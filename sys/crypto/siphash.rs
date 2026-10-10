@@ -101,6 +101,10 @@
 //!   `SipHash_Final(dst, ctx)` is [`SiphashCtx::finalize`], which returns the bytes; both
 //!   wipe the context in place (the C's `explicit_bzero(ctx, ..)`). The one-call
 //!   `SipHash(key, rc, rf, src)` is [`SiphashCtx::hash`].
+//! - `SipHash_Init` has a second form, [`SiphashCtx::with_key_words`], which takes the key's
+//!   two stored words by value: pf's SYN-cookie secrets live in atomics, read straight into
+//!   the state, so no copy of the key is gathered on the stack per packet
+//!   (`sys/net/pf_syncookies.rs`).
 //! - The C passes the compression and finalisation round counts (`rc`, `rf`) to every call,
 //!   and the `SipHash24_*`/`SipHash48_*` macros fix them; nothing stops an `Update` with one
 //!   count and an `End` with another. Here they are the context's const parameters,
@@ -156,9 +160,16 @@ impl<const C: usize, const D: usize> SiphashCtx<C, D> {
 
     /// `SipHash_Init`: starts a hash under `key`.
     pub fn new(key: &SiphashKey) -> Self {
+        Self::with_key_words(key.k0, key.k1)
+    }
+
+    /// `SipHash_Init` from the two words of a key as a [`SiphashKey`] stores them (`k0`,
+    /// `k1`, little-endian), for an owner that keeps its key in words of its own (atomics) and
+    /// so never gathers it into a [`SiphashKey`] value.
+    pub fn with_key_words(k0: u64, k1: u64) -> Self {
         // lemtoh64: the key words are stored little-endian.
-        let k0 = u64::from_le(key.k0);
-        let k1 = u64::from_le(key.k1);
+        let k0 = u64::from_le(k0);
+        let k1 = u64::from_le(k1);
 
         Self {
             v: [
@@ -373,6 +384,25 @@ mod tests {
             ctx.update(&msg[..n]);
             assert_eq!(ctx.finalize(), want24.to_le_bytes(), "2-4 bytes, {n}");
         }
+    }
+
+    #[test]
+    fn the_key_words_start_the_same_hash() {
+        // `with_key_words` takes the words as a `SiphashKey` stores them: the same vectors.
+        let key = paper_key();
+        let msg: [u8; 16] = core::array::from_fn(|i| i as u8);
+        for (n, (want24, want48)) in VECTORS.iter().enumerate() {
+            let mut ctx = SipHash24Ctx::with_key_words(key.k0, key.k1);
+            ctx.update(&msg[..n]);
+            assert_eq!(ctx.end(), *want24, "2-4, {n} bytes");
+            let mut ctx = SipHash48Ctx::with_key_words(key.k0, key.k1);
+            ctx.update(&msg[..n]);
+            assert_eq!(ctx.end(), *want48, "4-8, {n} bytes");
+        }
+        assert_eq!(
+            SipHash24Ctx::with_key_words(key.k0, key.k1),
+            SipHash24Ctx::new(&key)
+        );
     }
 
     #[test]

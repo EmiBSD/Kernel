@@ -58,6 +58,7 @@ pub mod pf_lb;
 pub mod pf_norm;
 pub mod pf_osfp;
 pub mod pf_ruleset;
+#[forbid(unsafe_code)]
 pub mod pf_syncookies;
 pub mod pf_table;
 pub mod pfkeyv2;

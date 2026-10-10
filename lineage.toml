@@ -1619,8 +1619,8 @@ status = "redesigned"
 
 [[module.fn]]
 lz = "sys/crypto/siphash.rs::SipHash_Init"
-native = ["SiphashCtx::new"]
-kind = "renamed"
+native = ["SiphashCtx::new", "SiphashCtx::with_key_words"]
+kind = "split"
 
 [[module.fn]]
 lz = "sys/crypto/siphash.rs::SipHash_Update"
@@ -5028,8 +5028,7 @@ status = "inherited"
 [[module]]
 rust = "sys/net/pf_syncookies.rs"
 lz = ["sys/net/pf_syncookies.rs"]
-status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/net/pf_table.rs"
