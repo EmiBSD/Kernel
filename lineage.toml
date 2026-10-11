@@ -3872,7 +3872,8 @@ status = "inherited"
 [[module]]
 rust = "sys/isofs/udf/udf.rs"
 lz = ["sys/isofs/udf/udf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/crypto/siphash.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_extern.rs"
@@ -3888,12 +3889,14 @@ status = "inherited"
 [[module]]
 rust = "sys/isofs/udf/udf_vfsops.rs"
 lz = ["sys/isofs/udf/udf_vfsops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/crypto/siphash.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_vnops.rs"
 lz = ["sys/isofs/udf/udf_vnops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/crypto/siphash.rs"]
 
 [[module]]
 rust = "sys/kern/clock_subr.rs"
@@ -4976,7 +4979,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/crypto/siphash.rs"]
 
 [[module]]
 rust = "sys/net/ifq.rs"
@@ -5091,7 +5095,7 @@ status = "inherited"
 rust = "sys/net/wg_cookie.rs"
 lz = ["sys/net/wg_cookie.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/blake2s.rs"]
+adapted_by = ["sys/crypto/blake2s.rs", "sys/crypto/siphash.rs"]
 
 [[module]]
 rust = "sys/net/wg_noise.rs"

@@ -92,7 +92,6 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
-use crate::crypto::siphash::SipHash24;
 use crate::isofs::udf::ecma167_udf::{
     ExtfileEntry, FileEntry, FileidDesc, LongAd, Packed, ShortAd, TAGID_EXTFENTRY, TAGID_FID,
     Timestamp, UDF_EXTFENTRY_SIZE, UDF_FENTRY_PERM_GRP_MASK, UDF_FENTRY_PERM_OWNER_MASK,
@@ -214,8 +213,7 @@ pub enum UdfBmap {
 /// when the mount has no table.
 fn udf_hashchain(ump: &Umount, id: Udfino) -> Option<&'static crate::isofs::udf::udf::UdfHashLh> {
     let tbl = ump.um_hashtbl.get()?;
-    let key = ump.um_hashkey.get();
-    let h = SipHash24(&key, &id.to_ne_bytes()) & ump.um_hashsz.get();
+    let h = ump.um_hashkey.hash24(&id.to_ne_bytes()) & ump.um_hashsz.get();
     tbl.get(h as usize)
 }
 

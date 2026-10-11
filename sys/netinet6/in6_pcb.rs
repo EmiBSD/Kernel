@@ -148,7 +148,6 @@ use core::ptr;
 #[cfg(feature = "diagnostic")]
 use core::sync::atomic::Ordering;
 
-use crate::crypto::siphash::SipHash24Ctx;
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::subr_prf::panic;
@@ -232,7 +231,7 @@ pub fn in6_pcbhash(
     laddr: &In6Addr,
     lport: u16,
 ) -> u64 {
-    let mut ctx = SipHash24Ctx::new(&table.inpt_key.get());
+    let mut ctx = table.inpt_key.siphash24();
     let nrdom = rdomain.to_be_bytes();
 
     ctx.update(&nrdom);

@@ -543,7 +543,7 @@ pub fn udf_mountfs(
         let mut key = [0u8; 16];
         arc4random_buf(&mut key);
         let (k0, k1) = key.split_at(8);
-        ump.um_hashkey.set(SiphashKey {
+        ump.um_hashkey.store(SiphashKey {
             k0: u64::from_ne_bytes(k0.try_into().unwrap_or([0; 8])),
             k1: u64::from_ne_bytes(k1.try_into().unwrap_or([0; 8])),
         });

@@ -125,7 +125,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use libkern::{explicit_bzero, strlcpy, timingsafe_bcmp};
 
 use crate::crypto::curve25519::curve25519_generate_public;
-use crate::crypto::siphash::{SipHash24, SiphashKey};
+use crate::crypto::siphash::{AtomicSiphashKey, SiphashKey};
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};
 use crate::kern::init_main::NCPUS;
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_init_flags, mtx_leave};
@@ -987,7 +987,7 @@ pub struct WgSoftc {
     /// `sc_if`: first, as the C's `ifp->if_softc` and the softc share an address.
     pub sc_if: Ifnet,
     /// `sc_secret`: the key of the peer hash.
-    pub sc_secret: Cell<SiphashKey>,
+    pub sc_secret: AtomicSiphashKey,
 
     /// `sc_lock`.
     pub sc_lock: Rwlock,
@@ -1242,7 +1242,7 @@ pub fn wg_peer_create(sc: &'static WgSoftc, public: &[u8; WG_KEY_SIZE]) -> Optio
 
     peer.p_start_onlist.set(false);
 
-    let idx = SipHash24(&sc.sc_secret.get(), public) & sc.sc_peer_mask.get();
+    let idx = sc.sc_secret.hash24(public) & sc.sc_peer_mask.get();
 
     rw_enter_write(&sc.sc_peer_lock);
     if let Some(bucket) = sc.sc_peer.get().and_then(|t| t.get(idx as usize)) {
@@ -1262,7 +1262,7 @@ pub fn wg_peer_create(sc: &'static WgSoftc, public: &[u8; WG_KEY_SIZE]) -> Optio
 pub fn wg_peer_lookup(sc: &WgSoftc, public: &[u8; WG_KEY_SIZE]) -> Option<&'static WgPeer> {
     let mut peer_key = [0u8; WG_KEY_SIZE];
 
-    let idx = SipHash24(&sc.sc_secret.get(), public) & sc.sc_peer_mask.get();
+    let idx = sc.sc_secret.hash24(public) & sc.sc_peer_mask.get();
 
     rw_enter_read(&sc.sc_peer_lock);
     let found = sc
@@ -3942,7 +3942,7 @@ pub fn wg_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     let (mut k0, mut k1) = ([0u8; 8], [0u8; 8]);
     arc4random_buf(&mut k0);
     arc4random_buf(&mut k1);
-    sc.sc_secret.set(SiphashKey {
+    sc.sc_secret.store(SiphashKey {
         k0: u64::from_ne_bytes(k0),
         k1: u64::from_ne_bytes(k1),
     });

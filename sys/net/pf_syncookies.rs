@@ -83,12 +83,12 @@
 //! - LZ kept the two secrets as `[Cell<SiphashKey>; 2]` and `pf_syncookie_mac` copied the
 //!   current one out of its `Cell` (`.get()`) into a key value on the stack for every SYN and
 //!   every ACK it checked, never wiped: a residue an attacker who reads kernel stack memory
-//!   could use to forge cookies. Each secret is now a [`PfSyncookieKey`], the key's two words
-//!   in atomics: [`PfSyncookieKey::siphash24`] loads them straight into the hash state
-//!   (`SipHash24Ctx::with_key_words`), which `finalize` wipes, so no copy of the key is built
-//!   per packet; `pf_syncookie_newkey` draws the new secret into a stack buffer that is
-//!   `explicit_bzero`ed once stored ([`PfSyncookieKey::renew`]), and replacing or clearing a
-//!   secret overwrites its words, the only storage, in place.
+//!   could use to forge cookies. Each secret is now an [`AtomicSiphashKey`]
+//!   (`sys/crypto/siphash.rs`), the key's two words in atomics: `pf_syncookie_mac` starts
+//!   the hash from the words themselves (`siphash24()`), into a state `finalize` wipes, so no
+//!   copy of the key is built per packet; `pf_syncookie_newkey` draws the new secret into a
+//!   stack buffer that is `explicit_bzero`ed once stored, and replacing or clearing a secret
+//!   overwrites its words, the only storage, in place.
 //! - Atomics, not a lock: the key timeout (`pf_syncookie_rotate`, from softclock) writes a
 //!   slot while packets read the slots on other CPUs, without a common lock, as in the C. A
 //!   word is one load or store, so the race the C has (a packet checked under the slot being
@@ -99,11 +99,11 @@
 //!   a raw pointer to a local).
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use libkern::explicit_bzero;
 
-use crate::crypto::siphash::{SIPHASH_KEY_LENGTH, SipHash24Ctx};
+use crate::crypto::siphash::{AtomicSiphashKey, SIPHASH_KEY_LENGTH, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_set};
@@ -177,78 +177,19 @@ const PF_SYNCOOKIE_SECRET_SIZE: usize = SIPHASH_KEY_LENGTH;
 /// `PF_SYNCOOKIE_SECRET_LIFETIME`: seconds.
 const PF_SYNCOOKIE_SECRET_LIFETIME: i32 = 15;
 
-/// One SYN-cookie secret, a `SIPHASH_KEY` (`pf_syncookie_status.key[i]`) kept as its two
-/// stored words in atomics: the key timeout replaces a slot while packets on other CPUs read
-/// the slots, so each word is one atomic load or store (relaxed; a packet that races a new key
-/// of its own slot sees old or new words and its cookie fails, as in the C), and the words go
-/// straight into the hash state ([`PfSyncookieKey::siphash24`]): no copy of the key is built
-/// on the stack per packet. Replacing or clearing a secret overwrites these words, its only
-/// storage, in place.
-pub struct PfSyncookieKey {
-    /// `k0`, `k1`, as a `SiphashKey` stores them.
-    words: [AtomicU64; 2],
-}
-
-impl PfSyncookieKey {
-    /// The zeroed secret, the state before the first key and after the keys are dropped.
-    const fn zeroed() -> Self {
-        Self {
-            words: [AtomicU64::new(0), AtomicU64::new(0)],
-        }
-    }
-
-    /// `SipHash24_Init(&ctx, &key)`: a SipHash-2-4 context under this secret.
-    fn siphash24(&self) -> SipHash24Ctx {
-        SipHash24Ctx::with_key_words(
-            self.words[0].load(Ordering::Relaxed),
-            self.words[1].load(Ordering::Relaxed),
-        )
-    }
-
-    /// `arc4random_buf(&key, PF_SYNCOOKIE_SECRET_SIZE)`: a fresh random secret over the old
-    /// one. The random bytes pass through a stack buffer, wiped once stored.
-    fn renew(&self) {
-        let mut secret = [0u8; PF_SYNCOOKIE_SECRET_SIZE];
-        arc4random_buf(&mut secret);
-        for (word, bytes) in self.words.iter().zip(secret.as_chunks::<8>().0) {
-            word.store(u64::from_ne_bytes(*bytes), Ordering::Relaxed);
-        }
-        explicit_bzero(&mut secret);
-    }
-
-    /// `memset(&key, 0, PF_SYNCOOKIE_SECRET_SIZE)`.
-    fn clear(&self) {
-        for word in &self.words {
-            word.store(0, Ordering::Relaxed);
-        }
-    }
-
-    /// Sets the secret's words (the tests' fixed keys).
-    #[cfg(test)]
-    fn set(&self, k0: u64, k1: u64) {
-        self.words[0].store(k0, Ordering::Relaxed);
-        self.words[1].store(k1, Ordering::Relaxed);
-    }
-
-    /// The secret's words (the tests).
-    #[cfg(test)]
-    fn get(&self) -> [u64; 2] {
-        [
-            self.words[0].load(Ordering::Relaxed),
-            self.words[1].load(Ordering::Relaxed),
-        ]
-    }
-}
-
 /// The type of `pf_syncookie_status`. Every member is an atomic or the timeout (`Sync` on its
 /// own), so the status is shared between CPUs without an `unsafe impl Sync`.
+///
+/// The key timeout replaces a secret while packets on other CPUs read the secrets, with no
+/// lock in common, as in the C: each is an [`AtomicSiphashKey`], whose words go straight into
+/// the hash state, so no copy of a secret is built on the stack per packet.
 pub struct PfSyncookieStatus {
     /// `keytimeout`.
     pub keytimeout: Timeout,
     /// `oddeven` (`volatile`).
     pub oddeven: AtomicU32,
     /// `key[2]`.
-    pub key: [PfSyncookieKey; 2],
+    pub key: [AtomicSiphashKey; 2],
     /// `hiwat`: absolute; # of states.
     pub hiwat: AtomicU32,
     /// `lowat`.
@@ -259,7 +200,7 @@ pub struct PfSyncookieStatus {
 pub static PF_SYNCOOKIE_STATUS: PfSyncookieStatus = PfSyncookieStatus {
     keytimeout: Timeout::zeroed(),
     oddeven: AtomicU32::new(0),
-    key: [PfSyncookieKey::zeroed(), PfSyncookieKey::zeroed()],
+    key: [AtomicSiphashKey::zeroed(), AtomicSiphashKey::zeroed()],
     hiwat: AtomicU32::new(0),
     lowat: AtomicU32::new(0),
 };
@@ -441,8 +382,8 @@ pub fn pf_syncookie_rotate(_arg: *mut c_void) {
         && st.syncookies_inflight[0].get() == 0
         && st.syncookies_inflight[1].get() == 0
     {
-        PF_SYNCOOKIE_STATUS.key[0].clear();
-        PF_SYNCOOKIE_STATUS.key[1].clear();
+        PF_SYNCOOKIE_STATUS.key[0].store(SiphashKey::default());
+        PF_SYNCOOKIE_STATUS.key[1].store(SiphashKey::default());
         return;
     }
 
@@ -456,7 +397,12 @@ pub fn pf_syncookie_newkey() {
     let oe = (PF_SYNCOOKIE_STATUS.oddeven.load(Ordering::Relaxed) + 1) & 0x1;
     PF_SYNCOOKIE_STATUS.oddeven.store(oe, Ordering::Relaxed);
     PF_STATUS.syncookies_inflight[oe as usize].set(0);
-    PF_SYNCOOKIE_STATUS.key[oe as usize].renew();
+    // arc4random_buf(&key[oddeven], PF_SYNCOOKIE_SECRET_SIZE), through a buffer wiped once
+    // the secret is stored over the old one.
+    let mut secret = [0u8; PF_SYNCOOKIE_SECRET_SIZE];
+    arc4random_buf(&mut secret);
+    PF_SYNCOOKIE_STATUS.key[oe as usize].store_bytes(&secret);
+    explicit_bzero(&mut secret);
     timeout_add_sec(
         &PF_SYNCOOKIE_STATUS.keytimeout,
         PF_SYNCOOKIE_SECRET_LIFETIME,
@@ -576,7 +522,7 @@ mod tests {
     // not on another; the mode and watermark ioctls check their bounds.
 
     use std::sync::{Mutex as StdMutex, MutexGuard};
-    use std::{assert, assert_eq, assert_ne};
+    use std::{assert, assert_eq};
 
     use super::*;
     use crate::net::pfvar::PfAddr;
@@ -627,8 +573,11 @@ mod tests {
     /// Fixed secrets, the even one current.
     fn keys() {
         PF_SYNCOOKIE_STATUS.oddeven.store(0, Ordering::Relaxed);
-        PF_SYNCOOKIE_STATUS.key[0].set(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210);
-        PF_SYNCOOKIE_STATUS.key[1].set(1, 2);
+        PF_SYNCOOKIE_STATUS.key[0].store(SiphashKey {
+            k0: 0x0123_4567_89ab_cdef,
+            k1: 0xfedc_ba98_7654_3210,
+        });
+        PF_SYNCOOKIE_STATUS.key[1].store(SiphashKey { k0: 1, k1: 2 });
     }
 
     #[test]
@@ -661,20 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_is_renewed_and_cleared_in_place() {
-        // `renew` draws a new secret over the old words, `clear` zeroes them.
-        let key = PfSyncookieKey::zeroed();
-        key.set(1, 2);
-        key.renew();
-        let first = key.get();
-        assert_ne!(first, [1, 2]);
-        key.renew();
-        assert_ne!(key.get(), first);
-        key.clear();
-        assert_eq!(key.get(), [0, 0]);
-    }
-
-    #[test]
     fn the_rotation_drops_both_secrets_when_idle() {
         // Nothing active and nothing in flight: `pf_syncookie_rotate` zeroes both secrets
         // and draws no new one (the path that arms no timeout).
@@ -684,8 +619,8 @@ mod tests {
         PF_STATUS.syncookies_inflight[0].set(0);
         PF_STATUS.syncookies_inflight[1].set(0);
         pf_syncookie_rotate(core::ptr::null_mut());
-        assert_eq!(PF_SYNCOOKIE_STATUS.key[0].get(), [0, 0]);
-        assert_eq!(PF_SYNCOOKIE_STATUS.key[1].get(), [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[0].words(), [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[1].words(), [0, 0]);
     }
 
     #[test]
