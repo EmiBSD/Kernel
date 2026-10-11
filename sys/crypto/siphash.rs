@@ -120,7 +120,9 @@
 //!   [`AtomicSiphashKey`], its words in atomics, that starts a hash from the words
 //!   ([`AtomicSiphashKey::siphash24`], [`AtomicSiphashKey::hash24`]) and is replaced in place
 //!   ([`AtomicSiphashKey::store`]); a key behind a lock or written once at boot stays a
-//!   `SiphashKey` used by reference. `#[repr(C)]` and the layout are unchanged.
+//!   `SiphashKey` used by reference. `#[repr(C)]` and the layout are unchanged. Neither the
+//!   key nor the context derives `Debug` (nothing prints them), and the key has no
+//!   `PartialEq` (a compare that is not constant time; nothing compared keys).
 //! - The context holds key-derived state (`v` is the key xor the constants until the end),
 //!   so it is not `Copy` and zeroes itself when dropped (`docs/IDIOMS.md`, "a hash
 //!   context"): a by-value pass or a context dropped before `end` leaves no copy of it.
@@ -141,8 +143,9 @@ pub const SIPHASH_DIGEST_LENGTH: usize = 8;
 /// [`SiphashCtx::finalize`].
 ///
 /// `Default` is the wiped, all-zero context the end leaves behind, not a hash under any key.
-/// Not `Copy`: dropping a context wipes it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Not `Copy`: dropping a context wipes it. No `Debug`, so its key-derived state is never
+/// printed.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SiphashCtx<const C: usize, const D: usize> {
     /// `v`: the four state words.
     v: [u64; 4],
@@ -307,8 +310,10 @@ pub type SipHash48Ctx = SiphashCtx<4, 8>;
 /// Not `Copy`: dropping a key wipes it, so a key replaced or gone out of scope leaves no copy
 /// (a move still can, `docs/IDIOMS.md`). A key shared between CPUs and replaced at run time is
 /// an [`AtomicSiphashKey`] instead of a `Cell<SiphashKey>`, whose `get` would copy it out.
+/// Neither `Debug` nor `PartialEq`: a key is never printed, and never compared with an
+/// equality that is not constant time.
 #[repr(C)]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct SiphashKey {
     /// `k0`.
     pub k0: u64,
@@ -485,10 +490,7 @@ mod tests {
             ctx.update(&msg[..n]);
             assert_eq!(ctx.end(), *want48, "4-8, {n} bytes");
         }
-        assert_eq!(
-            SipHash24Ctx::with_key_words(key.k0, key.k1),
-            SipHash24Ctx::new(&key)
-        );
+        assert!(SipHash24Ctx::with_key_words(key.k0, key.k1) == SipHash24Ctx::new(&key));
     }
 
     #[test]
@@ -502,13 +504,13 @@ mod tests {
             ctx.update(&msg[split..]);
             assert_eq!(ctx.end(), whole, "split at {split}");
             // The end wipes the context.
-            assert_eq!(ctx, SipHash24Ctx::default());
+            assert!(ctx == SipHash24Ctx::default());
         }
         let mut ctx = SipHash48Ctx::new(&key);
         ctx.update(&msg);
         let d = ctx.finalize();
         assert_eq!(u64::from_le_bytes(d), SipHash48(&key, &msg));
-        assert_eq!(ctx, SipHash48Ctx::default());
+        assert!(ctx == SipHash48Ctx::default());
     }
 
     #[test]
@@ -564,7 +566,7 @@ mod tests {
         let other = AtomicSiphashKey::zeroed();
         other.store_bytes(&core::array::from_fn(|i| i as u8));
         assert_eq!(other.words(), atomic.words());
-        assert_eq!(other.siphash24(), SipHash24Ctx::new(&key));
+        assert!(other.siphash24() == SipHash24Ctx::new(&key));
         // A new key replaces the words.
         atomic.store(SiphashKey::default());
         assert_eq!(atomic.words(), [0, 0]);
@@ -575,15 +577,15 @@ mod tests {
         // What `Drop` runs on a context freed before `end`: the key-derived words zeroed.
         let mut ctx = SipHash24Ctx::new(&paper_key());
         ctx.update(b"0123456789a");
-        assert_ne!(ctx, SipHash24Ctx::default());
+        assert!(ctx != SipHash24Ctx::default());
         ctx.zeroize();
-        assert_eq!(ctx, SipHash24Ctx::default());
+        assert!(ctx == SipHash24Ctx::default());
 
         // Even with nothing hashed, the state is the key xor the constants.
         let mut ctx = SipHash48Ctx::new(&paper_key());
-        assert_ne!(ctx, SipHash48Ctx::default());
+        assert!(ctx != SipHash48Ctx::default());
         ctx.zeroize();
-        assert_eq!(ctx, SipHash48Ctx::default());
+        assert!(ctx == SipHash48Ctx::default());
     }
 
     #[test]
@@ -594,8 +596,8 @@ mod tests {
         let mut fork = ctx.clone();
         fork.update(b"klm");
         assert_eq!(fork.end(), SipHash24(&key, b"abcdefghijklm"));
-        assert_eq!(fork, SipHash24Ctx::default());
-        assert_ne!(ctx, SipHash24Ctx::default());
+        assert!(fork == SipHash24Ctx::default());
+        assert!(ctx != SipHash24Ctx::default());
         assert_eq!(ctx.end(), SipHash24(&key, b"abcdefghij"));
     }
 }
