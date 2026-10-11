@@ -79,7 +79,7 @@
 use core::cell::Cell;
 use core::ptr::NonNull;
 
-use crate::crypto::siphash::SiphashKey;
+use crate::crypto::siphash::AtomicSiphashKey;
 use crate::isofs::udf::ecma167_udf::{ExtfileEntry, FileEntry, LbAddr, LongAd, LongAdImpl, Packed};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::bread;
@@ -258,7 +258,7 @@ pub struct Umount {
     /// `um_hashtbl`.
     pub um_hashtbl: Cell<Option<&'static [UdfHashLh]>>,
     /// `um_hashkey`.
-    pub um_hashkey: Cell<SiphashKey>,
+    pub um_hashkey: AtomicSiphashKey,
     /// `um_hashsz`: the hash table's size - 1.
     pub um_hashsz: Cell<u64>,
     /// `um_hashmtx`.
@@ -300,7 +300,7 @@ impl Umount {
                 impl_: LongAdImpl { bytes: [0; 6] },
             }),
             um_hashtbl: Cell::new(None),
-            um_hashkey: Cell::new(SiphashKey { k0: 0, k1: 0 }),
+            um_hashkey: AtomicSiphashKey::zeroed(),
             um_hashsz: Cell::new(0),
             um_hashmtx: Mutex::new(IPL_NONE),
             um_psecs: Cell::new(0),

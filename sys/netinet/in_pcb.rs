@@ -222,7 +222,9 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
+use libkern::explicit_bzero;
+
+use crate::crypto::siphash::AtomicSiphashKey;
 use crate::dev::rnd::{arc4random_buf, arc4random_uniform};
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -711,9 +713,9 @@ pub struct Inpcbtable {
     /// \[t\] `inpt_lhashtbl`: local port hash.
     pub inpt_lhashtbl: Cell<&'static [ListHead<InpLhash>]>,
     /// \[I\] `inpt_key`: secret for the hash.
-    pub inpt_key: Cell<SiphashKey>,
+    pub inpt_key: AtomicSiphashKey,
     /// \[I\] `inpt_lkey`: secret for the local port hash.
-    pub inpt_lkey: Cell<SiphashKey>,
+    pub inpt_lkey: AtomicSiphashKey,
     /// \[t\] `inpt_mask`: hash mask.
     pub inpt_mask: Cell<u64>,
     /// \[t\] `inpt_lmask`: local port hash mask.
@@ -732,8 +734,8 @@ impl Inpcbtable {
             inpt_queue: TailqHead::new(),
             inpt_hashtbl: Cell::new(&[]),
             inpt_lhashtbl: Cell::new(&[]),
-            inpt_key: Cell::new(SiphashKey { k0: 0, k1: 0 }),
-            inpt_lkey: Cell::new(SiphashKey { k0: 0, k1: 0 }),
+            inpt_key: AtomicSiphashKey::zeroed(),
+            inpt_lkey: AtomicSiphashKey::zeroed(),
             inpt_mask: Cell::new(0),
             inpt_lmask: Cell::new(0),
             inpt_count: Cell::new(0),
@@ -897,7 +899,7 @@ pub fn in_pcbhash(
     laddr: &InAddr,
     lport: u16,
 ) -> u64 {
-    let mut ctx = SipHash24Ctx::new(&table.inpt_key.get());
+    let mut ctx = table.inpt_key.siphash24();
     let nrdom = rdomain.to_be_bytes();
 
     ctx.update(&nrdom);
@@ -910,7 +912,7 @@ pub fn in_pcbhash(
 
 /// `in_pcblhash`: the hash of local port `lport` in routing domain `rdomain`.
 pub fn in_pcblhash(table: &Inpcbtable, rdomain: u32, lport: u16) -> u64 {
-    let mut ctx = SipHash24Ctx::new(&table.inpt_lkey.get());
+    let mut ctx = table.inpt_lkey.siphash24();
     let nrdom = rdomain.to_be_bytes();
 
     ctx.update(&nrdom);
@@ -918,16 +920,12 @@ pub fn in_pcblhash(table: &Inpcbtable, rdomain: u32, lport: u16) -> u64 {
     ctx.end()
 }
 
-/// A fresh random hash key.
-fn random_key() -> SiphashKey {
+/// Stores a fresh random hash key in `key`, through a buffer wiped once stored.
+fn random_key(key: &AtomicSiphashKey) {
     let mut b = [0u8; 16];
     arc4random_buf(&mut b);
-    let [k0, k1] = [&b[..8], &b[8..]].map(|w| {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(w);
-        u64::from_ne_bytes(word)
-    });
-    SiphashKey { k0, k1 }
+    key.store_bytes(&b);
+    explicit_bzero(&mut b);
 }
 
 /// `in_pcbinit`: sets up `table` with hash tables of `hashsize` buckets and fresh keys.
@@ -945,8 +943,8 @@ pub fn in_pcbinit(table: &Inpcbtable, hashsize: i32) {
     table.inpt_lmask.set(lhashtbl.len() as u64 - 1);
     table.inpt_count.set(0);
     table.inpt_size.set(hashsize);
-    table.inpt_key.set(random_key());
-    table.inpt_lkey.set(random_key());
+    random_key(&table.inpt_key);
+    random_key(&table.inpt_lkey);
 }
 
 /// `in_baddynamic`: whether `port` is invalid for dynamic allocation.

@@ -58,6 +58,7 @@
 //! ACK carries a valid cookie back.
 //!
 //! Upstream: sys/net/pf_syncookies.c @ 3ce1f3f79392
+//! LZ: sys/net/pf_syncookies.rs@3c62ede68802
 //!
 //! When we're under synflood, we use syncookies to prevent state table exhaustion. Trigger
 //! for the synflood mode is the number of half-open connections in the state table. We leave
@@ -73,16 +74,36 @@
 //! - `union pf_syncookie` is [`PfSyncookie`], the byte with accessors for the bit-fields; the
 //!   bits are where clang puts them on both little-endian targets (amd64, arm64): `oddeven`
 //!   bit 0, `sack_ok` bit 1, `wscale_idx` bits 2-4, `mss_idx` bits 5-7.
-//! - The file-static `pf_syncookie_status` is [`PF_SYNCOOKIE_STATUS`], its members `Cell`s
-//!   (and an atomic for the `volatile` `oddeven`).
+//! - The file-static `pf_syncookie_status` is [`PF_SYNCOOKIE_STATUS`], its members atomics
+//!   (see the redesign).
 //! - `tcp_mssdflt` (netinet's `TCP_MSSDFLT`, an atomic) is read through `net/pf.rs`'s
 //!   `tcp_mssdflt()`.
+//!
+//! ## Redesign
+//! - LZ kept the two secrets as `[Cell<SiphashKey>; 2]` and `pf_syncookie_mac` copied the
+//!   current one out of its `Cell` (`.get()`) into a key value on the stack for every SYN and
+//!   every ACK it checked, never wiped: a residue an attacker who reads kernel stack memory
+//!   could use to forge cookies. Each secret is now an [`AtomicSiphashKey`]
+//!   (`sys/crypto/siphash.rs`), the key's two words in atomics: `pf_syncookie_mac` starts
+//!   the hash from the words themselves (`siphash24()`), into a state `finalize` wipes, so no
+//!   copy of the key is built per packet; `pf_syncookie_newkey` draws the new secret into a
+//!   stack buffer that is `explicit_bzero`ed once stored, and replacing or clearing a secret
+//!   overwrites its words, the only storage, in place.
+//! - Atomics, not a lock: the key timeout (`pf_syncookie_rotate`, from softclock) writes a
+//!   slot while packets read the slots on other CPUs, without a common lock, as in the C. A
+//!   word is one load or store, so the race the C has (a packet checked under the slot being
+//!   renewed sees old or new words and fails) stays a defined race instead of a data race on
+//!   a `Cell`. `hiwat` and `lowat` are atomics too, so the status is made of `Sync` parts and
+//!   loses LZ's `unsafe impl Sync`; the module compiles under `#[forbid(unsafe_code)]`, its
+//!   tests included (their descriptor keeps the addresses in its own header copy instead of
+//!   a raw pointer to a local).
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::crypto::siphash::{SIPHASH_KEY_LENGTH, SipHash24Ctx, SiphashKey};
+use libkern::explicit_bzero;
+
+use crate::crypto::siphash::{AtomicSiphashKey, SIPHASH_KEY_LENGTH, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_set};
@@ -156,34 +177,32 @@ const PF_SYNCOOKIE_SECRET_SIZE: usize = SIPHASH_KEY_LENGTH;
 /// `PF_SYNCOOKIE_SECRET_LIFETIME`: seconds.
 const PF_SYNCOOKIE_SECRET_LIFETIME: i32 = 15;
 
-/// The type of `pf_syncookie_status`.
+/// The type of `pf_syncookie_status`. Every member is an atomic or the timeout (`Sync` on its
+/// own), so the status is shared between CPUs without an `unsafe impl Sync`.
+///
+/// The key timeout replaces a secret while packets on other CPUs read the secrets, with no
+/// lock in common, as in the C: each is an [`AtomicSiphashKey`], whose words go straight into
+/// the hash state, so no copy of a secret is built on the stack per packet.
 pub struct PfSyncookieStatus {
     /// `keytimeout`.
     pub keytimeout: Timeout,
     /// `oddeven` (`volatile`).
     pub oddeven: AtomicU32,
     /// `key[2]`.
-    pub key: [Cell<SiphashKey>; 2],
+    pub key: [AtomicSiphashKey; 2],
     /// `hiwat`: absolute; # of states.
-    pub hiwat: Cell<u32>,
+    pub hiwat: AtomicU32,
     /// `lowat`.
-    pub lowat: Cell<u32>,
+    pub lowat: AtomicU32,
 }
-
-// SAFETY: changed under the net lock and `pf_lock`, and by the key timeout, which writes the
-// key slot `oddeven` (an atomic) does not select before it flips it, as the C does.
-unsafe impl Sync for PfSyncookieStatus {}
 
 /// `pf_syncookie_status`.
 pub static PF_SYNCOOKIE_STATUS: PfSyncookieStatus = PfSyncookieStatus {
     keytimeout: Timeout::zeroed(),
     oddeven: AtomicU32::new(0),
-    key: [
-        Cell::new(SiphashKey { k0: 0, k1: 0 }),
-        Cell::new(SiphashKey { k0: 0, k1: 0 }),
-    ],
-    hiwat: Cell::new(0),
-    lowat: Cell::new(0),
+    key: [AtomicSiphashKey::zeroed(), AtomicSiphashKey::zeroed()],
+    hiwat: AtomicU32::new(0),
+    lowat: AtomicU32::new(0),
 };
 
 /// `pf_syncookie_msstab`: distribution and probability of certain MSS values. Those in
@@ -208,12 +227,14 @@ pub fn pf_syncookies_init() {
         pf_syncookie_rotate,
         core::ptr::null_mut(),
     );
-    PF_SYNCOOKIE_STATUS
-        .hiwat
-        .set(PFSTATE_HIWAT * PF_SYNCOOKIES_HIWATPCT / 100);
-    PF_SYNCOOKIE_STATUS
-        .lowat
-        .set(PFSTATE_HIWAT * PF_SYNCOOKIES_LOWATPCT / 100);
+    PF_SYNCOOKIE_STATUS.hiwat.store(
+        PFSTATE_HIWAT * PF_SYNCOOKIES_HIWATPCT / 100,
+        Ordering::Relaxed,
+    );
+    PF_SYNCOOKIE_STATUS.lowat.store(
+        PFSTATE_HIWAT * PF_SYNCOOKIES_LOWATPCT / 100,
+        Ordering::Relaxed,
+    );
     let _ = pf_syncookies_setmode(PF_SYNCOOKIES_NEVER);
 }
 
@@ -241,15 +262,15 @@ pub fn pf_syncookies_setwats(hiwat: u32, lowat: u32) -> Result<(), Errno> {
         return Err(Errno::EINVAL);
     }
 
-    PF_SYNCOOKIE_STATUS.hiwat.set(hiwat);
-    PF_SYNCOOKIE_STATUS.lowat.set(lowat);
+    PF_SYNCOOKIE_STATUS.hiwat.store(hiwat, Ordering::Relaxed);
+    PF_SYNCOOKIE_STATUS.lowat.store(lowat, Ordering::Relaxed);
     Ok(())
 }
 
 /// `pf_syncookies_getwats`.
 pub fn pf_syncookies_getwats(wats: &mut PfiocSynflwats) -> Result<(), Errno> {
-    wats.hiwat = PF_SYNCOOKIE_STATUS.hiwat.get();
-    wats.lowat = PF_SYNCOOKIE_STATUS.lowat.get();
+    wats.hiwat = PF_SYNCOOKIE_STATUS.hiwat.load(Ordering::Relaxed);
+    wats.lowat = PF_SYNCOOKIE_STATUS.lowat.load(Ordering::Relaxed);
     Ok(())
 }
 
@@ -269,7 +290,7 @@ pub fn pf_synflood_check(pd: &mut PfPdesc) -> bool {
     }
 
     if PF_STATUS.syncookies_active.get() == 0
-        && PF_STATUS.states_halfopen.get() > PF_SYNCOOKIE_STATUS.hiwat.get()
+        && PF_STATUS.states_halfopen.get() > PF_SYNCOOKIE_STATUS.hiwat.load(Ordering::Relaxed)
     {
         pf_syncookie_newkey();
         PF_STATUS.syncookies_active.set(1);
@@ -349,7 +370,7 @@ pub fn pf_syncookie_rotate(_arg: *mut c_void) {
             && u64::from(st.states_halfopen.get())
                 + st.syncookies_inflight[0].get()
                 + st.syncookies_inflight[1].get()
-                < u64::from(PF_SYNCOOKIE_STATUS.lowat.get()))
+                < u64::from(PF_SYNCOOKIE_STATUS.lowat.load(Ordering::Relaxed)))
             || st.syncookies_mode.get() == PF_SYNCOOKIES_NEVER)
     {
         st.syncookies_active.set(0);
@@ -361,8 +382,8 @@ pub fn pf_syncookie_rotate(_arg: *mut c_void) {
         && st.syncookies_inflight[0].get() == 0
         && st.syncookies_inflight[1].get() == 0
     {
-        PF_SYNCOOKIE_STATUS.key[0].set(SiphashKey { k0: 0, k1: 0 });
-        PF_SYNCOOKIE_STATUS.key[1].set(SiphashKey { k0: 0, k1: 0 });
+        PF_SYNCOOKIE_STATUS.key[0].store(SiphashKey::default());
+        PF_SYNCOOKIE_STATUS.key[1].store(SiphashKey::default());
         return;
     }
 
@@ -376,16 +397,12 @@ pub fn pf_syncookie_newkey() {
     let oe = (PF_SYNCOOKIE_STATUS.oddeven.load(Ordering::Relaxed) + 1) & 0x1;
     PF_SYNCOOKIE_STATUS.oddeven.store(oe, Ordering::Relaxed);
     PF_STATUS.syncookies_inflight[oe as usize].set(0);
+    // arc4random_buf(&key[oddeven], PF_SYNCOOKIE_SECRET_SIZE), through a buffer wiped once
+    // the secret is stored over the old one.
     let mut secret = [0u8; PF_SYNCOOKIE_SECRET_SIZE];
     arc4random_buf(&mut secret);
-    let mut k0 = [0u8; 8];
-    let mut k1 = [0u8; 8];
-    k0.copy_from_slice(&secret[..8]);
-    k1.copy_from_slice(&secret[8..]);
-    PF_SYNCOOKIE_STATUS.key[oe as usize].set(SiphashKey {
-        k0: u64::from_ne_bytes(k0),
-        k1: u64::from_ne_bytes(k1),
-    });
+    PF_SYNCOOKIE_STATUS.key[oe as usize].store_bytes(&secret);
+    explicit_bzero(&mut secret);
     timeout_add_sec(
         &PF_SYNCOOKIE_STATUS.keytimeout,
         PF_SYNCOOKIE_SECRET_LIFETIME,
@@ -397,7 +414,7 @@ pub fn pf_syncookie_newkey() {
 pub fn pf_syncookie_mac(pd: &mut PfPdesc, cookie: PfSyncookie, seq: u32) -> u32 {
     kassert!(i32::from(pd.proto) == IPPROTO_TCP);
 
-    let mut ctx = SipHash24Ctx::new(&PF_SYNCOOKIE_STATUS.key[usize::from(cookie.oddeven())].get());
+    let mut ctx = PF_SYNCOOKIE_STATUS.key[usize::from(cookie.oddeven())].siphash24();
 
     let alen = match pd.af {
         AF_INET => 4,
@@ -505,10 +522,15 @@ mod tests {
     // not on another; the mode and watermark ioctls check their bounds.
 
     use std::sync::{Mutex as StdMutex, MutexGuard};
-    use std::{assert, assert_eq};
+    use std::{assert, assert_eq, assert_ne};
 
     use super::*;
+    use crate::kern::kern_timeout::timeout_del;
+    use crate::net::pfvar::PfAddr;
     use crate::net::pfvar_priv::PfLoc;
+    use crate::netinet::in_::InAddr;
+    use crate::netinet::ip_icmp::Icmp;
+    use crate::netinet::tcp::Tcphdr;
 
     /// Serialises the tests: they share `pf_status` and the secrets.
     static LOCK: StdMutex<()> = StdMutex::new(());
@@ -517,20 +539,26 @@ mod tests {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The client's and the server's addresses, side by side.
-    struct Addrs([u8; 8]);
+    /// Where the tests keep the two IPv4 addresses: in the descriptor's own header copy, past
+    /// the 20-byte TCP header (the copy is as large as an ICMP header, 28 bytes), so the
+    /// descriptor needs no location outside itself and the tests no `unsafe`.
+    const ADDR_OFF: usize = size_of::<Tcphdr>();
+    const _: () = assert!(ADDR_OFF + 8 <= size_of::<Icmp>());
 
-    /// A TCP descriptor from 192.168.1.5:40000 to 10.0.0.1:80 with `seq`, `ack` and `flags`;
-    /// its addresses are in `addrs`, which must outlive it.
-    fn tcp_pd(addrs: &mut Addrs, seq: u32, ack: u32, flags: u8) -> PfPdesc {
-        addrs.0 = [192, 168, 1, 5, 10, 0, 0, 1];
+    /// A TCP descriptor from 192.168.1.5:40000 to 10.0.0.1:80 with `seq`, `ack` and `flags`.
+    fn tcp_pd(seq: u32, ack: u32, flags: u8) -> PfPdesc {
         let mut pd = PfPdesc::new();
         pd.af = AF_INET;
         pd.proto = IPPROTO_TCP as u8;
-        // SAFETY: `addrs` outlives the descriptor in every test and is not touched while it is
-        // used.
-        pd.src = unsafe { PfLoc::local(addrs.0.as_mut_ptr()) };
+        pd.src = PfLoc::Hdr(ADDR_OFF);
         pd.dst = pd.src.offset(4);
+        let v4 = |a: [u8; 4]| {
+            PfAddr::from_v4(InAddr {
+                s_addr: u32::from_ne_bytes(a),
+            })
+        };
+        pd.st_addr(pd.src, &v4([192, 168, 1, 5]), AF_INET);
+        pd.st_addr(pd.dst, &v4([10, 0, 0, 1]), AF_INET);
         pd.sport = PfLoc::Hdr(0);
         pd.dport = PfLoc::Hdr(2);
         let th = pd.tcp_mut();
@@ -546,11 +574,11 @@ mod tests {
     /// Fixed secrets, the even one current.
     fn keys() {
         PF_SYNCOOKIE_STATUS.oddeven.store(0, Ordering::Relaxed);
-        PF_SYNCOOKIE_STATUS.key[0].set(SiphashKey {
+        PF_SYNCOOKIE_STATUS.key[0].store(SiphashKey {
             k0: 0x0123_4567_89ab_cdef,
             k1: 0xfedc_ba98_7654_3210,
         });
-        PF_SYNCOOKIE_STATUS.key[1].set(SiphashKey { k0: 1, k1: 2 });
+        PF_SYNCOOKIE_STATUS.key[1].store(SiphashKey { k0: 1, k1: 2 });
     }
 
     #[test]
@@ -568,11 +596,84 @@ mod tests {
     }
 
     #[test]
+    fn cookies_match_the_known_answers() {
+        // Values computed by the module before the secrets moved from `Cell<SiphashKey>` to
+        // atomics: the same key words make the same MACs and cookies, under both secrets.
+        let _g = lock();
+        keys();
+        let mut syn = tcp_pd(1000, 0, TH_SYN);
+        assert_eq!(pf_syncookie_generate(&mut syn, 1460), 0xa0ee_9744);
+        let mut syn = tcp_pd(0xdead_beef, 0, TH_SYN);
+        let odd = PfSyncookie { cookie: 0x5b };
+        let even = PfSyncookie { cookie: 0x5a };
+        assert_eq!(pf_syncookie_mac(&mut syn, odd, 0xdead_beef), 0x29d2_5a23);
+        assert_eq!(pf_syncookie_mac(&mut syn, even, 0xdead_beef), 0x803d_9189);
+    }
+
+    #[test]
+    fn a_new_key_replaces_the_other_slot_only() {
+        // `pf_syncookie_newkey` flips `oddeven`, forgets the cookies in flight under the slot
+        // it takes over, draws a fresh secret there (the C's arc4random_buf over the old key)
+        // and leaves the current slot alone. It arms the key timeout, so the timeout wheel is
+        // reset under the network setup and the wheel's test lock, as hfsc's tests do.
+        let _g = lock();
+        let _net = crate::net::if_::tests::setup_net();
+        let _t = crate::kern::kern_timeout::tests::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::kern::kern_timeout::timeout_startup();
+        timeout_set(
+            &PF_SYNCOOKIE_STATUS.keytimeout,
+            pf_syncookie_rotate,
+            core::ptr::null_mut(),
+        );
+        keys();
+        let even = PF_SYNCOOKIE_STATUS.key[0].words();
+        let odd = PF_SYNCOOKIE_STATUS.key[1].words();
+        PF_STATUS.syncookies_inflight[0].set(3);
+        PF_STATUS.syncookies_inflight[1].set(5);
+
+        pf_syncookie_newkey();
+        assert_eq!(oddeven(), 1);
+        assert_eq!(PF_STATUS.syncookies_inflight[1].get(), 0);
+        assert_eq!(PF_STATUS.syncookies_inflight[0].get(), 3);
+        let new = PF_SYNCOOKIE_STATUS.key[1].words();
+        assert_ne!(new, odd);
+        assert_ne!(new, [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[0].words(), even);
+
+        // And back: the even slot is renewed, the odd one kept.
+        pf_syncookie_newkey();
+        assert_eq!(oddeven(), 0);
+        assert_eq!(PF_STATUS.syncookies_inflight[0].get(), 0);
+        assert_ne!(PF_SYNCOOKIE_STATUS.key[0].words(), even);
+        assert_ne!(PF_SYNCOOKIE_STATUS.key[0].words(), [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[1].words(), new);
+
+        timeout_del(&PF_SYNCOOKIE_STATUS.keytimeout);
+        PF_STATUS.syncookies_inflight[0].set(0);
+        PF_STATUS.syncookies_inflight[1].set(0);
+    }
+
+    #[test]
+    fn the_rotation_drops_both_secrets_when_idle() {
+        // Nothing active and nothing in flight: `pf_syncookie_rotate` zeroes both secrets
+        // and draws no new one (the path that arms no timeout).
+        let _g = lock();
+        keys();
+        PF_STATUS.syncookies_active.set(0);
+        PF_STATUS.syncookies_inflight[0].set(0);
+        PF_STATUS.syncookies_inflight[1].set(0);
+        pf_syncookie_rotate(core::ptr::null_mut());
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[0].words(), [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[1].words(), [0, 0]);
+    }
+
+    #[test]
     fn generated_cookie_validates() {
         let _g = lock();
         keys();
-        let mut a1 = Addrs([0; 8]);
-        let mut syn = tcp_pd(&mut a1, 1000, 0, TH_SYN);
+        let mut syn = tcp_pd(1000, 0, TH_SYN);
         let iss = pf_syncookie_generate(&mut syn, 1460);
         // MSS 1460 is the last entry of the table; no window scale option (0) stops the C's
         // downward search at index 1, the first entry not above it.
@@ -584,8 +685,7 @@ mod tests {
         assert_eq!(cookie.oddeven(), 0);
 
         PF_STATUS.syncookies_inflight[0].set(1);
-        let mut a2 = Addrs([0; 8]);
-        let mut ack = tcp_pd(&mut a2, 1001, iss.wrapping_add(1), TH_ACK);
+        let mut ack = tcp_pd(1001, iss.wrapping_add(1), TH_ACK);
         assert_eq!(pf_syncookie_validate(&mut ack), 1);
         assert_eq!(PF_STATUS.syncookies_inflight[0].get(), 0);
     }
@@ -594,24 +694,20 @@ mod tests {
     fn wrong_ack_does_not_validate() {
         let _g = lock();
         keys();
-        let mut a1 = Addrs([0; 8]);
-        let mut syn = tcp_pd(&mut a1, 5000, 0, TH_SYN);
+        let mut syn = tcp_pd(5000, 0, TH_SYN);
         let iss = pf_syncookie_generate(&mut syn, 536);
 
         PF_STATUS.syncookies_inflight[0].set(1);
         PF_STATUS.syncookies_inflight[1].set(1);
         // The MAC bits differ.
-        let mut a2 = Addrs([0; 8]);
-        let mut ack = tcp_pd(&mut a2, 5001, (iss ^ 0x0100_0000).wrapping_add(1), TH_ACK);
+        let mut ack = tcp_pd(5001, (iss ^ 0x0100_0000).wrapping_add(1), TH_ACK);
         assert_eq!(pf_syncookie_validate(&mut ack), 0);
         // The sequence number differs.
-        let mut a3 = Addrs([0; 8]);
-        let mut ack = tcp_pd(&mut a3, 7001, iss.wrapping_add(1), TH_ACK);
+        let mut ack = tcp_pd(7001, iss.wrapping_add(1), TH_ACK);
         assert_eq!(pf_syncookie_validate(&mut ack), 0);
         // Nothing in flight under the cookie's secret.
         PF_STATUS.syncookies_inflight[0].set(0);
-        let mut a4 = Addrs([0; 8]);
-        let mut ack = tcp_pd(&mut a4, 5001, iss.wrapping_add(1), TH_ACK);
+        let mut ack = tcp_pd(5001, iss.wrapping_add(1), TH_ACK);
         assert_eq!(pf_syncookie_validate(&mut ack), 0);
         PF_STATUS.syncookies_inflight[1].set(0);
     }
@@ -639,8 +735,7 @@ mod tests {
     #[test]
     fn synflood_check_follows_the_mode() {
         let _g = lock();
-        let mut a1 = Addrs([0; 8]);
-        let mut syn = tcp_pd(&mut a1, 1, 0, TH_SYN);
+        let mut syn = tcp_pd(1, 0, TH_SYN);
         PF_STATUS.syncookies_mode.set(PF_SYNCOOKIES_NEVER);
         assert!(!pf_synflood_check(&mut syn));
         PF_STATUS.syncookies_mode.set(PF_SYNCOOKIES_ALWAYS);
@@ -648,7 +743,7 @@ mod tests {
         // Adaptive below the high watermark: no flood.
         PF_STATUS.syncookies_mode.set(PF_SYNCOOKIES_ADAPTIVE);
         PF_STATUS.syncookies_active.set(0);
-        PF_SYNCOOKIE_STATUS.hiwat.set(100);
+        PF_SYNCOOKIE_STATUS.hiwat.store(100, Ordering::Relaxed);
         PF_STATUS.states_halfopen.set(10);
         assert!(!pf_synflood_check(&mut syn));
         PF_STATUS.syncookies_mode.set(PF_SYNCOOKIES_NEVER);

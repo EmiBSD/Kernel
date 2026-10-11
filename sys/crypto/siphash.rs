@@ -101,6 +101,9 @@
 //!   `SipHash_Final(dst, ctx)` is [`SiphashCtx::finalize`], which returns the bytes; both
 //!   wipe the context in place (the C's `explicit_bzero(ctx, ..)`). The one-call
 //!   `SipHash(key, rc, rf, src)` is [`SiphashCtx::hash`].
+//! - `SipHash_Init` has a second form, [`SiphashCtx::with_key_words`], which takes the key's
+//!   two stored words by value, so an [`AtomicSiphashKey`] (below) starts a hash from its
+//!   atomics without gathering a key value on the stack.
 //! - The C passes the compression and finalisation round counts (`rc`, `rf`) to every call,
 //!   and the `SipHash24_*`/`SipHash48_*` macros fix them; nothing stops an `Update` with one
 //!   count and an `End` with another. Here they are the context's const parameters,
@@ -110,9 +113,21 @@
 //! - [`SipHash24`] and [`SipHash48`] keep their names and signatures (six callers across
 //!   fs and net use the one-call form).
 //! - The fields are private; the block loop of `update` walks `as_chunks`.
+//! - `SIPHASH_KEY` ([`SiphashKey`]) is not `Copy` either and wipes itself when dropped: LZ
+//!   kept run-time keys in `Cell<SiphashKey>` and every hash copied the key out with `get`
+//!   onto the stack, never wiped (pf's SYN-cookie secret, WireGuard's peer-table and
+//!   rate-limit secrets, the inpcb hash keys, udf's node hash key). Such a key is now an
+//!   [`AtomicSiphashKey`], its words in atomics, that starts a hash from the words
+//!   ([`AtomicSiphashKey::siphash24`], [`AtomicSiphashKey::hash24`]) and is replaced in place
+//!   ([`AtomicSiphashKey::store`]); a key behind a lock or written once at boot stays a
+//!   `SiphashKey` used by reference. `#[repr(C)]` and the layout are unchanged. Neither the
+//!   key nor the context derives `Debug` (nothing prints them), and the key has no
+//!   `PartialEq` (a compare that is not constant time; nothing compared keys).
 //! - The context holds key-derived state (`v` is the key xor the constants until the end),
 //!   so it is not `Copy` and zeroes itself when dropped (`docs/IDIOMS.md`, "a hash
 //!   context"): a by-value pass or a context dropped before `end` leaves no copy of it.
+
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::wipe;
 
@@ -128,8 +143,9 @@ pub const SIPHASH_DIGEST_LENGTH: usize = 8;
 /// [`SiphashCtx::finalize`].
 ///
 /// `Default` is the wiped, all-zero context the end leaves behind, not a hash under any key.
-/// Not `Copy`: dropping a context wipes it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Not `Copy`: dropping a context wipes it. No `Debug`, so its key-derived state is never
+/// printed.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SiphashCtx<const C: usize, const D: usize> {
     /// `v`: the four state words.
     v: [u64; 4],
@@ -156,9 +172,16 @@ impl<const C: usize, const D: usize> SiphashCtx<C, D> {
 
     /// `SipHash_Init`: starts a hash under `key`.
     pub fn new(key: &SiphashKey) -> Self {
+        Self::with_key_words(key.k0, key.k1)
+    }
+
+    /// `SipHash_Init` from the two words of a key as a [`SiphashKey`] stores them (`k0`,
+    /// `k1`, little-endian), for an owner that keeps its key in words of its own (atomics) and
+    /// so never gathers it into a [`SiphashKey`] value.
+    pub fn with_key_words(k0: u64, k1: u64) -> Self {
         // lemtoh64: the key words are stored little-endian.
-        let k0 = u64::from_le(key.k0);
-        let k1 = u64::from_le(key.k1);
+        let k0 = u64::from_le(k0);
+        let k1 = u64::from_le(k1);
 
         Self {
             v: [
@@ -283,13 +306,92 @@ pub type SipHash24Ctx = SiphashCtx<2, 4>;
 pub type SipHash48Ctx = SiphashCtx<4, 8>;
 
 /// `SIPHASH_KEY`: the 128-bit key, two words stored little-endian.
+///
+/// Not `Copy`: dropping a key wipes it, so a key replaced or gone out of scope leaves no copy
+/// (a move still can, `docs/IDIOMS.md`). A key shared between CPUs and replaced at run time is
+/// an [`AtomicSiphashKey`] instead of a `Cell<SiphashKey>`, whose `get` would copy it out.
+/// Neither `Debug` nor `PartialEq`: a key is never printed, and never compared with an
+/// equality that is not constant time.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct SiphashKey {
     /// `k0`.
     pub k0: u64,
     /// `k1`.
     pub k1: u64,
+}
+
+impl Drop for SiphashKey {
+    /// Wipes the key on every path that frees it, a replaced value included.
+    fn drop(&mut self) {
+        wipe(&mut self.k0);
+        wipe(&mut self.k1);
+    }
+}
+
+/// A [`SiphashKey`] kept where several CPUs read it and one may replace it (a hash table's
+/// key, a secret rotated by a timeout): its two stored words in atomics. A hash starts from
+/// the words themselves ([`AtomicSiphashKey::siphash24`]), so no key value is gathered on the
+/// stack per use, and [`AtomicSiphashKey::store`] overwrites the words, the key's only storage
+/// here, in place. Each word is one relaxed load or store: a hash that races a replacement may
+/// mix the old and the new key's words (a wrong hash, as the C's unlocked copy of a key being
+/// rewritten gives), never a data race.
+#[derive(Default)]
+pub struct AtomicSiphashKey {
+    /// `k0`, `k1`, as a [`SiphashKey`] stores them.
+    words: [AtomicU64; 2],
+}
+
+impl AtomicSiphashKey {
+    /// The zeroed key (`SiphashKey { k0: 0, k1: 0 }`), as the C's zero-initialised globals.
+    pub const fn zeroed() -> Self {
+        Self {
+            words: [AtomicU64::new(0), AtomicU64::new(0)],
+        }
+    }
+
+    /// Replaces the key with `key`, which is then dropped, and so wiped.
+    pub fn store(&self, key: SiphashKey) {
+        self.words[0].store(key.k0, Ordering::Relaxed);
+        self.words[1].store(key.k1, Ordering::Relaxed);
+    }
+
+    /// Replaces the key with the 16 bytes of `bytes`, in memory order (the C's
+    /// `arc4random_buf(&key, sizeof(key))`); the caller wipes its buffer.
+    pub fn store_bytes(&self, bytes: &[u8; SIPHASH_KEY_LENGTH]) {
+        for (word, b) in self.words.iter().zip(bytes.as_chunks::<8>().0) {
+            word.store(u64::from_ne_bytes(*b), Ordering::Relaxed);
+        }
+    }
+
+    /// `SipHash_Init` under this key: a SipHash-`C`-`D` context.
+    pub fn siphash<const C: usize, const D: usize>(&self) -> SiphashCtx<C, D> {
+        SiphashCtx::with_key_words(
+            self.words[0].load(Ordering::Relaxed),
+            self.words[1].load(Ordering::Relaxed),
+        )
+    }
+
+    /// `SipHash24_Init` under this key.
+    pub fn siphash24(&self) -> SipHash24Ctx {
+        self.siphash()
+    }
+
+    /// [`SipHash24`] of `src` under this key, in one call.
+    pub fn hash24(&self, src: &[u8]) -> u64 {
+        let mut ctx = self.siphash24();
+        ctx.update(src);
+        ctx.end()
+    }
+
+    /// The key's words, `[k0, k1]` (the tests).
+    #[cfg(test)]
+    pub(crate) fn words(&self) -> [u64; 2] {
+        [
+            self.words[0].load(Ordering::Relaxed),
+            self.words[1].load(Ordering::Relaxed),
+        ]
+    }
 }
 
 /// `SipHash24`: SipHash-2-4 of `src` under `key`, in one call.
@@ -376,6 +478,22 @@ mod tests {
     }
 
     #[test]
+    fn the_key_words_start_the_same_hash() {
+        // `with_key_words` takes the words as a `SiphashKey` stores them: the same vectors.
+        let key = paper_key();
+        let msg: [u8; 16] = core::array::from_fn(|i| i as u8);
+        for (n, (want24, want48)) in VECTORS.iter().enumerate() {
+            let mut ctx = SipHash24Ctx::with_key_words(key.k0, key.k1);
+            ctx.update(&msg[..n]);
+            assert_eq!(ctx.end(), *want24, "2-4, {n} bytes");
+            let mut ctx = SipHash48Ctx::with_key_words(key.k0, key.k1);
+            ctx.update(&msg[..n]);
+            assert_eq!(ctx.end(), *want48, "4-8, {n} bytes");
+        }
+        assert!(SipHash24Ctx::with_key_words(key.k0, key.k1) == SipHash24Ctx::new(&key));
+    }
+
+    #[test]
     fn incremental_updates_agree_with_one_call() {
         let key = paper_key();
         let msg: [u8; 37] = core::array::from_fn(|i| (i * 7) as u8);
@@ -386,13 +504,13 @@ mod tests {
             ctx.update(&msg[split..]);
             assert_eq!(ctx.end(), whole, "split at {split}");
             // The end wipes the context.
-            assert_eq!(ctx, SipHash24Ctx::default());
+            assert!(ctx == SipHash24Ctx::default());
         }
         let mut ctx = SipHash48Ctx::new(&key);
         ctx.update(&msg);
         let d = ctx.finalize();
         assert_eq!(u64::from_le_bytes(d), SipHash48(&key, &msg));
-        assert_eq!(ctx, SipHash48Ctx::default());
+        assert!(ctx == SipHash48Ctx::default());
     }
 
     #[test]
@@ -420,7 +538,38 @@ mod tests {
 
     #[test]
     fn the_contexts_are_not_copy() {
-        crate::crypto::testutil::assert_not_copy!(SipHash24Ctx, SipHash48Ctx);
+        crate::crypto::testutil::assert_not_copy!(SipHash24Ctx, SipHash48Ctx, SiphashKey);
+    }
+
+    #[test]
+    fn an_atomic_key_hashes_as_its_key() {
+        // `store` and `store_bytes` keep the words a `SiphashKey` stores, so every hash
+        // started from the atomic words is the hash under the key: the 16 vectors of both
+        // round counts.
+        let key = paper_key();
+        let atomic = AtomicSiphashKey::zeroed();
+        assert_eq!(atomic.words(), [0, 0]);
+        assert_eq!(
+            atomic.hash24(b"abc"),
+            SipHash24(&SiphashKey::default(), b"abc")
+        );
+        atomic.store(key.clone());
+        assert_eq!(atomic.words(), [key.k0, key.k1]);
+        let msg: [u8; 16] = core::array::from_fn(|i| i as u8);
+        for (n, (want24, want48)) in VECTORS.iter().enumerate() {
+            assert_eq!(atomic.hash24(&msg[..n]), *want24, "2-4, {n} bytes");
+            let mut ctx = atomic.siphash::<4, 8>();
+            ctx.update(&msg[..n]);
+            assert_eq!(ctx.end(), *want48, "4-8, {n} bytes");
+        }
+        // The paper's key is the bytes 00..0f in memory order.
+        let other = AtomicSiphashKey::zeroed();
+        other.store_bytes(&core::array::from_fn(|i| i as u8));
+        assert_eq!(other.words(), atomic.words());
+        assert!(other.siphash24() == SipHash24Ctx::new(&key));
+        // A new key replaces the words.
+        atomic.store(SiphashKey::default());
+        assert_eq!(atomic.words(), [0, 0]);
     }
 
     #[test]
@@ -428,15 +577,15 @@ mod tests {
         // What `Drop` runs on a context freed before `end`: the key-derived words zeroed.
         let mut ctx = SipHash24Ctx::new(&paper_key());
         ctx.update(b"0123456789a");
-        assert_ne!(ctx, SipHash24Ctx::default());
+        assert!(ctx != SipHash24Ctx::default());
         ctx.zeroize();
-        assert_eq!(ctx, SipHash24Ctx::default());
+        assert!(ctx == SipHash24Ctx::default());
 
         // Even with nothing hashed, the state is the key xor the constants.
         let mut ctx = SipHash48Ctx::new(&paper_key());
-        assert_ne!(ctx, SipHash48Ctx::default());
+        assert!(ctx != SipHash48Ctx::default());
         ctx.zeroize();
-        assert_eq!(ctx, SipHash48Ctx::default());
+        assert!(ctx == SipHash48Ctx::default());
     }
 
     #[test]
@@ -447,8 +596,8 @@ mod tests {
         let mut fork = ctx.clone();
         fork.update(b"klm");
         assert_eq!(fork.end(), SipHash24(&key, b"abcdefghijklm"));
-        assert_eq!(fork, SipHash24Ctx::default());
-        assert_ne!(ctx, SipHash24Ctx::default());
+        assert!(fork == SipHash24Ctx::default());
+        assert!(ctx != SipHash24Ctx::default());
         assert_eq!(ctx.end(), SipHash24(&key, b"abcdefghij"));
     }
 }

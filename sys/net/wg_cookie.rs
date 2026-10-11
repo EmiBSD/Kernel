@@ -78,7 +78,7 @@ use crate::crypto::blake2s::Blake2sState;
 use crate::crypto::chachapoly::{
     XCHACHA20POLY1305_NONCE_SIZE, xchacha20poly1305_decrypt, xchacha20poly1305_encrypt,
 };
-use crate::crypto::siphash::{SipHash24, SiphashKey};
+use crate::crypto::siphash::AtomicSiphashKey;
 use crate::crypto::wipe;
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_rwlock::{
@@ -205,7 +205,7 @@ queue_adapter!(
 /// `struct ratelimit`: the token buckets of the sources of one address family.
 pub struct Ratelimit {
     /// `rl_secret`: the hash key of the table.
-    pub rl_secret: Cell<SiphashKey>,
+    pub rl_secret: AtomicSiphashKey,
     /// `rl_pool`: where the entries come from.
     pub rl_pool: Cell<Option<&'static Pool>>,
 
@@ -225,7 +225,7 @@ impl Ratelimit {
     /// An all-zero rate limiter.
     pub const fn new() -> Self {
         Self {
-            rl_secret: Cell::new(SiphashKey { k0: 0, k1: 0 }),
+            rl_secret: AtomicSiphashKey::zeroed(),
             rl_pool: Cell::new(None),
             rl_lock: Rwlock::new("ratelimit_lock"),
             rl_table: Cell::new(None),
@@ -668,16 +668,11 @@ fn cookie_checker_make_cookie(
 /// `ratelimit_init`: an empty table and a random hash key; `ENOBUFS` without memory.
 fn ratelimit_init(rl: &Ratelimit, pool: &'static Pool) -> Result<(), Errno> {
     rw_init(&rl.rl_lock, "ratelimit_lock");
-    // arc4random_buf(&rl->rl_secret, sizeof(rl->rl_secret)): the key's two words.
-    let (mut k0, mut k1) = ([0u8; 8], [0u8; 8]);
-    arc4random_buf(&mut k0);
-    arc4random_buf(&mut k1);
-    rl.rl_secret.set(SiphashKey {
-        k0: u64::from_ne_bytes(k0),
-        k1: u64::from_ne_bytes(k1),
-    });
-    explicit_bzero(&mut k0);
-    explicit_bzero(&mut k1);
+    // arc4random_buf(&rl->rl_secret, sizeof(rl->rl_secret)), through a wiped buffer.
+    let mut secret = [0u8; 16];
+    arc4random_buf(&mut secret);
+    rl.rl_secret.store_bytes(&secret);
+    explicit_bzero(&mut secret);
     let table = hashinit::<RatelimitEntries>(RATELIMIT_SIZE as i32, M_DEVBUF, M_NOWAIT);
     rl.rl_table.set(table);
     rl.rl_table_mask
@@ -750,10 +745,10 @@ fn ratelimit_key_in6(rl: &Ratelimit, sa: &SockaddrStorage) -> Option<u64> {
         return None;
     }
     let sin6 = sin6_of(sa);
-    Some(SipHash24(
-        &rl.rl_secret.get(),
-        &sin6.sin6_addr.s6_addr[..IPV6_MASK_SIZE],
-    ))
+    Some(
+        rl.rl_secret
+            .hash24(&sin6.sin6_addr.s6_addr[..IPV6_MASK_SIZE]),
+    )
 }
 
 /// The `AF_INET6` key of `ratelimit_allow` (without `INET6`: none).
@@ -769,10 +764,8 @@ fn ratelimit_allow(rl: &Ratelimit, sa: &SockaddrStorage) -> Result<(), Errno> {
 
     let sin = sin_of(sa);
     let key = if sa.ss_family == AF_INET {
-        SipHash24(
-            &rl.rl_secret.get(),
-            &sin.sin_addr.s_addr.to_ne_bytes()[..IPV4_MASK_SIZE],
-        )
+        rl.rl_secret
+            .hash24(&sin.sin_addr.s_addr.to_ne_bytes()[..IPV4_MASK_SIZE])
     } else if let Some(key) = ratelimit_key_in6(rl, sa) {
         key
     } else {

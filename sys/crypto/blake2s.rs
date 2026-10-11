@@ -90,6 +90,11 @@
 //! - `blake2s_compress(state, block, nblocks, inc)` takes whole blocks
 //!   (`&[[u8; BLAKE2S_BLOCK_SIZE]]`), so `nblocks` is their count and no block can be short;
 //!   its `KASSERT` on `inc` is kept. `buflen` is a `usize`.
+//! - `compress` and `increment_counter` take the state's fields (`h`, `t`, `f`) instead of
+//!   the whole state, so `update` and `finalize` pass the buffered block as `&self.buf`
+//!   beside them: LZ's shape forced a copy of `buf` (`let buf = self.buf`) onto the stack
+//!   before each compression of the buffer, which for a keyed hash is the padded key block,
+//!   left there unwiped. The compression's own locals (`m`, `v`) are not wiped, as in the C.
 //! - A keyed state holds key-derived material (the chained value after the key block, and
 //!   the key block itself in `buf` until the next block arrives), so the state is not `Copy`
 //!   and zeroes itself when dropped (`docs/IDIOMS.md`, "a hash context"): a by-value pass or
@@ -180,10 +185,10 @@ impl<const N: usize> Blake2sState<N> {
         self.f[0] = u32::MAX;
     }
 
-    /// `blake2s_increment_counter`.
-    fn increment_counter(&mut self, inc: u32) {
-        self.t[0] = self.t[0].wrapping_add(inc);
-        self.t[1] = self.t[1].wrapping_add(u32::from(self.t[0] < inc));
+    /// `blake2s_increment_counter`: adds `inc` to the 64-bit byte counter `t`.
+    fn increment_counter(t: &mut [u32; 2], inc: u32) {
+        t[0] = t[0].wrapping_add(inc);
+        t[1] = t[1].wrapping_add(u32::from(t[0] < inc));
     }
 
     /// `blake2s_init_param`: the zeroed state with the IV xor the parameter block's first word.
@@ -226,24 +231,34 @@ impl<const N: usize> Blake2sState<N> {
         state
     }
 
-    /// `blake2s_compress`: absorbs the whole `blocks`, counting `inc` bytes for each.
-    fn compress(&mut self, blocks: &[[u8; BLAKE2S_BLOCK_SIZE]], inc: u32) {
+    /// `blake2s_compress`: absorbs the whole `blocks` into the chained value `h`, counting
+    /// `inc` bytes for each in `t`, under the finalisation flags `f`. It takes the state's
+    /// fields apart, not `&mut self`, so a caller can pass the buffered block as
+    /// `&self.buf` beside them (split borrows) and the block is compressed where it is,
+    /// never copied to the stack.
+    fn compress(
+        h: &mut [u32; 8],
+        t: &mut [u32; 2],
+        f: &[u32; 2],
+        blocks: &[[u8; BLAKE2S_BLOCK_SIZE]],
+        inc: u32,
+    ) {
         let mut m = [0u32; 16];
         let mut v = [0u32; 16];
 
         kassert!(!(blocks.len() > 1 && inc != BLAKE2S_BLOCK_SIZE as u32));
 
         for blk in blocks {
-            self.increment_counter(inc);
+            Self::increment_counter(t, inc);
             for (w, bytes) in m.iter_mut().zip(blk.as_chunks::<4>().0) {
                 *w = u32::from_le_bytes(*bytes);
             }
-            v[..8].copy_from_slice(&self.h);
+            v[..8].copy_from_slice(h);
             v[8..].copy_from_slice(&BLAKE2S_IV);
-            v[12] ^= self.t[0];
-            v[13] ^= self.t[1];
-            v[14] ^= self.f[0];
-            v[15] ^= self.f[1];
+            v[12] ^= t[0];
+            v[13] ^= t[1];
+            v[14] ^= f[0];
+            v[15] ^= f[1];
 
             // G(r, i, a, b, c, d)
             let g =
@@ -274,8 +289,8 @@ impl<const N: usize> Blake2sState<N> {
                 g(&mut v, r, 7, 3, 4, 9, 14);
             }
 
-            for (i, h) in self.h.iter_mut().enumerate() {
-                *h ^= v[i] ^ v[i + 8];
+            for (i, w) in h.iter_mut().enumerate() {
+                *w ^= v[i] ^ v[i + 8];
             }
         }
     }
@@ -291,8 +306,13 @@ impl<const N: usize> Blake2sState<N> {
         if input.len() > fill {
             let (head, rest) = input.split_at(fill);
             self.buf[self.buflen..].copy_from_slice(head);
-            let buf = self.buf;
-            self.compress(&[buf], BLAKE2S_BLOCK_SIZE as u32);
+            Self::compress(
+                &mut self.h,
+                &mut self.t,
+                &self.f,
+                core::slice::from_ref(&self.buf),
+                BLAKE2S_BLOCK_SIZE as u32,
+            );
             self.buflen = 0;
             input = rest;
         }
@@ -300,7 +320,13 @@ impl<const N: usize> Blake2sState<N> {
             // Hash one less (full) block than strictly possible
             let nblocks = input.len().div_ceil(BLAKE2S_BLOCK_SIZE);
             let (blocks, _) = input.as_chunks::<BLAKE2S_BLOCK_SIZE>();
-            self.compress(&blocks[..nblocks - 1], BLAKE2S_BLOCK_SIZE as u32);
+            Self::compress(
+                &mut self.h,
+                &mut self.t,
+                &self.f,
+                &blocks[..nblocks - 1],
+                BLAKE2S_BLOCK_SIZE as u32,
+            );
             input = &input[BLAKE2S_BLOCK_SIZE * (nblocks - 1)..];
         }
         self.buf[self.buflen..self.buflen + input.len()].copy_from_slice(input);
@@ -312,12 +338,17 @@ impl<const N: usize> Blake2sState<N> {
     pub fn finalize(&mut self) -> [u8; N] {
         self.set_lastblock();
         self.buf[self.buflen..].fill(0); // Padding
-        let buf = self.buf;
         // `buflen` is at most a block, so the conversion is exact.
-        self.compress(&[buf], self.buflen as u32);
+        Self::compress(
+            &mut self.h,
+            &mut self.t,
+            &self.f,
+            core::slice::from_ref(&self.buf),
+            self.buflen as u32,
+        );
 
         let mut full = [0u8; BLAKE2S_HASH_SIZE];
-        for (out, word) in full.as_chunks_mut::<4>().0.iter_mut().zip(self.h) {
+        for (out, word) in full.as_chunks_mut::<4>().0.iter_mut().zip(&self.h) {
             *out = word.to_le_bytes();
         }
         let mut digest = [0u8; N];
