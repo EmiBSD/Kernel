@@ -29,9 +29,11 @@
 //!
 //! ```text
 //! cargo xtask lz check                     validate lineage.toml against the tree and the pin
-//! cargo xtask lz status [--write]          inherited and redesigned modules per subsystem;
-//!                                          --write regenerates the tables of README.md and
-//!                                          docs/STATUS.md between the lz markers
+//! cargo xtask lz status [--write]          inherited and redesigned modules per subsystem,
+//!                                          the `forbid` ones of those outside the core, and
+//!                                          the core's line; --write regenerates the tables
+//!                                          of README.md and docs/STATUS.md between the lz
+//!                                          markers
 //! cargo xtask lz drift [--fetch] [--security] [--functions] [--strict]
 //!                                          the LZ commits after the pin without a record in
 //!                                          lz-sync.toml, with the native modules they touch;
@@ -1293,14 +1295,43 @@ fn closing(toks: &[Tok], open: usize) -> Option<usize> {
 
 // --- lz status ---------------------------------------------------------------------------
 
-/// `cargo xtask lz status [--write]`.
-pub(crate) fn status(root: &Path, write: bool) -> Result<()> {
+/// Each path `lineage.toml` names, with its status: `inherited`, `adapted` or `redesigned`
+/// for a `[[module]]`, `extra` for an `[[extra]]` (`cargo xtask unsafe-report --json`).
+pub(crate) fn lineage_statuses(root: &Path) -> Result<BTreeMap<String, &'static str>> {
     let lineage = load_lineage(root)?;
-    let pin = commit_line(root, LZ_PINNED)?;
-    let forbid = crate::unsafereport::forbid_modules(root)?;
-    // Per subsystem: inherited, adapted, redesigned, and how many are `forbid`.
-    let mut table: BTreeMap<String, [usize; 4]> = BTreeMap::new();
-    for m in &lineage.modules {
+    let mut out: BTreeMap<String, &'static str> = lineage
+        .modules
+        .iter()
+        .map(|m| (m.rust.clone(), status_name(m.status)))
+        .collect();
+    for e in &lineage.extras {
+        out.insert(e.rust.clone(), "extra");
+    }
+    Ok(out)
+}
+
+/// The word `lineage.toml` writes for `s`.
+fn status_name(s: Status) -> &'static str {
+    match s {
+        Status::Inherited => "inherited",
+        Status::Adapted => "adapted",
+        Status::Redesigned => "redesigned",
+    }
+}
+
+/// The `lz status` table: per subsystem, the modules by status, those outside the core, and
+/// the `forbid` ones among those (docs/ZERO_UNSAFE.md, section 5: a row's progress is its
+/// non-core modules made `forbid`). Returns the Markdown, the totals (inherited, adapted,
+/// redesigned, non-core, forbid) and how many modules the core holds.
+fn status_table(
+    root: &Path,
+    modules: &[Module],
+    core: &crate::unsafereport::CoreList,
+    forbid: &HashSet<&str>,
+) -> (String, [usize; 5], usize) {
+    let mut table: BTreeMap<String, [usize; 5]> = BTreeMap::new();
+    let mut core_modules = 0usize;
+    for m in modules {
         let row = table
             .entry(crate::unsafereport::subsystem(root, &m.rust))
             .or_default();
@@ -1309,41 +1340,65 @@ pub(crate) fn status(root: &Path, write: bool) -> Result<()> {
             Status::Adapted => row[1] += 1,
             Status::Redesigned => row[2] += 1,
         }
-        row[3] += usize::from(forbid.contains(&m.rust));
-    }
-    let mut md = String::new();
-    md.push_str(
-        "| Subsystem | inherited | adapted | redesigned | total | forbid |
-|---|---:|---:|---:|---:|---:|
-",
-    );
-    let mut t = [0usize; 4];
-    for (sub, [i, a, r, f]) in &table {
-        md.push_str(&format!(
-            "| {sub} | {i} | {a} | {r} | {} | {f} |
-",
-            i + a + r
-        ));
-        for (sum, n) in t.iter_mut().zip([i, a, r, f]) {
-            *sum += n;
+        if core.contains(&m.rust) {
+            core_modules += 1;
+        } else {
+            row[3] += 1;
+            row[4] += usize::from(forbid.contains(m.rust.as_str()));
         }
     }
-    let [ti, ta, tr, tf] = t;
+    let mut md = String::from(
+        "| Subsystem | inherited | adapted | redesigned | total | non-core | forbid |\n\
+         |---|---:|---:|---:|---:|---:|---:|\n",
+    );
+    let mut t = [0usize; 5];
+    for (sub, [i, a, r, n, f]) in &table {
+        md.push_str(&format!(
+            "| {sub} | {i} | {a} | {r} | {} | {n} | {f} |\n",
+            i + a + r
+        ));
+        for (sum, x) in t.iter_mut().zip([i, a, r, n, f]) {
+            *sum += x;
+        }
+    }
+    let [ti, ta, tr, tn, tf] = t;
     md.push_str(&format!(
-        "| **total** | {ti} | {ta} | {tr} | {} | {tf} |
-",
+        "| **total** | {ti} | {ta} | {tr} | {} | {tn} | {tf} |\n",
         ti + ta + tr
     ));
+    (md, t, core_modules)
+}
+
+/// `cargo xtask lz status [--write]`.
+pub(crate) fn status(root: &Path, write: bool) -> Result<()> {
+    let lineage = load_lineage(root)?;
+    let pin = commit_line(root, LZ_PINNED)?;
+    let measured = crate::unsafereport::measure(root)?;
+    let forbid: HashSet<&str> = measured
+        .files
+        .iter()
+        .filter(|f| f.forbid)
+        .map(|f| f.rel.as_str())
+        .collect();
+    let (md, [_, _, _, non_core, forbid_n], core_modules) =
+        status_table(root, &lineage.modules, &measured.core, &forbid);
+    let core_line = format!(
+        "Core (`unsafe-core.toml`): {core_modules} modules, {} `unsafe`, budget {}.\n",
+        measured.groups.core,
+        measured.core_budget()
+    );
     let rows: usize = lineage.modules.iter().map(|m| m.fns.len()).sum();
     let head = format!(
-        "_Generated by `cargo xtask lz status --write` against EmiBSD.LZ {}: {} modules ({tf} `forbid`), {rows} function rows, {} extras, {} dropped._\n\n",
+        "_Generated by `cargo xtask lz status --write` against EmiBSD.LZ {}: {} modules \
+         ({forbid_n} `forbid` of {non_core} non-core, {core_modules} core), {rows} function \
+         rows, {} extras, {} dropped._\n\n",
         short(&pin),
         lineage.modules.len(),
         lineage.extras.len(),
         lineage.dropped.len()
     );
     println!("EmiBSD.LZ @ {}", short(&pin));
-    print!("{md}");
+    print!("{md}\n{core_line}");
     if write {
         for doc_rel in TABLE_DOCS {
             let path = root.join(doc_rel);
@@ -1356,9 +1411,10 @@ pub(crate) fn status(root: &Path, write: bool) -> Result<()> {
             if e < b {
                 return Err(format!("{doc_rel}: {TABLE_END} appears before {TABLE_BEGIN}").into());
             }
-            // The README gets the table; docs/STATUS.md (under 30 lines) only the summary line.
+            // The README gets the table and the core's line; docs/STATUS.md (under 30 lines)
+            // only the summary line.
             let body = if doc_rel == "README.md" {
-                format!("{head}{md}")
+                format!("{head}{md}\n{core_line}")
             } else {
                 format!("{}\n", head.trim_end())
             };
@@ -2006,6 +2062,48 @@ mod tests {
         ]
         .into();
         assert!(redesigned_not_forbid(&l.module, &core, &forbid).is_empty());
+    }
+
+    #[test]
+    fn status_counts_forbid_among_the_non_core() {
+        #[derive(Deserialize)]
+        struct L {
+            module: Vec<Module>,
+        }
+        let l: L = toml::from_str(
+            r#"
+            [[module]]
+            rust = "sys/kern/a.rs"
+            status = "inherited"
+            [[module]]
+            rust = "sys/kern/b.rs"
+            status = "redesigned"
+            [[module]]
+            rust = "sys/kern/kern_lock.rs"
+            status = "inherited"
+            [[module]]
+            rust = "sys/uvm/c.rs"
+            status = "adapted"
+        "#,
+        )
+        .unwrap();
+        let core =
+            crate::unsafereport::CoreList::parse("[core]\npaths = [\"sys/kern/kern_lock.rs\"]\n")
+                .unwrap();
+        // A core module is never counted as forbid, even with the attribute.
+        let forbid: HashSet<&str> = ["sys/kern/b.rs", "sys/kern/kern_lock.rs"].into();
+        let (md, totals, core_modules) = status_table(Path::new("/w"), &l.module, &core, &forbid);
+        assert_eq!(totals, [2, 1, 1, 3, 1]);
+        assert_eq!(core_modules, 1);
+        assert_eq!(
+            md,
+            "| Subsystem | inherited | adapted | redesigned | total | non-core | forbid |\n\
+             |---|---:|---:|---:|---:|---:|---:|\n\
+             | kern | 2 | 0 | 1 | 3 | 2 | 1 |\n\
+             | uvm | 0 | 1 | 0 | 1 | 1 | 0 |\n\
+             | **total** | 2 | 1 | 1 | 4 | 3 | 1 |\n"
+        );
+        assert_eq!(status_name(Status::Adapted), "adapted");
     }
 }
 /* </TESTS> */

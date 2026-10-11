@@ -264,7 +264,10 @@ queue.rs's mutators therefore holds `unsafe` blocks and cannot be `forbid`.
 3. each core row stays within its budget.
 
 The floor of item 1 and the ceiling of item 2 live in `unsafe-budget.toml` beside the rows, and
-`--write` moves them only in the good direction, as it already does the budgets. The
+`--write` moves them only in the good direction, as it already does the budgets. Beside them,
+`legacy_baseline` and `baseline_date` record the legacy total on the day the plan was adopted
+(8,748 on 2026-10-10): `/progress` measures its pace from them, and `--write` never moves them.
+The
 per-subsystem rows stay; outside the core their sum is the legacy total. `--write` also writes
 the `Unsafe` lines of `docs/STATUS.md` and of `README.md` ("Lineage and safety"): core, legacy,
 and `forbid` modules out of all modules.
@@ -279,9 +282,15 @@ module outside the core whose declaration lacks the attribute, and an `Adapter` 
 hand (section 3). Why: the status then states something the compiler checked, not only that the
 shape changed. An `inherited` module may be `forbid` as well (the sweep) and stays `inherited`.
 
-**Where it shows.** `cargo xtask lz status --write` gains a `forbid` column per subsystem in the
-README table, and `/progress` a `forbid` column per milestone: `forbid` modules out of the row's
-modules. Why: the goal's progress then sits where the redesign's progress is already read.
+**Where it shows.** `cargo xtask lz status --write` shows, per subsystem of the README table,
+the modules outside the core and the `forbid` ones among them, and a line for the core (its
+modules, its `unsafe`, the budget the rows leave it). `/progress` reads `cargo xtask
+unsafe-report --json`, the one parser of the sources, and shows per milestone the `forbid`
+modules out of the row's non-core modules, the legacy modules and legacy `unsafe` left (the
+exit criterion's number: a row is complete when both are 0), its core modules, and an estimate
+from the legacy `unsafe` removed per active day since the baseline. Why: the goal's progress
+then sits where the redesign's progress is already read, and the core, which keeps its `unsafe`
+by design, does not dilute it.
 
 ## 6. The order
 

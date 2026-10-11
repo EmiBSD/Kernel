@@ -7,10 +7,14 @@
 # [ratchet] (docs/ZERO_UNSAFE.md, section 5): the `forbid` modules may not fall below
 # forbid_floor, and the `unsafe` outside unsafe-core.toml may not rise above
 # legacy_ceiling; `--write` only raises the floor and lowers the ceiling.
+# legacy_baseline is the legacy total on baseline_date, the day the plan was adopted;
+# /progress measures its pace from them. Written once by hand; `--write` keeps them.
 
 [ratchet]
 forbid_floor = 305
 legacy_ceiling = 8748
+legacy_baseline = 8748
+baseline_date = "2026-10-10"
 
 [[subsystem]]
 name = "(crate root)"

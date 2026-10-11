@@ -17,42 +17,59 @@
 """Redesign progress of EmiBSD, one row per milestone of docs/ROADMAP.md.
 
 Adapted from EmiBSD.LZ's .claude/skills/progress/scripts/progress.py (b0901dd3), which
-measured the port from ports.toml; this one measures the redesign from lineage.toml.
+measured the port from ports.toml; this one measures the zero-unsafe redesign
+(docs/ZERO_UNSAFE.md) from `cargo xtask unsafe-report --json`.
 
 Sources, all read live (nothing is typed in by hand):
-  - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion);
-  - lineage.toml: every [[module]] (rust, lz, status) and [[extra]]. A module
-    belongs to the N row whose scope cell names its path in backticks: a
+  - `cargo xtask unsafe-report --json`, run at the repository root: every kernel
+    file with its lineage.toml status, its group (core: listed in
+    unsafe-core.toml; forbid: its module is #[forbid(unsafe_code)]; legacy:
+    neither), its kernel `unsafe` and whether the forbid ratchet counts it as a
+    module (under sys/; crate roots, mod.rs and sys/machine, sys/arch/host,
+    sys/stand apart; lineage.toml's extras in); the totals; the ratchet with its
+    baseline; the pace (legacy `unsafe` removed per active day since that
+    baseline). unsafe-report is the one parser of the Rust sources: this script
+    reads none;
+  - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion). A
+    file belongs to the N row whose scope cell names its path in backticks: a
     directory (`sys/uvm/`), a file (`sys/sys/queue.rs`) or a glob
     (`sys/kern/vfs_*`); when several rows name it, the most specific pattern
-    wins. A module no row names is listed apart as "(no milestone)". Extras
-    (no LZ source) count nowhere. done = redesigned (adapted shown apart: their
-    call sites followed a redesign, nothing of their own changed); left =
-    inherited;
-  - reference/emibsd-lz at the pin: the lines of each module's LZ sources
-    (`git cat-file --batch`), each LZ file once per row. Without the clone the
-    native file stands in for an inherited module (it is byte-identical modulo
-    the RCS ident lines) and a redesigned module's sources count as unknown;
-  - the native .rs files: `wc -l`, tests included;
-  - the module tree from the crate roots (`lib.rs`, `main.rs`) down the `mod`
-    declarations: a module is `forbid` when its declaration, an inline module
-    around it, its own `#![forbid]` or an ancestor's carries
-    `#[forbid(unsafe_code)]` (docs/ZERO_UNSAFE.md, section 5; the same rule as
-    `cargo xtask unsafe-report`, which is authoritative);
-  - git: the `docs: Nx met` close commits after the pin, and the active days
-    (distinct commit dates after lz-origin) that give the rate for the estimate.
+    wins. A parent row (N2 with N2a, ...) adds its lettered children's;
+  - lineage.toml and reference/emibsd-lz at the pin: each module's LZ sources and
+    their lines (`git cat-file --batch`), for the module list only;
+  - git: the `docs: Nx met` close commits.
 
-The estimate is a linear extrapolation at the project's average rate of LZ
-lines redesigned per active day. It measures the past; it promises nothing.
+Columns, per row:
+  Non-core modules  the row's modules outside the core: the denominator;
+  Forbid            the forbid ones among them, x / y and the percentage;
+  Legacy modules    the rest, non-core modules not forbid yet;
+  Legacy unsafe     the kernel `unsafe` of the row's legacy files (mod.rs too):
+                    the exit criterion's "0 unsafe outside the core";
+  Core modules      the row's modules in unsafe-core.toml (not in the denominator);
+  Redesigned        lineage.toml's redesigned modules, adapted shown apart;
+  Est. left         Legacy unsafe / the pace; "done" once Legacy modules and
+                    Legacy unsafe are both 0 (the row is complete); "n/a" until
+                    two active days since the baseline have removed some.
+The Core line sums unsafe-core.toml (modules, unsafe, budget) and names the core
+paths no row claims; a non-core module no row names is a warning line.
 
-Usage: progress.py [MILESTONE]   (e.g. N2: adds that milestone's module list)
+Without cargo (or if unsafe-report fails) the script prints, with a note, the
+lineage table it printed before the forbid metric (modules redesigned and
+inherited, LZ lines, the LZ-lines rate since lz-origin).
+
+The estimate is a linear extrapolation of the project's own pace. It measures the
+past; it promises nothing.
+
+Usage: progress.py [MILESTONE]   (e.g. N2: adds that milestone's file list)
 Always exits 0; errors are printed, so a skill preamble never aborts on them.
 """
 
 import datetime as _dt
 import fnmatch
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -150,183 +167,34 @@ def parse_lineage(root: Path) -> tuple[dict, list[dict], list[dict]]:
     return data.get("meta", {}), data.get("module", []), data.get("extra", [])
 
 
-# --- forbid (the module tree) --------------------------------------------------
+# --- unsafe-report ---------------------------------------------------------------
 
-def lex(src: str) -> list[tuple[str, str]]:
-    """Rust tokens as (kind, text), kind in ident, punct, str (a plain string's text), lit;
-    comments, other literals and lifetimes dropped (unsafereport.rs's `lex`, in short)."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c.isspace():
-            i += 1
-        elif src.startswith("//", i):
-            j = src.find("\n", i)
-            i = n if j < 0 else j
-        elif src.startswith("/*", i):
-            depth = 0
-            while i < n:
-                if src.startswith("/*", i):
-                    depth, i = depth + 1, i + 2
-                elif src.startswith("*/", i):
-                    depth, i = depth - 1, i + 2
-                    if depth == 0:
-                        break
-                else:
-                    i += 1
-        elif c == '"':
-            j = i + 1
-            while j < n and src[j] != '"':
-                j += 2 if src[j] == "\\" else 1
-            out.append(("str", src[i + 1:j]))
-            i = j + 1
-        elif c == "'":
-            if src.startswith("\\", i + 1):
-                j = src.find("'", i + 3)
-                i = n if j < 0 else j + 1
-                out.append(("lit", ""))
-            elif i + 2 < n and src[i + 2] == "'":
-                i += 3
-                out.append(("lit", ""))
-            else:  # a lifetime or a label
-                i += 1
-                while i < n and (src[i].isalnum() or src[i] == "_"):
-                    i += 1
-        elif c.isalpha() or c == "_" or c.isdigit():
-            j = i
-            while j < n and (src[j].isalnum() or src[j] == "_"):
-                j += 1
-            word = src[i:j]
-            m = re.match(r'(#*)"', src[j:]) if word in ("r", "br", "cr") else None
-            if m:  # a raw string
-                end = src.find('"' + m.group(1), j + len(m.group(0)))
-                i = n if end < 0 else end + 1 + len(m.group(1))
-                out.append(("lit", ""))
-            elif word in ("b", "c") and j < n and src[j] in "\"'":
-                i = j  # the literal itself is lexed next, as a str or a lit
-            else:
-                out.append(("lit" if c.isdigit() else "ident", word))
-                i = j
-        else:
-            out.append(("punct", c))
-            i += 1
-    return out
+CARGO_DIRS = ("/opt/homebrew/opt/rustup/bin", "/usr/local/opt/rustup/bin",
+              str(Path.home() / ".cargo" / "bin"))
 
 
-def _match(toks, i: int, step: int) -> int | None:
-    """The bracket that matches toks[i], searching forward (step 1) or back (step -1)."""
-    opens, closes = "([{", ")]}"
-    depth = 0
-    while 0 <= i < len(toks):
-        kind, text = toks[i]
-        if kind == "punct" and text in (opens if step > 0 else closes):
-            depth += 1
-        elif kind == "punct" and text in (closes if step > 0 else opens):
-            depth -= 1
-            if depth == 0:
-                return i
-        i += step
-    return None
-
-
-def _is_forbid(attr) -> bool:
-    return bool(attr) and attr[0] == ("ident", "forbid") and ("ident", "unsafe_code") in attr
-
-
-def _inner_forbid(toks, i: int, end: int) -> tuple[bool, int]:
-    forbid = False
-    while i + 2 < end and toks[i] == ("punct", "#") and toks[i + 1] == ("punct", "!") \
-            and toks[i + 2] == ("punct", "["):
-        e = _match(toks, i + 2, 1)
-        if e is None:
-            break
-        forbid |= _is_forbid(toks[i + 3:e])
-        i = e + 1
-    return forbid, i
-
-
-def _outer_attrs(toks, start: int, kw: int) -> list:
-    j = kw
-    if j > start and toks[j - 1] == ("punct", ")"):
-        k = _match(toks, j - 1, -1)
-        if k is not None and k > start and toks[k - 1] == ("ident", "pub"):
-            j = k - 1
-    elif j > start and toks[j - 1] == ("ident", "pub"):
-        j -= 1
-    attrs = []
-    while j > start and toks[j - 1] == ("punct", "]"):
-        k = _match(toks, j - 1, -1)
-        if k is None or k <= start or toks[k - 1] != ("punct", "#"):
-            break
-        attrs.append(toks[k + 1:j - 1])
-        j = k - 1
-    return attrs
-
-
-def _children(toks, start: int, end: int, d: Path, file_dir: Path, top: bool, forbid: bool,
-              out: list) -> None:
-    """(candidate files, forbid, via #[path]) of each out-of-line `mod` at this item level."""
-    i = start
-    while i < end:
-        kind, text = toks[i]
-        if (kind, text) == ("punct", "{"):
-            e = _match(toks, i, 1)
-            i = end if e is None else e + 1
-            continue
-        if (kind, text) != ("ident", "mod") or i + 1 >= end or toks[i + 1][0] != "ident":
-            i += 1
-            continue
-        name = toks[i + 1][1]
-        attrs = _outer_attrs(toks, start, i)
-        f = forbid or any(_is_forbid(a) for a in attrs)
-        path = next((a[2][1] for a in attrs if len(a) == 3 and a[0] == ("ident", "path")
-                     and a[1] == ("punct", "=") and a[2][0] == "str"), None)
-        nxt = toks[i + 2] if i + 2 < len(toks) else None
-        if nxt == ("punct", ";"):
-            if path is not None:
-                files = [Path(os.path.normpath((file_dir if top else d) / path))]
-            else:
-                files = [d / f"{name}.rs", d / name / "mod.rs"]
-            out.append((files, f, path is not None))
-            i += 3
-        elif nxt == ("punct", "{"):
-            e = _match(toks, i + 2, 1)
-            e = end if e is None else min(e, end)
-            inner, s = _inner_forbid(toks, i + 3, e)
-            sub = Path(os.path.normpath(d / (path if path is not None else name)))
-            _children(toks, s, e, sub, file_dir, False, f or inner, out)
-            i = e + 1
-        else:
-            i += 1
-
-
-def forbid_modules(root: Path) -> set[str]:
-    """The workspace-relative .rs files whose module is #[forbid(unsafe_code)]."""
-    files = {p for d in ("sys", "init") if (root / d).is_dir() for p in (root / d).rglob("*.rs")
-             if "target" not in p.relative_to(root).parts}
-    stack = [(p, False, True) for p in files if p.name in ("lib.rs", "main.rs")]
-    seen, out = set(), set()
-    while stack:
-        f, inherited, mod_rs = stack.pop()
-        if f in seen:
-            continue
-        seen.add(f)
-        try:
-            toks = lex(f.read_text(errors="replace"))
-        except OSError:
-            continue
-        inner, s = _inner_forbid(toks, 0, len(toks))
-        forbid = inherited or inner
-        if forbid:
-            out.add(f.relative_to(root).as_posix())
-        d = f.parent if mod_rs else f.parent / f.stem
-        kids: list = []
-        _children(toks, s, len(toks), d, f.parent, True, False, kids)
-        for cands, cf, via_path in kids:
-            hit = next((c for c in cands if c in files), None)
-            if hit is not None:
-                stack.append((hit, forbid or cf, via_path or hit.name == "mod.rs"))
-    return out
+def unsafe_json(root: Path) -> tuple[dict | None, str]:
+    """`cargo xtask unsafe-report --json` at the root: (the document, "") or (None, why not)."""
+    cargo = shutil.which("cargo") or shutil.which("cargo", path=os.pathsep.join(CARGO_DIRS))
+    if not cargo:
+        return None, "cargo not found (PATH, rustup's bin, ~/.cargo/bin)"
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([str(Path(cargo).parent), env.get("PATH", "")])
+    try:
+        r = subprocess.run([cargo, "xtask", "unsafe-report", "--json"], cwd=root, env=env,
+                           capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"cargo xtask unsafe-report --json: {e}"
+    if r.returncode != 0:
+        tail = (r.stderr.strip().splitlines() or ["no output"])[-1]
+        return None, f"cargo xtask unsafe-report --json failed: {tail}"
+    try:
+        doc = json.loads(r.stdout)
+    except json.JSONDecodeError as e:
+        return None, f"cargo xtask unsafe-report --json printed no JSON: {e}"
+    if doc.get("schema") != 1:
+        return None, f"cargo xtask unsafe-report --json: schema {doc.get('schema')!r}, not 1"
+    return doc, ""
 
 
 # --- git ---------------------------------------------------------------------
@@ -398,11 +266,6 @@ def fmt(n) -> str:
     return "—" if n is None else f"{n:,}"
 
 
-def new_tally() -> dict:
-    return {"redesigned": 0, "adapted": 0, "inherited": 0, "rust": 0, "forbid": 0,
-            "lz_done": set(), "lz_left": set()}
-
-
 def subsystem(path: str) -> str:
     parts = path.split("/")
     if len(parts) > 3 and parts[1] in ("arch", "dev", "lib"):
@@ -410,32 +273,267 @@ def subsystem(path: str) -> str:
     return parts[1] if len(parts) > 2 else parts[0]
 
 
-def main() -> None:
-    root = root_dir()
-    want = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
-    cache: dict = {}
-
-    rows = parse_roadmap(root)
-    meta, modules, extras = parse_lineage(root)
-    pin = str(meta.get("lz", ""))
-    in_history = bool(pin) and subprocess.run(
-        ["git", "-C", str(root), "merge-base", "--is-ancestor", pin, "HEAD"],
-        capture_output=True).returncode == 0
-    rng = f"{pin}..HEAD" if in_history else "HEAD"
-    dates = close_dates(root, rng)
-    wip_ms = under_way(root)
-    commit_dates = sorted(set(git(root, "log", rng, "--format=%cd", "--date=short").split()))
-    days = len(commit_dates) or 1
-    forbid = forbid_modules(root)
-
+def lz_line_counts(root: Path, pin: str, modules: list[dict], cache: dict) -> tuple[dict, bool]:
+    """LZ path -> its lines at the pin, for the LZ sources of `modules`; and whether the clone is
+    missing (then the native file of an inherited module stands in: it is LZ's, byte for byte)."""
     lz_paths = sorted({p for m in modules for p in m.get("lz", [])})
     lz_len = lz_lines(root, pin, lz_paths)
-    clone_missing = lz_len is None
-    if clone_missing:  # the native file of an inherited module is LZ's, byte for byte
-        lz_len = {}
-        for m in modules:
-            if m.get("status", "inherited") == "inherited" and len(m.get("lz", [])) == 1:
-                lz_len[m["lz"][0]] = count_lines(root / m["rust"], cache)
+    if lz_len is not None:
+        return lz_len, False
+    lz_len = {}
+    for m in modules:
+        if m.get("status", "inherited") == "inherited" and len(m.get("lz", [])) == 1:
+            lz_len[m["lz"][0]] = count_lines(root / m["rust"], cache)
+    return lz_len, True
+
+
+class Plan:
+    """The ROADMAP rows: who owns a path, the lettered children, each row's status."""
+
+    def __init__(self, root: Path, rows: list[dict], pin: str):
+        self.rows = rows
+        self.ids = [r["id"] for r in rows]
+        self.children = {rid: [c for c in self.ids if re.fullmatch(re.escape(rid) + r"[a-z]", c)]
+                         for rid in self.ids}
+        self.is_child = {c for cs in self.children.values() for c in cs}
+        self.pats = []  # (specificity, -row index, pattern, row id)
+        for i, r in enumerate(rows):
+            for p in scope_patterns(r["scope"]):
+                self.pats.append((specificity(p), -i, p, r["id"]))
+        self.in_history = bool(pin) and subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", pin, "HEAD"],
+            capture_output=True).returncode == 0
+        self.rng = f"{pin}..HEAD" if self.in_history else "HEAD"
+        self.dates = close_dates(root, self.rng)
+        self.wip = under_way(root)
+
+    def owner(self, path: str) -> str:
+        """The row whose scope names the path, the most specific pattern winning."""
+        best = None
+        for spec, negi, p, rid in self.pats:
+            if pattern_matches(p, path) and (best is None or (spec, negi) > best[:2]):
+                best = (spec, negi, rid)
+        return best[2] if best else "unassigned"
+
+    def selected(self, rid: str, want: str | None) -> bool:
+        """The row is shown: no milestone was asked, or it is the one asked or its child."""
+        return not want or rid == want or bool(re.fullmatch(re.escape(want) + r"[a-z]", rid))
+
+    def row(self, rid: str) -> dict:
+        return next(x for x in self.rows if x["id"] == rid)
+
+    def has_patterns(self, rid: str) -> bool:
+        return bool(scope_patterns(self.row(rid)["scope"])) or bool(self.children[rid])
+
+    def aggregate(self, own: dict) -> dict:
+        """A parent row (N2 with N2a, N2b, ...) shows its own tally plus its children's."""
+        agg = {}
+        for rid, t in own.items():
+            a = {k: (set(v) if isinstance(v, set) else v) for k, v in t.items()}
+            for cid in self.children.get(rid, []):
+                for k, v in own[cid].items():
+                    if isinstance(v, set):
+                        a[k] |= v
+                    else:
+                        a[k] += v
+            agg[rid] = a
+        return agg
+
+    def status(self, rid: str, finished, busy) -> str:
+        """met (its close commit, or its ROADMAP date once finished), under way or pending."""
+        kids = self.children[rid]
+        if kids and all(self.status(c, finished, busy).startswith("met") for c in kids):
+            return "met " + (self.dates.get(rid) or max(self.dates.get(c, "") for c in kids))
+        if rid in self.dates:
+            return "met " + self.dates[rid]
+        if self.row(rid)["row_date"] and finished(rid):
+            return "met " + self.row(rid)["row_date"]
+        if rid in self.wip or busy(rid):
+            return "under way"
+        return "pending"
+
+
+def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: list[dict],
+                  pin: str) -> None:
+    """The zero-unsafe table, from `cargo xtask unsafe-report --json`."""
+    cache: dict = {}
+    files = doc["files"]
+    totals = doc["totals"]
+    ratchet = doc.get("ratchet") or {}
+    pace = doc.get("rate") or {}
+    per_day = pace.get("per_day")
+    days = pace.get("active_days", 0)
+    base, since = ratchet.get("legacy_baseline"), ratchet.get("baseline_date")
+
+    def tally() -> dict:
+        return {"noncore": 0, "forbid": 0, "legacy": 0, "legacy_unsafe": 0, "core": 0,
+                "redesigned": 0, "adapted": 0}
+
+    own = {rid: tally() for rid in plan.ids + ["unassigned"]}
+    files_of: dict[str, list[dict]] = {rid: [] for rid in own}
+    for f in files:
+        rid = plan.owner(f["path"])
+        files_of[rid].append(f)
+        t = own[rid]
+        if f["module"]:
+            if f["group"] == "core":
+                t["core"] += 1
+            else:
+                t["noncore"] += 1
+                t["forbid" if f["group"] == "forbid" else "legacy"] += 1
+        if f["group"] == "legacy":
+            t["legacy_unsafe"] += f["unsafe"]
+        if f["status"] in ("redesigned", "adapted"):
+            t[f["status"]] += 1
+    agg = plan.aggregate(own)
+
+    def finished(rid: str) -> bool:
+        """Complete: no legacy module and no legacy unsafe left."""
+        return agg[rid]["legacy"] == 0 and agg[rid]["legacy_unsafe"] == 0
+
+    def busy(rid: str) -> bool:
+        return agg[rid]["redesigned"] > 0 and not finished(rid)
+
+    def est(rid: str) -> str:
+        if finished(rid):
+            return "done"
+        if not per_day:
+            return "n/a"
+        d = agg[rid]["legacy_unsafe"] / per_day
+        return "<0.1 d" if d < 0.1 else f"~{d:.1f} d"
+
+    def forbid_txt(t: dict) -> str:
+        n = t["noncore"]
+        return f"{t['forbid']:,} / {n:,} ({100 * t['forbid'] // n}%)" if n else "—"
+
+    def redesigned_txt(t: dict) -> str:
+        return fmt(t["redesigned"]) + (f" + {t['adapted']} adapted" if t["adapted"] else "")
+
+    baseline = (f"; baseline {base:,} on {since}, {days} active day{'s' if days != 1 else ''} "
+                "since" if base is not None and since else "")
+    print(f"EmiBSD redesign progress — {_dt.date.today()} — EmiBSD.LZ pin {pin[:12] or '?'} — "
+          f"{totals['modules']:,} modules — legacy unsafe {totals['legacy_unsafe']:,}{baseline}")
+    print()
+    print("| Milestone | Title | Status | Non-core modules | Forbid | Legacy modules | "
+          "Legacy unsafe | Core modules | Redesigned | Est. left |")
+    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    for r in plan.rows:
+        rid = r["id"]
+        if not plan.selected(rid, want):
+            continue
+        t = agg[rid]
+        if not plan.has_patterns(rid):
+            cells = ["—"] * 6
+        elif not (t["noncore"] or t["core"]):
+            cells = ["no modules match"] + ["—"] * 5
+        else:
+            cells = [fmt(t["noncore"]), forbid_txt(t), fmt(t["legacy"]), fmt(t["legacy_unsafe"]),
+                     fmt(t["core"]), redesigned_txt(t)]
+        indent = "&nbsp;&nbsp;" if rid in plan.is_child else ""
+        print(f"| {indent}{rid} | {r['title']} | {plan.status(rid, finished, busy)} | "
+              + " | ".join(cells) + f" | {est(rid)} |")
+    if not want:
+        core = [f for f in files if f["group"] == "core"]
+        loose = sorted({f["subsystem"] for f in files_of["unassigned"] if f["group"] == "core"})
+        named = ", ".join(loose[:8]) + (", ..." if len(loose) > 8 else "")
+        print(f"| Core | `unsafe-core.toml`: {totals['core_unsafe']:,} unsafe, budget "
+              f"{totals['core_budget']:,}; no row names {named or 'none'} | — | — | — | — | — | "
+              f"{sum(1 for f in core if f['module']):,} | "
+              f"{fmt(sum(1 for f in core if f['status'] == 'redesigned'))} | — |")
+    print()
+    stray = sorted(f["path"] for f in files_of["unassigned"]
+                   if f["module"] and f["group"] != "core")
+    if stray and not want:
+        print(f"Warning: {len(stray)} non-core module{'s' if len(stray) != 1 else ''} no ROADMAP "
+              f"row names: {', '.join(stray[:10])}{', ...' if len(stray) > 10 else ''}.")
+        print()
+
+    if want:
+        ids = [rid for rid in plan.ids if plan.selected(rid, want)]
+        sel = [f for rid in ids for f in files_of.get(rid, []) if f["module"] or f["unsafe"]]
+        if sel:
+            by_path = {m.get("rust", ""): m for m in modules}
+            lz_len, _ = lz_line_counts(
+                root, pin, [by_path[f["path"]] for f in sel if f["path"] in by_path], cache)
+            print(f"Files of {want} ({len(sel)}):")
+            print()
+            print("| Module | Status | Group | Unsafe | LZ lines | Rust lines | LZ sources |")
+            print("|---|---|---|---:|---:|---:|---|")
+            order = {"legacy": 0, "forbid": 1, "core": 2}
+            for f in sorted(sel, key=lambda f: (order[f["group"]], -f["unsafe"], f["path"])):
+                srcs = by_path.get(f["path"], {}).get("lz", [])
+                vals = [lz_len.get(p) for p in srcs]
+                lz_n = sum(vals) if vals and all(v is not None for v in vals) else None
+                src_txt = "same path" if srcs == [f["path"]] else (", ".join(srcs) or "—")
+                print(f"| {f['path']} | {f['status'] or '—'} | {f['group']} | {f['unsafe']:,} | "
+                      f"{fmt(lz_n)} | {fmt(count_lines(root / f['path'], cache))} | {src_txt} |")
+            print()
+        else:
+            print(f"No ROADMAP row named {want}, or its scope names no module.")
+            print()
+
+    mods = [f for f in files if f["module"]]
+    noncore = [f for f in mods if f["group"] != "core"]
+    nforbid = sum(1 for f in noncore if f["group"] == "forbid")
+    pct = f" ({100 * nforbid // len(noncore)}%)" if noncore else ""
+    loose_legacy = own["unassigned"]["legacy_unsafe"]
+    where = sorted({f["subsystem"] for f in files_of["unassigned"]
+                    if f["group"] == "legacy" and f["unsafe"]})
+    counts = {s: sum(1 for m in modules if m.get("status", "inherited") == s) for s in STATUSES}
+    print(f"Totals: {len(mods):,} modules, {len(mods) - len(noncore):,} of them core; "
+          f"{nforbid:,} of the {len(noncore):,} non-core forbid{pct}, "
+          f"{len(noncore) - nforbid:,} legacy; legacy unsafe {totals['legacy_unsafe']:,}"
+          + (f" ({loose_legacy:,} in files no row names: {', '.join(where)})"
+             if loose_legacy else "")
+          + f"; core unsafe {totals['core_unsafe']:,}, budget {totals['core_budget']:,}; "
+          f"lineage.toml: {counts['redesigned']} redesigned, {counts['adapted']} adapted, "
+          f"{counts['inherited']} inherited.")
+    if base is None or not since:
+        print("Pace: n/a: unsafe-budget.toml's [ratchet] records no legacy_baseline and "
+              "baseline_date.")
+    elif per_day:
+        print(f"Pace: {pace['removed']:,} legacy unsafe removed over {days} active days since "
+              f"{since} (baseline {base:,}): {per_day:,.1f} a day. All the legacy at that pace: "
+              f"~{totals['legacy_unsafe'] / per_day:.1f} d.")
+    else:
+        print(f"Pace: n/a: {days} active day{'s' if days != 1 else ''} since the baseline "
+              f"({since}, {base:,} legacy unsafe), {pace.get('removed', 0):,} removed; the "
+              "estimate needs two active days and some unsafe removed.")
+    print()
+    print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
+          "Modules = the files the forbid ratchet counts (under sys/; crate roots, mod.rs and "
+          "sys/machine, sys/arch/host, sys/stand apart; lineage.toml's extras in). Groups: core = "
+          "listed in unsafe-core.toml; forbid = the module's declaration, or an ancestor's, is "
+          "#[forbid(unsafe_code)]; legacy = neither. A file belongs to the N row whose scope cell "
+          "names its path in backticks (a directory, a file or a glob), the most specific pattern "
+          "winning; a row whose scope is prose resolves nothing; a parent row adds its lettered "
+          "children's. Forbid = forbid / non-core modules (the core is not in the denominator); "
+          "Legacy unsafe = the kernel unsafe of the row's legacy files, mod.rs included: the exit "
+          "criterion's number. A row is complete when Legacy modules and Legacy unsafe are both "
+          "0; a met row may keep legacy modules that a later row's prose claims. Redesigned = "
+          "lineage.toml's redesigned modules, adapted shown apart. The Core line sums "
+          "unsafe-core.toml; its budget is what the row budgets leave it (each row's budget "
+          "minus its legacy). Est. left = Legacy unsafe / the pace, the legacy unsafe removed per "
+          "active day (a day with a commit) since the ratchet's baseline; n/a before two active "
+          "days. It is a linear extrapolation: it measures the past and promises nothing.")
+
+
+def new_tally() -> dict:
+    return {"redesigned": 0, "adapted": 0, "inherited": 0, "rust": 0,
+            "lz_done": set(), "lz_left": set()}
+
+
+def lineage_report(root: Path, want: str | None, plan: Plan, modules: list[dict],
+                   extras: list[dict], pin: str, why: str) -> None:
+    """The table this script printed before the forbid metric, for when unsafe-report cannot
+    run: modules redesigned and inherited, LZ lines, the LZ-lines rate since lz-origin."""
+    print(f"Note: {why}. The forbid metric needs `cargo xtask unsafe-report --json`; this is the "
+          "lineage table instead.")
+    print()
+    cache: dict = {}
+    commit_dates = sorted(set(git(root, "log", plan.rng, "--format=%cd", "--date=short").split()))
+    days = len(commit_dates) or 1
+    lz_len, clone_missing = lz_line_counts(root, pin, modules, cache)
 
     def lines_of(paths) -> tuple[int, int]:
         """(lines, files whose size is unknown) of a set of LZ paths."""
@@ -448,36 +546,16 @@ def main() -> None:
                 total += n
         return total, unknown
 
-    row_ids = [r["id"] for r in rows]
-    children = {rid: [c for c in row_ids if re.fullmatch(re.escape(rid) + r"[a-z]", c)]
-                for rid in row_ids}
-    is_child = {c for cs in children.values() for c in cs}
-
-    pats = []  # (specificity, -row index, pattern, row id)
-    for i, r in enumerate(rows):
-        for p in scope_patterns(r["scope"]):
-            pats.append((specificity(p), -i, p, r["id"]))
-
-    def owner(path: str) -> str:
-        """The ROADMAP row whose scope names the path, the most specific pattern winning."""
-        best = None
-        for spec, negi, p, rid in pats:
-            if pattern_matches(p, path) and (best is None or (spec, negi) > best[:2]):
-                best = (spec, negi, rid)
-        return best[2] if best else "unassigned"
-
-    own = {rid: new_tally() for rid in row_ids + ["unassigned"]}
+    own = {rid: new_tally() for rid in plan.ids + ["unassigned"]}
     rows_of: dict[str, list[dict]] = {rid: [] for rid in own}
     for m in modules:
         path = m.get("rust", "")
         st = m.get("status", "inherited")
         key = st if st in STATUSES else "inherited"
-        rid = owner(path)
+        rid = plan.owner(path)
         rows_of[rid].append(m)
         t = own[rid]
         t[key] += 1
-        m["_forbid"] = path in forbid
-        t["forbid"] += int(m["_forbid"])
         rl = count_lines(root / path, cache)
         m["_rust"] = rl
         m["_key"] = key
@@ -490,18 +568,9 @@ def main() -> None:
     for t in own.values():
         t["lz_left"] -= t["lz_done"]
 
-    # A parent row (N2 with N2a, N2b, ...) shows its own modules plus its children's.
-    agg = {}
-    for rid, t in own.items():
-        a = {k: (set(v) if isinstance(v, set) else v) for k, v in t.items()}
-        for cid in children.get(rid, []):
-            for k, v in own[cid].items():
-                if isinstance(v, set):
-                    a[k] |= v
-                else:
-                    a[k] += v
+    agg = plan.aggregate(own)
+    for a in agg.values():
         a["lz_left"] -= a["lz_done"]
-        agg[rid] = a
 
     total = new_tally()
     for t in own.values():
@@ -516,16 +585,8 @@ def main() -> None:
     rate = done_lines / days
 
     def status_of(rid: str) -> str:
-        if children[rid] and all(status_of(c).startswith("met") for c in children[rid]):
-            return "met " + (dates.get(rid) or max(dates.get(c, "") for c in children[rid]))
-        if rid in dates:
-            return "met " + dates[rid]
-        r = next(x for x in rows if x["id"] == rid)
-        if r["row_date"] and not agg[rid]["inherited"]:
-            return "met " + r["row_date"]
-        if rid in wip_ms or (agg[rid]["redesigned"] and agg[rid]["inherited"]):
-            return "under way"
-        return "pending"
+        return plan.status(rid, lambda r: not agg[r]["inherited"],
+                           lambda r: bool(agg[r]["redesigned"] and agg[r]["inherited"]))
 
     def est_days(lines: int) -> str:
         if not rate:
@@ -541,19 +602,16 @@ def main() -> None:
           f"{days} active day{'s' if days != 1 else ''} since lz-origin"
           f"{' (' + commit_dates[0] + ')' if commit_dates else ''}")
     print()
-    def forbid_txt(t: dict) -> str:
-        n = sum(t[k] for k in STATUSES)
-        return f"{fmt(t['forbid'])} / {fmt(n)}" if n else "—"
-
-    print("| Milestone | Title | Status | Modules done | Modules left | Forbid | LZ lines done | LZ lines left | Rust lines | Est. left |")
-    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
-    for r in rows:
+    print("| Milestone | Title | Status | Modules done | Modules left | LZ lines done | "
+          "LZ lines left | Rust lines | Est. left |")
+    print("|---|---|---|---:|---:|---:|---:|---:|---:|")
+    for r in plan.rows:
         rid = r["id"]
-        if want and not (rid == want or re.fullmatch(re.escape(want) + r"[a-z]", rid)):
+        if not plan.selected(rid, want):
             continue
         t = agg[rid]
         st = status_of(rid)
-        has_patterns = bool(scope_patterns(r["scope"])) or bool(children[rid])
+        has_patterns = plan.has_patterns(rid)
         has_modules = any(t[k] for k in STATUSES)
         done_n = t["redesigned"] + t["adapted"]
         done_txt = (fmt(done_n) + (f" ({t['adapted']} adapted)" if t["adapted"] else "")) if has_modules else "—"
@@ -573,8 +631,8 @@ def main() -> None:
             est = est_days(ll)
         else:
             est = "—"
-        indent = "&nbsp;&nbsp;" if rid in is_child else ""
-        print(f"| {indent}{rid} | {r['title']} | {st} | {done_txt} | {left_txt} | {forbid_txt(t)} | "
+        indent = "&nbsp;&nbsp;" if rid in plan.is_child else ""
+        print(f"| {indent}{rid} | {r['title']} | {st} | {done_txt} | {left_txt} | "
               f"{lz_done_txt} | {lz_left_txt} | {fmt(t['rust']) if t['rust'] else '—'} | {est} |")
     u = own["unassigned"]
     if any(u[k] for k in STATUSES) and not want:
@@ -585,24 +643,23 @@ def main() -> None:
         adapted_note = f" ({u['adapted']} adapted)" if u["adapted"] else ""
         print(f"| (no milestone) | modules no ROADMAP scope names: {shown} | — | "
               f"{fmt(u['redesigned'] + u['adapted'])}"
-              f"{adapted_note} | {fmt(u['inherited'])} | {forbid_txt(u)} | "
+              f"{adapted_note} | {fmt(u['inherited'])} | "
               f"{with_unknown(ud, udu)} | {with_unknown(ul, ulu)} | {fmt(u['rust'])} | — |")
     print()
 
     if want:
-        ids = [rid for rid in row_ids if rid == want or re.fullmatch(re.escape(want) + r"[a-z]", rid)]
+        ids = [rid for rid in plan.ids if plan.selected(rid, want)]
         sel = [m for rid in ids for m in rows_of.get(rid, [])]
         if sel:
             print(f"Modules of {want} ({len(sel)}):")
             print()
-            print("| Module | Status | Forbid | LZ lines | Rust lines | LZ sources |")
-            print("|---|---|---|---:|---:|---|")
+            print("| Module | Status | LZ lines | Rust lines | LZ sources |")
+            print("|---|---|---:|---:|---|")
             order = {"inherited": 0, "adapted": 1, "redesigned": 2}
             for m in sorted(sel, key=lambda m: (order[m["_key"]], m.get("rust", ""))):
                 srcs = m.get("lz", [])
                 src_txt = "same path" if srcs == [m.get("rust")] else ", ".join(srcs)
-                print(f"| {m.get('rust', '')} | {m['_key']} | {'yes' if m['_forbid'] else 'no'} | "
-                      f"{fmt(m['_lz'])} | "
+                print(f"| {m.get('rust', '')} | {m['_key']} | {fmt(m['_lz'])} | "
                       f"{fmt(m['_rust'])} | {src_txt} |")
             print()
         else:
@@ -614,7 +671,7 @@ def main() -> None:
         for p in (root / sub).rglob("*.rs"):
             rust_total += count_lines(p, cache) or 0
     print(f"Totals: {total['redesigned']} modules redesigned, {total['adapted']} adapted, "
-          f"{total['inherited']} inherited (of {len(modules)}), {total['forbid']} forbid; "
+          f"{total['inherited']} inherited (of {len(modules)}); "
           f"LZ lines done {with_unknown(done_lines, done_unknown)}, left {with_unknown(left_lines, left_unknown)}; "
           f"Rust lines in sys/ and tools/: {rust_total:,}.")
     if rate:
@@ -623,7 +680,7 @@ def main() -> None:
     if clone_missing:
         print("Warning: reference/emibsd-lz is not checked out: inherited modules are measured on the "
               "native file (identical to LZ's); the LZ sources of redesigned modules count as unknown.")
-    if not in_history:
+    if not plan.in_history:
         print("Warning: the pinned LZ commit is not in this history; the rate counts every commit date.")
     print()
     print("Method: modules = lineage.toml [[module]] rows; done = redesigned, with adapted shown apart "
@@ -632,11 +689,22 @@ def main() -> None:
           "backticks (a directory, a file or a glob), the most specific pattern winning; a row whose "
           "scope is prose resolves nothing, and a met row may keep inherited modules that a later "
           "row's prose claims. LZ lines = lines of the module's LZ sources at the pin, each file once "
-          "per row; Rust lines = wc -l of the native file, tests included; Forbid = the row's modules "
-          "whose mod declaration (or an ancestor's) is #[forbid(unsafe_code)], out of its modules. "
-          "A parent milestone shows "
+          "per row; Rust lines = wc -l of the native file, tests included. A parent milestone shows "
           "its own modules plus its lettered children's. The time column is a linear extrapolation "
           "of the project's own average; it measures the past and promises nothing.")
+
+
+def main() -> None:
+    root = root_dir()
+    want = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
+    meta, modules, extras = parse_lineage(root)
+    pin = str(meta.get("lz", ""))
+    plan = Plan(root, parse_roadmap(root), pin)
+    doc, why = unsafe_json(root)
+    if doc is None:
+        lineage_report(root, want, plan, modules, extras, pin, why)
+    else:
+        forbid_report(root, want, doc, plan, modules, pin)
 
 
 if __name__ == "__main__":

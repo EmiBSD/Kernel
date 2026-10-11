@@ -17,7 +17,8 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `cargo xtask unsafe-report [--write]`: how much `unsafe` the kernel holds, per subsystem.
+//! `cargo xtask unsafe-report [--write|--check|--json] [--shapes]`: how much `unsafe` the
+//! kernel holds, per subsystem.
 //!
 //! The Phase 2 baseline (docs/PHASE2.md, "Metrics"). Every `.rs` file of the kernel crates is
 //! read: `sys/` (the `bsd` crate, `sys/lib/libkern`, `sys/lib/libz`) and `init/` (the
@@ -42,6 +43,12 @@
 //! The grouping is in [`subsystem`] and docs/PORTING.md ("Measuring unsafe").
 //! `--write` replaces the one line of docs/STATUS.md that starts with `Unsafe` with the
 //! totals line ([`totals_line`]).
+//!
+//! `--json` prints the same measure ([`measure`]) as one JSON document instead ([`json`]):
+//! every kernel file with its lineage status, group, `unsafe` and shapes, the totals, the
+//! ratchet with its baseline, and the pace of the legacy `unsafe` removed since that
+//! baseline ([`rate`]). `/progress` reads it; the field names are stable
+//! (.claude/rules/xtask.md).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -122,7 +129,7 @@ impl Counts {
 
 /// One subsystem's kernel and test counts.
 #[derive(Debug, Default)]
-struct Row {
+pub(crate) struct Row {
     kernel: Counts,
     test: Counts,
 }
@@ -143,12 +150,20 @@ struct BudgetRow {
     total: usize,
 }
 
-/// The two numbers that only move one way: the `forbid` modules may not fall below
-/// `forbid_floor`, the legacy `unsafe` (outside the core) may not rise above `legacy_ceiling`.
-#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+/// The `[ratchet]` table. Two numbers only move one way: the `forbid` modules may not fall
+/// below `forbid_floor`, the legacy `unsafe` (outside the core) may not rise above
+/// `legacy_ceiling`. Two never move: `legacy_baseline`, the legacy total on `baseline_date`,
+/// the day the zero-unsafe plan was adopted, written once by hand and kept as they are by
+/// `--write`; [`rate`] measures from them.
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Ratchet {
     pub(crate) forbid_floor: usize,
     pub(crate) legacy_ceiling: usize,
+    #[serde(default)]
+    pub(crate) legacy_baseline: Option<usize>,
+    /// `YYYY-MM-DD`.
+    #[serde(default)]
+    pub(crate) baseline_date: Option<String>,
 }
 
 /// The rows and the ratchet of `unsafe-budget.toml`; empty and `None` when the file is absent.
@@ -159,6 +174,15 @@ fn load_budget(root: &Path) -> Result<(BTreeMap<String, usize>, Option<Ratchet>)
     }
     let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let b: Budget = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Some(d) = b.ratchet.as_ref().and_then(|r| r.baseline_date.as_deref())
+        && !is_iso_date(d)
+    {
+        return Err(format!(
+            "{}: [ratchet] baseline_date = \"{d}\" is not a YYYY-MM-DD date",
+            path.display()
+        )
+        .into());
+    }
     let rows = b
         .subsystems
         .into_iter()
@@ -185,19 +209,69 @@ pub(crate) fn ratchet_errors(r: &Ratchet, forbid: usize, legacy: usize) -> Vec<S
     out
 }
 
-/// The ratchet `--write` records: the floor only rises and the ceiling only falls; with no
-/// ratchet yet, today's numbers.
-pub(crate) fn ratchet_next(old: Option<Ratchet>, forbid: usize, legacy: usize) -> Ratchet {
+/// The ratchet `--write` records: the floor only rises and the ceiling only falls, the
+/// baseline stays as it is; with no ratchet yet, today's numbers and no baseline.
+pub(crate) fn ratchet_next(old: Option<&Ratchet>, forbid: usize, legacy: usize) -> Ratchet {
     match old {
         Some(o) => Ratchet {
             forbid_floor: o.forbid_floor.max(forbid),
             legacy_ceiling: o.legacy_ceiling.min(legacy),
+            legacy_baseline: o.legacy_baseline,
+            baseline_date: o.baseline_date.clone(),
         },
         None => Ratchet {
             forbid_floor: forbid,
             legacy_ceiling: legacy,
+            legacy_baseline: None,
+            baseline_date: None,
         },
     }
+}
+
+/// `s` is a `YYYY-MM-DD` date (digits where digits go; the calendar is not checked).
+fn is_iso_date(s: &str) -> bool {
+    s.len() == 10
+        && s.bytes().enumerate().all(|(i, c)| match i {
+            4 | 7 => c == b'-',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// The comment `--write` puts at the top of `unsafe-budget.toml`.
+const BUDGET_HEADER: &str = "\
+# Per-subsystem unsafe budget: the kernel total (blocks + fn + impl + trait + other)
+# each subsystem may not exceed. `cargo xtask unsafe-report --check` (in `just ci`) fails
+# when one does; `--write` lowers a budget to the current count and never raises it.
+# Raising a budget is a commit of its own, with the reason in the body
+# (.claude/rules/unsafe-budget.md). Names are unsafe-report's row names.
+#
+# [ratchet] (docs/ZERO_UNSAFE.md, section 5): the `forbid` modules may not fall below
+# forbid_floor, and the `unsafe` outside unsafe-core.toml may not rise above
+# legacy_ceiling; `--write` only raises the floor and lowers the ceiling.
+# legacy_baseline is the legacy total on baseline_date, the day the plan was adopted;
+# /progress measures its pace from them. Written once by hand; `--write` keeps them.
+";
+
+/// The text `--write` gives `unsafe-budget.toml`: the header, the ratchet (its baseline as
+/// it was) and one table per row, `rows` being each row's new budget.
+pub(crate) fn budget_text(r: &Ratchet, rows: &BTreeMap<String, usize>) -> String {
+    let mut text = String::from(BUDGET_HEADER);
+    text.push_str(&format!(
+        "\n[ratchet]\nforbid_floor = {}\nlegacy_ceiling = {}\n",
+        r.forbid_floor, r.legacy_ceiling
+    ));
+    if let Some(b) = r.legacy_baseline {
+        text.push_str(&format!("legacy_baseline = {b}\n"));
+    }
+    if let Some(d) = &r.baseline_date {
+        text.push_str(&format!("baseline_date = \"{d}\"\n"));
+    }
+    for (name, total) in rows {
+        text.push_str(&format!(
+            "\n[[subsystem]]\nname = \"{name}\"\ntotal = {total}\n"
+        ));
+    }
+    text
 }
 
 /// The three groups of docs/ZERO_UNSAFE.md, section 5, over the kernel counts (test code
@@ -258,37 +332,120 @@ fn test_files(lexed: &BTreeMap<PathBuf, Vec<Tok>>) -> BTreeSet<PathBuf> {
     }
 }
 
-/// The `forbid` modules as workspace-relative paths (for `lz status` and `lz check`).
-pub(crate) fn forbid_modules(root: &Path) -> Result<BTreeSet<String>> {
-    let lexed = lex_tree(root)?;
-    Ok(forbid_files(&lexed)
-        .iter()
-        .map(|f| rel_path(root, f))
-        .collect())
-}
-
 /// `f` relative to the workspace root, with `/` separators.
 fn rel_path(root: &Path, f: &Path) -> String {
     let rel = f.strip_prefix(root).unwrap_or(f);
     rel.to_string_lossy().replace('\\', "/")
 }
 
-/// `cargo xtask unsafe-report [--write] [--check] [--shapes]`.
-pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: bool) -> Result<()> {
-    let lexed = lex_tree(root)?;
-    let test_files = test_files(&lexed);
-    let core = CoreList::load(root)?;
-    let forbid = forbid_files(&lexed);
+/// One kernel file as the report measures it.
+#[derive(Debug, Clone)]
+pub(crate) struct FileMeasure {
+    /// Relative to the workspace root, with `/` separators.
+    pub(crate) rel: String,
+    /// Its row ([`subsystem`]).
+    pub(crate) subsystem: String,
+    /// A test-only file ([`test_files`]): all its code is test code.
+    pub(crate) test: bool,
+    /// Listed in `unsafe-core.toml`.
+    pub(crate) core: bool,
+    /// Its module is `#[forbid(unsafe_code)]` ([`forbid_files`]).
+    pub(crate) forbid: bool,
+    /// One of the modules the forbid ratchet counts: under `sys/` and not structure (a crate
+    /// root, `mod.rs`, `build.rs`, or a file of `sys/machine/`, `sys/arch/host/`, `sys/stand/`).
+    pub(crate) module: bool,
+    /// Its `unsafe` in kernel code.
+    pub(crate) kernel: Counts,
+    /// The shapes to replace, in its kernel code.
+    pub(crate) shapes: Shapes,
+}
 
-    let mut rows: BTreeMap<String, Row> = BTreeMap::new();
-    let mut groups = Groups::default();
-    let mut shape_rows: BTreeMap<String, Shapes> = BTreeMap::new();
-    let mut shape_files: Vec<(String, Shapes)> = Vec::new();
-    for (f, toks) in &lexed {
+impl FileMeasure {
+    /// Its group (docs/ZERO_UNSAFE.md, section 5): `core` when `unsafe-core.toml` lists it,
+    /// else `forbid` when its module is, else `legacy`.
+    pub(crate) fn group(&self) -> &'static str {
+        if self.core {
+            "core"
+        } else if self.forbid {
+            "forbid"
+        } else {
+            "legacy"
+        }
+    }
+}
+
+/// What the report measures: every kernel file, the rows and groups they add up to, and the
+/// two files they are checked against.
+pub(crate) struct Measure {
+    /// Every kernel `.rs` file, ordered by path.
+    pub(crate) files: Vec<FileMeasure>,
+    /// Kernel and test counts per row.
+    pub(crate) rows: BTreeMap<String, Row>,
+    /// The shapes per row.
+    pub(crate) shape_rows: BTreeMap<String, Shapes>,
+    /// The three groups.
+    pub(crate) groups: Groups,
+    /// `unsafe-budget.toml`'s rows.
+    pub(crate) budget: BTreeMap<String, usize>,
+    /// `unsafe-budget.toml`'s `[ratchet]`.
+    pub(crate) ratchet: Option<Ratchet>,
+    /// `unsafe-core.toml`.
+    pub(crate) core: CoreList,
+}
+
+impl Measure {
+    /// The row budgets left to the core: over the rows that hold core files, each row's
+    /// budget (its count when it has none) minus its legacy `unsafe`. The core's files may
+    /// hold that much before a row fails `--check`, with legacy as it stands.
+    pub(crate) fn core_budget(&self) -> usize {
+        self.groups
+            .core_rows
+            .iter()
+            .map(|(name, core)| {
+                let total = self.rows.get(name).map_or(0, |r| r.kernel.total());
+                let legacy = total.saturating_sub(*core);
+                self.budget
+                    .get(name)
+                    .copied()
+                    .unwrap_or(total)
+                    .saturating_sub(legacy)
+            })
+            .sum()
+    }
+}
+
+/// Measure the kernel tree under `root` (`sys/` and `init/`) against `unsafe-core.toml` and
+/// `unsafe-budget.toml`.
+pub(crate) fn measure(root: &Path) -> Result<Measure> {
+    let lexed = lex_tree(root)?;
+    let core = CoreList::load(root)?;
+    let (budget, ratchet) = load_budget(root)?;
+    Ok(measure_lexed(root, &lexed, core, budget, ratchet))
+}
+
+/// [`measure`] over files already lexed, keyed by their path under `root`.
+fn measure_lexed(
+    root: &Path,
+    lexed: &BTreeMap<PathBuf, Vec<Tok>>,
+    core: CoreList,
+    budget: BTreeMap<String, usize>,
+    ratchet: Option<Ratchet>,
+) -> Measure {
+    let test_files = test_files(lexed);
+    let forbid = forbid_files(lexed);
+    let mut m = Measure {
+        files: Vec::new(),
+        rows: BTreeMap::new(),
+        shape_rows: BTreeMap::new(),
+        groups: Groups::default(),
+        budget,
+        ratchet,
+        core,
+    };
+    for (f, toks) in lexed {
         let rel = rel_path(root, f);
         let is_test = test_files.contains(f);
         let sub = subsystem(root, &rel);
-        let row = rows.entry(sub.clone()).or_default();
         let scan = scan(toks, is_test);
         let mut k = Counts::default();
         let mut t = Counts::default();
@@ -304,27 +461,66 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
         } else {
             k.files = 1;
         }
+        let row = m.rows.entry(sub.clone()).or_default();
         row.kernel.merge(&k);
         row.test.merge(&t);
 
         let n = k.total();
-        if core.contains(&rel) {
-            groups.core += n;
-            *groups.core_rows.entry(sub.clone()).or_default() += n;
-            groups.core_files += usize::from(n > 0);
+        let in_core = m.core.contains(&rel);
+        if in_core {
+            m.groups.core += n;
+            *m.groups.core_rows.entry(sub.clone()).or_default() += n;
+            m.groups.core_files += usize::from(n > 0);
         } else {
-            groups.legacy += n;
-            groups.legacy_files += usize::from(n > 0);
+            m.groups.legacy += n;
+            m.groups.legacy_files += usize::from(n > 0);
         }
-        if rel.starts_with("sys/") && !crate::is_structural(&rel) {
-            groups.modules += 1;
-            groups.forbid += usize::from(forbid.contains(f));
+        let module = rel.starts_with("sys/") && !crate::is_structural(&rel);
+        let is_forbid = forbid.contains(f);
+        if module {
+            m.groups.modules += 1;
+            m.groups.forbid += usize::from(is_forbid);
         }
-        shape_rows.entry(sub).or_default().merge(&scan.shapes);
-        if !scan.shapes.is_empty() {
-            shape_files.push((rel, scan.shapes));
-        }
+        m.shape_rows
+            .entry(sub.clone())
+            .or_default()
+            .merge(&scan.shapes);
+        m.files.push(FileMeasure {
+            rel,
+            subsystem: sub,
+            test: is_test,
+            core: in_core,
+            forbid: is_forbid,
+            module,
+            kernel: k,
+            shapes: scan.shapes,
+        });
     }
+    m
+}
+
+/// `cargo xtask unsafe-report [--write] [--check] [--shapes]`, or `--json` alone.
+pub(crate) fn unsafe_report(
+    root: &Path,
+    write: bool,
+    check: bool,
+    per_module: bool,
+    json_out: bool,
+) -> Result<()> {
+    if json_out && (write || check || per_module) {
+        return Err("unsafe-report: --json goes alone".into());
+    }
+    let m = measure(root)?;
+    if json_out {
+        let statuses = crate::lz::lineage_statuses(root)?;
+        let log = crate::git(root, &["log", "--format=%cd", "--date=short"])?;
+        let dates: Vec<&str> = log.lines().collect();
+        let pace = rate(m.ratchet.as_ref(), m.groups.legacy, &dates);
+        print!("{}", json(&m, &statuses, &pace));
+        return Ok(());
+    }
+    let groups = &m.groups;
+    let rows = &m.rows;
 
     let mut kernel = Counts::default();
     let mut test = Counts::default();
@@ -362,7 +558,7 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
             t.traits + t.other
         );
     };
-    for (name, row) in &rows {
+    for (name, row) in rows {
         print_row(name, &row.kernel, &row.test);
         kernel.merge(&row.kernel);
         test.merge(&row.test);
@@ -381,7 +577,7 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
         );
     };
     let mut all_shapes = Shapes::default();
-    for (name, s) in &shape_rows {
+    for (name, s) in &m.shape_rows {
         if !s.is_empty() {
             print_shapes(name, s);
         }
@@ -390,15 +586,14 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
     print_shapes("total", &all_shapes);
     if per_module {
         println!();
-        for (rel, s) in &shape_files {
-            print_shapes(rel, s);
+        for f in m.files.iter().filter(|f| !f.shapes.is_empty()) {
+            print_shapes(&f.rel, &f.shapes);
         }
     }
 
-    let (budget, ratchet) = load_budget(root)?;
-    let shown = |r: Option<Ratchet>, f: fn(&Ratchet) -> usize| {
-        r.as_ref().map_or("none".to_string(), |r| f(r).to_string())
-    };
+    let ratchet = m.ratchet.as_ref();
+    let shown =
+        |f: fn(&Ratchet) -> usize| ratchet.map_or_else(|| "none".to_string(), |r| f(r).to_string());
     println!("\nzero-unsafe groups (docs/ZERO_UNSAFE.md; {CORE_FILE}):");
     let core_rows: Vec<String> = groups
         .core_rows
@@ -416,15 +611,15 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
         "  forbid {:>6} of {} modules (floor {})",
         groups.forbid,
         groups.modules,
-        shown(ratchet, |r| r.forbid_floor)
+        shown(|r| r.forbid_floor)
     );
     println!(
         "  legacy {:>6} unsafe in {} files (ceiling {})",
         groups.legacy,
         groups.legacy_files,
-        shown(ratchet, |r| r.legacy_ceiling)
+        shown(|r| r.legacy_ceiling)
     );
-    let line = totals_line(&kernel, &test, &groups);
+    let line = totals_line(&kernel, &test, groups);
     println!("\n{line}");
 
     if write {
@@ -433,46 +628,35 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
         let new = replace_status_line(&doc, &line)?;
         fs::write(&path, new).map_err(|e| format!("{}: {e}", path.display()))?;
         println!("wrote {STATUS_DOC}");
-        // The budget only ever goes down here, the floor only up; raising a budget is a
-        // commit of its own.
+        // The budget only ever goes down here, the floor only up, and the baseline stays;
+        // raising a budget is a commit of its own.
         let next = ratchet_next(ratchet, groups.forbid, groups.legacy);
-        let mut text = String::from(
-            "# Per-subsystem unsafe budget: the kernel total (blocks + fn + impl + trait + other)\n\
-             # each subsystem may not exceed. `cargo xtask unsafe-report --check` (in `just ci`) fails\n\
-             # when one does; `--write` lowers a budget to the current count and never raises it.\n\
-             # Raising a budget is a commit of its own, with the reason in the body\n\
-             # (.claude/rules/unsafe-budget.md). Names are unsafe-report's row names.\n\
-             #\n\
-             # [ratchet] (docs/ZERO_UNSAFE.md, section 5): the `forbid` modules may not fall below\n\
-             # forbid_floor, and the `unsafe` outside unsafe-core.toml may not rise above\n\
-             # legacy_ceiling; `--write` only raises the floor and lowers the ceiling.\n",
-        );
-        text.push_str(&format!(
-            "\n[ratchet]\nforbid_floor = {}\nlegacy_ceiling = {}\n",
-            next.forbid_floor, next.legacy_ceiling
-        ));
-        for (name, row) in &rows {
-            let now = row.kernel.total();
-            let total = budget.get(name).map_or(now, |b| (*b).min(now));
-            text.push_str(&format!(
-                "\n[[subsystem]]\nname = \"{name}\"\ntotal = {total}\n"
-            ));
-        }
+        let budgets: BTreeMap<String, usize> = rows
+            .iter()
+            .map(|(name, row)| {
+                let now = row.kernel.total();
+                (
+                    name.clone(),
+                    m.budget.get(name).map_or(now, |b| (*b).min(now)),
+                )
+            })
+            .collect();
         let path = root.join(BUDGET_FILE);
-        fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        fs::write(&path, budget_text(&next, &budgets))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         println!("wrote {BUDGET_FILE}");
     }
     if check {
-        if budget.is_empty() {
+        if m.budget.is_empty() {
             return Err(format!(
                 "{BUDGET_FILE} missing or empty; run `cargo xtask unsafe-report --write`"
             )
             .into());
         }
         let mut bad = 0usize;
-        for (name, row) in &rows {
+        for (name, row) in rows {
             let now = row.kernel.total();
-            match budget.get(name) {
+            match m.budget.get(name) {
                 Some(b) if now > *b => {
                     println!("error: {name}: {now} unsafe, budget {b} ({BUDGET_FILE})");
                     bad += 1;
@@ -486,13 +670,13 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
                 }
             }
         }
-        for p in core.missing(root) {
+        for p in m.core.missing(root) {
             println!("error: {CORE_FILE}: `{p}` names no file");
             bad += 1;
         }
         match ratchet {
             Some(r) => {
-                for e in ratchet_errors(&r, groups.forbid, groups.legacy) {
+                for e in ratchet_errors(r, groups.forbid, groups.legacy) {
                     println!("error: {e}");
                     bad += 1;
                 }
@@ -511,12 +695,164 @@ pub(crate) fn unsafe_report(root: &Path, write: bool, check: bool, per_module: b
         println!(
             "unsafe-report --check: every subsystem within its budget; forbid {} >= {}, legacy {} <= {}",
             groups.forbid,
-            shown(ratchet, |r| r.forbid_floor),
+            shown(|r| r.forbid_floor),
             groups.legacy,
-            shown(ratchet, |r| r.legacy_ceiling)
+            shown(|r| r.legacy_ceiling)
         );
     }
     Ok(())
+}
+
+/// The pace of the zero-unsafe work (`--json`'s `rate`): the legacy `unsafe` removed since
+/// the ratchet's baseline, per active day (a day with a commit, from `baseline_date` on).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Rate {
+    /// Distinct commit dates on or after `baseline_date`; 0 without a baseline.
+    pub(crate) active_days: usize,
+    /// `legacy_baseline` minus the legacy total now; 0 without a baseline or when it rose.
+    pub(crate) removed: usize,
+    /// `removed / active_days`; `None` ("n/a") without a baseline, before two active days or
+    /// while nothing has been removed.
+    pub(crate) per_day: Option<f64>,
+}
+
+/// The [`Rate`] of the legacy total `legacy` given the ratchet `r` and the commit dates
+/// `dates` (`YYYY-MM-DD`, in any order, repeats allowed).
+pub(crate) fn rate(r: Option<&Ratchet>, legacy: usize, dates: &[&str]) -> Rate {
+    let (Some(baseline), Some(since)) = (
+        r.and_then(|r| r.legacy_baseline),
+        r.and_then(|r| r.baseline_date.as_deref()),
+    ) else {
+        return Rate {
+            active_days: 0,
+            removed: 0,
+            per_day: None,
+        };
+    };
+    let active_days = dates
+        .iter()
+        .filter(|d| **d >= since)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let removed = baseline.saturating_sub(legacy);
+    let per_day = (active_days >= 2 && removed > 0).then(|| removed as f64 / active_days as f64);
+    Rate {
+        active_days,
+        removed,
+        per_day,
+    }
+}
+
+/// `s` as a JSON string literal.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `n` as a JSON number, or `null`.
+fn json_opt(n: Option<usize>) -> String {
+    n.map_or_else(|| "null".to_string(), |n| n.to_string())
+}
+
+/// `--json`: the measure as one document, a line per row and per file. The field names are
+/// stable (.claude/rules/xtask.md lists them); `statuses` maps a path to its `lineage.toml`
+/// status (`extra` for an `[[extra]]`), and a file it does not name gets `null`.
+pub(crate) fn json(m: &Measure, statuses: &BTreeMap<String, &'static str>, pace: &Rate) -> String {
+    let g = &m.groups;
+    let kernel: usize = m.rows.values().map(|r| r.kernel.total()).sum();
+    let tests: usize = m.rows.values().map(|r| r.test.total()).sum();
+    let mut out = String::from("{\n  \"schema\": 1,\n");
+    out.push_str(&format!(
+        "  \"totals\": {{\"kernel_unsafe\": {kernel}, \"test_unsafe\": {tests}, \
+         \"core_unsafe\": {}, \"core_unsafe_files\": {}, \"legacy_unsafe\": {}, \
+         \"legacy_unsafe_files\": {}, \"modules\": {}, \"forbid_modules\": {}, \
+         \"core_budget\": {}}},\n",
+        g.core,
+        g.core_files,
+        g.legacy,
+        g.legacy_files,
+        g.modules,
+        g.forbid,
+        m.core_budget()
+    ));
+    let ratchet = m.ratchet.as_ref().map_or_else(
+        || "null".to_string(),
+        |r| {
+            format!(
+                "{{\"forbid_floor\": {}, \"legacy_ceiling\": {}, \"legacy_baseline\": {}, \
+                 \"baseline_date\": {}}}",
+                r.forbid_floor,
+                r.legacy_ceiling,
+                json_opt(r.legacy_baseline),
+                r.baseline_date
+                    .as_deref()
+                    .map_or_else(|| "null".to_string(), json_str)
+            )
+        },
+    );
+    out.push_str(&format!("  \"ratchet\": {ratchet},\n"));
+    out.push_str(&format!(
+        "  \"rate\": {{\"active_days\": {}, \"removed\": {}, \"per_day\": {}}},\n",
+        pace.active_days,
+        pace.removed,
+        pace.per_day
+            .map_or_else(|| "null".to_string(), |x| format!("{x:.2}"))
+    ));
+    let subsystems: Vec<String> = m
+        .rows
+        .iter()
+        .map(|(name, row)| {
+            let total = row.kernel.total();
+            let core = g.core_rows.get(name).copied().unwrap_or(0);
+            format!(
+                "    {{\"name\": {}, \"budget\": {}, \"unsafe\": {total}, \"core\": {core}, \
+                 \"legacy\": {}}}",
+                json_str(name),
+                json_opt(m.budget.get(name).copied()),
+                total.saturating_sub(core)
+            )
+        })
+        .collect();
+    out.push_str("  \"subsystems\": [\n");
+    out.push_str(&subsystems.join(",\n"));
+    out.push_str("\n  ],\n  \"files\": [\n");
+    let files: Vec<String> = m
+        .files
+        .iter()
+        .map(|f| {
+            let status = statuses
+                .get(&f.rel)
+                .map_or_else(|| "null".to_string(), |s| json_str(s));
+            format!(
+                "    {{\"path\": {}, \"status\": {status}, \"subsystem\": {}, \"group\": \"{}\", \
+                 \"module\": {}, \"test\": {}, \"unsafe\": {}, \"static_cell\": {}, \
+                 \"send_sync\": {}, \"raw_cell\": {}, \"unsafe_cell\": {}}}",
+                json_str(&f.rel),
+                json_str(&f.subsystem),
+                f.group(),
+                f.module,
+                f.test,
+                f.kernel.total(),
+                f.shapes.static_cell,
+                f.shapes.send_sync,
+                f.shapes.raw_cell,
+                f.shapes.unsafe_cell
+            )
+        })
+        .collect();
+    out.push_str(&files.join(",\n"));
+    out.push_str("\n  ]\n}\n");
+    out
 }
 
 /// The stable one-line summary recorded in docs/STATUS.md.
@@ -1727,26 +2063,32 @@ mod tests {
         let r = Ratchet {
             forbid_floor: 400,
             legacy_ceiling: 8000,
+            legacy_baseline: Some(8748),
+            baseline_date: Some("2026-10-10".to_string()),
         };
         assert!(ratchet_errors(&r, 400, 8000).is_empty());
         assert!(ratchet_errors(&r, 401, 7999).is_empty());
         assert_eq!(ratchet_errors(&r, 399, 8000).len(), 1);
         assert_eq!(ratchet_errors(&r, 400, 8001).len(), 1);
         assert_eq!(ratchet_errors(&r, 0, 9000).len(), 2);
-        // --write raises the floor and lowers the ceiling, never the other way.
+        // --write raises the floor and lowers the ceiling, never the other way, and keeps the
+        // baseline as it is.
         assert_eq!(
-            ratchet_next(Some(r), 420, 7900),
+            ratchet_next(Some(&r), 420, 7900),
             Ratchet {
                 forbid_floor: 420,
-                legacy_ceiling: 7900
+                legacy_ceiling: 7900,
+                ..r.clone()
             }
         );
-        assert_eq!(ratchet_next(Some(r), 10, 9999), r);
+        assert_eq!(ratchet_next(Some(&r), 10, 9999), r);
         assert_eq!(
             ratchet_next(None, 7, 70),
             Ratchet {
                 forbid_floor: 7,
-                legacy_ceiling: 70
+                legacy_ceiling: 70,
+                legacy_baseline: None,
+                baseline_date: None,
             }
         );
     }
@@ -1761,12 +2103,65 @@ mod tests {
             b.ratchet,
             Some(Ratchet {
                 forbid_floor: 3,
-                legacy_ceiling: 9
+                legacy_ceiling: 9,
+                legacy_baseline: None,
+                baseline_date: None,
             })
         );
         assert_eq!(b.subsystems.len(), 1);
         let b: Budget = toml::from_str("[[subsystem]]\nname = \"kern\"\ntotal = 5\n").unwrap();
         assert_eq!(b.ratchet, None);
+        let b: Budget = toml::from_str(
+            "[ratchet]\nforbid_floor = 3\nlegacy_ceiling = 9\nlegacy_baseline = 12\nbaseline_date = \"2026-10-10\"\n",
+        )
+        .unwrap();
+        let r = b.ratchet.unwrap();
+        assert_eq!(r.legacy_baseline, Some(12));
+        assert_eq!(r.baseline_date.as_deref(), Some("2026-10-10"));
+        assert!(is_iso_date("2026-10-10"));
+        for bad in [
+            "2026-1-10",
+            "2026/10/10",
+            "20261010",
+            "2026-10-1x",
+            "2026-10-100",
+            "",
+        ] {
+            assert!(!is_iso_date(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn write_keeps_the_baseline() {
+        let old = Ratchet {
+            forbid_floor: 305,
+            legacy_ceiling: 8748,
+            legacy_baseline: Some(8748),
+            baseline_date: Some("2026-10-10".to_string()),
+        };
+        // A later --write: more forbid modules, less legacy; the baseline does not move.
+        let next = ratchet_next(Some(&old), 320, 8700);
+        let rows: BTreeMap<String, usize> =
+            [("kern".to_string(), 1100), ("uvm".to_string(), 215)].into();
+        let text = budget_text(&next, &rows);
+        assert!(text.starts_with("# Per-subsystem unsafe budget"));
+        assert!(text.contains(
+            "\n[ratchet]\nforbid_floor = 320\nlegacy_ceiling = 8700\nlegacy_baseline = 8748\nbaseline_date = \"2026-10-10\"\n"
+        ));
+        let b: Budget = toml::from_str(&text).unwrap();
+        assert_eq!(
+            b.ratchet,
+            Some(Ratchet {
+                forbid_floor: 320,
+                legacy_ceiling: 8700,
+                ..old
+            })
+        );
+        assert_eq!(b.subsystems.len(), 2);
+        // With no baseline recorded, --write invents none.
+        let bare = budget_text(&ratchet_next(None, 1, 2), &rows);
+        assert!(!bare.contains("legacy_baseline =") && !bare.contains("baseline_date ="));
+        assert!(toml::from_str::<Budget>(&bare).is_ok());
     }
 
     #[test]
@@ -1813,6 +2208,313 @@ mod tests {
             totals_line(&k, &Counts::default(), &g),
             "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules."
         );
+    }
+
+    /// A small tree: a core file, `forbid` modules (declared and inherited), legacy files, a
+    /// `mod.rs` with code, a test-only file and the init crate.
+    fn small_tree() -> Measure {
+        let files = [
+            (
+                "/w/sys/lib.rs",
+                "pub mod kern;\n#[forbid(unsafe_code)]\npub mod crypto;\n#[cfg(test)]\nmod testutil;",
+            ),
+            (
+                "/w/sys/kern/mod.rs",
+                "pub mod lock;\npub mod a;\n#[forbid(unsafe_code)]\npub mod b;\nfn f() { unsafe { g() } }",
+            ),
+            (
+                "/w/sys/kern/lock.rs",
+                "unsafe impl Send for L {}\nfn f() { unsafe { g() } }",
+            ),
+            (
+                "/w/sys/kern/a.rs",
+                "static S: StaticCell<u8> = StaticCell::new(0);\nunsafe fn h() {}",
+            ),
+            ("/w/sys/kern/b.rs", "fn safe() {}"),
+            ("/w/sys/crypto/mod.rs", "pub mod sha2;"),
+            ("/w/sys/crypto/sha2.rs", ""),
+            ("/w/sys/testutil.rs", "fn t() { unsafe { x() } }"),
+            ("/w/init/src/main.rs", "fn main() { unsafe { y() } }"),
+        ];
+        let lexed: BTreeMap<PathBuf, Vec<Tok>> = files
+            .iter()
+            .map(|(p, s)| (PathBuf::from(p), lex(s)))
+            .collect();
+        let core = CoreList::parse("[core]\npaths = [\"sys/kern/lock.rs\"]\n").unwrap();
+        let budget: BTreeMap<String, usize> = [("kern".to_string(), 10)].into();
+        let ratchet = Ratchet {
+            forbid_floor: 2,
+            legacy_ceiling: 3,
+            legacy_baseline: Some(9),
+            baseline_date: Some("2026-10-10".to_string()),
+        };
+        measure_lexed(Path::new("/w"), &lexed, core, budget, Some(ratchet))
+    }
+
+    #[test]
+    fn files_are_grouped_core_forbid_legacy() {
+        let m = small_tree();
+        let got: Vec<(&str, &str, bool, bool, usize)> = m
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.rel.as_str(),
+                    f.group(),
+                    f.module,
+                    f.test,
+                    f.kernel.total(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                // A crate root and a mod.rs are not modules the ratchet counts; their unsafe
+                // is legacy all the same.
+                ("init/src/main.rs", "legacy", false, false, 1),
+                ("sys/crypto/mod.rs", "forbid", false, false, 0),
+                ("sys/crypto/sha2.rs", "forbid", true, false, 0),
+                ("sys/kern/a.rs", "legacy", true, false, 1),
+                ("sys/kern/b.rs", "forbid", true, false, 0),
+                // The core wins over forbid and holds unsafe without counting as legacy.
+                ("sys/kern/lock.rs", "core", true, false, 2),
+                ("sys/kern/mod.rs", "legacy", false, false, 1),
+                ("sys/lib.rs", "legacy", false, false, 0),
+                // A test-only file: its unsafe is test code.
+                ("sys/testutil.rs", "legacy", true, true, 0),
+            ]
+        );
+        let g = &m.groups;
+        assert_eq!(
+            (g.core, g.core_files, g.legacy, g.legacy_files),
+            (2, 1, 3, 3)
+        );
+        assert_eq!((g.forbid, g.modules), (2, 5));
+        // kern: budget 10, 4 unsafe of which 2 legacy: 8 left to its core file.
+        assert_eq!(m.core_budget(), 8);
+        let a = m.files.iter().find(|f| f.rel == "sys/kern/a.rs").unwrap();
+        assert_eq!(a.shapes.static_cell, 2);
+    }
+
+    #[test]
+    fn json_shape() {
+        let m = small_tree();
+        let statuses: BTreeMap<String, &'static str> = [
+            ("sys/kern/a.rs".to_string(), "inherited"),
+            ("sys/kern/b.rs".to_string(), "redesigned"),
+            ("sys/kern/lock.rs".to_string(), "adapted"),
+            ("sys/testutil.rs".to_string(), "extra"),
+        ]
+        .into();
+        let pace = rate(
+            m.ratchet.as_ref(),
+            m.groups.legacy,
+            &["2026-10-11", "2026-10-10", "2026-10-09", "2026-10-11"],
+        );
+        let file = |path: &str,
+                    status: &str,
+                    sub: &str,
+                    group: &str,
+                    module: bool,
+                    test: bool,
+                    n: usize,
+                    sc: usize,
+                    ss: usize| {
+            format!(
+                "    {{\"path\": \"{path}\", \"status\": {status}, \"subsystem\": \"{sub}\", \"group\": \"{group}\", \
+                 \"module\": {module}, \"test\": {test}, \"unsafe\": {n}, \"static_cell\": {sc}, \
+                 \"send_sync\": {ss}, \"raw_cell\": 0, \"unsafe_cell\": 0}}"
+            )
+        };
+        let files = [
+            file(
+                "init/src/main.rs",
+                "null",
+                "init",
+                "legacy",
+                false,
+                false,
+                1,
+                0,
+                0,
+            ),
+            file(
+                "sys/crypto/mod.rs",
+                "null",
+                "crypto",
+                "forbid",
+                false,
+                false,
+                0,
+                0,
+                0,
+            ),
+            file(
+                "sys/crypto/sha2.rs",
+                "null",
+                "crypto",
+                "forbid",
+                true,
+                false,
+                0,
+                0,
+                0,
+            ),
+            file(
+                "sys/kern/a.rs",
+                "\"inherited\"",
+                "kern",
+                "legacy",
+                true,
+                false,
+                1,
+                2,
+                0,
+            ),
+            file(
+                "sys/kern/b.rs",
+                "\"redesigned\"",
+                "kern",
+                "forbid",
+                true,
+                false,
+                0,
+                0,
+                0,
+            ),
+            file(
+                "sys/kern/lock.rs",
+                "\"adapted\"",
+                "kern",
+                "core",
+                true,
+                false,
+                2,
+                0,
+                1,
+            ),
+            file(
+                "sys/kern/mod.rs",
+                "null",
+                "kern",
+                "legacy",
+                false,
+                false,
+                1,
+                0,
+                0,
+            ),
+            file(
+                "sys/lib.rs",
+                "null",
+                "(crate root)",
+                "legacy",
+                false,
+                false,
+                0,
+                0,
+                0,
+            ),
+            file(
+                "sys/testutil.rs",
+                "\"extra\"",
+                "(crate root)",
+                "legacy",
+                true,
+                true,
+                0,
+                0,
+                0,
+            ),
+        ];
+        let want = format!(
+            "{{\n  \"schema\": 1,\n  \
+             \"totals\": {{\"kernel_unsafe\": 5, \"test_unsafe\": 1, \"core_unsafe\": 2, \
+             \"core_unsafe_files\": 1, \"legacy_unsafe\": 3, \"legacy_unsafe_files\": 3, \
+             \"modules\": 5, \"forbid_modules\": 2, \"core_budget\": 8}},\n  \
+             \"ratchet\": {{\"forbid_floor\": 2, \"legacy_ceiling\": 3, \"legacy_baseline\": 9, \
+             \"baseline_date\": \"2026-10-10\"}},\n  \
+             \"rate\": {{\"active_days\": 2, \"removed\": 6, \"per_day\": 3.00}},\n  \
+             \"subsystems\": [\n    \
+             {{\"name\": \"(crate root)\", \"budget\": null, \"unsafe\": 0, \"core\": 0, \"legacy\": 0}},\n    \
+             {{\"name\": \"crypto\", \"budget\": null, \"unsafe\": 0, \"core\": 0, \"legacy\": 0}},\n    \
+             {{\"name\": \"init\", \"budget\": null, \"unsafe\": 1, \"core\": 0, \"legacy\": 1}},\n    \
+             {{\"name\": \"kern\", \"budget\": 10, \"unsafe\": 4, \"core\": 2, \"legacy\": 2}}\n  \
+             ],\n  \"files\": [\n{}\n  ]\n}}\n",
+            files.join(",\n")
+        );
+        assert_eq!(json(&m, &statuses, &pace), want);
+        // Without a ratchet: null, and a rate of nothing.
+        let mut bare = small_tree();
+        bare.ratchet = None;
+        let pace = rate(None, bare.groups.legacy, &["2026-10-10"]);
+        let doc = json(&bare, &statuses, &pace);
+        assert!(doc.contains("  \"ratchet\": null,\n"));
+        assert!(
+            doc.contains("  \"rate\": {\"active_days\": 0, \"removed\": 0, \"per_day\": null},\n")
+        );
+        assert_eq!(json_str("a\"b\\c\n"), "\"a\\\"b\\\\c\\u000a\"");
+    }
+
+    #[test]
+    fn rate_is_na_until_two_active_days() {
+        let r = Ratchet {
+            forbid_floor: 0,
+            legacy_ceiling: 100,
+            legacy_baseline: Some(100),
+            baseline_date: Some("2026-10-10".to_string()),
+        };
+        // The day of the baseline alone (dates before it do not count): n/a.
+        assert_eq!(
+            rate(Some(&r), 90, &["2026-10-10", "2026-10-10", "2026-10-09"]),
+            Rate {
+                active_days: 1,
+                removed: 10,
+                per_day: None
+            }
+        );
+        // Two active days: 10 removed, 5 a day.
+        assert_eq!(
+            rate(
+                Some(&r),
+                90,
+                &["2026-10-12", "2026-10-10", "2026-10-09", "2026-10-12"]
+            ),
+            Rate {
+                active_days: 2,
+                removed: 10,
+                per_day: Some(5.0)
+            }
+        );
+        // Nothing removed, or legacy above the baseline (an LZ sync): n/a.
+        assert_eq!(
+            rate(Some(&r), 100, &["2026-10-10", "2026-10-11"]).per_day,
+            None
+        );
+        assert_eq!(
+            rate(Some(&r), 120, &["2026-10-10", "2026-10-11"]),
+            Rate {
+                active_days: 2,
+                removed: 0,
+                per_day: None
+            }
+        );
+        // No baseline recorded: nothing to measure from.
+        let bare = Ratchet {
+            legacy_baseline: None,
+            baseline_date: None,
+            ..r
+        };
+        assert_eq!(
+            rate(Some(&bare), 90, &["2026-10-10", "2026-10-11"]),
+            Rate {
+                active_days: 0,
+                removed: 0,
+                per_day: None
+            }
+        );
+        assert_eq!(rate(None, 90, &[]).per_day, None);
     }
 }
 /* </TESTS> */
