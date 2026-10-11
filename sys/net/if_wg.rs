@@ -125,7 +125,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use libkern::{explicit_bzero, strlcpy, timingsafe_bcmp};
 
 use crate::crypto::curve25519::curve25519_generate_public;
-use crate::crypto::siphash::{AtomicSiphashKey, SiphashKey};
+use crate::crypto::siphash::AtomicSiphashKey;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};
 use crate::kern::init_main::NCPUS;
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_init_flags, mtx_leave};
@@ -3939,13 +3939,10 @@ pub fn wg_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     sc.sc_peer_seq.init();
 
     // sc_if is initialised after everything else
-    let (mut k0, mut k1) = ([0u8; 8], [0u8; 8]);
-    arc4random_buf(&mut k0);
-    arc4random_buf(&mut k1);
-    sc.sc_secret.store(SiphashKey {
-        k0: u64::from_ne_bytes(k0),
-        k1: u64::from_ne_bytes(k1),
-    });
+    let mut secret = [0u8; 16];
+    arc4random_buf(&mut secret);
+    sc.sc_secret.store_bytes(&secret);
+    explicit_bzero(&mut secret);
 
     rw_init(&sc.sc_lock, "wg");
     noise_local_init(&sc.sc_local, &local_upcall);

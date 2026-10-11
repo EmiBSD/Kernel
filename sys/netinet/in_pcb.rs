@@ -222,7 +222,9 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use crate::crypto::siphash::{AtomicSiphashKey, SiphashKey};
+use libkern::explicit_bzero;
+
+use crate::crypto::siphash::AtomicSiphashKey;
 use crate::dev::rnd::{arc4random_buf, arc4random_uniform};
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -918,16 +920,12 @@ pub fn in_pcblhash(table: &Inpcbtable, rdomain: u32, lport: u16) -> u64 {
     ctx.end()
 }
 
-/// A fresh random hash key.
-fn random_key() -> SiphashKey {
+/// Stores a fresh random hash key in `key`, through a buffer wiped once stored.
+fn random_key(key: &AtomicSiphashKey) {
     let mut b = [0u8; 16];
     arc4random_buf(&mut b);
-    let [k0, k1] = [&b[..8], &b[8..]].map(|w| {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(w);
-        u64::from_ne_bytes(word)
-    });
-    SiphashKey { k0, k1 }
+    key.store_bytes(&b);
+    explicit_bzero(&mut b);
 }
 
 /// `in_pcbinit`: sets up `table` with hash tables of `hashsize` buckets and fresh keys.
@@ -945,8 +943,8 @@ pub fn in_pcbinit(table: &Inpcbtable, hashsize: i32) {
     table.inpt_lmask.set(lhashtbl.len() as u64 - 1);
     table.inpt_count.set(0);
     table.inpt_size.set(hashsize);
-    table.inpt_key.store(random_key());
-    table.inpt_lkey.store(random_key());
+    random_key(&table.inpt_key);
+    random_key(&table.inpt_lkey);
 }
 
 /// `in_baddynamic`: whether `port` is invalid for dynamic allocation.

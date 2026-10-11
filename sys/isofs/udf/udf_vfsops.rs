@@ -94,7 +94,8 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use crate::crypto::siphash::SiphashKey;
+use libkern::explicit_bzero;
+
 use crate::dev::rnd::arc4random_buf;
 use crate::isofs::udf::ecma167_udf::{
     AnchorVdp, DescTag, ExtfileEntry, FileEntry, FilesetDesc, LogvolDesc, LongAd, Packed, PartDesc,
@@ -542,11 +543,8 @@ pub fn udf_mountfs(
         ump.um_hashsz.set(tbl.len() as u64 - 1);
         let mut key = [0u8; 16];
         arc4random_buf(&mut key);
-        let (k0, k1) = key.split_at(8);
-        ump.um_hashkey.store(SiphashKey {
-            k0: u64::from_ne_bytes(k0.try_into().unwrap_or([0; 8])),
-            k1: u64::from_ne_bytes(k1.try_into().unwrap_or([0; 8])),
-        });
+        ump.um_hashkey.store_bytes(&key);
+        explicit_bzero(&mut key);
 
         // Get the VAT, if needed
         if ump.um_flags.get() & UDF_MNT_FIND_VAT != 0

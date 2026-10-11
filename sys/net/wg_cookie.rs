@@ -78,7 +78,7 @@ use crate::crypto::blake2s::Blake2sState;
 use crate::crypto::chachapoly::{
     XCHACHA20POLY1305_NONCE_SIZE, xchacha20poly1305_decrypt, xchacha20poly1305_encrypt,
 };
-use crate::crypto::siphash::{AtomicSiphashKey, SiphashKey};
+use crate::crypto::siphash::AtomicSiphashKey;
 use crate::crypto::wipe;
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_rwlock::{
@@ -668,16 +668,11 @@ fn cookie_checker_make_cookie(
 /// `ratelimit_init`: an empty table and a random hash key; `ENOBUFS` without memory.
 fn ratelimit_init(rl: &Ratelimit, pool: &'static Pool) -> Result<(), Errno> {
     rw_init(&rl.rl_lock, "ratelimit_lock");
-    // arc4random_buf(&rl->rl_secret, sizeof(rl->rl_secret)): the key's two words.
-    let (mut k0, mut k1) = ([0u8; 8], [0u8; 8]);
-    arc4random_buf(&mut k0);
-    arc4random_buf(&mut k1);
-    rl.rl_secret.store(SiphashKey {
-        k0: u64::from_ne_bytes(k0),
-        k1: u64::from_ne_bytes(k1),
-    });
-    explicit_bzero(&mut k0);
-    explicit_bzero(&mut k1);
+    // arc4random_buf(&rl->rl_secret, sizeof(rl->rl_secret)), through a wiped buffer.
+    let mut secret = [0u8; 16];
+    arc4random_buf(&mut secret);
+    rl.rl_secret.store_bytes(&secret);
+    explicit_bzero(&mut secret);
     let table = hashinit::<RatelimitEntries>(RATELIMIT_SIZE as i32, M_DEVBUF, M_NOWAIT);
     rl.rl_table.set(table);
     rl.rl_table_mask
