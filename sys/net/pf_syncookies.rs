@@ -522,9 +522,10 @@ mod tests {
     // not on another; the mode and watermark ioctls check their bounds.
 
     use std::sync::{Mutex as StdMutex, MutexGuard};
-    use std::{assert, assert_eq};
+    use std::{assert, assert_eq, assert_ne};
 
     use super::*;
+    use crate::kern::kern_timeout::timeout_del;
     use crate::net::pfvar::PfAddr;
     use crate::net::pfvar_priv::PfLoc;
     use crate::netinet::in_::InAddr;
@@ -607,6 +608,51 @@ mod tests {
         let even = PfSyncookie { cookie: 0x5a };
         assert_eq!(pf_syncookie_mac(&mut syn, odd, 0xdead_beef), 0x29d2_5a23);
         assert_eq!(pf_syncookie_mac(&mut syn, even, 0xdead_beef), 0x803d_9189);
+    }
+
+    #[test]
+    fn a_new_key_replaces_the_other_slot_only() {
+        // `pf_syncookie_newkey` flips `oddeven`, forgets the cookies in flight under the slot
+        // it takes over, draws a fresh secret there (the C's arc4random_buf over the old key)
+        // and leaves the current slot alone. It arms the key timeout, so the timeout wheel is
+        // reset under the network setup and the wheel's test lock, as hfsc's tests do.
+        let _g = lock();
+        let _net = crate::net::if_::tests::setup_net();
+        let _t = crate::kern::kern_timeout::tests::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::kern::kern_timeout::timeout_startup();
+        timeout_set(
+            &PF_SYNCOOKIE_STATUS.keytimeout,
+            pf_syncookie_rotate,
+            core::ptr::null_mut(),
+        );
+        keys();
+        let even = PF_SYNCOOKIE_STATUS.key[0].words();
+        let odd = PF_SYNCOOKIE_STATUS.key[1].words();
+        PF_STATUS.syncookies_inflight[0].set(3);
+        PF_STATUS.syncookies_inflight[1].set(5);
+
+        pf_syncookie_newkey();
+        assert_eq!(oddeven(), 1);
+        assert_eq!(PF_STATUS.syncookies_inflight[1].get(), 0);
+        assert_eq!(PF_STATUS.syncookies_inflight[0].get(), 3);
+        let new = PF_SYNCOOKIE_STATUS.key[1].words();
+        assert_ne!(new, odd);
+        assert_ne!(new, [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[0].words(), even);
+
+        // And back: the even slot is renewed, the odd one kept.
+        pf_syncookie_newkey();
+        assert_eq!(oddeven(), 0);
+        assert_eq!(PF_STATUS.syncookies_inflight[0].get(), 0);
+        assert_ne!(PF_SYNCOOKIE_STATUS.key[0].words(), even);
+        assert_ne!(PF_SYNCOOKIE_STATUS.key[0].words(), [0, 0]);
+        assert_eq!(PF_SYNCOOKIE_STATUS.key[1].words(), new);
+
+        timeout_del(&PF_SYNCOOKIE_STATUS.keytimeout);
+        PF_STATUS.syncookies_inflight[0].set(0);
+        PF_STATUS.syncookies_inflight[1].set(0);
     }
 
     #[test]
