@@ -84,12 +84,14 @@
 //! - `tcp_mssdflt` (netinet's `TCP_MSSDFLT`, an atomic) is read through the function
 //!   `tcp_mssdflt()`, which `pf_syncookies.rs` shares.
 
-use core::cell::Cell;
+use core::cell::{Cell, OnceCell};
 use core::cmp::Ordering;
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+use libkern::explicit_bzero;
 
 use crate::crypto::sha2::Sha512Ctx;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};
@@ -243,16 +245,15 @@ pub static PF_HDR_LIMIT: core::sync::atomic::AtomicI32 = core::sync::atomic::Ato
 
 /// `pf_tcp_secret_ctx`, `pf_tcp_secret`, `pf_tcp_secret_init`, `pf_tcp_iss_off`.
 struct PfTcpSecret {
-    ctx: Cell<Option<Sha512Ctx>>,
+    /// `pf_tcp_secret_ctx`, made on first use; a set cell is `pf_tcp_secret_init == 1`.
+    ctx: OnceCell<Sha512Ctx>,
     secret: Cell<[u8; 16]>,
-    init: Cell<bool>,
     iss_off: Cell<u32>,
 }
 
 static PF_TCP_SECRET: PfGlobal<PfTcpSecret> = PfGlobal(PfTcpSecret {
-    ctx: Cell::new(None),
+    ctx: OnceCell::new(),
     secret: Cell::new([0; 16]),
-    init: Cell::new(false),
     iss_off: Cell::new(0),
 });
 
@@ -4567,23 +4568,22 @@ pub fn pf_tcp_iss(pd: &mut PfPdesc) -> u32 {
     use crate::crypto::sha2::SHA512_DIGEST_LENGTH;
 
     let sec = &*PF_TCP_SECRET;
-    if !sec.init.get() {
-        let mut s = [0u8; 16];
-        arc4random_buf(&mut s);
-        sec.secret.set(s);
-        let mut c = Sha512Ctx::new();
-        c.update(&s);
-        sec.ctx.set(Some(c));
-        sec.init.set(true);
-    }
-    // The keyed prefix stays in the cell and the hash runs on a clone of it: the context is
-    // not `Copy` (it wipes itself when dropped), so `Cell::get` cannot copy it out.
-    let prefix = sec.ctx.take();
-    let fork = prefix.clone();
-    sec.ctx.set(prefix);
-    let Some(mut ctx) = fork else {
-        return 0;
-    };
+    // `ctx = pf_tcp_secret_ctx`: the keyed prefix is made once, in its cell, and each call
+    // hashes a clone of it, which `finalize` wipes. Nothing is moved out of the cell and back,
+    // so no stale copy of the prefix (whose buffer holds the secret bytes) is left on the
+    // stack, and the prefix is never absent while a call runs.
+    let mut ctx = sec
+        .ctx
+        .get_or_init(|| {
+            let mut s = [0u8; 16];
+            arc4random_buf(&mut s);
+            sec.secret.set(s);
+            let mut c = Sha512Ctx::new();
+            c.update(&s);
+            explicit_bzero(&mut s);
+            c
+        })
+        .clone();
 
     let th = *pd.tcp();
     ctx.update(&pd.rdomain.to_ne_bytes());
@@ -10467,6 +10467,62 @@ mod tests {
         assert_eq!(format!("{}", PfHost(&c, 0, AF_INET6)), "::1");
         let d = pf6([0xfd00, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(format!("{}", PfHost(&d, 0, AF_INET6)), "fd00:1:2:3:4:5:6:7");
+    }
+
+    #[test]
+    fn tcp_iss_hashes_the_secret_and_the_connection() {
+        // `pf_tcp_iss`: the first word of SHA-512(pf_tcp_secret, rdomain, th_sport, th_dport,
+        // src, dst), plus `tcp_iss`, plus an offset that grows by 4096 a call; the keyed prefix
+        // is made once and every call starts from it. Recomputed here from the secret, so the
+        // same bytes are hashed in the same order as the C.
+        use crate::netinet::tcp_subr::TCP_ISS;
+
+        let mut pd = PfPdesc::new();
+        pd.af = AF_INET;
+        pd.proto = IPPROTO_TCP as u8;
+        pd.rdomain = 7;
+        // The addresses sit in the descriptor's header copy, past the TCP header.
+        pd.src = PfLoc::Hdr(size_of::<Tcphdr>());
+        pd.dst = pd.src.offset(4);
+        let v4 = |a: [u8; 4]| {
+            PfAddr::from_v4(crate::netinet::in_::InAddr {
+                s_addr: u32::from_ne_bytes(a),
+            })
+        };
+        pd.st_addr(pd.src, &v4([192, 0, 2, 1]), AF_INET);
+        pd.st_addr(pd.dst, &v4([198, 51, 100, 2]), AF_INET);
+        let th = pd.tcp_mut();
+        th.th_sport = 40000u16.to_be();
+        th.th_dport = 443u16.to_be();
+
+        let sec = &*PF_TCP_SECRET;
+        let mut checked = 0;
+        for _ in 0..100 {
+            let tcp_iss = TCP_ISS.load(AtomicOrdering::Relaxed);
+            let off = sec.iss_off.get().wrapping_add(4096);
+            let iss = pf_tcp_iss(&mut pd);
+            // Another test's timer or connection moved a counter meanwhile: try again.
+            if TCP_ISS.load(AtomicOrdering::Relaxed) != tcp_iss || sec.iss_off.get() != off {
+                continue;
+            }
+            let mut c = Sha512Ctx::new();
+            c.update(&sec.secret.get());
+            c.update(&7u16.to_ne_bytes());
+            c.update(&40000u16.to_be().to_ne_bytes());
+            c.update(&443u16.to_be().to_ne_bytes());
+            c.update(&[192, 0, 2, 1]);
+            c.update(&[198, 51, 100, 2]);
+            let d = c.finalize();
+            let want = u32::from_ne_bytes([d[0], d[1], d[2], d[3]])
+                .wrapping_add(tcp_iss)
+                .wrapping_add(off);
+            assert_eq!(iss, want);
+            checked += 1;
+            if checked == 2 {
+                break;
+            }
+        }
+        assert_eq!(checked, 2);
     }
 
     #[test]
