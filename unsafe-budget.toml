@@ -11,8 +11,8 @@
 # /progress measures its pace from them. Written once by hand; `--write` keeps them.
 
 [ratchet]
-forbid_floor = 305
-legacy_ceiling = 8748
+forbid_floor = 306
+legacy_ceiling = 8747
 legacy_baseline = 8748
 baseline_date = "2026-10-10"
 
@@ -174,7 +174,7 @@ total = 60
 
 [[subsystem]]
 name = "net"
-total = 1579
+total = 1578
 
 [[subsystem]]
 name = "netinet"
