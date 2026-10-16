@@ -1962,7 +1962,7 @@ smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fe
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi-openbsd.ko: 331 syscalls, 0 native" --reject "abi-openbsd.ko: not loaded" \
+        --expect "abi-openbsd.ko: 331 syscalls, 2 native" --reject "abi-openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -1985,7 +1985,7 @@ smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fe
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi-openbsd.ko: 331 syscalls, 0 native" --reject "abi-openbsd.ko: not loaded" \
+        --expect "abi-openbsd.ko: 331 syscalls, 2 native" --reject "abi-openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2164,10 +2164,12 @@ smoke-abi: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--featur
 
 # `smoke-abi`'s expectations and session.
 abi_steps := "--reject 'abi-openbsd.ko: not loaded' " + \
-    "--expect 'abi-openbsd.ko: 331 syscalls, 0 native' " + \
+    "--expect 'abi-openbsd.ko: 331 syscalls, 2 native' " + \
     "--send-after 'RETURN for sh:' --send '\\n' " + \
     "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
-    "--expect 'abi-ok-42'"
+    "--expect 'abi-ok-42' " + \
+    "--send-after 'abi-ok-42' --send 'echo abi-pipe-$((40+3)) | cat\\n' " + \
+    "--expect 'abi-pipe-43'"
 
 # M13: the date comes from the RTC. Each arch boots single user from the ramdisk (`-s`) and
 # ksh(1) compares `date +%s` right after boot with the host's clock ({host-ms}, hwopts.rs):

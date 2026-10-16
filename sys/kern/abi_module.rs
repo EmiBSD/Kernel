@@ -53,8 +53,14 @@ use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, KP_ZERO, KV_ANY, km_alloc, km_free}
 use crate::uvm::uvm_param::round_page;
 use crate::uvm::uvm_pmap::PMAP_WIRED;
 
-/// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s.
-static KERNEL_API: KernelApi = kernel::api::table(legacy_syscall, api_copyin, api_copyout);
+/// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
+/// pipe(2) is the kernel crate's, entered through `bsd`'s system call prologue.
+static KERNEL_API: KernelApi = kernel::api::table(
+    legacy_syscall,
+    api_copyin,
+    api_copyout,
+    crate::kern::pipe_glue::native_pipe2,
+);
 
 /// The module file the boot loader handed over (`set_image`): its kernel virtual address.
 static IMAGE_VA: AtomicUsize = AtomicUsize::new(0);

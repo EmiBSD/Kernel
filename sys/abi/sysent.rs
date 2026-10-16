@@ -23,10 +23,11 @@
 //! `KernelApi::syscall_legacy`), and the dispatcher `hal` reaches through the handler the
 //! module registered.
 //!
-//! N2.4: every entry is `Legacy`, so every system call behaves exactly as LZ's: the number
+//! N2.4: every entry was `Legacy`, so every system call behaves exactly as LZ's: the number
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
 //! fallback too, which answers `ENOSYS` as the traps did. A subsystem that moves into
-//! `kernel` flips its entries to `Native` (pipe(2) first, N2.6) and raises [`NATIVE`].
+//! `kernel` flips its entries to `Native` and raises [`NATIVE`]: N2.6, pipe(2) and pipe2(2)
+//! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -35,7 +36,7 @@
 use hal::api::KernelApi;
 use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
-use hal::sys::syscall::SYS_MAXSYSCALL;
+use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_pipe, SYS_pipe2};
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
 pub type NativeFn = fn(&'static KernelApi, &SysArgs, &mut Rval) -> SysResult;
@@ -50,7 +51,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 0;
+pub const NATIVE: u32 = 2;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -59,7 +60,12 @@ pub const INFO: HandlerInfo = HandlerInfo {
 };
 
 /// `sysent[]`: the entry of every system call number below `SYS_MAXSYSCALL`.
-pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = [Sysent::Legacy; SYS_MAXSYSCALL];
+pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
+    let mut table = [Sysent::Legacy; SYS_MAXSYSCALL];
+    table[SYS_pipe2 as usize] = Sysent::Native(sys_pipe2);
+    table[SYS_pipe as usize] = Sysent::Native(sys_pipe);
+    table
+};
 
 /// The module's system call handler (`hal::api::SyscallHandler`).
 pub fn syscall(
@@ -84,6 +90,16 @@ pub fn dispatch(
         Some(Sysent::Native(f)) => f(api, args, rval),
         Some(Sysent::Legacy) | None => (api.syscall_legacy)(nr, args, rval),
     }
+}
+
+/// 101 = `pipe2(int *fdp, int flags)`: the kernel's pipe(2) with the flags.
+fn sys_pipe2(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.pipe2)(SYS_pipe2 as Register, args[0] as usize, args[1])
+}
+
+/// 263 = `pipe(int *fdp)`: the kernel's pipe(2), no flags.
+fn sys_pipe(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.pipe2)(SYS_pipe as Register, args[0] as usize, 0)
 }
 
 /// The entry of number `nr`, if the table has one (a negative number has none).
@@ -119,7 +135,12 @@ mod tests {
 
     fn register(_: &'static KernelApi, _: hal::api::SyscallHandler, _: HandlerInfo) {}
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout);
+    /// The kernel's pipe entry of the test table: says what reached it.
+    fn pipe2(nr: Register, fdp: usize, flags: Register) -> SysResult {
+        Err(nr as i32 * 1000 + fdp as i32 + flags as i32)
+    }
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2);
 
     /// A `Native` entry of the test table.
     fn native(_: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
@@ -168,12 +189,31 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_is_legacy_at_n2_4() {
+    fn every_entry_but_pipe_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
+            if nr == SYS_pipe as Register || nr == SYS_pipe2 as Register {
+                continue;
+            }
             let mut rval = [-7; 2];
             assert_eq!(syscall(&API, nr, &[0; 6], &mut rval), Err(ENOSYS));
             assert_eq!(rval[0], nr, "number {nr} reached the fallback unchanged");
         }
+    }
+
+    #[test]
+    fn pipe_and_pipe2_reach_the_kernel_with_their_number_and_arguments() {
+        let mut rval = [-7; 2];
+        // pipe2(fdp = 5, flags = 3): the number, the address, the flags.
+        assert_eq!(
+            syscall(&API, SYS_pipe2 as Register, &[5, 3, 9, 9, 9, 9], &mut rval),
+            Err(101 * 1000 + 5 + 3)
+        );
+        // pipe(fdp = 5): no flags, whatever the second register holds.
+        assert_eq!(
+            syscall(&API, SYS_pipe as Register, &[5, 3, 9, 9, 9, 9], &mut rval),
+            Err(263 * 1000 + 5)
+        );
+        assert_eq!(rval, [-7, -7], "the return registers are left to the trap");
     }
 
     #[test]

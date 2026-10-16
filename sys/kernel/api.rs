@@ -23,8 +23,10 @@
 //! names it without depending on this crate.
 //!
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
-//! that answer: the LZ system call path, `copyin`/`copyout`); an entry moves to a `kernel`
-//! function when its subsystem does, and at N9 the kernel builds the table alone.
+//! that answer: the LZ system call path, `copyin`/`copyout`, and `pipe2`, which runs the
+//! system call prologue still in `bsd` (pledge, the pinned syscalls) before
+//! `kernel::pipe`, `sys/kern/pipe_glue.rs`); an entry moves to a `kernel` function when its
+//! subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, KERNEL_API_VERSION, KernelApi, SyscallHandler,
@@ -47,8 +49,15 @@ pub const fn table(
     syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
     copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
     copyout: fn(&[u8], usize) -> Result<(), i32>,
+    pipe2: fn(Register, usize, Register) -> SysResult,
 ) -> KernelApi {
-    KernelApi::new(register_syscall_handler, syscall_legacy, copyin, copyout)
+    KernelApi::new(
+        register_syscall_handler,
+        syscall_legacy,
+        copyin,
+        copyout,
+        pipe2,
+    )
 }
 
 /// `KernelApi::register_syscall_handler`: keeps the module's handler with the table it was
@@ -92,7 +101,11 @@ mod tests {
         Ok(())
     }
 
-    static API: KernelApi = table(legacy, copyin, copyout);
+    fn pipe2(nr: Register, _: usize, _: Register) -> SysResult {
+        Err(nr as i32)
+    }
+
+    static API: KernelApi = table(legacy, copyin, copyout, pipe2);
 
     #[test]
     fn the_table_is_this_version_with_the_kernels_registration() {
@@ -106,6 +119,7 @@ mod tests {
         let mut rval = [0; 2];
         assert_eq!((API.syscall_legacy)(9, &[0; 6], &mut rval), Ok(()));
         assert_eq!(rval[0], 9);
+        assert_eq!((API.pipe2)(263, 0, 0), Err(263));
     }
 }
 /* </TESTS> */

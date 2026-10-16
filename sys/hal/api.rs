@@ -32,15 +32,15 @@
 //! another version or size.
 //!
 //! Version 1 (N2.4): the system call handler's registration, the `Legacy` fallback, and the
-//! raw user copy the module's own `UserPtr` work needs. pipe(2) adds its entries at N2.6,
-//! with version 2.
+//! raw user copy the module's own `UserPtr` work needs. Version 2 (N2.6): `pipe2`, the
+//! kernel's entry for pipe(2) and pipe2(2), the first `Native` system calls.
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 1;
+pub const KERNEL_API_VERSION: u32 = 2;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -82,6 +82,10 @@ pub struct KernelApi {
     pub copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
     /// `copyout(kbuf, uaddr)`: `kbuf` to user memory at `uaddr`; an errno value on a fault.
     pub copyout: fn(&[u8], usize) -> Result<(), i32>,
+    /// pipe(2) and pipe2(2): `(nr, fdp, flags)`, the system call's number (`SYS_pipe` or
+    /// `SYS_pipe2`, which the system call prologue checks: pledge, the pinned syscalls), the
+    /// user address of the two descriptors and `pipe2`'s flags (0 for `pipe`).
+    pub pipe2: fn(Register, usize, Register) -> SysResult,
 }
 
 impl KernelApi {
@@ -91,6 +95,7 @@ impl KernelApi {
         syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
         copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
         copyout: fn(&[u8], usize) -> Result<(), i32>,
+        pipe2: fn(Register, usize, Register) -> SysResult,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -98,6 +103,7 @@ impl KernelApi {
             syscall_legacy,
             copyin,
             copyout,
+            pipe2,
         }
     }
 }
@@ -170,7 +176,15 @@ mod tests {
         Err(14) // EFAULT
     }
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout);
+    fn pipe2(nr: Register, fdp: usize, flags: Register) -> SysResult {
+        if nr as usize + fdp + flags as usize == 0 {
+            Ok(())
+        } else {
+            Err(22) // EINVAL
+        }
+    }
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2);
 
     #[test]
     fn the_table_names_its_version_and_size() {
@@ -188,6 +202,8 @@ mod tests {
         assert_eq!((API.copyin)(0x1000, &mut buf), Ok(()));
         assert_eq!(buf, [1, 1, 1]);
         assert_eq!((API.copyout)(&buf, 0x1000), Err(14));
+        assert_eq!((API.pipe2)(0, 0, 0), Ok(()));
+        assert_eq!((API.pipe2)(101, 0x1000, 0), Err(22));
     }
 
     fn init(_: &'static KernelApi) {}

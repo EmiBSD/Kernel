@@ -436,7 +436,11 @@ mod tests {
 
     use crate::syscall::{HandlerInfo, SysResult};
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout);
+    fn pipe2(_: isize, _: usize, _: isize) -> SysResult {
+        Ok(())
+    }
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2);
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -452,14 +456,15 @@ mod tests {
 
     #[test]
     fn another_table_is_refused() {
+        // Version 1's table (N2.4), before pipe2.
         static OTHER: KernelApi = KernelApi {
             prefix: ApiPrefix {
-                version: 2,
+                version: 1,
                 size: 48,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout)
+            ..KernelApi::new(register, legacy, copyin, copyout, pipe2)
         };
-        assert_eq!(load_with(&Empty, &OTHER), Err(LoadError::Table(2, 48)));
+        assert_eq!(load_with(&Empty, &OTHER), Err(LoadError::Table(1, 48)));
     }
 }
 /* </TESTS> */
