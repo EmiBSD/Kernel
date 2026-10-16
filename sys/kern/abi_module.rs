@@ -147,7 +147,7 @@ pub fn abi_module_attach() {
     match hal::module::load(&KERNEL_API) {
         Ok(loaded) => crate::kprintf!("{loaded}\n"),
         Err(e) => crate::kprintf!("{e}\n"),
-    }
+    };
 }
 
 /// `KernelApi::copyin`.
