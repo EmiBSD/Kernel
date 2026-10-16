@@ -124,12 +124,19 @@ recounted as progress.
 | hardware (`arch/amd64` 863, `arch/arm64` 943, `machine` 85) | 1,891 | moved into `hal` | 1,891 |
 | host test double (`arch/host`) | 38 | moved into `hal` | 38 |
 | ours (`queue`, `tree`, `subr_tree`) | 71 | moved into `hal` | 71 |
-| new runtime in `hal` (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, `UserPtr`, `Mmio`, `DmaBuf`) | 0 | written new, each site proved | 120 (estimate) |
+| new `hal` code, written new, each site proved: N2 runtime 120 + ELF loader 30, N3 `Pmap` API 10, N4 `cpu_switch`/clock glue 10, N7 `Mmio`/`DmaBuf`/interrupts 60 | 0 | added by the milestone that needs it, a commit each | 230 (estimate) |
 | boot loaders (`stand`, `libsa`), separate binaries | 319 | unchanged | 319 |
-| **total** | **11,225** | | **2,439** |
+| **total** | **11,225** | | **2,549** |
 
-Removed from the repository: 8,786 (8,747 + 159 − 120). `kernel` 0 and `abi` 0 by the
-compiler; `hal` 2,120, 89 % of it the hardware code that exists today; the boot loaders apart.
+Removed from the repository: 8,676 (8,747 + 159 − 230). `kernel` 0 and `abi` 0 by the
+compiler; `hal` 2,230, 85 % of it the hardware code that exists today; the boot loaders apart.
+
+What remains after each close (bsd / hal / total with the boot loaders): today 8,906 / 2,000 /
+11,225; N2 8,885 / 2,150 / 11,354 (the total rises: the runtime and the loader are written
+before the legacy falls); N3 8,670 / 2,160 / 11,149; N4 7,895 / 2,170 / 10,384; N5 7,079 /
+2,170 / 9,568; N6 5,239 / 2,170 / 7,728; N7 1,041 / 2,230 / 3,590; N8 192 / 2,230 / 2,741;
+N9 0 / 2,230 / 2,549. `hal`'s ceiling in `unsafe-budget.toml` falls between milestones and
+rises only in the commit that adds a listed piece, with the user's OK.
 
 ### 0.8 The slices, milestone by milestone
 
