@@ -246,6 +246,9 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
         );
     }
     init_main::set_init_module(boot.module(b"init").copied());
+    // The hal runtime's bridges, before main() and so before any user of a hal piece, on
+    // the boot CPU with interrupts off: the boot contract of sys/hal/bridges.rs.
+    bsd::kern::hal_bridges::hal_bridges_register();
     // N2.4: the Legacy system call path from the first system call on, and the ABI module
     // the boot loader handed over (Limine's `abi-openbsd.ko` module, or boot(8)'s after
     // the kernel, read through the direct map), which `main` loads.

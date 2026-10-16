@@ -6937,6 +6937,106 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
+
+
+
+
+[[extra]]
+rust = "sys/hal/assert.rs"
+crate = "hal"
+reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that names nothing of the kernel (through the image's panic handler); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/once.rs"
+crate = "hal"
+reason = "hal runtime, written new: OnceStatic<T>, the init-once static that replaces StaticCell for new code; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/bridges.rs"
+crate = "hal"
+reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/intr.rs"
+crate = "hal"
+reason = "hal runtime, written new: the interrupt-level guard and the IntrLevel bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/cpu.rs"
+crate = "hal"
+reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/testutil.rs"
+crate = "hal"
+reason = "hal host tests: the doubles of the bridges, registered once per test process (cfg(test) only)"
+
+[[module]]
+rust = "sys/hal/mutex.rs"
+crate = "hal"
+lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs"]
+status = "redesigned"
+notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9)"
+
+[[module]]
+rust = "sys/hal/percpu.rs"
+crate = "hal"
+lz = ["sys/kern/subr_percpu.rs", "sys/sys/percpu.rs"]
+status = "redesigned"
+notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the legacy cpumem stays in bsd for its users and is deleted with the last one (N9)"
+
+[[extra]]
+rust = "sys/hal/sleep.rs"
+crate = "hal"
+reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; docs/ZERO_UNSAFE.md 0.1"
+
+[[module]]
+rust = "sys/hal/rwlock.rs"
+crate = "hal"
+lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs"]
+status = "redesigned"
+notes = "N2.3: Rwlocked<T>, rw_enter(9)'s behaviour re-expressed as a lock that owns its data, with rwsleep on the guard; the legacy Rwlock and kern_rwlock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9)"
+
+[[module]]
+rust = "sys/hal/refcnt.rs"
+crate = "hal"
+lz = ["sys/sys/refcnt.rs", "sys/kern/kern_synch.rs"]
+status = "redesigned"
+notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and its functions in kern_synch.rs stay in bsd for their users and are deleted with the last one"
+
+[[extra]]
+rust = "sys/hal/kmbuf.rs"
+crate = "hal"
+reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/pool.rs"
+crate = "hal"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; docs/ZERO_UNSAFE.md 0.1, decision 10"
+
+[[extra]]
+rust = "sys/hal/malloc.rs"
+crate = "hal"
+reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; docs/ZERO_UNSAFE.md 0.1, decision 19"
+
+[[extra]]
+rust = "sys/hal/user.rs"
+crate = "hal"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; docs/ZERO_UNSAFE.md 0.1, decision 17"
+
+[[extra]]
+rust = "sys/hal/cons.rs"
+crate = "hal"
+reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpollc, a fmt::Write sink) and the Console bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/trust.rs"
+crate = "hal"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30"
+
+[[extra]]
+rust = "sys/kern/hal_bridges.rs"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"

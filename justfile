@@ -3243,12 +3243,13 @@ cc_script := disk_login + " " + \
 test:
     cargo test -p libkern -p libz -p bsd -p xtask
     cargo test -p hal -p kernel -p abi
+    cargo test -p hal --features multiprocessor,diagnostic
     cargo test -p libsa -p boot -p efi
     cargo test -p efiboot-arm64
 
 # tests that cross-check constants against the C reference tree
 test-ref:
-    OPENBSD_SRC={{justfile_directory()}}/reference/openbsd-src cargo test -p libkern -p libz -p bsd -- --ignored
+    OPENBSD_SRC={{justfile_directory()}}/reference/openbsd-src cargo test -p libkern -p libz -p hal -p bsd -- --ignored
     OPENBSD_SRC={{justfile_directory()}}/reference/openbsd-src cargo test -p efiboot-arm64 -- --ignored
 
 # bare targets with `--features qemu`: a superset of the plain build, which `just build` covers;
@@ -3261,7 +3262,8 @@ clippy:
     cargo clippy -p bsd --target {{amd64}} --features qemu,multiprocessor,viocon -- -D warnings
     cargo clippy -p init --target {{amd64}} -- -D warnings
     cargo clippy -p init --target {{arm64}} -- -D warnings
-    cargo clippy -p libkern -p libz -p bsd -p xtask -- -D warnings
+    cargo clippy -p libkern -p libz -p hal -p bsd -p xtask -- -D warnings
+    cargo clippy -p hal --features multiprocessor,diagnostic -- -D warnings
     cargo clippy -p libsa -p boot -p efi -- -D warnings
     cargo clippy -p libsa -p boot -p efi --target {{arm64}} -- -D warnings
     cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
