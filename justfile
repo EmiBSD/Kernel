@@ -3299,8 +3299,9 @@ check-hal:
 check-abi:
     cargo xtask abi-check
 
-# Regenerate the system call tables from reference/.../syscalls.master (sys/sys/syscall.rs,
-# syscallargs.rs, kern/init_sysent.rs, kern/syscalls.rs). Rerun after porting a sys_* function.
+# Regenerate the system call tables from reference/.../syscalls.master (sys/hal/sys/syscall.rs,
+# sys/sys/syscallargs.rs, kern/init_sysent.rs, kern/syscalls.rs). Rerun after porting a sys_*
+# function.
 gen-syscalls:
     cargo xtask gen-syscalls
 
