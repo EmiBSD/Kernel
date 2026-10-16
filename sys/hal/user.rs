@@ -25,7 +25,9 @@
 //! Here (decision 17) [`AbiPod`] is a safe trait whose impls only [`abi_pod!`] writes (and the
 //! primitives below): the macro checks at compile time that every field listed is exactly of
 //! the type listed, that every field type is itself `AbiPod`, and that the fields, in the
-//! order listed, tile the structure with no byte of padding and none left out. So every byte
+//! order listed, tile the structure with no byte of padding, and that they are all its fields
+//! (an exhaustive destructuring: a field left out, even a zero-sized one, or a union does not
+//! compile). So every byte
 //! of a value is initialised, every bit pattern is a valid value, and the one `unsafe` that
 //! views a value as bytes lives here. `cargo xtask lz check` refuses an `impl AbiPod` written
 //! by hand (the premise the byte views' `SAFETY:` arguments rest on, like `Adapter`'s).
@@ -130,9 +132,35 @@ impl<T: AbiPod, const N: usize> AbiPod for [T; N] {}
 /// hal::abi_pod!(Ref { r: u64 });
 /// fn main() {}
 /// ```
+///
+/// So is a union (its fields overlap, so its bytes are not each a field's):
+///
+/// ```compile_fail
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// union Both {
+///     a: u32,
+///     b: u32,
+/// }
+/// hal::abi_pod!(Both { a: u32 });
+/// fn main() {}
+/// ```
+///
+/// And a structure with a field left out, even a zero-sized one that the tiling cannot see:
+///
+/// ```compile_fail
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// struct Hidden {
+///     a: u64,
+///     marker: core::marker::PhantomData<&'static u8>,
+/// }
+/// hal::abi_pod!(Hidden { a: u64 });
+/// fn main() {}
+/// ```
 #[macro_export]
 macro_rules! abi_pod {
-    ($ty:ty { $($field:ident : $fty:ty),+ $(,)? }) => {
+    ($ty:path { $($field:ident : $fty:ty),+ $(,)? }) => {
         // `AbiPod`'s contract: initialised bytes, any pattern valid. The checks below prove
         // it; this macro is the only writer of the impl (`cargo xtask lz check`).
         impl $crate::user::AbiPod for $ty {}
@@ -159,10 +187,16 @@ macro_rules! abi_pod {
 
         // Each field is exactly of the type listed: a raw pointer never deref-coerces, so a
         // field that only dereferences to it (a reference, a `Box`) does not compile here.
+        // And the listed fields are all the fields of a struct: the pattern names every one
+        // and has no `..`, so a field left out (a zero-sized one included) does not compile,
+        // and binding a union's field by value needs `unsafe`, so a union does not either.
         // Compile time only; never called.
         const _: fn(&$ty) = |v: &$ty| {
             $(let _: *const $fty = ::core::ptr::addr_of!(v.$field);)+
+            let $ty { $($field),+ } = *v;
+            $(let _ = $field;)+
         };
+
     };
 }
 
