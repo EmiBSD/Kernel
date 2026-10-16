@@ -6916,3 +6916,15 @@ reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; 
 [[extra]]
 rust = "sys/hal/testutil.rs"
 reason = "hal host tests: the doubles of the bridges, registered once per test process (cfg(test) only)"
+
+[[module]]
+rust = "sys/hal/mutex.rs"
+lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs"]
+status = "redesigned"
+notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9)"
+
+[[module]]
+rust = "sys/hal/percpu.rs"
+lz = ["sys/kern/subr_percpu.rs", "sys/sys/percpu.rs"]
+status = "redesigned"
+notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the legacy cpumem stays in bsd for its users and is deleted with the last one (N9)"

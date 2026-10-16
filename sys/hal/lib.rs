@@ -34,8 +34,11 @@ pub mod cpu;
 pub mod errno;
 pub mod intr;
 pub mod list;
+pub mod mutex;
 pub mod once;
+pub mod percpu;
 pub mod rbtree;
+
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tree;

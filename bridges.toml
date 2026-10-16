@@ -29,12 +29,12 @@
 # bsd: splraise/splx and IPL_MPFLOOR of sys/machine/intr.rs.
 [[bridge]]
 trait = "hal::intr::IntrLevel"
-for = ["sys/hal/intr.rs"]
+for = ["sys/hal/intr.rs", "sys/hal/mutex.rs"]
 paid_by = "N2.2"
 
 # bsd: cpu_number(), curcpu(), ci_schedstate.spc_spinning, ci_mutex_level (sys/machine/cpu.rs),
 # panicstr (sys/kern/subr_prf.rs) and db_active (sys/kern/init_main.rs).
 [[bridge]]
 trait = "hal::cpu::CpuId"
-for = ["sys/hal/cpu.rs"]
+for = ["sys/hal/cpu.rs", "sys/hal/mutex.rs", "sys/hal/percpu.rs"]
 paid_by = "N2.2"

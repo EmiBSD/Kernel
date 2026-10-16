@@ -61,6 +61,8 @@ pub trait CpuId: Sync {
     fn past_caring(&self) -> bool;
     /// `curcpu()->ci_mutex_level += delta` (`DIAGNOSTIC`).
     fn mutex_level(&self, delta: i32);
+    /// `ncpusfound`: how many CPUs the machine has (the per-CPU readers walk that many).
+    fn ncpus(&self) -> usize;
 }
 
 /// `cpu_number()`, folded below [`MAXCPUS`] (0 before the bridge is registered).

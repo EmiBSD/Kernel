@@ -27,11 +27,13 @@
 //!
 //! - `IntrLevel`: a per-thread level; `splraise` never lowers it, `splx` restores; the
 //!   `IPL_MPFLOOR` of the host double of `bsd` (9).
-//! - `CpuId`: CPU 0, named by a word distinct per thread, so two test threads contend for a
-//!   lock as two CPUs do.
+//! - `CpuId`: each test thread is a CPU of its own (its index from a counter, its word the
+//!   address of a per-thread static), so two test threads contend for a lock and update
+//!   per-CPU counters as two CPUs do; `ncpusfound` is `MAXCPUS`.
 
 use std::cell::Cell;
 use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::bridges;
 use crate::cpu::CpuId;
@@ -42,7 +44,11 @@ std::thread_local! {
     static SPINNING: Cell<isize> = const { Cell::new(0) };
     static MUTEX_LEVEL: Cell<i32> = const { Cell::new(0) };
     static WORD: u8 = const { 0 };
+    static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
 }
+
+/// The index the next test thread gets.
+static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 /// The interrupt-level double.
 struct TestIntr;
@@ -70,7 +76,7 @@ struct TestCpu;
 
 impl CpuId for TestCpu {
     fn cpu_number(&self) -> usize {
-        0
+        CPU.with(|c| *c) % crate::cpu::MAXCPUS
     }
 
     fn curcpu_word(&self) -> usize {
@@ -89,6 +95,10 @@ impl CpuId for TestCpu {
 
     fn mutex_level(&self, delta: i32) {
         MUTEX_LEVEL.with(|m| m.set(m.get() + delta));
+    }
+
+    fn ncpus(&self) -> usize {
+        crate::cpu::MAXCPUS
     }
 }
 
