@@ -23,17 +23,16 @@
 //! (decision 21, `cargo xtask abi-check`). `forbid(unsafe_code)`: `hal::UserPtr` is safe.
 //!
 //! The module's binary is `sys/abi/ko` (package `abi-openbsd`), which carries the header
-//! `hal::module` checks and calls [`abi_init`] through. Until the 41 constant headers move
-//! here (N2.4, step g), `syscall` is `sys/sys/syscall.rs` itself, compiled into this crate
-//! by path: the numbers of the table are the ABI edge's, not a copy of them.
+//! `hal::module` checks and calls [`abi_init`] through. The constant headers of the ABI edge
+//! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ
+//! (`sys/hal/sys/`, the user's decision of 2026-10-16): the numbers of the table are
+//! `hal::sys::syscall`'s, not a copy of them.
 #![no_std]
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
 extern crate std;
 
-#[path = "../sys/syscall.rs"]
-pub mod syscall;
 pub mod sysent;
 
 use kernel::api::KernelApi;

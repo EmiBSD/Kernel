@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! The module's system call table: one entry per system call number of
-//! `<sys/syscall.h>` (`crate::syscall`, the ABI edge), each `Native` (translated into a
+//! `<sys/syscall.h>` (`hal::sys::syscall`, the ABI edge), each `Native` (translated into a
 //! `kernel` entry point) or `Legacy` (handed to the LZ path `bsd` registered, through
 //! `KernelApi::syscall_legacy`), and the dispatcher `hal` reaches through the handler the
 //! module registered.
@@ -34,7 +34,8 @@
 
 use kernel::api::{HandlerInfo, KernelApi, Register, Rval, SysArgs, SysResult};
 
-use crate::syscall::SYS_MAXSYSCALL;
+// TODO(N2 integrate): hal::sys lands with the headers slice (sys/hal/sys/syscall.rs).
+use hal::sys::syscall::SYS_MAXSYSCALL;
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
 pub type NativeFn = fn(&'static KernelApi, &SysArgs, &mut Rval) -> SysResult;
@@ -142,7 +143,7 @@ mod tests {
     /// entry of the table, and no two names share a number.
     #[test]
     fn the_numbers_are_sys_syscall_h() {
-        let src = include_str!("../sys/syscall.rs");
+        let src = include_str!("../hal/sys/syscall.rs");
         let mut seen = std::collections::BTreeMap::new();
         for line in src.lines() {
             let Some(rest) = line.strip_prefix("pub const SYS_") else {
