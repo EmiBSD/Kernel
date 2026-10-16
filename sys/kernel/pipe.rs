@@ -1670,7 +1670,14 @@ mod tests {
                 (error, uio.pos)
             })
         };
+        // Bounded: a writer that never sleeps is a failed test, not a hung test run.
+        let mut polls = 0;
         while !pp.end(Dir::Rd).has(PIPE_WANTW) {
+            polls += 1;
+            assert!(
+                polls < 10_000,
+                "the writer did not sleep on the full pipe within 10 s"
+            );
             thread::sleep(Duration::from_millis(1));
         }
         nonblock.store(true, Ordering::SeqCst);
