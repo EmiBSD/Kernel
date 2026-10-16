@@ -34,10 +34,11 @@ Every exit also requires:
   `just ci-full` at every close but N2's (decision 24: N3's close runs it for both);
 - `cargo xtask lz drift --security` empty, and the numbers in the closing commit.
 
-Since 2026-10-10 the goal is zero `unsafe` outside a listed core (`docs/ZERO_UNSAFE.md`); a row's
-scope resolves as `/progress` resolves it, the most specific path winning. A header of
+Since 2026-10-16 the goal is zero `unsafe` in the kernel: the crates `sys/kernel/` and `sys/abi/`
+forbid it at their roots, `sys/hal/` holds the only `unsafe`, and `bsd` is emptied
+(`docs/ZERO_UNSAFE.md` section 0); a row's scope resolves as `/progress` resolves it, the most specific path winning. A header of
 `sys/sys/` belongs to the row whose C fills its fields (`proc.h` to N4, `vnode.h` to N5),
-so it is redesigned with its owner; the constant headers nobody fills stay in N2's catch-all.
+so it is redesigned with its owner into `kernel`; the constant headers nobody fills move into `abi` at N2.
 
 ## Rolling: LZ sync
 

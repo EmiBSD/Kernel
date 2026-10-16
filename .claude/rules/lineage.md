@@ -67,9 +67,11 @@ reason = "absorbed by sys/kern/sched/runqueue.rs"
   exception: `sys/lib/libkern/lib.rs` is an `inherited` `[[module]]`, and it stays inherited
   with its declarations' attributes through the comparison rule above. A module that needs no redesign and is `forbid` as it stands
   may carry a per-file verdict (`reviewed`, with its reason) once the xtask supports it.
-- A seam (`docs/ZERO_UNSAFE.md`, decision 9: a safe function a legacy module exports, with the
-  `unsafe` inside it, so a `forbid` module can use it before that module's own slice) is never
-  hidden in `adapted`: it is a `[[seam]]` row, `module = "sys/uvm/uvm_km.rs"`, `item = "KmBuf"`,
+- v1 (decision 9, superseded on 2026-10-16 by the bridges of decision 20: `kernel` reaches what
+  is still in `bsd` only through a trait registered in `hal`, a row of `bridges.toml`; no seam
+  is written any more). A seam (a safe function a legacy module exports, with the
+  `unsafe` inside it, so a `forbid` module could use it before that module's own slice) was never
+  hidden in `adapted`: it was a `[[seam]]` row, `module = "sys/uvm/uvm_km.rs"`, `item = "KmBuf"`,
   `for = ["sys/kern/sys_pipe.rs"]`, `paid_by = "N3"` (the milestone whose owner removes it), and
   the module's status stays what it was. `lz status` and `cargo xtask unsafe-report` print the
   seams as their own group. A seam into `file` or `kern_event` is refused: those slots are typed

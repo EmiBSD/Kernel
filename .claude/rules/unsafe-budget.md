@@ -20,6 +20,8 @@ Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` 
   total never rose, except in the re-baseline commit of an LZ sync (below). In v2 the crate is
   the boundary (the header above); the modules `forbid` under v1 keep the attribute until they
   move into `sys/kernel/`.
+### The v1 tool, until N2.4 replaces it (then the crate groups of docs/ZERO_UNSAFE.md 0.4)
+
 - `cargo xtask unsafe-report` prints, beside the per-subsystem rows, the three groups over the
   kernel counts (test code apart): core (the `unsafe` in the files of `unsafe-core.toml`, per
   row), `forbid` (the modules so declared, read from the module tree down from every `lib.rs`
