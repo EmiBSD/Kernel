@@ -39,6 +39,11 @@
 //!
 //! Status: `ported` (M6-a): `svc_handler` and `child_return`; M11a: `child_return` drops the
 //! kernel lock (`KERNEL_UNLOCK`, `MULTIPROCESSOR`).
+//!
+//! ## Deviations
+//! - The system call number is the whole 64-bit `x8` (`Register`), where the C's `int code`
+//!   keeps its low 32 bits: a number that differs only above them gets `ENOSYS` here and
+//!   another call there. Inherited from LZ, not widened (the range check is the same).
 
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;

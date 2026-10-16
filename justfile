@@ -1942,7 +1942,7 @@ re_session := "--send-after 'login:' --send 'root\\n' --send-after 'Password:' -
 # random_start says "random: good seed from bootblocks" and not the Limine boot's no-entropy
 # warning. `machine dtb` is arm64's machine command (it has no `machine memory`). Part of
 # `smoke`.
-smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") efiboot-amd64 efiboot-arm64
+smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") efiboot-amd64 efiboot-arm64 build-abi
     @test -x target/userland/amd64/host/bin/makefs -a -f target/userland/amd64/ramdisk-root/etc/fstab || \
         { echo "smoke-efiboot: no makefs or staged root; run just userland first"; exit 1; }
     cargo xtask efiboot-disk --arch amd64 --efi target/efiboot/amd64/BOOTX64.EFI --kernel target/{{amd64}}/debug/bsd --root-dev sd1a
@@ -1962,6 +1962,7 @@ smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fe
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
+        --expect "abi-openbsd.ko: 331 syscalls, 0 native" --reject "abi-openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -1984,6 +1985,7 @@ smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fe
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
+        --expect "abi-openbsd.ko: 331 syscalls, 0 native" --reject "abi-openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \

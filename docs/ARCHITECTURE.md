@@ -195,11 +195,11 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
   `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4; `abi_init` registers
   the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi-openbsd`):
-  the header `kernel::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
+  the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
   entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
   names as the ELF entry. It links no kernel code and no `hal` state; its panic handler is
   `hal::module::rt` (feature `module-rt`), which parks the CPU.
-- **The vtable.** `kernel::api::KernelApi`, `#[repr(C)]`, version and size first, Rust-ABI
+- **The vtable.** `hal::api::KernelApi`, `#[repr(C)]`, version and size first (`ApiPrefix`), Rust-ABI
   `fn` pointers (one toolchain builds both sides): the handler's registration, the `Legacy`
   path, `copyin`/`copyout`. `bsd` fills it (`sys/kern/abi_module.rs`); the module receives it
   in every call and keeps no state.
@@ -209,7 +209,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   `sysent[]` and `mi_syscall`), both registered once at boot. Errnos cross `hal` as `i32`.
 - **The hand-over.** Limine: a `module_path:` of `limine.conf`, found by name in
   `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi-openbsd.ko`
-  from the kernel's device into the heap, then copied to the page after the kernel's image
+  from the kernel's device, read straight onto the page after the kernel's image
   inside the room the program reserved (`BootMd::abi_module_room`) with `marks[MARK_END]`
   raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
   of free memory; amd64 passes `BOOTARG_ABIMODULE` (`BiosAbiModule`, type 0x100), arm64
@@ -228,6 +228,14 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   file still boots). `just smoke-abi` checks the first and refuses the second.
 - **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`),
   install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`).
+  So `/abi-openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
+  OpenBSD's set lists; its boot(8) reads it there.
+- **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
+  `ApiPrefix` and `AbiModuleHeader`), so `abi` depends on `hal` alone and the `.ko` links no
+  kernel code; `kernel::api::table` fills it. `hal::module::load` takes `&'static KernelApi`,
+  checks its prefix, runs once, and releases the writable copy (`ModulePlatform::release`)
+  before the entry point runs, so no writable alias of the module is left but the direct map.
+  boot(8) reads the file straight into the room after the kernel, never into its heap.
 
 ## Cargo features ↔ `option(4)`
 
