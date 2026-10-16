@@ -95,8 +95,11 @@ Always:
 
 - `just clippy` runs clippy for amd64, arm64 AND host with `-D warnings`. All three must pass.
 - `just fmt` is `cargo fmt --all -- --check`.
-- `just check` (build on both archs, clippy, fmt, `lz check`, `unsafe-report --check`,
-  `just test`; no QEMU, minutes) is the gate of every commit and every slice merge into `main`.
+- Develop first, compile later (the user's decision of 2026-10-17, docs/ZERO_UNSAFE.md decision
+  23): no build, clippy or test runs per commit or per slice. The pre-commit hook keeps only
+  `cargo fmt --check` and `cargo xtask lz check` (seconds). `just check` (build on both archs,
+  clippy, fmt, `lz check`, `unsafe-report --check`, `just test`; no QEMU) runs at the milestone
+  close, first, in a compile-and-fix pass; then the QEMU tiers below.
 - `just ci` runs everything and is the definition of green **for a milestone**: the smokes,
   `lz drift --strict` and `just diff-openbsd` run once, at the milestone close, with `ci-full`
   (the user's decision of 2026-10-16: tests at the end of the milestone, not of each slice; the

@@ -809,3 +809,12 @@ every design that kept `unsafe` inside the kernel:
     0 `unsafe`, no logic), `kernel` (2, 0 `unsafe`), `hal` (3, the only `unsafe`, ceiling
     2,150), hardware (4); `bsd` beside them until N9, calling down and registering up. There is
     no "static first, dynamic later": the module exists from N2's close.
+
+23. **Develop first, compile later** (the user, 2026-10-17: "desarrolla primero compila
+    después"; "necesito que termine en 2 semanas"). No per-commit build, clippy or test gate:
+    the agents write a milestone's slices without compiling; `just check`, the smokes, `ci-full`
+    and `diff-openbsd` run once, at the milestone close, where the errors are fixed in a
+    compile-and-fix pass before the close. The pre-commit hook keeps only what takes seconds
+    (`cargo fmt --check`, `cargo xtask lz check`). The planning session said the risk: errors
+    found at the close compound across the milestone's commits; the user took it. The two-week
+    target is N2 and N3 closed, with parallel redesigners from N2.3 on (section 0.8).

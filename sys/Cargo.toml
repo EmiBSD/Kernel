@@ -58,6 +58,9 @@ wsdisplay_compat_rawkbd = [] # OpenBSD `option WSDISPLAY_COMPAT_RAWKBD` -> raw s
 viocon = []       # amd64 GENERIC's commented-out `#viocon* at virtio?`, uncommented -> viocon(4) in amd64's ioconf.rs and cdevsw 94 (NVIOCON 1); dev/pv/viocon.rs compiles on every build (M16d)
 
 [dependencies]
+# The crates of docs/ZERO_UNSAFE.md section 0: bsd calls down into them, never the reverse.
+hal = { path = "hal" }
+kernel = { path = "kernel" }
 libkern.workspace = true
 libz.workspace = true
 

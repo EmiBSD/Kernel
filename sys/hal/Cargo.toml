@@ -1,0 +1,17 @@
+[package]
+name = "hal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "EmiBSD HAL: the hardware and the runtime, the only crate with unsafe (docs/ZERO_UNSAFE.md, section 0)"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+libkern.workspace = true
+
+[lints]
+workspace = true

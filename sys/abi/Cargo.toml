@@ -1,0 +1,18 @@
+[package]
+name = "abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "EmiBSD ABI: OpenBSD userland interface as the loadable module abi-openbsd.ko, zero unsafe, no logic (docs/ZERO_UNSAFE.md, section 0)"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+hal = { path = "../hal" }
+kernel = { path = "../kernel" }
+
+[lints]
+workspace = true

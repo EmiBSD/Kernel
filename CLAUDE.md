@@ -72,7 +72,7 @@ Two provenance rules:
 | `just check-lineage` | `cargo xtask lz check`: every module's provenance, blobs, rows and zones |
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
-| `just check` | build (both archs), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; must be green before a commit |
+| `just check` | build (both archs), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-17: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on both archs (`smoke-install-*`, needs `just comp`); must be green before a milestone is met |
 | `just lz-sync` | fetch LZ, list the commits to triage with the items they touch (`docs/SYNC.md`) |
@@ -97,8 +97,8 @@ Tool installation lives in `docs/SETUP.md` and needs the user's explicit go-ahea
    renamed, moved, merged or dropped, `adapted` on the modules whose call sites followed,
    `[[dropped]]`), the `//! LZ:` lines and `## Redesign`. `cargo xtask lz trace` must answer
    where every item went.
-7. `just check` green -> commit one step, trailers `LZ:`, `Unsafe:`, `Bench:`. The smokes,
-   `just ci` and `just diff-openbsd` run once, at the milestone close (`testing.md`).
+7. Commit one step, trailers `LZ:`, `Unsafe:`, `Bench:`; no build per commit. `just check`,
+   the smokes, `just ci` and `just diff-openbsd` run once, at the milestone close (`testing.md`).
 
 Details: `.claude/rules/re-engineering.md`; LZ's later work: `.claude/rules/lz-sync.md` and
 `docs/SYNC.md`.
