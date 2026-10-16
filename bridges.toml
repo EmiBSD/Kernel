@@ -59,3 +59,10 @@ paid_by = "N3"
 trait = "hal::pool::PoolBackend"
 for = ["sys/hal/pool.rs"]
 paid_by = "N9"
+
+# bsd: malloc/free with the C's malloc types (sys/kern/kern_malloc.rs), so vmstat -m counts an
+# MBox in its type's row; an unsafe trait, as above.
+[[bridge]]
+trait = "hal::malloc::Malloc"
+for = ["sys/hal/malloc.rs"]
+paid_by = "N9"

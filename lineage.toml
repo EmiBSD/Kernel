@@ -6952,3 +6952,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; docs/ZERO_UNSAFE.md 0.1, decision 10"
+
+[[extra]]
+rust = "sys/hal/malloc.rs"
+reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; docs/ZERO_UNSAFE.md 0.1, decision 19"

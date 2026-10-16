@@ -38,10 +38,12 @@
 //! - `PageMemory`: zeroed, page-aligned allocations of the host's allocator, the bytes out
 //!   counted per thread.
 //! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`.
+//! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
+//!   malloc type.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::boxed::Box;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -53,6 +55,7 @@ use crate::cpu::CpuId;
 use crate::errno::Errno;
 use crate::intr::IntrLevel;
 use crate::kmbuf::{PageKind, PageMemory};
+use crate::malloc::{MALLOC_ALIGN, Malloc};
 use crate::pool::{PoolBackend, RawPool};
 use crate::sleep::{INFSLP, Sleep};
 
@@ -65,6 +68,7 @@ std::thread_local! {
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static PAGES_OUT: Cell<isize> = const { Cell::new(0) };
+    static MALLOC_OUT: RefCell<BTreeMap<i32, isize>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// The page size of the doubles.
@@ -293,11 +297,39 @@ unsafe impl PoolBackend for TestPools {
     }
 }
 
+/// The `malloc(9)` double.
+struct TestMalloc;
+
+// SAFETY: `malloc` returns the host allocator's block of `size` bytes aligned to
+// `MALLOC_ALIGN`, owned by the caller until `free` gives it back with the same size.
+unsafe impl Malloc for TestMalloc {
+    fn malloc(&self, size: usize, ty: i32, _flags: i32) -> Option<NonNull<u8>> {
+        if size == 0 {
+            return None;
+        }
+        let layout = Layout::from_size_align(size, MALLOC_ALIGN).ok()?;
+        // SAFETY: the layout's size is not 0.
+        let p = NonNull::new(unsafe { alloc(layout) })?;
+        MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) += size as isize);
+        Some(p)
+    }
+
+    fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize) {
+        if let Ok(layout) = Layout::from_size_align(size, MALLOC_ALIGN) {
+            // SAFETY: `ptr` came from `malloc` with this very layout (the trait's contract on
+            // the caller, `MBox`), once.
+            unsafe { dealloc(ptr.as_ptr(), layout) };
+        }
+        MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) -= size as isize);
+    }
+}
+
 static TEST_INTR: TestIntr = TestIntr;
 static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
+static TEST_MALLOC: TestMalloc = TestMalloc;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -308,10 +340,17 @@ pub(crate) fn install() {
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_page_memory(&TEST_PAGES);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
+        let _ = bridges::register_malloc(&TEST_MALLOC);
     });
 }
 
+/// The bytes of `malloc(9)` blocks of type `ty` this thread holds, as the double counts them.
+pub(crate) fn malloc_out(ty: i32) -> isize {
+    MALLOC_OUT.with(|m| m.borrow().get(&ty).copied().unwrap_or(0))
+}
+
 /// The bytes of kernel pages this thread holds, as the double counts them.
+
 pub(crate) fn pages_out() -> isize {
     PAGES_OUT.with(Cell::get)
 }

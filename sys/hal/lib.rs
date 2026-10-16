@@ -35,6 +35,7 @@ pub mod errno;
 pub mod intr;
 pub mod kmbuf;
 pub mod list;
+pub mod malloc;
 pub mod mutex;
 pub mod once;
 pub mod percpu;

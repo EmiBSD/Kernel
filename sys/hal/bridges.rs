@@ -43,6 +43,7 @@
 use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::kmbuf::PageMemory;
+use crate::malloc::Malloc;
 use crate::once::OnceStatic;
 use crate::pool::PoolBackend;
 use crate::sleep::Sleep;
@@ -106,6 +107,14 @@ bridge!(
     POOL_BACKEND: PoolBackend,
     register_pool_backend,
     pool_backend
+);
+
+bridge!(
+    /// Registers `malloc(9)` and `free(9)` (`sys/kern/kern_malloc.rs`); the implementation
+    /// vouches for `Malloc`'s contract with its `unsafe impl`. Paid by N9.
+    MALLOC: Malloc,
+    register_malloc,
+    malloc
 );
 
 /* </CODE> */
