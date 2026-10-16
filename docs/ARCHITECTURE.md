@@ -91,6 +91,9 @@ amd64, `&'static BusSpace` on arm64), and so are the DMA tag, map and segment ty
 members by their C names (`dm_nsegs`, `dm_segs()`, `ds_addr`, ...), which every arch must
 define (`bus_dma_public_members` checks it at compile time).
 
+`param.rs`, `vmparam.rs` and `exec.rs` (the traits `MachineParam`, `VmParam`, `MachineExec`) live
+in `sys/hal/machine/` since N2.2, and `sys/machine/mod.rs` re-exports them under their old names.
+
 Constants travel the same way as functions: `MachineParam` (M1) carries `<machine/param.h>` and
 the alignment rules of `<machine/_types.h>` as associated consts, each arch defines them in
 `arch/<arch>/include/{param,_types}.rs`, and `sys/sys/param.rs` re-exports them, so generic code
