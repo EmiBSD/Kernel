@@ -7,9 +7,14 @@ carry `#![forbid(unsafe_code)]` at their roots (no budget: the build refuses one
 (lowered by `--write`, raised only by the user, in a commit of its own, when a milestone adds a
 listed piece: 2,150 at N2, 2,230 by N7); `sys/` (`bsd`, the LZ tree) is legacy under
 `legacy_ceiling`, which only falls, until the crate is deleted at N9. `cargo xtask
-unsafe-report` prints `kernel`, `abi`, `hal`, `bsd` and `boot`; `hal-check` and `abi-check`
-run in `just check`. Until the xtask of N2.4 lands, the text below describes the v1 tool that
-still runs; `unsafe-core.toml` is kept readable and unused.
+unsafe-report` prints, beside its rows, a `crates` block: `kernel`, `abi`, `hal`, `hal_pending`
+(the hardware and the lists and trees until they move into `hal`), `boot` and `bsd`, files and
+`unsafe` each, and the headline ends with them. `--check` fails when `kernel` or `abi` is above 0,
+`hal` above `hal_ceiling` (`[ratchet]`, lowered by `--write`, raised only by the user), or the
+`bsd` files outside `unsafe-core.toml` above `legacy_ceiling`; the rows `kernel`, `abi` and `hal`
+have no per-row budget. `hal-check` and `abi-check` (`xtask.md`) run in `just check`. The v1
+groups below still print and gate until N9 (`legacy` is what `legacy_ceiling` ratchets and the
+pace baseline reads); `unsafe-core.toml` is still read for them.
 
 Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` in the kernel
 (`docs/ZERO_UNSAFE.md`). The budget makes that measurable and keeps it from regressing.
@@ -20,7 +25,7 @@ Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` 
   total never rose, except in the re-baseline commit of an LZ sync (below). In v2 the crate is
   the boundary (the header above); the modules `forbid` under v1 keep the attribute until they
   move into `sys/kernel/`.
-### The v1 tool, until N2.4 replaces it (then the crate groups of docs/ZERO_UNSAFE.md 0.4)
+### The v1 groups, kept until N9 (beside the crates of docs/ZERO_UNSAFE.md 0.4)
 
 - `cargo xtask unsafe-report` prints, beside the per-subsystem rows, the three groups over the
   kernel counts (test code apart): core (the `unsafe` in the files of `unsafe-core.toml`, per
