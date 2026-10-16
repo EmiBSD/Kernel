@@ -29,7 +29,15 @@
 extern crate std;
 
 pub(crate) mod assert;
+pub mod bridges;
+pub mod cpu;
+pub mod errno;
+pub mod intr;
 pub mod list;
+pub mod once;
 pub mod rbtree;
+#[cfg(test)]
+pub(crate) mod testutil;
 pub mod tree;
+
 /* </CODE> */

@@ -6892,3 +6892,27 @@ reason = "re-export of the hal module sys/hal/rbtree.rs for the users of the leg
 [[extra]]
 rust = "sys/hal/assert.rs"
 reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that names nothing of the kernel (through the image's panic handler); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/once.rs"
+reason = "hal runtime, written new: OnceStatic<T>, the init-once static that replaces StaticCell for new code; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/errno.rs"
+reason = "hal runtime, written new: the runtime's error, an errno(2) number carried as it is; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/bridges.rs"
+reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/intr.rs"
+reason = "hal runtime, written new: the interrupt-level guard and the IntrLevel bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/cpu.rs"
+reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/testutil.rs"
+reason = "hal host tests: the doubles of the bridges, registered once per test process (cfg(test) only)"

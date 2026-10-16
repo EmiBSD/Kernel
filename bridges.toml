@@ -1,0 +1,40 @@
+#
+# Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+#
+# The bridges (docs/ZERO_UNSAFE.md section 0.3.2): every trait through which `hal` or
+# `kernel` reaches code that has not moved into them yet. The trait is declared by the crate
+# that calls it and held in a `OnceStatic<&'static dyn Trait>`; `bsd`'s `main()` registers an
+# implementation over its legacy code before first use. A bridge carries no logic of its own.
+# N9 requires this file to hold no row.
+#
+# Schema, one [[bridge]] per trait:
+#   trait   = the trait's path ("hal::intr::IntrLevel", "kernel::...")
+#   for     = the files that call through it
+#   paid_by = the milestone whose subsystem moves the implementation in and removes the row
+#             ("N2.2" for a slice of N2, else "N3".."N9")
+# The comment above each row says what implements it today.
+
+# bsd: splraise/splx and IPL_MPFLOOR of sys/machine/intr.rs.
+[[bridge]]
+trait = "hal::intr::IntrLevel"
+for = ["sys/hal/intr.rs"]
+paid_by = "N2.2"
+
+# bsd: cpu_number(), curcpu(), ci_schedstate.spc_spinning, ci_mutex_level (sys/machine/cpu.rs),
+# panicstr (sys/kern/subr_prf.rs) and db_active (sys/kern/init_main.rs).
+[[bridge]]
+trait = "hal::cpu::CpuId"
+for = ["sys/hal/cpu.rs"]
+paid_by = "N2.2"
