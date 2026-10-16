@@ -327,15 +327,20 @@ static RWLOCK_KLISTOPS: Klistops = Klistops {
     klo_unlock: klist_rwlock_unlock,
 };
 
-/// `KLIST_ASSERT_LOCKED(kl)` (`DIAGNOSTIC`): the list's lock, or the kernel lock, is held.
+/// `KLIST_ASSERT_LOCKED(kl)` (`DIAGNOSTIC`): the list's lock, or the kernel lock, is held. A
+/// list whose lock is its owner's ([`Klist::owned`]) is not checked: the owner's guard is
+/// the proof, which this function cannot see.
 fn klist_assert_locked(kl: &Klist) {
     #[cfg(feature = "diagnostic")]
-    if let Some(ops) = kl.kl_ops.get() {
-        // SAFETY: `kl_arg` is the lock `klist_init` was given for these ops, valid while the
-        // list is (its contract).
-        unsafe { (ops.klo_assertlk)(kl.kl_arg.get()) };
-    } else {
-        kernel_assert_locked();
+    match (kl.kl_owned.get(), kl.kl_ops.get()) {
+        // The owner holds its own lock around every `_locked` call (`Klist::owned`).
+        (true, _) => {}
+        (false, Some(ops)) => {
+            // SAFETY: `kl_arg` is the lock `klist_init` was given for these ops, valid while
+            // the list is (its contract).
+            unsafe { (ops.klo_assertlk)(kl.kl_arg.get()) };
+        }
+        (false, None) => kernel_assert_locked(),
     }
     let _ = kl;
 }
@@ -2617,8 +2622,16 @@ pub fn klist_invalidate(list: &Klist) {
     klist_unlock(list, ls);
 }
 
-/// `klist_lock(list)`: the list's lock, or the kernel lock at `splhigh`.
+/// `klist_lock(list)`: the list's lock, or the kernel lock at `splhigh`. A list whose lock is
+/// its owner's has none to take here: reaching it is a caller that forgot the owner's lock,
+/// `panic(9)` naming the list, never a race.
 fn klist_lock(list: &Klist) -> i32 {
+    if list.kl_owned.get() {
+        panic(format_args!(
+            "klist_lock: klist {:p} is locked by its owner",
+            list
+        ));
+    }
     match list.kl_ops.get() {
         // SAFETY: `kl_arg` is what `klist_init` was given for these ops (its contract).
         Some(ops) => unsafe { (ops.klo_lock)(list.kl_arg.get()) },
@@ -2629,8 +2642,15 @@ fn klist_lock(list: &Klist) -> i32 {
     }
 }
 
-/// `klist_unlock(list, ls)`.
+/// `klist_unlock(list, ls)`; never reached for a list whose lock is its owner's
+/// (`klist_lock` refuses it first).
 fn klist_unlock(list: &Klist, ls: i32) {
+    if list.kl_owned.get() {
+        panic(format_args!(
+            "klist_unlock: klist {:p} is locked by its owner",
+            list
+        ));
+    }
     match list.kl_ops.get() {
         // SAFETY: as in `klist_lock`.
         Some(ops) => unsafe { (ops.klo_unlock)(list.kl_arg.get(), ls) },
@@ -3194,6 +3214,21 @@ pub(crate) mod tests {
         );
         assert_eq!(filt_timervalidate(0x20, 1), Err(Errno::EINVAL));
         assert_eq!(kn_hash(0x1234, 63), (0x1234 ^ 0x12) & 63);
+    }
+
+    /// A klist whose lock is its owner's takes the `_locked` forms with no other lock held
+    /// (the owner's guard is the proof); the forms that would lock it themselves refuse it
+    /// (`klist_lock`'s panic(9), not run here: it would mark the shared test process panicked).
+    #[test]
+    fn an_owned_klist_takes_the_locked_forms() {
+        let kl = Klist::owned();
+        assert!(kl.kl_owned.get() && !Klist::new().kl_owned.get());
+        let kn = Knote::new();
+        klist_insert_locked(&kl, &kn);
+        assert!(!kl.kl_list.is_empty());
+        klist_remove_locked(&kl, &kn);
+        assert!(kl.kl_list.is_empty());
+        klist_free(&kl);
     }
 }
 /* </TESTS> */

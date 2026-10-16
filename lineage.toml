@@ -3991,7 +3991,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/kern_event.rs"
 lz = ["sys/kern/kern_event.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 
 [[module]]
 rust = "sys/kern/kern_exec.rs"
@@ -5899,7 +5900,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/event.rs"
 lz = ["sys/sys/event.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 
 [[module]]
 rust = "sys/sys/eventvar.rs"
