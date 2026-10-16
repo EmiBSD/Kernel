@@ -87,7 +87,7 @@ use libsa::hdr::param::MAXPATHLEN;
 use libsa::hdr::reboot::{RB_GOODRANDOM, RB_UNHIBERNATE};
 use libsa::hdr::stat::{S_ISTXT, S_IXGRP, S_IXOTH, S_IXUSR, Stat};
 use libsa::hdr::types::{Dev, Time};
-use libsa::loadfile::{LOAD_ALL, MARK_MAX, MARK_START, loadfile};
+use libsa::loadfile::{LOAD_ALL, MARK_END, MARK_MAX, MARK_START, loadfile};
 use libsa::printf;
 use libsa::printf::Str;
 use libsa::saerrno::Errno;
