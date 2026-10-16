@@ -18,20 +18,23 @@ How to answer:
 - Show the table as it is; never retype or round its numbers. Reply in the user's language,
   keeping the table's English headers (artifacts stay in English).
 - Under it, three to six lines: the last milestone met and the one under way, what is left and
-  where it concentrates (Legacy unsafe is the exit criterion's number; a row is complete when
-  Legacy modules and Legacy unsafe are both 0), and the caveats that matter for the question
-  asked: Forbid counts a row's non-core modules only, the core sits apart on the Core line;
-  an `adapted` module only followed a redesign and is shown apart; a met row may keep legacy
-  modules that a later row's prose claims (N1's crypto framework is N8's); the estimate
-  divides a row's legacy unsafe by the legacy unsafe removed per active day since the
-  baseline of `unsafe-budget.toml`, reads n/a until 5 active days have removed 100 or more (a smaller sample is noise), and
-  promises nothing.
-- A `Warning:` line under the table names non-core modules no ROADMAP row claims: say so;
-  they need an owner row.
-- With a milestone argument (`/progress N2`) the file list follows the table, legacy files
-  first and the most unsafe first: say what is left in it and which files hold the most.
+  where it concentrates (Files in bsd and Unsafe in bsd are the exit criterion: a row is
+  complete when both are 0 and it pays no open bridge), and the caveats that matter for the
+  question asked: Moved counts the row's files already in `hal`, `kernel` or `abi` (a move into
+  `hal` keeps its `unsafe`: it is not a reduction, the Crates line shows where it went); an
+  `adapted` module only followed a redesign and is shown apart; a met row may keep files in
+  bsd that a later row's prose claims (N1's crypto framework is N8's); the estimate divides a
+  row's unsafe in bsd by the unsafe removed per active day since the baseline of
+  `unsafe-budget.toml`, reads n/a until 5 active days have removed 100 or more (a smaller
+  sample is noise), and promises nothing. The Crates line is the whole picture: kernel and abi
+  are 0 by the compiler, hal has the only unsafe under its ceiling, bsd is what must reach 0
+  files, the boot loaders are outside the plan.
+- A `Warning:` line under the table names files in bsd no ROADMAP row claims: say so; they
+  need an owner row.
+- With a milestone argument (`/progress N2`) the file list follows the table, bsd files first
+  and the most unsafe first: say what is left in it and which files hold the most.
 - If the output starts with `Note:`, unsafe-report could not run (the note says why) and the
-  table is the old lineage one (modules and LZ lines, no forbid metric): say so.
+  table is the old lineage one (modules and LZ lines, no unsafe metric): say so.
 - If the table is missing or starts with `progress: error`, run the script with Bash and
   report the error. Never estimate by hand.
 - These numbers are for the conversation. The docs (README, STATUS, JOURNAL) take theirs from

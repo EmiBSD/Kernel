@@ -18,44 +18,44 @@
 
 Adapted from EmiBSD.LZ's .claude/skills/progress/scripts/progress.py (b0901dd3), which
 measured the port from ports.toml; this one measures the zero-unsafe redesign
-(docs/ZERO_UNSAFE.md) from `cargo xtask unsafe-report --json`.
+(docs/ZERO_UNSAFE.md section 0: the kernel crate with no unsafe) from
+`cargo xtask unsafe-report --json`.
 
 Sources, all read live (nothing is typed in by hand):
   - `cargo xtask unsafe-report --json`, run at the repository root: every kernel
-    file with its lineage.toml status, its group (core: listed in
-    unsafe-core.toml; forbid: its module is #[forbid(unsafe_code)]; legacy:
-    neither), its kernel `unsafe` and whether the forbid ratchet counts it as a
-    module (under sys/; crate roots, mod.rs and sys/machine, sys/arch/host,
-    sys/stand apart; lineage.toml's extras in); the totals; the ratchet with its
-    baseline; the pace (legacy `unsafe` removed per active day since that
-    baseline). unsafe-report is the one parser of the Rust sources: this script
-    reads none;
+    file with its lineage.toml status, its kernel `unsafe` and whether the tool
+    counts it as a module; the totals; the ratchet with its baseline; the pace.
+    unsafe-report is the one parser of the Rust sources: this script reads none.
+    The crate of a file (docs/ZERO_UNSAFE.md section 0) is derived here from its
+    path: sys/hal/, sys/kernel/, sys/abi/, the boot loaders (sys/stand/,
+    sys/lib/libsa/), and bsd (the LZ tree, legacy) for the rest of sys/;
   - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion). A
     file belongs to the N row whose scope cell names its path in backticks: a
     directory (`sys/uvm/`), a file (`sys/sys/queue.rs`) or a glob
     (`sys/kern/vfs_*`); when several rows name it, the most specific pattern
     wins. A parent row (N2 with N2a, ...) adds its lettered children's;
+  - bridges.toml: the bridges open, by the milestone that pays them (`paid_by`);
   - lineage.toml and reference/emibsd-lz at the pin: each module's LZ sources and
     their lines (`git cat-file --batch`), for the module list only;
   - git: the `docs: Nx met` close commits.
 
-Columns, per row:
-  Non-core modules  the row's modules outside the core: the denominator;
-  Forbid            the forbid ones among them, x / y and the percentage;
-  Legacy modules    the rest, non-core modules not forbid yet;
-  Legacy unsafe     the kernel `unsafe` of the row's legacy files (mod.rs too):
-                    the exit criterion's "0 unsafe outside the core";
-  Core modules      the row's modules in unsafe-core.toml (not in the denominator);
+Columns, per row (docs/ZERO_UNSAFE.md 0.4):
+  Files in bsd      the row's files still in the LZ tree (counted as modules, or
+                    holding unsafe): the exit criterion's first number;
+  Unsafe in bsd     their kernel `unsafe`: the exit criterion's second number;
+  Moved             the row's files already in hal, kernel or abi;
+  Bridges open      bridges.toml rows whose paid_by is this row;
   Redesigned        lineage.toml's redesigned modules, adapted shown apart;
-  Est. left         Legacy unsafe / the pace; "done" once Legacy modules and
-                    Legacy unsafe are both 0 (the row is complete); "n/a" until
-                    5 active days since the baseline have removed 100 or more
-                    (MIN_PACE_DAYS, MIN_PACE_REMOVED): a smaller sample is noise.
-The Core line sums unsafe-core.toml (modules, unsafe, budget) and names the core
-paths no row claims; a non-core module no row names is a warning line.
+  Est. left         Unsafe in bsd / the pace; "done" once Files in bsd, Unsafe in
+                    bsd and Bridges open are all 0; "n/a" until 5 active days since
+                    the baseline have removed 100 or more (MIN_PACE_DAYS,
+                    MIN_PACE_REMOVED): a smaller sample is noise.
+The Crates line gives kernel, abi, hal (with its ceiling when unsafe-budget.toml
+records hal_ceiling), bsd and the boot loaders; a file in bsd no row names is a
+warning line.
 
 Without cargo (or if unsafe-report fails) the script prints, with a note, the
-lineage table it printed before the forbid metric (modules redesigned and
+lineage table it printed before the unsafe metric (modules redesigned and
 inherited, LZ lines, the LZ-lines rate since lz-origin).
 
 The estimate is a linear extrapolation of the project's own pace. It measures the
@@ -358,9 +358,32 @@ class Plan:
         return "pending"
 
 
+CRATES = (("hal", "sys/hal/"), ("kernel", "sys/kernel/"), ("abi", "sys/abi/"),
+          ("boot", "sys/stand/"), ("boot", "sys/lib/libsa/"))
+
+
+def crate_of(path: str) -> str:
+    """The crate a file belongs to under docs/ZERO_UNSAFE.md section 0, by its path: hal,
+    kernel, abi, boot (the loaders, outside the four crates) or bsd (the LZ tree, legacy)."""
+    for name, prefix in CRATES:
+        if path.startswith(prefix):
+            return name
+    return "bsd"
+
+
+def bridges(root: Path) -> list[dict]:
+    """The rows of bridges.toml (trait, for, paid_by); none while the file does not exist."""
+    try:
+        return tomllib.loads((root / "bridges.toml").read_text()).get("bridge", [])
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+
+
 def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: list[dict],
                   pin: str) -> None:
-    """The zero-unsafe table, from `cargo xtask unsafe-report --json`."""
+    """The zero-unsafe table of docs/ZERO_UNSAFE.md 0.4, computed by path from
+    `cargo xtask unsafe-report --json`: what is still in bsd per milestone, what moved into
+    the crates, the bridges open, and the crates' totals."""
     cache: dict = {}
     files = doc["files"]
     totals = doc["totals"]
@@ -373,10 +396,12 @@ def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     if days < MIN_PACE_DAYS or pace.get("removed", 0) < MIN_PACE_REMOVED:
         per_day = None
     base, since = ratchet.get("legacy_baseline"), ratchet.get("baseline_date")
+    for f in files:
+        f["crate"] = crate_of(f["path"])
+    br = bridges(root)
 
     def tally() -> dict:
-        return {"noncore": 0, "forbid": 0, "legacy": 0, "legacy_unsafe": 0, "core": 0,
-                "redesigned": 0, "adapted": 0}
+        return {"bsd_files": 0, "bsd_unsafe": 0, "moved": 0, "redesigned": 0, "adapted": 0}
 
     own = {rid: tally() for rid in plan.ids + ["unassigned"]}
     files_of: dict[str, list[dict]] = {rid: [] for rid in own}
@@ -384,78 +409,79 @@ def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
         rid = plan.owner(f["path"])
         files_of[rid].append(f)
         t = own[rid]
-        if f["module"]:
-            if f["group"] == "core":
-                t["core"] += 1
-            else:
-                t["noncore"] += 1
-                t["forbid" if f["group"] == "forbid" else "legacy"] += 1
-        if f["group"] == "legacy":
-            t["legacy_unsafe"] += f["unsafe"]
+        counted = f["module"] or f["unsafe"]
+        if f["crate"] == "bsd":
+            if counted:
+                t["bsd_files"] += 1
+            t["bsd_unsafe"] += f["unsafe"]
+        elif f["crate"] != "boot" and counted:
+            t["moved"] += 1
         if f["status"] in ("redesigned", "adapted"):
             t[f["status"]] += 1
     agg = plan.aggregate(own)
+    open_bridges = {rid: sum(1 for x in br if x.get("paid_by") == rid) for rid in plan.ids}
 
     def finished(rid: str) -> bool:
-        """Complete: no legacy module and no legacy unsafe left."""
-        return agg[rid]["legacy"] == 0 and agg[rid]["legacy_unsafe"] == 0
+        """Complete: nothing of the row left in bsd (0.4), and no bridge it must pay."""
+        return (agg[rid]["bsd_files"] == 0 and agg[rid]["bsd_unsafe"] == 0
+                and open_bridges.get(rid, 0) == 0)
 
     def busy(rid: str) -> bool:
-        return agg[rid]["redesigned"] > 0 and not finished(rid)
+        return (agg[rid]["moved"] > 0 or agg[rid]["redesigned"] > 0) and not finished(rid)
 
     def est(rid: str) -> str:
         if finished(rid):
             return "done"
         if not per_day:
             return "n/a"
-        d = agg[rid]["legacy_unsafe"] / per_day
+        d = agg[rid]["bsd_unsafe"] / per_day
         return "<0.1 d" if d < 0.1 else f"~{d:.1f} d"
 
-    def forbid_txt(t: dict) -> str:
-        n = t["noncore"]
-        return f"{t['forbid']:,} / {n:,} ({100 * t['forbid'] // n}%)" if n else "—"
-
-    def redesigned_txt(t: dict) -> str:
-        return fmt(t["redesigned"]) + (f" + {t['adapted']} adapted" if t["adapted"] else "")
-
+    crate_unsafe = {c: 0 for c in ("kernel", "abi", "hal", "bsd", "boot")}
+    crate_files = {c: 0 for c in crate_unsafe}
+    for f in files:
+        crate_unsafe[f["crate"]] += f["unsafe"]
+        if f["module"] or f["unsafe"]:
+            crate_files[f["crate"]] += 1
+    hal_ceiling = ratchet.get("hal_ceiling")
     baseline = (f"; baseline {base:,} on {since}, {days} active day{'s' if days != 1 else ''} "
                 "since" if base is not None and since else "")
     print(f"EmiBSD redesign progress — {_dt.date.today()} — EmiBSD.LZ pin {pin[:12] or '?'} — "
-          f"{totals['modules']:,} modules — legacy unsafe {totals['legacy_unsafe']:,}{baseline}")
+          f"docs/ZERO_UNSAFE.md v2 — bsd unsafe {crate_unsafe['bsd']:,}{baseline}")
     print()
-    print("| Milestone | Title | Status | Non-core modules | Forbid | Legacy modules | "
-          "Legacy unsafe | Core modules | Redesigned | Est. left |")
-    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    print("| Milestone | Title | Status | Files in bsd | Unsafe in bsd | Moved | Bridges open | "
+          "Redesigned | Est. left |")
+    print("|---|---|---|---:|---:|---:|---:|---:|---:|")
     for r in plan.rows:
         rid = r["id"]
         if not plan.selected(rid, want):
             continue
         t = agg[rid]
         if not plan.has_patterns(rid):
-            cells = ["—"] * 6
-        elif not (t["noncore"] or t["core"]):
-            cells = ["no modules match"] + ["—"] * 5
+            cells = ["—"] * 5
+        elif not (t["bsd_files"] or t["moved"]):
+            cells = ["no files match"] + ["—"] * 4
         else:
-            cells = [fmt(t["noncore"]), forbid_txt(t), fmt(t["legacy"]), fmt(t["legacy_unsafe"]),
-                     fmt(t["core"]), redesigned_txt(t)]
+            cells = [fmt(t["bsd_files"]), fmt(t["bsd_unsafe"]), fmt(t["moved"]),
+                     fmt(open_bridges.get(rid, 0)),
+                     fmt(t["redesigned"]) + (f" + {t['adapted']} adapted" if t["adapted"] else "")]
         indent = "&nbsp;&nbsp;" if rid in plan.is_child else ""
         print(f"| {indent}{rid} | {r['title']} | {plan.status(rid, finished, busy)} | "
               + " | ".join(cells) + f" | {est(rid)} |")
-    if not want:
-        core = [f for f in files if f["group"] == "core"]
-        loose = sorted({f["subsystem"] for f in files_of["unassigned"] if f["group"] == "core"})
-        named = ", ".join(loose[:8]) + (", ..." if len(loose) > 8 else "")
-        print(f"| Core | `unsafe-core.toml`: {totals['core_unsafe']:,} unsafe, budget "
-              f"{totals['core_budget']:,}; no row names {named or 'none'} | — | — | — | — | — | "
-              f"{sum(1 for f in core if f['module']):,} | "
-              f"{fmt(sum(1 for f in core if f['status'] == 'redesigned'))} | — |")
     print()
+    print(f"Crates: kernel {crate_unsafe['kernel']:,} unsafe in {crate_files['kernel']:,} files; "
+          f"abi {crate_unsafe['abi']:,} in {crate_files['abi']:,}; "
+          f"hal {crate_unsafe['hal']:,} in {crate_files['hal']:,}"
+          + (f" (ceiling {hal_ceiling:,})" if hal_ceiling is not None else "")
+          + f"; bsd {crate_unsafe['bsd']:,} in {crate_files['bsd']:,}; "
+          f"boot loaders {crate_unsafe['boot']:,} in {crate_files['boot']:,} (outside the plan). "
+          f"Bridges open: {len(br)}.")
     stray = sorted(f["path"] for f in files_of["unassigned"]
-                   if f["module"] and f["group"] != "core")
+                   if f["crate"] == "bsd" and (f["module"] or f["unsafe"]))
     if stray and not want:
-        print(f"Warning: {len(stray)} non-core module{'s' if len(stray) != 1 else ''} no ROADMAP "
+        print(f"Warning: {len(stray)} file{'s' if len(stray) != 1 else ''} in bsd no ROADMAP "
               f"row names: {', '.join(stray[:10])}{', ...' if len(stray) > 10 else ''}.")
-        print()
+    print()
 
     if want:
         ids = [rid for rid in plan.ids if plan.selected(rid, want)]
@@ -466,65 +492,53 @@ def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
                 root, pin, [by_path[f["path"]] for f in sel if f["path"] in by_path], cache)
             print(f"Files of {want} ({len(sel)}):")
             print()
-            print("| Module | Status | Group | Unsafe | LZ lines | Rust lines | LZ sources |")
+            print("| File | Status | Crate | Unsafe | LZ lines | Rust lines | LZ sources |")
             print("|---|---|---|---:|---:|---:|---|")
-            order = {"legacy": 0, "forbid": 1, "core": 2}
-            for f in sorted(sel, key=lambda f: (order[f["group"]], -f["unsafe"], f["path"])):
+            order = {"bsd": 0, "hal": 1, "kernel": 2, "abi": 3, "boot": 4}
+            for f in sorted(sel, key=lambda f: (order[f["crate"]], -f["unsafe"], f["path"])):
                 srcs = by_path.get(f["path"], {}).get("lz", [])
                 vals = [lz_len.get(p) for p in srcs]
                 lz_n = sum(vals) if vals and all(v is not None for v in vals) else None
                 src_txt = "same path" if srcs == [f["path"]] else (", ".join(srcs) or "—")
-                print(f"| {f['path']} | {f['status'] or '—'} | {f['group']} | {f['unsafe']:,} | "
+                print(f"| {f['path']} | {f['status'] or '—'} | {f['crate']} | {f['unsafe']:,} | "
                       f"{fmt(lz_n)} | {fmt(count_lines(root / f['path'], cache))} | {src_txt} |")
             print()
         else:
-            print(f"No ROADMAP row named {want}, or its scope names no module.")
+            print(f"No ROADMAP row named {want}, or its scope names no file.")
             print()
 
-    mods = [f for f in files if f["module"]]
-    noncore = [f for f in mods if f["group"] != "core"]
-    nforbid = sum(1 for f in noncore if f["group"] == "forbid")
-    pct = f" ({100 * nforbid // len(noncore)}%)" if noncore else ""
-    loose_legacy = own["unassigned"]["legacy_unsafe"]
-    where = sorted({f["subsystem"] for f in files_of["unassigned"]
-                    if f["group"] == "legacy" and f["unsafe"]})
     counts = {s: sum(1 for m in modules if m.get("status", "inherited") == s) for s in STATUSES}
-    print(f"Totals: {len(mods):,} modules, {len(mods) - len(noncore):,} of them core; "
-          f"{nforbid:,} of the {len(noncore):,} non-core forbid{pct}, "
-          f"{len(noncore) - nforbid:,} legacy; legacy unsafe {totals['legacy_unsafe']:,}"
-          + (f" ({loose_legacy:,} in files no row names: {', '.join(where)})"
-             if loose_legacy else "")
-          + f"; core unsafe {totals['core_unsafe']:,}, budget {totals['core_budget']:,}; "
+    print(f"Totals: {sum(crate_files.values()):,} files; bsd {crate_unsafe['bsd']:,} unsafe "
+          f"in {crate_files['bsd']:,} files (must reach 0 files at N9); kernel "
+          f"{crate_unsafe['kernel']:,}; abi {crate_unsafe['abi']:,}; hal {crate_unsafe['hal']:,}; "
           f"lineage.toml: {counts['redesigned']} redesigned, {counts['adapted']} adapted, "
           f"{counts['inherited']} inherited.")
     if base is None or not since:
         print("Pace: n/a: unsafe-budget.toml's [ratchet] records no legacy_baseline and "
               "baseline_date.")
     elif per_day:
-        print(f"Pace: {pace['removed']:,} legacy unsafe removed over {days} active days since "
-              f"{since} (baseline {base:,}): {per_day:,.1f} a day. All the legacy at that pace: "
-              f"~{totals['legacy_unsafe'] / per_day:.1f} d.")
+        print(f"Pace: {pace['removed']:,} unsafe removed over {days} active days since "
+              f"{since} (baseline {base:,}, the v1 legacy count until N2.4's tool): "
+              f"{per_day:,.1f} a day. All of bsd at that pace: "
+              f"~{crate_unsafe['bsd'] / per_day:.1f} d.")
     else:
         print(f"Pace: n/a: {days} active day{'s' if days != 1 else ''} since the baseline "
-              f"({since}, {base:,} legacy unsafe), {pace.get('removed', 0):,} removed; the "
+              f"({since}, {base:,}), {pace.get('removed', 0):,} removed; the "
               f"estimate needs {MIN_PACE_DAYS} active days and {MIN_PACE_REMOVED} unsafe removed.")
     print()
     print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
-          "Modules = the files the forbid ratchet counts (under sys/; crate roots, mod.rs and "
-          "sys/machine, sys/arch/host, sys/stand apart; lineage.toml's extras in). Groups: core = "
-          "listed in unsafe-core.toml; forbid = the module's declaration, or an ancestor's, is "
-          "#[forbid(unsafe_code)]; legacy = neither. A file belongs to the N row whose scope cell "
-          "names its path in backticks (a directory, a file or a glob), the most specific pattern "
-          "winning; a row whose scope is prose resolves nothing; a parent row adds its lettered "
-          "children's. Forbid = forbid / non-core modules (the core is not in the denominator); "
-          "Legacy unsafe = the kernel unsafe of the row's legacy files, mod.rs included: the exit "
-          "criterion's number. A row is complete when Legacy modules and Legacy unsafe are both "
-          "0; a met row may keep legacy modules that a later row's prose claims. Redesigned = "
-          "lineage.toml's redesigned modules, adapted shown apart. The Core line sums "
-          "unsafe-core.toml; its budget is what the row budgets leave it (each row's budget "
-          "minus its legacy). Est. left = Legacy unsafe / the pace, the legacy unsafe removed per "
-          "active day (a day with a commit) since the ratchet's baseline; n/a before 5 active "
-          "days and 100 unsafe removed. It is a linear extrapolation: it measures the past and promises nothing.")
+          "A file's crate comes from its path (docs/ZERO_UNSAFE.md section 0): sys/hal/, "
+          "sys/kernel/, sys/abi/, the boot loaders (sys/stand/, sys/lib/libsa/, outside the "
+          "plan), and bsd for everything else under sys/ (the LZ tree, legacy). A file belongs "
+          "to the N row whose scope cell names its path in backticks (a directory, a file or a "
+          "glob), the most specific pattern winning; a row whose scope is prose resolves "
+          "nothing; a parent row adds its lettered children's. Files in bsd and Unsafe in bsd "
+          "are the exit criterion: a row is complete when both are 0 and no bridge names it in "
+          "`paid_by` (bridges.toml). Moved = the row's files already in hal, kernel or abi. "
+          "Redesigned = lineage.toml's redesigned modules, adapted shown apart. Est. left = "
+          "Unsafe in bsd / the pace, the unsafe removed per active day (a day with a commit) "
+          "since the ratchet's baseline; n/a before 5 active days and 100 unsafe removed. It is "
+          "a linear extrapolation: it measures the past and promises nothing.")
 
 
 def new_tally() -> dict:
