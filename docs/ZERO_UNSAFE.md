@@ -424,3 +424,21 @@ every design that kept `unsafe` inside the kernel:
     recorded as pending in `docs/STATUS.md` and runs once at the N3 close for both milestones.
 
 25. **`abi-check`'s mechanical criteria** (the launching session, 2026-10-16, under the user's standing authority of that day, fixing the numbers decision 21 left open): in `sys/abi/`, kernel code: no `loop`/`while`/`for`; an `if`/`match` only on the identifier `nr` (the syscall number) or on `Ok`/`Err`/`Some`/`None` arms (the conversion's own result); at most one call per function into `kernel::` or through the `&KernelApi` parameter; at most 40 lines per function body; no `static` with interior mutability. A violation fails `just check`. The limits are the planning session's and change only by a decision here.
+
+Taken by the redesigner of N2.4a on 2026-10-16 under the user's standing authority of that
+day ("yap puedes seguir solo? hasta acabar?"):
+
+29. **A kernel without its ABI module still boots** (docs/ARCHITECTURE.md, "abi-openbsd.ko").
+    When the boot loader hands over no `/abi-openbsd.ko`, or the loader refuses it (another
+    machine, another `KernelApi`, a malformed file), the kernel prints one line,
+    `abi-openbsd.ko: not loaded, <why>; every system call takes the legacy path`, and every
+    system call goes to the `Legacy` fallback, which is the path the traps took before N2.4.
+    Reason: the module only translates (decision 21) and every entry is `Legacy` at N2, so
+    nothing userland sees depends on it yet, and a medium made before the module, or one a
+    builder forgot, must not turn into a kernel that cannot run `init(8)`; `just smoke-abi`
+    refuses that line, so a medium that lacks the module is a red smoke, not a silent
+    fallback. To be revisited when the first entry is `Native` (N2.6): from then on a missing
+    module changes what userland sees, and the fallback becomes a panic or stays with a
+    reason here. Also taken: the loader's memory, mapping and hand-over go through the
+    `ModulePlatform` bridge `bsd` implements until `hal` holds the pmap (`bridges.toml`); its
+    three `unsafe` rest on that premise, stated in `sys/hal/module/load.rs`.
