@@ -70,6 +70,9 @@
 //! ## Deviations
 //! - `counters_read` waits for an odd generation with `CPU_BUSY_CYCLE` where the C calls
 //!   `yield()`: the scheduler is not `hal`'s, and an update is a few stores long.
+//! - Without `MULTIPROCESSOR`, `counters_read` copies the one set at `splhigh()` as the C does
+//!   (through the `IntrLevel` bridge; before it is registered there are no interrupts to
+//!   tear the copy).
 //!
 //! ## Redesign
 //! - LZ's `cpumem` is a handle to `ncpusfound` pool or `malloc` allocations, reached by raw
@@ -161,6 +164,12 @@ impl<T> PerCpu<T> {
     }
 }
 
+impl<T: PerCpuInit> Default for PerCpu<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One CPU's counters: the generation number and the `N` counters.
 pub struct CounterWords<const N: usize> {
     /// The generation number: odd during an update (`MULTIPROCESSOR` only).
@@ -195,7 +204,7 @@ impl<const N: usize> Counters<N> {
         let words = self.cpus.get();
         #[cfg(feature = "multiprocessor")]
         {
-            // make the generation number odd
+            // An odd number tells a reader that this copy is being written.
             let g = words.generation.load(Ordering::Relaxed);
             words.generation.store(g.wrapping_add(1), Ordering::Relaxed);
             fence(Ordering::Release); // membar_producer()
@@ -228,6 +237,10 @@ impl<const N: usize> Counters<N> {
     /// `counters_read`: the sum of every CPU's counters, each CPU's copy read whole (retried
     /// while its generation number is odd or moves under the read).
     pub fn read(&self) -> [u64; N] {
+        // Without MULTIPROCESSOR there is no generation: the C copies the one set at splhigh,
+        // so an interrupt that counts cannot tear the copy.
+        #[cfg(not(feature = "multiprocessor"))]
+        let _high = crate::intr::splhigh();
         let mut out = [0u64; N];
         for words in self.cpus.iter() {
             let temp = read_whole(words);
@@ -245,7 +258,7 @@ impl<const N: usize> Counters<N> {
             for c in &words.counters {
                 c.store(0, Ordering::Relaxed);
             }
-            // zero the generation numbers too
+            // The number goes back to 0 with the counters it guards.
             fence(Ordering::Release); // membar_producer()
             words.generation.store(0, Ordering::Relaxed);
         }
@@ -275,7 +288,7 @@ impl<const N: usize> Drop for CountersRef<'_, N> {
         #[cfg(feature = "multiprocessor")]
         {
             fence(Ordering::Release); // membar_producer()
-            // make the generation number even again
+            // Even again: the copy is whole.
             let g = self.words.generation.load(Ordering::Relaxed);
             self.words
                 .generation
@@ -289,26 +302,29 @@ fn ncpus() -> usize {
     bridges::cpu_id().map_or(1, |b| b.ncpus().clamp(1, MAXCPUS))
 }
 
-/// One CPU's counters, read whole: the loop of `counters_read` over one copy.
+/// One CPU's counters, read whole: a snapshot is kept only when the generation number was
+/// even before it and unchanged after it, so no update was under way or happened in between.
 fn read_whole<const N: usize>(words: &CounterWords<N>) -> [u64; N] {
-    let mut temp = [0u64; N];
-    let mut enter = words.generation.load(Ordering::Acquire);
     loop {
-        // the generation number is odd during an update
-        while enter & 1 != 0 {
-            core::hint::spin_loop();
-            enter = words.generation.load(Ordering::Acquire);
-        }
+        let before = stable_generation(words);
         fence(Ordering::Acquire); // membar_consumer()
-        for (t, c) in temp.iter_mut().zip(&words.counters) {
-            *t = c.load(Ordering::Relaxed);
-        }
+        let snapshot: [u64; N] =
+            core::array::from_fn(|i| words.counters[i].load(Ordering::Relaxed));
         fence(Ordering::Acquire); // membar_consumer()
-        let leave = words.generation.load(Ordering::Relaxed);
-        if enter == leave {
-            return temp;
+        if words.generation.load(Ordering::Relaxed) == before {
+            return snapshot;
         }
-        enter = leave;
+    }
+}
+
+/// The copy's generation number once no update is under way (an even number).
+fn stable_generation<const N: usize>(words: &CounterWords<N>) -> u64 {
+    loop {
+        let g = words.generation.load(Ordering::Acquire);
+        if g & 1 == 0 {
+            return g;
+        }
+        core::hint::spin_loop();
     }
 }
 /* </CODE> */

@@ -95,17 +95,18 @@
 //! retrying after every wakeup. A reader adds itself to a word with no writer, but only while
 //! no writer waits (writers are not starved by a stream of readers), else counts itself in
 //! `rwl_readers` and sleeps on that address at `PLOCK`. `RW_INTR` adds `PCATCH`: a signal ends
-//! the wait with the sleep's error (`EINTR`, `ERESTART`). The last one out wakes one waiting
-//! writer, or else every waiting reader. Not recursive: a writer entering again, or reading
+//! the wait with the sleep's error (`EINTR`, `ERESTART`). The holder that leaves the word
+//! free wakes one waiting writer, or else every waiting reader. Not recursive: a writer
+//! entering again, or reading
 //! what it writes, panics ("enter write deadlock", "enter read deadlock"). A writer may
 //! downgrade (waking the readers when no writer waits) and the only reader may try to
 //! upgrade (`EBUSY` otherwise). `rwsleep(9)` releases the lock for the sleep and takes it
 //! again, in the same mode, before returning, whatever the sleep returned.
 //!
 //! The sleep queues and `curproc` arrive through the `Sleep` bridge (`sleep.rs`). Before it is
-//! registered nothing else runs: a contended lock spins instead of sleeping (which on the one
-//! boot CPU never happens but in a bug), and a guard's sleep releases the lock, lets the CPU
-//! breathe and takes it back.
+//! registered nothing else runs, so a lock found held then could never be released: it is
+//! `panic(9)` naming the lock (the reviewer's finding 7; spinning would hang the boot
+//! silently). A guard's sleep then releases the lock, lets the CPU breathe and takes it back.
 //!
 //! ## Deviations
 //! - `WITNESS`, `RWDIAG` and the `dt(4)` tracepoints (`TRACEINDEX`, `rwl_traceidx`) are not
@@ -113,6 +114,13 @@
 //! - `rw_enter` with `RW_DOWNGRADE`/`RW_UPGRADE` are [`WriteGuard::downgrade`] and
 //!   [`ReadGuard::try_upgrade`]; `PNORELOCK` does not exist for a guard (the guard would
 //!   outlive the lock it proves); the `rw_assert_*` checks are the guards' types.
+//! - `rwsleep_nsec`'s assertion that a sleep on `nowake` has `PCATCH` or a timeout has nothing
+//!   to check here: `hal` offers no `nowake` channel (a guard sleeps on a channel its caller
+//!   names, which something wakes).
+//! - The structure is not the C's: one `wait` serves writers and readers (counted in their
+//!   counter, asleep on its address, retrying after each wakeup), and the tries at the word are
+//!   small functions. The C is the specification of the behaviour, not of the shape.
+
 //!
 //! ## Redesign
 //! - LZ's `Rwlock` is the C's `struct rwlock` with free functions (`rw_enter_write(&l)`, the
@@ -190,7 +198,7 @@ impl RawRwlock {
         }
     }
 
-    /// `rw_cas`: the compare-and-swap of the owner word; the value found.
+    /// `rw_cas`: one compare-and-swap of the owner word; the value it found.
     fn cas(&self, expect: usize, new: usize) -> usize {
         match self
             .owner
@@ -209,72 +217,108 @@ impl RawRwlock {
         ))
     }
 
+    /// A writer's one try: the free word becomes `me`.
+    fn try_write(&self, me: usize) -> bool {
+        self.cas(0, me) == 0
+    }
+
+    /// A reader's try (`rw_read_incr`): one more reader on a word with no writer, starting from
+    /// the word last seen and following it while other readers move it; `false` as soon as a
+    /// writer holds it.
+    fn try_read_from(&self, seen: usize) -> bool {
+        let mut seen = seen;
+        loop {
+            if seen & RWLOCK_WRLOCK != 0 {
+                return false;
+            }
+            let found = self.cas(seen, seen + RWLOCK_READ_INCR);
+            if found == seen {
+                return true;
+            }
+            seen = found;
+        }
+    }
+
+    /// Under `MULTIPROCESSOR`, a writer that does not hold the kernel lock polls the word
+    /// `RW_SPINS` times before it sleeps, in case the holder is a writer about to leave; one
+    /// that holds it gives the CPU up at once, so the CPUs waiting for the kernel lock run.
+    #[cfg(feature = "multiprocessor")]
+    fn spin_for_writer(&self, me: usize) -> bool {
+        if sleep::kernel_lock_held() {
+            return false;
+        }
+        crate::cpu::spinning(1);
+        let won = (0..RW_SPINS).any(|_| {
+            core::hint::spin_loop(); // CPU_BUSY_CYCLE()
+            self.owner.load(Ordering::Relaxed) == 0 && self.try_write(me)
+        });
+        crate::cpu::spinning(-1);
+        won
+    }
+
+    /// The wait shared by writers and readers: counted in `counter` (`rwl_waiters` or
+    /// `rwl_readers`), asleep on its address at `prio` while `busy()` says the lock is still
+    /// out of reach (checked once queued, so a release in between is not missed), trying
+    /// `take()` after each wakeup. Under `RW_INTR` a signal ends the wait with its error.
+    /// Before the sleep queues are registered nothing could ever release the lock: that is a
+    /// kernel bug, `panic(9)` naming the lock.
+    fn wait(
+        &self,
+        counter: &AtomicU32,
+        prio: i32,
+        flags: i32,
+        busy: impl Fn() -> bool,
+        take: impl Fn() -> bool,
+    ) -> Result<(), Errno> {
+        let Some(b) = bridges::sleep() else {
+            self.panic(format_args!("contended before the sleep queues exist"));
+        };
+        let prio = if flags & RW_INTR != 0 {
+            prio | PCATCH
+        } else {
+            prio
+        };
+        counter.fetch_add(1, Ordering::SeqCst);
+        let outcome = loop {
+            b.sleep_setup(chan(ptr::from_ref(counter)), prio, self.name);
+            let slept = b.sleep_finish(INFSLP, busy());
+            if flags & RW_INTR != 0
+                && let Err(e) = slept
+            {
+                break Err(e);
+            }
+            if take() {
+                break Ok(());
+            }
+        };
+        counter.fetch_sub(1, Ordering::SeqCst);
+        outcome
+    }
+
     /// `rw_do_enter_write`: the word stored (this process as a writer).
     fn enter_write(&self, flags: i32) -> Result<usize, Errno> {
         let me = rw_self();
-        let owner = self.cas(0, me);
-        if owner == 0 {
-            // wow, we won. so easy
+        let seen = self.cas(0, me);
+        if seen == 0 {
             return Ok(me);
         }
-        if owner == me {
+        if seen == me {
             self.panic(format_args!("enter write deadlock"));
         }
-
-        // If the process holds the kernel lock, give the CPU up as soon as possible so the
-        // others waiting for the kernel lock progress: no spinning then.
         #[cfg(feature = "multiprocessor")]
-        if !sleep::kernel_lock_held() {
-            crate::cpu::spinning(1);
-            for _ in 0..RW_SPINS {
-                core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-                if self.owner.load(Ordering::Relaxed) != 0 {
-                    continue;
-                }
-                if self.cas(0, me) == 0 {
-                    crate::cpu::spinning(-1);
-                    // ok, we won now.
-                    return Ok(me);
-                }
-            }
-            crate::cpu::spinning(-1);
+        if self.spin_for_writer(me) {
+            return Ok(me);
         }
-
         if flags & RW_NOSLEEP != 0 {
             return Err(Errno::EBUSY);
         }
-
-        let Some(b) = bridges::sleep() else {
-            // Nothing else runs before the sleep queues are registered.
-            loop {
-                core::hint::spin_loop();
-                if self.owner.load(Ordering::Relaxed) == 0 && self.cas(0, me) == 0 {
-                    return Ok(me);
-                }
-            }
-        };
-
-        let mut prio = PLOCK - 4;
-        if flags & RW_INTR != 0 {
-            prio |= PCATCH;
-        }
-
-        self.waiters.fetch_add(1, Ordering::SeqCst);
-        loop {
-            b.sleep_setup(chan(&raw const self.waiters), prio, self.name);
-            let owner = self.owner.load(Ordering::SeqCst);
-            let error = b.sleep_finish(INFSLP, owner != 0);
-            if flags & RW_INTR != 0
-                && let Err(e) = error
-            {
-                self.waiters.fetch_sub(1, Ordering::SeqCst);
-                return Err(e);
-            }
-            if self.cas(0, me) == 0 {
-                break;
-            }
-        }
-        self.waiters.fetch_sub(1, Ordering::SeqCst);
+        self.wait(
+            &self.waiters,
+            PLOCK - 4,
+            flags,
+            || self.owner.load(Ordering::SeqCst) != 0,
+            || self.try_write(me),
+        )?;
         Ok(me)
     }
 
@@ -286,77 +330,33 @@ impl RawRwlock {
         }
     }
 
-    /// `rw_read_incr`: one more reader on a word with no writer, starting from the guess
-    /// `owner`; `false` when a writer got in first.
-    fn read_incr(&self, owner: usize) -> bool {
-        let mut owner = owner;
-        loop {
-            let found = self.cas(owner, owner + RWLOCK_READ_INCR);
-            if found == owner {
-                return true;
-            }
-            owner = found;
-            if owner & RWLOCK_WRLOCK != 0 {
-                return false;
-            }
-        }
-    }
-
-    /// `rw_do_enter_read`.
+    /// `rw_do_enter_read`. A reader joins other readers only while no writer waits, so a
+    /// stream of readers cannot starve a writer.
     fn enter_read(&self, flags: i32) -> Result<(), Errno> {
-        let owner = self.cas(0, RWLOCK_READ_INCR);
-        if owner == 0 {
-            // ermagerd, we won!
+        let seen = self.cas(0, RWLOCK_READ_INCR);
+        if seen == 0 {
             return Ok(());
         }
-
-        if owner & RWLOCK_WRLOCK != 0 {
-            if owner == rw_self() {
+        if seen & RWLOCK_WRLOCK != 0 {
+            if seen == rw_self() {
                 self.panic(format_args!("enter read deadlock"));
             }
-        } else if self.waiters.load(Ordering::SeqCst) == 0 && self.read_incr(owner) {
-            // nailed it
+        } else if self.waiters.load(Ordering::SeqCst) == 0 && self.try_read_from(seen) {
             return Ok(());
         }
-
         if flags & RW_NOSLEEP != 0 {
             return Err(Errno::EBUSY);
         }
-
-        let Some(b) = bridges::sleep() else {
-            // Nothing else runs before the sleep queues are registered.
-            loop {
-                core::hint::spin_loop();
-                let owner = self.owner.load(Ordering::Relaxed);
-                if owner & RWLOCK_WRLOCK == 0 && self.read_incr(owner) {
-                    return Ok(());
-                }
-            }
-        };
-
-        let mut prio = PLOCK;
-        if flags & RW_INTR != 0 {
-            prio |= PCATCH;
-        }
-
-        self.readers.fetch_add(1, Ordering::SeqCst);
-        loop {
-            b.sleep_setup(chan(&raw const self.readers), prio, self.name);
-            let busy = self.waiters.load(Ordering::SeqCst) > 0
-                || self.owner.load(Ordering::SeqCst) & RWLOCK_WRLOCK != 0;
-            let error = b.sleep_finish(INFSLP, busy);
-            if flags & RW_INTR != 0
-                && let Err(e) = error
-            {
-                self.readers.fetch_sub(1, Ordering::SeqCst);
-                return Err(e);
-            }
-            if self.read_incr(0) {
-                break;
-            }
-        }
-        self.readers.fetch_sub(1, Ordering::SeqCst);
-        Ok(())
+        self.wait(
+            &self.readers,
+            PLOCK,
+            flags,
+            || {
+                self.waiters.load(Ordering::SeqCst) > 0
+                    || self.owner.load(Ordering::SeqCst) & RWLOCK_WRLOCK != 0
+            },
+            || self.try_read_from(0),
+        )
     }
 
     /// `rw_enter_read` without flags, which cannot fail.
@@ -366,44 +366,43 @@ impl RawRwlock {
         }
     }
 
-    /// `rw_exit_read` (`rw_do_exit_read` from the guess of one reader).
+    /// `rw_exit_read`: one reader fewer; the one that leaves the word free wakes the next.
     fn exit_read(&self) {
-        let mut owner = RWLOCK_READ_INCR;
-        let left = loop {
-            let decr = owner.wrapping_sub(RWLOCK_READ_INCR);
-            let found = self.cas(owner, decr);
-            if found == owner {
-                break decr;
-            }
-            if found & RWLOCK_WRLOCK != 0 {
+        let mut seen = RWLOCK_READ_INCR;
+        loop {
+            if seen & RWLOCK_WRLOCK != 0 {
                 self.panic(format_args!(
-                    "exit read on write locked lock (owner {found:#x})"
+                    "exit read on write locked lock (owner {seen:#x})"
                 ));
             }
-            if found == 0 {
+            if seen == 0 {
                 self.panic(format_args!("exit read on unlocked lock"));
             }
-            owner = found;
-        };
-        if left == 0 {
-            // last one out
-            self.exited();
+            let found = self.cas(seen, seen - RWLOCK_READ_INCR);
+            if found == seen {
+                if seen == RWLOCK_READ_INCR {
+                    self.wake_next();
+                }
+                return;
+            }
+            seen = found;
         }
     }
 
     /// `rw_exit_write`, for the writer that stored `me`.
     fn exit_write(&self, me: usize) {
-        let owner = self.cas(me, 0);
-        if owner != me {
+        let found = self.cas(me, 0);
+        if found != me {
             self.panic(format_args!(
-                "exit write when lock not held (owner {owner:#x}, self {me:#x})"
+                "exit write when lock not held (owner {found:#x}, self {me:#x})"
             ));
         }
-        self.exited();
+        self.wake_next();
     }
 
-    /// `rw_exited`: wakes one waiting writer, or else every waiting reader.
-    fn exited(&self) {
+    /// `rw_exited`: a free word goes to one waiting writer if there is one, else to every
+    /// waiting reader.
+    fn wake_next(&self) {
         if self.waiters.load(Ordering::SeqCst) > 0 {
             sleep::wakeup_one(&raw const self.waiters);
         } else if self.readers.load(Ordering::SeqCst) > 0 {
@@ -411,12 +410,13 @@ impl RawRwlock {
         }
     }
 
-    /// `rw_downgrade`, for the writer that stored `me`.
+    /// `rw_downgrade`, for the writer that stored `me`: the word becomes one reader, and the
+    /// readers waiting join it unless a writer waits too.
     fn downgrade(&self, me: usize) {
-        let owner = self.cas(me, RWLOCK_READ_INCR);
-        if owner != me {
+        let found = self.cas(me, RWLOCK_READ_INCR);
+        if found != me {
             self.panic(format_args!(
-                "downgrade when lock not held (owner {owner:#x}, self {me:#x})"
+                "downgrade when lock not held (owner {found:#x}, self {me:#x})"
             ));
         }
         if self.waiters.load(Ordering::SeqCst) == 0 && self.readers.load(Ordering::SeqCst) > 0 {
@@ -428,16 +428,16 @@ impl RawRwlock {
     /// readers hold it.
     fn upgrade(&self) -> Result<usize, Errno> {
         let me = rw_self();
-        let owner = self.cas(RWLOCK_READ_INCR, me);
-        if owner == RWLOCK_READ_INCR {
+        let found = self.cas(RWLOCK_READ_INCR, me);
+        if found == RWLOCK_READ_INCR {
             return Ok(me);
         }
-        if owner == 0 {
+        if found == 0 {
             self.panic(format_args!("upgrade on unowned lock"));
         }
-        if owner & RWLOCK_WRLOCK != 0 {
+        if found & RWLOCK_WRLOCK != 0 {
             self.panic(format_args!(
-                "upgrade on write locked lock(owner {owner:#x}, self {me:#x})"
+                "upgrade on write locked lock(owner {found:#x}, self {me:#x})"
             ));
         }
         Err(Errno::EBUSY)
@@ -446,16 +446,12 @@ impl RawRwlock {
     /// `rw_status`.
     fn status(&self) -> i32 {
         let owner = self.owner.load(Ordering::SeqCst);
-        if owner & RWLOCK_WRLOCK != 0 {
-            if owner == rw_self() {
-                return RW_WRITE;
-            }
-            return RW_WRITE_OTHER;
+        match owner {
+            0 => 0,
+            w if w & RWLOCK_WRLOCK == 0 => RW_READ,
+            w if w == rw_self() => RW_WRITE,
+            _ => RW_WRITE_OTHER,
         }
-        if owner != 0 {
-            return RW_READ;
-        }
-        0
     }
 
     /// The `rwsleep_nsec` checks: the priority bits and a channel that is not the lock.
@@ -587,14 +583,16 @@ impl<'a, T> WriteGuard<'a, T> {
         raw.check_sleep(ident, prio);
         let result = match bridges::sleep() {
             Some(b) => {
+                // Queued before the lock is released, so the wakeup that follows a change
+                // under the lock cannot be missed; released before sleeping, so a stop
+                // signal taken while asleep does not hold it.
                 b.sleep_setup(chan(ident), prio, wmesg);
                 raw.exit_write(self.me);
-                // signal may stop the process, release rwlock before that
                 b.sleep_finish(nsecs, true)
             }
             None => {
-                // Nothing else runs before the sleep queues are registered: let the CPU
-                // breathe, as the C's cold `tsleep` does.
+                // No sleep queues yet, so no one to wait for: release, let the CPU breathe
+                // (the C's `tsleep` while `cold`), take the lock back.
                 raw.exit_write(self.me);
                 core::hint::spin_loop();
                 Ok(())

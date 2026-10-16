@@ -85,7 +85,8 @@
 //! `refcnt_shared` are snapshots.
 //!
 //! The finalizer's sleep goes through the `Sleep` bridge (`sleep.rs`); before it is
-//! registered nothing else runs to drop a reference, and the finalizer spins instead.
+//! registered nothing else runs that could drop a reference, so a finalizer that finds other
+//! references then would wait for ever: it panics naming its wait message instead.
 //!
 //! ## Deviations
 //! - `r_traceidx` and its `dt(4)` tracepoints are not configured (`refcnt_init_trace` is
@@ -162,20 +163,22 @@ impl Refcnt {
         if refs == u32::MAX {
             hal_panic(format_args!("refcnt_finalize: count was 0"));
         }
-        while refs != 0 {
-            match bridges::sleep() {
-                Some(b) => {
-                    b.sleep_setup(chan(core::ptr::from_ref(self)), PWAIT, wmesg);
-                    refs = self.refs.load(Ordering::Relaxed);
-                    let _ = b.sleep_finish(INFSLP, refs != 0);
-                }
-                None => {
-                    core::hint::spin_loop();
-                    refs = self.refs.load(Ordering::Relaxed);
-                }
+        if refs != 0 {
+            let Some(b) = bridges::sleep() else {
+                hal_panic(format_args!(
+                    "refcnt_finalize: {wmesg}: {refs} references left before the sleep queues exist"
+                ));
+            };
+            // Go on the queue first, then look: a last `rele_wake` between the two finds us
+            // queued, so its wakeup is not lost.
+            while refs != 0 {
+                b.sleep_setup(chan(core::ptr::from_ref(self)), PWAIT, wmesg);
+                refs = self.refs.load(Ordering::Relaxed);
+                let _ = b.sleep_finish(INFSLP, refs != 0);
             }
         }
-        // Order subsequent loads and stores after the refs == 0 load.
+        // What the caller does with the object from here must not move before the load that
+        // saw the count at 0.
         fence(Ordering::SeqCst); // membar_sync()
     }
 
