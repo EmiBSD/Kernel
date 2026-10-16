@@ -493,5 +493,19 @@ Taken by the user on 2026-10-16 ("vamos por la recta, lo barato me sale caro sie
     no I/O-lock primitive is needed.
 12. **`pipe_state` and `peer_alive`** are atomics written only under the pair's write guard, so
     `kern_sysctl` keeps the C's unlocked read; a race the C has, kept on purpose and named here.
-13. **sigio and klist need no primitive** for pipe: their APIs are safe; the pipe's klists carry
-    no `kl_ops` and every call is the `_locked` form under the guard. Five items became three.
+13. **sigio and klist need no primitive** for pipe: their APIs are safe. After its slice the
+    pipe's klists lock through `KlistLock::Kernel` semantics replaced by the pair's guard: every
+    call is the `_locked` form under it (today they use the rwlock klistops, as the C). Five
+    items became three.
+14. **`FileData`** (2026-10-16, from the `f_data` survey): `File.f_data` is an `OnceCell<enum
+    FileData { None, Vnode, Socket, Pipe, Kqueue }>` whose payloads are the handles the owners
+    hold today; `fo_close` receives it by value from `fdrop`, the only taker (one `unsafe` there,
+    on the invariant `pool_put` already rests on). `f_cred` is an owned counted `CredRef`
+    (`kern_prot.rs`, the second `[[seam]]`, paid by N4). No cast is moved: the five are deleted.
+15. **The knote's hook** is `OnceCell<Hook>`, `Borrowed(&'static dyn Any)` or `Owned(Box<dyn
+    Any>)` (the timer), read by `downcast_ref`: typed at run time, no `unsafe` per filter. The
+    klist's lock is `enum KlistLock { Kernel, Mutex(&'static Mutex), Rwlock(&'static Rwlock) }`;
+    `Klistops` and the three `unsafe fn klist_init*` go. A filter with no `&'static` object in
+    hand stops the work; no cast is added for it.
+16. **`[[seam]]` is tooling first**: `lz check`, `lz status` and `unsafe-report` learn the table
+    before the first seam lands.
