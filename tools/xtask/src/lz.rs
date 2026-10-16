@@ -425,6 +425,22 @@ fn rel_of(root: &Path, f: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// The LZ path an inherited or adapted module of the native tree derives from. A module that
+/// moved into a crate at N2 (`hal`, `kernel`) keeps the LZ file it came from at its old path;
+/// every other module has the same path in both trees.
+fn lz_home(rust: &str) -> String {
+    const MOVED: [(&str, &str); 2] = [
+        ("sys/hal/arch/", "sys/arch/"),
+        ("sys/kernel/crypto/", "sys/crypto/"),
+    ];
+    for (native, lz) in MOVED {
+        if let Some(rest) = rust.strip_prefix(native) {
+            return format!("{lz}{rest}");
+        }
+    }
+    rust.to_string()
+}
+
 fn is_hex12(s: &str) -> bool {
     s.len() == 12 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -798,6 +814,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
 
     // LZ coverage: every LZ file at the pin is derived from or dropped.
     let lz_files: HashSet<String> = lz.rs_files()?.into_iter().collect();
+    let extra_homes: Vec<String> = lineage.extras.iter().map(|x| lz_home(&x.rust)).collect();
     let mut derived: HashSet<&str> = HashSet::new();
     for m in &lineage.modules {
         for l in &m.lz {
@@ -806,8 +823,8 @@ pub(crate) fn check(root: &Path) -> Result<()> {
     }
     // A project helper of the same path in LZ is derived by the native [[extra]] (N0 carried
     // them over); a dropped LZ file needs its reason.
-    for x in &lineage.extras {
-        derived.insert(x.rust.as_str());
+    for h in &extra_homes {
+        derived.insert(h.as_str());
     }
     let dropped: HashSet<&str> = lineage.dropped.iter().map(|d| d.lz.as_str()).collect();
     for d in &lineage.dropped {
@@ -862,8 +879,9 @@ pub(crate) fn check(root: &Path) -> Result<()> {
     for m in &lineage.modules {
         let rust = &m.rust;
         let tag = format!("[[module]] rust = \"{rust}\"");
+        let home = lz_home(rust);
         let at = synced
-            .get(rust.as_str())
+            .get(home.as_str())
             .map(String::as_str)
             .unwrap_or(lz.pin.as_str());
         if !rust.starts_with("sys/") || !rust.ends_with(".rs") {
@@ -891,7 +909,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         match m.status {
             Status::Inherited => {
                 n_inherited += 1;
-                if m.lz.len() != 1 || m.lz[0] != *rust {
+                if m.lz.len() != 1 || m.lz[0] != home {
                     errors.push(format!(
                         "{tag}: inherited modules derive from the LZ file of the same path only"
                     ));
@@ -902,7 +920,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
                         "{tag}: inherited modules have no [[module.fn]] rows"
                     ));
                 }
-                let theirs = lz.show_at(at, rust).unwrap_or_default();
+                let theirs = lz.show_at(at, &home).unwrap_or_default();
                 if comparable(&src) != comparable(&theirs) {
                     errors.push(format!(
                         "{tag}: differs from LZ at {}; set status = \"redesigned\" in the commit that changes it",
@@ -927,12 +945,12 @@ pub(crate) fn check(root: &Path) -> Result<()> {
                 if !m.fns.is_empty() {
                     errors.push(format!("{tag}: adapted modules have no [[module.fn]] rows (nothing of their own changed)"));
                 }
-                if m.lz.len() != 1 || m.lz[0] != *rust {
+                if m.lz.len() != 1 || m.lz[0] != home {
                     errors.push(format!(
                         "{tag}: adapted modules derive from the LZ file of the same path only"
                     ));
                 } else {
-                    let theirs = lz.show_at(at, rust).unwrap_or_default();
+                    let theirs = lz.show_at(at, &home).unwrap_or_default();
                     if comparable(&src) == comparable(&theirs) {
                         errors.push(format!(
                             "{tag}: identical to LZ at {}; an unchanged module is `inherited`",
@@ -1034,7 +1052,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         .filter(|m| m.status == Status::Redesigned)
     {
         let at = synced
-            .get(m.rust.as_str())
+            .get(lz_home(&m.rust).as_str())
             .map(String::as_str)
             .unwrap_or(lz.pin.as_str());
         for l in &m.lz {
@@ -1153,7 +1171,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
     let n_synced = lineage
         .modules
         .iter()
-        .filter(|m| synced.contains_key(m.rust.as_str()))
+        .filter(|m| synced.contains_key(lz_home(&m.rust).as_str()))
         .count();
     println!(
         "lz check: {nmod} modules ({n_inherited} inherited, {n_adapted} adapted, {nred} redesigned), {n_rows} fn rows, {nx} extras, {nd} dropped; author's block in {n_author} of {nfiles} .rs; pin {}, {n_synced} synced ahead of it: {nerr} error(s), {nwarn} warning(s)",
@@ -1796,6 +1814,16 @@ mod tests {
             security: false,
             method: String::new(),
         }
+    }
+
+    #[test]
+    fn lz_home_maps_the_moved_trees_back() {
+        assert_eq!(
+            lz_home("sys/hal/arch/amd64/amd64/pmap.rs"),
+            "sys/arch/amd64/amd64/pmap.rs"
+        );
+        assert_eq!(lz_home("sys/kernel/crypto/sha2.rs"), "sys/crypto/sha2.rs");
+        assert_eq!(lz_home("sys/kern/kern_sched.rs"), "sys/kern/kern_sched.rs");
     }
 
     #[test]
