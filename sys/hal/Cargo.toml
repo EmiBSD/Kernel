@@ -10,6 +10,11 @@ publish = false
 [lib]
 path = "lib.rs"
 
+[features]
+# The runtime of the ABI module abi-openbsd.ko (its panic handler, sys/hal/module/rt.rs):
+# set by sys/abi/ko alone, never in the kernel's build, which has its own panic handler.
+module-rt = []
+
 [dependencies]
 libkern.workspace = true
 

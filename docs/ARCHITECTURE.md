@@ -170,6 +170,15 @@ Per-target rustflags in `.cargo/config.toml`: `relocation-model=static` (non-PIE
 and `force-frame-pointers=yes` (backtraces in `panic`). No `[build] target`, so host builds stay
 the default and `cargo test` just works.
 
+`abi-openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
+`RUSTFLAGS="-C relocation-model=pie"` (replacing the kernel's `static`), its own target
+directory (`target/abi`), `CARGO_PROFILE_DEV_STRIP=debuginfo` (boot(8) reads the whole file
+into efiboot's 1 MiB heap), and `sys/abi/ko/abi.ld`: a static PIE at 0 with `-pie
+--no-dynamic-linker -z notext -Bsymbolic --pack-dyn-relocs=none -z norelro`, three
+page-aligned `PT_LOAD`s (text R X; rodata R with the module header first at the ELF entry,
+the GOT and `.data.rel.ro`, relocated by the loader before it is mapped; data R W) and no
+import (section "abi-openbsd.ko").
+
 ## Cargo features ↔ `option(4)`
 
 | Feature | OpenBSD | Effect |

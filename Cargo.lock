@@ -11,6 +11,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "abi-openbsd"
+version = "0.0.1"
+dependencies = [
+ "abi",
+ "hal",
+ "kernel",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

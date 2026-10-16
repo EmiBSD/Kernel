@@ -68,7 +68,21 @@ build-init-amd64:
 build-init-arm64:
     cargo build -p init --target {{arm64}}
 
-build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 build-mp efiboot-amd64 efiboot-arm64
+# N2.4: abi-openbsd.ko (sys/abi/ko), the ABI module the boot loaders hand the kernel
+# (decision 22): an ELF linked position-independent at 0 (relocation-model=pie, as
+# efiboot), without debug information (boot(8) reads the whole file into efiboot's 1 MiB
+# heap), in a target directory of its own so the kernel's builds are not redone:
+# target/abi/<target>/debug/abi-openbsd, which `cargo xtask image` and the media put on the
+# boot medium as /abi-openbsd.ko. docs/ARCHITECTURE.md, "abi-openbsd.ko".
+build-abi-amd64:
+    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi-openbsd --target {{amd64}} --target-dir target/abi
+
+build-abi-arm64:
+    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi-openbsd --target {{arm64}} --target-dir target/abi
+
+build-abi: build-abi-amd64 build-abi-arm64
+
+build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 build-mp efiboot-amd64 efiboot-arm64 build-abi
 
 # The MULTIPROCESSOR kernels (option MULTIPROCESSOR, M11a), so the MP paths build on every
 # commit; `smoke` boots them (with `--features qemu`) since M11e.
@@ -92,10 +106,10 @@ efiboot-arm64:
 
 # --- boot images and QEMU ---------------------------------------------------
 
-image-amd64: (build-amd64 "--features qemu") build-init-amd64
+image-amd64: (build-amd64 "--features qemu") build-init-amd64 build-abi-amd64
     cargo xtask image --arch amd64 --kernel target/{{amd64}}/debug/bsd
 
-image-arm64: (build-arm64 "--features qemu") build-init-arm64
+image-arm64: (build-arm64 "--features qemu") build-init-arm64 build-abi-arm64
     cargo xtask image --arch arm64 --kernel target/{{arm64}}/debug/bsd
 
 run-amd64: image-amd64
@@ -129,7 +143,7 @@ smoke: smoke-build
 
 # What the smoke recipes boot: the MULTIPROCESSOR kernels with `--features qemu`, the init
 # stand-ins, `smoke-up`'s uniprocessor kernels (`build-up`) and `smoke-cd80`'s cd80.iso (M16g).
-smoke-build: build-up (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64 build-bsdrd cd-iso-amd64
+smoke-build: build-up (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") build-init-amd64 build-init-arm64 build-abi efiboot-amd64 efiboot-arm64 build-bsdrd cd-iso-amd64
 
 # `smoke-boot`, the first of `smokes` (it was `smoke`'s own body until the smokes ran in
 # parallel). Boots per arch, every one with a virtio network card on QEMU's user network: a
@@ -3232,6 +3246,9 @@ clippy:
     cargo clippy -p libsa -p boot -p efi --target {{arm64}} -- -D warnings
     cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
     cargo clippy -p efiboot-arm64 --target {{arm64}} -- -D warnings
+    cargo clippy -p hal -p kernel -p abi -- -D warnings
+    cargo clippy -p abi-openbsd --target {{amd64}} -- -D warnings
+    cargo clippy -p abi-openbsd --target {{arm64}} -- -D warnings
 
 fmt:
     cargo fmt --all -- --check

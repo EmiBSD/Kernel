@@ -21,12 +21,16 @@
 //! needs to load it and to let it register itself.
 //!
 //! - `once`: the init-once cell the registrations are kept in.
+//! - `rt`: the module's own runtime, its panic handler (feature `module-rt`, set by
+//!   `sys/abi/ko` alone).
 //!
 //! The module's header, which its linker script puts at the ELF entry address, is read
 //! here as bytes before its type is known: `kernel::api::AbiModuleHeader` is laid out as
 //! the offsets below say, and a compile-time check there keeps the two in step.
 
 pub mod once;
+#[forbid(unsafe_code)]
+mod rt;
 
 /// The module's file name on the boot medium and in the boot line.
 pub const MODULE_NAME: &str = "abi-openbsd.ko";
