@@ -1188,8 +1188,11 @@ fn redesigned_not_forbid(
 }
 
 /// The files where the adapter macros are defined, with the macros whose bodies may write
-/// `impl Adapter`.
-const ADAPTER_MACROS: [(&str, &str); 2] = [
+/// `impl Adapter`. The lists and trees move into the hal crate at N2.3 (`sys/hal/list.rs`,
+/// `sys/hal/tree.rs`); the old paths stay listed while the tests below name them.
+const ADAPTER_MACROS: [(&str, &str); 4] = [
+    ("sys/hal/list.rs", "queue_adapter"),
+    ("sys/hal/tree.rs", "tree_adapter"),
     ("sys/sys/queue.rs", "queue_adapter"),
     ("sys/sys/tree.rs", "tree_adapter"),
 ];
