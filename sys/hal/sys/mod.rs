@@ -48,8 +48,6 @@ pub mod softintr;
 #[forbid(unsafe_code)]
 pub mod syscall;
 #[forbid(unsafe_code)]
-pub mod types;
-#[forbid(unsafe_code)]
 pub mod unistd;
 #[forbid(unsafe_code)]
 pub mod uuid;

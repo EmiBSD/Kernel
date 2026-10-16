@@ -6329,8 +6329,7 @@ lz = ["sys/sys/ttydefaults.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/hal/sys/types.rs"
-crate = "hal"
+rust = "sys/sys/types.rs"
 lz = ["sys/sys/types.rs"]
 status = "inherited"
 
