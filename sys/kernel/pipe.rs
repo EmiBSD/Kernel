@@ -551,15 +551,19 @@ impl<G: PipeGlue> Default for Pipes<G> {
 }
 
 /// `bsd`'s part of one pipe (`sys/kern/pipe_glue.rs`): its klist and its sigio registration,
-/// built by `Default` as `pipe_pair_create` and `pipe_create` set them up (an empty klist,
-/// `sigio_init`). The kernel calls every method with the pair's write guard held, so one that
+/// made by [`PipeGlue::new`] as `pipe_pair_create` and `pipe_create` set them up (an empty
+/// klist, `sigio_init`), and given back by its drop. The kernel calls every method with the pair's write guard held, so one that
 /// reaches a filter finds the lock taken, as the C's `knote_locked` does; but
 /// [`PipeGlue::sigio_setown`] and [`PipeGlue::sigio_getown`] (the C's `[S]`, `sigio_lock`),
 /// and [`PipeGlue::klist_free`], called by the pair's last drop, when nothing reaches it.
 /// A bridge (`bridges.toml`): one call into `bsd` per method, no logic.
-pub trait PipeGlue: Default + Send + Sync + 'static {
+pub trait PipeGlue: Send + Sync + Sized + 'static {
     /// `struct knote`, which the kernel only passes through.
     type Knote: ?Sized;
+
+    /// One pipe's klist and sigio registration, set up; `ENOMEM` when they cannot be had
+    /// (`pipe(2)` then fails as for a pool item that cannot be had).
+    fn new() -> Result<Self, Errno>;
 
     /// `getnanotime(9)`.
     fn nanotime() -> Timespec;
@@ -658,11 +662,12 @@ impl<G: PipeGlue> Pipes<G> {
     }
 
     /// `pipe_pair_create()`: a new pair with both buffers, as its two ends (`pp_rpipe`,
-    /// `pp_wpipe`); `ENOMEM` when the pool or a buffer cannot be had.
+    /// `pp_wpipe`); `ENOMEM` when the pool, the glue or a buffer cannot be had.
     pub fn create(&'static self) -> Result<(PipeEnd<G>, PipeEnd<G>), Errno> {
+        let glue = [G::new()?, G::new()?];
         let pair = self
             .pool
-            .get_shared(PR_WAITOK, || PipePair::new(self))
+            .get_shared(PR_WAITOK, || PipePair::new(self, glue))
             .ok_or(Errno::ENOMEM)?;
         let wpipe = PipeEnd {
             pair: pair.clone(),
@@ -689,8 +694,10 @@ impl<G: PipeGlue> Pipes<G> {
 
 impl<G: PipeGlue> PipePair<G> {
     /// A pair as `pipe_pair_create` links it, before `pipe_create`: each pipe the other's
-    /// peer, the lock `pipelk`, the glue's klists and sigio set up.
-    fn new(pipes: &'static Pipes<G>) -> Self {
+    /// peer, the lock `pipelk`, the glue's klists and sigio set up (`glue`, indexed by
+    /// [`Dir`]).
+    fn new(pipes: &'static Pipes<G>, glue: [G; 2]) -> Self {
+        let [rglue, wglue] = glue;
         Self {
             pipes,
             lock: Rwlocked::new(
@@ -699,7 +706,7 @@ impl<G: PipeGlue> PipePair<G> {
                     ends: [PipeState::new(), PipeState::new()],
                 },
             ),
-            ends: [Pipe::new(G::default()), Pipe::new(G::default())],
+            ends: [Pipe::new(rglue), Pipe::new(wglue)],
         }
     }
 
@@ -742,7 +749,7 @@ impl<G: PipeGlue> PipePair<G> {
         Ok(())
     }
 
-    /// Initialize and allocate VM and memory for pipe (`sigio_init` is the glue's `Default`).
+    /// Initialize and allocate VM and memory for pipe (`sigio_init` is `PipeGlue::new`).
     fn pipe_create(&self, g: &mut Guard<'_>, dir: Dir) -> Result<(), Errno> {
         self.buffer_realloc(g, dir, PIPE_SIZE)?;
 
@@ -1387,6 +1394,10 @@ mod tests {
 
     impl PipeGlue for TestGlue {
         type Knote = TestKnote;
+
+        fn new() -> Result<Self, Errno> {
+            Ok(Self::default())
+        }
 
         fn nanotime() -> Timespec {
             Timespec {
