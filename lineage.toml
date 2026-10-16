@@ -6968,3 +6968,7 @@ reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpol
 [[extra]]
 rust = "sys/hal/trust.rs"
 reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30"
+
+[[extra]]
+rust = "sys/kern/hal_bridges.rs"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"

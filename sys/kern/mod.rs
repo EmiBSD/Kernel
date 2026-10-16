@@ -32,6 +32,8 @@ pub mod exec_elf;
 #[forbid(unsafe_code)]
 pub mod exec_script;
 pub mod exec_subr;
+#[forbid(unsafe_code)]
+pub mod hal_bridges;
 pub mod init_main;
 #[forbid(unsafe_code)]
 pub mod init_sysent;

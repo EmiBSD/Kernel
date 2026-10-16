@@ -259,6 +259,9 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
             kprintf!("rd: no ramdisk module\n");
         }
     }
+    // The hal runtime's bridges, before main() and so before any user of a hal piece, on
+    // the boot CPU with interrupts off: the boot contract of sys/hal/bridges.rs.
+    bsd::kern::hal_bridges::hal_bridges_register();
     init_main::main()
 }
 
