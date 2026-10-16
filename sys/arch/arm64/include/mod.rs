@@ -21,32 +21,32 @@
 //!
 //! Constants, `#[repr(C)]` hardware structs and inline accessors only; never state.
 
-pub mod _types;
+pub use hal::arch::arm64::include::_types;
 pub mod armreg;
 pub mod bootconfig;
 pub mod bus;
 pub mod cpu;
 pub mod db_machdep;
-pub mod disklabel;
+pub use hal::arch::arm64::include::disklabel;
 pub mod efivar;
-pub mod elf;
+pub use hal::arch::arm64::include::elf;
 pub mod exec;
 pub mod fdt;
 pub mod frame;
 pub mod hypervisor;
 pub mod intr;
-pub mod mplock;
-pub mod mutex;
+pub use hal::arch::arm64::include::mplock;
+pub use hal::arch::arm64::include::mutex;
 pub mod param;
 pub mod pcb;
 pub mod pci_machdep;
 pub mod pmap;
-pub mod proc;
+pub use hal::arch::arm64::include::proc;
 pub mod pte;
-pub mod reg;
+pub use hal::arch::arm64::include::reg;
 pub mod signal;
 pub mod simplebusvar;
 pub mod tcb;
-pub mod timetc;
+pub use hal::arch::arm64::include::timetc;
 pub mod vmparam;
 /* </CODE> */

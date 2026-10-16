@@ -818,7 +818,8 @@ lz = ["sys/arch/arm64/dev/smmuvar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/_types.rs"
+rust = "sys/hal/arch/arm64/include/_types.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/_types.rs"]
 status = "inherited"
 
@@ -852,7 +853,8 @@ status = "inherited"
 notes = "M4: db_regs_t, PC_REGS/SET_PC_REGS, BKPT_*, db_clear/set_single_step, IS_BREAKPOINT_TRAP/IS_WATCHPOINT_TRAP; M11c: db_expr_t (DbExpr = i64, and DbAddr = usize), the inst_* classifiers (never true, as the C's 'ALL BROKEN' macros); DB_MACHINE_COMMANDS is the machine table in db_interface.rs; DDB_STATE_NOT_RUNNING/RUNNING/EXITING; the ddb-wide contract is sys/machine/db_machdep.rs"
 
 [[module]]
-rust = "sys/arch/arm64/include/disklabel.rs"
+rust = "sys/hal/arch/arm64/include/disklabel.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/disklabel.rs"]
 status = "inherited"
 
@@ -862,7 +864,8 @@ lz = ["sys/arch/arm64/include/efivar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/elf.rs"
+rust = "sys/hal/arch/arm64/include/elf.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/elf.rs"]
 status = "inherited"
 
@@ -896,13 +899,15 @@ status = "inherited"
 notes = "M3: the levels; M4: IST_* (with the arm64 extra trigger types), SOFTINTR_XCALL, struct machine_intr_handle, struct arm_intr_func, struct interrupt_controller (ic_establish's name is &str, the cookie a *const ()); the spl*() helpers are the machine::intr contract; ARM_IPI_* with MULTIPROCESSOR (M5); M11a: ARM_IPI_NOP/DDB/HALT/XCALL; ; M12: ic_establish_msi in struct interrupt_controller (IcEstablishMsiFn, addr/data as &mut u64)"
 
 [[module]]
-rust = "sys/arch/arm64/include/mplock.rs"
+rust = "sys/hal/arch/arm64/include/mplock.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/mplock.rs"]
 status = "inherited"
 license = "public domain"
 
 [[module]]
-rust = "sys/arch/arm64/include/mutex.rs"
+rust = "sys/hal/arch/arm64/include/mutex.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/mutex.rs"]
 status = "inherited"
 license = "none"
@@ -929,7 +934,8 @@ status = "inherited"
 notes = "struct pmap (kernel subset with pm_vp as an enum of the union), vm_page_md, VP_IDX* and cache/pv flags; pointer authentication keys with M6; M7a-3b: pv_mtx in vm_page_md; M11a: pm_asid is an AtomicU64 (pmap_rollover_asid rewrites other CPUs' active pmaps); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap; pm_refs is an AtomicI32 (atomic_inc_int/atomic_dec_int_nv)"
 
 [[module]]
-rust = "sys/arch/arm64/include/proc.rs"
+rust = "sys/hal/arch/arm64/include/proc.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/proc.rs"]
 status = "inherited"
 
@@ -940,7 +946,8 @@ status = "inherited"
 notes = "descriptor types and attribute bits; PTE_ATTR_* follow the bootloader's MAIR_EL1 layout (0 WB, 1 nGnRE, 2 nGnRnE, 3 CI, 4 WT) until the kernel owns its page tables (deviation in the module)"
 
 [[module]]
-rust = "sys/arch/arm64/include/reg.rs"
+rust = "sys/hal/arch/arm64/include/reg.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/reg.rs"]
 status = "inherited"
 
@@ -960,7 +967,8 @@ lz = ["sys/arch/arm64/include/tcb.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/timetc.rs"
+rust = "sys/hal/arch/arm64/include/timetc.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/timetc.rs"]
 status = "inherited"
 
