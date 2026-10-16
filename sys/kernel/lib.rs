@@ -23,4 +23,16 @@
 //! tree is reached only through a registered bridge (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
 #![forbid(unsafe_code)]
+
+#[cfg(test)]
+extern crate std;
+// A verbatim copy of bsd's helper: the modules moved so far use only part of it.
+#[cfg(test)]
+#[allow(dead_code, unused_macros, unused_imports)]
+pub(crate) mod reftest;
+
+extern crate alloc;
+
+pub use hal::sys;
+pub mod crypto;
 /* </CODE> */
