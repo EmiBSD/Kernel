@@ -6921,3 +6921,7 @@ rust = "sys/hal/reftest.rs"
 crate = "hal"
 reason = "copy of sys/reftest.rs so the inherited headers moved into hal keep their #[ignore] reference-backed tests byte-identical (crate::reftest resolves inside hal); the two copies merge when bsd's last reference test moves"
 
+[[extra]]
+rust = "sys/kernel/reftest.rs"
+crate = "kernel"
+reason = "copy of sys/reftest.rs so the crypto tests moved into kernel keep crate::reftest byte-identical; the copies merge when the last reference test leaves bsd"
