@@ -42,10 +42,10 @@ paths:
   roots, `mod.rs`, `build.rs`, `sys/machine/`, `sys/arch/host/` and `sys/stand/`),
   `forbid_modules`, `core_budget` (over the rows that hold core files, each row's budget
   minus its legacy)} (the v1 groups stay until N9, the pace baseline reads `legacy`); `crates` (additive,
-  `schema` stays 1) {`kernel`, `abi`, `hal`, `hal_pending` (the hardware and the lists and
-  trees that move into `hal` at N2), `boot` (`sys/stand/`, `sys/lib/libsa/`,
-  `sys/arch/*/stand/`), `bsd` (every other file under `sys/`, and `init/`): each {`files`,
-  `unsafe`}, kernel code, test code apart}; `ratchet` {`forbid_floor`, `legacy_ceiling`,
+  `schema` stays 1) {`kernel`, `abi`, `hal`, `boot` (`sys/stand/`, `sys/lib/libsa/`,
+  `sys/arch/*/stand/`), `bsd` (every other file under `sys/`, and `init/`; it also carries
+  `to_hal` {`files`, `unsafe`}, the hardware and the lists and trees that N2 moves into `hal`:
+  still `bsd` until they move)}: each {`files`, `unsafe`}, kernel code, test code apart}; `ratchet` {`forbid_floor`, `legacy_ceiling`,
   `legacy_baseline`, `hal_ceiling` (or `null`), `baseline_date`} or `null`; `rate` {`active_days` (days with a commit from `baseline_date`
   on), `removed` (`legacy_baseline` minus `legacy_unsafe`, 0 when it rose), `per_day` (`null`
   before two active days or while nothing is removed)}; `subsystems` [{`name`, `budget`,

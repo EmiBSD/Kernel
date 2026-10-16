@@ -7,11 +7,13 @@ carry `#![forbid(unsafe_code)]` at their roots (no budget: the build refuses one
 (lowered by `--write`, raised only by the user, in a commit of its own, when a milestone adds a
 listed piece: 2,150 at N2, 2,230 by N7); `sys/` (`bsd`, the LZ tree) is legacy under
 `legacy_ceiling`, which only falls, until the crate is deleted at N9. `cargo xtask
-unsafe-report` prints, beside its rows, a `crates` block: `kernel`, `abi`, `hal`, `hal_pending`
-(the hardware and the lists and trees until they move into `hal`), `boot` and `bsd`, files and
-`unsafe` each, and the headline ends with them. `--check` fails when `kernel` or `abi` is above 0,
+unsafe-report` prints, beside its rows, a `crates` block: `kernel`, `abi`, `hal`, `bsd` and `boot`, files and
+`unsafe` each, and the headline ends with them. A file that has not moved is in `bsd`; under the
+`bsd` line an informative line gives the part N2 moves into `hal` (the hardware and the lists
+and trees): a move, not a reduction. `--check` fails when `kernel` or `abi` is above 0,
 `hal` above `hal_ceiling` (`[ratchet]`, lowered by `--write`, raised only by the user), or the
-`bsd` files outside `unsafe-core.toml` above `legacy_ceiling`; the rows `kernel`, `abi` and `hal`
+`bsd` files outside `unsafe-core.toml` above `legacy_ceiling` (the hardware is in the core, so
+it is already outside that count); the rows `kernel`, `abi` and `hal`
 have no per-row budget. `hal-check` and `abi-check` (`xtask.md`) run in `just check`. The v1
 groups below still print and gate until N9 (`legacy` is what `legacy_ceiling` ratchets and the
 pace baseline reads); `unsafe-core.toml` is still read for them.
