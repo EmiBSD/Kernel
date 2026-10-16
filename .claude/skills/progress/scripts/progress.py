@@ -139,11 +139,12 @@ def parse_roadmap(root: Path) -> list[dict]:
 
 
 def scope_patterns(scope: str) -> list[str]:
-    """The `sys/...` paths a scope cell names in backticks: a directory, a file or a glob."""
+    """The `sys/...` (or `init/`, the init stand-in) paths a scope cell names in backticks: a
+    directory, a file or a glob."""
     pats = []
     for tok in re.findall(r"`([^`]+)`", scope):
         tok = tok.strip()
-        if tok.startswith("sys/") and " " not in tok and "{" not in tok:
+        if tok.startswith(("sys/", "init/")) and " " not in tok and "{" not in tok:
             pats.append(tok)
     return pats
 
