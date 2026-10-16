@@ -6964,3 +6964,7 @@ reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_po
 [[extra]]
 rust = "sys/hal/cons.rs"
 reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpollc, a fmt::Write sink) and the Console bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/trust.rs"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30"

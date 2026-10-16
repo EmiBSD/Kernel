@@ -28,8 +28,8 @@
 //! M_NOWAIT`: another `vmstat -m` row, and a failure where the C sleeps).
 //!
 //! The blocks come from `sys/kern/kern_malloc.rs` through the [`Malloc`] bridge (bridges.toml;
-//! paid by N9, when the old runtime files go), an `unsafe trait` like the other memory
-//! bridges: this module writes a `T` into what it returns.
+//! paid by N9, when the old runtime files go), a safe trait like the other memory bridges
+//! (decision 30): it returns a pointer and the size granted, and builds nothing unsafe.
 //!
 //! **Before registration** (early boot, host tests that register none) there is no
 //! `kmem_map`: [`MBox::new`] answers `None` whatever the flags (the value is dropped).
@@ -41,6 +41,12 @@
 //! - The block must hold a `T`: `malloc(9)` aligns every block to at least
 //!   [`MALLOC_ALIGN`] (its smallest bucket, `1 << MINBUCKET`), which a `T` of a larger
 //!   alignment refuses at compile time; a zero-sized `T` likewise (`malloc(0)` has no use).
+//! - Writing the `T` into a block, and every reference to it, rest on the registration
+//!   contract of the bridge (the kernel's boot path registers its own `malloc(9)`, once,
+//!   before any user; `sys/hal/trust.rs`): a documented trust boundary, not a compile-time
+//!   proof. `hal` checks every block (aligned for `T`, the size granted; a probe of the first
+//!   and last byte under `diagnostic`) and panics naming the bridge when one fails. It goes
+//!   with the bridge, at N9.
 
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
@@ -48,6 +54,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use crate::bridges;
+use crate::trust::check_block;
 
 /// `M_WAITOK`: `malloc` may sleep, and then never fails.
 pub const M_WAITOK: i32 = 0x0001;
@@ -61,15 +68,14 @@ pub const MALLOC_ALIGN: usize = 16;
 
 /// `malloc(9)` and `free(9)`, as `bsd` registers them (`sys/kern/kern_malloc.rs`).
 ///
-/// # Safety
-///
-/// An implementation upholds: `malloc(size, ty, flags)` returns `None` or a pointer to `size`
-/// bytes aligned to at least [`MALLOC_ALIGN`], counted under `ty`, that nothing else
-/// references until `free` is called with that pointer, the same `ty` and the same `size`;
-/// `free` is called once per such pointer.
-pub unsafe trait Malloc: Sync {
-    /// `malloc(size, ty, flags)` (`M_WAITOK`, `M_NOWAIT`, `M_CANFAIL`).
-    fn malloc(&self, size: usize, ty: i32, flags: i32) -> Option<NonNull<u8>>;
+/// The registration contract (`sys/hal/trust.rs`): `malloc(size, ty, flags)` returns `None`
+/// or a block and the size granted (at least `size`), aligned to at least [`MALLOC_ALIGN`],
+/// counted under `ty`, that nothing else references until `free` gets it back with the same
+/// `ty` and `size`. `hal` checks the alignment and the size of every block.
+pub trait Malloc: Sync {
+    /// `malloc(size, ty, flags)` (`M_WAITOK`, `M_NOWAIT`, `M_CANFAIL`): the block and the size
+    /// granted.
+    fn malloc(&self, size: usize, ty: i32, flags: i32) -> Option<(NonNull<u8>, usize)>;
     /// `free(ptr, ty, size)`.
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize);
 }
@@ -99,10 +105,14 @@ impl<T> MBox<T> {
             );
         }
         let mem = bridges::malloc()?;
-        let ptr = mem.malloc(size_of::<T>(), ty, flags)?.cast::<T>();
-        // SAFETY: `ptr` names `size_of::<T>()` bytes aligned to at least `MALLOC_ALIGN`, which
-        // is at least `align_of::<T>()` (checked above), referenced by nothing else
-        // (`Malloc`'s contract); writing the value initialises it before the box exists.
+        let (block, granted) = mem.malloc(size_of::<T>(), ty, flags)?;
+        check_block("Malloc", block, granted, size_of::<T>(), align_of::<T>());
+        let ptr = block.cast::<T>();
+        // SAFETY: `ptr` is aligned for `T` and names at least `size_of::<T>()` bytes
+        // (`check_block` above), a fresh block that nothing else references: the registration
+        // contract of `Malloc` (the kernel's boot path registered its own `malloc(9)`, once,
+        // before any user; `sys/hal/trust.rs`), a documented trust boundary. Writing the value
+        // initialises it before the box exists.
         unsafe { ptr.as_ptr().write(value) };
         Some(MBox {
             ptr,

@@ -453,8 +453,17 @@ after 24 when it merges):
   coordinator), and the integrator folds it into `hal::sys::errno::Errno` in one commit; the
   runtime uses only what the legacy enum also has.
 
-Open, for the user (not taken): the memory bridges (`PageMemory`, `PoolBackend`/`RawPool`,
-`Malloc`) are `unsafe trait`s, because the runtime makes `&mut` of the memory they return;
-`bsd`'s implementation of each will carry one `unsafe impl` (3 in all, legacy, under the
-`legacy_ceiling`) until pipe(2)'s slice removes 21. The alternative, safe traits, would let
-any implementation break `hal`'s soundness. `bsd`'s registrations are not written yet.
+The question R1-R5 left open (three `unsafe impl`s in `bsd` for `unsafe trait` memory
+bridges) was answered by the user the same day, decision 30 below.
+
+30. **The memory bridges are safe traits** (the user, 2026-10-16, rejecting 3 `unsafe impl` in
+    `bsd`: "Rechazar: trait seguro"): `PageMemory`, `PoolBackend`/`RawPool` and `Malloc` are
+    safe; the trust that the kernel's allocators return valid, exclusive memory is a
+    boot-time registration contract that `hal` documents in the `// SAFETY:` of every site
+    that dereferences what they return, checked for null, alignment and size on each answer,
+    probed under `diagnostic`; `bsd` registers them with 0 `unsafe`. Stated cost: `hal`'s
+    soundness rests on that registration until the bridges go (N3, N9); it is a documented
+    trust boundary, not a compiler-checked one. (`sys/hal/trust.rs` holds the checks;
+    `sys/kern/hal_bridges.rs` the registrations, called by `stand::start_kernel` before
+    `main()`.)
+

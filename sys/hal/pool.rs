@@ -31,8 +31,8 @@
 //! The items come from `bsd`'s `pool(9)` through the [`PoolBackend`] bridge (bridges.toml;
 //! paid by N9, when the old runtime files go): each `TypedPool` is one pool of its own, named
 //! and listed as the C's are, so `vmstat -m` and `systat pool` show it with its `wchan` as
-//! they show every pool. The bridge is an `unsafe trait`: what it returns is memory this
-//! module writes a `T` into.
+//! they show every pool. The bridge is a safe trait (decision 30): it returns a pointer and
+//! the size granted, and builds nothing unsafe.
 //!
 //! **Before registration** (early boot, host tests that register none) there is no pool
 //! allocator: [`TypedPool::init`] fails with `ENOMEM` and every `get_shared` with `None`, as a
@@ -44,6 +44,12 @@
 //!   (the value written before anyone sees the item, `PR_ZERO` unnecessary); the matching
 //!   `pool_put` -> the last [`PoolArc`]'s drop, after the `T`'s own drop. A double put or a
 //!   put into the wrong pool cannot be written.
+//! - Writing the `T` into an item, and every reference to it, rest on the registration
+//!   contract of the bridge (the kernel's boot path registers its own `pool(9)`, once, before
+//!   any user; `sys/hal/trust.rs`): a documented trust boundary, not a compile-time proof.
+//!   `hal` checks every item it is given (aligned for the item, the size granted; a probe of
+//!   the first and last byte under `diagnostic`) and panics naming the bridge when one
+//!   fails. It goes with the bridge, at N9.
 //! - No raw form (`into_raw`/`from_raw`) yet: its first user would be a type-erased slot, and
 //!   the kernel's slots hold the handle itself (`FileData`, decision 14).
 
@@ -56,6 +62,7 @@ use crate::assert::hal_panic;
 use crate::bridges;
 use crate::errno::Errno;
 use crate::once::OnceStatic;
+use crate::trust::check_block;
 
 /// `PR_WAITOK`: `pool_get` may sleep for an item.
 pub const PR_WAITOK: i32 = 0x0001;
@@ -70,15 +77,14 @@ const MAX_REFS: usize = isize::MAX as usize;
 
 /// One pool of `bsd`'s `pool(9)`, as [`PoolBackend::create`] returns it.
 ///
-/// # Safety
-///
-/// An implementation upholds: `get` returns `None` or a pointer to an item of at least the
-/// `size` bytes, aligned to the `align`, the pool was created with, that nothing else
-/// references until `put` takes it back; `put` is given only items this pool's `get`
-/// returned, once each.
-pub unsafe trait RawPool: Sync {
-    /// `pool_get(pp, flags)` (`PR_WAITOK`, `PR_NOWAIT`, `PR_LIMITFAIL`).
-    fn get(&self, flags: i32) -> Option<NonNull<u8>>;
+/// The registration contract (`sys/hal/trust.rs`): `get` returns `None` or an item and the
+/// size granted (`pr_size`, at least the size the pool was created with), aligned to its
+/// `align`, that nothing else references until `put` takes it back. `hal` checks the
+/// alignment and the size of every item.
+pub trait RawPool: Sync {
+    /// `pool_get(pp, flags)` (`PR_WAITOK`, `PR_NOWAIT`, `PR_LIMITFAIL`): the item and the
+    /// size granted.
+    fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)>;
     /// `pool_put(pp, item)`.
     fn put(&self, item: NonNull<u8>);
     /// `pr_nout`: the items out of the pool now.
@@ -87,11 +93,9 @@ pub unsafe trait RawPool: Sync {
 
 /// `bsd`'s `pool(9)`, as it registers it (`sys/kern/subr_pool.rs`).
 ///
-/// # Safety
-///
-/// An implementation upholds: `create` returns `None` or a pool for which [`RawPool`]'s
-/// contract holds with the `size` and `align` given, alive for the rest of the kernel's life.
-pub unsafe trait PoolBackend: Sync {
+/// The registration contract: `create` returns `None` or a pool, alive for the rest of the
+/// kernel's life, whose items hold `size` bytes aligned to `align`.
+pub trait PoolBackend: Sync {
     /// `pool_init(pp, size, align, ipl, flags, wchan, NULL)` of a new pool that lives for
     /// ever (`size` at least 1, `align` a power of two).
     fn create(
@@ -144,17 +148,27 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// or the pool was never made; `init` is not called then.
     pub fn get_shared(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<PoolArc<T>> {
         let raw = *self.raw.get()?;
-        let item = raw.get(flags)?.cast::<Inner<T>>();
+        let (block, granted) = raw.get(flags)?;
+        check_block(
+            "RawPool",
+            block,
+            granted,
+            size_of::<Inner<T>>(),
+            align_of::<Inner<T>>(),
+        );
+        let item = block.cast::<Inner<T>>();
         // A panic in `init` leaks the item (it never reaches a handle); nothing reads it.
         let inner = Inner {
             refs: AtomicUsize::new(1),
             pool: self,
             value: init(),
         };
-        // SAFETY: `item` is a fresh item of this pool, at least `size_of::<Inner<T>>()` bytes
-        // aligned for `Inner<T>` and referenced by nothing else (`RawPool`'s contract, the
-        // pool created with exactly that size and alignment by `init`); writing a whole value
-        // into it initialises it, before any handle exists.
+        // SAFETY: `item` is aligned for `Inner<T>` and at least `size_of::<Inner<T>>()` bytes
+        // (`check_block` above), and it is a fresh item of this pool that nothing else
+        // references: the registration contract of `RawPool` (the kernel's boot path
+        // registered its own `pool(9)`, once, before any user; `sys/hal/trust.rs`), a
+        // documented trust boundary. Writing a whole value initialises it, before any handle
+        // exists.
         unsafe { item.as_ptr().write(inner) };
         Some(PoolArc {
             inner: item,
@@ -195,8 +209,10 @@ pub struct PoolArc<T: Send + Sync + 'static> {
 impl<T: Send + Sync + 'static> PoolArc<T> {
     fn inner(&self) -> &Inner<T> {
         // SAFETY: the item is initialised and outlives every handle, this one included (the
-        // invariant); only shared references to it are ever made while handles live (the
-        // count is atomic, the value is reached as `&T`), so this one aliases no `&mut`.
+        // invariant; that no one else touches it until it is put back is the registration
+        // contract of `RawPool`, `sys/hal/trust.rs`); only shared references to it are ever
+        // made while handles live (the count is atomic, the value is reached as `&T`), so
+        // this one aliases no `&mut`.
         unsafe { self.inner.as_ref() }
     }
 

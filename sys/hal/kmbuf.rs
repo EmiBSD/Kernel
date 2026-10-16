@@ -26,9 +26,8 @@
 //! out of the pair's lock while `uiomove` runs, decision 11), and its drop is the `km_free`.
 //!
 //! The pages come from `uvm_km` through the [`PageMemory`] bridge (bridges.toml; paid by N3,
-//! when `kernel::vm` owns the kernel map). The bridge is an `unsafe trait`: what it returns
-//! is memory this module hands out as `&mut [u8]`, so its implementer vouches for the
-//! contract, as `GlobalAlloc`'s does.
+//! when `kernel::vm` owns the kernel map), a safe trait (decision 30): it returns a pointer
+//! and the size granted, and builds nothing unsafe.
 //!
 //! **Before registration** (early boot, host tests that register none) there is no kernel
 //! map to take pages from: an allocation fails (`None`), as `km_alloc` with `KD_NOWAIT` may.
@@ -38,12 +37,18 @@
 //!   `km_alloc(len, &kv_any, &kp_zero, &kd_*)` -> [`KmBuf::alloc_wired`]; the `km_free` with
 //!   the same modes -> the drop. The modes the C passes beside the pointer are part of the
 //!   value, so they cannot disagree.
+//! - The slices over the pages rest on the registration contract of the bridge (the kernel's
+//!   boot path registers `uvm_km` itself, once, before any user; `sys/hal/trust.rs`): a
+//!   documented trust boundary, not a compile-time proof. `hal` checks every answer (page
+//!   alignment, the size granted; a probe of the first and last byte under `diagnostic`)
+//!   and panics naming the bridge when one fails. It goes with the bridge, at N3.
 
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use crate::assert::kassert;
 use crate::bridges;
+use crate::trust::check_block;
 
 /// What backs a [`KmBuf`]: the C's `kp_pageable` or `kp_zero` physical-page mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -58,16 +63,15 @@ pub enum PageKind {
 /// The kernel map's pages, as `bsd` registers them (`km_alloc`/`km_free` of
 /// `sys/uvm/uvm_km.rs`, with `&kv_any`).
 ///
-/// # Safety
-///
-/// An implementation upholds, for every call: `alloc(len, kind, wait)` returns `None` or a
-/// pointer to `len` bytes of kernel memory, aligned to the page size, zeroed, readable and
-/// writable, that nothing else references until `free` is called with that pointer, the same
-/// `len` and the same `kind`; `free` is called once per such pointer and takes the memory
-/// back; `page_size` is the machine's `PAGE_SIZE`, constant.
-pub unsafe trait PageMemory: Sync {
-    /// `km_alloc(len, &kv_any, kind's mode, wait ? &kd_waitok : &kd_nowait)`.
-    fn alloc(&self, len: usize, kind: PageKind, wait: bool) -> Option<NonNull<u8>>;
+/// The registration contract (`sys/hal/trust.rs`): `alloc(len, kind, wait)` returns `None`
+/// or a pointer to the size granted (at least `len`) of zeroed kernel memory, page-aligned,
+/// that nothing else references until `free` gets that pointer back with the same `len` and
+/// `kind`; `page_size` is the machine's `PAGE_SIZE`. `hal` checks the alignment and the size
+/// of every answer.
+pub trait PageMemory: Sync {
+    /// `km_alloc(len, &kv_any, kind's mode, wait ? &kd_waitok : &kd_nowait)`: the block and
+    /// the size granted.
+    fn alloc(&self, len: usize, kind: PageKind, wait: bool) -> Option<(NonNull<u8>, usize)>;
     /// `km_free(ptr, len, &kv_any, kind's mode)`.
     fn free(&self, ptr: NonNull<u8>, len: usize, kind: PageKind);
     /// `PAGE_SIZE`.
@@ -76,9 +80,10 @@ pub unsafe trait PageMemory: Sync {
 
 /// An owned run of kernel pages: `len` bytes, freed on drop.
 ///
-/// Invariant: `ptr` came from the registered [`PageMemory`]'s `alloc(len, kind, _)` and has
-/// not been freed; this value is the only reference to the memory (the trait's contract), so
-/// it may hand out `&[u8]` and `&mut [u8]` of it under the usual borrow rules.
+/// Invariant: `ptr` came from the registered [`PageMemory`]'s `alloc(len, kind, _)`, passed
+/// [`check_block`] (page-aligned, at least `len` bytes) and has not been freed; by the
+/// registration contract this value is the only reference to the memory, so it may hand out
+/// `&[u8]` and `&mut [u8]` of it under the usual borrow rules.
 pub struct KmBuf {
     ptr: NonNull<u8>,
     len: usize,
@@ -103,7 +108,8 @@ impl KmBuf {
     fn alloc(len: usize, kind: PageKind, wait: bool) -> Option<KmBuf> {
         let mem = bridges::page_memory()?;
         kassert!(len != 0 && len.is_multiple_of(mem.page_size())); // km_alloc: sz == round_page(sz)
-        let ptr = mem.alloc(len, kind, wait)?;
+        let (ptr, granted) = mem.alloc(len, kind, wait)?;
+        check_block("PageMemory", ptr, granted, len, mem.page_size());
         Some(KmBuf {
             ptr,
             len,
@@ -132,9 +138,11 @@ impl Deref for KmBuf {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        // SAFETY: `ptr` names `len` zeroed, initialised bytes that only this value
-        // references (the invariant, from `PageMemory`'s contract) and that live until the
-        // drop; the slice borrows `self`, so it ends before the drop frees them.
+        // SAFETY: `ptr` names at least `len` bytes (checked by `check_block` when the run was
+        // made) of zeroed, initialised kernel memory that only this value references and that
+        // lives until the drop: the registration contract of `PageMemory` (the kernel's boot
+        // path registered its own `uvm_km`, once, before any user; `sys/hal/trust.rs`), a
+        // documented trust boundary. The slice borrows `self`, so it ends before the drop.
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -153,8 +161,10 @@ impl Drop for KmBuf {
     }
 }
 
-// SAFETY: a `KmBuf` owns its bytes outright (no other reference exists, the invariant) and
-// its bridge is `Sync`, so moving it to another CPU moves the only access to them.
+// SAFETY: a `KmBuf` owns its bytes outright (no other reference exists, the invariant, which
+// rests on the registration contract) and its bridge is `Sync`, so moving it to another CPU
+// moves the only access to them.
+
 unsafe impl Send for KmBuf {}
 
 // SAFETY: `&KmBuf` gives only `&[u8]` (shared reads of plain bytes) and the length and kind,

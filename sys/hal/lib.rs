@@ -48,5 +48,6 @@ pub mod sleep;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tree;
+pub(crate) mod trust;
 pub mod user;
 /* </CODE> */

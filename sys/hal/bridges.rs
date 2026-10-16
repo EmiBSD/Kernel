@@ -35,6 +35,15 @@
 //! register none) is written in its module and is never a panic in a hot path: no interrupts
 //! yet (`intr.rs`), one boot CPU (`cpu.rs`).
 //!
+//! **The boot contract.** Every bridge is a safe trait (decision 30). The three memory
+//! bridges (`PageMemory`, `PoolBackend`, `Malloc`) are registered once by the kernel's boot
+//! path (`bsd`'s `hal_bridges_register`, called by `stand::start_kernel` before `main()`, on
+//! the boot CPU, before interrupts and before any user of the pieces) with the kernel's own
+//! `uvm_km`, `pool(9)` and `malloc(9)`; `hal`'s soundness rests on that registration: the
+//! blocks they return are kernel memory of the size granted, exclusively the caller's until
+//! freed through the same bridge (`sys/hal/trust.rs` checks every answer for alignment and
+//! size). A slot is set once, so nothing registered later can replace them.
+//!
 //! ## Redesign
 //! - Not a port: the C calls these functions directly. The registry is the one place where
 //!   an arrow goes up, so it is audited here: the slots are private, a slot is set once
@@ -96,24 +105,29 @@ bridge!(
 );
 
 bridge!(
-    /// Registers the kernel map's pages (`km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`); the
-    /// implementation vouches for `PageMemory`'s contract with its `unsafe impl`. Paid by N3.
+    /// Registers the kernel map's pages (`km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`). The boot
+    /// contract (module docs): called once by the kernel's boot path, before interrupts and
+    /// before any user, with the kernel's own page allocator; `hal`'s soundness rests on it.
+    /// Paid by N3.
     PAGE_MEMORY: PageMemory,
     register_page_memory,
     page_memory
 );
 
 bridge!(
-    /// Registers `pool(9)` (`sys/kern/subr_pool.rs`); the implementation vouches for
-    /// `PoolBackend`'s contract with its `unsafe impl`. Paid by N9.
+    /// Registers `pool(9)` (`sys/kern/subr_pool.rs`). The boot contract (module docs): called
+    /// once by the kernel's boot path, before interrupts and before any user, with the
+    /// kernel's own pool allocator; `hal`'s soundness rests on it. Paid by N9.
     POOL_BACKEND: PoolBackend,
     register_pool_backend,
     pool_backend
 );
 
 bridge!(
-    /// Registers `malloc(9)` and `free(9)` (`sys/kern/kern_malloc.rs`); the implementation
-    /// vouches for `Malloc`'s contract with its `unsafe impl`. Paid by N9.
+    /// Registers `malloc(9)` and `free(9)` (`sys/kern/kern_malloc.rs`). The boot contract
+    /// (module docs): called once by the kernel's boot path, before interrupts and before any
+    /// user, with the kernel's own `malloc(9)`; `hal`'s soundness rests on it. Paid by N9.
+
     MALLOC: Malloc,
     register_malloc,
     malloc

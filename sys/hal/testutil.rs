@@ -237,10 +237,10 @@ impl Sleep for TestSleep {
 /// The kernel map double.
 struct TestPages;
 
-// SAFETY: `alloc` returns the host allocator's zeroed, page-aligned block of `len` bytes, owned
-// by the caller alone until `free` gives it back with the same layout; `page_size` is fixed.
-unsafe impl PageMemory for TestPages {
-    fn alloc(&self, len: usize, _kind: PageKind, _wait: bool) -> Option<NonNull<u8>> {
+// The registration contract: the host allocator's zeroed, page-aligned block of `len` bytes,
+// owned by the caller alone until `free` gives it back with the same layout.
+impl PageMemory for TestPages {
+    fn alloc(&self, len: usize, _kind: PageKind, _wait: bool) -> Option<(NonNull<u8>, usize)> {
         if len == 0 {
             return None;
         }
@@ -248,7 +248,7 @@ unsafe impl PageMemory for TestPages {
         // SAFETY: the layout's size is not 0.
         let p = NonNull::new(unsafe { alloc_zeroed(layout) })?;
         PAGES_OUT.with(|c| c.set(c.get() + len as isize));
-        Some(p)
+        Some((p, len))
     }
 
     fn free(&self, ptr: NonNull<u8>, len: usize, _kind: PageKind) {
@@ -271,14 +271,14 @@ struct TestPool {
     nout: AtomicU64,
 }
 
-// SAFETY: `get` returns the host allocator's block of the pool's layout (the size and
+// The registration contract: the host allocator's block of the pool's layout (the size and
 // alignment it was created with), owned by the caller until `put` gives it back.
-unsafe impl RawPool for TestPool {
-    fn get(&self, _flags: i32) -> Option<NonNull<u8>> {
+impl RawPool for TestPool {
+    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
         // SAFETY: the layout's size is not 0 (`create` makes it at least 1).
         let p = NonNull::new(unsafe { alloc(self.layout) })?;
         self.nout.fetch_add(1, Ordering::Relaxed);
-        Some(p)
+        Some((p, self.layout.size()))
     }
 
     fn put(&self, item: NonNull<u8>) {
@@ -296,9 +296,9 @@ unsafe impl RawPool for TestPool {
 /// The pool allocator double.
 struct TestPools;
 
-// SAFETY: every pool `create` returns is a `TestPool` of the size and alignment asked for,
-// leaked so it lives for ever.
-unsafe impl PoolBackend for TestPools {
+// Every pool `create` returns is a `TestPool` of the size and alignment asked for, leaked so
+// it lives for ever.
+impl PoolBackend for TestPools {
     fn create(
         &self,
         size: usize,
@@ -318,10 +318,10 @@ unsafe impl PoolBackend for TestPools {
 /// The `malloc(9)` double.
 struct TestMalloc;
 
-// SAFETY: `malloc` returns the host allocator's block of `size` bytes aligned to
+// The registration contract: the host allocator's block of `size` bytes aligned to
 // `MALLOC_ALIGN`, owned by the caller until `free` gives it back with the same size.
-unsafe impl Malloc for TestMalloc {
-    fn malloc(&self, size: usize, ty: i32, _flags: i32) -> Option<NonNull<u8>> {
+impl Malloc for TestMalloc {
+    fn malloc(&self, size: usize, ty: i32, _flags: i32) -> Option<(NonNull<u8>, usize)> {
         if size == 0 {
             return None;
         }
@@ -329,7 +329,7 @@ unsafe impl Malloc for TestMalloc {
         // SAFETY: the layout's size is not 0.
         let p = NonNull::new(unsafe { alloc(layout) })?;
         MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) += size as isize);
-        Some(p)
+        Some((p, size))
     }
 
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize) {
