@@ -149,7 +149,7 @@ the session.
   sync with LZ, step by step.
 - `docs/SETUP.md`: toolchain, QEMU and the boot loaders on macOS.
 - `.claude/agents/`: the subagent roles (`milestone-coordinator`, `redesigner`, `mechanical`,
-  `integrator`, `debugger`, `reviewer`, `surveyor`, `openbsd-probe`, `image-worker`); launch them by
+  `integrator`, `debugger`, `reviewer`, `surveyor`, `planner`, `openbsd-probe`, `image-worker`); launch them by
   `subagent_type`; their lessons persist in `.claude/agent-memory/<agent>/`. The shared
   contract is `.claude/rules/subagents.md`; the main session drives the redesign and launches
   them one by one. `/progress` (`.claude/skills/progress/`) measures the redesign per milestone.

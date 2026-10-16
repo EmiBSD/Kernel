@@ -71,6 +71,7 @@ this repository's, and there is no bug-log role, since LZ is never told this rep
 | `integrator` | opus | merge agent branches, resolve the shared files (`lineage.toml`, the budget, the justfile), `just ci` |
 | `debugger` | opus | the root cause of a failing or flaky smoke, test or `diff-openbsd` scenario, fixed without weakening an expectation |
 | `reviewer` | opus | a read-only review of a branch: behaviour kept, `unsafe`, rules, security; it writes the `Security-Review:` text |
+| `planner` | fable | a design burst from an inventory: the brief a redesigner executes and the decisions for the user; proposes, never decides |
 | `surveyor` | opus | a read-only inventory of a module before its redesign is designed: `unsafe` by pattern, the primitives it needs, callers, the C's constraints, coverage; facts, not a design |
 | `openbsd-probe` | sonnet | boot the real OpenBSD 8.0 on a QEMU setup and report what it does |
 | `image-worker` | sonnet | view, crop, resize images, so the coordinator's context stays small |
