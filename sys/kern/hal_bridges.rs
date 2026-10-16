@@ -24,7 +24,8 @@
 //! `pool(9)`, `malloc(9)`, the user copy, the console) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
-//! section 0.3.2), with the C's modes spelled out and `bsd`'s `Errno` carried as its number.
+//! section 0.3.2), with the C's modes spelled out; `Errno` is one type on both sides
+//! (`hal::sys::errno`, which `crate::sys::errno` re-exports).
 //! It writes no `unsafe` (decision 30: the memory bridges are safe traits).
 //!
 //! [`hal_bridges_register`] is called by `stand::start_kernel` (sys/stand/mod.rs), on the boot
@@ -63,16 +64,6 @@ use crate::sys::mutex::mtx_curcpu;
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::pool::Pool;
 use crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_PAGEABLE, KP_ZERO, KV_ANY, km_alloc, km_free};
-
-/// `bsd`'s error as the runtime's (its number; the same type once `hal::sys::errno` lands).
-fn to_hal(e: Errno) -> hal::errno::Errno {
-    hal::errno::Errno::from_raw(e.as_i32()).unwrap_or(hal::errno::Errno::EINTR)
-}
-
-/// A `bsd` result with the runtime's error.
-fn hal_result<T>(r: Result<T, Errno>) -> Result<T, hal::errno::Errno> {
-    r.map_err(to_hal)
-}
 
 /// `spl(9)` of `sys/machine/intr.rs`.
 struct BsdIntr;
@@ -139,8 +130,8 @@ impl Sleep for BsdSleep {
         sleep_setup(ident.cast::<c_void>(), prio, wmesg);
     }
 
-    fn sleep_finish(&self, nsecs: u64, do_sleep: bool) -> Result<(), hal::errno::Errno> {
-        hal_result(sleep_finish(nsecs, do_sleep))
+    fn sleep_finish(&self, nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
+        sleep_finish(nsecs, do_sleep)
     }
 
     fn tsleep_nsec(
@@ -149,8 +140,8 @@ impl Sleep for BsdSleep {
         prio: i32,
         wmesg: &'static str,
         nsecs: u64,
-    ) -> Result<(), hal::errno::Errno> {
-        hal_result(tsleep_nsec(ident, prio, wmesg, nsecs))
+    ) -> Result<(), Errno> {
+        tsleep_nsec(ident, prio, wmesg, nsecs)
     }
 
     fn wakeup(&self, ident: *const ()) {
@@ -261,20 +252,20 @@ impl Malloc for BsdMalloc {
 struct BsdUser;
 
 impl UserCopy for BsdUser {
-    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), hal::errno::Errno> {
-        hal_result(copyin(uaddr, kbuf))
+    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        copyin(uaddr, kbuf)
     }
 
-    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), hal::errno::Errno> {
-        hal_result(copyout(kbuf, uaddr))
+    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
+        copyout(kbuf, uaddr)
     }
 
-    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, hal::errno::Errno> {
-        hal_result(copyinstr(uaddr, kbuf))
+    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
+        copyinstr(uaddr, kbuf)
     }
 
-    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, hal::errno::Errno> {
-        hal_result(copyoutstr(kbuf, uaddr))
+    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
+        copyoutstr(kbuf, uaddr)
     }
 }
 

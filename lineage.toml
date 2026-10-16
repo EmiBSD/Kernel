@@ -6943,11 +6943,6 @@ crate = "hal"
 reason = "hal runtime, written new: OnceStatic<T>, the init-once static that replaces StaticCell for new code; docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
-rust = "sys/hal/errno.rs"
-crate = "hal"
-reason = "hal runtime, written new: the runtime's error, an errno(2) number carried as it is; docs/ZERO_UNSAFE.md 0.1"
-
-[[extra]]
 rust = "sys/hal/bridges.rs"
 crate = "hal"
 reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"

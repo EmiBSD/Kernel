@@ -497,8 +497,8 @@ after 24 when it merges):
   answer such questions are safe traits.
 - R5. **`hal::errno::Errno` is interim** (a transparent `errno(2)` number): the constant
   headers move into `hal` as inherited modules (the user's decision relayed by the
-  coordinator), and the integrator folds it into `hal::sys::errno::Errno` in one commit; the
-  runtime uses only what the legacy enum also has.
+  coordinator); the runtime used only what the legacy enum also has, and after the merge of
+  main at 5f9deff1 it was folded: the runtime and `bsd`'s bridges use `hal::sys::errno::Errno`.
 
 The question R1-R5 left open (three `unsafe impl`s in `bsd` for `unsafe trait` memory
 bridges) was answered by the user the same day, decision 30 below.

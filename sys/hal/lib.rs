@@ -41,7 +41,6 @@ pub(crate) mod assert;
 pub mod bridges;
 pub mod cons;
 pub mod cpu;
-pub mod errno;
 pub mod intr;
 pub mod kmbuf;
 pub mod list;

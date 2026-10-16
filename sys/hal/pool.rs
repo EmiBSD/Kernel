@@ -60,8 +60,8 @@ use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
 use crate::bridges;
-use crate::errno::Errno;
 use crate::once::OnceStatic;
+use crate::sys::errno::Errno;
 use crate::trust::check_block;
 
 /// `PR_WAITOK`: `pool_get` may sleep for an item.

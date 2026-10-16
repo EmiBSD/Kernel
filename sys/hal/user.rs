@@ -53,7 +53,7 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
 use crate::bridges;
-use crate::errno::Errno;
+use crate::sys::errno::Errno;
 
 /// The machine's copy routines, as `bsd` registers them (`sys/machine/copy.rs`).
 pub trait UserCopy: Sync {

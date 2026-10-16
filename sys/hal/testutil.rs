@@ -56,12 +56,12 @@ use std::time::{Duration, Instant};
 use crate::bridges;
 use crate::cons::Console;
 use crate::cpu::CpuId;
-use crate::errno::Errno;
 use crate::intr::IntrLevel;
 use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
 use crate::pool::{PoolBackend, RawPool};
 use crate::sleep::{INFSLP, Sleep};
+use crate::sys::errno::Errno;
 use crate::user::UserCopy;
 
 std::thread_local! {

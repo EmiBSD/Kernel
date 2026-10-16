@@ -141,8 +141,8 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::{hal_panic, kassert};
 use crate::bridges;
-use crate::errno::Errno;
 use crate::sleep::{self, INFSLP, PCATCH, PLOCK, PRIMASK, chan};
+use crate::sys::errno::Errno;
 
 /// `RWLOCK_WRLOCK`: the word holds a writer.
 const RWLOCK_WRLOCK: usize = 0x04;

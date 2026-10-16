@@ -36,7 +36,7 @@
 //!   through one trait object until the scheduler moves into `kernel` (N4).
 
 use crate::bridges;
-use crate::errno::Errno;
+use crate::sys::errno::Errno;
 
 /// `PWAIT`: the priority of a plain wait (`refcnt_finalize`).
 pub const PWAIT: i32 = 32;
