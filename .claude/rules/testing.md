@@ -96,7 +96,7 @@ Always:
 
 - `just clippy` runs clippy for amd64, arm64 AND host with `-D warnings`. All three must pass.
 - `just fmt` is `cargo fmt --all -- --check`.
-- Develop first, compile later (the user's decision of 2026-10-17, docs/ZERO_UNSAFE.md decision
+- Develop first, compile later (the user's decision of 2026-10-16, docs/ZERO_UNSAFE.md decision
   23): no build, clippy or test runs per commit or per slice. The pre-commit hook keeps only
   `cargo fmt --check` and `cargo xtask lz check` (seconds). `just check` (build on both archs,
   clippy, fmt, `lz check`, `unsafe-report --check`, `just test`; no QEMU) runs at the milestone

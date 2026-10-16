@@ -408,7 +408,7 @@ every design that kept `unsafe` inside the kernel:
     2,150), hardware (4); `bsd` beside them until N9, calling down and registering up. There is
     no "static first, dynamic later": the module exists from N2's close.
 
-23. **Develop first, compile later** (the user, 2026-10-17: "desarrolla primero compila
+23. **Develop first, compile later** (the user, 2026-10-16: "desarrolla primero compila
     después"; "necesito que termine en 2 semanas"). No per-commit build, clippy or test gate:
     the agents write a milestone's slices without compiling; `just check`, the smokes, `ci-full`
     and `diff-openbsd` run once, at the milestone close, where the errors are fixed in a
@@ -417,7 +417,7 @@ every design that kept `unsafe` inside the kernel:
     found at the close compound across the milestone's commits; the user took it. The two-week
     target is N2 and N3 closed, with parallel redesigners from N2.3 on (section 0.8).
 
-24. **The N2 close** (the user, 2026-10-17): integrate the agents' branches into `main`, then
+24. **The N2 close** (the user, 2026-10-16): integrate the agents' branches into `main`, then
     compile without QEMU until green (`just build` on both archs, then `just check`), fixing
     the integration errors between `hal`, `kernel`, `abi` and `bsd`; no `just ci-full`; one
     `just ci` and one `just diff-openbsd`, both rc=0, mark N2 closed and push. `ci-full` is

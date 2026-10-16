@@ -4,7 +4,7 @@ Milestone: **N2 Foundations under way** (replanned 2026-10-16, docs/ZERO_UNSAFE.
 N1 met on 2026-10-09. Goal: zero `unsafe` in the kernel: `sys/kernel/` and `sys/abi/` are
 `#![forbid(unsafe_code)]` crates, `sys/hal/` holds the only `unsafe`, `sys/` (`bsd`, the LZ
 tree) is replaced subsystem by subsystem and deleted at N9 (decisions 20-24).
-Updated: 2026-10-17.
+Updated: 2026-10-16.
 
 Done:
 - N2 step 1: the crates `hal`, `kernel` (forbid) and `abi` (forbid) exist and `bsd` links them
