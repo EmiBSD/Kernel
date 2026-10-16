@@ -167,6 +167,9 @@ mod tests {
         fn mpfloor(&self) -> i32 {
             0
         }
+        fn ipl_high(&self) -> i32 {
+            0
+        }
     }
 
     static OTHER: Other = Other;

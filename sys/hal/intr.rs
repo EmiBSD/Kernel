@@ -30,15 +30,17 @@
 //! by `bsd` at boot over `sys/machine/intr.rs` (bridges.toml; paid by N4, when the hardware
 //! is `hal`'s own and the bridge goes).
 //!
-//! **Before registration** (early boot, before `main()` registers the bridges, and the host
-//! tests that register none): there are no interrupts yet on the one CPU that runs, so raising
-//! the level has nothing to hold back. [`splraise`] then returns a guard that restores
-//! nothing, and [`mpfloor`] is `IPL_NONE`.
+//! **Before registration** (early boot, before the boot path registers the bridges, and the
+//! host tests that register none): there are no interrupts yet on the one CPU that runs, so
+//! raising the level has nothing to hold back. A guard taken then raised nothing and so
+//! restores nothing, even if the bridge is registered before it drops: a guard restores only
+//! a level it raised (the reviewer's finding 5; restoring `IPL_NONE` there would lower the
+//! real level). [`mpfloor`] is `IPL_NONE` before registration.
 //!
 //! ## Redesign
 //! - `s = splraise(ipl); ...; splx(s)` -> `let _s = splraise(ipl);`, the guard restoring on
-//!   drop. The raw pair stays for the locks of this crate (`mutex.rs`), which store the old
-//!   level in the lock as `mtx_oldipl` does.
+//!   drop. The raw pair (`raise`/`restore`, crate-private) carries the same "raised or not"
+//!   for the locks of this crate (`mutex.rs`), which keep it in their guards.
 
 use core::marker::PhantomData;
 
@@ -50,21 +52,22 @@ pub const IPL_NONE: i32 = 0;
 /// A raised interrupt level; dropping it is `splx` of the level it replaced.
 #[must_use = "dropping the guard at once restores the level"]
 pub struct SplGuard {
-    old: i32,
+    /// The level to restore, `None` when nothing was raised (no bridge yet).
+    old: Option<i32>,
     /// `spl(9)` is per CPU: the guard stays on the CPU that raised the level.
     _not_send: PhantomData<*const ()>,
 }
 
 impl SplGuard {
-    /// The level the guard restores.
+    /// The level the guard restores (`IPL_NONE` when it raised nothing).
     pub fn old_level(&self) -> i32 {
-        self.old
+        self.old.unwrap_or(IPL_NONE)
     }
 }
 
 impl Drop for SplGuard {
     fn drop(&mut self) {
-        splx(self.old);
+        restore(self.old);
     }
 }
 
@@ -76,24 +79,36 @@ pub trait IntrLevel: Sync {
     fn splx(&self, s: i32);
     /// `IPL_MPFLOOR`: the lowest level a mutex raises to under `MULTIPROCESSOR`.
     fn mpfloor(&self) -> i32;
+    /// `IPL_HIGH`: the level that blocks every interrupt (`splhigh()`).
+    fn ipl_high(&self) -> i32;
 }
 
 /// `splraise(ipl)` as a guard: the level is at least `ipl` until the guard drops.
 pub fn splraise(ipl: i32) -> SplGuard {
     SplGuard {
-        old: splraise_raw(ipl),
+        old: raise(ipl),
         _not_send: PhantomData,
     }
 }
 
-/// `splraise(ipl)`: the old level (`IPL_NONE` before the bridge is registered).
-pub(crate) fn splraise_raw(ipl: i32) -> i32 {
-    bridges::intr_level().map_or(IPL_NONE, |b| b.splraise(ipl))
+/// `splhigh()` as a guard (nothing raised before the bridge is registered).
+pub fn splhigh() -> SplGuard {
+    SplGuard {
+        old: bridges::intr_level().map(|b| b.splraise(b.ipl_high())),
+        _not_send: PhantomData,
+    }
 }
 
-/// `splx(s)` (nothing before the bridge is registered).
-pub(crate) fn splx(s: i32) {
-    if let Some(b) = bridges::intr_level() {
+/// `splraise(ipl)`: `Some(old level)` when the level was raised through the bridge, `None`
+/// when there is no bridge yet (nothing raised, so nothing to restore).
+pub(crate) fn raise(ipl: i32) -> Option<i32> {
+    bridges::intr_level().map(|b| b.splraise(ipl))
+}
+
+/// `splx(s)` of what [`raise`] returned: nothing when it raised nothing. The bridge is set once,
+/// so a level raised through it is restored through the same implementation.
+pub(crate) fn restore(old: Option<i32>) {
+    if let (Some(s), Some(b)) = (old, bridges::intr_level()) {
         b.splx(s);
     }
 }
@@ -125,6 +140,31 @@ mod tests {
                 drop(inner);
             }
             assert_eq!(testutil::spl_level(), base + 3);
+        }
+        assert_eq!(testutil::spl_level(), base);
+    }
+
+    #[test]
+    fn a_guard_that_raised_nothing_restores_nothing() {
+        testutil::install();
+        // As a guard taken before the bridge was registered and dropped after it.
+        let raised = splraise(7);
+        let before = testutil::spl_level();
+        drop(SplGuard {
+            old: None,
+            _not_send: PhantomData,
+        });
+        assert_eq!(testutil::spl_level(), before);
+        drop(raised);
+    }
+
+    #[test]
+    fn splhigh_raises_to_ipl_high() {
+        testutil::install();
+        let base = testutil::spl_level();
+        {
+            let _s = splhigh();
+            assert_eq!(testutil::spl_level(), base.max(testutil::IPL_HIGH));
         }
         assert_eq!(testutil::spl_level(), base);
     }

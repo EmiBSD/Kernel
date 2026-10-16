@@ -65,9 +65,20 @@ pub trait CpuId: Sync {
     fn ncpus(&self) -> usize;
 }
 
-/// `cpu_number()`, folded below [`MAXCPUS`] (0 before the bridge is registered).
+/// `cpu_number()` (0 before the bridge is registered). An index at or past [`MAXCPUS`] is a
+/// broken machine answer: `panic(9)` naming it, never a silent fold onto another CPU's slot
+/// (which would make two CPUs write one per-CPU copy).
 pub fn cpu_number() -> usize {
-    bridges::cpu_id().map_or(0, |b| b.cpu_number() % MAXCPUS)
+    let Some(b) = bridges::cpu_id() else {
+        return 0;
+    };
+    let n = b.cpu_number();
+    if n >= MAXCPUS {
+        crate::assert::hal_panic(format_args!(
+            "CpuId: cpu_number {n} is not below MAXCPUS {MAXCPUS}"
+        ));
+    }
+    n
 }
 
 /// `curcpu()` as a word (a fixed word before the bridge is registered).

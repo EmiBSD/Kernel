@@ -26,7 +26,7 @@
 #             ("N3".."N9"; a slice "N4.1" where one is meant)
 # The comment above each row says what implements it today.
 
-# bsd: splraise/splx and IPL_MPFLOOR of sys/machine/intr.rs.
+# bsd: splraise/splx, IPL_MPFLOOR and IPL_HIGH of sys/machine/intr.rs.
 # hal::intr::IntrLevel
 [[bridge]]
 trait = "IntrLevel"

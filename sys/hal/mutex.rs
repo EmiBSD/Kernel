@@ -63,13 +63,16 @@
 //! under `MULTIPROCESSOR`, `__MUTEX_IPL`) before taking the owner word, so an interrupt
 //! handler of that level or below cannot run on this CPU and try to take it again; a CPU that
 //! finds it held spins, counted in its scheduler's `spc_spinning`; leaving it releases the
-//! owner word and then restores the level saved in the mutex (`mtx_oldipl`). It never
-//! sleeps. `ci_mutex_level` is counted under `DIAGNOSTIC`.
+//! owner word and then restores the level it replaced. It never sleeps. `ci_mutex_level` is
+//! counted under `DIAGNOSTIC`.
 //!
 //! The machine's `spl(9)` and the CPU's identity arrive through the `IntrLevel` and `CpuId`
 //! bridges (`intr.rs`, `cpu.rs`); before they are registered there are no interrupts and one
 //! CPU, and a mutex is a compare-and-swap of its owner word, which is all its exclusion ever
-//! rests on.
+//! rests on. The level a mutex raises to is fixed when it is entered, and the guard restores
+//! only a level it raised: a mutex entered before the `IntrLevel` bridge exists and left
+//! after it was registered restores nothing (the C fixes `mtx_wantipl` at init; this
+//! mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry).
 //!
 //! ## Deviations
 //! - The parking lots of the C's slow path (`mtx_park`, `mtx_enter_park`: a CPU that spun 40
@@ -83,9 +86,13 @@
 //!   not deadlock on a lock a stopped CPU holds. A `Mutexed` cannot hand out its data without
 //!   holding the lock (that would be a second `&mut`), so it takes the lock as usual then;
 //!   code that must run after a panic (the console output, `cons.rs`) does not take one.
+//!   `mtx_owned` keeps the C's answer: true after a panic or in ddb, whoever holds the mutex
+//!   (`<sys/mutex.h>`), since it only feeds assertions.
 //! - "locking against myself" (entering a mutex this CPU holds) panics in every
 //!   configuration, where the C checks it only under `DIAGNOSTIC` (and otherwise spins for
 //!   ever under `MULTIPROCESSOR`, or carries on with two owners without it).
+//! - `mtx_oldipl` is not kept in the mutex: the guard holds the level to restore, which only
+//!   the owner ever read.
 //!
 //! ## Redesign
 //! - LZ's `Mutex` is the C's `struct mutex` and free functions (`mtx_enter(&m)`, then the
@@ -98,7 +105,6 @@
 //!   compare-and-swap excludes even when the `CpuId` bridge answers wrongly, and the
 //!   uniprocessor build takes the same path: on one CPU the swap never fails but on a
 //!   recursion, which panics.
-//! - `mtx_oldipl` is an atomic written by the owner only, so the type needs no `Cell`.
 //! - `mtx_enter_try` is [`Mutexed::try_lock`], `None` when held elsewhere.
 //! - The legacy `Mutex` (129 files) keeps its API (the timing rule; decision 8 names the
 //!   owning type `Mutexed` beside it, the rename is N9's).
@@ -106,7 +112,7 @@
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cpu;
 use crate::intr::{self, IPL_NONE};
@@ -124,9 +130,6 @@ pub struct Mutexed<T> {
     owner: AtomicUsize,
     /// `mtx_wantipl`: the level entering raises to (before `__MUTEX_IPL`'s floor).
     wantipl: i32,
-    /// `mtx_oldipl`: the level to restore on leave; written by the owner after taking the
-    /// mutex, read by the owner before releasing it.
-    oldipl: AtomicI32,
     data: UnsafeCell<T>,
 }
 
@@ -136,7 +139,6 @@ impl<T> Mutexed<T> {
         Self {
             owner: AtomicUsize::new(0),
             wantipl: ipl,
-            oldipl: AtomicI32::new(IPL_NONE),
             data: UnsafeCell::new(value),
         }
     }
@@ -144,37 +146,30 @@ impl<T> Mutexed<T> {
     /// `mtx_enter(9)`: raises the level, then takes the mutex, spinning while another CPU
     /// holds it. Panics when this CPU holds it already ("locking against myself").
     pub fn lock(&self) -> MutexedGuard<'_, T> {
-        let want = self.want();
-        let s = raise(want);
+        let restore = self.raise();
         let me = self_word();
-        let found = self.cas(0, me);
+        let found = self.swap_in(me);
         if found != 0 {
             self.against_myself(found, me);
             cpu::spinning(1);
-            loop {
+            while !(self.owner.load(Ordering::Relaxed) == 0 && self.swap_in(me) == 0) {
                 core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-                if self.owner.load(Ordering::Relaxed) == 0 && self.cas(0, me) == 0 {
-                    break;
-                }
             }
             cpu::spinning(-1);
         }
-        self.locked(want, s)
+        self.held(restore)
     }
 
     /// `mtx_enter_try(9)`: the guard when the mutex was free; `None` (at the old level) when
     /// another CPU holds it. Panics when this CPU holds it.
     pub fn try_lock(&self) -> Option<MutexedGuard<'_, T>> {
-        let want = self.want();
-        let s = raise(want);
+        let restore = self.raise();
         let me = self_word();
-        let found = self.cas(0, me);
+        let found = self.swap_in(me);
         if found == 0 {
-            return Some(self.locked(want, s));
+            return Some(self.held(restore));
         }
-        if want != IPL_NONE {
-            intr::splx(s);
-        }
+        intr::restore(restore);
         self.against_myself(found, me);
         None
     }
@@ -194,26 +189,33 @@ impl<T> Mutexed<T> {
         self.owner.load(Ordering::Relaxed) != 0
     }
 
-    /// `mtx_owned(mtx)`: whether this CPU holds the mutex.
+    /// `mtx_owned(mtx)`: whether this CPU holds the mutex, or the kernel is past caring (after
+    /// a panic, in ddb), as the C answers for its assertions.
     pub fn owned(&self) -> bool {
-        self.owner.load(Ordering::Relaxed) == self_word()
+        self.owner.load(Ordering::Relaxed) == self_word() || cpu::past_caring()
     }
 
-    /// `__MUTEX_IPL(mtx_wantipl)`: under `MULTIPROCESSOR` at least `IPL_MPFLOOR`.
-    fn want(&self) -> i32 {
-        if cfg!(feature = "multiprocessor") {
+    /// Raises to `__MUTEX_IPL(mtx_wantipl)` (under `MULTIPROCESSOR` at least `IPL_MPFLOOR`),
+    /// read once, here; what [`intr::raise`] says to restore.
+    fn raise(&self) -> Option<i32> {
+        let want = if cfg!(feature = "multiprocessor") {
             self.wantipl.max(intr::mpfloor())
         } else {
             self.wantipl
+        };
+        if want == IPL_NONE {
+            None
+        } else {
+            intr::raise(want)
         }
     }
 
-    /// `mtx_cas`: the compare-and-swap of the owner word; the value found. Acquire on
-    /// success, so the data the previous owner wrote is visible (`membar_enter_after_atomic`).
-    fn cas(&self, expect: usize, new: usize) -> usize {
+    /// One attempt at the owner word, free to `me`; the value found (0 when taken). Acquire
+    /// on success, so the data the previous owner wrote is visible.
+    fn swap_in(&self, me: usize) -> usize {
         match self
             .owner
-            .compare_exchange(expect, new, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed)
         {
             Ok(found) | Err(found) => found,
         }
@@ -230,31 +232,14 @@ impl<T> Mutexed<T> {
         }
     }
 
-    /// The tail of `mtx_enter` once the owner word is ours: the old level saved in the mutex,
-    /// `ci_mutex_level` counted, the guard made.
-    fn locked(&self, want: i32, s: i32) -> MutexedGuard<'_, T> {
-        if want != IPL_NONE {
-            self.oldipl.store(s, Ordering::Relaxed);
-        }
+    /// The owner word is ours: `ci_mutex_level` counted, the guard made with what to restore.
+    fn held(&self, restore: Option<i32>) -> MutexedGuard<'_, T> {
         #[cfg(feature = "diagnostic")]
         cpu::mutex_level(1);
         MutexedGuard {
             lock: self,
+            restore,
             _not_send: PhantomData,
-        }
-    }
-
-    /// `mtx_leave(9)`: called by the guard's drop only, so the owner word is ours.
-    fn unlock(&self) {
-        #[cfg(feature = "diagnostic")]
-        cpu::mutex_level(-1);
-        let want = self.want();
-        let s = self.oldipl.load(Ordering::Relaxed);
-        // membar_exit_before_atomic(): the data written under the mutex is visible to the
-        // next owner, whose compare-and-swap acquires.
-        self.owner.store(0, Ordering::Release);
-        if want != IPL_NONE {
-            intr::splx(s);
         }
     }
 }
@@ -275,6 +260,8 @@ unsafe impl<T: Send> Sync for Mutexed<T> {}
 #[must_use = "dropping the guard at once leaves the mutex"]
 pub struct MutexedGuard<'a, T> {
     lock: &'a Mutexed<T>,
+    /// The level entering replaced, `None` when it raised none.
+    restore: Option<i32>,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -298,17 +285,13 @@ impl<T> DerefMut for MutexedGuard<'_, T> {
 }
 
 impl<T> Drop for MutexedGuard<'_, T> {
+    /// `mtx_leave(9)`: the owner word released (Release, so the next owner's swap sees every
+    /// write made under the mutex), then the level this guard raised put back.
     fn drop(&mut self) {
-        self.lock.unlock();
-    }
-}
-
-/// Raises to `want` unless it is `IPL_NONE`; the old level.
-fn raise(want: i32) -> i32 {
-    if want != IPL_NONE {
-        intr::splraise_raw(want)
-    } else {
-        IPL_NONE
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(-1);
+        self.lock.owner.store(0, Ordering::Release);
+        intr::restore(self.restore);
     }
 }
 

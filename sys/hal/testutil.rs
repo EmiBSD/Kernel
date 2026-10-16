@@ -76,6 +76,9 @@ std::thread_local! {
     static MALLOC_OUT: RefCell<BTreeMap<i32, isize>> = const { RefCell::new(BTreeMap::new()) };
 }
 
+/// The `IPL_HIGH` of the interrupt-level double (the host double of `bsd`'s).
+pub(crate) const IPL_HIGH: i32 = 0xd;
+
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
 
@@ -118,6 +121,10 @@ impl IntrLevel for TestIntr {
 
     fn mpfloor(&self) -> i32 {
         9
+    }
+
+    fn ipl_high(&self) -> i32 {
+        IPL_HIGH
     }
 }
 
