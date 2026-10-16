@@ -4203,8 +4203,7 @@ status = "inherited"
 notes = "M5-a: profclock_period and profclock (addupc_intr reported, struct process M5-b); GPROF/DDBPROF not configured; sys_profil and addupc_* are M6; M8: sys_profil's checks (EPERM without PSI_PROFILE, EINVAL above 1.0, scale 0 stops); struct uprof, prof_fork/exec/write, addupc_intr/task and start/stopprofclock are not ported, so the rest is reported"
 
 [[module]]
-rust = "sys/hal/rbtree.rs"
-crate = "hal"
+rust = "sys/kern/subr_tree.rs"
 lz = ["sys/kern/subr_tree.rs"]
 status = "redesigned"
 
@@ -5080,7 +5079,7 @@ status = "inherited"
 rust = "sys/net/pfvar.rs"
 lz = ["sys/net/pfvar.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/tree.rs"]
+adapted_by = ["sys/sys/tree.rs"]
 
 [[module]]
 rust = "sys/net/pfvar_priv.rs"
@@ -6102,8 +6101,7 @@ lz = ["sys/sys/protosw.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/hal/list.rs"
-crate = "hal"
+rust = "sys/sys/queue.rs"
 lz = ["sys/sys/queue.rs"]
 status = "redesigned"
 
@@ -6299,8 +6297,7 @@ lz = ["sys/sys/tprintf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/hal/tree.rs"
-crate = "hal"
+rust = "sys/sys/tree.rs"
 lz = ["sys/sys/tree.rs"]
 status = "redesigned"
 
@@ -6920,17 +6917,8 @@ rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
 
-[[extra]]
-rust = "sys/sys/queue.rs"
-reason = "re-export of the hal module sys/hal/list.rs for the 400+ users of the legacy tree; the timing rule (docs/ZERO_UNSAFE.md 0.8, N2.3)"
 
-[[extra]]
-rust = "sys/sys/tree.rs"
-reason = "re-export of the hal module sys/hal/tree.rs for the users of the legacy tree; the timing rule (docs/ZERO_UNSAFE.md 0.8, N2.3)"
 
-[[extra]]
-rust = "sys/kern/subr_tree.rs"
-reason = "re-export of the hal module sys/hal/rbtree.rs for the users of the legacy tree; the timing rule (docs/ZERO_UNSAFE.md 0.8, N2.3)"
 
 [[extra]]
 rust = "sys/hal/assert.rs"

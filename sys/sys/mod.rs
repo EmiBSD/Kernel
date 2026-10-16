@@ -96,7 +96,6 @@ pub mod poll;
 pub mod pool;
 pub mod proc;
 pub mod protosw;
-#[forbid(unsafe_code)]
 pub mod queue;
 pub use hal::sys::reboot;
 pub mod refcnt;
@@ -142,7 +141,6 @@ pub mod timeout;
 pub mod timetc;
 #[forbid(unsafe_code)]
 pub mod tprintf;
-#[forbid(unsafe_code)]
 pub mod tree;
 pub mod tty;
 pub mod ttycom;

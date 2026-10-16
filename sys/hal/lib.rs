@@ -43,19 +43,16 @@ pub mod cons;
 pub mod cpu;
 pub mod intr;
 pub mod kmbuf;
-pub mod list;
 pub mod malloc;
 pub mod mutex;
 pub mod once;
 pub mod percpu;
 pub mod pool;
-pub mod rbtree;
 pub mod refcnt;
 pub mod rwlock;
 pub mod sleep;
 #[cfg(test)]
 pub(crate) mod testutil;
-pub mod tree;
 pub(crate) mod trust;
 pub mod user;
 /* </CODE> */
