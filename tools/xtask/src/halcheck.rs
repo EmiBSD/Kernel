@@ -155,7 +155,8 @@ pub(crate) fn check_source(rel: &str, src: &str, test_file: bool) -> FileCheck {
         }
     }
     for (i, t) in lexed.toks.iter().enumerate() {
-        if *t == Tok::Ident("static".into()) && lexed.toks.get(i + 1) == Some(&Tok::Ident("mut".into()))
+        if *t == Tok::Ident("static".into())
+            && lexed.toks.get(i + 1) == Some(&Tok::Ident("mut".into()))
         {
             add(lexed.lines[i], "static mut is forbidden");
         }

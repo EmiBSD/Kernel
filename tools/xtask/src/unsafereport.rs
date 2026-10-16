@@ -171,7 +171,7 @@ pub(crate) struct Ratchet {
 }
 
 /// The rows and the ratchet of `unsafe-budget.toml`; empty and `None` when the file is absent.
-fn load_budget(root: &Path) -> Result<(BTreeMap<String, usize>, Option<Ratchet>)> {
+pub(crate) fn load_budget(root: &Path) -> Result<(BTreeMap<String, usize>, Option<Ratchet>)> {
     let path = root.join(BUDGET_FILE);
     if !path.is_file() {
         return Ok((BTreeMap::new(), None));

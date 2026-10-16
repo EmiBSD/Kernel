@@ -102,6 +102,11 @@
 //!                                          kernel file with its lineage status, group,
 //!                                          `unsafe` and shapes, the totals, the ratchet and
 //!                                          the pace since its baseline (what /progress reads)
+//! cargo xtask hal-check                    the rules of the hal crate (sys/hal/): no `pub unsafe
+//!                                          fn`, a `// SAFETY:` comment above every `unsafe`
+//!                                          block, no `static mut`, the crate's `unsafe` at or
+//!                                          under hal_ceiling of unsafe-budget.toml
+//!                                          (halcheck.rs)
 //! cargo xtask symbolize --arch A [--kernel K]
 //!                                          annotate the addresses of a stack trace on stdin
 //!                                          with K's symbols (default: the debug kernel)
@@ -143,6 +148,7 @@ mod diffopenbsd;
 mod distrib;
 mod e2fs;
 mod efiboot;
+mod halcheck;
 mod https;
 mod hwopts;
 mod install;
@@ -314,6 +320,7 @@ fn run(args: &[String]) -> Result<()> {
             smokeall::smoke_all(&root, a.jobs, a.just, &a.recipes)
         }
         ["diff-openbsd", rest @ ..] => diffopenbsd::diff_openbsd(&root, rest),
+        ["hal-check"] => halcheck::hal_check(&root),
         ["unsafe-report", flags @ ..] => unsafereport::unsafe_report(
             &root,
             flags.contains(&"--write"),
