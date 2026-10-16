@@ -21,9 +21,8 @@ fixes under way); 6. pipe(2) into `kernel`; 7. the close per decision 24: integr
 build`, `just check`, one `just ci`, one `just diff-openbsd`, push; `ci-full` at N3. Decisions
 26-28 and 30 taken today; the rest of the hardware moves by owner (N3 pmap, N4 cpu, N7 bus).
 
-Unsafe today (`cargo xtask unsafe-report`, 2026-10-16): `kernel` 0, `abi` 0, `hal` 1 (ceiling
-2,150), `kernel` 20 files, `bsd` 10,603 in 1,100 files (8,906 legacy + 1,697 hardware, host double, lists and trees
-not moved yet), boot loaders 621; total 11,225. At N9: `hal` ~1,430, `bsd` deleted, boot 621 (0.7).
+Unsafe (`cargo xtask unsafe-report`): kernel 8913 blocks, 1126 fn, 829 impl, 30 trait, 340 other; tests 903 more; core 2512, legacy 8726, forbid 320 of 1195 modules; crates: kernel 0, abi 0, hal 35, bsd 10582 (1697 to move into hal), boot 621.
+
 Blockers (inherited from LZ; not regressions): amd64 kernel stacks tight (~4.9 KB free under
 softraid I/O); a `diagnostic` MP kernel panics at boot; flakes: amd64 serial cut at QEMU exit,
 host test `no idleproc set on CPU0` (~1 in 80), EDK2 UhciDxe ASSERT on arm64 (~1 in 5).
