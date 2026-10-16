@@ -22,7 +22,8 @@
 //! The image is a raw disk with one MBR partition holding a FAT file system: Limine's UEFI
 //! binary at `EFI/BOOT/BOOT{X64,AA64}.EFI`, `limine.conf` at the root, the kernel at `/bsd`
 //! and the boot modules: `/init` (the freestanding init of `init/`) and `/ramdisk.ffs` (the
-//! root file system image `just userland` makes, rd(4)'s image), each when it exists.
+//! root file system image `just userland` makes, rd(4)'s image) and, N2.4, `/abi-openbsd.ko`
+//! (the ABI module `just build-abi-<arch>` makes), each when it exists.
 //! QEMU boots it with EDK2 firmware; the kernel's serial console is on stdio and, under feature
 //! `qemu`, the kernel ends the emulator with a status `smoke` checks.
 
@@ -181,6 +182,10 @@ const PART_START: u64 = 2048;
 /// The ramdisk module's name on the ESP and in `limine.conf`; `sys/stand` looks it up by
 /// this name and hands it to rd(4).
 pub const RAMDISK_MODULE: &str = "ramdisk.ffs";
+
+/// N2.4 (decision 22): the ABI module's name on every boot medium and in `limine.conf`;
+/// `sys/stand` looks the Limine module up by it, boot(8) reads `/` of it.
+pub const ABI_MODULE: &str = "abi-openbsd.ko";
 
 /// The environment variable naming a run's directory (see [`run_dir`]).
 pub(crate) const RUN_DIR_ENV: &str = "EMIBSD_RUN_DIR";
@@ -430,6 +435,8 @@ pub fn image_tagged(
         crate::userland::check_ramdisk_devices(r)?;
     }
     let ramdisk_bytes = ramdisk.map(read).transpose()?;
+    let abi_module = default_abi_module(root, arch);
+    let abi_bytes = abi_module.as_deref().map(read).transpose()?;
     let efi_path = limine_file(arch.limine_efi())?;
     let efi = read(&efi_path)?;
     let mut conf = read(&root.join("sys/stand/limine.conf"))?;
@@ -446,6 +453,9 @@ pub fn image_tagged(
     }
     if ramdisk_bytes.is_some() {
         conf.extend_from_slice(format!("    module_path: boot():/{RAMDISK_MODULE}\n").as_bytes());
+    }
+    if abi_bytes.is_some() {
+        conf.extend_from_slice(format!("    module_path: boot():/{ABI_MODULE}\n").as_bytes());
     }
 
     let path = image_path(root, arch, tag);
@@ -484,11 +494,14 @@ pub fn image_tagged(
                 .create_file(RAMDISK_MODULE)?
                 .write_all(ramdisk_bytes)?;
         }
+        if let Some(abi_bytes) = &abi_bytes {
+            root_dir.create_file(ABI_MODULE)?.write_all(abi_bytes)?;
+        }
     }
     fs.unmount()?;
 
     println!(
-        "xtask: {} ({} KiB kernel, {} from {}{}{})",
+        "xtask: {} ({} KiB kernel, {} from {}{}{}{})",
         path.display(),
         kernel_bytes.len() / 1024,
         arch.limine_efi(),
@@ -503,6 +516,10 @@ pub fn image_tagged(
                 p.display()
             ),
             _ => format!(", no {RAMDISK_MODULE} (run `just userland`)"),
+        },
+        match &abi_bytes {
+            Some(b) => format!(", {ABI_MODULE} ({} KiB)", b.len().div_ceil(1024)),
+            None => format!(", no {ABI_MODULE} (run `just build-abi-{}`)", arch.name()),
         }
     );
     Ok(path)
@@ -864,6 +881,19 @@ pub fn default_init(root: &Path, arch: Arch) -> Option<PathBuf> {
         .join(arch.target())
         .join("debug")
         .join("init");
+    p.is_file().then_some(p)
+}
+
+/// The ABI module every boot medium carries as `/abi-openbsd.ko`: the one
+/// `just build-abi-<arch>` left in `target/abi/`, if it exists (without it the kernel says
+/// so and takes every system call through its legacy path).
+pub fn default_abi_module(root: &Path, arch: Arch) -> Option<PathBuf> {
+    let p = root
+        .join("target")
+        .join("abi")
+        .join(arch.target())
+        .join("debug")
+        .join("abi-openbsd");
     p.is_file().then_some(p)
 }
 

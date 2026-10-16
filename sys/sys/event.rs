@@ -82,6 +82,10 @@
 //!   safety contract.
 //! - The prototypes are their functions in `kern/kern_event.rs`; `knote_modify_fn` and
 //!   `knote_process_fn` take the event function as an `fn` pointer, as in C.
+//! - A klist may be made by [`Klist::owned`] (`kl_owned`), a kind the C does not have: its
+//!   lock is its owner's, held by the owner around every `_locked` call (pipe(2), whose pair
+//!   lock is `sys/kernel/pipe.rs`'s guard, decision 13). The C's rwlock klistops would need
+//!   `unsafe fn` callbacks over a lock the kernel crate owns; this kind needs none.
 
 use core::cell::Cell;
 use core::ffi::c_void;
@@ -579,6 +583,9 @@ pub struct Klist {
     pub kl_ops: Cell<Option<&'static Klistops>>,
     /// `kl_arg`: the lock, for `kl_ops`.
     pub kl_arg: Cell<*const c_void>,
+    /// The list's lock is its owner's ([`Klist::owned`]): only the `_locked` forms may touch
+    /// it, under the owner's lock; `kl_ops` and `kl_arg` are unused.
+    pub kl_owned: Cell<bool>,
 }
 
 // SAFETY: a klist is touched under its lock (`kl_ops`) or the kernel lock at `splhigh`, as in
@@ -592,6 +599,20 @@ impl Klist {
             kl_list: SlistHead::new(),
             kl_ops: Cell::new(None),
             kl_arg: Cell::new(ptr::null()),
+            kl_owned: Cell::new(false),
+        }
+    }
+
+    /// An empty klist whose lock is its owner's: the owner calls only the `_locked` forms
+    /// (`klist_insert_locked`, `klist_remove_locked`, `knote_locked`), holding its own lock,
+    /// which `KLIST_ASSERT_LOCKED` cannot see; the forms that take the list's lock themselves
+    /// (`klist_insert`, `klist_remove`, `knote`, `klist_invalidate`) panic on it.
+    pub const fn owned() -> Self {
+        Self {
+            kl_list: SlistHead::new(),
+            kl_ops: Cell::new(None),
+            kl_arg: Cell::new(ptr::null()),
+            kl_owned: Cell::new(true),
         }
     }
 }

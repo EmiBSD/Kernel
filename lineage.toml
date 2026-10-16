@@ -151,7 +151,7 @@ notes = "BSD-4-clause (Wasabi), BSD-2-clause (NetBSD Foundation) and BSD-3-claus
 [[module]]
 rust = "sys/arch/amd64/amd64/machdep.rs"
 lz = ["sys/arch/amd64/amd64/machdep.rs"]
-status = "inherited"
+status = "redesigned"
 notes = "M2: init_x86_64 (message buffer, consinit, boot -d -> db_enter), boot (cold path; under feature qemu the key wait is the failure exit; resettodr/if_downall/uvm_shutdown/dumpsys/config_suspend_all/cpu_reset reported unported; M14: vfs_shutdown is called, as the C does), delay (the DELAY macro over delay_func), cpureset_delay, lid_action, waittime; M3: the direct map, pmap_bootstrap, the memory clusters, cpu_startup's memory lines; M4: setgate/unsetgate/setregion/set_mem_segment/set_sys_segment, idt (a static page) and idt_allocmap, cpu_init_idt, idt_vec_alloc/alloc_range/set/free, x86_64_proc0_tss_ldt_init (ltr/lldt only, proc0's pcb reported), splassert_check, the GDT/TSS/IDT setup and cpu_init_msrs first thing in init_x86_64, which ends as the C does (intr_default_setup, softintr_init, splraise(IPL_IPI), intr_enable), cpu_enter_pages from cpu_startup; the bootinfo parsing, the ACPI/MP tables, cpu_init, dumpsys, sendsig/setregs, sysctl are M5 to M6; M5: startclocks in cpu_startup (rtcinit reported, M7), initclock_func/startclock_func (StaticCells with setters), cpu_initclocks, cpu_startclock, need_resched (aston reported, M5-b); M5-b1: proc0paddr (a static u-area; the boot stack stays Limine's), x86_64_proc0_tss_ldt_init sets ci_curpcb, pcb_fsbase, pcb_kstack, md_regs and (a deviation, for cpu_switchto) pcb_cr3 = %cr3; M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), aston, clear_resched, cpu_unidle (UP), cpu_idle_cycle_hlt/cpu_idle_cycle (cpu_idle_cycle_fcn is a direct call until acpicpu); cold moved to sys/systm.rs; M6-b2: reset_segs, setregs (MDP_IRET, pcb_fsbase, the user trap frame; initialize_thread_xstate is M6-c); kern_sig.c: sendsig, sys_sigreturn (through machine::MachineSignal), copyoutfpu, initialize_thread_xstate (reported: fpu.c), signotify (aston; cpu_kick is MULTIPROCESSOR), setregs calls initialize_thread_xstate; without fpu.c fpu_save_len is the fxsave size, cpu_use_xsaves is false, fpusave/fpureset/fpu_cleandata/xrstor_user are reported, so a handler shares the interrupted code's FPU state; the bootinfo parsing, the ACPI/MP tables, cpu_init, dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: startclocks in cpu_startup (rtcinit reported, M7), initclock_func/startclock_func (StaticCells with setters), cpu_initclocks, cpu_startclock, need_resched (aston reported, M5-b); M5-b1: proc0paddr (a static u-area; the boot stack stays Limine's), x86_64_proc0_tss_ldt_init sets ci_curpcb, pcb_fsbase, pcb_kstack, md_regs and (a deviation, for cpu_switchto) pcb_cr3 = %cr3; M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), aston, clear_resched, cpu_unidle (UP), cpu_idle_cycle_hlt/cpu_idle_cycle (cpu_idle_cycle_fcn is a direct call until acpicpu); cold moved to sys/systm.rs; M6-b2: reset_segs, setregs (MDP_IRET, pcb_fsbase, the user trap frame; initialize_thread_xstate is M6-c); vfs stage 2: cpu_startup calls bufinit after the memory lines, as the C does; M8: cpu_startup makes exec_map (uvm_km_suballoc of 16 * NCARGS, VM_MAP_PAGEABLE); M8: copyin32 (alignment check, then copyin) behind machine::copy; M8: fpuinit from init_x86_64; initialize_thread_xstate (the non-XSAVES branch), sendsig fpusave and sys_sigreturn fpureset/fpu_cleandata/xrstor_user are real; fpu_save_len is fpu.c's; TSC: delay_func (StaticCell<fn(i32)>, delay_is_i8254), amd64_delay_quality, delay_init, delay_fini, cpu_set_vendor; init_x86_64 does locore0.S's CPUID probe (cpuid_level, cpu_vendor, cpu_id, cpu_*feature with CPUID_NXE) before cpu_set_vendor; the meltdown and SEV probes are not there; M10a: cpu_startup makes phys_map (uvm_km_suballoc of VM_PHYS_SIZE, flags 0) and stores it in uvm_extern's PHYS_MAP, as it does exec_map; M11a: the MULTIPROCESSOR parts: cpu_kick (X86_IPI_NOP to another CPU; no mwait, cpu_init_mwait is not ported), cpu_unidle's IPI, need_resched's cpu_kick (ci_want_resched is atomic), signotify's cpu_kick(p->p_cpu), boot's x86_broadcast_ipi(X86_IPI_HALT); init_x86_64 keeps BootInfo::mp in cpu.rs's BOOT_MP for mainbus_attach and mp_cpu_start (the C reads the ACPI/MP tables during autoconfiguration); map_tramps' MP trampoline pages and the avail_start floor are replaced-by-limine; M13: cpu_sysctl (through machine::cpu::cpu_sysctl, called by sys_sysctl for CTL_MACHDEP) is ported: consdev, chr2blk, cpuvendor, kbdreset (sysctl_securelevel_int), allowaperture (the #else: 0, APERTURE not configured), tscfreq, vmmode (cpu_sev_guestmode stays 0: the SEV probe is not ported), cpuid, cpufeature and the sysctl_bounded_arr table (hibernatedelay, lidaction, pwraction, xcrypt, invarianttsc, retpoline); bios_sysctl is EOPNOTSUPP as the C answers without bootapiver BAPIV_VECTOR (Limine passes no boot arguments: BIOS_DEV/BIOS_DISKINFO/BIOS_CKSUMLEN unreachable); forceukbd (M16d, with pckbc(4): read-only once set, else sysctl_int and, when set, pckbc_release_console); amd64_has_xcrypt (identcpu.rs) stays 0 (via_nano_setup not ported) and need_retpoline (cpu.rs) stays 1 (no codepatch); kbd_reset and hibernate_delay are statics here; the CPU_* names and CTL_MACHDEP_NAMES are in include/cpu.rs; M14 (A2, the boot(8) entry): getbootinfo (the bootarg32 walk: BOOTARG_MEMMAP, DISKINFO (its record kept, bios_getdiskinfo not ported), APMINFO/PCIINFO ignored as in C, CKSUMLEN, CONSDEV (comcons* except comconsiot: consinit attaches in I/O space), BOOTMAC, DDB, BOOTDUID, BOOTSR (copied, then zeroed), EFIINFO, UCODE) behind machine::Cpu::getbootinfo, with init_x86_64's boot(8) half: the bootapiver and size checks, the EFI memory map relocated to first_avail, avail_start (MP trampolines), the bios_memmap flensing into a MemMap (the [IOM_END, KERNTEXTOFF) block only where boot(8) says free; memory above the 4 GB locore0 maps is reported, pmap_bootstrap's direct-map extension is not ported), pmap_direct_base without pmap_direct_rand; init_x86_64 calls pmap_prealloc_lowmem_ptps after a boot(8) boot; map_tramps (the MP half; the lo32 bounce page reported; nothing under Limine); the globals ssym, esym, bootdev, biosbasemem, bootapiver, bootinfo[], bootinfo_size, bios_cksumlen, bios_diskinfo, bios_efiinfo, bios_ucode, avail_start; the CPUs come from a MADT walk (cpu.rs mp_madt_cpus) since acpimadt.c is not ported; M13 (rasops): bios_efiinfo() (reads BIOS_EFIINFO, which getbootinfo fills after a boot(8) boot and init_x86_64 under Limine when the machine booted through UEFI): config_acpi, system_table and the fb_* fields from Limine's framebuffer response (masks from the channel sizes and shifts, the reserved mask the rest of the pixel), for efifb(4); M16e: bios_memmap kept as its record's place in bootinfo[] (BIOS_MEMMAP) with bios_memmap() over its entries; empty under Limine; M16e: cpu_idle_cycle_fcn and cpu_suspend_cycle_fcn (StaticCells written while cold), setperf_prio, cpu_idle_cycle through cpu_idle_cycle_fcn, cpu_kick and cpu_unidle with their mwait branches (cpu_mwait_size, MWAIT_IN_IDLE/KEEP_IDLING/ONLY); M16d: etext() (the linker script's etext, machine::Cpu::etext, for rnd.c's random_start)"
 
 [[module]]
@@ -185,7 +185,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/amd64/trap.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/syscall.rs"]
 notes = "M4: trap_type[], trap_types, fault (writes ci_panicbuf), pgex2access, kpageflttrap (returns 0 at the curproc check, as C with p == NULL; the pcb_onfault/SMEP/SMAP/uvm_fault code behind it is ported with uvm_fault reported), kerntrap (x86_nmi from intr.c, verify_smap M4-b2, debug_trap is the DEBUG option), trap_print; upageflttrap, usertrap, ast, syscall, frame_dump, verify_pkru, vctrap are M6; M6-a: syscall, ast, child_return; kpageflttrap checks pcb_onfault against the .nofault table and resumes there (uvm_fault still reported); M6-b: syscall hands the six argument registers as a SysArgs block; M6-b2: usertrap (the signal table; verify_pkru, fputrap and uvm_map_inentry reported), upageflttrap (uvm_fault reported: a user fault is SIGSEGV), frame_dump (always on, as TRAP_SIGDEBUG); trapsignal is a stand-in that prints and lets the process die of the signal through exit1 until kern_sig.c (M6-c); M7a-3b: kpageflttrap and upageflttrap call uvm_fault (kernel_map or the process's vm_map, the PROT_EXEC retry without NX); uvm_grow reported; M7a-3b: usertrap's uvm_map_inentry stack check before a user page fault, uvm_grow after a served fault; kern_sig.c: usertrap and upageflttrap call kern_sig's trapsignal with the C's sigval (rip, cr2) and usertrap ends in userret; the siginfo codes come from sys/siginfo.rs (the local ILL_BTCFI was 10, the C's is 9); fputrap reported (SIGFPE code 0); M8: child_return behind machine::cpu; M11a: child_return's KERNEL_UNLOCK() (the kernel lock proc_trampoline_mi takes for a new thread with MULTIPROCESSOR), ast reads ci_want_resched as the atomic other CPUs set; the system call's kernel lock is mi_syscall's; verify_pkru's KERNEL_LOCK/sigabort waits for PKU (M6-b); fpageqlock, malloc_mtx and the pool locks are real; M11e: kpageflttrap and upageflttrap run uvm_fault and uvm_grow without the kernel lock, as the C"
 
 [[module]]
@@ -220,7 +221,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/include/biosvar.rs"
 lz = ["sys/arch/amd64/include/biosvar.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/amd64/include/bus.rs"
@@ -515,7 +516,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/conf.rs"
 lz = ["sys/arch/amd64/stand/efiboot/conf.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/dev_i386.rs"
@@ -550,7 +551,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/exec_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/exec_i386.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/heap.rs"
@@ -710,7 +711,7 @@ license = "none"
 [[module]]
 rust = "sys/arch/arm64/arm64/machdep.rs"
 lz = ["sys/arch/arm64/arm64/machdep.rs"]
-status = "inherited"
+status = "redesigned"
 notes = "M2: initarm (the 1 GiB TTBR0 Device-nGnRnE identity block for devices until pmap, message buffer, consinit, boot -d -> db_enter), boot (cold path; under feature qemu the key wait is the failure exit; vfs_shutdown/resettodr/if_downall/uvm_shutdown/dumpsys/config_suspend_all reported unported), cold, waittime, cpuresetfn, powerdownfn; the bootargs parsing is BootInfo::boothowto; M3: the memory setup and pmap_bootstrap; M4: cpu_info_primary, SP_EL1/tpidr_el1/VBAR_EL1 first thing, fdt_init of the bootloader DTB, consinit = pluart_init_cons (the other *_init_cons are deferred drivers), stdout_node/stdout_speed, fdt_find_cons, (M8: cn_rx_intr_establish is gone; pluart_fdt_attach establishes the console's interrupt); cpu_info[], dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: need_resched (aston reported, M5-b); M5-b1: proc0paddr and proc0tf statics, cpu_startup sets proc0.p_addr and curpcb (pcb_flags, pcb_tf); M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), cpu_idle_enter/cycle/leave (cpu_wfi), cpu_switchto (fpu_drop then cpuswitch.S), aston, clear_resched, cpu_unidle (UP); cold moved to sys/systm.rs; M6-b2: setregs (pm_guarded from EXEC_NOBTCFI, the FPU state dropped, the EL0 trap frame with PSR_M_EL0t|PSR_DIT; pmap_setpauthkeys M7); vfs stage 2: cpu_startup calls bufinit before avail mem, as the C does; M4: cpu_info_primary, SP_EL1/tpidr_el1/VBAR_EL1 first thing, fdt_init of the bootloader DTB, consinit = pluart_init_cons (the other *_init_cons are deferred drivers), stdout_node/stdout_speed, fdt_find_cons, cn_rx_intr_establish (the console receive interrupt pluart_fdt_attach would establish, until autoconf M5); cpu_info[], dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: need_resched (aston reported, M5-b); M5-b1: proc0paddr and proc0tf statics, cpu_startup sets proc0.p_addr and curpcb (pcb_flags, pcb_tf); M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), cpu_idle_enter/cycle/leave (cpu_wfi), cpu_switchto (fpu_drop then cpuswitch.S), aston, clear_resched, cpu_unidle (UP); cold moved to sys/systm.rs; M6-b2: setregs (pm_guarded from EXEC_NOBTCFI, the FPU state dropped, the EL0 trap frame with PSR_M_EL0t|PSR_DIT; pmap_setpauthkeys M7); vfs stage 2: cpu_startup calls bufinit before avail mem, as the C does; M8: cpu_startup makes exec_map (uvm_km_suballoc of 16 * NCARGS, VM_MAP_PAGEABLE); efi(4): mmap/mmap_size/mmap_desc_size/mmap_desc_ver (the UEFI memory map from the boot protocol, relocated into a static buffer, efi_mmap) and system_table (SYSTEM_TABLE, an initarm local in C) instead of efiboot's openbsd,uefi-* properties; M10a: cpu_startup makes phys_map (uvm_km_suballoc of VM_PHYS_SIZE, flags 0) and stores it in uvm_extern's PHYS_MAP, as it does exec_map; M11a: cpu_info[MAXCPUS] (CiPtr, cpu_info_primary first), cpu_info_list() (cpu.c's), cpu_idle_cycle_fcn (StaticCell, cpu_wfi), need_resched's cpu_kick, the MULTIPROCESSOR signotify (aston + cpu_unidle(p->p_cpu)), ci_want_resched atomic; initarm keeps BootInfo.mp in BOOT_MP for cpu_start_secondary; cpu_unidle moved to cpu.rs; M13: cpu_sysctl (through machine::cpu::cpu_sysctl, called by sys_sysctl for CTL_MACHDEP) is ported: compatible (the root node's property through OF_getprop), the id_aa64* quads (smfr0 is 0 as in C), led_blink (the C then calls blink_led_timeout, which returns at once with no blink_led registered: blink_led_register and the LED drivers are not ported) and the sysctl_bounded_arr table (lidaction, lid_action is a static in machdep.rs, nothing reads it until aplsmc); the CPU_* names and CTL_MACHDEP_NAMES are in include/cpu.rs; M13: cpuresetfn/powerdownfn are set by psci(4) (dev/fdt/psci.c) through machine::fdt::set_cpuresetfn/set_powerdownfn, so boot() powers off (halt -p: SYSTEM_OFF) and resets (reboot: SYSTEM_RESET) through PSCI; cpu_reset is boot()'s doreset path; M14 (A3): boot(8)'s entry: getbootinfo (the /chosen half of initarm: bootargs via collect_kernel_args/process_kernel_args, openbsd,boothowto/bootduid/bootmac/sr-bootuuid/sr-bootkey (explicit_bzero of the props)/uefi-mmap-*/uefi-system-table/dma-constraint), the memory (EFI map Conventional/BootServices, /memory fallback, /reserved-memory no-map, the 64 MB block, its part after esym usable; memreg_add/memreg_remove), FDT and EFI map read in place through locore0.S's direct map (bootarg_direct_map, not in the C, maps the RAM gigabytes); dma_constraint stays constant, a narrower one is reported by initarm; BootMp from /cpus with PSCI CPU_ON through dev/fdt/psci.rs's psci_cpu_on (psci attaches before the processors); M14: boot() calls vfs_shutdown(curproc) (skipped with no thread on the CPU), so a halt or reboot syncs the disks; M13 (wsdisplay): consinit calls simplefb_init_cons(&arm64_bs_tag) after pluart_init_cons, as the C does (the frame buffer is the console only when stdout-path names it); M16d: etext() (kernel.ld now provides etext), machine::Cpu::etext; initarm records the kernel image's range and physical offset for pmap_extract"
 
 [[module]]
@@ -733,7 +734,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/arm64/syscall.rs"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/syscall.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/trap.rs"
@@ -981,7 +983,7 @@ notes = "address-space bounds and physical segment policy; M6-b: USRSTACK and th
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
 lz = ["sys/arch/arm64/stand/efiboot/conf.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/disk.rs"
@@ -1003,7 +1005,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efiboot.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiboot.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efidev.rs"
@@ -3967,13 +3969,15 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start"
 
 [[module]]
 rust = "sys/kern/init_sysent.rs"
 lz = ["sys/kern/init_sysent.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 license = "none"
 
 [[module]]
@@ -4006,7 +4010,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/kern_event.rs"
 lz = ["sys/kern/kern_event.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 
 [[module]]
 rust = "sys/kern/kern_exec.rs"
@@ -4120,7 +4125,8 @@ notes = "wakeup(9) and wakeup_one(9) report themselves unported: nothing sleeps 
 [[module]]
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 
 [[module]]
 rust = "sys/kern/kern_task.rs"
@@ -4262,9 +4268,21 @@ lz = ["sys/kern/sys_generic.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/kern/sys_pipe.rs"
+rust = "sys/kern/pipe_glue.rs"
 lz = ["sys/kern/sys_pipe.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::fp_pipe"
+native = ["pipe_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::kn_pipe"
+native = []
+kind = "dropped"
+reason = "kn_hook holds the index of the pipe whose klist the knote is on (filt_pipedetach reads it with Dir::from_index); there is no pointer to cast back"
 
 [[module]]
 rust = "sys/kern/sys_socket.rs"
@@ -5715,7 +5733,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/boot.rs"
 lz = ["sys/stand/boot/boot.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/stand/boot/bootarg.rs"
@@ -5725,7 +5743,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/cmd.rs"
 lz = ["sys/stand/boot/cmd.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/stand/boot/vars.rs"
@@ -5914,7 +5932,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/event.rs"
 lz = ["sys/sys/event.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 
 [[module]]
 rust = "sys/sys/eventvar.rs"
@@ -5953,7 +5972,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/file.rs"
 lz = ["sys/sys/file.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/pipe.rs"]
 
 [[module]]
 rust = "sys/sys/filedesc.rs"
@@ -6084,11 +6104,6 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/percpu.rs"
 lz = ["sys/sys/percpu.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/sys/pipe.rs"
-lz = ["sys/sys/pipe.rs"]
 status = "inherited"
 
 [[module]]
@@ -6793,6 +6808,25 @@ status = "inherited"
 license = "none"
 notes = "struct uvmexp with every field atomic (one static, no lock), the VM_* sysctl ids, the counters enum; M7a-3: uvmexp_counters as one array for the one CPU with counters_inc/counters_read; kern_sysctl.c: UvmexpCopy (the plain #[repr(C)] struct uvmexp of ints, SysctlPlain) and Uvmexp::snapshot for VM_UVMEXP; M11e: uvmexp_counters stay one array of relaxed atomics bumped by every CPU (correct under MULTIPROCESSOR; the C's per-CPU copies, counters_alloc_ncpus, only spread the cache lines)"
 
+[[module]]
+rust = "sys/hal/syscall.rs"
+lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
+status = "redesigned"
+crate = "hal"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi-openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/trap.rs::syscall"
+native = ["sys/arch/amd64/amd64/trap.rs::syscall", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
+kind = "split"
+lines = "L352-L357"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
+native = ["sys/arch/arm64/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
+kind = "split"
+lines = "L83-L88"
+
 [[extra]]
 rust = "sys/arch/amd64/amd64/qemu.rs"
 reason = "M0 bootstrap: QEMU isa-debug-exit under feature qemu; not OpenBSD code"
@@ -6933,6 +6967,106 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
+
+
+
+
+[[extra]]
+rust = "sys/hal/assert.rs"
+crate = "hal"
+reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that names nothing of the kernel (through the image's panic handler); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/once.rs"
+crate = "hal"
+reason = "hal runtime, written new: OnceStatic<T>, the init-once static that replaces StaticCell for new code; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/bridges.rs"
+crate = "hal"
+reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/intr.rs"
+crate = "hal"
+reason = "hal runtime, written new: the interrupt-level guard and the IntrLevel bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/cpu.rs"
+crate = "hal"
+reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/testutil.rs"
+crate = "hal"
+reason = "hal host tests: the doubles of the bridges, registered once per test process (cfg(test) only)"
+
+[[module]]
+rust = "sys/hal/mutex.rs"
+crate = "hal"
+lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs"]
+status = "redesigned"
+notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9)"
+
+[[module]]
+rust = "sys/hal/percpu.rs"
+crate = "hal"
+lz = ["sys/kern/subr_percpu.rs", "sys/sys/percpu.rs"]
+status = "redesigned"
+notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the legacy cpumem stays in bsd for its users and is deleted with the last one (N9)"
+
+[[extra]]
+rust = "sys/hal/sleep.rs"
+crate = "hal"
+reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; docs/ZERO_UNSAFE.md 0.1"
+
+[[module]]
+rust = "sys/hal/rwlock.rs"
+crate = "hal"
+lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs"]
+status = "redesigned"
+notes = "N2.3: Rwlocked<T>, rw_enter(9)'s behaviour re-expressed as a lock that owns its data, with rwsleep on the guard; the legacy Rwlock and kern_rwlock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9)"
+
+[[module]]
+rust = "sys/hal/refcnt.rs"
+crate = "hal"
+lz = ["sys/sys/refcnt.rs", "sys/kern/kern_synch.rs"]
+status = "redesigned"
+notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and its functions in kern_synch.rs stay in bsd for their users and are deleted with the last one"
+
+[[extra]]
+rust = "sys/hal/kmbuf.rs"
+crate = "hal"
+reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/pool.rs"
+crate = "hal"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; docs/ZERO_UNSAFE.md 0.1, decision 10"
+
+[[extra]]
+rust = "sys/hal/malloc.rs"
+crate = "hal"
+reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; docs/ZERO_UNSAFE.md 0.1, decision 19"
+
+[[extra]]
+rust = "sys/hal/user.rs"
+crate = "hal"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; docs/ZERO_UNSAFE.md 0.1, decision 17"
+
+[[extra]]
+rust = "sys/hal/cons.rs"
+crate = "hal"
+reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpollc, a fmt::Write sink) and the Console bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/trust.rs"
+crate = "hal"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30"
+
+[[extra]]
+rust = "sys/kern/hal_bridges.rs"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"
@@ -6947,3 +7081,168 @@ reason = "copy of sys/reftest.rs so the crypto tests moved into kernel keep crat
 rust = "sys/kernel/crypto/testutil.rs"
 crate = "kernel"
 reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded xorshift) so the crypto tests moved into kernel keep crate::crypto::testutil byte-identical; bsd keeps its own for the framework files that stay; the copies merge when those move"
+
+[[extra]]
+rust = "sys/kernel/api.rs"
+crate = "kernel"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
+
+[[extra]]
+rust = "sys/abi/sysent.rs"
+crate = "abi"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native"
+
+[[extra]]
+rust = "sys/hal/module/rt.rs"
+crate = "hal"
+reason = "N2.4a: the runtime of the ABI module abi-openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
+
+[[extra]]
+rust = "sys/hal/module/elf.rs"
+crate = "hal"
+reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and the AMD64/AArch64 supplements' structures as #[repr(C)] read field by field with checked offsets (no crate, docs/ARCHITECTURE.md Dependencies); a static PIE of the running machine, page-aligned W^X PT_LOADs, RELATIVE relocations only"
+
+[[extra]]
+rust = "sys/hal/module/load.rs"
+crate = "hal"
+reason = "N2.4a (decision 22): the loader of abi-openbsd.ko: placement, relocation, mapping each page with its segment's protection through ModulePlatform (bsd's pmap and boot hand-over until N2.2, the platform premise), the header check, the call of abi_init, the boot line"
+
+[[extra]]
+rust = "sys/kern/abi_module.rs"
+reason = "N2.4a: bsd's side of abi-openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the kernel's km_alloc/pmap_extract/pmap_enter and the boot hand-over, and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+
+[[extra]]
+rust = "sys/hal/api.rs"
+crate = "hal"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type"
+
+[[module]]
+rust = "sys/kernel/pipe.rs"
+crate = "kernel"
+lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]
+status = "redesigned"
+notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PipePair::default"
+native = []
+kind = "dropped"
+reason = "a pair is built only by Pipes::create (PipePair::new is private and takes its glue, made fallibly); there is no zeroed pair"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::NBIGPIPE"
+native = ["Pipes::nbigpipe"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::AMOUNTPIPEKVA"
+native = ["Pipes::amountpipekva"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_PAIR_POOL"
+native = ["Pipes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_buffer_realloc"
+native = ["PipePair::buffer_realloc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_create"
+native = ["PipePair::pipe_create"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_peer"
+native = ["PipePair::peer_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_iolock"
+native = ["PipePair::iolock"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_iounlock"
+native = ["PipePair::iounlock"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_iosleep"
+native = ["PipePair::iosleep"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_wakeup"
+native = ["PipePair::pipe_wakeup"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_buffer_free"
+native = ["PipePair::buffer_free"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_destroy"
+native = ["PipePair::destroy", "PipeEnd::drop"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_rundown"
+native = ["PipePair::rundown"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_pair_create"
+native = ["Pipes::create"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_pair_destroy"
+native = ["PipePair::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipebuf::new"
+native = ["PipeState::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipebuf::default"
+native = []
+kind = "dropped"
+reason = "a Pipebuf is built only inside PipeState::new; nothing asks for a default one"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipe::lock"
+native = []
+kind = "dropped"
+reason = "the lock is the pair's Rwlocked<PairState>, reached through the PipePair that holds the pipe; no pointer to it is kept"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipe::set_state"
+native = ["Pipe::set"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipe::clear_state"
+native = ["Pipe::clear"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipe::has_state"
+native = ["Pipe::has"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/pipe.rs::Pipe::default"
+native = []
+kind = "dropped"
+reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
+
+[[extra]]
+rust = "sys/kernel/testutil.rs"
+crate = "kernel"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"

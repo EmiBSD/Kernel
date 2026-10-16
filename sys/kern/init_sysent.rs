@@ -67,6 +67,7 @@ use crate::kern::kern_time::{
     sys_getitimer, sys_gettimeofday, sys_nanosleep, sys_setitimer, sys_settimeofday,
 };
 use crate::kern::kern_xxx::sys_reboot;
+use crate::kern::pipe_glue::{sys_pipe, sys_pipe2};
 use crate::kern::subr_log::sys_sendsyslog;
 use crate::kern::subr_prof::sys_profil;
 use crate::kern::sys_futex::sys_futex;
@@ -74,7 +75,6 @@ use crate::kern::sys_generic::{
     sys_ioctl, sys_poll, sys_ppoll, sys_pselect, sys_read, sys_readv, sys_select, sys_utrace,
     sys_write, sys_writev,
 };
-use crate::kern::sys_pipe::{sys_pipe, sys_pipe2};
 use crate::kern::uipc_syscalls::{
     sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getrtable,
     sys_getsockname, sys_getsockopt, sys_listen, sys_recvfrom, sys_recvmmsg, sys_recvmsg,

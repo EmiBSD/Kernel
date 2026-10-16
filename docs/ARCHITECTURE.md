@@ -179,6 +179,64 @@ Per-target rustflags in `.cargo/config.toml`: `relocation-model=static` (non-PIE
 and `force-frame-pointers=yes` (backtraces in `panic`). No `[build] target`, so host builds stay
 the default and `cargo test` just works.
 
+`abi-openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
+`RUSTFLAGS="-C relocation-model=pie"` (replacing the kernel's `static`), its own target
+directory (`target/abi`), `CARGO_PROFILE_DEV_STRIP=debuginfo` (boot(8) reads the whole file
+into efiboot's 1 MiB heap), and `sys/abi/ko/abi.ld`: a static PIE at 0 with `-pie
+--no-dynamic-linker -z notext -Bsymbolic --pack-dyn-relocs=none -z norelro`, three
+page-aligned `PT_LOAD`s (text R X; rodata R with the module header first at the ELF entry,
+the GOT and `.data.rel.ro`, relocated by the loader before it is mapped; data R W) and no
+import (section "abi-openbsd.ko").
+
+## abi-openbsd.ko (N2.4)
+
+The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The pieces:
+
+- **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
+  `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4; `abi_init` registers
+  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi-openbsd`):
+  the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
+  entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
+  names as the ELF entry. It links no kernel code and no `hal` state; its panic handler is
+  `hal::module::rt` (feature `module-rt`), which parks the CPU.
+- **The vtable.** `hal::api::KernelApi`, `#[repr(C)]`, version and size first (`ApiPrefix`), Rust-ABI
+  `fn` pointers (one toolchain builds both sides): the handler's registration, the `Legacy`
+  path, `copyin`/`copyout`. `bsd` fills it (`sys/kern/abi_module.rs`); the module receives it
+  in every call and keeps no state.
+- **The dispatch.** Both arch traps call `kern::abi_module::syscall` where they chose the
+  `sysent[]` entry; it calls `hal::syscall::dispatch`, which calls the registered handler
+  (the module's, through `kernel::api`'s trampoline) or the `Legacy` fallback (`bsd`'s
+  `sysent[]` and `mi_syscall`), both registered once at boot. Errnos cross `hal` as `i32`.
+- **The hand-over.** Limine: a `module_path:` of `limine.conf`, found by name in
+  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi-openbsd.ko`
+  from the kernel's device, read straight onto the page after the kernel's image
+  inside the room the program reserved (`BootMd::abi_module_room`) with `marks[MARK_END]`
+  raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
+  of free memory; amd64 passes `BOOTARG_ABIMODULE` (`BiosAbiModule`, type 0x100), arm64
+  `/chosen`'s `emibsd,abi-module` (two big-endian 64-bit cells); `getbootinfo` turns either
+  into `BootInfo::abi_module`. The boot glue registers the `Legacy` fallback before `main`.
+- **The loader.** `hal::module` (`elf.rs`, `load.rs`), called from `main` just before
+  `init(8)` may exec: parses the ELF64 in safe code (a static PIE of the running machine,
+  page-aligned W^X loads, `RELATIVE` relocations only), copies it into wired memory, applies
+  the relocations for the range it will run at, checks the header, maps each page with its
+  segment's protection (text R X, rodata R, data R W) and calls the entry point. The memory,
+  the mapping and the hand-over come through `ModulePlatform`, implemented by `bsd` over
+  `km_alloc` and the pmap until `hal` holds the pmap (the bridge of `bridges.toml`).
+  Three `unsafe` there, each resting on that platform premise (`load.rs`'s module doc).
+- **The boot line.** `abi-openbsd.ko: 331 syscalls, 0 native`, or `abi-openbsd.ko: not
+  loaded, <why>; every system call takes the legacy path` (decision 29: a medium without the
+  file still boots). `just smoke-abi` checks the first and refuses the second.
+- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`),
+  install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`).
+  So `/abi-openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
+  OpenBSD's set lists; its boot(8) reads it there.
+- **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
+  `ApiPrefix` and `AbiModuleHeader`), so `abi` depends on `hal` alone and the `.ko` links no
+  kernel code; `kernel::api::table` fills it. `hal::module::load` takes `&'static KernelApi`,
+  checks its prefix, runs once, and releases the writable copy (`ModulePlatform::release`)
+  before the entry point runs, so no writable alias of the module is left but the direct map.
+  boot(8) reads the file straight into the room after the kernel, never into its heap.
+
 ## Cargo features ↔ `option(4)`
 
 | Feature | OpenBSD | Effect |

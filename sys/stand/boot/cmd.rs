@@ -75,6 +75,7 @@
 //! `time`.
 //!
 //! Upstream: sys/stand/boot/cmd.c @ 3ce1f3f79392, sys/stand/boot/cmd.h @ 3ce1f3f79392
+//! LZ: sys/stand/boot/cmd.rs@3c62ede68802
 //!
 //! Compiled as efiboot compiles it: `MACHINE_CMD` (the program's `machine` table),
 //! `BOOT_STTY`, `CHECK_SKIP_CONF`, no `INSECURE`, no `DEBUG`.
@@ -89,6 +90,10 @@
 //! - `getsecs()`, `ttyname()`, `ttydev()`, `cnspeed()` and the `machine` table are the
 //!   program's, reached through [`boot_md`](crate::boot::boot_md).
 //! - `Xhexdump` reads the memory the operator names, as the C does: an `unsafe` slice.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `CmdState::abi_module`, where boot() put `/abi-openbsd.ko` after
+//!   the kernel (a load-space address and a length), for the program's `run_loadfile`.
 
 use libsa::cons::cnischar;
 use libsa::ctime::ctime;
@@ -165,6 +170,9 @@ pub struct CmdState {
     pub argv0: &'static str,
     /// `cmd_buf`: the line being run (NUL-terminated words once parsed).
     pub buf: [u8; CMD_BUFF_SIZE],
+    /// Not in the C (N2.4): where boot() put `/abi-openbsd.ko` after the kernel, as a
+    /// load-space address (as `marks` are) and a length, for `run_loadfile` to hand over.
+    pub abi_module: Option<(u64, u64)>,
 }
 
 impl CmdState {
@@ -182,6 +190,7 @@ impl CmdState {
             argv: [(0, 0); 8],
             argv0: "",
             buf: [0; CMD_BUFF_SIZE],
+            abi_module: None,
         }
     }
 
@@ -838,6 +847,7 @@ mod tests {
         fwrandom: None,
         bootdev_has_hibernate: None,
         stty: None,
+        abi_module_room: None,
     };
 
     /// A state with boot device `hd0a` and image `/bsd`, and `line` in the buffer.

@@ -50,6 +50,7 @@
 //! `run_i386`; and the CPU microcode it may load first.
 //!
 //! Upstream: sys/arch/amd64/stand/efiboot/exec_i386.c @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/stand/efiboot/exec_i386.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - `run_loadfile` takes boot(8)'s command state (`cmd.bootdev`, which `ucode_load` reads
@@ -58,6 +59,12 @@
 //!   (no softraid volume can be the boot device without it).
 //! - `marks` and the move are done with the addresses as integers (`u64`), as the C's
 //!   `u_long` arithmetic; `delta` is the two's complement of `efi_loadaddr`.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): when boot() put `/abi-openbsd.ko` after the kernel's image
+//!   (`CmdState::abi_module`, a load-space address), `run_loadfile` adds a
+//!   `BOOTARG_ABIMODULE` record with the physical address the move gives it; the move itself
+//!   already carries it, `marks[MARK_END]` being raised over it.
 
 use alloc::vec;
 use core::arch::asm;
@@ -76,8 +83,8 @@ use libsa::printf::Str;
 use libsa::snprintf;
 
 use crate::biosvar::{
-    BOOTARG_BOOTDUID, BOOTARG_BOOTMAC, BOOTARG_DDB, BOOTARG_LEN, BOOTARG_UCODE, BiosBootduid,
-    BiosDdb, BiosUcode,
+    BOOTARG_ABIMODULE, BOOTARG_BOOTDUID, BOOTARG_BOOTMAC, BOOTARG_DDB, BOOTARG_LEN, BOOTARG_UCODE,
+    BiosAbiModule, BiosBootduid, BiosDdb, BiosUcode,
 };
 use crate::diskprobe::BOOTDEV_DIP;
 use crate::efiboot::{EFI_LOADADDR, RUN_I386, bs, efi_cleanup, efi_makebootargs, efi_setconsdev};
@@ -145,6 +152,16 @@ pub fn run_loadfile(cmd: &mut CmdState, marks: &mut [u64; MARK_MAX], howto: i32)
     }
 
     addbootarg(BOOTARG_BOOTDUID, BiosBootduid { duid }.as_bytes());
+
+    // Not in the C (N2.4): where boot() put /abi-openbsd.ko, after the kernel's image and
+    // below its end mark, as the physical address the move below gives it.
+    if let Some((at, size)) = cmd.abi_module {
+        let module = BiosAbiModule {
+            addr: at.wrapping_add(delta),
+            size,
+        };
+        addbootarg(BOOTARG_ABIMODULE, module.as_bytes());
+    }
 
     ucode_load(cmd);
 

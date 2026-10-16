@@ -125,13 +125,13 @@ use crate::kern::kern_smr::{smr_startup, smr_startup_thread};
 use crate::kern::kern_synch::{endtsleep, sleep_queue_init, tsleep_nsec, wakeup};
 use crate::kern::kern_task::taskq_init;
 use crate::kern::kern_timeout::{timeout_proc_init, timeout_set, timeout_startup};
+use crate::kern::pipe_glue::pipe_init;
 use crate::kern::sched_bsd::{sched_lock_init, scheduler_start};
 use crate::kern::subr_autoconf::{
     CONFIG_PENDING, config_init, config_process_deferred_mountroot, config_rootfound,
 };
 use crate::kern::subr_disk::disk_init;
 use crate::kern::subr_prf::{Str, panic};
-use crate::kern::sys_pipe::pipe_init;
 use crate::kern::tty::tty_init;
 use crate::kern::uipc_domain::domaininit;
 use crate::kern::uipc_mbuf::{mbcpuinit, mbinit};
@@ -682,6 +682,10 @@ pub fn main() -> ! {
     if crate::kern::selftest::tpm_requested() {
         crate::dev::acpi::tpm::tpm_selftest();
     }
+
+    // The system call path (N2.4, docs/ZERO_UNSAFE.md 0.1): the Legacy fallback and the ABI
+    // module abi-openbsd.ko, registered before init(8) makes its first system call.
+    crate::kern::abi_module::abi_module_attach();
 
     // Okay, now we can let init(8) exec! It's off to userland!
     START_INIT_EXEC.store(1, Ordering::Relaxed);

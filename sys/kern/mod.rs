@@ -25,6 +25,8 @@
 //! `[[extra]]`).
 
 #[forbid(unsafe_code)]
+pub mod abi_module;
+#[forbid(unsafe_code)]
 pub mod clock_subr;
 #[forbid(unsafe_code)]
 pub mod dma_alloc;
@@ -32,6 +34,8 @@ pub mod exec_elf;
 #[forbid(unsafe_code)]
 pub mod exec_script;
 pub mod exec_subr;
+#[forbid(unsafe_code)]
+pub mod hal_bridges;
 pub mod init_main;
 #[forbid(unsafe_code)]
 pub mod init_sysent;
@@ -70,6 +74,8 @@ pub mod kern_timeout;
 pub mod kern_unveil;
 pub mod kern_watchdog;
 pub mod kern_xxx;
+#[forbid(unsafe_code)]
+pub mod pipe_glue;
 #[cfg(feature = "alloc")]
 pub mod rust_alloc;
 pub mod sched_bsd;
@@ -92,7 +98,6 @@ pub mod subr_userconf;
 pub mod subr_xxx;
 pub mod sys_futex;
 pub mod sys_generic;
-pub mod sys_pipe;
 pub mod sys_socket;
 #[forbid(unsafe_code)]
 pub mod syscalls;

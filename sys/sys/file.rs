@@ -70,6 +70,10 @@
 //! - `FREF`/`FRELE` are the functions [`fref`]/[`frele`]; `frele` takes the thread as
 //!   `impl Into<Option<&Proc>>`, as the C passes NULL from the socket garbage collector.
 //!   `FREF` calls `vfs_stall_barrier()` (`vfs_subr.rs`) as in C.
+//! - A pipe file keeps its pipe in [`File::f_pipe`], a typed slot beside `f_data` (which stays
+//!   null for it), set by `dopipe` and taken by its `fo_close` (`kern/pipe_glue.rs`): pipe(2)
+//!   lives in the kernel crate (`sys/kernel/pipe.rs`), and reading its pair back out of the
+//!   type-erased `f_data` would need a cast. Gone at N4 with `FileData` (decision 14).
 //! - `maxfiles` is `conf/param.rs`'s `MAXFILES`; `numfiles` is `kern_descrip.rs`'s
 //!   `NUMFILES`; `vnops` is `kern/vfs_vnops.rs`'s `VNOPS`; `socketops` is
 //!   `kern/sys_socket.rs`'s `SOCKETOPS`.
@@ -79,8 +83,11 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use hal::mutex::Mutexed;
+
 use crate::kern::kern_descrip::fdrop;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
+use crate::kern::pipe_glue::PipeFile;
 use crate::machine::cpu::MAXCPUS;
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::queue_adapter;
@@ -165,8 +172,11 @@ pub struct File {
     pub f_ops: Cell<Option<&'static Fileops>>,
     /// \[f,v\] `f_offset`: offset.
     pub f_offset: Cell<Off>,
-    /// \[I\] `f_data`: private data, whose type `f_type` names.
+    /// \[I\] `f_data`: private data, whose type `f_type` names (null for a pipe).
     pub f_data: Cell<*mut c_void>,
+    /// A `DTYPE_PIPE` file's pipe (`kern/pipe_glue.rs`): set once by `dopipe`, taken by
+    /// `fo_close`; the mutex is held only to clone or take it.
+    pub f_pipe: Mutexed<Option<PipeFile>>,
     /// \[f\] `f_rxfer`: total number of read transfers.
     pub f_rxfer: Cell<u64>,
     /// \[f\] `f_wxfer`: total number of write transfers.
@@ -193,6 +203,7 @@ impl File {
             f_ops: Cell::new(None),
             f_offset: Cell::new(0),
             f_data: Cell::new(ptr::null_mut()),
+            f_pipe: Mutexed::new(IPL_MPFLOOR, None),
             f_rxfer: Cell::new(0),
             f_wxfer: Cell::new(0),
             f_seek: Cell::new(0),

@@ -245,6 +245,12 @@ fn make_ffs(
     }
     fs::create_dir_all(staging.join("etc")).map_err(|e| format!("{}: {e}", staging.display()))?;
     fs::copy(kernel, staging.join("bsd")).map_err(|e| format!("{}: {e}", kernel.display()))?;
+    // N2.4: the ABI module boot(8) reads after the kernel, when it was built.
+    let abi_module = crate::boot::default_abi_module(root, arch);
+    if let Some(m) = &abi_module {
+        fs::copy(m, staging.join(crate::boot::ABI_MODULE))
+            .map_err(|e| format!("{}: {e}", m.display()))?;
+    }
     fs::write(staging.join("etc/boot.conf"), BOOT_CONF)?;
     // A seed boot(8) can read (and marks used, sticky bit, as on a real install).
     let seed: Vec<u8> = (0..256u32)
@@ -255,6 +261,9 @@ fn make_ffs(
     owners_text.push_str(
         "0755 0 0 /etc\n0555 0 0 /bsd\n0644 0 0 /etc/boot.conf\n0600 0 0 /etc/random.seed\n",
     );
+    if abi_module.is_some() {
+        owners_text.push_str(&format!("0444 0 0 /{}\n", crate::boot::ABI_MODULE));
+    }
     fs::write(&owners, owners_text)?;
     // makefs's own estimate leaves no room for the indirect blocks of a big kernel: a tenth
     // more and 4 MiB, in whole MiB; a root gets room to write besides (twice its size).

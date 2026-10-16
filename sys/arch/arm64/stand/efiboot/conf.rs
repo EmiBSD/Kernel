@@ -47,6 +47,7 @@
 //! systems, the devices, the consoles and the network interface drivers.
 //!
 //! Upstream: sys/arch/arm64/stand/efiboot/conf.c @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/stand/efiboot/conf.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - The tables and the machine-dependent routines are gathered in [`SA_CONF`] (libsa's)
@@ -57,6 +58,10 @@
 //!   softraid_arm64.c, which is not ported (with libsa's softraid.c and its crypto): here
 //!   `sropen` says so and fails with `ENXIO`, so no `sr` name opens; `srclose` and
 //!   `srioctl` are the C's, `srstrategy` fails with `ENXIO` (no open hands it a volume).
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `BOOT_MD.abi_module_room`, the end of the room the program reserved
+//!   for the kernel, which boot() may fill with `/abi-openbsd.ko` after the kernel's image.
 
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;
@@ -224,7 +229,14 @@ pub static BOOT_MD: BootMd = BootMd {
         ttydev,
         cnspeed,
     }),
+    abi_module_room: Some(abi_module_room),
 };
+
+/// Not in the C (N2.4): the end of the 64 MB block `machdep()` allocated for the kernel
+/// (`efi_memprobe`), which boot() may fill with `/abi-openbsd.ko` after the kernel's image.
+fn abi_module_room() -> u64 {
+    EFI_LOADADDR.load(Ordering::Relaxed) + crate::efiboot::KERN_BLOCK_SIZE
+}
 
 /// `LOADADDR(a)` of arm64's `<machine/loadfile_machdep.h>`: the kernel goes to
 /// `efi_loadaddr` plus its address within 512 GB.

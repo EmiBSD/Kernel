@@ -246,6 +246,17 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
         );
     }
     init_main::set_init_module(boot.module(b"init").copied());
+    // The hal runtime's bridges, before main() and so before any user of a hal piece, on
+    // the boot CPU with interrupts off: the boot contract of sys/hal/bridges.rs.
+    bsd::kern::hal_bridges::hal_bridges_register();
+    // N2.4: the Legacy system call path from the first system call on, and the ABI module
+    // the boot loader handed over (Limine's `abi-openbsd.ko` module, or boot(8)'s after
+    // the kernel, read through the direct map), which `main` loads.
+    let abi_module = boot
+        .module(b"abi-openbsd.ko")
+        .map(|m| (m.data.as_ptr().expose_provenance(), m.data.len()))
+        .or_else(|| abi_module_handover(&boot));
+    bsd::kern::abi_module::abi_module_boot(abi_module);
     match boot.module(b"ramdisk.ffs") {
         // SAFETY: the module is never reclaimed, is mapped read-write for the
         // kernel's lifetime, and nothing but rd(4) uses it from here on.
@@ -260,6 +271,47 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
         }
     }
     init_main::main()
+}
+
+/// N2.4: boot(8)'s record of the ABI module (`BootInfo::abi_module`), checked before the
+/// module loader may read it: its length is neither 0 nor above the kernel's 64 MiB room,
+/// and `[pa, pa + len)` (`checked_add`) starts at or after the kernel image's physical
+/// start, ends within the room from there, and is covered by one region the memory map
+/// calls the kernel's image, so it lies below `esym` (amd64: between `KERNTEXTOFF - KERNBASE`
+/// and the tables after `esym`; arm64: in the 64 MB block, below the end mark of `x0`) and
+/// is in the direct map on both machines. Its kernel virtual address and length; otherwise
+/// one line, and the kernel boots without the module (decision 29).
+fn abi_module_handover(boot: &BootInfo) -> Option<(usize, usize)> {
+    /// The room boot(8) puts the kernel and the module in (both efiboots reserve 64 MiB).
+    const ROOM: usize = 64 << 20;
+    let (pa, len) = boot.abi_module?;
+    let start = pa.as_usize();
+    let kstart = boot.kernel_phys.as_usize();
+    let in_image = start.checked_add(len).is_some_and(|end| {
+        len != 0
+            && len <= ROOM
+            && start >= kstart
+            && end <= kstart.saturating_add(ROOM)
+            && boot.memmap.regions().iter().any(|r| {
+                // One region the map calls the kernel's image covers the whole record: both
+                // getbootinfo put `[kernel start, esym and its tables)` in one such region,
+                // and boot(8) raised esym over the module. A reserved region, a gap the map
+                // does not list, or free RAM all fail here.
+                let (base, length) = (r.base.as_usize(), r.length.as_usize());
+                r.kind == MemKind::KernelAndModules
+                    && start >= base
+                    && end <= base.saturating_add(length)
+            })
+    });
+    if !in_image {
+        kprintf!(
+            "abi-openbsd.ko: boot(8)'s record {:#x}+{:#x} is not in the kernel's image; ignored\n",
+            start,
+            len
+        );
+        return None;
+    }
+    Some((boot.hhdm(pa).as_usize(), len))
 }
 
 /// Sets `boothowto` and the boot DUID and brings up the machine's console.
@@ -371,6 +423,7 @@ fn gather() -> Result<BootInfo, BootError> {
         mp: boot_mp(),
         howto: 0,
         duid: None,
+        abi_module: None,
     })
 }
 

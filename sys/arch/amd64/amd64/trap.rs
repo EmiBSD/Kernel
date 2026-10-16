@@ -128,7 +128,7 @@ use crate::arch::amd64::include::trap::{
 };
 use crate::arch::amd64::include::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS};
 use crate::kassert;
-use crate::kern::init_sysent::SYSENT;
+use crate::kern::abi_module;
 use crate::kern::kern_sig::{trapsignal, userret};
 use crate::kern::subr_prf::{Str, db_printf, panic, panicstr_claim, printf, vsnprintf};
 use crate::machine::Machine;
@@ -141,8 +141,7 @@ use crate::sys::siginfo::{
     SEGV_MAPERR, Sigval, TRAP_BRKPT,
 };
 use crate::sys::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
-use crate::sys::syscall::SYS_MAXSYSCALL;
-use crate::sys::syscall_mi::{mi_ast, mi_child_return, mi_syscall, mi_syscall_return};
+use crate::sys::syscall_mi::{mi_ast, mi_child_return, mi_syscall_return};
 use crate::sys::systm::{SysArgs, kernel_unlock};
 use crate::sys::types::Register;
 use crate::uvm::uvm_extern::VmProt;
@@ -347,12 +346,7 @@ pub extern "C" fn syscall(frame: &mut Trapframe) {
 
     let mut rval: [Register; 2] = [0, 0];
 
-    let error = if code <= 0 || code as usize >= SYS_MAXSYSCALL {
-        Err(Errno::ENOSYS)
-    } else {
-        let callp = &SYSENT[code as usize];
-        mi_syscall(p, code, callp, args, &mut rval)
-    };
+    let error = abi_module::syscall(code, args, &mut rval);
 
     match error {
         Ok(()) => {

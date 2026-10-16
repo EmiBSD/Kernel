@@ -24,7 +24,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-#[cfg(test)]
+// The host tests (and the doubles other crates' tests use) link std; a kernel image never
+// does.
+#[cfg(any(test, feature = "doubles"))]
 extern crate std;
 // A verbatim copy of bsd's helper: the modules moved so far use only part of it.
 #[cfg(test)]
@@ -34,5 +36,9 @@ pub(crate) mod reftest;
 extern crate alloc;
 
 pub use hal::sys;
+pub mod api;
 pub mod crypto;
+pub mod pipe;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testutil;
 /* </CODE> */

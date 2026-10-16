@@ -49,6 +49,7 @@
 //! `boot>`, seed the random generator, load the kernel and start it.
 //!
 //! Upstream: sys/stand/boot/boot.c @ 3ce1f3f79392
+//! LZ: sys/stand/boot/boot.rs@3c62ede68802
 //!
 //! Compiled as efiboot compiles it: `MDRANDOM`, `FWRANDOM`, `HIBERNATE`.
 //!
@@ -65,6 +66,16 @@
 //!   reads it).
 //! - The banner names the operating system as the kernel does: `>> EmiBSD/amd64 BOOTX64
 //!   3.71` (`docs/ARCHITECTURE.md`, "The system's identity"); the C prints `OpenBSD`.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22, the boot loaders read a second file): boot() opens
+//!   `/abi-openbsd.ko` on the kernel's device (`abi_module_open`) and, after `loadfile`,
+//!   reads it onto the page after the kernel's image when it fits the room the program gives
+//!   (`BootMd::abi_module_room`, new), raising `marks[MARK_END]` over it and recording it in
+//!   `CmdState::abi_module` for `run_loadfile`'s hand-over (amd64 `BOOTARG_ABIMODULE`, arm64
+//!   `/chosen`'s `emibsd,abi-module`): the move and the cache clean of `run_loadfile` carry
+//!   it, and the kernel's `esym` keeps it out of free memory. Without the file, or without
+//!   the room, nothing changes but a line.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
@@ -78,7 +89,7 @@ use libsa::hdr::param::MAXPATHLEN;
 use libsa::hdr::reboot::{RB_GOODRANDOM, RB_UNHIBERNATE};
 use libsa::hdr::stat::{S_ISTXT, S_IXGRP, S_IXOTH, S_IXUSR, Stat};
 use libsa::hdr::types::{Dev, Time};
-use libsa::loadfile::{LOAD_ALL, MARK_MAX, MARK_START, loadfile};
+use libsa::loadfile::{LOAD_ALL, MARK_END, MARK_MAX, MARK_START, loadfile};
 use libsa::printf;
 use libsa::printf::Str;
 use libsa::saerrno::Errno;
@@ -127,6 +138,10 @@ pub struct BootMd {
     pub bootdev_has_hibernate: Option<fn() -> bool>,
     /// `BOOT_STTY`.
     pub stty: Option<Stty>,
+    /// Not in the C (N2.4, decision 22): the end of the room the program reserved for the
+    /// kernel (the load space `LOADADDR` maps into), where boot() puts `/abi-openbsd.ko`
+    /// after the kernel's image when it fits; `None` loads no module.
+    pub abi_module_room: Option<fn() -> u64>,
 }
 
 /// The program's routines (null until [`boot_md_register`]).
@@ -255,9 +270,40 @@ pub fn boot(bootdev: Dev) -> ! {
         printf!("booting {}: ", Str(&cmd.path));
         marks[MARK_START] = 0;
         let path = cmd.path;
+        let module = md
+            .abi_module_room
+            .and_then(|room| abi_module_open(&cmd).map(|(fd, len)| (fd, len, room())));
+        cmd.abi_module = None;
         // SAFETY: the program's LOADADDR maps the kernel into the memory it reserved for it
-        // (efiboot: the 64 MB `efi_memprobe` allocates), the contract of `BootMd`.
-        if let Ok(fd) = unsafe { loadfile(cstr(&path), &mut marks, LOAD_ALL) } {
+        // (efiboot: the 64 MB `efi_memprobe` allocates), the contract of `BootMd`. The
+        // module is read straight into the page after the kernel's image (`marks[MARK_END]`,
+        // a load-space address as every mark is) only when it ends before `room`, the end of
+        // that same reserved memory (`BootMd::abi_module_room`), so it overwrites nothing
+        // the program or the kernel's image uses, and no heap is spent on it.
+        let loaded = unsafe {
+            let loaded = loadfile(cstr(&path), &mut marks, LOAD_ALL);
+            if let (Ok(_), Some((fd, len, room))) = (&loaded, module) {
+                let at = marks[MARK_END].next_multiple_of(ABI_MODULE_ALIGN);
+                match at.checked_add(len).filter(|&end| end <= room) {
+                    Some(end) => {
+                        let dst =
+                            core::slice::from_raw_parts_mut(at as usize as *mut u8, len as usize);
+                        if read(fd, dst) == Ok(len as usize) {
+                            marks[MARK_END] = end;
+                            cmd.abi_module = Some((at, len));
+                        } else {
+                            printf!("{}: cannot read it whole\n", Str(ABI_MODULE));
+                        }
+                    }
+                    None => printf!("{}: no room after the kernel\n", Str(ABI_MODULE)),
+                }
+            }
+            loaded
+        };
+        if let Some((fd, _, _)) = module {
+            let _ = close(fd);
+        }
+        if let Ok(fd) = loaded {
             // Prevent re-upgrade: chmod a-x bsd.upgrade
             if isupgrade {
                 let mut sb = Stat::default();
@@ -333,5 +379,42 @@ pub fn loadrandom(cmd: &CmdState, name: &[u8], buf: &mut [u8]) -> i32 {
     }
     let _ = close(fd);
     error
+}
+
+/// Not in the C (N2.4, decision 22): the ABI module the kernel loads before init(8), read
+/// from the device of the kernel being booted.
+pub const ABI_MODULE: &[u8] = b"/abi-openbsd.ko";
+
+/// Where the module goes after the kernel's image: the next page.
+const ABI_MODULE_ALIGN: u64 = 4096;
+
+/// Not in the C (N2.4): `/abi-openbsd.ko` on the device of the kernel being loaded, opened:
+/// its descriptor and length, which boot() reads straight into the room after the kernel;
+/// `None` without one (the kernel then takes every system call through its legacy path and
+/// says so). No buffer: an oversized or corrupt length is refused by boot()'s room check,
+/// never allocated (efiboot's heap is 1 MiB and panics when full).
+pub fn abi_module_open(cmd: &CmdState) -> Option<(usize, u64)> {
+    let mut path = [0u8; MAXPATHLEN];
+    let kpath = cstr(&cmd.path);
+    match kpath.iter().position(|&c| c == b':') {
+        Some(i) => {
+            snprintf!(&mut path, "{}:{}", Str(&kpath[..i]), Str(ABI_MODULE));
+        }
+        None => {
+            snprintf!(&mut path, "{}:{}", Str(&cmd.bootdev), Str(ABI_MODULE));
+        }
+    }
+    let fd = open(cstr(&path), 0).ok()?;
+    let mut sb = Stat::default();
+    let len = if fstat(fd, &mut sb).is_ok() {
+        u64::try_from(sb.st_size).ok()
+    } else {
+        None
+    };
+    if len.is_none() {
+        printf!("cannot stat {}\n", Str(&path));
+        let _ = close(fd);
+    }
+    len.map(|len| (fd, len))
 }
 /* </CODE> */

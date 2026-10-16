@@ -1282,6 +1282,16 @@ pub(crate) fn build(
         "./var/sysmerge/etc.tgz".to_string(),
         ent(Kind::File(etc_tgz), 0o644, "root", "wheel"),
     );
+    // N2.4 (decision 22): the ABI module the installed kernel's boot(8) reads from `/`, in
+    // base (install.sub extracts base at the new root); not in OpenBSD's lists.
+    let abi_module = crate::boot::default_abi_module(&ctx.root, arch);
+    let abi_path = format!("./{}", crate::boot::ABI_MODULE);
+    if let Some(m) = &abi_module {
+        tree.insert(
+            abi_path.clone(),
+            ent(Kind::File(m.clone()), 0o444, "root", "wheel"),
+        );
+    }
 
     // The etc files are in the set through `etc.tgz`; they are claimed by `lists/etc`.
     let mut claimed: BTreeSet<String> = etc_list.iter().cloned().collect();
@@ -1305,6 +1315,9 @@ pub(crate) fn build(
         if *name == "base" {
             list.push("./var/sysmerge/etc.tgz".to_string());
             list.push("./var/sysmerge/etcsum".to_string());
+            if abi_module.is_some() {
+                list.push(abi_path.clone());
+            }
         }
         let tar = scratch.join(format!("{name}.tar"));
         let mut rep = make_set(&tree, &ids, &list, &tar, &mut claimed)?;

@@ -49,6 +49,7 @@
 //! map, disks, console, EFI information...), and the BIOS constants beside them.
 //!
 //! Upstream: sys/arch/amd64/include/biosvar.h @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/include/biosvar.rs@3c62ede68802
 //!
 //! The file is self-contained (only `core`): efiboot (`sys/arch/amd64/stand/efiboot`)
 //! includes it with `#[path]`, as the C includes the header in both the boot program and the
@@ -59,6 +60,12 @@
 //!   `addbootarg`. `struct BIOS_regs`, `DOINT`, `struct bios_attach_args` and the kernel's
 //!   `extern` declarations (`bios_sysctl`, `bios_memmap`...) are left to the kernel's use of
 //!   this file; `CTL_BIOS_NAMES` is the kernel's sysctl table, not declared here.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `BOOTARG_ABIMODULE` (type 0x100, EmiBSD's own, far above
+//!   OpenBSD's 0..12) and its record `BiosAbiModule` (physical address, size): where
+//!   efiboot put `/abi-openbsd.ko` after the kernel's image, below `esym`. amd64's
+//!   `getbootinfo` reads it into `BootInfo::abi_module`; nothing else of the header changed.
 
 #![allow(dead_code)] // a header: each includer uses part of it
 
@@ -326,7 +333,24 @@ pub struct BiosUcode {
     pub uc_size: u64,
 }
 
+/// Not in the C (N2.4, decision 22): `BOOTARG_ABIMODULE`, where efiboot put the ABI module
+/// `/abi-openbsd.ko` (after the kernel's image, below `esym`). EmiBSD's own type, far
+/// above OpenBSD's.
+pub const BOOTARG_ABIMODULE: i32 = 0x100;
+
+/// Not in the C (N2.4): the `BOOTARG_ABIMODULE` record: the module's physical address and
+/// size.
+#[repr(C, packed)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct BiosAbiModule {
+    /// Physical address of its first byte.
+    pub addr: u64,
+    /// Its size in bytes.
+    pub size: u64,
+}
+
 bootarg_bytes!(
+    BiosAbiModule,
     BiosMemmap,
     BiosDiskinfo,
     BiosConsdev,
@@ -344,5 +368,6 @@ const _: () = {
     assert!(core::mem::size_of::<BiosConsdev>() == 32);
     assert!(core::mem::size_of::<BiosEfiinfo>() == 100);
     assert!(core::mem::size_of::<BiosUcode>() == 16);
+    assert!(core::mem::size_of::<BiosAbiModule>() == 16);
 };
 /* </CODE> */

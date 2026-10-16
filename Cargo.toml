@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["sys", "sys/hal", "sys/kernel", "sys/abi", "sys/lib/libkern", "sys/lib/libz", "tools/xtask", "init",
+members = ["sys", "sys/hal", "sys/kernel", "sys/abi", "sys/abi/ko", "sys/lib/libkern", "sys/lib/libz", "tools/xtask", "init",
     # M14: boot(8)/efiboot (docs/ARCHITECTURE.md, "Boot loaders")
     "sys/stand/efi", "sys/lib/libsa", "sys/stand/boot", "sys/arch/amd64/stand/efiboot",
     "sys/arch/arm64/stand/efiboot"]

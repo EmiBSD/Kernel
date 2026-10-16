@@ -91,6 +91,7 @@
 //! sys/arch/arm64/stand/efiboot/efiboot.h @ 3ce1f3f79392,
 //! sys/arch/arm64/stand/efiboot/efidt.h @ 3ce1f3f79392,
 //! sys/arch/arm64/stand/efiboot/libsa.h @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/stand/efiboot/efiboot.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - `ST`, `BS`, `RS`, `IH`, `efi_bootdp`, `fdt_sys`, `fdt_override`, `smbios`, `heap`, the
@@ -116,6 +117,12 @@
 //!   starts at the first console, the C's at none).
 //! - `EFI_DEBUG` (the "Hit any key to reboot" wait in `_rtt`) is not defined, as in the C;
 //!   `DPRINTF` (libsa.h, `DEBUG`) neither.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `efi_makebootargs` adds `/chosen`'s `emibsd,abi-module` (two
+//!   big-endian 64-bit cells: the physical address and size of `/abi-openbsd.ko`, which
+//!   boot() put in the kernel's block after its image) when boot() placed one. The block's
+//!   size is `KERN_BLOCK_SIZE`, which `conf.rs` reads for the module's room.
 
 #![allow(non_upper_case_globals)] // the UEFI specification's enumerator names, in patterns
 
@@ -161,6 +168,10 @@ const EFI_OS_INDICATIONS_BOOT_TO_FW_UI: u64 = 1;
 
 /// `heapsiz`: the heap's size.
 pub const HEAPSIZ: u64 = 1024 * 1024;
+
+/// Not in the C (N2.4): the size of the block `machdep()` allocates for the kernel (the C's
+/// literal 64 MB), named so `conf.rs` can give boot() the module's room in it.
+pub const KERN_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 
 /// `EFI_DT_FIXUP_PROTOCOL_GUID` (efidt.h).
 const EFI_DT_FIXUP_PROTOCOL_GUID: EfiGuid = EfiGuid::new(
@@ -1081,6 +1092,16 @@ pub fn efi_makebootargs(cmd: &CmdState, bootargs: &[u8], howto: i32) -> *mut u8 
     fdt_node_add_property(node, b"bootargs", &args);
     fdt_node_add_property(node, b"openbsd,boothowto", &boothowto);
 
+    // Not in the C (N2.4): where boot() put /abi-openbsd.ko in the kernel's block, after
+    // its image and below the end mark passed in x0 (two big-endian 64-bit cells: the
+    // physical address and the size).
+    if let Some((at, size)) = cmd.abi_module {
+        let mut module = [0u8; 16];
+        module[..8].copy_from_slice(&at.to_be_bytes());
+        module[8..].copy_from_slice(&size.to_be_bytes());
+        fdt_node_add_property(node, b"emibsd,abi-module", &module);
+    }
+
     // Pass DUID of the boot disk.
     let dip = BOOTDEV_DIP.load(Ordering::Relaxed);
     if !dip.is_null() {
@@ -1157,7 +1178,7 @@ pub fn machdep() {
     // allocate a block of 64MB of memory, which gives us plenty of room for growth.
     let mut addr: EfiPhysicalAddress = 0;
     if efi_memprobe_find(
-        efi_size_to_pages(64 * 1024 * 1024),
+        efi_size_to_pages(KERN_BLOCK_SIZE as usize),
         0x20_0000,
         EfiLoaderCode,
         &mut addr,

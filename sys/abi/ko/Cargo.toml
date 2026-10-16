@@ -1,0 +1,29 @@
+[package]
+name = "abi-openbsd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "abi-openbsd.ko: the ABI crate linked as the loadable module the boot loader hands the kernel (docs/ZERO_UNSAFE.md, decision 22)"
+build = "build.rs"
+publish = false
+
+# abi-openbsd.ko: `just build-abi-<arch>` links this ELF position-independent at 0
+# (relocation-model=pie, as efiboot), without debug information, in a target directory of
+# its own (target/abi/<target>/debug/abi-openbsd), with abi.ld: the module header at the
+# ELF entry address, text, the read-only data the loader relocates, the data. Not a
+# default member: it is built for the bare targets only.
+[[bin]]
+name = "abi-openbsd"
+path = "main.rs"
+test = false
+bench = false
+doc = false
+
+[dependencies]
+abi = { path = ".." }
+# The module's runtime (its panic handler): hal's feature `module-rt`, set here only.
+hal = { path = "../../hal", features = ["module-rt"] }
+
+[lints]
+workspace = true

@@ -7,7 +7,14 @@ name = "abi"
 version = "0.0.1"
 dependencies = [
  "hal",
- "kernel",
+]
+
+[[package]]
+name = "abi-openbsd"
+version = "0.0.1"
+dependencies = [
+ "abi",
+ "hal",
 ]
 
 [[package]]

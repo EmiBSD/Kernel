@@ -90,7 +90,6 @@ pub mod namei;
 pub mod param;
 pub use hal::sys::pclock;
 pub mod percpu;
-pub mod pipe;
 pub use hal::sys::pledge;
 pub mod poll;
 pub mod pool;

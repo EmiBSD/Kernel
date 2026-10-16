@@ -313,6 +313,11 @@ pub struct BootInfo {
     /// The boot disk's label DUID as the boot loader passed it (`BOOTARG_BOOTDUID`); `None`
     /// under Limine, which names it on the command line (`bootduid=`).
     pub duid: Option<[u8; 8]>,
+    /// Not in the C (N2.4, decision 22): the ABI module `abi-openbsd.ko` boot(8) put after
+    /// the kernel's image (amd64 `BOOTARG_ABIMODULE`, arm64 `/chosen`'s
+    /// `emibsd,abi-module`): its physical address and size, below `esym`, so never free
+    /// memory; `None` under Limine, which hands it over as a boot module.
+    pub abi_module: Option<(Paddr, usize)>,
 }
 
 impl BootInfo {
@@ -442,6 +447,7 @@ mod tests {
             mp: None,
             howto: 0,
             duid: None,
+            abi_module: None,
         };
         assert_eq!(
             boot.kernel_virt_to_phys(Vaddr::new(0xffff_ffff_8001_2345)),
@@ -497,6 +503,7 @@ mod tests {
             mp: None,
             howto: 0,
             duid: None,
+            abi_module: None,
         };
         assert_eq!(boot.boothowto(), 0);
         boot.cmdline = c"-d";

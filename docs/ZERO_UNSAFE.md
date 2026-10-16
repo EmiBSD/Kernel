@@ -475,6 +475,68 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
     planner estimated ~1,700; both are estimates until the first cluster moves); the ceilings of
     0.1 stand until `--write` lowers them.
 
+Taken by the redesigner of N2.4a on 2026-10-16 under the user's standing authority of that
+day ("yap puedes seguir solo? hasta acabar?"):
+
+29. **A kernel without its ABI module still boots** (docs/ARCHITECTURE.md, "abi-openbsd.ko").
+    When the boot loader hands over no `/abi-openbsd.ko`, or the loader refuses it (another
+    machine, another `KernelApi`, a malformed file), the kernel prints one line,
+    `abi-openbsd.ko: not loaded, <why>; every system call takes the legacy path`, and every
+    system call goes to the `Legacy` fallback, which is the path the traps took before N2.4.
+    Reason: the module only translates (decision 21) and every entry is `Legacy` at N2, so
+    nothing userland sees depends on it yet, and a medium made before the module, or one a
+    builder forgot, must not turn into a kernel that cannot run `init(8)`; `just smoke-abi`
+    refuses that line, so a medium that lacks the module is a red smoke, not a silent
+    fallback. To be revisited when the first entry is `Native` (N2.6): from then on a missing
+    module changes what userland sees, and the fallback becomes a panic or stays with a
+    reason here. Also taken: the loader's memory, mapping and hand-over go through the
+    `ModulePlatform` bridge `bsd` implements until `hal` holds the pmap (`bridges.toml`); its
+    three `unsafe` rest on that premise, stated in `sys/hal/module/load.rs`.
+
+Taken by the N2.3 runtime redesigner on 2026-10-16 under the user's standing authority of that
+day (numbered R1.. so that other slices' entries do not collide; the integrator renumbers them
+after 24 when it merges):
+
+- R1. **A runtime module that re-expresses one C file's algorithm keeps that file's licence and
+  provenance.** `sys/hal/mutex.rs` (`kern_lock.c`, `mutex.h`), `rwlock.rs` (`kern_rwlock.c`,
+  `rwlock.h`), `percpu.rs` (`subr_percpu.c`, `percpu.h`) and `refcnt.rs` (`refcnt.h`,
+  `kern_synch.c`) are `redesigned` `[[module]]`s with those LZ files in `lz`, their notices
+  and `//! LZ:` lines, not `[[extra]]`s with the author's block alone: a translation is a
+  derivative work (`scope-and-stubs.md`). The pieces that follow no C file (`once`, `bridges`,
+  `intr`, `cpu`, `sleep`, `kmbuf`, `pool`, `malloc`, `user`, `cons`, `errno`, `assert`) are
+  `[[extra]]`s. The LZ files stay `inherited` in `bsd` for their users.
+- R2. **`TypedPool<T>` is backed by `bsd`'s `pool(9)`, one pool per type, through a bridge**,
+  not by a pool allocator written in `hal`: `vmstat -m` and `systat pool` list the pools by
+  name (`pipepl`, ...), which userland sees; the same for `MBox<T>` over `malloc(9)` (its
+  types' rows, decision 19).
+- R3. **`Mutexed<T>` deviations, until `hal` owns `intr_disable` (N4.1):** a contended mutex
+  spins on its owner word (no parking lots); the `panicstr || db_active` bypass is not kept
+  (it would hand out a second `&mut`; the console primitive takes no lock instead); entering a
+  mutex this CPU holds panics in every configuration. Written in the module's
+  `## Deviations`.
+- R4. **No lock's exclusion rests on a bridge.** The owner words are never 0 for an owner
+  (`MTX_OWNED`, `RWLOCK_WRLOCK`) and a writer's exit compares the word it stored, so a wrong
+  `CpuId` or `Sleep` answer costs a diagnostic, never an aliased `&mut`; the bridges that
+  answer such questions are safe traits.
+- R5. **`hal::errno::Errno` is interim** (a transparent `errno(2)` number): the constant
+  headers move into `hal` as inherited modules (the user's decision relayed by the
+  coordinator); the runtime used only what the legacy enum also has, and after the merge of
+  main at 5f9deff1 it was folded: the runtime and `bsd`'s bridges use `hal::sys::errno::Errno`.
+
+The question R1-R5 left open (three `unsafe impl`s in `bsd` for `unsafe trait` memory
+bridges) was answered by the user the same day, decision 30 below.
+
+30. **The memory bridges are safe traits** (the user, 2026-10-16, rejecting 3 `unsafe impl` in
+    `bsd`: "Rechazar: trait seguro"): `PageMemory`, `PoolBackend`/`RawPool` and `Malloc` are
+    safe; the trust that the kernel's allocators return valid, exclusive memory is a
+    boot-time registration contract that `hal` documents in the `// SAFETY:` of every site
+    that dereferences what they return, checked for null, alignment and size on each answer,
+    probed under `diagnostic`; `bsd` registers them with 0 `unsafe`. Stated cost: `hal`'s
+    soundness rests on that registration until the bridges go (N3, N9); it is a documented
+    trust boundary, not a compiler-checked one. (`sys/hal/trust.rs` holds the checks;
+    `sys/kern/hal_bridges.rs` the registrations, called by `stand::start_kernel` before
+    `main()`.)
+
 Taken by the user on 2026-10-16, on the day's runs (decisions 29 and 30 land with the ABI and
 runtime branches):
 
