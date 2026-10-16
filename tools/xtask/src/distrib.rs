@@ -735,7 +735,21 @@ pub(crate) fn make_cd_iso(root: &Path, arch: Arch) -> Result<PathBuf> {
     fs::set_permissions(reldir.join("bsd.rd"), fs::Permissions::from_mode(0o755))?;
     fs::copy(&eficdboot, reldir.join("eficdboot"))?;
     // N2.4 (decision 22): the ABI module boot(8) reads from the kernel's device, at its root.
-    let abi_module = crate::boot::default_abi_module(root, arch);
+    // ISO 9660 has no `-` in a name and libsa's cd9660 reads no Rock Ridge, so a module whose
+    // name does not survive `iso_name` could never be opened by boot(8) from this CD: it is
+    // left out, and the kernel boots without it (decision 29), until its name is settled.
+    let abi_module = crate::boot::default_abi_module(root, arch).filter(|_| {
+        let survives = crate::iso9660::libsa_name_survives(crate::boot::ABI_MODULE);
+        if !survives {
+            println!(
+                "  cd-iso {}: left out: {} (not an ISO 9660 name: libsa's cd9660 could not \
+                 open it; the kernel boots without the module, decision 29)",
+                arch.name(),
+                crate::boot::ABI_MODULE
+            );
+        }
+        survives
+    });
     if let Some(m) = &abi_module {
         fs::copy(m, cd.join(crate::boot::ABI_MODULE))?;
     }

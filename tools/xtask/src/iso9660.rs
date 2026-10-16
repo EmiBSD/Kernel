@@ -289,6 +289,14 @@ impl Tree {
 }
 
 /// The ISO 9660 name of `name` (module docs: `-l -L -d -N`).
+/// Whether libsa's cd9660 would find a file called `name` at the root of an image this
+/// module writes: [`libsa_lookup`] (and boot(8)) compare the upper-cased path with the stored
+/// ISO 9660 name and read no Rock Ridge, so a name is found only when [`iso_name`] keeps it
+/// (`-` and other characters outside `A-Z`, `0-9`, `_` become `_` and are lost).
+pub(crate) fn libsa_name_survives(name: &str) -> bool {
+    iso_name(name, false) == name.to_ascii_uppercase()
+}
+
 fn iso_name(name: &str, dir: bool) -> String {
     let upper: Vec<char> = name.chars().map(|c| c.to_ascii_uppercase()).collect();
     let last_dot = if dir {
@@ -965,6 +973,12 @@ mod tests {
 
     #[test]
     fn names() {
+        assert!(libsa_name_survives("bsd.rd"));
+        assert!(libsa_name_survives("abi_openbsd.ko"));
+        assert!(!libsa_name_survives("abi-openbsd.ko"));
+        assert!(!libsa_name_survives(
+            "a-very-long-name-past-thirty-one-chars.ko"
+        ));
         assert_eq!(iso_name("bsd.rd", false), "BSD.RD");
         assert_eq!(iso_name("8.0", true), "8.0");
         assert_eq!(iso_name("a.b.c", false), "A_B.C");
