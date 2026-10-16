@@ -136,7 +136,7 @@ smokes := "smoke-boot smoke-shell smoke-login smoke-net smoke-route smoke-diag s
     "smoke-net-mp smoke-up smoke-audio smoke-usb smoke-puc smoke-fb smoke-wscons smoke-vga smoke-kbd " + \
     "smoke-powerbtn smoke-ukc smoke-ppb smoke-dmar smoke-iic smoke-ipmi smoke-tpm smoke-virtio smoke-viogpu " + \
     "smoke-mouse smoke-ugen smoke-ehci smoke-uaudio smoke-uhci smoke-ohci smoke-cdce smoke-ucom " + \
-    "smoke-pckbc smoke-eap smoke-lpt smoke-bell smoke-cd80"
+    "smoke-pckbc smoke-eap smoke-lpt smoke-bell smoke-cd80 smoke-abi"
 
 smoke: smoke-build
     cargo xtask smoke-all -j {{jobs}} --just {{quote(just_executable())}} {{smokes}}
@@ -2148,6 +2148,24 @@ smoke-powerbtn: (build-arm64 "--features qemu,multiprocessor") build-init-arm64
         --expect "plgpio0 at mainbus0" --expect 'gpiokeys0 at mainbus0: "GPIO Key Poweroff"' \
         --expect "rc: multi-user" --expect "m16f-armed-41" --expect "m16f-still-up-42" \
         --reject "syncing disks" --reject "Attempting to power down" --reject "The operating system has halted"
+
+# N2.4 (decision 22): the ABI module. Limine hands /abi-openbsd.ko over beside the kernel,
+# hal's loader places, relocates and maps it before init(8) runs and prints its one line,
+# and every system call goes through it (each entry Legacy at N2.4): single user from the
+# ramdisk, a command that execs, opens and reads, then the shell's own answer. A kernel that
+# did not load it says `not loaded`, which fails the run. Part of `smoke`.
+smoke-abi: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") build-abi
+    @test -f target/userland/amd64/ramdisk.ffs -a -f target/userland/arm64/ramdisk.ffs || \
+        { echo "smoke-abi: no ramdisk image; run just userland first"; exit 1; }
+    cargo xtask smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{abi_steps}}
+    cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{abi_steps}}
+
+# `smoke-abi`'s expectations and session.
+abi_steps := "--reject 'abi-openbsd.ko: not loaded' " + \
+    "--expect 'abi-openbsd.ko: 331 syscalls, 0 native' " + \
+    "--send-after 'RETURN for sh:' --send '\\n' " + \
+    "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
+    "--expect 'abi-ok-42'"
 
 # M13: the date comes from the RTC. Each arch boots single user from the ramdisk (`-s`) and
 # ksh(1) compares `date +%s` right after boot with the host's clock ({host-ms}, hwopts.rs):

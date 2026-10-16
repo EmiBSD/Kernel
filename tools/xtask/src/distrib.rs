@@ -407,6 +407,11 @@ fn stage_openbsd_partition(
             fs::hard_link(reldir.join("bsd.rd"), dir.join("bsd"))?;
         }
     }
+    // N2.4 (decision 22): the ABI module boot(8) reads from the kernel's device, at its root.
+    if let Some(m) = crate::boot::default_abi_module(root, arch) {
+        let bytes = fs::read(&m).map_err(|e| format!("{}: {e}", m.display()))?;
+        put(&dir.join(crate::boot::ABI_MODULE), &bytes, 0o444)?;
+    }
     Ok(())
 }
 
@@ -729,6 +734,11 @@ pub(crate) fn make_cd_iso(root: &Path, arch: Arch) -> Result<PathBuf> {
     fs::copy(&bsd_rd, reldir.join("bsd.rd"))?;
     fs::set_permissions(reldir.join("bsd.rd"), fs::Permissions::from_mode(0o755))?;
     fs::copy(&eficdboot, reldir.join("eficdboot"))?;
+    // N2.4 (decision 22): the ABI module boot(8) reads from the kernel's device, at its root.
+    let abi_module = crate::boot::default_abi_module(root, arch);
+    if let Some(m) = &abi_module {
+        fs::copy(m, cd.join(crate::boot::ABI_MODULE))?;
+    }
     println!(
         "  cd-iso {}: not built, left out: cdbr and cdboot (the BIOS El Torito boot)",
         arch.name()
@@ -756,10 +766,14 @@ pub(crate) fn make_cd_iso(root: &Path, arch: Arch) -> Result<PathBuf> {
     )?;
     // The boot loader must find the kernel and boot.conf as libsa's cd9660 looks them up.
     let iso = fs::read(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    for p in [
+    let mut lookups = vec![
         format!("/{osrev}/{}/bsd.rd", arch.name()),
         "/etc/boot.conf".to_string(),
-    ] {
+    ];
+    if abi_module.is_some() {
+        lookups.push(format!("/{}", crate::boot::ABI_MODULE));
+    }
+    for p in lookups {
         if crate::iso9660::libsa_lookup(&iso, &p).is_none() {
             return Err(format!("{}: libsa's lookup does not find {p}", out.display()).into());
         }
