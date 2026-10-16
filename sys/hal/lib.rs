@@ -26,4 +26,10 @@
 
 pub mod arch;
 pub mod machine;
+
+#[cfg(test)]
+extern crate std;
+#[cfg(test)]
+#[forbid(unsafe_code)]
+pub(crate) mod reftest;
 /* </CODE> */

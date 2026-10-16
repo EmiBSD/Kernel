@@ -6897,3 +6897,8 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
+[[extra]]
+rust = "sys/hal/reftest.rs"
+crate = "hal"
+reason = "copy of sys/reftest.rs so the inherited headers moved into hal keep their #[ignore] reference-backed tests byte-identical (crate::reftest resolves inside hal); the two copies merge when bsd's last reference test moves"
+
