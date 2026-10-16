@@ -1,7 +1,118 @@
-# Zero unsafe outside the core
+# Zero unsafe in the kernel
 
-A proposal: make `unsafe` a compile error everywhere except in a small, listed core, and measure
-the redesign by how much of the kernel already compiles that way.
+The kernel is a crate the compiler refuses to build with one `unsafe` in it; the only `unsafe`
+of the system lives in a small HAL below it, proved site by site; an ABI crate above it keeps
+OpenBSD's userland interface byte-identical and decides nothing. Section 0 is the plan in force
+(v2, 2026-10-16); sections 1-9 record v1 and its measurements.
+
+## 0. v2 (2026-10-16): the kernel is a crate with no `unsafe`
+
+Decisions 20 and 21 (section 10) replace the shape of sections 4, 6 and 7: the kernel is not
+"the LZ tree with a listed core", it is a **new crate with `#![forbid(unsafe_code)]` at its
+root**, and the LZ tree is what that crate replaces. Everything below here is the plan in force;
+sections 1-9 stay as the record of how the first version was measured and why it was dropped.
+
+### 0.1 The four crates
+
+| Crate | Path | `unsafe` | Holds |
+|---|---|---|---|
+| `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware (today's `sys/arch/amd64`, `sys/arch/arm64`, `sys/machine`, moved in), the host test double (`sys/arch/host`), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (today's `queue.rs`, `tree.rs`, `subr_tree.rs`), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
+| `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
+| `abi` | `sys/abi/` | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno. Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
+| `bsd` | `sys/` (the LZ tree, today's crate) | legacy: 8,911 today (the 8,747 outside the old core plus the 164 of the old runtime files, which are legacy now), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
+
+The boot loaders (`sys/stand`, `sys/lib/libsa`, 319 `unsafe`) are separate binaries that run
+before the kernel; they are outside the four crates and unchanged. `libkern` and `libz` stay
+crates of their own, `forbid` (`StaticCell` moves to `hal`, so `libkern` can be).
+
+Dependencies, one direction: `bsd -> abi -> kernel -> hal`, plus `libkern`/`libz` under
+`kernel`. `hal` depends on nothing of ours. No cycle: a kernel-to-legacy call is a bridge.
+
+### 0.2 What the compiler guarantees
+
+- `cargo build` of `kernel` or `abi` with one `unsafe` anywhere, in any module, under any
+  `cfg`, fails: `#![forbid(unsafe_code)]` cannot be overridden below the root. There is no
+  allow list, no core list, no per-module attribute.
+- `hal`'s API is safe: an `unsafe fn` in `hal` is `pub(crate)`. `cargo xtask hal-check` fails
+  `just check` on a `pub unsafe fn`, on an `unsafe` block without a `// SAFETY:`, and on a
+  `hal` count above `hal_ceiling` in `unsafe-budget.toml` (lowered by `--write`, never raised
+  without the user).
+- `abi` holds no logic: `cargo xtask abi-check` fails `just check` on a function of `abi` that
+  branches on anything but the syscall number, its own conversion's `Ok`/`Err` and the byte
+  layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
+  limit (decision 21).
+
+### 0.3 The migration mechanism
+
+1. **A subsystem moves, it is not patched.** The unit of work is still one owner module (or
+   cluster) of the ROADMAP row: the surveyor inventories the LZ module and the C, the planner
+   writes the brief, the redesigner writes the subsystem **in `kernel`** from the C's behaviour
+   (LZ's shape is reference, never the starting text), deletes the LZ module from `bsd`, and
+   leaves in `bsd` at most a call-site adapter with 0 `unsafe` (`adapted`, `adapted_by` the
+   kernel module) until the callers move too.
+2. **Bridges, for the kernel's calls into what has not moved yet.** `kernel` declares a trait
+   (`pub trait Vfs`, `pub trait Sockets`, ...) and holds it in a `hal::OnceStatic<&'static dyn
+   Trait>`; `bsd` implements it over its legacy code and registers it in `main()` before first
+   use. Every bridge is a row of `bridges.toml` (`trait`, `for`, `paid_by` = the milestone whose
+   subsystem removes it); `cargo xtask` counts them; N9 requires 0. A bridge carries no logic
+   of its own (the same rule as `abi`).
+3. **The syscall table lives in `abi` from N2 on.** Each entry is `Native(fn)` (translation into
+   `kernel`) or `Legacy` (the fallback `bsd` registers at boot). A migrated syscall flips its
+   entry; `diff-openbsd` and the smokes see no difference, which is the test.
+4. **Lineage keeps every provenance rule.** A kernel module is `redesigned` with its `lz` list
+   and `//! LZ:` lines; the LZ file it replaces becomes `[[dropped]]` with `absorbed by
+   sys/kernel/...`; `lineage.toml` gains `crate`. An LZ change to a dropped file is
+   `covered-by-redesign` or `reimplemented` in `kernel` (`lz-sync.md`).
+5. **Tests.** `kernel`'s host tests run on `hal`'s host backend; `just check` (build on both
+   archs, clippy, fmt, `lz check`, `hal-check`, `abi-check`, `unsafe-report --check`, host
+   tests) gates every commit; the smokes, `just ci`, `ci-full` and `diff-openbsd` run at the
+   milestone close (the user's rule of 2026-10-16).
+
+### 0.4 The metric
+
+`cargo xtask unsafe-report` prints four numbers and `/progress` shows them per milestone:
+`kernel` (always 0, else the build failed), `abi` (always 0), `hal` (today's hardware code plus
+the new runtime; the ceiling in `unsafe-budget.toml`, lowered only), and `bsd` (legacy: the
+`unsafe` still in the LZ tree, per ROADMAP row). A row is **complete when its files in `bsd`
+are 0** (deleted, or a 0-`unsafe` adapter listed as such) and its subsystem answers in
+`kernel`. The old `forbid` count is gone: nothing in `kernel` needs marking.
+
+### 0.5 Milestones, replanned
+
+Measured on `main` at `47e1c4f` with `/progress`. "Files" and "`unsafe`" are what leaves `bsd`.
+The estimate is continuous agent time (sessions open around the clock), from the one slice
+measured end to end on 2026-10-16 (the typed slots: 4 h for two series of a mid-size slice);
+it is the planning session's number, labelled as such, and `/progress` replaces it once five
+active days have moved 100 `unsafe`.
+
+| Milestone | Scope (what moves into `kernel`/`abi`/`hal`) | Files | `unsafe` | Exit (mechanical) | Est. |
+|---|---|---:|---:|---|---:|
+| **N2 Foundations** (under way, replanned) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the hardware code (moved) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`) and the 41 constant headers of `sys/sys/`; `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 28 + 41 + the hardware move | 21 (+ 1,891 moved into `hal`, not removed) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; `just ci`, `ci-full`, `diff-openbsd` equal | 8 d |
+| **N3 Memory** | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` last, with `security-review.md`); the pmap behind a safe `hal::Pmap` API | 26 | 215 | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | 6 d |
+| **N4 Processes** | `sys/kern/` by owner into `kernel`: timeout, task, event/kqueue, descriptors (`file`, `kern_descrip`), signals, proc, the scheduler, sysctl's core, tty; `StaticCell` uses in `kern` → `OnceStatic` | 75 + 4 (kqueue and descriptors, N2's before) | 680 + 95 | `sys/kern/` in `bsd` holds only the VFS (N5), the sockets (N6) and the N8 files; the bridges `Proc`, `Fd`, `Kq` removed from `bridges.toml` | 12 d |
+| **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/nfs/`, `sys/ntfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs` | 140 | 816 | those directories gone from `bsd`; the `Vfs` bridge removed | 14 d |
+| **N6 Network** | `sys/net/`, `sys/netinet/`, `sys/netinet6/`, the sockets of `sys/kern/uipc_*` → `kernel::net`, except N8's files | 99 | 1,840 | those directories gone from `bsd` but N8's files; the `Sockets` bridge removed | 18 d |
+| **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last | 395 | 4,198 | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 40 d |
+| **N8 Security subsystems** | `pf*`, `if_wg`/`wg_*`, IPsec, `softraid_crypto`, `pledge`, `unveil`, `exec_*`, the crypto framework → `kernel`, each with `Security-Review:` and the area's smokes before every commit | 36 | 849 | those files gone from `bsd`; `lz drift --security` empty | 8 d |
+| **N9 Close** | what is left: `sys/ddb/`, `sys/conf/`, `init/`, the old runtime files (`subr_pool`, `kern_lock`, `kern_rwlock`, `kern_malloc`, `smr`, `percpu`: deleted with their last user), `sys/sys/` emptied into `abi`/`kernel`; the `bsd` crate deleted; the binary is `kernel` + `abi` + `hal`; `bridges.toml` empty; `hal`'s floor recorded with its proof list; Miri green on `hal` | 14 + the old runtime 15 | 28 + 164 | `sys/` holds `hal/`, `kernel/`, `abi/`, `stand/`, `lib/`; `unsafe-report`: `bsd` does not exist, `kernel` 0, `abi` 0, `hal` = its floor | 5 d |
+
+Total: 8,911 `unsafe` out of `bsd`, 580 + 15 files, about **111 days of continuous agent
+time** at the measured pace, serial (the slices share files); this number is the planning
+session's and promises nothing: `/progress` measures.
+
+What does not change in any milestone: what userland sees (`abi` is byte-identical, the smokes
+and `diff-openbsd` are the proof), the LZ sync (`lz-sync.md`, with `covered-by-redesign` for
+dropped files), the two architectures on every commit, the per-commit `just check`.
+
+### 0.6 The work in flight on 2026-10-16
+
+The two branches of the typed-slots slice (`worktree-agent-ab058223a74c4dcd6` at `ade1ddb`,
+series 0 and 1 reviewed; `worktree-agent-ad1fb0331db500561`, series 2 half done) redesign
+inside `bsd`. Under v2 that is not the goal: `bsd` is deleted, not improved. They are **not
+merged**; their shapes (`FileData` by value to the close, `CredRef`, the typed hook over `dyn
+Any`, `KlistLock`) are reused when descriptors and kqueue move into `kernel` at N4. About
+eight hours of agent work set aside by the architecture change; said here so it is not
+recounted as progress.
 
 ## 1. Status and goal
 
