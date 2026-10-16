@@ -6892,3 +6892,8 @@ reason = "N2.4a: the init-once cell the system call registry, kernel::api and th
 rust = "sys/kernel/api.rs"
 crate = "kernel"
 reason = "N2.4a (decision 22): KernelApi, the versioned #[repr(C)] vtable of safe functions handed to abi-openbsd.ko at load (the handler's registration, the Legacy fallback, copyin/copyout), the module header the loader checks, and the registration that keeps the module's handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
+
+[[extra]]
+rust = "sys/abi/sysent.rs"
+crate = "abi"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native"

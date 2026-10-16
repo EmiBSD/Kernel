@@ -3208,7 +3208,7 @@ cc_script := disk_login + " " + \
 # host unit tests (libkern + libz + bsd through sys/arch/host, plus xtask's own)
 test:
     cargo test -p libkern -p libz -p bsd -p xtask
-    cargo test -p hal -p kernel
+    cargo test -p hal -p kernel -p abi
     cargo test -p libsa -p boot -p efi
     cargo test -p efiboot-arm64
 

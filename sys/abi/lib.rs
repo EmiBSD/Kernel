@@ -21,6 +21,26 @@
 //! `abi-openbsd.ko`. Translation only: userland bytes to the kernel's types and back, one
 //! `KernelApi` entry per syscall, an errno from its `Result`; no decision on what a value means
 //! (decision 21, `cargo xtask abi-check`). `forbid(unsafe_code)`: `hal::UserPtr` is safe.
+//!
+//! The module's binary is `sys/abi/ko` (package `abi-openbsd`), which carries the header
+//! `hal::module` checks and calls [`abi_init`] through. Until the 41 constant headers move
+//! here (N2.4, step g), `syscall` is `sys/sys/syscall.rs` itself, compiled into this crate
+//! by path: the numbers of the table are the ABI edge's, not a copy of them.
 #![no_std]
 #![forbid(unsafe_code)]
+
+#[cfg(test)]
+extern crate std;
+
+#[path = "../sys/syscall.rs"]
+pub mod syscall;
+pub mod sysent;
+
+use kernel::api::KernelApi;
+
+/// The module's entry point, which `hal::module` calls once, before `init(8)` starts:
+/// registers the system call handler and what the table holds.
+pub fn abi_init(api: &'static KernelApi) {
+    (api.register_syscall_handler)(api, sysent::syscall, sysent::INFO);
+}
 /* </CODE> */
