@@ -23,4 +23,6 @@
 //! tree is reached only through a registered bridge (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
 #![forbid(unsafe_code)]
+
+pub mod api;
 /* </CODE> */

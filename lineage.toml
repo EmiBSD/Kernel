@@ -6887,3 +6887,8 @@ reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backe
 rust = "sys/hal/module/once.rs"
 crate = "hal"
 reason = "N2.4a: the init-once cell the system call registry, kernel::api and the module loader keep their registrations in; TODO(N2 integrate): replaced by hal::OnceStatic (the runtime of N2.3)"
+
+[[extra]]
+rust = "sys/kernel/api.rs"
+crate = "kernel"
+reason = "N2.4a (decision 22): KernelApi, the versioned #[repr(C)] vtable of safe functions handed to abi-openbsd.ko at load (the handler's registration, the Legacy fallback, copyin/copyout), the module header the loader checks, and the registration that keeps the module's handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
