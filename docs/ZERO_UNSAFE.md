@@ -532,3 +532,20 @@ Taken by the planning session on 2026-10-16 under the user's standing authority 
     Timer(MBox<FiltTimer>)`: the one owned hook is kqueue's own, named, not generic. Rejected:
     `Box` (the global allocator is `M_TEMP, M_NOWAIT`: a different `vmstat` row and a panic
     where the C sleeps).
+
+Taken by the user on 2026-10-16, late ("OK te voy a permitir eso por ahora"), after rejecting
+every design that kept `unsafe` inside the kernel:
+
+20. **The kernel is a crate with `#![forbid(unsafe_code)]` at its root: zero `unsafe`, enforced
+    by the compiler, with no exception inside it.** Below it, a HAL crate, new code, small, holds
+    the only `unsafe` the system has (locks and the allocator: `UnsafeCell`, bytes to `T`; page
+    tables, traps, context switch, MMIO, DMA), each with a soundness proof, Miri on its host
+    tests: the kernel's `std`. Above it, an ABI compatibility crate keeps OpenBSD's userland
+    interface byte-identical (the syscall table, the `#[repr(C)]` structs, ioctl and sysctl
+    encodings) and frees the kernel from the C's shape. The LZ-derived tree is not a layer: it
+    is what the kernel crate replaces, subsystem by subsystem, until it is empty; while it runs,
+    it calls the new crates, never the reverse except through the HAL's registered bridges.
+    This supersedes sections 4 (the core list) and 7 (the milestones): a v2 of this document
+    rewrites them with the crate split, the migration mechanism and the new N2/N3. The
+    Asterinas framekernel (OS services in safe Rust over an `unsafe` OSTD) is the precedent.
+    The user's words: zero `unsafe` in the kernel, "por ahora" the HAL may have it.
