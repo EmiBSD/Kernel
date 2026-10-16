@@ -66,15 +66,13 @@
 //! - The banner names the operating system as the kernel does: `>> EmiBSD/amd64 BOOTX64
 //!   3.71` (`docs/ARCHITECTURE.md`, "The system's identity"); the C prints `OpenBSD`.
 //! - Not in the C (N2.4, decision 22): after the kernel, boot() reads `/abi-openbsd.ko`
-//!   from the kernel's device and puts it on the page after the kernel's image, inside the
+//!   from the kernel's device straight onto the page after the kernel's image, inside the
 //!   room the program reserved (`BootMd::abi_module_room`), raising `marks[MARK_END]` over
 //!   it, so the move and the cache clean of `run_loadfile` carry it and the kernel's
 //!   `esym` keeps it out of free memory; `CmdState::abi_module` tells `run_loadfile` where
 //!   it is, for its hand-over (amd64 `BOOTARG_ABIMODULE`, arm64 `/chosen`'s
 //!   `emibsd,abi-module`). Without the file nothing changes.
 
-use alloc::vec;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
 use libkern::staticcell::StaticCell;
@@ -270,30 +268,37 @@ pub fn boot(bootdev: Dev) -> ! {
         let path = cmd.path;
         let module = md
             .abi_module_room
-            .and_then(|room| abi_module_read(&cmd).map(|m| (m, room())));
+            .and_then(|room| abi_module_open(&cmd).map(|(fd, len)| (fd, len, room())));
         cmd.abi_module = None;
         // SAFETY: the program's LOADADDR maps the kernel into the memory it reserved for it
         // (efiboot: the 64 MB `efi_memprobe` allocates), the contract of `BootMd`. The
-        // module goes to the page after the kernel's image (`marks[MARK_END]`, a load-space
-        // address as every mark is) only when it ends before `room`, the end of that same
-        // reserved memory (`BootMd::abi_module_room`), so it overwrites nothing the program
-        // or the kernel's image uses; its source is a heap buffer, outside that memory.
+        // module is read straight into the page after the kernel's image (`marks[MARK_END]`,
+        // a load-space address as every mark is) only when it ends before `room`, the end of
+        // that same reserved memory (`BootMd::abi_module_room`), so it overwrites nothing
+        // the program or the kernel's image uses, and no heap is spent on it.
         let loaded = unsafe {
             let loaded = loadfile(cstr(&path), &mut marks, LOAD_ALL);
-            if let (Ok(_), Some((m, room))) = (&loaded, &module) {
+            if let (Ok(_), Some((fd, len, room))) = (&loaded, module) {
                 let at = marks[MARK_END].next_multiple_of(ABI_MODULE_ALIGN);
-                let len = m.len() as u64;
-                if at.checked_add(len).is_some_and(|end| end <= *room) {
-                    core::slice::from_raw_parts_mut(at as usize as *mut u8, m.len())
-                        .copy_from_slice(m);
-                    marks[MARK_END] = at + len;
-                    cmd.abi_module = Some((at, len));
-                } else {
-                    printf!("{}: no room after the kernel\n", Str(ABI_MODULE));
+                match at.checked_add(len).filter(|&end| end <= room) {
+                    Some(end) => {
+                        let dst =
+                            core::slice::from_raw_parts_mut(at as usize as *mut u8, len as usize);
+                        if read(fd, dst) == Ok(len as usize) {
+                            marks[MARK_END] = end;
+                            cmd.abi_module = Some((at, len));
+                        } else {
+                            printf!("{}: cannot read it whole\n", Str(ABI_MODULE));
+                        }
+                    }
+                    None => printf!("{}: no room after the kernel\n", Str(ABI_MODULE)),
                 }
             }
             loaded
         };
+        if let Some((fd, _, _)) = module {
+            let _ = close(fd);
+        }
         if let Ok(fd) = loaded {
             // Prevent re-upgrade: chmod a-x bsd.upgrade
             if isupgrade {
@@ -379,10 +384,12 @@ pub const ABI_MODULE: &[u8] = b"/abi-openbsd.ko";
 /// Where the module goes after the kernel's image: the next page.
 const ABI_MODULE_ALIGN: u64 = 4096;
 
-/// Not in the C (N2.4): `/abi-openbsd.ko` from the device of the kernel being loaded, into
-/// the heap; `None` without one (the kernel then takes every system call through its legacy
-/// path and says so) or when it cannot be read whole.
-pub fn abi_module_read(cmd: &CmdState) -> Option<Vec<u8>> {
+/// Not in the C (N2.4): `/abi-openbsd.ko` on the device of the kernel being loaded, opened:
+/// its descriptor and length, which boot() reads straight into the room after the kernel;
+/// `None` without one (the kernel then takes every system call through its legacy path and
+/// says so). No buffer: an oversized or corrupt length is refused by boot()'s room check,
+/// never allocated (efiboot's heap is 1 MiB and panics when full).
+pub fn abi_module_open(cmd: &CmdState) -> Option<(usize, u64)> {
     let mut path = [0u8; MAXPATHLEN];
     let kpath = cstr(&cmd.path);
     match kpath.iter().position(|&c| c == b':') {
@@ -395,18 +402,15 @@ pub fn abi_module_read(cmd: &CmdState) -> Option<Vec<u8>> {
     }
     let fd = open(cstr(&path), 0).ok()?;
     let mut sb = Stat::default();
-    let module = if fstat(fd, &mut sb).is_ok() {
-        usize::try_from(sb.st_size).ok().and_then(|len| {
-            let mut buf = vec![0u8; len];
-            (read(fd, &mut buf) == Ok(len)).then_some(buf)
-        })
+    let len = if fstat(fd, &mut sb).is_ok() {
+        u64::try_from(sb.st_size).ok()
     } else {
         None
     };
-    let _ = close(fd);
-    if module.is_none() {
-        printf!("cannot read {}\n", Str(&path));
+    if len.is_none() {
+        printf!("cannot stat {}\n", Str(&path));
+        let _ = close(fd);
     }
-    module
+    len.map(|len| (fd, len))
 }
 /* </CODE> */
