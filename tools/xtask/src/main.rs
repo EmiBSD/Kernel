@@ -98,10 +98,11 @@
 //!                                          modules fall below the floor or legacy rises
 //!                                          above the ceiling; --shapes lists the shapes per
 //!                                          module; a `crates` block (kernel, abi, hal,
-//!                                          hal_pending, boot, bsd: files and `unsafe`) and
+//!                                          bsd with the part that moves into hal, boot: files and `unsafe`) and
 //!                                          --check's rules for it (kernel and abi 0, hal
 //!                                          under hal_ceiling, bsd outside the core under
-//!                                          legacy_ceiling) (unsafereport.rs)
+//!                                          legacy_ceiling: the hardware is in unsafe-core.toml,
+//!                                          so it is already outside) (unsafereport.rs)
 //! cargo xtask unsafe-report --json         the same measure as one JSON document: every
 //!                                          kernel file with its lineage status, group,
 //!                                          `unsafe` and shapes, the totals, the ratchet and

@@ -22,6 +22,10 @@
 
 [core]
 paths = [
+    # The hal crate (docs/ZERO_UNSAFE.md section 0, decision 20): the only crate where
+    # `unsafe` may live under v2; listed here so the v1 tool counts it as core until the
+    # crate groups of unsafe-report v2 (N2.4) replace this file.
+    "sys/hal/**",
     # Hardware: MMIO, page tables, traps, context switch, copyin/copyout, atomics.
     "sys/arch/amd64/**",
     "sys/arch/arm64/**",

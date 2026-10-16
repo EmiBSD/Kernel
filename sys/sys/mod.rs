@@ -43,17 +43,14 @@ pub mod disklabel;
 pub mod dkio;
 #[forbid(unsafe_code)]
 pub mod domain;
-#[forbid(unsafe_code)]
-pub mod endian;
-#[forbid(unsafe_code)]
-pub mod errno;
+pub use hal::sys::endian;
+pub use hal::sys::errno;
 pub mod evcount;
 pub mod event;
 pub mod eventvar;
 #[forbid(unsafe_code)]
 pub mod exec;
-#[forbid(unsafe_code)]
-pub mod exec_elf;
+pub use hal::sys::exec_elf;
 #[forbid(unsafe_code)]
 pub mod exec_script;
 #[forbid(unsafe_code)]
@@ -67,26 +64,21 @@ pub mod filedesc;
 pub mod filio;
 #[cfg(feature = "fuse")]
 pub mod fusebuf;
-#[forbid(unsafe_code)]
-pub mod futex;
+pub use hal::sys::futex;
 pub mod gpio;
-#[forbid(unsafe_code)]
-pub mod intrmap;
+pub use hal::sys::intrmap;
 #[forbid(unsafe_code)]
 pub mod ioccom;
 pub mod ioctl;
-#[forbid(unsafe_code)]
-pub mod kernel;
-#[forbid(unsafe_code)]
-pub mod limits;
+pub use hal::sys::kernel;
+pub use hal::sys::limits;
 #[forbid(unsafe_code)]
 pub mod lock;
 #[forbid(unsafe_code)]
 pub mod lockf;
 pub mod malloc;
 pub mod mbuf;
-#[forbid(unsafe_code)]
-pub mod mman;
+pub use hal::sys::mman;
 pub mod mount;
 pub mod mplock;
 pub mod msgbuf;
@@ -96,27 +88,23 @@ pub mod mutex;
 pub mod namei;
 #[forbid(unsafe_code)]
 pub mod param;
-#[forbid(unsafe_code)]
-pub mod pclock;
+pub use hal::sys::pclock;
 pub mod percpu;
 pub mod pipe;
-#[forbid(unsafe_code)]
-pub mod pledge;
+pub use hal::sys::pledge;
 pub mod poll;
 pub mod pool;
 pub mod proc;
 pub mod protosw;
 pub mod queue;
-#[forbid(unsafe_code)]
-pub mod reboot;
+pub use hal::sys::reboot;
 pub mod refcnt;
 pub mod resource;
 pub mod resourcevar;
 pub mod rwlock;
 pub mod sched;
 pub mod scsiio;
-#[forbid(unsafe_code)]
-pub mod select;
+pub use hal::sys::select;
 #[forbid(unsafe_code)]
 pub mod selinfo;
 pub mod sensors;
@@ -130,16 +118,14 @@ pub mod socket;
 pub mod socketvar;
 #[forbid(unsafe_code)]
 pub mod sockio;
-#[forbid(unsafe_code)]
-pub mod softintr;
+pub use hal::sys::softintr;
 #[forbid(unsafe_code)]
 pub mod specdev;
 #[forbid(unsafe_code)]
 pub mod stat;
 #[forbid(unsafe_code)]
 pub mod swap;
-#[forbid(unsafe_code)]
-pub mod syscall;
+pub use hal::sys::syscall;
 pub mod syscall_mi;
 pub mod syscallargs;
 pub mod sysctl;
@@ -160,23 +146,18 @@ pub mod tty;
 pub mod ttycom;
 #[forbid(unsafe_code)]
 pub mod ttydefaults;
-#[forbid(unsafe_code)]
-pub mod types;
+pub use hal::sys::types;
 pub mod ucred;
 #[forbid(unsafe_code)]
 pub mod uio;
 #[forbid(unsafe_code)]
 pub mod un;
-#[forbid(unsafe_code)]
-pub mod unistd;
+pub use hal::sys::unistd;
 pub mod unpcb;
 #[forbid(unsafe_code)]
 pub mod user;
-#[forbid(unsafe_code)]
-pub mod uuid;
-#[forbid(unsafe_code)]
-pub mod vmmeter;
+pub use hal::sys::uuid;
+pub use hal::sys::vmmeter;
 pub mod vnode;
-#[forbid(unsafe_code)]
-pub mod wait;
+pub use hal::sys::wait;
 /* </CODE> */
