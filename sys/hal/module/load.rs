@@ -184,8 +184,8 @@ fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<L
     // view of them aliases no write. The boot path establishes it before registering the
     // image: Limine's module is Limine's own response; boot(8)'s record is accepted only
     // when `len` is not 0 nor above the kernel's 64 MiB room and `[pa, pa + len)` lies
-    // inside the kernel's image (from its physical start, within the room, in no region the
-    // memory map calls free: below `esym`), checked with `checked_add` by
+    // inside the kernel's image (from its physical start, within the room, covered by one
+    // region the memory map calls the kernel's image: below `esym`), checked with `checked_add` by
     // `sys/stand/mod.rs`'s `abi_module_handover` (otherwise the record is dropped with one
     // line), and that range is in the direct map on both machines.
     let file: &'static [u8] = unsafe { core::slice::from_raw_parts(first, len) };
