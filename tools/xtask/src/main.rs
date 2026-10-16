@@ -97,11 +97,16 @@
 //!                                          when a subsystem exceeds its budget, the forbid
 //!                                          modules fall below the floor or legacy rises
 //!                                          above the ceiling; --shapes lists the shapes per
-//!                                          module (unsafereport.rs)
+//!                                          module; a `crates` block (kernel, abi, hal,
+//!                                          hal_pending, boot, bsd: files and `unsafe`) and
+//!                                          --check's rules for it (kernel and abi 0, hal
+//!                                          under hal_ceiling, bsd outside the core under
+//!                                          legacy_ceiling) (unsafereport.rs)
 //! cargo xtask unsafe-report --json         the same measure as one JSON document: every
 //!                                          kernel file with its lineage status, group,
 //!                                          `unsafe` and shapes, the totals, the ratchet and
-//!                                          the pace since its baseline (what /progress reads)
+//!                                          the pace since its baseline and, additively, a
+//!                                          `crates` object (what /progress reads)
 //! cargo xtask hal-check                    the rules of the hal crate (sys/hal/): no `pub unsafe
 //!                                          fn`, a `// SAFETY:` comment above every `unsafe`
 //!                                          block, no `static mut`, the crate's `unsafe` at or
