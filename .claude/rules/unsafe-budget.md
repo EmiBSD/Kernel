@@ -14,14 +14,12 @@ still runs; `unsafe-core.toml` is kept readable and unused.
 Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` in the kernel
 (`docs/ZERO_UNSAFE.md`). The budget makes that measurable and keeps it from regressing.
 
-- The core is the list of paths in `unsafe-core.toml` (the hardware, the boot code, the host
-  harness, the runtime of primitives). Only there may `unsafe` live. A path joins the list only
-  with the user's OK, in a commit of its own, like a budget raise.
-- Every module outside the core is either `forbid` (its `mod` declaration in the parent
-  `mod.rs` or crate root, or an ancestor's, carries `#[forbid(unsafe_code)]`, so the compiler
-  refuses any `unsafe` in it) or legacy (inherited, not yet redesigned). The `forbid` count
-  never falls; the legacy total never rises, except in the re-baseline commit of an LZ sync
-  (below).
+- v1 (2026-10-10 to 2026-10-16, superseded; kept so the v1 tool's output still reads): the core
+  was the list of paths in `unsafe-core.toml`, and every module outside it was `forbid` (the
+  attribute on its `mod` declaration) or legacy; the `forbid` count never fell and the legacy
+  total never rose, except in the re-baseline commit of an LZ sync (below). In v2 the crate is
+  the boundary (the header above); the modules `forbid` under v1 keep the attribute until they
+  move into `sys/kernel/`.
 - `cargo xtask unsafe-report` prints, beside the per-subsystem rows, the three groups over the
   kernel counts (test code apart): core (the `unsafe` in the files of `unsafe-core.toml`, per
   row), `forbid` (the modules so declared, read from the module tree down from every `lib.rs`

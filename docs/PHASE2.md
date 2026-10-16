@@ -30,9 +30,11 @@ repository: the dependency points one way.
 
 ## Goals, in priority order
 
-1. **Safety.** Zero `unsafe` outside a listed core: every module outside `unsafe-core.toml`
-   compiles under `#[forbid(unsafe_code)]`, and every `unsafe` inside the core is budgeted,
-   argued and reviewed (`docs/ZERO_UNSAFE.md`, `.claude/rules/unsafe-budget.md`).
+1. **Safety.** Zero `unsafe` in the kernel: `sys/kernel/` and `sys/abi/` are crates with
+   `#![forbid(unsafe_code)]` at their roots; `sys/hal/` is the only crate with `unsafe`, every
+   site argued and reviewed under a ceiling; the LZ tree (`bsd`) is replaced subsystem by
+   subsystem and deleted at N9 (`docs/ZERO_UNSAFE.md` section 0, the one diagram;
+   `.claude/rules/unsafe-budget.md`).
 2. **Maintainability.** Idiomatic Rust where the LZ shape exists only to mirror C:
    `Cell`-everywhere structs, raw-pointer links, C-shaped out parameters (`docs/IDIOMS.md`).
 3. **Performance.** Measured improvements only (`just bench`), never at the cost of 1 or 2.
@@ -159,6 +161,7 @@ commit; crypto, IPsec, WireGuard and softraid CRYPTO change last of all, with ex
 | 2026-10-10 | EmiBSD.LZ's subagent set-up (`b0901dd3`) adopted: roles in `.claude/agents/` (`redesigner` and `mechanical` for LZ's porters), one contract in `.claude/rules/subagents.md`, `.claude/agent-memory/` committed, the machine lock `/tmp/emibsd/ci.lock` shared with LZ, `/redesign` and `/progress` (the ROADMAP scope resolved against `lineage.toml`; no milestone key in its rows); no `external-bugs` role: slips go to the user. |
 | 2026-10-10 | `/redesign` retired after its first run, stopped in its Plan phase: the session drives the redesign and launches the roles one by one (a `milestone-coordinator` when a whole milestone runs in the background); a workflow hid the plan, could not be watched from VS Code and was never tested. The roles, the contract, the memories and `/progress` stay. |
 | 2026-10-10 | Zero `unsafe` outside a listed core (`docs/ZERO_UNSAFE.md`): every module outside `unsafe-core.toml` compiles under `#[forbid(unsafe_code)]`, set on its `mod` declaration; the core (hardware, boot, the host harness, a runtime of primitives, `explicit_bzero.rs`) is budgeted and reviewed; the legacy total only falls, an LZ sync aside; "redesigned" means "compiles with `forbid`"; N2 becomes "Core runtime", N9 "Close" is added; first slice pipe(2); `Adapter` a safe trait checked by `lz check`; `reimplemented` normal for `forbid` modules; Miri and the core crate decided at N9. Iterative: the plan follows what each step teaches. |
+| 2026-10-16 | **v2 of the zero-unsafe plan** (`docs/ZERO_UNSAFE.md` section 0, decisions 20-24): the kernel is the crate `sys/kernel/` with `#![forbid(unsafe_code)]` at its root; `sys/abi/`, also `forbid`, is OpenBSD's userland interface as the loadable module `abi-openbsd.ko` with no logic; `sys/hal/` holds the only `unsafe` (hardware and runtime, ceiling 2,150 at N2); `bsd` (the LZ tree) is replaced subsystem by subsystem through bridges registered in `hal` and deleted at N9; develop first, compile later (no build per commit; `just check` and QEMU at the milestone close). Supersedes the row above: no core list, no per-module `forbid`. |
 
 ## Later
 

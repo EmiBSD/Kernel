@@ -14,7 +14,8 @@ your prompt names.
 
 Read first: CLAUDE.md, `.claude/rules/` (`re-engineering.md`, `unsafe-budget.md`, `lineage.md`,
 `rust-kernel.md`, `security-review.md`, `subagents.md`), `docs/ZERO_UNSAFE.md` (all of it: the
-decisions in section 10 bind you), `docs/IDIOMS.md`, `unsafe-core.toml`, and the inventory and
+decisions in section 10 bind you; section 0 and its one diagram are the architecture),
+`docs/IDIOMS.md`, `bridges.toml`, and the inventory and
 any earlier brief your prompt names. Re-check in the code every fact your design rests on; an
 inventory can be wrong.
 

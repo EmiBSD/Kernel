@@ -15,7 +15,8 @@ nothing else is yours to write. You report facts; you do not design and you do n
 
 Read first: CLAUDE.md, `.claude/rules/` (`re-engineering.md` for the timing rule, `unsafe-budget.md`
 and `rust-kernel.md` for the zero-unsafe terms, `subagents.md` for the common contract),
-`docs/ZERO_UNSAFE.md` sections 1-7, `docs/IDIOMS.md`, and `unsafe-core.toml`. OpenBSD's C under
+`docs/ZERO_UNSAFE.md` section 0 (the plan in force and its one diagram), `docs/IDIOMS.md`, and
+`bridges.toml`. OpenBSD's C under
 `reference/openbsd-src/` is the specification; the LZ module at the pin
 (`reference/emibsd-lz`) is the shape; `sys/sys/queue.rs` is the model of a core primitive with a
 safe API.
@@ -46,7 +47,7 @@ sections in this order (empty ones say "none"):
 - **B. Callers.** Every module that names the surveyed items, with what it uses.
 - **C. The primitives it needs.** For each one the prompt lists (and any the code shows): the
   API that exists today (signatures with locations), whether it lives in the core of
-  `unsafe-core.toml` or in a legacy module, its `unsafe` count, and the number of modules that
+  `sys/hal/` or still in `bsd` (legacy), its `unsafe` count, and the number of modules that
   call it tree-wide, flagging every item over 50 (the timing rule: it waits for LZ's milestone).
 - **D. The glue.** The file, descriptor, syscall-entry and `machine::copy` paths the module
   crosses, and whether a `forbid` module can use each as it stands or needs a seam.

@@ -41,7 +41,9 @@ paths:
   hold any), `modules` (the files the forbid ratchet counts: under `sys/`, apart from crate
   roots, `mod.rs`, `build.rs`, `sys/machine/`, `sys/arch/host/` and `sys/stand/`),
   `forbid_modules`, `core_budget` (over the rows that hold core files, each row's budget
-  minus its legacy)}; `ratchet` {`forbid_floor`, `legacy_ceiling`, `legacy_baseline`,
+  minus its legacy)} (this is the v1 tool; N2.4 replaces the groups by the crates `kernel`,
+  `abi`, `hal`, `bsd`, `boot`, schema 2, with `hal-check` and `abi-check` beside it,
+  docs/ZERO_UNSAFE.md 0.2 and 0.4); `ratchet` {`forbid_floor`, `legacy_ceiling`, `legacy_baseline`,
   `baseline_date`} or `null`; `rate` {`active_days` (days with a commit from `baseline_date`
   on), `removed` (`legacy_baseline` minus `legacy_unsafe`, 0 when it rose), `per_day` (`null`
   before two active days or while nothing is removed)}; `subsystems` [{`name`, `budget`,

@@ -63,9 +63,10 @@ The definitions are generic; the prompt of each launch supplies the specifics:
 5. what else runs on the machine at the same time (in this repository and in LZ);
 6. any authorisation the user gave for this launch, quoted.
 
-A redesign prompt also says which modules end `forbid` and which core primitives the work may
-add or must wait for (`docs/ZERO_UNSAFE.md`): no agent adds a path to `unsafe-core.toml` or
-moves `unsafe` into a non-core module.
+A redesign prompt also says which `bsd` modules the work deletes, which `hal` pieces it may
+add or must wait for, and which bridges it creates or removes (`docs/ZERO_UNSAFE.md` section
+0): no agent writes `unsafe` outside `sys/hal/`, raises `hal_ceiling`, or adds a bridge
+without its `bridges.toml` row.
 
 A prompt that misses one of these gets a question back, not a guess.
 
