@@ -251,7 +251,7 @@ impl<T> UserPtr<T> {
 
     /// The address of the `n`th `T` from this one (`uaddr + n * sizeof(T)`); `None` on
     /// overflow.
-    pub fn add(self, n: usize) -> Option<Self> {
+    pub fn checked_add(self, n: usize) -> Option<Self> {
         let bytes = n.checked_mul(size_of::<T>())?;
         Some(Self::new(self.addr.checked_add(bytes)?))
     }
@@ -395,7 +395,7 @@ mod tests {
         u.copyin_slice(&mut back).unwrap();
         assert_eq!(back, [n, n]);
         assert_eq!(
-            u.add(1).map(UserPtr::addr),
+            u.checked_add(1).map(UserPtr::addr),
             Some(u.addr() + size_of::<Nested>())
         );
     }
@@ -408,7 +408,7 @@ mod tests {
             UserPtr::<u32>::new(usize::MAX - 2).copyout(&1),
             Err(Errno::EFAULT)
         );
-        assert_eq!(UserPtr::<u64>::new(usize::MAX).add(1), None);
+        assert_eq!(UserPtr::<u64>::new(usize::MAX).checked_add(1), None);
     }
 
     #[test]
