@@ -72,7 +72,10 @@ pub trait PageMemory: Sync {
     /// `km_alloc(len, &kv_any, kind's mode, wait ? &kd_waitok : &kd_nowait)`: the block and
     /// the size granted.
     fn alloc(&self, len: usize, kind: PageKind, wait: bool) -> Option<(NonNull<u8>, usize)>;
-    /// `km_free(ptr, len, &kv_any, kind's mode)`.
+    /// `km_free(ptr, len, &kv_any, kind's mode)`: the contract's other half. The block given
+    /// back is one this bridge granted, with its `len` and `kind`, and no view of it is
+    /// alive; `hal` alone calls it (from `KmBuf`'s drop), since the registered object never
+    /// leaves `hal` (`bridges::page_memory` is crate-private).
     fn free(&self, ptr: NonNull<u8>, len: usize, kind: PageKind);
     /// `PAGE_SIZE`.
     fn page_size(&self) -> usize;

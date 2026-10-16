@@ -30,6 +30,10 @@
 //! no console, and the C's `cnputc` with `cn_tab == NULL` drops the character: so does this
 //! one, counting it ([`dropped`]); `cngetc` answers 0, `cnpollc` does nothing.
 //!
+//! Not for any line the C prints with `printf(9)`: `Cons` bypasses `printf`'s lock and the
+//! message buffer, so `dmesg` never sees what goes through it, and lines a smoke or
+//! `diff-openbsd` compares keep going through `bsd`'s `printf` until it moves.
+//!
 //! ## Redesign
 //! - Not a port: the functions are `dev/cons.rs`'s, reached through one trait object; what is
 //!   new is [`Cons`], a `fmt::Write` sink, so the runtime and the kernel crate can format to

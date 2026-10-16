@@ -38,6 +38,13 @@
 //! allocator: [`TypedPool::init`] fails with `ENOMEM` and every `get_shared` with `None`, as a
 //! `pool_get` that cannot get a page does with `PR_NOWAIT`.
 //!
+//! ## Deviations
+//! - An item is an `Inner<T>`: the `T` with its reference count and its pool, 16 bytes (and
+//!   any alignment padding) more than the C's item, so the Size column of `vmstat -m` (and
+//!   `systat pool`) differs for a pool made through `TypedPool` from the C's pool of that
+//!   object. No `diff-openbsd` scenario prints `vmstat -m`; the first such pool is
+//!   pipe(2)'s (N2.6), whose name and counts are the C's.
+//!
 //! ## Redesign
 //! - `pool_init(&pp, sizeof(T), align, ipl, flags, wchan, NULL)` -> [`TypedPool::init`],
 //!   sized and aligned by the type; `pool_get` + initialisation -> [`TypedPool::get_shared`]
@@ -85,7 +92,10 @@ pub trait RawPool: Sync {
     /// `pool_get(pp, flags)` (`PR_WAITOK`, `PR_NOWAIT`, `PR_LIMITFAIL`): the item and the
     /// size granted.
     fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)>;
-    /// `pool_put(pp, item)`.
+    /// `pool_put(pp, item)`: the contract's other half. The item given back is one this pool
+    /// granted and no view of it is alive; `hal` alone calls it (from the last `PoolArc`'s
+    /// drop), since the pools never leave `hal` (`TypedPool` keeps them, and
+    /// `bridges::pool_backend` is crate-private).
     fn put(&self, item: NonNull<u8>);
     /// `pr_nout`: the items out of the pool now.
     fn nout(&self) -> u64;

@@ -76,7 +76,10 @@ pub trait Malloc: Sync {
     /// `malloc(size, ty, flags)` (`M_WAITOK`, `M_NOWAIT`, `M_CANFAIL`): the block and the size
     /// granted.
     fn malloc(&self, size: usize, ty: i32, flags: i32) -> Option<(NonNull<u8>, usize)>;
-    /// `free(ptr, ty, size)`.
+    /// `free(ptr, ty, size)`: the contract's other half. The block given back is one this
+    /// bridge granted, with its `ty` and `size`, and no view of it is alive; `hal` alone
+    /// calls it (from `MBox`'s drop and `into_inner`), since the registered object never
+    /// leaves `hal` (`bridges::malloc` is crate-private).
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize);
 }
 

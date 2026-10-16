@@ -3209,6 +3209,7 @@ cc_script := disk_login + " " + \
 test:
     cargo test -p libkern -p libz -p bsd -p xtask
     cargo test -p hal -p kernel
+    cargo test -p hal --features multiprocessor,diagnostic
     cargo test -p libsa -p boot -p efi
     cargo test -p efiboot-arm64
 
@@ -3228,6 +3229,7 @@ clippy:
     cargo clippy -p init --target {{amd64}} -- -D warnings
     cargo clippy -p init --target {{arm64}} -- -D warnings
     cargo clippy -p libkern -p libz -p hal -p bsd -p xtask -- -D warnings
+    cargo clippy -p hal --features multiprocessor,diagnostic -- -D warnings
     cargo clippy -p libsa -p boot -p efi -- -D warnings
     cargo clippy -p libsa -p boot -p efi --target {{arm64}} -- -D warnings
     cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
