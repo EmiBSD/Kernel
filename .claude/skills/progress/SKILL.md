@@ -24,7 +24,7 @@ How to answer:
   an `adapted` module only followed a redesign and is shown apart; a met row may keep legacy
   modules that a later row's prose claims (N1's crypto framework is N8's); the estimate
   divides a row's legacy unsafe by the legacy unsafe removed per active day since the
-  baseline of `unsafe-budget.toml`, reads n/a until two active days have removed some, and
+  baseline of `unsafe-budget.toml`, reads n/a until 5 active days have removed 100 or more (a smaller sample is noise), and
   promises nothing.
 - A `Warning:` line under the table names non-core modules no ROADMAP row claims: say so;
   they need an owner row.

@@ -49,7 +49,8 @@ Columns, per row:
   Redesigned        lineage.toml's redesigned modules, adapted shown apart;
   Est. left         Legacy unsafe / the pace; "done" once Legacy modules and
                     Legacy unsafe are both 0 (the row is complete); "n/a" until
-                    two active days since the baseline have removed some.
+                    5 active days since the baseline have removed 100 or more
+                    (MIN_PACE_DAYS, MIN_PACE_REMOVED): a smaller sample is noise.
 The Core line sums unsafe-core.toml (modules, unsafe, budget) and names the core
 paths no row claims; a non-core module no row names is a warning line.
 
@@ -90,6 +91,9 @@ import tomllib  # noqa: E402
 MS_ID = re.compile(r"N\d+[a-z]*")
 STATUSES = ("redesigned", "adapted", "inherited")
 DONE = ("redesigned", "adapted")
+# The smallest sample the pace is computed from: below it, Est. left reads n/a.
+MIN_PACE_DAYS = 5
+MIN_PACE_REMOVED = 100
 
 
 def root_dir() -> Path:
@@ -363,6 +367,10 @@ def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     pace = doc.get("rate") or {}
     per_day = pace.get("per_day")
     days = pace.get("active_days", 0)
+    # A pace from a handful of days or a handful of unsafe extrapolates noise (2026-10-16: one
+    # unsafe in two planning days gave "~232 d" for N2); below this sample there is no estimate.
+    if days < MIN_PACE_DAYS or pace.get("removed", 0) < MIN_PACE_REMOVED:
+        per_day = None
     base, since = ratchet.get("legacy_baseline"), ratchet.get("baseline_date")
 
     def tally() -> dict:
@@ -498,7 +506,7 @@ def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     else:
         print(f"Pace: n/a: {days} active day{'s' if days != 1 else ''} since the baseline "
               f"({since}, {base:,} legacy unsafe), {pace.get('removed', 0):,} removed; the "
-              "estimate needs two active days and some unsafe removed.")
+              f"estimate needs {MIN_PACE_DAYS} active days and {MIN_PACE_REMOVED} unsafe removed.")
     print()
     print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
           "Modules = the files the forbid ratchet counts (under sys/; crate roots, mod.rs and "
@@ -514,8 +522,8 @@ def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
           "lineage.toml's redesigned modules, adapted shown apart. The Core line sums "
           "unsafe-core.toml; its budget is what the row budgets leave it (each row's budget "
           "minus its legacy). Est. left = Legacy unsafe / the pace, the legacy unsafe removed per "
-          "active day (a day with a commit) since the ratchet's baseline; n/a before two active "
-          "days. It is a linear extrapolation: it measures the past and promises nothing.")
+          "active day (a day with a commit) since the ratchet's baseline; n/a before 5 active "
+          "days and 100 unsafe removed. It is a linear extrapolation: it measures the past and promises nothing.")
 
 
 def new_tally() -> dict:
