@@ -300,6 +300,16 @@ redesigns them to `forbid` in one go, once the core primitives it needs exist. W
 fields and their users change together; a horizontal pass ("every `Cell` out of `sys/sys/`")
 would rewrite modules that later milestones own, and pay for it again in every LZ sync.
 
+### Before pipe: the two type-erased slots (decision 9, 2026-10-16)
+
+`File.f_data: Cell<*mut c_void>` (`sys/sys/file.rs:169`, 16 files) and `Knote.kn_hook:
+Cell<*mut c_void>` (`sys/sys/event.rs:446`, 18 files) are the slots every file type and every
+kqueue filter casts from. A slice that keeps them needs a seam per slot (a tag-checked cast in
+`kern_descrip`, an index smuggled into `kn_hook`): `unsafe` moved, not removed. Both are under
+the 50-module timing rule, so they are typed first, as two slices of their own: `f_data` becomes
+an owned `enum FileData` dropped by `fdrop` (the direction of a pipe end rides in its variant);
+`kn_hook` a typed hook. Then pipe(2) needs no seam into `file` or `kern_event`.
+
 ### The first slice: pipe(2), recommended
 
 - Modules: `sys/kern/sys_pipe.rs` (1,659 lines, 21 `unsafe`) and `sys/sys/pipe.rs` (233 lines,
@@ -455,7 +465,7 @@ Taken by the user on 2026-10-10 ("ta bien, demosle, igual esto es iterativo. lz 
 1. **The goal: adopted** as stated in section 1.
 2. **The initial core list: as listed** in section 4, `explicit_bzero.rs` included, `conf` and
    `init` left as legacy. A later addition is a commit of its own, with the user's OK.
-3. **The first slice: pipe(2)** (section 6).
+3. **The first slice: pipe(2)** (section 6); since decision 9, after the two slot slices.
 4. **Miri: deferred.** Decided at N9; the plan does not depend on it.
 5. **The core at N9, crate or list: deferred** to N9. Nothing before it depends on it.
 6. **LZ: `reimplemented` is the normal method for `forbid` modules** (section 8).
@@ -464,3 +474,24 @@ Taken by the user on 2026-10-10 ("ta bien, demosle, igual esto es iterativo. lz 
    refuses a hand-written impl. The alternative (back links that point at the element or the
    head, so no offset and no `container_of`) was set aside for now; it stays open if the
    tool-enforced boundary proves weak.
+
+Taken by the user on 2026-10-16 ("vamos por la recta, lo barato me sale caro siempre"):
+
+8. **Names.** The owning primitives are `Rwlocked<T>`, `TypedPool<T>` with `PoolArc<T>`, and
+   later `Mutexed<T>`, beside the C-shaped `Rwlock`, `Pool` and `Mutex` (72, 73 and 129 files:
+   the timing rule). The renames (`RawRwlock`, ... and the plain names for the owning types) are
+   N9's.
+9. **No hidden seams.** The two type-erased slots are typed first (section 6, "Before pipe"); pipe
+   follows with no seam into `file` or `kern_event`. The one seam left, an owned pageable
+   allocation (`KmBuf`) in `sys/uvm/uvm_km.rs` until N3 owns uvm, is recorded as such: a
+   `[[seam]]` row of `lineage.toml` (`module`, `for`, `paid_by`) that `lz status` and
+   `unsafe-report` print as their own group, never as `adapted`.
+10. **No `&'static` from a pool** (docs/IDIOMS.md): `PoolArc<T>` is an owned handle; a raw form
+    exists only inside the core.
+11. **The pipe's `PIPE_LOCK`** stays a bit of `pipe_state` (userland sees the word whole through
+    `kinfo_file`); the buffer is an owned `KmBuf` moved out of the lock while `uiomove` runs, so
+    no I/O-lock primitive is needed.
+12. **`pipe_state` and `peer_alive`** are atomics written only under the pair's write guard, so
+    `kern_sysctl` keeps the C's unlocked read; a race the C has, kept on purpose and named here.
+13. **sigio and klist need no primitive** for pipe: their APIs are safe; the pipe's klists carry
+    no `kl_ops` and every call is the `_locked` form under the guard. Five items became three.
