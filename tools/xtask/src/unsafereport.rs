@@ -453,7 +453,7 @@ pub(crate) fn lex_tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<Tok>>> {
 
 /// Which files are test-only: by name first, then by the test-only `mod x;` declarations,
 /// until nothing changes (a test file's own `mod` lines declare test files too).
-fn test_files(lexed: &BTreeMap<PathBuf, Vec<Tok>>) -> BTreeSet<PathBuf> {
+pub(crate) fn test_files(lexed: &BTreeMap<PathBuf, Vec<Tok>>) -> BTreeSet<PathBuf> {
     let mut test: BTreeSet<PathBuf> = lexed.keys().filter(|f| is_test_path(f)).cloned().collect();
     loop {
         let mut added = false;

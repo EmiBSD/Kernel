@@ -33,9 +33,10 @@
 //!    `unsafe impl` and `unsafe fn` have their own rule (`# Safety`, unsafe-budget.md).
 //! 3. **No `static mut`.**
 //! 4. **The count stays under the ceiling.** The crate's `unsafe` sites (every kind, test code
-//!    apart, as `unsafe-report` counts them) may not exceed `hal_ceiling` in the `[ratchet]`
-//!    table of `unsafe-budget.toml`; `unsafe-report --write` lowers the key and never raises
-//!    it. A missing key is an error.
+//!    apart: the test-only files are the ones `unsafe-report` leaves out, `tests.rs`, `tests/`
+//!    and the files a test-only `mod x;` declares, so both tools compare the same number) may
+//!    not exceed `hal_ceiling` in the `[ratchet]` table of `unsafe-budget.toml`;
+//!    `unsafe-report --write` lowers the key and never raises it. A missing key is an error.
 //!
 //! Rules 1 to 3 apply to every line of every file, test code included (a test that builds
 //! under Miri proves its sites too). Each finding prints as `path:line: message`; the
@@ -45,6 +46,9 @@ use std::fs;
 use std::path::Path;
 
 use crate::Result;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 use crate::unsafereport::{Kind, Lexed, Tok, lex_pos, scan};
 
 const HAL_DIR: &str = "sys/hal";
@@ -79,16 +83,29 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         crate::walk_rs(&dir, &mut files)?;
     }
     files.sort();
+    // The test-only files as `unsafe-report` finds them (`tests.rs`, `tests/`, and the files a
+    // test-only `mod x;` declares, such as `testutil.rs`), so both tools count the same sites
+    // against `hal_ceiling`.
+    let mut sources = BTreeMap::new();
+    for f in &files {
+        let src = fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        sources.insert(f.clone(), src);
+    }
+    let lexed: BTreeMap<PathBuf, Vec<Tok>> = sources
+        .iter()
+        .map(|(f, src)| (f.clone(), crate::unsafereport::lex(src)))
+        .collect();
+    let test_files = crate::unsafereport::test_files(&lexed);
     let mut findings = Vec::new();
     let mut sites = 0usize;
     for f in &files {
-        let src = fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        let src = &sources[f];
         let rel = f
             .strip_prefix(root)
             .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
-        let c = check_source(&rel, &src, crate::unsafereport::is_test_path(f));
+        let c = check_source(&rel, src, test_files.contains(f));
         sites += c.unsafe_sites;
         findings.extend(c.findings);
     }
@@ -309,6 +326,26 @@ mod tests {
         let t = check_source("sys/hal/tests.rs", "unsafe { b() };\n", true);
         assert_eq!(t.unsafe_sites, 0);
         assert_eq!(t.findings.len(), 1);
+    }
+
+    #[test]
+    fn a_file_a_test_only_mod_declares_is_test_code() {
+        use crate::unsafereport::{lex, test_files};
+        let mut lexed = BTreeMap::new();
+        lexed.insert(
+            PathBuf::from("/w/sys/hal/lib.rs"),
+            lex("pub mod user;\n#[cfg(test)]\npub(crate) mod testutil;\n"),
+        );
+        lexed.insert(PathBuf::from("/w/sys/hal/user.rs"), lex("pub fn f() {}"));
+        lexed.insert(
+            PathBuf::from("/w/sys/hal/testutil.rs"),
+            lex("pub fn g() { unsafe { h() } }"),
+        );
+        let tests = test_files(&lexed);
+        assert!(tests.contains(&PathBuf::from("/w/sys/hal/testutil.rs")));
+        assert!(!tests.contains(&PathBuf::from("/w/sys/hal/user.rs")));
+        let c = check_source("sys/hal/testutil.rs", "pub fn g() { unsafe { h() } }", true);
+        assert_eq!(c.unsafe_sites, 0);
     }
 
     #[test]
