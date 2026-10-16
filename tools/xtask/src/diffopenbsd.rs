@@ -102,7 +102,7 @@ const SNAPSHOT_FILE: &str = "tools/xtask/openbsd-snapshot.toml";
 const DATA_DIR: &str = "tools/xtask/diff-openbsd";
 const EXPECTED_FILE: &str = "tools/xtask/diff-openbsd/expected.toml";
 /// The scenario sets, in the order they run (`setup` formats and mounts the scratch disk).
-const SETS: &[&str] = &["setup", "syscalls", "fs"];
+const SETS: &[&str] = &["setup", "syscalls", "fs", "pipe"];
 /// The installed system's root password (`install.conf`), the same as the ramdisk's.
 const ROOT_PASSWORD: &str = "emibsd";
 /// Size of the OpenBSD VM's disk (sparse).

@@ -1,0 +1,21 @@
+# diff-openbsd set `pipe` (format: tools/xtask/src/diffopenbsd/scenario.rs): pipe(2) through
+# the shell's pipelines, in /mnt/pipe on the scratch FFS (`setup`): bytes through a pipe, a
+# stream larger than the buffer, writes larger than PIPE_SIZE (the buffer grows to
+# BIG_PIPE_SIZE), the first line of a stream, and SIGPIPE when the reader goes first. Since
+# N2.6 pipe(2) and pipe2(2) are the kernel crate's (sys/kernel/pipe.rs) and `Native` entries of
+# abi-openbsd.ko. Only deterministic output: byte counts, and a writer's status read after the
+# whole pipeline is done. head(1) and yes(1) are not in EmiBSD's userland; dd(1) and sed(1) do
+# their part.
+
+## bytes
+! mkdir /mnt/pipe
+! cd /mnt/pipe
+$ echo hi | cat
+$ (echo one; echo two) | sed q
+$ dd if=/dev/zero bs=512 count=200 2>/dev/null | wc -c
+$ dd if=/dev/zero bs=65536 count=4 2>/dev/null | dd bs=65536 2>/dev/null | wc -c
+
+## sigpipe
+! cd /mnt/pipe
+$ (dd if=/dev/zero bs=1024 count=1024 2>/dev/null; echo "dd rc=$?" >rc) | dd bs=1024 count=1 2>/dev/null | wc -c; cat rc
+! cd /
