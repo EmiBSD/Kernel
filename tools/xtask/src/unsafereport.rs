@@ -161,6 +161,10 @@ pub(crate) struct Ratchet {
     pub(crate) legacy_ceiling: usize,
     #[serde(default)]
     pub(crate) legacy_baseline: Option<usize>,
+    /// The most `unsafe` the `hal` crate (`sys/hal/`) may hold; `cargo xtask hal-check`
+    /// compares against it and `--write` only lowers it. Written by hand the first time.
+    #[serde(default)]
+    pub(crate) hal_ceiling: Option<usize>,
     /// `YYYY-MM-DD`.
     #[serde(default)]
     pub(crate) baseline_date: Option<String>,
@@ -211,18 +215,25 @@ pub(crate) fn ratchet_errors(r: &Ratchet, forbid: usize, legacy: usize) -> Vec<S
 
 /// The ratchet `--write` records: the floor only rises and the ceiling only falls, the
 /// baseline stays as it is; with no ratchet yet, today's numbers and no baseline.
-pub(crate) fn ratchet_next(old: Option<&Ratchet>, forbid: usize, legacy: usize) -> Ratchet {
+pub(crate) fn ratchet_next(
+    old: Option<&Ratchet>,
+    forbid: usize,
+    legacy: usize,
+    hal: usize,
+) -> Ratchet {
     match old {
         Some(o) => Ratchet {
             forbid_floor: o.forbid_floor.max(forbid),
             legacy_ceiling: o.legacy_ceiling.min(legacy),
             legacy_baseline: o.legacy_baseline,
+            hal_ceiling: o.hal_ceiling.map(|c| c.min(hal)),
             baseline_date: o.baseline_date.clone(),
         },
         None => Ratchet {
             forbid_floor: forbid,
             legacy_ceiling: legacy,
             legacy_baseline: None,
+            hal_ceiling: None,
             baseline_date: None,
         },
     }
@@ -262,6 +273,9 @@ pub(crate) fn budget_text(r: &Ratchet, rows: &BTreeMap<String, usize>) -> String
     ));
     if let Some(b) = r.legacy_baseline {
         text.push_str(&format!("legacy_baseline = {b}\n"));
+    }
+    if let Some(c) = r.hal_ceiling {
+        text.push_str(&format!("hal_ceiling = {c}\n"));
     }
     if let Some(d) = &r.baseline_date {
         text.push_str(&format!("baseline_date = \"{d}\"\n"));
@@ -394,6 +408,15 @@ pub(crate) struct Measure {
 }
 
 impl Measure {
+    /// The `unsafe` in kernel code of the files under `sys/hal/` (test code apart).
+    pub(crate) fn hal_unsafe(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|f| f.rel.starts_with("sys/hal/"))
+            .map(|f| f.kernel.total())
+            .sum()
+    }
+
     /// The row budgets left to the core: over the rows that hold core files, each row's
     /// budget (its count when it has none) minus its legacy `unsafe`. The core's files may
     /// hold that much before a row fails `--check`, with legacy as it stands.
@@ -630,7 +653,7 @@ pub(crate) fn unsafe_report(
         println!("wrote {STATUS_DOC}");
         // The budget only ever goes down here, the floor only up, and the baseline stays;
         // raising a budget is a commit of its own.
-        let next = ratchet_next(ratchet, groups.forbid, groups.legacy);
+        let next = ratchet_next(ratchet, groups.forbid, groups.legacy, m.hal_unsafe());
         let budgets: BTreeMap<String, usize> = rows
             .iter()
             .map(|(name, row)| {
@@ -895,7 +918,7 @@ fn replace_status_line(doc: &str, line: &str) -> Result<String> {
 }
 
 /// `tests.rs`, or a file under a `tests/` directory.
-fn is_test_path(p: &Path) -> bool {
+pub(crate) fn is_test_path(p: &Path) -> bool {
     p.file_name().and_then(|n| n.to_str()) == Some("tests.rs")
         || p.components().any(|c| c.as_os_str() == "tests")
 }
@@ -1343,6 +1366,8 @@ fn impl_of_send_sync(after: &[Tok]) -> bool {
 pub(crate) struct Scan {
     /// Every `unsafe` keyword: its kind and whether it sits in test code.
     pub(crate) found: Vec<(Kind, bool)>,
+    /// The same, with the index of the `unsafe` token: `(token, kind, in test code)`.
+    pub(crate) sites: Vec<(usize, Kind, bool)>,
     /// The names of the `mod name;` declarations that are test-only.
     pub(crate) test_mods: Vec<String>,
     /// The shapes to replace, in its kernel code.
@@ -1383,15 +1408,17 @@ pub(crate) fn scan(toks: &[Tok], file_is_test: bool) -> Scan {
         }
         i += 1;
     }
-    let found = toks
+    let sites: Vec<(usize, Kind, bool)> = toks
         .iter()
         .enumerate()
         .filter(|(_, t)| **t == Tok::Ident("unsafe".into()))
-        .map(|(i, _)| (classify(&toks[i + 1..]), in_test[i]))
+        .map(|(i, _)| (i, classify(&toks[i + 1..]), in_test[i]))
         .collect();
+    let found = sites.iter().map(|&(_, k, t)| (k, t)).collect();
     let shapes = shapes(toks, &in_test);
     Scan {
         found,
+        sites,
         test_mods,
         shapes,
     }
@@ -1431,7 +1458,7 @@ fn fn_kind(after_fn: &[Tok]) -> Kind {
 }
 
 /// The index of the bracket that closes the one at `open` (`(`, `[` or `{`).
-fn matching(toks: &[Tok], open: usize) -> Option<usize> {
+pub(crate) fn matching(toks: &[Tok], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, t) in toks.iter().enumerate().skip(open) {
         match t {
@@ -1523,18 +1550,60 @@ fn split_args(toks: &[Tok]) -> Vec<&[Tok]> {
 
 /// Tokenize Rust source, dropping comments, literals, lifetimes and whitespace.
 pub(crate) fn lex(src: &str) -> Vec<Tok> {
+    lex_pos(src).toks
+}
+
+/// A comment of a source file: the 1-based lines it starts and ends on, and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Comment {
+    pub(crate) first: usize,
+    pub(crate) last: usize,
+    pub(crate) text: String,
+}
+
+/// [`lex`] with positions: the 1-based line of every token (`lines[i]` is `toks[i]`'s) and
+/// the comments the token stream drops. The host tools that check comments (`hal-check`'s
+/// `// SAFETY:` rule) read these.
+#[derive(Debug, Default)]
+pub(crate) struct Lexed {
+    pub(crate) toks: Vec<Tok>,
+    pub(crate) lines: Vec<usize>,
+    pub(crate) comments: Vec<Comment>,
+}
+
+/// [`lex`], keeping each token's line and the comments.
+pub(crate) fn lex_pos(src: &str) -> Lexed {
     let s: Vec<char> = src.chars().collect();
     let mut toks = Vec::new();
+    let mut lines: Vec<usize> = Vec::new();
+    let mut comments: Vec<Comment> = Vec::new();
+    // `line_of[k]` is the 1-based line of char `k`.
+    let mut line_of = Vec::with_capacity(s.len() + 1);
+    let mut line = 1usize;
+    for &ch in &s {
+        line_of.push(line);
+        if ch == '\n' {
+            line += 1;
+        }
+    }
+    line_of.push(line);
     let mut i = 0;
     let at = |i: usize| s.get(i).copied().unwrap_or('\0');
     while i < s.len() {
         let c = s[i];
+        let start = i;
+        let before = toks.len();
         if c.is_whitespace() {
             i += 1;
         } else if c == '/' && at(i + 1) == '/' {
             while i < s.len() && s[i] != '\n' {
                 i += 1;
             }
+            comments.push(Comment {
+                first: line_of[start],
+                last: line_of[start],
+                text: s[start..i].iter().collect(),
+            });
         } else if c == '/' && at(i + 1) == '*' {
             let mut depth = 0usize;
             while i < s.len() {
@@ -1551,6 +1620,12 @@ pub(crate) fn lex(src: &str) -> Vec<Tok> {
                     i += 1;
                 }
             }
+            let end = i.min(s.len());
+            comments.push(Comment {
+                first: line_of[start],
+                last: line_of[end.saturating_sub(1).max(start)],
+                text: s[start..end].iter().collect(),
+            });
         } else if c == '"' {
             let from = i + 1;
             i = skip_string(&s, i);
@@ -1605,8 +1680,15 @@ pub(crate) fn lex(src: &str) -> Vec<Tok> {
             toks.push(Tok::Punct(c));
             i += 1;
         }
+        if toks.len() > before {
+            lines.push(line_of[start]);
+        }
     }
-    toks
+    Lexed {
+        toks,
+        lines,
+        comments,
+    }
 }
 
 /// Past the `".."` string that starts at `i`.
@@ -2064,6 +2146,7 @@ mod tests {
             forbid_floor: 400,
             legacy_ceiling: 8000,
             legacy_baseline: Some(8748),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         assert!(ratchet_errors(&r, 400, 8000).is_empty());
@@ -2074,20 +2157,21 @@ mod tests {
         // --write raises the floor and lowers the ceiling, never the other way, and keeps the
         // baseline as it is.
         assert_eq!(
-            ratchet_next(Some(&r), 420, 7900),
+            ratchet_next(Some(&r), 420, 7900, 0),
             Ratchet {
                 forbid_floor: 420,
                 legacy_ceiling: 7900,
                 ..r.clone()
             }
         );
-        assert_eq!(ratchet_next(Some(&r), 10, 9999), r);
+        assert_eq!(ratchet_next(Some(&r), 10, 9999, 0), r);
         assert_eq!(
-            ratchet_next(None, 7, 70),
+            ratchet_next(None, 7, 70, 0),
             Ratchet {
                 forbid_floor: 7,
                 legacy_ceiling: 70,
                 legacy_baseline: None,
+                hal_ceiling: None,
                 baseline_date: None,
             }
         );
@@ -2105,6 +2189,7 @@ mod tests {
                 forbid_floor: 3,
                 legacy_ceiling: 9,
                 legacy_baseline: None,
+                hal_ceiling: None,
                 baseline_date: None,
             })
         );
@@ -2137,10 +2222,11 @@ mod tests {
             forbid_floor: 305,
             legacy_ceiling: 8748,
             legacy_baseline: Some(8748),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         // A later --write: more forbid modules, less legacy; the baseline does not move.
-        let next = ratchet_next(Some(&old), 320, 8700);
+        let next = ratchet_next(Some(&old), 320, 8700, 0);
         let rows: BTreeMap<String, usize> =
             [("kern".to_string(), 1100), ("uvm".to_string(), 215)].into();
         let text = budget_text(&next, &rows);
@@ -2159,7 +2245,7 @@ mod tests {
         );
         assert_eq!(b.subsystems.len(), 2);
         // With no baseline recorded, --write invents none.
-        let bare = budget_text(&ratchet_next(None, 1, 2), &rows);
+        let bare = budget_text(&ratchet_next(None, 1, 2, 0), &rows);
         assert!(!bare.contains("legacy_baseline =") && !bare.contains("baseline_date ="));
         assert!(toml::from_str::<Budget>(&bare).is_ok());
     }
@@ -2246,6 +2332,7 @@ mod tests {
             forbid_floor: 2,
             legacy_ceiling: 3,
             legacy_baseline: Some(9),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         measure_lexed(Path::new("/w"), &lexed, core, budget, Some(ratchet))
@@ -2463,6 +2550,7 @@ mod tests {
             forbid_floor: 0,
             legacy_ceiling: 100,
             legacy_baseline: Some(100),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         // The day of the baseline alone (dates before it do not count): n/a.
@@ -2503,6 +2591,7 @@ mod tests {
         // No baseline recorded: nothing to measure from.
         let bare = Ratchet {
             legacy_baseline: None,
+            hal_ceiling: None,
             baseline_date: None,
             ..r
         };
