@@ -13,9 +13,9 @@ module as it is at the pin) is the starting point; what userland sees never chan
 launcher (a milestone coordinator or the main session) integrates your branch and runs
 `just ci`; you do not.
 
-Read first: CLAUDE.md, every file of `.claude/rules/` (`subagents.md` is the common contract,
-`re-engineering.md` the loop), the AGENT-RULES.md your prompt names, and `docs/IDIOMS.md`. Then
-merge the branch your prompt names.
+Read first: the "Rules that apply to this work" block of your prompt and the rule files it
+names (decision 31; `.claude/rules/subagents.md` is the common contract, `re-engineering.md`
+the loop), and `docs/IDIOMS.md`. Then merge the branch your prompt names.
 
 ## The redesign
 

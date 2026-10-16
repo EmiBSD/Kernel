@@ -61,7 +61,12 @@ The definitions are generic; the prompt of each launch supplies the specifics:
 4. the machine lock path (`/tmp/emibsd/ci.lock`, or `ci.lock` in the launching session's
    scratchpad), or "no lock";
 5. what else runs on the machine at the same time (in this repository and in LZ);
-6. any authorisation the user gave for this launch, quoted.
+6. any authorisation the user gave for this launch, quoted;
+7. the block "Rules that apply to this work" (decision 31): the 10-15 lines that bind the task
+   (zones and the author's block, the lineage of a move or of a redesign, decision 23, the
+   hook, what is forbidden) and the two or three files of `.claude/rules/` the agent reads
+   whole; the rest only if the work touches them. The reviewer is launched without it and
+   reads everything.
 
 A redesign prompt also says which `bsd` modules the work deletes, which `hal` pieces it may
 add or must wait for, and which bridges it creates or removes (`docs/ZERO_UNSAFE.md` section
@@ -84,7 +89,9 @@ A prompt that misses one of these gets a question back, not a guess.
 - The smokes need the userland (`target/userland/<arch>/ramdisk.ffs`): `cp -Rc
   "$MAIN/target/userland" target/userland` (an APFS clone, seconds), then `just userland`,
   which rebuilds only what its stamps say changed. Once, before any smoke.
-- Read CLAUDE.md and every file of `.claude/rules/` before writing anything.
+- Read the "Rules that apply to this work" block of your prompt and the rule files it names
+  before writing anything (decision 31); this file is the common contract. The reviewer reads
+  CLAUDE.md and every file of `.claude/rules/`.
 
 ## While working
 
@@ -137,4 +144,6 @@ Branch and tip, commits in order, the evidence (`cargo xtask unsafe-report` befo
 per subsystem, test counts before and after, serial lines, `rc=`, wall times, the
 `diff-openbsd` result), the `lineage.toml` rows changed, deviations closed or kept, what is
 left, the `HANDOFF.md` path, and the background tasks stopped. Then `rm -rf target/smoke` in
-the worktree.
+the worktree. The host checks run once per branch (decision 31): the agent quotes the lines of
+`cargo xtask lz check`, `unsafe-report`, `hal-check` and `abi-check` it saw at its tip, and the
+integrator runs them once more on `main` after the merge, not in the worktree.

@@ -101,6 +101,13 @@ Always:
   `cargo fmt --check` and `cargo xtask lz check` (seconds). `just check` (build on both archs,
   clippy, fmt, `lz check`, `unsafe-report --check`, `just test`; no QEMU) runs at the milestone
   close, first, in a compile-and-fix pass; then the QEMU tiers below.
+- Decision 31 (the user, 2026-10-16) cuts the repetitions: the host checks (`lz check`,
+  `unsafe-report --check`, `hal-check`, `abi-check`, fmt, `cargo test -p xtask`) run once per
+  branch, by the integrator on `main` after the merge; a branch is merged into `main` once per
+  milestone, at the close, unless a real dependency between branches exists, which is resolved
+  by merging one branch into the other; every merge into `main` is followed by `just build` and
+  `cargo check -p bsd --tests` (the lesson of `types.rs`); docs, STATUS and the session memory
+  take one `docs:` commit at the close and one update at the end of the session, not per slice.
 - `just ci` runs everything and is the definition of green **for a milestone**: the smokes,
   `lz drift --strict` and `just diff-openbsd` run once, at the milestone close, with `ci-full`
   (the user's decision of 2026-10-16: tests at the end of the milestone, not of each slice; the

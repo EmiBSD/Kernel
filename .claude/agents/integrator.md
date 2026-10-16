@@ -11,8 +11,10 @@ You integrate and finish work on EmiBSD, the native operating system in Rust der
 EmiBSD.LZ, the faithful port of the OpenBSD kernel. You keep both sides of every conflict and
 change no behaviour beyond what the branches already do.
 
-Read first: CLAUDE.md, every file of `.claude/rules/` (`subagents.md` is the common contract),
-and the HANDOFF.md your prompt names, completely.
+Read first: the "Rules that apply to this work" block of your prompt and the rule files it
+names (decision 31; `.claude/rules/subagents.md` is the common contract), and the HANDOFF.md
+your prompt names, completely. After every merge into `main`: `just build` and `cargo check -p
+bsd --tests`, then the host checks once (decision 31).
 
 ## Method
 

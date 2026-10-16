@@ -474,3 +474,30 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
     N7 like every driver. `hal`'s floor at N9 is therefore about 1,430 by 0.7's table (the
     planner estimated ~1,700; both are estimates until the first cluster moves); the ceilings of
     0.1 stand until `--write` lowers them.
+
+Taken by the user on 2026-10-16, on the day's runs (decisions 29 and 30 land with the ABI and
+runtime branches):
+
+31. **The N2 pipeline's repetitions are cut** (Emilio Navarrete Lineros, 2026-10-16), measured
+    on the day's launches:
+    1. *Rules per agent.* A launch no longer reads CLAUDE.md and the twelve files of
+       `.claude/rules/` whole. The launching prompt carries a block "Rules that apply to this
+       work": the 10-15 lines that bind it (zones and the author's block, the lineage of a move
+       or of a redesign, decision 23, the hook, what is forbidden) and the two or three rule
+       files to read whole; the rest only if the work touches them. The reviewer keeps reading
+       everything: that is its job.
+    2. *Host checks.* One pass per branch, the integrator's on `main` after the merge (`lz
+       check`, `unsafe-report --check`, `hal-check`, `abi-check`, fmt, `cargo test -p xtask`).
+       The agent reports its lines; the integrator does not repeat them in the worktree.
+    3. *Integrations into `main`.* One per milestone, at the close (decision 24), except for a
+       real dependency between branches, which is resolved by merging one branch into the
+       other, not into `main`. The exception that stays because it paid today: every merge into
+       `main` is followed by `just build` and `cargo check -p bsd --tests` (the lesson of
+       `types.rs`, f619ca94).
+    4. *Docs, STATUS and memory.* One `docs:` commit at the milestone close with the
+       accumulated decisions and the tools' numbers; STATUS and the session memory are updated
+       at the end of the session, not per slice.
+    Not cut: the review per branch (today it found two soundness defects in `abi_pod!`), the
+    hook's `lz check` on every commit, and the surveyor's inventory. Expected saving, so it is
+    measured: 1 to 1.5 h of the main session and 1.5 to 2 h of agent time per milestone, plus
+    the rule reading in tokens; on the critical path, half an hour to an hour.

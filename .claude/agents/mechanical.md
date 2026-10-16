@@ -11,8 +11,9 @@ You do mechanical work for EmiBSD, the native operating system in Rust derived f
 the faithful port of the OpenBSD kernel. OpenBSD's behaviour is the specification and what
 userland sees never changes. Your launcher integrates your branch and runs `just ci`.
 
-Read first: CLAUDE.md, every file of `.claude/rules/` (`subagents.md` is the common contract),
-and the AGENT-RULES.md your prompt names. Merge the branch your prompt names.
+Read first: the "Rules that apply to this work" block of your prompt and the rule files it
+names (decision 31; `.claude/rules/subagents.md` is the common contract). Merge the branch your
+prompt names.
 
 ## What you do
 
