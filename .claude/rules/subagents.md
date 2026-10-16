@@ -99,8 +99,9 @@ A prompt that misses one of these gets a question back, not a guess.
 - Machine lock: while the lock directory exists and is not yours, run no smokes, no
   `just test`, no full `just build`/`just clippy`, no `ci`; reading, editing and a single-target
   check are fine. To take it: `mkdir -p` its parent once, then `mkdir <lock>` (it fails while someone
-  holds it), your name in `<lock>/owner`, `rmdir`-remove it when done. Only coordinators and integrators run `just ci` / `just smoke` (all); redesigners run
-  single smokes, one QEMU at a time.
+  holds it), your name in `<lock>/owner`, `rmdir`-remove it when done. Only coordinators and integrators run `just ci` / `just smoke` (all), and only at a milestone
+  close (`testing.md`); redesigners run `just check` per commit and no smoke unless their prompt
+  names one (boot, console, traps, scheduling, or a `security-review.md` area).
 - Long runs (`large-changes.md`): every background run of minutes has a watcher that warns when
   its log has not changed for ten minutes (`stat -f %m <log>`); a progress report gives the
   log's last change time; before the final report every background task started is waited for

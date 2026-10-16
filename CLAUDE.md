@@ -72,7 +72,8 @@ Two provenance rules:
 | `just check-lineage` | `cargo xtask lz check`: every module's provenance, blobs, rows and zones |
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
-| `just ci` | all of the above; must be green before a commit |
+| `just check` | build (both archs), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; must be green before a commit |
+| `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on both archs (`smoke-install-*`, needs `just comp`); must be green before a milestone is met |
 | `just lz-sync` | fetch LZ, list the commits to triage with the items they touch (`docs/SYNC.md`) |
 | `just diff-openbsd` | the oracle: the same scenarios on EmiBSD and on a real OpenBSD, compared step by step |
@@ -96,15 +97,16 @@ Tool installation lives in `docs/SETUP.md` and needs the user's explicit go-ahea
    renamed, moved, merged or dropped, `adapted` on the modules whose call sites followed,
    `[[dropped]]`), the `//! LZ:` lines and `## Redesign`. `cargo xtask lz trace` must answer
    where every item went.
-7. `just ci` green -> commit one step, trailers `LZ:`, `Unsafe:`, `Bench:`.
+7. `just check` green -> commit one step, trailers `LZ:`, `Unsafe:`, `Bench:`. The smokes,
+   `just ci` and `just diff-openbsd` run once, at the milestone close (`testing.md`).
 
 Details: `.claude/rules/re-engineering.md`; LZ's later work: `.claude/rules/lz-sync.md` and
 `docs/SYNC.md`.
 
 ## Definition of done
 
-`just ci` green on both archs (lineage, drift and budget checks included); `lineage.toml`
-updated; `LZ:` and `Unsafe:` trailers in the commit; `docs/IDIOMS.md` or `docs/ARCHITECTURE.md`
+`just check` green on both archs (lineage and budget checks included) for a slice; `just ci`,
+`just ci-full` and `just diff-openbsd` green for a milestone; `lineage.toml` updated; `LZ:` and `Unsafe:` trailers in the commit; `docs/IDIOMS.md` or `docs/ARCHITECTURE.md`
 updated if a new idiom or structural decision was made; `docs/STATUS.md` updated at the end of
 the session.
 

@@ -3389,6 +3389,11 @@ smoke-cd80:
     @test -f target/install/amd64/cd80.iso || { echo "smoke-cd80: no cd80.iso; run just cd-iso-amd64"; exit 1; }
     cargo xtask cd80 {{smp}} --arch amd64
 
+# The gate of every commit and every slice merge: no QEMU, minutes. The smokes, `check-drift`
+# and `diff-openbsd` run in `ci` at the milestone close (the user's decision of 2026-10-16:
+# tests at the end of the milestone, not of each slice; .claude/rules/testing.md).
+check: fmt clippy test build check-lineage check-unsafe check-syscalls
+
 ci: fmt clippy test build smoke check-lineage check-drift check-unsafe check-syscalls
 
 # `ci` with every `{{smp}}` recipe on four processors (`EMIBSD_NCPU=4`), not only the `smp4`

@@ -95,7 +95,16 @@ Always:
 
 - `just clippy` runs clippy for amd64, arm64 AND host with `-D warnings`. All three must pass.
 - `just fmt` is `cargo fmt --all -- --check`.
-- `just ci` runs everything and is the definition of green.
+- `just check` (build on both archs, clippy, fmt, `lz check`, `unsafe-report --check`,
+  `just test`; no QEMU, minutes) is the gate of every commit and every slice merge into `main`.
+- `just ci` runs everything and is the definition of green **for a milestone**: the smokes,
+  `lz drift --strict` and `just diff-openbsd` run once, at the milestone close, with `ci-full`
+  (the user's decision of 2026-10-16: tests at the end of the milestone, not of each slice; the
+  QEMU runs were costing each slice three times over). A failing close is bisected over the
+  milestone's slices, which is why each slice is one commit series that `just check` passed.
+  Two exceptions keep their smokes before the commit: a change to boot, console, traps or
+  scheduling (tier 3 above), and a `security-review.md` area (`diff-openbsd` and the area's
+  smokes before each commit there).
 - Test code may use `unwrap`/`expect`/`panic!` (allowed via `clippy.toml`); kernel code may not.
 - A test that needs `alloc` enables the `alloc` feature explicitly until M3 makes it default.
 - Never weaken or delete a failing test to get green. Fix the code or tell the user.
