@@ -75,6 +75,7 @@
 //! `time`.
 //!
 //! Upstream: sys/stand/boot/cmd.c @ 3ce1f3f79392, sys/stand/boot/cmd.h @ 3ce1f3f79392
+//! LZ: sys/stand/boot/cmd.rs@3c62ede68802
 //!
 //! Compiled as efiboot compiles it: `MACHINE_CMD` (the program's `machine` table),
 //! `BOOT_STTY`, `CHECK_SKIP_CONF`, no `INSECURE`, no `DEBUG`.
@@ -89,6 +90,10 @@
 //! - `getsecs()`, `ttyname()`, `ttydev()`, `cnspeed()` and the `machine` table are the
 //!   program's, reached through [`boot_md`](crate::boot::boot_md).
 //! - `Xhexdump` reads the memory the operator names, as the C does: an `unsafe` slice.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `CmdState::abi_module`, where boot() put `/abi-openbsd.ko` after
+//!   the kernel (a load-space address and a length), for the program's `run_loadfile`.
 
 use libsa::cons::cnischar;
 use libsa::ctime::ctime;

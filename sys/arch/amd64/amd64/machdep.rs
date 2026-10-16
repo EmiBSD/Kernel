@@ -84,6 +84,7 @@
 //! amd64 machine-dependent setup and shutdown: `arch/amd64/amd64/machdep.c`.
 //!
 //! Upstream: sys/arch/amd64/amd64/machdep.c @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/amd64/machdep.rs@3c62ede68802
 //!
 //! Status: `wip`. Milestone M2 ports what the console and a panic need: the first part of
 //! `init_x86_64` (message buffer, console, `boot -d`), `boot`, `delay` and the globals they
@@ -180,6 +181,12 @@
 //!   (`dev/isa/isareg.h`) are local constants of `cpu_reset`, whose last resort faults
 //!   with `ud2` through the emptied IDT where the C divides by zero: either fault becomes
 //!   the triple fault that resets the processor.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `getbootinfo` also reads the `BOOTARG_ABIMODULE` record efiboot
+//!   adds (the ABI module `/abi-openbsd.ko`, put after the kernel's image and below `esym`,
+//!   so never free memory) into `BootInfo::abi_module`; the boot glue hands it to the module
+//!   loader through the direct map. No other path of the file changed.
 
 use core::arch::asm;
 use core::mem::offset_of;

@@ -50,6 +50,7 @@
 //! `run_i386`; and the CPU microcode it may load first.
 //!
 //! Upstream: sys/arch/amd64/stand/efiboot/exec_i386.c @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/stand/efiboot/exec_i386.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - `run_loadfile` takes boot(8)'s command state (`cmd.bootdev`, which `ucode_load` reads
@@ -58,6 +59,12 @@
 //!   (no softraid volume can be the boot device without it).
 //! - `marks` and the move are done with the addresses as integers (`u64`), as the C's
 //!   `u_long` arithmetic; `delta` is the two's complement of `efi_loadaddr`.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): when boot() put `/abi-openbsd.ko` after the kernel's image
+//!   (`CmdState::abi_module`, a load-space address), `run_loadfile` adds a
+//!   `BOOTARG_ABIMODULE` record with the physical address the move gives it; the move itself
+//!   already carries it, `marks[MARK_END]` being raised over it.
 
 use alloc::vec;
 use core::arch::asm;

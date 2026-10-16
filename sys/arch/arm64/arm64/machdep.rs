@@ -37,6 +37,7 @@
 //! arm64 machine-dependent setup and shutdown: `arch/arm64/arm64/machdep.c`.
 //!
 //! Upstream: sys/arch/arm64/arm64/machdep.c @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/arm64/machdep.rs@3c62ede68802
 //!
 //! Status: `wip`. Milestone M2 ports what the console and a panic need: the part of `initarm`
 //! that brings up the message buffer and the console, `consinit`, `boot`, `cold`, `waittime`,
@@ -103,6 +104,12 @@
 //! - `cpu_info[]` holds `CiPtr`s; `cpu_idle_cycle_fcn` is a `StaticCell` written at attach
 //!   time; `BOOT_MP` (`MULTIPROCESSOR`) has no C counterpart: PSCI or a spin table in the C
 //!   (`cpu.rs`, deviations).
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `getbootinfo` also reads `/chosen`'s `emibsd,abi-module` (two
+//!   big-endian 64-bit cells, the physical address and size of the ABI module efiboot put in
+//!   the kernel's block after its image, below the end mark of `x0`) into
+//!   `BootInfo::abi_module`. No other path of the file changed.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;

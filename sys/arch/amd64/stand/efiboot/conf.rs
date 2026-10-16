@@ -47,12 +47,17 @@
 //! works through: the file systems, the devices and the consoles.
 //!
 //! Upstream: sys/arch/amd64/stand/efiboot/conf.c @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/stand/efiboot/conf.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - The tables and the machine-dependent routines are gathered in [`SA_CONF`] (libsa's)
 //!   and [`BOOT_MD`] (boot(8)'s), which `efi_main` registers (the C's linker resolves them).
 //! - `sa_cleanup` is not declared: efiboot leaves it NULL ("can't use sa_cleanup since
 //!   printf is used after sa_cleanup()", `efiboot.c`), so `run_loadfile` never calls it.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22): `BOOT_MD.abi_module_room`, the end of the room the program reserved
+//!   for the kernel, which boot() may fill with `/abi-openbsd.ko` after the kernel's image.
 
 use boot::boot::{BootMd, Stty};
 use libsa::cd9660::*;

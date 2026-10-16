@@ -151,8 +151,7 @@ notes = "BSD-4-clause (Wasabi), BSD-2-clause (NetBSD Foundation) and BSD-3-claus
 [[module]]
 rust = "sys/arch/amd64/amd64/machdep.rs"
 lz = ["sys/arch/amd64/amd64/machdep.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 notes = "M2: init_x86_64 (message buffer, consinit, boot -d -> db_enter), boot (cold path; under feature qemu the key wait is the failure exit; resettodr/if_downall/uvm_shutdown/dumpsys/config_suspend_all/cpu_reset reported unported; M14: vfs_shutdown is called, as the C does), delay (the DELAY macro over delay_func), cpureset_delay, lid_action, waittime; M3: the direct map, pmap_bootstrap, the memory clusters, cpu_startup's memory lines; M4: setgate/unsetgate/setregion/set_mem_segment/set_sys_segment, idt (a static page) and idt_allocmap, cpu_init_idt, idt_vec_alloc/alloc_range/set/free, x86_64_proc0_tss_ldt_init (ltr/lldt only, proc0's pcb reported), splassert_check, the GDT/TSS/IDT setup and cpu_init_msrs first thing in init_x86_64, which ends as the C does (intr_default_setup, softintr_init, splraise(IPL_IPI), intr_enable), cpu_enter_pages from cpu_startup; the bootinfo parsing, the ACPI/MP tables, cpu_init, dumpsys, sendsig/setregs, sysctl are M5 to M6; M5: startclocks in cpu_startup (rtcinit reported, M7), initclock_func/startclock_func (StaticCells with setters), cpu_initclocks, cpu_startclock, need_resched (aston reported, M5-b); M5-b1: proc0paddr (a static u-area; the boot stack stays Limine's), x86_64_proc0_tss_ldt_init sets ci_curpcb, pcb_fsbase, pcb_kstack, md_regs and (a deviation, for cpu_switchto) pcb_cr3 = %cr3; M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), aston, clear_resched, cpu_unidle (UP), cpu_idle_cycle_hlt/cpu_idle_cycle (cpu_idle_cycle_fcn is a direct call until acpicpu); cold moved to sys/systm.rs; M6-b2: reset_segs, setregs (MDP_IRET, pcb_fsbase, the user trap frame; initialize_thread_xstate is M6-c); kern_sig.c: sendsig, sys_sigreturn (through machine::MachineSignal), copyoutfpu, initialize_thread_xstate (reported: fpu.c), signotify (aston; cpu_kick is MULTIPROCESSOR), setregs calls initialize_thread_xstate; without fpu.c fpu_save_len is the fxsave size, cpu_use_xsaves is false, fpusave/fpureset/fpu_cleandata/xrstor_user are reported, so a handler shares the interrupted code's FPU state; the bootinfo parsing, the ACPI/MP tables, cpu_init, dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: startclocks in cpu_startup (rtcinit reported, M7), initclock_func/startclock_func (StaticCells with setters), cpu_initclocks, cpu_startclock, need_resched (aston reported, M5-b); M5-b1: proc0paddr (a static u-area; the boot stack stays Limine's), x86_64_proc0_tss_ldt_init sets ci_curpcb, pcb_fsbase, pcb_kstack, md_regs and (a deviation, for cpu_switchto) pcb_cr3 = %cr3; M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), aston, clear_resched, cpu_unidle (UP), cpu_idle_cycle_hlt/cpu_idle_cycle (cpu_idle_cycle_fcn is a direct call until acpicpu); cold moved to sys/systm.rs; M6-b2: reset_segs, setregs (MDP_IRET, pcb_fsbase, the user trap frame; initialize_thread_xstate is M6-c); vfs stage 2: cpu_startup calls bufinit after the memory lines, as the C does; M8: cpu_startup makes exec_map (uvm_km_suballoc of 16 * NCARGS, VM_MAP_PAGEABLE); M8: copyin32 (alignment check, then copyin) behind machine::copy; M8: fpuinit from init_x86_64; initialize_thread_xstate (the non-XSAVES branch), sendsig fpusave and sys_sigreturn fpureset/fpu_cleandata/xrstor_user are real; fpu_save_len is fpu.c's; TSC: delay_func (StaticCell<fn(i32)>, delay_is_i8254), amd64_delay_quality, delay_init, delay_fini, cpu_set_vendor; init_x86_64 does locore0.S's CPUID probe (cpuid_level, cpu_vendor, cpu_id, cpu_*feature with CPUID_NXE) before cpu_set_vendor; the meltdown and SEV probes are not there; M10a: cpu_startup makes phys_map (uvm_km_suballoc of VM_PHYS_SIZE, flags 0) and stores it in uvm_extern's PHYS_MAP, as it does exec_map; M11a: the MULTIPROCESSOR parts: cpu_kick (X86_IPI_NOP to another CPU; no mwait, cpu_init_mwait is not ported), cpu_unidle's IPI, need_resched's cpu_kick (ci_want_resched is atomic), signotify's cpu_kick(p->p_cpu), boot's x86_broadcast_ipi(X86_IPI_HALT); init_x86_64 keeps BootInfo::mp in cpu.rs's BOOT_MP for mainbus_attach and mp_cpu_start (the C reads the ACPI/MP tables during autoconfiguration); map_tramps' MP trampoline pages and the avail_start floor are replaced-by-limine; M13: cpu_sysctl (through machine::cpu::cpu_sysctl, called by sys_sysctl for CTL_MACHDEP) is ported: consdev, chr2blk, cpuvendor, kbdreset (sysctl_securelevel_int), allowaperture (the #else: 0, APERTURE not configured), tscfreq, vmmode (cpu_sev_guestmode stays 0: the SEV probe is not ported), cpuid, cpufeature and the sysctl_bounded_arr table (hibernatedelay, lidaction, pwraction, xcrypt, invarianttsc, retpoline); bios_sysctl is EOPNOTSUPP as the C answers without bootapiver BAPIV_VECTOR (Limine passes no boot arguments: BIOS_DEV/BIOS_DISKINFO/BIOS_CKSUMLEN unreachable); forceukbd (M16d, with pckbc(4): read-only once set, else sysctl_int and, when set, pckbc_release_console); amd64_has_xcrypt (identcpu.rs) stays 0 (via_nano_setup not ported) and need_retpoline (cpu.rs) stays 1 (no codepatch); kbd_reset and hibernate_delay are statics here; the CPU_* names and CTL_MACHDEP_NAMES are in include/cpu.rs; M14 (A2, the boot(8) entry): getbootinfo (the bootarg32 walk: BOOTARG_MEMMAP, DISKINFO (its record kept, bios_getdiskinfo not ported), APMINFO/PCIINFO ignored as in C, CKSUMLEN, CONSDEV (comcons* except comconsiot: consinit attaches in I/O space), BOOTMAC, DDB, BOOTDUID, BOOTSR (copied, then zeroed), EFIINFO, UCODE) behind machine::Cpu::getbootinfo, with init_x86_64's boot(8) half: the bootapiver and size checks, the EFI memory map relocated to first_avail, avail_start (MP trampolines), the bios_memmap flensing into a MemMap (the [IOM_END, KERNTEXTOFF) block only where boot(8) says free; memory above the 4 GB locore0 maps is reported, pmap_bootstrap's direct-map extension is not ported), pmap_direct_base without pmap_direct_rand; init_x86_64 calls pmap_prealloc_lowmem_ptps after a boot(8) boot; map_tramps (the MP half; the lo32 bounce page reported; nothing under Limine); the globals ssym, esym, bootdev, biosbasemem, bootapiver, bootinfo[], bootinfo_size, bios_cksumlen, bios_diskinfo, bios_efiinfo, bios_ucode, avail_start; the CPUs come from a MADT walk (cpu.rs mp_madt_cpus) since acpimadt.c is not ported; M13 (rasops): bios_efiinfo() (reads BIOS_EFIINFO, which getbootinfo fills after a boot(8) boot and init_x86_64 under Limine when the machine booted through UEFI): config_acpi, system_table and the fb_* fields from Limine's framebuffer response (masks from the channel sizes and shifts, the reserved mask the rest of the pixel), for efifb(4); M16e: bios_memmap kept as its record's place in bootinfo[] (BIOS_MEMMAP) with bios_memmap() over its entries; empty under Limine; M16e: cpu_idle_cycle_fcn and cpu_suspend_cycle_fcn (StaticCells written while cold), setperf_prio, cpu_idle_cycle through cpu_idle_cycle_fcn, cpu_kick and cpu_unidle with their mwait branches (cpu_mwait_size, MWAIT_IN_IDLE/KEEP_IDLING/ONLY); M16d: etext() (the linker script's etext, machine::Cpu::etext, for rnd.c's random_start)"
 
 [[module]]
@@ -222,8 +221,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/include/biosvar.rs"
 lz = ["sys/arch/amd64/include/biosvar.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/amd64/include/bus.rs"
@@ -518,8 +516,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/conf.rs"
 lz = ["sys/arch/amd64/stand/efiboot/conf.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/dev_i386.rs"
@@ -554,8 +551,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/exec_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/exec_i386.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/amd64/stand/efiboot/heap.rs"
@@ -715,8 +711,7 @@ license = "none"
 [[module]]
 rust = "sys/arch/arm64/arm64/machdep.rs"
 lz = ["sys/arch/arm64/arm64/machdep.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 notes = "M2: initarm (the 1 GiB TTBR0 Device-nGnRnE identity block for devices until pmap, message buffer, consinit, boot -d -> db_enter), boot (cold path; under feature qemu the key wait is the failure exit; vfs_shutdown/resettodr/if_downall/uvm_shutdown/dumpsys/config_suspend_all reported unported), cold, waittime, cpuresetfn, powerdownfn; the bootargs parsing is BootInfo::boothowto; M3: the memory setup and pmap_bootstrap; M4: cpu_info_primary, SP_EL1/tpidr_el1/VBAR_EL1 first thing, fdt_init of the bootloader DTB, consinit = pluart_init_cons (the other *_init_cons are deferred drivers), stdout_node/stdout_speed, fdt_find_cons, (M8: cn_rx_intr_establish is gone; pluart_fdt_attach establishes the console's interrupt); cpu_info[], dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: need_resched (aston reported, M5-b); M5-b1: proc0paddr and proc0tf statics, cpu_startup sets proc0.p_addr and curpcb (pcb_flags, pcb_tf); M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), cpu_idle_enter/cycle/leave (cpu_wfi), cpu_switchto (fpu_drop then cpuswitch.S), aston, clear_resched, cpu_unidle (UP); cold moved to sys/systm.rs; M6-b2: setregs (pm_guarded from EXEC_NOBTCFI, the FPU state dropped, the EL0 trap frame with PSR_M_EL0t|PSR_DIT; pmap_setpauthkeys M7); vfs stage 2: cpu_startup calls bufinit before avail mem, as the C does; M4: cpu_info_primary, SP_EL1/tpidr_el1/VBAR_EL1 first thing, fdt_init of the bootloader DTB, consinit = pluart_init_cons (the other *_init_cons are deferred drivers), stdout_node/stdout_speed, fdt_find_cons, cn_rx_intr_establish (the console receive interrupt pluart_fdt_attach would establish, until autoconf M5); cpu_info[], dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: need_resched (aston reported, M5-b); M5-b1: proc0paddr and proc0tf statics, cpu_startup sets proc0.p_addr and curpcb (pcb_flags, pcb_tf); M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), cpu_idle_enter/cycle/leave (cpu_wfi), cpu_switchto (fpu_drop then cpuswitch.S), aston, clear_resched, cpu_unidle (UP); cold moved to sys/systm.rs; M6-b2: setregs (pm_guarded from EXEC_NOBTCFI, the FPU state dropped, the EL0 trap frame with PSR_M_EL0t|PSR_DIT; pmap_setpauthkeys M7); vfs stage 2: cpu_startup calls bufinit before avail mem, as the C does; M8: cpu_startup makes exec_map (uvm_km_suballoc of 16 * NCARGS, VM_MAP_PAGEABLE); efi(4): mmap/mmap_size/mmap_desc_size/mmap_desc_ver (the UEFI memory map from the boot protocol, relocated into a static buffer, efi_mmap) and system_table (SYSTEM_TABLE, an initarm local in C) instead of efiboot's openbsd,uefi-* properties; M10a: cpu_startup makes phys_map (uvm_km_suballoc of VM_PHYS_SIZE, flags 0) and stores it in uvm_extern's PHYS_MAP, as it does exec_map; M11a: cpu_info[MAXCPUS] (CiPtr, cpu_info_primary first), cpu_info_list() (cpu.c's), cpu_idle_cycle_fcn (StaticCell, cpu_wfi), need_resched's cpu_kick, the MULTIPROCESSOR signotify (aston + cpu_unidle(p->p_cpu)), ci_want_resched atomic; initarm keeps BootInfo.mp in BOOT_MP for cpu_start_secondary; cpu_unidle moved to cpu.rs; M13: cpu_sysctl (through machine::cpu::cpu_sysctl, called by sys_sysctl for CTL_MACHDEP) is ported: compatible (the root node's property through OF_getprop), the id_aa64* quads (smfr0 is 0 as in C), led_blink (the C then calls blink_led_timeout, which returns at once with no blink_led registered: blink_led_register and the LED drivers are not ported) and the sysctl_bounded_arr table (lidaction, lid_action is a static in machdep.rs, nothing reads it until aplsmc); the CPU_* names and CTL_MACHDEP_NAMES are in include/cpu.rs; M13: cpuresetfn/powerdownfn are set by psci(4) (dev/fdt/psci.c) through machine::fdt::set_cpuresetfn/set_powerdownfn, so boot() powers off (halt -p: SYSTEM_OFF) and resets (reboot: SYSTEM_RESET) through PSCI; cpu_reset is boot()'s doreset path; M14 (A3): boot(8)'s entry: getbootinfo (the /chosen half of initarm: bootargs via collect_kernel_args/process_kernel_args, openbsd,boothowto/bootduid/bootmac/sr-bootuuid/sr-bootkey (explicit_bzero of the props)/uefi-mmap-*/uefi-system-table/dma-constraint), the memory (EFI map Conventional/BootServices, /memory fallback, /reserved-memory no-map, the 64 MB block, its part after esym usable; memreg_add/memreg_remove), FDT and EFI map read in place through locore0.S's direct map (bootarg_direct_map, not in the C, maps the RAM gigabytes); dma_constraint stays constant, a narrower one is reported by initarm; BootMp from /cpus with PSCI CPU_ON through dev/fdt/psci.rs's psci_cpu_on (psci attaches before the processors); M14: boot() calls vfs_shutdown(curproc) (skipped with no thread on the CPU), so a halt or reboot syncs the disks; M13 (wsdisplay): consinit calls simplefb_init_cons(&arm64_bs_tag) after pluart_init_cons, as the C does (the frame buffer is the console only when stdout-path names it); M16d: etext() (kernel.ld now provides etext), machine::Cpu::etext; initarm records the kernel image's range and physical offset for pmap_extract"
 
 [[module]]
@@ -988,8 +983,7 @@ notes = "address-space bounds and physical segment policy; M6-b: USRSTACK and th
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
 lz = ["sys/arch/arm64/stand/efiboot/conf.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/disk.rs"
@@ -1011,8 +1005,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efiboot.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiboot.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efidev.rs"
@@ -5707,8 +5700,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/boot.rs"
 lz = ["sys/stand/boot/boot.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/stand/boot/bootarg.rs"
@@ -5718,8 +5710,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/cmd.rs"
 lz = ["sys/stand/boot/cmd.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+status = "redesigned"
 
 [[module]]
 rust = "sys/stand/boot/vars.rs"
@@ -6798,13 +6789,13 @@ notes = "N2.4a: the system call dispatch point both traps call (the sysent[] cho
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
 native = ["sys/arch/amd64/amd64/trap.rs::syscall", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
-lines = "L350-L355"
+lines = "L336-L341"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
 native = ["sys/arch/arm64/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
-lines = "L82-L87"
+lines = "L67-L72"
 
 [[extra]]
 rust = "sys/arch/amd64/amd64/qemu.rs"

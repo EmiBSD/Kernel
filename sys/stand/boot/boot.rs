@@ -49,6 +49,7 @@
 //! `boot>`, seed the random generator, load the kernel and start it.
 //!
 //! Upstream: sys/stand/boot/boot.c @ 3ce1f3f79392
+//! LZ: sys/stand/boot/boot.rs@3c62ede68802
 //!
 //! Compiled as efiboot compiles it: `MDRANDOM`, `FWRANDOM`, `HIBERNATE`.
 //!
@@ -65,13 +66,16 @@
 //!   reads it).
 //! - The banner names the operating system as the kernel does: `>> EmiBSD/amd64 BOOTX64
 //!   3.71` (`docs/ARCHITECTURE.md`, "The system's identity"); the C prints `OpenBSD`.
-//! - Not in the C (N2.4, decision 22): after the kernel, boot() reads `/abi-openbsd.ko`
-//!   from the kernel's device straight onto the page after the kernel's image, inside the
-//!   room the program reserved (`BootMd::abi_module_room`), raising `marks[MARK_END]` over
-//!   it, so the move and the cache clean of `run_loadfile` carry it and the kernel's
-//!   `esym` keeps it out of free memory; `CmdState::abi_module` tells `run_loadfile` where
-//!   it is, for its hand-over (amd64 `BOOTARG_ABIMODULE`, arm64 `/chosen`'s
-//!   `emibsd,abi-module`). Without the file nothing changes.
+//!
+//! ## Redesign
+//! - N2.4 (decision 22, the boot loaders read a second file): boot() opens
+//!   `/abi-openbsd.ko` on the kernel's device (`abi_module_open`) and, after `loadfile`,
+//!   reads it onto the page after the kernel's image when it fits the room the program gives
+//!   (`BootMd::abi_module_room`, new), raising `marks[MARK_END]` over it and recording it in
+//!   `CmdState::abi_module` for `run_loadfile`'s hand-over (amd64 `BOOTARG_ABIMODULE`, arm64
+//!   `/chosen`'s `emibsd,abi-module`): the move and the cache clean of `run_loadfile` carry
+//!   it, and the kernel's `esym` keeps it out of free memory. Without the file, or without
+//!   the room, nothing changes but a line.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
