@@ -20,63 +20,71 @@
 # N9 requires this file to hold no row.
 #
 # Schema, one [[bridge]] per trait:
-#   trait   = the trait's path ("hal::intr::IntrLevel", "kernel::...")
+#   trait   = the trait's name, a bare identifier (its crate and module in the comment above the row)
 #   for     = the files that call through it
 #   paid_by = the milestone whose subsystem moves the implementation in and removes the row
 #             ("N3".."N9"; a slice "N4.1" where one is meant)
 # The comment above each row says what implements it today.
 
 # bsd: splraise/splx and IPL_MPFLOOR of sys/machine/intr.rs.
+# hal::intr::IntrLevel
 [[bridge]]
-trait = "hal::intr::IntrLevel"
+trait = "IntrLevel"
 for = ["sys/hal/intr.rs", "sys/hal/mutex.rs"]
 paid_by = "N4"
 
 # bsd: cpu_number(), curcpu(), ci_schedstate.spc_spinning, ci_mutex_level (sys/machine/cpu.rs),
 # panicstr (sys/kern/subr_prf.rs) and db_active (sys/kern/init_main.rs).
+# hal::cpu::CpuId
 [[bridge]]
-trait = "hal::cpu::CpuId"
+trait = "CpuId"
 for = ["sys/hal/cpu.rs", "sys/hal/mutex.rs", "sys/hal/percpu.rs"]
 paid_by = "N4"
 
 # bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
 # _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs.
+# hal::sleep::Sleep
 [[bridge]]
-trait = "hal::sleep::Sleep"
+trait = "Sleep"
 for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
 paid_by = "N4"
 
 # bsd: km_alloc/km_free with &kv_any and &kp_pageable or &kp_zero (sys/uvm/uvm_km.rs). A safe
 # trait (decision 30): hal's soundness rests on the boot registration (sys/hal/trust.rs).
+# hal::kmbuf::PageMemory
 [[bridge]]
-trait = "hal::kmbuf::PageMemory"
+trait = "PageMemory"
 for = ["sys/hal/kmbuf.rs"]
 paid_by = "N3"
 
 # bsd: pool_init/pool_get/pool_put and pr_nout (sys/kern/subr_pool.rs), one pool per TypedPool so
 # vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
+# hal::pool::PoolBackend
 [[bridge]]
-trait = "hal::pool::PoolBackend"
+trait = "PoolBackend"
 for = ["sys/hal/pool.rs"]
 paid_by = "N9"
 
 # bsd: malloc/free with the C's malloc types (sys/kern/kern_malloc.rs), so vmstat -m counts an
 # MBox in its type's row; a safe trait, the same boot contract.
 
+# hal::malloc::Malloc
 [[bridge]]
-trait = "hal::malloc::Malloc"
+trait = "Malloc"
 for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
 
 # bsd: copyin, copyout, copyinstr, copyoutstr of sys/machine/copy.rs (copy.S with pcb_onfault).
 # A safe trait: it only reads and writes the byte slices it is given.
+# hal::user::UserCopy
 [[bridge]]
-trait = "hal::user::UserCopy"
+trait = "UserCopy"
 for = ["sys/hal/user.rs"]
 paid_by = "N4"
 
 # bsd: cnputc, cngetc, cnpollc of sys/dev/cons.rs, registered once consinit() has run.
+# hal::cons::Console
 [[bridge]]
-trait = "hal::cons::Console"
+trait = "Console"
 for = ["sys/hal/cons.rs"]
 paid_by = "N7"

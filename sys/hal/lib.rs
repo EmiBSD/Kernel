@@ -24,9 +24,18 @@
 //! hal-check` refuses a `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
 
+pub mod arch;
+pub mod machine;
+pub mod sys;
+
 // The host tests link std; a kernel image never does.
 #[cfg(test)]
 extern crate std;
+#[cfg(test)]
+#[forbid(unsafe_code)]
+// A verbatim copy of bsd's helper: the headers moved so far use only part of it.
+#[allow(dead_code, unused_macros, unused_imports)]
+pub(crate) mod reftest;
 
 pub(crate) mod assert;
 pub mod bridges;

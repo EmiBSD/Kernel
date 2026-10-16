@@ -44,6 +44,11 @@
 //! `--write` replaces the one line of docs/STATUS.md that starts with `Unsafe` with the
 //! totals line ([`totals_line`]).
 //!
+//! The crates of docs/ZERO_UNSAFE.md 0.4 (`kernel`, `abi`, `hal`, `boot`, `bsd`,
+//! and the hardware that N2 moves into `hal`, shown as part of `bsd`) are counted
+//! from each file's path ([`crate_of_file`]); `--check` bounds them ([`crate_errors`]) and the
+//! rows `kernel`, `abi` and `hal` carry no per-row budget ([`is_crate_row`]).
+//!
 //! `--json` prints the same measure ([`measure`]) as one JSON document instead ([`json`]):
 //! every kernel file with its lineage status, group, `unsafe` and shapes, the totals, the
 //! ratchet with its baseline, and the pace of the legacy `unsafe` removed since that
@@ -161,13 +166,17 @@ pub(crate) struct Ratchet {
     pub(crate) legacy_ceiling: usize,
     #[serde(default)]
     pub(crate) legacy_baseline: Option<usize>,
+    /// The most `unsafe` the `hal` crate (`sys/hal/`) may hold; `cargo xtask hal-check`
+    /// compares against it and `--write` only lowers it. Written by hand the first time.
+    #[serde(default)]
+    pub(crate) hal_ceiling: Option<usize>,
     /// `YYYY-MM-DD`.
     #[serde(default)]
     pub(crate) baseline_date: Option<String>,
 }
 
 /// The rows and the ratchet of `unsafe-budget.toml`; empty and `None` when the file is absent.
-fn load_budget(root: &Path) -> Result<(BTreeMap<String, usize>, Option<Ratchet>)> {
+pub(crate) fn load_budget(root: &Path) -> Result<(BTreeMap<String, usize>, Option<Ratchet>)> {
     let path = root.join(BUDGET_FILE);
     if !path.is_file() {
         return Ok((BTreeMap::new(), None));
@@ -211,18 +220,25 @@ pub(crate) fn ratchet_errors(r: &Ratchet, forbid: usize, legacy: usize) -> Vec<S
 
 /// The ratchet `--write` records: the floor only rises and the ceiling only falls, the
 /// baseline stays as it is; with no ratchet yet, today's numbers and no baseline.
-pub(crate) fn ratchet_next(old: Option<&Ratchet>, forbid: usize, legacy: usize) -> Ratchet {
+pub(crate) fn ratchet_next(
+    old: Option<&Ratchet>,
+    forbid: usize,
+    legacy: usize,
+    hal: usize,
+) -> Ratchet {
     match old {
         Some(o) => Ratchet {
             forbid_floor: o.forbid_floor.max(forbid),
             legacy_ceiling: o.legacy_ceiling.min(legacy),
             legacy_baseline: o.legacy_baseline,
+            hal_ceiling: o.hal_ceiling.map(|c| c.min(hal)),
             baseline_date: o.baseline_date.clone(),
         },
         None => Ratchet {
             forbid_floor: forbid,
             legacy_ceiling: legacy,
             legacy_baseline: None,
+            hal_ceiling: None,
             baseline_date: None,
         },
     }
@@ -263,6 +279,9 @@ pub(crate) fn budget_text(r: &Ratchet, rows: &BTreeMap<String, usize>) -> String
     if let Some(b) = r.legacy_baseline {
         text.push_str(&format!("legacy_baseline = {b}\n"));
     }
+    if let Some(c) = r.hal_ceiling {
+        text.push_str(&format!("hal_ceiling = {c}\n"));
+    }
     if let Some(d) = &r.baseline_date {
         text.push_str(&format!("baseline_date = \"{d}\"\n"));
     }
@@ -293,6 +312,128 @@ pub(crate) struct Groups {
     pub(crate) forbid: usize,
     /// All those modules.
     pub(crate) modules: usize,
+    /// The v2 crates (docs/ZERO_UNSAFE.md 0.4): files and `unsafe` per crate, keyed by
+    /// [`CRATE_NAMES`] (test code apart).
+    pub(crate) crates: BTreeMap<&'static str, CrateCount>,
+    /// The `unsafe` of `bsd` files that `unsafe-core.toml` does not list: what
+    /// `legacy_ceiling` bounds (the old runtime files are in `bsd` and in the core).
+    pub(crate) bsd_noncore: usize,
+    /// The part of `bsd` that N2 moves into `hal` ([`moves_to_hal`]): informative, it is still
+    /// `bsd` until it moves.
+    pub(crate) to_hal: CrateCount,
+}
+
+/// Files (test-only files apart) and kernel-code `unsafe` of one crate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CrateCount {
+    pub(crate) files: usize,
+    pub(crate) unsafe_n: usize,
+}
+
+/// The crates `unsafe-report` prints, in order (docs/ZERO_UNSAFE.md 0.4). A file that has not
+/// moved is in `bsd`, whatever its destination.
+pub(crate) const CRATE_NAMES: [&str; 5] = ["kernel", "abi", "hal", "bsd", "boot"];
+
+/// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `hal`, `boot`
+/// (`sys/stand/`, `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every
+/// other file under `sys/` and `init/`; `None` for anything else.
+pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
+    if rel.starts_with("init/") {
+        // The binary that links the crates: part of the legacy `bsd` (STATUS counts it there).
+        return Some("bsd");
+    }
+    let r = rel.strip_prefix("sys/")?;
+    let parts: Vec<&str> = r.split('/').collect();
+    Some(match parts.as_slice() {
+        ["stand", ..] | ["lib", "libsa", ..] | ["arch", _, "stand", ..] => "boot",
+        ["kernel", ..] => "kernel",
+        ["abi", ..] => "abi",
+        ["hal", ..] => "hal",
+        _ => "bsd",
+    })
+}
+
+/// A `bsd` file that N2 moves into `hal`: the hardware (`sys/arch/` apart from the boot
+/// loaders' `stand/`, `sys/machine/`) and the lists and trees (`sys/sys/queue.rs`,
+/// `sys/sys/tree.rs`, `sys/kern/subr_tree.rs`). Informative: it counts as `bsd` until it moves.
+pub(crate) fn moves_to_hal(rel: &str) -> bool {
+    crate_of_file(rel) == Some("bsd")
+        && matches!(
+            rel.strip_prefix("sys/")
+                .map(|r| r.split('/').collect::<Vec<_>>())
+                .as_deref(),
+            Some(
+                ["arch", ..]
+                    | ["machine", ..]
+                    | ["sys", "queue.rs" | "tree.rs"]
+                    | ["kern", "subr_tree.rs"]
+            )
+        )
+}
+
+/// A row that is a v2 crate (`kernel`, `abi`, `hal`): no per-row budget, `crate_errors` and
+/// `hal_ceiling` bound it instead.
+pub(crate) fn is_crate_row(name: &str) -> bool {
+    matches!(name, "kernel" | "abi" | "hal")
+}
+
+/// What `--check` says of the crates: `kernel` and `abi` must be 0 (the compiler already
+/// refuses it), `hal` at or under `hal_ceiling` when the key is there, and the `bsd` files
+/// outside the core at or under `legacy_ceiling`. The hardware that moves into `hal` is in
+/// `unsafe-core.toml`, so it is already outside that count; the 159 `unsafe` of the old runtime
+/// files, in `bsd` and in the core, are outside it too.
+pub(crate) fn crate_errors(
+    r: Option<&Ratchet>,
+    crates: &BTreeMap<&'static str, CrateCount>,
+    bsd_noncore: usize,
+) -> Vec<String> {
+    let n = |c: &str| crates.get(c).map_or(0, |x| x.unsafe_n);
+    let mut out = Vec::new();
+    for c in ["kernel", "abi"] {
+        if n(c) > 0 {
+            out.push(format!(
+                "{c}: {} unsafe; the crate is #![forbid(unsafe_code)] and holds none",
+                n(c)
+            ));
+        }
+    }
+    if let Some(r) = r {
+        if let Some(h) = r.hal_ceiling
+            && n("hal") > h
+        {
+            out.push(format!(
+                "hal: {} unsafe, above hal_ceiling {h} ({BUDGET_FILE} [ratchet]); it may only fall",
+                n("hal")
+            ));
+        }
+        if bsd_noncore > r.legacy_ceiling {
+            out.push(format!(
+                "bsd: {bsd_noncore} unsafe outside the core, above legacy_ceiling {} ({BUDGET_FILE} [ratchet])",
+                r.legacy_ceiling
+            ));
+        }
+    }
+    out
+}
+
+/// `crates: kernel 0, abi 0, hal 0, bsd 10604 (1698 to move into hal), boot 621` without the
+/// `crates: ` (the `unsafe` of each).
+pub(crate) fn crates_summary(
+    crates: &BTreeMap<&'static str, CrateCount>,
+    to_hal: CrateCount,
+) -> String {
+    CRATE_NAMES
+        .iter()
+        .map(|c| {
+            let n = crates.get(c).map_or(0, |x| x.unsafe_n);
+            if *c == "bsd" {
+                format!("{c} {n} ({} to move into hal)", to_hal.unsafe_n)
+            } else {
+                format!("{c} {n}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Every kernel `.rs` file (`sys/` and `init/`), lexed, by absolute path.
@@ -475,6 +616,18 @@ fn measure_lexed(
             m.groups.legacy += n;
             m.groups.legacy_files += usize::from(n > 0);
         }
+        if let Some(c) = crate_of_file(&rel) {
+            let cc = m.groups.crates.entry(c).or_default();
+            cc.files += usize::from(!is_test);
+            cc.unsafe_n += n;
+            if moves_to_hal(&rel) {
+                m.groups.to_hal.files += usize::from(!is_test);
+                m.groups.to_hal.unsafe_n += n;
+            }
+            if c == "bsd" && !in_core {
+                m.groups.bsd_noncore += n;
+            }
+        }
         let module = rel.starts_with("sys/") && !crate::is_structural(&rel);
         let is_forbid = forbid.contains(f);
         if module {
@@ -619,6 +772,17 @@ pub(crate) fn unsafe_report(
         groups.legacy_files,
         shown(|r| r.legacy_ceiling)
     );
+    println!("\ncrates (docs/ZERO_UNSAFE.md 0.4; files, unsafe in kernel code):");
+    for c in CRATE_NAMES {
+        let cc = groups.crates.get(c).copied().unwrap_or_default();
+        println!("  {c:<12} {:>5} files {:>6} unsafe", cc.files, cc.unsafe_n);
+        if c == "bsd" {
+            println!(
+                "    of which {} unsafe in {} files are the hardware (sys/arch/amd64, sys/arch/arm64 without stand/, sys/machine, sys/arch/host) and the lists and trees (sys/sys/queue.rs, sys/sys/tree.rs, sys/kern/subr_tree.rs) that N2 moves into hal: a move, not a reduction",
+                groups.to_hal.unsafe_n, groups.to_hal.files
+            );
+        }
+    }
     let line = totals_line(&kernel, &test, groups);
     println!("\n{line}");
 
@@ -630,9 +794,15 @@ pub(crate) fn unsafe_report(
         println!("wrote {STATUS_DOC}");
         // The budget only ever goes down here, the floor only up, and the baseline stays;
         // raising a budget is a commit of its own.
-        let next = ratchet_next(ratchet, groups.forbid, groups.legacy);
+        let next = ratchet_next(
+            ratchet,
+            groups.forbid,
+            groups.legacy,
+            groups.crates.get("hal").map_or(0, |c| c.unsafe_n),
+        );
         let budgets: BTreeMap<String, usize> = rows
             .iter()
+            .filter(|(name, _)| !is_crate_row(name))
             .map(|(name, row)| {
                 let now = row.kernel.total();
                 (
@@ -655,6 +825,9 @@ pub(crate) fn unsafe_report(
         }
         let mut bad = 0usize;
         for (name, row) in rows {
+            if is_crate_row(name) {
+                continue;
+            }
             let now = row.kernel.total();
             match m.budget.get(name) {
                 Some(b) if now > *b => {
@@ -669,6 +842,10 @@ pub(crate) fn unsafe_report(
                     bad += 1;
                 }
             }
+        }
+        for e in crate_errors(ratchet, &groups.crates, groups.bsd_noncore) {
+            println!("error: {e}");
+            bad += 1;
         }
         for p in m.core.missing(root) {
             println!("error: {CORE_FILE}: `{p}` names no file");
@@ -785,15 +962,35 @@ pub(crate) fn json(m: &Measure, statuses: &BTreeMap<String, &'static str>, pace:
         g.forbid,
         m.core_budget()
     ));
+    let crates: Vec<String> = CRATE_NAMES
+        .iter()
+        .map(|c| {
+            let cc = g.crates.get(c).copied().unwrap_or_default();
+            let to_hal = if *c == "bsd" {
+                format!(
+                    ", \"to_hal\": {{\"files\": {}, \"unsafe\": {}}}",
+                    g.to_hal.files, g.to_hal.unsafe_n
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "\"{c}\": {{\"files\": {}, \"unsafe\": {}{to_hal}}}",
+                cc.files, cc.unsafe_n
+            )
+        })
+        .collect();
+    out.push_str(&format!("  \"crates\": {{{}}},\n", crates.join(", ")));
     let ratchet = m.ratchet.as_ref().map_or_else(
         || "null".to_string(),
         |r| {
             format!(
                 "{{\"forbid_floor\": {}, \"legacy_ceiling\": {}, \"legacy_baseline\": {}, \
-                 \"baseline_date\": {}}}",
+                 \"hal_ceiling\": {}, \"baseline_date\": {}}}",
                 r.forbid_floor,
                 r.legacy_ceiling,
                 json_opt(r.legacy_baseline),
+                json_opt(r.hal_ceiling),
                 r.baseline_date
                     .as_deref()
                     .map_or_else(|| "null".to_string(), json_str)
@@ -859,7 +1056,7 @@ pub(crate) fn json(m: &Measure, statuses: &BTreeMap<String, &'static str>, pace:
 pub(crate) fn totals_line(k: &Counts, t: &Counts, g: &Groups) -> String {
     format!(
         "{STATUS_PREFIX} (`cargo xtask unsafe-report`): kernel {} blocks, {} fn, {} impl, {} trait, \
-         {} other; tests {} more; core {}, legacy {}, forbid {} of {} modules.",
+         {} other; tests {} more; core {}, legacy {}, forbid {} of {} modules; crates: {}.",
         k.blocks,
         k.fns,
         k.impls,
@@ -869,7 +1066,8 @@ pub(crate) fn totals_line(k: &Counts, t: &Counts, g: &Groups) -> String {
         g.core,
         g.legacy,
         g.forbid,
-        g.modules
+        g.modules,
+        crates_summary(&g.crates, g.to_hal)
     )
 }
 
@@ -895,7 +1093,7 @@ fn replace_status_line(doc: &str, line: &str) -> Result<String> {
 }
 
 /// `tests.rs`, or a file under a `tests/` directory.
-fn is_test_path(p: &Path) -> bool {
+pub(crate) fn is_test_path(p: &Path) -> bool {
     p.file_name().and_then(|n| n.to_str()) == Some("tests.rs")
         || p.components().any(|c| c.as_os_str() == "tests")
 }
@@ -1343,10 +1541,14 @@ fn impl_of_send_sync(after: &[Tok]) -> bool {
 pub(crate) struct Scan {
     /// Every `unsafe` keyword: its kind and whether it sits in test code.
     pub(crate) found: Vec<(Kind, bool)>,
+    /// The same, with the index of the `unsafe` token: `(token, kind, in test code)`.
+    pub(crate) sites: Vec<(usize, Kind, bool)>,
     /// The names of the `mod name;` declarations that are test-only.
     pub(crate) test_mods: Vec<String>,
     /// The shapes to replace, in its kernel code.
     pub(crate) shapes: Shapes,
+    /// Per token: it sits in test code (`#[cfg(test)]` items, test files).
+    pub(crate) test_mask: Vec<bool>,
 }
 
 /// Classify every `unsafe` in `toks` and find the test-only regions; `file_is_test` makes the
@@ -1383,17 +1585,20 @@ pub(crate) fn scan(toks: &[Tok], file_is_test: bool) -> Scan {
         }
         i += 1;
     }
-    let found = toks
+    let sites: Vec<(usize, Kind, bool)> = toks
         .iter()
         .enumerate()
         .filter(|(_, t)| **t == Tok::Ident("unsafe".into()))
-        .map(|(i, _)| (classify(&toks[i + 1..]), in_test[i]))
+        .map(|(i, _)| (i, classify(&toks[i + 1..]), in_test[i]))
         .collect();
+    let found = sites.iter().map(|&(_, k, t)| (k, t)).collect();
     let shapes = shapes(toks, &in_test);
     Scan {
         found,
+        sites,
         test_mods,
         shapes,
+        test_mask: in_test,
     }
 }
 
@@ -1431,7 +1636,7 @@ fn fn_kind(after_fn: &[Tok]) -> Kind {
 }
 
 /// The index of the bracket that closes the one at `open` (`(`, `[` or `{`).
-fn matching(toks: &[Tok], open: usize) -> Option<usize> {
+pub(crate) fn matching(toks: &[Tok], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, t) in toks.iter().enumerate().skip(open) {
         match t {
@@ -1523,18 +1728,60 @@ fn split_args(toks: &[Tok]) -> Vec<&[Tok]> {
 
 /// Tokenize Rust source, dropping comments, literals, lifetimes and whitespace.
 pub(crate) fn lex(src: &str) -> Vec<Tok> {
+    lex_pos(src).toks
+}
+
+/// A comment of a source file: the 1-based lines it starts and ends on, and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Comment {
+    pub(crate) first: usize,
+    pub(crate) last: usize,
+    pub(crate) text: String,
+}
+
+/// [`lex`] with positions: the 1-based line of every token (`lines[i]` is `toks[i]`'s) and
+/// the comments the token stream drops. The host tools that check comments (`hal-check`'s
+/// `// SAFETY:` rule) read these.
+#[derive(Debug, Default)]
+pub(crate) struct Lexed {
+    pub(crate) toks: Vec<Tok>,
+    pub(crate) lines: Vec<usize>,
+    pub(crate) comments: Vec<Comment>,
+}
+
+/// [`lex`], keeping each token's line and the comments.
+pub(crate) fn lex_pos(src: &str) -> Lexed {
     let s: Vec<char> = src.chars().collect();
     let mut toks = Vec::new();
+    let mut lines: Vec<usize> = Vec::new();
+    let mut comments: Vec<Comment> = Vec::new();
+    // `line_of[k]` is the 1-based line of char `k`.
+    let mut line_of = Vec::with_capacity(s.len() + 1);
+    let mut line = 1usize;
+    for &ch in &s {
+        line_of.push(line);
+        if ch == '\n' {
+            line += 1;
+        }
+    }
+    line_of.push(line);
     let mut i = 0;
     let at = |i: usize| s.get(i).copied().unwrap_or('\0');
     while i < s.len() {
         let c = s[i];
+        let start = i;
+        let before = toks.len();
         if c.is_whitespace() {
             i += 1;
         } else if c == '/' && at(i + 1) == '/' {
             while i < s.len() && s[i] != '\n' {
                 i += 1;
             }
+            comments.push(Comment {
+                first: line_of[start],
+                last: line_of[start],
+                text: s[start..i].iter().collect(),
+            });
         } else if c == '/' && at(i + 1) == '*' {
             let mut depth = 0usize;
             while i < s.len() {
@@ -1551,6 +1798,12 @@ pub(crate) fn lex(src: &str) -> Vec<Tok> {
                     i += 1;
                 }
             }
+            let end = i.min(s.len());
+            comments.push(Comment {
+                first: line_of[start],
+                last: line_of[end.saturating_sub(1).max(start)],
+                text: s[start..end].iter().collect(),
+            });
         } else if c == '"' {
             let from = i + 1;
             i = skip_string(&s, i);
@@ -1605,8 +1858,15 @@ pub(crate) fn lex(src: &str) -> Vec<Tok> {
             toks.push(Tok::Punct(c));
             i += 1;
         }
+        if toks.len() > before {
+            lines.push(line_of[start]);
+        }
     }
-    toks
+    Lexed {
+        toks,
+        lines,
+        comments,
+    }
 }
 
 /// Past the `".."` string that starts at `i`.
@@ -2064,6 +2324,7 @@ mod tests {
             forbid_floor: 400,
             legacy_ceiling: 8000,
             legacy_baseline: Some(8748),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         assert!(ratchet_errors(&r, 400, 8000).is_empty());
@@ -2074,20 +2335,21 @@ mod tests {
         // --write raises the floor and lowers the ceiling, never the other way, and keeps the
         // baseline as it is.
         assert_eq!(
-            ratchet_next(Some(&r), 420, 7900),
+            ratchet_next(Some(&r), 420, 7900, 0),
             Ratchet {
                 forbid_floor: 420,
                 legacy_ceiling: 7900,
                 ..r.clone()
             }
         );
-        assert_eq!(ratchet_next(Some(&r), 10, 9999), r);
+        assert_eq!(ratchet_next(Some(&r), 10, 9999, 0), r);
         assert_eq!(
-            ratchet_next(None, 7, 70),
+            ratchet_next(None, 7, 70, 0),
             Ratchet {
                 forbid_floor: 7,
                 legacy_ceiling: 70,
                 legacy_baseline: None,
+                hal_ceiling: None,
                 baseline_date: None,
             }
         );
@@ -2105,6 +2367,7 @@ mod tests {
                 forbid_floor: 3,
                 legacy_ceiling: 9,
                 legacy_baseline: None,
+                hal_ceiling: None,
                 baseline_date: None,
             })
         );
@@ -2137,10 +2400,11 @@ mod tests {
             forbid_floor: 305,
             legacy_ceiling: 8748,
             legacy_baseline: Some(8748),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         // A later --write: more forbid modules, less legacy; the baseline does not move.
-        let next = ratchet_next(Some(&old), 320, 8700);
+        let next = ratchet_next(Some(&old), 320, 8700, 0);
         let rows: BTreeMap<String, usize> =
             [("kern".to_string(), 1100), ("uvm".to_string(), 215)].into();
         let text = budget_text(&next, &rows);
@@ -2159,7 +2423,7 @@ mod tests {
         );
         assert_eq!(b.subsystems.len(), 2);
         // With no baseline recorded, --write invents none.
-        let bare = budget_text(&ratchet_next(None, 1, 2), &rows);
+        let bare = budget_text(&ratchet_next(None, 1, 2, 0), &rows);
         assert!(!bare.contains("legacy_baseline =") && !bare.contains("baseline_date ="));
         assert!(toml::from_str::<Budget>(&bare).is_ok());
     }
@@ -2206,7 +2470,7 @@ mod tests {
         };
         assert_eq!(
             totals_line(&k, &Counts::default(), &g),
-            "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules."
+            "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules; crates: kernel 0, abi 0, hal 0, bsd 0 (0 to move into hal), boot 0."
         );
     }
 
@@ -2246,6 +2510,7 @@ mod tests {
             forbid_floor: 2,
             legacy_ceiling: 3,
             legacy_baseline: Some(9),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         measure_lexed(Path::new("/w"), &lexed, core, budget, Some(ratchet))
@@ -2433,8 +2698,11 @@ mod tests {
              \"totals\": {{\"kernel_unsafe\": 5, \"test_unsafe\": 1, \"core_unsafe\": 2, \
              \"core_unsafe_files\": 1, \"legacy_unsafe\": 3, \"legacy_unsafe_files\": 3, \
              \"modules\": 5, \"forbid_modules\": 2, \"core_budget\": 8}},\n  \
+             \"crates\": {{\"kernel\": {{\"files\": 0, \"unsafe\": 0}}, \"abi\": {{\"files\": 0, \"unsafe\": 0}}, \
+             \"hal\": {{\"files\": 0, \"unsafe\": 0}}, \"bsd\": {{\"files\": 8, \"unsafe\": 5, \"to_hal\": {{\"files\": 0, \"unsafe\": 0}}}}, \
+             \"boot\": {{\"files\": 0, \"unsafe\": 0}}}},\n  \
              \"ratchet\": {{\"forbid_floor\": 2, \"legacy_ceiling\": 3, \"legacy_baseline\": 9, \
-             \"baseline_date\": \"2026-10-10\"}},\n  \
+             \"hal_ceiling\": null, \"baseline_date\": \"2026-10-10\"}},\n  \
              \"rate\": {{\"active_days\": 2, \"removed\": 6, \"per_day\": 3.00}},\n  \
              \"subsystems\": [\n    \
              {{\"name\": \"(crate root)\", \"budget\": null, \"unsafe\": 0, \"core\": 0, \"legacy\": 0}},\n    \
@@ -2458,11 +2726,133 @@ mod tests {
     }
 
     #[test]
+    fn files_belong_to_one_crate() {
+        for (rel, want) in [
+            ("sys/kernel/pipe.rs", Some("kernel")),
+            ("sys/abi/lib.rs", Some("abi")),
+            ("sys/hal/lock.rs", Some("hal")),
+            ("sys/stand/boot/main.rs", Some("boot")),
+            ("sys/lib/libsa/open.rs", Some("boot")),
+            ("sys/arch/amd64/stand/efiboot/x.rs", Some("boot")),
+            ("sys/arch/amd64/amd64/pmap.rs", Some("bsd")),
+            ("sys/machine/mod.rs", Some("bsd")),
+            ("sys/sys/queue.rs", Some("bsd")),
+            ("sys/kern/subr_tree.rs", Some("bsd")),
+            ("sys/sys/errno.rs", Some("bsd")),
+            ("sys/kern/kern_sig.rs", Some("bsd")),
+            ("sys/lib/libkern/lib.rs", Some("bsd")),
+            ("init/src/main.rs", Some("bsd")),
+            ("tools/xtask/src/main.rs", None),
+        ] {
+            assert_eq!(crate_of_file(rel), want, "{rel}");
+        }
+    }
+
+    #[test]
+    fn crates_are_counted_and_checked() {
+        let m = small_tree();
+        let bsd = m.groups.crates["bsd"];
+        assert_eq!((bsd.files, bsd.unsafe_n), (8, 5));
+        // lock.rs is core: 2 of the 5 are not bounded by legacy_ceiling.
+        assert_eq!(m.groups.bsd_noncore, 3);
+        assert_eq!(
+            crates_summary(&m.groups.crates, m.groups.to_hal),
+            "kernel 0, abi 0, hal 0, bsd 5 (0 to move into hal), boot 0"
+        );
+        for (rel, want) in [
+            ("sys/arch/amd64/amd64/pmap.rs", true),
+            ("sys/arch/host/mod.rs", true),
+            ("sys/machine/mod.rs", true),
+            ("sys/sys/queue.rs", true),
+            ("sys/sys/tree.rs", true),
+            ("sys/kern/subr_tree.rs", true),
+            ("sys/arch/amd64/stand/efiboot/x.rs", false),
+            ("sys/kern/kern_sig.rs", false),
+            ("sys/hal/lock.rs", false),
+            ("init/src/main.rs", false),
+        ] {
+            assert_eq!(moves_to_hal(rel), want, "{rel}");
+        }
+        let c = |k, h, b| -> BTreeMap<&'static str, CrateCount> {
+            [
+                (
+                    "kernel",
+                    CrateCount {
+                        files: 1,
+                        unsafe_n: k,
+                    },
+                ),
+                (
+                    "hal",
+                    CrateCount {
+                        files: 1,
+                        unsafe_n: h,
+                    },
+                ),
+                (
+                    "bsd",
+                    CrateCount {
+                        files: 1,
+                        unsafe_n: b,
+                    },
+                ),
+            ]
+            .into()
+        };
+        let r = Ratchet {
+            forbid_floor: 0,
+            legacy_ceiling: 10,
+            legacy_baseline: None,
+            hal_ceiling: Some(5),
+            baseline_date: None,
+        };
+        assert!(crate_errors(Some(&r), &c(0, 5, 10), 10).is_empty());
+        assert_eq!(crate_errors(Some(&r), &c(1, 5, 10), 10).len(), 1);
+        assert_eq!(crate_errors(Some(&r), &c(0, 6, 10), 10).len(), 1);
+        assert_eq!(crate_errors(Some(&r), &c(0, 5, 10), 11).len(), 1);
+        let mut abi = c(0, 0, 0);
+        abi.insert(
+            "abi",
+            CrateCount {
+                files: 1,
+                unsafe_n: 2,
+            },
+        );
+        assert_eq!(crate_errors(Some(&r), &abi, 0).len(), 1);
+        // No ratchet or no hal_ceiling: only the compiler's two rules apply here.
+        assert!(crate_errors(None, &c(0, 99, 99), 99).is_empty());
+    }
+
+    #[test]
+    fn crate_rows_have_no_row_budget() {
+        for n in ["kernel", "abi", "hal"] {
+            assert!(is_crate_row(n));
+        }
+        for n in ["kern", "arch/amd64", "halo", "(crate root)"] {
+            assert!(!is_crate_row(n));
+        }
+    }
+
+    #[test]
+    fn write_lowers_hal_ceiling_and_never_raises_it() {
+        let r = Ratchet {
+            forbid_floor: 1,
+            legacy_ceiling: 9,
+            legacy_baseline: None,
+            hal_ceiling: Some(2150),
+            baseline_date: None,
+        };
+        assert_eq!(ratchet_next(Some(&r), 1, 9, 100).hal_ceiling, Some(100));
+        assert_eq!(ratchet_next(Some(&r), 1, 9, 3000).hal_ceiling, Some(2150));
+    }
+
+    #[test]
     fn rate_is_na_until_two_active_days() {
         let r = Ratchet {
             forbid_floor: 0,
             legacy_ceiling: 100,
             legacy_baseline: Some(100),
+            hal_ceiling: None,
             baseline_date: Some("2026-10-10".to_string()),
         };
         // The day of the baseline alone (dates before it do not count): n/a.
@@ -2503,6 +2893,7 @@ mod tests {
         // No baseline recorded: nothing to measure from.
         let bare = Ratchet {
             legacy_baseline: None,
+            hal_ceiling: None,
             baseline_date: None,
             ..r
         };

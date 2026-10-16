@@ -28,7 +28,7 @@ Sources, all read live (nothing is typed in by hand):
     unsafe-report is the one parser of the Rust sources: this script reads none.
     The crate of a file (docs/ZERO_UNSAFE.md section 0) is derived here from its
     path: sys/hal/, sys/kernel/, sys/abi/, the boot loaders (sys/stand/,
-    sys/lib/libsa/), and bsd (the LZ tree, legacy) for the rest of sys/;
+    sys/lib/libsa/, sys/arch/*/stand/), and bsd (the LZ tree, legacy) for the rest of sys/;
   - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion). A
     file belongs to the N row whose scope cell names its path in backticks: a
     directory (`sys/uvm/`), a file (`sys/sys/queue.rs`) or a glob
@@ -368,6 +368,8 @@ def crate_of(path: str) -> str:
     for name, prefix in CRATES:
         if path.startswith(prefix):
             return name
+    if re.match(r"sys/arch/[^/]+/stand/", path):
+        return "boot"  # the per-arch efiboot crates: workspace members, never compiled into bsd
     return "bsd"
 
 
@@ -528,7 +530,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     print()
     print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
           "A file's crate comes from its path (docs/ZERO_UNSAFE.md section 0): sys/hal/, "
-          "sys/kernel/, sys/abi/, the boot loaders (sys/stand/, sys/lib/libsa/, outside the "
+          "sys/kernel/, sys/abi/, the boot loaders (sys/stand/, sys/lib/libsa/, sys/arch/*/stand/, outside the "
           "plan), and bsd for everything else under sys/ (the LZ tree, legacy). A file belongs "
           "to the N row whose scope cell names its path in backticks (a directory, a file or a "
           "glob), the most specific pattern winning; a row whose scope is prose resolves "
