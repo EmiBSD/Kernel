@@ -33,37 +33,16 @@ use core::fmt;
 use core::mem::size_of;
 
 use super::PAGE_SIZE;
+// `<sys/exec_elf.h>`'s own values, where its type is the one read here.
+pub use crate::sys::exec_elf::{
+    ELFCLASS64, ELFDATA2LSB, ELFMAG, EM_AARCH64, ET_DYN, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_INTERP,
+    PT_LOAD, PT_TLS,
+};
 
-/// `ELFMAG`: the first four bytes of an ELF file.
-pub const ELFMAG: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-/// `ELFCLASS64`.
-pub const ELFCLASS64: u8 = 2;
-/// `ELFDATA2LSB`: little-endian.
-pub const ELFDATA2LSB: u8 = 1;
-/// `EV_CURRENT`.
-pub const EV_CURRENT: u8 = 1;
-/// `ET_DYN`: a position-independent executable or a shared object.
-pub const ET_DYN: u16 = 3;
-/// `EM_X86_64`.
-pub const EM_X86_64: u16 = 62;
-/// `EM_AARCH64`.
-pub const EM_AARCH64: u16 = 183;
-
-/// `PT_LOAD`.
-pub const PT_LOAD: u32 = 1;
-/// `PT_DYNAMIC`.
-pub const PT_DYNAMIC: u32 = 2;
-/// `PT_INTERP`.
-pub const PT_INTERP: u32 = 3;
-/// `PT_TLS`.
-pub const PT_TLS: u32 = 7;
-
-/// `PF_X`.
-pub const PF_X: u32 = 0x1;
-/// `PF_W`.
-pub const PF_W: u32 = 0x2;
-/// `PF_R`.
-pub const PF_R: u32 = 0x4;
+/// `EV_CURRENT` as the byte `e_ident[EI_VERSION]` holds (`<sys/exec_elf.h>`'s is a `u32`).
+pub const EV_CURRENT: u8 = crate::sys::exec_elf::EV_CURRENT as u8;
+/// `EM_X86_64` (`<sys/exec_elf.h>`'s `EM_AMD64`).
+pub const EM_X86_64: u16 = crate::sys::exec_elf::EM_AMD64;
 
 /// `DT_NULL`.
 pub const DT_NULL: i64 = 0;

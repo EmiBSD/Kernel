@@ -34,7 +34,6 @@
 
 use kernel::api::{HandlerInfo, KernelApi, Register, Rval, SysArgs, SysResult};
 
-// TODO(N2 integrate): hal::sys lands with the headers slice (sys/hal/sys/syscall.rs).
 use hal::sys::syscall::SYS_MAXSYSCALL;
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -100,10 +99,13 @@ fn entry(table: &[Sysent], nr: Register) -> Option<&Sysent> {
 mod tests {
     use super::*;
 
+    /// `ENOSYS`, the fallback's answer here.
+    const ENOSYS: i32 = hal::sys::errno::Errno::ENOSYS.as_i32();
+
     /// The fallback of the test table: says which number reached it.
     fn legacy(nr: Register, _: &SysArgs, rval: &mut Rval) -> SysResult {
         rval[0] = nr;
-        Err(78) // ENOSYS, as the LZ path answers an out-of-range number
+        Err(ENOSYS) // as the LZ path answers an out-of-range number
     }
 
     fn copyin(_: usize, _: &mut [u8]) -> Result<(), i32> {
@@ -166,7 +168,7 @@ mod tests {
     fn every_entry_is_legacy_at_n2_4() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             let mut rval = [-7; 2];
-            assert_eq!(syscall(&API, nr, &[0; 6], &mut rval), Err(78));
+            assert_eq!(syscall(&API, nr, &[0; 6], &mut rval), Err(ENOSYS));
             assert_eq!(rval[0], nr, "number {nr} reached the fallback unchanged");
         }
     }
@@ -175,7 +177,7 @@ mod tests {
     fn a_number_without_an_entry_goes_to_the_fallback() {
         for nr in [-1, Register::MIN, SYS_MAXSYSCALL as Register, 100_000] {
             let mut rval = [-7; 2];
-            assert_eq!(syscall(&API, nr, &[0; 6], &mut rval), Err(78));
+            assert_eq!(syscall(&API, nr, &[0; 6], &mut rval), Err(ENOSYS));
             assert_eq!(rval[0], nr);
         }
     }
@@ -191,7 +193,7 @@ mod tests {
         assert_eq!(rval, [5, -1]);
         assert_eq!(
             dispatch(&table, &API, 2, &[2, 3, 0, 0, 0, 0], &mut rval),
-            Err(78)
+            Err(ENOSYS)
         );
         assert_eq!(rval[0], 2);
     }

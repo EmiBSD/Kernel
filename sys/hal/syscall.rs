@@ -144,7 +144,7 @@ pub type SysResult = Result<(), i32>;
 pub type SyscallFn = fn(Register, &SysArgs, &mut Rval) -> SysResult;
 
 /// `ENOSYS` (`<sys/errno.h>`): what an unanswered system call returns.
-pub const ENOSYS: i32 = 78;
+pub const ENOSYS: i32 = crate::sys::errno::Errno::ENOSYS.as_i32();
 
 /// What the registered handler says about itself, for the boot line `hal::module` prints.
 #[repr(C)]
