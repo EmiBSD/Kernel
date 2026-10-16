@@ -63,14 +63,15 @@ fallback) exist only as registrations in `hal`'s registry, made by `bsd`'s `main
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware (today's `sys/arch/amd64`, `sys/arch/arm64`, `sys/machine`, moved in), the host test double (`sys/arch/host`), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (today's `queue.rs`, `tree.rs`, `subr_tree.rs`), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
 | `abi` | `sys/abi/`, built as the loadable module `abi-openbsd.ko` (decision 22) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno. Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
-| `bsd` | `sys/` (the LZ tree, today's crate) | legacy: 8,906 today (the 8,747 outside the old core plus the 159 of the old runtime files, which are legacy now), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
+| `bsd` | `sys/` (the LZ tree, today's crate) | 10,604 today in 1,161 files (`unsafe-report`, 2026-10-16): the 8,906 legacy (8,747 outside the old core plus the 159 of the old runtime files) and the 1,698 of the hardware, the host double and the lists and trees that have not moved yet (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
-The boot loaders (`sys/stand`, `sys/lib/libsa`, 319 `unsafe`) are separate binaries that run
-before the kernel; they are outside the four crates and unchanged. `libkern` and `libz` stay
-crates of their own, `forbid` (`StaticCell` moves to `hal`, so `libkern` can be).
+The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
+binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`
+and `libz` stay crates of their own, leaves below `hal`; `StaticCell` stays in `libkern` (`hal`
+depends on it, so it cannot move up) and `hal::OnceStatic` replaces its uses one by one.
 
 Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> hal` (for `UserPtr`) and `abi -> KernelApi` (the vtable `hal` hands it at load, decision 22); nothing names `abi`, plus `libkern`/`libz` under
-`kernel`. `hal` depends on nothing of ours. No cycle: a kernel-to-legacy call is a bridge.
+`kernel`. `hal` depends on nothing of ours but `libkern`. No cycle: a kernel-to-legacy call is a bridge.
 
 ### 0.2 What the compiler guarantees
 
@@ -131,7 +132,7 @@ active days have moved 100 `unsafe`.
 
 | Milestone | Scope (what moves into `kernel`/`abi`/`hal`) | Files | `unsafe` | Exit (mechanical) | Est. |
 |---|---|---:|---:|---|---:|
-| **N2 Foundations** (under way, replanned) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the hardware code (moved) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`) and the 41 constant headers of `sys/sys/`; `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 28 + 41 + the hardware move | 21 (+ 1,891 moved into `hal`, not removed; + 30 new for the module loader) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; `just ci`, `ci-full`, `diff-openbsd` equal | 9 d |
+| **N2 Foundations** (under way, replanned) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the hardware code (moved) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`) and the 41 constant headers of `sys/sys/`; `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 28 + 41 + the hardware move | 21 (+ 1,627 moved into `hal`, not removed, the hardware move under review after the N2.2 survey of 2026-10-16; + 30 new for the module loader) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; `just ci`, `ci-full`, `diff-openbsd` equal | 9 d |
 | **N3 Memory** | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` last, with `security-review.md`); the pmap behind a safe `hal::Pmap` API | 26 | 215 | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | 6 d |
 | **N4 Processes** | `sys/kern/` by owner into `kernel`: timeout, task, event/kqueue, descriptors (`file`, `kern_descrip`), signals, proc, the scheduler, sysctl's core, tty; `StaticCell` uses in `kern` → `OnceStatic` | 75 + 4 (kqueue and descriptors, N2's before) | 680 + 95 | `sys/kern/` in `bsd` holds only the VFS (N5), the sockets (N6) and the N8 files; the bridges `Proc`, `Fd`, `Kq` removed from `bridges.toml` | 12 d |
 | **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/nfs/`, `sys/ntfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs` | 140 | 816 | those directories gone from `bsd`; the `Vfs` bridge removed | 14 d |
@@ -165,22 +166,25 @@ recounted as progress.
 |---|---:|---|---:|
 | LZ code not redesigned (580 files) | 8,747 | rewritten in `kernel`, deleted | 0 |
 | old LZ runtime files (19: `subr_pool` 58, `subr_percpu` 16, `kern_malloc` 14, `staticcell` 9, `kern_lock` 8, `smr` 8, `kern_tc` 7, `subr_prf` 7, `percpu` 7, `kern_smr` 6, `kern_subr` 6, `malloc` 3, `kern_rwlock` 2, `mutex` 2, `rwlock` 2, `explicit_bzero` 1, `pool` 1, `refcnt` 1, `systm` 1) | 159 | deleted with their last user; `hal` replaces them | 0 |
-| hardware (`arch/amd64` 863, `arch/arm64` 943, `machine` 85) | 1,891 | moved into `hal` | 1,891 |
+| hardware (`arch/amd64` 732, `arch/arm64` 772, `machine` 85; without `sys/arch/*/stand`) | 1,589 | moved into `hal` | 1,589 |
 | host test double (`arch/host`) | 38 | moved into `hal` | 38 |
 | ours (`queue`, `tree`, `subr_tree`) | 71 | moved into `hal` | 71 |
 | new `hal` code, written new, each site proved: N2 runtime 120 + ELF loader 30, N3 `Pmap` API 10, N4 `cpu_switch`/clock glue 10, N7 `Mmio`/`DmaBuf`/interrupts 60 | 0 | added by the milestone that needs it, a commit each | 230 (estimate) |
-| boot loaders (`stand`, `libsa`), separate binaries | 319 | unchanged | 319 |
+| boot loaders (`stand` 235, `libsa` 84, `arch/*/stand` 302), separate binaries | 621 | unchanged | 621 |
 | **total** | **11,225** | | **2,549** |
 
 Removed from the repository: 8,676 (8,747 + 159 − 230). `kernel` 0 and `abi` 0 by the
-compiler; `hal` 2,230, 85 % of it the hardware code that exists today; the boot loaders apart.
+compiler; `hal` 1,928, 88 % of it the hardware code that exists today (1,698 with the host
+double and the lists and trees); the boot loaders apart. The 2,150 and 2,230 ceilings of 0.1
+were set on the 1,891 figure, which counted 302 of boot-loader code; they stand as ceilings,
+`unsafe-report --write` lowers them to the measured count, and they rise only in the commit
+that adds a listed piece, with the user's OK.
 
-What remains after each close (bsd / hal / total with the boot loaders): today 8,906 / 2,000 /
-11,225; N2 8,885 / 2,150 / 11,354 (the total rises: the runtime and the loader are written
-before the legacy falls); N3 8,670 / 2,160 / 11,149; N4 7,895 / 2,170 / 10,384; N5 7,079 /
-2,170 / 9,568; N6 5,239 / 2,170 / 7,728; N7 1,041 / 2,230 / 3,590; N8 192 / 2,230 / 2,741;
-N9 0 / 2,230 / 2,549. `hal`'s ceiling in `unsafe-budget.toml` falls between milestones and
-rises only in the commit that adds a listed piece, with the user's OK.
+What `cargo xtask unsafe-report` prints today (2026-10-16): `kernel` 0, `abi` 0, `hal` 0,
+`bsd` 10,604 (1,698 of them to move into `hal`), boot 621. The per-close series the planning
+session wrote here counted the hardware as `hal` from N2 on; it is withdrawn until the N2.2
+decision (the survey of 2026-10-16: 1,627 hardware `unsafe` in 198 files, 36 of them movable
+as they stand), and each close records the five numbers the tool prints.
 
 ### 0.8 The slices, milestone by milestone
 
@@ -192,7 +196,9 @@ tool's at `47e1c4f`; days are continuous agent time, the planning session's esti
 `#![forbid(unsafe_code)]` on the last two, `bsd` linking `kernel` and `hal`, `just check` green
 (0.5 d). 2. The hardware into `hal`: `sys/arch/amd64`, `sys/arch/arm64`, `sys/machine`,
 `sys/arch/host`, one `lineage:` move per directory, code untouched, `crate::machine` paths kept
-by re-export (1 d). 3. The runtime, each piece with its first user in `kernel` or in the move:
+by re-export (1 d; **measured on 2026-10-16: not a plain move: 135 of 198 files name `bsd`,
+1,514 of 1,627 `unsafe`, 36 files move as they stand; replanned from the survey's options once
+the user decides**). 3. The runtime, each piece with its first user in `kernel` or in the move:
 `List`/`Tree` (moved), `Mutexed<T>`, `Rwlocked<T>`, `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`,
 `KmBuf`, `OnceStatic<T>`, `PerCpu<T>`, `Refcnt`, `UserPtr<T>` with `abi_pod!`, the bridge
 registry, the interrupt-level guard, the console primitive; `hal-check` (3 d). 4. `KernelApi`

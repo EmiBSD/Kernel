@@ -8,18 +8,24 @@ Re-implement the OpenBSD kernel in Rust, file by file, preserving OpenBSD's stru
 semantics, as a standalone `#![no_std]` kernel for amd64 and arm64, booted by Limine, run in QEMU.
 The C tree under `reference/openbsd-src/sys` is the specification.
 
-## One kernel crate, not one crate per subsystem
+## Four crates: `hal`, `kernel`, `abi` and the LZ tree `bsd` (decision 20, 2026-10-16)
 
-`sys/` is a single Cargo package, `bsd` (OpenBSD's kernel image is `/bsd`). Subsystems are modules:
-`kern`, `uvm`, `dev`, `ddb`, `sys` (headers), `machine`, `arch`.
+`sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
+the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
+decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
+userland interface as the loadable module `abi-openbsd.ko`, `forbid`, translation only; and
+`bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
+modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
+and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal`, `abi -> hal` and `abi ->
+KernelApi`; `hal` depends on nothing of ours but `libkern`.
 
-Reason: kern, uvm and arch are mutually recursive (`trap → uvm_fault → pmap → tsleep → sched`).
-OpenBSD resolves that at link time. Cargo forbids crate cycles, so a crate per subsystem would force
-trait inversions everywhere. One crate resolves the cycles the way C does.
-
-Exceptions are true leaves only: `sys/lib/libkern` and `sys/lib/libz` (OpenBSD builds both as libraries
-too; libz holds what the kernel compiles of zlib: crc32, adler32, deflate, inflate; zlib licence). A module
-may be promoted to a crate only if it uses nothing from `crate::{kern, uvm, arch, machine}`.
+The cycles OpenBSD resolves at link time (`trap → uvm_fault → pmap → tsleep → sched`) were the
+reason `bsd` was one crate until 2026-10-16 (v1: a module could become a crate only if it used
+nothing from `crate::{kern, uvm, arch, machine}`). Under v2 an upward call is never a
+dependency: it is a trait `kernel` or `hal` declares and `bsd` implements and registers in
+`hal`'s registry at boot, one row of `bridges.toml` each (section 0.3). `sys/lib/libkern` and
+`sys/lib/libz` stay leaves (OpenBSD builds both as libraries too; libz holds what the kernel
+compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
 No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
 
