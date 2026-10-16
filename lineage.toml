@@ -207,7 +207,8 @@ status = "inherited"
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
-rust = "sys/arch/amd64/include/_types.rs"
+rust = "sys/hal/arch/amd64/include/_types.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/_types.rs"]
 status = "inherited"
 
@@ -256,12 +257,14 @@ status = "inherited"
 notes = "M4: db_regs_t, PC_REGS/SET_PC_REGS, BKPT_*, SSF_*, FIXUP_PC_AFTER_BREAK, db_clear/set_single_step, IS_BREAKPOINT_TRAP/IS_WATCHPOINT_TRAP; M11c: db_expr_t (DbExpr = i64, and DbAddr = usize), I_CALL/I_CALLI/I_RET/I_IRET and the inst_* classifiers; DB_MACHINE_COMMANDS is the machine table in db_interface.rs; DDB_STATE_NOT_RUNNING/RUNNING/EXITING; the ddb-wide contract is sys/machine/db_machdep.rs"
 
 [[module]]
-rust = "sys/arch/amd64/include/disklabel.rs"
+rust = "sys/hal/arch/amd64/include/disklabel.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/disklabel.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/efifbvar.rs"
+rust = "sys/hal/arch/amd64/include/efifbvar.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/efifbvar.rs"]
 status = "inherited"
 
@@ -278,7 +281,8 @@ license = "none"
 notes = "M5: fxsave64, xstate_hdr, savefpu (align 64) and the initial control words; fpuinit/fputrap/fpusave/xrstor_*/xsetbv_user and xsave_mask are M6; M8: fpu_cleandata, fpureset, the locore.S routine declarations and the fninit/fwait/fxsave/ldmxcsr/fldcw macros (fxsave takes the aligned savefpu)"
 
 [[module]]
-rust = "sys/arch/amd64/include/frame.rs"
+rust = "sys/hal/arch/amd64/include/frame.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/frame.rs"]
 status = "inherited"
 notes = "M2: struct callframe; M4: struct trapframe, intrframe, iretq_frame, FRAMESIZE; switchframe is M5; M5-b2: struct switchframe"
@@ -300,13 +304,15 @@ status = "inherited"
 notes = "M4: the registers and bits lapic.c's boot path uses (ID, version, TPR, EOI, SVR, LVTs, timer, delivery modes, LAPIC_BASE, MSR_X2APIC_BASE); the ICR fields, ESR, LDR/DFR, ISR/TMR/IRR and the x2APIC MSR map are M5; M11a: LAPIC_ICRLO and LAPIC_ICRHI for the IPIs (reference test with the ICR fields); ESR, LDR/DFR, ISR/TMR/IRR and the rest of the x2APIC MSR map come with their users; M14: MSR_X2APIC_ID, X2APIC_ID_MASK (mptramp.S)"
 
 [[module]]
-rust = "sys/arch/amd64/include/i82489var.rs"
+rust = "sys/hal/arch/amd64/include/i82489var.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/i82489var.rs"]
 status = "inherited"
 notes = "M4: the LAPIC vector numbers; local_apic, lapic_tpr, the lapic_readreg/writereg pointers and the prototypes are amd64/lapic.rs; the IPI and timer stubs are M5"
 
 [[module]]
-rust = "sys/arch/amd64/include/i8259.rs"
+rust = "sys/hal/arch/amd64/include/i8259.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/i8259.rs"]
 status = "inherited"
 
@@ -352,13 +358,15 @@ status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/arch/amd64/include/mplock.rs"
+rust = "sys/hal/arch/amd64/include/mplock.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/mplock.rs"]
 status = "inherited"
 license = "public domain"
 
 [[module]]
-rust = "sys/arch/amd64/include/mutex.rs"
+rust = "sys/hal/arch/amd64/include/mutex.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/mutex.rs"]
 status = "inherited"
 license = "none"
@@ -375,7 +383,8 @@ status = "inherited"
 notes = "M5: struct pcb (Cells; the save area an UnsafeCell), copy_from for cpu_fork; reset_segs is M6"
 
 [[module]]
-rust = "sys/arch/amd64/include/pci_machdep.rs"
+rust = "sys/hal/arch/amd64/include/pci_machdep.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/pci_machdep.rs"]
 status = "inherited"
 
@@ -398,7 +407,8 @@ status = "inherited"
 notes = "struct pmap (bootstrap subset), pv_entry, vm_page_md, the PML4 slot layout, the recursive mapping (PTE_BASE/L*_BASE, pl*_i, kvtopte, ptp_va2o), the nkptp/nbpd initializers; pmap_page_protect/pmap_protect with M6; M7a-3b: pv_mtx in vm_page_md, the inline frontends pmap_page_protect/pmap_protect and the attribute macros (pmap_clear_modify/clear_reference/is_modified/is_referenced); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap"
 
 [[module]]
-rust = "sys/arch/amd64/include/proc.rs"
+rust = "sys/hal/arch/amd64/include/proc.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/proc.rs"]
 status = "inherited"
 
@@ -436,12 +446,14 @@ status = "inherited"
 notes = "CR0/CR3 bits, MSR_EFER with its flags, the syscall and segment-base MSRs (MSR_STAR/LSTAR/CSTAR/SFMASK/FSBASE/GSBASE/KERNELGSBASE), MSR_APICBASE and its APICBASE_* bits; the CPUID feature words, the other MSRs and the MTRR/PAT definitions come with CPU identification (M4-b2); M8: CR4_PSE/PAE/PGE/OSFXSR/OSXMMEXCPT/UMIP/PCIDE/OSXSAVE/SMEP/SMAP/PKE and CR4_DEFAULT (reference test); TSC: CPUID_TSC, CPUIDECX_HV, SEFF0EBX_TSC_ADJUST, CPUID_NXE, CPUID_RDTSCP, CPUIDEDX_ITSC, CPUIDEAX_VERID, CPUIDEDX_NUM_FC, MSR_TSC_ADJUST, MSR_BIOS_SIGN, the MSR_PERF_FIXED_CTR*/MSR_PERF_GLOBAL_* bits cpu_freq_ctr uses, MSR_PATCH_LEVEL, MSR_HWCR/HWCR_TSCFREQSEL, MSR_PSTATEDEF/PSTATEDEF_EN; CPUID/CPUID_LEAF are the functions cpuid/cpuid_leaf over __cpuid_count; M11a: CR0_NE, CR0_WP, CR0_DEFAULT (an application processor's CR0, as mptramp.S loads it); M14: CPUID_APIC (mp_cpu_start), MSR_SEV_GHCB (locore0.S's #VC termination); M16e: CPUIDECX_MWAIT, TPM_SENSOR, TPM_ARAT, TPM_PTS; M16d: CPUIDECX_RDRAND, SEFF0EBX_RDSEED"
 
 [[module]]
-rust = "sys/arch/amd64/include/tcb.rs"
+rust = "sys/hal/arch/amd64/include/tcb.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/tcb.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/timetc.rs"
+rust = "sys/hal/arch/amd64/include/timetc.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/timetc.rs"]
 status = "inherited"
 
@@ -451,7 +463,8 @@ lz = ["sys/arch/amd64/include/trap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/tss.rs"
+rust = "sys/hal/arch/amd64/include/tss.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/tss.rs"]
 status = "inherited"
 
