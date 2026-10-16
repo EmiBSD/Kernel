@@ -818,3 +818,9 @@ every design that kept `unsafe` inside the kernel:
     (`cargo fmt --check`, `cargo xtask lz check`). The planning session said the risk: errors
     found at the close compound across the milestone's commits; the user took it. The two-week
     target is N2 and N3 closed, with parallel redesigners from N2.3 on (section 0.8).
+
+24. **The N2 close** (the user, 2026-10-17): integrate the agents' branches into `main`, then
+    compile without QEMU until green (`just build` on both archs, then `just check`), fixing
+    the integration errors between `hal`, `kernel`, `abi` and `bsd`; no `just ci-full`; one
+    `just ci` and one `just diff-openbsd`, both rc=0, mark N2 closed and push. `ci-full` is
+    recorded as pending in `docs/STATUS.md` and runs once at the N3 close for both milestones.
