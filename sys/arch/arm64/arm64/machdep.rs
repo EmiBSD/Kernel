@@ -658,6 +658,7 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
 
     let mut howto = 0;
     let mut duid = None;
+    let mut abi_module = None;
     let mut mmap_start = 0u64;
     let mut mmap_size = 0u32;
     let mut mmap_desc_size = 0u32;
@@ -682,6 +683,12 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
             let mut d = [0u8; 8];
             d.copy_from_slice(p);
             duid = Some(d);
+        }
+        // Not in the C (N2.4): the ABI module efiboot put in the block after the kernel,
+        // below the end mark of x0.
+        let p = prop(b"emibsd,abi-module");
+        if p.len() == 16 {
+            abi_module = Some((Paddr::new(be64(p) as usize), be64(&p[8..]) as usize));
         }
         let p = prop(b"openbsd,bootmac");
         if p.len() == ETHER_ADDR_LEN {
@@ -940,6 +947,7 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
         mp: bootarg_mp(),
         howto,
         duid,
+        abi_module,
         // efiboot's efi_framebuffer() already put the GOP frame buffer in the tree as
         // /chosen/framebuffer, where simplefb finds it, as in C; the Limine entry's copy of
         // that node (stand/fdtfb.rs) is not needed here.

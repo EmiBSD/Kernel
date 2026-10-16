@@ -219,5 +219,12 @@ pub static BOOT_MD: BootMd = BootMd {
         ttydev,
         cnspeed,
     }),
+    abi_module_room: Some(abi_module_room),
 };
+
+/// Not in the C (N2.4): the end of the room `efi_memprobe` reserved for the kernel, which
+/// boot() may fill with `/abi-openbsd.ko` after the kernel's image.
+fn abi_module_room() -> u64 {
+    EFI_LOADADDR.load(core::sync::atomic::Ordering::Relaxed) + crate::efiboot::KERN_LOADSPACE_SIZE
+}
 /* </CODE> */

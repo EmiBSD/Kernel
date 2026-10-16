@@ -1081,6 +1081,16 @@ pub fn efi_makebootargs(cmd: &CmdState, bootargs: &[u8], howto: i32) -> *mut u8 
     fdt_node_add_property(node, b"bootargs", &args);
     fdt_node_add_property(node, b"openbsd,boothowto", &boothowto);
 
+    // Not in the C (N2.4): where boot() put /abi-openbsd.ko in the kernel's block, after
+    // its image and below the end mark passed in x0 (two big-endian 64-bit cells: the
+    // physical address and the size).
+    if let Some((at, size)) = cmd.abi_module {
+        let mut module = [0u8; 16];
+        module[..8].copy_from_slice(&at.to_be_bytes());
+        module[8..].copy_from_slice(&size.to_be_bytes());
+        fdt_node_add_property(node, b"emibsd,abi-module", &module);
+    }
+
     // Pass DUID of the boot disk.
     let dip = BOOTDEV_DIP.load(Ordering::Relaxed);
     if !dip.is_null() {

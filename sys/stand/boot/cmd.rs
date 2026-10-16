@@ -165,6 +165,9 @@ pub struct CmdState {
     pub argv0: &'static str,
     /// `cmd_buf`: the line being run (NUL-terminated words once parsed).
     pub buf: [u8; CMD_BUFF_SIZE],
+    /// Not in the C (N2.4): where boot() put `/abi-openbsd.ko` after the kernel, as a
+    /// load-space address (as `marks` are) and a length, for `run_loadfile` to hand over.
+    pub abi_module: Option<(u64, u64)>,
 }
 
 impl CmdState {
@@ -182,6 +185,7 @@ impl CmdState {
             argv: [(0, 0); 8],
             argv0: "",
             buf: [0; CMD_BUFF_SIZE],
+            abi_module: None,
         }
     }
 
@@ -838,6 +842,7 @@ mod tests {
         fwrandom: None,
         bootdev_has_hibernate: None,
         stty: None,
+        abi_module_room: None,
     };
 
     /// A state with boot device `hd0a` and image `/bsd`, and `line` in the buffer.

@@ -224,7 +224,14 @@ pub static BOOT_MD: BootMd = BootMd {
         ttydev,
         cnspeed,
     }),
+    abi_module_room: Some(abi_module_room),
 };
+
+/// Not in the C (N2.4): the end of the 64 MB block `machdep()` allocated for the kernel
+/// (`efi_memprobe`), which boot() may fill with `/abi-openbsd.ko` after the kernel's image.
+fn abi_module_room() -> u64 {
+    EFI_LOADADDR.load(Ordering::Relaxed) + 64 * 1024 * 1024
+}
 
 /// `LOADADDR(a)` of arm64's `<machine/loadfile_machdep.h>`: the kernel goes to
 /// `efi_loadaddr` plus its address within 512 GB.

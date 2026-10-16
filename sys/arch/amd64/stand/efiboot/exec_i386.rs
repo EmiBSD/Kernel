@@ -76,8 +76,8 @@ use libsa::printf::Str;
 use libsa::snprintf;
 
 use crate::biosvar::{
-    BOOTARG_BOOTDUID, BOOTARG_BOOTMAC, BOOTARG_DDB, BOOTARG_LEN, BOOTARG_UCODE, BiosBootduid,
-    BiosDdb, BiosUcode,
+    BOOTARG_ABIMODULE, BOOTARG_BOOTDUID, BOOTARG_BOOTMAC, BOOTARG_DDB, BOOTARG_LEN, BOOTARG_UCODE,
+    BiosAbiModule, BiosBootduid, BiosDdb, BiosUcode,
 };
 use crate::diskprobe::BOOTDEV_DIP;
 use crate::efiboot::{EFI_LOADADDR, RUN_I386, bs, efi_cleanup, efi_makebootargs, efi_setconsdev};
@@ -145,6 +145,16 @@ pub fn run_loadfile(cmd: &mut CmdState, marks: &mut [u64; MARK_MAX], howto: i32)
     }
 
     addbootarg(BOOTARG_BOOTDUID, BiosBootduid { duid }.as_bytes());
+
+    // Not in the C (N2.4): where boot() put /abi-openbsd.ko, after the kernel's image and
+    // below its end mark, as the physical address the move below gives it.
+    if let Some((at, size)) = cmd.abi_module {
+        let module = BiosAbiModule {
+            addr: at.wrapping_add(delta),
+            size,
+        };
+        addbootarg(BOOTARG_ABIMODULE, module.as_bytes());
+    }
 
     ucode_load(cmd);
 

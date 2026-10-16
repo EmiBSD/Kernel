@@ -203,10 +203,11 @@ use crate::arch::amd64::amd64::tsc::{TSC_FREQUENCY, TSC_IS_INVARIANT};
 use crate::arch::amd64::amd64::vector::Xexceptions;
 use crate::arch::amd64::include::biosvar;
 use crate::arch::amd64::include::biosvar::{
-    BIOS_MAP_ACPI, BIOS_MAP_END, BIOS_MAP_FREE, BIOS_MAP_NVS, BIOS_MAP_RES, BOOTARG_APMINFO,
-    BOOTARG_BOOTDUID, BOOTARG_BOOTMAC, BOOTARG_BOOTSR, BOOTARG_CKSUMLEN, BOOTARG_CONSDEV,
-    BOOTARG_DDB, BOOTARG_DISKINFO, BOOTARG_EFIINFO, BOOTARG_MEMMAP, BOOTARG_PCIINFO, BOOTARG_UCODE,
-    BiosBootduid, BiosBootsr, BiosConsdev, BiosDdb, BiosEfiinfo, BiosMemmap, BiosUcode,
+    BIOS_MAP_ACPI, BIOS_MAP_END, BIOS_MAP_FREE, BIOS_MAP_NVS, BIOS_MAP_RES, BOOTARG_ABIMODULE,
+    BOOTARG_APMINFO, BOOTARG_BOOTDUID, BOOTARG_BOOTMAC, BOOTARG_BOOTSR, BOOTARG_CKSUMLEN,
+    BOOTARG_CONSDEV, BOOTARG_DDB, BOOTARG_DISKINFO, BOOTARG_EFIINFO, BOOTARG_MEMMAP,
+    BOOTARG_PCIINFO, BOOTARG_UCODE, BiosAbiModule, BiosBootduid, BiosBootsr, BiosConsdev, BiosDdb,
+    BiosEfiinfo, BiosMemmap, BiosUcode,
 };
 use crate::arch::amd64::include::cpu::{
     CPU_ALLOWAPERTURE, CPU_BIOS, CPU_CHR2BLK, CPU_CONSDEV, CPU_CPUFEATURE, CPU_CPUID,
@@ -884,6 +885,7 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
     let mut memmap_arg: Option<(usize, usize)> = None;
     let mut efiinfo: Option<BiosEfiinfo> = None;
     let mut duid: Option<[u8; 8]> = None;
+    let mut abi_module: Option<(Paddr, usize)> = None;
     let mut q = 0;
     while q + BOOTARG32_HDR <= bootinfo.len() {
         let word = |o: usize| {
@@ -940,6 +942,11 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
                 }
             }
             BOOTARG_BOOTDUID => duid = bootarg_read::<BiosBootduid>(arg).map(|d| d.duid),
+            // Not in the C (N2.4): the ABI module efiboot put after the kernel, below esym.
+            BOOTARG_ABIMODULE => {
+                abi_module = bootarg_read::<BiosAbiModule>(arg)
+                    .map(|m| (Paddr::new(m.addr as usize), m.size as usize));
+            }
             BOOTARG_BOOTSR => {
                 if let Some(sr) = bootarg_read::<BiosBootsr>(arg) {
                     // SAFETY: the boot CPU alone, before softraid(4) attaches.
@@ -1052,6 +1059,7 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
         mp,
         howto: BOOTHOWTO.load(Ordering::Relaxed),
         duid,
+        abi_module,
         // boot(8)'s frame buffer reaches efifb(4) through bios_efiinfo, as in C.
         framebuffer: None,
     })

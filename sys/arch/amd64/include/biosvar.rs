@@ -326,7 +326,24 @@ pub struct BiosUcode {
     pub uc_size: u64,
 }
 
+/// Not in the C (N2.4, decision 22): `BOOTARG_ABIMODULE`, where efiboot put the ABI module
+/// `/abi-openbsd.ko` (after the kernel's image, below `esym`). EmiBSD's own type, far
+/// above OpenBSD's.
+pub const BOOTARG_ABIMODULE: i32 = 0x100;
+
+/// Not in the C (N2.4): the `BOOTARG_ABIMODULE` record: the module's physical address and
+/// size.
+#[repr(C, packed)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct BiosAbiModule {
+    /// Physical address of its first byte.
+    pub addr: u64,
+    /// Its size in bytes.
+    pub size: u64,
+}
+
 bootarg_bytes!(
+    BiosAbiModule,
     BiosMemmap,
     BiosDiskinfo,
     BiosConsdev,
