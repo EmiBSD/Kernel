@@ -36,7 +36,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::module::{ModulePlatform, Prot};
-use kernel::api::{KERNEL_API_VERSION, KernelApi};
+use kernel::api::KernelApi;
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::subr_prf::panic;
@@ -49,12 +49,12 @@ use crate::sys::syscall::SYS_MAXSYSCALL;
 use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::systm::SysArgs;
 use crate::sys::types::{Register, Vaddr};
-use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, KP_ZERO, KV_ANY, km_alloc};
+use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, KP_ZERO, KV_ANY, km_alloc, km_free};
 use crate::uvm::uvm_param::round_page;
 use crate::uvm::uvm_pmap::PMAP_WIRED;
 
 /// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s.
-static KERNEL_API: KernelApi = KernelApi::new(legacy_syscall, api_copyin, api_copyout);
+static KERNEL_API: KernelApi = kernel::api::table(legacy_syscall, api_copyin, api_copyout);
 
 /// The module file the boot loader handed over (`set_image`): its kernel virtual address.
 static IMAGE_VA: AtomicUsize = AtomicUsize::new(0);
@@ -91,6 +91,14 @@ impl ModulePlatform for BsdPlatform {
         let entered = pmap_enter(pmap_kernel(), Vaddr::new(va), pa, prot, prot | PMAP_WIRED);
         pmap_update(pmap_kernel());
         entered.is_ok()
+    }
+
+    fn release(&self, rw: usize, len: usize) {
+        // `kp_none`: km_free gives back the virtual range only (uvm_unmap removes its
+        // mappings); the pages stay, held by the module's mappings, never freed.
+        if let Some(v) = NonNull::new(core::ptr::with_exposed_provenance_mut::<u8>(rw)) {
+            km_free(v, round_page(len), &KV_ANY, &KP_NONE);
+        }
     }
 }
 
@@ -129,7 +137,7 @@ pub fn abi_module_boot(image: Option<(usize, usize)>) {
 /// The second boot step, from `main` before `init(8)` may exec: loads the module, which
 /// registers its handler; prints the one line that says whether it did.
 pub fn abi_module_attach() {
-    match hal::module::load(&BsdPlatform, &KERNEL_API, KERNEL_API_VERSION) {
+    match hal::module::load(&BsdPlatform, &KERNEL_API) {
         Ok(loaded) => crate::kprintf!("{loaded}\n"),
         Err(e) => crate::kprintf!("{e}\n"),
     }

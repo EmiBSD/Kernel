@@ -32,7 +32,7 @@
 // The module's runtime: the panic handler (hal's feature `module-rt`).
 extern crate hal;
 
-use kernel::api::AbiModuleHeader;
+use hal::api::AbiModuleHeader;
 
 /// The header `hal::module` reads at the ELF entry address (`abi.ld` puts this static
 /// there): the magic, the `KernelApi` version and size the module was built against, and

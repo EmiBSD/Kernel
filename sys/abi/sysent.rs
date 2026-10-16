@@ -32,7 +32,8 @@
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
 //! function, no state.
 
-use kernel::api::{HandlerInfo, KernelApi, Register, Rval, SysArgs, SysResult};
+use hal::api::KernelApi;
+use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::SYS_MAXSYSCALL;
 
@@ -60,7 +61,7 @@ pub const INFO: HandlerInfo = HandlerInfo {
 /// `sysent[]`: the entry of every system call number below `SYS_MAXSYSCALL`.
 pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = [Sysent::Legacy; SYS_MAXSYSCALL];
 
-/// The module's system call handler (`kernel::api::SyscallHandler`).
+/// The module's system call handler (`hal::api::SyscallHandler`).
 pub fn syscall(
     api: &'static KernelApi,
     nr: Register,
@@ -116,7 +117,9 @@ mod tests {
         Ok(())
     }
 
-    static API: KernelApi = KernelApi::new(legacy, copyin, copyout);
+    fn register(_: &'static KernelApi, _: hal::api::SyscallHandler, _: HandlerInfo) {}
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout);
 
     /// A `Native` entry of the test table.
     fn native(_: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {

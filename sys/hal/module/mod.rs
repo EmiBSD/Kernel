@@ -28,8 +28,8 @@
 //!   `sys/abi/ko` alone).
 //!
 //! The module's header, which its linker script puts at the ELF entry address, is read
-//! here as bytes before its type is known: `kernel::api::AbiModuleHeader` is laid out as
-//! the offsets below say, and a compile-time check there keeps the two in step.
+//! here as bytes before anything of the module runs, at the offsets of
+//! [`crate::api::AbiModuleHeader`] (re-exported below).
 
 #[forbid(unsafe_code)]
 pub mod elf;
@@ -38,6 +38,9 @@ pub mod once;
 #[forbid(unsafe_code)]
 mod rt;
 
+pub use crate::api::{
+    HEADER_API_SIZE, HEADER_API_VERSION, HEADER_INIT, HEADER_MAGIC, HEADER_SIZE, MODULE_MAGIC,
+};
 pub use load::{LoadError, Loaded, ModulePlatform, Prot, load};
 
 /// The page size the module is laid out and mapped in (4 KiB on both machines).
@@ -45,18 +48,4 @@ pub const PAGE_SIZE: usize = 4096;
 
 /// The module's file name on the boot medium and in the boot line.
 pub const MODULE_NAME: &str = "abi-openbsd.ko";
-
-/// The first eight bytes of the module's header.
-pub const MODULE_MAGIC: [u8; 8] = *b"EMIABIKO";
-
-/// Offset of the header's magic.
-pub const HEADER_MAGIC: usize = 0;
-/// Offset of the `KernelApi` version the module was built against (`u32`).
-pub const HEADER_API_VERSION: usize = 8;
-/// Offset of the `KernelApi` size the module was built against (`u32`).
-pub const HEADER_API_SIZE: usize = 12;
-/// Offset of the entry point (a pointer, relocated).
-pub const HEADER_INIT: usize = 16;
-/// The header's size.
-pub const HEADER_SIZE: usize = 24;
 /* </CODE> */

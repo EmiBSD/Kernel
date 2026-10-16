@@ -6959,7 +6959,7 @@ reason = "N2.4a: the init-once cell the system call registry, kernel::api and th
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): KernelApi, the versioned #[repr(C)] vtable of safe functions handed to abi-openbsd.ko at load (the handler's registration, the Legacy fallback, copyin/copyout), the module header the loader checks, and the registration that keeps the module's handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
@@ -6984,3 +6984,8 @@ reason = "N2.4a (decision 22): the loader of abi-openbsd.ko: placement, relocati
 [[extra]]
 rust = "sys/kern/abi_module.rs"
 reason = "N2.4a: bsd's side of abi-openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the kernel's km_alloc/pmap_extract/pmap_enter and the boot hand-over, and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+
+[[extra]]
+rust = "sys/hal/api.rs"
+crate = "hal"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type"

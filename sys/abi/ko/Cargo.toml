@@ -22,7 +22,6 @@ doc = false
 
 [dependencies]
 abi = { path = ".." }
-kernel = { path = "../../kernel" }
 # The module's runtime (its panic handler): hal's feature `module-rt`, set here only.
 hal = { path = "../../hal", features = ["module-rt"] }
 

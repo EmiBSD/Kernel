@@ -40,13 +40,14 @@
 //! pmap and the boot entry, the trait becomes `hal`'s own code and the premise a proof.
 
 use core::fmt;
-use core::mem::size_of;
 
 use super::elf::{self, ElfError, Module, PF_W, PF_X};
+use super::once::Once;
 use super::{
     HEADER_API_SIZE, HEADER_API_VERSION, HEADER_INIT, HEADER_MAGIC, HEADER_SIZE, MODULE_MAGIC,
     MODULE_NAME, PAGE_SIZE,
 };
+use crate::api::{AbiInit, ApiPrefix, KernelApi};
 use crate::syscall::handler_info;
 
 /// The protection a page of the module is mapped with.
@@ -81,6 +82,12 @@ pub trait ModulePlatform: Sync {
     /// `va` (in a range from [`Self::reserve`]) with `prot`, wired, the instruction caches
     /// made coherent with what was written through `rw`; `false` if it could not.
     fn enter(&self, va: usize, rw: usize, prot: Prot) -> bool;
+
+    /// Unmaps the writable range `[rw, rw + len)` (from [`Self::alloc`]) and keeps its
+    /// physical pages, which the mappings [`Self::enter`] made still hold: after it, no
+    /// writable alias of the module's text and read-only data is left but the direct map,
+    /// which aliases every page of memory as OpenBSD's does. Nothing may touch `rw` after.
+    fn release(&self, rw: usize, len: usize);
 }
 
 /// Why the module was not loaded.
@@ -102,6 +109,10 @@ pub enum LoadError {
     Map,
     /// The module returned from its entry point without registering its handler.
     NoHandler,
+    /// The table handed to `load` is not this tree's `KernelApi` (its prefix).
+    Table(u32, u32),
+    /// A module was loaded already, or a load is under way.
+    Again,
 }
 
 impl From<ElfError> for LoadError {
@@ -122,6 +133,8 @@ impl fmt::Display for LoadError {
             Self::Entry => write!(f, "its entry point is not in its text")?,
             Self::Map => write!(f, "a page could not be mapped")?,
             Self::NoHandler => write!(f, "it registered no system call handler")?,
+            Self::Table(v, s) => write!(f, "the kernel's table is version {v}, size {s}")?,
+            Self::Again => return write!(f, "a module was loaded already"),
         }
         write!(f, "; every system call takes the legacy path")
     }
@@ -146,14 +159,17 @@ impl fmt::Display for Loaded {
     }
 }
 
+/// Set by the first [`load`]: the module is loaded at most once.
+static LOADING: Once<()> = Once::new();
+
 /// Loads the module the platform's boot hand-over holds and calls its entry point with
-/// `api`, whose type is the `KernelApi` of version `api_version` (`kernel::api`, which
-/// `hal` cannot name: the header's version and size must match it).
-pub fn load<A: Sync + 'static>(
-    platform: &dyn ModulePlatform,
-    api: &'static A,
-    api_version: u32,
-) -> Result<Loaded, LoadError> {
+/// `api`, the table of this tree's version (its prefix is checked, and the module's header
+/// must name the same). Once: a second call is refused before it touches anything.
+pub fn load(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<Loaded, LoadError> {
+    if api.prefix != ApiPrefix::CURRENT {
+        return Err(LoadError::Table(api.prefix.version, api.prefix.size));
+    }
+    LOADING.set(()).map_err(|()| LoadError::Again)?;
     let (va, len) = platform.image().ok_or(LoadError::NoImage)?;
     let first = core::ptr::with_exposed_provenance::<u8>(va);
     // SAFETY: the platform premise: `image` names `len` readable bytes the boot loader
@@ -164,17 +180,24 @@ pub fn load<A: Sync + 'static>(
     let span = module.span();
 
     let rw = platform.alloc(span).ok_or(LoadError::NoMemory)?;
-    // SAFETY: the platform premise: `alloc` handed over `span` bytes of writable, wired
-    // memory owned by this caller alone for the kernel's lifetime; this is its only
-    // reference, and it lives as long as the memory.
-    let image: &'static mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(core::ptr::with_exposed_provenance_mut(rw), span)
-    };
     let exec = platform.reserve(span).ok_or(LoadError::NoMemory)?;
-
-    module.place(image)?;
-    module.relocate(image, exec as u64)?;
-    let init = entry_point(&module, image, exec, size_of::<A>(), api_version)?;
+    let init = {
+        let first = core::ptr::with_exposed_provenance_mut::<u8>(rw);
+        // SAFETY: the platform premise: `alloc` handed over `span` bytes of writable, wired
+        // memory owned by this caller alone, mapped until `release` below; this is the only
+        // reference to it, and it is not used after this block, which ends before
+        // `release` unmaps the range.
+        let image: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(first, span) };
+        module.place(image)?;
+        module.relocate(image, exec as u64)?;
+        entry_point(
+            &module,
+            image,
+            exec,
+            ApiPrefix::CURRENT.size as usize,
+            ApiPrefix::CURRENT.version,
+        )?
+    };
 
     for page in (0..span).step_by(PAGE_SIZE) {
         let prot = match module.flags_at(page as u64) {
@@ -187,16 +210,18 @@ pub fn load<A: Sync + 'static>(
             return Err(LoadError::Map);
         }
     }
+    // W^X: the module's pages keep only the protections just entered.
+    platform.release(rw, span);
 
+    let entry = core::ptr::with_exposed_provenance::<()>(init);
     // SAFETY: `init` is the relocated `init` field of the module's header, which matched
-    // the magic and was built against this `KernelApi` (`A`, version and size checked by
-    // `entry_point`), so it is the address of the module's `fn(&'static KernelApi)` entry;
-    // `entry_point` checked it lies in a page of an executable segment, and the loop above
-    // mapped every such page executable at `exec` with the relocated bytes (the platform
-    // premise). The module stays mapped for the kernel's lifetime.
-    let init: fn(&'static A) = unsafe {
-        core::mem::transmute::<*const (), fn(&'static A)>(core::ptr::with_exposed_provenance(init))
-    };
+    // the magic and names this tree's `KernelApi` (version and size, `entry_point`); the
+    // module was built against `hal::api::AbiInit`, so it is the address of its
+    // `fn(&'static KernelApi)` entry, and `api` is that type (its prefix checked above).
+    // `entry_point` checked the address lies in a page of an executable segment, and the
+    // loop above mapped every such page executable at `exec` with the relocated bytes (the
+    // platform premise). The module stays mapped for the kernel's lifetime.
+    let init: AbiInit = unsafe { core::mem::transmute::<*const (), AbiInit>(entry) };
     init(api);
 
     let info = handler_info().ok_or(LoadError::NoHandler)?;
@@ -367,12 +392,46 @@ mod tests {
         fn enter(&self, _: usize, _: usize, _: Prot) -> bool {
             false
         }
+        fn release(&self, _: usize, _: usize) {}
+    }
+
+    fn register(_: &'static KernelApi, _: crate::api::SyscallHandler, _: HandlerInfo) {}
+    fn legacy(_: isize, _: &crate::syscall::SysArgs, _: &mut crate::syscall::Rval) -> SysResult {
+        Ok(())
+    }
+    fn copyin(_: usize, _: &mut [u8]) -> Result<(), i32> {
+        Ok(())
+    }
+    fn copyout(_: &[u8], _: usize) -> Result<(), i32> {
+        Ok(())
+    }
+
+    use crate::syscall::{HandlerInfo, SysResult};
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout);
+
+    /// The one test that calls `load` (its once-guard is process-wide): no image is
+    /// reported, and the second call is refused.
+    #[test]
+    fn no_image_then_no_second_load() {
+        assert_eq!(load(&Empty, &API), Err(LoadError::NoImage));
+        assert_eq!(load(&Empty, &API), Err(LoadError::Again));
+        assert_eq!(
+            format!("{}", LoadError::Again),
+            "abi-openbsd.ko: not loaded, a module was loaded already"
+        );
     }
 
     #[test]
-    fn no_image_is_reported() {
-        static API: u64 = 0;
-        assert_eq!(load(&Empty, &API, 1), Err(LoadError::NoImage));
+    fn another_table_is_refused() {
+        static OTHER: KernelApi = KernelApi {
+            prefix: ApiPrefix {
+                version: 2,
+                size: 48,
+            },
+            ..KernelApi::new(register, legacy, copyin, copyout)
+        };
+        assert_eq!(load(&Empty, &OTHER), Err(LoadError::Table(2, 48)));
     }
 }
 /* </TESTS> */

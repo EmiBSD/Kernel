@@ -24,6 +24,8 @@
 //! hal-check` refuses a `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
 
+#[forbid(unsafe_code)]
+pub mod api;
 pub mod arch;
 pub mod machine;
 pub mod module;

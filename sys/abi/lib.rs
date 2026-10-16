@@ -35,7 +35,7 @@ extern crate std;
 
 pub mod sysent;
 
-use kernel::api::KernelApi;
+use hal::api::KernelApi;
 
 /// The module's entry point, which `hal::module` calls once, before `init(8)` starts:
 /// registers the system call handler and what the table holds.
