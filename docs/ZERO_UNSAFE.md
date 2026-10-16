@@ -509,3 +509,26 @@ Taken by the user on 2026-10-16 ("vamos por la recta, lo barato me sale caro sie
     hand stops the work; no cast is added for it.
 16. **`[[seam]]` is tooling first**: `lz check`, `lz status` and `unsafe-report` learn the table
     before the first seam lands.
+
+Taken by the planning session on 2026-10-16 under the user's standing authority of that day
+("autorizo dentro de reglas"), after the slots redesigner stopped before its series 2:
+
+17. **`AbiPod` is a safe trait checked by `lz check`**, like `Adapter` (decision 7): the only
+    impls are written by `abi_pod!(Type { field: Type, ... })` in the core (`sys/machine/copy.rs`),
+    which checks every field's exact type at compile time against the primitives the core
+    declares `AbiPod`; `lz check` refuses a hand-written `impl` (`unsafe` or not). First user:
+    `Kevent` (`sys/sys/event.rs`), so that file can be `forbid`; the other ~200 impls convert
+    as their owners' slices come. Rejected: moving the `unsafe impl` into `kern_event.rs` (an
+    `unsafe` moved, not removed).
+18. **`kn_kq` and `kqs_kq`** become `Cell<Option<&'static Kqueue>>`, like `kn_fp`; the callers
+    already hold the `&'static` (`fp.kqueue()`, `p.kq()`). No new cast. A hook site that has no
+    `&'static` object in hand takes it from the same owner lookup the other device filters use
+    (`device_lookup`-style, the softc the autoconf tree owns); where the owner holds only a raw
+    pointer, the site stops and reports: none is cast here.
+19. **The timer's hook owns its object through `MBox<T>`**, an owned typed `malloc` in the core
+    (`sys/sys/malloc.rs`, `sys/kern/kern_malloc.rs`, already core paths): `MBox::new(ty, flags,
+    value) -> Option<MBox<T>>` with the C's `M_KEVENT, M_WAITOK`, so `vmstat -m` and the wait
+    behaviour stay the C's; `Drop` frees. `Hook` is `Borrowed(&'static dyn Any) |
+    Timer(MBox<FiltTimer>)`: the one owned hook is kqueue's own, named, not generic. Rejected:
+    `Box` (the global allocator is `M_TEMP, M_NOWAIT`: a different `vmstat` row and a panic
+    where the C sleeps).
