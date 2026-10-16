@@ -142,6 +142,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 mod boot;
+mod bridges;
 mod bsdmake;
 mod devices;
 mod diffopenbsd;

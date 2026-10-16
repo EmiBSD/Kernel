@@ -106,6 +106,9 @@ struct Module {
     notes: String,
     #[serde(default, rename = "fn")]
     fns: Vec<FnRow>,
+    /// v2: `hal`, `kernel` or `abi`, agreeing with the path prefix (`bridges.rs`).
+    #[serde(default, rename = "crate")]
+    krate: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -144,6 +147,8 @@ enum Kind {
 struct Extra {
     rust: String,
     reason: String,
+    #[serde(default, rename = "crate")]
+    krate: Option<String>,
 }
 
 /// An LZ file nothing derives from any more.
@@ -814,6 +819,22 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         }
     }
 
+    // v2 bookkeeping: the `crate` keys and bridges.toml.
+    for m in &lineage.modules {
+        let (e, w) = crate::bridges::check_crate_key("[[module]]", &m.rust, m.krate.as_deref());
+        errors.extend(e);
+        warnings.extend(w);
+    }
+    for x in &lineage.extras {
+        let (e, w) = crate::bridges::check_crate_key("[[extra]]", &x.rust, x.krate.as_deref());
+        errors.extend(e);
+        warnings.extend(w);
+    }
+    let bridges = crate::bridges::load_bridges(root)?;
+    errors.extend(crate::bridges::check_bridges(&bridges, |p| {
+        root.join(p).is_file()
+    }));
+
     // LZ coverage: every LZ file at the pin is derived from or dropped.
     let lz_files: HashSet<String> = lz.rs_files()?.into_iter().collect();
     let extra_homes: Vec<String> = lineage.extras.iter().map(|x| lz_home(&x.rust)).collect();
@@ -1176,8 +1197,9 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         .filter(|m| synced.contains_key(lz_home(&m.rust).as_str()))
         .count();
     println!(
-        "lz check: {nmod} modules ({n_inherited} inherited, {n_adapted} adapted, {nred} redesigned), {n_rows} fn rows, {nx} extras, {nd} dropped; author's block in {n_author} of {nfiles} .rs; pin {}, {n_synced} synced ahead of it: {nerr} error(s), {nwarn} warning(s)",
-        short(&lz.pin)
+        "lz check: {nmod} modules ({n_inherited} inherited, {n_adapted} adapted, {nred} redesigned), {n_rows} fn rows, {nx} extras, {nd} dropped; author's block in {n_author} of {nfiles} .rs; pin {}, {n_synced} synced ahead of it; {}: {nerr} error(s), {nwarn} warning(s)",
+        short(&lz.pin),
+        crate::bridges::summary(&bridges)
     );
     if errors.is_empty() {
         Ok(())
@@ -1419,6 +1441,10 @@ pub(crate) fn status(root: &Path, write: bool) -> Result<()> {
     );
     println!("EmiBSD.LZ @ {}", short(&pin));
     print!("{md}\n{core_line}");
+    println!(
+        "{}",
+        crate::bridges::summary(&crate::bridges::load_bridges(root)?)
+    );
     if write {
         for doc_rel in TABLE_DOCS {
             let path = root.join(doc_rel);
