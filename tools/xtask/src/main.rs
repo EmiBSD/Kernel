@@ -112,6 +112,11 @@
 //!                                          block, no `static mut`, the crate's `unsafe` at or
 //!                                          under hal_ceiling of unsafe-budget.toml
 //!                                          (halcheck.rs)
+//! cargo xtask abi-check                    the rules of the abi crate (sys/abi/), decision 25:
+//!                                          no loop/while/for, if/match only on nr or on
+//!                                          Ok/Err/Some/None, at most one kernel call and 40
+//!                                          lines per fn, no static with interior
+//!                                          mutability (abicheck.rs)
 //! cargo xtask symbolize --arch A [--kernel K]
 //!                                          annotate the addresses of a stack trace on stdin
 //!                                          with K's symbols (default: the debug kernel)
@@ -146,6 +151,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+mod abicheck;
 mod boot;
 mod bridges;
 mod bsdmake;
@@ -327,6 +333,7 @@ fn run(args: &[String]) -> Result<()> {
         }
         ["diff-openbsd", rest @ ..] => diffopenbsd::diff_openbsd(&root, rest),
         ["hal-check"] => halcheck::hal_check(&root),
+        ["abi-check"] => abicheck::abi_check(&root),
         ["unsafe-report", flags @ ..] => unsafereport::unsafe_report(
             &root,
             flags.contains(&"--write"),

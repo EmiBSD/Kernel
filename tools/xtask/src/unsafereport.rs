@@ -1500,6 +1500,8 @@ pub(crate) struct Scan {
     pub(crate) test_mods: Vec<String>,
     /// The shapes to replace, in its kernel code.
     pub(crate) shapes: Shapes,
+    /// Per token: it sits in test code (`#[cfg(test)]` items, test files).
+    pub(crate) test_mask: Vec<bool>,
 }
 
 /// Classify every `unsafe` in `toks` and find the test-only regions; `file_is_test` makes the
@@ -1549,6 +1551,7 @@ pub(crate) fn scan(toks: &[Tok], file_is_test: bool) -> Scan {
         sites,
         test_mods,
         shapes,
+        test_mask: in_test,
     }
 }
 
