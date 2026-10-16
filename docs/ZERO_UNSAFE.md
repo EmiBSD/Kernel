@@ -19,44 +19,38 @@ is a copy of this one or wrong.
 
 ```mermaid
 flowchart TB
-    U["0 · USERLAND of OpenBSD · binaries unchanged, ABI byte-identical"]
-
-    subgraph ABI["1 · abi · sys/abi/ · built as the loadable module abi-openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic (decision 21, xtask abi-check)"]
-        A1["syscall table: Native(fn) | Legacy"]
-        A2["bytes ⇄ the kernel's types: stat, kevent, sockaddr, kinfo_* (#[repr(C)]) · errno from Result"]
-    end
-
-    subgraph K["2 · kernel · sys/kernel/ · #![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one"]
-        K1["every decision of the OS: vm, proc, sched, signals, fd, kqueue, pipes, fs, net, drivers' logic, crypto, pf, pledge"]
-        K2["exports KernelApi: the vtable of safe functions the module calls · the kernel never names the ABI"]
-        K3["bridge traits (Vfs, Sockets, Fd, Kq, Sigio, Uio, Pages, Sleep): the kernel's only way into what has not moved · bridges.toml → 0 at N9"]
-    end
-
-    subgraph H["3 · hal · sys/hal/ · the ONLY unsafe of the system · ceiling 2,150 at N2, 2,230 at N9 · every site with a SAFETY proof · no pub unsafe fn (xtask hal-check) · Miri"]
-        H1["hardware, moved from LZ: arch/amd64, arch/arm64, machine, arch/host (1,891 + 38)"]
-        H2["runtime, written new: Mutexed, Rwlocked, TypedPool/PoolArc, MBox, KmBuf, OnceStatic, List/Tree (71), UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf"]
-        H3["registry: the syscall handler, KernelApi, the bridges' impls · the ELF loader of the module · the syscall trap"]
-    end
-
-    subgraph B["bsd · sys/ · the LZ tree, legacy · 8,906 unsafe today → the crate is deleted at N9"]
-        B1["kern, uvm, dev, net, fs…: what gets replaced, subsystem by subsystem; it boots and passes every smoke throughout"]
-        B2["implements the bridge traits and the Legacy syscall fallback; registers them in hal at boot"]
-    end
-
-    HW["4 · hardware (QEMU amd64 / arm64, real machines)"]
-
-    U -->|"syscall trap"| H3
-    H3 -->|"registered handler"| A1
-    A1 -->|"Native: one KernelApi entry per syscall"| K2
-    A1 -.->|"Legacy: the fallback registered in hal"| H3
-    H3 -.->|"calls the registered fallback"| B2
-    K1 --> H2
-    K3 -.->|"dyn Trait in OnceStatic, registered"| B2
-    B1 -->|"calls down"| K1
-    B1 -->|"calls down"| H2
-    H1 --> HW
-    H2 --> H1
+    L0["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
+    L1["1 · abi · sys/abi/ · the loadable module abi-openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
+    L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · exports KernelApi (the vtable the module calls)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
+    L3["3 · hal · sys/hal/ · the ONLY unsafe · ceiling 2,150 (N2) → 2,230 (N9)<br/>hardware moved from LZ: arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, TypedPool/PoolArc, MBox, KmBuf, OnceStatic, List/Tree, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the ELF loader of the module, the syscall trap"]
+    L4["4 · hardware · QEMU amd64 / arm64, real machines"]
+    L0 -->|"syscall"| L1
+    L1 -->|"KernelApi, one entry per syscall"| L2
+    L2 -->|"safe API"| L3
+    L3 --> L4
+    B["bsd · sys/ · the LZ tree, legacy · 8,906 unsafe today → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers in hal at boot: the Legacy syscall fallback, the bridge impls"]
+    B -->|"calls down"| L2
+    B -->|"calls down"| L3
 ```
+
+The arrows go down only. What goes up (the module's syscall handler, `KernelApi`, the bridge
+implementations, the `Legacy` fallback) is never a dependency: it is a registration in `hal`'s
+registry at boot, and this is the whole of it:
+
+```mermaid
+sequenceDiagram
+    participant HAL as hal
+    participant K as kernel
+    participant M as abi-openbsd.ko
+    participant B as bsd (until N9)
+    HAL->>HAL: init hardware
+    K->>HAL: register KernelApi
+    B->>HAL: register the Legacy syscall fallback and the bridge impls (dyn Trait in OnceStatic)
+    HAL->>M: load the .ko (ELF loader), call abi_init(KernelApi)
+    M->>HAL: register the syscall handler
+    Note over HAL: from here every syscall trap → the handler → Native (KernelApi) or Legacy (the fallback)
+```
+
 
 Dependencies, one direction: `bsd → kernel → hal`; `abi → hal` and `abi → KernelApi` (the
 vtable `hal` hands the module at load). Nothing names `abi`; `kernel` and `abi` never name
