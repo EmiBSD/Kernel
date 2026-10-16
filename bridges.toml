@@ -38,3 +38,10 @@ paid_by = "N2.2"
 trait = "hal::cpu::CpuId"
 for = ["sys/hal/cpu.rs", "sys/hal/mutex.rs", "sys/hal/percpu.rs"]
 paid_by = "N2.2"
+
+# bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
+# _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs.
+[[bridge]]
+trait = "hal::sleep::Sleep"
+for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
+paid_by = "N4"

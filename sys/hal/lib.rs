@@ -38,9 +38,10 @@ pub mod mutex;
 pub mod once;
 pub mod percpu;
 pub mod rbtree;
-
+pub mod refcnt;
+pub mod rwlock;
+pub mod sleep;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tree;
-
 /* </CODE> */

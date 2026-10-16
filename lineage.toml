@@ -6928,3 +6928,19 @@ rust = "sys/hal/percpu.rs"
 lz = ["sys/kern/subr_percpu.rs", "sys/sys/percpu.rs"]
 status = "redesigned"
 notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the legacy cpumem stays in bsd for its users and is deleted with the last one (N9)"
+
+[[extra]]
+rust = "sys/hal/sleep.rs"
+reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; docs/ZERO_UNSAFE.md 0.1"
+
+[[module]]
+rust = "sys/hal/rwlock.rs"
+lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs"]
+status = "redesigned"
+notes = "N2.3: Rwlocked<T>, rw_enter(9)'s behaviour re-expressed as a lock that owns its data, with rwsleep on the guard; the legacy Rwlock and kern_rwlock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9)"
+
+[[module]]
+rust = "sys/hal/refcnt.rs"
+lz = ["sys/sys/refcnt.rs", "sys/kern/kern_synch.rs"]
+status = "redesigned"
+notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and its functions in kern_synch.rs stay in bsd for their users and are deleted with the last one"

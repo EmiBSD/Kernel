@@ -43,6 +43,7 @@
 use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::once::OnceStatic;
+use crate::sleep::Sleep;
 
 /// A second registration of a bridge, which keeps the first; names the trait.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,6 +82,14 @@ bridge!(
     register_cpu_id,
     cpu_id
 );
+
+bridge!(
+    /// Registers the sleep queues (`sys/kern/kern_synch.rs`). Paid by N4.
+    SLEEP: Sleep,
+    register_sleep,
+    sleep
+);
+
 /* </CODE> */
 
 /* <TESTS> */
