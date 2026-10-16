@@ -2863,6 +2863,71 @@ pub(crate) mod tests {
         closef(fp, p).unwrap();
     }
 
+    /// `doppoll` without the copies and the limit check (which need a `curproc`): register
+    /// the pollfds on the thread's poll kqueue, collect what is ready without sleeping.
+    pub(crate) fn poll_once(p: &Proc, pl: &mut [crate::sys::poll::Pollfd]) -> usize {
+        let nfds = pl.len() as u32;
+        assert_eq!(kqpoll_init(p, nfds), Ok(()));
+        let (mut nevents, mut ncollected) = (0, 0);
+        crate::kern::sys_generic::ppollregister(p, pl, &mut nevents, &mut ncollected);
+        if nevents > 0 {
+            let scan = crate::sys::event::KqueueScanState::new();
+            // SAFETY: `scan` stays in place until `kqueue_scan_finish`.
+            unsafe { kqueue_scan_setup(&scan, p.kq()) };
+            let mut kev = [Kevent::default(); crate::sys::eventvar::KQ_NEVENTS];
+            let mut ts = Timespec::new(0, 0);
+            let mut error = Ok(());
+            let count = nevents.min(crate::sys::eventvar::KQ_NEVENTS);
+            let ready = kqueue_scan(&scan, count, &mut kev, Some(&mut ts), p, &mut error);
+            assert_eq!(error, Ok(()));
+            for k in &kev[..ready] {
+                ncollected += crate::kern::sys_generic::ppollcollect(p, k, pl);
+            }
+            kqueue_scan_finish(&scan);
+        }
+        kqpoll_done(p, nfds);
+        ncollected
+    }
+
+    /// `dopselect` likewise, over one word of each fd set: the three output words.
+    pub(crate) fn select_once(
+        p: &Proc,
+        nd: usize,
+        r: crate::sys::select::FdMask,
+        w: crate::sys::select::FdMask,
+    ) -> Result<[crate::sys::select::FdMask; 3], Errno> {
+        assert_eq!(kqpoll_init(p, nd as u32), Ok(()));
+        let pibits = [r, w, 0];
+        let mut pobits = [0 as crate::sys::select::FdMask; 3];
+        let mut ncollected = 0;
+        let result =
+            crate::kern::sys_generic::pselregister(p, &pibits, 1, nd).and_then(|nevents| {
+                let scan = crate::sys::event::KqueueScanState::new();
+                // SAFETY: `scan` stays in place until `kqueue_scan_finish`.
+                unsafe { kqueue_scan_setup(&scan, p.kq()) };
+                let mut kev = [Kevent::default(); crate::sys::eventvar::KQ_NEVENTS];
+                let mut ts = Timespec::new(0, 0);
+                let mut error = Ok(());
+                let count = nevents.min(crate::sys::eventvar::KQ_NEVENTS);
+                let ready = kqueue_scan(&scan, count, &mut kev, Some(&mut ts), p, &mut error);
+                for k in &kev[..ready] {
+                    if error.is_ok() {
+                        error = crate::kern::sys_generic::pselcollect(
+                            p,
+                            k,
+                            &mut pobits,
+                            1,
+                            &mut ncollected,
+                        );
+                    }
+                }
+                kqueue_scan_finish(&scan);
+                error
+            });
+        kqpoll_done(p, nd as u32);
+        result.map(|()| pobits)
+    }
+
     /// The test object: a klist and whether its event is ready.
     static TEST_KLIST: Klist = Klist::new();
     static TEST_READY: TestFlag = TestFlag(Cell::new(false));

@@ -2052,7 +2052,10 @@ mod tests {
         assert_eq!(pipes.sys_pipe2(fdp, O_CLOEXEC | FNONBLOCK, &files), Ok(()));
         let mut expect = 3i32.to_ne_bytes().to_vec();
         expect.extend_from_slice(&4i32.to_ne_bytes());
-        assert_eq!(testutil::user_bytes(testutil::USER_BASE + 64, 8), expect);
+        assert_eq!(
+            testutil::user_bytes(testutil::USER_BASE + 64, 8),
+            Some(expect)
+        );
         {
             let ends = files.ends.lock().unwrap();
             assert_eq!(ends.len(), 2);

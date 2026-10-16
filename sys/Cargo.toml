@@ -64,5 +64,10 @@ kernel = { path = "kernel" }
 libkern.workspace = true
 libz.workspace = true
 
+# The host tests register the kernel crate's doubles of hal's bridges (never the real ones):
+# the same dependency with its `doubles` feature, for tests only.
+[dev-dependencies]
+kernel = { path = "kernel", features = ["doubles"] }
+
 [lints]
 workspace = true

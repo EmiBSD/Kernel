@@ -24,12 +24,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-// The host tests link std; a kernel image never does.
-#[cfg(test)]
+// The host tests (and the doubles other crates' tests use) link std; a kernel image never
+// does.
+#[cfg(any(test, feature = "doubles"))]
 extern crate std;
 
 pub mod api;
 pub mod pipe;
-#[cfg(test)]
-mod testutil;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testutil;
 /* </CODE> */

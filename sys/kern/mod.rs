@@ -74,6 +74,8 @@ pub mod kern_timeout;
 pub mod kern_unveil;
 pub mod kern_watchdog;
 pub mod kern_xxx;
+#[forbid(unsafe_code)]
+pub mod pipe_glue;
 #[cfg(feature = "alloc")]
 pub mod rust_alloc;
 pub mod sched_bsd;
@@ -96,7 +98,6 @@ pub mod subr_userconf;
 pub mod subr_xxx;
 pub mod sys_futex;
 pub mod sys_generic;
-pub mod sys_pipe;
 pub mod sys_socket;
 #[forbid(unsafe_code)]
 pub mod syscalls;

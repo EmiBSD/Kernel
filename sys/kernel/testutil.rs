@@ -17,12 +17,13 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The kernel crate's host test doubles of `hal`'s bridges (`cfg(test)` only, declared so in
-//! `lib.rs`), in safe code: this crate forbids `unsafe`, its tests included.
+//! The kernel crate's host test doubles of `hal`'s bridges (`cfg(test)`, or feature `doubles`
+//! for the tests of a crate that uses the kernel's pieces, never a kernel image; declared so
+//! in `lib.rs`), in safe code: this crate forbids `unsafe`, its tests included.
 //!
-//! `hal` keeps its own doubles crate-private (`sys/hal/testutil.rs`); this crate's tests run
-//! in a process of their own, so they register these instead, once, the first time a test
-//! calls [`install`]. What they keep per test thread (the running "process" and "CPU"
+//! `hal` keeps its own doubles crate-private (`sys/hal/testutil.rs`); this crate's tests, and
+//! `bsd`'s (`sys/kern/pipe_glue.rs`), run in a process of their own, so they register these
+//! instead (never the real bridges), once, the first time a test calls [`install`]. What they keep per test thread (the running "process" and "CPU"
 //! words, the pending sleep) lets two test threads contend for a lock and sleep and wake each
 //! other as two processes do.
 //!
@@ -63,9 +64,9 @@ use hal::user::UserCopy;
 const TEST_PAGE: usize = 4096;
 
 /// Where the user address space of the double starts.
-pub(crate) const USER_BASE: usize = 0x1000_0000;
+pub const USER_BASE: usize = 0x1000_0000;
 /// Its size.
-pub(crate) const USER_LEN: usize = 64 * 1024;
+pub const USER_LEN: usize = 64 * 1024;
 
 /// One page of the doubles' memory: page-aligned, so a run of them is too.
 #[derive(Clone, Copy)]
@@ -344,7 +345,7 @@ static TEST_POOLS: TestPools = TestPools;
 static TEST_USER: TestUser = TestUser;
 
 /// Registers every double, once per process.
-pub(crate) fn install() {
+pub fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = bridges::register_intr_level(&TEST_INTR);
@@ -356,14 +357,14 @@ pub(crate) fn install() {
     });
 }
 
-/// `len` bytes of the double's user memory at `uaddr`.
-pub(crate) fn user_bytes(uaddr: usize, len: usize) -> Vec<u8> {
-    let r = user_range(uaddr, len).unwrap();
-    lock(&USER)[r].to_vec()
+/// `len` bytes of the double's user memory at `uaddr`, `None` outside it.
+pub fn user_bytes(uaddr: usize, len: usize) -> Option<Vec<u8>> {
+    let r = user_range(uaddr, len).ok()?;
+    Some(lock(&USER)[r].to_vec())
 }
 
 /// The bytes of pages this thread holds, as the page double counts them.
-pub(crate) fn pages_out() -> i64 {
+pub fn pages_out() -> i64 {
     PAGES_OUT.with(Cell::get)
 }
 /* </CODE> */

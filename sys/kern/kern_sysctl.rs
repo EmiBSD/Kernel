@@ -160,6 +160,7 @@ use crate::kern::kern_synch::{refcnt_rele_wake, refcnt_take};
 use crate::kern::kern_tc::{microboottime, nanoboottime, nanotime, sysctl_tc, tc_setrealtimeclock};
 use crate::kern::kern_timeout::timeout_sysctl;
 use crate::kern::kern_watchdog::sysctl_wdog;
+use crate::kern::pipe_glue::pipe_kinfo;
 use crate::kern::sched_bsd;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
@@ -167,7 +168,6 @@ use crate::kern::subr_evcount::evcount_sysctl;
 use crate::kern::subr_log::{LOG_MTX, consbufp, msgbufp};
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
-use crate::kern::sys_pipe::fp_pipe;
 use crate::kern::sys_socket::fp_socket;
 use crate::kern::tty::{TTY_COUNT, sysctl_tty};
 use crate::kern::uipc_mbuf::{MBS_NCOUNTERS, mbstat, nmbclust_update};
@@ -1630,11 +1630,14 @@ pub fn fill_file(
             }
         }
         (DTYPE_PIPE, Some(fp)) => {
-            let pipe = fp_pipe(fp);
-            if show_pointers {
-                kf.pipe_peer = ptrtoint64(pipe.pipe_peer.get());
+            // The pipe's own address is `f_data`'s column (its `f_data` stays null).
+            if let Some(pipe) = pipe_kinfo(fp) {
+                if show_pointers {
+                    kf.f_data = pipe.addr as u64;
+                    kf.pipe_peer = pipe.peer as u64;
+                }
+                kf.pipe_state = pipe.state;
             }
-            kf.pipe_state = pipe.pipe_state.get();
         }
         (DTYPE_KQUEUE, Some(fp)) => {
             let kqi = fp_kqueue(fp);
