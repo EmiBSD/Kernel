@@ -35,10 +35,16 @@
 //!   records it and `sleep_finish` waits on one condition variable until it moves (so a wakeup
 //!   between the two is never lost, as with the C's sleep queue lock) or the timeout
 //!   (`EWOULDBLOCK`); no signals.
+//! - `PageMemory`: zeroed, page-aligned allocations of the host's allocator, the bytes out
+//!   counted per thread.
+//! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`.
 
+use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
+use std::boxed::Box;
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant};
 
@@ -46,6 +52,8 @@ use crate::bridges;
 use crate::cpu::CpuId;
 use crate::errno::Errno;
 use crate::intr::IntrLevel;
+use crate::kmbuf::{PageKind, PageMemory};
+use crate::pool::{PoolBackend, RawPool};
 use crate::sleep::{INFSLP, Sleep};
 
 std::thread_local! {
@@ -56,7 +64,11 @@ std::thread_local! {
     static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    static PAGES_OUT: Cell<isize> = const { Cell::new(0) };
 }
+
+/// The page size of the doubles.
+const TEST_PAGE: usize = 4096;
 
 /// The generation number of every wait channel a wakeup touched.
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
@@ -200,9 +212,92 @@ impl Sleep for TestSleep {
     }
 }
 
+/// The kernel map double.
+struct TestPages;
+
+// SAFETY: `alloc` returns the host allocator's zeroed, page-aligned block of `len` bytes, owned
+// by the caller alone until `free` gives it back with the same layout; `page_size` is fixed.
+unsafe impl PageMemory for TestPages {
+    fn alloc(&self, len: usize, _kind: PageKind, _wait: bool) -> Option<NonNull<u8>> {
+        if len == 0 {
+            return None;
+        }
+        let layout = Layout::from_size_align(len, TEST_PAGE).ok()?;
+        // SAFETY: the layout's size is not 0.
+        let p = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+        PAGES_OUT.with(|c| c.set(c.get() + len as isize));
+        Some(p)
+    }
+
+    fn free(&self, ptr: NonNull<u8>, len: usize, _kind: PageKind) {
+        if let Ok(layout) = Layout::from_size_align(len, TEST_PAGE) {
+            // SAFETY: `ptr` came from `alloc` with this very layout (the trait's contract on
+            // the caller, `KmBuf`), once.
+            unsafe { dealloc(ptr.as_ptr(), layout) };
+        }
+        PAGES_OUT.with(|c| c.set(c.get() - len as isize));
+    }
+
+    fn page_size(&self) -> usize {
+        TEST_PAGE
+    }
+}
+
+/// One pool of the pool double.
+struct TestPool {
+    layout: Layout,
+    nout: AtomicU64,
+}
+
+// SAFETY: `get` returns the host allocator's block of the pool's layout (the size and
+// alignment it was created with), owned by the caller until `put` gives it back.
+unsafe impl RawPool for TestPool {
+    fn get(&self, _flags: i32) -> Option<NonNull<u8>> {
+        // SAFETY: the layout's size is not 0 (`create` makes it at least 1).
+        let p = NonNull::new(unsafe { alloc(self.layout) })?;
+        self.nout.fetch_add(1, Ordering::Relaxed);
+        Some(p)
+    }
+
+    fn put(&self, item: NonNull<u8>) {
+        // SAFETY: `item` came from `get` with this pool's layout (the trait's contract on the
+        // caller, `PoolArc`), once.
+        unsafe { dealloc(item.as_ptr(), self.layout) };
+        self.nout.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn nout(&self) -> u64 {
+        self.nout.load(Ordering::Relaxed)
+    }
+}
+
+/// The pool allocator double.
+struct TestPools;
+
+// SAFETY: every pool `create` returns is a `TestPool` of the size and alignment asked for,
+// leaked so it lives for ever.
+unsafe impl PoolBackend for TestPools {
+    fn create(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        _wchan: &'static str,
+    ) -> Option<&'static dyn RawPool> {
+        let layout = Layout::from_size_align(size.max(1), align).ok()?;
+        Some(Box::leak(Box::new(TestPool {
+            layout,
+            nout: AtomicU64::new(0),
+        })))
+    }
+}
+
 static TEST_INTR: TestIntr = TestIntr;
 static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
+static TEST_PAGES: TestPages = TestPages;
+static TEST_POOLS: TestPools = TestPools;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -211,7 +306,14 @@ pub(crate) fn install() {
         let _ = bridges::register_intr_level(&TEST_INTR);
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
+        let _ = bridges::register_page_memory(&TEST_PAGES);
+        let _ = bridges::register_pool_backend(&TEST_POOLS);
     });
+}
+
+/// The bytes of kernel pages this thread holds, as the double counts them.
+pub(crate) fn pages_out() -> isize {
+    PAGES_OUT.with(Cell::get)
 }
 
 /// This thread's interrupt level, as the double keeps it.

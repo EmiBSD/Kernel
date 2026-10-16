@@ -6944,3 +6944,11 @@ rust = "sys/hal/refcnt.rs"
 lz = ["sys/sys/refcnt.rs", "sys/kern/kern_synch.rs"]
 status = "redesigned"
 notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and its functions in kern_synch.rs stay in bsd for their users and are deleted with the last one"
+
+[[extra]]
+rust = "sys/hal/kmbuf.rs"
+reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory bridge; docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/pool.rs"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; docs/ZERO_UNSAFE.md 0.1, decision 10"

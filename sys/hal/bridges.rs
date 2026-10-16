@@ -42,7 +42,9 @@
 
 use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
+use crate::kmbuf::PageMemory;
 use crate::once::OnceStatic;
+use crate::pool::PoolBackend;
 use crate::sleep::Sleep;
 
 /// A second registration of a bridge, which keeps the first; names the trait.
@@ -88,6 +90,22 @@ bridge!(
     SLEEP: Sleep,
     register_sleep,
     sleep
+);
+
+bridge!(
+    /// Registers the kernel map's pages (`km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`); the
+    /// implementation vouches for `PageMemory`'s contract with its `unsafe impl`. Paid by N3.
+    PAGE_MEMORY: PageMemory,
+    register_page_memory,
+    page_memory
+);
+
+bridge!(
+    /// Registers `pool(9)` (`sys/kern/subr_pool.rs`); the implementation vouches for
+    /// `PoolBackend`'s contract with its `unsafe impl`. Paid by N9.
+    POOL_BACKEND: PoolBackend,
+    register_pool_backend,
+    pool_backend
 );
 
 /* </CODE> */
