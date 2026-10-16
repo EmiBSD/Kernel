@@ -207,7 +207,8 @@ status = "inherited"
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
-rust = "sys/arch/amd64/include/_types.rs"
+rust = "sys/hal/arch/amd64/include/_types.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/_types.rs"]
 status = "inherited"
 
@@ -256,12 +257,14 @@ status = "inherited"
 notes = "M4: db_regs_t, PC_REGS/SET_PC_REGS, BKPT_*, SSF_*, FIXUP_PC_AFTER_BREAK, db_clear/set_single_step, IS_BREAKPOINT_TRAP/IS_WATCHPOINT_TRAP; M11c: db_expr_t (DbExpr = i64, and DbAddr = usize), I_CALL/I_CALLI/I_RET/I_IRET and the inst_* classifiers; DB_MACHINE_COMMANDS is the machine table in db_interface.rs; DDB_STATE_NOT_RUNNING/RUNNING/EXITING; the ddb-wide contract is sys/machine/db_machdep.rs"
 
 [[module]]
-rust = "sys/arch/amd64/include/disklabel.rs"
+rust = "sys/hal/arch/amd64/include/disklabel.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/disklabel.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/efifbvar.rs"
+rust = "sys/hal/arch/amd64/include/efifbvar.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/efifbvar.rs"]
 status = "inherited"
 
@@ -278,7 +281,8 @@ license = "none"
 notes = "M5: fxsave64, xstate_hdr, savefpu (align 64) and the initial control words; fpuinit/fputrap/fpusave/xrstor_*/xsetbv_user and xsave_mask are M6; M8: fpu_cleandata, fpureset, the locore.S routine declarations and the fninit/fwait/fxsave/ldmxcsr/fldcw macros (fxsave takes the aligned savefpu)"
 
 [[module]]
-rust = "sys/arch/amd64/include/frame.rs"
+rust = "sys/hal/arch/amd64/include/frame.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/frame.rs"]
 status = "inherited"
 notes = "M2: struct callframe; M4: struct trapframe, intrframe, iretq_frame, FRAMESIZE; switchframe is M5; M5-b2: struct switchframe"
@@ -300,13 +304,15 @@ status = "inherited"
 notes = "M4: the registers and bits lapic.c's boot path uses (ID, version, TPR, EOI, SVR, LVTs, timer, delivery modes, LAPIC_BASE, MSR_X2APIC_BASE); the ICR fields, ESR, LDR/DFR, ISR/TMR/IRR and the x2APIC MSR map are M5; M11a: LAPIC_ICRLO and LAPIC_ICRHI for the IPIs (reference test with the ICR fields); ESR, LDR/DFR, ISR/TMR/IRR and the rest of the x2APIC MSR map come with their users; M14: MSR_X2APIC_ID, X2APIC_ID_MASK (mptramp.S)"
 
 [[module]]
-rust = "sys/arch/amd64/include/i82489var.rs"
+rust = "sys/hal/arch/amd64/include/i82489var.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/i82489var.rs"]
 status = "inherited"
 notes = "M4: the LAPIC vector numbers; local_apic, lapic_tpr, the lapic_readreg/writereg pointers and the prototypes are amd64/lapic.rs; the IPI and timer stubs are M5"
 
 [[module]]
-rust = "sys/arch/amd64/include/i8259.rs"
+rust = "sys/hal/arch/amd64/include/i8259.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/i8259.rs"]
 status = "inherited"
 
@@ -352,13 +358,15 @@ status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/arch/amd64/include/mplock.rs"
+rust = "sys/hal/arch/amd64/include/mplock.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/mplock.rs"]
 status = "inherited"
 license = "public domain"
 
 [[module]]
-rust = "sys/arch/amd64/include/mutex.rs"
+rust = "sys/hal/arch/amd64/include/mutex.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/mutex.rs"]
 status = "inherited"
 license = "none"
@@ -375,7 +383,8 @@ status = "inherited"
 notes = "M5: struct pcb (Cells; the save area an UnsafeCell), copy_from for cpu_fork; reset_segs is M6"
 
 [[module]]
-rust = "sys/arch/amd64/include/pci_machdep.rs"
+rust = "sys/hal/arch/amd64/include/pci_machdep.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/pci_machdep.rs"]
 status = "inherited"
 
@@ -398,7 +407,8 @@ status = "inherited"
 notes = "struct pmap (bootstrap subset), pv_entry, vm_page_md, the PML4 slot layout, the recursive mapping (PTE_BASE/L*_BASE, pl*_i, kvtopte, ptp_va2o), the nkptp/nbpd initializers; pmap_page_protect/pmap_protect with M6; M7a-3b: pv_mtx in vm_page_md, the inline frontends pmap_page_protect/pmap_protect and the attribute macros (pmap_clear_modify/clear_reference/is_modified/is_referenced); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap"
 
 [[module]]
-rust = "sys/arch/amd64/include/proc.rs"
+rust = "sys/hal/arch/amd64/include/proc.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/proc.rs"]
 status = "inherited"
 
@@ -436,12 +446,14 @@ status = "inherited"
 notes = "CR0/CR3 bits, MSR_EFER with its flags, the syscall and segment-base MSRs (MSR_STAR/LSTAR/CSTAR/SFMASK/FSBASE/GSBASE/KERNELGSBASE), MSR_APICBASE and its APICBASE_* bits; the CPUID feature words, the other MSRs and the MTRR/PAT definitions come with CPU identification (M4-b2); M8: CR4_PSE/PAE/PGE/OSFXSR/OSXMMEXCPT/UMIP/PCIDE/OSXSAVE/SMEP/SMAP/PKE and CR4_DEFAULT (reference test); TSC: CPUID_TSC, CPUIDECX_HV, SEFF0EBX_TSC_ADJUST, CPUID_NXE, CPUID_RDTSCP, CPUIDEDX_ITSC, CPUIDEAX_VERID, CPUIDEDX_NUM_FC, MSR_TSC_ADJUST, MSR_BIOS_SIGN, the MSR_PERF_FIXED_CTR*/MSR_PERF_GLOBAL_* bits cpu_freq_ctr uses, MSR_PATCH_LEVEL, MSR_HWCR/HWCR_TSCFREQSEL, MSR_PSTATEDEF/PSTATEDEF_EN; CPUID/CPUID_LEAF are the functions cpuid/cpuid_leaf over __cpuid_count; M11a: CR0_NE, CR0_WP, CR0_DEFAULT (an application processor's CR0, as mptramp.S loads it); M14: CPUID_APIC (mp_cpu_start), MSR_SEV_GHCB (locore0.S's #VC termination); M16e: CPUIDECX_MWAIT, TPM_SENSOR, TPM_ARAT, TPM_PTS; M16d: CPUIDECX_RDRAND, SEFF0EBX_RDSEED"
 
 [[module]]
-rust = "sys/arch/amd64/include/tcb.rs"
+rust = "sys/hal/arch/amd64/include/tcb.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/tcb.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/timetc.rs"
+rust = "sys/hal/arch/amd64/include/timetc.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/timetc.rs"]
 status = "inherited"
 
@@ -451,7 +463,8 @@ lz = ["sys/arch/amd64/include/trap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/tss.rs"
+rust = "sys/hal/arch/amd64/include/tss.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/tss.rs"]
 status = "inherited"
 
@@ -805,7 +818,8 @@ lz = ["sys/arch/arm64/dev/smmuvar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/_types.rs"
+rust = "sys/hal/arch/arm64/include/_types.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/_types.rs"]
 status = "inherited"
 
@@ -839,7 +853,8 @@ status = "inherited"
 notes = "M4: db_regs_t, PC_REGS/SET_PC_REGS, BKPT_*, db_clear/set_single_step, IS_BREAKPOINT_TRAP/IS_WATCHPOINT_TRAP; M11c: db_expr_t (DbExpr = i64, and DbAddr = usize), the inst_* classifiers (never true, as the C's 'ALL BROKEN' macros); DB_MACHINE_COMMANDS is the machine table in db_interface.rs; DDB_STATE_NOT_RUNNING/RUNNING/EXITING; the ddb-wide contract is sys/machine/db_machdep.rs"
 
 [[module]]
-rust = "sys/arch/arm64/include/disklabel.rs"
+rust = "sys/hal/arch/arm64/include/disklabel.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/disklabel.rs"]
 status = "inherited"
 
@@ -849,7 +864,8 @@ lz = ["sys/arch/arm64/include/efivar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/elf.rs"
+rust = "sys/hal/arch/arm64/include/elf.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/elf.rs"]
 status = "inherited"
 
@@ -883,13 +899,15 @@ status = "inherited"
 notes = "M3: the levels; M4: IST_* (with the arm64 extra trigger types), SOFTINTR_XCALL, struct machine_intr_handle, struct arm_intr_func, struct interrupt_controller (ic_establish's name is &str, the cookie a *const ()); the spl*() helpers are the machine::intr contract; ARM_IPI_* with MULTIPROCESSOR (M5); M11a: ARM_IPI_NOP/DDB/HALT/XCALL; ; M12: ic_establish_msi in struct interrupt_controller (IcEstablishMsiFn, addr/data as &mut u64)"
 
 [[module]]
-rust = "sys/arch/arm64/include/mplock.rs"
+rust = "sys/hal/arch/arm64/include/mplock.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/mplock.rs"]
 status = "inherited"
 license = "public domain"
 
 [[module]]
-rust = "sys/arch/arm64/include/mutex.rs"
+rust = "sys/hal/arch/arm64/include/mutex.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/mutex.rs"]
 status = "inherited"
 license = "none"
@@ -916,7 +934,8 @@ status = "inherited"
 notes = "struct pmap (kernel subset with pm_vp as an enum of the union), vm_page_md, VP_IDX* and cache/pv flags; pointer authentication keys with M6; M7a-3b: pv_mtx in vm_page_md; M11a: pm_asid is an AtomicU64 (pmap_rollover_asid rewrites other CPUs' active pmaps); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap; pm_refs is an AtomicI32 (atomic_inc_int/atomic_dec_int_nv)"
 
 [[module]]
-rust = "sys/arch/arm64/include/proc.rs"
+rust = "sys/hal/arch/arm64/include/proc.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/proc.rs"]
 status = "inherited"
 
@@ -927,7 +946,8 @@ status = "inherited"
 notes = "descriptor types and attribute bits; PTE_ATTR_* follow the bootloader's MAIR_EL1 layout (0 WB, 1 nGnRE, 2 nGnRnE, 3 CI, 4 WT) until the kernel owns its page tables (deviation in the module)"
 
 [[module]]
-rust = "sys/arch/arm64/include/reg.rs"
+rust = "sys/hal/arch/arm64/include/reg.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/reg.rs"]
 status = "inherited"
 
@@ -947,7 +967,8 @@ lz = ["sys/arch/arm64/include/tcb.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/timetc.rs"
+rust = "sys/hal/arch/arm64/include/timetc.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/timetc.rs"]
 status = "inherited"
 
@@ -5856,12 +5877,14 @@ lz = ["sys/sys/domain.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/endian.rs"
+rust = "sys/hal/sys/endian.rs"
+crate = "hal"
 lz = ["sys/sys/endian.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/errno.rs"
+rust = "sys/hal/sys/errno.rs"
+crate = "hal"
 lz = ["sys/sys/errno.rs"]
 status = "inherited"
 
@@ -5887,7 +5910,8 @@ status = "inherited"
 notes = "M8: ps_strings (to_bytes), exec_vmcmd (ev_proc an enum of the five vmcmds, ev_vp an ExecFile: a vnode or the boot module image), exec_vmcmd_set as a Vec (NEW_VMCMD2 = push with vref, kill_vmcmds = kill with vrele), exec_package with every member (ep_hdr an owned exec_maxhdrsz buffer, ep_interp a namei_pool NameiBuf, ep_pins, ep_execpath; ep_ndp is check_exec's argument, ep_image the module stand-in), execsw, exec_maxhdrsz as a const fn, EXEC_*, VMCMD_*, ELF_RANDOMIZE_LIMIT; the a.out struct exec and MID_* are not used; M14: exec_makecmds_fcn takes the nameidata (ep_ndp) as its third argument, exec_maxhdrsz is max(EXEC_SCRIPT_HDRSZ, sizeof(Elf_Ehdr)), ep_fa holds exec_script.c's fake args"
 
 [[module]]
-rust = "sys/sys/exec_elf.rs"
+rust = "sys/hal/sys/exec_elf.rs"
+crate = "hal"
 lz = ["sys/sys/exec_elf.rs"]
 status = "inherited"
 notes = "M6-b: Elf64 Ehdr/Phdr/Note, EI_*, ELFMAG, ELFCLASS64/ELFDATA2LSB/EV_CURRENT/ELFOSABI_OPENBSD, ET_*, EM_AMD64/EM_AARCH64, PT_* (with the OpenBSD ones), PF_*, NT_OPENBSD_*, elfround, IS_ELF/ELF_TRUNC/ELF_ROUND, ELF_MAX_VALID_PHDR; sections, symbols, relocations, dynamic entries, AuxInfo and the 32-bit types are M7; M8: Elf64_Dyn, DT_NULL/DT_TEXTREL, Elf64_Shalf, Aux64Info (to_bytes; the hole after au_id is a named zero field), the AUX_* ids in aux_id, ELF_AUX_ENTRIES, ELF_AUX_WORDS"
@@ -5929,7 +5953,8 @@ lz = ["sys/sys/fusebuf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/futex.rs"
+rust = "sys/hal/sys/futex.rs"
+crate = "hal"
 lz = ["sys/sys/futex.rs"]
 status = "inherited"
 
@@ -5939,7 +5964,8 @@ lz = ["sys/sys/gpio.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/intrmap.rs"
+rust = "sys/hal/sys/intrmap.rs"
+crate = "hal"
 lz = ["sys/sys/intrmap.rs"]
 status = "inherited"
 
@@ -5954,13 +5980,15 @@ lz = ["sys/sys/ioctl.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/kernel.rs"
+rust = "sys/hal/sys/kernel.rs"
+crate = "hal"
 lz = ["sys/sys/kernel.rs"]
 status = "inherited"
 notes = "M2: HZ only; hostname/hostnamelen/domainname/domainnamelen/hostid are defined in kern_sysctl.rs (where the C defines them), the extern ints live where they are defined (conf/param.c, kern_clock.c)"
 
 [[module]]
-rust = "sys/sys/limits.rs"
+rust = "sys/hal/sys/limits.rs"
+crate = "hal"
 lz = ["sys/sys/limits.rs"]
 status = "inherited"
 notes = "M6-b: the integer limits, SSIZE_MAX and SIZE_MAX (machine/limits.h of both targets, LP64, given here); the FLT_* legacy values are not kernel material"
@@ -5987,7 +6015,8 @@ lz = ["sys/sys/mbuf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/mman.rs"
+rust = "sys/hal/sys/mman.rs"
+crate = "hal"
 lz = ["sys/sys/mman.rs"]
 status = "inherited"
 notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL_FUTURE only; the mmap(2) family prototypes and the remaining MAP_* flags come with uvm_mmap.c (M7a-3); M7a-3b: MAP_SHARED/FIXED/__MAP_NOREPLACE/__MAP_NOFAULT/STACK/CONCEAL, MAP_FLAGMASK, the deprecated MAP_* aliases, MS_*"
@@ -6029,7 +6058,8 @@ lz = ["sys/sys/param.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/pclock.rs"
+rust = "sys/hal/sys/pclock.rs"
+crate = "hal"
 lz = ["sys/sys/pclock.rs"]
 status = "inherited"
 
@@ -6044,7 +6074,8 @@ lz = ["sys/sys/pipe.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/pledge.rs"
+rust = "sys/hal/sys/pledge.rs"
+crate = "hal"
 lz = ["sys/sys/pledge.rs"]
 status = "inherited"
 
@@ -6075,7 +6106,8 @@ lz = ["sys/sys/queue.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/sys/reboot.rs"
+rust = "sys/hal/sys/reboot.rs"
+crate = "hal"
 lz = ["sys/sys/reboot.rs"]
 status = "inherited"
 
@@ -6113,7 +6145,8 @@ status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/sys/select.rs"
+rust = "sys/hal/sys/select.rs"
+crate = "hal"
 lz = ["sys/sys/select.rs"]
 status = "inherited"
 
@@ -6171,7 +6204,8 @@ status = "inherited"
 notes = "M7b: the 106 socket and interface ioctls whose argument structures are ported (ifreq, ifconf, ifaliasreq, ifmediareq, if_sffpage, if_laddrreq, if_clonereq, ifgroupreq, ifkalivereq, if_afreq, if_parent, int); SIOCBRDG* wait for net/if_bridge.h, SIOCGETVIFCNT/SIOCGETSGCNT for netinet/ip_mroute.h"
 
 [[module]]
-rust = "sys/sys/softintr.rs"
+rust = "sys/hal/sys/softintr.rs"
+crate = "hal"
 lz = ["sys/sys/softintr.rs"]
 status = "inherited"
 
@@ -6191,7 +6225,8 @@ lz = ["sys/sys/swap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/syscall.rs"
+rust = "sys/hal/sys/syscall.rs"
+crate = "hal"
 lz = ["sys/sys/syscall.rs"]
 status = "inherited"
 license = "none"
@@ -6282,7 +6317,8 @@ lz = ["sys/sys/ttydefaults.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/types.rs"
+rust = "sys/hal/sys/types.rs"
+crate = "hal"
 lz = ["sys/sys/types.rs"]
 status = "inherited"
 
@@ -6302,7 +6338,8 @@ lz = ["sys/sys/un.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/unistd.rs"
+rust = "sys/hal/sys/unistd.rs"
+crate = "hal"
 lz = ["sys/sys/unistd.rs"]
 status = "inherited"
 
@@ -6317,12 +6354,14 @@ lz = ["sys/sys/user.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/uuid.rs"
+rust = "sys/hal/sys/uuid.rs"
+crate = "hal"
 lz = ["sys/sys/uuid.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/vmmeter.rs"
+rust = "sys/hal/sys/vmmeter.rs"
+crate = "hal"
 lz = ["sys/sys/vmmeter.rs"]
 status = "inherited"
 
@@ -6332,7 +6371,8 @@ lz = ["sys/sys/vnode.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/wait.rs"
+rust = "sys/hal/sys/wait.rs"
+crate = "hal"
 lz = ["sys/sys/wait.rs"]
 status = "inherited"
 
@@ -6875,4 +6915,9 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 [[extra]]
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
+
+[[extra]]
+rust = "sys/hal/reftest.rs"
+crate = "hal"
+reason = "copy of sys/reftest.rs so the inherited headers moved into hal keep their #[ignore] reference-backed tests byte-identical (crate::reftest resolves inside hal); the two copies merge when bsd's last reference test moves"
 

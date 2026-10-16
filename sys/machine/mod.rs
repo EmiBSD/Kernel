@@ -46,12 +46,11 @@ pub mod copy;
 pub mod cpu;
 pub mod db_machdep;
 pub mod disklabel;
-pub mod exec;
+pub use hal::machine::{exec, param, vmparam};
 pub mod fdt;
 pub mod intr;
 pub mod isa_machdep;
 pub mod mpconfig;
-pub mod param;
 #[cfg(machine_pci_chipset)]
 pub mod pci_chipset;
 pub mod pci_machdep;
@@ -60,7 +59,6 @@ pub mod pmap;
 pub mod proc;
 pub mod signal;
 pub mod tcb;
-pub mod vmparam;
 #[cfg(machine_x86)]
 pub mod x86;
 
@@ -75,19 +73,19 @@ pub use copy::*;
 pub use cpu::*;
 pub use db_machdep::*;
 pub use disklabel::*;
-pub use exec::*;
 pub use fdt::*;
+pub use hal::machine::exec::*;
+pub use hal::machine::param::*;
+pub use hal::machine::vmparam::*;
 pub use intr::*;
 pub use isa_machdep::*;
 pub use mpconfig::*;
-pub use param::*;
 pub use pci_machdep::*;
 pub use pciide_machdep::*;
 pub use pmap::*;
 pub use proc::*;
 pub use signal::*;
 pub use tcb::*;
-pub use vmparam::*;
 
 /// The selected architecture's implementation of the machine interface.
 pub use crate::arch::current::Machine;
