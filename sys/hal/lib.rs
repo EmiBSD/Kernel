@@ -23,4 +23,11 @@
 //! system where `unsafe` may appear; every site carries a soundness proof and `cargo xtask
 //! hal-check` refuses a `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
+
+#[cfg(test)]
+extern crate std;
+
+pub mod module;
+#[forbid(unsafe_code)]
+pub mod syscall;
 /* </CODE> */

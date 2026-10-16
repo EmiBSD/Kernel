@@ -6736,6 +6736,13 @@ status = "inherited"
 license = "none"
 notes = "struct uvmexp with every field atomic (one static, no lock), the VM_* sysctl ids, the counters enum; M7a-3: uvmexp_counters as one array for the one CPU with counters_inc/counters_read; kern_sysctl.c: UvmexpCopy (the plain #[repr(C)] struct uvmexp of ints, SysctlPlain) and Uvmexp::snapshot for VM_UVMEXP; M11e: uvmexp_counters stay one array of relaxed atomics bumped by every CPU (correct under MULTIPROCESSOR; the C's per-CPU copies, counters_alloc_ncpus, only spread the cache lines)"
 
+[[module]]
+rust = "sys/hal/syscall.rs"
+lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
+status = "redesigned"
+crate = "hal"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi-openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
+
 [[extra]]
 rust = "sys/arch/amd64/amd64/qemu.rs"
 reason = "M0 bootstrap: QEMU isa-debug-exit under feature qemu; not OpenBSD code"
@@ -6876,3 +6883,7 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
+[[extra]]
+rust = "sys/hal/module/once.rs"
+crate = "hal"
+reason = "N2.4a: the init-once cell the system call registry, kernel::api and the module loader keep their registrations in; TODO(N2 integrate): replaced by hal::OnceStatic (the runtime of N2.3)"
