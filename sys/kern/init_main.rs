@@ -683,6 +683,10 @@ pub fn main() -> ! {
         crate::dev::acpi::tpm::tpm_selftest();
     }
 
+    // The system call path (N2.4, docs/ZERO_UNSAFE.md 0.1): the Legacy fallback and the ABI
+    // module abi-openbsd.ko, registered before init(8) makes its first system call.
+    crate::kern::abi_module::abi_module_attach();
+
     // Okay, now we can let init(8) exec! It's off to userland!
     START_INIT_EXEC.store(1, Ordering::Relaxed);
     wakeup(ptr::from_ref(&START_INIT_EXEC));

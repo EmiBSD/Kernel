@@ -25,6 +25,8 @@
 //! `[[extra]]`).
 
 #[forbid(unsafe_code)]
+pub mod abi_module;
+#[forbid(unsafe_code)]
 pub mod clock_subr;
 #[forbid(unsafe_code)]
 pub mod dma_alloc;

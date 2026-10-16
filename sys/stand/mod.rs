@@ -246,6 +246,12 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
         );
     }
     init_main::set_init_module(boot.module(b"init").copied());
+    // N2.4: the Legacy system call path from the first system call on, and the ABI module
+    // the boot loader handed over (Limine's `abi-openbsd.ko` module), which `main` loads.
+    bsd::kern::abi_module::abi_module_boot(
+        boot.module(b"abi-openbsd.ko")
+            .map(|m| (m.data.as_ptr().expose_provenance(), m.data.len())),
+    );
     match boot.module(b"ramdisk.ffs") {
         // SAFETY: the module is never reclaimed, is mapped read-write for the
         // kernel's lifetime, and nothing but rd(4) uses it from here on.
