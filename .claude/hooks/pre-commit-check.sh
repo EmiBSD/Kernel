@@ -21,10 +21,21 @@
 # Clippy and the smokes stay in `just ci` (too slow for every commit).
 payload=$(cat)
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty')
-printf '%s\n' "$cmd" | grep -qE '(^|[;&|(]|&&)[[:space:]]*git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$)' || exit 0
-dir=$(printf '%s' "$payload" | jq -r '.cwd // empty')
-cd "${dir:-${CLAUDE_PROJECT_DIR:-.}}" 2>/dev/null && cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || exit 0
+# A `git commit` at the start or after a separator, with any `VAR=value` assignments or
+# `env` before `git` (`PATH=... git commit`), and `git -C <dir> commit`.
+re='(^|[;&|(]|&&)[[:space:]]*((env|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)[[:space:]]+)*git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$)'
+printf '%s\n' "$cmd" | grep -qE "$re" || exit 0
+# The checkout the commit runs in: `git -C <dir>` first, then a leading `cd <dir> &&` or
+# `cd <dir>;` (a literal path; an unexpanded `$var` is ignored), then the tool's cwd.
+dir=$(printf '%s\n' "$cmd" | grep -oE 'git[[:space:]]+-C[[:space:]]+[^[:space:]]+' | head -1 | awk '{print $3}')
+[ -n "$dir" ] || dir=$(printf '%s\n' "$cmd" | sed -nE 's/^[[:space:]]*cd[[:space:]]+"?([^"[:space:];&|]+)"?[[:space:]]*(&&|;).*/\1/p' | head -1)
+case "$dir" in *'$'*) dir= ;; esac
+dir=${dir//\"/}
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty')
+{ [ -n "$dir" ] && cd "$dir" 2>/dev/null; } || cd "${cwd:-${CLAUDE_PROJECT_DIR:-.}}" 2>/dev/null || exit 0
+cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || exit 0
 [ -f lineage.toml ] || exit 0
+if [ -n "$PRE_COMMIT_CHECK_DRY" ]; then printf 'pre-commit-check: would check in %s\n' "$PWD"; exit 0; fi
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH
 if ! out=$(cargo xtask lz check 2>&1); then
     printf 'commit blocked by .claude/hooks/pre-commit-check.sh: `cargo xtask lz check` failed in %s\n%s\n' "$PWD" "$(printf '%s\n' "$out" | grep -v '^ *\(Compiling\|Finished\|Running\)' | tail -30)" >&2
