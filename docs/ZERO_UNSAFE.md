@@ -549,3 +549,15 @@ every design that kept `unsafe` inside the kernel:
     rewrites them with the crate split, the migration mechanism and the new N2/N3. The
     Asterinas framekernel (OS services in safe Rust over an `unsafe` OSTD) is the precedent.
     The user's words: zero `unsafe` in the kernel, "por ahora" the HAL may have it.
+
+21. **The ABI compatibility crate holds no business logic** (the user, 2026-10-16: "solo debe
+    orquestar con la basura unsafe llamadas al verdadero núcleo safe"). It only translates: the
+    syscall number and its register arguments to a typed call into the kernel crate, the
+    userland bytes of a `#[repr(C)]` struct to the kernel's own type and back, an errno from the
+    kernel's `Result`. No permission check, no semantic validation, no state of its own, no
+    branch on a value's meaning: every decision OpenBSD's behaviour requires lives in the
+    kernel crate, where it is safe code. Mechanical criterion, checked by `cargo xtask`: a
+    function of the ABI crate contains no `if`/`match` on anything but the syscall number, the
+    conversion's own result (`Ok`/`Err`) and the layout of the bytes; it calls exactly one
+    kernel entry point; its size stays under a fixed line count per syscall. A violation fails
+    `just check`.
