@@ -496,6 +496,8 @@ fn is_structural(rel: &str) -> bool {
     matches!(name, "mod.rs" | "lib.rs" | "main.rs" | "build.rs")
         || rel.starts_with("sys/machine/")
         || rel.starts_with("sys/arch/host/")
+        || rel.starts_with("sys/hal/machine/")
+        || rel.starts_with("sys/hal/arch/host/")
         || rel.starts_with("sys/stand/")
 }
 
