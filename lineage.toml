@@ -7075,3 +7075,15 @@ reason = "N2.4a: bsd's side of abi-openbsd.ko until its subsystems move (deleted
 rust = "sys/hal/api.rs"
 crate = "hal"
 reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type"
+
+[[module]]
+rust = "sys/kernel/pipe.rs"
+crate = "kernel"
+lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]
+status = "redesigned"
+notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy"
+
+[[extra]]
+rust = "sys/kernel/testutil.rs"
+crate = "kernel"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"

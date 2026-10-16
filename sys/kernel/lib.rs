@@ -24,5 +24,12 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+// The host tests link std; a kernel image never does.
+#[cfg(test)]
+extern crate std;
+
 pub mod api;
+pub mod pipe;
+#[cfg(test)]
+mod testutil;
 /* </CODE> */

@@ -97,3 +97,29 @@ paid_by = "N7"
 trait = "ModulePlatform"
 for = ["sys/hal/module/load.rs"]
 paid_by = "N3"
+
+# bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
+# sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
+# pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by
+# sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not a registered slot.
+# kernel::pipe::PipeGlue
+[[bridge]]
+trait = "PipeGlue"
+for = ["sys/kernel/pipe.rs"]
+paid_by = "N4"
+
+# bsd: the Uio of a read or write and uiomove (sys/sys/uio.rs, sys/kern/kern_subr.rs), passed
+# down by the glue's fo_read/fo_write as &mut dyn UioMove.
+# kernel::pipe::UioMove
+[[bridge]]
+trait = "UioMove"
+for = ["sys/kernel/pipe.rs"]
+paid_by = "N4"
+
+# bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
+# (sys/kern/kern_descrip.rs, sys/sys/filedesc.rs), implemented by sys/kern/pipe_glue.rs.
+# kernel::pipe::PipeFiles
+[[bridge]]
+trait = "PipeFiles"
+for = ["sys/kernel/pipe.rs"]
+paid_by = "N4"

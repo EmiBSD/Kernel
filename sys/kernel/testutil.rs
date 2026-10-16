@@ -1,0 +1,369 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! The kernel crate's host test doubles of `hal`'s bridges (`cfg(test)` only, declared so in
+//! `lib.rs`), in safe code: this crate forbids `unsafe`, its tests included.
+//!
+//! `hal` keeps its own doubles crate-private (`sys/hal/testutil.rs`); this crate's tests run
+//! in a process of their own, so they register these instead, once, the first time a test
+//! calls [`install`]. What they keep per test thread (the running "process" and "CPU"
+//! words, the pending sleep) lets two test threads contend for a lock and sleep and wake each
+//! other as two processes do.
+//!
+//! - `IntrLevel`: a per-thread level, as hal's double.
+//! - `CpuId`: each test thread a CPU (its index from a counter, its word a per-thread
+//!   static's address).
+//! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
+//!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
+//!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
+//!   nothing.
+//! - `PageMemory` and `PoolBackend`: zeroed, page-aligned blocks of the host's heap, leaked
+//!   (a block given back is counted and never reused: freeing it would need the pointer
+//!   turned back into its `Box`, which is `unsafe`); the pages out are counted per
+//!   thread, the items out per pool.
+//! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
+//!   outside it is `EFAULT`.
+
+use std::boxed::Box;
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, Once};
+use std::time::{Duration, Instant};
+use std::vec;
+use std::vec::Vec;
+
+use hal::bridges;
+use hal::cpu::CpuId;
+use hal::intr::IntrLevel;
+use hal::kmbuf::{PageKind, PageMemory};
+use hal::pool::{PoolBackend, RawPool};
+use hal::sleep::{INFSLP, Sleep};
+use hal::sys::errno::Errno;
+use hal::user::UserCopy;
+
+/// The page size of the doubles.
+const TEST_PAGE: usize = 4096;
+
+/// Where the user address space of the double starts.
+pub(crate) const USER_BASE: usize = 0x1000_0000;
+/// Its size.
+pub(crate) const USER_LEN: usize = 64 * 1024;
+
+/// One page of the doubles' memory: page-aligned, so a run of them is too.
+#[derive(Clone, Copy)]
+#[repr(C, align(4096))]
+struct Page([u8; TEST_PAGE]);
+
+std::thread_local! {
+    static SPL: Cell<i32> = const { Cell::new(0) };
+    static WORD: u8 = const { 0 };
+    static PROC: u8 = const { 0 };
+    static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
+    static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
+}
+
+/// The index the next test thread gets.
+static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
+
+/// The generation number of every wait channel a wakeup touched.
+static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
+/// Signalled by every wakeup.
+static WAKE: Condvar = Condvar::new();
+
+/// The user address space of the double.
+static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
+
+/// A double's state, a panicking test's poison ignored.
+fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A zeroed, page-aligned, leaked block of at least `len` bytes (`None` for 0).
+fn pages(len: usize) -> Option<NonNull<u8>> {
+    if len == 0 {
+        return None;
+    }
+    let n = len.div_ceil(TEST_PAGE);
+    let block: &'static mut [Page] = Box::leak(vec![Page([0; TEST_PAGE]); n].into_boxed_slice());
+    // Made from the whole slice, so the pointer may reach every byte of it.
+    Some(NonNull::from(block).cast::<u8>())
+}
+
+/// The interrupt-level double.
+struct TestIntr;
+
+impl IntrLevel for TestIntr {
+    fn splraise(&self, ipl: i32) -> i32 {
+        SPL.with(|l| {
+            let old = l.get();
+            l.set(old.max(ipl));
+            old
+        })
+    }
+
+    fn splx(&self, s: i32) {
+        SPL.with(|l| l.set(s));
+    }
+
+    fn mpfloor(&self) -> i32 {
+        9
+    }
+
+    fn ipl_high(&self) -> i32 {
+        0xd
+    }
+}
+
+/// The CPU double.
+struct TestCpu;
+
+impl CpuId for TestCpu {
+    fn cpu_number(&self) -> usize {
+        CPU.with(|c| *c) % hal::cpu::MAXCPUS
+    }
+
+    fn curcpu_word(&self) -> usize {
+        // Distinct per live thread, never 0, the locks' low flag bits clear.
+        WORD.with(|w| std::ptr::from_ref(w).addr() & !0xf) | 0x10
+    }
+
+    fn spinning(&self, _delta: isize) {}
+
+    fn past_caring(&self) -> bool {
+        false
+    }
+
+    fn mutex_level(&self, _delta: i32) {}
+
+    fn ncpus(&self) -> usize {
+        hal::cpu::MAXCPUS
+    }
+}
+
+/// The sleep queue double.
+struct TestSleep;
+
+impl Sleep for TestSleep {
+    fn curproc_word(&self) -> usize {
+        PROC.with(|p| std::ptr::from_ref(p).addr() & !0xf) | 0x10
+    }
+
+    fn sleep_setup(&self, ident: *const (), _prio: i32, _wmesg: &'static str) {
+        let q = lock(&QUEUES);
+        let chan = ident.addr();
+        let generation = q.get(&chan).copied().unwrap_or(0);
+        PENDING.with(|p| p.set(Some((chan, generation))));
+    }
+
+    fn sleep_finish(&self, nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
+        let Some((chan, generation)) = PENDING.with(Cell::take) else {
+            return Ok(());
+        };
+        if !do_sleep {
+            return Ok(());
+        }
+        let deadline = (nsecs != INFSLP).then(|| Instant::now() + Duration::from_nanos(nsecs));
+        let mut q = lock(&QUEUES);
+        loop {
+            if q.get(&chan).copied().unwrap_or(0) != generation {
+                return Ok(());
+            }
+            match deadline {
+                None => {
+                    q = WAKE
+                        .wait(q)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                }
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d {
+                        return Err(Errno::EWOULDBLOCK);
+                    }
+                    q = WAKE
+                        .wait_timeout(q, d - now)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                }
+            }
+        }
+    }
+
+    fn tsleep_nsec(
+        &self,
+        ident: *const (),
+        prio: i32,
+        wmesg: &'static str,
+        nsecs: u64,
+    ) -> Result<(), Errno> {
+        self.sleep_setup(ident, prio, wmesg);
+        self.sleep_finish(nsecs, true)
+    }
+
+    fn wakeup(&self, ident: *const ()) {
+        let mut q = lock(&QUEUES);
+        *q.entry(ident.addr()).or_insert(0) += 1;
+        WAKE.notify_all();
+    }
+
+    fn wakeup_one(&self, ident: *const ()) {
+        // Waking every sleeper is a correct wakeup_one for callers that retry.
+        self.wakeup(ident);
+    }
+
+    fn kernel_lock_held(&self) -> bool {
+        false
+    }
+}
+
+/// The kernel map double.
+struct TestPages;
+
+// The registration contract: a zeroed, page-aligned block of `len` bytes that only the caller
+// references (leaked, so it is never handed out again).
+impl PageMemory for TestPages {
+    fn alloc(&self, len: usize, _kind: PageKind, _wait: bool) -> Option<(NonNull<u8>, usize)> {
+        let p = pages(len)?;
+        PAGES_OUT.with(|c| c.set(c.get() + len as i64));
+        Some((p, len))
+    }
+
+    fn free(&self, _ptr: NonNull<u8>, len: usize, _kind: PageKind) {
+        PAGES_OUT.with(|c| c.set(c.get() - len as i64));
+    }
+
+    fn page_size(&self) -> usize {
+        TEST_PAGE
+    }
+}
+
+/// One pool of the pool double.
+struct TestPool {
+    size: usize,
+    nout: AtomicU64,
+}
+
+// The registration contract: a fresh block of the pool's size, page-aligned (which covers any
+// item alignment up to a page; `create` refuses more), the caller's alone.
+impl RawPool for TestPool {
+    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        let p = pages(self.size)?;
+        self.nout.fetch_add(1, Ordering::Relaxed);
+        Some((p, self.size))
+    }
+
+    fn put(&self, _item: NonNull<u8>) {
+        self.nout.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn nout(&self) -> u64 {
+        self.nout.load(Ordering::Relaxed)
+    }
+}
+
+/// The pool allocator double.
+struct TestPools;
+
+impl PoolBackend for TestPools {
+    fn create(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        _wchan: &'static str,
+    ) -> Option<&'static dyn RawPool> {
+        if align > TEST_PAGE {
+            return None;
+        }
+        Some(Box::leak(Box::new(TestPool {
+            size: size.max(1),
+            nout: AtomicU64::new(0),
+        })))
+    }
+}
+
+/// The user copy double.
+struct TestUser;
+
+/// The range `[uaddr, uaddr + len)` of the double's address space, `EFAULT` outside it.
+fn user_range(uaddr: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
+    let start = uaddr.checked_sub(USER_BASE).ok_or(Errno::EFAULT)?;
+    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
+    if end > USER_LEN {
+        return Err(Errno::EFAULT);
+    }
+    Ok(start..end)
+}
+
+impl UserCopy for TestUser {
+    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        let r = user_range(uaddr, kbuf.len())?;
+        kbuf.copy_from_slice(&lock(&USER)[r]);
+        Ok(())
+    }
+
+    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
+        let r = user_range(uaddr, kbuf.len())?;
+        lock(&USER)[r].copy_from_slice(kbuf);
+        Ok(())
+    }
+
+    fn copyinstr(&self, _uaddr: usize, _kbuf: &mut [u8]) -> Result<usize, Errno> {
+        Err(Errno::EFAULT)
+    }
+
+    fn copyoutstr(&self, _kbuf: &[u8], _uaddr: usize) -> Result<usize, Errno> {
+        Err(Errno::EFAULT)
+    }
+}
+
+static TEST_INTR: TestIntr = TestIntr;
+static TEST_CPU: TestCpu = TestCpu;
+static TEST_SLEEP: TestSleep = TestSleep;
+static TEST_PAGES: TestPages = TestPages;
+static TEST_POOLS: TestPools = TestPools;
+static TEST_USER: TestUser = TestUser;
+
+/// Registers every double, once per process.
+pub(crate) fn install() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = bridges::register_intr_level(&TEST_INTR);
+        let _ = bridges::register_cpu_id(&TEST_CPU);
+        let _ = bridges::register_sleep(&TEST_SLEEP);
+        let _ = bridges::register_page_memory(&TEST_PAGES);
+        let _ = bridges::register_pool_backend(&TEST_POOLS);
+        let _ = bridges::register_user_copy(&TEST_USER);
+    });
+}
+
+/// `len` bytes of the double's user memory at `uaddr`.
+pub(crate) fn user_bytes(uaddr: usize, len: usize) -> Vec<u8> {
+    let r = user_range(uaddr, len).unwrap();
+    lock(&USER)[r].to_vec()
+}
+
+/// The bytes of pages this thread holds, as the page double counts them.
+pub(crate) fn pages_out() -> i64 {
+    PAGES_OUT.with(Cell::get)
+}
+/* </CODE> */

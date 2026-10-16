@@ -23,7 +23,7 @@ doc = false
 default = ["alloc", "boot_config", "ffs", "ffs2", "kmemstats", "inet6", "quota", "ufs_dirhash", "mfs", "tmpfs", "msdosfs", "cd9660", "udf", "nfsclient", "nfsserver", "fuse", "ntfs", "ext2fs", "wsdisplay_compat_usl", "wsdisplay_compat_rawkbd"]
 alloc = []        # enables `extern crate alloc` and the GlobalAlloc over malloc(9)
 boot_config = ["alloc"] # OpenBSD `option BOOT_CONFIG` -> `boot -c`, the UKC> prompt (kern/subr_userconf.c); default (both GENERICs have it)
-diagnostic = ["hal/diagnostic"]   # OpenBSD `option DIAGNOSTIC` -> kassert! active (and hal's)
+diagnostic = ["hal/diagnostic", "kernel/diagnostic"]   # OpenBSD `option DIAGNOSTIC` -> kassert! active (and hal's and the kernel crate's)
 debug = []        # OpenBSD `option DEBUG`      -> kdassert! active
 kmemstats = []    # OpenBSD `option KMEMSTATS`  -> malloc(9) statistics; default (GENERIC has it)
 pool_debug = []   # OpenBSD `option POOL_DEBUG` -> pool_debug = 1
