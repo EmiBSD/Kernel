@@ -595,6 +595,10 @@ pub trait UioMove {
     /// uio's direction: out of `buf` for a read, into it for a write. It may fault and
     /// sleep, so the pipe calls it with its lock released.
     fn uiomove(&mut self, buf: &mut [u8]) -> Result<(), Errno>;
+    /// `fp->f_flag & FNONBLOCK` of the file the I/O is on, read now: the pipe asks at every
+    /// check, as the C reads `f_flag` each time round its loops (`fcntl(F_SETFL)` from
+    /// another thread changes it while a reader or a writer sleeps).
+    fn nonblock(&self) -> bool;
 }
 
 /// `dopipe`'s descriptor work, which stays `bsd`'s until descriptors move (N4): two
@@ -714,7 +718,9 @@ impl<G: PipeGlue> PipePair<G> {
         &self.ends[dir.index()]
     }
 
-    /// The glue's part of pipe `dir`.
+    /// The glue's part of pipe `dir`, for tests only: outside them the glue is reached only
+    /// through the kernel's calls, under the pair's guard where the C holds the lock.
+    #[cfg(any(test, feature = "doubles"))]
     pub fn glue(&self, dir: Dir) -> &G {
         &self.end(dir).glue
     }
@@ -833,9 +839,9 @@ impl<G: PipeGlue> PipePair<G> {
         }
     }
 
-    /// `fo_read` of a pipe: copies out what pipe `dir` buffers, waiting for data unless
-    /// `nonblock` (the file's `FNONBLOCK`); 0 bytes at EOF.
-    pub fn read(&self, dir: Dir, uio: &mut dyn UioMove, nonblock: bool) -> Result<(), Errno> {
+    /// `fo_read` of a pipe: copies out what pipe `dir` buffers, waiting for data unless the
+    /// file is non-blocking ([`UioMove::nonblock`], read at every check); 0 bytes at EOF.
+    pub fn read(&self, dir: Dir, uio: &mut dyn UioMove) -> Result<(), Errno> {
         let rpipe = self.end(dir);
         let d = dir.index();
         let mut nread: usize = 0;
@@ -899,7 +905,7 @@ impl<G: PipeGlue> PipePair<G> {
                     }
 
                     // Handle non-blocking mode operation.
-                    if nonblock {
+                    if uio.nonblock() {
                         error = Err(Errno::EAGAIN);
                         break;
                     }
@@ -941,9 +947,9 @@ impl<G: PipeGlue> PipePair<G> {
     }
 
     /// `fo_write` of a pipe: copies into the buffer of `dir`'s peer, waiting for space
-    /// unless `nonblock`; `EPIPE` once the reader is gone. Writes of at most `PIPE_BUF` bytes
-    /// are atomic.
-    pub fn write(&self, dir: Dir, uio: &mut dyn UioMove, nonblock: bool) -> Result<(), Errno> {
+    /// unless the file is non-blocking ([`UioMove::nonblock`], read at every check); `EPIPE`
+    /// once the reader is gone. Writes of at most `PIPE_BUF` bytes are atomic.
+    pub fn write(&self, dir: Dir, uio: &mut dyn UioMove) -> Result<(), Errno> {
         let mut g = self.lock.write();
 
         // Detect loss of pipe read side, issue SIGPIPE if lost.
@@ -1040,7 +1046,7 @@ impl<G: PipeGlue> PipePair<G> {
                     }
 
                     // Don't block on non-blocking I/O.
-                    if nonblock {
+                    if uio.nonblock() {
                         error = Err(Errno::EAGAIN);
                         break;
                     }
@@ -1360,8 +1366,8 @@ mod tests {
     // the glue (knotes, SIGIOs, the klist). A test that counts the pool's items or the big
     // pipes uses a `Pipes` of its own, since the tests run in parallel.
 
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicI32, AtomicI64};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
     use std::vec::Vec;
@@ -1467,12 +1473,14 @@ mod tests {
     }
 
     /// A user buffer: the source of a write or the destination of a read; it faults (`EFAULT`)
-    /// once `fault_at` bytes have moved.
+    /// once `fault_at` bytes have moved; `nonblock` is its file's `FNONBLOCK`, which another
+    /// thread may set while the I/O sleeps.
     struct Buf {
         data: Vec<u8>,
         pos: usize,
         source: bool,
         fault_at: usize,
+        nonblock: Arc<AtomicBool>,
     }
 
     impl UioMove for Buf {
@@ -1494,6 +1502,10 @@ mod tests {
             self.pos += n;
             Ok(())
         }
+
+        fn nonblock(&self) -> bool {
+            self.nonblock.load(Ordering::SeqCst)
+        }
     }
 
     /// `write(2)` of `bytes` on the file of pipe `dir`: the result and how much went in.
@@ -1508,8 +1520,9 @@ mod tests {
             pos: 0,
             source: true,
             fault_at: usize::MAX,
+            nonblock: Arc::new(AtomicBool::new(nb)),
         };
-        let error = pp.write(dir, &mut uio, nb);
+        let error = pp.write(dir, &mut uio);
         (error, uio.pos)
     }
 
@@ -1520,8 +1533,9 @@ mod tests {
             pos: 0,
             source: false,
             fault_at: usize::MAX,
+            nonblock: Arc::new(AtomicBool::new(nb)),
         };
-        let error = pp.read(dir, &mut uio, nb);
+        let error = pp.read(dir, &mut uio);
         uio.data.truncate(uio.pos);
         (error, uio.data)
     }
@@ -1579,6 +1593,95 @@ mod tests {
         testutil::install();
         assert_eq!(P.create().err(), Some(Errno::ENOMEM));
         assert_eq!(P.nout(), 0);
+    }
+
+    /// LZ's `pair_create_fails_without_pageable_memory`: the first buffer (`pp_wpipe`'s) or
+    /// the second (`pp_rpipe`'s) cannot be had; both pipes are destroyed, the first buffer
+    /// freed, the pair back in the pool, `ENOMEM`.
+    #[test]
+    fn create_fails_with_enomem_when_a_buffer_cannot_be_had() {
+        static P: Pipes<TestGlue> = Pipes::new();
+        let pipes = setup(&P);
+        let pages = testutil::pages_out();
+        for skip in [0, 1] {
+            testutil::fail_pages(skip, 1);
+            assert_eq!(pipes.create().err(), Some(Errno::ENOMEM));
+            assert_eq!(pipes.nout(), 0, "the pair went back to the pool");
+            assert_eq!(pipes.amountpipekva(), 0, "the first buffer was freed");
+            assert_eq!(testutil::pages_out(), pages);
+        }
+        testutil::fail_pages(0, 0);
+        let (r, w) = pipes.create().unwrap();
+        assert_eq!(pipes.nout(), 1);
+        r.close();
+        w.close();
+        assert_eq!(pipes.nout(), 0);
+    }
+
+    /// A big write whose grow to `BIG_PIPE_SIZE` fails keeps the small buffer and gives its
+    /// `nbigpipe` slot back, as the C does; the write goes on in the small buffer.
+    #[test]
+    fn a_failed_grow_keeps_the_small_buffer() {
+        static P: Pipes<TestGlue> = Pipes::new();
+        let (r, w) = setup(&P).create().unwrap();
+        let pp = r.pair().clone();
+
+        testutil::fail_pages(0, 1);
+        let big = pattern(0, PIPE_SIZE + 1);
+        assert_eq!(
+            write(&pp, Dir::Wr, &big, true),
+            (Err(Errno::EAGAIN), PIPE_SIZE)
+        );
+        assert_eq!(pp.end(Dir::Rd).size(), PIPE_SIZE);
+        assert_eq!(P.nbigpipe(), 0);
+        assert_eq!(P.amountpipekva(), 2 * PIPE_SIZE as u32);
+        assert_eq!(read(&pp, Dir::Rd, PIPE_SIZE, false).1, big[..PIPE_SIZE]);
+
+        drop(pp);
+        r.close();
+        w.close();
+        assert_eq!(P.amountpipekva(), 0);
+    }
+
+    /// The C reads `f_flag` at every check: a writer asleep on a full pipe whose file is made
+    /// non-blocking (`fcntl(F_SETFL, O_NONBLOCK)` from another thread) returns `EAGAIN` with
+    /// what it copied once woken (a short write), instead of sleeping again.
+    #[test]
+    fn a_writer_made_non_blocking_while_asleep_returns_a_short_write() {
+        let (r, w, pp) = pair();
+
+        assert_eq!(
+            write(&pp, Dir::Wr, &pattern(0, PIPE_SIZE), false).1,
+            PIPE_SIZE
+        );
+        let nonblock = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let pp = pp.clone();
+            let nonblock = nonblock.clone();
+            thread::spawn(move || {
+                let mut uio = Buf {
+                    data: pattern(PIPE_SIZE, 20_000),
+                    pos: 0,
+                    source: true,
+                    fault_at: usize::MAX,
+                    nonblock,
+                };
+                let error = pp.write(Dir::Wr, &mut uio);
+                (error, uio.pos)
+            })
+        };
+        while !pp.end(Dir::Rd).has(PIPE_WANTW) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        nonblock.store(true, Ordering::SeqCst);
+        // Below MINPIPESIZE the reader wakes the writer (the hysteresis).
+        assert_eq!(read(&pp, Dir::Rd, 12_000, false).1, pattern(0, 12_000));
+        assert_eq!(writer.join().unwrap(), (Err(Errno::EAGAIN), 12_000));
+        assert_eq!(pp.end(Dir::Rd).cnt(), PIPE_SIZE);
+
+        drop(pp);
+        r.close();
+        w.close();
     }
 
     #[test]
@@ -1928,8 +2031,9 @@ mod tests {
             pos: 0,
             source: true,
             fault_at: 3,
+            nonblock: Arc::new(AtomicBool::new(false)),
         };
-        assert_eq!(pp.write(Dir::Wr, &mut uio, false), Err(Errno::EFAULT));
+        assert_eq!(pp.write(Dir::Wr, &mut uio), Err(Errno::EFAULT));
         assert_eq!(pp.end(Dir::Rd).cnt(), 0);
         assert!(!pp.end(Dir::Rd).has(PIPE_LOCK));
 
@@ -1939,8 +2043,9 @@ mod tests {
             pos: 0,
             source: false,
             fault_at: 2,
+            nonblock: Arc::new(AtomicBool::new(false)),
         };
-        assert_eq!(pp.read(Dir::Rd, &mut uio, false), Err(Errno::EFAULT));
+        assert_eq!(pp.read(Dir::Rd, &mut uio), Err(Errno::EFAULT));
         assert_eq!(pp.end(Dir::Rd).cnt(), 6, "nothing consumed");
         assert_eq!(
             pp.lock.read().ends[0].buffer.mem.as_ref().map(|m| m.len()),

@@ -79,6 +79,10 @@
 //!   until descriptors move (N4, `CredRef`).
 //! - `fo_ioctl`'s `data` is the kernel copy of the argument (`sys_ioctl`), at least an `int`
 //!   wide; the `int` is read and written in native byte order (LZ's).
+//! - A `PipeKlists` comes from the global allocator, `malloc(9)` with `M_NOWAIT`
+//!   (`kern/rust_alloc.rs`): when no recycled one is free and memory is short, pipe(2) answers
+//!   `ENOMEM` where the C's `pool_get(PR_WAITOK)` of the pair sleeps for memory (`hal`'s
+//!   `MBox` has no safe way to a `&'static`; one would need `unsafe` in `hal`). Gone at N4.
 //! - `KTRACE` is not configured (`ktrfds`), as in LZ.
 //!
 //! ## Redesign
@@ -176,9 +180,11 @@ pub struct BsdFiles<'a> {
     pub p: &'a Proc,
 }
 
-/// A `Uio` as the kernel's pipe moves bytes through it.
+/// A `Uio` as the kernel's pipe moves bytes through it, with the file it is on (whose
+/// `FNONBLOCK` the pipe reads at every check).
 struct UioAdapter<'a, 'b> {
     uio: &'a mut Uio<'b>,
+    fp: &'a File,
 }
 
 /// `pipeops`: the interfaces to the outside world.
@@ -360,6 +366,10 @@ impl UioMove for UioAdapter<'_, '_> {
     fn uiomove(&mut self, buf: &mut [u8]) -> Result<(), Errno> {
         uiomove(buf, self.uio)
     }
+
+    fn nonblock(&self) -> bool {
+        self.fp.flag() & FNONBLOCK != 0
+    }
 }
 
 impl PipeFiles<BsdPipeGlue> for BsdFiles<'_> {
@@ -525,13 +535,13 @@ pub fn dopipe(
 /// `fo_read` of a pipe.
 pub fn pipe_read(fp: &File, uio: &mut Uio<'_>, _fflags: i32) -> Result<(), Errno> {
     let (pair, dir) = pipe_of(fp);
-    pair.read(dir, &mut UioAdapter { uio }, fp.flag() & FNONBLOCK != 0)
+    pair.read(dir, &mut UioAdapter { uio, fp })
 }
 
 /// `fo_write` of a pipe.
 pub fn pipe_write(fp: &File, uio: &mut Uio<'_>, _fflags: i32) -> Result<(), Errno> {
     let (pair, dir) = pipe_of(fp);
-    pair.write(dir, &mut UioAdapter { uio }, fp.flag() & FNONBLOCK != 0)
+    pair.write(dir, &mut UioAdapter { uio, fp })
 }
 
 /// We implement a very minimal set of ioctls for compatibility with sockets: `bsd`'s
