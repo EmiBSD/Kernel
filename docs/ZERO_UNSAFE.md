@@ -422,3 +422,5 @@ every design that kept `unsafe` inside the kernel:
     the integration errors between `hal`, `kernel`, `abi` and `bsd`; no `just ci-full`; one
     `just ci` and one `just diff-openbsd`, both rc=0, mark N2 closed and push. `ci-full` is
     recorded as pending in `docs/STATUS.md` and runs once at the N3 close for both milestones.
+
+25. **`abi-check`'s mechanical criteria** (the launching session, 2026-10-16, under the user's standing authority of that day, fixing the numbers decision 21 left open): in `sys/abi/`, kernel code: no `loop`/`while`/`for`; an `if`/`match` only on the identifier `nr` (the syscall number) or on `Ok`/`Err`/`Some`/`None` arms (the conversion's own result); at most one call per function into `kernel::` or through the `&KernelApi` parameter; at most 40 lines per function body; no `static` with interior mutability. A violation fails `just check`. The limits are the planning session's and change only by a decision here.
