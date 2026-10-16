@@ -1,8 +1,18 @@
 # The unsafe budget
 
-Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` outside a
-listed core (`docs/ZERO_UNSAFE.md`, the user's decision of 2026-10-10). The budget makes that
-measurable and keeps it from regressing.
+**v2 (2026-10-16, docs/ZERO_UNSAFE.md section 0, decisions 20-24) supersedes the core list
+and the per-module `forbid` below:** the boundary is the crate. `sys/kernel/` and `sys/abi/`
+carry `#![forbid(unsafe_code)]` at their roots (no budget: the build refuses one `unsafe`);
+`sys/hal/` is the only crate with `unsafe`, under `hal_ceiling` in `unsafe-budget.toml`
+(lowered by `--write`, raised only by the user, in a commit of its own, when a milestone adds a
+listed piece: 2,150 at N2, 2,230 by N7); `sys/` (`bsd`, the LZ tree) is legacy under
+`legacy_ceiling`, which only falls, until the crate is deleted at N9. `cargo xtask
+unsafe-report` prints `kernel`, `abi`, `hal`, `bsd` and `boot`; `hal-check` and `abi-check`
+run in `just check`. Until the xtask of N2.4 lands, the text below describes the v1 tool that
+still runs; `unsafe-core.toml` is kept readable and unused.
+
+Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` in the kernel
+(`docs/ZERO_UNSAFE.md`). The budget makes that measurable and keeps it from regressing.
 
 - The core is the list of paths in `unsafe-core.toml` (the hardware, the boot code, the host
   harness, the runtime of primitives). Only there may `unsafe` live. A path joins the list only

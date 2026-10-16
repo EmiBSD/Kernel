@@ -14,6 +14,56 @@ sections 1-9 stay as the record of how the first version was measured and why it
 
 ### 0.1 The four crates
 
+The one diagram of the architecture. Every other drawing (a chat, a slide, a session's notes)
+is a copy of this one or wrong.
+
+```mermaid
+flowchart TB
+    U["0 · USERLAND of OpenBSD · binaries unchanged, ABI byte-identical"]
+
+    subgraph ABI["1 · abi · sys/abi/ · built as the loadable module abi-openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic (decision 21, xtask abi-check)"]
+        A1["syscall table: Native(fn) | Legacy"]
+        A2["bytes ⇄ the kernel's types: stat, kevent, sockaddr, kinfo_* (#[repr(C)]) · errno from Result"]
+    end
+
+    subgraph K["2 · kernel · sys/kernel/ · #![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one"]
+        K1["every decision of the OS: vm, proc, sched, signals, fd, kqueue, pipes, fs, net, drivers' logic, crypto, pf, pledge"]
+        K2["exports KernelApi: the vtable of safe functions the module calls · the kernel never names the ABI"]
+        K3["bridge traits (Vfs, Sockets, Fd, Kq, Sigio, Uio, Pages, Sleep): the kernel's only way into what has not moved · bridges.toml → 0 at N9"]
+    end
+
+    subgraph H["3 · hal · sys/hal/ · the ONLY unsafe of the system · ceiling 2,150 at N2, 2,230 at N9 · every site with a SAFETY proof · no pub unsafe fn (xtask hal-check) · Miri"]
+        H1["hardware, moved from LZ: arch/amd64, arch/arm64, machine, arch/host (1,891 + 38)"]
+        H2["runtime, written new: Mutexed, Rwlocked, TypedPool/PoolArc, MBox, KmBuf, OnceStatic, List/Tree (71), UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf"]
+        H3["registry: the syscall handler, KernelApi, the bridges' impls · the ELF loader of the module · the syscall trap"]
+    end
+
+    subgraph B["bsd · sys/ · the LZ tree, legacy · 8,906 unsafe today → the crate is deleted at N9"]
+        B1["kern, uvm, dev, net, fs…: what gets replaced, subsystem by subsystem; it boots and passes every smoke throughout"]
+        B2["implements the bridge traits and the Legacy syscall fallback; registers them in hal at boot"]
+    end
+
+    HW["4 · hardware (QEMU amd64 / arm64, real machines)"]
+
+    U -->|"syscall trap"| H3
+    H3 -->|"registered handler"| A1
+    A1 -->|"Native: one KernelApi entry per syscall"| K2
+    A1 -.->|"Legacy: the fallback registered in hal"| H3
+    H3 -.->|"calls the registered fallback"| B2
+    K1 --> H2
+    K3 -.->|"dyn Trait in OnceStatic, registered"| B2
+    B1 -->|"calls down"| K1
+    B1 -->|"calls down"| H2
+    H1 --> HW
+    H2 --> H1
+```
+
+Dependencies, one direction: `bsd → kernel → hal`; `abi → hal` and `abi → KernelApi` (the
+vtable `hal` hands the module at load). Nothing names `abi`; `kernel` and `abi` never name
+`bsd`. Arrows up (the syscall handler, `KernelApi`, the bridge implementations, the `Legacy`
+fallback) exist only as registrations in `hal`'s registry, made by `bsd`'s `main()` at boot.
+
+
 | Crate | Path | `unsafe` | Holds |
 |---|---|---|---|
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware (today's `sys/arch/amd64`, `sys/arch/arm64`, `sys/machine`, moved in), the host test double (`sys/arch/host`), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (today's `queue.rs`, `tree.rs`, `subr_tree.rs`), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |

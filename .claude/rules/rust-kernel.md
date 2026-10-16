@@ -37,10 +37,11 @@ paths:
 - LZ's idioms are in `docs/C_TO_RUST.md` (frozen, the key to reading LZ code); native idioms,
   LZ shape -> native shape, are rows of `docs/IDIOMS.md`. Follow them; propose a new row rather
   than improvising.
-- No `unsafe` outside the core of `unsafe-core.toml` (`docs/ZERO_UNSAFE.md`): a module outside
-  it is legacy or `forbid`. Every `unsafe` in the core carries a soundness argument, not a
-  reference to the C (`unsafe-budget.md`), and the core exposes safe APIs: an `unsafe fn` there is
-  for the core's own use, since a caller of it cannot be `forbid`.
+- No `unsafe` outside `sys/hal/` (`docs/ZERO_UNSAFE.md` section 0, v2): `sys/kernel/` and
+  `sys/abi/` forbid it at the crate root; `bsd` is legacy and gets no new `unsafe`. Every
+  `unsafe` in `hal` carries a soundness argument, not a reference to the C
+  (`unsafe-budget.md`), and `hal` exposes safe APIs only: an `unsafe fn` there is
+  `pub(crate)`, since no caller outside `hal` may be `unsafe` (`cargo xtask hal-check`).
 - `Adapter` (`sys/sys/queue.rs`) is implemented only by `queue_adapter!` and `tree_adapter!`;
   never write an impl by hand, rename the trait, or impl a trait passed through a macro
   variable (`lz check` refuses all three). The element's field must be exactly the entry

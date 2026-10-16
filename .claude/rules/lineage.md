@@ -54,9 +54,14 @@ reason = "absorbed by sys/kern/sched/runqueue.rs"
   trailer. `lz status` shows the three columns.
 - A `redesigned` module keeps the whole licence blocks and the
   `//! Upstream:` lines of every file in its `lz` list, and has one `//! LZ: <path>@<12-hex>`
-  line per entry (`rust-kernel.md`, file layout). Outside the core of `unsafe-core.toml` it is
+  line per entry (`rust-kernel.md`, file layout). Since v2 (`docs/ZERO_UNSAFE.md` section 0,
+  decision 20) a redesigned module lives in `sys/kernel/` (or `sys/abi/`, `sys/hal/`), its LZ
+  file in `bsd` becomes `[[dropped]]` with `absorbed by sys/kernel/...`, and `lineage.toml`
+  gains `crate`; the crate root's `#![forbid(unsafe_code)]` replaces the per-`mod` attribute of
+  v1 (the paragraph that follows is v1 and applies to the modules redesigned inside `bsd`
+  before 2026-10-16). v1: outside the core of `unsafe-core.toml` it is
   also `forbid`: its `mod` declaration (or an ancestor's) carries `#[forbid(unsafe_code)]`
-  (`docs/ZERO_UNSAFE.md`; `lz check` enforces it). The attribute lives in the parent `mod.rs`
+  (`lz check` enforces it). The attribute lives in the parent `mod.rs`
   or crate root, never in the module's own file, so an `inherited` module can be `forbid` and
   stay byte-identical to LZ. Those parents are not modules of `lineage.toml`, with one
   exception: `sys/lib/libkern/lib.rs` is an `inherited` `[[module]]`, and it stays inherited

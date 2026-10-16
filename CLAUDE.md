@@ -24,9 +24,15 @@ Everything in this repository (code, comments, docs, commits) is in English.
 - `lineage.toml` is updated in the same commit as the change it describes (`.claude/rules/lineage.md`).
 - Every commit carries its numbers: `LZ:` per source file, `Unsafe:` when a count moved
   (`.claude/rules/git-commits.md`). `cargo xtask unsafe-report --check` stays green.
-- Zero `unsafe` outside the core listed in `unsafe-core.toml` (`docs/ZERO_UNSAFE.md`): every
-  other module ends `#[forbid(unsafe_code)]` on its `mod` declaration; the `forbid` count never
-  falls; adding a path to the core is the user's decision.
+- **Zero `unsafe` in the kernel** (`docs/ZERO_UNSAFE.md` section 0, the plan in force since
+  2026-10-16, decisions 20-24): four crates, `sys/kernel/` and `sys/abi/` with
+  `#![forbid(unsafe_code)]` at their roots (the compiler refuses one `unsafe`), `sys/hal/` the
+  only crate with `unsafe` (the hardware and the runtime, every site with a `// SAFETY:` proof,
+  a ceiling that only the user raises), and `sys/` (`bsd`, the LZ tree) the legacy that is
+  replaced subsystem by subsystem and deleted at N9. `abi` is the loadable module
+  `abi-openbsd.ko` and holds no logic. Section 0 of that document and its one diagram are the
+  only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
+  are superseded.
 - No `std` outside `sys/arch/host/`, `#[cfg(test)]` code and `tools/xtask/`.
 - Stable toolchain, pinned in `rust-toolchain.toml`. No nightly features, ever.
 - A new crate dependency needs the user's OK, a row in `docs/ARCHITECTURE.md` ("Dependencies") and
@@ -41,9 +47,12 @@ lz/PINNED.md                 the LZ commit this tree is synced to (machine-read 
 lineage.toml                 native module -> LZ files and items, the source of truth for provenance
 lz-sync.toml                 one triage record per LZ commit after the pin
 unsafe-budget.toml           per-subsystem unsafe totals that `just ci` enforces
-sys/                         package `bsd`, the kernel; the subsystem directories are LZ's, the inside is ours
-  kern/ uvm/ dev/ net/ ...   fixed subsystems; files inside may be split, merged, renamed or moved
-  machine/ arch/ stand/      unchanged from LZ: the machine contract, the two archs, the boot glue
+sys/                         package `bsd`: the LZ tree, legacy, replaced subsystem by subsystem, deleted at N9
+  kern/ uvm/ dev/ net/ ...   LZ's subsystems, still the kernel that boots while they move out
+  hal/                       crate `hal`: the hardware (arch/amd64, arch/arm64, machine, moved here at N2) and the runtime; the ONLY unsafe
+  kernel/                    crate `kernel`: every decision of the OS, #![forbid(unsafe_code)] at the root
+  abi/                       crate `abi`: OpenBSD's userland interface as the loadable module abi-openbsd.ko, forbid, no logic
+  stand/                     the boot loaders (separate binaries, outside the four crates)
   lib/libkern/ lib/libz/     leaf crates
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`
 docs/                        PHASE2 (the process), ARCHITECTURE, IDIOMS, ROADMAP (N0..), SYNC, JOURNAL, STATUS, SETUP, C_TO_RUST (frozen)
@@ -84,8 +93,10 @@ Tool installation lives in `docs/SETUP.md` and needs the user's explicit go-ahea
 ## Re-engineering one module (the loop)
 
 1. Pick: one module of the subsystem the roadmap names; `cargo xtask lz status` shows what is
-   still inherited. A redesign of an item used by many modules waits for the LZ milestone that
-   touches them to close (`.claude/rules/re-engineering.md`).
+   still inherited. Since v2 (`docs/ZERO_UNSAFE.md` section 0.3) a module is redesigned **into
+   `sys/kernel/`** from the C's behaviour, deleted from `bsd`, and reaches what has not moved
+   only through a bridge registered in `hal` (`bridges.toml`); the cycle is surveyor ->
+   planner -> redesigner -> reviewer -> integrate.
 2. Measure: `cargo xtask unsafe-report` for the subsystem, the smokes that cover the module, the
    `diff-openbsd` scenarios, a benchmark when performance is the point.
 3. Read the LZ module(s) completely (the `<CODE>` zone) and the C they ported. No skimming.
@@ -119,7 +130,10 @@ the session.
 - Copy C verbatim or translate line by line without re-expressing the semantics in Rust.
 - `todo!()`, `unimplemented!()`, or silently dropping a code path (`.claude/rules/scope-and-stubs.md`).
 - `unsafe` without a `// SAFETY:` comment; `unsafe fn` without a `# Safety` section.
-- `static mut`. Use atomics, `Mutex<T>` or the documented `StaticCell<T>`.
+- `static mut`. Use atomics, `hal`'s `Mutexed<T>`/`Rwlocked<T>` or `OnceStatic<T>` (in `bsd`
+  legacy code, the inherited `Mutex` and `StaticCell` stay until their file is replaced).
+- `unsafe` in `sys/kernel/` or `sys/abi/` (the build refuses it); a path added to `hal`'s
+  ceiling or a new bridge without a `bridges.toml` row.
 - Raise a subsystem's unsafe budget, bump `lz/PINNED.md` or drop an LZ file without the user.
 - Mix a redesign with an `lz-sync:` or a `lineage:` commit.
 - Nightly features, `std` in kernel code, `[build] target` in `.cargo/config.toml`.
