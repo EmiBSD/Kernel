@@ -23,21 +23,21 @@
 #   trait   = the trait's path ("hal::intr::IntrLevel", "kernel::...")
 #   for     = the files that call through it
 #   paid_by = the milestone whose subsystem moves the implementation in and removes the row
-#             ("N2.2" for a slice of N2, else "N3".."N9")
+#             ("N3".."N9"; a slice "N4.1" where one is meant)
 # The comment above each row says what implements it today.
 
 # bsd: splraise/splx and IPL_MPFLOOR of sys/machine/intr.rs.
 [[bridge]]
 trait = "hal::intr::IntrLevel"
 for = ["sys/hal/intr.rs", "sys/hal/mutex.rs"]
-paid_by = "N2.2"
+paid_by = "N4"
 
 # bsd: cpu_number(), curcpu(), ci_schedstate.spc_spinning, ci_mutex_level (sys/machine/cpu.rs),
 # panicstr (sys/kern/subr_prf.rs) and db_active (sys/kern/init_main.rs).
 [[bridge]]
 trait = "hal::cpu::CpuId"
 for = ["sys/hal/cpu.rs", "sys/hal/mutex.rs", "sys/hal/percpu.rs"]
-paid_by = "N2.2"
+paid_by = "N4"
 
 # bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
 # _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs.
@@ -66,3 +66,16 @@ paid_by = "N9"
 trait = "hal::malloc::Malloc"
 for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
+
+# bsd: copyin, copyout, copyinstr, copyoutstr of sys/machine/copy.rs (copy.S with pcb_onfault).
+# A safe trait: it only reads and writes the byte slices it is given.
+[[bridge]]
+trait = "hal::user::UserCopy"
+for = ["sys/hal/user.rs"]
+paid_by = "N4"
+
+# bsd: cnputc, cngetc, cnpollc of sys/dev/cons.rs, registered once consinit() has run.
+[[bridge]]
+trait = "hal::cons::Console"
+for = ["sys/hal/cons.rs"]
+paid_by = "N7"

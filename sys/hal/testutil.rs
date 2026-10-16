@@ -40,6 +40,9 @@
 //! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`.
 //! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
 //!   malloc type.
+//! - `UserCopy`: one user address space of `USER_LEN` bytes at [`user_base`]; anything
+//!   outside it is `EFAULT`.
+//! - `Console`: the output kept in one buffer, the input a queue the tests feed.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::boxed::Box;
@@ -51,6 +54,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant};
 
 use crate::bridges;
+use crate::cons::Console;
 use crate::cpu::CpuId;
 use crate::errno::Errno;
 use crate::intr::IntrLevel;
@@ -58,6 +62,7 @@ use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
 use crate::pool::{PoolBackend, RawPool};
 use crate::sleep::{INFSLP, Sleep};
+use crate::user::UserCopy;
 
 std::thread_local! {
     static SPL: Cell<i32> = const { Cell::new(0) };
@@ -73,6 +78,19 @@ std::thread_local! {
 
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
+
+/// Where the user address space of the double starts.
+const USER_BASE: usize = 0x1000_0000;
+/// Its size.
+const USER_LEN: usize = 64 * 1024;
+
+/// The user address space of the double.
+static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
+/// What the console double was given.
+static CONS_OUT: Mutex<std::vec::Vec<u8>> = Mutex::new(std::vec::Vec::new());
+/// What the console double will answer.
+static CONS_IN: Mutex<std::collections::VecDeque<u8>> =
+    Mutex::new(std::collections::VecDeque::new());
 
 /// The generation number of every wait channel a wakeup touched.
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
@@ -324,12 +342,84 @@ unsafe impl Malloc for TestMalloc {
     }
 }
 
+/// The user copy double.
+struct TestUser;
+
+/// The range `[uaddr, uaddr + len)` of the double's address space, `EFAULT` outside it.
+fn user_range(uaddr: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
+    let start = uaddr.checked_sub(USER_BASE).ok_or(Errno::EFAULT)?;
+    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
+    if end > USER_LEN {
+        return Err(Errno::EFAULT);
+    }
+    Ok(start..end)
+}
+
+impl UserCopy for TestUser {
+    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        let r = user_range(uaddr, kbuf.len())?;
+        kbuf.copy_from_slice(&lock(&USER)[r]);
+        Ok(())
+    }
+
+    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
+        let r = user_range(uaddr, kbuf.len())?;
+        lock(&USER)[r].copy_from_slice(kbuf);
+        Ok(())
+    }
+
+    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
+        let start = user_range(uaddr, 0)?.start;
+        let user = lock(&USER);
+        for (i, k) in kbuf.iter_mut().enumerate() {
+            let c = *user.get(start + i).ok_or(Errno::EFAULT)?;
+            *k = c;
+            if c == 0 {
+                return Ok(i + 1);
+            }
+        }
+        Err(Errno::ENAMETOOLONG)
+    }
+
+    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
+        let n = kbuf
+            .iter()
+            .position(|&c| c == 0)
+            .map(|i| i + 1)
+            .ok_or(Errno::ENAMETOOLONG)?;
+        self.copyout(&kbuf[..n], uaddr)?;
+        Ok(n)
+    }
+}
+
+/// The console double.
+struct TestCons;
+
+impl Console for TestCons {
+    fn cnputc(&self, c: u8) {
+        lock(&CONS_OUT).push(c);
+    }
+
+    fn cngetc(&self) -> i32 {
+        lock(&CONS_IN).pop_front().map_or(0, i32::from)
+    }
+
+    fn cnpollc(&self, _on: bool) {}
+}
+
+/// A double's state, a panicking test's poison ignored.
+fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 static TEST_INTR: TestIntr = TestIntr;
 static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
 static TEST_MALLOC: TestMalloc = TestMalloc;
+static TEST_USER: TestUser = TestUser;
+static TEST_CONS: TestCons = TestCons;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -341,10 +431,28 @@ pub(crate) fn install() {
         let _ = bridges::register_page_memory(&TEST_PAGES);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);
+        let _ = bridges::register_user_copy(&TEST_USER);
+        let _ = bridges::register_console(&TEST_CONS);
     });
 }
 
+/// The first address of the double's user address space.
+pub(crate) fn user_base() -> usize {
+    USER_BASE
+}
+
+/// Whether the console double was given `s`, in one piece.
+pub(crate) fn console_saw(s: &[u8]) -> bool {
+    lock(&CONS_OUT).windows(s.len()).any(|w| w == s)
+}
+
+/// Queues `c` for the console double's `cngetc`.
+pub(crate) fn console_feed(c: u8) {
+    lock(&CONS_IN).push_back(c);
+}
+
 /// The bytes of `malloc(9)` blocks of type `ty` this thread holds, as the double counts them.
+
 pub(crate) fn malloc_out(ty: i32) -> isize {
     MALLOC_OUT.with(|m| m.borrow().get(&ty).copied().unwrap_or(0))
 }

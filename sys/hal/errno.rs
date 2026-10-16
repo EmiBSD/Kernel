@@ -30,9 +30,13 @@
 //! [`Errno::get`].
 //!
 //! ## Redesign
-//! - Not a port of `<sys/errno.h>` (`sys/sys/errno.rs` stays the legacy tree's enum, and the
-//!   ABI owns the table userland sees): a transparent number, so no conversion can lose a
-//!   value on the way up from a bridge. The constants it names are the C's values, checked
+//! - Interim, by design one definition: `<sys/errno.h>` moves into `hal` as the inherited
+//!   `hal::sys::errno` (the user's decision of 2026-10-16, a parallel branch), and after that
+//!   merge this file becomes `pub use crate::sys::errno::Errno;` in one commit. So the runtime
+//!   names the type only as `crate::errno::Errno` and uses only what the legacy enum also has
+//!   (the `E*` names, `EWOULDBLOCK`, `from_raw`, `Debug`); [`Errno::get`] is used by this
+//!   file's own tests alone. Until then it is a transparent number, so no conversion can
+//!   lose a value on the way up from a bridge; the constants are the C's values, checked
 //!   against the header by a reference-backed test.
 
 /// An `errno(2)` value, as the runtime's fallible operations return it. Never 0.

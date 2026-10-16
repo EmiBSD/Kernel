@@ -282,7 +282,7 @@ impl RawRwlock {
     fn write_wait(&self) -> usize {
         match self.enter_write(0) {
             Ok(me) => me,
-            Err(e) => self.panic(format_args!("uninterruptible enter failed ({})", e.get())),
+            Err(e) => self.panic(format_args!("uninterruptible enter failed ({e:?})")),
         }
     }
 
@@ -362,7 +362,7 @@ impl RawRwlock {
     /// `rw_enter_read` without flags, which cannot fail.
     fn read_wait(&self) {
         if let Err(e) = self.enter_read(0) {
-            self.panic(format_args!("uninterruptible enter failed ({})", e.get()));
+            self.panic(format_args!("uninterruptible enter failed ({e:?})"));
         }
     }
 

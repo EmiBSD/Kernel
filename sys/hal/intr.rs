@@ -27,7 +27,7 @@
 //! The levels themselves are the machine's (`IPL_NONE` is 0 on both architectures; the
 //! others differ between amd64 and arm64), so they are passed in as the C's numbers. The
 //! machine's `splraise`/`splx` reach the runtime through the [`IntrLevel`] bridge, registered
-//! by `bsd` at boot over `sys/machine/intr.rs` (bridges.toml; paid by N2.2, when the hardware
+//! by `bsd` at boot over `sys/machine/intr.rs` (bridges.toml; paid by N4, when the hardware
 //! is `hal`'s own and the bridge goes).
 //!
 //! **Before registration** (early boot, before `main()` registers the bridges, and the host

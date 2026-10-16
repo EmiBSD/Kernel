@@ -75,7 +75,7 @@
 //! - The parking lots of the C's slow path (`mtx_park`, `mtx_enter_park`: a CPU that spun 40
 //!   times publishes itself in one of 128 lots with interrupts disabled and waits to be
 //!   handed the mutex) need `intr_disable`/`intr_restore`, which `hal` gets with the hardware
-//!   at N2.2: until then a contended `Mutexed` keeps spinning on its owner word with
+//!   at N4 (intr, N4.1): until then a contended `Mutexed` keeps spinning on its owner word with
 //!   `CPU_BUSY_CYCLE`, the C's behaviour before the lots. Mutual exclusion, the levels and the
 //!   counters are the C's; only who wins a contended release may differ.
 //! - After a panic or inside ddb (`panicstr || db_active`) the C's `mtx_enter` returns

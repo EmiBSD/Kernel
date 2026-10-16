@@ -23,7 +23,7 @@
 //!
 //! The machine answers through the [`CpuId`] bridge, registered by `bsd` at boot over
 //! `curcpu()`, `cpu_number()`, `ci_schedstate.spc_spinning`, `panicstr` and `db_active`
-//! (bridges.toml; paid by N2.2, when the hardware is `hal`'s own).
+//! (bridges.toml; paid by N4, when the hardware is `hal`'s own).
 //!
 //! **Before registration** (the boot CPU before `main()` registers the bridges, the host tests
 //! that register none): one CPU runs, index 0, named by a fixed word; nobody counts its spins;

@@ -30,6 +30,7 @@ extern crate std;
 
 pub(crate) mod assert;
 pub mod bridges;
+pub mod cons;
 pub mod cpu;
 pub mod errno;
 pub mod intr;
@@ -47,4 +48,5 @@ pub mod sleep;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tree;
+pub mod user;
 /* </CODE> */

@@ -40,6 +40,7 @@
 //!   an arrow goes up, so it is audited here: the slots are private, a slot is set once
 //!   (`register_*` refuses a second implementation), and a reader gets an `Option`.
 
+use crate::cons::Console;
 use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::kmbuf::PageMemory;
@@ -47,6 +48,7 @@ use crate::malloc::Malloc;
 use crate::once::OnceStatic;
 use crate::pool::PoolBackend;
 use crate::sleep::Sleep;
+use crate::user::UserCopy;
 
 /// A second registration of a bridge, which keeps the first; names the trait.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,14 +75,14 @@ macro_rules! bridge {
 }
 
 bridge!(
-    /// Registers the machine's `spl(9)` (`sys/machine/intr.rs`). Paid by N2.2.
+    /// Registers the machine's `spl(9)` (`sys/machine/intr.rs`). Paid by N4 (the hardware enters hal with its kernel owner, N4.1/N4.5).
     INTR_LEVEL: IntrLevel,
     register_intr_level,
     intr_level
 );
 
 bridge!(
-    /// Registers the running CPU's identity (`curcpu()`, `cpu_number()`). Paid by N2.2.
+    /// Registers the running CPU's identity (`curcpu()`, `cpu_number()`). Paid by N4 (the hardware enters hal with its kernel owner, N4.1/N4.5).
     CPU_ID: CpuId,
     register_cpu_id,
     cpu_id
@@ -115,6 +117,22 @@ bridge!(
     MALLOC: Malloc,
     register_malloc,
     malloc
+);
+
+bridge!(
+    /// Registers the machine's user copy (`copyin`, `copyout`, `copyinstr`, `copyoutstr` of
+    /// `sys/machine/copy.rs`). Paid by N4 (with the trap code, N4.5).
+    USER_COPY: UserCopy,
+    register_user_copy,
+    user_copy
+);
+
+bridge!(
+    /// Registers the console (`cnputc`, `cngetc`, `cnpollc` of `sys/dev/cons.rs`), once
+    /// `consinit()` has run. Paid by N7.
+    CONSOLE: Console,
+    register_console,
+    console
 );
 
 /* </CODE> */

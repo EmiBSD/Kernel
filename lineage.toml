@@ -6956,3 +6956,11 @@ reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items a
 [[extra]]
 rust = "sys/hal/malloc.rs"
 reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; docs/ZERO_UNSAFE.md 0.1, decision 19"
+
+[[extra]]
+rust = "sys/hal/user.rs"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; docs/ZERO_UNSAFE.md 0.1, decision 17"
+
+[[extra]]
+rust = "sys/hal/cons.rs"
+reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpollc, a fmt::Write sink) and the Console bridge; docs/ZERO_UNSAFE.md 0.1"
