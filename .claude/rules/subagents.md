@@ -17,6 +17,7 @@ summarises stay authoritative in their own files (`re-engineering.md`, `large-ch
 | `integrator` | opus | yes | yes | branch | merge agent branches, resolve the shared files, finish a stopped agent's work, `just ci` |
 | `debugger` | opus | yes | yes | branch | root cause of a failing or flaky smoke, test or `diff-openbsd` scenario, fixed without weakening an expectation |
 | `reviewer` | opus | no | no | nothing | read-only review of a branch: behaviour kept, `unsafe`, rules, security; returns the `Security-Review:` text |
+| `surveyor` | opus | no | yes | scratchpad | read-only inventory of a module before its redesign is designed: every `unsafe` and raw field by pattern, the primitives it needs and what exists of them, callers against the 50-module rule, the C's constraints, coverage; facts with `file:line`, never a design (the user's decision of 2026-10-16) |
 | `openbsd-probe` | sonnet | no | no | nothing | boot real OpenBSD 8.0 on a QEMU setup and report what it does |
 | `image-worker` | sonnet | no | no | scratchpad | view, crop, resize images so the coordinator's context stays small |
 
