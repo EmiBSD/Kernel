@@ -23,7 +23,6 @@
 //! - `elf`: the ELF64 file as the loader reads it, parsed in safe code.
 //! - `load`: the loader: placement, relocation, mapping through the platform, the header's
 //!   check and the call of the entry point; the boot line.
-//! - `once`: the init-once cell the registrations are kept in.
 //! - `rt`: the module's own runtime, its panic handler (feature `module-rt`, set by
 //!   `sys/abi/ko` alone).
 //!
@@ -34,7 +33,6 @@
 #[forbid(unsafe_code)]
 pub mod elf;
 pub mod load;
-pub mod once;
 #[forbid(unsafe_code)]
 mod rt;
 

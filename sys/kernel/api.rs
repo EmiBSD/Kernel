@@ -29,7 +29,7 @@
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, KERNEL_API_VERSION, KernelApi, SyscallHandler,
 };
-use hal::module::once::Once;
+use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The registered module: the table it was given and its handler.
@@ -39,7 +39,7 @@ struct Module {
 }
 
 /// The module's registration, once `abi_init` made it.
-static MODULE: Once<Module> = Once::new();
+static MODULE: OnceStatic<Module> = OnceStatic::new();
 
 /// The table of this version, with the kernel's registration and the functions the caller
 /// owns.

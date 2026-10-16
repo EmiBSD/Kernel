@@ -88,10 +88,10 @@
 //! names, the random seed from the tree, and the EFI `machine` commands.
 //!
 //! Upstream: sys/arch/arm64/stand/efiboot/efiboot.c @ 3ce1f3f79392,
-//! LZ: sys/arch/arm64/stand/efiboot/efiboot.rs@3c62ede68802
 //! sys/arch/arm64/stand/efiboot/efiboot.h @ 3ce1f3f79392,
 //! sys/arch/arm64/stand/efiboot/efidt.h @ 3ce1f3f79392,
 //! sys/arch/arm64/stand/efiboot/libsa.h @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/stand/efiboot/efiboot.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - `ST`, `BS`, `RS`, `IH`, `efi_bootdp`, `fdt_sys`, `fdt_override`, `smbios`, `heap`, the

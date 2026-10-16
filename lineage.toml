@@ -6789,13 +6789,13 @@ notes = "N2.4a: the system call dispatch point both traps call (the sysent[] cho
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
 native = ["sys/arch/amd64/amd64/trap.rs::syscall", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
-lines = "L336-L341"
+lines = "L352-L357"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
 native = ["sys/arch/arm64/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
-lines = "L67-L72"
+lines = "L83-L88"
 
 [[extra]]
 rust = "sys/arch/amd64/amd64/qemu.rs"
@@ -7041,11 +7041,6 @@ reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bri
 rust = "sys/hal/reftest.rs"
 crate = "hal"
 reason = "copy of sys/reftest.rs so the inherited headers moved into hal keep their #[ignore] reference-backed tests byte-identical (crate::reftest resolves inside hal); the two copies merge when bsd's last reference test moves"
-
-[[extra]]
-rust = "sys/hal/module/once.rs"
-crate = "hal"
-reason = "N2.4a: the init-once cell the system call registry, kernel::api and the module loader keep their registrations in; TODO(N2 integrate): replaced by hal::OnceStatic (the runtime of N2.3)"
 
 [[extra]]
 rust = "sys/kernel/api.rs"

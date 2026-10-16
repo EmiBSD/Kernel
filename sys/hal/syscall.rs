@@ -126,7 +126,7 @@
 //!   caller can repeat: a second registration is refused, so a system call never sees a
 //!   handler change under it.
 
-use crate::module::once::Once;
+use crate::once::OnceStatic;
 
 /// `register_t`: a machine register as a system call sees it (64 bits on both machines).
 pub type Register = isize;
@@ -164,10 +164,10 @@ struct Handler {
 }
 
 /// The module's handler, once `abi_init` registered it.
-static HANDLER: Once<Handler> = Once::new();
+static HANDLER: OnceStatic<Handler> = OnceStatic::new();
 
 /// The `Legacy` fallback, once `bsd`'s `main` registered it.
-static LEGACY: Once<SyscallFn> = Once::new();
+static LEGACY: OnceStatic<SyscallFn> = OnceStatic::new();
 
 /// Registers the `Legacy` fallback: the LZ system call path, which answers every entry the
 /// module's table marks `Legacy`. Once; a second registration is refused and returned.

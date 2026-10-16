@@ -255,10 +255,7 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
     let abi_module = boot
         .module(b"abi-openbsd.ko")
         .map(|m| (m.data.as_ptr().expose_provenance(), m.data.len()))
-        .or_else(|| {
-            boot.abi_module
-                .map(|(pa, len)| (boot.hhdm(pa).as_usize(), len))
-        });
+        .or_else(|| abi_module_handover(&boot));
     bsd::kern::abi_module::abi_module_boot(abi_module);
     match boot.module(b"ramdisk.ffs") {
         // SAFETY: the module is never reclaimed, is mapped read-write for the
@@ -274,6 +271,41 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
         }
     }
     init_main::main()
+}
+
+/// N2.4: boot(8)'s record of the ABI module (`BootInfo::abi_module`), checked before the
+/// module loader may read it: its length is neither 0 nor above the kernel's 64 MiB room,
+/// and `[pa, pa + len)` (`checked_add`) starts at or after the kernel image's physical
+/// start, ends within the room from there, and meets no region the memory map calls free,
+/// so it lies in the kernel's image below `esym` (amd64: between `KERNTEXTOFF - KERNBASE`
+/// and the tables after `esym`; arm64: in the 64 MB block, below the end mark of `x0`) and
+/// is in the direct map on both machines. Its kernel virtual address and length; otherwise
+/// one line, and the kernel boots without the module (decision 29).
+fn abi_module_handover(boot: &BootInfo) -> Option<(usize, usize)> {
+    /// The room boot(8) puts the kernel and the module in (both efiboots reserve 64 MiB).
+    const ROOM: usize = 64 << 20;
+    let (pa, len) = boot.abi_module?;
+    let start = pa.as_usize();
+    let kstart = boot.kernel_phys.as_usize();
+    let in_image = start.checked_add(len).is_some_and(|end| {
+        len != 0
+            && len <= ROOM
+            && start >= kstart
+            && end <= kstart.saturating_add(ROOM)
+            && boot.memmap.regions().iter().all(|r| {
+                let (base, length) = (r.base.as_usize(), r.length.as_usize());
+                r.kind != MemKind::Usable || end <= base || start >= base.saturating_add(length)
+            })
+    });
+    if !in_image {
+        kprintf!(
+            "abi-openbsd.ko: boot(8)'s record {:#x}+{:#x} is not in the kernel's image; ignored\n",
+            start,
+            len
+        );
+        return None;
+    }
+    Some((boot.hhdm(pa).as_usize(), len))
 }
 
 /// Sets `boothowto` and the boot DUID and brings up the machine's console.

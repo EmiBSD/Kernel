@@ -54,6 +54,7 @@ use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::kmbuf::PageMemory;
 use crate::malloc::Malloc;
+use crate::module::ModulePlatform;
 use crate::once::OnceStatic;
 use crate::pool::PoolBackend;
 use crate::sleep::Sleep;
@@ -147,6 +148,16 @@ bridge!(
     CONSOLE: Console,
     register_console,
     console
+);
+
+bridge!(
+    /// Registers the module loader's platform (`sys/hal/module/load.rs`): the boot loader's
+    /// hand-over of `abi-openbsd.ko` and the kernel pmap it is mapped with
+    /// (`sys/kern/abi_module.rs`), once, by the kernel's boot path before `main` loads the
+    /// module; the loader's three `unsafe` rest on it (the platform premise). Paid by N3.
+    MODULE_PLATFORM: ModulePlatform,
+    register_module_platform,
+    module_platform
 );
 
 /* </CODE> */

@@ -128,6 +128,7 @@ pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) 
 /// (Limine's module, or boot(8)'s through the direct map).
 pub fn abi_module_boot(image: Option<(usize, usize)>) {
     let _ = hal::syscall::set_legacy(legacy_syscall);
+    let _ = hal::bridges::register_module_platform(&BsdPlatform);
     if let Some((va, len)) = image {
         IMAGE_VA.store(va, Ordering::Relaxed);
         IMAGE_LEN.store(len, Ordering::Release);
@@ -137,7 +138,7 @@ pub fn abi_module_boot(image: Option<(usize, usize)>) {
 /// The second boot step, from `main` before `init(8)` may exec: loads the module, which
 /// registers its handler; prints the one line that says whether it did.
 pub fn abi_module_attach() {
-    match hal::module::load(&BsdPlatform, &KERNEL_API) {
+    match hal::module::load(&KERNEL_API) {
         Ok(loaded) => crate::kprintf!("{loaded}\n"),
         Err(e) => crate::kprintf!("{e}\n"),
     }
