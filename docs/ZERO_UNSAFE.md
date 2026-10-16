@@ -19,7 +19,7 @@ sections 1-9 stay as the record of how the first version was measured and why it
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware (today's `sys/arch/amd64`, `sys/arch/arm64`, `sys/machine`, moved in), the host test double (`sys/arch/host`), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (today's `queue.rs`, `tree.rs`, `subr_tree.rs`), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
 | `abi` | `sys/abi/` | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno. Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
-| `bsd` | `sys/` (the LZ tree, today's crate) | legacy: 8,911 today (the 8,747 outside the old core plus the 164 of the old runtime files, which are legacy now), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
+| `bsd` | `sys/` (the LZ tree, today's crate) | legacy: 8,906 today (the 8,747 outside the old core plus the 159 of the old runtime files, which are legacy now), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/stand`, `sys/lib/libsa`, 319 `unsafe`) are separate binaries that run
 before the kernel; they are outside the four crates and unchanged. `libkern` and `libz` stay
@@ -94,9 +94,9 @@ active days have moved 100 `unsafe`.
 | **N6 Network** | `sys/net/`, `sys/netinet/`, `sys/netinet6/`, the sockets of `sys/kern/uipc_*` → `kernel::net`, except N8's files | 99 | 1,840 | those directories gone from `bsd` but N8's files; the `Sockets` bridge removed | 18 d |
 | **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last | 395 | 4,198 | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 40 d |
 | **N8 Security subsystems** | `pf*`, `if_wg`/`wg_*`, IPsec, `softraid_crypto`, `pledge`, `unveil`, `exec_*`, the crypto framework → `kernel`, each with `Security-Review:` and the area's smokes before every commit | 36 | 849 | those files gone from `bsd`; `lz drift --security` empty | 8 d |
-| **N9 Close** | what is left: `sys/ddb/`, `sys/conf/`, `init/`, the old runtime files (`subr_pool`, `kern_lock`, `kern_rwlock`, `kern_malloc`, `smr`, `percpu`: deleted with their last user), `sys/sys/` emptied into `abi`/`kernel`; the `bsd` crate deleted; the binary is `kernel` + `abi` + `hal`; `bridges.toml` empty; `hal`'s floor recorded with its proof list; Miri green on `hal` | 14 + the old runtime 15 | 28 + 164 | `sys/` holds `hal/`, `kernel/`, `abi/`, `stand/`, `lib/`; `unsafe-report`: `bsd` does not exist, `kernel` 0, `abi` 0, `hal` = its floor | 5 d |
+| **N9 Close** | what is left: `sys/ddb/`, `sys/conf/`, `init/`, the old runtime files (`subr_pool`, `kern_lock`, `kern_rwlock`, `kern_malloc`, `smr`, `percpu`: deleted with their last user), `sys/sys/` emptied into `abi`/`kernel`; the `bsd` crate deleted; the binary is `kernel` + `abi` + `hal`; `bridges.toml` empty; `hal`'s floor recorded with its proof list; Miri green on `hal` | 14 + the old runtime 19 | 28 + 159 | `sys/` holds `hal/`, `kernel/`, `abi/`, `stand/`, `lib/`; `unsafe-report`: `bsd` does not exist, `kernel` 0, `abi` 0, `hal` = its floor | 5 d |
 
-Total: 8,911 `unsafe` out of `bsd`, 580 + 15 files, about **111 days of continuous agent
+Total: 8,906 `unsafe` out of `bsd` (8,747 legacy + 159 old runtime files), 580 + 19 files, about **111 days of continuous agent
 time** at the measured pace, serial (the slices share files); this number is the planning
 session's and promises nothing: `/progress` measures.
 
@@ -113,6 +113,23 @@ merged**; their shapes (`FileData` by value to the close, `CredRef`, the typed h
 Any`, `KlistLock`) are reused when descriptors and kqueue move into `kernel` at N4. About
 eight hours of agent work set aside by the architecture change; said here so it is not
 recounted as progress.
+
+
+### 0.7 The whole account (measured 2026-10-16 with `unsafe-report --json`)
+
+| Today | `unsafe` | At N9 | `unsafe` |
+|---|---:|---|---:|
+| LZ code not redesigned (580 files) | 8,747 | rewritten in `kernel`, deleted | 0 |
+| old LZ runtime files (19: `subr_pool` 58, `subr_percpu` 16, `kern_malloc` 14, `staticcell` 9, `kern_lock` 8, `smr` 8, `kern_tc` 7, `subr_prf` 7, `percpu` 7, `kern_smr` 6, `kern_subr` 6, `malloc` 3, `kern_rwlock` 2, `mutex` 2, `rwlock` 2, `explicit_bzero` 1, `pool` 1, `refcnt` 1, `systm` 1) | 159 | deleted with their last user; `hal` replaces them | 0 |
+| hardware (`arch/amd64` 863, `arch/arm64` 943, `machine` 85) | 1,891 | moved into `hal` | 1,891 |
+| host test double (`arch/host`) | 38 | moved into `hal` | 38 |
+| ours (`queue`, `tree`, `subr_tree`) | 71 | moved into `hal` | 71 |
+| new runtime in `hal` (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, `UserPtr`, `Mmio`, `DmaBuf`) | 0 | written new, each site proved | 120 (estimate) |
+| boot loaders (`stand`, `libsa`), separate binaries | 319 | unchanged | 319 |
+| **total** | **11,225** | | **2,439** |
+
+Removed from the repository: 8,786 (8,747 + 159 − 120). `kernel` 0 and `abi` 0 by the
+compiler; `hal` 2,120, 89 % of it the hardware code that exists today; the boot loaders apart.
 
 ## 1. Status and goal
 
