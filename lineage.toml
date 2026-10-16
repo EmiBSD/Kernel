@@ -6902,3 +6902,13 @@ reason = "N2.4a (decisions 21, 22): the module's system call table, one Native |
 rust = "sys/hal/module/rt.rs"
 crate = "hal"
 reason = "N2.4a: the runtime of the ABI module abi-openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
+
+[[extra]]
+rust = "sys/hal/module/elf.rs"
+crate = "hal"
+reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and the AMD64/AArch64 supplements' structures as #[repr(C)] read field by field with checked offsets (no crate, docs/ARCHITECTURE.md Dependencies); a static PIE of the running machine, page-aligned W^X PT_LOADs, RELATIVE relocations only"
+
+[[extra]]
+rust = "sys/hal/module/load.rs"
+crate = "hal"
+reason = "N2.4a (decision 22): the loader of abi-openbsd.ko: placement, relocation, mapping each page with its segment's protection through ModulePlatform (bsd's pmap and boot hand-over until N2.2, the platform premise), the header check, the call of abi_init, the boot line"

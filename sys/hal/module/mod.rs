@@ -20,6 +20,9 @@
 //! The loadable module `abi-openbsd.ko` (decision 22, docs/ZERO_UNSAFE.md 0.1): what `hal`
 //! needs to load it and to let it register itself.
 //!
+//! - `elf`: the ELF64 file as the loader reads it, parsed in safe code.
+//! - `load`: the loader: placement, relocation, mapping through the platform, the header's
+//!   check and the call of the entry point; the boot line.
 //! - `once`: the init-once cell the registrations are kept in.
 //! - `rt`: the module's own runtime, its panic handler (feature `module-rt`, set by
 //!   `sys/abi/ko` alone).
@@ -28,9 +31,17 @@
 //! here as bytes before its type is known: `kernel::api::AbiModuleHeader` is laid out as
 //! the offsets below say, and a compile-time check there keeps the two in step.
 
+#[forbid(unsafe_code)]
+pub mod elf;
+pub mod load;
 pub mod once;
 #[forbid(unsafe_code)]
 mod rt;
+
+pub use load::{LoadError, Loaded, ModulePlatform, Prot, load};
+
+/// The page size the module is laid out and mapped in (4 KiB on both machines).
+pub const PAGE_SIZE: usize = 4096;
 
 /// The module's file name on the boot medium and in the boot line.
 pub const MODULE_NAME: &str = "abi-openbsd.ko";

@@ -1,0 +1,13 @@
+# Bridges: the traits through which code in hal or kernel reaches what is still in bsd
+# (docs/ZERO_UNSAFE.md 0.3 point 2). One row each: `trait`, `for` (the files that call
+# through it), `paid_by` (the milestone that removes it). `cargo xtask lz check` validates
+# the rows; N9 requires none.
+
+[[bridge]]
+# hal::module::ModulePlatform: the boot hand-over of abi-openbsd.ko and the kernel pmap
+# (km_alloc, pmap_extract, pmap_enter) the loader maps the module with, implemented by
+# bsd's sys/kern/abi_module.rs; it becomes hal's own code once hal holds the pmap and the
+# boot entry (the hardware move).
+trait = "ModulePlatform"
+for = ["sys/hal/module/load.rs"]
+paid_by = "N3"
