@@ -1169,6 +1169,12 @@ pub(crate) fn check(root: &Path) -> Result<()> {
                 "{rel}: {n} hand-written `impl Adapter`, rename of the trait, or `impl $t for` with the trait in a macro variable; only queue_adapter! and tree_adapter! implement sys/sys/queue.rs's Adapter, whose OFFSET the core's container_of trusts (docs/ZERO_UNSAFE.md, section 3)"
             ));
         }
+        let n = abi_pod_impls(&rel, toks);
+        if n > 0 {
+            errors.push(format!(
+                "{rel}: {n} hand-written `impl AbiPod` or rename of hal's `user::AbiPod`; only abi_pod! (and sys/hal/user.rs's primitives) implement it, whose checks UserPtr's byte views trust (docs/ZERO_UNSAFE.md, decision 17)"
+            ));
+        }
     }
     let core = crate::unsafereport::CoreList::load(root)?;
     let forbid: HashSet<String> = crate::unsafereport::forbid_files(&lexed)
@@ -1281,6 +1287,46 @@ pub(crate) fn adapter_impls(rel: &str, toks: &[Tok]) -> usize {
                     .windows(2)
                     .any(|w| matches!(w, [Tok::Punct('$'), Tok::Ident(v)] if v != "crate"));
                 last == Some("Adapter") || via_var
+            });
+        if renamed || hand_impl {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The file where `hal`'s safe `AbiPod` lives with the only code allowed to implement it:
+/// `abi_pod!` (which checks the type at compile time), `abi_pod_primitive!` and the impl for
+/// arrays (docs/ZERO_UNSAFE.md, decision 17).
+const ABI_POD_FILES: [&str; 1] = ["sys/hal/user.rs"];
+
+/// How many hand-written impls of `hal`'s safe `AbiPod` the file `rel`, lexed as `toks`,
+/// writes: an `impl .. AbiPod for` not preceded by `unsafe`, and a rename `.. user::AbiPod
+/// as`, anywhere but in [`ABI_POD_FILES`]. The byte views of `hal::user::UserPtr` rest on
+/// every impl having passed `abi_pod!`'s checks, so a hand-written one is refused. An `unsafe
+/// impl .. AbiPod` is the legacy trait of sys/machine/copy.rs (the compiler refuses an
+/// `unsafe impl` of a safe trait), so it is not counted. Raw identifiers count as the plain
+/// name.
+pub(crate) fn abi_pod_impls(rel: &str, toks: &[Tok]) -> usize {
+    if ABI_POD_FILES.contains(&rel) {
+        return 0;
+    }
+    let ident = |i: usize, s: &str| matches!(toks.get(i), Some(Tok::Ident(x)) if unraw(x) == s);
+    let mut n = 0;
+    for i in 0..toks.len() {
+        let renamed = ident(i, "AbiPod")
+            && ident(i + 1, "as")
+            && i >= 3
+            && toks[i - 1] == Tok::Punct(':')
+            && toks[i - 2] == Tok::Punct(':')
+            && ident(i - 3, "user");
+        let hand_impl = ident(i, "impl")
+            && !(i > 0 && ident(i - 1, "unsafe"))
+            && impl_trait_path(&toks[i + 1..]).is_some_and(|path| {
+                path.iter().rev().find_map(|t| match t {
+                    Tok::Ident(x) => Some(unraw(x)),
+                    _ => None,
+                }) == Some("AbiPod")
             });
         if renamed || hand_impl {
             n += 1;
@@ -1997,6 +2043,41 @@ mod tests {
             Some("trap")
         );
     }
+    #[test]
+    fn abi_pod_impls_only_in_hal_user() {
+        use crate::unsafereport::lex;
+        let user = r#"
+        pub trait AbiPod: Copy + 'static {}
+        macro_rules! abi_pod_primitive { ($($t:ty),+) => { $(impl AbiPod for $t {})+ }; }
+        impl<T: AbiPod, const N: usize> AbiPod for [T; N] {}
+        macro_rules! abi_pod {
+            ($ty:path { $($field:ident : $fty:ty),+ }) => {
+                impl $crate::user::AbiPod for $ty {}
+            };
+        }
+    "#;
+        assert_eq!(abi_pod_impls("sys/hal/user.rs", &lex(user)), 0);
+        // The same text anywhere else is a hand-written impl.
+        assert_eq!(abi_pod_impls("sys/kernel/x.rs", &lex(user)), 3);
+        let allowed = r#"
+        hal::abi_pod!(Kevent { ident: u64, filter: i16 });
+        unsafe impl AbiPod for Sigaction {}
+        unsafe impl<T: Copy> AbiPod for Wrap<T> {}
+        use crate::machine::copy::AbiPod;
+        fn f<T: AbiPod>(t: T) -> T { t }
+    "#;
+        assert_eq!(abi_pod_impls("sys/kern/kern_sig.rs", &lex(allowed)), 0);
+        for refused in [
+            "impl AbiPod for Mine {}",
+            "impl hal::user::AbiPod for Mine {}",
+            "impl<T: Copy + 'static> user::AbiPod for Wrap<T> {}",
+            "impl r#AbiPod for Mine {}",
+            "use hal::user::AbiPod as P;",
+        ] {
+            assert_eq!(abi_pod_impls("sys/abi/x.rs", &lex(refused)), 1, "{refused}");
+        }
+    }
+
     #[test]
     fn adapter_impls_only_inside_the_macros() {
         use crate::unsafereport::lex;
