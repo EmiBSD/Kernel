@@ -112,15 +112,12 @@
 //!   so does unlinking an element its parent (or the root) does not hold: an element removed
 //!   twice or never inserted, which in the C silently corrupts the tree. The panics go
 //!   through `rb_panic`, `panic(9)` in the kernel and an unwinding panic in the host tests.
-//! - N2.3 (docs/ZERO_UNSAFE.md section 0.8): the module lives in the hal crate
-//!   (`sys/hal/rbtree.rs`, decision 20); `sys/kern/subr_tree.rs` re-exports it for the legacy
-//!   tree. `rb_panic` reaches `panic(9)` through `core::panic!` and the image's panic handler.
 
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
-use crate::tree::{Color, Link, RB_BLACK, RB_RED, RbTree, RbtEntry};
+use crate::sys::tree::{Color, Link, RB_BLACK, RB_RED, RbTree, RbtEntry};
 
 /// Which child of a node: the C's mirrored halves of each step are one path over it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -324,11 +321,19 @@ fn is_red<T: RbType>(node: Option<RbNode<'_, T>>) -> bool {
 
 /// What the C does by dereferencing `NULL` or a poison value when a caller breaks a
 /// precondition: a kernel panic, in every configuration (`docs/IDIOMS.md`, the same shape as
-/// `list.rs`'s): `panic(9)` through the image's panic handler, an unwinding panic that
-/// `#[should_panic]` sees on the host.
+/// `queue.rs`'s).
 #[cold]
+#[cfg(not(test))]
 fn rb_panic(args: core::fmt::Arguments<'_>) -> ! {
-    crate::assert::hal_panic(args)
+    crate::kern::subr_prf::panic(args)
+}
+
+/// The host tests' `rb_panic`: an unwinding panic, so that `#[should_panic]` sees it (the
+/// host's `panic(9)` ends the test process through `boot`).
+#[cold]
+#[cfg(test)]
+fn rb_panic(args: core::fmt::Arguments<'_>) -> ! {
+    std::panic!("{args}")
 }
 
 /// A poisoned entry's links were about to be followed.
@@ -855,7 +860,7 @@ mod tests {
     use core::ptr;
     use std::vec::Vec;
 
-    use crate::tree::{RB_BLACK, RB_RED, RbtAdapter, RbtEntry, RbtHead};
+    use crate::sys::tree::{RB_BLACK, RB_RED, RbtAdapter, RbtEntry, RbtHead};
     use crate::tree_adapter;
 
     struct Node {

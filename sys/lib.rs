@@ -63,10 +63,6 @@ pub mod uvm;
 #[forbid(unsafe_code)]
 pub(crate) mod reftest;
 
-// The adapter macros live in the hal crate with the lists and trees (docs/ZERO_UNSAFE.md 0.8,
-// N2.3); the legacy tree keeps naming them `crate::queue_adapter!` and `crate::tree_adapter!`.
-pub use hal::{queue_adapter, tree_adapter};
-
 /// Kernel panic entry point for bare-metal targets: `panic!("...")` anywhere in the kernel is
 /// OpenBSD's `panic(9)`, in `kern/subr_prf.rs`. The message is the one `panic!` was given; the
 /// Rust source location is left out, as the C prints only the message. On the host, std's panic

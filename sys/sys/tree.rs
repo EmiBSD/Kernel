@@ -110,21 +110,18 @@
 //!   mutators' contracts and the two `RbType` implementations. `RB_REMOVE` and `RBT_REMOVE`
 //!   leave the element as [`RbtEntry::new`] makes it. [`RbIter`] and [`RbIterReverse`] hold
 //!   references, not raw pointers.
-//! - N2.3 (docs/ZERO_UNSAFE.md section 0.8): the module lives in the hal crate
-//!   (`sys/hal/tree.rs`, decision 20), its algorithm in `sys/hal/rbtree.rs`;
-//!   `sys/sys/tree.rs` re-exports it for the legacy tree.
 
 use core::cell::Cell;
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
-use crate::list::Adapter;
-use crate::rbtree::{
+use crate::kern::subr_tree::{
     _rb_check, _rb_find, _rb_insert, _rb_left, _rb_max, _rb_min, _rb_next, _rb_nfind, _rb_parent,
     _rb_poison, _rb_prev, _rb_remove, _rb_right, _rb_root, _rb_set_left, _rb_set_parent,
     _rb_set_right, RbType,
 };
+use crate::sys::queue::Adapter;
 
 /// `RB_BLACK`.
 pub const RB_BLACK: u32 = 0;
@@ -139,7 +136,7 @@ macro_rules! tree_adapter {
     ($(#[$meta:meta])* $vis:vis $name:ident: $elem:ty, $field:ident => $entry:ty, $cmp:expr) => {
         $crate::queue_adapter!($(#[$meta])* $vis $name: $elem, $field => $entry);
 
-        impl $crate::tree::TreeAdapter for $name {
+        impl $crate::sys::tree::TreeAdapter for $name {
             fn compare(a: &$elem, b: &$elem) -> ::core::cmp::Ordering {
                 $cmp(a, b)
             }
@@ -149,7 +146,7 @@ macro_rules! tree_adapter {
      augment = $aug:expr) => {
         $crate::queue_adapter!($(#[$meta])* $vis $name: $elem, $field => $entry);
 
-        impl $crate::tree::TreeAdapter for $name {
+        impl $crate::sys::tree::TreeAdapter for $name {
             const AUGMENTED: bool = true;
 
             fn compare(a: &$elem, b: &$elem) -> ::core::cmp::Ordering {
