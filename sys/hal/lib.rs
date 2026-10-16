@@ -23,4 +23,13 @@
 //! system where `unsafe` may appear; every site carries a soundness proof and `cargo xtask
 //! hal-check` refuses a `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
+
+// The host tests link std; a kernel image never does.
+#[cfg(test)]
+extern crate std;
+
+pub(crate) mod assert;
+pub mod list;
+pub mod rbtree;
+pub mod tree;
 /* </CODE> */

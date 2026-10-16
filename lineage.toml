@@ -6876,3 +6876,19 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
+
+[[extra]]
+rust = "sys/sys/queue.rs"
+reason = "re-export of the hal module sys/hal/list.rs for the 400+ users of the legacy tree; the timing rule (docs/ZERO_UNSAFE.md 0.8, N2.3)"
+
+[[extra]]
+rust = "sys/sys/tree.rs"
+reason = "re-export of the hal module sys/hal/tree.rs for the users of the legacy tree; the timing rule (docs/ZERO_UNSAFE.md 0.8, N2.3)"
+
+[[extra]]
+rust = "sys/kern/subr_tree.rs"
+reason = "re-export of the hal module sys/hal/rbtree.rs for the users of the legacy tree; the timing rule (docs/ZERO_UNSAFE.md 0.8, N2.3)"
+
+[[extra]]
+rust = "sys/hal/assert.rs"
+reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that names nothing of the kernel (through the image's panic handler); docs/ZERO_UNSAFE.md 0.1"

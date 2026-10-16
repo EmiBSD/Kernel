@@ -145,6 +145,10 @@
 //!   deref-coerce a `Box` or a reference to the entry behind it); `cargo xtask lz check`
 //!   refuses any `impl Adapter` written by hand: the one place where a CI check, not the
 //!   compiler, upholds a premise of a `SAFETY:` argument (the adapter premise).
+//! - N2.3 (docs/ZERO_UNSAFE.md section 0.8): the module lives in the hal crate
+//!   (`sys/hal/list.rs`, decision 20); `sys/sys/queue.rs` re-exports it for the legacy tree.
+//!   `panic(9)` is reached through `core::panic!` and the image's panic handler (the same
+//!   message), and the `diagnostic` assertions through hal's own `kassert!`.
 
 use core::cell::Cell;
 use core::marker::PhantomData;
@@ -164,8 +168,8 @@ const Q_INVALID: usize = usize::MAX;
 /// while `entry` returned the entry behind it, so the macro refuses it at compile time.
 ///
 /// ```
-/// use bsd::queue_adapter;
-/// use bsd::sys::queue::TailqEntry;
+/// use hal::list::TailqEntry;
+/// use hal::queue_adapter;
 /// struct Node {
 ///     link: TailqEntry<Node>,
 /// }
@@ -174,8 +178,8 @@ const Q_INVALID: usize = usize::MAX;
 /// ```
 ///
 /// ```compile_fail
-/// use bsd::queue_adapter;
-/// use bsd::sys::queue::TailqEntry;
+/// use hal::list::TailqEntry;
+/// use hal::queue_adapter;
 /// struct Node {
 ///     link: std::boxed::Box<TailqEntry<Node>>,
 /// }
@@ -191,7 +195,7 @@ macro_rules! queue_adapter {
         // `Adapter`'s contract: `entry` projects the named field and nothing else, and
         // `OFFSET` is that field's offset, so the two agree. This macro and `tree_adapter!`
         // (which expands to it) are the only impls; `cargo xtask lz check` refuses any other.
-        impl $crate::sys::queue::Adapter for $name {
+        impl $crate::list::Adapter for $name {
             type Elem = $elem;
             type Entry = $entry;
             const OFFSET: usize = ::core::mem::offset_of!($elem, $field);
@@ -230,7 +234,7 @@ impl<P> Link<P> {
     fn get(&self) -> Option<NonNull<P>> {
         let v = self.0.get();
         #[cfg(feature = "diagnostic")]
-        crate::kassert!(v.is_none_or(|p| p.addr().get() != Q_INVALID));
+        crate::assert::kassert!(v.is_none_or(|p| p.addr().get() != Q_INVALID));
         v
     }
 
@@ -262,7 +266,7 @@ impl<P> Link<P> {
     fn target<'a>(&self) -> Option<&'a P> {
         let p = self.0.get()?;
         #[cfg(feature = "diagnostic")]
-        crate::kassert!(p.addr().get() != Q_INVALID);
+        crate::assert::kassert!(p.addr().get() != Q_INVALID);
         // SAFETY: by the type's invariant a `Some` link of a head or of a linked element names
         // a live `P`: the mutators' callers keep linked elements valid and in place until they
         // are unlinked, and the list and tail queue heads the back links name in place while
@@ -1748,19 +1752,11 @@ impl<A: TailqAdapter> Step<A::Elem> for &TailqHead<A> {
 
 /// What the C does by dereferencing `NULL` when a caller breaks an operation's precondition
 /// (`what` names the operation and the broken condition): a kernel panic, in every
-/// configuration.
+/// configuration (`panic(9)` through the image's panic handler; an unwinding panic that
+/// `#[should_panic]` sees on the host).
 #[cold]
-#[cfg(not(test))]
 fn queue_panic(what: &str) -> ! {
-    crate::kern::subr_prf::panic(format_args!("{what}"))
-}
-
-/// The host tests' `queue_panic`: an unwinding panic, so that `#[should_panic]` sees it (the
-/// host's `panic(9)` ends the test process through `boot`).
-#[cold]
-#[cfg(test)]
-fn queue_panic(what: &str) -> ! {
-    std::panic!("{what}")
+    crate::assert::hal_panic(format_args!("{what}"))
 }
 
 /// `_Q_INVALIDATE`: under feature `diagnostic`, poisons a link of a removed element so that a

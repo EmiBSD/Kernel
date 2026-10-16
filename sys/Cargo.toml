@@ -23,7 +23,7 @@ doc = false
 default = ["alloc", "boot_config", "ffs", "ffs2", "kmemstats", "inet6", "quota", "ufs_dirhash", "mfs", "tmpfs", "msdosfs", "cd9660", "udf", "nfsclient", "nfsserver", "fuse", "ntfs", "ext2fs", "wsdisplay_compat_usl", "wsdisplay_compat_rawkbd"]
 alloc = []        # enables `extern crate alloc` and the GlobalAlloc over malloc(9)
 boot_config = ["alloc"] # OpenBSD `option BOOT_CONFIG` -> `boot -c`, the UKC> prompt (kern/subr_userconf.c); default (both GENERICs have it)
-diagnostic = []   # OpenBSD `option DIAGNOSTIC` -> kassert! active
+diagnostic = ["hal/diagnostic"]   # OpenBSD `option DIAGNOSTIC` -> kassert! active (and hal's)
 debug = []        # OpenBSD `option DEBUG`      -> kdassert! active
 kmemstats = []    # OpenBSD `option KMEMSTATS`  -> malloc(9) statistics; default (GENERIC has it)
 pool_debug = []   # OpenBSD `option POOL_DEBUG` -> pool_debug = 1
@@ -47,7 +47,7 @@ qemu = []         # QEMU-only exits (isa-debug-exit, semihosting) and shortcuts
 encdebug = []     # OpenBSD `option ENCDEBUG` -> the IPsec DPRINTF messages (net.inet.ip.encdebug)
 tcp_sack_debug = [] # OpenBSD `option TCP_SACK_DEBUG` -> tcp_print_holes in tcp_output
 wdcdebug = []     # OpenBSD `option WDCDEBUG` -> wdc(4)/wd(4) debug messages (WDCDEBUG_PRINT) and the event trace ring (wdcevent.h, wdc_log, ATAIOGETTRACE)
-multiprocessor = [] # OpenBSD `option MULTIPROCESSOR` -> the kernel lock, the spinning mutex, the APs (M11a), the TSC sync test (M11b), the audited MP paths (M11e); off by default, but every `just smoke` recipe but `smoke-up` boots it
+multiprocessor = ["hal/multiprocessor"] # OpenBSD `option MULTIPROCESSOR` -> the kernel lock, the spinning mutex, the APs (M11a), the TSC sync test (M11b), the audited MP paths (M11e); off by default, but every `just smoke` recipe but `smoke-up` boots it
 scsiterse = []    # OpenBSD `option SCSITERSE` -> sense codes printed as numbers, no adesc[] table
 miniroot = []     # OpenBSD `option MINIROOTSIZE` -> the ramdisk image compiled in (bsd.rd): rd_root_image/rd_root_size, sized by $EMIBSD_MINIROOTSIZE (sectors), filled by `cargo xtask rdsetroot`; roots on rd0a
 inet6 = []        # OpenBSD option INET6 -> IPv6 (sys/netinet6); default (GENERIC has it)
