@@ -106,6 +106,7 @@ pub mod poll;
 pub mod pool;
 pub mod proc;
 pub mod protosw;
+#[path = "../hal/list.rs"]
 pub mod queue;
 #[forbid(unsafe_code)]
 pub mod reboot;
@@ -155,6 +156,7 @@ pub mod timeout;
 pub mod timetc;
 #[forbid(unsafe_code)]
 pub mod tprintf;
+#[path = "../hal/tree.rs"]
 pub mod tree;
 pub mod tty;
 pub mod ttycom;
