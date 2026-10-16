@@ -1172,7 +1172,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         let n = abi_pod_impls(&rel, toks);
         if n > 0 {
             errors.push(format!(
-                "{rel}: {n} hand-written `impl AbiPod` or rename of hal's `user::AbiPod`; only abi_pod! (and sys/hal/user.rs's primitives) implement it, whose checks UserPtr's byte views trust (docs/ZERO_UNSAFE.md, decision 17)"
+                "{rel}: {n} hand-written `impl AbiPod`, rename `AbiPod as`, or `impl $t for` with the trait in a macro variable; only abi_pod! (and sys/hal/user.rs's primitives) implement hal's AbiPod, whose checks UserPtr's byte views trust (docs/ZERO_UNSAFE.md, decision 17)"
             ));
         }
     }
@@ -1301,12 +1301,14 @@ pub(crate) fn adapter_impls(rel: &str, toks: &[Tok]) -> usize {
 const ABI_POD_FILES: [&str; 1] = ["sys/hal/user.rs"];
 
 /// How many hand-written impls of `hal`'s safe `AbiPod` the file `rel`, lexed as `toks`,
-/// writes: an `impl .. AbiPod for` not preceded by `unsafe`, and a rename `.. user::AbiPod
-/// as`, anywhere but in [`ABI_POD_FILES`]. The byte views of `hal::user::UserPtr` rest on
-/// every impl having passed `abi_pod!`'s checks, so a hand-written one is refused. An `unsafe
-/// impl .. AbiPod` is the legacy trait of sys/machine/copy.rs (the compiler refuses an
-/// `unsafe impl` of a safe trait), so it is not counted. Raw identifiers count as the plain
-/// name.
+/// writes: an `impl .. AbiPod for` not preceded by `unsafe`, an `impl $t for` with the trait
+/// in a macro variable (as [`adapter_impls`] refuses it), and any rename `AbiPod as`,
+/// whatever path precedes it (`use hal::user::{AbiPod as P}` names the trait with no path
+/// before it; the legacy trait of sys/machine/copy.rs is never renamed in the tree), anywhere
+/// but in [`ABI_POD_FILES`]. The byte views of `hal::user::UserPtr` rest on every impl having
+/// passed `abi_pod!`'s checks, so a hand-written one is refused. An `unsafe impl .. AbiPod`
+/// is the legacy trait (the compiler refuses an `unsafe impl` of a safe trait), so it is not
+/// counted. Raw identifiers count as the plain name.
 pub(crate) fn abi_pod_impls(rel: &str, toks: &[Tok]) -> usize {
     if ABI_POD_FILES.contains(&rel) {
         return 0;
@@ -1314,19 +1316,18 @@ pub(crate) fn abi_pod_impls(rel: &str, toks: &[Tok]) -> usize {
     let ident = |i: usize, s: &str| matches!(toks.get(i), Some(Tok::Ident(x)) if unraw(x) == s);
     let mut n = 0;
     for i in 0..toks.len() {
-        let renamed = ident(i, "AbiPod")
-            && ident(i + 1, "as")
-            && i >= 3
-            && toks[i - 1] == Tok::Punct(':')
-            && toks[i - 2] == Tok::Punct(':')
-            && ident(i - 3, "user");
+        let renamed = ident(i, "AbiPod") && ident(i + 1, "as");
         let hand_impl = ident(i, "impl")
             && !(i > 0 && ident(i - 1, "unsafe"))
             && impl_trait_path(&toks[i + 1..]).is_some_and(|path| {
-                path.iter().rev().find_map(|t| match t {
+                let last = path.iter().rev().find_map(|t| match t {
                     Tok::Ident(x) => Some(unraw(x)),
                     _ => None,
-                }) == Some("AbiPod")
+                });
+                let via_var = path
+                    .windows(2)
+                    .any(|w| matches!(w, [Tok::Punct('$'), Tok::Ident(v)] if v != "crate"));
+                last == Some("AbiPod") || via_var
             });
         if renamed || hand_impl {
             n += 1;
@@ -2073,6 +2074,9 @@ mod tests {
             "impl<T: Copy + 'static> user::AbiPod for Wrap<T> {}",
             "impl r#AbiPod for Mine {}",
             "use hal::user::AbiPod as P;",
+            "use hal::user::{AbiPod as P}; type Q = P;",
+            "use hal::user::r#AbiPod as P;",
+            "macro_rules! m { ($t:path) => { impl $t for Mine {} } }",
         ] {
             assert_eq!(abi_pod_impls("sys/abi/x.rs", &lex(refused)), 1, "{refused}");
         }

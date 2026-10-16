@@ -70,9 +70,9 @@
 //! ## Deviations
 //! - `counters_read` waits for an odd generation with `CPU_BUSY_CYCLE` where the C calls
 //!   `yield()`: the scheduler is not `hal`'s, and an update is a few stores long.
-//! - Without `MULTIPROCESSOR`, `counters_read` copies the one set at `splhigh()` as the C does
-//!   (through the `IntrLevel` bridge; before it is registered there are no interrupts to
-//!   tear the copy).
+//! - Without `MULTIPROCESSOR`, `counters_read` copies and `counters_zero` zeroes the one set at
+//!   `splhigh()` as the C does (through the `IntrLevel` bridge; before it is registered there
+//!   are no interrupts to tear the copy or to count between the stores).
 //!
 //! ## Redesign
 //! - LZ's `cpumem` is a handle to `ncpusfound` pool or `malloc` allocations, reached by raw
@@ -253,6 +253,10 @@ impl<const N: usize> Counters<N> {
 
     /// `counters_zero`: every counter of every CPU back to 0, the generation numbers too.
     pub fn zero(&self) {
+        // Without MULTIPROCESSOR the C zeroes the one set at splhigh (subr_percpu.c), so an
+        // interrupt that counts cannot land between the stores.
+        #[cfg(not(feature = "multiprocessor"))]
+        let _high = crate::intr::splhigh();
         fence(Ordering::Release); // membar_producer()
         for words in self.cpus.iter() {
             for c in &words.counters {

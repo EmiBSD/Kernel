@@ -158,10 +158,13 @@ impl Sleep for BsdSleep {
 
     fn kernel_lock_held(&self) -> bool {
         #[cfg(feature = "multiprocessor")]
-        let held = crate::kern::kern_lock::_kernel_lock_held();
+        {
+            crate::kern::kern_lock::_kernel_lock_held()
+        }
         #[cfg(not(feature = "multiprocessor"))]
-        let held = false;
-        held
+        {
+            false
+        }
     }
 }
 
@@ -210,6 +213,10 @@ impl RawPool for Pool {
 struct BsdPools;
 
 impl PoolBackend for BsdPools {
+    /// The `struct pool` itself comes from the Rust global allocator (`malloc(9)` with
+    /// `M_TEMP`, `M_NOWAIT` behind it; a failure there is the allocator's panic) and is
+    /// leaked: `pool_init(9)` assumes its `struct pool` outlives every item, and no pool is
+    /// ever destroyed here.
     #[cfg(feature = "alloc")]
     fn create(
         &self,

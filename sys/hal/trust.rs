@@ -64,6 +64,11 @@ pub(crate) fn check_block(
             "{bridge}: block of {granted} bytes for a request of {requested}"
         ));
     }
+    if ptr.as_ptr().addr().checked_add(granted).is_none() {
+        hal_panic(format_args!(
+            "{bridge}: block {ptr:p} of {granted} bytes ends past the address space"
+        ));
+    }
     #[cfg(feature = "diagnostic")]
     probe(bridge, ptr, requested);
 }
@@ -116,6 +121,14 @@ mod tests {
     fn a_short_block_panics() {
         let mut b = [0u64; 4];
         check_block("test", NonNull::from(&mut b).cast::<u8>(), 16, 32, 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "ends past the address space")]
+    fn a_block_past_the_end_of_memory_panics() {
+        let mut b = [0u64; 4];
+        let p = NonNull::from(&mut b).cast::<u8>();
+        check_block("test", p, usize::MAX, 32, 8);
     }
 
     #[test]
