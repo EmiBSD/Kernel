@@ -201,12 +201,9 @@ impl<T> Mutexed<T> {
 
     /// `__MUTEX_IPL(mtx_wantipl)`: under `MULTIPROCESSOR` at least `IPL_MPFLOOR`.
     fn want(&self) -> i32 {
-        #[cfg(feature = "multiprocessor")]
-        {
+        if cfg!(feature = "multiprocessor") {
             self.wantipl.max(intr::mpfloor())
-        }
-        #[cfg(not(feature = "multiprocessor"))]
-        {
+        } else {
             self.wantipl
         }
     }

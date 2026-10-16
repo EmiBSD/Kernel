@@ -102,7 +102,7 @@ impl KmBuf {
 
     fn alloc(len: usize, kind: PageKind, wait: bool) -> Option<KmBuf> {
         let mem = bridges::page_memory()?;
-        kassert!(len != 0 && len % mem.page_size() == 0); // km_alloc: sz == round_page(sz)
+        kassert!(len != 0 && len.is_multiple_of(mem.page_size())); // km_alloc: sz == round_page(sz)
         let ptr = mem.alloc(len, kind, wait)?;
         Some(KmBuf {
             ptr,

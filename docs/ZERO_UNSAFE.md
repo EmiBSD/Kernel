@@ -422,3 +422,39 @@ every design that kept `unsafe` inside the kernel:
     the integration errors between `hal`, `kernel`, `abi` and `bsd`; no `just ci-full`; one
     `just ci` and one `just diff-openbsd`, both rc=0, mark N2 closed and push. `ci-full` is
     recorded as pending in `docs/STATUS.md` and runs once at the N3 close for both milestones.
+
+Taken by the N2.3 runtime redesigner on 2026-10-16 under the user's standing authority of that
+day (numbered R1.. so that other slices' entries do not collide; the integrator renumbers them
+after 24 when it merges):
+
+- R1. **A runtime module that re-expresses one C file's algorithm keeps that file's licence and
+  provenance.** `sys/hal/mutex.rs` (`kern_lock.c`, `mutex.h`), `rwlock.rs` (`kern_rwlock.c`,
+  `rwlock.h`), `percpu.rs` (`subr_percpu.c`, `percpu.h`) and `refcnt.rs` (`refcnt.h`,
+  `kern_synch.c`) are `redesigned` `[[module]]`s with those LZ files in `lz`, their notices
+  and `//! LZ:` lines, not `[[extra]]`s with the author's block alone: a translation is a
+  derivative work (`scope-and-stubs.md`). The pieces that follow no C file (`once`, `bridges`,
+  `intr`, `cpu`, `sleep`, `kmbuf`, `pool`, `malloc`, `user`, `cons`, `errno`, `assert`) are
+  `[[extra]]`s. The LZ files stay `inherited` in `bsd` for their users.
+- R2. **`TypedPool<T>` is backed by `bsd`'s `pool(9)`, one pool per type, through a bridge**,
+  not by a pool allocator written in `hal`: `vmstat -m` and `systat pool` list the pools by
+  name (`pipepl`, ...), which userland sees; the same for `MBox<T>` over `malloc(9)` (its
+  types' rows, decision 19).
+- R3. **`Mutexed<T>` deviations, until `hal` owns `intr_disable` (N4.1):** a contended mutex
+  spins on its owner word (no parking lots); the `panicstr || db_active` bypass is not kept
+  (it would hand out a second `&mut`; the console primitive takes no lock instead); entering a
+  mutex this CPU holds panics in every configuration. Written in the module's
+  `## Deviations`.
+- R4. **No lock's exclusion rests on a bridge.** The owner words are never 0 for an owner
+  (`MTX_OWNED`, `RWLOCK_WRLOCK`) and a writer's exit compares the word it stored, so a wrong
+  `CpuId` or `Sleep` answer costs a diagnostic, never an aliased `&mut`; the bridges that
+  answer such questions are safe traits.
+- R5. **`hal::errno::Errno` is interim** (a transparent `errno(2)` number): the constant
+  headers move into `hal` as inherited modules (the user's decision relayed by the
+  coordinator), and the integrator folds it into `hal::sys::errno::Errno` in one commit; the
+  runtime uses only what the legacy enum also has.
+
+Open, for the user (not taken): the memory bridges (`PageMemory`, `PoolBackend`/`RawPool`,
+`Malloc`) are `unsafe trait`s, because the runtime makes `&mut` of the memory they return;
+`bsd`'s implementation of each will carry one `unsafe impl` (3 in all, legacy, under the
+`legacy_ceiling`) until pipe(2)'s slice removes 21. The alternative, safe traits, would let
+any implementation break `hal`'s soundness. `bsd`'s registrations are not written yet.
