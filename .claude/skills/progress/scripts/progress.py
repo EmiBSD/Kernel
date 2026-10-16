@@ -379,7 +379,7 @@ def bridges(root: Path) -> list[dict]:
         return []
 
 
-def forbid_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: list[dict],
+def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: list[dict],
                   pin: str) -> None:
     """The zero-unsafe table of docs/ZERO_UNSAFE.md 0.4, computed by path from
     `cargo xtask unsafe-report --json`: what is still in bsd per milestone, what moved into
@@ -548,9 +548,9 @@ def new_tally() -> dict:
 
 def lineage_report(root: Path, want: str | None, plan: Plan, modules: list[dict],
                    extras: list[dict], pin: str, why: str) -> None:
-    """The table this script printed before the forbid metric, for when unsafe-report cannot
+    """The table this script printed before the unsafe metric, for when unsafe-report cannot
     run: modules redesigned and inherited, LZ lines, the LZ-lines rate since lz-origin."""
-    print(f"Note: {why}. The forbid metric needs `cargo xtask unsafe-report --json`; this is the "
+    print(f"Note: {why}. The unsafe metric needs `cargo xtask unsafe-report --json`; this is the "
           "lineage table instead.")
     print()
     cache: dict = {}
@@ -727,7 +727,7 @@ def main() -> None:
     if doc is None:
         lineage_report(root, want, plan, modules, extras, pin, why)
     else:
-        forbid_report(root, want, doc, plan, modules, pin)
+        unsafe_report(root, want, doc, plan, modules, pin)
 
 
 if __name__ == "__main__":
