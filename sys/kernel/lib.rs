@@ -30,4 +30,9 @@ extern crate std;
 #[cfg(test)]
 #[allow(dead_code, unused_macros, unused_imports)]
 pub(crate) mod reftest;
+
+extern crate alloc;
+
+pub use hal::sys;
+pub mod crypto;
 /* </CODE> */

@@ -23,14 +23,10 @@
 pub mod aes;
 #[forbid(unsafe_code)]
 pub mod blake2s;
-#[forbid(unsafe_code)]
-pub mod blf;
-#[forbid(unsafe_code)]
-pub mod cast;
-#[forbid(unsafe_code)]
-pub mod chacha_private;
-#[forbid(unsafe_code)]
-pub mod chachapoly;
+pub use kernel::crypto::blf;
+pub use kernel::crypto::cast;
+pub use kernel::crypto::chacha_private;
+pub use kernel::crypto::chachapoly;
 pub mod criov;
 #[allow(clippy::module_inception)] // crypto.c, the file, in the crypto directory
 pub mod crypto;
@@ -39,53 +35,33 @@ pub mod cryptodev;
 pub mod cryptosoft;
 #[forbid(unsafe_code)]
 pub mod curve25519;
-#[forbid(unsafe_code)]
-pub mod des_locl;
-#[forbid(unsafe_code)]
-pub mod ecb3_enc;
-#[forbid(unsafe_code)]
-pub mod ecb_enc;
+pub use kernel::crypto::des_locl;
+pub use kernel::crypto::ecb_enc;
+pub use kernel::crypto::ecb3_enc;
 #[forbid(unsafe_code)]
 pub mod gmac;
-#[forbid(unsafe_code)]
-pub mod hmac;
+pub use kernel::crypto::hmac;
 #[forbid(unsafe_code)]
 pub mod idgen;
-#[forbid(unsafe_code)]
-pub mod md5;
-#[forbid(unsafe_code)]
-pub mod podd;
-#[forbid(unsafe_code)]
-pub mod poly1305;
+pub use kernel::crypto::md5;
+pub use kernel::crypto::podd;
+pub use kernel::crypto::poly1305;
 #[forbid(unsafe_code)]
 pub mod rijndael;
-#[forbid(unsafe_code)]
-pub mod rmd160;
-#[forbid(unsafe_code)]
-pub mod set_key;
-#[forbid(unsafe_code)]
-pub mod sha1;
-#[forbid(unsafe_code)]
-pub mod sha2;
+pub use kernel::crypto::rmd160;
+pub use kernel::crypto::set_key;
+pub use kernel::crypto::sha1;
+pub use kernel::crypto::sha2;
 #[forbid(unsafe_code)]
 pub mod siphash;
-#[forbid(unsafe_code)]
-pub mod sk;
-#[forbid(unsafe_code)]
-pub mod spr;
+pub use kernel::crypto::sk;
+pub use kernel::crypto::spr;
 #[cfg(test)]
 #[forbid(unsafe_code)]
 pub(crate) mod testutil;
 #[forbid(unsafe_code)]
 pub mod xform;
-#[forbid(unsafe_code)]
-pub mod xform_ipcomp;
+pub use kernel::crypto::xform_ipcomp;
 
-/// `explicit_bzero(&x, sizeof(x))` for a context that is a plain value: overwrites it with its
-/// default (all zero) and keeps the compiler from proving the store dead, so the secret it held
-/// does not outlive the call. The byte buffers use `libkern::explicit_bzero`.
-pub fn wipe<T: Default>(x: &mut T) {
-    *x = T::default();
-    core::hint::black_box(&*x);
-}
+pub use kernel::crypto::wipe;
 /* </CODE> */

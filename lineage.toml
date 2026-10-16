@@ -1152,7 +1152,8 @@ native = ["blake2s_hmac"]
 kind = "merged"
 
 [[module]]
-rust = "sys/crypto/blf.rs"
+rust = "sys/kernel/crypto/blf.rs"
+crate = "kernel"
 lz = ["sys/crypto/blf.rs"]
 status = "redesigned"
 
@@ -1217,7 +1218,8 @@ native = ["BlfCtx::cbc_decrypt"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/cast.rs"
+rust = "sys/kernel/crypto/cast.rs"
+crate = "kernel"
 lz = ["sys/crypto/cast.rs"]
 status = "redesigned"
 
@@ -1237,7 +1239,8 @@ native = ["CastKey::decrypt"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/chacha_private.rs"
+rust = "sys/kernel/crypto/chacha_private.rs"
+crate = "kernel"
 lz = ["sys/crypto/chacha_private.rs"]
 status = "redesigned"
 
@@ -1272,7 +1275,8 @@ native = ["load_words"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/chachapoly.rs"
+rust = "sys/kernel/crypto/chachapoly.rs"
+crate = "kernel"
 lz = ["sys/crypto/chachapoly.rs"]
 status = "redesigned"
 
@@ -1343,17 +1347,20 @@ lz = ["sys/crypto/curve25519.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/crypto/des_locl.rs"
+rust = "sys/kernel/crypto/des_locl.rs"
+crate = "kernel"
 lz = ["sys/crypto/des_locl.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/crypto/ecb3_enc.rs"
+rust = "sys/kernel/crypto/ecb3_enc.rs"
+crate = "kernel"
 lz = ["sys/crypto/ecb3_enc.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/crypto/ecb_enc.rs"
+rust = "sys/kernel/crypto/ecb_enc.rs"
+crate = "kernel"
 lz = ["sys/crypto/ecb_enc.rs"]
 status = "redesigned"
 
@@ -1403,7 +1410,8 @@ native = ["AesGmacCtx::finalize"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/hmac.rs"
+rust = "sys/kernel/crypto/hmac.rs"
+crate = "kernel"
 lz = ["sys/crypto/hmac.rs"]
 status = "redesigned"
 
@@ -1433,7 +1441,8 @@ native = ["Idgen32Ctx::rekey"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/md5.rs"
+rust = "sys/kernel/crypto/md5.rs"
+crate = "kernel"
 lz = ["sys/crypto/md5.rs"]
 status = "redesigned"
 
@@ -1453,12 +1462,14 @@ native = ["Md5Ctx::finalize"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/podd.rs"
+rust = "sys/kernel/crypto/podd.rs"
+crate = "kernel"
 lz = ["sys/crypto/podd.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/crypto/poly1305.rs"
+rust = "sys/kernel/crypto/poly1305.rs"
+crate = "kernel"
 lz = ["sys/crypto/poly1305.rs"]
 status = "redesigned"
 
@@ -1513,7 +1524,8 @@ native = ["RijndaelCtx::encrypt"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/rmd160.rs"
+rust = "sys/kernel/crypto/rmd160.rs"
+crate = "kernel"
 lz = ["sys/crypto/rmd160.rs"]
 status = "redesigned"
 
@@ -1533,7 +1545,8 @@ native = ["Rmd160Ctx::finalize"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/set_key.rs"
+rust = "sys/kernel/crypto/set_key.rs"
+crate = "kernel"
 lz = ["sys/crypto/set_key.rs"]
 status = "redesigned"
 
@@ -1543,7 +1556,8 @@ native = ["DesKeySchedule::new"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/sha1.rs"
+rust = "sys/kernel/crypto/sha1.rs"
+crate = "kernel"
 lz = ["sys/crypto/sha1.rs"]
 status = "redesigned"
 
@@ -1563,7 +1577,8 @@ native = ["Sha1Ctx::finalize"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/crypto/sha2.rs"
+rust = "sys/kernel/crypto/sha2.rs"
+crate = "kernel"
 lz = ["sys/crypto/sha2.rs"]
 status = "redesigned"
 
@@ -1714,12 +1729,14 @@ native = ["SiphashCtx::finalize"]
 kind = "merged"
 
 [[module]]
-rust = "sys/crypto/sk.rs"
+rust = "sys/kernel/crypto/sk.rs"
+crate = "kernel"
 lz = ["sys/crypto/sk.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/crypto/spr.rs"
+rust = "sys/kernel/crypto/spr.rs"
+crate = "kernel"
 lz = ["sys/crypto/spr.rs"]
 status = "inherited"
 
@@ -1729,7 +1746,8 @@ lz = ["sys/crypto/xform.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/crypto/xform_ipcomp.rs"
+rust = "sys/kernel/crypto/xform_ipcomp.rs"
+crate = "kernel"
 lz = ["sys/crypto/xform_ipcomp.rs"]
 status = "adapted"
 adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs", "sys/lib/libz/deflate.rs"]
@@ -3269,7 +3287,7 @@ status = "inherited"
 rust = "sys/dev/rnd.rs"
 lz = ["sys/dev/rnd.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/chacha_private.rs", "sys/crypto/sha2.rs"]
+adapted_by = ["sys/kernel/crypto/chacha_private.rs", "sys/kernel/crypto/sha2.rs"]
 notes = "M16d: the whole file: the entropy input ring (rand_event, rnd_event_space, rnd_event_prod/cons, add_event_data, enqueue_randomness with the rnd_cold path and rnd_timeout), add_entropy_words (twisted GFSR, twist_table), dequeue_randomness, extract_entropy (SHA-512 of the pool copy), suspend_randomness/resume_randomness (no caller: subr_suspend.c not ported), the ChaCha20 generator (_rs_init, _rs_seed, _rs_stir, _rs_stir_if_needed, _rs_rekey, _rs_random_buf, _rs_random_u32 under rndlock IPL_HIGH), _rs_clearseed (km_alloc kv_any/kp_none at kd_prefer, pmap_kenter_pa), arc4random, arc4random_buf, arc4random_ctx_new/free/buf (malloc M_TEMP), arc4random_uniform, rnd_init, rnd_reinit (rnd_task on systq, rndreinit_timeout 10 min), random_start (__guard_local warning, clearseed, msgbuf and etext words, good-seed lines), randomopen/close/read/write/kqfilter/ioctl and the filtops (cdevsw 45), sys_getentropy. entropy_pool0 and rs_buf0 in .openbsd.randomdata (PT_OPENBSD_RANDOMIZE in both kernel.ld), read volatile. Deviations: the C's lock-free shared words are Relaxed atomics; add_entropy_words' two statics live in EntropyPool with the pool; extract_entropy hashes block by block; the generator state is a StaticCell under rndlock, which suspend/resume_randomness also take; _rs_clearseed panics on an unmapped seed page; arc4random_ctx_new returns None (callers ENOMEM) if malloc fails. Boot seed: boot(8)/efiboot fills the segment (loadrandom, mdrandom, fwrandom; RB_GOODRANDOM); Limine fills nothing (unported! in sys/stand/mod.rs; random_start prints the C's no-entropy warning). Licence BSD-3 with a GPL alternative, the BSD terms apply (block now verbatim from the pin); host tests (ChaCha keystream vector, rekey/fill, pool mixing, input ring, uniform bound)"
 
 [[module]]
@@ -3354,7 +3372,7 @@ notes = "M16a: the whole header: struct sdmmc_csd/cid/scr, sdmmc_response, struc
 rust = "sys/dev/softraid.rs"
 lz = ["sys/dev/softraid.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/md5.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_concat.rs"
@@ -3365,7 +3383,7 @@ status = "inherited"
 rust = "sys/dev/softraid_crypto.rs"
 lz = ["sys/dev/softraid_crypto.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/sha1.rs", "sys/crypto/hmac.rs", "sys/crypto/rijndael.rs"]
+adapted_by = ["sys/kernel/crypto/sha1.rs", "sys/kernel/crypto/hmac.rs", "sys/crypto/rijndael.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_raid0.rs"
@@ -3638,7 +3656,7 @@ license = "ISC. M12: XHCI_CMD_TIMEOUT/MAX_CMDS/MAX_EVTS/MAX_XFER"
 rust = "sys/dev/vnd.rs"
 lz = ["sys/dev/vnd.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/blf.rs"]
+adapted_by = ["sys/kernel/crypto/blf.rs"]
 
 [[module]]
 rust = "sys/dev/vndioctl.rs"
@@ -5017,7 +5035,7 @@ status = "inherited"
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/sha2.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -5028,7 +5046,7 @@ status = "inherited"
 rust = "sys/net/pf_ioctl.rs"
 lz = ["sys/net/pf_ioctl.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/md5.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs"]
 
 [[module]]
 rust = "sys/net/pf_lb.rs"
@@ -5316,7 +5334,7 @@ status = "inherited"
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/md5.rs", "sys/crypto/sha2.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
@@ -6925,3 +6943,8 @@ reason = "copy of sys/reftest.rs so the inherited headers moved into hal keep th
 rust = "sys/kernel/reftest.rs"
 crate = "kernel"
 reason = "copy of sys/reftest.rs so the crypto tests moved into kernel keep crate::reftest byte-identical; the copies merge when the last reference test leaves bsd"
+
+[[extra]]
+rust = "sys/kernel/crypto/testutil.rs"
+crate = "kernel"
+reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded xorshift) so the crypto tests moved into kernel keep crate::crypto::testutil byte-identical; bsd keeps its own for the framework files that stay; the copies merge when those move"
