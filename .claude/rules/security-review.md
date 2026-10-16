@@ -15,9 +15,10 @@ pmaps, copyin/copyout and the per-arch syscall entry, `dev/rnd`.
   invariant reviewed (bounds, lifetime, constant time, privilege boundary), the tests run, and
   the `diff-openbsd` scenarios that cover it. The review is written before the commit, by the
   agent that did not write the change when one is available (`large-changes.md`).
-- Before the commit: `just diff-openbsd` and every smoke of the area (`smoke-pf`, `smoke-wg`,
-  `smoke-esp`, `smoke-ipcomp`, `smoke-softraid`, `smoke-login`, ... as the justfile names them)
-  pass, and `cargo xtask lz drift --security` is empty for the area.
+- At the milestone close (decision 23: nothing runs per commit): `just diff-openbsd` and every
+  smoke of the area (`smoke-pf`, `smoke-wg`, `smoke-esp`, `smoke-ipcomp`, `smoke-softraid`,
+  `smoke-login`, ... as the justfile names them) pass, and `cargo xtask lz drift --security` is
+  empty for the area; the `Security-Review:` trailer is written per commit all the same.
 - No new dependency and no new algorithm in `sys/crypto/` without the user's decision; a
   primitive is re-expressed, never replaced.
 - A redesign may not relax a check the C makes (a pledge, an unveil path, a bounds check, a

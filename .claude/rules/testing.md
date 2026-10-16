@@ -50,8 +50,9 @@ Four tiers. Every change lands with the tier it belongs to.
    `smoke-install80-amd64`, `-arm64`, the same from `install80.img` as a USB stick with the
    installer answered over the console and no HTTP server; so it needs
    `just userland` and `just comp`. Two CPUs make the races rarer and nothing else checks the
-   installer, so `ci-full` is mandatory before a milestone is marked met, and its result (rc
-   and wall time) goes in the milestone's closing commit. A milestone split into lettered
+   installer, so `ci-full` is mandatory before a milestone is marked met (N2 excepted:
+   decision 24 runs it once at the N3 close for both), and its result (rc and wall time) goes
+   in the milestone's closing commit. A milestone split into lettered
    sub-milestones (M16a..M16g, the user's decision of 2026-10-08) runs it once, at the
    whole milestone's close; each sub-milestone closes with `just ci`.
    `just smoke` runs the recipes of the justfile's `smokes` list in parallel, `JOBS` at a time
@@ -104,10 +105,11 @@ Always:
   `lz drift --strict` and `just diff-openbsd` run once, at the milestone close, with `ci-full`
   (the user's decision of 2026-10-16: tests at the end of the milestone, not of each slice; the
   QEMU runs were costing each slice three times over). A failing close is bisected over the
-  milestone's slices, which is why each slice is one commit series that `just check` passed.
-  Two exceptions keep their smokes before the commit: a change to boot, console, traps or
-  scheduling (tier 3 above), and a `security-review.md` area (`diff-openbsd` and the area's
-  smokes before each commit there).
+  milestone's slices, which is why each slice is one commit series with its own hashes.
+  No exception runs QEMU per commit since decision 23: a `security-review.md` area carries its
+  `Security-Review:` trailer on every commit (written by the reviewer) and its smokes and
+  `diff-openbsd` run at the milestone close with the rest. `ci-full`: N2's close runs without
+  it, N3's runs it for both (decision 24), every later close runs it.
 - Test code may use `unwrap`/`expect`/`panic!` (allowed via `clippy.toml`); kernel code may not.
 - A test that needs `alloc` enables the `alloc` feature explicitly until M3 makes it default.
 - Never weaken or delete a failing test to get green. Fix the code or tell the user.

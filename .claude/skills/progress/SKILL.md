@@ -1,6 +1,6 @@
 ---
 name: progress
-description: Redesign progress of EmiBSD per ROADMAP milestone (N0..), measured live by `cargo xtask unsafe-report --json` - the non-core modules made forbid, the legacy modules and legacy unsafe left, the core, the modules redesigned, and a time estimate from the legacy unsafe removed per active day since the zero-unsafe baseline. Use when the user asks how far the redesign is, how much is left, how long a milestone will take, or wants status numbers.
+description: Redesign progress of EmiBSD per ROADMAP milestone (N0..), measured live by `cargo xtask unsafe-report --json` - until N2.4 lands the v1 tool's columns (forbid, legacy), then v2's (files and unsafe still in bsd, bridges open; docs/ZERO_UNSAFE.md 0.4) - the legacy modules and legacy unsafe left, the core, the modules redesigned, and a time estimate from the legacy unsafe removed per active day since the zero-unsafe baseline. Use when the user asks how far the redesign is, how much is left, how long a milestone will take, or wants status numbers.
 argument-hint: [milestone]
 allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/progress.py*)
 ---

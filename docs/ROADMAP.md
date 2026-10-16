@@ -27,11 +27,11 @@ gate for every milestone, never a milestone of its own.
 
 Every exit also requires:
 
-- each module of the scope is `redesigned` (and so `forbid`), listed in the core, or `reviewed`:
-  a per-file verdict in `lineage.toml`, with its reason, for a module that needs no redesign and
-  is `forbid` as it stands (the 45 constant headers of `sys/sys/`, 40 of them N2's, get `forbid`
-  and `just test-ref` checks of their constants);
-- `just ci`, `just ci-full` and `just diff-openbsd` equal, with the same expected list;
+- each file of the scope has left `bsd`: redesigned into `sys/kernel/` (or moved into `sys/abi/`
+  or `sys/hal/` where the row says so) and `[[dropped]]` in `lineage.toml` with `absorbed by
+  ...`, or a 0-`unsafe` call-site adapter listed as such (docs/ZERO_UNSAFE.md 0.3, 0.4);
+- `just check`, one `just ci` and `just diff-openbsd` equal, with the same expected list;
+  `just ci-full` at every close but N2's (decision 24: N3's close runs it for both);
 - `cargo xtask lz drift --security` empty, and the numbers in the closing commit.
 
 Since 2026-10-10 the goal is zero `unsafe` outside a listed core (`docs/ZERO_UNSAFE.md`); a row's

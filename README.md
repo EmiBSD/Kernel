@@ -21,10 +21,11 @@
 - OpenBSD's behaviour is the specification. The system-call ABI and everything userland sees
   never change: OpenBSD's own userland runs unmodified here, as on LZ, and `just diff-openbsd`
   checks the three against each other.
-- The inside changes, subsystem by subsystem. The goal is zero `unsafe` outside a small, listed
-  core: every other module compiles under `#[forbid(unsafe_code)]`
-  ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md)), with idiomatic ownership and measured
-  performance. N1 settled
+- The inside changes, subsystem by subsystem. The goal is zero `unsafe` in the kernel: the
+  crates `sys/kernel/` and `sys/abi/` carry `#![forbid(unsafe_code)]` at their roots, `sys/hal/`
+  is the only crate with `unsafe` (the hardware and the runtime, every site proved), and the LZ
+  tree is replaced and deleted ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md) section 0, the
+  plan since 2026-10-16), with idiomatic ownership and measured performance. N1 settled
   the type idioms on leaves that were already almost free of `unsafe` (libkern 10 -> 10, libz
   2 -> 0, crypto 5 -> 5); the reduction starts with N2's core structures. Every module says what it derives
   from ([lineage.toml](lineage.toml)), and every LZ commit after the pin is triaged
@@ -40,7 +41,7 @@ Status: N1 (leaves: libkern, libz, the crypto primitives) met; N2 (core runtime)
 |---|---|---|
 | N0 | Bootstrap: governance, lineage, the `lz` tooling, the unsafe budget, the baseline | met |
 | N1 | Leaves: libkern, libz, the crypto primitives | met |
-| N2 | Core runtime: the safe primitives, the `forbid` ratchet, the first slice (pipe) | under way |
+| N2 | Foundations: the crates `hal`, `kernel`, `abi`; the runtime; the loadable ABI module; pipe(2) by the new path | under way |
 | N3 | Memory (uvm) | next |
 | N4 | Processes and scheduling (kern) | next |
 | N5 | VFS and file systems | next |

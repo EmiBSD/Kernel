@@ -83,7 +83,7 @@ Two provenance rules:
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check` | build (both archs), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-17: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
-| `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on both archs (`smoke-install-*`, needs `just comp`); must be green before a milestone is met |
+| `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on both archs (`smoke-install-*`, needs `just comp`); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |
 | `just lz-sync` | fetch LZ, list the commits to triage with the items they touch (`docs/SYNC.md`) |
 | `just diff-openbsd` | the oracle: the same scenarios on EmiBSD and on a real OpenBSD, compared step by step |
 
@@ -116,8 +116,10 @@ Details: `.claude/rules/re-engineering.md`; LZ's later work: `.claude/rules/lz-s
 
 ## Definition of done
 
-`just check` green on both archs (lineage and budget checks included) for a slice; `just ci`,
-`just ci-full` and `just diff-openbsd` green for a milestone; `lineage.toml` updated; `LZ:` and `Unsafe:` trailers in the commit; `docs/IDIOMS.md` or `docs/ARCHITECTURE.md`
+For a slice: committed with `cargo fmt --check` and `cargo xtask lz check` green (the hook), no
+build (decision 23). For a milestone: `just check` (the compile-and-fix pass), one `just ci` and
+one `just diff-openbsd` green; `just ci-full` at the N3 close for N2 and N3 together (decision
+24) and at every close after it. `lineage.toml` updated; `LZ:` and `Unsafe:` trailers in the commit; `docs/IDIOMS.md` or `docs/ARCHITECTURE.md`
 updated if a new idiom or structural decision was made; `docs/STATUS.md` updated at the end of
 the session.
 

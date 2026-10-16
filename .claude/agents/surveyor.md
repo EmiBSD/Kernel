@@ -50,7 +50,8 @@ sections in this order (empty ones say "none"):
   `sys/hal/` or still in `bsd` (legacy), its `unsafe` count, and the number of modules that
   call it tree-wide, flagging every item over 50 (the timing rule: it waits for LZ's milestone).
 - **D. The glue.** The file, descriptor, syscall-entry and `machine::copy` paths the module
-  crosses, and whether a `forbid` module can use each as it stands or needs a seam.
+  crosses, and whether a `kernel` module can use each through `hal` as it stands or needs a
+  bridge (`bridges.toml`).
 - **E. Hard constraints.** What the C's semantics fix: wait channels and their identity, shared
   locks, lifetimes tied to two owners, NOLOCK syscalls, MP notes, anything whose address userland
   or another module relies on. Stale `SAFETY` or `## Deviations` text you noticed, quoted.

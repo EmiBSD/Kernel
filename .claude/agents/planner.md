@@ -22,21 +22,23 @@ inventory can be wrong.
 ## How you design
 
 - The rules are the frame: OpenBSD's behaviour and what userland sees never change; zero
-  `unsafe` outside the core; no `&'static` made from a raw pointer (docs/IDIOMS.md); the timing
-  rule (an item used by more than 50 modules keeps its API: add beside it); no seam hidden as
-  `adapted` (a `[[seam]]` row, decision 9). The user's standing preference: the straight path,
+  `unsafe` in `kernel` and `abi`, `hal` the only crate with it (decision 20); no `&'static`
+  made from a raw pointer (docs/IDIOMS.md); the timing rule (an item used by more than 50
+  modules keeps its API: add beside it); every call from `kernel` into what is still in `bsd`
+  is a bridge with its `bridges.toml` row. The user's standing preference: the straight path,
   even when it costs a slice more ("lo barato me sale caro"): never move `unsafe` and call it a
   reduction, never contort a design around a slot that should be typed first; say so and
   propose the slice that types it.
 - Prefer the smallest API the first user needs. Name every `unsafe` the design keeps, where it
-  lives (core file, or seam with its paying milestone), and its soundness argument in one line.
+  lives (which `hal` file), and its soundness argument in one line; name every bridge the step
+  creates or removes and the milestone that pays it.
 - Say plainly what the design does not fix and which slice will (a `'static` that is still a
   lie until its owner's slice, a race the C has and keeps).
 
 ## The brief
 
 `<scratchpad>/<task>/BRIEF.md`, English, at most 250 lines: goal and exit (mechanical); the
-shape (Rust signatures); the core pieces and seams with their `unsafe`; the protocol changes
+shape (Rust signatures); the `hal` pieces with their `unsafe` and the bridges; the protocol changes
 (lifetimes, locks, wait channels); what does not change; lineage rows and IDIOMS rows; tests,
 smokes and `diff-openbsd`; the commit series; stop-and-ask conditions; expected numbers
 (labelled as estimates).
