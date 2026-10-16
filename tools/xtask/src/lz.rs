@@ -434,9 +434,10 @@ fn rel_of(root: &Path, f: &Path) -> String {
 /// moved into a crate at N2 (`hal`, `kernel`) keeps the LZ file it came from at its old path;
 /// every other module has the same path in both trees.
 fn lz_home(rust: &str) -> String {
-    const MOVED: [(&str, &str); 4] = [
+    const MOVED: [(&str, &str); 5] = [
         ("sys/hal/arch/", "sys/arch/"),
         ("sys/hal/machine/", "sys/machine/"),
+        ("sys/hal/sys/", "sys/sys/"),
         ("sys/abi/sys/", "sys/sys/"),
         ("sys/kernel/crypto/", "sys/crypto/"),
     ];
@@ -1853,6 +1854,7 @@ mod tests {
         assert_eq!(lz_home("sys/kernel/crypto/sha2.rs"), "sys/crypto/sha2.rs");
         assert_eq!(lz_home("sys/abi/sys/errno.rs"), "sys/sys/errno.rs");
         assert_eq!(lz_home("sys/hal/machine/mod.rs"), "sys/machine/mod.rs");
+        assert_eq!(lz_home("sys/hal/sys/types.rs"), "sys/sys/types.rs");
         assert_eq!(lz_home("sys/kern/kern_sched.rs"), "sys/kern/kern_sched.rs");
     }
 
