@@ -4266,6 +4266,86 @@ native = []
 kind = "dropped"
 reason = "kn_hook holds the index of the pipe whose klist the knote is on (filt_pipedetach reads it with Dir::from_index); there is no pointer to cast back"
 
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::sys_pipe"
+native = ["sys_pipe", "sys/kernel/pipe.rs::Pipes::sys_pipe"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::sys_pipe2"
+native = ["sys_pipe2", "sys/kernel/pipe.rs::Pipes::sys_pipe2"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::dopipe"
+native = ["dopipe", "sys/kernel/pipe.rs::Pipes::dopipe"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_read"
+native = ["pipe_read", "sys/kernel/pipe.rs::PipePair::read"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_write"
+native = ["pipe_write", "sys/kernel/pipe.rs::PipePair::write"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_ioctl"
+native = ["pipe_ioctl", "sys/kernel/pipe.rs::PipePair::ioctl"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_stat"
+native = ["pipe_stat", "sys/kernel/pipe.rs::PipePair::stat"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_close"
+native = ["pipe_close", "sys/kernel/pipe.rs::PipeEnd::drop"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_kqfilter"
+native = ["pipe_kqfilter", "sys/kernel/pipe.rs::PipePair::kqfilter"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::filt_pipedetach"
+native = ["filt_pipedetach", "sys/kernel/pipe.rs::PipePair::detach"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::filt_piperead"
+native = ["filt_piperead", "sys/kernel/pipe.rs::PipePair::filter"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::filt_pipewrite"
+native = ["filt_pipewrite", "sys/kernel/pipe.rs::PipePair::filter"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::filt_pipeexcept"
+native = ["filt_pipeexcept", "sys/kernel/pipe.rs::PipePair::filter"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::filt_pipemodify"
+native = ["filt_pipemodify", "sys/kernel/pipe.rs::PipePair::with_lock"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::filt_pipeprocess"
+native = ["filt_pipeprocess", "sys/kernel/pipe.rs::PipePair::with_lock"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::pipe_init"
+native = ["pipe_init", "sys/kernel/pipe.rs::Pipes::init"]
+kind = "split"
+
 [[module]]
 rust = "sys/kern/sys_socket.rs"
 lz = ["sys/kern/sys_socket.rs"]

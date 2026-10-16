@@ -37,7 +37,8 @@
 //! - `PageMemory` and `PoolBackend`: zeroed, page-aligned blocks of the host's heap, leaked
 //!   (a block given back is counted and never reused: freeing it would need the pointer
 //!   turned back into its `Box`, which is `unsafe`); the pages out are counted per
-//!   thread, the items out per pool.
+//!   thread, the items out per pool; [`fail_pages`] makes a thread's next page allocations
+//!   fail, as a full kernel map does.
 //! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
 //!   outside it is `EFAULT`.
 
@@ -80,6 +81,7 @@ std::thread_local! {
     static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
+    static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 }
 
 /// The index the next test thread gets.
@@ -242,6 +244,9 @@ struct TestPages;
 // references (leaked, so it is never handed out again).
 impl PageMemory for TestPages {
     fn alloc(&self, len: usize, _kind: PageKind, _wait: bool) -> Option<(NonNull<u8>, usize)> {
+        if page_fails() {
+            return None;
+        }
         let p = pages(len)?;
         PAGES_OUT.with(|c| c.set(c.get() + len as i64));
         Some((p, len))
@@ -361,6 +366,27 @@ pub fn install() {
 pub fn user_bytes(uaddr: usize, len: usize) -> Option<Vec<u8>> {
     let r = user_range(uaddr, len).ok()?;
     Some(lock(&USER)[r].to_vec())
+}
+
+/// Makes this thread's page allocations fail, as `km_alloc` does when the kernel map is full:
+/// after `skip` more that succeed, the next `n` fail (`fail_pages(0, 0)` clears it).
+pub fn fail_pages(skip: u32, n: u32) {
+    FAIL_PAGES.with(|f| f.set((skip, n)));
+}
+
+/// Whether this page allocation is one [`fail_pages`] asked to fail (and count it).
+fn page_fails() -> bool {
+    FAIL_PAGES.with(|f| match f.get() {
+        (0, 0) => false,
+        (0, n) => {
+            f.set((0, n - 1));
+            true
+        }
+        (skip, n) => {
+            f.set((skip - 1, n));
+            false
+        }
+    })
 }
 
 /// The bytes of pages this thread holds, as the page double counts them.

@@ -456,15 +456,15 @@ mod tests {
 
     #[test]
     fn another_table_is_refused() {
-        // Version 1's table (N2.4), before pipe2.
+        // Version 1's table (N2.4), before pipe2: 40 bytes.
         static OTHER: KernelApi = KernelApi {
             prefix: ApiPrefix {
                 version: 1,
-                size: 48,
+                size: 40,
             },
             ..KernelApi::new(register, legacy, copyin, copyout, pipe2)
         };
-        assert_eq!(load_with(&Empty, &OTHER), Err(LoadError::Table(1, 48)));
+        assert_eq!(load_with(&Empty, &OTHER), Err(LoadError::Table(1, 40)));
     }
 }
 /* </TESTS> */
