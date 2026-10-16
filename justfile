@@ -3208,6 +3208,7 @@ cc_script := disk_login + " " + \
 # host unit tests (libkern + libz + bsd through sys/arch/host, plus xtask's own)
 test:
     cargo test -p libkern -p libz -p bsd -p xtask
+    cargo test -p hal -p kernel
     cargo test -p libsa -p boot -p efi
     cargo test -p efiboot-arm64
 
@@ -3246,6 +3247,16 @@ check-drift:
 # no subsystem over its unsafe budget (unsafe-budget.toml; .claude/rules/unsafe-budget.md)
 check-unsafe:
     cargo xtask unsafe-report --check
+
+# the rules of the hal crate: no pub unsafe fn, a SAFETY comment on every block, no static mut,
+# the count under hal_ceiling (docs/ZERO_UNSAFE.md 0.2; cargo xtask hal-check)
+check-hal:
+    cargo xtask hal-check
+
+# sys/abi/ holds no logic: no loop, branches only on nr or Ok/Err/Some/None, at most one kernel
+# call and 40 lines per fn, no state (decision 25; cargo xtask abi-check)
+check-abi:
+    cargo xtask abi-check
 
 # Regenerate the system call tables from reference/.../syscalls.master (sys/sys/syscall.rs,
 # syscallargs.rs, kern/init_sysent.rs, kern/syscalls.rs). Rerun after porting a sys_* function.
@@ -3392,9 +3403,9 @@ smoke-cd80:
 # The gate of every commit and every slice merge: no QEMU, minutes. The smokes, `check-drift`
 # and `diff-openbsd` run in `ci` at the milestone close (the user's decision of 2026-10-16:
 # tests at the end of the milestone, not of each slice; .claude/rules/testing.md).
-check: fmt clippy test build check-lineage check-unsafe check-syscalls
+check: fmt clippy test build check-lineage check-unsafe check-hal check-abi check-syscalls
 
-ci: fmt clippy test build smoke check-lineage check-drift check-unsafe check-syscalls
+ci: fmt clippy test build smoke check-lineage check-drift check-unsafe check-hal check-abi check-syscalls
 
 # `ci` with every `{{smp}}` recipe on four processors (`EMIBSD_NCPU=4`), not only the `smp4`
 # group: four CPUs make the MP races likelier. Then the installer end to end on both archs, also

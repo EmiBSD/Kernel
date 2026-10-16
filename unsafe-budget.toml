@@ -13,6 +13,7 @@
 [ratchet]
 forbid_floor = 306
 legacy_ceiling = 8747
+hal_ceiling = 2150
 legacy_baseline = 8748
 baseline_date = "2026-10-10"
 

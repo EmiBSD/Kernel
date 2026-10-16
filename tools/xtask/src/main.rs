@@ -97,11 +97,27 @@
 //!                                          when a subsystem exceeds its budget, the forbid
 //!                                          modules fall below the floor or legacy rises
 //!                                          above the ceiling; --shapes lists the shapes per
-//!                                          module (unsafereport.rs)
+//!                                          module; a `crates` block (kernel, abi, hal,
+//!                                          bsd with the part that moves into hal, boot: files and `unsafe`) and
+//!                                          --check's rules for it (kernel and abi 0, hal
+//!                                          under hal_ceiling, bsd outside the core under
+//!                                          legacy_ceiling: the hardware is in unsafe-core.toml,
+//!                                          so it is already outside) (unsafereport.rs)
 //! cargo xtask unsafe-report --json         the same measure as one JSON document: every
 //!                                          kernel file with its lineage status, group,
 //!                                          `unsafe` and shapes, the totals, the ratchet and
-//!                                          the pace since its baseline (what /progress reads)
+//!                                          the pace since its baseline and, additively, a
+//!                                          `crates` object (what /progress reads)
+//! cargo xtask hal-check                    the rules of the hal crate (sys/hal/): no `pub unsafe
+//!                                          fn`, a `// SAFETY:` comment above every `unsafe`
+//!                                          block, no `static mut`, the crate's `unsafe` at or
+//!                                          under hal_ceiling of unsafe-budget.toml
+//!                                          (halcheck.rs)
+//! cargo xtask abi-check                    the rules of the abi crate (sys/abi/), decision 25:
+//!                                          no loop/while/for, if/match only on nr or on
+//!                                          Ok/Err/Some/None, at most one kernel call and 40
+//!                                          lines per fn, no static with interior
+//!                                          mutability (abicheck.rs)
 //! cargo xtask symbolize --arch A [--kernel K]
 //!                                          annotate the addresses of a stack trace on stdin
 //!                                          with K's symbols (default: the debug kernel)
@@ -136,13 +152,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+mod abicheck;
 mod boot;
+mod bridges;
 mod bsdmake;
 mod devices;
 mod diffopenbsd;
 mod distrib;
 mod e2fs;
 mod efiboot;
+mod halcheck;
 mod https;
 mod hwopts;
 mod install;
@@ -314,6 +333,8 @@ fn run(args: &[String]) -> Result<()> {
             smokeall::smoke_all(&root, a.jobs, a.just, &a.recipes)
         }
         ["diff-openbsd", rest @ ..] => diffopenbsd::diff_openbsd(&root, rest),
+        ["hal-check"] => halcheck::hal_check(&root),
+        ["abi-check"] => abicheck::abi_check(&root),
         ["unsafe-report", flags @ ..] => unsafereport::unsafe_report(
             &root,
             flags.contains(&"--write"),
@@ -496,6 +517,8 @@ fn is_structural(rel: &str) -> bool {
     matches!(name, "mod.rs" | "lib.rs" | "main.rs" | "build.rs")
         || rel.starts_with("sys/machine/")
         || rel.starts_with("sys/arch/host/")
+        || rel.starts_with("sys/hal/machine/")
+        || rel.starts_with("sys/hal/arch/host/")
         || rel.starts_with("sys/stand/")
 }
 
