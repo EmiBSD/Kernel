@@ -1821,11 +1821,8 @@ mod tests {
         assert_eq!(free(), before - 1);
         uvm_pagefree(pg, Owner::None);
         assert_eq!(free(), before);
-        // On the free lists, or (MULTIPROCESSOR, a page of the unused high range) in one of
-        // this CPU's magazines and on no free list.
-        #[cfg(not(feature = "multiprocessor"))]
-        assert!(pg.is_free());
-        #[cfg(feature = "multiprocessor")]
+        // A page of the unused high range goes to one of this CPU's magazines, on no free
+        // list.
         assert!(
             !pg.is_free() && pmemrange::uvm_pmr_cache_holds(pg),
             "the page is in this CPU's magazine"
