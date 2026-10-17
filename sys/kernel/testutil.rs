@@ -157,6 +157,11 @@ impl IntrLevel for TestIntr {
     fn ipl_high(&self) -> i32 {
         0xd
     }
+
+    fn splassert(&self, wantipl: i32, func: &str) {
+        let at = SPL.with(Cell::get);
+        assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
+    }
 }
 
 /// The CPU double.

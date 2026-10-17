@@ -216,6 +216,7 @@ mod tests {
         fn ipl_high(&self) -> i32 {
             0
         }
+        fn splassert(&self, _wantipl: i32, _func: &str) {}
     }
 
     static OTHER: Other = Other;

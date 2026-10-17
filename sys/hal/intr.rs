@@ -49,6 +49,18 @@ use crate::bridges;
 /// `IPL_NONE`: no interrupt is blocked (0 on amd64 and arm64).
 pub const IPL_NONE: i32 = 0;
 
+/// `IPL_BIO`: block I/O, the level of the page system's per-CPU caches (the buffer flipper
+/// allocates and frees pages from interrupt context, `uvm_pmemrange.c`). The machine's number
+/// (amd64 `<machine/intrdefs.h>` 0x3; the host double uses amd64's), until the interrupt
+/// tables enter `hal` with their owner (N4); `bsd`'s `sys/machine/intr.rs` asserts that it
+/// equals the machine's.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+pub const IPL_BIO: i32 = 0x3;
+/// `IPL_BIO`: block I/O, the level of the page system's per-CPU caches. The machine's number
+/// (arm64 `<machine/intr.h>`), until the interrupt tables enter `hal` with their owner (N4);
+/// `bsd`'s `sys/machine/intr.rs` asserts that it equals the machine's.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub const IPL_BIO: i32 = 5;
 /// `IPL_VM`: memory allocation, the level of the pmap's locks (`pm_mtx`, `pv_mtx`). The
 /// machine's number (amd64 `<machine/intrdefs.h>` 0xa, arm64 `<machine/intr.h>` 8; the host
 /// double uses amd64's), until the interrupt tables enter `hal` with their owner (N4); `bsd`'s
@@ -102,6 +114,9 @@ pub trait IntrLevel: Sync {
     fn mpfloor(&self) -> i32;
     /// `IPL_HIGH`: the level that blocks every interrupt (`splhigh()`).
     fn ipl_high(&self) -> i32;
+    /// `splassert(wantipl)` (`DIAGNOSTIC`, while `splassert_ctl` is on): reports, through
+    /// the machine's `splassert_fail`, a caller of `func` running below `wantipl`.
+    fn splassert(&self, wantipl: i32, func: &str);
 }
 
 /// `splraise(ipl)` as a guard: the level is at least `ipl` until the guard drops.
@@ -117,6 +132,15 @@ pub fn splhigh() -> SplGuard {
     SplGuard {
         old: bridges::intr_level().map(|b| b.splraise(b.ipl_high())),
         _not_send: PhantomData,
+    }
+}
+
+/// `splassert(wantipl)`: the machine's `DIAGNOSTIC` check that the running code is at
+/// `wantipl` or above (named `func` in the report); nothing before the bridge is registered
+/// (no interrupts yet: every level holds).
+pub fn splassert(wantipl: i32, func: &str) {
+    if let Some(b) = bridges::intr_level() {
+        b.splassert(wantipl, func);
     }
 }
 

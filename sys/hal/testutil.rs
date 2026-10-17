@@ -50,7 +50,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, Once};
+use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::bridges;
@@ -59,9 +59,11 @@ use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
+use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 use crate::pool::{PoolBackend, RawPool};
 use crate::sleep::{INFSLP, Sleep};
 use crate::sys::errno::Errno;
+use crate::sys::types::{Paddr, Vaddr};
 use crate::user::UserCopy;
 
 std::thread_local! {
@@ -125,6 +127,11 @@ impl IntrLevel for TestIntr {
 
     fn ipl_high(&self) -> i32 {
         IPL_HIGH
+    }
+
+    fn splassert(&self, wantipl: i32, func: &str) {
+        let at = SPL.with(Cell::get);
+        assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
     }
 }
 
@@ -483,5 +490,56 @@ pub(crate) fn spl_level() -> i32 {
 /// This thread's spin count, as the double keeps it.
 pub(crate) fn spinning() -> isize {
     SPINNING.with(Cell::get)
+}
+
+/// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, no
+/// managed page, the page system never up (so `steal_memory` serves `bootmem`'s tests).
+pub(crate) struct FakePages {
+    next: AtomicUsize,
+}
+
+impl PhysPages for FakePages {
+    fn alloc_ptp(&self) -> Option<Paddr> {
+        Some(Paddr::new(
+            self.next.fetch_add(TEST_PAGE, Ordering::Relaxed),
+        ))
+    }
+    fn free_ptp(&self, _pa: Paddr) {}
+    fn md_of(&self, _pa: Paddr) -> Option<&'static PageMd> {
+        None
+    }
+    fn steal(&self, npg: usize) -> Option<Paddr> {
+        Some(Paddr::new(
+            self.next.fetch_add(npg * TEST_PAGE, Ordering::Relaxed),
+        ))
+    }
+    fn page_init_done(&self) -> bool {
+        false
+    }
+}
+
+/// The one provider of the test process's host pmap.
+pub(crate) static FAKE_PAGES: FakePages = FakePages {
+    next: AtomicUsize::new(0x10_0000),
+};
+
+/// The bridges' doubles, the host pmap's bootstrap over [`FAKE_PAGES`] and `pmap_init`, once
+/// per test process (a second `bootstrap` panics, so every test module shares this one).
+pub(crate) fn pmap_boot() -> &'static Bootstrapped {
+    static BOOTED: OnceLock<Bootstrapped> = OnceLock::new();
+    BOOTED.get_or_init(|| {
+        install();
+        let params = BootstrapParams {
+            direct_base: Vaddr::new(0),
+            direct_end: Vaddr::new(0),
+            nx: true,
+            first_avail: Paddr::new(0x20_0000),
+            image: None,
+        };
+        let b = crate::pmap::bootstrap(&params, &FAKE_PAGES);
+        assert_eq!(b.first_avail, Paddr::new(0x20_0000));
+        crate::pmap::init();
+        b
+    })
 }
 /* </CODE> */

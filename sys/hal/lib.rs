@@ -47,11 +47,21 @@ extern crate std;
 pub(crate) mod reftest;
 
 pub(crate) mod assert;
+// Typed memory stolen at boot over the pmap's `steal_memory` (N3.3): wherever the pmap is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+pub mod bootmem;
 pub mod bridges;
 pub mod cons;
 pub mod cpu;
 pub mod intr;
 pub mod kmbuf;
+pub mod link;
+#[forbid(unsafe_code)]
+pub mod list;
 pub mod malloc;
 pub mod mutex;
 pub mod once;
@@ -73,6 +83,8 @@ pub mod rwlock;
 pub mod sleep;
 #[cfg(test)]
 pub(crate) mod testutil;
+#[forbid(unsafe_code)]
+pub mod tree;
 pub(crate) mod trust;
 pub mod user;
 pub mod vm;

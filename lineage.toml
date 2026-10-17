@@ -8189,6 +8189,26 @@ crate = "hal"
 reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that names nothing of the kernel (through the image's panic handler); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
+rust = "sys/hal/link.rs"
+crate = "hal"
+reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md"
+
+[[extra]]
+rust = "sys/hal/list.rs"
+crate = "hal"
+reason = "hal runtime, written new (N3.3): List<A>, queue(3)'s TAILQ over 'static elements with safe mutators (Link links, no pointer into the head), list_adapter!; the page system's queues; sys/sys/queue.rs stays for the legacy tree (the 50-module rule)"
+
+[[extra]]
+rust = "sys/hal/tree.rs"
+crate = "hal"
+reason = "hal runtime, written new (N3.3): Tree<A>, the RBT red-black tree of tree.h/subr_tree.c over 'static elements with safe mutators (Link links), find_by/nfind_by without a key element, tree_adapter!; the page system's trees; sys/sys/tree.rs and sys/kern/subr_tree.rs stay for the legacy tree"
+
+[[extra]]
+rust = "sys/hal/bootmem.rs"
+crate = "hal"
+reason = "hal runtime, written new (N3.3): steal_slice/steal_one, typed &'static memory built in place over pmap::steal_memory before the page system is up (uvm_pageboot_alloc's cast); docs/IDIOMS.md"
+
+[[extra]]
 rust = "sys/hal/once.rs"
 crate = "hal"
 reason = "hal runtime, written new: OnceStatic<T>, the init-once static that replaces StaticCell for new code; docs/ZERO_UNSAFE.md 0.1"

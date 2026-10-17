@@ -253,10 +253,13 @@ impl PmapBackend for Backend {
     fn steal_memory(pages: &'static dyn PhysPages, size: Vsize) -> Vaddr {
         let size = round_page(size.as_usize());
         let _ = pages.steal(size / PAGE_SIZE);
-        let words = size.div_ceil(size_of::<u64>());
+        // A page more than asked, so the block can start on a page boundary as a frame does.
+        let words = (size + PAGE_SIZE).div_ceil(size_of::<u64>());
         let block: &'static mut [u64] = std::vec![0u64; words].leak();
+        let p = block.as_mut_ptr().cast::<u8>();
+        let p = p.wrapping_add(p.align_offset(PAGE_SIZE));
 
-        Vaddr::new(block.as_mut_ptr().addr())
+        Vaddr::new(p.expose_provenance())
     }
 
     fn virtual_space() -> (Vaddr, Vaddr) {

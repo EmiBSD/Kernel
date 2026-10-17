@@ -1045,42 +1045,12 @@ const _: fn() = || {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::{Mutex, MutexGuard};
 
     use super::*;
     use crate::arch::current::param::PAGE_SIZE;
     use crate::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
     use crate::testutil;
-
-    /// A page provider of the host: frame numbers from a counter, no managed page.
-    struct FakePages {
-        next: AtomicUsize,
-    }
-
-    impl PhysPages for FakePages {
-        fn alloc_ptp(&self) -> Option<Paddr> {
-            Some(Paddr::new(
-                self.next.fetch_add(PAGE_SIZE, Ordering::Relaxed),
-            ))
-        }
-        fn free_ptp(&self, _pa: Paddr) {}
-        fn md_of(&self, _pa: Paddr) -> Option<&'static PageMd> {
-            None
-        }
-        fn steal(&self, npg: usize) -> Option<Paddr> {
-            Some(Paddr::new(
-                self.next.fetch_add(npg * PAGE_SIZE, Ordering::Relaxed),
-            ))
-        }
-        fn page_init_done(&self) -> bool {
-            true
-        }
-    }
-
-    static PAGES: FakePages = FakePages {
-        next: AtomicUsize::new(0x10_0000),
-    };
 
     /// The tests that count the pmap pool's items run one at a time (the pool is shared).
     fn serial() -> MutexGuard<'static, ()> {
@@ -1099,23 +1069,10 @@ mod tests {
         &boot().switcher
     }
 
-    /// The bridges' doubles, the bootstrap and `pmap_init`, once per test process.
+    /// The bridges' doubles, the bootstrap and `pmap_init`, once per test process (shared
+    /// with every test module of the crate, `testutil::pmap_boot`).
     fn boot() -> &'static Bootstrapped {
-        static BOOTED: OnceLock<Bootstrapped> = OnceLock::new();
-        BOOTED.get_or_init(|| {
-            testutil::install();
-            let params = BootstrapParams {
-                direct_base: Vaddr::new(0),
-                direct_end: Vaddr::new(0),
-                nx: true,
-                first_avail: Paddr::new(0x20_0000),
-                image: None,
-            };
-            let b = bootstrap(&params, &PAGES);
-            assert_eq!(b.first_avail, Paddr::new(0x20_0000));
-            init();
-            b
-        })
+        testutil::pmap_boot()
     }
 
     #[test]
@@ -1174,7 +1131,7 @@ mod tests {
             first_avail: Paddr::new(0),
             image: None,
         };
-        let _again = bootstrap(&params, &PAGES);
+        let _again = bootstrap(&params, &testutil::FAKE_PAGES);
     }
 
     #[test]

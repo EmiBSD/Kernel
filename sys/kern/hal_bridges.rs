@@ -60,7 +60,7 @@ use crate::kern::subr_prf::panicstr;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::{Cpu, cpu_number, curcpu, curproc};
-use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splraise, splx};
+use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::mutex::mtx_curcpu;
 use crate::sys::pool::Pool;
@@ -83,6 +83,10 @@ impl IntrLevel for BsdIntr {
 
     fn ipl_high(&self) -> i32 {
         IPL_HIGH
+    }
+
+    fn splassert(&self, wantipl: i32, func: &str) {
+        splassert(wantipl, func);
     }
 }
 
