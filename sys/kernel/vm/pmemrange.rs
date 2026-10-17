@@ -427,6 +427,8 @@ impl PmrIndex {
 
     /// Copies the ranges of `fs` in address order and publishes them; leaves the index
     /// unpublished when there are more than it holds (the lookups then take the lock).
+    /// Called once per boot, at the end of `uvm_pmr_init` (and again only by the host tests'
+    /// re-init): it is not a seqlock, so a reader racing a second publish could see torn slots.
     fn publish(&self, fs: &FreeState) {
         self.withdraw();
         let mut n = 0;

@@ -7987,7 +7987,7 @@ rust = "sys/uvm/uvm_pdaemon.rs"
 lz = ["sys/uvm/uvm_pdaemon.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/vm/pmemrange.rs"]
-notes = "uvm_wait reports itself unported: no page daemon before kernel threads (M5); uvm_pageout, uvmpd_scan and the aiodone daemon come with swapping (M7); M8: uvmpd_tune (freemin, freetarg, wiredmax), called from main where the daemon thread would be forked, since uvm_pageout is not ported"
+notes = "uvm_wait delegates to kernel::vm::pmemrange::uvm_wait, which reports itself unported once per boot: no page daemon before kernel threads (M5); uvm_pageout, uvmpd_scan and the aiodone daemon come with swapping (M7); M8: uvmpd_tune (freemin, freetarg, wiredmax), called from main where the daemon thread would be forked, since uvm_pageout is not ported"
 
 [[module]]
 rust = "sys/uvm/uvm_pmap.rs"

@@ -87,6 +87,9 @@ pub static UVM: Uvm = Uvm::new();
 pub static VM_MIN_KERNEL_ADDRESS: AtomicUsize =
     AtomicUsize::new(<Machine as VmParam>::VM_MIN_KERNEL_ADDRESS);
 
+// From LZ `sys/uvm/uvmexp.rs` (whose other items moved to `sys/hal/vm/uvmexp.rs`): it stays
+// here because only `bsd` may implement its own trait for `hal`'s type, so an LZ change to it
+// lands here, not in hal.
 // SAFETY: `#[repr(C)]` and nothing but `i32`s: no padding, every bit pattern valid.
 unsafe impl SysctlPlain for UvmexpCopy {}
 
