@@ -31,9 +31,10 @@ Four tiers. Every change lands with the tier it belongs to.
    line the smokes assert updates the expectation in the same commit; a line userland prints
    never changes.
    Every smoke and smoke2 run boots the `multiprocessor` kernel: since decision 40 (the
-   user, 2026-10-17) it is the only kernel built, `multiprocessor` being a default feature of
-   `bsd`, `hal` and `kernel` (recipes build with `--features qemu`; the host tests,
-   `abi_openbsd.ko` and the images are MP too, and `bsd` refuses to compile without it).
+   user, 2026-10-17) it is the only kernel built: `multiprocessor` is a default feature of
+   `bsd`, which refuses to compile without it, and `hal` and `kernel` are MP code only, with
+   no such option (recipes build with `--features qemu`; the host tests, `abi_openbsd.ko` and
+   the images are MP too).
    Since the user's decision of 2026-10-07 (replacing the
    `-smp 4` everywhere of 2026-10-03) the CPU count is the justfile's `smp` variable,
    `-smp 2` by default (`ncpu`, from `EMIBSD_NCPU`, 2 or 4): every MP bug found so far needs
