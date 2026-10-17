@@ -501,7 +501,6 @@ mod tests {
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]
     fn values_match_the_c_header() {
         let defs = crate::reftest::defines("sys/arch/arm64/include/pmap.h");
-
         let ours: &[(&str, i64)] = &[
             ("VP_IDX0_CNT", VP_IDX0_CNT as i64),
             ("VP_IDX0_POS", i64::from(VP_IDX0_POS)),

@@ -96,7 +96,6 @@ paid_by = "N7"
 # commit 7), so reserve/enter are gone; image/alloc/release are N3.2's (uvm_km) and the
 # boot entry's.
 
-
 # hal::module::ModulePlatform
 [[bridge]]
 trait = "ModulePlatform"

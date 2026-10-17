@@ -126,7 +126,9 @@
 //!   token does not refuse the user half: amd64's MP trampoline is mapped at its low
 //!   identity address in the kernel pmap (`cpu.c`, `machdep.c`), executable. arm64's
 //!   kernel pmap, which has no such page, refuses `PROT_EXEC` through the token (its
-//!   backend's deviations): there only the image and the module window execute.
+//!   backend's deviations): there nothing executes but the boot loader's mapping of the image
+//!   (under boot(8)/efiboot its whole 64 MB block, read-write, an inherited deviation of the
+//!   backend) and the module window.
 //! - Switching the running CPU to a pmap's root (`lcr3` in `pmap_activate`, arm64's
 //!   `pmap_setttb`, `efi_enter`/`efi_leave`) takes a second token, [`Switcher`], from the
 //!   same `bootstrap`: a safe `load` would let any caller run on a root whose pmap it then

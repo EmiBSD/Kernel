@@ -67,13 +67,24 @@
 //!   page's. The module is never unloaded, so no leaf is ever removed: the window lives for
 //!   the kernel's lifetime.
 //!
-//! What executes after this: the kernel's text, and in the window only the leaves entered
-//! `PROT_EXEC` (the module's text); nothing else in the kernel half, since the kernel pmap
-//! refuses `PROT_EXEC` and the managed range's table descriptors carry `Lx_PT_PXN`
-//! (`backend.rs`, deviations). The loader's writable copy is a `kernel_map` range,
-//! unmapped before the module's entry point is called. A stray kernel write to the module's
-//! text or read-only data faults on a read-only leaf outside every uvm map: a kernel panic,
-//! the W^X behaviour wanted.
+//! What executes after this: in the window, only the leaves entered `PROT_EXEC` (the
+//! module's text); in the managed range (`vmmap`, `kernel_map`) nothing, since the kernel
+//! pmap refuses `PROT_EXEC` and the range's table descriptors carry `Lx_PT_PXN`
+//! (`backend.rs`, deviations); and the image's own mapping, which is the boot loader's. Under
+//! boot(8)/efiboot that mapping is `locore0.S`'s 32 level-2 blocks over the whole 64 MB, each
+//! read-write with only `ATTR_UXN`: all of it executes at EL1, the kernel text is writable,
+//! and the uvm pages past `kernel_end` in that block have a writable, executable alias there
+//! (an inherited deviation, `backend.rs`; the C remaps the image by section). Under Limine it
+//! is the image's segments as Limine maps them. The loader's writable copy is a
+//! `kernel_map` range, unmapped before the module's entry point is called. A stray kernel
+//! write to the module's text or read-only data faults on a read-only leaf outside every uvm
+//! map: a kernel panic, the W^X behaviour wanted for the module.
+//!
+//! `pmap_extract` of a window address on the kernel pmap answers `None`: the window's leaves
+//! have no software descriptor, and the image's level-1 entry has no vp table of ours below
+//! it (`backend.rs`'s `extract`), where amd64 walks the hardware tables. No caller extracts a
+//! window address today: the loader extracts the writable copy's `kernel_map` address and
+//! enters that page here.
 //!
 //! ## Redesign
 //! - New in native (N3.1 commit 7, decision 37's symmetry at N3): until it, arm64 placed the
@@ -90,7 +101,11 @@
 //!   window has no `unsafe`.
 //! - The link is attempted once ([`MODULE_WINDOW_TRIED`]): a refused first attempt leaves the
 //!   window empty for good, and the module loader reports it has no memory for the module
-//!   (decision 29's fail-soft); it is never placed in `kernel_map` instead.
+//!   (decision 29's fail-soft); it is never placed in `kernel_map` instead. Two limits of
+//!   that promise: reaching the boot loader's level-2 table panics (`vp.rs`'s `check_frame`)
+//!   rather than refusing when that table lies outside the direct map (it lies inside on both
+//!   boot paths today); and a refused link reaches the boot console as the same `NoMemory`
+//!   line as a failed `km_alloc` of the writable copy, with no line of its own.
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -135,7 +150,8 @@ static MODULE_WINDOW_TRIED: AtomicBool = AtomicBool::new(false);
 /// documentation). Once: the first call, from the end of the bootstrap on the boot CPU, is
 /// the only one that may link; every later call returns at once. A first call without an
 /// image, with the image's gigabyte outside the kernel's level-1 table or mapped by a block,
-/// or with no room after its last entry, links nothing: the window stays empty.
+/// or with no room after its last entry, links nothing: the window stays empty. A level-2
+/// table outside the direct map panics instead (`words`, see the redesign).
 pub(super) fn init(image: Option<Vaddr>) {
     if MODULE_WINDOW_TRIED.swap(true, Ordering::AcqRel) {
         return;
