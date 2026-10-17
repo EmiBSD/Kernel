@@ -575,7 +575,9 @@ pub(super) fn pv_insert(head: &MutexedGuard<'_, PvHead>, pted: &PteDesc) {
 }
 
 /// `LIST_REMOVE(pted, pted_pv_list)` under the page's `pv_mtx` (O(1), by `pv_prev`); panics
-/// when `pted` is not on this page's list.
+/// when `pted` is not on this page's list. The caller passes the guard of the page `pted.pte`
+/// maps (`pted_md`): `pted.pv_prev` is read through it before the membership check, so a guard
+/// of another page would read a link that page's lock does not cover.
 pub(super) fn pv_unlink(head: &MutexedGuard<'_, PvHead>, pted: &PteDesc) {
     let me = Some(NonNull::from(pted));
     let next = pted.pv_next.get();

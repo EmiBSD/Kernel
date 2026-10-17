@@ -1618,7 +1618,6 @@ impl PmapBackend for Backend {
                                 break 'fail;
                             };
                             vp3.set_kernel_slot(k, pted);
-
                             g.maxkvaddr += PAGE_SIZE;
                         }
                     }
