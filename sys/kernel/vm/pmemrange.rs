@@ -129,10 +129,16 @@
 //! - The per-CPU magazines hold [`hal::link::Link`]s to pages instead of
 //!   `Cell<*const VmPage>`, their counts atomics: `hal::percpu::PerCpu<UvmPmrCache>`.
 //! - `splbio()`/`splx(s)` -> `hal::intr::splraise(IPL_BIO)`'s guard.
+//! - `uvm_pmr_cache_put`'s lock-free `uvm_pmemrange_find` (the C walks the range tree without
+//!   `uvm.fpageqlock`, since the ranges change only in `uvm_pmr_init`) -> the ranges' bounds
+//!   and use, copied at the end of `uvm_pmr_init` into a static index of atomics published by
+//!   its count ([`uvm_pmemrange_is_low`]); the tree stays inside [`FREE`], so a free on the hot
+//!   path takes no lock, and a range changed after init withdraws the index (the lookups then
+//!   take the lock) instead of being read stale.
 
 use core::cmp::Ordering as Cmp;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 use hal::bootmem;
 use hal::bridges::AlreadyRegistered;
@@ -170,6 +176,11 @@ pub const UVM_PMR_MEMTYPE_MAX: usize = 2;
 /// of the contention in the pmemrange allocator during concurrent page faults and small enough
 /// to limit fragmentation.
 pub const UVM_PMR_CACHEMAGSZ: usize = 8;
+
+/// The most pmemranges the lock-free index holds: one range plus at most two per DMA
+/// constraint (each `uvm_pmr_use_inc` splits at its two ends; the machines have at most two
+/// constraints). More ranges leave the index unpublished, never wrong.
+const PMR_INDEX_MAX: usize = 16;
 
 hal::tree_adapter!(
     /// `uvm_pmr_addr`: free ranges by address (`vm_page[0].objt`).
@@ -377,6 +388,87 @@ impl PerCpuInit for UvmPmrCache {
     const INIT: Self = UvmPmrCache::new();
 }
 
+/// One pmemrange as the lock-free index keeps it: its page-number bounds and whether its use
+/// count is above zero.
+struct PmrIndexSlot {
+    low: AtomicUsize,
+    high: AtomicUsize,
+    used: AtomicBool,
+}
+
+impl PmrIndexSlot {
+    const fn new() -> Self {
+        Self {
+            low: AtomicUsize::new(0),
+            high: AtomicUsize::new(0),
+            used: AtomicBool::new(false),
+        }
+    }
+}
+
+/// The pmemranges' bounds and use, in address order, published once `uvm_pmr_init` is done
+/// so that [`uvm_pmr_cache_put`] finds a page's range without [`FREE`] (the C reads the
+/// range tree lock-free there, `uvm_pmemrange_find`, relying on the ranges never changing
+/// after boot). `n` is 0 while unpublished; the slots are written only before `n` is stored
+/// (`Release`), and a reader loads `n` first (`Acquire`), so it sees whole slots. Whatever
+/// would change a range ([`uvm_pmr_split`], [`uvm_pmr_use_inc`]) withdraws the index first,
+/// and the lookups fall back to the tree under the lock: the index can be stale only for a
+/// reader racing that change, as the C's tree read is.
+struct PmrIndex {
+    n: AtomicUsize,
+    slots: [PmrIndexSlot; PMR_INDEX_MAX],
+}
+
+impl PmrIndex {
+    const fn new() -> Self {
+        Self {
+            n: AtomicUsize::new(0),
+            slots: [const { PmrIndexSlot::new() }; PMR_INDEX_MAX],
+        }
+    }
+
+    /// Copies the ranges of `fs` in address order and publishes them; leaves the index
+    /// unpublished when there are more than it holds (the lookups then take the lock).
+    fn publish(&self, fs: &FreeState) {
+        self.withdraw();
+        let mut n = 0;
+        for pmr in fs.control.addr.iter() {
+            let Some(slot) = self.slots.get(n) else {
+                return;
+            };
+            slot.low.store(pmr.low(), Ordering::Relaxed);
+            slot.high.store(pmr.high(), Ordering::Relaxed);
+            slot.used.store(pmr.use_count() > 0, Ordering::Relaxed);
+            n += 1;
+        }
+        self.n.store(n, Ordering::Release);
+    }
+
+    /// Unpublishes the index (the ranges are about to change).
+    fn withdraw(&self) {
+        self.n.store(0, Ordering::Release);
+    }
+
+    /// Whether the page numbered `pageno` is "low" (in no range, or in a range in use):
+    /// `None` while the index is unpublished.
+    fn is_low(&self, pageno: usize) -> Option<bool> {
+        let n = self.n.load(Ordering::Acquire);
+        if n == 0 {
+            return None;
+        }
+        let slots = self.slots.get(..n)?;
+        // The first range that ends past `pageno`; it holds `pageno` when it starts at or
+        // before it (the ranges are disjoint and in address order).
+        let i = slots.partition_point(|s| s.high.load(Ordering::Relaxed) <= pageno);
+        Some(
+            slots
+                .get(i)
+                .filter(|s| s.low.load(Ordering::Relaxed) <= pageno)
+                .is_none_or(|s| s.used.load(Ordering::Relaxed)),
+        )
+    }
+}
+
 /// `uvm.fpageqlock` and what it guards.
 static FREE: Mutexed<FreeState> = Mutexed::new(IPL_VM, FreeState::new());
 
@@ -386,6 +478,9 @@ static UVM_PMR_CACHES: PerCpu<UvmPmrCache> = PerCpu::new();
 
 /// The buffer cache's statistics, once registered.
 static STATS: OnceStatic<&'static dyn BufCacheStats> = OnceStatic::new();
+
+/// The pmemranges' lock-free index (published at the end of `uvm_pmr_init`).
+static PMR_INDEX: PmrIndex = PmrIndex::new();
 
 /// The buffer cache's page statistics the allocator reads to wake the page daemon early
 /// (`<sys/mount.h>`'s `BUFPAGES_DEFICIT` and `BUFPAGES_INACT` over `bcstats`), still `bsd`'s:
@@ -1607,6 +1702,8 @@ pub fn uvm_pmr_assertvalid(_fs: &FreeState, _pmr: &UvmPmemrange) {}
 /// `uvm_pmr_split`: split pmr at split point pageno. Called with fpageq unlocked. Split is
 /// only applied if a pmemrange spans pageno.
 pub fn uvm_pmr_split(pageno: usize) {
+    // The ranges may change: the lock-free lookups take the lock from now on.
+    PMR_INDEX.withdraw();
     let fs = FREE.lock();
     let needs_split = uvm_pmemrange_find(&fs, pageno).is_some_and(|pmr| pmr.low() < pageno);
     drop(fs);
@@ -1689,6 +1786,8 @@ pub fn uvm_pmr_split(pageno: usize) {
 /// from it. Addresses here are in `paddr_t`, not page-numbers. The lowest and highest allowed
 /// address are specified.
 pub fn uvm_pmr_use_inc(low: Paddr, high: Paddr) {
+    // The use counts change: the lock-free lookups take the lock from now on.
+    PMR_INDEX.withdraw();
     // pmr uses page numbers, translate low and high.
     let high = atop(trunc_page(high.as_usize().wrapping_add(1)));
     let low = atop(round_page(low.as_usize()));
@@ -1748,6 +1847,9 @@ pub fn uvm_pmr_init(constraints: &[&UvmConstraintRange]) {
     for c in constraints {
         uvm_pmr_use_inc(c.ucr_low, c.ucr_high);
     }
+
+    // The ranges are final: publish them for the lookups that run without the lock.
+    PMR_INDEX.publish(&FREE.lock());
 }
 
 /// `uvm_pmemrange_find`: find the pmemrange that contains the given page number. (Manually
@@ -1764,6 +1866,18 @@ pub fn uvm_pmemrange_find(fs: &FreeState, pageno: usize) -> Option<&'static UvmP
         }
     }
     None
+}
+
+/// Whether the page numbered `pageno` is a "low" page, one the per-CPU caches never keep: in
+/// no pmemrange or in one whose use count is above zero (a DMA constraint's). Lock-free once
+/// `uvm_pmr_init` is done (the published index); under [`FREE`] before it, or after a range
+/// changed.
+pub fn uvm_pmemrange_is_low(pageno: usize) -> bool {
+    if let Some(low) = PMR_INDEX.is_low(pageno) {
+        return low;
+    }
+    let fs = FREE.lock();
+    uvm_pmemrange_find(&fs, pageno).is_none_or(|pmr| pmr.use_count() > 0)
 }
 
 /// `uvm_pmr_isfree`: return true if the given page is in any of the free lists. Used by
@@ -2153,13 +2267,9 @@ fn uvm_pmr_cache_free(upci: &UvmPmrCacheItem) -> u32 {
 pub fn uvm_pmr_cache_put(pg: &'static VmPage) {
     let upc = uvm_pmr_curcache();
 
-    // Always give back low pages to the allocator to not accelerate their exhaustion.
-    let low = {
-        let fs = FREE.lock();
-        uvm_pmemrange_find(&fs, atop(vm_page_to_phys(pg).as_usize()))
-            .is_none_or(|pmr| pmr.use_count() > 0)
-    };
-    if low {
+    // Always give back low pages to the allocator to not accelerate their exhaustion (the
+    // range found without the lock, as the C does).
+    if uvm_pmemrange_is_low(atop(vm_page_to_phys(pg).as_usize())) {
         uvm_pmr_freepages(pg, 1);
         return;
     }
@@ -2254,6 +2364,7 @@ pub fn uvm_pmr_free_frames(frames: &[Paddr]) -> Result<(), Paddr> {
 /// test's. Tests only.
 #[cfg(any(test, feature = "doubles"))]
 pub fn uvm_pmr_cache_test_reset() {
+    PMR_INDEX.withdraw();
     *FREE.lock() = FreeState::new();
     #[cfg(feature = "multiprocessor")]
     for upc in (0..hal::cpu::MAXCPUS).filter_map(|i| UVM_PMR_CACHES.cpu(i)) {
@@ -2600,7 +2711,86 @@ mod tests {
         assert!(out.ends_with("#ranges = 3\n"));
     }
 
+    /// The tree's answer to "is this page low" (no range, or a range in use), under the lock.
+    fn low_by_tree(pageno: usize) -> bool {
+        find(pageno).is_none_or(|pmr| pmr.use_count() > 0)
+    }
+
+    #[test]
+    fn the_lock_free_index_answers_as_the_tree() {
+        let _g = setup();
+        // Published by `uvm_pmr_init`: the three ranges of the host's constraints.
+        assert_eq!(PMR_INDEX.n.load(Ordering::Acquire), 3);
+        let probes = [
+            0,
+            SEG_ISA.0,
+            0xfff,
+            0x1000,
+            0x1001,
+            0xf_ffff,
+            0x10_0000,
+            SEG_HIGH.1,
+            atop(usize::MAX),
+        ];
+        for p in probes {
+            assert_eq!(
+                PMR_INDEX.is_low(p),
+                Some(low_by_tree(p)),
+                "page {p:#x}: the index and the tree agree"
+            );
+        }
+        assert_eq!(PMR_INDEX.is_low(SEG_ISA.0), Some(true), "ISA is in use");
+        assert_eq!(PMR_INDEX.is_low(0x1000), Some(true), "DMA is in use");
+        assert_eq!(PMR_INDEX.is_low(SEG_HIGH.0), Some(false), "high is not");
+
+        // A range that changes after init withdraws the index; the lookup takes the lock and
+        // sees the new use count. (The DMA range's own bounds: no split, which would need
+        // `uvm_pmr_allocpmr` after init.)
+        uvm_pmr_use_inc(
+            Paddr::new(0x1000 << PAGE_SHIFT),
+            Paddr::new((0x10_0000 << PAGE_SHIFT) - 1),
+        );
+        assert_eq!(PMR_INDEX.is_low(0x1000), None, "withdrawn");
+        assert_eq!(find(0x1000).map(UvmPmemrange::use_count), Some(2));
+        assert!(uvm_pmemrange_is_low(0x1000), "in use");
+        assert!(!uvm_pmemrange_is_low(SEG_HIGH.0), "the high range is not");
+        assert_all_valid();
+    }
+
+    #[test]
+    fn an_index_too_small_stays_unpublished() {
+        // More ranges than the index holds: nothing is published, the lookups take the lock.
+        let index = PmrIndex::new();
+        let fs = FreeState::new();
+        let pmrs: Vec<&'static UvmPmemrange> = (0..=PMR_INDEX_MAX)
+            .map(|i| {
+                let pmr: &'static UvmPmemrange = std::boxed::Box::leak(std::boxed::Box::default());
+                pmr.low.store(i * 0x100, Ordering::Relaxed);
+                pmr.high.store((i + 1) * 0x100, Ordering::Relaxed);
+                pmr
+            })
+            .collect();
+        for &pmr in &pmrs[..PMR_INDEX_MAX] {
+            assert!(fs.control.addr.insert(pmr).is_none());
+        }
+        index.publish(&fs);
+        assert_eq!(
+            index.is_low(0x150),
+            Some(false),
+            "a full index is published"
+        );
+        assert_eq!(
+            index.is_low(PMR_INDEX_MAX * 0x100),
+            Some(true),
+            "past every range"
+        );
+        assert!(fs.control.addr.insert(pmrs[PMR_INDEX_MAX]).is_none());
+        index.publish(&fs);
+        assert_eq!(index.is_low(0x150), None, "one range too many");
+    }
+
     /// A test's memory is gone at the next setup: the per-CPU cache it filled must not hand
+
     /// its pages to the next test (hal's managed-page check refuses to zero them).
     #[cfg(feature = "multiprocessor")]
     #[test]
