@@ -576,6 +576,8 @@ pub unsafe fn pmap_bootstrap(first_avail: Paddr, _max_pa: Paddr) -> Paddr {
     // curpcb->pcb_pmap = kpm (proc0's pcb): M5. PCID, pmap_randomize, the direct map's own
     // page tables, the early PTE pages and the low-memory PTPs: with M4 to M6.
 
+    crate::arch::amd64::amd64::pmap_module::pmap_module_window_init();
+
     first_avail
 }
 

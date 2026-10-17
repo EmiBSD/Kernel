@@ -435,6 +435,14 @@ impl Pmap for Machine {
         amd64::pmap::pmap_extract(pmap, va)
     }
 
+    fn pmap_module_window() -> Option<(Vaddr, usize)> {
+        amd64::pmap_module::pmap_module_window()
+    }
+
+    fn pmap_module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
+        amd64::pmap_module::pmap_module_enter(va, pa, prot)
+    }
+
     fn pmap_create() -> &'static Self::Pmap {
         amd64::pmap::pmap_create()
     }
