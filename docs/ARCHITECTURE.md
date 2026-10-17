@@ -2267,3 +2267,50 @@ after that: about 35 to 65 s for amd64 and 80 s for arm64, image build included.
 **beside `just ci`**, a documented recipe, not part of it: the first run needs the network and
 a snapshot that the mirrors drop within days, so `ci` could not stay reproducible on a fresh
 clone; and it adds no build step `ci` does not already do. `testing.md` says when to run it.
+
+### bench
+
+`just bench` (`cargo xtask bench`, `tools/xtask/src/bench.rs`, N3) measures EmiBSD against
+OpenBSD 8.0 on the same emulated machine, so that a redesign of a hot path (N3's uvm and pmap:
+page faults, fork, exec, mmap) has a before and an after. PHASE2's goal 3 ("measured
+improvements only") rests on it; a milestone close that moved a number carries `Bench:`
+trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`.
+
+- **Two systems, one machine.** Per arch, EmiBSD (the smokes' MP kernel, a debug build at
+  `opt-level = 1`, with the ramdisk) and `diff-openbsd`'s installed snapshot (under
+  `-snapshot`, never installed or downloaded by `bench`) boot on `diff-openbsd`'s QEMU
+  configuration: four processors, the same CPU model, firmware, virtio disks and NICs, and
+  the same memory (`boot::VM_MEMORY`, 512 MiB; `diff-openbsd` gives OpenBSD 1 GiB, which a
+  ratio cannot have). They boot one after the other, never side by side, so neither steals the
+  host's cores from the other, and the order alternates from run to run, so a drift of the
+  host's speed falls on both. Five runs each.
+- **What is measured.** `boot`: QEMU's start to the first `login:` (firmware and boot loader
+  included: OpenBSD's efiboot waits at `boot>`, Limine does not). `tools/bench` (ISC, ours,
+  one static binary for both, in the ramdisk as `difftest` is and fetched by OpenBSD over
+  `diff-openbsd`'s HTTP server) prints ns per op of `pagefault` (the first touch of a page of
+  a fresh anonymous mapping), `forkexit`, `forkexec` (the program executes itself as a
+  trivial `true`: the ramdisk has no true(1) and OpenBSD's is dynamic), `pipe` (a one-byte
+  round trip between two processes) and `fileread` (64 KiB reads of a 64 MiB file on a fresh
+  128 MiB scratch disk, FFS, mounted again after the file is written, so it is read cold
+  through vioblk). `tcpbench`: `smoke-tcpbench`'s two VMs on `smoke2`'s private link, for each
+  system, pf disabled on both, a 2 s warm-up and then five 10 s runs in the same boot (Mbps,
+  tcpbench(1)'s average).
+- **Why ratios.** Under TCG (amd64 always on this Mac, arm64 too: no hvf) an absolute number
+  says how fast QEMU translates, not how fast the kernel is; the same emulation running both
+  kernels cancels that out to first order, as TRACTOR reports a translation's overhead against
+  the C it came from. The ratio is EmiBSD's median over OpenBSD's: below 1 is faster for times,
+  above 1 for Mbps. It is only indicative of real hardware (M17), and EmiBSD's side is a debug
+  kernel against OpenBSD's release one.
+- **Spread.** Each side's spread is `(max - min) / median` over its runs. A ratio is printed
+  only when both are at most 15 %; otherwise the table says `spread` and the report gives the
+  numbers. The limit is not tuned to make a run pass: a measurement that stays above it is
+  reported as it is, and the cause found.
+- **Report.** A table per arch on stdout and in `<run dir>/<arch>/report.txt`, and
+  `<run dir>/<arch>/report.toml` (`schema = 1`): the kernel's commit, whether `sys/` was
+  clean, its SHA-256, the QEMU command lines, the date, the configuration, and every raw sample
+  with each side's median, minimum, maximum and spread. `compare` reads two of them and prints
+  a `Bench: <measurement>-<arch> <before> -> <after> <unit>` line for each EmiBSD median that
+  moved by more than the larger spread of the two, and why not for the others.
+- **Where it runs.** Beside `just ci`, not in it, like `diff-openbsd`: under the machine lock,
+  with nothing else running on the Mac (a concurrent build moves every number). The baseline
+  and each milestone's after go in that milestone's section of `docs/JOURNAL.md`.

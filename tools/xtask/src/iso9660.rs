@@ -343,7 +343,7 @@ fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 /// (year, month, day, hour, minute, second) of `t` in UTC.
-fn ymdhms(t: i64) -> (i64, u32, u32, u32, u32, u32) {
+pub(crate) fn ymdhms(t: i64) -> (i64, u32, u32, u32, u32, u32) {
     let (y, m, d) = civil(t.div_euclid(86_400));
     let s = t.rem_euclid(86_400) as u32;
     (y, m, d, s / 3600, s / 60 % 60, s % 60)
