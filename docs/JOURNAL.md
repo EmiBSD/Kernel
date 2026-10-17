@@ -189,43 +189,56 @@ Time: _(user)_
 Under way (from the `docs: close N2` commit; this section is completed at the close).
 
 - Performance baseline before any uvm slice is merged (`just bench`, docs/ARCHITECTURE.md
-  "bench"; the brief of 2026-10-17): measured on 2026-10-17 at 22:01-22:16 UTC (926 s, both
-  archs) on `n3/bench` 87b88bea, whose `sys/` is identical to `main` 20035fd0 (`git diff
-  20035fd0 87b88bea -- sys` is empty), under the machine lock with nothing else running.
-  EmiBSD is the smokes' MP debug kernel (`opt-level = 1`) with the ramdisk and
-  `abi-openbsd.ko`; OpenBSD the `diff-openbsd` snapshot; both `-smp 4`, `-m 512M`, TCG.
-  Five runs per side; median, then minimum and spread `(max - min) / median`; the ratio is
-  EmiBSD / OpenBSD and is refused (`spread`) when either spread exceeds 15 %. The reports,
-  raw samples included, are kept as `docs/bench/n3-before-<arch>.toml` for `bench compare`.
+  "bench"; the brief of 2026-10-17). EmiBSD is the smokes' MP debug kernel (`opt-level = 1`,
+  kept so by the user's decision of 2026-10-17, the caveat documented) with the ramdisk and
+  `abi-openbsd.ko`; OpenBSD the `diff-openbsd` snapshot; both `-smp 4`, `-m 512M`, TCG, one
+  after the other. Five runs per side; median, then minimum and spread `(max - min) /
+  median`; the ratio is EmiBSD / OpenBSD and is refused (`spread`) when either spread exceeds
+  15 %. The reports, raw samples included, are kept as `docs/bench/n3-before-<arch>.toml`
+  for `bench compare`.
+- The first baseline (a49170f2, 2026-10-17 22:01-22:16 UTC, one pass per boot, `forkexit`
+  500 ops, `forkexec` 200, a 64 MiB file) is superseded: six of its fourteen ratios were
+  refused, most of the spread from the first sample after boot (amd64's first tcpbench run,
+  483.8 Mbps against 629.6 to 716.9; arm64's first `forkexit`, 2.47 ms against 1.70 to 2.03).
+  The user chose a warm-up pass discarded per boot (a 10 s tcpbench run too) and more work
+  per sample (`forkexit` 2,000 ops, `forkexec` 800, a 256 MiB file), five runs and the 15 %
+  limit unchanged (b7e474e3).
+- The baseline in force: 2026-10-17 22:27-22:50 UTC (1,423 s with `just userland` first), on
+  `n3/bench` b7e474e3, whose `sys/` is identical to `main` 20035fd0 (`git diff 20035fd0
+  b7e474e3 -- sys` is empty; the kernel's SHA-256 differs from the first baseline's only
+  because `sys/build.rs` stamps the last commit's time), under the machine lock with nothing
+  else running.
 
-  amd64 (kernel SHA-256 97362a5e...):
+  amd64 (kernel SHA-256 3f177e56...):
 
   | measurement | unit | EmiBSD median (min, spread) | OpenBSD median (min, spread) | ratio |
   |---|---|---|---|---|
-  | boot | s | 18.34 (17.59, 10.9 %) | 22.28 (22.19, 2.0 %) | 0.823 |
-  | pagefault | ns/op | 8596 (8407, 10.9 %) | 9853 (9609, 7.0 %) | 0.872 |
-  | forkexit | ns/op | 461840 (450951, 8.3 %) | 808826 (786270, 15.1 %) | spread |
-  | forkexec | ns/op | 1371678 (1317021, 19.1 %) | 2006815 (1943595, 10.4 %) | spread |
-  | pipe | ns/op | 61551 (61109, 1.8 %) | 69345 (67698, 3.2 %) | 0.888 |
-  | fileread | ns/op | 261697 (230372, 22.6 %) | 309562 (275291, 12.5 %) | spread |
-  | tcpbench | Mbps | 654.9 (483.8, 35.6 %) | 579.0 (525.2, 9.7 %) | spread |
+  | boot | s | 17.86 (17.33, 7.4 %) | 22.96 (22.59, 6.0 %) | 0.778 |
+  | pagefault | ns/op | 8550 (8328, 63.4 %) | 11639 (11114, 13.8 %) | spread |
+  | forkexit | ns/op | 472092 (440343, 125.5 %) | 862593 (807299, 16.3 %) | spread |
+  | forkexec | ns/op | 1324559 (1242873, 138.9 %) | 2262595 (2047343, 31.8 %) | spread |
+  | pipe | ns/op | 61452 (61160, 72.5 %) | 70807 (68653, 7.2 %) | spread |
+  | fileread | ns/op | 238012 (229906, 249.5 %) | 313960 (301332, 9.3 %) | spread |
+  | tcpbench | Mbps | 511.6 (507.7, 24.5 %) | 487.6 (442.8, 16.5 %) | spread |
 
-  arm64 (kernel SHA-256 10bf89e7...):
+  arm64 (kernel SHA-256 aaf30db8...):
 
   | measurement | unit | EmiBSD median (min, spread) | OpenBSD median (min, spread) | ratio |
   |---|---|---|---|---|
-  | boot | s | 8.50 (8.47, 1.3 %) | 33.34 (32.78, 2.9 %) | 0.255 |
-  | pagefault | ns/op | 97335 (87572, 14.5 %) | 126223 (124333, 5.1 %) | 0.771 |
-  | forkexit | ns/op | 1784205 (1698824, 43.2 %) | 2308920 (2144398, 10.5 %) | spread |
-  | forkexec | ns/op | 5795360 (5313465, 18.3 %) | 7071500 (6821290, 5.2 %) | spread |
-  | pipe | ns/op | 172346 (171664, 3.8 %) | 181096 (177751, 11.2 %) | 0.952 |
-  | fileread | ns/op | 693166 (682117, 4.8 %) | 843146 (818997, 6.8 %) | 0.822 |
-  | tcpbench | Mbps | 108.3 (102.3, 7.5 %) | 86.2 (80.8, 11.3 %) | 1.256 |
+  | boot | s | 8.50 (8.44, 3.0 %) | 32.45 (31.49, 5.3 %) | 0.262 |
+  | pagefault | ns/op | 77970 (77422, 2.6 %) | 127518 (122273, 4.4 %) | 0.611 |
+  | forkexit | ns/op | 1744749 (1694479, 12.8 %) | 2216416 (2158573, 5.4 %) | 0.787 |
+  | forkexec | ns/op | 5499000 (5127110, 12.4 %) | 7247977 (6668492, 9.2 %) | 0.759 |
+  | pipe | ns/op | 170852 (166816, 5.1 %) | 179770 (177440, 6.6 %) | 0.950 |
+  | fileread | ns/op | 723894 (717189, 5.5 %) | 928659 (874096, 7.5 %) | 0.780 |
+  | tcpbench | Mbps | 106.6 (101.8, 4.9 %) | 89.1 (88.9, 1.6 %) | 1.195 |
 
-  Six of the fourteen ratios are refused: the spread stayed above 15 % after five runs
-  (EmiBSD's forkexec on both archs, forkexit on arm64, fileread and tcpbench on amd64,
-  OpenBSD's forkexit on amd64 at 15.1 %). Most come from one sample: the first tcpbench run
-  on amd64 (483.8 Mbps, the others 629.6 to 716.9), arm64's first forkexit (2.47 ms, the others
-  1.70 to 2.03). The limit was not tuned; how to tighten the measure is the user's decision.
-  The N3 close runs the same command and carries `Bench:` lines from `cargo xtask bench
-  compare` against these reports.
+  arm64 gives all seven ratios. amd64 gives one: EmiBSD's first run, the first VM booted
+  after `just userland` ended, recorded every measurement 1.5 to 3.5 times slower than its
+  own warm-up pass of the same boot and than the four later runs (`forkexit` 1.03 ms against
+  0.44 to 0.48, `fileread` 824 against 230 to 243 us), with no kernel message on its console
+  that the other runs lack; the four other runs agree within 9 % (`forkexit` 8.1 %,
+  `pipe` 0.7 %). OpenBSD's own amd64 spreads are at 16.3 % (`forkexit`), 31.8 % (`forkexec`,
+  one run at 2.77 ms) and 16.5 % (tcpbench), and EmiBSD's tcpbench at 24.5 %. The limit was not
+  tuned; the next step is the user's. The N3 close runs the same command and carries
+  `Bench:` lines from `cargo xtask bench compare` against these reports.
