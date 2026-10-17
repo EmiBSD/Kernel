@@ -7890,7 +7890,7 @@ rust = "sys/uvm/uvm_init.rs"
 lz = ["sys/uvm/uvm_init.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/uvmexp.rs"]
-notes = "uvm_init: page system, uvm_map_init, uvm_km_init (kernel_map), uvmfault_init, pmap_init, kmeminit, uvm_pager_init, amap_init, uao_create (kernel swap), uvm_anon_init, the bestfit switch of kernel_map (kmem_map waits for kmeminit's suballoc) run; uvm_km_page_init, uvm_km_page_lateinit and uvm_init_percpu's counters report themselves unported; uvmexp is exported under its C name for the amd64 interrupt stubs' V_INTR; vm_min_kernel_address is a runtime value (amd64 shifts the kernel map above its direct map) and uvm_maxkaddr is raised to it before uvm_km_init; M11a: uvm_init_percpu calls uvm_anon_init_percpu; uvmexp_counters stay static atomics, so counters_alloc_ncpus (now in subr_percpu.rs) is not called: a deviation, no longer reported; M16d: dma_alloc_init runs (kern/dma_alloc.rs)"
+notes = "N3.3: UVMEXP moved into hal (sys/hal/vm/uvmexp.rs lists this file; re-exported here under its old path), and bsd's SysctlPlain impl of hal's UvmexpCopy (LZ's uvmexp.rs) sits here, where the orphan rule lets bsd implement its own trait for hal's type: call sites of the moved type, nothing of uvm_init's own changed; uvm_init: page system, uvm_map_init, uvm_km_init (kernel_map), uvmfault_init, pmap_init, kmeminit, uvm_pager_init, amap_init, uao_create (kernel swap), uvm_anon_init, the bestfit switch of kernel_map (kmem_map waits for kmeminit's suballoc) run; uvm_km_page_init, uvm_km_page_lateinit and uvm_init_percpu's counters report themselves unported; uvmexp is exported under its C name for the amd64 interrupt stubs' V_INTR; vm_min_kernel_address is a runtime value (amd64 shifts the kernel map above its direct map) and uvm_maxkaddr is raised to it before uvm_km_init; M11a: uvm_init_percpu calls uvm_anon_init_percpu; uvmexp_counters stay static atomics, so counters_alloc_ncpus (now in subr_percpu.rs) is not called: a deviation, no longer reported; M16d: dma_alloc_init runs (kern/dma_alloc.rs)"
 
 [[module]]
 rust = "sys/uvm/uvm_io.rs"
@@ -8022,10 +8022,9 @@ adapted_by = ["sys/kernel/vm/page.rs"]
 [[module]]
 rust = "sys/hal/vm/uvmexp.rs"
 crate = "hal"
-lz = ["sys/uvm/uvmexp.rs"]
+lz = ["sys/uvm/uvmexp.rs", "sys/uvm/uvm_init.rs"]
 status = "redesigned"
-license = "none"
-notes = "struct uvmexp with every field atomic (one static, no lock), the VM_* sysctl ids, the counters enum; M7a-3: uvmexp_counters as one array for the one CPU with counters_inc/counters_read; kern_sysctl.c: UvmexpCopy (the plain #[repr(C)] struct uvmexp of ints, SysctlPlain) and Uvmexp::snapshot for VM_UVMEXP; M11e: uvmexp_counters stay one array of relaxed atomics bumped by every CPU (correct under MULTIPROCESSOR; the C's per-CPU copies, counters_alloc_ncpus, only spread the cache lines)"
+notes = "N3.3: uvmexp.h's type and uvm_init.c's one instance, UVMEXP (exported as uvmexp for the interrupt stubs' V_INTR), moved into hal; uvmexp.h has no licence text, uvm_init.c's notice (Cranor/Washington University, BSD) is carried whole; struct uvmexp with every field atomic (one static, no lock), the VM_* sysctl ids, the counters enum; M7a-3: uvmexp_counters as one array for the one CPU with counters_inc/counters_read; kern_sysctl.c: UvmexpCopy (the plain #[repr(C)] struct uvmexp of ints, SysctlPlain) and Uvmexp::snapshot for VM_UVMEXP; M11e: uvmexp_counters stay one array of relaxed atomics bumped by every CPU (correct under MULTIPROCESSOR; the C's per-CPU copies, counters_alloc_ncpus, only spread the cache lines)"
 
 [[module]]
 rust = "sys/hal/syscall.rs"
