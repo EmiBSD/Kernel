@@ -228,47 +228,47 @@ impl<A: ListAdapter> List<A> {
     }
 
     /// `TAILQ_INSERT_BEFORE(at, e)`: `e` goes right before `at`, which must be on this list.
-    /// Panics when `e` is on a list or `at` is not.
+    /// Panics when `e` is on a list or `at` is not, before anything is changed.
     pub fn insert_before(&self, at: &'static A::Elem, e: &'static A::Elem) {
         if !A::entry(at).is_linked() {
             hal_panic(format_args!(
                 "TAILQ_INSERT_BEFORE: the position is on no list"
             ));
         }
+        let p = A::entry(at).prev.get();
+        if p.is_none() {
+            self.check_end(self.first.points_to(at), "TAILQ_INSERT_BEFORE");
+        }
         Self::claim(e, "TAILQ_INSERT_BEFORE");
         let ent = A::entry(e);
-        let p = A::entry(at).prev.get();
         ent.prev.set(p);
         ent.next.set(Some(at));
         match p {
             Some(p) => A::entry(p).next.set(Some(e)),
-            None => {
-                self.check_end(self.first.points_to(at), "TAILQ_INSERT_BEFORE");
-                self.first.set(Some(e));
-            }
+            None => self.first.set(Some(e)),
         }
         A::entry(at).prev.set(Some(e));
     }
 
     /// `TAILQ_INSERT_AFTER(at, e)`: `e` goes right after `at`, which must be on this list.
-    /// Panics when `e` is on a list or `at` is not.
+    /// Panics when `e` is on a list or `at` is not, before anything is changed.
     pub fn insert_after(&self, at: &'static A::Elem, e: &'static A::Elem) {
         if !A::entry(at).is_linked() {
             hal_panic(format_args!(
                 "TAILQ_INSERT_AFTER: the position is on no list"
             ));
         }
+        let n = A::entry(at).next.get();
+        if n.is_none() {
+            self.check_end(self.last.points_to(at), "TAILQ_INSERT_AFTER");
+        }
         Self::claim(e, "TAILQ_INSERT_AFTER");
         let ent = A::entry(e);
-        let n = A::entry(at).next.get();
         ent.next.set(n);
         ent.prev.set(Some(at));
         match n {
             Some(n) => A::entry(n).prev.set(Some(e)),
-            None => {
-                self.check_end(self.last.points_to(at), "TAILQ_INSERT_AFTER");
-                self.last.set(Some(e));
-            }
+            None => self.last.set(Some(e)),
         }
         A::entry(at).next.set(Some(e));
     }
@@ -282,7 +282,8 @@ impl<A: ListAdapter> List<A> {
     }
 
     /// `TAILQ_REMOVE(e)`: takes `e` off this list and clears its links. Panics when `e` is on
-    /// no list, or on another list when that shows (an end that is not this list's).
+    /// no list, or on another list when that shows (an end that is not this list's), before
+    /// anything is changed.
     pub fn remove(&self, e: &A::Elem) {
         let ent = A::entry(e);
         if !ent.is_linked() {
@@ -290,19 +291,20 @@ impl<A: ListAdapter> List<A> {
         }
         let n = ent.next.get();
         let p = ent.prev.get();
+        // Both ends first: a failed check leaves every list as it was.
+        if n.is_none() {
+            self.check_end(self.last.points_to(e), "TAILQ_REMOVE");
+        }
+        if p.is_none() {
+            self.check_end(self.first.points_to(e), "TAILQ_REMOVE");
+        }
         match n {
             Some(n) => A::entry(n).prev.set(p),
-            None => {
-                self.check_end(self.last.points_to(e), "TAILQ_REMOVE");
-                self.last.set(p);
-            }
+            None => self.last.set(p),
         }
         match p {
             Some(p) => A::entry(p).next.set(n),
-            None => {
-                self.check_end(self.first.points_to(e), "TAILQ_REMOVE");
-                self.first.set(n);
-            }
+            None => self.first.set(n),
         }
         ent.next.set(None);
         ent.prev.set(None);
@@ -317,8 +319,12 @@ impl<A: ListAdapter> List<A> {
     }
 
     /// `TAILQ_CONCAT(self, other)`: every element of `other`, in order, appended to this
-    /// list; `other` is left empty.
+    /// list; `other` is left empty. Panics when `other` is this list (the C would make it a
+    /// cycle).
     pub fn concat(&self, other: &Self) {
+        if core::ptr::eq(self, other) {
+            hal_panic(format_args!("TAILQ_CONCAT: a list onto itself"));
+        }
         let Some(of) = other.first.get() else {
             return;
         };
@@ -506,6 +512,84 @@ mod tests {
     fn inserting_before_an_unlinked_element_panics() {
         let l = List::<Q>::new();
         l.insert_before(item(1), item(2));
+    }
+
+    /// Runs `f`, which must panic; the lists it touched are checked afterwards.
+    fn panics(f: impl FnOnce()) {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        assert!(r.is_err(), "the operation panicked");
+    }
+
+    #[test]
+    fn a_refused_removal_changes_nothing() {
+        // `a` heads `l1` and has a successor: removing it from `l2` is seen at its first end,
+        // after its next end, which must not have been relinked yet.
+        let (l1, l2) = (List::<Q>::new(), List::<Q>::new());
+        let (a, b) = (item(1), item(2));
+        l1.insert_tail(a);
+        l1.insert_tail(b);
+        l2.insert_tail(item(3));
+        panics(|| l2.remove(a));
+        assert_eq!(values(&l1), [1, 2]);
+        assert!(List::<Q>::prev(b).is_some_and(|p| core::ptr::eq(p, a)));
+        assert!(List::<Q>::is_linked(a));
+        assert_eq!(values(&l2), [3]);
+    }
+
+    #[test]
+    fn a_refused_insertion_changes_nothing() {
+        // `at` heads `l1`: inserting before it on `l2`, or after the tail of `l1` on `l2`, is
+        // refused before `e` is claimed or any link is written.
+        let (l1, l2) = (List::<Q>::new(), List::<Q>::new());
+        let (at, e) = (item(1), item(9));
+        l1.insert_tail(at);
+        l2.insert_tail(item(2));
+        panics(|| l2.insert_before(at, e));
+        assert!(!List::<Q>::is_linked(e), "e was not claimed");
+        assert!(List::<Q>::prev(at).is_none());
+        panics(|| l2.insert_after(at, e));
+        assert!(!List::<Q>::is_linked(e));
+        assert!(List::<Q>::next(at).is_none());
+        assert_eq!(values(&l1), [1]);
+        assert_eq!(values(&l2), [2]);
+        // Still usable on its own list.
+        l1.insert_after(at, e);
+        assert_eq!(values(&l1), [1, 9]);
+    }
+
+    #[test]
+    fn concat_appends_and_empties_the_other() {
+        let (l1, l2) = (List::<Q>::new(), List::<Q>::new());
+        // Empty onto empty, then a list onto an empty one.
+        l1.concat(&l2);
+        assert!(l1.is_empty() && l2.is_empty());
+        for v in [1, 2] {
+            l2.insert_tail(item(v));
+        }
+        l1.concat(&l2);
+        assert_eq!(values(&l1), [1, 2]);
+        assert!(l2.is_empty() && l2.last().is_none());
+        // A list onto a non-empty one: the links meet in the middle, both ways.
+        for v in [3, 4] {
+            l2.insert_tail(item(v));
+        }
+        l1.concat(&l2);
+        assert_eq!(values(&l1), [1, 2, 3, 4]);
+        let back: Vec<u32> = core::iter::successors(l1.last(), |i| List::<Q>::prev(i))
+            .map(|i| i.v)
+            .collect();
+        assert_eq!(back, [4, 3, 2, 1]);
+        // The emptied list is a list again.
+        l2.insert_tail(item(5));
+        assert_eq!(values(&l2), [5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "TAILQ_CONCAT: a list onto itself")]
+    fn concat_onto_itself_panics() {
+        let l = List::<Q>::new();
+        l.insert_tail(item(1));
+        l.concat(&l);
     }
 }
 /* </TESTS> */

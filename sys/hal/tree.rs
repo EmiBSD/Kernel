@@ -356,7 +356,10 @@ impl<A: TreeAdapter> Tree<A> {
     /// `RBT_INSERT(e)`: puts `e` in the tree and returns `None`, or returns the element already
     /// there that compares equal (and leaves `e` out). Panics when `e` is in a tree.
     pub fn insert(&self, e: &'static A::Elem) -> Option<&'static A::Elem> {
-        if Self::is_linked(e) {
+        let ent = Self::e(e);
+        // One swap claims the entry, as `List::claim` does: two inserts of the same element
+        // cannot both see it unlinked.
+        if ent.linked.swap(true, Mem::Relaxed) {
             hal_panic(format_args!("RBT_INSERT: the element is in a tree already"));
         }
         let mut parent = None;
@@ -368,15 +371,17 @@ impl<A: TreeAdapter> Tree<A> {
             n = match went {
                 Ordering::Less => Self::left(x),
                 Ordering::Greater => Self::right(x),
-                Ordering::Equal => return Some(x),
+                Ordering::Equal => {
+                    // An equal element is there: `e` stays out, its claim released.
+                    ent.linked.store(false, Mem::Relaxed);
+                    return Some(x);
+                }
             };
         }
-        let ent = Self::e(e);
         ent.parent.set(parent);
         ent.left.set(None);
         ent.right.set(None);
         ent.set_color(RED);
-        ent.linked.store(true, Mem::Relaxed);
         match parent {
             Some(p) if went == Ordering::Less => Self::e(p).left.set(Some(e)),
             Some(p) => Self::e(p).right.set(Some(e)),
@@ -387,11 +392,15 @@ impl<A: TreeAdapter> Tree<A> {
     }
 
     /// `RBT_REMOVE(e)`: takes `e` out of this tree and clears its links. Panics when `e` is in
-    /// no tree, or in another tree when that shows (a root that is not this tree's).
+    /// no tree, or in another tree when that shows (a root that is not this tree's), before
+    /// anything is changed.
     pub fn remove(&self, e: &A::Elem) {
         let ent = Self::e(e);
         if !ent.is_linked() {
             hal_panic(format_args!("RBT_REMOVE: the element is in no tree"));
+        }
+        if ent.parent.is_none() && !self.root.points_to(e) {
+            hal_panic(format_args!("RBT_REMOVE: the element is in another tree"));
         }
         let (child, parent, color) = match (ent.left.get(), ent.right.get()) {
             (None, c) | (c, None) => {
@@ -411,19 +420,23 @@ impl<A: TreeAdapter> Tree<A> {
                 }
                 let sent = Self::e(s);
                 let s_child = sent.right.get();
-                let s_parent = sent.parent.get();
+                // The successor is below `e`, so it has a parent (checked before any change).
+                let Some(sp) = sent.parent.get() else {
+                    broken("RBT_REMOVE")
+                };
                 let color = sent.color();
                 if let Some(c) = s_child {
-                    Self::e(c).parent.set(s_parent);
+                    Self::e(c).parent.set(Some(sp));
                 }
-                match s_parent {
-                    Some(sp) if Self::e(sp).left.points_to(s) => Self::e(sp).left.set(s_child),
-                    Some(sp) => Self::e(sp).right.set(s_child),
-                    None => broken("RBT_REMOVE"),
+                if Self::e(sp).left.points_to(s) {
+                    Self::e(sp).left.set(s_child);
+                } else {
+                    Self::e(sp).right.set(s_child);
                 }
-                let fix_parent = match s_parent {
-                    Some(sp) if core::ptr::eq(sp, e) => Some(s),
-                    other => other,
+                let fix_parent = if core::ptr::eq(sp, e) {
+                    Some(s)
+                } else {
+                    Some(sp)
                 };
                 // The successor takes `e`'s links and colour (read after the detach above,
                 // which may have changed `e`'s right child).
@@ -873,6 +886,38 @@ mod tests {
         a.insert(n);
         b.insert(node(2));
         b.remove(n);
+    }
+
+    #[test]
+    fn a_refused_removal_changes_nothing() {
+        // The root of `a`, with two children: removing it from `b` is refused before the
+        // successor is detached or any colour changes.
+        let (a, b) = (T::new(), T::new());
+        let mut oracle = BTreeSet::new();
+        for k in [20, 10, 30] {
+            a.insert(node(k));
+            oracle.insert(k);
+        }
+        b.insert(node(99));
+        let root = a.root().expect("a root");
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| b.remove(root)));
+        assert!(r.is_err(), "refused");
+        valid(&a, &oracle);
+        valid(&b, &BTreeSet::from([99]));
+    }
+
+    #[test]
+    fn a_duplicate_is_left_out_and_unclaimed() {
+        let t = T::new();
+        let first = node(7);
+        assert!(t.insert(first).is_none());
+        let dup = node(7);
+        assert!(t.insert(dup).is_some_and(|x| core::ptr::eq(x, first)));
+        assert!(!T::is_linked(dup), "the duplicate's claim is released");
+        // So it may go into another tree.
+        let other = T::new();
+        assert!(other.insert(dup).is_none());
+        assert!(T::is_linked(dup));
     }
 }
 /* </TESTS> */
