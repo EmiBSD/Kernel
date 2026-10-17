@@ -20,14 +20,17 @@
 //! The trust boundary of the memory bridges: the checks `hal` makes on every block the
 //! kernel's allocators hand it, before it trusts the block.
 //!
-//! The memory bridges (`PageMemory`, `PoolBackend`/`RawPool`, `Malloc`) are safe traits
-//! (decision 30): their implementations, registered once by the kernel's boot path with the
-//! kernel's own `uvm_km`, `pool(9)` and `malloc(9)`, build nothing unsafe; they return a
-//! pointer and the size they granted. That the block is the kernel's memory, exclusively the
-//! caller's until it is freed through the same bridge, is the **registration contract**
-//! (`sys/hal/bridges.rs`), on which the `// SAFETY:` of every site that makes a reference or
-//! a slice of such a block rests. It is a documented trust boundary, not a compile-time
-//! proof, and it goes with the bridges (N3 for `PageMemory`, N9 for the others).
+//! The memory bridges (`PoolBackend`/`RawPool`, `Malloc`) and the kernel map's page provider
+//! (`PageMemory`) are safe traits (decision 30): their implementations (the bridges registered
+//! once by the kernel's boot path with the kernel's own `pool(9)` and `malloc(9)`; the
+//! provider the kernel's own `km` is and passes down as a value, N3.2) build nothing unsafe;
+//! they return a pointer and the size they granted. That the block is the kernel's memory,
+//! exclusively the caller's until it is freed through the same implementation, is the
+//! **registration contract** (`sys/hal/bridges.rs`; for the page provider, the contract of
+//! `crate::kmbuf::PageMemory`), on which the `// SAFETY:` of every site that makes a
+//! reference or a slice of such a block rests. It is a documented trust boundary, not a
+//! compile-time proof, and it goes with the bridges (N9) and, for the pages, when the kernel
+//! map's record is typed (N3.5).
 //!
 //! What can be checked is checked here, on every answer: the pointer is not null (it is a
 //! `NonNull`), it is aligned as the request needs, and the size granted covers the request.

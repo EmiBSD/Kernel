@@ -39,7 +39,7 @@ mod rt;
 pub use crate::api::{
     HEADER_API_SIZE, HEADER_API_VERSION, HEADER_INIT, HEADER_MAGIC, HEADER_SIZE, MODULE_MAGIC,
 };
-pub use load::{LoadError, Loaded, ModulePlatform, Prot, load};
+pub use load::{LoadError, Loaded, ModuleMemory, ModulePlatform, Prot, load};
 
 /// The page size the module is laid out and mapped in (4 KiB on both machines).
 pub const PAGE_SIZE: usize = 4096;

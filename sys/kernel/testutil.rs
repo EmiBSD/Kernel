@@ -34,7 +34,8 @@
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
 //!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
 //!   nothing.
-//! - `PageMemory` and `PoolBackend`: zeroed, page-aligned blocks of the host's heap, leaked
+//! - `PageMemory` (not a bridge: [`page_memory`] hands it out as a value) and `PoolBackend`:
+//!   zeroed, page-aligned blocks of the host's heap, leaked
 //!   (a block given back is counted and never reused: freeing it would need the pointer
 //!   turned back into its `Box`, which is `unsafe`); the pages out are counted per
 //!   thread, the items out per pool; [`fail_pages`] makes a thread's next page allocations
@@ -356,10 +357,15 @@ pub fn install() {
         let _ = bridges::register_intr_level(&TEST_INTR);
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
-        let _ = bridges::register_page_memory(&TEST_PAGES);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_user_copy(&TEST_USER);
     });
+}
+
+/// The kernel map double, for `KmBuf` and `kernel::pipe::Pipes::new` (a provider passed as a
+/// value, not a registered bridge; a `const fn` so a test's `static` can name it).
+pub const fn page_memory() -> &'static dyn PageMemory {
+    &TEST_PAGES
 }
 
 /// `len` bytes of the double's user memory at `uaddr`, `None` outside it.

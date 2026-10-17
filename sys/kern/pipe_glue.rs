@@ -229,7 +229,7 @@ pub static PIPE_EFILTOPS: Filterops = Filterops {
 };
 
 /// The pipes: `pipe_pair_pool`, `nbigpipe`, `amountpipekva`, over this glue.
-pub static PIPES: Pipes<BsdPipeGlue> = Pipes::new();
+pub static PIPES: Pipes<BsdPipeGlue> = Pipes::new(crate::kern::hal_bridges::page_memory());
 
 /// The `PipeKlists` given back, for the next pipe. The mutex covers a pop or a push.
 #[cfg(feature = "alloc")]

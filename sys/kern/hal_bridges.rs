@@ -170,7 +170,8 @@ impl Sleep for BsdSleep {
     }
 }
 
-/// `km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`, with `&kv_any`.
+/// `km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`, with `&kv_any`: the page provider
+/// `kernel::pipe`'s buffers take as a value ([`page_memory`]), no longer a registered bridge.
 struct BsdPages;
 
 impl PageMemory for BsdPages {
@@ -365,6 +366,11 @@ static BSD_CONS: BsdCons = BsdCons;
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
 
+/// The kernel map's pages as `hal::kmbuf::KmBuf` takes them (a provider passed as a value).
+pub const fn page_memory() -> &'static dyn PageMemory {
+    &BSD_PAGES
+}
+
 /// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
 /// then: `Machine::cpu_boot_secondary_processors`).
 static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -376,7 +382,6 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_intr_level(&BSD_INTR);
     let _ = hal::bridges::register_cpu_id(&BSD_CPU);
     let _ = hal::bridges::register_sleep(&BSD_SLEEP);
-    let _ = hal::bridges::register_page_memory(&BSD_PAGES);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);

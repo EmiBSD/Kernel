@@ -49,14 +49,6 @@ trait = "Sleep"
 for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
 paid_by = "N4"
 
-# bsd: km_alloc/km_free with &kv_any and &kp_pageable or &kp_zero (sys/uvm/uvm_km.rs). A safe
-# trait (decision 30): hal's soundness rests on the boot registration (sys/hal/trust.rs).
-# hal::kmbuf::PageMemory
-[[bridge]]
-trait = "PageMemory"
-for = ["sys/hal/kmbuf.rs"]
-paid_by = "N3"
-
 # bsd: pool_init/pool_get/pool_put and pr_nout (sys/kern/subr_pool.rs), one pool per TypedPool so
 # vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # hal::pool::PoolBackend

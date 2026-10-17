@@ -35,8 +35,8 @@
 //!   records it and `sleep_finish` waits on one condition variable until it moves (so a wakeup
 //!   between the two is never lost, as with the C's sleep queue lock) or the timeout
 //!   (`EWOULDBLOCK`); no signals.
-//! - `PageMemory`: zeroed, page-aligned allocations of the host's allocator, the bytes out
-//!   counted per thread.
+//! - `PageMemory` (not a bridge: [`page_memory`] hands it to `KmBuf` as a value): zeroed,
+//!   page-aligned allocations of the host's allocator, the bytes out counted per thread.
 //! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`.
 //! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
 //!   malloc type.
@@ -435,12 +435,17 @@ pub(crate) fn install() {
         let _ = bridges::register_intr_level(&TEST_INTR);
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
-        let _ = bridges::register_page_memory(&TEST_PAGES);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_console(&TEST_CONS);
     });
+}
+
+/// The kernel map double, for `KmBuf`'s constructors (a provider passed as a value, not a
+/// registered bridge).
+pub(crate) fn page_memory() -> &'static dyn PageMemory {
+    &TEST_PAGES
 }
 
 /// The first address of the double's user address space.

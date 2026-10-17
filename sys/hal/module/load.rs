@@ -94,6 +94,23 @@ pub trait ModulePlatform: Sync {
     fn release(&self, rw: usize, len: usize);
 }
 
+/// The kernel memory the loader's writable copy takes (`km_alloc`/`km_free`), as the kernel
+/// provides it (`kernel::vm::km::module_memory()`) and passes it to [`load`] as a value: a
+/// safe trait whose contract the loader's `unsafe` rests on (the platform premise, above).
+pub trait ModuleMemory: Sync {
+    /// `km_alloc(round_page(len), &kv_any, &kp_zero, &kd_waitok)`: `len` bytes, rounded up to
+    /// whole pages, of zeroed, wired kernel memory, mapped writable, page-aligned, owned by the
+    /// caller until [`Self::release`]: its kernel virtual address; `None` when there is none.
+    fn alloc(&self, len: usize) -> Option<Vaddr>;
+
+    /// Unmaps the writable range `[va, va + len)` (from [`Self::alloc`], the same `len`) and
+    /// gives back its virtual space, keeping its physical pages, which the module window's
+    /// mappings (`crate::pmap::module_enter`) still hold: after it, no writable alias of the
+    /// module's text and read-only data is left but the direct map, which aliases every page
+    /// of memory as OpenBSD's does. Nothing may touch `va` after.
+    fn release(&self, va: Vaddr, len: usize);
+}
+
 /// Why the module was not loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadError {

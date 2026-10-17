@@ -35,11 +35,15 @@
 //! register none) is written in its module and is never a panic in a hot path: no interrupts
 //! yet (`intr.rs`), one boot CPU (`cpu.rs`).
 //!
-//! **The boot contract.** Every bridge is a safe trait (decision 30). The three memory
-//! bridges (`PageMemory`, `PoolBackend`, `Malloc`) are registered once by the kernel's boot
+//! The kernel's page allocator is not a bridge: `kernel::vm::km` implements `hal`'s
+//! [`crate::kmbuf::PageMemory`] and its callers pass it down as a value (N3.2), as the pmap's
+//! page provider is (D16).
+//!
+//! **The boot contract.** Every bridge is a safe trait (decision 30). The two memory
+//! bridges (`PoolBackend`, `Malloc`) are registered once by the kernel's boot
 //! path (`bsd`'s `hal_bridges_register`, called by `stand::start_kernel` before `main()`, on
 //! the boot CPU, before interrupts and before any user of the pieces) with the kernel's own
-//! `uvm_km`, `pool(9)` and `malloc(9)`; `hal`'s soundness rests on that registration: the
+//! `pool(9)` and `malloc(9)`; `hal`'s soundness rests on that registration: the
 //! blocks they return are kernel memory of the size granted, exclusively the caller's until
 //! freed through the same bridge (`sys/hal/trust.rs` checks every answer for alignment and
 //! size). A slot is set once, so nothing registered later can replace them.
@@ -52,7 +56,6 @@
 use crate::cons::Console;
 use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
-use crate::kmbuf::PageMemory;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
 use crate::once::OnceStatic;
@@ -110,16 +113,6 @@ bridge!(
     SLEEP: Sleep,
     register_sleep,
     sleep
-);
-
-bridge!(
-    /// Registers the kernel map's pages (`km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`). The boot
-    /// contract (module docs): called once by the kernel's boot path, before interrupts and
-    /// before any user, with the kernel's own page allocator; `hal`'s soundness rests on it.
-    /// Paid by N3.
-    PAGE_MEMORY: PageMemory,
-    register_page_memory,
-    page_memory
 );
 
 bridge!(
