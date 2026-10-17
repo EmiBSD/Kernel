@@ -63,3 +63,8 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - arm64's `ap_bits_user[PROT_EXEC]` is execute-only (AP 0b10: EL0 fetches, cannot load): a compile-time check "EL0 reads every user leaf" is wrong for it; write the PTE asserts from the C's table, not from intuition.
 - `PoolBox`/`SharedBox` are two words (item + pool): a slot that is one word of a page (arm64's vp3 `vp[]`) needs `SharedBox::into_raw`/`from_raw`; a typed slot array would need a third page per table at every level.
 - `in` is a keyword: an `asm!` operand named `in = out(reg) _` does not parse; name loop registers `cnt`, `ia`.
+- `[[dropped]]` is refused (lz check) for an LZ file still in any module's lz list: an LZ file absorbed by hal modules that list it needs only the `[[module.fn]]` rows for its items no hal item covers by name.
+- lz check resolves trait-impl methods as `Type::method` in any file (`sys/arch/amd64/mod.rs::Machine::pmap_activate_md`, `sys/hal/pmap.rs::Pmap::drop`), so rows may target the structural mod.rs and machine adapters.
+- When the direct map's base moves into `hal::pmap::bootstrap`, everything that used LZ's early static before bootstrap (amd64 consinit: efifb's early map, the VGA hole) breaks; move the bootstrap before consinit.
+- A device softc is zero-initialised by autoconf: a non-pointer handle (`Option<PmapRef>`) cannot live in it; keep it in a module `OnceStatic` and leave the softc's raw pointer for identity.
+- bsd host tests get hal's pool backend only from `kernel::testutil::install()` (dev-dependency, once per process, heap-backed): a hal TypedPool used by bsd host code must install it before `init`, never bsd's subr_pool (its memory is renewed per test).
