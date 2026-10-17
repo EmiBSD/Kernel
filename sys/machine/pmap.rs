@@ -174,7 +174,7 @@ pub trait Pmap {
     /// `pmap_extract`: the physical address `va` maps to in `pmap`, if any.
     fn pmap_extract(pmap: &Self::Pmap, va: Vaddr) -> Option<Paddr>;
 
-    /// The kernel virtual window the ABI module `abi-openbsd.ko` must run from (N2, decision
+    /// The kernel virtual window the ABI module `abi_openbsd.ko` must run from (N2, decision
     /// 22): its first address and its size, outside `kernel_map`, for the kernel's lifetime.
     /// `None` on a machine whose `kernel_map` may hold executable kernel pages (arm64, the
     /// host double): the module is then placed in `kernel_map`. amd64 has one in the kernel

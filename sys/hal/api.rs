@@ -24,7 +24,7 @@
 //! module against the very type it hands over. `kernel::api` fills the table and keeps the
 //! module's registration; this file holds no function a table entry points at.
 //!
-//! The table crosses a binary boundary (the kernel and `abi-openbsd.ko` are linked apart),
+//! The table crosses a binary boundary (the kernel and `abi_openbsd.ko` are linked apart),
 //! so it is `#[repr(C)]` and starts with [`ApiPrefix`] (its version and size); both sides
 //! are built by the one pinned toolchain from the one tree, and its fields are Rust-ABI
 //! `fn` pointers over slices and `Result`s, laid out the same on both sides. The loader

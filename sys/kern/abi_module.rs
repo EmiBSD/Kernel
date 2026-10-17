@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `bsd`'s side of the ABI module `abi-openbsd.ko` (decision 22) until the subsystems it
+//! `bsd`'s side of the ABI module `abi_openbsd.ko` (decision 22) until the subsystems it
 //! stands for move: the `Legacy` system call path (LZ's `sysent[]` and `mi_syscall`, what
 //! both arch traps called themselves), the `KernelApi` table `bsd` fills, the platform the
 //! module loader maps the module through (the kernel's pmap and the boot hand-over), and

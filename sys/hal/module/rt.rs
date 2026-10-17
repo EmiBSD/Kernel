@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The module's runtime: what `abi-openbsd.ko`'s binary needs that its own crates may not
+//! The module's runtime: what `abi_openbsd.ko`'s binary needs that its own crates may not
 //! hold, its panic handler. Compiled in only with feature `module-rt`, which `sys/abi/ko`
 //! alone sets, and only for the bare targets; the kernel's binary has its own (`bsd`'s
 //! panic(9)).

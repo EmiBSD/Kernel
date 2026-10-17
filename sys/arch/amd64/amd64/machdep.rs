@@ -184,7 +184,7 @@
 //!
 //! ## Redesign
 //! - N2.4 (decision 22): `getbootinfo` also reads the `BOOTARG_ABIMODULE` record efiboot
-//!   adds (the ABI module `/abi-openbsd.ko`, put after the kernel's image and below `esym`,
+//!   adds (the ABI module `/abi_openbsd.ko`, put after the kernel's image and below `esym`,
 //!   so never free memory) into `BootInfo::abi_module`; the boot glue hands it to the module
 //!   loader through the direct map. No other path of the file changed.
 

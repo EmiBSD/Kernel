@@ -68,17 +68,17 @@ build-init-amd64:
 build-init-arm64:
     cargo build -p init --target {{arm64}}
 
-# N2.4: abi-openbsd.ko (sys/abi/ko), the ABI module the boot loaders hand the kernel
+# N2.4: abi_openbsd.ko (sys/abi/ko), the ABI module the boot loaders hand the kernel
 # (decision 22): an ELF linked position-independent at 0 (relocation-model=pie, as
 # efiboot), without debug information (boot(8) reads the whole file into efiboot's 1 MiB
 # heap), in a target directory of its own so the kernel's builds are not redone:
-# target/abi/<target>/debug/abi-openbsd, which `cargo xtask image` and the media put on the
-# boot medium as /abi-openbsd.ko. docs/ARCHITECTURE.md, "abi-openbsd.ko".
+# target/abi/<target>/debug/abi_openbsd, which `cargo xtask image` and the media put on the
+# boot medium as /abi_openbsd.ko. docs/ARCHITECTURE.md, "abi_openbsd.ko".
 build-abi-amd64:
-    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi-openbsd --target {{amd64}} --target-dir target/abi
+    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{amd64}} --target-dir target/abi
 
 build-abi-arm64:
-    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi-openbsd --target {{arm64}} --target-dir target/abi
+    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{arm64}} --target-dir target/abi
 
 build-abi: build-abi-amd64 build-abi-arm64
 
@@ -1962,7 +1962,7 @@ smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fe
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi-openbsd.ko: 331 syscalls, 2 native" --reject "abi-openbsd.ko: not loaded" \
+        --expect "abi_openbsd.ko: 331 syscalls, 2 native" --reject "abi_openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -1985,7 +1985,7 @@ smoke-efiboot: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fe
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi-openbsd.ko: 331 syscalls, 2 native" --reject "abi-openbsd.ko: not loaded" \
+        --expect "abi_openbsd.ko: 331 syscalls, 2 native" --reject "abi_openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2151,7 +2151,7 @@ smoke-powerbtn: (build-arm64 "--features qemu,multiprocessor") build-init-arm64
         --expect "rc: multi-user" --expect "m16f-armed-41" --expect "m16f-still-up-42" \
         --reject "syncing disks" --reject "Attempting to power down" --reject "The operating system has halted"
 
-# N2.4 (decision 22): the ABI module. Limine hands /abi-openbsd.ko over beside the kernel,
+# N2.4 (decision 22): the ABI module. Limine hands /abi_openbsd.ko over beside the kernel,
 # hal's loader places, relocates and maps it before init(8) runs and prints its one line,
 # and every system call goes through it (each entry Legacy at N2.4): single user from the
 # ramdisk, a command that execs, opens and reads, then the shell's own answer. A kernel that
@@ -2163,8 +2163,8 @@ smoke-abi: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--featur
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{abi_steps}}
 
 # `smoke-abi`'s expectations and session.
-abi_steps := "--reject 'abi-openbsd.ko: not loaded' " + \
-    "--expect 'abi-openbsd.ko: 331 syscalls, 2 native' " + \
+abi_steps := "--reject 'abi_openbsd.ko: not loaded' " + \
+    "--expect 'abi_openbsd.ko: 331 syscalls, 2 native' " + \
     "--send-after 'RETURN for sh:' --send '\\n' " + \
     "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
     "--expect 'abi-ok-42' " + \
@@ -3271,8 +3271,8 @@ clippy:
     cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
     cargo clippy -p efiboot-arm64 --target {{arm64}} -- -D warnings
     cargo clippy -p hal -p kernel -p abi -- -D warnings
-    cargo clippy -p abi-openbsd --target {{amd64}} -- -D warnings
-    cargo clippy -p abi-openbsd --target {{arm64}} -- -D warnings
+    cargo clippy -p abi_openbsd --target {{amd64}} -- -D warnings
+    cargo clippy -p abi_openbsd --target {{arm64}} -- -D warnings
 
 fmt:
     cargo fmt --all -- --check

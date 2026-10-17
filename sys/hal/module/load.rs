@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The loader of `abi-openbsd.ko` (decision 22): takes the file the boot loader handed
+//! The loader of `abi_openbsd.ko` (decision 22): takes the file the boot loader handed
 //! over, places it in memory it owns, relocates it for the address it will run at, maps
 //! each page with its segment's protection, checks the module's header and calls its entry
 //! point once, before `init(8)` starts; the module registers its system call handler from
@@ -397,10 +397,10 @@ mod tests {
             syscalls: 331,
             native: 0,
         };
-        assert_eq!(format!("{l}"), "abi-openbsd.ko: 331 syscalls, 0 native");
+        assert_eq!(format!("{l}"), "abi_openbsd.ko: 331 syscalls, 0 native");
         assert_eq!(
             format!("{}", LoadError::NoImage),
-            "abi-openbsd.ko: not loaded, the boot loader handed over none; every system call takes the legacy path"
+            "abi_openbsd.ko: not loaded, the boot loader handed over none; every system call takes the legacy path"
         );
     }
 
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(load_with(&Empty, &API), Err(LoadError::Again));
         assert_eq!(
             format!("{}", LoadError::Again),
-            "abi-openbsd.ko: not loaded, a module was loaded already"
+            "abi_openbsd.ko: not loaded, a module was loaded already"
         );
     }
 

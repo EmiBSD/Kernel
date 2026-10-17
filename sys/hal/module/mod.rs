@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The loadable module `abi-openbsd.ko` (decision 22, docs/ZERO_UNSAFE.md 0.1): what `hal`
+//! The loadable module `abi_openbsd.ko` (decision 22, docs/ZERO_UNSAFE.md 0.1): what `hal`
 //! needs to load it and to let it register itself.
 //!
 //! - `elf`: the ELF64 file as the loader reads it, parsed in safe code.
@@ -45,5 +45,5 @@ pub use load::{LoadError, Loaded, ModulePlatform, Prot, load};
 pub const PAGE_SIZE: usize = 4096;
 
 /// The module's file name on the boot medium and in the boot line.
-pub const MODULE_NAME: &str = "abi-openbsd.ko";
+pub const MODULE_NAME: &str = "abi_openbsd.ko";
 /* </CODE> */

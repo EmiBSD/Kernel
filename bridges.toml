@@ -90,7 +90,7 @@ for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
 # bsd: km_alloc, pmap_extract and pmap_enter (sys/uvm/uvm_km.rs, the arch pmaps) and the boot
-# hand-over of abi-openbsd.ko, implemented by sys/kern/abi_module.rs; hal's own code once hal
+# hand-over of abi_openbsd.ko, implemented by sys/kern/abi_module.rs; hal's own code once hal
 # holds the pmap and the boot entry (decision 26, N3).
 # hal::module::ModulePlatform
 [[bridge]]

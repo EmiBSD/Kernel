@@ -61,7 +61,7 @@
 //!   `u_long` arithmetic; `delta` is the two's complement of `efi_loadaddr`.
 //!
 //! ## Redesign
-//! - N2.4 (decision 22): when boot() put `/abi-openbsd.ko` after the kernel's image
+//! - N2.4 (decision 22): when boot() put `/abi_openbsd.ko` after the kernel's image
 //!   (`CmdState::abi_module`, a load-space address), `run_loadfile` adds a
 //!   `BOOTARG_ABIMODULE` record with the physical address the move gives it; the move itself
 //!   already carries it, `marks[MARK_END]` being raised over it.
@@ -153,7 +153,7 @@ pub fn run_loadfile(cmd: &mut CmdState, marks: &mut [u64; MARK_MAX], howto: i32)
 
     addbootarg(BOOTARG_BOOTDUID, BiosBootduid { duid }.as_bytes());
 
-    // Not in the C (N2.4): where boot() put /abi-openbsd.ko, after the kernel's image and
+    // Not in the C (N2.4): where boot() put /abi_openbsd.ko, after the kernel's image and
     // below its end mark, as the physical address the move below gives it.
     if let Some((at, size)) = cmd.abi_module {
         let module = BiosAbiModule {

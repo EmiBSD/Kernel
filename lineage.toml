@@ -182,7 +182,7 @@ notes = "direct map over Limine's HHDM, pmap_bootstrap adopts the bootloader's P
 rust = "sys/arch/amd64/amd64/pmap_module.rs"
 lz = ["sys/arch/amd64/amd64/pmap.rs"]
 status = "redesigned"
-notes = "N2 close (the user's decision of 2026-10-16, option C): the window abi-openbsd.ko runs from, in the kernel image's slot 511 after the last level-2 entry the boot loader used in KERNBASE's gigabyte (both boot paths, from the end of pmap_bootstrap), 16 MiB (hal::module::elf::MAX_SPAN), its level-1 tables a static of the kernel's .bss linked with locore0's directory flags (PG_V|PG_RW|pg_crypt, no pg_nx), outside kernel_map, which keeps pg_nx at every directory level as in OpenBSD; pmap_module_window (the range, empty when it could not be linked) and pmap_module_enter (pmap_kenter_pa's leaf, W^X refused, only an empty entry taken) behind machine::Pmap; no pmap.rs item moved"
+notes = "N2 close (the user's decision of 2026-10-16, option C): the window abi_openbsd.ko runs from, in the kernel image's slot 511 after the last level-2 entry the boot loader used in KERNBASE's gigabyte (both boot paths, from the end of pmap_bootstrap), 16 MiB (hal::module::elf::MAX_SPAN), its level-1 tables a static of the kernel's .bss linked with locore0's directory flags (PG_V|PG_RW|pg_crypt, no pg_nx), outside kernel_map, which keeps pg_nx at every directory level as in OpenBSD; pmap_module_window (the range, empty when it could not be linked) and pmap_module_enter (pmap_kenter_pa's leaf, W^X refused, only an empty entry taken) behind machine::Pmap; no pmap.rs item moved"
 
 [[module]]
 rust = "sys/arch/amd64/amd64/spl.rs"
@@ -6900,7 +6900,7 @@ rust = "sys/hal/syscall.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
 crate = "hal"
-notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi-openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi_openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
 
 [[module.fn]]
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
@@ -7182,7 +7182,7 @@ reason = "N2.4a (decisions 21, 22): the module's system call table, one Native |
 [[extra]]
 rust = "sys/hal/module/rt.rs"
 crate = "hal"
-reason = "N2.4a: the runtime of the ABI module abi-openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
+reason = "N2.4a: the runtime of the ABI module abi_openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
 
 [[extra]]
 rust = "sys/hal/module/elf.rs"
@@ -7192,11 +7192,11 @@ reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and
 [[extra]]
 rust = "sys/hal/module/load.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the loader of abi-openbsd.ko: placement, relocation, mapping each page with its segment's protection through ModulePlatform (bsd's pmap and boot hand-over until N2.2, the platform premise), the header check, the call of abi_init, the boot line"
+reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection through ModulePlatform (bsd's pmap and boot hand-over until N2.2, the platform premise), the header check, the call of abi_init, the boot line"
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi-openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the kernel's km_alloc/pmap_extract/pmap_enter and the boot hand-over (the module's pages in machine::pmap_module_window through pmap_module_enter where the machine has a window, amd64; in kernel_map through pmap_enter otherwise), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the kernel's km_alloc/pmap_extract/pmap_enter and the boot hand-over (the module's pages in machine::pmap_module_window through pmap_module_enter where the machine has a window, amd64; in kernel_map through pmap_enter otherwise), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
 
 [[extra]]
 rust = "sys/hal/api.rs"

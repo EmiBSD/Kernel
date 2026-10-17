@@ -30,7 +30,7 @@ Everything in this repository (code, comments, docs, commits) is in English.
   only crate with `unsafe` (the hardware and the runtime, every site with a `// SAFETY:` proof,
   a ceiling that only the user raises), and `sys/` (`bsd`, the LZ tree) the legacy that is
   replaced subsystem by subsystem and deleted at N9. `abi` is the loadable module
-  `abi-openbsd.ko` and holds no logic. Section 0 of that document and its one diagram are the
+  `abi_openbsd.ko` and holds no logic. Section 0 of that document and its one diagram are the
   only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
   are superseded.
 - No `std` outside `sys/arch/host/`, `#[cfg(test)]` code and `tools/xtask/`.
@@ -51,7 +51,7 @@ sys/                         package `bsd`: the LZ tree, legacy, replaced subsys
   kern/ uvm/ dev/ net/ ...   LZ's subsystems, still the kernel that boots while they move out
   hal/                       crate `hal`: the hardware (arch/amd64, arch/arm64, machine, moved here at N2) and the runtime; the ONLY unsafe
   kernel/                    crate `kernel`: every decision of the OS, #![forbid(unsafe_code)] at the root
-  abi/                       crate `abi`: OpenBSD's userland interface as the loadable module abi-openbsd.ko, forbid, no logic
+  abi/                       crate `abi`: OpenBSD's userland interface as the loadable module abi_openbsd.ko, forbid, no logic
   stand/                     the boot loaders (separate binaries, outside the four crates)
   lib/libkern/ lib/libz/     leaf crates
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`

@@ -77,7 +77,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! amd64: the window of the kernel image's own slot the ABI module `abi-openbsd.ko` runs
+//! amd64: the window of the kernel image's own slot the ABI module `abi_openbsd.ko` runs
 //! from.
 //!
 //! Upstream: sys/arch/amd64/amd64/pmap.c @ 3ce1f3f79392

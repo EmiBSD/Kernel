@@ -13,7 +13,7 @@ The C tree under `reference/openbsd-src/sys` is the specification.
 `sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
 the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
 decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
-userland interface as the loadable module `abi-openbsd.ko`, `forbid`, translation only; and
+userland interface as the loadable module `abi_openbsd.ko`, `forbid`, translation only; and
 `bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
 and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal`, `abi -> hal` and `abi ->
@@ -197,16 +197,16 @@ Per-target rustflags in `.cargo/config.toml`: `relocation-model=static` (non-PIE
 and `force-frame-pointers=yes` (backtraces in `panic`). No `[build] target`, so host builds stay
 the default and `cargo test` just works.
 
-`abi-openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
+`abi_openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
 `RUSTFLAGS="-C relocation-model=pie"` (replacing the kernel's `static`), its own target
 directory (`target/abi`), `CARGO_PROFILE_DEV_STRIP=debuginfo` (boot(8) reads the whole file
 into efiboot's 1 MiB heap), and `sys/abi/ko/abi.ld`: a static PIE at 0 with `-pie
 --no-dynamic-linker -z notext -Bsymbolic --pack-dyn-relocs=none -z norelro`, three
 page-aligned `PT_LOAD`s (text R X; rodata R with the module header first at the ELF entry,
 the GOT and `.data.rel.ro`, relocated by the loader before it is mapped; data R W) and no
-import (section "abi-openbsd.ko").
+import (section "abi_openbsd.ko").
 
-## abi-openbsd.ko (N2.4)
+## abi_openbsd.ko (N2.4)
 
 The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The pieces:
 
@@ -214,7 +214,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4 but pipe and pipe2,
   `Native` since N2.6 (through `KernelApi::pipe2`, which runs the same `sysent[]` row and
   calls `kernel::pipe`, so the `Legacy` path gives the same answer); `abi_init` registers
-  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi-openbsd`):
+  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi_openbsd`):
   the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
   entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
   names as the ELF entry. It links no kernel code and no `hal` state; its panic handler is
@@ -228,7 +228,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   (the module's, through `kernel::api`'s trampoline) or the `Legacy` fallback (`bsd`'s
   `sysent[]` and `mi_syscall`), both registered once at boot. Errnos cross `hal` as `i32`.
 - **The hand-over.** Limine: a `module_path:` of `limine.conf`, found by name in
-  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi-openbsd.ko`
+  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi_openbsd.ko`
   from the kernel's device, read straight onto the page after the kernel's image
   inside the room the program reserved (`BootMd::abi_module_room`) with `marks[MARK_END]`
   raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
@@ -251,14 +251,14 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   OpenBSD's do, so `reserve` hands out a 16 MiB window of the kernel's L4 slot after the
   image, linked once by `pmap_bootstrap` (`sys/arch/amd64/amd64/pmap_module.rs`); arm64
   (no PXN on its tables) uses `kernel_map` until N3 (docs/ZERO_UNSAFE.md decision 37).
-- **The boot line.** `abi-openbsd.ko: 331 syscalls, 2 native`, or `abi-openbsd.ko: not
+- **The boot line.** `abi_openbsd.ko: 331 syscalls, 2 native`, or `abi_openbsd.ko: not
   loaded, <why>; every system call takes the legacy path` (decision 29: a medium without the
   file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
   `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).
-- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`) and
-  install80.img carry the file the build made (`xtask::boot::default_abi_module`); cd80.iso
-  leaves it off, with one line, until its name is one ISO 9660 keeps (decision 29).
-  So `/abi-openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
+- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi_openbsd.ko`) and
+  install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`);
+  the name is one ISO 9660 keeps, so libsa's cd9660 opens it (decision 38).
+  So `/abi_openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
   OpenBSD's set lists; its boot(8) reads it there.
 - **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
   `ApiPrefix` and `AbiModuleHeader`), so `abi` depends on `hal` alone and the `.ko` links no

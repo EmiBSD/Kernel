@@ -684,7 +684,7 @@ pub fn main() -> ! {
     }
 
     // The system call path (N2.4, docs/ZERO_UNSAFE.md 0.1): the Legacy fallback and the ABI
-    // module abi-openbsd.ko, registered before init(8) makes its first system call.
+    // module abi_openbsd.ko, registered before init(8) makes its first system call.
     crate::kern::abi_module::abi_module_attach();
 
     // Okay, now we can let init(8) exec! It's off to userland!
