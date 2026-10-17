@@ -21,7 +21,8 @@
 //!
 //! The runtime in `hal` (docs/ZERO_UNSAFE.md 0.1) names nothing of `bsd`: what it needs from
 //! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues,
-//! `pool(9)`, `malloc(9)`, the user copy, the console, and for the pmap (N3.1) amd64's CPUs
+//! `pool(9)`, `malloc(9)`, the user copy, the console, `printf(9)` (N3.3, the kernel crate's
+//! lines), and for the pmap (N3.1) amd64's CPUs
 //! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
@@ -48,6 +49,7 @@ use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::malloc::Malloc;
 use hal::pool::{PoolBackend, RawPool};
+use hal::prf::Printf;
 use hal::sleep::Sleep;
 use hal::user::UserCopy;
 
@@ -56,7 +58,7 @@ use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
-use crate::kern::subr_prf::panicstr;
+use crate::kern::subr_prf::{panicstr, printf};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::{Cpu, cpu_number, curcpu, curproc};
@@ -353,6 +355,15 @@ impl Console for BsdCons {
     }
 }
 
+/// `printf(9)` of `sys/kern/subr_prf.rs`.
+struct BsdPrintf;
+
+impl Printf for BsdPrintf {
+    fn printf(&self, args: core::fmt::Arguments<'_>) {
+        let _ = printf(args);
+    }
+}
+
 static BSD_INTR: BsdIntr = BsdIntr;
 static BSD_CPU: BsdCpu = BsdCpu;
 static BSD_SLEEP: BsdSleep = BsdSleep;
@@ -360,6 +371,7 @@ static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
 static BSD_CONS: BsdCons = BsdCons;
+static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
@@ -379,6 +391,7 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);
     let _ = hal::bridges::register_console(&BSD_CONS);
+    let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]

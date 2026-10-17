@@ -7985,7 +7985,8 @@ kind = "moved"
 [[module]]
 rust = "sys/uvm/uvm_pdaemon.rs"
 lz = ["sys/uvm/uvm_pdaemon.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/pmemrange.rs"]
 notes = "uvm_wait reports itself unported: no page daemon before kernel threads (M5); uvm_pageout, uvmpd_scan and the aiodone daemon come with swapping (M7); M8: uvmpd_tune (freemin, freetarg, wiredmax), called from main where the daemon thread would be forked, since uvm_pageout is not ported"
 
 [[module]]
@@ -8204,6 +8205,11 @@ reason = "hal runtime, written new (N3.3): List<A>, queue(3)'s TAILQ over 'stati
 rust = "sys/hal/tree.rs"
 crate = "hal"
 reason = "hal runtime, written new (N3.3): Tree<A>, the RBT red-black tree of tree.h/subr_tree.c over 'static elements with safe mutators (Link links), find_by/nfind_by without a key element, tree_adapter!; the page system's trees; sys/sys/tree.rs and sys/kern/subr_tree.rs stay for the legacy tree"
+
+[[extra]]
+rust = "sys/hal/prf.rs"
+crate = "hal"
+reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above bsd over the Printf bridge (bsd's subr_prf printf: console and message buffer), dropped and counted before registration; bridges.toml Printf, paid by N9"
 
 [[extra]]
 rust = "sys/hal/bootmem.rs"
@@ -8482,6 +8488,11 @@ crate = "kernel"
 reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"
 
 [[extra]]
+rust = "sys/kernel/prf.rs"
+crate = "kernel"
+reason = "N3.3 fix-up: the kernel crate's printf (hal::prf) and unported!(name), bsd's project helper sys/kern/unported.rs for the moved code (printed once per site through printf(9), yields ENOSYS; scope-and-stubs.md); no LZ source"
+
+[[extra]]
 rust = "sys/kernel/assert.rs"
 crate = "kernel"
 reason = "N3.2: the kernel crate's KASSERT(9) and panic(9) (kassert!, kpanic, through the image's panic handler, as sys/hal/assert.rs), written new for pipe and vm::km; no LZ source"
@@ -8652,7 +8663,7 @@ rust = "sys/kernel/vm/pmemrange.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_pmemrange.rs", "sys/uvm/uvm_percpu.rs"]
 status = "redesigned"
-notes = "N3.3: the free page allocator of uvm_pmemrange.c over hal Tree/List of 'static pages and boot-stolen pmemranges (hal::bootmem::steal_one), uvm.fpageqlock as Mutexed<FreeState> whose guard every range function takes as proof, the size tree's pg[1] and the array-broke test by index; the per-CPU magazines of uvm_percpu.h in a hal::percpu::PerCpu of Links at splraise(IPL_BIO) with IntrLevel::splassert; the buffer cache's BUFPAGES_DEFICIT/INACT through the BufCacheStats bridge (N5); uvm_wait absent (WAITOK -> ENOMEM, LZ's deviation), uvm_pmr_allocpmr after init panics (unreachable), uvm_pagezero_thread N4; uvm_pmr_free_frames for kernel::vm::km"
+notes = "N3.3: the free page allocator of uvm_pmemrange.c over hal Tree/List of 'static pages and boot-stolen pmemranges (hal::bootmem::steal_one), uvm.fpageqlock as Mutexed<FreeState> whose guard every range function takes as proof, the size tree's pg[1] and the array-broke test by index; the per-CPU magazines of uvm_percpu.h in a hal::percpu::PerCpu of Links at splraise(IPL_BIO) with IntrLevel::splassert; the buffer cache's BUFPAGES_DEFICIT/INACT through the BufCacheStats bridge (N5); uvm_wait reports unported once through the Printf bridge and WAITOK fails with ENOMEM (LZ's deviation, kept; bsd's uvm_wait delegates here), the C's printf lines through hal::prf; the lock-free pmemrange index for uvm_pmr_cache_put; uvm_pmr_allocpmr after init panics (unreachable), uvm_pagezero_thread N4; uvm_pmr_free_frames for kernel::vm::km"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_pmemrange.rs::pmr_static"

@@ -96,12 +96,13 @@
 use core::sync::atomic::Ordering;
 
 use crate::sys::param::PAGE_SHIFT;
-use crate::unported;
 use crate::uvm::uvm_init::UVMEXP;
 
-/// `uvm_wait`: wait for the page daemon to free memory; nothing can be waited for yet.
-pub fn uvm_wait(_wmsg: &str) {
-    let _ = unported!("uvm_wait (uvm_pdaemon.c, M5)");
+/// `uvm_wait`: wait for the page daemon to free memory; nothing can be waited for yet. The
+/// page allocator's (`kernel::vm::pmemrange::uvm_wait`), which reports the gap once for
+/// every waiter.
+pub fn uvm_wait(wmsg: &str) {
+    kernel::vm::pmemrange::uvm_wait(wmsg);
 }
 
 /// `uvmpd_tune`: tune paging parameters.

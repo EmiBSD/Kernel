@@ -42,6 +42,7 @@
 //!   fail, as a full kernel map does.
 //! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
 //!   outside it is `EFAULT`.
+//! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
 //! - `vm::km`'s maps bridge, installed only by [`km_install`] (the kernel's own tests: `bsd`'s
 //!   installs its real one): `KmMaps`, a first-fit allocator of virtual space per map over a
 //!   `BTreeMap`, in a range no host address uses, whose next maps a thread can make fail
@@ -56,6 +57,7 @@ use std::boxed::Box;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
+use std::string::String;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
@@ -68,6 +70,7 @@ use hal::intr::IntrLevel;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::pmap::BootstrapParams;
 use hal::pool::{PoolBackend, RawPool};
+use hal::prf::Printf;
 use hal::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
@@ -379,6 +382,20 @@ static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
 static TEST_USER: TestUser = TestUser;
 
+/// The `printf(9)` double: every line formatted into one buffer.
+struct TestPrintf;
+
+impl Printf for TestPrintf {
+    fn printf(&self, args: core::fmt::Arguments<'_>) {
+        let _ = core::fmt::Write::write_fmt(&mut *lock(&PRINTF_OUT), args);
+    }
+}
+
+/// What the `printf(9)` double was given.
+static PRINTF_OUT: Mutex<String> = Mutex::new(String::new());
+
+static TEST_PRINTF: TestPrintf = TestPrintf;
+
 /// Registers every double, once per process.
 pub fn install() {
     static ONCE: Once = Once::new();
@@ -388,7 +405,13 @@ pub fn install() {
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_user_copy(&TEST_USER);
+        let _ = bridges::register_printf(&TEST_PRINTF);
     });
+}
+
+/// How many times the `printf(9)` double was given `s` (whole, by any test of the process).
+pub fn printf_count(s: &str) -> usize {
+    lock(&PRINTF_OUT).matches(s).count()
 }
 
 /// The kernel map double, for `KmBuf` and `kernel::pipe::Pipes::new` (a provider passed as a

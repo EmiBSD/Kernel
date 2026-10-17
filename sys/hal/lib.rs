@@ -78,6 +78,8 @@ pub mod percpu;
 pub mod pmap;
 
 pub mod pool;
+#[forbid(unsafe_code)]
+pub mod prf;
 pub mod refcnt;
 pub mod rwlock;
 pub mod sleep;

@@ -169,8 +169,8 @@
 //! ## Deviations
 //! - On a machine without an MMU (`PMAP_NOMMU`, only the host test double) every page-backed
 //!   request is served through the direct map, physically contiguous, and `kp_nomem` or
-//!   `kp_pageable` requests fail (`None`); LZ reported the latter with `unported!`, which the
-//!   kernel crate does not have: the host's output is the only place it showed.
+//!   `kp_pageable` requests fail (`None`), reported once as LZ did (`unported: km_alloc:
+//!   kp_nomem/kp_pageable on a machine without an MMU`, through `printf(9)`).
 //! - `km_alloc`'s single-page allocator (`uvm_km_pages` and its thread, `!__HAVE_PMAP_DIRECT`)
 //!   is not compiled: both machines have a direct map (arm64 by LZ's deviation: OpenBSD's
 //!   arm64 has none), so a `kv_singlepage` request that reaches the map path panics as the C
@@ -223,6 +223,7 @@ use super::types::{
     UVM_UNKNOWN_OFFSET, UvmConstraintRange, VmProt, Voff, uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
+use crate::prf::unported;
 
 /// Which kernel map a [`KmemVaMode`] allocates from (`kv_map` in C is a pointer to the map
 /// pointer; the maps are `bsd`'s, named here, reached through [`KmMaps`]).
@@ -577,6 +578,7 @@ fn alloc_in(
         if nommu {
             // Kernel virtual space without memory, or pageable memory, means nothing without
             // an MMU (the host double; module deviations).
+            let _ = unported!("km_alloc: kp_nomem/kp_pageable on a machine without an MMU");
             return None;
         }
         return map_va(maps, sz, kv, kp, kd).ok();

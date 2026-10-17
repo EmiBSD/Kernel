@@ -152,15 +152,13 @@
 //!   `uvm_page_physload`) prints the C's two lines.
 //! - `uvm_pagezero_thread` (`uvm_pmemrange.c`, started by `main()`) is not here: it needs a
 //!   kernel thread (N4). Zeroed ranges still exist and `UVM_PLA_ZERO` zeroes on demand.
-//! - `uvm_wait` is not here (no page daemon, N3.5): a `UVM_PLA_WAITOK` request that cannot be
-//!   met fails with `ENOMEM` (LZ's deviation, kept).
+//! - There is no page daemon (N3.5): a `UVM_PLA_WAITOK` request that cannot be met reports
+//!   `unported: uvm_wait (uvm_pdaemon.c, M5)` once (`pmemrange::uvm_wait`) and fails with
+//!   `ENOMEM` (LZ's deviation, kept).
 //! - `uvm_pagewait` (a sleep on a legacy `rw_obj` lock), `uvm_pagealloc_multi` (the buffer
 //!   cache's, under the kernel lock), `uvm_shutdown` (`smr_flush`) and the DMA reachability of
 //!   `machine::Pmap` stay in `bsd`'s `sys/uvm/uvm_page.rs`, over [`VmPage::set_bits`] and
 //!   [`uvm_pagealloc_pg`].
-//! - The C's `printf` lines of this module that are not the caller's (none on a normal boot)
-//!   go to the console through `hal::cons::Cons`, not through `printf(9)`'s message buffer,
-//!   which is `bsd`'s.
 //!
 //! ## Redesign
 //! - `struct vm_page`'s `uobject`/`uanon` back pointers (`Cell<*const T>`, followed by every
@@ -189,7 +187,6 @@
 //! - `hal::pmap::PhysPages` is implemented here ([`PHYS_PAGES`]), passed by the boot glue to
 //!   `hal::pmap::bootstrap`.
 
-use core::fmt::Write;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering as Mem};
 
@@ -215,6 +212,7 @@ use super::types::{
     UVM_PLA_ZERO, UvmConstraintRange, Voff,
 };
 use crate::assert::{kassert, kpanic};
+use crate::prf::printf;
 
 // pg_flags: object flags
 
@@ -1130,11 +1128,10 @@ pub fn uvm_pglistalloc(
     let flags = flags | UVM_PLA_USERESERVE;
 
     if high.as_usize() & PAGE_MASK != PAGE_MASK {
-        let _ = writeln!(
-            hal::cons::Cons,
-            "uvm_pglistalloc: Upper boundary {:#x} not on pagemask.",
+        printf(format_args!(
+            "uvm_pglistalloc: Upper boundary {:#x} not on pagemask.\n",
             high.as_usize()
-        );
+        ));
     }
 
     // Our allocations are always page granularity, so our alignment must be, too.

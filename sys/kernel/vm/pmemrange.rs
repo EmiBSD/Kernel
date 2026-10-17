@@ -91,11 +91,11 @@
 //! ## Deviations
 //! - Page numbers (`paddr_t` holding `atop()` results in C) are `usize`; byte addresses stay
 //!   `Paddr`.
-//! - `uvm_wait` is absent (no page daemon, N3.5), so a `UVM_PLA_WAITOK` request that cannot
-//!   be met returns `ENOMEM` instead of sleeping for the page daemon (LZ's deviation, kept).
-//!   LZ called its `uvm_wait`, which printed `unported: uvm_wait (uvm_pdaemon.c, M5)` once;
-//!   the kernel crate has no `printf(9)` (N3.2's precedent for `km_alloc`), so this line is
-//!   where the gap shows.
+//! - There is no page daemon to wait for (N3.5), so a `UVM_PLA_WAITOK` request that cannot be
+//!   met calls [`uvm_wait`], which reports `unported: uvm_wait (uvm_pdaemon.c, M5)` once per
+//!   boot through `printf(9)`, and returns `ENOMEM` instead of sleeping and retrying (LZ's
+//!   deviation, kept). `bsd`'s `uvm_wait` (`sys/uvm/uvm_pdaemon.rs`, the fault handler's and
+//!   the pagers') is this one, so the line is printed once whoever waits first, as in LZ.
 //! - `in_pagedaemon` answers false: there is no page daemon nor `curproc` here yet (N3.5, N4).
 //! - The `goto`-driven search of `uvm_pmr_getpages` is written with labelled loops; the order
 //!   of the tries, memtypes and ranges is the C's.
@@ -111,9 +111,6 @@
 //! - The buffer cache's statistics the allocator reads (`BUFPAGES_DEFICIT`,
 //!   `BUFPAGES_INACT`, over `bcstats`) come through the [`BufCacheStats`] bridge (N5);
 //!   before it is registered they are 0, their values at boot.
-//! - The C's `printf` lines of this module ("Flags: ... will panic now.", "uvm_pmr_split: lost
-//!   one pmr") go to the console through `hal::cons::Cons`, not through `printf(9)`'s message
-//!   buffer, which is `bsd`'s.
 //!
 //! ## Redesign
 //! - The ranges' and the pages' links are `hal::tree::Tree`/`hal::list::List` over `'static`
@@ -162,6 +159,7 @@ use super::types::{
     UVM_PLA_ZERO, UvmConstraintRange,
 };
 use crate::assert::{kassert, kdassert, kpanic};
+use crate::prf::{printf, unported};
 #[cfg(feature = "multiprocessor")]
 use hal::{intr::IPL_BIO, link::Link, percpu::PerCpu, percpu::PerCpuInit};
 
@@ -515,6 +513,14 @@ fn valid_flags(pg_flags: u32) -> bool {
 fn in_pagedaemon(_allowsyncer: bool) -> bool {
     // curcpu()->ci_idepth, uvm.pagedaemon_proc and syncerproc arrive with N3.5 and N4.
     false
+}
+
+/// `uvm_wait` (`uvm_pdaemon.c`): wait for the page daemon to free memory. There is no daemon
+/// to wait for yet (N3.5): the gap is reported once per boot (module deviations), as LZ's
+/// `uvm_wait` did, and the caller goes on as if the wait had ended (it fails). Also `bsd`'s
+/// `uvm_wait`, so every waiter shares the one report.
+pub fn uvm_wait(_wmsg: &str) {
+    let _ = unported!("uvm_wait (uvm_pdaemon.c, M5)");
 }
 
 /// `uvm_pmr_pg_to_memtype`: memory types. The page flags are used to derive what the current
@@ -1235,8 +1241,12 @@ pub fn uvm_pmr_getpages(
     if free <= i64::from(UVMEXP.reserve_pagedaemon.load(Ordering::Relaxed)) + count as i64
         && !in_pagedaemon(true)
     {
-        // UVM_PLA_WAITOK: uvm_wait("uvm_pmr_getpages") then goto retry; without a page
-        // daemon the wait cannot be satisfied (module deviations).
+        drop(fs);
+        if flags & UVM_PLA_WAITOK != 0 {
+            uvm_wait("uvm_pmr_getpages");
+            // goto retry: without a page daemon the wait cannot be satisfied (module
+            // deviations).
+        }
         return Err(Errno::ENOMEM);
     }
 
@@ -1428,8 +1438,10 @@ pub fn uvm_pmr_getpages(
         }
 
         if flags & UVM_PLA_WAITOK != 0 {
-            // uvm_wait("pmrwait") then goto retry: without a page daemon the wait cannot be
-            // satisfied (module deviations).
+            drop(fs);
+            uvm_wait("pmrwait");
+            // goto retry: without a page daemon the wait cannot be satisfied (module
+            // deviations).
             return Err(Errno::ENOMEM);
         }
         if flags & UVM_PLA_NOWAKE == 0 {
@@ -1526,11 +1538,7 @@ pub fn uvm_pmr_freepages(pg: &'static VmPage, count: usize) {
         kassert!(pgno(pgi) == pgno(pg) + i);
 
         if !(pgi.flags() & PQ_FREE == 0 && valid_flags(pgi.flags())) {
-            let _ = writeln!(
-                hal::cons::Cons,
-                "Flags: {:#x}, will panic now.",
-                pgi.flags()
-            );
+            printf(format_args!("Flags: {:#x}, will panic now.\n", pgi.flags()));
         }
         kassert!(pgi.flags() & PQ_FREE == 0 && valid_flags(pgi.flags()));
         pgi.set_bits(PQ_FREE);
@@ -1569,7 +1577,7 @@ pub fn uvm_pmr_freepageq(pgl: &Pglist) {
         kassert!(!pg.has_owner());
 
         if !(pg.flags() & PQ_FREE == 0 && valid_flags(pg.flags())) {
-            let _ = writeln!(hal::cons::Cons, "Flags: {:#x}, will panic now.", pg.flags());
+            printf(format_args!("Flags: {:#x}, will panic now.\n", pg.flags()));
         }
         kassert!(pg.flags() & PQ_FREE == 0 && valid_flags(pg.flags()));
         pg.set_bits(PQ_FREE);
@@ -1719,7 +1727,7 @@ pub fn uvm_pmr_split(pageno: usize) {
     let Some(pmr) = uvm_pmemrange_find(&fs, pageno).filter(|pmr| pmr.low() < pageno) else {
         // We lost the race since someone else ran this or a related function, however this
         // should be triggered very rarely so we just leak the pmr.
-        let _ = writeln!(hal::cons::Cons, "uvm_pmr_split: lost one pmr");
+        printf(format_args!("uvm_pmr_split: lost one pmr\n"));
         return;
     };
 
@@ -2601,6 +2609,44 @@ mod tests {
         for pmr in FREE.lock().control.ranges() {
             assert!(pmr.nsegs() <= 1, "every range is one free chunk again");
         }
+    }
+
+    #[test]
+    fn a_failed_wait_reports_uvm_wait_once() {
+        let _g = setup();
+        const LINE: &str = "unported: uvm_wait (uvm_pdaemon.c, M5)\n";
+        let list = Pglist::new();
+
+        // Only the page daemon's reserve would be left: uvm_wait("uvm_pmr_getpages").
+        let r = uvm_pmr_getpages(
+            total() + 1,
+            0,
+            0,
+            1,
+            0,
+            1,
+            UVM_PLA_WAITOK | UVM_PLA_USERESERVE,
+            &list,
+        );
+        assert_eq!(r, Err(Errno::ENOMEM));
+        // Nothing in the range asked for (below the ISA segment): uvm_wait("pmrwait").
+        let r = uvm_pglistalloc(
+            PAGE_SIZE,
+            Paddr::new(0),
+            Paddr::new((SEG_ISA.0 << PAGE_SHIFT) - 1),
+            Paddr::new(0),
+            Paddr::new(0),
+            &list,
+            1,
+            UVM_PLA_WAITOK,
+        );
+        assert_eq!(r, Err(Errno::ENOMEM));
+        assert!(list.is_empty());
+        assert_eq!(free(), total());
+
+        // LZ's line, once for every waiter (bsd's uvm_wait is this one too).
+        uvm_wait("flt_noram1");
+        assert_eq!(testutil::printf_count(LINE), 1);
     }
 
     #[test]

@@ -66,6 +66,7 @@ use crate::once::OnceStatic;
 ))]
 use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
+use crate::prf::Printf;
 use crate::sleep::Sleep;
 use crate::user::UserCopy;
 
@@ -148,6 +149,15 @@ bridge!(
     CONSOLE: Console,
     register_console,
     console
+);
+
+bridge!(
+    /// Registers `printf(9)` (`sys/kern/subr_prf.rs`: the console and the message buffer),
+    /// for the kernel crate's lines (`hal::prf`). Paid by N9 (`subr_prf` goes with the `bsd`
+    /// crate).
+    PRINTF: Printf,
+    register_printf,
+    printf
 );
 
 bridge!(

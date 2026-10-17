@@ -49,6 +49,7 @@ use std::boxed::Box;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
+use std::string::String;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
@@ -61,6 +62,7 @@ use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
 use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 use crate::pool::{PoolBackend, RawPool};
+use crate::prf::Printf;
 use crate::sleep::{INFSLP, Sleep};
 use crate::sys::errno::Errno;
 use crate::sys::types::{Paddr, Vaddr};
@@ -421,6 +423,18 @@ impl Console for TestCons {
     fn cnpollc(&self, _on: bool) {}
 }
 
+/// The `printf(9)` double: every line formatted into one buffer.
+struct TestPrintf;
+
+impl Printf for TestPrintf {
+    fn printf(&self, args: core::fmt::Arguments<'_>) {
+        let _ = core::fmt::Write::write_fmt(&mut *lock(&PRINTF_OUT), args);
+    }
+}
+
+/// What the `printf(9)` double was given.
+static PRINTF_OUT: Mutex<String> = Mutex::new(String::new());
+
 /// A double's state, a panicking test's poison ignored.
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -434,6 +448,7 @@ static TEST_POOLS: TestPools = TestPools;
 static TEST_MALLOC: TestMalloc = TestMalloc;
 static TEST_USER: TestUser = TestUser;
 static TEST_CONS: TestCons = TestCons;
+static TEST_PRINTF: TestPrintf = TestPrintf;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -446,6 +461,7 @@ pub(crate) fn install() {
         let _ = bridges::register_malloc(&TEST_MALLOC);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_console(&TEST_CONS);
+        let _ = bridges::register_printf(&TEST_PRINTF);
     });
 }
 
@@ -458,6 +474,11 @@ pub(crate) fn page_memory() -> &'static dyn PageMemory {
 /// The first address of the double's user address space.
 pub(crate) fn user_base() -> usize {
     USER_BASE
+}
+
+/// Whether the `printf(9)` double was given `s`, in one piece.
+pub(crate) fn printf_saw(s: &str) -> bool {
+    lock(&PRINTF_OUT).contains(s)
 }
 
 /// Whether the console double was given `s`, in one piece.

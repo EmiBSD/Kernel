@@ -82,6 +82,16 @@ trait = "Console"
 for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
+# bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
+# implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
+# crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
+# subr_prf goes with the bsd crate.
+# hal::prf::Printf
+[[bridge]]
+trait = "Printf"
+for = ["sys/hal/prf.rs"]
+paid_by = "N9"
+
 # bsd: the boot hand-over of abi_openbsd.ko (IMAGE_VA/IMAGE_LEN from stand::start_kernel),
 # implemented by sys/kern/abi_module.rs. The trait keeps only image since N3.2: the mapping is
 # the loader's own on both machines (hal::pmap::module_window/module_enter, N3.1 commits 6 and
