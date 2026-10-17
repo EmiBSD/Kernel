@@ -36,8 +36,9 @@ pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;
 
-// The host tests link std; a kernel image never does.
-#[cfg(test)]
+// The host tests and the host double of the pmap (`arch/host/`) link std; a kernel image
+// never does.
+#[cfg(not(target_os = "none"))]
 extern crate std;
 #[cfg(test)]
 #[forbid(unsafe_code)]
@@ -63,4 +64,5 @@ pub mod sleep;
 pub(crate) mod testutil;
 pub(crate) mod trust;
 pub mod user;
+pub mod vm;
 /* </CODE> */

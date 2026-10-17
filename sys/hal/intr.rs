@@ -49,6 +49,27 @@ use crate::bridges;
 /// `IPL_NONE`: no interrupt is blocked (0 on amd64 and arm64).
 pub const IPL_NONE: i32 = 0;
 
+/// `IPL_VM`: memory allocation, the level of the pmap's locks (`pm_mtx`, `pv_mtx`). The
+/// machine's number (amd64 `<machine/intrdefs.h>` 0xa, arm64 `<machine/intr.h>` 8; the host
+/// double uses amd64's), until the interrupt tables enter `hal` with their owner (N4); `bsd`'s
+/// `sys/machine/intr.rs` asserts that it equals the machine's.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+pub const IPL_VM: i32 = 0xa;
+/// `IPL_VM`: memory allocation, the level of the pmap's locks (`pm_mtx`, `pv_mtx`). The
+/// machine's number (arm64 `<machine/intr.h>`), until the interrupt tables enter `hal` with
+/// their owner (N4); `bsd`'s `sys/machine/intr.rs` asserts that it equals the machine's.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub const IPL_VM: i32 = 8;
+
+/// `IPL_HIGH`: everything (arm64's `pmap_asid_mtx`). The machine's number (amd64 0xd, the
+/// host double's too); asserted equal to the machine's by `bsd`'s `sys/machine/intr.rs`.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+pub const IPL_HIGH: i32 = 0xd;
+/// `IPL_HIGH`: everything (arm64's `pmap_asid_mtx`). The machine's number (arm64 11);
+/// asserted equal to the machine's by `bsd`'s `sys/machine/intr.rs`.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub const IPL_HIGH: i32 = 11;
+
 /// A raised interrupt level; dropping it is `splx` of the level it replaced.
 #[must_use = "dropping the guard at once restores the level"]
 pub struct SplGuard {

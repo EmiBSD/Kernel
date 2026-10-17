@@ -57,7 +57,7 @@ pub mod pio;
 pub mod pmap;
 pub use hal::arch::amd64::include::proc;
 pub mod psl;
-pub mod pte;
+pub use hal::arch::amd64::include::pte;
 pub mod segments;
 pub mod signal;
 pub mod smbiosvar;

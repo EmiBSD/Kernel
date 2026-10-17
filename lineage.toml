@@ -382,7 +382,35 @@ license = "none"
 [[module]]
 rust = "sys/arch/amd64/include/param.rs"
 lz = ["sys/arch/amd64/include/param.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N3.1: PAGE_SHIFT/PAGE_SIZE/PAGE_MASK/KERNBASE moved into sys/hal/arch/amd64/include/param.rs and re-exported; the MachineParam impl stays"
+
+[[module]]
+rust = "sys/hal/arch/amd64/include/param.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/include/param.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic and pmap"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::PAGE_SHIFT"
+native = ["PAGE_SHIFT"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::PAGE_SIZE"
+native = ["PAGE_SIZE"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::PAGE_MASK"
+native = ["PAGE_MASK"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::KERNBASE"
+native = ["KERNBASE"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/amd64/include/pcb.rs"
@@ -426,7 +454,8 @@ lz = ["sys/arch/amd64/include/psl.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/pte.rs"
+rust = "sys/hal/arch/amd64/include/pte.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/pte.rs"]
 status = "inherited"
 notes = "pd_entry_t/pt_entry_t, the level shifts, masks and frames, NBPD_*, the PG_* bits, PG_UCMINUS, x86_round_pdr, the PGEX_* error-code bits; the EPT bits and PGK_VALUE come with vmm; M14: PG_KR, PG_KW (locore0.S)"
@@ -479,8 +508,40 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/include/vmparam.rs"
 lz = ["sys/arch/amd64/include/vmparam.rs"]
-status = "inherited"
-notes = "M2: VM_MIN/MAX_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN/MAX_KERNEL_ADDRESS; physical segments, page-queue and pmap parameters are M3; M6-b: USRSTACK, MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test"
+status = "redesigned"
+notes = "M2: VM_MIN/MAX_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN/MAX_KERNEL_ADDRESS; physical segments, page-queue and pmap parameters are M3; M6-b: USRSTACK, MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test; N3.1: the five address bounds moved into sys/hal/arch/amd64/include/vmparam.rs and re-exported"
+
+[[module]]
+rust = "sys/hal/arch/amd64/include/vmparam.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/include/vmparam.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the user and kernel address-space bounds, for hal's pmap"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MIN_ADDRESS"
+native = ["VM_MIN_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MAXUSER_ADDRESS"
+native = ["VM_MAXUSER_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MAX_ADDRESS"
+native = ["VM_MAX_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MIN_KERNEL_ADDRESS"
+native = ["VM_MIN_KERNEL_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MAX_KERNEL_ADDRESS"
+native = ["VM_MAX_KERNEL_ADDRESS"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/amd64/isa/clock.rs"
@@ -924,7 +985,35 @@ license = "none"
 [[module]]
 rust = "sys/arch/arm64/include/param.rs"
 lz = ["sys/arch/arm64/include/param.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N3.1: PAGE_SHIFT/PAGE_SIZE/PAGE_MASK/KERNBASE moved into sys/hal/arch/arm64/include/param.rs and re-exported; the MachineParam impl stays"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/param.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/param.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic, pmap and pte.rs"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::PAGE_SHIFT"
+native = ["PAGE_SHIFT"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::PAGE_SIZE"
+native = ["PAGE_SIZE"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::PAGE_MASK"
+native = ["PAGE_MASK"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::KERNBASE"
+native = ["KERNBASE"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/arm64/include/pcb.rs"
@@ -949,7 +1038,8 @@ lz = ["sys/arch/arm64/include/proc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/pte.rs"
+rust = "sys/hal/arch/arm64/include/pte.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/pte.rs"]
 status = "inherited"
 notes = "descriptor types and attribute bits; PTE_ATTR_* follow the bootloader's MAIR_EL1 layout (0 WB, 1 nGnRE, 2 nGnRnE, 3 CI, 4 WT) until the kernel owns its page tables (deviation in the module)"
@@ -984,8 +1074,46 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/include/vmparam.rs"
 lz = ["sys/arch/arm64/include/vmparam.rs"]
-status = "inherited"
-notes = "address-space bounds and physical segment policy; M6-b: USRSTACK and the user limits (MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS) through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test; SHMMAXPGS not yet"
+status = "redesigned"
+notes = "address-space bounds and physical segment policy; M6-b: USRSTACK and the user limits (MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS) through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test; SHMMAXPGS not yet; N3.1: the address bounds and USER_SPACE_BITS moved into sys/hal/arch/arm64/include/vmparam.rs and re-exported"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/vmparam.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/vmparam.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the user and kernel address-space bounds and USER_SPACE_BITS, for hal's pmap"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MIN_ADDRESS"
+native = ["VM_MIN_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::USER_SPACE_BITS"
+native = ["USER_SPACE_BITS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MAXUSER_ADDRESS"
+native = ["VM_MAXUSER_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MAX_ADDRESS"
+native = ["VM_MAX_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MIN_KERNEL_ADDRESS"
+native = ["VM_MIN_KERNEL_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MAX_KERNEL_ADDRESS"
+native = ["VM_MAX_KERNEL_ADDRESS"]
+kind = "moved"
+
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
@@ -6437,7 +6565,8 @@ lz = ["sys/sys/ttydefaults.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/types.rs"
+rust = "sys/hal/sys/types.rs"
+crate = "hal"
 lz = ["sys/sys/types.rs"]
 status = "inherited"
 
@@ -6846,8 +6975,40 @@ notes = "M7a-1: struct uvm_pagerops (every op an Option<fn> with the Pgo* aliase
 [[module]]
 rust = "sys/uvm/uvm_param.rs"
 lz = ["sys/uvm/uvm_param.rs"]
-status = "inherited"
-notes = "page arithmetic (atop/ptoa/round_page/trunc_page) and the page-size constants; the VM_* sysctl names live in uvmexp.rs; the MIN/MAX address constants are machine::VmParam"
+status = "redesigned"
+notes = "page arithmetic (atop/ptoa/round_page/trunc_page) and the page-size constants; the VM_* sysctl names live in uvmexp.rs; the MIN/MAX address constants are machine::VmParam; N3.1: the arithmetic and its inherent impls on Paddr/Vaddr/Vsize moved into sys/hal/vm/param.rs with types.rs, re-exported here beside VM_KERNEL_SPACE_SIZE"
+
+[[module]]
+rust = "sys/hal/vm/param.rs"
+crate = "hal"
+lz = ["sys/uvm/uvm_param.rs"]
+status = "redesigned"
+notes = "N3.1: the page arithmetic of uvm_param.h and its inherent impls on the address newtypes, moved with sys/sys/types.rs into hal (an inherent impl lives in the type's crate); over hal::arch::current::param"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::DEFAULT_PAGE_SIZE"
+native = ["DEFAULT_PAGE_SIZE"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::atop"
+native = ["atop"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::ptoa"
+native = ["ptoa"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::round_page"
+native = ["round_page"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::trunc_page"
+native = ["trunc_page"]
+kind = "moved"
 
 [[module]]
 rust = "sys/uvm/uvm_pdaemon.rs"

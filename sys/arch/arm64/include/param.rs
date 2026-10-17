@@ -52,6 +52,7 @@
 //! arm64 `<machine/param.h>`: machine type and page geometry.
 //!
 //! Upstream: sys/arch/arm64/include/param.h @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/include/param.rs@3c62ede68802
 //!
 //! The constants are exported to generic code through the [`MachineParam`] implementation at the
 //! bottom, re-exported by `sys::param`.
@@ -62,24 +63,21 @@
 //! - `STACKALIGN(p)` is the function [`stackalign`].
 //! - The `<machine/cpu.h>` include is not reproduced; that header is a module of its own when
 //!   ported.
+//!
+//! ## Redesign
+//! - `PAGE_SHIFT`, `PAGE_SIZE`, `PAGE_MASK` and `KERNBASE` moved into `hal`
+//!   (`sys/hal/arch/arm64/include/param.rs`, N3.1: `hal`'s page arithmetic, pmap and `pte.rs`
+//!   read them there) and are re-exported here, where the `MachineParam` implementation stays.
 
 use super::_types::{_ALIGNBYTES, _MAX_PAGE_SHIFT, _STACKALIGNBYTES, _aligned_pointer};
 use crate::machine::MachineParam;
+
+pub use hal::arch::arm64::include::param::{KERNBASE, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 
 /// `MACHINE`: the OpenBSD machine name.
 pub const MACHINE: &str = "arm64";
 /// `MACHINE_ARCH`: the CPU architecture name.
 pub const MACHINE_ARCH: &str = "aarch64";
-
-/// log2 of the page size.
-pub const PAGE_SHIFT: usize = 12;
-/// Bytes per page.
-pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
-/// Byte offset mask within a page.
-pub const PAGE_MASK: usize = PAGE_SIZE - 1;
-
-/// Start of kernel virtual space.
-pub const KERNBASE: usize = 0xffff_ff80_0000_0000;
 
 /// Bytes per page.
 pub const NBPG: usize = PAGE_SIZE;

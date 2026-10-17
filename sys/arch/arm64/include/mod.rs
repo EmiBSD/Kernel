@@ -42,7 +42,7 @@ pub mod pcb;
 pub mod pci_machdep;
 pub mod pmap;
 pub use hal::arch::arm64::include::proc;
-pub mod pte;
+pub use hal::arch::arm64::include::pte;
 pub use hal::arch::arm64::include::reg;
 pub mod signal;
 pub mod simplebusvar;

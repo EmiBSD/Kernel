@@ -1,0 +1,199 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
+ * Copyright (c) 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * The Mach Operating System project at Carnegie-Mellon University.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)vm_param.h	8.2 (Berkeley) 1/9/95
+ *
+ *
+ * Copyright (c) 1987, 1990 Carnegie-Mellon University.
+ * All rights reserved.
+ *
+ * Authors: Avadis Tevanian, Jr., Michael Wayne Young
+ *
+ * Permission to use, copy, modify and distribute this software and
+ * its documentation is hereby granted, provided that both the copyright
+ * notice and this permission notice appear in all copies of the
+ * software, derivative works or modified versions, and any portions
+ * thereof, and that both notices appear in supporting documentation.
+ *
+ * CARNEGIE MELLON ALLOWS FREE USE OF THIS SOFTWARE IN ITS "AS IS"
+ * CONDITION.  CARNEGIE MELLON DISCLAIMS ANY LIABILITY OF ANY KIND
+ * FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+ *
+ * Carnegie Mellon requests users of this software to return to
+ *
+ *  Software Distribution Coordinator  or  Software.Distribution@CS.CMU.EDU
+ *  School of Computer Science
+ *  Carnegie Mellon University
+ *  Pittsburgh PA 15213-3890
+ *
+ * any improvements or extensions that they make and grant Carnegie the
+ * rights to redistribute these changes.
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! Machine independent virtual memory parameters: the page arithmetic of `<uvm/uvm_param.h>`.
+//!
+//! Upstream: sys/uvm/uvm_param.h @ 3ce1f3f79392
+//! LZ: sys/uvm/uvm_param.rs@3c62ede68802
+//!
+//! `atop`, `ptoa`, `round_page` and `trunc_page` over the running machine's `PAGE_SHIFT` and
+//! `PAGE_MASK` (`<machine/param.h>`, `crate::arch::current::param`), as `const fn`s on `usize`
+//! with the typed conveniences on the address newtypes of `<sys/types.h>`.
+//!
+//! ## Deviations
+//! - `boolean_t`, `TRUE` and `FALSE` are `bool`.
+//! - `atop`, `ptoa`, `round_page` and `trunc_page` are `const fn`s on `usize` (page numbers and
+//!   byte counts), with typed conveniences on the address newtypes: [`Paddr::atop`],
+//!   [`Paddr::ptoa`], [`Vaddr::round_page`] and friends.
+//!
+//! ## Redesign
+//! - LZ keeps the page arithmetic in `bsd`'s `sys/uvm/uvm_param.rs`, with inherent `impl`
+//!   blocks on `Paddr`, `Vaddr` and `Vsize`. Rust allows an inherent `impl` only in the crate
+//!   that defines the type, and N3.1 moves `<sys/types.h>` into `hal` (`sys/hal/sys/types.rs`)
+//!   because every signature of `hal::pmap` takes those newtypes; so the arithmetic moves with
+//!   them, here, and `bsd`'s `uvm_param.rs` re-exports it beside what it keeps
+//!   (`VM_KERNEL_SPACE_SIZE`, over the `VmParam` trait `hal` has no implementor of).
+//! - The page geometry comes from `crate::arch::current::param` (the machine's
+//!   `<machine/param.h>` in `hal`) instead of `sys::param` over the `MachineParam` trait: the
+//!   same values, which `bsd`'s `sys/machine/param.rs` users still read through the trait.
+
+use crate::arch::current::param::{PAGE_MASK, PAGE_SHIFT};
+use crate::sys::types::{Paddr, Vaddr, Vsize};
+
+/// Default page size.
+pub const DEFAULT_PAGE_SIZE: usize = 4096;
+
+/// `atop(x)`: bytes to pages.
+pub const fn atop(x: usize) -> usize {
+    x >> PAGE_SHIFT
+}
+
+/// `ptoa(x)`: pages to bytes.
+pub const fn ptoa(x: usize) -> usize {
+    x << PAGE_SHIFT
+}
+
+/// `round_page(x)`: rounds up to a page boundary.
+pub const fn round_page(x: usize) -> usize {
+    (x + PAGE_MASK) & !PAGE_MASK
+}
+
+/// `trunc_page(x)`: rounds down to a page boundary.
+pub const fn trunc_page(x: usize) -> usize {
+    x & !PAGE_MASK
+}
+
+impl Paddr {
+    /// `atop(pa)`: the page frame number of this address.
+    pub const fn atop(self) -> usize {
+        atop(self.0)
+    }
+
+    /// `ptoa(pgno)`: the address of page frame `pgno`.
+    pub const fn ptoa(pgno: usize) -> Paddr {
+        Paddr(ptoa(pgno))
+    }
+
+    /// `round_page`.
+    pub const fn round_page(self) -> Paddr {
+        Paddr(round_page(self.0))
+    }
+
+    /// `trunc_page`.
+    pub const fn trunc_page(self) -> Paddr {
+        Paddr(trunc_page(self.0))
+    }
+}
+
+impl Vaddr {
+    /// `round_page`.
+    pub const fn round_page(self) -> Vaddr {
+        Vaddr(round_page(self.0))
+    }
+
+    /// `trunc_page`.
+    pub const fn trunc_page(self) -> Vaddr {
+        Vaddr(trunc_page(self.0))
+    }
+}
+
+impl Vsize {
+    /// `round_page`.
+    pub const fn round_page(self) -> Vsize {
+        Vsize(round_page(self.0))
+    }
+
+    /// `atop`.
+    pub const fn atop(self) -> usize {
+        atop(self.0)
+    }
+}
+/* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_arithmetic() {
+        assert_eq!(atop(0x3000), 3);
+        assert_eq!(ptoa(3), 0x3000);
+        assert_eq!(round_page(0x1001), 0x2000);
+        assert_eq!(round_page(0x1000), 0x1000);
+        assert_eq!(trunc_page(0x1fff), 0x1000);
+        assert_eq!(Paddr::new(0x5123).atop(), 5);
+        assert_eq!(Paddr::ptoa(5), Paddr::new(0x5000));
+        assert_eq!(Vaddr::new(0x1001).round_page(), Vaddr::new(0x2000));
+        assert_eq!(Vaddr::new(0x1fff).trunc_page(), Vaddr::new(0x1000));
+        assert_eq!(Paddr::new(0x1001).round_page(), Paddr::new(0x2000));
+        assert_eq!(Vsize::new(0x1001).round_page().atop(), 2);
+    }
+}
+/* </TESTS> */
