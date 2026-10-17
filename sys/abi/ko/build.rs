@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Build script of `abi-openbsd.ko`: hands `abi.ld` to the linker with the flags efiboot links its position-independent image with (`-pie`,
+//! Build script of `abi_openbsd.ko`: hands `abi.ld` to the linker with the flags efiboot links its position-independent image with (`-pie`,
 //! `--no-dynamic-linker`, `-Bsymbolic`, no packed relocations, no RELRO segment) and
 //! `-z notext`: the read-only data the script gathers (the header, the GOT, `.data.rel.ro`,
 //! the precompiled `core`'s absolute addresses) is relocated by `hal::module` through its

@@ -24,7 +24,10 @@ pub mod disklabel;
 pub mod elf;
 pub mod mplock;
 pub mod mutex;
+pub mod param;
 pub mod proc;
+pub mod pte;
 pub mod reg;
 pub mod timetc;
+pub mod vmparam;
 /* </CODE> */

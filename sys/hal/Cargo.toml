@@ -11,7 +11,7 @@ publish = false
 path = "lib.rs"
 
 [features]
-# The runtime of the ABI module abi-openbsd.ko (its panic handler, sys/hal/module/rt.rs):
+# The runtime of the ABI module abi_openbsd.ko (its panic handler, sys/hal/module/rt.rs):
 # set by sys/abi/ko alone, never in the kernel's build, which has its own panic handler.
 module-rt = []
 # Forwarded by `bsd`'s features of the same names (sys/Cargo.toml), OpenBSD's options:

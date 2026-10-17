@@ -73,150 +73,51 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The external interface of `uvm`: `<uvm/uvm_extern.h>`.
+//! The external interface of `uvm`: `<uvm/uvm_extern.h>`, `bsd`'s half since N3.2.
 //!
 //! Upstream: sys/uvm/uvm_extern.h @ 3ce1f3f79392
+//! LZ: sys/uvm/uvm_extern.rs@3c62ede68802
 //!
-//! Status: `wip`. Milestone M3 has the types and flags the page allocator and `km_alloc` use:
-//! `voff_t`, `vm_prot_t`, the map flag encoding, the `UVM_PGA_*`/`UVM_PLA_*` flags,
-//! `PHYSLOAD_DEVICE`, `struct uvm_constraint_range` and the `kmem_*_mode` structures.
-//! M6 adds `struct vmspace`. The kernel maps and the prototypes arrive with the files that
-//! implement them.
+//! The types and flags that name only the machine's own types are the kernel crate's
+//! (`kernel::vm::types`), and the kernel memory allocation modes are its allocator's
+//! (`kernel::vm::km`); both are re-exported here by name. What stays is what embeds or names
+//! the map, still `bsd`'s (`uvm_map`, N3.5): `struct vmspace` and the `exec_map`/`phys_map`
+//! submaps.
 //!
 //! ## Deviations
-//! - `UVM_MAPFLAG` and its extractors are `const fn`s.
-//! - In `kmem_va_mode`, `kv_map` (a pointer to a map pointer) waits for `vm_map`; the mode
-//!   says which map by name until then.
+//! - `UVM_MAPFLAG` and its extractors are `const fn`s (`kernel::vm::types`).
+//! - In `kmem_va_mode`, `kv_map` (a pointer to a map pointer) says which map by name
+//!   (`kernel::vm::km::KvMap`).
 //! - `exec_map`, which every machine's `machdep.c` defines and makes identically in
 //!   `cpu_startup`, is one static here ([`EXEC_MAP`]) that the machines set. The same holds
 //!   for `phys_map` ([`PHYS_MAP`]), the physio submap.
+//!
+//! ## Redesign
+//! - N3.2 (DECISIONS G1): the header is split by owner. `kernel::vm::types` holds `voff_t`,
+//!   `vm_prot_t` (one type with `hal::pmap::VmProt`), `vm_inherit_t`, `vm_fault_t`, the map
+//!   flags and their encoding, the page allocation and lock flags, `uvm_constraint_range` and
+//!   the core dump callbacks; `kernel::vm::km` holds `kmem_va_mode`, `kmem_pa_mode`,
+//!   `kmem_dyn_mode` and `KMEM_DYN_INITIALIZER`. Their 49 users compile unchanged through the
+//!   re-exports below.
 
 use core::cell::Cell;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
-use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
-use crate::sys::types::{Off, Paddr, Segsz};
+pub use kernel::vm::km::{KMEM_DYN_INITIALIZER, KmemDynMode, KmemPaMode, KmemVaMode, KvMap};
+pub use kernel::vm::types::{
+    MADV_MASK, MAP_INHERIT_MASK, PHYSLOAD_DEVICE, PROT_MASK, UVM_FLAG_CONCEAL, UVM_FLAG_COPYONW,
+    UVM_FLAG_FIXED, UVM_FLAG_HOLE, UVM_FLAG_NOFAULT, UVM_FLAG_NOMERGE, UVM_FLAG_OVERLAY,
+    UVM_FLAG_QUERY, UVM_FLAG_SIGALTSTACK, UVM_FLAG_STACK, UVM_FLAG_TRYLOCK, UVM_FLAG_UNMAP,
+    UVM_FLAG_WC, UVM_IO_FIXPROT, UVM_LK_ENTER, UVM_LK_EXIT, UVM_PGA_USERESERVE, UVM_PGA_ZERO,
+    UVM_PLA_NOWAIT, UVM_PLA_NOWAKE, UVM_PLA_TRYCONTIG, UVM_PLA_USERESERVE, UVM_PLA_WAITOK,
+    UVM_PLA_ZERO, UVM_UNKNOWN_OFFSET, UvmConstraintRange, UvmCoredumpSetupCb, UvmCoredumpWalkCb,
+    VmFault, VmInherit, VmProt, Voff, uvm_advice, uvm_inherit, uvm_mapflag, uvm_maxprotection,
+    uvm_protection,
+};
+
+use crate::sys::types::Segsz;
 use crate::uvm::uvm_map::VmMap;
-
-/// `vm_fault_t`.
-pub type VmFault = i32;
-/// `vm_inherit_t`: XXX inheritance codes.
-pub type VmInherit = i32;
-/// `voff_t`: XXX offset within a uvm_object.
-pub type Voff = Off;
-/// `vm_prot_t`.
-pub type VmProt = i32;
-
-// Bit assignments assigned by UVM_MAPFLAG() and extracted by
-// UVM_{PROTECTION,INHERIT,MAXPROTECTION,ADVICE}(): bits 0-2 protection, bits 4-5 inheritance,
-// bits 8-10 max protection, bits 12-14 advice, bits 16-N flags.
-
-/// Protections bits.
-pub const PROT_MASK: i32 = PROT_READ | PROT_WRITE | PROT_EXEC;
-/// Inherit mask.
-pub const MAP_INHERIT_MASK: i32 = 0x3;
-/// Advice mask.
-pub const MADV_MASK: i32 = 0x7;
-
-// mapping flags
-
-/// Find space.
-pub const UVM_FLAG_FIXED: u32 = 0x0010000;
-/// Establish overlay.
-pub const UVM_FLAG_OVERLAY: u32 = 0x0020000;
-/// Don't merge map entries.
-pub const UVM_FLAG_NOMERGE: u32 = 0x0040000;
-/// Set copy_on_write flag.
-pub const UVM_FLAG_COPYONW: u32 = 0x0080000;
-/// Fail if we can not lock map.
-pub const UVM_FLAG_TRYLOCK: u32 = 0x0100000;
-/// No backend.
-pub const UVM_FLAG_HOLE: u32 = 0x0200000;
-/// Do everything, except actual execution.
-pub const UVM_FLAG_QUERY: u32 = 0x0400000;
-/// Don't fault.
-pub const UVM_FLAG_NOFAULT: u32 = 0x0800000;
-/// Unmap to make space.
-pub const UVM_FLAG_UNMAP: u32 = 0x1000000;
-/// Page may contain a stack.
-pub const UVM_FLAG_STACK: u32 = 0x2000000;
-/// Write combining.
-pub const UVM_FLAG_WC: u32 = 0x4000000;
-/// Omit from dumps.
-pub const UVM_FLAG_CONCEAL: u32 = 0x8000000;
-/// Sigaltstack validation required.
-pub const UVM_FLAG_SIGALTSTACK: u32 = 0x20000000;
-
-/// `UVM_PROTECTION(X)`.
-pub const fn uvm_protection(x: u32) -> VmProt {
-    (x as i32) & PROT_MASK
-}
-
-/// `UVM_INHERIT(X)`.
-pub const fn uvm_inherit(x: u32) -> VmInherit {
-    ((x >> 4) as i32) & MAP_INHERIT_MASK
-}
-
-/// `UVM_MAXPROTECTION(X)`.
-pub const fn uvm_maxprotection(x: u32) -> VmProt {
-    ((x >> 8) as i32) & PROT_MASK
-}
-
-/// `UVM_ADVICE(X)`.
-pub const fn uvm_advice(x: u32) -> i32 {
-    ((x >> 12) as i32) & MADV_MASK
-}
-
-/// `UVM_MAPFLAG(prot, maxprot, inh, advice, flags)`.
-pub const fn uvm_mapflag(
-    prot: VmProt,
-    maxprot: VmProt,
-    inh: VmInherit,
-    advice: i32,
-    flags: u32,
-) -> u32 {
-    (prot as u32) | ((maxprot as u32) << 8) | ((inh as u32) << 4) | ((advice as u32) << 12) | flags
-}
-
-/// Magic offset value: offset not known (obj) or don't care (!obj).
-pub const UVM_UNKNOWN_OFFSET: Voff = -1;
-
-// flags for uvm_pagealloc()
-
-/// Ok to use reserve pages.
-pub const UVM_PGA_USERESERVE: i32 = 0x0001;
-/// Returned page must be zeroed.
-pub const UVM_PGA_ZERO: i32 = 0x0002;
-
-// flags for uvm_pglistalloc() also used by uvm_pmr_getpages()
-
-/// May sleep.
-pub const UVM_PLA_WAITOK: i32 = 0x0001;
-/// Can't sleep (need one of the two).
-pub const UVM_PLA_NOWAIT: i32 = 0x0002;
-/// Zero all pages before returning.
-pub const UVM_PLA_ZERO: i32 = 0x0004;
-/// Try to allocate contig physmem.
-pub const UVM_PLA_TRYCONTIG: i32 = 0x0008;
-/// Don't wake page daemon on failure.
-pub const UVM_PLA_NOWAKE: i32 = 0x0020;
-/// Can allocate from kernel reserve.
-pub const UVM_PLA_USERESERVE: i32 = 0x0040;
-
-// lockflags that control the locking behavior of various functions.
-
-/// Map locked on entry.
-pub const UVM_LK_ENTER: i32 = 0x0000_0001;
-/// Leave map locked on exit.
-pub const UVM_LK_EXIT: i32 = 0x0000_0002;
-
-/// `uvm_io` flag: extract the mappings with their maximum protection (`UVM_EXTRACT_FIXPROT`).
-pub const UVM_IO_FIXPROT: i32 = 0x01;
-
-/// Flag to `uvm_page_physload`: don't add to the page queue.
-pub const PHYSLOAD_DEVICE: i32 = 0x01;
 
 /// `struct vmspace`: shareable process virtual address space. May eventually be merged with
 /// `vm_map`. Several fields are temporary (text, data stuff).
@@ -305,19 +206,6 @@ impl Default for Vmspace {
 // atomics whose protection the field docs name (the map's lock, the kernel lock).
 unsafe impl Sync for Vmspace {}
 
-/// `struct uvm_constraint_range`: MD code is allowed to setup constraint ranges for memory
-/// allocators, the primary use for this is to keep allocation for certain memory consumers such
-/// as mbuf pools within address ranges that are reachable by devices that perform DMA. It is also
-/// to discourage memory allocations from being satisfied from ranges such as the ISA memory
-/// range, if they can be satisfied with allocation from other ranges.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UvmConstraintRange {
-    /// Lowest allowed address.
-    pub ucr_low: Paddr,
-    /// Highest allowed address.
-    pub ucr_high: Paddr,
-}
-
 /// `exec_map`: the submap of `kernel_map` that holds `execve`'s argument buffers (16
 /// `NCARGS`, which effectively limits the number of processes exec'ing at any time); null
 /// until the machine's `cpu_startup` made it.
@@ -346,120 +234,4 @@ pub fn phys_map() -> &'static crate::uvm::uvm_map::VmMap {
         None => crate::kern::subr_prf::panic(format_args!("phys_map used before cpu_startup")),
     }
 }
-
-/// Which kernel map a `kmem_va_mode` allocates from (`kv_map` in C is a pointer to the map
-/// pointer; the maps themselves arrive with `uvm_map`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KvMap {
-    /// `kernel_map`.
-    Kernel,
-    /// `kmem_map`.
-    Kmem,
-    /// `exec_map` (`kv_exec`, `kern_exec.c`).
-    Exec,
-    /// `phys_map` (`kv_physwait`, the machine's `vm_machdep.c`).
-    Phys,
-    /// No map: the single page allocator (`kv_singlepage`).
-    None,
-}
-
-/// `struct kmem_va_mode`: allocation mode for virtual space.
-#[derive(Clone, Copy)]
-pub struct KmemVaMode {
-    /// The map we're allocating from.
-    pub kv_map: KvMap,
-    /// Alignment.
-    pub kv_align: usize,
-    /// Wait for free space in the map if it's full. The default allocators don't wait since
-    /// running out of space in kernel_map and kmem_map is usually fatal. Special maps like
-    /// exec_map are specifically limited, so waiting for space in them is necessary.
-    pub kv_wait: bool,
-    /// Use the single page allocator.
-    pub kv_singlepage: bool,
-}
-
-/// `struct kmem_pa_mode`: allocation mode for physical pages.
-#[derive(Clone, Copy)]
-pub struct KmemPaMode {
-    /// Allocation constraint for physical pages.
-    pub kp_constraint: &'static UvmConstraintRange,
-    /// If the pages should be allocated from an object: the kernel object (`kp_pageable`).
-    pub kp_object: bool,
-    /// Physical alignment of the first page in the allocation.
-    pub kp_align: Paddr,
-    /// Boundary that the physical addresses can't cross if the allocation is contiguous.
-    pub kp_boundary: Paddr,
-    /// Maximal amount of contiguous segments.
-    pub kp_maxseg: i32,
-    /// Don't allocate any backing pages.
-    pub kp_nomem: bool,
-    /// Zero the returned memory.
-    pub kp_zero: bool,
-    /// Allocate pageable memory.
-    pub kp_pageable: bool,
-}
-
-/// `struct kmem_dyn_mode`: dynamic allocation parameters. Stuff that changes too often or too
-/// much to create separate va and pa modes for.
-#[derive(Clone, Copy)]
-pub struct KmemDynMode {
-    /// Offset to feed to `PMAP_PREFER`.
-    pub kd_prefer: Voff,
-    /// Special parameter for the singlepage va allocator that tells the caller to sleep if
-    /// possible to let the singlepage allocator catch up (`kd_slowdown` in C is a pointer the
-    /// allocator writes through).
-    pub kd_slowdown: bool,
-    /// Is it ok to sleep?
-    pub kd_waitok: bool,
-    /// Don't sleep on map locks.
-    pub kd_trylock: bool,
-}
-
-/// `KMEM_DYN_INITIALIZER`.
-pub const KMEM_DYN_INITIALIZER: KmemDynMode = KmemDynMode {
-    kd_prefer: UVM_UNKNOWN_OFFSET,
-    kd_slowdown: false,
-    kd_waitok: false,
-    kd_trylock: false,
-};
-
-/// `uvm_coredump_setup_cb`: called once with the number of segments a core dump will hold.
-pub type UvmCoredumpSetupCb =
-    fn(nsegment: i32, cookie: *mut core::ffi::c_void) -> Result<(), Errno>;
-
-/// `uvm_coredump_walk_cb`: called for each segment of a core dump: `[start, realend)` holds
-/// data, `[realend, end)` is absent (zero) memory.
-pub type UvmCoredumpWalkCb = fn(
-    start: usize,
-    realend: usize,
-    end: usize,
-    prot: VmProt,
-    isvnode: bool,
-    nsegment: i32,
-    cookie: *mut core::ffi::c_void,
-) -> Result<(), Errno>;
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE};
-
-    #[test]
-    fn map_flags_round_trip() {
-        let f = uvm_mapflag(
-            PROT_READ | PROT_WRITE,
-            PROT_MASK,
-            MAP_INHERIT_NONE,
-            MADV_RANDOM,
-            UVM_FLAG_FIXED,
-        );
-        assert_eq!(uvm_protection(f), PROT_READ | PROT_WRITE);
-        assert_eq!(uvm_maxprotection(f), PROT_MASK);
-        assert_eq!(uvm_inherit(f), MAP_INHERIT_NONE);
-        assert_eq!(uvm_advice(f), MADV_RANDOM);
-        assert_ne!(f & UVM_FLAG_FIXED, 0);
-    }
-}
-/* </TESTS> */

@@ -63,7 +63,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::kern::dma_alloc::dma_alloc_init;
 use crate::kern::kern_malloc::kmeminit;
-use crate::machine::{Machine, Pmap, VmParam};
+use crate::machine::{Machine, VmParam};
 use crate::sys::types::{Vaddr, Vsize};
 use crate::unported;
 use crate::uvm::uvm::Uvm;
@@ -126,7 +126,7 @@ pub fn uvm_init() {
 
     // Init the pmap module. The pmap module is free to allocate memory for its private use
     // (e.g. pvlists).
-    Machine::pmap_init();
+    crate::machine::pmap::pmap_init();
 
     // step 6: init uvm_km_page allocator memory.
     let _ = unported!("uvm_km_page_init");

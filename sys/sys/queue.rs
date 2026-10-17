@@ -70,8 +70,9 @@
 //! Links are interior-mutable, so a list is modified through `&Elem` and `&Head`, like the C
 //! that mutates through pointers under a lock. The lock discipline stays the caller's, as in C:
 //! readers are safe functions whose references live as long as the borrow they come from; every
-//! mutator is `unsafe` and states what the caller guarantees. The contract behind all of them:
-//! an element linked into a list stays valid and in place until it is unlinked, a non-empty
+//! mutator but [`TailqHead::pop_head`] is `unsafe` and states what the caller guarantees. The contract behind all of them:
+//! an element linked into a list stays valid and in place until it is unlinked (and one that
+//! [`TailqHead::pop_head`] unlinks, while the borrow of the head it came from lives), a non-empty
 //! list or tail queue head stays in place (its first element's back link names it; the other
 //! heads are named by nothing), and an element unlinked and then freed is not the pending
 //! position of a live iterator (the `_FOREACH_SAFE` rule: only the element just yielded may go).
@@ -145,6 +146,11 @@
 //!   deref-coerce a `Box` or a reference to the entry behind it); `cargo xtask lz check`
 //!   refuses any `impl Adapter` written by hand: the one place where a CI check, not the
 //!   compiler, upholds a premise of a `SAFETY:` argument (the adapter premise).
+//! - [`TailqHead::pop_head`] (N3.2) is the one safe mutator: the C's drain
+//!   (`while ((e = TAILQ_FIRST(h))) TAILQ_REMOVE(h, e, f)`) as one call whose only `unsafe`
+//!   is the removal of the element the head itself names, so the precondition is the list's
+//!   own invariant and a drain needs no `unsafe` at its call site (the kernel's page lists,
+//!   `sys/uvm/uvm_km.rs`).
 
 use core::cell::Cell;
 use core::marker::PhantomData;
@@ -784,7 +790,8 @@ impl<A: SimpleqAdapter> SimpleqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = &A::entry(listelm).sqe_next;
         let entry = A::entry(elem);
@@ -1012,7 +1019,8 @@ impl<A: XsimpleqAdapter> XsimpleqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = A::entry(listelm);
         let entry = A::entry(elem);
@@ -1247,8 +1255,10 @@ impl<A: TailqAdapter> TailqHead<A> {
     ///
     /// # Safety
     ///
-    /// `elem` is in no queue of `A` and stays valid and in place until it is unlinked; the head
-    /// stays in place while the queue is not empty.
+    /// `elem` is in no queue of `A` and stays valid and in place until it is unlinked, and,
+    /// when [`pop_head`](Self::pop_head) is what unlinks it, for as long as the borrow of the
+    /// head `pop_head` returned it under lives; the head stays in place while the queue is not
+    /// empty.
     pub unsafe fn insert_head(&self, elem: &A::Elem) {
         let entry = A::entry(elem);
         entry.tqe_next.set(self.tqh_first.get());
@@ -1278,7 +1288,8 @@ impl<A: TailqAdapter> TailqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = A::entry(listelm);
         let entry = A::entry(elem);
@@ -1296,7 +1307,8 @@ impl<A: TailqAdapter> TailqHead<A> {
     /// # Safety
     ///
     /// `listelm` is linked; `elem` is in no queue of `A` and stays valid and in place until it
-    /// is unlinked.
+    /// is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as long as
+    /// the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_before(listelm: &A::Elem, elem: &A::Elem) {
         let before = A::entry(listelm);
         let entry = A::entry(elem);
@@ -1327,6 +1339,34 @@ impl<A: TailqAdapter> TailqHead<A> {
         prev.set(entry.tqe_next.get());
         invalidate(&entry.tqe_prev);
         invalidate(&entry.tqe_next);
+    }
+
+    /// `while ((e = TAILQ_FIRST(head)) != NULL) TAILQ_REMOVE(head, e, field)`, one step of the
+    /// drain: unlinks the first element and returns it (its links invalidated, as
+    /// [`remove`](Self::remove) leaves them), `None` once the queue is empty. Safe: the only
+    /// element it unlinks is the one the head itself names.
+    ///
+    /// The element is in no queue afterwards, yet the reference lives as long as the borrow of
+    /// the head, as [`first`](Self::first)'s: the premise is the insertion contract
+    /// ([`insert_head`](Self::insert_head) and the other mutators that link an element), under
+    /// which an element `pop_head` unlinks stays valid while that borrow lives. The caller,
+    /// who drains the queue it owns, decides where the element goes next (the kernel's page
+    /// lists: static `vm_page`s, valid for ever).
+    pub fn pop_head(&self) -> Option<&A::Elem> {
+        let elem = self.first()?;
+        // SAFETY: `remove`'s precondition is that `elem` is in this queue. `elem` is what this
+        // head's `tqh_first` names (`first()`), and a head's `Some` first link names an element
+        // linked in that very queue: the link invariant (`Link`, module docs, "Redesign"),
+        // established by the mutators that link an element (`insert_*`, `replace`, `concat`
+        // set `tqh_first` only to an element they link here) and upheld by those that unlink
+        // one (`remove`, `replace` move `tqh_first` to the next linked element or `None`), all
+        // of which require the head and the linked elements to stay valid and in place. No
+        // other caller can unlink `elem` between the read and the removal without breaking the
+        // queue's lock discipline, which every mutator's contract already demands. The
+        // reference returned past the unlink is the insertion contract's (`insert_head`): an
+        // element `pop_head` unlinks stays valid while the head's borrow lives.
+        unsafe { self.remove(elem) };
+        Some(elem)
     }
 
     /// `TAILQ_REPLACE`: puts `elem2` where `elem` is and unlinks `elem`, invalidating its links.
@@ -1511,7 +1551,8 @@ impl<A: StailqAdapter> StailqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = &A::entry(listelm).stqe_next;
         let entry = A::entry(elem);
@@ -2282,6 +2323,31 @@ mod tests {
         }
         assert_eq!(id(h.last()), Some(3));
         assert_eq!(id(h.first()), Some(3));
+    }
+
+    #[test]
+    fn tailq_pop_head_drains_in_order() {
+        let n = nodes::<3>();
+        let h = TailqHead::<Tq>::new();
+        assert_eq!(id(h.pop_head()), None);
+        // SAFETY: the nodes outlive the head; each is in no queue.
+        unsafe {
+            h.insert_tail(&n[0]);
+            h.insert_tail(&n[1]);
+            h.insert_tail(&n[2]);
+        }
+        let mut drained = Vec::new();
+        while let Some(e) = h.pop_head() {
+            drained.push(e.id);
+        }
+        assert_eq!(drained, [1, 2, 3]);
+        assert!(h.is_empty());
+        assert_eq!(id(h.last()), None);
+        assert_eq!(id(h.pop_head()), None);
+        // The drained elements can be linked again.
+        // SAFETY: as above.
+        unsafe { h.insert_head(&n[1]) };
+        assert_eq!(ids(h.iter()), [2]);
     }
 
     #[test]

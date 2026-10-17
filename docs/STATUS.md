@@ -6,7 +6,7 @@ crates, `sys/hal/` holds the only `unsafe`, `bsd` (the LZ tree) is replaced subs
 subsystem and deleted at N9 (decisions 20-24). Updated: 2026-10-16.
 
 Done (N2, docs/ZERO_UNSAFE.md 0.9):
-- Runtime in `hal` (N2.3, ..8bc36e7e), `KernelApi` + ELF loader + `abi-openbsd.ko` (N2.4a,
+- Runtime in `hal` (N2.3, ..8bc36e7e), `KernelApi` + ELF loader + `abi_openbsd.ko` (N2.4a,
   ..c1c42b52), pipe(2) in `kernel` (N2.6, ..66edafdb); crypto (N2.5, 736103ad); merged e37a4152.
 - Close: compile fixes 2a4eb082, a1482f39, db35b0db; cd80.iso without the module (1ae6774d);
   amd64 module window, decision 37 (8b2ed4e1, 2ff6d854); `just jobs=3 ci` rc=0 (85/85, 1734 s),

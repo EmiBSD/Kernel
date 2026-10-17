@@ -111,7 +111,7 @@
 //! this crate sits below every crate that names `Errno`.
 //!
 //! Two answers can be registered, each once, at boot (docs/ZERO_UNSAFE.md 0.1, the
-//! sequence diagram): the module's handler (`abi-openbsd.ko` registers it through
+//! sequence diagram): the module's handler (`abi_openbsd.ko` registers it through
 //! `KernelApi` when `hal::module` loads it) and the `Legacy` fallback (`bsd`'s `main`
 //! registers the LZ path: `sysent[]` and `mi_syscall`). [`dispatch`] calls the handler when
 //! there is one, the fallback otherwise; nothing registered at all answers `ENOSYS`, which

@@ -52,6 +52,7 @@
 //! amd64 `<machine/param.h>`: machine type and page geometry.
 //!
 //! Upstream: sys/arch/amd64/include/param.h @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/include/param.rs@3c62ede68802
 //!
 //! The constants are exported to generic code through the [`MachineParam`] implementation at the
 //! bottom, re-exported by `sys::param`.
@@ -61,24 +62,22 @@
 //! - `MID_MACHINE` (`MID_AMD64`) arrives with `sys/sys/exec.h`.
 //! - The `<machine/cpu.h>` / `<machine/psl.h>` includes are not reproduced; those headers are
 //!   modules of their own when ported.
+//!
+//! ## Redesign
+//! - `PAGE_SHIFT`, `PAGE_SIZE`, `PAGE_MASK` and `KERNBASE` moved into `hal`
+//!   (`sys/hal/arch/amd64/include/param.rs`, N3.1: `hal`'s page arithmetic and pmap read them
+//!   there) and are re-exported here, where the `MachineParam` implementation stays.
 
 use super::_types::{_ALIGNBYTES, _MAX_PAGE_SHIFT, _STACKALIGNBYTES, _aligned_pointer};
 use crate::machine::MachineParam;
+
+pub use hal::arch::amd64::include::param::{KERNBASE, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 
 /// `MACHINE`: the OpenBSD machine name.
 pub const MACHINE: &str = "amd64";
 /// `MACHINE_ARCH`: the CPU architecture name.
 pub const MACHINE_ARCH: &str = "amd64";
 
-/// log2 of the page size.
-pub const PAGE_SHIFT: usize = 12;
-/// Bytes per page.
-pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
-/// Byte offset mask within a page.
-pub const PAGE_MASK: usize = PAGE_SIZE - 1;
-
-/// Start of kernel virtual space.
-pub const KERNBASE: usize = 0xffff_ffff_8000_0000;
 /// Start of kernel text.
 pub const KERNTEXTOFF: usize = KERNBASE + 0x0100_0000;
 

@@ -64,7 +64,7 @@
 //! ## Redesign
 //! - N2.4 (decision 22): `BOOTARG_ABIMODULE` (type 0x100, EmiBSD's own, far above
 //!   OpenBSD's 0..12) and its record `BiosAbiModule` (physical address, size): where
-//!   efiboot put `/abi-openbsd.ko` after the kernel's image, below `esym`. amd64's
+//!   efiboot put `/abi_openbsd.ko` after the kernel's image, below `esym`. amd64's
 //!   `getbootinfo` reads it into `BootInfo::abi_module`; nothing else of the header changed.
 
 #![allow(dead_code)] // a header: each includer uses part of it
@@ -334,7 +334,7 @@ pub struct BiosUcode {
 }
 
 /// Not in the C (N2.4, decision 22): `BOOTARG_ABIMODULE`, where efiboot put the ABI module
-/// `/abi-openbsd.ko` (after the kernel's image, below `esym`). EmiBSD's own type, far
+/// `/abi_openbsd.ko` (after the kernel's image, below `esym`). EmiBSD's own type, far
 /// above OpenBSD's.
 pub const BOOTARG_ABIMODULE: i32 = 0x100;
 

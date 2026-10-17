@@ -131,12 +131,14 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use hal::kmbuf::KmBuf;
+use hal::kmbuf::{KmBuf, PageMemory};
 use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
 use hal::sleep::{PCATCH, wakeup};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;
+
+use crate::assert::{kassert, kpanic};
 
 /// `PIPE_SIZE`: pipe buffer size, keep moderate in value, pipes take kva space.
 pub const PIPE_SIZE: usize = 16384;
@@ -179,28 +181,6 @@ pub const O_CLOFORK: i32 = 0x40000;
 /// `FNONBLOCK` (`O_NONBLOCK`) of `<sys/fcntl.h>`: both files are non-blocking.
 pub const FNONBLOCK: i32 = 0x0004;
 
-/// `KASSERT(9)`: under feature `diagnostic`, `panic(9)` with `__assert`'s message when `e` is
-/// false; otherwise `e` is type-checked and never evaluated.
-macro_rules! kassert {
-    ($e:expr) => {
-        #[cfg(feature = "diagnostic")]
-        {
-            if !$e {
-                pipe_panic(format_args!(
-                    "kernel diagnostic assertion \"{}\" failed: file \"{}\", line {}",
-                    stringify!($e),
-                    file!(),
-                    line!()
-                ));
-            }
-        }
-        #[cfg(not(feature = "diagnostic"))]
-        {
-            let _ = || -> bool { $e };
-        }
-    };
-}
-
 /// The C's `#ifdef DIAGNOSTIC` `if (e) panic(msg)`: under feature `diagnostic`, `panic(9)`
 /// with `msg` when `e` holds; otherwise `e` is type-checked and never evaluated.
 macro_rules! diagnostic_panic {
@@ -208,7 +188,7 @@ macro_rules! diagnostic_panic {
         #[cfg(feature = "diagnostic")]
         {
             if $e {
-                pipe_panic(format_args!($msg));
+                kpanic(format_args!($msg));
             }
         }
         #[cfg(not(feature = "diagnostic"))]
@@ -507,11 +487,14 @@ pub struct PipeFlags {
     pub nonblock: bool,
 }
 
-/// The pipes' globals: the pool of pairs, `nbigpipe` and `amountpipekva`. `bsd` keeps one
-/// `static` of it over its glue.
+/// The pipes' globals: the pool of pairs, `nbigpipe` and `amountpipekva`, and the kernel map's
+/// pages the buffers come from. `bsd` keeps one `static` of it over its glue.
 pub struct Pipes<G: PipeGlue> {
     /// `pipe_pair_pool`.
     pool: TypedPool<PipePair<G>>,
+    /// The buffers' pages (`km_alloc(&kv_any, &kp_pageable, &kd_waitok)`: the kernel's
+    /// `vm::km::page_memory()`, or a test's).
+    mem: &'static dyn PageMemory,
     /// `nbigpipe`: the number of pipes whose buffer is `BIG_PIPE_SIZE`.
     nbigpipe: AtomicU32,
     /// `amountpipekva`: the kernel memory held by pipe buffers.
@@ -519,10 +502,11 @@ pub struct Pipes<G: PipeGlue> {
 }
 
 impl<G: PipeGlue> Pipes<G> {
-    /// The globals before `pipe_init`.
-    pub const fn new() -> Self {
+    /// The globals before `pipe_init`, the buffers from `mem`.
+    pub const fn new(mem: &'static dyn PageMemory) -> Self {
         Self {
             pool: TypedPool::new(),
+            mem,
             nbigpipe: AtomicU32::new(0),
             amountpipekva: AtomicU32::new(0),
         }
@@ -541,12 +525,6 @@ impl<G: PipeGlue> Pipes<G> {
     /// `pr_nout` of `pipepl`: the pairs out of the pool.
     pub fn nout(&self) -> u64 {
         self.pool.nout()
-    }
-}
-
-impl<G: PipeGlue> Default for Pipes<G> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -737,7 +715,7 @@ impl<G: PipeGlue> PipePair<G> {
         // buffer should be empty
         kassert!(cpipe.cnt() == 0);
 
-        let mem = KmBuf::alloc_pageable(size).ok_or(Errno::ENOMEM)?;
+        let mem = KmBuf::alloc_pageable(self.pipes.mem, size).ok_or(Errno::ENOMEM)?;
 
         // free old resources if we are resizing
         self.buffer_free(g, dir);
@@ -835,7 +813,7 @@ impl<G: PipeGlue> PipePair<G> {
             Some(mem) => mem,
             // Only the I/O lock's holder takes it, and it puts it back before it lets go: a
             // broken I/O lock protocol is panic(9), never a no-op.
-            None => pipe_panic(format_args!("pipe: no buffer under the I/O lock")),
+            None => kpanic(format_args!("pipe: no buffer under the I/O lock")),
         }
     }
 
@@ -1332,14 +1310,6 @@ impl<G: PipeGlue> PipePair<G> {
     }
 }
 
-/// `panic(9)` for this module: every kernel image's panic handler is `panic(9)` with the
-/// message (`sys/hal/assert.rs`), and the host tests' is the unwinding panic.
-#[cold]
-#[allow(clippy::panic)] // KASSERT(9), the C's DIAGNOSTIC checks and a broken I/O lock: panic(9)
-fn pipe_panic(msg: core::fmt::Arguments<'_>) -> ! {
-    panic!("{msg}")
-}
-
 impl<G: PipeGlue> Drop for PipeEnd<G> {
     fn drop(&mut self) {
         self.pair.destroy(self.dir);
@@ -1450,7 +1420,7 @@ mod tests {
     }
 
     /// The pipes most tests share.
-    static PIPES: Pipes<TestGlue> = Pipes::new();
+    static PIPES: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
 
     /// Registers the doubles and makes `pipes`'s pool (once).
     fn setup(pipes: &'static Pipes<TestGlue>) -> &'static Pipes<TestGlue> {
@@ -1554,7 +1524,7 @@ mod tests {
 
     #[test]
     fn create_links_two_pipes_and_the_last_close_frees_the_pair_once() {
-        static P: Pipes<TestGlue> = Pipes::new();
+        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
         let pipes = setup(&P);
         let pages = testutil::pages_out();
         for reader_first in [true, false] {
@@ -1589,7 +1559,7 @@ mod tests {
 
     #[test]
     fn create_fails_with_enomem_before_pipe_init() {
-        static P: Pipes<TestGlue> = Pipes::new();
+        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
         testutil::install();
         assert_eq!(P.create().err(), Some(Errno::ENOMEM));
         assert_eq!(P.nout(), 0);
@@ -1600,7 +1570,7 @@ mod tests {
     /// freed, the pair back in the pool, `ENOMEM`.
     #[test]
     fn create_fails_with_enomem_when_a_buffer_cannot_be_had() {
-        static P: Pipes<TestGlue> = Pipes::new();
+        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
         let pipes = setup(&P);
         let pages = testutil::pages_out();
         for skip in [0, 1] {
@@ -1622,7 +1592,7 @@ mod tests {
     /// `nbigpipe` slot back, as the C does; the write goes on in the small buffer.
     #[test]
     fn a_failed_grow_keeps_the_small_buffer() {
-        static P: Pipes<TestGlue> = Pipes::new();
+        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
         let (r, w) = setup(&P).create().unwrap();
         let pp = r.pair().clone();
 
@@ -2010,7 +1980,7 @@ mod tests {
 
     #[test]
     fn a_big_write_grows_an_empty_buffer() {
-        static P: Pipes<TestGlue> = Pipes::new();
+        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
         let (r, w) = setup(&P).create().unwrap();
         let pp = r.pair().clone();
 
@@ -2144,7 +2114,7 @@ mod tests {
 
     #[test]
     fn pipe2_checks_its_flags_and_copies_out_both_descriptors() {
-        static P: Pipes<TestGlue> = Pipes::new();
+        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
         let pipes = setup(&P);
         let files = TestFiles {
             ends: Mutex::new(Vec::new()),

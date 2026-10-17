@@ -36,7 +36,8 @@ pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;
 
-// The host tests link std; a kernel image never does.
+// The host tests link std; a kernel image never does (the host double of the pmap declares
+// its own, `arch/host/pmap.rs`).
 #[cfg(test)]
 extern crate std;
 #[cfg(test)]
@@ -55,6 +56,17 @@ pub mod malloc;
 pub mod mutex;
 pub mod once;
 pub mod percpu;
+// pmap(9) (N3.1). A machine's build has the module once its backend is in
+// `arch/<machine>/pmap/`: the host double's, amd64's (N3.1 commit 4) and arm64's (commit 5),
+// as the two pmap bridges of `bridges.rs`.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+#[forbid(unsafe_code)]
+pub mod pmap;
+
 pub mod pool;
 pub mod refcnt;
 pub mod rwlock;
@@ -63,4 +75,5 @@ pub mod sleep;
 pub(crate) mod testutil;
 pub(crate) mod trust;
 pub mod user;
+pub mod vm;
 /* </CODE> */

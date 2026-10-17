@@ -58,8 +58,6 @@ pub mod mainbus;
 pub mod mem;
 #[cfg(feature = "multiprocessor")]
 pub mod mptramp;
-pub mod pmap;
-pub mod pmap_module;
 #[cfg(feature = "qemu")]
 pub mod qemu;
 pub mod spl;

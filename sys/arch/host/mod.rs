@@ -27,8 +27,11 @@
 //! see the page geometry of a real architecture (`just test-ref` checks that they stay equal).
 //! Its console is a `Consdev` that writes to stdout and reads nothing, so `kprintf!` in a test
 //! shows up with `--nocapture`; its bus space accepts every map, reads 0 and drops writes.
-//! Its pmap is a `BTreeMap` of kernel mappings; physical pages are numbers, not memory, so
-//! zeroing and copying them do nothing, and boot memory comes from the host allocator.
+//! Its pmap is `hal`'s host backend (`sys/hal/arch/host/pmap.rs`: a `BTreeMap` per pmap)
+//! behind the same adapter as the machines' (`sys/machine/pmap.rs`); physical pages are
+//! numbers, not memory, so zeroing and copying them do nothing, and boot memory comes from
+//! the host allocator.
+//!
 //! No host device does DMA: its `bus_dma` types carry only the public members and every
 //! operation fails with `EOPNOTSUPP` (the archs' `bus_dma` is exercised by the QEMU boot
 //! self-test). It has no PCI bus either: configuration reads return all ones unless a test
@@ -38,11 +41,9 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use std::boxed::Box;
-use std::collections::BTreeMap;
 use std::eprintln;
 use std::io::Write;
 use std::sync::Mutex;
-use std::vec;
 
 use crate::dev::cons::{CN_LOWPRI, Consdev, set_cn_tab};
 use crate::dev::pci::pcivar::{PciAttachArgs, PcibusAttachArgs, Pcireg};
@@ -64,18 +65,16 @@ use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::exec_elf::{ELFCLASS64, ELFDATA2LSB};
 use crate::sys::mbuf::Mbuf;
 use crate::sys::param::NODEV;
-use crate::sys::proc::{Proc, Process};
+use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
-use crate::sys::types::{Dev, Off, Paddr, Register, Vaddr, Vsize};
+use crate::sys::types::{Dev, Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
 use crate::sys::user::User;
-use crate::uvm::uvm_extern::{UvmConstraintRange, VmProt, Vmspace};
-use crate::uvm::uvm_page::{
-    PHYS_TO_VM_PAGE, VM_PSTRAT_BIGFIRST, VmPage, uvm_page_physsteal, vm_page_to_phys,
-};
+use crate::uvm::uvm_extern::UvmConstraintRange;
+use crate::uvm::uvm_page::VM_PSTRAT_BIGFIRST;
 
 /// The host's `<machine/*.h>` types where generic code names them: amd64's.
 pub mod include {
@@ -179,23 +178,11 @@ pub type HostPciConf = (
 /// The configuration space a test installed.
 static HOST_PCI_CONF: Mutex<Option<HostPciConf>> = Mutex::new(None);
 
-/// The host's `struct pmap`: the kernel mappings, page by page.
-pub struct HostPmap {
-    mappings: Mutex<BTreeMap<usize, usize>>,
-    /// `pm_obj.uo_refs`: how many vmspaces hold the pmap.
-    refs: core::sync::atomic::AtomicI32,
-}
-
 /// Where the host pretends kernel virtual space starts (amd64's `VM_MIN_KERNEL_ADDRESS`).
 const HOST_KVA_START: usize = 0xffff_8000_0000_0000;
 /// Where it ends (amd64's `VM_MAX_KERNEL_ADDRESS`).
 const HOST_KVA_END: usize = 0xffff_8080_0000_0000;
 
-/// The host's kernel pmap.
-static HOST_PMAP: HostPmap = HostPmap {
-    mappings: Mutex::new(BTreeMap::new()),
-    refs: core::sync::atomic::AtomicI32::new(1),
-};
 /// amd64's `isa_constraint`, so the tests see two DMA ranges.
 static ISA_CONSTRAINT: UvmConstraintRange = UvmConstraintRange {
     ucr_low: Paddr::new(0),
@@ -589,195 +576,57 @@ impl VmParam for Machine {
 }
 
 impl Pmap for Machine {
-    type VmPageMd = ();
-    type Pmap = HostPmap;
-
-    const VM_MDPAGE_INIT: () = ();
-    const HAVE_PMAP_DIRECT: bool = true;
-    const PMAP_WC: usize = 0;
-    const PMAP_NOCACHE: usize = 0;
-    const PMAP_NOMMU: bool = true;
-    const PMAP_STEAL_MEMORY: bool = true;
+    const HAVE_PMAP_DIRECT: bool = hal::pmap::HAVE_PMAP_DIRECT;
+    const PMAP_WC: usize = hal::pmap::PMAP_WC;
+    const PMAP_NOCACHE: usize = hal::pmap::PMAP_NOCACHE;
+    const PMAP_NOMMU: bool = hal::pmap::PMAP_NOMMU;
+    const PMAP_STEAL_MEMORY: bool = hal::pmap::PMAP_STEAL_MEMORY;
     const UVM_MD_CONSTRAINTS: &'static [&'static UvmConstraintRange] =
         &[&ISA_CONSTRAINT, &DMA_CONSTRAINT];
     const DMA_CONSTRAINT: &'static UvmConstraintRange = &DMA_CONSTRAINT;
 
-    fn pmap_kernel() -> &'static HostPmap {
-        &HOST_PMAP
+    fn pmap_init_md() {
+        hal::pmap::init();
     }
 
-    /// A user pmap is another map; it is leaked on destroy (a test double).
-    fn pmap_create() -> &'static HostPmap {
-        Box::leak(Box::new(HostPmap {
-            mappings: Mutex::new(BTreeMap::new()),
-            refs: core::sync::atomic::AtomicI32::new(1),
-        }))
+    fn pmap_steal_bounds() -> (Vaddr, Vaddr) {
+        hal::pmap::virtual_space()
     }
 
-    fn pmap_destroy(pmap: &'static HostPmap) {
-        if pmap
-            .refs
-            .fetch_sub(1, core::sync::atomic::Ordering::Relaxed)
-            == 1
-        {
-            pmap.mappings
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clear();
-        }
-    }
-
-    fn pmap_reference(pmap: &HostPmap) {
-        pmap.refs
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn pmap_enter(
-        pmap: &HostPmap,
-        va: Vaddr,
-        pa: Paddr,
-        _prot: VmProt,
-        _flags: i32,
-    ) -> Result<(), Errno> {
-        let mut map = pmap.mappings.lock().unwrap_or_else(|e| e.into_inner());
-        map.insert(va.trunc_page().as_usize(), pa.trunc_page().as_usize());
-        Ok(())
-    }
-
-    fn pmap_remove(pmap: &HostPmap, sva: Vaddr, eva: Vaddr) {
-        let mut map = pmap.mappings.lock().unwrap_or_else(|e| e.into_inner());
-        map.retain(|&va, _| va < sva.trunc_page().as_usize() || va >= eva.as_usize());
-    }
-
-    /// Mappings have no protection on the host; `PROT_NONE` removes them, as the C does.
-    fn pmap_protect(pmap: &HostPmap, sva: Vaddr, eva: Vaddr, prot: VmProt) {
-        if prot == crate::sys::mman::PROT_NONE {
-            Self::pmap_remove(pmap, sva, eva);
-        }
-    }
-
-    /// Nothing is wired on the host.
-    fn pmap_wired_count(_pmap: &HostPmap) -> i64 {
-        0
-    }
-
-    /// Every mapping is resident on the host.
-    fn pmap_resident_count(pmap: &HostPmap) -> i64 {
-        pmap.mappings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len() as i64
-    }
-
-    /// Nothing is wired on the host.
-    fn pmap_unwire(_pmap: &HostPmap, _va: Vaddr) {}
-
-    fn pmap_remove_holes(_vm: &Vmspace) {}
-
-    fn pmap_proc_iflush(_pr: &Process, _va: Vaddr, _len: Vsize) {}
-
-    /// Page contents are not modelled.
-    fn pmap_zero_page(_pg: &VmPage) {}
-
-    /// Page contents are not modelled.
-    fn pmap_copy_page(_src: &VmPage, _dst: &VmPage) {}
-
-    /// Mappings have no protection on the host.
-    fn pmap_page_protect(_pg: &VmPage, _prot: VmProt) {}
-
-    /// Nothing is ever modified on the host.
-    fn pmap_clear_modify(_pg: &VmPage) -> bool {
+    /// The host switches nothing.
+    fn pmap_activate_md(_p: &Proc, _pm: &hal::pmap::Pmap) -> bool {
         false
     }
 
-    /// Nothing is ever referenced on the host.
-    fn pmap_clear_reference(_pg: &VmPage) -> bool {
-        false
-    }
+    fn pmap_switched_md(_pm: &hal::pmap::Pmap) {}
 
-    /// Nothing is ever modified on the host.
-    fn pmap_is_modified(_pg: &VmPage) -> bool {
-        false
-    }
+    fn pmap_deactivate_md(_p: &Proc, _pm: &hal::pmap::Pmap) {}
 
-    /// Boot memory comes from the host allocator and is never returned; the frames it stands
-    /// for leave `vm_physmem[]` through `uvm_page_physsteal`, as on a real machine, so
-    /// `uvm_page_init`'s page count adds up.
-    unsafe fn pmap_steal_memory(
-        size: Vsize,
-        start: Option<&mut Vaddr>,
-        end: Option<&mut Vaddr>,
-    ) -> Vaddr {
-        let size = size.round_page().as_usize();
-        // A missing frame is the C's "out of memory" panic; the tests load enough.
-        let _ = uvm_page_physsteal(size / Self::PAGE_SIZE);
-        let words = size.div_ceil(size_of::<u64>());
-        let block: &'static mut [u64] = vec![0u64; words].leak();
-        if let Some(start) = start {
-            *start = Vaddr::new(HOST_KVA_START);
-        }
-        if let Some(end) = end {
-            *end = Vaddr::new(HOST_KVA_END);
-        }
-        Vaddr::new(block.as_mut_ptr() as usize)
-    }
+    fn pmap_purge_md(_p: &Proc, _pm: &hal::pmap::Pmap) {}
 
-    fn pmap_virtual_space(start: &mut Vaddr, end: &mut Vaddr) {
-        *start = Vaddr::new(HOST_KVA_START);
-        *end = Vaddr::new(HOST_KVA_END);
-    }
-
-    unsafe fn pmap_kenter_pa(va: Vaddr, pa: Paddr, _prot: VmProt) {
-        let mut map = HOST_PMAP.mappings.lock().unwrap_or_else(|e| e.into_inner());
-        map.insert(va.trunc_page().as_usize(), pa.trunc_page().as_usize());
-    }
-
-    unsafe fn pmap_kremove(va: Vaddr, len: Vsize) {
-        let mut map = HOST_PMAP.mappings.lock().unwrap_or_else(|e| e.into_inner());
-        let mut page = va.trunc_page().as_usize();
-        let end = va.as_usize() + len.as_usize();
-        while page < end {
-            map.remove(&page);
-            page += Self::PAGE_SIZE;
-        }
-    }
-
-    fn pmap_extract(pmap: &HostPmap, va: Vaddr) -> Option<Paddr> {
-        let map = pmap.mappings.lock().unwrap_or_else(|e| e.into_inner());
-        map.get(&va.trunc_page().as_usize())
-            .map(|pa| Paddr::new(pa + (va.as_usize() & Self::PAGE_MASK)))
-    }
-
-    fn pmap_module_window() -> Option<(Vaddr, usize)> {
-        None
-    }
-
-    fn pmap_module_enter(_va: Vaddr, _pa: Paddr, _prot: VmProt) -> bool {
-        false
-    }
-
-    fn pmap_activate(_p: &Proc) {}
-
-    fn pmap_deactivate(_p: &Proc) {}
-
-    fn pmap_purge(_p: &Proc) {}
-
-    fn pmap_update(_pmap: &HostPmap) {}
-
-    /// The host's page tables never run out.
-    fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr {
-        maxkvaddr
-    }
-
-    fn pmap_init() {}
-
-    /// The "direct map" is the identity: a frame's address is its number.
-    fn pmap_map_direct(pg: &VmPage) -> Vaddr {
-        Vaddr::new(vm_page_to_phys(pg).as_usize())
-    }
-
-    fn pmap_unmap_direct(va: Vaddr) -> Option<&'static VmPage> {
-        PHYS_TO_VM_PAGE(Paddr::new(va.as_usize()))
+    /// The host has no boot path: the pmap is bootstrapped on first use, once per process,
+    /// over `hal`'s host backend. Its page provider reads `uvm`'s globals on each call, so the
+    /// fresh memory every test loads (`setup_real_memory`) needs no reset here. A test process
+    /// also gets the kernel crate's doubles of `hal`'s bridges first (`kernel::testutil`,
+    /// heap-backed and once per process, as `pipe_glue`'s tests register them), so the pool
+    /// of user pmaps never draws on a test's memory; outside the tests (`cargo check` of the
+    /// host build, never run) no pool is made and `pmap_create` would panic.
+    fn pmap_bootstrap_lazy() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let _ = crate::machine::pmap::pmap_bootstrap(&hal::pmap::BootstrapParams {
+                direct_base: Vaddr::new(0),
+                direct_end: Vaddr::new(usize::MAX),
+                nx: false,
+                first_avail: Paddr::new(0),
+                image: None,
+            });
+            #[cfg(test)]
+            {
+                kernel::testutil::install();
+                hal::pmap::init();
+            }
+        });
     }
 }
 

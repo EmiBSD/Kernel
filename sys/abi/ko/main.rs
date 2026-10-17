@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `abi-openbsd.ko`, the ABI module's binary (decision 22): the `abi` crate linked alone,
+//! `abi_openbsd.ko`, the ABI module's binary (decision 22): the `abi` crate linked alone,
 //! with no kernel code and no `hal` state in it, and the header `hal::module` checks at the
 //! ELF entry address before it calls [`abi::abi_init`].
 //!

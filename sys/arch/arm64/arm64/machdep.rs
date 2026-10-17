@@ -66,8 +66,9 @@
 //!   exclude the kernel, the device tree, the initrd and the bootloader's own data: the
 //!   `memreg_add`/`memreg_remove` bookkeeping, the EFI memory map walk, `pmap_avail_fixup`
 //!   and `pmap_physload_avail` have nothing left to do, and the direct map `pmap` uses is the
-//!   bootloader's (`arm64/pmap.rs`, deviations). The memory is loaded before `pmap_bootstrap`
-//!   (after it in the C) because `pmap_bootstrap` steals its tables from `vm_physmem[]`.
+//!   bootloader's (`hal::pmap`'s arm64 backend, deviations). The memory is loaded before
+//!   `pmap_bootstrap` (after it in the C) because `pmap_bootstrap` steals its tables from
+//!   `vm_physmem[]`.
 //! - The message buffer is a static area (`kern/subr_log.rs`, `init_static_msgbuf`) instead of
 //!   reserved physical pages, until M3.
 //! - `cpu_startup` prints the memory sizes, makes the exec and physio maps and sets up the
@@ -110,6 +111,12 @@
 //!   big-endian 64-bit cells, the physical address and size of the ABI module efiboot put in
 //!   the kernel's block after its image, below the end mark of `x0`) into
 //!   `BootInfo::abi_module`. No other path of the file changed.
+//! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
+//!   into the pmap's statics before `pmap_bootstrap` (`PMAP_DIRECT_BASE`/`END`,
+//!   `PMAP_KERNEL_IMAGE_START`/`END`/`PHYS_OFF`) are its `BootstrapParams`; `setregs` sets
+//!   the pmap's branch-target guard through `Pmap::set_guarded`. N3.1 commit 8: the image's
+//!   section bounds (`__text_start`, `_etext`, `__rodata_start`, `_erodata`, `__data_start`,
+//!   `_end`) go in `KernelImage`, for the pmap to map the image by section.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -135,10 +142,6 @@ use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 use crate::arch::arm64::arm64::fpu::{fpu_drop, fpu_save};
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
-use crate::arch::arm64::arm64::pmap::{
-    PMAP_DIRECT_BASE, PMAP_DIRECT_END, PMAP_KERNEL_IMAGE_END, PMAP_KERNEL_IMAGE_PHYS_OFF,
-    PMAP_KERNEL_IMAGE_START, pmap_bootstrap, pmap_growkernel,
-};
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
 use crate::arch::arm64::include::armreg::{PSR_DIT, PSR_M_EL0t};
@@ -153,8 +156,8 @@ use crate::arch::arm64::include::frame::Trapframe;
 use crate::arch::arm64::include::param::{PAGE_MASK, PAGE_SIZE};
 use crate::arch::arm64::include::pcb::{PCB_FPU, PCB_SVE};
 use crate::arch::arm64::include::pte::{
-    ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, L1_BLOCK, L1_SHIFT, L2_SIZE, Ln_ENTRIES, PTE_ATTR_WB,
-    SH_INNER, attr_idx, attr_sh,
+    ATTR_AF, ATTR_PXN, ATTR_UXN, L1_BLOCK, L1_SHIFT, L2_SIZE, Ln_ENTRIES, PTE_ATTR_WB, SH_INNER,
+    attr_idx, attr_sh,
 };
 use crate::arch::arm64::include::reg::Fpreg;
 use crate::arch::arm64::include::vmparam::{VM_MIN_KERNEL_ADDRESS, VM_PHYS_SIZE, VM_PHYSSEG_MAX};
@@ -210,6 +213,7 @@ use crate::uvm::uvm_km::{kernel_map, kernel_map_min, uvm_km_suballoc};
 use crate::uvm::uvm_map::VM_MAP_PAGEABLE;
 use crate::uvm::uvm_page::{VmPage, uvm_page_physload, uvm_setpagesize};
 use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
+use hal::pmap::{BootstrapParams, KernelImage};
 use libkern::explicit_bzero::explicit_bzero;
 
 #[cfg(feature = "qemu")]
@@ -507,27 +511,36 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         }
     }
 
-    // The direct map is the bootloader's (see `arm64/pmap.rs`).
+    // The direct map is the bootloader's (see `hal::pmap`'s arm64 backend).
     let regions = boot.memmap.regions();
     let map_end = regions
         .iter()
         .map(|r| r.base.as_usize() + r.length.as_usize())
         .max()
         .unwrap_or(0);
-    // The kernel image, for pmap_extract (arm64/pmap.rs, deviations).
-    PMAP_KERNEL_IMAGE_START.store(boot.kernel_virt.as_usize(), Ordering::Relaxed);
-    PMAP_KERNEL_IMAGE_END.store(ptr::addr_of!(_end) as usize, Ordering::Relaxed);
-    PMAP_KERNEL_IMAGE_PHYS_OFF.store(
-        boot.kernel_phys
-            .as_usize()
-            .wrapping_sub(boot.kernel_virt.as_usize()),
-        Ordering::Relaxed,
-    );
-    PMAP_DIRECT_BASE.store(boot.hhdm_offset, Ordering::Relaxed);
-    PMAP_DIRECT_END.store(
-        boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE),
-        Ordering::Relaxed,
-    );
+    // The kernel image by section, which pmap_bootstrap maps (`pmap_map_stolen`) and
+    // pmap_extract translates (`hal::pmap`'s arm64 backend), and the direct map:
+    // pmap_bootstrap's parameters.
+    let params = BootstrapParams {
+        direct_base: Vaddr::new(boot.hhdm_offset),
+        direct_end: Vaddr::new(
+            boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE),
+        ),
+        nx: false,
+        first_avail: Paddr::new(0),
+        image: Some(KernelImage {
+            start: Vaddr::new(ptr::addr_of!(__text_start) as usize),
+            text_end: Vaddr::new(etext()),
+            rodata_start: Vaddr::new(ptr::addr_of!(__rodata_start) as usize),
+            rodata_end: Vaddr::new(ptr::addr_of!(_erodata) as usize),
+            data_start: Vaddr::new(ptr::addr_of!(__data_start) as usize),
+            end: Vaddr::new(ptr::addr_of!(_end) as usize),
+            phys_off: boot
+                .kernel_phys
+                .as_usize()
+                .wrapping_sub(boot.kernel_virt.as_usize()),
+        }),
+    };
 
     let usable = || regions.iter().filter(|r| r.kind == MemKind::Usable);
 
@@ -535,7 +548,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     uvm_setpagesize();
 
     // Make all physical memory available to UVM (pmap_physload_avail and the EFI memory map
-    // loop of the C); before pmap_bootstrap, which steals from it (see `arm64/pmap.rs`).
+    // loop of the C); before pmap_bootstrap, which steals from it (`hal::pmap`'s arm64
+    // backend).
+
     for r in usable() {
         if r.length.as_usize() < PAGE_SIZE {
             kprintf!(" skipped - too small\n");
@@ -550,14 +565,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         PHYSMEM.fetch_add(atop(end - start), Ordering::Relaxed);
     }
 
-    let ram_start = usable().map(|r| r.base.as_usize()).min().unwrap_or(0);
-    let ram_end = usable()
-        .map(|r| r.base.as_usize() + r.length.as_usize())
-        .max()
-        .unwrap_or(0);
-    // SAFETY: once, on the boot CPU, with the direct map set above, the memory loaded and the
-    // MMU on.
-    let _vstart = unsafe { pmap_bootstrap(Paddr::new(ram_start), Paddr::new(ram_end)) };
+    // Once, on the boot CPU, with the memory loaded and the MMU on (the C's ram_start and
+    // ram_end, which `pmap_bootstrap` does not read, are not passed).
+    let (_, _vstart) = crate::machine::pmap::pmap_bootstrap(&params);
 
     // pmap_avail_fixup: nothing to fix up, the map is the bootloader's.
 
@@ -565,7 +575,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     // to be able to allocate the vm_page structures and nkmempages for malloc(9).
     kmeminit_nkmempages();
     let nkmempages = nkmempages();
-    pmap_growkernel(Vaddr::new(
+    crate::machine::pmap::pmap_growkernel(Vaddr::new(
         VM_MIN_KERNEL_ADDRESS
             + 1024 * 1024 * 1024
             + PHYSMEM.load(Ordering::Relaxed) * size_of::<VmPage>()
@@ -619,6 +629,14 @@ unsafe extern "C" {
     static esym: u64;
     /// `_end` (`conf/kernel.ld`): the end of the image's BSS.
     static _end: [u8; 0];
+    /// `__text_start` (`conf/kernel.ld`): the first address of the kernel text, the image's.
+    static __text_start: [u8; 0];
+    /// `__rodata_start` (`conf/kernel.ld`): the first address of the read-only data.
+    static __rodata_start: [u8; 0];
+    /// `_erodata` (`conf/kernel.ld`): the end of the read-only data, page-aligned.
+    static _erodata: [u8; 0];
+    /// `__data_start` (`conf/kernel.ld`): the first address of the data.
+    static __data_start: [u8; 0];
 }
 
 /// boot(8)'s entry (`Cpu::getbootinfo`): the half of `initarm` that reads what efiboot
@@ -1218,11 +1236,8 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
     let pcb = p.pcb();
     let tf = pcb.pcb_tf.get();
 
-    pm.pm_guarded.set(if pack.ep_flags & EXEC_NOBTCFI != 0 {
-        0
-    } else {
-        ATTR_GP
-    });
+    // `pm_guarded`: ATTR_GP on the process's executable mappings unless the binary opted out.
+    pm.set_guarded(pack.ep_flags & EXEC_NOBTCFI == 0);
 
     // pm_apiakey/apdakey/apibkey/apdbkey/apgakey and pmap_setpauthkeys: pointer
     // authentication (M7; QEMU's default virt CPU has none).

@@ -80,95 +80,34 @@
 //! Machine independent virtual memory parameters: `<uvm/uvm_param.h>`.
 //!
 //! Upstream: sys/uvm/uvm_param.h @ 3ce1f3f79392
+//! LZ: sys/uvm/uvm_param.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - `boolean_t`, `TRUE` and `FALSE` are `bool`.
 //! - `atop`, `ptoa`, `round_page` and `trunc_page` are `const fn`s on `usize` (page numbers and
-//!   byte counts), with typed conveniences on the address newtypes: [`Paddr::atop`],
-//!   [`Paddr::ptoa`], [`Vaddr::round_page`] and friends.
+//!   byte counts), with typed conveniences on the address newtypes (`Paddr::atop`,
+//!   `Paddr::ptoa`, `Vaddr::round_page` and friends).
+//!
+//! ## Redesign
+//! - The page arithmetic and its inherent `impl` blocks on `Paddr`, `Vaddr` and `Vsize` moved
+//!   into `hal` (`sys/hal/vm/param.rs`) with `<sys/types.h>` (N3.1: Rust allows an inherent
+//!   `impl` only in the type's own crate); this module re-exports them and keeps
+//!   `VM_KERNEL_SPACE_SIZE`, which reads the `VmParam` trait `bsd`'s `Machine` implements.
 
 use crate::machine::{Machine, VmParam};
-use crate::sys::param::{PAGE_MASK, PAGE_SHIFT};
-use crate::sys::types::{Paddr, Vaddr, Vsize};
 
-/// Default page size.
-pub const DEFAULT_PAGE_SIZE: usize = 4096;
+pub use hal::vm::param::{DEFAULT_PAGE_SIZE, atop, ptoa, round_page, trunc_page};
 
 /// `VM_KERNEL_SPACE_SIZE`: the size of the kernel's virtual address space.
 pub const VM_KERNEL_SPACE_SIZE: usize =
     <Machine as VmParam>::VM_MAX_KERNEL_ADDRESS - <Machine as VmParam>::VM_MIN_KERNEL_ADDRESS;
-
-/// `atop(x)`: bytes to pages.
-pub const fn atop(x: usize) -> usize {
-    x >> PAGE_SHIFT
-}
-
-/// `ptoa(x)`: pages to bytes.
-pub const fn ptoa(x: usize) -> usize {
-    x << PAGE_SHIFT
-}
-
-/// `round_page(x)`: rounds up to a page boundary.
-pub const fn round_page(x: usize) -> usize {
-    (x + PAGE_MASK) & !PAGE_MASK
-}
-
-/// `trunc_page(x)`: rounds down to a page boundary.
-pub const fn trunc_page(x: usize) -> usize {
-    x & !PAGE_MASK
-}
-
-impl Paddr {
-    /// `atop(pa)`: the page frame number of this address.
-    pub const fn atop(self) -> usize {
-        atop(self.0)
-    }
-
-    /// `ptoa(pgno)`: the address of page frame `pgno`.
-    pub const fn ptoa(pgno: usize) -> Paddr {
-        Paddr(ptoa(pgno))
-    }
-
-    /// `round_page`.
-    pub const fn round_page(self) -> Paddr {
-        Paddr(round_page(self.0))
-    }
-
-    /// `trunc_page`.
-    pub const fn trunc_page(self) -> Paddr {
-        Paddr(trunc_page(self.0))
-    }
-}
-
-impl Vaddr {
-    /// `round_page`.
-    pub const fn round_page(self) -> Vaddr {
-        Vaddr(round_page(self.0))
-    }
-
-    /// `trunc_page`.
-    pub const fn trunc_page(self) -> Vaddr {
-        Vaddr(trunc_page(self.0))
-    }
-}
-
-impl Vsize {
-    /// `round_page`.
-    pub const fn round_page(self) -> Vsize {
-        Vsize(round_page(self.0))
-    }
-
-    /// `atop`.
-    pub const fn atop(self) -> usize {
-        atop(self.0)
-    }
-}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::types::{Paddr, Vaddr, Vsize};
 
     #[test]
     fn page_arithmetic() {
@@ -184,4 +123,5 @@ mod tests {
         assert!(VM_KERNEL_SPACE_SIZE > 0);
     }
 }
+
 /* </TESTS> */

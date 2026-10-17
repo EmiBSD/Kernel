@@ -61,7 +61,7 @@
 //!
 //! ## Redesign
 //! - N2.4 (decision 22): `BOOT_MD.abi_module_room`, the end of the room the program reserved
-//!   for the kernel, which boot() may fill with `/abi-openbsd.ko` after the kernel's image.
+//!   for the kernel, which boot() may fill with `/abi_openbsd.ko` after the kernel's image.
 
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;
@@ -233,7 +233,7 @@ pub static BOOT_MD: BootMd = BootMd {
 };
 
 /// Not in the C (N2.4): the end of the 64 MB block `machdep()` allocated for the kernel
-/// (`efi_memprobe`), which boot() may fill with `/abi-openbsd.ko` after the kernel's image.
+/// (`efi_memprobe`), which boot() may fill with `/abi_openbsd.ko` after the kernel's image.
 fn abi_module_room() -> u64 {
     EFI_LOADADDR.load(Ordering::Relaxed) + crate::efiboot::KERN_BLOCK_SIZE
 }

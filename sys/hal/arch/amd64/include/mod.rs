@@ -27,9 +27,12 @@ pub mod i82489var;
 pub mod i8259;
 pub mod mplock;
 pub mod mutex;
+pub mod param;
 pub mod pci_machdep;
 pub mod proc;
+pub mod pte;
 pub mod tcb;
 pub mod timetc;
 pub mod tss;
+pub mod vmparam;
 /* </CODE> */

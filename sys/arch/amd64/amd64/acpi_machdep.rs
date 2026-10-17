@@ -68,7 +68,6 @@ use crate::arch::amd64::amd64::bus_space::{
 use crate::arch::amd64::amd64::intr::intr_establish;
 use crate::arch::amd64::amd64::ioapic::ioapic_find_bybase;
 use crate::arch::amd64::amd64::machdep::CPURESETFN;
-use crate::arch::amd64::amd64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::arch::amd64::include::i82093reg::{
     IOAPIC_REDLO_ACTLO, IOAPIC_REDLO_DEL_LOPRI, IOAPIC_REDLO_DEL_SHIFT, IOAPIC_REDLO_LEVEL,
 };
@@ -92,6 +91,7 @@ use crate::machine::intr::{IPL_BIO, IPL_WAKEUP};
 use crate::machine::isa_machdep::IST_LEVEL;
 use crate::machine::mpconfig::MpIntrMap;
 use crate::machine::pmap::pmap_update;
+use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::sys::device::{CfMatch, Cfattach, Device};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};

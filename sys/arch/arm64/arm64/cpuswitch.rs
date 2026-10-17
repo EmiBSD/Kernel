@@ -14,18 +14,36 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * Copyright (c) 2008-2009,2014-2016 Dale Rahn <drahn@dalerahn.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
 //! The context switch of `arch/arm64/arm64/cpuswitch.S`, pulled in from the `.S` file next
 //! to this module (the file keeps OpenBSD's licence block and layout; `{NAME}` placeholders
-//! are what `assym.h` provides in C).
+//! are what `assym.h` provides in C), and the `pmap_setttb` entry the assembly calls.
 //!
 //! Upstream: sys/arch/arm64/arm64/cpuswitch.S @ 3ce1f3f79392
+//! Upstream: sys/arch/arm64/arm64/pmap.c @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/arm64/cpuswitch.rs@3c62ede68802
+//! LZ: sys/arch/arm64/arm64/pmap.rs@3c62ede68802
 //!
 //! Status: `ported` (M5): `cpu_switchto_asm` and `proc_trampoline`. `machdep.rs` wraps the
-//! former as `cpu_switchto` (the FPU state goes with the old thread there), `pmap.rs`
-//! provides the `pmap_setttb` the assembly calls.
+//! former as `cpu_switchto` (the FPU state goes with the old thread there).
 //!
 //! ## Deviations
 //! - No retguard: the cookie load/calc/check around the stack pivot has no counterpart in
@@ -33,6 +51,15 @@
 //! - `proc_trampoline` calls `proc_trampoline_run` (Rust) with the function and argument
 //!   instead of `blr`ing the function itself: Rust `fn` pointers have no C calling
 //!   convention. After the function returns both go to `syscall_return`.
+//!
+//! ## Redesign
+//! - `pmap_setttb` (LZ `arm64/pmap.rs`, whose pmap moved into `hal` at N3.1) is only the
+//!   C-named entry `cpu_switchto_asm` branches to: it turns the `struct proc *` into a
+//!   `&Proc` and calls `machine::pmap::pmap_setttb`, where the ASID check, the empty table
+//!   first and `cpu_setttb` are `hal`'s (`hal::pmap`, the arm64 backend's `load`) and the
+//!   `ci_curpm` record and the branch-predictor flush are `pmap_switched_md`'s. It is an
+//!   `unsafe extern "C" fn`: its one caller is the assembly, and a safe signature would let
+//!   any Rust caller pass a dangling pointer.
 
 use core::arch::global_asm;
 use core::ffi::c_void;
@@ -90,4 +117,24 @@ pub unsafe extern "C" fn proc_trampoline_run(func: *const (), arg: *mut c_void) 
     let func: fn(*mut c_void) = unsafe { core::mem::transmute::<*const (), fn(*mut c_void)>(func) };
     func(arg);
 }
+
+/// `pmap_setttb(p)`: loads `p`'s address space into `TTBR0_EL1` (the ASID check, the empty
+/// table first, `cpu_setttb`, then `ci_curpm` and the branch-predictor flush:
+/// `machine::pmap::pmap_setttb` over `hal::pmap`), for every switch `cpu_switchto_asm` makes
+/// (hence `extern "C"` by its C name, N3.1: moved here from LZ's `arm64/pmap.rs`).
+///
+/// # Safety
+///
+/// `p` is a live `struct proc *` (a `Proc`, opaque to the ABI) that stays alive for the
+/// call: the thread being switched to, `cpu_switchto_asm`'s `new`, which the caller of
+/// `cpu_switchto` keeps alive. Only `cpu_switchto_asm` calls this.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pmap_setttb(p: *const c_void) {
+    // SAFETY: the caller's guarantee: `p` points to a live `Proc` for the whole call; a
+    // `Proc` is only ever shared (`&Proc`, its mutable state in cells), so a shared reference
+    // for the call's duration aliases nothing exclusive.
+    let p = unsafe { &*p.cast::<Proc>() };
+    crate::machine::pmap::pmap_setttb(p);
+}
+
 /* </CODE> */

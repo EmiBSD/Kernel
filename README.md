@@ -60,7 +60,7 @@ are EmiBSD.LZ's; this history holds them up to `f5985f1d055a`.
 
 Everything the port had at `lz-origin`; every smoke here is also LZ's, and a redesign may not
 change what they see. One is this repository's own (N2): `smoke-abi` boots with the loadable
-module `abi-openbsd.ko` (`abi-openbsd.ko: 331 syscalls, 2 native`, as `smoke-efiboot` checks
+module `abi_openbsd.ko` (`abi_openbsd.ko: 331 syscalls, 2 native`, as `smoke-efiboot` checks
 under boot(8)) and runs a pipeline through it (`abi-pipe-43`).
 
 Every line below is a recipe of `just smoke`, run on both architectures, on the

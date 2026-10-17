@@ -50,9 +50,10 @@
 //!   from Limine's framebuffer response (`docs/ARCHITECTURE.md`, "Frame buffer under
 //!   Limine").
 //! - `efifb_early_map` is the bootloader's direct map: Limine maps the frame buffer memory in
-//!   its higher-half direct map, which the kernel keeps (`pmap.rs`), so there is no
-//!   `pmap_set_pml4_early` slot to borrow and `efifb_early_cleanup` has nothing to undo
-//!   (`pmap_set_pml4_early`/`pmap_clear_pml4_early` are not ported).
+//!   its higher-half direct map, which the kernel keeps (`sys/hal/arch/amd64/pmap/backend.rs`,
+//!   deviations), so there is no `pmap_set_pml4_early` slot to borrow and
+//!   `efifb_early_cleanup` has nothing to undo (`pmap_set_pml4_early`/`pmap_clear_pml4_early`
+//!   are not ported).
 //! - `efifb_cnattach` is `wscons_machdep.c`'s `wscn_video_init`'s, which is not ported: the
 //!   kernel's console is the serial line (`consinit.rs`), as OpenBSD's with a serial console
 //!   chosen by boot(8), so `wsdisplay0 at efifb0` attaches as a plain, non-console display.
@@ -81,9 +82,7 @@ use crate::arch::amd64::amd64::bus_space::{
     bus_space_vaddr,
 };
 use crate::arch::amd64::amd64::machdep::bios_efiinfo;
-use crate::arch::amd64::amd64::pmap::pmap_direct_map;
 use crate::arch::amd64::include::efifbvar::EfifbAttachArgs;
-use crate::arch::amd64::include::pmap::PMAP_WC;
 use crate::dev::pci::pci_map::{pci_mapreg_info, pci_mapreg_probe};
 use crate::dev::pci::pcireg::{
     PCI_MAPREG_END, PCI_MAPREG_MEM_TYPE_64BIT, PCI_MAPREG_START, PCI_MAPREG_TYPE_IO,
@@ -116,6 +115,8 @@ use crate::sys::ioctl::{ioctl_arg, ioctl_ret};
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Paddr, Psize};
+use hal::arch::amd64::pmap::layout::PMAP_WC;
+use hal::pmap::direct_map as pmap_direct_map;
 
 /// `CB_TAG_VERSION`.
 #[allow(dead_code)] // the C defines it; the table walk does not use it

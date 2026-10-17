@@ -184,9 +184,19 @@
 //!
 //! ## Redesign
 //! - N2.4 (decision 22): `getbootinfo` also reads the `BOOTARG_ABIMODULE` record efiboot
-//!   adds (the ABI module `/abi-openbsd.ko`, put after the kernel's image and below `esym`,
+//!   adds (the ABI module `/abi_openbsd.ko`, put after the kernel's image and below `esym`,
 //!   so never free memory) into `BootInfo::abi_module`; the boot glue hands it to the module
 //!   loader through the direct map. No other path of the file changed.
+//! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
+//!   into the pmap's statics (`PMAP_DIRECT_BASE`/`END`) and `EFER.NXE`, which LZ's pmap read
+//!   itself, are `pmap_bootstrap`'s parameters; its answer `virtual_avail` is stored here as
+//!   the kernel map's base (LZ's pmap did it). The bootstrap now runs before `consinit`,
+//!   not after it: the console's frame buffer and the VGA hole are reached through the
+//!   direct map, which is the pmap's from its bootstrap on (LZ's statics were set before
+//!   `consinit` too; the C's direct map is `locore0.S`'s, built before `init_x86_64`).
+//!   So a bootstrap panic (`pmap_bootstrap: PML4 slot .. is in use`) comes before the console
+//!   and the msgbuf exist and prints nothing, where the C calls `cninit` first
+//!   (`machdep.c`:1557, `pmap_bootstrap` at :1700).
 
 use core::arch::asm;
 use core::mem::offset_of;
@@ -205,7 +215,6 @@ use crate::arch::amd64::amd64::fpu::{FPU_SAVE_LEN, XSAVE_MASK, fpuinit};
 use crate::arch::amd64::amd64::identcpu::AMD64_HAS_XCRYPT;
 use crate::arch::amd64::amd64::intr::{intr_default_setup, splraise};
 use crate::arch::amd64::amd64::locore::lgdt;
-use crate::arch::amd64::amd64::pmap::{PMAP_DIRECT_BASE, PMAP_DIRECT_END, pmap_bootstrap};
 use crate::arch::amd64::amd64::tsc::{TSC_FREQUENCY, TSC_IS_INVARIANT};
 use crate::arch::amd64::amd64::vector::Xexceptions;
 use crate::arch::amd64::include::biosvar;
@@ -222,14 +231,13 @@ use crate::arch::amd64::include::cpu::{
     CPU_LIDACTION, CPU_PWRACTION, CPU_RETPOLINE, CPU_TSCFREQ, CPU_VMMODE, CPU_XCRYPT,
     CPUPF_USERSEGS, CPUPF_USERXSTATE, CpuInfo, CpuVendor, cpu_info_primary, curcpu,
 };
-use crate::arch::amd64::include::cpufunc::{intr_enable, lidt, lldt, ltr, rcr3};
+use crate::arch::amd64::include::cpufunc::{intr_enable, lidt, lldt, ltr, rcr3, rdmsr};
 use crate::arch::amd64::include::fpu::{
     Savefpu, XstateHdr, fpu_cleandata, fpureset, fpusave, xrstor_user,
 };
 use crate::arch::amd64::include::frame::Trapframe;
 use crate::arch::amd64::include::intrdefs::IPL_IPI;
 use crate::arch::amd64::include::param::{KERNBASE, KERNTEXTOFF, NBPG, PAGE_SIZE, USPACE};
-use crate::arch::amd64::include::pmap::{L4_SLOT_DIRECT, NDML2_ENTRIES, va_sign_neg};
 use crate::arch::amd64::include::proc::MDP_IRET;
 use crate::arch::amd64::include::psl::{PSL_AC, PSL_D, PSL_T, PSL_USERSET, PSL_USERSTATIC, PSL_VM};
 use crate::arch::amd64::include::pte::{NBPD_L3, NBPD_L4};
@@ -241,8 +249,12 @@ use crate::arch::amd64::include::segments::{
 };
 use crate::arch::amd64::include::signal::Sigcontext;
 use crate::arch::amd64::include::specialreg::{
-    CPUID_NXE, CPUIDECX_HV, SEV_STAT_ENABLED, SEV_STAT_ES_ENABLED, SEV_STAT_SNP_ACTIVE, cpuid,
+    CPUID_NXE, CPUIDECX_HV, EFER_NXE, MSR_EFER, SEV_STAT_ENABLED, SEV_STAT_ES_ENABLED,
+    SEV_STAT_SNP_ACTIVE, cpuid,
 };
+use hal::arch::amd64::pmap::layout::{L4_SLOT_DIRECT, NDML2_ENTRIES, va_sign_neg};
+use hal::pmap::BootstrapParams;
+
 use crate::arch::amd64::include::tss::X86_64Tss;
 use crate::arch::amd64::include::vmparam::{VM_MAXUSER_ADDRESS, VM_PHYS_SIZE};
 use crate::arch::amd64::isa::clock::{
@@ -535,7 +547,7 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
 
     // locore0.S: cpuid(0) gives cpuid_level and the vendor string, cpuid(1) the signature
     // and the feature words; the NX bit of cpuid(0x80000001) is or'ed into cpu_feature
-    // (pg_nx itself is the bootloader's EFER.NXE, pmap.rs).
+    // (pg_nx itself is the bootloader's EFER.NXE, sys/hal/arch/amd64/pmap/backend.rs).
     let (level, vb, vc, vd) = cpuid(0);
     CPUID_LEVEL.store(level, Ordering::Relaxed);
     let mut vendor = [0u8; 16];
@@ -563,11 +575,25 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
         .map(|r| r.base.as_usize() + r.length.as_usize())
         .max()
         .unwrap_or(0);
-    PMAP_DIRECT_BASE.store(boot.hhdm_offset, Ordering::Relaxed);
-    PMAP_DIRECT_END.store(
-        boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE),
-        Ordering::Relaxed,
-    );
+    let direct_end = boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE);
+
+    // Call pmap initialization to make new kernel address space: before consinit, whose
+    // frame buffer is reached through the direct map (see the module's redesign).
+    // pg_nx: whether the bootloader enabled NX (the C's locore0.S does, after CPUID).
+    // SAFETY: `rdmsr` of `MSR_EFER`, an architectural MSR every x86-64 CPU has (long mode is
+    // entered through it, so this code runs only where it exists); reading it changes no
+    // state.
+    let efer = unsafe { rdmsr(MSR_EFER) };
+    let (first_avail, virtual_avail) = crate::machine::pmap::pmap_bootstrap(&BootstrapParams {
+        direct_base: Vaddr::new(boot.hhdm_offset),
+        direct_end: Vaddr::new(direct_end),
+        nx: efer & EFER_NXE != 0,
+        first_avail: Paddr::new(0),
+        image: None,
+    });
+    // The kernel map's base follows (`vm_min_kernel_address`, as sparc64's runtime
+    // VM_MIN_KERNEL_ADDRESS): the window is [virtual_avail, virtual_avail + the C's size).
+    crate::uvm::uvm_init::VM_MIN_KERNEL_ADDRESS.store(virtual_avail.as_usize(), Ordering::Relaxed);
 
     // cpu_init_early_vctrap and the early PTE pages: M4 and the page tables.
 
@@ -588,19 +614,14 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
         .unwrap_or(0);
     AVAIL_END.store(avail_end, Ordering::Relaxed);
 
-    // Call pmap initialization to make new kernel address space.
-    // SAFETY: once, on the boot CPU, with the direct map set above and paging on.
-    let first_avail = unsafe { pmap_bootstrap(Paddr::new(0), Paddr::new(trunc_page(avail_end))) };
-
     // Allocate these out of the 640KB base memory (after a boot by boot(8): getbootinfo
     // kept the low pages out of uvm; Limine's memory map has no such floor).
     let avail_start = AVAIL_START.load(Ordering::Relaxed);
     if avail_start != 0 && avail_start != PAGE_SIZE {
-        // SAFETY: once, after pmap_bootstrap; the low pages from avail_start are the
-        // kernel's (Reserved in getbootinfo's memory map).
-        let next = unsafe {
-            crate::arch::amd64::amd64::pmap::pmap_prealloc_lowmem_ptps(Paddr::new(avail_start))
-        };
+        // Once, after pmap_bootstrap; the low pages from avail_start are the kernel's
+        // (Reserved in getbootinfo's memory map).
+        let next = crate::machine::pmap::pmap_prealloc_lowmem_ptps(Paddr::new(avail_start));
+
         AVAIL_START.store(next.as_usize(), Ordering::Relaxed);
     }
 
@@ -1266,8 +1287,8 @@ pub fn map_tramps() {
             cpu_spinup_trampoline, cpu_spinup_trampoline_end, mp_pdirpa, mp_tramp_data_end,
             mp_tramp_data_start,
         };
-        use crate::arch::amd64::amd64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
         use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
+        use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
         use crate::sys::mman::{PROT_READ, PROT_WRITE};
 
         if AVAIL_START.load(Ordering::Relaxed) == 0 {
@@ -1278,7 +1299,7 @@ pub fn map_tramps() {
 
         // The initial PML4 pointer must be below 4G, so if the current one isn't, use a
         // "bounce buffer" and save it for tramps to use.
-        let pdirpa = kmp.pm_pdirpa.get().as_usize();
+        let pdirpa = kmp.cr3() as usize;
         if pdirpa > 0xffff_ffff {
             let _ = unported!("map_tramps: the lo32 bounce page for a PML4 above 4 GB");
             return;

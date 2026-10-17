@@ -74,43 +74,104 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
+
+/*
+ * Copyright (c) 1997 Charles D. Cranor and Washington University.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Copyright 2001 (c) Wasabi Systems, Inc.
+ * All rights reserved.
+ *
+ * Written by Frank van der Linden for Wasabi Systems, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *      This product includes software developed for the NetBSD Project by
+ *      Wasabi Systems, Inc.
+ * 4. The name of Wasabi Systems, Inc. may not be used to endorse
+ *    or promote products derived from this software without specific prior
+ *    written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY WASABI SYSTEMS, INC. ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL WASABI SYSTEMS, INC
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
-//! amd64 `<machine/pmap.h>`: the physical map's types and constants.
+//! amd64 `<machine/pmap.h>`'s layout: the PML4 slots, the page-table geometry, the recursive
+//! mapping's addresses, the PTE bits the pmap adds and the composition of a leaf.
 //!
 //! Upstream: sys/arch/amd64/include/pmap.h @ 3ce1f3f79392
+//! Upstream: sys/arch/amd64/amd64/pmap.c @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/include/pmap.rs@3c62ede68802
+//! LZ: sys/arch/amd64/amd64/pmap.rs@3c62ede68802
 //!
-//! Status: `wip`. Milestone M3 ports `struct pmap` (its bootstrap subset), `struct pv_entry`,
-//! `struct vm_page_md`, the PML4 slot layout, the page-table geometry constants, the recursive
-//! mapping (`PTE_BASE`, `L*_BASE`, `pl*_i`, `kvtopte`), the PCID and pmap-type constants and
-//! the `PG_PMAP_*` bits. M7a adds the inline frontends `pmap_page_protect`, `pmap_protect`
-//! and the attribute macros (`pmap_clear_modify`, `pmap_is_modified`, ...).
+//! Pure constants and `const fn`s, so the host tests compile this file by `#[path]`
+//! (`sys/hal/arch/host/mod.rs`, D15): its two neighbours are reached as
+//! `super::super::include`, the same path on the machine and on the host.
 //!
 //! ## Deviations
-//! - `pm_obj` has no pager (`pmap_pager`, M6): the objects are built with `UvmObject::new`.
+//! - `pm_pdir_intel` (the Meltdown PML4), PCID and the nested (EPT, RVI) pmaps are not
+//!   configured: their constants are here, as the header's, and nothing uses them.
+//!
+//! ## Redesign
+//! - LZ's `include/pmap.rs` holds this layout with `struct pmap`, `struct pv_entry`,
+//!   `struct vm_page_md` and the inline frontends; those are `hal::pmap`'s and the backend's
+//!   (`backend.rs`) now, and this file keeps the layout alone.
+//! - `kvtopte` (a pointer through the recursive mapping) and `ptp_va2o` (the offset of a PTP
+//!   in `pm_obj`) are gone: the backend walks the tables through the direct map and the walk
+//!   is the PTPs' index. The recursive slot stays installed (`locore0.S`'s protocol) and its
+//!   addresses (`PTE_BASE`, `L2_BASE`, ...) stay, for the TLB entries they name.
+//! - `protection_codes[]`, which `pmap_bootstrap` filled once, is [`protection_code`], a
+//!   `const fn` of the protection and the machine's `pg_nx`/`pg_xo`; `pl_pi` (the index inside
+//!   one table, the C's `pl1_pi`..`pl4_pi` by level) comes from the C file.
 
-use core::cell::Cell;
-use core::ptr;
-
-use crate::arch::amd64::amd64::pmap::{
-    pmap_clear_attrs, pmap_page_remove, pmap_remove, pmap_test_attrs, pmap_write_protect,
-};
-use crate::arch::amd64::include::param::{PAGE_MASK, PAGE_SIZE};
-use crate::arch::amd64::include::pte::{
+use super::super::include::param::{PAGE_MASK, PAGE_SIZE};
+use super::super::include::pte::{
     L1_FRAME, L1_MASK, L1_SHIFT, L2_FRAME, L2_MASK, L2_SHIFT, L3_FRAME, L3_MASK, L3_SHIFT,
-    L4_FRAME, L4_MASK, L4_SHIFT, NBPD_L1, NBPD_L2, NBPD_L3, NBPD_L4, PG_AVAIL1, PG_AVAIL2, PG_M,
-    PG_RW, PG_U, PdEntry, PtEntry,
+    L4_FRAME, L4_MASK, L4_SHIFT, NBPD_L1, NBPD_L2, NBPD_L3, NBPD_L4, PG_AVAIL1, PG_AVAIL2, PG_RO,
+    PG_RW, PG_V, PdEntry,
 };
-use crate::kassert;
-use crate::machine::intr::IPL_VM;
-use crate::sys::mman::{PROT_NONE, PROT_READ};
-use crate::sys::mutex::Mutex;
-use crate::sys::types::{Paddr, Vaddr};
-use crate::uvm::uvm_extern::VmProt;
-use crate::uvm::uvm_object::UvmObject;
-use crate::uvm::uvm_page::{PG_PMAP0, PG_PMAP1, PG_PMAP2, VmPage};
-use crate::uvm::uvm_pmap::{PMAP_MD0, PMAP_MD1, PmapStatistics};
+use crate::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, VmProt};
 
 /// `VA_SIGN_MASK`: the sign-extension bits of a canonical address.
 pub const VA_SIGN_MASK: usize = 0xffff_0000_0000_0000;
@@ -157,9 +218,10 @@ pub const PDIR_SLOT_DIRECT: usize = L4_SLOT_DIRECT;
 /// `PDIR_SLOT_EARLY`.
 pub const PDIR_SLOT_EARLY: usize = L4_SLOT_EARLY;
 
-// The following defines give the virtual addresses of the page tables and the page directory
-// through the recursive mapping in slot L4_SLOT_PTE: PTE_BASE is the level-1 table of every
-// address, L2_BASE the level-2 tables, and so on up to the PML4 itself at L4_BASE.
+// The virtual addresses of the page tables and the page directory through the recursive
+// mapping in slot L4_SLOT_PTE: PTE_BASE is the level-1 table of every address, L2_BASE the
+// level-2 tables, and so on up to the PML4 itself at L4_BASE. Nothing reads through them; the
+// TLB shootdown of a freed table names its page there, as the C does.
 
 /// `PTE_BASE`: where every level-1 table is visible.
 pub const PTE_BASE: usize = L4_SLOT_PTE * NBPD_L4;
@@ -244,15 +306,10 @@ pub const fn pl_i(va: usize, lvl: usize) -> usize {
     (va_sign_pos(va) & PTP_MASKS[lvl - 1]) >> PTP_SHIFTS[lvl - 1]
 }
 
-/// `ptp_va2o(va, lvl)`: the offset of `va`'s level-`lvl` PTP in `pm_obj[lvl - 1]`.
-pub const fn ptp_va2o(va: usize, lvl: usize) -> usize {
-    pl_i(va, lvl + 1) * PAGE_SIZE
-}
-
-/// `kvtopte(va)`: the level-1 entry of `va` through the recursive mapping (`LARGEPAGES` is
-/// not an option here, so there is no 2M case).
-pub fn kvtopte(va: usize) -> *mut PtEntry {
-    (PTE_BASE as *mut PtEntry).wrapping_add(pl1_i(va))
+/// `pl<lvl>_pi(va)`: the index of `va`'s entry within one level-`lvl` table (`pl_i` counts
+/// across the whole level).
+pub const fn pl_pi(va: usize, lvl: usize) -> usize {
+    pl_i(va, lvl) & (NTOPLEVEL_PDES - 1)
 }
 
 // NK*_MAX_ENTRIES: the maximum number of PTPs per level the kernel may use. NK*_KIMG_ENTRIES
@@ -337,188 +394,42 @@ pub const PMAP_NOCACHE: i32 = 0x1;
 /// `PMAP_WC`: set page write combining.
 pub const PMAP_WC: i32 = 0x2;
 
-/// `PG_PMAP_MOD`: the page was modified.
-pub const PG_PMAP_MOD: u32 = PG_PMAP0;
-/// `PG_PMAP_REF`: the page was referenced.
-pub const PG_PMAP_REF: u32 = PG_PMAP1;
-/// `PG_PMAP_WC`: the page is mapped write-combining.
+/// `PG_PMAP_WC`: the page is mapped write-combining (`PG_PMAP_MOD` and `PG_PMAP_REF` are
+/// `hal::pmap`'s, the same on every machine).
 pub const PG_PMAP_WC: u32 = PG_PMAP2;
-
-/// `struct pmap`: the bootstrap subset (see the module doc).
-pub struct Pmap {
-    /// `pm_mtx`: guards a user pmap's page tables, PTP objects, hints and statistics
-    /// (`pmap_map_ptes`/`pmap_unmap_ptes`); the kernel pmap never takes it.
-    pub pm_mtx: Mutex,
-    /// Objects for lvl >= 1.
-    pub pm_obj: [UvmObject; PTP_LEVELS - 1],
-    // pm_list (lck by pm_list lock): M6.
-    /// VA of page table to be used when executing in privileged mode.
-    pub pm_pdir: Cell<*mut PdEntry>,
-    /// VA of special page table to be used when executing on an Intel CPU in usermode (no
-    /// kernel mappings).
-    pub pm_pdir_intel: Cell<*mut PdEntry>,
-    /// PA of page table to be used when executing in privileged mode.
-    pub pm_pdirpa: Cell<Paddr>,
-    /// PA of special page table to be used when executing on an Intel CPU in usermode (no
-    /// kernel mappings).
-    pub pm_pdirpa_intel: Cell<Paddr>,
-    /// Pointer to a PTP in our pmap.
-    pub pm_ptphint: [Cell<*const VmPage>; PTP_LEVELS - 1],
-    /// pmap stats (lck by object lock).
-    pub pm_stats: PmapStatistics,
-    /// Type of pmap this is (`PMAP_TYPE_x`).
-    pub pm_type: Cell<i32>,
-    /// Cached EPTP (used by vmm).
-    pub eptp: Cell<u64>,
-}
-
-// SAFETY: a user pmap is guarded by `pm_mtx`, as in C; the kernel pmap's tables by the
-// kernel map's lock and `pmap_growkernel`'s callers, its statistics are updated racily as in
-// C (single-word counters). `pm_pdir`, `pm_pdirpa`, `pm_type` and `eptp` are written once by
-// `pmap_create`/`pmap_bootstrap` before the pmap is shared; `pm_obj[0].uo_refs` is atomic.
-unsafe impl Sync for Pmap {}
-
-impl Pmap {
-    /// A pmap with nothing mapped.
-    pub const fn new() -> Self {
-        Self {
-            pm_mtx: Mutex::new(IPL_VM),
-            pm_obj: [UvmObject::new(1), UvmObject::new(1), UvmObject::new(1)],
-            pm_pdir: Cell::new(ptr::null_mut()),
-            pm_pdir_intel: Cell::new(ptr::null_mut()),
-            pm_pdirpa: Cell::new(Paddr::new(0)),
-            pm_pdirpa_intel: Cell::new(Paddr::new(0)),
-            pm_ptphint: [
-                Cell::new(ptr::null()),
-                Cell::new(ptr::null()),
-                Cell::new(ptr::null()),
-            ],
-            pm_stats: PmapStatistics::new(),
-            pm_type: Cell::new(PMAP_TYPE_NORMAL),
-            eptp: Cell::new(0),
-        }
-    }
-
-    /// `pmap_nested(pm)`: a nested (vmm) pmap.
-    pub fn pmap_nested(&self) -> bool {
-        self.pm_type.get() != PMAP_TYPE_NORMAL
-    }
-
-    /// `pmap_is_ept(pm)`.
-    pub fn pmap_is_ept(&self) -> bool {
-        self.pm_type.get() == PMAP_TYPE_EPT
-    }
-
-    /// `pmap_resident_count(pmap)`.
-    pub fn pmap_resident_count(&self) -> i64 {
-        self.pm_stats.resident_count.get()
-    }
-
-    /// `pmap_wired_count(pmap)`.
-    pub fn pmap_wired_count(&self) -> i64 {
-        self.pm_stats.wired_count.get()
-    }
-}
-
-impl Default for Pmap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `struct pv_entry`: one mapping of a page, locked by its list's `pvh_lock`.
-pub struct PvEntry {
-    /// Next entry.
-    pub pv_next: Cell<*const PvEntry>,
-    /// The pmap.
-    pub pv_pmap: Cell<*const Pmap>,
-    /// The virtual address.
-    pub pv_va: Cell<Vaddr>,
-    /// The vm_page of the PTP.
-    pub pv_ptp: Cell<*const VmPage>,
-}
-
-/// `struct vm_page_md`: the pmap's per-page data.
-pub struct VmPageMd {
-    /// Protects `pv_list`.
-    pub pv_mtx: Mutex,
-    /// The mappings of this page.
-    pub pv_list: Cell<*const PvEntry>,
-}
-
-/// `VM_MDPAGE_INIT`: no mappings.
-#[allow(clippy::declare_interior_mutable_const)] // an initializer, copied into every vm_page
-pub const VM_MDPAGE_INIT: VmPageMd = VmPageMd {
-    pv_mtx: Mutex::new(IPL_VM),
-    pv_list: Cell::new(ptr::null()),
-};
-
-/// `pmap_clear_modify(pg)`.
-pub fn pmap_clear_modify(pg: &VmPage) -> bool {
-    pmap_clear_attrs(pg, PG_M)
-}
-
-/// `pmap_clear_reference(pg)`.
-pub fn pmap_clear_reference(pg: &VmPage) -> bool {
-    pmap_clear_attrs(pg, PG_U)
-}
-
-/// `pmap_is_modified(pg)`.
-pub fn pmap_is_modified(pg: &VmPage) -> bool {
-    pmap_test_attrs(pg, PG_M)
-}
-
-/// `pmap_is_referenced(pg)`.
-pub fn pmap_is_referenced(pg: &VmPage) -> bool {
-    pmap_test_attrs(pg, PG_U)
-}
-
-/// `pmap_page_protect`: change the protection of all recorded mappings of a managed page.
-///
-/// This function is a frontend for `pmap_page_remove`/`pmap_clear_attrs`. We only have to
-/// worry about making the page more protected; unprotecting a page is done on-demand at
-/// fault time.
-pub fn pmap_page_protect(pg: &VmPage, prot: VmProt) {
-    if prot == PROT_READ {
-        let _ = pmap_clear_attrs(pg, PG_RW);
-    } else {
-        kassert!(prot == PROT_NONE);
-        pmap_page_remove(pg);
-    }
-}
-
-/// `pmap_protect`: change the protection of pages in a pmap.
-///
-/// This function is a frontend for `pmap_remove`/`pmap_write_protect`. We only have to
-/// worry about making the page more protected; unprotecting a page is done on-demand at
-/// fault time.
-pub fn pmap_protect(pmap: &Pmap, sva: Vaddr, eva: Vaddr, prot: VmProt) {
-    if prot != PROT_NONE {
-        pmap_write_protect(pmap, sva, eva, prot);
-    } else {
-        pmap_remove(pmap, sva, eva);
-    }
-}
 
 /// `pmap_valid_entry(E)`: is PDE or PTE valid?
 pub const fn pmap_valid_entry(e: PdEntry) -> bool {
-    e & crate::arch::amd64::include::pte::PG_V != 0
+    e & PG_V != 0
 }
 
-/// `pmap_resident_count(pmap)`.
-pub fn pmap_resident_count(pmap: &Pmap) -> i64 {
-    pmap.pm_stats.resident_count.get()
+/// `protection_codes[prot & 7]`: the PTE protection bits of a combination of `PROT_READ`
+/// (1), `PROT_WRITE` (2) and `PROT_EXEC` (4), as `pmap_bootstrap` fills the C's table:
+/// non-executable (`pg_nx`) unless `PROT_EXEC`, writable when `PROT_WRITE`, execute-only
+/// (`pg_xo`, the PKU key) for `PROT_EXEC` alone.
+pub const fn protection_code(prot: VmProt, pg_nx: u64, pg_xo: u64) -> u64 {
+    match prot & 7 {
+        0 => pg_nx,         // ---
+        1 => PG_RO | pg_nx, // -r-
+        2 => PG_RW | pg_nx, // w--
+        3 => PG_RW | pg_nx, // wr-
+        4 => pg_xo,         // --x
+        5 => PG_RO,         // -rx
+        _ => PG_RW,         // w-x, wrx
+    }
 }
 
-/// `pmap_wired_count(pmap)`.
-pub fn pmap_wired_count(pmap: &Pmap) -> i64 {
-    pmap.pm_stats.wired_count.get()
+/// `ci_cflushsz` from `cpuid(1)`'s `%ebx`, as `identifycpu` computes it: the `clflush` line
+/// size is bits 15-8, in 8-byte units (0 on a CPU without `clflush`).
+pub const fn cflushsz_of(ebx: u32) -> usize {
+    (((ebx >> 8) & 0xff) * 8) as usize
 }
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use super::super::super::include::pte::PG_NX;
     use super::*;
 
     #[test]
@@ -547,8 +458,32 @@ mod tests {
         assert_eq!(pl1_i(va), (256 << 27) | (2 << 9) | 1);
         assert_eq!(pl_i(va, 4), pl4_i(va));
         assert_eq!(pl4_i(va), 256);
-        assert_eq!(kvtopte(va) as usize, PTE_BASE + pl1_i(va) * 8);
-        assert_eq!(ptp_va2o(va, 1), pl2_i(va) * PAGE_SIZE);
+        for lvl in 1..=PTP_LEVELS {
+            assert!(pl_pi(va, lvl) < NTOPLEVEL_PDES);
+        }
+        assert_eq!(pl_pi(va, 1), pl1_pi(va));
+        assert_eq!(pl_pi(va, 2), pl2_pi(va));
+        assert_eq!(pl_pi(va, 4), pl4_pi(va));
+    }
+
+    #[test]
+    fn protection_codes_are_the_c_table() {
+        let codes: [u64; 8] = core::array::from_fn(|p| protection_code(p as VmProt, PG_NX, 0));
+        assert_eq!(
+            codes,
+            [
+                PG_NX,
+                PG_RO | PG_NX,
+                PG_RW | PG_NX,
+                PG_RW | PG_NX,
+                0,
+                PG_RO,
+                PG_RW,
+                PG_RW
+            ]
+        );
+        // Without NX the machine cannot refuse execution: no code carries the bit.
+        assert!((0..8).all(|p| protection_code(p, 0, 0) & PG_NX == 0));
     }
 
     #[test]
@@ -579,6 +514,22 @@ mod tests {
         for (name, value) in ours {
             assert_eq!(crate::reftest::int(&defs, name), Some(*value), "{name}");
         }
+    }
+
+    #[test]
+    fn cflushsz_is_identifycpus() {
+        // (cpuid(1) %ebx, line size): a 64-byte line (8 units) whatever the other bytes hold
+        // (the brand index in 7-0, the APIC ID in 31-24), a 32-byte one, and no clflush.
+        let cases: [(u32, usize); 4] = [
+            (0x0000_0800, 64),
+            (0x0a01_0800, 64),
+            (0x0000_0400, 32),
+            (0xff00_00ff, 0),
+        ];
+        for (ebx, sz) in cases {
+            assert_eq!(cflushsz_of(ebx), sz, "{ebx:#x}");
+        }
+        assert_eq!(cflushsz_of(u32::MAX), 0xff * 8);
     }
 }
 /* </TESTS> */

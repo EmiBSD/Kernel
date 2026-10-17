@@ -81,7 +81,6 @@ use core::ptr::{self, NonNull};
 
 use crate::arch::amd64::amd64::locore::proc_trampoline;
 use crate::arch::amd64::amd64::machdep::reset_segs;
-use crate::arch::amd64::amd64::pmap::pmap_activate;
 use crate::arch::amd64::include::_types::_STACKALIGNBYTES;
 use crate::arch::amd64::include::cpu::{CPUPF_USERXSTATE, curcpu};
 use crate::arch::amd64::include::frame::{Switchframe, Trapframe};
@@ -90,6 +89,7 @@ use crate::dev::rnd::arc4random;
 use crate::kassert;
 use crate::kern::init_main::PROC0;
 use crate::kern::subr_prf::panic;
+use crate::machine::pmap::pmap_activate;
 use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove, pmap_update};
 use crate::sys::buf::{B_PHYS, Buf};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};

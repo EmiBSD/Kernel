@@ -55,16 +55,15 @@ use crate::sys::clockintr::Clockqueue;
 use crate::sys::errno::Errno;
 use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::mbuf::Mbuf;
-use crate::sys::proc::{Proc, Process};
+use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
-use crate::sys::types::{Off, Paddr, Register, Vaddr, Vsize};
+use crate::sys::types::{Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
 use crate::sys::user::User;
-use crate::uvm::uvm_extern::{UvmConstraintRange, VmProt, Vmspace};
-use crate::uvm::uvm_page::VmPage;
+use crate::uvm::uvm_extern::UvmConstraintRange;
 
 /// The arm64 implementation of the machine interface.
 pub struct Machine;
@@ -368,167 +367,71 @@ impl VmParam for Machine {
 }
 
 impl Pmap for Machine {
-    type VmPageMd = include::pmap::VmPageMd;
-    type Pmap = include::pmap::Pmap;
-
-    #[allow(clippy::declare_interior_mutable_const)] // an initializer, copied into every vm_page
-    const VM_MDPAGE_INIT: Self::VmPageMd = include::pmap::VM_MDPAGE_INIT;
-    /// The bootloader's direct map, until the kernel owns its page tables
-    /// (`arm64/pmap.rs`, deviations).
-    const HAVE_PMAP_DIRECT: bool = true;
-    const PMAP_STEAL_MEMORY: bool = true;
-    const PMAP_WC: usize = include::pmap::PMAP_WC as usize;
-    const PMAP_NOCACHE: usize = include::pmap::PMAP_NOCACHE as usize;
-    const PMAP_NOMMU: bool = false;
+    /// The bootloader's direct map (`hal::pmap`'s arm64 backend, deviations).
+    const HAVE_PMAP_DIRECT: bool = hal::pmap::HAVE_PMAP_DIRECT;
+    const PMAP_STEAL_MEMORY: bool = hal::pmap::PMAP_STEAL_MEMORY;
+    const PMAP_WC: usize = hal::pmap::PMAP_WC;
+    const PMAP_NOCACHE: usize = hal::pmap::PMAP_NOCACHE;
+    const PMAP_NOMMU: bool = hal::pmap::PMAP_NOMMU;
     const UVM_MD_CONSTRAINTS: &'static [&'static UvmConstraintRange] =
         &arm64::machdep::UVM_MD_CONSTRAINTS;
     const DMA_CONSTRAINT: &'static UvmConstraintRange = &arm64::machdep::DMA_CONSTRAINT;
 
-    fn pmap_kernel() -> &'static Self::Pmap {
-        arm64::pmap::pmap_kernel()
+    /// `pmap_init`: the pools (`hal`); then, the bus space mapping through the kernel half
+    /// from here on, the console moves there before the boot glue's identity map in
+    /// `TTBR0_EL1` goes, and the lower half gets its translation registers. Last, the boot
+    /// CPU records that it runs on the kernel pmap.
+    fn pmap_init_md() {
+        hal::pmap::init();
+        crate::dev::ic::pluart::pluartcn_remap();
+        hal::arch::arm64::pmap::init_lower_half();
+        // `curcpu()->ci_curpm = pmap_kernel()` (arm64 pmap.c:1409, in pmap_bootstrap once the
+        // kernel's tables are live; LZ at the end of pmap_init, after TTBR0 moved to the
+        // kernel's empty table, the order kept here): efi_enter/efi_leave on proc0, while
+        // cold and before any cpu_switchto, reload the pmap this records.
+        include::cpu::curcpu()
+            .ci_curpm
+            .set(hal::pmap::kernel().as_ptr());
     }
 
-    fn pmap_zero_page(pg: &VmPage) {
-        arm64::pmap::pmap_zero_page(pg)
+    /// The bounds as `pmap_steal_memory` leaves them, without `pmap_virtual_space`'s side
+    /// effect (once it ran, the vp tables are no longer stolen).
+    fn pmap_steal_bounds() -> (Vaddr, Vaddr) {
+        hal::arch::arm64::pmap::stolen_bounds()
     }
 
-    fn pmap_copy_page(src: &VmPage, dst: &VmPage) {
-        arm64::pmap::pmap_copy_page(src, dst)
+    /// `pmap_activate`: one more thread uses the pmap (`pm_active`); switched in now when `p`
+    /// is the running thread and the CPU is not on it already.
+    fn pmap_activate_md(p: &Proc, pm: &hal::pmap::Pmap) -> bool {
+        pm.activate();
+        let ci = include::cpu::curcpu();
+        core::ptr::eq(p, ci.ci_curproc.get()) && !core::ptr::eq(pm.as_ptr(), ci.ci_curpm.get())
     }
 
-    fn pmap_page_protect(pg: &VmPage, prot: VmProt) {
-        arm64::pmap::pmap_page_protect(pg, prot)
+    /// `pmap_setttb`'s record: the CPU's pmap, then the branch predictor flush.
+    fn pmap_switched_md(pm: &hal::pmap::Pmap) {
+        let ci = include::cpu::curcpu();
+        ci.ci_curpm.set(pm.as_ptr());
+        if let Some(flush_bp) = ci.ci_flush_bp.get() {
+            flush_bp();
+        }
     }
 
-    fn pmap_clear_modify(pg: &VmPage) -> bool {
-        arm64::pmap::pmap_clear_modify(pg)
+    /// `pmap_deactivate`, on the running thread.
+    fn pmap_deactivate_md(p: &Proc, pm: &hal::pmap::Pmap) {
+        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().ci_curproc.get()));
+        pm.deactivate();
     }
 
-    fn pmap_clear_reference(pg: &VmPage) -> bool {
-        arm64::pmap::pmap_clear_reference(pg)
+    /// `pmap_purge`: the last thread of the exiting process, on its CPU.
+    fn pmap_purge_md(p: &Proc, pm: &hal::pmap::Pmap) {
+        crate::kassert!(p.process().ps_threadcnt.get() == 0);
+        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().ci_curproc.get()));
+        pm.purge();
     }
 
-    fn pmap_is_modified(pg: &VmPage) -> bool {
-        arm64::pmap::pmap_is_modified(pg)
-    }
-
-    unsafe fn pmap_steal_memory(
-        size: Vsize,
-        start: Option<&mut Vaddr>,
-        end: Option<&mut Vaddr>,
-    ) -> Vaddr {
-        // SAFETY: forwarded.
-        unsafe { arm64::pmap::pmap_steal_memory(size, start, end) }
-    }
-
-    fn pmap_virtual_space(start: &mut Vaddr, end: &mut Vaddr) {
-        arm64::pmap::pmap_virtual_space(start, end)
-    }
-
-    unsafe fn pmap_kenter_pa(va: Vaddr, pa: Paddr, prot: VmProt) {
-        // SAFETY: forwarded.
-        unsafe { arm64::pmap::pmap_kenter_pa(va, pa, prot) }
-    }
-
-    unsafe fn pmap_kremove(va: Vaddr, len: Vsize) {
-        // SAFETY: forwarded.
-        unsafe { arm64::pmap::pmap_kremove(va, len) }
-    }
-
-    fn pmap_extract(pmap: &Self::Pmap, va: Vaddr) -> Option<Paddr> {
-        arm64::pmap::pmap_extract(pmap, va)
-    }
-
-    // No module window: kernel_map executes here (no PXN on a kernel R|X leaf, none on the
-    // tables), so the module is placed in kernel_map.
-    fn pmap_module_window() -> Option<(Vaddr, usize)> {
-        None
-    }
-
-    fn pmap_module_enter(_va: Vaddr, _pa: Paddr, _prot: VmProt) -> bool {
-        false
-    }
-
-    fn pmap_create() -> &'static Self::Pmap {
-        arm64::pmap::pmap_create()
-    }
-
-    fn pmap_destroy(pmap: &'static Self::Pmap) {
-        arm64::pmap::pmap_destroy(pmap)
-    }
-
-    fn pmap_reference(pmap: &Self::Pmap) {
-        arm64::pmap::pmap_reference(pmap)
-    }
-
-    fn pmap_enter(
-        pmap: &Self::Pmap,
-        va: Vaddr,
-        pa: Paddr,
-        prot: VmProt,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        arm64::pmap::pmap_enter(pmap, va, pa, prot, flags)
-    }
-
-    fn pmap_remove(pmap: &Self::Pmap, sva: Vaddr, eva: Vaddr) {
-        arm64::pmap::pmap_remove(pmap, sva, eva)
-    }
-
-    fn pmap_protect(pmap: &Self::Pmap, sva: Vaddr, eva: Vaddr, prot: VmProt) {
-        arm64::pmap::pmap_protect(pmap, sva, eva, prot)
-    }
-
-    fn pmap_wired_count(pmap: &Self::Pmap) -> i64 {
-        pmap.pm_stats.wired_count.get()
-    }
-
-    fn pmap_resident_count(pmap: &Self::Pmap) -> i64 {
-        pmap.pm_stats.resident_count.get()
-    }
-
-    fn pmap_unwire(pmap: &Self::Pmap, va: Vaddr) {
-        arm64::pmap::pmap_unwire(pmap, va)
-    }
-
-    fn pmap_remove_holes(vm: &Vmspace) {
-        arm64::pmap::pmap_remove_holes(vm)
-    }
-
-    fn pmap_proc_iflush(pr: &Process, va: Vaddr, len: Vsize) {
-        arm64::pmap::pmap_proc_iflush(pr, va, len)
-    }
-
-    /// `pmap_update`: nothing, as the C.
-    fn pmap_activate(p: &Proc) {
-        arm64::pmap::pmap_activate(p)
-    }
-
-    fn pmap_deactivate(p: &Proc) {
-        arm64::pmap::pmap_deactivate(p)
-    }
-
-    fn pmap_purge(p: &Proc) {
-        arm64::pmap::pmap_purge(p)
-    }
-
-    fn pmap_update(_pmap: &Self::Pmap) {}
-
-    fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr {
-        arm64::pmap::pmap_growkernel(maxkvaddr)
-    }
-
-    fn pmap_init() {
-        arm64::pmap::pmap_init()
-    }
-
-    fn pmap_map_direct(pg: &VmPage) -> Vaddr {
-        arm64::pmap::pmap_map_direct(pg)
-    }
-
-    fn pmap_unmap_direct(va: Vaddr) -> Option<&'static VmPage> {
-        arm64::pmap::pmap_unmap_direct(va)
-    }
+    /// `initarm` bootstraps the pmap (`machdep.rs`).
+    fn pmap_bootstrap_lazy() {}
 }
 
 impl MachineExec for Machine {

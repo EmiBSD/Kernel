@@ -145,9 +145,9 @@ pub mod tty;
 pub mod ttycom;
 #[forbid(unsafe_code)]
 pub mod ttydefaults;
-#[forbid(unsafe_code)]
-pub mod types;
+pub use hal::sys::types;
 pub mod ucred;
+
 #[forbid(unsafe_code)]
 pub mod uio;
 #[forbid(unsafe_code)]

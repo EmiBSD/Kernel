@@ -198,7 +198,6 @@ use {
     },
     crate::arch::amd64::amd64::locore::lgdt,
     crate::arch::amd64::amd64::machdep::{cpu_init_idt, cpu_set_vendor, delay, setregion},
-    crate::arch::amd64::amd64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove},
     crate::arch::amd64::amd64::tsc::{tsc_test_sync_ap, tsc_test_sync_bp},
     crate::arch::amd64::include::cpu::{
         CPUF_AP, CPUF_GO, CPUF_IDENTIFIED, CPUF_IDENTIFY, CPUF_RUNNING, cpu_is_primary,
@@ -222,6 +221,7 @@ use {
     crate::machine::bootinfo::BootCpu,
     crate::machine::bootinfo::BootMp,
     crate::machine::intr::{splhigh, splx},
+    crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove},
     crate::sys::errno::Errno,
     crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_DIRTY, KP_ZERO, KV_ANY, km_alloc},
     core::sync::atomic::AtomicPtr,
@@ -585,8 +585,7 @@ pub fn cpu_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         pcb.pcb_rbp.set((kstack + USPACE - 16) as u64);
         pcb.pcb_rsp.set((kstack + USPACE - 16) as u64);
         pcb.pcb_pmap.set(pmap_kernel());
-        pcb.pcb_cr3
-            .set(pmap_kernel().pm_pdirpa.get().as_usize() as u64);
+        pcb.pcb_cr3.set(pmap_kernel().cr3());
     }
 
     // further PCB init done later.
@@ -1006,7 +1005,6 @@ pub fn mp_cpu_start_cleanup(_ci: &CpuInfo) {
 #[cfg(feature = "multiprocessor")]
 unsafe fn mp_cpu_start_tramp(_i: usize, arg: usize) {
     use crate::arch::amd64::amd64::lapic::{x86_ipi, x86_ipi_init};
-    use crate::arch::amd64::amd64::pmap::pmap_direct_map;
     use crate::arch::amd64::include::i82489reg::LAPIC_DLMODE_STARTUP;
     use crate::arch::amd64::include::mpbiosvar::MP_TRAMPOLINE;
     use crate::arch::amd64::include::pio::outb;
@@ -1014,6 +1012,7 @@ unsafe fn mp_cpu_start_tramp(_i: usize, arg: usize) {
     use crate::arch::amd64::isa::nvram::{NVRAM_RESET, NVRAM_RESET_JUMP};
     use crate::dev::isa::isareg::IO_RTC;
     use crate::sys::types::Paddr;
+    use hal::pmap::direct_map as pmap_direct_map;
 
     // SAFETY: the caller's guarantee: `arg` is the processor's cpu_info, never freed.
     let ci: &CpuInfo = unsafe { &*(arg as *const CpuInfo) };

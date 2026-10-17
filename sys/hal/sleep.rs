@@ -38,6 +38,8 @@
 use crate::bridges;
 use crate::sys::errno::Errno;
 
+/// `PVM`: the priority of a wait for virtual memory (`km_alloc`'s `"km_allocva"`).
+pub const PVM: i32 = 4;
 /// `PWAIT`: the priority of a plain wait (`refcnt_finalize`).
 pub const PWAIT: i32 = 32;
 /// `PLOCK`: the priority of a lock's sleep (`rw_enter`'s readers; writers sleep at

@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! `TypedPool<T>` and `PoolArc<T>`: a `pool(9)` of `T`s whose items are owned, counted
-//! handles.
+//! handles; `BoxPool<T>` and `PoolBox<T>`: one whose items have exactly one owner.
 //!
 //! The C's `pool_get(pp, flags)` returns a `void *` the caller casts and initialises, and
 //! `pool_put(pp, v)` takes it back, wherever the caller decides; LZ keeps the shape and hands
@@ -59,10 +59,34 @@
 //!   fails. It goes with the bridge, at N9.
 //! - No raw form (`into_raw`/`from_raw`) yet: its first user would be a type-erased slot, and
 //!   the kernel's slots hold the handle itself (`FileData`, decision 14).
+//! - N3.1 (D18): [`BoxPool<T>`] and [`PoolBox<T>`], the owned item without a count, for the
+//!   pmaps' per-mapping records (amd64's `pv_entry`, pool `"pvpl"`; arm64's `pte_desc`, pool
+//!   `"pted"`), which the C gets with `pool_get` and frees with `pool_put` from exactly one
+//!   owner: the page's pv chain (`Option<PoolBox<PvEntry>>`, each entry owning the next) or
+//!   the table slot that maps it. `BoxPool::get` writes the value before the handle exists;
+//!   the handle derefs mutably (it is the only one) and its drop drops the `T` and puts the
+//!   item back. It is its own pool type, not a mode of `TypedPool`: a `TypedPool` item is an
+//!   `Inner<T>` (the count and the pool beside the value), and an uncounted item needs
+//!   neither, so a `BoxPool` item is exactly a `T`, the C's item, and `vmstat -m` shows the
+//!   C's size for it; the pool the item goes back to rides in the handle instead (the
+//!   handle is two words: an `Option<PoolBox<T>>` is too, by the niche of its pointer).
+//! - N3.1's review: [`SharedBox<T>`] ([`BoxPool::get_linked`]) is the owned item that raw
+//!   links also reach (arm64's `pte_desc`, owned by its table slot and linked on its page's pv
+//!   list): a `PoolBox` without `DerefMut`, so a `&mut` through the owner never coexists with
+//!   a link's reader; `PoolBox` keeps `DerefMut` for an item that only its owner reaches
+//!   (amd64's `pv_entry`, owned by its chain). [`PoolArc::from_value`] rebuilds a counted
+//!   handle from a pointer to the value a record keeps (`pmap_reference(pve->pv_pmap)`).
+//! - N3.1 commit 5: the raw form of a [`SharedBox`], for the type-erased slot the first item
+//!   above waited for: arm64's level-3 table keeps its `pte_desc`s in a page of 512 words
+//!   (the C's `struct pmapvp3`'s `vp[]`, beside the 512 entries the MMU reads), where a
+//!   two-word handle does not fit. [`SharedBox::into_raw`] gives the handle up for the
+//!   pointer (the slot owns the item then); [`SharedBox::from_raw`] takes it back, once, to
+//!   free it. The pool rides in the handle, so `from_raw` names it.
 
 use core::marker::PhantomData;
-use core::ops::Deref;
-use core::ptr::NonNull;
+use core::mem::{ManuallyDrop, offset_of};
+use core::ops::{Deref, DerefMut};
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
@@ -180,6 +204,8 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         // documented trust boundary. Writing a whole value initialises it, before any handle
         // exists.
         unsafe { item.as_ptr().write(inner) };
+        // The item's whole provenance, for `PoolArc::from_value`'s step back from the value.
+        let _ = item.as_ptr().expose_provenance();
         Some(PoolArc {
             inner: item,
             _owns: PhantomData,
@@ -241,6 +267,54 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     pub fn as_ptr(this: &Self) -> *const T {
         &raw const this.inner().value
     }
+
+    /// One more handle to the item whose value `value` points at, counted as a clone: the C's
+    /// `pmap_reference` of a pointer a record keeps (`pve->pv_pmap`), for who must hold the
+    /// object after dropping the lock that keeps the record. The item is reached back from
+    /// the value by `offset_of!`, with the provenance `get_shared` exposed for the whole item.
+    ///
+    /// # Safety
+    ///
+    /// `value` is the address of the value of an item of a `TypedPool<T>` (one `get_shared`
+    /// made) that has not been put back into its pool and is not put back during this call:
+    /// the caller holds the lock that keeps the record of the pointer, and the object's drop
+    /// refuses to finish while a record is left (a pmap with a pv entry: `hal::pmap`'s last
+    /// drop panics, and a drop that does not finish never puts the item back). The count may
+    /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused with
+    /// a panic here, never taken back to 1, so no second last drop can follow.
+    #[allow(
+        dead_code,
+        reason = "the pmap backends' (pmap_page_remove), N3.1 commits 4 and 5"
+    )]
+    pub(crate) unsafe fn from_value(value: NonNull<T>) -> Self {
+        let addr = value.as_ptr().addr() - offset_of!(Inner<T>, value);
+        let Some(inner) = NonNull::new(ptr::with_exposed_provenance_mut::<Inner<T>>(addr)) else {
+            hal_panic(format_args!("PoolArc::from_value: a null item"));
+        };
+        // A view the caller's guarantee makes valid (the item is not put back), never dropped:
+        // its count is raised only from a live count, never from 0.
+        let borrowed = ManuallyDrop::new(PoolArc {
+            inner,
+            _owns: PhantomData,
+        });
+        let counted =
+            borrowed
+                .inner()
+                .refs
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                    (c != 0 && c < MAX_REFS).then(|| c + 1)
+                });
+        match counted {
+            Ok(_) => PoolArc {
+                inner,
+                _owns: PhantomData,
+            },
+            Err(0) => hal_panic(format_args!(
+                "PoolArc::from_value: an item whose last handle is gone"
+            )),
+            Err(_) => hal_panic(format_args!("PoolArc: reference count overflow")),
+        }
+    }
 }
 
 impl<T: Send + Sync + 'static> Deref for PoolArc<T> {
@@ -291,6 +365,208 @@ unsafe impl<T: Send + Sync + 'static> Send for PoolArc<T> {}
 // SAFETY: `&PoolArc<T>` gives `&T` and clones (an atomic increment); with `T: Sync` sharing it
 // across CPUs is sound, and a clone moved elsewhere is covered by `Send` above.
 unsafe impl<T: Send + Sync + 'static> Sync for PoolArc<T> {}
+
+/// A pool of `T`s whose items have one owner each (`struct pool` sized for the type): a
+/// `static`, initialised once at boot. Its items are exactly `T`s (no count, no back
+/// pointer), handed out as [`PoolBox<T>`].
+pub struct BoxPool<T: 'static> {
+    raw: OnceStatic<&'static dyn RawPool>,
+    _t: PhantomData<fn() -> T>,
+}
+
+impl<T: 'static> BoxPool<T> {
+    /// A pool that `init` has not made yet.
+    pub const fn new() -> Self {
+        Self {
+            raw: OnceStatic::new(),
+            _t: PhantomData,
+        }
+    }
+
+    /// `pool_init(9)`: the pool of `T`s at `ipl`, with `flags`, named `wchan` (the name
+    /// `vmstat -m` shows). `ENOMEM` when the pool cannot be made (or before the bridge is
+    /// registered); `EBUSY` when it was already.
+    pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
+        if self.raw.is_set() {
+            return Err(Errno::EBUSY);
+        }
+        let backend = bridges::pool_backend().ok_or(Errno::ENOMEM)?;
+        let raw = backend
+            .create(size_of::<T>().max(1), align_of::<T>(), ipl, flags, wchan)
+            .ok_or(Errno::ENOMEM)?;
+        self.raw.set(raw).map_err(|_| Errno::EBUSY)
+    }
+
+    /// `pool_get(9)` and the item's initialisation: the one handle to a new item holding
+    /// `init()`. `None` when `pool_get` fails (`PR_NOWAIT`, `PR_LIMITFAIL`, no memory) or the
+    /// pool was never made; `init` is not called then.
+    pub fn get(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<PoolBox<T>> {
+        let raw = *self.raw.get()?;
+        let (block, granted) = raw.get(flags)?;
+        check_block("RawPool", block, granted, size_of::<T>(), align_of::<T>());
+        let item = block.cast::<T>();
+        // A panic in `init` leaks the item (it never reaches a handle); nothing reads it.
+        let value = init();
+        // SAFETY: `item` is aligned for `T` and at least `size_of::<T>()` bytes (`check_block`
+        // above), and it is a fresh item of this pool that nothing else references: the
+        // registration contract of `RawPool` (the kernel's boot path registered its own
+        // `pool(9)`, once, before any user; `sys/hal/trust.rs`), a documented trust boundary.
+        // Writing a whole value initialises it, before the handle exists.
+        unsafe { item.as_ptr().write(value) };
+        Some(PoolBox {
+            item,
+            pool: self,
+            _owns: PhantomData,
+        })
+    }
+
+    /// `pr_nout`: the items out of the pool now (0 before `init`).
+    pub fn nout(&self) -> u64 {
+        self.raw.get().map_or(0, |r| r.nout())
+    }
+}
+
+impl<T: 'static> Default for BoxPool<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The one owner of a pool item holding a `T`: `Deref`/`DerefMut<Target = T>`; its drop drops
+/// the `T` and puts the item back into the pool it came from. Not `Clone`.
+///
+/// Invariant: `item` names an initialised `T` in an item of `pool`, which nothing but this
+/// handle references, except when the handle is the private field of a [`SharedBox`]: that
+/// one never takes `&mut T`, and raw links may read the item beside its shared references
+/// (`SharedBox`'s contract). It is put back exactly once, by this handle's drop.
+pub struct PoolBox<T: 'static> {
+    item: NonNull<T>,
+    pool: &'static BoxPool<T>,
+    _owns: PhantomData<T>,
+}
+
+impl<T: 'static> PoolBox<T> {
+    /// The value's address, for what compares items by identity (a pv chain's entry, a table
+    /// slot's descriptor); never to be dereferenced outside the handle.
+    pub fn as_ptr(this: &Self) -> *const T {
+        this.item.as_ptr().cast_const()
+    }
+
+    /// Whether two handles name the same item (only possible through a broken pool).
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        a.item == b.item
+    }
+}
+
+impl<T: 'static> Deref for PoolBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the item is initialised and alive until this handle's drop (the invariant;
+        // that no one else frees or writes it until it is put back is the registration
+        // contract of `RawPool`, `sys/hal/trust.rs`); the shared reference borrows the handle,
+        // so no `&mut` from `deref_mut` can be alive beside it, and a `SharedBox`'s links only
+        // read.
+        unsafe { self.item.as_ref() }
+    }
+}
+
+impl<T: 'static> DerefMut for PoolBox<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as for `deref`, and the handle is borrowed mutably, so no other reference
+        // through it is alive; this `PoolBox` is not a `SharedBox`'s (whose field is private
+        // and which never calls this), so no link to the item exists either: this is the
+        // only reference to the value while it lives.
+        unsafe { self.item.as_mut() }
+    }
+}
+
+impl<T: 'static> Drop for PoolBox<T> {
+    fn drop(&mut self) {
+        let Some(raw) = self.pool.raw.get() else {
+            hal_panic(format_args!("PoolBox: an item of a pool never made"));
+        };
+        // SAFETY: this handle is the item's only owner (the invariant) and is being dropped, so
+        // no reference through it is alive and none can be made (a `SharedBox`'s links are
+        // unlinked before its owner drops it, under the lock their readers hold: its
+        // contract); the value is initialised and dropped once, here, before its memory goes
+        // back to the pool it came from.
+        unsafe { core::ptr::drop_in_place(self.item.as_ptr()) };
+        raw.put(self.item.cast());
+    }
+}
+
+// SAFETY: the handle owns its `T` as a `Box` does: moving it to another CPU moves the `T`
+// (`T: Send`), which is dropped wherever the handle is; the pool it goes back to is `Sync`.
+unsafe impl<T: Send + 'static> Send for PoolBox<T> {}
+
+// SAFETY: `&PoolBox<T>` gives only `&T` (`DerefMut` needs `&mut PoolBox<T>`), so sharing it
+// across CPUs is sharing `&T`, sound with `T: Sync`.
+unsafe impl<T: Sync + 'static> Sync for PoolBox<T> {}
+
+/// An owned pool item that others may also reach by raw links: one owner (this handle, in
+/// a table slot) frees it, and `&T` from it may coexist with the links' readers (a page's pv
+/// list, arm64's `pte_desc`). No `DerefMut`: a field changed after the item is linked is an
+/// atomic or a `Cell` under the lock that guards it.
+///
+/// The contract its users keep (the links' derefs are theirs, each with its own `SAFETY:`):
+/// a link is made from [`SharedBox::link`] and read only under the lock that also guards the
+/// link's removal, and the owner drops the box only after every link to it was removed under
+/// that lock; links never take `&mut T`.
+pub struct SharedBox<T: 'static>(PoolBox<T>);
+
+impl<T: 'static> SharedBox<T> {
+    /// A pointer to the value, with the item's whole provenance, for a link; never written
+    /// through.
+    pub fn link(this: &Self) -> NonNull<T> {
+        this.0.item
+    }
+
+    /// Gives the handle up for the item's pointer, with the item's whole provenance: whoever
+    /// keeps the pointer (a word of a table page) owns the item from now on, and frees it by
+    /// [`SharedBox::from_raw`]. The item is not freed here; dropped, the pointer leaks it.
+    pub fn into_raw(this: Self) -> NonNull<T> {
+        let this = ManuallyDrop::new(this);
+        this.0.item
+    }
+
+    /// The handle back from what [`SharedBox::into_raw`] returned, to free the item or keep
+    /// it as a handle again.
+    ///
+    /// # Safety
+    ///
+    /// `raw` was returned by `into_raw` for an item of `pool` (`get_linked` on that pool), and
+    /// no handle was rebuilt from it since: each `into_raw` is answered by at most one
+    /// `from_raw`, so the item has one owner again and is put back once. Every link to the
+    /// item is still read only under the lock that guards its removal (the type's contract).
+    #[cfg_attr(
+        not(all(target_os = "none", target_arch = "aarch64")),
+        allow(dead_code, reason = "arm64's level-3 table slots alone keep raw items")
+    )]
+    pub(crate) unsafe fn from_raw(pool: &'static BoxPool<T>, raw: NonNull<T>) -> Self {
+        SharedBox(PoolBox {
+            item: raw,
+            pool,
+            _owns: PhantomData,
+        })
+    }
+}
+
+impl<T: 'static> Deref for SharedBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: 'static> BoxPool<T> {
+    /// `pool_get(9)` and the item's initialisation, as [`BoxPool::get`], for an item that will
+    /// also be linked: the owner's [`SharedBox`].
+    pub fn get_linked(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<SharedBox<T>> {
+        self.get(flags, init).map(SharedBox)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -380,6 +656,131 @@ mod tests {
     }
 
     #[test]
+    fn a_box_drops_its_value_and_puts_the_item_back() {
+        static P: BoxPool<Pair> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testbx"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut b = P
+            .get(PR_NOWAIT, || Pair {
+                a: 3,
+                drops: Arc::clone(&drops),
+            })
+            .unwrap();
+        assert_eq!(P.nout(), 1);
+        b.a += 1;
+        assert_eq!(b.a, 4);
+        drop(b);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(P.nout(), 0);
+    }
+
+    /// The pv chain's shape: each entry owns the next, so dropping the head frees the chain.
+    struct Link {
+        n: u32,
+        next: Option<PoolBox<Link>>,
+    }
+
+    #[test]
+    fn an_owned_chain_frees_every_link_with_its_head() {
+        static P: BoxPool<Link> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testch"), Ok(()));
+        let mut head: Option<PoolBox<Link>> = None;
+        for n in 0..5 {
+            let next = head.take();
+            head = Some(P.get(PR_NOWAIT, || Link { n, next }).unwrap());
+        }
+        assert_eq!(P.nout(), 5);
+        // Unlink the entry holding 2 through a cursor, as pmap_remove_pv does.
+        let mut cur = &mut head;
+        while cur.as_ref().is_some_and(|e| e.n != 2) {
+            cur = &mut cur.as_mut().unwrap().next;
+        }
+        let mut gone = cur.take().unwrap();
+        *cur = gone.next.take();
+        drop(gone);
+
+        assert_eq!(P.nout(), 4);
+        let mut seen = Vec::new();
+        let mut at = head.as_deref();
+        while let Some(e) = at {
+            seen.push(e.n);
+            at = e.next.as_deref();
+        }
+        assert_eq!(seen, [4, 3, 1, 0]);
+        drop(head);
+        assert_eq!(P.nout(), 0);
+    }
+
+    #[test]
+    fn a_box_item_is_exactly_its_value() {
+        assert_eq!(size_of::<Option<PoolBox<Pair>>>(), 2 * size_of::<usize>());
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testsz"), Ok(()));
+        let b = P.get(PR_NOWAIT, || 7).unwrap();
+        assert_eq!(*b, 7);
+        assert!(PoolBox::as_ptr(&b).addr().is_multiple_of(align_of::<u64>()));
+    }
+
+    #[test]
+    fn a_handle_is_rebuilt_from_its_value() {
+        static P: TypedPool<Pair> = TypedPool::new();
+        let pool = made(&P);
+        let drops = Arc::new(AtomicU32::new(0));
+        let one = pool
+            .get_shared(PR_WAITOK, || Pair {
+                a: 9,
+                drops: Arc::clone(&drops),
+            })
+            .unwrap();
+        let value = NonNull::from(&*one);
+        // SAFETY: `value` is the value of `one`'s item, alive with a count of 1 for the call.
+        let two = unsafe { PoolArc::from_value(value) };
+        assert!(PoolArc::ptr_eq(&one, &two));
+        assert_eq!(PoolArc::count(&one), 2);
+        drop(one);
+        assert_eq!(two.a, 9);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(two);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(pool.nout(), 0);
+    }
+
+    #[test]
+    fn a_shared_box_reads_through_its_link_and_frees_once() {
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testsb"), Ok(()));
+        let b = P.get_linked(PR_NOWAIT, || 42).unwrap();
+        let link = SharedBox::link(&b);
+        assert_eq!(*b, 42);
+        assert_eq!(link.as_ptr().cast_const(), &raw const *b);
+        assert_eq!(P.nout(), 1);
+        drop(b);
+        assert_eq!(P.nout(), 0);
+    }
+
+    #[test]
+    fn a_shared_box_given_up_for_its_pointer_is_freed_once_back() {
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testraw"), Ok(()));
+        let b = P.get_linked(PR_NOWAIT, || 7).unwrap();
+        let link = SharedBox::link(&b);
+        let raw = SharedBox::into_raw(b);
+        assert_eq!(raw, link);
+        // The item stays out while only the pointer owns it.
+        assert_eq!(P.nout(), 1);
+        // SAFETY: `raw` is what `into_raw` returned for an item of `P`, rebuilt this once.
+        let back = unsafe { SharedBox::from_raw(&P, raw) };
+        assert_eq!(*back, 7);
+        drop(back);
+        assert_eq!(P.nout(), 0);
+    }
+
+    #[test]
     fn a_pool_never_made_gives_nothing() {
         static NEVER: TypedPool<u32> = TypedPool::new();
         let mut called = false;
@@ -393,6 +794,10 @@ mod tests {
         );
         assert!(!called);
         assert_eq!(NEVER.nout(), 0);
+        static NEVER_BOX: BoxPool<u32> = BoxPool::new();
+        assert!(NEVER_BOX.get(PR_NOWAIT, || 0).is_none());
+        assert_eq!(NEVER_BOX.nout(), 0);
     }
 }
+
 /* </TESTS> */

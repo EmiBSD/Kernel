@@ -223,4 +223,11 @@ pub const IPL_MPFLOOR: i32 = <Machine as Intr>::IPL_MPFLOOR;
 pub const IPL_MPSAFE: i32 = <Machine as Intr>::IPL_MPSAFE;
 /// `IPL_WAKEUP` on the selected machine.
 pub const IPL_WAKEUP: i32 = <Machine as Intr>::IPL_WAKEUP;
+
+// `hal`'s copies of the two levels its pmap locks use (N3.1, until the interrupt tables enter
+// `hal` at N4) are the machine's.
+const _: () = {
+    assert!(hal::intr::IPL_VM == IPL_VM);
+    assert!(hal::intr::IPL_HIGH == IPL_HIGH);
+};
 /* </CODE> */

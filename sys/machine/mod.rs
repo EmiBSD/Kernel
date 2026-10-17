@@ -123,6 +123,22 @@ const _: () = {
     }
     assert_impl::<Machine>();
 };
+
+// `hal`'s copy of the machine's page geometry and address-space bounds
+// (`hal::arch::current::{param, vmparam}`, N3.1: the pmap and the page arithmetic read them
+// there) is the one this contract exports.
+const _: () = {
+    use hal::arch::current::{param as hp, vmparam as hv};
+    assert!(<Machine as MachineParam>::PAGE_SHIFT == hp::PAGE_SHIFT);
+    assert!(<Machine as MachineParam>::PAGE_SIZE == hp::PAGE_SIZE);
+    assert!(<Machine as MachineParam>::PAGE_MASK == hp::PAGE_MASK);
+    assert!(<Machine as MachineParam>::KERNBASE == hp::KERNBASE);
+    assert!(<Machine as VmParam>::VM_MIN_ADDRESS == hv::VM_MIN_ADDRESS);
+    assert!(<Machine as VmParam>::VM_MAXUSER_ADDRESS == hv::VM_MAXUSER_ADDRESS);
+    assert!(<Machine as VmParam>::VM_MAX_ADDRESS == hv::VM_MAX_ADDRESS);
+    assert!(<Machine as VmParam>::VM_MIN_KERNEL_ADDRESS == hv::VM_MIN_KERNEL_ADDRESS);
+    assert!(<Machine as VmParam>::VM_MAX_KERNEL_ADDRESS == hv::VM_MAX_KERNEL_ADDRESS);
+};
 /* </CODE> */
 
 /* <TESTS> */

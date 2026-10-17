@@ -10,7 +10,8 @@ lz = "3c62ede688029454763f1734a2cc3748a168b430"
 [[module]]
 rust = "sys/arch/amd64/amd64/acpi_machdep.rs"
 lz = ["sys/arch/amd64/amd64/acpi_machdep.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/apic.rs"
@@ -26,17 +27,20 @@ notes = "M2: cold (now sys/systm.rs); M7b: cpu_configure in the C's order around
 [[module]]
 rust = "sys/arch/amd64/amd64/bios.rs"
 lz = ["sys/arch/amd64/amd64/bios.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/bus_dma.rs"
 lz = ["sys/arch/amd64/amd64/bus_dma.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/amd64/pmap/layout.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/bus_space.rs"
 lz = ["sys/arch/amd64/amd64/bus_space.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/amd64/pmap/backend.rs", "sys/hal/arch/amd64/pmap/layout.rs"]
 notes = "M2: X86BusSpace enum tag (X86_BUS_SPACE_IO/MEM), BusSpaceHandle, bus_space_map/unmap for I/O space, bus_space_subregion, single-register io/mem accessors, bus_space_barrier; M7b: memory space: bus_space_map (the ISA hole, the direct map before pmap_init, x86_mem_add_mapping), x86_mem_add_mapping (km_alloc(kv_any, kp_none) + pmap_kenter_pa with PMAP_NOCACHE, PMAP_WC for prefetchable, cached for BUS_SPACE_MAP_CACHEABLE), bus_space_unmap (pmap_kremove + km_free), atdevbase (the direct map's address of IOM_BEGIN, locore0.S does not run); the extents (ioport_ex/iomem_ex, subr_extent.c) are comments at their sites; multi/region/copy accessors, alloc/free, _bus_space_map/unmap, vaddr/mmap, SEV-ES variants are not ported yet; M13 (rasops): bus_space_vaddr (the <machine/bus.h> macro: the handle for memory space, NULL for I/O), in the machine BusSpace contract on every arch; M13 (vga): bus_space_map takes the ISA-hole shortcut only for pages mapped at atdevbase (isa_hole_mapped): Limine's direct map covers only its memory map's regions and OVMF's leaves the VGA window 0xa0000-0xbffff out, so vga(4)'s probe of the text memory faulted; the others are mapped like any device memory, uncached; x86_bus_space_io_copy_2/x86_bus_space_mem_copy_2 and bus_space_copy_2 (as a move, as in C); M16e: x86_bus_space_mem_read_8/write_8 (the I/O ones panic as in C) and bus_space_read_8/write_8 (acpidmar)"
 
 [[module]]
@@ -60,7 +64,8 @@ license = "none"
 [[module]]
 rust = "sys/arch/amd64/amd64/cpu.rs"
 lz = ["sys/arch/amd64/amd64/cpu.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M4: cpu_info_full_primary (its static initialiser is cpu_info_primary_init), cpu_info_list, cpu_init_msrs (MSR_STAR/LSTAR/CSTAR/SFMASK as in C and EFER.SCE, which the C's locore0 sets at boot; patinit reported), cpu_enter_pages (the TSS stacks; pmap_enter_special is M6); identifycpu, cpu_match/cpu_attach, cpu_init, cpu_boot_secondary, cpu_hatch, the MDS/TSX/ucode work are M4-b to M6; M7b: struct cpu_softc, cpu_ca/cpu_cd (CD_COCOVM, no cpu_activate), cpu_match (name and MAXCPUS; the SEV-ES check only concerns units MAXCPUS already refuses), cpu_attach for CPU_ROLE_SP and CPU_ROLE_BP (ci_self, sc_info, ci_dev, the ids, ci_handled_intr_level, the CPUF_* flags, cpu_intr_init; BP: lapic_enable and lapic_calibrate_timer); identifycpu, cpu_fix_msrs, mem_range_attach, cpu_init, cpu_init_mwait and cpu_init_vmm reported, an AP is reported (no km_alloc'd cpu_info_full without MULTIPROCESSOR); M8: cpu_init (CR4_DEFAULT with OSFXSR/OSXMMEXCPT, fpu_cleandata from the initial control words through xrstor_user/fpusave; SMEP/SMAP/UMIP/PKE/PCIDE and the XSAVE setup reported: they need identifycpu), called from cpu_attach for SP/BP; TSC: cpuid_level, cpu_vendor (StaticCell, written by init_x86_64), cpu_id, cpu_ebxfeature, cpu_ecxfeature, cpu_feature, ecpu_ecxfeature; cpu_attach calls identifycpu (cpu_fix_msrs and mem_range_attach still reported); M11a (MULTIPROCESSOR): cpu_info[], mp_cpu_funcs (mp_cpu_start is BootMp::start, mptramp.S replaced-by-limine; mp_cpu_start_cleanup has no NVRAM byte), the AP's cpu_attach (km_alloc'd cpu_info_full, idle pcb, sched_init_cpu, ncpus, cpu_info_list), cpu_boot_secondary_processors, cpu_start_secondary, cpu_boot_secondary, cpu_hatch (cpu_hatch_entry does mptramp.S's cpu_spinup_finish), cpu_init's CPUF_RUNNING and TLB flush, wbinvd_on_all_cpus; feature qemu: x86_ipi_selftest after cpu_boot_secondary_processors; M11b: tsc_test_sync_bp (cpu_start_secondary; cpu_boot_secondary while cold) and tsc_test_sync_ap (cpu_hatch; cpu_init while cold) run as in C; feature qemu: a verdict line per AP after the test (tsc.c's tsc_report_verdict); still reported: cpu_ucode_apply, cpu_tsx_disable, cpu_fix_msrs, mem_range_attach, cpu_init_mwait, cpu_init_vmm, patinit; M13: ioapic_bsp_id set by the CPU_ROLE_BP attach (NIOAPIC > 0); M14 (A2): after a boot by boot(8) the C's mp_cpu_start (NVRAM_RESET_JUMP, the 40:67 warm reset vector written through the direct map, INIT, two STARTUP IPIs to MP_TRAMPOLINE) is the BootMp::start of mp_madt_cpus (the enabled LAPIC/x2APIC entries of the MADT, standing for acpimadt0), cpu_start_secondary maps and unmaps the trampoline pages, mp_cpu_start_cleanup restores NVRAM_RESET_RST, and the processor enters cpu_hatch from mptramp.S's cpu_spinup_finish; under Limine as before; M16e: cpu_mwait_size, cpu_mwait_states, cpu_idle_mwait_cycle and cpu_init_mwait (called from cpu_attach for SP and BP, as in C; nothing under QEMU's qemu64, which has no MONITOR); M16d: rdrand and rdrand_tmo (RDSEED, else RDRAND, XORed with the TSC, two enqueue_randomness every 10 ms; the sample is 0 where the C reads an uninitialised one)"
 
 [[module]]
@@ -83,7 +88,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/amd64/efifb.rs"
 lz = ["sys/arch/amd64/amd64/efifb.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/amd64/pmap/layout.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/fpu.rs"
@@ -121,7 +127,8 @@ license = "NetBSD Foundation BSD-2 and Grefen BSD-4 blocks"
 [[module]]
 rust = "sys/arch/amd64/amd64/ipi.rs"
 lz = ["sys/arch/amd64/amd64/ipi.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/amd64/pmap/tlb.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/ipifuncs.rs"
@@ -131,7 +138,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/amd64/lapic.rs"
 lz = ["sys/arch/amd64/amd64/lapic.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/amd64/pmap/layout.rs"]
 notes = "M4: local_pic, local_apic (a page-aligned static under its C name; locore.S's .space), the i82489_*/x2apic_* accessors, lapic_readreg/writereg (StaticCell fn pointers), lapic_cpu_number, lapic_map (pmap_kenter_pa with PMAP_NOCACHE instead of whapping the PTE; x2APIC only if the firmware enabled it, cpu_ecxfeature is M4-b2; pmap_enter_special M6; the EOI codepatch reported), lapic_enable/disable, lapic_set_lvt (no MP/ACPI tables: LINT0 = ExtINT, LINT1 = NMI, the MP default configuration, because the firmware leaves LINT0 masked; the AMD C1E workaround is M4-b2), lapic_boot_init (spurious vector set, timer vector reserved only, IPIs M5), lapic_hwmask/hwunmask/setup; the timer, clockintr and IPIs are M5; M5: the timer: lapic_gettick, lapic_per_second and the nsec ratio, lapic_timer_intrclock, lapic_timer_rearm/trigger/start/oneshot/periodic, lapic_clockintr (frame by pointer), lapic_startclock, lapic_initclocks, wait_next_cycle, lapic_calibrate_timer (against the i8254, or over a 1 s delay() once delay_func is better; installs initclock_func/startclock_func); lapic_boot_init points LAPIC_TIMER_VECTOR at Xintr_lapic_ltimer; M11a: the MULTIPROCESSOR parts: ipi_count (evcount, per CPU), x86_ipi (a StaticCell fn pointer, x2apic_ipi when lapic_map takes x2APIC mode), lapic_boot_init's IPI vectors (LAPIC_IPI_VECTOR to Xintr_lapic_ipi, LAPIC_IPI_INVLTLB/INVLPG/INVLRANGE to the no-PCID shootdown stubs; NVMM's INVEPT not configured), i82489_icr_wait (DIAGNOSTIC's spin-out panic behind feature diagnostic), i82489_ipi_init, i82489_ipi (splhigh around the ICR write), x2apic_writeicr, x2apic_ipi_init, x2apic_ipi (mfence; lfence before the ICR write), x86_ipi_init; lapic_set_lvt masks LINT0 on an application processor (ExtINT, the 8259, goes to the boot processor only, as nioapics > 0 would; QEMU feeds the 8259 to every LAPIC with LINT0 open); the APs start their clock with lapic_startclock from cpu_hatch; mp_verbose's apic_format_redir dumps are not there (mp_verbose is off); M13: lapic_set_lvt as in C with I/O APICs (ExtINT masked, the mp_intrs LAPIC NMI entries, the mp_verbose dumps); the MP default LINT0/LINT1 stand-in only without any table"
 
 [[module]]
@@ -144,7 +152,8 @@ notes = "M4: lgdt and intr_fast_exit, in locore.S (AT&T syntax, included by glob
 [[module]]
 rust = "sys/arch/amd64/amd64/locore0.rs"
 lz = ["sys/arch/amd64/amd64/locore0.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/amd64/pmap/tables.rs", "sys/hal/arch/amd64/pmap/layout.rs"]
 license = "none"
 notes = "BSD-4-clause (Wasabi), BSD-2-clause (NetBSD Foundation) and BSD-3-clause blocks. M14 (A2): the kernel's 32-bit entry from boot(8) (efiboot), ELF entry `start` (Limine enters _start through its entry point request): the boot arguments (boothowto, bootdev, esym, biosbasemem, bootapiver, bootinfo[]), the temporary #VC IDT, the CPUID probe (cpuid_level, cpu_vendor, cpu_id, cpu_*feature, pg_nx), the bootstrap tables after the kernel and its symbols (kernel image at KERNBASE, identity map, ISA I/O memory, the first 4 GB of the direct map with the kernel's 2 MB pages read-only, the recursive slot), PAE/LME/SCE/NXE, paging, the far jump to long mode and the higher half, the identity map dropped, ssym; then bootarg_main (sys/stand/bootarg.rs) instead of init_x86_64 + main. Deviations: AT&T through global_asm! (const/sym placeholders, .macro fillkpt, .if); no Meltdown probe (cpu_meltdown not ported, pg_g_kern stays 0) and no AMD SEV probe/GHCB (AMDSEV not configured; locore_vc_trap32 is its !AMDSEV termination request); no pmap_direct_rand; no proc0 stack in the tables (a 64 KiB .bss boot stack, proc0's u-area is PROC0_UAREA); atdevbase not relocated (the direct map's ISA hole)"
 
@@ -162,7 +171,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/amd64/mem.rs"
 lz = ["sys/arch/amd64/amd64/mem.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "mmopen (securelevel/allowkmem for /dev/mem and /dev/kmem), mmclose, mmrw (/dev/mem through the direct map copied with kcopy through a small buffer, EFAULT where the C would fault; /dev/null; /dev/zero from a stack buffer), mmmmap, mmioctl; reported: /dev/kmem (uvm_kernacc, uvm_glue.c) and mmmmap's amd64_pa_used (machdep.c); APERTURE and MTRR are not configured; wip until uvm_kernacc"
 
 [[module]]
@@ -172,17 +182,955 @@ status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/arch/amd64/amd64/pmap.rs"
-lz = ["sys/arch/amd64/amd64/pmap.rs"]
-status = "adapted"
-adapted_by = ["sys/arch/amd64/amd64/pmap_module.rs"]
-notes = "direct map over Limine's HHDM, pmap_bootstrap adopts the bootloader's PML4 and installs the recursive slot, pmap_steal_memory (vm_physmem half in uvm_page_physsteal), zero/copy page, pmap_kenter_pa/kremove/extract/pdes_valid/find_pte_direct, pmap_growkernel/alloc_level/get_physpage (bootloader PTPs kept), single-CPU TLB shootdowns; user pmaps, pv lists, PCID, pmap_randomize, MP shootdowns: M4 to M6; deviations listed in the module; M5-b2: pmap_activate (the kernel pmap for every thread until vmspaces exist; PCID off) and pmap_deactivate; M6-b2: user pmaps: pmap_create (the PDP from uvm_pagealloc, pmap_pdp_ctor copying the kernel's upper half), pmap_destroy, pmap_reference, pmap_get_ptp/find_ptp/freepage/free_ptp and pmap_enter/pmap_remove/pmap_do_remove/pmap_remove_ptes walking the tables through the direct map (no pmap_map_ptes), pmap_activate/deactivate over the vmspace's pmap, pmap_remove_holes and pmap_proc_iflush (nothing); no pv entries yet (pmap_enter_pv/remove_pv, pmap_page_remove/page_protect, pmap_protect, the R/M bits, pmap_unwire: M7a), no pmaps list (pmap_growkernel does not update user PML4s), cpu_meltdown not configured, the pmap pool initialised in pmap_init; M7a-3b: pv lists (pmap_pv_pool, pmap_enter_pv/remove_pv, PG_PVLIST mappings from pmap_enter and pmap_remove_ptes), pmap_page_remove, pmap_test_attrs/clear_attrs with the R/M sync into PG_PMAP_*, pmap_write_protect; pmap_remove_pte (the single-page shortcut) is folded into pmap_do_remove's block loop; vfs stage 2: pmap_is_modified and pmap_clear_reference are machine::pmap contract methods (the vnode pager and uvm_pagedeactivate use them); pmap_is_curpmap counts the kernel pmap as always loaded and pmap_free_ptp invalidates the recursive mapping's page per freed level, as the C does (selftest pmap_reuse); M11a: the MULTIPROCESSOR TLB shootdowns: tlb_shoot_lock, tlb_shoot_cpu, tlb_shoot_counts[MAXCPUS], tlb_shoot_addr1/addr2 (atomics, each on its own 64-byte line as in C, plain statics since .kudata is the Meltdown u-k mapping, M6; the vector.S stubs reach them by symbol), pmap_is_active (over the now atomic ci_proc_pmap), pmap_start_tlb_shoot, pmap_tlb_shootwait, pmap_tlb_shootfail and the IPI halves of pmap_tlb_shootpage/shootrange/shoottlb (the targets mask and the x86_fast_ipi loop factored into pmap_tlb_shoot_targets/pmap_tlb_shoot_send); tlb_shoot_first_pcid and the PCID/EPT variants are not there (pmap_use_pcid is never set, NVMM not configured); MP_LOCKDEBUG's spin-out not configured; M11e: pmap_map_ptes/pmap_unmap_ptes take and release pm_mtx for user pmaps (no %cr3 borrow: the tables are walked through the direct map) at the C's windows: pmap_do_remove, pmap_page_remove (pmap locked after dropping pv_mtx, list re-checked), pmap_write_protect, pmap_enter (the CoW read-to-write shootdown waited for under the lock, as the C); pmap_extract locks pm_mtx for user pmaps; mtx_init in pmap_create; pmap_reference/pmap_destroy with atomic_inc_int/atomic_dec_int_nv on pm_obj[0].uo_refs; M14 (A2): pmap_prealloc_lowmem_ptps (after a boot by boot(8)); pmap_bootstrap accepts the recursive PML4 slot when locore0.S installed it; M16e: pmap_flush_cache (clflush by ci_cflushsz lines between mfences, wbinvd_on_all_cpus without clflush)"
+rust = "sys/hal/arch/amd64/pmap/backend.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs", "sys/arch/amd64/include/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: amd64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root, the PTP count, page_remove's pins), PvEntry in a PoolBox (pool pvpl) on the page's owned chain, PTP refcounts in PageMd.ptp_refs found by the walk (pm_obj, pm_ptphint, pmap_find_ptp dropped), pmap_enter/do_remove/remove_ptes/free_ptp/get_ptp/page_remove/test_attrs/clear_attrs/write_protect, kenter/kremove through the direct map, growkernel (G11 assert instead of the pmaps list), bootstrap from BootstrapParams (both boot paths, the recursive slot kept), prealloc_lowmem_ptps on KernelMapper, find_pte; LZ's files stay in bsd until commit 6"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::NORMAL_PDES"
+native = []
+kind = "dropped"
+reason = "the recursive mapping's PDE bases: hal walks the page tables through the direct map (tables.rs's frame view and entry); the recursive slot stays installed but nothing reads through it"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_DIRECT_BASE"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::DIRECT_BASE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_DIRECT_END"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::DIRECT_END"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PG_XO_BITS"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::PG_XO"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PG_FRAME_MASK"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::pg_frame"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PG_LGFRAME_MASK"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::leaf_pa"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_USE_PCID"
+native = []
+kind = "dropped"
+reason = "PCID is off (never set in LZ or here, G11): the non-PCID paths are the only ones, said in backend.rs's deviations"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PROTECTION_CODES"
+native = ["sys/hal/arch/amd64/pmap/layout.rs::protection_code"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::KERNEL_PMAP_STORE"
+native = ["KERNEL_PMAP"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_PMAP_POOL"
+native = ["sys/hal/pmap.rs::PMAP_POOL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_PV_POOL"
+native = ["PV_POOL"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_REMOVE_SKIPWIRED"
+native = []
+kind = "dropped"
+reason = "pmap_do_remove's skip-wired mode is pmap_collect's (not ported, no caller); every remove here removes all (PMAP_REMOVE_ALL)"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_kernel"
+native = ["sys/hal/pmap.rs::kernel", "sys/machine/pmap.rs::pmap_kernel", "Backend::kernel"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_activate"
+native = ["sys/machine/pmap.rs::pmap_activate", "sys/arch/amd64/mod.rs::Machine::pmap_activate_md", "Backend::load"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_deactivate"
+native = ["sys/machine/pmap.rs::pmap_deactivate", "sys/arch/amd64/mod.rs::Machine::pmap_deactivate_md"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_initialized"
+native = ["Backend::initialized", "sys/hal/pmap.rs::initialized"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_maxkvaddr"
+native = ["PMAP_MAXKVADDR"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_direct_map"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::direct_map"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_direct_unmap"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::direct_unmap"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_direct_mapped"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::direct_unmap"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_map_direct"
+native = ["sys/machine/pmap.rs::pmap_map_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_unmap_direct"
+native = ["sys/machine/pmap.rs::pmap_unmap_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pte_set"
+native = []
+kind = "dropped"
+reason = "the entries are &AtomicU64 of the frame view (tables.rs::entry): the atomic swap is at each site"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pte_setbits"
+native = []
+kind = "dropped"
+reason = "as pmap_pte_set: fetch_or on the entry's &AtomicU64 at each site"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pte_clearbits"
+native = []
+kind = "dropped"
+reason = "as pmap_pte_set: fetch_and on the entry's &AtomicU64 at each site"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_unmap_ptes"
+native = ["pmap_map_ptes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pde_at"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::entry"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pde_set"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::entry"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_bootstrap"
+native = ["Backend::bootstrap", "sys/hal/pmap.rs::bootstrap", "sys/machine/pmap.rs::pmap_bootstrap"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_prealloc_lowmem_ptps"
+native = ["KernelMapper::prealloc_lowmem_ptps", "sys/machine/pmap.rs::pmap_prealloc_lowmem_ptps"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_init"
+native = ["Backend::init", "sys/hal/pmap.rs::init"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pagezero"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::zero_frame"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_zero_page"
+native = ["Backend::zero_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_flush_cache"
+native = ["Backend::flush_cache"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_copy_page"
+native = ["Backend::copy_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pdes_valid"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::find_pte_from"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_find_pte_direct"
+native = ["find_pte", "sys/hal/arch/amd64/pmap/tables.rs::find_pte_from"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_unwire"
+native = ["Backend::unwire"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_kenter_pa"
+native = ["Backend::kenter", "sys/machine/pmap.rs::pmap_kenter_pa"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_kremove"
+native = ["Backend::kremove", "sys/machine/pmap.rs::pmap_kremove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_extract"
+native = ["Backend::extract"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_steal_memory"
+native = ["Backend::steal_memory", "sys/machine/pmap.rs::pmap_steal_memory"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_virtual_space"
+native = ["Backend::virtual_space"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_growkernel"
+native = ["Backend::growkernel"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_tlb_shoot_targets"
+native = ["sys/hal/arch/amd64/pmap/tlb.rs::shoot_targets"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_tlb_shoot_send"
+native = ["sys/hal/arch/amd64/pmap/tlb.rs::shoot_send"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_free_pvs"
+native = ["free_pvs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::curpcb_pmap"
+native = ["pmap_is_curpmap"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_table_direct"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::frame"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_find_ptp"
+native = []
+kind = "dropped"
+reason = "the PTPs are found by the walk itself (the walk as the index, no pm_obj and no pm_ptphint): pmap_get_ptp and pmap_free_ptp read the table above"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_freepage"
+native = ["pmap_free_ptp"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_create"
+native = ["Backend::create", "sys/hal/pmap.rs::create", "sys/machine/pmap.rs::pmap_create"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_destroy"
+native = ["Backend::destroy", "sys/hal/pmap.rs::Pmap::drop", "sys/machine/pmap.rs::pmap_destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_reference"
+native = ["sys/machine/pmap.rs::pmap_reference"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_remove"
+native = ["Backend::remove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_remove_holes"
+native = ["sys/machine/pmap.rs::pmap_remove_holes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_proc_iflush"
+native = ["Backend::proc_iflush"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::ptp_va2o"
+native = []
+kind = "dropped"
+reason = "the PTPs' offsets in pm_obj: no pm_obj, the walk is the index"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::kvtopte"
+native = []
+kind = "dropped"
+reason = "the recursive mapping's PTE address: kernel_pte walks the kernel pmap through the direct map"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::PG_PMAP_MOD"
+native = ["sys/hal/pmap.rs::PG_PMAP_MOD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::PG_PMAP_REF"
+native = ["sys/hal/pmap.rs::PG_PMAP_REF"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap"
+native = ["sys/hal/pmap.rs::Pmap", "PmapMd"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::new"
+native = ["PmapMd::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_nested"
+native = []
+kind = "dropped"
+reason = "nested (EPT/RVI) pmaps are vmm(4)'s, not ported: every pmap here is PMAP_TYPE_NORMAL"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_is_ept"
+native = []
+kind = "dropped"
+reason = "as pmap_nested: no EPT pmap without vmm(4)"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_resident_count"
+native = ["sys/hal/pmap.rs::Pmap::resident_count"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_wired_count"
+native = ["sys/hal/pmap.rs::Pmap::wired_count"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::default"
+native = ["PmapMd::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::VmPageMd"
+native = ["sys/hal/pmap.rs::PageMd"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::VM_MDPAGE_INIT"
+native = ["sys/hal/pmap.rs::PageMd::new"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_clear_modify"
+native = ["Backend::clear_modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_clear_reference"
+native = ["Backend::clear_reference"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_is_modified"
+native = ["Backend::is_modified"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_is_referenced"
+native = ["Backend::is_referenced"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_page_protect"
+native = ["Backend::page_protect"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_protect"
+native = ["Backend::protect"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_resident_count"
+native = ["sys/hal/pmap.rs::Pmap::resident_count"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_wired_count"
+native = ["sys/hal/pmap.rs::Pmap::wired_count"]
+kind = "moved"
 
 [[module]]
-rust = "sys/arch/amd64/amd64/pmap_module.rs"
+rust = "sys/hal/arch/amd64/pmap/tables.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/amd64/pmap.rs"]
 status = "redesigned"
-notes = "N2 close (the user's decision of 2026-10-16, option C): the window abi-openbsd.ko runs from, in the kernel image's slot 511 after the last level-2 entry the boot loader used in KERNBASE's gigabyte (both boot paths, from the end of pmap_bootstrap), 16 MiB (hal::module::elf::MAX_SPAN), its level-1 tables a static of the kernel's .bss linked with locore0's directory flags (PG_V|PG_RW|pg_crypt, no pg_nx), outside kernel_map, which keeps pg_nx at every directory level as in OpenBSD; pmap_module_window (the range, empty when it could not be linked) and pmap_module_enter (pmap_kenter_pa's leaf, W^X refused, only an empty entry taken) behind machine::Pmap; no pmap.rs item moved"
+notes = "N3.1 commit 4: the frame view of the direct map (one unsafe), the walks (pmap_find_pte_direct as find_pte_from, table_from, leaf_pa) over AtomicU64 entries, the direct map's bounds, PG_NX_BIT/PG_CRYPT/PG_G_KERN (pub, locore0's symbols); pg_xo, pmap_pg_wc, pg_frame as constants"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/tlb.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs", "sys/arch/amd64/include/cpufunc.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: the MULTIPROCESSOR shootdown (TLB_SHOOT_* of the C's shapes, vector.S's symbols; the CPU list and IPIs through the TlbCpus bridge, N4) and the MMU's instructions as private asm! (split from cpufunc.rs, which keeps them for its other users until N4); PCID off"
+
+# The seven cpufunc rows are copies, not moves: cpufunc.rs keeps the items for its other
+# users until N4; `split` is the kind lz check accepts for an item whose code also lives on.
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::rcr3"
+native = ["rcr3"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::lcr3"
+native = ["lcr3"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::tlbflush"
+native = ["tlbflush"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::invlpg"
+native = ["invlpg"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::mfence"
+native = ["mfence"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::clflush"
+native = ["clflush"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::wbinvd"
+native = ["wbinvd"]
+kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/window.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: the ABI module's window of bsd's pmap_module.rs (decision 37, option C) in hal: the boot loader's level-2 table through the frame view (no unsafe left), the one-shot link, W^X refused at entry"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/layout.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/include/pmap.rs", "sys/arch/amd64/amd64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4 (D15): include/pmap.h's slot layout and page-table geometry as pure constants, protection_codes as a const fn, pl_pi from pmap.c; compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs); kvtopte and ptp_va2o gone with the recursive reads and pm_obj"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/backend.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/include/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: arm64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root's two pages, have_4_level_pt/pm_privileged/pm_pt0pa/pm_asid/pm_active/pm_guarded as atomics, the limit, the EFI flag, the count of user slots), PvHead (a Link under pv_mtx), user pteds as SharedBox<PteDesc> of the pool pted owned by their vp3 slot (into_raw/from_raw), the kernel's carved from pages; pmap_enter/remove/remove_pted/kenter/kremove/page_protect (the C's reference via PoolArc::from_value)/protect/fault_fixup/clear_modify/clear_reference/unwire/extract, bootstrap from BootstrapParams (both boot paths: the boot loader's L0 and the kernel slot's L1 copied, MAIR 2-4, TTBR1 switched, the ASID probe), pmap_init's pools and init_lower_half (the TTBR0/TCR switch after pluartcn_remap), growkernel under its own lock, load (pmap_setttb's body), load_efi/leave_efi, purge, the EFI pmap; LZ's files stay in bsd until commit 6; commit 7b: the kernel pmap refuses PROT_EXEC (pmap_enter, pmap_kenter_pa, pmap_kenter_cache) and growkernel's table descriptors of the managed range carry Lx_PT_PXN, stricter than the C (a deviation)"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::TABLE_ENTRIES"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::VP_ENTRIES"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_table"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::view"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_DIRECT_BASE"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::DIRECT_BASE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_DIRECT_END"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::DIRECT_END"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_KERNEL_IMAGE_START"
+native = ["IMAGE", "sys/hal/pmap.rs::KernelImage"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_KERNEL_IMAGE_END"
+native = ["IMAGE", "sys/hal/pmap.rs::KernelImage"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_KERNEL_IMAGE_PHYS_OFF"
+native = ["IMAGE", "sys/hal/pmap.rs::KernelImage"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_MAXKVADDR"
+native = ["GROW"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::KPTED_NEXT"
+native = ["pmap_kpted_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::KPTED_LEFT"
+native = ["pmap_kpted_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_PMAP_POOL"
+native = ["sys/hal/pmap.rs::PMAP_POOL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_ASID_MTX"
+native = ["sys/hal/arch/arm64/pmap/asid.rs::PMAP_ASID"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kernel"
+native = ["sys/hal/pmap.rs::kernel", "sys/machine/pmap.rs::pmap_kernel", "Backend::kernel"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_unlock"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Locked"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_assert_locked"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Locked"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_activate"
+native = ["sys/machine/pmap.rs::pmap_activate", "sys/arch/arm64/mod.rs::Machine::pmap_activate_md", "Backend::activate"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_deactivate"
+native = ["sys/machine/pmap.rs::pmap_deactivate", "sys/arch/arm64/mod.rs::Machine::pmap_deactivate_md", "Backend::deactivate"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_setttb"
+native = ["sys/arch/arm64/arm64/cpuswitch.rs::pmap_setttb", "sys/machine/pmap.rs::pmap_setttb", "sys/arch/arm64/mod.rs::Machine::pmap_switched_md", "Backend::load"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_initialized"
+native = ["Backend::initialized", "sys/hal/pmap.rs::initialized"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_maxkvaddr"
+native = ["GROW"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_direct_map"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::direct_map"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_direct_unmap"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::direct_unmap"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_direct_mapped"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::direct_unmap"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_map_direct"
+native = ["sys/machine/pmap.rs::pmap_map_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_unmap_direct"
+native = ["sys/machine/pmap.rs::pmap_unmap_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx0"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx1"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx2"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx3"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_lx"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp1"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::lookup"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_alloc"
+native = ["pmap_kvp_alloc", "sys/hal/arch/arm64/pmap/vp.rs::enter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_populate"
+native = []
+kind = "dropped"
+reason = "__HAVE_PMAP_POPULATE stays unconfigured (G11, as LZ: no caller); uvm_fault's slice (N3.6) decides"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_pages"
+native = ["pmap_kvp_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_set_l1"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table::set_child"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_set_l2"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table::set_child"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_set_l3"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table::set_child"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_growkernel"
+native = ["Backend::growkernel"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_bootstrap"
+native = ["Backend::bootstrap", "sys/hal/pmap.rs::bootstrap", "sys/machine/pmap.rs::pmap_bootstrap"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_init"
+native = ["Backend::init", "init_lower_half", "sys/arch/arm64/mod.rs::Machine::pmap_init_md"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::_pmap_kenter_pa"
+native = ["pmap_kenter"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kenter_pa"
+native = ["Backend::kenter", "sys/machine/pmap.rs::pmap_kenter_pa"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kenter_cache"
+native = ["Backend::kenter_cache", "sys/machine/pmap.rs::pmap_kenter_cache"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kremove"
+native = ["Backend::kremove", "sys/machine/pmap.rs::pmap_kremove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pagezero_cache"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::zero_frame"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_zero_page"
+native = ["Backend::zero_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_copy_page"
+native = ["Backend::copy_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_purge"
+native = ["Backend::purge", "sys/arch/arm64/mod.rs::Machine::pmap_purge_md"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_extract"
+native = ["Backend::extract"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_steal_memory"
+native = ["Backend::steal_memory", "stolen_bounds", "sys/machine/pmap.rs::pmap_steal_memory"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_virtual_space"
+native = ["Backend::virtual_space"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_remove_pv"
+native = ["pmap_pte_remove", "sys/hal/arch/arm64/pmap/vp.rs::pv_unlink"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_pted_alloc"
+native = ["PMAP_PTED_POOL"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_pted_free"
+native = ["PMAP_PTED_POOL"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_enter_locked"
+native = ["pmap_enter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_fault_fixup_locked"
+native = ["pmap_fault_fixup"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_is_referenced"
+native = ["Backend::is_referenced"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_is_modified"
+native = ["Backend::is_modified"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_clear_modify"
+native = ["Backend::clear_modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_clear_reference"
+native = ["Backend::clear_reference"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_unwire"
+native = ["Backend::unwire"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_free"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_pinit"
+native = ["Backend::create"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_create"
+native = ["Backend::create", "sys/hal/pmap.rs::create", "sys/machine/pmap.rs::pmap_create"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_reference"
+native = ["sys/machine/pmap.rs::pmap_reference"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_destroy"
+native = ["Backend::destroy", "sys/hal/pmap.rs::Pmap::drop", "sys/machine/pmap.rs::pmap_destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_release"
+native = ["Backend::destroy", "sys/hal/pmap.rs::Pmap::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_destroy_l2_l3"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_destroy"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_remove_holes"
+native = ["sys/machine/pmap.rs::pmap_remove_holes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_proc_iflush"
+native = ["Backend::proc_iflush"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::PG_PMAP_MOD"
+native = ["sys/hal/pmap.rs::PG_PMAP_MOD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::PG_PMAP_REF"
+native = ["sys/hal/pmap.rs::PG_PMAP_REF"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::PmVp"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::Pmap"
+native = ["sys/hal/pmap.rs::Pmap", "PmapMd"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::Pmap::new"
+native = ["PmapMd::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::Pmap::default"
+native = ["PmapMd::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::VmPageMd"
+native = ["sys/hal/pmap.rs::PageMd"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::VM_MDPAGE_INIT"
+native = ["sys/hal/pmap.rs::PageMd::new"]
+kind = "moved"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/vp.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: the vp tables (struct pmapvp0..3) as two frames of the page provider (hardware page + software page of children's physical addresses or pted links), the one frame view of the direct map behind trust::check_frame (one unsafe), Link<SlotKind>/Link<PvKind> (pted pointers by kind) with their one dereference under the kind's Holds witness (Locked built only by Locked::of, checked by L3) and the user slot's take (SharedBox::from_raw), PteDesc (all atomics, 40 bytes as the C's, pv_next/pv_prev: O(1) pv_unlink), the removal rule (a managed pted torn down inside its page's pv_mtx), the walks (pmap_vp_lookup, pmap_vp_enter's, pmap_vp_destroy's) as safe code"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/asid.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: the ASID pairs (pmap_find_asid, pmap_rollover_asid, pmap_allocate_asid, pmap_free_asid): the bitmap inside pmap_asid_mtx (IPL_HIGH), the generation an atomic, the C's 16-bit probe of id_aa64mmfr0_el1 with TCR_EL1.AS (8 bits otherwise, the probe saying why), arc4random through the Random bridge (N7), each CPU's loaded pmap recorded here for the rollover (ci_curpm stays bsd's until N4)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/window.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 7 (G4, decision 37's symmetry): the ABI module's window as amd64's, 16 MiB after the boot loader's last level-2 entry of the image's gigabyte (hal's level-1 copy, the boot loader's level-2 table through the frame view), eight level-3 tables in a typed .bss static linked once by the bootstrap (the one-shot flag), leaves as pmap_pte_update's write-back kernel descriptor (kernel_leaf), the I-cache synced for an executable page, W^X and every address outside the window refused; no unsafe"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/arm64/locore.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus; N3.1 commit 8/8b: locore.S's switch_mmu_kernel as hal_switch_mmu_kernel (global_asm!, run at its physical address by the backend), cpu_ttbr1; locore.rs has no licence text (the .S holds it): locore.S's Andrew Turner block is kept whole beside the others"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_setttb"
+native = ["cpu_setttb"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush"
+native = ["cpu_tlb_flush"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush_asid"
+native = ["cpu_tlb_flush_asid"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush_all_asid"
+native = ["cpu_tlb_flush_all_asid"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush_asid_all"
+native = ["cpu_tlb_flush_asid_all"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_dcache_wbinv_range"
+native = ["cpu_dcache_wbinv_range"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_idcache_wbinv_range"
+native = ["cpu_idcache_wbinv_range"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_icache_sync_range"
+native = ["cpu_icache_sync_range"]
+kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/layout.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/pmap.rs", "sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5 (D15): include/pmap.h's vp geometry, cache and pted flags as pure constants, with pmap.c's arithmetic that needs no machine (vp_idx, cache_of_pa, asid_slot, the tlbi operands, the ASID width probe, the TCR fields; at commit 7 the module window's placement and protection checks); compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs)"
 
 [[module]]
 rust = "sys/arch/amd64/amd64/spl.rs"
@@ -193,7 +1141,7 @@ status = "inherited"
 rust = "sys/arch/amd64/amd64/trap.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/hal/arch/amd64/pmap/tables.rs"]
 notes = "M4: trap_type[], trap_types, fault (writes ci_panicbuf), pgex2access, kpageflttrap (returns 0 at the curproc check, as C with p == NULL; the pcb_onfault/SMEP/SMAP/uvm_fault code behind it is ported with uvm_fault reported), kerntrap (x86_nmi from intr.c, verify_smap M4-b2, debug_trap is the DEBUG option), trap_print; upageflttrap, usertrap, ast, syscall, frame_dump, verify_pkru, vctrap are M6; M6-a: syscall, ast, child_return; kpageflttrap checks pcb_onfault against the .nofault table and resumes there (uvm_fault still reported); M6-b: syscall hands the six argument registers as a SysArgs block; M6-b2: usertrap (the signal table; verify_pkru, fputrap and uvm_map_inentry reported), upageflttrap (uvm_fault reported: a user fault is SIGSEGV), frame_dump (always on, as TRAP_SIGDEBUG); trapsignal is a stand-in that prints and lets the process die of the signal through exit1 until kern_sig.c (M6-c); M7a-3b: kpageflttrap and upageflttrap call uvm_fault (kernel_map or the process's vm_map, the PROT_EXEC retry without NX); uvm_grow reported; M7a-3b: usertrap's uvm_map_inentry stack check before a user page fault, uvm_grow after a served fault; kern_sig.c: usertrap and upageflttrap call kern_sig's trapsignal with the C's sigval (rip, cr2) and usertrap ends in userret; the siginfo codes come from sys/siginfo.rs (the local ILL_BTCFI was 10, the C's is 9); fputrap reported (SIGFPE code 0); M8: child_return behind machine::cpu; M11a: child_return's KERNEL_UNLOCK() (the kernel lock proc_trampoline_mi takes for a new thread with MULTIPROCESSOR), ast reads ci_want_resched as the atomic other CPUs set; the system call's kernel lock is mi_syscall's; verify_pkru's KERNEL_LOCK/sigabort waits for PKU (M6-b); fpageqlock, malloc_mtx and the pool locks are real; M11e: kpageflttrap and upageflttrap run uvm_fault and uvm_grow without the kernel lock, as the C"
 
 [[module]]
@@ -204,14 +1152,16 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/amd64/vector.rs"
 lz = ["sys/arch/amd64/amd64/vector.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/amd64/pmap/tlb.rs"]
 license = "none"
 notes = "M4: Xtrap00-Xtrap1f, Xexceptions, alltraps/alltraps_kern (TRAP_ENTRY_KERN, INTR_SAVE_MOST_GPRS_NO_ADJ), the frameasm.h entry macros (INTRENTRY, INTR_RECURSE, INTR_SAVE_GPRS, INTR_CLEAR_GPRS), the i8259_asm_* macros, INTRSTUB with the 16 legacy instances, i8259_stubs[], Xsoftclock/Xsoftnet/Xsofttty, in vector.S (AT&T syntax, global_asm! with placeholders); NMI and #DF use alltraps on their IST stacks instead of calltrap_specstk (user GS/cr3, M6), the #GP resume stubs and Xalltraps page are M6, SMAP_CLAC is M4-b2, retpoline_r13 is a plain jmp (no codepatch); the IOAPIC/LAPIC stubs, the IPIs and x2apic_eoi are M5; #VC (AMDSEV) and DDBPROF not configured; M5: Xintr_lapic_ltimer with Xrecurse/Xresume_lapic_ltimer (the handler gets the frame by pointer; the EOI is the MMIO write, no CODEPATCH); M6-b2: alltraps' user path (alltraps_user: swapgs, TRAP_ENTRY_USER, usertrap, intr_user_exit) and INTRENTRY's from-userspace path (the kernel stack from ci_kern_rsp, the iretq frame copied), without the Meltdown CR3 switch; M8: trap0d resumes a #GP at xrstor_fault in xrstor_resume (iretq; the doreti_iret, xsetbv and rdmsr_safe cases have no takers); M11a: the MULTIPROCESSOR stubs in an .if {MULTIPROCESSOR} block (vector.rs's vector_asm! macro passes 1 and the pmap.rs shootdown symbols with the feature, 0 for all of them without): Xintr_lapic_ipi with Xrecurse/Xresume_lapic_ipi (x86_ipi_handler at IPL_IPI, LIR_IPI pending when masked) and the fast no-PCID shootdown IPIs Xipi_invltlb, Xipi_invlpg, Xipi_invlrange (ioapic_asm_ack as the MMIO EOI, the lock decl of tlb_shoot_counts[tlb_shoot_cpu] and the tlb_shoot_lock release); the _pcid variants, Xipi_invept (NVMM) and Xxcallintr (kern_xcall.c) are not there; M13: the I/O APIC half (NIOAPIC > 0): the ioapic_asm_ack/ioapic_mask/ioapic_unmask macros (i82093reg.h; the EOI is the MMIO write, no CODEPATCH; immediates written $(..) so the assembler sees no positional macro parameter), the 64 ioapic_edge and 64 ioapic_level INTRSTUB instances and the ioapic_edge_stubs/ioapic_level_stubs tables (IS_PIC, IS_PIN, IF_ERR placeholders)"
 
 [[module]]
 rust = "sys/arch/amd64/amd64/vm_machdep.rs"
 lz = ["sys/arch/amd64/amd64/vm_machdep.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -239,7 +1189,8 @@ notes = "one of its two blocks is BSD-4-clause (Demetriou), allowed by the user 
 [[module]]
 rust = "sys/arch/amd64/include/cpu.rs"
 lz = ["sys/arch/amd64/include/cpu.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M4: struct cpu_info (the fields the trap and interrupt paths use, in C order, Cells; ci_isources, ci_ipending as an AtomicU64 the stubs and softintr share), ci_PAGEALIGN, CPUPF_*, CPUF_*, CI_DDB_*, curcpu (%%gs:ci_self), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING; the CPU identification fields, the scheduler state, the sensors, vmm, CTL_MACHDEP and the cpu_functions come with M4-b2 to M6; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = intrframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb/ci_idle_pcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; TSC: enum cpu_vendor (CpuVendor) and ci_vendor, ci_cpuid_level, ci_feature_flags, ci_feature_eflags, ci_pnfeatset, ci_efeature_eax/ecx, ci_brand, ci_signature, ci_family, ci_model; M11a (contract): MAXCPUS 255 with MULTIPROCESSOR; M11a: ci_func (struct cpu_functions), CPU_STARTUP/CPU_START_CLEANUP (cpu_startup_ci/cpu_start_cleanup), CPU_BUSY_CYCLE (pause with MULTIPROCESSOR), CPU_INFO_UNIT over ci_dev->dv_unit; the fields other CPUs write are atomics: ci_want_resched (AtomicI32), ci_proc_pmap (AtomicPtr, read by the shootdowns), with ci_flags/ci_ipis; the [I] fields are written by the boot CPU before the CPU runs, ordered by the CPUF_GO release; M11c: ci_ddb_paused is an AtomicI32 (volatile, written by the CPUs entering and leaving ddb); M16e: ci_feature_tpmflags, ci_acpicpudev (AtomicPtr), ci_mwait (AtomicU32), MWAIT_IN_IDLE/KEEP_IDLING/ONLY/IDLING; M16d: cpu_rnd_messybits (rdtsc's halves XORed), machine::Cpu::cpu_rnd_messybits"
 
 [[module]]
@@ -382,12 +1333,41 @@ license = "none"
 [[module]]
 rust = "sys/arch/amd64/include/param.rs"
 lz = ["sys/arch/amd64/include/param.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N3.1: PAGE_SHIFT/PAGE_SIZE/PAGE_MASK/KERNBASE moved into sys/hal/arch/amd64/include/param.rs and re-exported; the MachineParam impl stays"
+
+[[module]]
+rust = "sys/hal/arch/amd64/include/param.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/include/param.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic and pmap"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::PAGE_SHIFT"
+native = ["PAGE_SHIFT"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::PAGE_SIZE"
+native = ["PAGE_SIZE"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::PAGE_MASK"
+native = ["PAGE_MASK"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/param.rs::KERNBASE"
+native = ["KERNBASE"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/amd64/include/pcb.rs"
 lz = ["sys/arch/amd64/include/pcb.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M5: struct pcb (Cells; the save area an UnsafeCell), copy_from for cpu_fork; reset_segs is M6"
 
 [[module]]
@@ -409,12 +1389,6 @@ lz = ["sys/arch/amd64/include/pio.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/pmap.rs"
-lz = ["sys/arch/amd64/include/pmap.rs"]
-status = "inherited"
-notes = "struct pmap (bootstrap subset), pv_entry, vm_page_md, the PML4 slot layout, the recursive mapping (PTE_BASE/L*_BASE, pl*_i, kvtopte, ptp_va2o), the nkptp/nbpd initializers; pmap_page_protect/pmap_protect with M6; M7a-3b: pv_mtx in vm_page_md, the inline frontends pmap_page_protect/pmap_protect and the attribute macros (pmap_clear_modify/clear_reference/is_modified/is_referenced); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap"
-
-[[module]]
 rust = "sys/hal/arch/amd64/include/proc.rs"
 crate = "hal"
 lz = ["sys/arch/amd64/include/proc.rs"]
@@ -426,7 +1400,8 @@ lz = ["sys/arch/amd64/include/psl.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/include/pte.rs"
+rust = "sys/hal/arch/amd64/include/pte.rs"
+crate = "hal"
 lz = ["sys/arch/amd64/include/pte.rs"]
 status = "inherited"
 notes = "pd_entry_t/pt_entry_t, the level shifts, masks and frames, NBPD_*, the PG_* bits, PG_UCMINUS, x86_round_pdr, the PGEX_* error-code bits; the EPT bits and PGK_VALUE come with vmm; M14: PG_KR, PG_KW (locore0.S)"
@@ -479,8 +1454,40 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/amd64/include/vmparam.rs"
 lz = ["sys/arch/amd64/include/vmparam.rs"]
-status = "inherited"
-notes = "M2: VM_MIN/MAX_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN/MAX_KERNEL_ADDRESS; physical segments, page-queue and pmap parameters are M3; M6-b: USRSTACK, MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test"
+status = "redesigned"
+notes = "M2: VM_MIN/MAX_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN/MAX_KERNEL_ADDRESS; physical segments, page-queue and pmap parameters are M3; M6-b: USRSTACK, MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test; N3.1: the five address bounds moved into sys/hal/arch/amd64/include/vmparam.rs and re-exported"
+
+[[module]]
+rust = "sys/hal/arch/amd64/include/vmparam.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/include/vmparam.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the user and kernel address-space bounds, for hal's pmap"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MIN_ADDRESS"
+native = ["VM_MIN_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MAXUSER_ADDRESS"
+native = ["VM_MAXUSER_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MAX_ADDRESS"
+native = ["VM_MAX_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MIN_KERNEL_ADDRESS"
+native = ["VM_MIN_KERNEL_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/vmparam.rs::VM_MAX_KERNEL_ADDRESS"
+native = ["VM_MAX_KERNEL_ADDRESS"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/amd64/isa/clock.rs"
@@ -608,7 +1615,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/arm64/acpi_machdep.rs"
 lz = ["sys/arch/arm64/arm64/acpi_machdep.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/ast.rs"
@@ -624,12 +1632,14 @@ notes = "M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in
 [[module]]
 rust = "sys/arch/arm64/arm64/bus_dma.rs"
 lz = ["sys/arch/arm64/arm64/bus_dma.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/bus_space.rs"
 lz = ["sys/arch/arm64/arm64/bus_space.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/backend.rs", "sys/hal/arch/arm64/pmap/layout.rs"]
 notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, generic_space_map (identity inside the 1 GiB bootstrap device map until pmap_init; M6-b2: afterwards kernel-half mappings from the vmmap range through pmap_growkernel + pmap_kenter_cache with the cache mode from the flags, the C's km_alloc(kv_any); unmap = pmap_kremove, the range is not reused), unmap, region, vaddr; raw-multi and mmap are M6; kern_sig.c: generic_space_map takes its range from the vmmap window (VMMAP_SIZE) and reports running out of it instead of overlapping kernel_map; ; M12: generic_space_mmap and arm64_bs_tag's bus_private (NULL) and _space_mmap; after pmap_init a mapping beyond the vmmap window (a 256 MiB PCIe ECAM region) takes km_alloc(kv_any, kp_none, kd_nowait) as the C does for every mapping, given back with km_free by generic_space_unmap; pmap_update after map and unmap, as in C"
 
 [[module]]
@@ -652,7 +1662,8 @@ license = "none"
 [[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -662,9 +1673,9 @@ notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"
-lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
-status = "inherited"
-license = "none"
+lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswitch.S calls, moved from LZ's arm64/pmap.rs (an unsafe extern \"C\" fn over machine::pmap::pmap_setttb); the licence zone holds pmap.c's block (Dale Rahn, ISC); cpuswitch.S carries Dale Rahn's 2015 ISC notice too (lines 2-15; LZ recorded license = \"none\" for it, a slip of LZ's ports.toml), so both C sources are ISC and no license field is needed"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/db_interface.rs"
@@ -724,14 +1735,9 @@ notes = "M2: initarm (the 1 GiB TTBR0 Device-nGnRnE identity block for devices u
 [[module]]
 rust = "sys/arch/arm64/arm64/mem.rs"
 lz = ["sys/arch/arm64/arm64/mem.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through the direct map instead of a pmap_enter at vmmap, copied with kcopy; /dev/null; /dev/zero from a stack buffer), mmmmap, mmioctl; reported: /dev/kmem (uvm_kernacc, uvm_glue.c); APERTURE is not configured; wip until uvm_kernacc"
-
-[[module]]
-rust = "sys/arch/arm64/arm64/pmap.rs"
-lz = ["sys/arch/arm64/arm64/pmap.rs"]
-status = "inherited"
-notes = "pte_desc, the pmapvp tables, kernel pmap, pmap_bootstrap adopting the bootloader's four-level tables (copies of L0 and the kernel slot's L1, TTBR1 switched to them, MAIR indices 2-4), vp lookup/enter/set_l1-3, kvp/kpted allocators over the direct map, pmap_growkernel (populates the first GiB, which the C's pmap_bootstrap does), kenter/kenter_cache/kremove(_pg), fill_pte, pte_insert/update/remove, extract, zero/copy page via the HHDM, pmap_steal_memory (not in the C; OpenBSD arm64 has no direct map nor PMAP_STEAL_MEMORY); pmap_vp_populate and pmap_fault_fixup: M7a; M5-b2: pmap_activate, pmap_deactivate, pmap_setttb (extern C for cpuswitch.S; every thread runs on the kernel pmap, already live, M6-b2 makes it real); M6-b2: pmap_init (the pmap and pted pools, the console remap, TCR_EL1.T0SZ = 64 - USER_SPACE_BITS and TTBR0 pointed at the empty table: the C's locore did the last two at boot), user pmaps (pmap_create/pinit (three-level), pmap_reference, pmap_destroy/release/vp_destroy, pmap_enter/remove/remove_pted with pmap_pted_pool, the pv lists pmap_enter_pv/remove_pv, pmap_icache_sync_page), pmap_allocate_asid/free_asid over an 8-bit bitmap (pmap_rollover_asid and the 16-bit probe are M7), pmap_activate/deactivate/setttb over the vmspace's pmap (pmap_setpauthkeys M7), pmap_remove_holes (nothing), pmap_proc_iflush through the direct-map alias; every vp table comes from the two-page allocator and goes back page by page (no pmap_vp_pool); M7a-3b: pv_mtx around the pv lists, pmap_page_ro, pmap_page_protect, pmap_protect, pmap_fault_fixup (the R/M emulation), pmap_is_referenced/is_modified/clear_modify/clear_reference; kern_sig.c: the vmmap window is VMMAP_SIZE (1024 pages) below virtual_avail instead of one page, because generic_space_map takes every device mapping from it: with one page the device mappings overlapped kernel_map's first allocations (the first uvm_map of kernel_map, exec_sigcode_map's sigobject, wrote over the GIC); vfs stage 2: pmap_is_modified and pmap_clear_reference are machine::pmap contract methods (the vnode pager and uvm_pagedeactivate use them); M11a: the ASID allocator as in C under pmap_asid_mtx (IPL_HIGH): pmap_find_asid (the old ASID, five random tries with arc4random, then the linear search), pmap_rollover_asid (a new generation, ASID 0 reserved, the ASIDs active on every CPU carried over, cpu_tlb_flush), pmap_allocate_asid/pmap_free_asid locked, ASID 0 marked in use by pmap_bootstrap; pm_asid is an AtomicU64 (the rollover rewrites other CPUs' active pmaps); the TLB invalidations were already the inner-shareable broadcast ones (cpufunc.rs); pmap_setttb runs on the APs through cpu_switchto; pm_mtx/pmap_lock still absent (user pmaps change under the kernel lock in M11a, M11e); M11e: pmap_lock/pmap_unlock/PMAP_ASSERT_LOCKED (pm_mtx, nothing for the kernel pmap) where the C has them: pmap_vp_enter (assert), pmap_enter, pmap_remove, pmap_page_protect, pmap_protect, pmap_fault_fixup, pmap_extract, pmap_unwire; mtx_init in pmap_create; pmap_reference/pmap_destroy atomic; pmap_purge ported, called by uvm_purge through machine::Pmap; M16d: pmap_extract answers for the kernel image (whose tables stay the bootloader's) through the image's virtual-to-physical offset initarm records (PMAP_KERNEL_IMAGE_*), as rnd.c's _rs_clearseed needs; the C maps the image with pteds"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/sig_machdep.rs"
@@ -747,12 +1753,14 @@ adapted_by = ["sys/hal/syscall.rs"]
 [[module]]
 rust = "sys/arch/arm64/arm64/trap.rs"
 lz = ["sys/arch/arm64/arm64/trap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -778,13 +1786,20 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/dev/ampintc.rs"
 lz = ["sys/arch/arm64/dev/ampintc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M4: the registers, ampintc_match/attach (from fdt_attach_args autoconf.rs builds; one static softc AMPINTC), init, set_priority, setipl, intr_enable/disable/config, calc_mask/calc_irq, splx/spllower/splraise, iack/eoi, route, cpuinit (the IPI EOI waits for MULTIPROCESSOR), route_irq, intr_barrier (sched_barrier reported, M5), run_handler, irq_handler, intr_establish_fdt, intr_establish, intr_disestablish; ampintc_activate (resume), the IPIs, the GICv2m MSI frame and simplebus_attach of the children are M5; M7b: ampintc_ca/ampintc_cd (ca_devsize is a bare struct device, the rest of the softc stays the static AMPINTC; no ampintc_activate yet), ampintc_match/ampintc_attach take the cfattach arguments and mainbus attaches the GIC (ampintc* at fdt? early 1), printing the C's ' nirq N, ncpu N'; M11a: the MULTIPROCESSOR side: ampintc_attach finds the IPI's SGI (the IPRn probe), establishes ampintc_ipi_handler at IPL_IPI|IPL_MPSAFE ('ipi 0' on the attach line) and installs ampintc_send_ipi as intr_send_ipi_func; ampintc_ipi_ddb (db_enter; M11c), ampintc_ipi_halt (cpu_halt), ampintc_ipi_handler (atomic swap of sc_ipi_reason), ampintc_send_ipi (ICD_SGIR to the target's mask); ampintc_cpuinit's IPI EOI (the APs' per-CPU init of their banked SGI/PPI registers and target mask); sc_cpu_mask/sc_ipi_reason atomics; ampintc_run_handler takes the kernel lock below IPL_SCHED unless the handler is IPL_MPSAFE (since M11e exactly the C's rule; M11a also locked IPL_MPSAFE handlers at or below IPL_MPFLOOR); SPIs stay routed to the boot CPU; ampintc_ipi_count (feature qemu, the self-check's IPI counter); ; M12: ampintc_attach ends with simplebus_attach for the GIC's children (ampintc_ca's ca_devsize is now the struct simplebus_softc that heads the C's softc), and the GICv2m frame: GICV2M_* registers, struct ampintc_msi_softc (repr(C); sc_ic an UnsafeCell written once before arm_intr_register_fdt; sc_spi Cell slots, the MSI cookie is the slot's address), ampintcmsi_ca/cd (ampintcmsi* at fdt? early 1), ampintc_msi_match/attach (pmap_extract of the mapping for the doorbell address, ' nspi N'), ampintc_intr_establish_msi (edge SPI on the parent GIC, addr = frame + GICV2M_SETSPI_NS, data = SPI), ampintc_intr_disestablish_msi, ampintc_intr_barrier_msi"
 
 [[module]]
 rust = "sys/arch/arm64/dev/efi_machdep.rs"
 lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N3.1 commit 6 (redesigned at 6d): the runtime services' pmap is hal's EFI pmap (hal::pmap::create_efi), held as a counted PmapRef in EFI_PMAP (OnceStatic); efi_enter/efi_leave's TTBR0/TCR sequences are hal's (pmap_efi_enter, pmap_efi_leave); EFI_SPACE_BITS moved to hal's arm64 layout"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_SPACE_BITS"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::EFI_SPACE_BITS"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/arm64/dev/mainbus.rs"
@@ -804,7 +1819,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/dev/smmu.rs"
 lz = ["sys/arch/arm64/dev/smmu.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/arm64/pmap/layout.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/dev/smmu_acpi.rs"
@@ -852,7 +1868,8 @@ notes = "M2: struct bus_space with single-register accessors, map/unmap/subregio
 [[module]]
 rust = "sys/arch/arm64/include/cpu.rs"
 lz = ["sys/arch/arm64/include/cpu.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M0: DAIF helpers (restore_daif, enable/disable_irq_daif[_ret], intr_enable/disable/restore); M4: struct cpu_info (the fields the exception and interrupt paths use, in C order), curcpu (tpidr_el1), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING, CPUF_*, CI_DDB_*; the topology fields, the scheduler state, CTL_MACHDEP and the cache helpers come with M4-b/M5; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = trapframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; M11a: struct cpu_info complete (topology, PSCI idle state, opp table/idx/max, cpu supply, capacity, prev_sleep/last_itime; srp hazards, xcall and ci_uvm still out); fields other CPUs touch are atomics (ci_flags, ci_want_resched, ci_opp_idx/max, ci_ddb_paused) or CiPtr (ci_next, ci_curproc, ci_curpm); ci_dev is a *const Device; CPU_IS_RUNNING true without MULTIPROCESSOR, CPU_INFO_UNIT from ci_dev with it; CPU_BUSY_CYCLE; M16d: cpu_rnd_messybits (CNTVCT_EL0 XOR its bit reversal, low 32 bits), machine::Cpu::cpu_rnd_messybits"
 
 [[module]]
@@ -870,7 +1887,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/include/efivar.rs"
 lz = ["sys/arch/arm64/include/efivar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/elf.rs"
@@ -924,7 +1942,35 @@ license = "none"
 [[module]]
 rust = "sys/arch/arm64/include/param.rs"
 lz = ["sys/arch/arm64/include/param.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N3.1: PAGE_SHIFT/PAGE_SIZE/PAGE_MASK/KERNBASE moved into sys/hal/arch/arm64/include/param.rs and re-exported; the MachineParam impl stays"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/param.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/param.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic, pmap and pte.rs"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::PAGE_SHIFT"
+native = ["PAGE_SHIFT"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::PAGE_SIZE"
+native = ["PAGE_SIZE"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::PAGE_MASK"
+native = ["PAGE_MASK"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/param.rs::KERNBASE"
+native = ["KERNBASE"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/arm64/include/pcb.rs"
@@ -937,19 +1983,14 @@ lz = ["sys/arch/arm64/include/pci_machdep.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/pmap.rs"
-lz = ["sys/arch/arm64/include/pmap.rs"]
-status = "inherited"
-notes = "struct pmap (kernel subset with pm_vp as an enum of the union), vm_page_md, VP_IDX* and cache/pv flags; pointer authentication keys with M6; M7a-3b: pv_mtx in vm_page_md; M11a: pm_asid is an AtomicU64 (pmap_rollover_asid rewrites other CPUs' active pmaps); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap; pm_refs is an AtomicI32 (atomic_inc_int/atomic_dec_int_nv)"
-
-[[module]]
 rust = "sys/hal/arch/arm64/include/proc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/proc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/pte.rs"
+rust = "sys/hal/arch/arm64/include/pte.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/pte.rs"]
 status = "inherited"
 notes = "descriptor types and attribute bits; PTE_ATTR_* follow the bootloader's MAIR_EL1 layout (0 WB, 1 nGnRE, 2 nGnRnE, 3 CI, 4 WT) until the kernel owns its page tables (deviation in the module)"
@@ -984,8 +2025,45 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/include/vmparam.rs"
 lz = ["sys/arch/arm64/include/vmparam.rs"]
-status = "inherited"
-notes = "address-space bounds and physical segment policy; M6-b: USRSTACK and the user limits (MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS) through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test; SHMMAXPGS not yet"
+status = "redesigned"
+notes = "address-space bounds and physical segment policy; M6-b: USRSTACK and the user limits (MAXTSIZ/DFLDSIZ/MAXDSIZ/BRKSIZ/DFLSSIZ/MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS) through machine::vmparam; M10a: USRIOSIZE and VM_PHYS_SIZE (the physio map), USRIOSIZE in the reference-backed test; SHMMAXPGS not yet; N3.1: the address bounds and USER_SPACE_BITS moved into sys/hal/arch/arm64/include/vmparam.rs and re-exported"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/vmparam.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/vmparam.rs"]
+status = "redesigned"
+notes = "N3.1 (D17): the user and kernel address-space bounds and USER_SPACE_BITS, for hal's pmap"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MIN_ADDRESS"
+native = ["VM_MIN_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::USER_SPACE_BITS"
+native = ["USER_SPACE_BITS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MAXUSER_ADDRESS"
+native = ["VM_MAXUSER_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MAX_ADDRESS"
+native = ["VM_MAX_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MIN_KERNEL_ADDRESS"
+native = ["VM_MIN_KERNEL_ADDRESS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/vmparam.rs::VM_MAX_KERNEL_ADDRESS"
+native = ["VM_MAX_KERNEL_ADDRESS"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
@@ -4218,7 +5296,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/km.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress"
 
 [[module]]
@@ -6437,7 +7516,8 @@ lz = ["sys/sys/ttydefaults.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/types.rs"
+rust = "sys/hal/sys/types.rs"
+crate = "hal"
 lz = ["sys/sys/types.rs"]
 status = "inherited"
 
@@ -6778,8 +7858,9 @@ notes = "M7a-1: struct uao_swhash_elt, struct uvm_aobj (#[repr(C)], u_obj first;
 [[module]]
 rust = "sys/uvm/uvm_extern.rs"
 lz = ["sys/uvm/uvm_extern.rs"]
-status = "inherited"
-notes = "vm_fault_t, vm_inherit_t, vm_prot_t, the UVM_FLAG_* encoding, UVM_PGA_*/UVM_PLA_*/UVM_LK_*, uvm_constraint_range, the kmem_*_mode structs; the prototypes land with their .c files; M6-b: struct vmspace (vm_shm left out: SYSVSHM not configured) with copy_startcopy_from/clear_startcopy for the vm_startcopy memcpy/memset; M7a-3b: uvm_coredump_setup_cb/uvm_coredump_walk_cb as fn types returning Result; M8: exec_map (one static every machine's cpu_startup sets, EXEC_MAP/exec_map()) and KvMap::Exec for kv_exec; M10a: phys_map likewise (PHYS_MAP/phys_map(), set by cpu_startup) and KvMap::Phys for kv_physwait; the vmapbuf/vunmapbuf prototypes are the machine's (machine::cpu::Cpu)"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/types.rs", "sys/kernel/vm/km.rs"]
+notes = "N3.2: the items that name only hal's types moved to sys/kernel/vm/types.rs and the kmem_*_mode structs to sys/kernel/vm/km.rs, re-exported here by name; adapted, not redesigned, because what stays (vmspace, exec_map, phys_map) is LZ's unchanged and keeps its 3 unsafe until N3.5 (a redesigned bsd module must be forbid); before N3.2: vm_fault_t, vm_inherit_t, vm_prot_t, the UVM_FLAG_* encoding, UVM_PGA_*/UVM_PLA_*/UVM_LK_*, uvm_constraint_range, the kmem_*_mode structs; the prototypes land with their .c files; M6-b: struct vmspace (vm_shm left out: SYSVSHM not configured) with copy_startcopy_from/clear_startcopy for the vm_startcopy memcpy/memset; M7a-3b: uvm_coredump_setup_cb/uvm_coredump_walk_cb as fn types returning Result; M8: exec_map (one static every machine's cpu_startup sets, EXEC_MAP/exec_map()) and KvMap::Exec for kv_exec; M10a: phys_map likewise (PHYS_MAP/phys_map(), set by cpu_startup) and KvMap::Phys for kv_physwait; the vmapbuf/vunmapbuf prototypes are the machine's (machine::cpu::Cpu)"
 
 [[module]]
 rust = "sys/uvm/uvm_fault.rs"
@@ -6796,7 +7877,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 [[module]]
 rust = "sys/uvm/uvm_init.rs"
 lz = ["sys/uvm/uvm_init.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "uvm_init: page system, uvm_map_init, uvm_km_init (kernel_map), uvmfault_init, pmap_init, kmeminit, uvm_pager_init, amap_init, uao_create (kernel swap), uvm_anon_init, the bestfit switch of kernel_map (kmem_map waits for kmeminit's suballoc) run; uvm_km_page_init, uvm_km_page_lateinit and uvm_init_percpu's counters report themselves unported; uvmexp is exported under its C name for the amd64 interrupt stubs' V_INTR; vm_min_kernel_address is a runtime value (amd64 shifts the kernel map above its direct map) and uvm_maxkaddr is raised to it before uvm_km_init; M11a: uvm_init_percpu calls uvm_anon_init_percpu; uvmexp_counters stay static atomics, so counters_alloc_ncpus (now in subr_percpu.rs) is not called: a deviation, no longer reported; M16d: dma_alloc_init runs (kern/dma_alloc.rs)"
 
 [[module]]
@@ -6807,13 +7889,19 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm_km.rs"
 lz = ["sys/uvm/uvm_km.rs"]
-status = "inherited"
-notes = "km_alloc/km_free, the kv_*/kp_*/kd_* modes, no_constraint; M7a-1: uvm_km_init creates the kernel object (uao_init, uao_create UAO_FLAG_KERNOBJ); M7a-2: uvm_km_init sets kernel_map up (uvm_map_setup, the reservation of [base, start) with uvm_map FIXED; kernel_map() and is_kernel_map stand for the C's pointer), uvm_km_suballoc, uvm_km_pgremove, uvm_km_pgremove_intrsafe; kernel_map_min keeps the first free address past the reservation for the selftests; without kmem_map (kmeminit's uvm_km_suballoc, M7+) km_alloc still serves every request physically contiguous through the direct map and reported once, kp_nomem/kp_pageable requests fail reported; the single-page thread is __HAVE_PMAP_DIRECT: nothing; M7b: km_alloc/km_free follow the C (kernel_map/kmem_map space with pmap_kenter_pa or pmap_enter for kp_pageable, kp_nomem virtual-only space, the direct map only for single pages and single segments); the host double (PMAP_NOMMU) keeps the direct map; M8: kv_map_of resolves KvMap::Exec to exec_map; M10a: kv_map_of resolves KvMap::Phys to phys_map"
+status = "redesigned"
+notes = "N3.2: the 0-unsafe adapter of sys/kernel/vm/km.rs and the kernel map's owner until N3.5 (more than a call-site adapter, DECISIONS G4): kernel_map (KERNEL_MAP_STORE, KERNEL_MAP a OnceStatic, kernel_map(), is_kernel_map), uvm_km_init (installs the KmMaps/KmPages bridges first, then the kernel object, uvm_map_setup and the reservation, then the kernel's set_bounds), uvm_km_suballoc, uvm_km_pgremove (aobj pages, N3.4), kp_dma* over the machine's dma_constraint, BsdKmMaps (uvm_map/uvm_unmap of the four maps) and BsdKmPages (uvm_pglistalloc drained with TailqHead::pop_head; uvm_pglistfree's work through uvm_pmr_freepages per page for km_free and km_alloc's no-space path; uvm_pagefree for uvm_km_pgremove_intrsafe), km_alloc/km_free in the legacy Option<NonNull<u8>> shape, re-exports of the modes; before N3.2: km_alloc/km_free, the kv_*/kp_*/kd_* modes, no_constraint; M7a-1: uvm_km_init creates the kernel object (uao_init, uao_create UAO_FLAG_KERNOBJ); M7a-2: uvm_km_init sets kernel_map up (uvm_map_setup, the reservation of [base, start) with uvm_map FIXED; kernel_map() and is_kernel_map stand for the C's pointer), uvm_km_suballoc, uvm_km_pgremove, uvm_km_pgremove_intrsafe; kernel_map_min keeps the first free address past the reservation for the selftests; without kmem_map (kmeminit's uvm_km_suballoc, M7+) km_alloc still serves every request physically contiguous through the direct map and reported once, kp_nomem/kp_pageable requests fail reported; the single-page thread is __HAVE_PMAP_DIRECT: nothing; M7b: km_alloc/km_free follow the C (kernel_map/kmem_map space with pmap_kenter_pa or pmap_enter for kp_pageable, kp_nomem virtual-only space, the direct map only for single pages and single segments); the host double (PMAP_NOMMU) keeps the direct map; M8: kv_map_of resolves KvMap::Exec to exec_map; M10a: kv_map_of resolves KvMap::Phys to phys_map"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_km.rs::kv_map_of"
+native = ["BsdKmMaps::map_of"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/uvm/uvm_map.rs"
 lz = ["sys/uvm/uvm_map.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "M6-b: uvm_map_setup/teardown/init, uvmspace_alloc/init/share/exec/addref/purge/free/fork; M7a: the rwlock map lock with vm_map_lock_try/lock/lock_read/unlock/unlock_read/upgrade/downgrade/busy/unbusy/assert_anylock/assert_wrlock (the *_ln functions without file/line and LPRINTF), vm_map_modflags; M7a-2: the entry tree (uvm_mapent_copy/free_insert/free_remove/addr_insert/addr_remove, the augmented uvm_map_addr with uvm_map_addr_augment), uvm_map_reference, lock/unlock_entry, uvmspace_dused, entrybyaddr, DEAD_ENTRY_PUSH, isavail, findspace, uvm_mapanon, uvm_map, isjoinable/merge/tryjoin, unmap_detach(_intrsafe), mkentry, mapent_alloc/free (the static kentries, uvm_map_entry_pool, uvm_map_entry_kmem_pool), lookup_entry, inentry_sp/recheck/fix/inentry (printf for uprintf, trapsignal reported, the format is two words), is_stack_remappable, remap_as_stack, uvm_map_pie, uvm_unmap, mkfree, unmap_kill_entry(_withlock), unmap_remove, pageable_pgon/wire/pageable/pageable_all, setup_entries, splitentry, uvm_tree_assert/sanity/size_chk/vmspace_validate under feature vmmap_debug (and in host tests; uvm_map_deallocate zeroes the bounds for them as teardown does), uvm_map_protect (the RLIMIT_DATA lim_cur check reported), the fork copy functions mapent_clone/share/forkshared/forkcopy/forkzero with uvmspace_fork real, uvm_map_hint, submap, checkprot, create, deallocate, inherit, immutable, advice, extract, clean, clip_end/clip_start, boundfix, uaddr/uaddr_e, boundary, vmspace_update, kmem_grow (pmap_growkernel), freelist_update_clear/refill/update, set_uaddr (the slot as an enum), fix_space, mquery, setup_md (__LP64__); uvm_maxkaddr follows the runtime kernel-map base (uvm_init); uvm_map_fill_vmmap (sysctl) and the ddb printers wait for their subsystems; PMAP_CHECK_COPYIN, SYSVSHM, DEADBEEF0, TRACEPOINT, KERNEL_LOCK not configured; host tests; M7a-3b: the wired stand-ins (uvm_map_enter_wired/write_wired/remove_wired, VmMap.wired) are gone: exec goes through uvm_map; kern_sig.c: uvm_map_inentry's trapsignal(SIGSEGV, SEGV_ACCERR) at PROC_PC; M11a: the kernel lock at the C's sites (uvm_map_inentry's report, uvm_map_splitentry's pgo_reference); M11e: uvm_map_deallocate and uvmspace_free release with AcqRel (atomic_dec_int_nv); the KERNEL_LOCKs of uvm_map_inentry and uvm_map_splitentry were real since M11a; uvmspace_purge's is SYSVSHM (not configured)"
 
 [[module]]
@@ -6834,7 +7922,8 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm_page.rs"
 lz = ["sys/uvm/uvm_page.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "struct vm_page (Cell/atomic fields, pointer-arithmetic helpers add/sub/ptr_add), the PG_*/PQ_* flags, vm_physseg, VM_PSTRAT_*; M11e: uvm_lock_pageq/uvm_unlock_pageq are mtx_enter/mtx_leave(&uvm.pageqlock), uvm_lock_fpageq/uvm_unlock_fpageq on uvm.fpageqlock, as the C macros; page init, physload/physget/physdump, pageboot_alloc (both PMAP_STEAL_MEMORY paths), pagealloc/pagefree/pglistalloc/pglistfree, wire/unwire/activate/deactivate, PHYS_TO_VM_PAGE; uvm_page_physload after uvm_init needs malloc; uvm_pagezero_thread not here; M7a-1: uvm_pagewait sleeps on the owner lock (rwsleep_nsec), uvm_page_unbusy calls pmap_page_protect, uvm_page_owner_locked_p checks vmobjlock/an_lock; vfs stage 2: uvm_pagealloc_multi asks for one segment on a machine without an MMU (the host double), so the buffer cache can use the direct map there; vfs stage 2: uvm_pagedeactivate calls pmap_page_protect, pmap_clear_reference and pmap_is_modified (now in the machine contract) as the C does; M11a: uvm_shutdown calls smr_flush; M11a: uvm_page_init does mtx_init(&uvm.fpageqlock, IPL_VM) and uvm_lock_fpageq/uvm_unlock_fpageq are mtx_enter/mtx_leave on it; M11e: mtx_init(&uvm.pageqlock, IPL_VM) in uvm_page_init, uvm_lock_pageq/uvm_unlock_pageq real at every C site (pageclean, pagewire, pagedeactivate, pageactivate), MUTEX_ASSERT_LOCKED(&uvm.pageqlock) in uvm_pagedequeue, the owner-lock KASSERTs of pageinsert/pageremove/pagealloc_pg/pagealloc/pageclean, and uvm_pagealloc_multi's KASSERT(UVM_OBJ_IS_BUFCACHE) and KERNEL_ASSERT_LOCKED"
 
 [[module]]
@@ -6846,8 +7935,40 @@ notes = "M7a-1: struct uvm_pagerops (every op an Option<fn> with the Pgo* aliase
 [[module]]
 rust = "sys/uvm/uvm_param.rs"
 lz = ["sys/uvm/uvm_param.rs"]
-status = "inherited"
-notes = "page arithmetic (atop/ptoa/round_page/trunc_page) and the page-size constants; the VM_* sysctl names live in uvmexp.rs; the MIN/MAX address constants are machine::VmParam"
+status = "redesigned"
+notes = "page arithmetic (atop/ptoa/round_page/trunc_page) and the page-size constants; the VM_* sysctl names live in uvmexp.rs; the MIN/MAX address constants are machine::VmParam; N3.1: the arithmetic and its inherent impls on Paddr/Vaddr/Vsize moved into sys/hal/vm/param.rs with types.rs, re-exported here beside VM_KERNEL_SPACE_SIZE"
+
+[[module]]
+rust = "sys/hal/vm/param.rs"
+crate = "hal"
+lz = ["sys/uvm/uvm_param.rs"]
+status = "redesigned"
+notes = "N3.1: the page arithmetic of uvm_param.h and its inherent impls on the address newtypes, moved with sys/sys/types.rs into hal (an inherent impl lives in the type's crate); over hal::arch::current::param"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::DEFAULT_PAGE_SIZE"
+native = ["DEFAULT_PAGE_SIZE"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::atop"
+native = ["atop"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::ptoa"
+native = ["ptoa"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::round_page"
+native = ["round_page"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_param.rs::trunc_page"
+native = ["trunc_page"]
+kind = "moved"
 
 [[module]]
 rust = "sys/uvm/uvm_pdaemon.rs"
@@ -6867,9 +7988,17 @@ status = "inherited"
 notes = "pmap_statistics and the PMAP_* flags; the pmap(9) prototypes are the machine::Pmap trait (sys/machine/pmap.rs); M7a-1: pmap_page_protect and pmap_clear_modify in the trait; M7a-2: the PMAP_PREFER_ALIGN/OFFSET defaults, pmap_protect and pmap_wired_count (amd64/arm64 report pmap_protect until the pv lists); M7a-3: PMAP_WC as a trait constant, pmap_resident_count and pmap_unwire (amd64 and arm64 real); M11e: the pmap_statistics counters are PmapCounter, relaxed AtomicI64 words with get/set: the kernel pmap's are changed by every CPU without a lock (plain racy longs in the C)"
 
 [[module]]
+rust = "sys/hal/pmap.rs"
+crate = "hal"
+lz = ["sys/uvm/uvm_pmap.rs"]
+status = "redesigned"
+notes = "N3.1: pmap(9)'s machine-independent API in hal over a cfg-selected backend (crate::arch::current::pmap, the PmapBackend contract): PmapRef (counted handle with a static kernel arm; clone = pmap_reference, last drop = pmap_destroy, panics with leaf mappings left), KernelMapper (the kernel map's token from bootstrap), PageMd (vm_page_md), PhysPages (the page provider passed down, D16), BootstrapParams/KernelImage/Bootstrapped, the TlbCpus and Random bridges; pmap_statistics and the PMAP_* flags as uvm_pmap.rs (bsd's copy stays until commit 6); the module exists where a backend does (host now, amd64/arm64 with commits 4/5)"
+
+[[module]]
 rust = "sys/uvm/uvm_pmemrange.rs"
 lz = ["sys/uvm/uvm_pmemrange.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/pmap.rs"]
 notes = "uvm_pmemrange, uvm_pmr_control, the memtype constants and the tree adapters; the whole allocator (getpages/getone/get1page, freepages/freepageq, split/use_inc, rootupdate, isfree, print, assertvalid under debug); uvm_wait reports itself unported so WAITOK fails with ENOMEM; in_pagedaemon is false; uvm_pmr_allocpmr after uvm_init needs malloc; vfs stage 2: BUFPAGES_DEFICIT/BUFPAGES_INACT are mount.h's bufpages_deficit()/bufpages_inact() over bcstats; M11a: uvm_lock_fpageq is the real mutex (uvm.fpageqlock, IPL_VM) at every C site (getpages, freepages, freepageq, split, use_inc); uvm_pagezero_thread not here; selftest=mpstress stresses uvm_pglistalloc/free on every CPU; M11e: the per-CPU page cache (MULTIPROCESSOR && __HAVE_UVM_PERCPU, which amd64 and arm64 define): uvm_pmr_cache_alloc/get/free/put/drain as the C at splbio, counting uvmexp.percpucaches/pcphit/pcpmiss; the magazines live in UVM_PMR_CACHES[cpu_number()] instead of curcpu()->ci_uvm (keeps the uvm type out of the machine's cpu_info); the uniprocessor kernel keeps the !MULTIPROCESSOR versions"
 
 [[module]]
@@ -6900,7 +8029,7 @@ rust = "sys/hal/syscall.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
 crate = "hal"
-notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi-openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi_openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
 
 [[module.fn]]
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
@@ -7054,10 +8183,6 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
-
-
-
-
 [[extra]]
 rust = "sys/hal/assert.rs"
 crate = "hal"
@@ -7124,12 +8249,12 @@ notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and 
 [[extra]]
 rust = "sys/hal/kmbuf.rs"
 crate = "hal"
-reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory bridge; docs/ZERO_UNSAFE.md 0.1"
+reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory provider trait (a registered bridge until N3.2, then the kernel's vm::km passed as a value); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; docs/ZERO_UNSAFE.md 0.1, decision 10"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); docs/ZERO_UNSAFE.md 0.1, decision 10"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -7182,7 +8307,7 @@ reason = "N2.4a (decisions 21, 22): the module's system call table, one Native |
 [[extra]]
 rust = "sys/hal/module/rt.rs"
 crate = "hal"
-reason = "N2.4a: the runtime of the ABI module abi-openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
+reason = "N2.4a: the runtime of the ABI module abi_openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
 
 [[extra]]
 rust = "sys/hal/module/elf.rs"
@@ -7192,11 +8317,11 @@ reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and
 [[extra]]
 rust = "sys/hal/module/load.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the loader of abi-openbsd.ko: placement, relocation, mapping each page with its segment's protection through ModulePlatform (bsd's pmap and boot hand-over until N2.2, the platform premise), the header check, the call of abi_init, the boot line"
+reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection in the machine's module window (hal::pmap::module_window/module_enter, amd64 since N3.1 commit 6, arm64 since commit 7; nowhere else), the boot hand-over through ModulePlatform (bsd's image until N4.1) and the writable copy through ModuleMemory (the kernel's vm::km since N3.2, passed as a value; the platform premise), the header check, the call of abi_init, the boot line"
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi-openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the kernel's km_alloc/pmap_extract/pmap_enter and the boot hand-over (the module's pages in machine::pmap_module_window through pmap_module_enter where the machine has a window, amd64; in kernel_map through pmap_enter otherwise), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
 
 [[extra]]
 rust = "sys/hal/api.rs"
@@ -7333,3 +8458,22 @@ reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
 reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"
+
+[[extra]]
+rust = "sys/kernel/assert.rs"
+crate = "kernel"
+reason = "N3.2: the kernel crate's KASSERT(9) and panic(9) (kassert!, kpanic, through the image's panic handler, as sys/hal/assert.rs), written new for pipe and vm::km; no LZ source"
+
+[[module]]
+rust = "sys/kernel/vm/types.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_extern.rs"]
+status = "redesigned"
+notes = "N3.2 (DECISIONS G1, G2): the items of uvm_extern.h that name only hal's types (voff_t, vm_prot_t as hal::pmap::VmProt, vm_inherit_t, vm_fault_t, the UVM_MAPFLAG encoding, UVM_FLAG_*, UVM_PGA_*, UVM_PLA_*, UVM_LK_*, UVM_IO_FIXPROT, PHYSLOAD_DEVICE, uvm_constraint_range, the coredump callbacks); bsd's uvm_extern.rs keeps vmspace and the submaps and re-exports these"
+
+[[module]]
+rust = "sys/kernel/vm/km.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]
+status = "redesigned"
+notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over two bridges (KmMaps: the kernel maps, N3.5; KmPages: the page system, frames as Paddr, N3.3); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader)"

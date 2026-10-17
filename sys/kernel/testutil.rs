@@ -34,17 +34,28 @@
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
 //!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
 //!   nothing.
-//! - `PageMemory` and `PoolBackend`: zeroed, page-aligned blocks of the host's heap, leaked
+//! - `PageMemory` (not a bridge: [`page_memory`] hands it out as a value) and `PoolBackend`:
+//!   zeroed, page-aligned blocks of the host's heap, leaked
 //!   (a block given back is counted and never reused: freeing it would need the pointer
 //!   turned back into its `Box`, which is `unsafe`); the pages out are counted per
 //!   thread, the items out per pool; [`fail_pages`] makes a thread's next page allocations
 //!   fail, as a full kernel map does.
 //! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
 //!   outside it is `EFAULT`.
+//! - `vm::km`'s two bridges, installed only by [`km_install`] (the kernel's own tests: `bsd`'s
+//!   install its real ones): `KmMaps`, a first-fit allocator of virtual space per map over a
+//!   `BTreeMap`, in a range no host address uses, whose next maps a thread can make fail
+//!   ([`km_fail_maps`]); `KmPages`, frames that are leaked, zeroed, page-aligned blocks of the
+//!   heap whose physical address is their address (the host pmap's direct map is the
+//!   identity), counted per thread ([`km_frames_out`]), those given back as a list counted
+//!   apart ([`km_list_freed`]), and a list that frees a frame a watched range still maps
+//!   counted too ([`km_watch`], [`km_freed_mapped`]).
+//! - `PhysPages` ([`phys_pages`], for `hal::pmap::bootstrap`): the host pmap asks it for
+//!   nothing; it answers as a page system with no managed pages would.
 
 use std::boxed::Box;
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once};
@@ -56,10 +67,15 @@ use hal::bridges;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::kmbuf::{PageKind, PageMemory};
+use hal::pmap::{PageMd, PhysPages};
 use hal::pool::{PoolBackend, RawPool};
 use hal::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
+use hal::sys::types::{Paddr, Vaddr};
 use hal::user::UserCopy;
+
+use crate::vm::km::{KmMaps, KmObject, KmPages, KvMap};
+use crate::vm::types::{UvmConstraintRange, Voff};
 
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
@@ -82,6 +98,13 @@ std::thread_local! {
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+    static KM_FRAMES_OUT: Cell<i64> = const { Cell::new(0) };
+    static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
+    static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
+    static KM_LAST_UNMAP: Cell<Option<(KvMap, usize, usize)>> = const { Cell::new(None) };
+    static KM_LIST_FREED: Cell<i64> = const { Cell::new(0) };
+    static KM_WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    static KM_FREED_MAPPED: Cell<u32> = const { Cell::new(0) };
 }
 
 /// The index the next test thread gets.
@@ -356,10 +379,15 @@ pub fn install() {
         let _ = bridges::register_intr_level(&TEST_INTR);
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
-        let _ = bridges::register_page_memory(&TEST_PAGES);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_user_copy(&TEST_USER);
     });
+}
+
+/// The kernel map double, for `KmBuf` and `kernel::pipe::Pipes::new` (a provider passed as a
+/// value, not a registered bridge; a `const fn` so a test's `static` can name it).
+pub const fn page_memory() -> &'static dyn PageMemory {
+    &TEST_PAGES
 }
 
 /// `len` bytes of the double's user memory at `uaddr`, `None` outside it.
@@ -392,5 +420,222 @@ fn page_fails() -> bool {
 /// The bytes of pages this thread holds, as the page double counts them.
 pub fn pages_out() -> i64 {
     PAGES_OUT.with(Cell::get)
+}
+
+/// Where the kernel maps double hands out virtual space: kernel-like addresses no host
+/// allocation has.
+pub const KM_VA_BASE: usize = 0xffff_9000_0000_0000;
+/// Its end.
+pub const KM_VA_END: usize = KM_VA_BASE + (1 << 40);
+
+/// One map entry of the kernel maps double: its end, map and object.
+type KmEntry = (usize, KvMap, KmObject);
+
+/// The entries of the kernel maps double, by start.
+static KM_ENTRIES: Mutex<BTreeMap<usize, KmEntry>> = Mutex::new(BTreeMap::new());
+/// The frames the page double handed out and has not taken back.
+static KM_FRAMES: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+/// One wait channel per map.
+static KM_CHANS: [u8; 5] = [0; 5];
+
+/// The kernel maps double.
+struct TestKmMaps;
+
+impl KmMaps for TestKmMaps {
+    fn map(
+        &self,
+        which: KvMap,
+        sz: usize,
+        object: KmObject,
+        _prefer: Voff,
+        align: usize,
+        _mapflags: u32,
+    ) -> Result<Vaddr, Errno> {
+        KM_MAP_CALLS.with(|c| c.set(c.get() + 1));
+        if KM_FAIL_MAPS.with(|f| {
+            let n = f.get();
+            f.set(n.saturating_sub(1));
+            n != 0
+        }) {
+            return Err(Errno::ENOMEM);
+        }
+        let align = align.max(TEST_PAGE);
+        let mut m = lock(&KM_ENTRIES);
+        let mut va = KM_VA_BASE;
+        for (&start, &(end, _, _)) in m.iter() {
+            if va + sz <= start {
+                break;
+            }
+            va = va.max(end.next_multiple_of(align));
+        }
+        if va + sz > KM_VA_END {
+            return Err(Errno::ENOMEM);
+        }
+        m.insert(va, (va + sz, which, object));
+        Ok(Vaddr::new(va))
+    }
+
+    fn unmap(&self, which: KvMap, sva: Vaddr, eva: Vaddr) {
+        KM_LAST_UNMAP.with(|u| u.set(Some((which, sva.as_usize(), eva.as_usize()))));
+        lock(&KM_ENTRIES).remove(&sva.as_usize());
+    }
+
+    fn chan(&self, which: KvMap) -> *const () {
+        let i = match which {
+            KvMap::Kernel => 0,
+            KvMap::Kmem => 1,
+            KvMap::Exec => 2,
+            KvMap::Phys => 3,
+            KvMap::None => 4,
+        };
+        std::ptr::from_ref(&KM_CHANS[i]).cast::<()>()
+    }
+}
+
+/// The page system double.
+struct TestKmPages;
+
+impl KmPages for TestKmPages {
+    fn alloc(
+        &self,
+        sz: usize,
+        _constraint: &UvmConstraintRange,
+        _align: Paddr,
+        _boundary: Paddr,
+        _maxseg: i32,
+        _flags: i32,
+        each: &mut dyn FnMut(Paddr),
+    ) -> Result<(), Errno> {
+        let base = pages(sz).ok_or(Errno::EINVAL)?.as_ptr().addr();
+        let n = sz.div_ceil(TEST_PAGE);
+        lock(&KM_FRAMES).extend((0..n).map(|i| base + i * TEST_PAGE));
+        KM_FRAMES_OUT.with(|c| c.set(c.get() + n as i64));
+        for i in 0..n {
+            each(Paddr::new(base + i * TEST_PAGE));
+        }
+        Ok(())
+    }
+
+    fn free_list(&self, frames: &[Paddr]) -> Result<(), Paddr> {
+        let mut known = lock(&KM_FRAMES);
+        if let Some(&pa) = frames.iter().find(|pa| !known.contains(&pa.as_usize())) {
+            return Err(pa);
+        }
+        // A frame back on the free list while the watched range still maps it is the order
+        // the C never has.
+        if let Some((start, end)) = KM_WATCH.with(Cell::get) {
+            let mapped = (start..end)
+                .step_by(TEST_PAGE)
+                .filter_map(|va| hal::pmap::kernel().extract(Vaddr::new(va)))
+                .any(|pa| frames.contains(&pa));
+            if mapped {
+                KM_FREED_MAPPED.with(|c| c.set(c.get() + 1));
+            }
+        }
+        for pa in frames {
+            known.remove(&pa.as_usize());
+        }
+        KM_FRAMES_OUT.with(|c| c.set(c.get() - frames.len() as i64));
+        KM_LIST_FREED.with(|c| c.set(c.get() + frames.len() as i64));
+        Ok(())
+    }
+
+    fn free(&self, pa: Paddr) -> bool {
+        let known = lock(&KM_FRAMES).remove(&pa.as_usize());
+        if known {
+            KM_FRAMES_OUT.with(|c| c.set(c.get() - 1));
+        }
+        known
+    }
+}
+
+/// The page provider double of `hal::pmap::bootstrap`.
+struct TestPhysPages;
+
+impl PhysPages for TestPhysPages {
+    fn alloc_ptp(&self) -> Option<Paddr> {
+        pages(TEST_PAGE).map(|p| Paddr::new(p.as_ptr().addr()))
+    }
+
+    fn free_ptp(&self, _pa: Paddr) {}
+
+    fn md_of(&self, _pa: Paddr) -> Option<&'static PageMd> {
+        None
+    }
+
+    fn steal(&self, _npg: usize) -> Option<Paddr> {
+        None
+    }
+
+    fn page_init_done(&self) -> bool {
+        true
+    }
+}
+
+static TEST_KM_MAPS: TestKmMaps = TestKmMaps;
+static TEST_KM_PAGES: TestKmPages = TestKmPages;
+static TEST_PHYS_PAGES: TestPhysPages = TestPhysPages;
+
+/// `vm::km`'s two doubles, as `install` takes them.
+pub fn km_doubles() -> (&'static dyn KmMaps, &'static dyn KmPages) {
+    (&TEST_KM_MAPS, &TEST_KM_PAGES)
+}
+
+/// Installs `vm::km`'s two doubles, once per process (the kernel's own tests only).
+pub fn km_install() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let (maps, pages) = km_doubles();
+        let _ = crate::vm::km::install(maps, pages);
+    });
+}
+
+/// The frames this thread holds from the page double.
+pub fn km_frames_out() -> i64 {
+    KM_FRAMES_OUT.with(Cell::get)
+}
+
+/// Makes this thread's next `n` maps fail (`ENOMEM`), as a full map does.
+pub fn km_fail_maps(n: u32) {
+    KM_FAIL_MAPS.with(|f| f.set(n));
+}
+
+/// How many maps this thread has asked the double for.
+pub fn km_map_calls() -> u32 {
+    KM_MAP_CALLS.with(Cell::get)
+}
+
+/// The map and object of the double's entry at `va`, if one starts there.
+pub fn km_entry(va: Vaddr) -> Option<(KvMap, KmObject)> {
+    lock(&KM_ENTRIES)
+        .get(&va.as_usize())
+        .map(|&(_, which, object)| (which, object))
+}
+
+/// The last range this thread gave back to the double (`which`, start, end).
+pub fn km_last_unmap() -> Option<(KvMap, usize, usize)> {
+    KM_LAST_UNMAP.with(Cell::get)
+}
+
+/// The frames this thread gave back through the page double's `free_list` (the C's
+/// `uvm_pglistfree`), as opposed to `free` (`uvm_pagefree`).
+pub fn km_list_freed() -> i64 {
+    KM_LIST_FREED.with(Cell::get)
+}
+
+/// Watches `[start, end)` of the kernel pmap: every `free_list` of this thread then counts a
+/// call that frees a frame the range still maps ([`km_freed_mapped`]).
+pub fn km_watch(start: usize, end: usize) {
+    KM_WATCH.with(|w| w.set(Some((start, end))));
+}
+
+/// How many of this thread's `free_list` calls freed a frame the watched range still mapped.
+pub fn km_freed_mapped() -> u32 {
+    KM_FREED_MAPPED.with(Cell::get)
+}
+
+/// The page provider double for `hal::pmap::bootstrap`.
+pub fn phys_pages() -> &'static dyn PhysPages {
+    &TEST_PHYS_PAGES
 }
 /* </CODE> */

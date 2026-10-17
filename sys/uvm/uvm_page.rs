@@ -126,7 +126,12 @@ use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_synch::rwsleep_nsec;
 use crate::kern::subr_prf::panic;
 use crate::machine::intr::IPL_VM;
+use crate::machine::pmap::{
+    pmap_copy_page, pmap_growkernel, pmap_kenter_pa, pmap_kernel, pmap_page_protect,
+    pmap_steal_memory, pmap_update, pmap_virtual_space, pmap_zero_page,
+};
 use crate::machine::{Machine, Pmap, VmPageMd, VmParam};
+
 use crate::sys::errno::Errno;
 use crate::sys::mman::PROT_NONE;
 use crate::sys::mutex::mutex_assert_locked;
@@ -279,7 +284,7 @@ impl VmPage {
             wire_count: Cell::new(0),
             phys_addr,
             fpgsz: Cell::new(0),
-            mdpage: <Machine as Pmap>::VM_MDPAGE_INIT,
+            mdpage: VmPageMd::new(),
         }
     }
 
@@ -630,7 +635,7 @@ pub fn uvm_pageboot_alloc(size: Vsize) -> Vaddr {
         let mut end = Vaddr::new(VIRTUAL_SPACE_END.load(Ordering::Relaxed));
         // SAFETY: `uvm_pageboot_alloc` is only called before `uvm.page_init_done` (the C
         // panics in `uvm_page_physget` otherwise), on the boot CPU.
-        let addr = unsafe { Machine::pmap_steal_memory(size, Some(&mut start), Some(&mut end)) };
+        let addr = unsafe { pmap_steal_memory(size, Some(&mut start), Some(&mut end)) };
         VIRTUAL_SPACE_START.store(start.as_usize(), Ordering::Relaxed);
         VIRTUAL_SPACE_END.store(end.as_usize(), Ordering::Relaxed);
         return addr;
@@ -645,7 +650,7 @@ pub fn uvm_pageboot_alloc(size: Vsize) -> Vaddr {
     if !INITIALIZED.swap(true, Ordering::Relaxed) {
         let mut start = Vaddr::new(0);
         let mut end = Vaddr::new(0);
-        Machine::pmap_virtual_space(&mut start, &mut end);
+        pmap_virtual_space(&mut start, &mut end);
 
         // round it the way we like it
         VIRTUAL_SPACE_START.store(start.round_page().as_usize(), Ordering::Relaxed);
@@ -667,7 +672,7 @@ pub fn uvm_pageboot_alloc(size: Vsize) -> Vaddr {
     // PMAP_GROWKERNEL: if the kernel pmap can't map the requested space, then allocate more
     // resources for it.
     if UVM_MAXKADDR.load(Ordering::Relaxed) < addr + size.as_usize() {
-        let reached = Machine::pmap_growkernel(Vaddr::new(addr + size.as_usize()));
+        let reached = pmap_growkernel(Vaddr::new(addr + size.as_usize()));
         UVM_MAXKADDR.store(reached.as_usize(), Ordering::Relaxed);
         if reached.as_usize() < addr + size.as_usize() {
             #[allow(clippy::panic)] // the C panics here too
@@ -693,7 +698,7 @@ pub fn uvm_pageboot_alloc(size: Vsize) -> Vaddr {
         // SAFETY: the virtual range was just carved out of the free kernel space above, and the
         // page was just taken from the unmanaged part of a segment.
         unsafe {
-            Machine::pmap_kenter_pa(
+            pmap_kenter_pa(
                 Vaddr::new(vaddr),
                 paddr,
                 crate::sys::mman::PROT_READ | crate::sys::mman::PROT_WRITE,
@@ -701,7 +706,7 @@ pub fn uvm_pageboot_alloc(size: Vsize) -> Vaddr {
         };
         vaddr += PAGE_SIZE;
     }
-    Machine::pmap_update(Machine::pmap_kernel());
+    pmap_update(pmap_kernel());
     Vaddr::new(addr)
 }
 
@@ -1239,7 +1244,7 @@ pub fn uvm_page_unbusy(pgs: &[Option<&VmPage>]) {
         if pg.flags() & PG_RELEASED != 0 {
             kassert!(pg.uobject().is_some() || pg.uanon().is_some_and(|a| a.an_ref.get() > 0));
             pg.clear_bits(PG_WANTED);
-            Machine::pmap_page_protect(pg, PROT_NONE);
+            pmap_page_protect(pg, PROT_NONE);
             uvm_pagefree(pg);
         } else {
             kassert!(pg.flags() & PG_FAKE == 0);
@@ -1373,7 +1378,7 @@ pub fn uvm_pagedeactivate(pg: &VmPage) {
     }
 
     // Make sure next access to this page will fault.
-    Machine::pmap_page_protect(pg, PROT_NONE);
+    pmap_page_protect(pg, PROT_NONE);
 
     uvm_pagedequeue(pg);
     // SAFETY: the page was dequeued just above, so it is on no queue.
@@ -1431,13 +1436,13 @@ pub fn uvm_pagedequeue(pg: &VmPage) {
 /// `uvm_pagezero`: zero fill a page.
 pub fn uvm_pagezero(pg: &VmPage) {
     pg.clear_bits(PG_CLEAN);
-    Machine::pmap_zero_page(pg);
+    pmap_zero_page(pg);
 }
 
 /// `uvm_pagecopy`: copy a page.
 pub fn uvm_pagecopy(src: &VmPage, dst: &VmPage) {
     dst.clear_bits(PG_CLEAN);
-    Machine::pmap_copy_page(src, dst);
+    pmap_copy_page(src, dst);
 }
 
 /// `uvm_page_owner_locked_p`: return true if object associated with page is locked. This is a

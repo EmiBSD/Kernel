@@ -49,14 +49,6 @@ trait = "Sleep"
 for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
 paid_by = "N4"
 
-# bsd: km_alloc/km_free with &kv_any and &kp_pageable or &kp_zero (sys/uvm/uvm_km.rs). A safe
-# trait (decision 30): hal's soundness rests on the boot registration (sys/hal/trust.rs).
-# hal::kmbuf::PageMemory
-[[bridge]]
-trait = "PageMemory"
-for = ["sys/hal/kmbuf.rs"]
-paid_by = "N3"
-
 # bsd: pool_init/pool_get/pool_put and pr_nout (sys/kern/subr_pool.rs), one pool per TypedPool so
 # vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # hal::pool::PoolBackend
@@ -89,13 +81,36 @@ trait = "Console"
 for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
-# bsd: km_alloc, pmap_extract and pmap_enter (sys/uvm/uvm_km.rs, the arch pmaps) and the boot
-# hand-over of abi-openbsd.ko, implemented by sys/kern/abi_module.rs; hal's own code once hal
-# holds the pmap and the boot entry (decision 26, N3).
+# bsd: the boot hand-over of abi_openbsd.ko (IMAGE_VA/IMAGE_LEN from stand::start_kernel),
+# implemented by sys/kern/abi_module.rs. The trait keeps only image since N3.2: the mapping is
+# the loader's own on both machines (hal::pmap::module_window/module_enter, N3.1 commits 6 and
+# 7) and the writable copy's memory is the kernel's (kernel::vm::km::module_memory(), a
+# hal::module::ModuleMemory passed to load as a value). N4.1, the boot entry.
 # hal::module::ModulePlatform
 [[bridge]]
 trait = "ModulePlatform"
 for = ["sys/hal/module/load.rs"]
+paid_by = "N4"
+
+# bsd: uvm_map/uvm_unmap of kernel_map, kmem_map, exec_map and phys_map, with the map's address as
+# km_allocva's wait channel (sys/uvm/uvm_map.rs, sys/kern/kern_malloc.rs, sys/uvm/uvm_extern.rs),
+# implemented by sys/uvm/uvm_km.rs (BsdKmMaps) and installed by its uvm_km_init. N3.5, when
+# kernel::vm::map owns the kernel map's record (and the token's proof becomes a type).
+# kernel::vm::km::KmMaps
+[[bridge]]
+trait = "KmMaps"
+for = ["sys/kernel/vm/km.rs"]
+paid_by = "N3"
+
+# bsd: uvm_pglistalloc (the list drained with TailqHead::pop_head), uvm_pglistfree's work
+# (uvm_pmr_freepages per page: the free list, uvmexp.free and its wakeups) and uvm_pagefree of
+# PHYS_TO_VM_PAGE(pa) (sys/uvm/uvm_page.rs, sys/uvm/uvm_pmemrange.rs), the frames crossing as
+# physical addresses, implemented by sys/uvm/uvm_km.rs (BsdKmPages). N3.3, when kernel::vm
+# owns the pages.
+# kernel::vm::km::KmPages
+[[bridge]]
+trait = "KmPages"
+for = ["sys/kernel/vm/km.rs"]
 paid_by = "N3"
 
 # bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
@@ -123,3 +138,31 @@ paid_by = "N4"
 trait = "PipeFiles"
 for = ["sys/kernel/pipe.rs"]
 paid_by = "N4"
+
+# bsd: uvm_pagealloc/uvm_pagefree, PHYS_TO_VM_PAGE(pa)->mdpage, uvm_page_physsteal and
+# uvm.page_init_done (sys/uvm/uvm_page.rs), implemented by sys/machine/pmap.rs (BsdPages)
+# and passed to hal::pmap::bootstrap as a value, not a registered slot (D16). Paid by N3.3,
+# when kernel::vm implements it: the row goes, the trait stays as API (0.3.2).
+# hal::pmap::PhysPages
+[[bridge]]
+trait = "PhysPages"
+for = ["sys/hal/pmap.rs"]
+paid_by = "N3"
+
+# bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
+# LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
+# for amd64's TLB shootdown and cache flush, implemented by sys/kern/hal_bridges.rs
+# (BsdTlbCpus); arm64 broadcasts tlbi and registers none.
+# hal::pmap::TlbCpus
+[[bridge]]
+trait = "TlbCpus"
+for = ["sys/hal/arch/amd64/pmap/tlb.rs", "sys/hal/arch/amd64/pmap/backend.rs"]
+paid_by = "N4"
+
+# bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick),
+# implemented by sys/kern/hal_bridges.rs (BsdRandom).
+# hal::pmap::Random
+[[bridge]]
+trait = "Random"
+for = ["sys/hal/arch/arm64/pmap/asid.rs"]
+paid_by = "N7"

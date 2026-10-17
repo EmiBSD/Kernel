@@ -89,7 +89,6 @@ use crate::arch::amd64::include::frame::Intrframe;
 use crate::arch::amd64::include::intr::Intrsource;
 use crate::arch::amd64::include::intrdefs::{MAX_INTR_SOURCES, NIPL};
 use crate::arch::amd64::include::pcb::Pcb;
-use crate::arch::amd64::include::pmap::Pmap;
 use crate::arch::amd64::include::segments::usermode;
 use crate::arch::amd64::include::tss::X86_64Tss;
 use crate::sys::clockintr::Clockqueue;
@@ -97,6 +96,7 @@ use crate::sys::device::Device;
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_QUAD, CTLTYPE_STRING, CTLTYPE_STRUCT};
+use hal::pmap::Pmap;
 
 /// `enum cpu_vendor`: the vendor `cpu_set_vendor` maps cpuid(0)'s string to.
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)] // OpenBSD names, verbatim

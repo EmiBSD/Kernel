@@ -60,7 +60,8 @@
 //!   physical address have nothing left to do. The processor arrives in `cpu_hatch_entry`
 //!   with the MMU on and the bootloader's tables: it does what `cpu_hatch_secondary` does
 //!   (`TPIDR_EL1`, then the MMU with the boot processor's `MAIR_EL1`, `TCR_EL1`,
-//!   `SCTLR_EL1` and `ci_ttbr1`, then `ci_el1_stkend` as its stack) plus what `initarm` does
+//!   `SCTLR_EL1` and `ci_ttbr1`, the last through `hal`'s `switch_mmu_kernel_table`, then
+//!   `ci_el1_stkend` as its stack) plus what `initarm` does
 //!   on the boot processor (`SPSel`, `VBAR_EL1`, the FPU trapped as `fpu_drop` leaves it),
 //!   then calls `cpu_init_secondary`. After a boot by boot(8) (M14) the `BootMp` is
 //!   `machdep.rs`'s: psci(4)'s `psci_cpu_on` (`dev/fdt/psci.rs`, attached before the
@@ -2212,9 +2213,7 @@ fn wfe() {
 /// PAN, DIT, pointer authentication, BTI, SVE's default vector length and the debug
 /// registers.
 pub fn cpu_init() {
-    let pt0pa = crate::arch::arm64::arm64::pmap::pmap_kernel()
-        .pm_pt0pa
-        .get();
+    let pt0pa = hal::arch::arm64::pmap::kernel_pt0pa();
 
     let mut tcr = read_specialreg!("tcr_el1");
     tcr &= !tcr_t0sz(0x3f);
@@ -2431,9 +2430,8 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
     #[cfg(feature = "multiprocessor")]
     {
         let ci = arg as *const CpuInfo;
-        let pt0pa = crate::arch::arm64::arm64::pmap::pmap_kernel()
-            .pm_pt0pa
-            .get();
+        let pt0pa = hal::arch::arm64::pmap::kernel_pt0pa();
+
         let mut cpacr = read_specialreg!("cpacr_el1");
         cpacr &= !(CPACR_FPEN_MASK | CPACR_ZEN_MASK);
         cpacr |= CPACR_FPEN_TRAP_ALL1 | CPACR_ZEN_TRAP_ALL1;
@@ -2441,13 +2439,16 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
         // SAFETY: the processor's first kernel instructions, interrupts masked, on the
         // bootloader's stack and tables, touching only the kernel image (which both sets of
         // tables map). The kernel runs on SP_EL1 (the "EL1h" vectors, as initarm does on the
-        // boot processor). The kernel's TTBR1 tables map the upper half as the bootloader's
-        // do (`pmap_bootstrap` adopted them, the bootloader's stack in the direct map
-        // included) plus what the kernel mapped since (`ci`, the kernel stacks); MAIR keeps
-        // the bootloader's attributes 0 and 1. The lower half gets the kernel's empty table,
-        // then this CPU's TLB is flushed. FP/SIMD and SVE trap at EL0 and EL1 (what
-        // `fpu_drop` leaves). Then the per-CPU pointer and the kernel's vectors, so curcpu()
-        // and a fault work from here on.
+        // boot processor). The kernel's TTBR1 tables map the upper half at the same physical
+        // addresses as the bootloader's (`pmap_bootstrap` copied their direct map, the
+        // bootloader's stack in it included, and mapped the image by section) plus what the
+        // kernel mapped since (`ci`, the kernel stacks); hal's `switch_mmu_kernel_table` loads
+        // them from its identity page, as the boot processor did, with the kernel's ASID 0
+        // (`AP_TTBR1`, what boot(8)'s `start_mmu` loaded, is that value); MAIR keeps the
+        // bootloader's attributes 0 and 1. The lower half gets the
+        // kernel's empty table, then this CPU's TLB is flushed. FP/SIMD and SVE trap at EL0
+        // and EL1 (what `fpu_drop` leaves). Then the per-CPU pointer and the kernel's vectors,
+        // so curcpu() and a fault work from here on.
         unsafe {
             asm!(
                 "mov {tmp}, sp",
@@ -2458,11 +2459,12 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
                 options(nomem, nostack, preserves_flags)
             );
             write_specialreg!("mair_el1", AP_MAIR.load(Ordering::Relaxed));
+            // Onto the kernel's tables (the switch sets the lower-half walk of its identity
+            // table, then puts TTBR0_EL1 and TCR_EL1 back as they were).
+            hal::arch::arm64::pmap::switch_mmu_kernel_table();
             write_specialreg!("ttbr0_el1", pt0pa);
             asm!("isb", options(nomem, nostack, preserves_flags));
             write_specialreg!("tcr_el1", AP_TCR.load(Ordering::Relaxed));
-            asm!("isb", options(nomem, nostack, preserves_flags));
-            write_specialreg!("ttbr1_el1", AP_TTBR1.load(Ordering::Relaxed));
             asm!(
                 "isb",
                 "tlbi vmalle1",
