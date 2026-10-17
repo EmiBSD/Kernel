@@ -1497,5 +1497,6 @@ pub fn uvm_page_test_reset() {
     UVMEXP.npages.store(0, Ordering::Relaxed);
     UVMEXP.free.store(0, Ordering::Relaxed);
     UVMEXP.zeropages.store(0, Ordering::Relaxed);
+    crate::uvm::uvm_pmemrange::uvm_pmr_cache_test_reset();
 }
 /* </CODE> */

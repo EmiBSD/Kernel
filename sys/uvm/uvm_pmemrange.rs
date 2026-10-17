@@ -2092,6 +2092,23 @@ pub fn uvm_pmr_cache_put(pg: &VmPage) {
 pub fn uvm_pmr_cache_drain() -> u32 {
     0
 }
+
+/// Forgets every CPU's cached pages without freeing them, so a host test that sets up its own
+/// memory (`uvm_page_test_reset`) is never handed a page of an earlier test's. Tests only.
+#[cfg(test)]
+pub(crate) fn uvm_pmr_cache_test_reset() {
+    #[cfg(feature = "multiprocessor")]
+    for upc in &UVM_PMR_CACHES {
+        for upci in &upc.upc_magz {
+            upci.upci_npages.set(0);
+            for slot in &upci.upci_pages {
+                slot.set(ptr::null());
+            }
+        }
+        upc.upc_actv.set(0);
+    }
+    UVMEXP.percpucaches.store(0, Ordering::Relaxed);
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -2399,6 +2416,31 @@ pub(crate) mod tests {
         assert!(!pmr_intersects_with(10, 20, 0, 10));
         assert_eq!(pmr_align(17, 16), 32);
         assert_eq!(pmr_align_down(17, 16), 16);
+    }
+
+    /// A test's memory is gone at the next setup: the per-CPU cache it filled must not hand
+    /// its pages to the next test (hal's managed-page check refuses to zero them).
+    #[cfg(feature = "multiprocessor")]
+    #[test]
+    fn a_new_setup_forgets_the_per_cpu_cache() {
+        {
+            let _g = setup();
+            let pg = uvm_pmr_cache_get(UVM_PLA_NOWAIT).expect("a page");
+            assert!(
+                UVMEXP.percpucaches.load(Ordering::Relaxed) > 0,
+                "the magazine filled"
+            );
+            assert!(in_seg(pg, SEG_HIGH));
+        }
+        let _g = setup();
+        assert_eq!(UVMEXP.percpucaches.load(Ordering::Relaxed), 0);
+        assert!(
+            uvm_pmr_curcache()
+                .upc_magz
+                .iter()
+                .all(|m| m.upci_npages.get() == 0)
+        );
+        assert_eq!(free(), total(), "every page of the new memory is free");
     }
 }
 /* </TESTS> */
