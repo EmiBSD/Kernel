@@ -37,8 +37,10 @@ extern crate alloc;
 
 pub use hal::sys;
 pub mod api;
+pub(crate) mod assert;
 pub mod crypto;
 pub mod pipe;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
+pub mod vm;
 /* </CODE> */

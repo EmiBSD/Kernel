@@ -138,6 +138,8 @@ use hal::sleep::{PCATCH, wakeup};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;
 
+use crate::assert::{kassert, kpanic};
+
 /// `PIPE_SIZE`: pipe buffer size, keep moderate in value, pipes take kva space.
 pub const PIPE_SIZE: usize = 16384;
 
@@ -179,28 +181,6 @@ pub const O_CLOFORK: i32 = 0x40000;
 /// `FNONBLOCK` (`O_NONBLOCK`) of `<sys/fcntl.h>`: both files are non-blocking.
 pub const FNONBLOCK: i32 = 0x0004;
 
-/// `KASSERT(9)`: under feature `diagnostic`, `panic(9)` with `__assert`'s message when `e` is
-/// false; otherwise `e` is type-checked and never evaluated.
-macro_rules! kassert {
-    ($e:expr) => {
-        #[cfg(feature = "diagnostic")]
-        {
-            if !$e {
-                pipe_panic(format_args!(
-                    "kernel diagnostic assertion \"{}\" failed: file \"{}\", line {}",
-                    stringify!($e),
-                    file!(),
-                    line!()
-                ));
-            }
-        }
-        #[cfg(not(feature = "diagnostic"))]
-        {
-            let _ = || -> bool { $e };
-        }
-    };
-}
-
 /// The C's `#ifdef DIAGNOSTIC` `if (e) panic(msg)`: under feature `diagnostic`, `panic(9)`
 /// with `msg` when `e` holds; otherwise `e` is type-checked and never evaluated.
 macro_rules! diagnostic_panic {
@@ -208,7 +188,7 @@ macro_rules! diagnostic_panic {
         #[cfg(feature = "diagnostic")]
         {
             if $e {
-                pipe_panic(format_args!($msg));
+                kpanic(format_args!($msg));
             }
         }
         #[cfg(not(feature = "diagnostic"))]
@@ -835,7 +815,7 @@ impl<G: PipeGlue> PipePair<G> {
             Some(mem) => mem,
             // Only the I/O lock's holder takes it, and it puts it back before it lets go: a
             // broken I/O lock protocol is panic(9), never a no-op.
-            None => pipe_panic(format_args!("pipe: no buffer under the I/O lock")),
+            None => kpanic(format_args!("pipe: no buffer under the I/O lock")),
         }
     }
 
@@ -1330,14 +1310,6 @@ impl<G: PipeGlue> PipePair<G> {
             state: pipe.state.load(Ordering::Relaxed),
         }
     }
-}
-
-/// `panic(9)` for this module: every kernel image's panic handler is `panic(9)` with the
-/// message (`sys/hal/assert.rs`), and the host tests' is the unwinding panic.
-#[cold]
-#[allow(clippy::panic)] // KASSERT(9), the C's DIAGNOSTIC checks and a broken I/O lock: panic(9)
-fn pipe_panic(msg: core::fmt::Arguments<'_>) -> ! {
-    panic!("{msg}")
 }
 
 impl<G: PipeGlue> Drop for PipeEnd<G> {

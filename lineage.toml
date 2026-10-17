@@ -8448,3 +8448,15 @@ reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
 reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"
+
+[[extra]]
+rust = "sys/kernel/assert.rs"
+crate = "kernel"
+reason = "N3.2: the kernel crate's KASSERT(9) and panic(9) (kassert!, kpanic, through the image's panic handler, as sys/hal/assert.rs), written new for pipe and vm::km; no LZ source"
+
+[[module]]
+rust = "sys/kernel/vm/types.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_extern.rs"]
+status = "redesigned"
+notes = "N3.2 (DECISIONS G1, G2): the items of uvm_extern.h that name only hal's types (voff_t, vm_prot_t as hal::pmap::VmProt, vm_inherit_t, vm_fault_t, the UVM_MAPFLAG encoding, UVM_FLAG_*, UVM_PGA_*, UVM_PLA_*, UVM_LK_*, UVM_IO_FIXPROT, PHYSLOAD_DEVICE, uvm_constraint_range, the coredump callbacks); bsd's uvm_extern.rs keeps vmspace and the submaps and re-exports these"
