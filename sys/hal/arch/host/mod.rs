@@ -29,9 +29,11 @@
 //! The constant headers of the two machines are compiled here for their host tests only
 //! (docs/ARCHITECTURE.md, "Host tests of arch code"): `sys/hal/arch/<arch>/` is built for
 //! `target_os = "none"` alone, and the tests of a header are plain constant checks, five of
-//! them against the C under `just test-ref`. arm64's `pte.rs` is not among them: it is
-//! inherited from LZ and names `crate::arch::arm64::include::param`, which does not exist on
-//! the host. The two pmap layouts (`pmap/layout.rs`, pure constants) are compiled with them.
+//! them against the C under `just test-ref`. arm64's `pte.rs` is inherited from LZ and names
+//! `crate::arch::arm64::include::param`: on the host that path is an alias of these headers
+//! (`sys/hal/arch/mod.rs`), so `pte.rs` compiles unchanged for the arm64 layout's leaf tests
+//! (N3.1 commit 8b). The two pmap layouts (`pmap/layout.rs`, pure constants) are compiled
+//! with them.
 
 pub mod param;
 pub(crate) mod pmap;
@@ -57,9 +59,10 @@ mod amd64_headers {
 #[cfg(test)]
 #[path = "../arm64"]
 #[allow(dead_code)] // compiled for its tests: what reads the constants is built for arm64 only
-mod arm64_headers {
+pub(crate) mod arm64_headers {
     pub mod include {
         pub mod param;
+        pub mod pte;
         pub mod vmparam;
     }
     pub mod pmap {

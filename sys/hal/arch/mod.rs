@@ -39,4 +39,12 @@ pub use self::arm64 as current;
 #[cfg(not(target_os = "none"))]
 pub use self::host as current;
 
+/// The host tests' path to arm64's headers under the name the inherited `include/pte.rs` uses
+/// (`crate::arch::arm64::include`): an alias of `host`'s copies, so the arm64 layout's leaf
+/// tests compile `pte.rs` unchanged.
+#[cfg(all(test, not(target_os = "none")))]
+pub(crate) mod arm64 {
+    pub(crate) use super::host::arm64_headers::include;
+}
+
 /* </CODE> */

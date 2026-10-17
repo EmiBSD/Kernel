@@ -59,7 +59,7 @@
 //!   `pmap_growkernel` never reaches it, and no table above it is ever freed.
 //! - [`enter`] enters one page in it, its leaf composed as `pmap_pte_update` composes a
 //!   write-back kernel mapping (`ap_bits_kern`: `ATTR_PXN` unless `PROT_EXEC`, `ATTR_UXN`,
-//!   read-only unless `PROT_WRITE`; the kernel pmap's `ATTR_GP`), the instruction cache made
+//!   read-only unless `PROT_WRITE`; no `ATTR_GP`, N3.1 8b, see the redesign), the instruction cache made
 //!   coherent with the page first when it is executable (`pmap_icache_sync_page`, as
 //!   `pmap_enter` does for an executable page); it refuses a writable executable page, a page
 //!   entered already, an address outside the window and a physical address that is not a
@@ -94,6 +94,11 @@
 //!   loaders hand over zeroed, mapped and outside every free region.
 //! - The image's level-2 table is reached through the frame view of the direct map
 //!   (`vp.rs`), as the bootstrap reaches the tables it builds: the window has no `unsafe`.
+//! - The leaves carry no `ATTR_GP` (N3.1 commit 8b; until then the kernel pmap's guard): on a
+//!   CPU with FEAT_BTI an executable guarded page enforces branch target identification at
+//!   EL1, and the module, built without BTI landing pads as the kernel is, would take a
+//!   Branch Target exception at its first indirect branch (`backend.rs`, deviations). QEMU's
+//!   `cortex-a72` has no BTI, so no smoke sees the difference.
 //! - The link is attempted once ([`MODULE_WINDOW_TRIED`]): a refused first attempt leaves the
 //!   window empty for good, and the module loader reports it has no memory for the module
 //!   (decision 29's fail-soft); it is never placed in `kernel_map` instead. Two limits of
@@ -108,11 +113,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::super::include::param::PAGE_SIZE;
 use super::super::include::pte::{L1_SIZE, Lx_TYPE_MASK, Lx_TYPE_PT, PTE_RPGN};
-use super::backend::{Backend, kernel_leaf, pmap_icache_sync_page};
+use super::backend::{Backend, pmap_icache_sync_page};
 use super::cpufunc::{cpu_tlb_flush, cpu_tlb_flush_all_asid};
 use super::layout::{
-    MODULE_WINDOW_NPTP, MODULE_WINDOW_SIZE, VP_ENTRIES, module_prot_ok, module_window_place,
-    tlbi_page, vp_idx,
+    MODULE_WINDOW_NPTP, MODULE_WINDOW_SIZE, VP_ENTRIES, kernel_leaf, module_prot_ok,
+    module_window_place, tlbi_page, vp_idx,
 };
 use super::vp::words;
 use crate::pmap::{PmapBackend, VmProt};
@@ -267,7 +272,7 @@ pub(super) fn enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
     if pte
         .compare_exchange(
             0,
-            kernel_leaf(pa, prot, Backend::kernel().md.guarded()),
+            kernel_leaf(pa, prot),
             Ordering::AcqRel,
             Ordering::Relaxed,
         )

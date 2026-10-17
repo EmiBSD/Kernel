@@ -86,9 +86,17 @@
 //!   pages ([`image_page_prot`]), the checks the bootstrap makes of the section bounds the
 //!   boot glue passes ([`image_layout_ok`]) and how many level-3 tables they take
 //!   ([`image_ptps`]), and the `TCR_EL1` the switch to the kernel's tables runs under while
-//!   its identity table is in `TTBR0_EL1` ([`tcr_identity`]).
+//!   its identity table is in `TTBR0_EL1` ([`tcr_identity`]). N3.1 commit 8b: `ap_bits_kern`
+//!   ([`AP_BITS_KERN`]) and the kernel leaf every page the pmap maps outside `pmap_enter`
+//!   takes ([`kernel_leaf`]: the image, the switch's identity page, the module window) moved
+//!   here from the backend, so the host tests check them; the `TCR_EL1` bits `pmap_init`
+//!   clears ([`TCR_HPD`]).
 
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
+use super::super::include::pte::{
+    ATTR_AF, ATTR_PXN, ATTR_UXN, ATTR_nG, L3_P, PTE_ATTR_WB, PTE_RPGN, SH_INNER, attr_ap, attr_idx,
+    attr_sh,
+};
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
 use crate::pmap::{KernelImage, PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
 use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
@@ -179,6 +187,11 @@ pub const TCR_A1: u64 = 1 << 22;
 pub const TCR_AS: u64 = 1 << 36;
 /// `T1SZ` of a four-level upper half (48 bits), what both boot paths leave.
 pub const T1SZ_4LEVEL: u64 = 16;
+/// `TCR_EL1.HPD0` and `HPD1` (bits 41 and 42, FEAT_HPDS; not in the C's `armreg.h`, whose
+/// `locore.S` leaves them clear): when set, the table descriptors' `PXNTable`, `UXNTable` and
+/// `APTable` are ignored. `pmap_init` clears both, as the C's `TCR_EL1` has them, so the
+/// `Lx_PT_PXN` and `Lx_PT_XN` the pmap puts on table descriptors are enforced.
+pub const TCR_HPD: u64 = (1 << 41) | (1 << 42);
 /// `TCR_EL1`'s `TTBR0_EL1` fields, bits 15:0: `T0SZ`, `EPD0`, `IRGN0`, `ORGN0`, `SH0`, `TG0`.
 pub const TCR_TTBR0_FIELDS: u64 = 0xffff;
 /// The `TTBR0_EL1` walk of the identity table the switch to the kernel's tables runs from
@@ -199,6 +212,18 @@ pub const EFI_SPACE_BITS: u32 = 48;
 pub const MODULE_WINDOW_SIZE: usize = crate::module::elf::MAX_SPAN as usize;
 /// The level-3 tables the window needs: one per level-2 entry (2 MiB).
 pub const MODULE_WINDOW_NPTP: usize = MODULE_WINDOW_SIZE >> VP_IDX2_POS;
+
+/// `ap_bits_kern[]`: the access bits of a kernel mapping, by `PROT_*`.
+pub const AP_BITS_KERN: [u64; 8] = [
+    0,                                          // PROT_NONE
+    ATTR_PXN | ATTR_UXN | ATTR_AF | attr_ap(2), // PROT_READ
+    ATTR_PXN | ATTR_UXN | ATTR_AF | attr_ap(0), // PROT_WRITE
+    ATTR_PXN | ATTR_UXN | ATTR_AF | attr_ap(0), // PROT_WRITE|PROT_READ
+    ATTR_UXN | ATTR_AF | attr_ap(2),            // PROT_EXEC
+    ATTR_UXN | ATTR_AF | attr_ap(2),            // PROT_EXEC|PROT_READ
+    ATTR_UXN | ATTR_AF | attr_ap(0),            // PROT_EXEC|PROT_WRITE
+    ATTR_UXN | ATTR_AF | attr_ap(0),            // PROT_EXEC|PROT_WRITE|PROT_READ
+];
 
 /// How wide the ASIDs are, and why ([`nasid_probe`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,6 +331,20 @@ pub const fn tcr_t1sz(tcr: u64) -> u64 {
 /// upper half's fields and the rest stay.
 pub const fn tcr_identity(tcr: u64) -> u64 {
     (tcr & !TCR_TTBR0_FIELDS) | TCR_IDENTITY_TTBR0
+}
+
+/// `pmap_pte_update`'s descriptor of a write-back kernel mapping of `pa` with `prot`, never
+/// guarded (no `ATTR_GP`: the kernel and the ABI module are built without BTI landing pads,
+/// the backend's deviations): the image's pages (`pmap_map_stolen`), the switch's identity
+/// page and the module window's leaves (`window.rs`). 0 for `PROT_NONE`, as
+/// `pmap_pte_update` stores.
+pub const fn kernel_leaf(pa: u64, prot: VmProt) -> u64 {
+    let access_bits = AP_BITS_KERN[(prot & PROT_MASK) as usize];
+    if access_bits == 0 {
+        return 0;
+    }
+    let attr = ATTR_nG | attr_idx(PTE_ATTR_WB) | attr_sh(SH_INNER);
+    (pa & PTE_RPGN) | attr | access_bits | L3_P
 }
 
 /// The highest physical address a descriptor holds (`PTE_RPGN`'s bits 47:12), plus one.
@@ -666,6 +705,55 @@ mod tests {
         top.end = Vaddr::new(0xffff_ffff_c000_0000);
         assert!(image_layout_ok(&top));
         assert_eq!(image_ptps(&top), 512);
+    }
+
+    #[test]
+    fn a_kernel_leaf_takes_its_sections_bits_and_no_guard() {
+        use super::super::super::include::pte::{ATTR_GP, ATTR_IDX_MASK};
+        let pa = 0x4012_3000u64;
+        let rx = kernel_leaf(pa, PROT_READ | PROT_EXEC);
+        let r = kernel_leaf(pa, PROT_READ);
+        let rw = kernel_leaf(pa, PROT_READ | PROT_WRITE);
+        // Text (and the identity page, and the module's text): executable at EL1 only,
+        // read-only.
+        assert_eq!(rx & (ATTR_PXN | ATTR_UXN), ATTR_UXN);
+        assert_eq!(rx & attr_ap(3), attr_ap(2));
+        // Read-only data: never executable, read-only.
+        assert_eq!(r & (ATTR_PXN | ATTR_UXN), ATTR_PXN | ATTR_UXN);
+        assert_eq!(r & attr_ap(3), attr_ap(2));
+        // Data and BSS: never executable, writable at EL1, never at EL0.
+        assert_eq!(rw & (ATTR_PXN | ATTR_UXN), ATTR_PXN | ATTR_UXN);
+        assert_eq!(rw & attr_ap(3), attr_ap(0));
+        for (prot, leaf) in [
+            (PROT_READ | PROT_EXEC, rx),
+            (PROT_READ, r),
+            (PROT_READ | PROT_WRITE, rw),
+        ] {
+            assert_eq!(leaf & PTE_RPGN, pa, "{prot:#x}");
+            assert_eq!(leaf & 0x3, L3_P, "{prot:#x}");
+            assert_ne!(leaf & ATTR_AF, 0, "{prot:#x}");
+            assert_ne!(leaf & ATTR_nG, 0, "{prot:#x}");
+            assert_eq!(leaf & ATTR_IDX_MASK, attr_idx(PTE_ATTR_WB), "{prot:#x}");
+            assert_eq!(leaf & attr_sh(3), attr_sh(SH_INNER), "{prot:#x}");
+            // No branch-target guard on any kernel leaf (the window's included).
+            assert_eq!(leaf & ATTR_GP, 0, "{prot:#x}");
+        }
+        // No access is no leaf; the flag bits of the address do not leak in.
+        assert_eq!(kernel_leaf(pa, PROT_NONE), 0);
+        assert_eq!(kernel_leaf(pa | 0xfff, PROT_READ) & PTE_RPGN, pa);
+        // `ap_bits_kern` grants write and execute together, as the C's: W^X is the callers'
+        // (the module window refuses it, the kernel pmap refuses any `PROT_EXEC`, the image
+        // asks for one of the three above).
+        assert_eq!(
+            kernel_leaf(pa, PROT_READ | PROT_WRITE | PROT_EXEC) & (ATTR_PXN | attr_ap(2)),
+            0
+        );
+    }
+
+    #[test]
+    fn pmap_init_clears_the_hierarchical_disables() {
+        assert_eq!(TCR_HPD, 0x0000_0600_0000_0000);
+        assert_eq!(TCR_HPD & (TCR_TTBR0_FIELDS | TCR_A1 | TCR_AS), 0);
     }
 
     #[test]

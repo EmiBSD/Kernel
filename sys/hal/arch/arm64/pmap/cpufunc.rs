@@ -60,6 +60,34 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+
+/*-
+ * Copyright (c) 2012-2014 Andrew Turner
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * $FreeBSD: head/sys/arm64/arm64/locore.S 282867 2015-05-13 18:57:03Z zbb $
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -70,8 +98,10 @@
 //!
 //! Upstream: sys/arch/arm64/arm64/cpufunc_asm.S @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/pmap.c @ 3ce1f3f79392
+//! Upstream: sys/arch/arm64/arm64/locore.S @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/arm64/cpufunc.rs@3c62ede68802
 //! LZ: sys/arch/arm64/arm64/pmap.rs@3c62ede68802
+//! LZ: sys/arch/arm64/arm64/locore.rs@3c62ede68802
 //!
 //! Every TLB invalidation is the inner-shareable broadcast (`tlbi ...is`): arm64 sends no IPI
 //! for a shootdown, so the pmap registers no `TlbCpus` bridge. The barriers are the C's: a
@@ -148,6 +178,22 @@ unsafe extern "C" {
 /// The virtual address of `hal_switch_mmu_kernel` in the kernel text.
 pub(super) fn switch_routine_va() -> usize {
     ptr::addr_of!(HAL_SWITCH_MMU_KERNEL).addr()
+}
+
+/// `READ_SPECIALREG(ttbr1_el1)`: the running CPU's `TTBR1_EL1` (its table base, ASID and
+/// `CnP`).
+pub(super) fn cpu_ttbr1() -> u64 {
+    let ttbr1: u64;
+    // SAFETY: reading a system register has no side effect and touches no memory;
+    // `TTBR1_EL1` is readable at EL1.
+    unsafe {
+        asm!(
+            "mrs {}, ttbr1_el1",
+            out(reg) ttbr1,
+            options(nomem, nostack, preserves_flags),
+        )
+    };
+    ttbr1
 }
 
 /// `cache_handle_range dcop[, ic, icop]`: one cache operation over every line of

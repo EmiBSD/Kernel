@@ -2443,8 +2443,9 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
         // addresses as the bootloader's (`pmap_bootstrap` copied their direct map, the
         // bootloader's stack in it included, and mapped the image by section) plus what the
         // kernel mapped since (`ci`, the kernel stacks); hal's `switch_mmu_kernel_table` loads
-        // them from its identity page, as the boot processor did, and checks `AP_TTBR1` names
-        // them; MAIR keeps the bootloader's attributes 0 and 1. The lower half gets the
+        // them from its identity page, as the boot processor did, with the kernel's ASID 0
+        // (`AP_TTBR1`, what boot(8)'s `start_mmu` loaded, is that value); MAIR keeps the
+        // bootloader's attributes 0 and 1. The lower half gets the
         // kernel's empty table, then this CPU's TLB is flushed. FP/SIMD and SVE trap at EL0
         // and EL1 (what `fpu_drop` leaves). Then the per-CPU pointer and the kernel's vectors,
         // so curcpu() and a fault work from here on.
@@ -2460,7 +2461,7 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
             write_specialreg!("mair_el1", AP_MAIR.load(Ordering::Relaxed));
             // Onto the kernel's tables (the switch sets the lower-half walk of its identity
             // table, then puts TTBR0_EL1 and TCR_EL1 back as they were).
-            hal::arch::arm64::pmap::switch_mmu_kernel_table(AP_TTBR1.load(Ordering::Relaxed));
+            hal::arch::arm64::pmap::switch_mmu_kernel_table();
             write_specialreg!("ttbr0_el1", pt0pa);
             asm!("isb", options(nomem, nostack, preserves_flags));
             write_specialreg!("tcr_el1", AP_TCR.load(Ordering::Relaxed));

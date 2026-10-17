@@ -1081,9 +1081,9 @@ notes = "N3.1 commit 7 (G4, decision 37's symmetry): the ABI module's window as 
 [[module]]
 rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
 crate = "hal"
-lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs"]
+lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/arm64/locore.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus"
+notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus; N3.1 commit 8/8b: locore.S's switch_mmu_kernel as hal_switch_mmu_kernel (global_asm!, run at its physical address by the backend), cpu_ttbr1; locore.rs has no licence text (the .S holds it): locore.S's Andrew Turner block is kept whole beside the others"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_setttb"
