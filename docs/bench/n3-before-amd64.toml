@@ -1,9 +1,9 @@
 schema = 1
 arch = "amd64"
-date = "2026-10-17T22:36:46Z"
-kernel_commit = "b7e474e36bc73cbbcdd99d47d709a9944129b425"
+date = "2026-10-17T23:19:41Z"
+kernel_commit = "6c971a458d870fc62d905d89052945927686573c"
 kernel_tree_clean = true
-kernel_sha256 = "3f177e562c4137a07e5c0b0e8acdf7ebcbb8e7c8f3f15f8b93d5f7a12ab72cbb"
+kernel_sha256 = "2fd0e502dc59b9e77d54f66dcba5e219e19cde8e92de22b748da59b3ce1ddb12"
 reps = 5
 smp = 4
 memory = "512M"
@@ -14,145 +14,145 @@ tcpbench_seconds = 10
 [qemu]
 emibsd = "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-amd64-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-amd64-bench.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-amd64-bench.img,id=sd0 -device virtio-blk-pci,drive=sd0"
 openbsd = "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/amd64/openbsd-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/amd64/openbsd-scratch.img,id=d1 -device virtio-blk-pci,drive=d1 -snapshot"
-emibsd_link = ["qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-amd64-a-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-amd64-a.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:01 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=53136,remote.type=inet,remote.host=127.0.0.1,remote.port=56112 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-amd64-a.img,id=sd0 -device virtio-blk-pci,drive=sd0", "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-amd64-b-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-amd64-b.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:02 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=56112,remote.type=inet,remote.host=127.0.0.1,remote.port=53136 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-amd64-b.img,id=sd0 -device virtio-blk-pci,drive=sd0"]
-openbsd_link = ["qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/amd64/openbsd-a-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:01 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=55672,remote.type=inet,remote.host=127.0.0.1,remote.port=53614 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -snapshot", "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/amd64/openbsd-b-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:02 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=53614,remote.type=inet,remote.host=127.0.0.1,remote.port=55672 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -snapshot"]
+emibsd_link = ["qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-amd64-a-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-amd64-a.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:01 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=63826,remote.type=inet,remote.host=127.0.0.1,remote.port=54208 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-amd64-a.img,id=sd0 -device virtio-blk-pci,drive=sd0", "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-amd64-b-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-amd64-b.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:02 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=54208,remote.type=inet,remote.host=127.0.0.1,remote.port=63826 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-amd64-b.img,id=sd0 -device virtio-blk-pci,drive=sd0"]
+openbsd_link = ["qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/amd64/openbsd-a-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:01 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=60504,remote.type=inet,remote.host=127.0.0.1,remote.port=57226 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -snapshot", "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/amd64/openbsd-b-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:02 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=57226,remote.type=inet,remote.host=127.0.0.1,remote.port=60504 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -snapshot"]
 
 [[measurement]]
 name = "boot"
 unit = "s"
 better = "lower"
-emibsd = [18.36, 18.648, 17.536, 17.863, 17.334]
-openbsd = [23.968, 23.81, 22.96, 22.834, 22.595]
-ratio = 0.778
+emibsd = [18.711, 21.241, 17.25, 17.94, 17.311]
+openbsd = [22.541, 27.062, 21.909, 21.778, 24.433]
+note = "no ratio: spread 22.2 % (EmiBSD), 23.4 % (OpenBSD), over 15 %"
 
 [measurement.emibsd_stats]
-median = 17.863
-min = 17.334
-max = 18.648
-spread_percent = 7.356
+median = 17.94
+min = 17.25
+max = 21.241
+spread_percent = 22.246
 
 [measurement.openbsd_stats]
-median = 22.96
-min = 22.595
-max = 23.968
-spread_percent = 5.98
+median = 22.541
+min = 21.778
+max = 27.062
+spread_percent = 23.442
 
 [[measurement]]
 name = "pagefault"
 unit = "ns/op"
 better = "lower"
-emibsd = [13747.0, 8527.0, 8550.0, 8328.0, 8772.0]
-openbsd = [11639.0, 12722.0, 11824.0, 11507.0, 11114.0]
-note = "no ratio: spread 63.4 % (EmiBSD), 13.8 % (OpenBSD), over 15 %"
+emibsd = [7990.0, 8075.0, 8165.0, 8210.0, 8202.0]
+openbsd = [11861.0, 14807.0, 10848.0, 11161.0, 11363.0]
+note = "no ratio: spread 2.7 % (EmiBSD), 34.8 % (OpenBSD), over 15 %"
 
 [measurement.emibsd_stats]
-median = 8550.0
-min = 8328.0
-max = 13747.0
-spread_percent = 63.38
+median = 8165.0
+min = 7990.0
+max = 8210.0
+spread_percent = 2.694
 
 [measurement.openbsd_stats]
-median = 11639.0
-min = 11114.0
-max = 12722.0
-spread_percent = 13.816
+median = 11363.0
+min = 10848.0
+max = 14807.0
+spread_percent = 34.841
 
 [[measurement]]
 name = "forkexit"
 unit = "ns/op"
 better = "lower"
-emibsd = [1032750.0, 472092.0, 457830.0, 440343.0, 478042.0]
-openbsd = [807299.0, 872671.0, 862593.0, 830099.0, 948324.0]
-note = "no ratio: spread 125.5 % (EmiBSD), 16.3 % (OpenBSD), over 15 %"
+emibsd = [466920.0, 470766.0, 481736.0, 433610.0, 461023.0]
+openbsd = [891070.0, 1234542.0, 788349.0, 781915.0, 806517.0]
+note = "no ratio: spread 10.3 % (EmiBSD), 56.1 % (OpenBSD), over 15 %"
 
 [measurement.emibsd_stats]
-median = 472092.0
-min = 440343.0
-max = 1032750.0
-spread_percent = 125.485
+median = 466920.0
+min = 433610.0
+max = 481736.0
+spread_percent = 10.307
 
 [measurement.openbsd_stats]
-median = 862593.0
-min = 807299.0
-max = 948324.0
-spread_percent = 16.349
+median = 806517.0
+min = 781915.0
+max = 1234542.0
+spread_percent = 56.121
 
 [[measurement]]
 name = "forkexec"
 unit = "ns/op"
 better = "lower"
-emibsd = [3082272.0, 1324559.0, 1336462.0, 1242873.0, 1301327.0]
-openbsd = [2068648.0, 2377322.0, 2262595.0, 2047343.0, 2765802.0]
-note = "no ratio: spread 138.9 % (EmiBSD), 31.8 % (OpenBSD), over 15 %"
+emibsd = [1227309.0, 1235729.0, 1219980.0, 1206154.0, 1258526.0]
+openbsd = [2069335.0, 6073186.0, 1846660.0, 1897716.0, 1980342.0]
+note = "no ratio: spread 4.3 % (EmiBSD), 213.4 % (OpenBSD), over 15 %"
 
 [measurement.emibsd_stats]
-median = 1324559.0
-min = 1242873.0
-max = 3082272.0
-spread_percent = 138.869
+median = 1227309.0
+min = 1206154.0
+max = 1258526.0
+spread_percent = 4.267
 
 [measurement.openbsd_stats]
-median = 2262595.0
-min = 2047343.0
-max = 2765802.0
-spread_percent = 31.754
+median = 1980342.0
+min = 1846660.0
+max = 6073186.0
+spread_percent = 213.424
 
 [[measurement]]
 name = "pipe"
 unit = "ns/op"
 better = "lower"
-emibsd = [105728.0, 61160.0, 61452.0, 61237.0, 61598.0]
-openbsd = [69976.0, 68653.0, 70807.0, 73433.0, 73745.0]
-note = "no ratio: spread 72.5 % (EmiBSD), 7.2 % (OpenBSD), over 15 %"
+emibsd = [68868.0, 70050.0, 71513.0, 64487.0, 60624.0]
+openbsd = [69575.0, 84288.0, 69677.0, 66984.0, 67684.0]
+note = "no ratio: spread 15.8 % (EmiBSD), 24.9 % (OpenBSD), over 15 %"
 
 [measurement.emibsd_stats]
-median = 61452.0
-min = 61160.0
-max = 105728.0
-spread_percent = 72.525
+median = 68868.0
+min = 60624.0
+max = 71513.0
+spread_percent = 15.811
 
 [measurement.openbsd_stats]
-median = 70807.0
-min = 68653.0
-max = 73745.0
-spread_percent = 7.191
+median = 69575.0
+min = 66984.0
+max = 84288.0
+spread_percent = 24.871
 
 [[measurement]]
 name = "fileread"
 unit = "ns/op"
 better = "lower"
-emibsd = [823637.0, 243399.0, 238012.0, 231484.0, 229906.0]
-openbsd = [303694.0, 313960.0, 316240.0, 301332.0, 330669.0]
-note = "no ratio: spread 249.5 % (EmiBSD), 9.3 % (OpenBSD), over 15 %"
+emibsd = [284485.0, 282159.0, 283491.0, 229623.0, 230007.0]
+openbsd = [307500.0, 358326.0, 287615.0, 301484.0, 283269.0]
+note = "no ratio: spread 19.4 % (EmiBSD), 24.9 % (OpenBSD), over 15 %"
 
 [measurement.emibsd_stats]
-median = 238012.0
-min = 229906.0
-max = 823637.0
-spread_percent = 249.454
+median = 282159.0
+min = 229623.0
+max = 284485.0
+spread_percent = 19.444
 
 [measurement.openbsd_stats]
-median = 313960.0
-min = 301332.0
-max = 330669.0
-spread_percent = 9.344
+median = 301484.0
+min = 283269.0
+max = 358326.0
+spread_percent = 24.896
 
 [[measurement]]
 name = "tcpbench"
 unit = "Mbps"
 better = "higher"
-emibsd = [633.249, 579.374, 511.591, 511.168, 507.667]
-openbsd = [484.019, 442.847, 513.615, 523.306, 487.573]
-note = "no ratio: spread 24.5 % (EmiBSD), 16.5 % (OpenBSD), over 15 %"
+emibsd = [762.698, 722.929, 694.839, 795.464, 785.172]
+openbsd = [545.977, 565.083, 579.49, 579.972, 554.502]
+ratio = 1.35
 
 [measurement.emibsd_stats]
-median = 511.591
-min = 507.667
-max = 633.249
-spread_percent = 24.547
+median = 762.698
+min = 694.839
+max = 795.464
+spread_percent = 13.193
 
 [measurement.openbsd_stats]
-median = 487.573
-min = 442.847
-max = 523.306
-spread_percent = 16.502
+median = 565.083
+min = 545.977
+max = 579.972
+spread_percent = 6.016
