@@ -76,6 +76,12 @@
 //!   a link's reader; `PoolBox` keeps `DerefMut` for an item that only its owner reaches
 //!   (amd64's `pv_entry`, owned by its chain). [`PoolArc::from_value`] rebuilds a counted
 //!   handle from a pointer to the value a record keeps (`pmap_reference(pve->pv_pmap)`).
+//! - N3.1 commit 5: the raw form of a [`SharedBox`], for the type-erased slot the first item
+//!   above waited for: arm64's level-3 table keeps its `pte_desc`s in a page of 512 words
+//!   (the C's `struct pmapvp3`'s `vp[]`, beside the 512 entries the MMU reads), where a
+//!   two-word handle does not fit. [`SharedBox::into_raw`] gives the handle up for the
+//!   pointer (the slot owns the item then); [`SharedBox::from_raw`] takes it back, once, to
+//!   free it. The pool rides in the handle, so `from_raw` names it.
 
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, offset_of};
@@ -497,6 +503,35 @@ impl<T: 'static> SharedBox<T> {
     pub fn link(this: &Self) -> NonNull<T> {
         this.0.item
     }
+
+    /// Gives the handle up for the item's pointer, with the item's whole provenance: whoever
+    /// keeps the pointer (a word of a table page) owns the item from now on, and frees it by
+    /// [`SharedBox::from_raw`]. The item is not freed here; dropped, the pointer leaks it.
+    pub fn into_raw(this: Self) -> NonNull<T> {
+        let this = ManuallyDrop::new(this);
+        this.0.item
+    }
+
+    /// The handle back from what [`SharedBox::into_raw`] returned, to free the item or keep
+    /// it as a handle again.
+    ///
+    /// # Safety
+    ///
+    /// `raw` was returned by `into_raw` for an item of `pool` (`get_linked` on that pool), and
+    /// no handle was rebuilt from it since: each `into_raw` is answered by at most one
+    /// `from_raw`, so the item has one owner again and is put back once. Every link to the
+    /// item is still read only under the lock that guards its removal (the type's contract).
+    #[cfg_attr(
+        not(all(target_os = "none", target_arch = "aarch64")),
+        allow(dead_code, reason = "arm64's level-3 table slots alone keep raw items")
+    )]
+    pub(crate) unsafe fn from_raw(pool: &'static BoxPool<T>, raw: NonNull<T>) -> Self {
+        SharedBox(PoolBox {
+            item: raw,
+            pool,
+            _owns: PhantomData,
+        })
+    }
 }
 
 impl<T: 'static> Deref for SharedBox<T> {
@@ -706,6 +741,24 @@ mod tests {
         assert_eq!(link.as_ptr().cast_const(), &raw const *b);
         assert_eq!(P.nout(), 1);
         drop(b);
+        assert_eq!(P.nout(), 0);
+    }
+
+    #[test]
+    fn a_shared_box_given_up_for_its_pointer_is_freed_once_back() {
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testraw"), Ok(()));
+        let b = P.get_linked(PR_NOWAIT, || 7).unwrap();
+        let link = SharedBox::link(&b);
+        let raw = SharedBox::into_raw(b);
+        assert_eq!(raw, link);
+        // The item stays out while only the pointer owns it.
+        assert_eq!(P.nout(), 1);
+        // SAFETY: `raw` is what `into_raw` returned for an item of `P`, rebuilt this once.
+        let back = unsafe { SharedBox::from_raw(&P, raw) };
+        assert_eq!(*back, 7);
+        drop(back);
         assert_eq!(P.nout(), 0);
     }
 
