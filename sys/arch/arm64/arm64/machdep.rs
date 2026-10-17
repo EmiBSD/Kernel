@@ -129,12 +129,9 @@ use libkern::StaticCell;
 use crate::arch::arm64::arm64::autoconf::BOOTMAC;
 use crate::arch::arm64::arm64::bus_space::ARM64_BS_TAG;
 use crate::arch::arm64::arm64::cpu;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpu::AP_TTBR1;
 use crate::arch::arm64::arm64::cpu::cpu_kick;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpu::cpu_unidle;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpufunc::cpu_dcache_wb_range;
 use crate::arch::arm64::arm64::cpufunc::cpu_wfi;
 use crate::arch::arm64::arm64::cpuswitch::cpu_switchto_asm;
@@ -142,7 +139,6 @@ use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 use crate::arch::arm64::arm64::fpu::{fpu_drop, fpu_save};
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
 use crate::arch::arm64::include::armreg::{PSR_DIT, PSR_M_EL0t};
 use crate::arch::arm64::include::bootconfig::Arm64Bootparams;
@@ -168,12 +164,9 @@ use crate::dev::efi::efi::{
     EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
 };
 use crate::dev::fdt::pluart_fdt::pluart_init_cons;
-#[cfg(feature = "multiprocessor")]
 use crate::dev::fdt::psci::psci_cpu_on;
-#[cfg(feature = "multiprocessor")]
 use crate::dev::fdt::pscivar::PSCI_SUCCESS;
 use crate::dev::fdt::simplefb::simplefb_init_cons;
-#[cfg(feature = "multiprocessor")]
 use crate::dev::ofw::fdt::fdt_node_property_int;
 use crate::dev::ofw::fdt::{
     FdtNode, FdtReg, fdt_child_node, fdt_find_node, fdt_get_reg, fdt_get_size, fdt_init,
@@ -188,7 +181,6 @@ use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_int, sysctl_rdquad, sy
 use crate::kern::subr_log::init_static_msgbuf;
 use crate::kern::vfs_bio::bufinit;
 use crate::kprintf;
-#[cfg(feature = "multiprocessor")]
 use crate::machine::bootinfo::BootCpu;
 use crate::machine::bootinfo::BootMp;
 use crate::machine::bootinfo::{BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion};
@@ -283,7 +275,6 @@ pub static CPU_INFO: [CiPtr<CpuInfo>; MAXCPUS as usize] = {
 
 /// The processors from the boot protocol (`MULTIPROCESSOR`), which `initarm` keeps for
 /// `cpu_start_secondary` (`cpu.rs`): written once by `initarm` on the boot CPU.
-#[cfg(feature = "multiprocessor")]
 pub static BOOT_MP: StaticCell<Option<BootMp>> = StaticCell::new(None);
 
 /// `proc0paddr`: proc0's u-area (its pcb; the boot stack is Limine's).
@@ -455,10 +446,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
 
     // The processors and the way to start them (MULTIPROCESSOR, cpu_start_secondary).
     // SAFETY: once, on the boot CPU, before any reader (cpu_attach runs much later).
-    #[cfg(feature = "multiprocessor")]
-    unsafe {
-        BOOT_MP.write(boot.mp)
-    };
+    unsafe { BOOT_MP.write(boot.mp) };
 
     // The FDT, memory-map and page-table work of the C happens in the boot protocol; the
     // device map below stands in for `pmap_bootstrap_bs_map` (see the module's deviations).
@@ -616,10 +604,8 @@ static BOOT_DMA_CONSTRAINT: StaticCell<Option<(u64, u64)>> = StaticCell::new(Non
 
 /// The processors `/cpus` lists (boot(8)'s entry, `MULTIPROCESSOR`): their `reg`, the MPIDR
 /// affinity.
-#[cfg(feature = "multiprocessor")]
 static BOOTARG_CPUS: StaticCell<[u64; MAXCPUS as usize]> = StaticCell::new([0; MAXCPUS as usize]);
 /// How many of [`BOOTARG_CPUS`] are filled.
-#[cfg(feature = "multiprocessor")]
 static BOOTARG_NCPUS: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "C" {
@@ -1048,58 +1034,52 @@ unsafe fn bootarg_bzero(p: &[u8]) {
 /// The processors and the way to start them under boot(8): `/cpus`'s `cpu` nodes and
 /// `/psci` (`MULTIPROCESSOR`; `None` without PSCI).
 fn bootarg_mp() -> Option<BootMp> {
-    #[cfg(feature = "multiprocessor")]
-    {
-        let psci = fdt_find_node(b"/psci");
-        if psci.is_null() {
-            return None;
-        }
-        // psci(4) (`dev/fdt/psci.rs`) attaches before the processors (`mainbus_attach_psci`)
-        // and makes the CPU_ON call; without a `/psci` node there is no way to start them.
-
-        let cpus = fdt_find_node(b"/cpus");
-        if cpus.is_null() {
-            return None;
-        }
-        let acells = fdt_node_property_int(cpus, b"#address-cells").unwrap_or(2) as usize;
-        // SAFETY: the boot CPU, before any reader (`BootMp` is handed out below).
-        let list = unsafe { BOOTARG_CPUS.get_mut() };
-        let mut n = 0;
-        let mut node = fdt_child_node(cpus);
-        while !node.is_null() && n < list.len() {
-            let is_cpu = fdt_node_property(node, b"device_type")
-                .is_some_and(|t| t.starts_with(b"cpu\0") || t == b"cpu");
-            if let Some(reg) = fdt_node_property(node, b"reg")
-                && is_cpu
-                && (acells == 1 || acells == 2)
-                && reg.len() >= 4 * acells
-            {
-                let mut hwid = 0u64;
-                for c in reg[..4 * acells].chunks(4) {
-                    hwid = (hwid << 32) | u64::from(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
-                }
-                list[n] = hwid;
-                n += 1;
-            }
-            node = fdt_next_node(node);
-        }
-        if n == 0 {
-            return None;
-        }
-        BOOTARG_NCPUS.store(n as u32, Ordering::Relaxed);
-        Some(BootMp {
-            bsp_hwid: read_specialreg!("mpidr_el1") & MPIDR_AFF,
-            ncpus: n,
-            cpu: bootarg_mp_cpu,
-            start: bootarg_mp_start,
-        })
+    let psci = fdt_find_node(b"/psci");
+    if psci.is_null() {
+        return None;
     }
-    #[cfg(not(feature = "multiprocessor"))]
-    None
+    // psci(4) (`dev/fdt/psci.rs`) attaches before the processors (`mainbus_attach_psci`)
+    // and makes the CPU_ON call; without a `/psci` node there is no way to start them.
+
+    let cpus = fdt_find_node(b"/cpus");
+    if cpus.is_null() {
+        return None;
+    }
+    let acells = fdt_node_property_int(cpus, b"#address-cells").unwrap_or(2) as usize;
+    // SAFETY: the boot CPU, before any reader (`BootMp` is handed out below).
+    let list = unsafe { BOOTARG_CPUS.get_mut() };
+    let mut n = 0;
+    let mut node = fdt_child_node(cpus);
+    while !node.is_null() && n < list.len() {
+        let is_cpu = fdt_node_property(node, b"device_type")
+            .is_some_and(|t| t.starts_with(b"cpu\0") || t == b"cpu");
+        if let Some(reg) = fdt_node_property(node, b"reg")
+            && is_cpu
+            && (acells == 1 || acells == 2)
+            && reg.len() >= 4 * acells
+        {
+            let mut hwid = 0u64;
+            for c in reg[..4 * acells].chunks(4) {
+                hwid = (hwid << 32) | u64::from(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
+            }
+            list[n] = hwid;
+            n += 1;
+        }
+        node = fdt_next_node(node);
+    }
+    if n == 0 {
+        return None;
+    }
+    BOOTARG_NCPUS.store(n as u32, Ordering::Relaxed);
+    Some(BootMp {
+        bsp_hwid: read_specialreg!("mpidr_el1") & MPIDR_AFF,
+        ncpus: n,
+        cpu: bootarg_mp_cpu,
+        start: bootarg_mp_start,
+    })
 }
 
 /// [`BootMp::cpu`] under boot(8): processor `i` of `/cpus`.
-#[cfg(feature = "multiprocessor")]
 fn bootarg_mp_cpu(i: usize) -> BootCpu {
     let n = BOOTARG_NCPUS.load(Ordering::Relaxed) as usize;
     // SAFETY: written once by `bootarg_mp` before the `BootMp` existed; read-only since.
@@ -1117,7 +1097,6 @@ fn bootarg_mp_cpu(i: usize) -> BootCpu {
 /// # Safety
 ///
 /// As [`BootMp::start`] states.
-#[cfg(feature = "multiprocessor")]
 unsafe fn bootarg_mp_start(i: usize, arg: usize) {
     unsafe extern "C" {
         /// `cpu_hatch_secondary` (`locore.S`).
@@ -1448,22 +1427,14 @@ pub fn setsoftast() {
 }
 
 /// `signotify(p)` (`<machine/cpu.h>`): notify the current process (p) that it has a signal
-/// pending, process as soon as possible. With `MULTIPROCESSOR`, `aston(p)` and
-/// `cpu_unidle(p->p_cpu)`; without, `setsoftast()`, which posts the AST to the thread on this
-/// CPU.
+/// pending, process as soon as possible: `MULTIPROCESSOR`'s `aston(p)` and
+/// `cpu_unidle(p->p_cpu)` (the kernel is always MP, decision 40; the C's uniprocessor
+/// `setsoftast()` is not called here).
 pub fn signotify(p: &Proc) {
-    #[cfg(feature = "multiprocessor")]
-    {
-        aston(p);
-        // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
-        if let Some(ci) = unsafe { p.p_cpu.get().as_ref() } {
-            cpu_unidle(ci);
-        }
-    }
-    #[cfg(not(feature = "multiprocessor"))]
-    {
-        let _ = p;
-        setsoftast();
+    aston(p);
+    // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
+    if let Some(ci) = unsafe { p.p_cpu.get().as_ref() } {
+        cpu_unidle(ci);
     }
 }
 

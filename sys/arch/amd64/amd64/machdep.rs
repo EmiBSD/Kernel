@@ -540,10 +540,7 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
     // MULTIPROCESSOR: the processors the bootloader found, for mainbus_attach (the C's
     // acpimadt/mpbios read the firmware tables) and mp_cpu_start.
     // SAFETY: the boot CPU, once, before anything reads it.
-    #[cfg(feature = "multiprocessor")]
-    unsafe {
-        crate::arch::amd64::amd64::cpu::BOOT_MP.write(boot.mp)
-    };
+    unsafe { crate::arch::amd64::amd64::cpu::BOOT_MP.write(boot.mp) };
 
     // locore0.S: cpuid(0) gives cpuid_level and the vendor string, cpuid(1) the signature
     // and the feature words; the NX bit of cpuid(0x80000001) is or'ed into cpu_feature
@@ -1034,15 +1031,11 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
 
     // We skip the first few pages for trampolines, hibernate, and to avoid buggy SMI
     // implementations that could corrupt the first 64KB.
-    #[allow(unused_mut)] // raised for MULTIPROCESSOR only
-    let mut avail_start = 16 * PAGE_SIZE;
-    #[cfg(feature = "multiprocessor")]
-    {
-        use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
-        avail_start = avail_start
-            .max(MP_TRAMPOLINE + PAGE_SIZE)
-            .max(MP_TRAMP_DATA + PAGE_SIZE);
-    }
+    // MULTIPROCESSOR: above the APs' trampoline code and data pages.
+    use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
+    let avail_start = (16 * PAGE_SIZE)
+        .max(MP_TRAMPOLINE + PAGE_SIZE)
+        .max(MP_TRAMP_DATA + PAGE_SIZE);
     // ACPI_TRAMPOLINE (acpi_wakecode.S), HIBERNATE and BOOT_KERNEL: not ported/configured.
     AVAIL_START.store(avail_start, Ordering::Relaxed);
 
@@ -1056,13 +1049,10 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
         .filter(|&pa| pa != 0)
         .map(|pa| Vaddr::new(direct_base + pa));
 
-    #[cfg(feature = "multiprocessor")]
     // SAFETY: the RSDP is firmware memory inside locore0's direct map, read once here.
     let mp = rsdp.and_then(|r| unsafe {
         crate::arch::amd64::amd64::cpu::mp_madt_cpus(r.as_usize(), direct_base)
     });
-    #[cfg(not(feature = "multiprocessor"))]
-    let mp = None;
 
     Ok(BootInfo {
         bootloader_name: c"boot(8)",
@@ -1281,80 +1271,77 @@ fn bootarg_memmap(
 /// `MP_TRAMPOLINE` and `MP_TRAMP_DATA` and points its `mp_pdirpa` at the kernel's PML4.
 /// Only after a boot by boot(8): under Limine the bootloader starts the processors.
 pub fn map_tramps() {
-    #[cfg(feature = "multiprocessor")]
-    {
-        use crate::arch::amd64::amd64::mptramp::{
-            cpu_spinup_trampoline, cpu_spinup_trampoline_end, mp_pdirpa, mp_tramp_data_end,
-            mp_tramp_data_start,
-        };
-        use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
-        use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
-        use crate::sys::mman::{PROT_READ, PROT_WRITE};
+    use crate::arch::amd64::amd64::mptramp::{
+        cpu_spinup_trampoline, cpu_spinup_trampoline_end, mp_pdirpa, mp_tramp_data_end,
+        mp_tramp_data_start,
+    };
+    use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
+    use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
+    use crate::sys::mman::{PROT_READ, PROT_WRITE};
 
-        if AVAIL_START.load(Ordering::Relaxed) == 0 {
-            // Booted by Limine: its MP request starts the processors (BootMp::start).
-            return;
-        }
-        let kmp = pmap_kernel();
-
-        // The initial PML4 pointer must be below 4G, so if the current one isn't, use a
-        // "bounce buffer" and save it for tramps to use.
-        let pdirpa = kmp.cr3() as usize;
-        if pdirpa > 0xffff_ffff {
-            let _ = unported!("map_tramps: the lo32 bounce page for a PML4 above 4 GB");
-            return;
-        }
-        let tramp_pdirpa = pdirpa;
-
-        // Map MP tramp code and data pages RW for copy
-        // SAFETY: the two low pages are the kernel's (getbootinfo kept them out of uvm) and
-        // their page tables exist (pmap_prealloc_lowmem_ptps).
-        unsafe {
-            pmap_kenter_pa(
-                Vaddr::new(MP_TRAMPOLINE),
-                Paddr::new(MP_TRAMPOLINE),
-                PROT_READ | PROT_WRITE,
-            );
-            pmap_kenter_pa(
-                Vaddr::new(MP_TRAMP_DATA),
-                Paddr::new(MP_TRAMP_DATA),
-                PROT_READ | PROT_WRITE,
-            );
-        }
-        let code = ptr::addr_of!(cpu_spinup_trampoline).cast::<u8>();
-        let code_len = ptr::addr_of!(cpu_spinup_trampoline_end) as usize - code as usize;
-        let data = ptr::addr_of!(mp_tramp_data_start).cast::<u8>();
-        let data_len = ptr::addr_of!(mp_tramp_data_end) as usize - data as usize;
-        // SAFETY: the two pages were just mapped writable at their own addresses; the
-        // sources are mptramp.S's bytes in .rodata, shorter than a page each.
-        unsafe {
-            ptr::write_bytes(MP_TRAMPOLINE as *mut u8, 0xcc, PAGE_SIZE);
-            ptr::write_bytes(MP_TRAMP_DATA as *mut u8, 0xcc, PAGE_SIZE);
-            ptr::copy_nonoverlapping(code, MP_TRAMPOLINE as *mut u8, code_len);
-            ptr::copy_nonoverlapping(data, MP_TRAMP_DATA as *mut u8, data_len);
-
-            // We need to patch this after we copy the tramp data, the symbol points into the
-            // copied tramp data page (at an odd offset in it: the write is unaligned).
-            ptr::write_unaligned(
-                ptr::addr_of!(mp_pdirpa).cast::<u32>().cast_mut(),
-                tramp_pdirpa as u32,
-            );
-        }
-
-        // Unmap, will be remapped in cpu_start_secondary
-        // SAFETY: the two mappings entered above, used by nothing else.
-        unsafe {
-            pmap_kremove(
-                Vaddr::new(MP_TRAMPOLINE),
-                crate::sys::types::Vsize::new(PAGE_SIZE),
-            );
-            pmap_kremove(
-                Vaddr::new(MP_TRAMP_DATA),
-                crate::sys::types::Vsize::new(PAGE_SIZE),
-            );
-        }
-        crate::arch::amd64::amd64::cpu::MP_TRAMP_INSTALLED.store(true, Ordering::Release);
+    if AVAIL_START.load(Ordering::Relaxed) == 0 {
+        // Booted by Limine: its MP request starts the processors (BootMp::start).
+        return;
     }
+    let kmp = pmap_kernel();
+
+    // The initial PML4 pointer must be below 4G, so if the current one isn't, use a
+    // "bounce buffer" and save it for tramps to use.
+    let pdirpa = kmp.cr3() as usize;
+    if pdirpa > 0xffff_ffff {
+        let _ = unported!("map_tramps: the lo32 bounce page for a PML4 above 4 GB");
+        return;
+    }
+    let tramp_pdirpa = pdirpa;
+
+    // Map MP tramp code and data pages RW for copy
+    // SAFETY: the two low pages are the kernel's (getbootinfo kept them out of uvm) and
+    // their page tables exist (pmap_prealloc_lowmem_ptps).
+    unsafe {
+        pmap_kenter_pa(
+            Vaddr::new(MP_TRAMPOLINE),
+            Paddr::new(MP_TRAMPOLINE),
+            PROT_READ | PROT_WRITE,
+        );
+        pmap_kenter_pa(
+            Vaddr::new(MP_TRAMP_DATA),
+            Paddr::new(MP_TRAMP_DATA),
+            PROT_READ | PROT_WRITE,
+        );
+    }
+    let code = ptr::addr_of!(cpu_spinup_trampoline).cast::<u8>();
+    let code_len = ptr::addr_of!(cpu_spinup_trampoline_end) as usize - code as usize;
+    let data = ptr::addr_of!(mp_tramp_data_start).cast::<u8>();
+    let data_len = ptr::addr_of!(mp_tramp_data_end) as usize - data as usize;
+    // SAFETY: the two pages were just mapped writable at their own addresses; the
+    // sources are mptramp.S's bytes in .rodata, shorter than a page each.
+    unsafe {
+        ptr::write_bytes(MP_TRAMPOLINE as *mut u8, 0xcc, PAGE_SIZE);
+        ptr::write_bytes(MP_TRAMP_DATA as *mut u8, 0xcc, PAGE_SIZE);
+        ptr::copy_nonoverlapping(code, MP_TRAMPOLINE as *mut u8, code_len);
+        ptr::copy_nonoverlapping(data, MP_TRAMP_DATA as *mut u8, data_len);
+
+        // We need to patch this after we copy the tramp data, the symbol points into the
+        // copied tramp data page (at an odd offset in it: the write is unaligned).
+        ptr::write_unaligned(
+            ptr::addr_of!(mp_pdirpa).cast::<u32>().cast_mut(),
+            tramp_pdirpa as u32,
+        );
+    }
+
+    // Unmap, will be remapped in cpu_start_secondary
+    // SAFETY: the two mappings entered above, used by nothing else.
+    unsafe {
+        pmap_kremove(
+            Vaddr::new(MP_TRAMPOLINE),
+            crate::sys::types::Vsize::new(PAGE_SIZE),
+        );
+        pmap_kremove(
+            Vaddr::new(MP_TRAMP_DATA),
+            crate::sys::types::Vsize::new(PAGE_SIZE),
+        );
+    }
+    crate::arch::amd64::amd64::cpu::MP_TRAMP_INSTALLED.store(true, Ordering::Release);
 }
 
 /// `x86_64_proc0_tss_ldt_init`: loads the boot CPU's task register and clears the LDT.
@@ -1720,27 +1707,26 @@ pub fn sys_sigreturn(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 }
 
 /// `cpu_kick`: force a CPU into the kernel, whether or not it's idle (`MULTIPROCESSOR`;
-/// nothing on one CPU).
-pub fn cpu_kick(_ci: &CpuInfo) {
-    #[cfg(feature = "multiprocessor")]
+/// nothing for the running CPU itself).
+pub fn cpu_kick(ci: &CpuInfo) {
     // only need to kick other CPUs
-    if !ptr::eq(_ci, curcpu()) {
+    if !ptr::eq(ci, curcpu()) {
         use crate::arch::amd64::amd64::cpu::CPU_MWAIT_SIZE;
         use crate::arch::amd64::include::cpu::{MWAIT_IN_IDLE, MWAIT_KEEP_IDLING};
         if CPU_MWAIT_SIZE.load(Ordering::Relaxed) > 0 {
             // If not idling, then send an IPI, else just clear the "keep idling" bit.
-            if _ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_IN_IDLE == 0 {
+            if ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_IN_IDLE == 0 {
                 crate::arch::amd64::amd64::ipi::x86_send_ipi(
-                    _ci,
+                    ci,
                     crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
                 );
             } else {
-                _ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
+                ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
             }
         } else {
             // no mwait, so need an IPI
             crate::arch::amd64::amd64::ipi::x86_send_ipi(
-                _ci,
+                ci,
                 crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
             );
         }
@@ -1805,7 +1791,6 @@ pub fn boot(howto: i32) -> ! {
         // haltsys:
         let _ = unported!("config_suspend_all (DVACT_POWERDOWN)");
 
-        #[cfg(feature = "multiprocessor")]
         crate::arch::amd64::amd64::ipi::x86_broadcast_ipi(
             crate::arch::amd64::include::intrdefs::X86_IPI_HALT,
         );
@@ -1958,29 +1943,26 @@ pub fn clear_resched(ci: &CpuInfo) {
     ci.ci_want_resched.store(0, Ordering::SeqCst);
 }
 
-/// `cpu_unidle(ci)`: with `MULTIPROCESSOR`, wakes another CPU's idle loop: when the CPU
-/// idles in `mwait` only (`MWAIT_ONLY`), by clearing its "keep idling" bit, which the
-/// monitor sees; otherwise with an IPI. On one CPU the idle loop sees the run queue itself.
-pub fn cpu_unidle(_ci: &CpuInfo) {
-    #[cfg(feature = "multiprocessor")]
+/// `cpu_unidle(ci)` (`MULTIPROCESSOR`'s): wakes another CPU's idle loop: when the CPU idles
+/// in `mwait` only (`MWAIT_ONLY`), by clearing its "keep idling" bit, which the monitor sees;
+/// otherwise with an IPI. The running CPU's own idle loop sees the run queue itself.
+pub fn cpu_unidle(ci: &CpuInfo) {
+    use crate::arch::amd64::amd64::cpu::CPU_MWAIT_SIZE;
+    use crate::arch::amd64::include::cpu::{MWAIT_KEEP_IDLING, MWAIT_ONLY};
+    if CPU_MWAIT_SIZE.load(Ordering::Relaxed) > 0
+        && ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_ONLY != 0
     {
-        use crate::arch::amd64::amd64::cpu::CPU_MWAIT_SIZE;
-        use crate::arch::amd64::include::cpu::{MWAIT_KEEP_IDLING, MWAIT_ONLY};
-        if CPU_MWAIT_SIZE.load(Ordering::Relaxed) > 0
-            && _ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_ONLY != 0
-        {
-            // Just clear the "keep idling" bit; if it wasn't idling then we didn't need to
-            // do anything anyway.
-            _ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
-            return;
-        }
+        // Just clear the "keep idling" bit; if it wasn't idling then we didn't need to
+        // do anything anyway.
+        ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
+        return;
+    }
 
-        if !ptr::eq(_ci, curcpu()) {
-            crate::arch::amd64::amd64::ipi::x86_send_ipi(
-                _ci,
-                crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
-            );
-        }
+    if !ptr::eq(ci, curcpu()) {
+        crate::arch::amd64::amd64::ipi::x86_send_ipi(
+            ci,
+            crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
+        );
     }
 }
 
