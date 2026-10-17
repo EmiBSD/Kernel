@@ -10,9 +10,10 @@ Four tiers. Every change lands with the tier it belongs to.
    `mod tests` outside `<TESTS>` and a `<TESTS>` zone without one.
    Table-driven tests for C-compatible behaviour (`strlcpy` return values, `crc32` vectors).
    The host tests share one process, and `setup_real_memory` (under
-   `uvm_pmemrange::tests::LOCK`) gives each test fresh kernel memory, leaking the old one. So a
-   global that test code touches and that holds kernel memory or pool items gets a
-   `*_test_reset` called from `setup_real_memory` (or from the subsystem's shared setup), which
+   `kernel::testutil::MEMORY`, the page system's lock since N3.3) gives each test fresh kernel
+   memory, leaking the old one. So a global that test code touches and that holds kernel
+   memory or pool items gets a `*_test_reset` called from `setup_real_memory` (or from the
+   subsystem's shared setup), which
    forgets the old state without freeing it: freeing into, or growing from, an earlier test's
    memory or a pool initialised again since crashes a later test, and a panic inside
    `config_attach` or under a kernel lock then hangs the rest of the run (rule of

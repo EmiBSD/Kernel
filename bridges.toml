@@ -113,10 +113,6 @@ trait = "KmMaps"
 for = ["sys/kernel/vm/km.rs"]
 paid_by = "N3"
 
-# bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
-# sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
-# pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by
-# sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not a registered slot.
 # bsd: the page's owners, struct uvm_object (sys/uvm/uvm_object.rs: UVM_OBJ_IS_DUMMY,
 # UVM_OBJ_IS_KERN_OBJECT, rw_write_held/rw_lock_held of vmobjlock, memt and uo_npages) and
 # struct vm_anon (sys/uvm/uvm_anon.rs: an_lock held, an_ref, an_page), implemented by bsd's
@@ -138,6 +134,10 @@ trait = "BufCacheStats"
 for = ["sys/kernel/vm/pmemrange.rs"]
 paid_by = "N5"
 
+# bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
+# sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
+# pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by
+# sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not a registered slot.
 # kernel::pipe::PipeGlue
 [[bridge]]
 trait = "PipeGlue"

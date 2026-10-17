@@ -2836,7 +2836,6 @@ mod tests {
     }
 
     /// A test's memory is gone at the next setup: the per-CPU cache it filled must not hand
-
     /// its pages to the next test (hal's managed-page check refuses to zero them).
     #[cfg(feature = "multiprocessor")]
     #[test]
