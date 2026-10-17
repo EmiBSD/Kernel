@@ -171,6 +171,7 @@ use super::super::include::pte::{
     L4_FRAME, L4_MASK, L4_SHIFT, NBPD_L1, NBPD_L2, NBPD_L3, NBPD_L4, PG_AVAIL1, PG_AVAIL2, PG_RO,
     PG_RW, PG_V, PdEntry,
 };
+use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
 use crate::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, VmProt};
 
 /// `VA_SIGN_MASK`: the sign-extension bits of a canonical address.
@@ -419,11 +420,48 @@ pub const fn protection_code(prot: VmProt, pg_nx: u64, pg_xo: u64) -> u64 {
     }
 }
 
+/// The managed kernel window `[virtual_avail, end)`: `pmap_bootstrap`'s `virtual_avail` and
+/// the end `pmap_virtual_space` reports, for a direct map `[direct_base, direct_end)`.
+///
+/// The C's window is `[VM_MIN_KERNEL_ADDRESS, VM_MAX_KERNEL_ADDRESS)`, PML4 slot
+/// `L4_SLOT_KERN`, and so is this one while the direct map lies elsewhere (`locore0.S`'s
+/// `L4_SLOT_DIRECT`). When the direct map overlaps that slot (Limine's HHDM starts there),
+/// the window starts at the direct map's end and ends where that address's own PML4 slot
+/// does: never larger than the C's (one slot, asserted below), never a second top-level
+/// entry (`NKL4_MAX_ENTRIES`), never over the direct map. `None` when no window is left: an
+/// empty or wrapping direct map, or one that reaches `KERNBASE`'s slot (the image and the
+/// module window).
+pub const fn kernel_window(direct_base: usize, direct_end: usize) -> Option<(usize, usize)> {
+    if direct_end <= direct_base {
+        return None;
+    }
+    let start = if direct_base < VM_MAX_KERNEL_ADDRESS && direct_end > VM_MIN_KERNEL_ADDRESS {
+        direct_end
+    } else {
+        VM_MIN_KERNEL_ADDRESS
+    };
+    // `start` is in the kernel half, so its slot is L4_SLOT_KERN..=L4_SLOT_KERNBASE.
+    let slot = pl_i(start, PTP_LEVELS);
+    if slot >= L4_SLOT_KERNBASE {
+        return None;
+    }
+    let end = va_sign_neg((slot + 1) * NBPD_L4);
+    if direct_base < end && start < direct_end {
+        return None;
+    }
+    Some((start, end))
+}
+
 /// `ci_cflushsz` from `cpuid(1)`'s `%ebx`, as `identifycpu` computes it: the `clflush` line
 /// size is bits 15-8, in 8-byte units (0 on a CPU without `clflush`).
 pub const fn cflushsz_of(ebx: u32) -> usize {
     (((ebx >> 8) & 0xff) * 8) as usize
 }
+
+// The C's kernel window is exactly one PML4 slot, so [`kernel_window`] (one slot at most)
+// never exceeds it.
+const _: () = assert!(VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS == NBPD_L4);
+const _: () = assert!(pl_i(VM_MIN_KERNEL_ADDRESS, PTP_LEVELS) == L4_SLOT_KERN);
 /* </CODE> */
 
 /* <TESTS> */
@@ -513,6 +551,71 @@ mod tests {
         ];
         for (name, value) in ours {
             assert_eq!(crate::reftest::int(&defs, name), Some(*value), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_kernel_window_is_one_slot_after_the_direct_map() {
+        const SLOT: usize = NBPD_L4;
+        let kern = VM_MIN_KERNEL_ADDRESS;
+        // (direct_base, direct_end) -> the window.
+        let cases: [((usize, usize), Option<(usize, usize)>); 9] = [
+            // boot(8): locore0.S's direct map at L4_SLOT_DIRECT, the C's window.
+            (
+                (
+                    va_sign_neg(L4_SLOT_DIRECT * SLOT),
+                    va_sign_neg(L4_SLOT_DIRECT * SLOT) + (4 << 30),
+                ),
+                Some((kern, VM_MAX_KERNEL_ADDRESS)),
+            ),
+            // Limine, 4 GiB of memory: the rest of slot 256 (4b's window).
+            (
+                (kern, kern + (4 << 30)),
+                Some((kern + (4 << 30), VM_MAX_KERNEL_ADDRESS)),
+            ),
+            // Limine, QEMU's map reaching 1 TiB: the HHDM ends where slot 258 starts, and the
+            // window is that whole slot (the N3 integration's boot, inverted by 4b's clamp).
+            (
+                (kern, 0xffff_8100_0000_0000),
+                Some((0xffff_8100_0000_0000, 0xffff_8180_0000_0000)),
+            ),
+            // An HHDM ending inside slot 257: the rest of 257.
+            (
+                (kern, kern + SLOT + (8 << 30)),
+                Some((kern + SLOT + (8 << 30), kern + 2 * SLOT)),
+            ),
+            // A direct map starting above slot 256 leaves the C's window whole.
+            (
+                (kern + SLOT, kern + 2 * SLOT),
+                Some((kern, VM_MAX_KERNEL_ADDRESS)),
+            ),
+            // A direct map inside slot 256, not at its start: the window starts above it.
+            (
+                (kern + (1 << 30), kern + (5 << 30)),
+                Some((kern + (5 << 30), VM_MAX_KERNEL_ADDRESS)),
+            ),
+            // A direct map up to KERNBASE's slot leaves nothing.
+            ((kern, va_sign_neg(L4_SLOT_KERNBASE * SLOT)), None),
+            // Empty and wrapping direct maps are refused.
+            ((kern, kern), None),
+            ((kern + SLOT, 0), None),
+        ];
+        for ((base, end), want) in cases {
+            let got = kernel_window(base, end);
+            assert_eq!(got, want, "direct map [{base:#x}, {end:#x})");
+            if let Some((s, e)) = got {
+                assert!(s < e, "non-empty");
+                assert_eq!(pl_i(s, PTP_LEVELS), pl_i(e - 1, PTP_LEVELS), "one slot");
+                assert!(
+                    e - s <= VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS,
+                    "the C's size"
+                );
+                assert!(!(base < e && s < end), "no overlap with the direct map");
+                assert!(
+                    pl_i(s, PTP_LEVELS) < L4_SLOT_KERNBASE,
+                    "below KERNBASE's slot"
+                );
+            }
         }
     }
 

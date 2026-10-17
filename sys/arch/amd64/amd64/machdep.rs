@@ -592,7 +592,7 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
         image: None,
     });
     // The kernel map's base follows (`vm_min_kernel_address`, as sparc64's runtime
-    // VM_MIN_KERNEL_ADDRESS): the window is [virtual_avail, virtual_avail + the C's size).
+    // VM_MIN_KERNEL_ADDRESS): the window is [virtual_avail, the end of its PML4 slot).
     crate::uvm::uvm_init::VM_MIN_KERNEL_ADDRESS.store(virtual_avail.as_usize(), Ordering::Relaxed);
 
     // cpu_init_early_vctrap and the early PTE pages: M4 and the page tables.

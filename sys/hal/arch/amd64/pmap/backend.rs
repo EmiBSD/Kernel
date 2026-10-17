@@ -165,12 +165,15 @@
 //!   sits inside `[VM_MIN_KERNEL_ADDRESS, VM_MAX_KERNEL_ADDRESS)` as Limine's default
 //!   placement does; `pmap_growkernel` counts its PTPs from there (`pmap_kva_start`), keeps
 //!   the page-table pages the boot loader installed on the way, and panics on a large page
-//!   there. The window keeps the C's size but ends at `VM_MAX_KERNEL_ADDRESS`, the end of the
-//!   kernel's one PML4 slot (`pmap_virtual_space` ends at the lesser of `pmap_kva_start +
-//!   (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS)` and `VM_MAX_KERNEL_ADDRESS`), so the
-//!   managed range never needs a second top-level entry (LZ's window could straddle into slot
-//!   257 under Limine and grow there without one); the boot glue moves uvm's runtime
-//!   `vm_min_kernel_address` to `virtual_avail` ([`crate::pmap::Bootstrapped`]).
+//!   there. The window ends where `virtual_avail`'s own PML4 slot does (`kernel_window` in
+//!   `layout.rs`; `pmap_virtual_space` reports that end): the whole of the C's slot 256 when
+//!   the direct map is elsewhere, the rest of slot 256 when the direct map ends inside it, the
+//!   whole next free slot when it ends on a slot boundary (QEMU's map reaching 1 TiB puts
+//!   Limine's HHDM over slots 256-257 and the window in slot 258). So the window is never
+//!   larger than the C's, never over the direct map, and never needs a second top-level entry
+//!   (LZ's window could straddle two slots under Limine and grow into the second without
+//!   one); a direct map that leaves no window panics at bootstrap. The boot glue moves uvm's
+//!   runtime `vm_min_kernel_address` to `virtual_avail` ([`crate::pmap::Bootstrapped`]).
 //! - `pg_nx` comes from `EFER.NXE` as the boot loader left it (`BootstrapParams::nx`); the
 //!   C's `locore0.S` probes CPUID. PCID is off; `cpu_meltdown` is not configured (no
 //!   `pm_pdir_intel`); vmm's nested pmaps are not configured.
@@ -232,8 +235,8 @@ use super::super::include::vmparam::{
 use super::layout::{
     L2_BASE, L3_BASE, L4_BASE, NKPTP_INITIALIZER, NKPTPMAX_INITIALIZER, NTOPLEVEL_PDES,
     PDIR_SLOT_PTE, PG_PMAP_WC, PG_PVLIST, PG_W, PMAP_EFI, PMAP_NOCACHE, PMAP_NOCRYPT, PMAP_PA_MASK,
-    PMAP_WC, PTE_BASE, PTP_LEVELS, PTP_SHIFTS, pl_i, pl_pi, pmap_valid_entry, protection_code,
-    va_sign_neg,
+    PMAP_WC, PTE_BASE, PTP_LEVELS, PTP_SHIFTS, kernel_window, pl_i, pl_pi, pmap_valid_entry,
+    protection_code, va_sign_neg,
 };
 use super::tables::{
     PG_NX_BIT, PG_XO, PMAP_PG_WC, copy_frame, direct_map, direct_unmap, entry, entry_pa,
@@ -422,6 +425,9 @@ static PMAP_MAXKVADDR: AtomicUsize = AtomicUsize::new(VM_MIN_KERNEL_ADDRESS);
 /// Where the managed kernel range begins: `VM_MIN_KERNEL_ADDRESS` in the C (see the
 /// deviations).
 static PMAP_KVA_START: AtomicUsize = AtomicUsize::new(VM_MIN_KERNEL_ADDRESS);
+/// Where the managed kernel range ends: `VM_MAX_KERNEL_ADDRESS` in the C, the end of
+/// `pmap_kva_start`'s PML4 slot here (see the deviations).
+static PMAP_KVA_END: AtomicUsize = AtomicUsize::new(VM_MAX_KERNEL_ADDRESS);
 /// `nkptp[]`: how many page-table pages the kernel has at each level.
 static NKPTP: [AtomicUsize; PTP_LEVELS] = [
     AtomicUsize::new(NKPTP_INITIALIZER[0]),
@@ -610,11 +616,10 @@ fn pmap_alloc_level(kva: usize, lvl: usize, needed_ptps: &[isize; PTP_LEVELS]) {
     }
 }
 
-/// The end of the managed kernel window: it keeps the C's size but starts at
-/// `pmap_kva_start` (see the deviations).
+/// The end of the managed kernel window, set by the bootstrap: the end of `pmap_kva_start`'s
+/// own PML4 slot (see the deviations).
 fn kernel_virtual_end() -> usize {
-    (PMAP_KVA_START.load(Ordering::Relaxed) + (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS))
-        .min(VM_MAX_KERNEL_ADDRESS)
+    PMAP_KVA_END.load(Ordering::Relaxed)
 }
 
 /// `pmap_freepage` + `pmap_free_ptp`: frees the level-1 PTP `ptp` of `va` (which no longer
@@ -1339,16 +1344,18 @@ impl PmapBackend for Backend {
     fn bootstrap(p: &BootstrapParams) -> (Paddr, Vaddr) {
         set_direct_map(p.direct_base, p.direct_end);
         let kva_start = VM_MIN_KERNEL_ADDRESS;
-        // define the boundaries of the managed kernel virtual address space.
+        // define the boundaries of the managed kernel virtual address space: past the direct
+        // map when it overlaps the C's, inside one PML4 slot (see the deviations).
         let (direct_base, direct_end) = (p.direct_base.as_usize(), p.direct_end.as_usize());
-        let virtual_avail = if direct_base < VM_MAX_KERNEL_ADDRESS && direct_end > kva_start {
-            // The direct map overlaps the managed range (see the deviations).
-            direct_end.max(kva_start)
-        } else {
-            kva_start
+        let Some((virtual_avail, virtual_end)) = kernel_window(direct_base, direct_end) else {
+            hal_panic(format_args!(
+                "pmap_bootstrap: no kernel virtual space beside the direct map \
+                 [{direct_base:#x}, {direct_end:#x})"
+            ));
         };
         VIRTUAL_AVAIL.store(virtual_avail, Ordering::Relaxed); // first free KVA
         PMAP_KVA_START.store(virtual_avail, Ordering::Relaxed);
+        PMAP_KVA_END.store(virtual_end, Ordering::Relaxed);
         PMAP_MAXKVADDR.store(virtual_avail, Ordering::Relaxed);
 
         // pg_nx: whether the boot loader enabled NX (the C's locore0.S does, after CPUID).
