@@ -2386,6 +2386,17 @@ pub fn uvm_pmr_cache_test_reset() {
     }
     UVMEXP.percpucaches.store(0, Ordering::Relaxed);
 }
+
+/// Whether this CPU's page cache holds `pg` in either magazine (where a free of a page that
+/// is not "low" goes under `MULTIPROCESSOR`). Tests only.
+#[cfg(all(test, feature = "multiprocessor"))]
+pub(crate) fn uvm_pmr_cache_holds(pg: &VmPage) -> bool {
+    uvm_pmr_curcache().upc_magz.iter().any(|m| {
+        m.upci_pages[..m.npages()]
+            .iter()
+            .any(|slot| slot.points_to(pg))
+    })
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -2696,8 +2707,15 @@ mod tests {
 
         uvm_pagefree(pg, Owner::None);
         assert_eq!(avail(), total());
-        // On the free lists, or (MULTIPROCESSOR) in this CPU's page cache.
-        assert!(isfree(pg) || cfg!(feature = "multiprocessor"));
+        // On the free lists, or (MULTIPROCESSOR, a page of an unused range) in one of this
+        // CPU's magazines and on no free list.
+        #[cfg(not(feature = "multiprocessor"))]
+        assert!(isfree(pg));
+        #[cfg(feature = "multiprocessor")]
+        assert!(
+            !isfree(pg) && uvm_pmr_cache_holds(pg),
+            "the page is in this CPU's magazine"
+        );
         assert_all_valid();
     }
 

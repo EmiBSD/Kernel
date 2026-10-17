@@ -1708,6 +1708,56 @@ mod tests {
     }
 
     #[test]
+    fn bsearch_sorts_the_segments_and_bisection_finds_every_frame() {
+        // arm64's VM_PSTRAT_BSEARCH: physload keeps the table sorted by address whatever the
+        // load order, and vm_physseg_find bisects it. For tables of 1 to 6 segments (odd and
+        // even lengths), every frame from below the first to past the last is found exactly
+        // where a linear search finds it, gaps included.
+        let p = SegPolicy {
+            max: 16,
+            strat: SegStrat::Bsearch,
+        };
+        let order = [3usize, 1, 5, 0, 4, 2];
+        for nseg in 1..=order.len() {
+            let _g = testutil::pages_reset();
+            for &k in order.iter().filter(|&&k| k < nseg) {
+                let start = 0x100 + k * 0x100;
+                assert_eq!(
+                    uvm_page_physload(start, start + 0x40, start, start + 0x40, 0, p),
+                    Ok(())
+                );
+            }
+            let mut segs = [VmPhysseg::EMPTY; MAX_SEGS];
+            let n = boot_segments(&mut segs);
+            assert_eq!(n, nseg);
+            assert!(
+                segs[..n].windows(2).all(|w| w[0].start < w[1].start),
+                "{nseg} segments sorted by address"
+            );
+
+            uvm_page_init(&[]);
+            let table = vm_physmem();
+            assert_eq!(table.len(), nseg);
+            for pframe in 0xf0..0x100 + nseg * 0x100 + 0x10 {
+                let linear = table
+                    .iter()
+                    .position(|s| pframe >= s.start && pframe < s.end)
+                    .map(|i| (i, pframe - table[i].start));
+                assert_eq!(
+                    vm_physseg_find(pframe),
+                    linear,
+                    "frame {pframe:#x} of {nseg}"
+                );
+                if let Some((i, off)) = linear {
+                    let pg = PHYS_TO_VM_PAGE(Paddr::ptoa(pframe)).expect("a page");
+                    assert_eq!(pg.phys_addr, Paddr::ptoa(pframe));
+                    assert_eq!(pg.index(), table[i].first + off);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_full_table_and_a_late_segment_are_refused() {
         let _g = testutil::pages_reset();
         let p = SegPolicy {
@@ -1771,8 +1821,15 @@ mod tests {
         assert_eq!(free(), before - 1);
         uvm_pagefree(pg, Owner::None);
         assert_eq!(free(), before);
-        // On the free lists, or (MULTIPROCESSOR) in this CPU's page cache.
-        assert!(pg.is_free() || cfg!(feature = "multiprocessor"));
+        // On the free lists, or (MULTIPROCESSOR, a page of the unused high range) in one of
+        // this CPU's magazines and on no free list.
+        #[cfg(not(feature = "multiprocessor"))]
+        assert!(pg.is_free());
+        #[cfg(feature = "multiprocessor")]
+        assert!(
+            !pg.is_free() && pmemrange::uvm_pmr_cache_holds(pg),
+            "the page is in this CPU's magazine"
+        );
         assert!(!pg.has_owner() && pg.flags() & PG_BUSY == 0);
     }
 
