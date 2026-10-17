@@ -16,7 +16,8 @@ path = "lib.rs"
 module-rt = []
 # Forwarded by `bsd`'s features of the same names (sys/Cargo.toml), OpenBSD's options:
 diagnostic = []     # `option DIAGNOSTIC` -> the runtime's KASSERT(9)s are active
-multiprocessor = [] # `option MULTIPROCESSOR` -> the locks spin for other CPUs
+multiprocessor = [] # `option MULTIPROCESSOR` -> the locks spin for other CPUs (a default, decision 40)
+default = ["multiprocessor"] # the one kernel built (decision 40), abi_openbsd.ko and the host tests too
 
 [dependencies]
 libkern.workspace = true

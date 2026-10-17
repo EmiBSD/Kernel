@@ -280,7 +280,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
 | `ffs2` | `option FFS2` | FFS2 (UFS2 dinodes, the 64 KB super-block) in ffs; default |
 | `qemu` | — | QEMU-only exits (`isa-debug-exit`, semihosting), the boot self-tests, the TSC under TCG and the `uptime went backwards` check |
 | `inet6` | `option INET6` | IPv6: the `#ifdef INET6` sites outside `sys/netinet6` and `inet6domain` in `domains[]`; default, as in GENERIC. `sys/netinet6` itself (and the IPv6 tables and usrreqs it names, `route6_cache`, `tcp6_usrreqs`, ...) always compiles, like a library nothing reaches without the option, so the tree builds both ways |
-| `multiprocessor` | `option MULTIPROCESSOR` | off by default, so the uniprocessor kernel stays the plain build; `just build` and `just clippy` also build it, and since M11e every `just smoke` recipe boots it except `smoke-up` (the user's decision of 2026-10-03), since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
+| `multiprocessor` | `option MULTIPROCESSOR` | a default since decision 40 (the user, 2026-10-17): the MULTIPROCESSOR kernel is the only one built (every recipe, image, smoke, `abi_openbsd.ko` and host test; `hal` and `kernel` have it as a default too), and `bsd`'s `lib.rs` refuses a build without it. Until then it was off by default and `smoke-up` booted a kernel built without it; now `smoke-up` boots this one with `-smp 1`. The uniprocessor branches still in `bsd`'s inherited and adapted modules are unbuilt and go when N4 redesigns those files. Since M11e every `just smoke` recipe boots it, since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
 | `ntfs` | `option NTFS` | the read-only NTFS file system (`sys/ntfs`) and its `vfsconflist[]` entry; default, but compiled only where the architecture's GENERIC has it (amd64): see below |
 | `fuse` | `option FUSE` | FUSE (`sys/miscfs/fuse`), its `vfsconflist[]` entry, `cdevsw[]` 92 (`/dev/fuse0`) and `fuseattach` in `pdevinit[]`; default, as in GENERIC |
 | `viocon` | amd64 GENERIC's commented-out `#viocon* at virtio?` | viocon(4) (M16d) in neither GENERIC: the feature stands for uncommenting the line, so amd64's `ioconf.rs` gets the `viocon* at virtio?` entry and `cdevsw[]` 94 its entry points (`NVIOCON` 1, 0 without the feature as `config(8)` counts it: `ENXIO`); arm64's GENERIC has no such line, so nothing changes there. `dev/pv/viocon.rs` compiles on every build, so `just clippy` and the host tests cover it either way; off by default |
@@ -2137,8 +2137,8 @@ sequential run had grown to about 35 minutes of boots under TCG. Decided on 2026
 user's plan). The shape is one build phase, then one run phase:
 
 - `smoke-build` builds everything a recipe boots, once and in order: the MULTIPROCESSOR
-  kernels with `--features qemu`, the init stand-ins, and `smoke-up`'s uniprocessor kernels
-  (`build-up`, which leaves `bsd.up` beside the MP `bsd`). No recipe builds while others boot.
+  kernels with `--features qemu` (`smoke-up` boots them too, with `-smp 1`, since decision
+  40), the init stand-ins, the media kernels and cd80.iso. No recipe builds while others boot.
 - `cargo xtask smoke-all -j N` (`tools/xtask/src/smokeall.rs`) runs each recipe of the
   justfile's `smokes` list as `just --no-deps <recipe>`, N at a time, longest first by the
   time each took last. A recipe runs exactly as `just <recipe>` would, with the same
@@ -2196,7 +2196,7 @@ of every recipe decided on 2026-10-03 for M11):
   (multi-queue and softnet networking; the latter's `-smp 8` boot stays) and
   `smoke-softraid` (the disk smoke under load). `diff-openbsd` also keeps four processors,
   the configuration its expected differences were recorded with. `smoke-up` stays the one
-  uniprocessor boot.
+  single-processor boot, of the same MP kernel with `-smp 1` since decision 40.
 - `just ci-full` runs `EMIBSD_NCPU=4 just ci`: every recipe on four processors, as before
   2026-10-07. Then, still on four, the installer end to end on both archs (the user's
   decision of 2026-10-07): `smoke-install-<arch>` and `smoke-install-boot-<arch>` for amd64,
