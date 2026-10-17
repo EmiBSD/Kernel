@@ -40,7 +40,6 @@ pub use hal::arch::arm64::include::mutex;
 pub mod param;
 pub mod pcb;
 pub mod pci_machdep;
-pub mod pmap;
 pub use hal::arch::arm64::include::proc;
 pub use hal::arch::arm64::include::pte;
 pub use hal::arch::arm64::include::reg;

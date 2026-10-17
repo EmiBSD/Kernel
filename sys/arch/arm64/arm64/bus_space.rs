@@ -73,26 +73,26 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::arch::arm64::arm64::machdep::BOOTSTRAP_DEVICE_MAP_SIZE;
-use crate::arch::arm64::arm64::pmap::{
-    VMMAP, VMMAP_SIZE, pmap_growkernel, pmap_initialized, pmap_kenter_cache, pmap_kernel,
-    pmap_kremove,
-};
+
 use crate::arch::arm64::include::bus::{
     BUS_SPACE_MAP_CACHEABLE, BUS_SPACE_MAP_PREFETCHABLE, BusSpace, BusSpaceHandle,
 };
 use crate::arch::arm64::include::param::PAGE_SIZE;
-use crate::arch::arm64::include::pmap::{
-    PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB,
-};
+
 use crate::arch::arm64::include::vmparam::VM_MIN_KERNEL_ADDRESS;
 use crate::machine::bus::{BusAddr, BusSize};
-use crate::machine::pmap::pmap_update;
+use crate::machine::pmap::{
+    pmap_growkernel, pmap_kenter_cache, pmap_kernel, pmap_kremove, pmap_update,
+};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Off, Paddr, Vaddr, Vsize};
 use crate::unported;
 use crate::uvm::uvm_km::{KD_NOWAIT, KP_NONE, KV_ANY, km_alloc, km_free};
 use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::arch::arm64::pmap::layout::{PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB};
+use hal::arch::arm64::pmap::{VMMAP, VMMAP_SIZE};
+use hal::pmap::initialized as pmap_initialized;
 
 /// `arm64_bs_tag`: the one bus space of the machine.
 pub static ARM64_BS_TAG: BusSpace = BusSpace {

@@ -53,7 +53,6 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
 use crate::arch::arm64::arm64::intr::interrupt_controllers;
-use crate::arch::arm64::arm64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::arch::arm64::dev::acpiiort::acpiiort_device_map;
 use crate::arch::arm64::include::bus::{self, BUS_DMA_COHERENT};
 use crate::arch::arm64::include::fdt::FdtAttachArgs;
@@ -70,6 +69,7 @@ use crate::machine::bus::{
     BusAddr, BusDmaTag, BusSize, BusSpaceHandle, BusSpaceTag, bus_space_map, bus_space_unmap,
 };
 use crate::machine::pmap::pmap_update;
+use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::sys::device::{CfMatch, Cfattach, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK, M_ZERO};

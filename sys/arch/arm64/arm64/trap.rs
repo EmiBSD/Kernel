@@ -72,7 +72,6 @@ use core::sync::atomic::Ordering;
 use crate::arch::arm64::arm64::cpu;
 use crate::arch::arm64::arm64::db_interface::db_ktrap;
 use crate::arch::arm64::arm64::fpu::{fpu_load, sve_load};
-use crate::arch::arm64::arm64::pmap::pmap_fault_fixup;
 use crate::arch::arm64::arm64::syscall::svc_handler;
 use crate::arch::arm64::include::armreg::{
     EXCP_BRANCH_TGT, EXCP_BRK, EXCP_DATA_ABORT, EXCP_DATA_ABORT_L, EXCP_FP_SIMD, EXCP_FPAC,
@@ -184,7 +183,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     };
 
     // Handle referenced/modified emulation
-    if pmap_fault_fixup(map.pmap(), Vaddr::new(va), access_type) {
+    if map.pmap().fault_fixup(Vaddr::new(va), access_type) {
         return;
     }
 
@@ -332,7 +331,7 @@ fn udata_abort(_frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     }
 
     // Handle referenced/modified emulation
-    if pmap_fault_fixup(map.pmap(), Vaddr::new(va), access_type) {
+    if map.pmap().fault_fixup(Vaddr::new(va), access_type) {
         return;
     }
     let result = uvm_fault(map, va, 0, access_type);

@@ -106,7 +106,6 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::arch::arm64::arm64::pmap::pmap_direct_map;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_enter, rw_exit};
 use crate::kern::kern_subr::uiomove;
@@ -123,6 +122,7 @@ use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Dev, Off, Paddr, minor};
 use crate::sys::uio::{Uio, UioRw};
 use crate::unported;
+use hal::pmap::direct_map as pmap_direct_map;
 
 /// The bytes `/dev/mem` and `/dev/zero` move per step.
 const MEM_CHUNK: usize = 512;

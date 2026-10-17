@@ -2212,9 +2212,7 @@ fn wfe() {
 /// PAN, DIT, pointer authentication, BTI, SVE's default vector length and the debug
 /// registers.
 pub fn cpu_init() {
-    let pt0pa = crate::arch::arm64::arm64::pmap::pmap_kernel()
-        .pm_pt0pa
-        .get();
+    let pt0pa = hal::arch::arm64::pmap::kernel_pt0pa();
 
     let mut tcr = read_specialreg!("tcr_el1");
     tcr &= !tcr_t0sz(0x3f);
@@ -2431,9 +2429,8 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
     #[cfg(feature = "multiprocessor")]
     {
         let ci = arg as *const CpuInfo;
-        let pt0pa = crate::arch::arm64::arm64::pmap::pmap_kernel()
-            .pm_pt0pa
-            .get();
+        let pt0pa = hal::arch::arm64::pmap::kernel_pt0pa();
+
         let mut cpacr = read_specialreg!("cpacr_el1");
         cpacr &= !(CPACR_FPEN_MASK | CPACR_ZEN_MASK);
         cpacr |= CPACR_FPEN_TRAP_ALL1 | CPACR_ZEN_TRAP_ALL1;

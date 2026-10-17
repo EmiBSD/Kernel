@@ -24,8 +24,10 @@
 //! Upstream: sys/arch/arm64/arm64/cpuswitch.S @ 3ce1f3f79392
 //!
 //! Status: `ported` (M5): `cpu_switchto_asm` and `proc_trampoline`. `machdep.rs` wraps the
-//! former as `cpu_switchto` (the FPU state goes with the old thread there), `pmap.rs`
-//! provides the `pmap_setttb` the assembly calls.
+//! former as `cpu_switchto` (the FPU state goes with the old thread there); the
+//! `pmap_setttb` the assembly calls is here since the pmap moved into `hal` (N3.1), over
+//! `machine::pmap::pmap_setttb`.
+
 //!
 //! ## Deviations
 //! - No retguard: the cookie load/calc/check around the stack pivot has no counterpart in
@@ -90,4 +92,18 @@ pub unsafe extern "C" fn proc_trampoline_run(func: *const (), arg: *mut c_void) 
     let func: fn(*mut c_void) = unsafe { core::mem::transmute::<*const (), fn(*mut c_void)>(func) };
     func(arg);
 }
+
+/// `pmap_setttb(p)`: loads `p`'s address space into `TTBR0_EL1` (the ASID check, the empty
+/// table first, `cpu_setttb`, then `ci_curpm` and the branch-predictor flush:
+/// `machine::pmap::pmap_setttb` over `hal::pmap`), for every switch `cpu_switchto_asm` makes
+/// (hence `extern "C"` by its C name, N3.1: moved here from LZ's `arm64/pmap.rs`).
+#[unsafe(no_mangle)]
+pub extern "C" fn pmap_setttb(p: *const c_void) {
+    // SAFETY: the switch hands over the thread it makes current (a `struct proc *`, opaque
+    // to the ABI: `cpu_switchto_asm`'s `new`, which the caller of `cpu_switchto` keeps
+    // alive), so the pointer is a live `Proc` for the call.
+    let p = unsafe { &*p.cast::<Proc>() };
+    crate::machine::pmap::pmap_setttb(p);
+}
+
 /* </CODE> */

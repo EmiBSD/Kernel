@@ -68,19 +68,17 @@ use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::arch::arm64::arm64::cpufunc::cpu_setttb;
 use crate::arch::arm64::arm64::fpu::{fpu_kernel_enter, fpu_kernel_exit};
 use crate::arch::arm64::arm64::machdep::{MMAP_DESC_SIZE, SYSTEM_TABLE, efi_mmap};
-use crate::arch::arm64::arm64::pmap::{pmap_create, pmap_enter, pmap_kernel};
+
 use crate::arch::arm64::include::_types::Label;
-use crate::arch::arm64::include::armreg::{read_specialreg, tcr_t0sz, write_specialreg};
+
 use crate::arch::arm64::include::bus::{BUS_SPACE_MAP_CACHEABLE, BUS_SPACE_MAP_LINEAR};
 use crate::arch::arm64::include::cpu::{curcpu, intr_disable, intr_restore};
 use crate::arch::arm64::include::efivar::EfiSoftc;
 use crate::arch::arm64::include::fdt::FdtAttachArgs;
 use crate::arch::arm64::include::param::PAGE_SIZE;
-use crate::arch::arm64::include::pmap::{PMAP_DEVICE, PmVp};
-use crate::arch::arm64::include::vmparam::USER_SPACE_BITS;
+
 use crate::dev::clock_subr::TodrChipHandle;
 use crate::dev::efi::efi::{
     EFI_ACPI_20_TABLE_GUID, EFI_MEMORY_RO, EFI_MEMORY_RP, EFI_MEMORY_RUNTIME, EFI_MEMORY_WB,
@@ -96,6 +94,7 @@ use crate::kern::kern_time::todr_attach;
 use crate::kern::subr_autoconf::config_found;
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::machine::bus::bus_space_map;
+use crate::machine::pmap::{PmapRef, pmap_efi_enter, pmap_efi_leave, pmap_enter};
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
@@ -103,10 +102,12 @@ use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::time::{ClockYmdhms, POSIX_BASE_YEAR, Timeval};
 use crate::sys::types::{Paddr, Vaddr};
 use crate::uvm::uvm_pmap::PMAP_WIRED;
+use hal::arch::arm64::pmap::layout::PMAP_DEVICE;
+use hal::once::OnceStatic;
 
-/// `EFI_SPACE_BITS`: we need a large address space to allow identity mapping of physical
-/// memory on some machines.
-const EFI_SPACE_BITS: u64 = 48;
+/// The runtime services' pmap (`sc_pm`'s counted handle, kept for the kernel's lifetime:
+/// the C never destroys it); one EFI per machine.
+static EFI_PMAP: OnceStatic<PmapRef> = OnceStatic::new();
 
 /// `label_t efi_jmpbuf`: where `efi_rs_call` saves the registers `efi_fault` restores.
 #[repr(transparent)]
@@ -359,14 +360,20 @@ pub fn efi_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
 /// around in kernel space.  So create a separate pmap and only activate it when we call
 /// runtime services.
 pub fn efi_map_runtime(sc: &EfiSoftc) {
-    let pm = pmap_create();
-    pm.pm_privileged.set(true);
-    pm.have_4_level_pt.set(true);
-    // The union pm_vp: the table pmap_create made is now read as level 0.
-    if let PmVp::L1(l1) = pm.pm_vp.get() {
-        pm.pm_vp.set(PmVp::L0(l1.cast()));
+    // A privileged pmap with four-level tables (`pm_privileged`, `have_4_level_pt`):
+    // `hal`'s EFI pmap, whose limit is `1 << EFI_SPACE_BITS`.
+    let Some(pm) = hal::pmap::create_efi() else {
+        panic(format_args!("efi_map_runtime: no pmap"));
+    };
+    sc.sc_pm.set(pm.as_ptr());
+    if EFI_PMAP.set(pm).is_err() {
+        panic(format_args!(
+            "efi_map_runtime: the runtime services are mapped already"
+        ));
     }
-    sc.sc_pm.set(pm);
+    let Some(pm) = EFI_PMAP.get() else {
+        return;
+    };
 
     let map = efi_mmap();
     let desc_size = MMAP_DESC_SIZE.load(Ordering::Relaxed) as usize;
@@ -425,25 +432,17 @@ pub fn efi_map_runtime(sc: &EfiSoftc) {
 /// `efi_enter`: switches the lower half to the runtime services' pmap, with interrupts
 /// disabled and the FPU usable, and arms `efi_fault`.
 pub fn efi_enter(sc: &EfiSoftc) {
-    // SAFETY: `sc_pm` is the pmap `efi_map_runtime` made, never destroyed.
-    let pm = unsafe { &*sc.sc_pm.get() };
+    let Some(pm) = EFI_PMAP.get() else {
+        panic(format_args!(
+            "efi_enter: the runtime services are not mapped"
+        ));
+    };
 
     sc.sc_psw.set(intr_disable());
-    // SAFETY: the kernel runs in the upper half (TTBR1); the lower half goes to the kernel's
-    // empty table while its walk is widened, then to the runtime services' level-0 table,
-    // with interrupts disabled until efi_leave puts the current pmap back.
-    unsafe {
-        write_specialreg!("ttbr0_el1", pmap_kernel().pm_pt0pa.get());
-        core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
-    }
-    let mut tcr = read_specialreg!("tcr_el1");
-    tcr &= !tcr_t0sz(0x3f);
-    tcr |= tcr_t0sz(64 - EFI_SPACE_BITS);
-    // SAFETY: as above.
-    unsafe {
-        write_specialreg!("tcr_el1", tcr);
-        cpu_setttb(pm.pm_asid.load(Ordering::Relaxed), pm.pm_pt0pa.get());
-    }
+    // The lower half to the kernel's empty table while its walk is widened, then to the
+    // runtime services' level-0 table, with interrupts disabled until efi_leave puts the
+    // current pmap back (`hal::pmap::Pmap::load_efi`).
+    pmap_efi_enter(pm);
 
     fpu_kernel_enter();
 
@@ -466,21 +465,10 @@ pub fn efi_leave(sc: &EfiSoftc) {
 
     fpu_kernel_exit();
 
-    // SAFETY: as in `efi_enter`, back to the user address space width and the current pmap;
-    // the interrupt state is the one efi_enter saved on this CPU.
-    unsafe {
-        write_specialreg!("ttbr0_el1", pmap_kernel().pm_pt0pa.get());
-        core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
-    }
-    let mut tcr = read_specialreg!("tcr_el1");
-    tcr &= !tcr_t0sz(0x3f);
-    tcr |= tcr_t0sz(64 - u64::from(USER_SPACE_BITS));
-    // SAFETY: as above.
-    unsafe {
-        write_specialreg!("tcr_el1", tcr);
-        cpu_setttb(pm.pm_asid.load(Ordering::Relaxed), pm.pm_pt0pa.get());
-        intr_restore(sc.sc_psw.get());
-    }
+    // Back to the user address space width and the current pmap (`hal::pmap::leave_efi`).
+    pmap_efi_leave(pm);
+    // SAFETY: the interrupt state efi_enter saved on this CPU.
+    unsafe { intr_restore(sc.sc_psw.get()) };
 }
 
 /// `efi_enter_check(sc)`, the runtime service at byte `slot` of the runtime services table
