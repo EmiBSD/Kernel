@@ -1072,6 +1072,13 @@ status = "redesigned"
 notes = "N3.1 commit 5: the ASID pairs (pmap_find_asid, pmap_rollover_asid, pmap_allocate_asid, pmap_free_asid): the bitmap inside pmap_asid_mtx (IPL_HIGH), the generation an atomic, the C's 16-bit probe of id_aa64mmfr0_el1 with TCR_EL1.AS (8 bits otherwise, the probe saying why), arc4random through the Random bridge (N7), each CPU's loaded pmap recorded here for the rollover (ci_curpm stays bsd's until N4)"
 
 [[module]]
+rust = "sys/hal/arch/arm64/pmap/window.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 7 (G4, decision 37's symmetry): the ABI module's window as amd64's, 16 MiB after the boot loader's last level-2 entry of the image's gigabyte (hal's level-1 copy, the boot loader's level-2 table through the frame view), eight level-3 tables in a typed .bss static linked once by the bootstrap (the one-shot flag), leaves as pmap_pte_update's write-back kernel descriptor (kernel_leaf), the I-cache synced for an executable page, W^X and every address outside the window refused; no unsafe"
+
+[[module]]
 rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs"]
@@ -1123,7 +1130,7 @@ rust = "sys/hal/arch/arm64/pmap/layout.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/pmap.rs", "sys/arch/arm64/arm64/pmap.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5 (D15): include/pmap.h's vp geometry, cache and pted flags as pure constants, with pmap.c's arithmetic that needs no machine (vp_idx, cache_of_pa, asid_slot, the tlbi operands, the ASID width probe, the TCR fields); compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs)"
+notes = "N3.1 commit 5 (D15): include/pmap.h's vp geometry, cache and pted flags as pure constants, with pmap.c's arithmetic that needs no machine (vp_idx, cache_of_pa, asid_slot, the tlbi operands, the ASID width probe, the TCR fields; at commit 7 the module window's placement and protection checks); compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs)"
 
 [[module]]
 rust = "sys/arch/amd64/amd64/spl.rs"
@@ -8300,11 +8307,11 @@ reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and
 [[extra]]
 rust = "sys/hal/module/load.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection through ModulePlatform (bsd's pmap and boot hand-over until N2.2, the platform premise), the header check, the call of abi_init, the boot line"
+reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection in the machine's module window (hal::pmap::module_window/module_enter, amd64 since N3.1 commit 6, arm64 since commit 7; nowhere else), the boot hand-over and the writable copy through ModulePlatform (bsd's image/alloc/release until N3.2, the platform premise), the header check, the call of abi_init, the boot line"
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the kernel's km_alloc/pmap_extract/pmap_enter and the boot hand-over (the module's pages in machine::pmap_module_window through pmap_module_enter where the machine has a window, amd64; in kernel_map through pmap_enter otherwise), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over and km_alloc/km_free of the writable copy (the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
 
 [[extra]]
 rust = "sys/hal/api.rs"

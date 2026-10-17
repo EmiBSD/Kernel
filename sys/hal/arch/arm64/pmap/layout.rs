@@ -77,9 +77,14 @@
 //!   ([`asid_slot`]), the operands of `ttlb_flush`'s and `pmap_free_asid`'s `tlbi`
 //!   ([`tlbi_page`], [`tlbi_asid`]), and the ASID width `pmap_bootstrap` probes
 //!   ([`nasid_probe`], which also says why it stays at 8 bits).
+//! - New in native (N3.1 commit 7): the ABI module window's geometry and its two pure
+//!   checks, where it goes in the image's level-2 table ([`module_window_place`]) and which
+//!   protections it maps ([`module_prot_ok`]); `window.rs` links and fills it.
 
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT};
-use crate::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3};
+use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
+use crate::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
+use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_WRITE};
 
 // V->P mapping data
 
@@ -175,6 +180,11 @@ pub const ID_AA64MMFR0_ASID_BITS_MASK: u64 = 0xf << 4;
 pub const ID_AA64MMFR0_ASID_BITS_16: u64 = 0x2 << 4;
 /// `EFI_SPACE_BITS` (`efi_machdep.c`): the width of the EFI runtime pmap's address space.
 pub const EFI_SPACE_BITS: u32 = 48;
+/// The ABI module window's size (`window.rs`): the largest image the module loader takes
+/// (`hal::module::elf::MAX_SPAN`), so the window never refuses a module the loader accepts.
+pub const MODULE_WINDOW_SIZE: usize = crate::module::elf::MAX_SPAN as usize;
+/// The level-3 tables the window needs: one per level-2 entry (2 MiB).
+pub const MODULE_WINDOW_NPTP: usize = MODULE_WINDOW_SIZE >> VP_IDX2_POS;
 
 /// How wide the ASIDs are, and why ([`nasid_probe`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,6 +288,38 @@ pub const fn tcr_t1sz(tcr: u64) -> u64 {
     (tcr >> TCR_T1SZ_SHIFT) & 0x3f
 }
 
+/// Where the module window goes in the level-2 table of the gigabyte at `gib` (the kernel
+/// image's), whose last entry in use is `last`: the index of its first level-2 entry, the
+/// one after `last`, and its first address. `None` when `gib` is not a gigabyte's address,
+/// the [`MODULE_WINDOW_NPTP`] entries do not fit in the table after `last`, or the window
+/// would meet the kernel's managed range (`VM_MIN_KERNEL_ADDRESS`..=`VM_MAX_KERNEL_ADDRESS`,
+/// `vmmap` and `kernel_map`), whose tables `pmap_growkernel` makes.
+pub const fn module_window_place(gib: usize, last: usize) -> Option<(usize, usize)> {
+    if gib & ((1 << VP_IDX1_POS) - 1) != 0 || last >= VP_ENTRIES {
+        return None;
+    }
+    let first = last + 1;
+    if first + MODULE_WINDOW_NPTP > VP_ENTRIES {
+        return None;
+    }
+    let base = gib + (first << VP_IDX2_POS);
+    // Its last byte, inside the gigabyte (aligned, so no overflow even at the top one).
+    let end = base + (MODULE_WINDOW_SIZE - 1);
+    if base <= VM_MAX_KERNEL_ADDRESS && VM_MIN_KERNEL_ADDRESS <= end {
+        return None;
+    }
+    Some((first, base))
+}
+
+/// Whether the module window maps a page with `prot`: a protection the kernel's access bits
+/// grant (`ap_bits_kern`, not `PROT_NONE`) and never both writable and executable (W^X; the
+/// loader asks for read, read-write or read-execute only).
+pub const fn module_prot_ok(prot: VmProt) -> bool {
+    prot & !PROT_MASK == 0
+        && prot != PROT_NONE
+        && prot & (PROT_WRITE | PROT_EXEC) != (PROT_WRITE | PROT_EXEC)
+}
+
 const _: () = {
     assert!(PMAP_CACHE_BITS & (PTED_VA_MANAGED_M | PTED_VA_WIRED_M) == 0);
     assert!(
@@ -285,6 +327,8 @@ const _: () = {
             == 0
     );
     assert!(PMAP_ASID_MASK == 0xffff);
+    assert!(MODULE_WINDOW_SIZE.is_multiple_of(1 << VP_IDX2_POS));
+    assert!(MODULE_WINDOW_NPTP > 0 && MODULE_WINDOW_NPTP < VP_ENTRIES);
 };
 /* </CODE> */
 
@@ -378,9 +422,61 @@ mod tests {
     }
 
     #[test]
+    fn the_module_window_goes_after_the_last_entry() {
+        // The image's gigabyte (`kernel.ld`'s `__kernel_base`).
+        const GIB: usize = 0xffff_ffff_8000_0000;
+        assert_eq!(MODULE_WINDOW_NPTP, 8);
+        // boot(8)/efiboot: locore0's 32 blocks of 2 MiB (the 64 MB block).
+        assert_eq!(module_window_place(GIB, 31), Some((32, GIB + (32 << 21))));
+        // Limine: the image's own entries.
+        assert_eq!(module_window_place(GIB, 10), Some((11, GIB + (11 << 21))));
+        // The last that fits, and the first that does not.
+        assert_eq!(
+            module_window_place(GIB, 503),
+            Some((504, GIB + (504 << 21)))
+        );
+        assert_eq!(module_window_place(GIB, 504), None);
+        assert_eq!(module_window_place(GIB, 511), None);
+        assert_eq!(module_window_place(GIB, 512), None);
+        // The top gigabyte: the window's last byte is the address space's.
+        const TOP: usize = 0xffff_ffff_c000_0000;
+        assert_eq!(
+            module_window_place(TOP, 503),
+            Some((504, TOP + (504 << 21)))
+        );
+        // Never in the managed kernel range, never off a gigabyte.
+        assert_eq!(module_window_place(VM_MIN_KERNEL_ADDRESS, 1), None);
+        assert_eq!(
+            module_window_place(VM_MIN_KERNEL_ADDRESS + (3 << 30), 1),
+            None
+        );
+        assert_eq!(module_window_place(GIB + 4096, 1), None);
+    }
+
+    #[test]
+    fn the_module_window_takes_w_xor_x() {
+        use crate::sys::mman::PROT_READ;
+        for (prot, ok) in [
+            (PROT_READ, true),
+            (PROT_READ | PROT_WRITE, true),
+            (PROT_READ | PROT_EXEC, true),
+            (PROT_EXEC, true),
+            (PROT_WRITE, true),
+            (PROT_NONE, false),
+            (PROT_WRITE | PROT_EXEC, false),
+            (PROT_READ | PROT_WRITE | PROT_EXEC, false),
+            (0x08, false),
+            (-1, false),
+        ] {
+            assert_eq!(module_prot_ok(prot), ok, "{prot:#x}");
+        }
+    }
+
+    #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]
     fn values_match_the_c_header() {
         let defs = crate::reftest::defines("sys/arch/arm64/include/pmap.h");
+
         let ours: &[(&str, i64)] = &[
             ("VP_IDX0_CNT", VP_IDX0_CNT as i64),
             ("VP_IDX0_POS", i64::from(VP_IDX0_POS)),

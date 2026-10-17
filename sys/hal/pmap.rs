@@ -1002,9 +1002,9 @@ pub fn flush_cache(va: Vaddr, len: Vsize) {
 
 /// The kernel virtual window the ABI module `abi_openbsd.ko` must run from (decision 22): its
 /// first address and its size, outside `kernel_map`, for the kernel's lifetime; `None` on a
-/// machine without one (the module then goes in `kernel_map`). Its size is 0 when the
-/// bootstrap could not link it (the module is then not loaded). The module loader's
-/// (`sys/hal/module/load.rs`).
+/// machine without one (the host double; amd64 and arm64 have one, N3.1). Its size is 0 when
+/// the bootstrap could not link it. Without a window, or with an empty one, the module is not
+/// loaded. The module loader's (`sys/hal/module/load.rs`).
 pub(crate) fn module_window() -> Option<(Vaddr, usize)> {
     Backend::module_window()
 }

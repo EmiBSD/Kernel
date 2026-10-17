@@ -89,12 +89,13 @@ trait = "Console"
 for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
-# bsd: the boot hand-over of abi_openbsd.ko, km_alloc/km_free of its writable copy and, on a
-# machine without hal::pmap's module window (arm64 until N3.1 commit 7), km_alloc of its
-# range in kernel_map and pmap_enter there (sys/uvm/uvm_km.rs, sys/machine/pmap.rs),
-# implemented by sys/kern/abi_module.rs. amd64's window is the loader's own since N3.1
-# commit 6 (hal::pmap::module_window/module_enter); reserve/enter go with arm64's window, the
-# rest with uvm_km (N3.2) and the boot entry.
+# bsd: the boot hand-over of abi_openbsd.ko and km_alloc/km_free of its writable copy
+# (sys/uvm/uvm_km.rs), implemented by sys/kern/abi_module.rs. The trait keeps only
+# image/alloc/release since N3.1 commit 7: the mapping is the loader's own on both machines
+# (hal::pmap::module_window/module_enter, amd64's window since commit 6, arm64's since
+# commit 7), so reserve/enter are gone; image/alloc/release are N3.2's (uvm_km) and the
+# boot entry's.
+
 
 # hal::module::ModulePlatform
 [[bridge]]

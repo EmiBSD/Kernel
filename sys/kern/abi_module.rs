@@ -29,11 +29,10 @@
 //! thread, number, arguments and return registers as before, and comes back with the same
 //! `Result`; only the route changed.
 //!
-//! Where the module runs: the machine's module window when it has one (amd64, whose
-//! `kernel_map` is never executable, keeps one in the kernel image's slot), which the loader
-//! takes and enters itself (`hal::pmap`, N3.1); `kernel_map` otherwise (arm64 until its
-//! window), reserved and entered with `pmap_enter` here. Either way the loader's writable
-//! copy is a `kernel_map` range, released before the module's entry point is called, and a
+//! Where the module runs: the machine's module window beside the kernel image (amd64's in
+//! the image's slot, arm64's in the image's gigabyte, N3.1), which the loader takes and
+//! enters itself (`hal::pmap`); nothing here maps it. The loader's writable copy is a
+//! `kernel_map` range from here, released before the module's entry point is called, and a
 //! page of the module is executable only when its segment is.
 //!
 //! No `unsafe`: every call here is a safe function of `bsd`, `hal` or `kernel`. Deleted at
@@ -42,23 +41,20 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hal::module::{ModulePlatform, Prot};
+use hal::module::ModulePlatform;
 use kernel::api::KernelApi;
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::subr_prf::panic;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
-use crate::machine::pmap::{pmap_enter, pmap_extract, pmap_kernel, pmap_update};
 use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::syscall::SYS_MAXSYSCALL;
 use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::systm::SysArgs;
-use crate::sys::types::{Register, Vaddr};
+use crate::sys::types::Register;
 use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, KP_ZERO, KV_ANY, km_alloc, km_free};
 use crate::uvm::uvm_param::round_page;
-use crate::uvm::uvm_pmap::PMAP_WIRED;
 
 /// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
 /// pipe(2) is the kernel crate's, entered through `bsd`'s system call prologue.
@@ -74,7 +70,8 @@ static IMAGE_VA: AtomicUsize = AtomicUsize::new(0);
 /// Its length; 0 while there is none.
 static IMAGE_LEN: AtomicUsize = AtomicUsize::new(0);
 
-/// The loader's platform over the kernel's pmap (`hal::module::ModulePlatform`).
+/// The loader's platform over the boot hand-over and `km_alloc`
+/// (`hal::module::ModulePlatform`).
 struct BsdPlatform;
 
 impl ModulePlatform for BsdPlatform {
@@ -86,26 +83,6 @@ impl ModulePlatform for BsdPlatform {
     fn alloc(&self, len: usize) -> Option<usize> {
         km_alloc(round_page(len), &KV_ANY, &KP_ZERO, &KD_WAITOK)
             .map(|p: NonNull<u8>| p.as_ptr().expose_provenance())
-    }
-
-    /// A machine without a module window: the range is `kernel_map`'s.
-    fn reserve(&self, len: usize) -> Option<usize> {
-        km_alloc(round_page(len), &KV_ANY, &KP_NONE, &KD_WAITOK).map(|p| p.as_ptr().addr())
-    }
-
-    fn enter(&self, va: usize, rw: usize, prot: Prot) -> bool {
-        let Some(pa) = pmap_extract(pmap_kernel(), Vaddr::new(rw)) else {
-            return false;
-        };
-        let prot = match prot {
-            Prot::Read => PROT_READ,
-            Prot::ReadWrite => PROT_READ | PROT_WRITE,
-            Prot::ReadExec => PROT_READ | PROT_EXEC,
-        };
-        let entered =
-            pmap_enter(pmap_kernel(), Vaddr::new(va), pa, prot, prot | PMAP_WIRED).is_ok();
-        pmap_update(pmap_kernel());
-        entered
     }
 
     fn release(&self, rw: usize, len: usize) {

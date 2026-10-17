@@ -141,6 +141,10 @@
 //! - `pmap_steal_memory`, `pmap_kvp_alloc` and `pmap_kpted_alloc` take their frames from the
 //!   page provider (`steal` before the page system is up, `alloc_ptp` after), where LZ called
 //!   `uvm_page_physsteal`/`uvm_pglistalloc`.
+//! - The ABI module's window (`window.rs`, N3.1 commit 7, decision 37's symmetry): the
+//!   bootstrap links it at its end, `module_window`/`module_enter` are its, and the window's
+//!   leaves are [`kernel_leaf`]s, `pmap_pte_update`'s write-back kernel descriptor; until
+//!   then arm64 placed the module in `kernel_map`.
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
@@ -170,6 +174,7 @@ use super::vp::{
     self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvKind, Table, copy_frame, direct_map,
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, zero_frame,
 };
+use super::window;
 use crate::assert::{hal_panic, kassert};
 use crate::intr::{IPL_NONE, IPL_VM, splraise};
 use crate::mutex::Mutexed;
@@ -309,6 +314,11 @@ impl PmapMd {
     /// Sets `pm_asid` (under `pmap_asid_mtx`).
     pub(super) fn set_asid(&self, asid: u64) {
         self.asid.store(asid, Ordering::Release);
+    }
+
+    /// `pm_guarded`.
+    pub(super) fn guarded(&self) -> u64 {
+        self.guarded.load(Ordering::Relaxed)
     }
 }
 
@@ -549,7 +559,7 @@ fn pmap_pte_remove(pm: &Pmap, pted: &PteDesc, l3: L3) {
 
 /// `pmap_icache_sync_page`: the page's contents made visible to instruction fetch, through
 /// the direct map.
-fn pmap_icache_sync_page(pa: usize) {
+pub(super) fn pmap_icache_sync_page(pa: usize) {
     cpu_icache_sync_range(
         direct_map(Paddr::new(pa & PMAP_PA_MASK)).as_usize(),
         PAGE_SIZE,
@@ -806,6 +816,18 @@ fn pmap_pte_update(pm: &Pmap, pted: &PteDesc, pl3: &AtomicU64) {
 
     let pte = (pte & PTE_RPGN) | attr | access_bits | L3_P;
     pl3.store(if access_bits != 0 { pte } else { 0 }, Ordering::Release);
+}
+
+/// `pmap_pte_update`'s descriptor of a write-back kernel mapping of `pa` with `prot`, under the
+/// kernel pmap's guard `guarded` (the ABI module window's leaves, `window.rs`); 0 for
+/// `PROT_NONE`, as `pmap_pte_update` stores.
+pub(super) const fn kernel_leaf(pa: u64, prot: VmProt, guarded: u64) -> u64 {
+    let access_bits = AP_BITS_KERN[(prot & PROT_MASK) as usize];
+    if access_bits == 0 {
+        return 0;
+    }
+    let attr = ATTR_nG | attr_idx(PTE_ATTR_WB) | attr_sh(SH_INNER);
+    (pa & PTE_RPGN) | attr | access_bits | guarded | L3_P
 }
 
 /// `pmap_pte_insert`: writes a descriptor's PTE into its level-3 table.
@@ -1258,6 +1280,9 @@ impl PmapBackend for Backend {
         VMMAP.store(vstart, Ordering::Relaxed);
         let vstart = vstart + VMMAP_SIZE;
         VIRTUAL_AVAIL.store(vstart, Ordering::Relaxed);
+
+        // The ABI module's window beside the image, on the kernel's tables now loaded.
+        window::init(p.image.map(|i| i.start));
         (p.first_avail, Vaddr::new(vstart))
     }
 
@@ -1642,14 +1667,13 @@ impl PmapBackend for Backend {
         cpu_dcache_wbinv_range(va.as_usize(), len.as_usize());
     }
 
-    /// No module window on arm64 until N3.1 commit 7 (`kernel_map` executes here: no PXN on a
-    /// kernel R|X leaf, none on the tables), so the module is placed in `kernel_map`.
+    /// The window beside the image (`window.rs`), the module's only place, as on amd64.
     fn module_window() -> Option<(Vaddr, usize)> {
-        None
+        Some(window::window())
     }
 
-    fn module_enter(_va: Vaddr, _pa: Paddr, _prot: VmProt) -> bool {
-        false
+    fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
+        window::enter(va, pa, prot)
     }
 
     /// `pmap_kenter_cache`: enter a kernel mapping with the given cache mode.
@@ -1695,5 +1719,18 @@ const _: () = {
     assert!(MAIR_SET & !MAIR_KEEP == MAIR_SET);
     assert!(PTE_ATTR_DEV_NGNRNE == 2 && PTE_ATTR_CI == 3 && PTE_ATTR_WT == 4);
     assert!(PTE_ATTR_WB == 0 && PTE_ATTR_DEV_NGNRE == 1);
+    // The module window's leaves (`window.rs`): its text executes at EL1 only, the rest
+    // never; writable only when asked; every one accessed, write-back, a page of `pa`.
+    let pa = 0x4000_0000;
+    let rx = kernel_leaf(pa, PROT_READ | PROT_EXEC, ATTR_GP);
+    assert!(rx & ATTR_PXN == 0 && rx & ATTR_UXN != 0 && rx & attr_ap(2) != 0);
+    let rw = kernel_leaf(pa, PROT_READ | PROT_WRITE, ATTR_GP);
+    assert!(rw & ATTR_PXN != 0 && rw & ATTR_UXN != 0 && rw & attr_ap(2) == 0);
+    let r = kernel_leaf(pa, PROT_READ, ATTR_GP);
+    assert!(r & ATTR_PXN != 0 && r & ATTR_UXN != 0 && r & attr_ap(2) != 0);
+    assert!(rx & PTE_RPGN == pa && rx & L3_P == L3_P && rx & ATTR_AF != 0);
+    assert!(rx & attr_idx(0x7) == attr_idx(PTE_ATTR_WB));
+    assert!(kernel_leaf(pa, PROT_NONE, ATTR_GP) == 0);
 };
+
 /* </CODE> */

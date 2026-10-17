@@ -29,21 +29,25 @@
 //! the platform says it handed over) and the entry point (an address the module's header
 //! names, checked to lie in its executable pages).
 //!
-//! Where the module runs: the machine's module window (`crate::pmap::module_window`, amd64,
-//! whose `kernel_map` never executes) when it has one, each page entered there by
-//! `crate::pmap::module_enter` with the physical page behind the writable copy
-//! (`pmap_extract` of the kernel pmap); otherwise (arm64 until its window, N3.1 commit 7) a
-//! range the platform reserves in `kernel_map`, entered by the platform.
+//! Where the module runs: the machine's module window (`crate::pmap::module_window`), on
+//! amd64 and arm64 alike (arm64's since N3.1 commit 7, decision 37's symmetry), each page
+//! entered there by `crate::pmap::module_enter` with the physical page behind the writable
+//! copy (`pmap_extract` of the kernel pmap), and nowhere else: without a window, or with one
+//! the bootstrap could not link or too small, the module is not loaded (`NoMemory`), never
+//! placed in `kernel_map` instead.
 //!
 //! # The platform premise
 //!
-//! Until the hardware is in `hal` (N2.2), the boot loader's hand-over and the kernel's
-//! pmap are `bsd`'s, so the loader reaches them through [`ModulePlatform`], which `bsd`'s
-//! boot glue implements (`sys/kern/abi_module.rs`) and registers once, before `main`, in the
-//! bridge registry (`crate::bridges::register_module_platform`). The soundness of the three `unsafe` rests on that implementation doing what each
-//! method's documentation says: it is the kernel's own pmap and boot hand-over, the same
-//! facts the rest of the kernel already trusts. TODO(N2 integrate): when `hal` holds the
-//! pmap and the boot entry, the trait becomes `hal`'s own code and the premise a proof.
+//! Until the boot entry and `uvm_km` leave `bsd` (N3.2 and the boot path), the boot loader's
+//! hand-over and the kernel's memory allocator are `bsd`'s, so the loader reaches them
+//! through [`ModulePlatform`], which `bsd`'s boot glue implements (`sys/kern/abi_module.rs`)
+//! and registers once, before `main`, in the bridge registry
+//! (`crate::bridges::register_module_platform`). The soundness of the three `unsafe`
+//! rests on that implementation doing what each method's documentation says: it is the
+//! kernel's own boot hand-over and `km_alloc`, the same facts the rest of the kernel already
+//! trusts; the mapping is `hal`'s own (`crate::pmap::module_enter`). TODO(N3.2): when `hal`
+//! or `kernel` holds the boot entry and `uvm_km`, the trait becomes their own code and the
+//! premise a proof.
 
 use core::fmt;
 
@@ -82,21 +86,11 @@ pub trait ModulePlatform: Sync {
     /// virtual address.
     fn alloc(&self, len: usize) -> Option<usize>;
 
-    /// A range of `len` bytes (a whole number of pages) of kernel virtual space, unmapped,
-    /// owned by the caller for the kernel's lifetime: its address. Asked only on a machine
-    /// without a module window (`crate::pmap::module_window`).
-    fn reserve(&self, len: usize) -> Option<usize>;
-
-    /// Maps the physical page behind the writable page at `rw` (from [`Self::alloc`]) at
-    /// `va` (in a range from [`Self::reserve`]) with `prot`, wired, the instruction caches
-    /// made coherent with what was written through `rw`; `false` if it could not. Asked only
-    /// on a machine without a module window.
-    fn enter(&self, va: usize, rw: usize, prot: Prot) -> bool;
-
     /// Unmaps the writable range `[rw, rw + len)` (from [`Self::alloc`]) and keeps its
-    /// physical pages, which the mappings [`Self::enter`] made still hold: after it, no
-    /// writable alias of the module's text and read-only data is left but the direct map,
-    /// which aliases every page of memory as OpenBSD's does. Nothing may touch `rw` after.
+    /// physical pages, which the module window's mappings (`crate::pmap::module_enter`)
+    /// still hold: after it, no writable alias of the module's text and read-only data is
+    /// left but the direct map, which aliases every page of memory as OpenBSD's does. Nothing
+    /// may touch `rw` after.
     fn release(&self, rw: usize, len: usize);
 }
 
@@ -107,7 +101,7 @@ pub enum LoadError {
     NoImage,
     /// The file is not a module this loader takes.
     Elf(ElfError),
-    /// The platform had no memory or no virtual space for it.
+    /// The platform had no memory for it, or the machine no module window that holds it.
     NoMemory,
     /// The header at the ELF entry address is missing or malformed.
     Header,
@@ -203,7 +197,7 @@ fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<L
     let span = module.span();
 
     let rw = platform.alloc(span).ok_or(LoadError::NoMemory)?;
-    let mapped = place_and_map(platform, &module, rw, span);
+    let mapped = place_and_map(&module, rw, span);
     // W^X: whatever happened, the writable copy goes; the module's pages keep only the
     // protections entered.
     platform.release(rw, span);
@@ -216,7 +210,9 @@ fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<L
     // `fn(&'static KernelApi)` entry, and `api` is that type (its prefix checked above).
     // `entry_point` checked the address lies in a page of an executable segment, and the
     // loop above mapped every such page executable at `exec` with the relocated bytes (the
-    // platform premise). The module stays mapped for the kernel's lifetime.
+    // platform premise for the bytes, `crate::pmap::module_enter` for the mapping, which
+    // makes the instruction caches coherent with them). The module stays mapped for the
+    // kernel's lifetime.
     let init: AbiInit = unsafe { core::mem::transmute::<*const (), AbiInit>(entry) };
     init(api);
 
@@ -228,22 +224,15 @@ fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<L
 }
 
 /// Places and relocates the module in the writable copy at `rw` (`span` bytes from the
-/// platform's `alloc`), checks its header, and maps every page of it at a fresh range with
-/// its segment's protection; the relocated entry point. The caller releases `rw` after it,
-/// whether it succeeded or not.
-fn place_and_map(
-    platform: &dyn ModulePlatform,
-    module: &Module<'_>,
-    rw: usize,
-    span: usize,
-) -> Result<usize, LoadError> {
-    // The machine's window, the module's alone (it is loaded once): refused when too small,
-    // never placed elsewhere; without one, the platform's range in `kernel_map`.
-    let window = crate::pmap::module_window();
-    let exec = match window {
+/// platform's `alloc`), checks its header, and maps every page of it in the machine's module
+/// window with its segment's protection; the relocated entry point. The caller releases `rw`
+/// after it, whether it succeeded or not.
+fn place_and_map(module: &Module<'_>, rw: usize, span: usize) -> Result<usize, LoadError> {
+    // The machine's window, the module's alone (it is loaded once): refused when missing,
+    // not linked or too small, never placed elsewhere.
+    let exec = match crate::pmap::module_window() {
         Some((base, size)) if span <= size => base.as_usize(),
-        Some(_) => return Err(LoadError::NoMemory),
-        None => platform.reserve(span).ok_or(LoadError::NoMemory)?,
+        _ => return Err(LoadError::NoMemory),
     };
     let init = {
         let first = core::ptr::with_exposed_provenance_mut::<u8>(rw);
@@ -269,11 +258,7 @@ fn place_and_map(
             Some(_) => Prot::Read,
             None => continue,
         };
-        let entered = match window {
-            Some(_) => window_enter(exec + page, rw + page, prot),
-            None => platform.enter(exec + page, rw + page, prot),
-        };
-        if !entered {
+        if !window_enter(exec + page, rw + page, prot) {
             return Err(LoadError::Map);
         }
     }
@@ -448,12 +433,6 @@ mod tests {
         }
         fn alloc(&self, _: usize) -> Option<usize> {
             None
-        }
-        fn reserve(&self, _: usize) -> Option<usize> {
-            None
-        }
-        fn enter(&self, _: usize, _: usize, _: Prot) -> bool {
-            false
         }
         fn release(&self, _: usize, _: usize) {}
     }

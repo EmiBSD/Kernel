@@ -159,7 +159,7 @@ bridge!(
 
 bridge!(
     /// Registers the module loader's platform (`sys/hal/module/load.rs`): the boot loader's
-    /// hand-over of `abi_openbsd.ko` and the kernel pmap it is mapped with
+    /// hand-over of `abi_openbsd.ko` and the kernel memory its writable copy takes
     /// (`sys/kern/abi_module.rs`), once, by the kernel's boot path before `main` loads the
     /// module; the loader's three `unsafe` rest on it (the platform premise). Paid by N3.
     MODULE_PLATFORM: ModulePlatform,
