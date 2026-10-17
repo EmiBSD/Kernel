@@ -144,10 +144,9 @@ for = ["sys/hal/arch/amd64/pmap/tlb.rs"]
 
 paid_by = "N4"
 
-# bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator; `for` moves to the arm64
-# backend with N3.1 commit 5.
+# bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"
-for = ["sys/hal/pmap.rs"]
+for = ["sys/hal/arch/arm64/pmap/asid.rs"]
 paid_by = "N7"

@@ -257,6 +257,81 @@ status = "redesigned"
 notes = "N3.1 commit 4 (D15): include/pmap.h's slot layout and page-table geometry as pure constants, protection_codes as a const fn, pl_pi from pmap.c; compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs); kvtopte and ptp_va2o gone with the recursive reads and pm_obj"
 
 [[module]]
+rust = "sys/hal/arch/arm64/pmap/backend.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/include/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: arm64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root's two pages, have_4_level_pt/pm_privileged/pm_pt0pa/pm_asid/pm_active/pm_guarded as atomics, the limit, the EFI flag, the count of user slots), PvHead (a Link under pv_mtx), user pteds as SharedBox<PteDesc> of the pool pted owned by their vp3 slot (into_raw/from_raw), the kernel's carved from pages; pmap_enter/remove/remove_pted/kenter/kremove/page_protect (the C's reference via PoolArc::from_value)/protect/fault_fixup/clear_modify/clear_reference/unwire/extract, bootstrap from BootstrapParams (both boot paths: the boot loader's L0 and the kernel slot's L1 copied, MAIR 2-4, TTBR1 switched, the ASID probe), pmap_init's pools and init_lower_half (the TTBR0/TCR switch after pluartcn_remap), growkernel under its own lock, load (pmap_setttb's body), load_efi/leave_efi, purge, the EFI pmap; LZ's files stay in bsd until commit 6"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/vp.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: the vp tables (struct pmapvp0..3) as two frames of the page provider (hardware page + software page of children's physical addresses or pted links), the one frame view of the direct map behind trust::check_frame (one unsafe), Link (a pted pointer) with its one dereference under a Holds witness and the user slot's take (SharedBox::from_raw), PteDesc (all atomics, 32 bytes, singly linked pv list), the walks (pmap_vp_lookup, pmap_vp_enter's, pmap_vp_destroy's) as safe code"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/asid.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: the ASID pairs (pmap_find_asid, pmap_rollover_asid, pmap_allocate_asid, pmap_free_asid): the bitmap inside pmap_asid_mtx (IPL_HIGH), the generation an atomic, the C's 16-bit probe of id_aa64mmfr0_el1 with TCR_EL1.AS (8 bits otherwise, the probe saying why), arc4random through the Random bridge (N7), each CPU's loaded pmap recorded here for the rollover (ci_curpm stays bsd's until N4)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_setttb"
+native = ["cpu_setttb"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush"
+native = ["cpu_tlb_flush"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush_asid"
+native = ["cpu_tlb_flush_asid"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush_all_asid"
+native = ["cpu_tlb_flush_all_asid"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_tlb_flush_asid_all"
+native = ["cpu_tlb_flush_asid_all"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_dcache_wbinv_range"
+native = ["cpu_dcache_wbinv_range"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_idcache_wbinv_range"
+native = ["cpu_idcache_wbinv_range"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_icache_sync_range"
+native = ["cpu_icache_sync_range"]
+kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/arm64/pmap/layout.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/pmap.rs", "sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 5 (D15): include/pmap.h's vp geometry, cache and pted flags as pure constants, with pmap.c's arithmetic that needs no machine (vp_idx, cache_of_pa, asid_slot, the tlbi operands, the ASID width probe, the TCR fields); compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs)"
+
+[[module]]
 rust = "sys/arch/amd64/amd64/spl.rs"
 lz = ["sys/arch/amd64/amd64/spl.rs"]
 status = "inherited"

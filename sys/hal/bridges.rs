@@ -56,7 +56,11 @@ use crate::kmbuf::PageMemory;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
 use crate::once::OnceStatic;
-#[cfg(any(not(target_os = "none"), target_arch = "x86_64"))]
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
 use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
 use crate::sleep::Sleep;
@@ -163,10 +167,13 @@ bridge!(
     module_platform
 );
 
-// The pmap's two bridges exist where `hal::pmap` does (`lib.rs`: the host and amd64 now, arm64
-// with its backend, N3.1 commit 5); their readers are the backends'.
-
-#[cfg(any(not(target_os = "none"), target_arch = "x86_64"))]
+// The pmap's two bridges exist where `hal::pmap` does (`lib.rs`: the host, amd64 and arm64);
+// their readers are the backends' (amd64's shootdown, arm64's ASID allocator).
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
 bridge!(
     /// Registers the CPUs as amd64's TLB shootdown needs them (`CPU_INFO_FOREACH`,
     /// `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`, `wbinvd_on_all_cpus`, `ci_cflushsz` of
@@ -180,12 +187,19 @@ bridge!(
     )]
 );
 
-#[cfg(any(not(target_os = "none"), target_arch = "x86_64"))]
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
 bridge!(
     /// Registers `arc4random(9)` (`sys/dev/rnd.rs`) for arm64's ASID allocator. Paid by N7.
     RANDOM: Random,
     register_random,
-    random #[allow(dead_code, reason = "read by arm64's ASID allocator, N3.1 commit 5")]
+    random #[cfg_attr(
+        not(all(target_os = "none", target_arch = "aarch64")),
+        allow(dead_code, reason = "read by arm64's ASID allocator alone")
+    )]
 );
 
 /* </CODE> */
