@@ -24,7 +24,6 @@
 //! `pool(9)`, `malloc(9)`, the user copy, the console, and for the pmap (N3.1) amd64's CPUs
 //! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
-
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
 //! section 0.3.2), with the C's modes spelled out; `Errno` is one type on both sides
 //! (`hal::sys::errno`, which `crate::sys::errno` re-exports).

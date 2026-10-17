@@ -497,5 +497,21 @@ mod tests {
             Err(LoadError::Table(1, 40))
         );
     }
+
+    /// Without a module window (the host double's, as on a machine whose bootstrap could not
+    /// link one) the module is refused as `NoMemory` before anything is placed or mapped:
+    /// the writable copy stays as `alloc` gave it. `place_and_map` rather than `load_with`,
+    /// whose once-guard the test above takes for the whole process.
+    #[test]
+    fn no_window_is_no_memory_and_maps_nothing() {
+        assert_eq!(crate::pmap::module_window(), None);
+        let f = module_file();
+        let m = Module::parse(&f, elf::EM_X86_64).unwrap();
+        let span = m.span();
+        let mut copy = vec![0u8; span];
+        let rw = copy.as_mut_ptr().expose_provenance();
+        assert_eq!(place_and_map(&m, rw, span), Err(LoadError::NoMemory));
+        assert!(copy.iter().all(|&b| b == 0));
+    }
 }
 /* </TESTS> */

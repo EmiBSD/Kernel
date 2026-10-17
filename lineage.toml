@@ -1673,10 +1673,9 @@ notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"
-lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
-license = "none"
+lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswitch.S calls, moved from LZ's arm64/pmap.rs (an unsafe extern \"C\" fn over machine::pmap::pmap_setttb); the licence is pmap.c's (Dale Rahn, ISC): cpuswitch.S has no licence text (license = \"none\" before), and one module field cannot say both"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/db_interface.rs"
@@ -1794,8 +1793,13 @@ notes = "M4: the registers, ampintc_match/attach (from fdt_attach_args autoconf.
 [[module]]
 rust = "sys/arch/arm64/dev/efi_machdep.rs"
 lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs"]
+status = "redesigned"
+notes = "N3.1 commit 6 (redesigned at 6d): the runtime services' pmap is hal's EFI pmap (hal::pmap::create_efi), held as a counted PmapRef in EFI_PMAP (OnceStatic); efi_enter/efi_leave's TTBR0/TCR sequences are hal's (pmap_efi_enter, pmap_efi_leave); EFI_SPACE_BITS moved to hal's arm64 layout"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_SPACE_BITS"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::EFI_SPACE_BITS"]
+kind = "moved"
 
 [[module]]
 rust = "sys/arch/arm64/dev/mainbus.rs"

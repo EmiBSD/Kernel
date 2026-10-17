@@ -87,7 +87,15 @@
 //!   from scratch (`pmap_setup_avail`, `pmap_map_stolen`, `switch_mmu_kernel`) and
 //!   pre-populates the first GiB; here the boot glue's `pmap_growkernel` populates it, so
 //!   `pmap_maxkvaddr` starts at `VM_MIN_KERNEL_ADDRESS`, and the memory is loaded into uvm
-//!   before `pmap_bootstrap`.
+//!   before `pmap_bootstrap`. Inherited from LZ (its `pmap_init`: "the bootloader's tables
+//!   stay"): the C maps the image by section with `pmap_map_stolen` (text read-only and
+//!   executable, rodata read-only, the rest read-write and not executable) and switches to
+//!   those tables (`switch_mmu_kernel`); under boot(8)/efiboot the image keeps `locore0.S`'s
+//!   32 level-2 blocks over the whole 64 MB, each read-write with only `ATTR_UXN`, so all of
+//!   it executes at EL1 and the kernel text is writable, and the block's tail past
+//!   `kernel_end`, which `machdep.rs` gives uvm as usable memory, gives the uvm pages there a
+//!   writable, EL1-executable alias at `0xffffffff80000000 + (pa - memstart)`. Not fixed
+//!   here (the user's decision).
 //! - The kernel pmap is four-level (`TCR_EL1.T1SZ` = 16, as both boot paths leave it); the
 //!   C's is three-level (a 39-bit kernel), so where the C reaches `pm_vp.l1` directly the walks
 //!   go through level 0.
@@ -122,8 +130,9 @@
 //!   EL1 whatever a leaf says: amd64's posture, whose directories carry `pg_nx`. The image's
 //!   tables (the boot loader's, under its own level-1 entry, never set by `pmap_growkernel`),
 //!   the direct map's (another level-0 slot) and the EFI runtime pmap's (its own root) are
-//!   not touched; the only executable kernel memory beside the image is the module window
-//!   (`window.rs`), whose tables hang from the image's level-2 table. A table `pmap_vp_enter`
+//!   not touched; outside the image's own mapping (under boot(8)/efiboot all of its 64 MB
+//!   block, see the deviation on the adopted tables above) the only executable kernel memory
+//!   is the module window (`window.rs`), whose tables hang from the image's level-2 table. A table `pmap_vp_enter`
 //!   would hang for the kernel pmap beyond `pmap_growkernel`'s reach (uvm never asks) has no
 //!   `Lx_PT_PXN`, but its leaves are refused `PROT_EXEC` all the same.
 //!
