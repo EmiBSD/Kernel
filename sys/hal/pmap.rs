@@ -669,6 +669,7 @@ pub trait TlbCpus: Sync {
     /// `x86_fast_ipi(ci, ipi)`: whether the IPI was sent. A CPU that could not take it is
     /// counted as done (`pmap_tlb_shootfail`: its count decremented, the lock released with
     /// the last one, `pmap.c`), not a panic.
+
     fn send(&self, cpuid: usize, ipi: TlbIpi) -> bool;
     /// `wbinvd_on_all_cpus()`: write back and invalidate every CPU's caches.
     fn wbinvd_all(&self);

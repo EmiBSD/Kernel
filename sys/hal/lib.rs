@@ -57,9 +57,9 @@ pub mod mutex;
 pub mod once;
 pub mod percpu;
 // pmap(9) (N3.1). A machine's build has the module once its backend is in
-// `arch/<machine>/pmap/` (amd64: N3.1 commit 4, arm64: commit 5, each adding its `target_arch`
-// here and on the two pmap bridges of `bridges.rs`); the host double has one now.
-#[cfg(not(target_os = "none"))]
+// `arch/<machine>/pmap/`: the host double's and amd64's are (N3.1 commit 4); arm64 adds its
+// `target_arch` here and on the two pmap bridges of `bridges.rs` with its backend (commit 5).
+#[cfg(any(not(target_os = "none"), target_arch = "x86_64"))]
 #[forbid(unsafe_code)]
 pub mod pmap;
 

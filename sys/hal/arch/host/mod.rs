@@ -31,7 +31,7 @@
 //! `target_os = "none"` alone, and the tests of a header are plain constant checks, five of
 //! them against the C under `just test-ref`. arm64's `pte.rs` is not among them: it is
 //! inherited from LZ and names `crate::arch::arm64::include::param`, which does not exist on
-//! the host.
+//! the host. amd64's pmap layout (`pmap/layout.rs`, pure constants) is compiled with them.
 
 pub mod param;
 pub(crate) mod pmap;
@@ -47,6 +47,9 @@ mod amd64_headers {
         pub mod param;
         pub mod pte;
         pub mod vmparam;
+    }
+    pub mod pmap {
+        pub mod layout;
     }
 }
 

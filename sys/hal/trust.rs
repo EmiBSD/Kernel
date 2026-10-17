@@ -36,6 +36,11 @@
 //! last bytes are written and read back (then restored), so a block that is not memory, or
 //! not writable, fails at its first use instead of corrupting something later.
 //!
+//! The pmap's page provider (`hal::pmap::PhysPages`, N3.1, passed to `pmap_bootstrap` as a
+//! value by the same boot path) is under the same contract for the frames it hands out, and a
+//! machine's pmap views a frame through the direct map only after [`check_frame`]: the frame
+//! page-aligned, its whole page inside the direct map the boot glue described.
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.
@@ -43,6 +48,26 @@
 use core::ptr::NonNull;
 
 use crate::assert::hal_panic;
+
+/// Checks a frame `pa` (from `PhysPages`, or a caller's `Paddr`) before a pmap views it through
+/// the direct map `[base, end)` that the boot glue described: `pa` page-aligned (`page` a
+/// power of two), the map set (`base` not 0), and the whole page inside it. Its direct-map
+/// address; panics naming the frame otherwise.
+#[cfg_attr(
+    not(all(target_os = "none", target_arch = "x86_64")),
+    allow(dead_code, reason = "amd64's pmap views frames through its direct map")
+)]
+pub(crate) fn check_frame(pa: usize, page: usize, base: usize, end: usize) -> usize {
+    let va = base.checked_add(pa).filter(|va| {
+        base != 0 && pa & (page - 1) == 0 && va.checked_add(page).is_some_and(|e| e <= end)
+    });
+    match va {
+        Some(va) => va,
+        None => hal_panic(format_args!(
+            "PhysPages: frame {pa:#x} outside the direct map [{base:#x}, {end:#x})"
+        )),
+    }
+}
 
 /// Checks a block `bridge` returned for a request of `requested` bytes aligned to `align`:
 /// aligned, and `granted` covering the request; probes it under `diagnostic`. Panics naming

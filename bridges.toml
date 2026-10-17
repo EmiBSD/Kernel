@@ -136,12 +136,12 @@ paid_by = "N3"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
-# for amd64's TLB shootdown; arm64 broadcasts tlbi and registers none. `for` moves to the
-# amd64 backend with N3.1 commit 4.
+# for amd64's TLB shootdown and cache flush; arm64 broadcasts tlbi and registers none.
 # hal::pmap::TlbCpus
 [[bridge]]
 trait = "TlbCpus"
-for = ["sys/hal/pmap.rs"]
+for = ["sys/hal/arch/amd64/pmap/tlb.rs"]
+
 paid_by = "N4"
 
 # bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator; `for` moves to the arm64

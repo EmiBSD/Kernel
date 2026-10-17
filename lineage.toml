@@ -185,6 +185,76 @@ status = "redesigned"
 notes = "N2 close (the user's decision of 2026-10-16, option C): the window abi_openbsd.ko runs from, in the kernel image's slot 511 after the last level-2 entry the boot loader used in KERNBASE's gigabyte (both boot paths, from the end of pmap_bootstrap), 16 MiB (hal::module::elf::MAX_SPAN), its level-1 tables a static of the kernel's .bss linked with locore0's directory flags (PG_V|PG_RW|pg_crypt, no pg_nx), outside kernel_map, which keeps pg_nx at every directory level as in OpenBSD; pmap_module_window (the range, empty when it could not be linked) and pmap_module_enter (pmap_kenter_pa's leaf, W^X refused, only an empty entry taken) behind machine::Pmap; no pmap.rs item moved"
 
 [[module]]
+rust = "sys/hal/arch/amd64/pmap/backend.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs", "sys/arch/amd64/include/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: amd64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root, the PTP count, page_remove's pins), PvEntry in a PoolBox (pool pvpl) on the page's owned chain, PTP refcounts in PageMd.ptp_refs found by the walk (pm_obj, pm_ptphint, pmap_find_ptp dropped), pmap_enter/do_remove/remove_ptes/free_ptp/get_ptp/page_remove/test_attrs/clear_attrs/write_protect, kenter/kremove through the direct map, growkernel (G11 assert instead of the pmaps list), bootstrap from BootstrapParams (both boot paths, the recursive slot kept), prealloc_lowmem_ptps on KernelMapper, find_pte; LZ's files stay in bsd until commit 6"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/tables.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: the frame view of the direct map (one unsafe), the walks (pmap_find_pte_direct as find_pte_from, table_from, leaf_pa) over AtomicU64 entries, the direct map's bounds, PG_NX_BIT/PG_CRYPT/PG_G_KERN (pub, locore0's symbols); pg_xo, pmap_pg_wc, pg_frame as constants"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/tlb.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs", "sys/arch/amd64/include/cpufunc.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: the MULTIPROCESSOR shootdown (TLB_SHOOT_* of the C's shapes, vector.S's symbols; the CPU list and IPIs through the TlbCpus bridge, N4) and the MMU's instructions as private asm! (split from cpufunc.rs, which keeps them for its other users until N4); PCID off"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::rcr3"
+native = ["rcr3"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::lcr3"
+native = ["lcr3"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::tlbflush"
+native = ["tlbflush"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::invlpg"
+native = ["invlpg"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::mfence"
+native = ["mfence"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::clflush"
+native = ["clflush"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/cpufunc.rs::wbinvd"
+native = ["wbinvd"]
+kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/window.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/amd64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4: the ABI module's window of bsd's pmap_module.rs (decision 37, option C) in hal: the boot loader's level-2 table through the frame view (no unsafe left), the one-shot link, W^X refused at entry"
+
+[[module]]
+rust = "sys/hal/arch/amd64/pmap/layout.rs"
+crate = "hal"
+lz = ["sys/arch/amd64/include/pmap.rs", "sys/arch/amd64/amd64/pmap.rs"]
+status = "redesigned"
+notes = "N3.1 commit 4 (D15): include/pmap.h's slot layout and page-table geometry as pure constants, protection_codes as a const fn, pl_pi from pmap.c; compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs); kvtopte and ptp_va2o gone with the recursive reads and pm_obj"
+
+[[module]]
 rust = "sys/arch/amd64/amd64/spl.rs"
 lz = ["sys/arch/amd64/amd64/spl.rs"]
 status = "inherited"
