@@ -27,7 +27,9 @@
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
 //! section 0.3.2), with the C's modes spelled out; `Errno` is one type on both sides
 //! (`hal::sys::errno`, which `crate::sys::errno` re-exports).
-//! It writes no `unsafe` (decision 30: the memory bridges are safe traits).
+//! It writes no `unsafe` (decision 30: the memory bridges are safe traits). One piece of
+//! storage is its own: the `struct pool`s of the first pools `hal` makes (`pmap_init`'s, before
+//! `kmeminit`, as the C's static pools) are a static array, handed out once each.
 //!
 //! [`hal_bridges_register`] is called by `stand::start_kernel` (sys/stand/mod.rs), on the boot
 //! CPU, after the machine's earliest setup and the console and just before `main()`: before
@@ -39,7 +41,7 @@
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
 use hal::cpu::CpuId;
@@ -184,12 +186,36 @@ impl RawPool for Pool {
 /// `pool_init(9)` of a new pool that lives for ever.
 struct BsdPools;
 
+/// How many `struct pool`s are kept in [`STATIC_POOLS`]: the pools `hal` makes before
+/// `kmeminit` (`pmap_init`'s two on either machine: amd64's `pmappl` and `pvpl`, arm64's
+/// `pmap` and `pted`), with room for two more.
+const NSTATIC_POOLS: usize = 4;
+
+/// `struct pool`s that need no `malloc(9)`, for the first pools made: the C's `pmap_init`
+/// runs before `kmeminit` (`uvm_init`) and calls `pool_init` on static `struct pool`s
+/// (`pmap_pmap_pool`, `pmap_pv_pool`, `pmap_pted_pool`). Each is handed out once.
+static STATIC_POOLS: [Pool; NSTATIC_POOLS] = [const { Pool::new() }; NSTATIC_POOLS];
+/// How many of [`STATIC_POOLS`] were handed out.
+static STATIC_POOLS_USED: AtomicUsize = AtomicUsize::new(0);
+
+/// The next `struct pool` of [`STATIC_POOLS`] no one has, if one is left.
+fn static_pool() -> Option<&'static Pool> {
+    let i = STATIC_POOLS_USED
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            (n < NSTATIC_POOLS).then_some(n + 1)
+        })
+        .ok()?;
+    STATIC_POOLS.get(i)
+}
+
 impl PoolBackend for BsdPools {
-    /// The `struct pool` itself comes from the Rust global allocator (`malloc(9)` with
-    /// `M_TEMP`, `M_NOWAIT` behind it; a failure there is the allocator's panic) and is
-    /// leaked: `pool_init(9)` assumes its `struct pool` outlives every item, and no pool is
-    /// ever destroyed here.
-    #[cfg(feature = "alloc")]
+    /// The `struct pool` is one of [`STATIC_POOLS`] while one is left (so the pools made
+    /// before `kmeminit` need no heap), then comes from the Rust global allocator
+    /// (`malloc(9)` with `M_TEMP`, `M_NOWAIT` behind it; a failure there is the allocator's
+    /// panic) and is leaked. Either way it lives for ever: `pool_init(9)` assumes its
+    /// `struct pool` outlives every item, and no pool is ever destroyed here. The pool is the
+    /// C's either way (`pool_init` with the caller's size, name and `ipl`), so `vmstat -m`
+    /// and `kern.pool` show the same row.
     fn create(
         &self,
         size: usize,
@@ -199,23 +225,23 @@ impl PoolBackend for BsdPools {
         wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
         let align = u32::try_from(align).ok()?;
-        let pp: &'static Pool = alloc::boxed::Box::leak(alloc::boxed::Box::new(Pool::new()));
+        let pp = static_pool().or_else(heap_pool)?;
         pool_init(pp, size, align, ipl, flags, wchan, None);
         Some(pp)
     }
+}
 
-    /// Without the global allocator there is nowhere to keep a new pool: none is made.
-    #[cfg(not(feature = "alloc"))]
-    fn create(
-        &self,
-        _size: usize,
-        _align: usize,
-        _ipl: i32,
-        _flags: i32,
-        _wchan: &'static str,
-    ) -> Option<&'static dyn RawPool> {
-        None
-    }
+/// A new `struct pool` from the Rust global allocator, leaked.
+#[cfg(feature = "alloc")]
+fn heap_pool() -> Option<&'static Pool> {
+    Some(alloc::boxed::Box::leak(alloc::boxed::Box::new(Pool::new())))
+}
+
+/// Without the global allocator there is nowhere to keep a new pool once [`STATIC_POOLS`]
+/// are gone: none is made.
+#[cfg(not(feature = "alloc"))]
+fn heap_pool() -> Option<&'static Pool> {
+    None
 }
 
 /// `malloc(9)`/`free(9)` of `sys/kern/kern_malloc.rs`.
@@ -364,3 +390,34 @@ pub fn tlb_cpus_registered() -> bool {
     TLB_CPUS_REGISTERED.load(Ordering::Acquire)
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::vec::Vec;
+    use std::{assert, assert_eq};
+
+    use super::*;
+
+    #[test]
+    fn the_static_pools_are_handed_out_once_each() {
+        // Other tests may take some meanwhile: what this one gets is distinct, at most
+        // NSTATIC_POOLS in all, and once they are gone none comes back.
+        let mut got: Vec<&'static Pool> = Vec::new();
+        while let Some(pp) = static_pool() {
+            assert!(
+                !got.iter().any(|q| ptr::eq(*q, pp)),
+                "a pool handed out twice"
+            );
+            got.push(pp);
+        }
+        assert!(got.len() <= NSTATIC_POOLS);
+        assert!(
+            got.iter()
+                .all(|pp| STATIC_POOLS.iter().any(|q| ptr::eq(q, *pp)))
+        );
+        assert!(static_pool().is_none());
+        assert_eq!(STATIC_POOLS_USED.load(Ordering::Relaxed), NSTATIC_POOLS);
+    }
+}
+/* </TESTS> */
