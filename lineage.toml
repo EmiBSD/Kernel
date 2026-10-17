@@ -205,6 +205,8 @@ lz = ["sys/arch/amd64/amd64/pmap.rs", "sys/arch/amd64/include/cpufunc.rs"]
 status = "redesigned"
 notes = "N3.1 commit 4: the MULTIPROCESSOR shootdown (TLB_SHOOT_* of the C's shapes, vector.S's symbols; the CPU list and IPIs through the TlbCpus bridge, N4) and the MMU's instructions as private asm! (split from cpufunc.rs, which keeps them for its other users until N4); PCID off"
 
+# The seven cpufunc rows are copies, not moves: cpufunc.rs keeps the items for its other
+# users until N4; `split` is the kind lz check accepts for an item whose code also lives on.
 [[module.fn]]
 lz = "sys/arch/amd64/include/cpufunc.rs::rcr3"
 native = ["rcr3"]

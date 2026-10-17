@@ -269,11 +269,13 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     ///
     /// # Safety
     ///
-    /// `value` is the address of the value of a live item of a `TypedPool<T>` (one
-    /// `get_shared` made), whose count is at least 1 and stays so until this call returns: the
-    /// caller holds the lock that keeps the record of the pointer, and the record exists only
-    /// while a handle does (a pmap's pv entries, its mappings: `hal::pmap`'s last drop panics
-    /// while one is left).
+    /// `value` is the address of the value of an item of a `TypedPool<T>` (one `get_shared`
+    /// made) that has not been put back into its pool and is not put back during this call:
+    /// the caller holds the lock that keeps the record of the pointer, and the object's drop
+    /// refuses to finish while a record is left (a pmap with a pv entry: `hal::pmap`'s last
+    /// drop panics, and a drop that does not finish never puts the item back). The count may
+    /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused with
+    /// a panic here, never taken back to 1, so no second last drop can follow.
     #[allow(
         dead_code,
         reason = "the pmap backends' (pmap_page_remove), N3.1 commits 4 and 5"
@@ -283,13 +285,29 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         let Some(inner) = NonNull::new(ptr::with_exposed_provenance_mut::<Inner<T>>(addr)) else {
             hal_panic(format_args!("PoolArc::from_value: a null item"));
         };
-        // A handle the caller's guarantee makes valid, never dropped: cloning it counts the
-        // new one (and refuses an overflow), leaving the count of the others as it was.
+        // A view the caller's guarantee makes valid (the item is not put back), never dropped:
+        // its count is raised only from a live count, never from 0.
         let borrowed = ManuallyDrop::new(PoolArc {
             inner,
             _owns: PhantomData,
         });
-        PoolArc::clone(&borrowed)
+        let counted =
+            borrowed
+                .inner()
+                .refs
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                    (c != 0 && c < MAX_REFS).then(|| c + 1)
+                });
+        match counted {
+            Ok(_) => PoolArc {
+                inner,
+                _owns: PhantomData,
+            },
+            Err(0) => hal_panic(format_args!(
+                "PoolArc::from_value: an item whose last handle is gone"
+            )),
+            Err(_) => hal_panic(format_args!("PoolArc: reference count overflow")),
+        }
     }
 }
 

@@ -165,8 +165,11 @@
 //!   sits inside `[VM_MIN_KERNEL_ADDRESS, VM_MAX_KERNEL_ADDRESS)` as Limine's default
 //!   placement does; `pmap_growkernel` counts its PTPs from there (`pmap_kva_start`), keeps
 //!   the page-table pages the boot loader installed on the way, and panics on a large page
-//!   there. The window keeps the C's size: `pmap_virtual_space` ends at `pmap_kva_start +
-//!   (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS)`, and the boot glue moves uvm's runtime
+//!   there. The window keeps the C's size but ends at `VM_MAX_KERNEL_ADDRESS`, the end of the
+//!   kernel's one PML4 slot (`pmap_virtual_space` ends at the lesser of `pmap_kva_start +
+//!   (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS)` and `VM_MAX_KERNEL_ADDRESS`), so the
+//!   managed range never needs a second top-level entry (LZ's window could straddle into slot
+//!   257 under Limine and grow there without one); the boot glue moves uvm's runtime
 //!   `vm_min_kernel_address` to `virtual_avail` ([`crate::pmap::Bootstrapped`]).
 //! - `pg_nx` comes from `EFER.NXE` as the boot loader left it (`BootstrapParams::nx`); the
 //!   C's `locore0.S` probes CPUID. PCID is off; `cpu_meltdown` is not configured (no
@@ -180,7 +183,18 @@
 //!   `pmap_growkernel` makes the kernel's one top-level entry at boot, before any user pmap;
 //!   a new top-level entry once a user pmap exists panics (G11) instead of copying it into
 //!   every pmap. `splhigh()` around the growth is kept.
-//! - `pmap_unwire`'s two diagnostics go to the console (`hal::cons`), not the message buffer.
+//! - `pmap_unwire` is the C's under `DIAGNOSTIC` (a panic on an unmapped `va` and on an
+//!   invalid PDE, the "didn't change" message) and silent without it; the message goes to
+//!   the console (`hal::cons`), not the message buffer. LZ printed both messages always and
+//!   panicked on an invalid PDE in every configuration.
+//! - `pool_sethiwat(&pmap_pv_pool, 32 * 1024)` (pmap.c) is not set (LZ did not either):
+//!   `hal::pool` has no high-water mark yet, so `vmstat -m`'s Hiwat column of `pvpl` is the
+//!   pool's default.
+//! - `pmap_free_ptp` shoots the recursive view's page of a freed table on this CPU always,
+//!   where the C asks whether `curpcb`'s pmap is loaded (it is, but in the middle of a
+//!   switch): one `invlpg` more, never one less.
+//! - `PMAP_EFI` is refused (a panic) by `pmap_enter`: amd64's `efi_machdep.c` is not in LZ at
+//!   the pin, so nothing enters an EFI runtime mapping, whose PTE the C makes without `PG_u`.
 //!
 //! ## Redesign
 //! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
@@ -217,8 +231,9 @@ use super::super::include::vmparam::{
 };
 use super::layout::{
     L2_BASE, L3_BASE, L4_BASE, NKPTP_INITIALIZER, NKPTPMAX_INITIALIZER, NTOPLEVEL_PDES,
-    PDIR_SLOT_PTE, PG_PMAP_WC, PG_PVLIST, PG_W, PMAP_NOCACHE, PMAP_NOCRYPT, PMAP_PA_MASK, PMAP_WC,
-    PTE_BASE, PTP_LEVELS, PTP_SHIFTS, pl_i, pl_pi, pmap_valid_entry, protection_code, va_sign_neg,
+    PDIR_SLOT_PTE, PG_PMAP_WC, PG_PVLIST, PG_W, PMAP_EFI, PMAP_NOCACHE, PMAP_NOCRYPT, PMAP_PA_MASK,
+    PMAP_WC, PTE_BASE, PTP_LEVELS, PTP_SHIFTS, pl_i, pl_pi, pmap_valid_entry, protection_code,
+    va_sign_neg,
 };
 use super::tables::{
     PG_NX_BIT, PG_XO, PMAP_PG_WC, copy_frame, direct_map, direct_unmap, entry, entry_pa,
@@ -344,6 +359,21 @@ impl Drop for PvEntry {
     }
 }
 
+/// Panics when another running CPU runs on `pmap` (its `ci_proc_pmap`): its tables are about
+/// to be freed. Nothing to look at while the CPU bridge is not registered (one CPU).
+fn other_cpus_off(pmap: &Pmap) {
+    #[cfg(feature = "multiprocessor")]
+    if let Some(b) = crate::bridges::tlb_cpus() {
+        b.for_each_other_running(&mut |id, active| {
+            if ptr::eq(active, pmap.as_ptr()) {
+                hal_panic(format_args!("pmap_destroy: the pmap is loaded on cpu {id}"));
+            }
+        });
+    }
+    #[cfg(not(feature = "multiprocessor"))]
+    let _ = pmap;
+}
+
 /// `pmap_reference(pve->pv_pmap)`: a counted handle to the pmap of a linked entry, taken
 /// under the page's `pv_mtx` (`pmap_page_remove`, before it drops the lock); the kernel
 /// pmap's is its static arm.
@@ -354,10 +384,11 @@ fn pmap_reference_pv(e: &PvEntry) -> PmapRef {
     // SAFETY: `e.pmap` is the address of a user pmap's value inside its item of
     // `hal::pmap`'s pool (`pmap_enter` recorded `NonNull::from(pmap)` of the `&Pmap` a
     // `PmapRef` derefs to, and every pmap but the kernel's is one `create` put in that pool).
-    // The entry is linked and the caller holds the page's `pv_mtx`, so the mapping exists:
-    // every removal unlinks the entry under this lock first. A user pmap with a mapping has a
-    // handle (its last drop panics while one is left, `hal::pmap`'s `Drop for Pmap`, and the
-    // panic leaves the item in place), so the count is at least 1 for the whole call.
+    // The entry is linked and the caller holds the page's `pv_mtx`, so the mapping exists
+    // (every removal unlinks the entry under this lock first), and a pmap with a mapping is
+    // never put back: `hal::pmap`'s `Drop for Pmap` panics while one is left, before
+    // `PoolArc`'s drop reaches the put. So the item is not put back during the call; a count
+    // of 0 (the last handle gone, that drop under way) is refused by `from_value` itself.
     PmapRef::User(unsafe { PoolArc::from_value(e.pmap) })
 }
 
@@ -582,7 +613,8 @@ fn pmap_alloc_level(kva: usize, lvl: usize, needed_ptps: &[isize; PTP_LEVELS]) {
 /// The end of the managed kernel window: it keeps the C's size but starts at
 /// `pmap_kva_start` (see the deviations).
 fn kernel_virtual_end() -> usize {
-    PMAP_KVA_START.load(Ordering::Relaxed) + (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS)
+    (PMAP_KVA_START.load(Ordering::Relaxed) + (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS))
+        .min(VM_MAX_KERNEL_ADDRESS)
 }
 
 /// `pmap_freepage` + `pmap_free_ptp`: frees the level-1 PTP `ptp` of `va` (which no longer
@@ -843,7 +875,12 @@ fn pmap_page_remove(md: &PageMd) {
                 "pmap_page_remove: mapped managed page has invalid pv_ptp field: va {va:#x}"
             ));
         }
-        kassert!(level == 0);
+        if level != 0 {
+            // A linked entry's mapping has its level-1 table: the C faults on the PTE here.
+            hal_panic(format_args!(
+                "pmap_page_remove: no PTE for the mapping at {va:#x} (level {level})"
+            ));
+        }
 
         // atomically save the old PTE and zap it
         let opte = entry(table, offs).swap(0, Ordering::AcqRel);
@@ -962,7 +999,9 @@ fn pmap_write_protect(pmap: &Pmap, sva: usize, eva: usize, prot: VmProt) {
         if cfg!(feature = "diagnostic") && (VM_MAXUSER_ADDRESS..VM_MAX_ADDRESS).contains(&va) {
             hal_panic(format_args!("pmap_write_protect: PTE space"));
         }
-        let n = (blkendva - va) / PAGE_SIZE;
+        // The C's count of entries, `pl1_i(blkendva) - pl1_i(va)`: an unaligned `va` still
+        // covers every page the range touches.
+        let n = pl_i(blkendva, 1) - pl_i(va, 1);
         for e in frame(table).iter().skip(offs).take(n) {
             if pmap_valid_entry(e.load(Ordering::Relaxed)) {
                 e.fetch_and(!clear, Ordering::AcqRel);
@@ -998,6 +1037,11 @@ fn pmap_enter(
     let is_kernel = pmap.is_kernel();
 
     kassert!(!(wc && nocache));
+    if flags & PMAP_EFI != 0 {
+        hal_panic(format_args!(
+            "pmap_enter: PMAP_EFI (amd64's EFI runtime pmap is not ported)"
+        ));
+    }
     let pa = pa_raw & PMAP_PA_MASK;
 
     if cfg!(feature = "diagnostic") {
@@ -1154,7 +1198,7 @@ fn pmap_enter(
         npte |= PG_N;
     }
     if va < VM_MAXUSER_ADDRESS {
-        npte |= PG_u; // PMAP_EFI is never set here
+        npte |= PG_u; // PMAP_EFI was refused above
     } else if va < VM_MAX_ADDRESS {
         npte |= PG_u | PG_RW; // XXXCDC: no longer needed?
     }
@@ -1242,11 +1286,12 @@ fn kernel_pte(va: usize) -> &'static AtomicU64 {
     entry(table, offs)
 }
 
-/// `pmap_find_pte_direct` of `pm` at `va` as the C's callers use it outside the pmap (the ISA
-/// hole check of `bus_space`): the level the walk stopped at (0 for a level-1 entry) and the
-/// entry there.
-pub fn find_pte(pm: &Pmap, va: Vaddr) -> (usize, u64) {
-    let (level, table, offs) = find_pte_from(pm.md.root_pa(), va.as_usize());
+/// `pmap_find_pte_direct(pmap_kernel(), va, ..)` as the C's callers use it outside the pmap
+/// (the ISA hole check of `bus_space`): the level the walk stopped at (0 for a level-1 entry)
+/// and the entry there. The kernel pmap only: its tables are never freed, so the walk needs
+/// no lock (a user pmap's would need its `pm_mtx`, and no caller walks one).
+pub fn find_pte(va: Vaddr) -> (usize, u64) {
+    let (level, table, offs) = find_pte_from(KERNEL_PMAP.md.root_pa(), va.as_usize());
     (level, entry(table, offs).load(Ordering::Relaxed))
 }
 
@@ -1392,6 +1437,11 @@ impl PmapBackend for Backend {
         if root.as_usize() == 0 {
             return;
         }
+        // A loaded root is never freed: not this CPU's `%cr3`, not another running CPU's pmap.
+        if rcr3() & pg_frame() == root.as_usize() as u64 {
+            hal_panic(format_args!("pmap_destroy: the pmap is loaded on this CPU"));
+        }
+        other_cpus_off(pmap);
         for e4 in frame(root).iter().take(PDIR_SLOT_PTE) {
             let p4 = e4.load(Ordering::Relaxed);
             if !pmap_valid_entry(p4) {
@@ -1452,25 +1502,26 @@ impl PmapBackend for Backend {
         leaf_pa(level, entry(table, offs).load(Ordering::Relaxed), va)
     }
 
-    /// `pmap_unwire`: clear the wired bit in the PTE.
+    /// `pmap_unwire`: clear the wired bit in the PTE (the C's checks under `DIAGNOSTIC`).
     fn unwire(pmap: &Pmap, va: Vaddr) {
         let _locked = pmap_map_ptes(pmap);
         let va = va.as_usize();
         let (level, table, offs) = find_pte_from(pmap.md.root_pa(), va);
         if level != 0 {
-            hal_panic(format_args!("pmap_unwire: invalid PDE"));
+            if cfg!(feature = "diagnostic") {
+                hal_panic(format_args!("pmap_unwire: invalid PDE"));
+            }
+            return;
         }
         let e = entry(table, offs);
         let pte = e.load(Ordering::Relaxed);
-        if !pmap_valid_entry(pte) {
-            let _ = core::fmt::Write::write_fmt(
-                &mut crate::cons::Cons,
-                format_args!("pmap_unwire: invalid (unmapped) va {va:#x}\n"),
-            );
-        } else if pte & PG_W != 0 {
+        if cfg!(feature = "diagnostic") && !pmap_valid_entry(pte) {
+            hal_panic(format_args!("pmap_unwire: invalid (unmapped) va {va:#x}"));
+        }
+        if pte & PG_W != 0 {
             e.fetch_and(!PG_W, Ordering::AcqRel);
             add(&pmap.stats.wired_count, -1);
-        } else {
+        } else if cfg!(feature = "diagnostic") {
             let _ = core::fmt::Write::write_fmt(
                 &mut crate::cons::Cons,
                 format_args!(
@@ -1512,8 +1563,12 @@ impl PmapBackend for Backend {
         pmap_tlb_shootwait();
     }
 
-    /// `pmap_activate`'s switch: `lcr3` of the pmap's root (PCID off).
+    /// `pmap_activate`'s switch: `lcr3` of the pmap's root (PCID off); a pmap without a root
+    /// (the kernel pmap before the bootstrap) panics.
     fn load(pmap: &Pmap) {
+        if pmap.md.root() == 0 {
+            hal_panic(format_args!("pmap_activate: a pmap without a root"));
+        }
         lcr3(pmap);
     }
 
