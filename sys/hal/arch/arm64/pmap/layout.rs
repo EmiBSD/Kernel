@@ -199,7 +199,6 @@ impl AsidWidth {
     }
 
     /// The probe's answer in words (for ddb and the tests; OpenBSD prints no boot line for it).
-
     pub const fn why(self) -> &'static str {
         match self {
             AsidWidth::Bits16 => "16-bit ASIDs",
