@@ -48,13 +48,12 @@
 //! - The bootstrap calls [`init`] once, at its end, on the boot CPU, with the kernel pmap's
 //!   copied level-0 and level-1 tables in `TTBR1_EL1`; both boot paths (boot(8)/efiboot
 //!   through `locore0.S`, and Limine) end there. In hal's level-1 copy it finds the entry of
-//!   the gigabyte the image starts in (`kernel.ld`'s `0xffffffff80000000`): a table the boot
-//!   loader built, its level-2 table, which no vp table of ours describes and nothing frees
-//!   (under boot(8): `locore0.S`'s 32 blocks of 2 MiB over the 64 MB the kernel, its symbols
-//!   and the module file were loaded into; under Limine: the image's segments). It links the
-//!   [`MODULE_WINDOW_SIZE`] bytes after the last entry the boot loader used to level-3
-//!   tables the window owns ([`MODULE_WINDOW_PTPS`], in the kernel's `.bss`), by table
-//!   descriptors without `Lx_PT_PXN`: the leaves decide.
+//!   the gigabyte the image starts in (`kernel.ld`'s `0xffffffff80000000`): the level-2 table
+//!   the bootstrap's `pmap_map_stolen` built for the image (N3.1 commit 8), which no vp table
+//!   of ours describes and nothing frees, one level-3 table per 2 MiB of the image, the same
+//!   on both boot paths. It links the [`MODULE_WINDOW_SIZE`] bytes after the image's last
+//!   entry to level-3 tables the window owns ([`MODULE_WINDOW_PTPS`], in the kernel's
+//!   `.bss`), by table descriptors without `Lx_PT_PXN`: the leaves decide.
 //! - The window is outside the kernel's managed range (`VM_MIN_KERNEL_ADDRESS` to
 //!   `VM_MAX_KERNEL_ADDRESS`: `vmmap` and `kernel_map`, checked), so uvm never hands it out,
 //!   `pmap_growkernel` never reaches it, and no table above it is ever freed.
@@ -70,15 +69,12 @@
 //! What executes after this: in the window, only the leaves entered `PROT_EXEC` (the
 //! module's text); in the managed range (`vmmap`, `kernel_map`) nothing, since the kernel
 //! pmap refuses `PROT_EXEC` and the range's table descriptors carry `Lx_PT_PXN`
-//! (`backend.rs`, deviations); and the image's own mapping, which is the boot loader's. Under
-//! boot(8)/efiboot that mapping is `locore0.S`'s 32 level-2 blocks over the whole 64 MB, each
-//! read-write with only `ATTR_UXN`: all of it executes at EL1, the kernel text is writable,
-//! and the uvm pages past `kernel_end` in that block have a writable, executable alias there
-//! (an inherited deviation, `backend.rs`; the C remaps the image by section). Under Limine it
-//! is the image's segments as Limine maps them. The loader's writable copy is a
-//! `kernel_map` range, unmapped before the module's entry point is called. A stray kernel
-//! write to the module's text or read-only data faults on a read-only leaf outside every uvm
-//! map: a kernel panic, the W^X behaviour wanted for the module.
+//! (`backend.rs`, deviations); in the image, its text alone, read-only (`pmap_map_stolen`,
+//! `backend.rs`, redesign: the read-only data and the data are never executable, and
+//! nothing past the image is mapped there). The loader's writable copy is a `kernel_map`
+//! range, unmapped before the module's entry point is called. A stray kernel write to the
+//! module's text or read-only data faults on a read-only leaf outside every uvm map: a
+//! kernel panic, the W^X behaviour wanted for the module.
 //!
 //! `pmap_extract` of a window address on the kernel pmap answers `None`: the window's leaves
 //! have no software descriptor, and the image's level-1 entry has no vp table of ours below
@@ -96,16 +92,16 @@
 //!   page), written with atomics, not vp tables of the page provider: they need no software
 //!   page (nothing walks them but the MMU and [`enter`]), and the `.bss` is memory both boot
 //!   loaders hand over zeroed, mapped and outside every free region.
-//! - The boot loader's level-2 table is reached through the frame view of the direct map
-//!   (`vp.rs`), as the bootstrap reaches the level-0 and level-1 tables it copies: the
-//!   window has no `unsafe`.
+//! - The image's level-2 table is reached through the frame view of the direct map
+//!   (`vp.rs`), as the bootstrap reaches the tables it builds: the window has no `unsafe`.
 //! - The link is attempted once ([`MODULE_WINDOW_TRIED`]): a refused first attempt leaves the
 //!   window empty for good, and the module loader reports it has no memory for the module
 //!   (decision 29's fail-soft); it is never placed in `kernel_map` instead. Two limits of
-//!   that promise: reaching the boot loader's level-2 table panics (`vp.rs`'s `check_frame`)
-//!   rather than refusing when that table lies outside the direct map (it lies inside on both
-//!   boot paths today); and a refused link reaches the boot console as the same `NoMemory`
-//!   line as a failed `km_alloc` of the writable copy, with no line of its own.
+//!   that promise: reaching the image's level-2 table panics (`vp.rs`'s `check_frame`)
+//!   rather than refusing when that table lies outside the direct map (a stolen frame, it
+//!   lies inside on both boot paths); and a refused link reaches the boot console as the
+//!   same `NoMemory` line as a failed `km_alloc` of the writable copy, with no line of its
+//!   own.
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -162,8 +158,8 @@ pub(super) fn init(image: Option<Vaddr>) {
     let kpm = Backend::kernel();
     let gib = image.as_usize() & !(L1_SIZE - 1);
 
-    // hal's level-1 copy (the bootstrap's `vp1`), and in it the boot loader's level-2 table
-    // of the image's gigabyte: a table descriptor no vp table of ours hangs from.
+    // hal's level-1 copy (the bootstrap's `vp1`), and in it the image's level-2 table
+    // (`pmap_map_stolen`'s): a table descriptor no vp table of ours hangs from.
     let Some(l1) = kpm.md.root().and_then(|r| r.child(vp_idx(0, gib))) else {
         return;
     };
@@ -177,8 +173,8 @@ pub(super) fn init(image: Option<Vaddr>) {
     }
     let l2 = words(Paddr::new((d & PTE_RPGN) as usize));
 
-    // The window starts after the last entry the boot loader used, whatever it maps, and
-    // stays out of the kernel's managed range.
+    // The window starts after the image's last entry and stays out of the kernel's managed
+    // range.
     let Some(last) = l2.iter().rposition(|e| e.load(Ordering::Relaxed) != 0) else {
         return;
     };

@@ -6,6 +6,11 @@
  * image lands at the block's start. The ELF entry is the physical offset of locore0.S's
  * `_start` for the same reason (e_entry goes through LOADADDR too); Limine enters the
  * boot glue's `_start` (sys/stand/mod.rs) through its entry point request.
+ *
+ * The section bounds `__text_start`, `__rodata_start`, `_erodata` and `__data_start` are
+ * OpenBSD's (kern.ldscript): hal's pmap_bootstrap maps the image by section with them
+ * (text read-only executable, rodata read-only, the rest read-write), as pmap_map_stolen
+ * does. They are symbols only: no section or segment moves.
  */
 OUTPUT_FORMAT(elf64-littleaarch64)
 ENTRY(__start_phys)
@@ -25,6 +30,7 @@ SECTIONS
 {
     /* Higher half, where Limine loads non-relocatable kernels; physical = virtual - base. */
     . = __kernel_base;
+    PROVIDE(__text_start = .);
 
     .text : AT(ADDR(.text) - __kernel_base) {
         /* locore0.S's _start first: efiboot cleans the cache from the entry point on. */
@@ -36,6 +42,7 @@ SECTIONS
     PROVIDE(etext = .);
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    PROVIDE(__rodata_start = .);
 
     .rodata : AT(ADDR(.rodata) - __kernel_base) {
         *(.rodata .rodata.*)
@@ -47,8 +54,11 @@ SECTIONS
     .openbsd.randomdata : AT(ADDR(.openbsd.randomdata) - __kernel_base) {
         *(.openbsd.randomdata .openbsd.randomdata.*)
     } :openbsd_randomize :rodata
+    . = ALIGN(0x1000);
+    PROVIDE(_erodata = .);
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    PROVIDE(__data_start = .);
 
     .data : AT(ADDR(.data) - __kernel_base) {
         *(.data .data.*)

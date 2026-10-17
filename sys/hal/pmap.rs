@@ -572,12 +572,21 @@ pub trait PhysPages: Sync {
     fn page_init_done(&self) -> bool;
 }
 
-/// The kernel image, for a machine whose pmap needs it to translate the image's addresses
-/// (arm64's `pmap_extract` of the image outside the direct map).
+/// The kernel image, for a machine whose pmap maps it by section and translates its addresses
+/// (arm64's `pmap_map_stolen` and `pmap_extract` of the image outside the direct map).
 #[derive(Clone, Copy, Debug)]
 pub struct KernelImage {
-    /// The image's first virtual address (`PMAP_KERNEL_IMAGE_START`).
+    /// The image's first virtual address, where its text starts (`__text_start`,
+    /// `PMAP_KERNEL_IMAGE_START`).
     pub start: Vaddr,
+    /// The end of the text (`_etext`).
+    pub text_end: Vaddr,
+    /// The first address of the read-only data (`__rodata_start`).
+    pub rodata_start: Vaddr,
+    /// Its end (`_erodata`).
+    pub rodata_end: Vaddr,
+    /// The first address of the data (`__data_start`): data and BSS up to `end`.
+    pub data_start: Vaddr,
     /// Its end (`_end`).
     pub end: Vaddr,
     /// Physical minus virtual (`PMAP_KERNEL_IMAGE_PHYS_OFF`).

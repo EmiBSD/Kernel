@@ -82,11 +82,16 @@
 //!   protections it maps ([`module_prot_ok`]); `window.rs` links and fills it. And the
 //!   level-1 slots of the kernel's managed range ([`kernel_map_slot`]), whose table
 //!   descriptors `pmap_growkernel` marks `Lx_PT_PXN` (the backend's deviations).
+//! - N3.1 commit 8: `pmap_map_stolen`'s choice of protection by section, for the image's
+//!   pages ([`image_page_prot`]), the checks the bootstrap makes of the section bounds the
+//!   boot glue passes ([`image_layout_ok`]) and how many level-3 tables they take
+//!   ([`image_ptps`]), and the `TCR_EL1` the switch to the kernel's tables runs under while
+//!   its identity table is in `TTBR0_EL1` ([`tcr_identity`]).
 
-use super::super::include::param::{PAGE_MASK, PAGE_SHIFT};
+use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
-use crate::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
-use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_WRITE};
+use crate::pmap::{KernelImage, PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
+use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
 
 // V->P mapping data
 
@@ -174,6 +179,13 @@ pub const TCR_A1: u64 = 1 << 22;
 pub const TCR_AS: u64 = 1 << 36;
 /// `T1SZ` of a four-level upper half (48 bits), what both boot paths leave.
 pub const T1SZ_4LEVEL: u64 = 16;
+/// `TCR_EL1`'s `TTBR0_EL1` fields, bits 15:0: `T0SZ`, `EPD0`, `IRGN0`, `ORGN0`, `SH0`, `TG0`.
+pub const TCR_TTBR0_FIELDS: u64 = 0xffff;
+/// The `TTBR0_EL1` walk of the identity table the switch to the kernel's tables runs from
+/// (the backend's `switch_mmu_kernel_table`): 48 bits (`T0SZ` 16, four levels), walks enabled
+/// (`EPD0` clear), write-back write-allocate inner and outer (`IRGN0`, `ORGN0` 0b01), inner
+/// shareable (`SH0` 0b11), 4 KiB granule (`TG0` 0b00).
+pub const TCR_IDENTITY_TTBR0: u64 = 16 | (0b01 << 8) | (0b01 << 10) | (0b11 << 12);
 /// `TTBRx_EL1.BADDR`: bits 47:1 hold the table's physical address.
 pub const TTBR_BADDR_MASK: u64 = 0x0000_ffff_ffff_fffe;
 /// `ID_AA64MMFR0_ASID_BITS_MASK`.
@@ -288,6 +300,73 @@ pub const fn tcr_t0sz(tcr: u64, bits: u32) -> u64 {
 /// The `T1SZ` field of `tcr`.
 pub const fn tcr_t1sz(tcr: u64) -> u64 {
     (tcr >> TCR_T1SZ_SHIFT) & 0x3f
+}
+
+/// `tcr` with the lower half's walk the identity table needs ([`TCR_IDENTITY_TTBR0`]); the
+/// upper half's fields and the rest stay.
+pub const fn tcr_identity(tcr: u64) -> u64 {
+    (tcr & !TCR_TTBR0_FIELDS) | TCR_IDENTITY_TTBR0
+}
+
+/// The highest physical address a descriptor holds (`PTE_RPGN`'s bits 47:12), plus one.
+const PA_LIMIT: usize = 1 << 48;
+
+/// Whether the image's section bounds are what `pmap_map_stolen` can map: `start` page-aligned
+/// and before the end of the text, the read-only data and the data starting on pages, in that
+/// order, without overlap (`text_end <= rodata_start <= rodata_end <= data_start <= end`), the
+/// physical offset a whole number of pages, every page of the image below 48 physical bits,
+/// and the whole image inside one gigabyte (one level-1 entry, one level-2 table).
+pub fn image_layout_ok(img: &KernelImage) -> bool {
+    let start = img.start.as_usize();
+    let (text_end, end) = (img.text_end.as_usize(), img.end.as_usize());
+    let (ro, ro_end) = (img.rodata_start.as_usize(), img.rodata_end.as_usize());
+    let data = img.data_start.as_usize();
+    let aligned = |a: usize| a & PAGE_MASK == 0;
+    if !(aligned(start) && aligned(ro) && aligned(ro_end) && aligned(data))
+        || !(start < text_end && text_end <= ro && ro <= ro_end && ro_end <= data && data < end)
+        || !aligned(img.phys_off)
+    {
+        return false;
+    }
+    let Some(last) = end
+        .checked_add(PAGE_MASK)
+        .map(|e| (e & !PAGE_MASK) - PAGE_SIZE)
+    else {
+        return false;
+    };
+    let (pa_first, pa_last) = (
+        start.wrapping_add(img.phys_off),
+        last.wrapping_add(img.phys_off),
+    );
+    pa_first <= pa_last && pa_last < PA_LIMIT && start >> VP_IDX1_POS == last >> VP_IDX1_POS
+}
+
+/// `pmap_map_stolen`'s protection of the image's page at `va` (its page's first address):
+/// read and execute in the text (`__text_start` to `_etext`, the page holding `_etext`
+/// included), read in the read-only data (`__rodata_start` to `_erodata`), read and write in
+/// the data and BSS (`__data_start` to the page holding `_end`). `None` for a page outside the
+/// image or in the padding between two sections, which is not mapped (the C maps every stolen
+/// page read-write but those two).
+pub fn image_page_prot(img: &KernelImage, va: usize) -> Option<VmProt> {
+    let va = va & !PAGE_MASK;
+    let end = img.end.as_usize().checked_add(PAGE_MASK)? & !PAGE_MASK;
+    if img.start.as_usize() <= va && va < img.text_end.as_usize() {
+        Some(PROT_READ | PROT_EXEC)
+    } else if img.rodata_start.as_usize() <= va && va < img.rodata_end.as_usize() {
+        Some(PROT_READ)
+    } else if img.data_start.as_usize() <= va && va < end {
+        Some(PROT_READ | PROT_WRITE)
+    } else {
+        None
+    }
+}
+
+/// The level-3 tables the image takes: one per level-2 entry its pages touch (an image that
+/// passed [`image_layout_ok`]).
+pub fn image_ptps(img: &KernelImage) -> usize {
+    let first = img.start.as_usize() >> VP_IDX2_POS;
+    let last = (img.end.as_usize() - 1) >> VP_IDX2_POS;
+    last - first + 1
 }
 
 /// Where the module window goes in the level-2 table of the gigabyte at `gib` (the kernel
@@ -501,6 +580,102 @@ mod tests {
         ] {
             assert_eq!(module_prot_ok(prot), ok, "{prot:#x}");
         }
+    }
+
+    /// An image as both boot paths lay it out (`kernel.ld`): the text from the gigabyte's
+    /// start, the read-only data and the data on 64 KiB boundaries.
+    fn image() -> KernelImage {
+        use crate::sys::types::Vaddr;
+        KernelImage {
+            start: Vaddr::new(0xffff_ffff_8000_0000),
+            text_end: Vaddr::new(0xffff_ffff_80a1_2345),
+            rodata_start: Vaddr::new(0xffff_ffff_80a2_0000),
+            rodata_end: Vaddr::new(0xffff_ffff_80c4_3000),
+            data_start: Vaddr::new(0xffff_ffff_80c5_0000),
+            end: Vaddr::new(0xffff_ffff_8123_4568),
+            phys_off: 0x4000_0000usize.wrapping_sub(0xffff_ffff_8000_0000),
+        }
+    }
+
+    #[test]
+    fn the_image_is_mapped_by_section() {
+        let img = image();
+        let rx = Some(PROT_READ | PROT_EXEC);
+        let r = Some(PROT_READ);
+        let rw = Some(PROT_READ | PROT_WRITE);
+        for (va, prot) in [
+            (0xffff_ffff_7fff_f000, None),
+            (0xffff_ffff_8000_0000, rx),
+            (0xffff_ffff_8000_0123, rx),
+            // The page holding `_etext` is text; the padding after it is not mapped.
+            (0xffff_ffff_80a1_2000, rx),
+            (0xffff_ffff_80a1_3000, None),
+            (0xffff_ffff_80a1_f000, None),
+            (0xffff_ffff_80a2_0000, r),
+            (0xffff_ffff_80c4_2fff, r),
+            (0xffff_ffff_80c4_3000, None),
+            (0xffff_ffff_80c4_f000, None),
+            (0xffff_ffff_80c5_0000, rw),
+            // The page holding `_end` is data; nothing after it.
+            (0xffff_ffff_8123_4000, rw),
+            (0xffff_ffff_8123_5000, None),
+            (0xffff_ffff_8400_0000, None),
+        ] {
+            assert_eq!(image_page_prot(&img, va), prot, "{va:#x}");
+        }
+        assert!(image_layout_ok(&img));
+        // 0xffffffff80000000 to 0xffffffff81234568: level-2 entries 0 to 9.
+        assert_eq!(image_ptps(&img), 10);
+    }
+
+    #[test]
+    fn the_image_layout_is_checked() {
+        use crate::sys::types::Vaddr;
+        let ok = image();
+        let cases: [(&str, fn(&mut KernelImage)); 8] = [
+            ("start off a page", |i| {
+                i.start = Vaddr::new(0xffff_ffff_8000_0800)
+            }),
+            ("rodata off a page", |i| {
+                i.rodata_start = Vaddr::new(0xffff_ffff_80a2_0010)
+            }),
+            ("text into rodata", |i| {
+                i.text_end = Vaddr::new(0xffff_ffff_80a2_1000)
+            }),
+            ("rodata into data", |i| {
+                i.rodata_end = Vaddr::new(0xffff_ffff_80c6_0000)
+            }),
+            ("no data", |i| i.end = Vaddr::new(0xffff_ffff_80c5_0000)),
+            ("offset off a page", |i| {
+                i.phys_off = i.phys_off.wrapping_add(8)
+            }),
+            ("past a gigabyte", |i| {
+                i.end = Vaddr::new(0xffff_ffff_c000_0001)
+            }),
+            ("past 48 physical bits", |i| {
+                i.phys_off = (1usize << 48).wrapping_sub(0xffff_ffff_8000_0000 + 0x1000)
+            }),
+        ];
+        for (what, change) in cases {
+            let mut img = ok;
+            change(&mut img);
+            assert!(!image_layout_ok(&img), "{what}");
+        }
+        // The top gigabyte's last page still fits.
+        let mut top = ok;
+        top.end = Vaddr::new(0xffff_ffff_c000_0000);
+        assert!(image_layout_ok(&top));
+        assert_eq!(image_ptps(&top), 512);
+    }
+
+    #[test]
+    fn the_identity_walk_replaces_the_lower_half_fields_only() {
+        let tcr = 0x0000_0035_b510_3519 | (1 << 7);
+        let id = tcr_identity(tcr);
+        assert_eq!(id & TCR_TTBR0_FIELDS, 0x3510);
+        assert_eq!(id & !TCR_TTBR0_FIELDS, tcr & !TCR_TTBR0_FIELDS);
+        assert_eq!(id & TCR_T0SZ_MASK, 16);
+        assert_eq!(tcr_t1sz(id), tcr_t1sz(tcr));
     }
 
     #[test]
