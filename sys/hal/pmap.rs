@@ -496,7 +496,7 @@ impl Deref for PmapRef {
     fn deref(&self) -> &Pmap {
         match self {
             PmapRef::Kernel => kernel(),
-            PmapRef::User(p) => &**p,
+            PmapRef::User(p) => p,
         }
     }
 }
