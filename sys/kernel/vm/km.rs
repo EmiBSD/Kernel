@@ -184,7 +184,8 @@
 //!   where the C has one per call; within a chunk the C's order holds (the mappings go, then
 //!   the frames go back), so no frame is on a free list while it is still mapped. A frame no
 //!   page describes panics once its chunk is unmapped, where the C panics before the
-//!   `pmap_kremove`.
+//!   `pmap_kremove`. Each frame goes back by itself ([`KmPages::free_list`]: one free-page
+//!   lock and one wakeup per page, where the C's `uvm_pglistfree` takes one per list).
 //! - `km_alloc` gives back the frames of a request that found no virtual space one at a time
 //!   as the page list hands them over ([`KmPages::alloc`]'s callback), each with the C's
 //!   `uvm_pglistfree` ([`KmPages::free_list`]): the same counter and wakeups, in more calls.

@@ -510,7 +510,9 @@ mod tests {
         let p = km_alloc(2 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("two pages");
         assert_eq!(free_pages(), before - 2);
         km_free(p, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
-        // uvm_pglistfree's way: counted free at once, not parked in a per-CPU cache.
+        // uvm_pglistfree's way: counted free at once. On the host (no `multiprocessor`) the
+        // per-CPU cache is the free list itself, so this cannot tell the two paths apart; the
+        // kernel crate's `km_list_freed` tests do.
         assert_eq!(free_pages(), before);
     }
 

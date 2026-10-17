@@ -790,7 +790,8 @@ impl<A: SimpleqAdapter> SimpleqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = &A::entry(listelm).sqe_next;
         let entry = A::entry(elem);
@@ -1018,7 +1019,8 @@ impl<A: XsimpleqAdapter> XsimpleqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = A::entry(listelm);
         let entry = A::entry(elem);
@@ -1286,7 +1288,8 @@ impl<A: TailqAdapter> TailqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = A::entry(listelm);
         let entry = A::entry(elem);
@@ -1304,7 +1307,8 @@ impl<A: TailqAdapter> TailqHead<A> {
     /// # Safety
     ///
     /// `listelm` is linked; `elem` is in no queue of `A` and stays valid and in place until it
-    /// is unlinked.
+    /// is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as long as
+    /// the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_before(listelm: &A::Elem, elem: &A::Elem) {
         let before = A::entry(listelm);
         let entry = A::entry(elem);
@@ -1547,7 +1551,8 @@ impl<A: StailqAdapter> StailqHead<A> {
     /// # Safety
     ///
     /// `listelm` is in this queue; `elem` is in no queue of `A` and stays valid and in place
-    /// until it is unlinked.
+    /// until it is unlinked, and, when [`pop_head`](Self::pop_head) is what unlinks it, for as
+    /// long as the borrow of the head `pop_head` returned it under lives.
     pub unsafe fn insert_after(&self, listelm: &A::Elem, elem: &A::Elem) {
         let after = &A::entry(listelm).stqe_next;
         let entry = A::entry(elem);
