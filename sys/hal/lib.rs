@@ -17,11 +17,14 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The HAL: the hardware (`arch/amd64`, `arch/arm64`, `machine`, moved in at N2.2) and the
-//! runtime written new (locks that own their data, typed pools, owned memory, lists and
-//! trees, the typed user copy, the bridge registry, the module loader). The only crate of the
-//! system where `unsafe` may appear; every site carries a soundness proof and `cargo xtask
-//! hal-check` refuses a `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
+//! The HAL: the hardware (`arch/amd64`, `arch/arm64`, `machine`: the 24 machine headers that
+//! name nothing of `bsd` and the 18 constant headers of `sys/`, moved in at N2.2; the rest of
+//! the hardware arrives with its owner, the pmap at N3, cpu and traps at N4, the buses at N7)
+//! and the runtime written new (locks that own their data, typed pools, owned memory, the
+//! typed user copy, the bridge registry, the system call dispatch point and the ABI module's
+//! loader). The only crate of the system where `unsafe` may appear; every site carries a
+//! soundness proof and `cargo xtask hal-check` refuses a `pub unsafe fn`: the API is safe
+//! (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
 
 #[forbid(unsafe_code)]

@@ -132,7 +132,7 @@ active days have moved 100 `unsafe`.
 
 | Milestone | Scope (what moves into `kernel`/`abi`/`hal`) | Files | `unsafe` | Exit (mechanical) | Est. |
 |---|---|---:|---:|---|---:|
-| **N2 Foundations** (under way, replanned) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the 24 `bsd`-free machine headers and 18 constant headers of `sys/sys/` (decisions 26, 27; `types.rs` at N3) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`); `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 18 + 24 + 18 | 21 (+ 1 moved into `hal`; + 30 new for the module loader; the hardware's remaining 1,626 move by owner: N3 the pmap cluster ~150, N4 cpu/clock/trap ~740, N7 bus/autoconf/glue ~675, N9 ddb glue and tables ~60; decision 26) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; the 24 + 18 headers under `sys/hal/`; `just ci` and `diff-openbsd` equal (`ci-full` at N3's close, decision 24) | 8.5 d |
+| **N2 Foundations** (met 2026-10-16; section 0.9) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the 24 `bsd`-free machine headers and 18 constant headers of `sys/sys/` (decisions 26, 27; `types.rs` at N3) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`); `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 18 + 24 + 18 | 21 (+ 1 moved into `hal`; + 30 new for the module loader; the hardware's remaining 1,626 move by owner: N3 the pmap cluster ~150, N4 cpu/clock/trap ~740, N7 bus/autoconf/glue ~675, N9 ddb glue and tables ~60; decision 26) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; the 24 + 18 headers under `sys/hal/`; `just ci` and `diff-openbsd` equal (`ci-full` at N3's close, decision 24) | 8.5 d |
 | **N3 Memory** | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` last, with `security-review.md`); the pmap behind a safe `hal::Pmap` API, with the pmap cluster of `sys/arch` (13 files) moved into `hal` behind it (decision 26) | 26 + 13 | 215 (+ 150 moved) | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | 7.5 d |
 | **N4 Processes** | `sys/kern/` by owner into `kernel`: timeout, task, event/kqueue, descriptors (`file`, `kern_descrip`), signals, proc, the scheduler, sysctl's core, tty; `StaticCell` uses in `kern` → `OnceStatic` | 75 + 4 (kqueue and descriptors, N2's before) + 97 of `sys/arch` (cpu, clock, interrupts, trap, syscall entry, copy, into `hal`; decision 26) | 680 + 95 (+ 742 moved) | `sys/kern/` in `bsd` holds only the VFS (N5), the sockets (N6) and the N8 files; the bridges `Proc`, `Fd`, `Kq` removed from `bridges.toml` | 15 d |
 | **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/nfs/`, `sys/ntfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs` | 140 | 816 | those directories gone from `bsd`; the `Vfs` bridge removed | 14 d |
@@ -181,8 +181,12 @@ were set on the 1,891 figure, which counted 302 of boot-loader code; they stand 
 `unsafe-report --write` lowers them to the measured count, and they rise only in the commit
 that adds a listed piece, with the user's OK.
 
-What `cargo xtask unsafe-report` prints today (2026-10-16): `kernel` 0, `abi` 0, `hal` 0,
-`bsd` 10,604 (1,698 of them to move into `hal`), boot 621. The per-close series the planning
+What `cargo xtask unsafe-report` printed before N2 (2026-10-16): `kernel` 0, `abi` 0, `hal` 0,
+`bsd` 10,604 (1,698 of them to move into `hal`), boot 621. At the N2 close (the first cluster
+moved, pipe(2), section 0.9): `kernel` 0, `abi` 0, `hal` 35 (the runtime and the ELF loader,
+ceiling 35), `bsd` 10,583 (legacy 8,726; the hardware's 1,698, one more for amd64's module
+window of decision 37, move by owner: the pmap cluster at N3, cpu/clock/trap at N4,
+bus/autoconf at N7, the ddb glue and tables at N9), boot 621; total 11,239. The per-close series the planning
 session wrote here counted the hardware as `hal` from N2 on; it is withdrawn until the N2.2
 decision (the survey of 2026-10-16: 1,627 hardware `unsafe` in 198 files, 36 of them movable
 as they stand), and each close records the five numbers the tool prints.
@@ -291,12 +295,87 @@ Sum: 8,906 `unsafe` and 599 files out of `bsd`; 112 days. Order of risk, highest
 sleep/wakeup and run queues over `hal::cpu_switch` (N4.5), the ELF loader (N2.4), the VFS
 core's locking (N5.1), `if_` and the routing tables (N6.1), `uvm_map` (N3.5), `uvm_fault` (N3.6).
 
+### 0.9 N2 as built (the close, 2026-10-16)
+
+What 0.8's N2 plan became, measured on the merged tree with the tools.
+
+- **The crates and the headers** (N2.1, N2.2 slice 1): `hal`, `kernel` and `abi` exist, the
+  last two `#![forbid(unsafe_code)]`; `bsd` links `kernel` and `hal`. The 24 `bsd`-free machine
+  headers and 18 constant headers of `sys/sys/` are `inherited` modules under `sys/hal/`
+  (`types.rs` stays in `bsd` until N3). The lists and trees (`sys/sys/queue.rs`,
+  `sys/sys/tree.rs`, `sys/kern/subr_tree.rs`) went back to `bsd` after the runtime's review:
+  `hal`'s own `List`/`Tree` come with their first `kernel` user.
+- **The runtime** (N2.3): `OnceStatic<T>`, `Mutexed<T>`, `Rwlocked<T>` (with `rwsleep` on the
+  guard), `PerCpu<T>`, `Refcnt`, `KmBuf`, `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`,
+  `UserPtr<T>` with `abi_pod!`, the spl guard, CPU identity, the console primitive and the
+  bridge registry (decisions 30, 32-36).
+- **The ABI module** (N2.4a): `hal::api::KernelApi`, the dispatch point
+  `hal::syscall`, the ELF loader `hal::module`, `abi-openbsd.ko` with the table of 331
+  entries; boot(8) and Limine hand it over, every medium carries it but `cd80.iso` until
+  its name is settled (decision 29; docs/ARCHITECTURE.md, "abi-openbsd.ko"). On amd64 it
+  executes from a window of the kernel's L4 slot, kernel_map keeping the C's NX (decision
+  37).
+- **Crypto** (N2.5): 18 of the 28 files of `sys/crypto/` in `kernel`, 0 `unsafe`; the 10 that
+  name `bsd` follow their unblockers, the framework at N8.
+- **pipe(2)** (N2.6), the first subsystem by the new path: `sys/kernel/pipe.rs` (0 `unsafe`),
+  generic over `bsd`'s glue through three bridges (`PipeGlue`, `UioMove`, `PipeFiles`, paid by
+  N4; not the `Fd`/`Kq`/`Sigio`/`Uio` of 0.8's text); `sys/kern/sys_pipe.rs` and
+  `sys/sys/pipe.rs` are gone from `bsd`; `sys/kern/pipe_glue.rs` is the 0-`unsafe` call-site
+  adapter; pipe and pipe2 are `Native` in the module's table (`abi-openbsd.ko: 331 syscalls,
+  2 native`). `KernelApi` v2 adds `pipe2(nr, fdp, flags)`, which carries the number for
+  `pin_check` and pledge.
+
+The glue's deviations, gone at N4 when `File`, `Klist` and `Sigio` are the kernel's:
+
+- The klist and sigio of each pipe live in a glue-allocated `PipeKlists`, recycled and never
+  freed: they stay allocated at the peak number of pipes and show under `M_TEMP` in
+  `vmstat -m` instead of inside the `pipepl` items. No `diff-openbsd` scenario prints
+  `vmstat -m`. Option (i), an `unsafe impl Send` for `Klist` and `SigioRef` in `bsd` so the
+  pair could hold them by value, was not taken: it is the pattern decision 30 refused (an
+  `unsafe impl` in `bsd` to meet a `hal` bound), and `bsd` gets no new `unsafe`.
+- The file's typed slot `File::f_pipe: Mutexed<Option<PipeFile>>` costs one uncontended mutex
+  and one atomic per pipe operation; `pipe_stat`'s uid and gid come from the slot (the
+  opener's cred, the one `f_cred` holds), since reading `f_cred` needs `unsafe` until N4.
+- Both pipe files are `FREAD | FWRITE` in the C, so a file's end travels with its handle
+  (`Dir`), never from `f_flag`. The filters read four atomics (state, `peer_alive`, `cnt`,
+  `size`) written only under the guard, because kqueue calls them back under the lock
+  without a guard (beside decision 12). `sys/kernel/pipe.rs` is one file of about 2,150
+  lines (code zone about 1,280), left unsplit.
+
+Open for N3 and N4 (the reviewers' notes):
+
+- On arm64, `ModulePlatform::reserve` maps the module's range read-write in `kernel_map`
+  (`km_alloc(KP_NONE)`), so a stray kernel write to a text page goes through `uvm_fault`
+  instead of panicking: a `uvm_map_protect` of the range to R/RX after the loop closes it.
+  amd64 no longer has the question: its window lies outside every uvm map (decision 37).
+- `sys/arch/amd64/amd64/pmap_module.rs` (the window) moves into `hal` with the pmap cluster;
+  arm64 then takes a window too, or PXN on its tables, for the symmetry of decision 37.
+  A pure `module_leaf` function with `const` asserts would check W^X on every amd64 build.
+  `sys/arch/amd64/amd64/pmap.rs` is `adapted` now, so its LZ syncs are
+  `cherry-pick-conflicts`.
+- `ModulePlatform` is a safe trait and `load` a safe function: a lying `image()` is undefined
+  behaviour reached from safe code, accepted as the bridge N3 pays (an `unsafe trait` or
+  `hal`-owned code then).
+- `release` uses `km_free(KP_NONE)` (`uvm_unmap` -> `pmap_remove`); OpenBSD's `km_free` does
+  `pmap_kremove` and `pmap_update` (`reference/openbsd-src/sys/uvm/uvm_km.c:700-711`), an
+  `unsafe fn` in `bsd`, so not done until the pmap is `hal`'s.
+- `hal::bridges::register_module_platform` is `pub` and the first registration wins (the
+  `let _ =` in `sys/kern/abi_module.rs`); so does `kernel::testutil::install` for the test
+  doubles. locore0's early tables with `esym` raised by up to 64 MiB were not checked by
+  anyone.
+
+Numbers at the close (`cargo xtask unsafe-report`, `hal-check`, `lz check`): `kernel` 0, `abi`
+0, `hal` 35 in 72 files (ceiling 35), `bsd` 10,583 in 1,103 files (legacy 8,726, ceiling
+8,726; arch/amd64 863, its budget raised by the user for decision 37), boot 621; `forbid` 320
+of 1,196 modules; `lz check` 1,156 modules (1,058 inherited, 40 adapted, 58 redesigned), 157
+fn rows, 60 extras; 12 bridges open (N3 2, N4 7, N7 1, N9 2).
+
 ## 10. Decisions
 
 Status under v2 (2026-10-16), so no one applies a superseded one: **in force**: 1 (the goal,
 restated by 20), 4, 6, 8 (the names), 10 (no `&'static` from a pool), 11, 12, 13 (the pipe's
 shape, now in `kernel`), 17, 18, 19 (`abi_pod!`, typed `kn_kq`, `MBox`: `hal` designs), 20, 21,
-22, 23, 24. **Superseded**: 2 (the core list: the crate boundary replaces it), 3 (pipe is still
+22, 23, 24, 25-37. **Superseded**: 2 (the core list: the crate boundary replaces it), 3 (pipe is still
 the first subsystem, in `kernel`, after the foundations), 5 (closed by 20: the core is a crate),
 7 (the safe `Adapter` stays, in `hal`), 9 (seams: replaced by bridges in `hal`, `bridges.toml`),
 14, 15, 16 (the typed slots inside `bsd`: not merged; their shapes are reused when descriptors
@@ -338,7 +417,10 @@ Taken by the user on 2026-10-16 ("vamos por la recta, lo barato me sale caro sie
 13. **sigio and klist need no primitive** for pipe: their APIs are safe. After its slice the
     pipe's klists lock through `KlistLock::Kernel` semantics replaced by the pair's guard: every
     call is the `_locked` form under it (today they use the rwlock klistops, as the C). Five
-    items became three.
+    items became three. Implemented at N2.6 as an owner-locked klist kind, `Klist::owned()`:
+    the pipe's klists take only the `_locked` forms under the pair's write guard,
+    `KLIST_ASSERT_LOCKED` skips that kind, and the forms that lock the list themselves panic
+    on it.
 14. **`FileData`** (2026-10-16, from the `f_data` survey): `File.f_data` is an `OnceCell<enum
     FileData { None, Vnode, Socket, Pipe, Kqueue }>` whose payloads are the handles the owners
     hold today; `fo_close` receives it by value from `fdrop`, the only taker (one `unsafe` there,
@@ -492,39 +574,25 @@ day ("yap puedes seguir solo? hasta acabar?"):
     reason here. Also taken: the loader's memory, mapping and hand-over go through the
     `ModulePlatform` bridge `bsd` implements until `hal` holds the pmap (`bridges.toml`); its
     three `unsafe` rest on that premise, stated in `sys/hal/module/load.rs`.
+    Revisited at N2.6, and the fallback stays: pipe and pipe2 are `Native`, but the module's
+    entry (`KernelApi::pipe2`) runs `bsd`'s `mi_syscall` on the same `sysent[]` row as the
+    `Legacy` path (the prologue: `refreshcreds`, `pin_check`, pledge, the kernel-lock rule),
+    and that row calls the same `kernel::pipe` function, so with the module or without it a
+    pipe(2) takes the same steps and a missing module still changes nothing userland sees.
+    Since the reviews: boot(8)'s record is range-checked (`sys/stand/mod.rs`
+    `abi_module_handover`: one `KernelAndModules` region must cover it) and dropped with one
+    line when it lies outside the kernel's image; the open descriptor across `loadfile` holds
+    about 8 KiB of libsa's 1 MiB heap, bounded by the file system's block size, not by the
+    file. A panic inside the module parks the CPU silently (`hal::module::rt`): the module
+    keeps no state to print with (decision 25). `cd80.iso` ships without the module until its
+    name is settled (the user's decision, pending): ISO 9660 stores `abi-openbsd.ko` as
+    `ABI_OPENBSD.KO`, which libsa's cd9660 (no Rock Ridge) cannot open, so `cd-iso` leaves it
+    off with one line (1ae6774d) and a kernel booted from the CD takes this decision's
+    fallback; the choices are a name ISO 9660 keeps (`abi_openbsd.ko`), a `-` -> `_` mapping
+    in boot(8)'s cd9660, or relaxed ISO names.
 
-Taken by the N2.3 runtime redesigner on 2026-10-16 under the user's standing authority of that
-day (numbered R1.. so that other slices' entries do not collide; the integrator renumbers them
-after 24 when it merges):
-
-- R1. **A runtime module that re-expresses one C file's algorithm keeps that file's licence and
-  provenance.** `sys/hal/mutex.rs` (`kern_lock.c`, `mutex.h`), `rwlock.rs` (`kern_rwlock.c`,
-  `rwlock.h`), `percpu.rs` (`subr_percpu.c`, `percpu.h`) and `refcnt.rs` (`refcnt.h`,
-  `kern_synch.c`) are `redesigned` `[[module]]`s with those LZ files in `lz`, their notices
-  and `//! LZ:` lines, not `[[extra]]`s with the author's block alone: a translation is a
-  derivative work (`scope-and-stubs.md`). The pieces that follow no C file (`once`, `bridges`,
-  `intr`, `cpu`, `sleep`, `kmbuf`, `pool`, `malloc`, `user`, `cons`, `errno`, `assert`) are
-  `[[extra]]`s. The LZ files stay `inherited` in `bsd` for their users.
-- R2. **`TypedPool<T>` is backed by `bsd`'s `pool(9)`, one pool per type, through a bridge**,
-  not by a pool allocator written in `hal`: `vmstat -m` and `systat pool` list the pools by
-  name (`pipepl`, ...), which userland sees; the same for `MBox<T>` over `malloc(9)` (its
-  types' rows, decision 19).
-- R3. **`Mutexed<T>` deviations, until `hal` owns `intr_disable` (N4.1):** a contended mutex
-  spins on its owner word (no parking lots); the `panicstr || db_active` bypass is not kept
-  (it would hand out a second `&mut`; the console primitive takes no lock instead); entering a
-  mutex this CPU holds panics in every configuration. Written in the module's
-  `## Deviations`.
-- R4. **No lock's exclusion rests on a bridge.** The owner words are never 0 for an owner
-  (`MTX_OWNED`, `RWLOCK_WRLOCK`) and a writer's exit compares the word it stored, so a wrong
-  `CpuId` or `Sleep` answer costs a diagnostic, never an aliased `&mut`; the bridges that
-  answer such questions are safe traits.
-- R5. **`hal::errno::Errno` is interim** (a transparent `errno(2)` number): the constant
-  headers move into `hal` as inherited modules (the user's decision relayed by the
-  coordinator); the runtime used only what the legacy enum also has, and after the merge of
-  main at 5f9deff1 it was folded: the runtime and `bsd`'s bridges use `hal::sys::errno::Errno`.
-
-The question R1-R5 left open (three `unsafe impl`s in `bsd` for `unsafe trait` memory
-bridges) was answered by the user the same day, decision 30 below.
+Taken by the user on 2026-10-16, answering the question decisions 32-36 below left open
+(three `unsafe impl`s in `bsd` for `unsafe trait` memory bridges):
 
 30. **The memory bridges are safe traits** (the user, 2026-10-16, rejecting 3 `unsafe impl` in
     `bsd`: "Rechazar: trait seguro"): `PageMemory`, `PoolBackend`/`RawPool` and `Malloc` are
@@ -537,8 +605,7 @@ bridges) was answered by the user the same day, decision 30 below.
     `sys/kern/hal_bridges.rs` the registrations, called by `stand::start_kernel` before
     `main()`.)
 
-Taken by the user on 2026-10-16, on the day's runs (decisions 29 and 30 land with the ABI and
-runtime branches):
+Taken by the user on 2026-10-16, on the day's runs:
 
 31. **The N2 pipeline's repetitions are cut** (Emilio Navarrete Lineros, 2026-10-16), measured
     on the day's launches:
@@ -563,3 +630,53 @@ runtime branches):
     hook's `lz check` on every commit, and the surveyor's inventory. Expected saving, so it is
     measured: 1 to 1.5 h of the main session and 1.5 to 2 h of agent time per milestone, plus
     the rule reading in tokens; on the critical path, half an hour to an hour.
+
+Taken by the N2.3 runtime redesigner on 2026-10-16 under the user's standing authority of that
+day (numbered R1-R5 on its branch so that other slices' entries did not collide; renumbered
+32-36 at the N2 close):
+
+32. **A runtime module that re-expresses one C file's algorithm keeps that file's licence and
+    provenance.** `sys/hal/mutex.rs` (`kern_lock.c`, `mutex.h`), `rwlock.rs` (`kern_rwlock.c`,
+    `rwlock.h`), `percpu.rs` (`subr_percpu.c`, `percpu.h`) and `refcnt.rs` (`refcnt.h`,
+    `kern_synch.c`) are `redesigned` `[[module]]`s with those LZ files in `lz`, their notices
+    and `//! LZ:` lines, not `[[extra]]`s with the author's block alone: a translation is a
+    derivative work (`scope-and-stubs.md`). The pieces that follow no C file (`once`, `bridges`,
+    `intr`, `cpu`, `sleep`, `kmbuf`, `pool`, `malloc`, `user`, `cons`, `errno`, `assert`) are
+    `[[extra]]`s. The LZ files stay `inherited` in `bsd` for their users.
+33. **`TypedPool<T>` is backed by `bsd`'s `pool(9)`, one pool per type, through a bridge**,
+    not by a pool allocator written in `hal`: `vmstat -m` and `systat pool` list the pools by
+    name (`pipepl`, ...), which userland sees; the same for `MBox<T>` over `malloc(9)` (its
+    types' rows, decision 19).
+34. **`Mutexed<T>` deviations, until `hal` owns `intr_disable` (N4.1):** a contended mutex
+    spins on its owner word (no parking lots); the `panicstr || db_active` bypass is not kept
+    (it would hand out a second `&mut`; the console primitive takes no lock instead); entering a
+    mutex this CPU holds panics in every configuration. Written in the module's
+    `## Deviations`.
+35. **No lock's exclusion rests on a bridge.** The owner words are never 0 for an owner
+    (`MTX_OWNED`, `RWLOCK_WRLOCK`) and a writer's exit compares the word it stored, so a wrong
+    `CpuId` or `Sleep` answer costs a diagnostic, never an aliased `&mut`; the bridges that
+    answer such questions are safe traits.
+36. **`hal::errno::Errno` is interim** (a transparent `errno(2)` number): the constant
+    headers move into `hal` as inherited modules (the user's decision relayed by the
+    coordinator); the runtime used only what the legacy enum also has, and after the merge of
+    main at 5f9deff1 it was folded: the runtime and `bsd`'s bridges use `hal::sys::errno::Errno`.
+
+Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
+
+37. **On amd64 the ABI module executes from a window of the kernel's slot.** The close's `just
+    ci` panicked every amd64 boot on the jump into `abi-openbsd.ko`: the relocated RX copy sat
+    in `kernel_map`, whose directory entries carry `pg_nx` as OpenBSD's `pmap_alloc_level`
+    sets them (OpenBSD never executes from `kernel_map`); arm64 has no PXN on its tables and
+    loaded it. `kernel_map` keeps the C's directory-level NX. The module runs from a 16 MiB
+    window of L4 slot 511 (`KERNBASE`) after the kernel's image (`hal::module::elf::MAX_SPAN`),
+    linked once at the end of `pmap_bootstrap` with R|X, R and RW leaves as its segments ask
+    (`sys/arch/amd64/amd64/pmap_module.rs`, redesigned; `pmap.rs` adapted; two functions in
+    `sys/machine/pmap.rs`); `BsdPlatform::reserve` and `enter` use it on amd64; one `unsafe`
+    block (the level-2 link), the `arch/amd64` budget raised to 863 by the user (c3950865).
+    arm64 keeps `kernel_map` (no PXN on its tables, as the C) until the pmap cluster enters
+    `hal` at N3, where the two machines become symmetric. Rejected: dropping `pg_nx` from the
+    directory entries (one line, but it removes the C's protection from all of `kernel_map`),
+    a pmap entry point that clears NX over a range (the same exposure), deferring amd64 to N3
+    (no ABI module on amd64 until then). The `Security-Review:` paragraph of 8b2ed4e1 and
+    2ff6d854 travels with the `docs: close N2` commit, because the commits were already on the
+    candidate when the review came, as for the loader (bad16b2a) and pipe (7fc65c78).

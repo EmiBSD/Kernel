@@ -105,9 +105,10 @@ Effort: _(user)_
 
 Time: _(user)_
 
-## N2 Core structures
+## N2 Foundations
 
-Under way since 2026-10-10. Boundary: from `lz: bump pin to 3c62ede68802` (7eee150).
+Met 2026-10-16 (under way since 2026-10-10). Boundary: from `lz: bump pin to 3c62ede68802`
+(7eee150) to the `docs: close N2` commit.
 
 - LZ sync before N2 (the timing rule: N2 redesigns `queue`/`tree`, used by 222 files, so LZ's
   M16 came first): `f5985f1d055a..3c62ede68802`, 99 LZ commits, every one recorded in
@@ -119,3 +120,66 @@ Under way since 2026-10-10. Boundary: from `lz: bump pin to 3c62ede68802` (7eee1
   user's rule in `unsafe-budget.md`), `just jobs=3 ci` rc=0 in 1643 s (84 of 84 smokes in
   17 min 43 s; host tests 2893 passed, 0 failed, 294 ignored) and `just diff-openbsd` rc=0
   (amd64 and arm64, 102 steps, 99 equal, 3 expected, 0 unexpected) at 154ad1d.
+- v1 (2026-10-10 to 2026-10-16): the N2 of "core structures" (the safe `Adapter`, the typed
+  slots of `File.f_data` and the knote hook, the `forbid` ratchet inside `bsd`). Replanned on
+  2026-10-16 as N2 Foundations (docs/ZERO_UNSAFE.md section 0, decisions 20-24): the kernel is a
+  crate with no `unsafe`, so the typed-slot branches were not merged (0.6).
+- Went well: four crates where there was one, built on both archs at the first compile but one
+  `;` (`just build` rc=0 after one fix; nothing of the runtime, the loader, the module or pipe
+  had been compiled before, decision 23). The runtime in `hal` (N2.3), `KernelApi` with the
+  ELF loader and `abi-openbsd.ko` (N2.4a), crypto into `kernel` (N2.5) and pipe(2) as the first
+  subsystem by the new path (N2.6) arrived as three stacked branches, each reviewed before the
+  close, merged into `main` once (decision 31). The reviews found real defects before any build:
+  two soundness holes in `abi_pod!` (unions, fields left out), boot(8)'s record not
+  range-checked, pipe's `O_NONBLOCK` read once instead of at every check, and the module
+  window's one-shot link not enforced. `diff-openbsd`'s new `pipe` set was equal on both
+  archs at its first run.
+- Failed: the first `just ci` attempt stopped in `smoke-build`: `cd-iso-amd64` refused
+  `cd80.iso` because ISO 9660 stores `abi-openbsd.ko` as `ABI_OPENBSD.KO` and libsa's cd9660
+  (no Rock Ridge) looks for `ABI-OPENBSD.KO`; xtask's model of that lookup caught it, no smoke
+  had booted. 1ae6774d leaves the module off the CD (decision 29's fallback); the module's
+  name is the user's decision, pending (`abi_openbsd.ko`, a `-` -> `_` mapping in boot(8)'s
+  cd9660, or relaxed ISO names). The second attempt booted: 7 of 85 smokes, every amd64 kernel
+  panicked on the jump into the module (`panic: trap type 6, code=11`): amd64's `kernel_map`
+  directories carry NX as OpenBSD's `pmap_alloc_level` sets them, arm64 has no PXN on its
+  tables. A debugger found the cause (its first hypothesis, the direct map, was wrong); the
+  user chose a window of the kernel's L4 slot (decision 37), redesigned in 8b2ed4e1, reviewed,
+  fixed in 2ff6d854 (the link at most once). The third run was green. `smoke-fb`'s
+  "monitor.sock: No such file" in the second run was the same panic, hidden by xtask
+  returning before it printed the transcript (`tools/xtask/src/boot.rs` `poll_monitor`, a
+  follow-up).
+- Idioms that took several attempts: the lists and trees moved into `hal` and back (their
+  first `kernel` user brings `hal`'s own); `hal::errno::Errno` interim, then folded into
+  `hal::sys::errno` (decision 36); the memory bridges `unsafe trait` then safe with a checked
+  trust boundary (decision 30); `KernelApi` typed in `kernel`, then in `hal` so the module
+  links no kernel code; decision 13 as `Klist::owned()`.
+- Rules corrected: decision 31 (the pipeline's repetitions cut: rules blocks in prompts, host
+  checks once by the integrator, one merge into `main` per milestone with `just build` and
+  `cargo check -p bsd --tests` after it); the commit hook now sees `PATH=...` prefixes and the
+  `cd` target (44e48b6f); `hal-check` counts the sites `unsafe-report` counts (7deb1419: it
+  had counted `testutil.rs`, 41 against 35), so `hal_ceiling` fell to 35 (f46a7e48);
+  `gen-syscalls` writes `sys/hal/sys/syscall.rs` (db35b0db).
+- Numbers:
+  - `cargo xtask unsafe-report` (crates): before N2 `kernel` 0, `abi` 0, `hal` 0, `bsd`
+    10,604, boot 621; at the close `kernel` 0 (23 files), `abi` 0 (4), `hal` 35 (72, ceiling
+    35), `bsd` 10,583 (1,103 files; legacy 8,747 -> 8,726, `forbid` 306 -> 320; kern 1,146 ->
+    1,126, sys 328 -> 327, arch/amd64 863 -> 862 -> 863 with the user's raise for decision
+    37), boot 621.
+  - `cargo xtask lz check`: 1,156 modules (1,058 inherited, 40 adapted, 58 redesigned), 157
+    fn rows, 60 extras; 12 bridges open (N3 2, N4 7, N7 1, N9 2).
+  - Host tests (`just test`): 3,010 passed at main f5101f5b -> 3,229 passed, 0 failed, 301
+    ignored at the close.
+  - `just jobs=3 ci` at 5716e767: rc=0 in 1734 s; 85 of 85 smokes in 22 min 36 s, one EDK2
+    UhciDxe retry (smoke-uhci, the known firmware flake). After the review fix 2ff6d854 (merged
+    at 17fb1cb1): `just build` rc=0 and `smoke-boot`, `smoke-abi`, `smoke-efiboot`, `smoke-fb`
+    rc=0 on both archs (`abi-openbsd.ko: 331 syscalls, 2 native`, `abi-ok-42`, `abi-pipe-43`);
+    no second full `ci` (the full run covered the tree one commit before).
+  - `just diff-openbsd`: rc=0 in 79 s; amd64 and arm64, 107 steps, 104 equal, 3 expected, 0
+    unexpected (the `pipe` set new).
+  - `cargo xtask lz drift --security`: empty; no LZ commit after the pin.
+  - Commits: 196 after the pin bump (176 without merges; `git rev-list --count
+    [--no-merges] 7eee150..` this commit's parent), 140 of them on 2026-10-16.
+
+Effort: _(user)_
+
+Time: _(user)_

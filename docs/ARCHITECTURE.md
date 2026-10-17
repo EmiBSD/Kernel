@@ -29,6 +29,24 @@ compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
 No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
 
+### The runtime API (N2.3)
+
+What `kernel` builds on, all safe to call, every `unsafe` inside `hal` with its proof
+(docs/ZERO_UNSAFE.md decisions 30, 32-36): `hal::once::OnceStatic<T>` (a global set once at
+boot), `hal::mutex::Mutexed<T>` and `hal::rwlock::Rwlocked<T>` (locks that own their data; the
+write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::percpu::PerCpu<T>`,
+`hal::refcnt::Refcnt`, `hal::intr::splraise` (a guard that restores only a level it raised),
+`hal::cpu` (the CPU's identity), `hal::kmbuf::KmBuf` (pageable kernel memory it owns),
+`hal::pool::TypedPool<T>` with `PoolArc<T>` (one `pool(9)` per type, so `vmstat -m` and
+`systat pool` name it), `hal::malloc::MBox<T>` (a `T` in a `malloc(9)` block of the C's type),
+`hal::user::UserPtr<T>` with `abi_pod!` (typed user copies), `hal::sleep` (`wakeup`) and
+`hal::cons` (the console primitive). What still lives in `bsd` is reached through
+`hal::bridges`, a registry of safe traits `bsd` fills at boot (`sys/kern/hal_bridges.rs`,
+called by `stand::start_kernel` before `main`) and checked on every answer
+(`sys/hal/trust.rs`): `IntrLevel`, `CpuId`, `Sleep`, `UserCopy` (paid by N4), `PageMemory`,
+`ModulePlatform` (N3), `Console` (N7), `PoolBackend`, `Malloc` (N9), and pipe's `PipeGlue`,
+`UioMove`, `PipeFiles` (N4). Each is a row of `bridges.toml`; `lz check` counts them.
+
 ## Path and name mapping
 
 | OpenBSD | Here |
@@ -193,7 +211,9 @@ import (section "abi-openbsd.ko").
 The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The pieces:
 
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
-  `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4; `abi_init` registers
+  `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4 but pipe and pipe2,
+  `Native` since N2.6 (through `KernelApi::pipe2`, which runs the same `sysent[]` row and
+  calls `kernel::pipe`, so the `Legacy` path gives the same answer); `abi_init` registers
   the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi-openbsd`):
   the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
   entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
@@ -214,7 +234,11 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
   of free memory; amd64 passes `BOOTARG_ABIMODULE` (`BiosAbiModule`, type 0x100), arm64
   `/chosen`'s `emibsd,abi-module` (two big-endian 64-bit cells); `getbootinfo` turns either
-  into `BootInfo::abi_module`. The boot glue registers the `Legacy` fallback before `main`.
+  into `BootInfo::abi_module`, and `sys/stand/mod.rs` `abi_module_handover` keeps the record
+  only when one `KernelAndModules` region of the memory map covers it (else one line, and the
+  kernel boots without the module). The open descriptor across `loadfile` holds about 8 KiB
+  of libsa's 1 MiB heap, bounded by the file system's block size, not by the file. The boot
+  glue registers the `Legacy` fallback before `main`.
 - **The loader.** `hal::module` (`elf.rs`, `load.rs`), called from `main` just before
   `init(8)` may exec: parses the ELF64 in safe code (a static PIE of the running machine,
   page-aligned W^X loads, `RELATIVE` relocations only), copies it into wired memory, applies
@@ -223,11 +247,17 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   the mapping and the hand-over come through `ModulePlatform`, implemented by `bsd` over
   `km_alloc` and the pmap until `hal` holds the pmap (the bridge of `bridges.toml`).
   Three `unsafe` there, each resting on that platform premise (`load.rs`'s module doc).
-- **The boot line.** `abi-openbsd.ko: 331 syscalls, 0 native`, or `abi-openbsd.ko: not
+  On amd64 the RX copy cannot live in `kernel_map`, whose directory entries carry NX as
+  OpenBSD's do, so `reserve` hands out a 16 MiB window of the kernel's L4 slot after the
+  image, linked once by `pmap_bootstrap` (`sys/arch/amd64/amd64/pmap_module.rs`); arm64
+  (no PXN on its tables) uses `kernel_map` until N3 (docs/ZERO_UNSAFE.md decision 37).
+- **The boot line.** `abi-openbsd.ko: 331 syscalls, 2 native`, or `abi-openbsd.ko: not
   loaded, <why>; every system call takes the legacy path` (decision 29: a medium without the
-  file still boots). `just smoke-abi` checks the first and refuses the second.
-- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`),
-  install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`).
+  file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
+  `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).
+- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`) and
+  install80.img carry the file the build made (`xtask::boot::default_abi_module`); cd80.iso
+  leaves it off, with one line, until its name is one ISO 9660 keeps (decision 29).
   So `/abi-openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
   OpenBSD's set lists; its boot(8) reads it there.
 - **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
