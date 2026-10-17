@@ -52,3 +52,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - amd64: OpenBSD's kernel_map never executes (pmap_alloc_level puts pg_nx on every directory entry); executable kernel pages exist only under the KERNBASE slot's directories. arm64's kernel_map does execute (no PXN, no PXNTable).
 - Under Limine the smoke transcript did not show a kprintf made inside pmap_bootstrap (boot(8)'s did); prove early-boot code by an effect printed later (a page walk at module load), not by an early line.
 - `cargo xtask lz trace` takes `<lz path>:<item>` with ONE colon (`sys/arch/amd64/amd64/pmap.rs:pmap_bootstrap`); `::` silently reports "not found".
+- A subagent's commit that raises an `unsafe-budget.toml` ratchet (hal_ceiling) is refused by the permission classifier: stop, leave the message in the scratchpad, the user makes that commit; the series may go on with `--check` red on that line only.
+- lineage treats every `mod.rs` (and all of `sys/hal/arch/host/`, `sys/hal/machine/`) as structural (`is_structural` in tools/xtask/src/main.rs): a hal API that needs a `[[module]]` record is `x.rs`, not `x/mod.rs`.
+- `bridges.toml` `paid_by` accepts `N2`..`N9` only (bridges.rs `is_milestone`): a slice (N3.3) goes in the row's comment.
+- A hal API whose backends land in later commits: gate `pub mod x` (and its `bridge!` slots, `#[cfg]` on the macro call works) to the targets that have a backend, so both machines build at every commit; `bridge!` takes an optional `#[attr]` after the reader's name for an `allow(dead_code)` until the reader exists.
