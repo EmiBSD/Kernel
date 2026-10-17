@@ -141,7 +141,7 @@
 //!   `kernel_map` as before.
 
 use core::ptr;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::amd64::amd64::pmap::{
     PG_CRYPT, PG_G_KERN, PG_NX_BIT, pmap_extract, pmap_find_pte_direct, pmap_kernel,
@@ -181,13 +181,21 @@ static MODULE_WINDOW_PTPS: [Ptp; MODULE_WINDOW_NPTP] = [const { Ptp::new() }; MO
 /// The window's first address, published once the window is linked; 0 while there is none.
 static MODULE_WINDOW_VA: AtomicUsize = AtomicUsize::new(0);
 
+/// Set by the first call of [`pmap_module_window_init`], whatever it achieved: the link is
+/// attempted once, on the boot CPU, and never again (a refused first attempt leaves the
+/// window empty for good, so no later caller touches the boot loader's level-2 table once
+/// other CPUs run).
+static MODULE_WINDOW_TRIED: AtomicBool = AtomicBool::new(false);
+
 /// Links the module window into the kernel image's slot (see the module's documentation).
-/// Once, from the end of `pmap_bootstrap`, on the boot CPU; a later call, a call with
-/// another page table in `%cr3`, or a slot with no room links nothing: the window is then
-/// empty, and the module loader reports it has no memory for the module (fail-soft,
-/// decision 29); it is never placed in `kernel_map` instead.
-pub fn pmap_module_window_init() {
-    if MODULE_WINDOW_VA.load(Ordering::Acquire) != 0 {
+/// Once: the first call, from the end of `pmap_bootstrap` on the boot CPU, is the only one
+/// that may link ([`MODULE_WINDOW_TRIED`]); every later call returns at once with whatever
+/// the first achieved. A first call with another page table in `%cr3`, or with a slot that
+/// has no room, links nothing: the window stays empty, and the module loader reports it has
+/// no memory for the module (fail-soft, decision 29); it is never placed in `kernel_map`
+/// instead.
+pub(crate) fn pmap_module_window_init() {
+    if MODULE_WINDOW_TRIED.swap(true, Ordering::AcqRel) {
         return;
     }
     let kpm = pmap_kernel();
@@ -213,10 +221,10 @@ pub fn pmap_module_window_init() {
     // recursive slot `PDIR_SLOT_PTE` holds its own PML4, which `pmap_bootstrap` installed or
     // accepted (locore0's) just before calling this, under the boot loader's RW entries for
     // slot 511 and `pmap_bootstrap`'s RW entry for slot 255. The reference does not outlive
-    // this function, which runs on the boot CPU before any other CPU or thread exists; every
-    // access through it is atomic, and the only other accesses to the page are the MMU's own
-    // (atomic accessed-bit updates) and the pmap's walks through the direct map (reads), so
-    // no access races a non-atomic write.
+    // this function, and this function's body runs at most once (`MODULE_WINDOW_TRIED`), from
+    // `pmap_bootstrap`, whose `# Safety` requires the boot CPU alone, before any other CPU or
+    // thread exists: nothing but the MMU's own accessed-bit updates touches this page while
+    // it runs, and every access through the reference is atomic.
     let l2: &[AtomicU64; NPDPG] =
         unsafe { &*ptr::with_exposed_provenance::<[AtomicU64; NPDPG]>(l2_va) };
 
