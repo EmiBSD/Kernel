@@ -314,9 +314,17 @@ impl Table {
     /// `pmap_set_l1`/`_l2`/`_l3`: hangs `child` at `i`, its table descriptor first, then the
     /// software link a walk reads first.
     pub(super) fn set_child(&self, i: usize, child: Table) {
+        self.set_child_with(i, child, 0);
+    }
+
+    /// [`Table::set_child`] with the table descriptor's attribute bits `attrs` (the kernel's
+    /// managed range: `Lx_PT_PXN`, `pmap_growkernel`), which no walk reads back.
+    pub(super) fn set_child_with(&self, i: usize, child: Table, attrs: u64) {
         // `VP_Lx(pa)`: the table's physical address as a table descriptor.
-        self.entry(i)
-            .store(child.hw.as_usize() as u64 | Lx_TYPE_PT, Ordering::Release);
+        self.entry(i).store(
+            child.hw.as_usize() as u64 | attrs | Lx_TYPE_PT,
+            Ordering::Release,
+        );
         words(self.sw)[i % VP_ENTRIES].store(child.sw.as_usize() as u64, Ordering::Release);
     }
 

@@ -113,6 +113,19 @@
 //!   no low-water mark (`hal::pool`).
 //! - `pmap_copy_page`'s `splbio` (the buffer flipper's interrupt-context use) is not needed:
 //!   the copy maps nothing.
+//! - Stricter than OpenBSD's arm64, whose kernel leaves may execute (`ap_bits_kern[PROT_EXEC]`
+//!   carries no `ATTR_PXN`, `pmap.c`) and whose tables carry no `PXNTable`, though nothing
+//!   asks a kernel page to: the kernel pmap refuses `PROT_EXEC` (`pmap_enter`,
+//!   `pmap_kenter_pa` and `pmap_kenter_cache` panic), and the table descriptors
+//!   `pmap_growkernel` makes for the managed range (`vmmap` and `kernel_map`, the level-1
+//!   slots [`kernel_map_slot`] names) carry `Lx_PT_PXN`, so nothing below them executes at
+//!   EL1 whatever a leaf says: amd64's posture, whose directories carry `pg_nx`. The image's
+//!   tables (the boot loader's, under its own level-1 entry, never set by `pmap_growkernel`),
+//!   the direct map's (another level-0 slot) and the EFI runtime pmap's (its own root) are
+//!   not touched; the only executable kernel memory beside the image is the module window
+//!   (`window.rs`), whose tables hang from the image's level-2 table. A table `pmap_vp_enter`
+//!   would hang for the kernel pmap beyond `pmap_growkernel`'s reach (uvm never asks) has no
+//!   `Lx_PT_PXN`, but its leaves are refused `PROT_EXEC` all the same.
 //!
 //! ## Redesign
 //! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
@@ -151,9 +164,9 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering
 
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
-    ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, ATTR_nG, L3_P, Lx_TYPE_MASK, Lx_TYPE_PT, MAIR_CI,
-    MAIR_DEV_NGNRNE, MAIR_WT, PTE_ATTR_CI, PTE_ATTR_DEV_NGNRE, PTE_ATTR_DEV_NGNRNE, PTE_ATTR_WB,
-    PTE_ATTR_WT, PTE_RPGN, SH_INNER, attr_ap, attr_idx, attr_sh, mair_attr,
+    ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, ATTR_nG, L3_P, Lx_PT_PXN, Lx_TYPE_MASK, Lx_TYPE_PT,
+    MAIR_CI, MAIR_DEV_NGNRNE, MAIR_WT, PTE_ATTR_CI, PTE_ATTR_DEV_NGNRE, PTE_ATTR_DEV_NGNRNE,
+    PTE_ATTR_WB, PTE_ATTR_WT, PTE_RPGN, SH_INNER, attr_ap, attr_idx, attr_sh, mair_attr,
 };
 use super::super::include::vmparam::{
     USER_SPACE_BITS, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS,
@@ -167,8 +180,8 @@ use super::layout::{
     ASID_USER, EFI_SPACE_BITS, PG_PMAP_EXE, PMAP_ASID_MASK, PMAP_CACHE_BITS, PMAP_CACHE_CI,
     PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB, PMAP_CACHE_WT, PMAP_NOCACHE,
     PMAP_PA_MASK, PMAP_WC, PROT_MASK, PTED_VA_MANAGED_M, PTED_VA_WIRED_M, T1SZ_4LEVEL, TCR_A1,
-    TCR_T0SZ_MASK, TTBR_BADDR_MASK, VP_IDX2_CNT, VP_IDX3_CNT, cache_of_pa, cache_valid, tcr_t1sz,
-    tlbi_asid, tlbi_page, vp_idx,
+    TCR_T0SZ_MASK, TTBR_BADDR_MASK, VP_IDX2_CNT, VP_IDX3_CNT, cache_of_pa, cache_valid,
+    kernel_map_slot, tcr_t1sz, tlbi_asid, tlbi_page, vp_idx,
 };
 use super::vp::{
     self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvKind, Table, copy_frame, direct_map,
@@ -1031,8 +1044,21 @@ fn pmap_clear_attrs(md: &PageMd, attr: u32, clear: i32) -> bool {
 }
 
 /// `pmap_kenter_cache`'s and `pmap_kenter_pa`'s cache-mode check, then `_pmap_kenter_pa`.
+/// Panics on `PROT_EXEC` (see the deviations).
 fn pmap_kenter(va: Vaddr, pa: Paddr, prot: VmProt, cache: i32) {
+    refuse_kernel_exec("pmap_kenter_pa", va, prot);
     pmap_kenter_pa_cache(va.as_usize(), pa.as_usize(), prot, prot, cache);
+}
+
+/// The kernel pmap's `PROT_EXEC` refusal (see the deviations): no kernel page outside the image
+/// and the module window (`window.rs`, entered by `module_enter` alone) executes.
+fn refuse_kernel_exec(what: &str, va: Vaddr, prot: VmProt) {
+    if prot & PROT_EXEC != 0 {
+        hal_panic(format_args!(
+            "{what}: an executable kernel mapping at {:#x}",
+            va.as_usize()
+        ));
+    }
 }
 
 /// The EFI pmap's and the user's half of `efi_enter`/`efi_leave`: the empty table, `T0SZ`
@@ -1374,7 +1400,11 @@ impl PmapBackend for Backend {
         pmap.md.root_sw.store(0, Ordering::Release);
     }
 
+    /// `pmap_enter`; on the kernel pmap, `PROT_EXEC` panics (see the deviations).
     fn enter(pmap: &Pmap, va: Vaddr, pa: Paddr, prot: VmProt, flags: i32) -> Result<(), Errno> {
+        if pmap.is_kernel() {
+            refuse_kernel_exec("pmap_enter", va, prot);
+        }
         pmap_enter(pmap, va.as_usize(), pa.as_usize(), prot, flags)
     }
 
@@ -1584,7 +1614,8 @@ impl PmapBackend for Backend {
         stolen_bounds()
     }
 
-    /// `pmap_growkernel`: makes the kernel's vp tables and descriptors reach `maxkvaddr`.
+    /// `pmap_growkernel`: makes the kernel's vp tables and descriptors reach `maxkvaddr`, the
+    /// table descriptors of the managed range with `Lx_PT_PXN` (see the deviations).
     fn growkernel(maxkvaddr: Vaddr) -> Vaddr {
         let maxkvaddr = maxkvaddr.as_usize();
         // Not strictly necessary, but we use an interrupt-safe map and uvm asserts that we're
@@ -1603,13 +1634,15 @@ impl PmapBackend for Backend {
 
         'fail: {
             for i in vp_idx(1, g.maxkvaddr)..=vp_idx(1, maxkvaddr - 1) {
+                // Never executable at EL1 below a level-1 slot of the managed range.
+                let pxn = if kernel_map_slot(i) { Lx_PT_PXN } else { 0 };
                 let vp2 = match vp1.child(i) {
                     Some(t) => t,
                     None => {
                         let Some(t) = pmap_kvp_alloc(pages) else {
                             break 'fail;
                         };
-                        vp1.set_child(i, t);
+                        vp1.set_child_with(i, t, pxn);
                         t
                     }
                 };
@@ -1632,7 +1665,7 @@ impl PmapBackend for Backend {
                             let Some(t) = pmap_kvp_alloc(pages) else {
                                 break 'fail;
                             };
-                            vp2.set_child(j, t);
+                            vp2.set_child_with(j, t, pxn);
                             t
                         }
                     };
@@ -1731,6 +1764,9 @@ const _: () = {
     assert!(rx & PTE_RPGN == pa && rx & L3_P == L3_P && rx & ATTR_AF != 0);
     assert!(rx & attr_idx(0x7) == attr_idx(PTE_ATTR_WB));
     assert!(kernel_leaf(pa, PROT_NONE, ATTR_GP) == 0);
+    // `Lx_PT_PXN` is a table descriptor's bit the walks ignore: above the output address
+    // (`Table::child`'s `PTE_RPGN`), outside the type bits.
+    assert!(Lx_PT_PXN & (PTE_RPGN | Lx_TYPE_MASK) == 0);
 };
 
 /* </CODE> */

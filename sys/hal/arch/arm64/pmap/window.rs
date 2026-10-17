@@ -68,7 +68,9 @@
 //!   the kernel's lifetime.
 //!
 //! What executes after this: the kernel's text, and in the window only the leaves entered
-//! `PROT_EXEC` (the module's text). The loader's writable copy is a `kernel_map` range,
+//! `PROT_EXEC` (the module's text); nothing else in the kernel half, since the kernel pmap
+//! refuses `PROT_EXEC` and the managed range's table descriptors carry `Lx_PT_PXN`
+//! (`backend.rs`, deviations). The loader's writable copy is a `kernel_map` range,
 //! unmapped before the module's entry point is called. A stray kernel write to the module's
 //! text or read-only data faults on a read-only leaf outside every uvm map: a kernel panic,
 //! the W^X behaviour wanted.

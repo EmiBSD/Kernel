@@ -124,7 +124,9 @@
 //!   [`bootstrap`] returns once; holding it is the proof the caller owns the kernel map's
 //!   allocations (the boot path gives it to the kernel map's owner, `uvm_km`, N3.2). The
 //!   token does not refuse the user half: amd64's MP trampoline is mapped at its low
-//!   identity address in the kernel pmap (`cpu.c`, `machdep.c`), executable.
+//!   identity address in the kernel pmap (`cpu.c`, `machdep.c`), executable. arm64's
+//!   kernel pmap, which has no such page, refuses `PROT_EXEC` through the token (its
+//!   backend's deviations): there only the image and the module window execute.
 //! - Switching the running CPU to a pmap's root (`lcr3` in `pmap_activate`, arm64's
 //!   `pmap_setttb`, `efi_enter`/`efi_leave`) takes a second token, [`Switcher`], from the
 //!   same `bootstrap`: a safe `load` would let any caller run on a root whose pmap it then

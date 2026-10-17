@@ -79,7 +79,9 @@
 //!   ([`nasid_probe`], which also says why it stays at 8 bits).
 //! - New in native (N3.1 commit 7): the ABI module window's geometry and its two pure
 //!   checks, where it goes in the image's level-2 table ([`module_window_place`]) and which
-//!   protections it maps ([`module_prot_ok`]); `window.rs` links and fills it.
+//!   protections it maps ([`module_prot_ok`]); `window.rs` links and fills it. And the
+//!   level-1 slots of the kernel's managed range ([`kernel_map_slot`]), whose table
+//!   descriptors `pmap_growkernel` marks `Lx_PT_PXN` (the backend's deviations).
 
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT};
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
@@ -311,6 +313,14 @@ pub const fn module_window_place(gib: usize, last: usize) -> Option<(usize, usiz
     Some((first, base))
 }
 
+/// Whether the level-1 slot `l1` of the kernel's level-0 slot is one of the managed range's
+/// (`VM_MIN_KERNEL_ADDRESS`..=`VM_MAX_KERNEL_ADDRESS`: `vmmap` and `kernel_map`), whose
+/// table descriptors `pmap_growkernel` makes never executable at EL1; the image's
+/// gigabyte is not one.
+pub const fn kernel_map_slot(l1: usize) -> bool {
+    vp_idx(1, VM_MIN_KERNEL_ADDRESS) <= l1 && l1 <= vp_idx(1, VM_MAX_KERNEL_ADDRESS)
+}
+
 /// Whether the module window maps a page with `prot`: a protection the kernel's access bits
 /// grant (`ap_bits_kern`, not `PROT_NONE`) and never both writable and executable (W^X; the
 /// loader asks for read, read-write or read-execute only).
@@ -329,6 +339,9 @@ const _: () = {
     assert!(PMAP_ASID_MASK == 0xffff);
     assert!(MODULE_WINDOW_SIZE.is_multiple_of(1 << VP_IDX2_POS));
     assert!(MODULE_WINDOW_NPTP > 0 && MODULE_WINDOW_NPTP < VP_ENTRIES);
+    // The managed range lies in one level-0 slot, so its level-1 slots name it alone.
+    assert!(vp_idx(0, VM_MIN_KERNEL_ADDRESS) == vp_idx(0, VM_MAX_KERNEL_ADDRESS));
+    assert!(VM_MIN_KERNEL_ADDRESS & ((1 << VP_IDX1_POS) - 1) == 0);
 };
 /* </CODE> */
 
@@ -451,6 +464,18 @@ mod tests {
             None
         );
         assert_eq!(module_window_place(GIB + 4096, 1), None);
+    }
+
+    #[test]
+    fn the_managed_range_has_its_own_level_1_slots() {
+        // VM_MIN_KERNEL_ADDRESS..=VM_MAX_KERNEL_ADDRESS: 16 GiB, slots 0 to 3.
+        for (l1, managed) in [(0, true), (3, true), (4, false), (510, false), (511, false)] {
+            assert_eq!(kernel_map_slot(l1), managed, "slot {l1}");
+        }
+        // The image's gigabyte (`kernel.ld`) and the boot(8) window's are not.
+        assert!(!kernel_map_slot(vp_idx(1, 0xffff_ffff_8000_0000)));
+        assert!(!kernel_map_slot(vp_idx(1, 0xffff_ffff_8400_0000)));
+        assert!(kernel_map_slot(vp_idx(1, VM_MAX_KERNEL_ADDRESS)));
     }
 
     #[test]
