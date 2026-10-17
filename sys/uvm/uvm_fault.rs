@@ -1730,11 +1730,15 @@ pub fn uvm_fault_wire(
 }
 
 /// The owner of `pg`, mapped at `va` in `entry` (whose amap and object the caller locked,
-/// `uvm_map_lock_entry`): the anon of the entry's amap at `va` when `pg` is its page, else the
-/// entry's object when `pg` is one of its pages, else none (`uvm_pageunwire` asserts that the
-/// owner is the page's and is locked; the C reads `pg->uanon`/`pg->uobject`).
+/// `uvm_map_lock_entry`): the anon of the entry's amap at `va` when the entry has an amap and
+/// `pg` is that anon's page, else the entry's object when `pg` is one of its pages, else none
+/// (`uvm_pageunwire` asserts that the owner is the page's and is locked; the C reads
+/// `pg->uanon`/`pg->uobject`). An entry without an amap is ordinary here (a shared file
+/// mapping, a private one only read so far): `amap_lookup` panics on it, so the amap is looked
+/// up only when there is one.
 fn entry_page_owner(entry: &VmMapEntry, va: usize, pg: &VmPage) -> Owner<'static> {
-    if let Some(anon) = amap_lookup(&entry.aref, va - entry.start.get())
+    if entry.aref.amap().is_some()
+        && let Some(anon) = amap_lookup(&entry.aref, va - entry.start.get())
         && pg.owned_by_anon(anon)
     {
         return Owner::Anon(anon);
@@ -1938,13 +1942,15 @@ mod tests {
     use crate::kern::kern_rwlock::rw_obj_init;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::machine::vmparam::VmParam;
-    use crate::sys::mman::{MAP_INHERIT_COPY, PROT_EXEC, PROT_READ};
+    use crate::sys::mman::{MAP_INHERIT_COPY, MAP_INHERIT_SHARE, PROT_EXEC, PROT_READ};
     use crate::sys::proc::Process;
+    use crate::sys::types::Vsize;
     use crate::uvm::uvm_amap::{amap_init, amap_refs};
     use crate::uvm::uvm_anon::uvm_anon_init;
+    use crate::uvm::uvm_aobj::{uao_create, uao_init};
     use crate::uvm::uvm_extern::{UVM_FLAG_COPYONW, UVM_FLAG_FIXED, Vmspace, uvm_mapflag};
     use crate::uvm::uvm_map::{
-        uvm_map_init, uvm_mapanon, uvmspace_alloc, uvmspace_fork, uvmspace_free,
+        uvm_map, uvm_map_init, uvm_mapanon, uvmspace_alloc, uvmspace_fork, uvmspace_free,
     };
     use crate::uvm::uvmexp::counters_read;
 
@@ -2120,6 +2126,46 @@ mod tests {
 
         uvm_fault_unwire(&vm.vm_map, va, va + len);
         for i in 0..3 {
+            let pa = pmap_extract(pmap, Vaddr::new(va + i * PAGE_SIZE)).expect("still mapped");
+            let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
+            assert_eq!(pg.wire_count(), 0, "page {i} unwired");
+        }
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    fn unwire_an_object_entry_without_an_amap() {
+        // A shared mapping of an object (a MAP_SHARED file, here an aobj) has no amap: wiring
+        // it faults the object's pages in, and unwiring must find their owner without looking
+        // up an amap (`amap_lookup` panics on an entry that has none).
+        let _g = setup();
+        uao_init();
+        let vm = vmspace_with_anon(0x7000_0000, PAGE_SIZE);
+        let map = &vm.vm_map;
+        let pmap = map.pmap();
+        let len = 2 * PAGE_SIZE;
+        let uobj = uao_create(Vsize::new(len), 0).expect("an aobj");
+        let mut va = 0x7100_0000;
+        let flags = uvm_mapflag(RW, RW, MAP_INHERIT_SHARE, MADV_NORMAL, UVM_FLAG_FIXED);
+        uvm_map(map, &mut va, len, Some(uobj), 0, 0, flags).expect("map the aobj");
+        vm_map_lock_read(map);
+        let entry = uvm_map_lookup_entry(map, va).expect("the entry");
+        assert!(
+            entry.aref.amap().is_none(),
+            "a shared object entry has no amap"
+        );
+        vm_map_unlock_read(map);
+
+        uvm_fault_wire(map, va, va + len, PROT_READ).expect("wire");
+        for i in 0..2 {
+            let pa = pmap_extract(pmap, Vaddr::new(va + i * PAGE_SIZE)).expect("mapped");
+            let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
+            assert!(pg.owned_by_object(uobj), "page {i} is the object's");
+            assert_eq!(pg.wire_count(), 1, "page {i} wired");
+        }
+
+        uvm_fault_unwire(map, va, va + len);
+        for i in 0..2 {
             let pa = pmap_extract(pmap, Vaddr::new(va + i * PAGE_SIZE)).expect("still mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
             assert_eq!(pg.wire_count(), 0, "page {i} unwired");
