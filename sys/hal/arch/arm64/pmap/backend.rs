@@ -59,10 +59,13 @@
 //! LZ: sys/arch/arm64/include/pmap.rs@3c62ede68802
 //!
 //! **Locks** (as the C): a user pmap's `pm_mtx` (`IPL_VM`) is taken before a page's `pv_mtx`
-//! (`IPL_VM`); the kernel pmap is never locked (a [`Locked::Kernel`] witness); vp tables and
-//! descriptors are allocated under `pm_mtx` (`PR_NOWAIT`), so the page allocator's locks nest
-//! inside it; `pmap_page_protect` takes a reference to the pmap under `pv_mtx`, drops it,
-//! takes `pm_mtx`, re-takes `pv_mtx` and re-checks; `pmap_asid_mtx` (`IPL_HIGH`) is taken on
+//! (`IPL_VM`); the kernel pmap is never locked (its [`Locked`] witness takes no lock); vp
+//! tables and descriptors are allocated under `pm_mtx` (`PR_NOWAIT`), so the page allocator's
+//! locks nest inside it; a managed mapping is removed inside its page's `pv_mtx`, taken under
+//! `pm_mtx` (the removal rule, `vp.rs`: no walker holding `pv_mtx` ever sees a linked
+//! descriptor whose PTE was zeroed); `pmap_page_protect` takes a reference to the pmap under
+//! `pv_mtx`, drops it, takes `pm_mtx`, re-takes `pv_mtx` and re-checks; `pmap_asid_mtx`
+//! (`IPL_HIGH`) is taken on
 //! the context switch's path (`Backend::load`). There is no TLB shootdown IPI: every
 //! invalidation is the inner-shareable broadcast `tlbi`, so arm64 registers no `TlbCpus`.
 //!
@@ -103,7 +106,11 @@
 //!   `pmap_vp_populate`/`__HAVE_PMAP_POPULATE` stays unconfigured (uvm_fault's slice decides,
 //!   N3.6): `uvm_fault` never calls it here.
 //! - `pmap_proc_iflush` syncs every page through its direct-map alias (the C syncs the user
-//!   range directly for the current process, through `zero_page` otherwise).
+//!   range directly for the current process, through `zero_page` otherwise), and skips a
+//!   frame that is not a managed page (a device page mapped into a traced process): it may lie
+//!   outside the direct map, and device memory is not instruction-cached.
+//! - `pool_setlowat` (the pteds' 20, the pmaps' 2) is not called, as in LZ: the pool bridge has
+//!   no low-water mark (`hal::pool`).
 //! - `pmap_copy_page`'s `splbio` (the buffer flipper's interrupt-context use) is not needed:
 //!   the copy maps nothing.
 //!
@@ -115,8 +122,8 @@
 //!   the EFI pmap's `1 << EFI_SPACE_BITS`). `pm_refs` is the pool handle's count
 //!   (`PmapRef`); the descriptors in user slots are counted ([`PmapMd`]'s `mapped`) for the
 //!   last drop's check.
-//! - `struct vm_page_md` is `hal::pmap::PageMd`: the pv list ([`PvHead`], a [`Link`] under
-//!   `pv_mtx`) and the `PG_PMAP_MOD`/`REF`/`EXE` bits the C keeps in `pg_flags`.
+//! - `struct vm_page_md` is `hal::pmap::PageMd`: the pv list (`vp.rs`'s `PvHead`, a pv link
+//!   under `pv_mtx`) and the `PG_PMAP_MOD`/`REF`/`EXE` bits the C keeps in `pg_flags`.
 //! - A user mapping's `struct pte_desc` is a `SharedBox<PteDesc>` of the pool `"pted"`, owned
 //!   by its level-3 slot; the kernel's come from pages of descriptors (`pmap_kpted_alloc`).
 //!   Its pmap is a pointer dereferenced in one place ([`pted_pmap`]): a pmap with a mapping is
@@ -160,8 +167,8 @@ use super::layout::{
     tlbi_asid, tlbi_page, vp_idx,
 };
 use super::vp::{
-    self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, Table, copy_frame, direct_map, direct_unmap,
-    pted_page, set_direct_map, zero_frame,
+    self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvKind, Table, copy_frame, direct_map,
+    direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, zero_frame,
 };
 use crate::assert::{hal_panic, kassert};
 use crate::intr::{IPL_NONE, IPL_VM, splraise};
@@ -170,7 +177,7 @@ use crate::pmap::{
     BootstrapParams, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd, PhysPages, Pmap,
     PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
 };
-use crate::pool::{BoxPool, PR_NOWAIT, PoolArc, SharedBox};
+use crate::pool::{BoxPool, PR_NOWAIT, PoolArc};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
@@ -216,8 +223,8 @@ const MAIR_KEEP: u64 = !(mair_attr(0xff, 2) | mair_attr(0xff, 3) | mair_attr(0xf
 /// `pt0pa` is the root's hardware page or the kernel's empty table.
 pub(crate) struct PmapMd {
     /// `pm_mtx`: a user pmap's tables, descriptors and statistics; the kernel pmap never
-    /// takes it.
-    mtx: Mutexed<()>,
+    /// takes it (`vp::Locked::of` alone takes it).
+    pub(super) mtx: Mutexed<()>,
     /// `pm_vp`'s hardware page (the top table, level 0 or 1).
     root_hw: AtomicU64,
     /// `pm_vp`'s software page.
@@ -275,7 +282,7 @@ impl PmapMd {
 
     /// `pm_vp`: the root table, `None` before the bootstrap (the kernel's) or after the
     /// release.
-    fn root(&self) -> Option<Table> {
+    pub(super) fn root(&self) -> Option<Table> {
         let hw = self.root_hw.load(Ordering::Acquire);
         let sw = self.root_sw.load(Ordering::Acquire);
         (hw != 0 && sw != 0).then(|| Table {
@@ -285,7 +292,7 @@ impl PmapMd {
     }
 
     /// `have_4_level_pt`.
-    fn four_level(&self) -> bool {
+    pub(super) fn four_level(&self) -> bool {
         self.four_level.load(Ordering::Relaxed)
     }
 
@@ -302,16 +309,6 @@ impl PmapMd {
     /// Sets `pm_asid` (under `pmap_asid_mtx`).
     pub(super) fn set_asid(&self, asid: u64) {
         self.asid.store(asid, Ordering::Release);
-    }
-}
-
-/// `struct vm_page_md`'s list: the page's managed mappings, under `pv_mtx`.
-pub(crate) struct PvHead(pub(super) Link);
-
-impl PvHead {
-    /// No mapping.
-    pub(crate) const fn new() -> Self {
-        Self(Link::new())
     }
 }
 
@@ -381,18 +378,14 @@ fn ttlb_flush(pm: &Pmap, va: usize) {
 
 /// `pmap_lock`: takes a user pmap's `pm_mtx`; the kernel pmap has no lock.
 fn pmap_lock(pm: &Pmap) -> Locked<'_> {
-    if pm.is_kernel() {
-        Locked::Kernel
-    } else {
-        Locked::User(pm.md.mtx.lock())
-    }
+    Locked::of(pm)
 }
 
 /// `pmap_vp_lookup`: the level-3 position of `va` in `pm`, `None` where a table is missing.
 /// This is used for `pmap_kernel()` mappings, they are not to be removed from the vp table
 /// because they were statically initialized at the initial pmap initialization.
 fn pmap_vp_lookup(pm: &Pmap, va: usize) -> Option<L3> {
-    vp::lookup(pm.md.root()?, pm.md.four_level(), va)
+    vp::lookup(pm, va)
 }
 
 /// The pmap of a filled descriptor.
@@ -503,12 +496,9 @@ fn pmap_kpted_alloc(g: &mut Grow, pages: &dyn PhysPages) -> Option<NonNull<PteDe
 
 /// `pmap_vp_enter`: the level-3 position of `va` in `pm`, the missing tables allocated
 /// (`PR_NOWAIT`); without `PMAP_CANFAIL` a missing frame panics.
-fn pmap_vp_enter(pm: &Pmap, _locked: &Locked<'_>, va: usize, flags: i32) -> Result<L3, Errno> {
-    let Some(root) = pm.md.root() else {
-        hal_panic(format_args!("pmap_vp_enter: pmap without a top table"));
-    };
+fn pmap_vp_enter(pm: &Pmap, locked: &Locked<'_>, va: usize, flags: i32) -> Result<L3, Errno> {
     let pages = pm.pages();
-    match vp::enter(root, pm.md.four_level(), va, || pmap_kvp_alloc(pages)) {
+    match vp::enter(pm, locked, va, || pmap_kvp_alloc(pages)) {
         Ok(l3) => Ok(l3),
         Err(level) => {
             if flags & PMAP_CANFAIL == 0 {
@@ -526,33 +516,35 @@ fn pmap_enter_pv(pted: &PteDesc, md: &PageMd) {
         return;
     }
     let head = md.pv.lock();
-    pted.pv_next.set(head.0.get());
-    head.0.set(Some(NonNull::from(pted)));
+    pv_insert(&head, pted);
     pted.va
         .fetch_or(PTED_VA_MANAGED_M as usize, Ordering::Relaxed);
 }
 
-/// `pmap_remove_pv`: takes the mapping off its page's pv list (a walk from the head: the list
-/// is singly linked).
-fn pmap_remove_pv(pted: &PteDesc, pages: &dyn PhysPages) {
+/// The page a managed descriptor maps (`PHYS_TO_VM_PAGE(pted->pted_pte & PTE_RPGN)`).
+fn pted_md(pted: &PteDesc, pages: &dyn PhysPages) -> &'static PageMd {
     let pa = Paddr::new((pted.pte.load(Ordering::Relaxed) & PTE_RPGN) as usize);
-    let Some(md) = pages.md_of(pa) else {
-        hal_panic(format_args!("pmap_remove_pv: {pa:?} is not a managed page"));
-    };
-    let head = md.pv.lock();
-    let mut cur: &Link = &head.0;
-    loop {
-        let Some(t) = cur.target(&head) else {
-            hal_panic(format_args!("pmap_remove_pv: pted not on its page's list"));
-        };
-        if ptr::eq(t, pted) {
-            cur.set(t.pv_next.get());
-            t.pv_next.set(None);
-            t.va.fetch_and(!(PTED_VA_MANAGED_M as usize), Ordering::Relaxed);
-            return;
-        }
-        cur = &t.pv_next;
+    match pages.md_of(pa) {
+        Some(md) => md,
+        None => hal_panic(format_args!("pmap_remove_pv: {pa:?} is not a managed page")),
     }
+}
+
+/// `pmap_pte_remove` + `pmap_remove_pv` + the descriptor cleared (`pted_pte = 0`,
+/// `pted_va = 0`): the PTE zeroed and its TLB entries dropped; for a managed descriptor all of
+/// it inside its page's `pv_mtx`, which the caller does not hold (the removal rule, `vp.rs`:
+/// a pv walker revalidates from `pted.pte` and would otherwise write the zeroed PTE back).
+fn pmap_pte_remove(pm: &Pmap, pted: &PteDesc, l3: L3) {
+    let va = pted_va(pted);
+    let pv = pted_managed(pted).then(|| pted_md(pted, pm.pages()).pv.lock());
+    l3.pte().store(0, Ordering::Release);
+    ttlb_flush(pm, va);
+    if let Some(head) = &pv {
+        pv_unlink(head, pted);
+    }
+    pted.pte.store(0, Ordering::Relaxed);
+    pted.va.store(0, Ordering::Relaxed);
+    drop(pv);
 }
 
 /// `pmap_icache_sync_page`: the page's contents made visible to instruction fetch, through
@@ -572,7 +564,7 @@ fn pmap_enter(pm: &Pmap, va: usize, pa: usize, prot: VmProt, flags: i32) -> Resu
     let mut locked = pmap_lock(pm);
     let mut l3 = pmap_vp_lookup(pm, va);
     let old = l3.and_then(|l| {
-        let t = l.slot().target(&locked)?;
+        let t = l.pted(&locked)?;
         pted_valid(t).then(|| {
             let v = t.va.load(Ordering::Relaxed);
             t.pte.load(Ordering::Relaxed) & PTE_RPGN == pa as u64 & PTE_RPGN
@@ -592,7 +584,7 @@ fn pmap_enter(pm: &Pmap, va: usize, pa: usize, prot: VmProt, flags: i32) -> Resu
     add(&pm.stats.resident_count, 1);
 
     // Do not have pted for this, get one and put it in VP
-    if l3.is_none_or(|l| l.slot().get().is_none()) {
+    if l3.is_none_or(|l| !l.occupied()) {
         let Some(pted) = PMAP_PTED_POOL.get_linked(PR_NOWAIT, PteDesc::new) else {
             if flags & PMAP_CANFAIL == 0 {
                 hal_panic(format_args!("pmap_enter: failed to allocate pted"));
@@ -606,9 +598,9 @@ fn pmap_enter(pm: &Pmap, va: usize, pa: usize, prot: VmProt, flags: i32) -> Resu
                 return Err(e);
             }
         };
-        // The slot owns it from now on (`Link::take` frees it); a kernel slot keeps it for
+        // The slot owns it from now on (`L3::take` frees it); a kernel slot keeps it for
         // good, as the C's kernel pmap never frees a descriptor.
-        l.slot().set(Some(SharedBox::into_raw(pted)));
+        l.put(&locked, pted);
         if !pm.is_kernel() {
             pm.md.mapped.fetch_add(1, Ordering::Relaxed);
         }
@@ -617,7 +609,7 @@ fn pmap_enter(pm: &Pmap, va: usize, pa: usize, prot: VmProt, flags: i32) -> Resu
     let Some(l3) = l3 else {
         hal_panic(format_args!("pmap_enter: no level-3 table"));
     };
-    let Some(pted) = l3.slot().target(&locked) else {
+    let Some(pted) = l3.pted(&locked) else {
         hal_panic(format_args!("pmap_enter: no pted"));
     };
 
@@ -663,7 +655,7 @@ fn pmap_remove(pm: &Pmap, sva: usize, eva: usize) {
         let Some(l3) = pmap_vp_lookup(pm, va) else {
             continue;
         };
-        let Some(pted) = l3.slot().target(&locked) else {
+        let Some(pted) = l3.pted(&locked) else {
             continue;
         };
         if pted_wired(pted) {
@@ -677,10 +669,11 @@ fn pmap_remove(pm: &Pmap, sva: usize, eva: usize) {
     }
 }
 
-/// `pmap_remove_pted`: remove a single mapping, notice that this code is O(1) (but for the
-/// pv list's walk). A user pmap's descriptor is freed; the kernel's stays in its slot.
+/// `pmap_remove_pted`: remove a single mapping, notice that this code is O(1). A user pmap's
+/// descriptor is freed; the kernel's stays in its slot. Under `pm_mtx` (`locked`); a managed
+/// one is torn down inside its page's `pv_mtx` ([`pmap_pte_remove`]).
 fn pmap_remove_pted(pm: &Pmap, locked: &mut Locked<'_>, l3: L3) {
-    let Some(pted) = l3.slot().target(&*locked) else {
+    let Some(pted) = l3.pted(locked) else {
         return;
     };
     add(&pm.stats.resident_count, -1);
@@ -691,19 +684,10 @@ fn pmap_remove_pted(pm: &Pmap, locked: &mut Locked<'_>, l3: L3) {
             .fetch_and(!(PTED_VA_WIRED_M as usize), Ordering::Relaxed);
     }
 
-    // pmap_pte_remove
-    l3.pte().store(0, Ordering::Release);
-    ttlb_flush(pm, pted_va(pted));
-
-    if pted_managed(pted) {
-        pmap_remove_pv(pted, pm.pages());
-    }
-
-    pted.pte.store(0, Ordering::Relaxed);
-    pted.va.store(0, Ordering::Relaxed);
+    pmap_pte_remove(pm, pted, l3);
 
     if !pm.is_kernel() {
-        drop(l3.slot().take(locked, &PMAP_PTED_POOL));
+        drop(l3.take(locked, &PMAP_PTED_POOL));
         pm.md.mapped.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -714,9 +698,9 @@ fn pmap_remove_pted(pm: &Pmap, locked: &mut Locked<'_>, l3: L3) {
 /// already exist.
 fn pmap_kenter_pa_cache(va: usize, pa: usize, prot: VmProt, flags: i32, cache: i32) {
     let pm = &KERNEL_PMAP;
-    let locked = Locked::Kernel;
+    let locked = Locked::of(pm);
     let l3 = pmap_vp_lookup(pm, va);
-    let Some((l3, pted)) = l3.and_then(|l| Some((l, l.slot().target(&locked)?))) else {
+    let Some((l3, pted)) = l3.and_then(|l| Some((l, l.pted(&locked)?))) else {
         hal_panic(format_args!(
             "pted not preallocated in pmap_kernel() va {va:#x} pa {pa:#x}"
         ));
@@ -747,11 +731,11 @@ fn pmap_kenter_pa_cache(va: usize, pa: usize, prot: VmProt, flags: i32, cache: i
 /// `pmap_kremove_pg`: remove kernel (`pmap_kernel()`) mapping, one page.
 fn pmap_kremove_pg(va: usize) {
     let pm = &KERNEL_PMAP;
-    let locked = Locked::Kernel;
+    let locked = Locked::of(pm);
     let Some(l3) = pmap_vp_lookup(pm, va) else {
         return;
     };
-    let Some(pted) = l3.slot().target(&locked) else {
+    let Some(pted) = l3.pted(&locked) else {
         return;
     };
     if !pted_valid(pted) {
@@ -761,22 +745,12 @@ fn pmap_kremove_pg(va: usize) {
     let _s = splraise(IPL_VM);
 
     add(&pm.stats.resident_count, -1);
-
-    // pmap_pte_remove(pted, 0)
-    l3.pte().store(0, Ordering::Release);
-    ttlb_flush(pm, pted_va(pted));
-
-    if pted_managed(pted) {
-        pmap_remove_pv(pted, pm.pages());
-    }
-
     if pted_wired(pted) {
         add(&pm.stats.wired_count, -1);
     }
 
-    // invalidate pted;
-    pted.pte.store(0, Ordering::Relaxed);
-    pted.va.store(0, Ordering::Relaxed);
+    // pmap_pte_remove(pted, 0), pmap_remove_pv, invalidate pted (the removal rule).
+    pmap_pte_remove(pm, pted, l3);
 }
 
 /// `pmap_fill_pte`: computes the descriptor of a mapping.
@@ -869,7 +843,7 @@ fn pmap_page_ro(pm: &Pmap, pted: &PteDesc, pl3: &AtomicU64, prot: VmProt) {
 fn pmap_page_protect(md: &PageMd, prot: VmProt) {
     if prot != PROT_NONE {
         let head = md.pv.lock();
-        let mut cur: &Link = &head.0;
+        let mut cur: &Link<PvKind> = &head.0;
         while let Some(pted) = cur.target(&head) {
             let pm = pted_pmap(pted);
             // Every VA needs a pted, even unmanaged ones.
@@ -905,10 +879,14 @@ fn pmap_page_protect(md: &PageMd, prot: VmProt) {
                 .filter(|t| ptr::eq(t.pmap.load(Ordering::Acquire), pm))
                 .map(pted_va)
         };
-        if let Some(va) = va
-            && let Some(l3) = pmap_vp_lookup(pm, va)
-        {
-            // The first mapping is `pm`'s at `va`, which only `pm`'s lock (held) removes.
+        if let Some(va) = va {
+            // The first mapping is `pm`'s at `va`, which only `pm`'s lock (held) removes; the
+            // head guard is dropped (the removal takes `pv_mtx` itself).
+            let Some(l3) = pmap_vp_lookup(pm, va) else {
+                hal_panic(format_args!(
+                    "pmap_page_protect: a linked pted without a vp for {va:#x}"
+                ));
+            };
             pmap_remove_pted(pm, &mut locked, l3);
         }
         drop(locked);
@@ -930,7 +908,7 @@ fn pmap_protect(pm: &Pmap, sva: usize, eva: usize, prot: VmProt) {
         let Some(l3) = pmap_vp_lookup(pm, va) else {
             continue;
         };
-        if let Some(pted) = l3.slot().target(&locked) {
+        if let Some(pted) = l3.pted(&locked) {
             pmap_page_ro(pm, pted, l3.pte(), prot);
         }
     }
@@ -944,7 +922,7 @@ fn pmap_fault_fixup(pm: &Pmap, va: usize, ftype: VmProt) -> bool {
     let Some(l3) = pmap_vp_lookup(pm, va) else {
         return false;
     };
-    let Some(pted) = l3.slot().target(&locked) else {
+    let Some(pted) = l3.pted(&locked) else {
         return false;
     };
     if !pted_valid(pted) {
@@ -1019,7 +997,7 @@ fn pmap_clear_attrs(md: &PageMd, attr: u32, clear: i32) -> bool {
     md.attrs.fetch_and(!attr, Ordering::Relaxed);
 
     let head = md.pv.lock();
-    let mut cur: &Link = &head.0;
+    let mut cur: &Link<PvKind> = &head.0;
     while let Some(pted) = cur.target(&head) {
         let pm = pted_pmap(pted);
         pted.pte.fetch_and(!(clear as u64), Ordering::Relaxed);
@@ -1341,6 +1319,11 @@ impl PmapBackend for Backend {
         if asid::loaded_anywhere(pmap) {
             hal_panic(format_args!("pmap_destroy: the pmap is loaded on a CPU"));
         }
+        // This order carries the ASID rollover's soundness (`asid.rs`): the check above (its
+        // Acquire loads pair with `set_curpm`'s Release stores) and then `pmap_free_asid`, which
+        // takes `pmap_asid_mtx`, both come before any table or the pool item is freed, so a
+        // rollover that read this pmap from a CPU's record still holds the lock until it is
+        // done with it. Never swap it back to the C's release-then-free.
         pmap_free_asid(pmap);
         let Some(&pages) = pmap.pages.get() else {
             return;
@@ -1397,7 +1380,7 @@ impl PmapBackend for Backend {
         let locked = pmap_lock(pmap);
         let va = va.as_usize();
         let l3 = pmap_vp_lookup(pmap, va)?;
-        let pted = l3.slot().target(&locked).filter(|t| pted_valid(t))?;
+        let pted = l3.pted(&locked).filter(|t| pted_valid(t))?;
         Some(Paddr::new(
             (pted.pte.load(Ordering::Relaxed) & PTE_RPGN) as usize | (va & PAGE_MASK),
         ))
@@ -1409,7 +1392,7 @@ impl PmapBackend for Backend {
         let Some(l3) = pmap_vp_lookup(pmap, va.as_usize()) else {
             return;
         };
-        if let Some(pted) = l3.slot().target(&locked).filter(|t| pted_wired(t)) {
+        if let Some(pted) = l3.pted(&locked).filter(|t| pted_wired(t)) {
             add(&pmap.stats.wired_count, -1);
             pted.va
                 .fetch_and(!(PTED_VA_WIRED_M as usize), Ordering::Relaxed);
@@ -1507,9 +1490,17 @@ impl PmapBackend for Backend {
             // add one to always round up to the next page
             let clen = (round_page(va + 1) - va).min(len);
             let off = va - trunc_page(va);
-            if let Some(pa) = Self::extract(pmap, Vaddr::new(trunc_page(va))) {
+            // A frame that is not a managed page (device memory) is not instruction-cached and
+            // may lie outside the direct map (see the deviations).
+            if let Some(pa) = Self::extract(pmap, Vaddr::new(trunc_page(va)))
+                && pmap
+                    .pages()
+                    .md_of(Paddr::new(pa.as_usize() & PMAP_PA_MASK))
+                    .is_some()
+            {
                 cpu_icache_sync_range(direct_map(pa).as_usize() + off, clen);
             }
+
             len -= clen;
             va += clen;
         }
@@ -1622,11 +1613,12 @@ impl PmapBackend for Backend {
                     };
 
                     for k in 0..VP_IDX3_CNT {
-                        if vp3.slot(k).get().is_none() {
+                        if !vp3.kernel_slot_full(k) {
                             let Some(pted) = pmap_kpted_alloc(&mut g, pages) else {
                                 break 'fail;
                             };
-                            vp3.slot(k).set(Some(pted));
+                            vp3.set_kernel_slot(k, pted);
+
                             g.maxkvaddr += PAGE_SIZE;
                         }
                     }

@@ -198,7 +198,8 @@ impl AsidWidth {
         }
     }
 
-    /// The probe's answer as a line a boot message can print.
+    /// The probe's answer in words (for ddb and the tests; OpenBSD prints no boot line for it).
+
     pub const fn why(self) -> &'static str {
         match self {
             AsidWidth::Bits16 => "16-bit ASIDs",
@@ -353,10 +354,8 @@ mod tests {
 
     #[test]
     fn the_tlbi_operands_drop_what_does_not_fit() {
-        assert_eq!(
-            tlbi_page(0xffff_ff80_0012_3000),
-            0xff80_0012_3 & ((1 << 44) - 1)
-        );
+        // The page number 0xf_ffff_f800_0123 keeps its low 44 bits.
+        assert_eq!(tlbi_page(0xffff_ff80_0012_3000), 0xffff_8000_123);
         assert_eq!(tlbi_asid(0x1_0005), 5 << 48);
         assert_eq!(tlbi_asid(0x2_0005 | ASID_USER), (5 | ASID_USER) << 48);
     }
