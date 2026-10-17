@@ -5130,7 +5130,7 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/kern_lock.rs"
 lz = ["sys/kern/kern_lock.rs"]
-status = "inherited"
+status = "redesigned"
 notes = "M4: the uniprocessor mutex (__mtx_init, _mtx_init, mtx_init, mtx_init_flags, mtx_enter, mtx_enter_try, mtx_leave) through the machine::intr spl and Cpu::curcpu_ptr contracts; M5: pc_lock_init, pc_sprod_enter/leave, pc_mprod_enter/leave (= sprod without MULTIPROCESSOR), pc_cons_enter/leave (membar_* are fences); M11a (feature multiprocessor): kernel_lock (KERNEL_LOCK static), _kernel_lock_init/_kernel_lock/_kernel_unlock/_kernel_lock_held, the ticket lock (___mp_lock_init, __mp_lock_spin, __mp_lock, __mp_unlock, __mp_release_all, __mp_acquire_count, __mp_lock_held indexed by ci_cpuid), the spinning mutex with its 128 parking lots (mtx_init_parking, mtx_park, mtx_enter_park/leave_park, mtx_cas, mtx_enter with the slow path split out as mtx_enter_slow, mtx_enter_try, mtx_leave), the interlocking pc_mprod_enter/leave; db_mtx_enter/leave and mtx_print_parks are ddb on MP (M11c); WITNESS and MP_LOCKDEBUG not configured; M11c: db_mtx_enter/db_mtx_leave (DDB, uniprocessor too; CPU_MIN_BUSY_CYCLES and CPU_MAX_BUSY_CYCLES = ncpusfound back-off); mtx_print_parks (a printer nothing calls) is not here"
 
 [[module]]
@@ -7252,7 +7252,7 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/mutex.rs"
 lz = ["sys/sys/mutex.rs"]
-status = "inherited"
+status = "redesigned"
 notes = "M4: struct mutex (the MI one), MUTEX_INITIALIZER (Mutex::new), __MUTEX_IPL (the ipl without MULTIPROCESSOR; M11a: at least IPL_MPFLOOR with it), mtx_curcpu/mtx_owner/mtx_owned, MUTEX_ASSERT_LOCKED/UNLOCKED, MTX_NOWITNESS/DUPOK; WITNESS is not configured; M11c: struct db_mutex (DbMutex: the owner as mtx_curcpu() in an AtomicUsize, mtx_intr_state a Cell) and DB_MUTEX_INITIALIZER (DbMutex::new)"
 
 [[module]]

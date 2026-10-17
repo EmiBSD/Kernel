@@ -52,6 +52,14 @@
 //! uniprocessor too, as in the C). `mtx_print_parks` (a debugging printer of the parking lots
 //! that nothing calls) is not here; `WITNESS` and `MP_LOCKDEBUG` are not configured.
 //!
+//! LZ: sys/kern/kern_lock.rs@3c62ede68802
+//!
+//! ## Redesign
+//! - The code is LZ's. Only the host test `init_resets` changed, when `MULTIPROCESSOR`
+//!   became the one kernel built (decision 40): it asserts the level each configuration
+//!   stores, `IPL_MPFLOOR` for a level below it with `MULTIPROCESSOR` (`__MUTEX_IPL`,
+//!   `<sys/mutex.h>`), the level given without; LZ's asserted the uniprocessor value alone.
+//!
 //! ## Deviations
 //! - `membar_producer`/`membar_consumer`/`membar_exit` are `fence`s of the matching
 //!   ordering; `membar_enter_after_atomic` is an `Acquire` fence and `membar_enter` a
@@ -842,6 +850,13 @@ mod tests {
         m.mtx_owner.store(42, Ordering::Relaxed);
         mtx_init(&m, 5);
         assert_eq!(mtx_owner(&m), 0);
+        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it under MULTIPROCESSOR.
+        #[cfg(feature = "multiprocessor")]
+        {
+            assert!(5 < crate::machine::intr::IPL_MPFLOOR);
+            assert_eq!(m.mtx_wantipl.get(), crate::machine::intr::IPL_MPFLOOR);
+        }
+        #[cfg(not(feature = "multiprocessor"))]
         assert_eq!(m.mtx_wantipl.get(), 5);
     }
 }

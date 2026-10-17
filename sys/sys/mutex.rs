@@ -46,6 +46,14 @@
 //! `MULTIPROCESSOR`, as in the C. M11c: `struct db_mutex` and `DB_MUTEX_INITIALIZER` (`DDB`,
 //! always configured here).
 //!
+//! LZ: sys/sys/mutex.rs@3c62ede68802
+//!
+//! ## Redesign
+//! - The code is LZ's. Only the host test `initializer_is_free` changed, when
+//!   `MULTIPROCESSOR` became the one kernel built (decision 40): it asserts the level each
+//!   configuration stores, `IPL_MPFLOOR` for a level below it with `MULTIPROCESSOR`
+//!   (`__MUTEX_IPL`), the level given without; LZ's asserted the uniprocessor value alone.
+//!
 //! ## Deviations
 //! - The fields are an atomic and `Cell`s, so a `static` mutex is entered through `&`.
 //! - `db_mutex`'s owner is the owning CPU as `mtx_curcpu()` gives it (an `AtomicUsize`, 0 when
@@ -175,6 +183,13 @@ mod tests {
     fn initializer_is_free() {
         let m = Mutex::new(7);
         assert_eq!(mtx_owner(&m), 0);
+        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it under MULTIPROCESSOR.
+        #[cfg(feature = "multiprocessor")]
+        {
+            assert!(7 < crate::machine::intr::IPL_MPFLOOR);
+            assert_eq!(m.mtx_wantipl.get(), crate::machine::intr::IPL_MPFLOOR);
+        }
+        #[cfg(not(feature = "multiprocessor"))]
         assert_eq!(m.mtx_wantipl.get(), 7);
         assert_eq!(m.mtx_oldipl.get(), IPL_NONE);
         assert!(!mtx_owned(&m));
