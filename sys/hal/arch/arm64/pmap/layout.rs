@@ -468,8 +468,14 @@ mod tests {
 
     #[test]
     fn the_managed_range_has_its_own_level_1_slots() {
-        // VM_MIN_KERNEL_ADDRESS..=VM_MAX_KERNEL_ADDRESS: 16 GiB, slots 0 to 3.
-        for (l1, managed) in [(0, true), (3, true), (4, false), (510, false), (511, false)] {
+        // VM_MIN_KERNEL_ADDRESS..=VM_MAX_KERNEL_ADDRESS: 16 GiB, one GiB per slot: 0 to 15.
+        for (l1, managed) in [
+            (0, true),
+            (15, true),
+            (16, false),
+            (510, false),
+            (511, false),
+        ] {
             assert_eq!(kernel_map_slot(l1), managed, "slot {l1}");
         }
         // The image's gigabyte (`kernel.ld`) and the boot(8) window's are not.
