@@ -162,8 +162,8 @@ global_asm!(
     ".popsection",
 );
 
-/// The routine's length: its eight instructions.
-pub(super) const SWITCH_ROUTINE_LEN: usize = 8 * size_of::<u32>();
+/// The routine's length in bytes: its eight instruction words.
+pub(super) const SWITCH_ROUTINE_LEN: usize = size_of::<[u32; 8]>();
 
 // SAFETY: the one item names the routine above, defined in this crate by its symbol, as its
 // eight instruction words (`.size` says the same). They lie in the kernel text, which both
