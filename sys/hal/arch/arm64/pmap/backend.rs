@@ -78,24 +78,23 @@
 //!   provider (`PhysPages::steal`, `uvm_page_physsteal`), and vp tables, descriptor pages and
 //!   `pmap_zero_page`/`pmap_copy_page`/the I-cache syncs reach their frames through it,
 //!   without the C's per-CPU `zero_page`/`copy_*_page` windows.
-//! - The kernel's page tables are the boot loader's, adopted: `pmap_bootstrap` copies its
-//!   level-0 table and the level-1 table of the kernel range's slot into fresh vp tables,
-//!   points `TTBR1_EL1` at the copy, and leaves the level-2/3 tables of the kernel image and of
-//!   the direct map as the boot loader built them: those have no descriptor, so
-//!   `pmap_extract` answers for them through the direct map, or for the image through its
-//!   virtual-to-physical offset (`BootstrapParams::image`). The C builds the kernel tables
-//!   from scratch (`pmap_setup_avail`, `pmap_map_stolen`, `switch_mmu_kernel`) and
-//!   pre-populates the first GiB; here the boot glue's `pmap_growkernel` populates it, so
-//!   `pmap_maxkvaddr` starts at `VM_MIN_KERNEL_ADDRESS`, and the memory is loaded into uvm
-//!   before `pmap_bootstrap`. Inherited from LZ (its `pmap_init`: "the bootloader's tables
-//!   stay"): the C maps the image by section with `pmap_map_stolen` (text read-only and
-//!   executable, rodata read-only, the rest read-write and not executable) and switches to
-//!   those tables (`switch_mmu_kernel`); under boot(8)/efiboot the image keeps `locore0.S`'s
-//!   32 level-2 blocks over the whole 64 MB, each read-write with only `ATTR_UXN`, so all of
-//!   it executes at EL1 and the kernel text is writable, and the block's tail past
-//!   `kernel_end`, which `machdep.rs` gives uvm as usable memory, gives the uvm pages there a
-//!   writable, EL1-executable alias at `0xffffffff80000000 + (pa - memstart)`. Not fixed
-//!   here (the user's decision).
+//! - The kernel's level-0 table and the level-1 table of the kernel range's slot start as
+//!   copies of the boot loader's (`pmap_bootstrap` copies them into fresh vp tables), so the
+//!   direct map's tables (another level-0 slot) stay the boot loader's: they have no
+//!   descriptor, and `pmap_extract` answers for them through the direct map. The C builds
+//!   the kernel tables from scratch (`pmap_setup_avail`) and pre-populates the first GiB;
+//!   here the boot glue's `pmap_growkernel` populates it, so `pmap_maxkvaddr` starts at
+//!   `VM_MIN_KERNEL_ADDRESS`, and the memory is loaded into uvm before `pmap_bootstrap`.
+//! - The kernel image is mapped as the C's `pmap_map_stolen` maps it (see the redesign), on
+//!   both boot paths, with these differences: only the image is mapped so (the C maps every
+//!   stolen region; here those are reached through the direct map), from its first page to
+//!   the page holding `_end` (the C maps up to `esym`: boot(8)'s symbol table past `_end` is
+//!   not mapped, since `ddb` loads no symbols and the ABI module efiboot puts there is read
+//!   through the direct map); the padding between two sections is not mapped (the C maps it
+//!   read-write); the image's leaves carry no `ATTR_GP` (the C's kernel pmap guards its text
+//!   for branch target identification; this kernel is built without BTI landing pads, which
+//!   stable rustc cannot emit); and they have no software descriptor, so `pmap_extract`
+//!   answers for the image through its virtual-to-physical offset (`BootstrapParams::image`).
 //! - The kernel pmap is four-level (`TCR_EL1.T1SZ` = 16, as both boot paths leave it); the
 //!   C's is three-level (a 39-bit kernel), so where the C reaches `pm_vp.l1` directly the walks
 //!   go through level 0.
@@ -128,13 +127,13 @@
 //!   `pmap_growkernel` makes for the managed range (`vmmap` and `kernel_map`, the level-1
 //!   slots [`kernel_map_slot`] names) carry `Lx_PT_PXN`, so nothing below them executes at
 //!   EL1 whatever a leaf says: amd64's posture, whose directories carry `pg_nx`. The image's
-//!   tables (the boot loader's, under its own level-1 entry, never set by `pmap_growkernel`),
-//!   the direct map's (another level-0 slot) and the EFI runtime pmap's (its own root) are
-//!   not touched; outside the image's own mapping (under boot(8)/efiboot all of its 64 MB
-//!   block, see the deviation on the adopted tables above) the only executable kernel memory
-//!   is the module window (`window.rs`), whose tables hang from the image's level-2 table. A table `pmap_vp_enter`
-//!   would hang for the kernel pmap beyond `pmap_growkernel`'s reach (uvm never asks) has no
-//!   `Lx_PT_PXN`, but its leaves are refused `PROT_EXEC` all the same.
+//!   tables (`pmap_map_stolen`'s, under the image's own level-1 entry, never set by
+//!   `pmap_growkernel`), the direct map's (another level-0 slot) and the EFI runtime pmap's
+//!   (its own root) are not touched; the only executable kernel memory is the image's text
+//!   and the module window (`window.rs`), whose tables hang from the image's level-2 table.
+//!   A table `pmap_vp_enter` would hang for the kernel pmap beyond `pmap_growkernel`'s reach
+//!   (uvm never asks) has no `Lx_PT_PXN`, but its leaves are refused `PROT_EXEC` all the
+//!   same.
 //!
 //! ## Redesign
 //! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
@@ -167,42 +166,66 @@
 //!   bootstrap links it at its end, `module_window`/`module_enter` are its, and the window's
 //!   leaves are [`kernel_leaf`]s, `pmap_pte_update`'s write-back kernel descriptor; until
 //!   then arm64 placed the module in `kernel_map`.
+//! - The image by section and the switch (N3.1 commit 8; LZ kept the boot loader's tables
+//!   below its level-1 copy, so under boot(8)/efiboot the image ran on `locore0.S`'s 32
+//!   level-2 blocks over the whole 64 MB block, read-write and executable at EL1, the block's
+//!   tail past the image, uvm's memory, aliased there too): [`pmap_map_stolen`] maps the image
+//!   in tables of its own, stolen frames through the direct map, as the C's maps it with
+//!   `pmap_kenter_cache`: the text (`__text_start` to `_etext`) read-only and executable at
+//!   EL1, the read-only data (`__rodata_start` to `_erodata`) read-only, the data and BSS
+//!   (`__data_start` to `_end`) read-write, every leaf `ATTR_UXN` and the last two
+//!   `ATTR_PXN`, nothing after the image (`layout.rs`'s `image_page_prot`, the bounds checked
+//!   by `image_layout_ok`); their level-2 table replaces the boot loader's entry for the
+//!   image's gigabyte in the level-1 copy, whatever the boot loader built there (Limine's
+//!   mapping or `locore0.S`'s blocks). [`switch_mmu_kernel_table`] then loads the copy into
+//!   `TTBR1_EL1` as the C's `switch_mmu_kernel_table(pt1pa)` does: at the switch routine's
+//!   physical address, through a four-page identity table in `TTBR0_EL1` that maps that page
+//!   alone, so no instruction runs through `TTBR1_EL1` while the kernel's live entries change
+//!   size and attributes (break-before-make); `TTBR0_EL1` and its `TCR_EL1` fields go back
+//!   as they were after it. The identity table stays (Limine's application processors switch
+//!   through it too, `cpu.rs`'s `cpu_hatch_entry`), as do the boot loader's tables, which
+//!   nothing walks any more: under boot(8) `locore.S`'s `pagetable` pages in the kernel's
+//!   `.data` (the direct map's level-1 table among them, still in use), under Limine its
+//!   bootloader-reclaimable pages (the application processors start on them).
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
-    ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, ATTR_nG, L3_P, Lx_PT_PXN, Lx_TYPE_MASK, Lx_TYPE_PT,
-    MAIR_CI, MAIR_DEV_NGNRNE, MAIR_WT, PTE_ATTR_CI, PTE_ATTR_DEV_NGNRE, PTE_ATTR_DEV_NGNRNE,
-    PTE_ATTR_WB, PTE_ATTR_WT, PTE_RPGN, SH_INNER, attr_ap, attr_idx, attr_sh, mair_attr,
+    ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, ATTR_nG, L2_SIZE, L3_P, Lx_PT_PXN, Lx_TYPE_MASK,
+    Lx_TYPE_PT, MAIR_CI, MAIR_DEV_NGNRNE, MAIR_WT, PTE_ATTR_CI, PTE_ATTR_DEV_NGNRE,
+    PTE_ATTR_DEV_NGNRNE, PTE_ATTR_WB, PTE_ATTR_WT, PTE_RPGN, SH_INNER, attr_ap, attr_idx, attr_sh,
+    mair_attr,
 };
 use super::super::include::vmparam::{
     USER_SPACE_BITS, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS,
 };
 use super::asid::{self, pmap_allocate_asid, pmap_free_asid};
 use super::cpufunc::{
-    cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range, cpu_setttb,
-    cpu_tlb_flush, cpu_tlb_flush_all_asid, cpu_tlb_flush_asid, cpu_tlb_flush_asid_all, ttbr0_empty,
+    SWITCH_ROUTINE_LEN, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range,
+    cpu_setttb, cpu_tlb_flush, cpu_tlb_flush_all_asid, cpu_tlb_flush_asid, cpu_tlb_flush_asid_all,
+    switch_routine_va, ttbr0_empty,
 };
 use super::layout::{
     ASID_USER, EFI_SPACE_BITS, PG_PMAP_EXE, PMAP_ASID_MASK, PMAP_CACHE_BITS, PMAP_CACHE_CI,
     PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB, PMAP_CACHE_WT, PMAP_NOCACHE,
     PMAP_PA_MASK, PMAP_WC, PROT_MASK, PTED_VA_MANAGED_M, PTED_VA_WIRED_M, T1SZ_4LEVEL, TCR_A1,
-    TCR_T0SZ_MASK, TTBR_BADDR_MASK, VP_IDX2_CNT, VP_IDX3_CNT, cache_of_pa, cache_valid,
-    kernel_map_slot, tcr_t1sz, tlbi_asid, tlbi_page, vp_idx,
+    TCR_IDENTITY_TTBR0, TCR_T0SZ_MASK, TCR_TTBR0_FIELDS, TTBR_BADDR_MASK, VP_IDX2_CNT, VP_IDX3_CNT,
+    cache_of_pa, cache_valid, image_layout_ok, image_page_prot, image_ptps, kernel_map_slot,
+    tcr_t1sz, tlbi_asid, tlbi_page, vp_idx,
 };
 use super::vp::{
     self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvKind, Table, copy_frame, direct_map,
-    direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, zero_frame,
+    direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
 };
 use super::window;
 use crate::assert::{hal_panic, kassert};
 use crate::intr::{IPL_NONE, IPL_VM, splraise};
 use crate::mutex::Mutexed;
 use crate::pmap::{
-    BootstrapParams, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd, PhysPages, Pmap,
-    PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
+    BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
+    PhysPages, Pmap, PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
 };
 use crate::pool::{BoxPool, PR_NOWAIT, PoolArc};
 use crate::sys::errno::Errno;
@@ -383,6 +406,12 @@ static GROW: Mutexed<Grow> = Mutexed::new(
 );
 /// `vmmap` (see the deviations): the next free address of the device window, `bus_space`'s.
 pub static VMMAP: AtomicUsize = AtomicUsize::new(0);
+/// The identity table [`switch_mmu_kernel_table`] runs from (its `TTBR0_EL1` value), built
+/// once by the bootstrap; 0 before.
+static SWITCH_IDENTITY: AtomicU64 = AtomicU64::new(0);
+/// The physical address of the switch routine (`cpufunc.rs`'s `hal_switch_mmu_kernel`), the
+/// one page the identity table maps; 0 before the bootstrap.
+static SWITCH_ROUTINE_PA: AtomicU64 = AtomicU64::new(0);
 
 /// arm64's pmap backend.
 pub(crate) struct Backend;
@@ -503,6 +532,142 @@ fn pmap_kvp_alloc(pages: &dyn PhysPages) -> Option<Table> {
     };
     MAPPINGS_ALLOCATED.fetch_add(1, Ordering::Relaxed);
     Some(Table { hw, sw })
+}
+
+/// A zeroed frame the bootstrap steals for a table of its own (the image's, the switch's
+/// identity table, the empty lower half), never given back.
+fn pmap_steal_table(pages: &dyn PhysPages) -> Paddr {
+    let Some(pa) = pages.steal(1) else {
+        hal_panic(format_args!("pmap_bootstrap: out of memory"));
+    };
+    zero_frame(pa);
+    pa
+}
+
+/// `pmap_map_stolen` for the kernel image (see the redesign): a level-2 table, and a level-3
+/// table per 2 MiB the image touches, mapping each page of the image with its section's
+/// protection (`image_page_prot`) through a write-back kernel leaf ([`kernel_leaf`], without
+/// `ATTR_GP`, see the deviations); the level-2 table's frame. `img` passed
+/// `image_layout_ok`: the image lies in one gigabyte, below 48 physical bits.
+fn pmap_map_stolen(pages: &dyn PhysPages, img: &KernelImage) -> Paddr {
+    let l2 = pmap_steal_table(pages);
+    let start = img.start.as_usize();
+    let end = round_page(img.end.as_usize());
+    let first = start & !(L2_SIZE - 1);
+    for i in 0..image_ptps(img) {
+        let block = first + i * L2_SIZE;
+        let l3 = pmap_steal_table(pages);
+        let ptes = words(l3);
+        let pages_of_block = block.max(start)..block.saturating_add(L2_SIZE).min(end);
+        for va in pages_of_block.step_by(PAGE_SIZE) {
+            if let Some(prot) = image_page_prot(img, va) {
+                let pa = va.wrapping_add(img.phys_off) as u64;
+                ptes[vp_idx(3, va)].store(kernel_leaf(pa, prot, 0), Ordering::Relaxed);
+            }
+        }
+        let table = l3.as_usize() as u64 | Lx_TYPE_PT;
+        words(l2)[vp_idx(2, block)].store(table, Ordering::Relaxed);
+    }
+    l2
+}
+
+/// The identity table [`switch_mmu_kernel_table`] runs from: four stolen tables, levels 0 to
+/// 3 of a 48-bit lower half, whose one leaf maps the page at `pa` (the switch routine's) at
+/// its own address, read-only and executable at EL1 ([`kernel_leaf`] of `PROT_READ |
+/// PROT_EXEC`, not global). Its level-0 frame, the `TTBR0_EL1` value.
+fn pmap_identity_table(pages: &dyn PhysPages, pa: usize) -> Paddr {
+    let [l0, l1, l2, l3] = [(); 4].map(|()| pmap_steal_table(pages));
+    words(l3)[vp_idx(3, pa)].store(
+        kernel_leaf(pa as u64, PROT_READ | PROT_EXEC, 0),
+        Ordering::Relaxed,
+    );
+    for (table, level, child) in [(l2, 2, l3), (l1, 1, l2), (l0, 0, l1)] {
+        words(table)[vp_idx(level, pa)]
+            .store(child.as_usize() as u64 | Lx_TYPE_PT, Ordering::Relaxed);
+    }
+    l0
+}
+
+/// `switch_mmu_kernel_table(pt1pa)`: loads `ttbr1` into `TTBR1_EL1` and drops every TLB entry
+/// (the C's `switch_mmu_kernel`), running the switch routine at its physical address through
+/// the bootstrap's identity table (see the redesign), then puts `TTBR0_EL1` and its `TCR_EL1`
+/// fields back as they were. `ttbr1` must name the kernel pmap's root (its other fields, the
+/// ASID and `CnP`, are the caller's); panics otherwise, or before the bootstrap built the
+/// identity table. The boot CPU calls it once, from the bootstrap; an application processor
+/// started on Limine's tables calls it to reach the kernel's (`cpu.rs`'s `cpu_hatch_entry`),
+/// and one already on them may (the same value: a TLB flush).
+pub fn switch_mmu_kernel_table(ttbr1: u64) {
+    let id = SWITCH_IDENTITY.load(Ordering::Acquire);
+    let routine = SWITCH_ROUTINE_PA.load(Ordering::Acquire);
+    let root = KERNEL_PMAP.md.root_hw.load(Ordering::Acquire);
+    if id == 0 || routine == 0 || root == 0 || ttbr1 & TTBR_BADDR_MASK != root {
+        hal_panic(format_args!(
+            "switch_mmu_kernel: {ttbr1:#x} is not the kernel's table"
+        ));
+    }
+    // SAFETY: the block changes the CPU's translation registers only, and leaves every
+    // translation the kernel uses valid:
+    // - `TTBR0_EL1`: the identity table (`pmap_identity_table`, stolen zeroed frames written
+    //   through their views, the `dsb ishst` completing the writes before any walk) maps one
+    //   page, the switch routine's, at its physical address, read-only and executable at EL1,
+    //   under the lower-half walk `TCR_IDENTITY_TTBR0` sets (48 bits, 4 KiB granule, the four
+    //   levels it was built for, write-back walks). Nothing else is reached through the lower
+    //   half inside the block, which has no memory operand, and with interrupts masked
+    //   (`daifset`, restored at the end) no handler runs inside it. The old `TTBR0_EL1` and
+    //   `TCR_EL1` are put back before the block ends, and `tlbi vmalle1` drops what this CPU
+    //   cached through the identity table, so the lower half translates afterwards as before
+    //   (the boot glue's device map, the kernel's empty table, or Limine's).
+    // - `TTBR1_EL1`: the routine (`cpufunc.rs`) runs from the identity page, so between its
+    //   `msr ttbr1_el1` and the completion of its `tlbi vmalle1is; dsb ish; isb` nothing is
+    //   fetched or accessed through the upper half (break-before-make for the kernel's live
+    //   entries, which change size and attributes here). `ttbr1` names the kernel pmap's root
+    //   (checked above): its tables map, at the physical addresses every table a CPU of this
+    //   kernel runs on maps them (the boot loader's on both paths, Limine's on an application
+    //   processor), the image, the direct map (the copied level-0 slots, Limine's stacks there
+    //   included) and the kernel map (the copied level-1 slots). So the return address, the
+    //   code after the block, the stack and every Rust reference stay mapped; only the image's
+    //   permissions change, tighter: no Rust code writes the text or the read-only data (the
+    //   boot seed in `.openbsd.randomdata` is wiped through another mapping), and nothing
+    //   executes from the data.
+    // - Registers: `x0` carries `ttbr1` and the routine leaves it; `blr` clobbers `x30`; the
+    //   routine touches no other register, no stack and no condition flag. Memory is a
+    //   clobber: the translations change.
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst",
+            "mrs {daif}, daif",
+            "msr daifset, #0xf",
+            "mrs {ttbr0}, ttbr0_el1",
+            "mrs {tcr}, tcr_el1",
+            "bic {t}, {tcr}, {fields}",
+            "orr {t}, {t}, {idtcr}",
+            "msr tcr_el1, {t}",
+            "msr ttbr0_el1, {id}",
+            "isb",
+            "tlbi vmalle1",
+            "dsb nsh",
+            "isb",
+            "blr {routine}",
+            "msr ttbr0_el1, {ttbr0}",
+            "msr tcr_el1, {tcr}",
+            "isb",
+            "tlbi vmalle1",
+            "dsb nsh",
+            "isb",
+            "msr daif, {daif}",
+            daif = out(reg) _,
+            ttbr0 = out(reg) _,
+            tcr = out(reg) _,
+            t = out(reg) _,
+            fields = in(reg) TCR_TTBR0_FIELDS,
+            idtcr = in(reg) TCR_IDENTITY_TTBR0,
+            id = in(reg) id,
+            routine = in(reg) routine,
+            in("x0") ttbr1,
+            out("x30") _,
+            options(nostack, preserves_flags),
+        )
+    };
 }
 
 /// `pmap_kpted_alloc`: a zeroed descriptor for the kernel, a page of them at a time.
@@ -1193,16 +1358,23 @@ impl PmapBackend for Backend {
         &KERNEL_PMAP
     }
 
-    /// `pmap_bootstrap`: adopts the boot loader's kernel page tables into the kernel pmap (see
+    /// `pmap_bootstrap`: copies the boot loader's top kernel tables into the kernel pmap, maps
+    /// the image by section in tables of its own and switches to them (see the redesign and
     /// the deviations), probes the ASIDs, reserves `vmmap`; the first free kernel virtual
     /// address.
     fn bootstrap(p: &BootstrapParams) -> (Paddr, Vaddr) {
         set_direct_map(p.direct_base, p.direct_end);
-        if let Some(img) = p.image {
-            IMAGE[0].store(img.start.as_usize(), Ordering::Relaxed);
-            IMAGE[1].store(img.end.as_usize(), Ordering::Relaxed);
-            IMAGE[2].store(img.phys_off, Ordering::Relaxed);
+        let Some(img) = p.image else {
+            hal_panic(format_args!("pmap_bootstrap: no kernel image"));
+        };
+        if !image_layout_ok(&img) {
+            hal_panic(format_args!(
+                "pmap_bootstrap: the image's sections cannot be mapped ({img:x?})"
+            ));
         }
+        IMAGE[0].store(img.start.as_usize(), Ordering::Relaxed);
+        IMAGE[1].store(img.end.as_usize(), Ordering::Relaxed);
+        IMAGE[2].store(img.phys_off, Ordering::Relaxed);
         let pages = KERNEL_PMAP.pages();
 
         let (tcr, ttbr1, mmfr0): (u64, u64, u64);
@@ -1246,6 +1418,19 @@ impl PmapBackend for Backend {
         copy_frame(Paddr::new((l1_desc & PTE_RPGN) as usize), vp1.hw);
         vp0.set_child(kslot, vp1);
 
+        // pmap_map_stolen: the image by section, in tables of its own that replace the boot
+        // loader's entry for its gigabyte in the copy (a table descriptor with no software
+        // child: no walk of ours descends there; the leaves decide).
+        let image = img.start.as_usize();
+        if vp_idx(0, image) != kslot {
+            hal_panic(format_args!(
+                "pmap_bootstrap: the image is outside the kernel's level-0 slot"
+            ));
+        }
+        let l2 = pmap_map_stolen(pages, &img);
+        vp1.entry(vp_idx(1, image))
+            .store(l2.as_usize() as u64 | Lx_TYPE_PT, Ordering::Release);
+
         let pm = &KERNEL_PMAP;
         pm.md
             .root_sw
@@ -1280,35 +1465,28 @@ impl PmapBackend for Backend {
             )
         };
 
-        // Switch to the copy: the same translations, so nothing running changes.
-        let ttbr1_new = vp0.hw.as_usize() as u64 | (ttbr1 & !TTBR_BADDR_MASK);
-        // SAFETY: `vp0` holds a copy of the live level-0 table, its kernel slot pointing at a
-        // copy of the live level-1 table (both written above through their views, the `dsb
-        // ishst` completing the writes before the walker can read them), and every lower table
-        // is the boot loader's, untouched: the translations of the kernel's code, stack and
-        // data are the same after the switch, which keeps the ASID and the other fields of the
-        // register. The TLB is flushed right after. Memory is a clobber.
-        unsafe {
-            core::arch::asm!(
-                "dsb ishst",
-                "msr ttbr1_el1, {}",
-                "isb",
-                in(reg) ttbr1_new,
-                options(nostack, preserves_flags),
-            )
-        };
-        cpu_tlb_flush();
+        // switch_mmu_kernel_table(pt1pa): the switch routine at its physical address, through
+        // an identity table that maps its page alone (see the redesign). The register keeps
+        // the boot loader's ASID and other fields.
+        let routine = switch_routine_va().wrapping_add(img.phys_off);
+        if routine & PAGE_MASK > PAGE_SIZE - SWITCH_ROUTINE_LEN || routine >> 48 != 0 {
+            hal_panic(format_args!(
+                "pmap_bootstrap: the switch routine at {routine:#x} is not on one page"
+            ));
+        }
+        let id = pmap_identity_table(pages, routine);
+        SWITCH_ROUTINE_PA.store(routine as u64, Ordering::Release);
+        SWITCH_IDENTITY.store(id.as_usize() as u64, Ordering::Release);
+        switch_mmu_kernel_table(vp0.hw.as_usize() as u64 | (ttbr1 & !TTBR_BADDR_MASK));
 
         // The empty lower-half table the C keeps in pm_pt0pa (`init_lower_half` loads it).
-        let Some(pt0pa) = pages.steal(1) else {
-            hal_panic(format_args!("pmap_bootstrap: out of memory"));
-        };
-        zero_frame(pt0pa);
+        let pt0pa = pmap_steal_table(pages);
         pm.md
             .pt0pa
             .store(pt0pa.as_usize() as u64, Ordering::Release);
 
-        // pmap_avail_fixup, pmap_map_stolen, switch_mmu_kernel: the boot loader's tables stay.
+        // pmap_avail_fixup: nothing to fix up, uvm has the memory already (see the
+        // deviations).
         asid::set_curpm(pm);
 
         let vstart = VM_MIN_KERNEL_ADDRESS;
@@ -1317,7 +1495,7 @@ impl PmapBackend for Backend {
         VIRTUAL_AVAIL.store(vstart, Ordering::Relaxed);
 
         // The ABI module's window beside the image, on the kernel's tables now loaded.
-        window::init(p.image.map(|i| i.start));
+        window::init(Some(img.start));
         (p.first_avail, Vaddr::new(vstart))
     }
 

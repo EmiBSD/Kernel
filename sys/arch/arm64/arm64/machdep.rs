@@ -114,7 +114,9 @@
 //! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
 //!   into the pmap's statics before `pmap_bootstrap` (`PMAP_DIRECT_BASE`/`END`,
 //!   `PMAP_KERNEL_IMAGE_START`/`END`/`PHYS_OFF`) are its `BootstrapParams`; `setregs` sets
-//!   the pmap's branch-target guard through `Pmap::set_guarded`.
+//!   the pmap's branch-target guard through `Pmap::set_guarded`. N3.1 commit 8: the image's
+//!   section bounds (`__text_start`, `_etext`, `__rodata_start`, `_erodata`, `__data_start`,
+//!   `_end`) go in `KernelImage`, for the pmap to map the image by section.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -516,8 +518,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         .map(|r| r.base.as_usize() + r.length.as_usize())
         .max()
         .unwrap_or(0);
-    // The kernel image, for pmap_extract (`hal::pmap`'s arm64 backend, deviations), and the
-    // direct map: pmap_bootstrap's parameters.
+    // The kernel image by section, which pmap_bootstrap maps (`pmap_map_stolen`) and
+    // pmap_extract translates (`hal::pmap`'s arm64 backend), and the direct map:
+    // pmap_bootstrap's parameters.
     let params = BootstrapParams {
         direct_base: Vaddr::new(boot.hhdm_offset),
         direct_end: Vaddr::new(
@@ -526,7 +529,11 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         nx: false,
         first_avail: Paddr::new(0),
         image: Some(KernelImage {
-            start: Vaddr::new(boot.kernel_virt.as_usize()),
+            start: Vaddr::new(ptr::addr_of!(__text_start) as usize),
+            text_end: Vaddr::new(etext()),
+            rodata_start: Vaddr::new(ptr::addr_of!(__rodata_start) as usize),
+            rodata_end: Vaddr::new(ptr::addr_of!(_erodata) as usize),
+            data_start: Vaddr::new(ptr::addr_of!(__data_start) as usize),
             end: Vaddr::new(ptr::addr_of!(_end) as usize),
             phys_off: boot
                 .kernel_phys
@@ -622,6 +629,14 @@ unsafe extern "C" {
     static esym: u64;
     /// `_end` (`conf/kernel.ld`): the end of the image's BSS.
     static _end: [u8; 0];
+    /// `__text_start` (`conf/kernel.ld`): the first address of the kernel text, the image's.
+    static __text_start: [u8; 0];
+    /// `__rodata_start` (`conf/kernel.ld`): the first address of the read-only data.
+    static __rodata_start: [u8; 0];
+    /// `_erodata` (`conf/kernel.ld`): the end of the read-only data, page-aligned.
+    static _erodata: [u8; 0];
+    /// `__data_start` (`conf/kernel.ld`): the first address of the data.
+    static __data_start: [u8; 0];
 }
 
 /// boot(8)'s entry (`Cpu::getbootinfo`): the half of `initarm` that reads what efiboot

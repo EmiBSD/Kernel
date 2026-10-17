@@ -92,11 +92,63 @@
 //! - `cpu_setttb(asid, pt0pa)` takes the pmap ([`cpu_setttb`]): the ASID and the table come
 //!   from its machine part, whose invariant is the soundness argument, instead of from two
 //!   numbers any caller could pass.
+//! - N3.1 commit 8: `locore.S`'s `switch_mmu_kernel`, which `pmap_bootstrap` calls at its
+//!   physical address (`switch_mmu_kernel_table`, `pmap.c`), is `hal_switch_mmu_kernel`, a
+//!   position-independent routine of its own section; the backend calls it the same way, at
+//!   its physical address through an identity table it builds (`backend.rs`,
+//!   `switch_mmu_kernel_table`), and finds it through [`switch_routine_va`]. RETGUARD and the
+//!   `CPTAG_REPEAT_TLBI` code patch are left out, as everywhere in this kernel.
 
-use core::arch::asm;
+use core::arch::{asm, global_asm};
+use core::ptr;
 
 use crate::assert::hal_panic;
 use crate::pmap::Pmap;
+
+// `switch_mmu_kernel` (`locore.S`): loads `TTBR1_EL1` with `x0` and drops every TLB entry of
+// every CPU (the broadcast `tlbi vmalle1is`, completed by `dsb ish`), then returns. Called
+// only at its physical address through the backend's identity table, so none of its
+// instructions is fetched through `TTBR1_EL1` while that register changes (the Arm ARM's
+// break-before-make for the kernel's own global entries, which the switch to the kernel's
+// tables changes in size and attributes). Position-independent: no literal, no absolute
+// address, no stack; eight instructions after a 64-byte alignment, so the routine never
+// crosses a page and one identity page maps it.
+global_asm!(
+    ".pushsection .text.hal_switch_mmu_kernel, \"ax\", %progbits",
+    ".balign 64",
+    ".globl hal_switch_mmu_kernel",
+    ".hidden hal_switch_mmu_kernel",
+    ".type hal_switch_mmu_kernel, %function",
+    "hal_switch_mmu_kernel:",
+    "dsb sy",
+    "msr ttbr1_el1, x0",
+    "isb",
+    "dsb ishst",
+    "tlbi vmalle1is",
+    "dsb ish",
+    "isb",
+    "ret",
+    ".size hal_switch_mmu_kernel, . - hal_switch_mmu_kernel",
+    ".popsection",
+);
+
+/// The routine's length: its eight instructions.
+pub(super) const SWITCH_ROUTINE_LEN: usize = 8 * size_of::<u32>();
+
+// SAFETY: the one item names the routine above, defined in this crate by its symbol, as its
+// eight instruction words (`.size` says the same). They lie in the kernel text, which both
+// boot paths and the kernel's own tables map readable and nothing ever writes, so a shared
+// view of them aliases no write; the kernel only takes its address (`switch_routine_va`).
+unsafe extern "C" {
+    /// The instructions of `hal_switch_mmu_kernel`.
+    #[link_name = "hal_switch_mmu_kernel"]
+    safe static HAL_SWITCH_MMU_KERNEL: [u32; 8];
+}
+
+/// The virtual address of `hal_switch_mmu_kernel` in the kernel text.
+pub(super) fn switch_routine_va() -> usize {
+    ptr::addr_of!(HAL_SWITCH_MMU_KERNEL).addr()
+}
 
 /// `cache_handle_range dcop[, ic, icop]`: one cache operation over every line of
 /// `[va, va + len)`, then `dsb ish`; with an instruction-cache operation, the same lines
