@@ -95,8 +95,8 @@
 //! - `option APERTURE` (minor 4) is not configured.
 //! - `/dev/mem` (minor 0): the C maps each physical page at `vmmap` (one reserved page) with
 //!   `pmap_enter` under `physlock`. Here `vmmap` is the device mapping window
-//!   (`sys/hal/arch/arm64/pmap/backend.rs`), and the kernel has a direct map, which the C's arm64 does not; the
-//!   page is reached through it, a page at a time under `physlock` as in C, and copied
+//!   (`sys/hal/arch/arm64/pmap/backend.rs`), and the kernel has a direct map, which the C's
+//!   arm64 does not; the page is reached through it, a page at a time under `physlock` as in C, and copied
 //!   through a small buffer with `kcopy`, so an address with nothing behind it fails with
 //!   `EFAULT`.
 //! - `/dev/kmem` (minor 1) checks the range with `uvm_kernacc` (`uvm_glue.c`), which is not

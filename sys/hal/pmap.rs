@@ -306,7 +306,9 @@ impl Pmap {
     }
 
     /// The pmap's address, its identity for what records which pmap a CPU runs on
-    /// (`pcb_pmap`, `ci_proc_pmap`, `ci_curpm`); never to be dereferenced.
+    /// (`pcb_pmap`, `ci_proc_pmap`, `ci_curpm`). Compared, not dereferenced, with one exception:
+    /// arm64's `efi_leave` dereferences `ci_curpm`, which names the kernel pmap (a static) or the
+    /// user pmap of the thread running the EFI call with interrupts off, alive for that call.
     pub fn as_ptr(&self) -> *const Pmap {
         self
     }
