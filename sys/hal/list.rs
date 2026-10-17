@@ -14,16 +14,54 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * Copyright (c) 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)queue.h	8.5 (Berkeley) 8/20/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
 //! `List<A>`: the tail queue of `queue(3)` (`TAILQ_*`) over elements that live for ever.
 //!
-//! Not an OpenBSD file: the behaviour of `<sys/queue.h>`'s tail queue, written for the
-//! kernel's first users whose elements are never freed (the `vm_page` array and the
-//! pmemranges, `kernel::vm`, N3.3). An element carries one [`ListEntry`] per list it can be on,
-//! and an adapter type (written by [`list_adapter!`]) names which; the list's head holds the
-//! first and the last element. Insertion takes a `&'static` element, so every link is a
+//! Upstream: sys/sys/queue.h @ 3ce1f3f79392
+//! LZ: sys/sys/queue.rs@3c62ede68802
+//!
+//! The behaviour of `<sys/queue.h>`'s tail queue (`TAILQ_INSERT_HEAD`, `_TAIL`, `_BEFORE`,
+//! `_AFTER`, `TAILQ_REMOVE`, `TAILQ_CONCAT`, the `TAILQ_FIRST`/`LAST`/`NEXT`/`PREV` walks),
+//! re-expressed for the kernel's first users whose elements are never freed (the `vm_page`
+//! array and the pmemranges, `kernel::vm`, N3.3). `bsd`'s `sys/sys/queue.rs` stays for the
+//! legacy tree (the 50-module rule) until its last user moves.
+//!
+//! An element carries one [`ListEntry`] per list it can be on, and an adapter type (written
+//! by [`list_adapter!`]) names which; the list's head holds the first and the last element.
+//! Insertion takes a `&'static` element, so every link is a
 //! [`Link`] to something that outlives the list and every operation is safe: a broken
 //! precondition (inserting an element that is on a list, removing one that is not, removing
 //! from the wrong list when it can be seen) panics, where the C would corrupt the list or

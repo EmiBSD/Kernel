@@ -14,18 +14,66 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * Copyright 2002 Niels Provos <provos@citi.umich.edu>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Copyright (c) 2016 David Gwynne <dlg@openbsd.org>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
 //! `Tree<A>`: the red-black tree of `RBT_*` (`<sys/tree.h>`, `kern/subr_tree.c`) over elements
 //! that live for ever.
 //!
-//! Not an OpenBSD file: the behaviour of `RBT_INSERT`, `RBT_REMOVE`, `RBT_FIND`, `RBT_NFIND`,
-//! `RBT_MIN`/`MAX`, `RBT_NEXT`/`PREV` and the `RBT_LEFT`/`RIGHT`/`PARENT`/`ROOT` walks, with the
-//! textbook rebalancing `subr_tree.c` uses (red-black colouring, the insertion and removal
-//! fix-ups, a removed node with two children replaced by its successor), written for the
-//! kernel's first users whose elements are never freed (`kernel::vm`'s pages and pmemranges,
-//! N3.3). An element carries a [`TreeEntry`]; an adapter type (written by [`tree_adapter!`])
+//! Upstream: sys/kern/subr_tree.c @ 3ce1f3f79392
+//! Upstream: sys/sys/tree.h @ 3ce1f3f79392
+//! LZ: sys/kern/subr_tree.rs@3c62ede68802
+//! LZ: sys/sys/tree.rs@3c62ede68802
+//!
+//! The behaviour of `RBT_INSERT`, `RBT_REMOVE`, `RBT_FIND`, `RBT_NFIND`, `RBT_MIN`/`MAX`,
+//! `RBT_NEXT`/`PREV` and the `RBT_LEFT`/`RIGHT`/`PARENT`/`ROOT` walks, re-expressed from
+//! `subr_tree.c` and `tree.h` (red-black colouring, `rbe_insert_color`'s and
+//! `rbe_remove_color`'s fix-ups, `rbe_remove`'s replacement of a node with two children by its
+//! successor, the rotations), written for the kernel's first users whose elements are never
+//! freed (`kernel::vm`'s pages and pmemranges, N3.3). `bsd`'s `sys/sys/tree.rs` and
+//! `sys/kern/subr_tree.rs` stay for the legacy tree (the 50-module rule) until their last user
+//! moves. An element carries a [`TreeEntry`]; an adapter type (written by [`tree_adapter!`])
 //! names the entry and the order. Insertion takes a `&'static` element, so every link is a
 //! [`Link`] to something that outlives the tree and every operation is safe; a broken
 //! precondition (inserting an element that is in a tree, removing one that is not, a tree whose
