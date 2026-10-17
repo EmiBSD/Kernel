@@ -95,6 +95,25 @@ trait = "ModulePlatform"
 for = ["sys/hal/module/load.rs"]
 paid_by = "N3"
 
+# bsd: uvm_map/uvm_unmap of kernel_map, kmem_map, exec_map and phys_map, with the map's address as
+# km_allocva's wait channel (sys/uvm/uvm_map.rs, sys/kern/kern_malloc.rs, sys/uvm/uvm_extern.rs),
+# implemented by sys/uvm/uvm_km.rs (BsdKmMaps) and installed by its uvm_km_init. N3.5, when
+# kernel::vm::map owns the kernel map's record (and the token's proof becomes a type).
+# kernel::vm::km::KmMaps
+[[bridge]]
+trait = "KmMaps"
+for = ["sys/kernel/vm/km.rs"]
+paid_by = "N3"
+
+# bsd: uvm_pglistalloc (the list drained with TailqHead::pop_head) and uvm_pagefree of
+# PHYS_TO_VM_PAGE(pa) (sys/uvm/uvm_page.rs), the frames crossing as physical addresses,
+# implemented by sys/uvm/uvm_km.rs (BsdKmPages). N3.3, when kernel::vm owns the pages.
+# kernel::vm::km::KmPages
+[[bridge]]
+trait = "KmPages"
+for = ["sys/kernel/vm/km.rs"]
+paid_by = "N3"
+
 # bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
 # sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
 # pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by

@@ -18,7 +18,9 @@
 
 /* <CODE> */
 //! The kernel's virtual memory (`uvm`), moving out of `bsd` piece by piece (N3,
-//! docs/ZERO_UNSAFE.md 0.8): the shared types of `<uvm/uvm_extern.h>` first.
+//! docs/ZERO_UNSAFE.md 0.8): the shared types of `<uvm/uvm_extern.h>` and the kernel map's
+//! allocator, `km_alloc(9)` (N3.2).
 
+pub mod km;
 pub mod types;
 /* </CODE> */

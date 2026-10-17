@@ -8460,3 +8460,10 @@ crate = "kernel"
 lz = ["sys/uvm/uvm_extern.rs"]
 status = "redesigned"
 notes = "N3.2 (DECISIONS G1, G2): the items of uvm_extern.h that name only hal's types (voff_t, vm_prot_t as hal::pmap::VmProt, vm_inherit_t, vm_fault_t, the UVM_MAPFLAG encoding, UVM_FLAG_*, UVM_PGA_*, UVM_PLA_*, UVM_LK_*, UVM_IO_FIXPROT, PHYSLOAD_DEVICE, uvm_constraint_range, the coredump callbacks); bsd's uvm_extern.rs keeps vmspace and the submaps and re-exports these"
+
+[[module]]
+rust = "sys/kernel/vm/km.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]
+status = "redesigned"
+notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over two bridges (KmMaps: the kernel maps, N3.5; KmPages: the page system, frames as Paddr, N3.3); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader)"
