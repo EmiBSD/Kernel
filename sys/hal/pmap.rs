@@ -1004,8 +1004,7 @@ pub fn flush_cache(va: Vaddr, len: Vsize) {
 /// first address and its size, outside `kernel_map`, for the kernel's lifetime; `None` on a
 /// machine without one (the module then goes in `kernel_map`). Its size is 0 when the
 /// bootstrap could not link it (the module is then not loaded). The module loader's
-/// (`sys/hal/module/load.rs`, which calls it from N3.1 commit 6).
-#[allow(dead_code, reason = "the module loader's, from N3.1 commit 6")]
+/// (`sys/hal/module/load.rs`).
 pub(crate) fn module_window() -> Option<(Vaddr, usize)> {
     Backend::module_window()
 }
@@ -1015,7 +1014,6 @@ pub(crate) fn module_window() -> Option<(Vaddr, usize)> {
 /// of the window, is mapped already, `pa` is not a page's address, or `prot` is both writable
 /// and executable (W^X); always `false` without a window. The module loader's, as
 /// [`module_window`].
-#[allow(dead_code, reason = "the module loader's, from N3.1 commit 6")]
 pub(crate) fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
     Backend::module_enter(va, pa, prot)
 }

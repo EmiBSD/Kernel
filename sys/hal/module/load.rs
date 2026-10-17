@@ -29,6 +29,12 @@
 //! the platform says it handed over) and the entry point (an address the module's header
 //! names, checked to lie in its executable pages).
 //!
+//! Where the module runs: the machine's module window (`crate::pmap::module_window`, amd64,
+//! whose `kernel_map` never executes) when it has one, each page entered there by
+//! `crate::pmap::module_enter` with the physical page behind the writable copy
+//! (`pmap_extract` of the kernel pmap); otherwise (arm64 until its window, N3.1 commit 7) a
+//! range the platform reserves in `kernel_map`, entered by the platform.
+//!
 //! # The platform premise
 //!
 //! Until the hardware is in `hal` (N2.2), the boot loader's hand-over and the kernel's
@@ -48,6 +54,8 @@ use super::{
 };
 use crate::api::{AbiInit, ApiPrefix, KernelApi};
 use crate::once::OnceStatic;
+use crate::sys::types::Vaddr;
+
 use crate::syscall::handler_info;
 
 /// The protection a page of the module is mapped with.
@@ -75,12 +83,14 @@ pub trait ModulePlatform: Sync {
     fn alloc(&self, len: usize) -> Option<usize>;
 
     /// A range of `len` bytes (a whole number of pages) of kernel virtual space, unmapped,
-    /// owned by the caller for the kernel's lifetime: its address.
+    /// owned by the caller for the kernel's lifetime: its address. Asked only on a machine
+    /// without a module window (`crate::pmap::module_window`).
     fn reserve(&self, len: usize) -> Option<usize>;
 
     /// Maps the physical page behind the writable page at `rw` (from [`Self::alloc`]) at
     /// `va` (in a range from [`Self::reserve`]) with `prot`, wired, the instruction caches
-    /// made coherent with what was written through `rw`; `false` if it could not.
+    /// made coherent with what was written through `rw`; `false` if it could not. Asked only
+    /// on a machine without a module window.
     fn enter(&self, va: usize, rw: usize, prot: Prot) -> bool;
 
     /// Unmaps the writable range `[rw, rw + len)` (from [`Self::alloc`]) and keeps its
@@ -227,7 +237,14 @@ fn place_and_map(
     rw: usize,
     span: usize,
 ) -> Result<usize, LoadError> {
-    let exec = platform.reserve(span).ok_or(LoadError::NoMemory)?;
+    // The machine's window, the module's alone (it is loaded once): refused when too small,
+    // never placed elsewhere; without one, the platform's range in `kernel_map`.
+    let window = crate::pmap::module_window();
+    let exec = match window {
+        Some((base, size)) if span <= size => base.as_usize(),
+        Some(_) => return Err(LoadError::NoMemory),
+        None => platform.reserve(span).ok_or(LoadError::NoMemory)?,
+    };
     let init = {
         let first = core::ptr::with_exposed_provenance_mut::<u8>(rw);
         // SAFETY: the platform premise: `alloc` handed over `span` bytes of writable, wired
@@ -252,11 +269,29 @@ fn place_and_map(
             Some(_) => Prot::Read,
             None => continue,
         };
-        if !platform.enter(exec + page, rw + page, prot) {
+        let entered = match window {
+            Some(_) => window_enter(exec + page, rw + page, prot),
+            None => platform.enter(exec + page, rw + page, prot),
+        };
+        if !entered {
             return Err(LoadError::Map);
         }
     }
     Ok(init)
+}
+
+/// Maps the physical page behind the writable page at `rw` at `va`, a page of the machine's
+/// module window, with `prot`; `false` if `rw` is not mapped or the window refuses it.
+fn window_enter(va: usize, rw: usize, prot: Prot) -> bool {
+    use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
+    let prot = match prot {
+        Prot::Read => PROT_READ,
+        Prot::ReadWrite => PROT_READ | PROT_WRITE,
+        Prot::ReadExec => PROT_READ | PROT_EXEC,
+    };
+    crate::pmap::kernel()
+        .extract(Vaddr::new(rw))
+        .is_some_and(|pa| crate::pmap::module_enter(Vaddr::new(va), pa, prot))
 }
 
 /// Checks the module header at the entry address of the placed, relocated `image` (which

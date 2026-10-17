@@ -151,15 +151,16 @@ use crate::kern::kern_time::ratecheck;
 use crate::kern::sched_bsd::r#yield;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::panic;
+use crate::machine::Machine;
 use crate::machine::cpu::{Cpu, curproc};
 use crate::machine::intr::splassert;
 use crate::machine::intr::{IPL_NONE, IPL_VM};
 use crate::machine::pmap::{
-    MachinePmap, pmap_activate, pmap_create, pmap_deactivate, pmap_destroy, pmap_kernel,
-    pmap_protect, pmap_reference, pmap_remove, pmap_remove_holes, pmap_update, pmap_wired_count,
+    MachinePmap, PmapRef, pmap_activate, pmap_create, pmap_deactivate, pmap_destroy,
+    pmap_growkernel, pmap_kernel, pmap_protect, pmap_reference, pmap_remove, pmap_remove_holes,
+    pmap_update, pmap_wired_count,
 };
 use crate::machine::vmparam::VmParam;
-use crate::machine::{Machine, Pmap};
 use crate::sys::acct::AMAP;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NOWAIT, M_VMMAP, M_WAITOK};
@@ -419,8 +420,9 @@ queue_adapter!(
 /// Locks used to protect struct members: `a` atomic operations, `I` immutable after creation
 /// or exec(2), `v` `vm_map_lock` (this map `lock` or `mtx`), `f` flags_lock.
 pub struct VmMap {
-    /// \[I\] `pmap`: physical map.
-    pub pmap: Cell<*const MachinePmap>,
+    /// \[I\] `pmap`: physical map, the map's reference to it (`uvm_map_setup` sets it, the
+    /// last reference's `uvmspace_free` or `uvm_map_deallocate` takes it out to drop it).
+    pmap: Cell<Option<PmapRef>>,
     /// \[v\] `sserial`: # stack changes.
     pub sserial: Cell<u64>,
     /// \[v\] `addr`: entry tree, by addr.
@@ -474,7 +476,7 @@ impl VmMap {
     /// A zero map, before `uvm_map_setup`.
     pub const fn new() -> Self {
         Self {
-            pmap: Cell::new(ptr::null()),
+            pmap: Cell::new(None),
             sserial: Cell::new(0),
             addr: RbtHead::new(),
             size: Cell::new(Vsize::new(0)),
@@ -501,11 +503,21 @@ impl VmMap {
     /// `map->pmap`: the physical map, which `uvm_map_setup` set and `uvmspace_free` clears
     /// after the last reference.
     pub fn pmap(&self) -> &'static MachinePmap {
-        let pm = self.pmap.get();
-        kassert!(!pm.is_null());
-        // SAFETY: non-null between `uvm_map_setup` and `uvmspace_free`, when the pmap holds
-        // the reference `uvmspace_init` took; `pmap_destroy` is only called by that free.
-        unsafe { &*pm }
+        self.pmap_ref()
+    }
+
+    /// `map->pmap` as the map's counted handle, for `pmap_reference(vm_map_pmap(map))`.
+    pub fn pmap_ref(&self) -> &'static PmapRef {
+        // SAFETY: the cell is written only by `uvm_map_setup`, before the map is shared, and
+        // emptied only by the last reference's `uvmspace_free` or `uvm_map_deallocate`, after
+        // which nothing reads the map: no write overlaps this shared view of it. The handle it
+        // holds keeps the pmap alive (a user pmap's pool item, or the kernel pmap's static)
+        // until that free, which is when every use of the map, and so of this reference, ends.
+        let slot = unsafe { &*self.pmap.as_ptr() };
+        match slot {
+            Some(pm) => pm,
+            None => panic(format_args!("vm_map_pmap: a map without a pmap")),
+        }
     }
 
     /// `(struct vmspace *)map`: the vmspace this map is the first field of
@@ -2855,7 +2867,7 @@ pub fn uvm_map_pageable_all(map: &VmMap, flags: i32, limit: usize) -> Result<(),
 /// `uvm_map_setup`: initialize map.
 ///
 /// Allocates sufficient entries to describe the free memory in the map.
-pub fn uvm_map_setup(map: &VmMap, pmap: &'static MachinePmap, min: usize, max: usize, flags: i32) {
+pub fn uvm_map_setup(map: &VmMap, pmap: PmapRef, min: usize, max: usize, flags: i32) {
     let mut max = max;
 
     kassert!(min & PAGE_MASK == 0);
@@ -2880,7 +2892,7 @@ pub fn uvm_map_setup(map: &VmMap, pmap: &'static MachinePmap, min: usize, max: u
     }
     map.uaddr_brk_stack.set(None);
 
-    map.pmap.set(pmap);
+    map.pmap.set(Some(pmap));
     map.size.set(Vsize::new(0));
     map.ref_count.store(0, AtomicOrdering::Relaxed);
     map.min_offset.set(min);
@@ -3550,10 +3562,8 @@ pub fn uvmspace_init(
     kassert!(pmap.is_none() || pmap.is_some_and(|pm| ptr::eq(pm, pmap_kernel())));
 
     let pmap = match pmap {
-        Some(pm) => {
-            pmap_reference(pm);
-            pm
-        }
+        // The only pmap handed in is the kernel's (asserted above).
+        Some(_) => pmap_reference(&PmapRef::Kernel),
         None => pmap_create(),
     };
 
@@ -3686,8 +3696,9 @@ pub fn uvmspace_free(vm: &'static Vmspace) {
         // down there VM space in exit1().
         uvmspace_purge(vm);
 
-        pmap_destroy(vm.vm_map.pmap());
-        vm.vm_map.pmap.set(ptr::null());
+        if let Some(pm) = vm.vm_map.pmap.take() {
+            pmap_destroy(pm);
+        }
 
         pool_put(&UVM_VMSPACE_POOL, NonNull::from(vm).cast::<u8>());
     }
@@ -4191,12 +4202,7 @@ pub fn uvm_map_checkprot(map: &VmMap, start: usize, end: usize, protection: VmPr
 }
 
 /// `uvm_map_create`: create map.
-pub fn uvm_map_create(
-    pmap: &'static MachinePmap,
-    min: usize,
-    max: usize,
-    flags: i32,
-) -> Option<&'static VmMap> {
+pub fn uvm_map_create(pmap: PmapRef, min: usize, max: usize, flags: i32) -> Option<&'static VmMap> {
     let mem = malloc(size_of::<VmMap>(), M_VMMAP, M_WAITOK)?;
     let p = mem.cast::<VmMap>();
     // SAFETY: a fresh, suitably aligned allocation of `size_of::<VmMap>()` bytes, written
@@ -4243,7 +4249,9 @@ pub fn uvm_map_deallocate(map: &'static VmMap) {
         map.max_offset.set(0);
     }
     vm_map_unlock(map);
-    pmap_destroy(map.pmap());
+    if let Some(pm) = map.pmap.take() {
+        pmap_destroy(pm);
+    }
     kassert!(map.addr.is_empty());
     free(NonNull::from(map).cast::<u8>(), M_VMMAP, size_of::<VmMap>());
 
@@ -4979,7 +4987,7 @@ pub fn uvm_map_kmem_grow(map: &VmMap, dead: &UvmMapDeadq, alloc_sz: usize, flags
 
     // Reserve pmap entries (PMAP_GROWKERNEL is defined on amd64 and arm64).
     UVM_MAXKADDR.store(
-        Machine::pmap_growkernel(Vaddr::new(end)).as_usize(),
+        pmap_growkernel(Vaddr::new(end)).as_usize(),
         AtomicOrdering::Relaxed,
     );
 
@@ -5673,8 +5681,9 @@ mod tests {
         let min = <Machine as VmParam>::VM_MIN_KERNEL_ADDRESS;
         let max = min + (1 << 30);
         UVM_MAXKADDR.store(min, AtomicOrdering::Relaxed);
-        pmap_reference(pmap_kernel());
-        let map = uvm_map_create(pmap_kernel(), min, max, VM_MAP_PAGEABLE).expect("map");
+        let map = uvm_map_create(pmap_reference(&PmapRef::Kernel), min, max, VM_MAP_PAGEABLE)
+            .expect("map");
+
         assert!(map.uaddr_any[3].get().is_some(), "the bootstrap selector");
         let kflags = uvm_mapflag(RW, RW, MAP_INHERIT_NONE, MADV_RANDOM, UVM_FLAG_FIXED);
 
@@ -5724,8 +5733,8 @@ mod tests {
         let min = <Machine as VmParam>::VM_MIN_KERNEL_ADDRESS;
         let max = min + (1 << 30);
         UVM_MAXKADDR.store(min, AtomicOrdering::Relaxed);
-        pmap_reference(pmap_kernel());
-        let map = uvm_map_create(pmap_kernel(), min, max, VM_MAP_PAGEABLE).expect("map");
+        let map = uvm_map_create(pmap_reference(&PmapRef::Kernel), min, max, VM_MAP_PAGEABLE)
+            .expect("map");
 
         // uvm_init's switch, with nothing reserved below uvm_maxkaddr (amd64's case).
         uvm_map_set_uaddr(

@@ -419,7 +419,7 @@ pub fn upageflttrap(frame: &mut Trapframe, cr2: u64) -> bool {
     // as read-only and PROT_EXEC access, so try both.
     let map = &p.vmspace().vm_map;
     let mut result = uvm_fault(map, va, 0, access_type);
-    if crate::arch::amd64::amd64::pmap::PG_NX_BIT.load(core::sync::atomic::Ordering::Relaxed) == 0
+    if hal::arch::amd64::pmap::PG_NX_BIT.load(core::sync::atomic::Ordering::Relaxed) == 0
         && result == Err(Errno::EACCES)
         && access_type == PROT_READ
     {

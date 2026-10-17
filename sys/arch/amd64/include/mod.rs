@@ -54,7 +54,6 @@ pub mod pcb;
 pub use hal::arch::amd64::include::pci_machdep;
 pub mod pic;
 pub mod pio;
-pub mod pmap;
 pub use hal::arch::amd64::include::proc;
 pub mod psl;
 pub use hal::arch::amd64::include::pte;

@@ -1165,7 +1165,7 @@ pub fn uvm_pmr_getpages(
     let (mut diag_fnsegs, mut diag_fcount, mut diag_prev): (usize, usize, Option<&VmPage>) =
         (0, 0, None);
     for found in result.iter() {
-        found.clear_bits(PG_PMAPMASK);
+        found.mdpage.clear_attrs();
 
         if found.flags() & PG_ZERO != 0 {
             uvm_lock_fpageq();

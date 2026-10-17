@@ -29,12 +29,12 @@
 //! thread, number, arguments and return registers as before, and comes back with the same
 //! `Result`; only the route changed.
 //!
-//! Where the module runs: the machine's module window when it has one
-//! (`machine::pmap_module_window`; amd64, whose `kernel_map` is never executable, keeps one
-//! in the kernel image's slot), entered with `pmap_module_enter`; `kernel_map` otherwise
-//! (arm64), entered with `pmap_enter`. Either way the loader's writable copy is a
-//! `kernel_map` range, released before the module's entry point is called, and a page of
-//! the module is executable only when its segment is.
+//! Where the module runs: the machine's module window when it has one (amd64, whose
+//! `kernel_map` is never executable, keeps one in the kernel image's slot), which the loader
+//! takes and enters itself (`hal::pmap`, N3.1); `kernel_map` otherwise (arm64 until its
+//! window), reserved and entered with `pmap_enter` here. Either way the loader's writable
+//! copy is a `kernel_map` range, released before the module's entry point is called, and a
+//! page of the module is executable only when its segment is.
 //!
 //! No `unsafe`: every call here is a safe function of `bsd`, `hal` or `kernel`. Deleted at
 //! N9 with `bsd`.
@@ -49,9 +49,7 @@ use crate::kern::init_sysent::SYSENT;
 use crate::kern::subr_prf::panic;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
-use crate::machine::pmap::{
-    pmap_enter, pmap_extract, pmap_kernel, pmap_module_enter, pmap_module_window, pmap_update,
-};
+use crate::machine::pmap::{pmap_enter, pmap_extract, pmap_kernel, pmap_update};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::syscall::SYS_MAXSYSCALL;
@@ -75,8 +73,6 @@ static KERNEL_API: KernelApi = kernel::api::table(
 static IMAGE_VA: AtomicUsize = AtomicUsize::new(0);
 /// Its length; 0 while there is none.
 static IMAGE_LEN: AtomicUsize = AtomicUsize::new(0);
-/// The bytes of the machine's module window `reserve` handed out (`window_take`).
-static WINDOW_USED: AtomicUsize = AtomicUsize::new(0);
 
 /// The loader's platform over the kernel's pmap (`hal::module::ModulePlatform`).
 struct BsdPlatform;
@@ -92,14 +88,9 @@ impl ModulePlatform for BsdPlatform {
             .map(|p: NonNull<u8>| p.as_ptr().expose_provenance())
     }
 
+    /// A machine without a module window: the range is `kernel_map`'s.
     fn reserve(&self, len: usize) -> Option<usize> {
-        let len = round_page(len);
-        match pmap_module_window() {
-            // The machine's module window (amd64: outside kernel_map, which never executes
-            // there); refused when it has no room left, never placed elsewhere.
-            Some((base, size)) => window_take(&WINDOW_USED, base.as_usize(), size, len),
-            None => km_alloc(len, &KV_ANY, &KP_NONE, &KD_WAITOK).map(|p| p.as_ptr().addr()),
-        }
+        km_alloc(round_page(len), &KV_ANY, &KP_NONE, &KD_WAITOK).map(|p| p.as_ptr().addr())
     }
 
     fn enter(&self, va: usize, rw: usize, prot: Prot) -> bool {
@@ -111,11 +102,8 @@ impl ModulePlatform for BsdPlatform {
             Prot::ReadWrite => PROT_READ | PROT_WRITE,
             Prot::ReadExec => PROT_READ | PROT_EXEC,
         };
-        let entered = if pmap_module_window().is_some() {
-            pmap_module_enter(Vaddr::new(va), pa, prot)
-        } else {
-            pmap_enter(pmap_kernel(), Vaddr::new(va), pa, prot, prot | PMAP_WIRED).is_ok()
-        };
+        let entered =
+            pmap_enter(pmap_kernel(), Vaddr::new(va), pa, prot, prot | PMAP_WIRED).is_ok();
         pmap_update(pmap_kernel());
         entered
     }
@@ -181,18 +169,6 @@ fn api_copyout(kbuf: &[u8], uaddr: usize) -> Result<(), i32> {
     copyout(kbuf, uaddr).map_err(Errno::as_i32)
 }
 
-/// The next `len` bytes of the window `[base, base + size)`, `used` bytes of which were
-/// handed out: each range once, for the kernel's lifetime; `None` when the window has no
-/// room left for `len`.
-fn window_take(used: &AtomicUsize, base: usize, size: usize, len: usize) -> Option<usize> {
-    let off = used
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |u| {
-            u.checked_add(len).filter(|&end| end <= size)
-        })
-        .ok()?;
-    base.checked_add(off)
-}
-
 /// An errno value from `hal` back as the [`Errno`] it was made from.
 fn errno_of(raw: i32) -> Errno {
     match Errno::from_raw(raw) {
@@ -201,35 +177,3 @@ fn errno_of(raw: i32) -> Errno {
     }
 }
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::assert_eq;
-
-    /// The window's bump: ranges in order, each once, refused past the end without moving.
-    #[test]
-    fn window_take_hands_out_each_range_once() {
-        let used = AtomicUsize::new(0);
-        let (base, size) = (0x10_0000, 0x4000);
-        assert_eq!(window_take(&used, base, size, 0x1000), Some(0x10_0000));
-        assert_eq!(window_take(&used, base, size, 0x2000), Some(0x10_1000));
-        assert_eq!(window_take(&used, base, size, 0x2000), None);
-        assert_eq!(used.load(Ordering::Relaxed), 0x3000);
-        assert_eq!(window_take(&used, base, size, 0x1000), Some(0x10_3000));
-        assert_eq!(window_take(&used, base, size, 0x1000), None);
-    }
-
-    /// An empty window (amd64 when `pmap_bootstrap` could not link it) refuses every
-    /// request; a length that would overflow is refused, not wrapped.
-    #[test]
-    fn window_take_refuses_empty_and_overflow() {
-        let used = AtomicUsize::new(0);
-        assert_eq!(window_take(&used, 0, 0, 0x1000), None);
-        let used = AtomicUsize::new(0x1000);
-        assert_eq!(window_take(&used, 0x1000, 0x4000, usize::MAX), None);
-        assert_eq!(used.load(Ordering::Relaxed), 0x1000);
-    }
-}
-/* </TESTS> */

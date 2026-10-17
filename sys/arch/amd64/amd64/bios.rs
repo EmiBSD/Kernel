@@ -112,8 +112,6 @@ use crate::arch::amd64::amd64::bus_space::{
 #[cfg(target_os = "none")]
 use crate::arch::amd64::amd64::machdep::{BIOS_EFIINFO_CONFIG_ACPI, bios_efiinfo};
 #[cfg(target_os = "none")]
-use crate::arch::amd64::amd64::pmap::pmap_kenter_pa;
-#[cfg(target_os = "none")]
 use crate::arch::amd64::include::param::{NBPG, PGOFSET};
 use crate::dev::rnd::enqueue_randomness;
 use crate::kern::kern_malloc::malloc;
@@ -122,6 +120,8 @@ use crate::kern::kern_sysctl::{hw_prod, hw_serial, hw_uuid, hw_vendor, hw_ver};
 use crate::kern::subr_autoconf::config_found;
 use crate::kern::subr_prf::{Str, snprintf};
 use crate::kprintf;
+#[cfg(target_os = "none")]
+use crate::machine::pmap::pmap_kenter_pa;
 #[cfg(target_os = "none")]
 use crate::sys::device::{CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_DULL, Device, UNCONF};
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT};

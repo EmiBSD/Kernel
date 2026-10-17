@@ -17,39 +17,69 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<machine/pmap.h>` and the machine-dependent half of `<uvm/uvm_pmap.h>` as a trait: the
-//! physical map, what `uvm` asks the MMU code to do.
+//! `<machine/pmap.h>` and the machine-dependent half of `<uvm/uvm_pmap.h>`: the physical map,
+//! what `uvm` asks the MMU code to do, over `hal::pmap` (N3.1).
 //!
-//! Milestone M3 needs the direct map, boot-time memory stealing, page zeroing and the kernel
-//! mapping entry points (`pmap_kenter_pa`, `pmap_kremove`, `pmap_extract`). M6 adds the
-//! user-space side: `pmap_create`/`pmap_destroy`/`pmap_reference`, `pmap_enter`/`pmap_remove`
-//! and activation. M7a (part 1) adds `pmap_page_protect` and `pmap_clear_modify`, which the
-//! object layer calls; `pmap_protect`, the reference bit and `pmap_unwire` arrive with
-//! `uvm_fault` (M7a part 3).
+//! The pmaps themselves are `hal`'s (`sys/hal/pmap.rs`, the backends under
+//! `sys/hal/arch/<machine>/pmap/`); this module is `bsd`'s adapter to them, so that the
+//! callers of the contract keep its free functions by name: `pmap_kernel`, `pmap_enter`,
+//! `pmap_page_protect(pg, ..)`, `pmap_activate(p)` and the rest. What changed shape:
+//!
+//! - A user pmap is a [`PmapRef`], `hal`'s counted handle: [`pmap_create`] makes one,
+//!   [`pmap_reference`] clones it, [`pmap_destroy`] drops it (the last drop frees the page
+//!   tables, and panics while a mapping is left, where the C freed silently). The kernel
+//!   pmap is `PmapRef::Kernel`; [`pmap_kernel`] still answers `&'static MachinePmap`.
+//! - The kernel pmap changes only through `hal::pmap::KernelMapper`, the token
+//!   `pmap_bootstrap` hands out once; it lives in a private static here, set by
+//!   [`pmap_bootstrap`] (the machine's boot glue), and is reached only behind
+//!   [`pmap_enter`]/[`pmap_remove`]/[`pmap_protect`] on the kernel pmap and the three legacy
+//!   `unsafe fn`s ([`pmap_kenter_pa`], [`pmap_kremove`], [`pmap_steal_memory`], with arm64's
+//!   [`pmap_kenter_cache`]), whose 37 callers keep their `unsafe` blocks until their owners
+//!   move (N3.2 `uvm_km`, N3.3 `uvm_page`, N4, N7). Their bodies hold no `unsafe` block.
+//! - Loading a pmap's root takes `hal::pmap::Switcher`, the other token: private here too,
+//!   used only by [`pmap_activate`] and the machine's switch path ([`pmap_setttb`]), each of
+//!   which records the switch (`ci_proc_pmap`, `ci_curpm`) where the shootdowns and the ASID
+//!   allocator look, through the machine's hooks of [`Pmap`].
+//! - The page allocator the pmap needs (`uvm_pagealloc`, `uvm_pagefree`, `PHYS_TO_VM_PAGE`,
+//!   `uvm_page_physsteal`, `uvm.page_init_done`) is `BsdPages`, a `hal::pmap::PhysPages`
+//!   given to `hal::pmap::bootstrap` as a value (D16); it reads `uvm`'s globals on each
+//!   call and keeps nothing.
+//! - [`Pmap`] is what stays machine-dependent in `bsd`: the constants and the machine's own
+//!   steps around `hal` (arm64's console remap in `pmap_init`, the switch records).
+//!
+//! The host double (`sys/arch/host`) runs the same adapter over `hal`'s host backend; having
+//! no boot path, it bootstraps the pmap on first use, once per process
+//! ([`Pmap::pmap_bootstrap_lazy`]).
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use hal::once::OnceStatic;
+use hal::pmap::{BootstrapParams, KernelMapper, PhysPages, Switcher};
+pub use hal::pmap::{KernelImage, PmapRef};
+
+use crate::kern::subr_prf::panic;
 use crate::machine::Machine;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Proc, Process};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
-use crate::uvm::uvm_extern::{UvmConstraintRange, VmProt, Vmspace};
-use crate::uvm::uvm_page::VmPage;
+use crate::uvm::uvm_extern::{
+    UVM_PGA_USERESERVE, UVM_PGA_ZERO, UvmConstraintRange, VmProt, Vmspace,
+};
+use crate::uvm::uvm_init::UVM;
+use crate::uvm::uvm_page::{
+    PG_BUSY, PG_FAKE, PHYS_TO_VM_PAGE, VmPage, uvm_page_physsteal, uvm_pagealloc, uvm_pagefree,
+    vm_page_to_phys,
+};
 
-/// `struct vm_page_md` of the selected architecture: the pmap's per-page data inside
-/// `struct vm_page`.
-pub type VmPageMd = <Machine as Pmap>::VmPageMd;
+/// `struct vm_page_md`: the pmap's per-page data inside `struct vm_page` (`hal`'s).
+pub type VmPageMd = hal::pmap::PageMd;
 
-/// `struct pmap` of the selected architecture (what a `pmap_t` points at).
-pub type MachinePmap = <Machine as Pmap>::Pmap;
+/// `struct pmap` (what a `pmap_t` points at; `hal`'s).
+pub type MachinePmap = hal::pmap::Pmap;
 
-/// The physical map interface.
+/// What stays machine-dependent of the physical map in `bsd`: the constants and the
+/// machine's steps around `hal::pmap`.
 pub trait Pmap {
-    /// `struct vm_page_md`.
-    type VmPageMd: 'static;
-    /// `struct pmap`.
-    type Pmap: 'static;
-
-    /// `VM_MDPAGE_INIT`: a fresh `vm_page_md`.
-    const VM_MDPAGE_INIT: Self::VmPageMd;
     /// `__HAVE_PMAP_DIRECT`: physical memory is direct-mapped, so `pmap_map_direct` works.
     const HAVE_PMAP_DIRECT: bool;
     /// `PMAP_STEAL_MEMORY`: `uvm_pageboot_alloc` defers to `pmap_steal_memory`.
@@ -69,177 +99,159 @@ pub trait Pmap {
     /// serve every request through the direct map. False on every real machine.
     const PMAP_NOMMU: bool;
 
-    /// `pmap_kernel()`: the kernel's pmap.
-    fn pmap_kernel() -> &'static Self::Pmap;
+    /// `pmap_init`'s machine sequence: `hal::pmap::init()` and what the machine does around
+    /// it (arm64: the console's remap, then the lower half's translation registers).
+    fn pmap_init_md();
 
-    /// `pmap_create()`: a new, empty user pmap with one reference; its top-level table maps
-    /// the kernel half.
-    fn pmap_create() -> &'static Self::Pmap;
+    /// The free kernel virtual range `pmap_steal_memory` reports to its caller (amd64 and
+    /// the host: `pmap_virtual_space`'s; arm64: the bounds without `pmap_virtual_space`'s
+    /// side effect, which would stop the vp tables being stolen).
+    fn pmap_steal_bounds() -> (Vaddr, Vaddr);
 
-    /// `pmap_destroy(pmap)`: drops a reference; the last one frees the page tables and the
-    /// pmap itself (the caller must have removed every mapping).
-    fn pmap_destroy(pmap: &'static Self::Pmap);
+    /// `pmap_activate(p)`'s records before any switch (amd64: `pcb_pmap`, `pcb_cr3` and, for
+    /// the running thread of a user process, `ci_proc_pmap`; arm64: `pm_active`); whether
+    /// `pm` is to be loaded on this CPU now.
+    fn pmap_activate_md(p: &Proc, pm: &MachinePmap) -> bool;
 
-    /// `pmap_reference(pmap)`: one more reference.
-    fn pmap_reference(pmap: &Self::Pmap);
+    /// The record of a switch, right after `pm`'s root was loaded on this CPU (arm64:
+    /// `ci_curpm` and the branch-predictor flush; nothing on amd64).
+    fn pmap_switched_md(pm: &MachinePmap);
 
-    /// `pmap_enter(pmap, va, pa, prot, flags)`: maps `pa` at `va` with `prot`; `flags` carries
-    /// `PMAP_WIRED`, `PMAP_CANFAIL` and the access type. Fails with `ENOMEM` only under
-    /// `PMAP_CANFAIL`.
-    fn pmap_enter(
-        pmap: &Self::Pmap,
-        va: Vaddr,
-        pa: Paddr,
-        prot: VmProt,
-        flags: i32,
-    ) -> Result<(), Errno>;
+    /// `pmap_deactivate(p)` on the running CPU (amd64: `ci_proc_pmap` cleared; arm64:
+    /// `TTBR0_EL1` back to the kernel's empty table, `pm_active` one less).
+    fn pmap_deactivate_md(p: &Proc, pm: &MachinePmap);
 
-    /// `pmap_remove(pmap, sva, eva)`: removes the mappings in `[sva, eva)`.
-    fn pmap_remove(pmap: &Self::Pmap, sva: Vaddr, eva: Vaddr);
+    /// `pmap_purge(p)` (`__HAVE_PMAP_PURGE`, arm64; nothing elsewhere).
+    fn pmap_purge_md(p: &Proc, pm: &MachinePmap);
 
-    /// `pmap_protect(pmap, sva, eva, prot)`: lowers the protection of the mappings in
-    /// `[sva, eva)` to `prot`; `PROT_NONE` removes them.
-    fn pmap_protect(pmap: &Self::Pmap, sva: Vaddr, eva: Vaddr, prot: VmProt);
-
-    /// `pmap_wired_count(pmap)`: the number of wired pages in the pmap (`pm_stats`).
-    fn pmap_wired_count(pmap: &Self::Pmap) -> i64;
-
-    /// `pmap_resident_count(pmap)`: the number of resident pages in the pmap (`pm_stats`).
-    fn pmap_resident_count(pmap: &Self::Pmap) -> i64;
-
-    /// `pmap_unwire(pmap, va)`: clears the wired bit of the mapping at `va`.
-    fn pmap_unwire(pmap: &Self::Pmap, va: Vaddr);
-
-    /// `pmap_page_protect(pg, prot)`: lowers every mapping of `pg` to `prot`; `PROT_NONE`
-    /// removes them all (what the object layer does before freeing a page).
-    fn pmap_page_protect(pg: &VmPage, prot: VmProt);
-
-    /// `pmap_clear_modify(pg)`: clears the modified bit of every mapping of `pg`; whether any
-    /// was set.
-    fn pmap_clear_modify(pg: &VmPage) -> bool;
-
-    /// `pmap_clear_reference(pg)`: clears the referenced bit of every mapping of `pg`; whether
-    /// any was set.
-    fn pmap_clear_reference(pg: &VmPage) -> bool;
-
-    /// `pmap_is_modified(pg)`: whether any mapping of `pg` has its modified bit set.
-    fn pmap_is_modified(pg: &VmPage) -> bool;
-
-    /// `pmap_remove_holes(vm)`: makes the MMU's unmappable holes unavailable in the map
-    /// (nothing on amd64 and arm64).
-    fn pmap_remove_holes(vm: &Vmspace);
-
-    /// `pmap_proc_iflush(pr, va, len)`: makes instructions just written to `[va, va+len)` of
-    /// `pr`'s address space visible to instruction fetch (an I-cache sync where the caches
-    /// are not coherent).
-    fn pmap_proc_iflush(pr: &Process, va: Vaddr, len: Vsize);
-
-    /// `pmap_zero_page`: zero-fills the page.
-    fn pmap_zero_page(pg: &VmPage);
-
-    /// `pmap_copy_page`: copies `src` into `dst`.
-    fn pmap_copy_page(src: &VmPage, dst: &VmPage);
-
-    /// `pmap_steal_memory`: takes `size` bytes of physical memory out of `vm_physmem` before
-    /// the page system is up, mapped and zeroed, and tells the caller the kernel virtual space
-    /// that is still free (`start`, `end`).
-    ///
-    /// # Safety
-    ///
-    /// Only before `uvm_page_init` has run (`uvm.page_init_done` is false), on the boot CPU.
-    unsafe fn pmap_steal_memory(
-        size: Vsize,
-        start: Option<&mut Vaddr>,
-        end: Option<&mut Vaddr>,
-    ) -> Vaddr;
-
-    /// `pmap_virtual_space`: the kernel virtual range still free, on machines without
-    /// `PMAP_STEAL_MEMORY`.
-    fn pmap_virtual_space(start: &mut Vaddr, end: &mut Vaddr);
-
-    /// `pmap_kenter_pa`: maps `pa` at `va` in the kernel pmap, wired, with `prot`.
-    ///
-    /// # Safety
-    ///
-    /// `va` must be kernel virtual space the caller owns and `pa` a page it may map there.
-    unsafe fn pmap_kenter_pa(va: Vaddr, pa: Paddr, prot: VmProt);
-
-    /// `pmap_kremove`: removes `len` bytes of mappings made by `pmap_kenter_pa` from `va`.
-    ///
-    /// # Safety
-    ///
-    /// The range must have been mapped by `pmap_kenter_pa` and nothing may use it afterwards.
-    unsafe fn pmap_kremove(va: Vaddr, len: Vsize);
-
-    /// `pmap_extract`: the physical address `va` maps to in `pmap`, if any.
-    fn pmap_extract(pmap: &Self::Pmap, va: Vaddr) -> Option<Paddr>;
-
-    /// The kernel virtual window the ABI module `abi_openbsd.ko` must run from (N2, decision
-    /// 22): its first address and its size, outside `kernel_map`, for the kernel's lifetime.
-    /// `None` on a machine whose `kernel_map` may hold executable kernel pages (arm64, the
-    /// host double): the module is then placed in `kernel_map`. amd64 has one in the kernel
-    /// image's slot, since its `kernel_map` is never executable (`pg_nx` on every directory
-    /// entry, as OpenBSD's); its size is 0 when `pmap_bootstrap` could not link it, and the
-    /// module is then not loaded.
-    fn pmap_module_window() -> Option<(Vaddr, usize)>;
-
-    /// Maps `pa` at `va`, a page of [`Pmap::pmap_module_window`], in the kernel pmap with
-    /// `prot`, wired, for the kernel's lifetime: the module's pages. `false`, mapping
-    /// nothing, when `va` is not a page of the window, is mapped already, `pa` is not a
-    /// page's address, or `prot` is both writable and executable (W^X); always `false` on a
-    /// machine without a window.
-    fn pmap_module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool;
-
-    /// `pmap_update`: makes pending mapping changes visible.
-    fn pmap_update(pmap: &Self::Pmap);
-
-    /// `pmap_activate(p)`: `p`'s address space is in use by one more thread; switched in now
-    /// when `p` is the running thread.
-    fn pmap_activate(p: &Proc);
-
-    /// `pmap_deactivate(p)`: the inverse, at exit.
-    fn pmap_deactivate(p: &Proc);
-
-    /// `pmap_purge(p)` (`__HAVE_PMAP_PURGE`): the last thread of a dying process is about to
-    /// tear its address space down (`uvm_purge`). arm64 drops the process's ASID first;
-    /// a machine without `__HAVE_PMAP_PURGE` (amd64, host) does nothing.
-    fn pmap_purge(p: &Proc);
-
-    /// `pmap_growkernel`: grows the kernel page tables to cover `maxkvaddr`; returns how far
-    /// they now reach.
-    fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr;
-
-    /// `pmap_init`: the pmap module's own initialisation, once the page system is up.
-    fn pmap_init();
-
-    /// `pmap_map_direct`: the direct-map address of a page (`__HAVE_PMAP_DIRECT`).
-    fn pmap_map_direct(pg: &VmPage) -> Vaddr;
-
-    /// `pmap_unmap_direct`: the page behind a direct-map address.
-    fn pmap_unmap_direct(va: Vaddr) -> Option<&'static VmPage>;
+    /// Bootstraps the pmap on first use where no boot path does (the host double, once per
+    /// process); nothing on a machine, whose boot glue calls [`pmap_bootstrap`].
+    fn pmap_bootstrap_lazy();
 }
 
-/// `pmap_kernel()` on the selected machine.
-pub fn pmap_kernel() -> &'static <Machine as Pmap>::Pmap {
-    Machine::pmap_kernel()
+/// The kernel's physical pages as `hal`'s pmap needs them (`hal::pmap::PhysPages`, D16):
+/// `uvm_page`'s functions, read afresh on every call.
+struct BsdPages;
+
+impl PhysPages for BsdPages {
+    fn alloc_ptp(&self) -> Option<Paddr> {
+        let pg = uvm_pagealloc(None, 0, None, UVM_PGA_USERESERVE | UVM_PGA_ZERO)?;
+        pg.clear_bits(PG_BUSY | PG_FAKE);
+        pg.wire_count.set(1);
+        Some(vm_page_to_phys(pg))
+    }
+
+    fn free_ptp(&self, pa: Paddr) {
+        match PHYS_TO_VM_PAGE(pa) {
+            Some(pg) => {
+                pg.wire_count.set(0);
+                uvm_pagefree(pg);
+            }
+            None => panic(format_args!("pmap: PTP {pa:?} is not a managed page")),
+        }
+    }
+
+    fn md_of(&self, pa: Paddr) -> Option<&'static VmPageMd> {
+        PHYS_TO_VM_PAGE(pa).map(|pg| &pg.mdpage)
+    }
+
+    fn steal(&self, npg: usize) -> Option<Paddr> {
+        uvm_page_physsteal(npg)
+    }
+
+    fn page_init_done(&self) -> bool {
+        UVM.page_init_done.load(Ordering::Relaxed)
+    }
 }
 
-/// `pmap_create` on the selected machine.
-pub fn pmap_create() -> &'static MachinePmap {
-    Machine::pmap_create()
+static BSD_PAGES: BsdPages = BsdPages;
+
+/// The kernel map's token, from `pmap_bootstrap`.
+static MAPPER: OnceStatic<KernelMapper> = OnceStatic::new();
+
+/// The context switch's token, from `pmap_bootstrap`.
+static SWITCHER: OnceStatic<Switcher> = OnceStatic::new();
+
+/// Whether [`pmap_bootstrap`] ran (the lazy path's quick test).
+static BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
+
+/// Bootstraps the pmap where the machine's boot path has not (the host double).
+fn booted() {
+    if !BOOTSTRAPPED.load(Ordering::Acquire) {
+        Machine::pmap_bootstrap_lazy();
+    }
 }
 
-/// `pmap_destroy` on the selected machine.
-pub fn pmap_destroy(pmap: &'static MachinePmap) {
-    Machine::pmap_destroy(pmap)
+/// The kernel map's token; panics before [`pmap_bootstrap`].
+fn mapper() -> &'static KernelMapper {
+    booted();
+    match MAPPER.get() {
+        Some(m) => m,
+        None => panic(format_args!(
+            "pmap: the kernel pmap used before pmap_bootstrap"
+        )),
+    }
 }
 
-/// `pmap_reference` on the selected machine.
-pub fn pmap_reference(pmap: &MachinePmap) {
-    Machine::pmap_reference(pmap)
+/// The context switch's token; panics before [`pmap_bootstrap`].
+fn switcher() -> &'static Switcher {
+    booted();
+    match SWITCHER.get() {
+        Some(s) => s,
+        None => panic(format_args!("pmap: a pmap loaded before pmap_bootstrap")),
+    }
 }
 
-/// `pmap_enter` on the selected machine.
+/// `pmap_bootstrap`, the boot glue's call (once, on the boot CPU, before anything maps):
+/// `hal::pmap::bootstrap` with the boot glue's facts and the kernel's page provider, the two
+/// tokens kept here. The first free physical page and the first free kernel virtual address
+/// (amd64's and arm64's answers).
+pub fn pmap_bootstrap(params: &BootstrapParams) -> (Paddr, Vaddr) {
+    let b = hal::pmap::bootstrap(params, &BSD_PAGES);
+    if MAPPER.set(b.mapper).is_err() || SWITCHER.set(b.switcher).is_err() {
+        panic(format_args!("pmap_bootstrap: the tokens were kept already"));
+    }
+    BOOTSTRAPPED.store(true, Ordering::Release);
+    (b.first_avail, b.virtual_avail)
+}
+
+/// `pmap_prealloc_lowmem_ptps` (amd64, after a boot by boot(8)): the PTPs that map the
+/// first 2 MB in the kernel pmap, taken from the low pages at `first_avail`; the next free
+/// page. The pages are the caller's (reserved in the boot memory map, below 4 GB).
+#[cfg(machine_x86)]
+pub fn pmap_prealloc_lowmem_ptps(first_avail: Paddr) -> Paddr {
+    mapper().prealloc_lowmem_ptps(first_avail)
+}
+
+/// `pmap_kernel()`: the kernel's pmap.
+pub fn pmap_kernel() -> &'static MachinePmap {
+    hal::pmap::kernel()
+}
+
+/// `pmap_create()`: a new, empty user pmap with one reference; its top-level table maps the
+/// kernel half. The C's `pool_get(PR_WAITOK)` never fails: no pmap is a panic.
+pub fn pmap_create() -> PmapRef {
+    booted();
+    match hal::pmap::create() {
+        Some(pm) => pm,
+        None => panic(format_args!("pmap_create: no pmap")),
+    }
+}
+
+/// `pmap_destroy(pmap)`: drops a reference; the last one frees the page tables and the pmap
+/// itself (the caller removed every mapping: `hal` panics otherwise).
+pub fn pmap_destroy(pmap: PmapRef) {
+    drop(pmap);
+}
+
+/// `pmap_reference(pmap)`: one more reference.
+pub fn pmap_reference(pmap: &PmapRef) -> PmapRef {
+    pmap.clone()
+}
+
+/// `pmap_enter(pmap, va, pa, prot, flags)`: maps `pa` at `va` with `prot`; `flags` carries
+/// `PMAP_WIRED`, `PMAP_CANFAIL` and the access type. Fails with `ENOMEM` only under
+/// `PMAP_CANFAIL`. The kernel pmap through the kernel map's token.
 pub fn pmap_enter(
     pmap: &MachinePmap,
     va: Vaddr,
@@ -247,165 +259,293 @@ pub fn pmap_enter(
     prot: VmProt,
     flags: i32,
 ) -> Result<(), Errno> {
-    Machine::pmap_enter(pmap, va, pa, prot, flags)
+    if pmap.is_kernel() {
+        mapper().enter(va, pa, prot, flags)
+    } else {
+        pmap.enter(va, pa, prot, flags)
+    }
 }
 
-/// `pmap_remove` on the selected machine.
+/// `pmap_remove(pmap, sva, eva)`: removes the mappings in `[sva, eva)`.
 pub fn pmap_remove(pmap: &MachinePmap, sva: Vaddr, eva: Vaddr) {
-    Machine::pmap_remove(pmap, sva, eva)
+    if pmap.is_kernel() {
+        mapper().remove(sva, eva);
+    } else {
+        pmap.remove(sva, eva);
+    }
 }
 
-/// `pmap_protect` on the selected machine.
+/// `pmap_protect(pmap, sva, eva, prot)`: lowers the protection of the mappings in
+/// `[sva, eva)` to `prot`; `PROT_NONE` removes them.
 pub fn pmap_protect(pmap: &MachinePmap, sva: Vaddr, eva: Vaddr, prot: VmProt) {
-    Machine::pmap_protect(pmap, sva, eva, prot)
+    if pmap.is_kernel() {
+        mapper().protect(sva, eva, prot);
+    } else {
+        pmap.protect(sva, eva, prot);
+    }
 }
 
-/// `pmap_wired_count` on the selected machine.
+/// `pmap_wired_count(pmap)`: the number of wired pages in the pmap (`pm_stats`).
 pub fn pmap_wired_count(pmap: &MachinePmap) -> i64 {
-    Machine::pmap_wired_count(pmap)
+    pmap.wired_count()
 }
 
-/// `pmap_resident_count` on the selected machine.
+/// `pmap_resident_count(pmap)`: the number of resident pages in the pmap (`pm_stats`).
 pub fn pmap_resident_count(pmap: &MachinePmap) -> i64 {
-    Machine::pmap_resident_count(pmap)
+    pmap.resident_count()
 }
 
-/// `pmap_unwire` on the selected machine.
+/// `pmap_unwire(pmap, va)`: clears the wired bit of the mapping at `va`.
 pub fn pmap_unwire(pmap: &MachinePmap, va: Vaddr) {
-    Machine::pmap_unwire(pmap, va)
+    pmap.unwire(va);
 }
 
-/// `pmap_page_protect` on the selected machine.
+/// `pmap_page_protect(pg, prot)`: lowers every mapping of `pg` to `prot`; `PROT_NONE`
+/// removes them all (what the object layer does before freeing a page).
 pub fn pmap_page_protect(pg: &VmPage, prot: VmProt) {
-    Machine::pmap_page_protect(pg, prot)
+    hal::pmap::page_protect(&pg.mdpage, prot);
 }
 
-/// `pmap_clear_modify` on the selected machine.
+/// `pmap_clear_modify(pg)`: clears the modified bit of every mapping of `pg`; whether any
+/// was set.
 pub fn pmap_clear_modify(pg: &VmPage) -> bool {
-    Machine::pmap_clear_modify(pg)
+    hal::pmap::clear_modify(&pg.mdpage)
 }
 
-/// `pmap_clear_reference` on the selected machine.
+/// `pmap_clear_reference(pg)`: clears the referenced bit of every mapping of `pg`; whether
+/// any was set.
 pub fn pmap_clear_reference(pg: &VmPage) -> bool {
-    Machine::pmap_clear_reference(pg)
+    hal::pmap::clear_reference(&pg.mdpage)
 }
 
-/// `pmap_is_modified` on the selected machine.
+/// `pmap_is_modified(pg)`: whether any mapping of `pg` has its modified bit set.
 pub fn pmap_is_modified(pg: &VmPage) -> bool {
-    Machine::pmap_is_modified(pg)
+    hal::pmap::is_modified(&pg.mdpage)
 }
 
-/// `pmap_remove_holes` on the selected machine.
-pub fn pmap_remove_holes(vm: &Vmspace) {
-    Machine::pmap_remove_holes(vm)
+/// `pmap_is_referenced(pg)`: whether any mapping of `pg` has its referenced bit set.
+pub fn pmap_is_referenced(pg: &VmPage) -> bool {
+    hal::pmap::is_referenced(&pg.mdpage)
 }
 
-/// `pmap_proc_iflush` on the selected machine.
+/// `pmap_remove_holes(vm)`: makes the MMU's unmappable holes unavailable in the map
+/// (nothing on amd64 and arm64: the C's `pmap_remove_holes` is empty there).
+pub fn pmap_remove_holes(_vm: &Vmspace) {}
+
+/// `pmap_proc_iflush(pr, va, len)`: makes instructions just written to `[va, va+len)` of
+/// `pr`'s address space visible to instruction fetch (an I-cache sync where the caches are
+/// not coherent).
 pub fn pmap_proc_iflush(pr: &Process, va: Vaddr, len: Vsize) {
-    Machine::pmap_proc_iflush(pr, va, len)
+    pr.vmspace().vm_map.pmap().proc_iflush(va, len);
 }
 
-/// `pmap_zero_page` on the selected machine.
+/// `pmap_zero_page`: zero-fills the page.
 pub fn pmap_zero_page(pg: &VmPage) {
-    Machine::pmap_zero_page(pg)
+    booted();
+    hal::pmap::zero_page(vm_page_to_phys(pg));
 }
 
-/// `pmap_copy_page` on the selected machine.
+/// `pmap_copy_page`: copies `src` into `dst`.
 pub fn pmap_copy_page(src: &VmPage, dst: &VmPage) {
-    Machine::pmap_copy_page(src, dst)
+    booted();
+    hal::pmap::copy_page(vm_page_to_phys(src), vm_page_to_phys(dst));
 }
 
-/// `pmap_steal_memory` on the selected machine.
+/// `pmap_steal_memory`: takes `size` bytes of physical memory out of `vm_physmem` before
+/// the page system is up, mapped and zeroed, and tells the caller the kernel virtual space
+/// that is still free (`start`, `end`).
 ///
 /// # Safety
 ///
-/// As for [`Pmap::pmap_steal_memory`].
+/// Only before `uvm_page_init` has run (`uvm.page_init_done` is false), on the boot CPU.
+/// (`hal` checks the first and panics; the contract keeps its `unsafe` for its callers until
+/// `uvm_page` moves, N3.3.)
 pub unsafe fn pmap_steal_memory(
     size: Vsize,
     start: Option<&mut Vaddr>,
     end: Option<&mut Vaddr>,
 ) -> Vaddr {
-    // SAFETY: forwarded.
-    unsafe { Machine::pmap_steal_memory(size, start, end) }
+    booted();
+    let va = hal::pmap::steal_memory(size);
+    let (s, e) = Machine::pmap_steal_bounds();
+    if let Some(start) = start {
+        *start = s;
+    }
+    if let Some(end) = end {
+        *end = e;
+    }
+    va
 }
 
-/// `pmap_virtual_space` on the selected machine.
+/// `pmap_virtual_space`: the kernel virtual range still free, on machines without
+/// `PMAP_STEAL_MEMORY`.
 pub fn pmap_virtual_space(start: &mut Vaddr, end: &mut Vaddr) {
-    Machine::pmap_virtual_space(start, end)
+    (*start, *end) = hal::pmap::virtual_space();
 }
 
-/// `pmap_kenter_pa` on the selected machine.
+/// `pmap_kenter_pa`: maps `pa` at `va` in the kernel pmap, wired, with `prot`.
 ///
 /// # Safety
 ///
-/// As for [`Pmap::pmap_kenter_pa`].
+/// `va` must be kernel virtual space the caller owns and `pa` a page it may map there (the
+/// proof the kernel map's token stands for, which these legacy callers give by their own
+/// `unsafe` block until their owners move).
 pub unsafe fn pmap_kenter_pa(va: Vaddr, pa: Paddr, prot: VmProt) {
-    // SAFETY: forwarded.
-    unsafe { Machine::pmap_kenter_pa(va, pa, prot) }
+    mapper().kenter(va, pa, prot);
 }
 
-/// `pmap_kremove` on the selected machine.
+/// `pmap_kremove`: removes `len` bytes of mappings made by `pmap_kenter_pa` from `va`.
 ///
 /// # Safety
 ///
-/// As for [`Pmap::pmap_kremove`].
+/// The range must have been mapped by `pmap_kenter_pa` and nothing may use it afterwards.
 pub unsafe fn pmap_kremove(va: Vaddr, len: Vsize) {
-    // SAFETY: forwarded.
-    unsafe { Machine::pmap_kremove(va, len) }
+    mapper().kremove(va, len);
 }
 
-/// `pmap_extract` on the selected machine.
-pub fn pmap_extract(pmap: &<Machine as Pmap>::Pmap, va: Vaddr) -> Option<Paddr> {
-    Machine::pmap_extract(pmap, va)
+/// `pmap_kenter_cache(va, pa, prot, cacheable)` (arm64): as [`pmap_kenter_pa`] with the
+/// memory type `cacheable` (`PMAP_CACHE_*`).
+///
+/// # Safety
+///
+/// As for [`pmap_kenter_pa`].
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn pmap_kenter_cache(va: Vaddr, pa: Paddr, prot: VmProt, cacheable: i32) {
+    mapper().kenter_cache(va, pa, prot, cacheable);
 }
 
-/// [`Pmap::pmap_module_window`] on the selected machine.
-pub fn pmap_module_window() -> Option<(Vaddr, usize)> {
-    Machine::pmap_module_window()
+/// `pmap_extract`: the physical address `va` maps to in `pmap`, if any.
+pub fn pmap_extract(pmap: &MachinePmap, va: Vaddr) -> Option<Paddr> {
+    pmap.extract(va)
 }
 
-/// [`Pmap::pmap_module_enter`] on the selected machine.
-pub fn pmap_module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
-    Machine::pmap_module_enter(va, pa, prot)
+/// `pmap_update`: makes pending mapping changes visible (nothing: every call does its own
+/// TLB work, on amd64 and arm64 alike).
+pub fn pmap_update(_pmap: &MachinePmap) {}
+
+/// Loads `pm`'s root on this CPU and records the switch (the context switch's token).
+fn switch_to(pm: &MachinePmap) {
+    pm.load(switcher());
+    Machine::pmap_switched_md(pm);
 }
 
-/// `pmap_activate` on the selected machine.
+/// `pmap_activate(p)`: `p`'s address space is in use by one more thread; switched in now
+/// when `p` is the running thread.
 pub fn pmap_activate(p: &Proc) {
-    Machine::pmap_activate(p)
+    let pm = p.vmspace().vm_map.pmap();
+    if Machine::pmap_activate_md(p, pm) {
+        switch_to(pm);
+    }
 }
 
-/// `pmap_deactivate` on the selected machine.
+/// `pmap_setttb(p)` (arm64): the switch path's load of `p`'s address space, for every
+/// context switch (`cpu_switchto`), and `pmap_activate`'s.
+pub fn pmap_setttb(p: &Proc) {
+    switch_to(p.vmspace().vm_map.pmap());
+}
+
+/// `pmap_deactivate(p)`: the inverse, at exit.
 pub fn pmap_deactivate(p: &Proc) {
-    Machine::pmap_deactivate(p)
+    Machine::pmap_deactivate_md(p, p.vmspace().vm_map.pmap());
 }
 
-/// `pmap_purge` on the selected machine (`__HAVE_PMAP_PURGE`; nothing where it is not).
+/// `pmap_purge(p)` (`__HAVE_PMAP_PURGE`): the last thread of a dying process is about to
+/// tear its address space down (`uvm_purge`). arm64 drops the process's ASID first; a
+/// machine without `__HAVE_PMAP_PURGE` (amd64, host) does nothing.
 pub fn pmap_purge(p: &Proc) {
-    Machine::pmap_purge(p)
+    Machine::pmap_purge_md(p, p.vmspace().vm_map.pmap());
 }
 
-/// `pmap_update` on the selected machine.
-pub fn pmap_update(pmap: &<Machine as Pmap>::Pmap) {
-    Machine::pmap_update(pmap)
+/// `efi_enter`'s pmap half (arm64): the EFI runtime pmap's tables on this CPU (interrupts
+/// are the caller's to disable around the call into the runtime).
+#[cfg(target_arch = "aarch64")]
+pub fn pmap_efi_enter(pm: &MachinePmap) {
+    pm.load_efi(switcher());
 }
 
-/// `pmap_growkernel` on the selected machine.
+/// `efi_leave`'s pmap half (arm64): the user address-space width back and `to`, the pmap
+/// this CPU ran on before [`pmap_efi_enter`], loaded again.
+#[cfg(target_arch = "aarch64")]
+pub fn pmap_efi_leave(to: &MachinePmap) {
+    hal::pmap::leave_efi(to, switcher());
+}
+
+/// `pmap_growkernel`: grows the kernel page tables to cover `maxkvaddr`; returns how far
+/// they now reach.
 pub fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr {
-    Machine::pmap_growkernel(maxkvaddr)
+    hal::pmap::growkernel(maxkvaddr)
 }
 
-/// `pmap_init` on the selected machine.
+/// `pmap_init`: the pmap module's own initialisation, once the page system is up.
 pub fn pmap_init() {
-    Machine::pmap_init()
+    booted();
+    Machine::pmap_init_md();
 }
 
-/// `pmap_map_direct` on the selected machine.
+/// `pmap_map_direct`: the direct-map address of a page (`__HAVE_PMAP_DIRECT`).
 pub fn pmap_map_direct(pg: &VmPage) -> Vaddr {
-    Machine::pmap_map_direct(pg)
+    hal::pmap::direct_map(vm_page_to_phys(pg))
 }
 
-/// `pmap_unmap_direct` on the selected machine.
+/// `pmap_unmap_direct`: the page behind a direct-map address.
 pub fn pmap_unmap_direct(va: Vaddr) -> Option<&'static VmPage> {
-    Machine::pmap_unmap_direct(va)
+    hal::pmap::direct_unmap(va).and_then(PHYS_TO_VM_PAGE)
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // The adapter over hal's host backend: the dispatch of the kernel pmap to the token, the
+    // counted handles, the page provider over the test's memory.
+
+    use std::assert;
+    use std::assert_eq;
+
+    use super::*;
+    use crate::kern::subr_pool::tests::setup_real_memory;
+    use crate::sys::mman::{PROT_READ, PROT_WRITE};
+    use crate::sys::param::PAGE_SIZE;
+    use crate::uvm::uvm_pmap::PMAP_WIRED;
+
+    #[test]
+    fn the_kernel_pmap_goes_through_the_token() {
+        let _g = setup_real_memory();
+        let va = Vaddr::new(hal::arch::current::vmparam::VM_MIN_KERNEL_ADDRESS + 0x7000_0000);
+        let pa = Paddr::new(0x4000_0000);
+        pmap_enter(pmap_kernel(), va, pa, PROT_READ, PROT_READ | PMAP_WIRED).unwrap();
+        assert_eq!(pmap_extract(pmap_kernel(), va), Some(pa));
+        pmap_remove(pmap_kernel(), va, Vaddr::new(va.as_usize() + PAGE_SIZE));
+        assert_eq!(pmap_extract(pmap_kernel(), va), None);
+    }
+
+    #[test]
+    fn a_user_pmap_is_counted_and_freed_with_its_last_handle() {
+        let _g = setup_real_memory();
+        let pm = pmap_create();
+        let other = pmap_reference(&pm);
+        assert!(PmapRef::ptr_eq(&pm, &other));
+        let va = Vaddr::new(0x1000_0000);
+        let pa = Paddr::new(0x4000_1000);
+        pmap_enter(&pm, va, pa, PROT_READ | PROT_WRITE, PROT_READ).unwrap();
+        assert_eq!(pmap_extract(&other, va), Some(pa));
+        assert_eq!(pmap_resident_count(&pm), 1);
+        pmap_remove(&pm, va, Vaddr::new(va.as_usize() + PAGE_SIZE));
+        pmap_destroy(other);
+        assert_eq!(pmap_extract(&pm, va), None);
+        pmap_destroy(pm);
+    }
+
+    #[test]
+    fn the_provider_knows_the_managed_pages() {
+        let _g = setup_real_memory();
+        let pa = BSD_PAGES.alloc_ptp().expect("a page-table page");
+        let md = BSD_PAGES.md_of(pa).expect("a managed page");
+        assert!(core::ptr::eq(md, &PHYS_TO_VM_PAGE(pa).unwrap().mdpage));
+        assert_eq!(PHYS_TO_VM_PAGE(pa).unwrap().wire_count.get(), 1);
+        assert!(BSD_PAGES.page_init_done());
+        BSD_PAGES.free_ptp(pa);
+        assert_eq!(BSD_PAGES.md_of(Paddr::new(0)).map(|_| ()), None);
+    }
+}
+/* </TESTS> */

@@ -143,12 +143,10 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::amd64::amd64::machdep::DMA_CONSTRAINT;
-use crate::arch::amd64::amd64::pmap::{pmap_direct_map, pmap_direct_mapped};
 use crate::arch::amd64::include::bus::{
     BUS_DMA_64BIT, BUS_DMA_NOCACHE, BUS_DMA_NOWAIT, BUS_DMA_WAITOK, BUS_DMA_ZERO,
     BUS_DMASYNC_POSTREAD, BUS_DMASYNC_PREWRITE, BusDmaSegment, BusDmaTagT, BusDmamap, BusDmamapT,
 };
-use crate::arch::amd64::include::pmap::{PMAP_NOCACHE, PMAP_NOCRYPT};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
 use crate::machine::bus::{BusAddr, BusSize};
@@ -172,6 +170,8 @@ use crate::uvm::uvm_page::{
 };
 use crate::uvm::uvm_param::round_page;
 use crate::uvm::uvm_pmap::{PMAP_CANFAIL, PMAP_WIRED};
+use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_NOCRYPT};
+use hal::pmap::{direct_map as pmap_direct_map, direct_unmap};
 
 /// `FORCE_BOUNCE_BUFFER`: bounce every map (a debugging knob, off).
 const FORCE_BOUNCE_BUFFER: bool = false;
@@ -928,7 +928,7 @@ pub unsafe fn _bus_dmamem_unmap(_t: BusDmaTagT, kva: NonNull<u8>, size: usize) {
     if kva.as_ptr() as usize & PGOFSET != 0 {
         panic(format_args!("_bus_dmamem_unmap"));
     }
-    if pmap_direct_mapped(Vaddr::new(kva.as_ptr() as usize)) {
+    if direct_unmap(Vaddr::new(kva.as_ptr() as usize)).is_some() {
         return;
     }
 

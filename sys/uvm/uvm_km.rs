@@ -109,7 +109,7 @@ use crate::kern::kern_malloc::kmem_map;
 use crate::kern::kern_rwlock::rw_enter_write;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::subr_prf::panic;
-use crate::machine::pmap::{pmap_enter, pmap_kenter_pa, pmap_update};
+use crate::machine::pmap::{PmapRef, pmap_enter, pmap_kenter_pa, pmap_update};
 use crate::machine::pmap::{
     pmap_extract, pmap_kernel, pmap_kremove, pmap_map_direct, pmap_reference, pmap_remove,
     pmap_unmap_direct,
@@ -296,7 +296,7 @@ pub fn uvm_km_init(base: Vaddr, start: Vaddr, end: Vaddr) {
     // KVA_GUARDPAGES is not configured.
     uvm_map_setup(
         &KERNEL_MAP_STORE,
-        pmap_kernel(),
+        PmapRef::Kernel,
         base.as_usize(),
         end.as_usize(),
         VM_MAP_PAGEABLE,
@@ -393,14 +393,15 @@ pub fn uvm_km_suballoc(
     *max = *min + size;
 
     // add references to pmap and create or init the submap
-    pmap_reference(map.pmap());
+    let pmap = pmap_reference(map.pmap_ref());
     let submap = match submap {
-        None => match uvm_map_create(map.pmap(), *min, *max, flags) {
+        None => match uvm_map_create(pmap, *min, *max, flags) {
             Some(submap) => submap,
             None => panic(format_args!("uvm_km_suballoc: unable to create submap")),
         },
         Some(submap) => {
-            uvm_map_setup(submap, map.pmap(), *min, *max, flags);
+            uvm_map_setup(submap, pmap, *min, *max, flags);
+
             submap
         }
     };

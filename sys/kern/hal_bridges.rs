@@ -21,8 +21,10 @@
 //!
 //! The runtime in `hal` (docs/ZERO_UNSAFE.md 0.1) names nothing of `bsd`: what it needs from
 //! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues, `uvm_km`,
-//! `pool(9)`, `malloc(9)`, the user copy, the console) arrives as one `&'static dyn Trait` per
+//! `pool(9)`, `malloc(9)`, the user copy, the console, and for the pmap (N3.1) amd64's CPUs
+//! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
+
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
 //! section 0.3.2), with the C's modes spelled out; `Errno` is one type on both sides
 //! (`hal::sys::errno`, which `crate::sys::errno` re-exports).
@@ -38,7 +40,7 @@
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::cons::Console;
 use hal::cpu::CpuId;
@@ -280,6 +282,60 @@ impl UserCopy for BsdUser {
     }
 }
 
+/// The CPUs as amd64's TLB shootdown and cache flush need them (`hal::pmap::TlbCpus`):
+/// `CPU_INFO_FOREACH`, `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`,
+/// `wbinvd_on_all_cpus` and `ci_cflushsz` of `sys/arch/amd64/amd64/{cpu,ipi}.rs`.
+#[cfg(all(machine_x86, feature = "multiprocessor"))]
+struct BsdTlbCpus;
+
+#[cfg(all(machine_x86, feature = "multiprocessor"))]
+impl hal::pmap::TlbCpus for BsdTlbCpus {
+    fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::pmap::Pmap)) {
+        let me = curcpu();
+        crate::machine::cpu::cpu_info_foreach(&mut |ci| {
+            if !ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
+                f(
+                    ci.ci_cpuid.get() as usize,
+                    ci.ci_proc_pmap.load(Ordering::Relaxed).cast_const(),
+                );
+            }
+        });
+    }
+
+    fn send(&self, cpuid: usize, ipi: hal::pmap::TlbIpi) -> bool {
+        use crate::machine::x86::{LAPIC_IPI_INVLPG, LAPIC_IPI_INVLRANGE, LAPIC_IPI_INVLTLB};
+        let vector = match ipi {
+            hal::pmap::TlbIpi::Page => LAPIC_IPI_INVLPG,
+            hal::pmap::TlbIpi::Range => LAPIC_IPI_INVLRANGE,
+            hal::pmap::TlbIpi::Tlb => LAPIC_IPI_INVLTLB,
+        };
+        let mut sent = false;
+        crate::machine::cpu::cpu_info_foreach(&mut |ci| {
+            if ci.ci_cpuid.get() as usize == cpuid {
+                sent = crate::machine::x86::x86_fast_ipi(ci, vector).is_ok();
+            }
+        });
+        sent
+    }
+
+    fn wbinvd_all(&self) {
+        let _ = crate::machine::x86::wbinvd_on_all_cpus();
+    }
+
+    fn cflushsz(&self) -> usize {
+        curcpu().ci_cflushsz.get() as usize
+    }
+}
+
+/// `arc4random(9)` of `sys/dev/rnd.rs` (`hal::pmap::Random`).
+struct BsdRandom;
+
+impl hal::pmap::Random for BsdRandom {
+    fn random_u32(&self) -> u32 {
+        crate::dev::rnd::arc4random()
+    }
+}
+
 /// The console of `sys/dev/cons.rs`.
 struct BsdCons;
 
@@ -305,6 +361,13 @@ static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
 static BSD_CONS: BsdCons = BsdCons;
+#[cfg(all(machine_x86, feature = "multiprocessor"))]
+static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
+static BSD_RANDOM: BsdRandom = BsdRandom;
+
+/// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
+/// then: `Machine::cpu_boot_secondary_processors`).
+static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Registers every bridge of the `hal` runtime, once (a second call changes nothing: each slot
 /// keeps its first implementation). Called by `stand::start_kernel` before `main()`: the boot
@@ -318,5 +381,18 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);
     let _ = hal::bridges::register_console(&BSD_CONS);
+    let _ = hal::bridges::register_random(&BSD_RANDOM);
+    // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
+    #[cfg(all(machine_x86, feature = "multiprocessor"))]
+    {
+        let _ = hal::bridges::register_tlb_cpus(&BSD_TLB_CPUS);
+        TLB_CPUS_REGISTERED.store(true, Ordering::Release);
+    }
+}
+
+/// Whether the TLB shootdown's CPUs are registered (always, once [`hal_bridges_register`]
+/// ran, on a machine that has them), for the check before the application processors start.
+pub fn tlb_cpus_registered() -> bool {
+    TLB_CPUS_REGISTERED.load(Ordering::Acquire)
 }
 /* </CODE> */
