@@ -1675,7 +1675,7 @@ notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/pmap.rs"]
 status = "redesigned"
-notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswitch.S calls, moved from LZ's arm64/pmap.rs (an unsafe extern \"C\" fn over machine::pmap::pmap_setttb); the licence is pmap.c's (Dale Rahn, ISC): cpuswitch.S has no licence text (license = \"none\" before), and one module field cannot say both"
+notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswitch.S calls, moved from LZ's arm64/pmap.rs (an unsafe extern \"C\" fn over machine::pmap::pmap_setttb); the licence zone holds pmap.c's block (Dale Rahn, ISC); cpuswitch.S carries Dale Rahn's 2015 ISC notice too (lines 2-15; LZ recorded license = \"none\" for it, a slip of LZ's ports.toml), so both C sources are ISC and no license field is needed"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/db_interface.rs"
