@@ -30,12 +30,13 @@
 //!   tables, and panics while a mapping is left, where the C freed silently). The kernel
 //!   pmap is `PmapRef::Kernel`; [`pmap_kernel`] still answers `&'static MachinePmap`.
 //! - The kernel pmap changes only through `hal::pmap::KernelMapper`, the token
-//!   `pmap_bootstrap` hands out once; it lives in a private static here, set by
-//!   [`pmap_bootstrap`] (the machine's boot glue), and is reached only behind
-//!   [`pmap_enter`]/[`pmap_remove`]/[`pmap_protect`] on the kernel pmap and the three legacy
-//!   `unsafe fn`s ([`pmap_kenter_pa`], [`pmap_kremove`], [`pmap_steal_memory`], with arm64's
-//!   [`pmap_kenter_cache`]), whose 37 callers keep their `unsafe` blocks until their owners
-//!   move (N3.2 `uvm_km`, N3.3 `uvm_page`, N4, N7). Their bodies hold no `unsafe` block.
+//!   `pmap_bootstrap` hands out once; [`pmap_bootstrap`] (the machine's boot glue) gives it to
+//!   its owner, the kernel's allocator (`kernel::vm::km::adopt_mapper`, N3.2), which lends it
+//!   back here (`kernel::vm::km::legacy_mapper`) for [`pmap_enter`]/[`pmap_remove`]/
+//!   [`pmap_protect`] on the kernel pmap and the three legacy `unsafe fn`s
+//!   ([`pmap_kenter_pa`], [`pmap_kremove`], [`pmap_steal_memory`], with arm64's
+//!   [`pmap_kenter_cache`]), whose callers keep their `unsafe` blocks until their owners move
+//!   (N3.3 `uvm_page`, N3.5 `uvm_glue`, N4, N7). Their bodies hold no `unsafe` block.
 //! - Loading a pmap's root takes `hal::pmap::Switcher`, the other token: private here too,
 //!   used only by [`pmap_activate`] and the machine's switch path ([`pmap_setttb`]), each of
 //!   which records the switch (`ci_proc_pmap`, `ci_curpm`) where the shootdowns and the ASID
@@ -166,9 +167,6 @@ impl PhysPages for BsdPages {
 
 static BSD_PAGES: BsdPages = BsdPages;
 
-/// The kernel map's token, from `pmap_bootstrap`.
-static MAPPER: OnceStatic<KernelMapper> = OnceStatic::new();
-
 /// The context switch's token, from `pmap_bootstrap`.
 static SWITCHER: OnceStatic<Switcher> = OnceStatic::new();
 
@@ -182,15 +180,11 @@ fn booted() {
     }
 }
 
-/// The kernel map's token; panics before [`pmap_bootstrap`].
+/// The kernel map's token, lent by its owner (`kernel::vm::km`); panics before
+/// [`pmap_bootstrap`].
 fn mapper() -> &'static KernelMapper {
     booted();
-    match MAPPER.get() {
-        Some(m) => m,
-        None => panic(format_args!(
-            "pmap: the kernel pmap used before pmap_bootstrap"
-        )),
-    }
+    kernel::vm::km::legacy_mapper()
 }
 
 /// The context switch's token; panics before [`pmap_bootstrap`].
@@ -203,12 +197,13 @@ fn switcher() -> &'static Switcher {
 }
 
 /// `pmap_bootstrap`, the boot glue's call (once, on the boot CPU, before anything maps):
-/// `hal::pmap::bootstrap` with the boot glue's facts and the kernel's page provider, the two
-/// tokens kept here. The first free physical page and the first free kernel virtual address
-/// (amd64's and arm64's answers).
+/// `hal::pmap::bootstrap` with the boot glue's facts and the kernel's page provider; the
+/// kernel map's token goes to the kernel's allocator (`kernel::vm::km::adopt_mapper`), the
+/// context switch's is kept here. The first free physical page and the first free kernel
+/// virtual address (amd64's and arm64's answers).
 pub fn pmap_bootstrap(params: &BootstrapParams) -> (Paddr, Vaddr) {
     let b = hal::pmap::bootstrap(params, &BSD_PAGES);
-    if MAPPER.set(b.mapper).is_err() || SWITCHER.set(b.switcher).is_err() {
+    if kernel::vm::km::adopt_mapper(b.mapper).is_err() || SWITCHER.set(b.switcher).is_err() {
         panic(format_args!("pmap_bootstrap: the tokens were kept already"));
     }
     BOOTSTRAPPED.store(true, Ordering::Release);

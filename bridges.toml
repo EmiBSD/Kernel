@@ -81,19 +81,16 @@ trait = "Console"
 for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
-# bsd: the boot hand-over of abi_openbsd.ko and km_alloc/km_free of its writable copy
-# (sys/uvm/uvm_km.rs), implemented by sys/kern/abi_module.rs. The trait keeps only
-# image/alloc/release since N3.1 commit 7: the mapping is the loader's own on both machines
-# (hal::pmap::module_window/module_enter, amd64's window since commit 6, arm64's since
-# commit 7), so reserve/enter are gone; image/alloc/release are N3.2's (uvm_km) and the
-# boot entry's.
-
-
+# bsd: the boot hand-over of abi_openbsd.ko (IMAGE_VA/IMAGE_LEN from stand::start_kernel),
+# implemented by sys/kern/abi_module.rs. The trait keeps only image since N3.2: the mapping is
+# the loader's own on both machines (hal::pmap::module_window/module_enter, N3.1 commits 6 and
+# 7) and the writable copy's memory is the kernel's (kernel::vm::km::module_memory(), a
+# hal::module::ModuleMemory passed to load as a value). N4.1, the boot entry.
 # hal::module::ModulePlatform
 [[bridge]]
 trait = "ModulePlatform"
 for = ["sys/hal/module/load.rs"]
-paid_by = "N3"
+paid_by = "N4"
 
 # bsd: uvm_map/uvm_unmap of kernel_map, kmem_map, exec_map and phys_map, with the map's address as
 # km_allocva's wait channel (sys/uvm/uvm_map.rs, sys/kern/kern_malloc.rs, sys/uvm/uvm_extern.rs),

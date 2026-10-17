@@ -181,8 +181,12 @@
 //!   range's mappings once; the C collects the pages on a list, removes the mappings, then
 //!   frees the list. The order is the C's own `uvm_km_pgremove_intrsafe`'s: the range is still
 //!   the caller's until `uvm_unmap`, so nothing uses its stale mappings, and the TLB
-//!   shootdown stays one per call. Frames are freed one by one (`uvm_pagefree`) where the C
-//!   frees a list (`uvm_pglistfree`): the same pages and counters.
+//!   shootdown stays one per call.
+//! - Frames go back one by one through [`KmPages::free`] (`uvm_pagefree`: `uvm_pageclean`,
+//!   then the per-CPU page cache), as the C's `uvm_km_pgremove_intrsafe` frees `kmem_map`'s
+//!   pages, where the C's `km_free` and `km_alloc`'s failure path free a list
+//!   (`uvm_pglistfree`): building a list needs `TAILQ_INSERT_TAIL`, an `unsafe` mutator, and
+//!   both are correct frees of the pages `uvm_pglistalloc` gave.
 //! - [`kernel_map_min`] is the first address the kernel map can hand out after the bootstrap
 //!   reservation (the selftests probe it), not `vm_map_min(kernel_map)`.
 //!
@@ -462,6 +466,10 @@ pub trait KmPages: Sync {
     /// maxseg, flags)`, then each frame of the list, in order, handed to `each` as it is taken
     /// off the list; the frames are the caller's from then on. Nothing is handed over when the
     /// allocation fails.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "uvm_pglistalloc's signature, and the callback"
+    )]
     fn alloc(
         &self,
         sz: usize,

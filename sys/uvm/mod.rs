@@ -33,6 +33,7 @@ pub mod uvm_fault;
 pub mod uvm_glue;
 pub mod uvm_init;
 pub mod uvm_io;
+#[forbid(unsafe_code)]
 pub mod uvm_km;
 pub mod uvm_map;
 pub mod uvm_meter;

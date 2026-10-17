@@ -20,7 +20,7 @@
 //! `bsd`'s implementations of the `hal` runtime's bridges, and their registration.
 //!
 //! The runtime in `hal` (docs/ZERO_UNSAFE.md 0.1) names nothing of `bsd`: what it needs from
-//! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues, `uvm_km`,
+//! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues,
 //! `pool(9)`, `malloc(9)`, the user copy, the console, and for the pmap (N3.1) amd64's CPUs
 //! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
@@ -45,7 +45,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use hal::cons::Console;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
-use hal::kmbuf::{PageKind, PageMemory};
 use hal::malloc::Malloc;
 use hal::pool::{PoolBackend, RawPool};
 use hal::sleep::Sleep;
@@ -63,9 +62,7 @@ use crate::machine::cpu::{Cpu, cpu_number, curcpu, curproc};
 use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::mutex::mtx_curcpu;
-use crate::sys::param::PAGE_SIZE;
 use crate::sys::pool::Pool;
-use crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_PAGEABLE, KP_ZERO, KV_ANY, km_alloc, km_free};
 
 /// `spl(9)` of `sys/machine/intr.rs`.
 struct BsdIntr;
@@ -167,33 +164,6 @@ impl Sleep for BsdSleep {
         {
             false
         }
-    }
-}
-
-/// `km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`, with `&kv_any`: the page provider
-/// `kernel::pipe`'s buffers take as a value ([`page_memory`]), no longer a registered bridge.
-struct BsdPages;
-
-impl PageMemory for BsdPages {
-    fn alloc(&self, len: usize, kind: PageKind, wait: bool) -> Option<(NonNull<u8>, usize)> {
-        let kp = match kind {
-            PageKind::Pageable => &KP_PAGEABLE,
-            PageKind::Wired => &KP_ZERO,
-        };
-        let kd = if wait { &KD_WAITOK } else { &KD_NOWAIT };
-        km_alloc(len, &KV_ANY, kp, kd).map(|p| (p, len))
-    }
-
-    fn free(&self, ptr: NonNull<u8>, len: usize, kind: PageKind) {
-        let kp = match kind {
-            PageKind::Pageable => &KP_PAGEABLE,
-            PageKind::Wired => &KP_ZERO,
-        };
-        km_free(ptr, len, &KV_ANY, kp);
-    }
-
-    fn page_size(&self) -> usize {
-        PAGE_SIZE
     }
 }
 
@@ -357,7 +327,6 @@ impl Console for BsdCons {
 static BSD_INTR: BsdIntr = BsdIntr;
 static BSD_CPU: BsdCpu = BsdCpu;
 static BSD_SLEEP: BsdSleep = BsdSleep;
-static BSD_PAGES: BsdPages = BsdPages;
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
@@ -365,11 +334,6 @@ static BSD_CONS: BsdCons = BsdCons;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
-
-/// The kernel map's pages as `hal::kmbuf::KmBuf` takes them (a provider passed as a value).
-pub const fn page_memory() -> &'static dyn PageMemory {
-    &BSD_PAGES
-}
 
 /// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
 /// then: `Machine::cpu_boot_secondary_processors`).

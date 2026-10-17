@@ -38,16 +38,16 @@
 //!
 //! # The platform premise
 //!
-//! Until the boot entry and `uvm_km` leave `bsd` (N3.2 and the boot path), the boot loader's
-//! hand-over and the kernel's memory allocator are `bsd`'s, so the loader reaches them
-//! through [`ModulePlatform`], which `bsd`'s boot glue implements (`sys/kern/abi_module.rs`)
-//! and registers once, before `main`, in the bridge registry
-//! (`crate::bridges::register_module_platform`). The soundness of the three `unsafe`
-//! rests on that implementation doing what each method's documentation says: it is the
-//! kernel's own boot hand-over and `km_alloc`, the same facts the rest of the kernel already
-//! trusts; the mapping is `hal`'s own (`crate::pmap::module_enter`). TODO(N3.2): when `hal`
-//! or `kernel` holds the boot entry and `uvm_km`, the trait becomes their own code and the
-//! premise a proof.
+//! The boot loader's hand-over is still `bsd`'s (the boot entry moves at N4.1), so the loader
+//! reaches it through [`ModulePlatform`], which `bsd`'s boot glue implements
+//! (`sys/kern/abi_module.rs`) and registers once, before `main`, in the bridge registry
+//! (`crate::bridges::register_module_platform`). The kernel memory of the writable copy is
+//! the kernel's own allocator since N3.2 (`kernel::vm::km::module_memory()`), a
+//! [`ModuleMemory`] passed to [`load`] as a value. The soundness of the three `unsafe` rests
+//! on those two doing what each method's documentation says: the kernel's own boot hand-over
+//! and `km_alloc`, the same facts the rest of the kernel already trusts; the mapping is
+//! `hal`'s own (`crate::pmap::module_enter`). When `hal` or `kernel` holds the boot entry
+//! (N4.1) and the kernel map's record is typed (N3.5), the premise becomes a proof.
 
 use core::fmt;
 
@@ -73,25 +73,13 @@ pub enum Prot {
     ReadExec,
 }
 
-/// What the loader needs from the machine and the boot hand-over (the platform premise,
-/// above). Implemented by `bsd`'s boot glue until N2.2.
+/// What the loader needs from the boot hand-over (the platform premise, above). Implemented
+/// by `bsd`'s boot glue until the boot entry moves (N4.1).
 pub trait ModulePlatform: Sync {
     /// The module file as the boot loader handed it over: the kernel virtual address of its
     /// first byte and its length, mapped readable and never reused for the kernel's
     /// lifetime; `None` when the boot loader handed over none.
     fn image(&self) -> Option<(usize, usize)>;
-
-    /// `len` bytes (a whole number of pages) of zeroed, wired kernel memory, mapped
-    /// writable, page-aligned, owned by the caller for the kernel's lifetime: its kernel
-    /// virtual address.
-    fn alloc(&self, len: usize) -> Option<usize>;
-
-    /// Unmaps the writable range `[rw, rw + len)` (from [`Self::alloc`]) and keeps its
-    /// physical pages, which the module window's mappings (`crate::pmap::module_enter`)
-    /// still hold: after it, no writable alias of the module's text and read-only data is
-    /// left but the direct map, which aliases every page of memory as OpenBSD's does. Nothing
-    /// may touch `rw` after.
-    fn release(&self, rw: usize, len: usize);
 }
 
 /// The kernel memory the loader's writable copy takes (`km_alloc`/`km_free`), as the kernel
@@ -184,16 +172,21 @@ impl fmt::Display for Loaded {
 static LOADING: OnceStatic<()> = OnceStatic::new();
 
 /// Loads the module the registered platform's boot hand-over holds
-/// (`crate::bridges::register_module_platform`) and calls its entry point with `api`, the
-/// table of this tree's version (its prefix is checked, and the module's header must name
-/// the same). Once: a second call is refused before it touches anything.
-pub fn load(api: &'static KernelApi) -> Result<Loaded, LoadError> {
+/// (`crate::bridges::register_module_platform`) into memory from `mem` (the kernel's
+/// `km_alloc`) and calls its entry point with `api`, the table of this tree's version (its
+/// prefix is checked, and the module's header must name the same). Once: a second call is
+/// refused before it touches anything.
+pub fn load(api: &'static KernelApi, mem: &dyn ModuleMemory) -> Result<Loaded, LoadError> {
     let platform = crate::bridges::module_platform().ok_or(LoadError::NoImage)?;
-    load_with(platform, api)
+    load_with(platform, mem, api)
 }
 
 /// [`load`] over a given platform (the registered one, or a test's).
-fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<Loaded, LoadError> {
+fn load_with(
+    platform: &dyn ModulePlatform,
+    mem: &dyn ModuleMemory,
+    api: &'static KernelApi,
+) -> Result<Loaded, LoadError> {
     if api.prefix != ApiPrefix::CURRENT {
         return Err(LoadError::Table(api.prefix.version, api.prefix.size));
     }
@@ -213,11 +206,11 @@ fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<L
     let module = Module::parse(file, elf::host_machine())?;
     let span = module.span();
 
-    let rw = platform.alloc(span).ok_or(LoadError::NoMemory)?;
+    let rw = mem.alloc(span).ok_or(LoadError::NoMemory)?.as_usize();
     let mapped = place_and_map(&module, rw, span);
     // W^X: whatever happened, the writable copy goes; the module's pages keep only the
     // protections entered.
-    platform.release(rw, span);
+    mem.release(Vaddr::new(rw), span);
     let init = mapped?;
 
     let entry = core::ptr::with_exposed_provenance::<()>(init);
@@ -241,7 +234,7 @@ fn load_with(platform: &dyn ModulePlatform, api: &'static KernelApi) -> Result<L
 }
 
 /// Places and relocates the module in the writable copy at `rw` (`span` bytes from the
-/// platform's `alloc`), checks its header, and maps every page of it in the machine's module
+/// [`ModuleMemory`]'s `alloc`), checks its header, and maps every page of it in the machine's module
 /// window with its segment's protection; the relocated entry point. The caller releases `rw`
 /// after it, whether it succeeded or not.
 fn place_and_map(module: &Module<'_>, rw: usize, span: usize) -> Result<usize, LoadError> {
@@ -253,8 +246,9 @@ fn place_and_map(module: &Module<'_>, rw: usize, span: usize) -> Result<usize, L
     };
     let init = {
         let first = core::ptr::with_exposed_provenance_mut::<u8>(rw);
-        // SAFETY: the platform premise: `alloc` handed over `span` bytes of writable, wired
-        // memory owned by this caller alone, mapped until the caller's `release`; this is
+        // SAFETY: the platform premise: the kernel's `ModuleMemory::alloc` handed over `span`
+        // bytes of writable, wired memory owned by this caller alone, mapped until the
+        // caller's `release`; this is
         // the only reference to it, and it is not used after this block, which ends before
         // this function returns and so before that `release`.
         let image: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(first, span) };
@@ -441,17 +435,20 @@ mod tests {
         );
     }
 
-    /// A platform with nothing to give: `load` stops before any `unsafe`.
+    /// A platform and a memory with nothing to give: `load` stops before any `unsafe`.
     struct Empty;
 
     impl ModulePlatform for Empty {
         fn image(&self) -> Option<(usize, usize)> {
             None
         }
-        fn alloc(&self, _: usize) -> Option<usize> {
+    }
+
+    impl ModuleMemory for Empty {
+        fn alloc(&self, _: usize) -> Option<Vaddr> {
             None
         }
-        fn release(&self, _: usize, _: usize) {}
+        fn release(&self, _: Vaddr, _: usize) {}
     }
 
     fn register(_: &'static KernelApi, _: crate::api::SyscallHandler, _: HandlerInfo) {}
@@ -477,8 +474,8 @@ mod tests {
     /// reported, and the second call is refused.
     #[test]
     fn no_image_then_no_second_load() {
-        assert_eq!(load_with(&Empty, &API), Err(LoadError::NoImage));
-        assert_eq!(load_with(&Empty, &API), Err(LoadError::Again));
+        assert_eq!(load_with(&Empty, &Empty, &API), Err(LoadError::NoImage));
+        assert_eq!(load_with(&Empty, &Empty, &API), Err(LoadError::Again));
         assert_eq!(
             format!("{}", LoadError::Again),
             "abi_openbsd.ko: not loaded, a module was loaded already"
@@ -495,7 +492,10 @@ mod tests {
             },
             ..KernelApi::new(register, legacy, copyin, copyout, pipe2)
         };
-        assert_eq!(load_with(&Empty, &OTHER), Err(LoadError::Table(1, 40)));
+        assert_eq!(
+            load_with(&Empty, &Empty, &OTHER),
+            Err(LoadError::Table(1, 40))
+        );
     }
 }
 /* </TESTS> */

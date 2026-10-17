@@ -2480,6 +2480,9 @@ pub(crate) mod tests {
             crate::sys::types::Vaddr::new(0),
         );
         uvm_page_init(&mut s, &mut e);
+        // The kernel's km_alloc reaches the pages through bsd's bridges, which uvm_km_init
+        // installs on a real boot (never run here).
+        crate::uvm::uvm_km::uvm_km_test_init();
         kmeminit();
         #[cfg(feature = "kmemstats")]
         crate::kern::kern_malloc::kmemstats_test_reset();

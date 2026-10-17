@@ -228,8 +228,17 @@ pub static PIPE_EFILTOPS: Filterops = Filterops {
     f_process: Some(filt_pipeprocess),
 };
 
+/// The pipe buffers' pages: the kernel's `km_alloc` (`kernel::vm::km`, `kv_any` with
+/// `kp_pageable`).
+#[cfg(not(test))]
+const PIPE_PAGES: &dyn hal::kmbuf::PageMemory = kernel::vm::km::page_memory();
+/// The host tests' pages: the kernel crate's double (the host has no MMU, so `km_alloc`
+/// refuses pageable memory there, as LZ's did).
+#[cfg(test)]
+const PIPE_PAGES: &dyn hal::kmbuf::PageMemory = kernel::testutil::page_memory();
+
 /// The pipes: `pipe_pair_pool`, `nbigpipe`, `amountpipekva`, over this glue.
-pub static PIPES: Pipes<BsdPipeGlue> = Pipes::new(crate::kern::hal_bridges::page_memory());
+pub static PIPES: Pipes<BsdPipeGlue> = Pipes::new(PIPE_PAGES);
 
 /// The `PipeKlists` given back, for the next pipe. The mutex covers a pop or a push.
 #[cfg(feature = "alloc")]

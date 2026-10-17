@@ -5292,7 +5292,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/km.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress"
 
 [[module]]
@@ -7853,8 +7854,9 @@ notes = "M7a-1: struct uao_swhash_elt, struct uvm_aobj (#[repr(C)], u_obj first;
 [[module]]
 rust = "sys/uvm/uvm_extern.rs"
 lz = ["sys/uvm/uvm_extern.rs"]
-status = "inherited"
-notes = "vm_fault_t, vm_inherit_t, vm_prot_t, the UVM_FLAG_* encoding, UVM_PGA_*/UVM_PLA_*/UVM_LK_*, uvm_constraint_range, the kmem_*_mode structs; the prototypes land with their .c files; M6-b: struct vmspace (vm_shm left out: SYSVSHM not configured) with copy_startcopy_from/clear_startcopy for the vm_startcopy memcpy/memset; M7a-3b: uvm_coredump_setup_cb/uvm_coredump_walk_cb as fn types returning Result; M8: exec_map (one static every machine's cpu_startup sets, EXEC_MAP/exec_map()) and KvMap::Exec for kv_exec; M10a: phys_map likewise (PHYS_MAP/phys_map(), set by cpu_startup) and KvMap::Phys for kv_physwait; the vmapbuf/vunmapbuf prototypes are the machine's (machine::cpu::Cpu)"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/types.rs", "sys/kernel/vm/km.rs"]
+notes = "N3.2: the items that name only hal's types moved to sys/kernel/vm/types.rs and the kmem_*_mode structs to sys/kernel/vm/km.rs, re-exported here by name; adapted, not redesigned, because what stays (vmspace, exec_map, phys_map) is LZ's unchanged and keeps its 3 unsafe until N3.5 (a redesigned bsd module must be forbid); before N3.2: vm_fault_t, vm_inherit_t, vm_prot_t, the UVM_FLAG_* encoding, UVM_PGA_*/UVM_PLA_*/UVM_LK_*, uvm_constraint_range, the kmem_*_mode structs; the prototypes land with their .c files; M6-b: struct vmspace (vm_shm left out: SYSVSHM not configured) with copy_startcopy_from/clear_startcopy for the vm_startcopy memcpy/memset; M7a-3b: uvm_coredump_setup_cb/uvm_coredump_walk_cb as fn types returning Result; M8: exec_map (one static every machine's cpu_startup sets, EXEC_MAP/exec_map()) and KvMap::Exec for kv_exec; M10a: phys_map likewise (PHYS_MAP/phys_map(), set by cpu_startup) and KvMap::Phys for kv_physwait; the vmapbuf/vunmapbuf prototypes are the machine's (machine::cpu::Cpu)"
 
 [[module]]
 rust = "sys/uvm/uvm_fault.rs"
@@ -7883,9 +7885,13 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm_km.rs"
 lz = ["sys/uvm/uvm_km.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
-notes = "km_alloc/km_free, the kv_*/kp_*/kd_* modes, no_constraint; M7a-1: uvm_km_init creates the kernel object (uao_init, uao_create UAO_FLAG_KERNOBJ); M7a-2: uvm_km_init sets kernel_map up (uvm_map_setup, the reservation of [base, start) with uvm_map FIXED; kernel_map() and is_kernel_map stand for the C's pointer), uvm_km_suballoc, uvm_km_pgremove, uvm_km_pgremove_intrsafe; kernel_map_min keeps the first free address past the reservation for the selftests; without kmem_map (kmeminit's uvm_km_suballoc, M7+) km_alloc still serves every request physically contiguous through the direct map and reported once, kp_nomem/kp_pageable requests fail reported; the single-page thread is __HAVE_PMAP_DIRECT: nothing; M7b: km_alloc/km_free follow the C (kernel_map/kmem_map space with pmap_kenter_pa or pmap_enter for kp_pageable, kp_nomem virtual-only space, the direct map only for single pages and single segments); the host double (PMAP_NOMMU) keeps the direct map; M8: kv_map_of resolves KvMap::Exec to exec_map; M10a: kv_map_of resolves KvMap::Phys to phys_map"
+status = "redesigned"
+notes = "N3.2: the 0-unsafe adapter of sys/kernel/vm/km.rs and the kernel map's owner until N3.5 (more than a call-site adapter, DECISIONS G4): kernel_map (KERNEL_MAP_STORE, KERNEL_MAP a OnceStatic, kernel_map(), is_kernel_map), uvm_km_init (installs the KmMaps/KmPages bridges first, then the kernel object, uvm_map_setup and the reservation, then the kernel's set_bounds), uvm_km_suballoc, uvm_km_pgremove (aobj pages, N3.4), kp_dma* over the machine's dma_constraint, BsdKmMaps (uvm_map/uvm_unmap of the four maps) and BsdKmPages (uvm_pglistalloc drained with TailqHead::pop_head, uvm_pagefree), km_alloc/km_free in the legacy Option<NonNull<u8>> shape, re-exports of the modes; before N3.2: km_alloc/km_free, the kv_*/kp_*/kd_* modes, no_constraint; M7a-1: uvm_km_init creates the kernel object (uao_init, uao_create UAO_FLAG_KERNOBJ); M7a-2: uvm_km_init sets kernel_map up (uvm_map_setup, the reservation of [base, start) with uvm_map FIXED; kernel_map() and is_kernel_map stand for the C's pointer), uvm_km_suballoc, uvm_km_pgremove, uvm_km_pgremove_intrsafe; kernel_map_min keeps the first free address past the reservation for the selftests; without kmem_map (kmeminit's uvm_km_suballoc, M7+) km_alloc still serves every request physically contiguous through the direct map and reported once, kp_nomem/kp_pageable requests fail reported; the single-page thread is __HAVE_PMAP_DIRECT: nothing; M7b: km_alloc/km_free follow the C (kernel_map/kmem_map space with pmap_kenter_pa or pmap_enter for kp_pageable, kp_nomem virtual-only space, the direct map only for single pages and single segments); the host double (PMAP_NOMMU) keeps the direct map; M8: kv_map_of resolves KvMap::Exec to exec_map; M10a: kv_map_of resolves KvMap::Phys to phys_map"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_km.rs::kv_map_of"
+native = ["BsdKmMaps::map_of"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/uvm/uvm_map.rs"
@@ -8239,7 +8245,7 @@ notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and 
 [[extra]]
 rust = "sys/hal/kmbuf.rs"
 crate = "hal"
-reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory bridge; docs/ZERO_UNSAFE.md 0.1"
+reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory provider trait (a registered bridge until N3.2, then the kernel's vm::km passed as a value); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
 rust = "sys/hal/pool.rs"
@@ -8307,11 +8313,11 @@ reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and
 [[extra]]
 rust = "sys/hal/module/load.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection in the machine's module window (hal::pmap::module_window/module_enter, amd64 since N3.1 commit 6, arm64 since commit 7; nowhere else), the boot hand-over and the writable copy through ModulePlatform (bsd's image/alloc/release until N3.2, the platform premise), the header check, the call of abi_init, the boot line"
+reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection in the machine's module window (hal::pmap::module_window/module_enter, amd64 since N3.1 commit 6, arm64 since commit 7; nowhere else), the boot hand-over through ModulePlatform (bsd's image until N4.1) and the writable copy through ModuleMemory (the kernel's vm::km since N3.2, passed as a value; the platform premise), the header check, the call of abi_init, the boot line"
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over and km_alloc/km_free of the writable copy (the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
 
 [[extra]]
 rust = "sys/hal/api.rs"

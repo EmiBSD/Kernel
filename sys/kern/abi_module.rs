@@ -32,13 +32,13 @@
 //! Where the module runs: the machine's module window beside the kernel image (amd64's in
 //! the image's slot, arm64's in the image's gigabyte, N3.1), which the loader takes and
 //! enters itself (`hal::pmap`); nothing here maps it. The loader's writable copy is a
-//! `kernel_map` range from here, released before the module's entry point is called, and a
-//! page of the module is executable only when its segment is.
+//! `kernel_map` range from the kernel's allocator (`kernel::vm::km::module_memory()`, N3.2),
+//! released before the module's entry point is called, and a page of the module is
+//! executable only when its segment is.
 //!
 //! No `unsafe`: every call here is a safe function of `bsd`, `hal` or `kernel`. Deleted at
 //! N9 with `bsd`.
 
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::module::ModulePlatform;
@@ -53,8 +53,6 @@ use crate::sys::syscall::SYS_MAXSYSCALL;
 use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::systm::SysArgs;
 use crate::sys::types::Register;
-use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, KP_ZERO, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_param::round_page;
 
 /// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
 /// pipe(2) is the kernel crate's, entered through `bsd`'s system call prologue.
@@ -70,27 +68,13 @@ static IMAGE_VA: AtomicUsize = AtomicUsize::new(0);
 /// Its length; 0 while there is none.
 static IMAGE_LEN: AtomicUsize = AtomicUsize::new(0);
 
-/// The loader's platform over the boot hand-over and `km_alloc`
-/// (`hal::module::ModulePlatform`).
+/// The loader's platform over the boot hand-over (`hal::module::ModulePlatform`).
 struct BsdPlatform;
 
 impl ModulePlatform for BsdPlatform {
     fn image(&self) -> Option<(usize, usize)> {
         let len = IMAGE_LEN.load(Ordering::Acquire);
         (len != 0).then(|| (IMAGE_VA.load(Ordering::Relaxed), len))
-    }
-
-    fn alloc(&self, len: usize) -> Option<usize> {
-        km_alloc(round_page(len), &KV_ANY, &KP_ZERO, &KD_WAITOK)
-            .map(|p: NonNull<u8>| p.as_ptr().expose_provenance())
-    }
-
-    fn release(&self, rw: usize, len: usize) {
-        // `kp_none`: km_free gives back the virtual range only (uvm_unmap removes its
-        // mappings); the pages stay, held by the module's mappings, never freed.
-        if let Some(v) = NonNull::new(core::ptr::with_exposed_provenance_mut::<u8>(rw)) {
-            km_free(v, round_page(len), &KV_ANY, &KP_NONE);
-        }
     }
 }
 
@@ -130,7 +114,7 @@ pub fn abi_module_boot(image: Option<(usize, usize)>) {
 /// The second boot step, from `main` before `init(8)` may exec: loads the module, which
 /// registers its handler; prints the one line that says whether it did.
 pub fn abi_module_attach() {
-    match hal::module::load(&KERNEL_API) {
+    match hal::module::load(&KERNEL_API, kernel::vm::km::module_memory()) {
         Ok(loaded) => crate::kprintf!("{loaded}\n"),
         Err(e) => crate::kprintf!("{e}\n"),
     };
