@@ -18,8 +18,10 @@
 
 /* <CODE> */
 //! The machine independent virtual memory definitions `hal` needs: the page arithmetic of
-//! `<uvm/uvm_param.h>`, moved in with `<sys/types.h>` at N3.1.
+//! `<uvm/uvm_param.h>`, moved in with `<sys/types.h>` at N3.1, and the exported statistics of
+//! `<uvm/uvmexp.h>` with their one instance, moved in at N3.3.
 
 #[forbid(unsafe_code)]
 pub mod param;
+pub mod uvmexp;
 /* </CODE> */

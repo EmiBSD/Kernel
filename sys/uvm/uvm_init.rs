@@ -64,6 +64,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::kern::dma_alloc::dma_alloc_init;
 use crate::kern::kern_malloc::kmeminit;
 use crate::machine::{Machine, VmParam};
+use crate::sys::sysctl::SysctlPlain;
 use crate::sys::types::{Vaddr, Vsize};
 use crate::unported;
 use crate::uvm::uvm::Uvm;
@@ -77,16 +78,17 @@ use crate::uvm::uvm_map::{UVM_MAXKADDR, UvmMapUaddrSlot, uvm_map_init, uvm_map_s
 use crate::uvm::uvm_page::uvm_page_init;
 use crate::uvm::uvm_pager::uvm_pager_init;
 use crate::uvm::uvm_param::VM_KERNEL_SPACE_SIZE;
-use crate::uvm::uvmexp::Uvmexp;
+pub use crate::uvm::uvmexp::UVMEXP;
+use crate::uvm::uvmexp::UvmexpCopy;
 
 /// `uvm`: the VM's global state.
 pub static UVM: Uvm = Uvm::new();
-/// `uvmexp`: the exported statistics, under its C name for the interrupt stubs' `V_INTR`.
-#[unsafe(export_name = "uvmexp")]
-pub static UVMEXP: Uvmexp = Uvmexp::new();
 /// `vm_min_kernel_address`: base of kernel virtual memory.
 pub static VM_MIN_KERNEL_ADDRESS: AtomicUsize =
     AtomicUsize::new(<Machine as VmParam>::VM_MIN_KERNEL_ADDRESS);
+
+// SAFETY: `#[repr(C)]` and nothing but `i32`s: no padding, every bit pattern valid.
+unsafe impl SysctlPlain for UvmexpCopy {}
 
 /// `uvm_init`: init the VM system. Called from `kern/init_main.c`.
 pub fn uvm_init() {

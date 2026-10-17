@@ -54,5 +54,7 @@ pub mod uvm_swap;
 #[forbid(unsafe_code)]
 pub mod uvm_unix;
 pub mod uvm_vnode;
-pub mod uvmexp;
+// `<uvm/uvmexp.h>` and its static live in `hal` since N3.3 (the kernel's page system writes
+// the counters); the legacy path stays.
+pub use hal::vm::uvmexp;
 /* </CODE> */

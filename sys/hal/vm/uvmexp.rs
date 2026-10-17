@@ -21,9 +21,12 @@
 //! upstream; it was split out of `uvm_extern.h`).
 //!
 //! Upstream: sys/uvm/uvmexp.h @ 3ce1f3f79392
+//! LZ: sys/uvm/uvmexp.rs@3c62ede68802
 //!
-//! Status: `wip`. `struct uvmexp` is complete; `uvmexp_counters` (the per-CPU counters) and
-//! `atomic_load_sint` arrive with `percpu` (M5).
+//! `struct uvmexp` is complete; `uvmexp_counters` (the per-CPU counters) and
+//! `atomic_load_sint` arrive with `percpu` (M5). The one instance, [`UVMEXP`], lives here
+//! under its C name: the machine's interrupt stubs count `intrs` through the symbol (amd64's
+//! `V_INTR`), and the kernel's page system (`kernel::vm`) writes its page counters.
 //!
 //! ## Deviations
 //! - Every field is an `AtomicI32`: the C mixes atomics (`[a]`), lock-protected fields and
@@ -32,10 +35,17 @@
 //! - The same member list also declares [`UvmexpCopy`], the plain `#[repr(C)]` structure of
 //!   `int`s that `sysctl(2)` copies out (the C copies `uvmexp` itself), and
 //!   [`Uvmexp::snapshot`] fills it.
+//!
+//! ## Redesign
+//! - LZ's `uvmexp.rs` (the type) and the static `UVMEXP` of `uvm_init.rs` move into `hal`
+//!   (N3.3), so the kernel's page system, which `bsd` calls and which cannot call `bsd`,
+//!   writes the counters `vm.uvmexp` and `vmstat -s` read: one static for the one userland
+//!   struct. The exported symbol is a linkage fact of the machine's interrupt stubs, the
+//!   hardware's domain. `bsd` reaches the module as `crate::uvm::uvmexp` (a re-export) and
+//!   keeps its `SysctlPlain` impl of [`UvmexpCopy`] (`sys/uvm/uvm_init.rs`), its own trait.
+//!   The layout of [`UvmexpCopy`] is unchanged.
 
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-
-use crate::sys::sysctl::SysctlPlain;
 
 /// `struct vmmeter`.
 pub const VM_METER: i32 = 1;
@@ -286,14 +296,22 @@ uvmexp_struct! {
     kmapent,
 }
 
-// SAFETY: `#[repr(C)]` and nothing but `i32`s: no padding, every bit pattern valid.
-unsafe impl SysctlPlain for UvmexpCopy {}
-
 impl Default for Uvmexp {
     fn default() -> Self {
         Self::new()
     }
 }
+
+/// `uvmexp`: the exported statistics, under its C name for the interrupt stubs' `V_INTR`.
+// SAFETY: exporting a name is unsound only when it collides with another symbol or a foreign
+// user misreads the object. `uvmexp` is given to no other symbol of the image (bsd's static
+// of the same name moved here, N3.3), and its one foreign user is amd64's `V_INTR` in
+// `vector.S`, which increments the `int` at `offset_of!(Uvmexp, intrs)` (an `AtomicI32`, the
+// size and alignment of the C's `int`) with an `incl`: a 4-byte read-modify-write of that
+// field's own bytes, never overlapping another field, whose concurrent increments on two CPUs
+// may lose a count as the C's statistical counter does, never tear a value.
+#[unsafe(export_name = "uvmexp")]
+pub static UVMEXP: Uvmexp = Uvmexp::new();
 
 /// `enum uvm_exp_counters`: the per-CPU counters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
