@@ -30,7 +30,11 @@
 //! `crate::kmbuf::PageMemory`), on which the `// SAFETY:` of every site that makes a
 //! reference or a slice of such a block rests. It is a documented trust boundary, not a
 //! compile-time proof, and it goes with the bridges (N9) and, for the pages, when the kernel
-//! map's record is typed (N3.5).
+//! map's record is typed (N3.5). Since the page provider is a value and not a slot, the
+//! boundary is chosen at each call: every caller of `KmBuf::alloc_pageable`/`alloc_wired` and
+//! of `kernel::pipe::Pipes::new` names its provider, and in a kernel image the one production
+//! choice is `sys/kern/pipe_glue.rs`'s `PIPES`, which passes the kernel's
+//! `kernel::vm::km::page_memory()` (the test doubles are `cfg(test)` code).
 //!
 //! What can be checked is checked here, on every answer: the pointer is not null (it is a
 //! `NonNull`), it is aligned as the request needs, and the size granted covers the request.

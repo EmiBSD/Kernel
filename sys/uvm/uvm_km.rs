@@ -146,6 +146,7 @@ use crate::uvm::uvm_page::{
     vm_page_to_phys,
 };
 use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, round_page};
+use crate::uvm::uvm_pmemrange::uvm_pmr_freepages;
 
 /// The kernel maps of `bsd`, as the kernel's `km` asks for them (`kernel::vm::km::KmMaps`).
 pub struct BsdKmMaps;
@@ -430,6 +431,24 @@ impl KmPages for BsdKmPages {
         Ok(())
     }
 
+    /// `uvm_pglistfree`'s work (`uvm_pmr_freepageq`) without the list, which only `unsafe`
+    /// mutators could build: every frame must have its page before any goes back (the C
+    /// panics while it collects them), then each page goes onto the free list with
+    /// `uvm_pmr_freepages(pg, 1)`: the same checks and flags, `uvmexp.free` counted, the
+    /// wakeups of `&uvmexp.free` and `&uvmexp.zeropages`; one page at a time, so a run is never
+    /// assumed to lie in one page array.
+    fn free_list(&self, frames: &[Paddr]) -> Result<(), Paddr> {
+        if let Some(&pa) = frames.iter().find(|&&pa| PHYS_TO_VM_PAGE(pa).is_none()) {
+            return Err(pa);
+        }
+        for &pa in frames {
+            if let Some(pg) = PHYS_TO_VM_PAGE(pa) {
+                uvm_pmr_freepages(pg, 1);
+            }
+        }
+        Ok(())
+    }
+
     fn free(&self, pa: Paddr) -> bool {
         match PHYS_TO_VM_PAGE(pa) {
             Some(pg) => {
@@ -460,9 +479,57 @@ pub fn km_free(v: NonNull<u8>, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) {
 
 /// The host tests' stand-in for [`uvm_km_init`]'s first step, which they never run: installs
 /// the two bridges so the kernel's allocator serves the pools and `malloc` over the test's
-/// memory (a second call keeps the first).
+/// memory (a second call keeps the first), and bootstraps the host pmap, so the kernel map's
+/// token is adopted before any path of the kernel's allocator that maps can run (a machine's
+/// boot glue does it before `uvm_init`).
 #[cfg(test)]
 pub(crate) fn uvm_km_test_init() {
     let _ = install(&BSD_KM_MAPS, &BSD_KM_PAGES);
+    <Machine as Pmap>::pmap_bootstrap_lazy();
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // The adapter over the host's memory (`setup_real_memory`, which runs uvm_km_test_init).
+
+    use std::assert_eq;
+
+    use super::*;
+    use crate::kern::subr_pool::tests::setup_real_memory;
+
+    fn free_pages() -> i32 {
+        UVMEXP.free.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn km_free_puts_the_pages_back_on_the_free_list() {
+        let _g = setup_real_memory();
+        let before = free_pages();
+        let p = km_alloc(2 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("two pages");
+        assert_eq!(free_pages(), before - 2);
+        km_free(p, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
+        // uvm_pglistfree's way: counted free at once, not parked in a per-CPU cache.
+        assert_eq!(free_pages(), before);
+    }
+
+    #[test]
+    fn the_pages_bridge_refuses_a_frame_without_a_page() {
+        let _g = setup_real_memory();
+        let before = free_pages();
+        assert_eq!(BSD_KM_PAGES.free_list(&[Paddr::new(0)]), Err(Paddr::new(0)));
+        assert!(!BSD_KM_PAGES.free(Paddr::new(0)));
+        assert_eq!(free_pages(), before);
+    }
+
+    #[test]
+    fn pgremove_intrsafe_runs_after_the_test_set_up() {
+        let _g = setup_real_memory();
+        // The kernel's token is reachable once uvm_km_test_init ran: an empty range is a
+        // kremove of nothing, not a panic.
+        let va = Vaddr::new(0xffff_9800_0000_0000);
+        uvm_km_pgremove_intrsafe(va, va);
+    }
+}
+/* </TESTS> */

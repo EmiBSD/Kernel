@@ -154,12 +154,13 @@
 //! What is still `bsd`'s is reached through two bridges (bridges.toml), registered once by
 //! `bsd`'s `uvm_km_init` ([`install`]): the kernel maps ([`KmMaps`]: `uvm_map`/`uvm_unmap` of
 //! `kernel_map`, `kmem_map`, `exec_map`, `phys_map`, N3.5) and the page system ([`KmPages`]:
-//! `uvm_pglistalloc` and `uvm_pagefree`, N3.3), whose boundary is the C's own: the physical
-//! address of a frame (`VM_PAGE_TO_PHYS`/`PHYS_TO_VM_PAGE`). The kernel pmap changes only
-//! through `hal::pmap::KernelMapper`, the token `pmap_bootstrap` hands out once: it is kept
-//! here ([`adopt_mapper`]), the owner of the fact it stands for (the caller owns the kernel
-//! virtual addresses it maps), and lent to the legacy wrappers of `machine::pmap` until their
-//! last caller moves ([`legacy_mapper`], N3.3 to N7).
+//! `uvm_pglistalloc`, `uvm_pglistfree` and `uvm_pagefree`, N3.3), whose boundary is the C's
+//! own: the physical address of a frame (`VM_PAGE_TO_PHYS`/`PHYS_TO_VM_PAGE`). The kernel pmap
+//! changes only through `hal::pmap::KernelMapper`, the token `pmap_bootstrap` hands out once:
+//! it is kept here ([`adopt_mapper`]), the owner of the fact it stands for (the caller owns the
+//! kernel virtual addresses it maps), and lent to `machine::pmap` alone, the holder of the one
+//! [`LegacyLend`], until the last caller of its kernel-pmap wrappers moves ([`legacy_mapper`],
+//! N3.3 to N7).
 //!
 //! No lock of its own, as the C with `__HAVE_PMAP_DIRECT`: the map's lock is inside
 //! [`KmMaps`], the page queues' inside [`KmPages`]; the callers raise the interrupt level
@@ -177,16 +178,16 @@
 //!   does with a direct map (`km_alloc: DIRECT single page`); `uvm_init` keeps its two
 //!   `unported:` lines (`uvm_km_page_init`, `uvm_km_page_lateinit`).
 //! - `kd_slowdown` is a value, not a pointer: only the single-page thread writes it.
-//! - `km_free` of wired pages gives each frame back as it finds it, then removes the whole
-//!   range's mappings once; the C collects the pages on a list, removes the mappings, then
-//!   frees the list. The order is the C's own `uvm_km_pgremove_intrsafe`'s: the range is still
-//!   the caller's until `uvm_unmap`, so nothing uses its stale mappings, and the TLB
-//!   shootdown stays one per call.
-//! - Frames go back one by one through [`KmPages::free`] (`uvm_pagefree`: `uvm_pageclean`,
-//!   then the per-CPU page cache), as the C's `uvm_km_pgremove_intrsafe` frees `kmem_map`'s
-//!   pages, where the C's `km_free` and `km_alloc`'s failure path free a list
-//!   (`uvm_pglistfree`): building a list needs `TAILQ_INSERT_TAIL`, an `unsafe` mutator, and
-//!   both are correct frees of the pages `uvm_pglistalloc` gave.
+//! - `km_free` collects the frames of at most [`FREE_CHUNK`] pages at a time (the kernel holds
+//!   no list and no heap here), so a wired range larger than that has its mappings removed
+//!   and its frames freed chunk by chunk, one `pmap_kremove` (one TLB shootdown) per chunk
+//!   where the C has one per call; within a chunk the C's order holds (the mappings go, then
+//!   the frames go back), so no frame is on a free list while it is still mapped. A frame no
+//!   page describes panics once its chunk is unmapped, where the C panics before the
+//!   `pmap_kremove`.
+//! - `km_alloc` gives back the frames of a request that found no virtual space one at a time
+//!   as the page list hands them over ([`KmPages::alloc`]'s callback), each with the C's
+//!   `uvm_pglistfree` ([`KmPages::free_list`]): the same counter and wakeups, in more calls.
 //! - [`kernel_map_min`] is the first address the kernel map can hand out after the bootstrap
 //!   reservation (the selftests probe it), not `vm_map_min(kernel_map)`.
 //!
@@ -231,6 +232,10 @@ use super::types::{
     UVM_UNKNOWN_OFFSET, UvmConstraintRange, VmProt, Voff, uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
+
+/// The most frames `km_free` collects before giving them back: `FREE_CHUNK` physical
+/// addresses on the stack, 256 bytes (the kernel stacks of the I/O paths are tight).
+pub const FREE_CHUNK: usize = 32;
 
 /// Which kernel map a [`KmemVaMode`] allocates from (`kv_map` in C is a pointer to the map
 /// pointer; the maps are `bsd`'s, named here, reached through [`KmMaps`]).
@@ -481,9 +486,24 @@ pub trait KmPages: Sync {
         each: &mut dyn FnMut(Paddr),
     ) -> Result<(), Errno>;
 
-    /// `uvm_pagefree(PHYS_TO_VM_PAGE(pa))`: gives a frame back; `false`, and nothing done,
-    /// when no page describes `pa` (the caller panics with the C's message).
+    /// `uvm_pglistfree` of the pages behind `frames` (`km_free`'s and `km_alloc`'s way back):
+    /// every page onto the free list (`uvm_pmr_freepageq`: `uvmexp.free` counts them, and
+    /// `&uvmexp.free` and `&uvmexp.zeropages` are woken), never into a per-CPU cache. When no
+    /// page describes a frame, nothing is freed and that frame is the error (the caller
+    /// panics with the C's message).
+    fn free_list(&self, frames: &[Paddr]) -> Result<(), Paddr>;
+
+    /// `uvm_pagefree(PHYS_TO_VM_PAGE(pa))` (`uvm_km_pgremove_intrsafe`'s way back: the page
+    /// cleaned, then the per-CPU page cache under `__HAVE_UVM_PERCPU`); `false`, and nothing
+    /// done, when no page describes `pa`.
     fn free(&self, pa: Paddr) -> bool;
+}
+
+/// The one lend of the kernel map's token to `bsd`: [`adopt_mapper`] makes it, once, and the
+/// holder (`machine::pmap`, in a private static) shows it to [`legacy_mapper`]. Not `Clone`,
+/// not `Copy`, no public constructor: code without it cannot reach the token.
+pub struct LegacyLend {
+    _private: (),
 }
 
 /// Registers the kernel maps and the page system, once (`bsd`'s `uvm_km_init`, before its
@@ -513,12 +533,17 @@ fn bridges_for(who: &str) -> Bridges {
 }
 
 /// Adopts the kernel map's token from the boot glue's `pmap_bootstrap` (once, on the boot
-/// CPU, before anything maps); a second token is handed back.
-pub fn adopt_mapper(m: KernelMapper) -> Result<(), KernelMapper> {
-    MAPPER.set(m)
+/// CPU, before anything maps) and returns the one [`LegacyLend`] for the caller to keep; a
+/// second token is handed back, and no second lend exists.
+pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
+    MAPPER.set(m)?;
+    Ok(LegacyLend { _private: () })
 }
 
-/// The kernel map's token; panics before [`adopt_mapper`].
+/// The kernel map's token; panics before [`adopt_mapper`]. On the host, where nothing boots,
+/// whoever reaches a path that maps (the map path, `km_free`'s wired path,
+/// [`uvm_km_pgremove_intrsafe`], `module_memory`'s release) has bootstrapped the pmap first:
+/// the kernel's tests in their set-up, `bsd`'s in `uvm_km_test_init`.
 fn mapper() -> &'static KernelMapper {
     match MAPPER.get() {
         Some(m) => m,
@@ -528,13 +553,16 @@ fn mapper() -> &'static KernelMapper {
     }
 }
 
-/// The token lent to `bsd`'s legacy wrappers (`machine::pmap`'s `pmap_kenter_pa`,
-/// `pmap_kremove`, `pmap_kenter_cache`, `pmap_enter` and friends on the kernel pmap), whose
-/// callers keep their `unsafe` blocks as the proof the token stands for: a documented trust
-/// boundary that shrinks as they move (N3.3 `uvm_page`, N3.5 `uvm_glue`, N4 the machines'
-/// `cpu` and `vm_machdep`, N7 `bus_space`, `rnd`, `vfs_biomem`) and goes with the last one.
-/// Panics before [`adopt_mapper`].
-pub fn legacy_mapper() -> &'static KernelMapper {
+/// The token, lent to the holder of the [`LegacyLend`]: `machine::pmap`, for its wrappers
+/// over the kernel pmap. Those are the three `unsafe fn`s (`pmap_kenter_pa`, `pmap_kremove`,
+/// arm64's `pmap_kenter_cache`), whose callers keep their `unsafe` blocks as the proof the
+/// token stands for, and the safe `pmap_enter`, `pmap_remove` and `pmap_protect` on
+/// `pmap_kernel()` and amd64's `pmap_prealloc_lowmem_ptps`, whose callers are the kernel map's
+/// own paths (`uvm_map`, `uvm_fault`, `uvm_glue`, the boot glue). A documented trust boundary
+/// that shrinks as they move (N3.3 `uvm_page`, N3.5 `uvm_glue` and `uvm_map`, N4 the
+/// machines' `cpu` and `vm_machdep`, N7 `bus_space`, `rnd`, `vfs_biomem`) and goes with the
+/// last one. Panics before [`adopt_mapper`].
+pub fn legacy_mapper(_lend: &LegacyLend) -> &'static KernelMapper {
     mapper()
 }
 
@@ -690,7 +718,7 @@ fn alloc_in(
                         };
                     }
                     Fill::Failed | Fill::Start => {
-                        if !b.pages.free(pa) {
+                        if let Err(pa) = b.pages.free_list(&[pa]) {
                             kpanic(format_args!(
                                 "km_alloc: unmanaged page {:#x}",
                                 pa.as_usize()
@@ -772,14 +800,23 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
 
     if !kp.kp_nomem {
         // __HAVE_PMAP_DIRECT
+        let mut frames = [Paddr::new(0); FREE_CHUNK];
         if HAVE_PMAP_DIRECT && (kv.kv_singlepage || kp.kp_maxseg == 1 || nommu) {
             let mut va = sva;
             while va < eva {
-                match hal::pmap::direct_unmap(Vaddr::new(va)) {
-                    Some(pa) if b.pages.free(pa) => {}
-                    _ => kpanic(format_args!("km_free: unmanaged page at {va:#x}")),
+                let mut n = 0;
+                while va < eva && n < FREE_CHUNK {
+                    match hal::pmap::direct_unmap(Vaddr::new(va)) {
+                        Some(pa) => frames[n] = pa,
+                        None => kpanic(format_args!("km_free: unmanaged page at {va:#x}")),
+                    }
+                    n += 1;
+                    va += PAGE_SIZE;
                 }
-                va += PAGE_SIZE;
+                if let Err(pa) = b.pages.free_list(&frames[..n]) {
+                    let at = hal::pmap::direct_map(pa).as_usize();
+                    kpanic(format_args!("km_free: unmanaged page at {at:#x}"));
+                }
             }
             return;
         }
@@ -787,16 +824,24 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
         if kp.kp_pageable {
             mapper().remove(Vaddr::new(sva), Vaddr::new(eva));
         } else {
+            // The C's order, per chunk: collect the frames, remove the mappings, then free
+            // the frames (module deviations).
             let mut va = sva;
             while va < eva {
-                if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va))
-                    && !b.pages.free(pa)
-                {
+                let start = va;
+                let mut n = 0;
+                while va < eva && va - start < FREE_CHUNK * PAGE_SIZE {
+                    if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va)) {
+                        frames[n] = pa;
+                        n += 1;
+                    }
+                    va += PAGE_SIZE;
+                }
+                mapper().kremove(Vaddr::new(start), Vsize::new(va - start));
+                if let Err(pa) = b.pages.free_list(&frames[..n]) {
                     kpanic(format_args!("km_free: unmanaged page {:#x}", pa.as_usize()));
                 }
-                va += PAGE_SIZE;
             }
-            mapper().kremove(Vaddr::new(sva), Vsize::new(sz));
         }
     }
     // free_va:
@@ -883,8 +928,8 @@ mod tests {
     // map path, which the host never takes, is exercised through `alloc_in`/`free_in` with
     // `nommu` false: the double's virtual space, the host pmap's mappings.
 
-    use std::sync::Once;
     use std::sync::atomic::AtomicBool;
+    use std::sync::{Once, OnceLock};
     use std::thread;
     use std::time::Duration;
 
@@ -893,8 +938,12 @@ mod tests {
     use hal::kmbuf::KmBuf;
     use hal::pmap::BootstrapParams;
 
+    /// The lend `adopt_mapper` returned to the set-up.
+    static LEND: OnceLock<LegacyLend> = OnceLock::new();
+
     /// The process's set-up, once: the runtime's doubles, the km doubles, the host pmap
-    /// bootstrapped with the page provider double and its token adopted here.
+    /// bootstrapped with the page provider double and its token adopted here (the lend kept
+    /// for the test that borrows it).
     fn setup() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
@@ -910,7 +959,10 @@ mod tests {
                 },
                 testutil::phys_pages(),
             );
-            assert!(adopt_mapper(b.mapper).is_ok());
+            match adopt_mapper(b.mapper) {
+                Ok(lend) => assert!(LEND.set(lend).is_ok()),
+                Err(_) => panic!("the token was adopted already"),
+            }
         });
     }
 
@@ -976,8 +1028,49 @@ mod tests {
             None,
             "the direct map takes no space"
         );
+        let listed = testutil::km_list_freed();
         km_free(va, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
         assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(
+            testutil::km_list_freed(),
+            listed + 2,
+            "back on the free list (uvm_pglistfree), not uvm_pagefree's per-CPU cache"
+        );
+    }
+
+    #[test]
+    fn km_free_removes_the_mappings_before_it_frees_the_frames() {
+        setup();
+        // More pages than one chunk, so two kremoves and two lists.
+        let pages = FREE_CHUNK + 8;
+        let len = pages * PAGE_SIZE;
+        let before = testutil::km_frames_out();
+        let listed = testutil::km_list_freed();
+        let va = alloc_in(false, len, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("space");
+        assert_eq!(testutil::km_frames_out(), before + pages as i64);
+        testutil::km_watch(va.as_usize(), va.as_usize() + len);
+        let mapped_before = testutil::km_freed_mapped();
+        free_in(false, va, len, &KV_ANY, &KP_ZERO);
+        assert_eq!(
+            testutil::km_freed_mapped(),
+            mapped_before,
+            "no frame freed while mapped"
+        );
+        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(testutil::km_list_freed(), listed + pages as i64);
+        assert!((0..pages).all(|i| extract(va.as_usize() + i * PAGE_SIZE).is_none()));
+    }
+
+    #[test]
+    fn the_lend_reaches_the_token() {
+        setup();
+        let lend = LEND.get().expect("the set-up's lend");
+        let va = Vaddr::new(testutil::KM_VA_END - PAGE_SIZE);
+        let pa = Paddr::new(0x4321_0000);
+        legacy_mapper(lend).kenter(va, pa, PROT_READ);
+        assert_eq!(extract(va.as_usize()), Some(pa));
+        legacy_mapper(lend).kremove(va, Vsize::new(PAGE_SIZE));
+        assert_eq!(extract(va.as_usize()), None);
     }
 
     #[test]

@@ -32,7 +32,8 @@
 //! - The kernel pmap changes only through `hal::pmap::KernelMapper`, the token
 //!   `pmap_bootstrap` hands out once; [`pmap_bootstrap`] (the machine's boot glue) gives it to
 //!   its owner, the kernel's allocator (`kernel::vm::km::adopt_mapper`, N3.2), which lends it
-//!   back here (`kernel::vm::km::legacy_mapper`) for [`pmap_enter`]/[`pmap_remove`]/
+//!   back here, to the holder of the one `kernel::vm::km::LegacyLend` (a private static:
+//!   `kernel::vm::km::legacy_mapper` takes it), for [`pmap_enter`]/[`pmap_remove`]/
 //!   [`pmap_protect`] on the kernel pmap and the three legacy `unsafe fn`s
 //!   ([`pmap_kenter_pa`], [`pmap_kremove`], [`pmap_steal_memory`], with arm64's
 //!   [`pmap_kenter_cache`]), whose callers keep their `unsafe` blocks until their owners move
@@ -57,6 +58,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use hal::once::OnceStatic;
 use hal::pmap::{BootstrapParams, KernelMapper, PhysPages, Switcher};
 pub use hal::pmap::{KernelImage, PmapRef};
+use kernel::vm::km::LegacyLend;
 
 use crate::kern::subr_prf::panic;
 use crate::machine::Machine;
@@ -167,6 +169,10 @@ impl PhysPages for BsdPages {
 
 static BSD_PAGES: BsdPages = BsdPages;
 
+/// The lend of the kernel map's token, from `kernel::vm::km::adopt_mapper`: only this module
+/// can borrow the token.
+static LEND: OnceStatic<LegacyLend> = OnceStatic::new();
+
 /// The context switch's token, from `pmap_bootstrap`.
 static SWITCHER: OnceStatic<Switcher> = OnceStatic::new();
 
@@ -184,7 +190,12 @@ fn booted() {
 /// [`pmap_bootstrap`].
 fn mapper() -> &'static KernelMapper {
     booted();
-    kernel::vm::km::legacy_mapper()
+    match LEND.get() {
+        Some(lend) => kernel::vm::km::legacy_mapper(lend),
+        None => panic(format_args!(
+            "pmap: the kernel pmap used before pmap_bootstrap"
+        )),
+    }
 }
 
 /// The context switch's token; panics before [`pmap_bootstrap`].
@@ -203,7 +214,8 @@ fn switcher() -> &'static Switcher {
 /// virtual address (amd64's and arm64's answers).
 pub fn pmap_bootstrap(params: &BootstrapParams) -> (Paddr, Vaddr) {
     let b = hal::pmap::bootstrap(params, &BSD_PAGES);
-    if kernel::vm::km::adopt_mapper(b.mapper).is_err() || SWITCHER.set(b.switcher).is_err() {
+    let lent = kernel::vm::km::adopt_mapper(b.mapper).is_ok_and(|lend| LEND.set(lend).is_ok());
+    if !lent || SWITCHER.set(b.switcher).is_err() {
         panic(format_args!("pmap_bootstrap: the tokens were kept already"));
     }
     BOOTSTRAPPED.store(true, Ordering::Release);

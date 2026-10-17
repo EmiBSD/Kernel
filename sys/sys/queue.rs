@@ -71,7 +71,8 @@
 //! that mutates through pointers under a lock. The lock discipline stays the caller's, as in C:
 //! readers are safe functions whose references live as long as the borrow they come from; every
 //! mutator but [`TailqHead::pop_head`] is `unsafe` and states what the caller guarantees. The contract behind all of them:
-//! an element linked into a list stays valid and in place until it is unlinked, a non-empty
+//! an element linked into a list stays valid and in place until it is unlinked (and one that
+//! [`TailqHead::pop_head`] unlinks, while the borrow of the head it came from lives), a non-empty
 //! list or tail queue head stays in place (its first element's back link names it; the other
 //! heads are named by nothing), and an element unlinked and then freed is not the pending
 //! position of a live iterator (the `_FOREACH_SAFE` rule: only the element just yielded may go).
@@ -1252,8 +1253,10 @@ impl<A: TailqAdapter> TailqHead<A> {
     ///
     /// # Safety
     ///
-    /// `elem` is in no queue of `A` and stays valid and in place until it is unlinked; the head
-    /// stays in place while the queue is not empty.
+    /// `elem` is in no queue of `A` and stays valid and in place until it is unlinked, and,
+    /// when [`pop_head`](Self::pop_head) is what unlinks it, for as long as the borrow of the
+    /// head `pop_head` returned it under lives; the head stays in place while the queue is not
+    /// empty.
     pub unsafe fn insert_head(&self, elem: &A::Elem) {
         let entry = A::entry(elem);
         entry.tqe_next.set(self.tqh_first.get());
@@ -1339,9 +1342,12 @@ impl<A: TailqAdapter> TailqHead<A> {
     /// [`remove`](Self::remove) leaves them), `None` once the queue is empty. Safe: the only
     /// element it unlinks is the one the head itself names.
     ///
-    /// The element is in no queue afterwards, so the list's contract no longer keeps it alive:
-    /// the reference lives as long as the borrow of the head, as [`first`](Self::first)'s, and
-    /// the caller, who drains the queue it owns, decides where the element goes next.
+    /// The element is in no queue afterwards, yet the reference lives as long as the borrow of
+    /// the head, as [`first`](Self::first)'s: the premise is the insertion contract
+    /// ([`insert_head`](Self::insert_head) and the other mutators that link an element), under
+    /// which an element `pop_head` unlinks stays valid while that borrow lives. The caller,
+    /// who drains the queue it owns, decides where the element goes next (the kernel's page
+    /// lists: static `vm_page`s, valid for ever).
     pub fn pop_head(&self) -> Option<&A::Elem> {
         let elem = self.first()?;
         // SAFETY: `remove`'s precondition is that `elem` is in this queue. `elem` is what this
@@ -1352,7 +1358,9 @@ impl<A: TailqAdapter> TailqHead<A> {
         // one (`remove`, `replace` move `tqh_first` to the next linked element or `None`), all
         // of which require the head and the linked elements to stay valid and in place. No
         // other caller can unlink `elem` between the read and the removal without breaking the
-        // queue's lock discipline, which every mutator's contract already demands.
+        // queue's lock discipline, which every mutator's contract already demands. The
+        // reference returned past the unlink is the insertion contract's (`insert_head`): an
+        // element `pop_head` unlinks stays valid while the head's borrow lives.
         unsafe { self.remove(elem) };
         Some(elem)
     }

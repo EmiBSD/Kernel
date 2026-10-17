@@ -144,10 +144,11 @@ impl Deref for KmBuf {
     fn deref(&self) -> &[u8] {
         // SAFETY: `ptr` names at least `len` bytes (checked by `check_block` when the run was
         // made) of zeroed, initialised kernel memory that only this value references and that
-        // lives until the drop: the contract of the `PageMemory` it came from (the kernel's own
-        // `km`, which hands each block out once and takes it back only from this drop;
-        // `sys/hal/trust.rs`), a documented trust boundary. The slice borrows `self`, so it
-        // ends before the drop.
+        // lives until the drop: the contract of the `PageMemory` it came from, which the caller
+        // of `alloc_*` chose (in a kernel image only `sys/kern/pipe_glue.rs`'s `PIPES`, with
+        // the kernel's own `km`, which hands each block out once and takes it back only from
+        // this drop; `sys/hal/trust.rs`), a documented trust boundary. The slice borrows
+        // `self`, so it ends before the drop.
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }

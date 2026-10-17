@@ -47,7 +47,9 @@
 //!   `BTreeMap`, in a range no host address uses, whose next maps a thread can make fail
 //!   ([`km_fail_maps`]); `KmPages`, frames that are leaked, zeroed, page-aligned blocks of the
 //!   heap whose physical address is their address (the host pmap's direct map is the
-//!   identity), counted per thread ([`km_frames_out`]).
+//!   identity), counted per thread ([`km_frames_out`]), those given back as a list counted
+//!   apart ([`km_list_freed`]), and a list that frees a frame a watched range still maps
+//!   counted too ([`km_watch`], [`km_freed_mapped`]).
 //! - `PhysPages` ([`phys_pages`], for `hal::pmap::bootstrap`): the host pmap asks it for
 //!   nothing; it answers as a page system with no managed pages would.
 
@@ -100,6 +102,9 @@ std::thread_local! {
     static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
     static KM_LAST_UNMAP: Cell<Option<(KvMap, usize, usize)>> = const { Cell::new(None) };
+    static KM_LIST_FREED: Cell<i64> = const { Cell::new(0) };
+    static KM_WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    static KM_FREED_MAPPED: Cell<u32> = const { Cell::new(0) };
 }
 
 /// The index the next test thread gets.
@@ -511,6 +516,30 @@ impl KmPages for TestKmPages {
         Ok(())
     }
 
+    fn free_list(&self, frames: &[Paddr]) -> Result<(), Paddr> {
+        let mut known = lock(&KM_FRAMES);
+        if let Some(&pa) = frames.iter().find(|pa| !known.contains(&pa.as_usize())) {
+            return Err(pa);
+        }
+        // A frame back on the free list while the watched range still maps it is the order
+        // the C never has.
+        if let Some((start, end)) = KM_WATCH.with(Cell::get) {
+            let mapped = (start..end)
+                .step_by(TEST_PAGE)
+                .filter_map(|va| hal::pmap::kernel().extract(Vaddr::new(va)))
+                .any(|pa| frames.contains(&pa));
+            if mapped {
+                KM_FREED_MAPPED.with(|c| c.set(c.get() + 1));
+            }
+        }
+        for pa in frames {
+            known.remove(&pa.as_usize());
+        }
+        KM_FRAMES_OUT.with(|c| c.set(c.get() - frames.len() as i64));
+        KM_LIST_FREED.with(|c| c.set(c.get() + frames.len() as i64));
+        Ok(())
+    }
+
     fn free(&self, pa: Paddr) -> bool {
         let known = lock(&KM_FRAMES).remove(&pa.as_usize());
         if known {
@@ -586,6 +615,23 @@ pub fn km_entry(va: Vaddr) -> Option<(KvMap, KmObject)> {
 /// The last range this thread gave back to the double (`which`, start, end).
 pub fn km_last_unmap() -> Option<(KvMap, usize, usize)> {
     KM_LAST_UNMAP.with(Cell::get)
+}
+
+/// The frames this thread gave back through the page double's `free_list` (the C's
+/// `uvm_pglistfree`), as opposed to `free` (`uvm_pagefree`).
+pub fn km_list_freed() -> i64 {
+    KM_LIST_FREED.with(Cell::get)
+}
+
+/// Watches `[start, end)` of the kernel pmap: every `free_list` of this thread then counts a
+/// call that frees a frame the range still maps ([`km_freed_mapped`]).
+pub fn km_watch(start: usize, end: usize) {
+    KM_WATCH.with(|w| w.set(Some((start, end))));
+}
+
+/// How many of this thread's `free_list` calls freed a frame the watched range still mapped.
+pub fn km_freed_mapped() -> u32 {
+    KM_FREED_MAPPED.with(Cell::get)
 }
 
 /// The page provider double for `hal::pmap::bootstrap`.
