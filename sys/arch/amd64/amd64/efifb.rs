@@ -50,9 +50,10 @@
 //!   from Limine's framebuffer response (`docs/ARCHITECTURE.md`, "Frame buffer under
 //!   Limine").
 //! - `efifb_early_map` is the bootloader's direct map: Limine maps the frame buffer memory in
-//!   its higher-half direct map, which the kernel keeps (`pmap.rs`), so there is no
-//!   `pmap_set_pml4_early` slot to borrow and `efifb_early_cleanup` has nothing to undo
-//!   (`pmap_set_pml4_early`/`pmap_clear_pml4_early` are not ported).
+//!   its higher-half direct map, which the kernel keeps (`sys/hal/arch/amd64/pmap/backend.rs`,
+//!   deviations), so there is no `pmap_set_pml4_early` slot to borrow and
+//!   `efifb_early_cleanup` has nothing to undo (`pmap_set_pml4_early`/`pmap_clear_pml4_early`
+//!   are not ported).
 //! - `efifb_cnattach` is `wscons_machdep.c`'s `wscn_video_init`'s, which is not ported: the
 //!   kernel's console is the serial line (`consinit.rs`), as OpenBSD's with a serial console
 //!   chosen by boot(8), so `wsdisplay0 at efifb0` attaches as a plain, non-console display.

@@ -73,12 +73,10 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::arch::arm64::arm64::machdep::BOOTSTRAP_DEVICE_MAP_SIZE;
-
 use crate::arch::arm64::include::bus::{
     BUS_SPACE_MAP_CACHEABLE, BUS_SPACE_MAP_PREFETCHABLE, BusSpace, BusSpaceHandle,
 };
 use crate::arch::arm64::include::param::PAGE_SIZE;
-
 use crate::arch::arm64::include::vmparam::VM_MIN_KERNEL_ADDRESS;
 use crate::machine::bus::{BusAddr, BusSize};
 use crate::machine::pmap::{
@@ -192,7 +190,7 @@ pub unsafe fn generic_space_map(
 
     // The C: startpa = trunc_page(bpa); endpa = round_page(bpa + size); va = km_alloc(endpa
     // - startpa, &kv_any, &kp_none, &kd_nowait); pmap_kenter_cache each page. Here the
-    // virtual range comes from `vmmap` (see `pmap.rs`).
+    // virtual range comes from `vmmap` (`VMMAP`, see sys/hal/arch/arm64/pmap/backend.rs).
     let startpa = trunc_page(offs);
     let endpa = round_page(offs.checked_add(size).ok_or(Errno::EINVAL)?);
     let len = endpa - startpa;

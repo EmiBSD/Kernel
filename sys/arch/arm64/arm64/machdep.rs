@@ -140,7 +140,6 @@ use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 use crate::arch::arm64::arm64::fpu::{fpu_drop, fpu_save};
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
-
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
 use crate::arch::arm64::include::armreg::{PSR_DIT, PSR_M_EL0t};

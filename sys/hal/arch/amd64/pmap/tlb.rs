@@ -145,14 +145,21 @@
 //!   its other users until N4): `lcr3` takes a pmap, whose root is a PML4 with the kernel
 //!   half, so no caller can load anything else; `wbinvd_on_all_cpus` is the bridge's, or
 //!   this CPU's `wbinvd` while one CPU runs.
+//! - `curcpu()->ci_cflushsz` is the bridge's with `multiprocessor`; without it (no bridge is
+//!   registered) `hal` reads the one CPU's line size itself, by `cpuid` once, as
+//!   `identifycpu` computes it (`layout::cflushsz_of`), so `pmap_flush_cache` uses `clflush`
+//!   whenever the CPU has it, as the C does, and `wbinvd` only when it has not.
 
 use core::arch::asm;
+use core::arch::x86_64::__cpuid;
 #[cfg(feature = "multiprocessor")]
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::super::include::param::PAGE_SIZE;
 #[cfg(feature = "multiprocessor")]
 use super::super::include::vmparam::VM_MIN_KERNEL_ADDRESS;
+use super::layout::cflushsz_of;
 #[cfg(feature = "multiprocessor")]
 use crate::bridges;
 use crate::pmap::Pmap;
@@ -262,14 +269,34 @@ pub(super) fn wbinvd_on_all_cpus() {
     wbinvd();
 }
 
-/// `curcpu()->ci_cflushsz`: the `clflush` line size (0 without `clflush`, or while the bridge
-/// is not registered: then the flush is a `wbinvd`, which is always correct).
+/// `curcpu()->ci_cflushsz`: the `clflush` line size, 0 without `clflush` (then the flush is a
+/// `wbinvd`, which is always correct). With `multiprocessor`, the running CPU's as `bsd`'s
+/// `identifycpu` recorded it, through the bridge (0 while it is not registered, as the C's
+/// `cpu_info` before `identifycpu`); without it, the one CPU's, [`boot_cflushsz`].
 pub(super) fn cflushsz() -> usize {
     #[cfg(feature = "multiprocessor")]
     if let Some(b) = bridges::tlb_cpus() {
         return b.cflushsz();
     }
-    0
+    if cfg!(feature = "multiprocessor") {
+        0
+    } else {
+        boot_cflushsz()
+    }
+}
+
+/// The one CPU's `ci_cflushsz` without `multiprocessor`, computed as `identifycpu` does
+/// (bits 15-8 of `cpuid(1)`'s `%ebx`, times 8) and read once: `cpuid` serializes the CPU and
+/// traps to a hypervisor. `usize::MAX` is "not read yet"; two readers store the same value.
+fn boot_cflushsz() -> usize {
+    static CFLUSHSZ: AtomicUsize = AtomicUsize::new(usize::MAX);
+    let cached = CFLUSHSZ.load(Ordering::Relaxed);
+    if cached != usize::MAX {
+        return cached;
+    }
+    let sz = cflushsz_of(__cpuid(1).ebx);
+    CFLUSHSZ.store(sz, Ordering::Relaxed);
+    sz
 }
 
 /// `pmap_update_pg(va)`: drops the TLB entry of one page.

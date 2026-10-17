@@ -379,11 +379,19 @@ impl Pmap for Machine {
 
     /// `pmap_init`: the pools (`hal`); then, the bus space mapping through the kernel half
     /// from here on, the console moves there before the boot glue's identity map in
-    /// `TTBR0_EL1` goes, and the lower half gets its translation registers.
+    /// `TTBR0_EL1` goes, and the lower half gets its translation registers. Last, the boot
+    /// CPU records that it runs on the kernel pmap.
     fn pmap_init_md() {
         hal::pmap::init();
         crate::dev::ic::pluart::pluartcn_remap();
         hal::arch::arm64::pmap::init_lower_half();
+        // `curcpu()->ci_curpm = pmap_kernel()` (arm64 pmap.c:1409, in pmap_bootstrap once the
+        // kernel's tables are live; LZ at the end of pmap_init, after TTBR0 moved to the
+        // kernel's empty table, the order kept here): efi_enter/efi_leave on proc0, while
+        // cold and before any cpu_switchto, reload the pmap this records.
+        include::cpu::curcpu()
+            .ci_curpm
+            .set(hal::pmap::kernel().as_ptr());
     }
 
     /// The bounds as `pmap_steal_memory` leaves them, without `pmap_virtual_space`'s side

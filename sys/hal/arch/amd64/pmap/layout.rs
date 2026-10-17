@@ -418,6 +418,12 @@ pub const fn protection_code(prot: VmProt, pg_nx: u64, pg_xo: u64) -> u64 {
         _ => PG_RW,         // w-x, wrx
     }
 }
+
+/// `ci_cflushsz` from `cpuid(1)`'s `%ebx`, as `identifycpu` computes it: the `clflush` line
+/// size is bits 15-8, in 8-byte units (0 on a CPU without `clflush`).
+pub const fn cflushsz_of(ebx: u32) -> usize {
+    (((ebx >> 8) & 0xff) * 8) as usize
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -508,6 +514,22 @@ mod tests {
         for (name, value) in ours {
             assert_eq!(crate::reftest::int(&defs, name), Some(*value), "{name}");
         }
+    }
+
+    #[test]
+    fn cflushsz_is_identifycpus() {
+        // (cpuid(1) %ebx, line size): a 64-byte line (8 units) whatever the other bytes hold
+        // (the brand index in 7-0, the APIC ID in 31-24), a 32-byte one, and no clflush.
+        let cases: [(u32, usize); 4] = [
+            (0x0000_0800, 64),
+            (0x0a01_0800, 64),
+            (0x0000_0400, 32),
+            (0xff00_00ff, 0),
+        ];
+        for (ebx, sz) in cases {
+            assert_eq!(cflushsz_of(ebx), sz, "{ebx:#x}");
+        }
+        assert_eq!(cflushsz_of(u32::MAX), 0xff * 8);
     }
 }
 /* </TESTS> */

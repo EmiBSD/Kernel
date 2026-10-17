@@ -31,7 +31,7 @@
 //! behind the same adapter as the machines' (`sys/machine/pmap.rs`); physical pages are
 //! numbers, not memory, so zeroing and copying them do nothing, and boot memory comes from
 //! the host allocator.
-
+//!
 //! No host device does DMA: its `bus_dma` types carry only the public members and every
 //! operation fails with `EOPNOTSUPP` (the archs' `bus_dma` is exercised by the QEMU boot
 //! self-test). It has no PCI bus either: configuration reads return all ones unless a test

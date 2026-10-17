@@ -194,6 +194,9 @@
 //!   not after it: the console's frame buffer and the VGA hole are reached through the
 //!   direct map, which is the pmap's from its bootstrap on (LZ's statics were set before
 //!   `consinit` too; the C's direct map is `locore0.S`'s, built before `init_x86_64`).
+//!   So a bootstrap panic (`pmap_bootstrap: PML4 slot .. is in use`) comes before the console
+//!   and the msgbuf exist and prints nothing, where the C calls `cninit` first
+//!   (`machdep.c`:1557, `pmap_bootstrap` at :1700).
 
 use core::arch::asm;
 use core::mem::offset_of;
@@ -544,7 +547,7 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
 
     // locore0.S: cpuid(0) gives cpuid_level and the vendor string, cpuid(1) the signature
     // and the feature words; the NX bit of cpuid(0x80000001) is or'ed into cpu_feature
-    // (pg_nx itself is the bootloader's EFER.NXE, pmap.rs).
+    // (pg_nx itself is the bootloader's EFER.NXE, sys/hal/arch/amd64/pmap/backend.rs).
     let (level, vb, vc, vd) = cpuid(0);
     CPUID_LEVEL.store(level, Ordering::Relaxed);
     let mut vendor = [0u8; 16];
