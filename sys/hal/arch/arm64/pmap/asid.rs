@@ -134,7 +134,8 @@ pub(super) fn probe(id_aa64mmfr0: u64, tcr: u64) {
     PMAP_ASID.lock().take(0);
 }
 
-/// The ASIDs this machine runs with and why (the bootstrap's probe), for a boot message.
+/// The ASIDs this machine runs with and why (the bootstrap's probe): no boot line prints it,
+/// as OpenBSD prints none.
 pub fn asid_width() -> AsidWidth {
     match PMAP_NASID.load(Ordering::Relaxed) {
         WIDTH_16 => AsidWidth::Bits16,
@@ -215,14 +216,17 @@ fn pmap_rollover_asid(map: &mut MutexedGuard<'_, AsidMap>, pm: &Pmap) -> Option<
         if p.is_null() {
             continue;
         }
-        // SAFETY: a CPU's recorded pmap is the one it runs on: `Backend::load` records it on
-        // every switch, and a pmap is freed only by its last handle's drop, which the backend's
-        // `destroy` refuses (a panic, before any table is freed) while any CPU's record names
-        // it. A record is replaced only by that CPU's next load, which waits for
-        // `pmap_asid_mtx` (held here) when it must allocate, and otherwise loads a pmap whose
-        // own handle keeps it alive; so the pmap behind `p` is alive while this lock is held.
-        // The pointer was made from a reference (`set_curpm`), with the pmap's provenance; the
-        // reference made is shared, its fields atomic.
+        // SAFETY: `p` was recorded by `set_curpm` from a live `&Pmap` (with its provenance) when
+        // a CPU loaded it; a record can change at any time without this lock (a load whose
+        // generation matches takes none), but the pmap behind it cannot be freed while this
+        // lock is held: a pmap is freed only by its last handle's drop, whose backend `destroy`
+        // first refuses (a panic) while any record names it (Acquire loads pairing with
+        // `set_curpm`'s Release stores, so a record that named it before this read is seen or
+        // was replaced) and then takes `pmap_asid_mtx` in `pmap_free_asid`, before any table or
+        // the pool item is freed. So a pmap this loop read from a record is either still named
+        // by it, which `destroy` refuses, or its `destroy` waits for this lock: it is alive
+        // until the rollover ends. No new record can name a pmap whose last handle is gone
+        // (`load` needs a reference). The reference made is shared, its fields atomic.
         let curpm = unsafe { &*p };
         let asid = curpm.md.asid() & PMAP_ASID_MASK;
         curpm.md.set_asid(asid | generation);
