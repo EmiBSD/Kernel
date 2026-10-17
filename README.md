@@ -66,7 +66,7 @@ under boot(8)) and runs a pipeline through it (`abi-pipe-43`).
 Every line below is a recipe of `just smoke`, run on both architectures, on the
 `multiprocessor` kernel with two processors (`-smp 2`; four for `smoke-mp`, `smoke-vmx`,
 `smoke-net-mp` and `smoke-softraid`, and for every recipe in `just ci-full`); `smoke-up`
-boots the uniprocessor kernel once per arch.
+boots that same kernel with `-smp 1` once per arch (decision 40).
 
 On one VM, with OpenBSD's own binaries from the ramdisk:
 
@@ -448,7 +448,7 @@ Four tiers:
 3. QEMU smoke tests (`just smoke`): boot both architectures headless and assert serial lines and
    exit codes. A full run boots 67 single VMs and 24 pairs of VMs, all on the
    `multiprocessor` kernel with `-smp 2` (`-smp 4` for the `smp4` group, and for every recipe
-   in `just ci-full`) except `smoke-up`'s uniprocessor boot per arch.
+   in `just ci-full`) except `smoke-up`'s `-smp 1` boot per arch.
    The recipes run four at a time, each in its own `target/smoke/<recipe>/` with its own log;
    `JOBS=N just smoke` changes N.
 4. Differential tests (`just diff-openbsd`, beside `just ci`): the same scenarios on EmiBSD and

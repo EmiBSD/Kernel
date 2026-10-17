@@ -1086,8 +1086,8 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - The application processors are started by Limine (M11a), not by the kernel's own
   trampoline: amd64's `mptramp.S` (real mode, INIT/SIPI/SIPI from `cpu_start_secondary`)
   and arm64's PSCI `CPU_ON` into `locore.S`'s `cpu_hatch` are replaced. The
-  `MULTIPROCESSOR` kernel puts the MP request in `.requests` (the uniprocessor one does not,
-  so the bootloader leaves the other processors halted); Limine brings each processor to
+  `MULTIPROCESSOR` kernel, the only one built since decision 40, puts the MP request in
+  `.requests` (a kernel without it, as before decision 40, left the other processors halted); Limine brings each processor to
   long mode or EL1 with the boot page tables and parks it on its `goto_address`.
   `sys/stand` turns the response into `machine::BootMp` (the processors' hardware IDs and a
   `start(i, arg)`), and the machine's `cpu_start_secondary` calls `start` with the
@@ -1105,8 +1105,8 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   `VBAR_EL1` and `CPACR`, moves to the CPU's own stack and runs `cpu_init_secondary`.
 - amd64 processor enumeration: since M13 `acpimadt0` attaches the processors from the MADT
   at mainbus, as OpenBSD does (`CPU_ROLE_BP` for the one whose local APIC is running, the
-  others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; a uniprocessor kernel's
-  `cpu0` is then `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
+  others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; with one processor
+  (`smoke-up`'s `-smp 1`) `cpu0` is `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
   starts the application processors (`mp_cpu_start` finds the MADT's APIC ID in Limine's
   list). Without a MADT (a kernel without ACPI, until `mpbios.c` is ported) the M11a
   stand-in remains: mainbus maps the local APIC at `LAPIC_BASE` and the `MULTIPROCESSOR`
