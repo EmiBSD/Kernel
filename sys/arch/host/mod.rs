@@ -748,6 +748,14 @@ impl Pmap for Machine {
             .map(|pa| Paddr::new(pa + (va.as_usize() & Self::PAGE_MASK)))
     }
 
+    fn pmap_module_window() -> Option<(Vaddr, usize)> {
+        None
+    }
+
+    fn pmap_module_enter(_va: Vaddr, _pa: Paddr, _prot: VmProt) -> bool {
+        false
+    }
+
     fn pmap_activate(_p: &Proc) {}
 
     fn pmap_deactivate(_p: &Proc) {}

@@ -439,6 +439,16 @@ impl Pmap for Machine {
         arm64::pmap::pmap_extract(pmap, va)
     }
 
+    // No module window: kernel_map executes here (no PXN on a kernel R|X leaf, none on the
+    // tables), so the module is placed in kernel_map.
+    fn pmap_module_window() -> Option<(Vaddr, usize)> {
+        None
+    }
+
+    fn pmap_module_enter(_va: Vaddr, _pa: Paddr, _prot: VmProt) -> bool {
+        false
+    }
+
     fn pmap_create() -> &'static Self::Pmap {
         arm64::pmap::pmap_create()
     }

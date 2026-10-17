@@ -174,6 +174,22 @@ pub trait Pmap {
     /// `pmap_extract`: the physical address `va` maps to in `pmap`, if any.
     fn pmap_extract(pmap: &Self::Pmap, va: Vaddr) -> Option<Paddr>;
 
+    /// The kernel virtual window the ABI module `abi-openbsd.ko` must run from (N2, decision
+    /// 22): its first address and its size, outside `kernel_map`, for the kernel's lifetime.
+    /// `None` on a machine whose `kernel_map` may hold executable kernel pages (arm64, the
+    /// host double): the module is then placed in `kernel_map`. amd64 has one in the kernel
+    /// image's slot, since its `kernel_map` is never executable (`pg_nx` on every directory
+    /// entry, as OpenBSD's); its size is 0 when `pmap_bootstrap` could not link it, and the
+    /// module is then not loaded.
+    fn pmap_module_window() -> Option<(Vaddr, usize)>;
+
+    /// Maps `pa` at `va`, a page of [`Pmap::pmap_module_window`], in the kernel pmap with
+    /// `prot`, wired, for the kernel's lifetime: the module's pages. `false`, mapping
+    /// nothing, when `va` is not a page of the window, is mapped already, `pa` is not a
+    /// page's address, or `prot` is both writable and executable (W^X); always `false` on a
+    /// machine without a window.
+    fn pmap_module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool;
+
     /// `pmap_update`: makes pending mapping changes visible.
     fn pmap_update(pmap: &Self::Pmap);
 
@@ -341,6 +357,16 @@ pub unsafe fn pmap_kremove(va: Vaddr, len: Vsize) {
 /// `pmap_extract` on the selected machine.
 pub fn pmap_extract(pmap: &<Machine as Pmap>::Pmap, va: Vaddr) -> Option<Paddr> {
     Machine::pmap_extract(pmap, va)
+}
+
+/// [`Pmap::pmap_module_window`] on the selected machine.
+pub fn pmap_module_window() -> Option<(Vaddr, usize)> {
+    Machine::pmap_module_window()
+}
+
+/// [`Pmap::pmap_module_enter`] on the selected machine.
+pub fn pmap_module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
+    Machine::pmap_module_enter(va, pa, prot)
 }
 
 /// `pmap_activate` on the selected machine.
