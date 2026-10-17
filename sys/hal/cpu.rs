@@ -38,12 +38,8 @@
 use crate::bridges;
 
 /// `MAXCPUS`: the most CPUs a kernel supports, at least the machine's (255 on amd64, 256 on
-/// arm64, 1 without `MULTIPROCESSOR`).
-#[cfg(feature = "multiprocessor")]
+/// arm64). The kernel is always `MULTIPROCESSOR` (decision 40), so there is no one-CPU value.
 pub const MAXCPUS: usize = 256;
-/// `MAXCPUS`: one CPU without `MULTIPROCESSOR`.
-#[cfg(not(feature = "multiprocessor"))]
-pub const MAXCPUS: usize = 1;
 
 /// The word that names the boot CPU before the bridge is registered.
 const BOOT_CPU_WORD: usize = 0x10;

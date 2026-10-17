@@ -102,9 +102,11 @@
 //!   `mtx_leave`. Holding the guard is the proof of the lock; it is not `Send`, as the
 //!   mutex belongs to the CPU that entered it.
 //! - The owner word is never 0 for an owner (the CPU's word with a flag bit set), so the
-//!   compare-and-swap excludes even when the `CpuId` bridge answers wrongly, and the
-//!   uniprocessor build takes the same path: on one CPU the swap never fails but on a
-//!   recursion, which panics.
+//!   compare-and-swap excludes even when the `CpuId` bridge answers wrongly, and a machine
+//!   with one CPU takes the same path: there the swap never fails but on a recursion, which
+//!   panics.
+//! - The kernel is always `MULTIPROCESSOR` (decision 40): the level is always raised to at
+//!   least `IPL_MPFLOOR`; LZ's uniprocessor `__MUTEX_IPL` (the level unchanged) is gone.
 //! - `mtx_enter_try` is [`Mutexed::try_lock`], `None` when held elsewhere.
 //! - The legacy `Mutex` (129 files) keeps its API (the timing rule; decision 8 names the
 //!   owning type `Mutexed` beside it, the rename is N9's).
@@ -195,14 +197,10 @@ impl<T> Mutexed<T> {
         self.owner.load(Ordering::Relaxed) == self_word() || cpu::past_caring()
     }
 
-    /// Raises to `__MUTEX_IPL(mtx_wantipl)` (under `MULTIPROCESSOR` at least `IPL_MPFLOOR`),
+    /// Raises to `__MUTEX_IPL(mtx_wantipl)` (`MULTIPROCESSOR`'s: at least `IPL_MPFLOOR`),
     /// read once, here; what [`intr::raise`] says to restore.
     fn raise(&self) -> Option<i32> {
-        let want = if cfg!(feature = "multiprocessor") {
-            self.wantipl.max(intr::mpfloor())
-        } else {
-            self.wantipl
-        };
+        let want = self.wantipl.max(intr::mpfloor());
         if want == IPL_NONE {
             None
         } else {

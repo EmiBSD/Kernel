@@ -118,7 +118,6 @@ pub(crate) fn curproc_word() -> usize {
 }
 
 /// `_kernel_lock_held()` (`false` before the bridge is registered).
-#[cfg(feature = "multiprocessor")]
 pub(crate) fn kernel_lock_held() -> bool {
     bridges::sleep().is_some_and(|b| b.kernel_lock_held())
 }

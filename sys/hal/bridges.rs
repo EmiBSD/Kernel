@@ -185,8 +185,8 @@ bridge!(
     TLB_CPUS: TlbCpus,
     register_tlb_cpus,
     tlb_cpus #[cfg_attr(
-        not(all(target_os = "none", target_arch = "x86_64", feature = "multiprocessor")),
-        allow(dead_code, reason = "read by amd64's MULTIPROCESSOR shootdown alone")
+        not(all(target_os = "none", target_arch = "x86_64")),
+        allow(dead_code, reason = "read by amd64's shootdown alone")
     )]
 );
 

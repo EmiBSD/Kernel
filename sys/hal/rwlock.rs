@@ -172,7 +172,6 @@ pub const RW_READ: i32 = 0x0002;
 pub const RW_WRITE_OTHER: i32 = 0x0100;
 
 /// `RW_SPINS`: how many times a writer polls the word before it sleeps, `MULTIPROCESSOR`.
-#[cfg(feature = "multiprocessor")]
 const RW_SPINS: u32 = 1000;
 
 /// `struct rwlock`: the owner word and the two wait counters whose addresses are the wait
@@ -242,7 +241,6 @@ impl RawRwlock {
     /// Under `MULTIPROCESSOR`, a writer that does not hold the kernel lock polls the word
     /// `RW_SPINS` times before it sleeps, in case the holder is a writer about to leave; one
     /// that holds it gives the CPU up at once, so the CPUs waiting for the kernel lock run.
-    #[cfg(feature = "multiprocessor")]
     fn spin_for_writer(&self, me: usize) -> bool {
         if sleep::kernel_lock_held() {
             return false;
@@ -305,7 +303,6 @@ impl RawRwlock {
         if seen == me {
             self.panic(format_args!("enter write deadlock"));
         }
-        #[cfg(feature = "multiprocessor")]
         if self.spin_for_writer(me) {
             return Ok(me);
         }
