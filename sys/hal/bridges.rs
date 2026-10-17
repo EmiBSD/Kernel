@@ -56,6 +56,8 @@ use crate::kmbuf::PageMemory;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
 use crate::once::OnceStatic;
+#[cfg(not(target_os = "none"))]
+use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
 use crate::sleep::Sleep;
 use crate::user::UserCopy;
@@ -65,9 +67,9 @@ use crate::user::UserCopy;
 pub struct AlreadyRegistered(pub &'static str);
 
 /// One slot: a private `OnceStatic` of the trait object, its `register_*` function and its
-/// crate-private reader.
+/// crate-private reader (with the attribute given after the reader's name, when one is).
 macro_rules! bridge {
-    ($(#[$doc:meta])* $slot:ident: $tr:ident, $register:ident, $get:ident) => {
+    ($(#[$doc:meta])* $slot:ident: $tr:ident, $register:ident, $get:ident $(#[$gattr:meta])?) => {
         static $slot: OnceStatic<&'static dyn $tr> = OnceStatic::new();
 
         $(#[$doc])*
@@ -78,6 +80,7 @@ macro_rules! bridge {
         }
 
         /// The registered implementation, `None` before registration.
+        $(#[$gattr])?
         pub(crate) fn $get() -> Option<&'static dyn $tr> {
             $slot.get().copied()
         }
@@ -158,6 +161,27 @@ bridge!(
     MODULE_PLATFORM: ModulePlatform,
     register_module_platform,
     module_platform
+);
+
+// The pmap's two bridges exist where `hal::pmap` does (`lib.rs`: the host now, amd64 and arm64
+// with their backends, N3.1 commits 4 and 5); their readers are the backends'.
+#[cfg(not(target_os = "none"))]
+bridge!(
+    /// Registers the CPUs as amd64's TLB shootdown needs them (`CPU_INFO_FOREACH`,
+    /// `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`, `wbinvd_on_all_cpus`, `ci_cflushsz` of
+    /// `sys/arch/amd64/amd64/{cpu,ipi}.rs`). Paid by N4 (the CPUs enter hal with their kernel
+    /// owner). arm64 registers none.
+    TLB_CPUS: TlbCpus,
+    register_tlb_cpus,
+    tlb_cpus #[allow(dead_code, reason = "read by amd64's shootdown, N3.1 commit 4")]
+);
+
+#[cfg(not(target_os = "none"))]
+bridge!(
+    /// Registers `arc4random(9)` (`sys/dev/rnd.rs`) for arm64's ASID allocator. Paid by N7.
+    RANDOM: Random,
+    register_random,
+    random #[allow(dead_code, reason = "read by arm64's ASID allocator, N3.1 commit 5")]
 );
 
 /* </CODE> */

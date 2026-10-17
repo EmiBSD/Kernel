@@ -7028,6 +7028,13 @@ status = "inherited"
 notes = "pmap_statistics and the PMAP_* flags; the pmap(9) prototypes are the machine::Pmap trait (sys/machine/pmap.rs); M7a-1: pmap_page_protect and pmap_clear_modify in the trait; M7a-2: the PMAP_PREFER_ALIGN/OFFSET defaults, pmap_protect and pmap_wired_count (amd64/arm64 report pmap_protect until the pv lists); M7a-3: PMAP_WC as a trait constant, pmap_resident_count and pmap_unwire (amd64 and arm64 real); M11e: the pmap_statistics counters are PmapCounter, relaxed AtomicI64 words with get/set: the kernel pmap's are changed by every CPU without a lock (plain racy longs in the C)"
 
 [[module]]
+rust = "sys/hal/pmap.rs"
+crate = "hal"
+lz = ["sys/uvm/uvm_pmap.rs"]
+status = "redesigned"
+notes = "N3.1: pmap(9)'s machine-independent API in hal over a cfg-selected backend (crate::arch::current::pmap, the PmapBackend contract): PmapRef (counted handle with a static kernel arm; clone = pmap_reference, last drop = pmap_destroy, panics with leaf mappings left), KernelMapper (the kernel map's token from bootstrap), PageMd (vm_page_md), PhysPages (the page provider passed down, D16), BootstrapParams/KernelImage/Bootstrapped, the TlbCpus and Random bridges; pmap_statistics and the PMAP_* flags as uvm_pmap.rs (bsd's copy stays until commit 6); the module exists where a backend does (host now, amd64/arm64 with commits 4/5)"
+
+[[module]]
 rust = "sys/uvm/uvm_pmemrange.rs"
 lz = ["sys/uvm/uvm_pmemrange.rs"]
 status = "inherited"
