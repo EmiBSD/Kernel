@@ -34,18 +34,19 @@
 //!   its owner, the kernel's allocator (`kernel::vm::km::adopt_mapper`, N3.2), which lends it
 //!   back here, to the holder of the one `kernel::vm::km::LegacyLend` (a private static:
 //!   `kernel::vm::km::legacy_mapper` takes it), for [`pmap_enter`]/[`pmap_remove`]/
-//!   [`pmap_protect`] on the kernel pmap and the three legacy `unsafe fn`s
-//!   ([`pmap_kenter_pa`], [`pmap_kremove`], [`pmap_steal_memory`], with arm64's
-//!   [`pmap_kenter_cache`]), whose callers keep their `unsafe` blocks until their owners move
-//!   (N3.3 `uvm_page`, N3.5 `uvm_glue`, N4, N7). Their bodies hold no `unsafe` block.
+//!   [`pmap_protect`] on the kernel pmap and the two legacy `unsafe fn`s
+//!   ([`pmap_kenter_pa`], [`pmap_kremove`], with arm64's [`pmap_kenter_cache`]), whose
+//!   callers keep their `unsafe` blocks until their owners move (N3.5 `uvm_glue`, N4, N7).
+//!   Their bodies hold no `unsafe` block. `pmap_steal_memory`'s wrapper went with its caller,
+//!   `uvm_page` (N3.3): the kernel's boot allocations are `hal::bootmem`'s.
 //! - Loading a pmap's root takes `hal::pmap::Switcher`, the other token: private here too,
 //!   used only by [`pmap_activate`] and the machine's switch path ([`pmap_setttb`]), each of
 //!   which records the switch (`ci_proc_pmap`, `ci_curpm`) where the shootdowns and the ASID
 //!   allocator look, through the machine's hooks of [`Pmap`].
 //! - The page allocator the pmap needs (`uvm_pagealloc`, `uvm_pagefree`, `PHYS_TO_VM_PAGE`,
-//!   `uvm_page_physsteal`, `uvm.page_init_done`) is `BsdPages`, a `hal::pmap::PhysPages`
-//!   given to `hal::pmap::bootstrap` as a value (D16); it reads `uvm`'s globals on each
-//!   call and keeps nothing.
+//!   `uvm_page_physsteal`, `uvm.page_init_done`) is the kernel's page system's
+//!   `hal::pmap::PhysPages`, `kernel::vm::page::PHYS_PAGES` (N3.3), given to
+//!   `hal::pmap::bootstrap` as a value (D16).
 //! - [`Pmap`] is what stays machine-dependent in `bsd`: the constants and the machine's own
 //!   steps around `hal` (arm64's console remap in `pmap_init`, the switch records).
 //!
@@ -56,7 +57,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::once::OnceStatic;
-use hal::pmap::{BootstrapParams, KernelMapper, PhysPages, Switcher};
+use hal::pmap::{BootstrapParams, KernelMapper, Switcher};
 pub use hal::pmap::{KernelImage, PmapRef};
 use kernel::vm::km::LegacyLend;
 
@@ -65,14 +66,8 @@ use crate::machine::Machine;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Proc, Process};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
-use crate::uvm::uvm_extern::{
-    UVM_PGA_USERESERVE, UVM_PGA_ZERO, UvmConstraintRange, VmProt, Vmspace,
-};
-use crate::uvm::uvm_init::UVM;
-use crate::uvm::uvm_page::{
-    PG_BUSY, PG_FAKE, PHYS_TO_VM_PAGE, VmPage, uvm_page_physsteal, uvm_pagealloc, uvm_pagefree,
-    vm_page_to_phys,
-};
+use crate::uvm::uvm_extern::{UvmConstraintRange, VmProt, Vmspace};
+use crate::uvm::uvm_page::{PHYS_TO_VM_PAGE, VmPage, vm_page_to_phys};
 
 /// `struct vm_page_md`: the pmap's per-page data inside `struct vm_page` (`hal`'s).
 pub type VmPageMd = hal::pmap::PageMd;
@@ -132,43 +127,6 @@ pub trait Pmap {
     fn pmap_bootstrap_lazy();
 }
 
-/// The kernel's physical pages as `hal`'s pmap needs them (`hal::pmap::PhysPages`, D16):
-/// `uvm_page`'s functions, read afresh on every call.
-struct BsdPages;
-
-impl PhysPages for BsdPages {
-    fn alloc_ptp(&self) -> Option<Paddr> {
-        let pg = uvm_pagealloc(None, 0, None, UVM_PGA_USERESERVE | UVM_PGA_ZERO)?;
-        pg.clear_bits(PG_BUSY | PG_FAKE);
-        pg.wire_count.set(1);
-        Some(vm_page_to_phys(pg))
-    }
-
-    fn free_ptp(&self, pa: Paddr) {
-        match PHYS_TO_VM_PAGE(pa) {
-            Some(pg) => {
-                pg.wire_count.set(0);
-                uvm_pagefree(pg);
-            }
-            None => panic(format_args!("pmap: PTP {pa:?} is not a managed page")),
-        }
-    }
-
-    fn md_of(&self, pa: Paddr) -> Option<&'static VmPageMd> {
-        PHYS_TO_VM_PAGE(pa).map(|pg| &pg.mdpage)
-    }
-
-    fn steal(&self, npg: usize) -> Option<Paddr> {
-        uvm_page_physsteal(npg)
-    }
-
-    fn page_init_done(&self) -> bool {
-        UVM.page_init_done.load(Ordering::Relaxed)
-    }
-}
-
-static BSD_PAGES: BsdPages = BsdPages;
-
 /// The lend of the kernel map's token, from `kernel::vm::km::adopt_mapper`: only this module
 /// can borrow the token.
 static LEND: OnceStatic<LegacyLend> = OnceStatic::new();
@@ -213,7 +171,7 @@ fn switcher() -> &'static Switcher {
 /// context switch's is kept here. The first free physical page and the first free kernel
 /// virtual address (amd64's and arm64's answers).
 pub fn pmap_bootstrap(params: &BootstrapParams) -> (Paddr, Vaddr) {
-    let b = hal::pmap::bootstrap(params, &BSD_PAGES);
+    let b = hal::pmap::bootstrap(params, &kernel::vm::page::PHYS_PAGES);
     let lent = kernel::vm::km::adopt_mapper(b.mapper).is_ok_and(|lend| LEND.set(lend).is_ok());
     if !lent || SWITCHER.set(b.switcher).is_err() {
         panic(format_args!("pmap_bootstrap: the tokens were kept already"));
@@ -356,32 +314,6 @@ pub fn pmap_zero_page(pg: &VmPage) {
 pub fn pmap_copy_page(src: &VmPage, dst: &VmPage) {
     booted();
     hal::pmap::copy_page(vm_page_to_phys(src), vm_page_to_phys(dst));
-}
-
-/// `pmap_steal_memory`: takes `size` bytes of physical memory out of `vm_physmem` before
-/// the page system is up, mapped and zeroed, and tells the caller the kernel virtual space
-/// that is still free (`start`, `end`).
-///
-/// # Safety
-///
-/// Only before `uvm_page_init` has run (`uvm.page_init_done` is false), on the boot CPU.
-/// (`hal` checks the first and panics; the contract keeps its `unsafe` for its callers until
-/// `uvm_page` moves, N3.3.)
-pub unsafe fn pmap_steal_memory(
-    size: Vsize,
-    start: Option<&mut Vaddr>,
-    end: Option<&mut Vaddr>,
-) -> Vaddr {
-    booted();
-    let va = hal::pmap::steal_memory(size);
-    let (s, e) = Machine::pmap_steal_bounds();
-    if let Some(start) = start {
-        *start = s;
-    }
-    if let Some(end) = end {
-        *end = e;
-    }
-    va
 }
 
 /// `pmap_virtual_space`: the kernel virtual range still free, on machines without
@@ -545,14 +477,16 @@ mod tests {
 
     #[test]
     fn the_provider_knows_the_managed_pages() {
+        use hal::pmap::PhysPages;
         let _g = setup_real_memory();
-        let pa = BSD_PAGES.alloc_ptp().expect("a page-table page");
-        let md = BSD_PAGES.md_of(pa).expect("a managed page");
+        let pages = &kernel::vm::page::PHYS_PAGES;
+        let pa = pages.alloc_ptp().expect("a page-table page");
+        let md = pages.md_of(pa).expect("a managed page");
         assert!(core::ptr::eq(md, &PHYS_TO_VM_PAGE(pa).unwrap().mdpage));
-        assert_eq!(PHYS_TO_VM_PAGE(pa).unwrap().wire_count.get(), 1);
-        assert!(BSD_PAGES.page_init_done());
-        BSD_PAGES.free_ptp(pa);
-        assert_eq!(BSD_PAGES.md_of(Paddr::new(0)).map(|_| ()), None);
+        assert_eq!(PHYS_TO_VM_PAGE(pa).unwrap().wire_count(), 1);
+        assert!(pages.page_init_done());
+        pages.free_ptp(pa);
+        assert_eq!(pages.md_of(Paddr::new(0)).map(|_| ()), None);
     }
 }
 /* </TESTS> */

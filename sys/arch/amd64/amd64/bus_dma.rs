@@ -311,7 +311,6 @@ pub fn _bus_dmamap_create(
     };
 
     let mlist = Pglist::new();
-    mlist.init();
     let pla = if flags & BUS_DMA_NOWAIT != 0 {
         UVM_PLA_NOWAIT
     } else {
@@ -341,8 +340,7 @@ pub fn _bus_dmamap_create(
         let Some(pg) = mlist.first() else {
             panic(format_args!("_bus_dmamap_create: short page list"));
         };
-        // SAFETY: `pg` is the head of `mlist`; the map keeps it from now on.
-        unsafe { mlist.remove(pg) };
+        mlist.remove(pg);
         // SAFETY: slot `i` of the `npages` page pointers.
         unsafe { pages.add(i).write(ptr::from_ref(pg)) };
         if pmap_enter(
@@ -361,8 +359,7 @@ pub fn _bus_dmamap_create(
             for j in 0..=i {
                 // SAFETY: slots 0..=i were written above.
                 let p = unsafe { &**pages.add(j) };
-                // SAFETY: the page left `mlist` above and is on no other list.
-                unsafe { mlist.insert_tail(p) };
+                mlist.insert_tail(p);
             }
             free(mapstore, M_DEVBUF, mapsize);
             uvm_pglistfree(&mlist);
@@ -397,10 +394,8 @@ pub unsafe fn _bus_dmamap_destroy(_t: BusDmaTagT, map: NonNull<BusDmamap>) {
 
     if !m._dm_pages.is_null() {
         let mlist = Pglist::new();
-        mlist.init();
         for i in 0..m._dm_npages as usize {
-            // SAFETY: the map owns its bounce pages, which are on no list.
-            unsafe { mlist.insert_tail(m.dm_page(i)) };
+            mlist.insert_tail(m.dm_page(i));
         }
         uvm_pglistfree(&mlist);
     }
@@ -844,16 +839,13 @@ pub fn _bus_dmamem_alloc(
 pub unsafe fn _bus_dmamem_free(_t: BusDmaTagT, segs: &[BusDmaSegment]) {
     // Build a list of pages to free back to the VM system.
     let mlist = Pglist::new();
-    mlist.init();
     for s in segs {
         let mut addr = s.ds_addr;
         while addr < s.ds_addr + s.ds_len {
             let Some(m) = PHYS_TO_VM_PAGE(Paddr::new(addr)) else {
                 panic(format_args!("_bus_dmamem_free: unmanaged page {:#x}", addr));
             };
-            // SAFETY: the caller's guarantee: the page was allocated by `_bus_dmamem_alloc`
-            // and is on no list.
-            unsafe { mlist.insert_tail(m) };
+            mlist.insert_tail(m);
             addr += PAGE_SIZE;
         }
     }
@@ -1116,7 +1108,6 @@ pub fn _bus_dmamem_alloc_range(
     }
 
     let mlist = Pglist::new();
-    mlist.init();
     uvm_pglistalloc(
         size,
         Paddr::new(low),
@@ -1136,12 +1127,10 @@ pub fn _bus_dmamem_alloc_range(
     let mut lastaddr = vm_page_to_phys(m).as_usize();
     segs[curseg].ds_addr = lastaddr;
     segs[curseg].ds_len = PAGE_SIZE;
-    // SAFETY: `m` is on `mlist`.
-    unsafe { mlist.remove(m) };
+    mlist.remove(m);
 
     while let Some(m) = mlist.first() {
-        // SAFETY: `m` is on `mlist`.
-        unsafe { mlist.remove(m) };
+        mlist.remove(m);
         let curaddr = vm_page_to_phys(m).as_usize();
         #[cfg(feature = "diagnostic")]
         {

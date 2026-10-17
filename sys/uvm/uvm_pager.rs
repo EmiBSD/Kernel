@@ -126,21 +126,21 @@ use crate::sys::param::{MAXBSIZE, PAGE_SHIFT, PAGE_SIZE, PVM};
 use crate::sys::rwlock::rw_write_held;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::Vaddr;
-use crate::uvm::uvm_anon::uvm_anon_release;
 use crate::uvm::uvm_aobj::AOBJ_PAGER;
 use crate::uvm::uvm_extern::{VmFault, VmProt, Voff};
 use crate::uvm::uvm_fault::UvmFaultinfo;
 use crate::uvm::uvm_km::{KD_TRYLOCK, KP_NONE, KV_ANY, km_alloc, km_free};
 use crate::uvm::uvm_object::UvmObject;
 use crate::uvm::uvm_page::{
-    PG_BUSY, PG_CLEAN, PG_CLEANCHK, PG_FAKE, PG_RELEASED, PG_WANTED, PQ_ANON, PQ_INACTIVE, VmPage,
-    uvm_pagelookup, uvm_unlock_pageq, vm_page_to_phys,
+    PG_BUSY, PG_CLEAN, PG_CLEANCHK, PG_FAKE, PG_RELEASED, PG_WANTED, PQ_ANON, PQ_INACTIVE,
+    PageQueues, VmPage, uvm_pagelookup, vm_page_to_phys,
 };
 use crate::uvm::uvm_param::ptoa;
 use crate::uvm::uvm_pdaemon::uvm_wait;
 use crate::uvm::uvm_pmap::{PMAP_CANFAIL, PMAP_WIRED, pmap_prefer_align};
 use crate::uvm::uvm_vnode::UVM_VNODEOPS;
 use crate::{kassert, kdassert};
+use hal::mutex::MutexedGuard;
 
 /// `pgo_fault`'s signature: `(ufi, vaddr, pps, npages, centeridx, fault_type, access_type,
 /// flags)`.
@@ -607,7 +607,7 @@ pub fn uvm_mk_pcluster(
     let Some(cluster) = uobj.pgops().pgo_cluster else {
         panic(format_args!("uvm_mk_pcluster: pager without pgo_cluster"));
     };
-    cluster(uobj, center.offset.get(), &mut lo, &mut hi);
+    cluster(uobj, center.offset(), &mut lo, &mut hi);
     if flags & PGO_ALLPAGES == 0 {
         lo = lo.max(mlo);
         hi = hi.min(mhi);
@@ -620,7 +620,7 @@ pub fn uvm_mk_pcluster(
     }
 
     // now determine the center and attempt to cluster around the edges
-    let center_idx = ((center.offset.get() - lo) >> PAGE_SHIFT) as usize;
+    let center_idx = ((center.offset() - lo) >> PAGE_SHIFT) as usize;
     pps[center_idx] = center; // plug in the center page
     let mut ppsp = center_idx;
     *npages = 1;
@@ -636,7 +636,7 @@ pub fn uvm_mk_pcluster(
         } else {
             -(PAGE_SIZE as Voff)
         };
-        let mut curoff = center.offset.get() + incr;
+        let mut curoff = center.offset() + incr;
         while (!forward && curoff >= lo) || (forward && curoff < hi) {
             let Some(pclust) = uvm_pagelookup(uobj, curoff) else {
                 break; // no page
@@ -696,7 +696,8 @@ pub fn uvm_mk_pcluster(
 ///
 /// we want to pageout page "pg" to backing store, clustering if possible.
 ///
-/// => page queues must be locked by caller
+/// => page queues must be locked by caller: `pageq` is their guard, dropped (unlocked) once
+///    the cluster is built
 /// => "uobj" points to the object backing it.
 /// => "pg" should be PG_BUSY (by caller), and !PG_CLEAN
 /// => "pps" is an array of `*npages` vm_page pointers for possible cluster building; the
@@ -725,6 +726,7 @@ pub fn uvm_pager_put(
     flags: i32,
     start: Voff,
     stop: Voff,
+    pageq: MutexedGuard<'static, PageQueues>,
 ) -> i32 {
     // note that the page queues must be locked to cluster.
 
@@ -739,7 +741,7 @@ pub fn uvm_pager_put(
     }
 
     // now that we've clustered we can unlock the page queues
-    uvm_unlock_pageq();
+    drop(pageq);
 
     // now attempt the I/O. if we have a failure and we are clustered, we will drop the
     // cluster and try again.
@@ -801,14 +803,14 @@ pub fn uvm_pager_dropcluster(
 
         // if page was released, release it. otherwise un-busy it
         if pg.flags() & PG_RELEASED != 0 && pg.flags() & PQ_ANON != 0 {
-            // kills anon and frees pg
-            match pg.uanon() {
-                Some(anon) => uvm_anon_release(anon),
-                None => panic(format_args!(
-                    "uvm_pager_dropcluster: anon page without anon"
-                )),
-            }
-            continue;
+            // kills anon and frees pg: an anon page is a swap cluster's (uobj NULL in the C),
+            // which this function, for a non-swap-backed object's cluster, never gets (there
+            // is no swap pageout, N3.5), and its anon is not reachable from the page
+            // (`kernel::vm::page` keeps no back pointer): refused, as LZ refused an anon page
+            // without an anon.
+            panic(format_args!(
+                "uvm_pager_dropcluster: anon page without anon"
+            ));
         } else {
             // if we were planning on async io then we would have PG_RELEASED set, clear that
             // with the others.

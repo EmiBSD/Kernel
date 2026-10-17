@@ -352,7 +352,7 @@ pub fn viomb_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         virtio_start_vq_intr(vsc, &sc.sc_vq[VQ_DEFLATE]);
 
         viomb_read_config(sc);
-        sc.sc_balloon_pages.init();
+        // TAILQ_INIT(&sc->sc_balloon_pages): a new list is empty.
 
         let Some(pages) = dma_alloc(BL_PAGES_SIZE, PR_NOWAIT | PR_ZERO) else {
             printf(format_args!("{}: Can't alloc DMA memory.\n", sc.devname()));
@@ -541,7 +541,7 @@ pub fn viomb_inflate(sc: &ViombSoftc) {
     b.bl_nentries.set(nvpages as i32);
     let mut i = 0usize;
     for p in b.bl_pglist.iter() {
-        b.set_page(i, (p.phys_addr.as_usize() / VIRTIO_PAGE_SIZE) as u32);
+        b.set_page(i, (p.phys_addr().as_usize() / VIRTIO_PAGE_SIZE) as u32);
         i += 1;
     }
 
@@ -596,19 +596,18 @@ pub fn viomb_deflate(sc: &ViombSoftc) {
     let nvpages = u64::from(viomb_nvpages(sc.sc_actual.get(), sc.sc_npages.get()));
     b.bl_nentries.set(nvpages as i32);
 
-    b.bl_pglist.init();
+    // TAILQ_INIT(&b->bl_pglist): the request's list was emptied into the balloon's
+    // (TAILQ_CONCAT) or freed (uvm_pglistfree) after the last request.
+    kassert!(b.bl_pglist.is_empty());
     for i in 0..nvpages as usize {
         let Some(p) = sc.sc_balloon_pages.first() else {
             b.bl_nentries.set(i as i32 - 1);
             break;
         };
-        // SAFETY: `p` is the first page of the balloon list; it moves to the request's list,
-        // and both heads are in the softc, which never moves.
-        unsafe {
-            sc.sc_balloon_pages.remove(p);
-            b.bl_pglist.insert_tail(p);
-        }
-        b.set_page(i, (p.phys_addr.as_usize() / VIRTIO_PAGE_SIZE) as u32);
+        // `p` is the first page of the balloon list; it moves to the request's list.
+        sc.sc_balloon_pages.remove(p);
+        b.bl_pglist.insert_tail(p);
+        b.set_page(i, (p.phys_addr().as_usize() / VIRTIO_PAGE_SIZE) as u32);
     }
 
     'err: {
@@ -651,8 +650,7 @@ pub fn viomb_deflate(sc: &ViombSoftc) {
         return;
     }
     // err:
-    // SAFETY: both heads are in the softc, which never moves.
-    unsafe { sc.sc_balloon_pages.concat(&b.bl_pglist) };
+    sc.sc_balloon_pages.concat(&b.bl_pglist);
 }
 
 /// `viomb_read_config`: the desired and current sizes, from the device.
@@ -712,8 +710,7 @@ pub fn viomb_inflate_intr(vq: &Virtqueue) -> i32 {
         size_of::<u32>() * nvpages as usize,
         BUS_DMASYNC_POSTWRITE,
     );
-    // SAFETY: both heads are in the softc, which never moves.
-    unsafe { sc.sc_balloon_pages.concat(&b.bl_pglist) };
+    sc.sc_balloon_pages.concat(&b.bl_pglist);
     viombdebug(
         sc,
         format_args!(

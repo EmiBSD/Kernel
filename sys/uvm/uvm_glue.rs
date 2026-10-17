@@ -224,7 +224,6 @@ pub fn uvm_vslock_device(
 
         let error = 'out_unmap: {
             let pgl = Pglist::new();
-            pgl.init();
             let dma = <Machine as Pmap>::DMA_CONSTRAINT;
             if let Err(e) = uvm_pglistalloc(
                 npages * PAGE_SIZE,
@@ -240,9 +239,7 @@ pub fn uvm_vslock_device(
             }
 
             let mut va = sva;
-            while let Some(pg) = pgl.first() {
-                // SAFETY: `pg` is the head of `pgl`.
-                unsafe { pgl.remove(pg) };
+            while let Some(pg) = pgl.pop_head() {
                 // SAFETY: `va` is a page of the virtual-only range km_alloc just reserved for
                 // us; `pg` a page uvm_pglistalloc just gave us.
                 unsafe {

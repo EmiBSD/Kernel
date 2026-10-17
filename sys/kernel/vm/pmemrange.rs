@@ -91,9 +91,11 @@
 //! ## Deviations
 //! - Page numbers (`paddr_t` holding `atop()` results in C) are `usize`; byte addresses stay
 //!   `Paddr`.
-//! - `uvm_wait` is reported as unported in LZ and absent here (no page daemon, N3.5), so a
-//!   `UVM_PLA_WAITOK` request that cannot be met returns `ENOMEM` instead of sleeping for the
-//!   page daemon (LZ's deviation, kept).
+//! - `uvm_wait` is absent (no page daemon, N3.5), so a `UVM_PLA_WAITOK` request that cannot
+//!   be met returns `ENOMEM` instead of sleeping for the page daemon (LZ's deviation, kept).
+//!   LZ called its `uvm_wait`, which printed `unported: uvm_wait (uvm_pdaemon.c, M5)` once;
+//!   the kernel crate has no `printf(9)` (N3.2's precedent for `km_alloc`), so this line is
+//!   where the gap shows.
 //! - `in_pagedaemon` answers false: there is no page daemon nor `curproc` here yet (N3.5, N4).
 //! - The `goto`-driven search of `uvm_pmr_getpages` is written with labelled loops; the order
 //!   of the tries, memtypes and ranges is the C's.

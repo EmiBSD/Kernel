@@ -97,8 +97,8 @@
 //!
 //! **The trust boundary.** A physical address is trusted everywhere (`enter`, `kenter`,
 //! `zero_page`, `copy_page`, `module_enter`): that `pa` is a page the caller may map or write
-//! is the frame proof N3.3's `kernel::vm::Page` brings; until then it is the caller's word,
-//! as in the C. What `hal` can check it checks: a user pmap refuses the kernel's half, the
+//! is the frame proof a typed page would bring (`kernel::vm::page::VmPage` exists since N3.3,
+//! but the pmap's callers still pass frames); until then it is the caller's word, as in the C. What `hal` can check it checks: a user pmap refuses the kernel's half, the
 //! kernel pmap is changed only through the [`KernelMapper`] token, and the page provider is
 //! the one [`bootstrap`] was given, once, by the boot path (decision 30's pattern).
 //!
@@ -148,7 +148,7 @@
 //!   managed page by type: [`zero_page`] and [`copy_page`] take a `Paddr` and panic unless the
 //!   provider knows it as a managed page (`PhysPages::md_of`), the check that type made.
 //! - `struct vm_page_md` is [`PageMd`], `hal`'s type, embedded by value in the kernel's page
-//!   (`bsd`'s `VmPage` now, `kernel::vm::Page` at N3.3): the pv chain under its own mutex, the
+//!   (`kernel::vm::page::VmPage`, N3.3): the pv chain under its own mutex, the
 //!   pmap's attribute bits the C keeps in `pg_flags` (`PG_PMAP0`..`2`) in their own atomic
 //!   word, and a PTP's count of valid entries (the C's `wire_count` of a page-table page).
 //! - The page allocator is a value passed down, [`PhysPages`] (D16), given to [`bootstrap`]
@@ -544,9 +544,9 @@ impl Default for PageMd {
     }
 }
 
-/// The kernel's physical pages, as the pmap needs them (D16): `bsd`'s `uvm_page` implements
-/// it until `kernel::vm` does (N3.3), and the boot path passes it to [`bootstrap`] as a value
-/// (bridges.toml: the row goes when `kernel` implements it; the trait stays, as API).
+/// The kernel's physical pages, as the pmap needs them (D16): the kernel's page system
+/// implements it (`kernel::vm::page::PHYS_PAGES`, N3.3; `bsd`'s `uvm_page` did before), and the
+/// boot path passes it to [`bootstrap`] as a value (an API, no longer a bridge row).
 ///
 /// The contract, on which the pmap's table views rest (a documented trust boundary, as the
 /// memory bridges', `sys/hal/trust.rs`): a frame `alloc_ptp` or `steal` hands out is RAM inside

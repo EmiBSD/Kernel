@@ -34,7 +34,7 @@ adapted_by = ["sys/hal/pmap.rs"]
 rust = "sys/arch/amd64/amd64/bus_dma.rs"
 lz = ["sys/arch/amd64/amd64/bus_dma.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/amd64/pmap/layout.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/amd64/pmap/layout.rs", "sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/bus_space.rs"
@@ -401,7 +401,7 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/arch/amd64/amd64/pmap.rs::pmap_steal_memory"
-native = ["Backend::steal_memory", "sys/machine/pmap.rs::pmap_steal_memory"]
+native = ["Backend::steal_memory"]
 kind = "renamed"
 
 [[module.fn]]
@@ -909,7 +909,7 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/pmap.rs::pmap_steal_memory"
-native = ["Backend::steal_memory", "stolen_bounds", "sys/machine/pmap.rs::pmap_steal_memory"]
+native = ["Backend::steal_memory", "stolen_bounds"]
 kind = "renamed"
 
 [[module.fn]]
@@ -1633,7 +1633,7 @@ notes = "M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in
 rust = "sys/arch/arm64/arm64/bus_dma.rs"
 lz = ["sys/arch/arm64/arm64/bus_dma.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/bus_space.rs"
@@ -4286,7 +4286,8 @@ notes = "M16d: license: BSD-3 (Red Hat), kept whole beside viogpu.c's ISC notice
 [[module]]
 rust = "sys/dev/pv/viomb.rs"
 lz = ["sys/dev/pv/viomb.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "M16d: license: BSD-2 (NetBSD, two notices kept whole); the whole file: viomb_ca/cd, match, attach (inflate and deflate queues, dma_alloc'ed frame number array and its map, taskq viomb, the desired/current sensors), viomb_config_change, viomb_worker, viomb_inflate (uvm_pglistalloc below dma_constraint), viomb_deflate, viomb_read_config, viomb_vq_dequeue (Result), viomb_inflate_intr, viomb_deflate_intr; the C's quirks kept: sensors lag the last request, a short deflate records i - 1 entries, request lengths are nvpages words; deviations: VIRTIO_PAGE_SIZE == PAGE_SIZE a const assertion (the C's #error), viomb_nvpages host-tested, VIOMBDEBUG behind VIRTIO_DEBUG; viomb* at virtio? on both archs; smoke-virtio: balloon 384 of 512 MB then 512 give raw0=134217728/raw1=133169152 then 0/1048576, as OpenBSD 8.0 does at the same scale"
 
 [[module]]
@@ -5135,7 +5136,8 @@ notes = "M4: the uniprocessor mutex (__mtx_init, _mtx_init, mtx_init, mtx_init_f
 [[module]]
 rust = "sys/kern/kern_malloc.rs"
 lz = ["sys/kern/kern_malloc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "malloc/free/mallocarray/kmeminit_nkmempages/kmeminit with BUCKETINDX; KMEMSTATS is feature kmemstats (default: GENERIC has option KMEMSTATS); btokup always range-checks; poison_*, uvm_map_checkprot and ratecheck reported; malloc_printit not here; M7b: kmeminit makes kmem_map with uvm_km_suballoc (VM_MAP_INTRSAFE) and kmembase/kmemlimit are its bounds; only the host double (PMAP_NOMMU) keeps the direct-map stand-in; diagnostic tools stage 2: sysctl_malloc, buckstring (KMEMSTATS) and memall (KMEMSTATS or DIAGNOSTIC) built by kmeminit; the structures go out through to_bytes; BUCKETINDX of a negative number is the smallest bucket; M11a: malloc_mtx is the C's mutex (IPL_VM) at the C's sites in malloc, free and sysctl_malloc (dropped around km_alloc/km_free, which run at splvm), with or without MULTIPROCESSOR; the KMEMSTATS ks_limit wait msleeps on it (memname as wmesg); DIAGNOSTIC assertwaitok, the pool_debug == 2 yield and the proc0 'cannot sleep for memory during boot' panic"
 
 [[module]]
@@ -5297,7 +5299,7 @@ status = "inherited"
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/km.rs"]
+adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress"
 
 [[module]]
@@ -5529,12 +5531,14 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/vfs_bio.rs"
 lz = ["sys/kern/vfs_bio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_biomem.rs"
 lz = ["sys/kern/vfs_biomem.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_cache.rs"
@@ -7783,7 +7787,8 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -7830,7 +7835,8 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm.rs"
 lz = ["sys/uvm/uvm.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "struct uvm (page queues, page_init_done, pmr_control) and the UVM_ET_* bits; the aiodone queue, the pager and swap fields arrive with their subsystems; M7a-1: kernel_object and the UVM_ET_IS* tests; M7a-2: kentry_free; M11a: fpageqlock (a mutex at IPL_VM); M11e: pageqlock (a mutex at IPL_VM; lock order pageqlock, then fpageqlock)"
 
 [[module]]
@@ -7841,18 +7847,21 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm_amap.rs"
 lz = ["sys/uvm/uvm_amap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/uvm/uvm_anon.rs"
 lz = ["sys/uvm/uvm_anon.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "M7a-1: uvm_anon_init (the pool, hiwat free/16), uvm_anon_init_percpu, uvm_analloc, uvm_anfree, uvm_anwait, uvm_anon_dropswap (uvm_swap_free reported: swap, M7), uvm_anon_release; uvm_anon_pagein reports uvmfault_anonget (M7a-3); UVM_PAGE_OWN not configured; M11a: uvm_anon_init_percpu does pool_cache_init(&uvm_anon_pool) under MULTIPROCESSOR"
 
 [[module]]
 rust = "sys/uvm/uvm_aobj.rs"
 lz = ["sys/uvm/uvm_aobj.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "M7a-1: struct uao_swhash_elt, struct uvm_aobj (#[repr(C)], u_obj first; u_swhash keeps hashinit's slice, u_swhashmask is its length - 1), the UAO_SWHASH_* macros, uao_find_swhash_elt, uao_find_swslot, uao_set_swslot, uao_free, uao_create (kernel_object_store, bootstrap_kernel_object_lock, kobj_alloced as statics), uao_init, uao_reference/uao_detach (uo_refs a Cell, not atomic: one CPU), uao_flush, uao_get_validate, uao_get (uvm_swap_get, SWSLOT_BAD and uvm_swap_markbad reported: a slot is an I/O error; swap, M7), uao_dropswap and uao_dropswap_range (uvm_swap_free reported, swpgonly accounted), uao_swap_off, uao_pagein, uao_pagein_page; uao_shrink*/uao_grow* are TMPFS, not configured; UVM_PAGE_OWN not configured; host tests; M10c (tmpfs): the #ifdef TMPFS block is now ported behind feature tmpfs: uao_shrink_flush, uao_shrink_hash, uao_shrink_convert, uao_shrink_array, uao_shrink, uao_grow_array, uao_grow_hash, uao_grow_convert, uao_grow (Result<(), Errno>, ENOMEM from the M_CANFAIL allocations); moving the swap hash to a table of another size rehashes each element by its tag (the C moves bucket i to bucket i, the same bucket only while the tags stay below both table sizes); a conversion clears the u_swslots/u_swhash field it leaves (side by side, not the C's union); host tests of every grow/shrink case and of the pages freed past the end; M11e: uao_reference/uao_detach change uo_refs with atomic_inc_int/atomic_dec_int_nv as the C"
 
 [[module]]
@@ -7865,13 +7874,15 @@ notes = "N3.2: the items that name only hal's types moved to sys/kernel/vm/types
 [[module]]
 rust = "sys/uvm/uvm_fault.rs"
 lz = ["sys/uvm/uvm_fault.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "M7a-1: VM_FAULT_INVALID/PROTECT/WIRE, struct uvm_faultinfo; M7a-3: the prototypes, with uvm_fault.c in the same file"
 
 [[module]]
 rust = "sys/uvm/uvm_glue.rs"
 lz = ["sys/uvm/uvm_glue.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -7901,7 +7912,7 @@ kind = "renamed"
 rust = "sys/uvm/uvm_map.rs"
 lz = ["sys/uvm/uvm_map.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/kernel/vm/page.rs"]
 notes = "M6-b: uvm_map_setup/teardown/init, uvmspace_alloc/init/share/exec/addref/purge/free/fork; M7a: the rwlock map lock with vm_map_lock_try/lock/lock_read/unlock/unlock_read/upgrade/downgrade/busy/unbusy/assert_anylock/assert_wrlock (the *_ln functions without file/line and LPRINTF), vm_map_modflags; M7a-2: the entry tree (uvm_mapent_copy/free_insert/free_remove/addr_insert/addr_remove, the augmented uvm_map_addr with uvm_map_addr_augment), uvm_map_reference, lock/unlock_entry, uvmspace_dused, entrybyaddr, DEAD_ENTRY_PUSH, isavail, findspace, uvm_mapanon, uvm_map, isjoinable/merge/tryjoin, unmap_detach(_intrsafe), mkentry, mapent_alloc/free (the static kentries, uvm_map_entry_pool, uvm_map_entry_kmem_pool), lookup_entry, inentry_sp/recheck/fix/inentry (printf for uprintf, trapsignal reported, the format is two words), is_stack_remappable, remap_as_stack, uvm_map_pie, uvm_unmap, mkfree, unmap_kill_entry(_withlock), unmap_remove, pageable_pgon/wire/pageable/pageable_all, setup_entries, splitentry, uvm_tree_assert/sanity/size_chk/vmspace_validate under feature vmmap_debug (and in host tests; uvm_map_deallocate zeroes the bounds for them as teardown does), uvm_map_protect (the RLIMIT_DATA lim_cur check reported), the fork copy functions mapent_clone/share/forkshared/forkcopy/forkzero with uvmspace_fork real, uvm_map_hint, submap, checkprot, create, deallocate, inherit, immutable, advice, extract, clean, clip_end/clip_start, boundfix, uaddr/uaddr_e, boundary, vmspace_update, kmem_grow (pmap_growkernel), freelist_update_clear/refill/update, set_uaddr (the slot as an enum), fix_space, mquery, setup_md (__LP64__); uvm_maxkaddr follows the runtime kernel-map base (uvm_init); uvm_map_fill_vmmap (sysctl) and the ddb printers wait for their subsystems; PMAP_CHECK_COPYIN, SYSVSHM, DEADBEEF0, TRACEPOINT, KERNEL_LOCK not configured; host tests; M7a-3b: the wired stand-ins (uvm_map_enter_wired/write_wired/remove_wired, VmMap.wired) are gone: exec goes through uvm_map; kern_sig.c: uvm_map_inentry's trapsignal(SIGSEGV, SEGV_ACCERR) at PROC_PC; M11a: the kernel lock at the C's sites (uvm_map_inentry's report, uvm_map_splitentry's pgo_reference); M11e: uvm_map_deallocate and uvmspace_free release with AcqRel (atomic_dec_int_nv); the KERNEL_LOCKs of uvm_map_inentry and uvm_map_splitentry were real since M11a; uvmspace_purge's is SYSVSHM (not configured)"
 
 [[module]]
@@ -7917,19 +7928,20 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm_object.rs"
 lz = ["sys/uvm/uvm_object.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/uvm/uvm_page.rs"
 lz = ["sys/uvm/uvm_page.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
-notes = "struct vm_page (Cell/atomic fields, pointer-arithmetic helpers add/sub/ptr_add), the PG_*/PQ_* flags, vm_physseg, VM_PSTRAT_*; M11e: uvm_lock_pageq/uvm_unlock_pageq are mtx_enter/mtx_leave(&uvm.pageqlock), uvm_lock_fpageq/uvm_unlock_fpageq on uvm.fpageqlock, as the C macros; page init, physload/physget/physdump, pageboot_alloc (both PMAP_STEAL_MEMORY paths), pagealloc/pagefree/pglistalloc/pglistfree, wire/unwire/activate/deactivate, PHYS_TO_VM_PAGE; uvm_page_physload after uvm_init needs malloc; uvm_pagezero_thread not here; M7a-1: uvm_pagewait sleeps on the owner lock (rwsleep_nsec), uvm_page_unbusy calls pmap_page_protect, uvm_page_owner_locked_p checks vmobjlock/an_lock; vfs stage 2: uvm_pagealloc_multi asks for one segment on a machine without an MMU (the host double), so the buffer cache can use the direct map there; vfs stage 2: uvm_pagedeactivate calls pmap_page_protect, pmap_clear_reference and pmap_is_modified (now in the machine contract) as the C does; M11a: uvm_shutdown calls smr_flush; M11a: uvm_page_init does mtx_init(&uvm.fpageqlock, IPL_VM) and uvm_lock_fpageq/uvm_unlock_fpageq are mtx_enter/mtx_leave on it; M11e: mtx_init(&uvm.pageqlock, IPL_VM) in uvm_page_init, uvm_lock_pageq/uvm_unlock_pageq real at every C site (pageclean, pagewire, pagedeactivate, pageactivate), MUTEX_ASSERT_LOCKED(&uvm.pageqlock) in uvm_pagedequeue, the owner-lock KASSERTs of pageinsert/pageremove/pagealloc_pg/pagealloc/pageclean, and uvm_pagealloc_multi's KASSERT(UVM_OBJ_IS_BUFCACHE) and KERNEL_ASSERT_LOCKED"
+status = "redesigned"
+notes = "N3.3: the adapter to kernel::vm::page (0 unsafe, forbid): the kernel's pages, segments, queues and operations re-exported by their C names; what stays here is the machine's segment policy (VM_PHYSSEG_*, VM_PSTRAT_*) and the C's lines for a refused segment, uvm_page_init's machine inputs (UVM_MD_CONSTRAINTS, pmap_steal_bounds, the BufCacheStats registration), uvm_pagealloc with the (obj, anon) pair, uvm_pagewait (a legacy rw_obj sleep, now with the owner), uvm_pagealloc_multi, uvm_shutdown, paddr_is_dma_reachable, uvm_page_physdump and uvm_pmr_print through printf"
 
 [[module]]
 rust = "sys/uvm/uvm_pager.rs"
 lz = ["sys/uvm/uvm_pager.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 notes = "M7a-1: struct uvm_pagerops (every op an Option<fn> with the Pgo* aliases), PGO_*, PGO_DONTCARE (a raw-pointer sentinel in &mut [*const VmPage] arrays), UVMPAGER_MAPIN_*, VM_PAGER_*, PAGER_MAP_SIZE; pgo_put's last argument is the PGO_* flags as i32 (the C prototype says boolean_t but uvn_put reads flags); pgo_mk_pcluster returns the cluster's start index; the uvm_pagermapin/out, uvm_mk_pcluster, uvm_pager_put/dropcluster prototypes are uvm_pager.c's functions, the uvm_aio_* ones come with the swap pager (M7); M7a-1: uvmpagerops[] (aobj and vnode pagers; uvm_device.c not ported), uvm_pseg_lck, uvm_pager_init (calls the pgo_init of every pager; uvm.aio_done is the swap pager's); vfs stage 2: struct uvm_pseg and psegs[] (Cells under uvm_pseg_lck), uvm_pseg_init/reserve_available/get/release (no page daemon yet: the reserve is never used), uvm_pagermapin/out (the direct map for one page), uvm_mk_pcluster and uvm_pager_put (the cluster's start is an index into pps), uvm_pager_dropcluster; uvm_aio_biodone, uvm_swap_dropcluster and uvm_aio_aiodone (async swap pageout) wait for uvm_swap.c (M7); selftest: pager map ok in smoke"
 
 [[module]]
@@ -7977,11 +7989,6 @@ status = "inherited"
 notes = "uvm_wait reports itself unported: no page daemon before kernel threads (M5); uvm_pageout, uvmpd_scan and the aiodone daemon come with swapping (M7); M8: uvmpd_tune (freemin, freetarg, wiredmax), called from main where the daemon thread would be forked, since uvm_pageout is not ported"
 
 [[module]]
-rust = "sys/uvm/uvm_percpu.rs"
-lz = ["sys/uvm/uvm_percpu.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/uvm/uvm_pmap.rs"
 lz = ["sys/uvm/uvm_pmap.rs"]
 status = "inherited"
@@ -7993,13 +8000,6 @@ crate = "hal"
 lz = ["sys/uvm/uvm_pmap.rs"]
 status = "redesigned"
 notes = "N3.1: pmap(9)'s machine-independent API in hal over a cfg-selected backend (crate::arch::current::pmap, the PmapBackend contract): PmapRef (counted handle with a static kernel arm; clone = pmap_reference, last drop = pmap_destroy, panics with leaf mappings left), KernelMapper (the kernel map's token from bootstrap), PageMd (vm_page_md), PhysPages (the page provider passed down, D16), BootstrapParams/KernelImage/Bootstrapped, the TlbCpus and Random bridges; pmap_statistics and the PMAP_* flags as uvm_pmap.rs (bsd's copy stays until commit 6); the module exists where a backend does (host now, amd64/arm64 with commits 4/5)"
-
-[[module]]
-rust = "sys/uvm/uvm_pmemrange.rs"
-lz = ["sys/uvm/uvm_pmemrange.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
-notes = "uvm_pmemrange, uvm_pmr_control, the memtype constants and the tree adapters; the whole allocator (getpages/getone/get1page, freepages/freepageq, split/use_inc, rootupdate, isfree, print, assertvalid under debug); uvm_wait reports itself unported so WAITOK fails with ENOMEM; in_pagedaemon is false; uvm_pmr_allocpmr after uvm_init needs malloc; vfs stage 2: BUFPAGES_DEFICIT/BUFPAGES_INACT are mount.h's bufpages_deficit()/bufpages_inact() over bcstats; M11a: uvm_lock_fpageq is the real mutex (uvm.fpageqlock, IPL_VM) at every C site (getpages, freepages, freepageq, split, use_inc); uvm_pagezero_thread not here; selftest=mpstress stresses uvm_pglistalloc/free on every CPU; M11e: the per-CPU page cache (MULTIPROCESSOR && __HAVE_UVM_PERCPU, which amd64 and arm64 define): uvm_pmr_cache_alloc/get/free/put/drain as the C at splbio, counting uvmexp.percpucaches/pcphit/pcpmiss; the magazines live in UVM_PMR_CACHES[cpu_number()] instead of curcpu()->ci_uvm (keeps the uvm type out of the machine's cpu_info); the uniprocessor kernel keeps the !MULTIPROCESSOR versions"
 
 [[module]]
 rust = "sys/uvm/uvm_swap.rs"
@@ -8015,7 +8015,8 @@ status = "inherited"
 [[module]]
 rust = "sys/uvm/uvm_vnode.rs"
 lz = ["sys/uvm/uvm_vnode.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/vm/page.rs"]
 
 [[module]]
 rust = "sys/hal/vm/uvmexp.rs"
@@ -8499,12 +8500,165 @@ lz = ["sys/uvm/uvm_page.rs", "sys/uvm/uvm.rs"]
 status = "redesigned"
 notes = "N3.3: struct vm_page as VmPage in one boot-stolen array (hal::bootmem), &'static for real: pageq/objt hal List/Tree links, the owner as an OwnerTag compared and never followed (the owner passed as Owner<'_> through the PageObject/PageAnon bridge traits, bsd's UvmObject/VmAnon, N3.4), [o]/[F] scalars relaxed atomics, the array index for pg + n; the segment table in a Mutexed while the system boots and frozen by uvm_page_init into a published table (PHYS_TO_VM_PAGE lock-free), the machine's VM_PHYSSEG_MAX/STRAT passed as a SegPolicy; the page queues inside Mutexed<PageQueues> (uvm_pagedequeue takes &mut PageQueues), page_init_done an atomic; implements hal::pmap::PhysPages (PHYS_PAGES); the !PMAP_STEAL_MEMORY boot path, uvm_pagewait, uvm_pagealloc_multi, uvm_shutdown and the DMA reachability stay in bsd's sys/uvm/uvm_page.rs"
 
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAP0"
+native = []
+kind = "dropped"
+reason = "the pmap bits left pg_flags at N3.1: hal::pmap::PageMd::attrs holds them (PG_PMAP_MOD, PG_PMAP_REF, PG_PMAP2), no reader of the uvm_page names is left"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAP1"
+native = []
+kind = "dropped"
+reason = "as PG_PMAP0: hal::pmap::PageMd::attrs since N3.1"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAP2"
+native = []
+kind = "dropped"
+reason = "as PG_PMAP0: hal::pmap::PageMd::attrs since N3.1 (hal::pmap::PG_PMAP2)"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAP3"
+native = []
+kind = "dropped"
+reason = "as PG_PMAP0: hal::pmap::PageMd::attrs since N3.1"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAP4"
+native = []
+kind = "dropped"
+reason = "as PG_PMAP0: hal::pmap::PageMd::attrs since N3.1"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAP5"
+native = []
+kind = "dropped"
+reason = "as PG_PMAP0: hal::pmap::PageMd::attrs since N3.1"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::PG_PMAPMASK"
+native = []
+kind = "dropped"
+reason = "pmemrange's valid_flags no longer masks pmap bits (they are in PageMd::attrs since N3.1); the free path clears them with PageMd::clear_attrs"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::uobject"
+native = ["VmPage::owner_tag", "VmPage::owned_by_object", "VmPage::has_object", "Owner"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::uanon"
+native = ["VmPage::owner_tag", "VmPage::owned_by_anon", "VmPage::has_anon", "Owner"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::add"
+native = ["nth"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::sub"
+native = ["nth_back"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::ptr_add"
+native = ["VmPage::index"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::ptr_sub"
+native = ["VmPage::index"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::same"
+native = []
+kind = "dropped"
+reason = "identity is core::ptr::eq on the &VmPage references, as every caller now writes it"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPage::forever"
+native = ["static_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VmPhysseg::page"
+native = ["PHYS_TO_VM_PAGE", "pages"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VM_PHYSMEM"
+native = ["BOOT", "TABLE"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VM_NPHYSSEG"
+native = ["BOOT", "TABLE"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VIRTUAL_SPACE_START"
+native = ["sys/uvm/uvm_page.rs::uvm_page_init"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::VIRTUAL_SPACE_END"
+native = ["sys/uvm/uvm_page.rs::uvm_page_init"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::vm_physmem_mut"
+native = []
+kind = "dropped"
+reason = "the boot segment table is the data of the BOOT mutex: uvm_page_physload and uvm_page_physsteal write it through its guard, no unsafe accessor"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::uvm_unlock_pageq"
+native = []
+kind = "dropped"
+reason = "uvm_lock_pageq returns the queues' guard and dropping it is the unlock (uvn_flush and uvm_pager_put pass the guard)"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::uvm_lock_fpageq"
+native = ["sys/kernel/vm/pmemrange.rs::uvm_lock_fpageq"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::uvm_unlock_fpageq"
+native = []
+kind = "dropped"
+reason = "uvm_lock_fpageq (kernel::vm::pmemrange) returns the free state's guard and dropping it is the unlock"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::uvm_pageboot_alloc"
+native = ["sys/hal/bootmem.rs::steal_slice", "sys/hal/bootmem.rs::steal_one"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::vm_physmem_remove"
+native = ["BootSegs::remove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_page.rs::uvm_page_physget"
+native = []
+kind = "dropped"
+reason = "only the !PMAP_STEAL_MEMORY path of uvm_pageboot_alloc called it, and every hal::pmap backend defines PMAP_STEAL_MEMORY (kernel::vm::page, ## Deviations)"
+
 [[module]]
 rust = "sys/kernel/vm/pmemrange.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_pmemrange.rs", "sys/uvm/uvm_percpu.rs"]
 status = "redesigned"
 notes = "N3.3: the free page allocator of uvm_pmemrange.c over hal Tree/List of 'static pages and boot-stolen pmemranges (hal::bootmem::steal_one), uvm.fpageqlock as Mutexed<FreeState> whose guard every range function takes as proof, the size tree's pg[1] and the array-broke test by index; the per-CPU magazines of uvm_percpu.h in a hal::percpu::PerCpu of Links at splraise(IPL_BIO) with IntrLevel::splassert; the buffer cache's BUFPAGES_DEFICIT/INACT through the BufCacheStats bridge (N5); uvm_wait absent (WAITOK -> ENOMEM, LZ's deviation), uvm_pmr_allocpmr after init panics (unreachable), uvm_pagezero_thread N4; uvm_pmr_free_frames for kernel::vm::km"
+
+[[module.fn]]
+lz = "sys/uvm/uvm_pmemrange.rs::pmr_static"
+native = []
+kind = "dropped"
+reason = "pmemranges are &'static by construction (hal::bootmem::steal_one, never freed), so no reference needs its lifetime restored"
 
 [[module]]
 rust = "sys/kernel/vm/km.rs"

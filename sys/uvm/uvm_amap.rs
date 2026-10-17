@@ -94,7 +94,7 @@ use crate::uvm::uvm::UVM_ET_NEEDSCOPY;
 use crate::uvm::uvm_anon::{VmAnon, VmAref, uvm_analloc, uvm_anfree, uvm_anon_pagein};
 use crate::uvm::uvm_map::{VmMap, VmMapEntry, uvm_map_clip_end_at, uvm_map_clip_start_at};
 use crate::uvm::uvm_page::{
-    PG_BUSY, PG_FAKE, uvm_pageactivate, uvm_pagealloc, uvm_pagecopy, uvm_pagewait,
+    Owner, PG_BUSY, PG_FAKE, uvm_pageactivate, uvm_pagealloc, uvm_pagecopy, uvm_pagewait,
 };
 use crate::uvm::uvm_param::atop;
 use crate::uvm::uvm_pdaemon::uvm_wait;
@@ -964,7 +964,7 @@ pub fn amap_cow_now(_map: &VmMap, entry: &VmMapEntry) {
 
                 // If the page is busy, then we have to unlock, wait for it and then restart.
                 if pg.flags() & PG_BUSY != 0 {
-                    uvm_pagewait(pg, amap.lock(), "cownow");
+                    uvm_pagewait(pg, Owner::Anon(anon), amap.lock(), "cownow");
                     continue 'restart;
                 }
 
@@ -1003,7 +1003,7 @@ pub fn amap_cow_now(_map: &VmMap, entry: &VmMapEntry) {
                 // it cannot be PG_RELEASED or PG_WANTED.
                 npg.clear_bits(PG_BUSY | PG_FAKE);
                 // UVM_PAGE_OWN(npg, NULL): not configured.
-                uvm_pageactivate(npg);
+                uvm_pageactivate(npg, Owner::Anon(nanon));
             }
             chunk = amap.next_chunk(c);
         }

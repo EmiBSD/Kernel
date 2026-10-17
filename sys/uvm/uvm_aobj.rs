@@ -109,8 +109,8 @@ use crate::uvm::uvm_object::{
     uvm_obj_is_kern_object, uvm_obj_setlock,
 };
 use crate::uvm::uvm_page::{
-    PG_BUSY, PG_CLEAN, PG_FAKE, PG_WANTED, PQ_AOBJ, VmPage, uvm_pagealloc, uvm_pagedeactivate,
-    uvm_pagefree, uvm_pagelookup, uvm_pagewait, uvm_pagezero,
+    Owner, PG_BUSY, PG_CLEAN, PG_FAKE, PG_WANTED, PQ_AOBJ, VmPage, uvm_pagealloc,
+    uvm_pagedeactivate, uvm_pagefree, uvm_pagelookup, uvm_pagewait, uvm_pagezero,
 };
 use crate::uvm::uvm_pager::{
     PGO_ALLPAGES, PGO_CLEANIT, PGO_DEACTIVATE, PGO_FREE, PGO_LOCKED, PGO_SYNCIO, UvmPagerops,
@@ -955,12 +955,12 @@ pub fn uao_detach(uobj: &UvmObject) {
     while let Some(pg) = uobj.memt.root() {
         pmap_page_protect(pg, PROT_NONE);
         if pg.flags() & PG_BUSY != 0 {
-            uvm_pagewait(pg, uobj.vmobjlock(), "uao_det");
+            uvm_pagewait(pg, Owner::Object(uobj), uobj.vmobjlock(), "uao_det");
             let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
             continue;
         }
-        uao_dropswap(&aobj.u_obj, (pg.offset.get() >> PAGE_SHIFT) as i32);
-        uvm_pagefree(pg);
+        uao_dropswap(&aobj.u_obj, (pg.offset() >> PAGE_SHIFT) as i32);
+        uvm_pagefree(pg, Owner::Object(uobj));
     }
 
     // Finally, free the anonymous UVM object itself.
@@ -1009,7 +1009,7 @@ pub fn uao_flush(uobj: &UvmObject, start: Voff, stop: Voff, flags: i32) -> bool 
 
         // Make sure page is unbusy, else wait for it.
         if pg.flags() & PG_BUSY != 0 {
-            uvm_pagewait(pg, uobj.vmobjlock(), "uaoflsh");
+            uvm_pagewait(pg, Owner::Object(uobj), uobj.vmobjlock(), "uaoflsh");
             let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
             curoff -= PAGE_SIZE as Voff;
             continue;
@@ -1025,7 +1025,7 @@ pub fn uao_flush(uobj: &UvmObject, start: Voff, stop: Voff, flags: i32) -> bool 
             || (what == PGO_FREE && uobj.uo_refs.get() > 1);
         if deactivate {
             // deactivate_it:
-            uvm_pagedeactivate(pg);
+            uvm_pagedeactivate(pg, Owner::Object(uobj));
             continue;
         }
         if what != PGO_FREE {
@@ -1033,7 +1033,7 @@ pub fn uao_flush(uobj: &UvmObject, start: Voff, stop: Voff, flags: i32) -> bool 
         }
 
         // XXX skip the page if it's wired
-        if pg.wire_count.get() != 0 {
+        if pg.wire_count() != 0 {
             continue;
         }
 
@@ -1042,8 +1042,8 @@ pub fn uao_flush(uobj: &UvmObject, start: Voff, stop: Voff, flags: i32) -> bool 
 
         // freeing swapslot here is not strictly necessary. however, leaving it here doesn't
         // save much because we need to update swap accounting anyway.
-        uao_dropswap(uobj, (pg.offset.get() >> PAGE_SHIFT) as i32);
-        uvm_pagefree(pg);
+        uao_dropswap(uobj, (pg.offset() >> PAGE_SHIFT) as i32);
+        uvm_pagefree(pg, Owner::Object(uobj));
     }
 
     true
@@ -1210,7 +1210,7 @@ pub fn uao_get(
 
             // page is there, see if we need to wait on it
             if ptmp.flags() & PG_BUSY != 0 {
-                uvm_pagewait(ptmp, uobj.vmobjlock(), "uao_get");
+                uvm_pagewait(ptmp, Owner::Object(uobj), uobj.vmobjlock(), "uao_get");
                 let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
                 continue; // goto top of pps while loop
             }
@@ -1260,7 +1260,7 @@ pub fn uao_get(
                 }
                 ptmp.clear_bits(PG_WANTED | PG_BUSY);
                 // UVM_PAGE_OWN(ptmp, NULL): not configured.
-                uvm_pagefree(ptmp);
+                uvm_pagefree(ptmp, Owner::Object(uobj));
                 rw_exit(uobj.vmobjlock());
 
                 return rv;
@@ -1431,7 +1431,7 @@ fn uao_pagein_page(aobj: &UvmAobj, pageidx: i32) -> bool {
     // UVM_PAGE_OWN(pg, NULL): not configured.
 
     // deactivate the page (to put it on a page queue).
-    uvm_pagedeactivate(pg);
+    uvm_pagedeactivate(pg, Owner::Object(uobj));
 
     false
 }
@@ -1649,13 +1649,13 @@ mod tests {
         assert!(pg.flags() & PG_BUSY != 0);
         assert_eq!(pg.flags() & PG_FAKE, 0);
         assert!(pg.flags() & PQ_AOBJ != 0);
-        assert_eq!(pg.offset.get(), off);
-        assert!(pg.uobject().is_some_and(|o| ptr::eq(o, uobj)));
+        assert_eq!(pg.offset(), off);
+        assert!(pg.owned_by_object(uobj));
         assert_eq!(uobj.uo_npages.get(), 1);
 
         // once unbusied, PGO_LOCKED finds it and leaves the PGO_DONTCARE slot alone
         let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
-        uvm_page_unbusy(&[Some(pg)]);
+        uvm_page_unbusy(&[Some(pg)], Owner::Object(uobj));
         let mut pps2: [*const VmPage; 2] = [PGO_DONTCARE, ptr::null()];
         let mut n2 = 2;
         let rv = uao_get(uobj, 0, &mut pps2, &mut n2, 1, PROT_READ, 0, PGO_LOCKED);
@@ -1760,7 +1760,7 @@ mod tests {
             // SAFETY: `uao_get` returned OK, so the slot holds a page of the object.
             let pg = unsafe { pps[0].as_ref() }.expect("a page");
             let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
-            uvm_page_unbusy(&[Some(pg)]);
+            uvm_page_unbusy(&[Some(pg)], Owner::Object(uobj));
             rw_exit(uobj.vmobjlock());
         }
         assert_eq!(uobj.uo_npages.get(), 2);

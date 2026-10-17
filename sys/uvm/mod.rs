@@ -39,16 +39,19 @@ pub mod uvm_map;
 pub mod uvm_meter;
 pub mod uvm_mmap;
 pub mod uvm_object;
+#[forbid(unsafe_code)]
 pub mod uvm_page;
 pub mod uvm_pager;
 #[forbid(unsafe_code)]
 pub mod uvm_param;
 #[forbid(unsafe_code)]
 pub mod uvm_pdaemon;
-pub mod uvm_percpu;
+
 #[forbid(unsafe_code)]
 pub mod uvm_pmap;
-pub mod uvm_pmemrange;
+// The free page allocator and the per-CPU page caches are the kernel's since N3.3
+// (`uvm_pmemrange.c`, `uvm_percpu.h`); the legacy path stays.
+pub use kernel::vm::pmemrange as uvm_pmemrange;
 #[forbid(unsafe_code)]
 pub mod uvm_swap;
 #[forbid(unsafe_code)]

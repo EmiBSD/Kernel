@@ -86,8 +86,9 @@
 //! The allocator (`km_alloc`, `km_free`, `uvm_km_pgremove_intrsafe` and the modes) is the
 //! kernel crate's, `kernel::vm::km`. What stays here is what belongs to the kernel map and the
 //! kernel object, which are still `bsd`'s (`uvm_map`, `uvm_aobj`): `kernel_map` itself, its
-//! set-up in [`uvm_km_init`], [`uvm_km_suballoc`] and [`uvm_km_pgremove`]; the two bridges the
-//! kernel's allocator reaches them through ([`BsdKmMaps`], [`BsdKmPages`]); `kp_dma*` (over
+//! set-up in [`uvm_km_init`], [`uvm_km_suballoc`] and [`uvm_km_pgremove`]; the bridge the
+//! kernel's allocator reaches the maps through ([`BsdKmMaps`]; its pages are the kernel's own
+//! page system since N3.3); `kp_dma*` (over
 //! the machine's `dma_constraint`); and the legacy signatures every caller of `km_alloc` and
 //! `km_free` keeps (`Option<NonNull<u8>>`).
 //!
@@ -106,8 +107,11 @@
 //!   kernel's, through its `KernelMapper` token).
 //! - `kv_map_of` is [`BsdKmMaps::map_of`], the `KmMaps` bridge's dispatch from a `KvMap` to
 //!   the map.
-//! - [`uvm_km_init`] installs the two bridges first: the kernel object and the reservation's
+//! - [`uvm_km_init`] installs the maps bridge first: the kernel object and the reservation's
 //!   map entries are allocated through `km_alloc` (`kv_page`) before the map is up.
+//! - N3.3: `BsdKmPages` (the `KmPages` bridge over `uvm_pglistalloc`, `uvm_pmr_freepages` and
+//!   `uvm_pagefree`) is gone with the bridge: the kernel's allocator calls the kernel's page
+//!   system.
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
@@ -118,7 +122,7 @@ pub use kernel::vm::km::{
     KV_ANY, KV_INTRSAFE, KV_PAGE, NO_CONSTRAINT, kernel_map_max, kernel_map_min,
     uvm_km_pgremove_intrsafe,
 };
-use kernel::vm::km::{KmMaps, KmObject, KmPages, KvMap, install, pa_mode, set_bounds};
+use kernel::vm::km::{KmMaps, KmObject, KvMap, install, pa_mode, set_bounds};
 
 use crate::kassert;
 use crate::kern::kern_malloc::kmem_map;
@@ -130,23 +134,19 @@ use crate::sys::errno::Errno;
 use crate::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE};
 use crate::sys::param::{PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::rwlock::rw_write_held;
-use crate::sys::types::{Paddr, Vaddr, Vsize};
+use crate::sys::types::{Vaddr, Vsize};
 use crate::uvm::uvm_aobj::{UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
 use crate::uvm::uvm_extern::{
     KmemDynMode, KmemPaMode, KmemVaMode, UVM_FLAG_FIXED, UVM_FLAG_NOMERGE, UVM_UNKNOWN_OFFSET,
-    UvmConstraintRange, Voff, uvm_mapflag,
+    Voff, uvm_mapflag,
 };
 use crate::uvm::uvm_init::{UVM, UVMEXP};
 use crate::uvm::uvm_map::{
     VM_MAP_PAGEABLE, VmMap, uvm_map, uvm_map_create, uvm_map_setup, uvm_map_submap, uvm_unmap,
 };
 use crate::uvm::uvm_object::{UvmObject, uvm_obj_is_aobj};
-use crate::uvm::uvm_page::{
-    PG_BUSY, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pagelookup, uvm_pagewait, uvm_pglistalloc,
-    vm_page_to_phys,
-};
+use crate::uvm::uvm_page::{Owner, PG_BUSY, uvm_pagefree, uvm_pagelookup, uvm_pagewait};
 use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, round_page};
-use crate::uvm::uvm_pmemrange::uvm_pmr_freepages;
 
 /// The kernel maps of `bsd`, as the kernel's `km` asks for them (`kernel::vm::km::KmMaps`).
 pub struct BsdKmMaps;
@@ -164,17 +164,13 @@ impl BsdKmMaps {
     }
 }
 
-/// The page system of `bsd`, as the kernel's `km` asks for it (`kernel::vm::km::KmPages`).
-pub struct BsdKmPages;
-
 /// `kernel_map_store`: the kernel map.
 static KERNEL_MAP_STORE: VmMap = VmMap::new();
 /// `kernel_map`: unset until `uvm_km_init` set the store up.
 static KERNEL_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
 
-/// The bridges' implementations, installed by [`uvm_km_init`].
+/// The bridge's implementation, installed by [`uvm_km_init`].
 static BSD_KM_MAPS: BsdKmMaps = BsdKmMaps;
-static BSD_KM_PAGES: BsdKmPages = BsdKmPages;
 
 /// `kernel_map`: the kernel's map, once `uvm_km_init` set it up.
 pub fn kernel_map() -> &'static VmMap {
@@ -212,9 +208,9 @@ pub static KP_DMA_ZERO: KmemPaMode = KmemPaMode {
 ///   `[base -> start]` has already been allocated and that "end" is the end of the kernel
 ///   image span.
 pub fn uvm_km_init(base: Vaddr, start: Vaddr, end: Vaddr) {
-    // The kernel's allocator reaches the maps and the pages through these; the kernel
-    // object's and the reservation's allocations below already go through it.
-    if install(&BSD_KM_MAPS, &BSD_KM_PAGES).is_err() {
+    // The kernel's allocator reaches the maps through this; the kernel object's and the
+    // reservation's allocations below already go through it.
+    if install(&BSD_KM_MAPS).is_err() {
         panic(format_args!("uvm_km_init: called twice"));
     }
 
@@ -351,7 +347,7 @@ pub fn uvm_km_pgremove(uobj: &UvmObject, startva: Vaddr, endva: Vaddr) {
     while curoff < end {
         let pp = uvm_pagelookup(uobj, curoff);
         if let Some(pg) = pp.filter(|pg| pg.flags() & PG_BUSY != 0) {
-            uvm_pagewait(pg, uobj.vmobjlock(), "km_pgrm");
+            uvm_pagewait(pg, Owner::Object(uobj), uobj.vmobjlock(), "km_pgrm");
             rw_enter_write(uobj.vmobjlock());
             continue; // loop back to us
         }
@@ -360,7 +356,7 @@ pub fn uvm_km_pgremove(uobj: &UvmObject, startva: Vaddr, endva: Vaddr) {
         let slot = uao_dropswap(uobj, (curoff >> PAGE_SHIFT) as i32);
 
         match pp {
-            Some(pg) => uvm_pagefree(pg),
+            Some(pg) => uvm_pagefree(pg, Owner::Object(uobj)),
             None if slot != 0 => swpgonlydelta += 1,
             None => {}
         }
@@ -402,64 +398,6 @@ impl KmMaps for BsdKmMaps {
     }
 }
 
-impl KmPages for BsdKmPages {
-    fn alloc(
-        &self,
-        sz: usize,
-        constraint: &UvmConstraintRange,
-        align: Paddr,
-        boundary: Paddr,
-        maxseg: i32,
-        flags: i32,
-        each: &mut dyn FnMut(Paddr),
-    ) -> Result<(), Errno> {
-        let pgl = Pglist::new();
-        pgl.init();
-        uvm_pglistalloc(
-            sz,
-            constraint.ucr_low,
-            constraint.ucr_high,
-            align,
-            boundary,
-            &pgl,
-            maxseg,
-            flags,
-        )?;
-        while let Some(pg) = pgl.pop_head() {
-            each(vm_page_to_phys(pg));
-        }
-        Ok(())
-    }
-
-    /// `uvm_pglistfree`'s work (`uvm_pmr_freepageq`) without the list, which only `unsafe`
-    /// mutators could build: every frame must have its page before any goes back (the C
-    /// panics while it collects them), then each page goes onto the free list with
-    /// `uvm_pmr_freepages(pg, 1)`: the same checks and flags, `uvmexp.free` counted, the
-    /// wakeups of `&uvmexp.free` and `&uvmexp.zeropages`; one page at a time, so a run is never
-    /// assumed to lie in one page array.
-    fn free_list(&self, frames: &[Paddr]) -> Result<(), Paddr> {
-        if let Some(&pa) = frames.iter().find(|&&pa| PHYS_TO_VM_PAGE(pa).is_none()) {
-            return Err(pa);
-        }
-        for &pa in frames {
-            if let Some(pg) = PHYS_TO_VM_PAGE(pa) {
-                uvm_pmr_freepages(pg, 1);
-            }
-        }
-        Ok(())
-    }
-
-    fn free(&self, pa: Paddr) -> bool {
-        match PHYS_TO_VM_PAGE(pa) {
-            Some(pg) => {
-                uvm_pagefree(pg);
-                true
-            }
-            None => false,
-        }
-    }
-}
-
 /// `km_alloc`: allocate `sz` bytes of kernel memory with the given virtual, physical and
 /// dynamic modes (`kernel::vm::km::km_alloc`, its address as the legacy pointer).
 pub fn km_alloc(
@@ -478,13 +416,13 @@ pub fn km_free(v: NonNull<u8>, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) {
 }
 
 /// The host tests' stand-in for [`uvm_km_init`]'s first step, which they never run: installs
-/// the two bridges so the kernel's allocator serves the pools and `malloc` over the test's
+/// the maps bridge so the kernel's allocator serves the pools and `malloc` over the test's
 /// memory (a second call keeps the first), and bootstraps the host pmap, so the kernel map's
 /// token is adopted before any path of the kernel's allocator that maps can run (a machine's
 /// boot glue does it before `uvm_init`).
 #[cfg(test)]
 pub(crate) fn uvm_km_test_init() {
-    let _ = install(&BSD_KM_MAPS, &BSD_KM_PAGES);
+    let _ = install(&BSD_KM_MAPS);
     <Machine as Pmap>::pmap_bootstrap_lazy();
 }
 /* </CODE> */
@@ -512,16 +450,7 @@ mod tests {
         km_free(p, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
         // uvm_pglistfree's way: counted free at once. On the host (no `multiprocessor`) the
         // per-CPU cache is the free list itself, so this cannot tell the two paths apart; the
-        // kernel crate's `km_list_freed` tests do.
-        assert_eq!(free_pages(), before);
-    }
-
-    #[test]
-    fn the_pages_bridge_refuses_a_frame_without_a_page() {
-        let _g = setup_real_memory();
-        let before = free_pages();
-        assert_eq!(BSD_KM_PAGES.free_list(&[Paddr::new(0)]), Err(Paddr::new(0)));
-        assert!(!BSD_KM_PAGES.free(Paddr::new(0)));
+        // kernel crate's km tests do (`UVMEXP.free` against the cache's count).
         assert_eq!(free_pages(), before);
     }
 

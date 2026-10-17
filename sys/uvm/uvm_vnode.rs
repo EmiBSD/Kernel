@@ -153,9 +153,9 @@ use crate::sys::vnode::{IO_NOCACHE, VBLK, VTEXT, Vattr, Vnode};
 use crate::uvm::uvm_extern::{VmProt, Voff};
 use crate::uvm::uvm_object::{UvmObject, uvm_obj_init, uvm_obj_is_vnode};
 use crate::uvm::uvm_page::{
-    PG_BUSY, PG_CLEAN, PG_CLEANCHK, PG_FAKE, PG_WANTED, PQ_ACTIVE, PQ_INACTIVE, VmPage,
+    Owner, PG_BUSY, PG_CLEAN, PG_CLEANCHK, PG_FAKE, PG_WANTED, PQ_ACTIVE, PQ_INACTIVE, VmPage,
     uvm_lock_pageq, uvm_pagealloc, uvm_pagedeactivate, uvm_pagedequeue, uvm_pagefree,
-    uvm_pagelookup, uvm_pagewait, uvm_unlock_pageq,
+    uvm_pagelookup, uvm_pagewait,
 };
 use crate::uvm::uvm_pager::{
     PGO_ALLPAGES, PGO_CLEANIT, PGO_DEACTIVATE, PGO_DOACTCLUST, PGO_FREE, PGO_LOCKED, PGO_NOWAIT,
@@ -690,8 +690,9 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
         }
     }
 
-    uvm_lock_pageq();
-    // locked: both page queues
+    // locked: both page queues (the guard; dropping it is uvm_unlock_pageq)
+    let mut q = uvm_lock_pageq();
+    let owner = Owner::Object(uobj);
     let mut curoff = start;
     while curoff < stop {
         let Some(pp) = uvm_pagelookup(uobj, curoff) else {
@@ -727,23 +728,23 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
         // if we don't need a clean, deactivate/free pages then cont.
         if !needs_clean {
             if flags & PGO_DEACTIVATE != 0 {
-                uvm_unlock_pageq();
-                uvm_pagedeactivate(pp);
-                uvm_lock_pageq();
+                drop(q);
+                uvm_pagedeactivate(pp, owner);
+                q = uvm_lock_pageq();
             } else if flags & PGO_FREE != 0 {
                 if pp.flags() & PG_BUSY != 0 {
-                    uvm_unlock_pageq();
-                    uvm_pagewait(pp, lock, "uvn_flsh");
+                    drop(q);
+                    uvm_pagewait(pp, owner, lock, "uvn_flsh");
                     let _ = rw_enter(lock, RW_WRITE);
-                    uvm_lock_pageq();
+                    q = uvm_lock_pageq();
                     continue; // the same offset again
                 } else {
                     pmap_page_protect(pp, PROT_NONE);
                     // dequeue to prevent lock recursion
                     if pp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
-                        uvm_pagedequeue(pp);
+                        uvm_pagedequeue(&mut q, pp, owner);
                     }
-                    uvm_pagefree(pp);
+                    uvm_pagefree(pp, owner);
                 }
             }
             curoff += ps;
@@ -772,13 +773,14 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
                 flags | PGO_DOACTCLUST,
                 start,
                 stop,
+                q,
             );
 
             // if we did an async I/O it is remotely possible for the async i/o to complete
             // and the page "pp" be freed or what not before we get a chance to relock the
             // object. Therefore, we only touch it when it won't be freed, RELEASED took care
             // of the rest.
-            uvm_lock_pageq();
+            q = uvm_lock_pageq();
 
             // VM_PAGER_AGAIN: given the structure of this pager, this can only happen when we
             // are doing async I/O and can't map the pages into kernel memory (pager_map) due
@@ -806,7 +808,7 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
         for lcv in 0..npages as usize {
             let ptmp = pps_page(pps[ppsp + lcv]);
             // verify the page didn't get moved
-            if result == VM_PAGER_PEND && !ptr::eq(ptmp.uobject.get(), uobj) {
+            if result == VM_PAGER_PEND && !ptmp.owned_by_object(uobj) {
                 continue;
             }
 
@@ -827,9 +829,9 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
 
             // dispose of page
             if flags & PGO_DEACTIVATE != 0 {
-                uvm_unlock_pageq();
-                uvm_pagedeactivate(ptmp);
-                uvm_lock_pageq();
+                drop(q);
+                uvm_pagedeactivate(ptmp, owner);
+                q = uvm_lock_pageq();
             } else if flags & PGO_FREE != 0 && result != VM_PAGER_PEND {
                 if result != VM_PAGER_OK {
                     static INTERVAL: Timeval = Timeval::new(5, 0);
@@ -839,8 +841,8 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
                     if ratecheck(lasttime, &INTERVAL) {
                         kprintf!(
                             "uvn_flush: obj={:p}, offset={:#x}.  error during pageout.\n",
-                            pp.uobject.get(),
-                            pp.offset.get()
+                            ptr::from_ref(uobj),
+                            pp.offset()
                         );
                         kprintf!("uvn_flush: WARNING: changes to page may be lost!\n");
                     }
@@ -849,16 +851,16 @@ pub fn uvn_flush(uobj: &UvmObject, start: Voff, stop: Voff, mut flags: i32) -> b
                 pmap_page_protect(ptmp, PROT_NONE);
                 // dequeue first to prevent lock recursion
                 if ptmp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
-                    uvm_pagedequeue(ptmp);
+                    uvm_pagedequeue(&mut q, ptmp, owner);
                 }
-                uvm_pagefree(ptmp);
+                uvm_pagefree(ptmp, owner);
             }
         } // end of "lcv" for loop
         curoff += ps;
     } // end of "pp" for loop
 
     // done with pagequeues: unlock
-    uvm_unlock_pageq();
+    drop(q);
 
     // now wait for all I/O if required.
     if need_iosync {
@@ -1049,7 +1051,7 @@ pub fn uvn_get(
 
             // page is there, see if we need to wait on it
             if ptmp.flags() & PG_BUSY != 0 {
-                uvm_pagewait(ptmp, lock, "uvn_get");
+                uvm_pagewait(ptmp, Owner::Object(uobj), lock, "uvn_get");
                 let _ = rw_enter(lock, RW_WRITE);
                 continue; // goto top of pps while loop
             }
@@ -1089,7 +1091,7 @@ pub fn uvn_get(
 
             ptmp.clear_bits(PG_WANTED | PG_BUSY);
             // UVM_PAGE_OWN(ptmp, NULL): not configured.
-            uvm_pagefree(ptmp);
+            uvm_pagefree(ptmp, Owner::Object(uobj));
             rw_exit(lock);
             return result;
         }
@@ -1139,7 +1141,7 @@ pub fn uvn_io(
     // init values
     let waitok = flags & PGO_SYNCIO != 0;
     let vn = uvn.vnode();
-    let file_offset = pps_page(pps[0]).offset.get();
+    let file_offset = pps_page(pps[0]).offset();
 
     // check for sync'ing I/O.
     while uvn.u_flags.get() & UVM_VNODE_IOSYNC != 0 {

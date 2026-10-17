@@ -105,6 +105,7 @@ use crate::sys::mutex::Mutex;
 use crate::sys::param::{PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::queue::XsimpleqEntry;
 use crate::sys::systm::PHYSMEM;
+use crate::sys::types::Paddr;
 #[cfg(feature = "diagnostic")]
 use crate::unported;
 use crate::uvm::uvm_init::UVMEXP;
@@ -113,7 +114,7 @@ use crate::uvm::uvm_km::{
     uvm_km_suballoc,
 };
 use crate::uvm::uvm_map::{VM_MAP_INTRSAFE, VmMap};
-use crate::uvm::uvm_page::vm_physmem;
+use crate::uvm::uvm_page::{PHYS_TO_VM_PAGE, vm_physmem};
 use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, atop, ptoa, round_page};
 use crate::{kassert, kprintf, queue_adapter};
 
@@ -739,8 +740,9 @@ pub fn kmeminit() {
         let Some(lowest) = segs.iter().min_by_key(|seg| seg.start) else {
             crate::kern::subr_prf::panic(format_args!("kmeminit: no physical memory"));
         };
-        // SAFETY: uvm_page_init set every segment's page array.
-        let pg0 = unsafe { lowest.page(0) };
+        let Some(pg0) = PHYS_TO_VM_PAGE(Paddr::new(ptoa(lowest.start))) else {
+            crate::kern::subr_prf::panic(format_args!("kmeminit: no page array"));
+        };
         let base = pmap_map_direct(pg0).as_usize();
         let frames = segs.iter().map(|seg| seg.end).max().unwrap_or(0) - lowest.start;
         (base, base + ptoa(frames), frames)

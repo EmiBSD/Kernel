@@ -103,17 +103,6 @@ trait = "KmMaps"
 for = ["sys/kernel/vm/km.rs"]
 paid_by = "N3"
 
-# bsd: uvm_pglistalloc (the list drained with TailqHead::pop_head), uvm_pglistfree's work
-# (uvm_pmr_freepages per page: the free list, uvmexp.free and its wakeups) and uvm_pagefree of
-# PHYS_TO_VM_PAGE(pa) (sys/uvm/uvm_page.rs, sys/uvm/uvm_pmemrange.rs), the frames crossing as
-# physical addresses, implemented by sys/uvm/uvm_km.rs (BsdKmPages). N3.3, when kernel::vm
-# owns the pages.
-# kernel::vm::km::KmPages
-[[bridge]]
-trait = "KmPages"
-for = ["sys/kernel/vm/km.rs"]
-paid_by = "N3"
-
 # bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
 # sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
 # pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by
@@ -160,16 +149,6 @@ paid_by = "N4"
 trait = "PipeFiles"
 for = ["sys/kernel/pipe.rs"]
 paid_by = "N4"
-
-# bsd: uvm_pagealloc/uvm_pagefree, PHYS_TO_VM_PAGE(pa)->mdpage, uvm_page_physsteal and
-# uvm.page_init_done (sys/uvm/uvm_page.rs), implemented by sys/machine/pmap.rs (BsdPages)
-# and passed to hal::pmap::bootstrap as a value, not a registered slot (D16). Paid by N3.3,
-# when kernel::vm implements it: the row goes, the trait stays as API (0.3.2).
-# hal::pmap::PhysPages
-[[bridge]]
-trait = "PhysPages"
-for = ["sys/hal/pmap.rs"]
-paid_by = "N3"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),

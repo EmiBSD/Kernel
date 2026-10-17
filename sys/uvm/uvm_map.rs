@@ -214,7 +214,7 @@ use crate::uvm::uvm_km::{
     uvm_km_pgremove_intrsafe,
 };
 use crate::uvm::uvm_object::{UvmObject, uvm_obj_is_kern_object};
-use crate::uvm::uvm_page::{PQ_ANON, uvm_pagedeactivate};
+use crate::uvm::uvm_page::{Owner, PQ_ANON, uvm_pagedeactivate};
 use crate::uvm::uvm_pager::{PGO_CLEANIT, PGO_DEACTIVATE, PGO_FREE};
 use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
 use crate::uvm::uvm_pmap::{pmap_prefer_align, pmap_prefer_offset};
@@ -4672,20 +4672,20 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
                         || f == PGO_CLEANIT | PGO_DEACTIVATE
                         || f == PGO_DEACTIVATE =>
                     {
-                        kassert!(ptr::eq(pg.uanon.get(), anon));
-                        uvm_pagedeactivate(pg);
+                        kassert!(pg.owned_by_anon(anon));
+                        uvm_pagedeactivate(pg, Owner::Anon(anon));
                     }
                     f if f == PGO_FREE => {
                         // If there are multiple references to the amap, just deactivate
                         // the page.
                         if amap_refs(amap) > 1 {
-                            kassert!(ptr::eq(pg.uanon.get(), anon));
-                            uvm_pagedeactivate(pg);
+                            kassert!(pg.owned_by_anon(anon));
+                            uvm_pagedeactivate(pg, Owner::Anon(anon));
                             continue;
                         }
 
                         // skip the page if it's wired
-                        if pg.wire_count.get() != 0 {
+                        if pg.wire_count() != 0 {
                             continue;
                         }
                         amap_unadd(&e.aref, off);

@@ -399,8 +399,8 @@ pub fn buf_free_pages(bp: &'static Buf) {
         let Some(pg) = uvm_pagelookup(uobj, off + ptoa(i) as i64) else {
             panic(format_args!("buf_free_pages: page {i} of {:p} is gone", bp));
         };
-        kassert!(pg.wire_count.get() == 1);
-        pg.wire_count.set(0);
+        kassert!(pg.wire_count() == 1);
+        pg.set_wire_count(0);
         BCSTATS.numbufpages.fetch_sub(1, Ordering::Relaxed);
     }
 

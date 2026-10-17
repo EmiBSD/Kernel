@@ -125,7 +125,7 @@ use crate::uvm::uvm_init::UVMEXP;
 use crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY, km_alloc, km_free};
 use crate::uvm::uvm_map::{uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_free};
 use crate::uvm::uvm_page::{
-    PHYS_TO_VM_PAGE, Pglist, uvm_pagealloc, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree,
+    Owner, PHYS_TO_VM_PAGE, Pglist, uvm_pagealloc, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree,
     vm_page_to_phys,
 };
 use crate::uvm::uvm_pmap::PMAP_WIRED;
@@ -305,7 +305,7 @@ pub fn pmap_kernel_mapping() {
     unsafe { pmap_kremove(va, Vsize::new(PAGE_SIZE)) };
     pmap_update(pmap_kernel());
     let gone = pmap_extract(pmap_kernel(), va).is_none();
-    uvm_pagefree(pg);
+    uvm_pagefree(pg, Owner::None);
     km_free(vp, PAGE_SIZE, &KV_ANY, &KP_NONE);
 
     let ok = seen == PATTERN && extracted == Some(Paddr::new(pa.as_usize() + 0x10)) && gone;
@@ -411,7 +411,7 @@ fn pmap_reuse_user(pm: &MachinePmap) -> Result<(), &'static str> {
     }
 
     for pg in pages.into_iter().flatten() {
-        uvm_pagefree(pg);
+        uvm_pagefree(pg, Owner::None);
     }
     result
 }
@@ -679,7 +679,7 @@ pub fn pager_map() {
 
     for pg in pages {
         pg.clear_bits(crate::uvm::uvm_page::PG_BUSY);
-        uvm_pagefree(pg);
+        uvm_pagefree(pg, crate::uvm::uvm_page::Owner::None);
     }
     if ok {
         kprintf!("selftest: pager map ok\n");
@@ -2133,9 +2133,6 @@ const MPSTRESS_PMR_CONSTRAINTS: [(usize, usize, usize, usize, i32); 5] = [
 /// pages lie inside their constraint, checks every tag, and frees the lists.
 fn mpstress_pmr_phase(me: usize, rand: &mut u64) {
     let lists: [Pglist; MPSTRESS_PMR_LISTS] = [const { Pglist::new() }; MPSTRESS_PMR_LISTS];
-    for l in &lists {
-        l.init();
-    }
     for round in 0..MPSTRESS_PMR_ROUNDS {
         for (li, pgl) in lists.iter().enumerate() {
             let (low, high, align, boundary, maxseg) =

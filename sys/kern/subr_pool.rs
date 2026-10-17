@@ -2460,7 +2460,7 @@ pub(crate) mod tests {
     /// Loads a fresh block of host memory as the physical memory, brings the page system up and
     /// `kmeminit`; holds the page system's lock for the test.
     pub(crate) fn setup_real_memory() -> MutexGuard<'static, ()> {
-        let guard = crate::uvm::uvm_pmemrange::tests::LOCK
+        let guard = kernel::testutil::MEMORY
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         uvm_page_test_reset();

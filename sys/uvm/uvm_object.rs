@@ -78,7 +78,6 @@
 //!   (vnodes); one type serves both, with relaxed plain loads and stores for the latter.
 
 use core::cell::Cell;
-use core::cmp::Ordering;
 use core::ptr;
 use core::sync::atomic::{self, AtomicI32};
 
@@ -87,18 +86,19 @@ use crate::kern::kern_rwlock::{rw_enter, rw_exit, rw_obj_alloc, rw_obj_free};
 use crate::sys::mman::{MADV_SEQUENTIAL, PROT_READ, PROT_WRITE};
 use crate::sys::param::{PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::rwlock::{RW_DUPOK, RW_WRITE, Rwlock};
+use crate::sys::rwlock::{rw_lock_held, rw_write_held};
 use crate::sys::systm::kernel_assert_locked;
-use crate::sys::tree::{RbtEntry, RbtHead};
 use crate::sys::vnode::VTEXT;
-use crate::tree_adapter;
 use crate::uvm::uvm_aobj::{AOBJ_PAGER, uao_dropswap};
 use crate::uvm::uvm_extern::Voff;
 use crate::uvm::uvm_page::{
-    PG_CLEAN, PG_RELEASED, PG_TABLED, PQ_AOBJ, Pglist, VmPage, uvm_page_unbusy, uvm_pageclean,
-    uvm_pagelookup, uvm_pageunwire, uvm_pagewire, uvm_pglistfree,
+    Owner, OwnerTag, PG_CLEAN, PG_RELEASED, PQ_AOBJ, PageObject, Pglist, VmPage, static_of,
+    uvm_obj_free_pages, uvm_page_unbusy, uvm_pagelookup, uvm_pageunwire, uvm_pagewire,
 };
+pub use crate::uvm::uvm_page::{UvmObjtree, uvm_pagecmp};
 use crate::uvm::uvm_pager::{PGO_ALLPAGES, PGO_SYNCIO, UvmPagerops};
 use crate::uvm::uvm_vnode::{UVM_VNODEOPS, uvn_of};
+use hal::tree::Tree;
 
 /// `UVM_OBJ_KERN` is a 'special' `uo_refs` value which indicates that the object is a kernel
 /// memory object rather than a normal one (kernel memory objects don't have reference counts:
@@ -118,16 +118,6 @@ pub const UVM_OBJ_KERN: i32 = -2;
 
 /// `FETCH_PAGECOUNT`: page count to fetch per single step.
 const FETCH_PAGECOUNT: usize = 16;
-
-/// `uvm_pagecmp`: orders an object's pages by offset.
-pub fn uvm_pagecmp(a: &VmPage, b: &VmPage) -> Ordering {
-    a.offset.get().cmp(&b.offset.get())
-}
-
-tree_adapter!(
-    /// `uvm_objtree`: the pages of an object, by offset.
-    pub UvmObjtree: VmPage, objt => RbtEntry, uvm_pagecmp
-);
 
 /// `uo_refs`, an `int` the C changes atomically (`atomic_inc_int`, `atomic_dec_int_nv`) or
 /// under the object's lock (see the module's deviations).
@@ -167,8 +157,8 @@ pub struct UvmObject {
     pub vmobjlock: Cell<*const Rwlock>,
     /// `pgops`: pager ops.
     pub pgops: Cell<Option<&'static UvmPagerops>>,
-    /// `memt`: pages in object.
-    pub memt: RbtHead<UvmObjtree>,
+    /// `memt`: pages in object (the kernel's tree of pages, `kernel::vm::page`).
+    pub memt: Tree<UvmObjtree>,
     /// `uo_npages`: # of pages in memt.
     pub uo_npages: Cell<i32>,
     /// `uo_refs`: reference count.
@@ -186,7 +176,7 @@ impl UvmObject {
         Self {
             vmobjlock: Cell::new(ptr::null()),
             pgops: Cell::new(Some(&PMAP_PAGER)),
-            memt: RbtHead::new(),
+            memt: Tree::new(),
             uo_npages: Cell::new(0),
             uo_refs: UoRefs::new(refs),
         }
@@ -207,6 +197,42 @@ impl UvmObject {
             Some(ops) => ops,
             None => crate::kern::subr_prf::panic(format_args!("uvm_object without pgops")),
         }
+    }
+}
+
+// The page system's view of an object (the `PageOwner` bridge, N3.4): one call each into the
+// object's fields and predicates.
+impl PageObject for UvmObject {
+    fn tag(&self) -> OwnerTag {
+        OwnerTag::object(self)
+    }
+
+    fn is_dummy(&self) -> bool {
+        uvm_obj_is_dummy(self)
+    }
+
+    fn is_kern_object(&self) -> bool {
+        uvm_obj_is_kern_object(self)
+    }
+
+    fn locked(&self, exclusive: bool) -> bool {
+        if exclusive {
+            rw_write_held(self.vmobjlock())
+        } else {
+            rw_lock_held(self.vmobjlock())
+        }
+    }
+
+    fn pages(&self) -> &Tree<UvmObjtree> {
+        &self.memt
+    }
+
+    fn npages(&self) -> i32 {
+        self.uo_npages.get()
+    }
+
+    fn set_npages(&self, n: i32) {
+        self.uo_npages.set(n);
     }
 }
 
@@ -275,7 +301,9 @@ pub fn uvm_obj_init(uobj: &UvmObject, pgops: Option<&'static UvmPagerops>, refs:
         uobj.vmobjlock.set(ptr::null());
     }
     uobj.pgops.set(pgops);
-    uobj.memt.init();
+    // RBT_INIT(uvm_objtree, &uobj->memt): a new object's tree, or an emptied one's
+    // (`uvm_obj_free`, `uvn_detach`), has nothing in it.
+    kassert!(uobj.memt.is_empty());
     uobj.uo_npages.set(0);
     uobj.uo_refs.set(refs);
 }
@@ -355,7 +383,7 @@ pub fn uvm_obj_wire(uobj: &UvmObject, start: Voff, end: Voff, pageq: Option<&Pgl
 
             if pg.flags() & PQ_AOBJ != 0 {
                 pg.clear_bits(PG_CLEAN);
-                uao_dropswap(uobj, (pg.offset.get() >> PAGE_SHIFT) as i32);
+                uao_dropswap(uobj, (pg.offset() >> PAGE_SHIFT) as i32);
             }
         }
 
@@ -363,11 +391,10 @@ pub fn uvm_obj_wire(uobj: &UvmObject, start: Voff, end: Voff, pageq: Option<&Pgl
         for &pg in &pgs[..npages] {
             // SAFETY: as above.
             let pg = unsafe { &*pg };
-            uvm_pagewire(pg);
+            uvm_pagewire(pg, Owner::Object(uobj));
             if let Some(pageq) = pageq {
-                // SAFETY: a page of this object, on no page queue once wired; the caller's
-                // list.
-                unsafe { pageq.insert_tail(pg) };
+                // A page of this object, on no page queue once wired; the caller's list.
+                pageq.insert_tail(static_of(pg));
             }
         }
 
@@ -377,7 +404,7 @@ pub fn uvm_obj_wire(uobj: &UvmObject, start: Voff, end: Voff, pageq: Option<&Pgl
             // SAFETY: as above; the slots are the object's pages.
             *slot = unsafe { pg.as_ref() };
         }
-        uvm_page_unbusy(&unbusy[..npages]);
+        uvm_page_unbusy(&unbusy[..npages], Owner::Object(uobj));
 
         left -= npages;
         offset += (npages as Voff) << PAGE_SHIFT;
@@ -401,7 +428,7 @@ pub fn uvm_obj_unwire(uobj: &UvmObject, start: Voff, end: Voff) {
         };
         kassert!(pg.flags() & PG_RELEASED == 0);
 
-        uvm_pageunwire(pg);
+        uvm_pageunwire(pg, Owner::Object(uobj));
         offset += PAGE_SIZE as Voff;
     }
     rw_exit(uobj.vmobjlock());
@@ -410,24 +437,12 @@ pub fn uvm_obj_unwire(uobj: &UvmObject, start: Voff, end: Voff) {
 /// `uvm_obj_free`: free all pages in a uvm object, used by the buffer cache to free all pages
 /// attached to a buffer.
 pub fn uvm_obj_free(uobj: &UvmObject) {
-    let pgl = Pglist::new();
-
     kassert!(uvm_obj_is_bufcache(uobj));
     kernel_assert_locked();
 
-    pgl.init();
-    // Extract from rb tree in offset order. The phys addresses usually increase in that
-    // order, which is better for uvm_pglistfree().
-    for pg in uobj.memt.iter() {
-        // clear PG_TABLED and `uobject' so we don't do work to remove this pg from the uobj
-        // we are throwing away.
-        pg.clear_bits(PG_TABLED);
-        pg.uobject.set(ptr::null());
-        uvm_pageclean(pg);
-        // SAFETY: the page just left every queue; the list is this function's.
-        unsafe { pgl.insert_tail(pg) };
-    }
-    uvm_pglistfree(&pgl);
+    // Extract from rb tree in offset order, clean each page and free them as one list (the
+    // kernel's page system, `kernel::vm::page::uvm_obj_free_pages`).
+    uvm_obj_free_pages(uobj);
 }
 /* </CODE> */
 

@@ -149,7 +149,7 @@ use crate::uvm::uvm_extern::UvmConstraintRange;
 use crate::uvm::uvm_init::UVMEXP;
 use crate::uvm::uvm_km::NO_CONSTRAINT;
 use crate::uvm::uvm_object::{BUFCACHE_PAGER, uvm_obj_init};
-use crate::uvm::uvm_page::{uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
+use crate::uvm::uvm_page::{Owner, uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
 use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, atop, ptoa, round_page};
 
 /// `bcstats`: the buffer cache counters (`struct bcachestats`), as atomics.
@@ -631,8 +631,8 @@ pub fn bread_cluster_callback(bp: &'static Buf) {
                     "bread_cluster_callback: page {off:#x} is gone"
                 ));
             };
-            kassert!(pg.wire_count.get() == 1);
-            uvm_pagerealloc(pg, Some(newobj), off);
+            kassert!(pg.wire_count() == 1);
+            uvm_pagerealloc(pg, Owner::Object(oldobj), Owner::Object(newobj), off);
         }
         x.b_pobj.set(newobj);
 

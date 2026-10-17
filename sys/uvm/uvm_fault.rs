@@ -167,8 +167,8 @@ use crate::uvm::uvm_map::{
 };
 use crate::uvm::uvm_object::UvmObject;
 use crate::uvm::uvm_page::{
-    PG_BUSY, PG_CLEAN, PG_FAKE, PG_RELEASED, PG_WANTED, PHYS_TO_VM_PAGE, PQ_ANON, PQ_AOBJ, VmPage,
-    uvm_pageactivate, uvm_pagealloc, uvm_pagecopy, uvm_pagedeactivate, uvm_pagefree,
+    Owner, PG_BUSY, PG_CLEAN, PG_FAKE, PG_RELEASED, PG_WANTED, PHYS_TO_VM_PAGE, PQ_ANON, PQ_AOBJ,
+    VmPage, owner, uvm_pageactivate, uvm_pagealloc, uvm_pagecopy, uvm_pagedeactivate, uvm_pagefree,
     uvm_pageunwire, uvm_pagewait, uvm_pagewire, vm_page_to_phys,
 };
 use crate::uvm::uvm_pager::{
@@ -363,7 +363,7 @@ fn uvmfault_anonflush(anons: &[*const VmAnon]) {
         if let Some(pg) = anon.page()
             && pg.flags() & PG_BUSY == 0
         {
-            uvm_pagedeactivate(pg);
+            uvm_pagedeactivate(pg, Owner::Anon(anon));
         }
     }
 }
@@ -424,7 +424,7 @@ pub fn uvmfault_anonget(
         match pg {
             Some(page) => {
                 kassert!(page.flags() & PQ_ANON != 0);
-                kassert!(ptr::eq(page.uanon.get(), anon));
+                kassert!(page.owned_by_anon(anon));
 
                 // if the page is busy, we drop all the locks and try again.
                 if page.flags() & (PG_BUSY | PG_RELEASED) == 0 {
@@ -433,9 +433,9 @@ pub fn uvmfault_anonget(
                 counters_inc(UvmExpCounters::FltPgwait);
 
                 // The last unlock must be an atomic unlock and wait on the owner of page.
-                kassert!(page.uobject().is_none());
+                kassert!(!page.has_object());
                 uvmfault_unlockall(ufi, None, None);
-                uvm_pagewait(page, lock, "anonget");
+                uvm_pagewait(page, Owner::Anon(anon), lock, "anonget");
             }
             None => {
                 // No page, therefore allocate one. A write lock is required for this. If
@@ -506,7 +506,7 @@ pub fn uvmfault_anonget(
                 kassert!(error != VM_PAGER_PEND);
 
                 // remove page from anon
-                anon.an_page.set(ptr::null());
+                anon.an_page.set(None);
 
                 // Remove the swap slot from the anon and mark the anon as having no real
                 // slot. Do not free the swap slot, thus preventing it from being used again.
@@ -515,7 +515,7 @@ pub fn uvmfault_anonget(
 
                 // Note: page was never !PG_BUSY, so it cannot be mapped and thus no need to
                 // pmap_page_protect() it.
-                uvm_pagefree(page);
+                uvm_pagefree(page, Owner::Anon(anon));
 
                 if locked {
                     uvmfault_unlockall(ufi, None, None);
@@ -528,7 +528,7 @@ pub fn uvmfault_anonget(
 
             // We have successfully read the page, activate it.
             pmap_clear_modify(page);
-            uvm_pageactivate(page);
+            uvm_pageactivate(page, Owner::Anon(anon));
             page.clear_bits(PG_WANTED | PG_BUSY | PG_FAKE);
             // UVM_PAGE_OWN(pg, NULL): not configured.
         }
@@ -567,12 +567,19 @@ pub fn uvmfault_anonget(
 pub fn uvmfault_promote(
     ufi: &UvmFaultinfo,
     uobjpage: *const VmPage,
+    uobjpage_obj: Option<&'static UvmObject>,
 ) -> Result<(&'static VmAnon, &'static VmPage), Errno> {
     let Some(amap) = ufi.entry().aref.amap() else {
         panic(format_args!("uvmfault_promote: entry without an amap"));
     };
     let uobjpg = page_at(uobjpage);
-    let uobj = uobjpg.and_then(VmPage::uobject);
+    // `uobjpage->uobject`: the caller names it (an anon's page has none); the page is that
+    // object's, or no object's.
+    let uobj = uobjpg.and(uobjpage_obj);
+    kassert!(uobjpg.is_none_or(|p| match uobj {
+        Some(o) => p.owned_by_object(o),
+        None => !p.has_object(),
+    }));
 
     kassert!(rw_write_held(amap.lock()));
     kassert!(uobj.is_none_or(|o| rw_lock_held(o.vmobjlock())));
@@ -1033,7 +1040,7 @@ fn uvm_fault_upper_lookup(
             && pg.flags() & (PG_RELEASED | PG_BUSY) == 0
             && pmap_extract(pmap, Vaddr::new(va)).is_none()
         {
-            uvm_pageactivate(pg); // reactivate
+            uvm_pageactivate(pg, Owner::Anon(anon)); // reactivate
             counters_inc(UvmExpCounters::FltNamap);
 
             // No fault-ahead when wired.
@@ -1133,7 +1140,11 @@ fn uvm_fault_upper(
         counters_inc(UvmExpCounters::FltAcow);
         let oanon = anon; // oanon = old
 
-        let (nanon, npg) = uvmfault_promote(ufi, oanon.an_page.get())?;
+        let (nanon, npg) = uvmfault_promote(
+            ufi,
+            oanon.an_page.get().map_or(ptr::null(), ptr::from_ref),
+            None,
+        )?;
         anon = nanon;
         pg = npg;
 
@@ -1197,9 +1208,9 @@ fn uvm_fault_upper(
 
     // ... update the page queues.
     if flt.wired {
-        uvm_pagewire(pg);
+        uvm_pagewire(pg, Owner::Anon(anon));
     } else {
-        uvm_pageactivate(pg);
+        uvm_pageactivate(pg, Owner::Anon(anon));
     }
 
     if flt.wired {
@@ -1287,7 +1298,7 @@ fn uvm_fault_lower_lookup(
         // calling pgo_get with PGO_LOCKED returns us pages which are neither busy nor
         // released, so we don't need to check for this. we can just directly enter the
         // pages.
-        uvm_pageactivate(pg);
+        uvm_pageactivate(pg, Owner::Object(uobj));
         counters_inc(UvmExpCounters::FltNomap);
 
         // No fault-ahead when wired.
@@ -1390,7 +1401,7 @@ fn uvm_fault_lower(
         // update rusage counters
         ru_minflt_inc();
         if let Some(pg) = page_at(uobjpage) {
-            uvm_pageactivate(pg);
+            uvm_pageactivate(pg, owner(uobj, None));
         }
     } else {
         uobjpage = uvm_fault_lower_io(ufi, flt, &mut uobj)?;
@@ -1432,7 +1443,7 @@ fn uvm_fault_lower(
 
         // if we are going to promote the data to an anon we allocate a blank anon here and
         // plug it into our amap.
-        let (nanon, npg) = uvmfault_promote(ufi, uobjpage)?;
+        let (nanon, npg) = uvmfault_promote(ufi, uobjpage, uobj)?;
         anon = Some(nanon);
         pg = npg;
 
@@ -1522,8 +1533,13 @@ fn uvm_fault_lower(
         return Err(Errno::ERESTART);
     }
 
+    // pg is either the uobjpage or the new page in the new anon: its owner.
+    let pg_owner = match anon {
+        Some(a) if pg.owned_by_anon(a) => Owner::Anon(a),
+        _ => owner(uobj, None),
+    };
     if flt.wired {
-        uvm_pagewire(pg);
+        uvm_pagewire(pg, pg_owner);
         if pg.flags() & PQ_AOBJ != 0 {
             // since the now-wired page cannot be paged out, release its swap resources for
             // others to use. since an aobj page with no swap cannot be clean, mark it dirty
@@ -1532,19 +1548,16 @@ fn uvm_fault_lower(
             // use pg->uobject here. if the page is from a tmpfs vnode, the pages are backed
             // by its UAO and not the vnode.
             kassert!(uobj.is_some());
-            kassert!(uobj.is_some_and(|uobj| {
-                pg.uobject()
-                    .is_some_and(|po| ptr::eq(po.vmobjlock(), uobj.vmobjlock()))
-            }));
+            kassert!(uobj.is_some_and(|uobj| pg.owned_by_object(uobj)));
             pg.clear_bits(PG_CLEAN);
             dropswap = true;
         }
     } else {
-        uvm_pageactivate(pg);
+        uvm_pageactivate(pg, pg_owner);
     }
 
     if let (true, Some(obj)) = (dropswap, uobj) {
-        uao_dropswap(obj, (pg.offset.get() >> PAGE_SHIFT) as i32);
+        uao_dropswap(obj, (pg.offset() >> PAGE_SHIFT) as i32);
     }
 
     if pg.flags() & PG_WANTED != 0 {
@@ -1639,12 +1652,18 @@ fn uvm_fault_lower_io(
         amap_lock(amap, flt.upper_lock_type);
     }
 
-    // might be changed
+    // might be changed: the C takes the page's own object (`pg->uobject`). Both pagers
+    // (`uao_get`, `uvn_get`) hand out pages of the object they were asked for, so it is
+    // `uobj0`; a page of another object is refused (the kernel's pages keep no pointer to
+    // follow, `kernel::vm::page`).
     if let Some(page) = page_at(pg) {
-        uobj = page.uobject();
-        if let Some(obj) = uobj {
-            let _ = rw_enter(obj.vmobjlock(), flt.lower_lock_type);
+        if !page.owned_by_object(uobj0) {
+            panic(format_args!(
+                "uvm_fault_lower_io: the pager returned another object's page"
+            ));
         }
+        uobj = Some(uobj0);
+        let _ = rw_enter(uobj0.vmobjlock(), flt.lower_lock_type);
         kassert!(page.flags() & PG_BUSY != 0);
         kassert!(flt.lower_lock_type == RW_WRITE);
     }
@@ -1660,7 +1679,7 @@ fn uvm_fault_lower_io(
 
     // release the page now, still holding object lock
     if let Some(page) = page_at(pg) {
-        uvm_pageactivate(page);
+        uvm_pageactivate(page, owner(uobj, None));
 
         if page.flags() & PG_WANTED != 0 {
             wakeup(ptr::from_ref(page));
@@ -1708,6 +1727,22 @@ pub fn uvm_fault_wire(
     }
 
     Ok(())
+}
+
+/// The owner of `pg`, mapped at `va` in `entry` (whose amap and object the caller locked,
+/// `uvm_map_lock_entry`): the anon of the entry's amap at `va` when `pg` is its page, else the
+/// entry's object when `pg` is one of its pages, else none (`uvm_pageunwire` asserts that the
+/// owner is the page's and is locked; the C reads `pg->uanon`/`pg->uobject`).
+fn entry_page_owner(entry: &VmMapEntry, va: usize, pg: &VmPage) -> Owner<'static> {
+    if let Some(anon) = amap_lookup(&entry.aref, va - entry.start.get())
+        && pg.owned_by_anon(anon)
+    {
+        return Owner::Anon(anon);
+    }
+    match entry.uvm_obj() {
+        Some(uobj) if pg.owned_by_object(uobj) => Owner::Object(uobj),
+        _ => Owner::None,
+    }
 }
 
 /// `uvm_fault_unwire`: unwire range of virtual space.
@@ -1765,7 +1800,7 @@ pub fn uvm_fault_unwire_locked(map: &VmMap, start: usize, end: usize) {
             }
 
             if let Some(pg) = PHYS_TO_VM_PAGE(pa) {
-                uvm_pageunwire(pg);
+                uvm_pageunwire(pg, entry_page_owner(entry, va, pg));
             }
         }
         va += PAGE_SIZE;
@@ -2079,7 +2114,7 @@ mod tests {
         for i in 0..3 {
             let pa = pmap_extract(pmap, Vaddr::new(va + i * PAGE_SIZE)).expect("mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
-            assert_eq!(pg.wire_count.get(), 1, "page {i} wired");
+            assert_eq!(pg.wire_count(), 1, "page {i} wired");
             assert_eq!(pg.flags() & PG_CLEAN, 0);
         }
 
@@ -2087,7 +2122,7 @@ mod tests {
         for i in 0..3 {
             let pa = pmap_extract(pmap, Vaddr::new(va + i * PAGE_SIZE)).expect("still mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
-            assert_eq!(pg.wire_count.get(), 0, "page {i} unwired");
+            assert_eq!(pg.wire_count(), 0, "page {i} unwired");
         }
         uvmspace_free(vm);
     }

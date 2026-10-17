@@ -418,9 +418,14 @@ hal::list_adapter!(
 /// `struct pglist`: a `TAILQ` of pages through `pageq`.
 pub type Pglist = List<Pageq>;
 
+/// `uvm_pagecmp`: orders an object's pages by offset.
+pub fn uvm_pagecmp(a: &VmPage, b: &VmPage) -> core::cmp::Ordering {
+    a.offset().cmp(&b.offset())
+}
+
 hal::tree_adapter!(
-    /// `uvm_objtree`: an object's pages by offset (`uvm_pagecmp`).
-    pub UvmObjtree: VmPage, objt, |a, b| a.offset().cmp(&b.offset())
+    /// `uvm_objtree`: an object's pages by offset.
+    pub UvmObjtree: VmPage, objt, uvm_pagecmp
 );
 
 /// The identity of a page's owner: the owner's address as a number, an anon's with the low bit
@@ -540,7 +545,8 @@ pub struct VmPhysseg {
 }
 
 impl VmPhysseg {
-    const EMPTY: VmPhysseg = VmPhysseg {
+    /// An unused slot of the table.
+    pub const EMPTY: VmPhysseg = VmPhysseg {
         start: 0,
         end: 0,
         avail_start: 0,
@@ -1191,8 +1197,9 @@ pub fn uvm_pagealloc(owner: Owner<'_>, off: Voff, flags: i32) -> Option<&'static
     Some(pg)
 }
 
-/// `uvm_pagerealloc`: moves `pg` from its object (`old`, when it has one) to `new` at `newoff`.
-pub fn uvm_pagerealloc(pg: &VmPage, old: Owner<'_>, new: Option<&dyn PageObject>, newoff: Voff) {
+/// `uvm_pagerealloc`: moves `pg` from its object (`old`, when it has one) to the object `new`
+/// at `newoff` (`Owner::None`: to no object). An anon is not an object: it panics.
+pub fn uvm_pagerealloc(pg: &VmPage, old: Owner<'_>, new: Owner<'_>, newoff: Voff) {
     let pg = static_of(pg);
     // remove it from the old object
     if pg.has_object() {
@@ -1203,6 +1210,11 @@ pub fn uvm_pagerealloc(pg: &VmPage, old: Owner<'_>, new: Option<&dyn PageObject>
     }
 
     // put it in the new object
+    let new = match new {
+        Owner::Object(o) => Some(o),
+        Owner::None => None,
+        Owner::Anon(_) => kpanic(format_args!("uvm_pagerealloc: to an anon")),
+    };
     if let Some(newobj) = new {
         pg.set_owner(newobj.tag());
         pg.set_offset(newoff);
@@ -1416,6 +1428,28 @@ pub fn uvm_pagedequeue(q: &mut PageQueues, pg: &VmPage, owner: Owner<'_>) {
         pg.clear_bits(PQ_INACTIVE);
         UVMEXP.inactive.fetch_sub(1, Mem::Relaxed);
     }
+}
+
+/// The page half of `uvm_obj_free` (the buffer cache's, `bsd`'s `uvm_object.rs`): every page
+/// of `obj`, which is being thrown away, leaves its tree in offset order (the physical
+/// addresses usually increase in that order, which is better for `uvm_pglistfree`), loses
+/// `PG_TABLED` and its owner without the object's bookkeeping (the C's shortcut: the object is
+/// initialised again before it is reused), is cleaned and goes onto one list that is freed.
+/// The C walks the tree without taking the pages out of it; here each leaves it, so its
+/// entry is free for the allocator's trees.
+pub fn uvm_obj_free_pages(obj: &dyn PageObject) {
+    let pgl = Pglist::new();
+    while let Some(pg) = obj.pages().min() {
+        check_owner(pg, Owner::Object(obj), "uvm_obj_free");
+        obj.pages().remove(pg);
+        // clear PG_TABLED and `uobject' so we don't do work to remove this pg from the uobj
+        // we are throwing away.
+        pg.clear_bits(PG_TABLED);
+        pg.set_owner(OwnerTag::NONE);
+        uvm_pageclean(pg, Owner::None);
+        pgl.insert_tail(pg);
+    }
+    uvm_pglistfree(&pgl);
 }
 
 /// `uvm_pagezero`: zero-fills the page.
@@ -1732,7 +1766,7 @@ mod tests {
 
         // Moved to another object at another offset.
         let other = Obj::new();
-        uvm_pagerealloc(b, o, Some(&other), 0x8000);
+        uvm_pagerealloc(b, o, Owner::Object(&other), 0x8000);
         assert!(uvm_pagelookup(&obj, 0x1000).is_none());
         assert!(uvm_pagelookup(&other, 0x8000).is_some_and(|p| ptr::eq(p, b)));
 

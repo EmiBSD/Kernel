@@ -151,11 +151,10 @@
 //! contiguous segment is returned through the direct map and touches no map at all; anything
 //! else takes virtual space from the map and enters each page.
 //!
-//! What is still `bsd`'s is reached through two bridges (bridges.toml), registered once by
+//! What is still `bsd`'s is reached through one bridge (bridges.toml), registered once by
 //! `bsd`'s `uvm_km_init` ([`install`]): the kernel maps ([`KmMaps`]: `uvm_map`/`uvm_unmap` of
-//! `kernel_map`, `kmem_map`, `exec_map`, `phys_map`, N3.5) and the page system ([`KmPages`]:
-//! `uvm_pglistalloc`, `uvm_pglistfree` and `uvm_pagefree`, N3.3), whose boundary is the C's
-//! own: the physical address of a frame (`VM_PAGE_TO_PHYS`/`PHYS_TO_VM_PAGE`). The kernel pmap
+//! `kernel_map`, `kmem_map`, `exec_map`, `phys_map`, N3.5). The pages are the kernel's own
+//! (`super::page`: `uvm_pglistalloc`, `uvm_pglistfree`, `uvm_pagefree`, since N3.3). The kernel pmap
 //! changes only through `hal::pmap::KernelMapper`, the token `pmap_bootstrap` hands out once:
 //! it is kept here ([`adopt_mapper`]), the owner of the fact it stands for (the caller owns the
 //! kernel virtual addresses it maps), and lent to `machine::pmap` alone, the holder of the one
@@ -163,7 +162,7 @@
 //! N3.3 to N7).
 //!
 //! No lock of its own, as the C with `__HAVE_PMAP_DIRECT`: the map's lock is inside
-//! [`KmMaps`], the page queues' inside [`KmPages`]; the callers raise the interrupt level
+//! [`KmMaps`], the free pages' inside the page system; the callers raise the interrupt level
 //! around `kv_intrsafe` (`pool(9)`). A `kv_wait` mode sleeps on the map's address
 //! (`"km_allocva"`, `PVM`) until a [`km_free`] of a `kv_wait` mode wakes it.
 //!
@@ -178,17 +177,6 @@
 //!   does with a direct map (`km_alloc: DIRECT single page`); `uvm_init` keeps its two
 //!   `unported:` lines (`uvm_km_page_init`, `uvm_km_page_lateinit`).
 //! - `kd_slowdown` is a value, not a pointer: only the single-page thread writes it.
-//! - `km_free` collects the frames of at most [`FREE_CHUNK`] pages at a time (the kernel holds
-//!   no list and no heap here), so a wired range larger than that has its mappings removed
-//!   and its frames freed chunk by chunk, one `pmap_kremove` (one TLB shootdown) per chunk
-//!   where the C has one per call; within a chunk the C's order holds (the mappings go, then
-//!   the frames go back), so no frame is on a free list while it is still mapped. A frame no
-//!   page describes panics once its chunk is unmapped, where the C panics before the
-//!   `pmap_kremove`. Each frame goes back by itself ([`KmPages::free_list`]: one free-page
-//!   lock and one wakeup per page, where the C's `uvm_pglistfree` takes one per list).
-//! - `km_alloc` gives back the frames of a request that found no virtual space one at a time
-//!   as the page list hands them over ([`KmPages::alloc`]'s callback), each with the C's
-//!   `uvm_pglistfree` ([`KmPages::free_list`]): the same counter and wakeups, in more calls.
 //! - [`kernel_map_min`] is the first address the kernel map can hand out after the bootstrap
 //!   reservation (the selftests probe it), not `vm_map_min(kernel_map)`.
 //!
@@ -201,11 +189,12 @@
 //!   here; `bsd`'s adapter turns it into the legacy `NonNull<u8>` for its callers.
 //! - A mode's `kv_map` is a [`KvMap`] name, not a pointer to a map pointer; `kp_object` is a
 //!   `bool` that means `&uvm.kernel_object` ([`KmObject::Kernel`] at the bridge).
-//! - The C allocates the pages first, then the virtual space, then enters each page. The page
-//!   list is `bsd`'s, so [`KmPages::alloc`] hands the frames over one at a time, in order; the
-//!   first frame takes the virtual space (sleeping for it under `kv_wait`, the pages held, as
-//!   the C), every frame is entered at the next page, and when there is no space each frame is
-//!   given back. The order the C has is kept and the kernel holds no list.
+//! - N3.3: the page system is the kernel's (`super::page`), so the `KmPages` bridge is gone and
+//!   the C's shape is back: `km_alloc` takes the page list first, then the virtual space
+//!   (sleeping for it under `kv_wait`, the pages held), then enters each page, or gives the
+//!   whole list back (`uvm_pglistfree`) when there is no space; `km_free` collects the pages
+//!   of the range on one list, removes the mappings and frees the list. N3.2's per-chunk
+//!   frees and its frame-at-a-time callback (two deviations) are gone with it.
 //! - The page provider of `hal::kmbuf::KmBuf` ([`page_memory`]) and the module loader's memory
 //!   ([`module_memory`]) are implemented here and passed down as values; the loader's
 //!   `release` is the C's `km_free` sequence for a writable alias: `pmap_kremove` of the range
@@ -228,15 +217,12 @@ use hal::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE};
 use hal::sys::types::{Paddr, Vaddr, Vsize};
 use hal::vm::param::round_page;
 
+use super::page::{Owner, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree};
 use super::types::{
     UVM_FLAG_TRYLOCK, UVM_PLA_NOWAIT, UVM_PLA_TRYCONTIG, UVM_PLA_WAITOK, UVM_PLA_ZERO,
     UVM_UNKNOWN_OFFSET, UvmConstraintRange, VmProt, Voff, uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
-
-/// The most frames `km_free` collects before giving them back: `FREE_CHUNK` physical
-/// addresses on the stack, 256 bytes (the kernel stacks of the I/O paths are tight).
-pub const FREE_CHUNK: usize = 32;
 
 /// Which kernel map a [`KmemVaMode`] allocates from (`kv_map` in C is a pointer to the map
 /// pointer; the maps are `bsd`'s, named here, reached through [`KmMaps`]).
@@ -322,13 +308,6 @@ pub enum KmObject {
     None,
     /// `uvm.kernel_object`, for pageable kernel memory.
     Kernel,
-}
-
-/// The two bridges, registered together by [`install`].
-#[derive(Clone, Copy)]
-struct Bridges {
-    maps: &'static dyn KmMaps,
-    pages: &'static dyn KmPages,
 }
 
 /// `no_constraint`: unconstrained range.
@@ -425,7 +404,7 @@ pub static KD_TRYLOCK: KmemDynMode = KmemDynMode {
 static MAPPER: OnceStatic<KernelMapper> = OnceStatic::new();
 
 /// The maps and the page system, registered once by `bsd`'s `uvm_km_init` ([`install`]).
-static BRIDGES: OnceStatic<Bridges> = OnceStatic::new();
+static MAPS: OnceStatic<&'static dyn KmMaps> = OnceStatic::new();
 
 /// The first free kernel virtual address after `uvm_km_init`'s reservation (see the module's
 /// deviations).
@@ -464,42 +443,6 @@ pub trait KmMaps: Sync {
     fn chan(&self, which: KvMap) -> *const ();
 }
 
-/// The page system, still `bsd`'s (`uvm_page`, N3.3): a bridge (bridges.toml), no logic.
-/// Frames cross as physical addresses, the C's own boundary (`VM_PAGE_TO_PHYS`,
-/// `PHYS_TO_VM_PAGE`).
-pub trait KmPages: Sync {
-    /// `uvm_pglistalloc(sz, constraint->ucr_low, constraint->ucr_high, align, boundary, &pgl,
-    /// maxseg, flags)`, then each frame of the list, in order, handed to `each` as it is taken
-    /// off the list; the frames are the caller's from then on. Nothing is handed over when the
-    /// allocation fails.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "uvm_pglistalloc's signature, and the callback"
-    )]
-    fn alloc(
-        &self,
-        sz: usize,
-        constraint: &UvmConstraintRange,
-        align: Paddr,
-        boundary: Paddr,
-        maxseg: i32,
-        flags: i32,
-        each: &mut dyn FnMut(Paddr),
-    ) -> Result<(), Errno>;
-
-    /// `uvm_pglistfree` of the pages behind `frames` (`km_free`'s and `km_alloc`'s way back):
-    /// every page onto the free list (`uvm_pmr_freepageq`: `uvmexp.free` counts them, and
-    /// `&uvmexp.free` and `&uvmexp.zeropages` are woken), never into a per-CPU cache. When no
-    /// page describes a frame, nothing is freed and that frame is the error (the caller
-    /// panics with the C's message).
-    fn free_list(&self, frames: &[Paddr]) -> Result<(), Paddr>;
-
-    /// `uvm_pagefree(PHYS_TO_VM_PAGE(pa))` (`uvm_km_pgremove_intrsafe`'s way back: the page
-    /// cleaned, then the per-CPU page cache under `__HAVE_UVM_PERCPU`); `false`, and nothing
-    /// done, when no page describes `pa`.
-    fn free(&self, pa: Paddr) -> bool;
-}
-
 /// The one lend of the kernel map's token to `bsd`: [`adopt_mapper`] makes it, once, and the
 /// holder (`machine::pmap`, in a private static) shows it to [`legacy_mapper`]. Not `Clone`,
 /// not `Copy`, no public constructor: code without it cannot reach the token.
@@ -507,30 +450,37 @@ pub struct LegacyLend {
     _private: (),
 }
 
-/// Registers the kernel maps and the page system, once (`bsd`'s `uvm_km_init`, before its
-/// first map entry is allocated; the host tests' set-up). A second call keeps the first and
-/// names the bridge.
-pub fn install(
-    maps: &'static dyn KmMaps,
-    pages: &'static dyn KmPages,
-) -> Result<(), AlreadyRegistered> {
-    BRIDGES
-        .set(Bridges { maps, pages })
-        .map_err(|_| AlreadyRegistered("KmMaps"))
+/// Registers the kernel maps, once (`bsd`'s `uvm_km_init`, before its first map entry is
+/// allocated; the host tests' set-up). A second call keeps the first and names the bridge.
+pub fn install(maps: &'static dyn KmMaps) -> Result<(), AlreadyRegistered> {
+    MAPS.set(maps).map_err(|_| AlreadyRegistered("KmMaps"))
 }
 
-/// The registered bridges; `None` before [`install`].
-fn bridges() -> Option<Bridges> {
-    BRIDGES.get().copied()
+/// The registered maps; `None` before [`install`].
+fn maps() -> Option<&'static dyn KmMaps> {
+    MAPS.get().copied()
 }
 
-/// The registered bridges for a call that needs them; panics (with `who`) before [`install`],
+/// The registered maps for a call that needs them; panics (with `who`) before [`install`],
 /// which only a broken caller can hit: there is nothing to free before anything was allocated.
-fn bridges_for(who: &str) -> Bridges {
-    match bridges() {
-        Some(b) => b,
+fn maps_for(who: &str) -> &'static dyn KmMaps {
+    match maps() {
+        Some(m) => m,
         None => kpanic(format_args!("{who}: before uvm_km_init")),
     }
+}
+
+/// `uvm_pglistfree` of the pages behind `frames`, panicking with `who`'s message (the C's) at
+/// the first frame no page describes, before any page goes back.
+fn free_frames(who: &str, frames: impl Iterator<Item = Paddr>) {
+    let pgl = Pglist::new();
+    for pa in frames {
+        match PHYS_TO_VM_PAGE(pa) {
+            Some(pg) => pgl.insert_tail(pg),
+            None => kpanic(format_args!("{who}: unmanaged page {:#x}", pa.as_usize())),
+        }
+    }
+    uvm_pglistfree(&pgl);
 }
 
 /// Adopts the kernel map's token from the boot glue's `pmap_bootstrap` (once, on the boot
@@ -592,13 +542,13 @@ pub fn kernel_map_max() -> Vaddr {
 /// - none of the pages will ever be busy, and none of them will ever be on the active or
 ///   inactive queues (because these objects are never allowed to "page").
 pub fn uvm_km_pgremove_intrsafe(start: Vaddr, end: Vaddr) {
-    let b = bridges_for("uvm_km_pgremove_intrsafe");
     let mut va = start.as_usize();
     while va < end.as_usize() {
-        if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va))
-            && !b.pages.free(pa)
-        {
-            kpanic(format_args!("uvm_km_pgremove_intrsafe: no page"));
+        if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va)) {
+            match PHYS_TO_VM_PAGE(pa) {
+                Some(pg) => uvm_pagefree(pg, Owner::None),
+                None => kpanic(format_args!("uvm_km_pgremove_intrsafe: no page")),
+            }
         }
         va += PAGE_SIZE;
     }
@@ -612,17 +562,6 @@ pub fn km_alloc(sz: usize, kv: &KmemVaMode, kp: &KmemPaMode, kd: &KmemDynMode) -
     alloc_in(PMAP_NOMMU, sz, kv, kp, kd)
 }
 
-/// Where a run of frames goes when it takes the map path (`km_alloc` after `alloc_va`).
-#[derive(Clone, Copy)]
-enum Fill {
-    /// No frame yet: the first one takes the virtual space.
-    Start,
-    /// The space starts at `sva`; the next frame goes at `next`.
-    Mapped { sva: Vaddr, next: Vaddr },
-    /// No space: every frame goes back.
-    Failed,
-}
-
 /// [`km_alloc`] on a machine with (`nommu` false) or without an MMU.
 fn alloc_in(
     nommu: bool,
@@ -632,7 +571,7 @@ fn alloc_in(
     kd: &KmemDynMode,
 ) -> Option<Vaddr> {
     kassert!(sz == round_page(sz));
-    let b = bridges()?;
+    let maps = maps()?;
 
     if kp.kp_nomem || kp.kp_pageable {
         if nommu {
@@ -640,7 +579,7 @@ fn alloc_in(
             // an MMU (the host double; module deviations).
             return None;
         }
-        return map_va(b, sz, kv, kp, kd).ok();
+        return map_va(maps, sz, kv, kp, kd).ok();
     }
 
     let mut pla_flags = if kd.kd_waitok {
@@ -665,81 +604,52 @@ fn alloc_in(
         pla_maxseg = 1;
     }
 
+    let pgl = Pglist::new();
+    uvm_pglistalloc(
+        sz,
+        kp.kp_constraint.ucr_low,
+        kp.kp_constraint.ucr_high,
+        Paddr::new(pla_align),
+        kp.kp_boundary,
+        &pgl,
+        pla_maxseg,
+        pla_flags,
+    )
+    .ok()?;
+
     // __HAVE_PMAP_DIRECT: only use direct mappings for single page or single segment
     // allocations.
     if HAVE_PMAP_DIRECT && (kv.kv_singlepage || kp.kp_maxseg == 1 || nommu) {
-        let mut sva = None;
-        b.pages
-            .alloc(
-                sz,
-                kp.kp_constraint,
-                Paddr::new(pla_align),
-                kp.kp_boundary,
-                pla_maxseg,
-                pla_flags,
-                &mut |pa| {
-                    if sva.is_none() {
-                        sva = Some(hal::pmap::direct_map(pa));
-                    }
-                },
-            )
-            .ok()?;
-        return sva;
+        let first = pgl.first().map(|pg| hal::pmap::direct_map(pg.phys_addr()));
+        // The pages are the caller's now: off this function's list.
+        while pgl.pop_head().is_some() {}
+        return first;
     }
 
+    let Ok(sva) = map_va(maps, sz, kv, kp, kd) else {
+        uvm_pglistfree(&pgl);
+        return None;
+    };
     let prot: VmProt = PROT_READ | PROT_WRITE;
-    let mut fill = Fill::Start;
-    b.pages
-        .alloc(
-            sz,
-            kp.kp_constraint,
-            Paddr::new(pla_align),
-            kp.kp_boundary,
-            pla_maxseg,
-            pla_flags,
-            &mut |pa| {
-                if let Fill::Start = fill {
-                    fill = match map_va(b, sz, kv, kp, kd) {
-                        Ok(va) => Fill::Mapped { sva: va, next: va },
-                        Err(_) => Fill::Failed,
-                    };
-                }
-                match fill {
-                    Fill::Mapped { sva, next } => {
-                        if kp.kp_pageable {
-                            // Never reached: pageable memory takes no pages here (it is
-                            // faulted in from the kernel object), as in the C.
-                            let _ = mapper().enter(next, pa, prot, prot | PMAP_WIRED);
-                        } else {
-                            mapper().kenter(next, pa, prot);
-                        }
-                        fill = Fill::Mapped {
-                            sva,
-                            next: Vaddr::new(next.as_usize() + PAGE_SIZE),
-                        };
-                    }
-                    Fill::Failed | Fill::Start => {
-                        if let Err(pa) = b.pages.free_list(&[pa]) {
-                            kpanic(format_args!(
-                                "km_alloc: unmanaged page {:#x}",
-                                pa.as_usize()
-                            ));
-                        }
-                    }
-                }
-            },
-        )
-        .ok()?;
-    match fill {
-        Fill::Mapped { sva, .. } => Some(sva),
-        Fill::Failed | Fill::Start => None,
+    let mut va = sva;
+    while let Some(pg) = pgl.pop_head() {
+        let pa = pg.phys_addr();
+        if kp.kp_pageable {
+            // Never reached: pageable memory takes no pages here (it is faulted in from the
+            // kernel object), as in the C.
+            let _ = mapper().enter(va, pa, prot, prot | PMAP_WIRED);
+        } else {
+            mapper().kenter(va, pa, prot);
+        }
+        va = Vaddr::new(va.as_usize() + PAGE_SIZE);
     }
+    Some(sva)
 }
 
 /// `km_alloc`'s `alloc_va`: virtual space of `sz` bytes in the mode's map, sleeping for it on
 /// the map under `kv_wait` with `kd_waitok`.
 fn map_va(
-    b: Bridges,
+    maps: &'static dyn KmMaps,
     sz: usize,
     kv: &KmemVaMode,
     kp: &KmemPaMode,
@@ -769,7 +679,7 @@ fn map_va(
     };
     loop {
         // try_map:
-        match b.maps.map(
+        match maps.map(
             kv.kv_map,
             sz,
             object,
@@ -782,7 +692,7 @@ fn map_va(
                 if !(kv.kv_wait && kd.kd_waitok) {
                     return Err(e);
                 }
-                let _ = tsleep_nsec(b.maps.chan(kv.kv_map), PVM, "km_allocva", INFSLP);
+                let _ = tsleep_nsec(maps.chan(kv.kv_map), PVM, "km_allocva", INFSLP);
             }
         }
     }
@@ -795,60 +705,47 @@ pub fn km_free(va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) {
 
 /// [`km_free`] on a machine with (`nommu` false) or without an MMU.
 fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) {
-    let b = bridges_for("km_free");
+    let maps = maps_for("km_free");
     let sva = va.as_usize();
     let eva = sva + sz;
 
     if !kp.kp_nomem {
         // __HAVE_PMAP_DIRECT
-        let mut frames = [Paddr::new(0); FREE_CHUNK];
         if HAVE_PMAP_DIRECT && (kv.kv_singlepage || kp.kp_maxseg == 1 || nommu) {
-            let mut va = sva;
-            while va < eva {
-                let mut n = 0;
-                while va < eva && n < FREE_CHUNK {
-                    match hal::pmap::direct_unmap(Vaddr::new(va)) {
-                        Some(pa) => frames[n] = pa,
-                        None => kpanic(format_args!("km_free: unmanaged page at {va:#x}")),
-                    }
-                    n += 1;
-                    va += PAGE_SIZE;
+            let frames = (sva..eva).step_by(PAGE_SIZE).map(|va| {
+                match hal::pmap::direct_unmap(Vaddr::new(va)) {
+                    Some(pa) => pa,
+                    None => kpanic(format_args!("km_free: unmanaged page at {va:#x}")),
                 }
-                if let Err(pa) = b.pages.free_list(&frames[..n]) {
-                    let at = hal::pmap::direct_map(pa).as_usize();
-                    kpanic(format_args!("km_free: unmanaged page at {at:#x}"));
-                }
-            }
+            });
+            free_frames("km_free", frames);
             return;
         }
 
         if kp.kp_pageable {
             mapper().remove(Vaddr::new(sva), Vaddr::new(eva));
         } else {
-            // The C's order, per chunk: collect the frames, remove the mappings, then free
-            // the frames (module deviations).
-            let mut va = sva;
-            while va < eva {
-                let start = va;
-                let mut n = 0;
-                while va < eva && va - start < FREE_CHUNK * PAGE_SIZE {
-                    if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va)) {
-                        frames[n] = pa;
-                        n += 1;
+            // The C's order: collect the pages, remove the mappings, then free the list (no
+            // page is on a free list while it is still mapped).
+            let pgl = Pglist::new();
+            for va in (sva..eva).step_by(PAGE_SIZE) {
+                if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va)) {
+                    match PHYS_TO_VM_PAGE(pa) {
+                        Some(pg) => pgl.insert_tail(pg),
+                        None => {
+                            kpanic(format_args!("km_free: unmanaged page {:#x}", pa.as_usize()))
+                        }
                     }
-                    va += PAGE_SIZE;
-                }
-                mapper().kremove(Vaddr::new(start), Vsize::new(va - start));
-                if let Err(pa) = b.pages.free_list(&frames[..n]) {
-                    kpanic(format_args!("km_free: unmanaged page {:#x}", pa.as_usize()));
                 }
             }
+            mapper().kremove(Vaddr::new(sva), Vsize::new(sz));
+            uvm_pglistfree(&pgl);
         }
     }
     // free_va:
-    b.maps.unmap(kv.kv_map, Vaddr::new(sva), Vaddr::new(eva));
+    maps.unmap(kv.kv_map, Vaddr::new(sva), Vaddr::new(eva));
     if kv.kv_wait {
-        wakeup(b.maps.chan(kv.kv_map));
+        wakeup(maps.chan(kv.kv_map));
     }
 }
 
@@ -925,24 +822,36 @@ pub const fn module_memory() -> &'static dyn ModuleMemory {
 #[cfg(test)]
 mod tests {
     // Over hal's host pmap (no MMU: `PMAP_NOMMU`, the direct map the identity, the kernel
-    // pmap a `BTreeMap`) and the kernel's doubles of the two bridges (`crate::testutil`). The
-    // map path, which the host never takes, is exercised through `alloc_in`/`free_in` with
-    // `nommu` false: the double's virtual space, the host pmap's mappings.
+    // pmap a `BTreeMap`), the kernel's own page system over a heap block
+    // (`testutil::pages_install`, which holds `testutil::MEMORY`) and the double of the maps
+    // bridge (`crate::testutil`). The map path, which the host never takes, is exercised
+    // through `alloc_in`/`free_in` with `nommu` false: the double's virtual space, the host
+    // pmap's mappings.
 
+    use std::sync::MutexGuard;
     use std::sync::atomic::AtomicBool;
     use std::thread;
     use std::time::Duration;
 
     use super::*;
     use crate::testutil;
-    use hal::kmbuf::KmBuf;
 
-    /// The process's set-up: the runtime's doubles and the km doubles, the host pmap
-    /// bootstrapped once per process with the kernel's page provider and its token adopted
-    /// here (`testutil::pmap_boot`, which keeps the lend).
-    fn setup() {
+    use hal::kmbuf::KmBuf;
+    use hal::vm::uvmexp::UVMEXP;
+
+    /// 16 MiB of pages for each test.
+    const BYTES: usize = 16 << 20;
+
+    /// The maps double, the host pmap (once per process) and fresh pages, `MEMORY` held.
+    fn setup() -> MutexGuard<'static, ()> {
         testutil::km_install();
-        let _ = testutil::pmap_boot();
+        testutil::pages_install(BYTES)
+    }
+
+    /// The free pages, those in this CPU's page cache (`MULTIPROCESSOR`) included.
+    fn avail() -> i64 {
+        i64::from(UVMEXP.free.load(Ordering::Relaxed))
+            + i64::from(UVMEXP.percpucaches.load(Ordering::Relaxed))
     }
 
     fn extract(va: usize) -> Option<Paddr> {
@@ -997,52 +906,53 @@ mod tests {
 
     #[test]
     fn without_an_mmu_the_direct_map_serves_and_gives_the_frames_back() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         let va = km_alloc(2 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("two pages");
         assert_eq!(va.as_usize() % PAGE_SIZE, 0);
-        assert_eq!(testutil::km_frames_out(), before + 2);
+        assert_eq!(avail(), before - 2);
         assert_eq!(
             testutil::km_entry(va),
             None,
             "the direct map takes no space"
         );
-        let listed = testutil::km_list_freed();
+        // The pages are the page system's, theirs in the direct map, off the free lists.
+        let pg = PHYS_TO_VM_PAGE(Paddr::new(va.as_usize())).expect("a managed page");
+        assert!(!pg.is_free());
+        let free = UVMEXP.free.load(Ordering::Relaxed);
         km_free(va, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
-        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(avail(), before);
         assert_eq!(
-            testutil::km_list_freed(),
-            listed + 2,
+            UVMEXP.free.load(Ordering::Relaxed),
+            free + 2,
             "back on the free list (uvm_pglistfree), not uvm_pagefree's per-CPU cache"
         );
     }
 
     #[test]
-    fn km_free_removes_the_mappings_before_it_frees_the_frames() {
-        setup();
-        // More pages than one chunk, so two kremoves and two lists.
-        let pages = FREE_CHUNK + 8;
+    fn km_free_removes_the_mappings_then_frees_the_list() {
+        let _g = setup();
+        let pages = 40;
         let len = pages * PAGE_SIZE;
-        let before = testutil::km_frames_out();
-        let listed = testutil::km_list_freed();
+        let before = avail();
         let va = alloc_in(false, len, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("space");
-        assert_eq!(testutil::km_frames_out(), before + pages as i64);
-        testutil::km_watch(va.as_usize(), va.as_usize() + len);
-        let mapped_before = testutil::km_freed_mapped();
+        assert_eq!(avail(), before - pages as i64);
+        let frames: std::vec::Vec<Paddr> = (0..pages)
+            .map(|i| extract(va.as_usize() + i * PAGE_SIZE).expect("entered"))
+            .collect();
         free_in(false, va, len, &KV_ANY, &KP_ZERO);
-        assert_eq!(
-            testutil::km_freed_mapped(),
-            mapped_before,
-            "no frame freed while mapped"
-        );
-        assert_eq!(testutil::km_frames_out(), before);
-        assert_eq!(testutil::km_list_freed(), listed + pages as i64);
+        assert_eq!(avail(), before);
         assert!((0..pages).all(|i| extract(va.as_usize() + i * PAGE_SIZE).is_none()));
+        assert!(
+            frames
+                .iter()
+                .all(|&pa| PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.is_free()))
+        );
     }
 
     #[test]
     fn the_lend_reaches_the_token() {
-        setup();
+        let _g = setup();
         let lend = testutil::pmap_boot();
         let va = Vaddr::new(testutil::KM_VA_END - PAGE_SIZE);
         let pa = Paddr::new(0x4321_0000);
@@ -1054,48 +964,48 @@ mod tests {
 
     #[test]
     fn without_an_mmu_no_memory_and_pageable_are_refused() {
-        setup();
+        let _g = setup();
         assert_eq!(km_alloc(PAGE_SIZE, &KV_ANY, &KP_NONE, &KD_NOWAIT), None);
         assert_eq!(km_alloc(PAGE_SIZE, &KV_ANY, &KP_PAGEABLE, &KD_WAITOK), None);
     }
 
     #[test]
     fn the_map_path_enters_each_page_and_km_free_removes_them() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         let va = alloc_in(false, 3 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("space");
         assert!(va.as_usize() >= testutil::KM_VA_BASE);
         assert_eq!(
             testutil::km_entry(va),
             Some((KvMap::Kernel, KmObject::None))
         );
-        assert_eq!(testutil::km_frames_out(), before + 3);
+        assert_eq!(avail(), before - 3);
         let frames: std::vec::Vec<Paddr> = (0..3)
             .map(|i| extract(va.as_usize() + i * PAGE_SIZE).expect("entered"))
             .collect();
         assert!(frames.windows(2).all(|w| w[0] != w[1]));
         free_in(false, va, 3 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
-        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(avail(), before);
         assert!((0..3).all(|i| extract(va.as_usize() + i * PAGE_SIZE).is_none()));
         assert_eq!(testutil::km_entry(va), None);
     }
 
     #[test]
     fn no_space_gives_every_frame_back() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         testutil::km_fail_maps(1);
         assert_eq!(
             alloc_in(false, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT),
             None
         );
-        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(avail(), before);
     }
 
     #[test]
     fn virtual_space_only_and_pageable_memory_take_no_frames() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         let va = alloc_in(false, PAGE_SIZE, &KV_ANY, &KP_NONE, &KD_NOWAIT).expect("space");
         assert_eq!(
             testutil::km_entry(va),
@@ -1112,12 +1022,12 @@ mod tests {
         );
         free_in(false, va, 2 * PAGE_SIZE, &KV_ANY, &KP_PAGEABLE);
         assert_eq!(testutil::km_entry(va), None);
-        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(avail(), before);
     }
 
     #[test]
     fn a_waiting_mode_sleeps_on_the_map_until_a_wakeup() {
-        setup();
+        let _g = setup();
         static KV_WAITS: KmemVaMode = KmemVaMode {
             kv_map: KvMap::Exec,
             kv_align: 0,
@@ -1125,7 +1035,7 @@ mod tests {
             kv_singlepage: false,
         };
         static DONE: AtomicBool = AtomicBool::new(false);
-        let (maps, _) = testutil::km_doubles();
+        let maps = testutil::km_maps();
         let chan = maps.chan(KvMap::Exec).addr();
         // The waker: a km_free of a kv_wait mode elsewhere, as often as needed (a wakeup
         // before the sleep is set up wakes nobody, as in the C).
@@ -1163,13 +1073,13 @@ mod tests {
 
     #[test]
     fn pgremove_intrsafe_frees_what_is_mapped() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         let va = alloc_in(false, 2 * PAGE_SIZE, &KV_INTRSAFE, &KP_ZERO, &KD_NOWAIT).expect("space");
-        assert_eq!(testutil::km_frames_out(), before + 2);
+        assert_eq!(avail(), before - 2);
         let end = Vaddr::new(va.as_usize() + 2 * PAGE_SIZE);
         uvm_km_pgremove_intrsafe(va, end);
-        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(avail(), before);
         assert_eq!(extract(va.as_usize()), None);
         assert_eq!(extract(va.as_usize() + PAGE_SIZE), None);
         // The space itself goes back with the map entry (uvm_unmap's part).
@@ -1179,9 +1089,11 @@ mod tests {
 
     #[test]
     fn a_second_install_is_refused() {
-        setup();
-        let (maps, pages) = testutil::km_doubles();
-        assert_eq!(install(maps, pages), Err(AlreadyRegistered("KmMaps")));
+        testutil::km_install();
+        assert_eq!(
+            install(testutil::km_maps()),
+            Err(AlreadyRegistered("KmMaps"))
+        );
     }
 
     #[test]
@@ -1193,15 +1105,15 @@ mod tests {
 
     #[test]
     fn page_memory_backs_a_kmbuf_and_takes_it_back() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         let mut b = KmBuf::alloc_wired(page_memory(), 2 * PAGE_SIZE, false).expect("wired");
-        assert_eq!(testutil::km_frames_out(), before + 2);
+        assert_eq!(avail(), before - 2);
         assert!(b.iter().all(|&x| x == 0));
         b[0] = 1;
         b[2 * PAGE_SIZE - 1] = 2;
         drop(b);
-        assert_eq!(testutil::km_frames_out(), before);
+        assert_eq!(avail(), before);
         // Pageable memory needs an MMU (module deviations).
         assert!(KmBuf::alloc_pageable(page_memory(), PAGE_SIZE).is_none());
         assert_eq!(page_memory().page_size(), PAGE_SIZE);
@@ -1209,18 +1121,18 @@ mod tests {
 
     #[test]
     fn module_memory_keeps_its_pages_when_released() {
-        setup();
-        let before = testutil::km_frames_out();
+        let _g = setup();
+        let before = avail();
         let mem = module_memory();
         let va = mem.alloc(PAGE_SIZE + 1).expect("two pages");
-        assert_eq!(testutil::km_frames_out(), before + 2);
+        assert_eq!(avail(), before - 2);
         mem.release(va, PAGE_SIZE + 1);
         assert_eq!(
             testutil::km_last_unmap(),
             Some((KvMap::Kernel, va.as_usize(), va.as_usize() + 2 * PAGE_SIZE))
         );
         // kp_none: the pages stay, the module window's mappings hold them.
-        assert_eq!(testutil::km_frames_out(), before + 2);
+        assert_eq!(avail(), before - 2);
     }
 }
 /* </TESTS> */

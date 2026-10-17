@@ -54,38 +54,20 @@
 //! and `aio_done` arrive with the buffer cache; M7a-2 adds `kentry_free`. M11a adds
 //! `fpageqlock`, M11e `pageqlock`.
 //!
-//! Locks used to protect struct members in this file: `Q` `uvm.pageqlock`, `F`
-//! `uvm.fpageqlock`.
+//! N3.3: the page fields (`page_active`, `page_inactive`, `pageqlock`, `fpageqlock`,
+//! `page_init_done`, `pmr_control`) are the kernel's page system's
+//! (`kernel::vm::page::uvm_lock_pageq`, `page_init_done`; `kernel::vm::pmemrange`'s free
+//! page state), each lock owning what it guards; what is left here is the kernel map's.
 
 use core::cell::Cell;
 use core::ptr;
-use core::sync::atomic::AtomicBool;
 
-use crate::machine::intr::IPL_VM;
-use crate::sys::mutex::Mutex;
 use crate::sys::queue::SlistHead;
 use crate::uvm::uvm_map::{UvmKentryFree, VmMapEntry};
 use crate::uvm::uvm_object::UvmObject;
 
-use crate::uvm::uvm_page::Pglist;
-use crate::uvm::uvm_pmemrange::UvmPmrControl;
-
 /// `struct uvm`.
 pub struct Uvm {
-    // vm_page related parameters: vm_page queues
-    /// \[Q\] allocated pages, in use.
-    pub page_active: Pglist,
-    /// \[Q\] pages inactive (reclaim/free).
-    pub page_inactive: Pglist,
-    // Lock order: pageqlock, then fpageqlock.
-    /// `pageqlock`: lock for active/inactive page q.
-    pub pageqlock: Mutex,
-    /// `fpageqlock`: lock for free page q + pdaemon.
-    pub fpageqlock: Mutex,
-    /// TRUE if `uvm_page_init()` finished.
-    pub page_init_done: AtomicBool,
-    /// \[F\] pmemrange data.
-    pub pmr_control: UvmPmrControl,
     /// `kentry_free`: free page pool (the static kernel map entries, guarded by
     /// `uvm_kmapent_mtx`).
     pub kentry_free: SlistHead<UvmKentryFree>,
@@ -95,22 +77,15 @@ pub struct Uvm {
     pub kernel_object: Cell<*const UvmObject>,
 }
 
-// SAFETY: every field is guarded by one of the locks named in the module doc (`Q`, `F`), or
-// written once on the boot CPU before the other processors start (`kernel_object`,
-// `kentry_free`'s initial fill, under `uvm_kmapent_mtx` afterwards); `page_init_done` is
-// atomic as in C.
+// SAFETY: the fields are written once on the boot CPU before the other processors start
+// (`kernel_object`, `kentry_free`'s initial fill) or under `uvm_kmapent_mtx` afterwards
+// (`kentry_free`).
 unsafe impl Sync for Uvm {}
 
 impl Uvm {
     /// The state before `uvm_init`.
     pub const fn new() -> Self {
         Self {
-            page_active: Pglist::new(),
-            page_inactive: Pglist::new(),
-            pageqlock: Mutex::new(IPL_VM),
-            fpageqlock: Mutex::new(IPL_VM),
-            page_init_done: AtomicBool::new(false),
-            pmr_control: UvmPmrControl::new(),
             kentry_free: SlistHead::new(),
             kernel_object: Cell::new(ptr::null()),
         }

@@ -79,14 +79,15 @@ use crate::sys::rwlock::{Rwlock, rw_lock_held, rw_write_held};
 use crate::unported;
 use crate::uvm::uvm_amap::VmAmap;
 use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_page::{PG_BUSY, PG_RELEASED, VmPage, uvm_pagefree};
+use crate::uvm::uvm_page::{Owner, OwnerTag, PG_BUSY, PG_RELEASED, PageAnon, VmPage, uvm_pagefree};
+use hal::link::Link;
 
 /// `struct vm_anon`.
 pub struct VmAnon {
     /// `an_lock`: the lock, shared with the amap the anon is in.
     pub an_lock: Cell<*const Rwlock>,
-    /// `an_page`: if in RAM.
-    pub an_page: Cell<*const VmPage>,
+    /// `an_page`: if in RAM (a page of the kernel's page array, `kernel::vm::page`).
+    pub an_page: Link<VmPage>,
     /// `an_ref`: reference count.
     pub an_ref: Cell<i32>,
     /// `an_swslot`: drum swap slot # (if != 0) \[if we hold an_page, PG_BUSY\].
@@ -106,7 +107,7 @@ impl VmAnon {
     pub const fn new() -> Self {
         Self {
             an_lock: Cell::new(ptr::null()),
-            an_page: Cell::new(ptr::null()),
+            an_page: Link::new(),
             an_ref: Cell::new(1),
             an_swslot: Cell::new(0),
             #[cfg(feature = "multiprocessor")]
@@ -122,8 +123,33 @@ impl VmAnon {
 
     /// `an_page`, if resident.
     pub fn page(&self) -> Option<&'static VmPage> {
-        // SAFETY: a non-null `an_page` is a page of the page array, owned by this anon.
-        unsafe { self.an_page.get().as_ref() }
+        self.an_page.get()
+    }
+}
+
+// The page system's view of an anon (the `PageOwner` bridge, N3.4): one call each into the
+// anon's fields.
+impl PageAnon for VmAnon {
+    fn tag(&self) -> OwnerTag {
+        OwnerTag::anon(self)
+    }
+
+    fn locked(&self, exclusive: bool) -> Option<bool> {
+        self.an_lock().map(|l| {
+            if exclusive {
+                rw_write_held(l)
+            } else {
+                rw_lock_held(l)
+            }
+        })
+    }
+
+    fn refs(&self) -> i32 {
+        self.an_ref.get()
+    }
+
+    fn set_page(&self, pg: Option<&'static VmPage>) {
+        self.an_page.set(pg);
     }
 }
 
@@ -229,7 +255,7 @@ pub fn uvm_anfree(anon: &VmAnon) {
             return;
         }
         pmap_page_protect(pg, PROT_NONE);
-        uvm_pagefree(pg);
+        uvm_pagefree(pg, Owner::Anon(anon));
     } else if anon.an_swslot.get() != 0 {
         // This page is no longer only in swap.
         kassert!(UVMEXP.swpgonly.load(Ordering::Relaxed) > 0);
@@ -240,7 +266,7 @@ pub fn uvm_anfree(anon: &VmAnon) {
     // Free any swap resources, leave a page replacement hint.
     uvm_anon_dropswap(anon);
 
-    kassert!(anon.an_page.get().is_null());
+    kassert!(anon.an_page.is_none());
     kassert!(anon.an_swslot.get() == 0);
 
     pool_put(&UVM_ANON_POOL, NonNull::from(anon).cast::<u8>());
@@ -299,13 +325,13 @@ pub fn uvm_anon_release(anon: &VmAnon) {
     kassert!(rw_write_held(lock));
     kassert!(pg.flags() & PG_RELEASED != 0);
     kassert!(pg.flags() & PG_BUSY != 0);
-    kassert!(pg.uobject().is_none());
-    kassert!(ptr::eq(pg.uanon.get(), anon));
+    kassert!(!pg.has_object());
+    kassert!(pg.owned_by_anon(anon));
     kassert!(anon.an_ref.get() == 0);
 
     pmap_page_protect(pg, PROT_NONE);
-    uvm_pagefree(pg);
-    kassert!(anon.an_page.get().is_null());
+    uvm_pagefree(pg, Owner::Anon(anon));
+    kassert!(anon.an_page.is_none());
     uvm_anon_dropswap(anon);
     pool_put(&UVM_ANON_POOL, NonNull::from(anon).cast::<u8>());
     rw_exit(lock);
@@ -336,12 +362,12 @@ mod tests {
         rw_enter_write(lock);
         let pg = uvm_pagealloc(None, 0, Some(anon), 0).expect("a page");
         assert!(anon.page().is_some_and(|p| ptr::eq(p, pg)));
-        assert!(pg.uanon().is_some_and(|a| ptr::eq(a, anon)));
+        assert!(pg.owned_by_anon(anon));
         pg.clear_bits(PG_BUSY);
 
         anon.an_ref.set(0);
         uvm_anfree(anon);
-        assert!(pg.uanon().is_none(), "the page went back to the free pool");
+        assert!(!pg.has_owner(), "the page went back to the free pool");
         rw_exit(lock);
         rw_obj_free(lock);
     }
