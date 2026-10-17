@@ -340,9 +340,16 @@ fn shoot_targets(pm: &Pmap, is_kva: bool) -> (ShootMask, u32) {
     let mut targets = 0;
     if let Some(b) = bridges::tlb_cpus() {
         b.for_each_other_running(&mut |id, active| {
-            if id >= TLB_MAXCPUS || (!is_kva && !pmap_is_active(pm, active)) {
+            if id >= TLB_MAXCPUS {
+                // Left out, it would keep a stale TLB: the machine broke its own bound.
+                crate::assert::hal_panic(format_args!(
+                    "pmap_tlb_shoot: cpu {id} past tlb_shoot_counts"
+                ));
+            }
+            if !is_kva && !pmap_is_active(pm, active) {
                 return;
             }
+
             mask[id / 8] |= 1 << (id % 8);
             targets += 1;
         });
