@@ -751,7 +751,9 @@ mod tests {
     }
 
     #[test]
-    fn pmap_init_clears_the_hierarchical_disables() {
+    // The constants only: `init_lower_half` writes TCR in `asm!`, which a host test cannot
+    // run; the arm64 smokes prove the write.
+    fn tcr_hpd_names_the_two_hierarchical_disable_bits() {
         assert_eq!(TCR_HPD, 0x0000_0600_0000_0000);
         assert_eq!(TCR_HPD & (TCR_TTBR0_FIELDS | TCR_A1 | TCR_AS), 0);
     }

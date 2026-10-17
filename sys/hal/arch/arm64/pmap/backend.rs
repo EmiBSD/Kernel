@@ -97,8 +97,9 @@
 //!   answers for the image through its virtual-to-physical offset (`BootstrapParams::image`).
 //!   The same holds for the module window's leaves (`window.rs`), which the C does not have:
 //!   no kernel leaf `kernel_leaf` composes is guarded. The C prints `removing ...` twice
-//!   (`pmap_remove_avail`) and `all mapped` after the switch; native prints neither (a new
-//!   boot line, and the memory is uvm's before the bootstrap).
+//!   (`pmap_remove_avail`) and `all mapped` after the switch; native prints neither, as LZ
+//!   did not: printing them would add boot lines the smokes and dmesg never had, and the
+//!   memory `removing` reports is handed to uvm before the bootstrap here.
 //! - The direct map (another level-0 slot, the boot loader's tables below hal's copy of its
 //!   level-0 entries) gets `Lx_PT_PXN` and `Lx_PT_XN` on those entries, so nothing below them
 //!   executes whatever the boot loader's leaves say (Limine's were never checked; `locore0.S`'s
@@ -210,9 +211,9 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
     ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, ATTR_nG, L2_SIZE, L3_P, Lx_PT_PXN, Lx_PT_XN,
-    Lx_TYPE_MASK, Lx_TYPE_PT, MAIR_CI, MAIR_DEV_NGNRNE, MAIR_WT, PTE_ATTR_CI, PTE_ATTR_DEV_NGNRE,
-    PTE_ATTR_DEV_NGNRNE, PTE_ATTR_WB, PTE_ATTR_WT, PTE_RPGN, SH_INNER, attr_ap, attr_idx, attr_sh,
-    mair_attr,
+    Lx_TYPE_MASK, Lx_TYPE_PT, Lx_TYPE_S, MAIR_CI, MAIR_DEV_NGNRNE, MAIR_WT, PTE_ATTR_CI,
+    PTE_ATTR_DEV_NGNRE, PTE_ATTR_DEV_NGNRNE, PTE_ATTR_WB, PTE_ATTR_WT, PTE_RPGN, SH_INNER, attr_ap,
+    attr_idx, attr_sh, mair_attr,
 };
 use super::super::include::vmparam::{
     USER_SPACE_BITS, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS,
@@ -1431,6 +1432,12 @@ impl PmapBackend for Backend {
             let d = e.load(Ordering::Relaxed);
             if d & Lx_TYPE_MASK == Lx_TYPE_PT {
                 e.store(d | Lx_PT_PXN | Lx_PT_XN, Ordering::Relaxed);
+            } else if d & Lx_TYPE_MASK == Lx_TYPE_S {
+                // A valid level-0 entry that is not a table is a block (only with TCR.DS): its
+                // execute rights could not be taken away here, so refuse it.
+                hal_panic(format_args!(
+                    "pmap_bootstrap: the direct map's level-0 entry {i} is a block"
+                ));
             }
         }
         let l1_desc = vp0.entry(kslot).load(Ordering::Relaxed);
