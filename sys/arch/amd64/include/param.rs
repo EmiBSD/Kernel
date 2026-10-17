@@ -79,7 +79,6 @@ pub const MACHINE: &str = "amd64";
 pub const MACHINE_ARCH: &str = "amd64";
 
 /// Start of kernel text.
-
 pub const KERNTEXTOFF: usize = KERNBASE + 0x0100_0000;
 
 /// Bytes per page.

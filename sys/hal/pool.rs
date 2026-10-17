@@ -70,10 +70,17 @@
 //!   neither, so a `BoxPool` item is exactly a `T`, the C's item, and `vmstat -m` shows the
 //!   C's size for it; the pool the item goes back to rides in the handle instead (the
 //!   handle is two words: an `Option<PoolBox<T>>` is too, by the niche of its pointer).
+//! - N3.1's review: [`SharedBox<T>`] ([`BoxPool::get_linked`]) is the owned item that raw
+//!   links also reach (arm64's `pte_desc`, owned by its table slot and linked on its page's pv
+//!   list): a `PoolBox` without `DerefMut`, so a `&mut` through the owner never coexists with
+//!   a link's reader; `PoolBox` keeps `DerefMut` for an item that only its owner reaches
+//!   (amd64's `pv_entry`, owned by its chain). [`PoolArc::from_value`] rebuilds a counted
+//!   handle from a pointer to the value a record keeps (`pmap_reference(pve->pv_pmap)`).
 
 use core::marker::PhantomData;
+use core::mem::{ManuallyDrop, offset_of};
 use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
@@ -191,6 +198,8 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         // documented trust boundary. Writing a whole value initialises it, before any handle
         // exists.
         unsafe { item.as_ptr().write(inner) };
+        // The item's whole provenance, for `PoolArc::from_value`'s step back from the value.
+        let _ = item.as_ptr().expose_provenance();
         Some(PoolArc {
             inner: item,
             _owns: PhantomData,
@@ -251,6 +260,36 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     /// to be dereferenced.
     pub fn as_ptr(this: &Self) -> *const T {
         &raw const this.inner().value
+    }
+
+    /// One more handle to the item whose value `value` points at, counted as a clone: the C's
+    /// `pmap_reference` of a pointer a record keeps (`pve->pv_pmap`), for who must hold the
+    /// object after dropping the lock that keeps the record. The item is reached back from
+    /// the value by `offset_of!`, with the provenance `get_shared` exposed for the whole item.
+    ///
+    /// # Safety
+    ///
+    /// `value` is the address of the value of a live item of a `TypedPool<T>` (one
+    /// `get_shared` made), whose count is at least 1 and stays so until this call returns: the
+    /// caller holds the lock that keeps the record of the pointer, and the record exists only
+    /// while a handle does (a pmap's pv entries, its mappings: `hal::pmap`'s last drop panics
+    /// while one is left).
+    #[allow(
+        dead_code,
+        reason = "the pmap backends' (pmap_page_remove), N3.1 commits 4 and 5"
+    )]
+    pub(crate) unsafe fn from_value(value: NonNull<T>) -> Self {
+        let addr = value.as_ptr().addr() - offset_of!(Inner<T>, value);
+        let Some(inner) = NonNull::new(ptr::with_exposed_provenance_mut::<Inner<T>>(addr)) else {
+            hal_panic(format_args!("PoolArc::from_value: a null item"));
+        };
+        // A handle the caller's guarantee makes valid, never dropped: cloning it counts the
+        // new one (and refuses an overflow), leaving the count of the others as it was.
+        let borrowed = ManuallyDrop::new(PoolArc {
+            inner,
+            _owns: PhantomData,
+        });
+        PoolArc::clone(&borrowed)
     }
 }
 
@@ -373,7 +412,9 @@ impl<T: 'static> Default for BoxPool<T> {
 /// the `T` and puts the item back into the pool it came from. Not `Clone`.
 ///
 /// Invariant: `item` names an initialised `T` in an item of `pool`, which nothing but this
-/// handle references; it is put back exactly once, by this handle's drop.
+/// handle references, except when the handle is the private field of a [`SharedBox`]: that
+/// one never takes `&mut T`, and raw links may read the item beside its shared references
+/// (`SharedBox`'s contract). It is put back exactly once, by this handle's drop.
 pub struct PoolBox<T: 'static> {
     item: NonNull<T>,
     pool: &'static BoxPool<T>,
@@ -397,18 +438,21 @@ impl<T: 'static> Deref for PoolBox<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: the item is initialised and referenced by this handle alone (the invariant;
-        // that no one else touches it until it is put back is the registration contract of
-        // `RawPool`, `sys/hal/trust.rs`); the shared reference borrows the handle, so no
-        // `&mut` from `deref_mut` can be alive beside it.
+        // SAFETY: the item is initialised and alive until this handle's drop (the invariant;
+        // that no one else frees or writes it until it is put back is the registration
+        // contract of `RawPool`, `sys/hal/trust.rs`); the shared reference borrows the handle,
+        // so no `&mut` from `deref_mut` can be alive beside it, and a `SharedBox`'s links only
+        // read.
         unsafe { self.item.as_ref() }
     }
 }
 
 impl<T: 'static> DerefMut for PoolBox<T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as for `deref`, and the handle is borrowed mutably, so this is the only
-        // reference to the value while it lives.
+        // SAFETY: as for `deref`, and the handle is borrowed mutably, so no other reference
+        // through it is alive; this `PoolBox` is not a `SharedBox`'s (whose field is private
+        // and which never calls this), so no link to the item exists either: this is the
+        // only reference to the value while it lives.
         unsafe { self.item.as_mut() }
     }
 }
@@ -419,8 +463,10 @@ impl<T: 'static> Drop for PoolBox<T> {
             hal_panic(format_args!("PoolBox: an item of a pool never made"));
         };
         // SAFETY: this handle is the item's only owner (the invariant) and is being dropped, so
-        // no reference to the value is alive and none can be made; the value is initialised
-        // and dropped once, here, before its memory goes back to the pool it came from.
+        // no reference through it is alive and none can be made (a `SharedBox`'s links are
+        // unlinked before its owner drops it, under the lock their readers hold: its
+        // contract); the value is initialised and dropped once, here, before its memory goes
+        // back to the pool it came from.
         unsafe { core::ptr::drop_in_place(self.item.as_ptr()) };
         raw.put(self.item.cast());
     }
@@ -433,6 +479,41 @@ unsafe impl<T: Send + 'static> Send for PoolBox<T> {}
 // SAFETY: `&PoolBox<T>` gives only `&T` (`DerefMut` needs `&mut PoolBox<T>`), so sharing it
 // across CPUs is sharing `&T`, sound with `T: Sync`.
 unsafe impl<T: Sync + 'static> Sync for PoolBox<T> {}
+
+/// An owned pool item that others may also reach by raw links: one owner (this handle, in
+/// a table slot) frees it, and `&T` from it may coexist with the links' readers (a page's pv
+/// list, arm64's `pte_desc`). No `DerefMut`: a field changed after the item is linked is an
+/// atomic or a `Cell` under the lock that guards it.
+///
+/// The contract its users keep (the links' derefs are theirs, each with its own `SAFETY:`):
+/// a link is made from [`SharedBox::link`] and read only under the lock that also guards the
+/// link's removal, and the owner drops the box only after every link to it was removed under
+/// that lock; links never take `&mut T`.
+pub struct SharedBox<T: 'static>(PoolBox<T>);
+
+impl<T: 'static> SharedBox<T> {
+    /// A pointer to the value, with the item's whole provenance, for a link; never written
+    /// through.
+    pub fn link(this: &Self) -> NonNull<T> {
+        this.0.item
+    }
+}
+
+impl<T: 'static> Deref for SharedBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: 'static> BoxPool<T> {
+    /// `pool_get(9)` and the item's initialisation, as [`BoxPool::get`], for an item that will
+    /// also be linked: the owner's [`SharedBox`].
+    pub fn get_linked(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<SharedBox<T>> {
+        self.get(flags, init).map(SharedBox)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -588,6 +669,44 @@ mod tests {
         let b = P.get(PR_NOWAIT, || 7).unwrap();
         assert_eq!(*b, 7);
         assert!(PoolBox::as_ptr(&b).addr().is_multiple_of(align_of::<u64>()));
+    }
+
+    #[test]
+    fn a_handle_is_rebuilt_from_its_value() {
+        static P: TypedPool<Pair> = TypedPool::new();
+        let pool = made(&P);
+        let drops = Arc::new(AtomicU32::new(0));
+        let one = pool
+            .get_shared(PR_WAITOK, || Pair {
+                a: 9,
+                drops: Arc::clone(&drops),
+            })
+            .unwrap();
+        let value = NonNull::from(&*one);
+        // SAFETY: `value` is the value of `one`'s item, alive with a count of 1 for the call.
+        let two = unsafe { PoolArc::from_value(value) };
+        assert!(PoolArc::ptr_eq(&one, &two));
+        assert_eq!(PoolArc::count(&one), 2);
+        drop(one);
+        assert_eq!(two.a, 9);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(two);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(pool.nout(), 0);
+    }
+
+    #[test]
+    fn a_shared_box_reads_through_its_link_and_frees_once() {
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testsb"), Ok(()));
+        let b = P.get_linked(PR_NOWAIT, || 42).unwrap();
+        let link = SharedBox::link(&b);
+        assert_eq!(*b, 42);
+        assert_eq!(link.as_ptr().cast_const(), &raw const *b);
+        assert_eq!(P.nout(), 1);
+        drop(b);
+        assert_eq!(P.nout(), 0);
     }
 
     #[test]

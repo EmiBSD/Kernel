@@ -26,14 +26,19 @@
 //! (`PROT_NONE` removes them, as the C does) and nothing is wired or emulated; a page has no
 //! pv chain, so the page-level calls change nothing and report nothing set; boot memory comes
 //! from the host allocator, its frames taken out of the provider (`steal`) so the page count
-//! adds up. `resident_count` is the number of mappings.
+//! adds up. `resident_count` is the number of mappings. A pmap's limit is
+//! `VM_MAXUSER_ADDRESS`, an EFI pmap's (aarch64 hosts) `1 << EFI_SPACE_BITS` as arm64's.
+
+// The host double alone links std outside the tests (rust-kernel.md: the host doubles).
+extern crate std;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::vec;
 
-use super::param::{PAGE_MASK, PAGE_SIZE, VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
+use super::param::{
+    PAGE_MASK, PAGE_SIZE, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS,
+};
 use crate::intr::IPL_VM;
 use crate::pmap::{BootstrapParams, PageMd, PhysPages, Pmap, PmapBackend, PmapStatistics, VmProt};
 use crate::pool::PR_WAITOK;
@@ -42,16 +47,22 @@ use crate::sys::mman::PROT_NONE;
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::round_page;
 
-/// The host's `struct pmap`: the mappings, virtual page to physical page.
+/// arm64's `EFI_SPACE_BITS`: the width of the EFI runtime pmap's address space.
+#[cfg(target_arch = "aarch64")]
+const EFI_SPACE_BITS: u32 = 48;
+
+/// The host's `struct pmap`: the mappings, virtual page to physical page, and the limit.
 pub(crate) struct PmapMd {
     mappings: Mutex<BTreeMap<usize, usize>>,
+    limit: usize,
 }
 
 impl PmapMd {
-    /// No mapping.
+    /// No mapping, the user half's limit.
     pub(crate) const fn new() -> Self {
         Self {
             mappings: Mutex::new(BTreeMap::new()),
+            limit: VM_MAXUSER_ADDRESS,
         }
     }
 
@@ -128,9 +139,29 @@ impl PmapBackend for Backend {
         INITIALIZED.load(Ordering::Relaxed)
     }
 
+    fn va_limit(pmap: &Pmap) -> Vaddr {
+        Vaddr::new(pmap.md.limit)
+    }
+
     fn create(_stats: &PmapStatistics, _pages: &'static dyn PhysPages) -> Option<PmapMd> {
         Some(PmapMd::new())
     }
+
+    #[cfg(target_arch = "aarch64")]
+    fn create_efi(_stats: &PmapStatistics, _pages: &'static dyn PhysPages) -> Option<PmapMd> {
+        Some(PmapMd {
+            mappings: Mutex::new(BTreeMap::new()),
+            limit: 1 << EFI_SPACE_BITS,
+        })
+    }
+
+    /// The host has no translation registers.
+    #[cfg(target_arch = "aarch64")]
+    fn load_efi(_pmap: &Pmap) {}
+
+    /// The host has no translation registers.
+    #[cfg(target_arch = "aarch64")]
+    fn leave_efi(_to: &Pmap) {}
 
     fn mappings(pmap: &Pmap) -> usize {
         pmap.md.map().len()
@@ -219,7 +250,8 @@ impl PmapBackend for Backend {
         let size = round_page(size.as_usize());
         let _ = pages.steal(size / PAGE_SIZE);
         let words = size.div_ceil(size_of::<u64>());
-        let block: &'static mut [u64] = vec![0u64; words].leak();
+        let block: &'static mut [u64] = std::vec![0u64; words].leak();
+
         Vaddr::new(block.as_mut_ptr().addr())
     }
 

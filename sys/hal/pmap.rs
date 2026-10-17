@@ -126,9 +126,19 @@
 //!   token does not refuse the user half: amd64's MP trampoline is mapped at its low
 //!   identity address in the kernel pmap (`cpu.c`, `machdep.c`), executable.
 //! - A user [`Pmap`]'s `enter`, `remove` and `protect` refuse the kernel half (`va` at or above
-//!   `VM_MAXUSER_ADDRESS`; on amd64 the recursive mapping's slot starts right above it) and the
-//!   kernel pmap (which needs the token): both panic, as uvm never asks (stricter than the
-//!   C, which would write into the shared kernel tables).
+//!   the pmap's limit, `VM_MAXUSER_ADDRESS`; on amd64 the recursive mapping's slot starts right
+//!   above it) and the kernel pmap (which needs the token): both panic, as uvm never asks
+//!   (stricter than the C, which would write into the shared kernel tables). arm64's EFI
+//!   runtime pmap ([`create_efi`]) has its own limit, `1 << EFI_SPACE_BITS`: the runtime
+//!   services are identity-mapped and may sit above the user half (`efi_machdep.c`).
+//! - A pv entry names its pmap by a pointer; who must hold the pmap after dropping the page's
+//!   `pv_mtx` (`pmap_page_remove`, the C's `pmap_reference(pve->pv_pmap)`) rebuilds a counted
+//!   handle from it with `PoolArc::from_value` (`sys/hal/pool.rs`), in the backend: this
+//!   module forbids `unsafe`. The extra handle is dropped outside `pv_mtx` and `pm_mtx`, since
+//!   its drop may be the last and free page-table pages.
+//! - `pmap_zero_page`/`pmap_copy_page` took a `struct vm_page *`, so their frame was a
+//!   managed page by type: [`zero_page`] and [`copy_page`] take a `Paddr` and panic unless the
+//!   provider knows it as a managed page (`PhysPages::md_of`), the check that type made.
 //! - `struct vm_page_md` is [`PageMd`], `hal`'s type, embedded by value in the kernel's page
 //!   (`bsd`'s `VmPage` now, `kernel::vm::Page` at N3.3): the pv chain under its own mutex, the
 //!   pmap's attribute bits the C keeps in `pg_flags` (`PG_PMAP0`..`2`) in their own atomic
@@ -151,7 +161,6 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 
 use crate::arch::current::pmap::{Backend, PmapMd, PvHead};
-use crate::arch::current::vmparam::VM_MAXUSER_ADDRESS;
 use crate::assert::hal_panic;
 use crate::intr::IPL_VM;
 use crate::mutex::Mutexed;
@@ -294,14 +303,20 @@ impl Pmap {
         self
     }
 
-    /// Panics unless this is a user pmap and `[sva, eva)` lies in the user half.
+    /// The first address this pmap may not map (`VM_MAXUSER_ADDRESS` for a user pmap; arm64's
+    /// EFI pmap, `1 << EFI_SPACE_BITS`).
+    pub fn va_limit(&self) -> Vaddr {
+        Backend::va_limit(self)
+    }
+
+    /// Panics unless this is a user pmap and `[sva, eva)` lies below its limit.
     fn user_range(&self, what: &str, sva: Vaddr, eva: Vaddr) {
         if self.is_kernel() {
             hal_panic(format_args!(
                 "{what}: the kernel pmap is changed through the KernelMapper"
             ));
         }
-        if sva.as_usize() > eva.as_usize() || eva.as_usize() > VM_MAXUSER_ADDRESS {
+        if sva.as_usize() > eva.as_usize() || eva > self.va_limit() {
             hal_panic(format_args!(
                 "{what}: [{sva:?}, {eva:?}) is not in the user half of a user pmap"
             ));
@@ -315,7 +330,7 @@ impl Pmap {
     /// pmap or a `va` of the kernel half.
     pub fn enter(&self, va: Vaddr, pa: Paddr, prot: VmProt, flags: i32) -> Result<(), Errno> {
         self.user_range("pmap_enter", va, va);
-        if va.as_usize() >= VM_MAXUSER_ADDRESS {
+        if va >= self.va_limit() {
             hal_panic(format_args!(
                 "pmap_enter: {va:?} is not in the user half of a user pmap"
             ));
@@ -365,8 +380,23 @@ impl Pmap {
     /// `pmap_asid_mtx`, then `TTBR0_EL1` to the empty table and `cpu_setttb(asid, pt0pa)`).
     /// The process half (`pcb_pmap`, `ci_proc_pmap`, `ci_curpm`, `ci_flush_bp`) is the
     /// caller's.
+    ///
+    /// The trust boundary: amd64's shootdowns pick their targets by the CPU's recorded pmap
+    /// (`ci_proc_pmap`, [`TlbCpus::for_each_other_running`]), so a pmap loaded without that
+    /// record updated in the same switch is left out of its own shootdowns and keeps stale
+    /// translations. Only the context switch's adapter (`pmap_activate`, `cpu_switchto`'s
+    /// `pmap_setttb`) calls this, beside the record; it changes no memory safety of Rust code
+    /// (the kernel half is the same in every pmap) but the isolation of the address spaces.
     pub fn load(&self) {
         Backend::load(self);
+    }
+
+    /// `efi_enter`'s pmap half (arm64): this EFI pmap's tables in `TTBR0_EL1` with the
+    /// address-space width of the EFI pmap (`TCR_EL1.T0SZ = 64 - EFI_SPACE_BITS`), the empty
+    /// table first; interrupts are the caller's to disable around the call into the runtime.
+    #[cfg(target_arch = "aarch64")]
+    pub fn load_efi(&self) {
+        Backend::load_efi(self);
     }
 
     /// The pmap's half of `pmap_activate(p)`: one more thread uses it (arm64 `pm_active`;
@@ -636,8 +666,9 @@ pub trait TlbCpus: Sync {
     /// pointer is the pmap that CPU runs user code on ([`Pmap::as_ptr`], null for none),
     /// only compared, never dereferenced.
     fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const Pmap));
-    /// `x86_fast_ipi(ci, ipi)`: whether the IPI was sent (the shootdown panics otherwise, as
-    /// the C).
+    /// `x86_fast_ipi(ci, ipi)`: whether the IPI was sent. A CPU that could not take it is
+    /// counted as done (`pmap_tlb_shootfail`: its count decremented, the lock released with
+    /// the last one, `pmap.c`), not a panic.
     fn send(&self, cpuid: usize, ipi: TlbIpi) -> bool;
     /// `wbinvd_on_all_cpus()`: write back and invalidate every CPU's caches.
     fn wbinvd_all(&self);
@@ -683,6 +714,8 @@ pub(crate) trait PmapBackend {
     fn init();
     /// `pmap_initialized`.
     fn initialized() -> bool;
+    /// The first address `pmap` may not map ([`Pmap::va_limit`]).
+    fn va_limit(pmap: &Pmap) -> Vaddr;
     /// `pmap_create`'s machine part: an empty user pmap's tables with the kernel half
     /// (`stats` to account the root, as amd64's `resident_count = 1`); `None` when no page
     /// could be had.
@@ -707,6 +740,16 @@ pub(crate) trait PmapBackend {
     fn kremove(va: Vaddr, len: Vsize);
     /// [`Pmap::load`].
     fn load(pmap: &Pmap);
+    /// [`create_efi`]'s machine part: a privileged four-level pmap whose limit is
+    /// `1 << EFI_SPACE_BITS`.
+    #[cfg(target_arch = "aarch64")]
+    fn create_efi(stats: &PmapStatistics, pages: &'static dyn PhysPages) -> Option<PmapMd>;
+    /// [`Pmap::load_efi`].
+    #[cfg(target_arch = "aarch64")]
+    fn load_efi(pmap: &Pmap);
+    /// [`leave_efi`].
+    #[cfg(target_arch = "aarch64")]
+    fn leave_efi(to: &Pmap);
     /// [`Pmap::activate`].
     fn activate(pmap: &Pmap);
     /// [`Pmap::deactivate`].
@@ -801,12 +844,39 @@ pub fn initialized() -> bool {
 }
 
 /// `pmap_create()`: a new, empty user pmap with one reference, whose top-level table maps the
-/// kernel half. `None` before [`bootstrap`] and [`init`], or when no page could be had (the
-/// C's `pool_get(PR_WAITOK)` never fails: a caller after boot may treat `None` as fatal).
+/// kernel half. `None` before [`bootstrap`] and [`init`] (between them the provider has no
+/// page system to allocate from), or when no page could be had (the C's
+/// `pool_get(PR_WAITOK)` never fails: a caller after boot may treat `None` as fatal).
 pub fn create() -> Option<PmapRef> {
+    create_with(Backend::create)
+}
+
+/// `efi_map_runtime`'s `pmap_create` (arm64): a privileged pmap with four-level tables whose
+/// limit is `1 << EFI_SPACE_BITS` instead of `VM_MAXUSER_ADDRESS`, for the identity mappings of
+/// the EFI runtime services; loaded by [`Pmap::load_efi`], left by [`leave_efi`]. `None` as
+/// for [`create`].
+#[cfg(target_arch = "aarch64")]
+pub fn create_efi() -> Option<PmapRef> {
+    create_with(Backend::create_efi)
+}
+
+/// `efi_leave`'s pmap half (arm64): the user address-space width back in `TCR_EL1` and `to`
+/// (the pmap the CPU ran on before `efi_enter`, `ci_curpm`) loaded again.
+#[cfg(target_arch = "aarch64")]
+pub fn leave_efi(to: &Pmap) {
+    Backend::leave_efi(to);
+}
+
+/// A user pmap whose machine part `make` builds, in the pool of user pmaps.
+fn create_with(
+    make: fn(&PmapStatistics, &'static dyn PhysPages) -> Option<PmapMd>,
+) -> Option<PmapRef> {
+    if !initialized() {
+        return None;
+    }
     let pages = *kernel().pages.get()?;
     let stats = PmapStatistics::new();
-    let md = Backend::create(&stats, pages)?;
+    let md = make(&stats, pages)?;
     let pmap = Pmap {
         stats,
         pages: OnceStatic::new(),
@@ -844,15 +914,25 @@ pub fn is_referenced(md: &PageMd) -> bool {
     Backend::is_referenced(md)
 }
 
-/// `pmap_zero_page`: zero-fills the frame at `pa` (through the direct map; `pa` is trusted,
-/// see the module docs).
+/// Panics unless the provider knows `pa` as a managed page (the C's `struct vm_page *`).
+fn managed(what: &str, pa: Paddr) {
+    if kernel().pages().md_of(pa).is_none() {
+        hal_panic(format_args!("{what}: {pa:?} is not a managed page"));
+    }
+}
+
+/// `pmap_zero_page`: zero-fills the managed page at `pa` (through the direct map). Panics
+/// when `pa` is not a managed page (see the module's redesign).
 pub fn zero_page(pa: Paddr) {
+    managed("pmap_zero_page", pa);
     Backend::zero_page(pa);
 }
 
-/// `pmap_copy_page`: copies the frame at `src` into the frame at `dst` (trusted, as for
-/// [`zero_page`]).
+/// `pmap_copy_page`: copies the managed page at `src` into the managed page at `dst`. Panics
+/// when either is not a managed page.
 pub fn copy_page(src: Paddr, dst: Paddr) {
+    managed("pmap_copy_page", src);
+    managed("pmap_copy_page", dst);
     Backend::copy_page(src, dst);
 }
 
@@ -901,18 +981,31 @@ pub fn flush_cache(va: Vaddr, len: Vsize) {
 /// The kernel virtual window the ABI module `abi_openbsd.ko` must run from (decision 22): its
 /// first address and its size, outside `kernel_map`, for the kernel's lifetime; `None` on a
 /// machine without one (the module then goes in `kernel_map`). Its size is 0 when the
-/// bootstrap could not link it (the module is then not loaded).
-pub fn module_window() -> Option<(Vaddr, usize)> {
+/// bootstrap could not link it (the module is then not loaded). The module loader's
+/// (`sys/hal/module/load.rs`, which calls it from N3.1 commit 6).
+#[allow(dead_code, reason = "the module loader's, from N3.1 commit 6")]
+pub(crate) fn module_window() -> Option<(Vaddr, usize)> {
     Backend::module_window()
 }
 
 /// Maps `pa` at `va`, a page of [`module_window`], in the kernel pmap with `prot`, wired, for
 /// the kernel's lifetime: the module's pages. `false`, mapping nothing, when `va` is not a page
 /// of the window, is mapped already, `pa` is not a page's address, or `prot` is both writable
-/// and executable (W^X); always `false` without a window.
-pub fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
+/// and executable (W^X); always `false` without a window. The module loader's, as
+/// [`module_window`].
+#[allow(dead_code, reason = "the module loader's, from N3.1 commit 6")]
+pub(crate) fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
     Backend::module_enter(va, pa, prot)
 }
+
+// The pmap and the page data are shared between CPUs: a pmap's handles cross them, every page
+// is reached from any CPU.
+const _: fn() = || {
+    fn shared<T: Send + Sync>() {}
+    shared::<Pmap>();
+    shared::<PageMd>();
+    shared::<PmapRef>();
+};
 /* </CODE> */
 
 /* <TESTS> */
@@ -1102,6 +1195,40 @@ mod tests {
         mapper.kenter(tramp, Paddr::new(0x7000), PROT_READ);
         assert_eq!(kernel().extract(tramp), Some(Paddr::new(0x7000)));
         mapper.kremove(tramp, Vsize::new(PAGE_SIZE));
+    }
+
+    #[test]
+    #[should_panic(expected = "not a managed page")]
+    fn zero_page_refuses_a_frame_that_is_not_a_managed_page() {
+        let _ = booted();
+        // The fake provider manages no page.
+        zero_page(Paddr::new(0x30_0000));
+    }
+
+    #[test]
+    fn the_user_limit_is_the_user_half() {
+        let _ = booted();
+        let _s = serial();
+        let pm = create().unwrap();
+        assert_eq!(
+            pm.va_limit(),
+            Vaddr::new(crate::arch::current::vmparam::VM_MAXUSER_ADDRESS)
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn the_efi_pmap_maps_above_the_user_half() {
+        let _ = booted();
+        let _s = serial();
+        let pm = create_efi().unwrap();
+        let top = Vaddr::new(crate::arch::current::vmparam::VM_MAXUSER_ADDRESS);
+        assert!(pm.va_limit() > top);
+        pm.enter(top, Paddr::new(0xb000), PROT_READ, 0).unwrap();
+        pm.load_efi();
+        leave_efi(kernel());
+        pm.remove(top, top + Vsize::new(PAGE_SIZE));
+        assert_eq!(pm.extract(top), None);
     }
 
     #[test]

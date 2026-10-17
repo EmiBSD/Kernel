@@ -36,9 +36,9 @@ pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;
 
-// The host tests and the host double of the pmap (`arch/host/`) link std; a kernel image
-// never does.
-#[cfg(not(target_os = "none"))]
+// The host tests link std; a kernel image never does (the host double of the pmap declares
+// its own, `arch/host/pmap.rs`).
+#[cfg(test)]
 extern crate std;
 #[cfg(test)]
 #[forbid(unsafe_code)]
@@ -60,7 +60,9 @@ pub mod percpu;
 // `arch/<machine>/pmap/` (amd64: N3.1 commit 4, arm64: commit 5, each adding its `target_arch`
 // here and on the two pmap bridges of `bridges.rs`); the host double has one now.
 #[cfg(not(target_os = "none"))]
+#[forbid(unsafe_code)]
 pub mod pmap;
+
 pub mod pool;
 pub mod refcnt;
 pub mod rwlock;
