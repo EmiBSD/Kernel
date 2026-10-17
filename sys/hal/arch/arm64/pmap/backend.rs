@@ -1818,6 +1818,11 @@ impl PmapBackend for Backend {
     fn steal_memory(pages: &'static dyn PhysPages, size: Vsize) -> Vaddr {
         let size = round_page(size.as_usize());
         let npg = atop(size);
+        if npg == 0 {
+            // No page taken would still hand out an address (the front refuses the sizes
+            // that round to none; this keeps the backend's own contract).
+            hal_panic(format_args!("pmap_steal_memory: no page"));
+        }
         let Some(pa) = pages.steal(npg) else {
             hal_panic(format_args!(
                 "pmap_steal_memory: unable to allocate region with size {size:#x}"

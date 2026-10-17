@@ -32,10 +32,18 @@
 //! backend, and nothing else knows them. `steal_memory` panics once the page system is up, so
 //! these functions are boot-time only, as the C's.
 //!
+//! The bounds, checked here before any byte is taken: the element type is not zero-sized and
+//! is aligned to at most a page (the stolen block starts on a page boundary), and the block's
+//! size, `n * size_of::<T>()`, neither overflows nor exceeds `isize::MAX` (`Layout::array`),
+//! the most a slice may span; `steal_memory` refuses a zero size or one past `isize::MAX`, so
+//! its page rounding cannot wrap to no page at all. `T: 'static`, since the values live for
+//! the kernel's whole run and are handed out as `&'static`.
+//!
 //! ## Redesign
 //! - `(struct T *)uvm_pageboot_alloc(n * sizeof(T))` and a loop that initialises each entry
 //!   through the pointer -> `steal_slice(n, |i| T)`: the cast and the writes are here, once.
 
+use core::alloc::Layout;
 use core::mem::{align_of, size_of};
 
 use crate::arch::current::param::PAGE_SIZE;
@@ -44,8 +52,9 @@ use crate::sys::types::Vsize;
 
 /// `n` values of `T`, `init(i)` the `i`th, in memory stolen from the page system before it is
 /// up; never freed. Panics when `T` is zero-sized or aligned beyond a page, when the size
-/// overflows, and (in `steal_memory`) after `uvm_page_init` or when the memory is not there.
-pub fn steal_slice<T: Sync>(n: usize, mut init: impl FnMut(usize) -> T) -> &'static [T] {
+/// overflows or exceeds `isize::MAX`, and (in `steal_memory`) after `uvm_page_init` or when
+/// the memory is not there.
+pub fn steal_slice<T: Sync + 'static>(n: usize, mut init: impl FnMut(usize) -> T) -> &'static [T] {
     if n == 0 {
         return &[];
     }
@@ -56,9 +65,16 @@ pub fn steal_slice<T: Sync>(n: usize, mut init: impl FnMut(usize) -> T) -> &'sta
             align_of::<T>()
         ));
     }
-    let Some(bytes) = n.checked_mul(size_of::<T>()) else {
-        hal_panic(format_args!("steal_slice: {n} values overflow"));
+    // `Layout::array` refuses a size that overflows `usize` or exceeds `isize::MAX` (the bound
+    // `slice::from_raw_parts` needs); since `size_of::<T>()` is a multiple of its alignment,
+    // its size is exactly `n * size_of::<T>()`, non-zero here.
+    let Ok(layout) = Layout::array::<T>(n) else {
+        hal_panic(format_args!(
+            "steal_slice: {n} values of size {} overflow",
+            size_of::<T>()
+        ));
     };
+    let bytes = layout.size();
     let va = crate::pmap::steal_memory(Vsize::new(bytes));
     let base = core::ptr::with_exposed_provenance_mut::<T>(va.as_usize());
     if base.is_null() || !base.is_aligned() {
@@ -80,15 +96,16 @@ pub fn steal_slice<T: Sync>(n: usize, mut init: impl FnMut(usize) -> T) -> &'sta
     }
     // SAFETY: the `n` elements from `base` were each initialised by the loop above, in memory
     // that no other reference names and that is never freed or written again except through
-    // the shared slice made here (whose `T: Sync` makes it shareable among CPUs); `bytes` did
-    // not overflow, so the slice's size is within `isize::MAX` for any block the backend
-    // could return.
+    // the shared slice made here (whose `T: Sync` makes it shareable among CPUs, and whose
+    // `T: 'static` lets it live as long as the memory); `bytes = n * size_of::<T>()` is at
+    // most `isize::MAX` (`Layout::array` checked it), so the slice spans no more than one
+    // allocation may, and the whole block lies in the stolen memory.
     unsafe { core::slice::from_raw_parts(base, n) }
 }
 
 /// One `T`, built by `init`, in memory stolen from the page system before it is up (the C's
 /// `uvm_pmr_allocpmr` during `uvm_page_init`); never freed. Panics as [`steal_slice`].
-pub fn steal_one<T: Sync>(init: impl FnOnce() -> T) -> &'static T {
+pub fn steal_one<T: Sync + 'static>(init: impl FnOnce() -> T) -> &'static T {
     let mut init = Some(init);
     let s = steal_slice(1, |_| match init.take() {
         Some(f) => f(),
@@ -138,6 +155,55 @@ mod tests {
     fn a_zero_sized_type_is_refused() {
         booted();
         let _ = steal_slice(4, |_| ());
+    }
+
+    /// A type aligned beyond a page.
+    #[repr(align(8192))]
+    struct OverAligned(#[allow(dead_code, reason = "only the alignment matters")] u8);
+
+    #[test]
+    #[should_panic(expected = "steal_slice: a type of size 8192 and alignment 8192")]
+    fn a_type_aligned_beyond_a_page_is_refused() {
+        booted();
+        let _ = steal_slice(1, |_| OverAligned(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "values of size 8 overflow")]
+    fn a_size_that_overflows_is_refused() {
+        booted();
+        // `n * 8` wraps `usize`: refused before anything is stolen.
+        let _ = steal_slice(usize::MAX / 4, |_| 0u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "values of size 8 overflow")]
+    fn a_size_past_isize_max_is_refused() {
+        booted();
+        // `n * 8` fits `usize` but not `isize`: no slice may span it.
+        let _ = steal_slice(usize::MAX / 8, |_| 0u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "values of size 4096 overflow")]
+    fn a_size_that_page_rounding_would_wrap_is_refused() {
+        booted();
+        // Within a page of `usize::MAX`, where `round_page` would wrap to 0 and steal nothing.
+        let _ = steal_slice(usize::MAX / PAGE_SIZE, |_| [0u8; PAGE_SIZE]);
+    }
+
+    #[test]
+    #[should_panic(expected = "pmap_steal_memory: size 0")]
+    fn steal_memory_refuses_a_zero_size() {
+        booted();
+        let _ = crate::pmap::steal_memory(Vsize::new(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "pmap_steal_memory: size 0xfffffffffffff001")]
+    fn steal_memory_refuses_a_size_round_page_would_wrap() {
+        booted();
+        let _ = crate::pmap::steal_memory(Vsize::new(usize::MAX - PAGE_SIZE + 2));
     }
 }
 /* </TESTS> */

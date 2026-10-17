@@ -252,7 +252,13 @@ impl PmapBackend for Backend {
     /// is the C's "out of memory" panic; the tests load enough).
     fn steal_memory(pages: &'static dyn PhysPages, size: Vsize) -> Vaddr {
         let size = round_page(size.as_usize());
+        if size == 0 {
+            // No page taken would still hand out an address (the front refuses the sizes
+            // that round to none; this keeps the backend's own contract).
+            crate::assert::hal_panic(format_args!("pmap_steal_memory: no page"));
+        }
         let _ = pages.steal(size / PAGE_SIZE);
+
         // A page more than asked, so the block can start on a page boundary as a frame does.
         let words = (size + PAGE_SIZE).div_ceil(size_of::<u64>());
         let block: &'static mut [u64] = std::vec![0u64; words].leak();

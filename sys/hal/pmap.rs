@@ -975,12 +975,18 @@ pub fn copy_page(src: Paddr, dst: Paddr) {
 /// `pmap_steal_memory(size, ..)`: `size` bytes of physical memory taken from the provider the
 /// kernel pmap was given, before the page system is up, mapped and zeroed; their kernel
 /// address. [`virtual_space`] then answers the kernel virtual space still free (the C's
-/// `*vstartp`, `*vendp`). Panics before [`bootstrap`], once the page system is up, or when
-/// the memory is not there (the C's "out of memory" panic).
+/// `*vstartp`, `*vendp`). Panics before [`bootstrap`], once the page system is up, when
+/// the memory is not there (the C's "out of memory" panic), and on a size of zero or past
+/// `isize::MAX`: the first would take no page and still hand out an address, the second is
+/// no object's size, and only below it can the backends' page rounding not wrap to 0.
 pub fn steal_memory(size: Vsize) -> Vaddr {
     let pages = kernel().pages();
     if pages.page_init_done() {
         hal_panic(format_args!("pmap_steal_memory: after uvm_page_init"));
+    }
+    let bytes = size.as_usize();
+    if bytes == 0 || bytes > isize::MAX.unsigned_abs() {
+        hal_panic(format_args!("pmap_steal_memory: size {bytes:#x}"));
     }
     Backend::steal_memory(pages, size)
 }
