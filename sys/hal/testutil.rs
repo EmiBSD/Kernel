@@ -515,6 +515,9 @@ pub(crate) fn spinning() -> isize {
 
 /// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, no
 /// managed page, the page system never up (so `steal_memory` serves `bootmem`'s tests).
+/// `page_init_done` is false: N3.1's provider of the same name in `pmap.rs`'s tests answered
+/// true, which `steal_memory` refuses; the host backend never reads it (only the machines'
+/// page-table allocation does), so the pmap tests see no difference.
 pub(crate) struct FakePages {
     next: AtomicUsize,
 }

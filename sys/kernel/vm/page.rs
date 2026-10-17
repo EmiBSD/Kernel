@@ -960,10 +960,12 @@ pub fn uvm_setpagesize() {
 ///
 /// Not a function of the C: the `vm_physmem[]` half of amd64's `pmap_steal_memory`, which every
 /// `pmap_steal_memory` working through a direct map shares (`hal::pmap::PhysPages::steal`).
-/// `None` when no segment has `npg` free frames at a boundary. Panics once the page system is
-/// up.
+/// `None` when no segment has `npg` free frames at a boundary. Panics once stealing is closed:
+/// when `uvm_page_init` has published the page array, right before it hands the segments'
+/// free frames to the allocator (a frame stolen after that could be both stolen and free; the
+/// C only refuses after `page_init_done`, and nothing steals in between), and after it.
 pub fn uvm_page_physsteal(npg: usize) -> Option<Paddr> {
-    if page_init_done() {
+    if page_init_done() || TABLE.get().is_some() {
         kpanic(format_args!("uvm_page_physsteal: called _after_ bootstrap"));
     }
 
@@ -1676,6 +1678,33 @@ mod tests {
         assert_eq!(uvm_page_physsteal(4), Some(Paddr::new(ptoa(0x100))));
         assert_eq!(boot_segments(&mut segs), 1);
         assert_eq!((segs[0].start, segs[0].end), (0x200, 0x202));
+    }
+
+    #[test]
+    #[should_panic(expected = "uvm_page_physsteal: called _after_ bootstrap")]
+    fn physsteal_after_init_panics() {
+        let _g = testutil::pages_setup(&[(0x100, 0x200)], &[]);
+        let _ = uvm_page_physsteal(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "pmap_steal_memory: after uvm_page_init")]
+    fn boot_memory_after_init_panics() {
+        // `hal::bootmem` over the kernel's provider: once the page system is up, the pmap
+        // refuses to steal before any frame is taken.
+        let _g = testutil::pages_setup(&[(0x100, 0x200)], &[]);
+        let _ = hal::bootmem::steal_one(|| 0u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "uvm_page_physsteal: called _after_ bootstrap")]
+    fn stealing_closes_when_the_page_array_is_published() {
+        // The window between the page array's publication and `page_init_done` (where the
+        // segments' free frames go to the allocator): no frame may be stolen in it.
+        let _g = testutil::pages_setup(&[(0x100, 0x200)], &[]);
+        PAGE_INIT_DONE.store(false, Mem::Release);
+        assert!(TABLE.get().is_some(), "the table is published");
+        let _ = uvm_page_physsteal(1);
     }
 
     #[test]

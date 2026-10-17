@@ -30,7 +30,10 @@
 //! boundary as the memory bridges', `sys/hal/trust.rs`): the frames `steal_memory` returns are
 //! taken out of the page system for good, mapped (through the direct map) and zeroed by the
 //! backend, and nothing else knows them. `steal_memory` panics once the page system is up, so
-//! these functions are boot-time only, as the C's.
+//! these functions are boot-time only, as the C's. The kernel's provider closes stealing
+//! earlier still, when `uvm_page_init` publishes the page array and before the first frame
+//! goes to the free lists (`kernel::vm::page::uvm_page_physsteal`): no frame can be both
+//! stolen and free.
 //!
 //! The bounds, checked here before any byte is taken: the element type is not zero-sized and
 //! is aligned to at most a page (the stolen block starts on a page boundary), and the block's
