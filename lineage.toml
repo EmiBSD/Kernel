@@ -182,24 +182,412 @@ status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/arch/amd64/amd64/pmap.rs"
-lz = ["sys/arch/amd64/amd64/pmap.rs"]
-status = "adapted"
-adapted_by = ["sys/arch/amd64/amd64/pmap_module.rs"]
-notes = "direct map over Limine's HHDM, pmap_bootstrap adopts the bootloader's PML4 and installs the recursive slot, pmap_steal_memory (vm_physmem half in uvm_page_physsteal), zero/copy page, pmap_kenter_pa/kremove/extract/pdes_valid/find_pte_direct, pmap_growkernel/alloc_level/get_physpage (bootloader PTPs kept), single-CPU TLB shootdowns; user pmaps, pv lists, PCID, pmap_randomize, MP shootdowns: M4 to M6; deviations listed in the module; M5-b2: pmap_activate (the kernel pmap for every thread until vmspaces exist; PCID off) and pmap_deactivate; M6-b2: user pmaps: pmap_create (the PDP from uvm_pagealloc, pmap_pdp_ctor copying the kernel's upper half), pmap_destroy, pmap_reference, pmap_get_ptp/find_ptp/freepage/free_ptp and pmap_enter/pmap_remove/pmap_do_remove/pmap_remove_ptes walking the tables through the direct map (no pmap_map_ptes), pmap_activate/deactivate over the vmspace's pmap, pmap_remove_holes and pmap_proc_iflush (nothing); no pv entries yet (pmap_enter_pv/remove_pv, pmap_page_remove/page_protect, pmap_protect, the R/M bits, pmap_unwire: M7a), no pmaps list (pmap_growkernel does not update user PML4s), cpu_meltdown not configured, the pmap pool initialised in pmap_init; M7a-3b: pv lists (pmap_pv_pool, pmap_enter_pv/remove_pv, PG_PVLIST mappings from pmap_enter and pmap_remove_ptes), pmap_page_remove, pmap_test_attrs/clear_attrs with the R/M sync into PG_PMAP_*, pmap_write_protect; pmap_remove_pte (the single-page shortcut) is folded into pmap_do_remove's block loop; vfs stage 2: pmap_is_modified and pmap_clear_reference are machine::pmap contract methods (the vnode pager and uvm_pagedeactivate use them); pmap_is_curpmap counts the kernel pmap as always loaded and pmap_free_ptp invalidates the recursive mapping's page per freed level, as the C does (selftest pmap_reuse); M11a: the MULTIPROCESSOR TLB shootdowns: tlb_shoot_lock, tlb_shoot_cpu, tlb_shoot_counts[MAXCPUS], tlb_shoot_addr1/addr2 (atomics, each on its own 64-byte line as in C, plain statics since .kudata is the Meltdown u-k mapping, M6; the vector.S stubs reach them by symbol), pmap_is_active (over the now atomic ci_proc_pmap), pmap_start_tlb_shoot, pmap_tlb_shootwait, pmap_tlb_shootfail and the IPI halves of pmap_tlb_shootpage/shootrange/shoottlb (the targets mask and the x86_fast_ipi loop factored into pmap_tlb_shoot_targets/pmap_tlb_shoot_send); tlb_shoot_first_pcid and the PCID/EPT variants are not there (pmap_use_pcid is never set, NVMM not configured); MP_LOCKDEBUG's spin-out not configured; M11e: pmap_map_ptes/pmap_unmap_ptes take and release pm_mtx for user pmaps (no %cr3 borrow: the tables are walked through the direct map) at the C's windows: pmap_do_remove, pmap_page_remove (pmap locked after dropping pv_mtx, list re-checked), pmap_write_protect, pmap_enter (the CoW read-to-write shootdown waited for under the lock, as the C); pmap_extract locks pm_mtx for user pmaps; mtx_init in pmap_create; pmap_reference/pmap_destroy with atomic_inc_int/atomic_dec_int_nv on pm_obj[0].uo_refs; M14 (A2): pmap_prealloc_lowmem_ptps (after a boot by boot(8)); pmap_bootstrap accepts the recursive PML4 slot when locore0.S installed it; M16e: pmap_flush_cache (clflush by ci_cflushsz lines between mfences, wbinvd_on_all_cpus without clflush)"
-
-[[module]]
-rust = "sys/arch/amd64/amd64/pmap_module.rs"
-lz = ["sys/arch/amd64/amd64/pmap.rs"]
-status = "redesigned"
-notes = "N2 close (the user's decision of 2026-10-16, option C): the window abi_openbsd.ko runs from, in the kernel image's slot 511 after the last level-2 entry the boot loader used in KERNBASE's gigabyte (both boot paths, from the end of pmap_bootstrap), 16 MiB (hal::module::elf::MAX_SPAN), its level-1 tables a static of the kernel's .bss linked with locore0's directory flags (PG_V|PG_RW|pg_crypt, no pg_nx), outside kernel_map, which keeps pg_nx at every directory level as in OpenBSD; pmap_module_window (the range, empty when it could not be linked) and pmap_module_enter (pmap_kenter_pa's leaf, W^X refused, only an empty entry taken) behind machine::Pmap; no pmap.rs item moved"
-
-[[module]]
 rust = "sys/hal/arch/amd64/pmap/backend.rs"
 crate = "hal"
 lz = ["sys/arch/amd64/amd64/pmap.rs", "sys/arch/amd64/include/pmap.rs"]
 status = "redesigned"
 notes = "N3.1 commit 4: amd64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root, the PTP count, page_remove's pins), PvEntry in a PoolBox (pool pvpl) on the page's owned chain, PTP refcounts in PageMd.ptp_refs found by the walk (pm_obj, pm_ptphint, pmap_find_ptp dropped), pmap_enter/do_remove/remove_ptes/free_ptp/get_ptp/page_remove/test_attrs/clear_attrs/write_protect, kenter/kremove through the direct map, growkernel (G11 assert instead of the pmaps list), bootstrap from BootstrapParams (both boot paths, the recursive slot kept), prealloc_lowmem_ptps on KernelMapper, find_pte; LZ's files stay in bsd until commit 6"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::NORMAL_PDES"
+native = []
+kind = "dropped"
+reason = "the recursive mapping's PDE bases: hal walks the page tables through the direct map (tables.rs's frame view and entry); the recursive slot stays installed but nothing reads through it"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_DIRECT_BASE"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::DIRECT_BASE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_DIRECT_END"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::DIRECT_END"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PG_XO_BITS"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::PG_XO"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PG_FRAME_MASK"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::pg_frame"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PG_LGFRAME_MASK"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::leaf_pa"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_USE_PCID"
+native = []
+kind = "dropped"
+reason = "PCID is off (never set in LZ or here, G11): the non-PCID paths are the only ones, said in backend.rs's deviations"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PROTECTION_CODES"
+native = ["sys/hal/arch/amd64/pmap/layout.rs::protection_code"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::KERNEL_PMAP_STORE"
+native = ["KERNEL_PMAP"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_PMAP_POOL"
+native = ["sys/hal/pmap.rs::PMAP_POOL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_PV_POOL"
+native = ["PV_POOL"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::PMAP_REMOVE_SKIPWIRED"
+native = []
+kind = "dropped"
+reason = "pmap_do_remove's skip-wired mode is pmap_collect's (not ported, no caller); every remove here removes all (PMAP_REMOVE_ALL)"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_kernel"
+native = ["sys/hal/pmap.rs::kernel", "sys/machine/pmap.rs::pmap_kernel", "Backend::kernel"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_activate"
+native = ["sys/machine/pmap.rs::pmap_activate", "sys/arch/amd64/mod.rs::Machine::pmap_activate_md", "Backend::load"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_deactivate"
+native = ["sys/machine/pmap.rs::pmap_deactivate", "sys/arch/amd64/mod.rs::Machine::pmap_deactivate_md"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_initialized"
+native = ["Backend::initialized", "sys/hal/pmap.rs::initialized"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_maxkvaddr"
+native = ["PMAP_MAXKVADDR"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_direct_map"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::direct_map"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_direct_unmap"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::direct_unmap"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_direct_mapped"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::direct_unmap"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_map_direct"
+native = ["sys/machine/pmap.rs::pmap_map_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_unmap_direct"
+native = ["sys/machine/pmap.rs::pmap_unmap_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pte_set"
+native = []
+kind = "dropped"
+reason = "the entries are &AtomicU64 of the frame view (tables.rs::entry): the atomic swap is at each site"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pte_setbits"
+native = []
+kind = "dropped"
+reason = "as pmap_pte_set: fetch_or on the entry's &AtomicU64 at each site"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pte_clearbits"
+native = []
+kind = "dropped"
+reason = "as pmap_pte_set: fetch_and on the entry's &AtomicU64 at each site"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_unmap_ptes"
+native = ["pmap_map_ptes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pde_at"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::entry"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pde_set"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::entry"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_bootstrap"
+native = ["Backend::bootstrap", "sys/hal/pmap.rs::bootstrap", "sys/machine/pmap.rs::pmap_bootstrap"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_prealloc_lowmem_ptps"
+native = ["KernelMapper::prealloc_lowmem_ptps", "sys/machine/pmap.rs::pmap_prealloc_lowmem_ptps"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_init"
+native = ["Backend::init", "sys/hal/pmap.rs::init"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pagezero"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::zero_frame"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_zero_page"
+native = ["Backend::zero_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_flush_cache"
+native = ["Backend::flush_cache"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_copy_page"
+native = ["Backend::copy_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_pdes_valid"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::find_pte_from"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_find_pte_direct"
+native = ["find_pte", "sys/hal/arch/amd64/pmap/tables.rs::find_pte_from"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_unwire"
+native = ["Backend::unwire"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_kenter_pa"
+native = ["Backend::kenter", "sys/machine/pmap.rs::pmap_kenter_pa"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_kremove"
+native = ["Backend::kremove", "sys/machine/pmap.rs::pmap_kremove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_extract"
+native = ["Backend::extract"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_steal_memory"
+native = ["Backend::steal_memory", "sys/machine/pmap.rs::pmap_steal_memory"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_virtual_space"
+native = ["Backend::virtual_space"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_growkernel"
+native = ["Backend::growkernel"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_tlb_shoot_targets"
+native = ["sys/hal/arch/amd64/pmap/tlb.rs::shoot_targets"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_tlb_shoot_send"
+native = ["sys/hal/arch/amd64/pmap/tlb.rs::shoot_send"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_free_pvs"
+native = ["free_pvs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::curpcb_pmap"
+native = ["pmap_is_curpmap"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_table_direct"
+native = ["sys/hal/arch/amd64/pmap/tables.rs::frame"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_find_ptp"
+native = []
+kind = "dropped"
+reason = "the PTPs are found by the walk itself (the walk as the index, no pm_obj and no pm_ptphint): pmap_get_ptp and pmap_free_ptp read the table above"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_freepage"
+native = ["pmap_free_ptp"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_create"
+native = ["Backend::create", "sys/hal/pmap.rs::create", "sys/machine/pmap.rs::pmap_create"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_destroy"
+native = ["Backend::destroy", "sys/hal/pmap.rs::Pmap::drop", "sys/machine/pmap.rs::pmap_destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_reference"
+native = ["sys/machine/pmap.rs::pmap_reference"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_remove"
+native = ["Backend::remove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_remove_holes"
+native = ["sys/machine/pmap.rs::pmap_remove_holes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/amd64/pmap.rs::pmap_proc_iflush"
+native = ["Backend::proc_iflush"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::ptp_va2o"
+native = []
+kind = "dropped"
+reason = "the PTPs' offsets in pm_obj: no pm_obj, the walk is the index"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::kvtopte"
+native = []
+kind = "dropped"
+reason = "the recursive mapping's PTE address: kernel_pte walks the kernel pmap through the direct map"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::PG_PMAP_MOD"
+native = ["sys/hal/pmap.rs::PG_PMAP_MOD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::PG_PMAP_REF"
+native = ["sys/hal/pmap.rs::PG_PMAP_REF"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap"
+native = ["sys/hal/pmap.rs::Pmap", "PmapMd"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::new"
+native = ["PmapMd::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_nested"
+native = []
+kind = "dropped"
+reason = "nested (EPT/RVI) pmaps are vmm(4)'s, not ported: every pmap here is PMAP_TYPE_NORMAL"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_is_ept"
+native = []
+kind = "dropped"
+reason = "as pmap_nested: no EPT pmap without vmm(4)"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_resident_count"
+native = ["sys/hal/pmap.rs::Pmap::resident_count"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::pmap_wired_count"
+native = ["sys/hal/pmap.rs::Pmap::wired_count"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::Pmap::default"
+native = ["PmapMd::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::VmPageMd"
+native = ["sys/hal/pmap.rs::PageMd"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::VM_MDPAGE_INIT"
+native = ["sys/hal/pmap.rs::PageMd::new"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_clear_modify"
+native = ["Backend::clear_modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_clear_reference"
+native = ["Backend::clear_reference"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_is_modified"
+native = ["Backend::is_modified"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_is_referenced"
+native = ["Backend::is_referenced"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_page_protect"
+native = ["Backend::page_protect"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_protect"
+native = ["Backend::protect"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_resident_count"
+native = ["sys/hal/pmap.rs::Pmap::resident_count"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/amd64/include/pmap.rs::pmap_wired_count"
+native = ["sys/hal/pmap.rs::Pmap::wired_count"]
+kind = "moved"
 
 [[module]]
 rust = "sys/hal/arch/amd64/pmap/tables.rs"
@@ -272,6 +660,402 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/include/pmap.rs"]
 status = "redesigned"
 notes = "N3.1 commit 5: arm64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root's two pages, have_4_level_pt/pm_privileged/pm_pt0pa/pm_asid/pm_active/pm_guarded as atomics, the limit, the EFI flag, the count of user slots), PvHead (a Link under pv_mtx), user pteds as SharedBox<PteDesc> of the pool pted owned by their vp3 slot (into_raw/from_raw), the kernel's carved from pages; pmap_enter/remove/remove_pted/kenter/kremove/page_protect (the C's reference via PoolArc::from_value)/protect/fault_fixup/clear_modify/clear_reference/unwire/extract, bootstrap from BootstrapParams (both boot paths: the boot loader's L0 and the kernel slot's L1 copied, MAIR 2-4, TTBR1 switched, the ASID probe), pmap_init's pools and init_lower_half (the TTBR0/TCR switch after pluartcn_remap), growkernel under its own lock, load (pmap_setttb's body), load_efi/leave_efi, purge, the EFI pmap; LZ's files stay in bsd until commit 6"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::TABLE_ENTRIES"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::VP_ENTRIES"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_table"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::view"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_DIRECT_BASE"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::DIRECT_BASE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_DIRECT_END"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::DIRECT_END"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_KERNEL_IMAGE_START"
+native = ["IMAGE", "sys/hal/pmap.rs::KernelImage"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_KERNEL_IMAGE_END"
+native = ["IMAGE", "sys/hal/pmap.rs::KernelImage"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_KERNEL_IMAGE_PHYS_OFF"
+native = ["IMAGE", "sys/hal/pmap.rs::KernelImage"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_MAXKVADDR"
+native = ["GROW"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::KPTED_NEXT"
+native = ["pmap_kpted_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::KPTED_LEFT"
+native = ["pmap_kpted_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_PMAP_POOL"
+native = ["sys/hal/pmap.rs::PMAP_POOL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::PMAP_ASID_MTX"
+native = ["sys/hal/arch/arm64/pmap/asid.rs::PMAP_ASID"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kernel"
+native = ["sys/hal/pmap.rs::kernel", "sys/machine/pmap.rs::pmap_kernel", "Backend::kernel"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_unlock"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Locked"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_assert_locked"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Locked"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_activate"
+native = ["sys/machine/pmap.rs::pmap_activate", "sys/arch/arm64/mod.rs::Machine::pmap_activate_md", "Backend::activate"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_deactivate"
+native = ["sys/machine/pmap.rs::pmap_deactivate", "sys/arch/arm64/mod.rs::Machine::pmap_deactivate_md", "Backend::deactivate"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_setttb"
+native = ["sys/arch/arm64/arm64/cpuswitch.rs::pmap_setttb", "sys/machine/pmap.rs::pmap_setttb", "sys/arch/arm64/mod.rs::Machine::pmap_switched_md", "Backend::load"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_initialized"
+native = ["Backend::initialized", "sys/hal/pmap.rs::initialized"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_maxkvaddr"
+native = ["GROW"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_direct_map"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::direct_map"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_direct_unmap"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::direct_unmap"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_direct_mapped"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::direct_unmap"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_map_direct"
+native = ["sys/machine/pmap.rs::pmap_map_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_unmap_direct"
+native = ["sys/machine/pmap.rs::pmap_unmap_direct"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx0"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx1"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx2"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_idx3"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::vp_lx"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::vp_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp1"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::lookup"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_alloc"
+native = ["pmap_kvp_alloc", "sys/hal/arch/arm64/pmap/vp.rs::enter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_populate"
+native = []
+kind = "dropped"
+reason = "__HAVE_PMAP_POPULATE stays unconfigured (G11, as LZ: no caller); uvm_fault's slice (N3.6) decides"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_pages"
+native = ["pmap_kvp_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_set_l1"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table::set_child"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_set_l2"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table::set_child"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_set_l3"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table::set_child"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_growkernel"
+native = ["Backend::growkernel"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_bootstrap"
+native = ["Backend::bootstrap", "sys/hal/pmap.rs::bootstrap", "sys/machine/pmap.rs::pmap_bootstrap"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_init"
+native = ["Backend::init", "init_lower_half", "sys/arch/arm64/mod.rs::Machine::pmap_init_md"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::_pmap_kenter_pa"
+native = ["pmap_kenter"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kenter_pa"
+native = ["Backend::kenter", "sys/machine/pmap.rs::pmap_kenter_pa"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kenter_cache"
+native = ["Backend::kenter_cache", "sys/machine/pmap.rs::pmap_kenter_cache"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_kremove"
+native = ["Backend::kremove", "sys/machine/pmap.rs::pmap_kremove"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pagezero_cache"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::zero_frame"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_zero_page"
+native = ["Backend::zero_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_copy_page"
+native = ["Backend::copy_page"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_purge"
+native = ["Backend::purge", "sys/arch/arm64/mod.rs::Machine::pmap_purge_md"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_extract"
+native = ["Backend::extract"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_steal_memory"
+native = ["Backend::steal_memory", "stolen_bounds", "sys/machine/pmap.rs::pmap_steal_memory"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_virtual_space"
+native = ["Backend::virtual_space"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_remove_pv"
+native = ["pmap_pte_remove", "sys/hal/arch/arm64/pmap/vp.rs::pv_unlink"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_pted_alloc"
+native = ["PMAP_PTED_POOL"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_pted_free"
+native = ["PMAP_PTED_POOL"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_enter_locked"
+native = ["pmap_enter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_fault_fixup_locked"
+native = ["pmap_fault_fixup"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_is_referenced"
+native = ["Backend::is_referenced"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_is_modified"
+native = ["Backend::is_modified"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_clear_modify"
+native = ["Backend::clear_modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_clear_reference"
+native = ["Backend::clear_reference"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_unwire"
+native = ["Backend::unwire"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_free"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_pinit"
+native = ["Backend::create"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_create"
+native = ["Backend::create", "sys/hal/pmap.rs::create", "sys/machine/pmap.rs::pmap_create"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_reference"
+native = ["sys/machine/pmap.rs::pmap_reference"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_destroy"
+native = ["Backend::destroy", "sys/hal/pmap.rs::Pmap::drop", "sys/machine/pmap.rs::pmap_destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_release"
+native = ["Backend::destroy", "sys/hal/pmap.rs::Pmap::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_destroy_l2_l3"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_vp_destroy"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::destroy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_remove_holes"
+native = ["sys/machine/pmap.rs::pmap_remove_holes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_proc_iflush"
+native = ["Backend::proc_iflush"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::PG_PMAP_MOD"
+native = ["sys/hal/pmap.rs::PG_PMAP_MOD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::PG_PMAP_REF"
+native = ["sys/hal/pmap.rs::PG_PMAP_REF"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::PmVp"
+native = ["sys/hal/arch/arm64/pmap/vp.rs::Table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::Pmap"
+native = ["sys/hal/pmap.rs::Pmap", "PmapMd"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::Pmap::new"
+native = ["PmapMd::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::Pmap::default"
+native = ["PmapMd::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::VmPageMd"
+native = ["sys/hal/pmap.rs::PageMd"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/pmap.rs::VM_MDPAGE_INIT"
+native = ["sys/hal/pmap.rs::PageMd::new"]
+kind = "moved"
 
 [[module]]
 rust = "sys/hal/arch/arm64/pmap/vp.rs"
@@ -596,12 +1380,6 @@ notes = "M4: struct pic (pic_dev reduced to pic_name, no pic_mutex without MULTI
 rust = "sys/arch/amd64/include/pio.rs"
 lz = ["sys/arch/amd64/include/pio.rs"]
 status = "inherited"
-
-[[module]]
-rust = "sys/arch/amd64/include/pmap.rs"
-lz = ["sys/arch/amd64/include/pmap.rs"]
-status = "inherited"
-notes = "struct pmap (bootstrap subset), pv_entry, vm_page_md, the PML4 slot layout, the recursive mapping (PTE_BASE/L*_BASE, pl*_i, kvtopte, ptp_va2o), the nkptp/nbpd initializers; pmap_page_protect/pmap_protect with M6; M7a-3b: pv_mtx in vm_page_md, the inline frontends pmap_page_protect/pmap_protect and the attribute macros (pmap_clear_modify/clear_reference/is_modified/is_referenced); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap"
 
 [[module]]
 rust = "sys/hal/arch/amd64/include/proc.rs"
@@ -956,12 +1734,6 @@ adapted_by = ["sys/hal/pmap.rs"]
 notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through the direct map instead of a pmap_enter at vmmap, copied with kcopy; /dev/null; /dev/zero from a stack buffer), mmmmap, mmioctl; reported: /dev/kmem (uvm_kernacc, uvm_glue.c); APERTURE is not configured; wip until uvm_kernacc"
 
 [[module]]
-rust = "sys/arch/arm64/arm64/pmap.rs"
-lz = ["sys/arch/arm64/arm64/pmap.rs"]
-status = "inherited"
-notes = "pte_desc, the pmapvp tables, kernel pmap, pmap_bootstrap adopting the bootloader's four-level tables (copies of L0 and the kernel slot's L1, TTBR1 switched to them, MAIR indices 2-4), vp lookup/enter/set_l1-3, kvp/kpted allocators over the direct map, pmap_growkernel (populates the first GiB, which the C's pmap_bootstrap does), kenter/kenter_cache/kremove(_pg), fill_pte, pte_insert/update/remove, extract, zero/copy page via the HHDM, pmap_steal_memory (not in the C; OpenBSD arm64 has no direct map nor PMAP_STEAL_MEMORY); pmap_vp_populate and pmap_fault_fixup: M7a; M5-b2: pmap_activate, pmap_deactivate, pmap_setttb (extern C for cpuswitch.S; every thread runs on the kernel pmap, already live, M6-b2 makes it real); M6-b2: pmap_init (the pmap and pted pools, the console remap, TCR_EL1.T0SZ = 64 - USER_SPACE_BITS and TTBR0 pointed at the empty table: the C's locore did the last two at boot), user pmaps (pmap_create/pinit (three-level), pmap_reference, pmap_destroy/release/vp_destroy, pmap_enter/remove/remove_pted with pmap_pted_pool, the pv lists pmap_enter_pv/remove_pv, pmap_icache_sync_page), pmap_allocate_asid/free_asid over an 8-bit bitmap (pmap_rollover_asid and the 16-bit probe are M7), pmap_activate/deactivate/setttb over the vmspace's pmap (pmap_setpauthkeys M7), pmap_remove_holes (nothing), pmap_proc_iflush through the direct-map alias; every vp table comes from the two-page allocator and goes back page by page (no pmap_vp_pool); M7a-3b: pv_mtx around the pv lists, pmap_page_ro, pmap_page_protect, pmap_protect, pmap_fault_fixup (the R/M emulation), pmap_is_referenced/is_modified/clear_modify/clear_reference; kern_sig.c: the vmmap window is VMMAP_SIZE (1024 pages) below virtual_avail instead of one page, because generic_space_map takes every device mapping from it: with one page the device mappings overlapped kernel_map's first allocations (the first uvm_map of kernel_map, exec_sigcode_map's sigobject, wrote over the GIC); vfs stage 2: pmap_is_modified and pmap_clear_reference are machine::pmap contract methods (the vnode pager and uvm_pagedeactivate use them); M11a: the ASID allocator as in C under pmap_asid_mtx (IPL_HIGH): pmap_find_asid (the old ASID, five random tries with arc4random, then the linear search), pmap_rollover_asid (a new generation, ASID 0 reserved, the ASIDs active on every CPU carried over, cpu_tlb_flush), pmap_allocate_asid/pmap_free_asid locked, ASID 0 marked in use by pmap_bootstrap; pm_asid is an AtomicU64 (the rollover rewrites other CPUs' active pmaps); the TLB invalidations were already the inner-shareable broadcast ones (cpufunc.rs); pmap_setttb runs on the APs through cpu_switchto; pm_mtx/pmap_lock still absent (user pmaps change under the kernel lock in M11a, M11e); M11e: pmap_lock/pmap_unlock/PMAP_ASSERT_LOCKED (pm_mtx, nothing for the kernel pmap) where the C has them: pmap_vp_enter (assert), pmap_enter, pmap_remove, pmap_page_protect, pmap_protect, pmap_fault_fixup, pmap_extract, pmap_unwire; mtx_init in pmap_create; pmap_reference/pmap_destroy atomic; pmap_purge ported, called by uvm_purge through machine::Pmap; M16d: pmap_extract answers for the kernel image (whose tables stay the bootloader's) through the image's virtual-to-physical offset initarm records (PMAP_KERNEL_IMAGE_*), as rnd.c's _rs_clearseed needs; the C maps the image with pteds"
-
-[[module]]
 rust = "sys/arch/arm64/arm64/sig_machdep.rs"
 lz = ["sys/arch/arm64/arm64/sig_machdep.rs"]
 status = "inherited"
@@ -1200,12 +1972,6 @@ lz = ["sys/arch/arm64/include/pci_machdep.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/include/pmap.rs"
-lz = ["sys/arch/arm64/include/pmap.rs"]
-status = "inherited"
-notes = "struct pmap (kernel subset with pm_vp as an enum of the union), vm_page_md, VP_IDX* and cache/pv flags; pointer authentication keys with M6; M7a-3b: pv_mtx in vm_page_md; M11a: pm_asid is an AtomicU64 (pmap_rollover_asid rewrites other CPUs' active pmaps); M11e: pm_mtx (a mutex at IPL_VM) in struct pmap; pm_refs is an AtomicI32 (atomic_inc_int/atomic_dec_int_nv)"
-
-[[module]]
 rust = "sys/hal/arch/arm64/include/proc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/proc.rs"]
@@ -1287,7 +2053,6 @@ kind = "moved"
 lz = "sys/arch/arm64/include/vmparam.rs::VM_MAX_KERNEL_ADDRESS"
 native = ["VM_MAX_KERNEL_ADDRESS"]
 kind = "moved"
-
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
@@ -7401,10 +8166,6 @@ reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole
 rust = "sys/reftest.rs"
 reason = "test helper: reads #define lines from $OPENBSD_SRC for reference-backed tests (cfg(test) only)"
 
-
-
-
-
 [[extra]]
 rust = "sys/hal/assert.rs"
 crate = "hal"
@@ -7477,7 +8238,6 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 rust = "sys/hal/pool.rs"
 crate = "hal"
 reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); docs/ZERO_UNSAFE.md 0.1, decision 10"
-
 
 [[extra]]
 rust = "sys/hal/malloc.rs"

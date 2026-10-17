@@ -66,8 +66,9 @@
 //!   exclude the kernel, the device tree, the initrd and the bootloader's own data: the
 //!   `memreg_add`/`memreg_remove` bookkeeping, the EFI memory map walk, `pmap_avail_fixup`
 //!   and `pmap_physload_avail` have nothing left to do, and the direct map `pmap` uses is the
-//!   bootloader's (`arm64/pmap.rs`, deviations). The memory is loaded before `pmap_bootstrap`
-//!   (after it in the C) because `pmap_bootstrap` steals its tables from `vm_physmem[]`.
+//!   bootloader's (`hal::pmap`'s arm64 backend, deviations). The memory is loaded before
+//!   `pmap_bootstrap` (after it in the C) because `pmap_bootstrap` steals its tables from
+//!   `vm_physmem[]`.
 //! - The message buffer is a static area (`kern/subr_log.rs`, `init_static_msgbuf`) instead of
 //!   reserved physical pages, until M3.
 //! - `cpu_startup` prints the memory sizes, makes the exec and physio maps and sets up the
@@ -509,7 +510,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         }
     }
 
-    // The direct map is the bootloader's (see `arm64/pmap.rs`).
+    // The direct map is the bootloader's (see `hal::pmap`'s arm64 backend).
     let regions = boot.memmap.regions();
     let map_end = regions
         .iter()
@@ -541,7 +542,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     uvm_setpagesize();
 
     // Make all physical memory available to UVM (pmap_physload_avail and the EFI memory map
-    // loop of the C); before pmap_bootstrap, which steals from it (see `arm64/pmap.rs`).
+    // loop of the C); before pmap_bootstrap, which steals from it (`hal::pmap`'s arm64
+    // backend).
+
     for r in usable() {
         if r.length.as_usize() < PAGE_SIZE {
             kprintf!(" skipped - too small\n");
