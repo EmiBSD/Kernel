@@ -574,7 +574,7 @@ reason = "LZ's external bugs log (docs/EXTERNAL_BUGS.md, EXT-181 to EXT-191: the
 [[commit]]
 lz = "3feb0258b021"
 subject = "dev: port rnd.c (entropy pool, ChaCha20 generator, /dev/random)"
-modules = ["sys/arch/amd64/amd64/conf.rs", "sys/arch/amd64/amd64/machdep.rs", "sys/arch/amd64/include/cpu.rs", "sys/arch/arm64/arm64/conf.rs", "sys/arch/arm64/arm64/machdep.rs", "sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/include/cpu.rs", "sys/dev/pv/viornd.rs", "sys/dev/rnd.rs", "sys/kern/init_main.rs"]
+modules = ["sys/arch/amd64/amd64/conf.rs", "sys/arch/amd64/amd64/machdep.rs", "sys/arch/amd64/include/cpu.rs", "sys/arch/arm64/arm64/conf.rs", "sys/arch/arm64/arm64/machdep.rs", "sys/arch/arm64/include/cpu.rs", "sys/dev/pv/viornd.rs", "sys/dev/rnd.rs", "sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/init_main.rs"]
 status = "applied"
 emibsd = "4749ab3c1452"
 method = "cherry-pick-conflicts"
