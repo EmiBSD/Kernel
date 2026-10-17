@@ -118,6 +118,27 @@ paid_by = "N3"
 # sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
 # pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by
 # sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not a registered slot.
+# bsd: the page's owners, struct uvm_object (sys/uvm/uvm_object.rs: UVM_OBJ_IS_DUMMY,
+# UVM_OBJ_IS_KERN_OBJECT, rw_write_held/rw_lock_held of vmobjlock, memt and uo_npages) and
+# struct vm_anon (sys/uvm/uvm_anon.rs: an_lock held, an_ref, an_page), implemented by bsd's
+# UvmObject and VmAnon (PageObject, PageAnon) and passed as values (kernel::vm::page::Owner),
+# never stored: the page keeps an OwnerTag. N3.4, when Object and Anon move into the kernel
+# with SharedRwlock.
+# kernel::vm::page::{PageObject, PageAnon}
+[[bridge]]
+trait = "PageOwner"
+for = ["sys/kernel/vm/page.rs"]
+paid_by = "N3"
+
+# bsd: BUFPAGES_DEFICIT and BUFPAGES_INACT of sys/sys/mount.rs over bcstats (sys/kern/vfs_bio.rs),
+# implemented by sys/uvm/uvm_page.rs (BsdBufCacheStats) and registered by its uvm_page_init;
+# 0 before registration (their boot values). N5, with the buffer cache.
+# kernel::vm::pmemrange::BufCacheStats
+[[bridge]]
+trait = "BufCacheStats"
+for = ["sys/kernel/vm/pmemrange.rs"]
+paid_by = "N5"
+
 # kernel::pipe::PipeGlue
 [[bridge]]
 trait = "PipeGlue"

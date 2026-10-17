@@ -56,6 +56,29 @@ macro_rules! kassert {
 }
 pub(crate) use kassert;
 
+/// `KDASSERT(e)`: as [`kassert`] under feature `debug` (OpenBSD's `option DEBUG`); otherwise
+/// `e` is checked by the compiler and never evaluated.
+macro_rules! kdassert {
+    ($e:expr) => {
+        #[cfg(feature = "debug")]
+        {
+            if !$e {
+                $crate::assert::kpanic(::core::format_args!(
+                    "kernel debugging assertion \"{}\" failed: file \"{}\", line {}",
+                    ::core::stringify!($e),
+                    ::core::file!(),
+                    ::core::line!()
+                ));
+            }
+        }
+        #[cfg(not(feature = "debug"))]
+        {
+            let _ = || -> bool { $e };
+        }
+    };
+}
+pub(crate) use kdassert;
+
 /// `__assert("diagnostic ", file, line, expr)`: the failed assertion's `panic(9)`.
 #[cfg(feature = "diagnostic")]
 #[cold]

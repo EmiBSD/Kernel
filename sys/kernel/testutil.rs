@@ -50,15 +50,17 @@
 //!   identity), counted per thread ([`km_frames_out`]), those given back as a list counted
 //!   apart ([`km_list_freed`]), and a list that frees a frame a watched range still maps
 //!   counted too ([`km_watch`], [`km_freed_mapped`]).
-//! - `PhysPages` ([`phys_pages`], for `hal::pmap::bootstrap`): the host pmap asks it for
-//!   nothing; it answers as a page system with no managed pages would.
+//! - The page system itself (`vm::page`, `vm::pmemrange`), not a double: [`pmap_boot`]
+//!   bootstraps the host pmap once per process with the kernel's provider
+//!   (`vm::page::PHYS_PAGES`), and [`pages_setup`]/[`pages_install`] load fresh segments
+//!   under [`MEMORY`], which every test of the page system holds (one set of statics).
 
 use std::boxed::Box;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, Once};
+use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::vec;
 use std::vec::Vec;
@@ -67,14 +69,19 @@ use hal::bridges;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::kmbuf::{PageKind, PageMemory};
-use hal::pmap::{PageMd, PhysPages};
+use hal::pmap::BootstrapParams;
 use hal::pool::{PoolBackend, RawPool};
 use hal::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
 use hal::user::UserCopy;
+use hal::vm::uvmexp::UVMEXP;
 
-use crate::vm::km::{KmMaps, KmObject, KmPages, KvMap};
+use crate::vm::km::{KmMaps, KmObject, KmPages, KvMap, LegacyLend};
+use crate::vm::page::{
+    PHYS_PAGES, SegPolicy, SegStrat, uvm_page_init, uvm_page_physload, uvm_page_test_reset,
+    uvm_setpagesize,
+};
 use crate::vm::types::{UvmConstraintRange, Voff};
 
 /// The page size of the doubles.
@@ -554,32 +561,8 @@ impl KmPages for TestKmPages {
     }
 }
 
-/// The page provider double of `hal::pmap::bootstrap`.
-struct TestPhysPages;
-
-impl PhysPages for TestPhysPages {
-    fn alloc_ptp(&self) -> Option<Paddr> {
-        pages(TEST_PAGE).map(|p| Paddr::new(p.as_ptr().addr()))
-    }
-
-    fn free_ptp(&self, _pa: Paddr) {}
-
-    fn md_of(&self, _pa: Paddr) -> Option<&'static PageMd> {
-        None
-    }
-
-    fn steal(&self, _npg: usize) -> Option<Paddr> {
-        None
-    }
-
-    fn page_init_done(&self) -> bool {
-        true
-    }
-}
-
 static TEST_KM_MAPS: TestKmMaps = TestKmMaps;
 static TEST_KM_PAGES: TestKmPages = TestKmPages;
-static TEST_PHYS_PAGES: TestPhysPages = TestPhysPages;
 
 /// `vm::km`'s two doubles, as `install` takes them.
 pub fn km_doubles() -> (&'static dyn KmMaps, &'static dyn KmPages) {
@@ -639,8 +622,97 @@ pub fn km_freed_mapped() -> u32 {
     KM_FREED_MAPPED.with(Cell::get)
 }
 
-/// The page provider double for `hal::pmap::bootstrap`.
-pub fn phys_pages() -> &'static dyn PhysPages {
-    &TEST_PHYS_PAGES
+/// Serialises the tests that use the page system (`vm::page`, `vm::pmemrange`: one set of
+/// statics); [`pages_reset`], [`pages_setup`] and [`pages_install`] take it.
+pub static MEMORY: Mutex<()> = Mutex::new(());
+
+/// The host's segment policy (`VM_PHYSSEG_MAX`, `VM_PHYSSEG_STRAT`: amd64's).
+pub const HOST_SEGS: SegPolicy = SegPolicy {
+    max: 16,
+    strat: SegStrat::Bigfirst,
+};
+
+/// The host's ISA range (16 MiB).
+static ISA_CONSTRAINT: UvmConstraintRange = UvmConstraintRange {
+    ucr_low: Paddr::new(0),
+    ucr_high: Paddr::new(0x00ff_ffff),
+};
+/// The host's DMA range (4 GiB).
+static DMA_CONSTRAINT: UvmConstraintRange = UvmConstraintRange {
+    ucr_low: Paddr::new(0),
+    ucr_high: Paddr::new(0xffff_ffff),
+};
+
+/// The host's `uvm_md_constraints[]` (the ISA and DMA ranges, as `bsd`'s host double has them).
+pub static HOST_CONSTRAINTS: [&UvmConstraintRange; 2] = [&ISA_CONSTRAINT, &DMA_CONSTRAINT];
+
+/// The lend of the kernel map's token the shared bootstrap gave.
+static LEND: OnceLock<LegacyLend> = OnceLock::new();
+
+/// The host pmap, bootstrapped once per process with the kernel's page provider
+/// (`vm::page::PHYS_PAGES`, which reads the page system afresh on every call), its kernel map
+/// token adopted by `vm::km` (the lend kept here): every test module of the crate shares it, a
+/// second bootstrap panics. Registers the doubles first.
+pub fn pmap_boot() -> &'static LegacyLend {
+    LEND.get_or_init(|| {
+        install();
+        let b = hal::pmap::bootstrap(
+            &BootstrapParams {
+                direct_base: Vaddr::new(0),
+                direct_end: Vaddr::new(usize::MAX),
+                nx: false,
+                first_avail: Paddr::new(0),
+                image: None,
+            },
+            &PHYS_PAGES,
+        );
+        match crate::vm::km::adopt_mapper(b.mapper) {
+            Ok(lend) => lend,
+            Err(_) => {
+                crate::assert::kpanic(format_args!("the kernel map's token was adopted already"))
+            }
+        }
+    })
+}
+
+/// The page system forgotten (`uvm_page_test_reset`) and the page size set, [`MEMORY`] held:
+/// segments may be loaded next.
+pub fn pages_reset() -> MutexGuard<'static, ()> {
+    let guard = lock(&MEMORY);
+    let _ = pmap_boot();
+    uvm_page_test_reset();
+    UVMEXP.pagesize.store(TEST_PAGE as i32, Ordering::Relaxed);
+    uvm_setpagesize();
+    guard
+}
+
+/// The page system over `segs` (page frame ranges, every frame available) and `constraints`
+/// (the machine's DMA ranges), [`MEMORY`] held. The frames need not be memory: the host's
+/// `steal_memory` hands out heap blocks and its `pmap_zero_page` models no contents.
+pub fn pages_setup(
+    segs: &[(usize, usize)],
+    constraints: &[&UvmConstraintRange],
+) -> MutexGuard<'static, ()> {
+    let guard = pages_reset();
+    for &(start, end) in segs {
+        if uvm_page_physload(start, end, start, end, 0, HOST_SEGS).is_err() {
+            crate::assert::kpanic(format_args!("pages_setup: a segment was refused"));
+        }
+    }
+    uvm_page_init(constraints);
+    guard
+}
+
+/// The page system over a fresh, leaked block of `bytes` of the host's heap, page-aligned, as
+/// one segment, no constraint: its frames are memory through the host pmap's identity direct
+/// map, for the tests that write the pages they get (`vm::km`). [`MEMORY`] held.
+pub fn pages_install(bytes: usize) -> MutexGuard<'static, ()> {
+    let block: &'static mut [u8] = vec![0u8; bytes + TEST_PAGE].leak();
+    let base = block
+        .as_ptr()
+        .expose_provenance()
+        .next_multiple_of(TEST_PAGE);
+    let (start, end) = (base / TEST_PAGE, (base + bytes) / TEST_PAGE);
+    pages_setup(&[(start, end)], &[])
 }
 /* </CODE> */

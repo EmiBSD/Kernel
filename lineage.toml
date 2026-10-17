@@ -8493,6 +8493,20 @@ status = "redesigned"
 notes = "N3.2 (DECISIONS G1, G2): the items of uvm_extern.h that name only hal's types (voff_t, vm_prot_t as hal::pmap::VmProt, vm_inherit_t, vm_fault_t, the UVM_MAPFLAG encoding, UVM_FLAG_*, UVM_PGA_*, UVM_PLA_*, UVM_LK_*, UVM_IO_FIXPROT, PHYSLOAD_DEVICE, uvm_constraint_range, the coredump callbacks); bsd's uvm_extern.rs keeps vmspace and the submaps and re-exports these"
 
 [[module]]
+rust = "sys/kernel/vm/page.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_page.rs", "sys/uvm/uvm.rs"]
+status = "redesigned"
+notes = "N3.3: struct vm_page as VmPage in one boot-stolen array (hal::bootmem), &'static for real: pageq/objt hal List/Tree links, the owner as an OwnerTag compared and never followed (the owner passed as Owner<'_> through the PageObject/PageAnon bridge traits, bsd's UvmObject/VmAnon, N3.4), [o]/[F] scalars relaxed atomics, the array index for pg + n; the segment table in a Mutexed while the system boots and frozen by uvm_page_init into a published table (PHYS_TO_VM_PAGE lock-free), the machine's VM_PHYSSEG_MAX/STRAT passed as a SegPolicy; the page queues inside Mutexed<PageQueues> (uvm_pagedequeue takes &mut PageQueues), page_init_done an atomic; implements hal::pmap::PhysPages (PHYS_PAGES); the !PMAP_STEAL_MEMORY boot path, uvm_pagewait, uvm_pagealloc_multi, uvm_shutdown and the DMA reachability stay in bsd's sys/uvm/uvm_page.rs"
+
+[[module]]
+rust = "sys/kernel/vm/pmemrange.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_pmemrange.rs", "sys/uvm/uvm_percpu.rs"]
+status = "redesigned"
+notes = "N3.3: the free page allocator of uvm_pmemrange.c over hal Tree/List of 'static pages and boot-stolen pmemranges (hal::bootmem::steal_one), uvm.fpageqlock as Mutexed<FreeState> whose guard every range function takes as proof, the size tree's pg[1] and the array-broke test by index; the per-CPU magazines of uvm_percpu.h in a hal::percpu::PerCpu of Links at splraise(IPL_BIO) with IntrLevel::splassert; the buffer cache's BUFPAGES_DEFICIT/INACT through the BufCacheStats bridge (N5); uvm_wait absent (WAITOK -> ENOMEM, LZ's deviation), uvm_pmr_allocpmr after init panics (unreachable), uvm_pagezero_thread N4; uvm_pmr_free_frames for kernel::vm::km"
+
+[[module]]
 rust = "sys/kernel/vm/km.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]

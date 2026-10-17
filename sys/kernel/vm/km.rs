@@ -930,41 +930,19 @@ mod tests {
     // `nommu` false: the double's virtual space, the host pmap's mappings.
 
     use std::sync::atomic::AtomicBool;
-    use std::sync::{Once, OnceLock};
     use std::thread;
     use std::time::Duration;
 
     use super::*;
     use crate::testutil;
     use hal::kmbuf::KmBuf;
-    use hal::pmap::BootstrapParams;
 
-    /// The lend `adopt_mapper` returned to the set-up.
-    static LEND: OnceLock<LegacyLend> = OnceLock::new();
-
-    /// The process's set-up, once: the runtime's doubles, the km doubles, the host pmap
-    /// bootstrapped with the page provider double and its token adopted here (the lend kept
-    /// for the test that borrows it).
+    /// The process's set-up: the runtime's doubles and the km doubles, the host pmap
+    /// bootstrapped once per process with the kernel's page provider and its token adopted
+    /// here (`testutil::pmap_boot`, which keeps the lend).
     fn setup() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            testutil::install();
-            testutil::km_install();
-            let b = hal::pmap::bootstrap(
-                &BootstrapParams {
-                    direct_base: Vaddr::new(0),
-                    direct_end: Vaddr::new(usize::MAX),
-                    nx: false,
-                    first_avail: Paddr::new(0),
-                    image: None,
-                },
-                testutil::phys_pages(),
-            );
-            match adopt_mapper(b.mapper) {
-                Ok(lend) => assert!(LEND.set(lend).is_ok()),
-                Err(_) => panic!("the token was adopted already"),
-            }
-        });
+        testutil::km_install();
+        let _ = testutil::pmap_boot();
     }
 
     fn extract(va: usize) -> Option<Paddr> {
@@ -1065,7 +1043,7 @@ mod tests {
     #[test]
     fn the_lend_reaches_the_token() {
         setup();
-        let lend = LEND.get().expect("the set-up's lend");
+        let lend = testutil::pmap_boot();
         let va = Vaddr::new(testutil::KM_VA_END - PAGE_SIZE);
         let pa = Paddr::new(0x4321_0000);
         legacy_mapper(lend).kenter(va, pa, PROT_READ);
