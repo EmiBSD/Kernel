@@ -1685,8 +1685,10 @@ const _: () = {
         assert!(kern & ATTR_UXN != 0);
         // Every granted page is accessed already (no access-flag fault).
         assert!(user & ATTR_AF != 0 && kern & ATTR_AF != 0);
-        // EL0 reaches user pages (AP[1] set), never kernel ones (AP[1] clear).
-        assert!(user & attr_ap(1) != 0 && kern & attr_ap(1) == 0);
+        // EL0 reads user pages (AP[1] set) but the execute-only ones (`PROT_EXEC` alone:
+        // AP 0b10, EL0 may fetch, not load), never kernel ones (AP[1] clear).
+        assert!((user & attr_ap(1) != 0) == (prot as i32 != PROT_EXEC));
+        assert!(kern & attr_ap(1) == 0);
         // Writable exactly when PROT_WRITE (AP[2], the read-only bit, clear).
         let writable = prot as i32 & PROT_WRITE != 0;
         assert!((user & attr_ap(2) == 0) == writable);

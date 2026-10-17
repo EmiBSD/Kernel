@@ -504,8 +504,9 @@ pub struct PageMd {
     pub(crate) pv: Mutexed<PvHead>,
     /// The `PG_PMAP_*` bits (`PG_PMAP_MOD`, `PG_PMAP_REF`, `PG_PMAP2`).
     pub(crate) attrs: AtomicU32,
-    /// Of a page-table page: its valid entries plus one (the C's `wire_count` of a PTP).
-    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
+    /// Of a page-table page: its valid entries plus one (the C's `wire_count` of a PTP;
+    /// amd64's alone: arm64's vp tables are found by the walk and freed with their pmap).
+    #[cfg_attr(not(all(target_os = "none", target_arch = "x86_64")), allow(dead_code))]
     pub(crate) ptp_refs: AtomicU32,
 }
 
