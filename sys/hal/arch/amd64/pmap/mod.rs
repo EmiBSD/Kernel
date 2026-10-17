@@ -38,7 +38,6 @@ mod window;
 pub use backend::find_pte;
 pub(crate) use backend::{Backend, PmapMd, PvHead};
 pub use tables::{PG_CRYPT, PG_G_KERN, PG_NX_BIT};
-#[cfg(feature = "multiprocessor")]
 pub use tlb::{
     TLB_SHOOT_ADDR1, TLB_SHOOT_ADDR2, TLB_SHOOT_COUNTS, TLB_SHOOT_CPU, TLB_SHOOT_LOCK, TlbShootWord,
 };

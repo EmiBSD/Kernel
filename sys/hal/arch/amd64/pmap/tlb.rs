@@ -145,56 +145,43 @@
 //!   its other users until N4): `lcr3` takes a pmap, whose root is a PML4 with the kernel
 //!   half, so no caller can load anything else; `wbinvd_on_all_cpus` is the bridge's, or
 //!   this CPU's `wbinvd` while one CPU runs.
-//! - `curcpu()->ci_cflushsz` is the bridge's with `multiprocessor`; without it (no bridge is
-//!   registered) `hal` reads the one CPU's line size itself, by `cpuid` once, as
-//!   `identifycpu` computes it (`layout::cflushsz_of`), so `pmap_flush_cache` uses `clflush`
-//!   whenever the CPU has it, as the C does, and `wbinvd` only when it has not.
+//! - `curcpu()->ci_cflushsz` is the bridge's, as `bsd`'s `identifycpu` recorded it (0 while
+//!   the bridge is not registered, as the C's `cpu_info` before `identifycpu`: the flush is
+//!   then a `wbinvd`, which is always correct). The kernel is always `MULTIPROCESSOR`
+//!   (decision 40): the one CPU's line size that `hal` read by `cpuid` for a kernel built
+//!   without it (`boot_cflushsz`, `layout::cflushsz_of`) is gone, with the uniprocessor
+//!   branches of the shootdowns.
 
 use core::arch::asm;
-use core::arch::x86_64::__cpuid;
-#[cfg(feature = "multiprocessor")]
-use core::sync::atomic::AtomicU32;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::super::include::param::PAGE_SIZE;
-#[cfg(feature = "multiprocessor")]
 use super::super::include::vmparam::VM_MIN_KERNEL_ADDRESS;
-use super::layout::cflushsz_of;
-#[cfg(feature = "multiprocessor")]
 use crate::bridges;
 use crate::pmap::Pmap;
-#[cfg(feature = "multiprocessor")]
 use crate::pmap::TlbIpi;
 
 /// The CPUs `tlb_shoot_counts[]` has a word for: amd64's `MAXCPUS` (`<machine/cpu.h>`).
-#[cfg(feature = "multiprocessor")]
 pub const TLB_MAXCPUS: usize = 255;
 
 /// `struct { volatile int x __attribute__((aligned(64))); }`: a shootdown word on a cache
 /// line of its own, which the IPI stubs of `vector.S` reach by symbol.
-#[cfg(feature = "multiprocessor")]
 #[repr(C, align(64))]
 pub struct TlbShootWord<T>(pub T);
 
 /// `tlb_shoot_lock`: held from `pmap_start_tlb_shoot` until the last target acknowledges
 /// (the IPI stubs release it).
-#[cfg(feature = "multiprocessor")]
 pub static TLB_SHOOT_LOCK: TlbShootWord<AtomicU32> = TlbShootWord(AtomicU32::new(0));
 /// `tlb_shoot_cpu`: the `ci_cpuid` of the CPU holding `tlb_shoot_lock`.
-#[cfg(feature = "multiprocessor")]
 pub static TLB_SHOOT_CPU: TlbShootWord<AtomicU32> = TlbShootWord(AtomicU32::new(0));
 /// `tlb_shoot_counts[]`: per shooting CPU, the targets that have not flushed yet.
-#[cfg(feature = "multiprocessor")]
 pub static TLB_SHOOT_COUNTS: [AtomicU32; TLB_MAXCPUS] = [const { AtomicU32::new(0) }; TLB_MAXCPUS];
 /// `tlb_shoot_addr1`: the page, or the start of the range, to flush.
-#[cfg(feature = "multiprocessor")]
 pub static TLB_SHOOT_ADDR1: TlbShootWord<AtomicUsize> = TlbShootWord(AtomicUsize::new(0));
 /// `tlb_shoot_addr2`: the end of the range to flush.
-#[cfg(feature = "multiprocessor")]
 pub static TLB_SHOOT_ADDR2: TlbShootWord<AtomicUsize> = TlbShootWord(AtomicUsize::new(0));
 
 /// The targets of one shootdown: a bit per `ci_cpuid` (`u_int8_t mask[howmany(MAXCPUS, 8)]`).
-#[cfg(feature = "multiprocessor")]
 type ShootMask = [u8; TLB_MAXCPUS.div_ceil(8)];
 
 /// `rcr3`: reads `CR3`.
@@ -261,7 +248,6 @@ fn wbinvd() {
 /// `wbinvd_on_all_cpus()`: every CPU's caches written back and invalidated (the bridge's IPI;
 /// this CPU's alone while the bridge is not registered: one CPU runs).
 pub(super) fn wbinvd_on_all_cpus() {
-    #[cfg(feature = "multiprocessor")]
     if let Some(b) = bridges::tlb_cpus() {
         b.wbinvd_all();
         return;
@@ -270,33 +256,11 @@ pub(super) fn wbinvd_on_all_cpus() {
 }
 
 /// `curcpu()->ci_cflushsz`: the `clflush` line size, 0 without `clflush` (then the flush is a
-/// `wbinvd`, which is always correct). With `multiprocessor`, the running CPU's as `bsd`'s
-/// `identifycpu` recorded it, through the bridge (0 while it is not registered, as the C's
-/// `cpu_info` before `identifycpu`); without it, the one CPU's, [`boot_cflushsz`].
+/// `wbinvd`, which is always correct): the running CPU's as `bsd`'s `identifycpu` recorded
+/// it, through the bridge (0 while it is not registered, as the C's `cpu_info` before
+/// `identifycpu`).
 pub(super) fn cflushsz() -> usize {
-    #[cfg(feature = "multiprocessor")]
-    if let Some(b) = bridges::tlb_cpus() {
-        return b.cflushsz();
-    }
-    if cfg!(feature = "multiprocessor") {
-        0
-    } else {
-        boot_cflushsz()
-    }
-}
-
-/// The one CPU's `ci_cflushsz` without `multiprocessor`, computed as `identifycpu` does
-/// (bits 15-8 of `cpuid(1)`'s `%ebx`, times 8) and read once: `cpuid` serializes the CPU and
-/// traps to a hypervisor. `usize::MAX` is "not read yet"; two readers store the same value.
-fn boot_cflushsz() -> usize {
-    static CFLUSHSZ: AtomicUsize = AtomicUsize::new(usize::MAX);
-    let cached = CFLUSHSZ.load(Ordering::Relaxed);
-    if cached != usize::MAX {
-        return cached;
-    }
-    let sz = cflushsz_of(__cpuid(1).ebx);
-    CFLUSHSZ.store(sz, Ordering::Relaxed);
-    sz
+    bridges::tlb_cpus().map_or(0, |b| b.cflushsz())
 }
 
 /// `pmap_update_pg(va)`: drops the TLB entry of one page.
@@ -306,14 +270,12 @@ fn pmap_update_pg(va: usize) {
 
 /// `pmap_is_active`: is this pmap loaded into the specified processor's `%cr3`? (`active` is
 /// that CPU's `ci_proc_pmap`.)
-#[cfg(feature = "multiprocessor")]
 fn pmap_is_active(pm: &Pmap, active: *const Pmap) -> bool {
     pm.is_kernel() || core::ptr::eq(pm.as_ptr(), active)
 }
 
 /// `pmap_start_tlb_shoot`: obtain the "lock" for TLB shooting, and expect `targets` CPUs to
 /// acknowledge.
-#[cfg(feature = "multiprocessor")]
 fn pmap_start_tlb_shoot(targets: u32) {
     let cpuid = crate::cpu::cpu_number();
     while TLB_SHOOT_LOCK
@@ -330,7 +292,6 @@ fn pmap_start_tlb_shoot(targets: u32) {
 }
 
 /// `tlb_shoot_counts[cpuid]`; a CPU id past the table is the machine's broken answer.
-#[cfg(feature = "multiprocessor")]
 fn shoot_count(cpuid: usize) -> &'static AtomicU32 {
     match TLB_SHOOT_COUNTS.get(cpuid) {
         Some(c) => c,
@@ -342,17 +303,13 @@ fn shoot_count(cpuid: usize) -> &'static AtomicU32 {
 
 /// `pmap_tlb_shootwait`: waits until every CPU this CPU shot at has flushed.
 pub fn pmap_tlb_shootwait() {
-    #[cfg(feature = "multiprocessor")]
-    {
-        let count = shoot_count(crate::cpu::cpu_number());
-        while count.load(Ordering::Acquire) > 0 {
-            core::hint::spin_loop();
-        }
+    let count = shoot_count(crate::cpu::cpu_number());
+    while count.load(Ordering::Acquire) > 0 {
+        core::hint::spin_loop();
     }
 }
 
 /// `pmap_tlb_shootfail`: a target could not take the IPI: count it as done.
-#[cfg(feature = "multiprocessor")]
 fn pmap_tlb_shootfail() {
     if shoot_count(crate::cpu::cpu_number()).fetch_sub(1, Ordering::AcqRel) == 1 {
         TLB_SHOOT_LOCK.0.store(0, Ordering::Release);
@@ -361,7 +318,6 @@ fn pmap_tlb_shootfail() {
 
 /// The CPUs a shootdown of `pm` goes to: running, not this one, and (but for a kernel
 /// address, `is_kva`) with `pm` active. The mask and the count.
-#[cfg(feature = "multiprocessor")]
 fn shoot_targets(pm: &Pmap, is_kva: bool) -> (ShootMask, u32) {
     let mut mask: ShootMask = [0; TLB_MAXCPUS.div_ceil(8)];
     let mut targets = 0;
@@ -385,7 +341,6 @@ fn shoot_targets(pm: &Pmap, is_kva: bool) -> (ShootMask, u32) {
 }
 
 /// Sends `ipi` to the CPUs of `mask`, counting each one that cannot take it as done.
-#[cfg(feature = "multiprocessor")]
 fn shoot_send(mask: &ShootMask, ipi: TlbIpi) {
     let Some(b) = bridges::tlb_cpus() else {
         return;
@@ -397,42 +352,32 @@ fn shoot_send(mask: &ShootMask, ipi: TlbIpi) {
     }
 }
 
-/// `pmap_tlb_shootpage`: drops one page's TLB entry here (when `shootself`) and, with
-/// `MULTIPROCESSOR`, on every other CPU that may cache it.
+/// `pmap_tlb_shootpage`: drops one page's TLB entry here (when `shootself`) and on every
+/// other CPU that may cache it.
 pub fn pmap_tlb_shootpage(pm: &Pmap, va: usize, shootself: bool) {
-    #[cfg(feature = "multiprocessor")]
-    {
-        let (mask, targets) = shoot_targets(pm, va >= VM_MIN_KERNEL_ADDRESS);
-        if targets != 0 {
-            let _s = crate::intr::splraise(crate::intr::IPL_VM);
-            pmap_start_tlb_shoot(targets);
-            TLB_SHOOT_ADDR1.0.store(va, Ordering::Relaxed);
-            shoot_send(&mask, TlbIpi::Page);
-        }
+    let (mask, targets) = shoot_targets(pm, va >= VM_MIN_KERNEL_ADDRESS);
+    if targets != 0 {
+        let _s = crate::intr::splraise(crate::intr::IPL_VM);
+        pmap_start_tlb_shoot(targets);
+        TLB_SHOOT_ADDR1.0.store(va, Ordering::Relaxed);
+        shoot_send(&mask, TlbIpi::Page);
     }
-    #[cfg(not(feature = "multiprocessor"))]
-    let _ = pm;
     if shootself {
         pmap_update_pg(va);
     }
 }
 
 /// `pmap_tlb_shootrange`: drops a range's TLB entries (here when `shootself`, and on the
-/// other CPUs with `MULTIPROCESSOR`).
+/// other CPUs).
 pub fn pmap_tlb_shootrange(pm: &Pmap, sva: usize, eva: usize, shootself: bool) {
-    #[cfg(feature = "multiprocessor")]
-    {
-        let (mask, targets) = shoot_targets(pm, sva >= VM_MIN_KERNEL_ADDRESS);
-        if targets != 0 {
-            let _s = crate::intr::splraise(crate::intr::IPL_VM);
-            pmap_start_tlb_shoot(targets);
-            TLB_SHOOT_ADDR1.0.store(sva, Ordering::Relaxed);
-            TLB_SHOOT_ADDR2.0.store(eva, Ordering::Relaxed);
-            shoot_send(&mask, TlbIpi::Range);
-        }
+    let (mask, targets) = shoot_targets(pm, sva >= VM_MIN_KERNEL_ADDRESS);
+    if targets != 0 {
+        let _s = crate::intr::splraise(crate::intr::IPL_VM);
+        pmap_start_tlb_shoot(targets);
+        TLB_SHOOT_ADDR1.0.store(sva, Ordering::Relaxed);
+        TLB_SHOOT_ADDR2.0.store(eva, Ordering::Relaxed);
+        shoot_send(&mask, TlbIpi::Range);
     }
-    #[cfg(not(feature = "multiprocessor"))]
-    let _ = pm;
     if shootself {
         for va in (sva..eva).step_by(PAGE_SIZE) {
             pmap_update_pg(va);
@@ -441,26 +386,20 @@ pub fn pmap_tlb_shootrange(pm: &Pmap, sva: usize, eva: usize, shootself: bool) {
 }
 
 /// `pmap_tlb_shoottlb`: drops the whole (non-global) TLB of a user pmap, here when
-/// `shootself` and, with `MULTIPROCESSOR`, on the other CPUs that run it.
+/// `shootself` and on the other CPUs that run it.
 pub fn pmap_tlb_shoottlb(pm: &Pmap, shootself: bool) {
-    #[cfg(feature = "multiprocessor")]
-    {
-        crate::assert::kassert!(!pm.is_kernel());
-        let (mask, targets) = shoot_targets(pm, false);
-        if targets != 0 {
-            let _s = crate::intr::splraise(crate::intr::IPL_VM);
-            pmap_start_tlb_shoot(targets);
-            shoot_send(&mask, TlbIpi::Tlb);
-        }
+    crate::assert::kassert!(!pm.is_kernel());
+    let (mask, targets) = shoot_targets(pm, false);
+    if targets != 0 {
+        let _s = crate::intr::splraise(crate::intr::IPL_VM);
+        pmap_start_tlb_shoot(targets);
+        shoot_send(&mask, TlbIpi::Tlb);
     }
-    #[cfg(not(feature = "multiprocessor"))]
-    let _ = pm;
     if shootself {
         tlbflush();
     }
 }
 
-#[cfg(feature = "multiprocessor")]
 const _: () = {
     assert!(TLB_MAXCPUS <= crate::cpu::MAXCPUS);
     assert!(size_of::<TlbShootWord<AtomicU32>>() == 64);

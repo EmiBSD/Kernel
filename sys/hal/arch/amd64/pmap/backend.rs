@@ -366,7 +366,6 @@ impl Drop for PvEntry {
 /// Panics when another running CPU runs on `pmap` (its `ci_proc_pmap`): its tables are about
 /// to be freed. Nothing to look at while the CPU bridge is not registered (one CPU).
 fn other_cpus_off(pmap: &Pmap) {
-    #[cfg(feature = "multiprocessor")]
     if let Some(b) = crate::bridges::tlb_cpus() {
         b.for_each_other_running(&mut |id, active| {
             if ptr::eq(active, pmap.as_ptr()) {
@@ -374,8 +373,6 @@ fn other_cpus_off(pmap: &Pmap) {
             }
         });
     }
-    #[cfg(not(feature = "multiprocessor"))]
-    let _ = pmap;
 }
 
 /// `pmap_reference(pve->pv_pmap)`: a counted handle to the pmap of a linked entry, taken
