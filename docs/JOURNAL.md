@@ -138,7 +138,7 @@ Met 2026-10-16 (under way since 2026-10-10). Boundary: from `lz: bump pin to 3c6
   `cd80.iso` because ISO 9660 stores `abi-openbsd.ko` as `ABI_OPENBSD.KO` and libsa's cd9660
   (no Rock Ridge) looks for `ABI-OPENBSD.KO`; xtask's model of that lookup caught it, no smoke
   had booted. 1ae6774d leaves the module off the CD (decision 29's fallback); the module's
-  name is the user's decision, pending (`abi_openbsd.ko`, a `-` -> `_` mapping in boot(8)'s
+  name was decided the same night, `abi_openbsd.ko` for N3's first mechanical slice (decision 38; the user's standing authority of the night) (`abi_openbsd.ko`, a `-` -> `_` mapping in boot(8)'s
   cd9660, or relaxed ISO names). The second attempt booted: 7 of 85 smokes, every amd64 kernel
   panicked on the jump into the module (`panic: trap type 6, code=11`): amd64's `kernel_map`
   directories carry NX as OpenBSD's `pmap_alloc_level` sets them, arm64 has no PXN on its

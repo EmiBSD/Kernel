@@ -60,7 +60,7 @@ fallback) exist only as registrations in `hal`'s registry, made by `bsd`'s `main
 
 | Crate | Path | `unsafe` | Holds |
 |---|---|---|---|
-| `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (today's `queue.rs`, `tree.rs`, `subr_tree.rs`), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
+| `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (written new with their first `kernel` user; `queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` until then), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
 | `abi` | `sys/abi/`, built as the loadable module `abi-openbsd.ko` (decision 22) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
 | `bsd` | `sys/` (the LZ tree, today's crate) | 10,604 today in 1,161 files (`unsafe-report`, 2026-10-16): the 8,906 legacy (8,747 outside the old core plus the 159 of the old runtime files) and the 1,698 of the hardware, the host double and the lists and trees that have not moved yet (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
@@ -133,7 +133,7 @@ active days have moved 100 `unsafe`.
 | Milestone | Scope (what moves into `kernel`/`abi`/`hal`) | Files | `unsafe` | Exit (mechanical) | Est. |
 |---|---|---:|---:|---|---:|
 | **N2 Foundations** (met 2026-10-16; section 0.9) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the 24 `bsd`-free machine headers and 18 constant headers of `sys/sys/` (decisions 26, 27; `types.rs` at N3) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`); `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 18 + 24 + 18 | 21 (+ 1 moved into `hal`; + 30 new for the module loader; the hardware's remaining 1,626 move by owner: N3 the pmap cluster ~150, N4 cpu/clock/trap ~740, N7 bus/autoconf/glue ~675, N9 ddb glue and tables ~60; decision 26) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; the 24 + 18 headers under `sys/hal/`; `just ci` and `diff-openbsd` equal (`ci-full` at N3's close, decision 24) | 8.5 d |
-| **N3 Memory** | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` last, with `security-review.md`); the pmap behind a safe `hal::Pmap` API, with the pmap cluster of `sys/arch` (13 files) moved into `hal` behind it (decision 26) | 26 + 13 | 215 (+ 150 moved) | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | 7.5 d |
+| **N3 Memory** | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` last, with `security-review.md`); the pmap behind a safe `hal::Pmap` API, with the pmap cluster of `sys/arch` (14 files, `pmap_module.rs` included) moved into `hal` behind it (decision 26) | 26 + 14 | 215 (+ 213 moved; 147 without the two `cpufunc.rs`: the N3.1 survey, 2026-10-16) | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | 7.5 d |
 | **N4 Processes** | `sys/kern/` by owner into `kernel`: timeout, task, event/kqueue, descriptors (`file`, `kern_descrip`), signals, proc, the scheduler, sysctl's core, tty; `StaticCell` uses in `kern` → `OnceStatic` | 75 + 4 (kqueue and descriptors, N2's before) + 97 of `sys/arch` (cpu, clock, interrupts, trap, syscall entry, copy, into `hal`; decision 26) | 680 + 95 (+ 742 moved) | `sys/kern/` in `bsd` holds only the VFS (N5), the sockets (N6) and the N8 files; the bridges `Proc`, `Fd`, `Kq` removed from `bridges.toml` | 15 d |
 | **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/nfs/`, `sys/ntfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs` | 140 | 816 | those directories gone from `bsd`; the `Vfs` bridge removed | 14 d |
 | **N6 Network** | `sys/net/`, `sys/netinet/`, `sys/netinet6/`, the sockets of `sys/kern/uipc_*` → `kernel::net`, except N8's files | 99 | 1,840 | those directories gone from `bsd` but N8's files; the `Sockets` bridge removed | 18 d |
@@ -205,7 +205,7 @@ constant headers of `sys/sys/` (decision 27), `git mv` with the old paths kept b
 (0.5 d); the pmap cluster with N3.1, cpu/clock/interrupts/trap with N4.1 and N4.5, bus/autoconf
 with N7.0-N7.2 (the arch drivers to `kernel::dev`, decision 28), ddb glue and the tables at
 N9.1. 3. The runtime, each piece with its first user in `kernel` or in the move:
-`List`/`Tree` (moved), `Mutexed<T>`, `Rwlocked<T>`, `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`,
+`List`/`Tree` (not moved: written new with their first `kernel` user), `Mutexed<T>`, `Rwlocked<T>`, `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`,
 `KmBuf`, `OnceStatic<T>`, `PerCpu<T>`, `Refcnt`, `UserPtr<T>` with `abi_pod!`, the bridge
 registry, the interrupt-level guard, the console primitive; `hal-check` (3 d). 4. `KernelApi`
 (the vtable), the ELF loader, `abi-openbsd.ko` with every entry `Legacy` and the 41 constant
@@ -522,7 +522,7 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
 
 26. **N2.2 is staged, not a move** (the user: "(c) por etapas"). The hardware enters `hal` with
     the kernel owner that defines each boundary: now the 24 `bsd`-free machine headers (1
-    `unsafe`); the pmap cluster (13 files, 150) with N3.1 `hal::Pmap`; cpu, clock, interrupts,
+    `unsafe`); the pmap cluster (14 files, 213 measured at the N2 close; 147 without the two `cpufunc.rs`) with N3.1 `hal::Pmap`; cpu, clock, interrupts,
     trap and syscall entry, copy (97 files, 742) with N4.1 and N4.5; bus, autoconf, the ACPI/FDT
     glue (74 files, 675) with N7.0-N7.2; ddb glue and the configuration tables at N9.1. Each
     boundary (`Proc`, `Device`, `Clockqueue`, `VmPage`) is typed once, by its owner: `CpuInfo`'s
@@ -585,7 +585,7 @@ day ("yap puedes seguir solo? hasta acabar?"):
     about 8 KiB of libsa's 1 MiB heap, bounded by the file system's block size, not by the
     file. A panic inside the module parks the CPU silently (`hal::module::rt`): the module
     keeps no state to print with (decision 25). `cd80.iso` ships without the module until its
-    name is settled (the user's decision, pending): ISO 9660 stores `abi-openbsd.ko` as
+    name is settled (decision 38: `abi_openbsd.ko`, N3's first mechanical slice): ISO 9660 stores `abi-openbsd.ko` as
     `ABI_OPENBSD.KO`, which libsa's cd9660 (no Rock Ridge) cannot open, so `cd-iso` leaves it
     off with one line (1ae6774d) and a kernel booted from the CD takes this decision's
     fallback; the choices are a name ISO 9660 keeps (`abi_openbsd.ko`), a `-` -> `_` mapping
@@ -680,3 +680,13 @@ Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
     (no ABI module on amd64 until then). The `Security-Review:` paragraph of 8b2ed4e1 and
     2ff6d854 travels with the `docs: close N2` commit, because the commits were already on the
     candidate when the review came, as for the loader (bad16b2a) and pipe (7fc65c78).
+
+38. **The ABI module is `abi_openbsd.ko`** (the main session, 2026-10-16, under the user's
+    standing authority of that night, "acepta las recomendaciones que ofrezcas"; the option it
+    recommended): an ISO 9660 name, so cd80.iso carries the module without touching libsa's
+    cd9660 or the image format (`iso_name` keeps `A-Z`, `0-9`, `_`; libsa compares the
+    upper-cased path with the stored name and reads no Rock Ridge). Renamed in N3's first
+    mechanical slice: 36 files (boot(8)'s open path, Limine's module name, the kernel's lines,
+    the smoke expectations, the docs), one `lineage:`-free `build:`/`stand:` series; until then
+    cd80.iso ships without it (decision 29). Rejected: a `-` -> `_` mapping in boot(8)'s cd9660
+    (a deviation from OpenBSD's libsa), relaxed ISO names with `-` (a non-conforming image).
