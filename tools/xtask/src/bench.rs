@@ -39,12 +39,15 @@
 //! - `tools/bench` (ISC, ours, `bench.c`), the same static binary on both: ns per op of
 //!   `pagefault` (first touch of a page of a fresh anonymous mapping), `forkexit`, `forkexec`
 //!   (fork and exec of the program itself as a trivial `true`), `pipe` (a one-byte round trip
-//!   between two processes) and `fileread` (64 KiB read(2)s of a cold 64 MiB file on the
-//!   scratch disk, a fresh 128 MiB virtio disk, FFS, mounted again after the file is written);
-//!   EmiBSD runs it from the ramdisk, OpenBSD fetches it from `diff-openbsd`'s HTTP server;
+//!   between two processes) and `fileread` (64 KiB read(2)s of a cold 256 MiB file on the
+//!   scratch disk, a fresh 384 MiB virtio disk, FFS, mounted again after the file is written);
+//!   EmiBSD runs it from the ramdisk, OpenBSD fetches it from `diff-openbsd`'s HTTP server.
+//!   Each boot runs it twice: a warm-up pass, checked and discarded, then, with the scratch
+//!   disk mounted again (the file cold once more), the pass that is recorded;
 //! - unless `--no-tcpbench`: tcpbench(1), `smoke-tcpbench`'s two VMs on `smoke2`'s private
-//!   link, for each system: B is the client of A's server, a 2 s warm-up and then `--reps`
-//!   runs of 10 s in the same boot (Mbps, tcpbench's average). pf is disabled on both first.
+//!   link, for each system: B is the client of A's server, a 2 s run retried until A answers,
+//!   one 10 s run as a warm-up, discarded, and then `--reps` runs of 10 s in the same boot
+//!   (Mbps, tcpbench's average). pf is disabled on both first.
 //!
 //! The table on stdout and `<run dir>/<arch>/report.toml` give, per measurement, the median,
 //! the minimum and the spread (`(max - min) / median`) of each system and the ratio of the
@@ -73,11 +76,11 @@ use crate::diffopenbsd::{self, Boot, http};
 const DEFAULT_REPS: usize = 5;
 /// The largest spread, in percent, at which a ratio is printed.
 const SPREAD_LIMIT: f64 = 15.0;
-/// The scratch disk: room for FFS and the 64 MiB file.
-const SCRATCH_SIZE: u64 = 128 << 20;
+/// The scratch disk: room for FFS and the 256 MiB file.
+const SCRATCH_SIZE: u64 = 384 << 20;
 /// The cold file `fileread` reads, and its size.
 const BENCH_FILE: &str = "/mnt/bench.dat";
-const FILE_MIB: u32 = 64;
+const FILE_MIB: u32 = 256;
 /// Length of each tcpbench(1) run.
 const TCPBENCH_SECS: u32 = 10;
 /// Where the program is on each system.
@@ -527,7 +530,7 @@ fn scratch(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The scratch disk `d` labelled, formatted and mounted on /mnt, the 64 MiB file written,
+/// The scratch disk `d` labelled, formatted and mounted on /mnt, the 256 MiB file written,
 /// then the file system mounted again, so the file is read cold.
 fn setup_cmd(d: &str) -> String {
     format!(
@@ -538,12 +541,29 @@ fn setup_cmd(d: &str) -> String {
     )
 }
 
-/// The scratch disk prepared, then `bench all` run: its measurements.
+/// The scratch disk `d` mounted again, so the file is cold once more.
+fn remount_cmd(d: &str) -> String {
+    format!("umount /mnt && mount /dev/{d}a /mnt")
+}
+
+/// The scratch disk prepared, `bench all` run once as a warm-up (checked, then discarded),
+/// the disk mounted again, then `bench all` run for the record: its measurements.
 fn run_program(vm: &mut Vm, disk: &str, prog: &str) -> Result<BTreeMap<String, f64>> {
     sh(
         vm,
         &setup_cmd(disk),
         boot::time_limit(Duration::from_secs(900)),
+    )?;
+    let warm = sh(
+        vm,
+        &format!("{prog} all {BENCH_FILE}"),
+        boot::time_limit(Duration::from_secs(1800)),
+    )?;
+    parse_bench(&warm).map_err(|e| format!("{}: warm-up: {e}", vm.name))?;
+    sh(
+        vm,
+        &remount_cmd(disk),
+        boot::time_limit(Duration::from_secs(300)),
     )?;
     let out = sh(
         vm,
@@ -654,12 +674,21 @@ fn pair_tcpbench(
         "pfctl -d >/dev/null 2>&1; ifconfig vio1 inet 192.168.77.2/24 up",
         limit,
     )?;
-    // The warm-up, retried until A's server answers.
+    // A first short run, retried until A's server answers; then a whole run as a warm-up,
+    // checked and discarded.
     sh(
         b,
         "until tcpbench -t 2 192.168.77.1 >/dev/null 2>&1; do sleep 1; done",
         limit,
     )?;
+    let warm = sh(
+        b,
+        &format!("tcpbench -t {TCPBENCH_SECS} 192.168.77.1"),
+        limit,
+    )?;
+    let v = parse_tcpbench(&warm)
+        .ok_or_else(|| format!("{}: no tcpbench summary in the warm-up", b.name))?;
+    println!("xtask: bench {name} warm-up (discarded): {v:.1} Mbps");
     let mut mbps = Vec::new();
     for rep in 1..=reps {
         let out = sh(
@@ -1096,7 +1125,8 @@ mod tests {
         let c = setup_cmd("sd1");
         assert!(c.contains("fdisk -iy -f /dev/rsd1c sd1"));
         assert!(c.contains("newfs sd1a"));
-        assert!(c.contains("of=/mnt/bench.dat bs=1m count=64"));
+        assert!(c.contains("of=/mnt/bench.dat bs=1m count=256"));
+        assert_eq!(remount_cmd("sd0"), "umount /mnt && mount /dev/sd0a /mnt");
         assert!(c.ends_with("mount /dev/sd1a /mnt && ls -l /mnt/bench.dat"));
     }
 

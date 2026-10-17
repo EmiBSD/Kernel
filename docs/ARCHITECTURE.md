@@ -2290,11 +2290,18 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
   `diff-openbsd`'s HTTP server) prints ns per op of `pagefault` (the first touch of a page of
   a fresh anonymous mapping), `forkexit`, `forkexec` (the program executes itself as a
   trivial `true`: the ramdisk has no true(1) and OpenBSD's is dynamic), `pipe` (a one-byte
-  round trip between two processes) and `fileread` (64 KiB reads of a 64 MiB file on a fresh
-  128 MiB scratch disk, FFS, mounted again after the file is written, so it is read cold
-  through vioblk). `tcpbench`: `smoke-tcpbench`'s two VMs on `smoke2`'s private link, for each
-  system, pf disabled on both, a 2 s warm-up and then five 10 s runs in the same boot (Mbps,
-  tcpbench(1)'s average).
+  round trip between two processes) and `fileread` (64 KiB reads of a 256 MiB file on a
+  fresh 384 MiB scratch disk, FFS, mounted again after the file is written, so it is read
+  cold through vioblk). Each boot runs the program twice: a warm-up pass, checked and
+  discarded, then, with the scratch disk mounted again, the recorded one. `tcpbench`:
+  `smoke-tcpbench`'s two VMs on `smoke2`'s private link, for each system, pf disabled on both,
+  a 2 s run retried until the server answers, one 10 s run as a warm-up, discarded, and then
+  five 10 s runs in the same boot (Mbps, tcpbench(1)'s average).
+- **Warm-up and sizes** (the user's decision of 2026-10-17, after the first baseline): five
+  runs of one pass each left six of fourteen spreads above 15 %, most from one sample, the
+  first after boot (the first tcpbench run, arm64's first `forkexit`). So a pass is discarded
+  per boot, and the noisiest measurements do more work per sample: `forkexit` 500 -> 2,000
+  ops, `forkexec` 200 -> 800, the file 64 -> 256 MiB. Five runs and the 15 % limit stay.
 - **Why ratios.** Under TCG (amd64 always on this Mac, arm64 too: no hvf) an absolute number
   says how fast QEMU translates, not how fast the kernel is; the same emulation running both
   kernels cancels that out to first order, as TRACTOR reports a translation's overhead against

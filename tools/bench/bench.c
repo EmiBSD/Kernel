@@ -46,6 +46,9 @@
  *			pipes
  *	fileread	read(2) of 64 KiB of FILE, from its start to its end
  *			(the caller makes it cold: a fresh mount)
+ *
+ * `cargo xtask bench` runs `bench all` twice per boot: a warm-up pass it
+ * discards, then, with the file system mounted again, the pass it records.
  */
 
 #include <sys/types.h>
@@ -63,8 +66,8 @@
 
 #define FAULT_PAGES	1024	/* pages per mapping */
 #define FAULT_ROUNDS	32	/* mappings */
-#define FORKEXIT_OPS	500
-#define FORKEXEC_OPS	200
+#define FORKEXIT_OPS	2000
+#define FORKEXEC_OPS	800
 #define PIPE_OPS	5000
 #define READ_CHUNK	(64 * 1024)
 
