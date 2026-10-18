@@ -97,6 +97,10 @@
 //!   so the kernel's `km` can use them; the map's and the address space's stay in `bsd` with
 //!   the map. `bsd`'s module re-exports these by name, so its 49 users compile unchanged.
 //! - `vm_prot_t` is one type, `hal::pmap::VmProt` (the pmap's, N3.1); this alias names it.
+//! - N3.5 S1: the kernel's `uvm_coredump_walkmap` (`vm::unix`) takes its callbacks as
+//!   `&mut dyn FnMut` closures, the walk's over a [`CoredumpSeg`]: the `void *cookie` the C
+//!   threads through is whatever the closure captures. The two `fn` types stay for `bsd`'s
+//!   copy of the walk until the flip (S2) deletes it with them.
 
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
@@ -230,6 +234,25 @@ pub struct UvmConstraintRange {
     pub ucr_low: Paddr,
     /// Highest allowed address.
     pub ucr_high: Paddr,
+}
+
+/// One segment of a core dump, as `uvm_coredump_walkmap` hands it to its walk callback
+/// (`uvm_coredump_walk_cb`'s arguments, the `cookie` gone into the closure): `[start,
+/// realend)` holds data, `[realend, end)` is absent (zero) memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoredumpSeg {
+    /// `start`.
+    pub start: usize,
+    /// `realend`.
+    pub realend: usize,
+    /// `end`.
+    pub end: usize,
+    /// `prot`.
+    pub prot: VmProt,
+    /// `isvnode`: the segment maps a vnode.
+    pub isvnode: bool,
+    /// `nsegment`: the segment's index.
+    pub nsegment: i32,
 }
 
 /// `uvm_coredump_setup_cb`: called once with the number of segments a core dump will hold.

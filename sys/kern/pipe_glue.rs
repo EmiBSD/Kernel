@@ -379,6 +379,10 @@ impl UioMove for UioAdapter<'_, '_> {
     fn nonblock(&self) -> bool {
         self.fp.flag() & FNONBLOCK != 0
     }
+
+    fn is_write(&self) -> bool {
+        self.uio.uio_rw == crate::sys::uio::UioRw::UIO_WRITE
+    }
 }
 
 impl PipeFiles<BsdPipeGlue> for BsdFiles<'_> {

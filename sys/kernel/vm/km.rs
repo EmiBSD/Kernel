@@ -209,6 +209,17 @@
 //!   object (the kernel's since N3.4e); its write witness is the C's `KASSERT(rw_write_held)`.
 //!   Nothing calls them in a kernel image until the flip (S2): `bsd`'s copies and the
 //!   [`KmMaps`] bridge stay live until then.
+//! - N3.5 S1: the windows of `uvm_io` and `sys_kbind` are minted only from the range
+//!   `uvm_map_extract` returned: [`uvm_map_extract_window`] wraps that range in an
+//!   [`Extracted`] (no other constructor), which [`foreign_window`] consumes into a
+//!   [`KernelWindow`]; the window is dropped before the range, and the range's drop unmaps it
+//!   from `kernel_map` (`uvm_unmap_remove`, `uvm_unmap_detach(AMAP_REFALL)`). The token's
+//!   contract ("a window only over your own extract's range, unmapped only after the window
+//!   is gone") is that type. The token stays private here (`token`): the other modules
+//!   of `kernel::vm` reach it as a [`VmMapper`] ([`mapper`]: `enter`, `map_direct`,
+//!   `map_frames`), which cannot mint a window, so no caller can name another range.
+//!   [`dma_memory`] is `KmBuf`'s provider of DMA-reachable wired pages (`uvm_vslock_device`'s
+//!   bounce), the virtual space taken first without waiting, then the pages, as the C.
 
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -216,30 +227,42 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::bridges::AlreadyRegistered;
 use hal::kmbuf::{PageKind, PageMemory};
+use hal::mapped::MappedBytes;
 use hal::module::ModuleMemory;
 use hal::once::OnceStatic;
-use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED};
+use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, PmapRef};
 use hal::rwlock::{Witness, WriteWitness};
 use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE};
 use hal::sys::types::{Paddr, Vaddr, Vsize};
+use hal::user::ForeignWindow;
 use hal::vm::param::round_page;
 use hal::vm::uvmexp::UVMEXP;
 
-use super::aobj::uao_dropswap;
-use super::map::VmMap;
+use super::amap::AMAP_REFALL;
+use super::aobj::{UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
+use super::map::{
+    DeadQueue, VM_MAP_PAGEABLE, VmMap, uvm_map, uvm_map_create, uvm_map_extract, uvm_map_setup,
+    uvm_map_submap, uvm_unmap_detach, uvm_unmap_remove,
+};
 use super::object::ObjRef;
 use super::page::{
     Owner, PG_BUSY, PG_WANTED, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pagelookup,
     uvm_pglistalloc, uvm_pglistfree,
 };
 use super::types::{
-    UVM_FLAG_TRYLOCK, UVM_PLA_NOWAIT, UVM_PLA_TRYCONTIG, UVM_PLA_WAITOK, UVM_PLA_ZERO,
-    UVM_UNKNOWN_OFFSET, UvmConstraintRange, VmProt, Voff, uvm_mapflag,
+    UVM_FLAG_FIXED, UVM_FLAG_NOMERGE, UVM_FLAG_TRYLOCK, UVM_PLA_NOWAIT, UVM_PLA_TRYCONTIG,
+    UVM_PLA_WAITOK, UVM_PLA_ZERO, UVM_UNKNOWN_OFFSET, UvmConstraintRange, VmProt, Voff,
+    uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
 use crate::prf::unported;
+
+/// `VM_KERNEL_SPACE_SIZE` (`<uvm/uvm_param.h>`): the size of the kernel's virtual address
+/// space (the kernel object's).
+pub const VM_KERNEL_SPACE_SIZE: usize = hal::arch::current::vmparam::VM_MAX_KERNEL_ADDRESS
+    - hal::arch::current::vmparam::VM_MIN_KERNEL_ADDRESS;
 
 /// Which kernel map a [`KmemVaMode`] allocates from (`kv_map` in C is a pointer to the map
 /// pointer; the maps are `bsd`'s, named here, reached through [`KmMaps`]).
@@ -437,6 +460,9 @@ static KMEM_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
 static EXEC_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
 /// `phys_map`: set once by the machine's `cpu_startup`.
 static PHYS_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
+/// `kernel_map_store`: the kernel map itself (`uvm_km_init` sets it up before `malloc(9)`
+/// exists, so it is a static, not a `uvm_map_create`d map).
+static KERNEL_MAP_STORE: VmMap = VmMap::new(0, 0);
 
 /// The kernel maps, still `bsd`'s (`uvm_map`, N3.5): a bridge (bridges.toml), no logic.
 ///
@@ -467,6 +493,106 @@ pub trait KmMaps: Sync {
     /// The map's address, the C's wait channel for `"km_allocva"` (compared, never
     /// dereferenced).
     fn chan(&self, which: KvMap) -> *const ();
+}
+
+/// The kernel map's token as [`mapper`] lends it to the rest of `kernel::vm`: the calls the
+/// fault and the pager make, and no foreign window (see [`mapper`]).
+#[derive(Clone, Copy)]
+pub(super) struct VmMapper(&'static KernelMapper);
+
+impl VmMapper {
+    /// `pmap_enter(pmap_kernel(), va, pa, prot, flags)` (`KernelMapper::enter`).
+    pub(super) fn enter(self, va: Vaddr, pa: Paddr, prot: VmProt, flags: i32) -> Result<(), Errno> {
+        self.0.enter(va, pa, prot, flags)
+    }
+
+    /// `pmap_remove(pmap_kernel(), sva, eva)` (`KernelMapper::remove`): the map's unmap path.
+    pub(super) fn remove(self, sva: Vaddr, eva: Vaddr) {
+        self.0.remove(sva, eva)
+    }
+
+    /// `pmap_protect(pmap_kernel(), sva, eva, prot)` (`KernelMapper::protect`): the map's
+    /// `uvm_map_protect`.
+    pub(super) fn protect(self, sva: Vaddr, eva: Vaddr, prot: VmProt) {
+        self.0.protect(sva, eva, prot)
+    }
+
+    /// The direct map's view of the page at `pa` (`KernelMapper::map_direct`).
+    pub(super) fn map_direct(self, pa: Paddr) -> MappedBytes<'static> {
+        self.0.map_direct(pa)
+    }
+
+    /// The pager's window of `frames` at `va` (`KernelMapper::map_frames`).
+    pub(super) fn map_frames(
+        self,
+        va: Vaddr,
+        frames: &[Paddr],
+        prot: VmProt,
+    ) -> Result<MappedBytes<'static>, Errno> {
+        self.0.map_frames(va, frames, prot)
+    }
+}
+
+/// A range of `kernel_map` that `uvm_map_extract` filled with another map's pages
+/// ([`uvm_map_extract_window`] makes the only ones; no other constructor): owned, so it is
+/// given back once, by its drop (`uvm_unmap_remove(kernel_map, va, va + len, &dead, FALSE,
+/// TRUE, FALSE)` under the map's write lock, then `uvm_unmap_detach(&dead, AMAP_REFALL)`,
+/// as `uvm_io` and `sys_kbind` do).
+pub struct Extracted {
+    va: Vaddr,
+    len: usize,
+}
+
+impl Extracted {
+    /// The range's first kernel address.
+    pub fn va(&self) -> Vaddr {
+        self.va
+    }
+
+    /// The range's length.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the range is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Drop for Extracted {
+    fn drop(&mut self) {
+        let kmap = kernel_map();
+        let mut dead = DeadQueue::new();
+        {
+            let mut g = kmap.lock();
+            let va = self.va.as_usize();
+            // uvm_unmap_remove cannot fail on kernel_map (no immutable check): the C ignores
+            // its result too. XXX
+            let _ = uvm_unmap_remove(&mut g, va, va + self.len, &mut dead, false, true, false);
+        }
+        uvm_unmap_detach(&mut dead, AMAP_REFALL);
+    }
+}
+
+/// An extracted range and the one window that copies through it ([`foreign_window`]). The
+/// window is dropped before the range (the fields' order), so the range is unmapped only
+/// once nothing can copy through it.
+pub struct KernelWindow {
+    window: ForeignWindow<'static>,
+    range: Extracted,
+}
+
+impl KernelWindow {
+    /// The window: `read_at`/`write_at` within the extracted range.
+    pub fn window(&self) -> &ForeignWindow<'static> {
+        &self.window
+    }
+
+    /// The range it copies through.
+    pub fn range(&self) -> &Extracted {
+        &self.range
+    }
 }
 
 /// The one lend of the kernel map's token to `bsd`: [`adopt_mapper`] makes it, once, and the
@@ -529,13 +655,22 @@ pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
 /// a pager window lies in space `km_alloc` reserved with neither (`kv_any`, `kp_none`: the
 /// pager segments), so a fault on a window's address is case 0 and fails with `EFAULT` before
 /// any `pmap_enter`.
-pub(super) fn mapper() -> &'static KernelMapper {
+fn token() -> &'static KernelMapper {
     match MAPPER.get() {
         Some(m) => m,
         None => kpanic(format_args!(
             "pmap: the kernel pmap used before pmap_bootstrap"
         )),
     }
+}
+
+/// The kernel map's token as the other modules of `kernel::vm` reach it: the fault's
+/// `pmap_enter` on `kernel_map` and the pager's windows (`map_direct`, `map_frames`). Every way
+/// in but [`KernelMapper::foreign_window`], which only this module calls, over an
+/// [`Extracted`] range ([`foreign_window`]): no other caller can name a window's range.
+/// Panics before [`adopt_mapper`].
+pub(super) fn mapper() -> VmMapper {
+    VmMapper(token())
 }
 
 /// The token, lent to the holder of the [`LegacyLend`]: `machine::pmap`, for its wrappers
@@ -548,7 +683,7 @@ pub(super) fn mapper() -> &'static KernelMapper {
 /// machines' `cpu` and `vm_machdep`, N7 `bus_space`, `rnd`, `vfs_biomem`) and goes with the
 /// last one. Panics before [`adopt_mapper`].
 pub fn legacy_mapper(_lend: &LegacyLend) -> &'static KernelMapper {
-    mapper()
+    token()
 }
 
 /// `uvm_km_init`'s bounds of the kernel map: the first address past its bootstrap reservation
@@ -638,6 +773,149 @@ pub fn is_kernel_map(map: &VmMap) -> bool {
     map_of(KvMap::Kernel).is_some_and(|k| core::ptr::eq(k, map))
 }
 
+/// `uvm_map_extract(src, start, len, &kva, flags)` as a value: the pages of `[start, start +
+/// len)` of `src`, mapped in `kernel_map` at the address the extract chose, wrapped in the
+/// only window that may copy through them ([`KernelWindow`]); its drop unmaps them. The one
+/// way to an [`Extracted`]: the range is the extract's result, never a caller's number.
+pub fn uvm_map_extract_window(
+    src: &VmMap,
+    start: usize,
+    len: usize,
+    flags: i32,
+) -> Result<KernelWindow, Errno> {
+    let kva = uvm_map_extract(src, start, len, flags)?;
+    Ok(foreign_window(Extracted {
+        va: Vaddr::new(kva),
+        len,
+    }))
+}
+
+/// The window onto an extracted range, minted by the kernel map's token: the window
+/// consumes the range, so it is the range's only window, and the range is unmapped only
+/// after the window is gone (the token's contract, `hal::pmap::KernelMapper::foreign_window`).
+pub fn foreign_window(range: Extracted) -> KernelWindow {
+    let window = token().foreign_window(range.va, range.len);
+    KernelWindow { window, range }
+}
+
+/// `uvm_km_init`: init kernel maps and objects to reflect reality (i.e. KVM already
+/// allocated for text, data, bss, and static data structures).
+///
+/// - KVM is defined by `[base.. base + VM_KERNEL_SPACE_SIZE]`. we assume that
+///   `[base -> start]` has already been allocated and that "end" is the end of the kernel
+///   image span.
+pub fn uvm_km_init(base: Vaddr, start: Vaddr, end: Vaddr) {
+    // kernel_object: for pageable anonymous kernel memory (the kernel's aobj keeps it:
+    // vm::aobj::kernel_object()).
+    if uao_init().is_err()
+        || uao_create(Vsize::new(VM_KERNEL_SPACE_SIZE), UAO_FLAG_KERNOBJ).is_none()
+    {
+        kpanic(format_args!("uvm_km_init: no kernel object"));
+    }
+
+    // init the map and reserve already allocated kernel space before installing.
+    // KVA_GUARDPAGES is not configured.
+    uvm_map_setup(
+        &KERNEL_MAP_STORE,
+        PmapRef::Kernel,
+        base.as_usize(),
+        end.as_usize(),
+        VM_MAP_PAGEABLE,
+    );
+    let mut reserve = base.as_usize();
+    if base != start
+        && uvm_map(
+            &KERNEL_MAP_STORE,
+            &mut reserve,
+            start.as_usize() - base.as_usize(),
+            None,
+            UVM_UNKNOWN_OFFSET,
+            0,
+            uvm_mapflag(
+                PROT_READ | PROT_WRITE,
+                PROT_READ | PROT_WRITE,
+                MAP_INHERIT_NONE,
+                MADV_RANDOM,
+                UVM_FLAG_FIXED,
+            ),
+        )
+        .is_err()
+    {
+        kpanic(format_args!(
+            "uvm_km_init: could not reserve space for kernel"
+        ));
+    }
+
+    install_submap(KvMap::Kernel, &KERNEL_MAP_STORE);
+    set_bounds(start, end);
+
+    // __HAVE_PMAP_DIRECT: no uvm_km_pages.mtx.
+}
+
+/// `uvm_km_suballoc`: allocate a submap in the kernel map. once a submap is allocated all
+/// references to that area of VM must go through it. this allows the locking of VAs in
+/// kernel_map to be broken up into regions.
+///
+/// - if `fixed` is true, `*min` specifies where the region described by the submap must
+///   start
+/// - if submap is given we use that as the submap, otherwise we alloc a new map
+pub fn uvm_km_suballoc(
+    map: &VmMap,
+    min: &mut usize,
+    max: &mut usize,
+    size: usize,
+    flags: i32,
+    fixed: bool,
+    submap: Option<&'static VmMap>,
+) -> &'static VmMap {
+    let mapflags = UVM_FLAG_NOMERGE | if fixed { UVM_FLAG_FIXED } else { 0 };
+
+    let size = round_page(size); // round up to pagesize
+
+    // first allocate a blank spot in the parent map
+    if uvm_map(
+        map,
+        min,
+        size,
+        None,
+        UVM_UNKNOWN_OFFSET,
+        0,
+        uvm_mapflag(
+            PROT_READ | PROT_WRITE,
+            PROT_READ | PROT_WRITE,
+            MAP_INHERIT_NONE,
+            MADV_RANDOM,
+            mapflags,
+        ),
+    )
+    .is_err()
+    {
+        kpanic(format_args!(
+            "uvm_km_suballoc: unable to allocate space in parent map"
+        ));
+    }
+
+    // set VM bounds (min is filled in by uvm_map)
+    *max = *min + size;
+
+    // add references to pmap and create or init the submap
+    let pmap = map.pmap().clone();
+    let submap = match submap {
+        None => uvm_map_create(pmap, *min, *max, flags),
+        Some(submap) => {
+            uvm_map_setup(submap, pmap, *min, *max, flags);
+            submap
+        }
+    };
+
+    // now let uvm_map_submap plug in it...
+    if uvm_map_submap(map, *min, *max, submap).is_err() {
+        kpanic(format_args!("uvm_km_suballoc: submap allocation failed"));
+    }
+
+    submap
+}
+
 /// `uvm_km_pgremove`: remove pages from a kernel uvm_object.
 ///
 /// - when you unmap a part of anonymous kernel memory you want to toss the pages right
@@ -660,7 +938,7 @@ pub fn uvm_km_pgremove(uobj: &ObjRef, w: &mut WriteWitness<'_>, startva: Vaddr, 
         kpanic(format_args!("uvm_km_pgremove: a witness of another lock"));
     }
 
-    mapper().remove(startva, endva);
+    token().remove(startva, endva);
     let mut curoff = start;
     while curoff < end {
         let pp = uvm_pagelookup(&**uobj, curoff);
@@ -704,7 +982,7 @@ pub fn uvm_km_pgremove_intrsafe(start: Vaddr, end: Vaddr) {
         }
         va += PAGE_SIZE;
     }
-    mapper().kremove(start, Vsize::new(end.as_usize() - start.as_usize()));
+    token().kremove(start, Vsize::new(end.as_usize() - start.as_usize()));
 }
 
 /// `km_alloc`: allocate `sz` bytes of kernel memory with the given virtual, physical and
@@ -790,9 +1068,9 @@ fn alloc_in(
         if kp.kp_pageable {
             // Never reached: pageable memory takes no pages here (it is faulted in from the
             // kernel object), as in the C.
-            let _ = mapper().enter(va, pa, prot, prot | PMAP_WIRED);
+            let _ = token().enter(va, pa, prot, prot | PMAP_WIRED);
         } else {
-            mapper().kenter(va, pa, prot);
+            token().kenter(va, pa, prot);
         }
         va = Vaddr::new(va.as_usize() + PAGE_SIZE);
     }
@@ -876,7 +1154,7 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
         }
 
         if kp.kp_pageable {
-            mapper().remove(Vaddr::new(sva), Vaddr::new(eva));
+            token().remove(Vaddr::new(sva), Vaddr::new(eva));
         } else {
             // The C's order: collect the pages, remove the mappings, then free the list (no
             // page is on a free list while it is still mapped).
@@ -891,7 +1169,7 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
                     }
                 }
             }
-            mapper().kremove(Vaddr::new(sva), Vsize::new(sz));
+            token().kremove(Vaddr::new(sva), Vsize::new(sz));
             uvm_pglistfree(&pgl);
         }
     }
@@ -936,6 +1214,91 @@ impl PageMemory for KmPageMemory {
 
 static KM_PAGE_MEMORY: KmPageMemory = KmPageMemory;
 
+/// `hal::kmbuf::KmBuf`'s wired pages within the machine's DMA range (`dma_constraint`, the
+/// `kp_dma_zero` mode): `uvm_vslock_device`'s bounce buffer.
+struct KmDmaMemory;
+
+impl KmDmaMemory {
+    /// `kp_dma_zero` over the machine's `dma_constraint` (`vm::init::machine()`).
+    fn kp() -> KmemPaMode {
+        KmemPaMode {
+            kp_zero: true,
+            ..pa_mode(super::init::machine().dma_constraint)
+        }
+    }
+}
+
+// The provider's contract (`hal::kmbuf::PageMemory`), as `KmPageMemory`'s: a block is fresh,
+// zeroed, page-aligned kernel memory nothing else references until `free`. Only wired
+// blocks: a pageable one has no physical range to keep to.
+impl PageMemory for KmDmaMemory {
+    fn alloc(&self, len: usize, kind: PageKind, wait: bool) -> Option<(NonNull<u8>, usize)> {
+        if kind != PageKind::Wired {
+            return None;
+        }
+        let va = dma_alloc_in(PMAP_NOMMU, len, &Self::kp(), wait)?;
+        let p = NonNull::new(core::ptr::with_exposed_provenance_mut::<u8>(va.as_usize()))?;
+        Some((p, len))
+    }
+
+    fn free(&self, ptr: NonNull<u8>, len: usize, _kind: PageKind) {
+        km_free(Vaddr::new(ptr.as_ptr().addr()), len, &KV_ANY, &Self::kp());
+    }
+
+    fn page_size(&self) -> usize {
+        PAGE_SIZE
+    }
+}
+
+static KM_DMA_MEMORY: KmDmaMemory = KmDmaMemory;
+
+/// `uvm_vslock_device`'s bounce in the C's order: the virtual space first, never waiting for
+/// it (`km_alloc(sz, &kv_any, &kp_none, &kd_nowait)`: none is the C's `ENOMEM`), then the
+/// pages within `kp`'s constraint (`uvm_pglistalloc(.., UVM_PLA_WAITOK)` with `wait`), each
+/// entered (`pmap_kenter_pa`); with the space given back if the pages cannot be had. Zeroed
+/// (`kp_zero`, the provider's contract). Without an MMU (the host double) `km_alloc` serves it
+/// through the direct map.
+fn dma_alloc_in(nommu: bool, sz: usize, kp: &KmemPaMode, wait: bool) -> Option<Vaddr> {
+    if nommu {
+        let kd = if wait { &KD_WAITOK } else { &KD_NOWAIT };
+        return alloc_in(nommu, sz, &KV_ANY, kp, kd);
+    }
+    let maps = maps()?;
+    let sva = map_va(maps, sz, &KV_ANY, &KP_NONE, &KD_NOWAIT).ok()?;
+    let mut pla_flags = if wait { UVM_PLA_WAITOK } else { UVM_PLA_NOWAIT };
+    if kp.kp_zero {
+        pla_flags |= UVM_PLA_ZERO;
+    }
+    let pgl = Pglist::new();
+    if uvm_pglistalloc(
+        sz,
+        kp.kp_constraint.ucr_low,
+        kp.kp_constraint.ucr_high,
+        Paddr::new(0),
+        Paddr::new(0),
+        &pgl,
+        (sz / PAGE_SIZE) as i32,
+        pla_flags,
+    )
+    .is_err()
+    {
+        free_in(nommu, sva, sz, &KV_ANY, &KP_NONE);
+        return None;
+    }
+    let mut va = sva;
+    while let Some(pg) = pgl.pop_head() {
+        token().kenter(va, pg.phys_addr(), PROT_READ | PROT_WRITE);
+        va = Vaddr::new(va.as_usize() + PAGE_SIZE);
+    }
+    Some(sva)
+}
+
+/// The kernel map's DMA-reachable wired pages as `KmBuf` takes them (`uvm_vslock_device`'s
+/// bounce), a provider passed as a value.
+pub const fn dma_memory() -> &'static dyn PageMemory {
+    &KM_DMA_MEMORY
+}
+
 /// The kernel map's pages as `hal::kmbuf::KmBuf` takes them: `km_alloc(&kv_any, &kp_pageable
 /// or &kp_zero, &kd_waitok or &kd_nowait)`, a provider passed as a value.
 pub const fn page_memory() -> &'static dyn PageMemory {
@@ -957,7 +1320,7 @@ impl ModuleMemory for KmModuleMemory {
 
     fn release(&self, va: Vaddr, len: usize) {
         let len = round_page(len);
-        mapper().kremove(va, Vsize::new(len));
+        token().kremove(va, Vsize::new(len));
         km_free(va, len, &KV_ANY, &KP_NONE);
     }
 }
@@ -968,6 +1331,13 @@ static KM_MODULE_MEMORY: KmModuleMemory = KmModuleMemory;
 /// value.
 pub const fn module_memory() -> &'static dyn ModuleMemory {
     &KM_MODULE_MEMORY
+}
+
+/// The host tests' window over the double's foreign memory (`testutil::FOREIGN_BASE`), which no
+/// extract filled: the copies of `vm::io` and `vm::mmap` tested without a map. Test code only.
+#[cfg(test)]
+pub(super) fn test_window(va: Vaddr, len: usize) -> ForeignWindow<'static> {
+    token().foreign_window(va, len)
 }
 /* </CODE> */
 

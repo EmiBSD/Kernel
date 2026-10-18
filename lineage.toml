@@ -5456,6 +5456,12 @@ native = ["pipe_init", "sys/kernel/pipe.rs::Pipes::init"]
 kind = "split"
 
 [[module]]
+rust = "sys/kern/vm_bsd.rs"
+lz = ["sys/uvm/uvm_mmap.rs", "sys/uvm/uvm_unix.rs", "sys/uvm/uvm_glue.rs", "sys/uvm/uvm_meter.rs", "sys/uvm/uvm_init.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until the flip, S2; forbid, 0 unsafe): bsd's side of kernel::vm: BsdVmProc (VmProc over curproc: pledge_protexec, the W^X exemption and ps_wxcounter, sigexit, trapsignal(SIGSEGV, SEGV_ACCERR), pid/tid/comm/PROC_PC, ps_acflag AMAP, lim_cur, P_HASSIBLING, ps_strings/sigcode/timekeep, fd_getfile..FRELE with DTYPE_VNODE, ps_kbind_* under ps_mtx, the pin table, p_ru, log) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp through SysctlPlain, nkmempages, averunnable, allproc); the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (native_*, VM_ENTRIES = KernelApi::vm: mi_syscall on the same row, pipe_glue's shape); VM_MACHINE (the machine's constants); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits (kernel::vm::glue::default_limits). Three helpers name what S2 changes in struct proc: vmspace_of (p_vmspace as the kernel's Vmspace), vmspace_take (the owning VmspaceRef, G5), pin_install (the owned pin table, G10); S2 also moves sys/uvm's other bsd remainders here"
+
+[[module]]
 rust = "sys/kern/sys_socket.rs"
 lz = ["sys/kern/sys_socket.rs"]
 status = "inherited"
@@ -8354,7 +8360,7 @@ reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::ap
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native"
 
 [[extra]]
 rust = "sys/hal/module/rt.rs"
@@ -8378,7 +8384,7 @@ reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"
@@ -8700,7 +8706,7 @@ rust = "sys/kernel/vm/km.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]
 status = "redesigned"
-notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip)"
+notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider)"
 
 [[module]]
 rust = "sys/kernel/vm/addr.rs"
@@ -8720,6 +8726,62 @@ notes = "N3.5 S1-R1: struct vm_map/vm_map_entry/vmspace in the kernel: entries a
 rust = "sys/kernel/vm/proc.rs"
 crate = "kernel"
 reason = "N3.5 S1: the VmProc bridge (bridges.toml), curproc as uvm asks about it until Proc moves (N4): the trait, its registered slot and the RLIMIT_*/LOG_NOTICE/BOGO_PC numbers; no LZ source (LZ's uvm files read struct proc directly)"
+
+[[module]]
+rust = "sys/kernel/vm/mmap.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_mmap.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until the flip, S2; bsd's sys/uvm/uvm_mmap.rs is the live copy): the 14 mmap system calls and kbind as functions of &Vmspace and typed arguments (MmapArgs), every check the C's, curproc's facts through VmProc (pledge_protexec, the W^X exemption, ps_wxcounter and log, sigexit, lim_cur, P_HASSIBLING, with_fd_vnode for the file half under the kernel lock, with_kbind under ps_mtx, pin_table_set with an MArray<u32>), the vnode's v_type/iszerodev/va_flags through VnodeOps; kbind writes through km's KernelWindow (minted from uvm_map_extract's result); uvm_mmaplock hands its write guard to uvm_map_pageable_locked; the checks split into table-tested helpers (mmap_check_flags, mmap_check_fixed, mmap_maxprot, pins_count/pins_check, kbind_blocks, kbind_check, wire_limits_ok); UVM_WXABORT the kern.wxabort atomic; udv_attach kept unported"
+
+[[module]]
+rust = "sys/kernel/vm/unix.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_unix.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): sys_obreak(vm, nsize) and uvm_grow(vm, sp) over the vmspace's atomics and VmProc's limits; the core dump walk with &mut dyn FnMut callbacks over CoredumpSeg, each entry copied out (Seg) under a short read lock before any callback runs (the C walks unlocked)"
+
+[[module]]
+rust = "sys/kernel/vm/glue.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_glue.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): uvm_vslock/vsunlock over &VmMap; uvm_vslock_device returns a DeviceLock (the FaultMap read guard and a KmBuf bounce of DMA pages from km::dma_memory) consumed by uvm_vsunlock_device; uvm_uarea_alloc/free as Vaddrs (the guard page kept unported); paddr_is_dma_reachable over VmMachine's dma_constraint; default_limits for bsd's uvm_init_limits (uvm_purge, uvm_exit, uvm_init_limits stay bsd's, sys/kern/vm_bsd.rs)"
+
+[[module]]
+rust = "sys/kernel/vm/io.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_io.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): uvm_io(map, &mut dyn UioMove, offset, flags) through km's KernelWindow per chunk (its drop the C's step 4) and a one-page KmBuf bounce (kcopy window <-> bounce, uiomove bounce <-> uio, by UioMove::is_write); the C's ENOMEM halving and EOF truncation kept"
+
+[[module]]
+rust = "sys/kernel/vm/init.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_init.rs"]
+status = "redesigned"
+notes = "N3.5 S1: VmMachine, the machine's constants hal does not carry (__LDPGSZ, USPACE, USPACE_ALIGN, __HAVE_USPACE_GUARD, dma_constraint), handed down once by bsd's uvm_init (uvm_machine_init), read through machine(); uvm_init_early (uvm_map_init, uvm_maxkaddr raised to the runtime base, uvm_km_init, uvmfault_init) and uvm_init_late (uvm_pager_init, amap_init, km_page_lateinit reported unported, the kernel swap aobj, uvm_anon_init, the best-fit switch of kernel_map AND kmem_map as the C, closing LZ's quirk), uvm_init_percpu; bsd's uvm_init runs page init, early, pmap_init, kmeminit, dma_alloc_init, late (dead until S2)"
+
+[[module]]
+rust = "sys/kernel/vm/meter.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_meter.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): uvm_sysctl over a SysctlReq and the VmSysctl bridge (sysctl_rdint/int/rdstruct/string, rdstruct_uvmexp over bsd's SysctlPlain view, nkmempages, averunnable, allproc as ProcState), every value and check here (the minimum percentages' 95 cap); uvm_total classifies ProcState as the C; malloc_conf a Mutexed copy around the sleeping sysctl_string; uvmexp_read, uvmexp_print over a closure"
+
+[[module]]
+rust = "sys/kernel/vm/pdaemon.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_pdaemon.rs"]
+status = "redesigned"
+notes = "N3.5 S1: LZ's stub moved whole (the N3 exit with the page daemon a visible stub, the main session's decision of 2026-10-18): uvm_wait forwards to pmemrange's unported report, uvmpd_tune (its arithmetic split out and table-tested)"
+
+[[module]]
+rust = "sys/kernel/vm/swap.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_swap.rs"]
+status = "redesigned"
+notes = "N3.5 S1: LZ's stub moved whole (the N3 exit with swap a visible stub): uvm_swapisfull, SWSLOT_BAD re-exported from vm::anon"
 
 [[module]]
 rust = "sys/kernel/vm/anon.rs"

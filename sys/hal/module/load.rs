@@ -468,7 +468,51 @@ mod tests {
         Ok(())
     }
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2);
+    fn nr(_: isize) -> SysResult {
+        Ok(())
+    }
+    fn nr_int(_: isize, _: i32) -> SysResult {
+        Ok(())
+    }
+    fn obreak(_: isize, _: usize) -> SysResult {
+        Ok(())
+    }
+    fn range(_: isize, _: usize, _: usize) -> SysResult {
+        Ok(())
+    }
+    fn range_int(_: isize, _: usize, _: usize, _: i32) -> SysResult {
+        Ok(())
+    }
+    fn mmap(_: isize, a: usize, _: usize, _: i32, _: i32, _: i32, _: i64) -> Result<usize, i32> {
+        Ok(a)
+    }
+    fn kbind(_: isize, _: usize, _: usize, _: u64) -> SysResult {
+        Ok(())
+    }
+    fn pins(_: isize, _: usize, _: usize, _: usize, _: i32) -> SysResult {
+        Ok(())
+    }
+
+    /// Version 3's entries, every one answering `Ok`.
+    const VM: crate::api::VmEntries = crate::api::VmEntries {
+        obreak,
+        mmap,
+        munmap: range,
+        mprotect: range_int,
+        madvise: range_int,
+        mquery: mmap,
+        kbind,
+        pinsyscalls: pins,
+        mimmutable: range,
+        mlock: range,
+        munlock: range,
+        minherit: range_int,
+        msync: range_int,
+        mlockall: nr_int,
+        munlockall: nr,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -490,7 +534,7 @@ mod tests {
                 version: 1,
                 size: 40,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout, pipe2)
+            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM)
         };
         assert_eq!(
             load_with(&Empty, &Empty, &OTHER),

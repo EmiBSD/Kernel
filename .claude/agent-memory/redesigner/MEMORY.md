@@ -145,3 +145,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - A trait method that reads lock-guarded fields without a witness parameter (FaultEntry::aref) cannot be implemented over `Guarded` cells: move such reads to the guard trait (`g.aref(e)`) before building on it.
 - A trial `git merge --no-commit --no-ff <other branch>` + cargo check, then `git restore` + `git merge --abort`, measures a parallel branch's API mismatches exactly; edits made during the trial must be restored before the abort succeeds.
 - `std::panic::catch_unwind(|| f(&x))` stops compiling once `x` gains cells (RefUnwindSafe): wrap in `AssertUnwindSafe` in the test.
+- Coding against an API another agent writes in parallel: keep its assumed signatures as a local, never-committed stub file plus a script that swaps it out (placeholder from HEAD, extra `mod` line dropped) before each commit and back after; `lz check` refuses an untracked .rs under sys/.
+- Inserting a `[[module]]` right after another module's `notes =` line in lineage.toml silently re-parents that module's `[[module.fn]]` rows; insert after its last row (before the next header).
+- Worktree sandbox: `python3 - <file> <<'EOF' ... EOF` (heredoc script, the path as argv) passes where `cat >> file <<EOF` and sed with multi-line `c\` are refused.
+- clippy doc_lazy_continuation: a `//!` continuation line that starts with `+` (or `-`, `*`) is read as a new list item; reword so no line starts with one.

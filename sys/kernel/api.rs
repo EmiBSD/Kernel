@@ -23,13 +23,14 @@
 //! names it without depending on this crate.
 //!
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
-//! that answer: the LZ system call path, `copyin`/`copyout`, and `pipe2`, which runs the
-//! system call prologue still in `bsd` (pledge, the pinned syscalls) before
-//! `kernel::pipe`, `sys/kern/pipe_glue.rs`); an entry moves to a `kernel` function when its
+//! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
+//! system's fifteen (`VmEntries`, N3.5), which run the system call prologue still in `bsd`
+//! (pledge, the pinned syscalls) before `kernel::pipe` and `kernel::vm`,
+//! `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`); an entry moves to a `kernel` function when its
 //! subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
-    AbiInit, AbiModuleHeader, ApiPrefix, KERNEL_API_VERSION, KernelApi, SyscallHandler,
+    AbiInit, AbiModuleHeader, ApiPrefix, KERNEL_API_VERSION, KernelApi, SyscallHandler, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -50,6 +51,7 @@ pub const fn table(
     copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
     copyout: fn(&[u8], usize) -> Result<(), i32>,
     pipe2: fn(Register, usize, Register) -> SysResult,
+    vm: VmEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -57,6 +59,7 @@ pub const fn table(
         copyin,
         copyout,
         pipe2,
+        vm,
     )
 }
 
@@ -105,7 +108,58 @@ mod tests {
         Err(nr as i32)
     }
 
-    static API: KernelApi = table(legacy, copyin, copyout, pipe2);
+    fn nr(nr: Register) -> SysResult {
+        Err(nr as i32)
+    }
+    fn nr_int(nr: Register, _: i32) -> SysResult {
+        Err(nr as i32)
+    }
+    fn obreak(nr: Register, _: usize) -> SysResult {
+        Err(nr as i32)
+    }
+    fn range(nr: Register, _: usize, _: usize) -> SysResult {
+        Err(nr as i32)
+    }
+    fn range_int(nr: Register, _: usize, _: usize, _: i32) -> SysResult {
+        Err(nr as i32)
+    }
+    fn mmap(
+        nr: Register,
+        _: usize,
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i64,
+    ) -> Result<usize, i32> {
+        Err(nr as i32)
+    }
+    fn kbind(nr: Register, _: usize, _: usize, _: u64) -> SysResult {
+        Err(nr as i32)
+    }
+    fn pins(nr: Register, _: usize, _: usize, _: usize, _: i32) -> SysResult {
+        Err(nr as i32)
+    }
+
+    const VM: VmEntries = VmEntries {
+        obreak,
+        mmap,
+        munmap: range,
+        mprotect: range_int,
+        madvise: range_int,
+        mquery: mmap,
+        kbind,
+        pinsyscalls: pins,
+        mimmutable: range,
+        mlock: range,
+        munlock: range,
+        minherit: range_int,
+        msync: range_int,
+        mlockall: nr_int,
+        munlockall: nr,
+    };
+
+    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM);
 
     #[test]
     fn the_table_is_this_version_with_the_kernels_registration() {
@@ -120,6 +174,8 @@ mod tests {
         assert_eq!((API.syscall_legacy)(9, &[0; 6], &mut rval), Ok(()));
         assert_eq!(rval[0], 9);
         assert_eq!((API.pipe2)(263, 0, 0), Err(263));
+        assert_eq!((API.vm.mmap)(49, 0, 0, 0, 0, 0, 0), Err(49));
+        assert_eq!((API.vm.munlockall)(272), Err(272));
     }
 }
 /* </TESTS> */

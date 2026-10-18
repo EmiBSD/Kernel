@@ -133,4 +133,6 @@ pub mod vfs_syscalls;
 pub mod vfs_vnops;
 #[forbid(unsafe_code)]
 pub mod vfs_vops;
+#[forbid(unsafe_code)]
+pub mod vm_bsd;
 /* </CODE> */

@@ -612,9 +612,16 @@ pub struct MemVnode {
     last_read: Mutex<Option<ReadSeen>>,
     /// Run by the next read inside the "VOP_READ", as another process might meanwhile.
     during_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// `v_type` (`VREG` unless a test sets another).
+    vtype: Mutex<crate::vm::vnode::VType>,
 }
 
 impl MemVnode {
+    /// Sets `v_type` (`vgone` makes it `VBAD`).
+    pub fn set_vtype(&self, t: crate::vm::vnode::VType) {
+        *lock_any(&self.vtype) = t;
+    }
+
     /// `v_usecount`.
     pub fn usecount(&self) -> i32 {
         self.usecount.load(Ordering::Relaxed)
@@ -657,6 +664,18 @@ fn lock_any<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl VnodeOps for MemVnode {
+    fn vtype(&self) -> crate::vm::vnode::VType {
+        *lock_any(&self.vtype)
+    }
+
+    fn is_zero_device(&self) -> bool {
+        false
+    }
+
+    fn attr_flags(&'static self) -> Result<u64, Errno> {
+        Ok(0)
+    }
+
     fn uvn(&self) -> Option<&'static Uvn> {
         self.uvn.get()
     }
@@ -756,6 +775,7 @@ pub fn mem_vnode(contents: Vec<u8>) -> &'static MemVnode {
         fail: std::sync::atomic::AtomicBool::new(false),
         last_read: Mutex::new(None),
         during_read: Mutex::new(None),
+        vtype: Mutex::new(crate::vm::vnode::VType::VREG),
     }))
 }
 static TEST_INTR: TestIntr = TestIntr;
@@ -796,6 +816,7 @@ pub fn install() {
         let _ = bridges::register_random(&TEST_RANDOM);
         let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
+        crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
     });
 }
 
@@ -1311,4 +1332,14 @@ impl crate::vm::proc::VmProc for TestVmProc {
 }
 
 static TEST_VM_PROC: TestVmProc = TestVmProc;
+
+/// The machine's constants of `vm::init` for the host tests: amd64's numbers, no DMA
+/// constraint.
+static TEST_VM_MACHINE: crate::vm::init::VmMachine = crate::vm::init::VmMachine {
+    ldpgsz: TEST_PAGE,
+    uspace: 5 * TEST_PAGE,
+    uspace_align: 0,
+    have_uspace_guard: true,
+    dma_constraint: &crate::vm::km::NO_CONSTRAINT,
+};
 /* </CODE> */
