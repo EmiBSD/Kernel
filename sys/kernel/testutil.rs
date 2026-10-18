@@ -657,6 +657,18 @@ fn lock_any<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl VnodeOps for MemVnode {
+    fn vtype(&self) -> crate::vm::vnode::VType {
+        crate::vm::vnode::VType::VREG
+    }
+
+    fn is_zero_device(&self) -> bool {
+        false
+    }
+
+    fn attr_flags(&'static self) -> Result<u64, Errno> {
+        Ok(0)
+    }
+
     fn uvn(&self) -> Option<&'static Uvn> {
         self.uvn.get()
     }
@@ -796,6 +808,7 @@ pub fn install() {
         let _ = bridges::register_random(&TEST_RANDOM);
         let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
+        crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
     });
 }
 
@@ -1311,4 +1324,14 @@ impl crate::vm::proc::VmProc for TestVmProc {
 }
 
 static TEST_VM_PROC: TestVmProc = TestVmProc;
+
+/// The machine's constants of `vm::init` for the host tests: amd64's numbers, no DMA
+/// constraint.
+static TEST_VM_MACHINE: crate::vm::init::VmMachine = crate::vm::init::VmMachine {
+    ldpgsz: TEST_PAGE,
+    uspace: 5 * TEST_PAGE,
+    uspace_align: 0,
+    have_uspace_guard: true,
+    dma_constraint: &crate::vm::km::NO_CONSTRAINT,
+};
 /* </CODE> */

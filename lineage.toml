@@ -8713,6 +8713,41 @@ crate = "kernel"
 reason = "N3.5 S1: the VmProc bridge (bridges.toml), curproc as uvm asks about it until Proc moves (N4): the trait, its registered slot and the RLIMIT_*/LOG_NOTICE/BOGO_PC numbers; no LZ source (LZ's uvm files read struct proc directly)"
 
 [[module]]
+rust = "sys/kernel/vm/mmap.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_mmap.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until the flip, S2; bsd's sys/uvm/uvm_mmap.rs is the live copy): the 14 mmap system calls and kbind as functions of &Vmspace and typed arguments (MmapArgs), every check the C's, curproc's facts through VmProc (pledge_protexec, the W^X exemption, ps_wxcounter and log, sigexit, lim_cur, P_HASSIBLING, with_fd_vnode for the file half under the kernel lock, with_kbind under ps_mtx, pin_table_set with an MArray<u32>), the vnode's v_type/iszerodev/va_flags through VnodeOps; kbind writes through km's KernelWindow (minted from uvm_map_extract's result); uvm_mmaplock hands its write guard to uvm_map_pageable_locked; the checks split into table-tested helpers (mmap_check_flags, mmap_check_fixed, mmap_maxprot, pins_count/pins_check, kbind_blocks, kbind_check, wire_limits_ok); UVM_WXABORT the kern.wxabort atomic; udv_attach kept unported"
+
+[[module]]
+rust = "sys/kernel/vm/unix.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_unix.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): sys_obreak(vm, nsize) and uvm_grow(vm, sp) over the vmspace's atomics and VmProc's limits; the core dump walk with &mut dyn FnMut callbacks over CoredumpSeg, each entry copied out (Seg) under a short read lock before any callback runs (the C walks unlocked)"
+
+[[module]]
+rust = "sys/kernel/vm/glue.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_glue.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): uvm_vslock/vsunlock over &VmMap; uvm_vslock_device returns a DeviceLock (the FaultMap read guard and a KmBuf bounce of DMA pages from km::dma_memory) consumed by uvm_vsunlock_device; uvm_uarea_alloc/free as Vaddrs (the guard page kept unported); paddr_is_dma_reachable over VmMachine's dma_constraint; default_limits for bsd's uvm_init_limits (uvm_purge, uvm_exit, uvm_init_limits stay bsd's, sys/kern/vm_bsd.rs)"
+
+[[module]]
+rust = "sys/kernel/vm/io.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_io.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until S2): uvm_io(map, &mut dyn UioMove, offset, flags) through km's KernelWindow per chunk (its drop the C's step 4) and a one-page KmBuf bounce (kcopy window <-> bounce, uiomove bounce <-> uio, by UioMove::is_write); the C's ENOMEM halving and EOF truncation kept"
+
+[[module]]
+rust = "sys/kernel/vm/init.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_init.rs"]
+status = "redesigned"
+notes = "N3.5 S1: VmMachine, the machine's constants hal does not carry (__LDPGSZ, USPACE, USPACE_ALIGN, __HAVE_USPACE_GUARD, dma_constraint), handed down once by bsd's uvm_init (uvm_machine_init), read through machine()"
+
+[[module]]
 rust = "sys/kernel/vm/anon.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_anon.rs"]

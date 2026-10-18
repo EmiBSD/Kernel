@@ -577,6 +577,9 @@ pub trait UioMove {
     /// check, as the C reads `f_flag` each time round its loops (`fcntl(F_SETFL)` from
     /// another thread changes it while a reader or a writer sleeps).
     fn nonblock(&self) -> bool;
+    /// `uio_rw == UIO_WRITE`: the bytes flow out of the uio (`uiomove` fills `buf`); a read
+    /// moves them into it. `uvm_io` asks which way to copy through its window.
+    fn is_write(&self) -> bool;
 }
 
 /// `dopipe`'s descriptor work, which stays `bsd`'s until descriptors move (N4): two
@@ -1475,6 +1478,10 @@ mod tests {
 
         fn nonblock(&self) -> bool {
             self.nonblock.load(Ordering::SeqCst)
+        }
+
+        fn is_write(&self) -> bool {
+            self.source
         }
     }
 

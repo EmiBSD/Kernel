@@ -349,6 +349,30 @@ enum UioRw {
     Write,
 }
 
+/// `enum vtype` (`<sys/vnode.h>`), as `mmap(2)` asks it of a vnode ([`VnodeOps::vtype`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)] // OpenBSD's names
+pub enum VType {
+    /// No type.
+    VNON,
+    /// Regular file.
+    VREG,
+    /// Directory.
+    VDIR,
+    /// Block device.
+    VBLK,
+    /// Character device.
+    VCHR,
+    /// Symbolic link.
+    VLNK,
+    /// Socket.
+    VSOCK,
+    /// Fifo.
+    VFIFO,
+    /// A vnode that has been cleaned out (`vgone`).
+    VBAD,
+}
+
 /// `uvm_vnode_pool`.
 static UVN_POOL: TypedPool<Uvn> = TypedPool::new();
 /// `uvn_wlist`: \[K\] writeable uvns.
@@ -398,6 +422,13 @@ pub trait VnodeOps: Sync {
     /// `VOP_WRITE(vp, &uio, ioflag, curproc's cred)` of `buf` at `off`: the bytes written. The
     /// vnode is locked.
     fn write(&'static self, off: Voff, buf: &[u8], ioflag: i32) -> Result<usize, Errno>;
+    /// `vp->v_type` (`mmap(2)`'s checks, `uvm_mmapfile`).
+    fn vtype(&self) -> VType;
+    /// `iszerodev(vp->v_rdev)`: the device is `/dev/zero` (meaningful for a `VCHR` vnode).
+    fn is_zero_device(&self) -> bool;
+    /// `VOP_GETATTR(vp, &vattr, p->p_ucred, p)` for `curproc`: `va_flags` (`mmap(2)`'s
+    /// `IMMUTABLE | APPEND` check).
+    fn attr_flags(&'static self) -> Result<u64, Errno>;
 }
 
 /// The system's clock and its shutdown state, as the vnode pager needs them, `bsd`'s until

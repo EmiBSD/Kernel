@@ -136,11 +136,12 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
+use crate::machine::conf::iszerodev;
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
-use crate::sys::vnode::{VBLK, VTEXT, Vattr, Vnode};
+use crate::sys::vnode::{VBLK, VTEXT, Vattr, Vnode, Vtype};
 use crate::uvm::uvm_extern::{VmProt, Voff};
 use crate::uvm::uvm_object::ObjRef;
 
@@ -253,6 +254,33 @@ impl VnodeOps for Vnode {
             buf.len(),
             ioflag,
         )
+    }
+
+    fn vtype(&self) -> VType {
+        match self.v_type.get() {
+            Vtype::VNON => VType::VNON,
+            Vtype::VREG => VType::VREG,
+            Vtype::VDIR => VType::VDIR,
+            Vtype::VBLK => VType::VBLK,
+            Vtype::VCHR => VType::VCHR,
+            Vtype::VLNK => VType::VLNK,
+            Vtype::VSOCK => VType::VSOCK,
+            Vtype::VFIFO => VType::VFIFO,
+            Vtype::VBAD => VType::VBAD,
+        }
+    }
+
+    fn is_zero_device(&self) -> bool {
+        iszerodev(self.v_rdev())
+    }
+
+    fn attr_flags(&'static self) -> Result<u64, Errno> {
+        let Some(p) = curproc() else {
+            panic(format_args!("mmap: no curproc"));
+        };
+        let mut vattr = Vattr::new();
+        VOP_GETATTR(self, &mut vattr, p.p_ucred.get(), p)?;
+        Ok(vattr.va_flags)
     }
 }
 
