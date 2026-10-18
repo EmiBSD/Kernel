@@ -175,7 +175,10 @@
 //! - `RBT_REMOVE(name, head, elm)` with `elm` a pointer the caller found ->
 //!   [`OwnedTree::take_by`], which finds and removes in one call (a reference that borrows the
 //!   tree cannot be passed to a method that changes it); `RBT_FIND`/`RBT_NFIND` with an
-//!   element built as the key -> [`OwnedTree::find_by`]/[`OwnedTree::nfind_by`].
+//!   element built as the key -> [`OwnedTree::find_by`]/[`OwnedTree::nfind_by`]. A caller
+//!   that goes on from the element it inserted (the C keeps its pointer) takes
+//!   [`OwnedTree::insert_get`], which lends the tree, shared, and the element now in it, or
+//!   gives the box back with the equal element (the C's return value).
 //! - `RBT_GENERATE_AUGMENT(name, type, field, cmp, augment)`: the adapter's `augment`
 //!   recomputes one node's summary from itself and its children and says whether it changed;
 //!   wherever `subr_tree.c` calls the callback this module walks up from the node while the
@@ -628,6 +631,34 @@ impl<A: OwnedAdapter> OwnedTree<A> {
     /// element that compares equal is there (the C returns that element: [`OwnedTree::find`]
     /// of the box gives it).
     pub fn insert(&mut self, e: PoolBox<A::Elem>) -> Option<PoolBox<A::Elem>> {
+        self.link(e).err().map(|(back, _)| back)
+    }
+
+    /// `RBT_INSERT(e)` as [`OwnedTree::insert`], lending what the C's caller keeps: the tree,
+    /// shared, and the element now in it (the pointer `uvm_map_fix_space` goes on with), or,
+    /// when an element that compares equal is there, `e`'s box and that element (the C's
+    /// return value).
+    #[allow(clippy::type_complexity, reason = "the two outcomes of RBT_INSERT")]
+    pub fn insert_get(
+        &mut self,
+        e: PoolBox<A::Elem>,
+    ) -> Result<(&Self, &A::Elem), (PoolBox<A::Elem>, &A::Elem)> {
+        match self.link(e) {
+            Ok(p) => {
+                let tree: &Self = self;
+                Ok((tree, tree.node(p)))
+            }
+            Err((back, x)) => Err((back, self.node(x))),
+        }
+    }
+
+    /// `RBT_INSERT`'s work: the element linked (its pointer), or its box given back with the
+    /// equal node's pointer.
+    #[allow(clippy::type_complexity, reason = "the two outcomes of RBT_INSERT")]
+    fn link(
+        &mut self,
+        e: PoolBox<A::Elem>,
+    ) -> Result<NonNull<A::Elem>, (PoolBox<A::Elem>, NonNull<A::Elem>)> {
         self.check("RBT_INSERT");
         let ent = entry_of::<A>(&e);
         if ent.is_linked() || ent.indexed() != 0 {
@@ -645,7 +676,7 @@ impl<A: OwnedAdapter> OwnedTree<A> {
             n = match went {
                 Ordering::Less => self.view(x).left(),
                 Ordering::Greater => self.view(x).right(),
-                Ordering::Equal => return Some(e),
+                Ordering::Equal => return Err((e, x)),
             };
         }
         if self.id == 0 {
@@ -665,7 +696,7 @@ impl<A: OwnedAdapter> OwnedTree<A> {
         ent.pool.set(Some(pool));
         rb_link(self, p, parent, went);
         core::mem::forget(changing);
-        None
+        Ok(p)
     }
 
     /// `RBT_REMOVE` of the element equal to the key (`key_vs`, as [`OwnedTree::find_by`]):
@@ -2224,6 +2255,33 @@ mod tests {
         drop(b);
         assert_eq!(drops.load(Mem::Relaxed), 1);
         assert!(t.contains(t.root().unwrap()));
+    }
+
+    #[test]
+    fn insert_get_lends_the_element_it_linked_or_the_equal_one() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut oracle = BTreeSet::new();
+        let mut t = OwnedTree::<ByKey>::new();
+        for k in [8u64, 3, 12, 1, 5, 10, 14] {
+            let (tree, e) = t.insert_get(node(k, k, &drops)).ok().unwrap();
+            oracle.insert(k);
+            // The element lent is the one linked, in the tree lent, and the walks go on from
+            // it as from a search's answer.
+            assert_eq!(e.key, k);
+            assert!(tree.contains(e));
+            assert!(core::ptr::eq(tree.find_by(|n| k.cmp(&n.key)).unwrap(), e));
+            let next = oracle.range(k + 1..).next().copied();
+            assert_eq!(tree.next(e).map(|n| n.key), next);
+            check_tree(tree, &oracle);
+        }
+        // An equal key: the box back, and the element already there.
+        let (back, there) = t.insert_get(node(5, 99, &drops)).err().unwrap();
+        assert!(!back.link.is_linked());
+        assert_eq!(there.key, 5);
+        assert_eq!(there.fspace.load(Mem::Relaxed), 5);
+        drop(back);
+        assert_eq!(drops.load(Mem::Relaxed), 1);
+        check_tree(&t, &oracle);
     }
 
     #[test]
