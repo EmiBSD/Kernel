@@ -208,6 +208,8 @@ const _: () = {
     // Version 3 only adds: the version 2 fields keep their places, `vm` comes last.
     assert!(offset_of!(KernelApi, vm) == size_of::<KernelApi>() - size_of::<VmEntries>());
     assert!(size_of::<VmEntries>() == 15 * size_of::<fn()>());
+    // Version 2's fields, the prefix and five entries, keep their offsets: `vm` follows them.
+    assert!(offset_of!(KernelApi, vm) == size_of::<ApiPrefix>() + 5 * size_of::<fn()>());
     assert!(HEADER_MAGIC == 0 && HEADER_API_VERSION == 8 && HEADER_INIT == 16);
     assert!(HEADER_SIZE == 24);
 };
@@ -301,11 +303,6 @@ mod tests {
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
         assert_eq!(KERNEL_API_VERSION, 3);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
-        // Version 2's prefix of fields stays where it was: the prefix, five entries.
-        assert_eq!(
-            offset_of!(KernelApi, vm),
-            size_of::<ApiPrefix>() + 5 * size_of::<fn()>()
-        );
     }
 
     #[test]
