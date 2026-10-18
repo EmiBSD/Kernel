@@ -1601,6 +1601,15 @@ impl<'a> MapGuard<'a> {
         }
     }
 
+    /// `e`'s handles through this guard's witness, its type known in each arm (the cell's
+    /// check monomorphic, not through [`MapGuard::witness`]'s `dyn`).
+    fn handles_of<'e>(&'e self, e: &'e VmMapEntry) -> &'e Handles {
+        match &self.w {
+            AnyWitness::Rw(w) => e.handles(w),
+            AnyWitness::Intr(g) => e.handles(g),
+        }
+    }
+
     /// The map's state.
     pub fn state(&self) -> &MapState {
         self.map.state_cell().get(self.witness())
@@ -2056,16 +2065,16 @@ impl<'a> FaultMapGuard for MapGuard<'a> {
     }
 
     fn submap(&self, entry: &VmMapEntry) -> Option<&'static VmMap> {
-        entry.handles(self.witness()).sub_map()
+        self.handles_of(entry).sub_map()
     }
 
     fn aref(&self, entry: &VmMapEntry) -> Option<(AmapRef, i32)> {
-        let h = entry.handles(self.witness());
+        let h = self.handles_of(entry);
         h.amap.clone().map(|a| (a, h.pageoff))
     }
 
     fn object(&self, entry: &VmMapEntry) -> Option<ObjRef> {
-        entry.handles(self.witness()).uvm_obj().cloned()
+        self.handles_of(entry).uvm_obj().cloned()
     }
 }
 
