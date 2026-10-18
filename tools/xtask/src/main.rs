@@ -86,14 +86,17 @@
 //!                                          that OpenBSD alone with the smokes' device
 //!                                          options, booted with `-c` and the UKC commands
 //!                                          given: its dmesg and CMD's output
-//! cargo xtask bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench]
+//! cargo xtask bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release]
 //!                                          N3: EmiBSD against that OpenBSD on the same
 //!                                          emulated machine, one after the other, N runs
 //!                                          (10): boot time, tools/bench's ns per op, tcpbench
 //!                                          between two VMs; the worst sample per side left
 //!                                          out, then median, min, spread and the
 //!                                          ratio EmiBSD / OpenBSD, refused over a 15 %
-//!                                          spread; <run dir>/A/report.toml (bench.rs)
+//!                                          spread; <run dir>/A/report.toml (bench.rs);
+//!                                          `--profile release` boots the release kernel
+//!                                          (decision 42, a diagnostic: init and the ABI
+//!                                          module stay debug)
 //! cargo xtask bench compare BEFORE AFTER   the `Bench:` lines of what moved between two
 //!                                          reports, beyond their spreads
 //! cargo xtask unsafe-report [--write|--check] [--shapes]
@@ -203,7 +206,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      unsafe-report [--write] [--check] [--shapes] | unsafe-report --json | \
                      diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn] | \
                      diff-openbsd --arch A [--ipmi] [--nic MODEL] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--ukc CMD]... [--sh CMD] probe | \
-                     bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] | bench compare BEFORE AFTER | \
+                     bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release] | bench compare BEFORE AFTER | \
                      symbolize --arch A [--kernel K] | userland --arch A | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
