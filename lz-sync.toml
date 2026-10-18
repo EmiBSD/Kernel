@@ -474,7 +474,7 @@ reason = "merge commit of the pckbc branch into the M16d branch; its resolution 
 [[commit]]
 lz = "602141098d1d"
 subject = "dev/pv: port viornd.c, viomb.c and dma_alloc.c"
-modules = ["sys/dev/pv/viomb.rs", "sys/dev/pv/viornd.rs", "sys/kern/dma_alloc.rs", "sys/uvm/uvm_init.rs"]
+modules = ["sys/dev/pv/viomb.rs", "sys/dev/pv/viornd.rs", "sys/kern/dma_alloc.rs", "sys/kern/vm_bsd.rs"]
 status = "applied"
 emibsd = "d8368cdc9122"
 method = "cherry-pick-conflicts"
