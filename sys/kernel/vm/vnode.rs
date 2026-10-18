@@ -1571,7 +1571,7 @@ mod tests {
     /// (`i % 251`) and its vnode.
     fn setup(len: usize) -> (MutexGuard<'static, ()>, &'static MemVnode) {
         let g = testutil::pages_install(256 * 4096);
-        let _ = hal::rwlock::init_shared();
+        crate::testutil::init_shared_once();
         let _ = uvn_init();
         kernel_lock();
         let vp = testutil::mem_vnode((0..len).map(|i| (i % 251) as u8).collect());

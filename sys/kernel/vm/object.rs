@@ -760,7 +760,7 @@ mod tests {
     /// Real page memory and the lock objects.
     fn setup() -> MutexGuard<'static, ()> {
         let guard = testutil::pages_install(256 * 4096);
-        let _ = hal::rwlock::init_shared();
+        crate::testutil::init_shared_once();
         guard
     }
 

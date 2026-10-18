@@ -8258,7 +8258,6 @@ lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs", "sys/kern/kern_synch.rs"]
 status = "redesigned"
 notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: MutexedGuard::sleep_nsec, msleep_nsec on the guard (kern_synch.c's, hence kern_synch.rs in lz, which also holds rwsleep_nsec for rwlock.rs), its cold || panicstr early return through the Sleep bridge's cold/cold_yield. N3.5 S0: Mutexed::id and the guard as a hal::rwlock witness (Exclusive, Divisible), so Guarded cells key to a mutex (an INTRSAFE map's vm_map.mtx)"
 
-
 [[module]]
 rust = "sys/hal/percpu.rs"
 crate = "hal"
@@ -8270,7 +8269,6 @@ notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the le
 rust = "sys/hal/sleep.rs"
 crate = "hal"
 reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; N3.5 S0: curproc_word and cold public (the map's busy owner, uvm_mapent_alloc's cold test); docs/ZERO_UNSAFE.md 0.1"
-
 
 [[module]]
 rust = "sys/hal/rwlock.rs"
@@ -8326,7 +8324,6 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
 reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
-
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"

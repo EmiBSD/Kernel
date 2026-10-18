@@ -50,7 +50,6 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use crate::assert::{hal_panic, kassert};
-
 use crate::trust::check_block;
 
 /// What backs a [`KmBuf`]: the C's `kp_pageable` or `kp_zero` physical-page mode.

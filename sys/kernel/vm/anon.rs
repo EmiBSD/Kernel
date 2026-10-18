@@ -369,7 +369,7 @@ mod tests {
     /// Real page memory, the lock objects and the anon pool.
     pub(crate) fn setup() -> MutexGuard<'static, ()> {
         let guard = testutil::pages_install(256 * 4096);
-        let _ = hal::rwlock::init_shared();
+        crate::testutil::init_shared_once();
         let _ = uvm_anon_init(0);
         guard
     }

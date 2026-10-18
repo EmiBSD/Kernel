@@ -75,7 +75,6 @@ paid_by = "N9"
 # memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
 # through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
 # window the kernel map's token minted.
-
 # hal::user::UserCopy
 [[bridge]]
 trait = "UserCopy"

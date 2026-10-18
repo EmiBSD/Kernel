@@ -856,7 +856,7 @@ mod tests {
     /// Real page memory, the lock objects, and psegs 0 and 1 seeded and free.
     fn setup() -> MutexGuard<'static, ()> {
         let guard = testutil::pages_install(256 * 4096);
-        let _ = hal::rwlock::init_shared();
+        crate::testutil::init_shared_once();
         let mut psegs = PSEGS.lock();
         for (i, p) in psegs.iter_mut().enumerate().take(2) {
             p.start = SEEDED + i * MAX_PAGER_SEGS * MAXBSIZE;

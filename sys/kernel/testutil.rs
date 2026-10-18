@@ -781,6 +781,16 @@ pub const fn page_memory() -> &'static dyn PageMemory {
     &TEST_PAGES
 }
 
+/// `hal::rwlock::init_shared()` once per test process (`rwobjpl`): called from tests in
+/// parallel, the one that lost the race could get `EBUSY` while the winner's
+/// `OnceStatic::set` was still under way, and find no pool.
+pub fn init_shared_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = hal::rwlock::init_shared();
+    });
+}
+
 /// `len` bytes of the double's user memory at `uaddr`, `None` outside it.
 pub fn user_bytes(uaddr: usize, len: usize) -> Option<Vec<u8>> {
     let r = user_range(uaddr, len).ok()?;

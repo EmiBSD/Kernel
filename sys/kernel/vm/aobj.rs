@@ -1450,7 +1450,7 @@ mod tests {
     /// Real page memory, the lock objects and the aobj pools.
     fn setup() -> MutexGuard<'static, ()> {
         let guard = testutil::pages_install(256 * 4096);
-        let _ = hal::rwlock::init_shared();
+        crate::testutil::init_shared_once();
         let _ = uao_init();
         guard
     }

@@ -1965,7 +1965,7 @@ mod tests {
     #[test]
     fn pagewait_sleeps_without_the_lock_until_the_page_is_unbusied() {
         let _g = setup();
-        let _ = hal::rwlock::init_shared();
+        crate::testutil::init_shared_once();
         let lock = hal::rwlock::SharedRwlock::new("testlk").expect("a lock object");
         let anon: &'static Anon =
             std::boxed::Box::leak(std::boxed::Box::new(Anon { page: Link::new() }));
