@@ -209,6 +209,12 @@
 //!   each entry are an [`EntryLocks`] whose drop releases the object's lock, then the amap's.
 //!   An entry without an amap has its page's owner looked for in its object only (N3.3's K1
 //!   rule: the amap is looked up only when the entry has one).
+//! - N3.5: an entry's two handles (`aref`, `object`, and a submap entry's map) are read
+//!   through the map's guard ([`FaultMapGuard::aref`], [`FaultMapGuard::object`],
+//!   [`FaultMapGuard::submap`]): in the kernel's map they sit in a cell keyed to the map's
+//!   lock, which only a witness of it opens. `amap_copy`'s map half names its entry by an
+//!   address ([`FaultMapGuard::copy_amap`] takes the guard mutably and `va`): a clip changes
+//!   the tree the entry would borrow.
 
 use core::ptr;
 use core::sync::atomic::Ordering;
@@ -397,7 +403,7 @@ pub trait FaultMap: Sized + 'static {
     type Entry: FaultEntry<Map = Self, Object = Self::Object>;
     /// The map locked (`vm_map_lock`, `vm_map_lock_read`): dropped is `vm_map_unlock` or
     /// `vm_map_unlock_read`; the entries are read through it.
-    type Guard<'a>: FaultMapGuard<Entry = Self::Entry, Map = Self>
+    type Guard<'a>: FaultMapGuard<Entry = Self::Entry, Map = Self, Object = Self::Object>
     where
         Self: 'a;
 
@@ -427,12 +433,16 @@ pub trait FaultMap: Sized + 'static {
     fn note_maxrss(&self, kb: usize);
 }
 
-/// A locked map ([`FaultMap::lock`]): the proof the entries it hands out are valid.
+/// A locked map ([`FaultMap::lock`]): the proof the entries it hands out are valid, and the
+/// witness their two handles are read under (`entry->aref`, `entry->object`: the map's lock
+/// guards them, N3.5).
 pub trait FaultMapGuard: Sized {
     /// The map's entries.
     type Entry;
     /// The map it locks.
-    type Map;
+    type Map: 'static;
+    /// The objects its entries map.
+    type Object: FaultObject;
 
     /// The map this guard locks.
     fn map(&self) -> &Self::Map;
@@ -449,10 +459,16 @@ pub trait FaultMapGuard: Sized {
     fn upgrade(self) -> Result<Self, Self>;
     /// `vm_map_downgrade(map)`: write-locked to read-locked, without a window.
     fn downgrade(self) -> Self;
-    /// `amap_copy(map, entry, waitf, canchunk, startva, endva)` (its map half, `bsd`'s
-    /// `uvm_amap.rs`): the map is write-locked; the entry may be clipped, so the caller looks
+    /// `amap_copy(map, entry, waitf, canchunk, startva, endva)` (its map half) of the entry
+    /// that holds `va`: the map is write-locked; the entry may be clipped, so the caller looks
     /// it up again.
-    fn copy_amap(&self, entry: &Self::Entry, waitf: i32, canchunk: bool, start: usize, end: usize);
+    fn copy_amap(&mut self, va: usize, waitf: i32, canchunk: bool, start: usize, end: usize);
+    /// `entry->object.sub_map` of a submap entry (submaps live for ever).
+    fn submap(&self, entry: &Self::Entry) -> Option<&'static Self::Map>;
+    /// `entry->aref`: the amap (a handle) and the reference's page offset, if any.
+    fn aref(&self, entry: &Self::Entry) -> Option<(AmapRef, i32)>;
+    /// `entry->object.uvm_obj` of an object entry (`UVM_ET_ISOBJ`), a handle.
+    fn object(&self, entry: &Self::Entry) -> Option<Self::Object>;
 }
 
 /// A map entry, as the fault reads it under its map's lock.
@@ -486,12 +502,6 @@ pub trait FaultEntry {
     fn is_stack(&self) -> bool;
     /// `UVM_ET_ISWC(entry)`.
     fn is_wc(&self) -> bool;
-    /// `entry->object.sub_map` of a submap entry (submaps live for ever).
-    fn submap(&self) -> Option<&'static Self::Map>;
-    /// `entry->aref`: the amap (a handle) and the reference's page offset, if any.
-    fn aref(&self) -> Option<(AmapRef, i32)>;
-    /// `entry->object.uvm_obj` of an object entry (`UVM_ET_ISOBJ`), a handle.
-    fn object(&self) -> Option<Self::Object>;
 }
 
 /// `struct uvm_faultinfo`: the fault's address and the map it is resolved in.
@@ -529,6 +539,14 @@ impl<'m, M: FaultMap> FaultInfo<'m, M> {
     /// The lock of the maps, which the caller holds.
     fn guard(&self) -> &M::Guard<'m> {
         match &self.guard {
+            Some(g) => g,
+            None => kpanic(format_args!("uvm_fault: the maps are not locked")),
+        }
+    }
+
+    /// The lock of the maps, to change through (`amap_copy`'s clips).
+    fn guard_mut(&mut self) -> &mut M::Guard<'m> {
+        match &mut self.guard {
             Some(g) => g,
             None => kpanic(format_args!("uvm_fault: the maps are not locked")),
         }
@@ -573,8 +591,11 @@ struct EntryView<O> {
 }
 
 impl<O: FaultObject> EntryView<O> {
-    /// The entry's fields now (its map locked).
-    fn of<E: FaultEntry<Object = O>>(e: &E) -> Self {
+    /// The entry's fields now (its map locked by `g`).
+    fn of<G: FaultMapGuard<Object = O>>(g: &G, e: &G::Entry) -> Self
+    where
+        G::Entry: FaultEntry,
+    {
         Self {
             start: e.start(),
             end: e.end(),
@@ -587,8 +608,8 @@ impl<O: FaultObject> EntryView<O> {
             needscopy: e.is_needscopy(),
             nofault: e.is_nofault(),
             stack: e.is_stack(),
-            aref: e.aref().map(|(amap, pageoff)| Aref { amap, pageoff }),
-            object: e.object(),
+            aref: g.aref(e).map(|(amap, pageoff)| Aref { amap, pageoff }),
+            object: g.object(e),
         }
     }
 
@@ -1187,25 +1208,21 @@ fn uvm_fault_check<'v, M: FaultMap>(
                     }
                 }
 
-                let g = ufi.guard();
+                let va = ufi.orig_rvaddr;
+                let g = ufi.guard_mut();
                 kassert!(g.mode() == RwMode::Write);
-                let Some(e) = g.lookup(ufi.orig_rvaddr) else {
+                if g.lookup(va).is_none() {
                     kpanic(format_args!(
                         "uvm_fault_check: the entry left the locked map"
                     ));
-                };
-                g.copy_amap(
-                    e,
-                    M_NOWAIT,
-                    !view.stack,
-                    ufi.orig_rvaddr,
-                    ufi.orig_rvaddr + 1,
-                );
+                }
+                g.copy_amap(va, M_NOWAIT, !view.stack, va, va + 1);
                 // The entry was copied (and perhaps clipped): read it again.
-                let Some(e) = g.lookup(ufi.orig_rvaddr) else {
+                let g = ufi.guard();
+                let Some(e) = g.lookup(va) else {
                     kpanic(format_args!("uvm_fault_check: amap_copy lost the entry"));
                 };
-                view = EntryView::of(e);
+                view = EntryView::of(g, e);
 
                 // didn't work? must be out of RAM.
                 if view.needscopy {
@@ -2265,8 +2282,10 @@ where
 
         // lock it (the entry's addresses up to `end`, then it is unlocked: the C unlocks the
         // previous entry when the walk reaches the next one, and the last at the end).
-        let aref = entry.aref().map(|(amap, pageoff)| Aref { amap, pageoff });
-        let uobj = entry.object();
+        let aref = guard
+            .aref(entry)
+            .map(|(amap, pageoff)| Aref { amap, pageoff });
+        let uobj = guard.object(entry);
         let locks = EntryLocks::new(
             aref.as_ref().map(|a| a.amap.lock()),
             uobj.as_ref().map(|o| o.vmobjlock()),
@@ -2357,9 +2376,9 @@ fn uvmfault_lookup<M: FaultMap>(
                 ufi.size = entry.end() - ufi.orig_rvaddr;
             }
             if entry.is_submap() {
-                Err(entry.submap())
+                Err(guard.submap(entry))
             } else {
-                Ok(EntryView::of(entry))
+                Ok(EntryView::of(&guard, entry))
             }
         });
         let version = guard.version();
@@ -2873,7 +2892,7 @@ mod tests {
         fn anon(&self, va: usize) -> Option<AnonRef> {
             let g = self.lock(RwMode::Read);
             let e = g.lookup(va)?;
-            let (amap, pageoff) = e.aref()?;
+            let (amap, pageoff) = g.aref(e)?;
             let start = e.start;
             let w = amap.lock().read();
             let anon = amap_lookup(&amap, &w, pageoff, va - start).cloned();
@@ -2883,7 +2902,8 @@ mod tests {
 
         fn amap(&self, va: usize) -> Option<AmapRef> {
             let g = self.lock(RwMode::Read);
-            g.lookup(va)?.aref().map(|(a, _)| a)
+            let e = g.lookup(va)?;
+            g.aref(e).map(|(a, _)| a)
         }
     }
 
@@ -2953,6 +2973,17 @@ mod tests {
     impl FaultMapGuard for FakeGuard<'_> {
         type Entry = FakeEntry;
         type Map = FakeMap;
+        type Object = TestObj;
+
+        fn submap(&self, e: &FakeEntry) -> Option<&'static FakeMap> {
+            e.submap
+        }
+        fn aref(&self, e: &FakeEntry) -> Option<(AmapRef, i32)> {
+            e.aref.borrow().clone()
+        }
+        fn object(&self, e: &FakeEntry) -> Option<TestObj> {
+            e.object.clone()
+        }
 
         fn map(&self) -> &FakeMap {
             match self {
@@ -3001,14 +3032,15 @@ mod tests {
         /// The double copies the whole entry (no clipping): a new amap for an entry without
         /// one, else the amap's own copy.
         fn copy_amap(
-            &self,
-            e: &FakeEntry,
+            &mut self,
+            va: usize,
             waitf: i32,
             _canchunk: bool,
             _start: usize,
             _end: usize,
         ) {
             assert_eq!(self.mode(), RwMode::Write);
+            let e = self.lookup(va).expect("the entry holding va");
             let old = e.aref.borrow().clone();
             let slots = (e.end - e.start) / PAGE_SIZE;
             match old {
@@ -3069,15 +3101,6 @@ mod tests {
         }
         fn is_wc(&self) -> bool {
             false
-        }
-        fn submap(&self) -> Option<&'static FakeMap> {
-            self.submap
-        }
-        fn aref(&self) -> Option<(AmapRef, i32)> {
-            self.aref.borrow().clone()
-        }
-        fn object(&self) -> Option<TestObj> {
-            self.object.clone()
         }
     }
 

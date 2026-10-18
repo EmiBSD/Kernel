@@ -106,6 +106,10 @@
 //! - `curproc->p_ru` (`ru_minflt`, `ru_majflt`, `ru_maxrss`): the map's notes; `note_maxrss`
 //!   keeps the C's `KASSERT(p != NULL && &p->p_vmspace->vm_map == map)` (LZ returned when
 //!   there was no process).
+//! - N3.5 S1: the kernel's fault reads an entry's handles through the guard
+//!   (`FaultMapGuard::aref`, `object`, `submap`) and names `amap_copy`'s entry by an address
+//!   (`copy_amap(&mut self, va, ..)`): [`MapGuard`] implements both over `bsd`'s entry, the
+//!   same reads and the same `amap_copy` as before.
 
 use core::ptr;
 
@@ -180,6 +184,7 @@ impl Drop for MapGuard<'_> {
 impl FaultMapGuard for MapGuard<'_> {
     type Entry = VmMapEntry;
     type Map = VmMap;
+    type Object = ObjRef;
 
     fn map(&self) -> &VmMap {
         self.map
@@ -218,9 +223,24 @@ impl FaultMapGuard for MapGuard<'_> {
         self
     }
 
-    fn copy_amap(&self, entry: &VmMapEntry, waitf: i32, canchunk: bool, start: usize, end: usize) {
+    fn copy_amap(&mut self, va: usize, waitf: i32, canchunk: bool, start: usize, end: usize) {
         kassert!(self.mode == RwMode::Write);
+        let Some(entry) = uvm_map_lookup_entry(self.map, va) else {
+            crate::kern::subr_prf::panic(format_args!("amap_copy: no entry holds {va:#x}"));
+        };
         amap_copy(self.map, entry, waitf, canchunk, start, end);
+    }
+
+    fn submap(&self, entry: &VmMapEntry) -> Option<&'static VmMap> {
+        entry.sub_map()
+    }
+
+    fn aref(&self, entry: &VmMapEntry) -> Option<(AmapRef, i32)> {
+        entry.aref.amap().map(|a| (a, entry.aref.ar_pageoff.get()))
+    }
+
+    fn object(&self, entry: &VmMapEntry) -> Option<ObjRef> {
+        entry.uvm_obj()
     }
 }
 
@@ -347,18 +367,6 @@ impl FaultEntry for VmMapEntry {
     fn is_wc(&self) -> bool {
         uvm_et_iswc(self)
     }
-
-    fn submap(&self) -> Option<&'static VmMap> {
-        self.sub_map()
-    }
-
-    fn aref(&self) -> Option<(AmapRef, i32)> {
-        self.aref.amap().map(|a| (a, self.aref.ar_pageoff.get()))
-    }
-
-    fn object(&self) -> Option<ObjRef> {
-        self.uvm_obj()
-    }
 }
 
 /// `uvmfault_init`: compute proper values for the `uvmadvice[]` array (the kernel's checks
@@ -482,7 +490,7 @@ mod tests {
     fn anon_of(vm: &Vmspace, va: usize) -> Option<AnonRef> {
         let guard = vm.vm_map.lock(RwMode::Read);
         let entry = guard.lookup(va)?;
-        let (amap, pageoff) = entry.aref()?;
+        let (amap, pageoff) = guard.aref(entry)?;
         let w = amap.lock().read();
         amap_lookup(&amap, &w, pageoff, va - entry.start.get()).cloned()
     }
