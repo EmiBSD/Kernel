@@ -37,7 +37,8 @@
 //!   (`EWOULDBLOCK`); no signals.
 //! - `PageMemory` (not a bridge: [`page_memory`] hands it to `KmBuf` as a value): zeroed,
 //!   page-aligned allocations of the host's allocator, the bytes out counted per thread.
-//! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`.
+//! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`; its
+//!   `set_hiwat` and `cache_init` recorded by the pool's name ([`pool_knobs`]).
 //! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
 //!   malloc type.
 //! - `UserCopy`: one user address space of `USER_LEN` bytes at [`user_base`]; anything
@@ -101,6 +102,14 @@ static CONS_IN: Mutex<std::collections::VecDeque<u8>> =
 
 /// The generation number of every wait channel a wakeup touched.
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
+/// Each pool's high-water mark and whether its cache was made, by the pool's name.
+static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
+/// The frame ranges `[start, end)` of host memory that [`memory_frames`] handed out: the
+/// managed pages of [`FAKE_PAGES`].
+static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, usize)>> = Mutex::new(std::vec::Vec::new());
+/// The `PageMd` every managed page of [`FAKE_PAGES`] answers (the host pmap keeps no pv
+/// chain and no attribute in it).
+static FAKE_MD: PageMd = PageMd::new();
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
 
@@ -285,6 +294,8 @@ impl PageMemory for TestPages {
 struct TestPool {
     layout: Layout,
     nout: AtomicU64,
+    /// The pool's name, the key of [`POOL_KNOBS`].
+    wchan: &'static str,
 }
 
 // The registration contract: the host allocator's block of the pool's layout (the size and
@@ -307,6 +318,16 @@ impl RawPool for TestPool {
     fn nout(&self) -> u64 {
         self.nout.load(Ordering::Relaxed)
     }
+
+    /// The double keeps no idle item: it records the bound for [`pool_knobs`].
+    fn set_hiwat(&self, n: u32) {
+        lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).0 = n;
+    }
+
+    /// The double has no per-CPU cache to make: it records the request for [`pool_knobs`].
+    fn cache_init(&self) {
+        lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).1 = true;
+    }
 }
 
 /// The pool allocator double.
@@ -321,12 +342,14 @@ impl PoolBackend for TestPools {
         align: usize,
         _ipl: i32,
         _flags: i32,
-        _wchan: &'static str,
+        wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
         let layout = Layout::from_size_align(size.max(1), align).ok()?;
+        lock(&POOL_KNOBS).entry(wchan).or_insert((0, false));
         Some(Box::leak(Box::new(TestPool {
             layout,
             nout: AtomicU64::new(0),
+            wchan,
         })))
     }
 }
@@ -335,13 +358,11 @@ impl PoolBackend for TestPools {
 struct TestMalloc;
 
 // The registration contract: the host allocator's block of `size` bytes aligned to
-// `MALLOC_ALIGN`, owned by the caller until `free` gives it back with the same size.
+// `MALLOC_ALIGN` (one byte for `malloc(0)`, which the C serves from its smallest bucket),
+// owned by the caller until `free` gives it back with the same size.
 impl Malloc for TestMalloc {
     fn malloc(&self, size: usize, ty: i32, _flags: i32) -> Option<(NonNull<u8>, usize)> {
-        if size == 0 {
-            return None;
-        }
-        let layout = Layout::from_size_align(size, MALLOC_ALIGN).ok()?;
+        let layout = Layout::from_size_align(size.max(1), MALLOC_ALIGN).ok()?;
         // SAFETY: the layout's size is not 0.
         let p = NonNull::new(unsafe { alloc(layout) })?;
         MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) += size as isize);
@@ -349,7 +370,7 @@ impl Malloc for TestMalloc {
     }
 
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize) {
-        if let Ok(layout) = Layout::from_size_align(size, MALLOC_ALIGN) {
+        if let Ok(layout) = Layout::from_size_align(size.max(1), MALLOC_ALIGN) {
             // SAFETY: `ptr` came from `malloc` with this very layout (the trait's contract on
             // the caller, `MBox`), once.
             unsafe { dealloc(ptr.as_ptr(), layout) };
@@ -508,13 +529,36 @@ pub(crate) fn spl_level() -> i32 {
     SPL.with(Cell::get)
 }
 
+/// The last high-water mark `set_hiwat` gave the pool named `wchan` (0: never) and whether its
+/// `cache_init` was asked for; `None` for a pool the double never made.
+pub(crate) fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
+    lock(&POOL_KNOBS).get(wchan).copied()
+}
+
+/// `n` frames of host memory of this test's own, physically contiguous and page-aligned (a
+/// fresh leaked, zeroed block), that [`FAKE_PAGES`] knows as managed pages from now on: the
+/// frames a byte view of mapped pages may be made over (`mapped.rs`).
+pub(crate) fn memory_frames(n: usize) -> std::vec::Vec<Paddr> {
+    let block: &'static mut [u8] = std::vec![0u8; (n + 1) * TEST_PAGE].leak();
+    let base = block
+        .as_mut_ptr()
+        .expose_provenance()
+        .next_multiple_of(TEST_PAGE);
+    lock(&MEMORY_FRAMES).push((base, base + n * TEST_PAGE));
+    (0..n).map(|i| Paddr::new(base + i * TEST_PAGE)).collect()
+}
+
 /// This thread's spin count, as the double keeps it.
+
 pub(crate) fn spinning() -> isize {
     SPINNING.with(Cell::get)
 }
 
-/// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, no
-/// managed page, the page system never up (so `steal_memory` serves `bootmem`'s tests).
+/// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, the
+/// page system never up (so `steal_memory` serves `bootmem`'s tests). Its managed pages are
+/// the frames of host memory [`memory_frames`] handed out (the host pmap's direct map is the
+/// identity, so they are memory there), all answering one `PageMd`; every other frame is no
+/// managed page.
 /// `page_init_done` is false: N3.1's provider of the same name in `pmap.rs`'s tests answered
 /// true, which `steal_memory` refuses; the host backend never reads it (only the machines'
 /// page-table allocation does), so the pmap tests see no difference.
@@ -529,8 +573,12 @@ impl PhysPages for FakePages {
         ))
     }
     fn free_ptp(&self, _pa: Paddr) {}
-    fn md_of(&self, _pa: Paddr) -> Option<&'static PageMd> {
-        None
+    fn md_of(&self, pa: Paddr) -> Option<&'static PageMd> {
+        let pa = pa.as_usize();
+        lock(&MEMORY_FRAMES)
+            .iter()
+            .any(|&(start, end)| (start..end).contains(&pa))
+            .then_some(&FAKE_MD)
     }
     fn steal(&self, npg: usize) -> Option<Paddr> {
         Some(Paddr::new(

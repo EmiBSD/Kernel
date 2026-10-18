@@ -50,8 +50,9 @@ trait = "Sleep"
 for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
 paid_by = "N4"
 
-# bsd: pool_init/pool_get/pool_put and pr_nout (sys/kern/subr_pool.rs), one pool per TypedPool so
-# vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
+# bsd: pool_init/pool_get/pool_put, pr_nout, pool_sethiwat and pool_cache_init (RawPool's
+# set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
+# TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # hal::pool::PoolBackend
 [[bridge]]
 trait = "PoolBackend"

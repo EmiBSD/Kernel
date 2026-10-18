@@ -867,7 +867,9 @@ pub fn bootstrap(p: &BootstrapParams, pages: &'static dyn PhysPages) -> Bootstra
 /// does nothing. Panics when the pool allocator is not registered (the C's `pool_init` cannot
 /// fail).
 pub fn init() {
-    match PMAP_POOL.init(Backend::POOL_IPL, Backend::POOL_FLAGS, Backend::POOL_WCHAN) {
+    // Recorded: the pv entries name their pmap by address and give a handle back from it
+    // (`PoolArc::from_value`), so the pool never gives a pmap mutably.
+    match PMAP_POOL.init_recorded(Backend::POOL_IPL, Backend::POOL_FLAGS, Backend::POOL_WCHAN) {
         Ok(()) => Backend::init(),
         Err(Errno::EBUSY) => {}
         Err(e) => hal_panic(format_args!("pmap_init: the pmap pool: {e:?}")),

@@ -25,8 +25,9 @@
 //! the item out as a `&'static T` (`pipe_pair_create`), which the pool frees under it. Here a
 //! [`TypedPool<T>`] makes items holding a `T` and a count: [`TypedPool::get_shared`] returns
 //! a [`PoolArc<T>`], an owned handle that `Clone` counts and whose last drop drops the `T` and
-//! puts the item back. No `&'static T` is ever made from an item (decision 10): a reference
-//! borrows a handle.
+//! puts the item back. No `&'static T` is ever made from an item that can be freed (decision
+//! 10): a reference borrows a handle, or the handle is given up for good, the item never put
+//! back ([`PoolArc::leak`]).
 //!
 //! The items come from `bsd`'s `pool(9)` through the [`PoolBackend`] bridge (bridges.toml;
 //! paid by N9, when the old runtime files go): each `TypedPool` is one pool of its own, named
@@ -82,6 +83,14 @@
 //!   two-word handle does not fit. [`SharedBox::into_raw`] gives the handle up for the
 //!   pointer (the slot owns the item then); [`SharedBox::from_raw`] takes it back, once, to
 //!   free it. The pool rides in the handle, so `from_raw` names it.
+//! - N3.4a: [`PoolArc::get_mut`] (`Arc::get_mut`: the value mutably while the handle is the
+//!   only one; `amap_copy` fills its new amap so before installing it) and [`PoolArc::leak`]
+//!   (the handle given up for a true `&'static T`: the C's vnode objects, never freed). A
+//!   pool whose values records reach by address ([`PoolArc::from_value`], the pmaps) is made
+//!   by [`TypedPool::init_recorded`] and never gives a value mutably; `from_value` refuses
+//!   any other pool. `pool_sethiwat(9)` and `pool_cache_init(9)` are
+//!   [`TypedPool::set_hiwat`]/[`TypedPool::cache_init`] (and [`BoxPool`]'s), two more
+//!   methods of the [`RawPool`] bridge (`uvm_anon_init`, `amap_init`).
 
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, offset_of};
@@ -123,6 +132,12 @@ pub trait RawPool: Sync {
     fn put(&self, item: NonNull<u8>);
     /// `pr_nout`: the items out of the pool now.
     fn nout(&self) -> u64;
+    /// `pool_sethiwat(pp, n)`: the pool keeps at most `n` idle items (its pages beyond them
+    /// go back to the system).
+    fn set_hiwat(&self, n: u32);
+    /// `pool_cache_init(pp)`: `pool_get` and `pool_put` go through a cache per CPU from now
+    /// on.
+    fn cache_init(&self);
 }
 
 /// `bsd`'s `pool(9)`, as it registers it (`sys/kern/subr_pool.rs`).
@@ -144,15 +159,23 @@ pub trait PoolBackend: Sync {
 
 /// A pool of `T`s (`struct pool` sized for the type): a `static`, initialised once at boot.
 pub struct TypedPool<T: 'static> {
-    raw: OnceStatic<&'static dyn RawPool>,
+    made: OnceStatic<Made>,
     _t: PhantomData<fn() -> T>,
+}
+
+/// A [`TypedPool`] once made: its `pool(9)`, and whether records reach its values by
+/// address ([`TypedPool::init_recorded`]).
+#[derive(Clone, Copy)]
+struct Made {
+    raw: &'static dyn RawPool,
+    recorded: bool,
 }
 
 impl<T: Send + Sync + 'static> TypedPool<T> {
     /// A pool that `init` has not made yet.
     pub const fn new() -> Self {
         Self {
-            raw: OnceStatic::new(),
+            made: OnceStatic::new(),
             _t: PhantomData,
         }
     }
@@ -161,7 +184,31 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// (the wait message and the name `vmstat -m` shows). `ENOMEM` when the pool cannot be
     /// made (or before the bridge is registered); `EBUSY` when it was already.
     pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
-        if self.raw.is_set() {
+        self.init_with(ipl, flags, wchan, false)
+    }
+
+    /// [`TypedPool::init`] for a pool whose values records reach by address and give back
+    /// as handles ([`PoolArc::from_value`]: the pmaps, named by their pv entries). Such a
+    /// pool never gives a value mutably ([`PoolArc::get_mut`] answers `None`), since a record
+    /// may rebuild a handle to it at any time; the choice is made with the pool, before any
+    /// item exists.
+    pub(crate) fn init_recorded(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+    ) -> Result<(), Errno> {
+        self.init_with(ipl, flags, wchan, true)
+    }
+
+    fn init_with(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        recorded: bool,
+    ) -> Result<(), Errno> {
+        if self.made.is_set() {
             return Err(Errno::EBUSY);
         }
         let backend = bridges::pool_backend().ok_or(Errno::ENOMEM)?;
@@ -174,14 +221,27 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
                 wchan,
             )
             .ok_or(Errno::ENOMEM)?;
-        self.raw.set(raw).map_err(|_| Errno::EBUSY)
+        self.made
+            .set(Made { raw, recorded })
+            .map_err(|_| Errno::EBUSY)
+    }
+
+    /// The pool's `pool(9)`, once made.
+    fn raw(&self) -> Option<&'static dyn RawPool> {
+        self.made.get().map(|m| m.raw)
+    }
+
+    /// Whether records reach the values ([`TypedPool::init_recorded`]); `false` before the
+    /// pool is made (it has no item then).
+    fn recorded(&self) -> bool {
+        self.made.get().is_some_and(|m| m.recorded)
     }
 
     /// `pool_get(9)` and the item's initialisation: a handle to a new item holding `init()`,
     /// counted once. `None` when `pool_get` fails (`PR_NOWAIT`, `PR_LIMITFAIL`, no memory)
     /// or the pool was never made; `init` is not called then.
     pub fn get_shared(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<PoolArc<T>> {
-        let raw = *self.raw.get()?;
+        let raw = self.raw()?;
         let (block, granted) = raw.get(flags)?;
         check_block(
             "RawPool",
@@ -214,7 +274,23 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
 
     /// `pr_nout`: the items out of the pool now (0 before `init`).
     pub fn nout(&self) -> u64 {
-        self.raw.get().map_or(0, |r| r.nout())
+        self.raw().map_or(0, |r| r.nout())
+    }
+
+    /// `pool_sethiwat(9)`: the pool keeps at most `n` idle items (`uvm_anon_init`'s
+    /// `uvmexp.free / 16`). Nothing before `init`: a pool never made holds no item.
+    pub fn set_hiwat(&self, n: u32) {
+        if let Some(raw) = self.raw() {
+            raw.set_hiwat(n);
+        }
+    }
+
+    /// `pool_cache_init(9)`: a cache per CPU in front of the pool from now on
+    /// (`uvm_anon_init_percpu`). Nothing before `init`.
+    pub fn cache_init(&self) {
+        if let Some(raw) = self.raw() {
+            raw.cache_init();
+        }
     }
 }
 
@@ -235,8 +311,11 @@ struct Inner<T: 'static> {
 /// reference, the last drop drops the `T` and puts the item back into its pool.
 ///
 /// Invariant: `inner` names an initialised `Inner<T>` of `inner.pool`, whose `refs` counts the
-/// live handles to it, this one included; the item is put back only when that count reaches 0,
-/// so it outlives every handle.
+/// live handles to it, this one included (a handle given up by [`PoolArc::leak`] stays
+/// counted for ever); the item is put back only when that count reaches 0, so it outlives
+/// every handle. While handles live only shared references to the item are made, except the
+/// `&mut T` of [`PoolArc::get_mut`], made only when its handle is the one counted and is
+/// borrowed mutably, in a pool that no record reaches.
 pub struct PoolArc<T: Send + Sync + 'static> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,
@@ -246,10 +325,48 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     fn inner(&self) -> &Inner<T> {
         // SAFETY: the item is initialised and outlives every handle, this one included (the
         // invariant; that no one else touches it until it is put back is the registration
-        // contract of `RawPool`, `sys/hal/trust.rs`); only shared references to it are ever
-        // made while handles live (the count is atomic, the value is reached as `&T`), so
-        // this one aliases no `&mut`.
+        // contract of `RawPool`, `sys/hal/trust.rs`); only shared references to it are made
+        // while handles live, but for `get_mut`'s, which exists only while the one handle is
+        // borrowed mutably (so `self` here cannot be it, and no other handle exists to be
+        // `self`) in a pool whose values no record rebuilds a handle from: this one aliases
+        // no `&mut`.
         unsafe { self.inner.as_ref() }
+    }
+
+    /// The value, mutably, when this handle is the only one (`Arc::get_mut`): `None` while
+    /// other handles exist, and always for a pool of [`TypedPool::init_recorded`] (whose
+    /// values a record may give a handle back from at any time: the pmaps). The value of an
+    /// amap copy being filled before anyone else sees it (`amap_copy`).
+    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+        let inner = this.inner();
+        // Acquire: the drops of the other handles (Release) happen before this access.
+        if inner.refs.load(Ordering::Acquire) != 1 || inner.pool.recorded() {
+            return None;
+        }
+        // SAFETY: the count is 1, so `this` is the only handle (the invariant), and it is
+        // borrowed mutably for as long as the returned reference lives, so no clone can be
+        // made of it, no `Deref` through it can run and no other handle exists to make a
+        // reference; the pool is not recorded, so `from_value` (which refuses such a pool)
+        // cannot make a handle either. The item is initialised and outlives the handle; the
+        // shared reference `inner` above ended before this one is made. The reference is to
+        // the value alone, which nothing else reaches while it lives.
+        Some(unsafe { &mut (*this.inner.as_ptr()).value })
+    }
+
+    /// Gives the handle up for a reference that lives for ever: the item stays counted by
+    /// this handle, never reaches 0 and is never put back (`uvm_vnode.c`'s vnode objects,
+    /// never freed and kept in their vnode across recycling). Other handles may still be
+    /// cloned and dropped; none ever gets the value mutably again (the count stays above 1
+    /// while one exists).
+    pub fn leak(this: Self) -> &'static T {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: the handle is never dropped (`ManuallyDrop`, and it is not returned), so the
+        // count it holds is never released: the count stays at least 1 and the item is never
+        // put back (the invariant), so the initialised value is valid for the rest of the
+        // kernel's life. Only shared references are made to it from now on: `get_mut` needs a
+        // handle whose count is 1, and with this one counted for ever every other handle sees
+        // 2 or more.
+        unsafe { &(*this.inner.as_ptr()).value }
     }
 
     /// Whether two handles name the same item.
@@ -275,8 +392,11 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     ///
     /// # Safety
     ///
-    /// `value` is the address of the value of an item of a `TypedPool<T>` (one `get_shared`
-    /// made) that has not been put back into its pool and is not put back during this call:
+    /// `value` is the address of the value of an item of a `TypedPool<T>` made by
+    /// [`TypedPool::init_recorded`] (one `get_shared` made; such a pool never gives its values
+    /// mutably, so no `&mut` from `get_mut` can be alive beside the handle made here; the
+    /// pool's flag is checked, a panic, which catches a wrong pool) that has not been put back
+    /// into its pool and is not put back during this call:
     /// the caller holds the lock that keeps the record of the pointer, and the object's drop
     /// refuses to finish while a record is left (a pmap with a pv entry: `hal::pmap`'s last
     /// drop panics, and a drop that does not finish never puts the item back). The count may
@@ -297,6 +417,11 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
             inner,
             _owns: PhantomData,
         });
+        if !borrowed.inner().pool.recorded() {
+            hal_panic(format_args!(
+                "PoolArc::from_value: an item of a pool no record reaches"
+            ));
+        }
         let counted =
             borrowed
                 .inner()
@@ -347,7 +472,7 @@ impl<T: Send + Sync + 'static> Drop for PoolArc<T> {
         // The last handle: every other handle's writes happen before what follows.
         fence(Ordering::Acquire);
         let pool = inner.pool;
-        let Some(raw) = pool.raw.get() else {
+        let Some(raw) = pool.raw() else {
             hal_panic(format_args!("PoolArc: an item of a pool never made"));
         };
         // SAFETY: the count reached 0, so no other handle, hence no other reference to the
@@ -423,6 +548,22 @@ impl<T: 'static> BoxPool<T> {
     /// `pr_nout`: the items out of the pool now (0 before `init`).
     pub fn nout(&self) -> u64 {
         self.raw.get().map_or(0, |r| r.nout())
+    }
+
+    /// `pool_sethiwat(9)`: the pool keeps at most `n` idle items (`amap_init`'s 4096 chunks).
+    /// Nothing before `init`: a pool never made holds no item.
+    pub fn set_hiwat(&self, n: u32) {
+        if let Some(raw) = self.raw.get() {
+            raw.set_hiwat(n);
+        }
+    }
+
+    /// `pool_cache_init(9)`: a cache per CPU in front of the pool from now on. Nothing
+    /// before `init`.
+    pub fn cache_init(&self) {
+        if let Some(raw) = self.raw.get() {
+            raw.cache_init();
+        }
     }
 }
 
@@ -727,7 +868,9 @@ mod tests {
     #[test]
     fn a_handle_is_rebuilt_from_its_value() {
         static P: TypedPool<Pair> = TypedPool::new();
-        let pool = made(&P);
+        testutil::install();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "testrec"), Ok(()));
+        let pool = &P;
         let drops = Arc::new(AtomicU32::new(0));
         let one = pool
             .get_shared(PR_WAITOK, || Pair {
@@ -778,6 +921,93 @@ mod tests {
         assert_eq!(*back, 7);
         drop(back);
         assert_eq!(P.nout(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "a pool no record reaches")]
+    fn from_value_refuses_a_pool_records_do_not_reach() {
+        static P: TypedPool<u64> = TypedPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, PR_WAITOK, "testnorec"), Ok(()));
+        let one = P.get_shared(PR_WAITOK, || 3).unwrap();
+        // SAFETY: `one`'s value, alive for the call; the pool is not recorded, which the call
+        // refuses before it makes a handle.
+        let _two = unsafe { PoolArc::from_value(NonNull::from(&*one)) };
+    }
+
+    #[test]
+    fn get_mut_answers_only_for_the_one_handle() {
+        static P: TypedPool<Pair> = TypedPool::new();
+        let pool = made(&P);
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut one = pool
+            .get_shared(PR_WAITOK, || Pair {
+                a: 1,
+                drops: Arc::clone(&drops),
+            })
+            .unwrap();
+        PoolArc::get_mut(&mut one).unwrap().a = 2;
+        let two = one.clone();
+        assert!(PoolArc::get_mut(&mut one).is_none());
+        assert_eq!(two.a, 2);
+        // The other handle dropped on another CPU: its drop happens before the access.
+        thread::spawn(move || drop(two)).join().unwrap();
+        PoolArc::get_mut(&mut one).unwrap().a += 1;
+        assert_eq!(one.a, 3);
+        drop(one);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_recorded_pool_never_gives_a_value_mutably() {
+        static P: TypedPool<u64> = TypedPool::new();
+        testutil::install();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "testrecmut"), Ok(()));
+        let mut one = P.get_shared(PR_WAITOK, || 7).unwrap();
+        assert_eq!(PoolArc::count(&one), 1);
+        assert!(PoolArc::get_mut(&mut one).is_none());
+    }
+
+    #[test]
+    fn a_leaked_handle_keeps_its_item_for_ever() {
+        static P: TypedPool<Pair> = TypedPool::new();
+        let pool = made(&P);
+        let drops = Arc::new(AtomicU32::new(0));
+        let one = pool
+            .get_shared(PR_WAITOK, || Pair {
+                a: 5,
+                drops: Arc::clone(&drops),
+            })
+            .unwrap();
+        let mut other = one.clone();
+        let forever: &'static Pair = PoolArc::leak(one);
+        assert_eq!(forever.a, 5);
+        // The leaked handle stays counted: the other is never the only one.
+        assert_eq!(PoolArc::count(&other), 2);
+        assert!(PoolArc::get_mut(&mut other).is_none());
+        drop(other);
+        assert_eq!(pool.nout(), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(forever.a, 5);
+    }
+
+    #[test]
+    fn the_high_water_mark_and_the_cache_reach_the_pool() {
+        static P: TypedPool<u64> = TypedPool::new();
+        static B: BoxPool<u64> = BoxPool::new();
+        static NEVER: TypedPool<u64> = TypedPool::new();
+        testutil::install();
+        // A pool never made has nothing to bound.
+        NEVER.set_hiwat(1);
+        NEVER.cache_init();
+        assert_eq!(P.init(0, PR_WAITOK, "testhiwat"), Ok(()));
+        assert_eq!(testutil::pool_knobs("testhiwat"), Some((0, false)));
+        P.set_hiwat(16);
+        P.cache_init();
+        assert_eq!(testutil::pool_knobs("testhiwat"), Some((16, true)));
+        assert_eq!(B.init(0, 0, "testbxhiwat"), Ok(()));
+        B.set_hiwat(4096);
+        assert_eq!(testutil::pool_knobs("testbxhiwat"), Some((4096, false)));
     }
 
     #[test]

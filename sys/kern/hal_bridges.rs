@@ -57,7 +57,7 @@ use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
-use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
+use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::{panicstr, printf};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
@@ -186,6 +186,14 @@ impl RawPool for Pool {
 
     fn nout(&self) -> u64 {
         u64::from(self.pr_nout.get())
+    }
+
+    fn set_hiwat(&self, n: u32) {
+        pool_sethiwat(self, n);
+    }
+
+    fn cache_init(&self) {
+        pool_cache_init(self);
     }
 }
 

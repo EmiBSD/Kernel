@@ -39,7 +39,10 @@
 //!   (a block given back is counted and never reused: freeing it would need the pointer
 //!   turned back into its `Box`, which is `unsafe`); the pages out are counted per
 //!   thread, the items out per pool; [`fail_pages`] makes a thread's next page allocations
-//!   fail, as a full kernel map does.
+//!   fail, as a full kernel map does. A pool's `set_hiwat` and `cache_init` are recorded by
+//!   its name ([`pool_knobs`]).
+//! - `Malloc`: the same leaked blocks (page-aligned, so `MALLOC_ALIGN`-aligned), the bytes out
+//!   counted per thread and malloc type ([`malloc_out`]); [`fail_pages`] fails them too.
 //! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
 //!   outside it is `EFAULT`.
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
@@ -54,7 +57,7 @@
 //!   under [`MEMORY`], which every test of the page system holds (one set of statics).
 
 use std::boxed::Box;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
@@ -68,6 +71,7 @@ use hal::bridges;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::kmbuf::{PageKind, PageMemory};
+use hal::malloc::Malloc;
 use hal::pmap::BootstrapParams;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
@@ -104,6 +108,7 @@ std::thread_local! {
     static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
+    static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 
     static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
@@ -298,7 +303,12 @@ impl PageMemory for TestPages {
 struct TestPool {
     size: usize,
     nout: AtomicU64,
+    /// The pool's name (`wchan`), the key of [`POOL_KNOBS`].
+    wchan: &'static str,
 }
+
+/// Each pool's last high-water mark and whether its cache was asked for, by the pool's name.
+static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
 
 // The registration contract: a fresh block of the pool's size, page-aligned (which covers any
 // item alignment up to a page; `create` refuses more), the caller's alone.
@@ -316,6 +326,37 @@ impl RawPool for TestPool {
     fn nout(&self) -> u64 {
         self.nout.load(Ordering::Relaxed)
     }
+
+    /// The double keeps no idle item, so it records the bound for [`pool_knobs`].
+    fn set_hiwat(&self, n: u32) {
+        lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).0 = n;
+    }
+
+    /// The double has no per-CPU cache to make: it records the request for [`pool_knobs`].
+    fn cache_init(&self) {
+        lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).1 = true;
+    }
+}
+
+/// The `malloc(9)` double.
+struct TestMalloc;
+
+// The registration contract: a zeroed, page-aligned (so `MALLOC_ALIGN`-aligned) block of at
+// least `size` bytes that only the caller references (leaked, never handed out again); the
+// bytes out counted per thread and type.
+impl Malloc for TestMalloc {
+    fn malloc(&self, size: usize, ty: i32, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        if page_fails() {
+            return None;
+        }
+        let p = pages(size.max(1))?;
+        MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) += size as i64);
+        Some((p, size))
+    }
+
+    fn free(&self, _ptr: NonNull<u8>, ty: i32, size: usize) {
+        MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) -= size as i64);
+    }
 }
 
 /// The pool allocator double.
@@ -328,14 +369,16 @@ impl PoolBackend for TestPools {
         align: usize,
         _ipl: i32,
         _flags: i32,
-        _wchan: &'static str,
+        wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
         if align > TEST_PAGE {
             return None;
         }
+        lock(&POOL_KNOBS).entry(wchan).or_insert((0, false));
         Some(Box::leak(Box::new(TestPool {
             size: size.max(1),
             nout: AtomicU64::new(0),
+            wchan,
         })))
     }
 }
@@ -380,6 +423,7 @@ static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
+static TEST_MALLOC: TestMalloc = TestMalloc;
 static TEST_USER: TestUser = TestUser;
 
 /// The `printf(9)` double: every line formatted into one buffer.
@@ -404,6 +448,7 @@ pub fn install() {
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
+        let _ = bridges::register_malloc(&TEST_MALLOC);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
     });
@@ -445,6 +490,17 @@ fn page_fails() -> bool {
             false
         }
     })
+}
+
+/// The bytes of `malloc(9)` blocks of type `ty` this thread holds, as the double counts them.
+pub fn malloc_out(ty: i32) -> i64 {
+    MALLOC_OUT.with(|m| m.borrow().get(&ty).copied().unwrap_or(0))
+}
+
+/// The last high-water mark `set_hiwat` gave the pool named `wchan` (0: never) and whether
+/// its `cache_init` was asked for; `None` for a pool the double never made.
+pub fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
+    lock(&POOL_KNOBS).get(wchan).copied()
 }
 
 /// The bytes of pages this thread holds, as the page double counts them.

@@ -63,6 +63,13 @@ pub mod link;
 #[forbid(unsafe_code)]
 pub mod list;
 pub mod malloc;
+// The byte view of frames mapped for I/O over the pmap (N3.4a): wherever the pmap is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+pub mod mapped;
 pub mod mutex;
 pub mod once;
 pub mod percpu;

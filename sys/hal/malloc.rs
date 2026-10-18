@@ -18,6 +18,7 @@
 
 /* <CODE> */
 //! `MBox<T>`: a `T` in a `malloc(9)` block of the C's type, owned; its drop is the `free`.
+//! `MArray<T>`: `n` of them, `mallocarray(9)`'s.
 //!
 //! The C writes `p = malloc(sizeof(*p), M_KEVENT, M_WAITOK)` and later `free(p, M_KEVENT,
 //! sizeof(*p))`, the type and the size repeated at both ends; LZ keeps the shape. An `MBox<T>`
@@ -47,12 +48,20 @@
 //!   proof. `hal` checks every block (aligned for `T`, the size granted; a probe of the first
 //!   and last byte under `diagnostic`) and panics naming the bridge when one fails. It goes
 //!   with the bridge, at N9.
+//! - N3.4a: `mallocarray(n, sizeof(T), ty, flags)` + a loop that fills it -> [`MArray::new`]
+//!   with an initialiser per index, `Deref`/`DerefMut<Target = [T]>`; the drop drops each
+//!   element and frees with the same type and size (`free(p, ty, n * sizeof(T))`). The C's
+//!   overflow test is kept: `n * size_of::<T>()` past `SIZE_MAX` (and here past `isize::MAX`,
+//!   the bound of a slice) is `None` under `M_CANFAIL` and `panic(9)` (`"mallocarray:
+//!   overflow"`) otherwise. The amap's `am_ppref` and `am_buckets`, the aobj's `u_swslots`
+//!   and the `hashinit(9)` tables (N3.4b/c).
 
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
+use crate::assert::hal_panic;
 use crate::bridges;
 use crate::trust::check_block;
 
@@ -175,6 +184,114 @@ unsafe impl<T: Send> Send for MBox<T> {}
 
 // SAFETY: `&MBox<T>` gives only `&T`, so sharing it is sharing `&T`.
 unsafe impl<T: Sync> Sync for MBox<T> {}
+
+/// `n` values of `T` in one block of `malloc(9)` of type `ty`, owned (`mallocarray(9)`):
+/// `Deref`/`DerefMut<Target = [T]>`; the drop drops every element and frees the block.
+///
+/// Invariant: `ptr` came from the registered [`Malloc`]'s `malloc(len * size_of::<T>(), ty, _)`
+/// (`check_block`ed for that size and `T`'s alignment, `len * size_of::<T>()` at most
+/// `isize::MAX`), holds `len` initialised `T`s, and only this array references it.
+pub struct MArray<T> {
+    ptr: NonNull<T>,
+    len: usize,
+    ty: i32,
+    mem: &'static dyn Malloc,
+    _owns: PhantomData<T>,
+}
+
+impl<T> MArray<T> {
+    /// `mallocarray(n, sizeof(T), ty, flags)`, element `i` set to `init(i)`: `None` when
+    /// `malloc` returns `NULL` (`M_NOWAIT`, `M_CANFAIL`) or before the bridge is registered,
+    /// and when `n * size_of::<T>()` overflows under `M_CANFAIL`; the overflow without it is
+    /// `panic(9)`, as the C's. With `M_WAITOK` alone it sleeps for the memory. `n` may be 0
+    /// (`malloc(0)`, a block of the smallest bucket, as the C asks for one). A panic in
+    /// `init` leaks the block and the elements made so far.
+    pub fn new(ty: i32, flags: i32, n: usize, mut init: impl FnMut(usize) -> T) -> Option<Self> {
+        const {
+            assert!(size_of::<T>() != 0, "MArray of a zero-sized type");
+            assert!(
+                align_of::<T>() <= MALLOC_ALIGN,
+                "MArray of a type malloc cannot align"
+            );
+        }
+        let Some(bytes) = n
+            .checked_mul(size_of::<T>())
+            .filter(|&b| b <= isize::MAX.unsigned_abs())
+        else {
+            if flags & M_CANFAIL != 0 {
+                return None;
+            }
+            hal_panic(format_args!(
+                "mallocarray: overflow {n} * {}",
+                size_of::<T>()
+            ));
+        };
+        let mem = bridges::malloc()?;
+        let (block, granted) = mem.malloc(bytes, ty, flags)?;
+        check_block("Malloc", block, granted, bytes, align_of::<T>());
+        let ptr = block.cast::<T>();
+        for i in 0..n {
+            let value = init(i);
+            // SAFETY: `ptr` is aligned for `T` and names at least `n * size_of::<T>()` bytes
+            // (`check_block` above, `bytes` computed without overflow), so element `i < n` is
+            // in the block; the block is fresh and nothing else references it (the
+            // registration contract of `Malloc`, `sys/hal/trust.rs`, a documented trust
+            // boundary). Writing a whole value initialises element `i`, once, before the
+            // array exists.
+            unsafe { ptr.add(i).write(value) };
+        }
+        Some(MArray {
+            ptr,
+            len: n,
+            ty,
+            mem,
+            _owns: PhantomData,
+        })
+    }
+
+    /// The malloc type the block is counted under.
+    pub fn ty(this: &Self) -> i32 {
+        this.ty
+    }
+}
+
+impl<T> Deref for MArray<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        // SAFETY: `ptr` holds `len` initialised `T`s, aligned, in one block of at most
+        // `isize::MAX` bytes that only this array references (the invariant); the slice
+        // borrows the array, so it ends before the drop frees the block.
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<T> DerefMut for MArray<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        // SAFETY: as for `deref`, and `&mut self` makes this the only reference to the
+        // elements while it lives.
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<T> Drop for MArray<T> {
+    fn drop(&mut self) {
+        let elements = core::ptr::slice_from_raw_parts_mut(self.ptr.as_ptr(), self.len);
+        // SAFETY: the `len` elements are initialised and only this array references them (the
+        // invariant); each is dropped once, here, before the block is freed, and nothing
+        // reads them afterwards.
+        unsafe { core::ptr::drop_in_place(elements) };
+        self.mem
+            .free(self.ptr.cast(), self.ty, self.len * size_of::<T>());
+    }
+}
+
+// SAFETY: the array owns its elements outright (only it references the block), so sending
+// the array sends the `T`s; the bridge is `Sync`.
+unsafe impl<T: Send> Send for MArray<T> {}
+
+// SAFETY: `&MArray<T>` gives only `&[T]`, so sharing it is sharing `&T`s.
+unsafe impl<T: Sync> Sync for MArray<T> {}
 /* </CODE> */
 
 /* <TESTS> */
@@ -246,6 +363,75 @@ mod tests {
         assert_eq!(t.ticks, 1);
         drop(t);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    /// `M_UVMAMAP`, a type of the C's table.
+    const M_UVMAMAP: i32 = 105;
+
+    #[test]
+    fn an_array_holds_its_elements_under_its_type_and_drops_each() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let before = testutil::malloc_out(M_UVMAMAP);
+        let mut a = MArray::new(M_UVMAMAP, M_WAITOK, 5, |i| Timer {
+            ticks: i as u64 * 10,
+            drops: Arc::clone(&drops),
+        })
+        .unwrap();
+        assert_eq!(MArray::ty(&a), M_UVMAMAP);
+        assert_eq!(a.len(), 5);
+        assert_eq!(
+            a.iter().map(|t| t.ticks).collect::<std::vec::Vec<_>>(),
+            [0, 10, 20, 30, 40]
+        );
+        a[4].ticks += 1;
+        assert_eq!(a[4].ticks, 41);
+        assert_eq!(
+            testutil::malloc_out(M_UVMAMAP),
+            before + (5 * size_of::<Timer>()) as isize
+        );
+        drop(a);
+        assert_eq!(drops.load(Ordering::Relaxed), 5);
+        assert_eq!(testutil::malloc_out(M_UVMAMAP), before);
+    }
+
+    #[test]
+    fn an_array_of_ints_and_an_empty_one() {
+        testutil::install();
+        let before = testutil::malloc_out(M_UVMAMAP);
+        let mut ppref = MArray::new(M_UVMAMAP, M_NOWAIT, 16, |_| 0i32).unwrap();
+        ppref[3] = -2;
+        assert_eq!(ppref.iter().sum::<i32>(), -2);
+        let none = MArray::new(M_UVMAMAP, M_NOWAIT, 0, |_| 0u64).unwrap();
+        assert!(none.is_empty());
+        drop((ppref, none));
+        assert_eq!(testutil::malloc_out(M_UVMAMAP), before);
+    }
+
+    #[test]
+    fn an_overflowing_array_fails_under_m_canfail() {
+        testutil::install();
+        let mut called = false;
+        let a = MArray::new(M_UVMAMAP, M_WAITOK | M_CANFAIL, usize::MAX / 2, |_| {
+            called = true;
+            0u32
+        });
+        assert!(a.is_none() && !called);
+        // Past isize::MAX bytes but not past SIZE_MAX: a slice cannot hold it either.
+        let a = MArray::new(
+            M_UVMAMAP,
+            M_CANFAIL,
+            isize::MAX.unsigned_abs() / 4 + 1,
+            |_| 0u32,
+        );
+        assert!(a.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "mallocarray: overflow")]
+    fn an_overflowing_array_panics_without_m_canfail() {
+        testutil::install();
+        let _ = MArray::new(M_UVMAMAP, M_WAITOK, usize::MAX / 2, |_| 0u32);
     }
 }
 /* </TESTS> */
