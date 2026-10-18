@@ -1783,5 +1783,34 @@ mod tests {
         assert!(!ratecheck(&LAST, (3600, 0)));
         assert!(ratecheck(&LAST, (0, 0)));
     }
+
+    #[test]
+    fn a_flush_deactivating_a_page_under_read_keeps_the_pagers_view() {
+        let (_g, vp) = setup(PAGE_SIZE);
+        let uobj = uvn_attach(vp, PROT_READ).expect("attached");
+        let u = uvn(&uobj);
+        let flushed = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let seen = std::sync::Arc::clone(&flushed);
+        // Inside VOP_READ (the page busy, held by the pager's view, the object unlocked),
+        // another process deactivates the range (madvise(MADV_DONTNEED), the fault's
+        // MADV_SEQUENTIAL flush): uvn_flush deactivates the busy page, whose page_protect
+        // spares the view (the C deactivates it harmlessly).
+        vp.during_read(move || {
+            let mut w = u.object().lock().write();
+            let _ = uvn_flush(u, &mut w, 0, PAGE_SIZE as Voff, PGO_DEACTIVATE);
+            drop(w);
+            seen.store(true, core::sync::atomic::Ordering::Relaxed);
+        });
+        let pg = get(&uobj, 0);
+        assert!(flushed.load(core::sync::atomic::Ordering::Relaxed));
+        assert!(pg.flags() & PQ_INACTIVE != 0, "deactivated while busy");
+        // The read went on through the view.
+        assert_eq!(bytes(pg)[..4], [0, 1, 2, 3]);
+        let w = uobj.lock().write();
+        pg.clear_bits(PG_BUSY);
+        drop(w);
+        uobj.detach();
+        teardown();
+    }
 }
 /* </TESTS> */

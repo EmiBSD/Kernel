@@ -234,13 +234,13 @@ use super::layout::{
     vp_idx,
 };
 use super::vp::{
-    self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvKind, Table, copy_frame, direct_map,
+    self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvHead, PvKind, Table, copy_frame, direct_map,
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
 };
 use super::window;
 use crate::assert::{hal_panic, kassert};
 use crate::intr::{IPL_NONE, IPL_VM, splraise};
-use crate::mutex::Mutexed;
+use crate::mutex::{Mutexed, MutexedGuard};
 use crate::pmap::{
     BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
     PhysPages, Pmap, PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
@@ -1053,6 +1053,21 @@ fn pmap_page_ro(pm: &Pmap, pted: &PteDesc, pl3: &AtomicU64, prot: VmProt) {
 }
 
 /// `pmap_page_protect`: lower the protection on the specified physical page.
+/// The first descriptor of the page's pv list that `pmap_page_protect` removes: the first
+/// that is not a live byte view's own mapping (a pager window's entry in the kernel pmap,
+/// `PageMd::spares`; a frame has at most one).
+fn first_unspared<'w>(md: &PageMd, head: &'w MutexedGuard<'_, PvHead>) -> Option<&'w PteDesc> {
+    let mut cur = head.0.target(head);
+    while let Some(pted) = cur {
+        let kernel = ptr::eq(pted.pmap.load(Ordering::Acquire), &KERNEL_PMAP);
+        if !md.spares(kernel, pted_va(pted)) {
+            return Some(pted);
+        }
+        cur = pted.pv_next.target(head);
+    }
+    None
+}
+
 fn pmap_page_protect(md: &PageMd, prot: VmProt) {
     if prot != PROT_NONE {
         let head = md.pv.lock();
@@ -1071,9 +1086,12 @@ fn pmap_page_protect(md: &PageMd, prot: VmProt) {
     loop {
         let pmref = {
             let head = md.pv.lock();
-            let Some(pted) = head.0.target(&head) else {
-                // page is being reclaimed, sync icache next use
-                md.attrs.fetch_and(!PG_PMAP_EXE, Ordering::Relaxed);
+            let Some(pted) = first_unspared(md, &head) else {
+                // page is being reclaimed, sync icache next use (a live window's own mapping,
+                // spared, is all that may be left: the page is not reclaimed then)
+                if head.0.target(&head).is_none() {
+                    md.attrs.fetch_and(!PG_PMAP_EXE, Ordering::Relaxed);
+                }
                 return;
             };
             pmap_reference_pted(pted)
@@ -1087,14 +1105,13 @@ fn pmap_page_protect(md: &PageMd, prot: VmProt) {
         // just locked. If it doesn't, unlock the pmap and try again.
         let va = {
             let head = md.pv.lock();
-            head.0
-                .target(&head)
+            first_unspared(md, &head)
                 .filter(|t| ptr::eq(t.pmap.load(Ordering::Acquire), pm))
                 .map(pted_va)
         };
         if let Some(va) = va {
-            // The first mapping is `pm`'s at `va`, which only `pm`'s lock (held) removes; the
-            // head guard is dropped (the removal takes `pv_mtx` itself).
+            // The first mapping not spared is `pm`'s at `va`, which only `pm`'s lock (held)
+            // removes; the head guard is dropped (the removal takes `pv_mtx` itself).
             let Some(l3) = pmap_vp_lookup(pm, va) else {
                 hal_panic(format_args!(
                     "pmap_page_protect: a linked pted without a vp for {va:#x}"

@@ -553,6 +553,8 @@ pub struct MemVnode {
     nlocked: std::sync::atomic::AtomicU32,
     fail: std::sync::atomic::AtomicBool,
     last_read: Mutex<Option<ReadSeen>>,
+    /// Run by the next read inside the "VOP_READ", as another process might meanwhile.
+    during_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl MemVnode {
@@ -584,6 +586,11 @@ impl MemVnode {
     /// What the last read saw.
     pub fn last_read(&self) -> Option<ReadSeen> {
         *lock_any(&self.last_read)
+    }
+
+    /// Runs `f` inside the next read, the pager's page busy and its locks let go.
+    pub fn during_read(&self, f: impl FnOnce() + Send + 'static) {
+        *lock_any(&self.during_read) = Some(Box::new(f));
     }
 }
 
@@ -653,6 +660,10 @@ impl VnodeOps for MemVnode {
             kernel_locked: kernel_lock_depth() > 0,
             vnode_locked: self.nlocked() > 0,
         });
+        let during = lock_any(&self.during_read).take();
+        if let Some(f) = during {
+            f();
+        }
         if self.fail.load(Ordering::Relaxed) {
             return Err(Errno::EIO);
         }
@@ -687,6 +698,7 @@ pub fn mem_vnode(contents: Vec<u8>) -> &'static MemVnode {
         nlocked: std::sync::atomic::AtomicU32::new(0),
         fail: std::sync::atomic::AtomicBool::new(false),
         last_read: Mutex::new(None),
+        during_read: Mutex::new(None),
     }))
 }
 static TEST_INTR: TestIntr = TestIntr;

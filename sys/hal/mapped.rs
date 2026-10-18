@@ -111,7 +111,7 @@
 //!   A frame already held is `panic(9)`, the frames claimed so far released first; so two
 //!   views of one frame cannot exist, whoever asks. The other ways to the frame's bytes
 //!   refuse a held frame: `pmap_zero_page` and `pmap_copy_page` claim it for their length,
-//!   `pmap_page_protect` may not take the view's mapping away (removing the page's mappings,
+//!   `pmap_page_protect` spares the view's own mapping (removing the page's other mappings,
 //!   which freeing it does, or write-protecting a writable view), the page system refuses to
 //!   free it (`uvm_pageclean`), to hand it out again (`PageMd::clear_attrs`) and to unbusy
 //!   it (`VmPage::clear_bits` of `PG_BUSY`), so the frames stay busy until the drop.
@@ -221,9 +221,11 @@ impl MappedBytes<'_> {
         // SAFETY: `view` names `len` bytes (at most `isize::MAX`, nonzero) of managed, busy
         // pages (checked when the view was made), so RAM, whose every byte is a valid `u8`.
         // They stay mapped while this value lives: the window was entered where nothing was
-        // mapped and `pmap_page_protect` refuses to take a held page's mapping away (the
-        // direct map never goes). Each frame is claimed by this value alone, so no other view
-        // exists, `pmap_zero_page`/`pmap_copy_page` refuse it, and the page system can
+        // mapped and `pmap_page_protect` spares a held page's window entry (`PageMd::spares`,
+        // recorded before the entry is made; the direct map, on no pv chain, never goes; a
+        // writable view is never write-protected). Each frame is claimed by this value
+        // alone, so no other view exists, `pmap_zero_page`/`pmap_copy_page` refuse it, and
+        // the page system can
         // neither unbusy, free nor hand it out again while the claim lives (it panics), so
         // the frames stay busy, their owner's, until the drop; no `&mut` through this value
         // is alive beside this `&` (`as_slice_mut` needs `&mut self`). Pages of
@@ -361,6 +363,8 @@ impl KernelMapper {
         }
         for (i, &pa) in frames.iter().enumerate() {
             let cva = va + Vsize::new(i * PAGE_SIZE);
+            // The window's own entry, which `page_protect` spares (recorded before it exists).
+            md("map_frames", pa).set_view_va(cva.as_usize());
             if let Err(e) = self.enter(cva, pa, prot, PMAP_WIRED | PMAP_CANFAIL | prot) {
                 self.remove(va, cva);
                 release(frames);
@@ -631,17 +635,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a page in a byte view")]
-    fn freeing_a_viewed_page_removes_no_mapping_from_under_it() {
+    fn removing_a_viewed_pages_mappings_spares_the_window() {
         let (mapper, va) = window(18);
         let frames = testutil::memory_frames(1);
-        let _w = mapper
+        let w = mapper
             .map_frames(va, &frames, PROT_READ | PROT_WRITE)
             .unwrap();
-        // What the page system does before it frees a page (`uvm_page_unbusy`'s released
-        // page, `uvm_pagefree`'s callers): every mapping removed.
+        // What a deactivation does to a busy page under I/O (`uvn_flush`'s PGO_DEACTIVATE):
+        // every mapping removed but the window's own, which keeps its bytes.
         let md = pmap::kernel().pages().md_of(frames[0]).unwrap();
+        assert!(md.spares(true, va.as_usize()));
         pmap::page_protect(md, PROT_NONE);
+        assert_eq!(pmap::kernel().extract(va), Some(frames[0]));
+        assert_eq!(w.as_slice().len(), PAGE_SIZE);
+        drop(w);
+        assert!(!md.spares(true, va.as_usize()));
     }
 
     #[test]

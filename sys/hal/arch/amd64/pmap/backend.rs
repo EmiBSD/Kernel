@@ -842,7 +842,7 @@ fn pmap_page_remove(md: &PageMd) {
     loop {
         let pmref = {
             let head = md.pv.lock();
-            let Some(e) = head.0.as_deref() else {
+            let Some(e) = first_unspared(md, &head.0) else {
                 break;
             };
             pmap_reference_pv(e)
@@ -856,19 +856,14 @@ fn pmap_page_remove(md: &PageMd) {
         // have modified it. All we care about is that the pvlist entry matches the pmap we
         // just locked. If it doesn't, unlock the pmap and try again.
         let mut head = md.pv.lock();
-        if !head
-            .0
-            .as_deref()
-            .is_some_and(|e| ptr::eq(e.pmap.as_ptr(), pm))
-        {
+        if !first_unspared(md, &head.0).is_some_and(|e| ptr::eq(e.pmap.as_ptr(), pm)) {
             drop(head);
             drop(locked);
             continue;
         }
-        let Some(mut pve) = head.0.take() else {
+        let Some(pve) = take_first_unspared(md, &mut head.0) else {
             continue;
         };
-        head.0 = pve.next.take();
         drop(head);
 
         let va = pve.va;
@@ -912,6 +907,41 @@ fn pmap_page_remove(md: &PageMd) {
     if freed.n != 0 {
         // Every pmap has the kernel pmap's provider (`hal::pmap::create`).
         freed.free(KERNEL_PMAP.pages());
+    }
+}
+
+/// Whether the pv entry `e` of the frame `md` is a live byte view's own mapping (a pager
+/// window's entry in the kernel pmap, `PageMd::spares`), which `pmap_page_remove` leaves.
+fn pv_spared(md: &PageMd, e: &PvEntry) -> bool {
+    md.spares(ptr::eq(e.pmap.as_ptr(), &KERNEL_PMAP), e.va)
+}
+
+/// The first entry of the chain `pmap_page_remove` takes: the first that is not spared (a
+/// frame has at most one spared entry, its window's).
+fn first_unspared<'h>(md: &PageMd, head: &'h Option<PoolBox<PvEntry>>) -> Option<&'h PvEntry> {
+    let mut cur = head.as_deref();
+    while let Some(e) = cur {
+        if !pv_spared(md, e) {
+            return Some(e);
+        }
+        cur = e.next.as_deref();
+    }
+    None
+}
+
+/// Takes [`first_unspared`]'s entry out of the chain, the chain closed behind it; the
+/// entry's `next` is empty.
+fn take_first_unspared(
+    md: &PageMd,
+    head: &mut Option<PoolBox<PvEntry>>,
+) -> Option<PoolBox<PvEntry>> {
+    match head {
+        Some(e) if pv_spared(md, e) => take_first_unspared(md, &mut e.next),
+        _ => {
+            let mut pve = head.take()?;
+            *head = pve.next.take();
+            Some(pve)
+        }
     }
 }
 

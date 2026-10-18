@@ -154,8 +154,12 @@
 //!   N3.4a: the word also holds `hal`'s claim (`PG_HAL_VIEW`, `PG_HAL_VIEW_W`, never in
 //!   [`PageMd::attrs`]): a frame held alone by a byte view (`sys/hal/mapped.rs`) or for the
 //!   length of [`zero_page`]/[`copy_page`], which panic on a held frame, as
-//!   [`page_protect`] does when it would take a view's mapping away and
+//!   [`page_protect`] does when it would write-protect a writable view and
 //!   [`PageMd::clear_attrs`] when the page system hands a held page out again;
+//!   [`page_protect`] spares the view's own mapping (N3.4c review: a pager window's managed
+//!   entry in the kernel pmap, `PageMd::view_va`; the direct map is on no pv chain) and
+//!   removes or lowers every other one, as the C does to a busy page (`uvn_flush`'s
+//!   deactivation of a page under I/O);
 //!   [`PhysPages::is_busy`] answers `PG_BUSY` for the views' check. The gap until N3.5 (the
 //!   token holder's contract): no live window is overlaid, removed or write-protected
 //!   through the kernel map's token but by its drop, and no frame is a busy page that backs
@@ -176,7 +180,7 @@
 //!   pick; N7), registered in `sys/hal/bridges.rs`.
 
 use core::ops::Deref;
-use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
 use crate::arch::current::pmap::{Backend, PmapMd, PvHead};
 use crate::assert::hal_panic;
@@ -534,6 +538,12 @@ pub struct PageMd {
     /// amd64's alone: arm64's vp tables are found by the walk and freed with their pmap).
     #[cfg_attr(not(all(target_os = "none", target_arch = "x86_64")), allow(dead_code))]
     pub(crate) ptp_refs: AtomicU32,
+    /// The kernel virtual address of the view's own managed mapping of the frame while a
+    /// pager window holds it (`KernelMapper::map_frames`), 0 otherwise (no view, or the direct
+    /// map's, which is on no pv chain): the mapping [`page_protect`] spares. Written by the
+    /// claim before the window's entry is made and cleared with the claim; read by the
+    /// backends under the frame's pv lock ([`PageMd::spares`]).
+    view_va: AtomicUsize,
 }
 
 impl PageMd {
@@ -543,6 +553,7 @@ impl PageMd {
             pv: Mutexed::new(IPL_VM, PvHead::new()),
             attrs: AtomicU32::new(0),
             ptp_refs: AtomicU32::new(0),
+            view_va: AtomicUsize::new(0),
         }
     }
 
@@ -590,19 +601,40 @@ impl PageMd {
             .is_ok()
     }
 
+    /// Records, for the holder of the claim, the kernel address its window maps the frame at
+    /// (before the entry is made: the backends read it under the pv lock the entry takes, so
+    /// a removal that sees the window's entry sees the address).
+    pub(crate) fn set_view_va(&self, va: usize) {
+        self.view_va.store(va, Ordering::Release);
+    }
+
     /// Gives a claim up (Release: what the holder wrote is seen by the next claim).
     pub(crate) fn release_view(&self) {
+        self.view_va.store(0, Ordering::Relaxed);
         self.attrs.fetch_and(!PG_HAL_MASK, Ordering::Release);
     }
 
-    /// Panics when lowering the page's mappings to `prot` would pull a live byte view's
-    /// mapping from under it: removing them (`PROT_NONE`; any other `prot` without
-    /// `PROT_WRITE` write-protects, `PROT_EXEC` alone included, as both machines' C do), or
-    /// write-protecting a writable view.
+    /// Whether the mapping of the frame at `va` in the kernel pmap (`kernel`) or a user pmap
+    /// is a live view's own, which [`page_protect`] spares. The backends ask under the frame's
+    /// pv lock.
+    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
+    pub(crate) fn spares(&self, kernel: bool, va: usize) -> bool {
+        kernel
+            && self.attrs.load(Ordering::Acquire) & PG_HAL_VIEW != 0
+            && va != 0
+            && self.view_va.load(Ordering::Acquire) == va
+    }
+
+    /// Panics when lowering the page's mappings to `prot` would write-protect a writable
+    /// byte view (any `prot` but `PROT_NONE` without `PROT_WRITE`, `PROT_EXEC` alone included,
+    /// as both machines' C do). Removing them (`PROT_NONE`) spares the view's own mapping
+    /// ([`PageMd::spares`]), so a view keeps its bytes.
     fn check_protect(&self, prot: VmProt) {
         let a = self.attrs.load(Ordering::Acquire);
         if a & PG_HAL_VIEW != 0
-            && (prot == PROT_NONE || (a & PG_HAL_VIEW_W != 0 && prot & PROT_WRITE == 0))
+            && prot != PROT_NONE
+            && a & PG_HAL_VIEW_W != 0
+            && prot & PROT_WRITE == 0
         {
             hal_panic(format_args!(
                 "pmap_page_protect: a page in a byte view, to {prot:#x}"
@@ -1005,11 +1037,13 @@ fn create_with(
 }
 
 /// `pmap_page_protect(pg, prot)`: lowers every mapping of the page to `prot`; `PROT_NONE`
-/// removes them all (what the object layer does before freeing a page).
+/// removes them all (what the object layer does before freeing a page, and what a
+/// deactivation does to a page, busy ones included).
 ///
-/// Panics when a byte view holds the page and `prot` would take its mapping away (the
-/// window is a managed mapping: freeing a page removes it): the view's owner gives the page
-/// up first.
+/// A byte view holding the page keeps its own mapping: a pager window's entry in the kernel
+/// pmap is spared ([`PageMd::spares`]), the direct map is on no pv chain; every other mapping
+/// goes (the C's busy page under I/O, `uvn_flush`'s `PGO_DEACTIVATE`). Panics when `prot`
+/// would write-protect a writable view.
 pub fn page_protect(md: &PageMd, prot: VmProt) {
     md.check_protect(prot);
     Backend::page_protect(md, prot);
@@ -1386,12 +1420,35 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a page in a byte view, to 0x0")]
-    fn a_page_in_a_view_keeps_its_mappings() {
+    fn a_page_in_a_view_has_its_other_mappings_removed() {
         let _ = booted();
         let md = PageMd::new();
         assert!(md.claim_view(false));
+        // PROT_NONE spares the view, so it no longer panics.
         page_protect(&md, PROT_NONE);
+        assert!(md.in_view());
+    }
+
+    #[test]
+    fn only_the_windows_own_kernel_mapping_is_spared() {
+        let md = PageMd::new();
+        // No view: nothing spared.
+        assert!(!md.spares(true, 0x4000));
+        // A direct view: on no pv chain, nothing to spare.
+        assert!(md.claim_view(true));
+        assert!(!md.spares(true, 0x4000) && !md.spares(true, 0));
+        md.release_view();
+        // A window at 0x4000: the kernel pmap's entry there alone.
+        assert!(md.claim_view(true));
+        md.set_view_va(0x4000);
+        assert!(md.spares(true, 0x4000));
+        assert!(!md.spares(true, 0x5000), "another kernel address");
+        assert!(
+            !md.spares(false, 0x4000),
+            "a user mapping at the same address"
+        );
+        md.release_view();
+        assert!(!md.spares(true, 0x4000), "the claim gone");
     }
 
     #[test]
