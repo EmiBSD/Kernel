@@ -147,6 +147,7 @@ pub fn uvm_init() {
     // Make kernel memory allocators ready for use. After this call the malloc memory allocator
     // can be used.
     kmeminit();
+    crate::kern::hal_bridges::hal_bridges_heap_ready();
 
     // step 7.5: init the dma allocator, which is backed by pools.
     dma_alloc_init();

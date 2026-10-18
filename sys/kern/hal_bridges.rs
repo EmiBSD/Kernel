@@ -232,6 +232,15 @@ const NSTATIC_POOLS: usize = 8;
 static STATIC_POOLS: [Pool; NSTATIC_POOLS] = [const { Pool::new() }; NSTATIC_POOLS];
 /// How many of [`STATIC_POOLS`] were handed out.
 static STATIC_POOLS_USED: AtomicUsize = AtomicUsize::new(0);
+/// Whether `malloc(9)` serves the global allocator yet (`uvm_init` sets it after `kmeminit`):
+/// a pool made before, past [`STATIC_POOLS`], is refused by name rather than by the
+/// allocator's out-of-memory panic.
+static HEAP_POOLS_READY: AtomicBool = AtomicBool::new(false);
+
+/// `kmeminit` has run: the `struct pool`s past [`STATIC_POOLS`] may come from the heap.
+pub fn hal_bridges_heap_ready() {
+    HEAP_POOLS_READY.store(true, Ordering::Release);
+}
 
 /// The next `struct pool` of [`STATIC_POOLS`] no one has, if one is left.
 fn static_pool() -> Option<&'static Pool> {
@@ -260,7 +269,13 @@ impl PoolBackend for BsdPools {
         wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
         let align = u32::try_from(align).ok()?;
-        let pp = static_pool().or_else(heap_pool)?;
+        let pp = match static_pool() {
+            Some(pp) => pp,
+            None if HEAP_POOLS_READY.load(Ordering::Acquire) => heap_pool()?,
+            None => crate::kern::subr_prf::panic(format_args!(
+                "pool_init {wchan}: more than NSTATIC_POOLS ({NSTATIC_POOLS}) pools before kmeminit"
+            )),
+        };
         pool_init(pp, size, align, ipl, flags, wchan, None);
         Some(pp)
     }
