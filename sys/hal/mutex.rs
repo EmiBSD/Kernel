@@ -157,6 +157,10 @@
 //!   C lowers through the mutex's saved level to the same effect), the mutex is entered again
 //!   and 0 returned without sleeping. `msleep_nsec` is `kern_synch.c`'s, hence the third
 //!   source.
+//! - N3.5 S0: a [`MutexedGuard`] is a witness (`hal::rwlock::Witness`, `Exclusive`,
+//!   `Divisible`): the one holder of the mutex, as a writer is of a reader-writer lock, so a
+//!   `Guarded` cell keyed to the mutex ([`Mutexed::id`], `Guarded::new_mutexed`) opens through
+//!   it (an `INTRSAFE` map, whose lock is `vm_map.mtx` at `IPL_VM` instead of an rwlock).
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -167,6 +171,7 @@ use crate::assert::kassert;
 use crate::bridges;
 use crate::cpu;
 use crate::intr::{self, IPL_NONE};
+use crate::rwlock::LockId;
 use crate::sleep::{INFSLP, PCATCH, PRIMASK, chan};
 use crate::sys::errno::Errno;
 
@@ -254,6 +259,12 @@ impl<T> Mutexed<T> {
     /// The data, consuming the mutex.
     pub fn into_inner(self) -> T {
         self.data.into_inner()
+    }
+
+    /// The mutex's identity (the address of its owner word, as a mutex's), for the
+    /// [`crate::rwlock::Guarded`] cells keyed to it: its guard is their witness.
+    pub fn id(&self) -> LockId {
+        LockId::of_mutex(&self.owner)
     }
 
     /// Whether some CPU holds the mutex (`mtx_owner(mtx) != 0`): a snapshot, for assertions.
@@ -377,6 +388,11 @@ impl<T> MutexedGuard<'_, T> {
         #[cfg(feature = "diagnostic")]
         cpu::mutex_level(1);
         result
+    }
+
+    /// The identity of the mutex this guard holds.
+    pub(crate) fn mutex_id(&self) -> LockId {
+        self.lock.id()
     }
 
     /// `msleep_nsec` with no timeout.

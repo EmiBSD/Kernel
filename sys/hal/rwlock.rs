@@ -223,6 +223,19 @@
 //!   [`Witness`] itself (the sealed trait gains the enum, which holds one of the two), so a
 //!   [`Guarded`] cell opens through it in either mode; the cell's mutable access still wants
 //!   the write witness itself ([`RwWitness::as_write`]).
+//! - N3.5 S0: a lock embedded in the object whose fields it guards (the C's `vm_map.lock`
+//!   beside the map's tree and its entries' handles) is a [`RawRwlock`] taken through its own
+//!   witnesses ([`RawRwlock::write`], [`RawRwlock::read`], [`RawRwlock::enter`] and the
+//!   `_flags`/`try_` forms; [`SharedRwlock`]'s are those of its lock), and the object's cells
+//!   are keyed to it at placement ([`Guarded::new_keyed`], [`Guarded::rekey_raw`]). An
+//!   `INTRSAFE` map's lock is a mutex: a [`MutexedGuard`] is a witness too
+//!   ([`Guarded::new_mutexed`]; a [`LockId`] tags a mutex's so the two kinds never meet).
+//!   [`Guarded::get_mut`] takes any [`Exclusive`] witness (a write witness, a mutex guard, a
+//!   part). A whole exclusive witness ([`Divisible`]) splits into [`WitnessPart`]s
+//!   ([`Divisible::split`]), each opening the cells of its part only ([`Guarded::keyed`] with
+//!   a part, `0..WITNESS_PARTS`), so a map's state (part 0) and the handles of an entry
+//!   borrowed from it (part 1) open mutably at once: one witness, disjoint cells, the
+//!   borrow checker keeping each part's `&mut` unique.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -233,6 +246,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::{hal_panic, kassert};
 use crate::bridges;
+use crate::mutex::{Mutexed, MutexedGuard};
 use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
 use crate::sleep::{self, INFSLP, PCATCH, PLOCK, PRIMASK, chan};
 use crate::sys::errno::Errno;
@@ -260,9 +274,11 @@ pub const RW_WRITE_OTHER: i32 = 0x0100;
 const RW_SPINS: u32 = 1000;
 
 /// `struct rwlock`: the owner word and the two wait counters whose addresses are the wait
-/// channels. Inside a [`Rwlocked`] or a [`SharedRwlock`]'s pool item; a `static` of its own
-/// only for [`SharedRwlock::from_static`], since it is taken and released only through
-/// those.
+/// channels. Inside a [`Rwlocked`] or a [`SharedRwlock`]'s pool item, a `static` of its own
+/// ([`SharedRwlock::from_static`]), or embedded in the object whose fields it guards (a map's
+/// `vmmaplk`, N3.5), taken there through its own witnesses ([`RawRwlock::write`],
+/// [`RawRwlock::read`], [`RawRwlock::enter`]) and keyed to by that object's [`Guarded`] cells
+/// ([`Guarded::new_keyed`]).
 pub struct RawRwlock {
     /// `rwl_owner`.
     owner: AtomicUsize,
@@ -290,9 +306,65 @@ impl RawRwlock {
         self.name
     }
 
-    /// The lock's identity: its address, as a number (two live locks never share one).
-    fn id(&self) -> LockId {
+    /// The lock's identity: its address, as a number (two live locks never share one), for
+    /// the [`Guarded`] cells keyed to it.
+    pub fn id(&self) -> LockId {
         LockId(ptr::from_ref(self).addr())
+    }
+
+    /// `rw_enter_write(9)`: waits (sleeping, uninterruptibly) until the lock is free and takes
+    /// it alone; the witness of it.
+    pub fn write(&self) -> WriteWitness<'_> {
+        let me = self.write_wait();
+        WriteWitness::new(self, me)
+    }
+
+    /// `rw_enter(9)` with `RW_WRITE | flags` (`RW_NOSLEEP`: `EBUSY` when held; `RW_INTR`: the
+    /// sleep's error when a signal ends the wait).
+    pub fn write_flags(&self, flags: i32) -> Result<WriteWitness<'_>, Errno> {
+        let me = self.enter_write(flags)?;
+        Ok(WriteWitness::new(self, me))
+    }
+
+    /// `rw_enter(9)` with `RW_WRITE | RW_NOSLEEP`: `None` when the lock is held.
+    pub fn try_write(&self) -> Option<WriteWitness<'_>> {
+        self.write_flags(RW_NOSLEEP).ok()
+    }
+
+    /// `rw_enter_read(9)`: waits (sleeping, uninterruptibly) until no writer holds or waits
+    /// for the lock and takes it shared; the witness of it.
+    pub fn read(&self) -> ReadWitness<'_> {
+        self.read_wait();
+        ReadWitness::new(self)
+    }
+
+    /// `rw_enter(9)` with `RW_READ | flags`, as [`RawRwlock::write_flags`].
+    pub fn read_flags(&self, flags: i32) -> Result<ReadWitness<'_>, Errno> {
+        self.enter_read(flags)?;
+        Ok(ReadWitness::new(self))
+    }
+
+    /// `rw_enter(9)` with `RW_READ | RW_NOSLEEP`: `None` when a writer holds or waits.
+    pub fn try_read(&self) -> Option<ReadWitness<'_>> {
+        self.read_flags(RW_NOSLEEP).ok()
+    }
+
+    /// `rw_enter(lock, mode)`: waits (sleeping, uninterruptibly) for the lock in `mode`; the
+    /// witness of it.
+    pub fn enter(&self, mode: RwMode) -> RwWitness<'_> {
+        match mode {
+            RwMode::Read => RwWitness::Read(self.read()),
+            RwMode::Write => RwWitness::Write(self.write()),
+        }
+    }
+
+    /// `rw_enter(lock, mode | flags)` (`RW_NOSLEEP`: `EBUSY` when the lock cannot be had in
+    /// `mode` now; `RW_INTR`: the sleep's error when a signal ends the wait).
+    pub fn enter_flags(&self, mode: RwMode, flags: i32) -> Result<RwWitness<'_>, Errno> {
+        Ok(match mode {
+            RwMode::Read => RwWitness::Read(self.read_flags(flags)?),
+            RwMode::Write => RwWitness::Write(self.write_flags(flags)?),
+        })
     }
 
     /// `rw_cas`: one compare-and-swap of the owner word; the value it found.
@@ -315,7 +387,7 @@ impl RawRwlock {
     }
 
     /// A writer's one try: the free word becomes `me`.
-    fn try_write(&self, me: usize) -> bool {
+    fn cas_write(&self, me: usize) -> bool {
         self.cas(0, me) == 0
     }
 
@@ -346,7 +418,7 @@ impl RawRwlock {
         crate::cpu::spinning(1);
         let won = (0..RW_SPINS).any(|_| {
             core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-            self.owner.load(Ordering::Relaxed) == 0 && self.try_write(me)
+            self.owner.load(Ordering::Relaxed) == 0 && self.cas_write(me)
         });
         crate::cpu::spinning(-1);
         won
@@ -412,7 +484,7 @@ impl RawRwlock {
             PLOCK - 4,
             flags,
             || self.owner.load(Ordering::SeqCst) != 0,
-            || self.try_write(me),
+            || self.cas_write(me),
         )?;
         Ok(me)
     }
@@ -538,8 +610,9 @@ impl RawRwlock {
         Err(Errno::EBUSY)
     }
 
-    /// `rw_status`.
-    fn status(&self) -> i32 {
+    /// `rw_status(9)`: [`RW_WRITE`] (this process writes), [`RW_WRITE_OTHER`], [`RW_READ`] or
+    /// 0 (free). A snapshot, for assertions (`rw_write_held` is `status() == RW_WRITE`).
+    pub fn status(&self) -> i32 {
         let owner = self.owner.load(Ordering::SeqCst);
         match owner {
             0 => 0,
@@ -889,60 +962,46 @@ impl SharedRwlock {
     /// `rw_enter_write(9)`: waits (sleeping, uninterruptibly) until the lock is free and takes
     /// it alone; the witness of it.
     pub fn write(&self) -> WriteWitness<'_> {
-        let raw = self.raw();
-        let me = raw.write_wait();
-        WriteWitness::new(raw, me)
+        self.raw().write()
     }
 
     /// `rw_enter(9)` with `RW_WRITE | flags` (`RW_NOSLEEP`: `EBUSY` when held; `RW_INTR`: the
     /// sleep's error when a signal ends the wait).
     pub fn write_flags(&self, flags: i32) -> Result<WriteWitness<'_>, Errno> {
-        let raw = self.raw();
-        let me = raw.enter_write(flags)?;
-        Ok(WriteWitness::new(raw, me))
+        self.raw().write_flags(flags)
     }
 
     /// `rw_enter(9)` with `RW_WRITE | RW_NOSLEEP`: `None` when the lock is held.
     pub fn try_write(&self) -> Option<WriteWitness<'_>> {
-        self.write_flags(RW_NOSLEEP).ok()
+        self.raw().try_write()
     }
 
     /// `rw_enter_read(9)`: waits (sleeping, uninterruptibly) until no writer holds or waits
     /// for the lock and takes it shared; the witness of it.
     pub fn read(&self) -> ReadWitness<'_> {
-        let raw = self.raw();
-        raw.read_wait();
-        ReadWitness::new(raw)
+        self.raw().read()
     }
 
     /// `rw_enter(9)` with `RW_READ | flags`, as [`SharedRwlock::write_flags`].
     pub fn read_flags(&self, flags: i32) -> Result<ReadWitness<'_>, Errno> {
-        let raw = self.raw();
-        raw.enter_read(flags)?;
-        Ok(ReadWitness::new(raw))
+        self.raw().read_flags(flags)
     }
 
     /// `rw_enter(9)` with `RW_READ | RW_NOSLEEP`: `None` when a writer holds or waits.
     pub fn try_read(&self) -> Option<ReadWitness<'_>> {
-        self.read_flags(RW_NOSLEEP).ok()
+        self.raw().try_read()
     }
 
     /// `rw_enter(lock, mode)`: waits (sleeping, uninterruptibly) for the lock in `mode`, the
     /// mode the caller decided at run time (`flt->upper_lock_type`); the witness of it.
     pub fn enter(&self, mode: RwMode) -> RwWitness<'_> {
-        match mode {
-            RwMode::Read => RwWitness::Read(self.read()),
-            RwMode::Write => RwWitness::Write(self.write()),
-        }
+        self.raw().enter(mode)
     }
 
     /// `rw_enter(lock, mode | flags)` (`RW_NOSLEEP`: `EBUSY` when the lock cannot be had in
     /// `mode` now; `RW_INTR`: the sleep's error when a signal ends the wait).
     pub fn enter_flags(&self, mode: RwMode, flags: i32) -> Result<RwWitness<'_>, Errno> {
-        Ok(match mode {
-            RwMode::Read => RwWitness::Read(self.read_flags(flags)?),
-            RwMode::Write => RwWitness::Write(self.write_flags(flags)?),
-        })
+        self.raw().enter_flags(mode, flags)
     }
 
     /// `rw_status(9)`: [`RW_WRITE`] (this process writes), [`RW_WRITE_OTHER`], [`RW_READ`] or
@@ -968,10 +1027,44 @@ impl SharedRwlock {
     }
 }
 
-/// A lock's identity: its address as a number, compared and never dereferenced. Two live
-/// locks never have the same one.
+/// A lock's identity: the address of its word as a number, with [`LOCKID_MUTEX`] set for a
+/// [`Mutexed`]'s, compared and never dereferenced. Two live locks never have the same one: a
+/// reader-writer lock's is its own address, a mutex's the address of its owner word, and
+/// neither kind holds another lock of either kind at its start.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LockId(usize);
+
+impl LockId {
+    /// The identity of the mutex whose owner word is `word`.
+    pub(crate) fn of_mutex(word: &AtomicUsize) -> LockId {
+        LockId(ptr::from_ref(word).addr() | LOCKID_MUTEX)
+    }
+}
+
+/// The bit of a [`LockId`] that says a mutex (a lock's word is aligned to 8 bytes, so its
+/// address leaves the three low bits free).
+const LOCKID_MUTEX: usize = 0b001;
+/// Where a [`Guarded`] key keeps its part (the two bits above [`LOCKID_MUTEX`]).
+const PART_SHIFT: u32 = 1;
+/// The part bits of a [`Guarded`] key.
+const PART_BITS: usize = 0b110;
+/// How many parts an exclusive witness splits into at most ([`Divisible::split`]), and the
+/// parts a [`Guarded`] cell may be made in (`0..WITNESS_PARTS`).
+pub const WITNESS_PARTS: usize = 4;
+
+/// One part of an exclusive witness ([`Divisible::split`]): it opens, mutably or not, only
+/// the [`Guarded`] cells of its lock that were made in its part ([`Guarded::keyed`]), so the
+/// parts of one witness reach disjoint cells at once (a map's state in one part, an entry's
+/// handles, which borrow nothing of the state, in another). It borrows the witness it came
+/// from mutably, so that witness opens nothing and cannot be released or slept while a part
+/// lives; it is not `Clone`, not `Send`, and not divisible again.
+#[must_use = "a part opens cells only while it lives"]
+pub struct WitnessPart<'w> {
+    id: LockId,
+    part: u8,
+    _borrow: PhantomData<&'w mut ()>,
+    _not_send: PhantomData<*const ()>,
+}
 
 /// The proof of holding a [`SharedRwlock`] alone (`rw_enter_write` on a lock object): no
 /// data; the [`Guarded`] cells keyed to the lock open mutably through it. Its drop is
@@ -1162,37 +1255,61 @@ impl Drop for ReadWitness<'_> {
 }
 
 /// A cell of one object kept under a lock that another object may own (the C's "locked by
-/// the amap's lock": an anon's fields, the amap's tables, the aobj's swap slots): it opens
-/// only through a witness of that lock.
+/// the amap's lock": an anon's fields, the amap's tables, the aobj's swap slots), or that is
+/// embedded beside it (a map's state and its entries' handles under the map's lock, N3.5): it
+/// opens only through a witness of that lock.
 ///
 /// Invariant: `data` is reached only through [`Guarded::get`] and [`Guarded::get_mut`], with
-/// a witness of the lock whose identity is `key`'s (checked at each access), or through
-/// `&mut self`. A witness exists only while its lock is held in its mode (the owner word
-/// holds its writer, or counts it among the readers) and borrows a handle that keeps the lock
-/// alive, and two live locks never share an identity; so every reference alive into the
-/// data comes from witnesses of one lock, and the lock's word keeps them apart as `rwlock(9)`
-/// keeps its holders: one `&mut T` from the one writer, or `&T`s, never both. (A key left
-/// from a lock that was freed matches only a later lock at the same address, whose witnesses
-/// exclude each other just the same.)
+/// a witness that opens the cell (checked at each access: the identity of the witness's lock
+/// is the key's, and a [`WitnessPart`]'s part is the cell's), or through `&mut self`. A
+/// witness exists only while its lock is held in its mode (the owner word holds its writer,
+/// or counts it among the readers; the mutex is this CPU's) and borrows what keeps the lock
+/// alive, a part only while the whole exclusive witness it came from is borrowed mutably, and
+/// two live locks never share an identity. So every reference alive into the data comes
+/// from the witnesses that open it, which the lock keeps apart as `rwlock(9)` and `mutex(9)`
+/// keep their holders: readers, or the one exclusive witness that opens the cell (the whole
+/// write witness or mutex guard, or, while it is split, the one part of the cell's number);
+/// one `&mut T`, or `&T`s, never both. (A key left from a lock that was freed or moved
+/// matches only a later lock at the same address, whose witnesses exclude each other just the
+/// same.)
 pub struct Guarded<T> {
     key: Key,
     data: UnsafeCell<T>,
 }
 
-/// The identity a [`Guarded`] is keyed to.
+/// The identity a [`Guarded`] is keyed to, and its part.
 #[derive(Clone, Copy)]
 enum Key {
-    /// A lock that lives for ever, named in a `const` context ([`Guarded::new_static`]).
+    /// A lock that lives for ever, named in a `const` context ([`Guarded::new_static`]);
+    /// part 0.
     Static(&'static RawRwlock),
-    /// A lock's address, as a number.
+    /// A lock's identity, its part in [`PART_BITS`].
     Addr(usize),
 }
 
 impl Key {
+    /// The key of `id`'s cells of `part`; a part past [`WITNESS_PARTS`] is `panic(9)`.
+    fn of(id: LockId, part: u8) -> Key {
+        if usize::from(part) >= WITNESS_PARTS {
+            hal_panic(format_args!(
+                "Guarded: part {part} of at most {WITNESS_PARTS}"
+            ));
+        }
+        Key::Addr(id.0 | (usize::from(part) << PART_SHIFT))
+    }
+
     fn id(self) -> LockId {
         match self {
             Key::Static(l) => l.id(),
-            Key::Addr(a) => LockId(a),
+            Key::Addr(a) => LockId(a & !PART_BITS),
+        }
+    }
+
+    fn part(self) -> u8 {
+        match self {
+            Key::Static(_) => 0,
+            // At most `PART_BITS >> PART_SHIFT`, 3: it fits.
+            Key::Addr(a) => ((a & PART_BITS) >> PART_SHIFT) as u8,
         }
     }
 }
@@ -1200,8 +1317,29 @@ impl Key {
 impl<T> Guarded<T> {
     /// `value`, kept under `lock`.
     pub fn new(lock: &SharedRwlock, value: T) -> Self {
+        Self::keyed(lock.id(), 0, value)
+    }
+
+    /// `value`, kept under `lock`, a lock embedded beside the cell (the map's `vmmaplk`); its
+    /// witnesses are `lock`'s own ([`RawRwlock::write`]). Key it after the object is placed
+    /// where it stays ([`Guarded::rekey_raw`]): a cell keyed to the address a lock had before
+    /// it moved opens with no witness.
+    pub fn new_keyed(lock: &RawRwlock, value: T) -> Self {
+        Self::keyed(lock.id(), 0, value)
+    }
+
+    /// `value`, kept under the mutex `lock` (an `INTRSAFE` map's `vm_map.mtx`); its witness is
+    /// the mutex's guard ([`MutexedGuard`]).
+    pub fn new_mutexed<U>(lock: &Mutexed<U>, value: T) -> Self {
+        Self::keyed(lock.id(), 0, value)
+    }
+
+    /// `value`, kept under the lock whose identity is `id`, in `part` (`0..WITNESS_PARTS`; a
+    /// cell of part `p` opens with a whole witness or with the part `p` of a split one,
+    /// [`Divisible::split`]); a part past them is `panic(9)`.
+    pub fn keyed(id: LockId, part: u8, value: T) -> Self {
         Self {
-            key: Key::Addr(lock.id().0),
+            key: Key::of(id, part),
             data: UnsafeCell::new(value),
         }
     }
@@ -1216,43 +1354,77 @@ impl<T> Guarded<T> {
         }
     }
 
-    /// The value, for the holder of `w`, a witness of the cell's lock in either mode; a
-    /// witness of another lock is `panic(9)`. The reference borrows the cell and the witness,
-    /// so it ends before the witness sleeps, upgrades or releases the lock.
+    /// The value, for the holder of `w`, a witness that opens the cell (of its lock, in
+    /// either mode; a part of its part); any other witness is `panic(9)`. The reference
+    /// borrows the cell and the witness, so it ends before the witness sleeps, upgrades or
+    /// releases the lock.
     pub fn get<'a, W: Witness>(&'a self, w: &'a W) -> &'a T {
-        self.check(w.lock_id());
-        // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, or
-        // an `RwWitness`, which holds one of the two and is that witness) of the lock whose
-        // identity is the cell's key (checked just above), so the lock is held and every
-        // reference alive into the data comes from witnesses of this lock (the type's
-        // invariant). A `&mut T` exists only through `get_mut`, which needs the one write
-        // witness borrowed mutably: if `w` is that witness, or an `RwWitness` holding it (whose
+        self.check(w);
+        // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, an
+        // `RwWitness` holding one of the two, a `MutexedGuard`, or a `WitnessPart`) that opens
+        // this cell (checked just above), so its lock is held and every reference alive into
+        // the data comes from the witnesses that open it (the type's invariant). A `&mut T`
+        // exists only through `get_mut`, which needs the one exclusive witness that opens the
+        // cell borrowed mutably: if `w` is that witness, or an `RwWitness` holding it (whose
         // `as_write` needs it mutably), it is borrowed shared here for as long as this
-        // reference lives, and if `w` is or holds a read witness no write witness exists. So no
-        // `&mut T` is alive beside this `&T`, and it ends before `w` can be released or slept
-        // (both need `w` by value or `&mut`).
+        // reference lives; if `w` is or holds a read witness, no exclusive witness exists; if
+        // `w` is a part, the whole witness it came from is borrowed mutably and the other
+        // parts open other cells. So no `&mut T` is alive beside this `&T`, and it ends before
+        // `w` can be released or slept (both need `w` by value or `&mut`).
         unsafe { &*self.data.get() }
     }
 
-    /// The value, mutably, for the holder of `w`, the one write witness of the cell's lock; a
-    /// witness of another lock is `panic(9)`. The reference borrows the witness mutably, so
-    /// no other reference through it exists while it lives.
-    pub fn get_mut<'a>(&'a self, w: &'a mut WriteWitness<'_>) -> &'a mut T {
-        self.check(w.lock.id());
-        // SAFETY: `w` holds the cell's lock for writing (identity checked above), so no read
-        // witness and no other write witness of it exists, and every reference into the data
-        // comes from a witness of this lock (the type's invariant): only through `w`, which
-        // is borrowed mutably for the life of this reference, so no other reference from it
-        // (by `get` or `get_mut`) can be alive or made meanwhile. This is the only reference
-        // to the data while it lives, and it ends before `w` is released or slept.
+    /// The value, mutably, for the holder of `w`, an exclusive witness that opens the cell
+    /// (the write witness or the mutex guard of its lock, or the part of its part); any other
+    /// witness is `panic(9)`. The reference borrows the witness mutably, so no other
+    /// reference through it exists while it lives.
+    pub fn get_mut<'a, W: Exclusive>(&'a self, w: &'a mut W) -> &'a mut T {
+        self.check(w);
+        // SAFETY: `w` is an exclusive witness (sealed: a `WriteWitness`, a `MutexedGuard` or a
+        // `WitnessPart`) that opens this cell (checked above): the lock is held alone (no
+        // read witness and no other writer or guard exists), and of its witnesses only `w`
+        // opens the cell now. A whole witness opens nothing while it is split (its parts
+        // borrow it mutably), so if `w` is whole no part exists; if `w` is a part, its whole
+        // witness is borrowed by the split, and the other parts of that split have other
+        // numbers (a part cannot be split again). Every reference into the data comes from a
+        // witness that opens it (the type's invariant), so only through `w`, which is borrowed
+        // mutably for the life of this reference: no other reference from it (by `get` or
+        // `get_mut`) can be alive or made meanwhile. This is the only reference to the data
+        // while it lives, and it ends before `w` is released or slept.
         unsafe { &mut *self.data.get() }
     }
 
-    /// Keys the cell to `lock` from now on: for a value still its maker's alone (`&mut self`:
-    /// no reference into it is alive), as `amap_copy`'s new amap that takes a lock of its own
-    /// before anyone sees it.
+    /// Keys the cell to `lock` from now on, in the same part: for a value still its maker's
+    /// alone (`&mut self`: no reference into it is alive), as `amap_copy`'s new amap that
+    /// takes a lock of its own before anyone sees it.
     pub fn rekey(&mut self, lock: &SharedRwlock) {
-        self.key = Key::Addr(lock.id().0);
+        self.rekey_id(lock.id());
+    }
+
+    /// Keys the cell to the embedded `lock` from now on, in the same part (a map placed in its
+    /// pool item, its lock with it).
+    pub fn rekey_raw(&mut self, lock: &RawRwlock) {
+        self.rekey_id(lock.id());
+    }
+
+    /// Keys the cell to the mutex `lock` from now on, in the same part.
+    pub fn rekey_mutexed<U>(&mut self, lock: &Mutexed<U>) {
+        self.rekey_id(lock.id());
+    }
+
+    /// Keys the cell to the lock whose identity is `id` from now on, in the same part.
+    pub fn rekey_id(&mut self, id: LockId) {
+        self.key = Key::of(id, self.key.part());
+    }
+
+    /// The identity of the cell's lock.
+    pub fn key(&self) -> LockId {
+        self.key.id()
+    }
+
+    /// The cell's part (`0..WITNESS_PARTS`).
+    pub fn part(&self) -> u8 {
+        self.key.part()
     }
 
     /// Whether the cell is under `lock` (`KASSERT(anon->an_lock == amap->am_lock)`).
@@ -1271,13 +1443,23 @@ impl<T> Guarded<T> {
         self.data.into_inner()
     }
 
-    /// `panic(9)` unless `id` is the identity the cell is keyed to.
-    fn check(&self, id: LockId) {
+    /// `panic(9)` unless `w` opens the cell: a witness of the lock the cell is keyed to, and,
+    /// for a part, of the cell's part.
+    fn check<W: Witness>(&self, w: &W) {
+        let id = w.lock_id();
         if self.key.id() != id {
             hal_panic(format_args!(
                 "Guarded: a witness of another lock ({:#x}, the cell's is {:#x})",
                 id.0,
                 self.key.id().0
+            ));
+        }
+        if let Some(p) = w.part()
+            && p != self.key.part()
+        {
+            hal_panic(format_args!(
+                "Guarded: a witness of part {p}, the cell is in part {}",
+                self.key.part()
             ));
         }
     }
@@ -1293,16 +1475,53 @@ static RWOBJ_POOL: TypedPool<RawRwlock> = TypedPool::new();
 
 /// What keeps [`Witness`] closed.
 mod sealed {
-    /// Implemented by the two witnesses alone.
+    /// Implemented by the witnesses alone.
     pub trait Sealed {}
 }
 
-/// A proof of holding a [`SharedRwlock`], in either mode: what [`Guarded::get`] checks.
-/// Sealed: [`WriteWitness`] and [`ReadWitness`] are the only witnesses (with [`RwWitness`],
-/// which is one of them), so no other type can claim a lock it does not hold.
+/// A proof of holding a lock: a reader-writer lock in either mode, or a [`Mutexed`]; what
+/// [`Guarded::get`] checks. Sealed: [`WriteWitness`], [`ReadWitness`], [`RwWitness`] (which
+/// is one of them), a [`MutexedGuard`] and a [`WitnessPart`] are the only witnesses, so no
+/// other type can claim a lock it does not hold.
 pub trait Witness: sealed::Sealed {
     /// The identity of the lock this witness holds.
     fn lock_id(&self) -> LockId;
+
+    /// The part of the lock's cells this witness opens: `None` for all of them (a whole
+    /// witness), the part's number for a [`WitnessPart`].
+    fn part(&self) -> Option<u8> {
+        None
+    }
+}
+
+/// A witness that holds its lock alone and so opens its cells mutably
+/// ([`Guarded::get_mut`]): [`WriteWitness`], a [`MutexedGuard`] (the one holder of a
+/// mutex, the same proof as a writer's), and a [`WitnessPart`] (for its part). Sealed, as
+/// [`Witness`].
+pub trait Exclusive: Witness {}
+
+/// An exclusive witness of a whole lock, divisible into parts that open disjoint cells at
+/// once: [`WriteWitness`] and [`MutexedGuard`]. Sealed, as [`Witness`].
+pub trait Divisible: Exclusive {
+    /// The witness divided into `N` parts (`N` at most [`WITNESS_PARTS`]), numbered `0..N`,
+    /// each opening the cells of its number ([`Guarded::keyed`]); the witness is borrowed
+    /// mutably while they live.
+    fn split<const N: usize>(&mut self) -> [WitnessPart<'_>; N] {
+        const {
+            assert!(
+                N <= WITNESS_PARTS,
+                "a witness splits into at most WITNESS_PARTS parts"
+            );
+        }
+        let id = self.lock_id();
+        core::array::from_fn(|i| WitnessPart {
+            id,
+            // `i < N <= WITNESS_PARTS`: it fits.
+            part: i as u8,
+            _borrow: PhantomData,
+            _not_send: PhantomData,
+        })
+    }
 }
 
 impl sealed::Sealed for WriteWitness<'_> {}
@@ -1312,6 +1531,36 @@ impl Witness for WriteWitness<'_> {
         self.lock.id()
     }
 }
+
+impl Exclusive for WriteWitness<'_> {}
+
+impl Divisible for WriteWitness<'_> {}
+
+impl<T> sealed::Sealed for MutexedGuard<'_, T> {}
+
+impl<T> Witness for MutexedGuard<'_, T> {
+    fn lock_id(&self) -> LockId {
+        self.mutex_id()
+    }
+}
+
+impl<T> Exclusive for MutexedGuard<'_, T> {}
+
+impl<T> Divisible for MutexedGuard<'_, T> {}
+
+impl sealed::Sealed for WitnessPart<'_> {}
+
+impl Witness for WitnessPart<'_> {
+    fn lock_id(&self) -> LockId {
+        self.id
+    }
+
+    fn part(&self) -> Option<u8> {
+        Some(self.part)
+    }
+}
+
+impl Exclusive for WitnessPart<'_> {}
 
 impl sealed::Sealed for ReadWitness<'_> {}
 
@@ -1485,6 +1734,10 @@ pub fn init_shared() -> Result<(), Errno> {
 fn rw_self() -> usize {
     (sleep::curproc_word() & !RWLOCK_MASK) | RWLOCK_WRLOCK
 }
+
+// A lock's word is aligned to 8 bytes, so a `LockId` keeps its kind and a key its part in the
+// three low bits.
+const _: () = assert!(align_of::<RawRwlock>() >= 8 && align_of::<AtomicUsize>() >= 8);
 /* </CODE> */
 
 /* <TESTS> */
@@ -2119,6 +2372,167 @@ mod tests {
         }
         sleep::wakeup(Arc::as_ptr(&chan_word));
         sleeper.join().unwrap();
+    }
+
+    /// A map's shape: its lock embedded beside the state and an entry's handles.
+    struct Map {
+        lock: RawRwlock,
+        state: Guarded<u64>,
+        handles: Guarded<u64>,
+    }
+
+    impl Map {
+        /// Built, moved into place, then keyed (`Vmspace::place`).
+        fn placed() -> std::boxed::Box<Map> {
+            let mut m = std::boxed::Box::new(Map {
+                lock: RawRwlock::new("vmmaplk"),
+                state: Guarded::keyed(LockId(0), 0, 0),
+                handles: Guarded::keyed(LockId(0), 1, 0),
+            });
+            let id = m.lock.id();
+            m.state.rekey_id(id);
+            m.handles.rekey_id(id);
+            m
+        }
+    }
+
+    #[test]
+    fn a_raw_lock_gives_its_own_witnesses() {
+        testutil::install();
+        let l = RawRwlock::new("test");
+        let w = l.write();
+        assert_eq!(l.status(), RW_WRITE);
+        // Another thread finds it held (this one reading it would be "enter read deadlock").
+        assert!(thread::scope(|s| s
+            .spawn(|| l.try_read().is_none())
+            .join()
+            .unwrap()));
+        drop(w);
+        let r1 = l.read();
+        let r2 = l.enter(RwMode::Read);
+        assert_eq!(r2.mode(), RwMode::Read);
+        assert_eq!(l.status(), RW_READ);
+        assert!(l.try_write().is_none());
+        assert_eq!(l.write_flags(RW_NOSLEEP).err(), Some(Errno::EBUSY));
+        drop((r1, r2));
+        let w = l.enter_flags(RwMode::Write, 0).unwrap();
+        assert_eq!(w.mode(), RwMode::Write);
+        drop(w);
+        assert_eq!(l.status(), 0);
+    }
+
+    #[test]
+    fn a_cell_keyed_to_an_embedded_lock_opens_with_its_witnesses() {
+        testutil::install();
+        let m = Map::placed();
+        assert_eq!((m.state.key(), m.state.part()), (m.lock.id(), 0));
+        assert_eq!(m.handles.part(), 1);
+        let mut w = m.lock.write();
+        *m.state.get_mut(&mut w) = 5;
+        *m.handles.get_mut(&mut w) = 6;
+        drop(w);
+        let r = m.lock.read();
+        assert_eq!((*m.state.get(&r), *m.handles.get(&r)), (5, 6));
+        drop(r);
+        let mut rw = m.lock.enter(RwMode::Write);
+        *m.state.get_mut(rw.as_write().unwrap()) += 1;
+        assert_eq!(*m.state.get(&rw), 6);
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of another lock")]
+    fn a_cell_refuses_a_witness_of_another_raw_lock() {
+        testutil::install();
+        let m = Map::placed();
+        let other = RawRwlock::new("other");
+        let w = other.write();
+        let _ = m.state.get(&w);
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of another lock")]
+    fn a_cell_keyed_before_its_lock_moved_opens_with_none() {
+        testutil::install();
+        let m = std::boxed::Box::new(RawRwlock::new("moved"));
+        let cell = Guarded::new_keyed(&RawRwlock::new("stack"), 1u8);
+        let w = m.write();
+        let _ = cell.get(&w);
+    }
+
+    #[test]
+    fn the_parts_of_a_witness_open_disjoint_cells_at_once() {
+        testutil::install();
+        let m = Map::placed();
+        let mut w = m.lock.write();
+        {
+            let [mut p0, mut p1] = w.split();
+            let state = m.state.get_mut(&mut p0);
+            let handles = m.handles.get_mut(&mut p1);
+            *state += 10;
+            *handles += 20;
+            assert_eq!((*state, *handles), (10, 20));
+            assert_eq!(*m.state.get(&p0), 10);
+        }
+        // Whole again: it opens every part.
+        assert_eq!((*m.state.get(&w), *m.handles.get(&w)), (10, 20));
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of part 1, the cell is in part 0")]
+    fn a_part_refuses_a_cell_of_another_part() {
+        testutil::install();
+        let m = Map::placed();
+        let mut w = m.lock.write();
+        let [_p0, mut p1] = w.split();
+        let _ = m.state.get_mut(&mut p1);
+    }
+
+    #[test]
+    #[should_panic(expected = "part 4 of at most 4")]
+    fn a_part_past_the_parts_is_refused() {
+        let l = RawRwlock::new("test");
+        let _ = Guarded::keyed(l.id(), 4, 0u8);
+    }
+
+    #[test]
+    fn a_cell_keyed_to_a_mutex_opens_with_its_guard_and_its_parts() {
+        testutil::install();
+        let mtx = Mutexed::new(crate::intr::IPL_VM, ());
+        let state = Guarded::new_mutexed(&mtx, 1u32);
+        let handles = Guarded::keyed(mtx.id(), 1, 2u32);
+        let mut g = mtx.lock();
+        *state.get_mut(&mut g) += 1;
+        assert_eq!(*state.get(&g), 2);
+        {
+            let [mut p0, mut p1] = g.split();
+            let (s, h) = (state.get_mut(&mut p0), handles.get_mut(&mut p1));
+            *s += *h;
+        }
+        assert_eq!(*state.get(&g), 4);
+        drop(g);
+        let mut c = Guarded::keyed(mtx.id(), 1, 0u8);
+        let other = Mutexed::new(crate::intr::IPL_VM, ());
+        c.rekey_mutexed(&other);
+        assert_eq!((c.key(), c.part()), (other.id(), 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of another lock")]
+    fn a_mutex_cell_refuses_a_guard_of_another_mutex() {
+        testutil::install();
+        let a = Mutexed::new(crate::intr::IPL_VM, ());
+        let b = Mutexed::new(crate::intr::IPL_VM, ());
+        let cell = Guarded::new_mutexed(&a, 0u8);
+        let g = b.lock();
+        let _ = cell.get(&g);
+    }
+
+    #[test]
+    fn a_mutex_and_an_rwlock_never_share_an_identity() {
+        let w = AtomicUsize::new(0);
+        let m = LockId::of_mutex(&w);
+        assert_ne!(m, LockId(ptr::from_ref(&w).addr()));
+        assert_eq!(m.0 & LOCKID_MUTEX, LOCKID_MUTEX);
     }
 }
 /* </TESTS> */
