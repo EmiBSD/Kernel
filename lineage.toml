@@ -8235,6 +8235,16 @@ crate = "hal"
 reason = "hal runtime, written new: the interrupt-level guard and the IntrLevel bridge; docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
+rust = "sys/hal/netlock.rs"
+crate = "hal"
+reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
+
+[[extra]]
+rust = "sys/hal/klock.rs"
+crate = "hal"
+reason = "hal runtime, written new: the KernelLock bridge (KERNEL_LOCK, KERNEL_UNLOCK, KERNEL_ASSERT_LOCKED of kern_lock.rs) for the kernel crate's pagers (N3.4c); paid by N4"
+
+[[extra]]
 rust = "sys/hal/cpu.rs"
 crate = "hal"
 reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; docs/ZERO_UNSAFE.md 0.1"
@@ -8708,3 +8718,35 @@ crate = "kernel"
 lz = ["sys/uvm/uvm_fault.rs"]
 status = "redesigned"
 notes = "N3.4d: the fault handler over lock witnesses: the map's guard in FaultInfo (Some exactly while the maps are locked), the amap's and the object's hal RwWitness values in uvm_fault's loop frame, returned by the function that locks and consumed by the one that unlocks (uvmfault_unlockall, uvmfault_anonget -> AnonGet, the upgrades, get_sync); generic over the FaultMap bridge (bsd's VmMap at the flip, N3.5 the kernel's map) with a GAT guard whose entries borrow it, relock -> Option<Guard>, the entry read once into an EntryView of counted handles; the objects through FaultObject (the frozen ObjRef shape of N3.4c) and PageSlot; rusage through the map's notes (N4); the lower amap_add failure frees the fresh anon and populates under the amap's write witness (the C's slip); no pgo_fault (G3); the ufi == NULL form of anonget arrives with swap (N3.5). Dead code until the flip (N3.4e): bsd's sys/uvm/uvm_fault.rs still serves the traps, so its items need no rows yet (listed for the flip in the N3.4d handoff)"
+
+[[module]]
+rust = "sys/kernel/vm/object.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_object.rs"]
+status = "redesigned"
+notes = "N3.4c: struct uvm_object as Object (lock Option<SharedRwlock>, None for the dummies; kind ObjKind for pgops; uo_refs a relaxed atomic, atomic ops for aobjs, set_refs asserting the lock for vnode objects); the pager table and the container casts as ObjRef, an enum of handles (Aobj PoolArc, Kernel static, Vnode leaked) whose methods are the pager ops: get (PGO_LOCKED, any witness, kept), get_sync (the write witness, consumed), put/flush (&mut WriteWitness, held across), cluster, mk_pcluster, reference, detach; uvm_obj_setlock on &mut Object; uvm_obj_destroy keeps the assertion, the lock goes with the memory; impl PageObject here (the PageOwner bridge's object half). Dead code until the flip (N3.4e): bsd's sys/uvm/uvm_object.rs still serves every caller"
+[[module.fn]]
+lz = "sys/uvm/uvm_object.rs::uvm_pagecmp"
+native = ["sys/kernel/vm/page.rs::uvm_pagecmp"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/vm/aobj.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_aobj.rs"]
+status = "redesigned"
+notes = "N3.4c: struct uvm_aobj as Aobj, a PoolArc of aobjpl (ObjRef::Aobj), the kernel object a static (ObjRef::Kernel, its lock the static kobjlk); uo_refs the C's count beside the handle count that owns the memory; the u_swap union a Swap enum in a Guarded keyed to the object's lock (None, Array of an MArray<i32>, Hash of an MArray of owned chains of PoolBox<SwhashElt> of uaoeltpl, 96 bytes as the C; a bucket head 16 bytes where the C's is 8); uao_get split into uao_get_locked (any witness, kept) and uao_get_sync (consumed); no uao_list (G7), uao_swap_off a visible unported stub until N3.5, uao_pagein/uao_pagein_page per aobj; uao_shrink/uao_grow under the kernel crate's tmpfs feature. Dead code until the flip (N3.4e): bsd's sys/uvm/uvm_aobj.rs still serves every caller"
+
+[[module]]
+rust = "sys/kernel/vm/pager.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_pager.rs"]
+status = "redesigned"
+notes = "N3.4c: PGO_*, VM_PAGER_*, UVMPAGER_MAPIN_*; PGO_DONTCARE and the page arrays as PageSlot (Empty, DontCare, Page); struct uvm_pagerops/uvmpagerops[] gone into ObjRef's methods; psegs[] and uvm_pseg_lck one Mutexed (IPL_VM) slept on with MutexedGuard::sleep_nsec; uvm_pagermapin -> PagerWindow (hal::mapped::MappedBytes by the kernel map's token, the pager segment given back after the mappings on drop), uvm_pagermapout its drop; uvm_mk_pcluster/uvm_pager_put/uvm_pager_dropcluster over ObjRef and the object's write witness. The async (swap) pageout stays absent as in LZ. Dead code until the flip (N3.4e): bsd's sys/uvm/uvm_pager.rs still serves every caller"
+
+[[module]]
+rust = "sys/kernel/vm/vnode.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_vnode.rs"]
+status = "redesigned"
+notes = "N3.4c: struct uvm_vnode as Uvn, a PoolArc of uvmvnodes leaked once made (PoolArc::leak: never freed, the vnode keeps it as the C), ObjRef::Vnode; the vnode a &'static dyn VnodeOps (bsd's Vnode at the flip, bridges.toml VnodeOps), uvn_io composed from one-call methods with the KernelLock, NetLock and SysInfo bridges; u_flags/u_nio/u_size relaxed atomics whose setters assert the lock; uvn_wlist a hal List under the kernel lock, uvn_sync_q inside the Rwlocked uvnsync; uvn_get split into uvn_get_locked and uvn_get_sync; the pager window a PagerWindow; ratecheck's lasttime in a Mutexed (IPL_HIGH). Dead code until the flip (N3.4e): bsd's sys/uvm/uvm_vnode.rs still serves every caller"
