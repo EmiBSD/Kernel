@@ -167,11 +167,11 @@
 //!   amap's witness where they are used ([`uvm_fault_upper_lookup`], `uvmfault_anonflush`),
 //!   and the centre anon that `uvmfault_anonget` keeps across its sleeps is an `AnonRef`
 //!   clone; the pages are [`PageSlot`]s.
-//! - The objects are reached through [`FaultObject`], the frozen shape of the kernel's
-//!   `ObjRef` (N3.4c: `get` with the object's witness, `get_sync` consuming the write witness,
-//!   since the pagers return from a `PGO_SYNCIO` get without the object's lock, `flush` with
-//!   the write witness); `kernel::vm::object::ObjRef` implements it at the flip, and the tests
-//!   use a double.
+//! - The objects are reached through [`FaultObject`], the shape of the kernel's `ObjRef`
+//!   (N3.4c: `get` with the object's witness, `get_sync` consuming the write witness, since
+//!   the pagers return from a `PGO_SYNCIO` get without the object's lock, `flush` with the
+//!   write witness), which implements it; the trait lets the tests script a pager (relock
+//!   failures, `VM_PAGER_AGAIN`) besides running over the real aobjs.
 //! - The C reads the I/O page's object back from the page (`uobj = pg->uobject`): a page here
 //!   keeps an owner tag, never a pointer, and every pager returns its own pages, so the fault
 //!   checks that the page is the asked object's and goes on with that object (a check, not a
@@ -214,11 +214,17 @@ use super::amap::{AMAP_SHARED, Amap, AmapRef, amap_add, amap_lookup, amap_lookup
 use super::anon::{
     AnonRef, SWSLOT_BAD, uvm_analloc, uvm_anfree, uvm_anon_dropswap, uvm_anon_release, uvm_anwait,
 };
+use super::aobj::uao_dropswap;
 use super::km;
+use super::object::ObjRef;
 use super::page::{
     Owner, PG_BUSY, PG_CLEAN, PG_FAKE, PG_RELEASED, PG_WANTED, PHYS_TO_VM_PAGE, PQ_ANON, PQ_AOBJ,
     VmPage, uvm_pageactivate, uvm_pagealloc, uvm_pagecopy, uvm_pagedeactivate, uvm_pagefree,
     uvm_pageunwire, uvm_pagewait, uvm_pagewire,
+};
+use super::pager::{
+    PGO_DEACTIVATE, PGO_LOCKED, PGO_SYNCIO, PageSlot, VM_PAGER_AGAIN, VM_PAGER_ERROR, VM_PAGER_OK,
+    VM_PAGER_PEND,
 };
 use super::pmemrange::uvm_wait;
 use super::types::{MADV_MASK, PROT_MASK, UVM_PGA_ZERO, VmFault, VmProt, Voff};
@@ -233,44 +239,14 @@ pub const VM_FAULT_PROTECT: VmFault = 0x1;
 pub const VM_FAULT_WIRE: VmFault = 0x2;
 
 /*
- * The lower layer, as the fault sees it. N3.4c writes the kernel's objects and pagers
- * (kernel::vm::{object, pager}) from the same base with these shapes frozen; until the two
- * meet (N3.4e) the fault names its own copy of the slot and of the pager constants, and the
- * flip replaces them by the pager's.
+ * The lower layer, as the fault sees it: the kernel's objects and pagers
+ * (kernel::vm::{object, pager}, N3.4c).
  */
 
-/// `PGO_SYNCIO` (`<uvm/uvm_pager.h>`): use synchronous I/O.
-pub const PGO_SYNCIO: i32 = 0x002;
-/// `PGO_DEACTIVATE`: deactivate flushed pages.
-pub const PGO_DEACTIVATE: i32 = 0x004;
-/// `PGO_LOCKED`: fault data structures are locked \[get\].
-pub const PGO_LOCKED: i32 = 0x040;
-
-/// `VM_PAGER_OK`.
-pub const VM_PAGER_OK: i32 = 0;
-/// `VM_PAGER_PEND`: an asynchronous I/O was started.
-pub const VM_PAGER_PEND: i32 = 3;
-/// `VM_PAGER_ERROR`.
-pub const VM_PAGER_ERROR: i32 = 4;
-/// `VM_PAGER_AGAIN`: try again later.
-pub const VM_PAGER_AGAIN: i32 = 5;
-
-/// A slot of a pager's page array: `NULL`, `PGO_DONTCARE` (`(struct vm_page *)-1`: a page the
-/// caller does not want, which `pgo_get` skips) or a page.
-#[derive(Clone, Copy)]
-pub enum PageSlot {
-    /// `NULL`: no page (yet).
-    Empty,
-    /// `PGO_DONTCARE`.
-    DontCare,
-    /// A page.
-    Page(&'static VmPage),
-}
-
 /// A uvm object with its pager, as the fault reaches it (`struct uvm_object` and its
-/// `pgops`): implemented by the kernel's `ObjRef` at the flip (N3.4e). `Clone` is a handle
-/// that keeps the object alive, as the entry's (no `uo_refs` is taken: the map entry's
-/// reference stands, as in the C).
+/// `pgops`): the kernel's [`ObjRef`] (below), and the tests' double. `Clone` is a handle that
+/// keeps the object alive, as the entry's (no `uo_refs` is taken: the map entry's reference
+/// stands, as in the C).
 pub trait FaultObject: Clone {
     /// `uobj->vmobjlock`.
     fn vmobjlock(&self) -> &SharedRwlock;
@@ -310,6 +286,82 @@ pub trait FaultObject: Clone {
     fn flush(&self, w: &mut WriteWitness<'_>, start: Voff, stop: Voff, flags: i32) -> bool;
     /// `uao_dropswap(uobj, pageidx)` of an aobj: the page's swap slot released.
     fn dropswap(&self, w: &mut WriteWitness<'_>, pageidx: i32);
+}
+
+// The kernel's objects: each operation is the object's own (one call); the fault's other
+// implementation is its tests' double.
+impl FaultObject for ObjRef {
+    fn vmobjlock(&self) -> &SharedRwlock {
+        // A mapped object (an aobj, the kernel object, a vnode's) always has its lock; a dummy
+        // (the pmap's, the buffer cache's) is never mapped: `Object::lock` panics on one.
+        self.lock()
+    }
+
+    fn owner(&self) -> Owner<'_> {
+        Owner::Object(&**self)
+    }
+
+    fn get(
+        &self,
+        w: &RwWitness<'_>,
+        off: Voff,
+        pps: &mut [PageSlot],
+        npages: &mut i32,
+        centeridx: i32,
+        access_type: VmProt,
+        advice: i32,
+        flags: i32,
+    ) -> i32 {
+        ObjRef::get(
+            self,
+            w,
+            off,
+            pps,
+            npages,
+            centeridx,
+            access_type,
+            advice,
+            flags,
+        )
+    }
+
+    fn get_sync(
+        &self,
+        w: WriteWitness<'_>,
+        off: Voff,
+        pps: &mut [PageSlot],
+        npages: &mut i32,
+        centeridx: i32,
+        access_type: VmProt,
+        advice: i32,
+        flags: i32,
+    ) -> i32 {
+        ObjRef::get_sync(
+            self,
+            w,
+            off,
+            pps,
+            npages,
+            centeridx,
+            access_type,
+            advice,
+            flags,
+        )
+    }
+
+    fn flush(&self, w: &mut WriteWitness<'_>, start: Voff, stop: Voff, flags: i32) -> bool {
+        ObjRef::flush(self, w, start, stop, flags)
+    }
+
+    fn dropswap(&self, w: &mut WriteWitness<'_>, pageidx: i32) {
+        // KASSERT(UVM_OBJ_IS_AOBJ(uobj)): only an aobj page is PQ_AOBJ.
+        match self.aobj() {
+            Some(aobj) => {
+                let _ = uao_dropswap(aobj, w, pageidx);
+            }
+            None => kpanic(format_args!("uao_dropswap: not an aobj")),
+        }
+    }
 }
 
 /*
@@ -2326,6 +2378,7 @@ mod tests {
 
     use hal::rwlock::{RW_READ, RW_WRITE, ReadGuard, Rwlocked, WriteGuard};
     use hal::sys::mman::{PROT_EXEC, PROT_READ};
+    use hal::sys::types::Vsize;
     use hal::tree::Tree;
     use hal::vm::uvmexp::counters_read;
 
@@ -2335,9 +2388,11 @@ mod tests {
         AMAP_REFALL, CopyOutcome, amap_alloc, amap_copy_from, amap_init, amap_ref, amap_unadd,
     };
     use crate::vm::anon::{anons_out, uvm_anon_init};
+    use crate::vm::aobj::{uao_create, uao_init};
     use crate::vm::page::{
         OwnerTag, PQ_ACTIVE, PQ_INACTIVE, PageObject, UvmObjtree, uvm_pagelookup,
     };
+    use crate::vm::vnode::{uvn_attach, uvn_init};
 
     const RW: VmProt = PROT_READ | PROT_WRITE;
     /// The double map's range.
@@ -2352,6 +2407,7 @@ mod tests {
         let _ = hal::rwlock::init_shared();
         let _ = uvm_anon_init(0);
         let _ = amap_init(0);
+        let _ = uao_init();
         hal::pmap::init();
         no_swap_get();
         guard
@@ -2549,6 +2605,108 @@ mod tests {
         }
     }
 
+    /// What the double map's entries map: the pager double or a real object (an aobj).
+    #[derive(Clone)]
+    enum TestObj {
+        Fake(FakeObj),
+        Real(ObjRef),
+    }
+
+    impl From<FakeObj> for TestObj {
+        fn from(o: FakeObj) -> Self {
+            TestObj::Fake(o)
+        }
+    }
+
+    impl From<ObjRef> for TestObj {
+        fn from(o: ObjRef) -> Self {
+            TestObj::Real(o)
+        }
+    }
+
+    impl FaultObject for TestObj {
+        fn vmobjlock(&self) -> &SharedRwlock {
+            match self {
+                TestObj::Fake(o) => o.vmobjlock(),
+                TestObj::Real(o) => FaultObject::vmobjlock(o),
+            }
+        }
+        fn owner(&self) -> Owner<'_> {
+            match self {
+                TestObj::Fake(o) => o.owner(),
+                TestObj::Real(o) => FaultObject::owner(o),
+            }
+        }
+        fn get(
+            &self,
+            w: &RwWitness<'_>,
+            off: Voff,
+            pps: &mut [PageSlot],
+            npages: &mut i32,
+            centeridx: i32,
+            access_type: VmProt,
+            advice: i32,
+            flags: i32,
+        ) -> i32 {
+            match self {
+                TestObj::Fake(o) => {
+                    o.get(w, off, pps, npages, centeridx, access_type, advice, flags)
+                }
+                TestObj::Real(o) => FaultObject::get(
+                    o,
+                    w,
+                    off,
+                    pps,
+                    npages,
+                    centeridx,
+                    access_type,
+                    advice,
+                    flags,
+                ),
+            }
+        }
+        fn get_sync(
+            &self,
+            w: WriteWitness<'_>,
+            off: Voff,
+            pps: &mut [PageSlot],
+            npages: &mut i32,
+            centeridx: i32,
+            access_type: VmProt,
+            advice: i32,
+            flags: i32,
+        ) -> i32 {
+            match self {
+                TestObj::Fake(o) => {
+                    o.get_sync(w, off, pps, npages, centeridx, access_type, advice, flags)
+                }
+                TestObj::Real(o) => FaultObject::get_sync(
+                    o,
+                    w,
+                    off,
+                    pps,
+                    npages,
+                    centeridx,
+                    access_type,
+                    advice,
+                    flags,
+                ),
+            }
+        }
+        fn flush(&self, w: &mut WriteWitness<'_>, start: Voff, stop: Voff, flags: i32) -> bool {
+            match self {
+                TestObj::Fake(o) => o.flush(w, start, stop, flags),
+                TestObj::Real(o) => FaultObject::flush(o, w, start, stop, flags),
+            }
+        }
+        fn dropswap(&self, w: &mut WriteWitness<'_>, pageidx: i32) {
+            match self {
+                TestObj::Fake(o) => o.dropswap(w, pageidx),
+                TestObj::Real(o) => FaultObject::dropswap(o, w, pageidx),
+            }
+        }
+    }
+
     /*
      * The map double.
      */
@@ -2564,7 +2722,7 @@ mod tests {
         needscopy: Cell<bool>,
         nofault: bool,
         aref: RefCell<Option<(AmapRef, i32)>>,
-        object: Option<FakeObj>,
+        object: Option<TestObj>,
         submap: Option<&'static FakeMap>,
     }
 
@@ -2601,10 +2759,10 @@ mod tests {
             e
         }
 
-        /// A shared mapping of `obj` from offset 0.
-        fn with_object(start: usize, npages: usize, obj: &FakeObj) -> Self {
+        /// A shared mapping of `obj` (the double or a real object) from offset 0.
+        fn with_object<T: Clone + Into<TestObj>>(start: usize, npages: usize, obj: &T) -> Self {
             Self {
-                object: Some(obj.clone()),
+                object: Some(obj.clone().into()),
                 ..Self::new(start, npages)
             }
         }
@@ -2689,7 +2847,7 @@ mod tests {
     }
 
     impl FaultMap for FakeMap {
-        type Object = FakeObj;
+        type Object = TestObj;
         type Entry = FakeEntry;
         type Guard<'a> = FakeGuard<'a>;
 
@@ -2811,7 +2969,7 @@ mod tests {
 
     impl FaultEntry for FakeEntry {
         type Map = FakeMap;
-        type Object = FakeObj;
+        type Object = TestObj;
 
         fn start(&self) -> usize {
             self.start
@@ -2855,7 +3013,7 @@ mod tests {
         fn aref(&self) -> Option<(AmapRef, i32)> {
             self.aref.borrow().clone()
         }
-        fn object(&self) -> Option<FakeObj> {
+        fn object(&self) -> Option<TestObj> {
             self.object.clone()
         }
     }
@@ -3390,6 +3548,130 @@ mod tests {
         assert_eq!(map.pa(VA), anon.page().map(VmPage::phys_addr));
         assert!(sub.pa(VA).is_none());
         assert!(map.is_free() && sub.is_free());
+    }
+
+    /// A new aobj of `npages` pages.
+    fn aobj(npages: usize) -> ObjRef {
+        uao_create(Vsize::new(npages * PAGE_SIZE), 0).expect("an aobj")
+    }
+
+    /// The object's page at `off`, under its lock.
+    fn aobj_page(o: &ObjRef, off: usize) -> Option<&'static VmPage> {
+        let _w = o.lock().read();
+        uvm_pagelookup(&**o, off as Voff)
+    }
+
+    #[test]
+    fn a_shared_aobj_mapping_reads_in_zeroed_pages() {
+        let _g = setup();
+        let o = aobj(4);
+        let map = map_of(vec![FakeEntry::with_object(VA, 4, &o)]);
+        let (get, obj2a) = (count(UvmExpCounters::FltGet), count(UvmExpCounters::FltObj));
+
+        // A read fault: the aobj has no page yet, uao_get makes a zeroed one (case 2A).
+        assert_eq!(
+            uvm_fault(map, VA + PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            Ok(())
+        );
+        let pg = aobj_page(&o, PAGE_SIZE).expect("the aobj's page");
+        assert_eq!(map.pa(VA + PAGE_SIZE), Some(pg.phys_addr()));
+        assert_ne!(pg.flags() & PQ_AOBJ, 0);
+        assert_ne!(pg.flags() & PQ_ACTIVE, 0);
+        assert_eq!(pg.flags() & (PG_BUSY | PG_FAKE | PG_WANTED), 0);
+        assert_eq!(count(UvmExpCounters::FltGet), get + 1);
+        assert_eq!(count(UvmExpCounters::FltObj), obj2a + 1);
+
+        // A write fault on it finds it resident (no I/O): the same page, writable.
+        assert_eq!(
+            uvm_fault(map, VA + PAGE_SIZE, VM_FAULT_INVALID, PROT_WRITE),
+            Ok(())
+        );
+        assert_eq!(count(UvmExpCounters::FltGet), get + 1);
+        assert_eq!(map.pa(VA + PAGE_SIZE), Some(pg.phys_addr()));
+        assert!(map.is_free());
+        assert_eq!(o.lock().status(), 0);
+    }
+
+    #[test]
+    fn a_private_aobj_mapping_copies_on_write() {
+        let _g = setup();
+        let o = aobj(1);
+        let mut e = FakeEntry::with_object(VA, 1, &o);
+        e.cow = true;
+        e.needscopy.set(true);
+        let map = map_of(vec![e]);
+
+        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        let opg = aobj_page(&o, 0).expect("the aobj's page");
+        assert_eq!(map.pa(VA), Some(opg.phys_addr()));
+
+        let prcopy = count(UvmExpCounters::FltPrcopy);
+        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(count(UvmExpCounters::FltPrcopy), prcopy + 1);
+        let anon = map.anon(VA).expect("the copy");
+        let pg = anon.page().expect("its page");
+        assert_ne!(pg.phys_addr(), opg.phys_addr());
+        assert_eq!(map.pa(VA), Some(pg.phys_addr()));
+        // The aobj keeps its page.
+        assert!(aobj_page(&o, 0).is_some_and(|p| ptr::eq(p, opg)));
+        assert!(map.is_free());
+        assert_eq!(o.lock().status(), 0);
+    }
+
+    #[test]
+    fn wiring_an_aobj_page_dirties_it_and_drops_its_swap() {
+        let _g = setup();
+        let o = aobj(2);
+        let map = map_of(vec![FakeEntry::with_object(VA, 2, &o)]);
+
+        // The wired PQ_AOBJ page goes through uao_dropswap (no slot: nothing to free).
+        assert_eq!(uvm_fault_wire(map, VA, VA + 2 * PAGE_SIZE, RW), Ok(()));
+        for i in 0..2 {
+            let pg = aobj_page(&o, i * PAGE_SIZE).expect("the aobj's page");
+            assert_eq!(map.pa(VA + i * PAGE_SIZE), Some(pg.phys_addr()));
+            assert_eq!(pg.wire_count(), 1, "page {i} wired");
+            assert_eq!(pg.flags() & PG_CLEAN, 0, "page {i} dirty");
+            assert_ne!(pg.flags() & PQ_AOBJ, 0);
+        }
+        uvm_fault_unwire(map, VA, VA + 2 * PAGE_SIZE);
+        for i in 0..2 {
+            let pg = aobj_page(&o, i * PAGE_SIZE).expect("the aobj's page");
+            assert_eq!(pg.wire_count(), 0, "page {i} unwired");
+        }
+        assert!(map.is_free());
+        assert_eq!(o.lock().status(), 0);
+    }
+
+    #[test]
+    fn a_file_mapping_reads_the_file_and_fails_past_its_end() {
+        let _g = setup();
+        let _ = uvn_init();
+        // uvn_attach runs under the kernel lock; the fault takes it in uvn_io.
+        hal::klock::kernel_lock();
+        let vp = testutil::mem_vnode((0..PAGE_SIZE + 100).map(|i| (i % 251) as u8).collect());
+        let o = uvn_attach(vp, PROT_READ | PROT_WRITE).expect("attached");
+        hal::klock::kernel_unlock();
+        let map = map_of(vec![FakeEntry::with_object(VA, 3, &o)]);
+
+        // The file's second page (100 bytes, then zeroes) is read in and mapped (case 2A).
+        assert_eq!(
+            uvm_fault(map, VA + PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            Ok(())
+        );
+        let pg = aobj_page(&o, PAGE_SIZE).expect("the vnode's page");
+        assert_eq!(map.pa(VA + PAGE_SIZE), Some(pg.phys_addr()));
+        assert_eq!(pg.flags() & (PG_BUSY | PG_FAKE | PG_WANTED), 0);
+        assert_eq!(map.majflt.load(Ordering::Relaxed), 1);
+
+        // Past the file's end the pager answers VM_PAGER_BAD and the fault EIO (the trap's
+        // SIGBUS, diff-openbsd's child_sigbus).
+        assert_eq!(
+            uvm_fault(map, VA + 2 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            Err(Errno::EIO)
+        );
+        assert!(map.pa(VA + 2 * PAGE_SIZE).is_none());
+        assert!(map.is_free());
+        assert_eq!(o.lock().status(), 0);
     }
 
     #[test]
