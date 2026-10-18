@@ -215,8 +215,11 @@
 //!   [`KernelWindow`]; the window is dropped before the range, and the range's drop unmaps it
 //!   from `kernel_map` (`uvm_unmap_remove`, `uvm_unmap_detach(AMAP_REFALL)`). The token's
 //!   contract ("a window only over your own extract's range, unmapped only after the window
-//!   is gone") is that type. [`dma_memory`] is `KmBuf`'s provider of DMA-reachable wired
-//!   pages (`uvm_vslock_device`'s bounce).
+//!   is gone") is that type. The token stays private here (`token`): the other modules
+//!   of `kernel::vm` reach it as a [`VmMapper`] ([`mapper`]: `enter`, `map_direct`,
+//!   `map_frames`), which cannot mint a window, so no caller can name another range.
+//!   [`dma_memory`] is `KmBuf`'s provider of DMA-reachable wired pages (`uvm_vslock_device`'s
+//!   bounce), the virtual space taken first without waiting, then the pages, as the C.
 
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -224,6 +227,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::bridges::AlreadyRegistered;
 use hal::kmbuf::{PageKind, PageMemory};
+use hal::mapped::MappedBytes;
 use hal::module::ModuleMemory;
 use hal::once::OnceStatic;
 use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, PmapRef};
@@ -491,6 +495,33 @@ pub trait KmMaps: Sync {
     fn chan(&self, which: KvMap) -> *const ();
 }
 
+/// The kernel map's token as [`mapper`] lends it to the rest of `kernel::vm`: the calls the
+/// fault and the pager make, and no foreign window (see [`mapper`]).
+#[derive(Clone, Copy)]
+pub(super) struct VmMapper(&'static KernelMapper);
+
+impl VmMapper {
+    /// `pmap_enter(pmap_kernel(), va, pa, prot, flags)` (`KernelMapper::enter`).
+    pub(super) fn enter(self, va: Vaddr, pa: Paddr, prot: VmProt, flags: i32) -> Result<(), Errno> {
+        self.0.enter(va, pa, prot, flags)
+    }
+
+    /// The direct map's view of the page at `pa` (`KernelMapper::map_direct`).
+    pub(super) fn map_direct(self, pa: Paddr) -> MappedBytes<'static> {
+        self.0.map_direct(pa)
+    }
+
+    /// The pager's window of `frames` at `va` (`KernelMapper::map_frames`).
+    pub(super) fn map_frames(
+        self,
+        va: Vaddr,
+        frames: &[Paddr],
+        prot: VmProt,
+    ) -> Result<MappedBytes<'static>, Errno> {
+        self.0.map_frames(va, frames, prot)
+    }
+}
+
 /// A range of `kernel_map` that `uvm_map_extract` filled with another map's pages
 /// ([`uvm_map_extract_window`] makes the only ones; no other constructor): owned, so it is
 /// given back once, by its drop (`uvm_unmap_remove(kernel_map, va, va + len, &dead, FALSE,
@@ -613,13 +644,22 @@ pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
 /// a pager window lies in space `km_alloc` reserved with neither (`kv_any`, `kp_none`: the
 /// pager segments), so a fault on a window's address is case 0 and fails with `EFAULT` before
 /// any `pmap_enter`.
-pub(super) fn mapper() -> &'static KernelMapper {
+fn token() -> &'static KernelMapper {
     match MAPPER.get() {
         Some(m) => m,
         None => kpanic(format_args!(
             "pmap: the kernel pmap used before pmap_bootstrap"
         )),
     }
+}
+
+/// The kernel map's token as the other modules of `kernel::vm` reach it: the fault's
+/// `pmap_enter` on `kernel_map` and the pager's windows (`map_direct`, `map_frames`). Every way
+/// in but [`KernelMapper::foreign_window`], which only this module calls, over an
+/// [`Extracted`] range ([`foreign_window`]): no other caller can name a window's range.
+/// Panics before [`adopt_mapper`].
+pub(super) fn mapper() -> VmMapper {
+    VmMapper(token())
 }
 
 /// The token, lent to the holder of the [`LegacyLend`]: `machine::pmap`, for its wrappers
@@ -632,7 +672,7 @@ pub(super) fn mapper() -> &'static KernelMapper {
 /// machines' `cpu` and `vm_machdep`, N7 `bus_space`, `rnd`, `vfs_biomem`) and goes with the
 /// last one. Panics before [`adopt_mapper`].
 pub fn legacy_mapper(_lend: &LegacyLend) -> &'static KernelMapper {
-    mapper()
+    token()
 }
 
 /// `uvm_km_init`'s bounds of the kernel map: the first address past its bootstrap reservation
@@ -743,7 +783,7 @@ pub fn uvm_map_extract_window(
 /// consumes the range, so it is the range's only window, and the range is unmapped only
 /// after the window is gone (the token's contract, `hal::pmap::KernelMapper::foreign_window`).
 pub fn foreign_window(range: Extracted) -> KernelWindow {
-    let window = mapper().foreign_window(range.va, range.len);
+    let window = token().foreign_window(range.va, range.len);
     KernelWindow { window, range }
 }
 
@@ -887,7 +927,7 @@ pub fn uvm_km_pgremove(uobj: &ObjRef, w: &mut WriteWitness<'_>, startva: Vaddr, 
         kpanic(format_args!("uvm_km_pgremove: a witness of another lock"));
     }
 
-    mapper().remove(startva, endva);
+    token().remove(startva, endva);
     let mut curoff = start;
     while curoff < end {
         let pp = uvm_pagelookup(&**uobj, curoff);
@@ -931,7 +971,7 @@ pub fn uvm_km_pgremove_intrsafe(start: Vaddr, end: Vaddr) {
         }
         va += PAGE_SIZE;
     }
-    mapper().kremove(start, Vsize::new(end.as_usize() - start.as_usize()));
+    token().kremove(start, Vsize::new(end.as_usize() - start.as_usize()));
 }
 
 /// `km_alloc`: allocate `sz` bytes of kernel memory with the given virtual, physical and
@@ -1017,9 +1057,9 @@ fn alloc_in(
         if kp.kp_pageable {
             // Never reached: pageable memory takes no pages here (it is faulted in from the
             // kernel object), as in the C.
-            let _ = mapper().enter(va, pa, prot, prot | PMAP_WIRED);
+            let _ = token().enter(va, pa, prot, prot | PMAP_WIRED);
         } else {
-            mapper().kenter(va, pa, prot);
+            token().kenter(va, pa, prot);
         }
         va = Vaddr::new(va.as_usize() + PAGE_SIZE);
     }
@@ -1103,7 +1143,7 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
         }
 
         if kp.kp_pageable {
-            mapper().remove(Vaddr::new(sva), Vaddr::new(eva));
+            token().remove(Vaddr::new(sva), Vaddr::new(eva));
         } else {
             // The C's order: collect the pages, remove the mappings, then free the list (no
             // page is on a free list while it is still mapped).
@@ -1118,7 +1158,7 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
                     }
                 }
             }
-            mapper().kremove(Vaddr::new(sva), Vsize::new(sz));
+            token().kremove(Vaddr::new(sva), Vsize::new(sz));
             uvm_pglistfree(&pgl);
         }
     }
@@ -1185,8 +1225,7 @@ impl PageMemory for KmDmaMemory {
         if kind != PageKind::Wired {
             return None;
         }
-        let kd = if wait { &KD_WAITOK } else { &KD_NOWAIT };
-        let va = km_alloc(len, &KV_ANY, &Self::kp(), kd)?;
+        let va = dma_alloc_in(PMAP_NOMMU, len, &Self::kp(), wait)?;
         let p = NonNull::new(core::ptr::with_exposed_provenance_mut::<u8>(va.as_usize()))?;
         Some((p, len))
     }
@@ -1201,6 +1240,47 @@ impl PageMemory for KmDmaMemory {
 }
 
 static KM_DMA_MEMORY: KmDmaMemory = KmDmaMemory;
+
+/// `uvm_vslock_device`'s bounce in the C's order: the virtual space first, never waiting for
+/// it (`km_alloc(sz, &kv_any, &kp_none, &kd_nowait)`: none is the C's `ENOMEM`), then the
+/// pages within `kp`'s constraint (`uvm_pglistalloc(.., UVM_PLA_WAITOK)` with `wait`), each
+/// entered (`pmap_kenter_pa`); with the space given back if the pages cannot be had. Zeroed
+/// (`kp_zero`, the provider's contract). Without an MMU (the host double) `km_alloc` serves it
+/// through the direct map.
+fn dma_alloc_in(nommu: bool, sz: usize, kp: &KmemPaMode, wait: bool) -> Option<Vaddr> {
+    if nommu {
+        let kd = if wait { &KD_WAITOK } else { &KD_NOWAIT };
+        return alloc_in(nommu, sz, &KV_ANY, kp, kd);
+    }
+    let maps = maps()?;
+    let sva = map_va(maps, sz, &KV_ANY, &KP_NONE, &KD_NOWAIT).ok()?;
+    let mut pla_flags = if wait { UVM_PLA_WAITOK } else { UVM_PLA_NOWAIT };
+    if kp.kp_zero {
+        pla_flags |= UVM_PLA_ZERO;
+    }
+    let pgl = Pglist::new();
+    if uvm_pglistalloc(
+        sz,
+        kp.kp_constraint.ucr_low,
+        kp.kp_constraint.ucr_high,
+        Paddr::new(0),
+        Paddr::new(0),
+        &pgl,
+        (sz / PAGE_SIZE) as i32,
+        pla_flags,
+    )
+    .is_err()
+    {
+        free_in(nommu, sva, sz, &KV_ANY, &KP_NONE);
+        return None;
+    }
+    let mut va = sva;
+    while let Some(pg) = pgl.pop_head() {
+        token().kenter(va, pg.phys_addr(), PROT_READ | PROT_WRITE);
+        va = Vaddr::new(va.as_usize() + PAGE_SIZE);
+    }
+    Some(sva)
+}
 
 /// The kernel map's DMA-reachable wired pages as `KmBuf` takes them (`uvm_vslock_device`'s
 /// bounce), a provider passed as a value.
@@ -1229,7 +1309,7 @@ impl ModuleMemory for KmModuleMemory {
 
     fn release(&self, va: Vaddr, len: usize) {
         let len = round_page(len);
-        mapper().kremove(va, Vsize::new(len));
+        token().kremove(va, Vsize::new(len));
         km_free(va, len, &KV_ANY, &KP_NONE);
     }
 }
@@ -1240,6 +1320,13 @@ static KM_MODULE_MEMORY: KmModuleMemory = KmModuleMemory;
 /// value.
 pub const fn module_memory() -> &'static dyn ModuleMemory {
     &KM_MODULE_MEMORY
+}
+
+/// The host tests' window over the double's foreign memory (`testutil::FOREIGN_BASE`), which no
+/// extract filled: the copies of `vm::io` and `vm::mmap` tested without a map. Test code only.
+#[cfg(test)]
+pub(super) fn test_window(va: Vaddr, len: usize) -> ForeignWindow<'static> {
+    token().foreign_window(va, len)
 }
 /* </CODE> */
 

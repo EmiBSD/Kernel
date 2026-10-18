@@ -57,6 +57,12 @@
 //! ## Deviations
 //! - `uvm_unmap_remove` cannot fail on `kernel_map` (no immutable entries are checked), so
 //!   its result is not consulted, as the C ignores it (LZ's).
+//! - A write (`UIO_WRITE`, `UVM_IO_FIXPROT`: ptrace's `PT_WRITE`/`PT_IO`, not ported yet) moves
+//!   the chunk out of the uio into the bounce before the copy into the window, so a fault in
+//!   the window leaves the uio advanced by the chunk where the C's `uiomove` straight into the
+//!   window advances it by none of it. No caller sees it today: the one caller,
+//!   `kern.proc_args` (`sysctl_proc_args`), reads, and throws the uio away on any error. To be
+//!   fixed when `PT_IO` is ported (the window copied from the uio's own iovecs).
 //!
 //! ## Redesign
 //! - The extracted chunk is a [`KernelWindow`](super::km::KernelWindow): minted only from
@@ -64,13 +70,12 @@
 //!   is the C's step 4 (`uvm_unmap_remove` of the range from `kernel_map`, then
 //!   `uvm_unmap_detach(AMAP_REFALL)`). LZ's `unsafe` slice over the window is gone: the
 //!   window's pages belong to another address space (another thread may write them), so no
-//!   `&mut [u8]` is made of them. The bytes go through a one-page bounce ([`KmBuf`]):
-//!   `kcopy` between the window and the bounce (`hal::user::ForeignWindow`, the machine's
-//!   copy with its fault recovery), `uiomove` between the bounce and the uio. The C's one
-//!   `uiomove` per chunk becomes one pair per page; what reaches the uio is the same bytes in
-//!   the same order. A fault in the middle of a chunk leaves the uio advanced by the pages
-//!   before it (the C's by none of the chunk); the one caller, `kern.proc_args`, throws the
-//!   buffer away on any error.
+//!   `&mut [u8]` is made of them. The bytes go through a bounce ([`KmBuf`]) as large as the
+//!   first chunk (at most `MAXBSIZE`; chunks only shrink): `kcopy` between the window and the
+//!   bounce (`hal::user::ForeignWindow`, the machine's copy with its fault recovery), then one
+//!   `uiomove` of the chunk between the bounce and the uio, so a read advances the uio by the
+//!   whole chunk or, on a fault, by none of it, as the C's one `uiomove` per chunk does (a
+//!   write: see the deviations).
 //! - The `struct uio *` is the kernel's `UioMove` (its direction is `is_write`), the
 //!   address in the map (`uio_offset`) a parameter.
 
@@ -126,7 +131,7 @@ pub fn uvm_io(map: &VmMap, uio: &mut dyn UioMove, offset: usize, flags: i32) -> 
         0
     };
 
-    let Some(mut bounce) = KmBuf::alloc_wired(page_memory(), PAGE_SIZE, true) else {
+    let Some(mut bounce) = KmBuf::alloc_wired(page_memory(), chunksz, true) else {
         return Err(Errno::ENOMEM);
     };
 
@@ -187,8 +192,8 @@ fn smaller_chunk(chunksz: usize) -> usize {
 }
 
 /// Step 3 of `uvm_io`: `sz` bytes between the window at `off` and the uio, through `bounce`
-/// a piece at a time, in the uio's direction (a read: window to bounce to uio; a write: uio
-/// to bounce to window).
+/// (`uvm_io`'s holds the whole chunk: one piece), in the uio's direction (a read: window to
+/// bounce to uio; a write: uio to bounce to window).
 fn io_move(
     window: &ForeignWindow<'_>,
     off: usize,
@@ -258,7 +263,7 @@ mod tests {
     fn window() -> ForeignWindow<'static> {
         testutil::install();
         let _ = testutil::pmap_boot();
-        super::super::km::mapper().foreign_window(
+        super::super::km::test_window(
             hal::sys::types::Vaddr::new(testutil::FOREIGN_BASE),
             testutil::FOREIGN_LEN,
         )
@@ -333,7 +338,7 @@ mod tests {
         testutil::install();
         let _ = testutil::pmap_boot();
         // A window past the double's foreign memory: every copy faults.
-        let w = super::super::km::mapper().foreign_window(
+        let w = super::super::km::test_window(
             hal::sys::types::Vaddr::new(testutil::FOREIGN_BASE + testutil::FOREIGN_LEN),
             PAGE_SIZE,
         );
@@ -348,6 +353,27 @@ mod tests {
             Err(Errno::EFAULT)
         );
         assert_eq!(uio.resid(), 16, "nothing reached the uio");
+    }
+
+    /// A read whose chunk faults past its first page leaves the uio where it was, as the C's
+    /// one `uiomove` per chunk: the bounce holds the whole chunk.
+    #[test]
+    fn a_read_fault_mid_chunk_moves_nothing() {
+        testutil::install();
+        let _ = testutil::pmap_boot();
+        let base = testutil::FOREIGN_BASE + testutil::FOREIGN_LEN - PAGE_SIZE;
+        let w = super::super::km::test_window(hal::sys::types::Vaddr::new(base), 2 * PAGE_SIZE);
+        let mut uio = Buf {
+            data: vec![0; 2 * PAGE_SIZE],
+            pos: 0,
+            write: false,
+        };
+        let mut bounce = vec![0u8; 2 * PAGE_SIZE];
+        assert_eq!(
+            io_move(&w, 0, 2 * PAGE_SIZE, &mut uio, &mut bounce),
+            Err(Errno::EFAULT)
+        );
+        assert_eq!(uio.resid(), 2 * PAGE_SIZE, "the uio did not move");
     }
 }
 /* </TESTS> */
