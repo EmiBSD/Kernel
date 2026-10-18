@@ -4960,7 +4960,7 @@ pub fn uvmspace_share(vm: &VmspaceRef) -> VmspaceRef {
 /// (`uvmspace_free`).
 ///
 /// - XXX: no locking on vmspace
-pub fn uvmspace_exec(vm: &VmspaceRef, start: usize, end: usize) -> Option<VmspaceRef> {
+pub fn uvmspace_exec(vm: &Vmspace, start: usize, end: usize) -> Option<VmspaceRef> {
     let map = &vm.vm_map;
     let mut end = end;
 

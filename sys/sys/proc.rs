@@ -274,7 +274,10 @@ impl Pinsyscall {
         self.pn_start.set(base);
         self.pn_end.set(end);
         self.pn_pins.set(table.as_ptr());
-        self.pn_npins.set(i32::try_from(npins).unwrap_or(i32::MAX));
+        // sys_pinsyscalls refuses a table of more than SYS_MAXSYSCALL entries (E2BIG).
+        let npins = i32::try_from(npins).ok();
+        kassert!(npins.is_some());
+        self.pn_npins.set(npins.unwrap_or(0));
     }
 }
 
@@ -607,14 +610,21 @@ impl Process {
     /// The process's handle, by reference (for `vmspace_opt` and `vmspace_share`, which
     /// end the borrow before they return a reference into the vmspace or a new handle).
     fn vmspace_handle(&self) -> Option<&'static VmspaceRef> {
-        // SAFETY: the slot is written only by `fork1`'s `process_new` before the process is
-        // reachable, by `exec` (`set_vmspace`, with its other threads gone) and by the
-        // reaper's `uvm_exit` (`take_vmspace`, after the process is a zombie), never while a
-        // reference made here is in use: the two callers above copy out of it (a reference
-        // into the vmspace, or a new handle) before they return, so no `&Option` outlives
-        // the call, and nothing writes the slot during it. The vmspace itself outlives the
-        // returned reference while the process holds its handle (the C's pointer is valid
-        // until `uvm_exit`); `'static` is that pointer's lifetime, the slot's to keep.
+        // SAFETY: the `&Option` made here lives only inside this module's callers
+        // (`vmspace`, `vmspace_opt`, `vmspace_share`, `vmspace_ptr`), which copy out of it (a
+        // reference into the vmspace, a new handle, an address) before they return and never
+        // write the slot meanwhile; so no write may run during the borrow. The writers are
+        // three: `fork1`'s `process_new` (`set_vmspace` before the child is reachable by
+        // anyone), `exec` (`uvmspace_exec`'s `set_vmspace`, in `sys_execve`, which runs
+        // under the kernel lock with the process's other threads gone), and the reaper's
+        // `uvm_exit` (`take_vmspace`, without the kernel lock, but only after `exit1` set
+        // `PS_EXITING` under it). The readers of another process's slot (`fill_kproc`,
+        // `kern.proc_args`, the tty's status line) run under the kernel lock and skip a
+        // process with `PS_EXITING` set, so they never overlap the reaper's take nor an exec's
+        // set; a process's own threads read its slot only while it is alive, before
+        // `uvm_exit`. The vmspace outlives the returned reference while the process holds
+        // its handle (the C's pointer is valid until `uvm_exit`); `'static` is that pointer's
+        // lifetime, the slot's to keep.
         unsafe { (*self.ps_vmspace.as_ptr()).as_ref() }
     }
 
@@ -624,14 +634,6 @@ impl Process {
     /// once `uvm_exit` took it.
     pub fn vmspace_share(&self) -> Option<VmspaceRef> {
         self.vmspace_handle().map(uvmspace_share)
-    }
-
-    /// `f` on the process's handle itself (`uvmspace_exec(pr->ps_vmspace, ..)`, which tells
-    /// a vmspace only this process holds from a shared one by the handle it is given); `None`
-    /// once `uvm_exit` took it. `f` must not change the slot (`set_vmspace`, `take_vmspace`):
-    /// the caller installs what `f` returns afterwards.
-    pub fn with_vmspace_handle<R>(&self, f: impl FnOnce(&VmspaceRef) -> R) -> Option<R> {
-        self.vmspace_handle().map(f)
     }
 
     /// The address of `pr->ps_vmspace` (null for none): `kinfo_proc`'s `p_vmspace` and the
@@ -1008,12 +1010,16 @@ impl Proc {
     pub fn vmspace(&self) -> &'static Vmspace {
         let vm = self.p_vmspace.get();
         kassert!(!vm.is_null());
-        // SAFETY: non-null, the pointer is the address of the vmspace its process's handle
-        // holds (`Process::vmspace_ptr`, copied by `fork1`, `main` and `uvmspace_exec`, which
-        // sets it before it replaces the handle), so the vmspace lives while the process holds
-        // that handle: until the reaper's `uvm_exit`, after it nulled the thread's copy of a
-        // dead thread (`p_vmspace = NULL`). The selftests that lend a thread another vmspace
-        // keep the handle until they set the copy back.
+        // SAFETY: this is called on a live thread (`curproc` in a system call, a fault or a
+        // selftest), whose copy is the address of the vmspace its process's handle holds:
+        // `fork1` and `main` copy `Process::vmspace_ptr`, and `uvmspace_exec` sets the
+        // exec'ing thread's copy before it replaces the handle (its other threads are dead by
+        // then); so the vmspace lives while the thread does, the process holding the handle
+        // until the reaper's `uvm_exit`. A dead thread whose process exec'd away a shared
+        // vmspace still names the old one, which only the other process keeps alive, until
+        // the reaper nulls its copy (`p_vmspace = NULL`, the C's): nothing calls this on a
+        // dead thread, the reaper only stores. The selftests that lend a thread another
+        // vmspace keep that handle until they set the copy back.
         unsafe { &*vm }
     }
 

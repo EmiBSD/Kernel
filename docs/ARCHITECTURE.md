@@ -251,7 +251,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   OpenBSD's do, so `reserve` hands out a 16 MiB window of the kernel's L4 slot after the
   image, linked once by `pmap_bootstrap` (`sys/arch/amd64/amd64/pmap_module.rs`); arm64
   (no PXN on its tables) uses `kernel_map` until N3 (docs/ZERO_UNSAFE.md decision 37).
-- **The boot line.** `abi_openbsd.ko: 331 syscalls, 2 native`, or `abi_openbsd.ko: not
+- **The boot line.** `abi_openbsd.ko: 331 syscalls, 17 native` (2 until N3.5), or `abi_openbsd.ko: not
   loaded, <why>; every system call takes the legacy path` (decision 29: a medium without the
   file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
   `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).

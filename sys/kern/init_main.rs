@@ -405,7 +405,8 @@ pub fn main() -> ! {
         trunc_page(<Machine as VmParam>::VM_MAX_ADDRESS),
     );
     p.p_vmspace.set(VmspaceRef::as_ptr(&vm0));
-    let _ = PROCESS0.set_vmspace(vm0);
+    let prev = PROCESS0.set_vmspace(vm0);
+    crate::kassert!(prev.is_none()); // process 0 had none
 
     p.p_addr.set(Machine::proc0paddr()); // XXX
 

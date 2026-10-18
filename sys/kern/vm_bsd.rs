@@ -1244,10 +1244,9 @@ pub fn uvm_exit(pr: &Process) {
 /// nvm`, `pmap_activate`) before the old one's reference is dropped (`uvmspace_free`).
 pub fn uvmspace_exec(p: &Proc, start: usize, end: usize) {
     let pr = p.process();
-    let nvm = pr
-        .with_vmspace_handle(|ovm| kernel::vm::map::uvmspace_exec(ovm, start, end))
-        .flatten();
-    if let Some(nvm) = nvm {
+    // The kernel's tells a vmspace only this process holds by its vm_refcnt; it reads the
+    // vmspace, not the process's handle, and the slot is changed only below, after it.
+    if let Some(nvm) = kernel::vm::map::uvmspace_exec(pr.vmspace(), start, end) {
         // install new vmspace and drop our ref to the old one.
         crate::machine::pmap::pmap_deactivate(p);
         p.p_vmspace.set(VmspaceRef::as_ptr(&nvm));
@@ -1270,7 +1269,9 @@ pub fn uvmspace_fork_or_share(parent: &Process, pr: &Process, share: bool) {
     } else {
         kernel::vm::map::uvmspace_fork(parent.vmspace())
     };
-    let _ = pr.set_vmspace(vm);
+    let prev = pr.set_vmspace(vm);
+    // process_new's child had no address space before this.
+    kassert!(prev.is_none());
 }
 
 /// `uvm_uarea_alloc`: a thread's u-area (`kernel::vm::glue::uvm_uarea_alloc`), as the
