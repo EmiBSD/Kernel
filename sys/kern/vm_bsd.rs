@@ -1516,6 +1516,12 @@ pub fn uvm_pagealloc_multi(obj: &Object, off: Voff, size: usize, flags: i32) -> 
 }
 
 const _: () = {
+    // Process::ps_vmspace holds the counted handle where the C has the pointer, in the same
+    // word: the processpl item (vmstat -m) does not grow.
+    assert!(
+        core::mem::size_of::<core::cell::Cell<Option<VmspaceRef>>>()
+            == core::mem::size_of::<*const KVmspace>()
+    );
     // The kernel's segment table holds the machine's.
     assert!(VM_PHYSSEG_MAX <= MAX_SEGS);
     // uvm_page_physload: unknown physseg strategy selected!
