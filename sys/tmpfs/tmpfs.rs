@@ -314,7 +314,9 @@ impl TmpfsNode {
 
     /// `tn_uobj` (`tn_spec.tn_reg.tn_aobj`): the regular file's object, a clone of the node's
     /// handle (taken out of the cell and put back: every caller holds the vnode locked
-    /// exclusively, as `vn_read`/`vn_write` and the vnode pager lock it).
+    /// exclusively, as `vn_read`/`vn_write` and the vnode pager lock it, and the kernel lock;
+    /// the C never takes a tmpfs vnode `LK_SHARED` on these paths, so no two threads are in
+    /// the window at once).
     pub fn tn_uobj(&self) -> PoolArc<Aobj> {
         let cell = &self.tn_spec.tn_reg.tn_aobj;
         let aobj = cell.take();

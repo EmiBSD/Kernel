@@ -130,6 +130,29 @@
 //! - Out parameters become return values (`Result`, tuples, `Option`): `uvm_map_findspace`
 //!   yields the first and last entry and the address, `uvm_map_lookup_entry` the entry only
 //!   when it contains the address, `uvm_map_extract` the destination address.
+//!
+//! ## Adapted to the kernel's owners (N3.4e)
+//!
+//! The module stays `adapted` (its 22 `unsafe` of LZ are untouched, and a redesigned module
+//! outside the core must compile with `forbid`; N3.5 redesigns it into the kernel). What its
+//! call sites became when the amaps, anons and objects moved into the kernel:
+//! - An entry holds counted handles where the C holds pointers: `object` an `ObjRef` in
+//!   [`VmMapEntryObject`], `aref` an `AmapRef` (`uvm_anon.rs`'s `VmAref`). Reading a handle out
+//!   of a `Cell` takes it out and puts it back, and the map's read lock admits several readers,
+//!   so each of the two cells has its own one-byte busy flag ([`VmMapEntry::object_get`],
+//!   [`VmMapEntry::object_set`]; see the `Sync` impl). When `uvm_map_fill_vmmap` and the `ddb`
+//!   printers arrive they read these cells with a try-acquire of the flag: `ddb` may stop a CPU
+//!   inside a window.
+//! - [`uvm_map_lock_entry`] takes an [`EntryRefs`] (the entry's amap and object handles, read
+//!   under the map lock) and returns the kernel's `EntryLocks`, the amap's write witness then
+//!   the object's; [`uvm_map_unlock_entry`] consumes it.
+//! - [`uvm_mapent_free`] drops the entry's handles before the item goes back to its pool (an
+//!   item is overwritten without a drop when handed out again); `uvm_map_splitentry` clears
+//!   the free-space half's object as well as its `aref` (the C leaves the stale union there).
+//! - The pager operations are the `ObjRef`'s (`reference`, `detach`, `flush` with the object's
+//!   write witness), `uvm_map_clean` walks the amap under its write witness, `amap_splitref`
+//!   returns the new page offset, `amap_cow_now` runs on the child's amap, and
+//!   `uvm_km_pgremove` gets the kernel object's write witness from the entry's locks.
 
 use core::cell::Cell;
 use core::cmp::Ordering;
@@ -279,8 +302,10 @@ pub enum VmMapEntryObject {
 /// protection information. Also included is control information for virtual copy
 /// operations.
 ///
-/// Every field is guarded by the map's lock (`vm_map_lock`); the `dfree` links by whichever
-/// tree, queue or dead queue the entry is on.
+/// Every field is guarded by the map's lock (`vm_map_lock`), written by its write lock's holder,
+/// but the two handle cells, `object` and `aref`'s amap, which read-lock holders also touch
+/// through their own busy flags (the `Sync` impl below); the `dfree` links by whichever tree,
+/// queue or dead queue the entry is on.
 pub struct VmMapEntry {
     /// `daddrs.addr_entry`: address tree.
     pub addr_entry: RbtEntry,
@@ -325,7 +350,28 @@ pub struct VmMapEntry {
     pub fspace_augment: Cell<usize>,
 }
 
-// SAFETY: the map lock guards every field (see the struct doc).
+// SAFETY: the shared accesses of the fields are of two kinds.
+// - The plain `Cell` fields (`start`, `end`, `guard`, `fspace`, `offset`, `etype`, the
+//   protections, `inheritance`, `wired_count`, `advice`, `flags`, `fspace_augment`,
+//   `aref.ar_pageoff`) are written only by the holder of the map's write lock (or by the
+//   entry's owner while it is on no map, or on a dead queue no other thread sees); readers
+//   hold the map's read or write lock, or the map busy, which keeps every writer out. The
+//   links are their tree's, queue's or list's, under the same rule.
+// - The two handle cells, `object` and `aref.ar_amap`, are written by read-lock holders too
+//   (reading a handle out of a `Cell` takes it out and puts it back), so each is private and
+//   reached only through its own busy flag (`with_object` here, `VmAref::with` in
+//   `uvm_anon.rs`): a compare-exchange with `Acquire` takes the flag, a `Release` store gives
+//   it back, so the windows of one cell are mutually exclusive and ordered, and a window only
+//   clones or swaps the value: it never nests another window, never sleeps and never takes or
+//   holds another lock while the flag is held; the old handle a swap replaces is dropped after
+//   the flag is let go. `uvm_mapent_free` clears both cells (through the flags) before the
+//   item goes back to its pool, which overwrites it without a drop.
+// - No interrupt handler spins on a flag a thread it interrupted holds: a kmem_map entry (the
+//   only map reached from interrupt context) is touched only under that map's `IPL_VM`
+//   mutex, which blocks those interrupts on its CPU, and its entries hold no amap or object;
+//   a dead queue's entries are their unmapper's alone.
+// Under these rules no two threads access one `Cell` at once; the map's own lock (or the
+// flags) orders the accesses of different threads.
 unsafe impl Sync for VmMapEntry {}
 
 impl VmMapEntry {
@@ -5515,6 +5561,31 @@ mod tests {
             "the stack/brk selector"
         );
         uvmspace_free(vm);
+    }
+
+    #[test]
+    fn concurrent_readers_always_see_the_object() {
+        // Faults on one entry read its object under the map's read lock at once: none may see
+        // the union empty while another clones the handle (object_busy).
+        let _g = setup();
+        let _ = hal::rwlock::init_shared();
+        let _ = crate::uvm::uvm_aobj::uao_init();
+        let uobj = crate::uvm::uvm_aobj::uao_create(Vsize::new(PAGE_SIZE), 0).expect("an aobj");
+        let e: &'static VmMapEntry = std::boxed::Box::leak(std::boxed::Box::new(VmMapEntry::new()));
+        e.object_set(VmMapEntryObject::Obj(uobj.clone()));
+        let readers: std::vec::Vec<_> = (0..4)
+            .map(|_| {
+                let want = uobj.clone();
+                std::thread::spawn(move || {
+                    (0..20_000).all(|_| e.uvm_obj().is_some_and(|o| ObjRef::ptr_eq(&o, &want)))
+                })
+            })
+            .collect();
+        for r in readers {
+            assert!(r.join().expect("a reader"), "a reader saw no object");
+        }
+        e.object_set(VmMapEntryObject::None);
+        uobj.detach();
     }
 
     #[test]

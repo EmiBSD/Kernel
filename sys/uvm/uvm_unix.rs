@@ -302,8 +302,10 @@ fn uvm_should_coredump(p: &Proc, entry: &VmMapEntry) -> bool {
 }
 
 /// `amap->am_ref += delta`: the coredump's extra reference to a shared amap, taken and
-/// dropped under the amap's write lock (the C changes the count unlocked; the map is locked
-/// either way, so MAPS => AMAP holds).
+/// dropped under the amap's write lock. The C changes the count with no lock at all, and
+/// neither it nor this walk takes the map lock: the walk reads the dumping process's own map
+/// while its other threads are stopped (`single_thread_set` before the core dump), so the
+/// amap's lock is the only one held here and no lock order is involved.
 fn amap_refs_adjust(amap: &Amap, delta: i32) {
     let w = amap.lock().write();
     amap.set_refs_locked(&w, amap.refs() + delta);
