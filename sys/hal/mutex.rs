@@ -391,6 +391,7 @@ impl<T> MutexedGuard<'_, T> {
     }
 
     /// The identity of the mutex this guard holds.
+    #[inline]
     pub(crate) fn mutex_id(&self) -> LockId {
         self.lock.id()
     }
