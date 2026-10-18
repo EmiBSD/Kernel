@@ -76,6 +76,7 @@ pub mod mutex;
 #[forbid(unsafe_code)]
 pub mod netlock;
 pub mod once;
+pub mod owned;
 pub mod percpu;
 // pmap(9) (N3.1). A machine's build has the module once its backend is in
 // `arch/<machine>/pmap/`: the host double's, amd64's (N3.1 commit 4) and arm64's (commit 5),

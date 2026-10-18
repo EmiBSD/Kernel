@@ -8199,6 +8199,13 @@ lz = ["sys/kern/subr_tree.rs", "sys/sys/tree.rs"]
 status = "redesigned"
 notes = "N3.3: Tree<A>, the RBT red-black tree of tree.h/subr_tree.c (rbe_insert_color, rbe_remove_color, rbe_remove, the rotations) re-expressed over 'static elements with safe mutators (Link links), find_by/nfind_by without a key element, tree_adapter!; the page system's trees; sys/sys/tree.rs and sys/kern/subr_tree.rs stay for the legacy tree, so every LZ item keeps its name there"
 
+[[module]]
+rust = "sys/hal/owned.rs"
+crate = "hal"
+lz = ["sys/kern/subr_tree.rs", "sys/sys/tree.rs", "sys/sys/queue.rs"]
+status = "redesigned"
+notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there"
+
 [[extra]]
 rust = "sys/hal/prf.rs"
 crate = "hal"

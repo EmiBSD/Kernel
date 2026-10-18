@@ -597,6 +597,32 @@ impl<T: 'static> PoolBox<T> {
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.item == b.item
     }
+
+    /// Gives the handle up for the item's pointer (with the item's whole provenance) and its
+    /// pool: whoever keeps them owns the item from now on and gives it back as a handle by
+    /// [`PoolBox::from_raw`]. The item is not freed here; dropped, the pair leaks it. The
+    /// owning containers of `sys/hal/owned.rs` are the one user: an element linked in one
+    /// is owned by the container, not by a handle.
+    pub(crate) fn into_raw(this: Self) -> (NonNull<T>, &'static BoxPool<T>) {
+        let this = ManuallyDrop::new(this);
+        (this.item, this.pool)
+    }
+
+    /// The handle back from what [`PoolBox::into_raw`] returned.
+    ///
+    /// # Safety
+    ///
+    /// `raw` and `pool` were returned together by `into_raw`, and no handle was rebuilt from
+    /// them since (each `into_raw` is answered by at most one `from_raw`, so the item has one
+    /// owner again and is put back once); no reference to the value made while the pointer
+    /// was kept is alive or used after this call (the handle may give `&mut T`).
+    pub(crate) unsafe fn from_raw(raw: NonNull<T>, pool: &'static BoxPool<T>) -> Self {
+        PoolBox {
+            item: raw,
+            pool,
+            _owns: PhantomData,
+        }
+    }
 }
 
 impl<T: 'static> Deref for PoolBox<T> {
