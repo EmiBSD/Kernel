@@ -2283,7 +2283,7 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
   the same memory (`boot::VM_MEMORY`, 512 MiB; `diff-openbsd` gives OpenBSD 1 GiB, which a
   ratio cannot have). They boot one after the other, never side by side, so neither steals the
   host's cores from the other, and the order alternates from run to run, so a drift of the
-  host's speed falls on both. Five runs each.
+  host's speed falls on both. Ten runs each.
 - **What is measured.** `boot`: QEMU's start to the first `login:` (firmware and boot loader
   included: OpenBSD's efiboot waits at `boot>`, Limine does not). `tools/bench` (ISC, ours,
   one static binary for both, in the ramdisk as `difftest` is and fetched by OpenBSD over
@@ -2296,28 +2296,38 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
   discarded, then, with the scratch disk mounted again, the recorded one. `tcpbench`:
   `smoke-tcpbench`'s two VMs on `smoke2`'s private link, for each system, pf disabled on both,
   a 2 s run retried until the server answers, one 10 s run as a warm-up, discarded, and then
-  five 10 s runs in the same boot (Mbps, tcpbench(1)'s average).
+  ten 10 s runs in the same boot (Mbps, tcpbench(1)'s average).
 - **Warm-up and sizes** (the user's decision of 2026-10-17, after the first baseline): five
   runs of one pass each left six of fourteen spreads above 15 %, most from one sample, the
   first after boot (the first tcpbench run, arm64's first `forkexit`). So a pass is discarded
   per boot, and the noisiest measurements do more work per sample: `forkexit` 500 -> 2,000
-  ops, `forkexec` 200 -> 800, the file 64 -> 256 MiB. Five runs and the 15 % limit stay.
+  ops, `forkexec` 200 -> 800, the file 64 -> 256 MiB.
+- **Ten runs, the worst left out** (the user's decision of 2026-10-17, after the second
+  baseline): with five runs one disturbed boot set the max-min spread on amd64 (EmiBSD's
+  first run once, OpenBSD's second the next time, on whichever side). So each side boots ten
+  times and, per measurement, its worst sample (the slowest for times, the lowest for Mbps)
+  is left out of the statistics; the 15 % limit stays.
 - **Why ratios.** Under TCG (amd64 always on this Mac, arm64 too: no hvf) an absolute number
   says how fast QEMU translates, not how fast the kernel is; the same emulation running both
   kernels cancels that out to first order, as TRACTOR reports a translation's overhead against
   the C it came from. The ratio is EmiBSD's median over OpenBSD's: below 1 is faster for times,
   above 1 for Mbps. It is only indicative of real hardware (M17), and EmiBSD's side is a debug
   kernel against OpenBSD's release one.
-- **Spread.** Each side's spread is `(max - min) / median` over its runs. A ratio is printed
+- **Spread.** Each side's spread is `(max - min) / median` over the nine samples it keeps
+  of its ten runs, and its median is theirs. A ratio is printed
   only when both are at most 15 %; otherwise the table says `spread` and the report gives the
   numbers. The limit is not tuned to make a run pass: a measurement that stays above it is
   reported as it is, and the cause found.
 - **Report.** A table per arch on stdout and in `<run dir>/<arch>/report.txt`, and
   `<run dir>/<arch>/report.toml` (`schema = 1`): the kernel's commit, whether `sys/` was
-  clean, its SHA-256, the QEMU command lines, the date, the configuration, and every raw sample
-  with each side's median, minimum, maximum and spread. `compare` reads two of them and prints
-  a `Bench: <measurement>-<arch> <before> -> <after> <unit>` line for each EmiBSD median that
-  moved by more than the larger spread of the two, and why not for the others.
+  clean, its SHA-256, the QEMU command lines, the date, the configuration and the method
+  (`reps`, `discard_worst`), and every raw sample, all ten, with the index of the discarded one
+  (`emibsd_discarded`, `openbsd_discarded`) and each side's median, minimum, maximum and spread
+  over the others; the table lists the discarded samples. `compare` reads two of them,
+  refuses two of different methods (runs, `discard_worst`, the file's size, tcpbench's
+  length), and prints a `Bench: <measurement>-<arch> <before> -> <after> <unit>` line for each
+  EmiBSD median that moved by more than the larger spread of the two, and why not for the
+  others.
 - **Where it runs.** Beside `just ci`, not in it, like `diff-openbsd`: under the machine lock,
   with nothing else running on the Mac (a concurrent build moves every number). The baseline
   and each milestone's after go in that milestone's section of `docs/JOURNAL.md`.
