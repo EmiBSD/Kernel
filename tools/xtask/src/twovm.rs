@@ -181,7 +181,7 @@ pub fn parse_plan(args: &[&str]) -> Result<Plan> {
 }
 
 /// Two distinct free UDP ports on localhost (bound and released: QEMU binds them next).
-fn free_udp_ports() -> Result<(u16, u16)> {
+pub(crate) fn free_udp_ports() -> Result<(u16, u16)> {
     let one = UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("udp bind: {e}"))?;
     let two = UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("udp bind: {e}"))?;
     let port = |s: &UdpSocket| s.local_addr().map(|a| a.port());
@@ -192,7 +192,7 @@ fn free_udp_ports() -> Result<(u16, u16)> {
 }
 
 /// The link of VM `index` (0 = A, 1 = B) given the two ports: its own MACs, its port first.
-fn vm_link(index: usize, ports: (u16, u16)) -> VmLink {
+pub(crate) fn vm_link(index: usize, ports: (u16, u16)) -> VmLink {
     let (tag, local_port, remote_port) = if index == 0 {
         ("a", ports.0, ports.1)
     } else {

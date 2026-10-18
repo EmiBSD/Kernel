@@ -209,6 +209,10 @@ pub(crate) fn image_path(root: &Path, arch: Arch, tag: Option<&str>) -> PathBuf 
     run_dir(root).join(format!("emibsd-{}{}.img", arch.name(), dash(tag)))
 }
 
+/// The memory of every EmiBSD VM ([`qemu_command`]), and of the OpenBSD VMs `bench` boots
+/// beside them (`diffopenbsd::Boot::Bench`), so both systems run on the same machine.
+pub(crate) const VM_MEMORY: &str = "512M";
+
 /// Size of the persistent disk: 64 MiB, sparse.
 pub(crate) const DISK_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -712,7 +716,7 @@ pub(crate) fn qemu_command(
 
     let mut cmd = Command::new(arch.qemu());
     // M13 (hwopts.rs): `--screenshot-after` and `--sendkey-after` put the monitor on a socket.
-    cmd.args(["-m", "512M", "-display", "none", "-monitor"]);
+    cmd.args(["-m", VM_MEMORY, "-display", "none", "-monitor"]);
     cmd.arg(crate::hwopts::monitor_arg());
     // M13 (hwopts.rs): `--reboot` lets a guest reset restart the machine.
     if !crate::hwopts::reboot() {
@@ -997,7 +1001,7 @@ pub(crate) const FIRMWARE_RETRY_MARKER: &str = "retrying once after a known firm
 
 /// The external bug id of the firmware failure on `serial`, when the boot ended in one of
 /// [`FIRMWARE_FLAKES`] before the kernel printed anything (its first line is `bsd: `).
-fn firmware_flake(serial: &str) -> Option<&'static str> {
+pub(crate) fn firmware_flake(serial: &str) -> Option<&'static str> {
     if serial.contains("bsd: ") {
         return None;
     }

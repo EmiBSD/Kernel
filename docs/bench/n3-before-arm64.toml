@@ -1,0 +1,173 @@
+schema = 1
+arch = "arm64"
+date = "2026-10-18T00:43:55Z"
+kernel_commit = "fc622fed1fde91459288015447d61fd98999f431"
+kernel_tree_clean = true
+kernel_sha256 = "48c0800491e936f502a2f62115cbff205dc677cca3aed241808016655ce6c596"
+reps = 10
+discard_worst = 1
+smp = 4
+memory = "512M"
+spread_limit_percent = 15.0
+file_mib = 256
+tcpbench_seconds = 10
+
+[qemu]
+emibsd = "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-arm64-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-arm64-bench.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -device virtio-net-device,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-arm64-bench.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native"
+openbsd = "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/arm64/openbsd-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -device virtio-net-device,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/arm64/openbsd-scratch.img,id=d1 -device virtio-blk-device,drive=d1 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot"
+emibsd_link = ["qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-arm64-a-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-arm64-a.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=49778,remote.type=inet,remote.host=127.0.0.1,remote.port=64085 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:01 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-arm64-a.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native", "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/edk2-arm64-b-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/emibsd-arm64-b.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=64085,remote.type=inet,remote.host=127.0.0.1,remote.port=49778 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:02 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/disk-arm64-b.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native"]
+openbsd_link = ["qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/arm64/openbsd-a-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=51180,remote.type=inet,remote.host=127.0.0.1,remote.port=57230 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:01 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot", "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/bench/arm64/openbsd-b-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=57230,remote.type=inet,remote.host=127.0.0.1,remote.port=51180 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:02 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a21a807ddd726d5c6/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot"]
+
+[[measurement]]
+name = "boot"
+unit = "s"
+better = "lower"
+emibsd = [8.529, 8.618, 8.333, 8.403, 8.284, 8.323, 8.326, 8.316, 8.392, 8.489]
+openbsd = [31.459, 31.89, 31.832, 31.668, 31.302, 31.301, 32.096, 30.986, 32.162, 31.984]
+emibsd_discarded = 1
+openbsd_discarded = 8
+ratio = 0.263
+
+[measurement.emibsd_stats]
+median = 8.333
+min = 8.284
+max = 8.529
+spread_percent = 2.94
+
+[measurement.openbsd_stats]
+median = 31.668
+min = 30.986
+max = 32.096
+spread_percent = 3.505
+
+[[measurement]]
+name = "pagefault"
+unit = "ns/op"
+better = "lower"
+emibsd = [76681.0, 76796.0, 75965.0, 74959.0, 75028.0, 75784.0, 75606.0, 92261.0, 76865.0, 74836.0]
+openbsd = [122733.0, 124129.0, 121819.0, 124531.0, 122917.0, 122297.0, 121450.0, 121518.0, 124503.0, 123596.0]
+emibsd_discarded = 7
+openbsd_discarded = 3
+ratio = 0.617
+
+[measurement.emibsd_stats]
+median = 75784.0
+min = 74836.0
+max = 76865.0
+spread_percent = 2.677
+
+[measurement.openbsd_stats]
+median = 122733.0
+min = 121450.0
+max = 124503.0
+spread_percent = 2.488
+
+[[measurement]]
+name = "forkexit"
+unit = "ns/op"
+better = "lower"
+emibsd = [1665155.0, 1673491.0, 1686982.0, 1649739.0, 1698503.0, 2077130.0, 1640915.0, 1687162.0, 1709976.0, 1694660.0]
+openbsd = [2352465.0, 2533415.0, 2234026.0, 2214634.0, 2118186.0, 2102787.0, 2237418.0, 2114289.0, 2242349.0, 2127581.0]
+emibsd_discarded = 5
+openbsd_discarded = 1
+ratio = 0.762
+
+[measurement.emibsd_stats]
+median = 1686982.0
+min = 1640915.0
+max = 1709976.0
+spread_percent = 4.094
+
+[measurement.openbsd_stats]
+median = 2214634.0
+min = 2102787.0
+max = 2352465.0
+spread_percent = 11.274
+
+[[measurement]]
+name = "forkexec"
+unit = "ns/op"
+better = "lower"
+emibsd = [4900752.0, 4852332.0, 5075677.0, 4964883.0, 4926580.0, 4887907.0, 4801397.0, 4909692.0, 5000831.0, 4810217.0]
+openbsd = [6825268.0, 6891198.0, 6432361.0, 6711033.0, 6516001.0, 6673346.0, 6621370.0, 6521085.0, 6866612.0, 6505321.0]
+emibsd_discarded = 2
+openbsd_discarded = 1
+ratio = 0.74
+
+[measurement.emibsd_stats]
+median = 4900752.0
+min = 4801397.0
+max = 5000831.0
+spread_percent = 4.069
+
+[measurement.openbsd_stats]
+median = 6621370.0
+min = 6432361.0
+max = 6866612.0
+spread_percent = 6.558
+
+[[measurement]]
+name = "pipe"
+unit = "ns/op"
+better = "lower"
+emibsd = [166878.0, 179684.0, 182330.0, 170312.0, 167114.0, 163968.0, 168655.0, 173298.0, 172963.0, 166288.0]
+openbsd = [186619.0, 177063.0, 188904.0, 175785.0, 178515.0, 176500.0, 175848.0, 175689.0, 188086.0, 179809.0]
+emibsd_discarded = 2
+openbsd_discarded = 2
+ratio = 0.953
+
+[measurement.emibsd_stats]
+median = 168655.0
+min = 163968.0
+max = 179684.0
+spread_percent = 9.318
+
+[measurement.openbsd_stats]
+median = 177063.0
+min = 175689.0
+max = 188086.0
+spread_percent = 7.001
+
+[[measurement]]
+name = "fileread"
+unit = "ns/op"
+better = "lower"
+emibsd = [708267.0, 616961.0, 641528.0, 706557.0, 701437.0, 710295.0, 703263.0, 706906.0, 702139.0, 697257.0]
+openbsd = [1078541.0, 897590.0, 888372.0, 893335.0, 871559.0, 874807.0, 873800.0, 874862.0, 907688.0, 898709.0]
+emibsd_discarded = 5
+openbsd_discarded = 0
+ratio = 0.79
+
+[measurement.emibsd_stats]
+median = 702139.0
+min = 616961.0
+max = 708267.0
+spread_percent = 13.004
+
+[measurement.openbsd_stats]
+median = 888372.0
+min = 871559.0
+max = 907688.0
+spread_percent = 4.067
+
+[[measurement]]
+name = "tcpbench"
+unit = "Mbps"
+better = "higher"
+emibsd = [105.506, 108.623, 102.088, 108.529, 109.094, 104.846, 108.31, 105.195, 102.658, 110.141]
+openbsd = [87.983, 87.648, 87.715, 88.02, 88.254, 87.74, 87.233, 87.323, 87.373, 86.867]
+emibsd_discarded = 2
+openbsd_discarded = 9
+ratio = 1.235
+
+[measurement.emibsd_stats]
+median = 108.31
+min = 102.658
+max = 110.141
+spread_percent = 6.909
+
+[measurement.openbsd_stats]
+median = 87.715
+min = 87.233
+max = 88.254
+spread_percent = 1.164

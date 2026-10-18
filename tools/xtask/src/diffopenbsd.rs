@@ -104,7 +104,7 @@ const EXPECTED_FILE: &str = "tools/xtask/diff-openbsd/expected.toml";
 /// The scenario sets, in the order they run (`setup` formats and mounts the scratch disk).
 const SETS: &[&str] = &["setup", "syscalls", "fs", "pipe"];
 /// The installed system's root password (`install.conf`), the same as the ramdisk's.
-const ROOT_PASSWORD: &str = "emibsd";
+pub(crate) const ROOT_PASSWORD: &str = "emibsd";
 /// Size of the OpenBSD VM's disk (sparse).
 const OPENBSD_DISK_SIZE: u64 = 8 << 30;
 
@@ -215,6 +215,26 @@ fn load_snapshot(root: &Path) -> Result<Snapshot> {
     Ok(toml::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))?)
 }
 
+/// Whether the snapshot of `arch` is installed: `target/openbsd/<arch>/disk.img` with its
+/// `installed` marker naming the recorded image (`bench` boots it and never installs it).
+pub(crate) fn installed(root: &Path, arch: Arch) -> Result<()> {
+    let snap = load_snapshot(root)?;
+    let a = snap
+        .arch
+        .get(arch.name())
+        .ok_or_else(|| format!("{SNAPSHOT_FILE}: no [arch.{}]", arch.name()))?;
+    let dir = cache_dir(root, arch);
+    let marker = dir.join("installed");
+    if !dir.join("disk.img").is_file() {
+        return Err(format!("{}: no disk.img", dir.display()).into());
+    }
+    match fs::read_to_string(&marker) {
+        Ok(m) if m.trim() == a.install_img_sha256 => Ok(()),
+        Ok(_) => Err(format!("{}: names another image", marker.display()).into()),
+        Err(e) => Err(format!("{}: {e}", marker.display()).into()),
+    }
+}
+
 /// `target/openbsd/<arch>`: the downloaded snapshot and the installed disk.
 fn cache_dir(root: &Path, arch: Arch) -> PathBuf {
     root.join("target").join("openbsd").join(arch.name())
@@ -233,7 +253,7 @@ fn work_dir(root: &Path, arch: Arch) -> Result<PathBuf> {
 }
 
 /// `shasum -a 256 <file>` (part of macOS).
-fn sha256(path: &Path) -> Result<String> {
+pub(crate) fn sha256(path: &Path) -> Result<String> {
     let out = Command::new("shasum")
         .args(["-a", "256"])
         .arg(path)
@@ -319,7 +339,7 @@ fn fetch(root: &Path, snap: &Snapshot, arch: Arch, a: &ArchSnapshot) -> Result<(
 }
 
 /// How the OpenBSD VM boots.
-enum Boot<'a> {
+pub(crate) enum Boot<'a> {
     /// From the install image, onto the blank disk.
     Install(&'a Path),
     /// From the installed disk, writing to it.
@@ -329,25 +349,44 @@ enum Boot<'a> {
     /// From the installed disk under `-snapshot`, alone, with QEMU's monitor on the Unix
     /// socket given (`powerbtn`, `probe`).
     Probe(&'a Path),
+    /// `bench` (`bench.rs`): as [`Boot::Run`], with the scratch disk given, but with the
+    /// memory EmiBSD's VMs get ([`boot::VM_MEMORY`]), so both systems run on the same
+    /// emulated machine.
+    Bench(&'a Path),
+    /// `bench`'s tcpbench(1) pair: as [`Boot::Bench`] without a scratch disk, one of two VMs
+    /// on the private link of `smoke2` (`vio1`, `boot::VmLink`), with its own variable store.
+    Link(&'a boot::VmLink),
 }
 
 /// QEMU for the OpenBSD VM. Disks: on amd64 PCI slots go up and the disk added first is
 /// `sd0`; on arm64 `virt` the virtio-mmio device added last is found first. The installed
-/// disk is `sd0` in every mode, the install image or the scratch disk `sd1`.
-fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<Command> {
+/// disk is `sd0` in every mode, the install image or the scratch disk `sd1`. The link NIC of
+/// [`Boot::Link`] is `vio1`, placed as `boot::qemu_command` places EmiBSD's.
+pub(crate) fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<Command> {
     let disk = cache_dir(root, arch).join("disk.img");
     let code = boot::edk2_file(arch.edk2_code())?;
     let vars_src = boot::edk2_file(arch.edk2_vars())?;
-    let vars = work_dir(root, arch)?.join("openbsd-vars.fd");
+    let link = match mode {
+        Boot::Link(l) => Some(*l),
+        _ => None,
+    };
+    let vars = work_dir(root, arch)?.join(match link {
+        Some(l) => format!("openbsd-{}-vars.fd", l.tag),
+        None => "openbsd-vars.fd".to_string(),
+    });
     fs::copy(&vars_src, &vars).map_err(|e| format!("{}: {e}", vars.display()))?;
     let mut cmd = Command::new(arch.qemu());
     let monitor = match mode {
         Boot::Probe(sock) => format!("unix:{},server=on,wait=off", sock.display()),
         _ => "none".to_string(),
     };
+    let memory = match mode {
+        Boot::Bench(_) | Boot::Link(_) => boot::VM_MEMORY,
+        _ => "1024",
+    };
     cmd.args([
         "-m",
-        "1024",
+        memory,
         "-display",
         "none",
         "-monitor",
@@ -388,15 +427,28 @@ fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<Command> {
             ("virtio-blk-device", "virtio-net-device")
         }
     };
+    // `bench`'s link NIC: on arm64 `virt` the device added last is found first, so it goes
+    // before the user network's, which stays vio0; on amd64 PCI slots go up, so it goes after.
+    let link_nic = |cmd: &mut Command, l: &boot::VmLink| {
+        cmd.args(["-netdev", &l.netdev()]);
+        cmd.args(["-device", &format!("{net},netdev=n1,mac={}", l.link_mac)]);
+    };
+    if let (Arch::Arm64, Some(l)) = (arch, link) {
+        link_nic(&mut cmd, l);
+    }
     // `probe` takes `--nic`'s model (hwopts) in the virtio NIC's place.
     match (mode, crate::hwopts::nic_model()) {
         (Boot::Probe(_), Some(model)) => cmd.args(["-device", &format!("{model},netdev=n0")]),
+        (Boot::Link(l), _) => cmd.args(["-device", &format!("{net},netdev=n0,mac={}", l.user_mac)]),
         _ => cmd.args(["-device", &format!("{net},netdev=n0")]),
     };
+    if let (Arch::Amd64, Some(l)) = (arch, link) {
+        link_nic(&mut cmd, l);
+    }
     let (second, second_opts, boot_second) = match mode {
         Boot::Install(img) => (Some(*img), ",snapshot=on", true),
-        Boot::Prepare | Boot::Probe(_) => (None, "", false),
-        Boot::Run(scratch) => (Some(*scratch), "", false),
+        Boot::Prepare | Boot::Probe(_) | Boot::Link(_) => (None, "", false),
+        Boot::Run(scratch) | Boot::Bench(scratch) => (Some(*scratch), "", false),
     };
     let mut root_disk = vec![
         "-drive".to_string(),
@@ -441,7 +493,10 @@ fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<Command> {
             cmd.args(&root_disk);
         }
     }
-    if matches!(mode, Boot::Run(_) | Boot::Probe(_)) {
+    if matches!(
+        mode,
+        Boot::Run(_) | Boot::Probe(_) | Boot::Bench(_) | Boot::Link(_)
+    ) {
         cmd.arg("-snapshot");
     }
     Ok(cmd)

@@ -183,3 +183,109 @@ Met 2026-10-16 (under way since 2026-10-10). Boundary: from `lz: bump pin to 3c6
 Effort: _(user)_
 
 Time: _(user)_
+
+## N3 Memory
+
+Under way (from the `docs: close N2` commit; this section is completed at the close).
+
+- Performance baseline before any uvm slice is merged (`just bench`, docs/ARCHITECTURE.md
+  "bench"; the brief of 2026-10-17). EmiBSD is the smokes' MP debug kernel (`opt-level = 1`,
+  kept so by the user's decision of 2026-10-17, the caveat documented) with the ramdisk and
+  `abi-openbsd.ko`; OpenBSD the `diff-openbsd` snapshot; both `-smp 4`, `-m 512M`, TCG, one
+  after the other, the order alternating. Ten runs per side, each boot running a discarded
+  warm-up pass before the recorded one; per measurement and side the worst sample is left
+  out, and the median, minimum and spread `(max - min) / median` are those of the nine kept;
+  the ratio is EmiBSD / OpenBSD and is refused (`spread`) when either spread exceeds 15 %.
+  The reports, all ten samples and the discarded one's index included, are kept as
+  `docs/bench/n3-before-<arch>.toml` for `bench compare`, which refuses a report of another
+  method.
+  Each run also records the host's one-minute load average at its start and end and its five
+  busiest processes but QEMU (cd47fb56, `[[host]]` in the report), a diagnostic that changes
+  no sample.
+- Superseded baselines, each run on a kernel whose `sys/` equals `main` 20035fd0:
+  - a49170f2 (22:01-22:16 UTC, five runs, one pass per boot, `forkexit` 500 ops, `forkexec`
+    200, a 64 MiB file): six of fourteen ratios refused, most of the spread from the first
+    sample after boot (amd64's first tcpbench run, 483.8 Mbps against 629.6 to 716.9;
+    arm64's first `forkexit`, 2.47 ms against 1.70 to 2.03). The user chose a warm-up pass
+    per boot, a 10 s tcpbench warm-up and more work per sample (`forkexit` 2,000 ops,
+    `forkexec` 800, a 256 MiB file): b7e474e3.
+  - 6c971a45 (22:27-22:50 UTC, five runs): arm64 seven of seven, amd64 one of seven, EmiBSD's
+    first run (booted the moment `just userland` ended) 1.5 to 3.5 times slow in every
+    measurement. 580cd038 (23:10-23:19 UTC, amd64 again alone, a quiet minute first): one
+    of seven again, this time OpenBSD's second run the outlier (`forkexec` 6.07 ms against
+    1.85 to 2.07). With five runs, one disturbed boot sets the max-min spread on either
+    side; the user chose ten runs a side with the worst sample of each left out (fc622fed).
+  - d55bd02a's amd64 run (2026-10-18 00:03-00:18 UTC, ten runs): five of seven, EmiBSD's
+    `pipe` (16.0 %) and `fileread` (26.0 %) refused, slow in runs 1 to 3 and fast after. A
+    debugger traced that step to host CPU contention, not the kernel, the files or the run
+    index: VS Code's cpptools in bursts of 350 to 430 % and macOS's idle-time daemons
+    (photoanalysisd, mediaanalysisd and others, about a core each); three `yes` hogs on the
+    host reproduce `pipe` at about 70k ns, its slow level. Its clean diagnostic run C10
+    (01:17-01:28 UTC, same tool and method) was made without tcpbench, so it is not a
+    baseline. The user had amd64 run again in full with the host diagnostic on (dd0f5a75).
+- The baseline in force, arm64: the fc622fed run (2026-10-18 00:18-00:44 UTC; the whole run
+  of both archs 2,446 s), whose `sys/` is identical to `main` 20035fd0 (`git diff 20035fd0
+  fc622fed -- sys` is empty; the kernel's SHA-256 changes from one commit to the next only
+  because `sys/build.rs` stamps the last commit's time), under the machine lock with nothing
+  else running and a quiet minute (no cargo, rustc or qemu in `ps`) before the first boot.
+
+  arm64 (kernel SHA-256 48c08004...):
+
+  | measurement | unit | EmiBSD median (min, spread) | OpenBSD median (min, spread) | ratio |
+  |---|---|---|---|---|
+  | boot | s | 8.33 (8.28, 2.9 %) | 31.67 (30.99, 3.5 %) | 0.263 |
+  | pagefault | ns/op | 75784 (74836, 2.7 %) | 122733 (121450, 2.5 %) | 0.617 |
+  | forkexit | ns/op | 1686982 (1640915, 4.1 %) | 2214634 (2102787, 11.3 %) | 0.762 |
+  | forkexec | ns/op | 4900752 (4801397, 4.1 %) | 6621370 (6432361, 6.6 %) | 0.740 |
+  | pipe | ns/op | 168655 (163968, 9.3 %) | 177063 (175689, 7.0 %) | 0.953 |
+  | fileread | ns/op | 702139 (616961, 13.0 %) | 888372 (871559, 4.1 %) | 0.790 |
+  | tcpbench | Mbps | 108.3 (102.7, 6.9 %) | 87.7 (87.2, 1.2 %) | 1.235 |
+
+  Discarded (run, value): boot EmiBSD 2 (8.62), OpenBSD 9 (32.16); pagefault 8 (92261), 4
+  (124531); forkexit 6 (2077130), 2 (2533415); forkexec 3 (5075677), 2 (6891198); pipe 3
+  (182330), 3 (188904); fileread 6 (710295), 1 (1078541); tcpbench 3 (102.1), 10 (86.9).
+
+- The baseline in force, amd64: the dd0f5a75 run (2026-10-18 01:45-02:01 UTC, 935 s of
+  benchmark, 1,016 s with the build and the quiet minute), `sys/` identical to 20035fd0,
+  under the machine lock, a quiet minute before the first boot, the host diagnostic on.
+
+  amd64 (kernel SHA-256 264087ac...):
+
+  | measurement | unit | EmiBSD median (min, spread) | OpenBSD median (min, spread) | ratio |
+  |---|---|---|---|---|
+  | boot | s | 17.35 (17.13, 2.4 %) | 21.64 (21.49, 1.5 %) | 0.802 |
+  | pagefault | ns/op | 7956 (7793, 13.8 %) | 10646 (10267, 8.8 %) | 0.747 |
+  | forkexit | ns/op | 459233 (432332, 7.4 %) | 786786 (768463, 3.7 %) | 0.584 |
+  | forkexec | ns/op | 1214616 (1186903, 6.5 %) | 1842307 (1770422, 8.6 %) | 0.659 |
+  | pipe | ns/op | 68504 (59989, 14.4 %) | 73197 (67555, 11.3 %) | 0.936 |
+  | fileread | ns/op | 280928 (224734, 24.8 %) | 329772 (276228, 19.7 %) | spread |
+  | tcpbench | Mbps | 767.3 (761.3, 1.2 %) | 590.4 (531.7, 14.0 %) | 1.300 |
+
+  Discarded (run, value): boot EmiBSD 1 (17.72), OpenBSD 1 (22.59); pagefault 9 (9087), 5
+  (11664); forkexit 9 (478218), 4 (817915); forkexec 1 (1387212), 7 (1971466); pipe 4
+  (70121), 7 (85702); fileread 1 (317045), 7 (342389); tcpbench 4 (728.2), 6 (517.0).
+
+  Thirteen of fourteen ratios print. The refused one is amd64's `fileread`, over the limit
+  on both sides. EmiBSD's samples sit at 277 to 317 us but for runs 2 and 5 (224.7 and
+  234.1); OpenBSD's at 276 to 317 in runs 1 to 4 and 330 to 342 in runs 5 to 10. The host
+  rows do not line up with either: cpptools ran at 64 to 100 % from OpenBSD's run 1 to
+  EmiBSD's run 5 (load 2.97 to 4.14), the quiet runs after it show 5 to 30 % for the busiest
+  process (load 2.16 to 3.09), and EmiBSD's two fast runs both fall inside the busy part,
+  OpenBSD's fast runs too. As recorded:
+
+  | run | EmiBSD fileread | host at its end | OpenBSD fileread | host at its end |
+  |---|---|---|---|---|
+  | 1 | 317045 (discarded) | load 2.53 -> 3.50; WindowServer 14 %, Code Helper 14 % | 276228 | load 3.50 -> 3.34; cpptools 64 % |
+  | 2 | 224734 | load 2.97 -> 3.46; cpptools 91 % | 285099 | load 3.34 -> 2.97; cpptools 82 % |
+  | 3 | 280702 | load 3.46 -> 4.14; cpptools 95 % | 289801 | load 4.14 -> 3.76; cpptools 84 % |
+  | 4 | 277067 | load 3.36 -> 3.54; cpptools 100 % | 317010 | load 3.76 -> 3.36; cpptools 86 % |
+  | 5 | 234109 | load 3.54 -> 3.64; cpptools 85 % | 333894 | load 3.64 -> 2.91; Creative Cloud 5 % |
+  | 6 | 283726 | load 2.61 -> 2.73; Creative Cloud 6 % | 329944 | load 2.91 -> 2.61; Creative Cloud 6 % |
+  | 7 | 294477 | load 2.73 -> 2.68; WindowServer 28 % | 342389 (discarded) | load 2.68 -> 3.09; WindowServer 17 %, firefox 17 % |
+  | 8 | 288055 | load 2.61 -> 2.72; socketfilterfw 30 % | 341235 | load 3.09 -> 2.61; Creative Cloud 6 % |
+  | 9 | 283475 | load 2.72 -> 2.54; WindowServer 9 % | 329772 | load 2.54 -> 2.16; Creative Cloud 6 % |
+  | 10 | 280928 | load 2.43 -> 2.74; cfprefsd 10 % | 338651 | load 2.16 -> 2.43; socketfilterfw 8 % |
+
+  The limit was not tuned and the method not changed (the user's decision); the cause of
+  `fileread`'s spread on amd64 is open. The N3 close runs the same command and carries
+  `Bench:` lines from `cargo xtask bench compare` against these reports, for what prints.

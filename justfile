@@ -3194,6 +3194,22 @@ diff-openbsd: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bu
         { echo "diff-openbsd: no difftest in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/diff-openbsd} cargo xtask diff-openbsd {{smp4}}
 
+# N3: EmiBSD's performance against OpenBSD 8.0 (`cargo xtask bench`, tools/xtask/src/bench.rs):
+# the smokes' MP kernel and ramdisk and `diff-openbsd`'s installed snapshot, booted one after the
+# other on the same emulated machine (`-smp 4`, the same memory and devices), ten runs each:
+# the boot to `login:`, tools/bench's ns per op (page faults, fork, fork+exec, pipe round trips,
+# a cold 256 MiB read from the scratch disk; a warm-up pass discarded per boot) and tcpbench(1)
+# between two VMs (a warm-up run discarded); per side the worst sample left out, the medians, the
+# spread and the ratio EmiBSD / OpenBSD, which is refused when a spread exceeds 15 %. The
+# report goes to target/bench/<arch>/report.toml unless EMIBSD_RUN_DIR says otherwise; `cargo
+# xtask bench compare BEFORE AFTER` gives the `Bench:` lines of a milestone close. Needs
+# `just userland` and the installed snapshot (`just diff-openbsd` once). Beside `ci`, not in it,
+# and run under the machine lock with nothing else on the Mac (docs/ARCHITECTURE.md, "bench").
+bench: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") build-init-amd64 build-init-arm64 build-abi
+    @test -f target/userland/amd64/root/usr/bin/bench -a -f target/userland/arm64/root/usr/bin/bench || \
+        { echo "bench: no bench in target/userland; run just userland first"; exit 1; }
+    EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench} cargo xtask bench {{smp4}}
+
 # --- the comp set (M14) --------------------------------------------------------------
 
 # Job count of `comp`: about half the Mac's cores by default (other builds share it).
