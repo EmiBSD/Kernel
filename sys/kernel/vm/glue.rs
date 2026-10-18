@@ -101,7 +101,8 @@
 //!   and `pmap_kenter_pa` per page: the same pages, mapped, owned, freed by its drop. LZ's five
 //!   `unsafe` blocks (the two `pmap_kenter_pa`/`pmap_kremove` and the two slices over the
 //!   bounce, the `ps_vmspace` deref) are gone. The guard order is the C's: unwire, unlock,
-//!   then the bounce is freed.
+//!   then the bounce is freed. The release is the lock's drop (`#[must_use]`), so a
+//!   `DeviceLock` not handed to `uvm_vsunlock_device` still unwires and unlocks.
 //! - A u-area is a [`Vaddr`] (`bsd` keeps `p_addr`).
 
 use hal::arch::current::vmparam::{DFLDSIZ, DFLSSIZ, MAXDSIZ, MAXSSIZ};
@@ -160,15 +161,25 @@ pub fn uvm_vsunlock(map: &VmMap, addr: usize, len: usize) {
 /// What [`uvm_vslock_device`] holds until [`uvm_vsunlock_device`]: the map read-locked with
 /// `[start, end)` wired, and the bounce buffer the device uses instead of the user pages
 /// when one of them is out of its reach.
+///
+/// Its drop is `uvm_vsunlock_device`'s work (the bounce copied out to the user, the range
+/// unwired, the map unlocked, the bounce freed, in the C's order): a lock that is not handed
+/// to [`uvm_vsunlock_device`] is released all the same, never leaked with the map locked and
+/// the pages wired. That is the C's pairing (physio calls `uvm_vsunlock_device` on every
+/// path after a successful `uvm_vslock_device`), so the drop is the safe choice over a panic.
+#[must_use = "the map stays read-locked and the range wired until the lock is released"]
 pub struct DeviceLock<'a> {
+    /// The user buffer: `addr`, `len`.
+    addr: usize,
+    len: usize,
     /// The wired pages' range.
     start: usize,
     end: usize,
+    /// The map's read lock, held across the transfer; dropped (unlocked) before the bounce
+    /// (the fields' order).
+    guard: <VmMap as FaultMap>::Guard<'a>,
     /// The bounce buffer and the user bytes' offset into it (`addr - start`).
     bounce: Option<(KmBuf, usize)>,
-    /// The map's read lock, held across the transfer. Dropped after the bounce's copy-out
-    /// and the unwiring ([`uvm_vsunlock_device`]).
-    guard: <VmMap as FaultMap>::Guard<'a>,
 }
 
 impl DeviceLock<'_> {
@@ -178,6 +189,18 @@ impl DeviceLock<'_> {
         self.bounce
             .as_ref()
             .map(|(buf, off)| Vaddr::new(buf.as_ptr().addr() + off))
+    }
+}
+
+impl Drop for DeviceLock<'_> {
+    /// `uvm_vsunlock_device`: the bounce copied back out to the user, the range unwired; then
+    /// the fields drop: the map's read lock, then the bounce's pages and space.
+    fn drop(&mut self) {
+        if let Some((buf, off)) = &self.bounce {
+            // The C ignores the copyout's result too: the transfer's error is already known.
+            let _ = UserPtr::<u8>::new(self.addr).copyout_slice(&buf[*off..*off + self.len]);
+        }
+        uvm_fault_unwire_locked(&self.guard, self.start, self.end);
     }
 }
 
@@ -229,23 +252,30 @@ pub fn uvm_vslock_device(
         }
         if reachable {
             return Ok(DeviceLock {
+                addr,
+                len,
                 start,
                 end,
-                bounce: None,
                 guard,
+                bounce: None,
             });
         }
 
+        // km_alloc(kv_any, kp_none, kd_nowait) for the space (ENOMEM without), then
+        // uvm_pglistalloc(dma_constraint, UVM_PLA_WAITOK) for the pages: km::dma_memory's
+        // order.
         let Some(mut buf) = KmBuf::alloc_wired(dma_memory(), sz, true) else {
             break 'out_unwire Errno::ENOMEM;
         };
         match UserPtr::<u8>::new(addr).copyin_slice(&mut buf[off..off + len]) {
             Ok(()) => {
                 return Ok(DeviceLock {
+                    addr,
+                    len,
                     start,
                     end,
-                    bounce: Some((buf, off)),
                     guard,
+                    bounce: Some((buf, off)),
                 });
             }
             // out_unmap: the bounce's pages and space go back with `buf`.
@@ -259,26 +289,12 @@ pub fn uvm_vslock_device(
 }
 
 /// `uvm_vsunlock_device`: unwire user memory wired by [`uvm_vslock_device`], copying the
-/// bounce buffer back out to the user first, and drop the map lock it kept.
+/// bounce buffer back out to the user first, and drop the map lock it kept (the lock's drop,
+/// [`DeviceLock`]); `addr` and `len` are the ones it was made for.
 pub fn uvm_vsunlock_device(lock: DeviceLock<'_>, addr: usize, len: usize) {
-    let DeviceLock {
-        start,
-        end,
-        bounce,
-        guard,
-    } = lock;
-    crate::assert::kassert!(start == trunc_page(addr) && end == round_page(addr + len));
-
-    if let Some((buf, off)) = &bounce {
-        // The C ignores the copyout's result too: the transfer's error is already known.
-        let _ = UserPtr::<u8>::new(addr).copyout_slice(&buf[*off..*off + len]);
-    }
-
-    uvm_fault_unwire_locked(&guard, start, end);
-    drop(guard);
-
-    // the bounce's pages (uvm_km_pgremove_intrsafe, pmap_kremove) and space (km_free).
-    drop(bounce);
+    crate::assert::kassert!(lock.addr == addr && lock.len == len);
+    crate::assert::kassert!(lock.end > lock.start);
+    drop(lock);
 }
 
 /// `uvm_uarea_alloc`: allocates a u-area (`USPACE` bytes of zeroed, wired kernel memory for
