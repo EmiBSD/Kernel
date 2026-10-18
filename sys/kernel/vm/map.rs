@@ -3935,9 +3935,13 @@ fn unmap_remove(
             break;
         }
         kdassert!(e.start() >= start);
-        // `if (entry->end > end || !markfree) UVM_MAP_CLIP_END(map, entry, end)`: the clip
-        // splits only an entry that reaches past end (its start is below end, as the loop
-        // checked), so without markfree an entry inside the range stays as it is.
+        // `if (entry->end > end || !markfree) UVM_MAP_CLIP_END(map, entry, end)`: the
+        // macro's KASSERT(start < end) runs under the C's condition, and the clip splits
+        // only an entry that reaches past end, so without markfree an entry inside the
+        // range stays as it is.
+        if e.end() > end || !markfree {
+            kassert!(e.start() < end);
+        }
         let e = if e.end() > end {
             uvm_map_clip_end(map, st, ew, key, end);
             ent(&st.addr, key, "uvm_unmap_remove")
