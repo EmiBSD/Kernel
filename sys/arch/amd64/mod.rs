@@ -55,16 +55,15 @@ use crate::sys::clockintr::Clockqueue;
 use crate::sys::errno::Errno;
 use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::mbuf::Mbuf;
-use crate::sys::proc::{Proc, Process};
+use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
-use crate::sys::types::{Off, Paddr, Register, Vaddr, Vsize};
+use crate::sys::types::{Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
 use crate::sys::user::User;
-use crate::uvm::uvm_extern::{UvmConstraintRange, VmProt, Vmspace};
-use crate::uvm::uvm_page::VmPage;
+use kernel::vm::types::UvmConstraintRange;
 
 /// The amd64 implementation of the machine interface.
 pub struct Machine;
@@ -335,6 +334,15 @@ impl Cpu for Machine {
     }
 
     fn cpu_boot_secondary_processors() {
+        // The pmap's TLB shootdowns reach the other processors only through hal's `TlbCpus`
+        // bridge (`hal_bridges_register`, before `main`): without it a running processor
+        // would keep stale translations, so none is started.
+        #[cfg(feature = "multiprocessor")]
+        if !crate::kern::hal_bridges::tlb_cpus_registered() {
+            crate::kern::subr_prf::panic(format_args!(
+                "cpu_boot_secondary_processors: the TlbCpus bridge is not registered"
+            ));
+        }
         amd64::cpu::cpu_boot_secondary_processors()
     }
 
@@ -366,162 +374,74 @@ impl VmParam for Machine {
 }
 
 impl Pmap for Machine {
-    type VmPageMd = include::pmap::VmPageMd;
-    type Pmap = include::pmap::Pmap;
-
-    #[allow(clippy::declare_interior_mutable_const)] // an initializer, copied into every vm_page
-    const VM_MDPAGE_INIT: Self::VmPageMd = include::pmap::VM_MDPAGE_INIT;
-    const HAVE_PMAP_DIRECT: bool = true;
-    const PMAP_STEAL_MEMORY: bool = true;
-    const PMAP_WC: usize = include::pmap::PMAP_WC as usize;
-    const PMAP_NOCACHE: usize = include::pmap::PMAP_NOCACHE as usize;
-    const PMAP_NOMMU: bool = false;
+    const HAVE_PMAP_DIRECT: bool = hal::pmap::HAVE_PMAP_DIRECT;
+    const PMAP_STEAL_MEMORY: bool = hal::pmap::PMAP_STEAL_MEMORY;
+    const PMAP_WC: usize = hal::pmap::PMAP_WC;
+    const PMAP_NOCACHE: usize = hal::pmap::PMAP_NOCACHE;
+    const PMAP_NOMMU: bool = hal::pmap::PMAP_NOMMU;
     const UVM_MD_CONSTRAINTS: &'static [&'static UvmConstraintRange] =
         &amd64::machdep::UVM_MD_CONSTRAINTS;
     const DMA_CONSTRAINT: &'static UvmConstraintRange = &amd64::machdep::DMA_CONSTRAINT;
 
-    fn pmap_kernel() -> &'static Self::Pmap {
-        amd64::pmap::pmap_kernel()
+    /// `pmap_init`: the pmap pools (the C's `pmap_bootstrap` makes them; nothing else).
+    fn pmap_init_md() {
+        hal::pmap::init();
     }
 
-    fn pmap_zero_page(pg: &VmPage) {
-        amd64::pmap::pmap_zero_page(pg)
+    /// `pmap_steal_memory`'s `*vstartp`/`*vendp`: `virtual_avail` and the end of the managed
+    /// kernel window, as `pmap_virtual_space` answers them.
+    fn pmap_steal_bounds() -> (Vaddr, Vaddr) {
+        hal::pmap::virtual_space()
     }
 
-    fn pmap_copy_page(src: &VmPage, dst: &VmPage) {
-        amd64::pmap::pmap_copy_page(src, dst)
+    /// `pmap_activate`: `p`'s pcb gets the pmap and the `%cr3` value `cpu_switchto` loads
+    /// (PCID is not enabled); for the running thread the pmap is loaded now, marked in use by
+    /// this processor first when the process is a user one (`ci_proc_pmap`, which the TLB
+    /// shootdowns read).
+    fn pmap_activate_md(p: &Proc, pm: &hal::pmap::Pmap) -> bool {
+        let pcb = p.pcb();
+        pcb.pcb_pmap.set(pm.as_ptr());
+        pcb.pcb_cr3.set(pm.cr3());
+
+        let ci = include::cpu::curcpu();
+        if !core::ptr::eq(p, ci.ci_curproc.get()) {
+            return false;
+        }
+        if p.p_flag.load(core::sync::atomic::Ordering::Relaxed) & crate::sys::proc::P_SYSTEM == 0 {
+            // mark the pmap in use by this processor
+            ci.ci_proc_pmap.store(
+                pm.as_ptr().cast_mut(),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            // in case we return to userspace without context switching: cpu_meltdown's
+            // ci_kern_cr3/ci_user_cr3 (not configured).
+        }
+        true
     }
 
-    fn pmap_page_protect(pg: &VmPage, prot: VmProt) {
-        include::pmap::pmap_page_protect(pg, prot)
-    }
+    /// amd64 records nothing more: `cpu_switchto` loads `pcb_cr3` itself.
+    fn pmap_switched_md(_pm: &hal::pmap::Pmap) {}
 
-    fn pmap_clear_modify(pg: &VmPage) -> bool {
-        include::pmap::pmap_clear_modify(pg)
-    }
-
-    fn pmap_clear_reference(pg: &VmPage) -> bool {
-        include::pmap::pmap_clear_reference(pg)
-    }
-
-    fn pmap_is_modified(pg: &VmPage) -> bool {
-        include::pmap::pmap_is_modified(pg)
-    }
-
-    unsafe fn pmap_steal_memory(
-        size: Vsize,
-        start: Option<&mut Vaddr>,
-        end: Option<&mut Vaddr>,
-    ) -> Vaddr {
-        // SAFETY: forwarded.
-        unsafe { amd64::pmap::pmap_steal_memory(size, start, end) }
-    }
-
-    fn pmap_virtual_space(start: &mut Vaddr, end: &mut Vaddr) {
-        amd64::pmap::pmap_virtual_space(start, end)
-    }
-
-    unsafe fn pmap_kenter_pa(va: Vaddr, pa: Paddr, prot: VmProt) {
-        // SAFETY: forwarded.
-        unsafe { amd64::pmap::pmap_kenter_pa(va, pa, prot) }
-    }
-
-    unsafe fn pmap_kremove(va: Vaddr, len: Vsize) {
-        // SAFETY: forwarded.
-        unsafe { amd64::pmap::pmap_kremove(va, len) }
-    }
-
-    fn pmap_extract(pmap: &Self::Pmap, va: Vaddr) -> Option<Paddr> {
-        amd64::pmap::pmap_extract(pmap, va)
-    }
-
-    fn pmap_module_window() -> Option<(Vaddr, usize)> {
-        amd64::pmap_module::pmap_module_window()
-    }
-
-    fn pmap_module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
-        amd64::pmap_module::pmap_module_enter(va, pa, prot)
-    }
-
-    fn pmap_create() -> &'static Self::Pmap {
-        amd64::pmap::pmap_create()
-    }
-
-    fn pmap_destroy(pmap: &'static Self::Pmap) {
-        amd64::pmap::pmap_destroy(pmap)
-    }
-
-    fn pmap_reference(pmap: &Self::Pmap) {
-        amd64::pmap::pmap_reference(pmap)
-    }
-
-    fn pmap_enter(
-        pmap: &Self::Pmap,
-        va: Vaddr,
-        pa: Paddr,
-        prot: VmProt,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        amd64::pmap::pmap_enter(pmap, va, pa, prot, flags)
-    }
-
-    fn pmap_remove(pmap: &Self::Pmap, sva: Vaddr, eva: Vaddr) {
-        amd64::pmap::pmap_remove(pmap, sva, eva)
-    }
-
-    fn pmap_protect(pmap: &Self::Pmap, sva: Vaddr, eva: Vaddr, prot: VmProt) {
-        include::pmap::pmap_protect(pmap, sva, eva, prot)
-    }
-
-    fn pmap_wired_count(pmap: &Self::Pmap) -> i64 {
-        pmap.pm_stats.wired_count.get()
-    }
-
-    fn pmap_resident_count(pmap: &Self::Pmap) -> i64 {
-        pmap.pm_stats.resident_count.get()
-    }
-
-    fn pmap_unwire(pmap: &Self::Pmap, va: Vaddr) {
-        amd64::pmap::pmap_unwire(pmap, va)
-    }
-
-    fn pmap_remove_holes(vm: &Vmspace) {
-        amd64::pmap::pmap_remove_holes(vm)
-    }
-
-    fn pmap_proc_iflush(pr: &Process, va: Vaddr, len: Vsize) {
-        amd64::pmap::pmap_proc_iflush(pr, va, len)
-    }
-
-    /// `pmap_update`: nothing (yet), as the C macro.
-    fn pmap_activate(p: &Proc) {
-        amd64::pmap::pmap_activate(p)
-    }
-
-    fn pmap_deactivate(p: &Proc) {
-        amd64::pmap::pmap_deactivate(p)
+    /// `pmap_deactivate`: the pmap no longer in use by this processor.
+    fn pmap_deactivate_md(p: &Proc, pm: &hal::pmap::Pmap) {
+        if p.p_flag.load(core::sync::atomic::Ordering::Relaxed) & crate::sys::proc::P_SYSTEM == 0 {
+            let ci = include::cpu::curcpu();
+            crate::kassert!(core::ptr::eq(
+                ci.ci_proc_pmap
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    .cast_const(),
+                pm.as_ptr()
+            ));
+            ci.ci_proc_pmap
+                .store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// No `__HAVE_PMAP_PURGE` on amd64.
-    fn pmap_purge(_p: &Proc) {}
+    fn pmap_purge_md(_p: &Proc, _pm: &hal::pmap::Pmap) {}
 
-    fn pmap_update(_pmap: &Self::Pmap) {}
-
-    fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr {
-        amd64::pmap::pmap_growkernel(maxkvaddr)
-    }
-
-    fn pmap_init() {
-        amd64::pmap::pmap_init()
-    }
-
-    fn pmap_map_direct(pg: &VmPage) -> Vaddr {
-        amd64::pmap::pmap_map_direct(pg)
-    }
-
-    fn pmap_unmap_direct(va: Vaddr) -> Option<&'static VmPage> {
-        amd64::pmap::pmap_unmap_direct(va)
-    }
+    /// `init_x86_64` bootstraps the pmap (`machdep.rs`).
+    fn pmap_bootstrap_lazy() {}
 }
 
 impl MachineExec for Machine {

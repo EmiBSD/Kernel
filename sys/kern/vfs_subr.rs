@@ -132,6 +132,7 @@ use crate::kern::vfs_vops::{
     VOP_BWRITE, VOP_CLOSE, VOP_FSYNC, VOP_INACTIVE, VOP_ISLOCKED, VOP_LOCK, VOP_RECLAIM,
     VOP_REVOKE, VOP_UNLOCK,
 };
+use crate::kern::vm_bsd::{uvm_vnp_sync, uvm_vnp_terminate};
 use crate::kprintf;
 use crate::machine::conf::{cdevsw, nblkdev};
 #[cfg(feature = "nfsserver")]
@@ -188,7 +189,6 @@ use crate::sys::vnode::{
     VFIFO, VFreelist, VISTTY, VLNK, VNON, VNOVAL, VREAD, VREG, VROOT, VSOCK, VSYSTEM, VSynclist,
     VT_NON, VWRITE, VXLOCK, VXWANT, Vattr, Vnode, VnodeUn, Vops, Vtagtype, Vtype, WRITECLOSE,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_sync, uvm_vnp_terminate};
 
 /// `iftovt_tab[]`: the vnode type of each inode format (`IFTOVT`).
 pub const IFTOVT_TAB: [Vtype; 16] = [

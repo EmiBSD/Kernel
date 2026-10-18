@@ -122,10 +122,10 @@ use crate::sys::time::{
 };
 use crate::sys::types::Pid;
 use crate::sys::types::{Register, Rlim};
-use crate::uvm::uvm::UVM_ET_STACK;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_map::uvm_map_protect;
-use crate::uvm::uvm_param::{ptoa, round_page, trunc_page};
+use hal::vm::param::{ptoa, round_page, trunc_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::map::UVM_ET_STACK;
+use kernel::vm::map::uvm_map_protect;
 
 /// `tuagg_sumup`: add the counts from `from` to `tu`, ensuring a consistent read of `from`.
 pub fn tuagg_sumup(tu: &Tusage, from: &Tusage) {
@@ -517,13 +517,13 @@ pub fn dosetrlimit(p: &Proc, which: u32, limp: &mut Rlimit) -> Result<(), Errno>
                 (
                     PROT_READ | PROT_WRITE,
                     (limp.rlim_cur - alimp.rlim_cur) as usize,
-                    vm.vm_minsaddr.get() - limp.rlim_cur as usize,
+                    vm.vm_minsaddr.load(Ordering::Relaxed) - limp.rlim_cur as usize,
                 )
             } else {
                 (
                     PROT_NONE,
                     (alimp.rlim_cur - limp.rlim_cur) as usize,
-                    vm.vm_minsaddr.get() - alimp.rlim_cur as usize,
+                    vm.vm_minsaddr.load(Ordering::Relaxed) - alimp.rlim_cur as usize,
                 )
             };
             let addr = trunc_page(addr);

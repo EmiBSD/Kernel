@@ -114,7 +114,7 @@ use crate::tmpfs::tmpfs_mem::{
 use crate::tmpfs::tmpfs_subr::{
     tmpfs_alloc_node, tmpfs_dir_detach, tmpfs_free_dirent, tmpfs_free_node, tmpfs_vnode_get,
 };
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /// `tmpfs_dirent_pool`.
 pub static TMPFS_DIRENT_POOL: Pool = Pool::new();
@@ -496,7 +496,7 @@ pub(crate) mod tests {
         tmpfs_alloc_file, tmpfs_chmod, tmpfs_chown, tmpfs_dir_cached, tmpfs_dir_getdents,
         tmpfs_dir_lookup, tmpfs_reg_resize, tmpfs_truncate,
     };
-    use crate::uvm::uvm_aobj::uao_init;
+    use kernel::vm::aobj::uao_init;
 
     /// The configuration entry of tmpfs in `vfsconflist[]`.
     pub(crate) fn tmpfs_conf() -> &'static Vfsconf {
@@ -508,8 +508,8 @@ pub(crate) mod tests {
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), p);
-        crate::kern::kern_rwlock::rw_obj_init();
-        uao_init();
+        let _ = hal::rwlock::init_shared();
+        let _ = uao_init();
         TMPFS_BYTES_USED.store(0, Ordering::Relaxed);
         (g, p)
     }

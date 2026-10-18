@@ -20,13 +20,17 @@
 //! `bsd`'s implementations of the `hal` runtime's bridges, and their registration.
 //!
 //! The runtime in `hal` (docs/ZERO_UNSAFE.md 0.1) names nothing of `bsd`: what it needs from
-//! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues, `uvm_km`,
-//! `pool(9)`, `malloc(9)`, the user copy, the console) arrives as one `&'static dyn Trait` per
+//! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues,
+//! `pool(9)`, `malloc(9)`, the user copy, the console, `printf(9)` (N3.3, the kernel crate's
+//! lines), and for the pmap (N3.1) amd64's CPUs
+//! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
 //! section 0.3.2), with the C's modes spelled out; `Errno` is one type on both sides
 //! (`hal::sys::errno`, which `crate::sys::errno` re-exports).
-//! It writes no `unsafe` (decision 30: the memory bridges are safe traits).
+//! It writes no `unsafe` (decision 30: the memory bridges are safe traits). One piece of
+//! storage is its own: the `struct pool`s of the first pools `hal` makes (`pmap_init`'s, before
+//! `kmeminit`, as the C's static pools) are a static array, handed out once each.
 //!
 //! [`hal_bridges_register`] is called by `stand::start_kernel` (sys/stand/mod.rs), on the boot
 //! CPU, after the machine's earliest setup and the console and just before `main()`: before
@@ -38,32 +42,35 @@
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
-use hal::kmbuf::{PageKind, PageMemory};
+use hal::klock::KernelLock;
 use hal::malloc::Malloc;
+use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
+use hal::prf::Printf;
 use hal::sleep::Sleep;
 use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
 use crate::kern::kern_malloc::{free, malloc};
+use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
-use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
-use crate::kern::subr_prf::panicstr;
+use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
+use crate::kern::subr_prf::{panicstr, printf};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::{Cpu, cpu_number, curcpu, curproc};
-use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splraise, splx};
+use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splhigh, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::mutex::mtx_curcpu;
-use crate::sys::param::PAGE_SIZE;
 use crate::sys::pool::Pool;
-use crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_PAGEABLE, KP_ZERO, KV_ANY, km_alloc, km_free};
+use crate::sys::systm::{COLD, SAFEPRI};
+use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// `spl(9)` of `sys/machine/intr.rs`.
 struct BsdIntr;
@@ -83,6 +90,10 @@ impl IntrLevel for BsdIntr {
 
     fn ipl_high(&self) -> i32 {
         IPL_HIGH
+    }
+
+    fn splassert(&self, wantipl: i32, func: &str) {
+        splassert(wantipl, func);
     }
 }
 
@@ -166,31 +177,27 @@ impl Sleep for BsdSleep {
             false
         }
     }
-}
 
-/// `km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`, with `&kv_any`.
-struct BsdPages;
-
-impl PageMemory for BsdPages {
-    fn alloc(&self, len: usize, kind: PageKind, wait: bool) -> Option<(NonNull<u8>, usize)> {
-        let kp = match kind {
-            PageKind::Pageable => &KP_PAGEABLE,
-            PageKind::Wired => &KP_ZERO,
-        };
-        let kd = if wait { &KD_WAITOK } else { &KD_NOWAIT };
-        km_alloc(len, &KV_ANY, kp, kd).map(|p| (p, len))
+    fn cold(&self) -> bool {
+        COLD.load(Ordering::Relaxed) || panicstr()
     }
 
-    fn free(&self, ptr: NonNull<u8>, len: usize, kind: PageKind) {
-        let kp = match kind {
-            PageKind::Pageable => &KP_PAGEABLE,
-            PageKind::Wired => &KP_ZERO,
-        };
-        km_free(ptr, len, &KV_ANY, kp);
+    /// `msleep_nsec`'s and `tsleep_nsec`'s `cold || panicstr` work (`kern_synch.rs`).
+    fn cold_yield(&self) {
+        let s = splhigh();
+        splx(SAFEPRI.load(Ordering::Relaxed));
+        #[cfg(feature = "multiprocessor")]
+        if crate::kern::kern_lock::_kernel_lock_held() {
+            let kl = &crate::kern::kern_lock::KERNEL_LOCK;
+            let hold_count = crate::kern::kern_lock::__mp_release_all(kl);
+            crate::kern::kern_lock::__mp_acquire_count(kl, hold_count);
+        }
+        splx(s);
     }
 
-    fn page_size(&self) -> usize {
-        PAGE_SIZE
+    /// `sched_pause(yield)` of `sys/sys/sched.rs` (`SPCF_SHOULDYIELD` on this CPU).
+    fn sched_pause(&self) {
+        crate::sys::sched::sched_pause(crate::kern::sched_bsd::r#yield);
     }
 }
 
@@ -207,17 +214,62 @@ impl RawPool for Pool {
     fn nout(&self) -> u64 {
         u64::from(self.pr_nout.get())
     }
+
+    fn set_hiwat(&self, n: u32) {
+        pool_sethiwat(self, n);
+    }
+
+    fn cache_init(&self) {
+        pool_cache_init(self);
+    }
 }
 
 /// `pool_init(9)` of a new pool that lives for ever.
 struct BsdPools;
 
+/// How many `struct pool`s are kept in [`STATIC_POOLS`]: the pools `hal` and the kernel make
+/// before `kmeminit` (`pmap_init`'s two on either machine: amd64's `pmappl` and `pvpl`, arm64's
+/// `pmap` and `pted`; N3.4e: `rw_obj_init`'s `rwobjpl` and `uao_init`'s `aobjpl` and
+/// `uaoeltpl`, which `uvm_km_init` runs for the kernel object; N3.5: `uvm_map_init`'s
+/// `vmsppl`, `vmmpepl` and `vmmpekpl` and `uvm_addr_init`'s `uaddr`, `uaddrrnd`,
+/// `uaddrbest` and `uaddrpivot`, the kernel's since the map moved: twelve), with room for
+/// four more.
+const NSTATIC_POOLS: usize = 16;
+
+/// `struct pool`s that need no `malloc(9)`, for the first pools made: the C's `pmap_init`
+/// runs before `kmeminit` (`uvm_init`) and calls `pool_init` on static `struct pool`s
+/// (`pmap_pmap_pool`, `pmap_pv_pool`, `pmap_pted_pool`). Each is handed out once.
+static STATIC_POOLS: [Pool; NSTATIC_POOLS] = [const { Pool::new() }; NSTATIC_POOLS];
+/// How many of [`STATIC_POOLS`] were handed out.
+static STATIC_POOLS_USED: AtomicUsize = AtomicUsize::new(0);
+/// Whether `malloc(9)` serves the global allocator yet (`uvm_init` sets it after `kmeminit`):
+/// a pool made before, past [`STATIC_POOLS`], is refused by name rather than by the
+/// allocator's out-of-memory panic.
+static HEAP_POOLS_READY: AtomicBool = AtomicBool::new(false);
+
+/// `kmeminit` has run: the `struct pool`s past [`STATIC_POOLS`] may come from the heap.
+pub fn hal_bridges_heap_ready() {
+    HEAP_POOLS_READY.store(true, Ordering::Release);
+}
+
+/// The next `struct pool` of [`STATIC_POOLS`] no one has, if one is left.
+fn static_pool() -> Option<&'static Pool> {
+    let i = STATIC_POOLS_USED
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            (n < NSTATIC_POOLS).then_some(n + 1)
+        })
+        .ok()?;
+    STATIC_POOLS.get(i)
+}
+
 impl PoolBackend for BsdPools {
-    /// The `struct pool` itself comes from the Rust global allocator (`malloc(9)` with
-    /// `M_TEMP`, `M_NOWAIT` behind it; a failure there is the allocator's panic) and is
-    /// leaked: `pool_init(9)` assumes its `struct pool` outlives every item, and no pool is
-    /// ever destroyed here.
-    #[cfg(feature = "alloc")]
+    /// The `struct pool` is one of [`STATIC_POOLS`] while one is left (so the pools made
+    /// before `kmeminit` need no heap), then comes from the Rust global allocator
+    /// (`malloc(9)` with `M_TEMP`, `M_NOWAIT` behind it; a failure there is the allocator's
+    /// panic) and is leaked. Either way it lives for ever: `pool_init(9)` assumes its
+    /// `struct pool` outlives every item, and no pool is ever destroyed here. The pool is the
+    /// C's either way (`pool_init` with the caller's size, name and `ipl`), so `vmstat -m`
+    /// and `kern.pool` show the same row.
     fn create(
         &self,
         size: usize,
@@ -227,23 +279,29 @@ impl PoolBackend for BsdPools {
         wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
         let align = u32::try_from(align).ok()?;
-        let pp: &'static Pool = alloc::boxed::Box::leak(alloc::boxed::Box::new(Pool::new()));
+        let pp = match static_pool() {
+            Some(pp) => pp,
+            None if HEAP_POOLS_READY.load(Ordering::Acquire) => heap_pool()?,
+            None => crate::kern::subr_prf::panic(format_args!(
+                "pool_init {wchan}: more than NSTATIC_POOLS ({NSTATIC_POOLS}) pools before kmeminit"
+            )),
+        };
         pool_init(pp, size, align, ipl, flags, wchan, None);
         Some(pp)
     }
+}
 
-    /// Without the global allocator there is nowhere to keep a new pool: none is made.
-    #[cfg(not(feature = "alloc"))]
-    fn create(
-        &self,
-        _size: usize,
-        _align: usize,
-        _ipl: i32,
-        _flags: i32,
-        _wchan: &'static str,
-    ) -> Option<&'static dyn RawPool> {
-        None
-    }
+/// A new `struct pool` from the Rust global allocator, leaked.
+#[cfg(feature = "alloc")]
+fn heap_pool() -> Option<&'static Pool> {
+    Some(alloc::boxed::Box::leak(alloc::boxed::Box::new(Pool::new())))
+}
+
+/// Without the global allocator there is nowhere to keep a new pool once [`STATIC_POOLS`]
+/// are gone: none is made.
+#[cfg(not(feature = "alloc"))]
+fn heap_pool() -> Option<&'static Pool> {
+    None
 }
 
 /// `malloc(9)`/`free(9)` of `sys/kern/kern_malloc.rs`.
@@ -259,7 +317,8 @@ impl Malloc for BsdMalloc {
     }
 }
 
-/// The user copy of `sys/machine/copy.rs`.
+/// The user copy of `sys/machine/copy.rs`, and `kcopy` onto a `hal::user::ForeignWindow`
+/// through `uiomove` (`sys/kern/kern_subr.rs`), whose `UIO_SYSSPACE` copy is the machine's.
 struct BsdUser;
 
 impl UserCopy for BsdUser {
@@ -277,6 +336,103 @@ impl UserCopy for BsdUser {
 
     fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
         copyoutstr(kbuf, uaddr)
+    }
+
+    /// The window's bytes into `kbuf`: `uiomove` from a `UIO_SYSSPACE` iovec over the window,
+    /// whose copy is the machine's `kcopy` (a fault is `EFAULT`, `pcb_onfault`).
+    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        sysspace_move(kva, kbuf, UioRw::UIO_WRITE)
+    }
+
+    /// `kbuf` into the window: `uiomove` to a `UIO_SYSSPACE` iovec over it, through a small
+    /// buffer of the stack (`uiomove`'s kernel side is writable).
+    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
+        let mut chunk = [0u8; KCOPY_CHUNK];
+        let mut at = kva;
+        for piece in kbuf.chunks(KCOPY_CHUNK) {
+            let c = &mut chunk[..piece.len()];
+            c.copy_from_slice(piece);
+            sysspace_move(at, c, UioRw::UIO_READ)?;
+            at = at.checked_add(piece.len()).ok_or(Errno::EFAULT)?;
+        }
+        Ok(())
+    }
+}
+
+/// The stack buffer of [`BsdUser::kcopy_out`]'s copies (kbind's parameters fit in one).
+const KCOPY_CHUNK: usize = 256;
+
+/// `uiomove(buf, uio)` over one `UIO_SYSSPACE` iovec at the kernel address `kva`: `rw` says
+/// which way (`UIO_READ`: `buf` to `kva`). The iovec's builder vouches for it (`struct uio`'s
+/// contract): `hal` reaches this only for a range of a `ForeignWindow`.
+fn sysspace_move(kva: usize, buf: &mut [u8], rw: UioRw) -> Result<(), Errno> {
+    let len = buf.len();
+    let mut iov = [Iovec {
+        iov_base: ptr::with_exposed_provenance_mut::<c_void>(kva),
+        iov_len: len,
+    }];
+    let mut uio = Uio {
+        uio_iov: &mut iov,
+        uio_offset: 0,
+        uio_resid: len,
+        uio_segflg: UioSeg::UIO_SYSSPACE,
+        uio_rw: rw,
+        uio_procp: None,
+    };
+    uiomove(buf, &mut uio)
+}
+
+/// The CPUs as amd64's TLB shootdown and cache flush need them (`hal::pmap::TlbCpus`):
+/// `CPU_INFO_FOREACH`, `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`,
+/// `wbinvd_on_all_cpus` and `ci_cflushsz` of `sys/arch/amd64/amd64/{cpu,ipi}.rs`.
+#[cfg(all(machine_x86, feature = "multiprocessor"))]
+struct BsdTlbCpus;
+
+#[cfg(all(machine_x86, feature = "multiprocessor"))]
+impl hal::pmap::TlbCpus for BsdTlbCpus {
+    fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::pmap::Pmap)) {
+        let me = curcpu();
+        crate::machine::cpu::cpu_info_foreach(&mut |ci| {
+            if !ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
+                f(
+                    ci.ci_cpuid.get() as usize,
+                    ci.ci_proc_pmap.load(Ordering::Relaxed).cast_const(),
+                );
+            }
+        });
+    }
+
+    fn send(&self, cpuid: usize, ipi: hal::pmap::TlbIpi) -> bool {
+        use crate::machine::x86::{LAPIC_IPI_INVLPG, LAPIC_IPI_INVLRANGE, LAPIC_IPI_INVLTLB};
+        let vector = match ipi {
+            hal::pmap::TlbIpi::Page => LAPIC_IPI_INVLPG,
+            hal::pmap::TlbIpi::Range => LAPIC_IPI_INVLRANGE,
+            hal::pmap::TlbIpi::Tlb => LAPIC_IPI_INVLTLB,
+        };
+        let mut sent = false;
+        crate::machine::cpu::cpu_info_foreach(&mut |ci| {
+            if ci.ci_cpuid.get() as usize == cpuid {
+                sent = crate::machine::x86::x86_fast_ipi(ci, vector).is_ok();
+            }
+        });
+        sent
+    }
+
+    fn wbinvd_all(&self) {
+        let _ = crate::machine::x86::wbinvd_on_all_cpus();
+    }
+
+    fn cflushsz(&self) -> usize {
+        curcpu().ci_cflushsz.get() as usize
+    }
+}
+
+/// `arc4random(9)` of `sys/dev/rnd.rs` (`hal::pmap::Random`).
+struct BsdRandom;
+
+impl hal::pmap::Random for BsdRandom {
+    fn random_u32(&self) -> u32 {
+        crate::dev::rnd::arc4random()
     }
 }
 
@@ -297,14 +453,69 @@ impl Console for BsdCons {
     }
 }
 
+/// `printf(9)` of `sys/kern/subr_prf.rs`.
+struct BsdPrintf;
+
+impl Printf for BsdPrintf {
+    fn printf(&self, args: core::fmt::Arguments<'_>) {
+        let _ = printf(args);
+    }
+}
+
+/// `KERNEL_LOCK`, `KERNEL_UNLOCK`, `KERNEL_ASSERT_LOCKED` of `sys/sys/systm.rs`
+/// (`kern_lock.rs`), for the kernel's objects and vnode pager (N3.4e).
+struct BsdKernelLock;
+
+impl KernelLock for BsdKernelLock {
+    fn lock(&self) {
+        crate::sys::systm::kernel_lock();
+    }
+
+    fn unlock(&self) {
+        crate::sys::systm::kernel_unlock();
+    }
+
+    fn assert_locked(&self) {
+        crate::sys::systm::kernel_assert_locked();
+    }
+}
+
+/// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
+/// vnode pager's `uvn_io` (N3.4e).
+struct BsdNetLock;
+
+impl NetLock for BsdNetLock {
+    fn write_held(&self) -> bool {
+        crate::kern::kern_rwlock::rw_status(&crate::net::if_::NETLOCK)
+            == crate::sys::rwlock::RW_WRITE
+    }
+
+    fn unlock(&self) {
+        crate::sys::systm::net_unlock();
+    }
+
+    fn lock(&self) {
+        crate::sys::systm::net_lock();
+    }
+}
+
 static BSD_INTR: BsdIntr = BsdIntr;
 static BSD_CPU: BsdCpu = BsdCpu;
 static BSD_SLEEP: BsdSleep = BsdSleep;
-static BSD_PAGES: BsdPages = BsdPages;
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
 static BSD_CONS: BsdCons = BsdCons;
+static BSD_PRINTF: BsdPrintf = BsdPrintf;
+#[cfg(all(machine_x86, feature = "multiprocessor"))]
+static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
+static BSD_RANDOM: BsdRandom = BsdRandom;
+static BSD_KERNEL_LOCK: BsdKernelLock = BsdKernelLock;
+static BSD_NET_LOCK: BsdNetLock = BsdNetLock;
+
+/// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
+/// then: `Machine::cpu_boot_secondary_processors`).
+static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Registers every bridge of the `hal` runtime, once (a second call changes nothing: each slot
 /// keeps its first implementation). Called by `stand::start_kernel` before `main()`: the boot
@@ -313,10 +524,61 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_intr_level(&BSD_INTR);
     let _ = hal::bridges::register_cpu_id(&BSD_CPU);
     let _ = hal::bridges::register_sleep(&BSD_SLEEP);
-    let _ = hal::bridges::register_page_memory(&BSD_PAGES);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);
     let _ = hal::bridges::register_console(&BSD_CONS);
+    let _ = hal::bridges::register_printf(&BSD_PRINTF);
+    let _ = hal::bridges::register_random(&BSD_RANDOM);
+    // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
+    #[cfg(all(machine_x86, feature = "multiprocessor"))]
+    {
+        let _ = hal::bridges::register_tlb_cpus(&BSD_TLB_CPUS);
+        TLB_CPUS_REGISTERED.store(true, Ordering::Release);
+    }
+}
+
+/// Registers the bridges of the kernel's VM objects and vnode pager (`KernelLock`, `NetLock`),
+/// once: called by `uvm_init` before the first object is made (bridges.toml).
+pub fn hal_bridges_register_vm() {
+    let _ = hal::bridges::register_kernel_lock(&BSD_KERNEL_LOCK);
+    let _ = hal::bridges::register_net_lock(&BSD_NET_LOCK);
+}
+
+/// Whether the TLB shootdown's CPUs are registered (always, once [`hal_bridges_register`]
+/// ran, on a machine that has them), for the check before the application processors start.
+pub fn tlb_cpus_registered() -> bool {
+    TLB_CPUS_REGISTERED.load(Ordering::Acquire)
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::vec::Vec;
+    use std::{assert, assert_eq};
+
+    use super::*;
+
+    #[test]
+    fn the_static_pools_are_handed_out_once_each() {
+        // Other tests may take some meanwhile: what this one gets is distinct, at most
+        // NSTATIC_POOLS in all, and once they are gone none comes back.
+        let mut got: Vec<&'static Pool> = Vec::new();
+        while let Some(pp) = static_pool() {
+            assert!(
+                !got.iter().any(|q| ptr::eq(*q, pp)),
+                "a pool handed out twice"
+            );
+            got.push(pp);
+        }
+        assert!(got.len() <= NSTATIC_POOLS);
+        assert!(
+            got.iter()
+                .all(|pp| STATIC_POOLS.iter().any(|q| ptr::eq(q, *pp)))
+        );
+        assert!(static_pool().is_none());
+        assert_eq!(STATIC_POOLS_USED.load(Ordering::Relaxed), NSTATIC_POOLS);
+    }
+}
+/* </TESTS> */

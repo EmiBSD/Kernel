@@ -145,6 +145,7 @@ use crate::kern::subr_pool::{
 };
 use crate::kern::subr_prf::{Bitmask, panic, printf};
 use crate::kern::uipc_mbuf2::{m_tag_copy_chain, m_tag_delete_chain};
+use crate::kern::vm_bsd::KP_DMA_CONTIG;
 use crate::machine::db_machdep::PrFn;
 use crate::machine::intr::{IPL_NET, splnet, splx};
 use crate::net::pf::{
@@ -163,8 +164,8 @@ use crate::sys::percpu::{CpumemBootMemory, CpumemPtr, counters_boot_words, count
 use crate::sys::pool::{PR_NOWAIT, PR_WAITOK, Pool, PoolAllocator};
 use crate::sys::refcnt::Refcnt;
 use crate::sys::time::{Timeval, nsec_to_timeval, timeradd};
-use crate::uvm::uvm_km::{KP_DMA_CONTIG, KP_MBUF_CONTIG};
 use crate::{kassert, kdassert};
+use kernel::vm::km::KP_MBUF_CONTIG;
 
 /// `IFQ_DEFPRIO` (`<net/if.h>`, not ported yet): the default packet priority.
 const IFQ_DEFPRIO: u8 = 3;

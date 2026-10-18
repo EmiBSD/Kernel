@@ -59,10 +59,10 @@
 //! The behaviour of `cpumem_*(9)` and `counters_*(9)`: each CPU has its own copy, on its
 //! own cache line, which it reaches through `cpumem_enter` (the slot of `cpu_number()`)
 //! without a lock; a reader walks every CPU's copy (`CPUMEM_FOREACH`, the `ncpusfound`
-//! CPUs). A counter set adds a generation number per CPU under `MULTIPROCESSOR`: an update
-//! makes it odd, then even again, and `counters_read` retries a CPU's copy while the number
-//! is odd or changed under it, so the sum it returns is made of whole updates. Without
-//! `MULTIPROCESSOR` there is one copy and no generation.
+//! CPUs). A counter set adds a generation number per CPU (`MULTIPROCESSOR`'s, the only
+//! kernel built since decision 40): an update makes it odd, then even again, and
+//! `counters_read` retries a CPU's copy while the number is odd or changed under it, so the
+//! sum it returns is made of whole updates.
 //!
 //! The running CPU's index arrives through the `CpuId` bridge (`cpu.rs`): before
 //! registration it is 0, the boot CPU, and `ncpusfound` is 1.
@@ -70,9 +70,8 @@
 //! ## Deviations
 //! - `counters_read` waits for an odd generation with `CPU_BUSY_CYCLE` where the C calls
 //!   `yield()`: the scheduler is not `hal`'s, and an update is a few stores long.
-//! - Without `MULTIPROCESSOR`, `counters_read` copies and `counters_zero` zeroes the one set at
-//!   `splhigh()` as the C does (through the `IntrLevel` bridge; before it is registered there
-//!   are no interrupts to tear the copy or to count between the stores).
+//! - The C's uniprocessor counters (one set, no generation, read and zeroed at `splhigh()`)
+//!   are not here: the kernel is always `MULTIPROCESSOR` (decision 40).
 //!
 //! ## Redesign
 //! - LZ's `cpumem` is a handle to `ncpusfound` pool or `malloc` allocations, reached by raw
@@ -172,7 +171,7 @@ impl<T: PerCpuInit> Default for PerCpu<T> {
 
 /// One CPU's counters: the generation number and the `N` counters.
 pub struct CounterWords<const N: usize> {
-    /// The generation number: odd during an update (`MULTIPROCESSOR` only).
+    /// The generation number: odd during an update.
     generation: AtomicU64,
     counters: [AtomicU64; N],
 }
@@ -202,13 +201,10 @@ impl<const N: usize> Counters<N> {
     /// reference drops (`counters_leave`).
     pub fn enter(&self) -> CountersRef<'_, N> {
         let words = self.cpus.get();
-        #[cfg(feature = "multiprocessor")]
-        {
-            // An odd number tells a reader that this copy is being written.
-            let g = words.generation.load(Ordering::Relaxed);
-            words.generation.store(g.wrapping_add(1), Ordering::Relaxed);
-            fence(Ordering::Release); // membar_producer()
-        }
+        // An odd number tells a reader that this copy is being written.
+        let g = words.generation.load(Ordering::Relaxed);
+        words.generation.store(g.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release); // membar_producer()
         CountersRef { words }
     }
 
@@ -237,10 +233,6 @@ impl<const N: usize> Counters<N> {
     /// `counters_read`: the sum of every CPU's counters, each CPU's copy read whole (retried
     /// while its generation number is odd or moves under the read).
     pub fn read(&self) -> [u64; N] {
-        // Without MULTIPROCESSOR there is no generation: the C copies the one set at splhigh,
-        // so an interrupt that counts cannot tear the copy.
-        #[cfg(not(feature = "multiprocessor"))]
-        let _high = crate::intr::splhigh();
         let mut out = [0u64; N];
         for words in self.cpus.iter() {
             let temp = read_whole(words);
@@ -253,10 +245,6 @@ impl<const N: usize> Counters<N> {
 
     /// `counters_zero`: every counter of every CPU back to 0, the generation numbers too.
     pub fn zero(&self) {
-        // Without MULTIPROCESSOR the C zeroes the one set at splhigh (subr_percpu.c), so an
-        // interrupt that counts cannot land between the stores.
-        #[cfg(not(feature = "multiprocessor"))]
-        let _high = crate::intr::splhigh();
         fence(Ordering::Release); // membar_producer()
         for words in self.cpus.iter() {
             for c in &words.counters {
@@ -289,15 +277,12 @@ impl<const N: usize> CountersRef<'_, N> {
 
 impl<const N: usize> Drop for CountersRef<'_, N> {
     fn drop(&mut self) {
-        #[cfg(feature = "multiprocessor")]
-        {
-            fence(Ordering::Release); // membar_producer()
-            // Even again: the copy is whole.
-            let g = self.words.generation.load(Ordering::Relaxed);
-            self.words
-                .generation
-                .store(g.wrapping_add(1), Ordering::Release);
-        }
+        fence(Ordering::Release); // membar_producer()
+        // Even again: the copy is whole.
+        let g = self.words.generation.load(Ordering::Relaxed);
+        self.words
+            .generation
+            .store(g.wrapping_add(1), Ordering::Release);
     }
 }
 
@@ -393,7 +378,6 @@ mod tests {
         {
             let r = c.enter();
             r.counters()[0].fetch_add(1, Ordering::Relaxed);
-            #[cfg(feature = "multiprocessor")]
             assert_eq!(c.cpus.get().generation.load(Ordering::Relaxed) & 1, 1);
         }
         assert_eq!(c.cpus.get().generation.load(Ordering::Relaxed) & 1, 0);

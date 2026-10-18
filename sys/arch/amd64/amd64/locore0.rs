@@ -65,12 +65,13 @@ use crate::arch::amd64::amd64::cpu::{
 use crate::arch::amd64::amd64::machdep::{
     BIOSBASEMEM, BOOTAPIVER, BOOTDEV, BOOTINFO, BOOTINFO_SIZE, ESYM, SSYM,
 };
-use crate::arch::amd64::amd64::pmap::{PG_CRYPT, PG_G_KERN, PG_NX_BIT};
 use crate::arch::amd64::include::param::{KERNBASE, KERNTEXTOFF, NBPG, PGOFSET, PGSHIFT};
-use crate::arch::amd64::include::pmap::{
+use hal::arch::amd64::pmap::layout::{
     L4_SLOT_KERNBASE, NDML2_ENTRIES, NDML3_ENTRIES, NKL2_KIMG_ENTRIES, NKL3_KIMG_ENTRIES,
     NKL4_KIMG_ENTRIES, NPDPG, PDIR_SLOT_DIRECT, PDIR_SLOT_PTE, pl2_pi, pl3_pi,
 };
+use hal::arch::amd64::pmap::{PG_CRYPT, PG_G_KERN, PG_NX_BIT};
+
 use crate::arch::amd64::include::psl::PSL_MBO;
 use crate::arch::amd64::include::pte::{NBPD_L2, PG_KR, PG_KW, PG_PS, PG_V};
 use crate::arch::amd64::include::segments::{GCODE_SEL, NIDT, SDT_SYS386IGT, SEL_KPL, gsel};

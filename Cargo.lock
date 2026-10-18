@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "abi-openbsd"
+name = "abi_openbsd"
 version = "0.0.1"
 dependencies = [
  "abi",

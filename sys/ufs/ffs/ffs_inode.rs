@@ -72,6 +72,7 @@ use crate::kern::vfs_bio::{
 };
 use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vops::VOP_STRATEGY;
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
 use crate::sys::errno::Errno;
@@ -95,7 +96,6 @@ use crate::ufs::ufs::quota::{getinoquota, ufs_quota_free_blocks};
 use crate::ufs::ufs::ufs_vnops::ufs_itimes;
 #[cfg(feature = "ffs2")]
 use crate::ufs::ufs::ufsmount::UM_UFS2;
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `ffs_update` (`iv_update`): write the inode back to its block.
 ///

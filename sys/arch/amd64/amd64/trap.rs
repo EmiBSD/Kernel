@@ -144,13 +144,13 @@ use crate::sys::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 use crate::sys::syscall_mi::{mi_ast, mi_child_return, mi_syscall_return};
 use crate::sys::systm::{SysArgs, kernel_unlock};
 use crate::sys::types::Register;
-use crate::uvm::uvm_extern::VmProt;
-use crate::uvm::uvm_fault::uvm_fault;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_map::{uvm_map_inentry, uvm_map_inentry_sp};
-use crate::uvm::uvm_unix::uvm_grow;
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::fault::uvm_fault;
+use kernel::vm::map::{uvm_map_inentry, uvm_map_inentry_sp};
+use kernel::vm::types::VmProt;
+use kernel::vm::unix::uvm_grow;
 
-use crate::uvm::uvm_param::trunc_page;
+use hal::vm::param::trunc_page;
 
 /// `trap_type[]`: the name of each `T_*` trap.
 pub static TRAP_TYPE: [&str; 23] = [
@@ -252,7 +252,7 @@ pub fn kpageflttrap(frame: &mut Trapframe, cr2: u64) -> bool {
 
     let error = if curcpu().ci_inatomic.get() == 0 || kernel_map {
         let map = if kernel_map {
-            crate::uvm::uvm_km::kernel_map()
+            kernel::vm::km::kernel_map()
         } else {
             &p.vmspace().vm_map
         };
@@ -261,7 +261,7 @@ pub fn kpageflttrap(frame: &mut Trapframe, cr2: u64) -> bool {
         let error = uvm_fault(map, va, 0, access_type);
         pcb.pcb_onfault.set(onfault);
         if error.is_ok() && !kernel_map {
-            uvm_grow(p, va);
+            uvm_grow(p.vmspace(), va);
         }
         error.err()
     } else {
@@ -393,13 +393,13 @@ pub fn child_return(arg: *mut c_void) {
 fn user_stack_ok(p: &Proc) -> bool {
     let mut ie = p.p_spinentry.get();
     let ok = uvm_map_inentry(
-        p,
+        &p.vmspace().vm_map,
         &mut ie,
         <Machine as Cpu>::proc_stack(p),
         "sp",
         "not MAP_STACK",
         uvm_map_inentry_sp,
-        p.vmspace().vm_map.sserial.get(),
+        p.vmspace().vm_map.sserial(),
     );
     p.p_spinentry.set(ie);
     ok
@@ -419,14 +419,14 @@ pub fn upageflttrap(frame: &mut Trapframe, cr2: u64) -> bool {
     // as read-only and PROT_EXEC access, so try both.
     let map = &p.vmspace().vm_map;
     let mut result = uvm_fault(map, va, 0, access_type);
-    if crate::arch::amd64::amd64::pmap::PG_NX_BIT.load(core::sync::atomic::Ordering::Relaxed) == 0
+    if hal::arch::amd64::pmap::PG_NX_BIT.load(core::sync::atomic::Ordering::Relaxed) == 0
         && result == Err(Errno::EACCES)
         && access_type == PROT_READ
     {
         result = uvm_fault(map, va, 0, PROT_EXEC);
     }
     if result.is_ok() {
-        uvm_grow(p, va);
+        uvm_grow(p.vmspace(), va);
     }
     let error = match result {
         Ok(()) => return true,

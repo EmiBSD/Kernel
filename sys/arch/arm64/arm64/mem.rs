@@ -95,8 +95,8 @@
 //! - `option APERTURE` (minor 4) is not configured.
 //! - `/dev/mem` (minor 0): the C maps each physical page at `vmmap` (one reserved page) with
 //!   `pmap_enter` under `physlock`. Here `vmmap` is the device mapping window
-//!   (`arm64/pmap.rs`), and the kernel has a direct map, which the C's arm64 does not; the
-//!   page is reached through it, a page at a time under `physlock` as in C, and copied
+//!   (`sys/hal/arch/arm64/pmap/backend.rs`), and the kernel has a direct map, which the C's
+//!   arm64 does not; the page is reached through it, a page at a time under `physlock` as in C, and copied
 //!   through a small buffer with `kcopy`, so an address with nothing behind it fails with
 //!   `EFAULT`.
 //! - `/dev/kmem` (minor 1) checks the range with `uvm_kernacc` (`uvm_glue.c`), which is not
@@ -106,7 +106,6 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::arch::arm64::arm64::pmap::pmap_direct_map;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_enter, rw_exit};
 use crate::kern::kern_subr::uiomove;
@@ -123,6 +122,7 @@ use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Dev, Off, Paddr, minor};
 use crate::sys::uio::{Uio, UioRw};
 use crate::unported;
+use hal::pmap::direct_map as pmap_direct_map;
 
 /// The bytes `/dev/mem` and `/dev/zero` move per step.
 const MEM_CHUNK: usize = 512;

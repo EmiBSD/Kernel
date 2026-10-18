@@ -118,7 +118,7 @@ use crate::sys::mbuf::Mbuf;
 use crate::sys::proc::Proc;
 use crate::sys::types::{Off, Paddr};
 use crate::sys::uio::Uio;
-use crate::uvm::uvm_page::VmPage;
+use kernel::vm::page::VmPage;
 
 /// `BUS_DMA_WAITOK`: safe to sleep (pseudo-flag).
 pub const BUS_DMA_WAITOK: i32 = 0x0000;

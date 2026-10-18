@@ -143,14 +143,13 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::amd64::amd64::machdep::DMA_CONSTRAINT;
-use crate::arch::amd64::amd64::pmap::{pmap_direct_map, pmap_direct_mapped};
 use crate::arch::amd64::include::bus::{
     BUS_DMA_64BIT, BUS_DMA_NOCACHE, BUS_DMA_NOWAIT, BUS_DMA_WAITOK, BUS_DMA_ZERO,
     BUS_DMASYNC_POSTREAD, BUS_DMASYNC_PREWRITE, BusDmaSegment, BusDmaTagT, BusDmamap, BusDmamapT,
 };
-use crate::arch::amd64::include::pmap::{PMAP_NOCACHE, PMAP_NOCRYPT};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{BusAddr, BusSize};
 use crate::machine::pmap::{pmap_enter, pmap_extract, pmap_kernel, pmap_update};
 use crate::sys::errno::Errno;
@@ -162,16 +161,16 @@ use crate::sys::proc::Proc;
 use crate::sys::types::{Off, Paddr, Vaddr};
 use crate::sys::uio::{Uio, UioSeg::UIO_USERSPACE};
 use crate::unported;
-use crate::uvm::uvm_extern::{UVM_PLA_NOWAIT, UVM_PLA_WAITOK, UVM_PLA_ZERO, UvmConstraintRange};
-use crate::uvm::uvm_km::{
-    KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT, km_alloc, km_free,
-};
-use crate::uvm::uvm_page::{
+use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_NOCRYPT};
+use hal::pmap::{PMAP_CANFAIL, PMAP_WIRED};
+use hal::pmap::{direct_map as pmap_direct_map, direct_unmap};
+use hal::vm::param::round_page;
+use kernel::vm::km::{KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT};
+use kernel::vm::page::{
     PHYS_TO_VM_PAGE, Pglist, VmPage, uvm_pagecount, uvm_pglistalloc, uvm_pglistfree,
     vm_page_to_phys,
 };
-use crate::uvm::uvm_param::round_page;
-use crate::uvm::uvm_pmap::{PMAP_CANFAIL, PMAP_WIRED};
+use kernel::vm::types::{UVM_PLA_NOWAIT, UVM_PLA_WAITOK, UVM_PLA_ZERO, UvmConstraintRange};
 
 /// `FORCE_BOUNCE_BUFFER`: bounce every map (a debugging knob, off).
 const FORCE_BOUNCE_BUFFER: bool = false;
@@ -311,7 +310,6 @@ pub fn _bus_dmamap_create(
     };
 
     let mlist = Pglist::new();
-    mlist.init();
     let pla = if flags & BUS_DMA_NOWAIT != 0 {
         UVM_PLA_NOWAIT
     } else {
@@ -341,8 +339,7 @@ pub fn _bus_dmamap_create(
         let Some(pg) = mlist.first() else {
             panic(format_args!("_bus_dmamap_create: short page list"));
         };
-        // SAFETY: `pg` is the head of `mlist`; the map keeps it from now on.
-        unsafe { mlist.remove(pg) };
+        mlist.remove(pg);
         // SAFETY: slot `i` of the `npages` page pointers.
         unsafe { pages.add(i).write(ptr::from_ref(pg)) };
         if pmap_enter(
@@ -361,8 +358,7 @@ pub fn _bus_dmamap_create(
             for j in 0..=i {
                 // SAFETY: slots 0..=i were written above.
                 let p = unsafe { &**pages.add(j) };
-                // SAFETY: the page left `mlist` above and is on no other list.
-                unsafe { mlist.insert_tail(p) };
+                mlist.insert_tail(p);
             }
             free(mapstore, M_DEVBUF, mapsize);
             uvm_pglistfree(&mlist);
@@ -397,10 +393,8 @@ pub unsafe fn _bus_dmamap_destroy(_t: BusDmaTagT, map: NonNull<BusDmamap>) {
 
     if !m._dm_pages.is_null() {
         let mlist = Pglist::new();
-        mlist.init();
         for i in 0..m._dm_npages as usize {
-            // SAFETY: the map owns its bounce pages, which are on no list.
-            unsafe { mlist.insert_tail(m.dm_page(i)) };
+            mlist.insert_tail(m.dm_page(i));
         }
         uvm_pglistfree(&mlist);
     }
@@ -844,16 +838,13 @@ pub fn _bus_dmamem_alloc(
 pub unsafe fn _bus_dmamem_free(_t: BusDmaTagT, segs: &[BusDmaSegment]) {
     // Build a list of pages to free back to the VM system.
     let mlist = Pglist::new();
-    mlist.init();
     for s in segs {
         let mut addr = s.ds_addr;
         while addr < s.ds_addr + s.ds_len {
             let Some(m) = PHYS_TO_VM_PAGE(Paddr::new(addr)) else {
                 panic(format_args!("_bus_dmamem_free: unmanaged page {:#x}", addr));
             };
-            // SAFETY: the caller's guarantee: the page was allocated by `_bus_dmamem_alloc`
-            // and is on no list.
-            unsafe { mlist.insert_tail(m) };
+            mlist.insert_tail(m);
             addr += PAGE_SIZE;
         }
     }
@@ -928,7 +919,7 @@ pub unsafe fn _bus_dmamem_unmap(_t: BusDmaTagT, kva: NonNull<u8>, size: usize) {
     if kva.as_ptr() as usize & PGOFSET != 0 {
         panic(format_args!("_bus_dmamem_unmap"));
     }
-    if pmap_direct_mapped(Vaddr::new(kva.as_ptr() as usize)) {
+    if direct_unmap(Vaddr::new(kva.as_ptr() as usize)).is_some() {
         return;
     }
 
@@ -1116,7 +1107,6 @@ pub fn _bus_dmamem_alloc_range(
     }
 
     let mlist = Pglist::new();
-    mlist.init();
     uvm_pglistalloc(
         size,
         Paddr::new(low),
@@ -1136,12 +1126,10 @@ pub fn _bus_dmamem_alloc_range(
     let mut lastaddr = vm_page_to_phys(m).as_usize();
     segs[curseg].ds_addr = lastaddr;
     segs[curseg].ds_len = PAGE_SIZE;
-    // SAFETY: `m` is on `mlist`.
-    unsafe { mlist.remove(m) };
+    mlist.remove(m);
 
     while let Some(m) = mlist.first() {
-        // SAFETY: `m` is on `mlist`.
-        unsafe { mlist.remove(m) };
+        mlist.remove(m);
         let curaddr = vm_page_to_phys(m).as_usize();
         #[cfg(feature = "diagnostic")]
         {

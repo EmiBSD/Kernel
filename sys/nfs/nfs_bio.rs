@@ -103,6 +103,7 @@ use crate::kern::vfs_bio::{BCSTATS, bdwrite, biodone, brelse, buf_dirty, getblk,
 use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vfs_vops::{VOP_BWRITE, VOP_GETATTR};
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::nfs::nfs::B_INVAFTERWRITE;
@@ -142,7 +143,6 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{
     IO_APPEND, IO_SYNC, V_SAVE, VLNK, VN_KNOTE, VREG, VROOT, VTEXT, Vattr, Vnode, VopWriteArgs,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `nfs_numasync`: the number of running nfsiods.
 fn nfs_numasync() -> i32 {

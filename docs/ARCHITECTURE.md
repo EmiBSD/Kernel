@@ -13,7 +13,7 @@ The C tree under `reference/openbsd-src/sys` is the specification.
 `sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
 the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
 decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
-userland interface as the loadable module `abi-openbsd.ko`, `forbid`, translation only; and
+userland interface as the loadable module `abi_openbsd.ko`, `forbid`, translation only; and
 `bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
 and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal`, `abi -> hal` and `abi ->
@@ -197,16 +197,16 @@ Per-target rustflags in `.cargo/config.toml`: `relocation-model=static` (non-PIE
 and `force-frame-pointers=yes` (backtraces in `panic`). No `[build] target`, so host builds stay
 the default and `cargo test` just works.
 
-`abi-openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
+`abi_openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
 `RUSTFLAGS="-C relocation-model=pie"` (replacing the kernel's `static`), its own target
 directory (`target/abi`), `CARGO_PROFILE_DEV_STRIP=debuginfo` (boot(8) reads the whole file
 into efiboot's 1 MiB heap), and `sys/abi/ko/abi.ld`: a static PIE at 0 with `-pie
 --no-dynamic-linker -z notext -Bsymbolic --pack-dyn-relocs=none -z norelro`, three
 page-aligned `PT_LOAD`s (text R X; rodata R with the module header first at the ELF entry,
 the GOT and `.data.rel.ro`, relocated by the loader before it is mapped; data R W) and no
-import (section "abi-openbsd.ko").
+import (section "abi_openbsd.ko").
 
-## abi-openbsd.ko (N2.4)
+## abi_openbsd.ko (N2.4)
 
 The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The pieces:
 
@@ -214,7 +214,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4 but pipe and pipe2,
   `Native` since N2.6 (through `KernelApi::pipe2`, which runs the same `sysent[]` row and
   calls `kernel::pipe`, so the `Legacy` path gives the same answer); `abi_init` registers
-  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi-openbsd`):
+  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi_openbsd`):
   the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
   entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
   names as the ELF entry. It links no kernel code and no `hal` state; its panic handler is
@@ -228,7 +228,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   (the module's, through `kernel::api`'s trampoline) or the `Legacy` fallback (`bsd`'s
   `sysent[]` and `mi_syscall`), both registered once at boot. Errnos cross `hal` as `i32`.
 - **The hand-over.** Limine: a `module_path:` of `limine.conf`, found by name in
-  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi-openbsd.ko`
+  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi_openbsd.ko`
   from the kernel's device, read straight onto the page after the kernel's image
   inside the room the program reserved (`BootMd::abi_module_room`) with `marks[MARK_END]`
   raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
@@ -251,14 +251,14 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   OpenBSD's do, so `reserve` hands out a 16 MiB window of the kernel's L4 slot after the
   image, linked once by `pmap_bootstrap` (`sys/arch/amd64/amd64/pmap_module.rs`); arm64
   (no PXN on its tables) uses `kernel_map` until N3 (docs/ZERO_UNSAFE.md decision 37).
-- **The boot line.** `abi-openbsd.ko: 331 syscalls, 2 native`, or `abi-openbsd.ko: not
+- **The boot line.** `abi_openbsd.ko: 331 syscalls, 17 native` (2 until N3.5), or `abi_openbsd.ko: not
   loaded, <why>; every system call takes the legacy path` (decision 29: a medium without the
   file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
   `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).
-- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`) and
-  install80.img carry the file the build made (`xtask::boot::default_abi_module`); cd80.iso
-  leaves it off, with one line, until its name is one ISO 9660 keeps (decision 29).
-  So `/abi-openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
+- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi_openbsd.ko`) and
+  install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`);
+  the name is one ISO 9660 keeps, so libsa's cd9660 opens it (decision 38).
+  So `/abi_openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
   OpenBSD's set lists; its boot(8) reads it there.
 - **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
   `ApiPrefix` and `AbiModuleHeader`), so `abi` depends on `hal` alone and the `.ko` links no
@@ -280,7 +280,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
 | `ffs2` | `option FFS2` | FFS2 (UFS2 dinodes, the 64 KB super-block) in ffs; default |
 | `qemu` | — | QEMU-only exits (`isa-debug-exit`, semihosting), the boot self-tests, the TSC under TCG and the `uptime went backwards` check |
 | `inet6` | `option INET6` | IPv6: the `#ifdef INET6` sites outside `sys/netinet6` and `inet6domain` in `domains[]`; default, as in GENERIC. `sys/netinet6` itself (and the IPv6 tables and usrreqs it names, `route6_cache`, `tcp6_usrreqs`, ...) always compiles, like a library nothing reaches without the option, so the tree builds both ways |
-| `multiprocessor` | `option MULTIPROCESSOR` | off by default, so the uniprocessor kernel stays the plain build; `just build` and `just clippy` also build it, and since M11e every `just smoke` recipe boots it except `smoke-up` (the user's decision of 2026-10-03), since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
+| `multiprocessor` | `option MULTIPROCESSOR` | a default since decision 40 (the user, 2026-10-17): the MULTIPROCESSOR kernel is the only one built (every recipe, image, smoke, `abi_openbsd.ko` and host test; `hal`, `kernel` and `abi` have no such option, their code is MULTIPROCESSOR only), and `bsd`'s `lib.rs` refuses a build without it. Until then it was off by default and `smoke-up` booted a kernel built without it; now `smoke-up` boots this one with `-smp 1`. The uniprocessor branches still in `bsd`'s inherited and adapted modules are unbuilt and go when N4 redesigns those files. Since M11e every `just smoke` recipe boots it, since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
 | `ntfs` | `option NTFS` | the read-only NTFS file system (`sys/ntfs`) and its `vfsconflist[]` entry; default, but compiled only where the architecture's GENERIC has it (amd64): see below |
 | `fuse` | `option FUSE` | FUSE (`sys/miscfs/fuse`), its `vfsconflist[]` entry, `cdevsw[]` 92 (`/dev/fuse0`) and `fuseattach` in `pdevinit[]`; default, as in GENERIC |
 | `viocon` | amd64 GENERIC's commented-out `#viocon* at virtio?` | viocon(4) (M16d) in neither GENERIC: the feature stands for uncommenting the line, so amd64's `ioconf.rs` gets the `viocon* at virtio?` entry and `cdevsw[]` 94 its entry points (`NVIOCON` 1, 0 without the feature as `config(8)` counts it: `ENXIO`); arm64's GENERIC has no such line, so nothing changes there. `dev/pv/viocon.rs` compiles on every build, so `just clippy` and the host tests cover it either way; off by default |
@@ -1086,8 +1086,8 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - The application processors are started by Limine (M11a), not by the kernel's own
   trampoline: amd64's `mptramp.S` (real mode, INIT/SIPI/SIPI from `cpu_start_secondary`)
   and arm64's PSCI `CPU_ON` into `locore.S`'s `cpu_hatch` are replaced. The
-  `MULTIPROCESSOR` kernel puts the MP request in `.requests` (the uniprocessor one does not,
-  so the bootloader leaves the other processors halted); Limine brings each processor to
+  `MULTIPROCESSOR` kernel, the only one built since decision 40, puts the MP request in
+  `.requests` (a kernel without it, as before decision 40, left the other processors halted); Limine brings each processor to
   long mode or EL1 with the boot page tables and parks it on its `goto_address`.
   `sys/stand` turns the response into `machine::BootMp` (the processors' hardware IDs and a
   `start(i, arg)`), and the machine's `cpu_start_secondary` calls `start` with the
@@ -1105,8 +1105,8 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   `VBAR_EL1` and `CPACR`, moves to the CPU's own stack and runs `cpu_init_secondary`.
 - amd64 processor enumeration: since M13 `acpimadt0` attaches the processors from the MADT
   at mainbus, as OpenBSD does (`CPU_ROLE_BP` for the one whose local APIC is running, the
-  others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; a uniprocessor kernel's
-  `cpu0` is then `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
+  others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; with one processor
+  (`smoke-up`'s `-smp 1`) `cpu0` is `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
   starts the application processors (`mp_cpu_start` finds the MADT's APIC ID in Limine's
   list). Without a MADT (a kernel without ACPI, until `mpbios.c` is ported) the M11a
   stand-in remains: mainbus maps the local APIC at `LAPIC_BASE` and the `MULTIPROCESSOR`
@@ -2137,8 +2137,8 @@ sequential run had grown to about 35 minutes of boots under TCG. Decided on 2026
 user's plan). The shape is one build phase, then one run phase:
 
 - `smoke-build` builds everything a recipe boots, once and in order: the MULTIPROCESSOR
-  kernels with `--features qemu`, the init stand-ins, and `smoke-up`'s uniprocessor kernels
-  (`build-up`, which leaves `bsd.up` beside the MP `bsd`). No recipe builds while others boot.
+  kernels with `--features qemu` (`smoke-up` boots them too, with `-smp 1`, since decision
+  40), the init stand-ins, the media kernels and cd80.iso. No recipe builds while others boot.
 - `cargo xtask smoke-all -j N` (`tools/xtask/src/smokeall.rs`) runs each recipe of the
   justfile's `smokes` list as `just --no-deps <recipe>`, N at a time, longest first by the
   time each took last. A recipe runs exactly as `just <recipe>` would, with the same
@@ -2196,7 +2196,7 @@ of every recipe decided on 2026-10-03 for M11):
   (multi-queue and softnet networking; the latter's `-smp 8` boot stays) and
   `smoke-softraid` (the disk smoke under load). `diff-openbsd` also keeps four processors,
   the configuration its expected differences were recorded with. `smoke-up` stays the one
-  uniprocessor boot.
+  single-processor boot, of the same MP kernel with `-smp 1` since decision 40.
 - `just ci-full` runs `EMIBSD_NCPU=4 just ci`: every recipe on four processors, as before
   2026-10-07. Then, still on four, the installer end to end on both archs (the user's
   decision of 2026-10-07): `smoke-install-<arch>` and `smoke-install-boot-<arch>` for amd64,

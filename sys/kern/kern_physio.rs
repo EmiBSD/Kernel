@@ -93,7 +93,7 @@ use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::uio::Uio;
-use crate::uvm::uvm_glue::{uvm_vslock_device, uvm_vsunlock_device};
+use kernel::vm::glue::{uvm_vslock_device, uvm_vsunlock_device};
 
 /// Do "physical I/O" on behalf of a user: transfer `uio` (user space, at a `DEV_BSIZE`
 /// multiple offset) to or from `dev` through `strategy`, at most `minphys` bytes at a time.
@@ -171,15 +171,19 @@ pub fn physio(
             } else {
                 PROT_READ
             };
-            let map = match uvm_vslock_device(p, iov_base, todo, access) {
-                Ok(map) => map,
+            let lock = match uvm_vslock_device(&p.vmspace().vm_map, iov_base, todo, access) {
+                Ok(lock) => lock,
                 Err(e) => {
                     error = Err(e);
                     break 'done;
                 }
             };
+            // The C's `map`: the bounce buffer's kernel address, or none.
+            let map = lock.bounce_va();
             match map {
-                Some(bounce) => bp.b_data.set(bounce.as_ptr()),
+                Some(bounce) => bp
+                    .b_data
+                    .set(ptr::with_exposed_provenance_mut::<u8>(bounce.as_usize())),
                 None => {
                     bp.b_data.set(iov_base as *mut u8);
                     vmapbuf(bp, todo);
@@ -211,7 +215,7 @@ pub fn physio(
             if map.is_none() {
                 vunmapbuf(bp, todo);
             }
-            uvm_vsunlock_device(p, iov_base, todo, map);
+            uvm_vsunlock_device(lock, iov_base, todo);
 
             // remember error value (save a splbio/splx pair)
             if bp.isset(B_ERROR) {

@@ -161,7 +161,7 @@ use crate::sys::reboot::{
 use crate::sys::socket::{AF_INET, AF_INET6};
 use crate::sys::socketvar::Socket;
 use crate::unported;
-use crate::uvm::uvm_meter::uvmexp_print;
+use kernel::vm::meter::uvmexp_print;
 
 /// `CS_OWN`: non-standard syntax.
 pub const CS_OWN: i32 = 0x1;
@@ -646,7 +646,7 @@ fn db_tdb_print_cmd(addr: DbExpr, _have_addr: bool, _count: DbExpr, modif: &[u8]
 
 /// `db_uvmexp_print_cmd`: `show uvmexp`.
 fn db_uvmexp_print_cmd(_addr: DbExpr, _have: bool, _count: DbExpr, _modif: &[u8]) -> DbResult {
-    uvmexp_print(db_pr);
+    uvmexp_print(&mut |args| db_pr(args));
     Ok(())
 }
 

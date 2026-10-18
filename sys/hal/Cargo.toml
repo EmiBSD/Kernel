@@ -11,12 +11,13 @@ publish = false
 path = "lib.rs"
 
 [features]
-# The runtime of the ABI module abi-openbsd.ko (its panic handler, sys/hal/module/rt.rs):
+# The runtime of the ABI module abi_openbsd.ko (its panic handler, sys/hal/module/rt.rs):
 # set by sys/abi/ko alone, never in the kernel's build, which has its own panic handler.
 module-rt = []
-# Forwarded by `bsd`'s features of the same names (sys/Cargo.toml), OpenBSD's options:
+# Forwarded by `bsd`'s feature of the same name (sys/Cargo.toml), OpenBSD's option:
 diagnostic = []     # `option DIAGNOSTIC` -> the runtime's KASSERT(9)s are active
-multiprocessor = [] # `option MULTIPROCESSOR` -> the locks spin for other CPUs
+# No `multiprocessor`: hal is MULTIPROCESSOR code only (decision 40, 2026-10-17); the locks
+# always spin for other CPUs, abi_openbsd.ko's runtime included.
 
 [dependencies]
 libkern.workspace = true

@@ -47,7 +47,7 @@ use crate::kern::kern_sig::userret;
 use crate::kern::subr_prf::panic;
 use crate::sys::proc::refreshcreds;
 use crate::sys::syscall_mi::mi_ast;
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /// `ast(tf)`: the asynchronous system trap on the way back to user mode (`do_ast` in
 /// `exception.S`).

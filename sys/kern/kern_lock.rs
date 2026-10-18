@@ -38,6 +38,7 @@
 //! Kernel lock and mutexes: `kern/kern_lock.c`.
 //!
 //! Upstream: sys/kern/kern_lock.c @ 3ce1f3f79392
+//! LZ: sys/kern/kern_lock.rs@3c62ede68802
 //!
 //! Status: `wip`. Milestone M4 ports the uniprocessor mutex: `__mtx_init`, `_mtx_init`,
 //! `mtx_init`, `mtx_init_flags`, `mtx_enter`, `mtx_enter_try` and `mtx_leave`; M5 adds the
@@ -63,6 +64,14 @@
 //!   the C uses `CPU_INFO_UNIT(ci)`; both are the CPU's number on every machine OpenBSD runs.
 //! - A parked mutex waiter (`struct mtx_waiter`) lives on the waiting CPU's stack as in the C;
 //!   its `wait` flag is an `AtomicU32` (the C's `volatile`).
+//!
+//! ## Redesign
+//! - The code is LZ's. Only the host test `init_resets` changed, when `MULTIPROCESSOR`
+//!   became the one kernel built (decision 40): it asserts the level each configuration
+//!   stores, `IPL_MPFLOOR` for a level below it with `MULTIPROCESSOR` (`__MUTEX_IPL`,
+//!   `<sys/mutex.h>`), the level given without; LZ's asserted the uniprocessor value alone.
+//! - Its uniprocessor branches stay, unbuilt, until N4 redesigns the file (the user's
+//!   decision 40 answer, 2026-10-17: the inherited UP code goes at each file's N4 redesign).
 
 #[cfg(feature = "multiprocessor")]
 use core::ptr;
@@ -842,6 +851,13 @@ mod tests {
         m.mtx_owner.store(42, Ordering::Relaxed);
         mtx_init(&m, 5);
         assert_eq!(mtx_owner(&m), 0);
+        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it under MULTIPROCESSOR.
+        #[cfg(feature = "multiprocessor")]
+        {
+            assert!(5 < crate::machine::intr::IPL_MPFLOOR);
+            assert_eq!(m.mtx_wantipl.get(), crate::machine::intr::IPL_MPFLOOR);
+        }
+        #[cfg(not(feature = "multiprocessor"))]
         assert_eq!(m.mtx_wantipl.get(), 5);
     }
 }

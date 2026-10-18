@@ -159,7 +159,7 @@ use crate::sys::ttycom::{
 };
 use crate::sys::types::{Gid, Pid, Register, Uid, major};
 use crate::sys::vnode::{VBAD, VBLK, VCHR, VDIR, VISTTY, Vnode};
-use crate::uvm::uvmexp::{VM_LOADAVG, VM_MALLOC_CONF, VM_MAXSLP, VM_PSSTRINGS, VM_UVMEXP};
+use hal::vm::uvmexp::{VM_LOADAVG, VM_MALLOC_CONF, VM_MAXSLP, VM_PSSTRINGS, VM_UVMEXP};
 
 /// `pledgereq[]`: the promise names and their flags, sorted by name (`pledgereq_flags`
 /// searches it by bisection).

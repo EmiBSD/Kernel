@@ -48,6 +48,10 @@
 //! `<machine/ioctl_fd.h>`'s, and fdc(4) reads the diskette types from the RTC's NVRAM
 //! (`mc146818_read`, `<i386/isa/nvram.h>`) under `#if defined(__i386__) ||
 //! defined(__amd64__)`.
+//!
+//! `kern/hal_bridges.rs`'s `TlbCpus` (the CPUs of the pmap's TLB shootdown, `hal::pmap`,
+//! N3.1) sends `x86_fast_ipi` with the `LAPIC_IPI_INVL*` vectors and calls
+//! `wbinvd_on_all_cpus`; `PMAP_DIRECT_MAP` and `pmap_flush_cache` are `hal`'s now.
 
 pub use crate::arch::current::amd64::bios::smbios_find_table;
 pub use crate::arch::current::amd64::bus_dma::{
@@ -64,7 +68,13 @@ pub use crate::arch::current::amd64::ioapic::ioapic_edge_stubs_table;
 pub use crate::arch::current::amd64::machdep::{
     CPU_IDLE_CYCLE_FCN, CPU_SUSPEND_CYCLE_FCN, SETPERF_PRIO, bios_memmap, cpu_idle_cycle_hlt,
 };
-pub use crate::arch::current::amd64::pmap::{pmap_direct_map, pmap_flush_cache};
+#[cfg(feature = "multiprocessor")]
+pub use crate::arch::current::amd64::{cpu::wbinvd_on_all_cpus, ipi::x86_fast_ipi};
+pub use crate::arch::current::include::i82489var::{
+    LAPIC_IPI_INVLPG, LAPIC_IPI_INVLRANGE, LAPIC_IPI_INVLTLB,
+};
+pub use hal::pmap::{direct_map as pmap_direct_map, flush_cache as pmap_flush_cache};
+
 pub use crate::arch::current::include::biosvar::{BIOS_MAP_END, BIOS_MAP_RES, BiosMemmap};
 pub use crate::arch::current::include::bus::{
     BUS_DMA_24BIT, BusDmaSegment, BusDmaTag, BusDmaTagT, BusDmamap, BusDmamapT,

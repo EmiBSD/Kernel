@@ -118,6 +118,7 @@ use crate::kern::vfs_subr::{
 };
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN, VOP_UNLOCK};
+use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::kprintf;
 use crate::machine::conf::{nblkdev, swapdev};
 use crate::machine::copy::copyinstr;
@@ -151,7 +152,6 @@ use crate::sys::vnode::{
     FORCECLOSE, V_SAVE, VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, VT_ISOFS,
     Vnode, iftovt,
 };
-use crate::uvm::uvm_vnode::uvm_vnp_setsize;
 
 /// `struct ifid`: an ISO 9660 file identifier, overlaid on `struct fid`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

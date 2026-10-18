@@ -20,7 +20,7 @@ is a copy of this one or wrong.
 ```mermaid
 flowchart TB
     L0["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
-    L1["1 · abi · sys/abi/ · the loadable module abi-openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
+    L1["1 · abi · sys/abi/ · the loadable module abi_openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
     L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · exports KernelApi (the vtable the module calls)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
     L3["3 · hal · sys/hal/ · the ONLY unsafe · ceiling 2,150 (N2) → 2,230 (N9)<br/>hardware moved from LZ: arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, TypedPool/PoolArc, MBox, KmBuf, OnceStatic, List/Tree, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the ELF loader of the module, the syscall trap"]
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
@@ -41,7 +41,7 @@ registry at boot, and this is the whole of it:
 sequenceDiagram
     participant HAL as hal
     participant K as kernel
-    participant M as abi-openbsd.ko
+    participant M as abi_openbsd.ko
     participant B as bsd (until N9)
     HAL->>HAL: init hardware
     K->>HAL: register KernelApi
@@ -62,7 +62,7 @@ fallback) exist only as registrations in `hal`'s registry, made by `bsd`'s `main
 |---|---|---|---|
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (written new with their first `kernel` user; `queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` until then), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
-| `abi` | `sys/abi/`, built as the loadable module `abi-openbsd.ko` (decision 22) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
+| `abi` | `sys/abi/`, built as the loadable module `abi_openbsd.ko` (decision 22) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
 | `bsd` | `sys/` (the LZ tree, today's crate) | 10,604 today in 1,161 files (`unsafe-report`, 2026-10-16): the 8,906 legacy (8,747 outside the old core plus the 159 of the old runtime files) and the 1,698 of the hardware, the host double and the lists and trees that have not moved yet (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
@@ -208,7 +208,7 @@ N9.1. 3. The runtime, each piece with its first user in `kernel` or in the move:
 `List`/`Tree` (not moved: written new with their first `kernel` user), `Mutexed<T>`, `Rwlocked<T>`, `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`,
 `KmBuf`, `OnceStatic<T>`, `PerCpu<T>`, `Refcnt`, `UserPtr<T>` with `abi_pod!`, the bridge
 registry, the interrupt-level guard, the console primitive; `hal-check` (3 d). 4. `KernelApi`
-(the vtable), the ELF loader, `abi-openbsd.ko` with every entry `Legacy` and the 41 constant
+(the vtable), the ELF loader, `abi_openbsd.ko` with every entry `Legacy` and the 41 constant
 headers, the boot loaders and the installer reading two files, `smoke-abi`, `abi-check`,
 `unsafe-report` v2 (kernel/abi/hal/bsd), `/progress` v2, `bridges.toml` (2 d). 5. Crypto into
 `kernel` (28 files, 0 `unsafe`, already safe) (0.5 d). 6. **pipe(2)** into `kernel`: its own
@@ -310,9 +310,9 @@ What 0.8's N2 plan became, measured on the merged tree with the tools.
   `UserPtr<T>` with `abi_pod!`, the spl guard, CPU identity, the console primitive and the
   bridge registry (decisions 30, 32-36).
 - **The ABI module** (N2.4a): `hal::api::KernelApi`, the dispatch point
-  `hal::syscall`, the ELF loader `hal::module`, `abi-openbsd.ko` with the table of 331
+  `hal::syscall`, the ELF loader `hal::module`, `abi_openbsd.ko` with the table of 331
   entries; boot(8) and Limine hand it over, every medium carries it but `cd80.iso` until
-  its name is settled (decision 29; docs/ARCHITECTURE.md, "abi-openbsd.ko"). On amd64 it
+  its name is settled (decision 29; docs/ARCHITECTURE.md, "abi_openbsd.ko"). On amd64 it
   executes from a window of the kernel's L4 slot, kernel_map keeping the C's NX (decision
   37).
 - **Crypto** (N2.5): 18 of the 28 files of `sys/crypto/` in `kernel`, 0 `unsafe`; the 10 that
@@ -321,7 +321,7 @@ What 0.8's N2 plan became, measured on the merged tree with the tools.
   generic over `bsd`'s glue through three bridges (`PipeGlue`, `UioMove`, `PipeFiles`, paid by
   N4; not the `Fd`/`Kq`/`Sigio`/`Uio` of 0.8's text); `sys/kern/sys_pipe.rs` and
   `sys/sys/pipe.rs` are gone from `bsd`; `sys/kern/pipe_glue.rs` is the 0-`unsafe` call-site
-  adapter; pipe and pipe2 are `Native` in the module's table (`abi-openbsd.ko: 331 syscalls,
+  adapter; pipe and pipe2 are `Native` in the module's table (`abi_openbsd.ko: 331 syscalls,
   2 native`). `KernelApi` v2 adds `pipe2(nr, fdp, flags)`, which carries the number for
   `pin_check` and pledge.
 
@@ -487,7 +487,7 @@ every design that kept `unsafe` inside the kernel:
     `just check`.
 
 22. **The ABI is a loadable module, from N2 on** (the user, 2026-10-16: the compatibility layer
-    out of the kernel, "una biblioteca dinámica"). `abi-openbsd.ko` is a separate ELF file on the
+    out of the kernel, "una biblioteca dinámica"). `abi_openbsd.ko` is a separate ELF file on the
     boot medium: the boot loader reads it, `hal`'s loader relocates it before `init(8)` and the
     module registers its syscall handler in `hal`'s registry and receives `KernelApi`, the vtable
     of safe functions the kernel exports: the only face of the kernel the module sees. The
@@ -560,10 +560,10 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
 Taken by the redesigner of N2.4a on 2026-10-16 under the user's standing authority of that
 day ("yap puedes seguir solo? hasta acabar?"):
 
-29. **A kernel without its ABI module still boots** (docs/ARCHITECTURE.md, "abi-openbsd.ko").
-    When the boot loader hands over no `/abi-openbsd.ko`, or the loader refuses it (another
+29. **A kernel without its ABI module still boots** (docs/ARCHITECTURE.md, "abi_openbsd.ko").
+    When the boot loader hands over no `/abi_openbsd.ko`, or the loader refuses it (another
     machine, another `KernelApi`, a malformed file), the kernel prints one line,
-    `abi-openbsd.ko: not loaded, <why>; every system call takes the legacy path`, and every
+    `abi_openbsd.ko: not loaded, <why>; every system call takes the legacy path`, and every
     system call goes to the `Legacy` fallback, which is the path the traps took before N2.4.
     Reason: the module only translates (decision 21) and every entry is `Legacy` at N2, so
     nothing userland sees depends on it yet, and a medium made before the module, or one a
@@ -664,7 +664,7 @@ day (numbered R1-R5 on its branch so that other slices' entries did not collide;
 Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
 
 37. **On amd64 the ABI module executes from a window of the kernel's slot.** The close's `just
-    ci` panicked every amd64 boot on the jump into `abi-openbsd.ko`: the relocated RX copy sat
+    ci` panicked every amd64 boot on the jump into `abi_openbsd.ko`: the relocated RX copy sat
     in `kernel_map`, whose directory entries carry `pg_nx` as OpenBSD's `pmap_alloc_level`
     sets them (OpenBSD never executes from `kernel_map`); arm64 has no PXN on its tables and
     loaded it. `kernel_map` keeps the C's directory-level NX. The module runs from a 16 MiB

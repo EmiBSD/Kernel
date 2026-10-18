@@ -118,7 +118,7 @@ use crate::sys::systm::kernel_unlock;
 use crate::sys::systm::{INFSLP, cond_signal, kernel_assert_locked};
 #[cfg(feature = "multiprocessor")]
 use crate::sys::task::Task;
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /*
  * To help choosing which cpu should run which process we keep track

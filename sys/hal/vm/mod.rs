@@ -1,0 +1,27 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! The machine independent virtual memory definitions `hal` needs: the page arithmetic of
+//! `<uvm/uvm_param.h>`, moved in with `<sys/types.h>` at N3.1, and the exported statistics of
+//! `<uvm/uvmexp.h>` with their one instance, moved in at N3.3.
+
+#[forbid(unsafe_code)]
+pub mod param;
+pub mod uvmexp;
+/* </CODE> */

@@ -45,7 +45,6 @@ pub mod locore;
 pub mod locore0;
 pub mod machdep;
 pub mod mem;
-pub mod pmap;
 #[cfg(feature = "qemu")]
 pub mod qemu;
 pub mod sig_machdep;

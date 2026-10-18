@@ -111,7 +111,7 @@ use crate::sys::signalvar::sigcantmask;
 use crate::sys::syscallargs::SysSigreturnArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
-use crate::uvm::uvm_param::trunc_page;
+use hal::vm::param::trunc_page;
 
 /// `process_frame(p)`: the thread's user trap frame.
 fn process_frame(p: &Proc) -> *mut Trapframe {

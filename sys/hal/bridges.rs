@@ -35,11 +35,15 @@
 //! register none) is written in its module and is never a panic in a hot path: no interrupts
 //! yet (`intr.rs`), one boot CPU (`cpu.rs`).
 //!
-//! **The boot contract.** Every bridge is a safe trait (decision 30). The three memory
-//! bridges (`PageMemory`, `PoolBackend`, `Malloc`) are registered once by the kernel's boot
+//! The kernel's page allocator is not a bridge: `kernel::vm::km` implements `hal`'s
+//! [`crate::kmbuf::PageMemory`] and its callers pass it down as a value (N3.2), as the pmap's
+//! page provider is (D16).
+//!
+//! **The boot contract.** Every bridge is a safe trait (decision 30). The two memory
+//! bridges (`PoolBackend`, `Malloc`) are registered once by the kernel's boot
 //! path (`bsd`'s `hal_bridges_register`, called by `stand::start_kernel` before `main()`, on
 //! the boot CPU, before interrupts and before any user of the pieces) with the kernel's own
-//! `uvm_km`, `pool(9)` and `malloc(9)`; `hal`'s soundness rests on that registration: the
+//! `pool(9)` and `malloc(9)`; `hal`'s soundness rests on that registration: the
 //! blocks they return are kernel memory of the size granted, exclusively the caller's until
 //! freed through the same bridge (`sys/hal/trust.rs` checks every answer for alignment and
 //! size). A slot is set once, so nothing registered later can replace them.
@@ -52,11 +56,19 @@
 use crate::cons::Console;
 use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
-use crate::kmbuf::PageMemory;
+use crate::klock::KernelLock;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
+use crate::netlock::NetLock;
 use crate::once::OnceStatic;
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
+use crate::prf::Printf;
 use crate::sleep::Sleep;
 use crate::user::UserCopy;
 
@@ -65,9 +77,9 @@ use crate::user::UserCopy;
 pub struct AlreadyRegistered(pub &'static str);
 
 /// One slot: a private `OnceStatic` of the trait object, its `register_*` function and its
-/// crate-private reader.
+/// crate-private reader (with the attribute given after the reader's name, when one is).
 macro_rules! bridge {
-    ($(#[$doc:meta])* $slot:ident: $tr:ident, $register:ident, $get:ident) => {
+    ($(#[$doc:meta])* $slot:ident: $tr:ident, $register:ident, $get:ident $(#[$gattr:meta])?) => {
         static $slot: OnceStatic<&'static dyn $tr> = OnceStatic::new();
 
         $(#[$doc])*
@@ -78,6 +90,7 @@ macro_rules! bridge {
         }
 
         /// The registered implementation, `None` before registration.
+        $(#[$gattr])?
         pub(crate) fn $get() -> Option<&'static dyn $tr> {
             $slot.get().copied()
         }
@@ -103,16 +116,6 @@ bridge!(
     SLEEP: Sleep,
     register_sleep,
     sleep
-);
-
-bridge!(
-    /// Registers the kernel map's pages (`km_alloc`/`km_free` of `sys/uvm/uvm_km.rs`). The boot
-    /// contract (module docs): called once by the kernel's boot path, before interrupts and
-    /// before any user, with the kernel's own page allocator; `hal`'s soundness rests on it.
-    /// Paid by N3.
-    PAGE_MEMORY: PageMemory,
-    register_page_memory,
-    page_memory
 );
 
 bridge!(
@@ -151,13 +154,73 @@ bridge!(
 );
 
 bridge!(
+    /// Registers `printf(9)` (`sys/kern/subr_prf.rs`: the console and the message buffer),
+    /// for the kernel crate's lines (`hal::prf`). Paid by N9 (`subr_prf` goes with the `bsd`
+    /// crate).
+    PRINTF: Printf,
+    register_printf,
+    printf
+);
+
+bridge!(
     /// Registers the module loader's platform (`sys/hal/module/load.rs`): the boot loader's
-    /// hand-over of `abi-openbsd.ko` and the kernel pmap it is mapped with
-    /// (`sys/kern/abi_module.rs`), once, by the kernel's boot path before `main` loads the
-    /// module; the loader's three `unsafe` rest on it (the platform premise). Paid by N3.
+    /// hand-over of `abi_openbsd.ko` (`sys/kern/abi_module.rs`), once, by the kernel's boot
+    /// path before `main` loads the module; the loader's three `unsafe` rest on it with the
+    /// kernel's `ModuleMemory` (the platform premise). Paid by N4 (the boot entry, N4.1).
     MODULE_PLATFORM: ModulePlatform,
     register_module_platform,
     module_platform
+);
+
+bridge!(
+    /// Registers the kernel lock (`KERNEL_LOCK`, `KERNEL_UNLOCK`, `KERNEL_ASSERT_LOCKED` of
+    /// `sys/kern/kern_lock.rs`), for the kernel crate's vnode pager and object functions
+    /// (`hal::klock`, N3.4c). Paid by N4 (`kern_lock` moves).
+    KERNEL_LOCK: KernelLock,
+    register_kernel_lock,
+    kernel_lock
+);
+
+bridge!(
+    /// Registers the network lock (`NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock)` of
+    /// `sys/net/if.rs`), for the kernel crate's vnode pager (`hal::netlock`, N3.4c). Paid by
+    /// N6 (the network stack moves).
+    NET_LOCK: NetLock,
+    register_net_lock,
+    net_lock
+);
+
+// The pmap's two bridges exist where `hal::pmap` does (`lib.rs`: the host, amd64 and arm64);
+// their readers are the backends' (amd64's shootdown, arm64's ASID allocator).
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+bridge!(
+    /// Registers the CPUs as amd64's TLB shootdown needs them (`CPU_INFO_FOREACH`,
+    /// `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`, `wbinvd_on_all_cpus`, `ci_cflushsz` of
+    /// `sys/arch/amd64/amd64/{cpu,ipi}.rs`). Paid by N4 (the CPUs enter hal with their kernel
+    /// owner). arm64 registers none.
+    TLB_CPUS: TlbCpus,
+    register_tlb_cpus,
+    tlb_cpus #[cfg_attr(
+        not(all(target_os = "none", target_arch = "x86_64")),
+        allow(dead_code, reason = "read by amd64's shootdown alone")
+    )]
+);
+
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+bridge!(
+    /// Registers `arc4random(9)` (`sys/dev/rnd.rs`) for arm64's ASID allocator and, through
+    /// `hal::random`, the kernel's map (N3.5). Paid by N7.
+    RANDOM: Random,
+    register_random,
+    random
 );
 
 /* </CODE> */
@@ -181,6 +244,7 @@ mod tests {
         fn ipl_high(&self) -> i32 {
             0
         }
+        fn splassert(&self, _wantipl: i32, _func: &str) {}
     }
 
     static OTHER: Other = Other;

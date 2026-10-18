@@ -24,7 +24,7 @@
 //! The structures are declared `#[repr(C)]` as the specification lays them out (a
 //! compile-time check pins their sizes) and are read from the file's bytes field by field
 //! with checked offsets: a short or lying file is an [`ElfError`], never an out-of-bounds
-//! read, and nothing is cast. Only what an `abi-openbsd.ko` may contain is accepted: a
+//! read, and nothing is cast. Only what an `abi_openbsd.ko` may contain is accepted: a
 //! little-endian `ET_DYN` (static PIE) of the running machine, page-aligned `PT_LOAD`s none
 //! of which is both writable and executable, no interpreter, no TLS, no needed library,
 //! and relocations that are all `R_*_RELATIVE` (the module imports nothing).

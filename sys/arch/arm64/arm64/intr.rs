@@ -95,7 +95,7 @@ use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::sys::softintr::{SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
 use crate::unported;
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /// `SI_TO_IRQBIT(x)`: the `ci_ipending` bit of soft interrupt `x`.
 const fn si_to_irqbit(x: i32) -> u32 {

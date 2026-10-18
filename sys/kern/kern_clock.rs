@@ -321,12 +321,21 @@ pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
             // maxrss is handled by uvm
             if tu_tick != TU_ITICKS {
                 let kb = |pages: i32| ((pages as u64) << (PAGE_SHIFT - 10)).wrapping_mul(count);
-                tu.tu_ixrss
-                    .set(tu.tu_ixrss.get().wrapping_add(kb(vm.vm_tsize.get())));
-                tu.tu_idrss
-                    .set(tu.tu_idrss.get().wrapping_add(kb(vm.vm_dused.get())));
-                tu.tu_isrss
-                    .set(tu.tu_isrss.get().wrapping_add(kb(vm.vm_ssize.get())));
+                tu.tu_ixrss.set(
+                    tu.tu_ixrss
+                        .get()
+                        .wrapping_add(kb(vm.vm_tsize.load(Ordering::Relaxed))),
+                );
+                tu.tu_idrss.set(
+                    tu.tu_idrss
+                        .get()
+                        .wrapping_add(kb(vm.vm_dused.load(Ordering::Relaxed))),
+                );
+                tu.tu_isrss.set(
+                    tu.tu_isrss
+                        .get()
+                        .wrapping_add(kb(vm.vm_ssize.load(Ordering::Relaxed))),
+                );
             }
             tu_leave(tu, generation);
         }

@@ -82,6 +82,7 @@ use crate::kern::vfs_cache::{NCHSTATS, cache_enter, cache_lookup};
 use crate::kern::vfs_subr::{vnoperm, vput, vref, vrele};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_UNLOCK};
+use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::kprintf;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_CLRBUF, B_SYNC, Buf};
@@ -112,7 +113,6 @@ use crate::ufs::ufs::ufs_dirhash::{
     ufsdirhash_newblk, ufsdirhash_remove,
 };
 use crate::ufs::ufs::ufsmount::vfstoufs;
-use crate::uvm::uvm_vnode::uvm_vnp_setsize;
 
 /// `dirchk`: full validation of directory entries during lookups (1 with `DIAGNOSTIC`).
 pub static DIRCHK: AtomicI32 = AtomicI32::new(if cfg!(feature = "diagnostic") { 1 } else { 0 });

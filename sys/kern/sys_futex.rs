@@ -74,14 +74,13 @@ use crate::sys::syscallargs::SysFutexArgs;
 use crate::sys::systm::{INFSLP, MAXTSLP, SysArgs, sysargs};
 use crate::sys::time::{Timespec, timespec_to_nsec};
 use crate::sys::types::Register;
-use crate::uvm::uvm::uvm_et_isobj;
-use crate::uvm::uvm_amap::VmAmap;
-use crate::uvm::uvm_extern::Voff;
-use crate::uvm::uvm_map::{
-    VmMapEntryObject, uvm_map_lookup_entry, vm_map_lock_read, vm_map_unlock_read,
-};
-use crate::uvm::uvm_object::UvmObject;
-use crate::uvm::uvm_param::ptoa;
+use kernel::vm::amap::Amap;
+use kernel::vm::map::uvm_et_isobj;
+use kernel::vm::types::Voff;
+
+use hal::pool::PoolArc;
+use hal::vm::param::ptoa;
+use kernel::vm::object::Object;
 
 /// `FT_PRIVATE`: futex is process-private (`futex_get` flags sit in `FUTEX_OP_MASK` space).
 const FT_PRIVATE: i32 = FUTEX_PRIVATE_FLAG;
@@ -119,10 +118,10 @@ pub struct Futex {
     ft_entry: TailqEntry<Futex>,
     /// \[I\] `ft_ps`: for private futexes.
     ft_ps: Cell<*const Process>,
-    /// \[f\] `ft_obj`: UVM object.
-    ft_obj: Cell<*const UvmObject>,
-    /// \[f\] `ft_amap`: UVM amap.
-    ft_amap: Cell<*const VmAmap>,
+    /// \[f\] `ft_obj`: UVM object (its address, an identity never dereferenced).
+    ft_obj: Cell<*const Object>,
+    /// \[f\] `ft_amap`: UVM amap (its address, an identity never dereferenced).
+    ft_amap: Cell<*const Amap>,
     /// \[f\] `ft_off`: UVM offset.
     ft_off: Cell<Voff>,
     /// \[f\] `ft_proc`: waiting thread.
@@ -216,8 +215,8 @@ pub fn sys_futex(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
 /// object or amap (and offset) of a shared mapping, else the address alone.
 fn futex_addrs(p: &Proc, f: &Futex, uaddr: usize, flags: i32) {
     let map = &p.vmspace().vm_map;
-    let mut obj: *const UvmObject = ptr::null();
-    let mut amap: *const VmAmap = ptr::null();
+    let mut obj: *const Object = ptr::null();
+    let mut amap: *const Amap = ptr::null();
     let mut off = uaddr as Voff;
     let ps: *const Process;
 
@@ -226,22 +225,23 @@ fn futex_addrs(p: &Proc, f: &Futex, uaddr: usize, flags: i32) {
     } else {
         ps = ptr::null();
 
-        vm_map_lock_read(map);
-        if let Some(entry) = uvm_map_lookup_entry(map, uaddr)
-            && entry.inheritance.get() == MAP_INHERIT_SHARE
+        // vm_map_lock_read(map) .. vm_map_unlock_read(map): the guard's scope.
+        let g = map.lock_read();
+        if let Some(entry) = g.lookup(uaddr)
+            && entry.inheritance() == MAP_INHERIT_SHARE
         {
+            let h = entry.handles(g.witness());
             if uvm_et_isobj(entry) {
-                if let VmMapEntryObject::Obj(o) = entry.object.get() {
-                    obj = o;
+                if let Some(o) = h.uvm_obj() {
+                    obj = o.as_ptr();
                 }
-                off = entry.offset.get() + (uaddr - entry.start.get()) as Voff;
-            } else if !entry.aref.ar_amap.get().is_null() {
-                amap = entry.aref.ar_amap.get();
-                off = ptoa(entry.aref.ar_pageoff.get() as usize) as Voff
-                    + (uaddr - entry.start.get()) as Voff;
+                off = entry.offset() + (uaddr - entry.start()) as Voff;
+            } else if let Some(a) = &h.amap {
+                amap = PoolArc::as_ptr(a);
+                off = ptoa(h.pageoff as usize) as Voff + (uaddr - entry.start()) as Voff;
             }
         }
-        vm_map_unlock_read(map);
+        drop(g);
     }
 
     f.ft_ps.set(ps);

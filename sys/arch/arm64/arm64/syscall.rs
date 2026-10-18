@@ -58,7 +58,7 @@ use crate::sys::proc::Proc;
 use crate::sys::syscall_mi::{mi_child_return, mi_syscall_return};
 use crate::sys::systm::{SysArgs, kernel_unlock};
 use crate::sys::types::Register;
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /// `svc_handler`: a system call from EL0 (`do_el0_sync`, `EXCP_SVC`).
 pub fn svc_handler(frame: &mut Trapframe) {

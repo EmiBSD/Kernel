@@ -180,7 +180,7 @@ use crate::sys::systm::{
 use crate::sys::time::sec_to_nsec;
 use crate::sys::tree::{RbEntry, RbtHead};
 use crate::sys::types::{Dev, SaFamily, minor};
-use crate::uvm::uvm_param::atop;
+use hal::vm::param::atop;
 
 /// `NPF`: the count `config(8)` writes into `pf.h` for `pseudo-device pf`.
 pub const NPF: i32 = 1;

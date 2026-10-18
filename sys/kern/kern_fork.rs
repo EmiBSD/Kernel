@@ -116,6 +116,7 @@ use crate::kern::subr_pool::pool_get;
 use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::subr_prof::profclock_period;
 use crate::kern::subr_xxx::assertwaitok;
+use crate::kern::vm_bsd::{uvm_uarea_alloc, uvmspace_fork_or_share};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::{Cpu, CpuInfo, child_return, curcpu, curproc};
@@ -143,9 +144,7 @@ use crate::sys::unistd::Tfork;
 use crate::sys::user::User;
 use crate::sys::vmmeter::Forkstat;
 use crate::unported;
-use crate::uvm::uvm_glue::uvm_uarea_alloc;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_map::{uvmspace_fork, uvmspace_share};
+use hal::vm::uvmexp::UVMEXP;
 
 /// `nprocesses`: process 0.
 pub static NPROCESSES: AtomicI32 = AtomicI32::new(1);
@@ -405,11 +404,7 @@ fn process_new(p: &'static Proc, parent: &'static Process, flags: i32) -> &'stat
         pr.ps_fd.set(fdcopy(parent));
     }
     pr.ps_sigacts.set(sigactsinit(parent));
-    if flags & FORK_SHAREVM != 0 {
-        pr.ps_vmspace.set(uvmspace_share(parent));
-    } else {
-        pr.ps_vmspace.set(uvmspace_fork(parent));
-    }
+    uvmspace_fork_or_share(parent, pr, flags & FORK_SHAREVM != 0);
 
     if parent.ps_flags.load(Ordering::Relaxed) & PS_PROFIL != 0 {
         let _ = unported!("process_new: startprofclock (subr_prof.c, M6)");
@@ -567,7 +562,7 @@ pub fn fork1(
     let pr = process_new(p, curpr, flags);
 
     p.p_fd.set(pr.ps_fd.get());
-    p.p_vmspace.set(pr.ps_vmspace.get());
+    p.p_vmspace.set(pr.vmspace_ptr());
     if pr.ps_flags.load(Ordering::Relaxed) & PS_SYSTEM != 0 {
         p.p_flag.fetch_or(P_SYSTEM, Ordering::Relaxed);
     }
@@ -591,7 +586,7 @@ pub fn fork1(
     Machine::cpu_fork(curp, p, ptr::null_mut(), ptr::null_mut(), func, arg);
 
     let vm = pr.vmspace();
-    let vmsize = (vm.vm_dsize.get() + vm.vm_ssize.get()) as u64;
+    let vmsize = (vm.vm_dsize.load(Ordering::Relaxed) + vm.vm_ssize.load(Ordering::Relaxed)) as u64;
     if flags & FORK_FORK != 0 {
         FORKSTAT.cntfork.fetch_add(1, Ordering::Relaxed);
         FORKSTAT.sizfork.fetch_add(vmsize, Ordering::Relaxed);
@@ -705,7 +700,7 @@ pub fn thread_fork(
 
     // local copies
     p.p_fd.set(pr.ps_fd.get());
-    p.p_vmspace.set(pr.ps_vmspace.get());
+    p.p_vmspace.set(pr.vmspace_ptr());
 
     // Finish creating the child thread. cpu_fork() will copy and update the pcb and make
     // the child ready to run. The child will exit directly to user mode via child_return()

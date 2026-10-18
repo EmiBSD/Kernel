@@ -72,7 +72,6 @@ use core::sync::atomic::Ordering;
 use crate::arch::arm64::arm64::cpu;
 use crate::arch::arm64::arm64::db_interface::db_ktrap;
 use crate::arch::arm64::arm64::fpu::{fpu_load, sve_load};
-use crate::arch::arm64::arm64::pmap::pmap_fault_fixup;
 use crate::arch::arm64::arm64::syscall::svc_handler;
 use crate::arch::arm64::include::armreg::{
     EXCP_BRANCH_TGT, EXCP_BRK, EXCP_DATA_ABORT, EXCP_DATA_ABORT_L, EXCP_FP_SIMD, EXCP_FPAC,
@@ -102,12 +101,12 @@ use crate::sys::signal::{SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 use crate::sys::systm::kernel_lock;
 use crate::sys::types::Register;
 use crate::sys::types::Vaddr;
-use crate::uvm::uvm_extern::VmProt;
-use crate::uvm::uvm_fault::uvm_fault;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_map::{uvm_map_inentry, uvm_map_inentry_sp};
-use crate::uvm::uvm_param::trunc_page;
-use crate::uvm::uvm_unix::uvm_grow;
+use hal::vm::param::trunc_page;
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::fault::uvm_fault;
+use kernel::vm::map::{uvm_map_inentry, uvm_map_inentry_sp};
+use kernel::vm::types::VmProt;
+use kernel::vm::unix::uvm_grow;
 
 /// `is_unpriv_ldst`: whether the instruction at `elr` (a kernel address) is an unprivileged
 /// load or store (`ldtr`/`sttr` family), the only way the kernel may touch user addresses.
@@ -180,18 +179,18 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     let p = unsafe { ci.ci_curproc.get().as_ref() };
     let map = match p {
         Some(p) if !kernel_map => &p.vmspace().vm_map,
-        _ => crate::uvm::uvm_km::kernel_map(),
+        _ => kernel::vm::km::kernel_map(),
     };
 
     // Handle referenced/modified emulation
-    if pmap_fault_fixup(map.pmap(), Vaddr::new(va), access_type) {
+    if map.pmap().fault_fixup(Vaddr::new(va), access_type) {
         return;
     }
 
     let error = uvm_fault(map, va, 0, access_type);
     if error.is_ok() {
         if !kernel_map && let Some(p) = p {
-            uvm_grow(p, va);
+            uvm_grow(p.vmspace(), va);
         }
         return;
     }
@@ -318,13 +317,13 @@ fn udata_abort(_frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
 
     let mut ie = p.p_spinentry.get();
     let ok = uvm_map_inentry(
-        p,
+        &p.vmspace().vm_map,
         &mut ie,
         <Machine as Cpu>::proc_stack(p),
         "sp",
         "not MAP_STACK",
         uvm_map_inentry_sp,
-        p.vmspace().vm_map.sserial.get(),
+        p.vmspace().vm_map.sserial(),
     );
     p.p_spinentry.set(ie);
     if !ok {
@@ -332,12 +331,12 @@ fn udata_abort(_frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     }
 
     // Handle referenced/modified emulation
-    if pmap_fault_fixup(map.pmap(), Vaddr::new(va), access_type) {
+    if map.pmap().fault_fixup(Vaddr::new(va), access_type) {
         return;
     }
     let result = uvm_fault(map, va, 0, access_type);
     if result.is_ok() {
-        uvm_grow(p, va);
+        uvm_grow(p.vmspace(), va);
     }
     let error = match result {
         Ok(()) => return,

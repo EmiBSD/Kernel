@@ -140,6 +140,7 @@ use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BWRITE, VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR,
     VOP_STRATEGY, VOP_UNLOCK,
 };
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::nfs::nfs::{NFS_DIRBLKSIZ, NFS_READDIRBLKSIZ, nfs_cmpfh, nfs_isv3};
@@ -220,7 +221,6 @@ use crate::sys::vnode::{
     VopUnlockArgs, VopWriteArgs, Vops, Vtype, cred_ref, vttoif,
 };
 use crate::unported;
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 use crate::nfs::nfs_vfsops::nfs_fsinfo;
 

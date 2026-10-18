@@ -10,9 +10,10 @@ Four tiers. Every change lands with the tier it belongs to.
    `mod tests` outside `<TESTS>` and a `<TESTS>` zone without one.
    Table-driven tests for C-compatible behaviour (`strlcpy` return values, `crc32` vectors).
    The host tests share one process, and `setup_real_memory` (under
-   `uvm_pmemrange::tests::LOCK`) gives each test fresh kernel memory, leaking the old one. So a
-   global that test code touches and that holds kernel memory or pool items gets a
-   `*_test_reset` called from `setup_real_memory` (or from the subsystem's shared setup), which
+   `kernel::testutil::MEMORY`, the page system's lock since N3.3) gives each test fresh kernel
+   memory, leaking the old one. So a global that test code touches and that holds kernel
+   memory or pool items gets a `*_test_reset` called from `setup_real_memory` (or from the
+   subsystem's shared setup), which
    forgets the old state without freeing it: freeing into, or growing from, an earlier test's
    memory or a pool initialised again since crashes a later test, and a panic inside
    `config_attach` or under a kernel lock then hangs the rest of the run (rule of
@@ -29,8 +30,12 @@ Four tiers. Every change lands with the tier it belongs to.
    scheduling adds or updates an expectation in `tools/xtask`; a redesign that changes a serial
    line the smokes assert updates the expectation in the same commit; a line userland prints
    never changes.
-   Every smoke and smoke2 run boots the `multiprocessor` kernel (recipes built with
-   `--features qemu,multiprocessor`). Since the user's decision of 2026-10-07 (replacing the
+   Every smoke and smoke2 run boots the `multiprocessor` kernel: since decision 40 (the
+   user, 2026-10-17) it is the only kernel built: `multiprocessor` is a default feature of
+   `bsd`, which refuses to compile without it, and `hal` and `kernel` are MP code only, with
+   no such option (recipes build with `--features qemu`; the host tests, `abi_openbsd.ko` and
+   the images are MP too).
+   Since the user's decision of 2026-10-07 (replacing the
    `-smp 4` everywhere of 2026-10-03) the CPU count is the justfile's `smp` variable,
    `-smp 2` by default (`ncpu`, from `EMIBSD_NCPU`, 2 or 4): every MP bug found so far needs
    only two CPUs. An expectation that names the count (`bsd: N processors`, `hw.ncpu=`,
@@ -39,9 +44,11 @@ Four tiers. Every change lands with the tier it belongs to.
    stays on `-smp 4` (`smp4`) to stress MP whatever `ncpu` says, with literal 4-CPU
    expectations: `smoke-mp` (mpstress, the kthread ping-pong), the multi-queue network
    smokes (`smoke-vmx`, `smoke-net-mp`, whose `-smp 8` boot stays as is) and
-   `smoke-softraid` (the disk smoke under load). `smoke-up` is the one uniprocessor boot per
-   arch, kept to catch a dependency on MP. New smokes follow suit: MP, `{{smp}}`, both archs;
-   `{{smp4}}` only by the user's decision.
+   `smoke-softraid` (the disk smoke under load). `smoke-up` is the one single-processor boot
+   per arch, kept to catch a dependency on a second CPU: since decision 40 it boots that same
+   MP kernel with `--smp 1` (no longer a kernel built without the feature), and its
+   expectations are the uniprocessor boot's, except any that names the CPU count. New smokes
+   follow suit: MP, `{{smp}}`, both archs; `{{smp4}}` only by the user's decision.
    `just ci-full` is `ci` with every `{{smp}}` recipe on four CPUs (`EMIBSD_NCPU=4`), then
    the installer end to end on both archs, also on four CPUs (the user's decision of
    2026-10-07): `smoke-install-amd64`, `smoke-install-arm64` (with `smoke-install-arm64-acpi`)

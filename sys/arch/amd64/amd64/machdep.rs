@@ -184,9 +184,19 @@
 //!
 //! ## Redesign
 //! - N2.4 (decision 22): `getbootinfo` also reads the `BOOTARG_ABIMODULE` record efiboot
-//!   adds (the ABI module `/abi-openbsd.ko`, put after the kernel's image and below `esym`,
+//!   adds (the ABI module `/abi_openbsd.ko`, put after the kernel's image and below `esym`,
 //!   so never free memory) into `BootInfo::abi_module`; the boot glue hands it to the module
 //!   loader through the direct map. No other path of the file changed.
+//! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
+//!   into the pmap's statics (`PMAP_DIRECT_BASE`/`END`) and `EFER.NXE`, which LZ's pmap read
+//!   itself, are `pmap_bootstrap`'s parameters; its answer `virtual_avail` is stored here as
+//!   the kernel map's base (LZ's pmap did it). The bootstrap now runs before `consinit`,
+//!   not after it: the console's frame buffer and the VGA hole are reached through the
+//!   direct map, which is the pmap's from its bootstrap on (LZ's statics were set before
+//!   `consinit` too; the C's direct map is `locore0.S`'s, built before `init_x86_64`).
+//!   So a bootstrap panic (`pmap_bootstrap: PML4 slot .. is in use`) comes before the console
+//!   and the msgbuf exist and prints nothing, where the C calls `cninit` first
+//!   (`machdep.c`:1557, `pmap_bootstrap` at :1700).
 
 use core::arch::asm;
 use core::mem::offset_of;
@@ -205,7 +215,6 @@ use crate::arch::amd64::amd64::fpu::{FPU_SAVE_LEN, XSAVE_MASK, fpuinit};
 use crate::arch::amd64::amd64::identcpu::AMD64_HAS_XCRYPT;
 use crate::arch::amd64::amd64::intr::{intr_default_setup, splraise};
 use crate::arch::amd64::amd64::locore::lgdt;
-use crate::arch::amd64::amd64::pmap::{PMAP_DIRECT_BASE, PMAP_DIRECT_END, pmap_bootstrap};
 use crate::arch::amd64::amd64::tsc::{TSC_FREQUENCY, TSC_IS_INVARIANT};
 use crate::arch::amd64::amd64::vector::Xexceptions;
 use crate::arch::amd64::include::biosvar;
@@ -222,14 +231,13 @@ use crate::arch::amd64::include::cpu::{
     CPU_LIDACTION, CPU_PWRACTION, CPU_RETPOLINE, CPU_TSCFREQ, CPU_VMMODE, CPU_XCRYPT,
     CPUPF_USERSEGS, CPUPF_USERXSTATE, CpuInfo, CpuVendor, cpu_info_primary, curcpu,
 };
-use crate::arch::amd64::include::cpufunc::{intr_enable, lidt, lldt, ltr, rcr3};
+use crate::arch::amd64::include::cpufunc::{intr_enable, lidt, lldt, ltr, rcr3, rdmsr};
 use crate::arch::amd64::include::fpu::{
     Savefpu, XstateHdr, fpu_cleandata, fpureset, fpusave, xrstor_user,
 };
 use crate::arch::amd64::include::frame::Trapframe;
 use crate::arch::amd64::include::intrdefs::IPL_IPI;
 use crate::arch::amd64::include::param::{KERNBASE, KERNTEXTOFF, NBPG, PAGE_SIZE, USPACE};
-use crate::arch::amd64::include::pmap::{L4_SLOT_DIRECT, NDML2_ENTRIES, va_sign_neg};
 use crate::arch::amd64::include::proc::MDP_IRET;
 use crate::arch::amd64::include::psl::{PSL_AC, PSL_D, PSL_T, PSL_USERSET, PSL_USERSTATIC, PSL_VM};
 use crate::arch::amd64::include::pte::{NBPD_L3, NBPD_L4};
@@ -241,8 +249,12 @@ use crate::arch::amd64::include::segments::{
 };
 use crate::arch::amd64::include::signal::Sigcontext;
 use crate::arch::amd64::include::specialreg::{
-    CPUID_NXE, CPUIDECX_HV, SEV_STAT_ENABLED, SEV_STAT_ES_ENABLED, SEV_STAT_SNP_ACTIVE, cpuid,
+    CPUID_NXE, CPUIDECX_HV, EFER_NXE, MSR_EFER, SEV_STAT_ENABLED, SEV_STAT_ES_ENABLED,
+    SEV_STAT_SNP_ACTIVE, cpuid,
 };
+use hal::arch::amd64::pmap::layout::{L4_SLOT_DIRECT, NDML2_ENTRIES, va_sign_neg};
+use hal::pmap::BootstrapParams;
+
 use crate::arch::amd64::include::tss::X86_64Tss;
 use crate::arch::amd64::include::vmparam::{VM_MAXUSER_ADDRESS, VM_PHYS_SIZE};
 use crate::arch::amd64::isa::clock::{
@@ -268,6 +280,7 @@ use crate::kern::subr_prf::DB_CONSOLE;
 use crate::kern::subr_prf::splassert_fail;
 use crate::kern::subr_xxx::chrtoblk;
 use crate::kern::vfs_bio::bufinit;
+use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
 use crate::machine::bootinfo::{
     BootFramebuffer, BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion,
@@ -293,12 +306,13 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Paddr, Psize, Register, Vaddr, major, minor};
 use crate::sys::user::{Uarea, User};
 use crate::unported;
-use crate::uvm::uvm_extern::{EXEC_MAP, PHYS_MAP, UvmConstraintRange};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{kernel_map, kernel_map_min, uvm_km_suballoc};
-use crate::uvm::uvm_map::VM_MAP_PAGEABLE;
-use crate::uvm::uvm_page::{uvm_page_physload, uvm_setpagesize};
-use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::{KvMap, install_submap};
+use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
+use kernel::vm::map::VM_MAP_PAGEABLE;
+use kernel::vm::page::uvm_setpagesize;
+use kernel::vm::types::UvmConstraintRange;
 
 #[cfg(feature = "qemu")]
 use crate::arch::amd64::amd64::qemu;
@@ -528,14 +542,11 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
     // MULTIPROCESSOR: the processors the bootloader found, for mainbus_attach (the C's
     // acpimadt/mpbios read the firmware tables) and mp_cpu_start.
     // SAFETY: the boot CPU, once, before anything reads it.
-    #[cfg(feature = "multiprocessor")]
-    unsafe {
-        crate::arch::amd64::amd64::cpu::BOOT_MP.write(boot.mp)
-    };
+    unsafe { crate::arch::amd64::amd64::cpu::BOOT_MP.write(boot.mp) };
 
     // locore0.S: cpuid(0) gives cpuid_level and the vendor string, cpuid(1) the signature
     // and the feature words; the NX bit of cpuid(0x80000001) is or'ed into cpu_feature
-    // (pg_nx itself is the bootloader's EFER.NXE, pmap.rs).
+    // (pg_nx itself is the bootloader's EFER.NXE, sys/hal/arch/amd64/pmap/backend.rs).
     let (level, vb, vc, vd) = cpuid(0);
     CPUID_LEVEL.store(level, Ordering::Relaxed);
     let mut vendor = [0u8; 16];
@@ -563,11 +574,25 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
         .map(|r| r.base.as_usize() + r.length.as_usize())
         .max()
         .unwrap_or(0);
-    PMAP_DIRECT_BASE.store(boot.hhdm_offset, Ordering::Relaxed);
-    PMAP_DIRECT_END.store(
-        boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE),
-        Ordering::Relaxed,
-    );
+    let direct_end = boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE);
+
+    // Call pmap initialization to make new kernel address space: before consinit, whose
+    // frame buffer is reached through the direct map (see the module's redesign).
+    // pg_nx: whether the bootloader enabled NX (the C's locore0.S does, after CPUID).
+    // SAFETY: `rdmsr` of `MSR_EFER`, an architectural MSR every x86-64 CPU has (long mode is
+    // entered through it, so this code runs only where it exists); reading it changes no
+    // state.
+    let efer = unsafe { rdmsr(MSR_EFER) };
+    let (first_avail, virtual_avail) = crate::machine::pmap::pmap_bootstrap(&BootstrapParams {
+        direct_base: Vaddr::new(boot.hhdm_offset),
+        direct_end: Vaddr::new(direct_end),
+        nx: efer & EFER_NXE != 0,
+        first_avail: Paddr::new(0),
+        image: None,
+    });
+    // The kernel map's base follows (`vm_min_kernel_address`, as sparc64's runtime
+    // VM_MIN_KERNEL_ADDRESS): the window is [virtual_avail, the end of its PML4 slot).
+    crate::kern::vm_bsd::VM_MIN_KERNEL_ADDRESS.store(virtual_avail.as_usize(), Ordering::Relaxed);
 
     // cpu_init_early_vctrap and the early PTE pages: M4 and the page tables.
 
@@ -588,19 +613,14 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
         .unwrap_or(0);
     AVAIL_END.store(avail_end, Ordering::Relaxed);
 
-    // Call pmap initialization to make new kernel address space.
-    // SAFETY: once, on the boot CPU, with the direct map set above and paging on.
-    let first_avail = unsafe { pmap_bootstrap(Paddr::new(0), Paddr::new(trunc_page(avail_end))) };
-
     // Allocate these out of the 640KB base memory (after a boot by boot(8): getbootinfo
     // kept the low pages out of uvm; Limine's memory map has no such floor).
     let avail_start = AVAIL_START.load(Ordering::Relaxed);
     if avail_start != 0 && avail_start != PAGE_SIZE {
-        // SAFETY: once, after pmap_bootstrap; the low pages from avail_start are the
-        // kernel's (Reserved in getbootinfo's memory map).
-        let next = unsafe {
-            crate::arch::amd64::amd64::pmap::pmap_prealloc_lowmem_ptps(Paddr::new(avail_start))
-        };
+        // Once, after pmap_bootstrap; the low pages from avail_start are the kernel's
+        // (Reserved in getbootinfo's memory map).
+        let next = crate::machine::pmap::pmap_prealloc_lowmem_ptps(Paddr::new(avail_start));
+
         AVAIL_START.store(next.as_usize(), Ordering::Relaxed);
     }
 
@@ -1013,15 +1033,11 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
 
     // We skip the first few pages for trampolines, hibernate, and to avoid buggy SMI
     // implementations that could corrupt the first 64KB.
-    #[allow(unused_mut)] // raised for MULTIPROCESSOR only
-    let mut avail_start = 16 * PAGE_SIZE;
-    #[cfg(feature = "multiprocessor")]
-    {
-        use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
-        avail_start = avail_start
-            .max(MP_TRAMPOLINE + PAGE_SIZE)
-            .max(MP_TRAMP_DATA + PAGE_SIZE);
-    }
+    // MULTIPROCESSOR: above the APs' trampoline code and data pages.
+    use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
+    let avail_start = (16 * PAGE_SIZE)
+        .max(MP_TRAMPOLINE + PAGE_SIZE)
+        .max(MP_TRAMP_DATA + PAGE_SIZE);
     // ACPI_TRAMPOLINE (acpi_wakecode.S), HIBERNATE and BOOT_KERNEL: not ported/configured.
     AVAIL_START.store(avail_start, Ordering::Relaxed);
 
@@ -1035,13 +1051,10 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
         .filter(|&pa| pa != 0)
         .map(|pa| Vaddr::new(direct_base + pa));
 
-    #[cfg(feature = "multiprocessor")]
     // SAFETY: the RSDP is firmware memory inside locore0's direct map, read once here.
     let mp = rsdp.and_then(|r| unsafe {
         crate::arch::amd64::amd64::cpu::mp_madt_cpus(r.as_usize(), direct_base)
     });
-    #[cfg(not(feature = "multiprocessor"))]
-    let mp = None;
 
     Ok(BootInfo {
         bootloader_name: c"boot(8)",
@@ -1260,80 +1273,77 @@ fn bootarg_memmap(
 /// `MP_TRAMPOLINE` and `MP_TRAMP_DATA` and points its `mp_pdirpa` at the kernel's PML4.
 /// Only after a boot by boot(8): under Limine the bootloader starts the processors.
 pub fn map_tramps() {
-    #[cfg(feature = "multiprocessor")]
-    {
-        use crate::arch::amd64::amd64::mptramp::{
-            cpu_spinup_trampoline, cpu_spinup_trampoline_end, mp_pdirpa, mp_tramp_data_end,
-            mp_tramp_data_start,
-        };
-        use crate::arch::amd64::amd64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
-        use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
-        use crate::sys::mman::{PROT_READ, PROT_WRITE};
+    use crate::arch::amd64::amd64::mptramp::{
+        cpu_spinup_trampoline, cpu_spinup_trampoline_end, mp_pdirpa, mp_tramp_data_end,
+        mp_tramp_data_start,
+    };
+    use crate::arch::amd64::include::mpbiosvar::{MP_TRAMP_DATA, MP_TRAMPOLINE};
+    use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
+    use crate::sys::mman::{PROT_READ, PROT_WRITE};
 
-        if AVAIL_START.load(Ordering::Relaxed) == 0 {
-            // Booted by Limine: its MP request starts the processors (BootMp::start).
-            return;
-        }
-        let kmp = pmap_kernel();
-
-        // The initial PML4 pointer must be below 4G, so if the current one isn't, use a
-        // "bounce buffer" and save it for tramps to use.
-        let pdirpa = kmp.pm_pdirpa.get().as_usize();
-        if pdirpa > 0xffff_ffff {
-            let _ = unported!("map_tramps: the lo32 bounce page for a PML4 above 4 GB");
-            return;
-        }
-        let tramp_pdirpa = pdirpa;
-
-        // Map MP tramp code and data pages RW for copy
-        // SAFETY: the two low pages are the kernel's (getbootinfo kept them out of uvm) and
-        // their page tables exist (pmap_prealloc_lowmem_ptps).
-        unsafe {
-            pmap_kenter_pa(
-                Vaddr::new(MP_TRAMPOLINE),
-                Paddr::new(MP_TRAMPOLINE),
-                PROT_READ | PROT_WRITE,
-            );
-            pmap_kenter_pa(
-                Vaddr::new(MP_TRAMP_DATA),
-                Paddr::new(MP_TRAMP_DATA),
-                PROT_READ | PROT_WRITE,
-            );
-        }
-        let code = ptr::addr_of!(cpu_spinup_trampoline).cast::<u8>();
-        let code_len = ptr::addr_of!(cpu_spinup_trampoline_end) as usize - code as usize;
-        let data = ptr::addr_of!(mp_tramp_data_start).cast::<u8>();
-        let data_len = ptr::addr_of!(mp_tramp_data_end) as usize - data as usize;
-        // SAFETY: the two pages were just mapped writable at their own addresses; the
-        // sources are mptramp.S's bytes in .rodata, shorter than a page each.
-        unsafe {
-            ptr::write_bytes(MP_TRAMPOLINE as *mut u8, 0xcc, PAGE_SIZE);
-            ptr::write_bytes(MP_TRAMP_DATA as *mut u8, 0xcc, PAGE_SIZE);
-            ptr::copy_nonoverlapping(code, MP_TRAMPOLINE as *mut u8, code_len);
-            ptr::copy_nonoverlapping(data, MP_TRAMP_DATA as *mut u8, data_len);
-
-            // We need to patch this after we copy the tramp data, the symbol points into the
-            // copied tramp data page (at an odd offset in it: the write is unaligned).
-            ptr::write_unaligned(
-                ptr::addr_of!(mp_pdirpa).cast::<u32>().cast_mut(),
-                tramp_pdirpa as u32,
-            );
-        }
-
-        // Unmap, will be remapped in cpu_start_secondary
-        // SAFETY: the two mappings entered above, used by nothing else.
-        unsafe {
-            pmap_kremove(
-                Vaddr::new(MP_TRAMPOLINE),
-                crate::sys::types::Vsize::new(PAGE_SIZE),
-            );
-            pmap_kremove(
-                Vaddr::new(MP_TRAMP_DATA),
-                crate::sys::types::Vsize::new(PAGE_SIZE),
-            );
-        }
-        crate::arch::amd64::amd64::cpu::MP_TRAMP_INSTALLED.store(true, Ordering::Release);
+    if AVAIL_START.load(Ordering::Relaxed) == 0 {
+        // Booted by Limine: its MP request starts the processors (BootMp::start).
+        return;
     }
+    let kmp = pmap_kernel();
+
+    // The initial PML4 pointer must be below 4G, so if the current one isn't, use a
+    // "bounce buffer" and save it for tramps to use.
+    let pdirpa = kmp.cr3() as usize;
+    if pdirpa > 0xffff_ffff {
+        let _ = unported!("map_tramps: the lo32 bounce page for a PML4 above 4 GB");
+        return;
+    }
+    let tramp_pdirpa = pdirpa;
+
+    // Map MP tramp code and data pages RW for copy
+    // SAFETY: the two low pages are the kernel's (getbootinfo kept them out of uvm) and
+    // their page tables exist (pmap_prealloc_lowmem_ptps).
+    unsafe {
+        pmap_kenter_pa(
+            Vaddr::new(MP_TRAMPOLINE),
+            Paddr::new(MP_TRAMPOLINE),
+            PROT_READ | PROT_WRITE,
+        );
+        pmap_kenter_pa(
+            Vaddr::new(MP_TRAMP_DATA),
+            Paddr::new(MP_TRAMP_DATA),
+            PROT_READ | PROT_WRITE,
+        );
+    }
+    let code = ptr::addr_of!(cpu_spinup_trampoline).cast::<u8>();
+    let code_len = ptr::addr_of!(cpu_spinup_trampoline_end) as usize - code as usize;
+    let data = ptr::addr_of!(mp_tramp_data_start).cast::<u8>();
+    let data_len = ptr::addr_of!(mp_tramp_data_end) as usize - data as usize;
+    // SAFETY: the two pages were just mapped writable at their own addresses; the
+    // sources are mptramp.S's bytes in .rodata, shorter than a page each.
+    unsafe {
+        ptr::write_bytes(MP_TRAMPOLINE as *mut u8, 0xcc, PAGE_SIZE);
+        ptr::write_bytes(MP_TRAMP_DATA as *mut u8, 0xcc, PAGE_SIZE);
+        ptr::copy_nonoverlapping(code, MP_TRAMPOLINE as *mut u8, code_len);
+        ptr::copy_nonoverlapping(data, MP_TRAMP_DATA as *mut u8, data_len);
+
+        // We need to patch this after we copy the tramp data, the symbol points into the
+        // copied tramp data page (at an odd offset in it: the write is unaligned).
+        ptr::write_unaligned(
+            ptr::addr_of!(mp_pdirpa).cast::<u32>().cast_mut(),
+            tramp_pdirpa as u32,
+        );
+    }
+
+    // Unmap, will be remapped in cpu_start_secondary
+    // SAFETY: the two mappings entered above, used by nothing else.
+    unsafe {
+        pmap_kremove(
+            Vaddr::new(MP_TRAMPOLINE),
+            crate::sys::types::Vsize::new(PAGE_SIZE),
+        );
+        pmap_kremove(
+            Vaddr::new(MP_TRAMP_DATA),
+            crate::sys::types::Vsize::new(PAGE_SIZE),
+        );
+    }
+    crate::arch::amd64::amd64::cpu::MP_TRAMP_INSTALLED.store(true, Ordering::Release);
 }
 
 /// `x86_64_proc0_tss_ldt_init`: loads the boot CPU's task register and clears the LDT.
@@ -1386,7 +1396,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    EXEC_MAP.store(ptr::from_ref(exec_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Exec, exec_map);
 
     // Allocate a submap for physio
     minaddr = kernel_map_min().as_usize();
@@ -1399,7 +1409,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    PHYS_MAP.store(ptr::from_ref(phys_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Phys, phys_map);
 
     // cpu_init_extents: with the extents.
 
@@ -1699,27 +1709,26 @@ pub fn sys_sigreturn(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 }
 
 /// `cpu_kick`: force a CPU into the kernel, whether or not it's idle (`MULTIPROCESSOR`;
-/// nothing on one CPU).
-pub fn cpu_kick(_ci: &CpuInfo) {
-    #[cfg(feature = "multiprocessor")]
+/// nothing for the running CPU itself).
+pub fn cpu_kick(ci: &CpuInfo) {
     // only need to kick other CPUs
-    if !ptr::eq(_ci, curcpu()) {
+    if !ptr::eq(ci, curcpu()) {
         use crate::arch::amd64::amd64::cpu::CPU_MWAIT_SIZE;
         use crate::arch::amd64::include::cpu::{MWAIT_IN_IDLE, MWAIT_KEEP_IDLING};
         if CPU_MWAIT_SIZE.load(Ordering::Relaxed) > 0 {
             // If not idling, then send an IPI, else just clear the "keep idling" bit.
-            if _ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_IN_IDLE == 0 {
+            if ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_IN_IDLE == 0 {
                 crate::arch::amd64::amd64::ipi::x86_send_ipi(
-                    _ci,
+                    ci,
                     crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
                 );
             } else {
-                _ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
+                ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
             }
         } else {
             // no mwait, so need an IPI
             crate::arch::amd64::amd64::ipi::x86_send_ipi(
-                _ci,
+                ci,
                 crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
             );
         }
@@ -1784,7 +1793,6 @@ pub fn boot(howto: i32) -> ! {
         // haltsys:
         let _ = unported!("config_suspend_all (DVACT_POWERDOWN)");
 
-        #[cfg(feature = "multiprocessor")]
         crate::arch::amd64::amd64::ipi::x86_broadcast_ipi(
             crate::arch::amd64::include::intrdefs::X86_IPI_HALT,
         );
@@ -1937,29 +1945,26 @@ pub fn clear_resched(ci: &CpuInfo) {
     ci.ci_want_resched.store(0, Ordering::SeqCst);
 }
 
-/// `cpu_unidle(ci)`: with `MULTIPROCESSOR`, wakes another CPU's idle loop: when the CPU
-/// idles in `mwait` only (`MWAIT_ONLY`), by clearing its "keep idling" bit, which the
-/// monitor sees; otherwise with an IPI. On one CPU the idle loop sees the run queue itself.
-pub fn cpu_unidle(_ci: &CpuInfo) {
-    #[cfg(feature = "multiprocessor")]
+/// `cpu_unidle(ci)` (`MULTIPROCESSOR`'s): wakes another CPU's idle loop: when the CPU idles
+/// in `mwait` only (`MWAIT_ONLY`), by clearing its "keep idling" bit, which the monitor sees;
+/// otherwise with an IPI. The running CPU's own idle loop sees the run queue itself.
+pub fn cpu_unidle(ci: &CpuInfo) {
+    use crate::arch::amd64::amd64::cpu::CPU_MWAIT_SIZE;
+    use crate::arch::amd64::include::cpu::{MWAIT_KEEP_IDLING, MWAIT_ONLY};
+    if CPU_MWAIT_SIZE.load(Ordering::Relaxed) > 0
+        && ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_ONLY != 0
     {
-        use crate::arch::amd64::amd64::cpu::CPU_MWAIT_SIZE;
-        use crate::arch::amd64::include::cpu::{MWAIT_KEEP_IDLING, MWAIT_ONLY};
-        if CPU_MWAIT_SIZE.load(Ordering::Relaxed) > 0
-            && _ci.ci_mwait.load(Ordering::SeqCst) & MWAIT_ONLY != 0
-        {
-            // Just clear the "keep idling" bit; if it wasn't idling then we didn't need to
-            // do anything anyway.
-            _ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
-            return;
-        }
+        // Just clear the "keep idling" bit; if it wasn't idling then we didn't need to
+        // do anything anyway.
+        ci.ci_mwait.fetch_and(!MWAIT_KEEP_IDLING, Ordering::SeqCst);
+        return;
+    }
 
-        if !ptr::eq(_ci, curcpu()) {
-            crate::arch::amd64::amd64::ipi::x86_send_ipi(
-                _ci,
-                crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
-            );
-        }
+    if !ptr::eq(ci, curcpu()) {
+        crate::arch::amd64::amd64::ipi::x86_send_ipi(
+            ci,
+            crate::arch::amd64::include::intrdefs::X86_IPI_NOP,
+        );
     }
 }
 

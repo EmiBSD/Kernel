@@ -83,6 +83,7 @@ use crate::kern::kern_tc::nanotime;
 use crate::kern::kern_time::ratecheck;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{bawrite, bdwrite, bread, brelse, buf_adjcnt, getblk};
+use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::kprintf;
 use crate::log;
 use crate::sys::buf::{B_DONE, Buf};
@@ -106,7 +107,6 @@ use crate::ufs::ffs::fs::{
 use crate::ufs::ufs::dinode::{IFDIR, IFMT, NDADDR, Ufsino};
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use crate::ufs::ufs::quota::{ufs_quota_alloc_blocks, ufs_quota_free_blocks};
-use crate::uvm::uvm_vnode::uvm_vnp_uncache;
 use libkern::{StaticCell, scanc, skpc};
 
 /// `fserr_interval`: at most one "file system full" message every 2 seconds.

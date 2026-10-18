@@ -145,12 +145,12 @@ use crate::sys::sched::sched_pause;
 use crate::sys::systm::{INFSLP, PHYSMEM};
 use crate::sys::types::Daddr;
 use crate::sys::vnode::{VBIOERROR, VBLK, VREG, Vnode};
-use crate::uvm::uvm_extern::UvmConstraintRange;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::NO_CONSTRAINT;
-use crate::uvm::uvm_object::{BUFCACHE_PAGER, uvm_obj_init};
-use crate::uvm::uvm_page::{uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
-use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, atop, ptoa, round_page};
+use hal::vm::param::{atop, ptoa, round_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::NO_CONSTRAINT;
+use kernel::vm::km::VM_KERNEL_SPACE_SIZE;
+use kernel::vm::page::{Owner, uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
+use kernel::vm::types::UvmConstraintRange;
 
 /// `bcstats`: the buffer cache counters (`struct bcachestats`), as atomics.
 pub struct Bcstats {
@@ -623,7 +623,7 @@ pub fn bread_cluster_callback(bp: &'static Buf) {
         let newobj = &x.b_uobj;
         let oldobj = &bp.b_uobj;
 
-        uvm_obj_init(newobj, Some(&BUFCACHE_PAGER), 1);
+        newobj.reinit_dummy(1); // uvm_obj_init(newobj, &bufcache_pager, 1)
         for page in 0..atop(x.b_bufsize.get() as usize) {
             let off = x.b_poffs.get() + ptoa(page) as i64;
             let Some(pg) = uvm_pagelookup(oldobj, off) else {
@@ -631,8 +631,8 @@ pub fn bread_cluster_callback(bp: &'static Buf) {
                     "bread_cluster_callback: page {off:#x} is gone"
                 ));
             };
-            kassert!(pg.wire_count.get() == 1);
-            uvm_pagerealloc(pg, Some(newobj), off);
+            kassert!(pg.wire_count() == 1);
+            uvm_pagerealloc(pg, Owner::Object(oldobj), Owner::Object(newobj), off);
         }
         x.b_pobj.set(newobj);
 

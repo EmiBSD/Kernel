@@ -54,24 +54,30 @@
 //! amd64 `<machine/vmparam.h>`: the virtual address space layout.
 //!
 //! Upstream: sys/arch/amd64/include/vmparam.h @ 3ce1f3f79392
+//! LZ: sys/arch/amd64/include/vmparam.rs@3c62ede68802
 //!
 //! Status: `wip`. Milestone M2 needs the kernel/user boundary for `ddb`'s `INKERNEL`, M3 the
 //! physical segment policy, M6 the user limits (`MAXTSIZ`, `DFLDSIZ`, `MAXDSIZ`, `BRKSIZ`,
 //! `DFLSSIZ`, `MAXSSIZ`, `STACKGAP_RANDOM`, `USRSTACK`, `VM_MIN_STACK_ADDRESS`);
 //! M10a (physio) `USRIOSIZE` and `VM_PHYS_SIZE`; `SHMMAXPGS` and the `VM_FREELIST_*` are
 //! not there yet.
+//!
+//! ## Redesign
+//! - `VM_MIN_ADDRESS`, `VM_MAXUSER_ADDRESS`, `VM_MAX_ADDRESS`, `VM_MIN_KERNEL_ADDRESS` and
+//!   `VM_MAX_KERNEL_ADDRESS` moved into `hal` (`sys/hal/arch/amd64/include/vmparam.rs`, N3.1:
+//!   `hal`'s pmap reads them there) and are re-exported here, beside the user limits and the
+//!   physical segment policy, which stay.
 
 use crate::arch::amd64::include::param::PAGE_SIZE;
-use crate::uvm::uvm_page::VM_PSTRAT_BIGFIRST;
+use crate::kern::vm_bsd::VM_PSTRAT_BIGFIRST;
+
+pub use hal::arch::amd64::include::vmparam::{
+    VM_MAX_ADDRESS, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS,
+    VM_MIN_KERNEL_ADDRESS,
+};
 
 /// `USRIOSIZE`: size of User Raw I/O map, in pages.
 pub const USRIOSIZE: usize = 300;
-/// `VM_MIN_ADDRESS`: the lowest user address.
-pub const VM_MIN_ADDRESS: usize = PAGE_SIZE;
-/// `VM_MAXUSER_ADDRESS`: the highest address user mappings may reach.
-pub const VM_MAXUSER_ADDRESS: usize = 0x0000_7f7f_ffff_c000;
-/// `VM_MAX_ADDRESS`: the end of the user address space.
-pub const VM_MAX_ADDRESS: usize = 0x0000_7fbf_dfef_f000;
 /// `USRSTACK`: the top (end) of the user stack. Immediately above the user stack
 /// resides the user structure, which is `USPACE` bytes long and contains the kernel stack
 /// of the process (C's description; the u-area is kernel memory here).
@@ -92,10 +98,7 @@ pub const MAXSSIZ: usize = 32 * 1024 * 1024;
 pub const STACKGAP_RANDOM: usize = 256 * 1024;
 /// `VM_MIN_STACK_ADDRESS`.
 pub const VM_MIN_STACK_ADDRESS: usize = 0x0000_6000_0000_0000;
-/// `VM_MIN_KERNEL_ADDRESS`: the start of the kernel address space (the direct map).
-pub const VM_MIN_KERNEL_ADDRESS: usize = 0xffff_8000_0000_0000;
-/// `VM_MAX_KERNEL_ADDRESS`: the end of the kernel's own virtual space.
-pub const VM_MAX_KERNEL_ADDRESS: usize = 0xffff_8080_0000_0000;
+
 /// `VM_PHYS_SIZE`: virtual size (bytes) of the physio submap (`phys_map`).
 pub const VM_PHYS_SIZE: usize = USRIOSIZE * PAGE_SIZE;
 /// `VM_PHYSSEG_MAX`: how many physical memory segments `uvm_page_physload` accepts (actually

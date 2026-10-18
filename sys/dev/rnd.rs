@@ -142,6 +142,7 @@ use crate::kern::kern_timeout::{timeout_add_msec, timeout_add_sec};
 use crate::kern::sched_bsd::r#yield;
 use crate::kern::subr_log::msgbufp;
 use crate::kern::subr_prf::{panic, printf};
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::copy::copyout;
 use crate::machine::cpu::{cpu_rnd_messybits, etext};
 use crate::machine::intr::IPL_HIGH;
@@ -163,9 +164,10 @@ use crate::sys::time::Timespec;
 use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{Dev, Register, Vaddr, Vsize};
 use crate::sys::uio::Uio;
-use crate::uvm::uvm_extern::{KmemDynMode, Voff};
-use crate::uvm::uvm_km::{KP_NONE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_param::trunc_page;
+use hal::vm::param::trunc_page;
+use kernel::vm::km::KmemDynMode;
+use kernel::vm::km::{KP_NONE, KV_ANY};
+use kernel::vm::types::Voff;
 
 // Stirring polynomial over GF(2), used in add_entropy_words(). The polynomial terms are
 // chosen to be evenly spaced (minimum RMS distance from evenly spaced), except for the last

@@ -79,6 +79,7 @@
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{bawrite, bdwrite, bread, brelse, buf_adjcnt, bwrite, getblk};
 use crate::kern::vfs_vops::VOP_FSYNC;
+use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_INVAL, B_SYNC, Buf, clrbuf};
 use crate::sys::errno::Errno;
@@ -100,7 +101,6 @@ use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode, daddr32_at, set
 use crate::ufs::ufs::inode::{daddr64_at, set_daddr64_at};
 use crate::ufs::ufs::quota::ufs_quota_free_blocks;
 use crate::ufs::ufs::ufs_bmap::ufs_getlbns;
-use crate::uvm::uvm_vnode::uvm_vnp_setsize;
 
 /// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
 fn getblk_wait(vp: &'static Vnode, blkno: Daddr, size: i32) -> &'static Buf {

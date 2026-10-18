@@ -26,8 +26,9 @@
 //! - `sys/kern/syscalls.rs` (the names, `syscalls.c`).
 //!
 //! The switch table points every entry at `sys_nosys` unless a `pub fn sys_<name>(` exists
-//! in a file directly under `sys/kern/`, `sys/uvm/`, `sys/dev/` or `sys/nfs/` (`getentropy(2)`
-//! lives in `dev/rnd.c`, `nfssvc(2)` in `nfs/nfs_syscalls.c`), so porting a syscall is: write
+//! in a file directly under `sys/kern/`, `sys/dev/` or `sys/nfs/` (`getentropy(2)` lives in
+//! `dev/rnd.c`, `nfssvc(2)` in `nfs/nfs_syscalls.c`; the vm calls' `sysent` adapters in
+//! `kern/vm_bsd.rs` since `sys/uvm/` went into the kernel, N3.5), so porting a syscall is: write
 //! the function, rerun the generator. `--check` regenerates in memory and fails if the files on
 //! disk differ (`just ci`). Of the kernel options the master file tests, `ACCOUNTING`,
 //! `NFSCLIENT` and `NFSSERVER` are configured (as in GENERIC); for `PTRACE`, `KTRACE` and
@@ -400,7 +401,6 @@ fn ported_syscalls(root: &Path) -> Result<BTreeMap<String, String>> {
     let mut found = BTreeMap::new();
     for (dir, module) in [
         ("sys/kern", "crate::kern"),
-        ("sys/uvm", "crate::uvm"),
         ("sys/dev", "crate::dev"),
         ("sys/nfs", "crate::nfs"),
     ] {

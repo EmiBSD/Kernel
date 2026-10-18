@@ -91,7 +91,6 @@ use crate::arch::arm64::arm64::intr::{
     arm_do_pending_intr, arm_init_smask, arm_intr_register_fdt, arm_set_intr_handler, arm_smask,
     interrupt_controllers, intr_barrier,
 };
-use crate::arch::arm64::arm64::pmap::{pmap_extract, pmap_kernel};
 use crate::arch::arm64::dev::simplebus::simplebus_attach;
 use crate::arch::arm64::include::cpu::{CpuInfo, cpu_info_primary, cpu_number, curcpu};
 use crate::arch::arm64::include::cpu::{intr_disable, intr_enable, intr_restore};
@@ -114,6 +113,7 @@ use crate::machine::bus::{
     BusSpaceHandle, BusSpaceTag, bus_space_map, bus_space_read_1, bus_space_read_4,
     bus_space_write_1, bus_space_write_4,
 };
+use crate::machine::pmap::{pmap_extract, pmap_kernel};
 use crate::queue_adapter;
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device, Softc};
 use crate::sys::evcount::Evcount;

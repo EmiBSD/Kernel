@@ -71,12 +71,12 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use crate::arch::arm64::arm64::cpu::OppTable;
 use crate::arch::arm64::include::frame::Trapframe;
 use crate::arch::arm64::include::pcb::Pcb;
-use crate::arch::arm64::include::pmap::Pmap;
 use crate::sys::clockintr::Clockqueue;
 use crate::sys::device::Device;
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_QUAD, CTLTYPE_STRING};
+use hal::pmap::Pmap;
 
 /// `restore_daif`: writes `daif` back into `DAIF`.
 ///

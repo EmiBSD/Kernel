@@ -79,7 +79,7 @@ use crate::sys::mbuf::Mbuf;
 use crate::sys::proc::Proc;
 use crate::sys::types::{Off, Paddr};
 use crate::sys::uio::Uio;
-use crate::uvm::uvm_page::VmPage;
+use kernel::vm::page::VmPage;
 
 /// `BUS_SPACE_MAP_CACHEABLE`.
 pub const BUS_SPACE_MAP_CACHEABLE: u32 = 0x01;

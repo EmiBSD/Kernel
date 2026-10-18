@@ -20,14 +20,21 @@
 //! The trust boundary of the memory bridges: the checks `hal` makes on every block the
 //! kernel's allocators hand it, before it trusts the block.
 //!
-//! The memory bridges (`PageMemory`, `PoolBackend`/`RawPool`, `Malloc`) are safe traits
-//! (decision 30): their implementations, registered once by the kernel's boot path with the
-//! kernel's own `uvm_km`, `pool(9)` and `malloc(9)`, build nothing unsafe; they return a
-//! pointer and the size they granted. That the block is the kernel's memory, exclusively the
-//! caller's until it is freed through the same bridge, is the **registration contract**
-//! (`sys/hal/bridges.rs`), on which the `// SAFETY:` of every site that makes a reference or
-//! a slice of such a block rests. It is a documented trust boundary, not a compile-time
-//! proof, and it goes with the bridges (N3 for `PageMemory`, N9 for the others).
+//! The memory bridges (`PoolBackend`/`RawPool`, `Malloc`) and the kernel map's page provider
+//! (`PageMemory`) are safe traits (decision 30): their implementations (the bridges registered
+//! once by the kernel's boot path with the kernel's own `pool(9)` and `malloc(9)`; the
+//! provider the kernel's own `km` is and passes down as a value, N3.2) build nothing unsafe;
+//! they return a pointer and the size they granted. That the block is the kernel's memory,
+//! exclusively the caller's until it is freed through the same implementation, is the
+//! **registration contract** (`sys/hal/bridges.rs`; for the page provider, the contract of
+//! `crate::kmbuf::PageMemory`), on which the `// SAFETY:` of every site that makes a
+//! reference or a slice of such a block rests. It is a documented trust boundary, not a
+//! compile-time proof, and it goes with the bridges (N9) and, for the pages, when the kernel
+//! map's record is typed (N3.5). Since the page provider is a value and not a slot, the
+//! boundary is chosen at each call: every caller of `KmBuf::alloc_pageable`/`alloc_wired` and
+//! of `kernel::pipe::Pipes::new` names its provider, and in a kernel image the one production
+//! choice is `sys/kern/pipe_glue.rs`'s `PIPES`, which passes the kernel's
+//! `kernel::vm::km::page_memory()` (the test doubles are `cfg(test)` code).
 //!
 //! What can be checked is checked here, on every answer: the pointer is not null (it is a
 //! `NonNull`), it is aligned as the request needs, and the size granted covers the request.
@@ -36,6 +43,23 @@
 //! last bytes are written and read back (then restored), so a block that is not memory, or
 //! not writable, fails at its first use instead of corrupting something later.
 //!
+//! The machine's `kcopy` (`hal::user::UserCopy::kcopy_in`/`kcopy_out`, N3.5 S0) writes and
+//! reads kernel memory named by an address. `hal` calls it only for a range inside a
+//! `hal::user::ForeignWindow`, which the kernel map's token alone mints
+//! (`KernelMapper::foreign_window`): nothing checks the range, so a window is a write to any
+//! kernel address its maker names, the strongest primitive the token gives. The token's
+//! contract (as for `kenter`'s addresses, which no check here could establish either): its
+//! holder mints a window only over a range its own `uvm_map_extract` returned into the
+//! kernel map, onto foreign pages no Rust object occupies, and unmaps that range only after
+//! the window is gone (N3.5 S1 makes this a type: windows minted only from the extract's
+//! result). The window bounds every copy (a range past it is `panic(9)`); the fault on an
+//! unmapped page is the machine's `pcb_onfault`, an `EFAULT`.
+//!
+//! The pmap's page provider (`hal::pmap::PhysPages`, N3.1, passed to `pmap_bootstrap` as a
+//! value by the same boot path) is under the same contract for the frames it hands out, and a
+//! machine's pmap views a frame through the direct map only after [`check_frame`]: the frame
+//! page-aligned, its whole page inside the direct map the boot glue described.
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.
@@ -43,6 +67,26 @@
 use core::ptr::NonNull;
 
 use crate::assert::hal_panic;
+
+/// Checks a frame `pa` (from `PhysPages`, or a caller's `Paddr`) before a pmap views it through
+/// the direct map `[base, end)` that the boot glue described: `pa` page-aligned (`page` a
+/// power of two), the map set (`base` not 0), and the whole page inside it. Its direct-map
+/// address; panics naming the frame otherwise.
+#[cfg_attr(
+    not(all(target_os = "none", target_arch = "x86_64")),
+    allow(dead_code, reason = "amd64's pmap views frames through its direct map")
+)]
+pub(crate) fn check_frame(pa: usize, page: usize, base: usize, end: usize) -> usize {
+    let va = base.checked_add(pa).filter(|va| {
+        base != 0 && pa & (page - 1) == 0 && va.checked_add(page).is_some_and(|e| e <= end)
+    });
+    match va {
+        Some(va) => va,
+        None => hal_panic(format_args!(
+            "PhysPages: frame {pa:#x} outside the direct map [{base:#x}, {end:#x})"
+        )),
+    }
+}
 
 /// Checks a block `bridge` returned for a request of `requested` bytes aligned to `align`:
 /// aligned, and `granted` covering the request; probes it under `diagnostic`. Panics naming

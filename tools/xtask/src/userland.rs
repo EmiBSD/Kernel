@@ -471,10 +471,16 @@ const AFTERINSTALL_SCRIPTS: &[(&str, &[&str])] = &[(
 /// relative to the workspace root. `tools/sr6create` makes a RAID 6 softraid(4) volume, which
 /// OpenBSD's own bioctl(8) refuses to; `tools/fusehello` (M10d) is a read-only FUSE file
 /// system over OpenBSD's libfuse (`LIBRARIES`); `tools/difftest` (M12+) holds the system call
-/// probes `cargo xtask diff-openbsd` runs on EmiBSD and on a real OpenBSD. Their sources are
-/// not OpenBSD's, so the licence report (which lists only the reference tree's files) does not
-/// name them.
-const OWN_PROGRAMS: &[&str] = &["tools/sr6create", "tools/fusehello", "tools/difftest"];
+/// probes `cargo xtask diff-openbsd` runs on EmiBSD and on a real OpenBSD; `tools/mmapstress`
+/// (N3.4e) races msync(2) against madvise(2) on a shared file mapping (`just smoke-mmap`).
+/// Their sources are not OpenBSD's, so the licence report (which lists only the reference
+/// tree's files) does not name them.
+const OWN_PROGRAMS: &[&str] = &[
+    "tools/sr6create",
+    "tools/fusehello",
+    "tools/difftest",
+    "tools/mmapstress",
+];
 
 /// Programs whose Makefile embeds their manual page in a generated `manual.c` (`disklabel`'s
 /// and `fdisk`'s `-h`/`help` pager): the Makefile renders `*.8` with mandoc(1), which this

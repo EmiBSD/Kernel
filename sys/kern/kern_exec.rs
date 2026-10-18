@@ -108,6 +108,8 @@ use crate::kern::vfs_subr::{vput, vref, vrele};
 use crate::kern::vfs_syscalls::NameiBuf;
 use crate::kern::vfs_vnops::{vn_close, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_OPEN, VOP_UNLOCK};
+use crate::kern::vm_bsd::uvmspace_exec;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::Cpu;
 use crate::machine::param::MachineParam;
@@ -155,24 +157,26 @@ use crate::sys::types::{Register, Vaddr, Vsize};
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
 use crate::unported;
-use crate::uvm::uvm_aobj::{uao_create, uao_detach, uao_reference};
-use crate::uvm::uvm_extern::{KmemVaMode, KvMap, UVM_FLAG_COPYONW, uvm_mapflag};
-use crate::uvm::uvm_fault::uvm_fault_wire;
-use crate::uvm::uvm_km::{KD_WAITOK, KP_PAGEABLE, kernel_map, km_alloc, km_free};
-use crate::uvm::uvm_map::{uvm_map, uvm_map_immutable, uvm_map_protect, uvm_unmap, uvmspace_exec};
-use crate::uvm::uvm_object::UvmObject;
-use crate::uvm::uvm_param::{atop, round_page, trunc_page};
+use hal::once::OnceStatic;
+use hal::vm::param::{atop, round_page, trunc_page};
+use kernel::vm::aobj::uao_create;
+use kernel::vm::fault::uvm_fault_wire;
+use kernel::vm::km::{KD_WAITOK, KP_PAGEABLE, kernel_map};
+use kernel::vm::km::{KmemVaMode, KvMap};
+use kernel::vm::map::{uvm_map, uvm_map_immutable, uvm_map_protect, uvm_unmap};
+use kernel::vm::object::ObjRef;
+use kernel::vm::types::{UVM_FLAG_COPYONW, uvm_mapflag};
 
 /// `sigobject`: the shared sigcode object, created by the first `exec_sigcode_map` and
 /// referenced forever after.
-static SIGOBJECT: AtomicPtr<UvmObject> = AtomicPtr::new(ptr::null_mut());
+static SIGOBJECT: OnceStatic<ObjRef> = OnceStatic::new();
 /// `sigcode_va`: where `sigobject` is mapped (read-only) in `kernel_map`.
 pub static SIGCODE_VA: AtomicUsize = AtomicUsize::new(0);
 /// `sigcode_sz`: the size of that mapping.
 pub static SIGCODE_SZ: AtomicUsize = AtomicUsize::new(0);
 /// `timekeep_object`: the shared timekeep object, created by the first
 /// `exec_timekeep_map`.
-static TIMEKEEP_OBJECT: AtomicPtr<UvmObject> = AtomicPtr::new(ptr::null_mut());
+static TIMEKEEP_OBJECT: OnceStatic<ObjRef> = OnceStatic::new();
 /// `timekeep`: the timekeep page in `kernel_map` (wired), which `tc_update_timekeep`
 /// (`kern_tc.c`) writes; null until the first exec maps it.
 pub static TIMEKEEP: AtomicPtr<Timekeep> = AtomicPtr::new(ptr::null_mut());
@@ -690,16 +694,23 @@ fn execve_common(
 
     let vm = pr.vmspace();
     // Now map address space
-    vm.vm_taddr.set(trunc_page(pack.ep_taddr));
-    vm.vm_tsize
-        .set(atop(round_page(pack.ep_taddr + pack.ep_tsize) - trunc_page(pack.ep_taddr)) as i32);
-    vm.vm_daddr.set(trunc_page(pack.ep_daddr));
-    vm.vm_dsize
-        .set(atop(round_page(pack.ep_daddr + pack.ep_dsize) - trunc_page(pack.ep_daddr)) as i32);
-    vm.vm_dused.set(0);
-    vm.vm_ssize.set(atop(round_page(pack.ep_ssize)) as i32);
-    vm.vm_maxsaddr.set(pack.ep_maxsaddr);
-    vm.vm_minsaddr.set(pack.ep_minsaddr);
+    vm.vm_taddr
+        .store(trunc_page(pack.ep_taddr), Ordering::Relaxed);
+    vm.vm_tsize.store(
+        atop(round_page(pack.ep_taddr + pack.ep_tsize) - trunc_page(pack.ep_taddr)) as i32,
+        Ordering::Relaxed,
+    );
+    vm.vm_daddr
+        .store(trunc_page(pack.ep_daddr), Ordering::Relaxed);
+    vm.vm_dsize.store(
+        atop(round_page(pack.ep_daddr + pack.ep_dsize) - trunc_page(pack.ep_daddr)) as i32,
+        Ordering::Relaxed,
+    );
+    vm.vm_dused.store(0, Ordering::Relaxed);
+    vm.vm_ssize
+        .store(atop(round_page(pack.ep_ssize)) as i32, Ordering::Relaxed);
+    vm.vm_maxsaddr.store(pack.ep_maxsaddr, Ordering::Relaxed);
+    vm.vm_minsaddr.store(pack.ep_minsaddr, Ordering::Relaxed);
 
     // exec_abort: the old process doesn't exist anymore. exit gracefully. get rid of the
     // (new) address space we have created, if any, get rid of our namei data and vnode, and
@@ -734,12 +745,12 @@ fn execve_common(
 
     // MACHINE_STACK_GROWS_UP: neither amd64 nor arm64.
     pr.ps_strings
-        .set(vm.vm_minsaddr.get() - sgap - PATH_MAX - size_of::<PsStrings>());
-    pack.ep_execpath = vm.vm_minsaddr.get() - sgap - PATH_MAX;
+        .set(vm.vm_minsaddr.load(Ordering::Relaxed) - sgap - PATH_MAX - size_of::<PsStrings>());
+    pack.ep_execpath = vm.vm_minsaddr.load(Ordering::Relaxed) - sgap - PATH_MAX;
     if uvm_map_protect(
         &vm.vm_map,
         round_page(pack.ep_execpath + PATH_MAX),
-        vm.vm_minsaddr.get(),
+        vm.vm_minsaddr.load(Ordering::Relaxed),
         PROT_NONE,
         0,
         true,
@@ -757,7 +768,7 @@ fn execve_common(
         ..PsStrings::default()
     };
 
-    let stack = vm.vm_minsaddr.get() - len;
+    let stack = vm.vm_minsaddr.load(Ordering::Relaxed) - len;
     // Now copy argc, args & environ to new stack
     if !copyargs(&mut pack, &mut arginfo, stack, argbuf) {
         exec_abort(&mut pack, &mut nid);
@@ -1116,10 +1127,8 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
     // to it and map it PROT_READ such that the coredump code can write it out into core
     // dumps. Then we map it with PROT_EXEC into the process just the way sys_mmap would map
     // it.
-    // SAFETY: a non-null `sigobject` is the aobj created below, which is never freed.
-    let existing = unsafe { SIGOBJECT.load(Ordering::Acquire).as_ref() };
-    let sigobject: &'static UvmObject = match existing {
-        Some(obj) => obj,
+    let sigobject: ObjRef = match SIGOBJECT.get() {
+        Some(obj) => obj.clone(),
         None => {
             let sigfill = <Machine as MachineSignal>::sigfill();
 
@@ -1133,7 +1142,7 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
                 kernel_map(),
                 &mut va,
                 round_page(sz),
-                Some(obj),
+                Some(obj.clone()),
                 0,
                 0,
                 uvm_mapflag(
@@ -1178,20 +1187,21 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
 
             SIGCODE_VA.store(va, Ordering::Relaxed);
             SIGCODE_SZ.store(round_page(sz), Ordering::Relaxed);
-            SIGOBJECT.store(ptr::from_ref(obj).cast_mut(), Ordering::Release);
+            // Exec runs under the kernel lock: no other thread made one meanwhile.
+            let _ = SIGOBJECT.set(obj.clone());
             obj
         }
     };
 
     pr.ps_sigcode.set(0); // no hint
-    uao_reference(sigobject);
+    sigobject.reference();
     let map = &pr.vmspace().vm_map;
     let mut addr = pr.ps_sigcode.get();
     if uvm_map(
         map,
         &mut addr,
         round_page(sz),
-        Some(sigobject),
+        Some(sigobject.clone()),
         0,
         0,
         uvm_mapflag(
@@ -1204,7 +1214,7 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
     )
     .is_err()
     {
-        uao_detach(sigobject);
+        sigobject.detach();
         return Err(Errno::ENOMEM);
     }
     pr.ps_sigcode.set(addr);
@@ -1223,23 +1233,21 @@ pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
     let timekeep_sz = round_page(size_of::<Timekeep>());
 
     // Similar to the sigcode object
-    // SAFETY: a non-null `timekeep_object` is the aobj created below, never freed.
-    let existing = unsafe { TIMEKEEP_OBJECT.load(Ordering::Acquire).as_ref() };
-    let object: &'static UvmObject = match existing {
-        Some(obj) => obj,
+    let object: ObjRef = match TIMEKEEP_OBJECT.get() {
+        Some(obj) => obj.clone(),
         None => {
             let mut va = 0usize;
 
             let Some(obj) = uao_create(Vsize::new(timekeep_sz), 0) else {
                 return Err(Errno::ENOMEM);
             };
-            uao_reference(obj);
+            obj.reference();
 
             if uvm_map(
                 kernel_map(),
                 &mut va,
                 timekeep_sz,
-                Some(obj),
+                Some(obj.clone()),
                 0,
                 0,
                 uvm_mapflag(
@@ -1252,12 +1260,12 @@ pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
             )
             .is_err()
             {
-                uao_detach(obj);
+                obj.detach();
                 return Err(Errno::ENOMEM);
             }
             if uvm_fault_wire(kernel_map(), va, va + timekeep_sz, PROT_READ | PROT_WRITE).is_err() {
                 uvm_unmap(kernel_map(), va, va + timekeep_sz);
-                uao_detach(obj);
+                obj.detach();
                 return Err(Errno::ENOMEM);
             }
 
@@ -1269,27 +1277,28 @@ pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
                 (*tk).tk_version = TK_VERSION;
             }
             TIMEKEEP.store(tk, Ordering::Release);
-            TIMEKEEP_OBJECT.store(ptr::from_ref(obj).cast_mut(), Ordering::Release);
+            // Exec runs under the kernel lock: no other thread made one meanwhile.
+            let _ = TIMEKEEP_OBJECT.set(obj.clone());
             obj
         }
     };
 
     pr.ps_timekeep.set(0); // no hint
-    uao_reference(object);
+    object.reference();
     let map = &pr.vmspace().vm_map;
     let mut addr = pr.ps_timekeep.get();
     if uvm_map(
         map,
         &mut addr,
         timekeep_sz,
-        Some(object),
+        Some(object.clone()),
         0,
         0,
         uvm_mapflag(PROT_READ, PROT_READ, MAP_INHERIT_COPY, MADV_RANDOM, 0),
     )
     .is_err()
     {
-        uao_detach(object);
+        object.detach();
         return Err(Errno::ENOMEM);
     }
     pr.ps_timekeep.set(addr);

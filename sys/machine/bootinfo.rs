@@ -313,7 +313,7 @@ pub struct BootInfo {
     /// The boot disk's label DUID as the boot loader passed it (`BOOTARG_BOOTDUID`); `None`
     /// under Limine, which names it on the command line (`bootduid=`).
     pub duid: Option<[u8; 8]>,
-    /// Not in the C (N2.4, decision 22): the ABI module `abi-openbsd.ko` boot(8) put after
+    /// Not in the C (N2.4, decision 22): the ABI module `abi_openbsd.ko` boot(8) put after
     /// the kernel's image (amd64 `BOOTARG_ABIMODULE`, arm64 `/chosen`'s
     /// `emibsd,abi-module`): its physical address and size, below `esym`, so never free
     /// memory; `None` under Limine, which hands it over as a boot module.

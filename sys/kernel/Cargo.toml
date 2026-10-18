@@ -11,8 +11,12 @@ publish = false
 path = "lib.rs"
 
 [features]
-# Forwarded by `bsd`'s feature of the same name (sys/Cargo.toml), OpenBSD's option:
+# Forwarded by `bsd`'s features of the same names (sys/Cargo.toml), OpenBSD's options:
 diagnostic = ["hal/diagnostic"] # `option DIAGNOSTIC` -> the kernel's KASSERT(9)s are active
+debug = []                      # `option DEBUG` -> the kernel's KDASSERT(9)s are active (uvm_pmr_assertvalid)
+tmpfs = []                      # `option TMPFS` -> vm::aobj's uao_grow/uao_shrink (tmpfs's regular files)
+# No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
+# 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,
 # for the tests of a crate that uses the kernel's pieces (bsd's [dev-dependencies]).
 doubles = []

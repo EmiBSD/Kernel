@@ -76,6 +76,7 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, bwrite, getblk};
 use crate::kern::vfs_subr::{vinvalbuf, vrecycle};
 use crate::kern::vfs_vops::{VOP_STRATEGY, VOP_UNLOCK};
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
 use crate::sys::errno::Errno;
@@ -94,7 +95,6 @@ use crate::ufs::ext2fs::ext2fs_balloc::ext2fs_buf_alloc;
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_MAXSYMLINKLEN, NDADDR, NIADDR, e2fs_isave};
 use crate::ufs::ufs::dinode::{IFMT, IFREG};
 use crate::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, Inode, vtoi};
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `SINGLE`: index of single indirect block.
 const SINGLE: usize = 0;
