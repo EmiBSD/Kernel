@@ -1358,7 +1358,7 @@ impl<T> Guarded<T> {
     /// either mode; a part of its part); any other witness is `panic(9)`. The reference
     /// borrows the cell and the witness, so it ends before the witness sleeps, upgrades or
     /// releases the lock.
-    pub fn get<'a, W: Witness>(&'a self, w: &'a W) -> &'a T {
+    pub fn get<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> &'a T {
         self.check(w);
         // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, an
         // `RwWitness` holding one of the two, a `MutexedGuard`, or a `WitnessPart`) that opens
@@ -1378,7 +1378,7 @@ impl<T> Guarded<T> {
     /// (the write witness or the mutex guard of its lock, or the part of its part); any other
     /// witness is `panic(9)`. The reference borrows the witness mutably, so no other
     /// reference through it exists while it lives.
-    pub fn get_mut<'a, W: Exclusive>(&'a self, w: &'a mut W) -> &'a mut T {
+    pub fn get_mut<'a, W: Exclusive + ?Sized>(&'a self, w: &'a mut W) -> &'a mut T {
         self.check(w);
         // SAFETY: `w` is an exclusive witness (sealed: a `WriteWitness`, a `MutexedGuard` or a
         // `WitnessPart`) that opens this cell (checked above): the lock is held alone (no
@@ -1445,7 +1445,7 @@ impl<T> Guarded<T> {
 
     /// `panic(9)` unless `w` opens the cell: a witness of the lock the cell is keyed to, and,
     /// for a part, of the cell's part.
-    fn check<W: Witness>(&self, w: &W) {
+    fn check<W: Witness + ?Sized>(&self, w: &W) {
         let id = w.lock_id();
         if self.key.id() != id {
             hal_panic(format_args!(
@@ -1943,8 +1943,13 @@ mod tests {
 
     /// A lock object from `rwobjpl` (made once per test process).
     fn shared(name: &'static str) -> SharedRwlock {
+        // Once: a test that lost the race to make the pool (EBUSY while the winner's
+        // `OnceStatic::set` was still under way) would find no pool yet.
+        static INIT: std::sync::Once = std::sync::Once::new();
         testutil::install();
-        let _ = init_shared();
+        INIT.call_once(|| {
+            let _ = init_shared();
+        });
         SharedRwlock::new(name).unwrap()
     }
 
@@ -2533,6 +2538,28 @@ mod tests {
         let m = LockId::of_mutex(&w);
         assert_ne!(m, LockId(ptr::from_ref(&w).addr()));
         assert_eq!(m.0 & LOCKID_MUTEX, LOCKID_MUTEX);
+    }
+
+    #[test]
+    fn a_cell_opens_through_a_dyn_witness_of_either_kind() {
+        testutil::install();
+        let m = Map::placed();
+        let mtx = Mutexed::new(crate::intr::IPL_VM, ());
+        let intr = Guarded::new_mutexed(&mtx, 7u64);
+        {
+            let mut w = m.lock.write();
+            let any: &mut dyn Exclusive = &mut w;
+            *m.state.get_mut(any) = 3;
+        }
+        let r = m.lock.read();
+        let any: &dyn Witness = &r;
+        assert_eq!(*m.state.get(any), 3);
+        drop(r);
+        let mut g = mtx.lock();
+        let any: &mut dyn Exclusive = &mut g;
+        *intr.get_mut(any) += 1;
+        let any: &dyn Witness = &g;
+        assert_eq!(*intr.get(any), 8);
     }
 }
 /* </TESTS> */

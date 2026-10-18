@@ -1478,28 +1478,35 @@ fn secondary_entry_of<S: SecondaryAdapter>(e: &Elem<S>) -> &SecondaryEntry<Elem<
 ///
 /// Its callers, all in this module, pass only a pointer read from `_by`'s head or from a link
 /// of an entry `_by` checked to carry its identity, the pointer `PoolBox::into_raw` just gave
-/// for a box `_by` consumed, or (`OwnedTree::drain_into`) the pointer of an element just moved
-/// to `_by` from the tree that owned it, its entry given `_by`'s identity.
+/// for a box `_by` consumed, the pointer of an element just moved to `_by` from the tree that
+/// owned it, its entry given `_by`'s identity (`OwnedTree::drain_into`), or the address of an
+/// element its caller holds by reference and `_by` checked to carry its identity
+/// (`OwnedTree::next(&self, e)`), used only while that reference lives.
 fn owned_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
     // SAFETY: `p` names an element `_by` owns: the pointer of a box it consumed (I1), of an
     // element another owning container handed it without a box in between (the drain: the
-    // element stays owned throughout), or one read from its head or from an entry carrying
-    // its identity, which name only elements it owns (I3, kept by every change here; a change
-    // cut short poisons the container and nothing reads its links again, I5). An owned
-    // element is a live pool item, initialised
-    // by `BoxPool::get` before its box existed, which no box frees while it is owned (I1)
-    // and which never moves; no `&mut` to it exists while it is owned (no box exists, and
-    // the containers make only shared references). The reference borrows `_by`, which
-    // gives an element back (a box, and so a possible `&mut` or free) only through `&mut
-    // self`: no reference made here outlives its ownership. The pointer has the item's whole
-    // provenance (`PoolBox::into_raw`).
+    // element stays owned throughout), one read from its head or from an entry carrying its
+    // identity, which name only elements it owns (I3, kept by every change here; a change cut
+    // short poisons the container and nothing reads its links again, I5), or the address of
+    // an element of `_by` (its entry carries `_by`'s identity, I2) that the caller holds by a
+    // shared reference, alive for the call. An owned element is a live pool item,
+    // initialised by `BoxPool::get` before its box existed, which no box frees while it is
+    // owned (I1) and which never moves; no `&mut` to it exists while it is owned (no box
+    // exists, and the containers and secondaries make only shared references). The reference
+    // borrows `_by`, which gives an element back (a box, and so a possible `&mut` or free)
+    // only through `&mut self`: no reference made here outlives its ownership. A pointer
+    // stored in a link has the item's whole provenance (`PoolBox::into_raw`); one taken from
+    // the caller's reference is that reference's, a shared one, and the reference made from
+    // it here is shared too and dropped before the call returns.
     unsafe { p.as_ref() }
 }
 
 /// The element a secondary's pointer names, borrowed for as long as the secondary.
 ///
 /// Its callers, all in this module, pass only a pointer read from a [`SecondaryTree`]'s root
-/// or from a [`SecondaryEntry`] it checked to carry its identity, or a [`SecondaryRef`]'s.
+/// or from a [`SecondaryEntry`] it checked to carry its identity, a [`SecondaryRef`]'s, or
+/// the address of an element its caller holds by reference and the tree checked to carry its
+/// identity (`SecondaryTree::next(&self, e)`, `remove`), used only while that reference lives.
 fn counted_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
     // SAFETY: `p` names an element that an owning container owns and whose `OwnedEntry`
     // counts this link (I3: a secondary links only an owned element and counts it before it
@@ -1508,7 +1515,9 @@ fn counted_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
     // panics before it frees it; so the element is a live, initialised pool item that does
     // not move, reached only by shared references (it is owned, so no box and no `&mut`
     // exists, I1). The reference borrows `_by`, which uncounts the link only through `&mut
-    // self`.
+    // self`. Every stored pointer was taken from a shared reference to the element (the
+    // insert's, the `set`'s), as is one passed by the caller, so the reference made here is
+    // a shared one of the same element.
     unsafe { p.as_ref() }
 }
 
@@ -2382,6 +2391,14 @@ mod tests {
         let a = fresh_id();
         let b = fresh_id();
         assert!(a != 0 && b != 0 && a != b);
+    }
+
+    #[test]
+    fn the_entries_are_as_large_as_lzs_links() {
+        // LZ's entry had two `RbtEntry`s, a `SlistEntry` and a `TailqEntry`: 88 bytes.
+        assert_eq!(size_of::<OwnedEntry<Node>>(), 48);
+        assert_eq!(size_of::<SecondaryEntry<Node>>(), 40);
+        assert_eq!(size_of::<SecondaryRef<ByKey>>(), 8);
     }
 }
 /* </TESTS> */
