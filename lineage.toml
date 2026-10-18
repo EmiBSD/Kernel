@@ -8519,7 +8519,7 @@ rust = "sys/kernel/vm/page.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_page.rs", "sys/uvm/uvm.rs"]
 status = "redesigned"
-notes = "N3.3: struct vm_page as VmPage in one boot-stolen array (hal::bootmem), &'static for real: pageq/objt hal List/Tree links, the owner as an OwnerTag compared and never followed (the owner passed as Owner<'_> through the PageObject/PageAnon bridge traits, bsd's UvmObject/VmAnon, N3.4), [o]/[F] scalars relaxed atomics, the array index for pg + n; the segment table in a Mutexed while the system boots and frozen by uvm_page_init into a published table (PHYS_TO_VM_PAGE lock-free), the machine's VM_PHYSSEG_MAX/STRAT passed as a SegPolicy; the page queues inside Mutexed<PageQueues> (uvm_pagedequeue takes &mut PageQueues), page_init_done an atomic; implements hal::pmap::PhysPages (PHYS_PAGES); the !PMAP_STEAL_MEMORY boot path, uvm_pagewait, uvm_pagealloc_multi, uvm_shutdown and the DMA reachability stay in bsd's sys/uvm/uvm_page.rs"
+notes = "N3.3: struct vm_page as VmPage in one boot-stolen array (hal::bootmem), &'static for real: pageq/objt hal List/Tree links, the owner as an OwnerTag compared and never followed (the owner passed as Owner<'_> through the PageObject/PageAnon bridge traits, bsd's UvmObject/VmAnon, N3.4), [o]/[F] scalars relaxed atomics, the array index for pg + n; the segment table in a Mutexed while the system boots and frozen by uvm_page_init into a published table (PHYS_TO_VM_PAGE lock-free), the machine's VM_PHYSSEG_MAX/STRAT passed as a SegPolicy; the page queues inside Mutexed<PageQueues> (uvm_pagedequeue takes &mut PageQueues), page_init_done an atomic; implements hal::pmap::PhysPages (PHYS_PAGES); N3.4b: uvm_pagewait(pg, owner, witness, wmesg) consumes the owner lock's witness (OwnerWitness); the !PMAP_STEAL_MEMORY boot path, the objects' legacy uvm_pagewait (until N3.4c), uvm_pagealloc_multi, uvm_shutdown and the DMA reachability stay in bsd's sys/uvm/uvm_page.rs"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_page.rs::PG_PMAP0"
@@ -8687,3 +8687,17 @@ crate = "kernel"
 lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]
 status = "redesigned"
 notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader)"
+
+[[module]]
+rust = "sys/kernel/vm/anon.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_anon.rs"]
+status = "redesigned"
+notes = "N3.4b: struct vm_anon as Anon, a PoolArc of anonpl (AnonRef): an_ref stays the C's count of amap slots beside the handle count that owns the memory (every an_ref increment clones a handle, a thread across a sleep clones one alone); an_lock a SharedRwlock clone given to uvm_analloc(lock) and never changed (no rw_obj_hold for PG_RELEASED); an_ref/an_swslot relaxed atomics whose setters assert the C's lock rule; uvm_anon_release consumes the witness; MULTIPROCESSOR always (decision 40); SWSLOT_BAD left out of swpgonly as the C. Dead code until the flip: bsd's sys/uvm/uvm_anon.rs (VmAnon, VmAref) still serves every caller"
+
+[[module]]
+rust = "sys/kernel/vm/amap.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_amap.rs"]
+status = "redesigned"
+notes = "N3.4b: struct vm_amap as Amap, a PoolArc of amappl (AmapRef), am_ref the C's count of map entries (relaxed atomic, read unlocked where the C reads it); the slots, ppref and chunk tables an AmapState in a Guarded keyed to the amap's SharedRwlock (shared with its anons and copies); buckets an MArray of owned chunk chains (PoolBox<Chunk> of amapchunkpl, 152 bytes as the C); ppref an enum (None/Failed/MArray); amap_copy's amap half as amap_copy_from -> CopyOutcome (the map half stays in bsd's adapter); no amap_list (G7), amap_swap_off a visible unported stub until N3.5; the aref forms take (amap, pageoff). Dead code until the flip: bsd's sys/uvm/uvm_amap.rs still serves every caller"

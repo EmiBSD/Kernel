@@ -155,10 +155,10 @@
 //! - There is no page daemon (N3.5): a `UVM_PLA_WAITOK` request that cannot be met reports
 //!   `unported: uvm_wait (uvm_pdaemon.c, M5)` once (`pmemrange::uvm_wait`) and fails with
 //!   `ENOMEM` (LZ's deviation, kept).
-//! - `uvm_pagewait` (a sleep on a legacy `rw_obj` lock), `uvm_pagealloc_multi` (the buffer
-//!   cache's, under the kernel lock), `uvm_shutdown` (`smr_flush`) and the DMA reachability of
-//!   `machine::Pmap` stay in `bsd`'s `sys/uvm/uvm_page.rs`, over [`VmPage::set_bits`] and
-//!   [`uvm_pagealloc_pg`].
+//! - `uvm_pagealloc_multi` (the buffer cache's, under the kernel lock), `uvm_shutdown`
+//!   (`smr_flush`), the DMA reachability of `machine::Pmap` and the `uvm_pagewait` of the
+//!   objects still in `bsd` (a sleep on a legacy `rw_obj` lock, until N3.4c) stay in `bsd`'s
+//!   `sys/uvm/uvm_page.rs`, over [`VmPage::set_bits`] and [`uvm_pagealloc_pg`].
 //!
 //! ## Redesign
 //! - `struct vm_page`'s `uobject`/`uanon` back pointers (`Cell<*const T>`, followed by every
@@ -186,6 +186,11 @@
 //!   instead of an on-stack key page.
 //! - `hal::pmap::PhysPages` is implemented here ([`PHYS_PAGES`]), passed by the boot glue to
 //!   `hal::pmap::bootstrap`.
+//! - N3.4b: `uvm_pagewait(pg, lock, wmesg)` (`rwsleep_nsec` with `PNORELOCK` on the owner's
+//!   lock) is [`uvm_pagewait`] taking the owner and a witness of its lock by value
+//!   ([`OwnerWitness`]: either kind, since the C asks `rw_lock_held`), consumed by the sleep,
+//!   so nothing the caller read under the lock can be used after it (`kernel::vm::amap`'s
+//!   `amap_cow_now`, the fault handler's anons).
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering as Mem};
@@ -198,7 +203,8 @@ use hal::list::{List, ListEntry};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
 use hal::pmap::{PageMd, PhysPages};
-use hal::sleep::wakeup;
+use hal::rwlock::{ReadWitness, WriteWitness};
+use hal::sleep::{PVM, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::PROT_NONE;
 use hal::sys::types::Paddr;
@@ -470,8 +476,9 @@ pub trait PageObject {
     fn set_npages(&self, n: i32);
 }
 
-/// An anon that owns a page (`struct vm_anon`, still `bsd`'s: bridges.toml `PageOwner`, N3.4).
-/// Implemented by `bsd`'s `VmAnon`, passed as a value, never stored.
+/// An anon that owns a page (`struct vm_anon`: bridges.toml `PageOwner`, N3.4). Implemented by
+/// `bsd`'s `VmAnon` and by the kernel's `vm::anon::Anon` (N3.4b, until the flip retires
+/// `bsd`'s), passed as a value, never stored.
 pub trait PageAnon {
     /// Its identity (`OwnerTag::anon(self)`).
     fn tag(&self) -> OwnerTag;
@@ -482,6 +489,27 @@ pub trait PageAnon {
     fn refs(&self) -> i32;
     /// `anon->an_page = pg` (under the anon's lock).
     fn set_page(&self, pg: Option<&'static VmPage>);
+}
+
+/// A witness of a page owner's lock that [`uvm_pagewait`] gives up for its sleep
+/// (`PNORELOCK`): the write witness or a read witness of a `hal::rwlock::SharedRwlock`.
+pub trait OwnerWitness {
+    /// Queued on `ident`, the lock released, asleep; the lock is not taken again.
+    fn release_for_sleep(self, ident: *const (), prio: i32, wmesg: &'static str);
+}
+
+impl OwnerWitness for WriteWitness<'_> {
+    fn release_for_sleep(self, ident: *const (), prio: i32, wmesg: &'static str) {
+        // Without PCATCH and a timeout the sleep ends only by a wakeup.
+        let _ = self.into_sleep(ident, prio, wmesg);
+    }
+}
+
+impl OwnerWitness for ReadWitness<'_> {
+    fn release_for_sleep(self, ident: *const (), prio: i32, wmesg: &'static str) {
+        // Without PCATCH and a timeout the sleep ends only by a wakeup.
+        let _ = self.into_sleep(ident, prio, wmesg);
+    }
 }
 
 /// The owner a caller names for a page: the C's `(obj, anon)` pair, at most one of them.
@@ -1313,6 +1341,17 @@ pub fn uvm_page_unbusy(pgs: &[Option<&VmPage>], owner: Owner<'_>) {
     }
 }
 
+/// `uvm_pagewait`: wait for the busy page `pg` of `owner`, whose lock the caller holds (`w`,
+/// either kind): `PG_WANTED` set, then asleep on the page with the lock released and not
+/// taken again (`w` is consumed). The waker is whoever unbusies the page.
+pub fn uvm_pagewait(pg: &VmPage, owner: Owner<'_>, w: impl OwnerWitness, wmesg: &'static str) {
+    kassert!(pg.flags() & PG_BUSY != 0);
+    kassert!(uvm_page_owner_locked_p(pg, owner, false));
+
+    pg.set_bits(PG_WANTED);
+    w.release_for_sleep(pg.chan(), PVM, wmesg);
+}
+
 /// `vm_physseg_find`: the segment (its index in [`vm_physmem`]) holding page frame `pframe`
 /// and the frame's offset in it.
 pub fn vm_physseg_find(pframe: usize) -> Option<(usize, usize)> {
@@ -1876,6 +1915,41 @@ mod tests {
         uvm_pagefree(pg, Owner::Anon(&anon));
         assert!(anon.page.is_none());
         assert!(!pg.has_owner() && pg.flags() & PQ_ANON == 0);
+    }
+
+    #[test]
+    fn pagewait_sleeps_without_the_lock_until_the_page_is_unbusied() {
+        let _g = setup();
+        let _ = hal::rwlock::init_shared();
+        let lock = hal::rwlock::SharedRwlock::new("testlk").expect("a lock object");
+        let anon: &'static Anon =
+            std::boxed::Box::leak(std::boxed::Box::new(Anon { page: Link::new() }));
+        let pg = uvm_pagealloc(Owner::Anon(anon), 0, 0).expect("a page");
+        assert_ne!(pg.flags() & PG_BUSY, 0);
+
+        let l2 = lock.clone();
+        let sleeper = std::thread::spawn(move || {
+            let w = l2.write();
+            uvm_pagewait(pg, Owner::Anon(anon), w, "testwt");
+            // PNORELOCK: back without the lock.
+            assert_ne!(l2.status(), hal::rwlock::RW_WRITE);
+        });
+        // The sleeper set PG_WANTED under the lock, then released it for its sleep.
+        loop {
+            if pg.flags() & PG_WANTED != 0
+                && let Some(w) = lock.try_write()
+            {
+                drop(w);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // The I/O filled the page.
+        pg.clear_bits(PG_FAKE);
+        uvm_page_unbusy(&[Some(pg)], Owner::Anon(anon));
+        sleeper.join().expect("the sleeper was woken");
+        assert_eq!(pg.flags() & (PG_BUSY | PG_WANTED), 0);
+        uvm_pagefree(pg, Owner::Anon(anon));
     }
 
     #[test]
