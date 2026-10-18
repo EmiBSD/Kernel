@@ -21,7 +21,7 @@
 //! machine, as a ratio per measurement.
 //!
 //! ```text
-//! cargo xtask bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench]
+//! cargo xtask bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release]
 //! cargo xtask bench compare BEFORE.toml AFTER.toml
 //! ```
 //!
@@ -66,6 +66,14 @@
 //! report): a diagnostic for reading a sample against the host, which changes no sample, rule
 //! or limit (a debugger traced a step in amd64's `pipe` and `fileread` to host contention).
 //! `just bench` sets `EMIBSD_RUN_DIR` to `target/bench`; logs are `<run dir>/<arch>/*.log`.
+//!
+//! `--profile release` (decision 42, a diagnostic beside the baseline, never in its place)
+//! boots the kernel of the release profile, `target/<triple>/release/bsd` (Cargo.toml's
+//! `[profile.release]`: LTO, one codegen unit, symbols kept), instead of the debug one;
+//! init, `abi_openbsd.ko` and the ramdisk are the same files as with `debug`, so only the
+//! kernel changes profile. The report records it (`profile = "release"`; a report without
+//! the key is a debug one) and the table's first line says it; `just bench-release` builds
+//! that kernel and sets `EMIBSD_RUN_DIR` to `target/bench-release`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -102,8 +110,15 @@ const OPENBSD_BENCH: &str = "/usr/local/bin/bench";
 const RC_MARK: &str = "@@RC ";
 /// What `bench.c` prints per measurement: `@@BENCH <name> <ns per op> <ops>`.
 const BENCH_MARK: &str = "@@BENCH ";
-/// The `report.toml` format; a change of its fields bumps it.
+/// The `report.toml` format; a change of its fields bumps it (an optional field with a
+/// default that keeps older reports readable, as `discard_worst`, `host` and `profile`, does
+/// not).
 const SCHEMA: u32 = 1;
+/// The kernel's build profile when `--profile` is not given, and in reports without the key.
+const DEFAULT_PROFILE: &str = "debug";
+/// The build profiles `--profile` takes: the cargo profiles' directories under
+/// `target/<triple>/`.
+const PROFILES: &[&str] = &["debug", "release"];
 
 /// One measurement: its name, unit and which way is better.
 struct Kind {
@@ -214,6 +229,14 @@ pub(crate) struct Report {
     /// Whether `git status --porcelain -- sys` was empty.
     kernel_tree_clean: bool,
     kernel_sha256: String,
+    /// The kernel's build profile (`--profile`): `debug`, or `release` (decision 42); only
+    /// the kernel's: init and `abi_openbsd.ko` are always the debug builds. Not written for
+    /// `debug`, so a debug report is as it was before the option.
+    #[serde(
+        default = "default_profile",
+        skip_serializing_if = "is_default_profile"
+    )]
+    profile: String,
     reps: usize,
     /// Samples per measurement and side left out of the statistics (0 in reports made before
     /// the rule).
@@ -259,6 +282,31 @@ pub(crate) struct TopProc {
 /// How many processes [`HostRun::top`] keeps.
 const TOP_PROCS: usize = 5;
 
+fn default_profile() -> String {
+    DEFAULT_PROFILE.to_string()
+}
+
+fn is_default_profile(p: &str) -> bool {
+    p == DEFAULT_PROFILE
+}
+
+/// `--profile`'s value: one of [`PROFILES`].
+fn parse_profile(v: &str) -> Result<&'static str> {
+    PROFILES
+        .iter()
+        .copied()
+        .find(|p| *p == v)
+        .ok_or_else(|| format!("--profile {v}: expected debug or release").into())
+}
+
+/// The kernel `bench` boots: `target/<triple>/<profile>/bsd`.
+fn kernel_path(root: &Path, arch: Arch, profile: &str) -> PathBuf {
+    root.join("target")
+        .join(arch.target())
+        .join(profile)
+        .join("bsd")
+}
+
 /// What one boot of one system measured.
 struct One {
     boot: f64,
@@ -281,6 +329,7 @@ pub(crate) fn bench(root: &Path, args: &[&str]) -> Result<()> {
     let mut arches = Vec::new();
     let mut reps = DEFAULT_REPS;
     let mut tcpbench = true;
+    let mut profile = DEFAULT_PROFILE;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match *a {
@@ -297,6 +346,9 @@ pub(crate) fn bench(root: &Path, args: &[&str]) -> Result<()> {
                 };
             }
             "--no-tcpbench" => tcpbench = false,
+            "--profile" => {
+                profile = parse_profile(it.next().ok_or("--profile needs a value")?)?;
+            }
             other => return Err(format!("bench: unknown argument {other:?}").into()),
         }
     }
@@ -319,10 +371,23 @@ pub(crate) fn bench(root: &Path, args: &[&str]) -> Result<()> {
         if !prog.is_file() {
             return Err(format!("bench: no {}; run `just userland` first", prog.display()).into());
         }
+        let kernel = kernel_path(root, arch, profile);
+        if !kernel.is_file() {
+            return Err(format!(
+                "bench: no {}; build the {profile} kernel first (`just bench{}`)",
+                kernel.display(),
+                if profile == DEFAULT_PROFILE {
+                    ""
+                } else {
+                    "-release"
+                }
+            )
+            .into());
+        }
     }
     for &arch in &arches {
         let started = Instant::now();
-        let report = run_arch(root, arch, reps, tcpbench)?;
+        let report = run_arch(root, arch, reps, tcpbench, profile)?;
         let work = work_dir(root, arch)?;
         let text = toml::to_string(&report).map_err(|e| format!("report.toml: {e}"))?;
         let rp = work.join("report.toml");
@@ -361,18 +426,14 @@ fn work_dir(root: &Path, arch: Arch) -> Result<PathBuf> {
 }
 
 /// Every run of `arch`, then the tcpbench pairs; the report.
-fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Report> {
+fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool, profile: &str) -> Result<Report> {
     let work = work_dir(root, arch)?;
     let www = work.join("www");
     fs::create_dir_all(&www).map_err(|e| format!("{}: {e}", www.display()))?;
     let prog = bench_program(root, arch);
     fs::copy(&prog, www.join("bench")).map_err(|e| format!("{}: {e}", prog.display()))?;
     let server = http::Server::start(&www)?;
-    let kernel = root
-        .join("target")
-        .join(arch.target())
-        .join("debug")
-        .join("bsd");
+    let kernel = kernel_path(root, arch, profile);
     let init = boot::default_init(root, arch);
     let ramdisk = boot::default_ramdisk(root, arch);
     let image = boot::image_tagged(
@@ -505,6 +566,7 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Repo
         kernel_commit: git(root, &["rev-parse", "HEAD"])?.trim().to_string(),
         kernel_tree_clean: clean,
         kernel_sha256: diffopenbsd::sha256(&kernel)?,
+        profile: profile.to_string(),
         reps,
         discard_worst: DISCARD_WORST,
         smp: boot::smp().unwrap_or(1),
@@ -1015,7 +1077,7 @@ fn fmt_value(v: f64, unit: &str) -> String {
 /// The report as the table printed on stdout and kept in `report.txt`.
 fn table(r: &Report) -> String {
     let mut s = format!(
-        "bench {}: kernel {}{} ({} runs, the worst {} of each side discarded, -smp {}, -m {}, {})\n\
+        "bench {}: kernel {}{}{} ({} runs, the worst {} of each side discarded, -smp {}, -m {}, {})\n\
          median, min and spread = (max - min) / median of the samples kept; \
          ratio = EmiBSD median / OpenBSD median, printed when both spreads are at most {} %\n",
         r.arch,
@@ -1024,6 +1086,11 @@ fn table(r: &Report) -> String {
             ""
         } else {
             " (sys/ modified)"
+        },
+        if is_default_profile(&r.profile) {
+            String::new()
+        } else {
+            format!(", {} profile", r.profile)
         },
         r.reps,
         r.discard_worst,
@@ -1115,6 +1182,12 @@ fn compare(before: &Report, after: &Report) -> Result<Vec<String>> {
         .into());
     }
     let mut out = Vec::new();
+    if before.profile != after.profile {
+        out.push(format!(
+            "profile: {} -> {}: the kernels differ in build profile, not only in code",
+            before.profile, after.profile
+        ));
+    }
     for a in &after.measurement {
         let unit = a.unit.trim_end_matches("/op");
         let b = before.measurement.iter().find(|b| b.name == a.name);
@@ -1285,6 +1358,7 @@ mod tests {
             kernel_commit: "20035fd0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             kernel_tree_clean: true,
             kernel_sha256: "ab".repeat(32),
+            profile: DEFAULT_PROFILE.into(),
             reps: 3,
             discard_worst: DISCARD_WORST,
             smp: 4,
@@ -1424,6 +1498,55 @@ mod tests {
             change(&mut other);
             assert!(compare(&before, &other).is_err());
         }
+    }
+
+    #[test]
+    fn profile_picks_the_kernel_and_is_recorded_only_when_not_debug() {
+        assert_eq!(parse_profile("debug").unwrap(), "debug");
+        assert_eq!(parse_profile("release").unwrap(), "release");
+        assert!(parse_profile("dev").is_err());
+        assert!(parse_profile("").is_err());
+        let root = Path::new("/r");
+        assert_eq!(
+            kernel_path(root, Arch::Amd64, "release"),
+            Path::new("/r/target")
+                .join(Arch::Amd64.target())
+                .join("release/bsd")
+        );
+        assert_eq!(
+            kernel_path(root, Arch::Arm64, DEFAULT_PROFILE),
+            Path::new("/r/target")
+                .join(Arch::Arm64.target())
+                .join("debug/bsd")
+        );
+        // A debug report is written as before the option; one without the key reads as debug.
+        let debug = report(&[("boot", &[30.0, 30.0, 31.0], &[60.0, 60.0, 61.0])]);
+        let text = toml::to_string(&debug).unwrap();
+        assert!(!text.contains("profile"));
+        assert_eq!(toml::from_str::<Report>(&text).unwrap().profile, "debug");
+        assert!(table(&debug).starts_with("bench amd64: kernel 20035fd0aaaa (3 runs"));
+        let mut release = debug.clone();
+        release.profile = "release".into();
+        let text = toml::to_string(&release).unwrap();
+        assert!(text.contains("profile = \"release\""));
+        assert_eq!(toml::from_str::<Report>(&text).unwrap(), release);
+        assert!(
+            table(&release)
+                .starts_with("bench amd64: kernel 20035fd0aaaa, release profile (3 runs")
+        );
+        // Two release reports compare as two debug ones do; across profiles it says so first.
+        assert!(
+            compare(&release, &release)
+                .unwrap()
+                .iter()
+                .all(|l| !l.starts_with("profile"))
+        );
+        let lines = compare(&debug, &release).unwrap();
+        assert_eq!(
+            lines[0],
+            "profile: debug -> release: the kernels differ in build profile, not only in code"
+        );
+        assert!(lines[1].starts_with("boot: 30.00 -> 30.00 s"));
     }
 
     #[test]

@@ -3210,6 +3210,24 @@ bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-ini
         { echo "bench: no bench in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench} cargo xtask bench {{smp4}}
 
+# Decision 42: `bench` with the kernel alone in the release profile (Cargo.toml's
+# `[profile.release]`: LTO, one codegen unit, symbols kept), a diagnostic beside the debug
+# baseline, never in its place: `cargo xtask bench --profile release` boots
+# target/<triple>/release/bsd, while init, abi_openbsd.ko and the ramdisk are `bench`'s own
+# (debug), so only the kernel changes profile; the report records `profile = "release"`.
+# Reports go to target/bench-release/<arch>/ unless EMIBSD_RUN_DIR says otherwise; ARGS go to
+# `cargo xtask bench` (`--arch amd64`, ...). Under the machine lock, as `bench`.
+build-release-amd64 features="":
+    cargo build -p bsd --release --target {{amd64}} {{features}}
+
+build-release-arm64 features="":
+    cargo build -p bsd --release --target {{arm64}} {{features}}
+
+bench-release *args: (build-release-amd64 "--features qemu") (build-release-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi
+    @test -f target/userland/amd64/root/usr/bin/bench -a -f target/userland/arm64/root/usr/bin/bench || \
+        { echo "bench-release: no bench in target/userland; run just userland first"; exit 1; }
+    EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench-release} cargo xtask bench {{smp4}} --profile release {{args}}
+
 # --- the comp set (M14) --------------------------------------------------------------
 
 # Job count of `comp`: about half the Mac's cores by default (other builds share it).

@@ -2367,3 +2367,15 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
 - **Where it runs.** Beside `just ci`, not in it, like `diff-openbsd`: under the machine lock,
   with nothing else running on the Mac (a concurrent build moves every number). The baseline
   and each milestone's after go in that milestone's section of `docs/JOURNAL.md`.
+- **The release diagnostic** (decision 42, the user's of 2026-10-18). `just bench-release`
+  (`cargo xtask bench --profile release`) builds the kernel alone in Cargo.toml's
+  `[profile.release]` (LTO, one codegen unit, symbols kept, `panic = "abort"`) and boots
+  `target/<triple>/release/bsd` in place of the debug kernel; init, `abi_openbsd.ko` and the
+  ramdisk are the files `just bench` boots (debug), so only the kernel's profile differs. The
+  method is the same (ten runs, the worst left out, the 15 % limit, the warm-up, the host
+  diagnostic); `report.toml` records `profile = "release"` (a report without the key is a
+  debug one, so the debug reports are written as before and stay readable), the table's
+  first line names it, and `compare` reads two release reports as two debug ones and says so
+  first when the two differ in profile. It tells how much of a ratio is the debug build's
+  rather than the design's; it never replaces the baseline, which stays the debug kernel's.
+  Its reports go to `target/bench-release/<arch>/` unless `EMIBSD_RUN_DIR` says otherwise.
