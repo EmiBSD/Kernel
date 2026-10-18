@@ -3726,8 +3726,10 @@ fn uvm_unmap_kill_entry_withlock(
         unwire_held(map, st, ew, start, end);
     }
 
-    let h = entry.handles(ew.witness()).clone();
-    let mut locks = needlock.then(|| uvm_map_lock_entry(&h));
+    // The entry's handles, lent: the write lock keeps them (no clone, the C takes no
+    // reference here).
+    let h = entry.handles(ew.witness());
+    let mut locks = needlock.then(|| uvm_map_lock_entry(h));
 
     // Entry-type specific code.
     if uvm_et_ishole(entry) {
@@ -4534,8 +4536,8 @@ fn uvm_map_splitentry(
             let issubmap = uvm_et_issubmap(o);
             let isobj = uvm_et_isobj(o);
             let nh = next.handles_owned();
-            if let Some(amap) = nh.amap.clone() {
-                nh.pageoff = amap_splitref(&amap, orig_pageoff, adj);
+            if let Some(amap) = &nh.amap {
+                nh.pageoff = amap_splitref(amap, orig_pageoff, adj);
             }
             let mut adjust_offset = false;
             if issubmap {
@@ -5178,9 +5180,10 @@ pub fn uvmspace_free(vm: VmspaceRef) {
     drop(vm);
 }
 
-/// What `uvm_mapent_clone` copies of the entry it clones: the scalars and the handles, read
-/// under the source map's lock.
-struct OldEntry {
+/// What `uvm_mapent_clone` copies of the entry it clones: the scalars, read under the source
+/// map's lock, and the handles, lent by it (the source's write lock, `w`, keeps them while
+/// the clone takes its own: the one copy the C makes, `uvm_mapent_copy`).
+struct OldEntry<'w> {
     start: usize,
     end: usize,
     offset: Voff,
@@ -5190,12 +5193,12 @@ struct OldEntry {
     inheritance: VmInherit,
     advice: i32,
     wired: bool,
-    handles: Handles,
+    handles: &'w Handles,
 }
 
-impl OldEntry {
-    /// `e`, an entry of the source map, its handles read with `w`.
-    fn of(e: &VmMapEntry, w: &EntryWrite<'_>) -> Self {
+impl<'w> OldEntry<'w> {
+    /// `e`, an entry of the source map, its handles lent with `w`.
+    fn of(e: &'w VmMapEntry, w: &'w EntryWrite<'_>) -> Self {
         Self {
             start: e.start(),
             end: e.end(),
@@ -5206,7 +5209,7 @@ impl OldEntry {
             inheritance: e.inheritance(),
             advice: e.advice(),
             wired: vm_mapent_iswired(e),
-            handles: e.handles(w.witness()).clone(),
+            handles: e.handles(w.witness()),
         }
     }
 }
@@ -5226,7 +5229,7 @@ fn uvm_mapent_clone<'s>(
     off: usize,
     prot: VmProt,
     maxprot: VmProt,
-    old: &OldEntry,
+    old: &OldEntry<'_>,
     dead: &mut DeadQueue,
     mapent_flags: u32,
     amap_share_flags: i32,
@@ -5265,12 +5268,12 @@ fn uvm_mapent_clone<'s>(
     let len = (ne.end() - ne.start()) >> PAGE_SHIFT;
     let isobj = uvm_et_isobj(ne);
     let h = ne.handles_mut(ew);
-    if let Some(amap) = h.amap.clone() {
+    if let Some(amap) = &h.amap {
         h.pageoff += (off >> PAGE_SHIFT) as i32;
-        amap_ref(&amap, h.pageoff as usize, len, amap_share_flags);
+        amap_ref(amap, h.pageoff as usize, len, amap_share_flags);
     }
-    let uobj = if isobj { h.uvm_obj().cloned() } else { None };
-    if let Some(uobj) = uobj {
+    // The new entry's object is the old one's (its handles were copied above).
+    if isobj && let Some(uobj) = old.handles.uvm_obj() {
         ne.set_offset(ew, ne.offset() + off as Voff);
         uobj.reference();
     }
@@ -5481,7 +5484,7 @@ fn uvm_mapent_forkcopy(
             // the child.
             if o.etype & UVM_ET_NEEDSCOPY == 0 {
                 if o.max_protection & PROT_WRITE != 0 {
-                    let locks = uvm_map_lock_entry(&o.handles);
+                    let locks = uvm_map_lock_entry(o.handles);
                     map_pmap_protect(old_map, o.start, o.end, o.protection & !PROT_WRITE);
                     drop(locks);
                     // pmap_update(old_map->pmap): nothing to do.
@@ -6937,8 +6940,7 @@ pub fn amap_copy(
 
     // Is there an amap to copy? If not, create one.
     let e = ent(&st.addr, key, "amap_copy");
-    let src = e.handles(ew.witness()).amap.clone();
-    let Some(srcamap) = src else {
+    let Some(srcamap) = e.handles(ew.witness()).amap.as_ref() else {
         // Check to see if we have a large amap that we can chunk. We align startva/endva
         // to chunk-sized boundaries and then clip to them.
         //
@@ -6979,7 +6981,10 @@ pub fn amap_copy(
     // copy its slots (sharing the anons and the lock) and drop the entry's reference to it.
     let slots = (e.end() - e.start()) >> PAGE_SHIFT;
     let pageoff = e.handles(ew.witness()).pageoff;
-    match amap_copy_from(&srcamap, pageoff, slots, waitf) {
+    // The entry's handle keeps the source alive (the write lock is held) while it is copied;
+    // the entry changes after (its handle replaced last, as before).
+    let outcome = amap_copy_from(srcamap, pageoff, slots, waitf);
+    match outcome {
         // Just take over the existing amap.
         CopyOutcome::TakeOver => e.etype_clear(ew, UVM_ET_NEEDSCOPY),
         // Install new amap (the entry's handle to the source goes with the old value).
