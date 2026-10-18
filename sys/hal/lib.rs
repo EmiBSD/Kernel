@@ -92,6 +92,14 @@ pub mod pmap;
 pub mod pool;
 #[forbid(unsafe_code)]
 pub mod prf;
+// arc4random(9) over the pmap's `Random` bridge (N3.5): wherever that bridge is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+#[forbid(unsafe_code)]
+pub mod random;
 pub mod refcnt;
 pub mod rwlock;
 pub mod sleep;

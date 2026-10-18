@@ -36,6 +36,7 @@
 //!   through one trait object until the scheduler moves into `kernel` (N4).
 //! - N3.5 S0: [`curproc_word`] and [`cold`] are public, for the kernel's map (the `busy`
 //!   owner of `vm_map_busy`, `uvm_mapent_alloc`'s `cold` test).
+//! - N3.5 S1: [`sched_pause`], for `uvm_map_teardown`'s yield between entries.
 
 use crate::bridges;
 use crate::sys::errno::Errno;
@@ -85,6 +86,9 @@ pub trait Sleep: Sync {
     /// the kernel lock released and taken back when this CPU holds it (`MULTIPROCESSOR`), the
     /// level put back. No process switch.
     fn cold_yield(&self);
+    /// `sched_pause(yield)`: `yield()` when the running CPU's scheduler asks its thread to
+    /// give the CPU up (`spc_schedflags & SPCF_SHOULDYIELD`), nothing otherwise.
+    fn sched_pause(&self);
 }
 
 /// A wait channel: the address of `ident`, compared and never dereferenced.
@@ -133,6 +137,15 @@ pub fn curproc_word() -> usize {
 /// before it is registered the kernel is booting: `true`.
 pub fn cold() -> bool {
     bridges::sleep().is_none_or(|b| b.cold())
+}
+
+/// `sched_pause(yield)` (`<sys/sched.h>`): gives the CPU up when its scheduler asks
+/// (`SPCF_SHOULDYIELD`), as a long loop of the kernel's does once per step
+/// (`uvm_map_teardown`'s entries). Nothing before the bridge is registered: nothing else runs.
+pub fn sched_pause() {
+    if let Some(b) = bridges::sleep() {
+        b.sched_pause();
+    }
 }
 
 /// `_kernel_lock_held()` (`false` before the bridge is registered).
@@ -190,6 +203,15 @@ mod tests {
         assert_ne!(me, 0);
         let other = thread::spawn(curproc_word).join().unwrap();
         assert_ne!(me, other);
+    }
+
+    #[test]
+    fn sched_pause_asks_the_bridge() {
+        testutil::install();
+        let before = testutil::sched_pauses();
+        sched_pause();
+        sched_pause();
+        assert_eq!(testutil::sched_pauses(), before + 2);
     }
 }
 /* </TESTS> */

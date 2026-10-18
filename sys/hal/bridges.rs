@@ -216,13 +216,11 @@ bridge!(
     target_arch = "aarch64"
 ))]
 bridge!(
-    /// Registers `arc4random(9)` (`sys/dev/rnd.rs`) for arm64's ASID allocator. Paid by N7.
+    /// Registers `arc4random(9)` (`sys/dev/rnd.rs`) for arm64's ASID allocator and, through
+    /// `hal::random`, the kernel's map (N3.5). Paid by N7.
     RANDOM: Random,
     register_random,
-    random #[cfg_attr(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        allow(dead_code, reason = "read by arm64's ASID allocator alone")
-    )]
+    random
 );
 
 /* </CODE> */

@@ -194,6 +194,11 @@ impl Sleep for BsdSleep {
         }
         splx(s);
     }
+
+    /// `sched_pause(yield)` of `sys/sys/sched.rs` (`SPCF_SHOULDYIELD` on this CPU).
+    fn sched_pause(&self) {
+        crate::sys::sched::sched_pause(crate::kern::sched_bsd::r#yield);
+    }
 }
 
 /// One pool of `pool(9)` (`sys/kern/subr_pool.rs`).

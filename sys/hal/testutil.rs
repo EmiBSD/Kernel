@@ -81,6 +81,8 @@ std::thread_local! {
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
     static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
+    static SCHED_PAUSES: Cell<u32> = const { Cell::new(0) };
+    static RANDOM: Cell<u64> = const { Cell::new(0x9e37_79b9_7f4a_7c15) };
     static PAGES_OUT: Cell<isize> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, isize>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -277,6 +279,27 @@ impl Sleep for TestSleep {
     /// Counts the early return's yields of this thread ([`cold_yields`]).
     fn cold_yield(&self) {
         COLD_YIELDS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// Counts this thread's pauses ([`sched_pauses`]); never asked to yield.
+    fn sched_pause(&self) {
+        SCHED_PAUSES.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// The `arc4random(9)` double: a per-thread xorshift64* sequence ([`set_random_seed`]).
+struct TestRandom;
+
+impl crate::pmap::Random for TestRandom {
+    fn random_u32(&self) -> u32 {
+        RANDOM.with(|s| {
+            let mut x = s.get();
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            s.set(x);
+            (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32
+        })
     }
 }
 
@@ -513,6 +536,7 @@ static TEST_MALLOC: TestMalloc = TestMalloc;
 static TEST_USER: TestUser = TestUser;
 static TEST_CONS: TestCons = TestCons;
 static TEST_PRINTF: TestPrintf = TestPrintf;
+static TEST_RANDOM: TestRandom = TestRandom;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -526,6 +550,7 @@ pub(crate) fn install() {
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_console(&TEST_CONS);
         let _ = bridges::register_printf(&TEST_PRINTF);
+        let _ = bridges::register_random(&TEST_RANDOM);
     });
 }
 
@@ -611,6 +636,16 @@ pub(crate) fn set_cold(cold: bool) {
 /// How many times this thread's sleeps took the `cold` early return's yield.
 pub(crate) fn cold_yields() -> u32 {
     COLD_YIELDS.with(Cell::get)
+}
+
+/// How many times this thread called `sched_pause`.
+pub(crate) fn sched_pauses() -> u32 {
+    SCHED_PAUSES.with(Cell::get)
+}
+
+/// Restarts this thread's `arc4random` double at `seed` (not 0).
+pub(crate) fn set_random_seed(seed: u64) {
+    RANDOM.with(|s| s.set(seed.max(1)));
 }
 
 /// Makes the memory frame `pa` a page that is not busy (`PG_BUSY` clear), as a page of a

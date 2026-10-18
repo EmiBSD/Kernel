@@ -45,7 +45,8 @@ paid_by = "N4"
 # bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
 # _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs;
 # N3.4a: cold (cold || panicstr) and cold_yield (splhigh, splx(safepri), the kernel lock's
-# bounce), msleep_nsec's early return for MutexedGuard::sleep_nsec.
+# bounce), msleep_nsec's early return for MutexedGuard::sleep_nsec; N3.5 S1: sched_pause(yield)
+# (sys/sys/sched.rs's SPCF_SHOULDYIELD test with sched_bsd's yield), for uvm_map_teardown.
 # hal::sleep::Sleep
 [[bridge]]
 trait = "Sleep"
@@ -164,12 +165,13 @@ trait = "TlbCpus"
 for = ["sys/hal/arch/amd64/pmap/tlb.rs", "sys/hal/arch/amd64/pmap/backend.rs"]
 paid_by = "N4"
 
-# bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick),
+# bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
+# and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
 # implemented by sys/kern/hal_bridges.rs (BsdRandom).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"
-for = ["sys/hal/arch/arm64/pmap/asid.rs"]
+for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
 paid_by = "N7"
 
 # bsd: KERNEL_LOCK, KERNEL_UNLOCK and KERNEL_ASSERT_LOCKED (_kernel_lock, _kernel_unlock,

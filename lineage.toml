@@ -8268,7 +8268,14 @@ notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the le
 [[extra]]
 rust = "sys/hal/sleep.rs"
 crate = "hal"
-reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; N3.5 S0: curproc_word and cold public (the map's busy owner, uvm_mapent_alloc's cold test); docs/ZERO_UNSAFE.md 0.1"
+reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; N3.5 S0: curproc_word and cold public (the map's busy owner, uvm_mapent_alloc's cold test); N3.5 S1: sched_pause (uvm_map_teardown's yield, a Sleep method); docs/ZERO_UNSAFE.md 0.1"
+
+[[module]]
+rust = "sys/hal/random.rs"
+crate = "hal"
+lz = ["sys/dev/rnd.rs"]
+status = "redesigned"
+notes = "N3.5 S1: arc4random(9) over the existing Random bridge (bsd's rnd.c generator; panic before registration) and arc4random_uniform(9) re-expressed over it with rnd.c's rejection of the low 2**32 % bound words; for the kernel's map and address selectors; sys/dev/rnd.rs keeps every LZ item for its legacy callers"
 
 [[module]]
 rust = "sys/hal/rwlock.rs"
@@ -8323,7 +8330,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"
