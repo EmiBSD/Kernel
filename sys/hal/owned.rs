@@ -155,7 +155,10 @@
 //!   elements it owns (a [`SecondaryTree`]: only elements some owning container owns, each
 //!   counted once in that element's [`OwnedEntry`]; a [`SecondaryRef`]'s pointer likewise).
 //! - I4, counting: an owning container gives no element back while its count is not 0; a
-//!   secondary uncounts only what it unlinks.
+//!   secondary uncounts only what it unlinks. The count is read last after every call into
+//!   an adapter of the removal (whose `entry` and `augment` see the element being removed and
+//!   could link it from a secondary): only this module's code runs between that read and the
+//!   box, and a late link panics with the container poisoned, the element never given back.
 //! - I5, poisoning: a panic in the middle of a change (an adapter's `cmp` or `augment`, a
 //!   refused entry, a broken shape) poisons the containers being changed, which then never
 //!   read or change their links again (every method panics, the drop leaks).
@@ -202,26 +205,6 @@ const BLACK: u8 = 0;
 /// `RB_RED`.
 const RED: u8 = 1;
 
-/// Names the [`OwnedEntry`] of an element for its owning containers, the tree's order and
-/// its augment (`RBT_PROTOTYPE(name, type, field, cmp)` and `RBT_GENERATE_AUGMENT`).
-/// Implemented by [`owned_adapter!`].
-pub trait OwnedAdapter: 'static {
-    /// The element type.
-    type Elem: Send + Sync + 'static;
-    /// Whether the tree is augmented (`RBT_GENERATE_AUGMENT`): `augment` is called only then.
-    const AUGMENTED: bool = false;
-    /// The element's entry.
-    fn entry(e: &Self::Elem) -> &OwnedEntry<Self::Elem>;
-    /// The order of the tree (`cmp(a, b)`: `a` before, equal to or after `b`).
-    fn cmp(a: &Self::Elem, b: &Self::Elem) -> Ordering;
-    /// The augment callback for one node: recomputes `e`'s summary from its own value and its
-    /// children's summaries and stores it; whether it changed (`uvm_map_addr_augment`'s step).
-    fn augment(e: &Self::Elem, left: Option<&Self::Elem>, right: Option<&Self::Elem>) -> bool {
-        let _ = (e, left, right);
-        false
-    }
-}
-
 /// Declares `$name`, the [`OwnedAdapter`] of `$elem`'s field `$field` ordered by `$cmp` (a
 /// function or a closure without captures, `fn(&$elem, &$elem) -> Ordering`), augmented by
 /// `$aug` (`fn(&$elem, Option<&$elem>, Option<&$elem>) -> bool`) when given:
@@ -265,21 +248,6 @@ macro_rules! owned_adapter {
     };
 }
 
-/// Names the [`SecondaryEntry`] of an element for one kind of secondary tree, the owning
-/// adapter whose entry counts its links, and the order (`RBT_PROTOTYPE` of a second tree of
-/// the same type: `uaddr_free_rbtree`). Implemented by [`secondary_adapter!`].
-pub trait SecondaryAdapter: 'static {
-    /// The adapter of the element's owning containers, whose [`OwnedEntry`] counts the links.
-    type Owner: OwnedAdapter;
-    /// The element's entry for this kind of secondary tree.
-    fn entry(e: &Elem<Self>) -> &SecondaryEntry<Elem<Self>>;
-    /// The order of the tree.
-    fn cmp(a: &Elem<Self>, b: &Elem<Self>) -> Ordering;
-}
-
-/// The element type of a [`SecondaryAdapter`]: its owner adapter's.
-pub type Elem<S> = <<S as SecondaryAdapter>::Owner as OwnedAdapter>::Elem;
-
 /// Declares `$name`, the [`SecondaryAdapter`] of the field `$field` of the elements of the
 /// owning adapter `$owner`, ordered by `$cmp`:
 /// `secondary_adapter!(pub ByFspace: ByAddr, free, cmp_fspace);`.
@@ -303,6 +271,9 @@ macro_rules! secondary_adapter {
         }
     };
 }
+
+/// The element type of a [`SecondaryAdapter`]: its owner adapter's.
+pub type Elem<S> = <<S as SecondaryAdapter>::Owner as OwnedAdapter>::Elem;
 
 /// An element's links in its owning container (`RBT_ENTRY` of the tree, or `TAILQ_ENTRY` of
 /// the list: `left` is the previous element there and `right` the next), the identity of the
@@ -704,6 +675,16 @@ impl<A: OwnedAdapter> OwnedTree<A> {
         }
         let changing = Mutating(&self.poisoned);
         rb_remove(self, x);
+        // The removal ran the adapter's code (`entry`, and `augment` on the element itself:
+        // `rbe_if_augment(parent)` with the successor `old`'s right child), which may have
+        // linked the element from a secondary meanwhile. Looked at again with nothing run in
+        // between from here to the box: a late link panics with the tree poisoned (I5), the
+        // element never given back, so the link it holds stays valid (I4).
+        if ent.indexed() != 0 {
+            hal_panic(format_args!(
+                "RBT_REMOVE: the element was linked from a secondary while being removed"
+            ));
+        }
         let pool = ent.pool.get();
         ent.clear();
         core::mem::forget(changing);
@@ -965,6 +946,13 @@ impl<A: OwnedAdapter> OwnedList<A> {
         match next {
             Some(n) => put(&self.ent(self.node(n), "TAILQ_REMOVE").left, None),
             None => put(&self.tail, None),
+        }
+        // The adapter's `entry` ran on the next element: looked at again with nothing run in
+        // between from here to the box (as `OwnedTree::take_by`).
+        if ent.indexed() != 0 {
+            hal_panic(format_args!(
+                "TAILQ_REMOVE: the element was linked from a secondary while being removed"
+            ));
         }
         let pool = ent.pool.get();
         ent.clear();
@@ -1363,6 +1351,38 @@ impl<A: OwnedAdapter> Drop for SecondaryRef<A> {
 /// The source of container identities (I2): never 0, never reused.
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
+/// Names the [`OwnedEntry`] of an element for its owning containers, the tree's order and
+/// its augment (`RBT_PROTOTYPE(name, type, field, cmp)` and `RBT_GENERATE_AUGMENT`).
+/// Implemented by [`owned_adapter!`].
+pub trait OwnedAdapter: 'static {
+    /// The element type.
+    type Elem: Send + Sync + 'static;
+    /// Whether the tree is augmented (`RBT_GENERATE_AUGMENT`): `augment` is called only then.
+    const AUGMENTED: bool = false;
+    /// The element's entry.
+    fn entry(e: &Self::Elem) -> &OwnedEntry<Self::Elem>;
+    /// The order of the tree (`cmp(a, b)`: `a` before, equal to or after `b`).
+    fn cmp(a: &Self::Elem, b: &Self::Elem) -> Ordering;
+    /// The augment callback for one node: recomputes `e`'s summary from its own value and its
+    /// children's summaries and stores it; whether it changed (`uvm_map_addr_augment`'s step).
+    fn augment(e: &Self::Elem, left: Option<&Self::Elem>, right: Option<&Self::Elem>) -> bool {
+        let _ = (e, left, right);
+        false
+    }
+}
+
+/// Names the [`SecondaryEntry`] of an element for one kind of secondary tree, the owning
+/// adapter whose entry counts its links, and the order (`RBT_PROTOTYPE` of a second tree of
+/// the same type: `uaddr_free_rbtree`). Implemented by [`secondary_adapter!`].
+pub trait SecondaryAdapter: 'static {
+    /// The adapter of the element's owning containers, whose [`OwnedEntry`] counts the links.
+    type Owner: OwnedAdapter;
+    /// The element's entry for this kind of secondary tree.
+    fn entry(e: &Elem<Self>) -> &SecondaryEntry<Elem<Self>>;
+    /// The order of the tree.
+    fn cmp(a: &Elem<Self>, b: &Elem<Self>) -> Ordering;
+}
+
 /// What the red-black engine needs from a tree: its root, a node's links (checked to be
 /// this tree's, I2), and the augment of a node.
 trait Rb {
@@ -1526,10 +1546,12 @@ fn reclaim<T: 'static>(p: NonNull<T>, pool: &'static BoxPool<T>) -> PoolBox<T> {
     // SAFETY: `p` and `pool` are the pair `PoolBox::into_raw` gave when the container that
     // calls this consumed the element's box (the pool kept in its entry since), and the
     // container rebuilds the box once: it has just unlinked the element and cleared its
-    // entry, so no container reaches it any more. Its count is 0 (checked by the caller,
-    // I4), so no secondary reaches it; every reference the container made borrowed it and
-    // ended before the `&mut self` of the caller, the only way here. So no reference to the
-    // value is alive or used after this.
+    // entry, so no container reaches it any more. Its count is 0, checked by the caller after
+    // the last code of an adapter ran (the unlinking's `entry` and `augment` calls, which may
+    // link the element from a secondary) and with nothing but this module's own code between
+    // that check and here (I4), so no secondary reaches it; every reference the container
+    // made borrowed it and ended before the `&mut self` of the caller, the only way here. So
+    // no reference to the value is alive or used after this.
     unsafe { PoolBox::from_raw(p, pool) }
 }
 
@@ -2399,6 +2421,40 @@ mod tests {
         assert_eq!(size_of::<OwnedEntry<Node>>(), 48);
         assert_eq!(size_of::<SecondaryEntry<Node>>(), 40);
         assert_eq!(size_of::<SecondaryRef<ByKey>>(), 8);
+    }
+
+    /// Armed, the next augment of key 2 links that element from [`TRAP`]: what a kernel
+    /// adapter could do while its element is being removed.
+    static TRAP_ARMED: AtomicBool = AtomicBool::new(false);
+    static TRAP: crate::mutex::Mutexed<SecondaryRef<ByKeyTrap>> =
+        crate::mutex::Mutexed::new(0, SecondaryRef::new());
+
+    fn augment_trap(e: &Node, l: Option<&Node>, r: Option<&Node>) -> bool {
+        if e.key == 2 && TRAP_ARMED.swap(false, Mem::Relaxed) {
+            TRAP.lock().set(Some(e));
+        }
+        augment_fspace(e, l, r)
+    }
+
+    owned_adapter!(ByKeyTrap: Node, link, |a, b| a.key.cmp(&b.key), augment = augment_trap);
+
+    #[test]
+    #[should_panic(
+        expected = "RBT_REMOVE: the element was linked from a secondary while being removed"
+    )]
+    fn an_augment_that_links_the_element_being_removed_is_caught() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut t = OwnedTree::<ByKeyTrap>::new();
+        for k in [2u64, 1, 3] {
+            assert!(t.insert(node(k, k, &drops)).is_none());
+        }
+        // 2 at the root, 3 its right child without a left one: removing 2, the successor is
+        // 3 and `rbe_if_augment(parent)` runs on 2 itself, after `take_by`'s first look at
+        // the count. The box must not come back: the trap's link would dangle.
+        assert_eq!(t.root().unwrap().key, 2);
+        assert!(t.left(t.root().unwrap()).is_some_and(|n| n.key == 1));
+        TRAP_ARMED.store(true, Mem::Relaxed);
+        let _ = t.take_by(|n| 2u64.cmp(&n.key));
     }
 }
 /* </TESTS> */
