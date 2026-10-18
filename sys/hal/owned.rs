@@ -316,6 +316,7 @@ impl<T: 'static> OwnedEntry<T> {
         self.indexed.load(Mem::Relaxed)
     }
 
+    #[inline]
     fn view(&self) -> View<'_, T> {
         View {
             left: &self.left,
@@ -394,6 +395,7 @@ impl<T: 'static> SecondaryEntry<T> {
         self.owner.load(Mem::Relaxed) != 0
     }
 
+    #[inline]
     fn view(&self) -> View<'_, T> {
         View {
             left: &self.left,
@@ -428,22 +430,27 @@ struct View<'a, T: 'static> {
 }
 
 impl<T: 'static> View<'_, T> {
+    #[inline]
     fn left(&self) -> Option<NonNull<T>> {
         get(self.left)
     }
 
+    #[inline]
     fn right(&self) -> Option<NonNull<T>> {
         get(self.right)
     }
 
+    #[inline]
     fn parent(&self) -> Option<NonNull<T>> {
         get(self.parent)
     }
 
+    #[inline]
     fn color(&self) -> u8 {
         self.color.load(Mem::Relaxed)
     }
 
+    #[inline]
     fn set_color(&self, c: u8) {
         self.color.store(c, Mem::Relaxed);
     }
@@ -474,19 +481,22 @@ impl<A: OwnedAdapter> OwnedTree<A> {
     }
 
     /// The element `p` names (a pointer of this tree, I3).
+    #[inline]
     fn node(&self, p: NonNull<A::Elem>) -> &A::Elem {
         owned_ref(self, p)
     }
 
     /// `e`'s entry, checked to be this tree's (I2); `panic` otherwise.
+    #[inline]
     fn ent<'e>(&self, e: &'e A::Elem, what: &str) -> &'e OwnedEntry<A::Elem> {
         let ent = entry_of::<A>(e);
         if self.id == 0 || ent.owner.load(Mem::Relaxed) != self.id {
-            hal_panic(format_args!("{what}: the element is not in this tree"));
+            not_in_tree(what);
         }
         ent
     }
 
+    #[inline]
     fn check(&self, what: &str) {
         if self.poisoned.load(Mem::Relaxed) {
             poisoned(what);
@@ -544,15 +554,15 @@ impl<A: OwnedAdapter> OwnedTree<A> {
     /// `RBT_NEXT(e)`: the element after `e` in order; `e` must be in this tree.
     pub fn next(&self, e: &A::Elem) -> Option<&A::Elem> {
         self.check("RBT_NEXT");
-        self.ent(e, "RBT_NEXT");
-        rb_next(self, NonNull::from(e)).map(|p| self.node(p))
+        let v = self.ent(e, "RBT_NEXT").view();
+        rb_next_from(self, NonNull::from(e), v).map(|p| self.node(p))
     }
 
     /// `RBT_PREV(e)`: the element before `e` in order; `e` must be in this tree.
     pub fn prev(&self, e: &A::Elem) -> Option<&A::Elem> {
         self.check("RBT_PREV");
-        self.ent(e, "RBT_PREV");
-        rb_prev(self, NonNull::from(e)).map(|p| self.node(p))
+        let v = self.ent(e, "RBT_PREV").view();
+        rb_prev_from(self, NonNull::from(e), v).map(|p| self.node(p))
     }
 
     /// `RBT_FIND(key)`: the element equal to `key` in the tree's order.
@@ -1039,19 +1049,22 @@ impl<S: SecondaryAdapter> SecondaryTree<S> {
         }
     }
 
+    #[inline]
     fn node(&self, p: NonNull<Elem<S>>) -> &Elem<S> {
         counted_ref(self, p)
     }
 
     /// `e`'s secondary entry, checked to be this tree's (I2); `panic` otherwise.
+    #[inline]
     fn ent<'e>(&self, e: &'e Elem<S>, what: &str) -> &'e SecondaryEntry<Elem<S>> {
         let ent = secondary_entry_of::<S>(e);
         if self.id == 0 || ent.owner.load(Mem::Relaxed) != self.id {
-            hal_panic(format_args!("{what}: the element is not in this tree"));
+            not_in_tree(what);
         }
         ent
     }
 
+    #[inline]
     fn check(&self, what: &str) {
         if self.poisoned.load(Mem::Relaxed) {
             poisoned(what);
@@ -1109,15 +1122,15 @@ impl<S: SecondaryAdapter> SecondaryTree<S> {
     /// `RBT_NEXT(e)`; `e` must be in this tree.
     pub fn next(&self, e: &Elem<S>) -> Option<&Elem<S>> {
         self.check("RBT_NEXT");
-        self.ent(e, "RBT_NEXT");
-        rb_next(self, NonNull::from(e)).map(|p| self.node(p))
+        let v = self.ent(e, "RBT_NEXT").view();
+        rb_next_from(self, NonNull::from(e), v).map(|p| self.node(p))
     }
 
     /// `RBT_PREV(e)`; `e` must be in this tree.
     pub fn prev(&self, e: &Elem<S>) -> Option<&Elem<S>> {
         self.check("RBT_PREV");
-        self.ent(e, "RBT_PREV");
-        rb_prev(self, NonNull::from(e)).map(|p| self.node(p))
+        let v = self.ent(e, "RBT_PREV").view();
+        rb_prev_from(self, NonNull::from(e), v).map(|p| self.node(p))
     }
 
     /// `RBT_FIND` without a key element (see [`OwnedTree::find_by`]).
@@ -1402,6 +1415,7 @@ impl<A: OwnedAdapter> Rb for OwnedTree<A> {
         &self.root
     }
 
+    #[inline]
     fn view(&self, x: NonNull<A::Elem>) -> View<'_, A::Elem> {
         self.ent(self.node(x), "RBT").view()
     }
@@ -1419,6 +1433,7 @@ impl<S: SecondaryAdapter> Rb for SecondaryTree<S> {
         &self.root
     }
 
+    #[inline]
     fn view(&self, x: NonNull<Elem<S>>) -> View<'_, Elem<S>> {
         self.ent(self.node(x), "RBT").view()
     }
@@ -1437,11 +1452,13 @@ impl Drop for Mutating<'_> {
 }
 
 /// A pointer read from a link.
+#[inline]
 fn get<T>(a: &AtomicPtr<T>) -> Option<NonNull<T>> {
     NonNull::new(a.load(Mem::Relaxed))
 }
 
 /// A link set (`None`: `NULL`).
+#[inline]
 fn put<T>(a: &AtomicPtr<T>, v: Option<NonNull<T>>) {
     a.store(v.map_or(ptr::null_mut(), NonNull::as_ptr), Mem::Relaxed);
 }
@@ -1463,6 +1480,7 @@ fn poisoned(what: &str) -> ! {
 }
 
 /// Whether `inner` lies within the bytes of `outer`.
+#[inline]
 fn within<O, I>(outer: &O, inner: &I) -> bool {
     let base = ptr::from_ref(outer).addr();
     ptr::from_ref(inner)
@@ -1473,25 +1491,39 @@ fn within<O, I>(outer: &O, inner: &I) -> bool {
 }
 
 /// The [`OwnedEntry`] `A` names for `e`, checked to lie within `e` (I2).
+#[inline]
 fn entry_of<A: OwnedAdapter>(e: &A::Elem) -> &OwnedEntry<A::Elem> {
     let ent = A::entry(e);
     if !within(e, ent) {
-        hal_panic(format_args!(
-            "OwnedAdapter: the entry is not the element's own"
-        ));
+        not_own_entry("OwnedAdapter");
     }
     ent
 }
 
 /// The [`SecondaryEntry`] `S` names for `e`, checked to lie within `e` (I2).
+#[inline]
 fn secondary_entry_of<S: SecondaryAdapter>(e: &Elem<S>) -> &SecondaryEntry<Elem<S>> {
     let ent = S::entry(e);
     if !within(e, ent) {
-        hal_panic(format_args!(
-            "SecondaryAdapter: the entry is not the element's own"
-        ));
+        not_own_entry("SecondaryAdapter");
     }
     ent
+}
+
+/// I2's refusal of an element whose entry carries another container's identity (`what`
+/// names the operation): kept out of the walks' line.
+#[cold]
+#[inline(never)]
+fn not_in_tree(what: &str) -> ! {
+    hal_panic(format_args!("{what}: the element is not in this tree"))
+}
+
+/// I2's refusal of an adapter whose entry is not within the element (`which` names the
+/// adapter trait).
+#[cold]
+#[inline(never)]
+fn not_own_entry(which: &str) -> ! {
+    hal_panic(format_args!("{which}: the entry is not the element's own"))
 }
 
 /// The element an owning container's pointer names, borrowed for as long as the container.
@@ -1502,6 +1534,7 @@ fn secondary_entry_of<S: SecondaryAdapter>(e: &Elem<S>) -> &SecondaryEntry<Elem<
 /// owned it, its entry given `_by`'s identity (`OwnedTree::drain_into`), or the address of an
 /// element its caller holds by reference and `_by` checked to carry its identity
 /// (`OwnedTree::next(&self, e)`), used only while that reference lives.
+#[inline]
 fn owned_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
     // SAFETY: `p` names an element `_by` owns: the pointer of a box it consumed (I1), of an
     // element another owning container handed it without a box in between (the drain: the
@@ -1527,6 +1560,7 @@ fn owned_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
 /// or from a [`SecondaryEntry`] it checked to carry its identity, a [`SecondaryRef`]'s, or
 /// the address of an element its caller holds by reference and the tree checked to carry its
 /// identity (`SecondaryTree::next(&self, e)`, `remove`), used only while that reference lives.
+#[inline]
 fn counted_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
     // SAFETY: `p` names an element that an owning container owns and whose `OwnedEntry`
     // counts this link (I3: a secondary links only an owned element and counts it before it
@@ -1556,6 +1590,7 @@ fn reclaim<T: 'static>(p: NonNull<T>, pool: &'static BoxPool<T>) -> PoolBox<T> {
 }
 
 /// `RBT_MIN` from `x`: its leftmost descendant.
+#[inline]
 fn rb_min<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
     let mut n = x;
     while let Some(l) = t.view(n).left() {
@@ -1565,6 +1600,7 @@ fn rb_min<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
 }
 
 /// `RBT_MAX` from `x`: its rightmost descendant.
+#[inline]
 fn rb_max<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
     let mut n = x;
     while let Some(r) = t.view(n).right() {
@@ -1574,35 +1610,46 @@ fn rb_max<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
 }
 
 /// `RBT_NEXT(x)`.
+#[inline]
 fn rb_next<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
-    if let Some(r) = t.view(x).right() {
+    rb_next_from(t, x, t.view(x))
+}
+
+/// `RBT_NEXT(x)` from `x`'s view `xv` (its entry checked by the caller): each node of the
+/// walk is viewed, so checked, once.
+#[inline]
+fn rb_next_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: View<'_, R::T>) -> Option<NonNull<R::T>> {
+    if let Some(r) = xv.right() {
         return rb_min(t, r);
     }
     let mut child = x;
-    let mut p = t.view(x).parent();
+    let mut p = xv.parent();
     while let Some(pp) = p {
-        if t.view(pp).left() == Some(child) {
+        let pv = t.view(pp);
+        if pv.left() == Some(child) {
             return Some(pp);
         }
         child = pp;
-        p = t.view(pp).parent();
+        p = pv.parent();
     }
     None
 }
 
-/// `RBT_PREV(x)`.
-fn rb_prev<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
-    if let Some(l) = t.view(x).left() {
+/// `RBT_PREV(x)` from `x`'s view `xv`, as [`rb_next_from`].
+#[inline]
+fn rb_prev_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: View<'_, R::T>) -> Option<NonNull<R::T>> {
+    if let Some(l) = xv.left() {
         return rb_max(t, l);
     }
     let mut child = x;
-    let mut p = t.view(x).parent();
+    let mut p = xv.parent();
     while let Some(pp) = p {
-        if t.view(pp).right() == Some(child) {
+        let pv = t.view(pp);
+        if pv.right() == Some(child) {
             return Some(pp);
         }
         child = pp;
-        p = t.view(pp).parent();
+        p = pv.parent();
     }
     None
 }
@@ -1725,10 +1772,11 @@ fn is_red<R: Rb>(t: &R, x: Option<NonNull<R::T>>) -> bool {
 fn rb_insert_color<R: Rb>(t: &R, x: NonNull<R::T>) {
     let mut x = x;
     while let Some(parent) = t.view(x).parent()
-        && t.view(parent).color() == RED
+        && let pv = t.view(parent)
+        && pv.color() == RED
     {
         // A red parent is never the root, so the grandparent exists.
-        let Some(gparent) = t.view(parent).parent() else {
+        let Some(gparent) = pv.parent() else {
             broken("RBT_INSERT")
         };
         let gv = t.view(gparent);
@@ -1739,17 +1787,18 @@ fn rb_insert_color<R: Rb>(t: &R, x: NonNull<R::T>) {
             gv.left()
         };
         if let Some(u) = uncle
-            && t.view(u).color() == RED
+            && let uv = t.view(u)
+            && uv.color() == RED
         {
-            t.view(u).set_color(BLACK);
-            t.view(parent).set_color(BLACK);
+            uv.set_color(BLACK);
+            pv.set_color(BLACK);
             gv.set_color(RED);
             x = gparent;
             continue;
         }
         let mut parent = parent;
         if parent_is_left {
-            if t.view(parent).right() == Some(x) {
+            if pv.right() == Some(x) {
                 rb_rotate_left(t, parent);
                 core::mem::swap(&mut parent, &mut x);
             }
@@ -1757,7 +1806,7 @@ fn rb_insert_color<R: Rb>(t: &R, x: NonNull<R::T>) {
             gv.set_color(RED);
             rb_rotate_right(t, gparent);
         } else {
-            if t.view(parent).left() == Some(x) {
+            if pv.left() == Some(x) {
                 rb_rotate_right(t, parent);
                 core::mem::swap(&mut parent, &mut x);
             }
