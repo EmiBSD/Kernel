@@ -1,0 +1,1214 @@
+schema = 1
+arch = "amd64"
+date = "2026-10-18T17:22:24Z"
+kernel_commit = "ef0888b7c25bde83c4e618e90a89bad74d1c5885"
+kernel_tree_clean = true
+kernel_sha256 = "5807770c98eecc3f2bec168864739990009935167e3385555b78809242ec4c48"
+profile = "release"
+reps = 10
+discard_worst = 1
+smp = 4
+memory = "512M"
+spread_limit_percent = 15.0
+file_mib = 256
+tcpbench_seconds = 10
+
+[qemu]
+emibsd = "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/edk2-amd64-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/emibsd-amd64-bench.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/disk-amd64-bench.img,id=sd0 -device virtio-blk-pci,drive=sd0"
+openbsd = "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/amd64/openbsd-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/amd64/openbsd-scratch.img,id=d1 -device virtio-blk-pci,drive=d1 -snapshot"
+emibsd_link = ["qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/edk2-amd64-a-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/emibsd-amd64-a.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:01 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=65325,remote.type=inet,remote.host=127.0.0.1,remote.port=56787 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/disk-amd64-a.img,id=sd0 -device virtio-blk-pci,drive=sd0", "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/edk2-amd64-b-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/emibsd-amd64-b.img,id=hd0 -device ide-hd,drive=hd0,bus=ide.0,bootindex=0 -device isa-debug-exit,iobase=0xf4,iosize=0x04 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:02 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=56787,remote.type=inet,remote.host=127.0.0.1,remote.port=65325 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/disk-amd64-b.img,id=sd0 -device virtio-blk-pci,drive=sd0"]
+openbsd_link = ["qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/amd64/openbsd-a-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:01 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=53802,remote.type=inet,remote.host=127.0.0.1,remote.port=59787 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -snapshot", "qemu-system-x86_64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-x86_64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/bench-release-before/amd64/openbsd-b-vars.fd -netdev user,id=n0 -M q35 -cpu qemu64 -device virtio-net-pci,netdev=n0,mac=52:54:00:aa:00:02 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=59787,remote.type=inet,remote.host=127.0.0.1,remote.port=53802 -device virtio-net-pci,netdev=n1,mac=52:54:00:bb:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/perf-before/target/openbsd/amd64/disk.img,id=d0 -device virtio-blk-pci,drive=d0,bootindex=0 -snapshot"]
+
+[[measurement]]
+name = "boot"
+unit = "s"
+better = "lower"
+emibsd = [18.187, 16.8, 16.903, 16.782, 16.81, 17.044, 18.391, 16.79, 16.892, 16.658]
+openbsd = [28.411, 21.806, 21.689, 21.985, 21.685, 21.774, 21.79, 21.929, 21.546, 21.683]
+emibsd_discarded = 6
+openbsd_discarded = 0
+ratio = 0.772
+
+[measurement.emibsd_stats]
+median = 16.81
+min = 16.658
+max = 18.187
+spread_percent = 9.096
+
+[measurement.openbsd_stats]
+median = 21.774
+min = 21.546
+max = 21.985
+spread_percent = 2.016
+
+[[measurement]]
+name = "pagefault"
+unit = "ns/op"
+better = "lower"
+emibsd = [6413.0, 6454.0, 6308.0, 6411.0, 6313.0, 6284.0, 6384.0, 6140.0, 6299.0, 7128.0]
+openbsd = [10671.0, 11915.0, 10469.0, 10649.0, 10618.0, 10445.0, 11599.0, 10755.0, 10392.0, 10374.0]
+emibsd_discarded = 9
+openbsd_discarded = 1
+ratio = 0.595
+
+[measurement.emibsd_stats]
+median = 6313.0
+min = 6140.0
+max = 6454.0
+spread_percent = 4.974
+
+[measurement.openbsd_stats]
+median = 10618.0
+min = 10374.0
+max = 11599.0
+spread_percent = 11.537
+
+[[measurement]]
+name = "forkexit"
+unit = "ns/op"
+better = "lower"
+emibsd = [408897.0, 392446.0, 394051.0, 410308.0, 389348.0, 406441.0, 395519.0, 385107.0, 393211.0, 439935.0]
+openbsd = [799234.0, 861222.0, 796840.0, 812338.0, 787367.0, 803916.0, 824658.0, 807023.0, 808594.0, 788464.0]
+emibsd_discarded = 9
+openbsd_discarded = 1
+ratio = 0.49
+
+[measurement.emibsd_stats]
+median = 394051.0
+min = 385107.0
+max = 410308.0
+spread_percent = 6.395
+
+[measurement.openbsd_stats]
+median = 803916.0
+min = 787367.0
+max = 824658.0
+spread_percent = 4.639
+
+[[measurement]]
+name = "forkexec"
+unit = "ns/op"
+better = "lower"
+emibsd = [1056510.0, 1008997.0, 1004321.0, 1008101.0, 996309.0, 999901.0, 996926.0, 979976.0, 999028.0, 1253055.0]
+openbsd = [1860228.0, 1980781.0, 1794781.0, 1865165.0, 1822018.0, 1857287.0, 1918030.0, 1878136.0, 1803295.0, 1839698.0]
+emibsd_discarded = 9
+openbsd_discarded = 1
+ratio = 0.538
+
+[measurement.emibsd_stats]
+median = 999901.0
+min = 979976.0
+max = 1056510.0
+spread_percent = 7.654
+
+[measurement.openbsd_stats]
+median = 1857287.0
+min = 1794781.0
+max = 1918030.0
+spread_percent = 6.636
+
+[[measurement]]
+name = "pipe"
+unit = "ns/op"
+better = "lower"
+emibsd = [55809.0, 54178.0, 53401.0, 53666.0, 52717.0, 52608.0, 52596.0, 52987.0, 53004.0, 53964.0]
+openbsd = [76465.0, 77485.0, 75160.0, 73686.0, 74770.0, 76304.0, 74901.0, 74513.0, 74988.0, 75393.0]
+emibsd_discarded = 0
+openbsd_discarded = 1
+ratio = 0.707
+
+[measurement.emibsd_stats]
+median = 53004.0
+min = 52596.0
+max = 54178.0
+spread_percent = 2.985
+
+[measurement.openbsd_stats]
+median = 74988.0
+min = 73686.0
+max = 76465.0
+spread_percent = 3.706
+
+[[measurement]]
+name = "fileread"
+unit = "ns/op"
+better = "lower"
+emibsd = [277735.0, 276474.0, 276933.0, 270468.0, 278979.0, 273690.0, 271720.0, 269522.0, 275107.0, 291185.0]
+openbsd = [336687.0, 340201.0, 339544.0, 342891.0, 344379.0, 348999.0, 354315.0, 347965.0, 340131.0, 343369.0]
+emibsd_discarded = 9
+openbsd_discarded = 6
+ratio = 0.802
+
+[measurement.emibsd_stats]
+median = 275107.0
+min = 269522.0
+max = 278979.0
+spread_percent = 3.438
+
+[measurement.openbsd_stats]
+median = 342891.0
+min = 336687.0
+max = 348999.0
+spread_percent = 3.591
+
+[[measurement]]
+name = "tcpbench"
+unit = "Mbps"
+better = "higher"
+emibsd = [987.555, 1116.988, 1085.718, 1118.633, 1111.928, 1132.513, 1063.709, 996.331, 997.244, 1079.374]
+openbsd = [552.711, 557.786, 567.403, 567.837, 531.876, 545.705, 554.844, 561.081, 548.034, 567.598]
+emibsd_discarded = 0
+openbsd_discarded = 4
+ratio = 1.946
+
+[measurement.emibsd_stats]
+median = 1085.718
+min = 996.331
+max = 1132.513
+spread_percent = 12.543
+
+[measurement.openbsd_stats]
+median = 557.786
+min = 545.705
+max = 567.837
+spread_percent = 3.968
+
+[[host]]
+system = "emibsd"
+run = 1
+load_start = 4.29
+load_end = 4.5
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 33.5
+
+[[host.top]]
+name = "WindowServer"
+cpu = 26.4
+
+[[host.top]]
+name = "plugin-container"
+cpu = 17.0
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.2
+
+[[host.top]]
+name = "firefox"
+cpu = 9.4
+
+[[host]]
+system = "openbsd"
+run = 1
+load_start = 4.5
+load_end = 7.08
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 27.5
+
+[[host.top]]
+name = "WindowServer"
+cpu = 24.1
+
+[[host.top]]
+name = "firefox"
+cpu = 12.9
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.5
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.2
+
+[[host]]
+system = "openbsd"
+run = 2
+load_start = 7.08
+load_end = 6.56
+
+[[host.top]]
+name = "rustfmt"
+cpu = 100.0
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 34.1
+
+[[host.top]]
+name = "WindowServer"
+cpu = 23.0
+
+[[host.top]]
+name = "plugin-container"
+cpu = 14.4
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.5
+
+[[host]]
+system = "emibsd"
+run = 2
+load_start = 6.56
+load_end = 5.64
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 34.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 23.9
+
+[[host.top]]
+name = "plugin-container"
+cpu = 14.6
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.6
+
+[[host.top]]
+name = "firefox"
+cpu = 8.5
+
+[[host]]
+system = "emibsd"
+run = 3
+load_start = 5.64
+load_end = 4.87
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 33.6
+
+[[host.top]]
+name = "biomesyncd"
+cpu = 22.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 14.7
+
+[[host.top]]
+name = "plugin-container"
+cpu = 13.3
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 12.0
+
+[[host]]
+system = "openbsd"
+run = 3
+load_start = 4.87
+load_end = 4.63
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 37.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 23.1
+
+[[host.top]]
+name = "plugin-container"
+cpu = 14.9
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 11.5
+
+[[host.top]]
+name = "firefox"
+cpu = 9.8
+
+[[host]]
+system = "openbsd"
+run = 4
+load_start = 4.63
+load_end = 4.25
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 31.0
+
+[[host.top]]
+name = "WindowServer"
+cpu = 20.0
+
+[[host.top]]
+name = "plugin-container"
+cpu = 17.8
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 11.3
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 8.3
+
+[[host]]
+system = "emibsd"
+run = 4
+load_start = 4.25
+load_end = 4.71
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 37.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 28.6
+
+[[host.top]]
+name = "plugin-container"
+cpu = 15.9
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 11.1
+
+[[host.top]]
+name = "firefox"
+cpu = 9.2
+
+[[host]]
+system = "emibsd"
+run = 5
+load_start = 4.71
+load_end = 4.64
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 36.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 24.4
+
+[[host.top]]
+name = "plugin-container"
+cpu = 10.9
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.8
+
+[[host.top]]
+name = "firefox"
+cpu = 8.5
+
+[[host]]
+system = "openbsd"
+run = 5
+load_start = 4.64
+load_end = 3.96
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 38.0
+
+[[host.top]]
+name = "WindowServer"
+cpu = 29.4
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 26.8
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.6
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.6
+
+[[host]]
+system = "openbsd"
+run = 6
+load_start = 3.96
+load_end = 4.58
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 36.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 22.8
+
+[[host.top]]
+name = "mobileassetd"
+cpu = 15.6
+
+[[host.top]]
+name = "plugin-container"
+cpu = 11.4
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 11.0
+
+[[host]]
+system = "emibsd"
+run = 6
+load_start = 4.58
+load_end = 4.6
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 32.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 29.3
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.3
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 9.2
+
+[[host.top]]
+name = "xtask"
+cpu = 8.4
+
+[[host]]
+system = "emibsd"
+run = 7
+load_start = 4.6
+load_end = 4.52
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 33.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 22.0
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.0
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.0
+
+[[host.top]]
+name = "firefox"
+cpu = 8.7
+
+[[host]]
+system = "openbsd"
+run = 7
+load_start = 4.52
+load_end = 3.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 25.3
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 22.6
+
+[[host.top]]
+name = "plugin-container"
+cpu = 13.3
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.2
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 9.2
+
+[[host]]
+system = "openbsd"
+run = 8
+load_start = 3.9
+load_end = 4.48
+
+[[host.top]]
+name = "NotificationCenter"
+cpu = 37.7
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 31.5
+
+[[host.top]]
+name = "WindowServer"
+cpu = 28.9
+
+[[host.top]]
+name = "plugin-container"
+cpu = 14.4
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.3
+
+[[host]]
+system = "emibsd"
+run = 8
+load_start = 4.48
+load_end = 6.25
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 38.5
+
+[[host.top]]
+name = "WindowServer"
+cpu = 20.8
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 13.1
+
+[[host.top]]
+name = "plugin-container"
+cpu = 13.0
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 12.3
+
+[[host]]
+system = "emibsd"
+run = 9
+load_start = 6.25
+load_end = 5.24
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 36.5
+
+[[host.top]]
+name = "WindowServer"
+cpu = 21.6
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.3
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 10.9
+
+[[host.top]]
+name = "firefox"
+cpu = 8.6
+
+[[host]]
+system = "openbsd"
+run = 9
+load_start = 5.24
+load_end = 4.61
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 38.6
+
+[[host.top]]
+name = "WindowServer"
+cpu = 23.8
+
+[[host.top]]
+name = "plugin-container"
+cpu = 13.1
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 11.7
+
+[[host.top]]
+name = "firefox"
+cpu = 8.8
+
+[[host]]
+system = "openbsd"
+run = 10
+load_start = 4.61
+load_end = 4.03
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 37.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 23.2
+
+[[host.top]]
+name = "plugin-container"
+cpu = 15.3
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 11.0
+
+[[host.top]]
+name = "firefox"
+cpu = 8.5
+
+[[host]]
+system = "emibsd"
+run = 10
+load_start = 4.03
+load_end = 4.24
+
+[[host.top]]
+name = "WindowServer"
+cpu = 45.7
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 26.3
+
+[[host.top]]
+name = "plugin-container"
+cpu = 21.5
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 17.2
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 8.8
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 1
+load_start = 6.34
+load_end = 6.6
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 24.1
+
+[[host.top]]
+name = "WindowServer"
+cpu = 18.4
+
+[[host.top]]
+name = "plugin-container"
+cpu = 10.8
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.8
+
+[[host.top]]
+name = "firefox"
+cpu = 6.0
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 2
+load_start = 6.6
+load_end = 6.49
+
+[[host.top]]
+name = "plugin-container"
+cpu = 38.4
+
+[[host.top]]
+name = "WindowServer"
+cpu = 25.7
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 17.4
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.3
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.5
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 3
+load_start = 6.49
+load_end = 6.64
+
+[[host.top]]
+name = "WindowServer"
+cpu = 32.9
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 22.4
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 13.3
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.2
+
+[[host.top]]
+name = "Code"
+cpu = 7.3
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 4
+load_start = 6.64
+load_end = 6.46
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 20.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 15.7
+
+[[host.top]]
+name = "plugin-container"
+cpu = 8.6
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.2
+
+[[host.top]]
+name = "claude"
+cpu = 5.6
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 5
+load_start = 6.46
+load_end = 6.81
+
+[[host.top]]
+name = "WindowServer"
+cpu = 23.2
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 22.7
+
+[[host.top]]
+name = "plugin-container"
+cpu = 11.2
+
+[[host.top]]
+name = "firefox"
+cpu = 7.7
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.4
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 6
+load_start = 6.81
+load_end = 7.07
+
+[[host.top]]
+name = "WindowServer"
+cpu = 32.1
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 23.9
+
+[[host.top]]
+name = "NotificationCenter"
+cpu = 19.0
+
+[[host.top]]
+name = "runningboardd"
+cpu = 11.6
+
+[[host.top]]
+name = "plugin-container"
+cpu = 8.2
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 7
+load_start = 7.07
+load_end = 10.41
+
+[[host.top]]
+name = "duetexpertd"
+cpu = 72.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 32.6
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 22.2
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 16.5
+
+[[host.top]]
+name = "biomesyncd"
+cpu = 11.4
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 8
+load_start = 10.41
+load_end = 10.04
+
+[[host.top]]
+name = "plugin-container"
+cpu = 89.2
+
+[[host.top]]
+name = "firefox"
+cpu = 43.8
+
+[[host.top]]
+name = "plugin-container"
+cpu = 19.8
+
+[[host.top]]
+name = "runningboardd"
+cpu = 19.0
+
+[[host.top]]
+name = "WindowServer"
+cpu = 17.6
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 9
+load_start = 10.04
+load_end = 8.96
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 22.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 17.3
+
+[[host.top]]
+name = "plugin-container"
+cpu = 9.9
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 7.7
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 6.0
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 10
+load_start = 8.96
+load_end = 8.57
+
+[[host.top]]
+name = "WindowServer"
+cpu = 19.4
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 18.3
+
+[[host.top]]
+name = "plugin-container"
+cpu = 9.7
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.4
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 1
+load_start = 7.04
+load_end = 7.35
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 22.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 18.7
+
+[[host.top]]
+name = "plugin-container"
+cpu = 11.6
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 7.0
+
+[[host.top]]
+name = "firefox"
+cpu = 6.9
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 2
+load_start = 7.35
+load_end = 7.2
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 19.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 12.3
+
+[[host.top]]
+name = "plugin-container"
+cpu = 7.3
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.5
+
+[[host.top]]
+name = "firefox"
+cpu = 5.4
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 3
+load_start = 7.2
+load_end = 6.85
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 21.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 13.2
+
+[[host.top]]
+name = "plugin-container"
+cpu = 9.5
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.8
+
+[[host.top]]
+name = "firefox"
+cpu = 5.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 4
+load_start = 6.85
+load_end = 6.58
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 18.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 10.4
+
+[[host.top]]
+name = "plugin-container"
+cpu = 7.8
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.3
+
+[[host.top]]
+name = "firefox"
+cpu = 4.9
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 5
+load_start = 6.58
+load_end = 6.61
+
+[[host.top]]
+name = "plugin-container"
+cpu = 27.1
+
+[[host.top]]
+name = "WindowServer"
+cpu = 20.4
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 18.5
+
+[[host.top]]
+name = "firefox"
+cpu = 17.5
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 7.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 6
+load_start = 6.61
+load_end = 6.89
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 21.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 16.9
+
+[[host.top]]
+name = "plugin-container"
+cpu = 13.3
+
+[[host.top]]
+name = "firefox"
+cpu = 10.8
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.4
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 7
+load_start = 6.89
+load_end = 7.23
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 24.8
+
+[[host.top]]
+name = "WindowServer"
+cpu = 17.1
+
+[[host.top]]
+name = "plugin-container"
+cpu = 12.0
+
+[[host.top]]
+name = "firefox"
+cpu = 8.0
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.4
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 8
+load_start = 7.23
+load_end = 7.21
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 25.4
+
+[[host.top]]
+name = "WindowServer"
+cpu = 16.3
+
+[[host.top]]
+name = "firefox"
+cpu = 7.2
+
+[[host.top]]
+name = "plugin-container"
+cpu = 7.0
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 9
+load_start = 7.21
+load_end = 7.35
+
+[[host.top]]
+name = "plugin-container"
+cpu = 48.5
+
+[[host.top]]
+name = "WindowServer"
+cpu = 43.7
+
+[[host.top]]
+name = "firefox"
+cpu = 26.6
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 25.2
+
+[[host.top]]
+name = "plugin-container"
+cpu = 10.7
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 10
+load_start = 7.35
+load_end = 6.98
+
+[[host.top]]
+name = "Firefox GPU Helper"
+cpu = 13.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 10.5
+
+[[host.top]]
+name = "plugin-container"
+cpu = 6.8
+
+[[host.top]]
+name = "coreaudiod"
+cpu = 6.2
+
+[[host.top]]
+name = "firefox"
+cpu = 5.2

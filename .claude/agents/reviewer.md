@@ -53,9 +53,17 @@ on the side it must match, and a concrete failing input or sequence when it is a
    `Security-Review:` paragraph the commit needs: the invariant reviewed (bounds, lifetime,
    constant time, privilege boundary), the tests run, the `diff-openbsd` scenarios that cover
    it.
-5. Tests: the C's known-answer vectors are real standard vectors (spot-check); tests assert
+5. Hot paths (decision 43: the page fault, fork, exec, mmap/munmap, the scheduler, what N4
+   adds): does the hot path make more lookups, clones or recomputations than the C? Compare
+   it with the C and with the LZ module: an element looked up again by key while a reference
+   to it is in hand, derived state recomputed when nothing it derives from changed, a
+   soundness check repeated in the same walk (never removed), a handle cloned where the lock
+   already keeps it alive (`docs/IDIOMS.md`, "hot path"). The commit carries the host
+   microbenchmarks' `Bench:` lines (`sys/kernel/benches/vm.rs`, debug and release), and an
+   op more than 10 % slower has its reason in the body.
+6. Tests: the C's known-answer vectors are real standard vectors (spot-check); tests assert
    behaviour, not just that the code runs; the counts in the commit body match.
-6. Commit shape (`git-commits.md`): the subject, the body's numbers, `LZ:` lines matching the
+7. Commit shape (`git-commits.md`): the subject, the body's numbers, `LZ:` lines matching the
    `lz` list, `Unsafe:` matching the tool, no redesign mixed with an `lz-sync:` or `lineage:`.
 
 Final message: verdict (approve / changes needed), then the defects ranked by severity, each

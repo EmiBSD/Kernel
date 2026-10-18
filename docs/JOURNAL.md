@@ -387,3 +387,147 @@ the `docs: close N3` commit.
 Effort: _(user)_
 
 Time: _(user)_
+
+### Decision 42: N3's performance
+
+Investigated 2026-10-18 after the close, before N4 (docs/ZERO_UNSAFE.md decisions 42 and 43).
+Boundary: main e3cdf1d3 to the `docs:` commit of n3/perf-close. Three branches, 12 commits
+without merges (`git rev-list --count --no-merges e3cdf1d3..n3/perf-release` 2,
+`..n3/perf-opt` 10), merged at 8accf040 and 11eb98d3 with no conflict (disjoint files), and
+the review's fix c51cb2c2; `git diff --shortstat e3cdf1d3 n3/perf-opt -- sys`: 7 files, +1,939
+-418 (sys/kernel/benches/vm.rs 1,021 of them).
+
+- The release diagnostic (eeb155ed, `just bench-release`; the method of the baselines: ten
+  runs a side, the worst left out, the 15 % limit). The MP kernel in the release profile at
+  20035fd0 (before N3, built at ef0888b7 with the flag picked onto it) and at eeb155ed (after),
+  2026-10-18 14:06-16:13 under the machine lock. Cell: EmiBSD median (spread), ratio to
+  OpenBSD; `spread` = refused.
+
+  | measurement | arch | debug before | debug after | release before | release after | release/debug before | after |
+  |---|---|---|---|---|---|---|---|
+  | boot (s) | amd64 | 17.35 (2.4 %) 0.802 | 17.22 (3.1 %) 0.804 | 16.81 (9.1 %) 0.772 | 16.79 (1.7 %) 0.780 | 0.969 | 0.975 |
+  | pagefault (ns) | amd64 | 7956 (13.8 %) 0.747 | 12269 (4.0 %) 1.184 | 6313 (5.0 %) 0.595 | 8550 (4.6 %) 0.821 | 0.793 | 0.697 |
+  | forkexit (ns) | amd64 | 459233 (7.4 %) 0.584 | 680755 (3.4 %) 0.884 | 394051 (6.4 %) 0.490 | 554141 (2.4 %) 0.700 | 0.858 | 0.814 |
+  | forkexec (ns) | amd64 | 1214616 (6.5 %) 0.659 | 1820719 (4.5 %) 1.034 | 999901 (7.7 %) 0.538 | 1431855 (4.3 %) 0.793 | 0.823 | 0.786 |
+  | pipe (ns) | amd64 | 68504 (14.4 %) 0.936 | 69186 (3.6 %) 0.942 | 53004 (3.0 %) 0.707 | 52262 (9.8 %) 0.709 | 0.774 | 0.755 |
+  | fileread (ns) | amd64 | 280928 (24.8 %) spread | 322744 (2.8 %) 0.973 | 275107 (3.4 %) 0.802 | 273054 (21.6 %) spread | 0.979 | 0.846 |
+  | tcpbench (Mbps) | amd64 | 767.3 (1.2 %) 1.300 | 787.6 (1.6 %) 1.313 | 1085.7 (12.5 %) 1.946 | 1191.4 (1.2 %) 2.004 | 1.415 | 1.513 |
+  | boot (s) | arm64 | 8.33 (2.9 %) 0.263 | 8.65 (1.5 %) 0.274 | 8.31 (2.1 %) 0.263 | 8.47 (3.3 %) 0.269 | 0.998 | 0.980 |
+  | pagefault (ns) | arm64 | 75784 (2.7 %) 0.617 | 81715 (2.3 %) 0.661 | 72791 (1.7 %) 0.589 | 78044 (7.4 %) 0.633 | 0.961 | 0.955 |
+  | forkexit (ns) | arm64 | 1686982 (4.1 %) 0.762 | 2672794 (2.5 %) 1.200 | 1572308 (1.7 %) 0.711 | 2225552 (3.5 %) 0.998 | 0.932 | 0.833 |
+  | forkexec (ns) | arm64 | 4900752 (4.1 %) 0.740 | 6868461 (2.8 %) 1.075 | 4436730 (3.8 %) 0.695 | 5918638 (3.9 %) 0.925 | 0.905 | 0.862 |
+  | pipe (ns) | arm64 | 168655 (9.3 %) 0.953 | 171029 (2.2 %) 0.922 | 161038 (4.6 %) 0.866 | 152366 (3.2 %) 0.821 | 0.955 | 0.891 |
+  | fileread (ns) | arm64 | 702139 (13.0 %) 0.790 | 879892 (2.1 %) 1.001 | 595441 (1.8 %) 0.678 | 813719 (2.3 %) 0.925 | 0.848 | 0.925 |
+  | tcpbench (Mbps) | arm64 | 108.3 (6.9 %) 1.235 | 102.1 (0.5 %) 1.143 | 105.5 (0.5 %) 1.189 | 107.2 (0.6 %) 1.226 | 0.974 | 1.050 |
+
+  The release kernel is slower after N3 in the same places as the debug one (pagefault
+  amd64 +35 %, forkexit +41 % / +42 %, forkexec +43 % / +33 %, fileread arm64 +37 %), so the
+  cost was the design, not `opt-level = 1`. Kept as `docs/bench/n3-release-{before,after}-
+  <arch>.toml`. Two runs were refused and run again alone: release-after amd64's first
+  (`forkexec` OpenBSD spread 19.0 %, host daemons' bursts in runs 2-4; the re-run's
+  `fileread` EmiBSD 21.6 %, one fast sample, reported as refused and not run a third time)
+  and release-before arm64's first (`fileread` EmiBSD 17.6 %; the re-run 1.8 %).
+- Where the time went (737b7b5d, `sys/kernel/benches/vm.rs`, docs/ARCHITECTURE.md "bench"):
+  the real `kernel::vm` code on the host, debug and release, profiled with sample(1) and
+  xctrace with the inlined frames expanded. Against LZ's legacy uvm at 20035fd0 (the same
+  ops through a scratch copy, never a worktree) the fault was +29 % (dev) / +23 % (release)
+  per page, a 70-entry fork +134 % / +168 %, its teardown +191 % / +163 %, a one-page
+  map/unmap +121 % / +123 %. Share of each op without the host pmap and the doubles (dev /
+  release), the pieces N3 added:
+  - fork, exit, exec, map/unmap: entry looked up again by key (`ent`, `next_key`; 12-15
+    tree searches per entry forked where the C follows pointers) 32-47 %; the owned tree's
+    per-node identity and bounds checks inside each search 10-24 %; `MapState::owners()`
+    rebuilt by every free-list call 8-17 %; `Guarded` checks 1.5-4.4 %; handle clones
+    2.5-3 %.
+  - the anonymous fault: the page system (queue mutexes, lists, the per-CPU cache)
+    37-40 %, the same share as LZ's; the fault's own logic 24-30 %; `PoolArc` clones 6-7 %;
+    `Guarded` 2-4 %, `PG_HAL_VIEW` 3 %, the owned-tree checks 4-6 %.
+  - Not seen by the host: the pmaps (the host pmap is a `BTreeMap`, 45-58 % of a host fault),
+    TLB shootdowns, the trap and syscall entry, TCG's costs. Busy-window relocks: 0 samples.
+- Phase 2 (n3/perf-opt, the redesigner; the user: no approval of the table needed), one
+  commit per piece, each with its host `Bench:` lines (two runs per profile, the lowest
+  median, against the previous commit; fork.big dev / release):
+  1. ac8b9ebf hold the map entry in hand instead of finding it again by key: 11834 -> 8804 /
+     10165 -> 6971 ns (forkexit 24374 -> 18064 / 20822 -> 14276, map.syscall 721 -> 556 /
+     600 -> 480).
+  2. dd9dc059 compute a map operation's owners once and lend them: 8804 -> 7214 / 6971 ->
+     6095 (keeping them in `MapState` was measured and refused: `Vmspace` 616 bytes, a
+     `vmsppl` item size `vmstat -m` shows).
+  3. 9986eaac view each node of an owned tree's walk once: 7214 -> 7374 / 6095 -> 5688.
+  4. 6eb820e2 lend map entries' handles where the write lock keeps them: 7374 -> 6956 /
+     5688 -> 5574.
+  5. 9dab32dd inline `Guarded`'s check and give the fault a typed witness: 6956 -> 6586 /
+     5574 -> 5458.
+  6. ee5bbc7b lend the element an owned tree's insert linked (hal API, no user yet; hal tests
+     292 -> 293).
+  7. f5caa6de go on from the entry an insert lends: 6586 -> 6225 / 5458 -> 5230.
+  Base 02f20ecb -> tip 98611cd0, dev / release: fork.big -47 % / -49 %, forkexit -43 % /
+  -44 %, forkexec -36 % / -38 %, exec -26 % / -29 %, map.syscall -30 % / -28 %, cmp.fork70
+  -49 % / -50 %, the faults -1 to -5 %; kernel tests 308 -> 310, `hal` 100. Refused by the
+  user: `hal::owned`'s identity check once per search instead of per node (fork.big -8 % /
+  -6 %); it stays per node.
+- The review (an agent that wrote none of it) approved everything but one defect: ac8b9ebf
+  dropped `UVM_MAP_CLIP_END`'s KASSERT from `uvm_unmap_remove` when the entry lies inside the
+  range and `markfree` is false (reference/openbsd-src/sys/uvm/uvm_map.h:111, uvm_map.c:1987-
+  1988), a tautology today but a check the C makes, and its body said "no check removed".
+  c51cb2c2 restores it under the C's condition (`diagnostic` only, as KASSERT; the host
+  bench unchanged, -7 % to +0.2 %).
+- The close of decision 42 (n3/perf-close): `just check` rc=0 (344 s; host tests 3,775 ->
+  3,780), `hal-check` 100 <= 100, `abi-check` clean, `cargo test -p xtask` 261,
+  `cargo check -p bsd --tests` clean; `just jobs=3 ci` rc=0 in 1,330 s (18:34-18:56), 86 of
+  86 smokes in 18 min 15 s, no retry, `lz drift --strict` 0 open; `just diff-openbsd` rc=0 in
+  76 s, 107 steps on each arch, 104 equal, 3 expected, 0 unexpected (`expected.toml`
+  unchanged). No `ci-full`: not an N close (it runs at N4's).
+- The final debug `just bench` (the smokes' kernel, the same method), against the N3 close's
+  reports (`cargo xtask bench compare docs/bench/n3-after-<arch>.toml <report>`) and the
+  baseline before N3 (`n3-before-<arch>.toml`); kept as `docs/bench/n3-perf-after-<arch>.toml`:
+
+  2026-10-18 18:59-19:43 (2,643 s with the build and a quiet minute), kernel c51cb2c2, under
+  the machine lock, nothing of ours else running; the host diagnostic shows macOS's suggestd at
+  100 % of a core through the whole run (not ours, not touched). EmiBSD medians; ratio to
+  OpenBSD in brackets; the change against the N3 close and against the baseline before N3.
+
+  | measurement | arch | before N3 | N3 close | now | now vs close | now vs before |
+  |---|---|---|---|---|---|---|
+  | boot (s) | amd64 | 17.35 [0.802] | 17.22 [0.804] | 17.31 [0.810] | within spread | within spread |
+  | pagefault (ns) | amd64 | 7956 [0.747] | 12269 [1.184] | 11855 [1.157] | -3.4 %, within spread | +49 % |
+  | forkexit (ns) | amd64 | 459233 [0.584] | 680755 [0.884] | 597826 [0.770] | -12.2 % | +30 % |
+  | forkexec (ns) | amd64 | 1214616 [0.659] | 1820719 [1.034] | 1646020 [0.934] | -9.6 % | +36 % |
+  | pipe (ns) | amd64 | 68504 [0.936] | 69186 [0.942] | 69415 [0.948] | within spread | within spread |
+  | fileread (ns) | amd64 | 280928 [spread] | 322744 [0.973] | 318409 [0.959] | within spread | baseline spread over 15 % |
+  | tcpbench (Mbps) | amd64 | 767.3 [1.300] | 787.6 [1.313] | 781.6 [1.295] | within spread | within spread |
+  | boot (s) | arm64 | 8.33 [0.263] | 8.65 [0.274] | 8.61 [0.273] | within spread | +3.4 % |
+  | pagefault (ns) | arm64 | 75784 [0.617] | 81715 [0.661] | 81425 [0.657] | within spread | +7.4 % |
+  | forkexit (ns) | arm64 | 1686982 [0.762] | 2672794 [1.200] | 2706914 [1.225] | +1.3 %, within spread | +60 % |
+  | forkexec (ns) | arm64 | 4900752 [0.740] | 6868461 [1.075] | 6904563 [1.077] | +0.5 %, within spread | +41 % |
+  | pipe (ns) | arm64 | 168655 [0.953] | 171029 [0.922] | 171062 [0.918] | within spread | within spread |
+  | fileread (ns) | arm64 | 702139 [0.790] | 879892 [1.001] | 867319 [0.983] | within spread | +24 % |
+  | tcpbench (Mbps) | arm64 | 108.3 [1.235] | 102.1 [1.143] | 103.8 [spread] | refused (15.5 %) | refused |
+
+  Thirteen of fourteen ratios print. arm64's `tcpbench` is refused: EmiBSD's spread 15.5 %
+  (OpenBSD's 14.7 %; EmiBSD's discarded run 3 at 58.2 Mbps, the nine kept 98.5 to 114.5,
+  run 1 the fast one). The arm64 half was started again alone at 19:45 for it and stopped by
+  the main session at 19:54, in its fourth run, to free the machine for the QEMU profiling
+  the user asked for; the first run's report is the one kept. `Bench:` lines (`cargo xtask bench compare`), against the N3
+  close: `forkexit-amd64 680755 -> 597826 ns`, `forkexec-amd64 1820719 -> 1646020 ns`; every
+  other row within the larger spread or not comparable. So on amd64 the phase recovered 37 %
+  of `forkexit`'s N3 regression and 29 % of `forkexec`'s, none of the page fault's; on arm64
+  nothing moved. The host's 36-49 % on fork and exec is the `kernel::vm` share only: what N3
+  costs under QEMU is mostly elsewhere, in what the host doubles cannot see (the pmaps moved
+  into `hal` at N3.1, arm64's above all; the page system's locks under TCG; the trap and the
+  TLB shootdowns), and is the next question.
+- Left: the lookups beyond the C the review listed in sys/kernel/vm/map.rs (unmap: one search
+  per step and one after a clip; `uvm_mapent_mkfree` up to three and `uvm_map_fix_space`'s by
+  key; `uvm_map_mkentry`'s first, `fix_space`'s from it and the final refind, ~8 % of a
+  release fork; the clips' and `uvm_map_splitentry`'s refinds; the owners recomputed in
+  `splitentry`, `clip_start` and the merge; the `next_key` walks of `pageable_pgon`,
+  `pageable_wire`, `clip_first`, `inherit`, `immutable`, `advice`, `extract`, `refill`), a
+  cursor over the state or a reshaped `mkentry` being the next step; the fault's aref/object
+  clones stay (they cross the sleeps with the map unlocked); the pmap side of the fault,
+  which only a QEMU profile or a kernel-side counter can see (the user's); `zero_page`/
+  `copy_page` taking the `PageMd` waits for typed pages.
+- `sys/kernel/benches/vm.rs` uses `std` (a host bench target, `harness = false`, never linked
+  into a kernel image), which CLAUDE.md's `std` exceptions did not name; the review asked for
+  the user's ruling, and the main session relayed on 2026-10-18 that the user allows
+  `sys/*/benches/`. The exception's wording in CLAUDE.md and `.claude/rules/rust-kernel.md`
+  is the main session's commit.

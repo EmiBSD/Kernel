@@ -2379,3 +2379,15 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
   first when the two differ in profile. It tells how much of a ratio is the debug build's
   rather than the design's; it never replaces the baseline, which stays the debug kernel's.
   Its reports go to `target/bench-release/<arch>/` unless `EMIBSD_RUN_DIR` says otherwise.
+- **Host microbenchmarks** (decision 42, phase 1; decision 43 runs them per slice).
+  `sys/kernel/benches/vm.rs`, a `harness = false` bench target of `kernel` (feature
+  `doubles`, an `[[extra]]` of `lineage.toml`, never a kernel image), drives the real
+  `kernel::vm` code over `kernel::testutil`'s doubles, with recycling pool(9) and malloc(9)
+  doubles of its own: the anonymous and lower faults, fork, exit, exec, map/unmap and the
+  primitives (a `PoolArc` clone, the map lock, a page allocation), ns per op, seven
+  repetitions of about 300 ms, median and spread. `cargo build -p kernel --features doubles
+  --bench vm --profile dev` (the kernel's `opt-level = 1`) and `--release`; the binary takes
+  bench names, `list`, or `--profile NAME SECS` for a profiler. What it cannot see: the real
+  pmaps (the host pmap is a `BTreeMap`), TLB shootdowns, the trap and syscall entry, the
+  page contents and TCG's costs; so it attributes and compares, and `just bench` stays the
+  measurement of record.

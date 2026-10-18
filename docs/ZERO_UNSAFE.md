@@ -895,3 +895,56 @@ nothing"), recorded as recommended under the user's N3 authority:
     and `rd.rs` (no GENERIC, but every ramdisk smoke roots on `rd0a`), stay. The study also
     measured N7: 383 files (408 with `mod.rs`), 4,101 `unsafe` (4,124 with `softraid_crypto`),
     softraid 9 files and 218 (0.5, 0.8).
+
+Taken by the user on 2026-10-18:
+
+42. **N3's performance regression is investigated before N4.** N3's close measured the debug
+    kernel slower (`pagefault` amd64 +54 %, `forkexit` +48 % amd64 / +58 % arm64, `forkexec`
+    +50 % / +40 %, `fileread` arm64 +25 %). Phase 1 measured, read-only on the kernel: (1) a
+    release diagnostic, `just bench` with the MP kernel in the release profile before N3
+    (20035fd0) and after, both archs, the same method (ten runs, the worst left out, the 15 %
+    limit), through an xtask flag (`bench --profile release`); it never replaces the
+    baseline, which stays the debug kernel's; (2) host microbenchmarks of the hot path over
+    the real `kernel::vm` code and `testutil`'s doubles (the anonymous fault upper and lower,
+    fork, exec, map/unmap), debug and release, with the cost per piece; (3) a table per
+    measurement and arch, debug and release, before and after, with the costliest pieces.
+    Phase 2 optimized by cost, one commit each with its `Bench:` lines: no new `unsafe`
+    (`hal` stays at most 100, else stop and ask), no check the C makes relaxed or removed,
+    no soundness check (`Guarded`, `PG_HAL_VIEW`, the counters) removed, only made cheaper or
+    moved to a type, nothing userland sees changed, the tests and smokes green, a
+    `Security-Review:` in its areas; a stop for any optimization that needed a check removed,
+    `unsafe` added or the smokes' build profile changed. At the end, `just bench` again
+    (debug, the same method) against `docs/bench/n3-after-*.toml`, and the final table.
+    The user's answers on the way: the table needed no approval ("no hace falta que yo
+    apruebe la tabla"); `hal::owned`'s ownership check stays per node (checking it once per
+    search was measured, fork.big -8 % dev / -6 % release, and refused). Done in eeb155ed
+    (the release flag), 737b7b5d (sys/kernel/benches/vm.rs), ac8b9ebf .. f5caa6de (seven
+    optimizations), c51cb2c2 (the review's defect: `UVM_MAP_CLIP_END`'s KASSERT restored).
+    Outcome: the release kernel takes up to 30 % less time than the debug one but is slower
+    after N3 in the same places, so the design, not the profile, was the cost (N3 added entry
+    lookups by key, a rebuilt owners snapshot, double per-node views and handle clones); on
+    the host fork.big -47 % (dev) / -49 % (release), forkexit -43 % / -44 %, forkexec -36 % /
+    -38 %, map.syscall -30 % / -28 %, the faults -1 to -5 %, at the same checks, `hal` 100;
+    under QEMU (the final debug `just bench`, against the N3 close) amd64 `forkexit` -12 %
+    and `forkexec` -10 % (37 % and 29 % of N3's regression), the page fault and every arm64
+    row within the spread (arm64 `tcpbench` refused): the rest of N3's cost is outside what
+    the host sees, the pmaps first, and is open (docs/JOURNAL.md, "Decision 42").
+    `sys/kernel/benches/vm.rs` uses `std`; the user allowed host bench targets under
+    `sys/*/benches/` on 2026-10-18 (relayed by the main session).
+
+43. **No "pig's tails" on the hot paths.** In force from 2026-10-18 for every launch prompt
+    (decision 42's phase 2 included); nothing userland sees changes. (1) A slice touching a
+    hot path (the page fault, fork, exec, mmap/munmap, the scheduler and what N4 adds) runs
+    the host microbenchmarks of `sys/kernel/benches/vm.rs` (and those added for N4), debug
+    and release, before its commit; the result is its `Bench:` lines (before -> after); an
+    op more than 10 % slower without a reason written in the body stops the agent, who asks
+    the user. A bounded exception to decision 23: no QEMU per slice, the QEMU bench stays at
+    the close (`testing.md`, `re-engineering.md`). (2) `docs/IDIOMS.md` gains the "hot path"
+    row, N3's pattern: whoever holds a reference to an element does not look it up again by
+    key in a loop (`next(e)` or a cursor); derived state (`MapState::owners()`) is kept and
+    recomputed only when what it derives from changes, computed once per operation and lent;
+    a soundness check runs once per operation or per node, never repeated in the same walk,
+    and is never removed; a handle is lent (`&T`) instead of cloned when the lock already
+    guarantees it lives. (3) The reviewer's checklist gains "does the hot path make more
+    lookups, clones or recomputations than the C?", compared with the C and with LZ
+    (`.claude/agents/reviewer.md`).
