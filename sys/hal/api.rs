@@ -33,14 +33,16 @@
 //!
 //! Version 1 (N2.4): the system call handler's registration, the `Legacy` fallback, and the
 //! raw user copy the module's own `UserPtr` work needs. Version 2 (N2.6): `pipe2`, the
-//! kernel's entry for pipe(2) and pipe2(2), the first `Native` system calls.
+//! kernel's entry for pipe(2) and pipe2(2), the first `Native` system calls. Version 3
+//! (N3.5): [`VmEntries`], the fifteen system calls of the virtual memory system (`mmap(2)`
+//! and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`), one typed entry each.
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 2;
+pub const KERNEL_API_VERSION: u32 = 3;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -67,6 +69,55 @@ impl ApiPrefix {
     };
 }
 
+/// `mmap(2)` and `mquery(2)`: `(nr, addr, len, prot, flags, fd, pos)`, the address in the
+/// `Ok`.
+pub type MmapEntry = fn(Register, usize, usize, i32, i32, i32, i64) -> Result<usize, i32>;
+/// A range call, `(nr, addr, len)`: `munmap`, `mimmutable`, `mlock`, `munlock`.
+pub type RangeEntry = fn(Register, usize, usize) -> SysResult;
+/// A range call with an `int`, `(nr, addr, len, arg)`: `mprotect` (`prot`), `madvise`
+/// (`behav`), `minherit` (`inherit`), `msync` (`flags`).
+pub type RangeIntEntry = fn(Register, usize, usize, i32) -> SysResult;
+
+/// The virtual memory system's entries (version 3): each takes the system call's number
+/// first (the prologue still `bsd`'s checks it: pledge, the pinned syscalls), then the
+/// arguments as `<sys/syscallargs.h>` types them.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VmEntries {
+    /// 17 = `break(char *nsize)`: `(nr, nsize)`.
+    pub obreak: fn(Register, usize) -> SysResult,
+    /// 49 = `mmap`.
+    pub mmap: MmapEntry,
+    /// 73 = `munmap`.
+    pub munmap: RangeEntry,
+    /// 74 = `mprotect`.
+    pub mprotect: RangeIntEntry,
+    /// 75 = `madvise`.
+    pub madvise: RangeIntEntry,
+    /// 78 = `mquery`.
+    pub mquery: MmapEntry,
+    /// 86 = `kbind(const struct __kbind *param, size_t psize, int64_t proc_cookie)`:
+    /// `(nr, param, psize, proc_cookie)`.
+    pub kbind: fn(Register, usize, usize, u64) -> SysResult,
+    /// 158 = `pinsyscalls(void *base, size_t len, u_int *pins, int npins)`: `(nr, base, len,
+    /// pins, npins)`.
+    pub pinsyscalls: fn(Register, usize, usize, usize, i32) -> SysResult,
+    /// 159 = `mimmutable`.
+    pub mimmutable: RangeEntry,
+    /// 203 = `mlock`.
+    pub mlock: RangeEntry,
+    /// 204 = `munlock`.
+    pub munlock: RangeEntry,
+    /// 250 = `minherit`.
+    pub minherit: RangeIntEntry,
+    /// 256 = `msync`.
+    pub msync: RangeIntEntry,
+    /// 271 = `mlockall(int flags)`: `(nr, flags)`.
+    pub mlockall: fn(Register, i32) -> SysResult,
+    /// 272 = `munlockall(void)`: `(nr)`.
+    pub munlockall: fn(Register) -> SysResult,
+}
+
 /// The vtable handed to the module.
 #[repr(C)]
 pub struct KernelApi {
@@ -86,6 +137,8 @@ pub struct KernelApi {
     /// `SYS_pipe2`, which the system call prologue checks: pledge, the pinned syscalls), the
     /// user address of the two descriptors and `pipe2`'s flags (0 for `pipe`).
     pub pipe2: fn(Register, usize, Register) -> SysResult,
+    /// The virtual memory system's system calls (version 3).
+    pub vm: VmEntries,
 }
 
 impl KernelApi {
@@ -96,6 +149,7 @@ impl KernelApi {
         copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
         copyout: fn(&[u8], usize) -> Result<(), i32>,
         pipe2: fn(Register, usize, Register) -> SysResult,
+        vm: VmEntries,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -104,6 +158,7 @@ impl KernelApi {
             copyin,
             copyout,
             pipe2,
+            vm,
         }
     }
 }
@@ -150,6 +205,9 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
+    // Version 3 only adds: the version 2 fields keep their places, `vm` comes last.
+    assert!(offset_of!(KernelApi, vm) == size_of::<KernelApi>() - size_of::<VmEntries>());
+    assert!(size_of::<VmEntries>() == 15 * size_of::<fn()>());
     assert!(HEADER_MAGIC == 0 && HEADER_API_VERSION == 8 && HEADER_INIT == 16);
     assert!(HEADER_SIZE == 24);
 };
@@ -184,13 +242,83 @@ mod tests {
         }
     }
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2);
+    fn nr(nr: Register) -> SysResult {
+        Err(nr as i32)
+    }
+    fn nr_int(nr: Register, v: i32) -> SysResult {
+        Err(nr as i32 + v)
+    }
+    fn obreak(nr: Register, n: usize) -> SysResult {
+        Err(nr as i32 + n as i32)
+    }
+    fn range(nr: Register, a: usize, l: usize) -> SysResult {
+        Err(nr as i32 + (a + l) as i32)
+    }
+    fn range_int(nr: Register, a: usize, l: usize, v: i32) -> SysResult {
+        Err(nr as i32 + (a + l) as i32 + v)
+    }
+    fn mmap(
+        nr: Register,
+        a: usize,
+        l: usize,
+        p: i32,
+        f: i32,
+        fd: i32,
+        o: i64,
+    ) -> Result<usize, i32> {
+        Ok(nr as usize + a + l + (p + f + fd) as usize + o as usize)
+    }
+    fn kbind(nr: Register, p: usize, s: usize, c: u64) -> SysResult {
+        Err(nr as i32 + (p + s) as i32 + c as i32)
+    }
+    fn pins(nr: Register, b: usize, l: usize, p: usize, n: i32) -> SysResult {
+        Err(nr as i32 + (b + l + p) as i32 + n)
+    }
+
+    const VM: VmEntries = VmEntries {
+        obreak,
+        mmap,
+        munmap: range,
+        mprotect: range_int,
+        madvise: range_int,
+        mquery: mmap,
+        kbind,
+        pinsyscalls: pins,
+        mimmutable: range,
+        mlock: range,
+        munlock: range,
+        minherit: range_int,
+        msync: range_int,
+        mlockall: nr_int,
+        munlockall: nr,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
+        assert_eq!(KERNEL_API_VERSION, 3);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
+        // Version 2's prefix of fields stays where it was: the prefix, five entries.
+        assert_eq!(
+            offset_of!(KernelApi, vm),
+            size_of::<ApiPrefix>() + 5 * size_of::<fn()>()
+        );
+    }
+
+    #[test]
+    fn the_vm_entries_are_the_callers() {
+        assert_eq!((API.vm.mmap)(49, 1, 2, 3, 4, 5, 6), Ok(70));
+        assert_eq!((API.vm.mquery)(78, 1, 2, 3, 4, 5, 6), Ok(99));
+        assert_eq!((API.vm.munmap)(73, 1, 2), Err(76));
+        assert_eq!((API.vm.msync)(256, 1, 2, 3), Err(262));
+        assert_eq!((API.vm.kbind)(86, 1, 2, 3), Err(92));
+        assert_eq!((API.vm.pinsyscalls)(158, 1, 2, 3, 4), Err(168));
+        assert_eq!((API.vm.obreak)(17, 1), Err(18));
+        assert_eq!((API.vm.mlockall)(271, 1), Err(272));
+        assert_eq!((API.vm.munlockall)(272), Err(272));
     }
 
     #[test]

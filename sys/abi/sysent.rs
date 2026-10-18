@@ -27,7 +27,9 @@
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
 //! fallback too, which answers `ENOSYS` as the traps did. A subsystem that moves into
 //! `kernel` flips its entries to `Native` and raises [`NATIVE`]: N2.6, pipe(2) and pipe2(2)
-//! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`).
+//! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`). N3.5 S1 writes the translations of the
+//! virtual memory system's fifteen (`KernelApi::vm`, `sys/kernel/vm/mmap.rs` and
+//! `unix.rs`); they stay out of [`SYSENT`] until the flip (S2) makes them `Native`.
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -36,7 +38,11 @@
 use hal::api::KernelApi;
 use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
-use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_pipe, SYS_pipe2};
+use hal::sys::syscall::{
+    SYS_MAXSYSCALL, SYS_break, SYS_kbind, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock,
+    SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall,
+    SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2,
+};
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
 pub type NativeFn = fn(&'static KernelApi, &SysArgs, &mut Rval) -> SysResult;
@@ -102,6 +108,148 @@ fn sys_pipe(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysRes
     (api.pipe2)(SYS_pipe as Register, args[0] as usize, 0)
 }
 
+/// 17 = `break(char *nsize)`.
+pub fn sys_obreak(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.obreak)(SYS_break as Register, args[0] as usize)
+}
+
+/// 49 = `mmap(void *addr, size_t len, int prot, int flags, int fd, off_t pos)`: the
+/// address in `rval[0]`.
+pub fn sys_mmap(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    let r = (api.vm.mmap)(
+        SYS_mmap as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as i32,
+        args[4] as i32,
+        args[5] as i64,
+    );
+    match r {
+        Ok(addr) => {
+            rval[0] = addr as Register;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 73 = `munmap(void *addr, size_t len)`.
+pub fn sys_munmap(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.munmap)(SYS_munmap as Register, args[0] as usize, args[1] as usize)
+}
+
+/// 74 = `mprotect(void *addr, size_t len, int prot)`.
+pub fn sys_mprotect(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.mprotect)(
+        SYS_mprotect as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+    )
+}
+
+/// 75 = `madvise(void *addr, size_t len, int behav)`.
+pub fn sys_madvise(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.madvise)(
+        SYS_madvise as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+    )
+}
+
+/// 78 = `mquery(void *addr, size_t len, int prot, int flags, int fd, off_t pos)`: the
+/// address in `rval[0]`.
+pub fn sys_mquery(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    let r = (api.vm.mquery)(
+        SYS_mquery as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as i32,
+        args[4] as i32,
+        args[5] as i64,
+    );
+    match r {
+        Ok(addr) => {
+            rval[0] = addr as Register;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 86 = `kbind(const struct __kbind *param, size_t psize, int64_t proc_cookie)`.
+pub fn sys_kbind(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.kbind)(
+        SYS_kbind as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as u64,
+    )
+}
+
+/// 158 = `pinsyscalls(void *base, size_t len, u_int *pins, int npins)`.
+pub fn sys_pinsyscalls(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.pinsyscalls)(
+        SYS_pinsyscalls as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as i32,
+    )
+}
+
+/// 159 = `mimmutable(void *addr, size_t len)`.
+pub fn sys_mimmutable(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.mimmutable)(
+        SYS_mimmutable as Register,
+        args[0] as usize,
+        args[1] as usize,
+    )
+}
+
+/// 203 = `mlock(const void *addr, size_t len)`.
+pub fn sys_mlock(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.mlock)(SYS_mlock as Register, args[0] as usize, args[1] as usize)
+}
+
+/// 204 = `munlock(const void *addr, size_t len)`.
+pub fn sys_munlock(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.munlock)(SYS_munlock as Register, args[0] as usize, args[1] as usize)
+}
+
+/// 250 = `minherit(void *addr, size_t len, int inherit)`.
+pub fn sys_minherit(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.minherit)(
+        SYS_minherit as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+    )
+}
+
+/// 256 = `msync(void *addr, size_t len, int flags)`.
+pub fn sys_msync(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.msync)(
+        SYS_msync as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+    )
+}
+
+/// 271 = `mlockall(int flags)`.
+pub fn sys_mlockall(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.mlockall)(SYS_mlockall as Register, args[0] as i32)
+}
+
+/// 272 = `munlockall(void)`.
+pub fn sys_munlockall(api: &'static KernelApi, _args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    (api.vm.munlockall)(SYS_munlockall as Register)
+}
+
 /// The entry of number `nr`, if the table has one (a negative number has none).
 fn entry(table: &[Sysent], nr: Register) -> Option<&Sysent> {
     match usize::try_from(nr) {
@@ -140,7 +288,69 @@ mod tests {
         Err(nr as i32 * 1000 + fdp as i32 + flags as i32)
     }
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2);
+    // The vm entries of the test table say what reached them: the number, then each
+    // argument at its own decimal place.
+    fn nr(nr: Register) -> SysResult {
+        Err(nr as i32)
+    }
+    fn nr_int(nr: Register, v: i32) -> SysResult {
+        Err(nr as i32 * 10 + v)
+    }
+    fn obreak(nr: Register, n: usize) -> SysResult {
+        Err(nr as i32 * 10 + n as i32)
+    }
+    fn range(nr: Register, a: usize, l: usize) -> SysResult {
+        Err(nr as i32 * 100 + a as i32 * 10 + l as i32)
+    }
+    fn range_int(nr: Register, a: usize, l: usize, v: i32) -> SysResult {
+        Err(nr as i32 * 1000 + a as i32 * 100 + l as i32 * 10 + v)
+    }
+    fn mmap(
+        nr: Register,
+        a: usize,
+        l: usize,
+        p: i32,
+        f: i32,
+        fd: i32,
+        o: i64,
+    ) -> Result<usize, i32> {
+        if fd < 0 {
+            return Err(-fd);
+        }
+        Ok(nr as usize * 1_000_000
+            + a * 100_000
+            + l * 10_000
+            + p as usize * 1000
+            + f as usize * 100
+            + fd as usize * 10
+            + o as usize)
+    }
+    fn kbind(nr: Register, p: usize, s: usize, c: u64) -> SysResult {
+        Err(nr as i32 * 1000 + p as i32 * 100 + s as i32 * 10 + c as i32)
+    }
+    fn pins(nr: Register, b: usize, l: usize, p: usize, n: i32) -> SysResult {
+        Err(nr as i32 * 10_000 + b as i32 * 1000 + l as i32 * 100 + p as i32 * 10 + n)
+    }
+
+    const VM: hal::api::VmEntries = hal::api::VmEntries {
+        obreak,
+        mmap,
+        munmap: range,
+        mprotect: range_int,
+        madvise: range_int,
+        mquery: mmap,
+        kbind,
+        pinsyscalls: pins,
+        mimmutable: range,
+        mlock: range,
+        munlock: range,
+        minherit: range_int,
+        msync: range_int,
+        mlockall: nr_int,
+        munlockall: nr,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
 
     /// A `Native` entry of the test table.
     fn native(_: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
@@ -214,6 +424,40 @@ mod tests {
             Err(263 * 1000 + 5)
         );
         assert_eq!(rval, [-7, -7], "the return registers are left to the trap");
+    }
+
+    /// Each vm translation calls its own entry with its own number and the arguments in
+    /// `<sys/syscallargs.h>`'s order; the address of mmap(2) and mquery(2) lands in
+    /// `rval[0]`, an error leaves the return registers alone.
+    #[test]
+    fn the_vm_translations_pass_their_number_and_arguments_in_order() {
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let mut rval = [-7; 2];
+        assert_eq!(sys_mmap(&API, &a, &mut rval), Ok(()));
+        assert_eq!(rval, [49_123_456, -7]);
+        assert_eq!(sys_mquery(&API, &a, &mut rval), Ok(()));
+        assert_eq!(rval, [78_123_456, -7]);
+        let mut rval = [-7; 2];
+        assert_eq!(sys_mmap(&API, &[1, 2, 3, 4, -9, 6], &mut rval), Err(9));
+        assert_eq!(rval, [-7, -7]);
+        assert_eq!(sys_obreak(&API, &a, &mut rval), Err(171));
+        assert_eq!(sys_munmap(&API, &a, &mut rval), Err(7312));
+        assert_eq!(sys_mprotect(&API, &a, &mut rval), Err(74123));
+        assert_eq!(sys_madvise(&API, &a, &mut rval), Err(75123));
+        assert_eq!(sys_kbind(&API, &a, &mut rval), Err(86123));
+        assert_eq!(sys_pinsyscalls(&API, &a, &mut rval), Err(1_581_234));
+        assert_eq!(sys_mimmutable(&API, &a, &mut rval), Err(15912));
+        assert_eq!(sys_mlock(&API, &a, &mut rval), Err(20312));
+        assert_eq!(sys_munlock(&API, &a, &mut rval), Err(20412));
+        assert_eq!(sys_minherit(&API, &a, &mut rval), Err(250123));
+        assert_eq!(sys_msync(&API, &a, &mut rval), Err(256123));
+        assert_eq!(sys_mlockall(&API, &a, &mut rval), Err(2711));
+        assert_eq!(sys_munlockall(&API, &a, &mut rval), Err(272));
+        assert_eq!(
+            rval,
+            [-7, -7],
+            "no translation but mmap's and mquery's writes rval"
+        );
     }
 
     #[test]
