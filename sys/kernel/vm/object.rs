@@ -120,8 +120,11 @@ use super::page::{
     UvmObjtree, VmPage, uvm_obj_free_pages, uvm_page_owner_locked_p, uvm_page_unbusy,
     uvm_pagelookup, uvm_pageunwire, uvm_pagewire,
 };
-use super::pager::{PGO_ALLPAGES, PGO_LOCKED, PGO_SYNCIO, PageSlot};
+use super::pager::{PGO_ALLPAGES, PGO_LOCKED, PGO_SYNCIO, PageSlot, uvm_mk_pcluster};
 use super::types::{VmProt, Voff};
+use super::vnode::{
+    Uvn, uvn_cluster, uvn_detach, uvn_flush, uvn_get_locked, uvn_get_sync, uvn_put, uvn_reference,
+};
 use crate::assert::{kassert, kpanic};
 
 /// `UVM_OBJ_KERN` is a 'special' `uo_refs` value which indicates that the object is a kernel
@@ -402,6 +405,8 @@ pub enum ObjRef {
     Aobj(PoolArc<Aobj>),
     /// The kernel object (`uvm.kernel_object`), which never dies.
     Kernel(&'static Aobj),
+    /// A vnode's object (`uvn_attach`), which is never freed: the vnode keeps it.
+    Vnode(&'static Uvn),
 }
 
 impl Deref for ObjRef {
@@ -411,6 +416,7 @@ impl Deref for ObjRef {
         match self {
             ObjRef::Aobj(a) => a.object(),
             ObjRef::Kernel(a) => a.object(),
+            ObjRef::Vnode(u) => u.object(),
         }
     }
 }
@@ -421,6 +427,15 @@ impl ObjRef {
         match self {
             ObjRef::Aobj(a) => Some(a),
             ObjRef::Kernel(a) => Some(a),
+            ObjRef::Vnode(_) => None,
+        }
+    }
+
+    /// The `uvm_vnode` behind a vnode object (`(struct uvm_vnode *)uobj`, `uvn_of`).
+    pub fn uvn(&self) -> Option<&'static Uvn> {
+        match self {
+            ObjRef::Vnode(u) => Some(u),
+            ObjRef::Aobj(_) | ObjRef::Kernel(_) => None,
         }
     }
 
@@ -439,6 +454,7 @@ impl ObjRef {
     /// module's deviations).
     pub fn is_vtext(&self) -> bool {
         match self {
+            ObjRef::Vnode(u) => u.vnode().vtext(),
             ObjRef::Aobj(_) | ObjRef::Kernel(_) => false,
         }
     }
@@ -449,6 +465,7 @@ impl ObjRef {
         match self {
             ObjRef::Aobj(a) => uao_reference(a),
             ObjRef::Kernel(a) => uao_reference(a),
+            ObjRef::Vnode(u) => uvn_reference(u),
         }
     }
 
@@ -458,6 +475,7 @@ impl ObjRef {
         match self {
             ObjRef::Aobj(a) => uao_detach(a),
             ObjRef::Kernel(a) => uao_detach(a),
+            ObjRef::Vnode(u) => uvn_detach(u),
         }
     }
 
@@ -471,6 +489,7 @@ impl ObjRef {
         match self {
             ObjRef::Aobj(a) => uao_flush(a, w, start, stop, flags),
             ObjRef::Kernel(a) => uao_flush(a, w, start, stop, flags),
+            ObjRef::Vnode(u) => uvn_flush(u, w, start, stop, flags),
         }
     }
 
@@ -500,6 +519,7 @@ impl ObjRef {
         match self {
             ObjRef::Aobj(a) => uao_get_locked(a, w, off, pps, npages, centeridx, advice, flags),
             ObjRef::Kernel(a) => uao_get_locked(a, w, off, pps, npages, centeridx, advice, flags),
+            ObjRef::Vnode(u) => uvn_get_locked(u, w, off, pps, npages, centeridx, advice, flags),
         }
     }
 
@@ -530,14 +550,17 @@ impl ObjRef {
             ObjRef::Kernel(a) => {
                 uao_get_sync(a, w, off, pps, npages, centeridx, access, advice, flags)
             }
+            ObjRef::Vnode(u) => {
+                uvn_get_sync(u, w, off, pps, npages, centeridx, access, advice, flags)
+            }
         }
     }
 
     /// `pgo_put(uobj, pps, npages, flags)`: write the busy pages `pps[..npages]` to backing
     /// store (`PGO_SYNCIO`: synchronously). `w`, the write witness of the object's lock, is held
     /// across (released and taken again around the I/O). The caller sets `PG_CLEAN` and clears
-    /// the modified bits. An aobj has no `pgo_put` (its pages go to swap, `uvm_swap`): `panic(9)`
-    /// as the C's call through `NULL` would fault.
+    /// the modified bits. An aobj has no `pgo_put` (its pages go to swap, `uvm_swap`):
+    /// `panic(9)` as the C's call through `NULL` would fault.
     pub fn put(
         &self,
         w: &mut WriteWitness<'_>,
@@ -546,8 +569,8 @@ impl ObjRef {
         flags: i32,
     ) -> i32 {
         self.check_witness(w.lock_id(), "pgo_put");
-        let _ = (pps, npages, flags);
         match self {
+            ObjRef::Vnode(u) => uvn_put(u, w, pps, npages, flags),
             ObjRef::Aobj(_) | ObjRef::Kernel(_) => {
                 kpanic(format_args!("uvm_pager_put: pager without pgo_put"))
             }
@@ -558,8 +581,8 @@ impl ObjRef {
     /// clustered. The object's lock is held for writing (`w`). An aobj has none: `panic(9)`.
     pub fn cluster(&self, w: &WriteWitness<'_>, off: Voff) -> (Voff, Voff) {
         self.check_witness(w.lock_id(), "pgo_cluster");
-        let _ = off;
         match self {
+            ObjRef::Vnode(u) => uvn_cluster(u, off),
             ObjRef::Aobj(_) | ObjRef::Kernel(_) => {
                 kpanic(format_args!("uvm_mk_pcluster: pager without pgo_cluster"))
             }
@@ -582,8 +605,11 @@ impl ObjRef {
         mhi: Voff,
     ) -> Option<usize> {
         self.check_witness(w.lock_id(), "pgo_mk_pcluster");
-        let _ = (pps, npages, center, flags, mlo, mhi);
         match self {
+            // use generic version of this: see uvm_pager.c
+            ObjRef::Vnode(_) => Some(uvm_mk_pcluster(
+                self, w, pps, npages, center, flags, mlo, mhi,
+            )),
             ObjRef::Aobj(_) | ObjRef::Kernel(_) => None,
         }
     }

@@ -188,5 +188,36 @@ paid_by = "N7"
 # hal::klock::KernelLock
 [[bridge]]
 trait = "KernelLock"
-for = ["sys/hal/klock.rs", "sys/kernel/vm/object.rs"]
+for = ["sys/hal/klock.rs", "sys/kernel/vm/object.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N4"
+
+# bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode
+# pager's uvn_io, which lets go of the net lock a faulting process holds around the VOP (N3.4c);
+# registered by bsd's uvm_init at the flip (N3.4e); nobody holds it before registration. N6,
+# with the network stack.
+# hal::netlock::NetLock
+[[bridge]]
+trait = "NetLock"
+for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
+paid_by = "N6"
+
+# bsd: getmicrouptime (sys/kern/kern_tc.rs, for the vnode pager's own ratecheck), rebooting and
+# &rebooting (sys/kern/kern_xxx.rs); installed by bsd's uvm_init at the flip (N3.4e); (0, 0) and
+# false before. N4, with kern_time and kern_xxx.
+# kernel::vm::vnode::SysInfo
+[[bridge]]
+trait = "SysInfo"
+for = ["sys/kernel/vm/vnode.rs"]
+paid_by = "N4"
+
+# bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
+# vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
+# curproc's credentials: sys/sys/vnode.rs, sys/kern/vfs_subr.rs, vfs_vnops.rs, vfs_vops.rs),
+# implemented by bsd's Vnode at the flip (N3.4e) and passed as &'static dyn VnodeOps to
+# uvn_attach and the uvm_vnp_* functions (vnodes are never freed); kept by the Uvn. N5, with
+# the vnode layer.
+# kernel::vm::vnode::VnodeOps
+[[bridge]]
+trait = "VnodeOps"
+for = ["sys/kernel/vm/vnode.rs"]
+paid_by = "N5"

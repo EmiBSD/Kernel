@@ -113,7 +113,8 @@
 //!   follow) in arrays of `struct vm_page *` -> [`PageSlot`]: `Empty` (`NULL`), `DontCare`,
 //!   `Page(&'static VmPage)`; a pager's page array is `&mut [PageSlot]`.
 //! - `struct uvm_pagerops` and `uvmpagerops[]` -> the methods of `ObjRef` (`object.rs`);
-//!   [`uvm_pager_init`] calls the pagers' init functions by name.
+//!   [`uvm_pager_init`] calls the pagers' init functions by name, and returns the error of
+//!   one that could not make its pool (pipe's precedent).
 //! - `uvm_pseg_lck` and `psegs[]` beside it, `msleep_nsec(&psegs, &uvm_pseg_lck, ..)` -> the
 //!   segments inside a `hal::mutex::Mutexed` at `IPL_VM` ([`PSEGS`]), slept on with
 //!   `MutexedGuard::sleep_nsec`; the wait channel is still the segments' address.
@@ -135,6 +136,7 @@ use hal::mutex::{Mutexed, MutexedGuard};
 use hal::pmap::HAVE_PMAP_DIRECT;
 use hal::rwlock::WriteWitness;
 use hal::sleep::{INFSLP, PVM, wakeup};
+use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_READ, PROT_WRITE};
 use hal::sys::types::{Paddr, Vaddr};
 
@@ -146,6 +148,7 @@ use super::page::{
 };
 use super::pmemrange::uvm_wait;
 use super::types::Voff;
+use super::vnode::uvn_init;
 use crate::assert::{kassert, kdassert, kpanic};
 
 // pager flags [mostly for flush]
@@ -318,9 +321,10 @@ fn psegs_chan() -> *const () {
     ptr::from_ref(&PSEGS).cast()
 }
 
-/// `uvm_pager_init`: init pagers (at boot time): the pager map's first two segments; the
-/// pagers have no init function of their own here yet (the vnode pager's arrives with it).
-pub fn uvm_pager_init() {
+/// `uvm_pager_init`: init pagers (at boot time): the pager map's first two segments, then
+/// the pagers' init functions (`uvmpagerops[]`: the aobj pager has none, the vnode pager's is
+/// `uvn_init`). The error of a pager's init (its pool could not be made) is returned.
+pub fn uvm_pager_init() -> Result<(), Errno> {
     // init pager map
     let mut psegs = PSEGS.lock();
     uvm_pseg_init(&mut psegs[0]);
@@ -329,6 +333,9 @@ pub fn uvm_pager_init() {
 
     // init ASYNC I/O queue: TAILQ_INIT(&uvm.aio_done): the async pageout path (uvm_aio_*,
     // the swap pager) is not here yet.
+
+    // call pager init functions
+    uvn_init()
 }
 
 /// Initialize a uvm_pseg.

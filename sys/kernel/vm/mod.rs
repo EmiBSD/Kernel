@@ -22,7 +22,7 @@
 //! allocator, `km_alloc(9)` (N3.2); the resident pages and the free page allocator,
 //! `uvm_page` and `uvm_pmemrange` with the per-CPU page caches (N3.3); the anons and the
 //! amaps, `uvm_anon` and `uvm_amap` (N3.4b); the memory objects and their pagers,
-//! `uvm_object`, `uvm_aobj` and `uvm_pager` (N3.4c).
+//! `uvm_object`, `uvm_aobj`, `uvm_pager` and `uvm_vnode` (N3.4c).
 
 pub mod amap;
 pub mod anon;
@@ -33,4 +33,5 @@ pub mod page;
 pub mod pager;
 pub mod pmemrange;
 pub mod types;
+pub mod vnode;
 /* </CODE> */

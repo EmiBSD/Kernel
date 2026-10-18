@@ -48,6 +48,11 @@
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
 //! - `KernelLock`: a per-thread depth, no exclusion (the tests that take it hold [`MEMORY`]);
 //!   the assertion panics on a thread that does not hold it ([`kernel_lock_depth`]).
+//! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
+//! - `vm::vnode`'s `SysInfo`: the host's monotonic clock from one second at the first call,
+//!   never rebooting.
+//! - `vm::vnode`'s `VnodeOps`, not a slot: [`MemVnode`], a vnode whose file is a `Vec` in
+//!   memory ([`mem_vnode`] leaks one), which records what it saw during its last read.
 //! - `vm::km`'s maps bridge, installed only by [`km_install`] (the kernel's own tests: `bsd`'s
 //!   installs its real one): `KmMaps`, a first-fit allocator of virtual space per map over a
 //!   `BTreeMap`, in a range no host address uses, whose next maps a thread can make fail
@@ -74,7 +79,9 @@ use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::klock::KernelLock;
 use hal::kmbuf::{PageKind, PageMemory};
+use hal::link::Link;
 use hal::malloc::Malloc;
+use hal::netlock::NetLock;
 use hal::pmap::BootstrapParams;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
@@ -90,6 +97,7 @@ use crate::vm::page::{
     uvm_setpagesize,
 };
 use crate::vm::types::{UvmConstraintRange, Voff};
+use crate::vm::vnode::{SysInfo, Uvn, VnodeOps};
 
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
@@ -116,6 +124,7 @@ std::thread_local! {
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static KLOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static NET_HELD: Cell<bool> = const { Cell::new(false) };
 
     static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -462,6 +471,220 @@ pub fn kernel_lock_depth() -> u32 {
 }
 
 static TEST_KERNEL_LOCK: TestKernelLock = TestKernelLock;
+
+/// The network lock double.
+struct TestNetLock;
+
+impl NetLock for TestNetLock {
+    fn write_held(&self) -> bool {
+        NET_HELD.with(Cell::get)
+    }
+
+    fn unlock(&self) {
+        NET_HELD.with(|h| h.set(false));
+    }
+
+    fn lock(&self) {
+        NET_HELD.with(|h| h.set(true));
+    }
+}
+
+/// Says whether this thread holds the network lock double for writing.
+pub fn net_lock_set(held: bool) {
+    NET_HELD.with(|h| h.set(held));
+}
+
+/// Whether this thread holds the network lock double for writing.
+pub fn net_lock_held() -> bool {
+    NET_HELD.with(Cell::get)
+}
+
+static TEST_NET_LOCK: TestNetLock = TestNetLock;
+
+/// The clock and shutdown double of `vm::vnode`.
+struct TestSysInfo;
+
+/// When the clock double started.
+static CLOCK_START: OnceLock<Instant> = OnceLock::new();
+
+/// `rebooting`'s wait channel in the double.
+static REBOOTING_CHAN: u8 = 0;
+
+impl SysInfo for TestSysInfo {
+    fn uptime(&self) -> (i64, i64) {
+        let t = CLOCK_START.get_or_init(Instant::now).elapsed() + Duration::from_secs(1);
+        (t.as_secs() as i64, i64::from(t.subsec_micros()))
+    }
+
+    fn rebooting(&self) -> bool {
+        false
+    }
+
+    fn rebooting_chan(&self) -> *const () {
+        std::ptr::from_ref(&REBOOTING_CHAN).cast()
+    }
+}
+
+static TEST_SYS_INFO: TestSysInfo = TestSysInfo;
+
+/// What a [`MemVnode`] saw during its last read.
+#[derive(Clone, Copy, Debug)]
+pub struct ReadSeen {
+    /// The object's lock was held (by anyone).
+    pub object_locked: bool,
+    /// This thread held the network lock double.
+    pub net_locked: bool,
+    /// This thread held the kernel lock double.
+    pub kernel_locked: bool,
+    /// The vnode was locked.
+    pub vnode_locked: bool,
+}
+
+/// A vnode double for the vnode pager: its file is a `Vec` in memory.
+pub struct MemVnode {
+    file: Mutex<Vec<u8>>,
+    uvn: Link<Uvn>,
+    usecount: std::sync::atomic::AtomicI32,
+    vtext: std::sync::atomic::AtomicBool,
+    nlocked: std::sync::atomic::AtomicU32,
+    fail: std::sync::atomic::AtomicBool,
+    last_read: Mutex<Option<ReadSeen>>,
+}
+
+impl MemVnode {
+    /// `v_usecount`.
+    pub fn usecount(&self) -> i32 {
+        self.usecount.load(Ordering::Relaxed)
+    }
+
+    /// The file's bytes.
+    pub fn contents(&self) -> Vec<u8> {
+        lock_any(&self.file).clone()
+    }
+
+    /// How many times the vnode is locked.
+    pub fn nlocked(&self) -> u32 {
+        self.nlocked.load(Ordering::Relaxed)
+    }
+
+    /// Makes the reads and writes fail with `EIO` (or work again).
+    pub fn fail_io(&self, fail: bool) {
+        self.fail.store(fail, Ordering::Relaxed);
+    }
+
+    /// Sets `VTEXT`.
+    pub fn set_vtext(&self) {
+        self.vtext.store(true, Ordering::Relaxed);
+    }
+
+    /// What the last read saw.
+    pub fn last_read(&self) -> Option<ReadSeen> {
+        *lock_any(&self.last_read)
+    }
+}
+
+/// A `std` mutex of a double, poisoned or not.
+fn lock_any<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl VnodeOps for MemVnode {
+    fn uvn(&self) -> Option<&'static Uvn> {
+        self.uvn.get()
+    }
+
+    fn set_uvn(&self, uvn: &'static Uvn) {
+        self.uvn.set(Some(uvn));
+    }
+
+    fn attr_size(&self) -> Result<u64, Errno> {
+        Ok(lock_any(&self.file).len() as u64)
+    }
+
+    fn is_blk(&self) -> bool {
+        false
+    }
+
+    fn vtext(&self) -> bool {
+        self.vtext.load(Ordering::Relaxed)
+    }
+
+    fn clear_vtext(&self) {
+        self.vtext.store(false, Ordering::Relaxed);
+    }
+
+    fn mount_id(&self) -> usize {
+        0x1000
+    }
+
+    fn vref(&self) {
+        self.usecount.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn vrele(&self) {
+        self.usecount.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn vget_nowait(&self) -> Result<(), Errno> {
+        self.vref();
+        Ok(())
+    }
+
+    fn lock(&self, _flags: i32) -> Result<(), Errno> {
+        self.nlocked.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn unlock(&self) {
+        self.nlocked.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn read(&self, off: Voff, buf: &mut [u8], _ioflag: i32) -> Result<usize, Errno> {
+        *lock_any(&self.last_read) = Some(ReadSeen {
+            object_locked: self
+                .uvn
+                .get()
+                .is_some_and(|u| u.object().lock().status() != 0),
+            net_locked: hal::netlock::net_lock_write_held(),
+            kernel_locked: kernel_lock_depth() > 0,
+            vnode_locked: self.nlocked() > 0,
+        });
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(Errno::EIO);
+        }
+        let data = lock_any(&self.file);
+        let off = usize::try_from(off).unwrap_or(usize::MAX).min(data.len());
+        let n = buf.len().min(data.len() - off);
+        buf[..n].copy_from_slice(&data[off..off + n]);
+        Ok(n)
+    }
+
+    fn write(&self, off: Voff, buf: &[u8], _ioflag: i32) -> Result<usize, Errno> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(Errno::EIO);
+        }
+        let mut data = lock_any(&self.file);
+        let off = usize::try_from(off).unwrap_or(0);
+        if data.len() < off + buf.len() {
+            data.resize(off + buf.len(), 0);
+        }
+        data[off..off + buf.len()].copy_from_slice(buf);
+        Ok(buf.len())
+    }
+}
+
+/// A vnode double over `contents`, leaked (vnodes are never freed).
+pub fn mem_vnode(contents: Vec<u8>) -> &'static MemVnode {
+    Box::leak(Box::new(MemVnode {
+        file: Mutex::new(contents),
+        uvn: Link::new(),
+        usecount: std::sync::atomic::AtomicI32::new(1),
+        vtext: std::sync::atomic::AtomicBool::new(false),
+        nlocked: std::sync::atomic::AtomicU32::new(0),
+        fail: std::sync::atomic::AtomicBool::new(false),
+        last_read: Mutex::new(None),
+    }))
+}
 static TEST_INTR: TestIntr = TestIntr;
 static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
@@ -496,6 +719,8 @@ pub fn install() {
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_kernel_lock(&TEST_KERNEL_LOCK);
+        let _ = bridges::register_net_lock(&TEST_NET_LOCK);
+        let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
     });
 }
 

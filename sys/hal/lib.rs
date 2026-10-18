@@ -73,6 +73,8 @@ pub mod malloc;
 ))]
 pub mod mapped;
 pub mod mutex;
+#[forbid(unsafe_code)]
+pub mod netlock;
 pub mod once;
 pub mod percpu;
 // pmap(9) (N3.1). A machine's build has the module once its backend is in

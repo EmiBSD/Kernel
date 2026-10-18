@@ -59,6 +59,7 @@ use crate::intr::IntrLevel;
 use crate::klock::KernelLock;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
+use crate::netlock::NetLock;
 use crate::once::OnceStatic;
 #[cfg(any(
     not(target_os = "none"),
@@ -178,6 +179,15 @@ bridge!(
     KERNEL_LOCK: KernelLock,
     register_kernel_lock,
     kernel_lock
+);
+
+bridge!(
+    /// Registers the network lock (`NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock)` of
+    /// `sys/net/if.rs`), for the kernel crate's vnode pager (`hal::netlock`, N3.4c). Paid by
+    /// N6 (the network stack moves).
+    NET_LOCK: NetLock,
+    register_net_lock,
+    net_lock
 );
 
 // The pmap's two bridges exist where `hal::pmap` does (`lib.rs`: the host, amd64 and arm64);

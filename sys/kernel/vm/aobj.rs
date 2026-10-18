@@ -283,7 +283,8 @@ impl Aobj {
         self.pages() > UAO_SWHASH_THRESHOLD
     }
 
-    /// `u_pages = pages`, under the object's lock held for writing.
+    /// `u_pages = pages`, under the object's lock held for writing (`uao_grow`, `uao_shrink`).
+    #[cfg(feature = "tmpfs")]
     fn set_pages(&self, pages: i32) {
         kassert!(self.obj.write_held());
         self.pages.store(pages, Ordering::Relaxed);
@@ -1450,6 +1451,16 @@ mod tests {
         guard
     }
 
+    /// The slot count of the swap-hash element of page `idx`, if there is one.
+    fn elt_count(aobj: &Aobj, w: &impl Witness, idx: Voff) -> Option<i32> {
+        match aobj.swap.get(w) {
+            Swap::Hash(t) => {
+                chain_find(&t[bucket_of(t, idx)], uao_swhash_elt_tag(idx)).map(|e| e.count)
+            }
+            _ => None,
+        }
+    }
+
     fn create(pages: usize) -> (ObjRef, PoolArc<Aobj>) {
         let obj = uao_create(Vsize::new(pages * PAGE_SIZE), 0).expect("an aobj");
         let ObjRef::Aobj(a) = &obj else {
@@ -1501,12 +1512,14 @@ mod tests {
         assert_eq!(uao_set_swslot(&aobj, &mut w, 5, 12), 0); // the same cluster
         assert_eq!(uao_set_swslot(&aobj, &mut w, 40, 13), 0); // another one
         assert_eq!(aobjs_out().1, elts + 2);
+        assert_eq!(elt_count(&aobj, &w, 3), Some(2));
         assert_eq!(uao_find_swslot(&aobj, &w, 5), 12);
         assert_eq!(uao_find_swslot(&aobj, &w, 40), 13);
         assert_eq!(uao_find_swslot(&aobj, &w, 41), 0);
 
         assert_eq!(uao_set_swslot(&aobj, &mut w, 3, 0), 11);
         assert_eq!(aobjs_out().1, elts + 2, "one slot left in the element");
+        assert_eq!(elt_count(&aobj, &w, 3), Some(1));
         assert_eq!(uao_set_swslot(&aobj, &mut w, 5, 0), 12);
         assert_eq!(
             aobjs_out().1,
