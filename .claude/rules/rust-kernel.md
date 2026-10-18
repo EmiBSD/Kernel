@@ -6,7 +6,8 @@ paths:
 # Kernel Rust
 
 - `#![no_std]` everywhere under `sys/`. `extern crate std` only in `sys/lib.rs` for the host
-  build, in `sys/arch/host/` and `sys/hal/arch/host/` (the host doubles), and under `#[cfg(test)]`. `alloc` only behind `feature = "alloc"`
+  build, in `sys/arch/host/` and `sys/hal/arch/host/` (the host doubles), under `#[cfg(test)]`, and in the host benchmark targets under
+  `sys/*/benches/` (`harness = false`, never linked into a kernel image; the user, 2026-10-18). `alloc` only behind `feature = "alloc"`
   until M3.
 - Workspace lints are law: `unsafe_op_in_unsafe_fn`, `clippy::undocumented_unsafe_blocks`,
   `missing_safety_doc`, `todo`, `unimplemented`, `unwrap_used`, `expect_used` are denied. Never
