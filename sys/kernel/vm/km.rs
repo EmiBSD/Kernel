@@ -1116,8 +1116,20 @@ mod tests {
         assert!(!is_kernel_map(m));
         assert_eq!(phys_map().min_offset(), 0x1000_0000);
         assert_eq!(phys_map().max_offset(), 0x2000_0000);
-        assert!(std::panic::catch_unwind(|| install_submap(KvMap::Phys, m)).is_err());
-        assert!(std::panic::catch_unwind(|| install_submap(KvMap::None, m)).is_err());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install_submap(
+                KvMap::Phys,
+                m
+            )))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install_submap(
+                KvMap::None,
+                m
+            )))
+            .is_err()
+        );
     }
 
     #[test]

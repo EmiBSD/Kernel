@@ -25,6 +25,7 @@
 //! `uvm_object`, `uvm_aobj`, `uvm_pager` and `uvm_vnode` (N3.4c); the fault handler,
 //! `uvm_fault` (N3.4d).
 
+pub mod addr;
 pub mod amap;
 pub mod anon;
 pub mod aobj;

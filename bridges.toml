@@ -201,7 +201,7 @@ paid_by = "N6"
 # kernel::vm::vnode::SysInfo
 [[bridge]]
 trait = "SysInfo"
-for = ["sys/kernel/vm/vnode.rs"]
+for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/map.rs"]
 paid_by = "N4"
 
 # bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
@@ -238,5 +238,5 @@ paid_by = "N3"
 # kernel::vm::proc::VmProc
 [[bridge]]
 trait = "VmProc"
-for = ["sys/kernel/vm/proc.rs"]
+for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/map.rs"]
 paid_by = "N4"

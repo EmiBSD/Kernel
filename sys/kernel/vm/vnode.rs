@@ -430,7 +430,7 @@ fn rebooting() -> bool {
 /// `ratecheck(lasttime, mininterval)` (`kern_time.c`): true, and `lasttime` set to now, when
 /// at least `mininterval` has passed since `lasttime` or `lasttime` is (0, 0) (so the message
 /// is seen at least once, even if interval is huge). The times are `(tv_sec, tv_usec)`.
-fn ratecheck(lasttime: &Mutexed<(i64, i64)>, mininterval: (i64, i64)) -> bool {
+pub(super) fn ratecheck(lasttime: &Mutexed<(i64, i64)>, mininterval: (i64, i64)) -> bool {
     let tv = uptime();
 
     let mut last = lasttime.lock();

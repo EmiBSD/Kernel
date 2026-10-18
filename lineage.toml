@@ -8702,10 +8702,19 @@ lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]
 status = "redesigned"
 notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip)"
 
-[[extra]]
+[[module]]
+rust = "sys/kernel/vm/addr.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_addr.rs"]
+status = "redesigned"
+notes = "N3.5 S1-R1: the address selectors (uvm_addr.c) as enum Selector { Rnd, KBootstrap, Bestfit, Pivot, StackBrk }, each state a PoolBox of the C's pool (uaddr, uaddrrnd, uaddrbest, uaddrpivot), the function table a match; the free trees hal::owned::SecondaryTree<ByFspace> over the map's entries and a pivot's entry a counted SecondaryRef; select(&mut self, &SelectCx) over the map's address tree, the owners snapshot and the brk/stack areas, an entry found in a free tree returned as the address tree's own; uvm_addr_invoke by slot, yielding entry keys; randomness from hal::random. Dead until the flip (S2): bsd's sys/uvm/uvm_addr.rs keeps every LZ item"
+
+[[module]]
 rust = "sys/kernel/vm/map.rs"
 crate = "kernel"
-reason = "N3.5 S1 placeholder: the VmMap type km's map slots name (its bounds only), replaced whole by R1's kernel::vm::map (redesigned from sys/uvm/uvm_map.rs), which then becomes its [[module]]"
+lz = ["sys/uvm/uvm_map.rs", "sys/uvm/uvm_extern.rs", "sys/uvm/uvm.rs", "sys/uvm/uvm_amap.rs", "sys/uvm/uvm_anon.rs", "sys/uvm/uvm_fault.rs"]
+status = "redesigned"
+notes = "N3.5 S1-R1: struct vm_map/vm_map_entry/vmspace in the kernel: entries are PoolBoxes owned by an augmented hal::owned::OwnedTree (or a dead OwnedList), the static entries a StaticArena behind their own BoxPool, vmmpepl/vmmpekpl kept; scalars relaxed atomics written through the split write guard's EntryWrite, the two handles (object, aref) one Guarded<Handles> keyed to the map lock (part 1), the state (tree, selectors, brk/stack) a Guarded<MapState> (part 0) keyed at uvm_map_setup; vm_map_lock & co. as MapGuard/MapWriteGuard/MapBusy values over the rwlock or the INTRSAFE mutex with busy/nbusy under flags_lock and the timestamp; entries named by their start across tree changes; busy walkers under short read locks; VmspaceVars in the map, Vmspace derefs to them, VmspaceRef a PoolArc of vmsppl (vmspace0 too); uvm_map_pageable_locked (UVM_LK_ENTER, consumes) and _keep (ENTER|EXIT); RLIMIT_DATA in uvm_map_protect over VmProc (LZ's unported! closed); impl FaultMap/FaultMapGuard/FaultEntry. Dead until the flip (S2): bsd's sys/uvm keeps every LZ item, so no fn rows yet (S2 lists them)"
 
 [[extra]]
 rust = "sys/kernel/vm/proc.rs"
