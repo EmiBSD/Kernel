@@ -8311,7 +8311,7 @@ notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: Mapp
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; docs/ZERO_UNSAFE.md 0.1, decision 17"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); docs/ZERO_UNSAFE.md 0.1, decision 17"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
@@ -8325,7 +8325,8 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"

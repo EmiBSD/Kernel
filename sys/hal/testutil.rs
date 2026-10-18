@@ -42,7 +42,9 @@
 //! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
 //!   malloc type.
 //! - `UserCopy`: one user address space of `USER_LEN` bytes at [`user_base`]; anything
-//!   outside it is `EFAULT`.
+//!   outside it is `EFAULT`. Its `kcopy_in`/`kcopy_out` reach one run of "foreign" kernel
+//!   memory of [`FOREIGN_LEN`] bytes at [`foreign_base`] (the pages a `ForeignWindow` would
+//!   name); anything outside it faults (`EFAULT`).
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
@@ -96,6 +98,12 @@ const USER_LEN: usize = 64 * 1024;
 
 /// The user address space of the double.
 static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
+/// Where the double's foreign kernel memory starts (`kcopy`'s window side).
+const FOREIGN_BASE: usize = 0x3000_0000;
+/// Its size.
+pub(crate) const FOREIGN_LEN: usize = 64 * 1024;
+/// The double's foreign kernel memory.
+static FOREIGN: Mutex<[u8; FOREIGN_LEN]> = Mutex::new([0; FOREIGN_LEN]);
 /// What the console double was given.
 static CONS_OUT: Mutex<std::vec::Vec<u8>> = Mutex::new(std::vec::Vec::new());
 /// What the console double will answer.
@@ -395,6 +403,16 @@ impl Malloc for TestMalloc {
 /// The user copy double.
 struct TestUser;
 
+/// The range `[kva, kva + len)` of the double's foreign memory, `EFAULT` outside it.
+fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
+    let start = kva.checked_sub(FOREIGN_BASE).ok_or(Errno::EFAULT)?;
+    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
+    if end > FOREIGN_LEN {
+        return Err(Errno::EFAULT);
+    }
+    Ok(start..end)
+}
+
 /// The range `[uaddr, uaddr + len)` of the double's address space, `EFAULT` outside it.
 fn user_range(uaddr: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
     let start = uaddr.checked_sub(USER_BASE).ok_or(Errno::EFAULT)?;
@@ -439,6 +457,18 @@ impl UserCopy for TestUser {
             .ok_or(Errno::ENAMETOOLONG)?;
         self.copyout(&kbuf[..n], uaddr)?;
         Ok(n)
+    }
+
+    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        let r = foreign_range(kva, kbuf.len())?;
+        kbuf.copy_from_slice(&lock(&FOREIGN)[r]);
+        Ok(())
+    }
+
+    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
+        let r = foreign_range(kva, kbuf.len())?;
+        lock(&FOREIGN)[r].copy_from_slice(kbuf);
+        Ok(())
     }
 }
 
@@ -508,6 +538,16 @@ pub(crate) fn page_memory() -> &'static dyn PageMemory {
 /// The first address of the double's user address space.
 pub(crate) fn user_base() -> usize {
     USER_BASE
+}
+
+/// The first address of the double's foreign kernel memory.
+pub(crate) fn foreign_base() -> usize {
+    FOREIGN_BASE
+}
+
+/// `len` bytes of the double's foreign memory from `off`.
+pub(crate) fn foreign_bytes(off: usize, len: usize) -> std::vec::Vec<u8> {
+    lock(&FOREIGN)[off..off + len].to_vec()
 }
 
 /// Whether the `printf(9)` double was given `s`, in one piece.

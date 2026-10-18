@@ -44,7 +44,9 @@
 //! - `Malloc`: the same leaked blocks (page-aligned, so `MALLOC_ALIGN`-aligned), the bytes out
 //!   counted per thread and malloc type ([`malloc_out`]); [`fail_pages`] fails them too.
 //! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
-//!   outside it is `EFAULT`.
+//!   outside it is `EFAULT`. Its `kcopy_in`/`kcopy_out` (a `hal::user::ForeignWindow`'s
+//!   copies) reach one run of "foreign" kernel memory of [`FOREIGN_LEN`] bytes at
+//!   [`FOREIGN_BASE`] ([`foreign_bytes`], [`set_foreign_bytes`]); anything outside it faults.
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
 //! - `KernelLock`: a per-thread depth, no exclusion (the tests that take it hold [`MEMORY`]);
 //!   the assertion panics on a thread that does not hold it ([`kernel_lock_depth`]).
@@ -106,6 +108,10 @@ const TEST_PAGE: usize = 4096;
 pub const USER_BASE: usize = 0x1000_0000;
 /// Its size.
 pub const USER_LEN: usize = 64 * 1024;
+/// Where the double's foreign kernel memory starts (a `ForeignWindow`'s side of `kcopy`).
+pub const FOREIGN_BASE: usize = 0x3000_0000;
+/// Its size.
+pub const FOREIGN_LEN: usize = 64 * 1024;
 
 /// One page of the doubles' memory: page-aligned, so a run of them is too.
 #[derive(Clone, Copy)]
@@ -143,6 +149,8 @@ static WAKE: Condvar = Condvar::new();
 
 /// The user address space of the double.
 static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
+/// The double's foreign kernel memory.
+static FOREIGN: Mutex<[u8; FOREIGN_LEN]> = Mutex::new([0; FOREIGN_LEN]);
 
 /// A double's state, a panicking test's poison ignored.
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
@@ -445,6 +453,28 @@ impl UserCopy for TestUser {
     fn copyoutstr(&self, _kbuf: &[u8], _uaddr: usize) -> Result<usize, Errno> {
         Err(Errno::EFAULT)
     }
+
+    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        let r = foreign_range(kva, kbuf.len())?;
+        kbuf.copy_from_slice(&lock(&FOREIGN)[r]);
+        Ok(())
+    }
+
+    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
+        let r = foreign_range(kva, kbuf.len())?;
+        lock(&FOREIGN)[r].copy_from_slice(kbuf);
+        Ok(())
+    }
+}
+
+/// The range `[kva, kva + len)` of the double's foreign memory, `EFAULT` outside it.
+fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
+    let start = kva.checked_sub(FOREIGN_BASE).ok_or(Errno::EFAULT)?;
+    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
+    if end > FOREIGN_LEN {
+        return Err(Errno::EFAULT);
+    }
+    Ok(start..end)
 }
 
 /// The kernel lock double.
@@ -755,6 +785,24 @@ pub const fn page_memory() -> &'static dyn PageMemory {
 pub fn user_bytes(uaddr: usize, len: usize) -> Option<Vec<u8>> {
     let r = user_range(uaddr, len).ok()?;
     Some(lock(&USER)[r].to_vec())
+}
+
+/// `len` bytes of the double's foreign kernel memory at `kva`, `None` outside it.
+pub fn foreign_bytes(kva: usize, len: usize) -> Option<Vec<u8>> {
+    let r = foreign_range(kva, len).ok()?;
+    Some(lock(&FOREIGN)[r].to_vec())
+}
+
+/// Writes `bytes` into the double's foreign kernel memory at `kva` (what the other process
+/// left in its pages); `false` outside it.
+pub fn set_foreign_bytes(kva: usize, bytes: &[u8]) -> bool {
+    match foreign_range(kva, bytes.len()) {
+        Ok(r) => {
+            lock(&FOREIGN)[r].copy_from_slice(bytes);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Makes this thread's page allocations fail, as `km_alloc` does when the kernel map is full:

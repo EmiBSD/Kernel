@@ -43,7 +43,16 @@
 //! last bytes are written and read back (then restored), so a block that is not memory, or
 //! not writable, fails at its first use instead of corrupting something later.
 //!
+//! The machine's `kcopy` (`hal::user::UserCopy::kcopy_in`/`kcopy_out`, N3.5 S0) writes and
+//! reads kernel memory named by an address. `hal` calls it only for a range inside a
+//! `hal::user::ForeignWindow`, which the kernel map's token alone mints
+//! (`KernelMapper::foreign_window`): that the range is the token holder's, onto foreign pages
+//! no Rust object occupies, is the token's contract (as for `kenter`'s addresses, which no
+//! check here could establish either), and the window bounds every copy (a range past it is
+//! `panic(9)`). The fault on an unmapped page is the machine's `pcb_onfault`, an `EFAULT`.
+//!
 //! The pmap's page provider (`hal::pmap::PhysPages`, N3.1, passed to `pmap_bootstrap` as a
+
 //! value by the same boot path) is under the same contract for the frames it hands out, and a
 //! machine's pmap views a frame through the direct map only after [`check_frame`]: the frame
 //! page-aligned, its whole page inside the direct map the boot glue described.

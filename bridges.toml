@@ -71,7 +71,11 @@ for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
 
 # bsd: copyin, copyout, copyinstr, copyoutstr of sys/machine/copy.rs (copy.S with pcb_onfault).
-# A safe trait: it only reads and writes the byte slices it is given.
+# A safe trait: the user copies only read and write the byte slices they are given and user
+# memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
+# through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
+# window the kernel map's token minted.
+
 # hal::user::UserCopy
 [[bridge]]
 trait = "UserCopy"

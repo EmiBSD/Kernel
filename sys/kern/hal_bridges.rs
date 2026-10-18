@@ -58,6 +58,7 @@ use hal::user::UserCopy;
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
 use crate::kern::kern_malloc::{free, malloc};
+use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::{panicstr, printf};
@@ -69,6 +70,7 @@ use crate::sys::errno::Errno;
 use crate::sys::mutex::mtx_curcpu;
 use crate::sys::pool::Pool;
 use crate::sys::systm::{COLD, SAFEPRI};
+use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// `spl(9)` of `sys/machine/intr.rs`.
 struct BsdIntr;
@@ -307,7 +309,8 @@ impl Malloc for BsdMalloc {
     }
 }
 
-/// The user copy of `sys/machine/copy.rs`.
+/// The user copy of `sys/machine/copy.rs`, and `kcopy` onto a `hal::user::ForeignWindow`
+/// through `uiomove` (`sys/kern/kern_subr.rs`), whose `UIO_SYSSPACE` copy is the machine's.
 struct BsdUser;
 
 impl UserCopy for BsdUser {
@@ -326,6 +329,49 @@ impl UserCopy for BsdUser {
     fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
         copyoutstr(kbuf, uaddr)
     }
+
+    /// The window's bytes into `kbuf`: `uiomove` from a `UIO_SYSSPACE` iovec over the window,
+    /// whose copy is the machine's `kcopy` (a fault is `EFAULT`, `pcb_onfault`).
+    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        sysspace_move(kva, kbuf, UioRw::UIO_WRITE)
+    }
+
+    /// `kbuf` into the window: `uiomove` to a `UIO_SYSSPACE` iovec over it, through a small
+    /// buffer of the stack (`uiomove`'s kernel side is writable).
+    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
+        let mut chunk = [0u8; KCOPY_CHUNK];
+        let mut at = kva;
+        for piece in kbuf.chunks(KCOPY_CHUNK) {
+            let c = &mut chunk[..piece.len()];
+            c.copy_from_slice(piece);
+            sysspace_move(at, c, UioRw::UIO_READ)?;
+            at = at.checked_add(piece.len()).ok_or(Errno::EFAULT)?;
+        }
+        Ok(())
+    }
+}
+
+/// The stack buffer of [`BsdUser::kcopy_out`]'s copies (kbind's parameters fit in one).
+const KCOPY_CHUNK: usize = 256;
+
+/// `uiomove(buf, uio)` over one `UIO_SYSSPACE` iovec at the kernel address `kva`: `rw` says
+/// which way (`UIO_READ`: `buf` to `kva`). The iovec's builder vouches for it (`struct uio`'s
+/// contract): `hal` reaches this only for a range of a `ForeignWindow`.
+fn sysspace_move(kva: usize, buf: &mut [u8], rw: UioRw) -> Result<(), Errno> {
+    let len = buf.len();
+    let mut iov = [Iovec {
+        iov_base: ptr::with_exposed_provenance_mut::<c_void>(kva),
+        iov_len: len,
+    }];
+    let mut uio = Uio {
+        uio_iov: &mut iov,
+        uio_offset: 0,
+        uio_resid: len,
+        uio_segflg: UioSeg::UIO_SYSSPACE,
+        uio_rw: rw,
+        uio_procp: None,
+    };
+    uiomove(buf, &mut uio)
 }
 
 /// The CPUs as amd64's TLB shootdown and cache flush need them (`hal::pmap::TlbCpus`):

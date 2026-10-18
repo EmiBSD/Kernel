@@ -36,9 +36,22 @@
 //! [`UserPtr::copyout`] move a whole `T`, the slice forms move `[T]` (`kevent(2)`'s arrays),
 //! [`UserPtr::copyinstr`] a NUL-terminated string. The copies themselves are the machine's
 //! (`copy.S` with `pcb_onfault`), reached through the [`UserCopy`] bridge (bridges.toml; paid
-//! by N4, when the machine code is `hal`'s own). The bridge is a safe trait: it reads and
-//! writes the byte slices it is given and nothing else, so no implementation can make this
-//! module unsound.
+//! by N4, when the machine code is `hal`'s own). The bridge is a safe trait: its user copies
+//! read and write the byte slices they are given and user memory, which aliases nothing of
+//! the kernel's, so no implementation of them can make this module unsound. Its kernel
+//! copies ([`UserCopy::kcopy_in`], [`UserCopy::kcopy_out`]) reach kernel memory by address:
+//! `hal` calls them only through a [`ForeignWindow`], below.
+//!
+//! A [`ForeignWindow`] is a run of kernel virtual addresses onto pages of another address
+//! space (`uvm_io`'s `uvm_map_extract` of a process's range into `kernel_map` for
+//! `kern.proc_args`, `sys_kbind`'s of the caller's own page): those pages are also mapped
+//! and written by their own process, so no Rust reference to them may exist, and a page may
+//! go away under the copy. The window is never referenced: [`ForeignWindow::read_at`] and
+//! [`ForeignWindow::write_at`] copy through it with the machine's `kcopy`, which turns a
+//! fault into `EFAULT` (`pcb_onfault`), as the C's `uiomove`/`kcopy` on the window do. Only
+//! the kernel map's token mints one ([`KernelMapper::foreign_window`]): its holder vouches,
+//! as for every address it maps, that the range is its own and that no Rust object lives in
+//! it (`sys/hal/trust.rs`); the window bounds every copy (one past its end panics).
 //!
 //! **Before registration** (early boot, host tests that register none) there is no user
 //! address space: every copy fails with `EFAULT`.
@@ -50,12 +63,25 @@
 //! - The `unsafe impl AbiPod for T {}` of each owner -> `abi_pod!(T { field: Type, ... })`
 //!   beside the type, checked by the compiler; the legacy trait of `sys/machine/copy.rs` stays
 //!   for its legacy users until each type's owner moves.
+//! - N3.5 S0: `kcopy(src, dst, len)` onto a window of extracted pages, an `unsafe fn` over two
+//!   raw pointers in LZ (`uvm_mmap.rs` `sys_kbind`, `uvm_io.rs`'s slice over the window) ->
+//!   [`ForeignWindow`], minted by the kernel map's token, whose `read_at`/`write_at` copy a
+//!   bounded range through the bridge's `kcopy_in`/`kcopy_out`: the copy is the machine's,
+//!   with its fault recovery; the kernel never holds a reference to the foreign pages.
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
+use crate::assert::hal_panic;
 use crate::bridges;
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+use crate::pmap::KernelMapper;
 use crate::sys::errno::Errno;
+use crate::sys::types::Vaddr;
 
 /// The machine's copy routines, as `bsd` registers them (`sys/machine/copy.rs`).
 pub trait UserCopy: Sync {
@@ -69,6 +95,111 @@ pub trait UserCopy: Sync {
     fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno>;
     /// `copyoutstr(kbuf, uaddr, kbuf.len(), &done)`: the bytes copied, the NUL included.
     fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno>;
+    /// `kcopy(kva, kbuf, kbuf.len())`: the bytes at the kernel address `kva` into `kbuf`;
+    /// `EFAULT` when a page of the range faults (`pcb_onfault`). `hal` calls it only for a
+    /// range inside a [`ForeignWindow`].
+    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno>;
+    /// `kcopy(kbuf, kva, kbuf.len())`: `kbuf` to the kernel address `kva`; `EFAULT` when a page
+    /// of the range faults. `hal` calls it only for a range inside a [`ForeignWindow`].
+    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno>;
+}
+
+/// A run of kernel virtual addresses onto pages of another address space (`uvm_io`'s and
+/// `sys_kbind`'s extracted window): copied through, never referenced. Made only by the
+/// kernel map's token ([`KernelMapper::foreign_window`]), which it borrows.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+pub struct ForeignWindow<'m> {
+    va: Vaddr,
+    len: usize,
+    _token: &'m KernelMapper,
+}
+
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+impl ForeignWindow<'_> {
+    /// The window's first address.
+    pub fn va(&self) -> Vaddr {
+        self.va
+    }
+
+    /// The window's length in bytes.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the window is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// `kcopy(va + off, buf, buf.len())`: the window's bytes from `off` into `buf`; `EFAULT`
+    /// when a page faults (or before the bridge is registered). A range past the window's end
+    /// panics: the C would copy beyond what it extracted.
+    pub fn read_at(&self, off: usize, buf: &mut [u8]) -> Result<(), Errno> {
+        let kva = self.at(off, buf.len());
+        if buf.is_empty() {
+            return Ok(());
+        }
+        bridges::user_copy()
+            .ok_or(Errno::EFAULT)?
+            .kcopy_in(kva, buf)
+    }
+
+    /// `kcopy(src, va + off, src.len())`: `src` into the window from `off`; `EFAULT` when a
+    /// page faults (or before the bridge is registered). A range past the window's end
+    /// panics.
+    pub fn write_at(&self, off: usize, src: &[u8]) -> Result<(), Errno> {
+        let kva = self.at(off, src.len());
+        if src.is_empty() {
+            return Ok(());
+        }
+        bridges::user_copy()
+            .ok_or(Errno::EFAULT)?
+            .kcopy_out(src, kva)
+    }
+
+    /// The address of `n` bytes at `off`, checked to lie inside the window.
+    fn at(&self, off: usize, n: usize) -> usize {
+        match off.checked_add(n) {
+            Some(end) if end <= self.len => self.va.as_usize() + off,
+            _ => hal_panic(format_args!(
+                "ForeignWindow: {n} bytes at {off:#x} past the window's {:#x}",
+                self.len
+            )),
+        }
+    }
+}
+
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+impl KernelMapper {
+    /// The window `[va, va + len)` onto foreign pages the kernel map holds there (`uvm_io`'s
+    /// and `sys_kbind`'s extracted range): the token's holder vouches that the range is its
+    /// own and holds no Rust object, as for every address it maps. A range that wraps the
+    /// address space panics.
+    pub fn foreign_window(&self, va: Vaddr, len: usize) -> ForeignWindow<'_> {
+        if va.as_usize().checked_add(len).is_none() {
+            hal_panic(format_args!(
+                "foreign_window: {len:#x} bytes at {:#x} wrap the address space",
+                va.as_usize()
+            ));
+        }
+        ForeignWindow {
+            va,
+            len,
+            _token: self,
+        }
+    }
 }
 
 /// A type the kernel copies to and from userland as the bytes it is in memory: every byte of
@@ -421,6 +552,71 @@ mod tests {
         assert_eq!(&k[..8], b"/etc/rc\0");
         let mut short = [0u8; 4];
         assert_eq!(u.copyinstr(&mut short), Err(Errno::ENAMETOOLONG));
+    }
+
+    #[test]
+    fn a_foreign_window_copies_through_the_bridge() {
+        testutil::install();
+        let base = testutil::foreign_base();
+        let w = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(base + 64), 128);
+        assert_eq!(
+            (w.va(), w.len(), w.is_empty()),
+            (Vaddr::new(base + 64), 128, false)
+        );
+        w.write_at(8, b"kbind").unwrap();
+        let mut back = [0u8; 5];
+        w.read_at(8, &mut back).unwrap();
+        assert_eq!(&back, b"kbind");
+        assert_eq!(testutil::foreign_bytes(64 + 8, 5), b"kbind");
+        // The last byte, and an empty copy at the end.
+        w.write_at(127, &[9]).unwrap();
+        w.read_at(128, &mut []).unwrap();
+        assert_eq!(testutil::foreign_bytes(64 + 127, 1), [9]);
+    }
+
+    #[test]
+    fn a_foreign_window_onto_nothing_faults() {
+        testutil::install();
+        let base = testutil::foreign_base();
+        let w = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(base + testutil::FOREIGN_LEN - 4), 16);
+        let mut buf = [0u8; 16];
+        assert_eq!(w.read_at(0, &mut buf), Err(Errno::EFAULT));
+        assert_eq!(w.write_at(0, &buf), Err(Errno::EFAULT));
+        assert_eq!(w.read_at(0, &mut buf[..4]), Ok(()));
+    }
+
+    #[test]
+    #[should_panic(expected = "past the window's")]
+    fn a_copy_past_the_window_panics() {
+        testutil::install();
+        let w = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(testutil::foreign_base()), 16);
+        let mut buf = [0u8; 4];
+        let _ = w.read_at(13, &mut buf);
+    }
+
+    #[test]
+    #[should_panic(expected = "past the window's")]
+    fn an_offset_that_overflows_panics() {
+        testutil::install();
+        let w = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(testutil::foreign_base()), 16);
+        let _ = w.write_at(usize::MAX, &[1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "wrap the address space")]
+    fn a_window_that_wraps_panics() {
+        testutil::install();
+        let _ = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(usize::MAX - 2), 16);
     }
 }
 /* </TESTS> */
