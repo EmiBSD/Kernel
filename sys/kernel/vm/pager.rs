@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn a_two_page_window_maps_both_pages_and_unmaps_before_its_segment() {
+    fn a_two_page_window_maps_both_pages_and_gives_both_back() {
         let _g = setup();
         // Two contiguous pages (the host has no MMU: a window is the frames' own addresses),
         // busy as a pager's I/O pages.
@@ -956,7 +956,8 @@ mod tests {
         win.as_slice_mut()[PAGE_SIZE] = 0xa5;
         assert_eq!(win.as_slice()[PAGE_SIZE], 0xa5);
 
-        // The drop: the mappings go first, then the segment, free again for the next get.
+        // The drop: the mappings are gone and the segment is free again for the next get
+        // (their order, the mappings first, is PagerWindow's field order).
         uvm_pagermapout(win);
         assert!(kernel.extract(va).is_none());
         assert!(

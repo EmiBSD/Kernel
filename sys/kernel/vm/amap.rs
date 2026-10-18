@@ -121,11 +121,12 @@
 //!   the amap and the reference's page offset (`aref->ar_pageoff`): the aref is the map's
 //!   (`VmAref`, "locked by vm_map lock"), whose forms stay in `bsd`'s adapter.
 //! - `amap_init(ipl)` takes the machine's `IPL_MPFLOOR` from its caller (the pools' level).
-//! - N3.4d: [`amap_populate`]'s allocation can sleep (`PR_WAITOK`), and the fault calls it
-//!   with nothing held (`uvm_fault.c`'s `amap_add` failure); the state opens only through the
-//!   write witness, so the fault splits it: [`amap_chunk_alloc`] makes the chunk with nothing
-//!   held (the C's sleep point), [`amap_populate_with`] installs it under a write witness
-//!   taken afterwards, unless the slot's chunk exists by then (the spare goes back).
+//! - N3.4d: `amap_populate` is split. Its allocation can sleep (`PR_WAITOK`), and its one
+//!   caller, the fault, calls it with nothing held (`uvm_fault.c`'s `amap_add` failure); the
+//!   state opens only through the write witness, so [`amap_chunk_alloc`] makes the chunk with
+//!   nothing held (the C's sleep point) and [`amap_populate_with`] installs it under a write
+//!   witness taken afterwards, unless the slot's chunk exists by then (the spare goes back).
+//!   No form that sleeps under the witness is kept.
 
 use core::mem;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -1270,24 +1271,9 @@ pub fn amap_lookups<'a, W: Witness>(
     }
 }
 
-/// `amap_populate`: ensure that the amap can store an anon for the page `offset` bytes into
-/// the reference at page `pageoff`. This function can sleep until memory to store the anon
-/// is available. The amap must be locked for writing (`w`).
-pub fn amap_populate(amap: &Amap, w: &mut WriteWitness<'_>, pageoff: i32, offset: usize) {
-    let slot = amap_b2slot(offset) + pageoff as usize;
-    kassert!(slot < amap.nslot() as usize);
-
-    let chunk = amap_chunk_get(
-        amap.geom,
-        &mut amap.state.get_mut(w).tables,
-        slot,
-        true,
-        PR_WAITOK,
-    );
-    kassert!(chunk.is_some());
-}
-
-/// A chunk made with no lock held ([`amap_chunk_alloc`]), for [`amap_populate_with`].
+/// A chunk made with no lock held ([`amap_chunk_alloc`]), for [`amap_populate_with`]: the two
+/// halves of `amap_populate` (the C's `amap_chunk_get(amap, slot, 1, PR_WAITOK)` under the
+/// amap's lock), whose one caller, the fault, sleeps for the chunk with nothing held.
 pub struct SpareChunk(PoolBox<Chunk>);
 
 /// `amap_populate`'s allocation, with nothing held (it may sleep with `PR_WAITOK`): a chunk

@@ -737,6 +737,24 @@ pub fn uvmfault_init() {
     );
 }
 
+/// `amap_populate(&ufi->entry->aref, ufi->orig_rvaddr - ufi->entry->start)` of the lower
+/// layer's `amap_add` failure, with nothing held (see the module's deviations): the chunk is
+/// made unlocked (the sleep is the C's), then installed under the amap's write lock taken
+/// again, unless the amap was wiped out meanwhile (`am_ref` 0: its tables are gone) or the
+/// slot's chunk was made by another fault; the spare goes back to its pool otherwise.
+fn uvmfault_populate(amap: &Amap, pageoff: i32, off: usize) {
+    let Some(spare) = amap_chunk_alloc(amap, pageoff, off, PR_WAITOK) else {
+        return;
+    };
+    let mut w = amap.lock().write();
+    if amap.refs() > 0 {
+        amap_populate_with(amap, &mut w, pageoff, off, spare);
+    } else {
+        drop(spare);
+    }
+    drop(w);
+}
+
 /// What [`uvmfault_anonget`] did.
 enum AnonGet<'w> {
     /// The anon's page is resident, neither busy nor released: everything still locked, the
@@ -1875,16 +1893,7 @@ fn uvm_fault_lower<'v, M: FaultMap>(
                 return Err(Errno::ENOMEM);
             }
 
-            // amap_populate: the chunk is made with nothing held (the sleep is the C's), then
-            // installed under the amap's write lock taken again, unless the amap was wiped out
-            // meanwhile (am_ref 0) or the slot's chunk was made by another fault.
-            if let Some(spare) = amap_chunk_alloc(&aref.amap, aref.pageoff, off, PR_WAITOK) {
-                let mut w = aref.amap.lock().write();
-                if aref.amap.refs() > 0 {
-                    amap_populate_with(&aref.amap, &mut w, aref.pageoff, off, spare);
-                }
-                drop(w);
-            }
+            uvmfault_populate(&aref.amap, aref.pageoff, off);
             return Err(Errno::ERESTART);
         }
         upper = Some(RwWitness::Write(ww));
@@ -2425,6 +2434,7 @@ mod tests {
     use crate::testutil;
     use crate::vm::amap::{
         AMAP_REFALL, CopyOutcome, amap_alloc, amap_copy_from, amap_init, amap_ref, amap_unadd,
+        amap_unref, amaps_out,
     };
     use crate::vm::anon::{anons_out, uvm_anon_init};
     use crate::vm::aobj::{uao_create, uao_find_swslot, uao_init, uao_set_swslot};
@@ -3884,6 +3894,29 @@ mod tests {
         assert_eq!(map.pa(VA), anon.page().map(VmPage::phys_addr));
         assert!(map.is_free());
         assert_eq!(x.lock().status(), 0);
+    }
+
+    #[test]
+    fn populating_a_wiped_out_amap_is_skipped() {
+        let _g = setup();
+        // A normal amap whose last reference went while the fault slept for its chunk.
+        let x = amap(32);
+        amap_unref(&x, 0, 32 * PAGE_SIZE, true);
+        assert_eq!(x.refs(), 0);
+        let (_, chunks) = amaps_out();
+
+        // The chunk made unlocked goes back: no table to install it in (no use after wipeout).
+        uvmfault_populate(&x, 0, 17 * PAGE_SIZE);
+        assert_eq!(amaps_out().1, chunks);
+        assert_eq!(x.lock().status(), 0);
+
+        // A live one gets its chunk installed.
+        let y = amap(32);
+        uvmfault_populate(&y, 0, 17 * PAGE_SIZE);
+        assert_eq!(amaps_out().1, chunks + 1);
+        // ... once: a second populate finds it and gives its spare back.
+        uvmfault_populate(&y, 0, 20 * PAGE_SIZE);
+        assert_eq!(amaps_out().1, chunks + 1);
     }
 }
 /* </TESTS> */

@@ -8711,6 +8711,10 @@ crate = "kernel"
 lz = ["sys/uvm/uvm_amap.rs"]
 status = "redesigned"
 notes = "N3.4b: struct vm_amap as Amap, a PoolArc of amappl (AmapRef), am_ref the C's count of map entries (relaxed atomic, read unlocked where the C reads it); the slots, ppref and chunk tables an AmapState in a Guarded keyed to the amap's SharedRwlock (shared with its anons and copies); buckets an MArray of owned chunk chains (PoolBox<Chunk> of amapchunkpl, 152 bytes as the C); ppref an enum (None/Failed/MArray); amap_copy's amap half as amap_copy_from -> CopyOutcome (the map half stays in bsd's adapter); no amap_list (G7), amap_swap_off a visible unported stub until N3.5; the aref forms take (amap, pageoff). Dead code until the flip: bsd's sys/uvm/uvm_amap.rs still serves every caller"
+[[module.fn]]
+lz = "sys/uvm/uvm_amap.rs::amap_populate"
+native = ["amap_chunk_alloc", "amap_populate_with"]
+kind = "split"
 
 [[module]]
 rust = "sys/kernel/vm/fault.rs"
