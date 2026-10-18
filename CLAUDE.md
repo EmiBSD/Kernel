@@ -33,7 +33,7 @@ Everything in this repository (code, comments, docs, commits) is in English.
   `abi_openbsd.ko` and holds no logic. Section 0 of that document and its one diagram are the
   only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
   are superseded.
-- No `std` outside `sys/arch/host/`, `#[cfg(test)]` code and `tools/xtask/`.
+- No `std` outside `sys/arch/host/`, `sys/hal/arch/host/`, `#[cfg(test)]` code and `tools/xtask/`.
 - Stable toolchain, pinned in `rust-toolchain.toml`. No nightly features, ever.
 - A new crate dependency needs the user's OK, a row in `docs/ARCHITECTURE.md` ("Dependencies") and
   the allowlist in `.claude/rules/rust-kernel.md`.

@@ -22,13 +22,13 @@ flowchart TB
     L0["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
     L1["1 · abi · sys/abi/ · the loadable module abi_openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
     L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · exports KernelApi (the vtable the module calls)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
-    L3["3 · hal · sys/hal/ · the ONLY unsafe · ceiling 2,150 (N2) → 2,230 (N9)<br/>hardware moved from LZ: arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, TypedPool/PoolArc, MBox, KmBuf, OnceStatic, List/Tree, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the ELF loader of the module, the syscall trap"]
+    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the ELF loader of the module, the syscall trap"]
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
     L0 -->|"syscall"| L1
     L1 -->|"KernelApi, one entry per syscall"| L2
     L2 -->|"safe API"| L3
     L3 --> L4
-    B["bsd · sys/ · the LZ tree, legacy · 8,906 unsafe today → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers in hal at boot: the Legacy syscall fallback, the bridge impls"]
+    B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers in hal at boot: the Legacy syscall fallback, the bridge impls"]
     B -->|"calls down"| L2
     B -->|"calls down"| L3
 ```
@@ -60,10 +60,10 @@ fallback) exist only as registrations in `hal`'s registry, made by `bsd`'s `main
 
 | Crate | Path | `unsafe` | Holds |
 |---|---|---|---|
-| `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>` (locks that own their data), `TypedPool<T>`/`PoolArc<T>`, `MBox<T>`, `KmBuf` (owned memory), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` (written new with their first `kernel` user; `queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` until then), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
+| `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3.1), the pmaps behind `hal::Pmap` (N3.1), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>`, `SharedRwlock` with `Guarded` cells and witnesses (locks that own their data), `TypedPool<T>`/`PoolArc<T>`/`PoolBox<T>`, `MBox<T>`, `MArray<T>`, `KmBuf` (owned memory), `MappedBytes` (a byte view of busy frames, N3.4), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` over `'static` elements (N3.3) and the owned intrusive trees and lists (N3.5), written new for `kernel::vm` (`queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` for their legacy users), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
 | `abi` | `sys/abi/`, built as the loadable module `abi_openbsd.ko` (decision 22) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
-| `bsd` | `sys/` (the LZ tree, today's crate) | 10,604 today in 1,161 files (`unsafe-report`, 2026-10-16): the 8,906 legacy (8,747 outside the old core plus the 159 of the old runtime files) and the 1,698 of the hardware, the host double and the lists and trees that have not moved yet (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
+| `bsd` | `sys/` (the LZ tree, today's crate) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
 binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`
@@ -100,7 +100,10 @@ Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> hal` (for `UserPtr`
    Trait>`; `bsd` implements it over its legacy code and registers it in `main()` before first
    use. Every bridge is a row of `bridges.toml` (`trait`, `for`, `paid_by` = the milestone whose
    subsystem removes it); `cargo xtask` counts them; N9 requires 0. A bridge carries no logic
-   of its own (the same rule as `abi`).
+   of its own (the same rule as `abi`). A trait a crate declares and receives as a value
+   (`hal::pmap::PhysPages` passed to `bootstrap`, `kernel::pipe::PipeGlue` the pair's generic
+   parameter) is API, not a slot: it is a row only while `bsd` implements it, and the row goes
+   at the milestone whose `kernel` module implements it, the trait staying (decision 39).
 3. **The syscall table lives in `abi` from N2 on.** Each entry is `Native(fn)` (translation into
    `kernel`) or `Legacy` (the fallback `bsd` registers at boot). A migrated syscall flips its
    entry; `diff-openbsd` and the smokes see no difference, which is the test.
@@ -133,11 +136,11 @@ active days have moved 100 `unsafe`.
 | Milestone | Scope (what moves into `kernel`/`abi`/`hal`) | Files | `unsafe` | Exit (mechanical) | Est. |
 |---|---|---:|---:|---|---:|
 | **N2 Foundations** (met 2026-10-16; section 0.9) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the 24 `bsd`-free machine headers and 18 constant headers of `sys/sys/` (decisions 26, 27; `types.rs` at N3) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`); `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 18 + 24 + 18 | 21 (+ 1 moved into `hal`; + 30 new for the module loader; the hardware's remaining 1,626 move by owner: N3 the pmap cluster ~150, N4 cpu/clock/trap ~740, N7 bus/autoconf/glue ~675, N9 ddb glue and tables ~60; decision 26) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; the 24 + 18 headers under `sys/hal/`; `just ci` and `diff-openbsd` equal (`ci-full` at N3's close, decision 24) | 8.5 d |
-| **N3 Memory** | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` last, with `security-review.md`); the pmap behind a safe `hal::Pmap` API, with the pmap cluster of `sys/arch` (14 files, `pmap_module.rs` included) moved into `hal` behind it (decision 26) | 26 + 14 | 215 (+ 213 moved; 147 without the two `cpufunc.rs`: the N3.1 survey, 2026-10-16) | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | 7.5 d |
+| **N3 Memory** (met 2026-10-18, section 0.10) | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` before the map, re-planned at N3.4, with `security-review.md`); the pmap behind a safe `hal::Pmap` API: no file of the cluster was movable as it stood (all 14 name `bsd`), so N3.1 redesigned the two pmaps into `hal` (the LZ pmap files and `pmap_module.rs` out of `sys/arch`); the two `cpufunc.rs` and `vm_machdep.rs` stay for N4 (decision 26) | 26 + 14 | 215 (measured at the close: `bsd` 10,583 -> 10,196, the `uvm` row gone, `hal` 35 -> 100) | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | ~15.5 d estimated (N3.1 ~9 and N3.2 ~2 by their planners, items 3-6 of 0.8 4.5); measured: 35 h of wall time, 2026-10-16 23:01 to 2026-10-18 09:49, many agents in parallel |
 | **N4 Processes** | `sys/kern/` by owner into `kernel`: timeout, task, event/kqueue, descriptors (`file`, `kern_descrip`), signals, proc, the scheduler, sysctl's core, tty; `StaticCell` uses in `kern` → `OnceStatic` | 75 + 4 (kqueue and descriptors, N2's before) + 97 of `sys/arch` (cpu, clock, interrupts, trap, syscall entry, copy, into `hal`; decision 26) | 680 + 95 (+ 742 moved) | `sys/kern/` in `bsd` holds only the VFS (N5), the sockets (N6) and the N8 files; the bridges `Proc`, `Fd`, `Kq` removed from `bridges.toml` | 15 d |
 | **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/nfs/`, `sys/ntfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs` | 140 | 816 | those directories gone from `bsd`; the `Vfs` bridge removed | 14 d |
 | **N6 Network** | `sys/net/`, `sys/netinet/`, `sys/netinet6/`, the sockets of `sys/kern/uipc_*` → `kernel::net`, except N8's files | 99 | 1,840 | those directories gone from `bsd` but N8's files; the `Sockets` bridge removed | 18 d |
-| **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last; the bus, autoconf and ACPI/FDT glue of `sys/arch` (74 files) into `hal`, its 19 drivers into `kernel::dev` (decisions 26, 28) | 395 + 74 | 4,198 (+ 675 moved) | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 44 d |
+| **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last; the bus, autoconf and ACPI/FDT glue of `sys/arch` (74 files) into `hal`, its 19 drivers into `kernel::dev` (decisions 26, 28) | 383 + 74 | 4,101 (+ 675 moved; 4,124 with `softraid_crypto`, N8's) | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 44 d |
 | **N8 Security subsystems** | `pf*`, `if_wg`/`wg_*`, IPsec, `softraid_crypto`, `pledge`, `unveil`, `exec_*`, the crypto framework → `kernel`, each with `Security-Review:` and the area's smokes before every commit | 36 | 849 | those files gone from `bsd`; `lz drift --security` empty | 8 d |
 | **N9 Close** | what is left: `sys/ddb/`, `sys/conf/`, `init/`, the old runtime files (`subr_pool`, `kern_lock`, `kern_rwlock`, `kern_malloc`, `smr`, `percpu`: deleted with their last user), `sys/sys/` emptied into `abi`/`kernel`; the `bsd` crate deleted; the binary is `kernel` + `abi` + `hal`; `bridges.toml` empty; `hal`'s floor recorded with its proof list; Miri green on `hal` | 14 + the old runtime 19 + the ddb glue and configuration tables of `sys/arch` (15) | 28 + 159 (+ ~60 moved) | `sys/` holds `hal/`, `kernel/`, `abi/`, `stand/`, `lib/`; `unsafe-report`: `bsd` does not exist, `kernel` 0, `abi` 0, `hal` = its floor | 5 d |
 
@@ -169,13 +172,13 @@ recounted as progress.
 | hardware (`arch/amd64` 732, `arch/arm64` 772, `machine` 85; without `sys/arch/*/stand`) | 1,589 | the primitives (1,094) moved into `hal`; the 19 arch drivers (495) rewritten in `kernel::dev` over `hal::Mmio`/`DmaBuf` (decision 28) | 1,094 |
 | host test double (`arch/host`) | 38 | moved into `hal` | 38 |
 | ours (`queue`, `tree`, `subr_tree`) | 71 | moved into `hal` | 71 |
-| new `hal` code, written new, each site proved: N2 runtime 120 + ELF loader 30, N3 `Pmap` API 10, N4 `cpu_switch`/clock glue 10, N7 `Mmio`/`DmaBuf`/interrupts 60 | 0 | added by the milestone that needs it, a commit each | 230 (estimate) |
+| new `hal` code, written new, each site proved: N2 runtime 120 + ELF loader 30, N3 `Pmap` ~60 (the two pmaps redesigned into `hal`, not a wrapper over moved code; 40 measured at N3.2's close with `PoolBox`), N4 `cpu_switch`/clock glue 10, N7 `Mmio`/`DmaBuf`/interrupts 60 | 0 | added by the milestone that needs it, a commit each | 230 (estimate) |
 | boot loaders (`stand` 235, `libsa` 84, `arch/*/stand` 302), separate binaries | 621 | unchanged | 621 |
 | **total** | **11,225** | | **2,054** |
 
 Removed from the repository: 9,171 (8,747 + 159 + 495 − 230). `kernel` 0 and `abi` 0 by the
 compiler; `hal` 1,433 by this table (the planner's estimate is ~1,700; both are estimates
-until the first cluster moves), 84 % of it the hardware primitives, the host double and the
+until the first cluster moves; the first did at N3.1: the pmap cluster landed in `hal` at about a quarter of LZ's count, so 1,433 is an upper bound), 84 % of it the hardware primitives, the host double and the
 lists and trees that exist today; the boot loaders apart. The 2,150 and 2,230 ceilings of 0.1
 were set on the 1,891 figure, which counted 302 of boot-loader code; they stand as ceilings,
 `unsafe-report --write` lowers them to the measured count, and they rise only in the commit
@@ -218,11 +221,18 @@ glue), `Kq` (knote/klist), `Sigio`, `Uio` (the copy); `sys_pipe.rs` and `pipe.rs
 `diff-openbsd`, docs, push (0.5 d). Out of `bsd`: 21 `unsafe` removed and 1 moved, 62 files (2 + 18 + 24 + 18; the 10 crypto files that
 name `bsd` follow their unblockers, the framework at N8).
 
-**N3 Memory, 6 d.** 1. `hal::Pmap`: a safe typed API over the two arch pmaps (`enter`,
-`remove`, `protect`, `extract`, `activate`; `uvm_pmap.rs` is the shape), the page allocator's
-hardware side (1 d). 2. `uvm_km`, `uvm_object`, `uvm_anon`, `uvm_extern`, `uvm` -> `kernel::vm`
-(0.5 d). 3. `uvm_page`, `uvm_pmemrange`, `uvm_addr` (86 `unsafe`, the free lists over `List`/
-`Tree`) (1.5 d). 4. `uvm_amap`, `uvm_aobj`, `uvm_vnode`, `uvm_pager` (61; bridge `Vfs` for the
+**N3 Memory, ~15.5 d** (6 d in this plan; the planners' estimates for N3.1 and N3.2 replace
+items 1 and 2; met 2026-10-18, as built in 0.10, where the order changed: N3.3 took items 3's
+page and pmemrange, N3.4 the owners of item 4 and the fault of item 6, which had to go before
+the map, N3.5 item 5 and `uvm_addr`; no N3.6). 1. `hal::Pmap`: a safe typed API over the two arch pmaps
+(`enter`, `remove`, `protect`, `extract`, `activate`; `uvm_pmap.rs` is the shape), the page
+allocator's hardware side (~9 d: no movable file, two pmaps re-expressed, 55 callers, a
+`security-review.md` area); `types.rs` moves in its first commit. 2. `uvm_km` -> `kernel::vm::km`
+(~2 d; `uvm_km` holds the `KernelMapper`, so it follows N3.1); re-scoped at N3.2: `uvm_object`
+and `uvm_anon` move with item 3's `Page` (one lock protocol with the page's owner fields),
+`uvm_extern`'s `Vmspace` and `uvm` with item 5. 3. `uvm_page`, `uvm_pmemrange`, `uvm_addr`
+with `uvm_object` and `uvm_anon` (86 `unsafe` + 13, the free lists over `List`/`Tree`;
+`kernel::vm::Page` implements `PhysPages` and embeds `PageMd`) (1.5 d). 4. `uvm_amap`, `uvm_aobj`, `uvm_vnode`, `uvm_pager` (61; bridge `Vfs` for the
 vnode pager) (1 d). 5. `uvm_map`, `uvm_mmap`, `uvm_glue`, `uvm_io`, `uvm_meter`, `uvm_percpu`,
 `uvmexp`, `uvm_init`, `uvm_pdaemon`, `uvm_swap`, `uvm_unix` (bridge `Proc` for the current
 vmspace, `Swap` for the device) (1.5 d). 6. `uvm_fault`, `security-review.md`, its smokes before
@@ -265,10 +275,11 @@ shared chips with their `pci` front ends, bus by bus (`com`, `pckbc`, `ahci`, `n
 `ix`, `re`, `vmx`, `mpi`, `azalia`, `auich`, `eap`, `vga`, ...) (135, 1,401; the `Ifnet` and
 `Disk` bridges removed as each driver moves) (14 d). 3. `wscons` + `rasops` + `wsfont` (47,
 611) (4 d). 4. `usb` (43, 528) (5 d). 5. `acpi` (18, 205), `fdt` + `ofw` (15, 115), `isa` (19,
-106) (4 d). 6. `scsi` (10, 149), `ata` (9, 82), `sdmmc` (13, 110), `softraid` (6, 192 but
+106) (4 d). 6. `scsi` (10, 149), `ata` (9, 82), `sdmmc` (13, 110), `softraid` (9, 218; 8 and 195 without
 `softraid_crypto`) (4 d). 7. `audio`, `midi`, `mii`, `ipmi`, `gpio`, `i2c`, `hid`, `rd`, `vnd`,
 `bio`, `cons`, `puc`, `efi`, `clock_subr`, `firmload`, `microcode` (2 d). 8. `dev/rnd.rs` last,
-`security-review.md` (0.5 d). 9. Close (0.5 d). Out of `bsd`: 4,198 `unsafe`, 395 files. Honest
+`security-review.md` (0.5 d). 9. Close (0.5 d). Out of `bsd`: 4,101 `unsafe`, 383 files (408 with `mod.rs`; measured by the
+legacy-hardware study of 2026-10-17, decision 41). Honest
 limit: a driver no QEMU device exercises is verified by `just check` and its host tests only;
 the list of those drivers goes in the close commit.
 
@@ -293,7 +304,8 @@ push (0.5 d). Out of `bsd`: 192 `unsafe`, 33 files; `sys/` holds `hal/`, `kernel
 
 Sum: 8,906 `unsafe` and 599 files out of `bsd`; 112 days. Order of risk, highest first: the
 sleep/wakeup and run queues over `hal::cpu_switch` (N4.5), the ELF loader (N2.4), the VFS
-core's locking (N5.1), `if_` and the routing tables (N6.1), `uvm_map` (N3.5), `uvm_fault` (N3.6).
+core's locking (N5.1), `if_` and the routing tables (N6.1); `uvm_map` and `uvm_fault` were N3's
+(N3.5, N3.4d).
 
 ### 0.9 N2 as built (the close, 2026-10-16)
 
@@ -342,7 +354,7 @@ The glue's deviations, gone at N4 when `File`, `Klist` and `Sigio` are the kerne
   without a guard (beside decision 12). `sys/kernel/pipe.rs` is one file of about 2,150
   lines (code zone about 1,280), left unsplit.
 
-Open for N3 and N4 (the reviewers' notes):
+Open for N3 and N4 (the reviewers' notes; N3 closed the first four, section 0.10):
 
 - On arm64, `ModulePlatform::reserve` maps the module's range read-write in `kernel_map`
   (`km_alloc(KP_NONE)`), so a stray kernel write to a text page goes through `uvm_fault`
@@ -370,12 +382,139 @@ Numbers at the close (`cargo xtask unsafe-report`, `hal-check`, `lz check`): `ke
 of 1,196 modules; `lz check` 1,156 modules (1,058 inherited, 40 adapted, 58 redesigned), 157
 fn rows, 60 extras; 12 bridges open (N3 2, N4 7, N7 1, N9 2).
 
+### 0.10 N3 as built (the close, 2026-10-18)
+
+What 0.8's N3 items became, on the merged tree (d612f9c5), measured with the tools. N3.1 and
+N3.2 were integrated and booted once before the rest (the checkpoint 54f48bd4, whose `just ci`
+found the two boot defects fixed in 74eabc4d and 6e996212); `sys/uvm/` is gone from `bsd`.
+
+- **N3.0** (621a179d): the module renamed `abi_openbsd.ko` (decision 38), 41 files with the
+  cargo package (`abi_openbsd`, since the `.ko` takes its name); `cd80.iso` carries it.
+- **N3.1, `hal::Pmap`** (80cdbac9 .. 1fa20789). `types.rs` and the page arithmetic first
+  (decision 27); `PoolBox<T>`, the owned pool item of the pv entries and pteds; the API
+  (`Pmap`, `PmapRef` a counted handle: `pmap_reference` is a clone, `pmap_destroy` the drop,
+  and a last drop with mappings left panics where the C frees; `PageMd`; `PhysPages` passed to
+  `bootstrap` as a value, decision 39) with its host backend; the amd64 backend (walks under
+  `pm_mtx`, loads only through the `Switcher` token, PTPs without `pm_obj`, the pv chain owned
+  by its page) and the arm64 one (a pted owned by its level-3 slot and torn down inside its
+  page's `pv_mtx`, the C's 40-byte pted, ASIDs with rollover). Commit 6 moved `bsd`'s 55
+  caller files onto it: `sys/machine/pmap.rs` is an adapter over `hal::pmap` with no `unsafe`
+  block (its three legacy `unsafe fn` signatures, and arm64's `pmap_kenter_cache`, leave with
+  their last caller); the LZ pmap files and `pmap_module.rs` left `sys/arch` (157 `[[module.fn]]`
+  rows; no `[[dropped]]`, since `hal` modules list those files in `lz`). Commit 7 gave arm64
+  amd64's module window and PXN on `kernel_map`'s tables (decision 37). Commit 8 maps arm64's
+  image by section in `hal`'s own tables, text RX, rodata R, data and BSS RW and PXN, nothing
+  past `round_page(_end)`, and switches TTBR1 from a one-page identity map as the C does
+  (`pmap_map_stolen`, `switch_mmu_kernel_table`): the user's decision of 2026-10-17 ("as the
+  C", option (a) of three), closing the inherited 64 MB RW and EL1-executable block of
+  boot(8)/efiboot, whose tail past `kernel_end` was uvm's; `kernel.ld` gained OpenBSD's four
+  section symbols and an `ASSERT` each. Its fix-up 8b: TTBR1 is the root with ASID 0, no guard
+  bit on the image's, the identity page's and the window's leaves (the kernel has no BTI pads),
+  PXNTable and UXNTable on the direct map's level-0 slots, where a block entry panics.
+- **The kernel pmap's authority is a token** (the N3.1 plan's G8): `hal::pmap::KernelMapper`,
+  zero-sized, not `Clone`, returned once by `bootstrap`; its `kenter`, `kremove` and the kernel
+  pmap's `enter` are safe, possession being the proof. N3.2 moves it once into
+  `kernel::vm::km` (`adopt_mapper`), which lends it to `bsd`'s legacy wrappers only through
+  `LegacyLend`, a handle made once and kept by `sys/machine/pmap.rs`.
+- **N3.2, `kernel::vm::km`** (5b9db7f0 .. 7aba0866): `km_alloc`/`km_free` in `kernel` over two
+  bridges, `KmMaps` (the kernel map's record, until N3.5) and `KmPages` (the frames, until
+  N3.3); frees go through `uvm_pmr_freepages` to the free list with its wakeups, in the C's
+  kremove-then-free order per 32-page chunk; `TailqHead::pop_head` in `queue.rs` (sys 327 ->
+  328, the user's raise); the loader's writable copy is a `ModuleMemory` value and
+  `ModulePlatform` keeps only `image`. Re-scoped from 0.8's item 2 (the N3.2 plan's G11): only
+  `uvm_km` moved (`sys/uvm/uvm_km.rs` stayed as `bsd`'s adapter, 9 -> 0 `unsafe`, until N3.5);
+  `uvm_object` and `uvm_anon` go with N3.3's `Page` (one lock protocol with the page's owner
+  fields), `uvm_extern`'s `Vmspace` and `uvm` with N3.5.
+- **An inherited deviation, kept visible**: the C's `uvm_km_pages` and its thread (the
+  single-page allocator of the machines without `__HAVE_PMAP_DIRECT`, arm64 in OpenBSD) were
+  never ported, because LZ gives arm64 a direct map (`HAVE_PMAP_DIRECT`,
+  `sys/arch/arm64/mod.rs:371`); `sys/kernel/vm/km.rs`'s Deviations says so and
+  the two `unported!` lines stay (`uvm_km_page_init` in `sys/kern/vm_bsd.rs`,
+  `uvm_km_page_lateinit` in `sys/kernel/vm/init.rs` since N3.5).
+- **Closed from 0.9's open list**: arm64's module range read-write in `kernel_map` (the window
+  replaces it, 7a); `pmap_module.rs` in `hal` (`sys/hal/arch/amd64/pmap/window.rs`) and arm64's
+  window with PXN (7); `ModulePlatform::reserve`/`enter` removed; `release` removes the
+  writable alias with `pmap_kremove` before `km_free(kp_none)`, the C's sequence (N3.2).
+- **Still open**: the trusted inputs until their owners type them (`Pmap::enter`'s pa and the
+  frames of `zero_page`/`copy_page` until N3.3's `Page`, `KmMaps::map`'s answer until N3.5,
+  `BootstrapParams` from the boot glue); both direct maps alias the image's text writable, as
+  OpenBSD amd64's does; Limine's HHDM leaf attributes are unchecked (PXN on its level-0 entry
+  covers execution); for the user: `Lx_PT_AP01` on arm64's direct-map level-0 entries (beyond
+  the C) and the xtask gaps (`lz check` misses a row for an item leaving an `adapted` module,
+  `lz trace` lowercases its answer, neither sees `extern` blocks' fns, one `license` per
+  module cannot say "one source none"). The 9 MP host-test failures the checkpoint saw went to
+  0 with the boot fixes (ae33901a) and decision 40 (b79f0ed2).
+- **The boot fixes** (74eabc4d, 6e996212, ae33901a, 799ca7ad): the amd64 kernel window is one
+  whole PML4 slot from `roundup(direct_end, NBPD_L4)`, always the C's 512 GiB (Limine's HHDM
+  reaches slot 258 on QEMU's 1 TiB map); the pools made before `kmeminit` take a static
+  `struct pool` (`NSTATIC_POOLS`, 16 at the close), since the Rust allocator is `malloc(9)`.
+- **N3.3, the page system** (8f5e43c0 .. c5a55961): `hal` gained `Link`, `List` and `Tree`
+  over `'static` elements (no `unsafe`, a broken precondition panics before anything changes),
+  boot memory stolen by `Layout` and the `uvmexp` statistics with their symbol;
+  `kernel::vm::page` and `vm::pmemrange` hold the page array (stolen once, never freed), the
+  free ranges and the per-CPU magazines; a page's owner is a compared, never dereferenced
+  `OwnerTag`; `kernel::vm::Page` implements `PhysPages` and the bridge row went (decision 39).
+  The review's K1 (unwiring an entry without an amap panicked, reachable from userland through
+  `munlock(2)` and `vslock`) was fixed before the merge (6d90d0f2).
+- **Decision 40, one MP kernel** (b79f0ed2 .. 2f861075): the uniprocessor paths of `hal`, the
+  page allocator, the two redesigned machdeps and the amd64 pmap deleted (96 owned `cfg` sites
+  to 0); `multiprocessor` a default of `bsd` only; `smoke-up` boots that kernel with `-smp 1`;
+  the sets keep `bsd` and `bsd.mp`, identical, as before.
+- **N3.4, the owners and the fault** (acc64229 .. 5962c446), re-planned after N3.4b found that
+  the owners could not flip before the fault held witnesses (the planner's REPLAN, its order
+  (ii-A) taken under the user's N3 authority; N3.6 folded into N3.4d/e): `hal`'s
+  `SharedRwlock` with `Guarded` cells and read/write witnesses (`RwMode`, `RwWitness`, the
+  consumed-guard sleep), `MArray`, `MappedBytes` (a byte view of busy, claimed frames, only
+  through the kernel map's token), pool high-water marks; `kernel::vm::anon`, `amap`,
+  `object`, `aobj`, `pager`, `vnode` and `fault` (`uvm_fault.c` with witnesses carried through
+  the fault loop, generic over a `FaultMap` bridge until N3.5); one flip (69559939) turned the
+  six owners and the fault on together, with `smoke-mmap` (tools/mmapstress) new. A new
+  difference from the C, recorded in `hal`'s `pmap.rs` and `mapped.rs` Deviations: a
+  deactivated multi-page pager window keeps its kernel entry where the C removes it and would
+  panic in the middle of a `VOP_WRITE`.
+- **N3.5, the map and the rest** (6e795add .. 925cce59): `hal`'s owned intrusive trees and lists
+  with a counted secondary link and the augmented red-black tree, `StaticArena`,
+  `ForeignWindow` over the `UserCopy` bridge's `kcopy`, `arc4random`, `sched_pause`;
+  `kernel::vm::map` and `vm::addr` (the map, the vmspace, the selectors), `mmap`, `unix`,
+  `glue`, `io`, `meter`, `init`, `pdaemon`, `swap`, `proc`; the 15 vm system calls (`mmap`,
+  `munmap`, `mprotect`, `msync`, `minherit`, `madvise`, `mlock`, `munlock`, `mlockall`,
+  `munlockall`, `mquery`, `mimmutable`, `pinsyscalls`, `kbind`, `obreak`) made `Native` in
+  `abi` through `KernelApi` v3, so the boot line reads `abi_openbsd.ko: 331 syscalls, 17
+  native`; the flip (04eb1108) deleted `sys/uvm/`. LZ's `unported!` on `mprotect` against
+  `RLIMIT_DATA` is closed (the C's check; `expected.toml` had no entry for it and keeps its
+  three: fifofs, the branding, the coredump); the coredump,
+  the swap device and the page daemon stay visible stubs (`vm::swap`, `vm::pdaemon`,
+  `vm::unix` Deviations; `unported: uvm_wait` once per boot).
+- **`vmstat -m` item sizes** (userland-visible, accepted under the user's N3 authority):
+  `anonpl` 48, `rwobjpl` 48 (the C's 40), `amappl` 280, `aobjpl` 128, `uvmvnodes` 136, `bufpl`
+  +8 (`b_uobj` is a kernel object), `vmmpepl`/`vmmpekpl` 216 (LZ's 200), `vmsppl` 448 (LZ's
+  288), `uaddr`/`uaddrrnd` 16 (24), `uaddrbest` 40 (32).
+- **C slips found by reading** (for the user, never reported upstream): `uvm_fault.c:1468-1485`
+  (`uvm_anfree` of an anon with `an_ref` 1 after the lock is released, and `amap_populate`
+  after the map is unlocked; confirmed by a reviewer, fixed in `kernel::vm::fault`);
+  `uvm_aobj.c:428-432` (the swap hash resize, latent with tmpfs and swap); `uvm_pager.c:292`
+  with `uvm_page.c:1238` (the window removed under `VOP_WRITE`, probable); `uvm_map.c:2214-2221`
+  (early returns that keep the lock under `UVM_LK_ENTER`, unreachable from its caller).
+- **Still open after N3**: `MappedBytes`' token contract (no view of a frame that backs kernel
+  memory) waits for typed pages (decision 30's extension; `mapped.rs` still says "until N3.5");
+  21 bridges (N4 13, N5 2, N6 1, N7 2, N9 3); a diagnostic `bsd` does not compile
+  (`sys/dev/usb/ucom.rs`, inherited; N7, the user's answer of 2026-10-17).
+
+Numbers at the close (`cargo xtask unsafe-report`, `hal-check`, `lz check`, 20035fd0 -> the
+merge): `kernel` 0 in 48 files, `abi` 0, `hal` 100 in 108 files (`hal-check` 111 files, 100
+sites <= `hal_ceiling` 110 before `--write`), `bsd` 10,583 -> 10,196 in 1,069 files (legacy
+8,726 -> 8,501; 1,698 -> 1,538 to move into `hal`), boot 621; rows: arch/amd64 863 -> 773,
+arch/arm64 943 -> 881, arch/host 38 -> 35, machine 85 -> 79, kern 1,126 -> 1,117, dev/pv 249 ->
+246, sys 327 -> 328, uvm 215 -> no row; `forbid` 320 -> 348 of 1,218 modules; `lz check`
+1,170 modules (937 inherited, 123 adapted, 110 redesigned), 594 fn rows, 68 extras; 21 bridges
+open. Host tests 3,229 -> 3,775 (bsd 2,396, kernel 308, hal 292, abi 9, xtask 260). The close: `just jobs=3 ci` at a043de71: 86 of 86 smokes in 18 min 32 s, rc=1 only at `check-drift` (the record of LZ 602141098d1d named the deleted `sys/uvm/uvm_init.rs`), fixed in 614d65af, the steps after it rc=0; `just jobs=3 ci-full` at 614d65af rc=0 in 2,248 s (its `ci` on four CPUs, 86 of 86 smokes in 21 min 18 s, no retry, then the eight installer recipes); `just diff-openbsd` rc=0 (107 steps per arch, 104 equal, 3 expected, 0 unexpected, as at N2); `just bench` printed 14 of 14 ratios; against the baselines (`bench compare`), the page fault and fork are slower on both machines (amd64 `pagefault` 7,956 -> 12,269 ns, `forkexit` 459,233 -> 680,755 ns; arm64 `forkexit` 1,686,982 -> 2,672,794 ns), boot, pipe and tcpbench unchanged within their spreads but arm64 boot (8.33 -> 8.65 s) and amd64 tcpbench (767.3 -> 787.6 Mbps); the table is in docs/JOURNAL.md.
+
 ## 10. Decisions
 
 Status under v2 (2026-10-16), so no one applies a superseded one: **in force**: 1 (the goal,
 restated by 20), 4, 6, 8 (the names), 10 (no `&'static` from a pool), 11, 12, 13 (the pipe's
 shape, now in `kernel`), 17, 18, 19 (`abi_pod!`, typed `kn_kq`, `MBox`: `hal` designs), 20, 21,
-22, 23, 24, 25-37. **Superseded**: 2 (the core list: the crate boundary replaces it), 3 (pipe is still
+22, 23, 24, 25-41 (30 extended at N3). **Superseded**: 2 (the core list: the crate boundary replaces it), 3 (pipe is still
 the first subsystem, in `kernel`, after the foundations), 5 (closed by 20: the core is a crate),
 7 (the safe `Adapter` stays, in `hal`), 9 (seams: replaced by bridges in `hal`, `bridges.toml`),
 14, 15, 16 (the typed slots inside `bsd`: not merged; their shapes are reused when descriptors
@@ -526,7 +665,9 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
     trap and syscall entry, copy (97 files, 742) with N4.1 and N4.5; bus, autoconf, the ACPI/FDT
     glue (74 files, 675) with N7.0-N7.2; ddb glue and the configuration tables at N9.1. Each
     boundary (`Proc`, `Device`, `Clockqueue`, `VmPage`) is typed once, by its owner: `CpuInfo`'s
-    by-value `SchedstatePercpu` and `Clockqueue` wait for N4.5, the softcs' `Device` for N7.0;
+    by-value `SchedstatePercpu` and `Clockqueue` wait for N4.5, the softcs' `Device` for N7.0,
+    `VmPage` in two halves (N3.1 typed `hal`'s side, `PageMd` and `PhysPages`; N3.3 types the
+    kernel's, `Page` and its impl);
     the four configuration tables stay in `bsd` as the registration of drivers until N9.1; the
     runtime's `IntrLevel` and `CpuId` bridges are `paid_by = "N4"`. The N2 exit drops "the
     hardware moved": `hal` holds the runtime, the module loader and the headers; `unsafe-report`
@@ -541,7 +682,10 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
     `vmmeter`, `wait`) move to `sys/hal/sys/` as `inherited` modules (`lz_home` maps them back;
     18 moved on 2026-10-16: `types.rs` stayed in `bsd`, because `sys/uvm/uvm_param.rs` defines
     inherent impls on its newtypes (`Paddr`, `Vaddr`, `Vsize`), which Rust allows only in the
-    defining crate; it moves at N3 with that page arithmetic;
+    defining crate; it moved at N3.1's first commit, 80cdbac9, into `sys/hal/sys/types.rs`,
+    the page arithmetic into `sys/hal/vm/param.rs`, the per-arch page and address constants
+    into `sys/hal/arch/<arch>/include/{param,vmparam}.rs` and `IPL_VM`/`IPL_HIGH` into
+    `hal::intr` until N4;
     `sys/sys/mod.rs` re-exports them so every path stands); `kernel` and `abi` name them through
     `hal`, byte-identical. One `Errno`: the runtime's interim `hal::errno::Errno` folds into
     `hal::sys::errno::Errno` at integration. The "41 constant headers" of decision 22 were never
@@ -674,7 +818,11 @@ Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
     `sys/machine/pmap.rs`); `BsdPlatform::reserve` and `enter` use it on amd64; one `unsafe`
     block (the level-2 link), the `arch/amd64` budget raised to 863 by the user (c3950865).
     arm64 keeps `kernel_map` (no PXN on its tables, as the C) until the pmap cluster enters
-    `hal` at N3, where the two machines become symmetric. Rejected: dropping `pg_nx` from the
+    `hal` at N3, where the two machines become symmetric. Met by N3.1 commit 7 (a94d76d9,
+    542d433a): arm64 has the window too (16 MiB after the boot loader's last L2 entry of the
+    image's gigabyte, eight L3 tables in `.bss`), the loader places the module nowhere else on
+    either machine, the kernel pmap refuses `PROT_EXEC` and `growkernel`'s table descriptors
+    carry `Lx_PT_PXN` (amd64's directory NX); `arch/amd64` fell with the files (863 -> 779). Rejected: dropping `pg_nx` from the
     directory entries (one line, but it removes the C's protection from all of `kernel_map`),
     a pmap entry point that clears NX over a range (the same exposure), deferring amd64 to N3
     (no ABI module on amd64 until then). The `Security-Review:` paragraph of 8b2ed4e1 and
@@ -690,3 +838,60 @@ Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
     the smoke expectations, the docs), one `lineage:`-free `build:`/`stand:` series; until then
     cd80.iso ships without it (decision 29). Rejected: a `-` -> `_` mapping in boot(8)'s cd9660
     (a deviation from OpenBSD's libsa), relaxed ISO names with `-` (a non-conforming image).
+
+Taken by the main session on 2026-10-16 under the user's standing authority of that night
+(the N3.1 plan's D16):
+
+39. **`PhysPages` is a parameter, not a slot.** `hal::pmap::bootstrap(params, pages)` takes the
+    page provider as a `&'static dyn PhysPages`, the kernel pmap keeps it and `create` copies it
+    (as `KmBuf` keeps its `PageMemory`): the arrows stay down, the host tests pass a fake, and
+    no registry slot outlives the bridge. While `bsd`'s `uvm_page` implements it
+    (`sys/machine/pmap.rs` `BsdPages`), `bridges.toml` carries its row (`paid_by = "N3"`, the
+    slice N3.3 in its comment); the row goes when `kernel::vm::Page` implements it and the
+    trait stays as API (0.3.2). Rejected: a `hal::bridges` slot, the N2 pattern, which would
+    stay after N3.3 against 0.3.2's "0 at N9". Met at N3.3: `kernel::vm::page` implements it
+    (`sys/kernel/vm/page.rs`) and the row went.
+
+Taken by the main session on 2026-10-17 under the user's N3 authority ("porfavor toma
+decisiones recomendadas en N3"), on the review of N3.4a:
+
+- **Decision 30, extended to `hal::mapped`.** `MappedBytes` (made only through the kernel
+  map's token, `KernelMapper::map_direct`/`map_frames`) trusts the token holder not to view a
+  frame that backs kernel memory (the buffer cache's pages, busy with `PG_FAKE` for the
+  buffer's life, or the kernel object's between allocation and unbusy) until the pages are
+  typed; what `hal` checks itself: each frame managed, busy and claimed for this view alone
+  (`PG_HAL_VIEW`, so two views of one frame are refused), the window unmapped and readable,
+  and `zero_page`, `copy_page`, `page_protect`, `uvm_pageclean` and reuse refusing a claimed
+  frame. The same documented trust boundary as decision 30's, not a compiler-checked one;
+  open after N3 (the typed pages did not come with N3.5).
+
+Taken by the user on 2026-10-17:
+
+40. **One MP kernel.** The kernel without `multiprocessor` is no longer maintained: the
+    MULTIPROCESSOR kernel is the only one built (every recipe, image, smoke, `abi_openbsd.ko`
+    and host test; `multiprocessor` a default of `bsd`, whose `lib.rs` refuses a build
+    without it; `hal`, `kernel` and `abi` have no such option), and `smoke-up` boots it with
+    `-smp 1`, its expectations unchanged but the CPU count. Started only after N3.3 had landed
+    and been reviewed, and only after four figures were measured and shown (8c4c5724: 577
+    `cfg` lines in 60 files, 96 of them in owned code; the sets' `bsd` already MP and `bsd.mp`
+    a copy; two host tests failing with the feature, asserting UP's IPL; the diagnostic build
+    error of `ucom.rs`). The user's answers: "Go, keep bsd.mp" (the sets keep `bsd` and
+    `bsd.mp`, identical, both MP, as OpenBSD ships them and install.sub expects), and the UP
+    branches of the 9 inherited files (`subr_percpu`, `kern_lock`, `sys/percpu`,
+    `kern_sched`, `ioapic`, the two `db_interface`, `db_command`, `cpufunc`) stay unbuilt
+    until N4 redesigns them, "as preferred"; `ucom.rs` waits for N7. Done in b79f0ed2 ..
+    2f861075: owned UP sites 96 -> 0, MP host-test failures 2 -> 0, no `unsafe` moved.
+
+Studied for the user on 2026-10-17 (the user: "study only; measure and propose; delete
+nothing"), recorded as recommended under the user's N3 authority:
+
+41. **No hardware support is dropped: studied, nothing removed.** The criterion, all three
+    required: the driver cannot attach to a current amd64 or arm64 machine (directly or
+    through an existing bridge); no OpenBSD GENERIC of either arch at the pin configures it;
+    no smoke or `diff-openbsd` scenario uses it (its age decides nothing, and QEMU not
+    emulating it is no reason). Of 412 driver files (4,713 `unsafe`) none meets it: LZ ported
+    only drivers that amd64 or arm64 GENERIC configures, and no PCMCIA, CardBus, EISA, ISAPnP,
+    MCA or VLB code exists. The closest, `viocon.rs` (no GENERIC, no smoke; virtio is current)
+    and `rd.rs` (no GENERIC, but every ramdisk smoke roots on `rd0a`), stay. The study also
+    measured N7: 383 files (408 with `mod.rs`), 4,101 `unsafe` (4,124 with `softraid_crypto`),
+    softraid 9 files and 218 (0.5, 0.8).

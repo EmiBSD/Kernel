@@ -186,7 +186,8 @@ Time: _(user)_
 
 ## N3 Memory
 
-Under way (from the `docs: close N2` commit; this section is completed at the close).
+Met 2026-10-18 (under way since 2026-10-16). Boundary: from `docs: close N2` (7775163b) to
+the `docs: close N3` commit.
 
 - Performance baseline before any uvm slice is merged (`just bench`, docs/ARCHITECTURE.md
   "bench"; the brief of 2026-10-17). EmiBSD is the smokes' MP debug kernel (`opt-level = 1`,
@@ -289,3 +290,100 @@ Under way (from the `docs: close N2` commit; this section is completed at the cl
   The limit was not tuned and the method not changed (the user's decision); the cause of
   `fileread`'s spread on amd64 is open. The N3 close runs the same command and carries
   `Bench:` lines from `cargo xtask bench compare` against these reports, for what prints.
+- The close (2026-10-18): N3's branch (925cce59, 152 commits from main 6da2ef08, 141 without
+  merges; `git rev-list --count [--no-merges] 6da2ef08..925cce59`) merged into the candidate
+  at d612f9c5 with no conflict, n3/bench (60700aff) at 29d66500 with one (`OWN_PROGRAMS` in
+  tools/xtask/src/userland.rs: mmapstress and bench, both kept). Wall time of the milestone:
+  2026-10-16 23:01 (621a179d) to 2026-10-18 09:49 (925cce59), about 35 h, up to four agents
+  at once. Six slices: N3.0 the module's name; N3.1 `hal::Pmap` and the two pmaps; N3.2
+  `kernel::vm::km`; N3.3 the page system; N3.4 the owners and the fault; N3.5 the map and the
+  rest, the flip that deleted `sys/uvm/`; decision 40 between N3.3 and N3.4.
+- Went well: every slice reviewed by an agent that did not write it before it was merged into
+  the next (25 Security-Review paragraphs, carried by d612f9c5's body), and the reviews found
+  what no build would have: the arm64 backend's PTE cleared before its pv lock, a pted 8 bytes
+  short of the C's (visible in `kern.pool`), the static-entry arena refilled through
+  `kernel_map` (a deadlock while cold), an unprivileged panic on unwiring an entry without an
+  amap (K1, reachable through `munlock(2)`), a use-after-free window in an owned tree's
+  removal, `with_vmspace_handle` reachable from safe code, and four slips in OpenBSD's own C
+  (`uvm_fault.c:1468-1485`, confirmed; `uvm_aobj.c:428-432`; `uvm_pager.c:292` with
+  `uvm_page.c:1238`; `uvm_map.c:2214-2221`, confirmed; for the user, never upstream). The
+  close's `just check` was green at its first run: the compile-and-fix pass found nothing,
+  since every flip had booted its own smokes (a `security-review.md` area). `just ci-full` ran for the first time under v2 (decision 24, for N2 and N3) and was green at its first run, the installer end to end on both archs included.
+- Failed: the first integration checkpoint (54f48bd4, N3.1 and N3.2 only) booted 0 of 85
+  smokes: amd64 under Limine underflowed `uvm_map_setup` (4b's clamp of the kernel window, the
+  HHDM reaching slot 258) and both machines panicked allocating with Box before `kmeminit`;
+  fixed in 74eabc4d, 6e996212 and 799ca7ad, then 85 of 85. N3.4b stopped before its flip: the
+  owners could not move before the fault held their witnesses, so the planner re-planned
+  (N3.4c-e, N3.6 folded in); N3.5 S1-R1 stopped on `hal` pieces the kernel could not reach
+  (`arc4random`, `sched_pause`), added in 7f2712c6. Two worktrees were created inside the LZ
+  clone once (the session's cwd), written nothing; the rule is never to `cd` into
+  `reference/`. The close's first `just ci` stopped in `test` on the inherited
+  `dev::ic::pckbc` flake (below).
+- Idioms that took several attempts: `MappedBytes`, from a bare `Paddr` (the review: safe code
+  could alias `&mut`) to a claimed, busy, token-only view (three reviews); the witness-carrying
+  fault (`RwWitness`, a witness consumed by a sleep, a `&'v mut Option<T>` slot to return a
+  witness borrowing a value); `Guarded::get_mut` needing witness parts (`Divisible::split`) for
+  two cells of one lock; owning intrusive containers that find and remove by key and re-read
+  the secondary count after adapter calls; the entry's handle cells needing their own
+  `AtomicBool` window under a read lock (smoke-mp found it); `NSTATIC_POOLS` 4 -> 8 -> 16 as
+  more pools moved before `kmeminit`.
+- Rules corrected: decision 40 (one MP kernel); decision 41 recorded as studied; decision 30
+  extended to `MappedBytes`; the redesigner's memory trimmed under its read limit (a043de71);
+  the bench recipe spells its features as the smokes do since decision 40 (818ed2f5).
+- Numbers:
+  - `cargo xtask unsafe-report` (crates), main 20035fd0 -> the close: `kernel` 0 (23 -> 48
+    files), `abi` 0 (4), `hal` 35 -> 100 (72 -> 108 files; `hal_ceiling` 110, the user's
+    raise a2ec4145), `bsd` 10,583 -> 10,196 (1,103 -> 1,069 files; legacy 8,726 -> 8,501,
+    core 2,513 -> 2,416, `forbid` 320 -> 348 of 1,218 modules; rows arch/amd64 863 -> 773,
+    arch/arm64 943 -> 881, arch/host 38 -> 35, machine 85 -> 79, kern 1,126 -> 1,117, dev/pv
+    249 -> 246, sys 327 -> 328 with the user's raise 6da2ef08, uvm 215 -> gone), boot 621.
+  - `cargo xtask lz check`: 1,156 -> 1,170 modules (1,058 -> 937 inherited, 40 -> 123 adapted,
+    58 -> 110 redesigned), 157 -> 594 fn rows, 60 -> 68 extras; bridges 12 -> 21 open (N4 13,
+    N5 2, N6 1, N7 2, N9 3).
+  - Host tests (`just check`): 3,229 -> 3,775 passed, 0 failed (bsd 2,396, kernel 308, hal
+    292, abi 9, xtask 260, libz 123, libkern 26, the boot loaders' 57).
+  - `just jobs=3 ci`: the first run (10:17) stopped in `test` on the inherited pckbc flake
+    (below); the second (10:20-10:43, 1,396 s) passed 86 of 86 smokes in 18 min 32 s, no retry,
+    and stopped at `check-drift`: the applied record of LZ 602141098d1d named
+    `sys/uvm/uvm_init.rs`, deleted by N3.5's flip (614d65af points it at `sys/kern/vm_bsd.rs`,
+    as 27432aa6 did for the pmap at the checkpoint); the steps after it rc=0.
+  - `just jobs=3 ci-full` at 614d65af (decision 24, N2 and N3): rc=0 in 2,248 s, its `ci` on
+    four CPUs (86 of 86 smokes in 21 min 18 s, no retry) and the eight installer recipes
+    (`smoke-install-amd64` 106 s, `-arm64` 164 s, `-arm64-acpi` 165 s, the four
+    `smoke-install-boot-*`, `smoke-install80-amd64` 75 s, `-arm64` 123 s). `just comp` first
+    (425 s, seeded from the main checkout).
+  - `just diff-openbsd`: rc=0 in 77 s; amd64 and arm64, 107 steps, 104 equal, 3 expected, 0
+    unexpected (`expected.toml` unchanged).
+  - `just bench` at 614d65af (11:37-12:20, 2,573 s with the build and a quiet minute; the same
+    command and method as the baselines, under the machine lock, nothing else running): fourteen
+    of fourteen ratios print. The reports are kept as `docs/bench/n3-after-<arch>.toml`.
+    `cargo xtask bench compare docs/bench/n3-before-<arch>.toml target/bench/<arch>/report.toml`
+    gives the `Bench:` lines of the closing commit (EmiBSD medians; a row prints when it moved
+    by more than the larger spread):
+
+    | measurement | unit | amd64 before -> after | ratio to OpenBSD | arm64 before -> after | ratio to OpenBSD |
+    |---|---|---|---|---|---|
+    | boot | s | 17.35 -> 17.22 (within spread) | 0.802 -> 0.804 | 8.33 -> 8.65 | 0.263 -> 0.274 |
+    | pagefault | ns/op | 7956 -> 12269 | 0.747 -> 1.184 | 75784 -> 81715 | 0.617 -> 0.661 |
+    | forkexit | ns/op | 459233 -> 680755 | 0.584 -> 0.884 | 1686982 -> 2672794 | 0.762 -> 1.200 |
+    | forkexec | ns/op | 1214616 -> 1820719 | 0.659 -> 1.034 | 4900752 -> 6868461 | 0.740 -> 1.075 |
+    | pipe | ns/op | 68504 -> 69186 (within spread) | 0.936 -> 0.942 | 168655 -> 171029 (within spread) | 0.953 -> 0.922 |
+    | fileread | ns/op | 280928 -> 322744 (baseline spread over 15 %) | spread -> 0.973 | 702139 -> 879892 | 0.790 -> 1.001 |
+    | tcpbench | Mbps | 767.3 -> 787.6 | 1.300 -> 1.313 | 108.3 -> 102.1 (within spread) | 1.235 -> 1.143 |
+
+    N3 made the page fault and fork slower on both machines: amd64 `pagefault` +54 %,
+    `forkexit` +48 %, `forkexec` +50 %; arm64 `forkexit` +58 %, `forkexec` +40 %, `pagefault`
+    +8 %, `fileread` +25 % (OpenBSD's own runs moved by under 6 %). On the debug kernel
+    (`opt-level = 1`) the kernel's witnesses, counted handles and checked slices run unoptimised;
+    where the time goes is not measured yet, and is the first question for N4's bench.
+  - `cargo xtask lz drift --security`: empty; no LZ commit after the pin.
+  - The flake of the close: `dev::ic::pckbc::tests::an_async_command_is_acked_byte_by_byte_then_freed`
+    panicked at `sys/kern/kern_timeout.rs:291` (a null `prev` in `circq_insert_tail`) in the
+    first `just ci`, as once at N3.4e. By reading: pckbc's test `controller()` takes
+    `kern_timeout::tests::LOCK` but never calls `timeout_startup()`, so it depends on an earlier
+    test (hidkbd's, kern_timeout's) having initialised the wheel; both files are inherited,
+    byte-identical to LZ, so the fix is the user's decision. The second run passed.
+
+Effort: _(user)_
+
+Time: _(user)_

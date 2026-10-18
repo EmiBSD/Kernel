@@ -17,7 +17,9 @@
 # `kernel` reaches code that has not moved into them yet. The trait is declared by the crate
 # that calls it and held in a `OnceStatic<&'static dyn Trait>`; `bsd`'s `main()` registers an
 # implementation over its legacy code before first use. A bridge carries no logic of its own.
-# N9 requires this file to hold no row.
+# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::pipe::PipeGlue`) is a
+# row only while `bsd` implements it; the row goes when a `kernel` module does, and the trait
+# stays as API (decision 39). N9 requires this file to hold no row.
 #
 # Schema, one [[bridge]] per trait:
 #   trait   = the trait's name, a bare identifier (its crate and module in the comment above the row)
