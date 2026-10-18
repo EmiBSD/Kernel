@@ -277,12 +277,15 @@ fn minpct_set(
     min: &AtomicI32,
     others: [&AtomicI32; 2],
 ) -> Result<(), Errno> {
-    let rest: i32 = others.iter().map(|o| o.load(Ordering::Relaxed)).sum();
-    if t + rest > 95 || t < 0 {
+    // The C's `int` sum, which wraps (a huge `t` from userland must not panic the kernel).
+    let sum = others
+        .iter()
+        .fold(t, |acc, o| acc.wrapping_add(o.load(Ordering::Relaxed)));
+    if sum > 95 || t < 0 {
         return Err(Errno::EINVAL);
     }
     pct.store(t, Ordering::Relaxed);
-    min.store(t * 256 / 100, Ordering::Relaxed);
+    min.store(t.wrapping_mul(256) / 100, Ordering::Relaxed);
     Ok(())
 }
 
@@ -533,6 +536,9 @@ mod tests {
         assert_eq!(minpct_set(16, &pct, &min, [&a, &b]), Err(Errno::EINVAL));
         assert_eq!(minpct_set(-1, &pct, &min, [&a, &b]), Err(Errno::EINVAL));
         assert_eq!(pct.load(Ordering::Relaxed), 10, "unchanged on EINVAL");
+        // i32::MAX + 80 wraps negative in the C's int sum: accepted, as the C accepts it.
+        assert_eq!(minpct_set(i32::MAX, &pct, &min, [&a, &b]), Ok(()));
+        assert_eq!(pct.load(Ordering::Relaxed), i32::MAX);
         assert_eq!(minpct_set(15, &pct, &min, [&a, &b]), Ok(()));
         assert_eq!(pct.load(Ordering::Relaxed), 15);
         assert_eq!(min.load(Ordering::Relaxed), 15 * 256 / 100);

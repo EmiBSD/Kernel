@@ -286,16 +286,25 @@ pub fn sys_mquery(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
         return query(UVM_UNKNOWN_OFFSET);
     }
 
-    // getvnode(p, fd, &fp): EBADF without a file, EINVAL when it is not a vnode; FRELE after.
+    // getvnode(p, fd, &fp), then FRELE(fp, p) after the query.
     let mut result = Err(Errno::EINVAL);
     vmproc().with_fd_vnode(a.fd, &mut |vp, _| {
-        if vp.is_none() {
-            return Err(Errno::EINVAL);
-        }
+        getvnode(vp)?;
         result = query(a.pos);
         Ok(())
     })?;
     result
+}
+
+/// `getvnode(p, fd, &fp)`'s checks of the file `fd_getfile` found (`EBADF` without one is the
+/// bridge's): `EINVAL` when it is not a vnode (`DTYPE_VNODE`), `EBADF` when the vnode was
+/// cleaned out (`VBAD`, `vfs_syscalls.c`).
+fn getvnode(vp: Option<&'static dyn VnodeOps>) -> Result<(), Errno> {
+    match vp {
+        None => Err(Errno::EINVAL),
+        Some(vp) if vp.vtype() == VType::VBAD => Err(Errno::EBADF),
+        Some(_) => Ok(()),
+    }
 }
 
 /// `uvm_wxcheck`: W^X violations are only allowed on permitted filesystems.
@@ -856,13 +865,13 @@ pub fn uvm_mmaplock(
         return Err(Errno::ENOMEM);
     }
     // uvm_map_pageable_locked consumes the guard: the map is unlocked on return.
-    let error = uvm_map_pageable_locked(guard, *addr, *addr + size, false);
-    kernel_unlock(); // KERNEL_UNLOCK()
-    if let Err(e) = error {
+    if let Err(e) = uvm_map_pageable_locked(guard, *addr, *addr + size, false) {
         // unmap the region!
         uvm_unmap(map, *addr, *addr + size);
+        kernel_unlock(); // KERNEL_UNLOCK()
         return Err(e);
     }
+    kernel_unlock(); // KERNEL_UNLOCK()
     Ok(())
 }
 
@@ -1282,6 +1291,26 @@ mod tests {
             Err(Errno::EINVAL)
         );
         assert_eq!(mmap_check_fixed(0x10_0000, PAGE_SIZE), Ok(()));
+    }
+
+    /// mquery's `getvnode`: no file `EBADF` (the bridge's), not a vnode `EINVAL`, a vnode
+    /// `vgone` cleaned out `EBADF`, through the process double's descriptors.
+    #[test]
+    fn mquery_takes_a_vnode_as_getvnode_does() {
+        use crate::testutil;
+        let good = testutil::mem_vnode(std::vec![0; 16]);
+        let bad = testutil::mem_vnode(std::vec![0; 16]);
+        bad.set_vtype(VType::VBAD);
+        testutil::vmproc_with(|s| {
+            s.files.push((3, None, FREAD));
+            s.files.push((4, Some(good), FREAD));
+            s.files.push((5, Some(bad), FREAD));
+        });
+        let check = |fd| vmproc().with_fd_vnode(fd, &mut |vp, _| getvnode(vp));
+        assert_eq!(check(2), Err(Errno::EBADF), "no such descriptor");
+        assert_eq!(check(3), Err(Errno::EINVAL), "not a vnode");
+        assert_eq!(check(4), Ok(()));
+        assert_eq!(check(5), Err(Errno::EBADF), "VBAD");
     }
 
     #[test]

@@ -239,7 +239,7 @@ paid_by = "N3"
 # kernel::vm::proc::VmProc
 [[bridge]]
 trait = "VmProc"
-for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs"]
+for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs", "sys/kernel/vm/meter.rs"]
 paid_by = "N4"
 
 # bsd: CTL_VM's reach into kern_sysctl.rs (sysctl_rdint, sysctl_int, sysctl_rdstruct,

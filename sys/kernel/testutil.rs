@@ -612,9 +612,16 @@ pub struct MemVnode {
     last_read: Mutex<Option<ReadSeen>>,
     /// Run by the next read inside the "VOP_READ", as another process might meanwhile.
     during_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// `v_type` (`VREG` unless a test sets another).
+    vtype: Mutex<crate::vm::vnode::VType>,
 }
 
 impl MemVnode {
+    /// Sets `v_type` (`vgone` makes it `VBAD`).
+    pub fn set_vtype(&self, t: crate::vm::vnode::VType) {
+        *lock_any(&self.vtype) = t;
+    }
+
     /// `v_usecount`.
     pub fn usecount(&self) -> i32 {
         self.usecount.load(Ordering::Relaxed)
@@ -658,7 +665,7 @@ fn lock_any<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl VnodeOps for MemVnode {
     fn vtype(&self) -> crate::vm::vnode::VType {
-        crate::vm::vnode::VType::VREG
+        *lock_any(&self.vtype)
     }
 
     fn is_zero_device(&self) -> bool {
@@ -768,6 +775,7 @@ pub fn mem_vnode(contents: Vec<u8>) -> &'static MemVnode {
         fail: std::sync::atomic::AtomicBool::new(false),
         last_read: Mutex::new(None),
         during_read: Mutex::new(None),
+        vtype: Mutex::new(crate::vm::vnode::VType::VREG),
     }))
 }
 static TEST_INTR: TestIntr = TestIntr;
