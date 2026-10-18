@@ -46,13 +46,16 @@
 //! The machine's `kcopy` (`hal::user::UserCopy::kcopy_in`/`kcopy_out`, N3.5 S0) writes and
 //! reads kernel memory named by an address. `hal` calls it only for a range inside a
 //! `hal::user::ForeignWindow`, which the kernel map's token alone mints
-//! (`KernelMapper::foreign_window`): that the range is the token holder's, onto foreign pages
-//! no Rust object occupies, is the token's contract (as for `kenter`'s addresses, which no
-//! check here could establish either), and the window bounds every copy (a range past it is
-//! `panic(9)`). The fault on an unmapped page is the machine's `pcb_onfault`, an `EFAULT`.
+//! (`KernelMapper::foreign_window`): nothing checks the range, so a window is a write to any
+//! kernel address its maker names, the strongest primitive the token gives. The token's
+//! contract (as for `kenter`'s addresses, which no check here could establish either): its
+//! holder mints a window only over a range its own `uvm_map_extract` returned into the
+//! kernel map, onto foreign pages no Rust object occupies, and unmaps that range only after
+//! the window is gone (N3.5 S1 makes this a type: windows minted only from the extract's
+//! result). The window bounds every copy (a range past it is `panic(9)`); the fault on an
+//! unmapped page is the machine's `pcb_onfault`, an `EFAULT`.
 //!
 //! The pmap's page provider (`hal::pmap::PhysPages`, N3.1, passed to `pmap_bootstrap` as a
-
 //! value by the same boot path) is under the same contract for the frames it hands out, and a
 //! machine's pmap views a frame through the direct map only after [`check_frame`]: the frame
 //! page-aligned, its whole page inside the direct map the boot glue described.

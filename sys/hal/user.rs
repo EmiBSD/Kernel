@@ -184,9 +184,13 @@ impl ForeignWindow<'_> {
 ))]
 impl KernelMapper {
     /// The window `[va, va + len)` onto foreign pages the kernel map holds there (`uvm_io`'s
-    /// and `sys_kbind`'s extracted range): the token's holder vouches that the range is its
-    /// own and holds no Rust object, as for every address it maps. A range that wraps the
-    /// address space panics.
+    /// and `sys_kbind`'s extracted range). Nothing here checks the range: `write_at` through
+    /// a window is a write to any kernel address its maker names, the strongest primitive the
+    /// token gives. The token's contract, beside every address it maps: its holder mints a
+    /// window only over a range its own `uvm_map_extract` returned into the kernel map
+    /// (pages of another address space, no Rust object among them), and unmaps that range
+    /// only after the window is gone. (N3.5 S1 makes that a type: windows minted only from
+    /// the extract's result.) A range that wraps the address space panics.
     pub fn foreign_window(&self, va: Vaddr, len: usize) -> ForeignWindow<'_> {
         if va.as_usize().checked_add(len).is_none() {
             hal_panic(format_args!(
