@@ -43,7 +43,9 @@ for = ["sys/hal/cpu.rs", "sys/hal/mutex.rs", "sys/hal/percpu.rs"]
 paid_by = "N4"
 
 # bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
-# _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs.
+# _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs;
+# N3.4a: cold (cold || panicstr) and cold_yield (splhigh, splx(safepri), the kernel lock's
+# bounce), msleep_nsec's early return for MutexedGuard::sleep_nsec.
 # hal::sleep::Sleep
 [[bridge]]
 trait = "Sleep"

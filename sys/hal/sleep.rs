@@ -76,6 +76,13 @@ pub trait Sleep: Sync {
     /// `_kernel_lock_held()`: the running CPU holds the kernel lock (an rwlock writer does not
     /// spin then, so the CPUs waiting for the kernel lock progress).
     fn kernel_lock_held(&self) -> bool;
+    /// `cold || panicstr`: autoconfiguration is not over, or the kernel panicked, so a sleep
+    /// must not reach the sleep queues (`msleep_nsec`'s and `tsleep_nsec`'s early return).
+    fn cold(&self) -> bool;
+    /// That early return's work: `splhigh`, `splx(safepri)` (interrupts get their chance),
+    /// the kernel lock released and taken back when this CPU holds it (`MULTIPROCESSOR`), the
+    /// level put back. No process switch.
+    fn cold_yield(&self);
 }
 
 /// A wait channel: the address of `ident`, compared and never dereferenced.

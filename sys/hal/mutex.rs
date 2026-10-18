@@ -48,6 +48,42 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * Copyright (c) 1982, 1986, 1990, 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * (c) UNIX System Laboratories, Inc.
+ * All or some portions of this file are derived from material licensed
+ * to the University of California by American Telephone and Telegraph
+ * Co. or Unix System Laboratories, Inc. and are reproduced herein with
+ * the permission of UNIX System Laboratories, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)kern_synch.c	8.6 (Berkeley) 1/21/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -55,8 +91,10 @@
 //!
 //! Upstream: sys/kern/kern_lock.c @ 3ce1f3f79392
 //! Upstream: sys/sys/mutex.h @ 3ce1f3f79392
+//! Upstream: sys/kern/kern_synch.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_lock.rs@3c62ede68802
 //! LZ: sys/sys/mutex.rs@3c62ede68802
+//! LZ: sys/kern/kern_synch.rs@3c62ede68802
 //!
 //! The behaviour of `mtx_enter(9)`: a mutex is owned by a CPU, never by a process; it is not
 //! recursive; entering it raises the interrupt level to the mutex's (at least `IPL_MPFLOOR`
@@ -93,12 +131,6 @@
 //!   ever under `MULTIPROCESSOR`, or carries on with two owners without it).
 //! - `mtx_oldipl` is not kept in the mutex: the guard holds the level to restore, which only
 //!   the owner ever read.
-//! - `msleep_nsec`'s early return while `cold || panicstr` (the mutex left at `safepri`, the
-//!   kernel lock bounced, 0 returned without sleeping) is not taken by
-//!   [`MutexedGuard::sleep_nsec`]: `hal` sees neither `cold` nor `panicstr` (the `Sleep`
-//!   bridge has no such method), so a sleep while `cold` goes to the sleep queues as
-//!   `rwsleep_nsec`'s does in the C. Its one caller (the pager's segments, N3.4c) sleeps only
-//!   for I/O, after autoconfiguration.
 //!
 //! ## Redesign
 //! - LZ's `Mutex` is the C's `struct mutex` and free functions (`mtx_enter(&m)`, then the
@@ -119,7 +151,12 @@
 //! - N3.4a: `msleep_nsec(ident, &mtx, prio, wmesg, nsecs)` is [`MutexedGuard::sleep_nsec`]:
 //!   `&mut self`, so no reference into the data lives across the sleep, and the mutex is held
 //!   again when it returns (on whichever CPU the process wakes), `Ok` or `Err`, as
-//!   `rwsleep`'s guards (`uvm_pseg_get`'s wait for a pager segment).
+//!   `rwsleep`'s guards (`uvm_pseg_get`'s wait for a pager segment). Its `cold || panicstr`
+//!   early return is the C's: the `Sleep` bridge answers `cold()`, and then the mutex is left,
+//!   `cold_yield()` gives interrupts their chance at `safepri` and bounces the kernel lock (the
+//!   C lowers through the mutex's saved level to the same effect), the mutex is entered again
+//!   and 0 returned without sleeping. `msleep_nsec` is `kern_synch.c`'s, hence the third
+//!   source.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -302,8 +339,10 @@ impl<T> MutexedGuard<'_, T> {
     /// left, asleep, and the mutex entered again before the sleep's result is returned:
     /// `EWOULDBLOCK` after `nsecs` ([`INFSLP`]: never), `EINTR`/`ERESTART` on a signal with
     /// `PCATCH` in `prio`. `&mut self`, so no reference into the data lives across the sleep.
-    /// Before the sleep queues exist no one could wake a sleeper: the mutex is left, the CPU
-    /// let breathe and the mutex entered again (the C's `cold` path).
+    /// While `cold || panicstr` it does not sleep: the mutex is left, interrupts get their
+    /// chance at `safepri`, the kernel lock is bounced, the mutex is entered again and `Ok`
+    /// returned. Before the sleep queues exist no one could wake a sleeper either: the mutex
+    /// is left, the CPU let breathe and the mutex entered again.
     pub fn sleep_nsec<I: ?Sized>(
         &mut self,
         ident: *const I,
@@ -314,6 +353,13 @@ impl<T> MutexedGuard<'_, T> {
         kassert!(prio & !(PRIMASK | PCATCH) == 0);
         let m = self.lock;
         let result = match bridges::sleep() {
+            Some(b) if b.cold() => {
+                // After a panic, or during autoconfiguration: give interrupts a chance, then
+                // return; no other process may run, in case this is the idle one.
+                m.leave(self.restore);
+                b.cold_yield();
+                Ok(())
+            }
             Some(b) => {
                 b.sleep_setup(chan(ident), prio, wmesg);
                 // Signal may stop the process: the mutex is left before the sleep.
@@ -500,6 +546,29 @@ mod tests {
         *g = 1;
         drop(g);
         assert!(!m.is_locked());
+        assert_eq!(testutil::spl_level(), base);
+        assert_eq!(*m.lock(), 1);
+    }
+
+    #[test]
+    fn a_cold_guard_sleep_yields_and_returns_without_sleeping() {
+        testutil::install();
+        let base = testutil::spl_level();
+        let m = Mutexed::new(base + 4, 0u8);
+        let x = 0u8;
+        let before = testutil::cold_yields();
+        testutil::set_cold(true);
+        let mut g = m.lock();
+        // No timeout and no wakeup: only the early return ends this sleep.
+        let slept = g.sleep(&raw const x, PWAIT, "testslp");
+        testutil::set_cold(false);
+        assert_eq!(slept, Ok(()));
+        assert_eq!(testutil::cold_yields(), before + 1);
+        // Held again, at the mutex's level, and the old level put back on the leave.
+        assert!(m.is_locked() && m.owned());
+        assert!(testutil::spl_level() >= base + 4);
+        *g = 1;
+        drop(g);
         assert_eq!(testutil::spl_level(), base);
         assert_eq!(*m.lock(), 1);
     }

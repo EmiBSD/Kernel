@@ -77,6 +77,8 @@ std::thread_local! {
     static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    static COLD: Cell<bool> = const { Cell::new(false) };
+    static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
     static PAGES_OUT: Cell<isize> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, isize>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -254,6 +256,16 @@ impl Sleep for TestSleep {
 
     fn kernel_lock_held(&self) -> bool {
         false
+    }
+
+    /// This thread's `cold || panicstr`, as [`set_cold`] put it.
+    fn cold(&self) -> bool {
+        COLD.with(Cell::get)
+    }
+
+    /// Counts the early return's yields of this thread ([`cold_yields`]).
+    fn cold_yield(&self) {
+        COLD_YIELDS.with(|c| c.set(c.get() + 1));
     }
 }
 
@@ -546,6 +558,16 @@ pub(crate) fn memory_frames(n: usize) -> std::vec::Vec<Paddr> {
         .leak();
     lock(&MEMORY_FRAMES).push((base, mds));
     (0..n).map(|i| Paddr::new(base + i * TEST_PAGE)).collect()
+}
+
+/// Makes this thread see `cold || panicstr` as `cold` says (the sleeps' early return).
+pub(crate) fn set_cold(cold: bool) {
+    COLD.with(|c| c.set(cold));
+}
+
+/// How many times this thread's sleeps took the `cold` early return's yield.
+pub(crate) fn cold_yields() -> u32 {
+    COLD_YIELDS.with(Cell::get)
 }
 
 /// This thread's spin count, as the double keeps it.

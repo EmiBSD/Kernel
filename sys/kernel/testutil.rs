@@ -107,6 +107,8 @@ std::thread_local! {
     static PROC: u8 = const { 0 };
     static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    static COLD: Cell<bool> = const { Cell::new(false) };
+    static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
@@ -272,6 +274,16 @@ impl Sleep for TestSleep {
 
     fn kernel_lock_held(&self) -> bool {
         false
+    }
+
+    /// This thread's `cold || panicstr`, as [`set_cold`] put it.
+    fn cold(&self) -> bool {
+        COLD.with(Cell::get)
+    }
+
+    /// Counts the early return's yields of this thread ([`cold_yields`]).
+    fn cold_yield(&self) {
+        COLD_YIELDS.with(|c| c.set(c.get() + 1));
     }
 }
 
@@ -501,6 +513,16 @@ pub fn malloc_out(ty: i32) -> i64 {
 /// its `cache_init` was asked for; `None` for a pool the double never made.
 pub fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
     lock(&POOL_KNOBS).get(wchan).copied()
+}
+
+/// Makes this thread see `cold || panicstr` as `cold` says (the sleeps' early return).
+pub fn set_cold(cold: bool) {
+    COLD.with(|c| c.set(cold));
+}
+
+/// How many times this thread's sleeps took the `cold` early return's yield.
+pub fn cold_yields() -> u32 {
+    COLD_YIELDS.with(Cell::get)
 }
 
 /// The bytes of pages this thread holds, as the page double counts them.

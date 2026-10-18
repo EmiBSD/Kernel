@@ -8247,9 +8247,9 @@ reason = "hal host tests: the doubles of the bridges, registered once per test p
 [[module]]
 rust = "sys/hal/mutex.rs"
 crate = "hal"
-lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs"]
+lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs", "sys/kern/kern_synch.rs"]
 status = "redesigned"
-notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: MutexedGuard::sleep_nsec, msleep_nsec on the guard (kern_synch.c's, without its cold || panicstr early return, a Deviations line)"
+notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: MutexedGuard::sleep_nsec, msleep_nsec on the guard (kern_synch.c's, hence kern_synch.rs in lz, which also holds rwsleep_nsec for rwlock.rs), its cold || panicstr early return through the Sleep bridge's cold/cold_yield"
 
 [[module]]
 rust = "sys/hal/percpu.rs"
@@ -8266,7 +8266,7 @@ reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeu
 [[module]]
 rust = "sys/hal/rwlock.rs"
 crate = "hal"
-lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs"]
+lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs", "sys/kern/kern_synch.rs"]
 status = "redesigned"
 notes = "N2.3: Rwlocked<T>, rw_enter(9)'s behaviour re-expressed as a lock that owns its data, with rwsleep on the guard; the legacy Rwlock and kern_rwlock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: kern_rwlock.rs's rw_obj_* re-expressed as SharedRwlock (a counted handle over pool rwobjpl, a static arm), its WriteWitness/ReadWitness (sleep_nsec, into_sleep = PNORELOCK) and Guarded<T>, a cell keyed to a lock's identity; bsd's rw_obj_* stay, by name, until uvm's last caller moves (N3.4b/c)"
 

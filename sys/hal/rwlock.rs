@@ -76,6 +76,42 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * Copyright (c) 1982, 1986, 1990, 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * (c) UNIX System Laboratories, Inc.
+ * All or some portions of this file are derived from material licensed
+ * to the University of California by American Telephone and Telegraph
+ * Co. or Unix System Laboratories, Inc. and are reproduced herein with
+ * the permission of UNIX System Laboratories, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)kern_synch.c	8.6 (Berkeley) 1/21/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -85,8 +121,10 @@
 //!
 //! Upstream: sys/kern/kern_rwlock.c @ 3ce1f3f79392
 //! Upstream: sys/sys/rwlock.h @ 3ce1f3f79392
+//! Upstream: sys/kern/kern_synch.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_rwlock.rs@3c62ede68802
 //! LZ: sys/sys/rwlock.rs@3c62ede68802
+//! LZ: sys/kern/kern_synch.rs@3c62ede68802
 //!
 //! The behaviour of `rw_enter(9)`, the C's word for word where userland or a sleeper could
 //! tell: one owner word, `[ writer or reader count | WRLOCK ]`; a writer is the running
@@ -127,8 +165,8 @@
 //! - The lock objects have no `ro_magic`: a lock is reached only through its handle
 //!   ([`SharedRwlock`]), never cast back from a `struct rwlock *`, so the `KASSERTMSG`s that
 //!   check the magic and the count of a pointer have nothing to check. Their pool item holds
-//!   the lock and the handle's count (40 bytes where the C's `struct rwlock_obj` has 32; the
-//!   user's decision D2 of N3.4, as `pipepl`).
+//!   the lock, the handle's count and its pool (48 bytes: 8 + 8 + the 32 of `RawRwlock`,
+//!   where the C's `struct rwlock_obj` has 40; the user's decision D2 of N3.4, as `pipepl`).
 //! - `rwsleep_nsec`'s assertion that a sleep on `nowake` has `PCATCH` or a timeout has nothing
 //!   to check here: `hal` offers no `nowake` channel (a guard sleeps on a channel its caller
 //!   names, which something wakes).
@@ -143,7 +181,9 @@
 //!   guards through which alone it is reached (`&mut T` for the one writer, `&T` for the
 //!   readers), and the guards' drops are `rw_exit_write`/`rw_exit_read`. Not `Send`: the lock
 //!   belongs to the process that took it.
-//! - `rwsleep_nsec(ident, &l, prio, wmesg, nsecs)` is [`WriteGuard::sleep_nsec`] (and
+//! - `rwsleep_nsec` is `kern_synch.c`'s (hence the third source; unlike `msleep_nsec` it has
+//!   no `cold || panicstr` early return, nor has `RawRwlock::sleep_released`).
+//!   `rwsleep_nsec(ident, &l, prio, wmesg, nsecs)` is [`WriteGuard::sleep_nsec`] (and
 //!   [`ReadGuard::sleep_nsec`]): `&mut self`, so no reference into the data lives across the
 //!   sleep, and the guard is valid again when it returns, `Ok` or `Err` (decision 11's
 //!   pipe needs exactly this). [`WriteGuard::unlocked`] runs a closure with the lock released

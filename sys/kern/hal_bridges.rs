@@ -62,10 +62,11 @@ use crate::kern::subr_prf::{panicstr, printf};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::{Cpu, cpu_number, curcpu, curproc};
-use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splraise, splx};
+use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splhigh, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::mutex::mtx_curcpu;
 use crate::sys::pool::Pool;
+use crate::sys::systm::{COLD, SAFEPRI};
 
 /// `spl(9)` of `sys/machine/intr.rs`.
 struct BsdIntr;
@@ -171,6 +172,23 @@ impl Sleep for BsdSleep {
         {
             false
         }
+    }
+
+    fn cold(&self) -> bool {
+        COLD.load(Ordering::Relaxed) || panicstr()
+    }
+
+    /// `msleep_nsec`'s and `tsleep_nsec`'s `cold || panicstr` work (`kern_synch.rs`).
+    fn cold_yield(&self) {
+        let s = splhigh();
+        splx(SAFEPRI.load(Ordering::Relaxed));
+        #[cfg(feature = "multiprocessor")]
+        if crate::kern::kern_lock::_kernel_lock_held() {
+            let kl = &crate::kern::kern_lock::KERNEL_LOCK;
+            let hold_count = crate::kern::kern_lock::__mp_release_all(kl);
+            crate::kern::kern_lock::__mp_acquire_count(kl, hold_count);
+        }
+        splx(s);
     }
 }
 
