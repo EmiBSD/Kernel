@@ -241,3 +241,14 @@ paid_by = "N3"
 trait = "VmProc"
 for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs"]
 paid_by = "N4"
+
+# bsd: CTL_VM's reach into kern_sysctl.rs (sysctl_rdint, sysctl_int, sysctl_rdstruct,
+# sysctl_string, and sysctl_rdstruct of struct uvmexp through bsd's SysctlPlain byte view),
+# kern_malloc's nkmempages, sched_bsd's averunnable and kern_proc's allproc (each thread's p_stat
+# and whether it is its CPU's idle thread); implemented by sys/kern/vm_bsd.rs (N3.5 S1,
+# registered by bsd's uvm_init at the flip), one bsd call each. N4, with kern_sysctl and proc.
+# kernel::vm::meter::VmSysctl
+[[bridge]]
+trait = "VmSysctl"
+for = ["sys/kernel/vm/meter.rs"]
+paid_by = "N4"
