@@ -2328,6 +2328,11 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
   length), and prints a `Bench: <measurement>-<arch> <before> -> <after> <unit>` line for each
   EmiBSD median that moved by more than the larger spread of the two, and why not for the
   others.
+- **Host diagnostic.** Around every run of each side (tcpbench's runs too) the host's
+  one-minute load average at the start and the end and its five busiest processes but QEMU
+  are printed and kept in `report.toml` (`[[host]]`), so a sample can be read against the
+  host: a debugger traced a step in amd64's `pipe` and `fileread` to host contention (VS
+  Code's cpptools bursts, macOS's idle-time daemons). It changes no sample, rule or limit.
 - **Where it runs.** Beside `just ci`, not in it, like `diff-openbsd`: under the machine lock,
   with nothing else running on the Mac (a concurrent build moves every number). The baseline
   and each milestone's after go in that milestone's section of `docs/JOURNAL.md`.
