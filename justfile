@@ -3205,7 +3205,7 @@ diff-openbsd: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bu
 # xtask bench compare BEFORE AFTER` gives the `Bench:` lines of a milestone close. Needs
 # `just userland` and the installed snapshot (`just diff-openbsd` once). Beside `ci`, not in it,
 # and run under the machine lock with nothing else on the Mac (docs/ARCHITECTURE.md, "bench").
-bench: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--features qemu,multiprocessor") build-init-amd64 build-init-arm64 build-abi
+bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi
     @test -f target/userland/amd64/root/usr/bin/bench -a -f target/userland/arm64/root/usr/bin/bench || \
         { echo "bench: no bench in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench} cargo xtask bench {{smp4}}
