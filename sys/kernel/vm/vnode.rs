@@ -114,9 +114,6 @@
 //! - `uvm_vnp_sync(NULL)` is `uvm_vnp_sync(None)`, a mount named by its identity
 //!   ([`VnodeOps::mount_id`]); `uvm_vnp_uncache` returns `bool`.
 //! - `UVM_PAGE_OWN` is not configured; the `DEBUG` printfs are compiled out as in C.
-//! - The `ratecheck` timestamp of [`uvn_flush`]'s error message is inside a mutex (at
-//!   `IPL_HIGH`, the level of `ratecheck`'s own `ratecheck_mtx`), where the C's function-local
-//!   `static` is unguarded.
 //!
 //! ## Redesign
 //! - The vnode (`struct vnode *u_vnode`, `vp->v_uvm`, and the `VOP_*`, `vget`, `vref`,
@@ -128,6 +125,12 @@
 //!   the VOP, the unlocks) is composed here from those one-call methods and the `KernelLock`
 //!   and `NetLock` bridges (`hal::klock`, `hal::netlock`); `ratecheck`'s clock and `rebooting`
 //!   are the [`SysInfo`] bridge's.
+//! - `ratecheck(9)` (`kern_time.c`) is `bsd`'s until N4: the kernel has its own copy for
+//!   [`uvn_flush`]'s rate-limited error message, over [`SysInfo`]'s uptime. The C's
+//!   `ratecheck` serializes every caller's `lasttime` under one `ratecheck_mtx` at
+//!   `IPL_HIGH` (`kern_time.c` 824-850); here the one call site's `lasttime` (the C's
+//!   function-local `static`) sits in a mutex of its own at `IPL_HIGH`, so the same update is
+//!   made under a lock, per call site rather than shared.
 //! - A `struct uvm_vnode` is a `uvm_vnode_pool` item that is never freed (the vnode keeps it
 //!   in `v_uvm` across recycling, as in C): a `hal::pool::PoolArc` of `"uvmvnodes"` leaked
 //!   once made (`PoolArc::leak`), so a true `&'static Uvn`, which the map's handle
@@ -1062,6 +1065,7 @@ pub fn uvn_get_locked(
     // locked (i.e. the first time through).
     let mut done = true; // be optimistic
 
+    kassert!(pps.len() >= *npagesp as usize);
     for (lcv, slot) in pps.iter_mut().enumerate().take(*npagesp as usize) {
         let off = offset + lcv as Voff * ps;
         // do we care about this page? if not, skip it
@@ -1131,6 +1135,7 @@ pub fn uvn_get_sync(
     //
     // XXX: because we can't do async I/O at this level we get things page at a time
     // (otherwise we'd chunk). the VOP_READ() will do async-read-ahead for us at a lower level.
+    kassert!(pps.len() >= *npagesp as usize);
     for (lcv, slot) in pps.iter_mut().enumerate().take(*npagesp as usize) {
         let off = offset + lcv as Voff * ps;
 

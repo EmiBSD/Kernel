@@ -910,5 +910,69 @@ mod tests {
             uvm_pseg_release(va);
         }
     }
+
+    #[test]
+    fn a_two_page_window_maps_both_pages_and_unmaps_before_its_segment() {
+        use super::super::page::{Pglist, uvm_pglistalloc, uvm_pglistfree};
+        use super::super::types::UVM_PLA_NOWAIT;
+
+        let _g = setup();
+        // Two contiguous pages (the host has no MMU: a window is the frames' own addresses),
+        // busy as a pager's I/O pages.
+        let pgl = Pglist::new();
+        uvm_pglistalloc(
+            2 * PAGE_SIZE,
+            Paddr::new(0),
+            Paddr::new(usize::MAX),
+            Paddr::new(PAGE_SIZE),
+            Paddr::new(0),
+            &pgl,
+            1,
+            UVM_PLA_NOWAIT,
+        )
+        .expect("two pages");
+        let p0 = pgl.pop_head().expect("a page");
+        let p1 = pgl.pop_head().expect("a second page");
+        let (p0, p1) = if p0.phys_addr() < p1.phys_addr() {
+            (p0, p1)
+        } else {
+            (p1, p0)
+        };
+        p0.set_bits(PG_BUSY);
+        p1.set_bits(PG_BUSY);
+        let pps = [PageSlot::Page(p0), PageSlot::Page(p1)];
+
+        // More than one page: a pager segment's window (map_frames), writable for a read.
+        let mut win = uvm_pagermapin(&pps, UVMPAGER_MAPIN_READ).expect("a window");
+        let va = win.va();
+        assert!(va.as_usize() >= SEEDED, "in a pager segment");
+        let kernel = hal::pmap::kernel();
+        assert_eq!(kernel.extract(va), Some(p0.phys_addr()));
+        assert_eq!(
+            kernel.extract(va + hal::sys::types::Vsize::new(PAGE_SIZE)),
+            Some(p1.phys_addr())
+        );
+        assert_eq!(win.as_slice().len(), 2 * PAGE_SIZE);
+        win.as_slice_mut()[PAGE_SIZE] = 0xa5;
+        assert_eq!(win.as_slice()[PAGE_SIZE], 0xa5);
+
+        // The drop: the mappings go first, then the segment, free again for the next get.
+        uvm_pagermapout(win);
+        assert!(kernel.extract(va).is_none());
+        assert!(
+            kernel
+                .extract(va + hal::sys::types::Vsize::new(PAGE_SIZE))
+                .is_none()
+        );
+        let again = uvm_pseg_get(0).expect("the segment back");
+        assert_eq!(again.as_usize(), va.as_usize());
+        uvm_pseg_release(again);
+
+        p0.clear_bits(PG_BUSY);
+        p1.clear_bits(PG_BUSY);
+        pgl.insert_tail(p0);
+        pgl.insert_tail(p1);
+        uvm_pglistfree(&pgl); // takes them off the list
+    }
 }
 /* </TESTS> */

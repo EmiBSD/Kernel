@@ -67,14 +67,19 @@
 //! - [`uao_swap_off`] reports itself and pages nothing in: the global list of aobjs it walks
 //!   (`uao_list`, `uao_list_lock`) arrives with its caller, `uvm_swap`'s swapoff (N3.5;
 //!   `swapctl` is `sys_nosys` at the pin). [`uao_pagein`] pages in one aobj's range.
-//! - `uao_shrink`/`uao_grow` and their helpers are `#ifdef TMPFS`: feature `tmpfs`. When
-//!   they move the swap-hash elements to a table of another size, each element goes to the
-//!   bucket its tag hashes to in the new table; the C moves bucket `i` of the old table to
-//!   bucket `i` of the new one, which is the same bucket whenever the tags are below both
-//!   tables' sizes (its comment's assumption) and indexes past a smaller table otherwise.
+//! - `uao_shrink`/`uao_grow` and their helpers are `#ifdef TMPFS`: feature `tmpfs`.
 //! - `UVM_PAGE_OWN` is not configured.
 //!
 //! ## Redesign
+//! - `uao_shrink_hash`/`uao_grow_hash` move the swap-hash elements to a table of another size
+//!   by rehashing each by its tag (`uao_swhash_move`); the C moves bucket `i` of the old table
+//!   to bucket `i` of the new one, on the premise that the hash of the elements it moves does
+//!   not change (`uvm_aobj.c` 425-434, 582-588). The premise always holds, so the two are
+//!   equivalent: a table has `min(clusters, UAO_SWHASH_MAXBUCKETS)` buckets and a tag is
+//!   below the clusters of the pages it still holds (a shrink flushed the rest first). Either
+//!   every live tag is below both bucket counts, so `tag & mask` is the tag in both tables, or
+//!   both tables have the maximal count and the same mask. The elements land in the same
+//!   buckets, each inserted at its bucket's head as the C's `LIST_INSERT_HEAD`.
 //! - LZ's `uao_create() -> &'static UvmObject` (a pool item written by hand, freed by
 //!   `uao_free`'s `pool_put` while map entries may still name it) -> an
 //!   `ObjRef::Aobj(PoolArc<Aobj>)` of `"aobjpl"`, the kernel object an `ObjRef::Kernel` of the
@@ -510,7 +515,7 @@ pub fn uao_shrink_flush(aobj: &Aobj, w: &mut WriteWitness<'_>, startpg: i32, end
 }
 
 /// Moves every swap-hash element of `old` into `new`, each to the bucket its tag hashes to
-/// in `new` (see the module's deviations).
+/// in `new` (the module's redesign: equivalent to the C's bucket-to-bucket move).
 #[cfg(feature = "tmpfs")]
 fn uao_swhash_move(old: &mut [Bucket], new: &mut [Bucket]) {
     let newmask = new.len() - 1;
