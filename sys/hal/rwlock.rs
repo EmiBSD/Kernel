@@ -212,6 +212,17 @@
 //!   access (a witness of another lock is `panic(9)`). [`Witness`] is sealed: only the two
 //!   witnesses are witnesses. The C's `KASSERT(anon->an_lock == amap->am_lock)` becomes the
 //!   check that makes the access sound.
+//! - N3.4d: the C asks for a lock object in a mode it decides at run time and asks again in
+//!   the mode it found (`rw_enter(lock, flt->upper_lock_type)`, `rw_enter(anon->an_lock,
+//!   rw_status(anon->an_lock))` in `uvm_fault.c`): [`RwMode`] is that mode as a value
+//!   (`RW_READ`/`RW_WRITE`), [`SharedRwlock::enter`] takes the lock in it and returns an
+//!   [`RwWitness`], one of the two witnesses as an enum. [`RwWitness::mode`] is the C's
+//!   `rw_status(lock) == flt->upper_lock_type` as a fact of the witness rather than a read of
+//!   the lock word, [`RwWitness::try_upgrade`] is `rw_enter(lock, RW_UPGRADE | RW_NOSLEEP)`
+//!   with the writer's fast path, and its sleeps are the two witnesses'. An `RwWitness` is a
+//!   [`Witness`] itself (the sealed trait gains the enum, which holds one of the two), so a
+//!   [`Guarded`] cell opens through it in either mode; the cell's mutable access still wants
+//!   the write witness itself ([`RwWitness::as_write`]).
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -916,6 +927,24 @@ impl SharedRwlock {
         self.read_flags(RW_NOSLEEP).ok()
     }
 
+    /// `rw_enter(lock, mode)`: waits (sleeping, uninterruptibly) for the lock in `mode`, the
+    /// mode the caller decided at run time (`flt->upper_lock_type`); the witness of it.
+    pub fn enter(&self, mode: RwMode) -> RwWitness<'_> {
+        match mode {
+            RwMode::Read => RwWitness::Read(self.read()),
+            RwMode::Write => RwWitness::Write(self.write()),
+        }
+    }
+
+    /// `rw_enter(lock, mode | flags)` (`RW_NOSLEEP`: `EBUSY` when the lock cannot be had in
+    /// `mode` now; `RW_INTR`: the sleep's error when a signal ends the wait).
+    pub fn enter_flags(&self, mode: RwMode, flags: i32) -> Result<RwWitness<'_>, Errno> {
+        Ok(match mode {
+            RwMode::Read => RwWitness::Read(self.read_flags(flags)?),
+            RwMode::Write => RwWitness::Write(self.write_flags(flags)?),
+        })
+    }
+
     /// `rw_status(9)`: [`RW_WRITE`] (this process writes), [`RW_WRITE_OTHER`], [`RW_READ`] or
     /// 0 (free). A snapshot, for assertions (`rw_write_held` is `status() == RW_WRITE`).
     pub fn status(&self) -> i32 {
@@ -1180,14 +1209,16 @@ impl<T> Guarded<T> {
     /// so it ends before the witness sleeps, upgrades or releases the lock.
     pub fn get<'a, W: Witness>(&'a self, w: &'a W) -> &'a T {
         self.check(w.lock_id());
-        // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness` or a `ReadWitness`)
-        // of the lock whose identity is the cell's key (checked just above), so the lock is
-        // held and every reference alive into the data comes from witnesses of this lock (the
-        // type's invariant). A `&mut T` exists only through `get_mut`, which needs the one
-        // write witness borrowed mutably: if `w` is that witness it is borrowed shared here
-        // for as long as this reference lives, and if `w` is a read witness no write witness
-        // exists. So no `&mut T` is alive beside this `&T`, and it ends before `w` can be
-        // released or slept (both need `w` by value or `&mut`).
+        // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, or
+        // an `RwWitness`, which holds one of the two and is that witness) of the lock whose
+        // identity is the cell's key (checked just above), so the lock is held and every
+        // reference alive into the data comes from witnesses of this lock (the type's
+        // invariant). A `&mut T` exists only through `get_mut`, which needs the one write
+        // witness borrowed mutably: if `w` is that witness, or an `RwWitness` holding it (whose
+        // `as_write` needs it mutably), it is borrowed shared here for as long as this
+        // reference lives, and if `w` is or holds a read witness no write witness exists. So no
+        // `&mut T` is alive beside this `&T`, and it ends before `w` can be released or slept
+        // (both need `w` by value or `&mut`).
         unsafe { &*self.data.get() }
     }
 
@@ -1255,8 +1286,8 @@ mod sealed {
 }
 
 /// A proof of holding a [`SharedRwlock`], in either mode: what [`Guarded::get`] checks.
-/// Sealed: [`WriteWitness`] and [`ReadWitness`] are the only witnesses, so no other type can
-/// claim a lock it does not hold.
+/// Sealed: [`WriteWitness`] and [`ReadWitness`] are the only witnesses (with [`RwWitness`],
+/// which is one of them), so no other type can claim a lock it does not hold.
 pub trait Witness: sealed::Sealed {
     /// The identity of the lock this witness holds.
     fn lock_id(&self) -> LockId;
@@ -1275,6 +1306,159 @@ impl sealed::Sealed for ReadWitness<'_> {}
 impl Witness for ReadWitness<'_> {
     fn lock_id(&self) -> LockId {
         self.lock.id()
+    }
+}
+
+/// The mode of a lock asked for at run time: `RW_READ` (shared) or `RW_WRITE` (alone), as
+/// the C keeps it in an `int` (`flt->upper_lock_type`) and compares it with `rw_status`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RwMode {
+    /// `RW_READ`: shared with other readers.
+    Read,
+    /// `RW_WRITE`: alone.
+    Write,
+}
+
+/// `RW_OPMASK`: the operation bits of `rw_enter`'s flags.
+const RW_OPMASK: i32 = 0x0007;
+
+impl RwMode {
+    /// The mode of the C's `RW_READ` or `RW_WRITE` (the operation bits of `flags`; the other
+    /// flags ignored); `None` for any other operation (`RW_DOWNGRADE`, `RW_UPGRADE`, none).
+    pub fn from_flags(flags: i32) -> Option<Self> {
+        match flags & RW_OPMASK {
+            RW_READ => Some(RwMode::Read),
+            RW_WRITE => Some(RwMode::Write),
+            _ => None,
+        }
+    }
+
+    /// The C's `RW_READ` or `RW_WRITE`, which is also what [`SharedRwlock::status`] answers
+    /// for a lock this process holds in the mode.
+    pub fn flags(self) -> i32 {
+        match self {
+            RwMode::Read => RW_READ,
+            RwMode::Write => RW_WRITE,
+        }
+    }
+}
+
+/// A witness of a [`SharedRwlock`] held in a mode decided at run time
+/// ([`SharedRwlock::enter`]): the write witness or a read witness, whichever the mode asked
+/// for. It is that witness: its drop releases the lock in its mode, its sleeps are the
+/// witness's, and a [`Guarded`] cell opens through it ([`Witness`]). Not `Send`, as the two.
+#[must_use = "dropping the witness at once releases the lock"]
+pub enum RwWitness<'a> {
+    /// Held shared (`RW_READ`).
+    Read(ReadWitness<'a>),
+    /// Held alone (`RW_WRITE`).
+    Write(WriteWitness<'a>),
+}
+
+impl<'a> RwWitness<'a> {
+    /// The mode the lock is held in: the C's `rw_status(lock)` of a lock this process holds,
+    /// answered by the witness instead of the lock word.
+    pub fn mode(&self) -> RwMode {
+        match self {
+            RwWitness::Read(_) => RwMode::Read,
+            RwWitness::Write(_) => RwMode::Write,
+        }
+    }
+
+    /// `rw_enter(lock, RW_UPGRADE | RW_NOSLEEP)` for a reader, the writer's fast path
+    /// otherwise: the write witness at once when the lock is held alone already, or when this
+    /// reader is the only one; while other readers hold it, the witness comes back in the
+    /// `Err`, still a reader (the C's `EBUSY`).
+    pub fn try_upgrade(self) -> Result<WriteWitness<'a>, RwWitness<'a>> {
+        match self {
+            RwWitness::Write(w) => Ok(w),
+            RwWitness::Read(r) => r.try_upgrade().map_err(RwWitness::Read),
+        }
+    }
+
+    /// The write witness, mutably, when the lock is held alone (for [`Guarded::get_mut`] and
+    /// the functions that change what the lock guards); `None` for a reader.
+    pub fn as_write(&mut self) -> Option<&mut WriteWitness<'a>> {
+        match self {
+            RwWitness::Write(w) => Some(w),
+            RwWitness::Read(_) => None,
+        }
+    }
+
+    /// `rwsleep_nsec(ident, lock, prio, wmesg, nsecs)` in the witness's mode: queued on
+    /// `ident`, the lock released, asleep, and the lock taken again in the same mode before
+    /// the sleep's result is returned ([`WriteWitness::sleep_nsec`],
+    /// [`ReadWitness::sleep_nsec`]).
+    pub fn sleep_nsec<I: ?Sized>(
+        &mut self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+        nsecs: u64,
+    ) -> Result<(), Errno> {
+        match self {
+            RwWitness::Read(r) => r.sleep_nsec(ident, prio, wmesg, nsecs),
+            RwWitness::Write(w) => w.sleep_nsec(ident, prio, wmesg, nsecs),
+        }
+    }
+
+    /// [`RwWitness::sleep_nsec`] with no timeout.
+    pub fn sleep<I: ?Sized>(
+        &mut self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+    ) -> Result<(), Errno> {
+        self.sleep_nsec(ident, prio, wmesg, INFSLP)
+    }
+
+    /// `rwsleep_nsec` with `PNORELOCK` in the witness's mode: queued on `ident`, the lock
+    /// released, asleep; the lock is not taken again and the witness is consumed
+    /// ([`WriteWitness::into_sleep_nsec`], [`ReadWitness::into_sleep_nsec`]).
+    pub fn into_sleep_nsec<I: ?Sized>(
+        self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+        nsecs: u64,
+    ) -> Result<(), Errno> {
+        match self {
+            RwWitness::Read(r) => r.into_sleep_nsec(ident, prio, wmesg, nsecs),
+            RwWitness::Write(w) => w.into_sleep_nsec(ident, prio, wmesg, nsecs),
+        }
+    }
+
+    /// [`RwWitness::into_sleep_nsec`] with no timeout.
+    pub fn into_sleep<I: ?Sized>(
+        self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+    ) -> Result<(), Errno> {
+        self.into_sleep_nsec(ident, prio, wmesg, INFSLP)
+    }
+}
+
+impl<'a> From<WriteWitness<'a>> for RwWitness<'a> {
+    fn from(w: WriteWitness<'a>) -> Self {
+        RwWitness::Write(w)
+    }
+}
+
+impl<'a> From<ReadWitness<'a>> for RwWitness<'a> {
+    fn from(r: ReadWitness<'a>) -> Self {
+        RwWitness::Read(r)
+    }
+}
+
+impl sealed::Sealed for RwWitness<'_> {}
+
+impl Witness for RwWitness<'_> {
+    fn lock_id(&self) -> LockId {
+        match self {
+            RwWitness::Read(r) => r.lock_id(),
+            RwWitness::Write(w) => w.lock_id(),
+        }
     }
 }
 
@@ -1741,6 +1925,172 @@ mod tests {
         let again = lock.clone();
         let _a = lock.write();
         let _b = again.write();
+    }
+
+    #[test]
+    fn a_mode_is_the_c_flag() {
+        // (flags, the mode they ask for)
+        let table = [
+            (RW_READ, Some(RwMode::Read)),
+            (RW_WRITE, Some(RwMode::Write)),
+            (RW_READ | RW_NOSLEEP, Some(RwMode::Read)),
+            (RW_WRITE | RW_INTR, Some(RwMode::Write)),
+            (0x0004, None), // RW_DOWNGRADE
+            (0x0005, None), // RW_UPGRADE
+            (0, None),
+        ];
+        for (flags, mode) in table {
+            assert_eq!(RwMode::from_flags(flags), mode, "flags {flags:#x}");
+        }
+        assert_eq!(RwMode::Read.flags(), RW_READ);
+        assert_eq!(RwMode::Write.flags(), RW_WRITE);
+    }
+
+    #[test]
+    fn enter_takes_the_lock_in_the_mode_asked() {
+        let lock = shared("testlk");
+        let r = lock.enter(RwMode::Read);
+        assert_eq!(r.mode(), RwMode::Read);
+        assert_eq!(lock.status(), RwMode::Read.flags());
+        let r2 = lock.enter(RwMode::Read);
+        assert_eq!(lock.status(), RW_READ);
+        assert!(lock.try_write().is_none());
+        drop((r, r2));
+        let w = lock.enter(RwMode::Write);
+        assert_eq!(w.mode(), RwMode::Write);
+        assert_eq!(lock.status(), RwMode::Write.flags());
+        drop(w);
+        assert_eq!(lock.status(), 0);
+    }
+
+    #[test]
+    fn enter_flags_answers_ebusy_in_either_mode() {
+        let lock = Arc::new(shared("testlk"));
+        let w = lock.enter(RwMode::Write);
+        let l2 = Arc::clone(&lock);
+        let other = thread::spawn(move || {
+            (
+                l2.enter_flags(RwMode::Read, RW_NOSLEEP).err(),
+                l2.enter_flags(RwMode::Write, RW_NOSLEEP).err(),
+            )
+        });
+        assert_eq!(
+            other.join().unwrap(),
+            (Some(Errno::EBUSY), Some(Errno::EBUSY))
+        );
+        drop(w);
+        let r = lock.enter_flags(RwMode::Read, RW_NOSLEEP).unwrap();
+        assert_eq!(r.mode(), RwMode::Read);
+        drop(r);
+        let w = lock.enter_flags(RwMode::Write, RW_NOSLEEP).unwrap();
+        assert_eq!(w.mode(), RwMode::Write);
+    }
+
+    #[test]
+    fn a_writer_upgrades_at_once_and_a_lone_reader_upgrades() {
+        let lock = shared("testlk");
+        // The fast path: already the writer.
+        let w = lock.enter(RwMode::Write).try_upgrade().ok().unwrap();
+        assert_eq!(lock.status(), RW_WRITE);
+        drop(w);
+        // The only reader.
+        let w = lock.enter(RwMode::Read).try_upgrade().ok().unwrap();
+        assert_eq!(lock.status(), RW_WRITE);
+        drop(w);
+        assert_eq!(lock.status(), 0);
+    }
+
+    #[test]
+    fn a_reader_beside_another_stays_a_reader() {
+        let lock = shared("testlk");
+        let other = lock.read();
+        let r = match lock.enter(RwMode::Read).try_upgrade() {
+            Ok(_) => unreachable!("two readers: no upgrade"),
+            Err(r) => r,
+        };
+        assert_eq!(r.mode(), RwMode::Read);
+        assert_eq!(lock.status(), RW_READ);
+        drop(other);
+        drop(r);
+        assert_eq!(lock.status(), 0);
+    }
+
+    #[test]
+    fn a_cell_opens_through_either_arm() {
+        let lock = shared("testlk");
+        let cell = Guarded::new(&lock, 1u32);
+        let r = lock.enter(RwMode::Read);
+        assert_eq!(*cell.get(&r), 1);
+        let mut r = r;
+        assert!(r.as_write().is_none());
+        drop(r);
+        let mut w = lock.enter(RwMode::Write);
+        assert_eq!(*cell.get(&w), 1);
+        *cell.get_mut(w.as_write().unwrap()) = 2;
+        assert_eq!(*cell.get(&w), 2);
+        let w: RwWitness<'_> = w.try_upgrade().ok().unwrap().downgrade().into();
+        assert_eq!((w.mode(), *cell.get(&w)), (RwMode::Read, 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of another lock")]
+    fn a_cell_refuses_an_rw_witness_of_another_lock() {
+        let mine = shared("testmine");
+        let other = shared("testother");
+        let cell = Guarded::new(&mine, 0u32);
+        let w = other.enter(RwMode::Write);
+        let _ = *cell.get(&w);
+    }
+
+    #[test]
+    fn an_rw_witness_sleeps_in_its_mode() {
+        let lock = shared("testlk");
+        let x = 0u8;
+        for mode in [RwMode::Read, RwMode::Write] {
+            let mut w = lock.enter(mode);
+            assert_eq!(
+                w.sleep_nsec(&raw const x, PLOCK, "testslp", 1_000_000),
+                Err(Errno::EWOULDBLOCK)
+            );
+            // Taken again in the same mode.
+            assert_eq!(lock.status(), mode.flags());
+            assert_eq!(w.mode(), mode);
+            drop(w);
+            let w = lock.enter(mode);
+            assert_eq!(
+                w.into_sleep_nsec(&raw const x, PLOCK, "testslp", 1_000_000),
+                Err(Errno::EWOULDBLOCK)
+            );
+            // Released and not taken again.
+            assert_eq!(lock.status(), 0);
+        }
+    }
+
+    #[test]
+    fn an_rw_witness_into_sleep_lets_a_writer_in() {
+        let lock = shared("testlk");
+        let o = Arc::new(Owner {
+            count: Guarded::new(&lock, 0),
+            lock,
+        });
+        let chan_word = Arc::new(0u8);
+        let (o2, c2) = (Arc::clone(&o), Arc::clone(&chan_word));
+        let sleeper = thread::spawn(move || {
+            loop {
+                let w = o2.lock.enter(RwMode::Read);
+                if *o2.count.get(&w) != 0 {
+                    return;
+                }
+                w.into_sleep(Arc::as_ptr(&c2), PLOCK, "testslp").unwrap();
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+        {
+            let mut w = o.lock.enter(RwMode::Write);
+            *o.count.get_mut(w.as_write().unwrap()) = 1;
+        }
+        sleep::wakeup(Arc::as_ptr(&chan_word));
+        sleeper.join().unwrap();
     }
 }
 /* </TESTS> */
