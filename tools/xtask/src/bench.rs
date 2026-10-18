@@ -61,6 +61,10 @@
 //! prints, for EmiBSD's medians, a `Bench:` trailer line (`git-commits.md`) per measurement
 //! that moved by more than the spread of either report. Under TCG absolute numbers are
 //! indicative only; the ratio between two kernels on the same emulation is the measure.
+//! Around every run (each side, tcpbench's too) the host's one-minute load average at its
+//! start and end and its busiest processes but QEMU are printed and kept (`[[host]]` in the
+//! report): a diagnostic for reading a sample against the host, which changes no sample, rule
+//! or limit (a debugger traced a step in amd64's `pipe` and `fileread` to host contention).
 //! `just bench` sets `EMIBSD_RUN_DIR` to `target/bench`; logs are `<run dir>/<arch>/*.log`.
 
 use std::collections::BTreeMap;
@@ -222,7 +226,38 @@ pub(crate) struct Report {
     tcpbench_seconds: u32,
     qemu: QemuLines,
     measurement: Vec<Measurement>,
+    /// The host's state around every run, for reading a sample against it: a diagnostic that
+    /// changes no sample, rule or limit (empty in the reports made before it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    host: Vec<HostRun>,
 }
+
+/// The host around one run of one system ([`host_before`], [`host_after`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct HostRun {
+    /// `emibsd`, `openbsd`, or `emibsd-tcpbench`, `openbsd-tcpbench` for a tcpbench run.
+    system: String,
+    /// The run, from 1.
+    run: usize,
+    /// The host's one-minute load average at the run's start and end (`vm.loadavg`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    load_start: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    load_end: Option<f64>,
+    /// The busiest processes at the run's end other than QEMU, by ps(1)'s %CPU.
+    #[serde(default)]
+    top: Vec<TopProc>,
+}
+
+/// One process of [`HostRun::top`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TopProc {
+    name: String,
+    cpu: f64,
+}
+
+/// How many processes [`HostRun::top`] keeps.
+const TOP_PROCS: usize = 5;
 
 /// What one boot of one system measured.
 struct One {
@@ -352,15 +387,25 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Repo
 
     let mut emi: Vec<One> = Vec::new();
     let mut obsd: Vec<One> = Vec::new();
+    let mut host = Vec::new();
     for rep in 1..=reps {
         // The order alternates, so a drift of the host's speed falls on both alike.
         for emibsd_turn in [rep % 2 == 1, rep % 2 == 0] {
             let started = Instant::now();
+            let load_start = host_before();
             let one = if emibsd_turn {
                 emibsd_run(root, arch, &image, &work, rep)?
             } else {
                 openbsd_run(root, arch, &work, &server, rep)?
             };
+            let system = if emibsd_turn { "emibsd" } else { "openbsd" };
+            let h = host_after(system, rep, load_start);
+            println!(
+                "xtask: bench {} run {rep}/{reps} {system} host: {}",
+                arch.name(),
+                host_line(&h)
+            );
+            host.push(h);
             println!(
                 "xtask: bench {} run {rep}/{reps} {}: boot {:.2}s, {} ({:.0}s)",
                 arch.name(),
@@ -391,8 +436,10 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Repo
     if tcpbench {
         let e = pair_tcpbench(
             &format!("emibsd-{}-tcp", arch.name()),
+            "emibsd-tcpbench",
             &work,
             reps,
+            &mut host,
             &|l: &VmLink| {
                 let img = boot::image_tagged(
                     root,
@@ -419,8 +466,10 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Repo
         )?;
         let o = pair_tcpbench(
             &format!("openbsd-{}-tcp", arch.name()),
+            "openbsd-tcpbench",
             &work,
             reps,
+            &mut host,
             &|l: &VmLink| diffopenbsd::openbsd_qemu(root, arch, &Boot::Link(l)),
         )?;
         (tcp_emi, qemu.emibsd_link) = e;
@@ -465,7 +514,76 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Repo
         tcpbench_seconds: TCPBENCH_SECS,
         qemu,
         measurement,
+        host,
     })
+}
+
+/// The host's one-minute load average now, taken at a run's start.
+fn host_before() -> Option<f64> {
+    let out = Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()?;
+    parse_loadavg(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The host at a run's end: the load average again and the busiest processes but QEMU.
+fn host_after(system: &str, run: usize, load_start: Option<f64>) -> HostRun {
+    let top = Command::new("ps")
+        .args(["-axo", "pcpu=,comm="])
+        .output()
+        .map(|o| parse_top(&String::from_utf8_lossy(&o.stdout), TOP_PROCS))
+        .unwrap_or_default();
+    HostRun {
+        system: system.to_string(),
+        run,
+        load_start,
+        load_end: host_before(),
+        top,
+    }
+}
+
+/// `sysctl -n vm.loadavg`'s `{ 1.23 0.98 0.75 }`: the first, the last minute's.
+fn parse_loadavg(text: &str) -> Option<f64> {
+    text.trim()
+        .trim_start_matches('{')
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// `ps -axo pcpu=,comm=`'s lines: the `n` busiest processes by %CPU, by the last component
+/// of their path, QEMU left out (it is the run itself).
+fn parse_top(text: &str, n: usize) -> Vec<TopProc> {
+    let mut v: Vec<TopProc> = text
+        .lines()
+        .filter_map(|l| {
+            let (cpu, comm) = l.trim().split_once(char::is_whitespace)?;
+            let cpu: f64 = cpu.parse().ok()?;
+            let comm = comm.trim();
+            let name = comm.rsplit('/').next().unwrap_or(comm).to_string();
+            (!name.starts_with("qemu-system")).then_some(TopProc { name, cpu })
+        })
+        .collect();
+    v.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+    v.truncate(n);
+    v
+}
+
+/// One line of the host's state around a run, as printed after it.
+fn host_line(h: &HostRun) -> String {
+    let load = |l: Option<f64>| l.map_or("?".to_string(), |x| format!("{x:.2}"));
+    format!(
+        "load {} -> {}; top {}",
+        load(h.load_start),
+        load(h.load_end),
+        h.top
+            .iter()
+            .map(|p| format!("{} {:.0}%", p.name, p.cpu))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// One boot of EmiBSD: the smokes' MP kernel and ramdisk, a fresh scratch disk as `sd0`.
@@ -652,8 +770,10 @@ fn sh(vm: &mut Vm, cmd: &str, limit: Duration) -> Result<String> {
 /// against it; B's Mbps per run and the two QEMU command lines.
 fn pair_tcpbench(
     name: &str,
+    system: &str,
     work: &Path,
     reps: usize,
+    host: &mut Vec<HostRun>,
     make: &dyn Fn(&VmLink) -> Result<Command>,
 ) -> Result<(Vec<f64>, Vec<String>)> {
     let ports = crate::twovm::free_udp_ports()?;
@@ -711,6 +831,7 @@ fn pair_tcpbench(
     println!("xtask: bench {name} warm-up (discarded): {v:.1} Mbps");
     let mut mbps = Vec::new();
     for rep in 1..=reps {
+        let load_start = host_before();
         let out = sh(
             b,
             &format!("tcpbench -t {TCPBENCH_SECS} 192.168.77.1"),
@@ -718,7 +839,12 @@ fn pair_tcpbench(
         )?;
         let v = parse_tcpbench(&out)
             .ok_or_else(|| format!("{}: no tcpbench summary in run {rep}", b.name))?;
-        println!("xtask: bench {name} run {rep}/{reps}: {v:.1} Mbps");
+        let h = host_after(system, rep, load_start);
+        println!(
+            "xtask: bench {name} run {rep}/{reps}: {v:.1} Mbps; host: {}",
+            host_line(&h)
+        );
+        host.push(h);
         mbps.push(v);
     }
     Ok((mbps, lines))
@@ -1179,7 +1305,47 @@ mod tests {
                     measure(k, e.to_vec(), o.to_vec())
                 })
                 .collect(),
+            host: vec![HostRun {
+                system: "emibsd".into(),
+                run: 1,
+                load_start: Some(2.5),
+                load_end: None,
+                top: vec![TopProc {
+                    name: "cpptools".into(),
+                    cpu: 61.5,
+                }],
+            }],
         }
+    }
+
+    #[test]
+    fn host_load_and_top_parse() {
+        assert_eq!(parse_loadavg("{ 3.58 4.84 5.64 }\n"), Some(3.58));
+        assert_eq!(parse_loadavg(""), None);
+        let ps = " 43.0 /Users/x/.vscode/extensions/cpptools-1.34/bin/cpptools\n\
+                  180.2 /opt/homebrew/bin/qemu-system-x86_64\n\
+                   6.0 /Applications/Creative Cloud.app/Contents/MacOS/Creative Cloud UI Helper\n\
+                  13.6 /System/Library/WindowServer\n\
+                   0.0 launchd\n\
+                  junk\n";
+        let top = parse_top(ps, 3);
+        let names: Vec<&str> = top.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["cpptools", "WindowServer", "Creative Cloud UI Helper"]
+        );
+        assert_eq!(top[0].cpu, 43.0);
+        let h = HostRun {
+            system: "openbsd".into(),
+            run: 4,
+            load_start: Some(3.5),
+            load_end: None,
+            top,
+        };
+        assert_eq!(
+            host_line(&h),
+            "load 3.50 -> ?; top cpptools 43%, WindowServer 14%, Creative Cloud UI Helper 6%"
+        );
     }
 
     #[test]
@@ -1200,6 +1366,10 @@ mod tests {
         assert!(text.contains("emibsd_discarded = 1"));
         let back: Report = toml::from_str(&text).unwrap();
         assert_eq!(back, r);
+        assert!(text.contains("[[host]]") && text.contains("name = \"cpptools\""));
+        // A report from before the diagnostic reads with no host rows.
+        let old = text.split("[[host]]").next().unwrap();
+        assert!(toml::from_str::<Report>(old).unwrap().host.is_empty());
         let t = table(&r);
         assert!(t.contains(
             "bench amd64: kernel 20035fd0aaaa (3 runs, the worst 1 of each side discarded, \
