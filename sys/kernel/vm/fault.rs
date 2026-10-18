@@ -121,15 +121,35 @@
 //!   swap slot before `uvm_swap.c` (N3.5; LZ's).
 //! - The fault starts with shared (`RW_READ`) upper and lower locks, as the C does on amd64
 //!   and arm64 (LZ's).
-//! - `pmap_nested` is 0 (no vmm), `__HAVE_PMAP_POPULATE` is not configured, both machines
-//!   define `__HAVE_PMAP_MPSAFE_ENTER_COW` (so the `MULTIPROCESSOR` COW paths that need its
-//!   absence are not compiled), `UVM_PAGE_OWN` and `TRACEPOINT` (dt) are not configured (LZ's).
+//! - `pmap_nested` is 0 (no vmm); both machines define `__HAVE_PMAP_MPSAFE_ENTER_COW` (so the
+//!   `MULTIPROCESSOR` COW paths that need its absence are not compiled); `UVM_PAGE_OWN` and
+//!   `TRACEPOINT` (dt) are not configured (LZ's).
+//! - arm64 defines `__HAVE_PMAP_POPULATE` (`arch/arm64/include/pmap.h`): after a failed
+//!   `pmap_enter` its C calls `pmap_populate(pmap, va)` (`arm64/pmap.c`) where amd64's waits in
+//!   `uvm_wait`. `pmap_populate` is not ported (inherited from LZ, which compiled the amd64
+//!   branch on both machines; `hal`'s arm64 pmap has no `pmap_vp_populate`): both machines
+//!   take the `uvm_wait` branch, then `ERESTART`, as LZ.
 //! - No pager implements `pgo_fault` (`uvm_device.c`, the only one, is not ported; DECISIONS
 //!   G3 of N3.4): the fault's branch that hands the fault to it goes with the operation.
 //! - `uvmfault_anonget`, `uvmfault_relock` and `uvmfault_unlockmaps` always have a fault info:
 //!   the C's `ufi == NULL` (paging an anon in without a fault, `uvm_anon_pagein` for swapoff)
 //!   arrives with swap (N3.5); `kernel::vm::anon::uvm_anon_pagein` reports it until then (an
 //!   inherited gap, kept visible).
+//! - The lower layer's `amap_add` failure (`uvm_fault_lower`, `uvm_fault.c` 1468-1485): the C
+//!   unlocks everything, then calls `uvm_anfree` on the fresh anon with `an_ref` still 1 and
+//!   its lock released (under `DIAGNOSTIC`, GENERIC's option, its two `KASSERT`s panic), and
+//!   `amap_populate(&ufi->entry->aref, ..)` reads the entry after the map was unlocked and
+//!   writes the amap unlocked (another process may unmap and free it meanwhile: a use after
+//!   free, and a race with any other writer of the amap). Here the object and the maps are
+//!   released first, the anon (which no one else ever saw) has its reference dropped and is
+//!   freed under the amap's write witness, and the amap is released: nothing is held, as in
+//!   the C. `amap_populate` is split: the chunk is made with nothing held (the C's sleep
+//!   point, `PR_WAITOK`), then installed under the amap's write lock taken afresh, skipped
+//!   when the amap was wiped out meanwhile (`am_ref` 0) and left to another fault's chunk if
+//!   one is there; the amap is the entry's as read before the unlock, kept alive by its
+//!   handle. What differs: no panic where a `DIAGNOSTIC` kernel panics, no access to freed or
+//!   unlocked memory; the retry (`ERESTART`) and the `ENOMEM` when `uvm_swapisfull()` are the
+//!   C's.
 //! - `uvm_swapisfull` reads the two swap counters without `uvm_swap_data_lock` (`uvm_swap`'s,
 //!   `bsd`'s until N3.5): nothing writes them while `swapctl(2)` is `sys_nosys` at the pin, as
 //!   `bsd`'s copy says. With no swap configured it answers true (0 >= 0), as the C.
@@ -179,12 +199,6 @@
 //!   comment that a tmpfs vnode's pages are its UAO's describes NetBSD's tmpfs; OpenBSD's
 //!   shares neither the pages nor the lock (`tmpfs_subr.c`'s `#if 0`), so the wired path's
 //!   `KASSERT(uobj->vmobjlock == pg->uobject->vmobjlock)` is the page's owner being `uobj`.
-//! - The C's lower-layer `amap_add` failure (`uvm_fault_lower`) unlocks everything, then frees
-//!   the fresh anon with `an_ref` still 1 and its lock released (`uvm_anfree`'s two `KASSERT`s
-//!   would fire under `DIAGNOSTIC`) and populates the amap after the map was unlocked (another
-//!   process may free it meanwhile): here the object and the maps are released first, the
-//!   anon (seen by no one) has its reference dropped and is freed under the amap's write
-//!   witness, and `amap_populate` runs under that witness, released last.
 //! - `curproc->p_ru` (`ru_minflt`, `ru_majflt`, `ru_maxrss`) is `bsd`'s process until N4: the
 //!   map's notes ([`FaultMap::note_minflt`], `note_majflt`, `note_maxrss`).
 //! - `pmap_enter` on `kernel_map`'s pmap goes through the kernel map's token (`vm::km`), a
@@ -202,6 +216,7 @@ use core::sync::atomic::Ordering;
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::malloc::M_NOWAIT;
 use hal::pmap::{PMAP_CANFAIL, PMAP_WC, PMAP_WIRED, PmapRef};
+use hal::pool::PR_WAITOK;
 use hal::rwlock::{RwMode, RwWitness, SharedRwlock, Witness, WriteWitness};
 use hal::sleep::{PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
@@ -210,7 +225,10 @@ use hal::sys::types::{Paddr, Vaddr};
 use hal::vm::param::{atop, trunc_page};
 use hal::vm::uvmexp::{UVMEXP, UvmExpCounters, counters_inc};
 
-use super::amap::{AMAP_SHARED, Amap, AmapRef, amap_add, amap_lookup, amap_lookups, amap_populate};
+use super::amap::{
+    AMAP_SHARED, Amap, AmapRef, amap_add, amap_chunk_alloc, amap_lookup, amap_lookups,
+    amap_populate_with,
+};
 use super::anon::{
     AnonRef, SWSLOT_BAD, uvm_analloc, uvm_anfree, uvm_anon_dropswap, uvm_anon_release, uvm_anwait,
 };
@@ -379,7 +397,7 @@ pub trait FaultMap: Sized + 'static {
     type Entry: FaultEntry<Map = Self, Object = Self::Object>;
     /// The map locked (`vm_map_lock`, `vm_map_lock_read`): dropped is `vm_map_unlock` or
     /// `vm_map_unlock_read`; the entries are read through it.
-    type Guard<'a>: FaultMapGuard<Entry = Self::Entry>
+    type Guard<'a>: FaultMapGuard<Entry = Self::Entry, Map = Self>
     where
         Self: 'a;
 
@@ -413,7 +431,11 @@ pub trait FaultMap: Sized + 'static {
 pub trait FaultMapGuard: Sized {
     /// The map's entries.
     type Entry;
+    /// The map it locks.
+    type Map;
 
+    /// The map this guard locks.
+    fn map(&self) -> &Self::Map;
     /// How the map is locked.
     fn mode(&self) -> RwMode;
     /// `map->timestamp`, the version a relock compares.
@@ -1542,7 +1564,8 @@ fn uvm_fault_upper<'v, M: FaultMap>(
             // XXX instrumentation
             return Err(Errno::ENOMEM);
         }
-        // __HAVE_PMAP_POPULATE: not configured.
+        // arm64's __HAVE_PMAP_POPULATE (pmap_populate) is not ported: uvm_wait on both
+        // machines (see the module's deviations).
         // XXX instrumentation
         uvm_wait("flt_pmfail1");
         return Err(Errno::ERESTART);
@@ -1837,21 +1860,31 @@ fn uvm_fault_lower<'v, M: FaultMap>(
 
             pg.clear_bits(PG_BUSY | PG_FAKE | PG_WANTED);
             // UVM_PAGE_OWN(pg, NULL): not configured.
-            // The object and the maps go first; the amap's write witness stays for the anon
-            // no amap saw and for amap_populate (see the module's notes).
+            // The object and the maps go first; the anon no amap saw is freed under the
+            // amap's write witness (its reference dropped: see the module's deviations), then
+            // the amap is unlocked: everything is, as the C's uvmfault_unlockall.
             drop(lower.take());
             uvmfault_unlockmaps(ufi);
             nanon.set_refs(nanon.refs() - 1);
             uvm_anfree(nanon);
             drop(anon);
+            drop(ww);
             counters_inc(UvmExpCounters::FltNoamap);
 
             if uvm_swapisfull() {
                 return Err(Errno::ENOMEM);
             }
 
-            amap_populate(&aref.amap, &mut ww, aref.pageoff, off);
-            drop(ww);
+            // amap_populate: the chunk is made with nothing held (the sleep is the C's), then
+            // installed under the amap's write lock taken again, unless the amap was wiped out
+            // meanwhile (am_ref 0) or the slot's chunk was made by another fault.
+            if let Some(spare) = amap_chunk_alloc(&aref.amap, aref.pageoff, off, PR_WAITOK) {
+                let mut w = aref.amap.lock().write();
+                if aref.amap.refs() > 0 {
+                    amap_populate_with(&aref.amap, &mut w, aref.pageoff, off, spare);
+                }
+                drop(w);
+            }
             return Err(Errno::ERESTART);
         }
         upper = Some(RwWitness::Write(ww));
@@ -1894,7 +1927,8 @@ fn uvm_fault_lower<'v, M: FaultMap>(
             // XXX instrumentation
             return Err(Errno::ENOMEM);
         }
-        // __HAVE_PMAP_POPULATE: not configured.
+        // arm64's __HAVE_PMAP_POPULATE (pmap_populate) is not ported: uvm_wait on both
+        // machines (see the module's deviations).
         // XXX instrumentation
         uvm_wait("flt_pmfail2");
         return Err(Errno::ERESTART);
@@ -2120,7 +2154,7 @@ pub fn uvm_fault_wire<M: FaultMap>(
 /// `uvm_fault_unwire`: unwire range of virtual space.
 pub fn uvm_fault_unwire<M: FaultMap>(map: &M, start: usize, end: usize) {
     let guard = map.lock(RwMode::Read);
-    uvm_fault_unwire_locked(map, &guard, start, end);
+    uvm_fault_unwire_locked(&guard, start, end);
     drop(guard);
 }
 
@@ -2179,17 +2213,18 @@ fn entry_page_owner<'a, O: FaultObject>(
 
 /// `uvm_fault_unwire_locked`: the guts of [`uvm_fault_unwire`].
 ///
-/// - map must be at least read-locked: `guard`.
-pub fn uvm_fault_unwire_locked<M: FaultMap>(
-    map: &M,
-    guard: &M::Guard<'_>,
-    start: usize,
-    end: usize,
-) {
+/// - map must be at least read-locked: `guard`, the map's lock, which names the map (the C's
+///   `vm_map_assert_anylock(map)` is the type: no guard of another map can be passed).
+pub fn uvm_fault_unwire_locked<G>(guard: &G, start: usize, end: usize)
+where
+    G: FaultMapGuard,
+    G::Map: FaultMap<Entry = G::Entry>,
+    G::Entry: FaultEntry<Object = <G::Map as FaultMap>::Object>,
+{
+    let map = guard.map();
     let pmap = map.pmap();
 
     kassert!(!map.is_intrsafe());
-    // vm_map_assert_anylock(map): `guard`.
 
     // we assume that the area we are unwiring has actually been wired in the first place.
     // this means that we should be able to extract the PAs from the pmap.
@@ -2232,6 +2267,10 @@ pub fn uvm_fault_unwire_locked<M: FaultMap>(
                 }
 
                 if let Some(pg) = PHYS_TO_VM_PAGE(pa) {
+                    // Owner::None only for a page neither the entry's anon at this address nor
+                    // its object owns, which a wired mapping of the entry cannot be:
+                    // uvm_pageunwire's owner assertion then fails under DIAGNOSTIC, as the C's
+                    // KASSERT(uvm_page_owner_locked_p(pg, TRUE)) on such a page.
                     let owner =
                         entry_page_owner(aref.as_ref(), &locks, uobj.as_ref(), va - estart, pg);
                     uvm_pageunwire(pg, owner);
@@ -2388,7 +2427,7 @@ mod tests {
         AMAP_REFALL, CopyOutcome, amap_alloc, amap_copy_from, amap_init, amap_ref, amap_unadd,
     };
     use crate::vm::anon::{anons_out, uvm_anon_init};
-    use crate::vm::aobj::{uao_create, uao_init};
+    use crate::vm::aobj::{uao_create, uao_find_swslot, uao_init, uao_set_swslot};
     use crate::vm::page::{
         OwnerTag, PQ_ACTIVE, PQ_INACTIVE, PageObject, UvmObjtree, uvm_pagelookup,
     };
@@ -2832,16 +2871,17 @@ mod tests {
         }
     }
 
+    /// The double map locked: the map and its lock's guard.
     enum FakeGuard<'a> {
-        Read(ReadGuard<'a, FakeState>),
-        Write(WriteGuard<'a, FakeState>),
+        Read(&'a FakeMap, ReadGuard<'a, FakeState>),
+        Write(&'a FakeMap, WriteGuard<'a, FakeState>),
     }
 
     impl FakeGuard<'_> {
         fn state(&self) -> &FakeState {
             match self {
-                FakeGuard::Read(g) => g,
-                FakeGuard::Write(g) => g,
+                FakeGuard::Read(_, g) => g,
+                FakeGuard::Write(_, g) => g,
             }
         }
     }
@@ -2859,17 +2899,17 @@ mod tests {
         }
         fn lock(&self, mode: RwMode) -> FakeGuard<'_> {
             match mode {
-                RwMode::Read => FakeGuard::Read(self.state.read()),
+                RwMode::Read => FakeGuard::Read(self, self.state.read()),
                 RwMode::Write => {
                     let mut g = self.state.write();
                     g.timestamp += 1;
-                    FakeGuard::Write(g)
+                    FakeGuard::Write(self, g)
                 }
             }
         }
         fn relock(&self, version: u32) -> Option<FakeGuard<'_>> {
             let g = self.state.read();
-            (g.timestamp == version).then_some(FakeGuard::Read(g))
+            (g.timestamp == version).then_some(FakeGuard::Read(self, g))
         }
         fn pmap(&self) -> &PmapRef {
             &self.pmap
@@ -2896,11 +2936,18 @@ mod tests {
 
     impl FaultMapGuard for FakeGuard<'_> {
         type Entry = FakeEntry;
+        type Map = FakeMap;
+
+        fn map(&self) -> &FakeMap {
+            match self {
+                FakeGuard::Read(m, _) | FakeGuard::Write(m, _) => m,
+            }
+        }
 
         fn mode(&self) -> RwMode {
             match self {
-                FakeGuard::Read(_) => RwMode::Read,
-                FakeGuard::Write(_) => RwMode::Write,
+                FakeGuard::Read(..) => RwMode::Read,
+                FakeGuard::Write(..) => RwMode::Write,
             }
         }
         fn version(&self) -> u32 {
@@ -2919,19 +2966,19 @@ mod tests {
         }
         fn upgrade(self) -> Result<Self, Self> {
             match self {
-                FakeGuard::Read(g) => match g.try_upgrade() {
+                FakeGuard::Read(m, g) => match g.try_upgrade() {
                     Ok(mut w) => {
                         w.timestamp += 1;
-                        Ok(FakeGuard::Write(w))
+                        Ok(FakeGuard::Write(m, w))
                     }
-                    Err(g) => Err(FakeGuard::Read(g)),
+                    Err(g) => Err(FakeGuard::Read(m, g)),
                 },
                 w => Ok(w),
             }
         }
         fn downgrade(self) -> Self {
             match self {
-                FakeGuard::Write(w) => FakeGuard::Read(w.downgrade()),
+                FakeGuard::Write(m, w) => FakeGuard::Read(m, w.downgrade()),
                 r => r,
             }
         }
@@ -3232,6 +3279,97 @@ mod tests {
         // uvmfault_anonget counts each call, the retry after the upgrade too (the C's
         // `goto retry` calls it again).
         assert_eq!(map.majflt.load(Ordering::Relaxed), 2);
+        assert!(map.is_free());
+        assert_eq!(x.lock().status(), 0);
+    }
+
+    #[test]
+    fn anonget_restarts_when_the_map_changed_during_its_read() {
+        let _g = setup();
+        let x = amap(1);
+        let anon = {
+            let mut w = x.lock().write();
+            anon_paged_out(&x, &mut w, 0)
+        };
+        let map = map_of(vec![FakeEntry::with_amap(VA, 1, &x)]);
+        let reads = std::rc::Rc::new(Cell::new(0));
+        let seen = std::rc::Rc::clone(&reads);
+        on_swap_get(move |_, _| {
+            // While the page is read in (everything unlocked), another process changes the map.
+            seen.set(seen.get() + 1);
+            map.bump();
+            VM_PAGER_OK
+        });
+        let (norelck, pageins) = (
+            count(UvmExpCounters::FltNorelck),
+            count(UvmExpCounters::Pageins),
+        );
+
+        // The relock fails while anonget owns the page: it takes the anon's lock again to
+        // finish the read (the page activated, unbusied), lets it go and restarts; the next
+        // round finds the page resident.
+        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        no_swap_get();
+        assert_eq!(reads.get(), 1);
+        assert_eq!(count(UvmExpCounters::FltNorelck), norelck + 1);
+        assert_eq!(count(UvmExpCounters::Pageins), pageins + 1);
+        let pg = anon.page().expect("the page read in");
+        assert_eq!(pg.flags() & (PG_BUSY | PG_FAKE | PG_WANTED), 0);
+        assert_eq!(map.pa(VA), Some(pg.phys_addr()));
+        assert!(map.is_free());
+        assert_eq!(x.lock().status(), 0);
+    }
+
+    #[test]
+    fn anonget_restarts_when_the_anon_moved_while_it_slept() {
+        let _g = setup();
+        let x = amap(1);
+        let (old, newer) = {
+            let mut w = x.lock().write();
+            let old = anon_with_page(&x, &mut w, 0);
+            let newer = uvm_analloc(x.lock()).expect("an anon");
+            let npg = uvm_pagealloc(Owner::Anon(&*newer), 0, 0).expect("a page");
+            npg.clear_bits(PG_BUSY | PG_FAKE);
+            uvm_pageactivate(npg, Owner::Anon(&*newer));
+            (old, newer)
+        };
+        // Someone holds the old anon's page busy (an I/O in progress).
+        let opg = old.page().expect("its page");
+        opg.set_bits(PG_BUSY);
+        let map = map_of(vec![FakeEntry::with_amap(VA, 1, &x)]);
+
+        // Another process: once the fault sleeps on the busy page, it moves a new anon into
+        // the slot, then ends the I/O and wakes the sleeper.
+        let (x2, old2, newer2) = (x.clone(), old.clone(), newer.clone());
+        let mover = thread::spawn(move || {
+            while opg.flags() & PG_WANTED == 0 {
+                thread::sleep(Duration::from_millis(1));
+            }
+            let mut w = x2.lock().write();
+            let out = amap_unadd(&x2, &mut w, 0, 0);
+            assert!(AnonRef::ptr_eq(&out, &old2));
+            out.set_refs(0);
+            assert!(matches!(
+                amap_add(&x2, &mut w, 0, 0, newer2, false),
+                Ok(None)
+            ));
+            drop(w);
+            opg.clear_bits(PG_BUSY | PG_WANTED);
+            wakeup(opg.chan());
+        });
+        let (pgwait, relck) = (
+            count(UvmExpCounters::FltPgwait),
+            count(UvmExpCounters::FltRelck),
+        );
+
+        // The fault waits for the page, relocks, finds another anon in the slot (ERESTART),
+        // and the next round maps the new anon's page.
+        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        mover.join().unwrap();
+        assert_eq!(count(UvmExpCounters::FltPgwait), pgwait + 1);
+        assert_eq!(count(UvmExpCounters::FltRelck), relck + 1);
+        assert!(map.anon(VA).is_some_and(|a| AnonRef::ptr_eq(&a, &newer)));
+        assert_eq!(map.pa(VA), newer.page().map(VmPage::phys_addr));
         assert!(map.is_free());
         assert_eq!(x.lock().status(), 0);
     }
@@ -3624,8 +3762,23 @@ mod tests {
         let o = aobj(2);
         let map = map_of(vec![FakeEntry::with_object(VA, 2, &o)]);
 
-        // The wired PQ_AOBJ page goes through uao_dropswap (no slot: nothing to free).
+        // Page 0 resident with a swap slot (as after a swap-in: the slot stays; slots exist
+        // only by uao_set_swslot until uvm_swap, N3.5), page 1 not resident.
+        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        let aobj = o.aobj().expect("an aobj");
+        {
+            let mut w = o.lock().write();
+            assert_eq!(uao_set_swslot(aobj, &mut w, 0, 7), 0);
+        }
+
+        // The wired PQ_AOBJ pages go through uao_dropswap: page 0's slot is released (its
+        // uvm_swap_free reported), page 1 had none.
         assert_eq!(uvm_fault_wire(map, VA, VA + 2 * PAGE_SIZE, RW), Ok(()));
+        {
+            let w = o.lock().read();
+            assert_eq!(uao_find_swslot(aobj, &w, 0), 0, "the slot was dropped");
+            assert_eq!(uao_find_swslot(aobj, &w, 1), 0);
+        }
         for i in 0..2 {
             let pg = aobj_page(&o, i * PAGE_SIZE).expect("the aobj's page");
             assert_eq!(map.pa(VA + i * PAGE_SIZE), Some(pg.phys_addr()));
@@ -3662,6 +3815,24 @@ mod tests {
         assert_eq!(map.pa(VA + PAGE_SIZE), Some(pg.phys_addr()));
         assert_eq!(pg.flags() & (PG_BUSY | PG_FAKE | PG_WANTED), 0);
         assert_eq!(map.majflt.load(Ordering::Relaxed), 1);
+        // Its bytes: the file's (i % 251) up to its end, zeroes after (a view wants the page
+        // busy, as the pager's).
+        let bytes = {
+            let _w = o.lock().write();
+            pg.set_bits(PG_BUSY);
+            let view = super::super::km::mapper().map_direct(pg.phys_addr());
+            let b = view.as_slice().to_vec();
+            drop(view);
+            pg.clear_bits(PG_BUSY);
+            b
+        };
+        for (i, &b) in bytes[..100].iter().enumerate() {
+            assert_eq!(b, ((PAGE_SIZE + i) % 251) as u8, "byte {i} of the page");
+        }
+        assert!(
+            bytes[100..].iter().all(|&b| b == 0),
+            "zeroes past the file's end"
+        );
 
         // Past the file's end the pager answers VM_PAGER_BAD and the fault EIO (the trap's
         // SIGBUS, diff-openbsd's child_sigbus).

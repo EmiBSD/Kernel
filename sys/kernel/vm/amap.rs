@@ -121,6 +121,11 @@
 //!   the amap and the reference's page offset (`aref->ar_pageoff`): the aref is the map's
 //!   (`VmAref`, "locked by vm_map lock"), whose forms stay in `bsd`'s adapter.
 //! - `amap_init(ipl)` takes the machine's `IPL_MPFLOOR` from its caller (the pools' level).
+//! - N3.4d: [`amap_populate`]'s allocation can sleep (`PR_WAITOK`), and the fault calls it
+//!   with nothing held (`uvm_fault.c`'s `amap_add` failure); the state opens only through the
+//!   write witness, so the fault splits it: [`amap_chunk_alloc`] makes the chunk with nothing
+//!   held (the C's sleep point), [`amap_populate_with`] installs it under a write witness
+//!   taken afterwards, unless the slot's chunk exists by then (the spare goes back).
 
 use core::mem;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -1282,6 +1287,63 @@ pub fn amap_populate(amap: &Amap, w: &mut WriteWitness<'_>, pageoff: i32, offset
     kassert!(chunk.is_some());
 }
 
+/// A chunk made with no lock held ([`amap_chunk_alloc`]), for [`amap_populate_with`].
+pub struct SpareChunk(PoolBox<Chunk>);
+
+/// `amap_populate`'s allocation, with nothing held (it may sleep with `PR_WAITOK`): a chunk
+/// for the page `offset` bytes into the reference at page `pageoff`; `None` for a small amap
+/// (its chunk is embedded) or when the pool has no item now (`PR_NOWAIT`).
+pub fn amap_chunk_alloc(
+    amap: &Amap,
+    pageoff: i32,
+    offset: usize,
+    waitf: i32,
+) -> Option<SpareChunk> {
+    let slot = amap_b2slot(offset) + pageoff as usize;
+    kassert!(slot < amap.nslot() as usize);
+    if amap.is_small() {
+        return None;
+    }
+    let baseslot = amap_base_slot(slot) as i32;
+    let n = (amap.geom.nslot - baseslot).min(UVM_AMAP_CHUNK as i32);
+    CHUNK_POOL
+        .get(waitf, || Chunk::new(baseslot, n as u16))
+        .map(SpareChunk)
+}
+
+/// `amap_populate`'s insertion: the slot of the page `offset` bytes into the reference at
+/// page `pageoff` gets the `spare` chunk, unless its chunk exists already (made meanwhile by
+/// another fault: the spare goes back to its pool). The amap must be locked for writing (`w`)
+/// and not wiped out (`am_ref` above 0, which the caller checks under `w`).
+pub fn amap_populate_with(
+    amap: &Amap,
+    w: &mut WriteWitness<'_>,
+    pageoff: i32,
+    offset: usize,
+    spare: SpareChunk,
+) {
+    let slot = amap_b2slot(offset) + pageoff as usize;
+    kassert!(slot < amap.nslot() as usize);
+    let geom = amap.geom;
+
+    match &mut amap.state.get_mut(w).tables {
+        // the embedded chunk serves every slot
+        Tables::Small(_) => {}
+        Tables::Normal { buckets, ncused } => {
+            let baseslot = amap_base_slot(slot) as i32;
+            kassert!(spare.0.baseslot == baseslot);
+            let head = &mut buckets[geom.bucket(slot)];
+            let at = chain_position(head, baseslot);
+            let cur = chain_at(head, at);
+            if cur.is_none() {
+                *cur = Some(spare.0);
+                *ncused += 1;
+            }
+        }
+        Tables::Gone => gone(),
+    }
+}
+
 /// `amap_add`: add (or `replace`) the anon of the page `offset` bytes into the reference at
 /// page `pageoff`, the caller's handle moving into the slot.
 ///
@@ -1901,6 +1963,34 @@ mod tests {
             AMAP_SHARED, AMAP_REFALL, AMAP_SWAPOFF, UVM_AMAP_LARGE, UVM_AMAP_CHUNK);
         let defs = crate::reftest::defines("sys/sys/malloc.h");
         let _ = crate::reftest::assert_defines!(defs; M_UVMAMAP);
+    }
+
+    #[test]
+    fn a_chunk_made_unlocked_is_installed_once() {
+        let _g = setup();
+        let amap = amap_alloc(32 * PAGE_SIZE, M_WAITOK, true).expect("a normal amap");
+        let (_, chunks) = amaps_out();
+
+        // Made with nothing held, installed under the write witness.
+        let spare = amap_chunk_alloc(&amap, 0, 17 * PAGE_SIZE, PR_WAITOK).expect("a chunk");
+        assert_eq!(amaps_out().1, chunks + 1);
+        let mut w = amap.lock().write();
+        assert!(amap_chunk_find(amap.geom, &amap.state.get(&w).tables, 17).is_none());
+        amap_populate_with(&amap, &mut w, 0, 17 * PAGE_SIZE, spare);
+        let c = amap_chunk_find(amap.geom, &amap.state.get(&w).tables, 17).expect("installed");
+        assert_eq!(c.baseslot(), 16);
+        drop(w);
+
+        // A second one for the same slot finds the chunk there and goes back to its pool.
+        let again = amap_chunk_alloc(&amap, 0, 20 * PAGE_SIZE, PR_WAITOK).expect("a chunk");
+        let mut w = amap.lock().write();
+        amap_populate_with(&amap, &mut w, 0, 20 * PAGE_SIZE, again);
+        drop(w);
+        assert_eq!(amaps_out().1, chunks + 1);
+
+        // A small amap's chunk is embedded: nothing to make.
+        let small = amap_alloc(4 * PAGE_SIZE, M_WAITOK, true).expect("a small amap");
+        assert!(amap_chunk_alloc(&small, 0, PAGE_SIZE, PR_WAITOK).is_none());
     }
 }
 /* </TESTS> */

@@ -498,6 +498,12 @@ pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
 /// [`uvm_km_pgremove_intrsafe`], `module_memory`'s release, the fault handler's
 /// `pmap_enter` on `kernel_map`, `kernel::vm::fault`) has bootstrapped the pmap first: the
 /// kernel's tests in their set-up, `bsd`'s in `uvm_km_test_init`.
+///
+/// The holders keep the token's contract (`hal::mapped`): no live pager window is overlaid.
+/// The fault handler enters pages only at addresses of an entry with an amap or an object, and
+/// a pager window lies in space `km_alloc` reserved with neither (`kv_any`, `kp_none`: the
+/// pager segments), so a fault on a window's address is case 0 and fails with `EFAULT` before
+/// any `pmap_enter`.
 pub(super) fn mapper() -> &'static KernelMapper {
     match MAPPER.get() {
         Some(m) => m,
