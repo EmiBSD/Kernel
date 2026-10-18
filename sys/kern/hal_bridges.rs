@@ -230,8 +230,11 @@ struct BsdPools;
 /// How many `struct pool`s are kept in [`STATIC_POOLS`]: the pools `hal` and the kernel make
 /// before `kmeminit` (`pmap_init`'s two on either machine: amd64's `pmappl` and `pvpl`, arm64's
 /// `pmap` and `pted`; N3.4e: `rw_obj_init`'s `rwobjpl` and `uao_init`'s `aobjpl` and
-/// `uaoeltpl`, which `uvm_km_init` runs for the kernel object), with room for three more.
-const NSTATIC_POOLS: usize = 8;
+/// `uaoeltpl`, which `uvm_km_init` runs for the kernel object; N3.5: `uvm_map_init`'s
+/// `vmsppl`, `vmmpepl` and `vmmpekpl` and `uvm_addr_init`'s `uaddr`, `uaddrrnd`,
+/// `uaddrbest` and `uaddrpivot`, the kernel's since the map moved: twelve), with room for
+/// four more.
+const NSTATIC_POOLS: usize = 16;
 
 /// `struct pool`s that need no `malloc(9)`, for the first pools made: the C's `pmap_init`
 /// runs before `kmeminit` (`uvm_init`) and calls `pool_init` on static `struct pool`s
