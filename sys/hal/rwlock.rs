@@ -1019,6 +1019,18 @@ impl<'a> WriteWitness<'a> {
         self.into_sleep_nsec(ident, prio, wmesg, INFSLP)
     }
 
+    /// Runs `f` with the lock released, then takes it again for writing before returning
+    /// (the C's `rw_exit(lock)` ... `rw_enter(lock, RW_WRITE)` around I/O the holder does
+    /// with the lock let go: `uvn_io`). `&mut self`, so no reference from a [`Guarded`] lives
+    /// across; what the witness proved must be looked at again afterwards.
+    pub fn unlocked<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        let raw = self.lock;
+        raw.exit_write(self.me);
+        let r = f();
+        self.me = raw.write_wait();
+        r
+    }
+
     /// `rw_enter(lock, RW_DOWNGRADE)`: the writer becomes a reader without letting another
     /// writer in; the readers waiting are woken when no writer waits.
     pub fn downgrade(self) -> ReadWitness<'a> {
@@ -1540,6 +1552,22 @@ mod tests {
         assert_eq!(a.status(), RW_WRITE);
         assert_eq!(b.status(), 0);
         assert!(b.try_write().is_some());
+    }
+
+    #[test]
+    fn a_write_witness_lets_go_of_the_lock_and_takes_it_again() {
+        let a = shared("testul");
+        let mut w = a.write();
+        let other = std::thread::scope(|s| {
+            w.unlocked(|| s.spawn(|| a.try_write().is_some()).join().unwrap())
+        });
+        assert!(other, "another writer got the lock while it was let go");
+        assert_eq!(a.status(), RW_WRITE, "taken again for writing");
+        assert!(std::thread::scope(|s| s
+            .spawn(|| a.try_write().is_none())
+            .join()
+            .unwrap()));
+        drop(w);
     }
 
     /// An object with a field under a lock it shares, as an amap's tables.

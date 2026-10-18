@@ -492,11 +492,12 @@ pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
     Ok(LegacyLend { _private: () })
 }
 
-/// The kernel map's token; panics before [`adopt_mapper`]. On the host, where nothing boots,
+/// The kernel map's token (also the pager's, for its window: `vm::pager::uvm_pagermapin`);
+/// panics before [`adopt_mapper`]. On the host, where nothing boots,
 /// whoever reaches a path that maps (the map path, `km_free`'s wired path,
 /// [`uvm_km_pgremove_intrsafe`], `module_memory`'s release) has bootstrapped the pmap first:
 /// the kernel's tests in their set-up, `bsd`'s in `uvm_km_test_init`.
-fn mapper() -> &'static KernelMapper {
+pub(super) fn mapper() -> &'static KernelMapper {
     match MAPPER.get() {
         Some(m) => m,
         None => kpanic(format_args!(

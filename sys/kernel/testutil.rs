@@ -46,6 +46,8 @@
 //! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
 //!   outside it is `EFAULT`.
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
+//! - `KernelLock`: a per-thread depth, no exclusion (the tests that take it hold [`MEMORY`]);
+//!   the assertion panics on a thread that does not hold it ([`kernel_lock_depth`]).
 //! - `vm::km`'s maps bridge, installed only by [`km_install`] (the kernel's own tests: `bsd`'s
 //!   installs its real one): `KmMaps`, a first-fit allocator of virtual space per map over a
 //!   `BTreeMap`, in a range no host address uses, whose next maps a thread can make fail
@@ -70,6 +72,7 @@ use std::vec::Vec;
 use hal::bridges;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
+use hal::klock::KernelLock;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::malloc::Malloc;
 use hal::pmap::BootstrapParams;
@@ -112,6 +115,7 @@ std::thread_local! {
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+    static KLOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
 
     static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -430,6 +434,34 @@ impl UserCopy for TestUser {
     }
 }
 
+/// The kernel lock double.
+struct TestKernelLock;
+
+impl KernelLock for TestKernelLock {
+    fn lock(&self) {
+        KLOCK_DEPTH.with(|d| d.set(d.get() + 1));
+    }
+
+    fn unlock(&self) {
+        KLOCK_DEPTH.with(|d| match d.get().checked_sub(1) {
+            Some(n) => d.set(n),
+            None => crate::assert::kpanic(format_args!("kernel_unlock: not locked")),
+        });
+    }
+
+    fn assert_locked(&self) {
+        if KLOCK_DEPTH.with(Cell::get) == 0 {
+            crate::assert::kpanic(format_args!("kernel lock not held"));
+        }
+    }
+}
+
+/// How many times this thread holds the kernel lock double.
+pub fn kernel_lock_depth() -> u32 {
+    KLOCK_DEPTH.with(Cell::get)
+}
+
+static TEST_KERNEL_LOCK: TestKernelLock = TestKernelLock;
 static TEST_INTR: TestIntr = TestIntr;
 static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
@@ -463,6 +495,7 @@ pub fn install() {
         let _ = bridges::register_malloc(&TEST_MALLOC);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
+        let _ = bridges::register_kernel_lock(&TEST_KERNEL_LOCK);
     });
 }
 

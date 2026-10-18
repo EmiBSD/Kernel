@@ -58,6 +58,8 @@ pub mod bridges;
 pub mod cons;
 pub mod cpu;
 pub mod intr;
+#[forbid(unsafe_code)]
+pub mod klock;
 pub mod kmbuf;
 pub mod link;
 #[forbid(unsafe_code)]

@@ -180,3 +180,13 @@ paid_by = "N4"
 trait = "Random"
 for = ["sys/hal/arch/arm64/pmap/asid.rs"]
 paid_by = "N7"
+
+# bsd: KERNEL_LOCK, KERNEL_UNLOCK and KERNEL_ASSERT_LOCKED (_kernel_lock, _kernel_unlock,
+# _kernel_lock_held of sys/kern/kern_lock.rs), for the kernel crate's object functions
+# (uvm_obj_free's assertion) and the vnode pager (N3.4c); registered by bsd's uvm_init at the
+# flip (N3.4e); nothing before registration. N4, with kern_lock.
+# hal::klock::KernelLock
+[[bridge]]
+trait = "KernelLock"
+for = ["sys/hal/klock.rs", "sys/kernel/vm/object.rs"]
+paid_by = "N4"
