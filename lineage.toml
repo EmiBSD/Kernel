@@ -5456,6 +5456,12 @@ native = ["pipe_init", "sys/kernel/pipe.rs::Pipes::init"]
 kind = "split"
 
 [[module]]
+rust = "sys/kern/vm_bsd.rs"
+lz = ["sys/uvm/uvm_mmap.rs", "sys/uvm/uvm_unix.rs", "sys/uvm/uvm_glue.rs", "sys/uvm/uvm_meter.rs", "sys/uvm/uvm_init.rs"]
+status = "redesigned"
+notes = "N3.5 S1 (dead until the flip, S2; forbid, 0 unsafe): bsd's side of kernel::vm: BsdVmProc (VmProc over curproc: pledge_protexec, the W^X exemption and ps_wxcounter, sigexit, trapsignal(SIGSEGV, SEGV_ACCERR), pid/tid/comm/PROC_PC, ps_acflag AMAP, lim_cur, P_HASSIBLING, ps_strings/sigcode/timekeep, fd_getfile..FRELE with DTYPE_VNODE, ps_kbind_* under ps_mtx, the pin table, p_ru, log) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp through SysctlPlain, nkmempages, averunnable, allproc); the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (native_*, VM_ENTRIES = KernelApi::vm: mi_syscall on the same row, pipe_glue's shape); VM_MACHINE (the machine's constants); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits (kernel::vm::glue::default_limits). Three helpers name what S2 changes in struct proc: vmspace_of (p_vmspace as the kernel's Vmspace), vmspace_take (the owning VmspaceRef, G5), pin_install (the owned pin table, G10); S2 also moves sys/uvm's other bsd remainders here"
+
+[[module]]
 rust = "sys/kern/sys_socket.rs"
 lz = ["sys/kern/sys_socket.rs"]
 status = "inherited"
