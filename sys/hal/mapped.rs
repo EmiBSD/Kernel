@@ -231,7 +231,11 @@ impl MappedBytes<'_> {
         let p = ptr::with_exposed_provenance::<u8>(self.view);
         // SAFETY: `view` names `len` bytes (at most `isize::MAX`, nonzero) of managed, busy
         // pages (checked when the view was made), so RAM, whose every byte is a valid `u8`.
-        // They stay mapped while this value lives: the window was entered where nothing was
+        // They stay mapped while this value lives, or are restored by `pmap_fault_fixup`,
+        // arm64's reference/modify emulation (`uvm_pagedeactivate`'s `pmap_clear_reference`
+        // clears the access bit of every pv entry, the window's included; the next kernel
+        // access faults and the fixup re-validates the entry with the protection its pted
+        // keeps): the window was entered where nothing was
         // mapped and `pmap_page_protect` spares a held page's window entry (`PageMd::spares`,
         // recorded before the entry is made, the entry removed by the identity checked; the
         // direct map, on no pv chain, never goes; `page_protect` refuses a `prot` that would
