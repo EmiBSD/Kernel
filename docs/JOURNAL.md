@@ -183,3 +183,207 @@ Met 2026-10-16 (under way since 2026-10-10). Boundary: from `lz: bump pin to 3c6
 Effort: _(user)_
 
 Time: _(user)_
+
+## N3 Memory
+
+Met 2026-10-18 (under way since 2026-10-16). Boundary: from `docs: close N2` (7775163b) to
+the `docs: close N3` commit.
+
+- Performance baseline before any uvm slice is merged (`just bench`, docs/ARCHITECTURE.md
+  "bench"; the brief of 2026-10-17). EmiBSD is the smokes' MP debug kernel (`opt-level = 1`,
+  kept so by the user's decision of 2026-10-17, the caveat documented) with the ramdisk and
+  `abi-openbsd.ko`; OpenBSD the `diff-openbsd` snapshot; both `-smp 4`, `-m 512M`, TCG, one
+  after the other, the order alternating. Ten runs per side, each boot running a discarded
+  warm-up pass before the recorded one; per measurement and side the worst sample is left
+  out, and the median, minimum and spread `(max - min) / median` are those of the nine kept;
+  the ratio is EmiBSD / OpenBSD and is refused (`spread`) when either spread exceeds 15 %.
+  The reports, all ten samples and the discarded one's index included, are kept as
+  `docs/bench/n3-before-<arch>.toml` for `bench compare`, which refuses a report of another
+  method.
+  Each run also records the host's one-minute load average at its start and end and its five
+  busiest processes but QEMU (cd47fb56, `[[host]]` in the report), a diagnostic that changes
+  no sample.
+- Superseded baselines, each run on a kernel whose `sys/` equals `main` 20035fd0:
+  - a49170f2 (22:01-22:16 UTC, five runs, one pass per boot, `forkexit` 500 ops, `forkexec`
+    200, a 64 MiB file): six of fourteen ratios refused, most of the spread from the first
+    sample after boot (amd64's first tcpbench run, 483.8 Mbps against 629.6 to 716.9;
+    arm64's first `forkexit`, 2.47 ms against 1.70 to 2.03). The user chose a warm-up pass
+    per boot, a 10 s tcpbench warm-up and more work per sample (`forkexit` 2,000 ops,
+    `forkexec` 800, a 256 MiB file): b7e474e3.
+  - 6c971a45 (22:27-22:50 UTC, five runs): arm64 seven of seven, amd64 one of seven, EmiBSD's
+    first run (booted the moment `just userland` ended) 1.5 to 3.5 times slow in every
+    measurement. 580cd038 (23:10-23:19 UTC, amd64 again alone, a quiet minute first): one
+    of seven again, this time OpenBSD's second run the outlier (`forkexec` 6.07 ms against
+    1.85 to 2.07). With five runs, one disturbed boot sets the max-min spread on either
+    side; the user chose ten runs a side with the worst sample of each left out (fc622fed).
+  - d55bd02a's amd64 run (2026-10-18 00:03-00:18 UTC, ten runs): five of seven, EmiBSD's
+    `pipe` (16.0 %) and `fileread` (26.0 %) refused, slow in runs 1 to 3 and fast after. A
+    debugger traced that step to host CPU contention, not the kernel, the files or the run
+    index: VS Code's cpptools in bursts of 350 to 430 % and macOS's idle-time daemons
+    (photoanalysisd, mediaanalysisd and others, about a core each); three `yes` hogs on the
+    host reproduce `pipe` at about 70k ns, its slow level. Its clean diagnostic run C10
+    (01:17-01:28 UTC, same tool and method) was made without tcpbench, so it is not a
+    baseline. The user had amd64 run again in full with the host diagnostic on (dd0f5a75).
+- The baseline in force, arm64: the fc622fed run (2026-10-18 00:18-00:44 UTC; the whole run
+  of both archs 2,446 s), whose `sys/` is identical to `main` 20035fd0 (`git diff 20035fd0
+  fc622fed -- sys` is empty; the kernel's SHA-256 changes from one commit to the next only
+  because `sys/build.rs` stamps the last commit's time), under the machine lock with nothing
+  else running and a quiet minute (no cargo, rustc or qemu in `ps`) before the first boot.
+
+  arm64 (kernel SHA-256 48c08004...):
+
+  | measurement | unit | EmiBSD median (min, spread) | OpenBSD median (min, spread) | ratio |
+  |---|---|---|---|---|
+  | boot | s | 8.33 (8.28, 2.9 %) | 31.67 (30.99, 3.5 %) | 0.263 |
+  | pagefault | ns/op | 75784 (74836, 2.7 %) | 122733 (121450, 2.5 %) | 0.617 |
+  | forkexit | ns/op | 1686982 (1640915, 4.1 %) | 2214634 (2102787, 11.3 %) | 0.762 |
+  | forkexec | ns/op | 4900752 (4801397, 4.1 %) | 6621370 (6432361, 6.6 %) | 0.740 |
+  | pipe | ns/op | 168655 (163968, 9.3 %) | 177063 (175689, 7.0 %) | 0.953 |
+  | fileread | ns/op | 702139 (616961, 13.0 %) | 888372 (871559, 4.1 %) | 0.790 |
+  | tcpbench | Mbps | 108.3 (102.7, 6.9 %) | 87.7 (87.2, 1.2 %) | 1.235 |
+
+  Discarded (run, value): boot EmiBSD 2 (8.62), OpenBSD 9 (32.16); pagefault 8 (92261), 4
+  (124531); forkexit 6 (2077130), 2 (2533415); forkexec 3 (5075677), 2 (6891198); pipe 3
+  (182330), 3 (188904); fileread 6 (710295), 1 (1078541); tcpbench 3 (102.1), 10 (86.9).
+
+- The baseline in force, amd64: the dd0f5a75 run (2026-10-18 01:45-02:01 UTC, 935 s of
+  benchmark, 1,016 s with the build and the quiet minute), `sys/` identical to 20035fd0,
+  under the machine lock, a quiet minute before the first boot, the host diagnostic on.
+
+  amd64 (kernel SHA-256 264087ac...):
+
+  | measurement | unit | EmiBSD median (min, spread) | OpenBSD median (min, spread) | ratio |
+  |---|---|---|---|---|
+  | boot | s | 17.35 (17.13, 2.4 %) | 21.64 (21.49, 1.5 %) | 0.802 |
+  | pagefault | ns/op | 7956 (7793, 13.8 %) | 10646 (10267, 8.8 %) | 0.747 |
+  | forkexit | ns/op | 459233 (432332, 7.4 %) | 786786 (768463, 3.7 %) | 0.584 |
+  | forkexec | ns/op | 1214616 (1186903, 6.5 %) | 1842307 (1770422, 8.6 %) | 0.659 |
+  | pipe | ns/op | 68504 (59989, 14.4 %) | 73197 (67555, 11.3 %) | 0.936 |
+  | fileread | ns/op | 280928 (224734, 24.8 %) | 329772 (276228, 19.7 %) | spread |
+  | tcpbench | Mbps | 767.3 (761.3, 1.2 %) | 590.4 (531.7, 14.0 %) | 1.300 |
+
+  Discarded (run, value): boot EmiBSD 1 (17.72), OpenBSD 1 (22.59); pagefault 9 (9087), 5
+  (11664); forkexit 9 (478218), 4 (817915); forkexec 1 (1387212), 7 (1971466); pipe 4
+  (70121), 7 (85702); fileread 1 (317045), 7 (342389); tcpbench 4 (728.2), 6 (517.0).
+
+  Thirteen of fourteen ratios print. The refused one is amd64's `fileread`, over the limit
+  on both sides. EmiBSD's samples sit at 277 to 317 us but for runs 2 and 5 (224.7 and
+  234.1); OpenBSD's at 276 to 317 in runs 1 to 4 and 330 to 342 in runs 5 to 10. The host
+  rows do not line up with either: cpptools ran at 64 to 100 % from OpenBSD's run 1 to
+  EmiBSD's run 5 (load 2.97 to 4.14), the quiet runs after it show 5 to 30 % for the busiest
+  process (load 2.16 to 3.09), and EmiBSD's two fast runs both fall inside the busy part,
+  OpenBSD's fast runs too. As recorded:
+
+  | run | EmiBSD fileread | host at its end | OpenBSD fileread | host at its end |
+  |---|---|---|---|---|
+  | 1 | 317045 (discarded) | load 2.53 -> 3.50; WindowServer 14 %, Code Helper 14 % | 276228 | load 3.50 -> 3.34; cpptools 64 % |
+  | 2 | 224734 | load 2.97 -> 3.46; cpptools 91 % | 285099 | load 3.34 -> 2.97; cpptools 82 % |
+  | 3 | 280702 | load 3.46 -> 4.14; cpptools 95 % | 289801 | load 4.14 -> 3.76; cpptools 84 % |
+  | 4 | 277067 | load 3.36 -> 3.54; cpptools 100 % | 317010 | load 3.76 -> 3.36; cpptools 86 % |
+  | 5 | 234109 | load 3.54 -> 3.64; cpptools 85 % | 333894 | load 3.64 -> 2.91; Creative Cloud 5 % |
+  | 6 | 283726 | load 2.61 -> 2.73; Creative Cloud 6 % | 329944 | load 2.91 -> 2.61; Creative Cloud 6 % |
+  | 7 | 294477 | load 2.73 -> 2.68; WindowServer 28 % | 342389 (discarded) | load 2.68 -> 3.09; WindowServer 17 %, firefox 17 % |
+  | 8 | 288055 | load 2.61 -> 2.72; socketfilterfw 30 % | 341235 | load 3.09 -> 2.61; Creative Cloud 6 % |
+  | 9 | 283475 | load 2.72 -> 2.54; WindowServer 9 % | 329772 | load 2.54 -> 2.16; Creative Cloud 6 % |
+  | 10 | 280928 | load 2.43 -> 2.74; cfprefsd 10 % | 338651 | load 2.16 -> 2.43; socketfilterfw 8 % |
+
+  The limit was not tuned and the method not changed (the user's decision); the cause of
+  `fileread`'s spread on amd64 is open. The N3 close runs the same command and carries
+  `Bench:` lines from `cargo xtask bench compare` against these reports, for what prints.
+- The close (2026-10-18): N3's branch (925cce59, 152 commits from main 6da2ef08, 141 without
+  merges; `git rev-list --count [--no-merges] 6da2ef08..925cce59`) merged into the candidate
+  at d612f9c5 with no conflict, n3/bench (60700aff) at 29d66500 with one (`OWN_PROGRAMS` in
+  tools/xtask/src/userland.rs: mmapstress and bench, both kept). Wall time of the milestone:
+  2026-10-16 23:01 (621a179d) to 2026-10-18 09:49 (925cce59), about 35 h, up to four agents
+  at once. Six slices: N3.0 the module's name; N3.1 `hal::Pmap` and the two pmaps; N3.2
+  `kernel::vm::km`; N3.3 the page system; N3.4 the owners and the fault; N3.5 the map and the
+  rest, the flip that deleted `sys/uvm/`; decision 40 between N3.3 and N3.4.
+- Went well: every slice reviewed by an agent that did not write it before it was merged into
+  the next (25 Security-Review paragraphs, carried by d612f9c5's body), and the reviews found
+  what no build would have: the arm64 backend's PTE cleared before its pv lock, a pted 8 bytes
+  short of the C's (visible in `kern.pool`), the static-entry arena refilled through
+  `kernel_map` (a deadlock while cold), an unprivileged panic on unwiring an entry without an
+  amap (K1, reachable through `munlock(2)`), a use-after-free window in an owned tree's
+  removal, `with_vmspace_handle` reachable from safe code, and four slips in OpenBSD's own C
+  (`uvm_fault.c:1468-1485`, confirmed; `uvm_aobj.c:428-432`; `uvm_pager.c:292` with
+  `uvm_page.c:1238`; `uvm_map.c:2214-2221`, confirmed; for the user, never upstream). The
+  close's `just check` was green at its first run: the compile-and-fix pass found nothing,
+  since every flip had booted its own smokes (a `security-review.md` area). `just ci-full` ran for the first time under v2 (decision 24, for N2 and N3) and was green at its first run, the installer end to end on both archs included.
+- Failed: the first integration checkpoint (54f48bd4, N3.1 and N3.2 only) booted 0 of 85
+  smokes: amd64 under Limine underflowed `uvm_map_setup` (4b's clamp of the kernel window, the
+  HHDM reaching slot 258) and both machines panicked allocating with Box before `kmeminit`;
+  fixed in 74eabc4d, 6e996212 and 799ca7ad, then 85 of 85. N3.4b stopped before its flip: the
+  owners could not move before the fault held their witnesses, so the planner re-planned
+  (N3.4c-e, N3.6 folded in); N3.5 S1-R1 stopped on `hal` pieces the kernel could not reach
+  (`arc4random`, `sched_pause`), added in 7f2712c6. Two worktrees were created inside the LZ
+  clone once (the session's cwd), written nothing; the rule is never to `cd` into
+  `reference/`. The close's first `just ci` stopped in `test` on the inherited
+  `dev::ic::pckbc` flake (below).
+- Idioms that took several attempts: `MappedBytes`, from a bare `Paddr` (the review: safe code
+  could alias `&mut`) to a claimed, busy, token-only view (three reviews); the witness-carrying
+  fault (`RwWitness`, a witness consumed by a sleep, a `&'v mut Option<T>` slot to return a
+  witness borrowing a value); `Guarded::get_mut` needing witness parts (`Divisible::split`) for
+  two cells of one lock; owning intrusive containers that find and remove by key and re-read
+  the secondary count after adapter calls; the entry's handle cells needing their own
+  `AtomicBool` window under a read lock (smoke-mp found it); `NSTATIC_POOLS` 4 -> 8 -> 16 as
+  more pools moved before `kmeminit`.
+- Rules corrected: decision 40 (one MP kernel); decision 41 recorded as studied; decision 30
+  extended to `MappedBytes`; the redesigner's memory trimmed under its read limit (a043de71);
+  the bench recipe spells its features as the smokes do since decision 40 (818ed2f5).
+- Numbers:
+  - `cargo xtask unsafe-report` (crates), main 20035fd0 -> the close: `kernel` 0 (23 -> 48
+    files), `abi` 0 (4), `hal` 35 -> 100 (72 -> 108 files; `hal_ceiling` 110, the user's
+    raise a2ec4145), `bsd` 10,583 -> 10,196 (1,103 -> 1,069 files; legacy 8,726 -> 8,501,
+    core 2,513 -> 2,416, `forbid` 320 -> 348 of 1,218 modules; rows arch/amd64 863 -> 773,
+    arch/arm64 943 -> 881, arch/host 38 -> 35, machine 85 -> 79, kern 1,126 -> 1,117, dev/pv
+    249 -> 246, sys 327 -> 328 with the user's raise 6da2ef08, uvm 215 -> gone), boot 621.
+  - `cargo xtask lz check`: 1,156 -> 1,170 modules (1,058 -> 937 inherited, 40 -> 123 adapted,
+    58 -> 110 redesigned), 157 -> 594 fn rows, 60 -> 68 extras; bridges 12 -> 21 open (N4 13,
+    N5 2, N6 1, N7 2, N9 3).
+  - Host tests (`just check`): 3,229 -> 3,775 passed, 0 failed (bsd 2,396, kernel 308, hal
+    292, abi 9, xtask 260, libz 123, libkern 26, the boot loaders' 57).
+  - `just jobs=3 ci`: the first run (10:17) stopped in `test` on the inherited pckbc flake
+    (below); the second (10:20-10:43, 1,396 s) passed 86 of 86 smokes in 18 min 32 s, no retry,
+    and stopped at `check-drift`: the applied record of LZ 602141098d1d named
+    `sys/uvm/uvm_init.rs`, deleted by N3.5's flip (614d65af points it at `sys/kern/vm_bsd.rs`,
+    as 27432aa6 did for the pmap at the checkpoint); the steps after it rc=0.
+  - `just jobs=3 ci-full` at 614d65af (decision 24, N2 and N3): rc=0 in 2,248 s, its `ci` on
+    four CPUs (86 of 86 smokes in 21 min 18 s, no retry) and the eight installer recipes
+    (`smoke-install-amd64` 106 s, `-arm64` 164 s, `-arm64-acpi` 165 s, the four
+    `smoke-install-boot-*`, `smoke-install80-amd64` 75 s, `-arm64` 123 s). `just comp` first
+    (425 s, seeded from the main checkout).
+  - `just diff-openbsd`: rc=0 in 77 s; amd64 and arm64, 107 steps, 104 equal, 3 expected, 0
+    unexpected (`expected.toml` unchanged).
+  - `just bench` at 614d65af (11:37-12:20, 2,573 s with the build and a quiet minute; the same
+    command and method as the baselines, under the machine lock, nothing else running): fourteen
+    of fourteen ratios print. The reports are kept as `docs/bench/n3-after-<arch>.toml`.
+    `cargo xtask bench compare docs/bench/n3-before-<arch>.toml target/bench/<arch>/report.toml`
+    gives the `Bench:` lines of the closing commit (EmiBSD medians; a row prints when it moved
+    by more than the larger spread):
+
+    | measurement | unit | amd64 before -> after | ratio to OpenBSD | arm64 before -> after | ratio to OpenBSD |
+    |---|---|---|---|---|---|
+    | boot | s | 17.35 -> 17.22 (within spread) | 0.802 -> 0.804 | 8.33 -> 8.65 | 0.263 -> 0.274 |
+    | pagefault | ns/op | 7956 -> 12269 | 0.747 -> 1.184 | 75784 -> 81715 | 0.617 -> 0.661 |
+    | forkexit | ns/op | 459233 -> 680755 | 0.584 -> 0.884 | 1686982 -> 2672794 | 0.762 -> 1.200 |
+    | forkexec | ns/op | 1214616 -> 1820719 | 0.659 -> 1.034 | 4900752 -> 6868461 | 0.740 -> 1.075 |
+    | pipe | ns/op | 68504 -> 69186 (within spread) | 0.936 -> 0.942 | 168655 -> 171029 (within spread) | 0.953 -> 0.922 |
+    | fileread | ns/op | 280928 -> 322744 (baseline spread over 15 %) | spread -> 0.973 | 702139 -> 879892 | 0.790 -> 1.001 |
+    | tcpbench | Mbps | 767.3 -> 787.6 | 1.300 -> 1.313 | 108.3 -> 102.1 (within spread) | 1.235 -> 1.143 |
+
+    N3 made the page fault and fork slower on both machines: amd64 `pagefault` +54 %,
+    `forkexit` +48 %, `forkexec` +50 %; arm64 `forkexit` +58 %, `forkexec` +40 %, `pagefault`
+    +8 %, `fileread` +25 % (OpenBSD's own runs moved by under 6 %). On the debug kernel
+    (`opt-level = 1`) the kernel's witnesses, counted handles and checked slices run unoptimised;
+    where the time goes is not measured yet, and is the first question for N4's bench.
+  - `cargo xtask lz drift --security`: empty; no LZ commit after the pin.
+  - The flake of the close: `dev::ic::pckbc::tests::an_async_command_is_acked_byte_by_byte_then_freed`
+    panicked at `sys/kern/kern_timeout.rs:291` (a null `prev` in `circq_insert_tail`) in the
+    first `just ci`, as once at N3.4e. By reading: pckbc's test `controller()` takes
+    `kern_timeout::tests::LOCK` but never calls `timeout_startup()`, so it depends on an earlier
+    test (hidkbd's, kern_timeout's) having initialised the wheel; both files are inherited,
+    byte-identical to LZ, so the fix is the user's decision. The second run passed.
+
+Effort: _(user)_
+
+Time: _(user)_

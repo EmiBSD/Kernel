@@ -17,10 +17,34 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Machine-dependent code moved into the HAL, one directory per architecture (N2.2).
+//! Machine-dependent code moved into the HAL, one directory per architecture (N2.2), and the
+//! host double (`host/`, N3.1) that the host tests and `bsd`'s host build run on.
+//!
+//! Exactly one is compiled in and re-exported as `current`, as `bsd`'s `sys/arch/mod.rs` does;
+//! each provides `param` and `vmparam` (`<machine/param.h>`'s page geometry and
+//! `<machine/vmparam.h>`'s address-space bounds), which `hal`'s generic code (the page
+//! arithmetic, the pmap) reads through `current`.
 
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
 pub mod amd64;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub mod arm64;
+#[cfg(not(target_os = "none"))]
+pub mod host;
+
+#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+pub use self::amd64 as current;
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub use self::arm64 as current;
+#[cfg(not(target_os = "none"))]
+pub use self::host as current;
+
+/// The host tests' path to arm64's headers under the name the inherited `include/pte.rs` uses
+/// (`crate::arch::arm64::include`): an alias of `host`'s copies, so the arm64 layout's leaf
+/// tests compile `pte.rs` unchanged.
+#[cfg(all(test, not(target_os = "none")))]
+pub(crate) mod arm64 {
+    pub(crate) use super::host::arm64_headers::include;
+}
+
 /* </CODE> */

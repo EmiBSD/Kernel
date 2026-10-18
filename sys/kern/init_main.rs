@@ -118,7 +118,6 @@ use crate::kern::kern_proc::{
 };
 use crate::kern::kern_prot::crget;
 use crate::kern::kern_resource::lim_startup;
-use crate::kern::kern_rwlock::rw_obj_init;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
 use crate::kern::kern_sig::{siginit, signal_init};
 use crate::kern::kern_smr::{smr_startup, smr_startup_thread};
@@ -149,7 +148,9 @@ use crate::machine::cons::consinit;
 use crate::machine::copy::copyout;
 use crate::machine::cpu::{Cpu, cpu_configure, cpu_startup, curcpu};
 use crate::machine::param::MachineParam;
-use crate::machine::pmap::pmap_kernel;
+
+use crate::kern::vm_bsd::uvm_init;
+use crate::kern::vm_bsd::uvm_init_limits;
 use crate::machine::{BootModule, Machine, VmParam};
 use crate::net::if_::{ifinit, softnet_init, softnet_percpu};
 use crate::net::rtable::rtable_init;
@@ -165,14 +166,13 @@ use crate::sys::signalvar::Sigacts;
 use crate::sys::systm::{INFSLP, MOUNTROOT, SysArgs, kernel_lock, kernel_lock_init, kernel_unlock};
 use crate::sys::types::Register;
 use crate::unported;
-use crate::uvm::uvm_extern::{
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::map::VmspaceRef;
+use kernel::vm::map::{uvm_map, uvmspace_alloc_kernel};
+use kernel::vm::types::{
     PROT_MASK, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_OVERLAY, UVM_FLAG_STACK,
-    UVM_UNKNOWN_OFFSET, Vmspace, uvm_mapflag,
+    UVM_UNKNOWN_OFFSET, uvm_mapflag,
 };
-use crate::uvm::uvm_glue::uvm_init_limits;
-use crate::uvm::uvm_init::uvm_init;
-use crate::uvm::uvm_map::{uvm_map, uvmspace_init};
-use crate::uvm::uvm_param::{round_page, trunc_page};
 
 #[cfg(feature = "qemu")]
 use crate::machine::{Exit, ExitStatus};
@@ -204,8 +204,6 @@ pub static PDEVINIT_DONE: AtomicBool = AtomicBool::new(false);
 pub static INITPROCESS: AtomicPtr<Process> = AtomicPtr::new(core::ptr::null_mut());
 /// `proc0`: process slot for swapper.
 pub static PROC0: Proc = Proc::new();
-/// `vmspace0`: the address space of process 0 (the kernel's).
-pub static VMSPACE0: Vmspace = Vmspace::new();
 
 /// `rootvp`: the vnode of the root device (`rootdev`), made by the root file system's
 /// `mountroot` (`ffs_mountroot`).
@@ -285,7 +283,10 @@ pub fn main() -> ! {
     kernel_lock_init(); // KERNEL_LOCK_INIT()
     sched_lock_init(); // SCHED_LOCK_INIT()
 
-    rw_obj_init();
+    // rw_obj_init(): the lock objects are hal's (`"rwobjpl"`, hal::rwlock::SharedRwlock).
+    if hal::rwlock::init_shared().is_err() {
+        panic(format_args!("rw_obj_init: cannot make rwobjpl"));
+    }
     uvm_init();
     #[cfg(feature = "qemu")]
     {
@@ -397,16 +398,15 @@ pub fn main() -> ! {
     p.p_fd.set(fdp);
     lim_startup(&LIMIT0);
     pr.ps_limit.set(&LIMIT0);
-    uvmspace_init(
-        &VMSPACE0,
-        Some(pmap_kernel()),
+    // vmspace0: uvmspace_init(&vmspace0, pmap_kernel(), ..), an item of "vmsppl" (the
+    // kernel's vmspaces have one constructor), which process 0 holds for ever.
+    let vm0 = uvmspace_alloc_kernel(
         round_page(0),
         trunc_page(<Machine as VmParam>::VM_MAX_ADDRESS),
-        true,
-        true,
     );
-    PROCESS0.ps_vmspace.set(&VMSPACE0);
-    p.p_vmspace.set(&VMSPACE0);
+    p.p_vmspace.set(VmspaceRef::as_ptr(&vm0));
+    let prev = PROCESS0.set_vmspace(vm0);
+    crate::kassert!(prev.is_none()); // process 0 had none
 
     p.p_addr.set(Machine::proc0paddr()); // XXX
 
@@ -493,7 +493,7 @@ pub fn main() -> ! {
     mbcpuinit();
     crate::kern::kern_event::kqueue_init_percpu();
     let _ = unported!("pmap_init_percpu");
-    crate::uvm::uvm_init::uvm_init_percpu();
+    kernel::vm::init::uvm_init_percpu();
     crate::kern::subr_evcount::evcount_init_percpu();
 
     // init exec: init_exec (exec_conf.c) computes exec_maxhdrsz from execsw[], which is a
@@ -586,7 +586,7 @@ pub fn main() -> ! {
     // Create the pageout, reaper, cleaner, update, aiodone and page zeroing kernel threads.
     let _ = unported!("kthread_create (pagedaemon, M7)");
     // The daemon's first act (uvm_pageout): tune the paging parameters.
-    crate::uvm::uvm_pdaemon::uvmpd_tune();
+    kernel::vm::pdaemon::uvmpd_tune();
     if kthread_create(reaper, core::ptr::null_mut(), b"reaper").is_err() {
         panic(format_args!("fork reaper"));
     }
@@ -684,7 +684,7 @@ pub fn main() -> ! {
     }
 
     // The system call path (N2.4, docs/ZERO_UNSAFE.md 0.1): the Legacy fallback and the ABI
-    // module abi-openbsd.ko, registered before init(8) makes its first system call.
+    // module abi_openbsd.ko, registered before init(8) makes its first system call.
     crate::kern::abi_module::abi_module_attach();
 
     // Okay, now we can let init(8) exec! It's off to userland!
@@ -817,8 +817,8 @@ pub fn start_init(arg: *mut c_void) {
     // MACHINE_STACK_GROWS_UP: neither amd64 nor arm64.
     let mut addr = <Machine as VmParam>::USRSTACK - PAGE_SIZE;
     let vm = p.vmspace();
-    vm.vm_maxsaddr.set(addr);
-    vm.vm_minsaddr.set(addr + PAGE_SIZE);
+    vm.vm_maxsaddr.store(addr, Ordering::Relaxed);
+    vm.vm_minsaddr.store(addr + PAGE_SIZE, Ordering::Relaxed);
     if uvm_map(
         &vm.vm_map,
         &mut addr,

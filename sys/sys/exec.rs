@@ -94,7 +94,7 @@ use crate::sys::exec_script::EXEC_SCRIPT_HDRSZ;
 use crate::sys::namei::Nameidata;
 use crate::sys::proc::Proc;
 use crate::sys::vnode::{Vattr, Vnode};
-use crate::uvm::uvm_extern::VmProt;
+use kernel::vm::types::VmProt;
 
 /// `struct ps_strings`: the array of argument and environment strings a process starts with,
 /// at `ps_strings`.

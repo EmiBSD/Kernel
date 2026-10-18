@@ -115,7 +115,7 @@ use crate::sys::sched::{
 };
 use crate::sys::timeout::Timeout;
 use crate::sys::types::Fixpt;
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /// \[I\] `roundrobin_period`: roundrobin period (ns).
 pub static ROUNDROBIN_PERIOD: AtomicU64 = AtomicU64::new(0);

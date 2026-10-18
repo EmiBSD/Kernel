@@ -119,6 +119,8 @@ use crate::kern::uipc_mbuf::{m_align, m_get, m_trailingspace};
 use crate::kern::vfs_cache::cache_purge;
 #[cfg(feature = "nfsclient")]
 use crate::kern::vfs_subr::{checkalias, vgone, vrele};
+#[cfg(feature = "nfsclient")]
+use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::machine::copy::copyout;
 use crate::machine::intr::{IPL_NONE, IPL_SOFTNET, splbio, splx};
 #[cfg(feature = "nfsclient")]
@@ -186,9 +188,7 @@ use crate::sys::vnode::Vattr;
 use crate::sys::vnode::iftovt;
 use crate::sys::vnode::{VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VNOVAL, VREG, VSOCK, Vnode, Vtype};
 #[cfg(feature = "nfsclient")]
-use crate::uvm::uvm_extern::Voff;
-#[cfg(feature = "nfsclient")]
-use crate::uvm::uvm_vnode::uvm_vnp_setsize;
+use kernel::vm::types::Voff;
 use libkern::StaticCell;
 
 /// `nfs_xdrneg1`: data items converted to XDR at startup, since they are constant. This is

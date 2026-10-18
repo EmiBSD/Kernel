@@ -17,7 +17,9 @@
 # `kernel` reaches code that has not moved into them yet. The trait is declared by the crate
 # that calls it and held in a `OnceStatic<&'static dyn Trait>`; `bsd`'s `main()` registers an
 # implementation over its legacy code before first use. A bridge carries no logic of its own.
-# N9 requires this file to hold no row.
+# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::pipe::PipeGlue`) is a
+# row only while `bsd` implements it; the row goes when a `kernel` module does, and the trait
+# stays as API (decision 39). N9 requires this file to hold no row.
 #
 # Schema, one [[bridge]] per trait:
 #   trait   = the trait's name, a bare identifier (its crate and module in the comment above the row)
@@ -26,7 +28,8 @@
 #             ("N3".."N9"; a slice "N4.1" where one is meant)
 # The comment above each row says what implements it today.
 
-# bsd: splraise/splx, IPL_MPFLOOR and IPL_HIGH of sys/machine/intr.rs.
+# bsd: splraise/splx, IPL_MPFLOOR, IPL_HIGH and splassert (N3.3: the kernel page caches' DIAGNOSTIC
+# check at IPL_BIO) of sys/machine/intr.rs.
 # hal::intr::IntrLevel
 [[bridge]]
 trait = "IntrLevel"
@@ -42,23 +45,19 @@ for = ["sys/hal/cpu.rs", "sys/hal/mutex.rs", "sys/hal/percpu.rs"]
 paid_by = "N4"
 
 # bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
-# _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs.
+# _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs;
+# N3.4a: cold (cold || panicstr) and cold_yield (splhigh, splx(safepri), the kernel lock's
+# bounce), msleep_nsec's early return for MutexedGuard::sleep_nsec; N3.5 S1: sched_pause(yield)
+# (sys/sys/sched.rs's SPCF_SHOULDYIELD test with sched_bsd's yield), for uvm_map_teardown.
 # hal::sleep::Sleep
 [[bridge]]
 trait = "Sleep"
 for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
 paid_by = "N4"
 
-# bsd: km_alloc/km_free with &kv_any and &kp_pageable or &kp_zero (sys/uvm/uvm_km.rs). A safe
-# trait (decision 30): hal's soundness rests on the boot registration (sys/hal/trust.rs).
-# hal::kmbuf::PageMemory
-[[bridge]]
-trait = "PageMemory"
-for = ["sys/hal/kmbuf.rs"]
-paid_by = "N3"
-
-# bsd: pool_init/pool_get/pool_put and pr_nout (sys/kern/subr_pool.rs), one pool per TypedPool so
-# vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
+# bsd: pool_init/pool_get/pool_put, pr_nout, pool_sethiwat and pool_cache_init (RawPool's
+# set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
+# TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # hal::pool::PoolBackend
 [[bridge]]
 trait = "PoolBackend"
@@ -75,7 +74,10 @@ for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
 
 # bsd: copyin, copyout, copyinstr, copyoutstr of sys/machine/copy.rs (copy.S with pcb_onfault).
-# A safe trait: it only reads and writes the byte slices it is given.
+# A safe trait: the user copies only read and write the byte slices they are given and user
+# memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
+# through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
+# window the kernel map's token minted.
 # hal::user::UserCopy
 [[bridge]]
 trait = "UserCopy"
@@ -89,14 +91,36 @@ trait = "Console"
 for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
-# bsd: km_alloc, pmap_extract and pmap_enter (sys/uvm/uvm_km.rs, the arch pmaps) and the boot
-# hand-over of abi-openbsd.ko, implemented by sys/kern/abi_module.rs; hal's own code once hal
-# holds the pmap and the boot entry (decision 26, N3).
+# bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
+# implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
+# crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
+# subr_prf goes with the bsd crate.
+# hal::prf::Printf
+[[bridge]]
+trait = "Printf"
+for = ["sys/hal/prf.rs"]
+paid_by = "N9"
+
+# bsd: the boot hand-over of abi_openbsd.ko (IMAGE_VA/IMAGE_LEN from stand::start_kernel),
+# implemented by sys/kern/abi_module.rs. The trait keeps only image since N3.2: the mapping is
+# the loader's own on both machines (hal::pmap::module_window/module_enter, N3.1 commits 6 and
+# 7) and the writable copy's memory is the kernel's (kernel::vm::km::module_memory(), a
+# hal::module::ModuleMemory passed to load as a value). N4.1, the boot entry.
 # hal::module::ModulePlatform
 [[bridge]]
 trait = "ModulePlatform"
 for = ["sys/hal/module/load.rs"]
-paid_by = "N3"
+paid_by = "N4"
+
+
+# bsd: BUFPAGES_DEFICIT and BUFPAGES_INACT of sys/sys/mount.rs over bcstats (sys/kern/vfs_bio.rs),
+# implemented by sys/kern/vm_bsd.rs (BsdBufCacheStats) and registered by its uvm_page_init;
+# 0 before registration (their boot values). N5, with the buffer cache.
+# kernel::vm::pmemrange::BufCacheStats
+[[bridge]]
+trait = "BufCacheStats"
+for = ["sys/kernel/vm/pmemrange.rs"]
+paid_by = "N5"
 
 # bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
 # sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
@@ -109,11 +133,12 @@ for = ["sys/kernel/pipe.rs"]
 paid_by = "N4"
 
 # bsd: the Uio of a read or write and uiomove (sys/sys/uio.rs, sys/kern/kern_subr.rs), passed
-# down by the glue's fo_read/fo_write as &mut dyn UioMove.
+# down by the glue's fo_read/fo_write as &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io
+# (kern.proc_args).
 # kernel::pipe::UioMove
 [[bridge]]
 trait = "UioMove"
-for = ["sys/kernel/pipe.rs"]
+for = ["sys/kernel/pipe.rs", "sys/kernel/vm/io.rs"]
 paid_by = "N4"
 
 # bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
@@ -122,4 +147,88 @@ paid_by = "N4"
 [[bridge]]
 trait = "PipeFiles"
 for = ["sys/kernel/pipe.rs"]
+paid_by = "N4"
+
+# bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
+# LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
+# for amd64's TLB shootdown and cache flush, implemented by sys/kern/hal_bridges.rs
+# (BsdTlbCpus); arm64 broadcasts tlbi and registers none.
+# hal::pmap::TlbCpus
+[[bridge]]
+trait = "TlbCpus"
+for = ["sys/hal/arch/amd64/pmap/tlb.rs", "sys/hal/arch/amd64/pmap/backend.rs"]
+paid_by = "N4"
+
+# bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
+# and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
+# implemented by sys/kern/hal_bridges.rs (BsdRandom).
+# hal::pmap::Random
+[[bridge]]
+trait = "Random"
+for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
+paid_by = "N7"
+
+# bsd: KERNEL_LOCK, KERNEL_UNLOCK and KERNEL_ASSERT_LOCKED (_kernel_lock, _kernel_unlock,
+# _kernel_lock_held of sys/kern/kern_lock.rs), for the kernel crate's object functions
+# (uvm_obj_free's assertion) and the vnode pager (N3.4c); implemented by sys/kern/hal_bridges.rs
+# (BsdKernelLock) and registered by bsd's uvm_init (N3.4e); nothing before registration. N4,
+# with kern_lock.
+# hal::klock::KernelLock
+[[bridge]]
+trait = "KernelLock"
+for = ["sys/hal/klock.rs", "sys/kernel/vm/object.rs", "sys/kernel/vm/vnode.rs"]
+paid_by = "N4"
+
+# bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode
+# pager's uvn_io, which lets go of the net lock a faulting process holds around the VOP (N3.4c);
+# implemented by sys/kern/hal_bridges.rs (BsdNetLock) and registered by bsd's uvm_init (N3.4e);
+# nobody holds it before registration. N6, with the network stack.
+# hal::netlock::NetLock
+[[bridge]]
+trait = "NetLock"
+for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
+paid_by = "N6"
+
+# bsd: getmicrouptime (sys/kern/kern_tc.rs, for the vnode pager's own ratecheck), rebooting and
+# &rebooting (sys/kern/kern_xxx.rs); implemented by sys/kern/vm_bsd.rs (BsdSysInfo) and
+# installed by bsd's uvm_init (N3.4e); (0, 0) and false before. N4, with kern_time and kern_xxx.
+# kernel::vm::vnode::SysInfo
+[[bridge]]
+trait = "SysInfo"
+for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/map.rs"]
+paid_by = "N4"
+
+# bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
+# vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
+# curproc's credentials: sys/sys/vnode.rs, sys/kern/vfs_subr.rs, vfs_vnops.rs, vfs_vops.rs),
+# implemented by bsd's Vnode (sys/kern/vm_bsd.rs since N3.5) and passed as &'static dyn VnodeOps to
+# uvn_attach and the uvm_vnp_* functions (vnodes are never freed); kept by the Uvn. N5, with
+# the vnode layer. N3.5 S1: mmap(2)'s v_type, iszerodev(v_rdev) and VOP_GETATTR's va_flags.
+# kernel::vm::vnode::VnodeOps
+[[bridge]]
+trait = "VnodeOps"
+for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/mmap.rs"]
+paid_by = "N5"
+
+
+# bsd: curproc's facts as uvm asks them (pledge_protexec, the W^X exemption and ps_wxcounter,
+# sigexit, trapsignal, ps_pid/p_tid/ps_comm/PROC_PC, ps_acflag, lim_cur, P_HASSIBLING,
+# ps_strings/ps_sigcode/ps_timekeep, fd_getfile..FRELE of a vnode, ps_kbind_* under ps_mtx,
+# ps_libcpin, p_ru's faults and maxrss, log(9)); implemented by sys/kern/vm_bsd.rs (N3.5 S1,
+# registered by bsd's uvm_init at the flip), one bsd call each. N4, when Proc moves.
+# kernel::vm::proc::VmProc
+[[bridge]]
+trait = "VmProc"
+for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs", "sys/kernel/vm/meter.rs"]
+paid_by = "N4"
+
+# bsd: CTL_VM's reach into kern_sysctl.rs (sysctl_rdint, sysctl_int, sysctl_rdstruct,
+# sysctl_string, and sysctl_rdstruct of struct uvmexp through bsd's SysctlPlain byte view),
+# kern_malloc's nkmempages, sched_bsd's averunnable and kern_proc's allproc (each thread's p_stat
+# and whether it is its CPU's idle thread); implemented by sys/kern/vm_bsd.rs (N3.5 S1,
+# registered by bsd's uvm_init at the flip), one bsd call each. N4, with kern_sysctl and proc.
+# kernel::vm::meter::VmSysctl
+[[bridge]]
+trait = "VmSysctl"
+for = ["sys/kernel/vm/meter.rs"]
 paid_by = "N4"

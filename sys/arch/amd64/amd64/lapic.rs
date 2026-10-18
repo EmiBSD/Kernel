@@ -124,7 +124,6 @@ use crate::arch::amd64::include::i82489var::{LAPIC_SPURIOUS_VECTOR, LAPIC_TIMER_
 use crate::arch::amd64::include::mpbiosreg::MPS_ALL_APICS;
 use crate::arch::amd64::include::param::PAGE_SIZE;
 use crate::arch::amd64::include::pic::{PIC_LAPIC, Pic};
-use crate::arch::amd64::include::pmap::PMAP_NOCACHE;
 use crate::arch::amd64::include::specialreg::{APICBASE_ENABLE_X2APIC, MSR_APICBASE};
 use crate::arch::amd64::isa::clock::{RTCLOCK_TVAL, gettick, i8254_inittimecounter_simple};
 use crate::conf::param::HZ;
@@ -139,6 +138,7 @@ use crate::sys::evcount::Evcount;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr};
 use crate::unported;
+use hal::arch::amd64::pmap::layout::PMAP_NOCACHE;
 
 /// `local_apic`: the page the LAPIC's registers are mapped over (`locore.S` reserves it in
 /// `.data`; here it is a page-aligned static the mapping replaces).
@@ -383,7 +383,8 @@ pub fn lapic_boot_init(lapic_base: Paddr) {
         IDT_ALLOCMAP[LAPIC_IPI_INVLTLB as usize].store(true, Ordering::Relaxed);
         IDT_ALLOCMAP[LAPIC_IPI_INVLPG as usize].store(true, Ordering::Relaxed);
         IDT_ALLOCMAP[LAPIC_IPI_INVLRANGE as usize].store(true, Ordering::Relaxed);
-        // !pmap_use_pcid: PCID is never enabled (pmap.rs), so the _pcid stubs are not there.
+        // !pmap_use_pcid: PCID is never enabled (sys/hal/arch/amd64/pmap/tlb.rs), so the _pcid
+        // stubs are not there.
         idt_vec_set(LAPIC_IPI_INVLTLB, Xipi_invltlb as *const () as usize);
         idt_vec_set(LAPIC_IPI_INVLPG, Xipi_invlpg as *const () as usize);
         idt_vec_set(LAPIC_IPI_INVLRANGE, Xipi_invlrange as *const () as usize);

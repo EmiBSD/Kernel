@@ -68,6 +68,7 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{bawrite, bdwrite, bread, breadn, brelse, bwrite};
 use crate::kern::vfs_vnops::vn_fsizechk;
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::buf::{B_CLRBUF, B_NOCACHE, B_SYNC};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
@@ -94,7 +95,6 @@ use crate::ufs::ext2fs::ext2fs_inode::{
 };
 use crate::ufs::ufs::dinode::{ISGID, ISUID};
 use crate::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_UPDATE, Inode, vtoi};
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `ext2fs_read` (`vop_read`): vnode op for reading.
 pub fn ext2fs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {

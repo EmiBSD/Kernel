@@ -30,7 +30,8 @@ paths:
   `global_asm!(include_str!("locore.S"))`, so it can be diffed against OpenBSD's.
 - Interrupt and exception entry stubs are assembly (like OpenBSD's `vector.S`/`exception.S`), not
   `extern "x86-interrupt"` (unstable).
-- `arch/host/` is a test double: it prints to stdout, has no-op SPL, a `HashMap`-backed fake pmap.
+- `arch/host/` is a test double: it prints to stdout, has no-op SPL; its fake pmap is `hal`'s host
+  backend since N3.1 (`sys/hal/arch/host/pmap.rs`, a `BTreeMap`), the same kind of double.
   It must not grow logic. If a test needs behaviour, the behaviour belongs in generic code.
 - Targets are `x86_64-unknown-none` and `aarch64-unknown-none-softfloat`. No FP/SIMD in kernel code:
   the softfloat target enforces it on arm64, the `none` target on amd64.

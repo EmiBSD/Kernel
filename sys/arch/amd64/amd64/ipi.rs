@@ -157,9 +157,11 @@ pub extern "C" fn x86_ipi_handler() {
 #[cfg(feature = "qemu")]
 pub fn x86_ipi_selftest() {
     use crate::arch::amd64::amd64::machdep::delay;
-    use crate::arch::amd64::amd64::pmap::{
-        TLB_SHOOT_COUNTS, pmap_kernel, pmap_tlb_shootpage, pmap_tlb_shootrange, pmap_tlb_shootwait,
+    use crate::machine::pmap::pmap_kernel;
+    use hal::arch::amd64::pmap::{
+        TLB_SHOOT_COUNTS, pmap_tlb_shootpage, pmap_tlb_shootrange, pmap_tlb_shootwait,
     };
+
     use crate::arch::amd64::include::intrdefs::X86_IPI_NOP;
     use crate::arch::amd64::include::param::PAGE_SIZE;
     use crate::kern::subr_prf::{panic, printf};

@@ -167,6 +167,7 @@ use crate::{
         },
     },
     kassert,
+    kern::vm_bsd::{km_alloc, km_free},
     kern::{
         kern_lock::{mtx_enter, mtx_init, mtx_leave},
         kern_malloc::{free, malloc},
@@ -207,11 +208,11 @@ use crate::{
         types::{Off, Paddr, Vaddr, Vsize},
         uio::Uio,
     },
-    uvm::{
-        uvm_km::{KD_TRYLOCK, KD_WAITOK, KP_ZERO, KV_PAGE, km_alloc, km_free},
-        uvm_param::{round_page, trunc_page},
-    },
 };
+#[cfg(machine_x86)]
+use hal::vm::param::{round_page, trunc_page};
+#[cfg(machine_x86)]
+use kernel::vm::km::{KD_TRYLOCK, KD_WAITOK, KP_ZERO, KV_PAGE};
 
 /// `IOMMU_DEBUG`: not defined (`DPRINTF` prints nothing).
 pub const IOMMU_DEBUG: bool = false;

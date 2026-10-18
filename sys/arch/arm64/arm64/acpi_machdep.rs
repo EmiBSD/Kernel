@@ -53,7 +53,6 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
 use crate::arch::arm64::arm64::intr::interrupt_controllers;
-use crate::arch::arm64::arm64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::arch::arm64::dev::acpiiort::acpiiort_device_map;
 use crate::arch::arm64::include::bus::{self, BUS_DMA_COHERENT};
 use crate::arch::arm64::include::fdt::FdtAttachArgs;
@@ -66,18 +65,20 @@ use crate::dev::acpi::dsdt::{LR_EXTIRQ_MODE, LR_EXTIRQ_POLARITY};
 use crate::dev::ofw::openfirm::OF_is_compatible;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{
     BusAddr, BusDmaTag, BusSize, BusSpaceHandle, BusSpaceTag, bus_space_map, bus_space_unmap,
 };
 use crate::machine::pmap::pmap_update;
+use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::sys::device::{CfMatch, Cfattach, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK, M_ZERO};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::unported;
-use crate::uvm::uvm_km::{KD_NOWAIT, KP_NONE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `pwr_action`: what the power button does (1: power down).
 pub const PWR_ACTION: i32 = 1;

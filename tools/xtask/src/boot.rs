@@ -22,7 +22,7 @@
 //! The image is a raw disk with one MBR partition holding a FAT file system: Limine's UEFI
 //! binary at `EFI/BOOT/BOOT{X64,AA64}.EFI`, `limine.conf` at the root, the kernel at `/bsd`
 //! and the boot modules: `/init` (the freestanding init of `init/`) and `/ramdisk.ffs` (the
-//! root file system image `just userland` makes, rd(4)'s image) and, N2.4, `/abi-openbsd.ko`
+//! root file system image `just userland` makes, rd(4)'s image) and, N2.4, `/abi_openbsd.ko`
 //! (the ABI module `just build-abi-<arch>` makes), each when it exists.
 //! QEMU boots it with EDK2 firmware; the kernel's serial console is on stdio and, under feature
 //! `qemu`, the kernel ends the emulator with a status `smoke` checks.
@@ -185,7 +185,7 @@ pub const RAMDISK_MODULE: &str = "ramdisk.ffs";
 
 /// N2.4 (decision 22): the ABI module's name on every boot medium and in `limine.conf`;
 /// `sys/stand` looks the Limine module up by it, boot(8) reads `/` of it.
-pub const ABI_MODULE: &str = "abi-openbsd.ko";
+pub const ABI_MODULE: &str = "abi_openbsd.ko";
 
 /// The environment variable naming a run's directory (see [`run_dir`]).
 pub(crate) const RUN_DIR_ENV: &str = "EMIBSD_RUN_DIR";
@@ -208,6 +208,10 @@ pub(crate) fn run_dir(root: &Path) -> PathBuf {
 pub(crate) fn image_path(root: &Path, arch: Arch, tag: Option<&str>) -> PathBuf {
     run_dir(root).join(format!("emibsd-{}{}.img", arch.name(), dash(tag)))
 }
+
+/// The memory of every EmiBSD VM ([`qemu_command`]), and of the OpenBSD VMs `bench` boots
+/// beside them (`diffopenbsd::Boot::Bench`), so both systems run on the same machine.
+pub(crate) const VM_MEMORY: &str = "512M";
 
 /// Size of the persistent disk: 64 MiB, sparse.
 pub(crate) const DISK_SIZE: u64 = 64 * 1024 * 1024;
@@ -712,7 +716,7 @@ pub(crate) fn qemu_command(
 
     let mut cmd = Command::new(arch.qemu());
     // M13 (hwopts.rs): `--screenshot-after` and `--sendkey-after` put the monitor on a socket.
-    cmd.args(["-m", "512M", "-display", "none", "-monitor"]);
+    cmd.args(["-m", VM_MEMORY, "-display", "none", "-monitor"]);
     cmd.arg(crate::hwopts::monitor_arg());
     // M13 (hwopts.rs): `--reboot` lets a guest reset restart the machine.
     if !crate::hwopts::reboot() {
@@ -884,7 +888,7 @@ pub fn default_init(root: &Path, arch: Arch) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-/// The ABI module every boot medium carries as `/abi-openbsd.ko`: the one
+/// The ABI module every boot medium carries as `/abi_openbsd.ko`: the one
 /// `just build-abi-<arch>` left in `target/abi/`, if it exists (without it the kernel says
 /// so and takes every system call through its legacy path).
 pub fn default_abi_module(root: &Path, arch: Arch) -> Option<PathBuf> {
@@ -893,7 +897,7 @@ pub fn default_abi_module(root: &Path, arch: Arch) -> Option<PathBuf> {
         .join("abi")
         .join(arch.target())
         .join("debug")
-        .join("abi-openbsd");
+        .join("abi_openbsd");
     p.is_file().then_some(p)
 }
 
@@ -997,7 +1001,7 @@ pub(crate) const FIRMWARE_RETRY_MARKER: &str = "retrying once after a known firm
 
 /// The external bug id of the firmware failure on `serial`, when the boot ended in one of
 /// [`FIRMWARE_FLAKES`] before the kernel printed anything (its first line is `bsd: `).
-fn firmware_flake(serial: &str) -> Option<&'static str> {
+pub(crate) fn firmware_flake(serial: &str) -> Option<&'static str> {
     if serial.contains("bsd: ") {
         return None;
     }

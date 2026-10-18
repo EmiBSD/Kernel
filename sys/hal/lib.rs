@@ -36,7 +36,8 @@ pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;
 
-// The host tests link std; a kernel image never does.
+// The host tests link std; a kernel image never does (the host double of the pmap declares
+// its own, `arch/host/pmap.rs`).
 #[cfg(test)]
 extern crate std;
 #[cfg(test)]
@@ -46,21 +47,67 @@ extern crate std;
 pub(crate) mod reftest;
 
 pub(crate) mod assert;
+// Typed memory stolen at boot over the pmap's `steal_memory` (N3.3): wherever the pmap is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+pub mod bootmem;
 pub mod bridges;
 pub mod cons;
 pub mod cpu;
 pub mod intr;
+#[forbid(unsafe_code)]
+pub mod klock;
 pub mod kmbuf;
+pub mod link;
+#[forbid(unsafe_code)]
+pub mod list;
 pub mod malloc;
+// The byte view of frames mapped for I/O over the pmap (N3.4a): wherever the pmap is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+pub mod mapped;
 pub mod mutex;
+#[forbid(unsafe_code)]
+pub mod netlock;
 pub mod once;
+pub mod owned;
 pub mod percpu;
+// pmap(9) (N3.1). A machine's build has the module once its backend is in
+// `arch/<machine>/pmap/`: the host double's, amd64's (N3.1 commit 4) and arm64's (commit 5),
+// as the two pmap bridges of `bridges.rs`.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+#[forbid(unsafe_code)]
+pub mod pmap;
+
 pub mod pool;
+#[forbid(unsafe_code)]
+pub mod prf;
+// arc4random(9) over the pmap's `Random` bridge (N3.5): wherever that bridge is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+#[forbid(unsafe_code)]
+pub mod random;
 pub mod refcnt;
 pub mod rwlock;
 pub mod sleep;
 #[cfg(test)]
 pub(crate) mod testutil;
+#[forbid(unsafe_code)]
+pub mod tree;
 pub(crate) mod trust;
 pub mod user;
+pub mod vm;
 /* </CODE> */

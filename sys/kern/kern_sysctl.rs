@@ -179,6 +179,7 @@ use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_lockf::MAXLOCKSPERUID;
 use crate::kern::vfs_subr::{MAXVNODES, NUMVNODES, vfs_sysctl, vref, vrele};
 use crate::kern::vfs_vops::VOP_GETATTR;
+use crate::kern::vm_bsd::{VmUio, uvm_sysctl};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::{Cpu, CpuInfo, cpu_info_foreach, curproc};
@@ -233,21 +234,20 @@ use crate::sys::unistd::_POSIX_VERSION;
 use crate::sys::unpcb::{UnpRefs, sotounpcb};
 use crate::sys::vnode::{GETCWD_CHECK_ACCESS, Vattr, Vnode, VnodeUn, makeimode};
 use crate::unported;
-use crate::uvm::uvm_extern::Vmspace;
-use crate::uvm::uvm_glue::{uvm_vslock, uvm_vsunlock};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_io::uvm_io;
-use crate::uvm::uvm_km::NO_CONSTRAINT;
-use crate::uvm::uvm_map::{VmMap, uvmspace_addref, uvmspace_free};
-use crate::uvm::uvm_meter::uvm_sysctl;
-use crate::uvm::uvm_mmap::UVM_WXABORT;
-use crate::uvm::uvm_page::uvm_pagecount;
-use crate::uvm::uvm_param::atop;
 #[cfg(feature = "inet6")]
 use crate::{
     netinet::tcp_usrreq::TCB6TABLE, netinet::udp_usrreq::UDB6TABLE,
     netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE,
 };
+use hal::vm::param::atop;
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::glue::{uvm_vslock, uvm_vsunlock};
+use kernel::vm::io::uvm_io;
+use kernel::vm::km::NO_CONSTRAINT;
+use kernel::vm::map::VmspaceRef;
+use kernel::vm::map::{VmMap, uvmspace_free};
+use kernel::vm::mmap::UVM_WXABORT;
+use kernel::vm::page::uvm_pagecount;
 
 /// `MAXPARTITIONS` (`<machine/disklabel.h>`, 16 on amd64 and arm64): number of partitions.
 /// The disklabel headers are not ported.
@@ -432,7 +432,7 @@ pub fn sysctl_vslock(addr: usize, len: usize) -> Result<(), Errno> {
             let Some(p) = curproc() else {
                 panic(format_args!("sysctl_vslock: no curproc"));
             };
-            uvm_vslock(p, addr, len, PROT_READ | PROT_WRITE)
+            uvm_vslock(&p.vmspace().vm_map, addr, len, PROT_READ | PROT_WRITE)
         };
         if let Err(e) = error {
             kernel_unlock();
@@ -452,7 +452,7 @@ pub fn sysctl_vsunlock(addr: usize, len: usize) {
         let Some(p) = curproc() else {
             panic(format_args!("sysctl_vsunlock: no curproc"));
         };
-        uvm_vsunlock(p, addr, len);
+        uvm_vsunlock(&p.vmspace().vm_map, addr, len);
     }
     kernel_unlock();
     rw_exit_write(&SYSCTL_LOCK);
@@ -2239,13 +2239,11 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     let (pg, s) = unsafe { (&*pr.ps_pgrp.get(), &*pr.session()) };
 
     // exiting/zombie process might no longer have VM space.
-    let mut vm: Option<&'static Vmspace> = None;
+    let mut vm: Option<VmspaceRef> = None;
     if flags & PS_EXITING == 0 {
-        // SAFETY: a process that is not exiting holds its vmspace reference.
-        vm = unsafe { pr.ps_vmspace.get().as_ref() };
-        if let Some(vm) = vm {
-            uvmspace_addref(vm);
-        }
+        // vm = pr->ps_vmspace; uvmspace_addref(vm): a process that is not exiting holds
+        // its vmspace, and the reference keeps it while it is read.
+        vm = pr.vmspace_share();
     }
 
     let tu = Tusage::new();
@@ -2274,7 +2272,7 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
         ki.p_paddr = ptrtoint64(p);
         ki.p_fd = ptrtoint64(pr.ps_fd.get());
         ki.p_limit = ptrtoint64(pr.ps_limit.get());
-        ki.p_vmspace = ptrtoint64(pr.ps_vmspace.get());
+        ki.p_vmspace = ptrtoint64(pr.vmspace_ptr());
         ki.p_sigacts = ptrtoint64(pr.ps_sigacts.get());
         ki.p_sess = ptrtoint64(pg.pg_session.get());
         ki.p_ru = ptrtoint64(pr.ps_ru.get());
@@ -2361,11 +2359,11 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     }
 
     if flags & (PS_EMBRYO | PS_ZOMBIE) == 0 {
-        if let Some(vm) = vm {
-            ki.p_vm_rssize = vm.vm_rssize.get();
-            ki.p_vm_tsize = vm.vm_tsize.get();
-            ki.p_vm_dsize = vm.vm_dused.get();
-            ki.p_vm_ssize = vm.vm_ssize.get();
+        if let Some(vm) = vm.as_deref() {
+            ki.p_vm_rssize = vm.vm_rssize.load(Ordering::Relaxed);
+            ki.p_vm_tsize = vm.vm_tsize.load(Ordering::Relaxed);
+            ki.p_vm_dsize = vm.vm_dused.load(Ordering::Relaxed);
+            ki.p_vm_ssize = vm.vm_ssize.load(Ordering::Relaxed);
         }
         ki.p_stat = p.p_stat.get() as i8;
         ki.p_slptime = p.p_slptime.get();
@@ -2432,7 +2430,7 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     // fixups that can only be done in the kernel
     if flags & PS_EXITING == 0 {
         if flags & PS_EMBRYO == 0
-            && let Some(vm) = vm
+            && let Some(vm) = vm.as_deref()
         {
             ki.p_vm_rssize = pmap_resident_count(vm.vm_map.pmap()) as i32;
         }
@@ -2537,8 +2535,10 @@ pub fn sysctl_proc_args(
     }
 
     let ps_strings = vpr.ps_strings.get();
-    let vm = vpr.vmspace();
-    uvmspace_addref(vm);
+    // vm = vpr->ps_vmspace; uvmspace_addref(vm) (gone already: exiting since the check)
+    let Some(vm) = vpr.vmspace_share() else {
+        return Err(Errno::EINVAL);
+    };
 
     let Some(mem) = malloc(PAGE_SIZE, M_TEMP, M_WAITOK) else {
         uvmspace_free(vm);
@@ -2584,7 +2584,7 @@ fn proc_args_copy(
             uio_rw: UioRw::UIO_READ,
             uio_procp: Some(cp),
         };
-        uvm_io(map, &mut uio, 0)
+        uvm_io(map, &mut VmUio(&mut uio), va, 0)
     };
 
     let mut pss = [0u8; size_of::<PsStrings>()];

@@ -120,7 +120,7 @@
 //!
 //! ## Redesign
 //! - N2.4 (decision 22): `efi_makebootargs` adds `/chosen`'s `emibsd,abi-module` (two
-//!   big-endian 64-bit cells: the physical address and size of `/abi-openbsd.ko`, which
+//!   big-endian 64-bit cells: the physical address and size of `/abi_openbsd.ko`, which
 //!   boot() put in the kernel's block after its image) when boot() placed one. The block's
 //!   size is `KERN_BLOCK_SIZE`, which `conf.rs` reads for the module's room.
 
@@ -1092,7 +1092,7 @@ pub fn efi_makebootargs(cmd: &CmdState, bootargs: &[u8], howto: i32) -> *mut u8 
     fdt_node_add_property(node, b"bootargs", &args);
     fdt_node_add_property(node, b"openbsd,boothowto", &boothowto);
 
-    // Not in the C (N2.4): where boot() put /abi-openbsd.ko in the kernel's block, after
+    // Not in the C (N2.4): where boot() put /abi_openbsd.ko in the kernel's block, after
     // its image and below the end mark passed in x0 (two big-endian 64-bit cells: the
     // physical address and the size).
     if let Some((at, size)) = cmd.abi_module {

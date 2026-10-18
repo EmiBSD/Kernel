@@ -125,7 +125,8 @@ use crate::sys::types::{Pid, Uid};
 use crate::sys::ucred::Ucred;
 use crate::sys::user::User;
 use crate::sys::vnode::Vnode;
-use crate::uvm::uvm_extern::Vmspace;
+use hal::malloc::MArray;
+use kernel::vm::map::{Vmspace, VmspaceRef, uvmspace_share};
 
 /// `_MAXCOMLEN`: the command and thread names, NUL included.
 pub const _MAXCOMLEN: usize = crate::sys::syslimits::_MAXCOMLEN;
@@ -262,6 +263,22 @@ impl Pinsyscall {
             pn_npins: Cell::new(0),
         }
     }
+
+    /// `pinsyscalls(2)`'s table for `[base, end)` (the kernel's `sys_pinsyscalls` built it,
+    /// `mallocarray(npins, sizeof(u_int), M_PINSYSCALL)`): the block is the process's from now
+    /// on, read by `pin_check` at every system call and freed by `exit`/`exec`'s `pin_free`
+    /// (`free(pn_pins, M_PINSYSCALL, npins * sizeof(u_int))`), as the C's. The fields are
+    /// stored in the C's order.
+    pub fn install(&self, base: usize, end: usize, pins: MArray<u32>) {
+        let (table, npins) = MArray::into_raw(pins);
+        self.pn_start.set(base);
+        self.pn_end.set(end);
+        self.pn_pins.set(table.as_ptr());
+        // sys_pinsyscalls refuses a table of more than SYS_MAXSYSCALL entries (E2BIG).
+        let npins = i32::try_from(npins).ok();
+        kassert!(npins.is_some());
+        self.pn_npins.set(npins.unwrap_or(0));
+    }
 }
 
 impl Default for Pinsyscall {
@@ -363,8 +380,10 @@ pub struct Process {
     pub ps_textvp: Cell<Option<&'static crate::sys::vnode::Vnode>>,
     /// `ps_fd`: ptr to open files structure; the process holds a reference (`fd()`).
     pub ps_fd: Cell<*const Filedesc>,
-    /// `ps_vmspace`: address space.
-    pub ps_vmspace: Cell<*const Vmspace>,
+    /// `ps_vmspace`: address space, the process's counted handle to it (one `vm_refcnt`
+    /// reference, set by `fork1`, `exec` and `main`, taken by the reaper's `uvm_exit`); a
+    /// pointer's size, as the C's.
+    pub ps_vmspace: Cell<Option<VmspaceRef>>,
     /// \[I\] `ps_pid`: process identifier.
     pub ps_pid: Cell<Pid>,
 
@@ -514,7 +533,7 @@ impl Process {
             ps_sigacts: Cell::new(ptr::null()),
             ps_textvp: Cell::new(None),
             ps_fd: Cell::new(ptr::null()),
-            ps_vmspace: Cell::new(ptr::null()),
+            ps_vmspace: Cell::new(None),
             ps_pid: Cell::new(0),
             ps_lock: Rwlock::new("pslock"),
             ps_mtx: Mutex::new(IPL_HIGH),
@@ -577,11 +596,62 @@ impl Process {
     /// `pr->ps_vmspace`: the address space, which the process holds a reference to from
     /// `fork1` (or `main` for process 0) until the reaper's `uvm_exit`.
     pub fn vmspace(&self) -> &'static Vmspace {
-        let vm = self.ps_vmspace.get();
-        kassert!(!vm.is_null());
-        // SAFETY: non-null while the process holds its reference; `uvmspace_free` runs only
-        // after `uvm_exit` cleared the pointer.
-        unsafe { &*vm }
+        match self.vmspace_opt() {
+            Some(vm) => vm,
+            None => crate::kern::subr_prf::panic(format_args!("vmspace: no address space")),
+        }
+    }
+
+    /// `pr->ps_vmspace`, `None` once `uvm_exit` took it (an exiting or zombie process).
+    pub fn vmspace_opt(&self) -> Option<&'static Vmspace> {
+        self.vmspace_handle().map(|vm| &**vm)
+    }
+
+    /// The process's handle, by reference (for `vmspace_opt` and `vmspace_share`, which
+    /// end the borrow before they return a reference into the vmspace or a new handle).
+    fn vmspace_handle(&self) -> Option<&'static VmspaceRef> {
+        // SAFETY: the `&Option` made here lives only inside this module's callers
+        // (`vmspace`, `vmspace_opt`, `vmspace_share`, `vmspace_ptr`), which copy out of it (a
+        // reference into the vmspace, a new handle, an address) before they return and never
+        // write the slot meanwhile; so no write may run during the borrow. The writers are
+        // three: `fork1`'s `process_new` (`set_vmspace` before the child is reachable by
+        // anyone), `exec` (`uvmspace_exec`'s `set_vmspace`, in `sys_execve`, which runs
+        // under the kernel lock with the process's other threads gone), and the reaper's
+        // `uvm_exit` (`take_vmspace`, without the kernel lock, but only after `exit1` set
+        // `PS_EXITING` under it). The readers of another process's slot (`fill_kproc`,
+        // `kern.proc_args`, the tty's status line) run under the kernel lock and skip a
+        // process with `PS_EXITING` set, so they never overlap the reaper's take nor an exec's
+        // set; a process's own threads read its slot only while it is alive, before
+        // `uvm_exit`. The vmspace outlives the returned reference while the process holds
+        // its handle (the C's pointer is valid until `uvm_exit`); `'static` is that pointer's
+        // lifetime, the slot's to keep.
+        unsafe { (*self.ps_vmspace.as_ptr()).as_ref() }
+    }
+
+    /// `vm = pr->ps_vmspace; uvmspace_addref(vm)`: one more reference (and handle) for a
+    /// reader that keeps the address space while it reads it (`fill_kproc`,
+    /// `sysctl_proc_args`, `fork1`'s `FORK_SHAREVM`), given back with `uvmspace_free`; `None`
+    /// once `uvm_exit` took it.
+    pub fn vmspace_share(&self) -> Option<VmspaceRef> {
+        self.vmspace_handle().map(uvmspace_share)
+    }
+
+    /// The address of `pr->ps_vmspace` (null for none): `kinfo_proc`'s `p_vmspace` and the
+    /// threads' copy, `p->p_vmspace`.
+    pub fn vmspace_ptr(&self) -> *const Vmspace {
+        self.vmspace_handle()
+            .map_or(ptr::null(), VmspaceRef::as_ptr)
+    }
+
+    /// `pr->ps_vmspace = vm`, the previous handle returned (`fork1` and `main` find none;
+    /// `exec`'s `uvmspace_exec` with a new vmspace frees the old one).
+    pub fn set_vmspace(&self, vm: VmspaceRef) -> Option<VmspaceRef> {
+        self.ps_vmspace.replace(Some(vm))
+    }
+
+    /// `vm = pr->ps_vmspace; pr->ps_vmspace = NULL` (`uvm_exit`): the process's handle.
+    pub fn take_vmspace(&self) -> Option<VmspaceRef> {
+        self.ps_vmspace.take()
     }
 
     /// `pr->ps_ucred`: the process's credentials, which it holds a reference to from
@@ -739,16 +809,9 @@ pub const PS_BITS: &[u8] = b"\x20\x01CONTROLT\x02EXEC\x03INEXEC\x04EXITING\x05SU
 pub const PS_FLAGS_INHERITED_ON_FORK: u32 =
     PS_SUGID | PS_SUGIDEXEC | PS_PLEDGE | PS_EXECPLEDGE | PS_CHROOT;
 
-/// `struct p_inentry`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PInentry {
-    /// `ie_serial`.
-    pub ie_serial: u64,
-    /// `ie_start`.
-    pub ie_start: usize,
-    /// `ie_end`.
-    pub ie_end: usize,
-}
+/// `struct p_inentry`: the map's own cache type (`kernel::vm::map::InentryCache`, which
+/// `uvm_map_inentry` fills: `ie_start`, `ie_end`, `ie_serial`).
+pub use kernel::vm::map::InentryCache as PInentry;
 
 /// `struct proc`: a thread.
 ///
@@ -773,7 +836,7 @@ pub struct Proc {
     // substructures:
     /// `p_fd`: copy of `p_p->ps_fd` (`fd()`).
     pub p_fd: Cell<*const Filedesc>,
-    /// \[I\] `p_vmspace`: copy of `p_p->ps_vmspace`.
+    /// \[I\] `p_vmspace`: copy of `p_p->ps_vmspace` (the address its handle holds).
     pub p_vmspace: Cell<*const Vmspace>,
     /// \[o\] `p_spinentry`: cache for SP check.
     pub p_spinentry: Cell<PInentry>,
@@ -892,9 +955,9 @@ impl Proc {
             p_fd: Cell::new(ptr::null()),
             p_vmspace: Cell::new(ptr::null()),
             p_spinentry: Cell::new(PInentry {
-                ie_serial: 0,
-                ie_start: 0,
-                ie_end: 0,
+                start: 0,
+                end: 0,
+                serial: 0,
             }),
             p_flag: AtomicI32::new(0),
             p_stat: Cell::new(0),
@@ -947,8 +1010,16 @@ impl Proc {
     pub fn vmspace(&self) -> &'static Vmspace {
         let vm = self.p_vmspace.get();
         kassert!(!vm.is_null());
-        // SAFETY: as for `Process::vmspace`; the reaper nulls the thread's copy after the
-        // thread is dead.
+        // SAFETY: this is called on a live thread (`curproc` in a system call, a fault or a
+        // selftest), whose copy is the address of the vmspace its process's handle holds:
+        // `fork1` and `main` copy `Process::vmspace_ptr`, and `uvmspace_exec` sets the
+        // exec'ing thread's copy before it replaces the handle (its other threads are dead by
+        // then); so the vmspace lives while the thread does, the process holding the handle
+        // until the reaper's `uvm_exit`. A dead thread whose process exec'd away a shared
+        // vmspace still names the old one, which only the other process keeps alive, until
+        // the reaper nulls its copy (`p_vmspace = NULL`, the C's): nothing calls this on a
+        // dead thread, the reaper only stores. The selftests that lend a thread another
+        // vmspace keep that handle until they set the copy back.
         unsafe { &*vm }
     }
 

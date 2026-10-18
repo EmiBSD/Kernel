@@ -3,7 +3,7 @@
 # stream larger than the buffer, writes larger than PIPE_SIZE (the buffer grows to
 # BIG_PIPE_SIZE), the first line of a stream, and SIGPIPE when the reader goes first. Since
 # N2.6 pipe(2) and pipe2(2) are the kernel crate's (sys/kernel/pipe.rs) and `Native` entries of
-# abi-openbsd.ko. Only deterministic output: byte counts, and a writer's status read after the
+# abi_openbsd.ko. Only deterministic output: byte counts, and a writer's status read after the
 # whole pipeline is done. head(1) and yes(1) are not in EmiBSD's userland; dd(1) and sed(1) do
 # their part.
 

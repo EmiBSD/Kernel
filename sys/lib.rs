@@ -33,6 +33,15 @@ extern crate std;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+// Decision 40 (2026-10-17): the MULTIPROCESSOR kernel is the only one built and maintained.
+// `multiprocessor` is a default feature (sys/Cargo.toml); a build that turns it off is refused
+// here rather than compiling the uniprocessor branches bsd's inherited modules still carry,
+// unbuilt, until N4 redesigns them.
+#[cfg(not(feature = "multiprocessor"))]
+compile_error!(
+    "the uniprocessor kernel is not maintained (decision 40): keep `multiprocessor`, a default feature of bsd"
+);
+
 pub mod arch;
 pub mod conf;
 pub mod crypto;
@@ -57,7 +66,6 @@ pub mod sys;
 pub mod tmpfs;
 #[cfg(feature = "ffs")]
 pub mod ufs;
-pub mod uvm;
 
 #[cfg(test)]
 #[forbid(unsafe_code)]

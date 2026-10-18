@@ -32,7 +32,8 @@
 //!
 //! Not for any line the C prints with `printf(9)`: `Cons` bypasses `printf`'s lock and the
 //! message buffer, so `dmesg` never sees what goes through it, and lines a smoke or
-//! `diff-openbsd` compares keep going through `bsd`'s `printf` until it moves.
+//! `diff-openbsd` compares keep going through `bsd`'s `printf` until it moves; the crates
+//! above `bsd` reach it through [`crate::prf::printf`].
 //!
 //! ## Redesign
 //! - Not a port: the functions are `dev/cons.rs`'s, reached through one trait object; what is

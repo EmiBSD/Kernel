@@ -1245,7 +1245,7 @@ mod tests {
     /// The lock under which the mounting tests run `vfsinit`, whose `ufsdirhash_init` draws a
     /// new hash key: a test that hashes a name twice holds it, so the key stays put between.
     fn key_lock() -> MutexGuard<'static, ()> {
-        crate::uvm::uvm_pmemrange::tests::LOCK
+        kernel::testutil::MEMORY
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }

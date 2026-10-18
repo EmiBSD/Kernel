@@ -137,6 +137,7 @@ use crate::kern::vfs_vops::{
     VOP_PATHCONF, VOP_READ, VOP_READDIR, VOP_READLINK, VOP_REMOVE, VOP_RENAME, VOP_RMDIR,
     VOP_SETATTR, VOP_SYMLINK, VOP_UNLOCK, VOP_WRITE,
 };
+use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::nfs::nfs::{ND_NFSV3, NfsrvDescript, NfssvcSock, nfs_srvmaxdata};
 use crate::nfs::nfs_socket::nfs_rephead;
 use crate::nfs::nfs_srvsubs::{
@@ -191,7 +192,6 @@ use crate::sys::vnode::{
     VREG, VROOT, VSOCK, VTEXT, VWRITE, Vattr, Vnode, iftovt,
 };
 use crate::ufs::ufs::dir::DIRBLKSIZ;
-use crate::uvm::uvm_vnode::uvm_vnp_uncache;
 
 /// A server procedure (`int (*)(struct nfsrv_descript *, struct nfssvc_sock *, struct proc *,
 /// struct mbuf **)`): serves the request `nd` from the socket `slp` in the nfsd `procp` and

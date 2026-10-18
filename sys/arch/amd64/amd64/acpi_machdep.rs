@@ -68,7 +68,6 @@ use crate::arch::amd64::amd64::bus_space::{
 use crate::arch::amd64::amd64::intr::intr_establish;
 use crate::arch::amd64::amd64::ioapic::ioapic_find_bybase;
 use crate::arch::amd64::amd64::machdep::CPURESETFN;
-use crate::arch::amd64::amd64::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::arch::amd64::include::i82093reg::{
     IOAPIC_REDLO_ACTLO, IOAPIC_REDLO_DEL_LOPRI, IOAPIC_REDLO_DEL_SHIFT, IOAPIC_REDLO_LEVEL,
 };
@@ -87,18 +86,20 @@ use crate::dev::acpi::acpivar::{AcpiMemMap, AcpiSoftc};
 use crate::dev::acpi::amltypes::AmlNodeRef;
 use crate::dev::acpi::dsdt::{LR_EXTIRQ_MODE, LR_EXTIRQ_POLARITY};
 use crate::dev::isa::isareg::IOM_BEGIN;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{BusAddr, BusDmaTag, BusSize};
 use crate::machine::intr::{IPL_BIO, IPL_WAKEUP};
 use crate::machine::isa_machdep::IST_LEVEL;
 use crate::machine::mpconfig::MpIntrMap;
 use crate::machine::pmap::pmap_update;
+use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
 use crate::sys::device::{CfMatch, Cfattach, Device};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::unported;
-use crate::uvm::uvm_km::{KD_NOWAIT, KP_NONE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `ACPI_BIOS_RSDP_WINDOW_BASE`: the BIOS area searched for the RSDP.
 const ACPI_BIOS_RSDP_WINDOW_BASE: usize = 0xe0000;

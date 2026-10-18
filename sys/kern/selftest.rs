@@ -73,6 +73,8 @@ use crate::kern::uipc_mbuf::{
     m_copym, m_dup_pkt, m_freem, m_gethdr, m_pullup, m_split,
 };
 use crate::kern::uipc_mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
+use crate::kern::vm_bsd::uvm_pagealloc;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::kprintf;
 use crate::machine::bus::{
     BUS_DMA_NOWAIT, BUS_DMA_ZERO, BUS_DMASYNC_POSTREAD, BUS_DMASYNC_POSTWRITE, BUS_DMASYNC_PREREAD,
@@ -116,19 +118,19 @@ use crate::sys::timeout::Timeout;
 use crate::sys::types::{Paddr, Vaddr, Vsize, major};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::IO_NDELAY;
-use crate::uvm::uvm_extern::{
+use hal::pmap::PMAP_WIRED;
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::fault::{VM_FAULT_INVALID, uvm_fault};
+use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY};
+use kernel::vm::map::Vmspace;
+use kernel::vm::map::{uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_free};
+use kernel::vm::page::{
+    Owner, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree, vm_page_to_phys,
+};
+use kernel::vm::types::{
     PROT_MASK, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_PGA_ZERO, UVM_PLA_NOWAIT, UVM_PLA_WAITOK,
-    UVM_PLA_ZERO, Vmspace, uvm_mapflag,
+    UVM_PLA_ZERO, uvm_mapflag,
 };
-use crate::uvm::uvm_fault::{VM_FAULT_INVALID, uvm_fault};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_map::{uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_free};
-use crate::uvm::uvm_page::{
-    PHYS_TO_VM_PAGE, Pglist, uvm_pagealloc, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree,
-    vm_page_to_phys,
-};
-use crate::uvm::uvm_pmap::PMAP_WIRED;
 
 /// A value that is neither all zeros nor all ones.
 const PATTERN: u64 = 0x5a5a_c3c3_0f0f_a5a5;
@@ -305,7 +307,7 @@ pub fn pmap_kernel_mapping() {
     unsafe { pmap_kremove(va, Vsize::new(PAGE_SIZE)) };
     pmap_update(pmap_kernel());
     let gone = pmap_extract(pmap_kernel(), va).is_none();
-    uvm_pagefree(pg);
+    uvm_pagefree(pg, Owner::None);
     km_free(vp, PAGE_SIZE, &KV_ANY, &KP_NONE);
 
     let ok = seen == PATTERN && extracted == Some(Paddr::new(pa.as_usize() + 0x10)) && gone;
@@ -411,7 +413,7 @@ fn pmap_reuse_user(pm: &MachinePmap) -> Result<(), &'static str> {
     }
 
     for pg in pages.into_iter().flatten() {
-        uvm_pagefree(pg);
+        uvm_pagefree(pg, Owner::None);
     }
     result
 }
@@ -433,13 +435,13 @@ pub fn pmap_reuse() {
         true,
     );
     pmap_deactivate(p);
-    p.p_vmspace.set(vm);
+    p.p_vmspace.set(kernel::vm::map::VmspaceRef::as_ptr(&vm));
     pmap_activate(p);
 
     let result = pmap_reuse_kernel().and_then(|()| pmap_reuse_user(vm.vm_map.pmap()));
 
     pmap_deactivate(p);
-    p.p_vmspace.set(ovm);
+    p.p_vmspace.set(ptr::from_ref(ovm));
     pmap_activate(p);
     uvmspace_free(vm);
 
@@ -633,14 +635,15 @@ pub fn buffer_cache() {
     }
 }
 
-/// The pager map: three busy pages, filled through the direct map, are mapped together in a
-/// pager segment (`uvm_pagermapin`, the vnode pager's path for a cluster) and read back
-/// through it; a single page uses the direct map. Then everything is given back.
+/// The pager map: three busy pages, filled through the direct map (a one-page window), are
+/// mapped together in a pager segment (`uvm_pagermapin`, the vnode pager's path for a cluster)
+/// and read back through it; a single page uses the direct map. Then everything is given back.
 pub fn pager_map() {
-    use crate::uvm::uvm_page::{uvm_pagealloc, uvm_pagefree};
-    use crate::uvm::uvm_pager::{UVMPAGER_MAPIN_READ, uvm_pagermapin, uvm_pagermapout};
+    use crate::kern::vm_bsd::uvm_pagealloc;
+    use kernel::vm::page::{Owner, PG_BUSY, VmPage, uvm_pagefree};
+    use kernel::vm::pager::{PageSlot, UVMPAGER_MAPIN_READ, uvm_pagermapin, uvm_pagermapout};
 
-    let mut pages: Vec<&'static crate::uvm::uvm_page::VmPage> = Vec::new();
+    let mut pages: Vec<&'static VmPage> = Vec::new();
     for _ in 0..3 {
         match uvm_pagealloc(None, 0, None, 0) {
             Some(pg) => pages.push(pg),
@@ -650,36 +653,45 @@ pub fn pager_map() {
             }
         }
     }
-    for (i, pg) in pages.iter().enumerate() {
-        pg.set_bits(crate::uvm::uvm_page::PG_BUSY);
-        let va = pmap_map_direct(pg).as_usize();
-        // SAFETY: a page this test just allocated, reached through the direct map.
-        unsafe { ptr::write_bytes(va as *mut u8, 0x40 + i as u8, PAGE_SIZE) };
-    }
-    let pps: Vec<*const crate::uvm::uvm_page::VmPage> =
-        pages.iter().map(|pg| ptr::from_ref(*pg)).collect();
-
     let mut ok = true;
-    let kva = uvm_pagermapin(&pps, 3, UVMPAGER_MAPIN_READ);
-    if kva == 0 {
-        kprintf!("selftest: pager map FAILED (uvm_pagermapin)\n");
-        ok = false;
-    } else {
-        for i in 0..3 {
-            // SAFETY: `kva` maps the three pages in order (uvm_pagermapin).
-            let b = unsafe { ptr::read_volatile((kva + i * PAGE_SIZE + 17) as *const u8) };
-            ok &= b == 0x40 + i as u8;
+    for (i, pg) in pages.iter().enumerate() {
+        pg.set_bits(PG_BUSY);
+        match uvm_pagermapin(&[PageSlot::Page(pg)], UVMPAGER_MAPIN_READ) {
+            Some(mut one) => {
+                one.as_slice_mut().fill(0x40 + i as u8);
+                uvm_pagermapout(one);
+            }
+            None => ok = false,
         }
-        uvm_pagermapout(kva, 3);
     }
-    let one = uvm_pagermapin(&pps[2..], 1, UVMPAGER_MAPIN_READ);
-    // SAFETY: the single page's mapping (the direct map).
-    ok &= one != 0 && unsafe { ptr::read_volatile(one as *const u8) } == 0x42;
-    uvm_pagermapout(one, 1);
+    let pps: Vec<PageSlot> = pages.iter().map(|pg| PageSlot::Page(pg)).collect();
+
+    match uvm_pagermapin(&pps, UVMPAGER_MAPIN_READ) {
+        None => {
+            kprintf!("selftest: pager map FAILED (uvm_pagermapin)\n");
+            ok = false;
+        }
+        Some(win) => {
+            // the window maps the three pages in order
+            let b = win.as_slice();
+            for i in 0..3 {
+                ok &= b[i * PAGE_SIZE + 17] == 0x40 + i as u8;
+            }
+            uvm_pagermapout(win);
+        }
+    }
+    // the single page's mapping (the direct map)
+    match uvm_pagermapin(&pps[2..], UVMPAGER_MAPIN_READ) {
+        Some(one) => {
+            ok &= one.as_slice()[0] == 0x42;
+            uvm_pagermapout(one);
+        }
+        None => ok = false,
+    }
 
     for pg in pages {
-        pg.clear_bits(crate::uvm::uvm_page::PG_BUSY);
-        uvm_pagefree(pg);
+        pg.clear_bits(PG_BUSY);
+        uvm_pagefree(pg, Owner::None);
     }
     if ok {
         kprintf!("selftest: pager map ok\n");
@@ -2133,9 +2145,6 @@ const MPSTRESS_PMR_CONSTRAINTS: [(usize, usize, usize, usize, i32); 5] = [
 /// pages lie inside their constraint, checks every tag, and frees the lists.
 fn mpstress_pmr_phase(me: usize, rand: &mut u64) {
     let lists: [Pglist; MPSTRESS_PMR_LISTS] = [const { Pglist::new() }; MPSTRESS_PMR_LISTS];
-    for l in &lists {
-        l.init();
-    }
     for round in 0..MPSTRESS_PMR_ROUNDS {
         for (li, pgl) in lists.iter().enumerate() {
             let (low, high, align, boundary, maxseg) =
@@ -2464,7 +2473,10 @@ pub fn mpstress() -> bool {
     .is_ok()
         && uva == mpstress_uva()
     {
-        MPSTRESS_VM.store(ptr::from_ref(vm).cast_mut(), Ordering::Release);
+        MPSTRESS_VM.store(
+            kernel::vm::map::VmspaceRef::as_ptr(&vm).cast_mut(),
+            Ordering::Release,
+        );
     }
     let free_start = UVMEXP.free.load(Ordering::Relaxed);
     let start_ns = nsecuptime();

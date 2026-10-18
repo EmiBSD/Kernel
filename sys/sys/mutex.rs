@@ -37,6 +37,7 @@
 //! providing mutual exclusion between processes, only cpus.
 //!
 //! Upstream: sys/sys/mutex.h @ 3ce1f3f79392
+//! LZ: sys/sys/mutex.rs@3c62ede68802
 //!
 //! Status: `wip`. Milestone M4 ports `struct mutex` (the machine-independent one: both
 //! architectures' `<machine/mutex.h>` say `__USE_MI_MUTEX`), `MUTEX_INITIALIZER`,
@@ -50,6 +51,14 @@
 //! - The fields are an atomic and `Cell`s, so a `static` mutex is entered through `&`.
 //! - `db_mutex`'s owner is the owning CPU as `mtx_curcpu()` gives it (an `AtomicUsize`, 0 when
 //!   free), like `struct mutex`'s, instead of a `struct cpu_info *volatile`.
+//!
+//! ## Redesign
+//! - The code is LZ's. Only the host test `initializer_is_free` changed, when
+//!   `MULTIPROCESSOR` became the one kernel built (decision 40): it asserts the level each
+//!   configuration stores, `IPL_MPFLOOR` for a level below it with `MULTIPROCESSOR`
+//!   (`__MUTEX_IPL`), the level given without; LZ's asserted the uniprocessor value alone.
+//! - Its uniprocessor branches stay, unbuilt, until N4 redesigns the file (the user's
+//!   decision 40 answer, 2026-10-17: the inherited UP code goes at each file's N4 redesign).
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -175,6 +184,13 @@ mod tests {
     fn initializer_is_free() {
         let m = Mutex::new(7);
         assert_eq!(mtx_owner(&m), 0);
+        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it under MULTIPROCESSOR.
+        #[cfg(feature = "multiprocessor")]
+        {
+            assert!(7 < crate::machine::intr::IPL_MPFLOOR);
+            assert_eq!(m.mtx_wantipl.get(), crate::machine::intr::IPL_MPFLOOR);
+        }
+        #[cfg(not(feature = "multiprocessor"))]
         assert_eq!(m.mtx_wantipl.get(), 7);
         assert_eq!(m.mtx_oldipl.get(), IPL_NONE);
         assert!(!mtx_owned(&m));

@@ -79,20 +79,21 @@ use core::ptr::{self, NonNull};
 
 use crate::arch::arm64::arm64::cpuswitch::proc_trampoline;
 use crate::arch::arm64::arm64::fpu::fpu_save;
-use crate::arch::arm64::arm64::pmap::pmap_activate;
 use crate::arch::arm64::include::frame::{Switchframe, Trapframe};
 use crate::arch::arm64::include::param::{USPACE, stackalign};
 use crate::arch::arm64::include::pcb::PCB_FPU;
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
+use crate::machine::pmap::pmap_activate;
 use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove, pmap_update};
 use crate::sys::buf::{B_PHYS, Buf};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::proc::Proc;
 use crate::sys::types::{Register, Vaddr, Vsize};
-use crate::uvm::uvm_extern::{KmemVaMode, KvMap};
-use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, km_alloc, km_free};
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::km::{KD_WAITOK, KP_NONE};
+use kernel::vm::km::{KmemVaMode, KvMap};
 
 /// `cpu_fork`: finish a fork operation, with process `p2` nearly set up. Copy and update the
 /// kernel stack and pcb, making the child ready to run, and marking it so that it can return

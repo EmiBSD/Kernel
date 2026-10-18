@@ -112,9 +112,7 @@ use core::ptr::{self, NonNull};
 use crate::dev::rnd::arc4random;
 use crate::kassert;
 use crate::kern::kern_prot::{groupmember, suser_ucred};
-use crate::kern::kern_rwlock::{
-    rrw_init_flags, rw_enter, rw_enter_write, rw_exit, rw_exit_write, rw_init,
-};
+use crate::kern::kern_rwlock::{rrw_init_flags, rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::kern_tc::{getnanotime, nanotime};
@@ -125,6 +123,7 @@ use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_subr::{checkalias, getnewvnode, vget, vgone, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_ISLOCKED};
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, Dirent, dirent_size,
 };
@@ -137,7 +136,7 @@ use crate::sys::namei::{Componentname, SAVESTART};
 use crate::sys::param::{MAXPATHLEN, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::proc::Proc;
 use crate::sys::queue::{ListHead, TailqHead};
-use crate::sys::rwlock::{RW_WRITE, RWL_DUPOK, RWL_IS_VNODE};
+use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISGID, S_ISTXT, SF_APPEND, SF_IMMUTABLE, SF_SETTABLE,
     UF_SETTABLE,
@@ -164,14 +163,14 @@ use crate::tmpfs::tmpfs_mem::{
 };
 use crate::tmpfs::tmpfs_specops::TMPFS_SPECVOPS;
 use crate::tmpfs::tmpfs_vnops::TMPFS_VOPS;
-use crate::uvm::uvm_aobj::{
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::aobj::{
     UAO_FLAG_CANFAIL, uao_create, uao_detach, uao_grow, uao_reference, uao_shrink,
 };
-use crate::uvm::uvm_extern::{Voff, uvm_mapflag};
-use crate::uvm::uvm_km::kernel_map;
-use crate::uvm::uvm_map::{uvm_map, uvm_unmap};
-use crate::uvm::uvm_param::{round_page, trunc_page};
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
+use kernel::vm::km::kernel_map;
+use kernel::vm::map::{uvm_map, uvm_unmap};
+use kernel::vm::object::ObjRef;
+use kernel::vm::types::{Voff, uvm_mapflag};
 
 /// `TMPFS_UIO_MAXBYTES`: be gentle to kernel_map, don't allow more than 4MB in a single
 /// transaction.
@@ -289,7 +288,7 @@ pub fn tmpfs_alloc_node(
         }
         VREG => {
             // Regular file. Create an underlying UVM object.
-            let Some(uobj) = uao_create(Vsize::new(0), UAO_FLAG_CANFAIL) else {
+            let Some(ObjRef::Aobj(uobj)) = uao_create(Vsize::new(0), UAO_FLAG_CANFAIL) else {
                 tmpfs_node_put(tmp, nnode);
                 return Err(Errno::ENOSPC);
             };
@@ -339,7 +338,7 @@ pub fn tmpfs_free_node(tmp: &TmpfsMount, node: &'static TmpfsNode) {
                 tmpfs_mem_decr(tmp, objsz);
             }
             if let Some(uobj) = node.tn_spec.tn_reg.tn_aobj.take() {
-                uao_detach(uobj);
+                uao_detach(&uobj);
             }
         }
         VDIR => {
@@ -1013,9 +1012,9 @@ pub fn tmpfs_reg_resize(vp: &'static Vnode, newsize: Off) -> Result<(), Errno> {
         if !tmpfs_mem_incr(tmp, bytes) {
             return Err(Errno::ENOSPC);
         }
-        let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
-        let error = uao_grow(uobj, newpages as i32);
-        rw_exit(uobj.vmobjlock());
+        let mut w = uobj.object().lock().write();
+        let error = uao_grow(&uobj, &mut w, newpages as i32);
+        drop(w);
         if error.is_err() {
             tmpfs_mem_decr(tmp, bytes);
             return Err(Errno::ENOSPC);
@@ -1032,11 +1031,11 @@ pub fn tmpfs_reg_resize(vp: &'static Vnode, newsize: Off) -> Result<(), Errno> {
         if tmpfs_uio_cached(node) {
             tmpfs_uio_uncache(node);
         }
-        let _ = rw_enter(uobj.vmobjlock(), RW_WRITE);
-        if uao_shrink(uobj, newpages as i32).is_err() {
+        let mut w = uobj.object().lock().write();
+        if uao_shrink(&uobj, &mut w, newpages as i32).is_err() {
             panic(format_args!("shrink failed"));
         }
-        rw_exit(uobj.vmobjlock());
+        drop(w);
         // Decrease the used-memory counter.
         tmpfs_mem_decr(tmp, (oldpages - newpages) << PAGE_SHIFT);
     }
@@ -1392,14 +1391,14 @@ pub fn tmpfs_uiomove(node: &TmpfsNode, uio: &mut Uio<'_>, len: usize) -> Result<
     }
 
     let uobj = node.tn_uobj();
-    uao_reference(uobj);
+    uao_reference(&uobj);
 
     let mut va = 0usize;
     if let Err(error) = uvm_map(
         kernel_map(),
         &mut va,
         round_page(pgoff + sz),
-        Some(uobj),
+        Some(ObjRef::Aobj(uobj.clone())),
         trunc_page(uio.uio_offset as usize) as Voff,
         0,
         uvm_mapflag(
@@ -1410,7 +1409,7 @@ pub fn tmpfs_uiomove(node: &TmpfsNode, uio: &mut Uio<'_>, len: usize) -> Result<
             0,
         ),
     ) {
-        uao_detach(uobj); // Drop reference.
+        uao_detach(&uobj); // Drop reference.
         return Err(error);
     }
 
@@ -1431,14 +1430,14 @@ pub fn tmpfs_zeropg(node: &TmpfsNode, pgnum: Voff, pgoff: usize) -> Result<(), E
     kassert!(!tmpfs_uio_cached(node));
 
     let uobj = node.tn_uobj();
-    uao_reference(uobj);
+    uao_reference(&uobj);
 
     let mut va = 0usize;
     if let Err(error) = uvm_map(
         kernel_map(),
         &mut va,
         PAGE_SIZE,
-        Some(uobj),
+        Some(ObjRef::Aobj(uobj.clone())),
         pgnum,
         0,
         uvm_mapflag(
@@ -1449,7 +1448,7 @@ pub fn tmpfs_zeropg(node: &TmpfsNode, pgnum: Voff, pgoff: usize) -> Result<(), E
             0,
         ),
     ) {
-        uao_detach(uobj); // Drop reference.
+        uao_detach(&uobj); // Drop reference.
         return Err(error);
     }
 

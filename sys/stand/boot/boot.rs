@@ -69,7 +69,7 @@
 //!
 //! ## Redesign
 //! - N2.4 (decision 22, the boot loaders read a second file): boot() opens
-//!   `/abi-openbsd.ko` on the kernel's device (`abi_module_open`) and, after `loadfile`,
+//!   `/abi_openbsd.ko` on the kernel's device (`abi_module_open`) and, after `loadfile`,
 //!   reads it onto the page after the kernel's image when it fits the room the program gives
 //!   (`BootMd::abi_module_room`, new), raising `marks[MARK_END]` over it and recording it in
 //!   `CmdState::abi_module` for `run_loadfile`'s hand-over (amd64 `BOOTARG_ABIMODULE`, arm64
@@ -139,7 +139,7 @@ pub struct BootMd {
     /// `BOOT_STTY`.
     pub stty: Option<Stty>,
     /// Not in the C (N2.4, decision 22): the end of the room the program reserved for the
-    /// kernel (the load space `LOADADDR` maps into), where boot() puts `/abi-openbsd.ko`
+    /// kernel (the load space `LOADADDR` maps into), where boot() puts `/abi_openbsd.ko`
     /// after the kernel's image when it fits; `None` loads no module.
     pub abi_module_room: Option<fn() -> u64>,
 }
@@ -383,12 +383,12 @@ pub fn loadrandom(cmd: &CmdState, name: &[u8], buf: &mut [u8]) -> i32 {
 
 /// Not in the C (N2.4, decision 22): the ABI module the kernel loads before init(8), read
 /// from the device of the kernel being booted.
-pub const ABI_MODULE: &[u8] = b"/abi-openbsd.ko";
+pub const ABI_MODULE: &[u8] = b"/abi_openbsd.ko";
 
 /// Where the module goes after the kernel's image: the next page.
 const ABI_MODULE_ALIGN: u64 = 4096;
 
-/// Not in the C (N2.4): `/abi-openbsd.ko` on the device of the kernel being loaded, opened:
+/// Not in the C (N2.4): `/abi_openbsd.ko` on the device of the kernel being loaded, opened:
 /// its descriptor and length, which boot() reads straight into the room after the kernel;
 /// `None` without one (the kernel then takes every system call through its legacy path and
 /// says so). No buffer: an oversized or corrupt length is refused by boot()'s room check,

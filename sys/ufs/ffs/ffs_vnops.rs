@@ -81,6 +81,7 @@ use crate::kern::vfs_default::{
 };
 use crate::kern::vfs_subr::{vnoperm, vwaitforio};
 use crate::kern::vfs_vnops::vn_fsizechk;
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::{B_BUSY, B_CLRBUF, B_DELWRI, B_NOCACHE, B_SCANNED, B_SYNC};
 use crate::sys::errno::Errno;
@@ -112,7 +113,6 @@ use crate::ufs::ufs::ufs_vnops::{
     ufs_readdir, ufs_readlink, ufs_remove, ufs_rename, ufs_rmdir, ufs_setattr, ufs_strategy,
     ufs_symlink, ufs_unlock, ufsspec_close, ufsspec_read, ufsspec_write,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `ffs_vops`: the operations of a file, directory or symbolic link on an FFS.
 pub static FFS_VOPS: Vops = Vops {

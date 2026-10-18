@@ -20,11 +20,12 @@ bench = false
 doc = false
 
 [features]
-default = ["alloc", "boot_config", "ffs", "ffs2", "kmemstats", "inet6", "quota", "ufs_dirhash", "mfs", "tmpfs", "msdosfs", "cd9660", "udf", "nfsclient", "nfsserver", "fuse", "ntfs", "ext2fs", "wsdisplay_compat_usl", "wsdisplay_compat_rawkbd"]
+# `multiprocessor` is always on: the MULTIPROCESSOR kernel is the only one built (decision 40).
+default = ["alloc", "boot_config", "multiprocessor", "ffs", "ffs2", "kmemstats", "inet6", "quota", "ufs_dirhash", "mfs", "tmpfs", "msdosfs", "cd9660", "udf", "nfsclient", "nfsserver", "fuse", "ntfs", "ext2fs", "wsdisplay_compat_usl", "wsdisplay_compat_rawkbd"]
 alloc = []        # enables `extern crate alloc` and the GlobalAlloc over malloc(9)
 boot_config = ["alloc"] # OpenBSD `option BOOT_CONFIG` -> `boot -c`, the UKC> prompt (kern/subr_userconf.c); default (both GENERICs have it)
 diagnostic = ["hal/diagnostic", "kernel/diagnostic"]   # OpenBSD `option DIAGNOSTIC` -> kassert! active (and hal's and the kernel crate's)
-debug = []        # OpenBSD `option DEBUG`      -> kdassert! active
+debug = ["kernel/debug"] # OpenBSD `option DEBUG` -> kdassert! active (and the kernel crate's)
 kmemstats = []    # OpenBSD `option KMEMSTATS`  -> malloc(9) statistics; default (GENERIC has it)
 pool_debug = []   # OpenBSD `option POOL_DEBUG` -> pool_debug = 1
 vmmap_debug = []  # OpenBSD `option VMMAP_DEBUG` -> uvm_tree_sanity, uvm_tree_size_chk, vmspace_validate
@@ -33,7 +34,7 @@ ffs2 = ["ffs"]    # OpenBSD `option FFS2` -> FFS2 (UFS2 dinodes) support in ffs
 quota = ["ffs"]   # OpenBSD `option QUOTA` -> disk quotas (ufs_quota.c, quotactl(2)); default (GENERIC has it)
 ufs_dirhash = ["ffs"] # OpenBSD `option UFS_DIRHASH` -> hashed lookups in large directories; default (GENERIC)
 mfs = ["ffs"]     # OpenBSD `option MFS` -> the memory file system (sys/ufs/mfs), in vfsconflist[]; default (GENERIC)
-tmpfs = []        # OpenBSD `option TMPFS`   -> tmpfs (sys/tmpfs), uao_grow/uao_shrink; default here, commented out in GENERIC (M10c needs it)
+tmpfs = ["kernel/tmpfs"] # OpenBSD `option TMPFS`   -> tmpfs (sys/tmpfs), uao_grow/uao_shrink (and the kernel crate's); default here, commented out in GENERIC (M10c needs it)
 msdosfs = []      # OpenBSD `option MSDOSFS` -> the MS-DOS FAT file system (sys/msdosfs)
 cd9660 = []       # OpenBSD `option CD9660`  -> the ISO 9660 file system (sys/isofs/cd9660)
 udf = []          # OpenBSD `option UDF`     -> the UDF file system (sys/isofs/udf)
@@ -47,7 +48,7 @@ qemu = []         # QEMU-only exits (isa-debug-exit, semihosting) and shortcuts
 encdebug = []     # OpenBSD `option ENCDEBUG` -> the IPsec DPRINTF messages (net.inet.ip.encdebug)
 tcp_sack_debug = [] # OpenBSD `option TCP_SACK_DEBUG` -> tcp_print_holes in tcp_output
 wdcdebug = []     # OpenBSD `option WDCDEBUG` -> wdc(4)/wd(4) debug messages (WDCDEBUG_PRINT) and the event trace ring (wdcevent.h, wdc_log, ATAIOGETTRACE)
-multiprocessor = ["hal/multiprocessor"] # OpenBSD `option MULTIPROCESSOR` -> the kernel lock, the spinning mutex, the APs (M11a), the TSC sync test (M11b), the audited MP paths (M11e); off by default, but every `just smoke` recipe but `smoke-up` boots it
+multiprocessor = [] # OpenBSD `option MULTIPROCESSOR` -> the kernel lock, the spinning mutex, the APs (M11a), the TSC sync test (M11b), the audited MP paths (M11e); a default since decision 40 (2026-10-17): the one kernel every recipe, smoke (`smoke-up` on one processor), image and host test builds, as GENERIC.MP; lib.rs refuses a build without it (the uniprocessor branches still in bsd's inherited and adapted modules are not maintained and go when N4 redesigns them; hal, kernel and abi have no such option: they are MULTIPROCESSOR code only)
 scsiterse = []    # OpenBSD `option SCSITERSE` -> sense codes printed as numbers, no adesc[] table
 miniroot = []     # OpenBSD `option MINIROOTSIZE` -> the ramdisk image compiled in (bsd.rd): rd_root_image/rd_root_size, sized by $EMIBSD_MINIROOTSIZE (sectors), filled by `cargo xtask rdsetroot`; roots on rd0a
 inet6 = []        # OpenBSD option INET6 -> IPv6 (sys/netinet6); default (GENERIC has it)

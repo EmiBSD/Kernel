@@ -34,10 +34,15 @@
 //! ## Redesign
 //! - Not a port: the C calls the sleep queue functions directly; the runtime calls them
 //!   through one trait object until the scheduler moves into `kernel` (N4).
+//! - N3.5 S0: [`curproc_word`] and [`cold`] are public, for the kernel's map (the `busy`
+//!   owner of `vm_map_busy`, `uvm_mapent_alloc`'s `cold` test).
+//! - N3.5 S1: [`sched_pause`], for `uvm_map_teardown`'s yield between entries.
 
 use crate::bridges;
 use crate::sys::errno::Errno;
 
+/// `PVM`: the priority of a wait for virtual memory (`km_alloc`'s `"km_allocva"`).
+pub const PVM: i32 = 4;
 /// `PWAIT`: the priority of a plain wait (`refcnt_finalize`).
 pub const PWAIT: i32 = 32;
 /// `PLOCK`: the priority of a lock's sleep (`rw_enter`'s readers; writers sleep at
@@ -74,6 +79,16 @@ pub trait Sleep: Sync {
     /// `_kernel_lock_held()`: the running CPU holds the kernel lock (an rwlock writer does not
     /// spin then, so the CPUs waiting for the kernel lock progress).
     fn kernel_lock_held(&self) -> bool;
+    /// `cold || panicstr`: autoconfiguration is not over, or the kernel panicked, so a sleep
+    /// must not reach the sleep queues (`msleep_nsec`'s and `tsleep_nsec`'s early return).
+    fn cold(&self) -> bool;
+    /// That early return's work: `splhigh`, `splx(safepri)` (interrupts get their chance),
+    /// the kernel lock released and taken back when this CPU holds it (`MULTIPROCESSOR`), the
+    /// level put back. No process switch.
+    fn cold_yield(&self);
+    /// `sched_pause(yield)`: `yield()` when the running CPU's scheduler asks its thread to
+    /// give the CPU up (`spc_schedflags & SPCF_SHOULDYIELD`), nothing otherwise.
+    fn sched_pause(&self);
 }
 
 /// A wait channel: the address of `ident`, compared and never dereferenced.
@@ -110,13 +125,30 @@ pub fn wakeup_one<T: ?Sized>(ident: *const T) {
     }
 }
 
-/// `curproc` as a word (0 before the bridge is registered).
-pub(crate) fn curproc_word() -> usize {
+/// `curproc` as a word (0 before the bridge is registered): an identity, compared and never
+/// dereferenced (an rwlock's writer, a map's `busy` owner, `vm_map_busy_ln`).
+pub fn curproc_word() -> usize {
     bridges::sleep().map_or(0, |b| b.curproc_word())
 }
 
+/// `cold`: autoconfiguration is not over, so nothing may sleep or rely on the kernel map
+/// growing (`uvm_mapent_alloc` takes its entries from the static ones then). The bridge
+/// answers `cold || panicstr` (after a panic the static entries serve too, harmlessly);
+/// before it is registered the kernel is booting: `true`.
+pub fn cold() -> bool {
+    bridges::sleep().is_none_or(|b| b.cold())
+}
+
+/// `sched_pause(yield)` (`<sys/sched.h>`): gives the CPU up when its scheduler asks
+/// (`SPCF_SHOULDYIELD`), as a long loop of the kernel's does once per step
+/// (`uvm_map_teardown`'s entries). Nothing before the bridge is registered: nothing else runs.
+pub fn sched_pause() {
+    if let Some(b) = bridges::sleep() {
+        b.sched_pause();
+    }
+}
+
 /// `_kernel_lock_held()` (`false` before the bridge is registered).
-#[cfg(feature = "multiprocessor")]
 pub(crate) fn kernel_lock_held() -> bool {
     bridges::sleep().is_some_and(|b| b.kernel_lock_held())
 }
@@ -158,6 +190,28 @@ mod tests {
             tsleep_nsec(&raw const x, PWAIT, "test", 1_000_000),
             Err(Errno::EWOULDBLOCK)
         );
+    }
+
+    #[test]
+    fn cold_and_curproc_are_the_bridges() {
+        testutil::install();
+        assert!(!cold());
+        testutil::set_cold(true);
+        assert!(cold());
+        testutil::set_cold(false);
+        let me = curproc_word();
+        assert_ne!(me, 0);
+        let other = thread::spawn(curproc_word).join().unwrap();
+        assert_ne!(me, other);
+    }
+
+    #[test]
+    fn sched_pause_asks_the_bridge() {
+        testutil::install();
+        let before = testutil::sched_pauses();
+        sched_pause();
+        sched_pause();
+        assert_eq!(testutil::sched_pauses(), before + 2);
     }
 }
 /* </TESTS> */

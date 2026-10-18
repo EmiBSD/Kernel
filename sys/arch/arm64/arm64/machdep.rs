@@ -66,8 +66,9 @@
 //!   exclude the kernel, the device tree, the initrd and the bootloader's own data: the
 //!   `memreg_add`/`memreg_remove` bookkeeping, the EFI memory map walk, `pmap_avail_fixup`
 //!   and `pmap_physload_avail` have nothing left to do, and the direct map `pmap` uses is the
-//!   bootloader's (`arm64/pmap.rs`, deviations). The memory is loaded before `pmap_bootstrap`
-//!   (after it in the C) because `pmap_bootstrap` steals its tables from `vm_physmem[]`.
+//!   bootloader's (`hal::pmap`'s arm64 backend, deviations). The memory is loaded before
+//!   `pmap_bootstrap` (after it in the C) because `pmap_bootstrap` steals its tables from
+//!   `vm_physmem[]`.
 //! - The message buffer is a static area (`kern/subr_log.rs`, `init_static_msgbuf`) instead of
 //!   reserved physical pages, until M3.
 //! - `cpu_startup` prints the memory sizes, makes the exec and physio maps and sets up the
@@ -110,6 +111,12 @@
 //!   big-endian 64-bit cells, the physical address and size of the ABI module efiboot put in
 //!   the kernel's block after its image, below the end mark of `x0`) into
 //!   `BootInfo::abi_module`. No other path of the file changed.
+//! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
+//!   into the pmap's statics before `pmap_bootstrap` (`PMAP_DIRECT_BASE`/`END`,
+//!   `PMAP_KERNEL_IMAGE_START`/`END`/`PHYS_OFF`) are its `BootstrapParams`; `setregs` sets
+//!   the pmap's branch-target guard through `Pmap::set_guarded`. N3.1 commit 8: the image's
+//!   section bounds (`__text_start`, `_etext`, `__rodata_start`, `_erodata`, `__data_start`,
+//!   `_end`) go in `KernelImage`, for the pmap to map the image by section.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -122,12 +129,9 @@ use libkern::StaticCell;
 use crate::arch::arm64::arm64::autoconf::BOOTMAC;
 use crate::arch::arm64::arm64::bus_space::ARM64_BS_TAG;
 use crate::arch::arm64::arm64::cpu;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpu::AP_TTBR1;
 use crate::arch::arm64::arm64::cpu::cpu_kick;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpu::cpu_unidle;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpufunc::cpu_dcache_wb_range;
 use crate::arch::arm64::arm64::cpufunc::cpu_wfi;
 use crate::arch::arm64::arm64::cpuswitch::cpu_switchto_asm;
@@ -135,11 +139,6 @@ use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 use crate::arch::arm64::arm64::fpu::{fpu_drop, fpu_save};
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
-use crate::arch::arm64::arm64::pmap::{
-    PMAP_DIRECT_BASE, PMAP_DIRECT_END, PMAP_KERNEL_IMAGE_END, PMAP_KERNEL_IMAGE_PHYS_OFF,
-    PMAP_KERNEL_IMAGE_START, pmap_bootstrap, pmap_growkernel,
-};
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
 use crate::arch::arm64::include::armreg::{PSR_DIT, PSR_M_EL0t};
 use crate::arch::arm64::include::bootconfig::Arm64Bootparams;
@@ -153,8 +152,8 @@ use crate::arch::arm64::include::frame::Trapframe;
 use crate::arch::arm64::include::param::{PAGE_MASK, PAGE_SIZE};
 use crate::arch::arm64::include::pcb::{PCB_FPU, PCB_SVE};
 use crate::arch::arm64::include::pte::{
-    ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, L1_BLOCK, L1_SHIFT, L2_SIZE, Ln_ENTRIES, PTE_ATTR_WB,
-    SH_INNER, attr_idx, attr_sh,
+    ATTR_AF, ATTR_PXN, ATTR_UXN, L1_BLOCK, L1_SHIFT, L2_SIZE, Ln_ENTRIES, PTE_ATTR_WB, SH_INNER,
+    attr_idx, attr_sh,
 };
 use crate::arch::arm64::include::reg::Fpreg;
 use crate::arch::arm64::include::vmparam::{VM_MIN_KERNEL_ADDRESS, VM_PHYS_SIZE, VM_PHYSSEG_MAX};
@@ -165,12 +164,9 @@ use crate::dev::efi::efi::{
     EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
 };
 use crate::dev::fdt::pluart_fdt::pluart_init_cons;
-#[cfg(feature = "multiprocessor")]
 use crate::dev::fdt::psci::psci_cpu_on;
-#[cfg(feature = "multiprocessor")]
 use crate::dev::fdt::pscivar::PSCI_SUCCESS;
 use crate::dev::fdt::simplefb::simplefb_init_cons;
-#[cfg(feature = "multiprocessor")]
 use crate::dev::ofw::fdt::fdt_node_property_int;
 use crate::dev::ofw::fdt::{
     FdtNode, FdtReg, fdt_child_node, fdt_find_node, fdt_get_reg, fdt_get_size, fdt_init,
@@ -184,8 +180,8 @@ use crate::kern::kern_malloc::{kmeminit_nkmempages, nkmempages};
 use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_int, sysctl_rdquad, sysctl_rdstring};
 use crate::kern::subr_log::init_static_msgbuf;
 use crate::kern::vfs_bio::bufinit;
+use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
-#[cfg(feature = "multiprocessor")]
 use crate::machine::bootinfo::BootCpu;
 use crate::machine::bootinfo::BootMp;
 use crate::machine::bootinfo::{BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion};
@@ -204,12 +200,14 @@ use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
 use crate::sys::user::{Uarea, User};
 use crate::unported;
-use crate::uvm::uvm_extern::{EXEC_MAP, PHYS_MAP, UvmConstraintRange};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{kernel_map, kernel_map_min, uvm_km_suballoc};
-use crate::uvm::uvm_map::VM_MAP_PAGEABLE;
-use crate::uvm::uvm_page::{VmPage, uvm_page_physload, uvm_setpagesize};
-use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
+use hal::pmap::{BootstrapParams, KernelImage};
+use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::{KvMap, install_submap};
+use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
+use kernel::vm::map::VM_MAP_PAGEABLE;
+use kernel::vm::page::{VmPage, uvm_setpagesize};
+use kernel::vm::types::UvmConstraintRange;
 use libkern::explicit_bzero::explicit_bzero;
 
 #[cfg(feature = "qemu")]
@@ -279,7 +277,6 @@ pub static CPU_INFO: [CiPtr<CpuInfo>; MAXCPUS as usize] = {
 
 /// The processors from the boot protocol (`MULTIPROCESSOR`), which `initarm` keeps for
 /// `cpu_start_secondary` (`cpu.rs`): written once by `initarm` on the boot CPU.
-#[cfg(feature = "multiprocessor")]
 pub static BOOT_MP: StaticCell<Option<BootMp>> = StaticCell::new(None);
 
 /// `proc0paddr`: proc0's u-area (its pcb; the boot stack is Limine's).
@@ -451,10 +448,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
 
     // The processors and the way to start them (MULTIPROCESSOR, cpu_start_secondary).
     // SAFETY: once, on the boot CPU, before any reader (cpu_attach runs much later).
-    #[cfg(feature = "multiprocessor")]
-    unsafe {
-        BOOT_MP.write(boot.mp)
-    };
+    unsafe { BOOT_MP.write(boot.mp) };
 
     // The FDT, memory-map and page-table work of the C happens in the boot protocol; the
     // device map below stands in for `pmap_bootstrap_bs_map` (see the module's deviations).
@@ -507,27 +501,36 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         }
     }
 
-    // The direct map is the bootloader's (see `arm64/pmap.rs`).
+    // The direct map is the bootloader's (see `hal::pmap`'s arm64 backend).
     let regions = boot.memmap.regions();
     let map_end = regions
         .iter()
         .map(|r| r.base.as_usize() + r.length.as_usize())
         .max()
         .unwrap_or(0);
-    // The kernel image, for pmap_extract (arm64/pmap.rs, deviations).
-    PMAP_KERNEL_IMAGE_START.store(boot.kernel_virt.as_usize(), Ordering::Relaxed);
-    PMAP_KERNEL_IMAGE_END.store(ptr::addr_of!(_end) as usize, Ordering::Relaxed);
-    PMAP_KERNEL_IMAGE_PHYS_OFF.store(
-        boot.kernel_phys
-            .as_usize()
-            .wrapping_sub(boot.kernel_virt.as_usize()),
-        Ordering::Relaxed,
-    );
-    PMAP_DIRECT_BASE.store(boot.hhdm_offset, Ordering::Relaxed);
-    PMAP_DIRECT_END.store(
-        boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE),
-        Ordering::Relaxed,
-    );
+    // The kernel image by section, which pmap_bootstrap maps (`pmap_map_stolen`) and
+    // pmap_extract translates (`hal::pmap`'s arm64 backend), and the direct map:
+    // pmap_bootstrap's parameters.
+    let params = BootstrapParams {
+        direct_base: Vaddr::new(boot.hhdm_offset),
+        direct_end: Vaddr::new(
+            boot.hhdm_offset + roundup(map_end, 1 << 30).max(DIRECT_MAP_MIN_SIZE),
+        ),
+        nx: false,
+        first_avail: Paddr::new(0),
+        image: Some(KernelImage {
+            start: Vaddr::new(ptr::addr_of!(__text_start) as usize),
+            text_end: Vaddr::new(etext()),
+            rodata_start: Vaddr::new(ptr::addr_of!(__rodata_start) as usize),
+            rodata_end: Vaddr::new(ptr::addr_of!(_erodata) as usize),
+            data_start: Vaddr::new(ptr::addr_of!(__data_start) as usize),
+            end: Vaddr::new(ptr::addr_of!(_end) as usize),
+            phys_off: boot
+                .kernel_phys
+                .as_usize()
+                .wrapping_sub(boot.kernel_virt.as_usize()),
+        }),
+    };
 
     let usable = || regions.iter().filter(|r| r.kind == MemKind::Usable);
 
@@ -535,7 +538,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     uvm_setpagesize();
 
     // Make all physical memory available to UVM (pmap_physload_avail and the EFI memory map
-    // loop of the C); before pmap_bootstrap, which steals from it (see `arm64/pmap.rs`).
+    // loop of the C); before pmap_bootstrap, which steals from it (`hal::pmap`'s arm64
+    // backend).
+
     for r in usable() {
         if r.length.as_usize() < PAGE_SIZE {
             kprintf!(" skipped - too small\n");
@@ -550,14 +555,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         PHYSMEM.fetch_add(atop(end - start), Ordering::Relaxed);
     }
 
-    let ram_start = usable().map(|r| r.base.as_usize()).min().unwrap_or(0);
-    let ram_end = usable()
-        .map(|r| r.base.as_usize() + r.length.as_usize())
-        .max()
-        .unwrap_or(0);
-    // SAFETY: once, on the boot CPU, with the direct map set above, the memory loaded and the
-    // MMU on.
-    let _vstart = unsafe { pmap_bootstrap(Paddr::new(ram_start), Paddr::new(ram_end)) };
+    // Once, on the boot CPU, with the memory loaded and the MMU on (the C's ram_start and
+    // ram_end, which `pmap_bootstrap` does not read, are not passed).
+    let (_, _vstart) = crate::machine::pmap::pmap_bootstrap(&params);
 
     // pmap_avail_fixup: nothing to fix up, the map is the bootloader's.
 
@@ -565,7 +565,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     // to be able to allocate the vm_page structures and nkmempages for malloc(9).
     kmeminit_nkmempages();
     let nkmempages = nkmempages();
-    pmap_growkernel(Vaddr::new(
+    crate::machine::pmap::pmap_growkernel(Vaddr::new(
         VM_MIN_KERNEL_ADDRESS
             + 1024 * 1024 * 1024
             + PHYSMEM.load(Ordering::Relaxed) * size_of::<VmPage>()
@@ -606,10 +606,8 @@ static BOOT_DMA_CONSTRAINT: StaticCell<Option<(u64, u64)>> = StaticCell::new(Non
 
 /// The processors `/cpus` lists (boot(8)'s entry, `MULTIPROCESSOR`): their `reg`, the MPIDR
 /// affinity.
-#[cfg(feature = "multiprocessor")]
 static BOOTARG_CPUS: StaticCell<[u64; MAXCPUS as usize]> = StaticCell::new([0; MAXCPUS as usize]);
 /// How many of [`BOOTARG_CPUS`] are filled.
-#[cfg(feature = "multiprocessor")]
 static BOOTARG_NCPUS: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "C" {
@@ -619,6 +617,14 @@ unsafe extern "C" {
     static esym: u64;
     /// `_end` (`conf/kernel.ld`): the end of the image's BSS.
     static _end: [u8; 0];
+    /// `__text_start` (`conf/kernel.ld`): the first address of the kernel text, the image's.
+    static __text_start: [u8; 0];
+    /// `__rodata_start` (`conf/kernel.ld`): the first address of the read-only data.
+    static __rodata_start: [u8; 0];
+    /// `_erodata` (`conf/kernel.ld`): the end of the read-only data, page-aligned.
+    static _erodata: [u8; 0];
+    /// `__data_start` (`conf/kernel.ld`): the first address of the data.
+    static __data_start: [u8; 0];
 }
 
 /// boot(8)'s entry (`Cpu::getbootinfo`): the half of `initarm` that reads what efiboot
@@ -1030,58 +1036,52 @@ unsafe fn bootarg_bzero(p: &[u8]) {
 /// The processors and the way to start them under boot(8): `/cpus`'s `cpu` nodes and
 /// `/psci` (`MULTIPROCESSOR`; `None` without PSCI).
 fn bootarg_mp() -> Option<BootMp> {
-    #[cfg(feature = "multiprocessor")]
-    {
-        let psci = fdt_find_node(b"/psci");
-        if psci.is_null() {
-            return None;
-        }
-        // psci(4) (`dev/fdt/psci.rs`) attaches before the processors (`mainbus_attach_psci`)
-        // and makes the CPU_ON call; without a `/psci` node there is no way to start them.
-
-        let cpus = fdt_find_node(b"/cpus");
-        if cpus.is_null() {
-            return None;
-        }
-        let acells = fdt_node_property_int(cpus, b"#address-cells").unwrap_or(2) as usize;
-        // SAFETY: the boot CPU, before any reader (`BootMp` is handed out below).
-        let list = unsafe { BOOTARG_CPUS.get_mut() };
-        let mut n = 0;
-        let mut node = fdt_child_node(cpus);
-        while !node.is_null() && n < list.len() {
-            let is_cpu = fdt_node_property(node, b"device_type")
-                .is_some_and(|t| t.starts_with(b"cpu\0") || t == b"cpu");
-            if let Some(reg) = fdt_node_property(node, b"reg")
-                && is_cpu
-                && (acells == 1 || acells == 2)
-                && reg.len() >= 4 * acells
-            {
-                let mut hwid = 0u64;
-                for c in reg[..4 * acells].chunks(4) {
-                    hwid = (hwid << 32) | u64::from(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
-                }
-                list[n] = hwid;
-                n += 1;
-            }
-            node = fdt_next_node(node);
-        }
-        if n == 0 {
-            return None;
-        }
-        BOOTARG_NCPUS.store(n as u32, Ordering::Relaxed);
-        Some(BootMp {
-            bsp_hwid: read_specialreg!("mpidr_el1") & MPIDR_AFF,
-            ncpus: n,
-            cpu: bootarg_mp_cpu,
-            start: bootarg_mp_start,
-        })
+    let psci = fdt_find_node(b"/psci");
+    if psci.is_null() {
+        return None;
     }
-    #[cfg(not(feature = "multiprocessor"))]
-    None
+    // psci(4) (`dev/fdt/psci.rs`) attaches before the processors (`mainbus_attach_psci`)
+    // and makes the CPU_ON call; without a `/psci` node there is no way to start them.
+
+    let cpus = fdt_find_node(b"/cpus");
+    if cpus.is_null() {
+        return None;
+    }
+    let acells = fdt_node_property_int(cpus, b"#address-cells").unwrap_or(2) as usize;
+    // SAFETY: the boot CPU, before any reader (`BootMp` is handed out below).
+    let list = unsafe { BOOTARG_CPUS.get_mut() };
+    let mut n = 0;
+    let mut node = fdt_child_node(cpus);
+    while !node.is_null() && n < list.len() {
+        let is_cpu = fdt_node_property(node, b"device_type")
+            .is_some_and(|t| t.starts_with(b"cpu\0") || t == b"cpu");
+        if let Some(reg) = fdt_node_property(node, b"reg")
+            && is_cpu
+            && (acells == 1 || acells == 2)
+            && reg.len() >= 4 * acells
+        {
+            let mut hwid = 0u64;
+            for c in reg[..4 * acells].chunks(4) {
+                hwid = (hwid << 32) | u64::from(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
+            }
+            list[n] = hwid;
+            n += 1;
+        }
+        node = fdt_next_node(node);
+    }
+    if n == 0 {
+        return None;
+    }
+    BOOTARG_NCPUS.store(n as u32, Ordering::Relaxed);
+    Some(BootMp {
+        bsp_hwid: read_specialreg!("mpidr_el1") & MPIDR_AFF,
+        ncpus: n,
+        cpu: bootarg_mp_cpu,
+        start: bootarg_mp_start,
+    })
 }
 
 /// [`BootMp::cpu`] under boot(8): processor `i` of `/cpus`.
-#[cfg(feature = "multiprocessor")]
 fn bootarg_mp_cpu(i: usize) -> BootCpu {
     let n = BOOTARG_NCPUS.load(Ordering::Relaxed) as usize;
     // SAFETY: written once by `bootarg_mp` before the `BootMp` existed; read-only since.
@@ -1099,7 +1099,6 @@ fn bootarg_mp_cpu(i: usize) -> BootCpu {
 /// # Safety
 ///
 /// As [`BootMp::start`] states.
-#[cfg(feature = "multiprocessor")]
 unsafe fn bootarg_mp_start(i: usize, arg: usize) {
     unsafe extern "C" {
         /// `cpu_hatch_secondary` (`locore.S`).
@@ -1218,11 +1217,8 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
     let pcb = p.pcb();
     let tf = pcb.pcb_tf.get();
 
-    pm.pm_guarded.set(if pack.ep_flags & EXEC_NOBTCFI != 0 {
-        0
-    } else {
-        ATTR_GP
-    });
+    // `pm_guarded`: ATTR_GP on the process's executable mappings unless the binary opted out.
+    pm.set_guarded(pack.ep_flags & EXEC_NOBTCFI == 0);
 
     // pm_apiakey/apdakey/apibkey/apdbkey/apgakey and pmap_setpauthkeys: pointer
     // authentication (M7; QEMU's default virt CPU has none).
@@ -1274,7 +1270,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    EXEC_MAP.store(ptr::from_ref(exec_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Exec, exec_map);
 
     // Allocate a submap for physio
     let phys_map = uvm_km_suballoc(
@@ -1286,7 +1282,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    PHYS_MAP.store(ptr::from_ref(phys_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Phys, phys_map);
 
     // Set up buffers, so they can be used to read disk labels.
     bufinit();
@@ -1433,22 +1429,14 @@ pub fn setsoftast() {
 }
 
 /// `signotify(p)` (`<machine/cpu.h>`): notify the current process (p) that it has a signal
-/// pending, process as soon as possible. With `MULTIPROCESSOR`, `aston(p)` and
-/// `cpu_unidle(p->p_cpu)`; without, `setsoftast()`, which posts the AST to the thread on this
-/// CPU.
+/// pending, process as soon as possible: `MULTIPROCESSOR`'s `aston(p)` and
+/// `cpu_unidle(p->p_cpu)` (the kernel is always MP, decision 40; the C's uniprocessor
+/// `setsoftast()` is not called here).
 pub fn signotify(p: &Proc) {
-    #[cfg(feature = "multiprocessor")]
-    {
-        aston(p);
-        // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
-        if let Some(ci) = unsafe { p.p_cpu.get().as_ref() } {
-            cpu_unidle(ci);
-        }
-    }
-    #[cfg(not(feature = "multiprocessor"))]
-    {
-        let _ = p;
-        setsoftast();
+    aston(p);
+    // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
+    if let Some(ci) = unsafe { p.p_cpu.get().as_ref() } {
+        cpu_unidle(ci);
     }
 }
 

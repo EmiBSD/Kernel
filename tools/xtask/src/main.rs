@@ -86,6 +86,16 @@
 //!                                          that OpenBSD alone with the smokes' device
 //!                                          options, booted with `-c` and the UKC commands
 //!                                          given: its dmesg and CMD's output
+//! cargo xtask bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench]
+//!                                          N3: EmiBSD against that OpenBSD on the same
+//!                                          emulated machine, one after the other, N runs
+//!                                          (10): boot time, tools/bench's ns per op, tcpbench
+//!                                          between two VMs; the worst sample per side left
+//!                                          out, then median, min, spread and the
+//!                                          ratio EmiBSD / OpenBSD, refused over a 15 %
+//!                                          spread; <run dir>/A/report.toml (bench.rs)
+//! cargo xtask bench compare BEFORE AFTER   the `Bench:` lines of what moved between two
+//!                                          reports, beyond their spreads
 //! cargo xtask unsafe-report [--write|--check] [--shapes]
 //!                                          `unsafe` blocks, fns, impls and traits per kernel
 //!                                          subsystem, test code apart, the shapes to replace,
@@ -153,6 +163,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 mod abicheck;
+mod bench;
 mod boot;
 mod bridges;
 mod bsdmake;
@@ -192,6 +203,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      unsafe-report [--write] [--check] [--shapes] | unsafe-report --json | \
                      diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn] | \
                      diff-openbsd --arch A [--ipmi] [--nic MODEL] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--ukc CMD]... [--sh CMD] probe | \
+                     bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] | bench compare BEFORE AFTER | \
                      symbolize --arch A [--kernel K] | userland --arch A | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
@@ -333,6 +345,7 @@ fn run(args: &[String]) -> Result<()> {
             smokeall::smoke_all(&root, a.jobs, a.just, &a.recipes)
         }
         ["diff-openbsd", rest @ ..] => diffopenbsd::diff_openbsd(&root, rest),
+        ["bench", rest @ ..] => bench::bench(&root, rest),
         ["hal-check"] => halcheck::hal_check(&root),
         ["abi-check"] => abicheck::abi_check(&root),
         ["unsafe-report", flags @ ..] => unsafereport::unsafe_report(

@@ -86,6 +86,7 @@ use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sysctl::{sysctl_rdstring, sysctl_rdstruct};
 #[cfg(any(feature = "kmemstats", feature = "diagnostic"))]
 use crate::kern::subr_prf::snprintf;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::intr::{IPL_VM, splvm, splx};
 use crate::machine::pmap::pmap_map_direct;
 use crate::machine::{Machine, Pmap};
@@ -105,17 +106,19 @@ use crate::sys::mutex::Mutex;
 use crate::sys::param::{PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::queue::XsimpleqEntry;
 use crate::sys::systm::PHYSMEM;
+use crate::sys::types::Paddr;
 #[cfg(feature = "diagnostic")]
 use crate::unported;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{
-    KD_NOWAIT, KD_WAITOK, KP_DIRTY, KP_ZERO, KV_ANY, KV_INTRSAFE, kernel_map, km_alloc, km_free,
-    uvm_km_suballoc,
-};
-use crate::uvm::uvm_map::{VM_MAP_INTRSAFE, VmMap};
-use crate::uvm::uvm_page::vm_physmem;
-use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, atop, ptoa, round_page};
 use crate::{kassert, kprintf, queue_adapter};
+use hal::vm::param::{atop, ptoa, round_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::VM_KERNEL_SPACE_SIZE;
+use kernel::vm::km::{
+    KD_NOWAIT, KD_WAITOK, KP_DIRTY, KP_ZERO, KV_ANY, KV_INTRSAFE, KvMap, install_submap,
+    kernel_map, uvm_km_suballoc,
+};
+use kernel::vm::map::{VM_MAP_INTRSAFE, VmMap};
+use kernel::vm::page::{PHYS_TO_VM_PAGE, vm_physmem};
 
 #[cfg(feature = "kmemstats")]
 use crate::kern::kern_synch::wakeup;
@@ -146,18 +149,12 @@ pub fn bucketindx(sz: usize) -> usize {
 }
 
 /// `kmem_map_store`.
-static KMEM_MAP_STORE: VmMap = VmMap::new();
-/// `kmem_map`: null until `kmeminit`.
-static KMEM_MAP: AtomicPtr<VmMap> = AtomicPtr::new(core::ptr::null_mut());
+static KMEM_MAP_STORE: VmMap = VmMap::new(0, 0);
 
-/// `kmem_map`, once `kmeminit` made it.
+/// `kmem_map`, once `kmeminit` made it (the kernel's slot, `kernel::vm::km::kmem_map`,
+/// which `kmeminit` installs).
 pub fn kmem_map() -> &'static VmMap {
-    let map = KMEM_MAP.load(Ordering::Acquire);
-    // SAFETY: a non-null pointer is `KMEM_MAP_STORE`, set up by `uvm_km_suballoc`.
-    match unsafe { map.as_ref() } {
-        Some(map) => map,
-        None => crate::kern::subr_prf::panic(format_args!("kmem_map used before kmeminit")),
-    }
+    kernel::vm::km::kmem_map()
 }
 
 /// `NKMEMPAGES`: the configured number of pages in `kmem_map`; -1 asks for the run-time
@@ -739,14 +736,15 @@ pub fn kmeminit() {
         let Some(lowest) = segs.iter().min_by_key(|seg| seg.start) else {
             crate::kern::subr_prf::panic(format_args!("kmeminit: no physical memory"));
         };
-        // SAFETY: uvm_page_init set every segment's page array.
-        let pg0 = unsafe { lowest.page(0) };
+        let Some(pg0) = PHYS_TO_VM_PAGE(Paddr::new(ptoa(lowest.start))) else {
+            crate::kern::subr_prf::panic(format_args!("kmeminit: no page array"));
+        };
         let base = pmap_map_direct(pg0).as_usize();
         let frames = segs.iter().map(|seg| seg.end).max().unwrap_or(0) - lowest.start;
         (base, base + ptoa(frames), frames)
     } else {
         let npages = NKMEMPAGES.load(Ordering::Relaxed) as usize;
-        let mut base = kernel_map().min_offset.get();
+        let mut base = kernel_map().min_offset();
         let mut limit = 0;
         let map = uvm_km_suballoc(
             kernel_map(),
@@ -757,7 +755,7 @@ pub fn kmeminit() {
             false,
             Some(&KMEM_MAP_STORE),
         );
-        KMEM_MAP.store(ptr::from_ref(map).cast_mut(), Ordering::Release);
+        install_submap(KvMap::Kmem, map);
         (base, limit, npages)
     };
     KMEMBASE.store(base, Ordering::Relaxed);

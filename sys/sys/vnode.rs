@@ -82,7 +82,7 @@
 //! - `si_specnext`, the link of the special-device alias chains, is the vnode's own
 //!   `v_specnext` instead of a member of `struct specinfo`: the queue adapters need the link
 //!   inside the element. `vp->v_specnext` reads the same in both.
-//! - `v_uvm` is `Option<&'static UvmVnode>`: a `uvm_vnode_pool` item is never freed
+//! - `v_uvm` is `Option<&'static Uvn>`: a `uvm_vnode_pool` item is never freed
 //!   either.
 //! - `struct buf *` (`a_bp`) is a `&'static Buf` (`sys/buf.rs`).
 //! - `RBT_HEAD(buf_rb_bufs, buf)` is the [`BufRbBufs`] adapter, ordered by `vfs_subr.c`'s
@@ -116,7 +116,7 @@ use crate::sys::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
 use crate::tree_adapter;
-use crate::uvm::uvm_vnode::UvmVnode;
+use kernel::vm::vnode::Uvn;
 
 /// `enum vtype`: vnode types. `VNON` means no type.
 #[repr(i32)]
@@ -223,7 +223,7 @@ pub enum VnodeUn {
 /// Locks: \[a\] atomic, \[V\] `vnode_mtx`, \[B\] `IPL_BIO`; the rest the kernel lock.
 pub struct Vnode {
     /// `v_uvm`: uvm data (the vnode pager's object, kept across recycling).
-    pub v_uvm: Cell<Option<&'static UvmVnode>>,
+    pub v_uvm: Cell<Option<&'static Uvn>>,
     /// `v_op`: vnode operations vector.
     pub v_op: Cell<Option<&'static Vops>>,
     /// `v_type`: vnode type.

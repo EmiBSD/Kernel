@@ -13,7 +13,7 @@ The C tree under `reference/openbsd-src/sys` is the specification.
 `sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
 the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
 decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
-userland interface as the loadable module `abi-openbsd.ko`, `forbid`, translation only; and
+userland interface as the loadable module `abi_openbsd.ko`, `forbid`, translation only; and
 `bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
 and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal`, `abi -> hal` and `abi ->
@@ -43,9 +43,12 @@ write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::percpu::Pe
 `hal::cons` (the console primitive). What still lives in `bsd` is reached through
 `hal::bridges`, a registry of safe traits `bsd` fills at boot (`sys/kern/hal_bridges.rs`,
 called by `stand::start_kernel` before `main`) and checked on every answer
-(`sys/hal/trust.rs`): `IntrLevel`, `CpuId`, `Sleep`, `UserCopy` (paid by N4), `PageMemory`,
-`ModulePlatform` (N3), `Console` (N7), `PoolBackend`, `Malloc` (N9), and pipe's `PipeGlue`,
-`UioMove`, `PipeFiles` (N4). Each is a row of `bridges.toml`; `lz check` counts them.
+(`sys/hal/trust.rs`). At the N3 close, 21: `IntrLevel`, `CpuId`, `Sleep`, `UserCopy`,
+`ModulePlatform` (the boot entry), `TlbCpus`, `KernelLock`, `SysInfo`, `VmProc`, `VmSysctl` and
+pipe's `PipeGlue`, `UioMove`, `PipeFiles` (paid by N4); `BufCacheStats`, `VnodeOps` (N5);
+`NetLock` (N6); `Console`, `Random` (N7); `PoolBackend`, `Malloc`, `Printf` (N9). N3 paid
+`PageMemory`, `PhysPages`'s row, `KmMaps`, `KmPages` and `FaultMap` with the kernel modules that
+implement them. Each is a row of `bridges.toml`; `lz check` counts them.
 
 ## Path and name mapping
 
@@ -111,6 +114,28 @@ define (`bus_dma_public_members` checks it at compile time).
 
 `param.rs`, `vmparam.rs` and `exec.rs` (the traits `MachineParam`, `VmParam`, `MachineExec`) live
 in `sys/hal/machine/` since N2.2, and `sys/machine/mod.rs` re-exports them under their old names.
+
+`pmap.rs` is an adapter over `hal::pmap` since N3.1 (docs/ZERO_UNSAFE.md 0.10): the `Pmap`
+trait's methods call the safe API of `hal`, whose two backends (`sys/hal/arch/amd64/pmap/`,
+`sys/hal/arch/arm64/pmap/`) replaced the LZ pmaps, and the host double's pmap is `hal`'s host
+backend (`sys/hal/arch/host/pmap.rs`). The adapter has no `unsafe` block: it holds the
+`LegacyLend` of the kernel map's token (`kernel::vm::km`), and its three legacy `unsafe fn`
+signatures (`pmap_kenter_pa`, `pmap_kremove` and arm64's `pmap_kenter_cache`) stay until
+their last caller moves. The page provider `bootstrap` takes as a value (decision 39) is the
+kernel's since N3.3 (`kernel::vm::page`, `sys/kernel/vm/page.rs`); `bsd`'s `BsdPages` went
+with `sys/uvm/`.
+
+Since N3, memory is the kernel's (docs/ZERO_UNSAFE.md 0.10): `sys/kernel/vm/` holds the page
+array and its free ranges, the owners (anon, amap, object, aobj, pager, vnode), the fault
+handler, the map and the vmspace, the vm system calls (`Native` entries of the module) and the
+rest of uvm's 26 files, all `#![forbid(unsafe_code)]`. Their locks are `hal::rwlock`'s
+`SharedRwlock` with `Guarded` cells: a cell opens only for a witness of its own lock, and the
+fault carries its witnesses through its loop; the lock order (map, amap, object, anon) stays
+the code's, as in the C, each acquisition saying where it stands. What they reach of the hardware is `hal`'s
+safe API: `hal::pmap` (the kernel pmap through the `KernelMapper` token, held by
+`kernel::vm::km`), `MappedBytes` for the pager's windows, `ForeignWindow` for `uvm_io`'s
+copies, the intrusive lists and trees of the page system and the map. What they reach of `bsd`
+is a bridge of `bridges.toml` (`VmProc` and `VmSysctl` until N4's `Proc`, `VnodeOps` until N5).
 
 Constants travel the same way as functions: `MachineParam` (M1) carries `<machine/param.h>` and
 the alignment rules of `<machine/_types.h>` as associated consts, each arch defines them in
@@ -197,16 +222,16 @@ Per-target rustflags in `.cargo/config.toml`: `relocation-model=static` (non-PIE
 and `force-frame-pointers=yes` (backtraces in `panic`). No `[build] target`, so host builds stay
 the default and `cargo test` just works.
 
-`abi-openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
+`abi_openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
 `RUSTFLAGS="-C relocation-model=pie"` (replacing the kernel's `static`), its own target
 directory (`target/abi`), `CARGO_PROFILE_DEV_STRIP=debuginfo` (boot(8) reads the whole file
 into efiboot's 1 MiB heap), and `sys/abi/ko/abi.ld`: a static PIE at 0 with `-pie
 --no-dynamic-linker -z notext -Bsymbolic --pack-dyn-relocs=none -z norelro`, three
 page-aligned `PT_LOAD`s (text R X; rodata R with the module header first at the ELF entry,
 the GOT and `.data.rel.ro`, relocated by the loader before it is mapped; data R W) and no
-import (section "abi-openbsd.ko").
+import (section "abi_openbsd.ko").
 
-## abi-openbsd.ko (N2.4)
+## abi_openbsd.ko (N2.4)
 
 The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The pieces:
 
@@ -214,7 +239,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4 but pipe and pipe2,
   `Native` since N2.6 (through `KernelApi::pipe2`, which runs the same `sysent[]` row and
   calls `kernel::pipe`, so the `Legacy` path gives the same answer); `abi_init` registers
-  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi-openbsd`):
+  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi_openbsd`):
   the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
   entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
   names as the ELF entry. It links no kernel code and no `hal` state; its panic handler is
@@ -228,7 +253,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   (the module's, through `kernel::api`'s trampoline) or the `Legacy` fallback (`bsd`'s
   `sysent[]` and `mi_syscall`), both registered once at boot. Errnos cross `hal` as `i32`.
 - **The hand-over.** Limine: a `module_path:` of `limine.conf`, found by name in
-  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi-openbsd.ko`
+  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi_openbsd.ko`
   from the kernel's device, read straight onto the page after the kernel's image
   inside the room the program reserved (`BootMd::abi_module_room`) with `marks[MARK_END]`
   raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
@@ -243,22 +268,25 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   `init(8)` may exec: parses the ELF64 in safe code (a static PIE of the running machine,
   page-aligned W^X loads, `RELATIVE` relocations only), copies it into wired memory, applies
   the relocations for the range it will run at, checks the header, maps each page with its
-  segment's protection (text R X, rodata R, data R W) and calls the entry point. The memory,
-  the mapping and the hand-over come through `ModulePlatform`, implemented by `bsd` over
-  `km_alloc` and the pmap until `hal` holds the pmap (the bridge of `bridges.toml`).
-  Three `unsafe` there, each resting on that platform premise (`load.rs`'s module doc).
-  On amd64 the RX copy cannot live in `kernel_map`, whose directory entries carry NX as
-  OpenBSD's do, so `reserve` hands out a 16 MiB window of the kernel's L4 slot after the
-  image, linked once by `pmap_bootstrap` (`sys/arch/amd64/amd64/pmap_module.rs`); arm64
-  (no PXN on its tables) uses `kernel_map` until N3 (docs/ZERO_UNSAFE.md decision 37).
-- **The boot line.** `abi-openbsd.ko: 331 syscalls, 2 native`, or `abi-openbsd.ko: not
+  segment's protection (text R X, rodata R, data R W) and calls the entry point. The
+  hand-over comes through `ModulePlatform` (`image` only, the bridge of `bridges.toml`), the
+  writable copy's memory from `kernel::vm::km::module_memory()` (a `ModuleMemory` passed to
+  `load` as a value, N3.2), and the mapping is `hal`'s own (`hal::pmap::module_window`,
+  `module_enter`). Three `unsafe` there, each resting on that platform premise (`load.rs`'s
+  module doc). The module runs from a 16 MiB window outside every uvm map on both machines,
+  linked once by `pmap_bootstrap`: on amd64 in the kernel's L4 slot after the image, since
+  `kernel_map`'s directory entries carry NX as OpenBSD's do (`sys/hal/arch/amd64/pmap/
+  window.rs`); on arm64 after the boot loader's last L2 entry of the image's gigabyte, with
+  PXN on `kernel_map`'s tables (`sys/hal/arch/arm64/pmap/window.rs`; docs/ZERO_UNSAFE.md
+  decision 37).
+- **The boot line.** `abi_openbsd.ko: 331 syscalls, 17 native` (2 until N3.5), or `abi_openbsd.ko: not
   loaded, <why>; every system call takes the legacy path` (decision 29: a medium without the
   file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
   `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).
-- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi-openbsd.ko`) and
-  install80.img carry the file the build made (`xtask::boot::default_abi_module`); cd80.iso
-  leaves it off, with one line, until its name is one ISO 9660 keeps (decision 29).
-  So `/abi-openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
+- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi_openbsd.ko`) and
+  install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`);
+  the name is one ISO 9660 keeps, so libsa's cd9660 opens it (decision 38).
+  So `/abi_openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
   OpenBSD's set lists; its boot(8) reads it there.
 - **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
   `ApiPrefix` and `AbiModuleHeader`), so `abi` depends on `hal` alone and the `.ko` links no
@@ -280,7 +308,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
 | `ffs2` | `option FFS2` | FFS2 (UFS2 dinodes, the 64 KB super-block) in ffs; default |
 | `qemu` | — | QEMU-only exits (`isa-debug-exit`, semihosting), the boot self-tests, the TSC under TCG and the `uptime went backwards` check |
 | `inet6` | `option INET6` | IPv6: the `#ifdef INET6` sites outside `sys/netinet6` and `inet6domain` in `domains[]`; default, as in GENERIC. `sys/netinet6` itself (and the IPv6 tables and usrreqs it names, `route6_cache`, `tcp6_usrreqs`, ...) always compiles, like a library nothing reaches without the option, so the tree builds both ways |
-| `multiprocessor` | `option MULTIPROCESSOR` | off by default, so the uniprocessor kernel stays the plain build; `just build` and `just clippy` also build it, and since M11e every `just smoke` recipe boots it except `smoke-up` (the user's decision of 2026-10-03), since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
+| `multiprocessor` | `option MULTIPROCESSOR` | a default since decision 40 (the user, 2026-10-17): the MULTIPROCESSOR kernel is the only one built (every recipe, image, smoke, `abi_openbsd.ko` and host test; `hal`, `kernel` and `abi` have no such option, their code is MULTIPROCESSOR only), and `bsd`'s `lib.rs` refuses a build without it. Until then it was off by default and `smoke-up` booted a kernel built without it; now `smoke-up` boots this one with `-smp 1`. The uniprocessor branches still in `bsd`'s inherited and adapted modules are unbuilt and go when N4 redesigns those files. Since M11e every `just smoke` recipe boots it, since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
 | `ntfs` | `option NTFS` | the read-only NTFS file system (`sys/ntfs`) and its `vfsconflist[]` entry; default, but compiled only where the architecture's GENERIC has it (amd64): see below |
 | `fuse` | `option FUSE` | FUSE (`sys/miscfs/fuse`), its `vfsconflist[]` entry, `cdevsw[]` 92 (`/dev/fuse0`) and `fuseattach` in `pdevinit[]`; default, as in GENERIC |
 | `viocon` | amd64 GENERIC's commented-out `#viocon* at virtio?` | viocon(4) (M16d) in neither GENERIC: the feature stands for uncommenting the line, so amd64's `ioconf.rs` gets the `viocon* at virtio?` entry and `cdevsw[]` 94 its entry points (`NVIOCON` 1, 0 without the feature as `config(8)` counts it: `ENXIO`); arm64's GENERIC has no such line, so nothing changes there. `dev/pv/viocon.rs` compiles on every build, so `just clippy` and the host tests cover it either way; off by default |
@@ -1086,8 +1114,8 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - The application processors are started by Limine (M11a), not by the kernel's own
   trampoline: amd64's `mptramp.S` (real mode, INIT/SIPI/SIPI from `cpu_start_secondary`)
   and arm64's PSCI `CPU_ON` into `locore.S`'s `cpu_hatch` are replaced. The
-  `MULTIPROCESSOR` kernel puts the MP request in `.requests` (the uniprocessor one does not,
-  so the bootloader leaves the other processors halted); Limine brings each processor to
+  `MULTIPROCESSOR` kernel, the only one built since decision 40, puts the MP request in
+  `.requests` (a kernel without it, as before decision 40, left the other processors halted); Limine brings each processor to
   long mode or EL1 with the boot page tables and parks it on its `goto_address`.
   `sys/stand` turns the response into `machine::BootMp` (the processors' hardware IDs and a
   `start(i, arg)`), and the machine's `cpu_start_secondary` calls `start` with the
@@ -1105,8 +1133,8 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   `VBAR_EL1` and `CPACR`, moves to the CPU's own stack and runs `cpu_init_secondary`.
 - amd64 processor enumeration: since M13 `acpimadt0` attaches the processors from the MADT
   at mainbus, as OpenBSD does (`CPU_ROLE_BP` for the one whose local APIC is running, the
-  others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; a uniprocessor kernel's
-  `cpu0` is then `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
+  others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; with one processor
+  (`smoke-up`'s `-smp 1`) `cpu0` is `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
   starts the application processors (`mp_cpu_start` finds the MADT's APIC ID in Limine's
   list). Without a MADT (a kernel without ACPI, until `mpbios.c` is ported) the M11a
   stand-in remains: mainbus maps the local APIC at `LAPIC_BASE` and the `MULTIPROCESSOR`
@@ -2129,6 +2157,9 @@ in their own layout (`include/biosvar.rs`, `include/smbiosvar.rs`, `amd64/bios.r
 file reaches its headers by relative paths (`super::super::include`) in both builds. What
 reaches the machine (bios0's attach, its mappings, `bios_efiinfo`) is `#[cfg(target_os =
 "none")]` in the file. This adds no logic to the host double, which only names the files.
+`hal` does the same since N3.1: `sys/hal/arch/host/mod.rs` compiles, for their tests, each
+arch's `include/param.rs`, `include/pte.rs`, `include/vmparam.rs` and the pure constants of
+its pmap (`pmap/layout.rs`) in their own layout (`#[path = "../amd64"]`, `"../arm64"`).
 
 ### Parallel smokes
 
@@ -2137,8 +2168,8 @@ sequential run had grown to about 35 minutes of boots under TCG. Decided on 2026
 user's plan). The shape is one build phase, then one run phase:
 
 - `smoke-build` builds everything a recipe boots, once and in order: the MULTIPROCESSOR
-  kernels with `--features qemu`, the init stand-ins, and `smoke-up`'s uniprocessor kernels
-  (`build-up`, which leaves `bsd.up` beside the MP `bsd`). No recipe builds while others boot.
+  kernels with `--features qemu` (`smoke-up` boots them too, with `-smp 1`, since decision
+  40), the init stand-ins, the media kernels and cd80.iso. No recipe builds while others boot.
 - `cargo xtask smoke-all -j N` (`tools/xtask/src/smokeall.rs`) runs each recipe of the
   justfile's `smokes` list as `just --no-deps <recipe>`, N at a time, longest first by the
   time each took last. A recipe runs exactly as `just <recipe>` would, with the same
@@ -2196,7 +2227,7 @@ of every recipe decided on 2026-10-03 for M11):
   (multi-queue and softnet networking; the latter's `-smp 8` boot stays) and
   `smoke-softraid` (the disk smoke under load). `diff-openbsd` also keeps four processors,
   the configuration its expected differences were recorded with. `smoke-up` stays the one
-  uniprocessor boot.
+  single-processor boot, of the same MP kernel with `-smp 1` since decision 40.
 - `just ci-full` runs `EMIBSD_NCPU=4 just ci`: every recipe on four processors, as before
   2026-10-07. Then, still on four, the installer end to end on both archs (the user's
   decision of 2026-10-07): `smoke-install-<arch>` and `smoke-install-boot-<arch>` for amd64,
@@ -2267,3 +2298,72 @@ after that: about 35 to 65 s for amd64 and 80 s for arm64, image build included.
 **beside `just ci`**, a documented recipe, not part of it: the first run needs the network and
 a snapshot that the mirrors drop within days, so `ci` could not stay reproducible on a fresh
 clone; and it adds no build step `ci` does not already do. `testing.md` says when to run it.
+
+### bench
+
+`just bench` (`cargo xtask bench`, `tools/xtask/src/bench.rs`, N3) measures EmiBSD against
+OpenBSD 8.0 on the same emulated machine, so that a redesign of a hot path (N3's uvm and pmap:
+page faults, fork, exec, mmap) has a before and an after. PHASE2's goal 3 ("measured
+improvements only") rests on it; a milestone close that moved a number carries `Bench:`
+trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`.
+
+- **Two systems, one machine.** Per arch, EmiBSD (the smokes' MP kernel, a debug build at
+  `opt-level = 1`, with the ramdisk) and `diff-openbsd`'s installed snapshot (under
+  `-snapshot`, never installed or downloaded by `bench`) boot on `diff-openbsd`'s QEMU
+  configuration: four processors, the same CPU model, firmware, virtio disks and NICs, and
+  the same memory (`boot::VM_MEMORY`, 512 MiB; `diff-openbsd` gives OpenBSD 1 GiB, which a
+  ratio cannot have). They boot one after the other, never side by side, so neither steals the
+  host's cores from the other, and the order alternates from run to run, so a drift of the
+  host's speed falls on both. Ten runs each.
+- **What is measured.** `boot`: QEMU's start to the first `login:` (firmware and boot loader
+  included: OpenBSD's efiboot waits at `boot>`, Limine does not). `tools/bench` (ISC, ours,
+  one static binary for both, in the ramdisk as `difftest` is and fetched by OpenBSD over
+  `diff-openbsd`'s HTTP server) prints ns per op of `pagefault` (the first touch of a page of
+  a fresh anonymous mapping), `forkexit`, `forkexec` (the program executes itself as a
+  trivial `true`: the ramdisk has no true(1) and OpenBSD's is dynamic), `pipe` (a one-byte
+  round trip between two processes) and `fileread` (64 KiB reads of a 256 MiB file on a
+  fresh 384 MiB scratch disk, FFS, mounted again after the file is written, so it is read
+  cold through vioblk). Each boot runs the program twice: a warm-up pass, checked and
+  discarded, then, with the scratch disk mounted again, the recorded one. `tcpbench`:
+  `smoke-tcpbench`'s two VMs on `smoke2`'s private link, for each system, pf disabled on both,
+  a 2 s run retried until the server answers, one 10 s run as a warm-up, discarded, and then
+  ten 10 s runs in the same boot (Mbps, tcpbench(1)'s average).
+- **Warm-up and sizes** (the user's decision of 2026-10-17, after the first baseline): five
+  runs of one pass each left six of fourteen spreads above 15 %, most from one sample, the
+  first after boot (the first tcpbench run, arm64's first `forkexit`). So a pass is discarded
+  per boot, and the noisiest measurements do more work per sample: `forkexit` 500 -> 2,000
+  ops, `forkexec` 200 -> 800, the file 64 -> 256 MiB.
+- **Ten runs, the worst left out** (the user's decision of 2026-10-17, after the second
+  baseline): with five runs one disturbed boot set the max-min spread on amd64 (EmiBSD's
+  first run once, OpenBSD's second the next time, on whichever side). So each side boots ten
+  times and, per measurement, its worst sample (the slowest for times, the lowest for Mbps)
+  is left out of the statistics; the 15 % limit stays.
+- **Why ratios.** Under TCG (amd64 always on this Mac, arm64 too: no hvf) an absolute number
+  says how fast QEMU translates, not how fast the kernel is; the same emulation running both
+  kernels cancels that out to first order, as TRACTOR reports a translation's overhead against
+  the C it came from. The ratio is EmiBSD's median over OpenBSD's: below 1 is faster for times,
+  above 1 for Mbps. It is only indicative of real hardware (M17), and EmiBSD's side is a debug
+  kernel against OpenBSD's release one.
+- **Spread.** Each side's spread is `(max - min) / median` over the nine samples it keeps
+  of its ten runs, and its median is theirs. A ratio is printed
+  only when both are at most 15 %; otherwise the table says `spread` and the report gives the
+  numbers. The limit is not tuned to make a run pass: a measurement that stays above it is
+  reported as it is, and the cause found.
+- **Report.** A table per arch on stdout and in `<run dir>/<arch>/report.txt`, and
+  `<run dir>/<arch>/report.toml` (`schema = 1`): the kernel's commit, whether `sys/` was
+  clean, its SHA-256, the QEMU command lines, the date, the configuration and the method
+  (`reps`, `discard_worst`), and every raw sample, all ten, with the index of the discarded one
+  (`emibsd_discarded`, `openbsd_discarded`) and each side's median, minimum, maximum and spread
+  over the others; the table lists the discarded samples. `compare` reads two of them,
+  refuses two of different methods (runs, `discard_worst`, the file's size, tcpbench's
+  length), and prints a `Bench: <measurement>-<arch> <before> -> <after> <unit>` line for each
+  EmiBSD median that moved by more than the larger spread of the two, and why not for the
+  others.
+- **Host diagnostic.** Around every run of each side (tcpbench's runs too) the host's
+  one-minute load average at the start and the end and its five busiest processes but QEMU
+  are printed and kept in `report.toml` (`[[host]]`), so a sample can be read against the
+  host: a debugger traced a step in amd64's `pipe` and `fileread` to host contention (VS
+  Code's cpptools bursts, macOS's idle-time daemons). It changes no sample, rule or limit.
+- **Where it runs.** Beside `just ci`, not in it, like `diff-openbsd`: under the machine lock,
+  with nothing else running on the Mac (a concurrent build moves every number). The baseline
+  and each milestone's after go in that milestone's section of `docs/JOURNAL.md`.

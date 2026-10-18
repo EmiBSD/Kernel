@@ -134,6 +134,7 @@ use crate::kern::vfs_lockf::lf_advlock;
 use crate::kern::vfs_subr::{vaccess, vattr_null, vput, vrecycle, vref, vrele};
 use crate::kern::vfs_vnops::{vn_fsizechk, vn_lock};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_UNLOCK};
+use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
 use crate::sys::event::{
@@ -181,8 +182,7 @@ use crate::tmpfs::tmpfs_subr::{
     tmpfs_dir_lookup, tmpfs_free_dirent, tmpfs_free_node, tmpfs_reg_resize, tmpfs_uio_cached,
     tmpfs_uio_uncache, tmpfs_uiomove, tmpfs_update, tmpfs_vnode_get,
 };
-use crate::uvm::uvm_param::round_page;
-use crate::uvm::uvm_vnode::uvm_vnp_uncache;
+use hal::vm::param::round_page;
 
 /// What `tmpfs_rename_enter` looked up and locked: the C's `*fde_ret`, `*fvp_ret`,
 /// `*tde_ret` and `*tvp_ret`.

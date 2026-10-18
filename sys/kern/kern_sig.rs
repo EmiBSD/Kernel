@@ -156,8 +156,8 @@ use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Pid, Register};
 use crate::sys::ucred::Ucred;
 use crate::unported;
-use crate::uvm::uvm_map::{uvm_map_remap_as_stack, uvm_unmap};
-use crate::uvm::uvm_param::ptoa;
+use hal::vm::param::ptoa;
+use kernel::vm::map::{uvm_map_remap_as_stack, uvm_unmap};
 
 /// `NSIG` as an array length.
 const NSIG_LEN: usize = NSIG as usize;
@@ -621,7 +621,7 @@ pub fn sys_sigaltstack(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
         return Err(Errno::ENOMEM);
     }
 
-    uvm_map_remap_as_stack(p, ss.ss_sp, ss.ss_size)?;
+    uvm_map_remap_as_stack(&p.vmspace().vm_map, ss.ss_sp, ss.ss_size)?;
 
     p.p_sigstk.set(ss);
     Ok(())
@@ -1785,7 +1785,11 @@ pub fn coredump(p: &Proc) -> Result<(), Errno> {
     // PMAP_CHECK_COPYIN: not configured.
 
     // Don't dump if will exceed file size limit.
-    let size = USPACE + ptoa(vm.vm_dsize.get() as usize + vm.vm_ssize.get() as usize);
+    let size = USPACE
+        + ptoa(
+            vm.vm_dsize.load(Ordering::Relaxed) as usize
+                + vm.vm_ssize.load(Ordering::Relaxed) as usize,
+        );
     if size as u64 >= lim_cur(RLIMIT_CORE) {
         return Err(Errno::EFBIG);
     }

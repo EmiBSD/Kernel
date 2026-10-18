@@ -250,10 +250,10 @@ unsafe fn start_kernel(boot: BootInfo, banner: fn(&BootInfo)) -> ! {
     // the boot CPU with interrupts off: the boot contract of sys/hal/bridges.rs.
     bsd::kern::hal_bridges::hal_bridges_register();
     // N2.4: the Legacy system call path from the first system call on, and the ABI module
-    // the boot loader handed over (Limine's `abi-openbsd.ko` module, or boot(8)'s after
+    // the boot loader handed over (Limine's `abi_openbsd.ko` module, or boot(8)'s after
     // the kernel, read through the direct map), which `main` loads.
     let abi_module = boot
-        .module(b"abi-openbsd.ko")
+        .module(b"abi_openbsd.ko")
         .map(|m| (m.data.as_ptr().expose_provenance(), m.data.len()))
         .or_else(|| abi_module_handover(&boot));
     bsd::kern::abi_module::abi_module_boot(abi_module);
@@ -305,7 +305,7 @@ fn abi_module_handover(boot: &BootInfo) -> Option<(usize, usize)> {
     });
     if !in_image {
         kprintf!(
-            "abi-openbsd.ko: boot(8)'s record {:#x}+{:#x} is not in the kernel's image; ignored\n",
+            "abi_openbsd.ko: boot(8)'s record {:#x}+{:#x} is not in the kernel's image; ignored\n",
             start,
             len
         );

@@ -81,7 +81,6 @@ use core::ptr::{self, NonNull};
 
 use crate::arch::amd64::amd64::locore::proc_trampoline;
 use crate::arch::amd64::amd64::machdep::reset_segs;
-use crate::arch::amd64::amd64::pmap::pmap_activate;
 use crate::arch::amd64::include::_types::_STACKALIGNBYTES;
 use crate::arch::amd64::include::cpu::{CPUPF_USERXSTATE, curcpu};
 use crate::arch::amd64::include::frame::{Switchframe, Trapframe};
@@ -90,15 +89,17 @@ use crate::dev::rnd::arc4random;
 use crate::kassert;
 use crate::kern::init_main::PROC0;
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
+use crate::machine::pmap::pmap_activate;
 use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove, pmap_update};
 use crate::sys::buf::{B_PHYS, Buf};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::proc::Proc;
 use crate::sys::types::{Vaddr, Vsize};
-use crate::uvm::uvm_extern::{KmemVaMode, KvMap};
-use crate::uvm::uvm_km::{KD_WAITOK, KP_NONE, km_alloc, km_free};
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::km::{KD_WAITOK, KP_NONE};
+use kernel::vm::km::{KmemVaMode, KvMap};
 
 /// `cpu_fork`: finish a fork operation, with process `p2` nearly set up. Copy and update the
 /// kernel stack and pcb, making the child ready to run, and marking it so that it can return

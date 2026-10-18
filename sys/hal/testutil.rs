@@ -35,13 +35,16 @@
 //!   records it and `sleep_finish` waits on one condition variable until it moves (so a wakeup
 //!   between the two is never lost, as with the C's sleep queue lock) or the timeout
 //!   (`EWOULDBLOCK`); no signals.
-//! - `PageMemory`: zeroed, page-aligned allocations of the host's allocator, the bytes out
-//!   counted per thread.
-//! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`.
+//! - `PageMemory` (not a bridge: [`page_memory`] hands it to `KmBuf` as a value): zeroed,
+//!   page-aligned allocations of the host's allocator, the bytes out counted per thread.
+//! - `PoolBackend`: each pool a host allocation layout and an atomic `pr_nout`; its
+//!   `set_hiwat` and `cache_init` recorded by the pool's name ([`pool_knobs`]).
 //! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
 //!   malloc type.
 //! - `UserCopy`: one user address space of `USER_LEN` bytes at [`user_base`]; anything
-//!   outside it is `EFAULT`.
+//!   outside it is `EFAULT`. Its `kcopy_in`/`kcopy_out` reach one run of "foreign" kernel
+//!   memory of [`FOREIGN_LEN`] bytes at [`foreign_base`] (the pages a `ForeignWindow` would
+//!   name); anything outside it faults (`EFAULT`).
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
@@ -49,8 +52,9 @@ use std::boxed::Box;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
+use std::string::String;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, Once};
+use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::bridges;
@@ -59,9 +63,12 @@ use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
+use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 use crate::pool::{PoolBackend, RawPool};
+use crate::prf::Printf;
 use crate::sleep::{INFSLP, Sleep};
 use crate::sys::errno::Errno;
+use crate::sys::types::{Paddr, Vaddr};
 use crate::user::UserCopy;
 
 std::thread_local! {
@@ -72,6 +79,10 @@ std::thread_local! {
     static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    static COLD: Cell<bool> = const { Cell::new(false) };
+    static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
+    static SCHED_PAUSES: Cell<u32> = const { Cell::new(0) };
+    static RANDOM: Cell<u64> = const { Cell::new(0x9e37_79b9_7f4a_7c15) };
     static PAGES_OUT: Cell<isize> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, isize>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -89,6 +100,12 @@ const USER_LEN: usize = 64 * 1024;
 
 /// The user address space of the double.
 static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
+/// Where the double's foreign kernel memory starts (`kcopy`'s window side).
+const FOREIGN_BASE: usize = 0x3000_0000;
+/// Its size.
+pub(crate) const FOREIGN_LEN: usize = 64 * 1024;
+/// The double's foreign kernel memory.
+static FOREIGN: Mutex<[u8; FOREIGN_LEN]> = Mutex::new([0; FOREIGN_LEN]);
 /// What the console double was given.
 static CONS_OUT: Mutex<std::vec::Vec<u8>> = Mutex::new(std::vec::Vec::new());
 /// What the console double will answer.
@@ -97,6 +114,15 @@ static CONS_IN: Mutex<std::collections::VecDeque<u8>> =
 
 /// The generation number of every wait channel a wakeup touched.
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
+/// Each pool's high-water mark and whether its cache was made, by the pool's name.
+static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
+/// The memory frames [`set_idle`] made not busy.
+static IDLE_FRAMES: Mutex<std::collections::BTreeSet<usize>> =
+    Mutex::new(std::collections::BTreeSet::new());
+/// The blocks of host memory that [`memory_frames`] handed out, the managed pages of
+/// [`FAKE_PAGES`]: the first frame's address and a `PageMd` per frame.
+static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
+    Mutex::new(std::vec::Vec::new());
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
 
@@ -125,6 +151,11 @@ impl IntrLevel for TestIntr {
 
     fn ipl_high(&self) -> i32 {
         IPL_HIGH
+    }
+
+    fn splassert(&self, wantipl: i32, func: &str) {
+        let at = SPL.with(Cell::get);
+        assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
     }
 }
 
@@ -239,6 +270,37 @@ impl Sleep for TestSleep {
     fn kernel_lock_held(&self) -> bool {
         false
     }
+
+    /// This thread's `cold || panicstr`, as [`set_cold`] put it.
+    fn cold(&self) -> bool {
+        COLD.with(Cell::get)
+    }
+
+    /// Counts the early return's yields of this thread ([`cold_yields`]).
+    fn cold_yield(&self) {
+        COLD_YIELDS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// Counts this thread's pauses ([`sched_pauses`]); never asked to yield.
+    fn sched_pause(&self) {
+        SCHED_PAUSES.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// The `arc4random(9)` double: a per-thread xorshift64* sequence ([`set_random_seed`]).
+struct TestRandom;
+
+impl crate::pmap::Random for TestRandom {
+    fn random_u32(&self) -> u32 {
+        RANDOM.with(|s| {
+            let mut x = s.get();
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            s.set(x);
+            (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32
+        })
+    }
 }
 
 /// The kernel map double.
@@ -276,6 +338,8 @@ impl PageMemory for TestPages {
 struct TestPool {
     layout: Layout,
     nout: AtomicU64,
+    /// The pool's name, the key of [`POOL_KNOBS`].
+    wchan: &'static str,
 }
 
 // The registration contract: the host allocator's block of the pool's layout (the size and
@@ -298,6 +362,16 @@ impl RawPool for TestPool {
     fn nout(&self) -> u64 {
         self.nout.load(Ordering::Relaxed)
     }
+
+    /// The double keeps no idle item: it records the bound for [`pool_knobs`].
+    fn set_hiwat(&self, n: u32) {
+        lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).0 = n;
+    }
+
+    /// The double has no per-CPU cache to make: it records the request for [`pool_knobs`].
+    fn cache_init(&self) {
+        lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).1 = true;
+    }
 }
 
 /// The pool allocator double.
@@ -312,12 +386,14 @@ impl PoolBackend for TestPools {
         align: usize,
         _ipl: i32,
         _flags: i32,
-        _wchan: &'static str,
+        wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
         let layout = Layout::from_size_align(size.max(1), align).ok()?;
+        lock(&POOL_KNOBS).entry(wchan).or_insert((0, false));
         Some(Box::leak(Box::new(TestPool {
             layout,
             nout: AtomicU64::new(0),
+            wchan,
         })))
     }
 }
@@ -326,13 +402,11 @@ impl PoolBackend for TestPools {
 struct TestMalloc;
 
 // The registration contract: the host allocator's block of `size` bytes aligned to
-// `MALLOC_ALIGN`, owned by the caller until `free` gives it back with the same size.
+// `MALLOC_ALIGN` (one byte for `malloc(0)`, which the C serves from its smallest bucket),
+// owned by the caller until `free` gives it back with the same size.
 impl Malloc for TestMalloc {
     fn malloc(&self, size: usize, ty: i32, _flags: i32) -> Option<(NonNull<u8>, usize)> {
-        if size == 0 {
-            return None;
-        }
-        let layout = Layout::from_size_align(size, MALLOC_ALIGN).ok()?;
+        let layout = Layout::from_size_align(size.max(1), MALLOC_ALIGN).ok()?;
         // SAFETY: the layout's size is not 0.
         let p = NonNull::new(unsafe { alloc(layout) })?;
         MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) += size as isize);
@@ -340,7 +414,7 @@ impl Malloc for TestMalloc {
     }
 
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize) {
-        if let Ok(layout) = Layout::from_size_align(size, MALLOC_ALIGN) {
+        if let Ok(layout) = Layout::from_size_align(size.max(1), MALLOC_ALIGN) {
             // SAFETY: `ptr` came from `malloc` with this very layout (the trait's contract on
             // the caller, `MBox`), once.
             unsafe { dealloc(ptr.as_ptr(), layout) };
@@ -351,6 +425,16 @@ impl Malloc for TestMalloc {
 
 /// The user copy double.
 struct TestUser;
+
+/// The range `[kva, kva + len)` of the double's foreign memory, `EFAULT` outside it.
+fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
+    let start = kva.checked_sub(FOREIGN_BASE).ok_or(Errno::EFAULT)?;
+    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
+    if end > FOREIGN_LEN {
+        return Err(Errno::EFAULT);
+    }
+    Ok(start..end)
+}
 
 /// The range `[uaddr, uaddr + len)` of the double's address space, `EFAULT` outside it.
 fn user_range(uaddr: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
@@ -397,6 +481,18 @@ impl UserCopy for TestUser {
         self.copyout(&kbuf[..n], uaddr)?;
         Ok(n)
     }
+
+    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        let r = foreign_range(kva, kbuf.len())?;
+        kbuf.copy_from_slice(&lock(&FOREIGN)[r]);
+        Ok(())
+    }
+
+    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
+        let r = foreign_range(kva, kbuf.len())?;
+        lock(&FOREIGN)[r].copy_from_slice(kbuf);
+        Ok(())
+    }
 }
 
 /// The console double.
@@ -414,6 +510,18 @@ impl Console for TestCons {
     fn cnpollc(&self, _on: bool) {}
 }
 
+/// The `printf(9)` double: every line formatted into one buffer.
+struct TestPrintf;
+
+impl Printf for TestPrintf {
+    fn printf(&self, args: core::fmt::Arguments<'_>) {
+        let _ = core::fmt::Write::write_fmt(&mut *lock(&PRINTF_OUT), args);
+    }
+}
+
+/// What the `printf(9)` double was given.
+static PRINTF_OUT: Mutex<String> = Mutex::new(String::new());
+
 /// A double's state, a panicking test's poison ignored.
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -427,6 +535,8 @@ static TEST_POOLS: TestPools = TestPools;
 static TEST_MALLOC: TestMalloc = TestMalloc;
 static TEST_USER: TestUser = TestUser;
 static TEST_CONS: TestCons = TestCons;
+static TEST_PRINTF: TestPrintf = TestPrintf;
+static TEST_RANDOM: TestRandom = TestRandom;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -435,17 +545,39 @@ pub(crate) fn install() {
         let _ = bridges::register_intr_level(&TEST_INTR);
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
-        let _ = bridges::register_page_memory(&TEST_PAGES);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_console(&TEST_CONS);
+        let _ = bridges::register_printf(&TEST_PRINTF);
+        let _ = bridges::register_random(&TEST_RANDOM);
     });
+}
+
+/// The kernel map double, for `KmBuf`'s constructors (a provider passed as a value, not a
+/// registered bridge).
+pub(crate) fn page_memory() -> &'static dyn PageMemory {
+    &TEST_PAGES
 }
 
 /// The first address of the double's user address space.
 pub(crate) fn user_base() -> usize {
     USER_BASE
+}
+
+/// The first address of the double's foreign kernel memory.
+pub(crate) fn foreign_base() -> usize {
+    FOREIGN_BASE
+}
+
+/// `len` bytes of the double's foreign memory from `off`.
+pub(crate) fn foreign_bytes(off: usize, len: usize) -> std::vec::Vec<u8> {
+    lock(&FOREIGN)[off..off + len].to_vec()
+}
+
+/// Whether the `printf(9)` double was given `s`, in one piece.
+pub(crate) fn printf_saw(s: &str) -> bool {
+    lock(&PRINTF_OUT).contains(s)
 }
 
 /// Whether the console double was given `s`, in one piece.
@@ -459,13 +591,11 @@ pub(crate) fn console_feed(c: u8) {
 }
 
 /// The bytes of `malloc(9)` blocks of type `ty` this thread holds, as the double counts them.
-
 pub(crate) fn malloc_out(ty: i32) -> isize {
     MALLOC_OUT.with(|m| m.borrow().get(&ty).copied().unwrap_or(0))
 }
 
 /// The bytes of kernel pages this thread holds, as the double counts them.
-
 pub(crate) fn pages_out() -> isize {
     PAGES_OUT.with(Cell::get)
 }
@@ -475,8 +605,123 @@ pub(crate) fn spl_level() -> i32 {
     SPL.with(Cell::get)
 }
 
+/// The last high-water mark `set_hiwat` gave the pool named `wchan` (0: never) and whether its
+/// `cache_init` was asked for; `None` for a pool the double never made.
+pub(crate) fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
+    lock(&POOL_KNOBS).get(wchan).copied()
+}
+
+/// `n` frames of host memory of this test's own, physically contiguous and page-aligned (a
+/// fresh leaked, zeroed block), that [`FAKE_PAGES`] knows as managed pages from now on: the
+/// frames a byte view of mapped pages may be made over (`mapped.rs`).
+pub(crate) fn memory_frames(n: usize) -> std::vec::Vec<Paddr> {
+    let block: &'static mut [u8] = std::vec![0u8; (n + 1) * TEST_PAGE].leak();
+    let base = block
+        .as_mut_ptr()
+        .expose_provenance()
+        .next_multiple_of(TEST_PAGE);
+    let mds: &'static [PageMd] = (0..n)
+        .map(|_| PageMd::new())
+        .collect::<std::vec::Vec<_>>()
+        .leak();
+    lock(&MEMORY_FRAMES).push((base, mds));
+    (0..n).map(|i| Paddr::new(base + i * TEST_PAGE)).collect()
+}
+
+/// Makes this thread see `cold || panicstr` as `cold` says (the sleeps' early return).
+pub(crate) fn set_cold(cold: bool) {
+    COLD.with(|c| c.set(cold));
+}
+
+/// How many times this thread's sleeps took the `cold` early return's yield.
+pub(crate) fn cold_yields() -> u32 {
+    COLD_YIELDS.with(Cell::get)
+}
+
+/// How many times this thread called `sched_pause`.
+pub(crate) fn sched_pauses() -> u32 {
+    SCHED_PAUSES.with(Cell::get)
+}
+
+/// Restarts this thread's `arc4random` double at `seed` (not 0).
+pub(crate) fn set_random_seed(seed: u64) {
+    RANDOM.with(|s| s.set(seed.max(1)));
+}
+
+/// Makes the memory frame `pa` a page that is not busy (`PG_BUSY` clear), as a page of a
+/// pool or of `km_alloc` is.
+pub(crate) fn set_idle(pa: Paddr) {
+    lock(&IDLE_FRAMES).insert(pa.as_usize());
+}
+
 /// This thread's spin count, as the double keeps it.
 pub(crate) fn spinning() -> isize {
     SPINNING.with(Cell::get)
+}
+
+/// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, the
+/// page system never up (so `steal_memory` serves `bootmem`'s tests). Its managed pages are
+/// the frames of host memory [`memory_frames`] handed out (the host pmap's direct map is the
+/// identity, so they are memory there), each with a `PageMd` of its own; every other frame is
+/// no managed page.
+/// `page_init_done` is false: N3.1's provider of the same name in `pmap.rs`'s tests answered
+/// true, which `steal_memory` refuses; the host backend never reads it (only the machines'
+/// page-table allocation does), so the pmap tests see no difference.
+pub(crate) struct FakePages {
+    next: AtomicUsize,
+}
+
+impl PhysPages for FakePages {
+    fn alloc_ptp(&self) -> Option<Paddr> {
+        Some(Paddr::new(
+            self.next.fetch_add(TEST_PAGE, Ordering::Relaxed),
+        ))
+    }
+    fn free_ptp(&self, _pa: Paddr) {}
+    fn md_of(&self, pa: Paddr) -> Option<&'static PageMd> {
+        let pa = pa.as_usize();
+        lock(&MEMORY_FRAMES).iter().find_map(|&(start, mds)| {
+            pa.checked_sub(start)
+                .map(|off| off / TEST_PAGE)
+                .and_then(|i| mds.get(i))
+        })
+    }
+    /// The memory frames are their test's busy pages, but those [`set_idle`] named.
+    fn is_busy(&self, pa: Paddr) -> bool {
+        self.md_of(pa).is_some() && !lock(&IDLE_FRAMES).contains(&pa.as_usize())
+    }
+    fn steal(&self, npg: usize) -> Option<Paddr> {
+        Some(Paddr::new(
+            self.next.fetch_add(npg * TEST_PAGE, Ordering::Relaxed),
+        ))
+    }
+    fn page_init_done(&self) -> bool {
+        false
+    }
+}
+
+/// The one provider of the test process's host pmap.
+pub(crate) static FAKE_PAGES: FakePages = FakePages {
+    next: AtomicUsize::new(0x10_0000),
+};
+
+/// The bridges' doubles, the host pmap's bootstrap over [`FAKE_PAGES`] and `pmap_init`, once
+/// per test process (a second `bootstrap` panics, so every test module shares this one).
+pub(crate) fn pmap_boot() -> &'static Bootstrapped {
+    static BOOTED: OnceLock<Bootstrapped> = OnceLock::new();
+    BOOTED.get_or_init(|| {
+        install();
+        let params = BootstrapParams {
+            direct_base: Vaddr::new(0),
+            direct_end: Vaddr::new(0),
+            nx: true,
+            first_avail: Paddr::new(0x20_0000),
+            image: None,
+        };
+        let b = crate::pmap::bootstrap(&params, &FAKE_PAGES);
+        assert_eq!(b.first_avail, Paddr::new(0x20_0000));
+        crate::pmap::init();
+        b
+    })
 }
 /* </CODE> */

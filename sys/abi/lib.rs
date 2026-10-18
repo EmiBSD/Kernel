@@ -18,11 +18,11 @@
 
 /* <CODE> */
 //! The ABI: OpenBSD's userland interface, byte-identical, as the loadable module
-//! `abi-openbsd.ko`. Translation only: userland bytes to the kernel's types and back, one
+//! `abi_openbsd.ko`. Translation only: userland bytes to the kernel's types and back, one
 //! `KernelApi` entry per syscall, an errno from its `Result`; no decision on what a value means
 //! (decision 21, `cargo xtask abi-check`). `forbid(unsafe_code)`: `hal::UserPtr` is safe.
 //!
-//! The module's binary is `sys/abi/ko` (package `abi-openbsd`), which carries the header
+//! The module's binary is `sys/abi/ko` (package `abi_openbsd`), which carries the header
 //! `hal::module` checks and calls [`abi_init`] through. The constant headers of the ABI edge
 //! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ
 //! (`sys/hal/sys/`, the user's decision of 2026-10-16): the numbers of the table are

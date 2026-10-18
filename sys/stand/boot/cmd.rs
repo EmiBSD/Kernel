@@ -92,7 +92,7 @@
 //! - `Xhexdump` reads the memory the operator names, as the C does: an `unsafe` slice.
 //!
 //! ## Redesign
-//! - N2.4 (decision 22): `CmdState::abi_module`, where boot() put `/abi-openbsd.ko` after
+//! - N2.4 (decision 22): `CmdState::abi_module`, where boot() put `/abi_openbsd.ko` after
 //!   the kernel (a load-space address and a length), for the program's `run_loadfile`.
 
 use libsa::cons::cnischar;
@@ -170,7 +170,7 @@ pub struct CmdState {
     pub argv0: &'static str,
     /// `cmd_buf`: the line being run (NUL-terminated words once parsed).
     pub buf: [u8; CMD_BUFF_SIZE],
-    /// Not in the C (N2.4): where boot() put `/abi-openbsd.ko` after the kernel, as a
+    /// Not in the C (N2.4): where boot() put `/abi_openbsd.ko` after the kernel, as a
     /// load-space address (as `marks` are) and a length, for `run_loadfile` to hand over.
     pub abi_module: Option<(u64, u64)>,
 }

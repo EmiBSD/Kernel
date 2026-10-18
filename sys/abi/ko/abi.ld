@@ -15,7 +15,7 @@
  */
 
 /*
- * abi-openbsd.ko, both architectures: a static position-independent ELF linked at 0,
+ * abi_openbsd.ko, both architectures: a static position-independent ELF linked at 0,
  * which hal::module (sys/hal/module/load.rs) places, relocates and maps, segment by
  * segment, each on its own pages:
  *

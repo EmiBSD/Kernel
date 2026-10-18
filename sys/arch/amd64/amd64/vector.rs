@@ -48,8 +48,8 @@
 //! - AT&T syntax, as the C file, so the two can be diffed.
 //! - The `MULTIPROCESSOR` stubs sit in an `.if {MULTIPROCESSOR}` block of the one `vector.S`
 //!   (the C's `#ifdef`): the `vector_asm!` macro passes 1 and the shootdown globals of
-//!   `pmap.rs` with the feature, 0 for all of them without. Only the no-PCID shootdown
-//!   stubs exist, since `pmap_use_pcid` is never set.
+//!   `hal`'s pmap (`sys/hal/arch/amd64/pmap/tlb.rs`) with the feature, 0 for all of them
+//!   without. Only the no-PCID shootdown stubs exist, since `pmap_use_pcid` is never set.
 
 use core::arch::global_asm;
 use core::mem::offset_of;
@@ -72,7 +72,7 @@ use crate::arch::amd64::include::trap::{
 };
 use crate::dev::isa::isareg::{IO_ICU1, IO_ICU2};
 use crate::sys::softintr::{SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
-use crate::uvm::uvmexp::Uvmexp;
+use hal::vm::uvmexp::Uvmexp;
 
 /// The `global_asm!` of `vector.S` with its placeholders; `$extra` are the
 /// `MULTIPROCESSOR`-only ones (the IPI stubs), constant zeroes without the feature.
@@ -171,11 +171,11 @@ macro_rules! vector_asm {
 #[cfg(feature = "multiprocessor")]
 vector_asm!(
     MULTIPROCESSOR = const 1,
-    TLB_SHOOT_LOCK = sym crate::arch::amd64::amd64::pmap::TLB_SHOOT_LOCK,
-    TLB_SHOOT_CPU = sym crate::arch::amd64::amd64::pmap::TLB_SHOOT_CPU,
-    TLB_SHOOT_COUNTS = sym crate::arch::amd64::amd64::pmap::TLB_SHOOT_COUNTS,
-    TLB_SHOOT_ADDR1 = sym crate::arch::amd64::amd64::pmap::TLB_SHOOT_ADDR1,
-    TLB_SHOOT_ADDR2 = sym crate::arch::amd64::amd64::pmap::TLB_SHOOT_ADDR2,
+    TLB_SHOOT_LOCK = sym hal::arch::amd64::pmap::TLB_SHOOT_LOCK,
+    TLB_SHOOT_CPU = sym hal::arch::amd64::pmap::TLB_SHOOT_CPU,
+    TLB_SHOOT_COUNTS = sym hal::arch::amd64::pmap::TLB_SHOOT_COUNTS,
+    TLB_SHOOT_ADDR1 = sym hal::arch::amd64::pmap::TLB_SHOOT_ADDR1,
+    TLB_SHOOT_ADDR2 = sym hal::arch::amd64::pmap::TLB_SHOOT_ADDR2,
 );
 #[cfg(not(feature = "multiprocessor"))]
 vector_asm!(

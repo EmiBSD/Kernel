@@ -6,7 +6,7 @@ paths:
 # Kernel Rust
 
 - `#![no_std]` everywhere under `sys/`. `extern crate std` only in `sys/lib.rs` for the host
-  build, in `sys/arch/host/`, and under `#[cfg(test)]`. `alloc` only behind `feature = "alloc"`
+  build, in `sys/arch/host/` and `sys/hal/arch/host/` (the host doubles), and under `#[cfg(test)]`. `alloc` only behind `feature = "alloc"`
   until M3.
 - Workspace lints are law: `unsafe_op_in_unsafe_fn`, `clippy::undocumented_unsafe_blocks`,
   `missing_safety_doc`, `todo`, `unimplemented`, `unwrap_used`, `expect_used` are denied. Never
@@ -42,10 +42,22 @@ paths:
   `unsafe` in `hal` carries a soundness argument, not a reference to the C
   (`unsafe-budget.md`), and `hal` exposes safe APIs only: an `unsafe fn` there is
   `pub(crate)`, since no caller outside `hal` may be `unsafe` (`cargo xtask hal-check`).
-- `Adapter` (`sys/sys/queue.rs`) is implemented only by `queue_adapter!` and `tree_adapter!`;
-  never write an impl by hand, rename the trait, or impl a trait passed through a macro
-  variable (`lz check` refuses all three). The element's field must be exactly the entry
-  type, never a pointer to it (the macro checks it at compile time).
+- `Adapter` (`sys/sys/queue.rs`) is implemented only by `bsd`'s `queue_adapter!` and
+  `tree_adapter!` (`crate::tree_adapter!` of `sys/sys/tree.rs`); never write an impl by hand,
+  rename the trait, or impl a trait passed through a macro variable (`lz check` refuses all
+  three). The element's field must be exactly the entry type, never a pointer to it (the
+  macro checks it at compile time).
+- `hal`'s lists and trees (N3.3) are a second family, for elements that live for ever
+  (`&'static`, the page array and the pmemranges): `hal::list::List` (TAILQ) and
+  `hal::tree::Tree` (RBT), whose links are `hal::link::Link`s and whose mutators are safe.
+  Their adapters are the safe traits `hal::list::ListAdapter` and `hal::tree::TreeAdapter`,
+  written by `hal::list_adapter!` and `hal::tree_adapter!` (`sys/hal/tree.rs`: a different
+  macro from `bsd`'s `tree_adapter!` of the same name; say `hal::tree_adapter!` or
+  `crate::tree_adapter!` to tell them apart). No premise rests on these adapters (an `entry`
+  that names the wrong field scrambles that list or tree, it never makes a reference
+  dangle), so `lz check` does not police them; write them only through the macros all the
+  same. Code in `sys/kernel/` uses this family; `bsd` keeps `sys/sys/queue.rs` and
+  `sys/sys/tree.rs` until their last user moves.
 - Dependencies allowed in `sys/`: `libkern`, `libz`, `bitflags`; dev-only `proptest`. The boot
   loaders' crates (M14) may also use `libsa`, `boot` and `efi` (ours, OpenBSD code); the kernel
   does not depend on them. Lists and trees

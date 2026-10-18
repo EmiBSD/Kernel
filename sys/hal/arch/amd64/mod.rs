@@ -20,4 +20,8 @@
 //! amd64 machine code moved into the HAL.
 
 pub mod include;
+pub mod pmap;
+
+/// `<machine/param.h>` and `<machine/vmparam.h>` as `hal::arch::current` names them.
+pub use self::include::{param, vmparam};
 /* </CODE> */
