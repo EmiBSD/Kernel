@@ -114,3 +114,8 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - A setter that takes `&WriteWitness` cannot be called while a `Guarded` cell of the same lock is open through `get_mut(&mut w)`; counters under a foreign lock are relaxed atomics whose setters `kassert!` the lock status instead.
 - Kernel host tests: `testutil::pages_install(64 * 4096)` left `uvm_pagealloc` answering `None`; 256 pages work. `uvm_page_unbusy` asserts `!PG_FAKE` under `diagnostic`: a test clears `PG_FAKE` (the I/O) before unbusying a fresh page.
 - `SharedRwlock` is 16 bytes (two pointer arms, no niche), so a pool item that clones one grows by 16 over a raw lock pointer; check `size_of` before quoting a `vmstat -m` size.
+- LZ at the pin reads from the worktree with plain `git show 3c62ede68802:sys/<path>` (the lz remote's objects are in the shared repo); `git -C reference/emibsd-lz ..` is refused by the sandbox.
+- A function that makes a value and returns a witness borrowing it: the caller passes a `&'v mut Option<T>` slot, the callee does `let v: &'v T = slot.insert(t);` and returns `(&'v T, Witness<'v>)` (kernel::vm::fault::uvm_fault_check); witnesses then cannot outlive the caller's round.
+- kernel testutil's pool double never fails (`pages()` ignores `fail_pages`); `testutil::fail_pool(wchan, n)` (N3.4d) fails one named pool's next items.
+- `uvm_swapisfull()` is true with no swap configured (`swpgonly >= swpages * 99 / 100`, 0 >= 0): every out-of-RAM fault path returns ENOMEM, not ERESTART; a test of the retry sets `UVMEXP.swpages` above 0 and restores it.
+- `uvmfault_anonget` counts rusage on every call, the retry after an ENOLCK upgrade too (the C's `goto retry`): a paged-out anon under a read lock gives majflt 2.
