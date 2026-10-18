@@ -57,11 +57,11 @@
 //!   per-thread [`VmProcState`] ([`vmproc_with`]); `sigexit` panics with its signal.
 //! - `vm::vnode`'s `VnodeOps`, not a slot: [`MemVnode`], a vnode whose file is a `Vec` in
 //!   memory ([`mem_vnode`] leaks one), which records what it saw during its last read.
-//! - `vm::km`'s maps bridge, installed only by [`km_install`] (the kernel's own tests: `bsd`'s
-//!   installs its real one): `KmMaps`, a first-fit allocator of virtual space per map over a
-//!   `BTreeMap`, in a range no host address uses, whose next maps a thread can make fail
-//!   ([`km_fail_maps`]). `km`'s pages are the kernel's page system over a heap block
-//!   ([`pages_install`]).
+//! - `vm::km`'s maps, not a double: [`kernel_maps_install`] sets up the kernel's own
+//!   `kernel_map`, `kmem_map` and a one-page `exec_map` (the kernel's `VmMap`s, switched to
+//!   best fit as `uvm_init_late` does) once per process, in a range no host address uses, and
+//!   counts the calls `km` makes to them per thread ([`km_map_calls`]). `km`'s pages are the
+//!   kernel's page system over a heap block ([`pages_install`]).
 //! - The page system itself (`vm::page`, `vm::pmemrange`), not a double: [`pmap_boot`]
 //!   bootstraps the host pmap once per process with the kernel's provider
 //!   (`vm::page::PHYS_PAGES`), and [`pages_setup`]/[`pages_install`] load fresh segments
@@ -95,7 +95,7 @@ use hal::sys::types::{Paddr, Vaddr};
 use hal::user::UserCopy;
 use hal::vm::uvmexp::UVMEXP;
 
-use crate::vm::km::{KmMaps, KmObject, KvMap, LegacyLend};
+use crate::vm::km::{KvMap, LegacyLend};
 use crate::vm::page::{
     PHYS_PAGES, SegPolicy, SegStrat, uvm_page_init, uvm_page_physload, uvm_page_test_reset,
     uvm_setpagesize,
@@ -137,9 +137,7 @@ std::thread_local! {
     static KLOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
 
-    static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
-    static KM_LAST_UNMAP: Cell<Option<(KvMap, usize, usize)>> = const { Cell::new(None) };
 
 }
 
@@ -941,110 +939,81 @@ pub fn pages_out() -> i64 {
     PAGES_OUT.with(Cell::get)
 }
 
-/// Where the kernel maps double hands out virtual space: kernel-like addresses no host
-/// allocation has.
-pub const KM_VA_BASE: usize = 0xffff_9000_0000_0000;
-/// Its end.
+/// Where the test kernel maps lie: kernel-like addresses no host allocation has, below the
+/// host's `VM_MIN_KERNEL_ADDRESS`, so `uvm_maxkaddr` (which the map tests set back to that
+/// address for their own kernel-style maps, where the C only ever raises it) is always above
+/// them: their free space is never split at it, and they never grow.
+pub const KM_VA_BASE: usize = 0xffff_7000_0000_0000;
+/// Their end.
 pub const KM_VA_END: usize = KM_VA_BASE + (1 << 40);
+/// Where `kmem_map` starts (`kernel_map` is below, `exec_map` above).
+pub const KM_KMEM_BASE: usize = KM_VA_BASE + (1 << 39);
+/// The one page of the test `exec_map`, below [`KM_VA_END`]'s last megabyte (a full map
+/// after one page-sized allocation).
+pub const KM_EXEC_BASE: usize = KM_VA_END - (1 << 20);
 
-/// One map entry of the kernel maps double: its end, map and object.
-type KmEntry = (usize, KvMap, KmObject);
-
-/// The entries of the kernel maps double, by start.
-static KM_ENTRIES: Mutex<BTreeMap<usize, KmEntry>> = Mutex::new(BTreeMap::new());
-
-/// One wait channel per map.
-static KM_CHANS: [u8; 5] = [0; 5];
-
-/// The kernel maps double.
-struct TestKmMaps;
-
-impl KmMaps for TestKmMaps {
-    fn map(
-        &self,
-        which: KvMap,
-        sz: usize,
-        object: KmObject,
-        _prefer: Voff,
-        align: usize,
-        _mapflags: u32,
-    ) -> Result<Vaddr, Errno> {
-        KM_MAP_CALLS.with(|c| c.set(c.get() + 1));
-        if KM_FAIL_MAPS.with(|f| {
-            let n = f.get();
-            f.set(n.saturating_sub(1));
-            n != 0
-        }) {
-            return Err(Errno::ENOMEM);
-        }
-        let align = align.max(TEST_PAGE);
-        let mut m = lock(&KM_ENTRIES);
-        let mut va = KM_VA_BASE;
-        for (&start, &(end, _, _)) in m.iter() {
-            if va + sz <= start {
-                break;
-            }
-            va = va.max(end.next_multiple_of(align));
-        }
-        if va + sz > KM_VA_END {
-            return Err(Errno::ENOMEM);
-        }
-        m.insert(va, (va + sz, which, object));
-        Ok(Vaddr::new(va))
-    }
-
-    fn unmap(&self, which: KvMap, sva: Vaddr, eva: Vaddr) {
-        KM_LAST_UNMAP.with(|u| u.set(Some((which, sva.as_usize(), eva.as_usize()))));
-        lock(&KM_ENTRIES).remove(&sva.as_usize());
-    }
-
-    fn chan(&self, which: KvMap) -> *const () {
-        let i = match which {
-            KvMap::Kernel => 0,
-            KvMap::Kmem => 1,
-            KvMap::Exec => 2,
-            KvMap::Phys => 3,
-            KvMap::None => 4,
-        };
-        std::ptr::from_ref(&KM_CHANS[i]).cast::<()>()
-    }
-}
-
-static TEST_KM_MAPS: TestKmMaps = TestKmMaps;
-
-/// `vm::km`'s maps double, as `install` takes it.
-pub fn km_maps() -> &'static dyn KmMaps {
-    &TEST_KM_MAPS
-}
-
-/// Installs `vm::km`'s maps double, once per process (the kernel's own tests only).
-pub fn km_install() {
+/// The kernel maps of the kernel's own tests, once per process: `kernel_map` over
+/// `[KM_VA_BASE, KM_KMEM_BASE)` (pageable) and `kmem_map` over `[KM_KMEM_BASE,
+/// KM_EXEC_BASE)` (intrsafe), both switched to best fit as `uvm_init_late` does, a one-page
+/// `exec_map` at [`KM_EXEC_BASE`], and the kernel object (`uvm_km_init`'s, if no test made
+/// it yet). Call it with [`MEMORY`] held (a test of the page system's set-up), as the kernel
+/// object's other maker does.
+pub fn kernel_maps_install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = crate::vm::km::install(km_maps());
+        use crate::vm::addr::uaddr_bestfit_create;
+        use crate::vm::map::{
+            UaddrSlot, VM_MAP_INTRSAFE, VM_MAP_PAGEABLE, uvm_map_create, uvm_map_init,
+            uvm_map_set_uaddr,
+        };
+        init_shared_once();
+        hal::pmap::init();
+        uvm_map_init();
+        let _ = crate::vm::aobj::uao_init();
+        if crate::vm::aobj::kernel_object().is_none() {
+            let _ = crate::vm::aobj::uao_create(
+                hal::sys::types::Vsize::new(16 << 20),
+                crate::vm::aobj::UAO_FLAG_KERNOBJ,
+            );
+        }
+        let make = |min: usize, max: usize, flags: i32, bestfit: bool| {
+            let map = uvm_map_create(hal::pmap::PmapRef::Kernel, min, max, flags);
+            if bestfit {
+                uvm_map_set_uaddr(map, UaddrSlot::Any(3), Some(uaddr_bestfit_create(min, max)));
+            }
+            map
+        };
+        let install = crate::vm::km::install_submap;
+        install(
+            KvMap::Kernel,
+            make(KM_VA_BASE, KM_KMEM_BASE, VM_MAP_PAGEABLE, true),
+        );
+        let spl = hal::intr::splraise(hal::intr::IPL_VM);
+        install(
+            KvMap::Kmem,
+            make(KM_KMEM_BASE, KM_EXEC_BASE, VM_MAP_INTRSAFE, true),
+        );
+        drop(spl);
+        install(
+            KvMap::Exec,
+            make(
+                KM_EXEC_BASE,
+                KM_EXEC_BASE + TEST_PAGE,
+                VM_MAP_PAGEABLE,
+                false,
+            ),
+        );
     });
 }
 
-/// Makes this thread's next `n` maps fail (`ENOMEM`), as a full map does.
-pub fn km_fail_maps(n: u32) {
-    KM_FAIL_MAPS.with(|f| f.set(n));
+/// Counts one map call of `vm::km` (`uvm_map` of a kernel map) for this thread.
+pub fn km_map_called() {
+    KM_MAP_CALLS.with(|c| c.set(c.get() + 1));
 }
 
-/// How many maps this thread has asked the double for.
+/// How many maps this thread has asked the kernel maps for (`vm::km`'s map path).
 pub fn km_map_calls() -> u32 {
     KM_MAP_CALLS.with(Cell::get)
-}
-
-/// The map and object of the double's entry at `va`, if one starts there.
-pub fn km_entry(va: Vaddr) -> Option<(KvMap, KmObject)> {
-    lock(&KM_ENTRIES)
-        .get(&va.as_usize())
-        .map(|&(_, which, object)| (which, object))
-}
-
-/// The last range this thread gave back to the double (`which`, start, end).
-pub fn km_last_unmap() -> Option<(KvMap, usize, usize)> {
-    KM_LAST_UNMAP.with(Cell::get)
 }
 
 /// Serialises the tests that use the page system (`vm::page`, `vm::pmemrange`: one set of

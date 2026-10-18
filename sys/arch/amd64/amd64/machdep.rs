@@ -280,6 +280,7 @@ use crate::kern::subr_prf::DB_CONSOLE;
 use crate::kern::subr_prf::splassert_fail;
 use crate::kern::subr_xxx::chrtoblk;
 use crate::kern::vfs_bio::bufinit;
+use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
 use crate::machine::bootinfo::{
     BootFramebuffer, BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion,
@@ -305,12 +306,13 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Paddr, Psize, Register, Vaddr, major, minor};
 use crate::sys::user::{Uarea, User};
 use crate::unported;
-use crate::uvm::uvm_extern::{EXEC_MAP, PHYS_MAP, UvmConstraintRange};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{kernel_map, kernel_map_min, uvm_km_suballoc};
-use crate::uvm::uvm_map::VM_MAP_PAGEABLE;
-use crate::uvm::uvm_page::{uvm_page_physload, uvm_setpagesize};
-use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::{KvMap, install_submap};
+use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
+use kernel::vm::map::VM_MAP_PAGEABLE;
+use kernel::vm::page::uvm_setpagesize;
+use kernel::vm::types::UvmConstraintRange;
 
 #[cfg(feature = "qemu")]
 use crate::arch::amd64::amd64::qemu;
@@ -590,7 +592,7 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
     });
     // The kernel map's base follows (`vm_min_kernel_address`, as sparc64's runtime
     // VM_MIN_KERNEL_ADDRESS): the window is [virtual_avail, the end of its PML4 slot).
-    crate::uvm::uvm_init::VM_MIN_KERNEL_ADDRESS.store(virtual_avail.as_usize(), Ordering::Relaxed);
+    crate::kern::vm_bsd::VM_MIN_KERNEL_ADDRESS.store(virtual_avail.as_usize(), Ordering::Relaxed);
 
     // cpu_init_early_vctrap and the early PTE pages: M4 and the page tables.
 
@@ -1394,7 +1396,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    EXEC_MAP.store(ptr::from_ref(exec_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Exec, exec_map);
 
     // Allocate a submap for physio
     minaddr = kernel_map_min().as_usize();
@@ -1407,7 +1409,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    PHYS_MAP.store(ptr::from_ref(phys_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Phys, phys_map);
 
     // cpu_init_extents: with the extents.
 

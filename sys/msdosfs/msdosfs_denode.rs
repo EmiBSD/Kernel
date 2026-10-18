@@ -110,6 +110,7 @@ use crate::kern::vfs_subr::PRTACTIVE;
 use crate::kern::vfs_subr::{getnewvnode, vget, vinvalbuf, vput, vrecycle, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::VOP_UNLOCK;
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::msdosfs::denode::{
     DE_MODIFIED, DE_UPDATE, DeHash, Denode, FC_LASTFC, MSDOSFSROOT_OFS, de_externalize,
@@ -141,7 +142,6 @@ use crate::sys::ucred::{NOCRED, Ucred};
 use crate::sys::vnode::{
     IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VREG, VROOT, VT_MSDOSFS, VopInactiveArgs, VopReclaimArgs,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 use libkern::StaticCell;
 
 /// The hash chains, with the claim that makes them shareable.

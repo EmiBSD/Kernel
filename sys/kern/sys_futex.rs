@@ -74,15 +74,13 @@ use crate::sys::syscallargs::SysFutexArgs;
 use crate::sys::systm::{INFSLP, MAXTSLP, SysArgs, sysargs};
 use crate::sys::time::{Timespec, timespec_to_nsec};
 use crate::sys::types::Register;
-use crate::uvm::uvm::uvm_et_isobj;
-use crate::uvm::uvm_amap::Amap;
-use crate::uvm::uvm_extern::Voff;
-use crate::uvm::uvm_map::{
-    VmMapEntryObject, uvm_map_lookup_entry, vm_map_lock_read, vm_map_unlock_read,
-};
-use crate::uvm::uvm_object::Object;
-use crate::uvm::uvm_param::ptoa;
+use kernel::vm::amap::Amap;
+use kernel::vm::map::uvm_et_isobj;
+use kernel::vm::types::Voff;
+
 use hal::pool::PoolArc;
+use hal::vm::param::ptoa;
+use kernel::vm::object::Object;
 
 /// `FT_PRIVATE`: futex is process-private (`futex_get` flags sit in `FUTEX_OP_MASK` space).
 const FT_PRIVATE: i32 = FUTEX_PRIVATE_FLAG;
@@ -227,22 +225,23 @@ fn futex_addrs(p: &Proc, f: &Futex, uaddr: usize, flags: i32) {
     } else {
         ps = ptr::null();
 
-        vm_map_lock_read(map);
-        if let Some(entry) = uvm_map_lookup_entry(map, uaddr)
-            && entry.inheritance.get() == MAP_INHERIT_SHARE
+        // vm_map_lock_read(map) .. vm_map_unlock_read(map): the guard's scope.
+        let g = map.lock_read();
+        if let Some(entry) = g.lookup(uaddr)
+            && entry.inheritance() == MAP_INHERIT_SHARE
         {
+            let h = entry.handles(g.witness());
             if uvm_et_isobj(entry) {
-                if let VmMapEntryObject::Obj(o) = entry.object_get() {
+                if let Some(o) = h.uvm_obj() {
                     obj = o.as_ptr();
                 }
-                off = entry.offset.get() + (uaddr - entry.start.get()) as Voff;
-            } else if let Some(a) = entry.aref.amap() {
-                amap = PoolArc::as_ptr(&a);
-                off = ptoa(entry.aref.ar_pageoff.get() as usize) as Voff
-                    + (uaddr - entry.start.get()) as Voff;
+                off = entry.offset() + (uaddr - entry.start()) as Voff;
+            } else if let Some(a) = &h.amap {
+                amap = PoolArc::as_ptr(a);
+                off = ptoa(h.pageoff as usize) as Voff + (uaddr - entry.start()) as Voff;
             }
         }
-        vm_map_unlock_read(map);
+        drop(g);
     }
 
     f.ft_ps.set(ps);

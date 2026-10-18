@@ -100,7 +100,7 @@ use crate::sys::queue::{
 use crate::sys::tree::RbtEntry;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::Vnode;
-use crate::uvm::uvm_object::{ObjKind, Object};
+use kernel::vm::object::{ObjKind, Object};
 
 // Buffer queues
 

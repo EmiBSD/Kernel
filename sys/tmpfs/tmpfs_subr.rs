@@ -123,6 +123,7 @@ use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_subr::{checkalias, getnewvnode, vget, vgone, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_ISLOCKED};
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, Dirent, dirent_size,
 };
@@ -162,15 +163,14 @@ use crate::tmpfs::tmpfs_mem::{
 };
 use crate::tmpfs::tmpfs_specops::TMPFS_SPECVOPS;
 use crate::tmpfs::tmpfs_vnops::TMPFS_VOPS;
-use crate::uvm::uvm_aobj::{
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::aobj::{
     UAO_FLAG_CANFAIL, uao_create, uao_detach, uao_grow, uao_reference, uao_shrink,
 };
-use crate::uvm::uvm_extern::{Voff, uvm_mapflag};
-use crate::uvm::uvm_km::kernel_map;
-use crate::uvm::uvm_map::{uvm_map, uvm_unmap};
-use crate::uvm::uvm_object::ObjRef;
-use crate::uvm::uvm_param::{round_page, trunc_page};
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
+use kernel::vm::km::kernel_map;
+use kernel::vm::map::{uvm_map, uvm_unmap};
+use kernel::vm::object::ObjRef;
+use kernel::vm::types::{Voff, uvm_mapflag};
 
 /// `TMPFS_UIO_MAXBYTES`: be gentle to kernel_map, don't allow more than 4MB in a single
 /// transaction.

@@ -110,6 +110,7 @@ use crate::kern::vfs_vops::{
     VOP_OPEN, VOP_PATHCONF, VOP_READDIR, VOP_READLINK, VOP_REMOVE, VOP_RENAME, VOP_REVOKE,
     VOP_RMDIR, VOP_SETATTR, VOP_SYMLINK, VOP_UNLOCK,
 };
+use crate::kern::vm_bsd::{uvm_vnp_sync, uvm_vnp_uncache};
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::{copyin, copyin_obj, copyinstr, copyout, copyout_obj, copyoutstr};
 use crate::sys::conf::D_TTY;
@@ -161,7 +162,6 @@ use crate::sys::vnode::{
     GETCWD_CHECK_ACCESS, REVOKEALL, V_SAVE, VA_UTIMES_CHANGE, VA_UTIMES_NULL, VALIASED, VBAD, VBLK,
     VCHR, VDIR, VEXEC, VNOVAL, VREAD, VROOT, VSGID, VSUID, VWRITE, Vattr, Vnode,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_sync, uvm_vnp_uncache};
 
 /// The user address of a pathname argument.
 fn upath(path: *const u8) -> NiDirp<'static> {

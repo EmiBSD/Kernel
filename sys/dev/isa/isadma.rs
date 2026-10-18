@@ -114,7 +114,7 @@ use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::param::NBPG;
 use crate::sys::proc::Proc;
-use crate::uvm::uvm_param::round_page;
+use hal::vm::param::round_page;
 
 /// `struct isa_mem`: one `isa_malloc` allocation, used by `isa_free`.
 struct IsaMem {

@@ -83,7 +83,7 @@ use crate::sys::queue::{SimpleqEntry, TailqEntry, TailqHead};
 use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::tree::RbtHead;
-use crate::uvm::uvm_extern::KmemPaMode;
+use kernel::vm::km::KmemPaMode;
 
 // sysctls: kern.pool.npools, kern.pool.name.<number>, kern.pool.pool.<number>
 

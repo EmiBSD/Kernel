@@ -125,6 +125,7 @@ use crate::kern::vfs_lookup::vfs_relookup;
 use crate::kern::vfs_subr::{vaccess, vflushbuf, vput, vrele};
 use crate::kern::vfs_vnops::{vn_fsizechk, vn_lock};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_STRATEGY, VOP_UNLOCK};
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::msdosfs::bpb::{getulong, getushort, putushort};
@@ -186,7 +187,6 @@ use crate::sys::vnode::{
     VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, VopWriteArgs,
     Vops, cred_ref,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `sizeof(struct direntry)`.
 const DIRENTRY_SIZE: u32 = Direntry::SIZE as u32;
@@ -2920,8 +2920,8 @@ mod tests {
         use crate::tmpfs::tmpfs_mem::TMPFS_BYTES_USED;
         use crate::tmpfs::tmpfs_vfsops::tests::{args, tmpfs_conf};
         use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
-        use crate::uvm::uvm_aobj::uao_init;
         use core::sync::atomic::Ordering;
+        use kernel::vm::aobj::uao_init;
 
         let (_g, p) = setup(sample());
         let _ = hal::rwlock::init_shared();

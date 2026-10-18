@@ -119,6 +119,8 @@ use crate::kern::kern_sysctl::{hw_prod, hw_serial, hw_uuid, hw_vendor, hw_ver};
 #[cfg(target_os = "none")]
 use crate::kern::subr_autoconf::config_found;
 use crate::kern::subr_prf::{Str, snprintf};
+#[cfg(target_os = "none")]
+use crate::kern::vm_bsd::km_alloc;
 use crate::kprintf;
 #[cfg(target_os = "none")]
 use crate::machine::pmap::pmap_kenter_pa;
@@ -132,9 +134,9 @@ use crate::sys::types::{Paddr, Vaddr};
 #[cfg(target_os = "none")]
 use crate::unported;
 #[cfg(target_os = "none")]
-use crate::uvm::uvm_km::{KD_NOWAIT, KP_NONE, KV_ANY, km_alloc};
+use hal::vm::param::{round_page, trunc_page};
 #[cfg(target_os = "none")]
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `struct bios_attach_args` (`<machine/biosvar.h>`): what bios0 hands `acpi0`, `efi0` and
 /// `mpbios0`.

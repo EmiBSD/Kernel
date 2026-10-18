@@ -94,6 +94,11 @@ use crate::kern::vfs_syscalls::{
     sys_statfs, sys_symlink, sys_symlinkat, sys_sync, sys_truncate, sys_umask, sys_unlink,
     sys_unlinkat, sys_unmount, sys_unveil, sys_utimensat, sys_utimes,
 };
+use crate::kern::vm_bsd::{
+    sys_kbind, sys_madvise, sys_mimmutable, sys_minherit, sys_mlock, sys_mlockall, sys_mmap,
+    sys_mprotect, sys_mquery, sys_msync, sys_munlock, sys_munlockall, sys_munmap, sys_obreak,
+    sys_pinsyscalls,
+};
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
 use crate::nfs::nfs_syscalls::sys_nfssvc;
 use crate::sys::syscall::SYS_MAXSYSCALL;
@@ -134,11 +139,6 @@ use crate::sys::syscallargs::{
     SysWait4Args, SysWaitidArgs, SysWriteArgs, SysWritevArgs, SysYpconnectArgs,
 };
 use crate::sys::systm::{SY_NOLOCK, Sysent};
-use crate::uvm::uvm_mmap::{
-    sys_kbind, sys_madvise, sys_mimmutable, sys_minherit, sys_mlock, sys_mlockall, sys_mmap,
-    sys_mprotect, sys_mquery, sys_msync, sys_munlock, sys_munlockall, sys_munmap, sys_pinsyscalls,
-};
-use crate::uvm::uvm_unix::sys_obreak;
 
 /// `sysent[]`: the system call switch table, indexed by `SYS_*`.
 pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = [

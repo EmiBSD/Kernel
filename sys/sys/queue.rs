@@ -150,7 +150,7 @@
 //!   (`while ((e = TAILQ_FIRST(h))) TAILQ_REMOVE(h, e, f)`) as one call whose only `unsafe`
 //!   is the removal of the element the head itself names, so the precondition is the list's
 //!   own invariant and a drain needs no `unsafe` at its call site (the kernel's page lists,
-//!   `sys/uvm/uvm_km.rs`).
+//!   LZ's `sys/uvm/uvm_km.rs`).
 
 use core::cell::Cell;
 use core::marker::PhantomData;

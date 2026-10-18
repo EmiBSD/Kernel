@@ -108,8 +108,9 @@
 //! write-lock a map you bump it), so we save the version number before we release the lock
 //! and start I/O, then relock and check the version numbers to see if anything changed.
 //!
-//! The traps reach it through `bsd`'s `sys/uvm/uvm_fault.rs` (N3.4e), whose `VmMap` implements
-//! [`FaultMap`]; the kernel's objects implement [`FaultObject`].
+//! The traps call it on the kernel's map (`super::map::VmMap` implements [`FaultMap`] since
+//! N3.5; `bsd`'s `sys/uvm/uvm_fault.rs` adapter did from N3.4e); the kernel's objects
+//! implement [`FaultObject`].
 //!
 //! ## Deviations
 //! - `uvmadvice[]` is a constant table: `PAGE_SIZE` is a constant here, so the values

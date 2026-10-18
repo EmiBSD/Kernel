@@ -27,9 +27,9 @@
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
 //! fallback too, which answers `ENOSYS` as the traps did. A subsystem that moves into
 //! `kernel` flips its entries to `Native` and raises [`NATIVE`]: N2.6, pipe(2) and pipe2(2)
-//! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`). N3.5 S1 writes the translations of the
-//! virtual memory system's fifteen (`KernelApi::vm`, `sys/kernel/vm/mmap.rs` and
-//! `unix.rs`); they stay out of [`SYSENT`] until the flip (S2) makes them `Native`.
+//! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`). N3.5: the virtual memory system's fifteen
+//! (`KernelApi::vm`, `sys/kernel/vm/mmap.rs` and `unix.rs`): written in S1, `Native` since
+//! the flip (S2).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -57,7 +57,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 2;
+pub const NATIVE: u32 = 17;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -70,6 +70,21 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     let mut table = [Sysent::Legacy; SYS_MAXSYSCALL];
     table[SYS_pipe2 as usize] = Sysent::Native(sys_pipe2);
     table[SYS_pipe as usize] = Sysent::Native(sys_pipe);
+    table[SYS_break as usize] = Sysent::Native(sys_obreak);
+    table[SYS_mmap as usize] = Sysent::Native(sys_mmap);
+    table[SYS_munmap as usize] = Sysent::Native(sys_munmap);
+    table[SYS_mprotect as usize] = Sysent::Native(sys_mprotect);
+    table[SYS_madvise as usize] = Sysent::Native(sys_madvise);
+    table[SYS_mquery as usize] = Sysent::Native(sys_mquery);
+    table[SYS_kbind as usize] = Sysent::Native(sys_kbind);
+    table[SYS_pinsyscalls as usize] = Sysent::Native(sys_pinsyscalls);
+    table[SYS_mimmutable as usize] = Sysent::Native(sys_mimmutable);
+    table[SYS_mlock as usize] = Sysent::Native(sys_mlock);
+    table[SYS_munlock as usize] = Sysent::Native(sys_munlock);
+    table[SYS_minherit as usize] = Sysent::Native(sys_minherit);
+    table[SYS_msync as usize] = Sysent::Native(sys_msync);
+    table[SYS_mlockall as usize] = Sysent::Native(sys_mlockall);
+    table[SYS_munlockall as usize] = Sysent::Native(sys_munlockall);
     table
 };
 
@@ -352,6 +367,25 @@ mod tests {
 
     static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
 
+    /// The vm system calls N3.5's flip made `Native` (`KernelApi::vm`).
+    const VM_CALLS: [i32; 15] = [
+        SYS_break,
+        SYS_mmap,
+        SYS_munmap,
+        SYS_mprotect,
+        SYS_madvise,
+        SYS_mquery,
+        SYS_kbind,
+        SYS_pinsyscalls,
+        SYS_mimmutable,
+        SYS_mlock,
+        SYS_munlock,
+        SYS_minherit,
+        SYS_msync,
+        SYS_mlockall,
+        SYS_munlockall,
+    ];
+
     /// A `Native` entry of the test table.
     fn native(_: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
         rval[0] = args[0] + args[1];
@@ -399,9 +433,12 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_is_legacy() {
+    fn every_entry_but_pipe_and_vm_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
-            if nr == SYS_pipe as Register || nr == SYS_pipe2 as Register {
+            if nr == SYS_pipe as Register
+                || nr == SYS_pipe2 as Register
+                || VM_CALLS.iter().any(|&v| v as Register == nr)
+            {
                 continue;
             }
             let mut rval = [-7; 2];
@@ -483,6 +520,23 @@ mod tests {
             Err(ENOSYS)
         );
         assert_eq!(rval[0], 2);
+    }
+
+    #[test]
+    fn the_vm_calls_are_native_and_reach_their_translation() {
+        // N3.5's flip: the fifteen vm system calls go to KernelApi::vm, each to its own
+        // entry, never the legacy fallback (which says it was reached in rval[0]).
+        for nr in VM_CALLS {
+            assert!(
+                matches!(SYSENT[nr as usize], Sysent::Native(_)),
+                "SYS {nr} is Native"
+            );
+            let mut rval = [0; 2];
+            let r = syscall(&API, nr as Register, &[0; 6], &mut rval);
+            let legacy = r == Err(ENOSYS) && rval[0] == nr as Register;
+            assert!(!legacy, "SYS {nr} reached the legacy fallback");
+        }
+        assert_eq!(NATIVE, 17);
     }
 }
 /* </TESTS> */

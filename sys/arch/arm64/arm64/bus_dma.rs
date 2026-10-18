@@ -115,6 +115,7 @@ use crate::arch::arm64::include::bus::{
 };
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{BusAddr, BusSize};
 use crate::machine::pmap::pmap_kenter_cache;
 use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_update};
@@ -127,17 +128,15 @@ use crate::sys::proc::Proc;
 use crate::sys::types::{Off, Paddr, Vaddr};
 use crate::sys::uio::{Uio, UioSeg::UIO_USERSPACE};
 use crate::unported;
-use crate::uvm::uvm_extern::{UVM_PLA_NOWAIT, UVM_PLA_WAITOK, UVM_PLA_ZERO, UvmConstraintRange};
-use crate::uvm::uvm_km::{
-    KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT, km_alloc, km_free,
-};
-use crate::uvm::uvm_page::{
+use hal::arch::arm64::pmap::layout::{PMAP_CACHE_CI, PMAP_CACHE_WB, PMAP_NOCACHE};
+use hal::pmap::{PMAP_CANFAIL, PMAP_WIRED};
+use hal::vm::param::round_page;
+use kernel::vm::km::{KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT};
+use kernel::vm::page::{
     PHYS_TO_VM_PAGE, Pglist, VmPage, uvm_pagecount, uvm_pglistalloc, uvm_pglistfree,
     vm_page_to_phys,
 };
-use crate::uvm::uvm_param::round_page;
-use crate::uvm::uvm_pmap::{PMAP_CANFAIL, PMAP_WIRED};
-use hal::arch::arm64::pmap::layout::{PMAP_CACHE_CI, PMAP_CACHE_WB, PMAP_NOCACHE};
+use kernel::vm::types::{UVM_PLA_NOWAIT, UVM_PLA_WAITOK, UVM_PLA_ZERO, UvmConstraintRange};
 
 /// The `-1` of a `vaddr_t` that names no mapping.
 const NO_VA: usize = usize::MAX;

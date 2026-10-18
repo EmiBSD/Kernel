@@ -116,7 +116,7 @@ use crate::sys::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
 use crate::tree_adapter;
-use crate::uvm::uvm_vnode::Uvn;
+use kernel::vm::vnode::Uvn;
 
 /// `enum vtype`: vnode types. `VNON` means no type.
 #[repr(i32)]

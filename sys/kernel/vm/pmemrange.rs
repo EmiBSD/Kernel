@@ -94,8 +94,8 @@
 //! - There is no page daemon to wait for (N3.5), so a `UVM_PLA_WAITOK` request that cannot be
 //!   met calls [`uvm_wait`], which reports `unported: uvm_wait (uvm_pdaemon.c, M5)` once per
 //!   boot through `printf(9)`, and returns `ENOMEM` instead of sleeping and retrying (LZ's
-//!   deviation, kept). `bsd`'s `uvm_wait` (`sys/uvm/uvm_pdaemon.rs`, the fault handler's and
-//!   the pagers') is this one, so the line is printed once whoever waits first, as in LZ.
+//!   deviation, kept). `super::pdaemon`'s `uvm_wait` (the fault handler's and the pagers')
+//!   is this one, so the line is printed once whoever waits first, as in LZ.
 //! - `in_pagedaemon` answers false: there is no page daemon nor `curproc` here yet (N3.5, N4).
 //! - The `goto`-driven search of `uvm_pmr_getpages` is written with labelled loops; the order
 //!   of the tries, memtypes and ranges is the C's.

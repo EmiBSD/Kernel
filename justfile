@@ -1963,7 +1963,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi_openbsd.ko: 331 syscalls, 2 native" --reject "abi_openbsd.ko: not loaded" \
+        --expect "abi_openbsd.ko: 331 syscalls, 17 native" --reject "abi_openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -1986,7 +1986,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi_openbsd.ko: 331 syscalls, 2 native" --reject "abi_openbsd.ko: not loaded" \
+        --expect "abi_openbsd.ko: 331 syscalls, 17 native" --reject "abi_openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2165,7 +2165,7 @@ smoke-abi: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build
 
 # `smoke-abi`'s expectations and session.
 abi_steps := "--reject 'abi_openbsd.ko: not loaded' " + \
-    "--expect 'abi_openbsd.ko: 331 syscalls, 2 native' " + \
+    "--expect 'abi_openbsd.ko: 331 syscalls, 17 native' " + \
     "--send-after 'RETURN for sh:' --send '\\n' " + \
     "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
     "--expect 'abi-ok-42' " + \

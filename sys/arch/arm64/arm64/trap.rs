@@ -101,12 +101,12 @@ use crate::sys::signal::{SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 use crate::sys::systm::kernel_lock;
 use crate::sys::types::Register;
 use crate::sys::types::Vaddr;
-use crate::uvm::uvm_extern::VmProt;
-use crate::uvm::uvm_fault::uvm_fault;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_map::{uvm_map_inentry, uvm_map_inentry_sp};
-use crate::uvm::uvm_param::trunc_page;
-use crate::uvm::uvm_unix::uvm_grow;
+use hal::vm::param::trunc_page;
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::fault::uvm_fault;
+use kernel::vm::map::{uvm_map_inentry, uvm_map_inentry_sp};
+use kernel::vm::types::VmProt;
+use kernel::vm::unix::uvm_grow;
 
 /// `is_unpriv_ldst`: whether the instruction at `elr` (a kernel address) is an unprivileged
 /// load or store (`ldtr`/`sttr` family), the only way the kernel may touch user addresses.
@@ -179,7 +179,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     let p = unsafe { ci.ci_curproc.get().as_ref() };
     let map = match p {
         Some(p) if !kernel_map => &p.vmspace().vm_map,
-        _ => crate::uvm::uvm_km::kernel_map(),
+        _ => kernel::vm::km::kernel_map(),
     };
 
     // Handle referenced/modified emulation
@@ -190,7 +190,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     let error = uvm_fault(map, va, 0, access_type);
     if error.is_ok() {
         if !kernel_map && let Some(p) = p {
-            uvm_grow(p, va);
+            uvm_grow(p.vmspace(), va);
         }
         return;
     }
@@ -317,13 +317,13 @@ fn udata_abort(_frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
 
     let mut ie = p.p_spinentry.get();
     let ok = uvm_map_inentry(
-        p,
+        &p.vmspace().vm_map,
         &mut ie,
         <Machine as Cpu>::proc_stack(p),
         "sp",
         "not MAP_STACK",
         uvm_map_inentry_sp,
-        p.vmspace().vm_map.sserial.get(),
+        p.vmspace().vm_map.sserial(),
     );
     p.p_spinentry.set(ie);
     if !ok {
@@ -336,7 +336,7 @@ fn udata_abort(_frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     }
     let result = uvm_fault(map, va, 0, access_type);
     if result.is_ok() {
-        uvm_grow(p, va);
+        uvm_grow(p.vmspace(), va);
     }
     let error = match result {
         Ok(()) => return,

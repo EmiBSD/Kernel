@@ -78,6 +78,7 @@ use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::sched_bsd::r#yield;
 use crate::kern::vfs_vnops::vn_rdwr;
+use crate::kern::vm_bsd::uvn_attach;
 use crate::machine::copy::copyout;
 use crate::machine::{Machine, VmParam};
 use crate::sys::errno::Errno;
@@ -96,13 +97,12 @@ use crate::sys::resourcevar::lim_cur;
 use crate::sys::sched::sched_pause;
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::IO_UNIT;
-use crate::uvm::uvm_extern::{
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::map::{uvm_map, uvm_map_immutable, uvm_map_protect};
+use kernel::vm::types::{
     PROT_MASK, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_OVERLAY, UVM_FLAG_STACK,
     UVM_UNKNOWN_OFFSET, uvm_mapflag,
 };
-use crate::uvm::uvm_map::{uvm_map, uvm_map_immutable, uvm_map_protect};
-use crate::uvm::uvm_param::{round_page, trunc_page};
-use crate::uvm::uvm_vnode::uvn_attach;
 
 /// `RANDOMIZE_CTX_THRESHOLD`: below this many bytes `vmcmd_randomize` uses the global
 /// generator directly.

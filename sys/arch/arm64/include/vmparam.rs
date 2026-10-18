@@ -68,7 +68,7 @@
 //!   re-exported here, beside the user limits and the physical segment policy, which stay.
 
 use crate::arch::arm64::include::param::PAGE_SIZE;
-use crate::uvm::uvm_page::VM_PSTRAT_BSEARCH;
+use crate::kern::vm_bsd::VM_PSTRAT_BSEARCH;
 
 pub use hal::arch::arm64::include::vmparam::{
     USER_SPACE_BITS, VM_MAX_ADDRESS, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS,

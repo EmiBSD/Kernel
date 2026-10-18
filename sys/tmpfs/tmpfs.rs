@@ -93,9 +93,9 @@ use crate::sys::rwlock::{Rrwlock, Rwlock};
 use crate::sys::time::Timespec;
 use crate::sys::types::{Dev, Gid, Ino, Mode, Nlink, Off, Uid};
 use crate::sys::vnode::{VDIR, VNON, VT_TMPFS, Vnode, Vtype};
-use crate::uvm::uvm_extern::Voff;
 use hal::pool::PoolArc;
 use kernel::vm::aobj::Aobj;
+use kernel::vm::types::Voff;
 
 /// `struct tmpfs_dirent` (`tmpfs_dirent_t`): internal representation of a tmpfs directory
 /// entry.

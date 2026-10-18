@@ -73,6 +73,8 @@ use crate::kern::uipc_mbuf::{
     m_copym, m_dup_pkt, m_freem, m_gethdr, m_pullup, m_split,
 };
 use crate::kern::uipc_mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
+use crate::kern::vm_bsd::uvm_pagealloc;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::kprintf;
 use crate::machine::bus::{
     BUS_DMA_NOWAIT, BUS_DMA_ZERO, BUS_DMASYNC_POSTREAD, BUS_DMASYNC_POSTWRITE, BUS_DMASYNC_PREREAD,
@@ -116,19 +118,19 @@ use crate::sys::timeout::Timeout;
 use crate::sys::types::{Paddr, Vaddr, Vsize, major};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::IO_NDELAY;
-use crate::uvm::uvm_extern::{
+use hal::pmap::PMAP_WIRED;
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::fault::{VM_FAULT_INVALID, uvm_fault};
+use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY};
+use kernel::vm::map::Vmspace;
+use kernel::vm::map::{uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_free};
+use kernel::vm::page::{
+    Owner, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree, vm_page_to_phys,
+};
+use kernel::vm::types::{
     PROT_MASK, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_PGA_ZERO, UVM_PLA_NOWAIT, UVM_PLA_WAITOK,
-    UVM_PLA_ZERO, Vmspace, uvm_mapflag,
+    UVM_PLA_ZERO, uvm_mapflag,
 };
-use crate::uvm::uvm_fault::{VM_FAULT_INVALID, uvm_fault};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_map::{uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_free};
-use crate::uvm::uvm_page::{
-    Owner, PHYS_TO_VM_PAGE, Pglist, uvm_pagealloc, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree,
-    vm_page_to_phys,
-};
-use crate::uvm::uvm_pmap::PMAP_WIRED;
 
 /// A value that is neither all zeros nor all ones.
 const PATTERN: u64 = 0x5a5a_c3c3_0f0f_a5a5;
@@ -433,13 +435,13 @@ pub fn pmap_reuse() {
         true,
     );
     pmap_deactivate(p);
-    p.p_vmspace.set(vm);
+    p.p_vmspace.set(kernel::vm::map::VmspaceRef::as_ptr(&vm));
     pmap_activate(p);
 
     let result = pmap_reuse_kernel().and_then(|()| pmap_reuse_user(vm.vm_map.pmap()));
 
     pmap_deactivate(p);
-    p.p_vmspace.set(ovm);
+    p.p_vmspace.set(ptr::from_ref(ovm));
     pmap_activate(p);
     uvmspace_free(vm);
 
@@ -637,8 +639,9 @@ pub fn buffer_cache() {
 /// mapped together in a pager segment (`uvm_pagermapin`, the vnode pager's path for a cluster)
 /// and read back through it; a single page uses the direct map. Then everything is given back.
 pub fn pager_map() {
-    use crate::uvm::uvm_page::{Owner, PG_BUSY, VmPage, uvm_pagealloc, uvm_pagefree};
-    use crate::uvm::uvm_pager::{PageSlot, UVMPAGER_MAPIN_READ, uvm_pagermapin, uvm_pagermapout};
+    use crate::kern::vm_bsd::uvm_pagealloc;
+    use kernel::vm::page::{Owner, PG_BUSY, VmPage, uvm_pagefree};
+    use kernel::vm::pager::{PageSlot, UVMPAGER_MAPIN_READ, uvm_pagermapin, uvm_pagermapout};
 
     let mut pages: Vec<&'static VmPage> = Vec::new();
     for _ in 0..3 {
@@ -2470,7 +2473,10 @@ pub fn mpstress() -> bool {
     .is_ok()
         && uva == mpstress_uva()
     {
-        MPSTRESS_VM.store(ptr::from_ref(vm).cast_mut(), Ordering::Release);
+        MPSTRESS_VM.store(
+            kernel::vm::map::VmspaceRef::as_ptr(&vm).cast_mut(),
+            Ordering::Release,
+        );
     }
     let free_start = UVMEXP.free.load(Ordering::Relaxed);
     let start_ns = nsecuptime();

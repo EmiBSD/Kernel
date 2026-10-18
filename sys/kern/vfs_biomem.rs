@@ -59,6 +59,7 @@ use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{BCSTATS, BUFPOOL, bufbackoff, cleanerproc, dma_constraint};
 use crate::kern::vfs_sync::syncerproc;
+use crate::kern::vm_bsd::uvm_pagealloc_multi;
 use crate::machine::Machine;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_BIO, splassert};
@@ -71,14 +72,14 @@ use crate::sys::param::{MAXPHYS, PRIBIO};
 use crate::sys::queue::TailqHead;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Vaddr, Vsize};
-use crate::uvm::uvm_extern::{
+use hal::vm::param::{atop, ptoa, round_page};
+use kernel::vm::km::kernel_map;
+use kernel::vm::map::uvm_map;
+use kernel::vm::object::uvm_obj_free;
+use kernel::vm::page::{uvm_pagelookup, vm_page_to_phys};
+use kernel::vm::types::{
     UVM_PLA_NOWAIT, UVM_PLA_NOWAKE, UVM_PLA_WAITOK, UVM_UNKNOWN_OFFSET, uvm_mapflag,
 };
-use crate::uvm::uvm_km::kernel_map;
-use crate::uvm::uvm_map::uvm_map;
-use crate::uvm::uvm_object::uvm_obj_free;
-use crate::uvm::uvm_page::{uvm_pagealloc_multi, uvm_pagelookup, vm_page_to_phys};
-use crate::uvm::uvm_param::{atop, ptoa, round_page};
 
 /// `buf_valist`'s type: a `Sync` static queue.
 pub struct BufValist(pub TailqHead<BValist>);
@@ -109,7 +110,7 @@ pub fn buf_mem_init(size: usize) {
         // a slot address is never NULL.
         MAXPHYS
     } else {
-        let mut start = kernel_map().min_offset.get();
+        let mut start = kernel_map().min_offset();
         if uvm_map(
             kernel_map(),
             &mut start,

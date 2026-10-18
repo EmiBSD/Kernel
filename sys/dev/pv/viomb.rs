@@ -107,8 +107,8 @@ use crate::sys::pool::{PR_NOWAIT, PR_ZERO};
 use crate::sys::sensors::{Ksensor, Ksensordev, SENSOR_INTEGER};
 use crate::sys::task::{Task, Taskq};
 use crate::sys::types::Paddr;
-use crate::uvm::uvm_extern::UVM_PLA_NOWAIT;
-use crate::uvm::uvm_page::{Pglist, uvm_pglistalloc, uvm_pglistfree};
+use kernel::vm::page::{Pglist, uvm_pglistalloc, uvm_pglistfree};
+use kernel::vm::types::UVM_PLA_NOWAIT;
 
 // Flags used to specify kind of operation, actually should be moved to virtiovar.h.
 /// `VRING_READ`: the device reads the buffer.

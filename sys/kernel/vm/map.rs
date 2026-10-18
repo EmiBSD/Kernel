@@ -7918,22 +7918,9 @@ mod tests {
         // map, needs-copy resolved first, the protection without PROT_EXEC.
         let _g = setup();
         let kmap = the_kernel_map();
-        UVM_MAXKADDR.store(kmap.min_offset(), Mem::Relaxed);
-        // Kernel space below uvm_maxkaddr, as the kernel map has once it ran (extract does
-        // not grow it, as the C).
-        let mut t = 0;
-        let kflags = uvm_mapflag(RW, RW, MAP_INHERIT_NONE, MADV_RANDOM, 0);
-        uvm_map(
-            kmap,
-            &mut t,
-            64 * PAGE_SIZE,
-            None,
-            UVM_UNKNOWN_OFFSET,
-            0,
-            kflags,
-        )
-        .expect("grow");
-        uvm_unmap(kmap, t, t + 64 * PAGE_SIZE);
+        // The test kernel map lies wholly below uvm_maxkaddr (testutil::KM_VA_BASE), as the
+        // kernel map's space has once it ran (extract does not grow it, as the C).
+        assert!(kmap.max_offset() <= uvm_maxkaddr());
         let va = 0x2000_0000;
         let vm = vmspace_with_anon(va, 2 * PAGE_SIZE);
         uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE).expect("fault");
@@ -7972,9 +7959,7 @@ mod tests {
 
     /// The kernel map of the tests: the first kernel-style map a test installed.
     fn the_kernel_map() -> &'static VmMap {
-        if map_of(KvMap::Kernel).is_none() {
-            super::super::km::install_submap(KvMap::Kernel, kernel_style_map(VM_MAP_PAGEABLE));
-        }
+        testutil::kernel_maps_install();
         kernel_map()
     }
 
@@ -8004,7 +7989,6 @@ mod tests {
         // static entries; the refill page is kv_page's (the direct map), so it takes no
         // kernel map entry and no map lock (a kv_any page would wait for the lock held here).
         let _g = setup();
-        testutil::km_install();
         let kmap = the_kernel_map();
         let before = UVMEXP.kmapent.load(Mem::Relaxed);
         let held = kmap.lock();
@@ -8022,7 +8006,6 @@ mod tests {
         // kmem_map at IPL_VM under its mutex (and uvm_kmapent_mtx): the refill touches no
         // kernel map, whose rwlock and IPL_NONE paths cannot be taken there.
         let _g = setup();
-        testutil::km_install();
         let map = kernel_style_map(VM_MAP_INTRSAFE);
         let before = UVMEXP.kmapent.load(Mem::Relaxed);
         let spl = hal::intr::splraise(IPL_VM);

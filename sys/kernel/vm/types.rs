@@ -84,8 +84,8 @@
 //! flags, the `UVM_LK_*` lock flags, `struct uvm_constraint_range` and the core dump callback
 //! types. The kernel memory allocation modes (`struct kmem_va_mode` and its siblings) are
 //! `km`'s ([`super::km`]), which uses them; `struct vmspace` and the `exec_map`/`phys_map`
-//! submaps embed or name the map, which is still `bsd`'s (`sys/uvm/uvm_extern.rs` keeps them
-//! until N3.5 and re-exports this module).
+//! submaps embed or name the map, so they are `super::map`'s and `super::km`'s (N3.5; `bsd`'s
+//! `sys/uvm/uvm_extern.rs` kept them, re-exporting this module, until then).
 //!
 //! ## Deviations
 //! - `UVM_MAPFLAG` and its extractors are `const fn`s.
@@ -99,10 +99,9 @@
 //! - `vm_prot_t` is one type, `hal::pmap::VmProt` (the pmap's, N3.1); this alias names it.
 //! - N3.5 S1: the kernel's `uvm_coredump_walkmap` (`vm::unix`) takes its callbacks as
 //!   `&mut dyn FnMut` closures, the walk's over a [`CoredumpSeg`]: the `void *cookie` the C
-//!   threads through is whatever the closure captures. The two `fn` types stay for `bsd`'s
-//!   copy of the walk until the flip (S2) deletes it with them.
+//!   threads through is whatever the closure captures. The two `fn` types went with `bsd`'s
+//!   copy of the walk at the flip (S2).
 
-use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use hal::sys::types::{Off, Paddr};
 
@@ -254,22 +253,6 @@ pub struct CoredumpSeg {
     /// `nsegment`: the segment's index.
     pub nsegment: i32,
 }
-
-/// `uvm_coredump_setup_cb`: called once with the number of segments a core dump will hold.
-pub type UvmCoredumpSetupCb =
-    fn(nsegment: i32, cookie: *mut core::ffi::c_void) -> Result<(), Errno>;
-
-/// `uvm_coredump_walk_cb`: called for each segment of a core dump: `[start, realend)` holds
-/// data, `[realend, end)` is absent (zero) memory.
-pub type UvmCoredumpWalkCb = fn(
-    start: usize,
-    realend: usize,
-    end: usize,
-    prot: VmProt,
-    isvnode: bool,
-    nsegment: i32,
-    cookie: *mut core::ffi::c_void,
-) -> Result<(), Errno>;
 /* </CODE> */
 
 /* <TESTS> */

@@ -112,9 +112,9 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::time::{ClockYmdhms, POSIX_BASE_YEAR, Timeval};
 use crate::sys::types::{Paddr, Vaddr};
-use crate::uvm::uvm_pmap::PMAP_WIRED;
 use hal::arch::arm64::pmap::layout::PMAP_DEVICE;
 use hal::once::OnceStatic;
+use hal::pmap::PMAP_WIRED;
 
 /// The runtime services' pmap (`sc_pm`'s counted handle, kept for the kernel's lifetime:
 /// the C never destroys it); one EFI per machine.

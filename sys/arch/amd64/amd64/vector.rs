@@ -72,7 +72,7 @@ use crate::arch::amd64::include::trap::{
 };
 use crate::dev::isa::isareg::{IO_ICU1, IO_ICU2};
 use crate::sys::softintr::{SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
-use crate::uvm::uvmexp::Uvmexp;
+use hal::vm::uvmexp::Uvmexp;
 
 /// The `global_asm!` of `vector.S` with its placeholders; `$extra` are the
 /// `MULTIPROCESSOR`-only ones (the IPI stubs), constant zeroes without the feature.

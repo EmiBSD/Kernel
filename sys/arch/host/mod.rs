@@ -47,6 +47,7 @@ use std::sync::Mutex;
 
 use crate::dev::cons::{CN_LOWPRI, Consdev, set_cn_tab};
 use crate::dev::pci::pcivar::{PciAttachArgs, PcibusAttachArgs, Pcireg};
+use crate::kern::vm_bsd::VM_PSTRAT_BIGFIRST;
 use crate::machine::autoconf::Autoconf;
 use crate::machine::bus::{BusAddr, BusDma, BusSize, BusSpace};
 use crate::machine::copy::UserCopy;
@@ -73,8 +74,7 @@ use crate::sys::systm::SysArgs;
 use crate::sys::types::{Dev, Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
 use crate::sys::user::User;
-use crate::uvm::uvm_extern::UvmConstraintRange;
-use crate::uvm::uvm_page::VM_PSTRAT_BIGFIRST;
+use kernel::vm::types::UvmConstraintRange;
 
 /// The host's `<machine/*.h>` types where generic code names them: amd64's.
 pub mod include {
@@ -632,7 +632,7 @@ impl Pmap for Machine {
                 // `kernel::testutil::install` in this binary (`pipe_glue`'s tests reach it
                 // through `kern_event::tests::setup`, which sets up the memory first).
                 crate::kern::hal_bridges::hal_bridges_register_vm();
-                crate::uvm::uvm_vnode::uvn_install_sysinfo();
+                crate::kern::vm_bsd::uvn_install_sysinfo();
                 kernel::testutil::install();
                 hal::pmap::init();
             }

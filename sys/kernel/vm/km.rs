@@ -151,9 +151,10 @@
 //! contiguous segment is returned through the direct map and touches no map at all; anything
 //! else takes virtual space from the map and enters each page.
 //!
-//! What is still `bsd`'s is reached through one bridge (bridges.toml), registered once by
-//! `bsd`'s `uvm_km_init` ([`install`]): the kernel maps ([`KmMaps`]: `uvm_map`/`uvm_unmap` of
-//! `kernel_map`, `kmem_map`, `exec_map`, `phys_map`, N3.5). The pages are the kernel's own
+//! The kernel maps are the kernel's (`super::map`, N3.5): `kernel_map`, set up by
+//! [`uvm_km_init`], and the three submaps `kmem_map`, `exec_map` and `phys_map`, which their
+//! boot paths install ([`install_submap`]); a mode's virtual space is `uvm_map`/`uvm_unmap`
+//! of the map its `kv_map` names ([`map_of`]). The pages are the kernel's own
 //! (`super::page`: `uvm_pglistalloc`, `uvm_pglistfree`, `uvm_pagefree`, since N3.3). The kernel pmap
 //! changes only through `hal::pmap::KernelMapper`, the token `pmap_bootstrap` hands out once:
 //! it is kept here ([`adopt_mapper`]), the owner of the fact it stands for (the caller owns the
@@ -161,8 +162,8 @@
 //! [`LegacyLend`], until the last caller of its kernel-pmap wrappers moves ([`legacy_mapper`],
 //! N3.3 to N7).
 //!
-//! No lock of its own, as the C with `__HAVE_PMAP_DIRECT`: the map's lock is inside
-//! [`KmMaps`], the free pages' inside the page system; the callers raise the interrupt level
+//! No lock of its own, as the C with `__HAVE_PMAP_DIRECT`: the map's lock is the map's
+//! (`super::map::VmMap`), the free pages' inside the page system; the callers raise the interrupt level
 //! around `kv_intrsafe` (`pool(9)`). A `kv_wait` mode sleeps on the map's address
 //! (`"km_allocva"`, `PVM`) until a [`km_free`] of a `kv_wait` mode wakes it.
 //!
@@ -184,11 +185,12 @@
 //! - LZ's `uvm_km.rs` is the allocator, the kernel map itself and `uvm_km_init`'s map and
 //!   object set-up, all in `bsd`. The allocator moves here (N3.2): `km_alloc`, `km_free`,
 //!   `uvm_km_pgremove_intrsafe` and the modes; the map (`kernel_map_store`, `uvm_km_init`,
-//!   `uvm_km_suballoc`, `uvm_km_pgremove`) stays in `bsd`'s `sys/uvm/uvm_km.rs` with `uvm_map`
-//!   and the aobj, reached through [`KmMaps`]. A result is a [`Vaddr`], never dereferenced
-//!   here; `bsd`'s adapter turns it into the legacy `NonNull<u8>` for its callers.
+//!   `uvm_km_suballoc`, `uvm_km_pgremove`) stayed in `bsd`'s `sys/uvm/uvm_km.rs` with `uvm_map`
+//!   and the aobj, reached through a bridge (`KmMaps`) until N3.5. A result is a [`Vaddr`],
+//!   never dereferenced here; `bsd`'s adapter (`sys/kern/vm_bsd.rs`) turns it into the legacy
+//!   `NonNull<u8>` for its callers.
 //! - A mode's `kv_map` is a [`KvMap`] name, not a pointer to a map pointer; `kp_object` is a
-//!   `bool` that means `&uvm.kernel_object` ([`KmObject::Kernel`] at the bridge).
+//!   `bool` that means `&uvm.kernel_object` (`super::aobj::kernel_object`).
 //! - N3.3: the page system is the kernel's (`super::page`), so the `KmPages` bridge is gone and
 //!   the C's shape is back: `km_alloc` takes the page list first, then the virtual space
 //!   (sleeping for it under `kv_wait`, the pages held), then enters each page, or gives the
@@ -207,8 +209,14 @@
 //!   and [`map_of`] (`KvMap` names the slot); `map == kernel_map` is [`is_kernel_map`], a
 //!   pointer compare. [`uvm_km_pgremove`] moved here from `bsd`'s `uvm_km.rs` with the kernel
 //!   object (the kernel's since N3.4e); its write witness is the C's `KASSERT(rw_write_held)`.
-//!   Nothing calls them in a kernel image until the flip (S2): `bsd`'s copies and the
-//!   [`KmMaps`] bridge stay live until then.
+//! - N3.5 S2 (the flip): the `KmMaps` bridge is gone. [`km_alloc`]'s virtual space is
+//!   `uvm_map` of the mode's map with `uvm.kernel_object` for `kp_object` ([`kv_map_alloc`]),
+//!   [`km_free`]'s `uvm_unmap` ([`kv_map_free`]), and `"km_allocva"` sleeps on the map's
+//!   address, as the C; a direct-map request no longer needs the maps to exist (the C's
+//!   `km_alloc` never looks at one on that path), and a map request before its map is set up
+//!   panics by name (a broken boot order), where the bridge answered `None` before
+//!   `uvm_km_init`. `bsd`'s `uvm_km_init`, `uvm_km_suballoc` and kernel map are gone with
+//!   `sys/uvm/`.
 //! - N3.5 S1: the windows of `uvm_io` and `sys_kbind` are minted only from the range
 //!   `uvm_map_extract` returned: [`uvm_map_extract_window`] wraps that range in an
 //!   [`Extracted`] (no other constructor), which [`foreign_window`] consumes into a
@@ -225,7 +233,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::bridges::AlreadyRegistered;
+
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::mapped::MappedBytes;
 use hal::module::ModuleMemory;
@@ -244,7 +252,7 @@ use super::amap::AMAP_REFALL;
 use super::aobj::{UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
 use super::map::{
     DeadQueue, VM_MAP_PAGEABLE, VmMap, uvm_map, uvm_map_create, uvm_map_extract, uvm_map_setup,
-    uvm_map_submap, uvm_unmap_detach, uvm_unmap_remove,
+    uvm_map_submap, uvm_unmap, uvm_unmap_detach, uvm_unmap_remove,
 };
 use super::object::ObjRef;
 use super::page::{
@@ -265,7 +273,7 @@ pub const VM_KERNEL_SPACE_SIZE: usize = hal::arch::current::vmparam::VM_MAX_KERN
     - hal::arch::current::vmparam::VM_MIN_KERNEL_ADDRESS;
 
 /// Which kernel map a [`KmemVaMode`] allocates from (`kv_map` in C is a pointer to the map
-/// pointer; the maps are `bsd`'s, named here, reached through [`KmMaps`]).
+/// pointer; the maps are this module's slots, [`map_of`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvMap {
     /// `kernel_map`.
@@ -339,16 +347,6 @@ pub const KMEM_DYN_INITIALIZER: KmemDynMode = KmemDynMode {
     kd_waitok: false,
     kd_trylock: false,
 };
-
-/// Which object a map request carries: none, or the kernel object (`uvm.kernel_object`,
-/// `kp_object`), whose offsets are the map's (`va - vm_map_min(kernel_map)`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KmObject {
-    /// No object (`NULL`).
-    None,
-    /// `uvm.kernel_object`, for pageable kernel memory.
-    Kernel,
-}
 
 /// `no_constraint`: unconstrained range.
 pub static NO_CONSTRAINT: UvmConstraintRange = UvmConstraintRange {
@@ -443,9 +441,6 @@ pub static KD_TRYLOCK: KmemDynMode = KmemDynMode {
 /// The kernel map's token, adopted once from `pmap_bootstrap` ([`adopt_mapper`]).
 static MAPPER: OnceStatic<KernelMapper> = OnceStatic::new();
 
-/// The maps and the page system, registered once by `bsd`'s `uvm_km_init` ([`install`]).
-static MAPS: OnceStatic<&'static dyn KmMaps> = OnceStatic::new();
-
 /// The first free kernel virtual address after `uvm_km_init`'s reservation (see the module's
 /// deviations).
 static KERNEL_MAP_MIN: AtomicUsize = AtomicUsize::new(0);
@@ -464,35 +459,45 @@ static PHYS_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
 /// exists, so it is a static, not a `uvm_map_create`d map).
 static KERNEL_MAP_STORE: VmMap = VmMap::new(0, 0);
 
-/// The kernel maps, still `bsd`'s (`uvm_map`, N3.5): a bridge (bridges.toml), no logic.
+/// `uvm_map(*kv->kv_map, &va, sz, uobj, prefer, align, mapflags)` with `va` starting at
+/// `vm_map_min(map)`: the address of `sz` bytes of new space in map `which`, carrying
+/// `uvm.kernel_object` at offset `UVM_UNKNOWN_OFFSET` for `kernel_object` (which the map turns
+/// into `va - vm_map_min(kernel_map)`), or why there was none (`ENOMEM`, or the try-lock's
+/// failure under `UVM_FLAG_TRYLOCK`).
 ///
-/// What it answers is trusted as the kernel map's allocation record (a documented boundary
-/// until `kernel::vm::map` owns the record, N3.5): a range [`KmMaps::map`] returns is free
-/// kernel virtual space nobody else maps until [`KmMaps::unmap`] gives it back, which is the
-/// fact the kernel map's token stands for when [`km_alloc`] enters pages there.
-pub trait KmMaps: Sync {
-    /// `uvm_map(*kv_map, &va, sz, uobj, prefer, align, mapflags)` with `va` starting at
-    /// `vm_map_min(map)`: the address of `sz` bytes of new space in map `which`, carrying
-    /// `object` (`uvm.kernel_object` at offset `UVM_UNKNOWN_OFFSET`, which the map turns into
-    /// `va - vm_map_min(kernel_map)`), or why there was none (`ENOMEM`, or the try-lock's
-    /// failure under `UVM_FLAG_TRYLOCK`).
-    fn map(
-        &self,
-        which: KvMap,
-        sz: usize,
-        object: KmObject,
-        prefer: Voff,
-        align: usize,
-        mapflags: u32,
-    ) -> Result<Vaddr, Errno>;
+/// The kernel map's record is the fact the kernel map's token stands for when [`km_alloc`]
+/// enters pages there: a range this returns is free kernel virtual space nobody else maps
+/// until [`kv_map_free`] gives it back.
+fn kv_map_alloc(
+    which: KvMap,
+    sz: usize,
+    kernel_object: bool,
+    prefer: Voff,
+    align: usize,
+    mapflags: u32,
+) -> Result<Vaddr, Errno> {
+    #[cfg(test)]
+    crate::testutil::km_map_called();
+    let map = map_for("km_alloc", which);
+    let uobj = if kernel_object {
+        super::aobj::kernel_object()
+    } else {
+        None
+    };
+    let mut va = map.min_offset();
+    uvm_map(map, &mut va, sz, uobj, prefer, align, mapflags)?;
+    Ok(Vaddr::new(va))
+}
 
-    /// `uvm_unmap(*kv_map, sva, eva)`: gives `[sva, eva)` back to map `which` (the map's own
-    /// teardown removes what it entered: the kernel object's pages, an intrsafe map's pages).
-    fn unmap(&self, which: KvMap, sva: Vaddr, eva: Vaddr);
+/// `uvm_unmap(*kv->kv_map, sva, eva)`: gives `[sva, eva)` back to map `which` (the map's own
+/// teardown removes what it entered: the kernel object's pages, an intrsafe map's pages).
+fn kv_map_free(which: KvMap, sva: Vaddr, eva: Vaddr) {
+    uvm_unmap(map_for("km_free", which), sva.as_usize(), eva.as_usize());
+}
 
-    /// The map's address, the C's wait channel for `"km_allocva"` (compared, never
-    /// dereferenced).
-    fn chan(&self, which: KvMap) -> *const ();
+/// `*kv->kv_map`, the C's wait channel for `"km_allocva"` (compared, never dereferenced).
+fn kv_map_chan(which: KvMap) -> *const () {
+    core::ptr::from_ref(map_for("km_allocva", which)).cast::<()>()
 }
 
 /// The kernel map's token as [`mapper`] lends it to the rest of `kernel::vm`: the calls the
@@ -600,26 +605,6 @@ impl KernelWindow {
 /// not `Copy`, no public constructor: code without it cannot reach the token.
 pub struct LegacyLend {
     _private: (),
-}
-
-/// Registers the kernel maps, once (`bsd`'s `uvm_km_init`, before its first map entry is
-/// allocated; the host tests' set-up). A second call keeps the first and names the bridge.
-pub fn install(maps: &'static dyn KmMaps) -> Result<(), AlreadyRegistered> {
-    MAPS.set(maps).map_err(|_| AlreadyRegistered("KmMaps"))
-}
-
-/// The registered maps; `None` before [`install`].
-fn maps() -> Option<&'static dyn KmMaps> {
-    MAPS.get().copied()
-}
-
-/// The registered maps for a call that needs them; panics (with `who`) before [`install`],
-/// which only a broken caller can hit: there is nothing to free before anything was allocated.
-fn maps_for(who: &str) -> &'static dyn KmMaps {
-    match maps() {
-        Some(m) => m,
-        None => kpanic(format_args!("{who}: before uvm_km_init")),
-    }
 }
 
 /// `uvm_pglistfree` of the pages behind `frames`, panicking with `who`'s message (the C's) at
@@ -1001,7 +986,6 @@ fn alloc_in(
     kd: &KmemDynMode,
 ) -> Option<Vaddr> {
     kassert!(sz == round_page(sz));
-    let maps = maps()?;
 
     if kp.kp_nomem || kp.kp_pageable {
         if nommu {
@@ -1010,7 +994,7 @@ fn alloc_in(
             let _ = unported!("km_alloc: kp_nomem/kp_pageable on a machine without an MMU");
             return None;
         }
-        return map_va(maps, sz, kv, kp, kd).ok();
+        return map_va(sz, kv, kp, kd).ok();
     }
 
     let mut pla_flags = if kd.kd_waitok {
@@ -1057,7 +1041,7 @@ fn alloc_in(
         return first;
     }
 
-    let Ok(sva) = map_va(maps, sz, kv, kp, kd) else {
+    let Ok(sva) = map_va(sz, kv, kp, kd) else {
         uvm_pglistfree(&pgl);
         return None;
     };
@@ -1079,13 +1063,7 @@ fn alloc_in(
 
 /// `km_alloc`'s `alloc_va`: virtual space of `sz` bytes in the mode's map, sleeping for it on
 /// the map under `kv_wait` with `kd_waitok`.
-fn map_va(
-    maps: &'static dyn KmMaps,
-    sz: usize,
-    kv: &KmemVaMode,
-    kp: &KmemPaMode,
-    kd: &KmemDynMode,
-) -> Result<Vaddr, Errno> {
+fn map_va(sz: usize, kv: &KmemVaMode, kp: &KmemPaMode, kd: &KmemDynMode) -> Result<Vaddr, Errno> {
     let prot: VmProt = PROT_READ | PROT_WRITE;
 
     if kp.kp_pageable {
@@ -1103,17 +1081,12 @@ fn map_va(
     }
 
     let mapflags = if kd.kd_trylock { UVM_FLAG_TRYLOCK } else { 0 };
-    let object = if kp.kp_object {
-        KmObject::Kernel
-    } else {
-        KmObject::None
-    };
     loop {
         // try_map:
-        match maps.map(
+        match kv_map_alloc(
             kv.kv_map,
             sz,
-            object,
+            kp.kp_object,
             kd.kd_prefer,
             kv.kv_align,
             uvm_mapflag(prot, prot, MAP_INHERIT_NONE, MADV_RANDOM, mapflags),
@@ -1123,7 +1096,7 @@ fn map_va(
                 if !(kv.kv_wait && kd.kd_waitok) {
                     return Err(e);
                 }
-                let _ = tsleep_nsec(maps.chan(kv.kv_map), PVM, "km_allocva", INFSLP);
+                let _ = tsleep_nsec(kv_map_chan(kv.kv_map), PVM, "km_allocva", INFSLP);
             }
         }
     }
@@ -1136,7 +1109,6 @@ pub fn km_free(va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) {
 
 /// [`km_free`] on a machine with (`nommu` false) or without an MMU.
 fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) {
-    let maps = maps_for("km_free");
     let sva = va.as_usize();
     let eva = sva + sz;
 
@@ -1174,9 +1146,9 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
         }
     }
     // free_va:
-    maps.unmap(kv.kv_map, Vaddr::new(sva), Vaddr::new(eva));
+    kv_map_free(kv.kv_map, Vaddr::new(sva), Vaddr::new(eva));
     if kv.kv_wait {
-        wakeup(maps.chan(kv.kv_map));
+        wakeup(kv_map_chan(kv.kv_map));
     }
 }
 
@@ -1263,8 +1235,7 @@ fn dma_alloc_in(nommu: bool, sz: usize, kp: &KmemPaMode, wait: bool) -> Option<V
         let kd = if wait { &KD_WAITOK } else { &KD_NOWAIT };
         return alloc_in(nommu, sz, &KV_ANY, kp, kd);
     }
-    let maps = maps()?;
-    let sva = map_va(maps, sz, &KV_ANY, &KP_NONE, &KD_NOWAIT).ok()?;
+    let sva = map_va(sz, &KV_ANY, &KP_NONE, &KD_NOWAIT).ok()?;
     let mut pla_flags = if wait { UVM_PLA_WAITOK } else { UVM_PLA_NOWAIT };
     if kp.kp_zero {
         pla_flags |= UVM_PLA_ZERO;
@@ -1346,10 +1317,11 @@ pub(super) fn test_window(va: Vaddr, len: usize) -> ForeignWindow<'static> {
 mod tests {
     // Over hal's host pmap (no MMU: `PMAP_NOMMU`, the direct map the identity, the kernel
     // pmap a `BTreeMap`), the kernel's own page system over a heap block
-    // (`testutil::pages_install`, which holds `testutil::MEMORY`) and the double of the maps
-    // bridge (`crate::testutil`). The map path, which the host never takes, is exercised
-    // through `alloc_in`/`free_in` with `nommu` false: the double's virtual space, the host
-    // pmap's mappings.
+    // (`testutil::pages_install`, which holds `testutil::MEMORY`) and the kernel's own maps
+    // (`testutil::kernel_maps_install`: `kernel_map`, an intrsafe `kmem_map`, a one-page
+    // `exec_map`). The map path, which the host never takes, is exercised through
+    // `alloc_in`/`free_in` with `nommu` false: the maps' virtual space, the host pmap's
+    // mappings.
 
     use std::sync::MutexGuard;
     use std::sync::atomic::AtomicBool;
@@ -1365,11 +1337,47 @@ mod tests {
     /// 16 MiB of pages for each test.
     const BYTES: usize = 16 << 20;
 
-    /// The maps double, the host pmap (once per process) and fresh pages, `MEMORY` held.
+    /// Fresh pages, `MEMORY` held, and the test kernel maps (once per process).
     fn setup() -> MutexGuard<'static, ()> {
-        testutil::km_install();
-        testutil::pages_install(BYTES)
+        let g = testutil::pages_install(BYTES);
+        testutil::kernel_maps_install();
+        g
     }
+
+    /// The entry of map `which` that starts at `va`, if one does: whether it carries the
+    /// kernel object (`kp_object`).
+    fn entry_at(which: KvMap, va: Vaddr) -> Option<bool> {
+        let map = map_of(which)?;
+        let spl = hal::intr::splraise(hal::intr::IPL_VM);
+        let g = map.lock_read();
+        let r = g
+            .lookup(va.as_usize())
+            .filter(|e| e.start() == va.as_usize())
+            .map(|e| {
+                e.handles(g.witness())
+                    .uvm_obj()
+                    .is_some_and(|o| o.is_kern_object())
+            });
+        drop(g);
+        drop(spl);
+        r
+    }
+
+    /// The one-page test `exec_map` taken whole (so the next request finds no room), the page
+    /// handed back by the caller.
+    fn fill_exec_map(kv: &KmemVaMode) -> Vaddr {
+        let va = alloc_in(false, PAGE_SIZE, kv, &KP_NONE, &KD_NOWAIT).expect("the one page");
+        assert_eq!(va.as_usize(), testutil::KM_EXEC_BASE);
+        va
+    }
+
+    /// `kv_any`'s twin on the test `exec_map`, never waiting.
+    static KV_EXEC: KmemVaMode = KmemVaMode {
+        kv_map: KvMap::Exec,
+        kv_align: 0,
+        kv_wait: false,
+        kv_singlepage: false,
+    };
 
     /// The free pages, those in this CPU's page cache (`MULTIPROCESSOR`) included.
     fn avail() -> i64 {
@@ -1435,7 +1443,7 @@ mod tests {
         assert_eq!(va.as_usize() % PAGE_SIZE, 0);
         assert_eq!(avail(), before - 2);
         assert_eq!(
-            testutil::km_entry(va),
+            entry_at(KvMap::Kernel, va),
             None,
             "the direct map takes no space"
         );
@@ -1526,11 +1534,8 @@ mod tests {
         let _g = setup();
         let before = avail();
         let va = alloc_in(false, 3 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("space");
-        assert!(va.as_usize() >= testutil::KM_VA_BASE);
-        assert_eq!(
-            testutil::km_entry(va),
-            Some((KvMap::Kernel, KmObject::None))
-        );
+        assert!(va.as_usize() >= testutil::KM_VA_BASE && va.as_usize() < testutil::KM_KMEM_BASE);
+        assert_eq!(entry_at(KvMap::Kernel, va), Some(false));
         assert_eq!(avail(), before - 3);
         let frames: std::vec::Vec<Paddr> = (0..3)
             .map(|i| extract(va.as_usize() + i * PAGE_SIZE).expect("entered"))
@@ -1539,19 +1544,21 @@ mod tests {
         free_in(false, va, 3 * PAGE_SIZE, &KV_ANY, &KP_ZERO);
         assert_eq!(avail(), before);
         assert!((0..3).all(|i| extract(va.as_usize() + i * PAGE_SIZE).is_none()));
-        assert_eq!(testutil::km_entry(va), None);
+        assert_eq!(entry_at(KvMap::Kernel, va), None);
     }
 
     #[test]
     fn no_space_gives_every_frame_back() {
         let _g = setup();
+        let full = fill_exec_map(&KV_EXEC);
         let before = avail();
-        testutil::km_fail_maps(1);
         assert_eq!(
-            alloc_in(false, 2 * PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT),
+            alloc_in(false, 2 * PAGE_SIZE, &KV_EXEC, &KP_ZERO, &KD_NOWAIT),
             None
         );
         assert_eq!(avail(), before);
+        free_in(false, full, PAGE_SIZE, &KV_EXEC, &KP_NONE);
+        assert_eq!(entry_at(KvMap::Exec, full), None);
     }
 
     #[test]
@@ -1559,21 +1566,19 @@ mod tests {
         let _g = setup();
         let before = avail();
         let va = alloc_in(false, PAGE_SIZE, &KV_ANY, &KP_NONE, &KD_NOWAIT).expect("space");
-        assert_eq!(
-            testutil::km_entry(va),
-            Some((KvMap::Kernel, KmObject::None))
-        );
+        assert_eq!(entry_at(KvMap::Kernel, va), Some(false));
         assert_eq!(extract(va.as_usize()), None);
         free_in(false, va, PAGE_SIZE, &KV_ANY, &KP_NONE);
-        assert_eq!(testutil::km_entry(va), None);
+        assert_eq!(entry_at(KvMap::Kernel, va), None);
 
         let va = alloc_in(false, 2 * PAGE_SIZE, &KV_ANY, &KP_PAGEABLE, &KD_WAITOK).expect("space");
         assert_eq!(
-            testutil::km_entry(va),
-            Some((KvMap::Kernel, KmObject::Kernel))
+            entry_at(KvMap::Kernel, va),
+            Some(true),
+            "pageable memory is the kernel object's"
         );
         free_in(false, va, 2 * PAGE_SIZE, &KV_ANY, &KP_PAGEABLE);
-        assert_eq!(testutil::km_entry(va), None);
+        assert_eq!(entry_at(KvMap::Kernel, va), None);
         assert_eq!(avail(), before);
     }
 
@@ -1587,47 +1592,54 @@ mod tests {
             kv_singlepage: false,
         };
         static DONE: AtomicBool = AtomicBool::new(false);
-        let maps = testutil::km_maps();
-        let chan = maps.chan(KvMap::Exec).addr();
-        // The waker: a km_free of a kv_wait mode elsewhere, as often as needed (a wakeup
-        // before the sleep is set up wakes nobody, as in the C).
+        DONE.store(false, Ordering::Release);
+        let chan = kv_map_chan(KvMap::Exec).addr();
+        assert_eq!(
+            chan,
+            core::ptr::from_ref(exec_map()).addr(),
+            "the map's address"
+        );
+        // The map's one page is taken: the next request finds no room.
+        let full = fill_exec_map(&KV_WAITS);
+        // Without kd_waitok the failure returns at once.
+        assert_eq!(
+            alloc_in(false, PAGE_SIZE, &KV_WAITS, &KP_NONE, &KD_NOWAIT),
+            None
+        );
+        // The waker: a km_free of a kv_wait mode elsewhere (which wakes the map's sleepers),
+        // then wakeups as often as needed (a wakeup before the sleep is set up wakes nobody,
+        // as in the C).
         let waker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            free_in(false, full, PAGE_SIZE, &KV_WAITS, &KP_NONE);
             while !DONE.load(Ordering::Acquire) {
                 wakeup(core::ptr::without_provenance::<()>(chan));
                 thread::sleep(Duration::from_millis(5));
             }
         });
         let calls = testutil::km_map_calls();
-        testutil::km_fail_maps(1);
         let va = alloc_in(false, PAGE_SIZE, &KV_WAITS, &KP_NONE, &KD_WAITOK);
         DONE.store(true, Ordering::Release);
         waker.join().unwrap();
         let va = va.expect("space after the wakeup");
-        assert_eq!(
-            testutil::km_map_calls(),
-            calls + 2,
-            "failed once, then retried"
+        assert!(
+            testutil::km_map_calls() >= calls + 2,
+            "failed at least once, then retried"
         );
-        assert_eq!(testutil::km_entry(va), Some((KvMap::Exec, KmObject::None)));
+        assert_eq!(va, full, "the page the waker gave back");
+        assert_eq!(entry_at(KvMap::Exec, va), Some(false));
         free_in(false, va, PAGE_SIZE, &KV_WAITS, &KP_NONE);
-        assert_eq!(
-            testutil::km_last_unmap(),
-            Some((KvMap::Exec, va.as_usize(), va.as_usize() + PAGE_SIZE))
-        );
-
-        // Without kd_waitok the same failure returns at once.
-        testutil::km_fail_maps(1);
-        assert_eq!(
-            alloc_in(false, PAGE_SIZE, &KV_WAITS, &KP_NONE, &KD_NOWAIT),
-            None
-        );
+        assert_eq!(entry_at(KvMap::Exec, va), None);
     }
 
     #[test]
     fn pgremove_intrsafe_frees_what_is_mapped() {
         let _g = setup();
+        // kv_intrsafe: the callers raise to IPL_VM (pool(9)), as kmem_map's uvm_map asserts.
+        let spl = hal::intr::splraise(hal::intr::IPL_VM);
         let before = avail();
         let va = alloc_in(false, 2 * PAGE_SIZE, &KV_INTRSAFE, &KP_ZERO, &KD_NOWAIT).expect("space");
+        assert!(va.as_usize() >= testutil::KM_KMEM_BASE, "kmem_map's space");
         assert_eq!(avail(), before - 2);
         let end = Vaddr::new(va.as_usize() + 2 * PAGE_SIZE);
         uvm_km_pgremove_intrsafe(va, end);
@@ -1636,15 +1648,22 @@ mod tests {
         assert_eq!(extract(va.as_usize() + PAGE_SIZE), None);
         // The space itself goes back with the map entry (uvm_unmap's part).
         free_in(false, va, 2 * PAGE_SIZE, &KV_INTRSAFE, &KP_NONE);
-        assert_eq!(testutil::km_entry(va), None);
+        drop(spl);
+        assert_eq!(entry_at(KvMap::Kmem, va), None);
     }
 
     #[test]
-    fn a_second_install_is_refused() {
-        testutil::km_install();
+    fn the_maps_are_the_installed_ones() {
+        let _g = setup();
+        assert!(is_kernel_map(kernel_map()));
+        assert!(!is_kernel_map(kmem_map()));
+        assert_eq!(kernel_map().min_offset(), testutil::KM_VA_BASE);
+        assert!(kmem_map().is_intrsafe());
+        assert!(map_of(KvMap::Exec).is_some_and(|m| core::ptr::eq(m, exec_map())));
         assert_eq!(
-            install(testutil::km_maps()),
-            Err(AlreadyRegistered("KmMaps"))
+            kv_map_chan(KvMap::Kmem),
+            core::ptr::from_ref(kmem_map()).cast::<()>(),
+            "km_allocva sleeps on the map's address"
         );
     }
 
@@ -1679,10 +1698,9 @@ mod tests {
         let va = mem.alloc(PAGE_SIZE + 1).expect("two pages");
         assert_eq!(avail(), before - 2);
         mem.release(va, PAGE_SIZE + 1);
-        assert_eq!(
-            testutil::km_last_unmap(),
-            Some((KvMap::Kernel, va.as_usize(), va.as_usize() + 2 * PAGE_SIZE))
-        );
+        // The virtual space went back to kernel_map (the direct map served the host's pages,
+        // so no entry was ever made: the space a machine with an MMU takes is the map path's).
+        assert_eq!(entry_at(KvMap::Kernel, va), None);
         // kp_none: the pages stay, the module window's mappings hold them.
         assert_eq!(avail(), before - 2);
     }

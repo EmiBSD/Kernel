@@ -2453,10 +2453,10 @@ pub fn ttyinfo(tp: &Tty) {
         let calc_pctcpu = ((u64::from(pctcpu) * 10000 + FSCALE as u64 / 2) >> FSHIFT) as i64;
         let mut rss: i64 = 0;
         if pickpr.ps_flags.load(Ordering::Relaxed) & (PS_EMBRYO | PS_EXITING) == 0
-            // SAFETY: a live process holds its vmspace.
-            && let Some(vm) = unsafe { pickpr.ps_vmspace.get().as_ref() }
+            // a live process holds its vmspace.
+            && let Some(vm) = pickpr.vmspace_opt()
         {
-            rss = i64::from(vm.vm_rssize.get());
+            rss = i64::from(vm.vm_rssize.load(Ordering::Relaxed));
         }
 
         let tu = Tusage::new();

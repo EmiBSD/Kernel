@@ -150,9 +150,9 @@ use crate::sys::proc::{BOGO_PC, Proc};
 use crate::sys::syscall::{SYS_MAXSYSCALL, SYS_kbind};
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{IO_UNIT, VREAD, VREG, Vnode};
-use crate::uvm::uvm_extern::{UVM_UNKNOWN_OFFSET, VmProt};
-use crate::uvm::uvm_map::{VM_MAP_PINSYSCALL_ONCE, uvm_map_hint, uvm_map_mquery, uvm_map_pie};
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::map::{VM_MAP_PINSYSCALL_ONCE, uvm_map_hint, uvm_map_mquery, uvm_map_pie};
+use kernel::vm::types::{UVM_UNKNOWN_OFFSET, VmProt};
 
 /// `ELF_TARG_VER`.
 const ELF_TARG_VER: u32 = EV_CURRENT;
@@ -584,7 +584,7 @@ fn elf_load_file_vnode(
         let size = round_page(addr + loadmap[i].1 as usize) - addr;
 
         // CRAP - map_findspace does not avoid daddr+BRKSIZ
-        let daddr = vm.vm_daddr.get();
+        let daddr = vm.vm_daddr.load(Ordering::Relaxed);
         if addr + size > daddr && addr < daddr + <Machine as VmParam>::BRKSIZ {
             addr = round_page(daddr + <Machine as VmParam>::BRKSIZ);
         }
@@ -1067,7 +1067,7 @@ pub fn exec_elf_fixup(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Errno> 
     if interp.is_none() {
         p.process().ps_kbind_addr.set(BOGO_PC);
         let map = &p.vmspace().vm_map;
-        map.flags.set(map.flags.get() | VM_MAP_PINSYSCALL_ONCE);
+        map.modflags(VM_MAP_PINSYSCALL_ONCE, 0);
     }
 
     if let Some(interp) = &interp

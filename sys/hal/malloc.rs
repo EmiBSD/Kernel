@@ -269,6 +269,16 @@ impl<T> MArray<T> {
     pub fn ty(this: &Self) -> i32 {
         this.ty
     }
+
+    /// Gives the block up, as `Box::into_raw`: its first element and its count. The elements
+    /// stay initialised and nothing frees them here; whoever takes the block frees it with
+    /// `free(ptr, ty, len * size_of::<T>())` of the same `malloc(9)` (`pinsyscalls(2)`'s
+    /// table, which the process keeps until `exit`/`exec` free it as the C's
+    /// `free(pn_pins, M_PINSYSCALL, ..)`), or leaks it.
+    pub fn into_raw(this: Self) -> (NonNull<T>, usize) {
+        let this = core::mem::ManuallyDrop::new(this);
+        (this.ptr, this.len)
+    }
 }
 
 impl<T> Deref for MArray<T> {
@@ -408,6 +418,26 @@ mod tests {
         );
         drop(a);
         assert_eq!(drops.load(Ordering::Relaxed), 5);
+        assert_eq!(testutil::malloc_out(M_UVMAMAP), before);
+    }
+
+    #[test]
+    fn into_raw_hands_the_block_over_counted_and_unfreed() {
+        // pinsyscalls(2)'s table: the process keeps the block and exit/exec free it with
+        // the C's free(pn_pins, M_PINSYSCALL, npins * sizeof(u_int)).
+        testutil::install();
+        let before = testutil::malloc_out(M_UVMAMAP);
+        let a = MArray::new(M_UVMAMAP, M_WAITOK, 6, |i| i as u32 * 3).unwrap();
+        let (ptr, n) = MArray::into_raw(a);
+        assert_eq!(n, 6);
+        assert_eq!(
+            testutil::malloc_out(M_UVMAMAP),
+            before + (6 * size_of::<u32>()) as isize,
+            "still allocated"
+        );
+        bridges::malloc()
+            .unwrap()
+            .free(ptr.cast(), M_UVMAMAP, n * size_of::<u32>());
         assert_eq!(testutil::malloc_out(M_UVMAMAP), before);
     }
 

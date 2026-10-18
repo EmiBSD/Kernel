@@ -131,12 +131,12 @@ use crate::sys::proc::Proc;
 use crate::sys::queue::SimpleqEntry;
 use crate::sys::types::Vaddr;
 use crate::sys::uio::Uio;
-use crate::uvm::uvm_param::{round_page, trunc_page};
 use hal::arch::arm64::pmap::layout::{
     PMAP_CACHE_BITS, PMAP_CACHE_CI, PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB,
     PMAP_CACHE_WT, VP_IDX0_CNT, VP_IDX0_MASK, VP_IDX0_POS, VP_IDX1_CNT, VP_IDX1_MASK, VP_IDX1_POS,
     VP_IDX2_CNT, VP_IDX2_MASK, VP_IDX2_POS, VP_IDX3_CNT, VP_IDX3_MASK, VP_IDX3_POS,
 };
+use hal::vm::param::{round_page, trunc_page};
 
 /// `SMMU_IDR0.Hyp` (bit 9, not in smmureg.h): the SMMU has the EL2 translation regime.
 const SMMU_V3_IDR0_HYP: u32 = 1 << 9;

@@ -69,7 +69,7 @@
 //!   physical segment policy, which stay.
 
 use crate::arch::amd64::include::param::PAGE_SIZE;
-use crate::uvm::uvm_page::VM_PSTRAT_BIGFIRST;
+use crate::kern::vm_bsd::VM_PSTRAT_BIGFIRST;
 
 pub use hal::arch::amd64::include::vmparam::{
     VM_MAX_ADDRESS, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS,

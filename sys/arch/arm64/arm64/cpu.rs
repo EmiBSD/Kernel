@@ -139,6 +139,7 @@ use crate::kern::kern_tc::microuptime;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_set};
 use crate::kern::subr_autoconf::config_mountroot;
 use crate::kern::subr_prf::{panic, snprintf};
+use crate::kern::vm_bsd::km_alloc;
 use crate::kprintf;
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device};
 use crate::sys::errno::Errno;
@@ -150,8 +151,8 @@ use crate::sys::task::Task;
 use crate::sys::time::timersub;
 use crate::sys::timeout::Timeout;
 use crate::unported;
-use crate::uvm::uvm_km::{KD_WAITOK, KP_ZERO, KV_ANY, km_alloc};
 use crate::{kassert, queue_adapter};
+use kernel::vm::km::{KD_WAITOK, KP_ZERO, KV_ANY};
 
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::cpuswitch::proc_trampoline;
@@ -3081,7 +3082,7 @@ mod selfcheck {
     use crate::sys::mman::{PROT_READ, PROT_WRITE};
     use crate::sys::param::PAGE_SIZE;
     use crate::sys::types::{Paddr, Vaddr, Vsize};
-    use crate::uvm::uvm_km::KP_NONE;
+    use kernel::vm::km::KP_NONE;
 
     /// The value of the page the window maps first.
     const OLD: u32 = 0x1111_1111;

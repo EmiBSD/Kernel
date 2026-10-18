@@ -108,6 +108,8 @@ use crate::kern::kern_timeout::timeout_del;
 use crate::kern::sched_bsd::sched_assert_unlocked;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::uvm_uarea_free;
+use crate::kern::vm_bsd::{uvm_exit, uvm_purge};
 #[cfg(feature = "qemu")]
 use crate::kprintf;
 use crate::machine::Machine;
@@ -143,7 +145,6 @@ use crate::sys::wait::{
     WNOWAIT, WSTOPPED, WTRAPPED, WUNTRACED, w_exitcode, w_stopcode, wcoredump, wstatus,
 };
 use crate::unported;
-use crate::uvm::uvm_glue::{uvm_exit, uvm_purge, uvm_uarea_free};
 
 /// `sys_exit`: death of process.
 pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {

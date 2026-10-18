@@ -66,8 +66,9 @@ use crate::machine::Machine;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Proc, Process};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
-use crate::uvm::uvm_extern::{UvmConstraintRange, VmProt, Vmspace};
-use crate::uvm::uvm_page::{PHYS_TO_VM_PAGE, VmPage, vm_page_to_phys};
+use kernel::vm::map::Vmspace;
+use kernel::vm::page::{PHYS_TO_VM_PAGE, VmPage, vm_page_to_phys};
+use kernel::vm::types::{UvmConstraintRange, VmProt};
 
 /// `struct vm_page_md`: the pmap's per-page data inside `struct vm_page` (`hal`'s).
 pub type VmPageMd = hal::pmap::PageMd;
@@ -445,7 +446,7 @@ mod tests {
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::mman::{PROT_READ, PROT_WRITE};
     use crate::sys::param::PAGE_SIZE;
-    use crate::uvm::uvm_pmap::PMAP_WIRED;
+    use hal::pmap::PMAP_WIRED;
 
     #[test]
     fn the_kernel_pmap_goes_through_the_token() {

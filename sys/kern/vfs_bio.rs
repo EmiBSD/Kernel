@@ -145,11 +145,12 @@ use crate::sys::sched::sched_pause;
 use crate::sys::systm::{INFSLP, PHYSMEM};
 use crate::sys::types::Daddr;
 use crate::sys::vnode::{VBIOERROR, VBLK, VREG, Vnode};
-use crate::uvm::uvm_extern::UvmConstraintRange;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::NO_CONSTRAINT;
-use crate::uvm::uvm_page::{Owner, uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
-use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, atop, ptoa, round_page};
+use hal::vm::param::{atop, ptoa, round_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::NO_CONSTRAINT;
+use kernel::vm::km::VM_KERNEL_SPACE_SIZE;
+use kernel::vm::page::{Owner, uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
+use kernel::vm::types::UvmConstraintRange;
 
 /// `bcstats`: the buffer cache counters (`struct bcachestats`), as atomics.
 pub struct Bcstats {

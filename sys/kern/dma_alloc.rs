@@ -54,9 +54,9 @@
 use core::ptr::NonNull;
 
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put, pool_set_constraints};
+use crate::kern::vm_bsd::KP_DMA_CONTIG;
 use crate::machine::intr::IPL_VM;
 use crate::sys::pool::Pool;
-use crate::uvm::uvm_km::KP_DMA_CONTIG;
 
 /// `DMA_PAGE_SHIFT`: the largest pool's items are `1 << DMA_PAGE_SHIFT` bytes.
 pub const DMA_PAGE_SHIFT: usize = 16;

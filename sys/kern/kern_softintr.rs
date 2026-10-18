@@ -68,7 +68,7 @@ use crate::sys::mutex::Mutex;
 use crate::sys::queue::{TailqEntry, TailqHead};
 use crate::sys::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
-use crate::uvm::uvm_init::UVMEXP;
+use hal::vm::uvmexp::UVMEXP;
 
 /// A soft interrupt handler's function.
 pub type SoftintrFn = fn(*mut c_void);

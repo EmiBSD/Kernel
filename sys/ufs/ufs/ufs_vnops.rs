@@ -95,6 +95,7 @@ use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BMAP, VOP_BWRITE, VOP_READ, VOP_REMOVE, VOP_STRATEGY, VOP_UNLOCK,
 };
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::{B_CLRBUF, B_ERROR, clrbuf};
@@ -151,7 +152,6 @@ use crate::ufs::ufs::quota::{
 use crate::ufs::ufs::ufs_lookup::{
     ufs_checkpath, ufs_dirempty, ufs_direnter, ufs_dirremove, ufs_dirrewrite, ufs_makedirentry,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `mastertemplate`: a virgin directory (no blushing please).
 pub const MASTERTEMPLATE: Dirtemplate = Dirtemplate {

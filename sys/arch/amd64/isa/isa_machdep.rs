@@ -147,7 +147,7 @@ use crate::sys::param::NBPG;
 use crate::sys::proc::Proc;
 use crate::sys::types::Vaddr;
 use crate::sys::uio::Uio;
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
 
 /// `isa_chipset_tag_t`: unused on amd64.
 pub type IsaChipsetTag = *const c_void;

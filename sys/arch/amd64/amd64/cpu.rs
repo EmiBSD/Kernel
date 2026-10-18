@@ -218,13 +218,14 @@ use {
     crate::kern::init_main::NCPUS,
     crate::kern::kern_clockintr::clockqueue_init,
     crate::kern::kern_sched::{sched_init_cpu, sched_toidle},
+    crate::kern::vm_bsd::km_alloc,
     crate::machine::bootinfo::BootCpu,
     crate::machine::bootinfo::BootMp,
     crate::machine::intr::{splhigh, splx},
     crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove},
     crate::sys::errno::Errno,
-    crate::uvm::uvm_km::{KD_NOWAIT, KD_WAITOK, KP_DIRTY, KP_ZERO, KV_ANY, km_alloc},
     core::sync::atomic::AtomicPtr,
+    kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_DIRTY, KP_ZERO, KV_ANY},
 };
 
 /// `struct cpu_softc`.

@@ -83,17 +83,18 @@ use core::ptr;
 use crate::arch::amd64::include::pio::{inb, inl, inw, outb, outl, outw};
 use crate::arch::amd64::include::pte::PG_V;
 use crate::dev::isa::isareg::{IOM_BEGIN, IOM_END};
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{BUS_SPACE_BARRIER_READ, BUS_SPACE_BARRIER_WRITE, BusAddr, BusSize};
 use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove, pmap_update};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::{PAGE_SIZE, PGOFSET};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
-use crate::uvm::uvm_km::{KD_NOWAIT, KP_NONE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_param::{round_page, trunc_page};
 use hal::arch::amd64::pmap::find_pte;
 use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_WC};
 use hal::pmap::{direct_map as pmap_direct_map, direct_unmap, initialized as pmap_initialized};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `BUS_SPACE_MAP_CACHEABLE`.
 pub const BUS_SPACE_MAP_CACHEABLE: u32 = 0x0001;

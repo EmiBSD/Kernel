@@ -112,6 +112,7 @@ use crate::kern::kern_task::{SYSTQMP, task_add};
 use crate::kern::kern_tc::getnsecuptime;
 use crate::kern::kern_timeout::timeout_add_sec;
 use crate::kern::subr_xxx::assertwaitok;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::intr::{IPL_HIGH, splvm, splx};
 use crate::sys::errno::Errno;
 use crate::sys::mutex::{mutex_assert_locked, mutex_assert_unlocked};
@@ -130,8 +131,6 @@ use crate::sys::timeout::Timeout;
 use crate::sys::tree::RbtEntry;
 #[cfg(feature = "diagnostic")]
 use crate::unported;
-use crate::uvm::uvm_extern::{KMEM_DYN_INITIALIZER, KmemPaMode, KmemVaMode};
-use crate::uvm::uvm_km::{KP_DIRTY, KV_ANY, KV_INTRSAFE, KV_PAGE, km_alloc, km_free};
 use crate::{kassert, queue_adapter, tree_adapter};
 #[cfg(feature = "multiprocessor")]
 use crate::{
@@ -142,6 +141,8 @@ use crate::{
     sys::percpu::{CACHELINESIZE, CpumemPtr, cpumem_enter, cpumem_foreach, cpumem_leave},
     sys::pool::{KinfoPoolCache, KinfoPoolCacheCpu},
 };
+use kernel::vm::km::{KMEM_DYN_INITIALIZER, KmemPaMode, KmemVaMode};
+use kernel::vm::km::{KP_DIRTY, KV_ANY, KV_INTRSAFE, KV_PAGE};
 
 /// `struct pool_item`: the free-list link at the start of every free item.
 #[repr(C)]
@@ -1684,7 +1685,7 @@ pub fn pool_allocator_free(pp: &Pool, v: NonNull<u8>) {
 /// `pool_page_alloc`: the default allocator, one page through `kv_page`.
 pub fn pool_page_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<NonNull<u8>> {
     // kd_slowdown: the single-page thread is not used with __HAVE_PMAP_DIRECT.
-    let kd = crate::uvm::uvm_extern::KmemDynMode {
+    let kd = kernel::vm::km::KmemDynMode {
         kd_waitok: flags & PR_WAITOK != 0,
         ..KMEM_DYN_INITIALIZER
     };
@@ -1707,7 +1708,7 @@ pub fn pool_page_free(pp: &Pool, v: NonNull<u8>) {
 /// `pool_multi_alloc`: pages of the pool's size from `kmem_map`, interrupt safe.
 pub fn pool_multi_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<NonNull<u8>> {
     let mut kv: KmemVaMode = KV_INTRSAFE;
-    let kd = crate::uvm::uvm_extern::KmemDynMode {
+    let kd = kernel::vm::km::KmemDynMode {
         kd_waitok: flags & PR_WAITOK != 0,
         ..KMEM_DYN_INITIALIZER
     };
@@ -1742,7 +1743,7 @@ pub fn pool_multi_free(pp: &Pool, v: NonNull<u8>) {
 /// `pool_multi_alloc_ni`: pages of the pool's size from `kernel_map`; may sleep.
 pub fn pool_multi_alloc_ni(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<NonNull<u8>> {
     let mut kv: KmemVaMode = KV_ANY;
-    let kd = crate::uvm::uvm_extern::KmemDynMode {
+    let kd = kernel::vm::km::KmemDynMode {
         kd_waitok: flags & PR_WAITOK != 0,
         ..KMEM_DYN_INITIALIZER
     };
@@ -2447,12 +2448,11 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::kern_malloc::kmeminit;
+    use crate::kern::vm_bsd::{uvm_page_init, uvm_page_physload};
     use crate::sys::param::PAGE_MASK;
-    use crate::uvm::uvm_init::UVMEXP;
-    use crate::uvm::uvm_page::{
-        uvm_page_init, uvm_page_physload, uvm_page_test_reset, uvm_setpagesize,
-    };
-    use crate::uvm::uvm_param::atop;
+    use hal::vm::param::atop;
+    use hal::vm::uvmexp::UVMEXP;
+    use kernel::vm::page::{uvm_page_test_reset, uvm_setpagesize};
 
     /// The block each test loads.
     const BLOCK_BYTES: usize = 32 << 20;
@@ -2480,9 +2480,9 @@ pub(crate) mod tests {
             crate::sys::types::Vaddr::new(0),
         );
         uvm_page_init(&mut s, &mut e);
-        // The kernel's km_alloc reaches the pages through bsd's bridges, which uvm_km_init
-        // installs on a real boot (never run here).
-        crate::uvm::uvm_km::uvm_km_test_init();
+        // The host pmap's bootstrap, which a machine's boot glue runs before uvm_init (never
+        // run here): the kernel map's token for the kernel's km_alloc.
+        crate::kern::vm_bsd::uvm_km_test_init();
         kmeminit();
         #[cfg(feature = "kmemstats")]
         crate::kern::kern_malloc::kmemstats_test_reset();

@@ -82,6 +82,7 @@ use crate::kern::vfs_lockf::lf_advlock;
 use crate::kern::vfs_subr::{vaccess, vgone, vput, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_GETATTR, VOP_UNLOCK};
+use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::miscfs::fuse::fuse_device::fuse_device_queue_fbuf;
 use crate::miscfs::fuse::fuse_file::{fusefs_fd_get, fusefs_file_close, fusefs_file_open};
@@ -129,7 +130,6 @@ use crate::sys::vnode::{
     VopReclaimArgs, VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs,
     VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, cred_ref, iftovt, makeimode,
 };
-use crate::uvm::uvm_vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `fusefs_vops`.
 pub static FUSEFS_VOPS: Vops = Vops {

@@ -71,9 +71,10 @@
 //!   (N3.3), so the kernel's page system, which `bsd` calls and which cannot call `bsd`,
 //!   writes the counters `vm.uvmexp` and `vmstat -s` read: one static for the one userland
 //!   struct. The exported symbol is a linkage fact of the machine's interrupt stubs, the
-//!   hardware's domain. `bsd` reaches the module as `crate::uvm::uvmexp` (a re-export) and
-//!   keeps its `SysctlPlain` impl of [`UvmexpCopy`] (`sys/uvm/uvm_init.rs`), its own trait.
-//!   The layout of [`UvmexpCopy`] is unchanged.
+//!   hardware's domain. The layout of [`UvmexpCopy`] is unchanged.
+//! - N3.5: [`UvmexpCopy::to_ne_bytes`] gives `VM_UVMEXP` its bytes field by field, so
+//!   `bsd`'s `unsafe impl SysctlPlain for UvmexpCopy` (`sys/uvm/uvm_init.rs`, a byte view of
+//!   the structure) is gone with `sys/uvm/`; `bsd` names this module by its path.
 
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
@@ -132,6 +133,22 @@ macro_rules! uvmexp_struct {
         #[derive(Clone, Copy, Debug, Default)]
         pub struct UvmexpCopy {
             $( $(#[$doc])* pub $field: i32, )*
+        }
+
+        impl UvmexpCopy {
+            /// The copy's bytes as the C's `struct uvmexp` lays them out (every member an
+            /// `int`, in declaration order, no padding): what `sysctl({CTL_VM, VM_UVMEXP})`
+            /// copies out, made field by field instead of viewing the structure as bytes.
+            pub fn to_ne_bytes(&self) -> [u8; core::mem::size_of::<UvmexpCopy>()] {
+                let mut out = [0u8; core::mem::size_of::<UvmexpCopy>()];
+                let mut at = 0;
+                $(
+                    out[at..at + 4].copy_from_slice(&self.$field.to_ne_bytes());
+                    at += 4;
+                )*
+                let _ = at;
+                out
+            }
         }
     };
 }
@@ -419,3 +436,31 @@ const _: () = {
     assert!(core::mem::size_of::<UvmexpCopy>() == 86 * 4);
 };
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_copy_bytes_are_the_c_layout() {
+        // Each member at its `offset_of!` in the #[repr(C)] struct, as the C's memcpy of
+        // struct uvmexp lays them out.
+        let c = UvmexpCopy {
+            pagesize: 4096,
+            npages: 0x0102_0304,
+            free: -7,
+            fltup: 86,
+            ..UvmexpCopy::default()
+        };
+        let b = c.to_ne_bytes();
+        assert_eq!(b.len(), core::mem::size_of::<UvmexpCopy>());
+        let at = |off: usize| i32::from_ne_bytes(b[off..off + 4].try_into().unwrap());
+        assert_eq!(at(core::mem::offset_of!(UvmexpCopy, pagesize)), 4096);
+        assert_eq!(at(core::mem::offset_of!(UvmexpCopy, npages)), 0x0102_0304);
+        assert_eq!(at(core::mem::offset_of!(UvmexpCopy, free)), -7);
+        assert_eq!(at(core::mem::offset_of!(UvmexpCopy, fltup)), 86);
+        assert_eq!(at(core::mem::offset_of!(UvmexpCopy, pagemask)), 0);
+    }
+}
+/* </TESTS> */

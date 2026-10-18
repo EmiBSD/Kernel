@@ -108,6 +108,8 @@ use crate::kern::vfs_subr::{vput, vref, vrele};
 use crate::kern::vfs_syscalls::NameiBuf;
 use crate::kern::vfs_vnops::{vn_close, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_OPEN, VOP_UNLOCK};
+use crate::kern::vm_bsd::uvmspace_exec;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::Cpu;
 use crate::machine::param::MachineParam;
@@ -155,14 +157,15 @@ use crate::sys::types::{Register, Vaddr, Vsize};
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
 use crate::unported;
-use crate::uvm::uvm_aobj::uao_create;
-use crate::uvm::uvm_extern::{KmemVaMode, KvMap, UVM_FLAG_COPYONW, uvm_mapflag};
-use crate::uvm::uvm_fault::uvm_fault_wire;
-use crate::uvm::uvm_km::{KD_WAITOK, KP_PAGEABLE, kernel_map, km_alloc, km_free};
-use crate::uvm::uvm_map::{uvm_map, uvm_map_immutable, uvm_map_protect, uvm_unmap, uvmspace_exec};
-use crate::uvm::uvm_object::ObjRef;
-use crate::uvm::uvm_param::{atop, round_page, trunc_page};
 use hal::once::OnceStatic;
+use hal::vm::param::{atop, round_page, trunc_page};
+use kernel::vm::aobj::uao_create;
+use kernel::vm::fault::uvm_fault_wire;
+use kernel::vm::km::{KD_WAITOK, KP_PAGEABLE, kernel_map};
+use kernel::vm::km::{KmemVaMode, KvMap};
+use kernel::vm::map::{uvm_map, uvm_map_immutable, uvm_map_protect, uvm_unmap};
+use kernel::vm::object::ObjRef;
+use kernel::vm::types::{UVM_FLAG_COPYONW, uvm_mapflag};
 
 /// `sigobject`: the shared sigcode object, created by the first `exec_sigcode_map` and
 /// referenced forever after.
@@ -691,16 +694,23 @@ fn execve_common(
 
     let vm = pr.vmspace();
     // Now map address space
-    vm.vm_taddr.set(trunc_page(pack.ep_taddr));
-    vm.vm_tsize
-        .set(atop(round_page(pack.ep_taddr + pack.ep_tsize) - trunc_page(pack.ep_taddr)) as i32);
-    vm.vm_daddr.set(trunc_page(pack.ep_daddr));
-    vm.vm_dsize
-        .set(atop(round_page(pack.ep_daddr + pack.ep_dsize) - trunc_page(pack.ep_daddr)) as i32);
-    vm.vm_dused.set(0);
-    vm.vm_ssize.set(atop(round_page(pack.ep_ssize)) as i32);
-    vm.vm_maxsaddr.set(pack.ep_maxsaddr);
-    vm.vm_minsaddr.set(pack.ep_minsaddr);
+    vm.vm_taddr
+        .store(trunc_page(pack.ep_taddr), Ordering::Relaxed);
+    vm.vm_tsize.store(
+        atop(round_page(pack.ep_taddr + pack.ep_tsize) - trunc_page(pack.ep_taddr)) as i32,
+        Ordering::Relaxed,
+    );
+    vm.vm_daddr
+        .store(trunc_page(pack.ep_daddr), Ordering::Relaxed);
+    vm.vm_dsize.store(
+        atop(round_page(pack.ep_daddr + pack.ep_dsize) - trunc_page(pack.ep_daddr)) as i32,
+        Ordering::Relaxed,
+    );
+    vm.vm_dused.store(0, Ordering::Relaxed);
+    vm.vm_ssize
+        .store(atop(round_page(pack.ep_ssize)) as i32, Ordering::Relaxed);
+    vm.vm_maxsaddr.store(pack.ep_maxsaddr, Ordering::Relaxed);
+    vm.vm_minsaddr.store(pack.ep_minsaddr, Ordering::Relaxed);
 
     // exec_abort: the old process doesn't exist anymore. exit gracefully. get rid of the
     // (new) address space we have created, if any, get rid of our namei data and vnode, and
@@ -735,12 +745,12 @@ fn execve_common(
 
     // MACHINE_STACK_GROWS_UP: neither amd64 nor arm64.
     pr.ps_strings
-        .set(vm.vm_minsaddr.get() - sgap - PATH_MAX - size_of::<PsStrings>());
-    pack.ep_execpath = vm.vm_minsaddr.get() - sgap - PATH_MAX;
+        .set(vm.vm_minsaddr.load(Ordering::Relaxed) - sgap - PATH_MAX - size_of::<PsStrings>());
+    pack.ep_execpath = vm.vm_minsaddr.load(Ordering::Relaxed) - sgap - PATH_MAX;
     if uvm_map_protect(
         &vm.vm_map,
         round_page(pack.ep_execpath + PATH_MAX),
-        vm.vm_minsaddr.get(),
+        vm.vm_minsaddr.load(Ordering::Relaxed),
         PROT_NONE,
         0,
         true,
@@ -758,7 +768,7 @@ fn execve_common(
         ..PsStrings::default()
     };
 
-    let stack = vm.vm_minsaddr.get() - len;
+    let stack = vm.vm_minsaddr.load(Ordering::Relaxed) - len;
     // Now copy argc, args & environ to new stack
     if !copyargs(&mut pack, &mut arginfo, stack, argbuf) {
         exec_abort(&mut pack, &mut nid);

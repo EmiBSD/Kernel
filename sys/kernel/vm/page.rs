@@ -159,7 +159,8 @@
 //! - `uvm_pagealloc_multi` (the buffer cache's, under the kernel lock), `uvm_shutdown`
 //!   (`smr_flush`), the DMA reachability of `machine::Pmap` and the `uvm_pagewait` of the
 //!   objects still in `bsd` (a sleep on a legacy `rw_obj` lock, until N3.4c) stay in `bsd`'s
-//!   `sys/uvm/uvm_page.rs`, over [`VmPage::set_bits`] and [`uvm_pagealloc_pg`].
+//!   `sys/kern/vm_bsd.rs` (`sys/uvm/uvm_page.rs` until N3.5), over [`VmPage::set_bits`] and
+//!   [`uvm_pagealloc_pg`].
 //!
 //! ## Redesign
 //! - `struct vm_page`'s `uobject`/`uanon` back pointers (`Cell<*const T>`, followed by every

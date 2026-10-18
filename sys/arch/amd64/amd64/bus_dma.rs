@@ -149,6 +149,7 @@ use crate::arch::amd64::include::bus::{
 };
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{BusAddr, BusSize};
 use crate::machine::pmap::{pmap_enter, pmap_extract, pmap_kernel, pmap_update};
 use crate::sys::errno::Errno;
@@ -160,18 +161,16 @@ use crate::sys::proc::Proc;
 use crate::sys::types::{Off, Paddr, Vaddr};
 use crate::sys::uio::{Uio, UioSeg::UIO_USERSPACE};
 use crate::unported;
-use crate::uvm::uvm_extern::{UVM_PLA_NOWAIT, UVM_PLA_WAITOK, UVM_PLA_ZERO, UvmConstraintRange};
-use crate::uvm::uvm_km::{
-    KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT, km_alloc, km_free,
-};
-use crate::uvm::uvm_page::{
+use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_NOCRYPT};
+use hal::pmap::{PMAP_CANFAIL, PMAP_WIRED};
+use hal::pmap::{direct_map as pmap_direct_map, direct_unmap};
+use hal::vm::param::round_page;
+use kernel::vm::km::{KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT};
+use kernel::vm::page::{
     PHYS_TO_VM_PAGE, Pglist, VmPage, uvm_pagecount, uvm_pglistalloc, uvm_pglistfree,
     vm_page_to_phys,
 };
-use crate::uvm::uvm_param::round_page;
-use crate::uvm::uvm_pmap::{PMAP_CANFAIL, PMAP_WIRED};
-use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_NOCRYPT};
-use hal::pmap::{direct_map as pmap_direct_map, direct_unmap};
+use kernel::vm::types::{UVM_PLA_NOWAIT, UVM_PLA_WAITOK, UVM_PLA_ZERO, UvmConstraintRange};
 
 /// `FORCE_BOUNCE_BUFFER`: bounce every map (a debugging knob, off).
 const FORCE_BOUNCE_BUFFER: bool = false;

@@ -180,6 +180,7 @@ use crate::kern::kern_malloc::{kmeminit_nkmempages, nkmempages};
 use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_int, sysctl_rdquad, sysctl_rdstring};
 use crate::kern::subr_log::init_static_msgbuf;
 use crate::kern::vfs_bio::bufinit;
+use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
 use crate::machine::bootinfo::BootCpu;
 use crate::machine::bootinfo::BootMp;
@@ -199,13 +200,14 @@ use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
 use crate::sys::user::{Uarea, User};
 use crate::unported;
-use crate::uvm::uvm_extern::{EXEC_MAP, PHYS_MAP, UvmConstraintRange};
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_km::{kernel_map, kernel_map_min, uvm_km_suballoc};
-use crate::uvm::uvm_map::VM_MAP_PAGEABLE;
-use crate::uvm::uvm_page::{VmPage, uvm_page_physload, uvm_setpagesize};
-use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
 use hal::pmap::{BootstrapParams, KernelImage};
+use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::uvmexp::UVMEXP;
+use kernel::vm::km::{KvMap, install_submap};
+use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
+use kernel::vm::map::VM_MAP_PAGEABLE;
+use kernel::vm::page::{VmPage, uvm_setpagesize};
+use kernel::vm::types::UvmConstraintRange;
 use libkern::explicit_bzero::explicit_bzero;
 
 #[cfg(feature = "qemu")]
@@ -1268,7 +1270,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    EXEC_MAP.store(ptr::from_ref(exec_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Exec, exec_map);
 
     // Allocate a submap for physio
     let phys_map = uvm_km_suballoc(
@@ -1280,7 +1282,7 @@ pub fn cpu_startup() {
         false,
         None,
     );
-    PHYS_MAP.store(ptr::from_ref(phys_map).cast_mut(), Ordering::Release);
+    install_submap(KvMap::Phys, phys_map);
 
     // Set up buffers, so they can be used to read disk labels.
     bufinit();

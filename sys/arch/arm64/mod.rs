@@ -63,7 +63,7 @@ use crate::sys::systm::SysArgs;
 use crate::sys::types::{Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
 use crate::sys::user::User;
-use crate::uvm::uvm_extern::UvmConstraintRange;
+use kernel::vm::types::UvmConstraintRange;
 
 /// The arm64 implementation of the machine interface.
 pub struct Machine;

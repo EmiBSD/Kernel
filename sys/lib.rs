@@ -66,7 +66,6 @@ pub mod sys;
 pub mod tmpfs;
 #[cfg(feature = "ffs")]
 pub mod ufs;
-pub mod uvm;
 
 #[cfg(test)]
 #[forbid(unsafe_code)]

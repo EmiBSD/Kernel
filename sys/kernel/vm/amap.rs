@@ -109,7 +109,8 @@
 //!   C's item.
 //! - `amap_copy(map, entry, waitf, canchunk, startva, endva)` is split: the map's half (the
 //!   chunking decision, the clips, the install into the entry and `UVM_ET_NEEDSCOPY`) stays
-//!   with the map (`bsd`'s `sys/uvm/uvm_amap.rs`), and [`amap_copy_from`] is the amap's: the
+//!   with the map (`super::map::amap_copy`; `bsd`'s `sys/uvm/uvm_amap.rs` until N3.5), and
+//!   [`amap_copy_from`] is the amap's: the
 //!   take-over checks, the copy of the slots and the lock it shares or replaces, answered as
 //!   a [`CopyOutcome`]. The C's `amap_ref`, `amap_unref` and `amap_splitref` keep their
 //!   counting; the handle a new map entry holds is the caller's clone.

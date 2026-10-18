@@ -65,6 +65,7 @@ use crate::dev::acpi::dsdt::{LR_EXTIRQ_MODE, LR_EXTIRQ_POLARITY};
 use crate::dev::ofw::openfirm::OF_is_compatible;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
+use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{
     BusAddr, BusDmaTag, BusSize, BusSpaceHandle, BusSpaceTag, bus_space_map, bus_space_unmap,
 };
@@ -76,8 +77,8 @@ use crate::sys::malloc::{M_DEVBUF, M_WAITOK, M_ZERO};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::unported;
-use crate::uvm::uvm_km::{KD_NOWAIT, KP_NONE, KV_ANY, km_alloc, km_free};
-use crate::uvm::uvm_param::{round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
+use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `pwr_action`: what the power button does (1: power down).
 pub const PWR_ACTION: i32 = 1;

@@ -105,6 +105,7 @@ use crate::kern::vfs_lookup::vfs_relookup;
 use crate::kern::vfs_subr::{vaccess, vflushbuf, vgone, vput, vref, vrele};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_READ, VOP_REMOVE, VOP_UNLOCK};
+use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FWRITE, O_APPEND};
@@ -154,7 +155,6 @@ use crate::ufs::ufs::ufs_vnops::{
     pnbuf_free, ucred, ufs_close, ufs_ioctl, ufs_islocked, ufs_kqfilter, ufs_lock, ufs_pathconf,
     ufs_print, ufs_strategy, ufs_unlock, ufsspec_close, ufsspec_read, ufsspec_write,
 };
-use crate::uvm::uvm_vnode::uvm_vnp_uncache;
 
 /// `ext2fs_vops`: the operations of a file, directory or symbolic link on an ext2fs.
 pub static EXT2FS_VOPS: Vops = Vops {

@@ -204,10 +204,11 @@ impl Drop for DeviceLock<'_> {
     }
 }
 
-/// `paddr_is_dma_reachable(pa)`: `pa` lies within the machine's `dma_constraint`.
+/// `PADDR_IS_DMA_REACHABLE(pa)` (`<uvm/uvm_page.h>`): `ucr_low <= pa < ucr_high` of the
+/// machine's `dma_constraint` (the C's bound is exclusive).
 pub fn paddr_is_dma_reachable(pa: Paddr) -> bool {
     let r = machine().dma_constraint;
-    pa >= r.ucr_low && pa <= r.ucr_high
+    pa >= r.ucr_low && pa < r.ucr_high
 }
 
 /// `uvm_vslock_device`: wire user memory, make sure it's device reachable and bounce if
@@ -361,9 +362,10 @@ mod tests {
     #[test]
     fn dma_reachability_is_the_machines_constraint() {
         testutil::install();
-        // The host's constant: no constraint.
+        // The host's constant: no constraint, whose high end is the C's exclusive bound.
         assert!(paddr_is_dma_reachable(Paddr::new(0)));
-        assert!(paddr_is_dma_reachable(Paddr::new(usize::MAX)));
+        assert!(paddr_is_dma_reachable(Paddr::new(usize::MAX - 4095)));
+        assert!(!paddr_is_dma_reachable(Paddr::new(usize::MAX)));
     }
 
     #[test]
