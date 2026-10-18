@@ -93,6 +93,12 @@
 //!   ever under `MULTIPROCESSOR`, or carries on with two owners without it).
 //! - `mtx_oldipl` is not kept in the mutex: the guard holds the level to restore, which only
 //!   the owner ever read.
+//! - `msleep_nsec`'s early return while `cold || panicstr` (the mutex left at `safepri`, the
+//!   kernel lock bounced, 0 returned without sleeping) is not taken by
+//!   [`MutexedGuard::sleep_nsec`]: `hal` sees neither `cold` nor `panicstr` (the `Sleep`
+//!   bridge has no such method), so a sleep while `cold` goes to the sleep queues as
+//!   `rwsleep_nsec`'s does in the C. Its one caller (the pager's segments, N3.4c) sleeps only
+//!   for I/O, after autoconfiguration.
 //!
 //! ## Redesign
 //! - LZ's `Mutex` is the C's `struct mutex` and free functions (`mtx_enter(&m)`, then the
@@ -110,23 +116,33 @@
 //! - `mtx_enter_try` is [`Mutexed::try_lock`], `None` when held elsewhere.
 //! - The legacy `Mutex` (129 files) keeps its API (the timing rule; decision 8 names the
 //!   owning type `Mutexed` beside it, the rename is N9's).
+//! - N3.4a: `msleep_nsec(ident, &mtx, prio, wmesg, nsecs)` is [`MutexedGuard::sleep_nsec`]:
+//!   `&mut self`, so no reference into the data lives across the sleep, and the mutex is held
+//!   again when it returns (on whichever CPU the process wakes), `Ok` or `Err`, as
+//!   `rwsleep`'s guards (`uvm_pseg_get`'s wait for a pager segment).
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::assert::kassert;
+use crate::bridges;
 use crate::cpu;
 use crate::intr::{self, IPL_NONE};
+use crate::sleep::{INFSLP, PCATCH, PRIMASK, chan};
+use crate::sys::errno::Errno;
 
 /// The flag bit every owner word carries, so an owner's word is never 0 (the free value).
 const MTX_OWNED: usize = 0x2;
 
 /// A spinning mutex that owns the `T` it protects (`struct mutex` with its data).
 ///
-/// Invariant: `data` is reached only through a [`MutexedGuard`], and a guard exists only
-/// between the compare-and-swap that moved `owner` from 0 to this CPU's word and the store of
-/// 0 in the guard's drop; so at most one guard, hence at most one `&mut T`, is alive.
+/// Invariant: `data` is reached only through a [`MutexedGuard`], and a guard can reach it
+/// only between the compare-and-swap that moved `owner` from 0 to its CPU's word and the
+/// store of 0 that releases it (the guard's drop, or the release inside the guard's own
+/// [`MutexedGuard::sleep_nsec`], which holds the guard borrowed mutably until it has taken
+/// the mutex again); so at most one guard, hence at most one `&mut T`, can reach the data.
 pub struct Mutexed<T> {
     /// `mtx_owner`: 0 when free, else the owning CPU's word.
     owner: AtomicUsize,
@@ -148,6 +164,13 @@ impl<T> Mutexed<T> {
     /// `mtx_enter(9)`: raises the level, then takes the mutex, spinning while another CPU
     /// holds it. Panics when this CPU holds it already ("locking against myself").
     pub fn lock(&self) -> MutexedGuard<'_, T> {
+        let restore = self.enter();
+        self.held(restore)
+    }
+
+    /// `mtx_enter`'s work: the level raised, the owner word taken (spinning while another CPU
+    /// holds it); the level to restore.
+    fn enter(&self) -> Option<i32> {
         let restore = self.raise();
         let me = self_word();
         let found = self.swap_in(me);
@@ -159,7 +182,17 @@ impl<T> Mutexed<T> {
             }
             cpu::spinning(-1);
         }
-        self.held(restore)
+        restore
+    }
+
+    /// `mtx_leave`'s work: `ci_mutex_level` uncounted, the owner word released (Release, so
+    /// the next owner's swap sees every write made under the mutex), then the level `restore`
+    /// says put back.
+    fn leave(&self, restore: Option<i32>) {
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(-1);
+        self.owner.store(0, Ordering::Release);
+        intr::restore(restore);
     }
 
     /// `mtx_enter_try(9)`: the guard when the mutex was free; `None` (at the old level) when
@@ -263,13 +296,62 @@ pub struct MutexedGuard<'a, T> {
     _not_send: PhantomData<*const ()>,
 }
 
+impl<T> MutexedGuard<'_, T> {
+    /// `msleep_nsec(ident, mtx, prio, wmesg, nsecs)`: queued on `ident` while the mutex is
+    /// still held (so the wakeup that follows a change under it cannot be missed), the mutex
+    /// left, asleep, and the mutex entered again before the sleep's result is returned:
+    /// `EWOULDBLOCK` after `nsecs` ([`INFSLP`]: never), `EINTR`/`ERESTART` on a signal with
+    /// `PCATCH` in `prio`. `&mut self`, so no reference into the data lives across the sleep.
+    /// Before the sleep queues exist no one could wake a sleeper: the mutex is left, the CPU
+    /// let breathe and the mutex entered again (the C's `cold` path).
+    pub fn sleep_nsec<I: ?Sized>(
+        &mut self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+        nsecs: u64,
+    ) -> Result<(), Errno> {
+        kassert!(prio & !(PRIMASK | PCATCH) == 0);
+        let m = self.lock;
+        let result = match bridges::sleep() {
+            Some(b) => {
+                b.sleep_setup(chan(ident), prio, wmesg);
+                // Signal may stop the process: the mutex is left before the sleep.
+                m.leave(self.restore);
+                b.sleep_finish(nsecs, true)
+            }
+            None => {
+                m.leave(self.restore);
+                core::hint::spin_loop();
+                Ok(())
+            }
+        };
+        // Entered again on whichever CPU the process woke on, at that CPU's level.
+        self.restore = m.enter();
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(1);
+        result
+    }
+
+    /// `msleep_nsec` with no timeout.
+    pub fn sleep<I: ?Sized>(
+        &mut self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+    ) -> Result<(), Errno> {
+        self.sleep_nsec(ident, prio, wmesg, INFSLP)
+    }
+}
+
 impl<T> Deref for MutexedGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: this guard exists, so its CPU holds the mutex (the type's invariant) and no
-        // other guard, hence no other reference to the data, is alive; the shared reference
-        // borrows the guard and cannot outlive it.
+        // SAFETY: `&self` is a borrow of the guard outside its own `sleep_nsec` (which holds
+        // it mutably borrowed while the mutex is released), so the guard's CPU holds the
+        // mutex (the type's invariant) and no other guard, hence no other reference to the
+        // data, can reach it; the shared reference borrows the guard and cannot outlive it.
         unsafe { &*self.lock.data.get() }
     }
 }
@@ -277,19 +359,16 @@ impl<T> Deref for MutexedGuard<'_, T> {
 impl<T> DerefMut for MutexedGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as for `deref`: the one guard of the held mutex, borrowed mutably, so this
-        // is the only reference to the data while it lives.
+        // is the only reference to the data while it lives (and `sleep_nsec` cannot run
+        // while it does).
         unsafe { &mut *self.lock.data.get() }
     }
 }
 
 impl<T> Drop for MutexedGuard<'_, T> {
-    /// `mtx_leave(9)`: the owner word released (Release, so the next owner's swap sees every
-    /// write made under the mutex), then the level this guard raised put back.
+    /// `mtx_leave(9)`: the owner word released, then the level this guard raised put back.
     fn drop(&mut self) {
-        #[cfg(feature = "diagnostic")]
-        cpu::mutex_level(-1);
-        self.lock.owner.store(0, Ordering::Release);
-        intr::restore(self.restore);
+        self.lock.leave(self.restore);
     }
 }
 
@@ -304,9 +383,11 @@ fn self_word() -> usize {
 mod tests {
     use std::sync::Arc;
     use std::thread;
+    use std::time::Duration;
     use std::vec::Vec;
 
     use super::*;
+    use crate::sleep::PWAIT;
     use crate::testutil;
 
     #[test]
@@ -379,6 +460,48 @@ mod tests {
             assert_eq!(t.join().unwrap(), 0);
         }
         assert_eq!(*m.lock(), 40_000);
+    }
+
+    #[test]
+    fn the_guard_sleeps_without_the_mutex_and_wakes_holding_it() {
+        testutil::install();
+        let m = Arc::new(Mutexed::new(IPL_NONE, false));
+        let chan_word = Arc::new(0u8);
+        let (m2, c2) = (Arc::clone(&m), Arc::clone(&chan_word));
+        let sleeper = thread::spawn(move || {
+            let mut g = m2.lock();
+            while !*g {
+                g.sleep(Arc::as_ptr(&c2), PWAIT, "testslp").unwrap();
+            }
+            // The mutex is held again on return, by this thread.
+            m2.owned()
+        });
+        // The sleeper left the mutex: this thread gets in.
+        thread::sleep(Duration::from_millis(20));
+        *m.lock() = true;
+        crate::sleep::wakeup(Arc::as_ptr(&chan_word));
+        assert!(sleeper.join().unwrap());
+        assert!(!m.is_locked());
+    }
+
+    #[test]
+    fn a_timed_guard_sleep_expires_holding_the_mutex_at_its_level() {
+        testutil::install();
+        let base = testutil::spl_level();
+        let m = Mutexed::new(base + 4, 0u8);
+        let x = 0u8;
+        let mut g = m.lock();
+        assert_eq!(
+            g.sleep_nsec(&raw const x, PWAIT, "testslp", 1_000_000),
+            Err(Errno::EWOULDBLOCK)
+        );
+        assert!(m.is_locked() && m.owned());
+        assert!(testutil::spl_level() >= base + 4);
+        *g = 1;
+        drop(g);
+        assert!(!m.is_locked());
+        assert_eq!(testutil::spl_level(), base);
+        assert_eq!(*m.lock(), 1);
     }
 
     #[test]
