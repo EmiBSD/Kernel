@@ -111,7 +111,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 use crate::assert::hal_panic;
 use crate::bridges;
 use crate::intr::IPL_VM;
-use crate::kmbuf::KmBuf;
+use crate::kmbuf::{KmBuf, PageKind};
 use crate::link::Link;
 use crate::mutex::Mutexed;
 use crate::once::OnceStatic;
@@ -791,8 +791,15 @@ impl<T: Send + 'static, const N: usize> StaticArena<T, N> {
 
     /// Gives `page` up for good and adds its slots to the free list (`uvm_mapent_alloc`'s
     /// `km_alloc(PAGE_SIZE, &kv_page, &kp_dirty, &kd_nowait)` carved into entries): how many.
-    /// The page is never freed.
+    /// The page is never freed. It must be wired (`kp_dirty`'s): the slots are written under
+    /// the arena's mutex at `IPL_VM` and from `INTRSAFE` paths, where a fault on a pageable
+    /// page cannot be taken; a pageable one panics.
     pub fn extend(&self, page: KmBuf) -> usize {
+        if page.kind() != PageKind::Wired {
+            hal_panic(format_args!(
+                "StaticArena::extend: a pageable page (the slots are used at IPL_VM)"
+            ));
+        }
         let slots = page.leak_slice(|_| Slot::new());
         let mut f = self.core.free.lock();
         for s in slots {
@@ -879,7 +886,6 @@ impl<T: Send + 'static, const N: usize> RawPool for ArenaCore<T, N> {
             f.fresh += 1;
             NonNull::from(s)
         };
-
         drop(f);
         self.nout.fetch_add(1, Ordering::Relaxed);
         Some((slot.cast::<u8>(), size_of::<Slot<T>>()))
@@ -1312,6 +1318,15 @@ mod tests {
         assert_eq!(b.a, 4);
         drop(b);
         assert_eq!((drops.load(Ordering::Relaxed), P.nout()), (1, 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "StaticArena::extend: a pageable page")]
+    fn an_arena_refuses_a_pageable_page() {
+        testutil::install();
+        static ARENA: StaticArena<Entry, 1> = StaticArena::new();
+        let page = KmBuf::alloc_pageable(testutil::page_memory(), 4096).unwrap();
+        let _ = ARENA.extend(page);
     }
 }
 
