@@ -1052,7 +1052,6 @@ fn pmap_page_ro(pm: &Pmap, pted: &PteDesc, pl3: &AtomicU64, prot: VmProt) {
     ttlb_flush(pm, pted_va(pted));
 }
 
-/// `pmap_page_protect`: lower the protection on the specified physical page.
 /// The first descriptor of the page's pv list that `pmap_page_protect` removes: the first
 /// that is not a live byte view's own mapping (a pager window's entry in the kernel pmap,
 /// `PageMd::spares`; a frame has at most one).
@@ -1068,6 +1067,7 @@ fn first_unspared<'w>(md: &PageMd, head: &'w MutexedGuard<'_, PvHead>) -> Option
     None
 }
 
+/// `pmap_page_protect`: lower the protection on the specified physical page.
 fn pmap_page_protect(md: &PageMd, prot: VmProt) {
     if prot != PROT_NONE {
         let head = md.pv.lock();
@@ -1087,11 +1087,8 @@ fn pmap_page_protect(md: &PageMd, prot: VmProt) {
         let pmref = {
             let head = md.pv.lock();
             let Some(pted) = first_unspared(md, &head) else {
-                // page is being reclaimed, sync icache next use (a live window's own mapping,
-                // spared, is all that may be left: the page is not reclaimed then)
-                if head.0.target(&head).is_none() {
-                    md.attrs.fetch_and(!PG_PMAP_EXE, Ordering::Relaxed);
-                }
+                // page is being reclaimed, sync icache next use
+                md.attrs.fetch_and(!PG_PMAP_EXE, Ordering::Relaxed);
                 return;
             };
             pmap_reference_pted(pted)

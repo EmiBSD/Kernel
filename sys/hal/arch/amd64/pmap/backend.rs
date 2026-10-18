@@ -531,7 +531,17 @@ fn pmap_enter_pv(md: &PageMd, mut pve: PoolBox<PvEntry>) {
 /// removed entry, unlinked (its `next` is `None`).
 fn pmap_remove_pv(md: &PageMd, pmap: &Pmap, va: usize) -> Option<PoolBox<PvEntry>> {
     let mut head = md.pv.lock();
-    let mut cur = &mut head.0;
+    unlink_pv(&mut head.0, pmap, va)
+}
+
+/// `pmap_remove_pv`'s search over a chain whose pv lock the caller holds: the entry of
+/// `pmap` at `va` taken out, the chain closed behind it.
+fn unlink_pv(
+    head: &mut Option<PoolBox<PvEntry>>,
+    pmap: &Pmap,
+    va: usize,
+) -> Option<PoolBox<PvEntry>> {
+    let mut cur = head;
     while cur
         .as_ref()
         .is_some_and(|e| !(ptr::eq(e.pmap.as_ptr(), pmap) && e.va == va))
@@ -855,13 +865,16 @@ fn pmap_page_remove(md: &PageMd) {
         // problems. This means we have to check the pvlist again since somebody else might
         // have modified it. All we care about is that the pvlist entry matches the pmap we
         // just locked. If it doesn't, unlock the pmap and try again.
+        // The entry is taken by the identity checked (`pm`, its address), under the same
+        // guard: a view released meanwhile changes what `spares` answers, never which entry
+        // goes.
         let mut head = md.pv.lock();
-        if !first_unspared(md, &head.0).is_some_and(|e| ptr::eq(e.pmap.as_ptr(), pm)) {
+        let checked = first_unspared(md, &head.0)
+            .filter(|e| ptr::eq(e.pmap.as_ptr(), pm))
+            .map(|e| e.va);
+        let Some(pve) = checked.and_then(|va| unlink_pv(&mut head.0, pm, va)) else {
             drop(head);
             drop(locked);
-            continue;
-        }
-        let Some(pve) = take_first_unspared(md, &mut head.0) else {
             continue;
         };
         drop(head);
@@ -927,22 +940,6 @@ fn first_unspared<'h>(md: &PageMd, head: &'h Option<PoolBox<PvEntry>>) -> Option
         cur = e.next.as_deref();
     }
     None
-}
-
-/// Takes [`first_unspared`]'s entry out of the chain, the chain closed behind it; the
-/// entry's `next` is empty.
-fn take_first_unspared(
-    md: &PageMd,
-    head: &mut Option<PoolBox<PvEntry>>,
-) -> Option<PoolBox<PvEntry>> {
-    match head {
-        Some(e) if pv_spared(md, e) => take_first_unspared(md, &mut e.next),
-        _ => {
-            let mut pve = head.take()?;
-            *head = pve.next.take();
-            Some(pve)
-        }
-    }
 }
 
 /// `pmap_test_attrs`: whether the page or one of its mappings has a bit of `testbits`.

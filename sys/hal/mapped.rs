@@ -138,6 +138,17 @@
 //! anything else is `panic(9)`; the mappings are still entered at the window's address, so
 //! `pmap_extract` answers as on a machine.
 //!
+//! ## Deviations
+//! - A byte view's own mapping is spared by `pmap::page_protect` with `PROT_NONE`
+//!   (N3.4c review): in the C a multi-page pager window is a managed kernel entry (`uvm_pager.c` 292,
+//!   `pmap_enter(pmap_kernel(), .., PMAP_WIRED | PMAP_CANFAIL)`) that a deactivation's
+//!   `pmap_page_protect(PROT_NONE)` removes like any other (`uvn_flush`'s `PGO_DEACTIVATE`
+//!   during `uvn_io`'s `VOP_WRITE`, `madvise(MADV_DONTNEED)` against `msync`), so the
+//!   `VOP_WRITE`'s copy then faults on `kp_none` pager space: `EFAULT`, a kernel trap, a
+//!   panic. Here the window keeps its entry until its own drop (`PageMd::spares`), and every
+//!   other mapping of the page goes. Only the one-page case, the direct map, behaves as the C
+//!   (it is on no pv chain there either).
+//!
 //! ## Redesign
 //! - LZ's `uvm_pagermapin(pps, npages, flags) -> usize` and `uvm_pagermapout(kva, npages)`
 //!   (`sys/uvm/uvm_pager.rs`) hand the window out as an address its callers cast into an
@@ -222,11 +233,12 @@ impl MappedBytes<'_> {
         // pages (checked when the view was made), so RAM, whose every byte is a valid `u8`.
         // They stay mapped while this value lives: the window was entered where nothing was
         // mapped and `pmap_page_protect` spares a held page's window entry (`PageMd::spares`,
-        // recorded before the entry is made; the direct map, on no pv chain, never goes; a
-        // writable view is never write-protected). Each frame is claimed by this value
-        // alone, so no other view exists, `pmap_zero_page`/`pmap_copy_page` refuse it, and
-        // the page system can
-        // neither unbusy, free nor hand it out again while the claim lives (it panics), so
+        // recorded before the entry is made, the entry removed by the identity checked; the
+        // direct map, on no pv chain, never goes; `page_protect` refuses a `prot` that would
+        // take a view's read access, or a writable one's write access, away). Each frame is
+        // claimed by this value alone, so no other view exists,
+        // `pmap_zero_page`/`pmap_copy_page` refuse it, and the page system can neither
+        // unbusy, free nor hand it out again while the claim lives (it panics), so
         // the frames stay busy, their owner's, until the drop; no `&mut` through this value
         // is alive beside this `&` (`as_slice_mut` needs `&mut self`). Pages of
         // `uvm_pglistalloc` and the page tables are never busy, so no reference to that

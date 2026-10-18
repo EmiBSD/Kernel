@@ -103,6 +103,15 @@
 //! the one [`bootstrap`] was given, once, by the boot path (decision 30's pattern).
 //!
 //! ## Deviations
+//! - A byte view's own mapping is spared by [`page_protect`] with `PROT_NONE`
+//!   (N3.4c review): in the C a multi-page pager window is a managed kernel entry (`uvm_pager.c` 292,
+//!   `pmap_enter(pmap_kernel(), .., PMAP_WIRED | PMAP_CANFAIL)`) that a deactivation's
+//!   `pmap_page_protect(PROT_NONE)` removes like any other (`uvn_flush`'s `PGO_DEACTIVATE`
+//!   during `uvn_io`'s `VOP_WRITE`, `madvise(MADV_DONTNEED)` against `msync`), so the
+//!   `VOP_WRITE`'s copy then faults on `kp_none` pager space: `EFAULT`, a kernel trap, a
+//!   panic. Here the window keeps its entry until its own drop (`PageMd::spares`), and every
+//!   other mapping of the page goes. Only the one-page case, the direct map, behaves as the C
+//!   (it is on no pv chain there either).
 //! - The `pmap_statistics` counters are [`PmapCounter`]s, relaxed atomic words: a user
 //!   pmap's are changed under its lock, but the kernel pmap's are changed by every CPU without
 //!   one (the C's plain `long`s race there; a racing `Cell` would be undefined behaviour in
@@ -158,8 +167,9 @@
 //!   [`PageMd::clear_attrs`] when the page system hands a held page out again;
 //!   [`page_protect`] spares the view's own mapping (N3.4c review: a pager window's managed
 //!   entry in the kernel pmap, `PageMd::view_va`; the direct map is on no pv chain) and
-//!   removes or lowers every other one, as the C does to a busy page (`uvn_flush`'s
-//!   deactivation of a page under I/O);
+//!   removes or lowers every other one (see the deviations), and refuses to lower a viewed
+//!   page's mappings to a `prot` without `PROT_READ` or, for a writable view, without
+//!   `PROT_WRITE`;
 //!   [`PhysPages::is_busy`] answers `PG_BUSY` for the views' check. The gap until N3.5 (the
 //!   token holder's contract): no live window is overlaid, removed or write-protected
 //!   through the kernel map's token but by its drop, and no frame is a busy page that backs
@@ -189,7 +199,7 @@ use crate::mutex::Mutexed;
 use crate::once::OnceStatic;
 use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
 use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_NONE, PROT_WRITE};
+use crate::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 
 /// `vm_prot_t`: a combination of `PROT_READ`, `PROT_WRITE`, `PROT_EXEC` (`<sys/mman.h>`), the
@@ -540,9 +550,13 @@ pub struct PageMd {
     pub(crate) ptp_refs: AtomicU32,
     /// The kernel virtual address of the view's own managed mapping of the frame while a
     /// pager window holds it (`KernelMapper::map_frames`), 0 otherwise (no view, or the direct
-    /// map's, which is on no pv chain): the mapping [`page_protect`] spares. Written by the
-    /// claim before the window's entry is made and cleared with the claim; read by the
-    /// backends under the frame's pv lock ([`PageMd::spares`]).
+    /// map's, which is on no pv chain): the mapping [`page_protect`] spares. Written without
+    /// the pv lock: set before the window's entry is made, whose insertion under the pv lock
+    /// orders it before any removal that sees the entry; cleared by the release, once no
+    /// reference into the view is alive (the view's drop holds it mutably), so a removal that
+    /// reads it cleared and takes the window's entry pulls nothing from under a reader. The
+    /// backends read it ([`PageMd::spares`]) under the pv lock and remove an entry by the
+    /// identity (pmap, address) they checked, never by a second reading.
     view_va: AtomicUsize,
 }
 
@@ -625,16 +639,16 @@ impl PageMd {
             && self.view_va.load(Ordering::Acquire) == va
     }
 
-    /// Panics when lowering the page's mappings to `prot` would write-protect a writable
-    /// byte view (any `prot` but `PROT_NONE` without `PROT_WRITE`, `PROT_EXEC` alone included,
-    /// as both machines' C do). Removing them (`PROT_NONE`) spares the view's own mapping
-    /// ([`PageMd::spares`]), so a view keeps its bytes.
+    /// Panics when lowering the page's mappings to `prot` would take a byte view's access
+    /// away: any `prot` but `PROT_NONE` without `PROT_READ` (`PROT_EXEC` alone strips read
+    /// access on arm64, `pmap_page_ro`), or without `PROT_WRITE` for a writable view (as both
+    /// machines' C write-protect). Removing them (`PROT_NONE`) spares the view's own mapping
+    /// ([`PageMd::spares`]), so a view keeps its bytes; the views' slices rest on this.
     fn check_protect(&self, prot: VmProt) {
         let a = self.attrs.load(Ordering::Acquire);
         if a & PG_HAL_VIEW != 0
             && prot != PROT_NONE
-            && a & PG_HAL_VIEW_W != 0
-            && prot & PROT_WRITE == 0
+            && (prot & PROT_READ == 0 || (a & PG_HAL_VIEW_W != 0 && prot & PROT_WRITE == 0))
         {
             hal_panic(format_args!(
                 "pmap_page_protect: a page in a byte view, to {prot:#x}"
@@ -1041,9 +1055,10 @@ fn create_with(
 /// deactivation does to a page, busy ones included).
 ///
 /// A byte view holding the page keeps its own mapping: a pager window's entry in the kernel
-/// pmap is spared ([`PageMd::spares`]), the direct map is on no pv chain; every other mapping
-/// goes (the C's busy page under I/O, `uvn_flush`'s `PGO_DEACTIVATE`). Panics when `prot`
-/// would write-protect a writable view.
+/// pmap is spared ([`PageMd::spares`]; the C removes it, see the module's deviations), the
+/// direct map is on no pv chain; every other mapping goes (a busy page under I/O,
+/// `uvn_flush`'s `PGO_DEACTIVATE`). Panics when `prot` would take a view's access away (no
+/// `PROT_READ`, or no `PROT_WRITE` for a writable view).
 pub fn page_protect(md: &PageMd, prot: VmProt) {
     md.check_protect(prot);
     Backend::page_protect(md, prot);
@@ -1460,11 +1475,19 @@ mod tests {
     }
 
     #[test]
-    fn exec_alone_write_protects_a_read_only_view() {
+    fn a_read_only_view_may_be_write_protected() {
+        let md = PageMd::new();
+        assert!(md.claim_view(false));
+        md.check_protect(PROT_READ);
+        md.check_protect(PROT_READ | crate::sys::mman::PROT_EXEC);
+    }
+
+    #[test]
+    #[should_panic(expected = "a page in a byte view, to 0x4")]
+    fn exec_alone_would_strip_a_views_read_access() {
         let md = PageMd::new();
         assert!(md.claim_view(false));
         md.check_protect(crate::sys::mman::PROT_EXEC);
-        md.check_protect(PROT_READ);
     }
 
     #[test]
