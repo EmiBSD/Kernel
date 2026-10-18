@@ -20,6 +20,10 @@ starting point, and what userland sees never changes.
 - Measure first: `cargo xtask unsafe-report` for the subsystem, the smokes that exercise the
   module (`tools/xtask`, the justfile's `smokes`), the `diff-openbsd` scenarios that touch it,
   and a benchmark (`just bench`) when performance is the point. The numbers go in the commit.
+  A module on a hot path (the page fault, fork, exec, mmap/munmap, the scheduler, what N4
+  adds) is measured with the host microbenchmarks of `sys/kernel/benches/vm.rs` (and N4's),
+  debug and release, before the change (decision 43, `testing.md`); its shape follows the
+  "hot path" row of `docs/IDIOMS.md`: no more lookups, clones or recomputations than the C.
 - Redesign with ownership first: data inside the lock that guards it, `Result<T, Errno>` and
   slices at the API, the `machine` contract untouched (`arch.md`), the ABI edge byte-identical
   (`sys/sys/syscall.rs`, the sysctl MIBs, ioctls, device majors, every `#[repr(C)]` shared with
@@ -47,6 +51,9 @@ starting point, and what userland sees never changes.
   went before the commit.
 - Commit one step at a time (`git-commits.md`): the `LZ:` trailer per source file, the
   `Unsafe:` trailer when the subsystem's count changed, `Bench:` when measured. Never mix a
-  redesign with an LZ sync (`lz-sync.md`).
+  redesign with an LZ sync (`lz-sync.md`). A commit on a hot path runs the host
+  microbenchmarks again, debug and release, and carries `Bench:` lines, before -> after, one
+  pair per line; an op more than 10 % slower without a reason in the body is a stop: ask the
+  user (decision 43). No QEMU per commit.
 - Before ending a session, update `docs/STATUS.md` (milestone, done, next, blockers) and run
   `cargo xtask lz status --write` if modules changed status.

@@ -108,6 +108,13 @@ Always:
   `cargo fmt --check` and `cargo xtask lz check` (seconds). `just check` (build on both archs,
   clippy, fmt, `lz check`, `unsafe-report --check`, `just test`; no QEMU) runs at the milestone
   close, first, in a compile-and-fix pass; then the QEMU tiers below.
+- The one bounded exception, decision 43 (the user, 2026-10-18): a slice that touches a hot
+  path (the page fault, fork, exec, mmap/munmap, the scheduler, and what N4 adds) runs the
+  host microbenchmarks of `sys/kernel/benches/vm.rs` (and the benches added for N4), debug
+  (`--profile dev`) and release, before its commit, and the commit carries the result as
+  `Bench:` lines (before -> after). An op that rises more than 10 % without a reason written
+  in the commit body stops the agent, who asks the user. Host only: no QEMU per slice; the
+  QEMU `just bench` stays at the close.
 - Decision 31 (the user, 2026-10-16) cuts the repetitions: the host checks (`lz check`,
   `unsafe-report --check`, `hal-check`, `abi-check`, fmt, `cargo test -p xtask`) run once per
   branch, by the integrator on `main` after the merge; a branch is merged into `main` once per

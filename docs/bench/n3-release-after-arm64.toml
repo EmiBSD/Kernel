@@ -1,0 +1,1214 @@
+schema = 1
+arch = "arm64"
+date = "2026-10-18T18:29:54Z"
+kernel_commit = "eeb155edc40acf59e87837917fe5608767277a43"
+kernel_tree_clean = true
+kernel_sha256 = "2689ebcd17bc16f14223cbc6e5a9d48d3158b3107aba2b58bea016c288aa08d1"
+profile = "release"
+reps = 10
+discard_worst = 1
+smp = 4
+memory = "512M"
+spread_limit_percent = 15.0
+file_mib = 256
+tcpbench_seconds = 10
+
+[qemu]
+emibsd = "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/edk2-arm64-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/emibsd-arm64-bench.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -device virtio-net-device,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/disk-arm64-bench.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native"
+openbsd = "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/arm64/openbsd-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -device virtio-net-device,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/arm64/openbsd-scratch.img,id=d1 -device virtio-blk-device,drive=d1 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot"
+emibsd_link = ["qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/edk2-arm64-a-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/emibsd-arm64-a.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=52245,remote.type=inet,remote.host=127.0.0.1,remote.port=51489 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:01 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/disk-arm64-a.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native", "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/edk2-arm64-b-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/emibsd-arm64-b.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=51489,remote.type=inet,remote.host=127.0.0.1,remote.port=52245 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:02 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/disk-arm64-b.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native"]
+openbsd_link = ["qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/arm64/openbsd-a-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=49262,remote.type=inet,remote.host=127.0.0.1,remote.port=53625 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:01 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot", "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/bench-release-after/arm64/openbsd-b-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=53625,remote.type=inet,remote.host=127.0.0.1,remote.port=49262 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:02 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/EmiBSD/.claude/worktrees/agent-a06d78a09c1ca746a/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot"]
+
+[[measurement]]
+name = "boot"
+unit = "s"
+better = "lower"
+emibsd = [8.28, 8.472, 8.475, 8.412, 8.522, 8.56, 8.545, 8.606, 8.478, 8.447]
+openbsd = [31.469, 31.491, 31.599, 31.401, 31.603, 31.502, 31.375, 31.445, 31.469, 31.521]
+emibsd_discarded = 7
+openbsd_discarded = 4
+ratio = 0.269
+
+[measurement.emibsd_stats]
+median = 8.475
+min = 8.28
+max = 8.56
+spread_percent = 3.304
+
+[measurement.openbsd_stats]
+median = 31.469
+min = 31.375
+max = 31.599
+spread_percent = 0.712
+
+[[measurement]]
+name = "pagefault"
+unit = "ns/op"
+better = "lower"
+emibsd = [77266.0, 80327.0, 78922.0, 83290.0, 77345.0, 78982.0, 77457.0, 78044.0, 83071.0, 77889.0]
+openbsd = [123283.0, 124578.0, 122119.0, 123524.0, 124396.0, 124104.0, 123516.0, 123192.0, 123111.0, 122636.0]
+emibsd_discarded = 3
+openbsd_discarded = 1
+ratio = 0.633
+
+[measurement.emibsd_stats]
+median = 78044.0
+min = 77266.0
+max = 83071.0
+spread_percent = 7.438
+
+[measurement.openbsd_stats]
+median = 123283.0
+min = 122119.0
+max = 124396.0
+spread_percent = 1.847
+
+[[measurement]]
+name = "forkexit"
+unit = "ns/op"
+better = "lower"
+emibsd = [2212677.0, 2231110.0, 2256387.0, 2176448.0, 2232635.0, 2207388.0, 2222174.0, 2232872.0, 2225552.0, 2253527.0]
+openbsd = [2243104.0, 2462606.0, 2176552.0, 2172146.0, 2228150.0, 2229562.0, 2232036.0, 2215938.0, 2255336.0, 2296271.0]
+emibsd_discarded = 2
+openbsd_discarded = 1
+ratio = 0.998
+
+[measurement.emibsd_stats]
+median = 2225552.0
+min = 2176448.0
+max = 2253527.0
+spread_percent = 3.463
+
+[measurement.openbsd_stats]
+median = 2229562.0
+min = 2172146.0
+max = 2296271.0
+spread_percent = 5.567
+
+[[measurement]]
+name = "forkexec"
+unit = "ns/op"
+better = "lower"
+emibsd = [5891293.0, 5921875.0, 6031958.0, 5800416.0, 5918638.0, 5881256.0, 5907233.0, 5989826.0, 6050618.0, 6007745.0]
+openbsd = [6284968.0, 6599058.0, 6391507.0, 6337983.0, 6475492.0, 6439423.0, 6396563.0, 6456527.0, 6358490.0, 6406055.0]
+emibsd_discarded = 8
+openbsd_discarded = 1
+ratio = 0.925
+
+[measurement.emibsd_stats]
+median = 5918638.0
+min = 5800416.0
+max = 6031958.0
+spread_percent = 3.912
+
+[measurement.openbsd_stats]
+median = 6396563.0
+min = 6284968.0
+max = 6475492.0
+spread_percent = 2.979
+
+[[measurement]]
+name = "pipe"
+unit = "ns/op"
+better = "lower"
+emibsd = [150525.0, 149793.0, 151538.0, 152366.0, 151671.0, 153498.0, 152441.0, 154676.0, 153338.0, 154686.0]
+openbsd = [185078.0, 183687.0, 185608.0, 186062.0, 186666.0, 184783.0, 185497.0, 185136.0, 185849.0, 186039.0]
+emibsd_discarded = 9
+openbsd_discarded = 4
+ratio = 0.821
+
+[measurement.emibsd_stats]
+median = 152366.0
+min = 149793.0
+max = 154676.0
+spread_percent = 3.205
+
+[measurement.openbsd_stats]
+median = 185497.0
+min = 183687.0
+max = 186062.0
+spread_percent = 1.28
+
+[[measurement]]
+name = "fileread"
+unit = "ns/op"
+better = "lower"
+emibsd = [813719.0, 810031.0, 828892.0, 810846.0, 809036.0, 818326.0, 809991.0, 818601.0, 824645.0, 827621.0]
+openbsd = [875261.0, 888212.0, 884888.0, 886668.0, 882254.0, 879540.0, 920154.0, 879767.0, 874835.0, 878124.0]
+emibsd_discarded = 2
+openbsd_discarded = 6
+ratio = 0.925
+
+[measurement.emibsd_stats]
+median = 813719.0
+min = 809036.0
+max = 827621.0
+spread_percent = 2.284
+
+[measurement.openbsd_stats]
+median = 879767.0
+min = 874835.0
+max = 888212.0
+spread_percent = 1.521
+
+[[measurement]]
+name = "tcpbench"
+unit = "Mbps"
+better = "higher"
+emibsd = [107.146, 107.137, 107.211, 107.052, 107.38, 107.201, 106.411, 107.297, 107.741, 107.338]
+openbsd = [87.087, 87.895, 87.146, 87.466, 87.266, 87.48, 87.465, 86.742, 87.086, 87.617]
+emibsd_discarded = 6
+openbsd_discarded = 7
+ratio = 1.226
+
+[measurement.emibsd_stats]
+median = 107.211
+min = 107.052
+max = 107.741
+spread_percent = 0.643
+
+[measurement.openbsd_stats]
+median = 87.465
+min = 87.086
+max = 87.895
+spread_percent = 0.925
+
+[[host]]
+system = "emibsd"
+run = 1
+load_start = 5.46
+load_end = 4.7
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.2
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.2
+
+[[host.top]]
+name = "mobileassetd"
+cpu = 4.0
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "BiomeAgent"
+cpu = 0.4
+
+[[host]]
+system = "openbsd"
+run = 1
+load_start = 4.7
+load_end = 5.43
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.9
+
+[[host.top]]
+name = "loginwindow"
+cpu = 11.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.3
+
+[[host.top]]
+name = "WindowServer"
+cpu = 3.1
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "openbsd"
+run = 2
+load_start = 5.43
+load_end = 3.93
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.9
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.9
+
+[[host.top]]
+name = "claude"
+cpu = 2.6
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 0.6
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "emibsd"
+run = 2
+load_start = 3.93
+load_end = 3.57
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.7
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.8
+
+[[host.top]]
+name = "Spotify"
+cpu = 3.5
+
+[[host.top]]
+name = "PerfPowerServices"
+cpu = 1.4
+
+[[host.top]]
+name = "mobileassetd"
+cpu = 1.1
+
+[[host]]
+system = "emibsd"
+run = 3
+load_start = 3.57
+load_end = 3.5
+
+[[host.top]]
+name = "suggestd"
+cpu = 100.0
+
+[[host.top]]
+name = "socketfilterfw"
+cpu = 17.5
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.6
+
+[[host.top]]
+name = "launchservicesd"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "openbsd"
+run = 3
+load_start = 3.5
+load_end = 3.02
+
+[[host.top]]
+name = "suggestd"
+cpu = 100.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 6.0
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "Creative Cloud UI Helper (GPU)"
+cpu = 0.6
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.3
+
+[[host]]
+system = "openbsd"
+run = 4
+load_start = 3.02
+load_end = 3.4
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.3
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.2
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "ps"
+cpu = 0.5
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 0.4
+
+[[host]]
+system = "emibsd"
+run = 4
+load_start = 3.4
+load_end = 3.47
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.1
+
+[[host.top]]
+name = "mobileassetd"
+cpu = 4.3
+
+[[host.top]]
+name = "locationd"
+cpu = 1.9
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "emibsd"
+run = 5
+load_start = 3.47
+load_end = 3.95
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.5
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.0
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 1.1
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (GPU)"
+cpu = 0.5
+
+[[host]]
+system = "openbsd"
+run = 5
+load_start = 3.95
+load_end = 3.36
+
+[[host.top]]
+name = "suggestd"
+cpu = 100.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.2
+
+[[host.top]]
+name = "mdworker_shared"
+cpu = 2.5
+
+[[host.top]]
+name = "mds_stores"
+cpu = 2.1
+
+[[host.top]]
+name = "mds"
+cpu = 0.8
+
+[[host]]
+system = "openbsd"
+run = 6
+load_start = 3.36
+load_end = 7.3
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.5
+
+[[host.top]]
+name = "exchangesyncd"
+cpu = 4.7
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.4
+
+[[host.top]]
+name = "accountsd"
+cpu = 2.7
+
+[[host.top]]
+name = "trustd"
+cpu = 1.6
+
+[[host]]
+system = "emibsd"
+run = 6
+load_start = 7.3
+load_end = 5.22
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.5
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 9.1
+
+[[host.top]]
+name = "claude"
+cpu = 2.4
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 1.0
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 1.0
+
+[[host]]
+system = "emibsd"
+run = 7
+load_start = 5.22
+load_end = 4.17
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.8
+
+[[host.top]]
+name = "locationd"
+cpu = 5.2
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.4
+
+[[host.top]]
+name = "searchpartyd"
+cpu = 2.0
+
+[[host.top]]
+name = "launchd"
+cpu = 0.9
+
+[[host]]
+system = "openbsd"
+run = 7
+load_start = 4.17
+load_end = 3.54
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.2
+
+[[host.top]]
+name = "claude"
+cpu = 10.1
+
+[[host.top]]
+name = "opendirectoryd"
+cpu = 4.3
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.0
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 1.0
+
+[[host]]
+system = "openbsd"
+run = 8
+load_start = 3.54
+load_end = 3.75
+
+[[host.top]]
+name = "suggestd"
+cpu = 100.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.8
+
+[[host.top]]
+name = "Spotify"
+cpu = 1.2
+
+[[host.top]]
+name = "mdworker_shared"
+cpu = 0.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "emibsd"
+run = 8
+load_start = 3.75
+load_end = 3.55
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 6.1
+
+[[host.top]]
+name = "Creative Cloud UI Helper (GPU)"
+cpu = 0.7
+
+[[host.top]]
+name = "BiomeAgent"
+cpu = 0.6
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.6
+
+[[host]]
+system = "emibsd"
+run = 9
+load_start = 3.55
+load_end = 3.55
+
+[[host.top]]
+name = "suggestd"
+cpu = 100.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.3
+
+[[host.top]]
+name = "locationd"
+cpu = 2.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 0.5
+
+[[host]]
+system = "openbsd"
+run = 9
+load_start = 3.55
+load_end = 3.54
+
+[[host.top]]
+name = "suggestd"
+cpu = 100.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.9
+
+[[host.top]]
+name = "locationd"
+cpu = 2.8
+
+[[host.top]]
+name = "mds_stores"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "openbsd"
+run = 10
+load_start = 3.54
+load_end = 3.51
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.4
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.0
+
+[[host.top]]
+name = "loginwindow"
+cpu = 4.3
+
+[[host.top]]
+name = "claude"
+cpu = 1.2
+
+[[host.top]]
+name = "locationd"
+cpu = 1.1
+
+[[host]]
+system = "emibsd"
+run = 10
+load_start = 3.51
+load_end = 3.75
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.9
+
+[[host.top]]
+name = "claude"
+cpu = 8.5
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 5.5
+
+[[host.top]]
+name = "mdworker_shared"
+cpu = 1.9
+
+[[host.top]]
+name = "securityd"
+cpu = 1.6
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 1
+load_start = 4.39
+load_end = 4.49
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.2
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.8
+
+[[host.top]]
+name = "locationd"
+cpu = 1.6
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 0.5
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 2
+load_start = 4.49
+load_end = 4.29
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.7
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.6
+
+[[host.top]]
+name = "ScreenTimeSettingsAgent"
+cpu = 2.5
+
+[[host.top]]
+name = "ScreenTimeAgent"
+cpu = 2.0
+
+[[host.top]]
+name = "familycircled"
+cpu = 0.7
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 3
+load_start = 4.29
+load_end = 4.39
+
+[[host.top]]
+name = "suggestd"
+cpu = 96.1
+
+[[host.top]]
+name = "plugin-container"
+cpu = 20.2
+
+[[host.top]]
+name = "firefox"
+cpu = 16.9
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.9
+
+[[host.top]]
+name = "claude"
+cpu = 1.8
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 4
+load_start = 4.39
+load_end = 4.57
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.7
+
+[[host.top]]
+name = "loginwindow"
+cpu = 5.9
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.8
+
+[[host.top]]
+name = "WindowServer"
+cpu = 2.1
+
+[[host.top]]
+name = "claude"
+cpu = 0.7
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 5
+load_start = 4.57
+load_end = 4.63
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.1
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.6
+
+[[host.top]]
+name = "locationd"
+cpu = 0.5
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "Creative Cloud UI Helper (GPU)"
+cpu = 0.4
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 6
+load_start = 4.63
+load_end = 4.68
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.0
+
+[[host.top]]
+name = "locationd"
+cpu = 5.3
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.2
+
+[[host.top]]
+name = "claude"
+cpu = 2.3
+
+[[host.top]]
+name = "searchpartyd"
+cpu = 1.3
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 7
+load_start = 4.68
+load_end = 4.83
+
+[[host.top]]
+name = "suggestd"
+cpu = 97.7
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.1
+
+[[host.top]]
+name = "BiomeAgent"
+cpu = 1.0
+
+[[host.top]]
+name = "contextstored"
+cpu = 0.7
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.5
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 8
+load_start = 4.83
+load_end = 4.7
+
+[[host.top]]
+name = "suggestd"
+cpu = 97.9
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.8
+
+[[host.top]]
+name = "launchd"
+cpu = 1.7
+
+[[host.top]]
+name = "BiomeAgent"
+cpu = 0.5
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 9
+load_start = 4.7
+load_end = 4.67
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.0
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.0
+
+[[host.top]]
+name = "BiomeAgent"
+cpu = 0.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "claude"
+cpu = 0.6
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 10
+load_start = 4.67
+load_end = 4.73
+
+[[host.top]]
+name = "suggestd"
+cpu = 97.9
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 4.5
+
+[[host.top]]
+name = "claude"
+cpu = 3.2
+
+[[host.top]]
+name = "ScreenTimeSettingsAgent"
+cpu = 1.7
+
+[[host.top]]
+name = "ScreenTimeAgent"
+cpu = 1.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 1
+load_start = 5.47
+load_end = 5.48
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.8
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.9
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "airportd"
+cpu = 0.3
+
+[[host.top]]
+name = "BiomeAgent"
+cpu = 0.3
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 2
+load_start = 5.48
+load_end = 5.24
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.4
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.6
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 1.6
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "PerfPowerServices"
+cpu = 0.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 3
+load_start = 5.24
+load_end = 5.05
+
+[[host.top]]
+name = "suggestd"
+cpu = 97.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.5
+
+[[host.top]]
+name = "exchangesyncd"
+cpu = 2.3
+
+[[host.top]]
+name = "locationd"
+cpu = 1.7
+
+[[host.top]]
+name = "mDNSResponder"
+cpu = 1.4
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 4
+load_start = 5.05
+load_end = 5.05
+
+[[host.top]]
+name = "suggestd"
+cpu = 97.2
+
+[[host.top]]
+name = "corespotlightd"
+cpu = 37.8
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.5
+
+[[host.top]]
+name = "spotlightknowledged.updater"
+cpu = 1.0
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 5
+load_start = 5.05
+load_end = 4.88
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.5
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.5
+
+[[host.top]]
+name = "ScreenTimeSettingsAgent"
+cpu = 1.3
+
+[[host.top]]
+name = "ScreenTimeAgent"
+cpu = 1.1
+
+[[host.top]]
+name = "claude"
+cpu = 0.7
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 6
+load_start = 4.88
+load_end = 4.9
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.4
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.7
+
+[[host.top]]
+name = "claude"
+cpu = 0.7
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.7
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 7
+load_start = 4.9
+load_end = 5.15
+
+[[host.top]]
+name = "suggestd"
+cpu = 98.8
+
+[[host.top]]
+name = "usernoted"
+cpu = 5.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.2
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 3.1
+
+[[host.top]]
+name = "coreduetd"
+cpu = 1.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 8
+load_start = 5.15
+load_end = 5.35
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.2
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.6
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 1.8
+
+[[host.top]]
+name = "claude"
+cpu = 1.1
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.6
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 9
+load_start = 5.35
+load_end = 5.22
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.4
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 3.1
+
+[[host.top]]
+name = "locationd"
+cpu = 1.1
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "Creative Cloud UI Helper (GPU)"
+cpu = 0.4
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 10
+load_start = 5.22
+load_end = 5.14
+
+[[host.top]]
+name = "suggestd"
+cpu = 99.0
+
+[[host.top]]
+name = "searchpartyd"
+cpu = 3.2
+
+[[host.top]]
+name = "Creative Cloud UI Helper (Renderer)"
+cpu = 2.9
+
+[[host.top]]
+name = "claude"
+cpu = 1.3
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 0.5

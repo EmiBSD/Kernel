@@ -308,6 +308,7 @@ impl RawRwlock {
 
     /// The lock's identity: its address, as a number (two live locks never share one), for
     /// the [`Guarded`] cells keyed to it.
+    #[inline]
     pub fn id(&self) -> LockId {
         LockId(ptr::from_ref(self).addr())
     }
@@ -1298,6 +1299,7 @@ impl Key {
         Key::Addr(id.0 | (usize::from(part) << PART_SHIFT))
     }
 
+    #[inline]
     fn id(self) -> LockId {
         match self {
             Key::Static(l) => l.id(),
@@ -1305,6 +1307,7 @@ impl Key {
         }
     }
 
+    #[inline]
     fn part(self) -> u8 {
         match self {
             Key::Static(_) => 0,
@@ -1358,6 +1361,7 @@ impl<T> Guarded<T> {
     /// either mode; a part of its part); any other witness is `panic(9)`. The reference
     /// borrows the cell and the witness, so it ends before the witness sleeps, upgrades or
     /// releases the lock.
+    #[inline]
     pub fn get<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> &'a T {
         self.check(w);
         // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, an
@@ -1378,6 +1382,7 @@ impl<T> Guarded<T> {
     /// (the write witness or the mutex guard of its lock, or the part of its part); any other
     /// witness is `panic(9)`. The reference borrows the witness mutably, so no other
     /// reference through it exists while it lives.
+    #[inline]
     pub fn get_mut<'a, W: Exclusive + ?Sized>(&'a self, w: &'a mut W) -> &'a mut T {
         self.check(w);
         // SAFETY: `w` is an exclusive witness (sealed: a `WriteWitness`, a `MutexedGuard` or a
@@ -1445,24 +1450,38 @@ impl<T> Guarded<T> {
 
     /// `panic(9)` unless `w` opens the cell: a witness of the lock the cell is keyed to, and,
     /// for a part, of the cell's part.
+    #[inline]
     fn check<W: Witness + ?Sized>(&self, w: &W) {
         let id = w.lock_id();
         if self.key.id() != id {
-            hal_panic(format_args!(
-                "Guarded: a witness of another lock ({:#x}, the cell's is {:#x})",
-                id.0,
-                self.key.id().0
-            ));
+            another_lock(id, self.key.id());
         }
         if let Some(p) = w.part()
             && p != self.key.part()
         {
-            hal_panic(format_args!(
-                "Guarded: a witness of part {p}, the cell is in part {}",
-                self.key.part()
-            ));
+            another_part(p, self.key.part());
         }
     }
+}
+
+/// [`Guarded::check`]'s refusal of a witness of another lock (`id`; the cell's is `cell`),
+/// out of the accesses' line.
+#[cold]
+#[inline(never)]
+fn another_lock(id: LockId, cell: LockId) -> ! {
+    hal_panic(format_args!(
+        "Guarded: a witness of another lock ({:#x}, the cell's is {:#x})",
+        id.0, cell.0
+    ))
+}
+
+/// [`Guarded::check`]'s refusal of a part `p` that is not the cell's (`cell`).
+#[cold]
+#[inline(never)]
+fn another_part(p: u8, cell: u8) -> ! {
+    hal_panic(format_args!(
+        "Guarded: a witness of part {p}, the cell is in part {cell}"
+    ))
 }
 
 // SAFETY: sharing `&Guarded<T>` lets the readers of the lock on several CPUs read the `T` at
@@ -1527,6 +1546,7 @@ pub trait Divisible: Exclusive {
 impl sealed::Sealed for WriteWitness<'_> {}
 
 impl Witness for WriteWitness<'_> {
+    #[inline]
     fn lock_id(&self) -> LockId {
         self.lock.id()
     }
@@ -1539,6 +1559,7 @@ impl Divisible for WriteWitness<'_> {}
 impl<T> sealed::Sealed for MutexedGuard<'_, T> {}
 
 impl<T> Witness for MutexedGuard<'_, T> {
+    #[inline]
     fn lock_id(&self) -> LockId {
         self.mutex_id()
     }
@@ -1551,10 +1572,12 @@ impl<T> Divisible for MutexedGuard<'_, T> {}
 impl sealed::Sealed for WitnessPart<'_> {}
 
 impl Witness for WitnessPart<'_> {
+    #[inline]
     fn lock_id(&self) -> LockId {
         self.id
     }
 
+    #[inline]
     fn part(&self) -> Option<u8> {
         Some(self.part)
     }
@@ -1565,6 +1588,7 @@ impl Exclusive for WitnessPart<'_> {}
 impl sealed::Sealed for ReadWitness<'_> {}
 
 impl Witness for ReadWitness<'_> {
+    #[inline]
     fn lock_id(&self) -> LockId {
         self.lock.id()
     }
@@ -1715,6 +1739,7 @@ impl<'a> From<ReadWitness<'a>> for RwWitness<'a> {
 impl sealed::Sealed for RwWitness<'_> {}
 
 impl Witness for RwWitness<'_> {
+    #[inline]
     fn lock_id(&self) -> LockId {
         match self {
             RwWitness::Read(r) => r.lock_id(),

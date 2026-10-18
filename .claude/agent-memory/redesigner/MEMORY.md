@@ -117,3 +117,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - clippy doc_lazy_continuation: a `//!` continuation line starting with `+`, `-` or `*` reads as a list item; reword.
 - Shared kernel test maps go below the host's VM_MIN_KERNEL_ADDRESS: the map tests store UVM_MAXKADDR downwards, which desyncs a best-fit map above it ("uaddr_bestfit_remove: entry was not in tree").
 - A mechanical `use` rewrite that splits one `use` into several drops the `#[cfg]` on all but the first: list HEAD's attributed uses and fix those by hand.
+- Derived state cached inside `MapState` (Owners, ~180 B) grows `Vmspace` past `the_pool_items_stay_near_the_cs`'s 512 B (vmsppl item size, vmstat -m): compute once per operation and lend `&T` down instead (as fast, no size change).
+- A `&'s VmMapEntry` returned from a `&'s mut MapState` keeps the whole state borrowed; inside a loop that reborrows the state NLL refuses it (universal region): return a `Copy` summary, or reborrow with `OwnedTree::insert_get` + destructuring `let MapState { addr, uaddr_exe, .. } = st` for split borrows.
+- The vm host bench is noisy: some fault rows are bimodal run to run (15-20 %) and dev primitives move +-10 % when unchanged code is re-placed by a rebuild; take two runs per profile (lowest median) and prove "same work" with a dump of the map's entries before and after.
+- Worktree sandbox: python heredocs whose text holds test/word fragments ("sane", "split", ...) can be refused as "too complex"; write the script with the Write tool and run it by path.
