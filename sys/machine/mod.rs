@@ -138,6 +138,16 @@ const _: () = {
     assert!(<Machine as VmParam>::VM_MAX_ADDRESS == hv::VM_MAX_ADDRESS);
     assert!(<Machine as VmParam>::VM_MIN_KERNEL_ADDRESS == hv::VM_MIN_KERNEL_ADDRESS);
     assert!(<Machine as VmParam>::VM_MAX_KERNEL_ADDRESS == hv::VM_MAX_KERNEL_ADDRESS);
+    // N3.5 S1: the user layout and the default limits, which the kernel's map reads there.
+    assert!(<Machine as VmParam>::USRSTACK == hv::USRSTACK);
+    assert!(<Machine as VmParam>::MAXTSIZ == hv::MAXTSIZ);
+    assert!(<Machine as VmParam>::DFLDSIZ == hv::DFLDSIZ);
+    assert!(<Machine as VmParam>::MAXDSIZ == hv::MAXDSIZ);
+    assert!(<Machine as VmParam>::BRKSIZ == hv::BRKSIZ);
+    assert!(<Machine as VmParam>::DFLSSIZ == hv::DFLSSIZ);
+    assert!(<Machine as VmParam>::MAXSSIZ == hv::MAXSSIZ);
+    assert!(<Machine as VmParam>::STACKGAP_RANDOM == hv::STACKGAP_RANDOM);
+    assert!(<Machine as VmParam>::VM_MIN_STACK_ADDRESS == hv::VM_MIN_STACK_ADDRESS);
 };
 /* </CODE> */
 

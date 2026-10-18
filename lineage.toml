@@ -1462,7 +1462,7 @@ rust = "sys/hal/arch/amd64/include/vmparam.rs"
 crate = "hal"
 lz = ["sys/arch/amd64/include/vmparam.rs"]
 status = "redesigned"
-notes = "N3.1 (D17): the user and kernel address-space bounds, for hal's pmap"
+notes = "N3.1 (D17): the user and kernel address-space bounds, for hal's pmap; N3.5 S1: vmparam.h's user layout and default limits (USRSTACK, MAXTSIZ, DFLDSIZ, MAXDSIZ, BRKSIZ, DFLSSIZ, MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS) for the kernel's map, bsd's copies asserted equal in sys/machine/mod.rs"
 
 [[module.fn]]
 lz = "sys/arch/amd64/include/vmparam.rs::VM_MIN_ADDRESS"
@@ -2033,7 +2033,7 @@ rust = "sys/hal/arch/arm64/include/vmparam.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/vmparam.rs"]
 status = "redesigned"
-notes = "N3.1 (D17): the user and kernel address-space bounds and USER_SPACE_BITS, for hal's pmap"
+notes = "N3.1 (D17): the user and kernel address-space bounds and USER_SPACE_BITS, for hal's pmap; N3.5 S1: vmparam.h's user layout and default limits (USRSTACK, MAXTSIZ, DFLDSIZ, MAXDSIZ, BRKSIZ, DFLSSIZ, MAXSSIZ, STACKGAP_RANDOM, VM_MIN_STACK_ADDRESS) for the kernel's map, bsd's copies asserted equal in sys/machine/mod.rs"
 
 [[module.fn]]
 lz = "sys/arch/arm64/include/vmparam.rs::VM_MIN_ADDRESS"

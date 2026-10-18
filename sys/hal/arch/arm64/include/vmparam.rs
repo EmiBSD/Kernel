@@ -63,6 +63,11 @@
 //!   `VM_MIN/MAX_KERNEL_ADDRESS`; `USER_SPACE_BITS` sizes the user half's tables (`TCR_T0SZ`).
 //!   `bsd`'s file keeps the user limits and the physical segment policy (`VM_PSTRAT_*` is
 //!   `uvm_page`'s) and re-exports these; `sys/machine/mod.rs` asserts that the two agree.
+//! - N3.5 S1: the user layout and the default limits of `vmparam.h` (`USRSTACK`, `MAXTSIZ`,
+//!   `DFLDSIZ`, `MAXDSIZ`, `BRKSIZ`, `DFLSSIZ`, `MAXSSIZ`, `STACKGAP_RANDOM`,
+//!   `VM_MIN_STACK_ADDRESS`) are here too, for the kernel's map (`uvm_map_hint`, the brk
+//!   area) and its limits; `bsd`'s file keeps its own copies, and `sys/machine/mod.rs`
+//!   asserts at compile time that the two agree.
 
 use super::param::PAGE_SIZE;
 
@@ -78,6 +83,25 @@ pub const VM_MAX_ADDRESS: usize = VM_MAXUSER_ADDRESS;
 pub const VM_MIN_KERNEL_ADDRESS: usize = 0xffff_ff80_0000_0000;
 /// `VM_MAX_KERNEL_ADDRESS`: the end of the kernel's own virtual space.
 pub const VM_MAX_KERNEL_ADDRESS: usize = 0xffff_ff83_ffff_ffff;
+
+/// `USRSTACK`: the top (end) of the user stack.
+pub const USRSTACK: usize = VM_MAXUSER_ADDRESS;
+/// `MAXTSIZ`: max text size.
+pub const MAXTSIZ: usize = 256 * 1024 * 1024;
+/// `DFLDSIZ`: initial data size limit.
+pub const DFLDSIZ: usize = 512 * 1024 * 1024;
+/// `MAXDSIZ`: max data size.
+pub const MAXDSIZ: usize = 64 * 1024 * 1024 * 1024;
+/// `BRKSIZ`: heap gap size.
+pub const BRKSIZ: usize = 16 * 1024 * 1024 * 1024;
+/// `DFLSSIZ`: initial stack size limit.
+pub const DFLSSIZ: usize = 2 * 1024 * 1024;
+/// `MAXSSIZ`: max stack size.
+pub const MAXSSIZ: usize = 32 * 1024 * 1024;
+/// `STACKGAP_RANDOM`: the range of the random gap below the stack.
+pub const STACKGAP_RANDOM: usize = 256 * 1024;
+/// `VM_MIN_STACK_ADDRESS`: the lowest address the stack may be placed at.
+pub const VM_MIN_STACK_ADDRESS: usize = 3 << (USER_SPACE_BITS - 2);
 /* </CODE> */
 
 /* <TESTS> */

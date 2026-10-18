@@ -41,4 +41,26 @@ pub const VM_MAX_ADDRESS: usize = 0x0000_7fbf_dfef_f000;
 pub const VM_MIN_KERNEL_ADDRESS: usize = 0xffff_8000_0000_0000;
 /// `VM_MAX_KERNEL_ADDRESS`: where it ends (amd64's).
 pub const VM_MAX_KERNEL_ADDRESS: usize = 0xffff_8080_0000_0000;
+
+// The user layout and the default limits (`vmparam.h`; the values `bsd`'s host `VmParam`
+// has, amd64's but for none; N3.5 S1, for the kernel's map and its limits).
+
+/// `USRSTACK`: the top (end) of the user stack.
+pub const USRSTACK: usize = VM_MAXUSER_ADDRESS;
+/// `MAXTSIZ`: max text size.
+pub const MAXTSIZ: usize = 256 * 1024 * 1024;
+/// `DFLDSIZ`: initial data size limit.
+pub const DFLDSIZ: usize = 128 * 1024 * 1024;
+/// `MAXDSIZ`: max data size.
+pub const MAXDSIZ: usize = 128 * 1024 * 1024 * 1024;
+/// `BRKSIZ`: heap gap size.
+pub const BRKSIZ: usize = 8 * 1024 * 1024 * 1024;
+/// `DFLSSIZ`: initial stack size limit.
+pub const DFLSSIZ: usize = 2 * 1024 * 1024;
+/// `MAXSSIZ`: max stack size.
+pub const MAXSSIZ: usize = 32 * 1024 * 1024;
+/// `STACKGAP_RANDOM`: the range of the random gap below the stack.
+pub const STACKGAP_RANDOM: usize = 256 * 1024;
+/// `VM_MIN_STACK_ADDRESS`: the lowest address the stack may be placed at.
+pub const VM_MIN_STACK_ADDRESS: usize = 0x0000_6000_0000_0000;
 /* </CODE> */
