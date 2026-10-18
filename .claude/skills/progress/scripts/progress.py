@@ -37,7 +37,7 @@ Sources, all read live (nothing is typed in by hand):
   - bridges.toml: the bridges open, by the milestone that pays them (`paid_by`);
   - lineage.toml and reference/emibsd-lz at the pin: each module's LZ sources and
     their lines (`git cat-file --batch`), for the module list only;
-  - git: the `docs: Nx met` close commits.
+  - git: the `docs: Nx met` and `docs: close Nx` close commits.
 
 Columns, per row (docs/ZERO_UNSAFE.md 0.4):
   Files in bsd      the row's files still in the LZ tree (counted as modules, or
@@ -214,13 +214,13 @@ def git(root: Path, *args: str) -> str:
 
 
 def close_dates(root: Path, rng: str) -> dict[str, str]:
-    """Milestone id -> the date it was declared met (`docs: Nx met ...` in the range)."""
+    """Milestone id -> the date it was declared met (`docs: Nx met ...` or `docs: close Nx` in the range)."""
     dates: dict[str, str] = {}
     for line in reversed(git(root, "log", rng, "--format=%cd%x09%s", "--date=short").splitlines()):
         date, _, subject = line.partition("\t")
-        if not subject.startswith("docs:") or not re.search(r"\bmet\b", subject):
+        if not subject.startswith("docs:") or not re.search(r"\b(met|close)\b", subject):
             continue
-        if re.search(r"\b(left|blocked|partial|pending)\b", subject):
+        if re.search(r"\b(left|blocked|partial|pending|under way)\b", subject):
             continue  # a partial criterion, not the close
         for mid in MS_ID.findall(subject.split("(")[0]):
             dates.setdefault(mid, date)
