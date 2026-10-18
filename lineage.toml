@@ -8297,7 +8297,7 @@ rust = "sys/hal/mapped.rs"
 crate = "hal"
 lz = ["sys/uvm/uvm_pager.rs"]
 status = "redesigned"
-notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: MappedBytes, KernelMapper::map_frames (the mapping loop) and map_direct (the one-page case), the drop the pmap_remove; each frame a managed page claimed for one view (PageMd's PG_HAL_VIEW); outside pmap.rs, which forbids unsafe. uvm_pagermapin/out themselves (segments, UVMPAGER_*, uvm_wait) stay in bsd's uvm_pager.rs until N3.4c. Gap until N3.5: a frame backing kernel memory cannot be told from a pager page"
+notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: MappedBytes, KernelMapper::map_frames (the mapping loop) and map_direct (the one-page case), the drop the pmap_remove; each frame a busy managed page (PhysPages::is_busy, the C's KASSERT(PG_BUSY)) claimed for one view (PageMd's PG_HAL_VIEW, which zero_page/copy_page/page_protect/uvm_pageclean/clear_attrs refuse), the window checked unmapped, prot with PROT_READ; outside pmap.rs, which forbids unsafe. uvm_pagermapin/out themselves (segments, UVMPAGER_*, uvm_wait) stay in bsd's uvm_pager.rs until N3.4c. Gap until N3.5 (the token holder's contract): no overlay or removal of a live window through the token, no busy page backing kernel memory (the buffer cache's)"
 
 [[extra]]
 rust = "sys/hal/user.rs"

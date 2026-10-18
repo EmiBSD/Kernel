@@ -106,6 +106,9 @@ static CONS_IN: Mutex<std::collections::VecDeque<u8>> =
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
 /// Each pool's high-water mark and whether its cache was made, by the pool's name.
 static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
+/// The memory frames [`set_idle`] made not busy.
+static IDLE_FRAMES: Mutex<std::collections::BTreeSet<usize>> =
+    Mutex::new(std::collections::BTreeSet::new());
 /// The blocks of host memory that [`memory_frames`] handed out, the managed pages of
 /// [`FAKE_PAGES`]: the first frame's address and a `PageMd` per frame.
 static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
@@ -570,6 +573,12 @@ pub(crate) fn cold_yields() -> u32 {
     COLD_YIELDS.with(Cell::get)
 }
 
+/// Makes the memory frame `pa` a page that is not busy (`PG_BUSY` clear), as a page of a
+/// pool or of `km_alloc` is.
+pub(crate) fn set_idle(pa: Paddr) {
+    lock(&IDLE_FRAMES).insert(pa.as_usize());
+}
+
 /// This thread's spin count, as the double keeps it.
 pub(crate) fn spinning() -> isize {
     SPINNING.with(Cell::get)
@@ -601,6 +610,10 @@ impl PhysPages for FakePages {
                 .map(|off| off / TEST_PAGE)
                 .and_then(|i| mds.get(i))
         })
+    }
+    /// The memory frames are their test's busy pages, but those [`set_idle`] named.
+    fn is_busy(&self, pa: Paddr) -> bool {
+        self.md_of(pa).is_some() && !lock(&IDLE_FRAMES).contains(&pa.as_usize())
     }
     fn steal(&self, npg: usize) -> Option<Paddr> {
         Some(Paddr::new(

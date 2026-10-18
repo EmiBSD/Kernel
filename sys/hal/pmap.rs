@@ -151,6 +151,12 @@
 //!   (`kernel::vm::page::VmPage`, N3.3): the pv chain under its own mutex, the
 //!   pmap's attribute bits the C keeps in `pg_flags` (`PG_PMAP0`..`2`) in their own atomic
 //!   word, and a PTP's count of valid entries (the C's `wire_count` of a page-table page).
+//!   N3.4a: the word also holds `hal`'s claim (`PG_HAL_VIEW`, `PG_HAL_VIEW_W`, never in
+//!   [`PageMd::attrs`]): a frame held alone by a byte view (`sys/hal/mapped.rs`) or for the
+//!   length of [`zero_page`]/[`copy_page`], which panic on a held frame, as
+//!   [`page_protect`] does when it would take a view's mapping away and
+//!   [`PageMd::clear_attrs`] when the page system hands a held page out again;
+//!   [`PhysPages::is_busy`] answers `PG_BUSY` for the views' check.
 //! - The page allocator is a value passed down, [`PhysPages`] (D16), given to [`bootstrap`]
 //!   and kept by the kernel pmap, copied into every pmap [`create`] makes: `uvm_pagealloc`,
 //!   `uvm_pagefree`, `PHYS_TO_VM_PAGE`, `uvm_page_physsteal`. `pmap_steal_memory` reads the
@@ -175,6 +181,7 @@ use crate::mutex::Mutexed;
 use crate::once::OnceStatic;
 use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
 use crate::sys::errno::Errno;
+use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 
 /// `vm_prot_t`: a combination of `PROT_READ`, `PROT_WRITE`, `PROT_EXEC` (`<sys/mman.h>`), the
@@ -217,9 +224,13 @@ pub const PG_PMAP_REF: u32 = 0x0200_0000;
 /// `PG_PMAP_EXE`, mapped executable and I-cache clean).
 pub const PG_PMAP2: u32 = 0x0400_0000;
 /// `hal`'s own bit of [`PageMd`]'s attribute word, outside the `PG_PMAP*` bits (and so never
-/// reported by [`PageMd::attrs`] nor cleared by [`PageMd::clear_attrs`]): the frame is in a
-/// byte view (`hal::mapped::MappedBytes`), which holds it alone.
+/// reported by [`PageMd::attrs`]): the frame is held alone, by a byte view
+/// (`hal::mapped::MappedBytes`) or for the length of `pmap_zero_page`/`pmap_copy_page`.
 const PG_HAL_VIEW: u32 = 0x8000_0000;
+/// With [`PG_HAL_VIEW`]: the view is writable, so its mapping may not lose `PROT_WRITE`.
+const PG_HAL_VIEW_W: u32 = 0x4000_0000;
+/// The bits `hal` keeps for itself.
+const PG_HAL_MASK: u32 = PG_HAL_VIEW | PG_HAL_VIEW_W;
 
 /// The pool of user pmaps (`pmap_pmap_pool`), named as the C names it on each machine
 /// (`"pmappl"` on amd64, `"pmap"` on arm64), made by [`init`].
@@ -513,7 +524,7 @@ pub struct PageMd {
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) pv: Mutexed<PvHead>,
     /// The `PG_PMAP_*` bits (`PG_PMAP_MOD`, `PG_PMAP_REF`, `PG_PMAP2`), and `hal`'s
-    /// `PG_HAL_VIEW` (the frame is in a byte view).
+    /// `PG_HAL_VIEW`/`PG_HAL_VIEW_W` (the frame is held alone, by a byte view or a copy).
     pub(crate) attrs: AtomicU32,
     /// Of a page-table page: its valid entries plus one (the C's `wire_count` of a PTP;
     /// amd64's alone: arm64's vp tables are found by the walk and freed with their pmap).
@@ -531,27 +542,63 @@ impl PageMd {
         }
     }
 
-    /// Clears the pmap's attribute bits of a page being freed (`uvm_pmemrange`'s
-    /// `atomic_clearbits_int(&pg->pg_flags, PG_PMAPMASK)`). A byte view's claim stays: only
-    /// the view's drop gives it up, so a page freed under a live view cannot be viewed again.
+    /// Clears the pmap's attribute bits of a page the page system hands out again
+    /// (`uvm_pmr_getpages`, at allocation: the C's `atomic_clearbits_int(&pg->pg_flags,
+    /// PG_PMAPMASK)` there). Panics when a byte view still holds the page: it was freed under
+    /// the view, and its next owner would write what the view reads.
     pub fn clear_attrs(&self) {
-        self.attrs.fetch_and(PG_HAL_VIEW, Ordering::Relaxed);
+        if self.in_view() {
+            hal_panic(format_args!(
+                "PageMd: a page in a byte view handed out again"
+            ));
+        }
+        self.attrs.store(0, Ordering::Relaxed);
     }
 
     /// The `PG_PMAP_*` bits now (a snapshot, for assertions and ddb).
     pub fn attrs(&self) -> u32 {
-        self.attrs.load(Ordering::Relaxed) & !PG_HAL_VIEW
+        self.attrs.load(Ordering::Relaxed) & !PG_HAL_MASK
     }
 
-    /// Claims the frame for one byte view: `true` when no view held it (Acquire, so the
-    /// bytes the last view wrote are visible), `false` when one does.
-    pub(crate) fn claim_view(&self) -> bool {
-        self.attrs.fetch_or(PG_HAL_VIEW, Ordering::AcqRel) & PG_HAL_VIEW == 0
+    /// Whether the frame is held alone now, by a byte view or a copy (`uvm_pageclean` refuses
+    /// to free such a page).
+    pub fn in_view(&self) -> bool {
+        self.attrs.load(Ordering::Acquire) & PG_HAL_VIEW != 0
     }
 
-    /// Gives a byte view's claim up (Release: what it wrote is seen by the next claim).
+    /// Claims the frame alone, for a view (`writable` when it may write) or a copy: `true`
+    /// when nothing held it (Acquire, so the bytes the last holder wrote are visible), `false`
+    /// when something does (and then nothing changes).
+    pub(crate) fn claim_view(&self, writable: bool) -> bool {
+        let bits = if writable {
+            PG_HAL_VIEW | PG_HAL_VIEW_W
+        } else {
+            PG_HAL_VIEW
+        };
+        self.attrs
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
+                (a & PG_HAL_VIEW == 0).then_some(a | bits)
+            })
+            .is_ok()
+    }
+
+    /// Gives a claim up (Release: what the holder wrote is seen by the next claim).
     pub(crate) fn release_view(&self) {
-        self.attrs.fetch_and(!PG_HAL_VIEW, Ordering::Release);
+        self.attrs.fetch_and(!PG_HAL_MASK, Ordering::Release);
+    }
+
+    /// Panics when lowering the page's mappings to `prot` would pull a live byte view's
+    /// mapping from under it: removing them (no `PROT_READ`), or write-protecting a writable
+    /// view.
+    fn check_protect(&self, prot: VmProt) {
+        let a = self.attrs.load(Ordering::Acquire);
+        if a & PG_HAL_VIEW != 0
+            && (prot & PROT_READ == 0 || (a & PG_HAL_VIEW_W != 0 && prot & PROT_WRITE == 0))
+        {
+            hal_panic(format_args!(
+                "pmap_page_protect: a page in a byte view, to {prot:#x}"
+            ));
+        }
     }
 }
 
@@ -580,6 +627,10 @@ pub trait PhysPages: Sync {
     /// `PHYS_TO_VM_PAGE(pa)->mdpage`: the `PageMd` of a managed frame; `None` for a frame
     /// outside the managed pages (device memory, a frame stolen at boot).
     fn md_of(&self, pa: Paddr) -> Option<&'static PageMd>;
+    /// `pg->pg_flags & PG_BUSY` of the managed frame `pa` (`false` for any other frame): the
+    /// page is held by its owner for I/O, the only pages a pager maps for their bytes
+    /// (`uvm_pagermapin`'s `KASSERT(pp->pg_flags & PG_BUSY)`).
+    fn is_busy(&self, pa: Paddr) -> bool;
     /// `uvm_page_physsteal(npg)`: `npg` contiguous frames taken out of the page system before
     /// it is up, not zeroed; `None` when there are none. Panics once `page_init_done` (as the
     /// C does).
@@ -944,7 +995,12 @@ fn create_with(
 
 /// `pmap_page_protect(pg, prot)`: lowers every mapping of the page to `prot`; `PROT_NONE`
 /// removes them all (what the object layer does before freeing a page).
+///
+/// Panics when a byte view holds the page and `prot` would take its mapping away (the
+/// window is a managed mapping: freeing a page removes it): the view's owner gives the page
+/// up first.
 pub fn page_protect(md: &PageMd, prot: VmProt) {
+    md.check_protect(prot);
     Backend::page_protect(md, prot);
 }
 
@@ -969,26 +1025,46 @@ pub fn is_referenced(md: &PageMd) -> bool {
     Backend::is_referenced(md)
 }
 
-/// Panics unless the provider knows `pa` as a managed page (the C's `struct vm_page *`).
-fn managed(what: &str, pa: Paddr) {
-    if kernel().pages().md_of(pa).is_none() {
-        hal_panic(format_args!("{what}: {pa:?} is not a managed page"));
+/// The `PageMd` of `pa`; panics unless the provider knows it as a managed page (the C's
+/// `struct vm_page *`).
+fn managed(what: &str, pa: Paddr) -> &'static PageMd {
+    match kernel().pages().md_of(pa) {
+        Some(md) => md,
+        None => hal_panic(format_args!("{what}: {pa:?} is not a managed page")),
+    }
+}
+
+/// Claims `md` (the frame `pa`) alone for `what`'s write; panics when a byte view holds it.
+fn hold(what: &str, md: &PageMd, pa: Paddr) {
+    if !md.claim_view(true) {
+        hal_panic(format_args!("{what}: {pa:?} is in a byte view"));
     }
 }
 
 /// `pmap_zero_page`: zero-fills the managed page at `pa` (through the direct map). Panics
-/// when `pa` is not a managed page (see the module's redesign).
+/// when `pa` is not a managed page (see the module's redesign), and when a byte view holds
+/// it (the page is held alone for the fill).
 pub fn zero_page(pa: Paddr) {
-    managed("pmap_zero_page", pa);
+    let md = managed("pmap_zero_page", pa);
+    hold("pmap_zero_page", md, pa);
     Backend::zero_page(pa);
+    md.release_view();
 }
 
 /// `pmap_copy_page`: copies the managed page at `src` into the managed page at `dst`. Panics
-/// when either is not a managed page.
+/// when either is not a managed page or a byte view holds either (both are held alone for
+/// the copy).
 pub fn copy_page(src: Paddr, dst: Paddr) {
-    managed("pmap_copy_page", src);
-    managed("pmap_copy_page", dst);
+    let s = managed("pmap_copy_page", src);
+    let d = managed("pmap_copy_page", dst);
+    hold("pmap_copy_page", s, src);
+    if !d.claim_view(true) {
+        s.release_view();
+        hal_panic(format_args!("pmap_copy_page: {dst:?} is in a byte view"));
+    }
     Backend::copy_page(src, dst);
+    d.release_view();
+    s.release_view();
 }
 
 /// `pmap_steal_memory(size, ..)`: `size` bytes of physical memory taken from the provider the
@@ -1273,16 +1349,46 @@ mod tests {
     #[test]
     fn a_byte_view_claims_a_frame_alone_and_the_pmap_bits_ignore_it() {
         let md = PageMd::new();
-        assert!(md.claim_view());
-        assert!(!md.claim_view());
+        assert!(md.claim_view(true));
+        assert!(md.in_view());
+        assert!(!md.claim_view(false));
         md.attrs.fetch_or(PG_PMAP_MOD, Ordering::Relaxed);
         assert_eq!(md.attrs(), PG_PMAP_MOD);
-        // A page freed under its view keeps the claim.
+        md.release_view();
+        assert!(!md.in_view());
+        assert_eq!(md.attrs(), PG_PMAP_MOD);
         md.clear_attrs();
         assert_eq!(md.attrs(), 0);
-        assert!(!md.claim_view());
+        // A read-only view may be write-protected, not removed.
+        assert!(md.claim_view(false));
+        md.check_protect(PROT_READ);
         md.release_view();
-        assert!(md.claim_view());
+        md.check_protect(PROT_NONE);
+    }
+
+    #[test]
+    #[should_panic(expected = "handed out again")]
+    fn a_page_in_a_view_is_not_handed_out_again() {
+        let md = PageMd::new();
+        assert!(md.claim_view(false));
+        md.clear_attrs();
+    }
+
+    #[test]
+    #[should_panic(expected = "a page in a byte view, to 0x0")]
+    fn a_page_in_a_view_keeps_its_mappings() {
+        let _ = booted();
+        let md = PageMd::new();
+        assert!(md.claim_view(false));
+        page_protect(&md, PROT_NONE);
+    }
+
+    #[test]
+    #[should_panic(expected = "a page in a byte view, to 0x1")]
+    fn a_writable_view_is_not_write_protected() {
+        let md = PageMd::new();
+        assert!(md.claim_view(true));
+        md.check_protect(PROT_READ);
     }
 }
 /* </TESTS> */

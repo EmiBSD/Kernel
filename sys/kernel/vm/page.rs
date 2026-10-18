@@ -1226,6 +1226,10 @@ pub fn uvm_pagerealloc(pg: &VmPage, old: Owner<'_>, new: Owner<'_>, newoff: Voff
 /// page queues, unwired); all its valid mappings are gone. `owner` is the page's.
 pub fn uvm_pageclean(pg: &VmPage, owner: Owner<'_>) {
     check_owner(pg, owner, "uvm_pageclean");
+    // hal's byte view of the page (the pager's window) must be gone before the page is.
+    if pg.mdpage.in_view() {
+        kpanic(format_args!("uvm_pageclean: a page in a byte view"));
+    }
     kassert!(pg.flags() & PG_DEV == 0);
     kassert!(match owner {
         Owner::Object(o) => o.is_dummy() || o.locked(true),
@@ -1520,6 +1524,10 @@ impl PhysPages for PhysPagesImpl {
 
     fn md_of(&self, pa: Paddr) -> Option<&'static PageMd> {
         PHYS_TO_VM_PAGE(pa).map(|pg| &pg.mdpage)
+    }
+
+    fn is_busy(&self, pa: Paddr) -> bool {
+        PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.flags() & PG_BUSY != 0)
     }
 
     fn steal(&self, npg: usize) -> Option<Paddr> {
