@@ -216,6 +216,10 @@ pub const PG_PMAP_REF: u32 = 0x0200_0000;
 /// `PG_PMAP2`: machine-dependent (amd64 `PG_PMAP_WC`, mapped write-combining; arm64
 /// `PG_PMAP_EXE`, mapped executable and I-cache clean).
 pub const PG_PMAP2: u32 = 0x0400_0000;
+/// `hal`'s own bit of [`PageMd`]'s attribute word, outside the `PG_PMAP*` bits (and so never
+/// reported by [`PageMd::attrs`] nor cleared by [`PageMd::clear_attrs`]): the frame is in a
+/// byte view (`hal::mapped::MappedBytes`), which holds it alone.
+const PG_HAL_VIEW: u32 = 0x8000_0000;
 
 /// The pool of user pmaps (`pmap_pmap_pool`), named as the C names it on each machine
 /// (`"pmappl"` on amd64, `"pmap"` on arm64), made by [`init`].
@@ -508,7 +512,8 @@ pub struct PageMd {
     // `pv` and `ptp_refs`.
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) pv: Mutexed<PvHead>,
-    /// The `PG_PMAP_*` bits (`PG_PMAP_MOD`, `PG_PMAP_REF`, `PG_PMAP2`).
+    /// The `PG_PMAP_*` bits (`PG_PMAP_MOD`, `PG_PMAP_REF`, `PG_PMAP2`), and `hal`'s
+    /// `PG_HAL_VIEW` (the frame is in a byte view).
     pub(crate) attrs: AtomicU32,
     /// Of a page-table page: its valid entries plus one (the C's `wire_count` of a PTP;
     /// amd64's alone: arm64's vp tables are found by the walk and freed with their pmap).
@@ -527,14 +532,26 @@ impl PageMd {
     }
 
     /// Clears the pmap's attribute bits of a page being freed (`uvm_pmemrange`'s
-    /// `atomic_clearbits_int(&pg->pg_flags, PG_PMAPMASK)`).
+    /// `atomic_clearbits_int(&pg->pg_flags, PG_PMAPMASK)`). A byte view's claim stays: only
+    /// the view's drop gives it up, so a page freed under a live view cannot be viewed again.
     pub fn clear_attrs(&self) {
-        self.attrs.store(0, Ordering::Relaxed);
+        self.attrs.fetch_and(PG_HAL_VIEW, Ordering::Relaxed);
     }
 
     /// The `PG_PMAP_*` bits now (a snapshot, for assertions and ddb).
     pub fn attrs(&self) -> u32 {
-        self.attrs.load(Ordering::Relaxed)
+        self.attrs.load(Ordering::Relaxed) & !PG_HAL_VIEW
+    }
+
+    /// Claims the frame for one byte view: `true` when no view held it (Acquire, so the
+    /// bytes the last view wrote are visible), `false` when one does.
+    pub(crate) fn claim_view(&self) -> bool {
+        self.attrs.fetch_or(PG_HAL_VIEW, Ordering::AcqRel) & PG_HAL_VIEW == 0
+    }
+
+    /// Gives a byte view's claim up (Release: what it wrote is seen by the next claim).
+    pub(crate) fn release_view(&self) {
+        self.attrs.fetch_and(!PG_HAL_VIEW, Ordering::Release);
     }
 }
 
@@ -1251,6 +1268,21 @@ mod tests {
         assert_eq!(md.attrs(), 0);
         assert!(!is_modified(&md));
         assert!(!clear_reference(&md));
+    }
+
+    #[test]
+    fn a_byte_view_claims_a_frame_alone_and_the_pmap_bits_ignore_it() {
+        let md = PageMd::new();
+        assert!(md.claim_view());
+        assert!(!md.claim_view());
+        md.attrs.fetch_or(PG_PMAP_MOD, Ordering::Relaxed);
+        assert_eq!(md.attrs(), PG_PMAP_MOD);
+        // A page freed under its view keeps the claim.
+        md.clear_attrs();
+        assert_eq!(md.attrs(), 0);
+        assert!(!md.claim_view());
+        md.release_view();
+        assert!(md.claim_view());
     }
 }
 /* </TESTS> */

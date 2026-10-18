@@ -8292,10 +8292,12 @@ rust = "sys/hal/malloc.rs"
 crate = "hal"
 reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; docs/ZERO_UNSAFE.md 0.1, decision 19"
 
-[[extra]]
+[[module]]
 rust = "sys/hal/mapped.rs"
 crate = "hal"
-reason = "hal runtime, written new (N3.4a): MappedBytes, the pager window's bytes over managed frames mapped through KernelMapper::map_frames (uvm_pagermapin's loop, uvm_pagermapout's removal as its drop) or the direct map, a trust boundary as KmBuf's; outside pmap.rs, which forbids unsafe; docs/ZERO_UNSAFE.md 0.1"
+lz = ["sys/uvm/uvm_pager.rs"]
+status = "redesigned"
+notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: MappedBytes, KernelMapper::map_frames (the mapping loop) and map_direct (the one-page case), the drop the pmap_remove; each frame a managed page claimed for one view (PageMd's PG_HAL_VIEW); outside pmap.rs, which forbids unsafe. uvm_pagermapin/out themselves (segments, UVMPAGER_*, uvm_wait) stay in bsd's uvm_pager.rs until N3.4c. Gap until N3.5: a frame backing kernel memory cannot be told from a pager page"
 
 [[extra]]
 rust = "sys/hal/user.rs"

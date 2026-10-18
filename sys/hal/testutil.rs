@@ -104,12 +104,10 @@ static CONS_IN: Mutex<std::collections::VecDeque<u8>> =
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
 /// Each pool's high-water mark and whether its cache was made, by the pool's name.
 static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
-/// The frame ranges `[start, end)` of host memory that [`memory_frames`] handed out: the
-/// managed pages of [`FAKE_PAGES`].
-static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, usize)>> = Mutex::new(std::vec::Vec::new());
-/// The `PageMd` every managed page of [`FAKE_PAGES`] answers (the host pmap keeps no pv
-/// chain and no attribute in it).
-static FAKE_MD: PageMd = PageMd::new();
+/// The blocks of host memory that [`memory_frames`] handed out, the managed pages of
+/// [`FAKE_PAGES`]: the first frame's address and a `PageMd` per frame.
+static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
+    Mutex::new(std::vec::Vec::new());
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
 
@@ -513,13 +511,11 @@ pub(crate) fn console_feed(c: u8) {
 }
 
 /// The bytes of `malloc(9)` blocks of type `ty` this thread holds, as the double counts them.
-
 pub(crate) fn malloc_out(ty: i32) -> isize {
     MALLOC_OUT.with(|m| m.borrow().get(&ty).copied().unwrap_or(0))
 }
 
 /// The bytes of kernel pages this thread holds, as the double counts them.
-
 pub(crate) fn pages_out() -> isize {
     PAGES_OUT.with(Cell::get)
 }
@@ -544,12 +540,15 @@ pub(crate) fn memory_frames(n: usize) -> std::vec::Vec<Paddr> {
         .as_mut_ptr()
         .expose_provenance()
         .next_multiple_of(TEST_PAGE);
-    lock(&MEMORY_FRAMES).push((base, base + n * TEST_PAGE));
+    let mds: &'static [PageMd] = (0..n)
+        .map(|_| PageMd::new())
+        .collect::<std::vec::Vec<_>>()
+        .leak();
+    lock(&MEMORY_FRAMES).push((base, mds));
     (0..n).map(|i| Paddr::new(base + i * TEST_PAGE)).collect()
 }
 
 /// This thread's spin count, as the double keeps it.
-
 pub(crate) fn spinning() -> isize {
     SPINNING.with(Cell::get)
 }
@@ -557,8 +556,8 @@ pub(crate) fn spinning() -> isize {
 /// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, the
 /// page system never up (so `steal_memory` serves `bootmem`'s tests). Its managed pages are
 /// the frames of host memory [`memory_frames`] handed out (the host pmap's direct map is the
-/// identity, so they are memory there), all answering one `PageMd`; every other frame is no
-/// managed page.
+/// identity, so they are memory there), each with a `PageMd` of its own; every other frame is
+/// no managed page.
 /// `page_init_done` is false: N3.1's provider of the same name in `pmap.rs`'s tests answered
 /// true, which `steal_memory` refuses; the host backend never reads it (only the machines'
 /// page-table allocation does), so the pmap tests see no difference.
@@ -575,10 +574,11 @@ impl PhysPages for FakePages {
     fn free_ptp(&self, _pa: Paddr) {}
     fn md_of(&self, pa: Paddr) -> Option<&'static PageMd> {
         let pa = pa.as_usize();
-        lock(&MEMORY_FRAMES)
-            .iter()
-            .any(|&(start, end)| (start..end).contains(&pa))
-            .then_some(&FAKE_MD)
+        lock(&MEMORY_FRAMES).iter().find_map(|&(start, mds)| {
+            pa.checked_sub(start)
+                .map(|off| off / TEST_PAGE)
+                .and_then(|i| mds.get(i))
+        })
     }
     fn steal(&self, npg: usize) -> Option<Paddr> {
         Some(Paddr::new(
