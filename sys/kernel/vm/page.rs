@@ -203,7 +203,7 @@ use hal::list::{List, ListEntry};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
 use hal::pmap::{PageMd, PhysPages};
-use hal::rwlock::{ReadWitness, WriteWitness};
+use hal::rwlock::{ReadWitness, RwWitness, WriteWitness};
 use hal::sleep::{PVM, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::PROT_NONE;
@@ -515,6 +515,15 @@ impl OwnerWitness for WriteWitness<'_> {
 }
 
 impl OwnerWitness for ReadWitness<'_> {
+    fn release_for_sleep(self, ident: *const (), prio: i32, wmesg: &'static str) {
+        // Without PCATCH and a timeout the sleep ends only by a wakeup.
+        let _ = self.into_sleep(ident, prio, wmesg);
+    }
+}
+
+/// N3.4d: the witness of a lock held in a mode decided at run time (the fault handler's
+/// `uvmfault_anonget`, `rw_status(anon->an_lock)`), given up in that mode.
+impl OwnerWitness for RwWitness<'_> {
     fn release_for_sleep(self, ident: *const (), prio: i32, wmesg: &'static str) {
         // Without PCATCH and a timeout the sleep ends only by a wakeup.
         let _ = self.into_sleep(ident, prio, wmesg);

@@ -8701,3 +8701,10 @@ crate = "kernel"
 lz = ["sys/uvm/uvm_amap.rs"]
 status = "redesigned"
 notes = "N3.4b: struct vm_amap as Amap, a PoolArc of amappl (AmapRef), am_ref the C's count of map entries (relaxed atomic, read unlocked where the C reads it); the slots, ppref and chunk tables an AmapState in a Guarded keyed to the amap's SharedRwlock (shared with its anons and copies); buckets an MArray of owned chunk chains (PoolBox<Chunk> of amapchunkpl, 152 bytes as the C); ppref an enum (None/Failed/MArray); amap_copy's amap half as amap_copy_from -> CopyOutcome (the map half stays in bsd's adapter); no amap_list (G7), amap_swap_off a visible unported stub until N3.5; the aref forms take (amap, pageoff). Dead code until the flip: bsd's sys/uvm/uvm_amap.rs still serves every caller"
+
+[[module]]
+rust = "sys/kernel/vm/fault.rs"
+crate = "kernel"
+lz = ["sys/uvm/uvm_fault.rs"]
+status = "redesigned"
+notes = "N3.4d: the fault handler over lock witnesses: the map's guard in FaultInfo (Some exactly while the maps are locked), the amap's and the object's hal RwWitness values in uvm_fault's loop frame, returned by the function that locks and consumed by the one that unlocks (uvmfault_unlockall, uvmfault_anonget -> AnonGet, the upgrades, get_sync); generic over the FaultMap bridge (bsd's VmMap at the flip, N3.5 the kernel's map) with a GAT guard whose entries borrow it, relock -> Option<Guard>, the entry read once into an EntryView of counted handles; the objects through FaultObject (the frozen ObjRef shape of N3.4c) and PageSlot; rusage through the map's notes (N4); the lower amap_add failure frees the fresh anon and populates under the amap's write witness (the C's slip); no pgo_fault (G3); the ufi == NULL form of anonget arrives with swap (N3.5). Dead code until the flip (N3.4e): bsd's sys/uvm/uvm_fault.rs still serves the traps, so its items need no rows yet (listed for the flip in the N3.4d handoff)"

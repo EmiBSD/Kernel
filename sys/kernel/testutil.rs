@@ -112,6 +112,7 @@ std::thread_local! {
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+    static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
 
     static KM_FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -326,6 +327,9 @@ static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTree
 // item alignment up to a page; `create` refuses more), the caller's alone.
 impl RawPool for TestPool {
     fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        if pool_fails(self.wchan) {
+            return None;
+        }
         let p = pages(self.size)?;
         self.nout.fetch_add(1, Ordering::Relaxed);
         Some((p, self.size))
@@ -487,6 +491,25 @@ pub fn user_bytes(uaddr: usize, len: usize) -> Option<Vec<u8>> {
 /// after `skip` more that succeed, the next `n` fail (`fail_pages(0, 0)` clears it).
 pub fn fail_pages(skip: u32, n: u32) {
     FAIL_PAGES.with(|f| f.set((skip, n)));
+}
+
+/// Makes this thread's next `n` items of the pool named `wchan` fail, as a pool with no page
+/// left does (`fail_pool(wchan, 0)` clears it): N3.4d's fault handler, `amap_add` without a
+/// chunk.
+pub fn fail_pool(wchan: &'static str, n: u32) {
+    FAIL_POOL.with(|f| f.set((n != 0).then_some((wchan, n))));
+}
+
+/// Whether this item of the pool named `wchan` is one [`fail_pool`] asked to fail (and count
+/// it).
+fn pool_fails(wchan: &str) -> bool {
+    FAIL_POOL.with(|f| match f.get() {
+        Some((name, n)) if name == wchan => {
+            f.set((n > 1).then_some((name, n - 1)));
+            true
+        }
+        _ => false,
+    })
 }
 
 /// Whether this page allocation is one [`fail_pages`] asked to fail (and count it).
