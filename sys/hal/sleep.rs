@@ -34,6 +34,8 @@
 //! ## Redesign
 //! - Not a port: the C calls the sleep queue functions directly; the runtime calls them
 //!   through one trait object until the scheduler moves into `kernel` (N4).
+//! - N3.5 S0: [`curproc_word`] and [`cold`] are public, for the kernel's map (the `busy`
+//!   owner of `vm_map_busy`, `uvm_mapent_alloc`'s `cold` test).
 
 use crate::bridges;
 use crate::sys::errno::Errno;
@@ -119,9 +121,18 @@ pub fn wakeup_one<T: ?Sized>(ident: *const T) {
     }
 }
 
-/// `curproc` as a word (0 before the bridge is registered).
-pub(crate) fn curproc_word() -> usize {
+/// `curproc` as a word (0 before the bridge is registered): an identity, compared and never
+/// dereferenced (an rwlock's writer, a map's `busy` owner, `vm_map_busy_ln`).
+pub fn curproc_word() -> usize {
     bridges::sleep().map_or(0, |b| b.curproc_word())
+}
+
+/// `cold`: autoconfiguration is not over, so nothing may sleep or rely on the kernel map
+/// growing (`uvm_mapent_alloc` takes its entries from the static ones then). The bridge
+/// answers `cold || panicstr` (after a panic the static entries serve too, harmlessly);
+/// before it is registered the kernel is booting: `true`.
+pub fn cold() -> bool {
+    bridges::sleep().is_none_or(|b| b.cold())
 }
 
 /// `_kernel_lock_held()` (`false` before the bridge is registered).
@@ -166,6 +177,19 @@ mod tests {
             tsleep_nsec(&raw const x, PWAIT, "test", 1_000_000),
             Err(Errno::EWOULDBLOCK)
         );
+    }
+
+    #[test]
+    fn cold_and_curproc_are_the_bridges() {
+        testutil::install();
+        assert!(!cold());
+        testutil::set_cold(true);
+        assert!(cold());
+        testutil::set_cold(false);
+        let me = curproc_word();
+        assert_ne!(me, 0);
+        let other = thread::spawn(curproc_word).join().unwrap();
+        assert_ne!(me, other);
     }
 }
 /* </TESTS> */

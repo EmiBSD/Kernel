@@ -8268,7 +8268,8 @@ notes = "N2.3: PerCpu<T> and Counters<N>, percpu(9)'s behaviour by value; the le
 [[extra]]
 rust = "sys/hal/sleep.rs"
 crate = "hal"
-reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; docs/ZERO_UNSAFE.md 0.1"
+reason = "hal runtime, written new: the Sleep bridge (sleep queues, tsleep/wakeup) and the sleep priorities; N3.5 S0: curproc_word and cold public (the map's busy owner, uvm_mapent_alloc's cold test); docs/ZERO_UNSAFE.md 0.1"
+
 
 [[module]]
 rust = "sys/hal/rwlock.rs"
@@ -8287,17 +8288,17 @@ notes = "N2.3: Refcnt, refcnt(9)'s behaviour as one type; the legacy Refcnt and 
 [[extra]]
 rust = "sys/hal/kmbuf.rs"
 crate = "hal"
-reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory provider trait (a registered bridge until N3.2, then the kernel's vm::km passed as a value); docs/ZERO_UNSAFE.md 0.1"
+reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_alloc to km_free as a value), and the PageMemory provider trait (a registered bridge until N3.2, then the kernel's vm::km passed as a value); N3.5 S0: KmBuf::leak_slice, the run given up for good as typed values (StaticArena::extend); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); docs/ZERO_UNSAFE.md 0.1, decision 10"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
 crate = "hal"
-reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; docs/ZERO_UNSAFE.md 0.1, decision 19"
+reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; N3.5 S0: MBox::leak, a block never freed as &'static T (the boot submaps); docs/ZERO_UNSAFE.md 0.1, decision 19"
 
 [[module]]
 rust = "sys/hal/mapped.rs"

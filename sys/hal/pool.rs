@@ -91,15 +91,29 @@
 //!   any other pool. `pool_sethiwat(9)` and `pool_cache_init(9)` are
 //!   [`TypedPool::set_hiwat`]/[`TypedPool::cache_init`] (and [`BoxPool`]'s), two more
 //!   methods of the [`RawPool`] bridge (`uvm_anon_init`, `amap_init`).
+//! - N3.5 S0: the raw form of a [`PoolBox`] (`into_raw`/`from_raw`, crate-private), for the
+//!   owning containers of `sys/hal/owned.rs`, which hold an element's item while it is linked
+//!   and give its box back once. [`StaticArena<T, N>`] is a pool that is not a `pool(9)`: `N`
+//!   slots in a `static` and, beyond them, pages given up for good ([`StaticArena::extend`]),
+//!   carved into slots that are never freed (the C's `kernel_map_entry[MAX_KMAPENT]` and the
+//!   `km_alloc`'d pages of `uvm_mapent_alloc`, which `vmstat -m` does not show either);
+//!   [`BoxPool::init_arena`] makes a `BoxPool` hand out its slots, so an entry from the
+//!   arena is the same `PoolBox` as one from `"vmmpepl"`. Its free list is a `Mutexed` at
+//!   `IPL_VM` (`uvm_kmapent_mtx`).
 
+use core::cell::UnsafeCell;
 use core::marker::PhantomData;
-use core::mem::{ManuallyDrop, offset_of};
+use core::mem::{ManuallyDrop, MaybeUninit, offset_of};
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
 use crate::bridges;
+use crate::intr::IPL_VM;
+use crate::kmbuf::KmBuf;
+use crate::link::Link;
+use crate::mutex::Mutexed;
 use crate::once::OnceStatic;
 use crate::sys::errno::Errno;
 use crate::trust::check_block;
@@ -734,6 +748,172 @@ impl<T: 'static> BoxPool<T> {
         self.get(flags, init).map(SharedBox)
     }
 }
+
+impl<T: Send + 'static> BoxPool<T> {
+    /// Makes this pool hand out the slots of `arena` instead of a `pool(9)`'s items: the
+    /// static entries' pool (`uvm_mapent_alloc`'s `VM_MAP_INTRSAFE || cold` case). `EBUSY`
+    /// when the pool was made already. Nothing shows in `vmstat -m`, as for the C's static
+    /// entries.
+    pub fn init_arena<const N: usize>(
+        &'static self,
+        arena: &'static StaticArena<T, N>,
+    ) -> Result<(), Errno> {
+        self.raw.set(&arena.core).map_err(|_| Errno::EBUSY)
+    }
+}
+
+/// A pool of `T`s that is not a `pool(9)`: `N` slots in the arena itself (a `static`) and
+/// those of the pages [`StaticArena::extend`] gives it, none ever freed; a [`BoxPool`] hands
+/// them out ([`BoxPool::init_arena`]). The C's `kernel_map_entry[MAX_KMAPENT]`, its
+/// `uvm.kentry_free` list under `uvm_kmapent_mtx`, and the never-freed pages
+/// `uvm_mapent_alloc` carves when the list is empty.
+pub struct StaticArena<T: 'static, const N: usize> {
+    core: ArenaCore<T, N>,
+}
+
+impl<T: Send + 'static, const N: usize> StaticArena<T, N> {
+    /// An arena of `N` free slots.
+    pub const fn new() -> Self {
+        Self {
+            core: ArenaCore {
+                slots: [const { Slot::new() }; N],
+                free: Mutexed::new(
+                    IPL_VM,
+                    Free {
+                        head: None,
+                        fresh: 0,
+                    },
+                ),
+                nout: AtomicU64::new(0),
+            },
+        }
+    }
+
+    /// Gives `page` up for good and adds its slots to the free list (`uvm_mapent_alloc`'s
+    /// `km_alloc(PAGE_SIZE, &kv_page, &kp_dirty, &kd_nowait)` carved into entries): how many.
+    /// The page is never freed.
+    pub fn extend(&self, page: KmBuf) -> usize {
+        let slots = page.leak_slice(|_| Slot::new());
+        let mut f = self.core.free.lock();
+        for s in slots {
+            s.next.set(f.head);
+            f.head = Some(s);
+        }
+        slots.len()
+    }
+
+    /// The slots out now (handed out and not put back).
+    pub fn nout(&self) -> u64 {
+        self.core.nout.load(Ordering::Relaxed)
+    }
+
+    /// Whether a slot is free now (a snapshot): when not, [`BoxPool::get`] on the arena's
+    /// pool answers `None` until [`StaticArena::extend`] or a put.
+    pub fn has_free(&self) -> bool {
+        let f = self.core.free.lock();
+        f.head.is_some() || f.fresh < N
+    }
+}
+
+impl<T: Send + 'static, const N: usize> Default for StaticArena<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What a [`StaticArena`] holds; the `RawPool` its `BoxPool` reaches. Private, so nothing
+/// outside this module can call its `put`.
+struct ArenaCore<T: 'static, const N: usize> {
+    /// The arena's own slots, handed out first, in order.
+    slots: [Slot<T>; N],
+    /// The free list and how many of `slots` were ever handed out.
+    free: Mutexed<Free<T>>,
+    /// `pr_nout`'s count.
+    nout: AtomicU64,
+}
+
+/// A [`StaticArena`]'s free list (`uvm.kentry_free`).
+struct Free<T: 'static> {
+    /// The first free slot put back or carved from a page.
+    head: Option<&'static Slot<T>>,
+    /// The first of the arena's own slots never handed out.
+    fresh: usize,
+}
+
+/// Room for one `T`, and the link of the free list while it is free. `#[repr(C)]` with the
+/// value first, so a slot's address is its item's.
+#[repr(C)]
+struct Slot<T: 'static> {
+    value: UnsafeCell<MaybeUninit<T>>,
+    next: Link<Slot<T>>,
+}
+
+impl<T: 'static> Slot<T> {
+    const fn new() -> Self {
+        Self {
+            value: UnsafeCell::new(MaybeUninit::zeroed()),
+            next: Link::new(),
+        }
+    }
+}
+
+// SAFETY: a slot's `value` is reached only through the one item pointer `ArenaCore::get`
+// handed out for it, by the `PoolBox` that holds it, until that box's drop puts it back
+// (the free list hands a slot out once, under its mutex, and takes it back once); `&Slot`
+// shared between CPUs gives nothing else access to the value (no method reads it) and its
+// `next` is an atomic `Link`. So sharing a slot never shares its `T`; the `T` is made on one
+// CPU and dropped on whichever CPU drops the box, which `T: Send` allows.
+unsafe impl<T: Send + 'static> Sync for Slot<T> {}
+
+impl<T: Send + 'static, const N: usize> RawPool for ArenaCore<T, N> {
+    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        let mut f = self.free.lock();
+        let slot = if let Some(s) = f.head {
+            f.head = s.next.get();
+            s.next.set(None);
+            NonNull::from(s)
+        } else {
+            // With no slot left, `None` and no sleep for one: the caller extends the arena
+            // (`kd_nowait`).
+            let s = self.slots.get(f.fresh)?;
+            f.fresh += 1;
+            NonNull::from(s)
+        };
+
+        drop(f);
+        self.nout.fetch_add(1, Ordering::Relaxed);
+        Some((slot.cast::<u8>(), size_of::<Slot<T>>()))
+    }
+
+    fn put(&self, item: NonNull<u8>) {
+        // SAFETY: `RawPool::put`'s contract: `item` is an item this pool granted and has not
+        // taken back, and nothing references it any more; only `PoolBox`'s drop calls it,
+        // with the pointer `get` gave (this type is private, so nothing outside this module
+        // can call it, and `BoxPool::init_arena` binds the arena to its own `BoxPool`). Such a
+        // pointer is a slot's address, with the slot's provenance (`NonNull::from` of the
+        // slot), of a slot in `slots` (this arena's, which lives for ever: `init_arena` takes
+        // it `&'static`) or in a page `extend` gave up for good: so it names a live, aligned
+        // `Slot<T>` that lives for ever. The value was dropped by the box and is a
+        // `MaybeUninit`, so the shared reference makes no claim on it; the slot is `Sync`,
+        // and shared references are all that is ever made of it.
+        let slot: &'static Slot<T> = unsafe { item.cast::<Slot<T>>().as_ref() };
+        let mut f = self.free.lock();
+        slot.next.set(f.head);
+        f.head = Some(slot);
+        drop(f);
+        self.nout.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn nout(&self) -> u64 {
+        self.nout.load(Ordering::Relaxed)
+    }
+
+    /// An arena keeps every slot: nothing to give back.
+    fn set_hiwat(&self, _n: u32) {}
+
+    /// An arena has no per-CPU cache: its free list is one mutex, as `uvm_kmapent_mtx`.
+    fn cache_init(&self) {}
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -1053,6 +1233,85 @@ mod tests {
         static NEVER_BOX: BoxPool<u32> = BoxPool::new();
         assert!(NEVER_BOX.get(PR_NOWAIT, || 0).is_none());
         assert_eq!(NEVER_BOX.nout(), 0);
+    }
+
+    /// A static entry's shape: a key and a count of the drops.
+    struct Entry {
+        key: u64,
+        drops: Arc<AtomicU32>,
+    }
+
+    impl Drop for Entry {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn an_arena_hands_out_its_slots_then_the_pages_it_is_given() {
+        testutil::install();
+        static ARENA: StaticArena<Entry, 4> = StaticArena::new();
+        static P: BoxPool<Entry> = BoxPool::new();
+        assert_eq!(P.init_arena(&ARENA), Ok(()));
+        assert_eq!(P.init_arena(&ARENA), Err(Errno::EBUSY));
+        let drops = Arc::new(AtomicU32::new(0));
+        let get = |key| {
+            P.get(PR_NOWAIT, || Entry {
+                key,
+                drops: Arc::clone(&drops),
+            })
+        };
+        let mut out: Vec<PoolBox<Entry>> = (0..4).map(|k| get(k).unwrap()).collect();
+        assert_eq!((ARENA.nout(), P.nout()), (4, 4));
+        assert!(!ARENA.has_free());
+        // Out of slots: `None`, and `init` is not called.
+        assert!(get(99).is_none());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        // A slot put back is handed out again.
+        let addr = PoolBox::as_ptr(&out[1]);
+        drop(out.remove(1));
+        assert_eq!((drops.load(Ordering::Relaxed), ARENA.nout()), (1, 3));
+        let again = get(10).unwrap();
+        assert_eq!(PoolBox::as_ptr(&again), addr);
+        assert_eq!(again.key, 10);
+        out.push(again);
+        // A page gives more slots, never freed.
+        let page = KmBuf::alloc_wired(testutil::page_memory(), 4096, false).unwrap();
+        let added = ARENA.extend(page);
+        assert_eq!(added, 4096 / size_of::<Slot<Entry>>());
+        for k in 0..added {
+            out.push(get(100 + k as u64).unwrap());
+        }
+        assert!(get(1000).is_none());
+        let keys: Vec<u64> = out.iter().map(|e| e.key).collect();
+        assert_eq!(keys.len(), 4 + added);
+        let n = out.len();
+        drop(out);
+        assert_eq!(drops.load(Ordering::Relaxed), 1 + n as u32);
+        assert_eq!(ARENA.nout(), 0);
+        assert!(ARENA.has_free());
+    }
+
+    #[test]
+    fn an_owned_box_round_trips_through_its_raw_form() {
+        static P: BoxPool<Pair> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, PR_WAITOK, "rawpl"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let b = P
+            .get(PR_WAITOK, || Pair {
+                a: 3,
+                drops: Arc::clone(&drops),
+            })
+            .unwrap();
+        let (raw, pool) = PoolBox::into_raw(b);
+        assert_eq!(P.nout(), 1);
+        // SAFETY: `raw` and `pool` came from `into_raw` just above, once.
+        let mut b = unsafe { PoolBox::from_raw(raw, pool) };
+        b.a += 1;
+        assert_eq!(b.a, 4);
+        drop(b);
+        assert_eq!((drops.load(Ordering::Relaxed), P.nout()), (1, 0));
     }
 }
 

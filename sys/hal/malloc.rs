@@ -55,6 +55,8 @@
 //!   the bound of a slice) is `None` under `M_CANFAIL` and `panic(9)` (`"mallocarray:
 //!   overflow"`) otherwise. The amap's `am_ppref` and `am_buckets`, the aobj's `u_swslots`
 //!   and the `hashinit(9)` tables (N3.4b/c).
+//! - N3.5 S0: [`MBox::leak`], the box given up for a `&'static T` whose block is never freed
+//!   (the three boot submaps of `uvm_km_suballoc`).
 
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
@@ -137,6 +139,20 @@ impl<T> MBox<T> {
     /// The malloc type the block is counted under.
     pub fn ty(this: &Self) -> i32 {
         this.ty
+    }
+
+    /// Gives the box up for a reference that lives for ever: the block is never freed and
+    /// stays counted under its type (`uvm_km_suballoc`'s `uvm_map_create` of a submap in
+    /// `M_VMMAP`, never freed: `kmem_map`, `exec_map`, `phys_map`), as
+    /// [`crate::pool::PoolArc::leak`] does for a pool item.
+    pub fn leak(this: Self) -> &'static T {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: the box holds an initialised `T` that only it references (the invariant);
+        // the box is never dropped (`ManuallyDrop`, not returned), so its block is never freed
+        // and the value stays valid for the rest of the kernel's life; the box is gone, so the
+        // shared reference made here is the only way to the value from now on, and no `&mut`
+        // can be made of it again.
+        unsafe { this.ptr.as_ref() }
     }
 
     /// The value, the block freed.
@@ -432,6 +448,29 @@ mod tests {
     fn an_overflowing_array_panics_without_m_canfail() {
         testutil::install();
         let _ = MArray::new(M_UVMAMAP, M_WAITOK, usize::MAX / 2, |_| 0u32);
+    }
+
+    #[test]
+    fn a_leaked_box_stays_counted_and_is_never_freed() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let before = testutil::malloc_out(M_KEVENT);
+        let b = MBox::new(
+            M_KEVENT,
+            M_WAITOK,
+            Timer {
+                ticks: 9,
+                drops: Arc::clone(&drops),
+            },
+        )
+        .unwrap();
+        let r: &'static Timer = MBox::leak(b);
+        assert_eq!(r.ticks, 9);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            testutil::malloc_out(M_KEVENT),
+            before + size_of::<Timer>() as isize
+        );
     }
 }
 /* </TESTS> */

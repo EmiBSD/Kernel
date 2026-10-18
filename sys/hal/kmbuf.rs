@@ -41,11 +41,16 @@
 //!   boundary, not a compile-time proof, until the kernel map's record is typed (N3.5). `hal`
 //!   checks every answer (page alignment, the size granted; a probe of the first and last
 //!   byte under `diagnostic`) and panics naming the provider when one fails.
+//! - N3.5 S0: [`KmBuf::leak_slice`] gives the run up for good as typed values that live for
+//!   ever (`uvm_mapent_alloc` carving a `km_alloc`'d page into map entries it never frees:
+//!   `hal::pool::StaticArena::extend`), as `bootmem::steal_slice` does with stolen memory.
 
+use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use crate::assert::kassert;
+use crate::assert::{hal_panic, kassert};
+
 use crate::trust::check_block;
 
 /// What backs a [`KmBuf`]: the C's `kp_pageable` or `kp_zero` physical-page mode.
@@ -136,6 +141,42 @@ impl KmBuf {
     pub fn kind(&self) -> PageKind {
         self.kind
     }
+
+    /// Gives the run up for good as `len / size_of::<T>()` values, element `i` set to
+    /// `init(i)`: they live for ever and the pages are never freed. `T` must fit the page
+    /// alignment (a larger alignment panics) and not be zero-sized (a compile-time error).
+    pub fn leak_slice<T: 'static>(self, mut init: impl FnMut(usize) -> T) -> &'static [T] {
+        const {
+            assert!(
+                size_of::<T>() != 0,
+                "KmBuf::leak_slice of a zero-sized type"
+            );
+        }
+        let this = ManuallyDrop::new(self);
+        if align_of::<T>() > this.mem.page_size() {
+            hal_panic(format_args!(
+                "KmBuf::leak_slice: an alignment of {} past the page's",
+                align_of::<T>()
+            ));
+        }
+        let n = this.len / size_of::<T>();
+        let base = this.ptr.as_ptr().cast::<T>();
+        // SAFETY: `ptr` names `len` bytes of kernel memory that only this value references
+        // and that live until `mem.free` (the provider's contract, checked page-aligned and
+        // at least `len` bytes by `check_block`, `sys/hal/trust.rs`); the value is never
+        // dropped (`ManuallyDrop`, not returned), so `free` is never called and the memory
+        // lives for ever, referenced by nothing else. `base` is aligned for `T` (page-aligned,
+        // and `T`'s alignment is at most the page's, checked above) and `n` values of `T` end
+        // within the `len` bytes; each is written whole before the shared slice over the `n`
+        // of them is made, and that slice is the only reference to the memory from now on.
+        // A panic in `init` leaks the run and the values made so far; nothing reads them.
+        unsafe {
+            for i in 0..n {
+                base.add(i).write(init(i));
+            }
+            core::slice::from_raw_parts(base, n)
+        }
+    }
 }
 
 impl Deref for KmBuf {
@@ -212,6 +253,18 @@ mod tests {
         g.unlocked(|| mem[0] = 1);
         *g = Some(mem);
         assert_eq!(g.as_ref().map(|m| m[0]), Some(1));
+    }
+
+    #[test]
+    fn a_leaked_buffer_holds_its_values_for_ever() {
+        testutil::install();
+        let before = testutil::pages_out();
+        let b = KmBuf::alloc_wired(testutil::page_memory(), 4096, true).unwrap();
+        let v: &'static [u64] = b.leak_slice(|i| i as u64 * 3);
+        assert_eq!(v.len(), 4096 / 8);
+        assert!(v.iter().enumerate().all(|(i, &x)| x == i as u64 * 3));
+        // Never freed.
+        assert_eq!(testutil::pages_out(), before + 4096);
     }
 }
 /* </TESTS> */
