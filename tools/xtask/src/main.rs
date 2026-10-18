@@ -89,8 +89,9 @@
 //! cargo xtask bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench]
 //!                                          N3: EmiBSD against that OpenBSD on the same
 //!                                          emulated machine, one after the other, N runs
-//!                                          (5): boot time, tools/bench's ns per op, tcpbench
-//!                                          between two VMs; median, min, spread and the
+//!                                          (10): boot time, tools/bench's ns per op, tcpbench
+//!                                          between two VMs; the worst sample per side left
+//!                                          out, then median, min, spread and the
 //!                                          ratio EmiBSD / OpenBSD, refused over a 15 %
 //!                                          spread; <run dir>/A/report.toml (bench.rs)
 //! cargo xtask bench compare BEFORE AFTER   the `Bench:` lines of what moved between two

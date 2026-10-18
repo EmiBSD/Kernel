@@ -3184,10 +3184,10 @@ diff-openbsd: (build-amd64 "--features qemu,multiprocessor") (build-arm64 "--fea
 
 # N3: EmiBSD's performance against OpenBSD 8.0 (`cargo xtask bench`, tools/xtask/src/bench.rs):
 # the smokes' MP kernel and ramdisk and `diff-openbsd`'s installed snapshot, booted one after the
-# other on the same emulated machine (`-smp 4`, the same memory and devices), five runs each:
+# other on the same emulated machine (`-smp 4`, the same memory and devices), ten runs each:
 # the boot to `login:`, tools/bench's ns per op (page faults, fork, fork+exec, pipe round trips,
 # a cold 256 MiB read from the scratch disk; a warm-up pass discarded per boot) and tcpbench(1)
-# between two VMs (a warm-up run discarded); the medians, the
+# between two VMs (a warm-up run discarded); per side the worst sample left out, the medians, the
 # spread and the ratio EmiBSD / OpenBSD, which is refused when a spread exceeds 15 %. The
 # report goes to target/bench/<arch>/report.toml unless EMIBSD_RUN_DIR says otherwise; `cargo
 # xtask bench compare BEFORE AFTER` gives the `Bench:` lines of a milestone close. Needs

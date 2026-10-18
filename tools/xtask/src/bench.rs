@@ -30,7 +30,7 @@
 //! and with the same memory (`boot::VM_MEMORY`; `diff-openbsd` itself gives OpenBSD 1 GiB):
 //! EmiBSD is the smokes' MP kernel with the ramdisk, OpenBSD the installed snapshot of
 //! `diff-openbsd` (`target/openbsd/<arch>/disk.img` under `-snapshot`; never downloaded or
-//! installed here: a missing `installed` marker stops the run). Each of `--reps` runs (5)
+//! installed here: a missing `installed` marker stops the run). Each of `--reps` runs (10)
 //! boots EmiBSD, then OpenBSD (the order alternates from run to run), and measures:
 //!
 //! - `boot`: seconds from QEMU's start (the firmware's) to the first `login:` on the serial
@@ -49,11 +49,15 @@
 //!   one 10 s run as a warm-up, discarded, and then `--reps` runs of 10 s in the same boot
 //!   (Mbps, tcpbench's average). pf is disabled on both first.
 //!
-//! The table on stdout and `<run dir>/<arch>/report.toml` give, per measurement, the median,
+//! Per measurement and side the worst sample ([`DISCARD_WORST`]: the slowest for times, the
+//! lowest for Mbps) is left out; the table on stdout and `<run dir>/<arch>/report.toml` give,
+//! over the samples kept, the median,
 //! the minimum and the spread (`(max - min) / median`) of each system and the ratio of the
 //! medians, EmiBSD / OpenBSD; the ratio is refused (and the report says why) when either
 //! spread exceeds 15 %. The report also records the kernel's commit and SHA-256, the QEMU
-//! command lines, the date and every raw sample, so a later run compares with it: `compare`
+//! command lines, the date, the method (`reps`, `discard_worst`) and every raw sample, the
+//! discarded one marked (`emibsd_discarded`, `openbsd_discarded`: its index), so a later run
+//! compares with it: `compare`, which refuses two reports of different methods,
 //! prints, for EmiBSD's medians, a `Bench:` trailer line (`git-commits.md`) per measurement
 //! that moved by more than the spread of either report. Under TCG absolute numbers are
 //! indicative only; the ratio between two kernels on the same emulation is the measure.
@@ -73,7 +77,11 @@ use crate::diffopenbsd::serial::Vm;
 use crate::diffopenbsd::{self, Boot, http};
 
 /// Runs per system and arch.
-const DEFAULT_REPS: usize = 5;
+const DEFAULT_REPS: usize = 10;
+/// How many samples per measurement and side are left out of the statistics: the worst (the
+/// slowest for times, the lowest for Mbps). `report.toml` records it, and `compare` refuses two
+/// reports made with different values.
+const DISCARD_WORST: u32 = 1;
 /// The largest spread, in percent, at which a ratio is printed.
 const SPREAD_LIMIT: f64 = 15.0;
 /// The scratch disk: room for FFS and the 256 MiB file.
@@ -158,8 +166,15 @@ pub(crate) struct Measurement {
     name: String,
     unit: String,
     better: String,
+    /// Every sample, in run order, the discarded one included.
     emibsd: Vec<f64>,
     openbsd: Vec<f64>,
+    /// The index in `emibsd` of the sample left out of `emibsd_stats` ([`DISCARD_WORST`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    emibsd_discarded: Option<usize>,
+    /// The same for `openbsd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    openbsd_discarded: Option<usize>,
     /// EmiBSD's median over OpenBSD's, when both spreads are at most [`SPREAD_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ratio: Option<f64>,
@@ -196,6 +211,10 @@ pub(crate) struct Report {
     kernel_tree_clean: bool,
     kernel_sha256: String,
     reps: usize,
+    /// Samples per measurement and side left out of the statistics (0 in reports made before
+    /// the rule).
+    #[serde(default)]
+    discard_worst: u32,
     smp: u32,
     memory: String,
     spread_limit_percent: f64,
@@ -438,6 +457,7 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool) -> Result<Repo
         kernel_tree_clean: clean,
         kernel_sha256: diffopenbsd::sha256(&kernel)?,
         reps,
+        discard_worst: DISCARD_WORST,
         smp: boot::smp().unwrap_or(1),
         memory: boot::VM_MEMORY.to_string(),
         spread_limit_percent: SPREAD_LIMIT,
@@ -786,9 +806,45 @@ fn stats(v: &[f64]) -> Option<Stats> {
     })
 }
 
-/// The measurement `k` of the samples of both systems, with its ratio or the reason for none.
+/// The index of the worst of `v` for a measurement where `better` (`lower` or `higher`) is
+/// better: the largest, or the smallest; the first of equals. `None` with fewer than two
+/// samples, which leave nothing to compare.
+fn worst(v: &[f64], better: &str) -> Option<usize> {
+    if v.len() < 2 {
+        return None;
+    }
+    let mut at = 0;
+    for (i, x) in v.iter().enumerate() {
+        let is_worse = match better {
+            "higher" => *x < v[at],
+            _ => *x > v[at],
+        };
+        if is_worse {
+            at = i;
+        }
+    }
+    Some(at)
+}
+
+/// `v` without the sample at `skip`.
+fn kept(v: &[f64], skip: Option<usize>) -> Vec<f64> {
+    v.iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != skip)
+        .map(|(_, x)| *x)
+        .collect()
+}
+
+/// The measurement `k` of the samples of both systems: the worst sample of each side
+/// discarded ([`DISCARD_WORST`]), the statistics of the others, and the ratio or the reason
+/// for none.
 fn measure(k: &Kind, emibsd: Vec<f64>, openbsd: Vec<f64>) -> Measurement {
-    let (es, os) = (stats(&emibsd), stats(&openbsd));
+    let (ed, od) = if DISCARD_WORST > 0 {
+        (worst(&emibsd, k.better), worst(&openbsd, k.better))
+    } else {
+        (None, None)
+    };
+    let (es, os) = (stats(&kept(&emibsd, ed)), stats(&kept(&openbsd, od)));
     let (ratio, note) = match (es, os) {
         (Some(e), Some(o))
             if e.spread_percent <= SPREAD_LIMIT && o.spread_percent <= SPREAD_LIMIT =>
@@ -812,6 +868,8 @@ fn measure(k: &Kind, emibsd: Vec<f64>, openbsd: Vec<f64>) -> Measurement {
         better: k.better.to_string(),
         emibsd,
         openbsd,
+        emibsd_discarded: ed,
+        openbsd_discarded: od,
         ratio,
         note,
         emibsd_stats: es,
@@ -831,9 +889,9 @@ fn fmt_value(v: f64, unit: &str) -> String {
 /// The report as the table printed on stdout and kept in `report.txt`.
 fn table(r: &Report) -> String {
     let mut s = format!(
-        "bench {}: kernel {}{} ({} runs, -smp {}, -m {}, {})\n\
-         spread = (max - min) / median; ratio = EmiBSD median / OpenBSD median, \
-         printed when both spreads are at most {} %\n",
+        "bench {}: kernel {}{} ({} runs, the worst {} of each side discarded, -smp {}, -m {}, {})\n\
+         median, min and spread = (max - min) / median of the samples kept; \
+         ratio = EmiBSD median / OpenBSD median, printed when both spreads are at most {} %\n",
         r.arch,
         r.kernel_commit.get(..12).unwrap_or(&r.kernel_commit),
         if r.kernel_tree_clean {
@@ -842,6 +900,7 @@ fn table(r: &Report) -> String {
             " (sys/ modified)"
         },
         r.reps,
+        r.discard_worst,
         r.smp,
         r.memory,
         r.date,
@@ -876,6 +935,22 @@ fn table(r: &Report) -> String {
         ));
     }
     for m in &r.measurement {
+        let gone = |v: &[f64], d: Option<usize>, who: &str| {
+            d.and_then(|i| v.get(i).map(|x| (i, *x)))
+                .map(|(i, x)| format!("{who} run {} ({})", i + 1, fmt_value(x, &m.unit)))
+        };
+        let both: Vec<String> = [
+            gone(&m.emibsd, m.emibsd_discarded, "EmiBSD"),
+            gone(&m.openbsd, m.openbsd_discarded, "OpenBSD"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !both.is_empty() {
+            s.push_str(&format!("{}: discarded {}\n", m.name, both.join(", ")));
+        }
+    }
+    for m in &r.measurement {
         if let Some(n) = &m.note {
             s.push_str(&format!("{}: {n}\n", m.name));
         }
@@ -900,6 +975,16 @@ fn compare(before: &Report, after: &Report) -> Result<Vec<String>> {
         return Err(format!(
             "bench compare: {} against {}: not the same arch",
             before.arch, after.arch
+        )
+        .into());
+    }
+    let method = |r: &Report| (r.reps, r.discard_worst, r.file_mib, r.tcpbench_seconds);
+    if method(before) != method(after) {
+        return Err(format!(
+            "bench compare: not the same method (runs, discarded, file MiB, tcpbench s): \
+             {:?} against {:?}",
+            method(before),
+            method(after)
         )
         .into());
     }
@@ -1016,12 +1101,40 @@ mod tests {
     }
 
     #[test]
+    fn worst_is_the_slowest_or_the_lowest() {
+        assert_eq!(worst(&[3.0, 1.0, 3.0], "lower"), Some(0));
+        assert_eq!(worst(&[1.0, 5.0, 2.0], "lower"), Some(1));
+        assert_eq!(worst(&[5.0, 2.0, 9.0], "higher"), Some(1));
+        assert_eq!(worst(&[7.0], "lower"), None);
+        assert_eq!(worst(&[], "higher"), None);
+        assert_eq!(kept(&[1.0, 2.0, 3.0], Some(1)), vec![1.0, 3.0]);
+        assert_eq!(kept(&[1.0, 2.0], None), vec![1.0, 2.0]);
+    }
+
+    #[test]
     fn ratio_only_within_the_spread_limit() {
         let k = &KINDS[1];
-        let m = measure(k, vec![200.0, 202.0, 198.0], vec![100.0, 101.0, 99.0]);
+        // The worst of each side (500, 101) is left out of the statistics.
+        let m = measure(
+            k,
+            vec![200.0, 202.0, 198.0, 500.0],
+            vec![100.0, 101.0, 99.0, 100.0],
+        );
+        assert_eq!(
+            (m.emibsd_discarded, m.openbsd_discarded),
+            (Some(3), Some(1))
+        );
+        assert_eq!(m.emibsd.len(), 4);
+        assert_eq!(m.emibsd_stats.unwrap().max, 202.0);
         assert_eq!(m.ratio, Some(2.0));
         assert_eq!(m.note, None);
-        let m = measure(k, vec![200.0, 260.0, 198.0], vec![100.0, 101.0, 99.0]);
+        // One bad sample is forgiven, two are not.
+        let m = measure(
+            k,
+            vec![200.0, 260.0, 198.0, 300.0],
+            vec![100.0, 101.0, 99.0, 100.0],
+        );
+        assert_eq!(m.emibsd_discarded, Some(3));
         assert_eq!(m.ratio, None);
         assert!(
             m.note
@@ -1029,9 +1142,13 @@ mod tests {
                 .unwrap()
                 .starts_with("no ratio: spread 31.0 % (EmiBSD)")
         );
-        let m = measure(&KINDS[6], vec![500.0], vec![]);
-        assert_eq!(m.ratio, None);
+        // Mbps: the lowest is the worst.
+        let m = measure(&KINDS[6], vec![500.0, 400.0, 510.0], vec![]);
+        assert_eq!(m.emibsd_discarded, Some(1));
+        assert_eq!(m.emibsd_stats.unwrap().median, 505.0);
         assert_eq!(m.note.as_deref(), Some("EmiBSD only"));
+        let m = measure(&KINDS[6], vec![500.0], vec![]);
+        assert_eq!(m.emibsd_discarded, None);
     }
 
     fn report(medians: &[(&str, &[f64], &[f64])]) -> Report {
@@ -1043,6 +1160,7 @@ mod tests {
             kernel_tree_clean: true,
             kernel_sha256: "ab".repeat(32),
             reps: 3,
+            discard_worst: DISCARD_WORST,
             smp: 4,
             memory: "512M".into(),
             spread_limit_percent: SPREAD_LIMIT,
@@ -1071,20 +1189,25 @@ mod tests {
             (
                 "pagefault",
                 &[5000.0, 5100.0, 4900.0],
-                &[1000.0, 1300.0, 900.0],
+                &[1000.0, 1300.0, 900.0, 1250.0],
             ),
             ("tcpbench", &[400.0, 410.0, 405.0], &[]),
         ]);
         let text = toml::to_string(&r).unwrap();
         assert!(text.contains("[[measurement]]"));
         assert!(text.contains("kernel_commit = \"20035fd0"));
+        assert!(text.contains("discard_worst = 1"));
+        assert!(text.contains("emibsd_discarded = 1"));
         let back: Report = toml::from_str(&text).unwrap();
         assert_eq!(back, r);
         let t = table(&r);
-        assert!(t.contains("bench amd64: kernel 20035fd0aaaa (3 runs, -smp 4, -m 512M"));
+        assert!(t.contains(
+            "bench amd64: kernel 20035fd0aaaa (3 runs, the worst 1 of each side discarded, \
+             -smp 4, -m 512M"
+        ));
         assert!(
             t.lines()
-                .any(|l| l.starts_with("boot") && l.ends_with(" 0.508"))
+                .any(|l| l.starts_with("boot") && l.ends_with(" 0.506"))
         );
         assert!(
             t.lines()
@@ -1094,20 +1217,22 @@ mod tests {
             t.lines()
                 .any(|l| l.starts_with("tcpbench") && l.ends_with("n/a"))
         );
+        assert!(t.contains("boot: discarded EmiBSD run 2 (31.00), OpenBSD run 2 (61.00)\n"));
+        assert!(t.contains("tcpbench: discarded EmiBSD run 1 (400.0)\n"));
         assert!(t.contains("tcpbench: EmiBSD only"));
     }
 
     #[test]
     fn compare_prints_a_bench_line_only_for_what_moved() {
         let before = report(&[
-            ("boot", &[30.0, 30.3, 29.9], &[60.0]),
-            ("pagefault", &[5000.0, 5050.0, 4990.0], &[1000.0]),
-            ("forkexit", &[800.0, 1000.0, 700.0], &[1000.0]),
+            ("boot", &[30.0, 30.3, 29.9, 35.0], &[60.0]),
+            ("pagefault", &[5000.0, 5050.0, 4990.0, 9000.0], &[1000.0]),
+            ("forkexit", &[800.0, 1000.0, 700.0, 1100.0], &[1000.0]),
         ]);
         let after = report(&[
-            ("boot", &[30.1, 30.2, 30.0], &[60.0]),
-            ("pagefault", &[4000.0, 4020.0, 3990.0], &[1000.0]),
-            ("forkexit", &[800.0, 810.0, 790.0], &[1000.0]),
+            ("boot", &[30.1, 30.2, 30.0, 40.0], &[60.0]),
+            ("pagefault", &[4000.0, 4020.0, 3990.0, 8000.0], &[1000.0]),
+            ("forkexit", &[800.0, 810.0, 790.0, 900.0], &[1000.0]),
             ("pipe", &[1.0], &[1.0]),
         ]);
         let lines = compare(&before, &after).unwrap();
@@ -1118,6 +1243,17 @@ mod tests {
         let mut arm = after.clone();
         arm.arch = "arm64".into();
         assert!(compare(&before, &arm).is_err());
+        // Reports of another method are refused: runs, the discard rule, the file.
+        let changes: [fn(&mut Report); 3] = [
+            |r: &mut Report| r.reps = 5,
+            |r: &mut Report| r.discard_worst = 0,
+            |r: &mut Report| r.file_mib = 64,
+        ];
+        for change in changes {
+            let mut other = after.clone();
+            change(&mut other);
+            assert!(compare(&before, &other).is_err());
+        }
     }
 
     #[test]
