@@ -420,7 +420,9 @@
 //! - **Selectors.** The `uaddr_*` slots are `Option<Selector>` values of the state, created
 //!   and destroyed with it ([`super::addr`]); which selector owns an address's free space
 //!   (`uvm_map_uaddr`) is computed over a snapshot of their ranges ([`Owners`]) and named by
-//!   its [`Slot`], not by a pointer.
+//!   its [`Slot`], not by a pointer. A map operation takes the snapshot once and lends it to
+//!   the functions it calls, again only after the free lists followed the vmspace's new
+//!   brk/stack areas (decision 43; the host tests check every loan against the state).
 //! - `curproc`'s facts (`p_ru`, the inentry report, `lim_cur`) come through the `VmProc`
 //!   bridge (`super::proc`); the kernel maps are `super::km`'s slots; randomness is
 //!   `hal::random`, the teardown's yield `hal::sleep::sched_pause`.
@@ -1115,7 +1117,7 @@ impl MapState {
     /// The address tree, shared, with every selector slot, mutably (the fields apart), and
     /// `owners` (this state's [`MapState::owners`]): what the free-list functions work on
     /// while the caller holds entries of the tree by reference.
-    fn free_parts(&mut self, owners: Owners) -> FreeParts<'_> {
+    fn free_parts<'s>(&'s mut self, owners: &'s Owners) -> FreeParts<'s> {
         FreeParts {
             tree: &self.addr,
             owners,
@@ -1149,7 +1151,12 @@ impl MapState {
 /// The selectors' ranges and the brk/stack areas of a map, copied out of its state: what
 /// decides which selector owns the free space at an address (`uvm_map_uaddr`) and where free
 /// space must be cut (`uvm_map_boundary`), while the selectors themselves are borrowed.
-#[derive(Clone, Copy)]
+///
+/// A map operation computes them once ([`MapState::owners`]) and lends them to the
+/// functions it calls (`uvm_map_fix_space`, `uvm_map_mkentry`, `uvm_mapent_clone`,
+/// `uvm_mapent_mkfree`, `uvm_map_isavail`), computing them again only after it changed a
+/// selector or the brk/stack areas (`uvm_map_vmspace_update`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Owners {
     /// `map->flags & VM_MAP_ISVMSPACE`.
     vmspace: bool,
@@ -1263,7 +1270,7 @@ struct FreeParts<'s> {
     /// `map->addr`.
     tree: &'s OwnedTree<ByAddr>,
     /// Which selector owns which free space ([`MapState::owners`]).
-    owners: Owners,
+    owners: &'s Owners,
     /// `map->uaddr_exe`.
     exe: &'s mut Option<Selector>,
     /// `map->uaddr_any`.
@@ -2298,6 +2305,19 @@ fn uvm_mapent_free_remove(
     }
 }
 
+/// The owners a map operation lent to `who` are the state's now (`VMMAP_DEBUG`, the host
+/// tests).
+fn owners_lent(map: &VmMap, st: &MapState, owners: &Owners, who: &str) {
+    if cfg!(test) {
+        uvm_tree_assert(
+            map,
+            *owners == st.owners(map),
+            "the owners lent are the map's",
+            who,
+        );
+    }
+}
+
 /// `uvm_mapent_addr_insert`: handle address tree insertion; the entry's key.
 fn uvm_mapent_addr_insert(map: &VmMap, st: &mut MapState, entry: PoolBox<VmMapEntry>) -> usize {
     kdassert!(entry.start() <= entry.end());
@@ -2648,6 +2668,9 @@ fn uvm_mapanon_locked(
     let inherit = uvm_inherit(flags);
     let hint = trunc_page(*addr);
 
+    // The owners of the free space, for this call's functions: computed again only when
+    // the freelists follow the vmspace's new areas.
+    let mut owners = st.owners(map);
     let (first, last);
     if flags & UVM_FLAG_FIXED != 0 {
         // Fixed location.
@@ -2683,10 +2706,10 @@ fn uvm_mapanon_locked(
                 return Err(Errno::EPERM); // immutable entries found
             }
         }
-        (first, last) = isavail_keys(map, st, None, *addr, sz).ok_or(Errno::ENOMEM)?;
+        (first, last) = isavail_keys(map, st, &owners, None, *addr, sz).ok_or(Errno::ENOMEM)?;
     } else if let Some(found) =
         (*addr != 0 && *addr & PAGE_MASK == 0 && (align == 0 || *addr & (align - 1) == 0))
-            .then(|| isavail_keys(map, st, None, *addr, sz))
+            .then(|| isavail_keys(map, st, &owners, None, *addr, sz))
             .flatten()
     {
         // Address used as hint.
@@ -2701,7 +2724,9 @@ fn uvm_mapanon_locked(
         *addr = a;
     } else {
         // Update freelists from vmspace.
-        uvm_map_vmspace_update(map, st, ew, dead, flags);
+        if uvm_map_vmspace_update(map, st, ew, dead, flags) {
+            owners = st.owners(map);
+        }
 
         let (f, l, a) = uvm_map_findspace(map, st, sz, pmap_align, pmap_offset, prot, hint)?;
         (first, last) = (f, l);
@@ -2719,8 +2744,20 @@ fn uvm_mapanon_locked(
     }
 
     // Create new entry. first and last may be invalidated after this call.
-    let entry = uvm_map_mkentry(map, st, ew, first, last, *addr, sz, flags, dead, new.take())
-        .ok_or(Errno::ENOMEM)?;
+    let entry = uvm_map_mkentry(
+        map,
+        st,
+        ew,
+        &owners,
+        first,
+        last,
+        *addr,
+        sz,
+        flags,
+        dead,
+        new.take(),
+    )
+    .ok_or(Errno::ENOMEM)?;
     kdassert!(entry.start() == *addr && entry.end() == *addr + sz);
     entry.set_offset(ew, 0);
     entry.set_protection(ew, prot);
@@ -2766,15 +2803,16 @@ fn uvm_mapanon_locked(
 fn isavail_keys(
     map: &VmMap,
     st: &MapState,
+    owners: &Owners,
     uaddr: Option<Slot>,
     addr: usize,
     sz: usize,
 ) -> Option<(usize, usize)> {
-    let owners = st.owners(map);
+    owners_lent(map, st, owners, "uvm_map_isavail");
     let mut first = None;
     let mut last = None;
     if !uvm_map_isavail(
-        map, &st.addr, &owners, uaddr, &mut first, &mut last, addr, sz,
+        map, &st.addr, owners, uaddr, &mut first, &mut last, addr, sz,
     ) {
         return None;
     }
@@ -2913,6 +2951,9 @@ fn uvm_map_locked(
     let inherit = uvm_inherit(flags);
     let mut hint = trunc_page(*addr);
     let mut uoffset = uoffset;
+    // The owners of the free space, for this call's functions: computed again only when
+    // the freelists follow the vmspace's new areas.
+    let mut owners = st.owners(map);
 
     // Unset hint for kernel_map non-fixed allocations.
     if !map.is_vmspace() && flags & UVM_FLAG_FIXED == 0 {
@@ -2938,12 +2979,12 @@ fn uvm_map_locked(
         {
             return Err(Errno::EPERM); // immutable entries found
         }
-        (first, last) = isavail_keys(map, st, None, *addr, sz).ok_or(Errno::ENOMEM)?;
+        (first, last) = isavail_keys(map, st, &owners, None, *addr, sz).ok_or(Errno::ENOMEM)?;
     } else if let Some(found) = (*addr != 0
         && *addr & PAGE_MASK == 0
         && map.is_vmspace()
         && (align == 0 || *addr & (align - 1) == 0))
-        .then(|| isavail_keys(map, st, None, *addr, sz))
+        .then(|| isavail_keys(map, st, &owners, None, *addr, sz))
         .flatten()
     {
         // Address used as hint.
@@ -2967,8 +3008,8 @@ fn uvm_map_locked(
         *addr = a;
     } else {
         // Update freelists from vmspace.
-        if map.is_vmspace() {
-            uvm_map_vmspace_update(map, st, ew, dead, flags);
+        if map.is_vmspace() && uvm_map_vmspace_update(map, st, ew, dead, flags) {
+            owners = st.owners(map);
         }
 
         let mut found = uvm_map_findspace(map, st, sz, pmap_align, pmap_offset, prot, hint);
@@ -3005,8 +3046,20 @@ fn uvm_map_locked(
     }
 
     // Create new entry. first and last may be invalidated after this call.
-    let entry = uvm_map_mkentry(map, st, ew, first, last, *addr, sz, flags, dead, new.take())
-        .ok_or(Errno::ENOMEM)?;
+    let entry = uvm_map_mkentry(
+        map,
+        st,
+        ew,
+        &owners,
+        first,
+        last,
+        *addr,
+        sz,
+        flags,
+        dead,
+        new.take(),
+    )
+    .ok_or(Errno::ENOMEM)?;
     kdassert!(entry.start() == *addr && entry.end() == *addr + sz);
     let key = entry.start();
     let has_uobj = uobj.is_some();
@@ -3139,7 +3192,7 @@ fn uvm_mapent_merge(
 ) -> usize {
     let owners = st.owners(map);
     let free = {
-        let mut fp = st.free_parts(owners);
+        let mut fp = st.free_parts(&owners);
         let e1 = ent(fp.tree, k1, "uvm_mapent_merge");
         // Merging is not supported for map entries that contain an amap in e1. This should
         // never happen anyway, because only kernel entries are merged. These do not contain
@@ -3156,7 +3209,7 @@ fn uvm_mapent_merge(
         free
     };
     let e2 = uvm_mapent_addr_remove(st, k2);
-    let mut fp = st.free_parts(owners);
+    let mut fp = st.free_parts(&owners);
     let e1 = ent(fp.tree, k1, "uvm_mapent_merge");
     e1.set_end(ew, e2.end());
     e1.set_guard(ew, e2.guard());
@@ -3264,6 +3317,7 @@ fn uvm_map_mkentry<'s>(
     map: &VmMap,
     st: &'s mut MapState,
     ew: &mut EntryWrite<'_>,
+    owners: &Owners,
     first: usize,
     last: usize,
     addr: usize,
@@ -3279,7 +3333,7 @@ fn uvm_map_mkentry<'s>(
         let l = ent(&st.addr, last, "uvm_map_mkentry");
         kassert!(f.end() <= addr && vmmap_free_end(f) > addr);
         kassert!(l.start() < addr + sz && vmmap_free_end(l) >= addr + sz);
-        kassert!(isavail_keys(map, st, None, addr, sz) == Some((first, last)));
+        kassert!(isavail_keys(map, st, owners, None, addr, sz) == Some((first, last)));
         uvm_tree_sanity(map, st, "uvm_map_mkentry");
     }
 
@@ -3303,7 +3357,7 @@ fn uvm_map_mkentry<'s>(
 
     // Reset free space in first. Its start and the start of its free space stay as they
     // are below (only entries after it leave the tree).
-    let owners = st.owners(map);
+    owners_lent(map, st, owners, "uvm_map_mkentry");
     let (first_start, first_free) = {
         let mut fp = st.free_parts(owners);
         let f = ent(fp.tree, first, "uvm_map_mkentry");
@@ -3336,12 +3390,12 @@ fn uvm_map_mkentry<'s>(
     if first_start == addr {
         dead.push(uvm_mapent_addr_remove(st, first));
     } else {
-        uvm_map_fix_space(map, st, ew, Some(first), first_free, addr, flags);
+        uvm_map_fix_space(map, st, ew, owners, Some(first), first_free, addr, flags);
     }
 
     // Finally, link in entry.
     let key = uvm_mapent_addr_insert(map, st, entry);
-    uvm_map_fix_space(map, st, ew, Some(key), min, max, flags);
+    uvm_map_fix_space(map, st, ew, owners, Some(key), min, max, flags);
 
     if cfg!(test) {
         uvm_tree_sanity(map, st, "uvm_map_mkentry");
@@ -3612,6 +3666,7 @@ fn uvm_mapent_mkfree(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
+    owners: &Owners,
     key: usize,
     prev_ptr: &mut Option<usize>,
     dead: &mut DeadQueue,
@@ -3623,7 +3678,7 @@ fn uvm_mapent_mkfree(
         prev = None;
     }
 
-    let owners = st.owners(map);
+    owners_lent(map, st, owners, "uvm_mapent_mkfree");
     let (addr, end) = {
         let mut fp = st.free_parts(owners);
         let tree = fp.tree;
@@ -3650,7 +3705,7 @@ fn uvm_mapent_mkfree(
             let pe = ent(fp.tree, p, "uvm_mapent_mkfree");
             uvm_mapent_free_remove(&mut fp, ew, owners.uaddr_e(pe), pe);
         }
-        *prev_ptr = uvm_map_fix_space(map, st, ew, prev, addr, end, 0);
+        *prev_ptr = uvm_map_fix_space(map, st, ew, owners, prev, addr, end, 0);
     }
 }
 
@@ -3803,7 +3858,9 @@ fn unmap_remove(
 
     // Iterate entries until we reach end address. prev_hint hints where the freed space
     // can be appended to. Each step finds its entry once and holds it until the entry
-    // leaves the tree (a clip changes the tree: the entry is found again after it).
+    // leaves the tree (a clip changes the tree: the entry is found again after it). No step
+    // changes a selector or an area: the owners are computed once.
+    let owners = st.owners(map);
     let mut prev_hint: Option<usize> = None;
     while let Some(key) = iter {
         let e = ent(&st.addr, key, "uvm_unmap_remove");
@@ -3852,7 +3909,7 @@ fn unmap_remove(
         }
 
         // Actual removal of entry.
-        uvm_mapent_mkfree(map, st, ew, key, &mut prev_hint, dead, markfree);
+        uvm_mapent_mkfree(map, st, ew, &owners, key, &mut prev_hint, dead, markfree);
         iter = next;
     }
 
@@ -4407,7 +4464,17 @@ pub fn uvm_map_teardown(map: &VmMap) {
 pub fn uvm_map_setup_entries(map: &VmMap, st: &mut MapState, ew: &mut EntryWrite<'_>) {
     kdassert!(st.addr.is_empty());
 
-    uvm_map_fix_space(map, st, ew, None, map.min_offset(), map.max_offset(), 0);
+    let owners = st.owners(map);
+    uvm_map_fix_space(
+        map,
+        st,
+        ew,
+        &owners,
+        None,
+        map.min_offset(),
+        map.max_offset(),
+        0,
+    );
 }
 
 /// `uvm_map_splitentry`: split entry at given address.
@@ -4434,7 +4501,7 @@ fn uvm_map_splitentry(
     // orig stays where it is in the tree until next goes in: found once.
     let owners = st.owners(map);
     let free = {
-        let mut fp = st.free_parts(owners);
+        let mut fp = st.free_parts(&owners);
         let o = ent(fp.tree, orig, "uvm_map_splitentry");
         kassert!(o.start() < split && vmmap_free_end(o) > split);
 
@@ -4503,7 +4570,7 @@ fn uvm_map_splitentry(
     };
     let nkey = uvm_mapent_addr_insert(map, st, next);
     {
-        let mut fp = st.free_parts(owners);
+        let mut fp = st.free_parts(&owners);
         let n = ent(fp.tree, nkey, "uvm_map_splitentry");
         uvm_mapent_free_insert(&mut fp, ew, free, n);
     }
@@ -5153,6 +5220,7 @@ fn uvm_mapent_clone<'s>(
     dstmap: &VmMap,
     st: &'s mut MapState,
     ew: &mut EntryWrite<'_>,
+    owners: &Owners,
     dstaddr: usize,
     dstlen: usize,
     off: usize,
@@ -5166,7 +5234,7 @@ fn uvm_mapent_clone<'s>(
     kdassert!(old.etype & UVM_ET_SUBMAP == 0);
 
     // Create new entry (linked in on creation). Fill in first, last.
-    let Some((first, last)) = isavail_keys(dstmap, st, None, dstaddr, dstlen) else {
+    let Some((first, last)) = isavail_keys(dstmap, st, owners, None, dstaddr, dstlen) else {
         kpanic(format_args!(
             "uvm_mapent_clone: no space in map for entry in empty map"
         ));
@@ -5175,6 +5243,7 @@ fn uvm_mapent_clone<'s>(
         dstmap,
         st,
         ew,
+        owners,
         first,
         last,
         dstaddr,
@@ -5216,6 +5285,7 @@ fn uvm_mapent_share<'s>(
     dstmap: &VmMap,
     st: &'s mut MapState,
     ew: &mut EntryWrite<'_>,
+    owners: &Owners,
     dstaddr: usize,
     dstlen: usize,
     off: usize,
@@ -5246,6 +5316,7 @@ fn uvm_mapent_share<'s>(
         dstmap,
         st,
         ew,
+        owners,
         dstaddr,
         dstlen,
         off,
@@ -5258,11 +5329,13 @@ fn uvm_mapent_share<'s>(
     )
 }
 
-/// The child's map, write-locked, for the fork functions.
+/// The child's map, write-locked, for the fork functions, and its owners (no fork function
+/// changes a selector or an area of the child).
 struct ForkDst<'s, 'w> {
     map: &'s VmMap,
     st: &'s mut MapState,
     ew: &'s mut EntryWrite<'w>,
+    owners: Owners,
 }
 
 /// The parent's map, write-locked, for the fork functions.
@@ -5309,6 +5382,7 @@ fn uvm_mapent_forkshared(
         new.map,
         new.st,
         new.ew,
+        &new.owners,
         start,
         end - start,
         0,
@@ -5339,6 +5413,7 @@ fn uvm_mapent_forkcopy(
         new.map,
         new.st,
         new.ew,
+        &new.owners,
         o.start,
         o.end - o.start,
         0,
@@ -5443,6 +5518,7 @@ fn uvm_mapent_forkzero(
         new.map,
         new.st,
         new.ew,
+        &new.owners,
         o.start,
         o.end - o.start,
         0,
@@ -5507,10 +5583,12 @@ pub fn uvmspace_fork(vm1: &Vmspace) -> VmspaceRef {
             st: ost,
             ew: oew,
         };
+        let owners = nst.owners(new_map);
         let mut new = ForkDst {
             map: new_map,
             st: nst,
             ew: new_ew,
+            owners,
         };
 
         // RBT_FOREACH over the parent's entries: no fork function moves, adds or removes an
@@ -6008,6 +6086,7 @@ fn uvm_map_extract_locked(
     // dstmap.
     // step 1: start looping through map entries, performing extraction.
     let mut error = Ok(dstaddr);
+    let kowners = kst.owners(kmap);
     let mut iter = Some(first);
     while let Some(key) = iter.filter(|k| ent(&st.addr, *k, "uvm_map_extract").start() < end) {
         iter = next_key(&st.addr, key);
@@ -6033,6 +6112,7 @@ fn uvm_map_extract_locked(
             kmap,
             kst,
             kew,
+            &kowners,
             cp_start - start + dstaddr,
             cp_len,
             cp_off,
@@ -6314,7 +6394,7 @@ fn uvm_map_clip_start(
     // Unlink original.
     let owners = st.owners(map);
     let free = {
-        let mut fp = st.free_parts(owners);
+        let mut fp = st.free_parts(&owners);
         let e = ent(fp.tree, key, "uvm_map_clip_start");
         let free = owners.uaddr_e(e);
         uvm_mapent_free_remove(&mut fp, ew, free, e);
@@ -6332,7 +6412,7 @@ fn uvm_map_clip_start(
     // Put new entry in place of original entry.
     let tkey = uvm_mapent_addr_insert(map, st, tmp);
     {
-        let mut fp = st.free_parts(owners);
+        let mut fp = st.free_parts(&owners);
         let t = ent(fp.tree, tkey, "uvm_map_clip_start");
         uvm_mapent_free_insert(&mut fp, ew, free, t);
     }
@@ -6353,14 +6433,14 @@ fn uvm_map_boundfix(min: usize, max: usize, bound: usize) -> usize {
 }
 
 /// `uvm_map_vmspace_update`: update map allocation start and end addresses from proc
-/// vmspace.
+/// vmspace; whether it changed them (the owners of the free space with them).
 fn uvm_map_vmspace_update(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
     dead: &mut DeadQueue,
     flags: u32,
-) {
+) -> bool {
     // Derive actual allocation boundaries from vmspace.
     let vm = map.vm();
     let b_start = vm.vm_daddr.load(Mem::Relaxed);
@@ -6384,10 +6464,11 @@ fn uvm_map_vmspace_update(
     }
 
     if st.b_start == b_start && st.b_end == b_end && st.s_start == s_start && st.s_end == s_end {
-        return;
+        return false;
     }
 
     uvm_map_freelist_update(map, st, ew, dead, b_start, b_end, s_start, s_end, flags);
+    true
 }
 
 /// `uvm_map_kmem_grow`: grow kernel memory.
@@ -6463,7 +6544,7 @@ fn uvm_map_freelist_update_clear(
     while let Some(key) = iter {
         // One lookup per entry: the tree changes only when a free-only entry leaves it.
         let remove = {
-            let mut fp = st.free_parts(owners);
+            let mut fp = st.free_parts(&owners);
             let tree = fp.tree;
             let e = ent(tree, key, "uvm_map_freelist_update_clear");
             iter = tree.next(e).map(VmMapEntry::start);
@@ -6499,6 +6580,7 @@ fn uvm_map_freelist_update_refill(
 ) {
     // RBT_FOREACH, where the body replaces `entry` by what uvm_map_fix_space returns and
     // the next step continues from there.
+    let owners = st.owners(map);
     let mut iter = st.addr.min().map(VmMapEntry::start);
     while let Some(key) = iter {
         let e = ent(&st.addr, key, "uvm_map_freelist_update_refill");
@@ -6506,7 +6588,7 @@ fn uvm_map_freelist_update_refill(
         let max = vmmap_free_end(e);
         e.set_fspace(ew, 0);
 
-        let last = uvm_map_fix_space(map, st, ew, Some(key), min, max, flags);
+        let last = uvm_map_fix_space(map, st, ew, &owners, Some(key), min, max, flags);
         iter = last.and_then(|l| next_key(&st.addr, l));
     }
 
@@ -6570,16 +6652,18 @@ pub fn uvm_map_set_uaddr(map: &VmMap, which: Slot, newval: Option<Selector>) {
 ///
 /// The entry being filled is held by reference from one step to the next and found again
 /// (by its key) only after a new entry went into the tree.
+#[allow(clippy::too_many_arguments)] // the C's signature, the owners lent
 fn uvm_map_fix_space(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
+    owners: &Owners,
     entry: Option<usize>,
     min: usize,
     max: usize,
     flags: u32,
 ) -> Option<usize> {
-    let owners = st.owners(map);
+    owners_lent(map, st, owners, "uvm_map_fix_space");
     let mut fp = st.free_parts(owners);
     let mut cur = entry.map(|k| ent(fp.tree, k, "uvm_map_fix_space"));
 
@@ -8153,6 +8237,66 @@ mod tests {
         let (_, _, _, etype) = entry_holding(map, a).expect("still mapped");
         assert_ne!(etype & UVM_ET_STACK, 0);
         uvmspace_free(vm);
+    }
+
+    #[test]
+    fn a_mapping_after_new_areas_lends_the_new_owners() {
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let before = map.lock_read().state().owners(map);
+        assert_eq!(
+            (before.b, before.s),
+            ((0, 0), (0, 0)),
+            "uvm_map_setup's empty areas"
+        );
+
+        // The first mapping moves the areas (uvm_map_vmspace_update): mkentry and
+        // fix_space run with the owners computed after the move (owners_lent checks it).
+        let mut a = 0;
+        uvm_mapanon(map, &mut a, PAGE_SIZE, 0, anon_flags(0)).expect("mapanon");
+        let after = map.lock_read().state().owners(map);
+        let daddr = 256 << 20;
+        assert_eq!(after.b, (daddr, daddr + BRKSIZ));
+        assert_eq!(after.s, (USRSTACK - MAXSSIZ, USRSTACK));
+        assert_eq!(
+            after.uaddr(daddr),
+            Some(Slot::BrkStack),
+            "the brk area's free space"
+        );
+        sane(map);
+
+        // A second one keeps them (no change, no recomputation needed).
+        let mut b = 0;
+        uvm_mapanon(map, &mut b, PAGE_SIZE, 0, anon_flags(0)).expect("mapanon");
+        assert_eq!(map.lock_read().state().owners(map), after);
+
+        uvm_unmap(map, a, a + PAGE_SIZE);
+        uvm_unmap(map, b, b + PAGE_SIZE);
+        sane(map);
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    #[should_panic(expected = "the owners lent are the map's")]
+    fn stale_owners_are_refused() {
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let mut a = 0;
+        uvm_mapanon(map, &mut a, PAGE_SIZE, 0, anon_flags(0)).expect("mapanon");
+        let mut g = map.lock();
+        let mut sp = g.split();
+        let (st, ew) = sp.parts();
+        // The owners as they were before the areas moved: not the map's any more.
+        let mut stale = st.owners(map);
+        stale.b = (0, 0);
+        let k = st.addr.min().map(VmMapEntry::start);
+        let at = {
+            let e = ent(&st.addr, k.expect("an entry"), "test");
+            vmmap_free_end(e)
+        };
+        uvm_map_fix_space(map, st, ew, &stale, k, at, at, 0);
     }
 }
 /* </TESTS> */

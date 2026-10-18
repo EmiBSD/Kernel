@@ -568,6 +568,11 @@ pub fn uvm_addr_invoke(
     prot: VmProt,
     hint: usize,
 ) -> Result<(usize, usize, usize), Errno> {
+    // An empty slot answers before the owners are computed (uvm_map_findspace tries every
+    // slot of uaddr_any in turn).
+    if st.selector(slot).is_none() {
+        return Err(Errno::ENOMEM);
+    }
     let owners = st.owners(map);
     let brk = (st.b_start, st.b_end);
     let stack = (st.s_start, st.s_end);
