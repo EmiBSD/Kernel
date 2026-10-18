@@ -227,3 +227,14 @@ paid_by = "N5"
 trait = "FaultMap"
 for = ["sys/kernel/vm/fault.rs"]
 paid_by = "N3"
+
+# bsd: curproc's facts as uvm asks them (pledge_protexec, the W^X exemption and ps_wxcounter,
+# sigexit, trapsignal, ps_pid/p_tid/ps_comm/PROC_PC, ps_acflag, lim_cur, P_HASSIBLING,
+# ps_strings/ps_sigcode/ps_timekeep, fd_getfile..FRELE of a vnode, ps_kbind_* under ps_mtx,
+# ps_libcpin, p_ru's faults and maxrss, log(9)); implemented by sys/kern/vm_bsd.rs (N3.5 S1,
+# registered by bsd's uvm_init at the flip), one bsd call each. N4, when Proc moves.
+# kernel::vm::proc::VmProc
+[[bridge]]
+trait = "VmProc"
+for = ["sys/kernel/vm/proc.rs"]
+paid_by = "N4"

@@ -30,10 +30,12 @@ pub mod anon;
 pub mod aobj;
 pub mod fault;
 pub mod km;
+pub mod map;
 pub mod object;
 pub mod page;
 pub mod pager;
 pub mod pmemrange;
+pub mod proc;
 pub mod types;
 pub mod vnode;
 /* </CODE> */
