@@ -26,7 +26,9 @@
 //! (`PROT_NONE` removes them, as the C does) and nothing is wired or emulated; a page has no
 //! pv chain, so the page-level calls change nothing and report nothing set; boot memory comes
 //! from the host allocator, its frames taken out of the provider (`steal`) so the page count
-//! adds up. `resident_count` is the number of mappings. A pmap's limit is
+//! adds up. One test knob, no logic: [`fail_enters`] makes this thread's next managed
+//! `pmap_enter`s fail with `ENOMEM`, as a machine's do under `PMAP_CANFAIL` without a pv entry
+//! or a page-table page. `resident_count` is the number of mappings. A pmap's limit is
 //! `VM_MAXUSER_ADDRESS`, an EFI pmap's (aarch64 hosts) `1 << EFI_SPACE_BITS` as arm64's.
 
 // The host double alone links std outside the tests (rust-kernel.md: the host doubles).
@@ -80,6 +82,27 @@ impl PvHead {
     pub(crate) const fn new() -> Self {
         Self
     }
+}
+
+std::thread_local! {
+    /// The managed entries this thread's next `pmap_enter`s fail ([`fail_enters`]).
+    static FAIL_ENTERS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// Makes this thread's next `n` managed `pmap_enter`s fail with `ENOMEM` (`fail_enters(0)`
+/// clears it): the host's stand-in for a pv entry or a page-table page that could not be had
+/// under `PMAP_CANFAIL`, for the tests of the callers' failure paths.
+pub fn fail_enters(n: u32) {
+    FAIL_ENTERS.with(|f| f.set(n));
+}
+
+/// Whether this `pmap_enter` is one [`fail_enters`] asked to fail (and count it).
+fn enter_fails() -> bool {
+    FAIL_ENTERS.with(|f| {
+        let n = f.get();
+        f.set(n.saturating_sub(1));
+        n != 0
+    })
 }
 
 /// The kernel pmap.
@@ -174,6 +197,9 @@ impl PmapBackend for Backend {
     fn destroy(_pmap: &mut Pmap) {}
 
     fn enter(pmap: &Pmap, va: Vaddr, pa: Paddr, _prot: VmProt, _flags: i32) -> Result<(), Errno> {
+        if enter_fails() {
+            return Err(Errno::ENOMEM);
+        }
         Self::insert(pmap, va, pa);
         Ok(())
     }

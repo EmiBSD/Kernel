@@ -841,8 +841,11 @@ pub fn uvm_pager_dropcluster(
 mod tests {
     use std::sync::MutexGuard;
 
+    use super::super::page::{Pglist, uvm_pglistalloc, uvm_pglistfree};
+    use super::super::types::UVM_PLA_NOWAIT;
     use super::*;
     use crate::testutil;
+    use hal::sys::types::Vsize;
 
     /// The address the tests give the first two psegs: the host's `km_alloc` has no kernel
     /// virtual space without pages (`PMAP_NOMMU`), so those two, which a booted kernel makes
@@ -913,9 +916,6 @@ mod tests {
 
     #[test]
     fn a_two_page_window_maps_both_pages_and_unmaps_before_its_segment() {
-        use super::super::page::{Pglist, uvm_pglistalloc, uvm_pglistfree};
-        use super::super::types::UVM_PLA_NOWAIT;
-
         let _g = setup();
         // Two contiguous pages (the host has no MMU: a window is the frames' own addresses),
         // busy as a pager's I/O pages.
@@ -973,6 +973,87 @@ mod tests {
         pgl.insert_tail(p0);
         pgl.insert_tail(p1);
         uvm_pglistfree(&pgl); // takes them off the list
+    }
+
+    /// Two contiguous busy pages, as a pager's I/O pages, and their list (for the release).
+    fn two_busy_pages() -> (Pglist, [PageSlot; 2]) {
+        let pgl = Pglist::new();
+        uvm_pglistalloc(
+            2 * PAGE_SIZE,
+            Paddr::new(0),
+            Paddr::new(usize::MAX),
+            Paddr::new(PAGE_SIZE),
+            Paddr::new(0),
+            &pgl,
+            1,
+            UVM_PLA_NOWAIT,
+        )
+        .expect("two pages");
+        let p0 = pgl.pop_head().expect("a page");
+        let p1 = pgl.pop_head().expect("a second page");
+        let (p0, p1) = if p0.phys_addr() < p1.phys_addr() {
+            (p0, p1)
+        } else {
+            (p1, p0)
+        };
+        p0.set_bits(PG_BUSY);
+        p1.set_bits(PG_BUSY);
+        (pgl, [PageSlot::Page(p0), PageSlot::Page(p1)])
+    }
+
+    /// Unbusies and frees the pages of [`two_busy_pages`].
+    fn free_pages(pgl: Pglist, pps: [PageSlot; 2]) {
+        for slot in pps {
+            let pg = slot.page().expect("a page");
+            pg.clear_bits(PG_BUSY);
+            pgl.insert_tail(pg);
+        }
+        uvm_pglistfree(&pgl); // takes them off the list
+    }
+
+    #[test]
+    fn a_window_whose_mapping_fails_gives_its_segment_back() {
+        let _g = setup();
+        let (pgl, pps) = two_busy_pages();
+        let first = uvm_pseg_get(0).expect("a segment");
+        uvm_pseg_release(first);
+
+        // Without UVMPAGER_MAPIN_WAITOK a failed pmap_enter (no pv entry under PMAP_CANFAIL)
+        // ends the mapin: nothing stays mapped and the segment goes back.
+        hal::arch::current::fail_enters(1);
+        let win = uvm_pagermapin(&pps, UVMPAGER_MAPIN_READ);
+        hal::arch::current::fail_enters(0);
+        assert!(win.is_none());
+        let kernel = hal::pmap::kernel();
+        assert!(kernel.extract(first).is_none());
+        let again = uvm_pseg_get(0).expect("the segment back");
+        assert_eq!(again.as_usize(), first.as_usize());
+        uvm_pseg_release(again);
+        free_pages(pgl, pps);
+    }
+
+    #[test]
+    fn a_waiting_window_retries_a_failed_mapping() {
+        let _g = setup();
+        let (pgl, pps) = two_busy_pages();
+
+        // With UVMPAGER_MAPIN_WAITOK the failure waits for memory (uvm_wait) and tries again,
+        // keeping its segment: the second try maps both pages.
+        hal::arch::current::fail_enters(1);
+        let win = uvm_pagermapin(&pps, UVMPAGER_MAPIN_READ | UVMPAGER_MAPIN_WAITOK);
+        hal::arch::current::fail_enters(0);
+        let win = win.expect("the retry's window");
+        let va = win.va();
+        let kernel = hal::pmap::kernel();
+        assert_eq!(kernel.extract(va), pps[0].page().map(VmPage::phys_addr));
+        assert_eq!(
+            kernel.extract(va + Vsize::new(PAGE_SIZE)),
+            pps[1].page().map(VmPage::phys_addr)
+        );
+        assert!(testutil::printf_count("unported: uvm_wait (uvm_pdaemon.c, M5)\n") >= 1);
+        uvm_pagermapout(win);
+        assert!(kernel.extract(va).is_none());
+        free_pages(pgl, pps);
     }
 }
 /* </TESTS> */

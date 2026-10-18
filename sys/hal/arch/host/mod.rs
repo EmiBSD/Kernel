@@ -39,6 +39,8 @@ pub mod param;
 pub(crate) mod pmap;
 
 pub use self::param as vmparam;
+/// The host pmap's test knob (its only one): a failing `pmap_enter`.
+pub use self::pmap::fail_enters;
 
 /// amd64's constant headers in their own layout (`include/`), compiled for their tests only.
 #[cfg(test)]
