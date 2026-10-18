@@ -339,10 +339,16 @@
 //! - Out parameters become return values (`Result`, tuples, `Option`): `uvm_map_findspace`
 //!   yields the first and last entry and the address, `uvm_map_lookup_entry` the entry only
 //!   when it contains the address, `uvm_map_extract` the destination address.
-//! - [`uvm_map_deallocate`]'s last reference empties the map but cannot give its block back:
-//!   a map made by [`uvm_map_create`] is a leaked `M_VMMAP` block (`&'static`), and the only
-//!   maps that are ever submapped (`kmem_map`, `exec_map`, `phys_map`) live for ever, as in
-//!   the C, where their reference never reaches 0.
+//! - [`uvm_map_deallocate`]'s last reference empties the map but cannot give its block back
+//!   nor drop its pmap (`pmap_destroy`, uvm_map.c:3996: the pmap is the map's `[I]` field,
+//!   which lives with the block): a map made by [`uvm_map_create`] is a leaked `M_VMMAP`
+//!   block (`&'static`), and the only maps that are ever submapped (`kmem_map`, `exec_map`,
+//!   `phys_map`, all over the kernel pmap) live for ever, as in the C, where their reference
+//!   never reaches 0.
+//! - The static entries' refill page is `km_alloc(PAGE_SIZE, &kv_page, &kp_zero,
+//!   &kd_nowait)`, the direct map's single page as the C's, zeroed where the C takes
+//!   `kp_dirty` (the page provider's contract hands out zeroed memory; the slots are written
+//!   before use either way).
 //! - `FaultMap::note_maxrss` keeps the C's `KASSERT` that the faulting map is a vmspace's;
 //!   whether it is `curproc`'s own is `bsd`'s to know (the `VmProc` bridge answers for the
 //!   current thread).
@@ -427,12 +433,14 @@ use core::sync::atomic::{
     AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering as Mem,
 };
 
+use core::ptr::NonNull;
 use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use hal::arch::current::vmparam::{
     BRKSIZ, MAXDSIZ, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS, VM_MIN_KERNEL_ADDRESS,
 };
 use hal::intr::{IPL_NONE, IPL_VM, splassert};
-use hal::kmbuf::KmBuf;
+
+use hal::kmbuf::{KmBuf, PageKind, PageMemory};
 use hal::malloc::{M_NOWAIT, M_WAITOK, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
@@ -467,8 +475,8 @@ use super::fault::{
     EntryLocks, FaultEntry, FaultMap, FaultMapGuard, uvm_fault_unwire_locked, uvm_fault_wire,
 };
 use super::km::{
-    KvMap, is_kernel_map, kernel_map, map_of, mapper, page_memory, uvm_km_pgremove,
-    uvm_km_pgremove_intrsafe,
+    KD_NOWAIT, KP_ZERO, KV_PAGE, KvMap, is_kernel_map, kernel_map, km_alloc, km_free, map_of,
+    mapper, uvm_km_pgremove, uvm_km_pgremove_intrsafe,
 };
 use super::object::ObjRef;
 use super::page::{Owner, PQ_ANON, uvm_pagedeactivate};
@@ -1837,6 +1845,43 @@ static ENTRY_POOL: BoxPool<VmMapEntry> = BoxPool::new();
 static KMEM_ENTRY_POOL: BoxPool<VmMapEntry> = BoxPool::new();
 /// `uvm_vmspace_pool`: pool for vmspace structures (`"vmsppl"`).
 static VMSPACE_POOL: TypedPool<Vmspace> = TypedPool::new();
+
+/// The static entries' refill pages: `km_alloc(PAGE_SIZE, &kv_page, &kp_zero,
+/// &kd_nowait)`, the direct map's single page (uvm_map.c:1497's `kv_page`): no map entry, no
+/// map lock, so a refill under a held map lock (`cold`, or an `INTRSAFE` map's mutex at
+/// `IPL_VM`) never waits for a map.
+struct KentryPages;
+
+// The provider's contract (`hal::kmbuf::PageMemory`): a block `km_alloc` returns is fresh
+// kernel memory of `len` bytes (one page here), zeroed (`kp_zero`), page-aligned, which nothing
+// else references until `free` hands it to `km_free` with the same modes (never: the arena
+// keeps its pages).
+impl PageMemory for KentryPages {
+    fn alloc(&self, len: usize, _kind: PageKind, _wait: bool) -> Option<(NonNull<u8>, usize)> {
+        kassert!(len == PAGE_SIZE);
+        #[cfg(test)]
+        KENTRY_PAGE_ALLOCS.fetch_add(1, Mem::Relaxed);
+        let va = km_alloc(len, &KV_PAGE, &KP_ZERO, &KD_NOWAIT)?;
+        let p = NonNull::new(ptr::with_exposed_provenance_mut::<u8>(va.as_usize()))?;
+        Some((p, len))
+    }
+
+    fn free(&self, p: NonNull<u8>, len: usize, _kind: PageKind) {
+        km_free(Vaddr::new(p.as_ptr().addr()), len, &KV_PAGE, &KP_ZERO);
+    }
+
+    fn page_size(&self) -> usize {
+        PAGE_SIZE
+    }
+}
+
+/// [`KentryPages`]' provider.
+static KENTRY_PAGES: KentryPages = KentryPages;
+
+/// The pages [`KentryPages`] was asked for (the host tests: on the host both `kv_any` and
+/// `kv_page` are served by the direct map, so the provider is what tells them apart).
+#[cfg(test)]
+static KENTRY_PAGE_ALLOCS: AtomicU32 = AtomicU32::new(0);
 
 /// `uvm_kmapent_mtx`: serialises the static entries' refill (the arena keeps its own list).
 static UVM_KMAPENT_MTX: Mutexed<()> = Mutexed::new(IPL_VM, ());
@@ -3285,7 +3330,7 @@ pub fn uvm_mapent_alloc(map: &VmMap, flags: u32) -> Option<PoolBox<VmMapEntry>> 
         let me = match KENTRY_POOL.get(PR_NOWAIT, static_entry) {
             Some(me) => me,
             None => {
-                let Some(page) = KmBuf::alloc_wired(page_memory(), PAGE_SIZE, false) else {
+                let Some(page) = KmBuf::alloc_wired(&KENTRY_PAGES, PAGE_SIZE, false) else {
                     kpanic(format_args!("uvm_mapent_alloc: cannot allocate map entry"));
                 };
                 KENTRY_ARENA.extend(page);
@@ -4629,7 +4674,9 @@ pub fn uvm_map_protect(
     }
 
     let g = map.lock();
-    let (g, error) =
+    // The etype as the body left it at its `out` label (narrowed to 0 unless the mapping
+    // becomes RW), which is the one the C's `map->sserial++` tests.
+    let (g, error, etype) =
         uvm_map_protect_locked(map, g, start, end, new_prot, etype, set_max, checkimmutable);
     if etype & UVM_ET_STACK != 0 {
         map.sserial.fetch_add(1, Mem::Relaxed);
@@ -4639,7 +4686,7 @@ pub fn uvm_map_protect(
 }
 
 /// [`uvm_map_protect`] with the map locked (the C's body up to the `out` label); the guard
-/// comes back.
+/// comes back, with the etype as it stood at the `out` label.
 #[allow(clippy::too_many_arguments)] // the C's locals
 fn uvm_map_protect_locked<'a>(
     map: &'a VmMap,
@@ -4650,7 +4697,7 @@ fn uvm_map_protect_locked<'a>(
     etype: i32,
     set_max: bool,
     checkimmutable: bool,
-) -> (MapWriteGuard<'a>, Result<(), Errno>) {
+) -> (MapWriteGuard<'a>, Result<(), Errno>, i32) {
     let mut dused = 0;
     let mut error = Ok(());
 
@@ -4701,7 +4748,7 @@ fn uvm_map_protect_locked<'a>(
         first.map(VmMapEntry::start)
     };
     if error.is_err() {
-        return (g, error);
+        return (g, error, etype);
     }
 
     // Check limits.
@@ -4710,7 +4757,7 @@ fn uvm_map_protect_locked<'a>(
         let dused = ptoa(dused);
         let vm_dused = usize::try_from(map.vm().vm_dused.load(Mem::Relaxed)).unwrap_or(0);
         if limit < dused || limit - dused < ptoa(vm_dused) {
-            return (g, Err(Errno::ENOMEM));
+            return (g, Err(Errno::ENOMEM), etype);
         }
     }
 
@@ -4827,7 +4874,7 @@ fn uvm_map_protect_locked<'a>(
     }
     // pmap_update(map->pmap): nothing to do.
 
-    (g, error)
+    (g, error, etype)
 }
 
 /// `uvmspace_alloc`: allocate a vmspace structure.
@@ -7870,11 +7917,8 @@ mod tests {
         // uvm_map_extract (kern.proc_args' uvm_io): the source's range cloned into the kernel
         // map, needs-copy resolved first, the protection without PROT_EXEC.
         let _g = setup();
-        let kmap = kernel_style_map(VM_MAP_PAGEABLE);
-        if !is_kernel_map(kmap) {
-            super::super::km::install_submap(KvMap::Kernel, kmap);
-        }
-        let kmap = kernel_map();
+        let kmap = the_kernel_map();
+        UVM_MAXKADDR.store(kmap.min_offset(), Mem::Relaxed);
         // Kernel space below uvm_maxkaddr, as the kernel map has once it ran (extract does
         // not grow it, as the C).
         let mut t = 0;
@@ -7924,6 +7968,96 @@ mod tests {
         std::println!("vmmpepl item {entry} bytes, vmsppl value {vmspace} bytes");
         assert!(entry <= 256, "{entry}");
         assert!(vmspace <= 512, "{vmspace}");
+    }
+
+    /// The kernel map of the tests: the first kernel-style map a test installed.
+    fn the_kernel_map() -> &'static VmMap {
+        if map_of(KvMap::Kernel).is_none() {
+            super::super::km::install_submap(KvMap::Kernel, kernel_style_map(VM_MAP_PAGEABLE));
+        }
+        kernel_map()
+    }
+
+    /// Takes static entries of `map` until the arena has none free, then one more (the
+    /// refill): whether that refill asked the kernel maps for space, and the entries.
+    fn exhaust_and_refill(map: &VmMap) -> (bool, Vec<PoolBox<VmMapEntry>>) {
+        let mut got = Vec::new();
+        while KENTRY_ARENA.has_free() {
+            got.push(uvm_mapent_alloc(map, 0).expect("a static entry"));
+        }
+        let (calls, nout) = (testutil::km_map_calls(), KENTRY_ARENA.nout());
+        let pages = KENTRY_PAGE_ALLOCS.load(Mem::Relaxed);
+        got.push(uvm_mapent_alloc(map, 0).expect("the refill's entry"));
+        assert_eq!(KENTRY_ARENA.nout(), nout + 1);
+        assert_eq!(
+            KENTRY_PAGE_ALLOCS.load(Mem::Relaxed),
+            pages + 1,
+            "the refill page is kv_page's (km_alloc(PAGE_SIZE, &kv_page, ..))"
+        );
+        assert!(got.iter().all(|e| e.flags() == UVM_MAP_STATIC));
+        (testutil::km_map_calls() != calls, got)
+    }
+
+    #[test]
+    fn static_entries_refill_from_the_direct_map_under_a_held_kernel_map() {
+        // cold: uvm_map on kernel_map holds its write lock when uvm_mapent_alloc runs out of
+        // static entries; the refill page is kv_page's (the direct map), so it takes no
+        // kernel map entry and no map lock (a kv_any page would wait for the lock held here).
+        let _g = setup();
+        testutil::km_install();
+        let kmap = the_kernel_map();
+        let before = UVMEXP.kmapent.load(Mem::Relaxed);
+        let held = kmap.lock();
+        testutil::set_cold(true);
+        let (mapped, got) = exhaust_and_refill(kmap);
+        testutil::set_cold(false);
+        assert!(!mapped, "the refill page asked a kernel map for space");
+        drop(got);
+        drop(held);
+        assert_eq!(UVMEXP.kmapent.load(Mem::Relaxed), before);
+    }
+
+    #[test]
+    fn an_intrsafe_map_refills_its_static_entries_without_a_map() {
+        // kmem_map at IPL_VM under its mutex (and uvm_kmapent_mtx): the refill touches no
+        // kernel map, whose rwlock and IPL_NONE paths cannot be taken there.
+        let _g = setup();
+        testutil::km_install();
+        let map = kernel_style_map(VM_MAP_INTRSAFE);
+        let before = UVMEXP.kmapent.load(Mem::Relaxed);
+        let spl = hal::intr::splraise(IPL_VM);
+        let held = map.lock();
+        let (mapped, got) = exhaust_and_refill(map);
+        assert!(!mapped, "the refill page asked a kernel map for space");
+        drop(got);
+        drop(held);
+        drop(spl);
+        assert_eq!(UVMEXP.kmapent.load(Mem::Relaxed), before);
+        uvm_map_deallocate(map);
+    }
+
+    #[test]
+    fn protect_counts_a_stack_change_only_for_a_stack_made_rw() {
+        // uvm_map_protect narrows UVM_ET_STACK to 0 unless the mapping becomes RW, and the C
+        // bumps sserial from that narrowed etype (uvm_map.c's `out` label).
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let mut a = 0x4800_0000;
+        let len = 2 * PAGE_SIZE;
+        uvm_mapanon(map, &mut a, len, 0, anon_flags(UVM_FLAG_FIXED)).expect("mapanon");
+        let s0 = map.sserial();
+
+        uvm_map_protect(map, a, a + len, PROT_NONE, UVM_ET_STACK, false, true).expect("none");
+        assert_eq!(map.sserial(), s0, "a PROT_NONE change is no stack change");
+        let (_, _, _, etype) = entry_holding(map, a).expect("still mapped");
+        assert_eq!(etype & UVM_ET_STACK, 0);
+
+        uvm_map_protect(map, a, a + len, RW, UVM_ET_STACK, false, true).expect("rw");
+        assert_eq!(map.sserial(), s0 + 1, "a stack made RW");
+        let (_, _, _, etype) = entry_holding(map, a).expect("still mapped");
+        assert_ne!(etype & UVM_ET_STACK, 0);
+        uvmspace_free(vm);
     }
 }
 /* </TESTS> */
