@@ -201,23 +201,39 @@
 //!   it entered, then `km_free(kp_none)`.
 //! - `pmap_update` is nothing on both machines (every pmap call does its own TLB work), so it
 //!   is not called.
+//! - N3.5 S1: the C's four map pointers (`kernel_map`, `kmem_map`, `exec_map`, `phys_map`,
+//!   assigned once each during boot) are `OnceStatic<&'static VmMap>` slots here, set by
+//!   [`install_submap`] and read by [`kernel_map`], [`kmem_map`], [`exec_map`], [`phys_map`]
+//!   and [`map_of`] (`KvMap` names the slot); `map == kernel_map` is [`is_kernel_map`], a
+//!   pointer compare. [`uvm_km_pgremove`] moved here from `bsd`'s `uvm_km.rs` with the kernel
+//!   object (the kernel's since N3.4e); its write witness is the C's `KASSERT(rw_write_held)`.
+//!   Nothing calls them in a kernel image until the flip (S2): `bsd`'s copies and the
+//!   [`KmMaps`] bridge stay live until then.
 
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hal::arch::current::param::PAGE_SIZE;
+use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::bridges::AlreadyRegistered;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::module::ModuleMemory;
 use hal::once::OnceStatic;
 use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED};
+use hal::rwlock::{Witness, WriteWitness};
 use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE};
 use hal::sys::types::{Paddr, Vaddr, Vsize};
 use hal::vm::param::round_page;
+use hal::vm::uvmexp::UVMEXP;
 
-use super::page::{Owner, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pglistalloc, uvm_pglistfree};
+use super::aobj::uao_dropswap;
+use super::map::VmMap;
+use super::object::ObjRef;
+use super::page::{
+    Owner, PG_BUSY, PG_WANTED, PHYS_TO_VM_PAGE, Pglist, uvm_pagefree, uvm_pagelookup,
+    uvm_pglistalloc, uvm_pglistfree,
+};
 use super::types::{
     UVM_FLAG_TRYLOCK, UVM_PLA_NOWAIT, UVM_PLA_TRYCONTIG, UVM_PLA_WAITOK, UVM_PLA_ZERO,
     UVM_UNKNOWN_OFFSET, UvmConstraintRange, VmProt, Voff, uvm_mapflag,
@@ -413,6 +429,15 @@ static KERNEL_MAP_MIN: AtomicUsize = AtomicUsize::new(0);
 /// `vm_map_max(kernel_map)`, kept for the selftests.
 static KERNEL_MAP_MAX: AtomicUsize = AtomicUsize::new(0);
 
+/// `kernel_map`: set once by `uvm_km_init` ([`install_submap`]).
+static KERNEL_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
+/// `kmem_map`: set once by `kmeminit`'s `uvm_km_suballoc` ([`install_submap`]).
+static KMEM_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
+/// `exec_map`: set once by the machine's `cpu_startup`.
+static EXEC_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
+/// `phys_map`: set once by the machine's `cpu_startup`.
+static PHYS_MAP: OnceStatic<&'static VmMap> = OnceStatic::new();
+
 /// The kernel maps, still `bsd`'s (`uvm_map`, N3.5): a bridge (bridges.toml), no logic.
 ///
 /// What it answers is trusted as the kernel map's allocation record (a documented boundary
@@ -542,6 +567,124 @@ pub fn kernel_map_min() -> Vaddr {
 /// `vm_map_max(kernel_map)`: the end of kernel virtual space.
 pub fn kernel_map_max() -> Vaddr {
     Vaddr::new(KERNEL_MAP_MAX.load(Ordering::Relaxed))
+}
+
+/// The slot of the kernel map `which` names; `None` for the single page mode, which has none.
+fn slot_of(which: KvMap) -> Option<&'static OnceStatic<&'static VmMap>> {
+    match which {
+        KvMap::Kernel => Some(&KERNEL_MAP),
+        KvMap::Kmem => Some(&KMEM_MAP),
+        KvMap::Exec => Some(&EXEC_MAP),
+        KvMap::Phys => Some(&PHYS_MAP),
+        KvMap::None => None,
+    }
+}
+
+/// Sets the kernel map `which` names, once: `kernel_map` (`uvm_km_init`), `kmem_map`
+/// (`kmeminit`'s `uvm_km_suballoc`), `exec_map` and `phys_map` (the machine's
+/// `cpu_startup`). The C assigns a global pointer; a second set keeps the first and names the
+/// map, and `KvMap::None` (the single page mode) has no map to set: both panic, as only a
+/// broken boot path can reach them.
+pub fn install_submap(which: KvMap, map: &'static VmMap) {
+    let Some(slot) = slot_of(which) else {
+        kpanic(format_args!(
+            "install_submap: the single page mode has no map"
+        ));
+    };
+    if slot.set(map).is_err() {
+        kpanic(format_args!("install_submap: {which:?} set twice"));
+    }
+}
+
+/// The kernel map `which` names, if it is set yet.
+pub fn map_of(which: KvMap) -> Option<&'static VmMap> {
+    slot_of(which).and_then(|slot| slot.get().copied())
+}
+
+/// The kernel map `which` names, for a caller that needs it; panics (with `who`) before it
+/// is set, which only a broken boot order can hit.
+fn map_for(who: &str, which: KvMap) -> &'static VmMap {
+    match map_of(which) {
+        Some(map) => map,
+        None => kpanic(format_args!(
+            "{who}: {which:?} map used before it is set up"
+        )),
+    }
+}
+
+/// `kernel_map`: the kernel's map; panics before `uvm_km_init`.
+pub fn kernel_map() -> &'static VmMap {
+    map_for("kernel_map", KvMap::Kernel)
+}
+
+/// `kmem_map`: the submap `malloc(9)` allocates from; panics before `kmeminit`.
+pub fn kmem_map() -> &'static VmMap {
+    map_for("kmem_map", KvMap::Kmem)
+}
+
+/// `exec_map`: the submap `exec` copies its arguments through; panics before `cpu_startup`.
+pub fn exec_map() -> &'static VmMap {
+    map_for("exec_map", KvMap::Exec)
+}
+
+/// `phys_map`: the submap `vmapbuf` maps physio buffers in; panics before `cpu_startup`.
+pub fn phys_map() -> &'static VmMap {
+    map_for("phys_map", KvMap::Phys)
+}
+
+/// `map == kernel_map`: whether `map` is the kernel map (false before `uvm_km_init`, as the
+/// C's null `kernel_map` compares).
+pub fn is_kernel_map(map: &VmMap) -> bool {
+    map_of(KvMap::Kernel).is_some_and(|k| core::ptr::eq(k, map))
+}
+
+/// `uvm_km_pgremove`: remove pages from a kernel uvm_object.
+///
+/// - when you unmap a part of anonymous kernel memory you want to toss the pages right
+///   away. (this gets called from uvm_unmap_...).
+///
+/// `w` is the write witness of `uobj`'s lock (the C's `KASSERT(rw_write_held(
+/// uobj->vmobjlock))` as a parameter: a witness of another lock panics); a busy page is
+/// waited for asleep on it with that lock released and taken again (`uvm_pagewait` then
+/// `rw_enter(RW_WRITE)`), `"km_pgrm"`, `PVM`.
+pub fn uvm_km_pgremove(uobj: &ObjRef, w: &mut WriteWitness<'_>, startva: Vaddr, endva: Vaddr) {
+    let base = kernel_map().min_offset();
+    let start = (startva.as_usize() - base) as Voff;
+    let end = (endva.as_usize() - base) as Voff;
+    let mut swpgonlydelta = 0;
+
+    let Some(aobj) = uobj.aobj() else {
+        kpanic(format_args!("uvm_km_pgremove: not an aobj"));
+    };
+    if w.lock_id() != uobj.lock().id() {
+        kpanic(format_args!("uvm_km_pgremove: a witness of another lock"));
+    }
+
+    mapper().remove(startva, endva);
+    let mut curoff = start;
+    while curoff < end {
+        let pp = uvm_pagelookup(&**uobj, curoff);
+        if let Some(pg) = pp.filter(|pg| pg.flags() & PG_BUSY != 0) {
+            pg.set_bits(PG_WANTED);
+            let _ = w.sleep_nsec(pg.chan(), PVM, "km_pgrm", INFSLP);
+            continue; // loop back to us
+        }
+
+        // free the swap slot, then the page
+        let slot = uao_dropswap(aobj, w, (curoff >> PAGE_SHIFT) as i32);
+
+        match pp {
+            Some(pg) => uvm_pagefree(pg, Owner::Object(&**uobj)),
+            None if slot != 0 => swpgonlydelta += 1,
+            None => {}
+        }
+        curoff += PAGE_SIZE as Voff;
+    }
+
+    if swpgonlydelta > 0 {
+        kassert!(UVMEXP.swpgonly.load(Ordering::Relaxed) >= swpgonlydelta);
+        UVMEXP.swpgonly.fetch_sub(swpgonlydelta, Ordering::Relaxed);
+    }
 }
 
 /// `uvm_km_pgremove_intrsafe`: like `uvm_km_pgremove()`, but for "intrsafe" objects.
@@ -958,6 +1101,23 @@ mod tests {
                 .iter()
                 .all(|&pa| PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.is_free()))
         );
+    }
+
+    /// A map slot is set once and read back; a second set and the single page mode's
+    /// (which names no map) panic. `phys_map` only: no other test sets it.
+    #[test]
+    fn a_submap_is_installed_once() {
+        assert!(map_of(KvMap::None).is_none());
+        let m: &'static VmMap =
+            std::boxed::Box::leak(std::boxed::Box::new(VmMap::new(0x1000_0000, 0x2000_0000)));
+        install_submap(KvMap::Phys, m);
+        assert!(core::ptr::eq(phys_map(), m));
+        assert!(map_of(KvMap::Phys).is_some_and(|p| core::ptr::eq(p, m)));
+        assert!(!is_kernel_map(m));
+        assert_eq!(phys_map().min_offset(), 0x1000_0000);
+        assert_eq!(phys_map().max_offset(), 0x2000_0000);
+        assert!(std::panic::catch_unwind(|| install_submap(KvMap::Phys, m)).is_err());
+        assert!(std::panic::catch_unwind(|| install_submap(KvMap::None, m)).is_err());
     }
 
     #[test]
