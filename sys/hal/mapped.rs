@@ -113,23 +113,24 @@
 //!   refuse a held frame: `pmap_zero_page` and `pmap_copy_page` claim it for their length,
 //!   `pmap_page_protect` may not take the view's mapping away (removing the page's mappings,
 //!   which freeing it does, or write-protecting a writable view), the page system refuses to
-//!   free it (`uvm_pageclean`) and to hand it out again (`PageMd::clear_attrs`).
+//!   free it (`uvm_pageclean`), to hand it out again (`PageMd::clear_attrs`) and to unbusy
+//!   it (`VmPage::clear_bits` of `PG_BUSY`), so the frames stay busy until the drop.
 //! - A window is entered only where nothing is mapped (each page `pmap_extract`ed first), so
 //!   no live window is overlaid by another.
 //! - Both constructors are methods of the [`KernelMapper`], the kernel map's token: only its
 //!   holders (the kernel's `vm::km`, and those it lends the token to: `bsd`'s
-//!   `machine::pmap`, the pager) can make a view, not any kernel code. **The token's
-//!   contract**, which `hal` cannot check: the window's addresses are the holder's (a pager
-//!   segment it took), no live window is overlaid by a `pmap_enter`/`kenter` on
-//!   `pmap_kernel()` nor removed but by the view's drop (`bsd`'s safe `pmap_enter` and
-//!   `pmap_remove` on `pmap_kernel()`, `sys/machine/pmap.rs`, are the legacy trust
-//!   `kernel::vm::km` records for its lend), and the frames are pager pages.
-//! - **The gap that remains** (until the pages are typed, N3.5): a page that is busy *and*
-//!   backs kernel memory reached by address passes every check. Such pages exist: the buffer
-//!   cache's (`uvm_pagealloc_multi` leaves `PG_BUSY | PG_FAKE` set for the buffer's life;
-//!   `vfs_biomem` maps them with `kenter` and `bsd` reaches them by raw pointers), and a
-//!   kernel object's page between its allocation and its unbusy (`uvm_km_kmemalloc`). That
-//!   none is passed is the token holder's contract above.
+//!   `machine::pmap`, the pager) can make a view, not any kernel code. The window's
+//!   addresses are the holder's (a pager segment it took).
+//! - **The gap until N3.5** (the token holder's contract): no live window is overlaid,
+//!   removed or write-protected through the kernel map's token but by its drop, and no frame
+//!   is a busy page that backs kernel memory (the buffer cache's, busy for the buffer's
+//!   life); the frames stay busy until the drop (unbusying, freeing or reallocating a viewed
+//!   page panics). The token's ways in are `KernelMapper::enter`/`kenter` (an overlay),
+//!   `remove`/`kremove` and `protect` on `pmap_kernel()`, and `bsd`'s safe `pmap_enter`,
+//!   `pmap_remove` and `pmap_protect` on `pmap_kernel()` (`sys/machine/pmap.rs`, the legacy
+//!   trust `kernel::vm::km` records for its lend); the buffer cache's pages are
+//!   `uvm_pagealloc_multi`'s, which leaves `PG_BUSY | PG_FAKE` set for the buffer's life
+//!   (`vfs_biomem` maps them with `kenter`, `bsd` reaches them by raw pointers).
 //!
 //! On a machine without an MMU (`PMAP_NOMMU`, only the host test double) a virtual address
 //! maps nothing, so the window's bytes are read through the direct map (the identity there):
@@ -220,16 +221,19 @@ impl MappedBytes<'_> {
         // SAFETY: `view` names `len` bytes (at most `isize::MAX`, nonzero) of managed, busy
         // pages (checked when the view was made), so RAM, whose every byte is a valid `u8`.
         // They stay mapped while this value lives: the window was entered where nothing was
-        // mapped, `pmap_page_protect` refuses to take a held page's mapping away, and only
-        // this value's drop removes the window (the token's contract: no overlay, no other
-        // removal; the direct map never goes). Each frame is claimed by this value alone, so
-        // no other view exists, `pmap_zero_page`/`pmap_copy_page` refuse it, and the page
-        // system can neither free it nor hand it out again while the claim lives; no `&mut`
-        // through this value is alive beside this `&` (`as_slice_mut` needs `&mut self`). No
-        // reference to kernel memory reaches the frames: pages of `uvm_pglistalloc` and the
-        // page tables are never busy, and a busy page that backs kernel memory (the buffer
-        // cache's) is the token holder's contract until N3.5 (the module's docs). The slice
-        // borrows `self`, so it ends before the drop unmaps and releases.
+        // mapped and `pmap_page_protect` refuses to take a held page's mapping away (the
+        // direct map never goes). Each frame is claimed by this value alone, so no other view
+        // exists, `pmap_zero_page`/`pmap_copy_page` refuse it, and the page system can
+        // neither unbusy, free nor hand it out again while the claim lives (it panics), so
+        // the frames stay busy, their owner's, until the drop; no `&mut` through this value
+        // is alive beside this `&` (`as_slice_mut` needs `&mut self`). Pages of
+        // `uvm_pglistalloc` and the page tables are never busy, so no reference to that
+        // kernel memory reaches the frames. What `hal` cannot check is the gap until N3.5,
+        // the token holder's contract (the module's docs): no live window is overlaid,
+        // removed or write-protected through the kernel map's token but by its drop, and no
+        // frame is a busy page that backs kernel memory (the buffer cache's, busy for the
+        // buffer's life). The slice borrows `self`, so it ends before the drop unmaps and
+        // releases.
         unsafe { slice::from_raw_parts(p, self.len) }
     }
 
@@ -266,6 +270,10 @@ impl Drop for MappedBytes<'_> {
         match self.kind {
             Kind::Direct(pa) => md("MappedBytes", pa).release_view(),
             Kind::Window(mapper) => {
+                // The claims go first: the frames are found through the window's own
+                // mapping (`extract`), which the removal takes away. No reference into the
+                // view is alive (the drop holds it mutably), so a frame claimed anew between
+                // the release and the removal meets no reader through this window.
                 for i in 0..self.len / PAGE_SIZE {
                     let cva = self.va + Vsize::new(i * PAGE_SIZE);
                     match pmap::kernel().extract(cva) {
@@ -292,10 +300,12 @@ impl KernelMapper {
     /// Exclusivity: each frame must be a busy managed page (`PG_BUSY`) and is claimed for
     /// this view alone; a frame already held (this one included, twice in `frames`) is
     /// `panic(9)`, after the claims made so far are given up. A page of the window already
-    /// mapped is `panic(9)` before anything is claimed. The token's contract (the module's
-    /// docs): `va` is kernel virtual space the caller owns (a pager segment), nothing overlays
-    /// or removes the window but its drop, and no frame is a busy page that backs kernel
-    /// memory (the buffer cache's), which `hal` cannot tell until the pages are typed (N3.5).
+    /// mapped is `panic(9)` before anything is claimed; the frames stay busy until the drop
+    /// (unbusying, freeing or reallocating a viewed page panics). `va` is kernel virtual
+    /// space the caller owns (a pager segment). The gap until N3.5 (the token holder's
+    /// contract, the module's docs): no live window is overlaid, removed or write-protected
+    /// through the kernel map's token but by its drop, and no frame is a busy page that backs
+    /// kernel memory (the buffer cache's, busy for the buffer's life).
     /// Panics on no frame, `prot` without `PROT_READ` (the pager maps `PROT_READ`, with
     /// `PROT_WRITE` for a read into the pages), a window that is not page-aligned or wraps, a
     /// frame that is not a managed page or not busy, and on a machine without an MMU frames
@@ -375,10 +385,11 @@ impl KernelMapper {
     /// write (`uvm_pagermapin` with one page and no aliasing risk).
     ///
     /// Exclusivity: as [`KernelMapper::map_frames`]: the frame must be a busy managed page
-    /// and is claimed for this view alone (a frame already held is `panic(9)`); that it is a
-    /// pager page and not a busy page backing kernel memory is the token's contract (the
-    /// module's docs). Panics on a machine without a direct map (none lacks one: amd64, arm64
-    /// by LZ's deviation, the host double) and when `pa` is not a busy managed page.
+    /// and is claimed for this view alone (a frame already held is `panic(9)`); it stays busy
+    /// until the drop. The gap until N3.5 (the token holder's contract, the module's docs):
+    /// no frame is a busy page that backs kernel memory (the buffer cache's, busy for the
+    /// buffer's life). Panics on a machine without a direct map (none lacks one: amd64,
+    /// arm64 by LZ's deviation, the host double) and when `pa` is not a busy managed page.
     pub fn map_direct(&self, pa: Paddr) -> MappedBytes<'_> {
         if !HAVE_PMAP_DIRECT {
             hal_panic(format_args!("map_direct: no direct map"));

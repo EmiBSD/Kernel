@@ -334,8 +334,17 @@ impl VmPage {
         self.pg_flags.fetch_or(bits, Mem::Relaxed);
     }
 
-    /// `atomic_clearbits_int(&pg->pg_flags, bits)`.
+    /// `atomic_clearbits_int(&pg->pg_flags, bits)`. Unbusying a page that `hal` holds in a
+    /// byte view (the pager's window) panics: its frames stay busy until the view's drop.
+    /// (`pmap_zero_page`'s and `pmap_copy_page`'s holds are taken under the page's owner
+    /// lock, or on a page the caller holds busy, as every `PG_BUSY` clear is, so they never
+    /// meet one.)
     pub fn clear_bits(&self, bits: u32) {
+        if bits & PG_BUSY != 0 && self.mdpage.in_view() {
+            kpanic(format_args!(
+                "uvm: PG_BUSY cleared on a page in a byte view"
+            ));
+        }
         self.pg_flags.fetch_and(!bits, Mem::Relaxed);
     }
 
@@ -1542,7 +1551,9 @@ pub fn uvm_pagecount(constraint: &UvmConstraintRange) -> usize {
 // `alloc_ptp` or `steal` hands out is RAM of the loaded segments (inside the direct map) that
 // nothing else uses until `free_ptp` takes it back (stolen frames never come back); `md_of`
 // answers the `PageMd` embedded in the frame's page, the same for ever (the array is never
-// freed).
+// freed); `is_busy` answers the page's `PG_BUSY` as this module keeps it, on which hal's
+// byte views rest (`sys/hal/mapped.rs`: only busy pages are viewed, and `clear_bits` keeps a
+// viewed page busy).
 impl PhysPages for PhysPagesImpl {
     fn alloc_ptp(&self) -> Option<Paddr> {
         let pg = uvm_pagealloc(Owner::None, 0, UVM_PGA_USERESERVE | UVM_PGA_ZERO)?;
@@ -1855,6 +1866,31 @@ mod tests {
                 .map(|s| s.avail_end - s.avail_start)
                 .sum::<usize>()
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "uvm_pageclean: a page in a byte view")]
+    fn a_page_in_a_byte_view_is_not_freed() {
+        let _g = setup();
+        let pg = uvm_pagealloc(Owner::None, 0, 0).expect("a page");
+        let mapper = crate::vm::km::legacy_mapper(testutil::pmap_boot());
+        let _view = mapper.map_direct(pg.phys_addr);
+        uvm_pagefree(pg, Owner::None);
+    }
+
+    #[test]
+    #[should_panic(expected = "PG_BUSY cleared on a page in a byte view")]
+    fn a_page_in_a_byte_view_stays_busy() {
+        let _g = setup();
+        let pg = uvm_pagealloc(Owner::None, 0, 0).expect("a page");
+        let mapper = crate::vm::km::legacy_mapper(testutil::pmap_boot());
+        let view = mapper.map_direct(pg.phys_addr);
+        // Other bits may change; the view's drop lets the page be unbusied.
+        pg.clear_bits(PG_FAKE);
+        drop(view);
+        pg.set_bits(PG_BUSY);
+        let _again = mapper.map_direct(pg.phys_addr);
+        pg.clear_bits(PG_BUSY);
     }
 
     #[test]
