@@ -8447,6 +8447,11 @@ crate = "kernel"
 reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"
 
 [[extra]]
+rust = "sys/kernel/benches/vm.rs"
+crate = "kernel"
+reason = "decision 42, phase 1: host microbenchmarks of kernel::vm's hot paths (fault, fork, exec, map/unmap, primitives) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/prf.rs"
 crate = "kernel"
 reason = "N3.3 fix-up: the kernel crate's printf (hal::prf) and unported!(name), bsd's project helper sys/kern/unported.rs for the moved code (printed once per site through printf(9), yields ENOSYS; scope-and-stubs.md); no LZ source"
