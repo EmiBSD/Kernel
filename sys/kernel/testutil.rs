@@ -608,7 +608,7 @@ impl VnodeOps for MemVnode {
         self.uvn.set(Some(uvn));
     }
 
-    fn attr_size(&self) -> Result<u64, Errno> {
+    fn attr_size(&'static self) -> Result<u64, Errno> {
         Ok(lock_any(&self.file).len() as u64)
     }
 
@@ -628,29 +628,29 @@ impl VnodeOps for MemVnode {
         0x1000
     }
 
-    fn vref(&self) {
+    fn vref(&'static self) {
         self.usecount.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn vrele(&self) {
+    fn vrele(&'static self) {
         self.usecount.fetch_sub(1, Ordering::Relaxed);
     }
 
-    fn vget_nowait(&self) -> Result<(), Errno> {
+    fn vget_nowait(&'static self) -> Result<(), Errno> {
         self.vref();
         Ok(())
     }
 
-    fn lock(&self, _flags: i32) -> Result<(), Errno> {
+    fn lock(&'static self, _flags: i32) -> Result<(), Errno> {
         self.nlocked.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    fn unlock(&self) {
+    fn unlock(&'static self) {
         self.nlocked.fetch_sub(1, Ordering::Relaxed);
     }
 
-    fn read(&self, off: Voff, buf: &mut [u8], _ioflag: i32) -> Result<usize, Errno> {
+    fn read(&'static self, off: Voff, buf: &mut [u8], _ioflag: i32) -> Result<usize, Errno> {
         *lock_any(&self.last_read) = Some(ReadSeen {
             object_locked: self
                 .uvn
@@ -674,7 +674,7 @@ impl VnodeOps for MemVnode {
         Ok(n)
     }
 
-    fn write(&self, off: Voff, buf: &[u8], _ioflag: i32) -> Result<usize, Errno> {
+    fn write(&'static self, off: Voff, buf: &[u8], _ioflag: i32) -> Result<usize, Errno> {
         if self.fail.load(Ordering::Relaxed) {
             return Err(Errno::EIO);
         }

@@ -364,14 +364,15 @@ static SYS_INFO: OnceStatic<&'static dyn SysInfo> = OnceStatic::new();
 /// A vnode as the pager needs it (`struct vnode`, `bsd`'s until the vnode layer moves, N5):
 /// implemented by `bsd`'s `Vnode`, passed as `&'static dyn VnodeOps` (vnodes are never freed)
 /// and kept by the [`Uvn`]; each method is one call into the vnode layer (bridges.toml
-/// `VnodeOps`).
+/// `VnodeOps`). The methods that reach the vnode layer take `&'static self`: its functions
+/// take `&'static Vnode`, and the pager only ever holds a vnode so.
 pub trait VnodeOps: Sync {
     /// `vp->v_uvm`: the vnode's object, once attached.
     fn uvn(&self) -> Option<&'static Uvn>;
     /// `vp->v_uvm = uvn`.
     fn set_uvn(&self, uvn: &'static Uvn);
     /// `VOP_GETATTR(vp, &vattr, p->p_ucred, p)` for `curproc`: `va_size`.
-    fn attr_size(&self) -> Result<u64, Errno>;
+    fn attr_size(&'static self) -> Result<u64, Errno>;
     /// `vp->v_type == VBLK`.
     fn is_blk(&self) -> bool;
     /// `vp->v_flag & VTEXT`: a running text.
@@ -382,21 +383,21 @@ pub trait VnodeOps: Sync {
     /// none).
     fn mount_id(&self) -> usize;
     /// `vref(vp)`.
-    fn vref(&self);
+    fn vref(&'static self);
     /// `vrele(vp)`.
-    fn vrele(&self);
+    fn vrele(&'static self);
     /// `vget(vp, LK_NOWAIT)`: a reference, unless the vnode is being recycled.
-    fn vget_nowait(&self) -> Result<(), Errno>;
+    fn vget_nowait(&'static self) -> Result<(), Errno>;
     /// `vn_lock(vp, flags)`.
-    fn lock(&self, flags: i32) -> Result<(), Errno>;
+    fn lock(&'static self, flags: i32) -> Result<(), Errno>;
     /// `VOP_UNLOCK(vp)`.
-    fn unlock(&self);
+    fn unlock(&'static self);
     /// `VOP_READ(vp, &uio, ioflag, curproc's cred)` of `buf.len()` bytes at `off` into `buf`
     /// (`UIO_SYSSPACE`): the bytes read (`len - uio_resid`). The vnode is locked.
-    fn read(&self, off: Voff, buf: &mut [u8], ioflag: i32) -> Result<usize, Errno>;
+    fn read(&'static self, off: Voff, buf: &mut [u8], ioflag: i32) -> Result<usize, Errno>;
     /// `VOP_WRITE(vp, &uio, ioflag, curproc's cred)` of `buf` at `off`: the bytes written. The
     /// vnode is locked.
-    fn write(&self, off: Voff, buf: &[u8], ioflag: i32) -> Result<usize, Errno>;
+    fn write(&'static self, off: Voff, buf: &[u8], ioflag: i32) -> Result<usize, Errno>;
 }
 
 /// The system's clock and its shutdown state, as the vnode pager needs them, `bsd`'s until

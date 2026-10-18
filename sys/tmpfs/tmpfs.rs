@@ -94,7 +94,8 @@ use crate::sys::time::Timespec;
 use crate::sys::types::{Dev, Gid, Ino, Mode, Nlink, Off, Uid};
 use crate::sys::vnode::{VDIR, VNON, VT_TMPFS, Vnode, Vtype};
 use crate::uvm::uvm_extern::Voff;
-use crate::uvm::uvm_object::UvmObject;
+use hal::pool::PoolArc;
+use kernel::vm::aobj::Aobj;
 
 /// `struct tmpfs_dirent` (`tmpfs_dirent_t`): internal representation of a tmpfs directory
 /// entry.
@@ -181,8 +182,8 @@ pub struct TnLnk {
 
 /// `struct tn_reg`: type case VREG.
 pub struct TnReg {
-    /// `tn_aobj`: underlying UVM object to store contents.
-    pub tn_aobj: Cell<Option<&'static UvmObject>>,
+    /// `tn_aobj`: underlying UVM object to store contents (the node's handle of its aobj).
+    pub tn_aobj: Cell<Option<PoolArc<Aobj>>>,
     /// `tn_aobj_pages`: the pages accounted to the object.
     pub tn_aobj_pages: Cell<usize>,
     /// `tn_aobj_pgptr`: the kernel address of the cached mapping of one page, or 0.
@@ -311,9 +312,15 @@ impl TmpfsNode {
         }
     }
 
-    /// `tn_uobj` (`tn_spec.tn_reg.tn_aobj`): the regular file's object.
-    pub fn tn_uobj(&self) -> &'static UvmObject {
-        match self.tn_spec.tn_reg.tn_aobj.get() {
+    /// `tn_uobj` (`tn_spec.tn_reg.tn_aobj`): the regular file's object, a clone of the node's
+    /// handle (taken out of the cell and put back: every caller holds the vnode locked
+    /// exclusively, as `vn_read`/`vn_write` and the vnode pager lock it).
+    pub fn tn_uobj(&self) -> PoolArc<Aobj> {
+        let cell = &self.tn_spec.tn_reg.tn_aobj;
+        let aobj = cell.take();
+        let r = aobj.clone();
+        cell.set(aobj);
+        match r {
             Some(uobj) => uobj,
             None => panic(format_args!("tmpfs node {:p}: no aobj", self)),
         }

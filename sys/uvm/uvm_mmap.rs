@@ -1044,13 +1044,11 @@ pub fn uvm_mmapfile(
         uvmflag,
     );
 
-    match uvm_map(map, addr, size, Some(uobj), foff, align, uvmflag) {
+    match uvm_map(map, addr, size, Some(uobj.clone()), foff, align, uvmflag) {
         Ok(()) => uvm_mmaplock(map, addr, size, prot, locklimit),
         Err(error) => {
             // errors: first detach from the uobj, if any.
-            if let Some(detach) = uobj.pgops().pgo_detach {
-                detach(uobj);
-            }
+            uobj.detach();
             Err(error)
         }
     }

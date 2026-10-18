@@ -63,6 +63,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::kern::dma_alloc::dma_alloc_init;
 use crate::kern::kern_malloc::kmeminit;
+use crate::kern::subr_prf::panic;
+use crate::machine::intr::IPL_MPFLOOR;
 use crate::machine::{Machine, VmParam};
 use crate::sys::sysctl::SysctlPlain;
 use crate::sys::types::{Vaddr, Vsize};
@@ -78,6 +80,7 @@ use crate::uvm::uvm_map::{UVM_MAXKADDR, UvmMapUaddrSlot, uvm_map_init, uvm_map_s
 use crate::uvm::uvm_page::uvm_page_init;
 use crate::uvm::uvm_pager::uvm_pager_init;
 use crate::uvm::uvm_param::VM_KERNEL_SPACE_SIZE;
+use crate::uvm::uvm_vnode::uvn_install_sysinfo;
 pub use crate::uvm::uvmexp::UVMEXP;
 use crate::uvm::uvmexp::UvmexpCopy;
 
@@ -107,6 +110,11 @@ pub fn uvm_init() {
     }
 
     // averunnable.fscale = FSCALE: M5.
+
+    // The kernel's objects and vnode pager reach the kernel lock, the net lock, the clock
+    // and the shutdown state through bridges (N3.4e): registered before the first object.
+    crate::kern::hal_bridges::hal_bridges_register_vm();
+    uvn_install_sysinfo();
 
     // Init the page sub-system. This includes allocating the vm_page structures, and setting
     // up all the page queues (and locks). Available memory will be put in the "free" queue,
@@ -144,10 +152,17 @@ pub fn uvm_init() {
     dma_alloc_init();
 
     // Init all pagers and the pager_map.
-    uvm_pager_init();
+    if uvm_pager_init().is_err() {
+        panic(format_args!(
+            "uvm_pager_init: cannot make the pager's pools"
+        ));
+    }
 
     // step 9: init anonymous memory system
-    amap_init(); // init amap module
+    if amap_init(IPL_MPFLOOR).is_err() {
+        // init amap module
+        panic(format_args!("amap_init: cannot make the amap pools"));
+    }
 
     // step 10: start uvm_km_page allocator thread.
     let _ = unported!("uvm_km_page_lateinit");
@@ -158,7 +173,9 @@ pub fn uvm_init() {
     // DEADBEEF0 / DEADBEEF1: not configured.
 
     // Init anonymous memory systems.
-    uvm_anon_init();
+    if uvm_anon_init(IPL_MPFLOOR).is_err() {
+        panic(format_args!("uvm_anon_init: cannot make anonpl"));
+    }
 
     // Switch kernel and kmem_map over to a best-fit allocator, instead of walking the tree
     // (SMALL_KERNEL is not configured; kmem_map waits for kmeminit's uvm_km_suballoc).

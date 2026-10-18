@@ -70,7 +70,6 @@
 //!   `Result`, the `int` error of the C.
 
 use core::ffi::c_void;
-use core::ptr;
 
 use crate::kern::subr_prf::panic;
 use crate::machine::{Machine, VmParam};
@@ -85,14 +84,12 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::tree::RbtHead;
 use crate::sys::types::Register;
 use crate::uvm::uvm::{uvm_et_isconceal, uvm_et_issubmap};
-use crate::uvm::uvm_amap::amap_lookups;
-use crate::uvm::uvm_anon::VmAnon;
+use crate::uvm::uvm_amap::{Amap, amap_lookups};
 use crate::uvm::uvm_extern::{
     UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_UNKNOWN_OFFSET, UvmCoredumpSetupCb, UvmCoredumpWalkCb,
     VmProt, uvm_mapflag,
 };
 use crate::uvm::uvm_map::{UvmMapAddr, VmMapEntry, uvm_map, uvm_unmap, vm_map_lock, vm_map_unlock};
-use crate::uvm::uvm_object::{uvm_obj_is_device, uvm_obj_is_vnode};
 use crate::uvm::uvm_param::{atop, ptoa, round_page};
 
 /// `sys_obreak`: set break.
@@ -196,7 +193,13 @@ pub fn uvm_coredump_walk_amap(
     walk: UvmCoredumpWalkCb,
     cookie: *mut c_void,
 ) -> Result<(), Errno> {
-    let mut anons: [*const VmAnon; WALK_CHUNK] = [ptr::null(); WALK_CHUNK];
+    let Some(amap) = entry.aref.amap() else {
+        panic(format_args!(
+            "uvm_coredump_walk_amap: entry without an amap"
+        ));
+    };
+    let pageoff = entry.aref.ar_pageoff.get();
+    let mut present = [false; WALK_CHUNK];
 
     let prot = entry.protection.get();
     let mut nsegment = *nsegmentp;
@@ -211,9 +214,24 @@ pub fn uvm_coredump_walk_amap(
     let mut pos = start;
     while pos < entry_end {
         let npages = ((entry_end - pos) >> PAGE_SHIFT).min(WALK_CHUNK);
-        amap_lookups(&entry.aref, pos - entry.start.get(), &mut anons[..npages]);
-        for (i, anon) in anons[..npages].iter().enumerate() {
-            if anon.is_null() == absent {
+        {
+            // The amap's read lock for the lookups only (the C reads the slots unlocked): the
+            // walk callback writes the core file and may fault on this very amap.
+            let w = amap.lock().read();
+            let mut anons = [None; WALK_CHUNK];
+            amap_lookups(
+                &amap,
+                &w,
+                pageoff,
+                pos - entry.start.get(),
+                &mut anons[..npages],
+            );
+            for (p, a) in present.iter_mut().zip(&anons[..npages]) {
+                *p = a.is_some();
+            }
+        }
+        for (i, &here) in present[..npages].iter().enumerate() {
+            if !here == absent {
                 continue;
             }
             if !absent {
@@ -250,7 +268,7 @@ fn uvm_should_coredump(p: &Proc, entry: &VmMapEntry) -> bool {
     let pr = p.process();
     let prot = entry.protection.get();
     if prot & PROT_WRITE == 0
-        && entry.aref.ar_amap.get().is_null()
+        && !entry.aref.has_amap()
         && entry.start.get() != pr.ps_sigcode.get()
         && entry.start.get() != pr.ps_timekeep.get()
     {
@@ -271,7 +289,7 @@ fn uvm_should_coredump(p: &Proc, entry: &VmMapEntry) -> bool {
 
     // Don't dump mmaped devices.
     if let Some(uobj) = entry.uvm_obj()
-        && uvm_obj_is_device(uobj)
+        && uobj.is_device()
     {
         return false;
     }
@@ -281,6 +299,14 @@ fn uvm_should_coredump(p: &Proc, entry: &VmMapEntry) -> bool {
     }
 
     true
+}
+
+/// `amap->am_ref += delta`: the coredump's extra reference to a shared amap, taken and
+/// dropped under the amap's write lock (the C changes the count unlocked; the map is locked
+/// either way, so MAPS => AMAP holds).
+fn amap_refs_adjust(amap: &Amap, delta: i32) {
+    let w = amap.lock().write();
+    amap.set_refs_locked(&w, amap.refs() + delta);
 }
 
 /// `noop`: do nothing callback for `uvm_coredump_walk_amap()`.
@@ -331,13 +357,13 @@ pub fn uvm_coredump_walkmap(
         }
 
         if let Some(amap) = entry.aref.amap() {
-            if amap.am_ref.get() == 1 {
+            if amap.refs() == 1 {
                 let _ = uvm_coredump_walk_amap(entry, &mut nsegment, noop, cookie);
                 continue;
             }
 
             // Multiple refs currently, so take another and treat it as a single segment
-            amap.am_ref.set(amap.am_ref.get() + 1);
+            amap_refs_adjust(&amap, 1);
             refed_amaps += 1;
         }
 
@@ -359,7 +385,7 @@ pub fn uvm_coredump_walkmap(
             }
 
             if let Some(amap) = e.aref.amap()
-                && amap.am_ref.get() == 1
+                && amap.refs() == 1
             {
                 error = uvm_coredump_walk_amap(e, &mut nsegment, walk, cookie);
                 if error.is_err() {
@@ -371,7 +397,7 @@ pub fn uvm_coredump_walkmap(
 
             let end = e.end.get().min(<Machine as VmParam>::VM_MAXUSER_ADDRESS);
 
-            let isvnode = e.uvm_obj().is_some_and(uvm_obj_is_vnode);
+            let isvnode = e.uvm_obj().is_some_and(|o| o.is_vnode());
             error = walk(
                 e.start.get(),
                 end,
@@ -387,10 +413,10 @@ pub fn uvm_coredump_walkmap(
             nsegment += 1;
 
             if let Some(amap) = e.aref.amap()
-                && amap.am_ref.get() > 1
+                && amap.refs() > 1
             {
                 // multiple refs, so we need to drop one
-                amap.am_ref.set(amap.am_ref.get() - 1);
+                amap_refs_adjust(&amap, -1);
                 refed_amaps -= 1;
             }
             entry = RbtHead::<UvmMapAddr>::next(e);
@@ -405,13 +431,13 @@ pub fn uvm_coredump_walkmap(
                 let Some(amap) = e.aref.amap() else {
                     continue;
                 };
-                if amap.am_ref.get() == 1 {
+                if amap.refs() == 1 {
                     continue;
                 }
                 if !uvm_should_coredump(p, e) {
                     continue;
                 }
-                amap.am_ref.set(amap.am_ref.get() - 1);
+                amap_refs_adjust(&amap, -1);
                 let was = refed_amaps;
                 refed_amaps -= 1;
                 if was == 0 {

@@ -97,9 +97,8 @@
 //! - `uvm_page_init`'s machine inputs: the DMA constraints (`uvm_md_constraints[]`), the kernel
 //!   virtual range the pmap leaves after the last steal ([`uvm_page_init`]), and the buffer
 //!   cache's statistics, registered for the allocator (the `BufCacheStats` bridge);
-//! - [`uvm_pagealloc`] with the C's `(obj, anon)` pair, [`uvm_pagewait`] (a sleep on the
-//!   owner's legacy `rw_obj`), [`uvm_pagealloc_multi`] (the buffer cache's, under the kernel
-//!   lock), [`uvm_shutdown`] (`smr_flush`), [`paddr_is_dma_reachable`],
+//! - [`uvm_pagealloc`] with the C's `(obj, anon)` pair, [`uvm_pagealloc_multi`] (the buffer
+//!   cache's, under the kernel lock), [`uvm_shutdown`] (`smr_flush`), [`paddr_is_dma_reachable`],
 //!   [`uvm_page_physdump`] (ddb's `printf`);
 //! - [`owner`]: the C's `(obj, anon)` as the kernel's [`Owner`].
 //!
@@ -117,8 +116,11 @@
 //! - The functions whose C body follows `pg->uobject` or `pg->uanon` take the owner
 //!   ([`Owner`], [`owner`]): `uvm_pagefree`, `uvm_pageclean`, `uvm_page_unbusy`,
 //!   `uvm_pagewire`, `uvm_pageunwire`, `uvm_pageactivate`, `uvm_pagedeactivate`,
-//!   `uvm_pagedequeue`, `uvm_pagerealloc` and [`uvm_pagewait`]. `uvm_pagealloc` keeps its
+//!   `uvm_pagedequeue`, `uvm_pagerealloc` and `uvm_pagewait`. `uvm_pagealloc` keeps its
 //!   `(obj, off, anon, flags)` here.
+//! - N3.4e: the owners are the kernel's (`kernel::vm::object::Object`, `kernel::vm::anon::Anon`)
+//!   and their locks `hal::rwlock::SharedRwlock`s: `uvm_pagewait` is the kernel's, which gives
+//!   up the owner lock's witness for its sleep (LZ's here slept on the legacy `rw_obj`).
 //! - `uvm_lock_pageq()` returns the queues' guard and dropping it is `uvm_unlock_pageq()`;
 //!   `uvm_pagedequeue` takes the guarded queues.
 
@@ -127,20 +129,17 @@ use core::fmt::Write;
 pub use kernel::vm::page::*;
 pub use kernel::vm::pmemrange::{BufCacheStats, uvm_pmr_cache_drain};
 
-use crate::kern::kern_synch::rwsleep_nsec;
 use crate::machine::pmap::Pmap;
 use crate::machine::{Machine, VmParam};
 use crate::sys::errno::Errno;
-use crate::sys::param::{PNORELOCK, PVM};
-use crate::sys::rwlock::{Rwlock, rw_lock_held};
 use crate::sys::smr::smr_flush;
-use crate::sys::systm::{INFSLP, kernel_assert_locked};
+use crate::sys::systm::kernel_assert_locked;
 use crate::sys::types::{Paddr, Vaddr};
-use crate::uvm::uvm_anon::VmAnon;
 use crate::uvm::uvm_extern::Voff;
-use crate::uvm::uvm_object::UvmObject;
 use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
 use crate::{kassert, kprintf};
+use kernel::vm::anon::Anon;
+use kernel::vm::object::Object;
 
 // Physical memory segment strategies: how vm_physmem[] is kept.
 
@@ -184,7 +183,7 @@ impl BufCacheStats for BsdBufCacheStats {
 static BSD_BUFCACHE_STATS: BsdBufCacheStats = BsdBufCacheStats;
 
 /// The C's `(obj, anon)` pair (at most one of them) as the kernel's [`Owner`].
-pub fn owner<'a>(obj: Option<&'a UvmObject>, anon: Option<&'a VmAnon>) -> Owner<'a> {
+pub fn owner<'a>(obj: Option<&'a Object>, anon: Option<&'a Anon>) -> Owner<'a> {
     kassert!(obj.is_none() || anon.is_none());
     match (obj, anon) {
         (Some(o), _) => Owner::Object(o),
@@ -302,22 +301,17 @@ pub fn uvm_shutdown() {
 /// free; only one of obj or anon can be non-null; caller must activate/deactivate page if it
 /// is not wired.
 pub fn uvm_pagealloc(
-    obj: Option<&UvmObject>,
+    obj: Option<&Object>,
     off: Voff,
-    anon: Option<&VmAnon>,
+    anon: Option<&Anon>,
     flags: i32,
 ) -> Option<&'static VmPage> {
     kernel::vm::page::uvm_pagealloc(owner(obj, anon), off, flags)
 }
 
 /// `uvm_pagealloc_multi`: interface used by the buffer cache to allocate a buffer at a time.
-pub fn uvm_pagealloc_multi(
-    obj: &UvmObject,
-    off: Voff,
-    size: usize,
-    flags: i32,
-) -> Result<(), Errno> {
-    kassert!(crate::uvm::uvm_object::uvm_obj_is_bufcache(obj));
+pub fn uvm_pagealloc_multi(obj: &Object, off: Voff, size: usize, flags: i32) -> Result<(), Errno> {
+    kassert!(obj.is_bufcache());
     kernel_assert_locked();
     let plist = Pglist::new();
     let r = uvm_pglistalloc(
@@ -347,17 +341,6 @@ pub fn uvm_pagealloc_multi(
         }
     }
     r
-}
-
-/// `uvm_pagewait`: wait for a busy page of `owner`. Page must be known `PG_BUSY`; the owner's
-/// `lock` must be held; it is released on return.
-pub fn uvm_pagewait(pg: &VmPage, owner: Owner<'_>, lock: &Rwlock, wmesg: &'static str) {
-    kassert!(rw_lock_held(lock));
-    kassert!(pg.flags() & PG_BUSY != 0);
-    kassert!(uvm_page_owner_locked_p(pg, owner, false));
-
-    pg.set_bits(PG_WANTED);
-    let _ = rwsleep_nsec(pg.chan(), lock, PVM | PNORELOCK, wmesg, INFSLP);
 }
 
 const _: () = {

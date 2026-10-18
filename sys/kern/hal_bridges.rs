@@ -47,7 +47,9 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use hal::cons::Console;
 use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
+use hal::klock::KernelLock;
 use hal::malloc::Malloc;
+use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
 use hal::sleep::Sleep;
@@ -218,10 +220,11 @@ impl RawPool for Pool {
 /// `pool_init(9)` of a new pool that lives for ever.
 struct BsdPools;
 
-/// How many `struct pool`s are kept in [`STATIC_POOLS`]: the pools `hal` makes before
-/// `kmeminit` (`pmap_init`'s two on either machine: amd64's `pmappl` and `pvpl`, arm64's
-/// `pmap` and `pted`), with room for two more.
-const NSTATIC_POOLS: usize = 4;
+/// How many `struct pool`s are kept in [`STATIC_POOLS`]: the pools `hal` and the kernel make
+/// before `kmeminit` (`pmap_init`'s two on either machine: amd64's `pmappl` and `pvpl`, arm64's
+/// `pmap` and `pted`; N3.4e: `rw_obj_init`'s `rwobjpl` and `uao_init`'s `aobjpl` and
+/// `uaoeltpl`, which `uvm_km_init` runs for the kernel object), with room for three more.
+const NSTATIC_POOLS: usize = 8;
 
 /// `struct pool`s that need no `malloc(9)`, for the first pools made: the C's `pmap_init`
 /// runs before `kmeminit` (`uvm_init`) and calls `pool_init` on static `struct pool`s
@@ -390,6 +393,43 @@ impl Printf for BsdPrintf {
     }
 }
 
+/// `KERNEL_LOCK`, `KERNEL_UNLOCK`, `KERNEL_ASSERT_LOCKED` of `sys/sys/systm.rs`
+/// (`kern_lock.rs`), for the kernel's objects and vnode pager (N3.4e).
+struct BsdKernelLock;
+
+impl KernelLock for BsdKernelLock {
+    fn lock(&self) {
+        crate::sys::systm::kernel_lock();
+    }
+
+    fn unlock(&self) {
+        crate::sys::systm::kernel_unlock();
+    }
+
+    fn assert_locked(&self) {
+        crate::sys::systm::kernel_assert_locked();
+    }
+}
+
+/// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
+/// vnode pager's `uvn_io` (N3.4e).
+struct BsdNetLock;
+
+impl NetLock for BsdNetLock {
+    fn write_held(&self) -> bool {
+        crate::kern::kern_rwlock::rw_status(&crate::net::if_::NETLOCK)
+            == crate::sys::rwlock::RW_WRITE
+    }
+
+    fn unlock(&self) {
+        crate::sys::systm::net_unlock();
+    }
+
+    fn lock(&self) {
+        crate::sys::systm::net_lock();
+    }
+}
+
 static BSD_INTR: BsdIntr = BsdIntr;
 static BSD_CPU: BsdCpu = BsdCpu;
 static BSD_SLEEP: BsdSleep = BsdSleep;
@@ -401,6 +441,8 @@ static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
+static BSD_KERNEL_LOCK: BsdKernelLock = BsdKernelLock;
+static BSD_NET_LOCK: BsdNetLock = BsdNetLock;
 
 /// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
 /// then: `Machine::cpu_boot_secondary_processors`).
@@ -425,6 +467,13 @@ pub fn hal_bridges_register() {
         let _ = hal::bridges::register_tlb_cpus(&BSD_TLB_CPUS);
         TLB_CPUS_REGISTERED.store(true, Ordering::Release);
     }
+}
+
+/// Registers the bridges of the kernel's VM objects and vnode pager (`KernelLock`, `NetLock`),
+/// once: called by `uvm_init` before the first object is made (bridges.toml).
+pub fn hal_bridges_register_vm() {
+    let _ = hal::bridges::register_kernel_lock(&BSD_KERNEL_LOCK);
+    let _ = hal::bridges::register_net_lock(&BSD_NET_LOCK);
 }
 
 /// Whether the TLB shootdown's CPUs are registered (always, once [`hal_bridges_register`]

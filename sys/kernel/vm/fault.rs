@@ -108,8 +108,8 @@
 //! write-lock a map you bump it), so we save the version number before we release the lock
 //! and start I/O, then relock and check the version numbers to see if anything changed.
 //!
-//! Dead code until the flip (N3.4e): `bsd`'s `sys/uvm/uvm_fault.rs` serves the traps until
-//! its `VmMap` implements [`FaultMap`] and the kernel's objects implement [`FaultObject`].
+//! The traps reach it through `bsd`'s `sys/uvm/uvm_fault.rs` (N3.4e), whose `VmMap` implements
+//! [`FaultMap`]; the kernel's objects implement [`FaultObject`].
 //!
 //! ## Deviations
 //! - `uvmadvice[]` is a constant table: `PAGE_SIZE` is a constant here, so the values
@@ -174,7 +174,7 @@
 //!   acquisitions is the code's, as the C's, and each one says where it stands in MAPS =>
 //!   AMAP => UOBJ => ANON => PQ.
 //! - The map is `bsd`'s until N3.5: the fault is generic over [`FaultMap`] (implemented by
-//!   `bsd`'s `VmMap` at the flip; bridges.toml `FaultMap`), whose guard is a GAT that borrows
+//!   `bsd`'s `VmMap` since the flip, N3.4e; bridges.toml `FaultMap`), whose guard is a GAT that borrows
 //!   the map and whose entries borrow the guard ([`FaultMapGuard::lookup`]), so no entry is
 //!   read after its map was unlocked. `uvmfault_relock`'s "same version, else nothing held" is
 //!   [`FaultMap::relock`] answering `Option<Guard>`. What the fault reads of an entry is taken
@@ -443,7 +443,7 @@ pub trait FaultMapGuard: Sized {
     /// `uvm_map_lookup_entry(map, va, &entry)`: the entry holding `va`.
     fn lookup(&self, va: usize) -> Option<&Self::Entry>;
     /// `RBT_NEXT(uvm_map_addr, entry)`: the next entry by address.
-    fn next(&self, entry: &Self::Entry) -> Option<&Self::Entry>;
+    fn next<'a>(&'a self, entry: &'a Self::Entry) -> Option<&'a Self::Entry>;
     /// `vm_map_upgrade(map)` of a read-locked map (which bumps the version): the map locked
     /// for writing, or still read-locked in the `Err` (the C's `FALSE`).
     fn upgrade(self) -> Result<Self, Self>;
@@ -2194,6 +2194,12 @@ impl<'a> EntryLocks<'a> {
     pub fn lower(&self) -> Option<&WriteWitness<'a>> {
         self.lower.as_ref()
     }
+
+    /// The object's write witness, to sleep on or to change the object's pages with (the
+    /// kernel object's `uvm_km_pgremove` under `uvm_map_lock_entry`).
+    pub fn lower_mut(&mut self) -> Option<&mut WriteWitness<'a>> {
+        self.lower.as_mut()
+    }
 }
 
 /// The owner of `pg`, mapped `off` bytes into an entry with `aref` (whose amap `locks` holds)
@@ -2969,7 +2975,7 @@ mod tests {
                 .iter()
                 .find(|e| e.start <= va && va < e.end)
         }
-        fn next(&self, entry: &FakeEntry) -> Option<&FakeEntry> {
+        fn next<'a>(&'a self, entry: &'a FakeEntry) -> Option<&'a FakeEntry> {
             let entries = &self.state().entries;
             let i = entries.iter().position(|e| ptr::eq(e, entry))?;
             entries.get(i + 1)

@@ -99,7 +99,7 @@
 //! - The page array of `pgo_get`/`pgo_put` is `&mut [PageSlot]` (`kernel::vm::pager`):
 //!   `PGO_DONTCARE` is a variant, not a pointer value.
 //! - An object is the page system's owner by implementing `kernel::vm::page::PageObject` here,
-//!   in the kernel (the `PageOwner` bridge's object half, which the flip retires).
+//!   in the kernel (the `PageOwner` bridge's object half, retired at the flip, N3.4e).
 
 use core::ops::Deref;
 use core::ptr;

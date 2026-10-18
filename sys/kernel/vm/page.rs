@@ -133,12 +133,13 @@
 //! ([`uvm_page_physload`], [`uvm_page_physsteal`] behind `hal::pmap::steal_memory`) and frozen by [`uvm_page_init`] into
 //! a table published once, which [`page_of`] (`PHYS_TO_VM_PAGE`) reads without a lock.
 //!
-//! The owners (`struct uvm_object`, `struct vm_anon`) have not moved (N3.4): a page records
-//! its owner's identity ([`OwnerTag`]) and never follows it; every operation whose C body
-//! reaches `pg->uobject` or `pg->uanon` takes the owner from its caller ([`Owner`]), who holds
-//! the owner's lock by the C's `[o]` rule, through the two traits bsd's `UvmObject` and
-//! `VmAnon` implement ([`PageObject`], [`PageAnon`]; bridges.toml `PageOwner`). An owner that
-//! is not the page's is refused (a panic): the C would act on the page's own.
+//! A page records its owner's identity ([`OwnerTag`]) and never follows it; every operation
+//! whose C body reaches `pg->uobject` or `pg->uanon` takes the owner from its caller
+//! ([`Owner`]), who holds the owner's lock by the C's `[o]` rule, through the two traits the
+//! owners implement ([`PageObject`], [`PageAnon`]: the kernel's `vm::object::Object` and
+//! `vm::anon::Anon` since N3.4e, which retired bsd's implementations and the `PageOwner`
+//! bridge). An owner that is not the page's is refused (a panic): the C would act on the
+//! page's own.
 //!
 //! ## Deviations
 //! - The `!PMAP_STEAL_MEMORY` path of `uvm_pageboot_alloc` (`pmap_virtual_space`, a frame at a
@@ -466,8 +467,8 @@ impl OwnerTag {
     }
 }
 
-/// An object that owns pages (`struct uvm_object`, still `bsd`'s: bridges.toml `PageOwner`,
-/// N3.4). Implemented by `bsd`'s `UvmObject`, passed as a value, never stored.
+/// An object that owns pages (`struct uvm_object`). Implemented by the kernel's
+/// `vm::object::Object` (N3.4e) and the tests' doubles, passed as a value, never stored.
 pub trait PageObject {
     /// Its identity (`OwnerTag::object(self)`).
     fn tag(&self) -> OwnerTag;
@@ -485,9 +486,8 @@ pub trait PageObject {
     fn set_npages(&self, n: i32);
 }
 
-/// An anon that owns a page (`struct vm_anon`: bridges.toml `PageOwner`, N3.4). Implemented by
-/// `bsd`'s `VmAnon` and by the kernel's `vm::anon::Anon` (N3.4b, until the flip retires
-/// `bsd`'s), passed as a value, never stored.
+/// An anon that owns a page (`struct vm_anon`). Implemented by the kernel's `vm::anon::Anon`
+/// (N3.4e) and the tests' doubles, passed as a value, never stored.
 pub trait PageAnon {
     /// Its identity (`OwnerTag::anon(self)`).
     fn tag(&self) -> OwnerTag;

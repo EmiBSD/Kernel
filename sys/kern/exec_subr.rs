@@ -186,7 +186,7 @@ pub fn vmcmd_map_pagedvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno>
                 map,
                 &mut cmd.ev_addr,
                 cmd.ev_len,
-                Some(uobj),
+                Some(uobj.clone()),
                 cmd.ev_offset as i64,
                 0,
                 uvm_mapflag(cmd.ev_prot, PROT_MASK, MAP_INHERIT_COPY, MADV_NORMAL, flags),
@@ -195,9 +195,7 @@ pub fn vmcmd_map_pagedvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno>
             // check for error
             if error.is_err() {
                 // error: detach from object
-                if let Some(detach) = uobj.pgops().pgo_detach {
-                    detach(uobj);
-                }
+                uobj.detach();
                 return error;
             }
         }

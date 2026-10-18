@@ -508,8 +508,8 @@ pub(crate) mod tests {
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), p);
-        crate::kern::kern_rwlock::rw_obj_init();
-        uao_init();
+        let _ = hal::rwlock::init_shared();
+        let _ = uao_init();
         TMPFS_BYTES_USED.store(0, Ordering::Relaxed);
         (g, p)
     }

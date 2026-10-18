@@ -58,28 +58,24 @@
 //! `page_init_done`, `pmr_control`) are the kernel's page system's
 //! (`kernel::vm::page::uvm_lock_pageq`, `page_init_done`; `kernel::vm::pmemrange`'s free
 //! page state), each lock owning what it guards; what is left here is the kernel map's.
-
-use core::cell::Cell;
-use core::ptr;
+//!
+//! N3.4e: `kernel_object` is the kernel's (`kernel::vm::aobj::kernel_object`, its static
+//! `ObjRef::Kernel`); [`Uvm::kernel_object`] reads it there.
 
 use crate::sys::queue::SlistHead;
 use crate::uvm::uvm_map::{UvmKentryFree, VmMapEntry};
-use crate::uvm::uvm_object::UvmObject;
+use crate::uvm::uvm_object::ObjRef;
 
 /// `struct uvm`.
 pub struct Uvm {
     /// `kentry_free`: free page pool (the static kernel map entries, guarded by
     /// `uvm_kmapent_mtx`).
     pub kentry_free: SlistHead<UvmKentryFree>,
-    // kernel object
-    /// `kernel_object`: the kernel's anonymous object (`uao_create` with
-    /// `UAO_FLAG_KERNOBJ`), null before `uvm_km_init`.
-    pub kernel_object: Cell<*const UvmObject>,
+    // kernel object: the kernel's (`Uvm::kernel_object`).
 }
 
-// SAFETY: the fields are written once on the boot CPU before the other processors start
-// (`kernel_object`, `kentry_free`'s initial fill) or under `uvm_kmapent_mtx` afterwards
-// (`kentry_free`).
+// SAFETY: the field is written once on the boot CPU before the other processors start
+// (`kentry_free`'s initial fill) or under `uvm_kmapent_mtx` afterwards.
 unsafe impl Sync for Uvm {}
 
 impl Uvm {
@@ -87,14 +83,13 @@ impl Uvm {
     pub const fn new() -> Self {
         Self {
             kentry_free: SlistHead::new(),
-            kernel_object: Cell::new(ptr::null()),
         }
     }
 
-    /// `uvm.kernel_object`, once `uvm_km_init` made it.
-    pub fn kernel_object(&self) -> Option<&'static UvmObject> {
-        // SAFETY: the kernel object is a static (`kernel_object_store`), alive forever.
-        unsafe { self.kernel_object.get().as_ref() }
+    /// `uvm.kernel_object`, once `uvm_km_init` made it (`uao_create(.., UAO_FLAG_KERNOBJ)`):
+    /// the kernel's.
+    pub fn kernel_object(&self) -> Option<ObjRef> {
+        kernel::vm::aobj::kernel_object()
     }
 }
 

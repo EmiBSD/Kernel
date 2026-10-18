@@ -339,6 +339,16 @@ impl Amap {
         self.state.get(w)
     }
 
+    /// `am_ref = n` by the holder of the amap's write witness `w`: the coredump's extra
+    /// reference (`uvm_coredump_walkmap`, `uvm_unix.c`, which the C counts without the lock;
+    /// here under it).
+    pub fn set_refs_locked(&self, w: &WriteWitness<'_>, n: i32) {
+        if w.lock_id() != self.lock.id() {
+            kpanic(format_args!("amap: a witness of another lock"));
+        }
+        self.refs.store(n, Ordering::Relaxed);
+    }
+
     /// `am_ref = n`, under the lock held for writing.
     fn set_refs(&self, n: i32) {
         kassert!(self.lock.status() == RW_WRITE);
@@ -1911,6 +1921,31 @@ mod tests {
         let other = SharedRwlock::new("other").expect("a lock");
         let w = other.read();
         let _ = amap_lookup(&amap, &w, 0, 0);
+    }
+
+    #[test]
+    fn the_coredump_reference_is_counted_under_the_write_witness() {
+        let _g = setup();
+        let amap = amap_alloc(4 * PAGE_SIZE, M_WAITOK, false).expect("an amap");
+        {
+            let w = amap.lock().write();
+            amap.set_refs_locked(&w, amap.refs() + 1);
+        }
+        assert_eq!(amap.refs(), 2);
+        let w = amap.lock().write();
+        amap.set_refs_locked(&w, amap.refs() - 1);
+        drop(w);
+        assert_eq!(amap.refs(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "amap: a witness of another lock")]
+    fn the_coredump_reference_refuses_a_witness_of_another_lock() {
+        let _g = setup();
+        let amap = amap_alloc(4 * PAGE_SIZE, M_WAITOK, false).expect("an amap");
+        let other = SharedRwlock::new("other").expect("a lock");
+        let w = other.write();
+        amap.set_refs_locked(&w, 2);
     }
 
     #[test]

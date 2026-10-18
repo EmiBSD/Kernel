@@ -403,7 +403,8 @@ pub fn uvmexp_print(pr: PrFn) {
     pr(format_args!("  kernel pointers:\n"));
     pr(format_args!(
         "    objs(kern)={:p}\n",
-        UVM.kernel_object.get()
+        UVM.kernel_object()
+            .map_or(core::ptr::null(), |o| o.as_ptr())
     ));
 }
 /* </CODE> */

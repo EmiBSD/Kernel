@@ -2917,7 +2917,6 @@ mod tests {
     #[cfg(feature = "tmpfs")]
     #[test]
     fn lookups_cross_the_mount_point_both_ways() {
-        use crate::kern::kern_rwlock::rw_obj_init;
         use crate::tmpfs::tmpfs_mem::TMPFS_BYTES_USED;
         use crate::tmpfs::tmpfs_vfsops::tests::{args, tmpfs_conf};
         use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
@@ -2925,8 +2924,8 @@ mod tests {
         use core::sync::atomic::Ordering;
 
         let (_g, p) = setup(sample());
-        rw_obj_init();
-        uao_init();
+        let _ = hal::rwlock::init_shared();
+        let _ = uao_init();
         TMPFS_BYTES_USED.store(0, Ordering::Relaxed);
 
         // a tmpfs root with /mnt

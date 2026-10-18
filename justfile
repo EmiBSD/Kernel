@@ -137,7 +137,7 @@ smokes := "smoke-boot smoke-shell smoke-login smoke-net smoke-route smoke-diag s
     "smoke-net-mp smoke-up smoke-audio smoke-usb smoke-puc smoke-fb smoke-wscons smoke-vga smoke-kbd " + \
     "smoke-powerbtn smoke-ukc smoke-ppb smoke-dmar smoke-iic smoke-ipmi smoke-tpm smoke-virtio smoke-viogpu " + \
     "smoke-mouse smoke-ugen smoke-ehci smoke-uaudio smoke-uhci smoke-ohci smoke-cdce smoke-ucom " + \
-    "smoke-pckbc smoke-eap smoke-lpt smoke-bell smoke-cd80 smoke-abi"
+    "smoke-pckbc smoke-eap smoke-lpt smoke-bell smoke-cd80 smoke-abi smoke-mmap"
 
 smoke: smoke-build
     cargo xtask smoke-all -j {{jobs}} --just {{quote(just_executable())}} {{smokes}}
@@ -2171,6 +2171,26 @@ abi_steps := "--reject 'abi_openbsd.ko: not loaded' " + \
     "--expect 'abi-ok-42' " + \
     "--send-after 'abi-ok-42' --send 'echo abi-pipe-$((40+3)) | cat\\n' " + \
     "--expect 'abi-pipe-43'"
+
+# N3.4e: the vnode pager under two CPUs (`tools/mmapstress`): a MAP_SHARED file of 16 pages, the
+# parent dirtying and msync(MS_SYNC)ing it (the pager's multi-page cluster window, the object's
+# lock let go across VOP_WRITE) while its child madvise(MADV_DONTNEED)s and reads it back in a
+# loop; on tmpfs, then on the ramdisk's FFS root. Each round checks both resident set sizes are
+# not negative; the mapping and the file must hold the last round's pattern. MP, `{{smp}}`.
+smoke-mmap: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+    @test -f target/userland/amd64/root/usr/bin/mmapstress -a -f target/userland/arm64/root/usr/bin/mmapstress || \
+        { echo "smoke-mmap: no mmapstress in target/userland; run just userland first"; exit 1; }
+    cargo xtask smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{mmap_steps}}
+    cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{mmap_steps}}
+
+# `smoke-mmap`'s session and the panics it must not see (hal's byte views and pmap removal).
+mmap_steps := "--reject 'panic:' --reject 'a page in a byte view' --reject 'lost its mapping' " + \
+    "--reject 'no PTE for the mapping' --reject 'mmapstress: FAILED' " + \
+    "--send-after 'RETURN for sh:' --send '\\n' " + \
+    "--send-after '# ' --send 'mount_tmpfs tmpfs /tmp && mmapstress /tmp/m 1000 && echo mmap-tmpfs-$((40+2))\\n' " + \
+    "--send-after 'mmap-tmpfs-42' --send 'mount -uw / && mmapstress /root/m 1000 && rm /root/m && echo mmap-ffs-$((40+2))\\n' " + \
+    "--expect 'mmapstress: ok /tmp/m rounds=1000' --expect 'mmap-tmpfs-42' " + \
+    "--expect 'mmapstress: ok /root/m rounds=1000' --expect 'mmap-ffs-42'"
 
 # M13: the date comes from the RTC. Each arch boots single user from the ramdisk (`-s`) and
 # ksh(1) compares `date +%s` right after boot with the host's clock ({host-ms}, hwopts.rs):

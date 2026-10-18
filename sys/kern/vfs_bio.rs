@@ -148,7 +148,6 @@ use crate::sys::vnode::{VBIOERROR, VBLK, VREG, Vnode};
 use crate::uvm::uvm_extern::UvmConstraintRange;
 use crate::uvm::uvm_init::UVMEXP;
 use crate::uvm::uvm_km::NO_CONSTRAINT;
-use crate::uvm::uvm_object::{BUFCACHE_PAGER, uvm_obj_init};
 use crate::uvm::uvm_page::{Owner, uvm_pagecount, uvm_pagelookup, uvm_pagerealloc};
 use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, atop, ptoa, round_page};
 
@@ -623,7 +622,7 @@ pub fn bread_cluster_callback(bp: &'static Buf) {
         let newobj = &x.b_uobj;
         let oldobj = &bp.b_uobj;
 
-        uvm_obj_init(newobj, Some(&BUFCACHE_PAGER), 1);
+        newobj.reinit_dummy(1); // uvm_obj_init(newobj, &bufcache_pager, 1)
         for page in 0..atop(x.b_bufsize.get() as usize) {
             let off = x.b_poffs.get() + ptoa(page) as i64;
             let Some(pg) = uvm_pagelookup(oldobj, off) else {

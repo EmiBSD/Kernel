@@ -118,7 +118,6 @@ use crate::kern::kern_proc::{
 };
 use crate::kern::kern_prot::crget;
 use crate::kern::kern_resource::lim_startup;
-use crate::kern::kern_rwlock::rw_obj_init;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
 use crate::kern::kern_sig::{siginit, signal_init};
 use crate::kern::kern_smr::{smr_startup, smr_startup_thread};
@@ -285,7 +284,10 @@ pub fn main() -> ! {
     kernel_lock_init(); // KERNEL_LOCK_INIT()
     sched_lock_init(); // SCHED_LOCK_INIT()
 
-    rw_obj_init();
+    // rw_obj_init(): the lock objects are hal's (`"rwobjpl"`, hal::rwlock::SharedRwlock).
+    if hal::rwlock::init_shared().is_err() {
+        panic(format_args!("rw_obj_init: cannot make rwobjpl"));
+    }
     uvm_init();
     #[cfg(feature = "qemu")]
     {

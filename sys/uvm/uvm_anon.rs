@@ -42,122 +42,49 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Anonymous memory management: `<uvm/uvm_anon.h>` and `uvm_anon.c` (uvm anon ops).
+//! Anonymous memory management: `<uvm/uvm_anon.h>` and `uvm_anon.c` (uvm anon ops): `bsd`'s
+//! adapter to the kernel's anons, `kernel::vm::anon` (N3.4e).
 //!
 //! Upstream: sys/uvm/uvm_anon.h @ 3ce1f3f79392
 //! Upstream: sys/uvm/uvm_anon.c @ 3ce1f3f79392
+//! LZ: sys/uvm/uvm_anon.rs@3c62ede68802
 //!
-//! Anonymous virtual memory is short term virtual memory that goes away when the processes
-//! referencing it go away. An anonymous page of virtual memory is described by `struct
-//! vm_anon`. For active anons the data can be in one of the following state: \[1\] in a
-//! vm_page with no backing store allocated yet, \[2\] in a vm_page with backing store
-//! allocated, or \[3\] paged out to backing store (no vm_page).
-//!
-//! Status: `wip`. Milestone M3 had the structure; M7a (part 1) adds `an_lock`, `struct
-//! vm_aref` and the functions: the anon pool, `uvm_analloc`, `uvm_anfree`, `uvm_anwait`,
-//! `uvm_anon_dropswap`, `uvm_anon_release`, `uvm_anon_pagein`.
+//! The anons, their pool and every function of `uvm_anon.c` are the kernel's
+//! (`sys/kernel/vm/anon.rs`), re-exported here by their names, so the legacy callers keep
+//! their paths. What stays is `struct vm_aref`: the map's reference to an amap ("Locked by
+//! vm_map lock", `uvm_anon.h`), which lives in `bsd`'s map entries until the map moves into
+//! the kernel (N3.5).
 //!
 //! ## Deviations
-//! - Swap is not here (M7): `uvm_anon_dropswap` reports `uvm_swap_free` when an anon has a
-//!   slot, which nothing assigns yet.
-//! - `uvm_anon_pagein` needs `uvmfault_anonget` (M7a part 3) and reports it.
-//! - M11a: `MULTIPROCESSOR`'s `unused` padding and `pool_cache_init` are in (the per-CPU
-//!   pool caches need items of at least a `pool_cache_item`).
+//! - Swap is not here (N3.5): the kernel's `uvm_anon_dropswap` reports `uvm_swap_free` when
+//!   an anon has a slot, which nothing assigns yet (LZ's).
+//! - `uvm_anon_pagein` reports `uvmfault_anonget` without a fault (swapoff, N3.5; LZ's).
+//!
+//! ## Redesign
+//! - LZ's `VmAnon` (a `bsd` pool item handed out as `&'static`, `an_lock` a raw pointer to a
+//!   legacy `rw_obj`) is the kernel's `Anon`, a counted handle of `"anonpl"` whose lock is a
+//!   `hal::rwlock::SharedRwlock` (see `sys/kernel/vm/anon.rs`, `## Redesign`).
+//! - `VmAref::ar_amap` was a `Cell<*const VmAmap>` read through an `amap()` that made a
+//!   `&'static` from it: it holds the entry's counted handle now ([`AmapRef`], the kernel's),
+//!   in a `Cell` of the same size, read by cloning ([`VmAref::amap`]). The C copies the
+//!   pointer between entries without counting (`uvm_mapent_copy`, the clips); here each copy
+//!   is a handle clone ([`VmAref::copy_from`]), which keeps the amap's memory alive and
+//!   leaves `am_ref`, the C's count of map entries, to the functions that change it
+//!   (`amap_ref`, `amap_unref`, `amap_splitref`, `amap_copy`). An entry's handle goes when
+//!   the entry drops its amap ([`VmAref::clear`]) or is freed (`uvm_mapent_free` clears it).
+//!   `ar_amap` is private and no reference into the cell is ever handed out. The map lock
+//!   guards it as the C says, but the read lock lets several readers in at once (two faults
+//!   on one entry; `uvm_map_clean` on a busy map beside a fault), and a read takes the handle
+//!   out of the `Cell` and puts it back: each read and write of the cell holds the reference's
+//!   own `busy` flag for that window (a clone or a swap, nothing else), which fits in the
+//!   padding beside `ar_pageoff`, so the entry keeps its size.
 
 use core::cell::Cell;
-use core::ptr::{self, NonNull};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::kassert;
-use crate::kern::kern_rwlock::{rw_exit, rw_obj_free, rw_obj_hold};
-use crate::kern::subr_pool::{pool_get, pool_init, pool_put, pool_sethiwat};
-use crate::machine::intr::IPL_MPFLOOR;
-use crate::machine::pmap::pmap_page_protect;
-use crate::sys::mman::PROT_NONE;
-use crate::sys::pool::{PR_NOWAIT, PR_WAITOK, Pool};
-use crate::sys::rwlock::{Rwlock, rw_lock_held, rw_write_held};
-use crate::unported;
-use crate::uvm::uvm_amap::VmAmap;
-use crate::uvm::uvm_init::UVMEXP;
-use crate::uvm::uvm_page::{Owner, OwnerTag, PG_BUSY, PG_RELEASED, PageAnon, VmPage, uvm_pagefree};
-use hal::link::Link;
+pub use kernel::vm::anon::*;
 
-/// `struct vm_anon`.
-pub struct VmAnon {
-    /// `an_lock`: the lock, shared with the amap the anon is in.
-    pub an_lock: Cell<*const Rwlock>,
-    /// `an_page`: if in RAM (a page of the kernel's page array, `kernel::vm::page`).
-    pub an_page: Link<VmPage>,
-    /// `an_ref`: reference count.
-    pub an_ref: Cell<i32>,
-    /// `an_swslot`: drum swap slot # (if != 0) \[if we hold an_page, PG_BUSY\].
-    pub an_swslot: Cell<i32>,
-    /// `unused`: the per-CPU pool caching code requires pool item to be at least the size of
-    /// struct pool_cache_item (`MULTIPROCESSOR && __LP64__`).
-    #[cfg(feature = "multiprocessor")]
-    pub unused: Cell<i64>,
-}
-
-// SAFETY: `an_lock` guards every field once the anon is in an amap; a fresh anon is its
-// maker's.
-unsafe impl Sync for VmAnon {}
-
-impl VmAnon {
-    /// An anon with no page, no lock and one reference (what `uvm_analloc` hands out).
-    pub const fn new() -> Self {
-        Self {
-            an_lock: Cell::new(ptr::null()),
-            an_page: Link::new(),
-            an_ref: Cell::new(1),
-            an_swslot: Cell::new(0),
-            #[cfg(feature = "multiprocessor")]
-            unused: Cell::new(0),
-        }
-    }
-
-    /// `an_lock`, if the anon has one.
-    pub fn an_lock(&self) -> Option<&'static Rwlock> {
-        // SAFETY: a non-null lock is a lock object held by this anon's amap.
-        unsafe { self.an_lock.get().as_ref() }
-    }
-
-    /// `an_page`, if resident.
-    pub fn page(&self) -> Option<&'static VmPage> {
-        self.an_page.get()
-    }
-}
-
-// The page system's view of an anon (the `PageOwner` bridge, N3.4): one call each into the
-// anon's fields.
-impl PageAnon for VmAnon {
-    fn tag(&self) -> OwnerTag {
-        OwnerTag::anon(self)
-    }
-
-    fn locked(&self, exclusive: bool) -> Option<bool> {
-        self.an_lock().map(|l| {
-            if exclusive {
-                rw_write_held(l)
-            } else {
-                rw_lock_held(l)
-            }
-        })
-    }
-
-    fn refs(&self) -> i32 {
-        self.an_ref.get()
-    }
-
-    fn set_page(&self, pg: Option<&'static VmPage>) {
-        self.an_page.set(pg);
-    }
-}
-
-impl Default for VmAnon {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+use kernel::vm::amap::{Amap, AmapRef};
 
 /// `struct vm_aref`: processes reference anonymous virtual memory maps with an anonymous
 /// reference structure. Note that the offset field indicates which part of the amap we are
@@ -165,8 +92,10 @@ impl Default for VmAnon {
 pub struct VmAref {
     /// `ar_pageoff`: page offset into amap we start.
     pub ar_pageoff: Cell<i32>,
-    /// `ar_amap`: pointer to amap.
-    pub ar_amap: Cell<*const VmAmap>,
+    /// Held while `ar_amap`'s handle is taken out and put back (see the module's notes).
+    busy: AtomicBool,
+    /// `ar_amap`: the amap, the entry's counted handle (see the module's notes).
+    ar_amap: Cell<Option<AmapRef>>,
 }
 
 impl VmAref {
@@ -174,14 +103,69 @@ impl VmAref {
     pub const fn new() -> Self {
         Self {
             ar_pageoff: Cell::new(0),
-            ar_amap: Cell::new(ptr::null()),
+            busy: AtomicBool::new(false),
+            ar_amap: Cell::new(None),
         }
     }
 
-    /// `ar_amap`, if the entry has one.
-    pub fn amap(&self) -> Option<&'static VmAmap> {
-        // SAFETY: a non-null `ar_amap` is an amap this reference holds alive.
-        unsafe { self.ar_amap.get().as_ref() }
+    /// `f` on the cell, with `busy` held (a short window: a clone or a swap, no sleep, no
+    /// other lock; no interrupt handler reads an entry of a map it does not hold).
+    fn with<R>(&self, f: impl FnOnce(&Cell<Option<AmapRef>>) -> R) -> R {
+        while self
+            .busy
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        let r = f(&self.ar_amap);
+        self.busy.store(false, Ordering::Release);
+        r
+    }
+
+    /// `f` on the handle, in the cell's window.
+    fn peek<R>(&self, f: impl FnOnce(Option<&AmapRef>) -> R) -> R {
+        self.with(|c| {
+            let a = c.take();
+            let r = f(a.as_ref());
+            c.set(a);
+            r
+        })
+    }
+
+    /// `ar_amap`, if the entry has one: a clone of the entry's handle.
+    pub fn amap(&self) -> Option<AmapRef> {
+        self.peek(|a| a.cloned())
+    }
+
+    /// `ar_amap != NULL`.
+    pub fn has_amap(&self) -> bool {
+        self.peek(|a| a.is_some())
+    }
+
+    /// `ar_amap == amap`: the reference is to `amap` (by identity).
+    pub fn is_amap(&self, amap: &Amap) -> bool {
+        self.peek(|a| a.is_some_and(|a| core::ptr::eq(&**a, amap)))
+    }
+
+    /// `ar_amap = amap`: the entry's handle replaced (the old one dropped once the cell is let
+    /// go).
+    pub fn set_amap(&self, amap: Option<AmapRef>) {
+        drop(self.with(|c| c.replace(amap)));
+    }
+
+    /// `ar_pageoff = 0; ar_amap = NULL`.
+    pub fn clear(&self) {
+        self.ar_pageoff.set(0);
+        self.set_amap(None);
+    }
+
+    /// `dst->aref = src->aref`: the C's copy of the pointer and the offset, a handle clone
+    /// here (no `am_ref` is taken: the caller's `amap_ref`/`amap_splitref` does that where the
+    /// C does).
+    pub fn copy_from(&self, src: &VmAref) {
+        self.ar_pageoff.set(src.ar_pageoff.get());
+        self.set_amap(src.amap());
     }
 }
 
@@ -190,186 +174,70 @@ impl Default for VmAref {
         Self::new()
     }
 }
-
-/// `uvm_anon_pool`.
-static UVM_ANON_POOL: Pool = Pool::new();
-
-/// `uvm_anon_init`: the anon pool.
-pub fn uvm_anon_init() {
-    pool_init(
-        &UVM_ANON_POOL,
-        size_of::<VmAnon>(),
-        0,
-        IPL_MPFLOOR,
-        PR_WAITOK,
-        "anonpl",
-        None,
-    );
-    pool_sethiwat(
-        &UVM_ANON_POOL,
-        (UVMEXP.free.load(Ordering::Relaxed) / 16).max(0) as u32,
-    );
-}
-
-/// `uvm_anon_init_percpu`: the anon pool's per-CPU caches (`MULTIPROCESSOR`).
-pub fn uvm_anon_init_percpu() {
-    #[cfg(feature = "multiprocessor")]
-    crate::kern::subr_pool::pool_cache_init(&UVM_ANON_POOL);
-}
-
-/// `uvm_analloc`: allocate a new anon.
-///
-/// Anon will have no lock associated.
-pub fn uvm_analloc() -> Option<&'static VmAnon> {
-    let mem = pool_get(&UVM_ANON_POOL, PR_NOWAIT)?;
-    let anon = mem.cast::<VmAnon>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<VmAnon>()` bytes, written
-    // once before anything else sees it; it lives until `uvm_anfree` returns it.
-    Some(unsafe {
-        anon.as_ptr().write(VmAnon::new());
-        anon.as_ref()
-    })
-}
-
-/// `uvm_anfree`: free a single anon structure.
-///
-/// Anon must be removed from the amap (if anon was in an amap). Amap must be locked, if anon
-/// was owned by amap.
-pub fn uvm_anfree(anon: &VmAnon) {
-    let pg = anon.page();
-
-    kassert!(anon.an_lock().is_none_or(rw_write_held));
-    kassert!(anon.an_ref.get() == 0);
-
-    // Dispose of the page, if it is resident.
-    if let Some(pg) = pg {
-        let Some(lock) = anon.an_lock() else {
-            crate::kern::subr_prf::panic(format_args!("uvm_anfree: resident anon without a lock"));
-        };
-
-        // If the page is busy, mark it as PG_RELEASED, so that uvm_anon_release(9) would
-        // release it later.
-        if pg.flags() & PG_BUSY != 0 {
-            pg.set_bits(PG_RELEASED);
-            rw_obj_hold(lock);
-            return;
-        }
-        pmap_page_protect(pg, PROT_NONE);
-        uvm_pagefree(pg, Owner::Anon(anon));
-    } else if anon.an_swslot.get() != 0 {
-        // This page is no longer only in swap.
-        kassert!(UVMEXP.swpgonly.load(Ordering::Relaxed) > 0);
-        UVMEXP.swpgonly.fetch_sub(1, Ordering::Relaxed);
-    }
-    anon.an_lock.set(ptr::null());
-
-    // Free any swap resources, leave a page replacement hint.
-    uvm_anon_dropswap(anon);
-
-    kassert!(anon.an_page.is_none());
-    kassert!(anon.an_swslot.get() == 0);
-
-    pool_put(&UVM_ANON_POOL, NonNull::from(anon).cast::<u8>());
-}
-
-/// `uvm_anwait`: wait for memory to become available to allocate an anon.
-pub fn uvm_anwait() {
-    // XXX: Want something like pool_wait()?
-    if let Some(anon) = pool_get(&UVM_ANON_POOL, PR_WAITOK) {
-        pool_put(&UVM_ANON_POOL, anon);
-    }
-}
-
-/// `uvm_anon_pagein`: fetch an anon's page.
-///
-/// Anon must be locked, and is unlocked upon return. Returns true if pagein was aborted due
-/// to lack of memory.
-pub fn uvm_anon_pagein(amap: &VmAmap, anon: &VmAnon) -> bool {
-    kassert!(anon.an_lock().is_some_and(rw_write_held));
-    kassert!(ptr::eq(anon.an_lock.get(), amap.am_lock.get()));
-
-    // Get the page of the anon: uvmfault_anonget (uvm_fault.c, M7a part 3); until then
-    // nothing is paged out, so there is nothing to fetch.
-    let _ = unported!("uvm_anon_pagein: uvmfault_anonget (M7a-3)");
-    if let Some(lock) = anon.an_lock() {
-        rw_exit(lock);
-    }
-    false
-}
-
-/// `uvm_anon_dropswap`: release any swap resources from this anon.
-///
-/// Anon must be locked or have a reference count of 0.
-pub fn uvm_anon_dropswap(anon: &VmAnon) {
-    kassert!(anon.an_ref.get() == 0 || anon.an_lock().is_some_and(rw_lock_held));
-
-    if anon.an_swslot.get() == 0 {
-        return;
-    }
-
-    let _ = unported!("uvm_anon_dropswap: uvm_swap_free (swap, M7)");
-    anon.an_swslot.set(0);
-}
-
-/// `uvm_anon_release`: release an anon and its page.
-///
-/// Anon should not have any references. Anon must be locked.
-pub fn uvm_anon_release(anon: &VmAnon) {
-    let Some(lock) = anon.an_lock() else {
-        crate::kern::subr_prf::panic(format_args!("uvm_anon_release: anon without a lock"));
-    };
-    let Some(pg) = anon.page() else {
-        crate::kern::subr_prf::panic(format_args!("uvm_anon_release: anon without a page"));
-    };
-
-    kassert!(rw_write_held(lock));
-    kassert!(pg.flags() & PG_RELEASED != 0);
-    kassert!(pg.flags() & PG_BUSY != 0);
-    kassert!(!pg.has_object());
-    kassert!(pg.owned_by_anon(anon));
-    kassert!(anon.an_ref.get() == 0);
-
-    pmap_page_protect(pg, PROT_NONE);
-    uvm_pagefree(pg, Owner::Anon(anon));
-    kassert!(anon.an_page.is_none());
-    uvm_anon_dropswap(anon);
-    pool_put(&UVM_ANON_POOL, NonNull::from(anon).cast::<u8>());
-    rw_exit(lock);
-    // Note: extra reference is held for PG_RELEASED case.
-    rw_obj_free(lock);
-}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kern::kern_rwlock::{rw_enter_write, rw_obj_alloc, rw_obj_init};
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::uvm::uvm_page::uvm_pagealloc;
+    use crate::machine::intr::IPL_MPFLOOR;
+    use crate::sys::malloc::M_WAITOK;
+    use crate::sys::param::PAGE_SIZE;
+    use crate::uvm::uvm_map::VmMapEntry;
+    use kernel::vm::amap::{amap_alloc, amap_init};
 
     #[test]
-    fn anons_come_from_the_pool_and_free_their_page() {
+    fn an_aref_holds_a_handle_and_copies_share_it() {
         let _g = setup_real_memory();
-        rw_obj_init();
-        uvm_anon_init();
-        let anon = uvm_analloc().expect("an anon");
-        assert_eq!(anon.an_ref.get(), 1);
-        assert!(anon.page().is_none() && anon.an_lock().is_none());
+        let _ = hal::rwlock::init_shared();
+        let _ = amap_init(IPL_MPFLOOR);
+        let amap = amap_alloc(4 * PAGE_SIZE, M_WAITOK, false).expect("an amap");
+        let raw: *const Amap = &*amap;
 
-        let lock = rw_obj_alloc("testlk");
-        anon.an_lock.set(lock);
-        rw_enter_write(lock);
-        let pg = uvm_pagealloc(None, 0, Some(anon), 0).expect("a page");
-        assert!(anon.page().is_some_and(|p| ptr::eq(p, pg)));
-        assert!(pg.owned_by_anon(anon));
-        pg.clear_bits(PG_BUSY);
+        let a = VmAref::new();
+        assert!(!a.has_amap() && a.amap().is_none());
+        a.ar_pageoff.set(2);
+        a.set_amap(Some(amap));
+        assert!(a.has_amap());
+        assert!(a.amap().is_some_and(|m| core::ptr::eq(&*m, raw)));
 
-        anon.an_ref.set(0);
-        uvm_anfree(anon);
-        assert!(!pg.has_owner(), "the page went back to the free pool");
-        rw_exit(lock);
-        rw_obj_free(lock);
+        // A copy (uvm_mapent_copy) shares the amap and the offset; am_ref is untouched.
+        let b = VmAref::new();
+        b.copy_from(&a);
+        assert_eq!(b.ar_pageoff.get(), 2);
+        assert!(b.amap().is_some_and(|m| a.is_amap(&m)));
+        assert_eq!(a.amap().map(|m| m.refs()), Some(1));
+
+        // Clearing one leaves the other's handle.
+        a.clear();
+        assert!(!a.has_amap() && a.ar_pageoff.get() == 0);
+        assert!(b.has_amap());
+        b.clear();
+        assert!(!b.has_amap());
+    }
+
+    #[test]
+    fn concurrent_readers_always_see_the_amap() {
+        // Two faults on one entry read its aref under the map's read lock at once: neither
+        // may see the cell empty while the other clones the handle.
+        let _g = setup_real_memory();
+        let _ = hal::rwlock::init_shared();
+        let _ = amap_init(IPL_MPFLOOR);
+        // The entry (Sync under its map's lock) holds the reference, as in a map.
+        let e: &'static VmMapEntry = std::boxed::Box::leak(std::boxed::Box::new(VmMapEntry::new()));
+        e.aref.set_amap(amap_alloc(PAGE_SIZE, M_WAITOK, false));
+        let readers: std::vec::Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    (0..20_000).all(|_| e.aref.amap().is_some() && e.aref.has_amap())
+                })
+            })
+            .collect();
+        for r in readers {
+            assert!(r.join().expect("a reader"), "a reader saw no amap");
+        }
+        e.aref.clear();
     }
 }
 /* </TESTS> */

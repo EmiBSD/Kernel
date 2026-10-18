@@ -100,7 +100,7 @@ use crate::sys::queue::{
 use crate::sys::tree::RbtEntry;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::Vnode;
-use crate::uvm::uvm_object::UvmObject;
+use crate::uvm::uvm_object::{ObjKind, Object};
 
 // Buffer queues
 
@@ -235,9 +235,9 @@ pub struct Buf {
     /// `b_bq`: what bufq this buf is on.
     pub b_bq: Cell<Option<&'static Bufq>>,
     /// `b_pobj`: the object holding the pages (`b_uobj`, or a cluster's first buffer's).
-    pub b_pobj: Cell<*const UvmObject>,
-    /// `b_uobj`: object containing the pages.
-    pub b_uobj: UvmObject,
+    pub b_pobj: Cell<*const Object>,
+    /// `b_uobj`: object containing the pages (the buffer cache's dummy object).
+    pub b_uobj: Object,
     /// `b_poffs`: offset within object.
     pub b_poffs: Cell<Off>,
     /// `b_lblkno`: logical block number.
@@ -285,7 +285,7 @@ impl Buf {
             b_bufq: SimpleqEntry::new(),
             b_bq: Cell::new(None),
             b_pobj: Cell::new(ptr::null()),
-            b_uobj: UvmObject::new(0),
+            b_uobj: Object::dummy(ObjKind::Bufcache, 0),
             b_poffs: Cell::new(0),
             b_lblkno: Cell::new(0),
             b_blkno: Cell::new(0),
@@ -329,7 +329,7 @@ impl Buf {
     }
 
     /// The buffer's object (`b_pobj`).
-    pub fn pobj(&self) -> Option<&UvmObject> {
+    pub fn pobj(&self) -> Option<&Object> {
         // SAFETY: `b_pobj` is NULL, the buffer's own `b_uobj` or the `b_uobj` of the first
         // buffer of a read cluster, which outlives the cluster's I/O (`bread_cluster`).
         unsafe { self.b_pobj.get().as_ref() }

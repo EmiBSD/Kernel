@@ -75,13 +75,14 @@ use crate::sys::systm::{INFSLP, MAXTSLP, SysArgs, sysargs};
 use crate::sys::time::{Timespec, timespec_to_nsec};
 use crate::sys::types::Register;
 use crate::uvm::uvm::uvm_et_isobj;
-use crate::uvm::uvm_amap::VmAmap;
+use crate::uvm::uvm_amap::Amap;
 use crate::uvm::uvm_extern::Voff;
 use crate::uvm::uvm_map::{
     VmMapEntryObject, uvm_map_lookup_entry, vm_map_lock_read, vm_map_unlock_read,
 };
-use crate::uvm::uvm_object::UvmObject;
+use crate::uvm::uvm_object::Object;
 use crate::uvm::uvm_param::ptoa;
+use hal::pool::PoolArc;
 
 /// `FT_PRIVATE`: futex is process-private (`futex_get` flags sit in `FUTEX_OP_MASK` space).
 const FT_PRIVATE: i32 = FUTEX_PRIVATE_FLAG;
@@ -119,10 +120,10 @@ pub struct Futex {
     ft_entry: TailqEntry<Futex>,
     /// \[I\] `ft_ps`: for private futexes.
     ft_ps: Cell<*const Process>,
-    /// \[f\] `ft_obj`: UVM object.
-    ft_obj: Cell<*const UvmObject>,
-    /// \[f\] `ft_amap`: UVM amap.
-    ft_amap: Cell<*const VmAmap>,
+    /// \[f\] `ft_obj`: UVM object (its address, an identity never dereferenced).
+    ft_obj: Cell<*const Object>,
+    /// \[f\] `ft_amap`: UVM amap (its address, an identity never dereferenced).
+    ft_amap: Cell<*const Amap>,
     /// \[f\] `ft_off`: UVM offset.
     ft_off: Cell<Voff>,
     /// \[f\] `ft_proc`: waiting thread.
@@ -216,8 +217,8 @@ pub fn sys_futex(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
 /// object or amap (and offset) of a shared mapping, else the address alone.
 fn futex_addrs(p: &Proc, f: &Futex, uaddr: usize, flags: i32) {
     let map = &p.vmspace().vm_map;
-    let mut obj: *const UvmObject = ptr::null();
-    let mut amap: *const VmAmap = ptr::null();
+    let mut obj: *const Object = ptr::null();
+    let mut amap: *const Amap = ptr::null();
     let mut off = uaddr as Voff;
     let ps: *const Process;
 
@@ -231,12 +232,12 @@ fn futex_addrs(p: &Proc, f: &Futex, uaddr: usize, flags: i32) {
             && entry.inheritance.get() == MAP_INHERIT_SHARE
         {
             if uvm_et_isobj(entry) {
-                if let VmMapEntryObject::Obj(o) = entry.object.get() {
-                    obj = o;
+                if let VmMapEntryObject::Obj(o) = entry.object_get() {
+                    obj = o.as_ptr();
                 }
                 off = entry.offset.get() + (uaddr - entry.start.get()) as Voff;
-            } else if !entry.aref.ar_amap.get().is_null() {
-                amap = entry.aref.ar_amap.get();
+            } else if let Some(a) = entry.aref.amap() {
+                amap = PoolArc::as_ptr(&a);
                 off = ptoa(entry.aref.ar_pageoff.get() as usize) as Voff
                     + (uaddr - entry.start.get()) as Voff;
             }

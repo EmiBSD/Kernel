@@ -25,10 +25,15 @@
 #[allow(clippy::module_inception)] // OpenBSD's name: uvm/uvm.h
 pub mod uvm;
 pub mod uvm_addr;
+#[forbid(unsafe_code)]
 pub mod uvm_amap;
+#[forbid(unsafe_code)]
 pub mod uvm_anon;
-pub mod uvm_aobj;
+// The anonymous objects, the objects and the pager interface are the kernel's since N3.4e
+// (`uvm_aobj.c`, `uvm_object.c`, `uvm_pager.c`); the legacy paths stay.
+pub use kernel::vm::aobj as uvm_aobj;
 pub mod uvm_extern;
+#[forbid(unsafe_code)]
 pub mod uvm_fault;
 pub mod uvm_glue;
 pub mod uvm_init;
@@ -38,10 +43,10 @@ pub mod uvm_km;
 pub mod uvm_map;
 pub mod uvm_meter;
 pub mod uvm_mmap;
-pub mod uvm_object;
+pub use kernel::vm::object as uvm_object;
 #[forbid(unsafe_code)]
 pub mod uvm_page;
-pub mod uvm_pager;
+pub use kernel::vm::pager as uvm_pager;
 #[forbid(unsafe_code)]
 pub mod uvm_param;
 #[forbid(unsafe_code)]
@@ -56,6 +61,7 @@ pub use kernel::vm::pmemrange as uvm_pmemrange;
 pub mod uvm_swap;
 #[forbid(unsafe_code)]
 pub mod uvm_unix;
+#[forbid(unsafe_code)]
 pub mod uvm_vnode;
 // `<uvm/uvmexp.h>` and its static live in `hal` since N3.3 (the kernel's page system writes
 // the counters); the legacy path stays.

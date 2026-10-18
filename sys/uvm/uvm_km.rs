@@ -112,6 +112,10 @@
 //! - N3.3: `BsdKmPages` (the `KmPages` bridge over `uvm_pglistalloc`, `uvm_pmr_freepages` and
 //!   `uvm_pagefree`) is gone with the bridge: the kernel's allocator calls the kernel's page
 //!   system.
+//! - N3.4e: the kernel object is the kernel's (`kernel::vm::aobj`, `uao_create(..,
+//!   UAO_FLAG_KERNOBJ)` keeps it); [`uvm_km_pgremove`] takes the write witness of its lock
+//!   (the C's `KASSERT(rw_write_held(uobj->vmobjlock))` as a parameter) and sleeps on a busy
+//!   page with it (`uvm_pagewait` then `rw_enter(RW_WRITE)`: the same lock taken again).
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
@@ -126,14 +130,13 @@ use kernel::vm::km::{KmMaps, KmObject, KvMap, install, pa_mode, set_bounds};
 
 use crate::kassert;
 use crate::kern::kern_malloc::kmem_map;
-use crate::kern::kern_rwlock::rw_enter_write;
 use crate::kern::subr_prf::panic;
 use crate::machine::pmap::{PmapRef, pmap_kernel, pmap_reference, pmap_remove};
 use crate::machine::{Machine, Pmap};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE};
-use crate::sys::param::{PAGE_SHIFT, PAGE_SIZE};
-use crate::sys::rwlock::rw_write_held;
+use crate::sys::param::{PAGE_SHIFT, PAGE_SIZE, PVM};
+use crate::sys::systm::INFSLP;
 use crate::sys::types::{Vaddr, Vsize};
 use crate::uvm::uvm_aobj::{UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
 use crate::uvm::uvm_extern::{
@@ -144,9 +147,10 @@ use crate::uvm::uvm_init::{UVM, UVMEXP};
 use crate::uvm::uvm_map::{
     VM_MAP_PAGEABLE, VmMap, uvm_map, uvm_map_create, uvm_map_setup, uvm_map_submap, uvm_unmap,
 };
-use crate::uvm::uvm_object::{UvmObject, uvm_obj_is_aobj};
-use crate::uvm::uvm_page::{Owner, PG_BUSY, uvm_pagefree, uvm_pagelookup, uvm_pagewait};
+use crate::uvm::uvm_object::ObjRef;
+use crate::uvm::uvm_page::{Owner, PG_BUSY, PG_WANTED, uvm_pagefree, uvm_pagelookup};
 use crate::uvm::uvm_param::{VM_KERNEL_SPACE_SIZE, round_page};
+use hal::rwlock::{Witness, WriteWitness};
 
 /// The kernel maps of `bsd`, as the kernel's `km` asks for them (`kernel::vm::km::KmMaps`).
 pub struct BsdKmMaps;
@@ -214,12 +218,13 @@ pub fn uvm_km_init(base: Vaddr, start: Vaddr, end: Vaddr) {
         panic(format_args!("uvm_km_init: called twice"));
     }
 
-    // kernel_object: for pageable anonymous kernel memory
-    uao_init();
-    let Some(kernel_object) = uao_create(Vsize::new(VM_KERNEL_SPACE_SIZE), UAO_FLAG_KERNOBJ) else {
+    // kernel_object: for pageable anonymous kernel memory (the kernel's aobj keeps it:
+    // UVM.kernel_object()).
+    if uao_init().is_err()
+        || uao_create(Vsize::new(VM_KERNEL_SPACE_SIZE), UAO_FLAG_KERNOBJ).is_none()
+    {
         panic(format_args!("uvm_km_init: no kernel object"));
-    };
-    UVM.kernel_object.set(kernel_object);
+    }
 
     // init the map and reserve already allocated kernel space before installing.
     // KVA_GUARDPAGES is not configured.
@@ -334,29 +339,35 @@ pub fn uvm_km_suballoc(
 ///
 /// - when you unmap a part of anonymous kernel memory you want to toss the pages right
 ///   away. (this gets called from uvm_unmap_...).
-pub fn uvm_km_pgremove(uobj: &UvmObject, startva: Vaddr, endva: Vaddr) {
+pub fn uvm_km_pgremove(uobj: &ObjRef, w: &mut WriteWitness<'_>, startva: Vaddr, endva: Vaddr) {
     let start = (startva.as_usize() - kernel_map().min_offset.get()) as Voff;
     let end = (endva.as_usize() - kernel_map().min_offset.get()) as Voff;
     let mut swpgonlydelta = 0;
 
-    kassert!(uvm_obj_is_aobj(uobj));
-    kassert!(rw_write_held(uobj.vmobjlock()));
+    let Some(aobj) = uobj.aobj() else {
+        panic(format_args!("uvm_km_pgremove: not an aobj"));
+    };
+    if w.lock_id() != uobj.lock().id() {
+        panic(format_args!("uvm_km_pgremove: a witness of another lock"));
+    }
 
     pmap_remove(pmap_kernel(), startva, endva);
     let mut curoff = start;
     while curoff < end {
-        let pp = uvm_pagelookup(uobj, curoff);
+        let pp = uvm_pagelookup(&**uobj, curoff);
         if let Some(pg) = pp.filter(|pg| pg.flags() & PG_BUSY != 0) {
-            uvm_pagewait(pg, Owner::Object(uobj), uobj.vmobjlock(), "km_pgrm");
-            rw_enter_write(uobj.vmobjlock());
+            // uvm_pagewait(pp, uobj->vmobjlock, "km_pgrm"), then rw_enter(RW_WRITE): asleep
+            // on the page with the lock released, the lock taken again.
+            pg.set_bits(PG_WANTED);
+            let _ = w.sleep_nsec(pg.chan(), PVM, "km_pgrm", INFSLP);
             continue; // loop back to us
         }
 
         // free the swap slot, then the page
-        let slot = uao_dropswap(uobj, (curoff >> PAGE_SHIFT) as i32);
+        let slot = uao_dropswap(aobj, w, (curoff >> PAGE_SHIFT) as i32);
 
         match pp {
-            Some(pg) => uvm_pagefree(pg, Owner::Object(uobj)),
+            Some(pg) => uvm_pagefree(pg, Owner::Object(&**uobj)),
             None if slot != 0 => swpgonlydelta += 1,
             None => {}
         }

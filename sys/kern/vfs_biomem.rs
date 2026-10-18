@@ -76,7 +76,7 @@ use crate::uvm::uvm_extern::{
 };
 use crate::uvm::uvm_km::kernel_map;
 use crate::uvm::uvm_map::uvm_map;
-use crate::uvm::uvm_object::{BUFCACHE_PAGER, uvm_obj_free, uvm_obj_init};
+use crate::uvm::uvm_object::uvm_obj_free;
 use crate::uvm::uvm_page::{uvm_pagealloc_multi, uvm_pagelookup, vm_page_to_phys};
 use crate::uvm::uvm_param::{atop, ptoa, round_page};
 
@@ -348,7 +348,7 @@ pub fn buf_alloc_pages(bp: &'static Buf, size: usize) {
     kassert!(bp.b_data.get().is_null());
     splassert(IPL_BIO, "buf_alloc_pages");
 
-    uvm_obj_init(&bp.b_uobj, Some(&BUFCACHE_PAGER), 1);
+    bp.b_uobj.reinit_dummy(1); // uvm_obj_init(&bp->b_uobj, &bufcache_pager, 1)
 
     // Attempt to allocate with NOWAIT. if we can't, then throw away some clean pages and try
     // again. Finally, if that fails, do a WAITOK allocation so the page daemon can find memory

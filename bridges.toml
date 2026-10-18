@@ -116,18 +116,6 @@ trait = "KmMaps"
 for = ["sys/kernel/vm/km.rs"]
 paid_by = "N3"
 
-# bsd: the page's owners, struct uvm_object (sys/uvm/uvm_object.rs: UVM_OBJ_IS_DUMMY,
-# UVM_OBJ_IS_KERN_OBJECT, rw_write_held/rw_lock_held of vmobjlock, memt and uo_npages) and
-# struct vm_anon (sys/uvm/uvm_anon.rs: an_lock held, an_ref, an_page), implemented by bsd's
-# UvmObject and VmAnon (PageObject, PageAnon) and passed as values (kernel::vm::page::Owner),
-# never stored: the page keeps an OwnerTag. N3.4, when Object and Anon move into the kernel
-# with SharedRwlock.
-# kernel::vm::page::{PageObject, PageAnon}
-[[bridge]]
-trait = "PageOwner"
-for = ["sys/kernel/vm/page.rs"]
-paid_by = "N3"
-
 # bsd: BUFPAGES_DEFICIT and BUFPAGES_INACT of sys/sys/mount.rs over bcstats (sys/kern/vfs_bio.rs),
 # implemented by sys/uvm/uvm_page.rs (BsdBufCacheStats) and registered by its uvm_page_init;
 # 0 before registration (their boot values). N5, with the buffer cache.
@@ -183,8 +171,9 @@ paid_by = "N7"
 
 # bsd: KERNEL_LOCK, KERNEL_UNLOCK and KERNEL_ASSERT_LOCKED (_kernel_lock, _kernel_unlock,
 # _kernel_lock_held of sys/kern/kern_lock.rs), for the kernel crate's object functions
-# (uvm_obj_free's assertion) and the vnode pager (N3.4c); registered by bsd's uvm_init at the
-# flip (N3.4e); nothing before registration. N4, with kern_lock.
+# (uvm_obj_free's assertion) and the vnode pager (N3.4c); implemented by sys/kern/hal_bridges.rs
+# (BsdKernelLock) and registered by bsd's uvm_init (N3.4e); nothing before registration. N4,
+# with kern_lock.
 # hal::klock::KernelLock
 [[bridge]]
 trait = "KernelLock"
@@ -193,8 +182,8 @@ paid_by = "N4"
 
 # bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode
 # pager's uvn_io, which lets go of the net lock a faulting process holds around the VOP (N3.4c);
-# registered by bsd's uvm_init at the flip (N3.4e); nobody holds it before registration. N6,
-# with the network stack.
+# implemented by sys/kern/hal_bridges.rs (BsdNetLock) and registered by bsd's uvm_init (N3.4e);
+# nobody holds it before registration. N6, with the network stack.
 # hal::netlock::NetLock
 [[bridge]]
 trait = "NetLock"
@@ -202,8 +191,8 @@ for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
 # bsd: getmicrouptime (sys/kern/kern_tc.rs, for the vnode pager's own ratecheck), rebooting and
-# &rebooting (sys/kern/kern_xxx.rs); installed by bsd's uvm_init at the flip (N3.4e); (0, 0) and
-# false before. N4, with kern_time and kern_xxx.
+# &rebooting (sys/kern/kern_xxx.rs); implemented by sys/uvm/uvm_vnode.rs (BsdSysInfo) and
+# installed by bsd's uvm_init (N3.4e); (0, 0) and false before. N4, with kern_time and kern_xxx.
 # kernel::vm::vnode::SysInfo
 [[bridge]]
 trait = "SysInfo"
@@ -213,7 +202,7 @@ paid_by = "N4"
 # bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
 # vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
 # curproc's credentials: sys/sys/vnode.rs, sys/kern/vfs_subr.rs, vfs_vnops.rs, vfs_vops.rs),
-# implemented by bsd's Vnode at the flip (N3.4e) and passed as &'static dyn VnodeOps to
+# implemented by bsd's Vnode (sys/uvm/uvm_vnode.rs, N3.4e) and passed as &'static dyn VnodeOps to
 # uvn_attach and the uvm_vnp_* functions (vnodes are never freed); kept by the Uvn. N5, with
 # the vnode layer.
 # kernel::vm::vnode::VnodeOps
@@ -227,7 +216,7 @@ paid_by = "N5"
 # (uvmfault_relock's version), uvm_map_lookup_entry, RBT_NEXT(uvm_map_addr), amap_copy's map half
 # (sys/uvm/uvm_amap.rs), vm_map_pmap, VM_MAP_ISVMSPACE/INTRSAFE/PAGEABLE, vm_map_min/max, the
 # entries' fields, and curproc's p_ru (ru_minflt, ru_majflt, ru_maxrss); implemented by
-# sys/uvm/uvm_fault.rs (VmMap, VmMapEntry) at the flip (N3.4e), the fault's generic parameter,
+# sys/uvm/uvm_fault.rs (VmMap, VmMapEntry, MapGuard; N3.4e), the fault's generic parameter,
 # not a registered slot. N3.5, when kernel::vm::map owns the map (the rusage notes then go to
 # N4's Proc).
 # kernel::vm::fault::{FaultMap, FaultMapGuard, FaultEntry}

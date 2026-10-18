@@ -134,7 +134,7 @@
 use core::cell::Cell;
 use core::cmp::Ordering;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering as AtomicOrdering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering as AtomicOrdering};
 
 use libkern::StaticCell;
 
@@ -196,8 +196,8 @@ use crate::uvm::uvm_addr::{
     uvm_addr_init, uvm_addr_invoke,
 };
 use crate::uvm::uvm_amap::{
-    AMAP_REFALL, AMAP_SHARED, amap_alloc, amap_copy, amap_cow_now, amap_flags, amap_lock,
-    amap_lookup, amap_ref, amap_refs, amap_splitref, amap_unadd, amap_unlock, amap_unref,
+    AMAP_REFALL, AMAP_SHARED, AmapRef, amap_alloc, amap_copy, amap_cow_now, amap_flags,
+    amap_lookup, amap_ref, amap_refs, amap_splitref, amap_unadd, amap_unref,
 };
 use crate::uvm::uvm_anon::{VmAref, uvm_anfree};
 use crate::uvm::uvm_extern::{
@@ -207,13 +207,13 @@ use crate::uvm::uvm_extern::{
     VmInherit, VmProt, Vmspace, Voff, uvm_advice, uvm_inherit, uvm_mapflag, uvm_maxprotection,
     uvm_protection,
 };
-use crate::uvm::uvm_fault::{uvm_fault_unwire_locked, uvm_fault_wire};
+use crate::uvm::uvm_fault::{EntryLocks, uvm_fault_unwire_locked, uvm_fault_wire};
 use crate::uvm::uvm_init::{UVM, UVMEXP};
 use crate::uvm::uvm_km::{
     KD_NOWAIT, KP_DIRTY, KV_PAGE, is_kernel_map, kernel_map, km_alloc, uvm_km_pgremove,
     uvm_km_pgremove_intrsafe,
 };
-use crate::uvm::uvm_object::{UvmObject, uvm_obj_is_kern_object};
+use crate::uvm::uvm_object::ObjRef;
 use crate::uvm::uvm_page::{Owner, PQ_ANON, uvm_pagedeactivate};
 use crate::uvm::uvm_pager::{PGO_CLEANIT, PGO_DEACTIVATE, PGO_FREE};
 use crate::uvm::uvm_param::{atop, ptoa, round_page, trunc_page};
@@ -260,13 +260,16 @@ pub const VMMAP_MIN_ADDR: usize = PAGE_SIZE;
 /// configured).
 pub const UVMMAP_DEADBEEF: usize = 0xdead_d0d0;
 
-/// `object`: what a map entry points to (the C's `object` union).
-#[derive(Clone, Copy)]
+/// `object`: what a map entry points to (the C's `object` union). An object is the entry's
+/// counted handle (N3.4e: the kernel's `ObjRef`; `uo_refs`, the C's count of references,
+/// stays with `pgo_reference`/`pgo_detach`).
+#[derive(Clone, Default)]
 pub enum VmMapEntryObject {
     /// Neither: anonymous memory or a hole.
+    #[default]
     None,
     /// `uvm_obj`: uvm object.
-    Obj(&'static UvmObject),
+    Obj(ObjRef),
     /// `sub_map`: belongs to another map.
     SubMap(&'static VmMap),
 }
@@ -295,8 +298,11 @@ pub struct VmMapEntry {
     pub guard: Cell<usize>,
     /// `fspace`: free space.
     pub fspace: Cell<usize>,
-    /// `object`: object I point to.
-    pub object: Cell<VmMapEntryObject>,
+    /// `object`: object I point to (its handle; read and written through [`Self::object_get`]
+    /// and [`Self::object_set`] only).
+    object: Cell<VmMapEntryObject>,
+    /// Held while `object`'s value is taken out and put back (see [`Self::object_get`]).
+    object_busy: AtomicBool,
     /// `offset`: offset into object.
     pub offset: Cell<Voff>,
     /// `aref`: anonymous overlay.
@@ -335,6 +341,7 @@ impl VmMapEntry {
             guard: Cell::new(0),
             fspace: Cell::new(0),
             object: Cell::new(VmMapEntryObject::None),
+            object_busy: AtomicBool::new(false),
             offset: Cell::new(0),
             aref: VmAref::new(),
             etype: Cell::new(0),
@@ -348,9 +355,48 @@ impl VmMapEntry {
         }
     }
 
-    /// `object.uvm_obj`, when the entry maps an object (`UVM_ET_ISOBJ`).
-    pub fn uvm_obj(&self) -> Option<&'static UvmObject> {
-        match self.object.get() {
+    /// `object`, the cell held: the map's read lock lets several readers in at once (two
+    /// faults on one entry, `uvm_map_clean` on a busy map beside a fault), and reading a
+    /// handle out of a `Cell` takes it out and puts it back, so each read and write holds
+    /// `object_busy` for that window (a clone or a swap: no sleep, no other lock, never from
+    /// an interrupt, since no interrupt handler reads an entry of a map it does not hold).
+    fn with_object<R>(&self, f: impl FnOnce(&Cell<VmMapEntryObject>) -> R) -> R {
+        while self
+            .object_busy
+            .compare_exchange_weak(
+                false,
+                true,
+                AtomicOrdering::Acquire,
+                AtomicOrdering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        let r = f(&self.object);
+        self.object_busy.store(false, AtomicOrdering::Release);
+        r
+    }
+
+    /// `object`: a copy of the union (a clone of the object's handle).
+    pub fn object_get(&self) -> VmMapEntryObject {
+        self.with_object(|c| {
+            let o = c.take();
+            let r = o.clone();
+            c.set(o);
+            r
+        })
+    }
+
+    /// `object = o` (the map write-locked); the old handle is dropped after the cell is let go.
+    pub fn object_set(&self, o: VmMapEntryObject) {
+        drop(self.with_object(|c| c.replace(o)));
+    }
+
+    /// `object.uvm_obj`, when the entry maps an object (`UVM_ET_ISOBJ`): a clone of the
+    /// entry's handle.
+    pub fn uvm_obj(&self) -> Option<ObjRef> {
+        match self.object_get() {
             VmMapEntryObject::Obj(o) => Some(o),
             _ => None,
         }
@@ -358,7 +404,7 @@ impl VmMapEntry {
 
     /// `object.sub_map`, when the entry is a submap (`UVM_ET_ISSUBMAP`).
     pub fn sub_map(&self) -> Option<&'static VmMap> {
-        match self.object.get() {
+        match self.object_get() {
             VmMapEntryObject::SubMap(m) => Some(m),
             _ => None,
         }
@@ -836,10 +882,9 @@ fn uvm_mapent_copy(src: &VmMapEntry, dst: &VmMapEntry) {
     dst.end.set(src.end.get());
     dst.guard.set(src.guard.get());
     dst.fspace.set(src.fspace.get());
-    dst.object.set(src.object.get());
+    dst.object_set(src.object_get());
     dst.offset.set(src.offset.get());
-    dst.aref.ar_pageoff.set(src.aref.ar_pageoff.get());
-    dst.aref.ar_amap.set(src.aref.ar_amap.get());
+    dst.aref.copy_from(&src.aref);
     dst.etype.set(src.etype.get());
     dst.protection.set(src.protection.get());
     dst.max_protection.set(src.max_protection.get());
@@ -949,24 +994,44 @@ pub fn uvm_map_reference(map: &VmMap) {
     map.ref_count.fetch_add(1, AtomicOrdering::Relaxed);
 }
 
-/// `uvm_map_lock_entry`: locks the entry's amap and object.
-pub fn uvm_map_lock_entry(entry: &VmMapEntry) {
-    if let Some(amap) = entry.aref.amap() {
-        amap_lock(amap, RW_WRITE);
+/// The handles of an entry's amap and object (`entry->aref.ar_amap`, `entry->object.uvm_obj`
+/// of an object entry), read under the map lock: what [`uvm_map_lock_entry`] locks, kept
+/// alive while the locks are held.
+pub struct EntryRefs {
+    /// The amap, if any.
+    amap: Option<AmapRef>,
+    /// The object, if the entry maps one (`UVM_ET_ISOBJ`).
+    uobj: Option<ObjRef>,
+}
+
+impl EntryRefs {
+    /// The entry's amap and object now.
+    pub fn of(entry: &VmMapEntry) -> Self {
+        Self {
+            amap: entry.aref.amap(),
+            uobj: entry.uvm_obj().filter(|_| uvm_et_isobj(entry)),
+        }
     }
-    if let Some(uobj) = entry.uvm_obj().filter(|_| uvm_et_isobj(entry)) {
-        rw_enter_write(uobj.vmobjlock());
+
+    /// The object, if the entry maps one.
+    pub fn uobj(&self) -> Option<&ObjRef> {
+        self.uobj.as_ref()
     }
 }
 
-/// `uvm_map_unlock_entry`: the inverse of [`uvm_map_lock_entry`].
-pub fn uvm_map_unlock_entry(entry: &VmMapEntry) {
-    if let Some(uobj) = entry.uvm_obj().filter(|_| uvm_et_isobj(entry)) {
-        rw_exit(uobj.vmobjlock());
-    }
-    if let Some(amap) = entry.aref.amap() {
-        amap_unlock(amap);
-    }
+/// `uvm_map_lock_entry`: locks the entry's amap and object (for writing, the amap's first:
+/// MAPS => AMAP => UOBJ); the locks are released by [`uvm_map_unlock_entry`] (or the drop).
+pub fn uvm_map_lock_entry(refs: &EntryRefs) -> EntryLocks<'_> {
+    EntryLocks::new(
+        refs.amap.as_ref().map(|a| a.lock()),
+        refs.uobj.as_ref().map(|o| o.lock()),
+    )
+}
+
+/// `uvm_map_unlock_entry`: the inverse of [`uvm_map_lock_entry`] (the object's lock, then
+/// the amap's).
+pub fn uvm_map_unlock_entry(locks: EntryLocks<'_>) {
+    drop(locks);
 }
 
 /// `uvmspace_dused`: calculate the dused delta.
@@ -1352,7 +1417,7 @@ fn uvm_mapanon_locked(
     let entry = uvm_map_mkentry(map, first, last, *addr, sz, flags, dead, new.take())
         .ok_or(Errno::ENOMEM)?;
     kdassert!(entry.start.get() == *addr && entry.end.get() == *addr + sz);
-    entry.object.set(VmMapEntryObject::None);
+    entry.object_set(VmMapEntryObject::None);
     entry.offset.set(0);
     entry.protection.set(prot);
     entry.max_protection.set(maxprot);
@@ -1376,10 +1441,7 @@ fn uvm_mapanon_locked(
     }
     if flags & UVM_FLAG_OVERLAY != 0 {
         entry.aref.ar_pageoff.set(0);
-        entry
-            .aref
-            .ar_amap
-            .set(amap_alloc(sz, M_WAITOK, false).map_or(ptr::null(), ptr::from_ref));
+        entry.aref.set_amap(amap_alloc(sz, M_WAITOK, false));
     }
 
     // Update map and process statistics.
@@ -1413,7 +1475,7 @@ pub fn uvm_map(
     map: &VmMap,
     addr: &mut usize,
     sz: usize,
-    uobj: Option<&'static UvmObject>,
+    uobj: Option<ObjRef>,
     uoffset: Voff,
     align: usize,
     flags: u32,
@@ -1488,7 +1550,7 @@ fn uvm_map_locked(
     map: &VmMap,
     addr: &mut usize,
     sz: usize,
-    uobj: Option<&'static UvmObject>,
+    uobj: Option<ObjRef>,
     uoffset: Voff,
     align: usize,
     flags: u32,
@@ -1627,7 +1689,7 @@ fn uvm_map_locked(
     if uobj.is_none() {
         uoffset = 0;
     } else if uoffset == UVM_UNKNOWN_OFFSET {
-        kassert!(uobj.is_some_and(uvm_obj_is_kern_object));
+        kassert!(uobj.as_ref().is_some_and(|o| o.is_kern_object()));
         uoffset = (*addr - kernel_map().min_offset.get()) as Voff;
     }
 
@@ -1638,9 +1700,8 @@ fn uvm_map_locked(
     let entry = uvm_map_mkentry(map, first, last, *addr, sz, flags, dead, new.take())
         .ok_or(Errno::ENOMEM)?;
     kdassert!(entry.start.get() == *addr && entry.end.get() == *addr + sz);
-    entry
-        .object
-        .set(uobj.map_or(VmMapEntryObject::None, VmMapEntryObject::Obj));
+    let has_uobj = uobj.is_some();
+    entry.object_set(uobj.map_or(VmMapEntryObject::None, VmMapEntryObject::Obj));
     entry.offset.set(uoffset);
     entry.protection.set(prot);
     entry.max_protection.set(maxprot);
@@ -1654,7 +1715,7 @@ fn uvm_map_locked(
             map.sserial.set(map.sserial.get() + 1);
         }
     }
-    if uobj.is_some() {
+    if has_uobj {
         etype |= UVM_ET_OBJ;
     } else if flags & UVM_FLAG_HOLE != 0 {
         etype |= UVM_ET_HOLE;
@@ -1677,16 +1738,13 @@ fn uvm_map_locked(
     entry.etype.set(etype);
     if flags & UVM_FLAG_OVERLAY != 0 {
         entry.aref.ar_pageoff.set(0);
-        entry
-            .aref
-            .ar_amap
-            .set(amap_alloc(sz, M_WAITOK, false).map_or(ptr::null(), ptr::from_ref));
+        entry.aref.set_amap(amap_alloc(sz, M_WAITOK, false));
     }
 
     // Update map and process statistics.
     if flags & UVM_FLAG_HOLE == 0 {
         map.size.set(Vsize::new(map.size.get().as_usize() + sz));
-        if map.flags.get() & VM_MAP_ISVMSPACE != 0 && uobj.is_none() && prot != PROT_NONE {
+        if map.flags.get() & VM_MAP_ISVMSPACE != 0 && !has_uobj && prot != PROT_NONE {
             let vm = map.vmspace();
             vm.vm_dused
                 .set(vm.vm_dused.get() + uvmspace_dused(map, *addr, *addr + sz) as i32);
@@ -1734,7 +1792,7 @@ pub fn uvm_mapent_isjoinable(_map: &VmMap, e1: &VmMapEntry, e2: &VmMapEntry) -> 
     // If uvm_object: object itself and offsets within object must match.
     if uvm_et_isobj(e1) {
         match (e1.uvm_obj(), e2.uvm_obj()) {
-            (Some(o1), Some(o2)) if ptr::eq(o1, o2) => {}
+            (Some(o1), Some(o2)) if ObjRef::ptr_eq(&o1, &o2) => {}
             _ => return false,
         }
         if e1.offset.get() + (e1.end.get() - e1.start.get()) as Voff != e2.offset.get() {
@@ -1745,10 +1803,10 @@ pub fn uvm_mapent_isjoinable(_map: &VmMap, e1: &VmMapEntry, e2: &VmMapEntry) -> 
     // Cannot join shared amaps. Note: no need to lock amap to look at refs, since we
     // don't care about its exact value. If it is 1 (i.e. we have the only reference) it
     // will stay there.
-    if e1.aref.amap().is_some_and(|a| amap_refs(a) != 1) {
+    if e1.aref.amap().is_some_and(|a| amap_refs(&a) != 1) {
         return false;
     }
-    if e2.aref.amap().is_some_and(|a| amap_refs(a) != 1) {
+    if e2.aref.amap().is_some_and(|a| amap_refs(&a) != 1) {
         return false;
     }
 
@@ -1830,7 +1888,7 @@ pub fn uvm_unmap_detach(deadq: &UvmMapDeadq, flags: i32) {
         // Drop reference to amap, if we've got one.
         if let Some(amap) = entry.aref.amap() {
             amap_unref(
-                amap,
+                &amap,
                 entry.aref.ar_pageoff.get() as usize,
                 atop(entry.end.get() - entry.start.get()),
                 flags & AMAP_REFALL != 0,
@@ -1845,9 +1903,8 @@ pub fn uvm_unmap_detach(deadq: &UvmMapDeadq, flags: i32) {
             }
         } else if uvm_et_isobj(entry)
             && let Some(uobj) = entry.uvm_obj()
-            && let Some(detach) = uobj.pgops().pgo_detach
         {
-            detach(uobj);
+            uobj.detach();
         }
 
         // SAFETY: `entry` is the head of `deadq`.
@@ -1911,8 +1968,7 @@ pub fn uvm_map_mkentry<'m>(
     entry.offset.set(0);
     entry.etype.set(0);
     entry.wired_count.set(0);
-    entry.aref.ar_pageoff.set(0);
-    entry.aref.ar_amap.set(ptr::null());
+    entry.aref.clear();
 
     entry.start.set(addr);
     entry.end.set(min);
@@ -2035,6 +2091,10 @@ pub fn uvm_mapent_alloc(map: &VmMap, flags: u32) -> Option<&'static VmMapEntry> 
 ///
 /// - XXX: static pool for kernel map?
 pub fn uvm_mapent_free(me: &'static VmMapEntry) {
+    // The entry's handles go with it (the C's pointers need nothing): a pool item is
+    // overwritten without a drop when it is handed out again.
+    me.aref.clear();
+    me.object_set(VmMapEntryObject::None);
     if me.flags.get() & UVM_MAP_STATIC != 0 {
         mtx_enter(&UVM_KMAPENT_MTX);
         // SAFETY: `uvm_kmapent_mtx` is held; a freed entry is on no list.
@@ -2326,9 +2386,8 @@ pub fn uvm_unmap_kill_entry_withlock(map: &VmMap, entry: &VmMapEntry, needlock: 
         uvm_fault_unwire_locked(map, entry.start.get(), entry.end.get());
     }
 
-    if needlock {
-        uvm_map_lock_entry(entry);
-    }
+    let refs = EntryRefs::of(entry);
+    let mut locks = needlock.then(|| uvm_map_lock_entry(&refs));
 
     // Entry-type specific code.
     if uvm_et_ishole(entry) {
@@ -2337,10 +2396,7 @@ pub fn uvm_unmap_kill_entry_withlock(map: &VmMap, entry: &VmMapEntry, needlock: 
         kassert!(ptr::eq(map.pmap(), pmap_kernel()));
 
         uvm_km_pgremove_intrsafe(Vaddr::new(entry.start.get()), Vaddr::new(entry.end.get()));
-    } else if let Some(uobj) = entry
-        .uvm_obj()
-        .filter(|uobj| uvm_et_isobj(entry) && uvm_obj_is_kern_object(uobj))
-    {
+    } else if let Some(uobj) = refs.uobj().filter(|uobj| uobj.is_kern_object()) {
         kassert!(ptr::eq(map.pmap(), pmap_kernel()));
         // Note: kernel object mappings are currently used in two ways:
         //  [1] "normal" mappings of pages in the kernel object
@@ -2362,12 +2418,16 @@ pub fn uvm_unmap_kill_entry_withlock(map: &VmMap, entry: &VmMapEntry, needlock: 
         // note there is version of uvm_km_pgremove() that is used for "intrsafe" objects.
         //
         // remove mappings from pmap and drop the pages from the object. offsets are always
-        // relative to vm_map_min(kernel_map).
-        uvm_km_pgremove(
-            uobj,
-            Vaddr::new(entry.start.get()),
-            Vaddr::new(entry.end.get()),
-        );
+        // relative to vm_map_min(kernel_map). The object's lock is the entry's (needlock); a
+        // caller that did not ask for it holds none (uvm_km_pgremove's KASSERT), so it is
+        // taken here (only the kernel map has kernel object entries, and it is killed with
+        // needlock).
+        let start = Vaddr::new(entry.start.get());
+        let end = Vaddr::new(entry.end.get());
+        match locks.as_mut().and_then(EntryLocks::lower_mut) {
+            Some(w) => uvm_km_pgremove(uobj, w, start, end),
+            None => uvm_km_pgremove(uobj, &mut uobj.lock().write(), start, end),
+        }
     } else {
         // remove mappings the standard way.
         pmap_remove(
@@ -2377,8 +2437,8 @@ pub fn uvm_unmap_kill_entry_withlock(map: &VmMap, entry: &VmMapEntry, needlock: 
         );
     }
 
-    if needlock {
-        uvm_map_unlock_entry(entry);
+    if let Some(locks) = locks {
+        uvm_map_unlock_entry(locks);
     }
 }
 
@@ -3037,8 +3097,8 @@ pub fn uvm_map_splitentry(map: &VmMap, orig: &VmMapEntry, next: &VmMapEntry, spl
         next.end.set(split);
         next.guard.set(0);
         next.fspace.set(vmmap_free_end(orig) - split);
-        next.aref.ar_amap.set(ptr::null());
-        next.aref.ar_pageoff.set(0);
+        next.aref.clear();
+        next.object_set(VmMapEntryObject::None);
         orig.guard.set(orig.guard.get().min(split - orig.end.get()));
         orig.fspace.set(split - vmmap_free_start(orig));
     } else {
@@ -3047,8 +3107,11 @@ pub fn uvm_map_splitentry(map: &VmMap, orig: &VmMapEntry, next: &VmMapEntry, spl
         orig.end.set(split);
         next.start.set(split);
 
-        if next.aref.amap().is_some() {
-            amap_splitref(&orig.aref, &next.aref, adj);
+        if let Some(amap) = next.aref.amap() {
+            kassert!(orig.aref.is_amap(&amap));
+            next.aref
+                .ar_pageoff
+                .set(amap_splitref(&amap, orig.aref.ar_pageoff.get(), adj));
         }
         if uvm_et_issubmap(orig) {
             if let Some(submap) = next.sub_map() {
@@ -3056,11 +3119,9 @@ pub fn uvm_map_splitentry(map: &VmMap, orig: &VmMapEntry, next: &VmMapEntry, spl
             }
             next.offset.set(next.offset.get() + adj as Voff);
         } else if uvm_et_isobj(orig) {
-            if let Some(uobj) = next.uvm_obj()
-                && let Some(reference) = uobj.pgops().pgo_reference
-            {
+            if let Some(uobj) = next.uvm_obj() {
                 kernel_lock(); // KERNEL_LOCK()
-                reference(uobj);
+                uobj.reference();
                 kernel_unlock(); // KERNEL_UNLOCK()
             }
             next.offset.set(next.offset.get() + adj as Voff);
@@ -3481,14 +3542,15 @@ fn uvm_map_protect_locked(
                 // (don't we have to unwire this in the pmap as well?)
                 e.wired_count.set(0);
             }
-            uvm_map_lock_entry(e);
+            let refs = EntryRefs::of(e);
+            let locks = uvm_map_lock_entry(&refs);
             pmap_protect(
                 map.pmap(),
                 Vaddr::new(e.start.get()),
                 Vaddr::new(e.end.get()),
                 e.protection.get() & mask,
             );
-            uvm_map_unlock_entry(e);
+            uvm_map_unlock_entry(locks);
         }
 
         // If the map is configured to lock any future mappings, wire this entry now if the
@@ -3745,13 +3807,9 @@ pub fn uvm_mapent_clone<'m>(
         None,
     )?;
     // old_entry -> new_entry
-    new_entry.object.set(old_entry.object.get());
+    new_entry.object_set(old_entry.object_get());
     new_entry.offset.set(old_entry.offset.get());
-    new_entry
-        .aref
-        .ar_pageoff
-        .set(old_entry.aref.ar_pageoff.get());
-    new_entry.aref.ar_amap.set(old_entry.aref.ar_amap.get());
+    new_entry.aref.copy_from(&old_entry.aref);
     new_entry
         .etype
         .set(new_entry.etype.get() | (old_entry.etype.get() & !UVM_ET_FREEMAPPED));
@@ -3767,18 +3825,16 @@ pub fn uvm_mapent_clone<'m>(
             .ar_pageoff
             .set(new_entry.aref.ar_pageoff.get() + (off >> PAGE_SHIFT) as i32);
         amap_ref(
-            amap,
+            &amap,
             new_entry.aref.ar_pageoff.get() as usize,
             (new_entry.end.get() - new_entry.start.get()) >> PAGE_SHIFT,
             amap_share_flags,
         );
     }
 
-    if let Some(uobj) = new_entry.uvm_obj().filter(|_| uvm_et_isobj(new_entry))
-        && let Some(reference) = uobj.pgops().pgo_reference
-    {
+    if let Some(uobj) = new_entry.uvm_obj().filter(|_| uvm_et_isobj(new_entry)) {
         new_entry.offset.set(new_entry.offset.get() + off as Voff);
-        reference(uobj);
+        uobj.reference();
     }
 
     Some(new_entry)
@@ -3893,7 +3949,7 @@ pub fn uvm_mapent_forkcopy<'m>(
     //    amap_cow_now requires "needs_copy" to be clear we might as well clear it here as
     //    well.
     if let Some(old_amap) = old_entry.aref.amap()
-        && (amap_flags(old_amap) & AMAP_SHARED != 0 || vm_mapent_iswired(old_entry))
+        && (amap_flags(&old_amap) & AMAP_SHARED != 0 || vm_mapent_iswired(old_entry))
     {
         amap_copy(new_map, new_entry, M_WAITOK, false, 0, 0);
         // XXXCDC: M_WAITOK ... ok?
@@ -3907,8 +3963,12 @@ pub fn uvm_mapent_forkcopy<'m>(
     if vm_mapent_iswired(old_entry) {
         // resolve all copy-on-write faults now (note that there is nothing to do if the
         // old mapping does not have an amap).
-        if old_entry.aref.amap().is_some() {
-            amap_cow_now(new_map, new_entry);
+        if old_entry.aref.has_amap()
+            && let Some(amap) = new_entry.aref.amap()
+        {
+            // the child's map is locked (amap_cow_now(new_map, new_entry)).
+            vm_map_assert_wrlock(new_map);
+            amap_cow_now(&amap);
         }
     } else {
         let protect_child = if old_entry.aref.amap().is_some() {
@@ -3921,14 +3981,15 @@ pub fn uvm_mapent_forkcopy<'m>(
             // the child.
             if !uvm_et_isneedscopy(old_entry) {
                 if old_entry.max_protection.get() & PROT_WRITE != 0 {
-                    uvm_map_lock_entry(old_entry);
+                    let refs = EntryRefs::of(old_entry);
+                    let locks = uvm_map_lock_entry(&refs);
                     pmap_protect(
                         old_map.pmap(),
                         Vaddr::new(old_entry.start.get()),
                         Vaddr::new(old_entry.end.get()),
                         old_entry.protection.get() & !PROT_WRITE,
                     );
-                    uvm_map_unlock_entry(old_entry);
+                    uvm_map_unlock_entry(locks);
                     pmap_update(old_map.pmap());
                 }
                 old_entry
@@ -3984,22 +4045,19 @@ pub fn uvm_mapent_forkzero<'m>(
 
     if let Some(amap) = new_entry.aref.amap() {
         amap_unref(
-            amap,
+            &amap,
             new_entry.aref.ar_pageoff.get() as usize,
             atop(new_entry.end.get() - new_entry.start.get()),
             false,
         );
-        new_entry.aref.ar_amap.set(ptr::null());
-        new_entry.aref.ar_pageoff.set(0);
+        new_entry.aref.clear();
     }
 
     if uvm_et_isobj(new_entry) {
-        if let Some(uobj) = new_entry.uvm_obj()
-            && let Some(detach) = uobj.pgops().pgo_detach
-        {
-            detach(uobj);
+        if let Some(uobj) = new_entry.uvm_obj() {
+            uobj.detach();
         }
-        new_entry.object.set(VmMapEntryObject::None);
+        new_entry.object_set(VmMapEntryObject::None);
         new_entry.etype.set(new_entry.etype.get() & !UVM_ET_OBJ);
     }
 
@@ -4156,7 +4214,7 @@ pub fn uvm_map_submap(
                 && !uvm_et_isneedscopy(entry) =>
         {
             entry.etype.set(entry.etype.get() | UVM_ET_SUBMAP);
-            entry.object.set(VmMapEntryObject::SubMap(submap));
+            entry.object_set(VmMapEntryObject::SubMap(submap));
             entry.offset.set(0);
             uvm_map_reference(submap);
             Ok(())
@@ -4652,15 +4710,16 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
             let mut cp_start = e.start.get().max(start);
             let cp_end = e.end.get().min(end);
 
-            amap_lock(amap, RW_WRITE);
+            let pageoff = e.aref.ar_pageoff.get();
+            let mut w = amap.lock().write();
             while cp_start != cp_end {
                 let off = cp_start - e.start.get();
                 cp_start += PAGE_SIZE;
-                let Some(anon) = amap_lookup(&e.aref, off) else {
+                let Some(anon) = amap_lookup(&amap, &w, pageoff, off).cloned() else {
                     continue;
                 };
 
-                kassert!(ptr::eq(anon.an_lock.get(), amap.am_lock.get()));
+                kassert!(anon.shares_lock(amap.lock()));
                 let Some(pg) = anon.page() else {
                     continue;
                 };
@@ -4672,15 +4731,15 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
                         || f == PGO_CLEANIT | PGO_DEACTIVATE
                         || f == PGO_DEACTIVATE =>
                     {
-                        kassert!(pg.owned_by_anon(anon));
-                        uvm_pagedeactivate(pg, Owner::Anon(anon));
+                        kassert!(pg.owned_by_anon(&*anon));
+                        uvm_pagedeactivate(pg, Owner::Anon(&*anon));
                     }
                     f if f == PGO_FREE => {
                         // If there are multiple references to the amap, just deactivate
                         // the page.
-                        if amap_refs(amap) > 1 {
-                            kassert!(pg.owned_by_anon(anon));
-                            uvm_pagedeactivate(pg, Owner::Anon(anon));
+                        if amap_refs(&amap) > 1 {
+                            kassert!(pg.owned_by_anon(&*anon));
+                            uvm_pagedeactivate(pg, Owner::Anon(&*anon));
                             continue;
                         }
 
@@ -4688,16 +4747,17 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
                         if pg.wire_count() != 0 {
                             continue;
                         }
-                        amap_unadd(&e.aref, off);
-                        anon.an_ref.set(anon.an_ref.get() - 1);
-                        if anon.an_ref.get() == 0 {
-                            uvm_anfree(anon);
+                        let anon = amap_unadd(&amap, &mut w, pageoff, off);
+                        let refs = anon.refs() - 1;
+                        anon.set_refs(refs);
+                        if refs == 0 {
+                            uvm_anfree(&anon);
                         }
                     }
                     _ => panic(format_args!("uvm_map_clean: weird flags")),
                 }
             }
-            amap_unlock(amap);
+            drop(w);
         }
 
         // flush_object:
@@ -4713,17 +4773,14 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
                 || (e.max_protection.get() & PROT_WRITE != 0
                     && e.etype.get() & UVM_ET_COPYONWRITE == 0))
         {
-            rw_enter_write(uobj.vmobjlock());
-            let rv = match uobj.pgops().pgo_flush {
-                Some(flush) => flush(
-                    uobj,
-                    (cp_start - e.start.get()) as Voff + e.offset.get(),
-                    (cp_end - e.start.get()) as Voff + e.offset.get(),
-                    flags,
-                ),
-                None => panic(format_args!("uvm_map_clean: object without pgo_flush")),
-            };
-            rw_exit(uobj.vmobjlock());
+            let mut w = uobj.lock().write();
+            let rv = uobj.flush(
+                &mut w,
+                (cp_start - e.start.get()) as Voff + e.offset.get(),
+                (cp_end - e.start.get()) as Voff + e.offset.get(),
+                flags,
+            );
+            drop(w);
 
             if !rv {
                 error = Err(Errno::EFAULT);
@@ -5186,7 +5243,7 @@ pub fn uvm_map_fix_space<'m>(
                 e.start.set(min);
                 e.guard.set(0);
                 e.fspace.set(lmax - min);
-                e.object.set(VmMapEntryObject::None);
+                e.object_set(VmMapEntryObject::None);
                 e.offset.set(0);
                 e.etype.set(0);
                 e.protection.set(0);
@@ -5194,8 +5251,7 @@ pub fn uvm_map_fix_space<'m>(
                 e.inheritance.set(0);
                 e.wired_count.set(0);
                 e.advice.set(0);
-                e.aref.ar_pageoff.set(0);
-                e.aref.ar_amap.set(ptr::null());
+                e.aref.clear();
                 uvm_mapent_addr_insert(map, e);
 
                 entry = Some(e);
@@ -5382,8 +5438,8 @@ mod tests {
     use std::{assert, assert_eq, assert_ne};
 
     use super::*;
-    use crate::kern::kern_rwlock::rw_obj_init;
     use crate::kern::subr_pool::tests::setup_real_memory;
+    use crate::machine::intr::IPL_MPFLOOR;
     use crate::sys::mman::MAP_INHERIT_COPY;
     use crate::uvm::uvm_amap::amap_init;
     use crate::uvm::uvm_anon::uvm_anon_init;
@@ -5396,9 +5452,9 @@ mod tests {
         let guard = setup_real_memory();
         // The console, so that a kernel panic in a test says why.
         crate::machine::cons::consinit();
-        rw_obj_init();
-        uvm_anon_init();
-        amap_init();
+        let _ = hal::rwlock::init_shared();
+        let _ = uvm_anon_init(IPL_MPFLOOR);
+        let _ = amap_init(IPL_MPFLOOR);
         uvm_map_init();
         guard
     }
@@ -5668,10 +5724,10 @@ mod tests {
             .and_then(|e| e.aref.amap())
             .expect("the overlay's amap is shared with the child");
         vm_map_unlock_read(cmap);
-        assert_eq!(amap_refs(child_amap), 2);
+        assert_eq!(amap_refs(&child_amap), 2);
 
         uvmspace_free(child);
-        assert_eq!(amap_refs(child_amap), 1, "the child's reference is gone");
+        assert_eq!(amap_refs(&child_amap), 1, "the child's reference is gone");
         uvmspace_free(vm);
     }
 

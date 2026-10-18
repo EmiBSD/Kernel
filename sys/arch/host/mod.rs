@@ -623,6 +623,11 @@ impl Pmap for Machine {
             });
             #[cfg(test)]
             {
+                // bsd's own kernel lock, net lock and clock first (the bridges uvm_init
+                // registers on a boot): the legacy code that takes the kernel lock is what the
+                // kernel's objects and vnode pager assert, not the doubles' count.
+                crate::kern::hal_bridges::hal_bridges_register_vm();
+                crate::uvm::uvm_vnode::uvn_install_sysinfo();
                 kernel::testutil::install();
                 hal::pmap::init();
             }
