@@ -24,6 +24,11 @@ starting point, and what userland sees never changes.
   adds) is measured with the host microbenchmarks of `sys/kernel/benches/vm.rs` (and N4's),
   debug and release, before the change (decision 43, `testing.md`); its shape follows the
   "hot path" row of `docs/IDIOMS.md`: no more lookups, clones or recomputations than the C.
+- Since decision 44 (2026-10-18) the work is written, built and tested for arm64 only; nothing
+  of amd64 is written, fixed or built before N10. A `hal` boundary type (`Proc`, `Clockqueue`,
+  `Device`, the trap and syscall entry) is still designed for two machines: the planner reads
+  the amd64 C and writes the brief's "amd64 constraints" paragraph, and the redesigner
+  implements arm64's side only.
 - Redesign with ownership first: data inside the lock that guards it, `Result<T, Errno>` and
   slices at the API, the `machine` contract untouched (`arch.md`), the ABI edge byte-identical
   (`sys/sys/syscall.rs`, the sysctl MIBs, ioctls, device majors, every `#[repr(C)]` shared with

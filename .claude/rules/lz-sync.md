@@ -27,6 +27,11 @@ records every decision. LZ is never written to: `reference/emibsd-lz/` is a read
     exist here; the reason says which.
   - `covered-by-redesign`: the redesigned code cannot have the bug or already has the feature;
     the reason names the test or the type that proves it.
+  - `deferred-to-N10` (decision 44, 2026-10-18): the commit touches only frozen amd64 files
+    (`sys/arch/amd64/`, `sys/hal/arch/amd64/`, the amd64 implementations of `sys/machine`) and
+    does not cherry-pick cleanly; N10 applies it. One that applies cleanly is `applied` by
+    `cherry-pick` without compiling, with `frozen = true` on the record. A security fix is
+    never deferred silently: its record names the fix, and N10 cannot close with one open.
 - Security fixes are never skipped silently. A commit `lz drift --security` lists (or any the
   triage recognises; set `security = true` by hand) is either `applied` or has a reason that
   names the fix and says why the native code is not affected. No `N` milestone closes with an

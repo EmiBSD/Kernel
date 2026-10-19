@@ -11,7 +11,10 @@ Everything in this repository (code, comments, docs, commits) is in English.
 
 ## Non-negotiables
 
-- Both architectures build on every commit (`just build`). Never land amd64-only or arm64-only work.
+- arm64 builds and is tested on every commit (`just build`, the smokes). amd64 is frozen until
+  N10 homologates it (decision 44, 2026-10-18): no amd64 code is written, fixed, built or booted
+  before then, and a `hal` boundary type is still designed with the amd64 C in view (the
+  planner's "amd64 constraints" paragraph).
 - Generic code (`kern/`, `uvm/`, `dev/`, `sys/`) reaches arch code ONLY through `crate::machine`.
   `crate::arch::amd64` / `crate::arch::arm64` are never named outside `sys/arch/` and `sys/machine/`.
 - The system-call ABI and the behaviour OpenBSD's userland sees never change: the ABI equals
@@ -73,20 +76,20 @@ Two provenance rules:
 
 | Command | What |
 |---|---|
-| `just build` | kernel for amd64 + arm64 |
+| `just build` | kernel for the archs of `EMIBSD_ARCHS` (arm64 until N10, decision 44; N4.0 lands the switch, until then it still builds both) |
 | `just run-amd64` / `just run-arm64` | boot in QEMU, serial on stdio |
-| `just smoke` | boot both archs headless, assert serial output and exit code; recipes run `JOBS` (4) at a time |
+| `just smoke` | boot the archs of `EMIBSD_ARCHS` headless (arm64 until N10; an amd64 boot is `SKIPPED (decision 44)`, never green), assert serial output and exit code; recipes run `JOBS` (4) at a time |
 | `just test` | host unit tests (libkern + bsd through arch/host) |
 | `just test-ref` | tests that cross-check constants against the C reference |
-| `just clippy` / `just fmt` | clippy for amd64, arm64 and host with `-D warnings` / format check |
+| `just clippy` / `just fmt` | clippy for arm64 and host (amd64 at N10) with `-D warnings` / format check |
 | `just check-lineage` | `cargo xtask lz check`: every module's provenance, blobs, rows and zones |
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check-hal` | `cargo xtask hal-check`: no `pub unsafe fn`, a `// SAFETY:` on every block, no `static mut`, `hal` under `hal_ceiling` |
 | `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) |
-| `just check` | build (both archs), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
+| `just check` | build (arm64), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
-| `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on both archs (`smoke-install-*`, needs `just comp`); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |
+| `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on the archs of `EMIBSD_ARCHS` (`smoke-install-*`, needs `just comp`; amd64's recipes at N10); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |
 | `just lz-sync` | fetch LZ, list the commits to triage with the items they touch (`docs/SYNC.md`) |
 | `just diff-openbsd` | the oracle: the same scenarios on EmiBSD and on a real OpenBSD, compared step by step |
 
@@ -140,6 +143,9 @@ the session.
 - `unsafe` in `sys/kernel/` or `sys/abi/` (the build refuses it); a path added to `hal`'s
   ceiling or a new bridge without a `bridges.toml` row.
 - Raise a subsystem's unsafe budget, bump `lz/PINNED.md` or drop an LZ file without the user.
+- Touch amd64 before N10 (decision 44): build, boot, fix or redesign `sys/arch/amd64/`,
+  `sys/hal/arch/amd64/` or the amd64 half of a `hal` boundary; an LZ commit that touches only
+  those files is cherry-picked without compiling or recorded `deferred-to-N10`.
 - Mix a redesign with an `lz-sync:` or a `lineage:` commit.
 - Nightly features, `std` in kernel code, `[build] target` in `.cargo/config.toml`.
 - Run `brew`, `rustup`, or change anything outside the repo without asking.

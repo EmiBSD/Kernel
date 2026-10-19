@@ -13,7 +13,8 @@ paths:
   functions); `db_machdep.rs` for `ddb`'s needs (`db_stack_trace_print`, `frame_address`,
   `db_enter`); more as milestones add them (`pmap.rs`, `intr.rs`). Generic code only sees
   `crate::machine` (every module is re-exported there). Adding a trait method means implementing
-  it for amd64, arm64 AND host in the same commit; `sys/machine/mod.rs` asserts the selected arch
+  it for arm64 AND host in the same commit (amd64's implementation is N10's, decision 44; the
+  method is still designed for both); `sys/machine/mod.rs` asserts the selected arch
   implements every trait.
 - Nothing generic lives in `sys/arch/`. If two archs would write the same code, it belongs in
   `kern/` or `uvm/`. If one arch needs a hook the other does not, it is still a trait method with a

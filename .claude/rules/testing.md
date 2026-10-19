@@ -25,7 +25,8 @@ Four tiers. Every change lands with the tier it belongs to.
 2. **Reference-backed tests**: `just test-ref`. Marked `#[ignore]`; they read `$OPENBSD_SRC`
    (set by the recipe to `reference/openbsd-src`) and cross-check constants against the C headers
    (`errno.h`, `param.h`, syscall numbers). They parse simple `#define` lines, nothing more.
-3. **QEMU smoke tests**: `just smoke`. Boot both archs headless, assert serial lines and the exit
+3. **QEMU smoke tests**: `just smoke`. Boot the archs of `EMIBSD_ARCHS` headless (arm64 only
+   until N10, decision 44), assert serial lines and the exit
    code (amd64 `isa-debug-exit`, arm64 semihosting). Every change to boot, console, traps or
    scheduling adds or updates an expectation in `tools/xtask`; a redesign that changes a serial
    line the smokes assert updates the expectation in the same commit; a line userland prints
@@ -48,9 +49,11 @@ Four tiers. Every change lands with the tier it belongs to.
    per arch, kept to catch a dependency on a second CPU: since decision 40 it boots that same
    MP kernel with `--smp 1` (no longer a kernel built without the feature), and its
    expectations are the uniprocessor boot's, except any that names the CPU count. New smokes
-   follow suit: MP, `{{smp}}`, both archs; `{{smp4}}` only by the user's decision.
+   follow suit: MP, `{{smp}}`, both archs in their expectations, run on arm64 until N10;
+   `{{smp4}}` only by the user's decision.
    `just ci-full` is `ci` with every `{{smp}}` recipe on four CPUs (`EMIBSD_NCPU=4`), then
-   the installer end to end on both archs, also on four CPUs (the user's decision of
+   the installer end to end on the archs of `EMIBSD_ARCHS` (amd64's recipes wait for N10), also
+   on four CPUs (the user's decision of
    2026-10-07): `smoke-install-amd64`, `smoke-install-arm64` (with `smoke-install-arm64-acpi`)
    and `smoke-install-boot-amd64`, `-arm64`, `-arm64-acpi`, which make the install media
    afresh from the tree, install to a fresh disk and boot the installed system, and (M16g)
@@ -101,11 +104,12 @@ Four tiers. Every change lands with the tier it belongs to.
 
 Always:
 
-- `just clippy` runs clippy for amd64, arm64 AND host with `-D warnings`. All three must pass.
+- `just clippy` runs clippy for arm64 AND host with `-D warnings` (amd64 at N10, decision 44).
+  Both must pass.
 - `just fmt` is `cargo fmt --all -- --check`.
 - Develop first, compile later (the user's decision of 2026-10-16, docs/ZERO_UNSAFE.md decision
   23): no build, clippy or test runs per commit or per slice. The pre-commit hook keeps only
-  `cargo fmt --check` and `cargo xtask lz check` (seconds). `just check` (build on both archs,
+  `cargo fmt --check` and `cargo xtask lz check` (seconds). `just check` (build on arm64,
   clippy, fmt, `lz check`, `unsafe-report --check`, `just test`; no QEMU) runs at the milestone
   close, first, in a compile-and-fix pass; then the QEMU tiers below.
 - The one bounded exception, decision 43 (the user, 2026-10-18): a slice that touches a hot
@@ -115,6 +119,13 @@ Always:
   `Bench:` lines (before -> after). An op that rises more than 10 % without a reason written
   in the commit body stops the agent, who asks the user. Host only: no QEMU per slice; the
   QEMU `just bench` stays at the close.
+- Decision 44 (the user, 2026-10-18): from N4 to N9 only arm64 is built, booted and measured.
+  xtask's `smoke`, `smoke2`, `smoke-all`, `diff-openbsd` and `bench` and the justfile's `build`,
+  `clippy` and `ci-full` read `EMIBSD_ARCHS` (default `arm64`; N4.0 lands the switch); an amd64
+  boot is logged `SKIPPED (decision 44)`, counted apart by `smoke-all` and never green; the
+  recipes and their amd64 expectations stay as they are for N10 (`EMIBSD_ARCHS=amd64,arm64`).
+  Nothing of amd64 is written or fixed before N10; its tree is frozen at N9 and homologated at
+  N10 (docs/ROADMAP.md).
 - Decision 31 (the user, 2026-10-16) cuts the repetitions: the host checks (`lz check`,
   `unsafe-report --check`, `hal-check`, `abi-check`, fmt, `cargo test -p xtask`) run once per
   branch, by the integrator on `main` after the merge; a branch is merged into `main` once per

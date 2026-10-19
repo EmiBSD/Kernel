@@ -39,7 +39,9 @@ inventory can be wrong.
 
 `<scratchpad>/<task>/BRIEF.md`, English, at most 250 lines: goal and exit (mechanical); the
 shape (Rust signatures); the `hal` pieces with their `unsafe` and the bridges; the protocol changes
-(lifetimes, locks, wait channels); what does not change; lineage rows and IDIOMS rows; tests,
+(lifetimes, locks, wait channels); what does not change; an "amd64 constraints" paragraph for
+every `hal` boundary type (decision 44: amd64 is frozen until N10, so the type is designed for
+both machines and implemented for arm64); lineage rows and IDIOMS rows; tests,
 smokes and `diff-openbsd`; the commit series; stop-and-ask conditions; expected numbers
 (labelled as estimates).
 
