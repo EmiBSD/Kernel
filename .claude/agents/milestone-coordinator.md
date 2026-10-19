@@ -32,6 +32,11 @@ names one.
 4. Split the row into clusters: the `inherited` modules its scope names (`lineage.toml`,
    `cargo xtask lz status`), grouped by the types they share, a module over about 3,000 lines
    alone (`large-changes.md`); the areas of `security-review.md` last within their subsystem.
+   Before any launch, one `/insight` heads-up call (`.claude/skills/insight/SKILL.md`, the
+   fourth trigger, the user's decision of 2026-10-19): the row, the milestone's paragraph of
+   `docs/ZERO_UNSAFE.md` and the surveyors' summary, one question, "what should we keep an eye
+   on?", at most five watch-outs verified against the plan and the C; the list goes to the
+   user beside the split, and only the user moves a slice. Never a replanning.
    Write `<scratchpad>/<milestone>/AGENT-RULES.md` for your subagents: your branch to merge
    first, the redesigned siblings and `docs/IDIOMS.md` rows to copy idioms from, which smokes
    they may run, the lock path, the baseline numbers. Then launch with the Agent tool:

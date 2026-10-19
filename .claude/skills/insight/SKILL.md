@@ -1,6 +1,6 @@
 ---
 name: insight
-description: A second opinion from external models (OpenRouter, the user's key; Gemini 4 Argon and GPT Sol by default, two families, none of them Claude) on one bounded EmiBSD question, verified claim by claim against the code and the C before anything becomes work. Use only on one of three triggers - a hot-path measurement that cannot be explained (decision 43 tripped, or a profile that names a module but not a cause), a design fork between two viable shapes, or a second reviewer in a security-review.md area. Never per slice or per commit; it applies nothing.
+description: A second opinion from external models (OpenRouter, the user's key; Gemini 4 Argon and GPT Sol by default, two families, none of them Claude) on one bounded EmiBSD question, verified claim by claim against the code and the C before anything becomes work. Use only on one of four triggers - a hot-path measurement that cannot be explained (decision 43 tripped, or a profile that names a module but not a cause), a design fork between two viable shapes, a second reviewer in a security-review.md area, or the heads-up at a milestone start (one short call: at most five things to watch, no replanning). Never per slice or per commit; it applies nothing.
 argument-hint: <brief.md> [--models a,b] [--out dir] [--dry-run]
 allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/insight.py*)
 ---
@@ -13,8 +13,22 @@ C also has, next to two real items. The cycle below is what makes the opinion wo
 
 ## The cycle
 
-1. **Trigger**: one of the three in the description. Not "I am unsure"; a measurement, a
-   fork, or a review. Write which one in the brief.
+1. **Trigger**: one of the four in the description. Not "I am unsure"; a measurement, a
+   fork, a review, or the heads-up at a milestone start. Write which one in the brief.
+   The heads-up (the user, 2026-10-19: "corto, no gigante") is one call per milestone, at
+   the coordinator's "measure and split" step, before any redesigner is launched: a short
+   brief (the ROADMAP row, the milestone's paragraph of `docs/ZERO_UNSAFE.md`, the
+   surveyors' summary: `unsafe` per module, callers, the `hal` pieces missing, under ~10k
+   tokens) and one question, "what should we keep an eye on?", answered as at most five
+   watch-outs, each with its evidence in the plan or the C. The question always names the
+   cost class (the user's example): where the safe shape will cost an order more than the C,
+   a search where the C follows a pointer (`next_key`'s find per step against `RBT_NEXT`;
+   `OwnedList` removing by key against `CIRCQ_REMOVE`), a clone where it copies a pointer, an
+   allocation where it embeds, an O(n) retag where it splices in O(1) (`CIRCQ_CONCAT`); the
+   "hot path" row of `docs/IDIOMS.md` is the rule those watch-outs serve. It never redesigns the split:
+   the verified list goes to the user beside the split proposal, and only the user moves a
+   slice. The design fork of a slice that adds a `hal` boundary type, primitive or bridge
+   is the second trigger, asked by the planner before its brief.
 2. **Brief**: `<scratchpad>/insight/<task>/BRIEF.md`, English, this template:
 
    ```markdown

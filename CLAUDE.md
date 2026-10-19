@@ -182,7 +182,8 @@ the session.
   them one by one. `/progress` (`.claude/skills/progress/`) measures the redesign per milestone;
   `/insight` (`.claude/skills/insight/`, the user's decision of 2026-10-19) asks external models
   through OpenRouter for a second opinion on one bounded question (an unexplained hot-path
-  measurement, a design fork, a second reviewer) and verifies it claim by claim; it applies nothing.
+  measurement, a design fork, a second reviewer, the heads-up at a milestone start) and verifies
+  it claim by claim; it applies nothing.
 - `docs/STATUS.md` and `lz/PINNED.md` are imported below, so they are always in context.
 
 @docs/STATUS.md
