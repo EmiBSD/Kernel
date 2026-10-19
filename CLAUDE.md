@@ -179,7 +179,10 @@ the session.
   `integrator`, `debugger`, `reviewer`, `surveyor`, `planner`, `openbsd-probe`, `image-worker`); launch them by
   `subagent_type`; their lessons persist in `.claude/agent-memory/<agent>/`. The shared
   contract is `.claude/rules/subagents.md`; the main session drives the redesign and launches
-  them one by one. `/progress` (`.claude/skills/progress/`) measures the redesign per milestone.
+  them one by one. `/progress` (`.claude/skills/progress/`) measures the redesign per milestone;
+  `/insight` (`.claude/skills/insight/`, the user's decision of 2026-10-19) asks external models
+  through OpenRouter for a second opinion on one bounded question (an unexplained hot-path
+  measurement, a design fork, a second reviewer) and verifies it claim by claim; it applies nothing.
 - `docs/STATUS.md` and `lz/PINNED.md` are imported below, so they are always in context.
 
 @docs/STATUS.md

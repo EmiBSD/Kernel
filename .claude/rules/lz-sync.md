@@ -7,7 +7,9 @@ records every decision. LZ is never written to: `reference/emibsd-lz/` is a read
 - When: after every LZ milestone close and every LZ pin bump, and in any case before an `N`
   milestone is marked met. `just ci` runs `cargo xtask lz drift --strict`, so an untriaged LZ
   commit is a red build.
-- How: `git -C reference/emibsd-lz fetch` (the only network use besides `diff-openbsd fetch`),
+- How: `git -C reference/emibsd-lz fetch` (the only network use besides `diff-openbsd fetch`
+  and `/insight`'s calls to OpenRouter, `.claude/skills/insight/`, the user's decision of
+  2026-10-19),
   then `cargo xtask lz drift --security`. Every listed commit gets one record in
   `lz-sync.toml`, in a commit with the `lz-sync:` scope that does nothing else:
   - `applied`: an inherited module takes the change as a cherry-pick (`git -C

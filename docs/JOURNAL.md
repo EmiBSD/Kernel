@@ -531,3 +531,83 @@ the review's fix c51cb2c2; `git diff --shortstat e3cdf1d3 n3/perf-opt -- sys`: 7
   the user's ruling, and the main session relayed on 2026-10-18 that the user allows
   `sys/*/benches/`. The exception's wording in CLAUDE.md and `.claude/rules/rust-kernel.md`
   is the main session's commit.
+
+### /insight: external opinions, the first smoke test (2026-10-19)
+
+- The user's decision of 2026-10-19: the session itself may ask external models for an opinion
+  when blocked, as in the performance case, and judge point by point what applies. Built as the
+  skill `.claude/skills/insight/` (`scripts/insight.py`, stdlib only, OpenRouter with the
+  user's key from the environment; `ledger.tsv` for the spend); pointers in CLAUDE.md, the
+  third network use in `.claude/rules/lz-sync.md`, decision 43's stop in `re-engineering.md`
+  ("the stop reaches the user with hypotheses already verified"), the planner's design fork in
+  `.claude/agents/planner.md`. Three triggers only; it applies nothing.
+- The models, chosen by the user by OpenRouter link: `google/gemini-4-argon`,
+  `qwen/qwen3.8-max-prime`, `~deepseek/deepseek-pro-latest`. After the test Qwen was dropped
+  (reasoning mandatory: HTTP 400 when disabled; twice Gemini's price; two empty answers; the
+  user's doubt about its training lineage); the defaults are Gemini 4 Argon and DeepSeek Pro
+  with reasoning off; a third family (OpenAI) waits for the user's OK.
+- The smoke test: the brief of today's chat feedback on `map.rs`, rewritten to the template
+  (question, the decision 42 numbers, the constraints, 12 line-numbered excerpts of `map.rs`,
+  the `OwnedTree` API and `uvm_map.c`, the answer format; 48.7 KB, 16.5k-21k input tokens:
+  the bytes/4 estimator under-counted, now bytes/3). Three runs: reasoning off, `low`, `high`.
+  Off: Gemini 8 claims, 8 correct, 2 the session did not have ($0.08, 71 s); DeepSeek 10/10,
+  nothing new ($0.02, 12 s). `low`: Gemini 6/6 with 0 reasoning tokens (lost the `Handles`
+  find, gained two implementation hints: `pe`'s free-tree removal hoisted inside the `fp`
+  borrow in `uvm_mapent_mkfree`; `uvm_map_fix_space` returning the lent `&VmMapEntry` when
+  `min == max`); Qwen 10/10 ($0.15, 61 s). `high`: DeepSeek the same 10 claims ($0.04);
+  Gemini and Qwen spent the whole 16k cap on reasoning and returned nothing ($0.40 for
+  nothing). Reasoning added no finding; the structured brief is what made the claims
+  checkable. The user then replaced DeepSeek and Qwen by GPT Sol (`~openai/gpt-sol-latest`,
+  served as `gpt-6.1-sol`): reasoning off, 6 claims, 5 correct and one honest "no claim" (the
+  excerpt of `uvm_unmap_remove` was the guard-splitting wrapper, 3853-3875, not the loop in
+  `unmap_remove`, 3880: GPT Sol was the only model to say so instead of inferring from the C;
+  the template now asks for the inner function), nothing new, $0.06, 40 s. The whole test:
+  $0.97.
+- Verified against the code and the C, all `correct`: the per-entry refinds (`next_key` =
+  find + next, `map.rs:2216`; the `clip_*_at` wrappers and their inner functions, 6407/6422
+  and 6444/6470; `splitentry`'s `ent(orig)` at 4576 and the `ent(nkey)` after the insert at
+  4645; `clip_start`'s chain, 6470-6493; `mkfree`'s five searches per freed entry, 3750-3770
+  plus `FixFrom::Key` at 6761; `mkentry`'s loop and its final `ent(&st.addr, addr)` at 3468
+  after `fix_space` had the reference lent). Two the session did not have: `insert_get` has a
+  user, `uvm_mapent_addr_insert_parts` (2348), so the ee5bbc7b "no user yet" note is stale;
+  `uvm_map_splitentry`'s free-space half clones `Handles` in `uvm_mapent_copy` (2243-2246)
+  and replaces them with `Handles::default()` at 4594: a refcount increment and decrement per
+  handle on the mmap/fork carve where the C does `memcpy` and `NULL`. No claim was false and
+  none a "regression" the C also has (the chat feedback of the same morning had one of each
+  and one "not a regression": the template, not the model, made the difference). What would
+  need a `hal` API, the user's decision: removal by reference or a cursor (`take_by` searches
+  again, `owned.rs:705`), and keeping a reference across a mutation.
+- Nothing applied. The items are N12's (or N4.1's where that slice rewrites the code), under
+  decision 43's `Bench:` lines, arm64 only; the QEMU-side arm64 regression (pmaps, trap) is
+  untouched by all of them, as the brief said.
+- Three more cases the same day, one per trigger, the five models (the user: "uno solo no
+  ayuda mucho", "considera también a los descartados", reasoning on, `medium`), $1.74: a
+  design fork (A: `kernel::timeout` owner-embedded vs wheel-owned, the N4.1 question, with
+  the C, LZ's port and `hal`'s owned API), a security review (B: commit 9dab32dd, the fault's
+  typed witness, a clean diff) and a trap (C: the fault's handle clones, which cross sleeps).
+  Verified against the code: Gemini 4 Argon 0 false in 27 claims over the four cases and 7
+  findings the session did not have; GPT Sol 0 false in 31 and 2; GPT Astra the same findings
+  as Sol at five times the price and a blocked sign-off on B; Qwen one false claim in C
+  (`fault.rs:879` relocks the amap on `owned.is_some()` without a map relock: "every
+  post-unlock use is gated on `locked`" is wrong) and two built on it; DeepSeek 0 false and 0
+  new in 38. The defaults stay Gemini + Sol. The system prompt named `uvm_map.c` for every
+  brief (Sol and Astra answered "no claim about uvm_map.c" ten times each): fixed to "the C
+  excerpt". Spend for the four tests: $2.71.
+- What the three cases leave for the work, verified: (A, for the N4.1 planner) `OwnedList`
+  owns `PoolBox` nodes (`owned.rs:856-866`), so an owner-embedded `Timeout` needs a new
+  non-owning intrusive list in `hal` (new `unsafe`); `timeout_barrier`'s stack `struct
+  timeout` (`kern_timeout.c:510`) cannot be a `'static` node in either shape (a pool node, or
+  a cond on `tctx_running` without a fake node); `timeout_set_flags` writes without the mutex
+  and overwrites `to_flags` (`kern_timeout.c:300-303`), so the native contract for "set while
+  pending" must be chosen, not copied; `CIRCQ_CONCAT` (`kern_timeout.c:781`) has no
+  `OwnedList` equivalent and the per-element owner id (`owned.rs:888`) makes a move O(n)
+  unless `hal` grows a splice; `timeout_del_barrier` from the callback itself waits on its own
+  context (`kern_timeout.c:533-549`); all five models recommend the wheel-owned shape. (C, for
+  N12) `uvm_fault_check` builds the `EntryView` at 1162 and again at 1226 after `copy_amap`,
+  so the COW path clones the handles twice (`fault.upper-cow` is that path); the resident path
+  never unlocks the map, so the handles could be lent and cloned only before
+  `uvmfault_unlockall` (the slow paths need them: `anonget`'s owned-page relock at 879,
+  `lower_io`'s `get_sync` at 2060 and its cleanup at 2104-2110 even when the relock fails); the
+  C re-reads `uobj = pg->uobject` after the I/O (`uvm_fault.c:1641`) where the Rust panics on
+  an owner-tag mismatch (2105-2108), a deviation the module notes already keep. Nothing
+  applied.
