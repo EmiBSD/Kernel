@@ -14,6 +14,9 @@ always before an `N` milestone is marked met. LZ is read, never written.
    - `not-applicable`, with the reason (nothing native derives from it, or the path does not
      exist here);
    - `covered-by-redesign`, with the test or the type that proves it;
+   - `deferred-to-N10` (decision 44), for a commit that touches only frozen amd64 files and does
+     not cherry-pick cleanly; one that does is `applied` by `cherry-pick` without compiling,
+     with `frozen = true`;
    - `security = true` on every security fix; such a record is never `not-applicable` without a
      reason that names the fix.
    A file new in LZ becomes a new `inherited` module of `lineage.toml` in the same commit.

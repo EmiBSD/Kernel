@@ -3,7 +3,8 @@
 Milestone: **N3 Memory met on 2026-10-18**, decision 42 done; **N4 Processes and scheduling**
 next (docs/ZERO_UNSAFE.md 0.8). Goal: zero `unsafe` in the kernel: `sys/kernel/` and `sys/abi/`
 are `#![forbid(unsafe_code)]` crates, `sys/hal/` holds the only `unsafe`, `bsd` (the LZ tree)
-is replaced subsystem by subsystem and deleted at N9 (decisions 20-24). Updated: 2026-10-18.
+is replaced subsystem by subsystem and deleted at N9 (decisions 20-24). Decision 44 (2026-10-18):
+arm64 only until N10 homologates amd64; then N11 verification, N12 performance. Updated: 2026-10-18.
 
 Done (N3, 0.10): `hal::Pmap` and both pmaps in `hal`; `kernel::vm` whole, `sys/uvm/` deleted,
 15 vm syscalls `Native`; one MP kernel (decision 40). Close: `just jobs=3 ci` 86/86,

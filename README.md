@@ -38,7 +38,8 @@
 ## Status
 
 Status: N3 (memory: uvm in `kernel::vm`, the pmaps in `hal`) met on 2026-10-18; N4 (processes
-and scheduling) next.
+and scheduling) next. Since decision 44 (2026-10-18) only arm64 is built and tested until N10
+homologates amd64 (`docs/ZERO_UNSAFE.md` section 10).
 
 | Milestone | Scope | State |
 |---|---|---|
@@ -51,7 +52,10 @@ and scheduling) next.
 | N6 | Network stack | next |
 | N7 | Devices: bus_space, DMA, the driver model | next |
 | N8 | Security subsystems, last: pf, IPsec, WireGuard, softraid CRYPTO, the crypto framework | next |
-| N9 | Close: legacy 0, the core's boundary made final | next |
+| N9 | Close on arm64: `bsd` deleted, the amd64 tree frozen (decision 44) | next |
+| N10 | amd64 homologation: the frozen tree compiled and its `hal` halves written; the same smokes, installer, diff-openbsd and bench on amd64 | next |
+| N11 | Verification: the semantic unsafe count, the idiomaticity rubric, an organic battery from OpenBSD's regress, hvf for arm64 | next |
+| N12 | Performance: what decision 42 left open, closed on both archs with QEMU profiles | next |
 
 Exit criteria are in [docs/ROADMAP.md](docs/ROADMAP.md); the current state is in
 [docs/STATUS.md](docs/STATUS.md). The port's milestones (M0..M16b at `lz-origin`, and onwards)
@@ -448,8 +452,9 @@ Four tiers:
 
 1. Host unit tests (`just test`): pure logic runs on macOS through `sys/arch/host`.
 2. Reference-backed tests (`just test-ref`): constants are cross-checked against the C headers.
-3. QEMU smoke tests (`just smoke`): boot both architectures headless and assert serial lines and
-   exit codes. A full run boots 67 single VMs and 24 pairs of VMs, all on the
+3. QEMU smoke tests (`just smoke`): boot arm64 headless (amd64 is frozen until N10, decision 44;
+   its expectations stay in the recipes and a skipped boot is never green) and assert serial
+   lines and exit codes. A full run boots 67 single VMs and 24 pairs of VMs, all on the
    `multiprocessor` kernel with `-smp 2` (`-smp 4` for the `smp4` group, and for every recipe
    in `just ci-full`) except `smoke-up`'s `-smp 1` boot per arch.
    The recipes run four at a time, each in its own `target/smoke/<recipe>/` with its own log;
@@ -457,10 +462,10 @@ Four tiers:
 4. Differential tests (`just diff-openbsd`, beside `just ci`): the same scenarios on EmiBSD and
    on a real OpenBSD VM (the -current snapshot nearest the pin, installed once with
    autoinstall(8) under `target/openbsd/`), compared step by step; every difference is fixed
-   or listed with its reason in `tools/xtask/diff-openbsd/expected.toml`. About two minutes
-   for both archs once installed.
+   or listed with its reason in `tools/xtask/diff-openbsd/expected.toml`. About a minute for
+   arm64 once installed (amd64 again at N10).
 
-`just ci` runs fmt, clippy for amd64, arm64 and the host, all tests, both builds, every smoke, and
+`just ci` runs fmt, clippy for arm64 and the host, all tests, the arm64 build, every arm64 smoke, and
 the lineage, drift and unsafe-budget checks (`cargo xtask lz check`, `lz drift --strict`,
 `unsafe-report --check`). Green `just ci` is the definition of done.
 Rules: [.claude/rules/testing.md](.claude/rules/testing.md).

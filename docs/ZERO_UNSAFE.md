@@ -125,6 +125,12 @@ the new runtime; the ceiling in `unsafe-budget.toml`, lowered only), and `bsd` (
 are 0** (deleted, or a 0-`unsafe` adapter listed as such) and its subsystem answers in
 `kernel`. The old `forbid` count is gone: nothing in `kernel` needs marking.
 
+Since decision 44 (2026-10-18) a fifth class exists from N9 on: `frozen`, the amd64 tree
+(`sys/arch/amd64/`, `sys/hal/arch/amd64/`, the amd64 implementations of `sys/machine`) left as
+it is, `inherited`, outside every crate, until N10 homologates it; `/progress` and
+`unsafe-report` print it beside the boot loaders, and a row is complete when its `bsd` files are
+0 whatever `frozen` holds. Until N9 those files are still `bsd`'s and belong to N10's row.
+
 ### 0.5 Milestones, replanned
 
 Measured on `main` at `47e1c4f` with `/progress`. "Files" and "`unsafe`" are what leaves `bsd`.
@@ -143,6 +149,9 @@ active days have moved 100 `unsafe`.
 | **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last; the bus, autoconf and ACPI/FDT glue of `sys/arch` (74 files) into `hal`, its 19 drivers into `kernel::dev` (decisions 26, 28) | 383 + 74 | 4,101 (+ 675 moved; 4,124 with `softraid_crypto`, N8's) | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 44 d |
 | **N8 Security subsystems** | `pf*`, `if_wg`/`wg_*`, IPsec, `softraid_crypto`, `pledge`, `unveil`, `exec_*`, the crypto framework → `kernel`, each with `Security-Review:` and the area's smokes before every commit | 36 | 849 | those files gone from `bsd`; `lz drift --security` empty | 8 d |
 | **N9 Close** | what is left: `sys/ddb/`, `sys/conf/`, `init/`, the old runtime files (`subr_pool`, `kern_lock`, `kern_rwlock`, `kern_malloc`, `smr`, `percpu`: deleted with their last user), `sys/sys/` emptied into `abi`/`kernel`; the `bsd` crate deleted; the binary is `kernel` + `abi` + `hal`; `bridges.toml` empty; `hal`'s floor recorded with its proof list; Miri green on `hal` | 14 + the old runtime 19 + the ddb glue and configuration tables of `sys/arch` (15) | 28 + 159 (+ ~60 moved) | `sys/` holds `hal/`, `kernel/`, `abi/`, `stand/`, `lib/`; `unsafe-report`: `bsd` does not exist, `kernel` 0, `abi` 0, `hal` = its floor | 5 d |
+| **N10 amd64 homologation** (decision 44; after N9) | the compile-and-fix pass of the frozen amd64 tree against `hal`'s and `kernel`'s APIs at N9; the amd64 halves N4 and N7 deferred (cpu, clock, trap, syscall entry, copy; bus, autoconf, the ACPI glue; the amd64 drivers of `sys/arch` into `kernel::dev`); the module window of decision 37; the open amd64 performance of decision 42 (`pagefault` +49 %, the pmap side of the fault, `fileread`); the `deferred-to-N10` LZ records applied | the amd64 tree | its count at N9 | `EMIBSD_ARCHS=amd64,arm64 just ci` rc=0 with the recipes' amd64 expectations unchanged; `ci-full` with the amd64 installer recipes and `cd80.iso`; `diff-openbsd` amd64 0 unexpected; `bench` amd64 at or under its value before N3 per measurement, or a written reason; `frozen` 0 files; no `deferred-to-N10` record open | n/a |
+| **N11 Verification** | the gaps deferred on 2026-10-17 after the TRACTOR comparison: the semantic count of unsafe operations beside the syntactic one; the six-dimension idiomaticity rubric as the reviewer's scorecard; an organic and hidden battery (OpenBSD's `regress` through `diff-openbsd`; the clone's widening is the user's); decision 8's renames; `-accel hvf` for arm64 tried once and recorded | 0 | 0 | `unsafe-report` prints operations and keywords; every module redesigned from N11 carries its six scores; the `regress` battery runs with its own `expected.toml`, 0 unexpected; the hvf result recorded | n/a |
+| **N12 Performance** | what decision 42 left open, on both archs: the QEMU profile of the fault and of fork (the pmaps in `hal`, the page system's locks under TCG, the trap, the TLB shootdowns), the lookups beyond the C listed for `sys/kernel/vm/map.rs`, `zero_page`/`copy_page` over typed pages | 0 | 0 | `just bench` on both archs: every ratio at or under its value before N3 (`docs/bench/n3-before-<arch>.toml`) or a written reason per measurement; `Bench:` on every commit (decision 43); no new `unsafe`, no check relaxed | n/a |
 
 Total: 8,906 `unsafe` out of `bsd` (8,747 legacy + 159 old runtime files), 580 + 19 files, about **112 days of continuous agent
 time** at the measured pace, serial (the slices share files); this number is the planning
@@ -948,3 +957,49 @@ Taken by the user on 2026-10-18:
     guarantees it lives. (3) The reviewer's checklist gains "does the hot path make more
     lookups, clones or recomputations than the C?", compared with the C and with LZ
     (`.claude/agents/reviewer.md`).
+
+44. **arm64 first; amd64 is frozen until N10, which homologates it** (the user, 2026-10-18:
+    "quiero que de aquí en adelante pruebes únicamente en arm64 y en un hito N10 homologues a
+    amd64"; the reason, the user's: the tokens spent advancing two architectures in parallel,
+    when the bulk can stabilize on one and be homologated on the second). From N4 on:
+    (1) Only arm64 is built, booted and measured: `just build`, `just clippy`, the smokes,
+    `ci`, `ci-full`, `diff-openbsd` and `bench` run on the architectures of `EMIBSD_ARCHS`
+    (default `arm64`), a switch read by xtask (`smoke`, `smoke2`, `smoke-all`, `diff-openbsd`,
+    `bench`) and the justfile (`build`, `clippy`, `ci-full`) that N4.0 lands first; an amd64
+    boot is logged `SKIPPED (decision 44)` and counted apart by `smoke-all`, never as a pass;
+    the recipes and their amd64 expectations are not touched, so N10 reactivates them with
+    `EMIBSD_ARCHS=amd64,arm64`.
+    (2) No amd64 code is written, fixed or redesigned: `sys/arch/amd64/`,
+    `sys/hal/arch/amd64/` and the amd64 implementations of `sys/machine` stay as they are, and
+    the amd64 target may stop compiling while `hal` changes. The amd64 halves of N4's moves
+    (cpu, clock, trap, syscall entry, copy) and of N7's (bus, autoconf, the ACPI glue, the
+    amd64 drivers of `sys/arch`) are N10's.
+    (3) The guard on the design: when N4 or N7 defines a `hal` boundary type (`Proc`,
+    `Clockqueue`, `Device`, the trap and syscall entry), the planner reads the amd64 C as well
+    and writes an "amd64 constraints" paragraph in the brief, so N10 implements against types
+    that had both machines in view (the cost decision 26 set out to avoid). Reading is cheap;
+    writing, compiling and debugging are what the decision stops paying.
+    (4) N9 closes on arm64: `bsd` is deleted and the amd64 tree stays where it is,
+    `inherited` in `lineage.toml`, outside every crate, counted by `/progress` and
+    `unsafe-report` as the class `frozen` beside the boot loaders (0.4; the tooling is N9's).
+    (5) LZ sync: a commit that touches only frozen amd64 files is applied by cherry-pick
+    without compiling (`method = "cherry-pick"`, `frozen = true`), or recorded
+    `deferred-to-N10` when it does not apply cleanly; a security fix is never deferred
+    silently: its record names the fix (`lz-sync.md`).
+    (6) The milestones after N8 (docs/ROADMAP.md): N9 Close on arm64; N10 amd64
+    homologation (the compile-and-fix pass, the amd64 halves of N4 and N7, the module window
+    of decision 37, the open amd64 performance: `pagefault` +49 %, the pmap side of the fault,
+    `fileread`'s spread); N11 Verification (the gaps deferred on 2026-10-17 after the TRACTOR
+    comparison: the semantic unsafe-operation count, the six-dimension idiomaticity rubric, an
+    organic and hidden battery from OpenBSD's `regress`, decision 8's renames, `-accel hvf`
+    for arm64 tried and recorded); N12 Performance (what decision 42 left open on both archs,
+    every `just bench` ratio at or under its value before N3 or a written reason).
+    The arm64 regression (`forkexit` +60 %, `forkexec` +41 %, `fileread` +24 %, unchanged by
+    decision 42's phase 2) does not wait for N12 entirely: decision 43 keeps it from growing
+    per slice, and its first measure, the QEMU profile of the arm64 fault, belongs with N4.1,
+    which moves the trap and the syscall entry into `hal`, where the diary puts the cost.
+    Stated cost, accepted: N10 is long and bisects badly, since amd64's bugs arrive in a block
+    instead of per slice (N2's NX window, N3's Limine underflow, the i8254 and i8259 fixes
+    were all amd64-only finds). Rejected: amd64 kept compiling (its compile fixes and `hal`
+    halves cost the tokens the decision saves) and one amd64 boot per close as a canary (the
+    same debugging, deferred a week at most).
