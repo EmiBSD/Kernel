@@ -26,7 +26,9 @@ shape every native module started from and the history `cargo xtask lz drift` re
 gitignored, never edited, and never pushed to: LZ does not know this repository exists.
 
 - Never edit, format, rename, delete or create files under `reference/`. `.claude/settings.json`
-  denies Edit/Write there as a backstop; do not work around it.
+  denies Edit/Write there as a backstop, and the writing subagents' `agent-guard.sh` hook
+  (`subagents.md`) refuses the Bash forms too (`sed -i`, a redirection, `git checkout`,
+  `sparse-checkout`, a `cd` inside); do not work around either.
 - Never copy C verbatim into Rust and never transliterate line by line. Read, understand,
   re-express. Identifiers, constants, data layouts and the *meaning* of comments are preserved;
   the text is yours.

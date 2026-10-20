@@ -54,6 +54,20 @@ until one shows, assume it does not. The worktree roles (`milestone-coordinator`
 `integrator`, `redesigner`, `debugger`, `mechanical`) carry none: a stop in the middle of
 their work leaves commits unmade, which `large-changes.md` forbids.
 
+Guard hook (the user's decision, 2026-10-19): the writing roles (`redesigner`, `mechanical`,
+`integrator`, `debugger`, `milestone-coordinator`) carry a `PreToolUse` hook in their
+frontmatter, `.claude/hooks/agent-guard.sh`, that refuses before it runs: `git push`,
+`git commit --amend`, a `cd` into `reference/`, any `git` other than a reading subcommand or
+`fetch` inside a reference tree, and any write (a write command, a redirection, an in-place
+edit, `git add`/`checkout`/`restore`, Edit or Write) under `reference/` or `lz/`. The one
+write it allows is the worktree setup's own: `ln -s` of `reference/openbsd-src` and
+`reference/emibsd-lz` and their unlinking (the link itself, never a path inside). It makes
+the words of this file and of `reference-readonly.md` mechanical; the main session has no
+such hook, since pushing and the pin bump are done there, on the user's word. A refusal is a
+"STOP" like any other (below): the agent reports it, never routes around it. The hook is a
+belt against a slip, not a wall: its tests are the table the session that wrote it ran, and
+a case it misses is added to the script, not argued with.
+
 ## Memory (`memory: project`)
 
 An agent with memory keeps `.claude/agent-memory/<agent>/MEMORY.md`: lessons that outlive one

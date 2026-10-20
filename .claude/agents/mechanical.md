@@ -5,6 +5,13 @@ model: sonnet
 effort: medium
 isolation: worktree
 memory: project
+hooks:
+  PreToolUse:
+    - matcher: "Bash|Edit|Write|NotebookEdit"
+      hooks:
+        - type: command
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/agent-guard.sh"
+          timeout: 10
 color: cyan
 ---
 
