@@ -1,6 +1,6 @@
 ---
 name: insight
-description: A second opinion from external models (OpenRouter, the user's key; Gemini 4 Argon and GPT Sol by default, two families, none of them Claude) on one bounded EmiBSD question, verified claim by claim against the code and the C before anything becomes work. Use only on one of four triggers - a hot-path measurement that cannot be explained (decision 43 tripped, or a profile that names a module but not a cause), a design fork between two viable shapes, a second reviewer in a security-review.md area, or the heads-up at a milestone start (one short call: at most five things to watch, no replanning). Never per slice or per commit; it applies nothing.
+description: "A second opinion from external models (OpenRouter, the user's key; Gemini 4 Argon and GPT Sol by default, two families, none of them Claude) on one bounded EmiBSD question, verified claim by claim against the code and the C before anything becomes work. Use only on one of four triggers - a hot-path measurement that cannot be explained (decision 43 tripped, or a profile that names a module but not a cause), a design fork between two viable shapes, a second reviewer in a security-review.md area, or the heads-up at a milestone start (one short call: at most five things to watch, no replanning). Never per slice or per commit; it applies nothing."
 argument-hint: <brief.md> [--models a,b] [--out dir] [--dry-run]
 allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/insight.py*)
 ---
