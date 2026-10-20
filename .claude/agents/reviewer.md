@@ -3,6 +3,7 @@ name: reviewer
 description: Independent read-only review of an EmiBSD branch or commit range - the behaviour userland sees kept (the ABI edge byte-identical; the same results, errno, locking and sleep points as the OpenBSD C and the LZ module), unsafe soundness and SAFETY arguments, the project rules (zones, author block, LZ lines, lineage.toml rows, no silent stubs, no C copied verbatim), and security invariants (checks kept or made a type, secret wiping, constant time, bounds). Use before integrating delicate work, on every change in a security-review.md area (it returns the Security-Review paragraph), or when the user asks for a review. Writes nothing; returns its findings.
 model: opus
 effort: high
+maxTurns: 400
 disallowedTools: Edit, Write, NotebookEdit, Agent
 color: yellow
 ---

@@ -40,6 +40,20 @@ it (a module over 3,000 lines, a `security-review.md` area, a close that failed 
 so in the prompt; it never lowers one. `CLAUDE_CODE_EFFORT_LEVEL`, if ever set, overrides all
 of this; it is not set.
 
+Turns (the user's decision, 2026-10-19): the read-only roles carry `maxTurns` in their
+frontmatter as a spending stop, set at about 1.5 times the longest run the project's own
+transcripts show (134 runs up to that date; the longest reviewer 380 turns, surveyor 545,
+planner 152): 400 for `reviewer`, 600 for `surveyor`, 200 for `planner`, 80 for
+`openbsd-probe`, 30 for `image-worker`. At the limit Claude Code returns the output marked
+partial; the launching session reads it and, if the work is worth finishing, resumes the run
+once with `SendMessage` (its context intact); a second partial return is a stop: the user
+decides. The Agent tool has no per-invocation `maxTurns`, so a launcher cannot raise one for
+a big task: a cap that cuts legitimate runs is raised here, in a `rules:` commit, with the
+turn counts that showed it. Whether a resumed run gets a fresh budget is not documented;
+until one shows, assume it does not. The worktree roles (`milestone-coordinator`,
+`integrator`, `redesigner`, `debugger`, `mechanical`) carry none: a stop in the middle of
+their work leaves commits unmade, which `large-changes.md` forbids.
+
 ## Memory (`memory: project`)
 
 An agent with memory keeps `.claude/agent-memory/<agent>/MEMORY.md`: lessons that outlive one

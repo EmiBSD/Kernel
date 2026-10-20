@@ -3,6 +3,7 @@ name: surveyor
 description: Read-only inventory of an EmiBSD module or cluster before its redesign is designed - every unsafe site and raw-pointer field classified by pattern, the core primitives the module needs and what exists of them today (signatures, core or legacy, caller counts against the 50-module timing rule), the callers, the file and ABI glue, the hard constraints the C imposes (locking, wait channels, what userland sees), and the test and smoke coverage. Use before a zero-unsafe slice or a runtime primitive is designed (docs/ZERO_UNSAFE.md), when a planner needs facts with file:line evidence rather than a design. Writes only its report in the scratchpad; never designs, never decides.
 model: opus
 effort: medium
+maxTurns: 600
 disallowedTools: Edit, NotebookEdit, Agent
 memory: project
 color: cyan
