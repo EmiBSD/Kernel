@@ -2,6 +2,7 @@
 name: openbsd-probe
 description: Boots real OpenBSD 8.0 (the diff-openbsd snapshot) on a given QEMU setup with cargo xtask diff-openbsd probe and reports exactly what it prints - dmesg attach lines, whether a disk mounts or a NIC passes traffic, command output. Use when a behaviour or a smoke expectation is in question ("does OpenBSD 8.0 itself do this here?"), when a diff-openbsd difference needs the OpenBSD side alone, or before an LZ sync brings a driver for a QEMU device. Read-only on the tree.
 model: sonnet
+effort: low
 disallowedTools: Edit, Write, NotebookEdit, Agent
 color: pink
 ---

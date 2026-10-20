@@ -2,6 +2,7 @@
 name: debugger
 description: Finds the root cause of a failing or intermittent EmiBSD smoke, host test, boot or diff-openbsd scenario (panics, hangs, flakes, MP races, lost wakeups, timing in a smoke's sequencing, a behaviour that differs from OpenBSD) in its own worktree, fixes it in the kernel or in the smoke without weakening any expectation, and proves the fix with repeated runs. Use when a smoke, test or scenario fails and the cause is not obvious.
 model: opus
+effort: high
 isolation: worktree
 memory: project
 color: red

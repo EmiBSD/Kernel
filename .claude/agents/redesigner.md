@@ -2,6 +2,7 @@
 name: redesigner
 description: Redesigns one delicate EmiBSD module or coherent cluster in its own worktree - locking, unsafe, intrusive data structures, uvm, the scheduler, VFS, the network stack, drivers with DMA or MMIO, anything in security-review.md's list, and every module over about 3,000 lines (one redesigner per big module). Reads the LZ module and the OpenBSD C behind it completely, keeps what userland sees, redesigns the inside with ownership first, proves it (SAFETY arguments, tests, smokes, diff-openbsd), records lineage.toml, commits early. Use for any redesign where a mistake is subtle; when unsure, use this one.
 model: opus
+effort: high
 isolation: worktree
 memory: project
 color: blue

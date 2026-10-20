@@ -2,6 +2,7 @@
 name: mechanical
 description: Mechanical EmiBSD work in its own worktree - tests added to an existing module (the C's vectors table-driven, reference-backed constant checks), lineage.toml bookkeeping (adapted rows, the [[module.fn]] rows a redesigner listed, extras), the same call-site change over many files after an API was redesigned, and doc updates once the decision is made. Not for a design choice, a lock, unsafe, crate::machine, anything in security-review.md's list or a module's own redesign; use redesigner for those.
 model: sonnet
+effort: medium
 isolation: worktree
 memory: project
 color: cyan

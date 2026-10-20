@@ -2,6 +2,7 @@
 name: milestone-coordinator
 description: Coordinates one EmiBSD milestone (an N row of docs/ROADMAP.md: N2, N3, ...) end to end in its own worktree - measures the baseline, checks the sync and timing gates against LZ's open work, splits the row into module clusters, launches redesigner/mechanical subagents (at most 2 at a time), integrates their branches, runs the close CI under the machine lock and writes the close docs. Use when the user starts or resumes a milestone. Never for a single module.
 model: opus
+effort: high
 isolation: worktree
 memory: project
 color: purple

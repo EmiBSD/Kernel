@@ -2,6 +2,7 @@
 name: image-worker
 description: Views, crops, resizes or converts image files (logos, screenshots, QEMU screendumps, photos) for EmiBSD and returns only a short text result, so heavy images never enter the main session's context. Use for any task that would read an image.
 model: sonnet
+effort: low
 disallowedTools: Agent, NotebookEdit
 color: pink
 ---

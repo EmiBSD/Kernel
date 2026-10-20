@@ -30,6 +30,16 @@ launched individually with the Agent tool ("one by one", below), never by a scri
 user in the final report, with the evidence; no agent reports anything upstream or to LZ (LZ
 is never told this repository exists, `reference-readonly.md`).
 
+Effort (the user's decision, 2026-10-19): every definition fixes `effort` in its frontmatter,
+so a run never inherits the main session's level: `low` for `image-worker` and
+`openbsd-probe`, `medium` for `mechanical` and `surveyor` (their value is completeness, which
+the instruction gives, not reasoning per step), `high` for `milestone-coordinator`,
+`integrator`, `redesigner`, `debugger`, `reviewer` and `planner`. The launching session may
+raise one run to `xhigh` through the Agent tool's `effort` parameter when the task justifies
+it (a module over 3,000 lines, a `security-review.md` area, a close that failed once) and says
+so in the prompt; it never lowers one. `CLAUDE_CODE_EFFORT_LEVEL`, if ever set, overrides all
+of this; it is not set.
+
 ## Memory (`memory: project`)
 
 An agent with memory keeps `.claude/agent-memory/<agent>/MEMORY.md`: lessons that outlive one
