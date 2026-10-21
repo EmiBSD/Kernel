@@ -1825,7 +1825,7 @@ status = "inherited"
 rust = "sys/arch/arm64/dev/smmu.rs"
 lz = ["sys/arch/arm64/dev/smmu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/layout.rs", "sys/hal/vm/param.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/layout.rs", "sys/hal/vm/param.rs", "sys/kernel/extent.rs", "sys/sys/extent.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/dev/smmu_acpi.rs"
@@ -3978,7 +3978,8 @@ notes = "M7b: struct msix_vector, struct pci_dev (repr(C) of Cells, malloc'd, Pc
 [[module]]
 rust = "sys/dev/pci/pci_map.rs"
 lz = ["sys/dev/pci/pci_map.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/extent.rs", "sys/sys/extent.rs"]
 
 [[module]]
 rust = "sys/dev/pci/pci_quirks.rs"
@@ -4145,7 +4146,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/ppb.rs"
 lz = ["sys/dev/pci/ppb.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/extent.rs", "sys/sys/extent.rs"]
 
 [[module]]
 rust = "sys/dev/pci/ppbreg.rs"
@@ -5294,12 +5296,6 @@ status = "inherited"
 rust = "sys/kern/subr_evcount.rs"
 lz = ["sys/kern/subr_evcount.rs"]
 status = "inherited"
-
-[[module]]
-rust = "sys/kern/subr_extent.rs"
-lz = ["sys/kern/subr_extent.rs"]
-status = "inherited"
-license = "NetBSD Foundation BSD-2-clause notice"
 
 [[module]]
 rust = "sys/kern/subr_log.rs"
@@ -7169,9 +7165,10 @@ status = "inherited"
 
 [[module]]
 rust = "sys/sys/extent.rs"
-lz = ["sys/sys/extent.rs"]
-status = "inherited"
+lz = ["sys/sys/extent.rs", "sys/kern/subr_extent.rs"]
+status = "redesigned"
 license = "NetBSD Foundation BSD-2-clause notice"
+notes = "N4.1: the legacy extent(9) API over kernel::extent (sys/kernel/extent.rs), reached as crate::kern::subr_extent too: the types and constants re-exported, the C-named functions safe over the kernel's methods; extent_create leaks the kernel's MBox for the callers' &'static (extent_destroy frees the regions and unlinks, the block stays: a stated deviation, one arm64 destroy site, ppb_detach); a fixed extent's storage is an ExtentFixed<N> passed as a FixedRegions; a caller's descriptor is a Descr made in advance (extent_descr) and given to the extent"
 
 [[module]]
 rust = "sys/sys/fcntl.rs"
@@ -8568,6 +8565,38 @@ lz = "sys/kern/kern_task.rs::_"
 native = []
 kind = "dropped"
 reason = "LZ's compile-time check that a #[repr(C)] queue's address (the bored channel) differs from &tq_running, &tq_bthreads, &tq_bgen: the channels are distinct fields by construction now (the queue's name field outside its mutex, three counters inside it), checked by the test the_wait_channels_are_distinct"
+
+[[module]]
+rust = "sys/kernel/extent.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_extent.rs", "sys/sys/extent.rs"]
+status = "redesigned"
+license = "NetBSD Foundation BSD-2-clause notice"
+notes = "N4.1: extent(9) in the kernel crate: the regions a hal::owned::OwnedTree by start owning each descriptor's PoolBox (extentpl, a BoxPool; a fixed extent's from its ExtentFixed<N> arena, kept on an OwnedList freelist), the extent's state (regions, freelist, EXF_WANTED/FLWANTED) in a Mutexed at IPL_VM where the C has no lock, EXF_FIXED/NOCOALESCE set at creation; the C's walks keep their order, a region is inserted by its start, coalescing moves a start or an end in place; the sleeps (EX_WAITSPACE, the empty freelist) on that mutex with the C's channels, PRIBIO and extnt; a non-fixed extent an MBox of mtype whose drop is extent_destroy, every extent pinned on the list of all extents (hal::pinlist); a caller's descriptor a Descr (a box of extentpl) the extent owns once given; descriptors the C leaks on two paths go back"
+
+[[module.fn]]
+lz = "sys/kern/subr_extent.rs::ExtListHead"
+native = []
+kind = "dropped"
+reason = "the list of all extents is a hal::pinlist::PinList (EXT_LIST) under its own mutex: no Sync wrapper over a legacy ListHead is needed"
+
+[[module.fn]]
+lz = "sys/kern/subr_extent.rs::extent_fixed"
+native = []
+kind = "dropped"
+reason = "a fixed extent's freelist is in the extent's own state (ExState::freelist), and its storage an ExtentFixed<N> that holds the extent: nothing casts an extent back to its storage"
+
+[[module.fn]]
+lz = "sys/sys/extent.rs::ExtentRegion::default"
+native = []
+kind = "dropped"
+reason = "a descriptor is made only by ExtentRegion::new with its flags, inside a pool's get; nothing made a default one"
+
+[[module.fn]]
+lz = "sys/sys/extent.rs::extent_fixed_storage_size"
+native = []
+kind = "dropped"
+reason = "a fixed extent's storage is ExtentFixed<N>, sized by its N descriptors (EXTENT_FIXED_STORAGE_SIZE's role); no byte count is computed"
 
 [[extra]]
 rust = "sys/kernel/thread.rs"

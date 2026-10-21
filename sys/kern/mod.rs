@@ -89,7 +89,9 @@ pub mod spec_vnops;
 pub mod subr_autoconf;
 pub mod subr_disk;
 pub mod subr_evcount;
-pub mod subr_extent;
+// extent(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/extent.rs`, still
+// reached at this path by its callers.
+pub use crate::sys::extent as subr_extent;
 pub mod subr_log;
 pub mod subr_percpu;
 pub mod subr_pool;

@@ -656,7 +656,10 @@ pub(crate) mod tests {
 
             // With the bus's memory extent (its window free, the rest taken), the BAR is
             // placed at the window's first aligned address and written back.
-            let storage = std::boxed::Box::leak(std::vec![0u8; 4096].into_boxed_slice());
+            // extentpl is the kernel crate's pool now: its doubles serve it.
+            kernel::testutil::install();
+            let storage: &'static crate::sys::extent::ExtentFixed<64> =
+                std::boxed::Box::leak(std::boxed::Box::new(crate::sys::extent::ExtentFixed::new()));
             let ex = crate::kern::subr_extent::extent_create(
                 b"test pcimem",
                 0,

@@ -40,6 +40,7 @@ pub mod api;
 pub(crate) mod assert;
 pub mod clock;
 pub mod crypto;
+pub mod extent;
 pub mod pipe;
 pub mod prf;
 pub mod task;

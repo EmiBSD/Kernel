@@ -18,9 +18,9 @@
 
 /* <CODE> */
 //! Host microbenchmarks of N4.1's hot paths (decision 43): timeout(9)'s `timeout_add`/
-//! `timeout_del`, `timeout_set`, `timeout_hardclock_update` and `softclock`, over the kernel's
-//! host doubles (`kernel::testutil`, feature `doubles`). Never part of a kernel image; it
-//! measures and changes nothing.
+//! `timeout_del`, `timeout_set`, `timeout_hardclock_update` and `softclock`, task(9)'s and
+//! extent(9)'s, over the kernel's host doubles (`kernel::testutil`, feature `doubles`). Never
+//! part of a kernel image; it measures and changes nothing.
 //!
 //! `cargo bench -p kernel --features doubles --bench timeout` (release: the `bench` profile)
 //! or with `--profile dev` (the kernel's opt-level 1). Arguments: `list`; the names of the
@@ -38,6 +38,11 @@
 //!   100 `timeout_add(to, 0)` before it are not timed).
 //! - `task.add-next`: `task_add(tq, t)` then one `taskq_next_work` and the call, by hand, on
 //!   a queue without a thread.
+//! - `extent.alloc-free`: `extent_alloc(ex, 0x1000, 0x1000, 0, 0, EX_NOWAIT)` (best fit) then
+//!   `extent_free` of it, in an extent `[0, 0xffffffff]` holding 16 one-page regions 1 MiB
+//!   apart (the page lands after the first and coalesces with it; the free is case 3).
+//! - `prim.pool-get-put`: one item of a 48-byte pool taken and given back, over the
+//!   recycling pool backend this bench registers (the doubles' pool never reuses an item).
 
 #![forbid(unsafe_code)]
 
@@ -46,11 +51,14 @@ use std::ffi::c_void;
 use std::hint::black_box;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::atomic::Ordering;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::pin::pin_static;
+use hal::pool::{PoolBackend, RawPool};
 use kernel::clock::TICKS;
 use kernel::testutil;
 use kernel::timeout::{self, KCLOCK_NONE, Timeout};
@@ -110,6 +118,127 @@ fn measure(b: &mut Bench<'_>, reps: usize, target: Duration) -> (f64, f64, f64, 
 }
 
 // ---------------------------------------------------------------------------------------
+// A pool backend that recycles its items (vm.rs's), registered before the doubles: the
+// doubles' pool hands out a fresh zeroed page per item and never takes one back, which
+// would time the host's page allocator and page faults, not extent(9). The ops below that
+// take pool items (extent.alloc-free's descriptors) get them from here.
+
+/// A page of the host.
+const PAGE: usize = 4096;
+
+/// A free list of items of one size, as addresses (the provenance exposed when they were
+/// carved or given back).
+struct FreeList {
+    stride: usize,
+    free: Mutex<Vec<usize>>,
+}
+
+impl FreeList {
+    const fn new(stride: usize) -> Self {
+        Self {
+            stride,
+            free: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Vec<usize>> {
+        self.free
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// An item: one given back, or a fresh slab carved into items.
+    fn get(&self) -> Option<NonNull<u8>> {
+        let mut free = self.lock();
+        if free.is_empty() {
+            let per = (64 * 1024 / self.stride).max(1);
+            let mut rest: &'static mut [u8] = fresh(per * self.stride);
+            while rest.len() >= self.stride {
+                let (item, tail) = rest.split_at_mut(self.stride);
+                free.push(
+                    NonNull::from(item)
+                        .cast::<u8>()
+                        .as_ptr()
+                        .expose_provenance(),
+                );
+                rest = tail;
+            }
+        }
+        let addr = free.pop()?;
+        NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr))
+    }
+
+    fn put(&self, item: NonNull<u8>) {
+        self.lock().push(item.as_ptr().expose_provenance());
+    }
+}
+
+/// `len` bytes of fresh, zeroed, page-aligned memory, leaked.
+fn fresh(len: usize) -> &'static mut [u8] {
+    // A byte block one page longer, cut at its first page boundary.
+    let block: &'static mut [u8] = vec![0u8; len + PAGE].leak();
+    let skip = block.as_ptr().addr().next_multiple_of(PAGE) - block.as_ptr().addr();
+    let (_, tail) = block.split_at_mut(skip);
+    let (run, _) = tail.split_at_mut(len);
+    run
+}
+
+/// One pool of the recycling double.
+struct BenchPool {
+    items: FreeList,
+    size: usize,
+    nout: AtomicU64,
+}
+
+impl RawPool for BenchPool {
+    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        let p = self.items.get()?;
+        self.nout.fetch_add(1, Ordering::Relaxed);
+        Some((p, self.size))
+    }
+
+    fn put(&self, item: NonNull<u8>) {
+        self.nout.fetch_sub(1, Ordering::Relaxed);
+        self.items.put(item);
+    }
+
+    fn nout(&self) -> u64 {
+        self.nout.load(Ordering::Relaxed)
+    }
+
+    fn set_hiwat(&self, _n: u32) {}
+
+    fn cache_init(&self) {}
+}
+
+/// The recycling pool backend.
+struct BenchPools;
+
+impl PoolBackend for BenchPools {
+    fn create(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        _wchan: &'static str,
+    ) -> Option<&'static dyn RawPool> {
+        if align > PAGE {
+            return None;
+        }
+        let size = size.max(1);
+        let stride = size.next_multiple_of(align.max(16));
+        Some(Box::leak(Box::new(BenchPool {
+            items: FreeList::new(stride),
+            size,
+            nout: AtomicU64::new(0),
+        })))
+    }
+}
+
+static BENCH_POOLS: BenchPools = BenchPools;
+
+// ---------------------------------------------------------------------------------------
 // timeout(9).
 
 /// A timeout function that does nothing.
@@ -140,6 +269,7 @@ fn main() {
         .skip(1)
         .filter(|a| a != "--bench")
         .collect();
+    let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
     testutil::install();
     timeout::startup(100, 10_000, 10_000_000);
 
@@ -206,6 +336,56 @@ fn main() {
         f: Box::new(prim(|| {
             black_box(kernel::task::task_add(&TQ, pin_static(&TASK)));
             kernel::task::run_next_by_hand(&TQ);
+        })),
+    });
+    // extent(9): one page allocated and freed (a coalescing extent of 16 regions).
+    let Some(ex) = kernel::extent::Extent::create(
+        b"bench",
+        0,
+        0xffff_ffff,
+        2, // M_DEVBUF
+        kernel::extent::EX_WAITOK,
+    ) else {
+        eprintln!("timeout bench: extent_create failed");
+        std::process::exit(2);
+    };
+    let ex: &'static kernel::extent::Extent = hal::malloc::MBox::leak(ex);
+    for i in 0..16u64 {
+        if ex
+            .alloc_region(i * 0x10_0000, 0x1000, kernel::extent::EX_NOWAIT)
+            .is_err()
+        {
+            eprintln!("timeout bench: extent_alloc_region failed");
+            std::process::exit(2);
+        }
+    }
+    benches.push(Bench {
+        name: "extent.alloc-free",
+        ops: PRIM,
+        f: Box::new(prim(move || {
+            let Ok(a) = ex.alloc(0x1000, 0x1000, 0, 0, kernel::extent::EX_NOWAIT) else {
+                std::process::exit(3);
+            };
+            if ex
+                .free(black_box(a), 0x1000, kernel::extent::EX_NOWAIT)
+                .is_err()
+            {
+                std::process::exit(3);
+            }
+        })),
+    });
+    // One pool item taken and given back (an extent descriptor's size), over the recycling
+    // backend: what each of extent.alloc-free's two descriptors costs.
+    static PRIM_POOL: hal::pool::BoxPool<[u64; 6]> = hal::pool::BoxPool::new();
+    if PRIM_POOL.init(hal::intr::IPL_VM, 0, "benchpl").is_err() {
+        eprintln!("timeout bench: cannot make benchpl");
+        std::process::exit(2);
+    }
+    benches.push(Bench {
+        name: "prim.pool-get-put",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            black_box(PRIM_POOL.get(hal::pool::PR_NOWAIT, || [0u64; 6]));
         })),
     });
     static CHAN: u8 = 0;
