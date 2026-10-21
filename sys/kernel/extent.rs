@@ -108,6 +108,8 @@
 //! - A descriptor the extent no longer needs on a path where the C forgets it (an
 //!   `EX_CONFLICTOK` allocation that the extent already covers, a sleep interrupted by a
 //!   signal) goes back where it came from; the C leaks it there.
+//! - ddb's `show extents` reports an extent whose lock is held (`<locked>`, or the list's)
+//!   instead of taking it: a panic may strike under it, and the C has no lock.
 //! - A caller's descriptor (`ER_DISCARD`) goes back to `extentpl` when its region is freed,
 //!   where the C leaves it to the structure that embeds it: the caller made it from the pool
 //!   ([`descr`]) and does not get it back.
@@ -322,7 +324,9 @@ pub struct Extent {
     nocoalesce: bool,
     /// The regions, the freelist and the waiters' flags.
     st: Mutexed<ExState>,
-    /// The freelist's wait channel (`&fex->fex_freelist`), distinct from the extent's own.
+    /// The freelist's wait channel (`&fex->fex_freelist`): its address is distinct from the
+    /// extent's own (`ex`, the `EX_WAITSPACE` channel) only because this byte is not the
+    /// struct's first field; a compile-time check below keeps it so.
     fl_chan: u8,
     /// `ex_link`: the list of all extents.
     ex_link: PinEntry<Extent>,
@@ -701,12 +705,13 @@ enum Freed {
     TakeAndGoOn(RKey),
 }
 
-/// An extent's name as the C prints it (`%s`, without the NUL).
+/// An extent's name as the C prints it (`%s`: up to its NUL, if any; each byte as a char, as
+/// LZ's `Str`, so a non-ASCII byte prints as its Latin-1 character).
 struct Name<'a>(&'a [u8]);
 
 impl fmt::Display for Name<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &c in self.0 {
+        for &c in self.0.iter().take_while(|&&c| c != 0) {
             fmt::Write::write_char(f, char::from(c))?;
         }
         Ok(())
@@ -781,10 +786,26 @@ fn extent_pool_init() -> &'static BoxPool<ExtentRegion> {
 
 /// `extent_print_all()`: every extent registered (ddb's `show extents`), through `pr`.
 pub fn extent_print_all(pr: fn(fmt::Arguments<'_>)) {
-    let g = EXT_LOCK.lock();
+    // ddb runs after a panic that may have struck under these locks: a held one is reported,
+    // never taken (`Mutexed` panics "locking against myself" when this CPU holds it).
+    let Some(g) = try_lock_free(&EXT_LOCK) else {
+        pr(format_args!("extent list <locked>\n"));
+        return;
+    };
     for ep in EXT_LIST.iter(&g) {
-        extent_print1(ep, pr);
+        match try_lock_free(&ep.st) {
+            Some(st) => print_locked(ep, &st, pr),
+            None => pr(format_args!("extent `{}' <locked>\n", Name(ep.ex_name))),
+        }
     }
+}
+
+/// `m`'s guard when no CPU holds it (ddb's path: a lock this CPU holds is not taken again).
+fn try_lock_free<T>(m: &Mutexed<T>) -> Option<MutexedGuard<'_, T>> {
+    if m.is_locked() {
+        return None;
+    }
+    m.try_lock()
 }
 
 /// A new extent over `[start, end]`, with no regions.
@@ -1506,8 +1527,10 @@ fn extent_free(ex: &Extent, start: u64, size: u64, flags: i32) -> Result<(), Err
     }
 
     if !done && flags & EX_CONFLICTOK == 0 {
-        // Region not found, or request otherwise invalid.
+        // Region not found, or request otherwise invalid. Printed under the lock, which is
+        // given up before the panic: ddb's `show extents` takes it.
         print_locked(ex, &g, printf);
+        drop(g);
         printf(format_args!(
             "extent_free: start 0x{start:x}, end 0x{end:x}\n"
         ));
@@ -1637,6 +1660,8 @@ pub fn extentpl_nout() -> u64 {
 const _: () = {
     assert!(extent_align(0x1001, 0x1000, 0) == 0x2000);
     assert!(le_ov(1, 2, 3) && !le_ov(u64::MAX, 2, u64::MAX));
+    // The freelist's channel is not the extent's (`fl_chan` is not at offset 0).
+    assert!(core::mem::offset_of!(Extent, fl_chan) != 0);
 };
 /* </CODE> */
 
@@ -1838,6 +1863,18 @@ mod tests {
         assert_eq!(ex.alloc_region(0x2000, 0x1000, EX_NOWAIT), Ok(()));
         assert_eq!(regions(&ex).last(), Some(&(0x2000, 0x2fff)));
         assert_eq!(ex.alloc_region(0x2800, 0x10, EX_NOWAIT), Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn a_held_extent_prints_as_locked_in_ddb() {
+        let _g = setup();
+        let ex = new_extent(0, 0xff, 0);
+        let held = ex.st.lock();
+        assert!(try_lock_free(&ex.st).is_none());
+        drop(held);
+        assert!(try_lock_free(&ex.st).is_some());
+        // The whole list, with nothing held, prints (and takes no lock it holds).
+        extent_print_all(|_| {});
     }
 
     #[test]
