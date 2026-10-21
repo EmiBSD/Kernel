@@ -144,3 +144,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - An owned tree that must admit equal keys (the C's list admits them) needs no hal change: key by (fields, element address), unique; the in-place edits must keep that order, and removal is by the exact key of the element the walk held.
 - Baseline a filtered test run at another commit: stash the paths with a unique message, check out the base, run, come back, apply the stash by its SHA, then drop the `stash@{n}` whose SHA it is.
 - Python heredocs whose text names the version-control tool are refused in the worktree sandbox: write the script with the Write tool and run it by path.
+- A view that holds `&mut Guard` after checking a binding must never lend `&mut Guard` (a caller can replace the guard with another lock's): lend `&mut Guard::Target` (`DerefMut`) and `&Guard`.
+- Token-level xtask rules compare names as Rust reads them: strip a leading `r#` (the lexer keeps it) and refuse `Name as` renames where an impl of the new name would slip through.
+- kernel::testutil's doubles run in two worlds: `cfg(test)` (the kernel's own tests) and `doubles` without test (bsd's tests, benches); a double that starts real threads (deferred kthread creation) races bsd tests that drive workers by hand, as LZ's host tests never ran deferred creations.
+- An aborting test module hides its later failures: after fixing an abort, rerun the module at the fixing commit and bisect what fails behind it (wg's data-message tests were masked from 7311cd9d to 7227d7f8).
