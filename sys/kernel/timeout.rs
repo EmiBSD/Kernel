@@ -938,15 +938,16 @@ fn run_first<'w>(
     mut g: MutexedGuard<'w, WheelState>,
     ctx: Ctx,
 ) -> (MutexedGuard<'w, WheelState>, bool) {
-    let q = ctx.todo();
-    let Some((func, arg, addr)) = q.first(&g).map(|to| {
+    // The context's queue bound once for the look and the removal.
+    let mut q = ring(ctx.todo()).bound(&mut g);
+    let Some((func, arg, addr)) = q.first().map(|to| {
         let flags = to.flags.load(Ordering::Relaxed);
-        take_for_run(to, flags, to.st.get(&g).func)
+        take_for_run(to, flags, to.st.get(q.witness()).func)
     }) else {
         return (g, false);
     };
-    q.remove_first(&mut g);
-    g.stat.tos_pending -= 1;
+    q.remove_first();
+    q.data_mut().stat.tos_pending -= 1;
     (run_taken(g, ctx, func, arg, addr), true)
 }
 

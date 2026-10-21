@@ -7528,7 +7528,7 @@ notes = "M5: timeval/timespec/bintime/timezone/itimerval/clockinfo, the timer*/t
 rust = "sys/sys/timeout.rs"
 lz = ["sys/sys/timeout.rs", "sys/kern/kern_timeout.rs"]
 status = "redesigned"
-notes = "N4.1: the legacy timeout(9) API over kernel::timeout (sys/kernel/timeout.rs), reached as crate::kern::kern_timeout too; struct timeout is a wrapper valid all zero (the zeroed softcs' timeouts) holding TIMEOUT_INITIALIZER's values and a hal::link::Link to its node, a kernel::timeout::Timeout in a timeoutpl item found by the wrapper's address in a registry (a hal::tree::Tree under a Mutexed), never given back since LZ frees the structures that embed timeouts without dropping them (the user's decision of 2026-10-21, option (a'): option (c), the kernel's timeout embedded by value, is not valid all zero and needed &'static at 33 call sites); a recycled address's node is deleted first; bounded by the distinct addresses that ever held a timeout; kern_timeout.c's functions are the kernel's under their legacy names, timeout_sysctl copies kernel::timeout::stats()"
+notes = "N4.1: the legacy timeout(9) API over kernel::timeout (sys/kernel/timeout.rs), reached as crate::kern::kern_timeout too; struct timeout is a wrapper valid all zero (the zeroed softcs' timeouts) holding TIMEOUT_INITIALIZER's values and a hal::link::Link to its node, a kernel::timeout::Timeout in a timeoutpl item found by the wrapper's address in a registry (a hal::tree::Tree under a Mutexed), never given back since LZ frees the structures that embed timeouts without dropping them (the user's decision of 2026-10-21, option (a'): option (c), the kernel's timeout embedded by value, is not valid all zero and needed &'static at 33 call sites); a recycled address's node is claimed under the registry's lock and set fresh (taken off its queue uncounted, kernel::timeout::Timeout::set_fresh); bounded by the distinct addresses that ever held a timeout; kern_timeout.c's functions are the kernel's under their legacy names, timeout_sysctl copies kernel::timeout::stats()"
 
 [[module]]
 rust = "sys/sys/timetc.rs"
@@ -8189,7 +8189,7 @@ reason = "hal runtime, written new (N4.1 P5): softintr_establish(9)/softintr_sch
 [[extra]]
 rust = "sys/hal/pin.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (Pin::new_unchecked once, over the premise that a shared borrow that never ends excludes every move); docs/ZERO_UNSAFE.md 0.1"
+reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
 rust = "sys/hal/prf.rs"
@@ -8622,7 +8622,7 @@ rust = "sys/kernel/task.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_task.rs", "sys/sys/task.rs"]
 status = "redesigned"
-notes = "N4.1: task(9) in the kernel crate: the queue's state in a Mutexed (tq_mtx), its worklist and threads hal::pinlist::PinLists bound to it, a task linked through Pin<&Task> (pending = its entry's link word), t_func/t_arg in a small mutex of their own (task_set's contract made a lock), created queues PoolArc items of taskqpl (decision 4), systq/systqmp statics; threads as start tickets (kernel::thread); a barrier's own task marked and run by the worker on its queue (no void * cast back); the legacy API stays in sys/sys/task.rs (adapted: the struct task bsd's lists use, with the kernel's task inside; a destroyed queue's memory kept for the callers' &'static)"
+notes = "N4.1: task(9) in the kernel crate: the queue's state in a Mutexed (tq_mtx), its worklist and threads hal::pinlist::PinLists bound to it, a task linked through Pin<&Task> (pending = its entry's link word), t_func/t_arg in a small mutex of their own (task_set's contract made a lock), created queues PoolArc items of taskqpl (decision 4), systq/systqmp statics; threads as start tickets (kernel::thread); a barrier's own task marked and run by the worker on its queue (no void * cast back); the legacy API stays in sys/sys/task.rs (adapted: the struct task bsd's lists use, with the kernel's task inside); taskq_destroy(TaskqRef) frees with the last handle, taskq_destroy_leaked only for the three legacy holders of a &'static (softnets, softraid, wsdisplay: their Deviations); taskqpl made at its first use"
 
 [[module.fn]]
 lz = "sys/kern/kern_task.rs::TASKQ_SYS"
@@ -8673,7 +8673,7 @@ crate = "kernel"
 lz = ["sys/kern/subr_extent.rs", "sys/sys/extent.rs"]
 status = "redesigned"
 license = "NetBSD Foundation BSD-2-clause notice"
-notes = "N4.1: extent(9) in the kernel crate: the regions a hal::owned::OwnedTree by start owning each descriptor's PoolBox (extentpl, a BoxPool; a fixed extent's from its ExtentFixed<N> arena, kept on an OwnedList freelist), the extent's state (regions, freelist, EXF_WANTED/FLWANTED) in a Mutexed at IPL_VM where the C has no lock, EXF_FIXED/NOCOALESCE set at creation; the C's walks keep their order, a region is inserted by its start, coalescing moves a start or an end in place; the sleeps (EX_WAITSPACE, the empty freelist) on that mutex with the C's channels, PRIBIO and extnt; a non-fixed extent an MBox of mtype whose drop is extent_destroy, every extent pinned on the list of all extents (hal::pinlist); a caller's descriptor a Descr (a box of extentpl) the extent owns once given; descriptors the C leaks on two paths go back"
+notes = "N4.1: extent(9) in the kernel crate: the regions a hal::owned::OwnedTree keyed by start, end and the descriptor's address (two regions may share a start: the EX_CONFLICTOK case-1 quirk) owning each descriptor's PoolBox (extentpl, a BoxPool; a fixed extent's from its ExtentFixed<N> arena, kept on an OwnedList freelist), the extent's state (regions, freelist, EXF_WANTED/FLWANTED) in a Mutexed at IPL_VM where the C has no lock, EXF_FIXED/NOCOALESCE set at creation; the C's walks keep their order and act on the region in hand, a region is inserted by its key, coalescing moves a start or an end in place, a removal is by the exact key after the walk; the sleeps (EX_WAITSPACE, the empty freelist) on that mutex with the C's channels, PRIBIO and extnt; a non-fixed extent an MBox of mtype whose drop is extent_destroy, every extent pinned on the list of all extents (hal::pinlist); a caller's descriptor a Descr (a box of extentpl) the extent owns once given; descriptors the C leaks on two paths go back"
 
 [[module.fn]]
 lz = "sys/kern/subr_extent.rs::ExtListHead"

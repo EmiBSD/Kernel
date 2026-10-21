@@ -300,7 +300,8 @@ pub type Descr = PoolBox<ExtentRegion>;
 
 /// What an extent's lock keeps.
 struct ExState {
-    /// `ex_regions`: allocated regions in extent, by start.
+    /// `ex_regions`: allocated regions in extent, by start, then end, then address
+    /// ([`RKey`]).
     regions: OwnedTree<ExtentRegionList>,
     /// `fex_freelist`: a fixed extent's free descriptors.
     freelist: OwnedList<ExtentRegionList>,
