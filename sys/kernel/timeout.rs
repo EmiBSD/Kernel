@@ -121,6 +121,10 @@
 //!   read without it by `timeout_pending` and friends, as the C's macros; `to_time` changes in
 //!   `timeout_adjust_ticks`'s walk). `timeout_set` writes them under the lock, where the C
 //!   writes them bare (its contract: not while pending).
+//! - `timeout_set` keeps the wheel's state bits (`TIMEOUT_ONQUEUE`, `TIMEOUT_TRIGGERED`)
+//!   where the C overwrites `to_flags` whole: a set on a pending timeout, which the C's
+//!   contract forbids and the C would leave linked but not `ONQUEUE` (lost to `timeout_del`),
+//!   stays pending and deletable.
 //! - `timeout_barrier`'s `struct cond` is the barrier timeout itself: the context sets its
 //!   `TIMEOUT_TRIGGERED` under the lock when it runs it and its function wakes the waiter,
 //!   whose condition is that flag (`tmobar`, as `cond_wait`).
@@ -270,7 +274,10 @@ impl Timeout {
 
     /// `timeout_set_flags(to, func, arg, kclock, flags)` (`func` `None`: the C's `NULL`, which
     /// `usbd_alloc_xfer` sets). The C writes the fields bare, trusting the caller not to set a
-    /// pending timeout; here they are written under the wheel's lock.
+    /// pending timeout; here they are written under the wheel's lock, and the state bits the
+    /// wheel keeps (`TIMEOUT_ONQUEUE`, `TIMEOUT_TRIGGERED`) survive, so a set on a pending
+    /// timeout leaves it pending and deletable: only `TIMEOUT_PROC`, `TIMEOUT_MPSAFE`, the
+    /// clock, the function and the argument change.
     pub fn set(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
         kassert!(flags & !(TIMEOUT_PROC | TIMEOUT_MPSAFE) == 0);
         kassert!((KCLOCK_NONE..KCLOCK_MAX).contains(&kclock));
@@ -284,8 +291,9 @@ impl Timeout {
         st.func = func;
         st.kclock = kclock;
         self.arg.store(arg, Ordering::Relaxed);
+        let state = self.flags.load(Ordering::Relaxed) & (TIMEOUT_ONQUEUE | TIMEOUT_TRIGGERED);
         self.flags
-            .store(flags | TIMEOUT_INITIALIZED, Ordering::Relaxed);
+            .store(flags | TIMEOUT_INITIALIZED | state, Ordering::Relaxed);
     }
 
     /// `timeout_add(to, to_ticks)`: due in `to_ticks` ticks; `true` when it was not pending
@@ -1216,6 +1224,32 @@ mod tests {
         assert!(!to.pending());
         assert!(!to.del(), "already ran");
         assert!(!to.triggered());
+    }
+
+    #[test]
+    fn a_set_on_a_pending_timeout_keeps_it_pending_and_deletable() {
+        let _g = setup();
+        static TO: Timeout = Timeout::new(fire, ptr::null_mut());
+        let to = pinned(&TO);
+        let before = pending_count();
+        assert!(to.add(10));
+        to.set(
+            Some(fire),
+            ptr::without_provenance_mut(9),
+            KCLOCK_NONE,
+            TIMEOUT_PROC,
+        );
+        assert!(to.pending(), "still on its queue");
+        assert!(to.initialized());
+        assert_ne!(TO.flags.load(Ordering::Relaxed) & TIMEOUT_PROC, 0);
+        assert!(to.del(), "deleted: it was pending");
+        assert!(!TO.entry.is_linked());
+        assert_eq!(pending_count(), before);
+        // Added again (the list's "on a list already" would panic here had the set lost
+        // TIMEOUT_ONQUEUE), then left as it was.
+        assert!(to.add(10));
+        assert!(to.del());
+        to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
     }
 
     #[test]
