@@ -248,8 +248,8 @@ impl Timeout {
         self.node.get().filter(|n| n.owner == self.addr())
     }
 
-    /// `timeout_set_flags` through the wrapper: its node's fields set (the state the wheel
-    /// keeps stays, `kernel::timeout::Timeout::set`), or, for a wrapper with no node, the node
+    /// `timeout_set_flags` through the wrapper: its node's fields set (its queued state
+    /// stays, `kernel::timeout::Timeout::set`), or, for a wrapper with no node, the node
     /// at its address claimed and set fresh ([`Timeout::claim`]).
     fn set_node(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
         match self.served() {

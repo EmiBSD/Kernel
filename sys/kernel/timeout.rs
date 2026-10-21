@@ -121,10 +121,11 @@
 //!   read without it by `timeout_pending` and friends, as the C's macros; `to_time` changes in
 //!   `timeout_adjust_ticks`'s walk). `timeout_set` writes them under the lock, where the C
 //!   writes them bare (its contract: not while pending).
-//! - `timeout_set` keeps the wheel's state bits (`TIMEOUT_ONQUEUE`, `TIMEOUT_TRIGGERED`)
-//!   where the C overwrites `to_flags` whole: a set on a pending timeout, which the C's
-//!   contract forbids and the C would leave linked but not `ONQUEUE` (lost to `timeout_del`),
-//!   stays pending and deletable.
+//! - `timeout_set` keeps `TIMEOUT_ONQUEUE` where the C overwrites `to_flags` whole: a set on
+//!   a pending timeout, which the C's contract forbids and the C would leave linked but not
+//!   `ONQUEUE` (lost to `timeout_del`), stays pending and deletable. `TIMEOUT_TRIGGERED` is
+//!   cleared, as the C clears it (the two bits never coexist: a timeout is triggered when it
+//!   leaves its queue).
 //! - `timeout_barrier`'s `struct cond` is the barrier timeout itself: the context sets its
 //!   `TIMEOUT_TRIGGERED` and takes it off its queue under the lock, then its function wakes the
 //!   waiter, whose condition is both (`tmobar`, as `cond_wait`): the waiter returns only once
@@ -276,10 +277,10 @@ impl Timeout {
 
     /// `timeout_set_flags(to, func, arg, kclock, flags)` (`func` `None`: the C's `NULL`, which
     /// `usbd_alloc_xfer` sets). The C writes the fields bare, trusting the caller not to set a
-    /// pending timeout; here they are written under the wheel's lock, and the state bits the
-    /// wheel keeps (`TIMEOUT_ONQUEUE`, `TIMEOUT_TRIGGERED`) survive, so a set on a pending
-    /// timeout leaves it pending and deletable: only `TIMEOUT_PROC`, `TIMEOUT_MPSAFE`, the
-    /// clock, the function and the argument change.
+    /// pending timeout; here they are written under the wheel's lock, and the queued state
+    /// (`TIMEOUT_ONQUEUE`) survives, so a set on a pending timeout leaves it pending and
+    /// deletable: `TIMEOUT_PROC`, `TIMEOUT_MPSAFE`, the clock, the function and the argument
+    /// change, and `TIMEOUT_TRIGGERED` is cleared as the C's whole store clears it.
     pub fn set(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
         set_checks(kclock, flags);
         let mut g = WHEEL.lock();
@@ -287,7 +288,7 @@ impl Timeout {
         st.func = func;
         st.kclock = kclock;
         self.arg.store(arg, Ordering::Relaxed);
-        let state = self.flags.load(Ordering::Relaxed) & (TIMEOUT_ONQUEUE | TIMEOUT_TRIGGERED);
+        let state = self.flags.load(Ordering::Relaxed) & TIMEOUT_ONQUEUE;
         self.flags
             .store(flags | TIMEOUT_INITIALIZED | state, Ordering::Relaxed);
     }
@@ -1333,6 +1334,24 @@ mod tests {
         assert!(to.add(10));
         assert!(to.del());
         to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
+    }
+
+    #[test]
+    fn a_re_set_timeout_is_no_longer_triggered() {
+        let _g = setup();
+        static TO: Timeout = Timeout::unset();
+        let to = pinned(&TO);
+        to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
+        assert!(to.add(1));
+        tick_once();
+        tick_once();
+        assert_eq!(FIRED.load(Ordering::Relaxed), 1);
+        assert!(to.triggered());
+        // The C's timeout_set_flags stores to_flags whole: TIMEOUT_TRIGGERED goes.
+        to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
+        assert!(!to.triggered());
+        assert!(to.initialized());
+        assert!(!to.pending());
     }
 
     #[test]
