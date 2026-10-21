@@ -126,8 +126,10 @@
 //!   contract forbids and the C would leave linked but not `ONQUEUE` (lost to `timeout_del`),
 //!   stays pending and deletable.
 //! - `timeout_barrier`'s `struct cond` is the barrier timeout itself: the context sets its
-//!   `TIMEOUT_TRIGGERED` under the lock when it runs it and its function wakes the waiter,
-//!   whose condition is that flag (`tmobar`, as `cond_wait`).
+//!   `TIMEOUT_TRIGGERED` and takes it off its queue under the lock, then its function wakes the
+//!   waiter, whose condition is both (`tmobar`, as `cond_wait`): the waiter returns only once
+//!   the node is unlinked, at the C's point (`c_wait` cleared by the function) or before it,
+//!   never while the node is still on the queue.
 //! - `timeout_startup` takes `hz`, `tick` and `tick_nsec` as data (`bsd`'s `conf/param.rs`,
 //!   never changed after boot); `softintr_establish` and `kthread_create[_deferred]` go through
 //!   `hal::softintr` and `kernel::thread` (bridges `SoftIntr`, `Kthread`), `nanouptime` through
@@ -480,7 +482,7 @@ impl Timeout {
         let chan = ptr::from_ref(&*barrier);
         loop {
             hal::sleep::sleep_setup(chan, PWAIT, "tmobar");
-            let wait = !barrier.triggered();
+            let wait = !barrier.barrier_ran();
             let _ = hal::sleep::sleep_finish(INFSLP, wait);
             if !wait {
                 break;
@@ -502,6 +504,15 @@ impl Timeout {
     /// `timeout_triggered(to)`: is it running, or did it run?
     pub fn triggered(&self) -> bool {
         self.flags.load(Ordering::Relaxed) & TIMEOUT_TRIGGERED != 0
+    }
+
+    /// A barrier timeout's condition (`c_wait` cleared): its context took it, so
+    /// `TIMEOUT_TRIGGERED` is set, and it is off its queue, its entry released (both under the
+    /// wheel's lock, the release last). `TIMEOUT_TRIGGERED` alone is set while the node is still
+    /// linked, so a waiter that returned on it could drop the node in that window, and the
+    /// drop's `del` would count a spurious `tos_deleted`.
+    fn barrier_ran(&self) -> bool {
+        self.triggered() && !self.entry.is_linked()
     }
 
     /// `to->to_time`: the ticks value it is due at (the readers that print or compare it).
@@ -1116,8 +1127,8 @@ pub fn stats() -> [u64; 12] {
 }
 
 /// The barrier timeout's function (`cond_signal_handler`): its argument is its own address,
-/// the waiter's channel; the waiter's condition is the barrier's `TIMEOUT_TRIGGERED`, set
-/// under the lock when the context took it.
+/// the waiter's channel; the waiter's condition is the barrier's `TIMEOUT_TRIGGERED` and its
+/// unlinked entry, both set under the lock when the context took it.
 fn barrier_signal(arg: *mut c_void) {
     hal::sleep::wakeup_one(arg.cast_const());
 }
@@ -1425,6 +1436,7 @@ mod tests {
         while !STARTED.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
+        let deleted = stats()[2];
         let waiter = std::thread::spawn(|| {
             TO.barrier();
             RELEASE.load(Ordering::SeqCst)
@@ -1434,6 +1446,9 @@ mod tests {
         RELEASE.store(true, Ordering::SeqCst);
         assert!(waiter.join().unwrap(), "returned after the release");
         runner.join().unwrap();
+        // The waiter returned once its barrier was off the queue: the barrier's drop deleted
+        // nothing (`tos_deleted` unchanged).
+        assert_eq!(stats()[2], deleted);
         // Not running any more: a barrier returns at once.
         TO.barrier();
     }
