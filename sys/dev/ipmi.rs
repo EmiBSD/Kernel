@@ -161,7 +161,7 @@ use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_sensors::{sensor_attach, sensordev_install};
 use crate::kern::kern_synch::{msleep_nsec, tsleep_nsec, wakeup};
-use crate::kern::kern_task::{task_add, task_add_local, task_del, task_set, taskq_create};
+use crate::kern::kern_task::{task_add, task_del, task_set, taskq_create};
 use crate::kern::kern_watchdog::{wdog_register, wdog_shutdown};
 use crate::kern::subr_autoconf::device_lookup;
 use crate::kern::subr_prf::{Str, panicstr, snprintf};
@@ -1356,11 +1356,14 @@ pub fn ipmi_cmd_wait(sc: &IpmiSoftc, c: &mut IpmiCmd<'_>) {
         done: AtomicBool::new(false),
         mtx: Mutex::new(IPL_MPFLOOR),
     };
-    let t = Task::new(ipmi_cmd_wait_cb, ptr::from_ref(&w).cast_mut().cast());
-    // SAFETY: `t` and `w` live on this stack frame until the task has run (`done` is set
-    // after its last use of them, under `w.mtx`, and this function waits for it) and the
-    // `task_del` below found it off the worklist.
-    let res = unsafe { task_add_local(tq, &t) };
+    // Pinned on this frame (the kernel crate's task(9)): the worker takes it off the queue
+    // before it runs it, and this function waits until it ran (`done`, set under `w.mtx`
+    // after its last use of `w`), so it is off the queue before the frame goes.
+    let t = core::pin::pin!(kernel::task::Task::new(
+        ipmi_cmd_wait_cb,
+        ptr::from_ref(&w).cast_mut().cast()
+    ));
+    let res = kernel::task::task_add(tq, t.as_ref());
     kassert!(res);
 
     mtx_enter(&w.mtx);
@@ -1369,7 +1372,7 @@ pub fn ipmi_cmd_wait(sc: &IpmiSoftc, c: &mut IpmiCmd<'_>) {
     }
     mtx_leave(&w.mtx);
 
-    let res = task_del(tq, &t);
+    let res = kernel::task::task_del(tq, &t);
     kassert!(!res);
 }
 

@@ -3904,8 +3904,8 @@ pub fn wg_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
             }
             (h, c) => {
                 for tq in [h, c].into_iter().flatten() {
-                    // SAFETY: a queue just created here, used by nobody.
-                    unsafe { taskq_destroy(NonNull::from(tq)) };
+                    // A queue just created here, used by nobody.
+                    taskq_destroy(tq);
                 }
                 WG_HANDSHAKE_TASKQ.store(ptr::null_mut(), Ordering::Release);
                 WG_CRYPT_TASKQ.store(ptr::null_mut(), Ordering::Release);
@@ -4080,9 +4080,11 @@ pub fn wg_clone_destroy(ifp: &'static Ifnet) -> Result<(), Errno> {
         crate::kassert!(!h.is_null() && !c.is_null());
         for tq in [h, c] {
             if let Some(tq) = NonNull::new(tq) {
-                // SAFETY: the queues of the last interface, created by `wg_clone_create`; no
-                // peer is left to use them.
-                unsafe { taskq_destroy(tq) };
+                // SAFETY: a queue `wg_clone_create` stored here from `taskq_create`, whose
+                // memory is never given back (`sys/sys/task.rs`): the reference is valid for
+                // good. No peer is left to use the queues of the last interface.
+                let tq: &'static Taskq = unsafe { tq.as_ref() };
+                taskq_destroy(tq);
             }
         }
     }

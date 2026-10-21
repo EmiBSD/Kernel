@@ -58,6 +58,10 @@ pub(crate) enum Start {
     Softclock,
     /// timeout(9)'s `softclock_thread_mp`.
     SoftclockMp,
+    /// task(9)'s `taskq_create_thread(tq)` (deferred by `taskq_init`, `taskq_create`).
+    TaskqCreate(crate::task::TqHandle),
+    /// task(9)'s `taskq_thread(tq)`, a worker.
+    TaskqWorker(crate::task::TqHandle),
 }
 
 /// The starts filed and not yet taken, by ticket; a taken slot is `None` and reused.
@@ -137,7 +141,8 @@ pub fn run(ticket: usize) -> ! {
     match take(ticket) {
         Some(Start::Softclock) => crate::timeout::softclock_thread(),
         Some(Start::SoftclockMp) => crate::timeout::softclock_thread_mp(),
-        Some(Start::SoftclockCreate) | None => {
+        Some(Start::TaskqWorker(tq)) => crate::task::taskq_thread(tq),
+        Some(Start::SoftclockCreate | Start::TaskqCreate(_)) | None => {
             kpanic(format_args!("kthread: ticket {ticket} names no thread"))
         }
     }
@@ -147,9 +152,10 @@ pub fn run(ticket: usize) -> ! {
 pub fn run_deferred(ticket: usize) {
     match take(ticket) {
         Some(Start::SoftclockCreate) => crate::timeout::softclock_create_thread(),
-        Some(Start::Softclock | Start::SoftclockMp) | None => kpanic(format_args!(
-            "kthread: ticket {ticket} names no deferred call"
-        )),
+        Some(Start::TaskqCreate(tq)) => crate::task::taskq_create_thread(tq),
+        Some(Start::Softclock | Start::SoftclockMp | Start::TaskqWorker(_)) | None => kpanic(
+            format_args!("kthread: ticket {ticket} names no deferred call"),
+        ),
     }
 }
 

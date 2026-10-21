@@ -1437,10 +1437,9 @@ pub fn softnet_percpu() {
     #[cfg(feature = "multiprocessor")]
     for sn in &SOFTNETS[softnet_count() as usize..] {
         if let Some(tq) = sn.sn_taskq.take() {
-            // SAFETY: the queue came from `taskq_create` in `softnet_init` and is destroyed
-            // once (its slot is emptied first). No interface uses it: `net_sn` and
+            // Destroyed once (its slot emptied first). No interface uses it: `net_sn` and
             // `net_tq_barriers` only reach the first `softnet_count()` softnets.
-            unsafe { taskq_destroy(NonNull::from(tq)) };
+            taskq_destroy(tq);
         }
     }
 }

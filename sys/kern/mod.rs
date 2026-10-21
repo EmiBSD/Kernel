@@ -67,7 +67,9 @@ pub mod kern_softintr;
 pub mod kern_subr;
 pub mod kern_synch;
 pub mod kern_sysctl;
-pub mod kern_task;
+// task(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/task.rs`, still
+// reached at this path by its callers.
+pub use crate::sys::task as kern_task;
 pub mod kern_tc;
 pub mod kern_time;
 pub mod kern_timeout;

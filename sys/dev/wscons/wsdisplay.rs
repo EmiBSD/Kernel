@@ -1179,9 +1179,9 @@ pub fn wsdisplay_detach(self_: &Device, flags: i32) -> Result<(), Errno> {
 
     if let Some(tq) = sc.sc_taskq.get() {
         sc.sc_taskq.set(None);
-        // SAFETY: the display's own queue from `taskq_create`; its screens (and their bell
-        // tasks) are gone.
-        unsafe { taskq_destroy(NonNull::from(tq)) };
+        // The display's own queue from `taskq_create`; its screens (and their bell tasks)
+        // are gone.
+        taskq_destroy(tq);
     }
 
     Ok(())

@@ -1462,8 +1462,7 @@ pub fn taskq_check() {
     let _ = task_add(tq, &TASKQ_NEW_TASK);
     let new_runner = taskq_wait(3);
     let nthreads_before = NTHREADS.load(Ordering::Relaxed);
-    // SAFETY: `tq` came from `taskq_create` and nothing uses it after this.
-    unsafe { taskq_destroy(NonNull::from(tq)) };
+    taskq_destroy(tq);
     // Give the worker's exit time to reach the reaper, in timed sleeps (endtsleep wakes us),
     // a second at most.
     for _ in 0..20 {

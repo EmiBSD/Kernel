@@ -59,8 +59,9 @@
 //!   topology known) until the machines port their topology probes (amd64 `identcpu.c`
 //!   `cpu_topology`, arm64 `cpu.c` `cpu_identify`): `hw.smt=0` and `hw.blockcpu` then block
 //!   no CPU.
-//! - `sched_barrier` queues its task, which lives on its stack frame, with `task_add_local`
-//!   (`kern_task.rs`); it waits for the task's signal before the frame goes.
+//! - `sched_barrier` queues its task, which lives on its stack frame, pinned there
+//!   (`core::pin::pin!`, the kernel crate's task(9)); it waits for the task's signal before
+//!   the frame goes.
 //! - `sched_steal_proc` skips a CPU in `sched_queued_cpus` with no queue flagged, and
 //!   `sched_proc_to_cpu_cost` a thread without an address space, where the C would index
 //!   queue -1 or follow a null pointer; neither happens under `sched_lock`.
@@ -84,7 +85,7 @@ use crate::kern::kern_smr::smr_idle;
 use crate::kern::kern_synch::{cond_init, cond_wait, sleep_finish, sleep_setup, wakeup};
 use crate::kern::kern_sysctl::{sysctl_int_bounded, sysctl_rdstring, sysctl_string};
 #[cfg(feature = "multiprocessor")]
-use crate::kern::kern_task::{SYSTQMP, task_add_local};
+use crate::kern::kern_task::SYSTQMP;
 use crate::kern::kern_time::itimer_update;
 #[cfg(feature = "multiprocessor")]
 use crate::kern::sched_bsd::sched_unlock;
@@ -117,7 +118,6 @@ use crate::sys::systm::kernel_unlock;
 #[cfg(feature = "multiprocessor")]
 use crate::sys::systm::{INFSLP, cond_signal, kernel_assert_locked};
 #[cfg(feature = "multiprocessor")]
-use crate::sys::task::Task;
 use hal::vm::uvmexp::UVMEXP;
 
 /*
@@ -897,11 +897,13 @@ pub fn sched_barrier(ci: Option<&'static CpuInfo>) {
         cond: Cond::new(),
     };
     cond_init(&sb.cond);
-    let task = Task::new(sched_barrier_task, ptr::from_ref(&sb).cast_mut().cast());
-
-    // SAFETY: `task` and `sb` stay on this frame until `cond_wait` returns, which is after
-    // the worker took the task off the queue and ran it up to its `cond_signal`.
-    let _ = unsafe { task_add_local(SYSTQMP, &task) };
+    // Pinned on this frame: the worker takes it off the queue before it runs it up to its
+    // `cond_signal`, so before `cond_wait` returns and the frame goes.
+    let task = core::pin::pin!(kernel::task::Task::new(
+        sched_barrier_task,
+        ptr::from_ref(&sb).cast_mut().cast()
+    ));
+    let _ = kernel::task::task_add(SYSTQMP, task.as_ref());
     cond_wait(&sb.cond, "sbar");
 }
 

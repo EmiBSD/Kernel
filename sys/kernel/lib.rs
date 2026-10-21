@@ -42,6 +42,7 @@ pub mod clock;
 pub mod crypto;
 pub mod pipe;
 pub mod prf;
+pub mod task;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;

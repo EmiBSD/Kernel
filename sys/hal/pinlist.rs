@@ -314,6 +314,20 @@ fn elem_of<'a, T>(n: &PinEntry<T>) -> &'a T {
 /// entry outside the element (I1) or the element is on a list already.
 #[inline]
 fn link<A: PinAdapter>(e: Pin<&A::Elem>, id: usize, what: &str) -> NonNull<PinEntry<A::Elem>> {
+    match try_link::<A>(e, id, what) {
+        Some(n) => n,
+        None => hal_panic(format_args!("{what}: the element is on a list already")),
+    }
+}
+
+/// [`link`], `None` (nothing changed) when the element is on a list already; panics when the
+/// adapter names an entry outside the element (I1).
+#[inline]
+fn try_link<A: PinAdapter>(
+    e: Pin<&A::Elem>,
+    id: usize,
+    what: &str,
+) -> Option<NonNull<PinEntry<A::Elem>>> {
     let e = e.get_ref();
     let ent = A::entry(e);
     let ea = ptr::from_ref(ent).addr();
@@ -330,10 +344,10 @@ fn link<A: PinAdapter>(e: Pin<&A::Elem>, id: usize, what: &str) -> NonNull<PinEn
         .compare_exchange(0, id, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        hal_panic(format_args!("{what}: the element is on a list already"));
+        return None;
     }
     ent.this.set(Some(NonNull::from(e)));
-    ent.addr()
+    Some(ent.addr())
 }
 
 /// The entry of `e`, which the caller names as being on a list of the lock `id`: panics
@@ -470,6 +484,28 @@ impl<A: PinAdapter> PinList<A> {
         let id = id_of(w);
         bind(&self.key, id, "TAILQ_INSERT_TAIL");
         let n = link::<A>(e, id, "TAILQ_INSERT_TAIL");
+        self.append(n);
+    }
+
+    /// `TAILQ_INSERT_TAIL` of an element that may be on a list already (of this lock, or of
+    /// another whose holder linked it meanwhile): `false`, nothing changed, when it is. The
+    /// test that decides is the claim of its entry itself, so it races with no other insert
+    /// (task(9)'s `task_add` on two queues at once, which the C would corrupt).
+    pub fn try_insert_tail<W: Divisible + ?Sized>(&self, w: &mut W, e: Pin<&A::Elem>) -> bool {
+        let id = id_of(w);
+        bind(&self.key, id, "TAILQ_INSERT_TAIL");
+        match try_link::<A>(e, id, "TAILQ_INSERT_TAIL") {
+            Some(n) => {
+                self.append(n);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Links the claimed entry `n` last.
+    #[inline]
+    fn append(&self, n: NonNull<PinEntry<A::Elem>>) {
         let ent = entry_at(n);
         let old = self.head.prev.get();
         ent.prev.set(old);
@@ -971,6 +1007,29 @@ mod tests {
         l1.remove(&mut g, &nodes[5]);
         assert_eq!(l1.last(&g).map(|n| n.v), Some(4));
         while l1.remove_first(&mut g) {}
+    }
+
+    #[test]
+    fn try_insert_tail_refuses_an_element_on_a_list_of_another_lock() {
+        testutil::install();
+        let m1 = Mutexed::new(IPL_NONE, ());
+        let m2 = Mutexed::new(IPL_NONE, ());
+        let l1: PinList<ByE> = PinList::new();
+        let l2: PinList<ByE> = PinList::new();
+        let a = core::pin::pin!(Node::new(1));
+        assert!(l1.try_insert_tail(&mut m1.lock(), a.as_ref()));
+        assert!(
+            !l1.try_insert_tail(&mut m1.lock(), a.as_ref()),
+            "on this list"
+        );
+        assert!(
+            !l2.try_insert_tail(&mut m2.lock(), a.as_ref()),
+            "on another lock's"
+        );
+        assert!(l2.is_empty(&m2.lock()));
+        l1.remove(&mut m1.lock(), &a);
+        assert!(l2.try_insert_tail(&mut m2.lock(), a.as_ref()), "free again");
+        l2.remove(&mut m2.lock(), &a);
     }
 }
 /* </TESTS> */

@@ -3555,7 +3555,8 @@ notes = "M16a: license: NetBSD Foundation BSD-2, kept whole; the whole header: s
 [[module]]
 rust = "sys/dev/ipmi.rs"
 lz = ["sys/dev/ipmi.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/dev/ipmivar.rs"
@@ -4469,7 +4470,7 @@ notes = "M16a: the whole header: struct sdmmc_csd/cid/scr, sdmmc_response, struc
 rust = "sys/dev/softraid.rs"
 lz = ["sys/dev/softraid.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_concat.rs"
@@ -4791,7 +4792,8 @@ notes = "M12 hid: ported so far: struct wscons_event, every WSCONS_EVENT_*, IS_*
 [[module]]
 rust = "sys/dev/wscons/wsdisplay.rs"
 lz = ["sys/dev/wscons/wsdisplay.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/dev/wscons/wsdisplay_compat_usl.rs"
@@ -5196,7 +5198,7 @@ status = "inherited"
 rust = "sys/kern/kern_sched.rs"
 lz = ["sys/kern/kern_sched.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/kern/kern_sensors.rs"
@@ -5238,10 +5240,6 @@ lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs"]
 
-[[module]]
-rust = "sys/kern/kern_task.rs"
-lz = ["sys/kern/kern_task.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/kern/kern_tc.rs"
@@ -6183,7 +6181,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/task.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6245,7 +6244,7 @@ status = "inherited"
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/net/ifq.rs"
@@ -7515,7 +7514,8 @@ notes = "physmem only (defined here, filled by the machdeps; the C defines it pe
 [[module]]
 rust = "sys/sys/task.rs"
 lz = ["sys/sys/task.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/sys/termios.rs"
@@ -8350,6 +8350,56 @@ notes = "N4.1: timeout(9) in the kernel crate: the wheel's 2052 queues hal::pinl
 rust = "sys/kernel/benches/timeout.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del, timeout_set, hardclock_update idle and with 1,000 timeouts, softclock; task(9) and extent(9) with their commits) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[module]]
+rust = "sys/kernel/task.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_task.rs", "sys/sys/task.rs"]
+status = "redesigned"
+notes = "N4.1: task(9) in the kernel crate: the queue's state in a Mutexed (tq_mtx), its worklist and threads hal::pinlist::PinLists bound to it, a task linked through Pin<&Task> (pending = its entry's link word), t_func/t_arg in a small mutex of their own (task_set's contract made a lock), created queues PoolArc items of taskqpl (decision 4), systq/systqmp statics; threads as start tickets (kernel::thread); a barrier's own task marked and run by the worker on its queue (no void * cast back); the legacy API stays in sys/sys/task.rs (adapted: the struct task bsd's lists use, with the kernel's task inside; a destroyed queue's memory kept for the callers' &'static)"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::TASKQ_SYS"
+native = ["SYSTQ"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::TASKQ_SYS_MP"
+native = ["SYSTQMP"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::TASKQ_SYS_NAME"
+native = ["SYSTQ"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::TASKQ_SYS_MP_NAME"
+native = ["SYSTQMP"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::task_set"
+native = ["Task::set"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::taskq_arg"
+native = []
+kind = "dropped"
+reason = "the void * a thread or a deferred call was handed is a start ticket (kernel::thread): the queue travels as a typed handle, nothing is cast back"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::task_add_local"
+native = []
+kind = "dropped"
+reason = "task_add takes Pin<&Task>: a task on a stack frame (sched_barrier's, ipmi's) is pinned there with core::pin::pin! and added like any other; the unsafe fn and its caller's promise are gone"
+
+[[module.fn]]
+lz = "sys/kern/kern_task.rs::_"
+native = []
+kind = "dropped"
+reason = "LZ's compile-time check that a #[repr(C)] queue's address (the bored channel) differs from &tq_running, &tq_bthreads, &tq_bgen: the channels are distinct fields by construction now (the queue's name field outside its mutex, three counters inside it), checked by the test the_wait_channels_are_distinct"
 
 [[extra]]
 rust = "sys/kernel/thread.rs"

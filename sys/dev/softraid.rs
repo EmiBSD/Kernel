@@ -4525,9 +4525,9 @@ pub fn sr_discipline_shutdown(sd: Option<&'static SrDiscipline>, meta_save: bool
     sr_chunks_unwind(sc, &sd.sd_vol.sv_chunk_list);
 
     if let Some(tq) = sd.sd_taskq.take() {
-        // SAFETY: the discipline's own queue (`taskq_create` in `sr_ioctl_createraid`),
-        // destroyed once (taken out); its work units are idle by now.
-        unsafe { taskq_destroy(NonNull::from(tq)) };
+        // The discipline's own queue (`taskq_create` in `sr_ioctl_createraid`), destroyed
+        // once (taken out); its work units are idle by now.
+        taskq_destroy(tq);
     }
 
     sr_discipline_free(Some(sd));

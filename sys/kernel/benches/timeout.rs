@@ -36,6 +36,8 @@
 //!   follows each update is not timed).
 //! - `timeout.softclock.100`: `softclock()` running 100 timeouts due now, per timeout (the
 //!   100 `timeout_add(to, 0)` before it are not timed).
+//! - `task.add-next`: `task_add(tq, t)` then one `taskq_next_work` and the call, by hand, on
+//!   a queue without a thread.
 
 #![forbid(unsafe_code)]
 
@@ -191,6 +193,26 @@ fn main() {
             timeout::softclock();
             t.elapsed()
         }),
+    });
+
+    // task(9): one task added and run by hand (`task_add` then the worker's
+    // `taskq_next_work` and the call), on a queue with no thread.
+    static TQ: kernel::task::Taskq = kernel::task::taskq_unthreaded(b"benchtq");
+    static TASK: kernel::task::Task = kernel::task::Task::new(noop, ptr::null_mut());
+    kernel::task::run_by_hand(&TQ);
+    benches.push(Bench {
+        name: "task.add-next",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            black_box(kernel::task::task_add(&TQ, pin_static(&TASK)));
+            kernel::task::run_next_by_hand(&TQ);
+        })),
+    });
+    static CHAN: u8 = 0;
+    benches.push(Bench {
+        name: "prim.wakeup-one",
+        ops: PRIM,
+        f: Box::new(prim(|| hal::sleep::wakeup_one(&raw const CHAN))),
     });
 
     // The primitives the ops are made of, to tell the wheel's cost from the lock's.
