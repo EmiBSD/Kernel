@@ -38,6 +38,18 @@
 //!    not exceed `hal_ceiling` in the `[ratchet]` table of `unsafe-budget.toml`;
 //!    `unsafe-report --write` lowers the key and never raises it. A missing key is an error.
 //!
+//! Two more rules keep the premise of `hal::pinlist` (its I1: an element linked through
+//! `Pin<&T>` is not `Unpin`, so safe code cannot move it while a list names it), over every
+//! `.rs` under `sys/`, on the lexed tokens (a comment or a string never matches):
+//!
+//! 5. **`PinAdapter` is implemented only by `pin_adapter!`.** An `impl .. PinAdapter for`, or
+//!    any naming of the trait's hidden seal `PinSealed` (it has no use but an impl), outside
+//!    `sys/hal/pinlist.rs` (the macro's body) is an error: every adapter then passes the
+//!    macro's compile-time refusal of an `Unpin` element.
+//! 6. **No `impl .. Unpin for` in `sys/kernel/` or `sys/abi/`.** A manual `Unpin` is the only
+//!    safe way to defeat `Pin` (a pinned value of an `Unpin` type may be moved); `hal`'s own
+//!    are allowed (it writes none for an element type).
+//!
 //! Rules 1 to 3 apply to every line of every file, test code included (a test that builds
 //! under Miri proves its sites too). Each finding prints as `path:line: message`; the
 //! command exits non-zero when there is one.
@@ -52,6 +64,15 @@ use std::path::PathBuf;
 use crate::unsafereport::{Kind, Lexed, Tok, lex_pos, scan};
 
 const HAL_DIR: &str = "sys/hal";
+
+/// Where rules 5 and 6 look: every `.rs` of the kernel's tree.
+const SYS_DIR: &str = "sys";
+
+/// The one file that may implement `PinAdapter` and name its seal: `pin_adapter!`'s.
+const PINLIST: &str = "sys/hal/pinlist.rs";
+
+/// The crates where rule 6 refuses an `impl Unpin`.
+const NO_UNPIN_DIRS: [&str; 2] = ["sys/kernel/", "sys/abi/"];
 
 /// One violation: where and what.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +130,25 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         sites += c.unsafe_sites;
         findings.extend(c.findings);
     }
+    // Rules 5 and 6, over the whole tree.
+    let mut all = Vec::new();
+    let sys = root.join(SYS_DIR);
+    if sys.is_dir() {
+        crate::walk_rs(&sys, &mut all)?;
+    }
+    all.sort();
+    for f in &all {
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = match sources.get(f) {
+            Some(s) => s.clone(),
+            None => fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
+        };
+        findings.extend(check_pin_premise(&rel, &src));
+    }
     let ceiling = crate::unsafereport::load_budget(root)?
         .1
         .and_then(|r| r.hal_ceiling);
@@ -134,9 +174,10 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         return Err(format!("hal-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut",
+        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi",
         files.len(),
-        ceiling.unwrap_or(0)
+        ceiling.unwrap_or(0),
+        all.len()
     );
     Ok(())
 }
@@ -179,6 +220,89 @@ pub(crate) fn check_source(rel: &str, src: &str, test_file: bool) -> FileCheck {
         }
     }
     out
+}
+
+/// Rules 5 and 6 over one file's text (`rel` is its path from the workspace root).
+pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
+    let lexed = lex_pos(src);
+    let toks = &lexed.toks;
+    let mut out = Vec::new();
+    let mut add = |i: usize, message: &str| {
+        out.push(Finding {
+            path: rel.to_string(),
+            line: lexed.lines[i],
+            message: message.to_string(),
+        });
+    };
+    let pinlist = rel == PINLIST;
+    let no_unpin = NO_UNPIN_DIRS.iter().any(|d| rel.starts_with(d));
+    for (i, t) in toks.iter().enumerate() {
+        let Tok::Ident(w) = t else { continue };
+        if w == "PinSealed" && !pinlist {
+            add(
+                i,
+                "PinSealed named outside sys/hal/pinlist.rs: PinAdapter is implemented by pin_adapter! alone (pinlist's I1)",
+            );
+        } else if w == "impl" {
+            match impl_trait(toks, i).as_deref() {
+                Some("PinAdapter") if !pinlist => add(
+                    i,
+                    "impl PinAdapter by hand: write it with hal::pin_adapter!, which refuses an Unpin element (pinlist's I1)",
+                ),
+                Some("Unpin") if no_unpin => add(
+                    i,
+                    "impl Unpin in kernel or abi: a manual Unpin defeats Pin (pinlist's I1)",
+                ),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The last identifier of the trait an `impl` at `i` implements (`impl<..> a::b::Trait<..>
+/// for`), or `None` when the `impl` is no trait impl (`impl X {`, an `impl Trait` type).
+fn impl_trait(toks: &[Tok], i: usize) -> Option<String> {
+    let mut j = i + 1;
+    // The impl's generics.
+    if toks.get(j) == Some(&Tok::Punct('<')) {
+        j = skip_angles(toks, j)?;
+    }
+    let mut last: Option<String> = None;
+    let mut depth = 0usize;
+    while let Some(t) = toks.get(j) {
+        match t {
+            Tok::Punct('-') if toks.get(j + 1) == Some(&Tok::Punct('>')) => j += 1,
+            Tok::Punct('<') => depth += 1,
+            Tok::Punct('>') => depth = depth.checked_sub(1)?,
+            Tok::Ident(w) if depth == 0 && w == "for" => return last,
+            Tok::Ident(w) if depth == 0 => last = Some(w.clone()),
+            Tok::Punct('{' | ';' | ',' | ')' | '=') if depth == 0 => return None,
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// The index past the `>` that closes the `<` at `j` (a `->` inside is no closer).
+fn skip_angles(toks: &[Tok], mut j: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    while let Some(t) = toks.get(j) {
+        match t {
+            Tok::Punct('-') if toks.get(j + 1) == Some(&Tok::Punct('>')) => j += 1,
+            Tok::Punct('<') => depth += 1,
+            Tok::Punct('>') => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(j + 1);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 /// The `unsafe fn` whose `unsafe` keyword is at `i` is declared with a bare `pub`: walk back
@@ -346,6 +470,81 @@ mod tests {
         assert!(!tests.contains(&PathBuf::from("/w/sys/hal/user.rs")));
         let c = check_source("sys/hal/testutil.rs", "pub fn g() { unsafe { h() } }", true);
         assert_eq!(c.unsafe_sites, 0);
+    }
+
+    fn premise_lines(rel: &str, src: &str) -> Vec<usize> {
+        check_pin_premise(rel, src).iter().map(|f| f.line).collect()
+    }
+
+    #[test]
+    fn rule_5_pin_adapter_only_through_the_macro() {
+        // Written by hand anywhere but pinlist.rs: refused, however the path is spelt.
+        for src in [
+            "impl PinAdapter for A {}\n",
+            "impl hal::pinlist::PinAdapter for A {\n    type Elem = N;\n}\n",
+            "impl<T: Sync> ::hal::pinlist::PinAdapter for A<T> {}\n",
+            "impl<F: Fn() -> u8> PinAdapter for A<F> {}\n",
+            "macro_rules! m { ($n:ident) => { impl $crate::pinlist::PinAdapter for $n {} }; }\n",
+        ] {
+            assert_eq!(premise_lines("sys/kernel/x.rs", src).len(), 1, "{src}");
+            assert_eq!(premise_lines("sys/net/if_x.rs", src).len(), 1, "{src}");
+        }
+        // The seal, named at all (an impl, a renaming use) outside pinlist.rs: refused.
+        assert_eq!(
+            premise_lines(
+                "sys/kernel/x.rs",
+                "\nimpl hal::pinlist::sealed::PinSealed for A {}\n"
+            ),
+            vec![2]
+        );
+        assert_eq!(
+            premise_lines(
+                "sys/dev/x.rs",
+                "use hal::pinlist::sealed::PinSealed as S;\n"
+            )
+            .len(),
+            1
+        );
+        // The macro's own file, a bound, a call, a comment or a string: allowed.
+        assert!(
+            premise_lines(
+                "sys/hal/pinlist.rs",
+                "impl sealed::PinSealed for A {}\nimpl PinAdapter for A {}\n"
+            )
+            .is_empty()
+        );
+        for src in [
+            "fn f<A: PinAdapter>(l: &PinList<A>) {}\n",
+            "impl<A: PinAdapter> Drop for PinList<A> {}\n",
+            "hal::pin_adapter!(ToList: Timeout, entry);\n",
+            "// impl PinAdapter for A {}\nlet s = \"impl PinSealed for A\";\n",
+            "fn f(x: impl PinAdapter) {}\n",
+        ] {
+            assert!(premise_lines("sys/kernel/x.rs", src).is_empty(), "{src}");
+        }
+    }
+
+    #[test]
+    fn rule_6_no_unpin_impl_in_kernel_or_abi() {
+        for src in [
+            "impl Unpin for Node {}\n",
+            "impl core::marker::Unpin for Node {}\n",
+            "impl<T> ::core::marker::Unpin for Node<T> {}\n",
+        ] {
+            assert_eq!(premise_lines("sys/kernel/x.rs", src), vec![1], "{src}");
+            assert_eq!(premise_lines("sys/abi/x.rs", src), vec![1], "{src}");
+            // hal's own, and the legacy tree, are outside the rule.
+            assert!(premise_lines("sys/hal/x.rs", src).is_empty(), "{src}");
+            assert!(premise_lines("sys/kern/x.rs", src).is_empty(), "{src}");
+        }
+        for src in [
+            "fn f<T: Unpin>(t: T) {}\n",
+            "impl<T: Unpin> Foo for Bar<T> {}\n",
+            "fn f() -> impl Unpin {}\n",
+            "impl Node {\n    fn unpin(&self) {}\n}\n",
+        ] {
+            assert!(premise_lines("sys/kernel/x.rs", src).is_empty(), "{src}");
+        }
     }
 
     #[test]

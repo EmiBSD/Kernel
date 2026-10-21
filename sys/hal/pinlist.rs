@@ -117,12 +117,20 @@
 //! function here keeps:
 //! - I1, pinning: an element is linked only through `Pin<&T>`, its entry checked to lie within
 //!   the element's own bytes (so it is dropped with the element), and an element type is not
-//!   `Unpin` ([`pin_adapter!`] refuses one at compile time: the adapters are written only
-//!   through it, as `hal`'s other adapters are). By `Pin`'s drop guarantee the element's
-//!   memory is not invalidated or reused before its drop runs, and [`PinEntry`]'s drop panics
-//!   while the entry is linked (`panic(9)` in a kernel image, which never returns: the memory
-//!   is never given back), so a linked element is alive. A ring's head is pinned likewise and
-//!   its drop panics while the ring is not empty.
+//!   `Unpin` ([`pin_adapter!`] refuses one at compile time). By `Pin`'s drop guarantee the
+//!   element's memory is not invalidated or reused before its drop runs, and [`PinEntry`]'s
+//!   drop panics while the entry is linked (`panic(9)` in a kernel image, which never returns:
+//!   the memory is never given back), so a linked element is alive. A ring's head is pinned
+//!   likewise and its drop panics while the ring is not empty.
+//!   The premise safe code could break is the element's `!Unpin`: an `Unpin` element pinned
+//!   with `Pin::new` and moved afterwards (`let m = n;`) would leave its list naming dead
+//!   memory. It holds by two means. [`PinAdapter`] is sealed behind a `#[doc(hidden)]`
+//!   supertrait that only [`pin_adapter!`]'s expansion implements, so every adapter passes the
+//!   macro's `Unpin` refusal, and `cargo xtask hal-check` makes both ends mechanical: it
+//!   refuses an `impl PinAdapter for` and any naming of the seal (`PinSealed`, which has no
+//!   use but an impl) anywhere under `sys/` outside this file (the macro's body), and an
+//!   `impl Unpin for` in `sys/kernel/` or `sys/abi/` (a manual `Unpin` is the only safe way
+//!   to defeat `Pin`; `hal` writes none for an element type).
 //! - I2, the lock: a list's head cells and the link cells of the elements on it are read and
 //!   written only by holders of a witness of the lock the list is bound to (checked once per
 //!   operation, against the list's identity and, for an element named by the caller, against
@@ -167,9 +175,18 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::assert::hal_panic;
 use crate::rwlock::{Divisible, Witness};
 
+/// The seal of [`PinAdapter`] (the module's I1): implemented by [`pin_adapter!`]'s expansion
+/// alone, through this hidden path; `cargo xtask hal-check` refuses any other impl.
+#[doc(hidden)]
+pub mod sealed {
+    /// The supertrait only [`crate::pin_adapter!`] implements.
+    pub trait PinSealed {}
+}
+
 /// Names the [`PinEntry`] of an element for one family of lists (`TAILQ_ENTRY(type) field`).
-/// Implemented by [`pin_adapter!`] alone, which refuses an `Unpin` element.
-pub trait PinAdapter {
+/// Implemented by [`pin_adapter!`] alone, which refuses an `Unpin` element: sealed, and an
+/// impl written by hand is refused by `cargo xtask hal-check` (I1).
+pub trait PinAdapter: sealed::PinSealed {
     /// The element type: shared between CPUs through the lists, so `Sync`.
     type Elem: Sync;
     /// The element's entry for this family of lists.
@@ -184,6 +201,8 @@ macro_rules! pin_adapter {
     ($(#[$meta:meta])* $vis:vis $name:ident: $elem:ty, $field:ident) => {
         $(#[$meta])*
         $vis struct $name;
+
+        impl $crate::pinlist::sealed::PinSealed for $name {}
 
         impl $crate::pinlist::PinAdapter for $name {
             type Elem = $elem;
