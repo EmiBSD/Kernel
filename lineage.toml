@@ -8141,6 +8141,18 @@ lz = ["sys/kern/subr_tree.rs", "sys/sys/tree.rs", "sys/sys/queue.rs"]
 status = "redesigned"
 notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there"
 
+[[module]]
+rust = "sys/hal/pinlist.rs"
+crate = "hal"
+lz = ["sys/sys/queue.rs", "sys/kern/kern_timeout.rs"]
+status = "redesigned"
+notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows"
+
+[[extra]]
+rust = "sys/hal/pin.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (Pin::new_unchecked once, over the premise that a shared borrow that never ends excludes every move); docs/ZERO_UNSAFE.md 0.1"
+
 [[extra]]
 rust = "sys/hal/prf.rs"
 crate = "hal"

@@ -1040,6 +1040,12 @@ impl LockId {
     pub(crate) fn of_mutex(word: &AtomicUsize) -> LockId {
         LockId(ptr::from_ref(word).addr() | LOCKID_MUTEX)
     }
+
+    /// The identity as a word, never 0 (the pinned lists record it, `pinlist.rs`).
+    #[inline]
+    pub(crate) fn raw(self) -> usize {
+        self.0
+    }
 }
 
 /// The bit of a [`LockId`] that says a mutex (a lock's word is aligned to 8 bytes, so its
