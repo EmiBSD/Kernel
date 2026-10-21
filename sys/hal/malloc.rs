@@ -57,10 +57,15 @@
 //!   and the `hashinit(9)` tables (N3.4b/c).
 //! - N3.5 S0: [`MBox::leak`], the box given up for a `&'static T` whose block is never freed
 //!   (the three boot submaps of `uvm_km_suballoc`).
+//! - N4.1: [`MBox::as_pin`], the value pinned (an extent on the list of all extents,
+//!   `hal::pinlist`): the block never moves and the value is dropped in place before it is
+//!   freed; the two ways to a `T` that could move it, `DerefMut` and [`MBox::into_inner`],
+//!   are for `T: Unpin` only.
 
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
 use core::ptr::NonNull;
 
 use crate::assert::hal_panic;
@@ -155,8 +160,23 @@ impl<T> MBox<T> {
         unsafe { this.ptr.as_ref() }
     }
 
-    /// The value, the block freed.
-    pub fn into_inner(this: Self) -> T {
+    /// The value, pinned: it stays where it is until the box drops it in place.
+    pub fn as_pin(&self) -> Pin<&T> {
+        // SAFETY: `Pin`'s contract: the value is not moved, nor its memory invalidated or
+        // reused, before its drop runs. The value sits in the box's block from `new`'s write
+        // until the box's drop, which drops it in place before freeing the block (the
+        // invariant: only the box references the block). Nothing in between can move it: the
+        // box gives `&T`, `&mut T` (`DerefMut`) and the value by value (`into_inner`) only for
+        // `T: Unpin`, so a value for which pinning means something never leaves the block or
+        // meets a `&mut`; `leak` gives a `&'static T` and never frees the block.
+        unsafe { Pin::new_unchecked(self.ptr.as_ref()) }
+    }
+
+    /// The value, the block freed (`T: Unpin`: a pinned value never leaves its block).
+    pub fn into_inner(this: Self) -> T
+    where
+        T: Unpin,
+    {
         let this = ManuallyDrop::new(this);
         // SAFETY: the box holds an initialised `T` that only it references (the invariant);
         // it is read out once, and `ManuallyDrop` keeps the box's drop from dropping it again,
@@ -177,7 +197,7 @@ impl<T> Deref for MBox<T> {
     }
 }
 
-impl<T> DerefMut for MBox<T> {
+impl<T: Unpin> DerefMut for MBox<T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as for `deref`, and `&mut self` makes this the only reference while it
         // lives.
@@ -501,6 +521,27 @@ mod tests {
             testutil::malloc_out(M_KEVENT),
             before + size_of::<Timer>() as isize
         );
+    }
+
+    #[test]
+    fn a_boxed_value_is_pinned_in_its_block() {
+        testutil::install();
+        struct Fixed {
+            v: u32,
+            _pin: core::marker::PhantomPinned,
+        }
+        let b = MBox::new(
+            M_KEVENT,
+            M_WAITOK,
+            Fixed {
+                v: 9,
+                _pin: core::marker::PhantomPinned,
+            },
+        )
+        .unwrap();
+        let p = b.as_pin();
+        assert!(core::ptr::eq(p.get_ref(), &*b));
+        assert_eq!(p.v, 9);
     }
 }
 /* </TESTS> */

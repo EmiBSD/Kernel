@@ -100,11 +100,16 @@
 //!   [`BoxPool::init_arena`] makes a `BoxPool` hand out its slots, so an entry from the
 //!   arena is the same `PoolBox` as one from `"vmmpepl"`. Its free list is a `Mutexed` at
 //!   `IPL_VM` (`uvm_kmapent_mtx`).
+//! - N4.1: [`PoolArc::as_pin`], the value pinned: a pool item never moves while a handle
+//!   lives and is dropped in place before it goes back (the pinned lists' elements,
+//!   `hal::pinlist`: a legacy timeout's node, a task queue). [`PoolArc::get_mut`], the one
+//!   `&mut T`, is for `T: Unpin` only, so it can never move a pinned value.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit, offset_of};
 use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 
@@ -351,7 +356,10 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     /// other handles exist, and always for a pool of [`TypedPool::init_recorded`] (whose
     /// values a record may give a handle back from at any time: the pmaps). The value of an
     /// amap copy being filled before anyone else sees it (`amap_copy`).
-    pub fn get_mut(this: &mut Self) -> Option<&mut T> {
+    pub fn get_mut(this: &mut Self) -> Option<&mut T>
+    where
+        T: Unpin,
+    {
         let inner = this.inner();
         // Acquire: the drops of the other handles (Release) happen before this access.
         if inner.refs.load(Ordering::Acquire) != 1 || inner.pool.recorded() {
@@ -381,6 +389,19 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         // handle whose count is 1, and with this one counted for ever every other handle sees
         // 2 or more.
         unsafe { &(*this.inner.as_ptr()).value }
+    }
+
+    /// The value, pinned: it stays where it is until its last handle drops it in place.
+    pub fn as_pin(&self) -> Pin<&T> {
+        // SAFETY: `Pin`'s contract: the value is not moved, nor its memory invalidated or
+        // reused, before its drop runs. The value lives in its pool item from `get_shared`'s
+        // write until the last handle's drop, which drops it in place (`drop_in_place`)
+        // before the item goes back to its pool (the invariant: the item outlives every
+        // handle). Nothing in between can move it: handles give `&T` alone, but for
+        // `get_mut`, which needs `T: Unpin` (so a value for which pinning means something is
+        // never given mutably), and `leak`, which gives a `&'static T`; no API reads the value
+        // out of its item.
+        unsafe { Pin::new_unchecked(&self.inner().value) }
     }
 
     /// Whether two handles name the same item.
@@ -1327,6 +1348,29 @@ mod tests {
         static ARENA: StaticArena<Entry, 1> = StaticArena::new();
         let page = KmBuf::alloc_pageable(testutil::page_memory(), 4096).unwrap();
         let _ = ARENA.extend(page);
+    }
+
+    /// A value that must stay where it is (`PhantomPinned`): `get_mut` does not exist for it.
+    struct Fixed {
+        v: u32,
+        _pin: core::marker::PhantomPinned,
+    }
+
+    #[test]
+    fn a_pool_value_is_pinned_where_its_handles_see_it() {
+        testutil::install();
+        static P: TypedPool<Fixed> = TypedPool::new();
+        assert_eq!(P.init(0, PR_WAITOK, "pinpl"), Ok(()));
+        let h = P
+            .get_shared(PR_WAITOK, || Fixed {
+                v: 3,
+                _pin: core::marker::PhantomPinned,
+            })
+            .unwrap();
+        let other = h.clone();
+        let pinned = other.as_pin();
+        assert!(core::ptr::eq(pinned.get_ref(), &*h));
+        assert_eq!(pinned.v, 3);
     }
 }
 
