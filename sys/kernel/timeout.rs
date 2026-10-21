@@ -146,7 +146,7 @@ use hal::intr::{IPL_HIGH, IPL_SOFTCLOCK};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
 use hal::pin::pin_static;
-use hal::pinlist::{PinEntry, PinRing};
+use hal::pinlist::{BoundRing, PinEntry, PinRing};
 use hal::rwlock::Guarded;
 use hal::sleep::{INFSLP, PSWP, PWAIT};
 use hal::softintr::SoftHandle;
@@ -743,13 +743,13 @@ fn bucket(rel: i32, abs: i32) -> &'static PinRing<ToList> {
     &QUEUES.wheel[idx]
 }
 
+/// `todo` with the wheel's lock, bound once ([`PinRing::bound`]).
+type Todo<'r, 'g> = BoundRing<'r, ToList, MutexedGuard<'g, WheelState>>;
+
 /// `MOVEBUCKET(wheel, time)`: the level's bucket for `time` appended to `todo`.
 #[inline]
-fn movebucket(g: &mut MutexedGuard<'_, WheelState>, wheel: u32, time: i32) {
-    ring(&QUEUES.todo).concat(
-        g,
-        &QUEUES.wheel[maskwheel(wheel, time) + wheel as usize * WHEELSIZE],
-    );
+fn movebucket(todo: &mut Todo<'_, '_>, wheel: u32, time: i32) {
+    todo.concat(&QUEUES.wheel[maskwheel(wheel, time) + wheel as usize * WHEELSIZE]);
 }
 
 /// `timeout_startup()`: `hz`, `tick` and `tick_nsec` as the machine set them, and `tick_ts`
@@ -813,15 +813,17 @@ pub fn timeout_maskwheel(level: u32, abstime: &Timespec) -> u32 {
 /// scan onto `todo`, and schedules `softclock` when there is work.
 pub fn hardclock_update() {
     let mut g = WHEEL.lock();
+    // `todo`'s binding to the lock is checked once for every bucket this tick takes.
+    let mut todo = ring(&QUEUES.todo).bound(&mut g);
 
     let t = clock::ticks();
-    movebucket(&mut g, 0, t);
+    movebucket(&mut todo, 0, t);
     if maskwheel(0, t) == 0 {
-        movebucket(&mut g, 1, t);
+        movebucket(&mut todo, 1, t);
         if maskwheel(1, t) == 0 {
-            movebucket(&mut g, 2, t);
+            movebucket(&mut todo, 2, t);
             if maskwheel(2, t) == 0 {
-                movebucket(&mut g, 3, t);
+                movebucket(&mut todo, 3, t);
             }
         }
     }
@@ -836,7 +838,7 @@ pub fn hardclock_update() {
     // greater than that of the last then we have completed a lap of the level and need to
     // process buckets in the next level.
     let now = clock::nanouptime();
-    let lastscan = g.kclock[KCLOCK_UPTIME as usize].lastscan;
+    let lastscan = todo.witness().kclock[KCLOCK_UPTIME as usize].lastscan;
     let elapsed = now.sub(lastscan);
     for (level, &width) in TIMEOUT_LEVEL_WIDTH.iter().enumerate() {
         let first = timeout_maskwheel(level as u32, &lastscan) as usize;
@@ -849,7 +851,7 @@ pub fn hardclock_update() {
         let off = level * WHEELSIZE;
         let mut b = first;
         loop {
-            ring(&QUEUES.todo).concat(&mut g, &QUEUES.wheel_kc[off + b]);
+            todo.concat(&QUEUES.wheel_kc[off + b]);
             if b == last {
                 break;
             }
@@ -861,13 +863,14 @@ pub fn hardclock_update() {
     }
 
     // Update the cached state for each kclock.
-    let tick_ts = g.tick_ts;
-    for kc in g.kclock.iter_mut() {
+    let w = todo.witness_mut();
+    let tick_ts = w.tick_ts;
+    for kc in w.kclock.iter_mut() {
         kc.lastscan = now.add(kc.offset);
         kc.late = kc.lastscan.sub(tick_ts);
     }
 
-    let need_softclock = !(QUEUES.new.is_empty(&g) && QUEUES.todo.is_empty(&g));
+    let need_softclock = !(QUEUES.new.is_empty(todo.witness()) && todo.first().is_none());
     drop(g);
 
     if need_softclock && let Some(si) = SOFTCLOCK_SI.get() {
@@ -994,20 +997,28 @@ pub fn softclock() {
     let mut new = false;
     loop {
         // One look at the first timeout: where it goes, and when it runs here, what to run (the
-        // C's `CIRCQ_REMOVE` then `softclock_process_*_timeout` then `timeout_run`).
-        let kc = g.kclock[KCLOCK_UPTIME as usize];
+        // C's `CIRCQ_REMOVE` then `softclock_process_*_timeout` then `timeout_run`); `todo`'s
+        // binding checked once for both.
+        let mut todo = ring(&QUEUES.todo).bound(&mut g);
         let mut bumps = Bumps::default();
-        let Some((dest, run)) = QUEUES.todo.first(&g).map(|to| {
+        let Some((dest, run)) = todo.first().map(|to| {
             if Some(ptr::from_ref(to).addr()) == first_new {
                 new = true;
             }
-            let st = to.st.get(&g);
+            let w = todo.witness();
+            let st = to.st.get(w);
             let flags = to.flags.load(Ordering::Relaxed);
             let dest = match st.kclock {
                 KCLOCK_NONE => {
                     process_tick(to.time.load(Ordering::Relaxed), flags, new, &mut bumps)
                 }
-                KCLOCK_UPTIME => process_kclock(&kc, &st.abstime, flags, new, &mut bumps),
+                KCLOCK_UPTIME => process_kclock(
+                    &w.kclock[KCLOCK_UPTIME as usize],
+                    &st.abstime,
+                    flags,
+                    new,
+                    &mut bumps,
+                ),
                 other => kpanic(format_args!("softclock: invalid to_clock: {other}")),
             };
             let run = matches!(dest, Dest::Run).then(|| take_for_run(to, flags, st.func));
@@ -1015,13 +1026,13 @@ pub fn softclock() {
         }) else {
             break;
         };
-        bumps.apply(&mut g.stat);
+        bumps.apply(&mut todo.witness_mut().stat);
         match (dest, run) {
             (Dest::Queue(q), _) => {
-                QUEUES.todo.move_first(&mut g, ring(q));
+                todo.move_first(ring(q));
             }
             (Dest::Run, Some((func, arg, addr))) => {
-                QUEUES.todo.remove_first(&mut g);
+                todo.remove_first();
                 g.stat.tos_pending -= 1;
                 g = run_taken(g, Ctx::Si, func, arg, addr);
                 g.stat.tos_run_softclock += 1;

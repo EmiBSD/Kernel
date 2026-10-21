@@ -753,6 +753,12 @@ impl<A: PinAdapter> PinRing<A> {
     /// `CIRCQ_FIRST` then `CIRCQ_REMOVE`: whether there was a first element to take off.
     pub fn remove_first<W: Divisible + ?Sized>(&self, w: &mut W) -> bool {
         bind(&self.key, id_of(w), "CIRCQ_REMOVE");
+        self.remove_first_bound()
+    }
+
+    /// [`PinRing::remove_first`] of a ring whose binding the caller checked.
+    #[inline]
+    fn remove_first_bound(&self) -> bool {
         match self.first_node() {
             Some(f) => {
                 Self::unlink(entry_at(f), false);
@@ -767,6 +773,13 @@ impl<A: PinAdapter> PinRing<A> {
     pub fn move_first<W: Divisible + ?Sized>(&self, w: &mut W, dst: Pin<&Self>) -> bool {
         let id = id_of(w);
         bind(&self.key, id, "CIRCQ_INSERT_TAIL");
+        self.move_first_bound(id, dst)
+    }
+
+    /// [`PinRing::move_first`] of a ring whose binding to the lock `id` the caller checked;
+    /// `dst`'s is checked here.
+    #[inline]
+    fn move_first_bound(&self, id: usize, dst: Pin<&Self>) -> bool {
         bind(&dst.key, id, "CIRCQ_INSERT_TAIL");
         let Some(f) = self.first_node() else {
             return false;
@@ -783,6 +796,13 @@ impl<A: PinAdapter> PinRing<A> {
     pub fn concat<W: Divisible + ?Sized>(self: Pin<&Self>, w: &mut W, other: &Self) {
         let id = id_of(w);
         bind(&self.key, id, "CIRCQ_CONCAT");
+        self.concat_bound(id, other);
+    }
+
+    /// [`PinRing::concat`] onto a ring whose binding to the lock `id` the caller checked;
+    /// `other`'s is checked here.
+    #[inline]
+    fn concat_bound(self: Pin<&Self>, id: usize, other: &Self) {
         bind(&other.key, id, "CIRCQ_CONCAT");
         if ptr::eq(self.get_ref(), other) {
             hal_panic(format_args!("CIRCQ_CONCAT: a ring onto itself"));
@@ -798,6 +818,62 @@ impl<A: PinAdapter> PinRing<A> {
         self.head.prev.set(Some(ol));
         other.head.next.set(None);
         other.head.prev.set(None);
+    }
+
+    /// The ring and the witness of its lock for an operation that works the ring several times
+    /// (`softclock`'s look at the first timeout and its move, `timeout_hardclock_update`'s
+    /// dumps of buckets): the ring's binding is checked once, here, and the other rings an
+    /// operation names (a destination, a source) once each, as the one-shot methods do.
+    pub fn bound<'r, W: Divisible + ?Sized>(
+        self: Pin<&'r Self>,
+        w: &'r mut W,
+    ) -> BoundRing<'r, A, W> {
+        let id = id_of(w);
+        bind(&self.key, id, "CIRCQ_FIRST");
+        BoundRing { ring: self, w, id }
+    }
+}
+
+/// A ring with the witness of its lock, its binding checked once ([`PinRing::bound`]). It
+/// holds the witness mutably, so it is the one way to the lock's data while it lives
+/// ([`BoundRing::witness`], [`BoundRing::witness_mut`]); an element [`BoundRing::first`]
+/// lends borrows it, so no change runs while the reference lives (I2).
+pub struct BoundRing<'r, A: PinAdapter, W: ?Sized> {
+    ring: Pin<&'r PinRing<A>>,
+    w: &'r mut W,
+    id: usize,
+}
+
+impl<A: PinAdapter, W: Divisible + ?Sized> BoundRing<'_, A, W> {
+    /// The witness, to read what the lock keeps.
+    pub fn witness(&self) -> &W {
+        self.w
+    }
+
+    /// The witness, to change what the lock keeps (no element lent by [`BoundRing::first`]
+    /// lives meanwhile: this borrows the view mutably).
+    pub fn witness_mut(&mut self) -> &mut W {
+        self.w
+    }
+
+    /// `CIRCQ_FIRST` as an element: borrows the view.
+    pub fn first(&self) -> Option<&A::Elem> {
+        self.ring.first_node().map(|p| elem_of(entry_at(p)))
+    }
+
+    /// [`PinRing::remove_first`].
+    pub fn remove_first(&mut self) -> bool {
+        self.ring.remove_first_bound()
+    }
+
+    /// [`PinRing::move_first`]: `dst`'s binding checked.
+    pub fn move_first(&mut self, dst: Pin<&PinRing<A>>) -> bool {
+        self.ring.move_first_bound(self.id, dst)
+    }
+
+    /// [`PinRing::concat`]: `other`'s binding checked; panics when `other` is this ring.
+    pub fn concat(&mut self, other: &PinRing<A>) {
+        self.ring.concat_bound(self.id, other);
     }
 }
 
@@ -980,6 +1056,51 @@ mod tests {
         assert_eq!(values(r.iter(&g)), [3, 2]);
         while r.remove_first(&mut g) {}
         assert!(r.is_empty(&g));
+    }
+
+    #[test]
+    fn a_bound_ring_works_a_ring_as_its_one_shot_methods_do() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, 0u32);
+        let mut g = m.lock();
+        let r = core::pin::pin!(PinRing::<ByE>::new());
+        let other = core::pin::pin!(PinRing::<ByE>::new());
+        let dst = core::pin::pin!(PinRing::<ByE>::new());
+        let nodes: Vec<Pin<Box<Node>>> = (0..4).map(|i| Box::pin(Node::new(i))).collect();
+        r.as_ref().insert_tail(&mut g, nodes[0].as_ref());
+        other.as_ref().insert_tail(&mut g, nodes[1].as_ref());
+        other.as_ref().insert_tail(&mut g, nodes[2].as_ref());
+        {
+            let mut b = r.as_ref().bound(&mut g);
+            b.concat(&other);
+            assert_eq!(b.first().map(|n| n.v), Some(0));
+            // The lock's data, through the view.
+            **b.witness_mut() += 1;
+            assert_eq!(**b.witness(), 1);
+            assert!(b.move_first(dst.as_ref()));
+            assert!(b.remove_first());
+            assert_eq!(b.first().map(|n| n.v), Some(2));
+        }
+        assert!(other.is_empty(&g));
+        assert_eq!(values(r.iter(&g)), [2]);
+        assert_eq!(values(dst.iter(&g)), [0]);
+        assert!(!nodes[1].e.is_linked());
+        while r.remove_first(&mut g) {}
+        while dst.remove_first(&mut g) {}
+    }
+
+    #[test]
+    #[should_panic(expected = "a list of another lock")]
+    fn a_bound_ring_refuses_a_destination_of_another_lock() {
+        testutil::install();
+        let m1 = Box::leak(Box::new(Mutexed::new(IPL_NONE, ())));
+        let m2 = Box::leak(Box::new(Mutexed::new(IPL_NONE, ())));
+        let r: Pin<&PinRing<ByE>> = pin_static(Box::leak(Box::new(PinRing::new())));
+        let dst: Pin<&PinRing<ByE>> = pin_static(Box::leak(Box::new(PinRing::new())));
+        let _ = dst.is_empty(&m2.lock());
+        let mut g = m1.lock();
+        let mut b = r.bound(&mut g);
+        b.move_first(dst);
     }
 
     #[test]

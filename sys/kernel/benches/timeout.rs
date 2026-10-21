@@ -43,6 +43,10 @@
 //!   apart (the page lands after the first and coalesces with it; the free is case 3).
 //! - `prim.pool-get-put`: one item of a 48-byte pool taken and given back, over the
 //!   recycling pool backend this bench registers (the doubles' pool never reuses an item).
+//! - `prim.concat-empty`: `CIRCQ_CONCAT` of an empty ring onto another (a static
+//!   `hal::pinlist::PinRing` pair), under a mutex held across the batch: what each of
+//!   `timeout_hardclock_update`'s `MOVEBUCKET`s and expired-bucket dumps costs on an idle
+//!   wheel, the lock apart.
 
 #![forbid(unsafe_code)]
 
@@ -58,6 +62,7 @@ use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::pin::pin_static;
+use hal::pinlist::{PinEntry, PinRing};
 use hal::pool::{PoolBackend, RawPool};
 use kernel::clock::TICKS;
 use kernel::testutil;
@@ -257,6 +262,16 @@ fn refire(arg: *mut c_void) {
 /// The timeouts `softclock.100` runs.
 static DUE: [Timeout; 100] = [const { Timeout::new(noop, ptr::null_mut()) }; 100];
 
+/// An element of `prim.concat-empty`'s rings (which stay empty).
+struct Node {
+    entry: PinEntry<Node>,
+}
+
+hal::pin_adapter!(
+    /// `prim.concat-empty`'s rings, through `Node::entry`.
+    NodeRing: Node, entry
+);
+
 /// One tick: `ticks++`, the update, the soft interrupt's work.
 fn tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
@@ -403,6 +418,26 @@ fn main() {
         f: Box::new(prim(|| {
             *PRIM_MTX.lock() += 1;
         })),
+    });
+    // An empty ring spliced onto another, the lock held across the batch (the wheel's
+    // dumps of empty buckets).
+    static CONCAT_MTX: hal::mutex::Mutexed<()> = hal::mutex::Mutexed::new(hal::intr::IPL_HIGH, ());
+    static RING_DST: PinRing<NodeRing> = PinRing::new();
+    static RING_SRC: PinRing<NodeRing> = PinRing::new();
+    benches.push(Bench {
+        name: "prim.concat-empty",
+        ops: PRIM,
+        f: Box::new(|| {
+            let mut g = CONCAT_MTX.lock();
+            let dst = pin_static(&RING_DST);
+            let t = Instant::now();
+            for _ in 0..PRIM {
+                dst.concat(&mut g, black_box(&RING_SRC));
+            }
+            let d = t.elapsed();
+            drop(g);
+            d
+        }),
     });
     benches.push(Bench {
         name: "prim.nanouptime",
