@@ -4271,6 +4271,9 @@ mod tests {
         WG_COUNTER.store(0, Ordering::Relaxed);
         WG_HANDSHAKE_TASKQ.store(ptr::null_mut(), Ordering::Relaxed);
         WG_CRYPT_TASKQ.store(ptr::null_mut(), Ordering::Relaxed);
+        // An earlier test's queues are forgotten, never destroyed into its memory
+        // (testing.md tier 1).
+        core::mem::forget(WG_TASKQ_REFS.lock().take());
 
         let pr: &'static Process = Box::leak(Box::new(Process::new()));
         let p: &'static Proc = Box::leak(Box::new(Proc::new()));
