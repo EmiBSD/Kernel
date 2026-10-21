@@ -57,7 +57,7 @@
 //!   them (`if_.rs`'s hooks, `ifq.rs`'s serializer: `t_entry`, `t_func`, `t_arg`, `t_flags`),
 //!   and carries the kernel's task (`t_node`), which is what a task queue links. `task_set`
 //!   sets both; `task_pending` is either one's (the C's one flag: a task is on one list at a
-//!   time).
+//!   time), and `task_add` refuses a task such a list holds, as the C's `TASK_ONQUEUE` test.
 //! - `t_flags` is an `AtomicU32` (`Relaxed`), read without a lock, as the C does.
 //! - `t_func` is an `Option`: a task that `task_set` has not seen ([`Task::zeroed`], the C's
 //!   zeroed `struct task`) has no function; `TASK_INITIALIZER` is [`Task::new`].
@@ -185,8 +185,14 @@ pub fn task_set(t: &Task, func: TaskFn, arg: *mut c_void) {
     t.t_node.set(func, arg);
 }
 
-/// `task_add(tq, w)`: `true` when the task was added (the C's 1).
+/// `task_add(tq, w)`: `true` when the task was added (the C's 1). A task its user's own list
+/// holds (`TASK_ONQUEUE` in `t_flags`: `ifq.rs`'s serializer) is not added, as the C's test of
+/// its one flag returns 0 before taking the queue's mutex; one pending on a queue already is
+/// refused by `kernel::task::task_add`.
 pub fn task_add(tq: &Taskq, w: &'static Task) -> bool {
+    if w.t_flags.load(Ordering::Relaxed) & TASK_ONQUEUE != 0 {
+        return false;
+    }
     kernel::task::task_add(tq, hal::pin::pin_static(&w.t_node))
 }
 
@@ -216,6 +222,25 @@ mod tests {
         assert!(task_pending(&T));
         T.t_flags.store(0, Ordering::Relaxed);
         assert!(!task_pending(&T));
+    }
+
+    #[test]
+    fn task_add_refuses_a_task_its_users_list_holds() {
+        kernel::testutil::install();
+        static TQ: Taskq = kernel::task::taskq_unthreaded(b"tqflags");
+        static T: Task = Task::zeroed();
+        task_set(&T, nothing, ptr::null_mut());
+        // On ifq's serializer list: the C returns 0 and leaves the queue alone.
+        T.t_flags.store(TASK_ONQUEUE, Ordering::Relaxed);
+        assert!(!task_add(&TQ, &T));
+        assert!(!T.t_node.pending());
+        assert!(kernel::task::worklist_is_empty(&TQ));
+        // Off that list: added, and refused while pending.
+        T.t_flags.store(0, Ordering::Relaxed);
+        assert!(task_add(&TQ, &T));
+        assert!(!task_add(&TQ, &T));
+        assert!(task_del(&TQ, &T));
+        assert!(kernel::task::worklist_is_empty(&TQ));
     }
 }
 /* </TESTS> */
