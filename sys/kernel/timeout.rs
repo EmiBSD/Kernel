@@ -892,7 +892,7 @@ pub fn hardclock_update() {
     }
 
     // Update the cached state for each kclock.
-    let w = todo.witness_mut();
+    let w = todo.data_mut();
     let tick_ts = w.tick_ts;
     for kc in w.kclock.iter_mut() {
         kc.lastscan = now.add(kc.offset);
@@ -1055,7 +1055,7 @@ pub fn softclock() {
         }) else {
             break;
         };
-        bumps.apply(&mut todo.witness_mut().stat);
+        bumps.apply(&mut todo.data_mut().stat);
         match (dest, run) {
             (Dest::Queue(q), _) => {
                 todo.move_first(ring(q));
@@ -1215,7 +1215,7 @@ pub fn timeout_test_reset() {
             .is_some()
         {
             b.remove_first();
-            let st = b.witness_mut();
+            let st = b.data_mut();
             st.stat.tos_pending = st.stat.tos_pending.saturating_sub(1);
         }
     }

@@ -168,6 +168,7 @@
 
 use core::cell::Cell;
 use core::marker::{PhantomData, PhantomPinned};
+use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -836,8 +837,11 @@ impl<A: PinAdapter> PinRing<A> {
 
 /// A ring with the witness of its lock, its binding checked once ([`PinRing::bound`]). It
 /// holds the witness mutably, so it is the one way to the lock's data while it lives
-/// ([`BoundRing::witness`], [`BoundRing::witness_mut`]); an element [`BoundRing::first`]
-/// lends borrows it, so no change runs while the reference lives (I2).
+/// ([`BoundRing::witness`], [`BoundRing::data_mut`]); an element [`BoundRing::first`] lends
+/// borrows it, so no change runs while the reference lives (I2). The witness itself is never
+/// lent mutably: a `&mut W` would let safe code replace the guard (`*w = other.lock()`,
+/// `mem::swap`), dropping the lock the binding was checked against while the view still
+/// works the ring; the lock's data is lent instead, which names no lock.
 pub struct BoundRing<'r, A: PinAdapter, W: ?Sized> {
     ring: Pin<&'r PinRing<A>>,
     w: &'r mut W,
@@ -850,10 +854,14 @@ impl<A: PinAdapter, W: Divisible + ?Sized> BoundRing<'_, A, W> {
         self.w
     }
 
-    /// The witness, to change what the lock keeps (no element lent by [`BoundRing::first`]
-    /// lives meanwhile: this borrows the view mutably).
-    pub fn witness_mut(&mut self) -> &mut W {
-        self.w
+    /// What the lock keeps, to change it (no element lent by [`BoundRing::first`] lives
+    /// meanwhile: this borrows the view mutably). The data, never the guard: the view stays
+    /// bound to the lock it was checked against for its whole life.
+    pub fn data_mut(&mut self) -> &mut W::Target
+    where
+        W: DerefMut,
+    {
+        &mut *self.w
     }
 
     /// `CIRCQ_FIRST` as an element: borrows the view.
@@ -1075,7 +1083,7 @@ mod tests {
             b.concat(&other);
             assert_eq!(b.first().map(|n| n.v), Some(0));
             // The lock's data, through the view.
-            **b.witness_mut() += 1;
+            *b.data_mut() += 1;
             assert_eq!(**b.witness(), 1);
             assert!(b.move_first(dst.as_ref()));
             assert!(b.remove_first());
@@ -1087,6 +1095,30 @@ mod tests {
         assert!(!nodes[1].e.is_linked());
         while r.remove_first(&mut g) {}
         while dst.remove_first(&mut g) {}
+    }
+
+    #[test]
+    fn a_bound_ring_stays_bound_to_its_lock_while_it_lends_the_data() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, 0u32);
+        let other = Mutexed::new(IPL_NONE, 0u32);
+        let mut g = m.lock();
+        let r = core::pin::pin!(PinRing::<ByE>::new());
+        let a = core::pin::pin!(Node::new(1));
+        r.as_ref().insert_tail(&mut g, a.as_ref());
+        {
+            let mut b = r.as_ref().bound(&mut g);
+            // The data can be replaced whole; the guard cannot (no `&mut W` is lent), so the
+            // witness the view holds names the ring's lock after every change.
+            *b.data_mut() = 7;
+            core::mem::swap(b.data_mut(), &mut 9);
+            assert_eq!(b.witness().lock_id(), m.id());
+            assert_ne!(b.witness().lock_id(), other.id());
+            assert!(m.is_locked());
+            assert!(b.remove_first());
+        }
+        assert_eq!(*g, 9);
+        assert!(r.is_empty(&g));
     }
 
     #[test]
