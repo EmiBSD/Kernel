@@ -224,9 +224,11 @@ pub const IPL_MPSAFE: i32 = <Machine as Intr>::IPL_MPSAFE;
 /// `IPL_WAKEUP` on the selected machine.
 pub const IPL_WAKEUP: i32 = <Machine as Intr>::IPL_WAKEUP;
 
-// `hal`'s copies of the levels its pmap locks (N3.1) and the kernel's per-CPU page caches
-// (N3.3) use, until the interrupt tables enter `hal` at N4, are the machine's.
+// `hal`'s copies of the levels its pmap locks (N3.1), the kernel's per-CPU page caches
+// (N3.3) and timeout(9)'s soft interrupt (N4.1) use, until the interrupt tables enter `hal`
+// at N4, are the machine's.
 const _: () = {
+    assert!(hal::intr::IPL_SOFTCLOCK == IPL_SOFTCLOCK);
     assert!(hal::intr::IPL_BIO == IPL_BIO);
     assert!(hal::intr::IPL_VM == IPL_VM);
     assert!(hal::intr::IPL_HIGH == IPL_HIGH);

@@ -58,6 +58,7 @@ use hal::user::UserCopy;
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
 use crate::kern::kern_malloc::{free, malloc};
+use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
@@ -482,6 +483,60 @@ impl KernelLock for BsdKernelLock {
 
 /// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
 /// vnode pager's `uvn_io` (N3.4e).
+/// The soft interrupts (`sys/kern/kern_softintr.rs`). `softintr_establish` takes a
+/// `fn(*mut c_void)` and an argument; the kernel's handlers are plain `fn()`s, so each takes
+/// a slot of [`SOFT_RUNS`] and the argument is the slot's number, an address without
+/// provenance that [`soft_run`] turns back into the number (never dereferenced); the handle
+/// the bridge returns is the slot's number plus one, and the `SoftintrHand` it names is kept,
+/// exposed, in [`SOFT_HANDS`].
+struct BsdSoftIntr;
+
+/// How many kernel soft interrupt handlers bsd serves (`softclock` alone today).
+const SOFT_SLOTS: usize = 4;
+
+/// The kernel's handlers, by slot.
+static SOFT_RUNS: [hal::once::OnceStatic<fn()>; SOFT_SLOTS] =
+    [const { hal::once::OnceStatic::new() }; SOFT_SLOTS];
+
+/// The `SoftintrHand` of each slot, its address with its provenance exposed (0: none yet).
+static SOFT_HANDS: [AtomicUsize; SOFT_SLOTS] = [const { AtomicUsize::new(0) }; SOFT_SLOTS];
+
+/// The next slot to hand out.
+static SOFT_NEXT: AtomicUsize = AtomicUsize::new(0);
+
+/// The soft interrupt handler of every slot: runs the kernel's handler of slot `arg`.
+fn soft_run(arg: *mut c_void) {
+    if let Some(run) = SOFT_RUNS.get(arg.addr()).and_then(|s| s.get()) {
+        run();
+    }
+}
+
+impl hal::softintr::SoftIntr for BsdSoftIntr {
+    fn establish(&self, ipl: i32, run: fn()) -> Option<usize> {
+        let slot = SOFT_NEXT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < SOFT_SLOTS).then_some(n + 1)
+            })
+            .ok()?;
+        SOFT_RUNS[slot].set(run).ok()?;
+        let sih = softintr_establish(ipl, soft_run, ptr::without_provenance_mut(slot))?;
+        SOFT_HANDS[slot].store(sih.as_ptr().expose_provenance(), Ordering::Release);
+        Some(slot + 1)
+    }
+
+    fn schedule(&self, handle: usize) {
+        let Some(hand) = handle.checked_sub(1).and_then(|s| SOFT_HANDS.get(s)) else {
+            return;
+        };
+        let p = ptr::with_exposed_provenance_mut::<SoftintrHand>(hand.load(Ordering::Acquire));
+        if let Some(sih) = NonNull::new(p) {
+            softintr_schedule(sih);
+        }
+    }
+}
+
+static BSD_SOFTINTR: BsdSoftIntr = BsdSoftIntr;
+
 struct BsdNetLock;
 
 impl NetLock for BsdNetLock {
@@ -530,6 +585,7 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
+    let _ = hal::bridges::register_softintr(&BSD_SOFTINTR);
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]
     {

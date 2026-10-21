@@ -8149,6 +8149,11 @@ status = "redesigned"
 notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows"
 
 [[extra]]
+rust = "sys/hal/softintr.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.1 P5): softintr_establish(9)/softintr_schedule(9) for the kernel over the SoftIntr bridge (bridges.toml, bsd's sys/kern/kern_softintr.rs behind sys/kern/hal_bridges.rs), a handler a plain fn(), the handle an opaque word; until the soft interrupts enter hal (N4.5, N4.8)"
+
+[[extra]]
 rust = "sys/hal/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (Pin::new_unchecked once, over the premise that a shared borrow that never ends excludes every move); docs/ZERO_UNSAFE.md 0.1"

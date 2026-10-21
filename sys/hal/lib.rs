@@ -105,6 +105,8 @@ pub mod random;
 pub mod refcnt;
 pub mod rwlock;
 pub mod sleep;
+#[forbid(unsafe_code)]
+pub mod softintr;
 #[cfg(test)]
 pub(crate) mod testutil;
 #[forbid(unsafe_code)]

@@ -46,6 +46,8 @@
 //!   memory of [`FOREIGN_LEN`] bytes at [`foreign_base`] (the pages a `ForeignWindow` would
 //!   name); anything outside it faults (`EFAULT`).
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
+//! - `SoftIntr`: a handler runs at once when scheduled, on the scheduling thread; the handle
+//!   is the handler's index in a table, plus one.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::boxed::Box;
@@ -67,6 +69,7 @@ use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 use crate::pool::{PoolBackend, RawPool};
 use crate::prf::Printf;
 use crate::sleep::{INFSLP, Sleep};
+use crate::softintr::SoftIntr;
 use crate::sys::errno::Errno;
 use crate::sys::types::{Paddr, Vaddr};
 use crate::user::UserCopy;
@@ -522,6 +525,25 @@ impl Printf for TestPrintf {
 /// What the `printf(9)` double was given.
 static PRINTF_OUT: Mutex<String> = Mutex::new(String::new());
 
+/// The soft interrupt double: a handler runs at once, on the thread that schedules it.
+struct TestSoftIntr;
+
+/// The handlers established, in order.
+static SOFT_HANDLERS: Mutex<std::vec::Vec<fn()>> = Mutex::new(std::vec::Vec::new());
+
+impl SoftIntr for TestSoftIntr {
+    fn establish(&self, _ipl: i32, run: fn()) -> Option<usize> {
+        let mut h = lock(&SOFT_HANDLERS);
+        h.push(run);
+        Some(h.len())
+    }
+
+    fn schedule(&self, handle: usize) {
+        let run = lock(&SOFT_HANDLERS)[handle - 1];
+        run();
+    }
+}
+
 /// A double's state, a panicking test's poison ignored.
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -537,6 +559,7 @@ static TEST_USER: TestUser = TestUser;
 static TEST_CONS: TestCons = TestCons;
 static TEST_PRINTF: TestPrintf = TestPrintf;
 static TEST_RANDOM: TestRandom = TestRandom;
+static TEST_SOFTINTR: TestSoftIntr = TestSoftIntr;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
@@ -551,6 +574,7 @@ pub(crate) fn install() {
         let _ = bridges::register_console(&TEST_CONS);
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_random(&TEST_RANDOM);
+        let _ = bridges::register_softintr(&TEST_SOFTINTR);
     });
 }
 
