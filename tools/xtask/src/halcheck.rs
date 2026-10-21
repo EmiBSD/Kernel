@@ -48,7 +48,11 @@
 //!    macro's compile-time refusal of an `Unpin` element.
 //! 6. **No `impl .. Unpin for` in `sys/kernel/` or `sys/abi/`.** A manual `Unpin` is the only
 //!    safe way to defeat `Pin` (a pinned value of an `Unpin` type may be moved); `hal`'s own
-//!    are allowed (it writes none for an element type).
+//!    are allowed (it writes none for an element type). A rename (`Unpin as X`, which would
+//!    let `impl X for` through) is refused there too.
+//!
+//! Both rules read an identifier as Rust does: a raw one (`r#PinSealed`, `r#Unpin`) is the
+//! same name.
 //!
 //! Rules 1 to 3 apply to every line of every file, test code included (a test that builds
 //! under Miri proves its sites too). Each finding prints as `path:line: message`; the
@@ -238,6 +242,18 @@ pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
     let no_unpin = NO_UNPIN_DIRS.iter().any(|d| rel.starts_with(d));
     for (i, t) in toks.iter().enumerate() {
         let Tok::Ident(w) = t else { continue };
+        let w = plain(w);
+        if w == "Unpin"
+            && no_unpin
+            && toks
+                .get(i + 1)
+                .is_some_and(|n| matches!(n, Tok::Ident(a) if a == "as"))
+        {
+            add(
+                i,
+                "Unpin renamed in kernel or abi: an impl of the new name would defeat Pin (pinlist's I1)",
+            );
+        }
         if w == "PinSealed" && !pinlist {
             add(
                 i,
@@ -260,6 +276,11 @@ pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
     out
 }
 
+/// An identifier as Rust reads it: `r#name` is `name`.
+fn plain(w: &str) -> &str {
+    w.strip_prefix("r#").unwrap_or(w)
+}
+
 /// The last identifier of the trait an `impl` at `i` implements (`impl<..> a::b::Trait<..>
 /// for`), or `None` when the `impl` is no trait impl (`impl X {`, an `impl Trait` type).
 fn impl_trait(toks: &[Tok], i: usize) -> Option<String> {
@@ -276,7 +297,7 @@ fn impl_trait(toks: &[Tok], i: usize) -> Option<String> {
             Tok::Punct('<') => depth += 1,
             Tok::Punct('>') => depth = depth.checked_sub(1)?,
             Tok::Ident(w) if depth == 0 && w == "for" => return last,
-            Tok::Ident(w) if depth == 0 => last = Some(w.clone()),
+            Tok::Ident(w) if depth == 0 => last = Some(plain(w).to_string()),
             Tok::Punct('{' | ';' | ',' | ')' | '=') if depth == 0 => return None,
             _ => {}
         }
@@ -522,6 +543,40 @@ mod tests {
         ] {
             assert!(premise_lines("sys/kernel/x.rs", src).is_empty(), "{src}");
         }
+    }
+
+    #[test]
+    fn rules_5_and_6_see_through_raw_identifiers_and_renames() {
+        // Rule 5: a raw seal, a raw trait name.
+        assert_eq!(
+            premise_lines(
+                "sys/kernel/x.rs",
+                "impl hal::pinlist::sealed::r#PinSealed for A {}\n"
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            premise_lines("sys/net/x.rs", "impl hal::pinlist::r#PinAdapter for A {}\n"),
+            vec![1]
+        );
+        // Rule 6: a raw Unpin, a renamed one (and the impl of the new name it would allow).
+        assert_eq!(
+            premise_lines("sys/abi/x.rs", "impl r#Unpin for N {}\n"),
+            vec![1]
+        );
+        assert_eq!(
+            premise_lines(
+                "sys/kernel/x.rs",
+                "use core::marker::Unpin as Movable;\nimpl Movable for N {}\n"
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            premise_lines("sys/kernel/x.rs", "use core::marker::{r#Unpin as U};\n"),
+            vec![1]
+        );
+        // Outside kernel and abi a rename is not this rule's business.
+        assert!(premise_lines("sys/kern/x.rs", "use core::marker::Unpin as U;\n").is_empty());
     }
 
     #[test]
