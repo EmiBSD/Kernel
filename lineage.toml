@@ -8513,6 +8513,10 @@ native = ["process_tick"]
 kind = "renamed"
 
 [[extra]]
+rust = "sys/benches/legacy_timeout.rs"
+reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's paths (timeout_set of a served wrapper, of a fresh wrapper at a known address, of a new address) over the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/timeout.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del, timeout_set, hardclock_update idle and with 1,000 timeouts, softclock; task(9) and extent(9) with their commits) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"

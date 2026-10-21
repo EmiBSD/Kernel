@@ -116,13 +116,18 @@
 //!   `const fn`s keep the statics compiling. The three direct field users read
 //!   [`Timeout::to_time`] or call [`Timeout::set_none`].
 //! - The node is found by the wrapper's address: the link when it names a node of this
-//!   address (one load and one compare per call, the hot path), else the registry (a
+//!   address (one load and one compare per call, the served path), else the registry (a
 //!   `hal::tree::Tree` of the nodes by address under its own mutex), else a new node. A
 //!   wrapper with no node claims one under the registry's lock: the link read again, the node
 //!   set fresh (the wheel's lock nested inside) and only then linked, so two first calls on
 //!   one wrapper (two CPUs' first `timeout_add` of a `TIMEOUT_INITIALIZER` static) set it
 //!   once and the second is served, as the C's second add returns 0. A node made for the
-//!   first `timeout_add` of a `TIMEOUT_INITIALIZER` takes the wrapper's values.
+//!   first `timeout_add` of a `TIMEOUT_INITIALIZER` takes the wrapper's values. What the C
+//!   writes in place costs more on a fresh wrapper (a fork's three, a tcpcb's): the registry's
+//!   lock, a tree search and the wheel's lock (`sys/benches/legacy_timeout.rs`:
+//!   `timeout.set-fresh` about 46 ns against `timeout.set-served`'s 7 on the host, release),
+//!   and a new address a pool item more (`timeout.set-new-address`, about 620 ns over the
+//!   doubles' pool, which takes a fresh host page per item).
 //! - A call on a wrapper with no node is answered as the C answers an idle timeout without
 //!   making one: `timeout_del` counts its deletion and `timeout_barrier` finds nothing
 //!   running, through an idle node of this module's.
