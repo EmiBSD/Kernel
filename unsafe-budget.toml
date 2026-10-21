@@ -26,6 +26,10 @@ name = "arch"
 total = 0
 
 [[subsystem]]
+name = "benches"
+total = 0
+
+[[subsystem]]
 name = "arch/amd64"
 total = 773
 
