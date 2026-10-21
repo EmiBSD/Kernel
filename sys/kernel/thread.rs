@@ -51,7 +51,14 @@ use crate::assert::kpanic;
 /// What a kernel thread made through this module runs, or what a deferred creation calls:
 /// filed under a ticket until the thread (or the deferred call) takes it. The variants are
 /// the kernel's subsystems that make threads (timeout(9), task(9)).
-pub(crate) enum Start {}
+pub(crate) enum Start {
+    /// timeout(9)'s `softclock_create_thread` (deferred by `timeout_proc_init`).
+    SoftclockCreate,
+    /// timeout(9)'s `softclock_thread`.
+    Softclock,
+    /// timeout(9)'s `softclock_thread_mp`.
+    SoftclockMp,
+}
 
 /// The starts filed and not yet taken, by ticket; a taken slot is `None` and reused.
 static STARTS: Mutexed<Vec<Option<Start>>> = Mutexed::new(IPL_NONE, Vec::new());
@@ -127,18 +134,23 @@ pub(crate) fn create_deferred(s: Start) {
 /// What a kernel thread made by [`create`] runs: called by `bsd`'s thread function with the
 /// ticket it was given. Never returns (each start ends in [`exit`] or runs for ever).
 pub fn run(ticket: usize) -> ! {
-    let Some(s) = take(ticket) else {
-        kpanic(format_args!("kthread: ticket {ticket} names no start"));
-    };
-    match s {}
+    match take(ticket) {
+        Some(Start::Softclock) => crate::timeout::softclock_thread(),
+        Some(Start::SoftclockMp) => crate::timeout::softclock_thread_mp(),
+        Some(Start::SoftclockCreate) | None => {
+            kpanic(format_args!("kthread: ticket {ticket} names no thread"))
+        }
+    }
 }
 
 /// What a deferred creation calls: called by `bsd`'s deferred function with its ticket.
 pub fn run_deferred(ticket: usize) {
-    let Some(s) = take(ticket) else {
-        kpanic(format_args!("kthread: ticket {ticket} names no start"));
-    };
-    match s {}
+    match take(ticket) {
+        Some(Start::SoftclockCreate) => crate::timeout::softclock_create_thread(),
+        Some(Start::Softclock | Start::SoftclockMp) | None => kpanic(format_args!(
+            "kthread: ticket {ticket} names no deferred call"
+        )),
+    }
 }
 
 /// `kthread_exit(9)`.

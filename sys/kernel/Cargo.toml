@@ -35,5 +35,14 @@ path = "benches/vm.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of N4.1's hot paths (decision 43; benches/timeout.rs): timeout(9),
+# task(9), extent(9) over the doubles, never a kernel image:
+# `cargo bench -p kernel --features doubles --bench timeout [--profile dev]`.
+[[bench]]
+name = "timeout"
+path = "benches/timeout.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

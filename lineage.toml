@@ -8339,6 +8339,18 @@ lz = ["sys/kern/kern_clock.rs"]
 status = "redesigned"
 notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8)"
 
+[[module]]
+rust = "sys/kernel/timeout.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_timeout.rs", "sys/sys/timeout.rs"]
+status = "redesigned"
+notes = "N4.1: timeout(9) in the kernel crate: the wheel's 2052 queues hal::pinlist::PinRings in a static (CIRCQ_REMOVE names no queue, MOVEBUCKET/CIRCQ_CONCAT a splice), the [T] globals the data of the WHEEL Mutexed (timeout_mutex, IPL_HIGH), a timeout's to_func/to_kclock/to_abstime a Guarded cell keyed to it (const TIMEOUT_INITIALIZER), to_time/to_arg/to_flags atomics written under it; Timeout is linked through Pin<&Timeout> and deletes itself when dropped pending; timeout_barrier's cond is the barrier timeout's TRIGGERED flag; softintr and kthreads through hal::softintr and kernel::thread, nanouptime through kernel::clock; WITNESS/kcov not configured, ddb's show callout not ported (LZ's gaps, kept); timeout_sysctl stays at the ABI side (sys/sys/timeout.rs) over stats()"
+
+[[extra]]
+rust = "sys/kernel/benches/timeout.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del, timeout_set, hardclock_update idle and with 1,000 timeouts, softclock; task(9) and extent(9) with their commits) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
 [[extra]]
 rust = "sys/kernel/thread.rs"
 crate = "kernel"

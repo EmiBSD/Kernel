@@ -176,17 +176,17 @@ paid_by = "N7"
 # hal::klock::KernelLock
 [[bridge]]
 trait = "Kthread"
-for = ["sys/kernel/thread.rs"]
+for = ["sys/kernel/thread.rs", "sys/kernel/timeout.rs"]
 paid_by = "N4"
 
 [[bridge]]
 trait = "Uptime"
-for = ["sys/kernel/clock.rs"]
+for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs"]
 paid_by = "N4"
 
 [[bridge]]
 trait = "SoftIntr"
-for = ["sys/hal/softintr.rs"]
+for = ["sys/hal/softintr.rs", "sys/kernel/timeout.rs"]
 paid_by = "N4"
 
 [[bridge]]

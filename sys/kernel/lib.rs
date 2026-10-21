@@ -45,5 +45,6 @@ pub mod prf;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;
+pub mod timeout;
 pub mod vm;
 /* </CODE> */
