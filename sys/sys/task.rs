@@ -51,8 +51,11 @@
 //!   `sd_taskq`; wsdisplay's `sc_taskq`): no safe cell lends a handle to such readers and
 //!   gives it up to a destroyer, so they leak the handle (`TaskqRef::leak`) and destroy with
 //!   [`taskq_destroy_leaked`], whose queue's threads are stopped and waited for as the C's
-//!   but whose memory stays. A deviation of those three callers, until they hold a
-//!   `TaskqRef` (N6, N7).
+//!   but whose memory stays. What stays: the softnets past `softnet_count()`, `NET_TASKQ`
+//!   (8) less one per CPU, once per boot (six `taskqpl` items on two CPUs, four on four);
+//!   one item per softraid discipline torn down (a volume created and detached by
+//!   `bioctl`); one item per wsdisplay detached. A deviation of those three callers, until
+//!   they hold a `TaskqRef` (N6, N7).
 //! - `struct task` keeps its fields for the code that links tasks on lists of its own and runs
 //!   them (`if_.rs`'s hooks, `ifq.rs`'s serializer: `t_entry`, `t_func`, `t_arg`, `t_flags`),
 //!   and carries the kernel's task (`t_node`), which is what a task queue links. `task_set`

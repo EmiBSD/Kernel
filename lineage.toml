@@ -7511,6 +7511,7 @@ rust = "sys/sys/task.rs"
 lz = ["sys/sys/task.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/task.rs"]
+notes = "N4.1: carries kern_task.rs's legacy API (task_add, task_del, taskq_create/destroy, the barriers) over kernel::task (crate::kern::kern_task names it) and keeps LZ's one unsafe impl Sync for Task, for the lists if_.rs and ifq.rs keep of their own (t_entry, t_flags); it becomes redesigned (forbid, lz with kern_task.rs) when those callers move (N6/N7): an adapted module may list only its own LZ path, a redesigned bsd one must be forbid (the main session's decision of 2026-10-21)"
 
 [[module]]
 rust = "sys/sys/termios.rs"
@@ -8510,6 +8511,101 @@ kind = "renamed"
 [[module.fn]]
 lz = "sys/kern/kern_timeout.rs::softclock_process_tick_timeout"
 native = ["process_tick"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_startup"
+native = ["startup"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_proc_init"
+native = ["proc_init"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_set"
+native = ["Timeout::set"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_set_flags"
+native = ["Timeout::set"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_set_proc"
+native = ["Timeout::set"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_add"
+native = ["Timeout::add"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_add_sec"
+native = ["Timeout::add_sec"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_add_msec"
+native = ["Timeout::add_msec"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_add_usec"
+native = ["Timeout::add_usec"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_add_nsec"
+native = ["Timeout::add_nsec"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_abs_ts"
+native = ["Timeout::abs_ts"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_del"
+native = ["Timeout::del"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_del_barrier"
+native = ["Timeout::del_barrier"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_barrier"
+native = ["Timeout::barrier"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_hardclock_update"
+native = ["hardclock_update"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_timeout.rs::timeout_adjust_ticks"
+native = ["adjust_ticks"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/timeout.rs::timeout_pending"
+native = ["Timeout::pending"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/timeout.rs::timeout_initialized"
+native = ["Timeout::initialized"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/timeout.rs::timeout_triggered"
+native = ["Timeout::triggered"]
 kind = "renamed"
 
 [[extra]]
