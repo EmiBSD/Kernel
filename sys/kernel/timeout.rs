@@ -1160,6 +1160,38 @@ pub fn tick_once() {
     softclock();
 }
 
+/// Test hook, `timeout_test_reset` (testing.md tier 1): every queued timeout taken off its
+/// queue without running, not pending any more (`tos_pending` follows), as LZ's
+/// `timeout_startup` re-initialised every queue. The host tests share the wheel: a timeout
+/// one left pending would otherwise run in the next one's `tick_once`, with an argument into
+/// the earlier test's memory. Every queued timeout is alive (a pinned one is deleted by its
+/// `Drop` before it goes, a legacy one is a pool item never given back), so it is touched
+/// safely.
+#[cfg(any(test, feature = "doubles"))]
+pub fn timeout_test_reset() {
+    let mut g = WHEEL.lock();
+    let queues = QUEUES.wheel.iter().chain(QUEUES.wheel_kc.iter()).chain([
+        &QUEUES.new,
+        &QUEUES.todo,
+        &QUEUES.proc_q,
+        &QUEUES.proc_mp,
+    ]);
+    for q in queues {
+        let mut b = ring(q).bound(&mut g);
+        while b
+            .first()
+            .map(|to| {
+                to.flags.fetch_and(!TIMEOUT_ONQUEUE, Ordering::Relaxed);
+            })
+            .is_some()
+        {
+            b.remove_first();
+            let st = b.witness_mut();
+            st.stat.tos_pending = st.stat.tos_pending.saturating_sub(1);
+        }
+    }
+}
+
 /// Test hook: whether the wheel holds no timeout (every queue empty).
 #[cfg(any(test, feature = "doubles"))]
 pub fn wheel_is_empty() -> bool {

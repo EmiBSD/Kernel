@@ -326,8 +326,19 @@ fn timeout_pool() -> &'static TypedPool<Node> {
     &TIMEOUT_POOL
 }
 
+/// The host tests' hal bridges (the kernel's doubles), installed once per process: the
+/// registry's and the wheel's locks and the nodes' pool need them, and a bsd test that sets a
+/// timeout may run before any test that installs them (a filtered run, or the order of a
+/// whole one). Nothing outside the host tests.
+#[inline]
+fn test_bridges() {
+    #[cfg(test)]
+    kernel::testutil::install();
+}
+
 /// The node at `owner`'s address: the registry's, or a new one inserted (never given back).
 fn node_at(owner: usize) -> &'static Node {
+    test_bridges();
     let find = |t: &Tree<ByOwner>| t.find_by(|n| owner.cmp(&n.owner));
     if let Some(n) = find(&REGISTRY.lock()) {
         return n;
@@ -374,8 +385,17 @@ pub fn timeout_triggered(to: &Timeout) -> bool {
     to.served().is_some_and(|n| n.to.triggered())
 }
 
-/// `timeout_startup()`: the wheel's `hz`, `tick` and `tick_nsec` (`param.c`'s).
+/// `timeout_startup()`: the wheel's `hz`, `tick` and `tick_nsec` (`param.c`'s). In the host
+/// tests it also installs the kernel's doubles of hal's bridges (the wheel's lock and its
+/// nodes' pool need them; a test that runs alone has had no other test install them) and
+/// empties the wheel (`timeout_test_reset`), as LZ's re-initialised every queue: the tests
+/// that call it rely on a wheel with nothing left by an earlier test.
 pub fn timeout_startup() {
+    #[cfg(test)]
+    {
+        test_bridges();
+        kernel::timeout::timeout_test_reset();
+    }
     kernel::timeout::startup(
         HZ.load(Ordering::Relaxed),
         TICK.load(Ordering::Relaxed),
@@ -438,16 +458,19 @@ pub fn timeout_abs_ts(to: &Timeout, abstime: &Timespec) -> bool {
 
 /// `timeout_del(to)`: `true` when it was pending.
 pub fn timeout_del(to: &Timeout) -> bool {
+    test_bridges();
     to.served().map_or(&IDLE, |n| &n.to).del()
 }
 
 /// `timeout_del_barrier(to)`: deleted, and not running when it returns.
 pub fn timeout_del_barrier(to: &Timeout) -> bool {
+    test_bridges();
     to.served().map_or(&IDLE, |n| &n.to).del_barrier()
 }
 
 /// `timeout_barrier(to)`: waits until `to` is not running.
 pub fn timeout_barrier(to: &Timeout) {
+    test_bridges();
     to.served().map_or(&IDLE, |n| &n.to).barrier();
 }
 
@@ -559,6 +582,24 @@ pub(crate) mod tests {
         assert!(!timeout_pending(&TO));
         assert!(!timeout_del(&TO));
         assert!(!timeout_triggered(&TO));
+    }
+
+    #[test]
+    fn startup_in_the_tests_empties_the_wheel() {
+        let _g = setup();
+        static TO: Timeout = Timeout::zeroed();
+        timeout_set(&TO, fire, ptr::null_mut());
+        assert!(timeout_add(&TO, 5));
+        let pending = kernel::timeout::stats()[4];
+        // An earlier test's timeout, left pending: the next setup takes it off unrun.
+        timeout_startup();
+        assert!(!timeout_pending(&TO));
+        assert!(kernel::timeout::wheel_is_empty());
+        assert_eq!(kernel::timeout::stats()[4], pending - 1);
+        for _ in 0..10 {
+            kernel::timeout::tick_once();
+        }
+        assert_eq!(FIRED.load(Ordering::Relaxed), 0);
     }
 
     #[test]
