@@ -26,23 +26,18 @@
 //! argument since LZ), needs this one.
 //!
 //! ## Redesign
-//! - Not a port: `Pin::new_unchecked` written once here, over the one premise that makes it
-//!   sound for every caller, instead of at each site.
+//! - Not a port: a name of the crate's for `core::pin::Pin::static_ref` (stable since Rust
+//!   1.61), whose premise is the one this module stated: a shared borrow that never ends
+//!   excludes every move and every free of the value it names. The module holds no `unsafe`
+//!   (its `mod` line forbids it).
 
 use core::pin::Pin;
 
-/// `r`, pinned: a shared borrow that never ends excludes every move of the value it names.
-pub fn pin_static<T: ?Sized>(r: &'static T) -> Pin<&'static T> {
-    // SAFETY: `Pin`'s contract for `Pin<&T>`: the `T` is not moved, nor its memory invalidated
-    // or reused, before its drop runs. A `&'static T` is a shared borrow that lasts for the rest
-    // of the program, so for as long as the program runs no `&mut T` to the same value may
-    // exist and its owner cannot use it by value (both conflict with a live shared borrow),
-    // which are the only ways to move a `T` out of its place or to free it: it stays where it
-    // is, and its memory is never given back (whatever owns it is itself borrowed for ever:
-    // a `static`, a leaked allocation). Interior mutability (`Cell::replace`, a lock's guard)
-    // moves the contents of a field, never the `T`: `hal`'s primitives project no pin through
-    // such a field (the lists reach an element's entry as a plain field, `pinlist`'s I1).
-    unsafe { Pin::new_unchecked(r) }
+/// `r`, pinned: a shared borrow that never ends excludes every move of the value it names
+/// (`Pin::static_ref`).
+#[inline]
+pub const fn pin_static<T: ?Sized>(r: &'static T) -> Pin<&'static T> {
+    Pin::static_ref(r)
 }
 /* </CODE> */
 
