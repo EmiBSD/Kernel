@@ -86,7 +86,9 @@
 //!   dropping them (`pool_put` of a `struct proc`, a `tcpcb`, a SYN cache entry; a softc's
 //!   `free`), so no wrapper can be trusted to say when its node is free. A wrapper made again
 //!   at an address the registry knows (the same pool item, reused) takes that address's node
-//!   back, deleted first, so the nodes are bounded by the number of distinct addresses that
+//!   back, taken off its queue if the previous wrapper left it pending (counting nothing but
+//!   `tos_pending`, as the C's `timeout_set` counts nothing) and set fresh, so the nodes are
+//!   bounded by the number of distinct addresses that
 //!   ever held a timeout that was set or added: in practice the peak of live timeouts, since
 //!   `pool(9)` and `malloc(9)` reuse their items' addresses (a pool page given back and carved
 //!   again for another pool can bring new ones). The C embeds the timeout and allocates
@@ -95,6 +97,12 @@
 //!   subsystem by subsystem.
 //! - `timeout_set` writes a timeout's fields under the wheel's lock (the C writes them bare),
 //!   the kernel's change (`kernel::timeout`).
+//! - A wrapper's link is trusted only when it names a node of the wrapper's own address
+//!   (`served`), which holds because every structure that embeds a wrapper is written whole
+//!   when it is made (a `const` constructor) or comes zeroed (`PR_ZERO`, `M_ZERO`, a zeroed
+//!   softc): its bytes are zero or a previous wrapper's at that address, never another
+//!   address's live link left by a copy (a moved structure's link names the old address and
+//!   is ignored).
 //! - `to_process` (the `kcov` identifier) is not kept: `kcov` is not configured.
 //!
 //! ## Redesign
@@ -109,8 +117,12 @@
 //!   [`Timeout::to_time`] or call [`Timeout::set_none`].
 //! - The node is found by the wrapper's address: the link when it names a node of this
 //!   address (one load and one compare per call, the hot path), else the registry (a
-//!   `hal::tree::Tree` of the nodes by address under its own mutex), else a new node. A node
-//!   made for the first `timeout_add` of a `TIMEOUT_INITIALIZER` takes the wrapper's values.
+//!   `hal::tree::Tree` of the nodes by address under its own mutex), else a new node. A
+//!   wrapper with no node claims one under the registry's lock: the link read again, the node
+//!   set fresh (the wheel's lock nested inside) and only then linked, so two first calls on
+//!   one wrapper (two CPUs' first `timeout_add` of a `TIMEOUT_INITIALIZER` static) set it
+//!   once and the second is served, as the C's second add returns 0. A node made for the
+//!   first `timeout_add` of a `TIMEOUT_INITIALIZER` takes the wrapper's values.
 //! - A call on a wrapper with no node is answered as the C answers an idle timeout without
 //!   making one: `timeout_del` counts its deletion and `timeout_barrier` finds nothing
 //!   running, through an idle node of this module's.
@@ -216,9 +228,7 @@ impl Timeout {
 
     /// `timeout_set(to, NULL, NULL)` (`usbd_alloc_xfer`'s): initialised, with no function.
     pub fn set_none(&self) {
-        self.node_or_make()
-            .to
-            .set(None, ptr::null_mut(), KCLOCK_NONE, 0);
+        self.set_node(None, ptr::null_mut(), KCLOCK_NONE, 0);
     }
 
     /// This wrapper's address, the registry's key.
@@ -233,34 +243,85 @@ impl Timeout {
         self.node.get().filter(|n| n.owner == self.addr())
     }
 
-    /// The wrapper's node, found in the registry or made (`timeout_set`'s path): a node
-    /// another wrapper left at this address is deleted first.
-    fn node_or_make(&self) -> &'static Node {
-        if let Some(n) = self.served() {
-            return n;
+    /// `timeout_set_flags` through the wrapper: its node's fields set (the state the wheel
+    /// keeps stays, `kernel::timeout::Timeout::set`), or, for a wrapper with no node, the node
+    /// at its address claimed and set fresh ([`Timeout::claim`]).
+    fn set_node(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
+        match self.served() {
+            Some(n) => n.to.set(func, arg, kclock, flags),
+            None => {
+                self.claim(|to| to.set_fresh(func, arg, kclock, flags));
+            }
         }
-        let n = node_at(self.addr());
-        n.to.del();
-        self.node.set(Some(n));
-        n
     }
 
-    /// The wrapper's node for an add: when it has none, the one at its address set to the
-    /// wrapper's `TIMEOUT_INITIALIZER` values (the C's `KASSERT` that it was initialised
-    /// first).
+    /// The wrapper's node for an add: when it has none, the one at its address claimed and
+    /// set fresh to the wrapper's `TIMEOUT_INITIALIZER` values (the C's `KASSERT` that it was
+    /// initialised first).
     fn node_for_add(&self) -> &'static Node {
         if let Some(n) = self.served() {
             return n;
         }
         kassert!(self.init_flags & TIMEOUT_INITIALIZED != 0);
-        let n = self.node_or_make();
-        n.to.set(
-            self.init_func,
-            self.init_arg.load(Ordering::Relaxed),
-            self.init_kclock,
-            flags_of(self.init_flags),
-        );
-        n
+        self.claim(|to| {
+            to.set_fresh(
+                self.init_func,
+                self.init_arg.load(Ordering::Relaxed),
+                self.init_kclock,
+                flags_of(self.init_flags),
+            );
+        })
+    }
+
+    /// The node of a wrapper that had none, claimed: under the registry's lock the link is
+    /// read again (another CPU claimed it meanwhile: that node, as it set it), else the node at
+    /// the wrapper's address (found, or a new one inserted) is set by `fresh` and only then
+    /// linked, so no CPU sees this wrapper's link before its node is set, and two first calls
+    /// on one wrapper set it once (the second one served). `fresh` takes the wheel's lock
+    /// inside the registry's (the one nesting: the kernel never takes the registry's). A new
+    /// node is made with the registry's lock released, and one not needed goes back to the
+    /// pool after it is released (the pool's lock is not nested in it).
+    fn claim(&self, fresh: impl FnOnce(&kernel::timeout::Timeout)) -> &'static Node {
+        test_bridges();
+        let owner = self.addr();
+        let find = |t: &Tree<ByOwner>| t.find_by(|n| owner.cmp(&n.owner));
+        let mut new: Option<PoolArc<Node>> = None;
+        loop {
+            let reg = REGISTRY.lock();
+            if let Some(n) = self.served() {
+                drop(reg);
+                drop(new);
+                return n;
+            }
+            let n = match (find(&reg), new.take()) {
+                (Some(n), spare) => {
+                    new = spare;
+                    n
+                }
+                (None, Some(made)) => {
+                    let n = PoolArc::leak(made);
+                    reg.insert(n);
+                    n
+                }
+                (None, None) => {
+                    drop(reg);
+                    let Some(made) = timeout_pool().get_shared(PR_NOWAIT, || Node {
+                        owner,
+                        entry: TreeEntry::new(),
+                        to: kernel::timeout::Timeout::unset(),
+                    }) else {
+                        panic(format_args!("timeout_set: no node for a legacy timeout"));
+                    };
+                    new = Some(made);
+                    continue;
+                }
+            };
+            fresh(&n.to);
+            self.node.set(Some(n));
+            drop(reg);
+            drop(new);
+            return n;
+        }
     }
 
     /// The node, pinned: a pool item never given back (the module's deviations).
@@ -336,33 +397,6 @@ fn test_bridges() {
     kernel::testutil::install();
 }
 
-/// The node at `owner`'s address: the registry's, or a new one inserted (never given back).
-fn node_at(owner: usize) -> &'static Node {
-    test_bridges();
-    let find = |t: &Tree<ByOwner>| t.find_by(|n| owner.cmp(&n.owner));
-    if let Some(n) = find(&REGISTRY.lock()) {
-        return n;
-    }
-    // Made with the registry's lock released (the pool's own lock is not nested in it).
-    let Some(new) = timeout_pool().get_shared(PR_NOWAIT, || Node {
-        owner,
-        entry: TreeEntry::new(),
-        to: kernel::timeout::Timeout::unset(),
-    }) else {
-        panic(format_args!("timeout_set: no node for a legacy timeout"));
-    };
-    let reg = REGISTRY.lock();
-    if let Some(n) = find(&reg) {
-        // Another CPU made this address's node meanwhile: ours goes back to the pool.
-        drop(reg);
-        drop(new);
-        return n;
-    }
-    let n = PoolArc::leak(new);
-    reg.insert(n);
-    n
-}
-
 /*
  * special macros
  */
@@ -416,9 +450,7 @@ pub fn timeout_set(new: &Timeout, func: TimeoutFn, arg: *mut c_void) {
 /// `timeout_set_flags(to, fn, arg, kclock, flags)`.
 pub fn timeout_set_flags(to: &Timeout, func: TimeoutFn, arg: *mut c_void, kclock: i32, flags: i32) {
     kassert!(flags & !(TIMEOUT_PROC | TIMEOUT_MPSAFE) == 0);
-    to.node_or_make()
-        .to
-        .set(Some(func), arg, kclock, flags_of(flags));
+    to.set_node(Some(func), arg, kclock, flags_of(flags));
 }
 
 /// `timeout_set_proc(new, fn, arg)`.
@@ -618,12 +650,66 @@ pub(crate) mod tests {
     #[test]
     fn an_address_keeps_one_node() {
         let _g = setup();
+        static A: Timeout = Timeout::zeroed();
+        static B: Timeout = Timeout::zeroed();
         let before = registry_len();
-        let a = node_at(0x10);
-        assert!(ptr::eq(a, node_at(0x10)), "found, not made again");
+        timeout_set(&A, fire, ptr::null_mut());
+        let a = A.served().map(ptr::from_ref);
+        // Made again at the same address (zeroed): the address's node, not a new one.
+        A.node.set(None);
+        timeout_set(&A, fire, ptr::null_mut());
+        assert_eq!(A.served().map(ptr::from_ref), a, "found, not made again");
         assert_eq!(registry_len(), before + 1);
-        assert!(!ptr::eq(a, node_at(0x20)));
+        timeout_set(&B, fire, ptr::null_mut());
+        assert_ne!(B.served().map(ptr::from_ref), a);
         assert_eq!(registry_len(), before + 2);
+    }
+
+    #[test]
+    fn timeout_set_on_a_fresh_wrapper_counts_nothing() {
+        let _g = setup();
+        static TO: Timeout = Timeout::zeroed();
+        // The C's timeout_set touches no counter: kern.timeout_stats stays as it is.
+        let before = kernel::timeout::stats();
+        timeout_set(&TO, fire, ptr::null_mut());
+        assert_eq!(kernel::timeout::stats(), before);
+        // Nor when the address's node is taken back idle (a structure made again).
+        TO.node.set(None);
+        timeout_set_proc(&TO, fire, ptr::null_mut());
+        assert_eq!(kernel::timeout::stats(), before);
+    }
+
+    static RACED: AtomicU32 = AtomicU32::new(0);
+
+    fn raced(_arg: *mut c_void) {
+        RACED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn two_first_adds_of_an_initializer_add_it_once() {
+        let _g = setup();
+        // Each round a fresh wrapper (a new leaked TIMEOUT_INITIALIZER), added by two threads
+        // at once: one add returns true, the other false (the C's 0, counted `readded`).
+        for _ in 0..200 {
+            let to: &'static Timeout =
+                std::boxed::Box::leak(std::boxed::Box::new(Timeout::new(raced, ptr::null_mut())));
+            let readded = kernel::timeout::stats()[5];
+            let start = std::sync::Barrier::new(2);
+            let added: u32 = std::thread::scope(|s| {
+                let t = [(); 2].map(|()| {
+                    s.spawn(|| {
+                        start.wait();
+                        u32::from(timeout_add(to, 1000))
+                    })
+                });
+                t.into_iter().map(|h| h.join().unwrap_or(0)).sum()
+            });
+            assert_eq!(added, 1, "one add of two");
+            assert!(timeout_pending(to));
+            assert_eq!(kernel::timeout::stats()[5], readded + 1);
+            assert!(timeout_del(to));
+        }
+        assert_eq!(RACED.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -643,7 +729,7 @@ pub(crate) mod tests {
             n,
             "the address's node, taken back"
         );
-        assert!(!timeout_pending(&TO), "deleted first");
+        assert!(!timeout_pending(&TO), "taken off first");
         assert_eq!(FIRED.load(Ordering::Relaxed), 0);
     }
 

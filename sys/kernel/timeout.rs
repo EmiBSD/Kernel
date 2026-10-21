@@ -281,13 +281,7 @@ impl Timeout {
     /// timeout leaves it pending and deletable: only `TIMEOUT_PROC`, `TIMEOUT_MPSAFE`, the
     /// clock, the function and the argument change.
     pub fn set(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
-        kassert!(flags & !(TIMEOUT_PROC | TIMEOUT_MPSAFE) == 0);
-        kassert!((KCLOCK_NONE..KCLOCK_MAX).contains(&kclock));
-        // For now, only process context timeouts may be marked MP-safe.
-        if flags & TIMEOUT_MPSAFE != 0 {
-            kassert!(flags & TIMEOUT_PROC != 0);
-        }
-
+        set_checks(kclock, flags);
         let mut g = WHEEL.lock();
         let st = self.st.get_mut(&mut g);
         st.func = func;
@@ -296,6 +290,30 @@ impl Timeout {
         let state = self.flags.load(Ordering::Relaxed) & (TIMEOUT_ONQUEUE | TIMEOUT_TRIGGERED);
         self.flags
             .store(flags | TIMEOUT_INITIALIZED | state, Ordering::Relaxed);
+    }
+
+    /// `timeout_set_flags` of a fresh `struct timeout` (all its state the new one's), over a
+    /// timeout that may carry a previous user's state: the legacy adapter's node taken back
+    /// for a wrapper made again at the same address (`sys/sys/timeout.rs`). A node the
+    /// previous wrapper left pending is taken off its queue without counting a deletion (the
+    /// C's `timeout_set` touches no counter; `tos_pending` follows, as it counts what is
+    /// queued), and its flags, clock, function, argument, `to_time` and `to_abstime` are the
+    /// fresh ones: one lock, as `set`.
+    pub fn set_fresh(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
+        set_checks(kclock, flags);
+        let mut g = WHEEL.lock();
+        if self.flags.load(Ordering::Relaxed) & TIMEOUT_ONQUEUE != 0 {
+            PinRing::<ToList>::remove(&mut g, self);
+            g.stat.tos_pending -= 1;
+        }
+        let st = self.st.get_mut(&mut g);
+        st.func = func;
+        st.kclock = kclock;
+        st.abstime = Timespec::ZERO;
+        self.arg.store(arg, Ordering::Relaxed);
+        self.time.store(0, Ordering::Relaxed);
+        self.flags
+            .store(flags | TIMEOUT_INITIALIZED, Ordering::Relaxed);
     }
 
     /// `timeout_add(to, to_ticks)`: due in `to_ticks` ticks; `true` when it was not pending
@@ -518,6 +536,17 @@ impl Timeout {
     /// `to->to_time`: the ticks value it is due at (the readers that print or compare it).
     pub fn time(&self) -> i32 {
         self.time.load(Ordering::Relaxed)
+    }
+}
+
+/// `timeout_set_flags`'s `KASSERT`s: known flags, a known clock, `TIMEOUT_MPSAFE` only with
+/// `TIMEOUT_PROC` ("for now, only process context timeouts may be marked MP-safe").
+#[inline]
+fn set_checks(kclock: i32, flags: u32) {
+    kassert!(flags & !(TIMEOUT_PROC | TIMEOUT_MPSAFE) == 0);
+    kassert!((KCLOCK_NONE..KCLOCK_MAX).contains(&kclock));
+    if flags & TIMEOUT_MPSAFE != 0 {
+        kassert!(flags & TIMEOUT_PROC != 0);
     }
 }
 
@@ -1304,6 +1333,27 @@ mod tests {
         assert!(to.add(10));
         assert!(to.del());
         to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
+    }
+
+    #[test]
+    fn set_fresh_takes_a_pending_timeout_back_without_counting() {
+        let _g = setup();
+        static TO: Timeout = Timeout::new(fire, ptr::null_mut());
+        let to = pinned(&TO);
+        assert!(to.add(50));
+        let before = stats();
+        to.set_fresh(Some(fire), ptr::without_provenance_mut(3), KCLOCK_NONE, 0);
+        let after = stats();
+        assert!(!to.pending());
+        assert!(!TO.entry.is_linked());
+        assert_eq!(to.time(), 0);
+        assert_eq!(after[4], before[4] - 1, "no longer queued");
+        for i in [0, 1, 2, 5, 6] {
+            assert_eq!(after[i], before[i], "counter {i} untouched");
+        }
+        // A fresh one again: idle, nothing changes.
+        to.set_fresh(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
+        assert_eq!(stats(), after);
     }
 
     #[test]
