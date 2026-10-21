@@ -11,6 +11,25 @@ export EMIBSD_BUILD_HOST := `hostname -s 2>/dev/null || echo localhost`
 amd64 := "x86_64-unknown-none"
 arm64 := "aarch64-unknown-none-softfloat"
 
+# Decision 44 (2026-10-18): from N4 to N9 only arm64 is built, booted and measured. `archs`
+# (`EMIBSD_ARCHS`, a comma-separated list of `amd64` and `arm64`, `arm64` when unset or empty)
+# names the architectures `build`, `clippy`, `diff-openbsd`, `bench` and `ci-full` work on;
+# xtask reads the same variable (exported below) in `smoke`, `smoke2`, `smoke-all`,
+# `diff-openbsd` and `bench`, and logs an amd64 boot as `SKIPPED (decision 44)`, counted apart,
+# never as a pass. The amd64 recipes keep their names, dependencies and commands: with amd64
+# off, their first command line prints `<recipe>: amd64 SKIPPED (decision 44)` and runs
+# nothing (`no_amd64` comments out the rest of every other amd64 line). N10 homologates amd64
+# with `EMIBSD_ARCHS=amd64,arm64` (`just archs=amd64,arm64 <recipe>`), which gives back
+# today's commands exactly. The userland (`userland`, `comp`) is OpenBSD's own build and does
+# not depend on the kernel's archs.
+archs_raw := env("EMIBSD_ARCHS", "arm64")
+archs := if trim(archs_raw) == "" { "arm64" } else { archs_raw }
+export EMIBSD_ARCHS := archs
+has_amd64 := if archs =~ '(^|,)\s*amd64\s*(,|$)' { "true" } else { "false" }
+has_arm64 := if archs =~ '(^|,)\s*arm64\s*(,|$)' { "true" } else { "false" }
+no_amd64 := if has_amd64 == "true" { "" } else { "true # " }
+both_archs_a := if has_amd64 == "true" { if has_arm64 == "true" { " -a " } else { "" } } else { "" }
+
 # Every smoke and smoke2 run fails if a VM prints this (kern_clockintr's check under feature
 # `qemu`: an uptime reading behind the previous one).
 reject := "--reject 'uptime went backwards'"
@@ -60,7 +79,7 @@ default:
 # build is the MULTIPROCESSOR kernel: `multiprocessor` is in `bsd`'s default features
 # (decision 40), so a feature list never names it.
 build-amd64 features="":
-    cargo build -p bsd --target {{amd64}} {{features}}
+    {{ if has_amd64 == "true" { "" } else { "echo 'build-amd64: amd64 SKIPPED (decision 44)' # " } }}cargo build -p bsd --target {{amd64}} {{features}}
 
 build-arm64 features="":
     cargo build -p bsd --target {{arm64}} {{features}}
@@ -68,7 +87,7 @@ build-arm64 features="":
 # The freestanding init(8) stand-in (init/), a static user ELF the image carries as a Limine
 # module (M6).
 build-init-amd64:
-    cargo build -p init --target {{amd64}}
+    {{ if has_amd64 == "true" { "" } else { "echo 'build-init-amd64: amd64 SKIPPED (decision 44)' # " } }}cargo build -p init --target {{amd64}}
 
 build-init-arm64:
     cargo build -p init --target {{arm64}}
@@ -80,7 +99,7 @@ build-init-arm64:
 # target/abi/<target>/debug/abi_openbsd, which `cargo xtask image` and the media put on the
 # boot medium as /abi_openbsd.ko. docs/ARCHITECTURE.md, "abi_openbsd.ko".
 build-abi-amd64:
-    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{amd64}} --target-dir target/abi
+    {{ if has_amd64 == "true" { "" } else { "echo 'build-abi-amd64: amd64 SKIPPED (decision 44)' # " } }}RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{amd64}} --target-dir target/abi
 
 build-abi-arm64:
     RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{arm64}} --target-dir target/abi
@@ -96,8 +115,8 @@ build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 efiboot-amd64 e
 # made a PE32+ image with `llvm-objcopy -O binary` (cargo xtask efiboot): target/efiboot/
 # amd64/BOOTX64.EFI. docs/ARCHITECTURE.md, "Boot loaders".
 efiboot-amd64:
-    RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-amd64 --target {{amd64}} --target-dir target/efiboot
-    cargo xtask efiboot --arch amd64 --elf target/efiboot/{{amd64}}/debug/bootx64
+    {{ if has_amd64 == "true" { "" } else { "echo 'efiboot-amd64: amd64 SKIPPED (decision 44)' # " } }}RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-amd64 --target {{amd64}} --target-dir target/efiboot
+    {{no_amd64}}cargo xtask efiboot --arch amd64 --elf target/efiboot/{{amd64}}/debug/bootx64
 
 # M14 track A3: arm64's BOOTAA64.EFI (sys/arch/arm64/stand/efiboot), built as amd64's:
 # target/efiboot/arm64/BOOTAA64.EFI, its PE header OpenBSD's own (`.peheader`, start.S).
@@ -3190,7 +3209,7 @@ userland:
 # MP kernel. Its files go to target/diff-openbsd unless EMIBSD_RUN_DIR says otherwise. Needs
 # `just userland`. Beside `ci`, not in it (timings in docs/ARCHITECTURE.md, "diff-openbsd").
 diff-openbsd: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
-    @test -f target/userland/amd64/root/usr/bin/difftest -a -f target/userland/arm64/root/usr/bin/difftest || \
+    @test {{ if has_amd64 == "true" { "-f target/userland/amd64/root/usr/bin/difftest" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/userland/arm64/root/usr/bin/difftest" } else { "" } }} || \
         { echo "diff-openbsd: no difftest in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/diff-openbsd} cargo xtask diff-openbsd {{smp4}}
 
@@ -3206,7 +3225,7 @@ diff-openbsd: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bu
 # `just userland` and the installed snapshot (`just diff-openbsd` once). Beside `ci`, not in it,
 # and run under the machine lock with nothing else on the Mac (docs/ARCHITECTURE.md, "bench").
 bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi
-    @test -f target/userland/amd64/root/usr/bin/bench -a -f target/userland/arm64/root/usr/bin/bench || \
+    @test {{ if has_amd64 == "true" { "-f target/userland/amd64/root/usr/bin/bench" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/userland/arm64/root/usr/bin/bench" } else { "" } }} || \
         { echo "bench: no bench in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench} cargo xtask bench {{smp4}}
 
@@ -3218,13 +3237,13 @@ bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-ini
 # Reports go to target/bench-release/<arch>/ unless EMIBSD_RUN_DIR says otherwise; ARGS go to
 # `cargo xtask bench` (`--arch amd64`, ...). Under the machine lock, as `bench`.
 build-release-amd64 features="":
-    cargo build -p bsd --release --target {{amd64}} {{features}}
+    {{ if has_amd64 == "true" { "" } else { "echo 'build-release-amd64: amd64 SKIPPED (decision 44)' # " } }}cargo build -p bsd --release --target {{amd64}} {{features}}
 
 build-release-arm64 features="":
     cargo build -p bsd --release --target {{arm64}} {{features}}
 
 bench-release *args: (build-release-amd64 "--features qemu") (build-release-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi
-    @test -f target/userland/amd64/root/usr/bin/bench -a -f target/userland/arm64/root/usr/bin/bench || \
+    @test {{ if has_amd64 == "true" { "-f target/userland/amd64/root/usr/bin/bench" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/userland/arm64/root/usr/bin/bench" } else { "" } }} || \
         { echo "bench-release: no bench in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench-release} cargo xtask bench {{smp4}} --profile release {{args}}
 
@@ -3305,19 +3324,19 @@ test-ref:
 # amd64 also with `viocon` (M16d), whose ioconf and cdevsw entries only that feature compiles.
 # Every build is the MULTIPROCESSOR kernel (a default feature since decision 40).
 clippy:
-    cargo clippy -p bsd --target {{amd64}} --features qemu -- -D warnings
+    {{ if has_amd64 == "true" { "" } else { "echo 'clippy: amd64 SKIPPED (decision 44)' # " } }}cargo clippy -p bsd --target {{amd64}} --features qemu -- -D warnings
     cargo clippy -p bsd --target {{arm64}} --features qemu -- -D warnings
-    cargo clippy -p bsd --target {{amd64}} --features qemu,viocon -- -D warnings
-    cargo clippy -p init --target {{amd64}} -- -D warnings
+    {{no_amd64}}cargo clippy -p bsd --target {{amd64}} --features qemu,viocon -- -D warnings
+    {{no_amd64}}cargo clippy -p init --target {{amd64}} -- -D warnings
     cargo clippy -p init --target {{arm64}} -- -D warnings
     cargo clippy -p libkern -p libz -p hal -p bsd -p xtask -- -D warnings
     cargo clippy -p hal --features diagnostic -- -D warnings
     cargo clippy -p libsa -p boot -p efi -- -D warnings
     cargo clippy -p libsa -p boot -p efi --target {{arm64}} -- -D warnings
-    cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
+    {{no_amd64}}cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
     cargo clippy -p efiboot-arm64 --target {{arm64}} -- -D warnings
     cargo clippy -p hal -p kernel -p abi -- -D warnings
-    cargo clippy -p abi_openbsd --target {{amd64}} -- -D warnings
+    {{no_amd64}}cargo clippy -p abi_openbsd --target {{amd64}} -- -D warnings
     cargo clippy -p abi_openbsd --target {{arm64}} -- -D warnings
 
 fmt:
@@ -3379,7 +3398,7 @@ miniroot_sectors := "65536"
 build-bsdrd: build-bsdrd-amd64 build-bsdrd-arm64
 
 build-bsdrd-amd64:
-    EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --target {{amd64}} --features qemu,miniroot --target-dir target/bsdrd
+    {{ if has_amd64 == "true" { "" } else { "echo 'build-bsdrd-amd64: amd64 SKIPPED (decision 44)' # " } }}EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --target {{amd64}} --features qemu,miniroot --target-dir target/bsdrd
 
 build-bsdrd-arm64:
     EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --target {{arm64}} --features qemu,miniroot --target-dir target/bsdrd
@@ -3387,8 +3406,8 @@ build-bsdrd-arm64:
 # The install media of one arch: the miniroot, `bsd.rd` and the signed sets, in
 # target/install/<arch> (`cargo xtask install-media`). Needs `just userland` and `just comp`.
 install-media-amd64: build-bsdrd-amd64 (build-amd64 "--features qemu") efiboot-amd64
-    @test -f target/comp/amd64/comp.ffs || { echo "install-media: no comp build; run just comp first"; exit 1; }
-    cargo xtask install-media --arch amd64 --rd-kernel target/bsdrd/{{amd64}}/debug/bsd --bsd target/{{amd64}}/debug/bsd
+    @{{ if has_amd64 == "true" { "" } else { "echo 'install-media-amd64: amd64 SKIPPED (decision 44)' # " } }}test -f target/comp/amd64/comp.ffs || { echo "install-media: no comp build; run just comp first"; exit 1; }
+    {{no_amd64}}cargo xtask install-media --arch amd64 --rd-kernel target/bsdrd/{{amd64}}/debug/bsd --bsd target/{{amd64}}/debug/bsd
 
 install-media-arm64: build-bsdrd-arm64 (build-arm64 "--features qemu") efiboot-arm64
     @test -f target/comp/arm64/comp.ffs || { echo "install-media: no comp build; run just comp first"; exit 1; }
@@ -3451,14 +3470,14 @@ smoke-install-boot-arm64-acpi:
 # El Torito catalogue whose EFI image holds efiboot), needs only `bsd.rd` and so no comp build:
 # `cd-iso` makes the miniroot and `bsd.rd` itself, as `install-media` does.
 install-img-amd64: install-media-amd64
-    cargo xtask install-img --arch amd64
+    {{ if has_amd64 == "true" { "" } else { "echo 'install-img-amd64: amd64 SKIPPED (decision 44)' # " } }}cargo xtask install-img --arch amd64
 
 install-img-arm64: install-media-arm64
     cargo xtask install-img --arch arm64
 
 cd-iso-amd64: build-bsdrd-amd64 efiboot-amd64
-    @test -x target/userland/amd64/host/bin/makefs || { echo "cd-iso: no makefs; run just userland first"; exit 1; }
-    cargo xtask cd-iso --arch amd64 --rd-kernel target/bsdrd/{{amd64}}/debug/bsd
+    @{{ if has_amd64 == "true" { "" } else { "echo 'cd-iso-amd64: amd64 SKIPPED (decision 44)' # " } }}test -x target/userland/amd64/host/bin/makefs || { echo "cd-iso: no makefs; run just userland first"; exit 1; }
+    {{no_amd64}}cargo xtask cd-iso --arch amd64 --rd-kernel target/bsdrd/{{amd64}}/debug/bsd
 
 # M16g's criterion, per arch: `install80.img` attached as a USB stick (its own qemu-xhci,
 # `bootindex=0`, QEMU writes to an overlay) and a fresh 2304 MB disk; the firmware boots
@@ -3505,6 +3524,6 @@ ci: fmt clippy test build smoke check-lineage check-drift check-unsafe check-hal
 # closing commit (.claude/rules/testing.md). `just jobs=N ci-full` passes N on.
 ci-full:
     EMIBSD_NCPU=4 {{quote(just_executable())}} jobs={{jobs}} ci
-    EMIBSD_NCPU=4 {{quote(just_executable())}} smoke-install-amd64 smoke-install-boot-amd64 \
+    EMIBSD_NCPU=4 {{quote(just_executable())}} {{ if has_amd64 == "true" { "smoke-install-amd64 smoke-install-boot-amd64 " } else { "" } }}\
         smoke-install-arm64 smoke-install-boot-arm64 smoke-install-arm64-acpi smoke-install-boot-arm64-acpi \
-        smoke-install80-amd64 smoke-install80-arm64
+        {{ if has_amd64 == "true" { "smoke-install80-amd64 " } else { "" } }}smoke-install80-arm64

@@ -58,6 +58,10 @@ arch-specific code, set `rust-analyzer.cargo.target` to one of the bare targets 
 - `qemu-system-x86_64`, `qemu-system-aarch64` on `PATH`.
 - EDK2 firmware and Limine binaries located via `brew --prefix qemu` / `brew --prefix limine`
   at runtime by `xtask` (no hardcoded paths).
+- `EMIBSD_ARCHS` (decision 44): the archs built and booted, `arm64` by default; an amd64 boot
+  is logged `SKIPPED (decision 44)`, never counted as a pass.
+- From N10, `EMIBSD_ARCHS=amd64,arm64 just <recipe>` (or `just archs=amd64,arm64 <recipe>`)
+  brings the amd64 recipes back as they are.
 
 ## Userland toolchain (M8)
 

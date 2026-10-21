@@ -2207,6 +2207,16 @@ user's plan). The shape is one build phase, then one run phase:
   The cause goes at the end of the log, with what `ps` showed of each process of the tree just
   before (state, CPU, wait channel, command), the recipe is reported `TIMEOUT` (a failure, its log
   printed with the others'), the other recipes go on, and `smoke-all` exits non-zero.
+- The architectures (decision 44, 2026-10-18; N4.0): `EMIBSD_ARCHS` (default `arm64`) names
+  the archs booted. `xtask smoke` and `smoke2` of a disabled arch print one line, `smoke:
+  amd64 SKIPPED (decision 44): EMIBSD_ARCHS=unset`, and exit 0 before they look at a kernel or
+  an image; the recipes and their amd64 expectations stay as they are. `smoke-all` counts
+  those lines in each recipe's log (`[N skipped]` beside the firmware-retry note); a recipe
+  that passed with no boot run is reported `SKIPPED` and is not counted as passed, and the
+  last line reads `P of T passed, S skipped (decision 44), B boot(s) skipped in ...`, the
+  skipped recipes named like the failed ones. The exit status is unchanged: only failures
+  fail. The watchdog's limit still counts the skipped boots of a recipe (a larger limit,
+  harmless). N10 runs with `EMIBSD_ARCHS=amd64,arm64`, which gives today's commands back.
 
 `JOBS=N just smoke` (or `just jobs=N smoke`, or `JOBS=N just ci`) picks another N; `JOBS=1`
 runs the recipes one after the other, still each in its own directory.
