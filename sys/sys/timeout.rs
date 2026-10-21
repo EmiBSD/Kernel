@@ -328,7 +328,7 @@ fn timeout_pool() -> &'static TypedPool<Node> {
 
 /// The node at `owner`'s address: the registry's, or a new one inserted (never given back).
 fn node_at(owner: usize) -> &'static Node {
-    let find = |t: &Tree<ByOwner>| t.find_by(|n| n.owner.cmp(&owner));
+    let find = |t: &Tree<ByOwner>| t.find_by(|n| owner.cmp(&n.owner));
     if let Some(n) = find(&REGISTRY.lock()) {
         return n;
     }
