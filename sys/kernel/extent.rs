@@ -117,12 +117,19 @@
 //!   records of `Cell`s linked by `queue.h` lists in `unsafe` blocks, the descriptors pool items
 //!   and storage bytes handed out as `&'static`, a fixed extent found by casting the extent
 //!   back to its storage, `extent_destroy` and the `*_with_descr` functions `unsafe fn`s with
-//!   the caller's promises. Now the regions are a `hal::owned::OwnedTree` ordered by start, which
-//!   owns each descriptor as its `PoolBox` and gives it back when the region goes (a freed
-//!   descriptor cannot stay linked), and a fixed extent's freelist an `OwnedList` of the same
-//!   boxes. The C's walks of the sorted list keep their order; a region is inserted by its
-//!   start where the C inserts after `last`, and a coalesced region's start or end moves in
-//!   place without changing the order.
+//!   the caller's promises. Now the regions are a `hal::owned::OwnedTree` ordered by start,
+//!   then end, then the descriptor's address, which owns each descriptor as its `PoolBox` and
+//!   gives it back when the region goes (a freed descriptor cannot stay linked), and a fixed
+//!   extent's freelist an `OwnedList` of the same boxes. The C's walks of the sorted list keep
+//!   their order, two regions with one start included (the `EX_CONFLICTOK` case-1 quirk's
+//!   `[s, s - 1]` before `[s, e]`, where the C's `LIST_INSERT_AFTER(last)` puts it; equal
+//!   regions, which no walk tells apart, by address where the C puts the newest first); a
+//!   region is inserted by its key where the C inserts after `last`, and a coalesced or freed
+//!   region's start or end moves in place without changing the order. The walks act on the
+//!   region in hand (its fields are atomics written under the lock): the coalescing of
+//!   `extent_insert_and_optimize` on the region the walk held and its successor, the cases of
+//!   `extent_free` on the region found; a removal or an insertion follows once the walk's
+//!   borrow has ended, by the region's exact key.
 //! - The extent's mutable state (its regions, the freelist, `EXF_WANTED` and `EXF_FLWANTED`)
 //!   is inside a `hal::mutex::Mutexed` at `IPL_VM`, the descriptors' pool's level; the C has no
 //!   lock (its callers serialise; the IOMMUs take a mutex around it). `EXF_FIXED` and
@@ -254,9 +261,35 @@ impl ExtentRegion {
     }
 }
 
+/// A region's place in the region tree: its start, then its end, then its descriptor's
+/// address. Two regions may share a start (the `EX_CONFLICTOK` case-1 quirk inserts `[s, s -
+/// 1]` before a region that starts at `s`, in an `EX_NOCOALESCE` extent, as the C's list
+/// admits); the address tells apart two that share both, which no walk can tell apart.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct RKey {
+    start: u64,
+    end: u64,
+    at: usize,
+}
+
+impl RKey {
+    /// `r`'s key now (its start and end move in place: see [`ExtentRegionList`]).
+    fn of(r: &ExtentRegion) -> Self {
+        Self {
+            start: r.start(),
+            end: r.end(),
+            at: ptr::from_ref(r).addr(),
+        }
+    }
+}
+
 hal::owned_adapter!(
-    /// `LIST_HEAD(, extent_region)`: the regions by start, and the freelist.
-    pub ExtentRegionList: ExtentRegion, er_link, |a, b| a.start().cmp(&b.start())
+    /// `LIST_HEAD(, extent_region)`: the regions by ([`RKey`]) start, end and address, and the
+    /// freelist. A start or end moved in place keeps the order: a coalesced or freed region
+    /// moves within the gap its neighbours leave, and where two regions share a start (only in
+    /// an `EX_NOCOALESCE` extent, which moves nothing in place) the quirk's `[s, s - 1]` sorts
+    /// before the region `[s, e]`, `e >= s`, as the C's list has them.
+    pub ExtentRegionList: ExtentRegion, er_link, |a, b| RKey::of(a).cmp(&RKey::of(b))
 );
 
 /// A caller's region descriptor, made in advance ([`descr`]) and given to the extent by the
@@ -349,7 +382,7 @@ impl Extent {
     /// extents; it is empty and unregistered afterwards.
     pub fn destroy(&self) {
         let mut g = self.st.lock();
-        while let Some(k) = g.regions.min().map(ExtentRegion::start) {
+        while let Some(k) = g.regions.min().map(RKey::of) {
             let Some(rp) = take(&mut g, k) else {
                 break;
             };
@@ -623,28 +656,49 @@ struct Req {
 }
 
 /// The end of `extent_do_alloc`'s search.
-enum Fit {
-    /// `found`: insert at this start, after the region of this start (`None`: first).
-    Found(u64, Option<u64>),
+enum Fit<'r> {
+    /// `found`: insert at this start, after this region (`None`: first).
+    Found(u64, Option<&'r ExtentRegion>),
     /// `fail`: no exact (or, with `EX_FAST`, first) fit.
     Fail,
 }
 
+/// What `extent_insert_and_optimize`'s coalescing ([`coalesce`]) leaves to the tree.
+enum Coalesced {
+    /// Merged with a neighbour: the new descriptor is not needed.
+    Merged,
+    /// Merged with both neighbours, filling the gap: the next region's descriptor goes too.
+    MergedTakeNext(RKey),
+    /// Not merged: the new descriptor is filled and linked.
+    Insert,
+}
+
 /// Where `extent_do_alloc_region`'s walk of the regions ended.
 enum Placed {
-    /// No conflict: insert after the region of this start (`None`: first).
-    Insert(Option<u64>),
+    /// No conflict: the coalescing done on the regions in hand, and what is left.
+    Insert(Coalesced),
     /// A conflict, and `EX_WAITSPACE`: sleep and try again.
     Sleep,
     /// `EX_CONFLICTOK`: try again with this range (cases 1 and 3).
     Retry(u64, u64),
-    /// `EX_CONFLICTOK`: the region of this start lies inside the request; free it and try
-    /// again (case 2).
-    Drop(u64),
+    /// `EX_CONFLICTOK`: this region lies inside the request; free it and try again (case 2).
+    Drop(RKey),
     /// `EX_CONFLICTOK`: the request lies inside an allocated region (case 4).
     Covered,
     /// A conflict: `EAGAIN`.
     Conflict,
+}
+
+/// What `extent_free`'s walk of the regions left to the tree.
+enum Freed {
+    /// Nothing (done in place, or not found).
+    Walked,
+    /// Case 1: this region goes.
+    Take(RKey),
+    /// Case 4: the new region `[end + 1, er_end]` is linked.
+    Insert(PoolBox<ExtentRegion>),
+    /// Case 1a: this region goes and the walk goes on.
+    TakeAndGoOn(RKey),
 }
 
 /// An extent's name as the C prints it (`%s`, without the NUL).
@@ -786,94 +840,108 @@ pub fn extent_destroy(ex: ExtentRef) {
     drop(ex);
 }
 
-/// The region of start `key`, taken off the tree.
-fn take(g: &mut MutexedGuard<'_, ExState>, key: u64) -> Option<PoolBox<ExtentRegion>> {
-    g.regions.take_by(|r| key.cmp(&r.start()))
+/// The region of key `key` (the one the caller had in hand, under the same lock), taken off
+/// the tree.
+fn take(g: &mut MutexedGuard<'_, ExState>, key: RKey) -> Option<PoolBox<ExtentRegion>> {
+    g.regions.take_by(|r| key.cmp(&RKey::of(r)))
 }
 
-/// The region of start `key`; it is there (the caller found it under the same lock).
-fn region(t: &OwnedTree<ExtentRegionList>, key: u64) -> &ExtentRegion {
-    match t.find_by(|r| key.cmp(&r.start())) {
-        Some(r) => r,
-        None => kpanic(format_args!("extent: no region at 0x{key:x}")),
-    }
-}
-
-/// `rp` linked in the region tree; two regions never start at one place.
+/// `rp` linked in the region tree. Keys are unique (the descriptor's address is part of
+/// them), so an equal key is the same descriptor linked twice, which its `PoolBox` rules
+/// out: never seen.
 fn insert(g: &mut MutexedGuard<'_, ExState>, rp: PoolBox<ExtentRegion>) {
     let at = rp.start();
     if g.regions.insert(rp).is_some() {
-        kpanic(format_args!("extent: two regions at 0x{at:x}"));
+        kpanic(format_args!("extent: a region at 0x{at:x} linked twice"));
     }
 }
 
-/// `extent_insert_and_optimize(ex, start, size, after, rp)`: the region `[start, start +
-/// size - 1]` after the region of start `after` (`None`: at the head), coalesced with its
-/// neighbours when allowed; `rp` is freed when it is not needed.
+/// `extent_insert_and_optimize`'s coalescing, on the regions in hand: `[start, start + size -
+/// 1]` goes after `after` (`None`: at the head) and is merged with its neighbours when the
+/// extent allows it, their start or end moved in place (one pointer step, as the C's: the
+/// region before is the one the caller's walk held, the one after its successor); what is
+/// left for the tree, which the caller does once the walk's borrow has ended
+/// ([`extent_insert_and_optimize`]).
+fn coalesce(
+    ex: &Extent,
+    regions: &OwnedTree<ExtentRegionList>,
+    start: u64,
+    size: u64,
+    after: Option<&ExtentRegion>,
+) -> Coalesced {
+    if ex.nocoalesce {
+        return Coalesced::Insert;
+    }
+    let end = start.wrapping_add(size.wrapping_sub(1));
+    match after {
+        None => {
+            // We're the first in the region list. If there's a region after us, attempt to
+            // coalesce to save descriptor overhead.
+            if let Some(first) = regions.min()
+                && start.wrapping_add(size) == first.start()
+            {
+                // We can coalesce. Prepend us to the first region.
+                first.set_start(start);
+                return Coalesced::Merged;
+            }
+        }
+        Some(a) => {
+            // Attempt to coalesce with the region before us, then with the one after.
+            let next = regions.next(a);
+            let appended = a.end().wrapping_add(1) == start;
+            if appended {
+                // We can coalesce. Append ourselves and make note of it.
+                a.set_end(end);
+            }
+            if let Some(n) = next
+                && start.wrapping_add(size) == n.start()
+            {
+                if appended {
+                    // We exactly fit the gap: the "next" region's descriptor goes.
+                    a.set_end(n.end());
+                    return Coalesced::MergedTakeNext(RKey::of(n));
+                }
+                // Just prepend us to the next region.
+                n.set_start(start);
+                return Coalesced::Merged;
+            }
+            // We don't need a region descriptor if we appended ourselves to the previous
+            // region.
+            if appended {
+                return Coalesced::Merged;
+            }
+        }
+    }
+    Coalesced::Insert
+}
+
+/// `extent_insert_and_optimize(ex, start, size, after, rp)`, the tree's part once
+/// [`coalesce`] has merged what it could: `rp` freed when it is not needed, or filled with
+/// `[start, start + size - 1]` and linked (`LIST_INSERT_AFTER(after)`: the key puts it where
+/// the C's list has it).
 fn extent_insert_and_optimize(
     ex: &Extent,
     g: &mut MutexedGuard<'_, ExState>,
     start: u64,
     size: u64,
-    after: Option<u64>,
+    c: Coalesced,
     rp: PoolBox<ExtentRegion>,
 ) {
-    let end = start.wrapping_add(size.wrapping_sub(1));
-    if !ex.nocoalesce {
-        match after {
-            None => {
-                // We're the first in the region list. If there's a region after us, attempt
-                // to coalesce to save descriptor overhead.
-                if let Some(first) = g.regions.min()
-                    && start.wrapping_add(size) == first.start()
-                {
-                    // We can coalesce. Prepend us to the first region.
-                    first.set_start(start);
-                    extent_free_region_descriptor(ex, g, rp);
-                    return;
-                }
+    match c {
+        Coalesced::Merged => extent_free_region_descriptor(ex, g, rp),
+        Coalesced::MergedTakeNext(next) => {
+            if let Some(nextr) = take(g, next) {
+                extent_free_region_descriptor(ex, g, nextr);
             }
-            Some(akey) => {
-                // Attempt to coalesce with the region before us, then with the one after.
-                let (appended, next) = {
-                    let a = region(&g.regions, akey);
-                    let appended = a.end().wrapping_add(1) == start;
-                    if appended {
-                        // We can coalesce. Append ourselves and make note of it.
-                        a.set_end(end);
-                    }
-                    (appended, g.regions.next(a).map(|n| (n.start(), n.end())))
-                };
-                if let Some((nstart, nend)) = next
-                    && start.wrapping_add(size) == nstart
-                {
-                    if appended {
-                        // We exactly fit the gap: the "next" region's descriptor goes.
-                        region(&g.regions, akey).set_end(nend);
-                        if let Some(nextr) = take(g, nstart) {
-                            extent_free_region_descriptor(ex, g, nextr);
-                        }
-                    } else {
-                        // Just prepend us to the next region.
-                        region(&g.regions, nstart).set_start(start);
-                    }
-                    extent_free_region_descriptor(ex, g, rp);
-                    return;
-                }
-                // We don't need a region descriptor if we appended ourselves to the previous
-                // region.
-                if appended {
-                    extent_free_region_descriptor(ex, g, rp);
-                    return;
-                }
-            }
+            extent_free_region_descriptor(ex, g, rp);
+        }
+        Coalesced::Insert => {
+            // cant_coalesce: fill in the region descriptor and insert ourselves.
+            rp.set_start(start);
+            rp.set_end(start.wrapping_add(size.wrapping_sub(1)));
+            insert(g, rp);
         }
     }
-
-    // cant_coalesce: fill in the region descriptor and insert ourselves.
-    rp.set_start(start);
-    rp.set_end(end);
-    insert(g, rp);
 }
 
 /// The sleep `EX_WAITSPACE` (and a fixed extent's empty freelist) takes on the extent's
@@ -949,7 +1017,7 @@ fn extent_do_alloc_region(
         // regions are sorted: once one starts past our end, there is nothing more to look at.
         // "last" is the region we fall after, `None` at the head.
         let placed = 'walk: {
-            let mut last = None;
+            let mut last: Option<&ExtentRegion> = None;
             for rp in g.regions.iter() {
                 if rp.start() > end {
                     // We lie before this region and don't conflict.
@@ -974,22 +1042,23 @@ fn extent_do_alloc_region(
                             break 'walk Placed::Retry(rp.end() + 1, end);
                         }
                     } else if rp.end() < end {
-                        break 'walk Placed::Drop(rp.start());
+                        break 'walk Placed::Drop(RKey::of(rp));
                     } else if rp.start() < end && rp.start() > ex.ex_start {
                         break 'walk Placed::Retry(start, rp.start() - 1);
                     }
                     break 'walk Placed::Covered;
                 }
                 // We don't conflict, but this region lies before us.
-                last = Some(rp.start());
+                last = Some(rp);
             }
-            Placed::Insert(last)
+            // We don't conflict with any regions: insert ourselves after "last" (the
+            // coalescing on the regions in hand, the tree's part below).
+            Placed::Insert(coalesce(ex, &g.regions, start, size, last))
         };
 
         match placed {
-            Placed::Insert(last) => {
-                // We don't conflict with any regions: insert ourselves after "last".
-                extent_insert_and_optimize(ex, g, start, size, last, myrp);
+            Placed::Insert(c) => {
+                extent_insert_and_optimize(ex, g, start, size, c, myrp);
                 return Ok(());
             }
             Placed::Sleep => {
@@ -1126,10 +1195,10 @@ fn extent_do_alloc(
         // fit in so far: its overhead ("bestovh", 0 for none: an exact match is inserted at
         // once), start and "last". "exend" is the end of the free region: the end of the
         // extent or the start of a region past the subend.
-        let mut last: Option<u64> = None;
+        let mut last: Option<&ExtentRegion> = None;
         let mut bestovh: u64 = 0;
         let mut beststart: u64 = 0;
-        let mut bestlast: Option<u64> = None;
+        let mut bestlast: Option<&ExtentRegion> = None;
         let mut exend = ex.ex_end;
 
         // For N allocated regions, we must make (N + 1) checks for unallocated space. The
@@ -1158,7 +1227,7 @@ fn extent_do_alloc(
             let mut it = regions.iter().peekable();
             let mut last_end = None;
             while let Some(r) = it.next_if(|r| r.start() < newstart) {
-                last = Some(r.start());
+                last = Some(r);
                 last_end = Some(r.end());
             }
             let mut rp = it.next();
@@ -1221,7 +1290,7 @@ fn extent_do_alloc(
                     break 'scan Fit::Fail;
                 }
 
-                last = Some(r.start());
+                last = Some(r);
                 rp = it.next();
             }
 
@@ -1285,8 +1354,9 @@ fn extent_do_alloc(
             }
         };
 
-        // found: insert ourselves into the region list.
-        extent_insert_and_optimize(ex, g, start, size, after, myrp);
+        // found: insert ourselves into the region list (after "last", the region in hand).
+        let c = coalesce(ex, &g.regions, start, size, after);
+        extent_insert_and_optimize(ex, g, start, size, c, myrp);
         return Ok(start);
     }
 }
@@ -1334,98 +1404,104 @@ fn extent_free(ex: &Extent, start: u64, size: u64, flags: i32) -> Result<(), Err
     // EX_CONFLICTOK allows partially overlapping regions: cases 1a, 2a and 3a below.
     let mut g = ex.st.lock();
     let mut done = false;
-    // The first region that does not end before the chunk begins (the C's walk skips the
-    // others with a `continue`).
-    let mut cur = g
-        .regions
-        .iter()
-        .find(|r| r.end() >= start)
-        .map(ExtentRegion::start);
-    while let Some(k) = cur {
-        let (rs, re, next) = {
-            let r = region(&g.regions, k);
-            (
-                r.start(),
-                r.end(),
-                g.regions.next(r).map(ExtentRegion::start),
-            )
+    loop {
+        // One walk of the regions in order, acting on the region in hand: cases 2 to 4, 2a and
+        // 3a move its start or end in place; what changes the tree (case 1's or 1a's removal,
+        // case 4's new region) is done once the walk's borrow has ended.
+        let act = 'walk: {
+            for r in g.regions.iter() {
+                let (rs, re) = (r.start(), r.end());
+
+                // Does the current region end before the chunk to be freed begins?
+                if re < start {
+                    continue;
+                }
+                // Does it begin after the chunk ends? Then we've passed every region that
+                // might hold it.
+                if rs > end {
+                    break;
+                }
+
+                // Case 1.
+                if start == rs && end == re {
+                    done = true;
+                    break 'walk Freed::Take(RKey::of(r));
+                }
+
+                // The following cases all require that EXF_NOCOALESCE is not set.
+                if ex.nocoalesce {
+                    continue;
+                }
+
+                // Case 2.
+                if start == rs && end < re {
+                    r.set_start(end + 1);
+                    done = true;
+                    break 'walk Freed::Walked;
+                }
+
+                // Case 3.
+                if start > rs && end == re {
+                    r.set_end(start - 1);
+                    done = true;
+                    break 'walk Freed::Walked;
+                }
+
+                // Case 4.
+                if start > rs
+                    && end < re
+                    && let Some(n) = nrp.take()
+                {
+                    // Fill in the new descriptor, adjust the current one, insert the new one
+                    // after it; we used the new descriptor, so don't free it below.
+                    n.set_start(end + 1);
+                    n.set_end(re);
+                    r.set_end(start - 1);
+                    done = true;
+                    break 'walk Freed::Insert(n);
+                }
+
+                if flags & EX_CONFLICTOK == 0 {
+                    continue;
+                }
+
+                // Case 1a: the region goes, and the walk goes on.
+                if start <= rs && end >= re {
+                    break 'walk Freed::TakeAndGoOn(RKey::of(r));
+                }
+
+                // Case 2a.
+                if start <= rs && end >= rs {
+                    r.set_start(end.wrapping_add(1));
+                }
+
+                // Case 3a.
+                if start <= r.end() && end >= r.end() {
+                    r.set_end(start.wrapping_sub(1));
+                }
+            }
+            Freed::Walked
         };
-        cur = next;
-
-        // Does the current region end before the chunk to be freed begins?
-        if re < start {
-            continue;
-        }
-        // Does it begin after the chunk ends? Then we've passed every region that might
-        // hold it.
-        if rs > end {
-            break;
-        }
-
-        // Case 1.
-        if start == rs && end == re {
-            if let Some(rp) = take(&mut g, k) {
-                extent_free_region_descriptor(ex, &mut g, rp);
+        match act {
+            Freed::Walked => break,
+            Freed::Take(k) => {
+                if let Some(rp) = take(&mut g, k) {
+                    extent_free_region_descriptor(ex, &mut g, rp);
+                }
+                break;
             }
-            done = true;
-            break;
-        }
-
-        // The following cases all require that EXF_NOCOALESCE is not set.
-        if ex.nocoalesce {
-            continue;
-        }
-
-        // Case 2.
-        if start == rs && end < re {
-            region(&g.regions, k).set_start(end + 1);
-            done = true;
-            break;
-        }
-
-        // Case 3.
-        if start > rs && end == re {
-            region(&g.regions, k).set_end(start - 1);
-            done = true;
-            break;
-        }
-
-        // Case 4.
-        if start > rs
-            && end < re
-            && let Some(n) = nrp.take()
-        {
-            // Fill in the new descriptor, adjust the current one, insert the new one after
-            // it; we used the new descriptor, so don't free it below.
-            n.set_start(end + 1);
-            n.set_end(re);
-            region(&g.regions, k).set_end(start - 1);
-            insert(&mut g, n);
-            done = true;
-            break;
-        }
-
-        if flags & EX_CONFLICTOK == 0 {
-            continue;
-        }
-
-        // Case 1a.
-        if start <= rs && end >= re {
-            if let Some(rp) = take(&mut g, k) {
-                extent_free_region_descriptor(ex, &mut g, rp);
+            Freed::Insert(n) => {
+                insert(&mut g, n);
+                break;
             }
-            continue;
-        }
-
-        // Case 2a.
-        let r = region(&g.regions, k);
-        if start <= r.start() && end >= r.start() {
-            r.set_start(end.wrapping_add(1));
-        }
-
-        // Case 3a.
-        if start <= r.end() && end >= r.end() {
-            r.set_end(start.wrapping_sub(1));
+            Freed::TakeAndGoOn(k) => {
+                // The C's walk goes on from the next region; walking again from the head
+                // reaches it after the same regions, each of which the walk left ending
+                // before the chunk (3a) or starting past it (2a, the last it can touch).
+                if let Some(rp) = take(&mut g, k) {
+                    extent_free_region_descriptor(ex, &mut g, rp);
+                }
+            }
         }
     }
 
@@ -1719,6 +1795,52 @@ mod tests {
     }
 
     #[test]
+    fn conflictok_case1_quirk_admits_a_region_at_a_taken_start() {
+        let _g = setup();
+        // The C's case 1 restarts at the conflicting region's end + 1 with the request's end
+        // unchanged: here `[0x2000, 0x1fff]`, inserted after the first region, before the one
+        // that starts at 0x2000 (subr_extent.c's list admits both; the C returns 0).
+        let ex = new_extent(0, 0xffff, EX_NOCOALESCE);
+        assert_eq!(ex.alloc_region(0x1000, 0x1000, EX_NOWAIT), Ok(()));
+        assert_eq!(ex.alloc_region(0x2000, 0x1000, EX_NOWAIT), Ok(()));
+        assert_eq!(
+            ex.alloc_region(0x1000, 0x1000, EX_NOWAIT | EX_CONFLICTOK),
+            Ok(())
+        );
+        assert_eq!(
+            regions(&ex),
+            [(0x1000, 0x1fff), (0x2000, 0x1fff), (0x2000, 0x2fff)]
+        );
+        // Twice (an SMMU window reserved for two requester IDs): two equal regions, which
+        // no walk tells apart.
+        assert_eq!(
+            ex.alloc_region(0x1000, 0x1000, EX_NOWAIT | EX_CONFLICTOK),
+            Ok(())
+        );
+        assert_eq!(
+            regions(&ex),
+            [
+                (0x1000, 0x1fff),
+                (0x2000, 0x1fff),
+                (0x2000, 0x1fff),
+                (0x2000, 0x2fff)
+            ]
+        );
+        // The region that shares their start is freed alone (case 1, the region in hand).
+        let out = extentpl_nout();
+        assert_eq!(ex.free(0x2000, 0x1000, EX_NOWAIT), Ok(()));
+        assert_eq!(
+            regions(&ex),
+            [(0x1000, 0x1fff), (0x2000, 0x1fff), (0x2000, 0x1fff)]
+        );
+        assert_eq!(extentpl_nout(), out - 1);
+        // And placed again after them.
+        assert_eq!(ex.alloc_region(0x2000, 0x1000, EX_NOWAIT), Ok(()));
+        assert_eq!(regions(&ex).last(), Some(&(0x2000, 0x2fff)));
+        assert_eq!(ex.alloc_region(0x2800, 0x10, EX_NOWAIT), Err(Errno::EAGAIN));
+    }
+
+    #[test]
     fn alloc_best_fit_and_first_fit() {
         let _g = setup();
         let ex = new_extent(0, 0xff, 0);
@@ -1812,6 +1934,12 @@ mod tests {
         // Nothing there at all is fine with EX_CONFLICTOK.
         assert_eq!(ex.free(0x0, 0x10, EX_NOWAIT | EX_CONFLICTOK), Ok(()));
         assert_eq!(regions(&ex), [(0x68, 0x6f)]);
+        // 3a, then 1a twice: the walk goes on past each region it frees.
+        assert_eq!(ex.alloc_region(0x10, 0x10, EX_NOWAIT), Ok(()));
+        assert_eq!(ex.alloc_region(0x30, 0x10, EX_NOWAIT), Ok(()));
+        assert_eq!(ex.alloc_region(0x50, 0x10, EX_NOWAIT), Ok(()));
+        assert_eq!(ex.free(0x14, 0x5c, EX_NOWAIT | EX_CONFLICTOK), Ok(()));
+        assert_eq!(regions(&ex), [(0x10, 0x13)]);
     }
 
     #[test]
