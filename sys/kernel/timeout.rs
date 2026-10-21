@@ -819,9 +819,9 @@ pub fn hardclock_update() {
     let now = clock::nanouptime();
     let lastscan = g.kclock[KCLOCK_UPTIME as usize].lastscan;
     let elapsed = now.sub(lastscan);
-    for level in 0..WHEELCOUNT {
+    for (level, &width) in TIMEOUT_LEVEL_WIDTH.iter().enumerate() {
         let first = timeout_maskwheel(level as u32, &lastscan) as usize;
-        let (last, done) = if elapsed.tv_sec >= TIMEOUT_LEVEL_WIDTH[level] {
+        let (last, done) = if elapsed.tv_sec >= width {
             (if first == 0 { WHEELSIZE - 1 } else { first - 1 }, false)
         } else {
             let last = timeout_maskwheel(level as u32, &now) as usize;

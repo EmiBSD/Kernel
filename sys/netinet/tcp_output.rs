@@ -1663,7 +1663,7 @@ mod tests {
 
     /// The ticks `tcp_timer_arm` asked for `msec` (`timeout_add_ticks` adds one).
     fn persist_ticks(tp: &Tcpcb) -> i32 {
-        tp.t_timer[TCPT_PERSIST].to_time.get().wrapping_sub(ticks())
+        tp.t_timer[TCPT_PERSIST].to_time().wrapping_sub(ticks())
     }
 
     fn ticks_for(msec: i32) -> i32 {

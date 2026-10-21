@@ -72,7 +72,9 @@ pub mod kern_sysctl;
 pub use crate::sys::task as kern_task;
 pub mod kern_tc;
 pub mod kern_time;
-pub mod kern_timeout;
+// timeout(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/timeout.rs`,
+// still reached at this path by its callers.
+pub use crate::sys::timeout as kern_timeout;
 pub mod kern_unveil;
 pub mod kern_watchdog;
 pub mod kern_xxx;
