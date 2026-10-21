@@ -90,12 +90,13 @@ use core::ffi::c_void;
 use core::ops::Deref;
 use core::pin::Pin;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use hal::intr::{IPL_HIGH, IPL_NONE};
 use hal::mutex::Mutexed;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::rwlock::Rwlocked;
 use hal::sleep::{INFSLP, PWAIT};
 
 use crate::assert::kpanic;
@@ -302,13 +303,30 @@ pub static SYSTQMP: Taskq = Taskq::new(b"systqmp", 1, IPL_HIGH, TASKQ_MPSAFE);
 /// The pool of created queues, `taskqpl` (decision 4: their `malloc(M_DEVBUF)` blocks move to
 /// a pool row of their own).
 static TASKQ_POOL: TypedPool<Taskq> = TypedPool::new();
+/// Whether [`TASKQ_POOL`] is made.
+static TASKQ_POOL_MADE: AtomicBool = AtomicBool::new(false);
+/// Serialises the making of [`TASKQ_POOL`] (a sleeping lock: `pool_init` may sleep), once.
+static TASKQ_POOL_INIT: Rwlocked<()> = Rwlocked::new("taskqpl", ());
+
+/// [`TASKQ_POOL`], made at its first need: `taskq_init`, or a `taskq_create` before it (the
+/// C's `malloc` needs no `taskq_init`; the host tests create queues without `main`).
+fn taskq_pool() -> &'static TypedPool<Taskq> {
+    if !TASKQ_POOL_MADE.load(Ordering::Acquire) {
+        let _w = TASKQ_POOL_INIT.write();
+        if !TASKQ_POOL_MADE.load(Ordering::Relaxed) {
+            if TASKQ_POOL.init(IPL_NONE, PR_WAITOK, "taskqpl").is_err() {
+                kpanic(format_args!("taskq_init: cannot make taskqpl"));
+            }
+            TASKQ_POOL_MADE.store(true, Ordering::Release);
+        }
+    }
+    &TASKQ_POOL
+}
 
 /// `taskq_init()` (called by `main`): the system queues' thread creations deferred until
 /// threads can be made; the pool of created queues made.
 pub fn taskq_init() {
-    if TASKQ_POOL.init(IPL_NONE, PR_WAITOK, "taskqpl").is_err() {
-        kpanic(format_args!("taskq_init: cannot make taskqpl"));
-    }
+    taskq_pool();
     // WITNESS_INIT: not configured.
     thread::create_deferred(Start::TaskqCreate(TqHandle::Sys(&SYSTQ)));
     thread::create_deferred(Start::TaskqCreate(TqHandle::Sys(&SYSTQMP)));
@@ -316,9 +334,9 @@ pub fn taskq_init() {
 
 /// `taskq_create(name, nthreads, ipl, flags)`: a queue whose `nthreads` threads are made as
 /// soon as threads can be (`kthread_create_deferred`). `None` only where the C's `malloc`
-/// returns `NULL` (never with `M_WAITOK`) or before `taskq_init`.
+/// returns `NULL` (never with `M_WAITOK`).
 pub fn taskq_create(name: &'static [u8], nthreads: u32, ipl: i32, flags: u32) -> Option<TaskqRef> {
-    let tq = TASKQ_POOL.get_shared(PR_WAITOK, || Taskq::new(name, nthreads, ipl, flags))?;
+    let tq = taskq_pool().get_shared(PR_WAITOK, || Taskq::new(name, nthreads, ipl, flags))?;
     // WITNESS: not configured.
 
     // try to create a thread to guarantee that tasks will be serviced
@@ -829,7 +847,7 @@ mod tests {
     fn a_queue_destroyed_before_its_threads_makes_none() {
         init();
         // The thread double runs a deferred creation at once: destroy first, by hand.
-        let tq = TASKQ_POOL
+        let tq = taskq_pool()
             .get_shared(PR_WAITOK, || Taskq::new(b"tqdead", 1, IPL_NONE, 0))
             .expect("a queue");
         let creator = TqHandle::Made(tq.clone());
