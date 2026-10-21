@@ -87,6 +87,10 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
+// `ticks` and its reader live in the kernel crate (N4.1: timeout(9)'s wheel reads and moves
+// them there); re-exported under their names for `hardclock` and the readers of this path.
+pub use kernel::clock::{TICKS, ticks};
+
 use crate::conf::param::{HZ, TICK};
 use crate::kassert;
 use crate::kern::kern_clockintr::{clockrequest_advance, clockrequest_advance_random};
@@ -113,8 +117,6 @@ pub static STATHZ: AtomicI32 = AtomicI32::new(0);
 pub static PROFHZ: AtomicI32 = AtomicI32::new(0);
 /// `profprocs`: the number of processes being profiled.
 pub static PROFPROCS: AtomicI32 = AtomicI32::new(0);
-/// `ticks`: the number of hardclock ticks, started close to wrapping.
-pub static TICKS: AtomicI32 = AtomicI32::new(i32::MAX - (15 * 60 * crate::sys::kernel::HZ));
 
 /// `jiffies` (volatile): don't force early wrap around, triggers bug in inteldrm.
 pub static JIFFIES: AtomicU64 = AtomicU64::new(0);
@@ -129,11 +131,6 @@ pub static STATCLOCK_MIN: AtomicU64 = AtomicU64::new(0);
 pub static STATCLOCK_MASK: AtomicU32 = AtomicU32::new(0);
 /// \[I\] `statclock_is_randomized`: fixed or pseudorandom period?
 pub static STATCLOCK_IS_RANDOMIZED: AtomicBool = AtomicBool::new(false);
-
-/// `ticks`.
-pub fn ticks() -> i32 {
-    TICKS.load(Ordering::Relaxed)
-}
 
 /// `hardclock_period`.
 pub fn hardclock_period() -> u64 {

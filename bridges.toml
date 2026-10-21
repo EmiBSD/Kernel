@@ -175,6 +175,16 @@ paid_by = "N7"
 # with kern_lock.
 # hal::klock::KernelLock
 [[bridge]]
+trait = "Kthread"
+for = ["sys/kernel/thread.rs"]
+paid_by = "N4"
+
+[[bridge]]
+trait = "Uptime"
+for = ["sys/kernel/clock.rs"]
+paid_by = "N4"
+
+[[bridge]]
 trait = "SoftIntr"
 for = ["sys/hal/softintr.rs"]
 paid_by = "N4"

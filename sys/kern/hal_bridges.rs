@@ -57,7 +57,9 @@ use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
+use crate::kern::kern_kthread::{kthread_create, kthread_create_deferred, kthread_exit};
 use crate::kern::kern_malloc::{free, malloc};
+use crate::kern::kern_sched::sched_peg_curproc;
 use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
@@ -65,7 +67,7 @@ use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, poo
 use crate::kern::subr_prf::{panicstr, printf};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
-use crate::machine::cpu::{Cpu, cpu_number, curcpu, curproc};
+use crate::machine::cpu::{Cpu, cpu_info_foreach, cpu_number, curcpu, curproc};
 use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splhigh, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::mutex::mtx_curcpu;
@@ -537,6 +539,66 @@ impl hal::softintr::SoftIntr for BsdSoftIntr {
 
 static BSD_SOFTINTR: BsdSoftIntr = BsdSoftIntr;
 
+/// The kernel crate's uptime clock (`kernel::clock::Uptime`) over `nanouptime` of
+/// `sys/kern/kern_tc.rs`, the userland-shaped `Timespec` turned into the kernel's.
+struct BsdUptime;
+
+impl kernel::clock::Uptime for BsdUptime {
+    fn nanouptime(&self) -> kernel::clock::Timespec {
+        let ts = crate::kern::kern_tc::nanouptime();
+        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
+    }
+}
+
+static BSD_UPTIME: BsdUptime = BsdUptime;
+
+/// The kernel crate's threads (`kernel::thread::Kthread`) over `kthread_create`,
+/// `kthread_create_deferred` and `kthread_exit` of `sys/kern/kern_kthread.rs`: the argument
+/// the C passes is the kernel's ticket, an address without provenance that the thread function
+/// turns back into the number (never dereferenced) and hands to `kernel::thread`.
+struct BsdKthread;
+
+/// A kernel thread's function: runs the start its ticket names.
+fn kthread_start(arg: *mut c_void) {
+    kernel::thread::run(arg.addr());
+}
+
+/// A deferred creation's function: calls the start its ticket names.
+fn kthread_deferred(arg: *mut c_void) {
+    kernel::thread::run_deferred(arg.addr());
+}
+
+impl kernel::thread::Kthread for BsdKthread {
+    fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno> {
+        kthread_create(kthread_start, ptr::without_provenance_mut(ticket), name).map(drop)
+    }
+
+    fn create_deferred(&self, ticket: usize) {
+        kthread_create_deferred(kthread_deferred, ptr::without_provenance_mut(ticket));
+    }
+
+    fn exit(&self, ecode: i32) -> ! {
+        kthread_exit(ecode)
+    }
+
+    /// `softclock_thread`'s "be conservative for the moment": the primary CPU, then
+    /// `sched_peg_curproc`.
+    fn peg_to_primary_cpu(&self) {
+        let mut primary = None;
+        cpu_info_foreach(&mut |ci| {
+            if primary.is_none() && Machine::cpu_is_primary(ci) {
+                primary = Some(ci);
+            }
+        });
+        let Some(ci) = primary else {
+            crate::kern::subr_prf::panic(format_args!("softclock_thread: no primary CPU"));
+        };
+        sched_peg_curproc(ci);
+    }
+}
+
+static BSD_KTHREAD: BsdKthread = BsdKthread;
+
 struct BsdNetLock;
 
 impl NetLock for BsdNetLock {
@@ -586,6 +648,9 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
     let _ = hal::bridges::register_softintr(&BSD_SOFTINTR);
+    // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
+    let _ = kernel::clock::install_uptime(&BSD_UPTIME);
+    let _ = kernel::thread::install_kthread(&BSD_KTHREAD);
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]
     {

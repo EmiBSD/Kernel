@@ -5093,7 +5093,7 @@ status = "inherited"
 rust = "sys/kern/kern_clock.rs"
 lz = ["sys/kern/kern_clock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs"]
 notes = "M5-a: stathz/profhz/profprocs/ticks/jiffies and the period globals, initclocks, hardclock, tvtohz, tstohz, statclock (the per-thread accounting and schedclock wait for struct proc, M5-b: reported); startprofclock/stopprofclock take a struct process (M5-b); sysctl_clockrate came with kern_sysctl.c; M7b: statclock's user/system/interrupt accounting, p_cpticks, the tusage ticks and sizes and schedclock every fourth tick (its unported! prints from the clock interrupt interleaved with user output and made smoke flaky); M11a: statclock's spc_cp_time update is a single-writer atomic store under the pc_lock"
 
 [[module]]
@@ -8282,7 +8282,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"
@@ -8331,6 +8331,18 @@ reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted
 rust = "sys/hal/api.rs"
 crate = "hal"
 reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries"
+
+[[module]]
+rust = "sys/kernel/clock.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_clock.rs"]
+status = "redesigned"
+notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8)"
+
+[[extra]]
+rust = "sys/kernel/thread.rs"
+crate = "kernel"
+reason = "kernel glue, written new (N4.1): kthread_create(9)/kthread_create_deferred/kthread_exit and the primary-CPU peg for the kernel's threads over the Kthread bridge (bridges.toml, bsd's kern_kthread/kern_sched until N4.5), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code)"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"
