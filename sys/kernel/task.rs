@@ -61,6 +61,9 @@
 //! - `kcov` is not configured: `t_process` is not kept, no `kcov_remote_enter`/`leave` (LZ's).
 //! - A task without a function (one `task_set` never named) panics when a worker reaches it,
 //!   where the C calls through a null pointer (LZ's).
+//! - `task_del(tq, t)` of a task pending on another queue panics (the worklist refuses an
+//!   element on a list of another lock, `hal::pinlist`'s I2), where the C's `TAILQ_REMOVE`
+//!   unlinks it through the wrong head and corrupts both queues.
 //!
 //! ## Redesign
 //! - `struct taskq` allocated by `malloc(M_DEVBUF)` and handed out as a pointer (LZ:
@@ -905,6 +908,19 @@ mod tests {
         taskq_del_barrier(&tq, &T);
         assert!(!T.pending());
         taskq_destroy(tq);
+    }
+
+    #[test]
+    #[should_panic(expected = "not on a list of this lock")]
+    fn task_del_of_a_task_pending_on_another_queue_panics() {
+        testutil::install();
+        static Q1: Taskq = taskq_unthreaded(b"tqdel1");
+        static Q2: Taskq = taskq_unthreaded(b"tqdel2");
+        static T: Task = Task::new(nothing, ptr::null_mut());
+        assert!(task_add(&Q1, pinned(&T)));
+        // The C would unlink it through Q2's head; here the worklist refuses it. (T stays on
+        // Q1, a static: nothing is dropped linked.)
+        task_del(&Q2, &T);
     }
 
     #[test]
