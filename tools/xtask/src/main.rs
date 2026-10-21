@@ -276,6 +276,9 @@ fn run(args: &[String]) -> Result<()> {
         }
         ["smoke", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
+            if boot::skip_disabled("smoke", arch)? {
+                return Ok(());
+            }
             let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
             let expects = flags(rest, "--expect");
             if expects.is_empty() {
@@ -328,6 +331,9 @@ fn run(args: &[String]) -> Result<()> {
         }
         ["smoke2", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
+            if boot::skip_disabled("smoke2", arch)? {
+                return Ok(());
+            }
             let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);

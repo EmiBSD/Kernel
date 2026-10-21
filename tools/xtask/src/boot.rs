@@ -99,6 +99,59 @@ impl Arch {
     }
 }
 
+/// The environment variable that names the architectures built, booted and measured
+/// (decision 44, 2026-10-18): a comma-separated list of `amd64` and `arm64`, `arm64` when
+/// unset or empty. The justfile reads the same variable; N10 sets `amd64,arm64` again.
+pub const ARCHS_ENV: &str = "EMIBSD_ARCHS";
+
+/// The line a skipped boot logs (after the arch and before the reason); `smoke-all` counts
+/// it in each recipe's log.
+pub const SKIPPED_LINE: &str = "SKIPPED (decision 44)";
+
+/// The architectures of a list as [`ARCHS_ENV`] spells it: `None` or empty is `[Arm64]`;
+/// names are trimmed, duplicates collapse, the order is the one written; an unknown name is
+/// an error that names it.
+pub fn parse_archs(value: Option<&str>) -> Result<Vec<Arch>> {
+    let value = value.map(str::trim).unwrap_or("");
+    if value.is_empty() {
+        return Ok(vec![Arch::Arm64]);
+    }
+    let mut arches = Vec::new();
+    for name in value.split(',') {
+        let arch = Arch::parse(name.trim()).map_err(|e| format!("{ARCHS_ENV}={value}: {e}"))?;
+        if !arches.contains(&arch) {
+            arches.push(arch);
+        }
+    }
+    Ok(arches)
+}
+
+/// The architectures enabled by `$EMIBSD_ARCHS` (see [`parse_archs`]).
+pub fn enabled_arches() -> Result<Vec<Arch>> {
+    parse_archs(std::env::var(ARCHS_ENV).ok().as_deref())
+}
+
+/// Whether `arch` is enabled by `$EMIBSD_ARCHS`.
+pub fn arch_enabled(arch: Arch) -> Result<bool> {
+    Ok(enabled_arches()?.contains(&arch))
+}
+
+/// When `arch` is disabled, prints the one line `<who>: <arch> SKIPPED (decision 44):
+/// EMIBSD_ARCHS=<value or "unset">` and returns true: the caller runs nothing.
+pub fn skip_disabled(who: &str, arch: Arch) -> Result<bool> {
+    if arch_enabled(arch)? {
+        return Ok(false);
+    }
+    let value = std::env::var(ARCHS_ENV).unwrap_or_default();
+    let shown = if value.trim().is_empty() {
+        "unset"
+    } else {
+        value.as_str()
+    };
+    println!("{who}: {} {SKIPPED_LINE}: {ARCHS_ENV}={shown}", arch.name());
+    Ok(true)
+}
+
 /// Exit status QEMU reports when the kernel leaves with `ExitStatus::Success`
 /// (`sys/machine/cpu.rs`).
 pub const QEMU_SUCCESS_STATUS: i32 = 33;
@@ -1318,6 +1371,20 @@ pub(crate) fn slurp_into(mut r: impl Read, into: &Mutex<Vec<u8>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archs_list_parses_as_decision_44_says() {
+        let a = Arch::Amd64;
+        let r = Arch::Arm64;
+        assert_eq!(parse_archs(None).unwrap(), vec![r]);
+        assert_eq!(parse_archs(Some("")).unwrap(), vec![r]);
+        assert_eq!(parse_archs(Some("arm64")).unwrap(), vec![r]);
+        assert_eq!(parse_archs(Some("amd64,arm64")).unwrap(), vec![a, r]);
+        assert_eq!(parse_archs(Some(" amd64 , arm64 ")).unwrap(), vec![a, r]);
+        assert_eq!(parse_archs(Some("amd64,amd64")).unwrap(), vec![a]);
+        let e = parse_archs(Some("riscv")).unwrap_err().to_string();
+        assert!(e.contains("riscv"), "{e}");
+    }
 
     #[test]
     fn extra_disks_are_numbered_files_beside_the_first() {

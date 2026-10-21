@@ -352,8 +352,18 @@ pub(crate) fn bench(root: &Path, args: &[&str]) -> Result<()> {
             other => return Err(format!("bench: unknown argument {other:?}").into()),
         }
     }
+    // Decision 44: the default is the archs of `$EMIBSD_ARCHS`; an explicit `--arch` of a
+    // disabled one logs `SKIPPED` and runs nothing for it (the others run).
     if arches.is_empty() {
-        arches = vec![Arch::Amd64, Arch::Arm64];
+        arches = boot::enabled_arches()?;
+    } else {
+        let mut enabled = Vec::new();
+        for arch in arches {
+            if !boot::skip_disabled("bench", arch)? {
+                enabled.push(arch);
+            }
+        }
+        arches = enabled;
     }
     // `diff-openbsd`'s configuration: four processors unless `--smp` says otherwise.
     if boot::smp().is_none() {

@@ -133,9 +133,39 @@ struct Finished {
     timeout: bool,
     /// Boots that were booted again after a known firmware bug (`boot::FIRMWARE_FLAKES`).
     retries: usize,
+    /// Boots logged `SKIPPED (decision 44)` (`boot::SKIPPED_LINE`): an amd64 boot while
+    /// `$EMIBSD_ARCHS` leaves amd64 out.
+    skipped: usize,
+    /// Boots that ran and passed (their `smoke A: ok in` / `smoke2 A: ok in` line).
+    ran: usize,
     seconds: f32,
     log: PathBuf,
     why: String,
+}
+
+impl Finished {
+    /// A recipe that passed without one boot running: every boot of it was skipped.
+    fn all_skipped(&self) -> bool {
+        self.ok && self.skipped > 0 && self.ran == 0
+    }
+}
+
+/// `(skipped, ran)` boots in a recipe's `log`: the `<who>: <arch> SKIPPED (decision 44)`
+/// lines of `boot::skip_disabled` and the `smoke <arch>: ok in` / `smoke2 <arch>: ok in`
+/// lines of a boot that passed.
+fn boot_counts(log: &str) -> (usize, usize) {
+    let mut skipped = 0;
+    let mut ran = 0;
+    for line in log.lines() {
+        if line.contains(boot::SKIPPED_LINE) {
+            skipped += 1;
+        } else if (line.starts_with("smoke ") || line.starts_with("smoke2 "))
+            && line.contains(": ok in ")
+        {
+            ran += 1;
+        }
+    }
+    (skipped, ran)
 }
 
 /// Runs `recipes` with `just` (`just_bin`), `jobs` at a time; see the module documentation.
@@ -180,14 +210,22 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
     let mut failed: Vec<Finished> = Vec::new();
     let mut count = 0;
     let mut retried: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut boots_skipped = 0;
     for done in rx {
         count += 1;
         if done.retries > 0 {
             retried.push(format!("{} ({})", done.recipe, done.retries));
         }
+        boots_skipped += done.skipped;
+        if done.all_skipped() {
+            skipped.push(done.recipe.clone());
+        }
         println!(
-            "smoke-all: [{count:>2}/{total}] {} {:<16} {:>6.1}s{}{}",
-            if done.ok {
+            "smoke-all: [{count:>2}/{total}] {} {:<16} {:>6.1}s{}{}{}",
+            if done.all_skipped() {
+                "SKIPPED"
+            } else if done.ok {
                 "ok  "
             } else if done.timeout {
                 "TIMEOUT"
@@ -203,6 +241,11 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
             },
             if done.retries > 0 {
                 format!("  [{} firmware retry]", done.retries)
+            } else {
+                String::new()
+            },
+            if done.skipped > 0 {
+                format!("  [{} skipped]", done.skipped)
             } else {
                 String::new()
             }
@@ -232,15 +275,15 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
     }
     let names: Vec<&str> = failed.iter().map(|f| f.recipe.as_str()).collect();
     println!(
-        "smoke-all: {} of {total} passed in {}m{:02}s{}",
-        total - failed.len(),
-        elapsed / 60,
-        elapsed % 60,
-        if names.is_empty() {
-            String::new()
-        } else {
-            format!("; FAILED: {}", names.join(" "))
-        }
+        "{}",
+        summary_line(
+            total,
+            failed.len(),
+            &skipped,
+            boots_skipped,
+            elapsed,
+            &names
+        )
     );
     if failed.is_empty() {
         Ok(())
@@ -252,6 +295,41 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
         )
         .into())
     }
+}
+
+/// The closing line: as ever when no boot was skipped; with skips (decision 44) the recipes
+/// that booted nothing are counted apart, never as passed, and named like the failed ones.
+fn summary_line(
+    total: usize,
+    failed: usize,
+    skipped: &[String],
+    boots_skipped: usize,
+    elapsed: u64,
+    failed_names: &[&str],
+) -> String {
+    let mut line = if boots_skipped == 0 {
+        format!(
+            "smoke-all: {} of {total} passed in {}m{:02}s",
+            total - failed,
+            elapsed / 60,
+            elapsed % 60
+        )
+    } else {
+        format!(
+            "smoke-all: {} of {total} passed, {} skipped (decision 44), {boots_skipped} boot(s) skipped in {}m{:02}s",
+            total - failed - skipped.len(),
+            skipped.len(),
+            elapsed / 60,
+            elapsed % 60
+        )
+    };
+    if !skipped.is_empty() {
+        line += &format!("; SKIPPED: {}", skipped.join(" "));
+    }
+    if !failed_names.is_empty() {
+        line += &format!("; FAILED: {}", failed_names.join(" "));
+    }
+    line
 }
 
 /// The time-limit factor for `jobs` recipes at a time: 1 up to two, then `jobs / 2` rounded
@@ -310,6 +388,9 @@ fn recipe_limit(root: &Path, just_bin: &str, recipe: &str, scale: usize) -> Dura
     boots.unwrap_or(UNKNOWN_BOOTS) * u32::try_from(scale).unwrap_or(10) + LIMIT_MARGIN
 }
 
+/// (A skipped boot is counted too, since `just --dry-run` cannot know `$EMIBSD_ARCHS` per
+/// line: the limit is larger than needed, which is harmless.)
+///
 /// The sum of the time limits of the boots in a recipe's commands: `boot::SMOKE_TIMEOUT` for
 /// each `xtask smoke`, its `--timeout` (or the same default) for each `xtask smoke2`. `None`
 /// when there is no boot.
@@ -435,6 +516,8 @@ fn run_recipe(
         ok,
         timeout: false,
         retries: 0,
+        skipped: 0,
+        ran: 0,
         seconds: started.elapsed().as_secs_f32(),
         log: log.clone(),
         why,
@@ -502,9 +585,9 @@ fn run_recipe(
         Ok(s) => finish(false, format!("just exited with {s}")),
         Err(e) => finish(false, format!("{just_bin}: {e}")),
     };
-    done.retries = fs::read_to_string(&log)
-        .map(|l| l.matches(boot::FIRMWARE_RETRY_MARKER).count())
-        .unwrap_or(0);
+    let text = fs::read_to_string(&log).unwrap_or_default();
+    done.retries = text.matches(boot::FIRMWARE_RETRY_MARKER).count();
+    (done.skipped, done.ran) = boot_counts(&text);
     if done.ok {
         let _ = fs::write(dir.join("seconds"), format!("{:.1}\n", done.seconds));
         remove_boot_files(&dir);
@@ -534,6 +617,66 @@ fn remove_boot_files(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_and_passed_boots_are_counted_from_the_log() {
+        let skip = "smoke: amd64 SKIPPED (decision 44): EMIBSD_ARCHS=unset\n";
+        let ok = "smoke arm64: ok in 12.0s (3 expected line(s) seen, exit status 33)\n";
+        let ok2 = "smoke2 arm64: ok in 40.0s (x)\n";
+        assert_eq!(boot_counts(""), (0, 0));
+        assert_eq!(boot_counts(&format!("{skip}xtask: q\n{ok}")), (1, 1));
+        assert_eq!(boot_counts(skip), (1, 0));
+        assert_eq!(boot_counts(&format!("{ok}{ok2}")), (0, 2));
+        assert_eq!(
+            boot_counts("smoke2: amd64 SKIPPED (decision 44): x\n"),
+            (1, 0)
+        );
+    }
+
+    fn fin(ok: bool, skipped: usize, ran: usize) -> Finished {
+        Finished {
+            recipe: "r".into(),
+            ok,
+            timeout: false,
+            retries: 0,
+            skipped,
+            ran,
+            seconds: 0.0,
+            log: PathBuf::new(),
+            why: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_recipe_is_skipped_only_when_nothing_booted() {
+        assert!(!fin(true, 1, 1).all_skipped());
+        assert!(fin(true, 2, 0).all_skipped());
+        assert!(!fin(true, 0, 0).all_skipped());
+        assert!(!fin(false, 1, 0).all_skipped());
+    }
+
+    #[test]
+    fn the_summary_counts_skips_apart_and_is_as_before_without() {
+        assert_eq!(
+            summary_line(5, 1, &[], 0, 125, &["a"]),
+            "smoke-all: 4 of 5 passed in 2m05s; FAILED: a"
+        );
+        assert_eq!(
+            summary_line(5, 0, &[], 0, 60, &[]),
+            "smoke-all: 5 of 5 passed in 1m00s"
+        );
+        let s = vec!["smoke-x".to_string()];
+        assert_eq!(
+            summary_line(5, 0, &s, 3, 60, &[]),
+            "smoke-all: 4 of 5 passed, 1 skipped (decision 44), 3 boot(s) skipped in 1m00s; \
+             SKIPPED: smoke-x"
+        );
+        // One skipped and one passed boot in a recipe: it passes, 1 boot skipped.
+        assert_eq!(
+            summary_line(2, 0, &[], 1, 5, &[]),
+            "smoke-all: 2 of 2 passed, 0 skipped (decision 44), 1 boot(s) skipped in 0m05s"
+        );
+    }
 
     #[test]
     fn args_take_jobs_just_and_recipes_in_any_order() {

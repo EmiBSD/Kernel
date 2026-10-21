@@ -164,8 +164,18 @@ pub(crate) fn diff_openbsd(root: &Path, args: &[&str]) -> Result<()> {
             other => return Err(format!("diff-openbsd: unknown argument {other:?}").into()),
         }
     }
+    // Decision 44: the default is the archs of `$EMIBSD_ARCHS`; an explicit `--arch` of a
+    // disabled one logs `SKIPPED` and runs nothing for it (the others run).
     if arches.is_empty() {
-        arches = vec![Arch::Amd64, Arch::Arm64];
+        arches = crate::boot::enabled_arches()?;
+    } else {
+        let mut enabled = Vec::new();
+        for arch in arches {
+            if !crate::boot::skip_disabled("diff-openbsd", arch)? {
+                enabled.push(arch);
+            }
+        }
+        arches = enabled;
     }
     let snap = load_snapshot(root)?;
     let mut failed = Vec::new();
