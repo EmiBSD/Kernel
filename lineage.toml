@@ -4299,7 +4299,7 @@ notes = "M16d: license: BSD-3 (Red Hat), kept whole beside viogpu.c's ISC notice
 rust = "sys/dev/pv/viomb.rs"
 lz = ["sys/dev/pv/viomb.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/types.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/vm/page.rs", "sys/kernel/vm/types.rs"]
 notes = "M16d: license: BSD-2 (NetBSD, two notices kept whole); the whole file: viomb_ca/cd, match, attach (inflate and deflate queues, dma_alloc'ed frame number array and its map, taskq viomb, the desired/current sensors), viomb_config_change, viomb_worker, viomb_inflate (uvm_pglistalloc below dma_constraint), viomb_deflate, viomb_read_config, viomb_vq_dequeue (Result), viomb_inflate_intr, viomb_deflate_intr; the C's quirks kept: sensors lag the last request, a short deflate records i - 1 entries, request lengths are nvpages words; deviations: VIRTIO_PAGE_SIZE == PAGE_SIZE a const assertion (the C's #error), viomb_nvpages host-tested, VIOMBDEBUG behind VIRTIO_DEBUG; viomb* at virtio? on both archs; smoke-virtio: balloon 384 of 512 MB then 512 give raw0=134217728/raw1=133169152 then 0/1048576, as OpenBSD 8.0 does at the same scale"
 
 [[module]]
@@ -5206,7 +5206,8 @@ adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/task.rs"]
 [[module]]
 rust = "sys/kern/kern_sensors.rs"
 lz = ["sys/kern/kern_sensors.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/task.rs"]
 
 [[module]]
 rust = "sys/kern/kern_sig.rs"

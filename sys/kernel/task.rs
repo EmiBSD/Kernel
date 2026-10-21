@@ -330,10 +330,12 @@ pub fn taskq_destroy(tq: TaskqRef) {
     destroy(&tq);
 }
 
-/// [`taskq_destroy`] of a queue whose handle was given up for a `&'static Taskq`
-/// (`PoolArc::leak`: the legacy callers' shape, `sys/sys/task.rs`): its threads stopped and
-/// waited for as by `taskq_destroy`; its memory stays, since no handle is left to give it back
-/// (a legacy deviation until those callers hold a [`TaskqRef`]).
+/// [`taskq_destroy`] of a queue whose handle its caller gave up for a `&'static Taskq`
+/// (`PoolArc::leak`): its threads stopped and waited for as by `taskq_destroy`; its memory
+/// stays, since no handle is left to give it back. Only for the legacy holders that hand the
+/// queue out as `&'static Taskq` to readers running beside the destroyer (`bsd`'s softnets,
+/// softraid's disciplines, wsdisplay's screens: `sys/sys/task.rs`'s deviations), which no safe
+/// cell can empty while such a reference may live; every other caller holds a [`TaskqRef`].
 pub fn taskq_destroy_leaked(tq: &'static Taskq) {
     destroy(tq);
 }
@@ -856,6 +858,9 @@ mod tests {
         taskq_destroy(tq);
         assert_eq!(probe.st.lock().running, 0, "every worker gone");
         assert_eq!(probe.st.lock().life, TqState::Destroyed);
+        // The destroyer's and the workers' handles are gone: the probe's is the last, so the
+        // queue's `taskqpl` item goes back with it (the C's `free`).
+        assert!(eventually(|| PoolArc::count(&probe) == 1));
     }
 
     static INSIDE: AtomicUsize = AtomicUsize::new(0);

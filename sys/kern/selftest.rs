@@ -1459,7 +1459,7 @@ pub fn taskq_check() {
         kprintf!("selftest: taskq FAILED: taskq_create\n");
         return;
     };
-    let _ = task_add(tq, &TASKQ_NEW_TASK);
+    let _ = task_add(&tq, &TASKQ_NEW_TASK);
     let new_runner = taskq_wait(3);
     let nthreads_before = NTHREADS.load(Ordering::Relaxed);
     taskq_destroy(tq);

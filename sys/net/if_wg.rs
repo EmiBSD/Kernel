@@ -221,10 +221,12 @@ use crate::sys::socketvar::Socket;
 use crate::sys::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMTU};
 use crate::sys::syslog::{LOG_DEBUG, LOG_INFO, LOG_WARNING};
 use crate::sys::systm::{kernel_assert_locked, net_assert_locked, net_lock, net_unlock};
-use crate::sys::task::{TASKQ_MPSAFE, Task, Taskq};
+use crate::sys::task::{TASKQ_MPSAFE, Task, Taskq, TaskqRef};
 use crate::sys::time::{Timespec, Timeval, timespecadd};
 use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{InPort, SaFamily};
+use hal::intr::IPL_NONE;
+use hal::mutex::Mutexed;
 use libkern::StaticCell;
 
 /// `WG_KEY_LEN`.
@@ -1131,6 +1133,10 @@ pub static WG_COUNTER: AtomicUsize = AtomicUsize::new(0);
 pub static WG_HANDSHAKE_TASKQ: AtomicPtr<Taskq> = AtomicPtr::new(ptr::null_mut());
 /// `wg_crypt_taskq`.
 pub static WG_CRYPT_TASKQ: AtomicPtr<Taskq> = AtomicPtr::new(ptr::null_mut());
+/// The counted handles of `wg_handshake_taskq` and `wg_crypt_taskq`, in that order, from the
+/// first `wg_clone_create` to the last `wg_clone_destroy`, which gives them to
+/// `taskq_destroy` (the two pointers above are what the readers copy).
+static WG_TASKQ_REFS: Mutexed<Option<[TaskqRef; 2]>> = Mutexed::new(IPL_NONE, None);
 
 /// `wg_cloner`.
 pub static WG_CLONER: IfClone = IfClone::new(b"wg", wg_clone_create, Some(wg_clone_destroy));
@@ -1148,8 +1154,12 @@ fn cstr(s: &[u8]) -> &[u8] {
 
 /// A task queue `wg_clone_create` made.
 fn taskq(tq: &AtomicPtr<Taskq>) -> &'static Taskq {
-    // SAFETY: the queues are created by the first `wg_clone_create` and destroyed by the last
-    // `wg_clone_destroy`, after every peer (whose tasks and timeouts use them) is gone.
+    // SAFETY: the pointer is null or names a queue whose counted handle `WG_TASKQ_REFS` holds:
+    // the first `wg_clone_create` stores both, and the last `wg_clone_destroy` nulls the
+    // pointer before it gives the handle to `taskq_destroy`, whose last drop frees the queue.
+    // That happens after every peer (whose tasks and timeouts call this) is gone, under the
+    // kernel lock every create and destroy holds, so a reference made here is not used past
+    // the free (the C's protocol for its `free`).
     match unsafe { tq.load(Ordering::Acquire).as_ref() } {
         Some(tq) => tq,
         None => panic(format_args!("wg: task queue not created")),
@@ -3899,8 +3909,9 @@ pub fn wg_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
 
         match (handshake, crypt) {
             (Some(h), Some(c)) => {
-                WG_HANDSHAKE_TASKQ.store(ptr::from_ref(h).cast_mut(), Ordering::Release);
-                WG_CRYPT_TASKQ.store(ptr::from_ref(c).cast_mut(), Ordering::Release);
+                WG_HANDSHAKE_TASKQ.store(ptr::from_ref(&*h).cast_mut(), Ordering::Release);
+                WG_CRYPT_TASKQ.store(ptr::from_ref(&*c).cast_mut(), Ordering::Release);
+                *WG_TASKQ_REFS.lock() = Some([h, c]);
             }
             (h, c) => {
                 for tq in [h, c].into_iter().flatten() {
@@ -4078,14 +4089,11 @@ pub fn wg_clone_destroy(ifp: &'static Ifnet) -> Result<(), Errno> {
         let h = WG_HANDSHAKE_TASKQ.swap(ptr::null_mut(), Ordering::AcqRel);
         let c = WG_CRYPT_TASKQ.swap(ptr::null_mut(), Ordering::AcqRel);
         crate::kassert!(!h.is_null() && !c.is_null());
-        for tq in [h, c] {
-            if let Some(tq) = NonNull::new(tq) {
-                // SAFETY: a queue `wg_clone_create` stored here from `taskq_create`, whose
-                // memory is never given back (`sys/sys/task.rs`): the reference is valid for
-                // good. No peer is left to use the queues of the last interface.
-                let tq: &'static Taskq = unsafe { tq.as_ref() };
-                taskq_destroy(tq);
-            }
+        // No peer is left to use the queues of the last interface: their handles go to
+        // `taskq_destroy`, which frees each queue with its last handle (the C's `free`).
+        let refs = WG_TASKQ_REFS.lock().take();
+        for tq in refs.into_iter().flatten() {
+            taskq_destroy(tq);
         }
     }
 

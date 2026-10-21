@@ -161,7 +161,7 @@ use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_sensors::{sensor_attach, sensordev_install};
 use crate::kern::kern_synch::{msleep_nsec, tsleep_nsec, wakeup};
-use crate::kern::kern_task::{task_add, task_del, task_set, taskq_create};
+use crate::kern::kern_task::{TaskqRef, task_add, task_del, task_set, taskq_create};
 use crate::kern::kern_watchdog::{wdog_register, wdog_shutdown};
 use crate::kern::subr_autoconf::device_lookup;
 use crate::kern::subr_prf::{Str, panicstr, snprintf};
@@ -2130,8 +2130,9 @@ pub fn ipmi_attach_common(sc: &'static IpmiSoftc, ia: &IpmiAttachArgs) {
     st.req.msgid = -1;
     st.cmd.c_ccode = -1;
 
+    // Never destroyed (the C's): the handle is given up for the softc's `&'static`.
     sc.sc_cmd_taskq
-        .set(taskq_create(b"ipmicmd", 1, IPL_MPFLOOR, TASKQ_MPSAFE));
+        .set(taskq_create(b"ipmicmd", 1, IPL_MPFLOOR, TASKQ_MPSAFE).map(TaskqRef::leak));
 }
 
 /// `ipmi_activate(self, act)`: disarms the watchdog at powerdown.

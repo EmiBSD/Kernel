@@ -43,12 +43,16 @@
 //! now (`crate::kern::kern_task` names this module), over `kernel::task`.
 //!
 //! ## Deviations
-//! - `struct taskq` is the kernel crate's ([`Taskq`], re-exported). The callers keep LZ's
-//!   `&'static Taskq` (in `Cell`s and atomics they read with `get()`), so `taskq_create` gives
-//!   the kernel's counted handle up for it (`PoolArc::leak`) and `taskq_destroy` takes the
-//!   reference: the queue's threads are stopped and waited for as the C's, but its memory (a
-//!   `taskqpl` item) is not given back, since references to it may remain. A deviation of this
-//!   adapter, until its callers hold a `TaskqRef` (N6, N7).
+//! - `struct taskq` is the kernel crate's ([`Taskq`], re-exported), and `taskq_create` hands
+//!   out its counted handle ([`TaskqRef`]): `taskq_destroy` takes it and the queue's memory (a
+//!   `taskqpl` item) goes with its last handle, as the C's `free`. Three callers keep LZ's
+//!   `&'static Taskq` in a `Cell` that readers running beside the destroyer copy with `get()`
+//!   (the softnets of `if_.rs`, destroyed once at boot by `softnet_percpu`; softraid's
+//!   `sd_taskq`; wsdisplay's `sc_taskq`): no safe cell lends a handle to such readers and
+//!   gives it up to a destroyer, so they leak the handle (`TaskqRef::leak`) and destroy with
+//!   [`taskq_destroy_leaked`], whose queue's threads are stopped and waited for as the C's
+//!   but whose memory stays. A deviation of those three callers, until they hold a
+//!   `TaskqRef` (N6, N7).
 //! - `struct task` keeps its fields for the code that links tasks on lists of its own and runs
 //!   them (`if_.rs`'s hooks, `ifq.rs`'s serializer: `t_entry`, `t_func`, `t_arg`, `t_flags`),
 //!   and carries the kernel's task (`t_node`), which is what a task queue links. `task_set`
@@ -146,19 +150,20 @@ pub fn taskq_init() {
     kernel::task::taskq_init();
 }
 
-/// `taskq_create(name, nthreads, ipl, flags)`: the queue, for good (the module's deviations).
-pub fn taskq_create(
-    name: &'static [u8],
-    nthreads: u32,
-    ipl: i32,
-    flags: u32,
-) -> Option<&'static Taskq> {
-    kernel::task::taskq_create(name, nthreads, ipl, flags).map(TaskqRef::leak)
+/// `taskq_create(name, nthreads, ipl, flags)`: the queue's counted handle.
+pub fn taskq_create(name: &'static [u8], nthreads: u32, ipl: i32, flags: u32) -> Option<TaskqRef> {
+    kernel::task::taskq_create(name, nthreads, ipl, flags)
 }
 
-/// `taskq_destroy(tq)`: the queue's threads stopped and waited for; its memory stays (the
-/// module's deviations).
-pub fn taskq_destroy(tq: &'static Taskq) {
+/// `taskq_destroy(tq)`: the queue's threads stopped and waited for; its memory goes with its
+/// last handle.
+pub fn taskq_destroy(tq: TaskqRef) {
+    kernel::task::taskq_destroy(tq);
+}
+
+/// `taskq_destroy(tq)` of a queue whose handle was given up for a `&'static Taskq` (the
+/// module's deviations): its threads stopped and waited for; its memory stays.
+pub fn taskq_destroy_leaked(tq: &'static Taskq) {
     kernel::task::taskq_destroy_leaked(tq);
 }
 
