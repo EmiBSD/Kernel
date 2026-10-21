@@ -138,7 +138,7 @@ use crate::kern::kern_sensors::{
     sensordev_deinstall, sensordev_install,
 };
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
-use crate::kern::kern_task::{task_add, task_set, taskq_create, taskq_destroy};
+use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create, taskq_destroy_leaked};
 use crate::kern::subr_autoconf::{config_detach, config_found, config_suspend};
 use crate::kern::subr_disk::{
     DISKLIST, DUID_SIZE, ROOTDUID, SOFTRAID_DISK_ATTACH, duid_iszero, findblkname,
@@ -3834,7 +3834,10 @@ pub fn sr_ioctl_createraid(
         let sd: &'static SrDiscipline = unsafe { sdp.as_ref() };
         sd.sd_sc.set(sc);
         sd.sd_meta_opt.init();
-        sd.sd_taskq.set(taskq_create(b"srdis", 1, IPL_BIO, 0));
+        // Readers copy the queue out of the cell (`sr_wu_done`): the handle is given up for a
+        // `&'static` (`sys/sys/task.rs`'s deviations).
+        sd.sd_taskq
+            .set(taskq_create(b"srdis", 1, IPL_BIO, 0).map(TaskqRef::leak));
         if sd.sd_taskq.get().is_none() {
             sr_error(sc, format_args!("could not create discipline taskq"));
             break 'unwind Some(sd);
@@ -4525,9 +4528,10 @@ pub fn sr_discipline_shutdown(sd: Option<&'static SrDiscipline>, meta_save: bool
     sr_chunks_unwind(sc, &sd.sd_vol.sv_chunk_list);
 
     if let Some(tq) = sd.sd_taskq.take() {
-        // SAFETY: the discipline's own queue (`taskq_create` in `sr_ioctl_createraid`),
-        // destroyed once (taken out); its work units are idle by now.
-        unsafe { taskq_destroy(NonNull::from(tq)) };
+        // The discipline's own queue (`taskq_create` in `sr_ioctl_createraid`), destroyed
+        // once (taken out); its work units are idle by now. Its memory stays
+        // (`sys/sys/task.rs`'s deviations).
+        taskq_destroy_leaked(tq);
     }
 
     sr_discipline_free(Some(sd));

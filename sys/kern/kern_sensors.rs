@@ -60,7 +60,7 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
-use crate::kern::kern_task::{task_add, task_set, taskq_create};
+use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create};
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_set};
 use crate::machine::intr::{IPL_HIGH, splhigh, splx};
 use crate::sys::errno::Errno;
@@ -272,7 +272,9 @@ pub fn sensor_task_register(
     }
 
     if SENSORS_TASKQ.load(Ordering::Relaxed).is_null() {
-        let tq = taskq_create(b"sensors", 1, IPL_HIGH, 0).unwrap_or(SYSTQ);
+        let tq = taskq_create(b"sensors", 1, IPL_HIGH, 0)
+            .map(TaskqRef::leak)
+            .unwrap_or(SYSTQ);
         SENSORS_TASKQ.store(ptr::from_ref(tq).cast_mut(), Ordering::Relaxed);
     }
 

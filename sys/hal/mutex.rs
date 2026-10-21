@@ -161,6 +161,10 @@
 //!   `Divisible`): the one holder of the mutex, as a writer is of a reader-writer lock, so a
 //!   `Guarded` cell keyed to the mutex ([`Mutexed::id`], `Guarded::new_mutexed`) opens through
 //!   it (an `INTRSAFE` map, whose lock is `vm_map.mtx` at `IPL_VM` instead of an rwlock).
+//! - N4.1: a lock whose data lives elsewhere, in the cells of the objects it guards (the C's
+//!   `[T]` fields of every timeout under `timeout_mutex`, `[S]` under `SCHED_LOCK`), is a
+//!   [`SharedMutex`], a `Mutexed<()>` whose guard is the cells' witness; a `static` one keys
+//!   cells made in a `const` context (`Guarded::new_static_mutexed`, `TIMEOUT_INITIALIZER`).
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -267,6 +271,12 @@ impl<T> Mutexed<T> {
         LockId::of_mutex(&self.owner)
     }
 
+    /// The owner word, whose address is the mutex's identity: what a `const`-made
+    /// [`crate::rwlock::Guarded`] keeps of a `static` mutex.
+    pub(crate) const fn owner_word(&self) -> &AtomicUsize {
+        &self.owner
+    }
+
     /// Whether some CPU holds the mutex (`mtx_owner(mtx) != 0`): a snapshot, for assertions.
     pub fn is_locked(&self) -> bool {
         self.owner.load(Ordering::Relaxed) != 0
@@ -322,6 +332,12 @@ impl<T> Mutexed<T> {
         }
     }
 }
+
+/// A mutex that guards no data of its own but the [`crate::rwlock::Guarded`] cells keyed to it
+/// (`Guarded::new_mutexed`, `Guarded::new_static_mutexed`): its guard is their witness. The
+/// C's `struct mutex` beside the fields it guards in other objects (`timeout_mutex`,
+/// `SCHED_LOCK`).
+pub type SharedMutex = Mutexed<()>;
 
 impl<T: Default> Default for Mutexed<T> {
     fn default() -> Self {

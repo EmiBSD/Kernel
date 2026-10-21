@@ -2873,7 +2873,7 @@ pub fn so_print(so: &Socket, pr: PrFn) {
             } else {
                 "not "
             },
-            sp.ssp_idleto.to_time.get()
+            sp.ssp_idleto.to_time()
         ));
     }
 

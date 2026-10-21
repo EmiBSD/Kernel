@@ -107,7 +107,7 @@ use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_extent::{
-    extent_alloc_region, extent_alloc_with_descr, extent_create, extent_free,
+    extent_alloc_region, extent_alloc_with_descr, extent_create, extent_descr, extent_free,
 };
 use crate::kern::subr_pool::{pool_get, pool_init, pool_setlowat};
 use crate::kern::subr_prf::{panic, printf};
@@ -120,7 +120,7 @@ use crate::machine::intr::IPL_VM;
 use crate::machine::pmap::{pmap_extract, pmap_kernel};
 use crate::sys::device::{Cfdriver, DV_DULL};
 use crate::sys::errno::Errno;
-use crate::sys::extent::{EX_CONFLICTOK, EX_NOCOALESCE, EX_NOWAIT, EX_WAITOK, ExtentRegion};
+use crate::sys::extent::{EX_CONFLICTOK, EX_NOCOALESCE, EX_NOWAIT, EX_WAITOK};
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::Mbuf;
 use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
@@ -152,10 +152,9 @@ const SMMU_ATTR_WB: u64 = 3;
 /// `PTE_ATTR_WT`: index 4 (write-through).
 const SMMU_ATTR_WT: u64 = 4;
 
-/// `struct smmu_map_state`: a DMA map's IOVA range.
+/// `struct smmu_map_state`: a DMA map's IOVA range (its extent descriptor, the C's `sms_er`,
+/// is the extent's: made with the map and given to the IOVA extent).
 struct SmmuMapState {
-    /// `sms_er`: the range's extent descriptor.
-    sms_er: ExtentRegion,
     /// `sms_dva`: the first IOVA.
     sms_dva: Cell<u64>,
     /// `sms_len`: the range's length, without the guard page.
@@ -1531,7 +1530,6 @@ pub fn smmu_dmamap_create(
     // chunks), written before use.
     unsafe {
         sms_ptr.write(SmmuMapState {
-            sms_er: ExtentRegion::new(),
             sms_dva: Cell::new(0),
             sms_len: Cell::new(0),
             sms_loaded: Cell::new(0),
@@ -1543,23 +1541,32 @@ pub fn smmu_dmamap_create(
     // Approximation of maximum pages needed.
     let mut len = round_page(size) + nsegments as usize * PAGE_SIZE;
 
-    // Allocate IOVA, and a guard page at the end.
+    // Allocate IOVA, and a guard page at the end, with the range's descriptor made first
+    // (the C's `sms_er`, allocated with the state: the same sleep, or failure, before the
+    // mutex).
     let ex = dom.iovamap();
-    mtx_enter(&dom.sd_iova_mtx);
-    // SAFETY: `sms_er` is in no list and lives at a fixed address until
-    // `smmu_dmamap_destroy` frees the region (and only then the state).
-    let r = unsafe {
-        extent_alloc_with_descr(
-            ex,
-            (len + PAGE_SIZE) as u64,
-            64 * 1024,
-            0,
-            0,
-            EX_NOWAIT,
-            &sms.sms_er,
-        )
+    let dflags = if flags & BUS_DMA_NOWAIT != 0 {
+        EX_NOWAIT
+    } else {
+        EX_WAITOK
     };
-    mtx_leave(&dom.sd_iova_mtx);
+    let r = match extent_descr(dflags) {
+        Some(er) => {
+            mtx_enter(&dom.sd_iova_mtx);
+            let r = extent_alloc_with_descr(
+                ex,
+                (len + PAGE_SIZE) as u64,
+                64 * 1024,
+                0,
+                0,
+                EX_NOWAIT,
+                er,
+            );
+            mtx_leave(&dom.sd_iova_mtx);
+            r
+        }
+        None => Err(Errno::ENOMEM),
+    };
     let dva = match r {
         Ok(dva) => dva,
         Err(e) => {

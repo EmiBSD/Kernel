@@ -49,6 +49,19 @@ use crate::bridges;
 /// `IPL_NONE`: no interrupt is blocked (0 on amd64 and arm64).
 pub const IPL_NONE: i32 = 0;
 
+/// `IPL_SOFTCLOCK`: soft clock interrupts, the level timeout(9)'s `softclock` runs at and its
+/// `softclock` thread raises to (`splsoftclock`). The machine's number, until the interrupt
+/// tables enter `hal` with their owner (N4.5): the host double's is amd64's numbering, as for
+/// the other levels here (`<machine/intrdefs.h>` 0x1); amd64's kernel gains its own at N10
+/// (decision 44). `bsd`'s `sys/machine/intr.rs` asserts that it equals the machine's.
+#[cfg(not(target_os = "none"))]
+pub const IPL_SOFTCLOCK: i32 = 0x1;
+/// `IPL_SOFTCLOCK`: soft clock interrupts (arm64 `<machine/intr.h>`), until the interrupt
+/// tables enter `hal` with their owner (N4.5); `bsd`'s `sys/machine/intr.rs` asserts that it
+/// equals the machine's.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub const IPL_SOFTCLOCK: i32 = 2;
+
 /// `IPL_BIO`: block I/O, the level of the page system's per-CPU caches (the buffer flipper
 /// allocates and frees pages from interrupt context, `uvm_pmemrange.c`). The machine's number
 /// (amd64 `<machine/intrdefs.h>` 0x3; the host double uses amd64's), until the interrupt

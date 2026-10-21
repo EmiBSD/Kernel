@@ -70,6 +70,7 @@ use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
 use crate::prf::Printf;
 use crate::sleep::Sleep;
+use crate::softintr::SoftIntr;
 use crate::user::UserCopy;
 
 /// A second registration of a bridge, which keeps the first; names the trait.
@@ -116,6 +117,15 @@ bridge!(
     SLEEP: Sleep,
     register_sleep,
     sleep
+);
+
+bridge!(
+    /// Registers the soft interrupts (`softintr_establish`, `softintr_schedule` of
+    /// `sys/kern/kern_softintr.rs`), for timeout(9)'s `softclock` (`hal::softintr`, N4.1).
+    /// Paid by N4 (the soft interrupts enter hal with the interrupt level, N4.8).
+    SOFT_INTR: SoftIntr,
+    register_softintr,
+    softintr
 );
 
 bridge!(

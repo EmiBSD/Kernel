@@ -571,9 +571,9 @@ pub fn ppbdetach(self_: &Device, flags: i32) -> Result<(), Errno> {
 
     for ex in [&sc.sc_busex, &sc.sc_ioex, &sc.sc_memex, &sc.sc_pmemex] {
         if let Some(e) = ex.take() {
-            // SAFETY: the extent came from `extent_create` in the attach; its name lives in
-            // the softc and nothing uses the extent afterwards.
-            unsafe { extent_destroy(e) };
+            // The extent came from `extent_create` in the attach; nothing uses it afterwards
+            // (its memory stays: sys/sys/extent.rs's deviations).
+            extent_destroy(e);
         }
     }
 

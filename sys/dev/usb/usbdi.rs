@@ -159,7 +159,6 @@ use crate::sys::param::{PCATCH, PRIBIO, PWAIT};
 use crate::sys::queue::{ListHead, TailqEntry};
 use crate::sys::systm::INFSLP;
 use crate::sys::time::{Timeval, sec_to_nsec};
-use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_INITIALIZED};
 
 /// `usbd_status`.
 #[repr(i32)]
@@ -775,11 +774,7 @@ pub fn usbd_alloc_xfer(dev: &'static UsbdDevice) -> Option<&'static UsbdXfer> {
     xfer.busy_free.set(XFER_FREE);
     xfer.device.set(Some(dev));
     // timeout_set(&xfer->timeout_handle, NULL, NULL)
-    let to = &xfer.timeout_handle;
-    to.to_func.set(None);
-    to.to_arg.set(ptr::null_mut());
-    to.to_kclock.set(KCLOCK_NONE);
-    to.to_flags.set(TIMEOUT_INITIALIZED);
+    xfer.timeout_handle.set_none();
     Some(xfer)
 }
 

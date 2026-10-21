@@ -92,7 +92,7 @@ use crate::dev::pv::virtiovar::{
 use crate::kassert;
 use crate::kern::dma_alloc::{dma_alloc, dma_free};
 use crate::kern::kern_sensors::{sensor_attach, sensordev_install};
-use crate::kern::kern_task::{task_add, task_set, taskq_create};
+use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create};
 use crate::kern::subr_prf::{panic, printf};
 use crate::machine::Machine;
 use crate::machine::bus::{
@@ -395,7 +395,8 @@ pub fn viomb_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         let Some(tq) = taskq_create(b"viomb", 1, IPL_BIO, 0) else {
             break 'err Err(true);
         };
-        sc.sc_taskq.set(Some(tq));
+        // Never destroyed (the C's): the handle is given up for the softc's `&'static`.
+        sc.sc_taskq.set(Some(TaskqRef::leak(tq)));
         task_set(
             &sc.sc_task,
             viomb_worker,

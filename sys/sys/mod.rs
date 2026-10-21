@@ -136,6 +136,7 @@ pub mod systm;
 pub mod task;
 pub mod termios;
 pub mod time;
+#[forbid(unsafe_code)]
 pub mod timeout;
 pub mod timetc;
 #[forbid(unsafe_code)]

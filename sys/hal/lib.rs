@@ -78,6 +78,9 @@ pub mod netlock;
 pub mod once;
 pub mod owned;
 pub mod percpu;
+#[forbid(unsafe_code)]
+pub mod pin;
+pub mod pinlist;
 // pmap(9) (N3.1). A machine's build has the module once its backend is in
 // `arch/<machine>/pmap/`: the host double's, amd64's (N3.1 commit 4) and arm64's (commit 5),
 // as the two pmap bridges of `bridges.rs`.
@@ -103,6 +106,8 @@ pub mod random;
 pub mod refcnt;
 pub mod rwlock;
 pub mod sleep;
+#[forbid(unsafe_code)]
+pub mod softintr;
 #[cfg(test)]
 pub(crate) mod testutil;
 #[forbid(unsafe_code)]

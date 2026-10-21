@@ -51,6 +51,15 @@
 //! - `KernelLock`: a per-thread depth, no exclusion (the tests that take it hold [`MEMORY`]);
 //!   the assertion panics on a thread that does not hold it ([`kernel_lock_depth`]).
 //! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
+//! - `SoftIntr`: a schedule is counted ([`softintr_scheduled`]), the handler not run: the
+//!   tests call `kernel::timeout::softclock` themselves, as LZ's did.
+//! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
+//!   timecounter), and [`uptime_advance`].
+//! - `thread`'s `Kthread`: a host thread holding the kernel lock double from its start; a
+//!   deferred creation runs at once in this crate's own tests and is held everywhere else
+//!   (`bsd`'s host tests, the benches), as LZ's host tests never ran `main`'s
+//!   `kthread_run_deferred_queue`: those tests drive a queue's workers by hand, and a worker
+//!   thread would race them; `kthread_exit` unwinds the thread, which its spawner catches.
 //! - `vm::vnode`'s `SysInfo`: the host's monotonic clock from one second at the first call,
 //!   never rebooting.
 //! - `vm::proc`'s `VmProc`: each test thread a process, whose answers and records are a
@@ -586,6 +595,102 @@ impl SysInfo for TestSysInfo {
 
 static TEST_SYS_INFO: TestSysInfo = TestSysInfo;
 
+/// The soft interrupt double: a schedule is counted, the handler is not run (the tests call
+/// what it would run themselves, `kernel::timeout::softclock`).
+struct TestSoftIntr;
+
+/// How many schedules the soft interrupt double saw (every test of the process).
+static SOFT_SCHEDULED: AtomicU64 = AtomicU64::new(0);
+
+/// The handlers established, by handle minus one.
+static SOFT_HANDLERS: Mutex<Vec<fn()>> = Mutex::new(Vec::new());
+
+impl hal::softintr::SoftIntr for TestSoftIntr {
+    fn establish(&self, _ipl: i32, run: fn()) -> Option<usize> {
+        let mut h = lock(&SOFT_HANDLERS);
+        h.push(run);
+        Some(h.len())
+    }
+
+    fn schedule(&self, _handle: usize) {
+        SOFT_SCHEDULED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+static TEST_SOFT_INTR: TestSoftIntr = TestSoftIntr;
+
+/// How many soft interrupt schedules the double saw so far (a process-wide count).
+pub fn softintr_scheduled() -> u64 {
+    SOFT_SCHEDULED.load(Ordering::Relaxed)
+}
+
+/// The uptime double: a clock in nanoseconds that advances a microsecond per read (as LZ's
+/// dummy timecounter did for the wheel's tests), and by [`uptime_advance`].
+struct TestUptime;
+
+/// The double's uptime, in nanoseconds, from one second.
+static UPTIME_NS: AtomicU64 = AtomicU64::new(1_000_000_000);
+
+impl crate::clock::Uptime for TestUptime {
+    fn nanouptime(&self) -> crate::clock::Timespec {
+        crate::clock::Timespec::from_nsec(UPTIME_NS.fetch_add(1_000, Ordering::Relaxed))
+    }
+}
+
+static TEST_UPTIME: TestUptime = TestUptime;
+
+/// Moves the uptime double forward by `ns`.
+pub fn uptime_advance(ns: u64) {
+    UPTIME_NS.fetch_add(ns, Ordering::Relaxed);
+}
+
+/// The kernel thread double: a thread is a host thread that starts holding the kernel lock
+/// double (as a kernel thread starts under the kernel lock), a deferred creation runs at once
+/// in this crate's tests (as after `kthread_run_deferred_queue`) and is held, never run, in
+/// `bsd`'s (its ticket stays filed: a queue destroyed then is in `TQ_S_CREATED` and makes no
+/// thread), and `kthread_exit` unwinds the host thread with [`KthreadExit`], which its
+/// spawner catches.
+struct TestKthread;
+
+/// What a test kernel thread's `kthread_exit` unwinds with.
+struct KthreadExit;
+
+impl crate::thread::Kthread for TestKthread {
+    fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno> {
+        std::thread::Builder::new()
+            .name(String::from_utf8_lossy(name).into_owned())
+            .spawn(move || {
+                hal::klock::kernel_lock();
+                let r = std::panic::catch_unwind(move || {
+                    crate::thread::run(ticket);
+                });
+                if let Err(e) = r
+                    && !e.is::<KthreadExit>()
+                {
+                    std::panic::resume_unwind(e);
+                }
+            })
+            .map(drop)
+            .map_err(|_| Errno::EAGAIN)
+    }
+
+    fn create_deferred(&self, ticket: usize) {
+        // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
+        // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
+        if cfg!(test) {
+            crate::thread::run_deferred(ticket);
+        }
+    }
+
+    fn exit(&self, _ecode: i32) -> ! {
+        std::panic::resume_unwind(Box::new(KthreadExit))
+    }
+
+    fn peg_to_primary_cpu(&self) {}
+}
+
+static TEST_KTHREAD: TestKthread = TestKthread;
+
 /// What a [`MemVnode`] saw during its last read.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadSeen {
@@ -814,6 +919,9 @@ pub fn install() {
         let _ = bridges::register_random(&TEST_RANDOM);
         let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
+        let _ = bridges::register_softintr(&TEST_SOFT_INTR);
+        let _ = crate::clock::install_uptime(&TEST_UPTIME);
+        let _ = crate::thread::install_kthread(&TEST_KTHREAD);
         crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
     });
 }

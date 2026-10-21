@@ -206,8 +206,8 @@ use crate::kern::kern_synch::{
     refcnt_finalize, refcnt_init, refcnt_rele, refcnt_rele_wake, refcnt_take,
 };
 #[cfg(feature = "multiprocessor")]
-use crate::kern::kern_task::taskq_destroy;
-use crate::kern::kern_task::{task_add, task_del, task_set, taskq_create};
+use crate::kern::kern_task::taskq_destroy_leaked;
+use crate::kern::kern_task::{TaskqRef, task_add, task_del, task_set, taskq_create};
 use crate::kern::kern_tc::getmicrotime;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::sched_bsd::r#yield;
@@ -1422,11 +1422,12 @@ pub fn softnet_init() {
         let name: &'static mut [u8; 16] = unsafe { &mut *sn.sn_name.get() };
         let _ = snprintf(name, format_args!("softnet{i}"));
         let name: &'static [u8] = cstr(name);
-        let tq = taskq_create(name, 1, IPL_NET, TASKQ_MPSAFE);
-        if tq.is_none() {
+        let Some(tq) = taskq_create(name, 1, IPL_NET, TASKQ_MPSAFE) else {
             panic(format_args!("unable to create network taskq {i}"));
-        }
-        sn.sn_taskq.set(tq);
+        };
+        // Readers copy the queue out of the cell (`net_tq`): the handle is given up for a
+        // `&'static` (`sys/sys/task.rs`'s deviations).
+        sn.sn_taskq.set(Some(TaskqRef::leak(tq)));
     }
 }
 
@@ -1437,10 +1438,10 @@ pub fn softnet_percpu() {
     #[cfg(feature = "multiprocessor")]
     for sn in &SOFTNETS[softnet_count() as usize..] {
         if let Some(tq) = sn.sn_taskq.take() {
-            // SAFETY: the queue came from `taskq_create` in `softnet_init` and is destroyed
-            // once (its slot is emptied first). No interface uses it: `net_sn` and
-            // `net_tq_barriers` only reach the first `softnet_count()` softnets.
-            unsafe { taskq_destroy(NonNull::from(tq)) };
+            // Destroyed once (its slot emptied first). No interface uses it: `net_sn` and
+            // `net_tq_barriers` only reach the first `softnet_count()` softnets. Its memory
+            // stays (`sys/sys/task.rs`'s deviations).
+            taskq_destroy_leaked(tq);
         }
     }
 }

@@ -236,6 +236,10 @@
 //!   a part, `0..WITNESS_PARTS`), so a map's state (part 0) and the handles of an entry
 //!   borrowed from it (part 1) open mutably at once: one witness, disjoint cells, the
 //!   borrow checker keeping each part's `&mut` unique.
+//! - N4.1: cells keyed to a `static` mutex are made in a `const` context
+//!   ([`Guarded::new_static_mutexed`], a key holding the mutex's owner word, as
+//!   [`Guarded::new_static`] holds a static rwlock): the fields of every timeout under
+//!   timeout(9)'s one `timeout_mutex`, initialised by `TIMEOUT_INITIALIZER`.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -1040,6 +1044,12 @@ impl LockId {
     pub(crate) fn of_mutex(word: &AtomicUsize) -> LockId {
         LockId(ptr::from_ref(word).addr() | LOCKID_MUTEX)
     }
+
+    /// The identity as a word, never 0 (the pinned lists record it, `pinlist.rs`).
+    #[inline]
+    pub(crate) fn raw(self) -> usize {
+        self.0
+    }
 }
 
 /// The bit of a [`LockId`] that says a mutex (a lock's word is aligned to 8 bytes, so its
@@ -1284,6 +1294,9 @@ enum Key {
     /// A lock that lives for ever, named in a `const` context ([`Guarded::new_static`]);
     /// part 0.
     Static(&'static RawRwlock),
+    /// A mutex that lives for ever, by its owner word, named in a `const` context
+    /// ([`Guarded::new_static_mutexed`]); part 0.
+    StaticMutex(&'static AtomicUsize),
     /// A lock's identity, its part in [`PART_BITS`].
     Addr(usize),
 }
@@ -1303,6 +1316,7 @@ impl Key {
     fn id(self) -> LockId {
         match self {
             Key::Static(l) => l.id(),
+            Key::StaticMutex(w) => LockId::of_mutex(w),
             Key::Addr(a) => LockId(a & !PART_BITS),
         }
     }
@@ -1310,7 +1324,7 @@ impl Key {
     #[inline]
     fn part(self) -> u8 {
         match self {
-            Key::Static(_) => 0,
+            Key::Static(_) | Key::StaticMutex(_) => 0,
             // At most `PART_BITS >> PART_SHIFT`, 3: it fits.
             Key::Addr(a) => ((a & PART_BITS) >> PART_SHIFT) as u8,
         }
@@ -1353,6 +1367,16 @@ impl<T> Guarded<T> {
     pub const fn new_static(lock: &'static RawRwlock, value: T) -> Self {
         Self {
             key: Key::Static(lock),
+            data: UnsafeCell::new(value),
+        }
+    }
+
+    /// `value`, kept under the mutex that lives for ever at `lock` (a `static` beside it:
+    /// timeout(9)'s wheel, whose `timeout_mutex` guards every timeout's `[T]` fields), made in
+    /// a `const` context (`TIMEOUT_INITIALIZER`); its witness is the mutex's guard.
+    pub const fn new_static_mutexed<U>(lock: &'static Mutexed<U>, value: T) -> Self {
+        Self {
+            key: Key::StaticMutex(lock.owner_word()),
             data: UnsafeCell::new(value),
         }
     }
@@ -2585,6 +2609,30 @@ mod tests {
         *intr.get_mut(any) += 1;
         let any: &dyn Witness = &g;
         assert_eq!(*intr.get(any), 8);
+    }
+
+    /// A `static` mutex keying cells made in a `const` context (timeout(9)'s wheel).
+    static STATIC_MTX: crate::mutex::SharedMutex = Mutexed::new(crate::intr::IPL_NONE, ());
+
+    #[test]
+    fn a_const_cell_opens_with_its_static_mutex() {
+        testutil::install();
+        static CELL: Guarded<u32> = Guarded::new_static_mutexed(&STATIC_MTX, 5);
+        let mut g = STATIC_MTX.lock();
+        *CELL.get_mut(&mut g) += 1;
+        assert_eq!(*CELL.get(&g), 6);
+        assert_eq!(CELL.key(), STATIC_MTX.id());
+        assert_eq!(CELL.part(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of another lock")]
+    fn a_const_cell_refuses_another_mutex() {
+        testutil::install();
+        static CELL: Guarded<u32> = Guarded::new_static_mutexed(&STATIC_MTX, 5);
+        let other = Mutexed::new(crate::intr::IPL_NONE, ());
+        let g = other.lock();
+        let _ = CELL.get(&g);
     }
 }
 /* </TESTS> */

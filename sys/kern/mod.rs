@@ -67,10 +67,14 @@ pub mod kern_softintr;
 pub mod kern_subr;
 pub mod kern_synch;
 pub mod kern_sysctl;
-pub mod kern_task;
+// task(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/task.rs`, still
+// reached at this path by its callers.
+pub use crate::sys::task as kern_task;
 pub mod kern_tc;
 pub mod kern_time;
-pub mod kern_timeout;
+// timeout(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/timeout.rs`,
+// still reached at this path by its callers.
+pub use crate::sys::timeout as kern_timeout;
 pub mod kern_unveil;
 pub mod kern_watchdog;
 pub mod kern_xxx;
@@ -85,7 +89,9 @@ pub mod spec_vnops;
 pub mod subr_autoconf;
 pub mod subr_disk;
 pub mod subr_evcount;
-pub mod subr_extent;
+// extent(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/extent.rs`, still
+// reached at this path by its callers.
+pub use crate::sys::extent as subr_extent;
 pub mod subr_log;
 pub mod subr_percpu;
 pub mod subr_pool;

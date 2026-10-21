@@ -201,7 +201,7 @@ use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::{
-    Taskq, task_add, task_set, taskq_create, taskq_del_barrier, taskq_destroy,
+    Taskq, TaskqRef, task_add, task_set, taskq_create, taskq_del_barrier, taskq_destroy_leaked,
 };
 use crate::kern::kern_timeout::{timeout_add, timeout_add_msec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic, printf};
@@ -1179,9 +1179,9 @@ pub fn wsdisplay_detach(self_: &Device, flags: i32) -> Result<(), Errno> {
 
     if let Some(tq) = sc.sc_taskq.get() {
         sc.sc_taskq.set(None);
-        // SAFETY: the display's own queue from `taskq_create`; its screens (and their bell
-        // tasks) are gone.
-        unsafe { taskq_destroy(NonNull::from(tq)) };
+        // The display's own queue from `taskq_create`; its screens (and their bell tasks)
+        // are gone. Its memory stays (`sys/sys/task.rs`'s deviations).
+        taskq_destroy_leaked(tq);
     }
 
     Ok(())
@@ -1249,7 +1249,10 @@ pub fn wsdisplay_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_vo
     // SAFETY: `dv_xname` is written once by `config_attach` before attach and the softc
     // lives for good, so the name's bytes do too.
     let xname: &'static [u8] = unsafe { &*ptr::from_ref(sc.sc_dv.xname().as_bytes()) };
-    sc.sc_taskq.set(taskq_create(xname, 1, IPL_TTY, 0));
+    // Readers copy the queue out of the cell (the bell, the screens' tasks): the handle is
+    // given up for a `&'static` (`sys/sys/task.rs`'s deviations).
+    sc.sc_taskq
+        .set(taskq_create(xname, 1, IPL_TTY, 0).map(TaskqRef::leak));
 
     if ap.console != 0 {
         crate::kassert!(WSDISPLAY_CONSOLE_INITTED.load(Ordering::Relaxed));

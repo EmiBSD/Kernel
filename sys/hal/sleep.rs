@@ -37,12 +37,20 @@
 //! - N3.5 S0: [`curproc_word`] and [`cold`] are public, for the kernel's map (the `busy`
 //!   owner of `vm_map_busy`, `uvm_mapent_alloc`'s `cold` test).
 //! - N3.5 S1: [`sched_pause`], for `uvm_map_teardown`'s yield between entries.
+//! - N4.1: [`sleep_setup`] and [`sleep_finish`], the two halves the C calls apart to wait
+//!   without holding its own mutex and the scheduler's lock at once (the softclock threads),
+//!   and [`PSWP`], [`PRIBIO`].
 
 use crate::bridges;
 use crate::sys::errno::Errno;
 
+/// `PSWP`: the highest sleep priority (the softclock threads' `"tmoslp"`).
+pub const PSWP: i32 = 0;
 /// `PVM`: the priority of a wait for virtual memory (`km_alloc`'s `"km_allocva"`).
 pub const PVM: i32 = 4;
+/// `PRIBIO`: the priority of a wait for a block device or a resource map (extent(9)'s
+/// `"extnt"`).
+pub const PRIBIO: i32 = 16;
 /// `PWAIT`: the priority of a plain wait (`refcnt_finalize`).
 pub const PWAIT: i32 = 32;
 /// `PLOCK`: the priority of a lock's sleep (`rw_enter`'s readers; writers sleep at
@@ -107,6 +115,26 @@ pub fn tsleep_nsec<T: ?Sized>(
     crate::assert::kassert!(prio & !(PRIMASK | PCATCH) == 0);
     match bridges::sleep() {
         Some(b) => b.tsleep_nsec(chan(ident), prio, wmesg, nsecs),
+        None => Ok(()),
+    }
+}
+
+/// `sleep_setup(ident, prio, wmesg)`: the running thread goes on `ident`'s sleep queue, to
+/// sleep in [`sleep_finish`] unless a wakeup on `ident` comes first. Nothing before the bridge
+/// is registered.
+pub fn sleep_setup<T: ?Sized>(ident: *const T, prio: i32, wmesg: &'static str) {
+    crate::assert::kassert!(prio & !(PRIMASK | PCATCH) == 0);
+    if let Some(b) = bridges::sleep() {
+        b.sleep_setup(chan(ident), prio, wmesg);
+    }
+}
+
+/// `sleep_finish(nsecs, do_sleep)`: sleeps (when `do_sleep`) until a wakeup on the channel
+/// [`sleep_setup`] named, the timeout (`EWOULDBLOCK`) or, with `PCATCH`, a signal; leaves the
+/// queue. `Ok` at once before the bridge is registered.
+pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
+    match bridges::sleep() {
+        Some(b) => b.sleep_finish(nsecs, do_sleep),
         None => Ok(()),
     }
 }
