@@ -56,8 +56,10 @@
 //! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
 //!   timecounter), and [`uptime_advance`].
 //! - `thread`'s `Kthread`: a host thread holding the kernel lock double from its start; a
-//!   deferred creation runs at once; `kthread_exit` unwinds the thread, which its spawner
-//!   catches.
+//!   deferred creation runs at once in this crate's own tests and is held everywhere else
+//!   (`bsd`'s host tests, the benches), as LZ's host tests never ran `main`'s
+//!   `kthread_run_deferred_queue`: those tests drive a queue's workers by hand, and a worker
+//!   thread would race them; `kthread_exit` unwinds the thread, which its spawner catches.
 //! - `vm::vnode`'s `SysInfo`: the host's monotonic clock from one second at the first call,
 //!   never rebooting.
 //! - `vm::proc`'s `VmProc`: each test thread a process, whose answers and records are a
@@ -644,8 +646,10 @@ pub fn uptime_advance(ns: u64) {
 
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock), a deferred creation runs at once
-/// (as after `kthread_run_deferred_queue`), and `kthread_exit` unwinds the host thread with
-/// [`KthreadExit`], which its spawner catches.
+/// in this crate's tests (as after `kthread_run_deferred_queue`) and is held, never run, in
+/// `bsd`'s (its ticket stays filed: a queue destroyed then is in `TQ_S_CREATED` and makes no
+/// thread), and `kthread_exit` unwinds the host thread with [`KthreadExit`], which its
+/// spawner catches.
 struct TestKthread;
 
 /// What a test kernel thread's `kthread_exit` unwinds with.
@@ -671,7 +675,11 @@ impl crate::thread::Kthread for TestKthread {
     }
 
     fn create_deferred(&self, ticket: usize) {
-        crate::thread::run_deferred(ticket);
+        // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
+        // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
+        if cfg!(test) {
+            crate::thread::run_deferred(ticket);
+        }
     }
 
     fn exit(&self, _ecode: i32) -> ! {
