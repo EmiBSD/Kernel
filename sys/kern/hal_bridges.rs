@@ -483,8 +483,6 @@ impl KernelLock for BsdKernelLock {
     }
 }
 
-/// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
-/// vnode pager's `uvn_io` (N3.4e).
 /// The soft interrupts (`sys/kern/kern_softintr.rs`). `softintr_establish` takes a
 /// `fn(*mut c_void)` and an argument; the kernel's handlers are plain `fn()`s, so each takes
 /// a slot of [`SOFT_RUNS`] and the argument is the slot's number, an address without
@@ -599,6 +597,8 @@ impl kernel::thread::Kthread for BsdKthread {
 
 static BSD_KTHREAD: BsdKthread = BsdKthread;
 
+/// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
+/// vnode pager's `uvn_io` (N3.4e).
 struct BsdNetLock;
 
 impl NetLock for BsdNetLock {
