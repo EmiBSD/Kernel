@@ -108,9 +108,9 @@ pub use hal::sys::select;
 #[forbid(unsafe_code)]
 pub mod selinfo;
 pub mod sensors;
-pub mod siginfo;
+pub use hal::sys::siginfo;
 pub mod sigio;
-pub mod signal;
+pub use hal::sys::signal;
 pub mod signalvar;
 pub mod smr;
 pub mod socket;

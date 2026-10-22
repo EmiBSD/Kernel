@@ -122,7 +122,7 @@ use crate::kern::sched_bsd::{mi_switch, sched_lock, sched_unlock, setrunnable, r
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{Str, log, panic, panicstr, printf, snprintf};
 use crate::machine::Machine;
-use crate::machine::copy::{copyin_obj, copyout_obj};
+use crate::machine::copy::copyin_obj;
 use crate::machine::cpu::{Cpu, curproc};
 use crate::machine::intr::{IPL_HIGH, IPL_NONE};
 use crate::machine::signal::{MachineSignal, sendsig};
@@ -172,6 +172,7 @@ use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
 use hal::klock;
 use hal::thread::SchedHold;
+use hal::user::UserPtr;
 use hal::vm::param::ptoa;
 use kernel::event::knote_process_locked;
 use kernel::vm::map::{uvm_map_remap_as_stack, uvm_unmap};
@@ -430,11 +431,11 @@ pub fn sys_sigaction(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
             sa.sa_flags |= SA_NODEFER;
         }
         sa.sa_mask &= !bit;
-        copyout_obj(&sa, osa)?;
+        UserPtr::<Sigaction>::new(osa).copyout(&sa)?;
         // KTRACE: not configured.
     }
     if nsa != 0 {
-        let mut sa: Sigaction = copyin_obj(nsa)?;
+        let mut sa = UserPtr::<Sigaction>::new(nsa).copyin()?;
         // KTRACE: not configured.
         setsigvec(p, signum, &mut sa);
     }
@@ -623,12 +624,12 @@ pub fn sys_sigaltstack(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
         if onstack {
             ss.ss_flags |= SS_ONSTACK;
         }
-        copyout_obj(&ss, oss)?;
+        UserPtr::<Sigaltstack>::new(oss).copyout(&ss)?;
     }
     if nss == 0 {
         return Ok(());
     }
-    let mut ss: Sigaltstack = copyin_obj(nss)?;
+    let mut ss = UserPtr::<Sigaltstack>::new(nss).copyin()?;
     ss._pad = 0;
     if onstack {
         return Err(Errno::EPERM);
@@ -2021,7 +2022,7 @@ pub fn sys___thrsigdivert(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> 
             retval[0] = si.si_signo as Register;
             let info = uap.info.get() as usize;
             if info != 0 {
-                copyout_obj(&si, info)?;
+                UserPtr::<Siginfo>::new(info).copyout(&si)?;
                 // KTRACE: not configured.
             }
             Ok(())

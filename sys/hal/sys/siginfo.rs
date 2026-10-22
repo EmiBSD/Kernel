@@ -45,6 +45,7 @@
 //! `<sys/siginfo.h>`: `union sigval`, `siginfo_t` and the signal codes.
 //!
 //! Upstream: sys/sys/siginfo.h @ 3ce1f3f79392
+//! LZ: sys/sys/siginfo.rs@3c62ede68802
 //!
 //! Status: `ported` (with `kern_sig.c`). `initsiginfo`, the one prototype, is in
 //! `kern/kern_sig.rs`.
@@ -58,8 +59,11 @@
 //!   `u64` words, read and written through accessor methods named after the C's
 //!   `si_*` macros (`si_addr()`, `set_si_addr()`, ...). The size (136 bytes on LP64) and
 //!   every offset are the C's; the `#if 0` members (`_file`, `_prof`) have no accessors.
-
-use crate::machine::copy::AbiPod;
+//!
+//! ## Redesign
+//! - N4.5b: the header is `hal`'s, so that `kernel::sig` and `bsd` name one `siginfo_t`. The
+//!   `unsafe impl AbiPod for Siginfo` is a [`crate::abi_pod!`] declaration, which proves at
+//!   compile time that the fields (the hole included) tile the structure.
 
 /// `union sigval`: an integer or a pointer value (see the module's deviations).
 #[repr(transparent)]
@@ -341,9 +345,13 @@ impl Default for Siginfo {
     }
 }
 
-// SAFETY: `repr(C)`: four `i32`s and fifteen `u64`s, no implicit padding (the hole is a
-// field); every bit pattern is a valid value.
-unsafe impl AbiPod for Siginfo {}
+crate::abi_pod!(Siginfo {
+    si_signo: i32,
+    si_code: i32,
+    si_errno: i32,
+    hole: i32,
+    data: [u64; SI_DATA_WORDS],
+});
 
 const _: () = {
     assert!(cfg!(target_endian = "little"));

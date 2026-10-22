@@ -5159,7 +5159,7 @@ notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEA
 rust = "sys/kern/kern_exit.rs"
 lz = ["sys/kern/kern_exit.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs", "sys/hal/sys/siginfo.rs"]
 notes = "M6-b: sys_exit, exit1 (single_thread_set, process_suspend_signal, stopprofclock, fdfree, SAS_NOCLDWAIT, lim_free, process_untrace reported), exit2 with deadproc, proc_free (crfree reported), reaper (prsignal reported), process_clear_orphan, process_reparent, process_zap (vrele, sigactsfree/lim_free/crfree reported); process 0 adopts orphans while initprocess is null; sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait, process_untrace are M6-c/M7; M6-b2: exit1 calls uvm_purge for user processes and the reaper uvm_exit; under feature qemu init's exit (pid 1) logs 'init exited with status N' and ends the run with that status instead of the C's panic; M7a-3b: lim_free of p_limit and of ps_limit in process_zap; kern_descrip.c: exit1 calls fdfree; kern_sig.c: single_thread_set(SINGLE_EXIT), process_suspend_signal, sigio_freelist, SAS_NOCLDWAIT, the SIGKILL to a traced child (process_untrace still reported), the reaper's prsignal(SIGCHLD), sigactsfree in process_zap; M8: exit1 calls killjobc and process_zap leavepgrp (kern_proc.c); M8: exit1 frees ps_pin/ps_libcpin (pin_free), process_zap vreles ps_textvp; M8: sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait (ruadd, scheduler_wait_hook, off zombprocess, freepid, process_zap), process_untrace (exit1 calls it for a traced child); acct_process in exit1 (ACCOUNTING); ps_opptr always null (no ptrace); kern_unveil.c: exit1 calls unveil_destroy; kern_event.c: kqpoll_exit in exit1 and knote_processexit in the reaper are real; M11e: exit1 releases every hold of the kernel lock (__mp_release_all) around uvm_purge and takes it back after; the reaper starts with KERNEL_UNLOCK and takes the lock only around the zombie's notification, as the C"
 
 [[module]]
@@ -5566,7 +5566,7 @@ adapted_by = ["sys/kernel/task.rs"]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/hal/sys/signal.rs", "sys/hal/sys/siginfo.rs"]
 
 [[module]]
 rust = "sys/kern/kern_smr.rs"
@@ -7850,9 +7850,11 @@ lz = ["sys/sys/sensors.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/siginfo.rs"
+rust = "sys/hal/sys/siginfo.rs"
+crate = "hal"
 lz = ["sys/sys/siginfo.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.5b: moved into hal so kernel::sig and bsd share siginfo_t; the AbiPod impl is hal::abi_pod!'s (LZ 1 unsafe impl); bsd's crate::sys::siginfo is a pub use"
 
 [[module]]
 rust = "sys/sys/sigio.rs"
@@ -7861,9 +7863,16 @@ status = "adapted"
 adapted_by = ["sys/hal/list.rs", "sys/kernel/cred.rs"]
 
 [[module]]
-rust = "sys/sys/signal.rs"
+rust = "sys/hal/sys/signal.rs"
+crate = "hal"
 lz = ["sys/sys/signal.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.5b: moved into hal so kernel::sig and bsd share the signal numbers, sigset_t and struct sigaction; the two AbiPod impls are hal::abi_pod!'s (LZ 2 unsafe impl); MINSIGSTKSZ from MAX_PAGE_SHIFT (12); bsd's crate::sys::signal is a pub use"
+[[module.fn]]
+lz = "sys/sys/signal.rs::Ucontext"
+native = []
+kind = "dropped"
+reason = "ucontext_t is the machine's struct sigcontext (bsd's machine::signal::MachineSignal::Sigcontext), which hal cannot name; nothing used the alias, and userland's ucontext_t is libc's"
 
 [[module]]
 rust = "sys/sys/signalvar.rs"

@@ -122,7 +122,7 @@ use crate::kern::vm_bsd::{uvm_exit, uvm_purge};
 #[cfg(feature = "qemu")]
 use crate::kprintf;
 use crate::machine::Machine;
-use crate::machine::copy::{copyout, copyout_obj};
+use crate::machine::copy::copyout;
 use crate::machine::cpu::Cpu;
 use crate::machine::pmap::pmap_deactivate;
 #[cfg(feature = "qemu")]
@@ -854,7 +854,7 @@ pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         Some(&mut info),
         retval,
     )?;
-    copyout_obj(&info, uap.info.get() as usize)?;
+    hal::user::UserPtr::<Siginfo>::new(uap.info.get() as usize).copyout(&info)?;
     // KTRACE: not configured.
     retval[0] = 0;
     Ok(())
