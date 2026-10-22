@@ -304,7 +304,7 @@ pub fn process_initialize(pr: &'static Process, p: &'static Proc) {
 
     pr.ps_children.init();
     pr.ps_orphans.init();
-    pr.ps_sigiolst.init();
+    kassert!(pr.ps_sigiolst.is_empty()); // LIST_INIT: a new hal::list head is empty
 
     rw_init(&pr.ps_lock, "pslock");
     mtx_init(&pr.ps_mtx, IPL_HIGH);

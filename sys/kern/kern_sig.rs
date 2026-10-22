@@ -2227,9 +2227,7 @@ pub fn single_thread_clear(p: &Proc) {
 
 /// `sigio_del`: frees the sigios on `rmlist`.
 pub fn sigio_del(rmlist: &Sigiolst) {
-    while let Some(sigio) = rmlist.first() {
-        // SAFETY: `sigio` is on `rmlist`.
-        unsafe { Sigiolst::remove(sigio) };
+    while let Some(sigio) = rmlist.pop_head() {
         // SAFETY: the sigio holds a reference to its credentials, dropped here.
         crfree(unsafe { &*sigio.sio_ucred.get() });
         free(
@@ -2249,17 +2247,25 @@ pub fn sigio_unlink(sir: &SigioRef, rmlist: &Sigiolst) {
         kassert!(ptr::eq(sigio.sio_myref.get(), sir));
         sir.sir_sigio.set(ptr::null());
 
+        // SAFETY: a registered sigio is on its owner's list, under `sigio_lock`, and the
+        // owner is alive while it is: `exit1` and `pgdelete` empty the list
+        // (`sigio_freelist`) before the process or group is freed; the sign of `sio_pgid`
+        // says which of `sio_proc`/`sio_pgrp` names the owner (the C's union).
+        let owner: &Sigiolst = unsafe {
+            if sigio.sio_pgid.get() > 0 {
+                &(*sigio.sio_proc.get()).ps_sigiolst
+            } else {
+                &(*sigio.sio_pgrp.get()).pg_sigiolst
+            }
+        };
         if sigio.sio_pgid.get() > 0 {
             sigio.sio_proc.set(ptr::null());
         } else {
             sigio.sio_pgrp.set(ptr::null());
         }
-        // SAFETY: a registered sigio is on its process's or group's list, under
-        // `sigio_lock`; it moves to `rmlist`, which outlives it until `sigio_del`.
-        unsafe {
-            Sigiolst::remove(sigio);
-            rmlist.insert_head(sigio);
-        }
+        // It moves to `rmlist`, which outlives it until `sigio_del`.
+        owner.remove(sigio);
+        rmlist.insert_head(sigio);
     }
 }
 
@@ -2354,8 +2360,8 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
                 break 'fail Err(Errno::ESRCH);
             }
             sigio.sio_proc.set(pr);
-            // SAFETY: a new sigio on no list; it stays until unlinked by `sigio_unlink`.
-            unsafe { pr.ps_sigiolst.insert_head(sigio) };
+            // A new sigio on no list; it stays until unlinked by `sigio_unlink`.
+            pr.ps_sigiolst.insert_head(sigio);
         } else {
             // if (pgid < 0)
             let Some(pgrp) = pgfind(-pgid) else {
@@ -2370,8 +2376,7 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
                 break 'fail Err(Errno::EPERM);
             }
             sigio.sio_pgrp.set(pgrp);
-            // SAFETY: as above.
-            unsafe { pgrp.pg_sigiolst.insert_head(sigio) };
+            pgrp.pg_sigiolst.insert_head(sigio);
         }
         Ok(())
     };

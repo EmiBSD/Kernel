@@ -59,13 +59,19 @@
 //! ## Deviations
 //! - The union `sio_u` (`sio_proc` or `sio_pgrp`, chosen by the sign of `sio_pgid`) is two
 //!   side-by-side pointer fields; the one the sign does not select stays null.
+//! - `LIST_HEAD(sigiolst, sigio)` is a `hal::list::List` (N4.2, interim until N4.4's sigio):
+//!   its links are atomics, so the lists can be members of the kernel's pooled `Process`
+//!   and `Pgrp` (`Send + Sync` by composition), and every insert and remove is safe. The
+//!   list's premise is elements never freed; a sigio is freed (`sigio_del`) only after it
+//!   left its list, and the `&'static` the inserts take is the deref of its `malloc(9)`
+//!   item (`sigio_setown`, `sigio_copy`), the convention every sigio reference rests on.
+//!   `LIST_REMOVE` names no head; `hal::list` does, so `sigio_unlink` reads the owner's
+//!   list from `sio_proc` or `sio_pgrp` before clearing it.
 
 use core::cell::Cell;
 use core::ptr;
 
-use crate::queue_adapter;
 use crate::sys::proc::{Pgrp, Process};
-use crate::sys::queue::{ListEntry, ListHead};
 use crate::sys::types::Pid;
 use crate::sys::ucred::Ucred;
 
@@ -107,7 +113,7 @@ pub struct Sigio {
     /// \[I\] `sio_pgrp` (`sio_u.siu_pgrp`): process group to receive ...
     pub sio_pgrp: Cell<*const Pgrp>,
     /// \[S\] `sio_pgsigio`: sigio's for process or group.
-    pub sio_pgsigio: ListEntry<Sigio>,
+    pub sio_pgsigio: hal::list::ListEntry<Sigio>,
     /// \[I\] `sio_myref`: location of the pointer that holds the reference to this structure.
     pub sio_myref: Cell<*const SigioRef>,
     /// \[I\] `sio_ucred`: current credentials.
@@ -125,7 +131,7 @@ impl Sigio {
         Self {
             sio_proc: Cell::new(ptr::null()),
             sio_pgrp: Cell::new(ptr::null()),
-            sio_pgsigio: ListEntry::new(),
+            sio_pgsigio: hal::list::ListEntry::new(),
             sio_myref: Cell::new(ptr::null()),
             sio_ucred: Cell::new(ptr::null()),
             sio_pgid: Cell::new(0),
@@ -139,13 +145,13 @@ impl Default for Sigio {
     }
 }
 
-queue_adapter!(
+hal::list_adapter!(
     /// `LIST_ENTRY(sigio) sio_pgsigio`: a process's or process group's sigios.
-    pub SigioPgsigio: Sigio, sio_pgsigio => ListEntry<Sigio>
+    pub SigioPgsigio: Sigio, sio_pgsigio
 );
 
 /// `LIST_HEAD(sigiolst, sigio)`.
-pub type Sigiolst = ListHead<SigioPgsigio>;
+pub type Sigiolst = hal::list::List<SigioPgsigio>;
 
 /// `sigio_init(sir)`.
 pub fn sigio_init(sir: &SigioRef) {

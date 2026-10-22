@@ -437,7 +437,7 @@ pub fn enternewpgrp(pr: &Process, pgrp: NonNull<u8>, newsess: Option<NonNull<u8>
     }
     pgrp.pg_id.set(pr.ps_pid.get());
     pgrp.pg_members.init();
-    pgrp.pg_sigiolst.init();
+    crate::kassert!(pgrp.pg_sigiolst.is_empty()); // LIST_INIT: a new hal::list head is empty
     // SAFETY: a new group in no chain yet; the hash is the kernel lock's.
     unsafe { pgrphash(pr.ps_pid.get()).insert_head(pgrp) };
     pgrp.pg_jobc.set(0);

@@ -5177,7 +5177,8 @@ adapted_by = ["sys/hal/vm/uvmexp.rs"]
 [[module]]
 rust = "sys/kern/kern_proc.rs"
 lz = ["sys/kern/kern_proc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/list.rs"]
 notes = "M5-b1: the lists, hash tables (slices from hashinit, masks are len-1) and pools (procinit), uid_find/uid_release under uidinfolk (a real rwlock since M7a), chgproccnt, inferior, tfind, tfind_user, prfind, pgfind, zombiefind; M8 (tty.c): the pgrp management: enternewpgrp (takes the pool items its callers got and writes a zeroed Pgrp/Session into them), enterthispgrp, leavepgrp, pgdelete (clears the tty's t_pgrp), zapverauth (the timeout's void *), fixjobc, killjobc (SIGHUP to the foreground group, ttywait, the controlling vnode released), orphanpg; proc_printit and the ddb commands are M7"
 
 [[module]]
@@ -5213,7 +5214,7 @@ adapted_by = ["sys/kernel/task.rs"]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs"]
 
 [[module]]
 rust = "sys/kern/kern_smr.rs"
@@ -7412,7 +7413,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/sigio.rs"
 lz = ["sys/sys/sigio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/list.rs"]
 
 [[module]]
 rust = "sys/sys/signal.rs"
