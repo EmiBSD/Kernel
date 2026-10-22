@@ -125,8 +125,7 @@ pub use hal::sys::syscall;
 pub mod syscall_mi;
 pub mod syscallargs;
 pub mod sysctl;
-#[forbid(unsafe_code)]
-pub mod syslimits;
+pub use hal::sys::syslimits;
 #[forbid(unsafe_code)]
 pub mod syslog;
 pub mod systm;

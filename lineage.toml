@@ -7783,7 +7783,8 @@ lz = ["sys/sys/sysctl.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/syslimits.rs"
+rust = "sys/hal/sys/syslimits.rs"
+crate = "hal"
 lz = ["sys/sys/syslimits.rs"]
 status = "inherited"
 
