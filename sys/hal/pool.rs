@@ -615,9 +615,32 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         Self::homed(value, Rebuild::Adopt)
     }
 
+    /// The references alive now on the item holding `value` (a snapshot, as
+    /// [`PoolArc::count`]), read without a handle: the C's `fp->f_count` read where taking
+    /// a reference could make its holder the last one (`unp_gc` under `unp_gc_lock`, whose
+    /// last close would take that lock again). 0 for a value no recorded pool placed, and
+    /// for one whose last handle is gone.
+    pub fn count_of(value: &T) -> usize
+    where
+        T: Homed,
+    {
+        Self::homed_view(value).map_or(0, |v| Self::count(&v))
+    }
+
     /// The handle [`PoolArc::from_ref`], [`PoolArc::try_from_ref`] and [`PoolArc::adopt`]
     /// rebuild for `value`, as `how` says.
     fn homed(value: &T, how: Rebuild) -> Option<Self>
+    where
+        T: Homed,
+    {
+        Self::take(&Self::homed_view(value)?, how)
+    }
+
+    /// A view of the item holding `value` (no reference of its own, never dropped), for
+    /// [`PoolArc::homed`] and [`PoolArc::count_of`] to read or raise its count while `value`
+    /// is borrowed; `None` for a value no recorded pool placed. The view is never kept past
+    /// the caller's use of `value`.
+    fn homed_view(value: &T) -> Option<ManuallyDrop<Self>>
     where
         T: Homed,
     {
@@ -625,7 +648,7 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
             return None;
         }
         let at = NonNull::from(value);
-        // SAFETY: `rebuild`'s contract. `at` is the address of the value of an item of a
+        // SAFETY: `view`'s contract. `at` is the address of the value of an item of a
         // `TypedPool<T>` made by `init_recorded`: the home checked above is a direct field of
         // `value` (`Homed` is implemented by `pool_home!` alone, sealed, and names a field of
         // the type) holding `value`'s own address, and the only store of a non-zero address
@@ -638,10 +661,11 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         // item is not put back during the call: `value` is borrowed for it, and an item goes
         // back only after its value's drop, which no `&T` survives but one a pinned list
         // lends, whose element's drop stops the kernel while it is linked (hal::pinlist's
-        // I1) before its memory goes back. A count of 0 is refused by `rebuild` (a panic or
-        // `None`, as `how` says), never taken back to 1; an adoption takes a parked
-        // reference, which only exists while the count is above 0.
-        unsafe { Self::rebuild(at, how) }
+        // I1) before its memory goes back. The view lives no longer than the caller's
+        // borrow of `value` (`homed` and `count_of` use it at once); a count of 0 is refused
+        // by `take` (a panic or `None`, as `how` says), never taken back to 1; an adoption
+        // takes a parked reference, which only exists while the count is above 0.
+        Some(unsafe { Self::view(at) })
     }
 
     /// Whether two handles name the same item.
@@ -697,23 +721,25 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     ///
     /// # Safety
     ///
-    /// As [`PoolArc::rebuild`]'s.
+    /// As [`PoolArc::view`]'s.
     #[cfg_attr(
         not(target_os = "none"),
         allow(dead_code, reason = "the pmap backends' alone; the host has none")
     )]
     pub(crate) unsafe fn from_value(value: NonNull<T>) -> Self {
-        // SAFETY: the caller keeps `rebuild`'s contract (this function's own).
-        match unsafe { Self::rebuild(value, Rebuild::Count) } {
+        // SAFETY: the caller keeps `view`'s contract (this function's own); the view is used
+        // at once, inside it.
+        let view = unsafe { Self::view(value) };
+        match Self::take(&view, Rebuild::Count) {
             Some(h) => h,
             None => hal_panic(format_args!("PoolArc::from_value: no handle rebuilt")),
         }
     }
 
-    /// A handle to the item whose value `value` points at, as `how` says: one more reference
-    /// (panicking at a count of 0, or answering `None` there), or a parked reference adopted
-    /// (`None` when none is parked). The item is reached back from the value by `offset_of!`,
-    /// with the provenance `get_shared` exposed for the whole item.
+    /// A view of the item whose value `value` points at: a `PoolArc` that holds no reference
+    /// of its own and is never dropped, through which [`PoolArc::take`] makes a handle or the
+    /// count is read. The item is reached back from the value by `offset_of!`, with the
+    /// provenance `get_shared` exposed for the whole item.
     ///
     /// # Safety
     ///
@@ -725,10 +751,12 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     /// the caller holds the lock that keeps the record of the pointer, and the object's drop
     /// refuses to finish while a record is left (a pmap with a pv entry: `hal::pmap`'s last
     /// drop panics, and a drop that does not finish never puts the item back). The count may
-    /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused with
-    /// a panic or `None` here (as `how` says), never taken back to 1, so no second last drop
-    /// can follow; a parked reference exists only while the count is above 0.
-    unsafe fn rebuild(value: NonNull<T>, how: Rebuild) -> Option<Self> {
+    /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused by
+    /// [`PoolArc::take`] with a panic or `None` (as its `how` says), never taken back to 1, so
+    /// no second last drop can follow, and only read by [`PoolArc::count_of`]; a parked
+    /// reference exists only while the count is above 0. The view is used only while those
+    /// hold (the caller's lock or borrow), never kept.
+    unsafe fn view(value: NonNull<T>) -> ManuallyDrop<Self> {
         let addr = value.as_ptr().addr() - offset_of!(Inner<T>, value);
         let Some(inner) = NonNull::new(ptr::with_exposed_provenance_mut::<Inner<T>>(addr)) else {
             hal_panic(format_args!("PoolArc::from_value: a null item"));
@@ -744,7 +772,15 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
                 "PoolArc::from_value: an item of a pool no record reaches"
             ));
         }
-        let refs = &borrowed.inner().refs;
+        borrowed
+    }
+
+    /// A handle to the item `view` names, as `how` says: one more reference (panicking at a
+    /// count of 0, or answering `None` there), or a parked reference adopted (`None` when
+    /// none is parked).
+    fn take(view: &ManuallyDrop<Self>, how: Rebuild) -> Option<Self> {
+        let inner = view.inner;
+        let refs = &view.inner().refs;
         let taken = match how {
             Rebuild::Count | Rebuild::CountUnlessLast => {
                 refs.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
@@ -810,7 +846,7 @@ unsafe impl<T: Send + Sync + 'static> Send for PoolArc<T> {}
 // across CPUs is sound, and a clone moved elsewhere is covered by `Send` above.
 unsafe impl<T: Send + Sync + 'static> Sync for PoolArc<T> {}
 
-/// How [`PoolArc::rebuild`] makes its handle.
+/// How [`PoolArc::take`] makes its handle.
 #[derive(Clone, Copy)]
 enum Rebuild {
     /// One more reference; a count of 0 is `panic(9)`.
@@ -828,7 +864,7 @@ enum Rebuild {
 ///
 /// Invariant: `inner` names an initialised `Inner<T>` of `inner.pool` whose count is 0 and
 /// that nothing parks a reference on: no handle to it exists and none can be made
-/// ([`PoolArc::rebuild`] refuses a count of 0, an adoption needs a parked reference), so
+/// ([`PoolArc::take`] refuses a count of 0, an adoption needs a parked reference), so
 /// this is its one owner until its drop; only shared references to the value are made from
 /// it.
 pub struct Last<T: Send + Sync + 'static> {
@@ -1916,6 +1952,37 @@ mod tests {
         };
         assert!(PoolArc::try_from_ref(&local).is_none());
         assert!(PoolArc::adopt(&local).is_none());
+    }
+
+    /// `count_of` reads the count through the value with no handle made: the count does not
+    /// move, a parked reference is counted, and a value at count 0 or of no pool reads 0.
+    #[test]
+    fn count_of_reads_the_count_without_a_reference() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "countpl"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let h = filey(&P, 4, &drops);
+        assert_eq!(PoolArc::count_of(&*h), 1);
+        assert_eq!(PoolArc::count(&h), 1);
+        let two = h.clone();
+        PoolArc::forget(two);
+        assert_eq!(PoolArc::count_of(&*h), 2);
+        let back = PoolArc::adopt(&*h).unwrap();
+        drop(back);
+        assert_eq!(PoolArc::count_of(&*h), 1);
+        // The last handle's drop is never started by the read: the value is still there.
+        let last = PoolArc::try_last(h).unwrap();
+        assert_eq!(PoolArc::count_of(&*last), 0);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(last);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        let local = Filey {
+            v: 0,
+            home: PoolHome::new(),
+            drops: drops.clone(),
+        };
+        assert_eq!(PoolArc::count_of(&local), 0);
     }
 
     #[test]

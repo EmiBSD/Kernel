@@ -233,6 +233,14 @@ impl<G: FileGlue> File<G> {
         self.f_flag.load(Ordering::Relaxed) as i32
     }
 
+    /// `fp->f_count` read through the file itself, with no reference taken: the references
+    /// alive now (a snapshot), 0 once the last is gone. For a holder that names the file
+    /// without a reference and must not take one (`unp_gc`, under a lock the file's last
+    /// close would take again).
+    pub fn f_count(&self) -> u32 {
+        PoolArc::count_of(self) as u32
+    }
+
     /// `fp->f_type` (0 before [`File::install`]).
     pub fn f_type(&self) -> i32 {
         self.f_type.load(Ordering::Relaxed)
@@ -686,6 +694,24 @@ mod tests {
         drop(fp);
         assert_eq!(file_log(), vec![String::from("close 5 false")]);
         assert_eq!(numfiles(), 0);
+    }
+
+    /// `f_count` through the file (unp_gc's read): the references, never one more, and the
+    /// read is never the release that closes the file.
+    #[test]
+    fn f_count_reads_the_references_without_taking_one() {
+        let (_pr, p) = thread(15);
+        let fp = fnew(&p).unwrap();
+        install(&fp, 8);
+        let file: &File<Files> = &fp;
+        assert_eq!(file.f_count(), 1);
+        let two = fp.fref();
+        assert_eq!(file.f_count(), 2);
+        assert_eq!(two.frele(Some(&p)), Ok(()));
+        assert_eq!(fp.f_count(), 1);
+        assert!(file_log().is_empty());
+        assert_eq!(fp.frele(Some(&p)), Ok(()));
+        assert_eq!(file_log(), vec![String::from("close 8 true")]);
     }
 
     #[test]

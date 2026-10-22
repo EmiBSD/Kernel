@@ -374,10 +374,11 @@ pub fn filedesc_init() {
 }
 
 /// `fp->f_count` of a file a holder names without a reference (`unp_gc`'s `unp_file`, a
-/// message's word): the references alive besides the one this read takes, 0 once the last
-/// is gone.
+/// message's word), read as the C reads it (uipc_usrreq.c's `unp_gc`): no reference is
+/// taken, so the read can never be the last holder whose drop closes the socket under
+/// `unp_gc_lock`; 0 once the last is gone.
 pub fn file_count(fp: &File) -> u32 {
-    FileRef::try_from_ref(fp).map_or(0, |r| r.count() - 1)
+    fp.f_count()
 }
 
 /// `falloc(p)` with the table locked: a new file (the caller's reference) and its descriptor.
