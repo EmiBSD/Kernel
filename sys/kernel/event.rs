@@ -1061,6 +1061,13 @@ impl<G: ProcGlue> Klist<G> {
     /// `knote_locked(list, hint)` of a `bsd` caller that holds the list's lock as the C
     /// knows it (as [`Klist::insert_legacy`]; the kernel lock's walk needs its reader only).
     pub fn knote_legacy(&self, hint: i64) {
+        // KLIST_ASSERT_LOCKED, as the C makes it at every call (kern_event.c:2129), even on
+        // an empty list: a caller without the kernel lock is caught under diagnostic whether
+        // or not anything listens.
+        #[cfg(feature = "diagnostic")]
+        if self.kind() == KlistKind::Kernel {
+            klock::kernel_assert_locked();
+        }
         // An empty list has nothing to walk: no lock taken (the C's KNOTE tests it too).
         if self.is_empty() {
             return;
