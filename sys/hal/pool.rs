@@ -496,7 +496,12 @@ struct Inner<T: 'static> {
 /// item is put back only when that count reaches 0, so it outlives every handle and every
 /// parked reference. While handles live only shared references to the item are made, except the
 /// `&mut T` of [`PoolArc::get_mut`], made only when its handle is the one counted and is
-/// borrowed mutably, in a pool that no record reaches.
+/// borrowed mutably, in a pool that no record reaches. One kind of `PoolArc` counts nothing:
+/// the views [`PoolArc::view`] builds ([`View`] through [`PoolArc::homed_view`]), never
+/// dropped, which only read `refs` ([`PoolArc::count_of`], at any count, 0 included) or raise
+/// it from a non-zero count ([`PoolArc::take`]); they are sound because the caller's borrow of
+/// the value (a `View`'s lifetime) or the lock keeping its record keeps the item's last drop
+/// from finishing, so the item is not put back while a view exists.
 pub struct PoolArc<T: Send + Sync + 'static> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,
@@ -888,7 +893,10 @@ enum Rebuild {
 /// that nothing parks a reference on: no handle to it exists and none can be made
 /// ([`PoolArc::take`] refuses a count of 0, an adoption needs a parked reference), so
 /// this is its one owner until its drop; only shared references to the value are made from
-/// it.
+/// it. A view ([`View`]) may still exist over a value a pinned list lends at count 0: it
+/// counts nothing, only reads `refs` ([`PoolArc::count_of`] answers 0, [`PoolArc::take`]
+/// refuses), and ends with the borrow of the value it was built over, before the unlink this
+/// owner makes ahead of its drop.
 pub struct Last<T: Send + Sync + 'static> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,
@@ -900,10 +908,11 @@ impl<T: Send + Sync + 'static> Last<T> {
         // SAFETY: the item is initialised and is not put back before this `Last` is dropped
         // (the invariant: it is the item's one owner, and only its drop frees it), and that
         // drop cannot run while the returned reference, which borrows `self`, lives. Only
-        // shared references to the item are made while it is at count 0: this one, and the
-        // ones to the value a pinned list lends its walkers, which end with the unlink the
-        // owner makes before dropping (hal::pinlist's I1 stops the kernel otherwise); none is
-        // `&mut`.
+        // shared references to the item are made while it is at count 0: this one, the ones
+        // to the value a pinned list lends its walkers, and the shared reads of `refs` the
+        // views built over such a value make (`count_of`, `take`'s refusal), all of which end
+        // with the unlink the owner makes before dropping (hal::pinlist's I1 stops the kernel
+        // otherwise); none is `&mut`.
         unsafe { self.inner.as_ref() }
     }
 }
