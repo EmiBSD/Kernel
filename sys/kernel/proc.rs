@@ -1679,6 +1679,10 @@ pub fn process_alloc<G: ProcGlue>(pid: Pid, g: G::ProcessG) -> ProcessRef<G> {
 pub struct Thread<G: ProcGlue> {
     /// `p_stat`, `p_cpu`, `p_addr`, `p_md`: what the machine reaches by offset.
     pub machine: MachineSlot,
+    /// \[S\] The number of the CPU `p_cpu` names (`kernel::sched`'s `set_thread_cpu`, which
+    /// writes both), -1 before the thread first ran or was queued: `p_cpu`'s CPU in O(1), beside the slot
+    /// (one cache line with `p_cpu`).
+    pub p_cpuno: I32Word,
     /// \[K\] `p_list`: `allproc`.
     pub p_list: PinEntry<Thread<G>>,
     /// \[K\] `p_hash`.
@@ -1791,6 +1795,7 @@ impl<G: ProcGlue> Thread<G> {
     ) -> Self {
         Self {
             machine: MachineSlot::new(),
+            p_cpuno: I32Word::new(-1),
             p_list: PinEntry::new(),
             p_hash: PinEntry::new(),
             p_thr_link: PinEntry::new(),

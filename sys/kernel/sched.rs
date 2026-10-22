@@ -631,19 +631,26 @@ fn cpu_of<G: ProcGlue>(n: usize) -> &'static SchedCpu<G> {
 /// slot holds; `None` before it first ran or was queued.
 #[inline]
 pub fn thread_cpu<G: ProcGlue>(p: &Thread<G>) -> Option<usize> {
-    hal::cpu::number_of_word(p.cpu_word())
+    usize::try_from(p.p_cpuno.get()).ok()
 }
 
 /// `p->p_cpu = ci` for CPU `n`: the word of CPU `n`'s core, an attached one or the running
-/// CPU's (a host thread's core is its own, never attached).
+/// CPU's (a host thread's core is its own, never attached), and its number beside it
+/// ([`thread_cpu`]). A number that names no CPU is a scheduler bug (`kassert`).
 #[inline]
 pub fn set_thread_cpu<G: ProcGlue>(p: &Thread<G>, n: usize) {
+    // The two are written together: a thread put back on its own CPU keeps both.
+    if usize::try_from(p.p_cpuno.get()) == Ok(n) {
+        return;
+    }
     let core = hal::cpu::by_number(n).or_else(|| {
         let c = hal::cpu::curcpu();
         (c.number() == n).then_some(c)
     });
+    kassert!(core.is_some());
     if let Some(core) = core {
         p.set_cpu_word(core.word());
+        p.p_cpuno.set(n as i32);
     }
 }
 
@@ -903,15 +910,19 @@ pub fn setrunqueue<G: ProcGlue>(
     p: Pin<&Thread<G>>,
     prio: u8,
 ) {
-    let n = queue_place(h, cpu, p.get_ref(), prio);
-    let spc = cpu_of::<G>(n);
+    let spc = queue_place(h, cpu, p.get_ref(), prio);
     spc.qs[usize::from(prio >> 2)].insert_tail(h, p);
     queued(spc, prio);
 }
 
 /// `setrunqueue`'s look at `p` before it is linked: the CPU chosen, `p`'s `p_cpu`, `p_stat`
-/// and `p_runpri` set, `spc_nrun` counted; the CPU's number.
-fn queue_place<G: ProcGlue>(h: &SchedHold, cpu: Option<usize>, p: &Thread<G>, prio: u8) -> usize {
+/// and `p_runpri` set, `spc_nrun` counted; the CPU's state.
+fn queue_place<G: ProcGlue>(
+    h: &SchedHold,
+    cpu: Option<usize>,
+    p: &Thread<G>,
+    prio: u8,
+) -> &'static SchedCpu<G> {
     let n = match cpu {
         Some(n) => n,
         None => sched_choosecpu(h, p),
@@ -925,9 +936,10 @@ fn queue_place<G: ProcGlue>(h: &SchedHold, cpu: Option<usize>, p: &Thread<G>, pr
     p.set_stat(SRUN);
     p.p_runpri.set(prio);
 
-    cpu_of::<G>(n).nrun.fetch_add(1, Ordering::Relaxed);
+    let spc = cpu_of::<G>(n);
+    spc.nrun.fetch_add(1, Ordering::Relaxed);
     // TRACEPOINT(sched, enqueue, ...): dt(4), not configured.
-    n
+    spc
 }
 
 /// `setrunqueue`'s bookkeeping once `p` is linked on `spc`'s queue for `prio`: the queue
@@ -1165,8 +1177,10 @@ fn sched_steal_proc<G: ProcGlue>(h: &mut SchedHold, me: &SchedCpu<G>) -> Option<
 
     let set = t.queued_cpus.copy();
 
-    // The cheapest: its CPU, queue and address (compared, while the hold keeps it linked).
+    // The cheapest: its CPU, queue and address (compared, while the hold keeps it linked), and
+    // its token, made while it is linked.
     let mut best: Option<(usize, usize, usize)> = None;
+    let mut next: Option<Next> = None;
     let mut bestcost = i32::MAX;
     while let Some(n) = set.first() {
         set.del(n);
@@ -1178,32 +1192,34 @@ fn sched_steal_proc<G: ProcGlue>(h: &mut SchedHold, me: &SchedCpu<G>) -> Option<
             continue;
         }
         let queue = whichqs.trailing_zeros() as usize; // ffs() - 1
-        for p in spc.qs[queue].iter(h) {
+        for p in spc.qs[queue].iter_pinned(h) {
             if p.p_flag.load(Ordering::Relaxed) & P_CPUPEG != 0 {
                 continue;
             }
-            let cost = sched_proc_to_cpu_cost(me.number, p);
+            let cost = sched_proc_to_cpu_cost(me.number, p.get_ref());
             if best.is_none() || cost < bestcost {
-                best = Some((n, queue, addr_of(p)));
+                best = Some((n, queue, addr_of(p.get_ref())));
+                next = Some(Next::of(h, p));
                 bestcost = cost;
             }
         }
     }
     let (n, queue, addr) = best?;
+    let next = next?;
 
     // TRACEPOINT(sched, steal, ...): dt(4), not configured.
 
+    // remrunqueue(best) and `best->p_cpu = self`, in the one walk that takes it off.
     let spc = cpu_of::<G>(n);
-    let next = {
-        let p = spc.qs[queue]
-            .iter_pinned(h)
-            .find(|p| addr_of(p.get_ref()) == addr)?;
-        set_thread_cpu(p.get_ref(), me.number);
-        Next::of(h, p)
-    };
-    // remrunqueue(best)
     spc.nrun.fetch_sub(1, Ordering::Relaxed);
-    spc.qs[queue].remove_where(h, |p| addr_of(p) == addr);
+    let took = spc.qs[queue].remove_where(h, |p| {
+        let it = addr_of(p) == addr;
+        if it {
+            set_thread_cpu(p, me.number);
+        }
+        it
+    });
+    kassert!(took);
     dequeued(h, spc, queue);
 
     SCHED_STOLEN.fetch_add(1, Ordering::Relaxed);
@@ -2198,13 +2214,12 @@ pub fn wakeup_n<G: ProcGlue>(ident: usize, n: i32) {
             return None;
         }
         let prio = runnable_prio(&h, p)?;
-        let cpu = queue_place(&h, None, p, prio);
+        let spc = queue_place(&h, None, p, prio);
         runnable_after(&h, p);
-        Some((cpu, prio))
+        Some((spc, prio))
     }) {
         match place {
-            Some((cpu, prio)) => {
-                let spc = cpu_of::<G>(cpu);
+            Some((spc, prio)) => {
                 wakeq.move_first_to(&mut h, &spc.qs[usize::from(prio >> 2)]);
                 queued(spc, prio);
             }
@@ -2436,7 +2451,7 @@ mod tests {
     fn run_as(n: usize, p: Pin<&'static T>) {
         hal::cpu::set_current(vcpu(n));
         p.set_stat(SONPROC);
-        p.set_cpu_word(vcpu(n).word());
+        set_thread_cpu(p.get_ref(), n);
         hal::thread::set_current_static(Some(p));
     }
 

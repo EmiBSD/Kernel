@@ -1108,7 +1108,8 @@ mod tests {
         // The user accepted these sizes (N4.2's and N4.3's decision 1, 2026-10-22). N4.5a
         // moved the run queues and the sleep timeout into the kernel: procpl 1056 -> 1128
         // (p_runq a PinEntry and p_sleep_to the kernel's Timeout in kernel::proc's Thread,
-        // where bsd's list entry and timeout were), pending the user's word as N4.2's were.
+        // where bsd's list entry and timeout were), then 1136 (p_cpuno, the CPU number beside
+        // the slot), pending the user's word as N4.2's were.
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
