@@ -301,6 +301,13 @@
 //!   caller waits on, where the C hands the task a pointer to the caller's stack state.
 //! - The CPU sets are kept by CPU number (`hal::cpu`'s), not by `struct cpu_info`.
 //! - dt(4) is not configured: the `TRACEPOINT`s are comments, as in LZ.
+//! - The CPUs' `spc_deadproc` lists share `deadproc_mutex` (`DEAD_LOCK`) with the reaper's
+//!   `deadproc` (the C's per-CPU list is the CPU's own, touched without a lock), so the
+//!   queues are bound to one lock; and `exit2`'s accounting of a dead thread
+//!   (`tuagg_add_process` under `ps_mtx`, the glue's `exit_account`) runs while
+//!   `deadproc_mutex` is held, where the C takes `ps_mtx` before it: the lock order is
+//!   `deadproc_mutex` -> `ps_mtx`, and nothing takes them the other way (`sched_exit` inserts
+//!   after `exit1` left `ps_mtx`; the reaper holds neither when it takes `deadproc_mutex`).
 //!
 //! ## Redesign
 //! - LZ's three files keep the run queues in each `struct cpu_info`'s `schedstate_percpu` and
@@ -323,7 +330,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use hal::cpu::MAXCPUS;
-use hal::intr::IPL_HIGH;
+use hal::intr::IPL_NONE;
 use hal::mutex::{Mutexed, SharedMutex};
 use hal::once::OnceStatic;
 use hal::pinlist::PinList;
@@ -621,8 +628,9 @@ impl<G: ProcGlue> Default for SchedTables<G> {
     }
 }
 
-/// `deadproc_mutex` and the CPUs' `spc_deadproc`'s lock: the dead threads' queues.
-static DEAD_LOCK: SharedMutex = Mutexed::new(IPL_HIGH, ());
+/// `deadproc_mutex` and the CPUs' `spc_deadproc`'s lock: the dead threads' queues, at the
+/// C's `IPL_NONE` (it is never taken from an interrupt).
+static DEAD_LOCK: SharedMutex = Mutexed::new(IPL_NONE, ());
 
 /// `nowake`: global sleep channel for threads that do not want to receive wakeup(9)
 /// broadcasts.
@@ -829,6 +837,7 @@ pub fn sched_idle<G: ProcGlue>(n: usize) -> ! {
 
     with_curproc::<G, _>(|p| {
         kassert!(addr_of(p.get_ref()) == spc.idle_addr());
+        kassert!(thread_cpu(p.get_ref()) == Some(n)); // KASSERT(p->p_cpu == ci)
 
         let h = sched_lock();
         p.set_stat(SSLEEP);
