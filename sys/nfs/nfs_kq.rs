@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn write_filter_is_always_ready() {
-        let kn = Knote::new();
+        let kn = Knote::detached();
         kn.kn_data().set(7);
         assert!(filt_nfswrite(&kn, 0));
         assert_eq!(kn.kn_data().get(), 0);
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn vnode_filter_records_requested_events() {
-        let kn = Knote::new();
+        let kn = Knote::detached();
         kn.kn_sfflags.set(NOTE_WRITE | NOTE_ATTRIB);
         assert!(!filt_nfsvnode(&kn, i64::from(NOTE_LINK)));
         assert!(filt_nfsvnode(&kn, i64::from(NOTE_WRITE)));

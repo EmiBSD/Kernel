@@ -570,6 +570,48 @@ impl<A: PinAdapter> PinList<A> {
         self.head.prev.set(Some(n));
     }
 
+    /// `TAILQ_REMOVE(e)` then `TAILQ_INSERT_AFTER(next, e)`, `next` being `e`'s next element:
+    /// `e` moves one place towards the tail, past whatever follows it (`kqueue_scan`'s start
+    /// marker stepping over another scan's marker, which the caller can only name through a
+    /// borrow of the witness). `false`, nothing changed, when `e` is the last element. Panics,
+    /// before anything is changed, when `e` is on no list of this lock or at an end that is
+    /// not this list's.
+    pub fn step_over<W: Divisible + ?Sized>(&self, w: &mut W, e: &A::Elem) -> bool {
+        let id = id_of(w);
+        bind(&self.key, id, "TAILQ_INSERT_AFTER");
+        let ent = linked_entry::<A>(e, id, "TAILQ_INSERT_AFTER");
+        let me = Some(ent.addr());
+        let p = ent.prev.get();
+        let n = ent.next.get();
+        if (n.is_none() && self.head.prev.get() != me)
+            || (p.is_none() && self.head.next.get() != me)
+        {
+            hal_panic(format_args!(
+                "TAILQ_INSERT_AFTER: the element is on another list"
+            ));
+        }
+        let Some(n) = n else {
+            return false;
+        };
+        let next = entry_at(n);
+        let after = next.next.get();
+        // `e` out from between `p` and `next`...
+        match p {
+            Some(p) => entry_at(p).next.set(Some(n)),
+            None => self.head.next.set(Some(n)),
+        }
+        next.prev.set(p);
+        // ... and in between `next` and what followed it.
+        next.next.set(me);
+        ent.prev.set(Some(n));
+        ent.next.set(after);
+        match after {
+            Some(a) => entry_at(a).prev.set(me),
+            None => self.head.prev.set(me),
+        }
+        true
+    }
+
     /// `TAILQ_REMOVE(e)`: takes `e` off this list. Panics when it is on no list of this lock, or
     /// at an end that is not this list's (on another list), before anything is changed.
     pub fn remove<W: Divisible + ?Sized>(&self, w: &mut W, e: &A::Elem) {
@@ -984,6 +1026,25 @@ mod tests {
     }
 
     #[test]
+    fn an_all_zero_list_is_an_empty_one() {
+        // A zeroed object (`M_ZERO`, `PR_ZERO`) that embeds a list (a klist) holds a valid
+        // empty list: every field's zero is its `new()` value.
+        testutil::install();
+        // SAFETY: `PinList` is a `PinEntry` (three `Cell<Option<NonNull<_>>>`, whose all-zero
+        // pattern is `None`, an `AtomicUsize` and a zero-sized marker), an `AtomicUsize` and a
+        // zero-sized marker: all zero bytes are a valid value of each field, so of the list.
+        let l: PinList<ByE> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut g = m.lock();
+        assert!(l.is_empty(&g));
+        let a = core::pin::pin!(Node::new(1));
+        l.insert_tail(&mut g, a.as_ref());
+        assert_eq!(values(l.iter(&g)), [1]);
+        l.remove(&mut g, &a);
+        assert!(l.is_empty(&g));
+    }
+
+    #[test]
     fn a_tail_queue_inserts_removes_and_walks_in_order() {
         testutil::install();
         let m = Mutexed::new(IPL_NONE, ());
@@ -1316,6 +1377,37 @@ mod tests {
         let g = m.lock();
         assert_eq!(values(l.iter(&g)), [1, 2]);
         assert_eq!(l.last(&g).map(|n| n.v), Some(2));
+    }
+
+    #[test]
+    fn step_over_moves_an_element_one_place_back() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut w = m.lock();
+        let l: PinList<ByE> = PinList::new();
+        let nodes: Vec<Pin<Box<Node>>> = (0..4).map(|v| Box::pin(Node::new(v))).collect();
+        for n in &nodes {
+            l.insert_tail(&mut w, n.as_ref());
+        }
+        // The head, the middle, and to the tail; then the tail stays.
+        assert!(l.step_over(&mut w, &nodes[0]));
+        assert_eq!(values(l.iter(&w)), [1, 0, 2, 3]);
+        assert!(l.step_over(&mut w, &nodes[0]));
+        assert_eq!(values(l.iter(&w)), [1, 2, 0, 3]);
+        assert!(l.step_over(&mut w, &nodes[0]));
+        assert_eq!(values(l.iter(&w)), [1, 2, 3, 0]);
+        assert!(!l.step_over(&mut w, &nodes[0]));
+        assert_eq!(values(l.iter(&w)), [1, 2, 3, 0]);
+        assert_eq!(l.last(&w).map(|n| n.v), Some(0));
+        assert_eq!(l.first(&w).map(|n| n.v), Some(1));
+        // The links both ways are whole: walk back from the tail by removing it.
+        for want in [0, 3, 2, 1] {
+            let last = l.last(&w).map(|n| n.v);
+            assert_eq!(last, Some(want));
+            let i = nodes.iter().position(|n| n.v == want).unwrap();
+            l.remove(&mut w, &nodes[i]);
+        }
+        assert!(l.is_empty(&w));
     }
 }
 /* </TESTS> */

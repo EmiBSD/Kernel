@@ -279,8 +279,8 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
   window.rs`); on arm64 after the boot loader's last L2 entry of the image's gigabyte, with
   PXN on `kernel_map`'s tables (`sys/hal/arch/arm64/pmap/window.rs`; docs/ZERO_UNSAFE.md
   decision 37).
-- **The boot line.** `abi_openbsd.ko: 331 syscalls, 37 native` (2 until N3.5, 17 until
-  N4.3), or `abi_openbsd.ko: not loaded, <why>; every system call takes the legacy path`
+- **The boot line.** `abi_openbsd.ko: 331 syscalls, 44 native` (2 until N3.5, 17 until
+  N4.3, 37 until N4.4), or `abi_openbsd.ko: not loaded, <why>; every system call takes the legacy path`
   (decision 29: a medium without the file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
   `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).
 - **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi_openbsd.ko`) and

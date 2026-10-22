@@ -16,6 +16,7 @@ $ difftest syscalls perms
 $ difftest syscalls procs
 $ difftest syscalls script
 $ difftest syscalls ipc
+$ difftest syscalls kqueue
 $ difftest syscalls memory
 $ difftest syscalls mmapfile
 $ difftest syscalls sysctl

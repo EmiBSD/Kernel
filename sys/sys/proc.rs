@@ -98,7 +98,7 @@ use crate::sys::time::Timeval;
 use crate::sys::user::User;
 
 pub use crate::kern::proc_glue::{
-    BsdPgrpG, BsdProcessG, BsdSessionG, BsdThreadG, PgrpHashLink as PgrpHash, ProcStore,
+    BsdPgrpG, BsdProcessG, BsdSessionG, BsdThreadG, PgrpHashLink as PgrpHash,
     ProcessHashLink as ProcessHash, ProcessListLink as ProcessList,
     ProcessOrphanLink as ProcessOrphan, ProcessPglistLink as ProcessPglist,
     ProcessSiblingLink as ProcessSibling, ThreadHashLink as ProcHash, ThreadListLink as ProcList,

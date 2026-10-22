@@ -53,5 +53,14 @@ path = "benches/proc.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of kqueue's and select/poll's hot paths (N4.4, decision 43) over the
+# doubles, never a kernel image: `cargo bench -p kernel --features doubles --bench event
+# [--profile dev]`.
+[[bench]]
+name = "event"
+path = "benches/event.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

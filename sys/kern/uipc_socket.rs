@@ -90,7 +90,9 @@ use core::slice;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_event::{klist_free, klist_init_mutex, klist_insert, klist_remove, knote};
+use crate::kern::kern_event::{
+    klist_free, klist_init_mutex, klist_insert, klist_remove, knote_locked,
+};
 use crate::kern::kern_lock::{mtx_enter, mtx_init_flags, mtx_leave};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_init, rw_init_flags_trace};
@@ -359,12 +361,8 @@ pub fn soalloc(prp: &'static Protosw, wait: i32) -> Option<&'static Socket> {
     rw_init(&so.so_snd.sb_lock, "sbufsnd");
     mtx_init_flags(&so.so_rcv.sb_mtx, IPL_MPFLOOR, Some("sbrcv"), 0);
     mtx_init_flags(&so.so_snd.sb_mtx, IPL_MPFLOOR, Some("sbsnd"), 0);
-    // SAFETY: each buffer's mutex is a member of the same socket, which outlives its lists
-    // (`sorele` and `sonewconn`'s failure path free them before the socket goes).
-    unsafe {
-        klist_init_mutex(&so.so_rcv.sb_klist, &so.so_rcv.sb_mtx);
-        klist_init_mutex(&so.so_snd.sb_klist, &so.so_snd.sb_mtx);
-    }
+    klist_init_mutex(&so.so_rcv.sb_klist, &so.so_rcv.sb_mtx);
+    klist_init_mutex(&so.so_snd.sb_klist, &so.so_snd.sb_mtx);
     crate::sys::sigio::sigio_init(&so.so_sigio);
     so.so_q0.init();
     so.so_q.init();
@@ -2562,7 +2560,11 @@ pub fn sogetopt(
 /// `sohasoutofband(so)`: out-of-band data arrived: `SIGURG` and the except knotes.
 pub fn sohasoutofband(so: &Socket) {
     pgsigio(&so.so_sigio, SIGURG, false);
-    knote(&so.so_rcv.sb_klist, 0);
+    // knote(&so->so_rcv.sb_klist, 0): the klist's lock is sb_mtx, which the filters read
+    // under.
+    mtx_enter(&so.so_rcv.sb_mtx);
+    knote_locked(&so.so_rcv.sb_klist, 0);
+    mtx_leave(&so.so_rcv.sb_mtx);
 }
 
 /// `fo_kqfilter` of a socket: attaches a read, write or except knote.
@@ -2939,7 +2941,7 @@ mod tests {
 
     /// A knote on `fp` for calling the filters directly: `filter`, `flags` and `sfflags` set.
     fn knote_on(fp: &FileRef, filter: i16, flags: u16, sfflags: u32) -> Knote {
-        let kn = Knote::new();
+        let kn = Knote::detached();
         drop(kn.kn_fp().lock().replace(fp.clone()));
         kn.kn_filter().set(filter);
         kn.kn_flags().set(flags);
@@ -2960,15 +2962,15 @@ mod tests {
 
         // EVFILT_READ on a: hooked on a's receive buffer, nothing pending.
         let mut kev = ev_set(a as usize, EVFILT_READ, EV_ADD, 0, 0, 7);
-        assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
+        assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
         assert!(!klist_empty(&so_a.so_rcv.sb_klist));
         assert!(klist_empty(&so_a.so_snd.sb_klist));
-        assert_eq!(scan(p, kq, &mut out), (0, Ok(())));
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
 
         // b sends: sowakeup's knote_locked activates the knote, with the byte count.
         assert_eq!(send(so_b, b"hello", 0), Ok(5));
-        assert_eq!(kq.kq_count.get(), 1);
-        assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
+        assert_eq!(kq.count(), 1);
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].filter), (a as usize, EVFILT_READ));
         assert_eq!(
             (out[0].data, out[0].udata, out[0].flags & EV_EOF),
@@ -2977,32 +2979,36 @@ mod tests {
 
         // Drained: the next scan finds the knote inactive.
         assert_eq!(recv(so_a, &mut buf, 0), Ok((5, 0)));
-        assert_eq!(scan(p, kq, &mut out), (0, Ok(())));
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
 
         // A one-shot EVFILT_WRITE on b: room to send, then gone from b's send buffer.
         let mut kev = ev_set(b as usize, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, 8);
-        assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
+        assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
         assert!(!klist_empty(&so_b.so_snd.sb_klist));
-        assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].filter), (b as usize, EVFILT_WRITE));
         assert!(out[0].data > 0);
         assert!(klist_empty(&so_b.so_snd.sb_klist));
 
         // EVFILT_EXCEPT for out-of-band data: hooked on a's receive buffer, quiet.
         let mut kev = ev_set(a as usize, EVFILT_EXCEPT, EV_ADD, NOTE_OOB, 0, 0);
-        assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
-        assert_eq!(scan(p, kq, &mut out), (0, Ok(())));
+        assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
+        // sohasoutofband walks a's receive klist under sb_mtx (its Own mutex inside it, as
+        // the C's knote takes sb_mtx); no out-of-band mark yet: still quiet.
+        sohasoutofband(so_a);
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
 
         // Sockets have no vnode filter.
         let mut kev = ev_set(a as usize, EVFILT_VNODE, EV_ADD, 0, 0, 0);
         assert_eq!(
-            kqueue_register(kq, &mut kev, 0, Some(p)),
+            kqueue_register(&kq, &mut kev, 0, Some(p)),
             Err(Errno::EINVAL)
         );
 
         // b goes away: a's read knote reports EOF; the except knote stays quiet.
         close(p, b);
-        assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].filter), (a as usize, EVFILT_READ));
         assert!(out[0].flags & EV_EOF != 0);
 

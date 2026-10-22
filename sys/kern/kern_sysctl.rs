@@ -145,7 +145,7 @@ use crate::dev::usb::ucom::sysctl_ucominit;
 use crate::kern::init_main::{NCPUS, NCPUSFOUND};
 use crate::kern::kern_clock::sysctl_clockrate;
 use crate::kern::kern_descrip::{BsdFileData, NUMFILES, fd_getfile, fd_iterfile};
-use crate::kern::kern_event::fp_kqueue;
+use crate::kern::kern_event::kqueue_kinfo;
 use crate::kern::kern_fork::{FORKSTAT, NPROCESSES, NTHREADS};
 use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray, sysctl_malloc};
@@ -1647,9 +1647,7 @@ pub fn fill_file(
             }
         }
         (DTYPE_KQUEUE, Some(fp)) => {
-            let kqi = fp_kqueue(fp);
-            kf.kq_count = kqi.kq_count.get() as u32;
-            kf.kq_state = kqi.kq_state.get() as u32;
+            (kf.kq_count, kf.kq_state) = kqueue_kinfo(fp);
         }
         _ => {}
     }
@@ -1676,7 +1674,7 @@ fn file_data_addr(fp: &File) -> u64 {
     match fp.data() {
         Some(BsdFileData::Vnode(v)) => v.get().map_or(0, |vp| ptrtoint64(vp)),
         Some(BsdFileData::Socket(word)) => ptrtoint64(word.get()),
-        Some(BsdFileData::Kqueue(k)) => k.get().map_or(0, |kq| ptrtoint64(kq)),
+        Some(BsdFileData::Kqueue(kq)) => kq.addr() as u64,
         _ => 0,
     }
 }

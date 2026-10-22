@@ -96,7 +96,7 @@ use crate::kern::exec_elf::{exec_elf_fixup, exec_elf_makecmds};
 use crate::kern::exec_script::exec_script_makecmds;
 use crate::kern::exec_subr::exec_process_vmcmds;
 use crate::kern::kern_descrip::{closef, falloc, fd_getfile, fdprepforexec, fdrelease, fdremove};
-use crate::kern::kern_event::knote;
+use crate::kern::kern_event::knote_processexec;
 use crate::kern::kern_exit::{exit1, pin_free};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::proc_cansugid;
@@ -122,7 +122,6 @@ use crate::machine::tcb::tcb_set;
 use crate::machine::{Machine, VmParam};
 use crate::sys::acct::AFORK;
 use crate::sys::errno::Errno;
-use crate::sys::event::NOTE_EXEC;
 use crate::sys::exec::{
     EXEC_DESTR, EXEC_HASARGL, EXEC_HASFD, EXEC_INDIR, EXEC_NOBTCFI, EXEC_PROFILE, EXEC_SKIPARG,
     EXEC_WXNEEDED, ExecPackage, Execsw, PsStrings,
@@ -993,7 +992,7 @@ fn execve_common(
     }
 
     // notify others that we exec'd
-    knote(&pr.ps_klist, i64::from(NOTE_EXEC));
+    knote_processexec(pr);
 
     // free_pack_abort: the package and the pathname buffers are dropped; exit noting
     // failure.

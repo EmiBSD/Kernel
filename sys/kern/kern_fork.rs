@@ -70,8 +70,8 @@
 //!   `Proc::new()`/`Process::new()` into the pool item and then copy the `p_startcopy`/
 //!   `ps_startcopy` fields from the parent, instead of `memset`/`memcpy` by field offset.
 //! - `process_initialize` reports what its process does not have yet: `prof_fork` (M6);
-//!   the `realitexpire` timeout is real since `kern_time.c` (M8) and `klist_init_mutex`
-//!   since `kern_event.c`. `process_new` likewise reports `startprofclock` (M6);
+//!   the `realitexpire` timeout is real since `kern_time.c` (M8); `ps_klist` is the
+//!   kernel `Process`'s, locked by `ps_mtx`, with nothing to initialise. `process_new` likewise reports `startprofclock` (M6);
 //!   `sigactsinit` is real since `kern_sig.c`, `fdcopy`/`fdshare` since `kern_descrip.c`
 //!   and `lim_fork` since the `plimit` port. `fork1` skips the `RLIMIT_NPROC` check for
 //!   root as the C does, reports it for other users (the limits); `knote_processfork` is
@@ -104,7 +104,7 @@ use crate::kassert;
 use crate::kern::kern_clock::hardclock_period;
 use crate::kern::kern_clockintr::clockintr_advance;
 use crate::kern::kern_descrip::{fdcopy, fdshare};
-use crate::kern::kern_event::{klist_init_mutex, knote_processfork};
+use crate::kern::kern_event::knote_processfork;
 use crate::kern::kern_lock::mtx_leave;
 use crate::kern::kern_resource::{lim_fork, rucheck};
 use crate::kern::kern_sched::{sched_choosecpu_fork, setrunqueue};
@@ -115,8 +115,7 @@ use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_time::ratecheck;
 use crate::kern::kern_timeout::timeout_set;
 use crate::kern::proc_glue::{
-    chgproccnt, fork_join_pgrp, pgfind, prfind, proc_tables, process_ref, store_alloc, store_free,
-    tfind, zombiefind,
+    chgproccnt, fork_join_pgrp, pgfind, prfind, proc_tables, process_ref, tfind, zombiefind,
 };
 use crate::kern::sched_bsd::{
     SCHED_LOCK, sched_assert_locked, sched_assert_unlocked, sched_lock, sched_unlock,
@@ -321,10 +320,6 @@ pub fn process_initialize(pr: &Process, p: &'static Proc) {
 
     // A new process's lists (children, orphans, sigio) are empty.
     kassert!(pr.ps_sigiolst.is_empty());
-
-    // SAFETY: the klist's mutex is a member of the same store, alive as long as its klist
-    // (a store is never freed: `kern/proc_glue.rs`).
-    unsafe { klist_init_mutex(&pr.ps_klist, &pr.ps_klmtx) };
 
     crate::kern::kern_timeout::timeout_set_flags(
         &pr.ps_realit_to,
@@ -557,18 +552,7 @@ pub fn fork1(
         let _ = unported!("fork1: lim_cur(RLIMIT_NPROC) (M6)");
     }
 
-    // The new process's klist store (see the module's deviations).
-    let store = match store_alloc() {
-        Ok(store) => store,
-        Err(error) => {
-            chgproccnt(uid, -1);
-            NPROCESSES.fetch_sub(1, Ordering::Relaxed);
-            NTHREADS.fetch_sub(1, Ordering::Relaxed);
-            return Err(error);
-        }
-    };
     let Some(uaddr) = uvm_uarea_alloc() else {
-        store_free(store);
         chgproccnt(uid, -1);
         NPROCESSES.fetch_sub(1, Ordering::Relaxed);
         NTHREADS.fetch_sub(1, Ordering::Relaxed);
@@ -576,7 +560,7 @@ pub fn fork1(
     };
 
     // From now on, we're committed to the fork and cannot fail.
-    let pr = kernel::proc::process_alloc(allocpid(), BsdProcessG::new(store));
+    let pr = kernel::proc::process_alloc(allocpid(), BsdProcessG::new());
     let p = thread_join(&pr, thread_new(curp, &pr, uaddr), |_, _| {});
     process_new(p, &pr, curpr, flags);
 

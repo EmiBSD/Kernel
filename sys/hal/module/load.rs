@@ -573,7 +573,41 @@ mod tests {
         closefrom: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD);
+    fn select(_: isize, _: i32, _: [usize; 3], _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn kevent(
+        _: isize,
+        _: i32,
+        _: (usize, i32),
+        _: (usize, i32),
+        _: usize,
+        _: &mut Rval,
+    ) -> SysResult {
+        Ok(())
+    }
+    fn ppoll(_: isize, _: usize, _: u32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn pselect(_: isize, _: i32, _: [usize; 3], _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn poll(_: isize, _: usize, _: u32, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
+    /// Version 5's entries, every one answering `Ok`.
+    const EVENT: crate::api::EventEntries = crate::api::EventEntries {
+        select,
+        kevent,
+        ppoll,
+        pselect,
+        poll,
+        kqueue: count,
+        kqueue1: fd1,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -595,7 +629,7 @@ mod tests {
                 version: 1,
                 size: 40,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD)
+            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT)
         };
         assert_eq!(
             load_with(&Empty, &Empty, &OTHER),

@@ -46,8 +46,8 @@
 //! Every decision pipe(2) makes is the kernel crate's; this file holds what N4 owns: the
 //! `struct fileops` (`PIPEOPS`) and the three `struct filterops` of a pipe file, which turn
 //! `bsd`'s `File`, `Uio`, `Knote`, ioctl numbers and `Stat` into the kernel's types; the
-//! descriptor work of `dopipe` ([`PipeFiles`]); the per-pipe klist and sigio registration
-//! ([`PipeGlue`]); the system call entries `bsd`'s `sysent[]` keeps (the `Legacy` path, which
+//! descriptor work of `dopipe` ([`PipeFiles`]); the per-pipe sigio registration, the clock
+//! and the filterops ([`PipeGlue`]); the system call entries `bsd`'s `sysent[]` keeps (the `Legacy` path, which
 //! calls the same kernel function as the module's `Native` entry); and `pipe_init`.
 //!
 //! A pipe file holds its pipe in its typed slot, `File::f_pipe` (`sys/sys/file.rs`): the
@@ -59,30 +59,28 @@
 //! only then drops the end, whose drop is `pipe_destroy` (it sleeps on `PIPE_WANTD`, which a
 //! spinning mutex must not be held across).
 //!
-//! The klist and the sigio registration of a pipe live in a [`PipeKlists`] that the glue
-//! allocates (`malloc(9)`, `M_TEMP`, through the global allocator) and recycles instead of
-//! freeing: `bsd`'s `Klist` and `SigioRef` are `Sync` but not `Send`, so the pair (a
-//! `PoolArc`, which needs its value `Send`) cannot hold them by value, and an `unsafe impl
-//! Send` in `bsd` was refused (the coordinator's decision of 2026-10-16, decision 30's
-//! pattern); a `&'static` to a never-freed object is `Send`. The klists are owner-locked
-//! (`Klist::owned`, decision 13): the kernel calls every klist function in its `_locked` form
-//! under the pair's write guard.
+//! A pipe's klist is the kernel's, by value in the pair (`kernel::pipe`, N4.4). Its sigio
+//! registration lives in a [`PipeSigio`] that the glue allocates (`malloc(9)`, `M_TEMP`,
+//! through the global allocator) and recycles instead of freeing: `bsd`'s `SigioRef` is
+//! `Sync` but not `Send`, so the pair (a `PoolArc`, which needs its value `Send`) cannot hold
+//! it by value, and an `unsafe impl Send` in `bsd` was refused (the coordinator's decision of
+//! 2026-10-16, decision 30's pattern); a `&'static` to a never-freed object is `Send`.
 //!
 //! ## Deviations
-//! - The `PipeKlists` objects stay allocated at the peak number of pipes (recycled through a
+//! - The `PipeSigio` objects stay allocated at the peak number of pipes (recycled through a
 //!   free list, never given back) and show under `M_TEMP` in `vmstat -m` instead of inside the
-//!   `pipepl` items; no `diff-openbsd` scenario prints `vmstat -m`. Gone at N4, when `Klist`
-//!   and `Sigio` are the kernel's and the pair holds them by value.
+//!   `pipepl` items; no `diff-openbsd` scenario prints `vmstat -m`. Gone at N4.5, when
+//!   `Sigio` is the kernel's and the pair holds it by value.
 //! - `pipe_stat`'s `st_uid`/`st_gid` are the opener's credentials read when `dopipe` makes
 //!   the files: the very `struct ucred` `fnew` stores in `f_cred`, which is never written once
 //!   shared (`crcopy`), so the values are the C's; reading `f_cred` itself needs `unsafe`
 //!   until descriptors move (N4, `CredRef`).
 //! - `fo_ioctl`'s `data` is the kernel copy of the argument (`sys_ioctl`), at least an `int`
 //!   wide; the `int` is read and written in native byte order (LZ's).
-//! - A `PipeKlists` comes from the global allocator, `malloc(9)` with `M_NOWAIT`
+//! - A `PipeSigio` comes from the global allocator, `malloc(9)` with `M_NOWAIT`
 //!   (`kern/rust_alloc.rs`): when no recycled one is free and memory is short, pipe(2) answers
 //!   `ENOMEM` where the C's `pool_get(PR_WAITOK)` of the pair sleeps for memory (`hal`'s
-//!   `MBox` has no safe way to a `&'static`; one would need `unsafe` in `hal`). Gone at N4.
+//!   `MBox` has no safe way to a `&'static`; one would need `unsafe` in `hal`). Gone at N4.5.
 //! - `KTRACE` is not configured (`ktrfds`), as in LZ.
 //!
 //! ## Redesign
@@ -91,13 +89,13 @@
 //!   names and signatures; each finds the pair through [`pipe_of`] (LZ's `fp_pipe`, a cast of
 //!   `f_data`) and calls one kernel method.
 //! - A knote's `kn_hook` holds the index of the pipe whose klist it is on (`Dir::index`, as
-//!   an address without provenance), not a pointer (LZ's `kn_pipe` cast it back).
+//!   an address without provenance, set by the kernel's `kqfilter`), not a pointer (LZ's
+//!   `kn_pipe` cast it back).
 //! - `dopipe`'s descriptor work is [`BsdFiles`], the kernel's [`PipeFiles`]: the same
 //!   `falloc`s under `fdplock`, the same error paths (the ends dropped where the C calls
 //!   `pipe_destroy`), the same `copyout` of both numbers (the kernel's `UserPtr`), `fdrelease`
 //!   of both on a fault.
 
-use core::ptr;
 use core::sync::atomic::Ordering;
 
 #[cfg(feature = "alloc")]
@@ -111,17 +109,17 @@ use kernel::pipe::{
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fdinsert, fdrelease, fdremove};
-use crate::kern::kern_event::{klist_free, klist_insert_locked, klist_remove_locked, knote_locked};
 use crate::kern::kern_sig::{pgsigio, sigio_free, sigio_getown, sigio_setown};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::getnanotime;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
 use crate::sys::event::{
     __EV_HUP, __EV_POLL, __EV_SELECT, EV_EOF, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE,
-    FILTEROP_ISFD, FILTEROP_MPSAFE, Filterops, Kevent, Klist, Knote, knote_modify, knote_process,
+    FILTEROP_ISFD, FILTEROP_MPSAFE, Filterops, Kevent, Knote, knote_modify, knote_process,
 };
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
 use crate::sys::file::{DTYPE_PIPE, File, Fileops, frele};
@@ -141,26 +139,23 @@ use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Gid, Register, Uid};
 use crate::sys::uio::Uio;
 
-/// One pipe's `pipe_klist` and `pipe_sigio`, allocated by the glue and recycled.
-pub struct PipeKlists {
-    /// `pipe_klist`, owner-locked: the pair's write guard is its lock.
-    klist: Klist,
+/// One pipe's `pipe_sigio`, allocated by the glue and recycled.
+pub struct PipeSigio {
     /// `pipe_sigio`, under `sigio_lock` (`[S]`).
     sigio: SigioRef,
 }
 
-impl PipeKlists {
+impl PipeSigio {
     const fn new() -> Self {
         Self {
-            klist: Klist::owned(),
             sigio: SigioRef::new(),
         }
     }
 }
 
-/// `bsd`'s part of one pipe, the kernel's [`PipeGlue`]: its klist and sigio registration.
+/// `bsd`'s part of one pipe, the kernel's [`PipeGlue`]: its sigio registration.
 pub struct BsdPipeGlue {
-    store: &'static PipeKlists,
+    store: &'static PipeSigio,
 }
 
 /// What a pipe file's typed slot holds: its pipe, and the opener's credentials for
@@ -240,13 +235,13 @@ const PIPE_PAGES: &dyn hal::kmbuf::PageMemory = kernel::testutil::page_memory();
 /// The pipes: `pipe_pair_pool`, `nbigpipe`, `amountpipekva`, over this glue.
 pub static PIPES: Pipes<BsdPipeGlue> = Pipes::new(PIPE_PAGES);
 
-/// The `PipeKlists` given back, for the next pipe. The mutex covers a pop or a push.
+/// The `PipeSigio`s given back, for the next pipe. The mutex covers a pop or a push.
 #[cfg(feature = "alloc")]
-static FREE: Mutexed<alloc::vec::Vec<&'static PipeKlists>> =
+static FREE: Mutexed<alloc::vec::Vec<&'static PipeSigio>> =
     Mutexed::new(IPL_MPFLOOR, alloc::vec::Vec::new());
 
-/// A `PipeKlists` given back by an earlier pipe, if there is one.
-fn klists_recycled() -> Option<&'static PipeKlists> {
+/// A `PipeSigio` given back by an earlier pipe, if there is one.
+fn sigio_recycled() -> Option<&'static PipeSigio> {
     #[cfg(feature = "alloc")]
     {
         FREE.lock().pop()
@@ -259,7 +254,7 @@ fn klists_recycled() -> Option<&'static PipeKlists> {
 
 /// Gives `store` back for the next pipe; one that the list cannot take (its growth failed)
 /// stays allocated, unused.
-fn klists_recycle(store: &'static PipeKlists) {
+fn sigio_recycle(store: &'static PipeSigio) {
     #[cfg(feature = "alloc")]
     {
         let mut free = FREE.lock();
@@ -273,15 +268,15 @@ fn klists_recycle(store: &'static PipeKlists) {
     }
 }
 
-/// A fresh `PipeKlists` from `malloc(9)` (the global allocator), never freed: `ENOMEM` when
+/// A fresh `PipeSigio` from `malloc(9)` (the global allocator), never freed: `ENOMEM` when
 /// it cannot be had (`try_reserve`, never the allocator's panic), or without `alloc`.
-fn klists_alloc() -> Result<&'static PipeKlists, Errno> {
+fn sigio_alloc() -> Result<&'static PipeSigio, Errno> {
     #[cfg(feature = "alloc")]
     {
-        let mut v: alloc::vec::Vec<PipeKlists> = alloc::vec::Vec::new();
+        let mut v: alloc::vec::Vec<PipeSigio> = alloc::vec::Vec::new();
         v.try_reserve_exact(1).map_err(|_| Errno::ENOMEM)?;
-        v.push(PipeKlists::new());
-        let block: &'static [PipeKlists] = v.leak();
+        v.push(PipeSigio::new());
+        let block: &'static [PipeSigio] = v.leak();
         let store = block.first().ok_or(Errno::ENOMEM)?;
         sigio_init(&store.sigio);
         Ok(store)
@@ -293,14 +288,13 @@ fn klists_alloc() -> Result<&'static PipeKlists, Errno> {
 }
 
 impl PipeGlue for BsdPipeGlue {
-    type Knote = Knote;
+    type Proc = BsdProcGlue;
 
-    /// `klist_init` and `sigio_init` of a pipe (`pipe_pair_create`, `pipe_create`): a
-    /// recycled `PipeKlists`, or a new one.
+    /// `sigio_init` of a pipe (`pipe_create`): a recycled `PipeSigio`, or a new one.
     fn new() -> Result<Self, Errno> {
-        let store = match klists_recycled() {
+        let store = match sigio_recycled() {
             Some(store) => store,
-            None => klists_alloc()?,
+            None => sigio_alloc()?,
         };
         Ok(Self { store })
     }
@@ -313,27 +307,12 @@ impl PipeGlue for BsdPipeGlue {
         }
     }
 
-    fn knote(&self, hint: i64) {
-        knote_locked(&self.store.klist, hint);
-    }
-
-    fn klist_insert(&self, kn: &Knote, filter: PipeFilter, hook: Dir) {
-        let fops: &'static Filterops = match filter {
+    fn filterops(filter: PipeFilter) -> &'static Filterops {
+        match filter {
             PipeFilter::Read => &PIPE_RFILTOPS,
             PipeFilter::Write => &PIPE_WFILTOPS,
             PipeFilter::Except => &PIPE_EFILTOPS,
-        };
-        kn.kn_fop.set(Some(fops));
-        kn.kn_hook.set(ptr::without_provenance_mut(hook.index()));
-        klist_insert_locked(&self.store.klist, kn);
-    }
-
-    fn klist_remove(&self, kn: &Knote) {
-        klist_remove_locked(&self.store.klist, kn);
-    }
-
-    fn klist_free(&self) {
-        klist_free(&self.store.klist);
+        }
     }
 
     fn pgsigio(&self) {
@@ -356,14 +335,13 @@ impl PipeGlue for BsdPipeGlue {
 }
 
 impl Drop for BsdPipeGlue {
-    /// The pipe is gone (`pipe_pair_destroy`): its klist is empty, its sigio freed and set up
-    /// again, and the object goes back on the free list; one that the list cannot take is
-    /// left allocated (bounded: the list's growth failed).
+    /// The pipe is gone (`pipe_pair_destroy`): its sigio freed and set up again, and the
+    /// object goes back on the free list; one that the list cannot take is left allocated
+    /// (bounded: the list's growth failed).
     fn drop(&mut self) {
-        klist_free(&self.store.klist);
         sigio_free(&self.store.sigio);
         sigio_init(&self.store.sigio);
-        klists_recycle(self.store);
+        sigio_recycle(self.store);
     }
 }
 
@@ -691,8 +669,9 @@ mod tests {
     // its doubles of hal's bridges (`kernel::testutil`, feature `doubles`, registered once in
     // this test process; the real bridges never are here). A kqueue seeing a pipe become
     // readable; poll and select on pipes through the kernel functions they run; the ioctls and
-    // `fo_stat`; what `kern_sysctl` reports; the klists recycled.
+    // `fo_stat`; what `kern_sysctl` reports; the sigio stores recycled.
 
+    use core::ptr;
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
@@ -706,7 +685,7 @@ mod tests {
         close_fd, close_kqueue, install, new_kqueue, poll_once, scan, select_once,
     };
     use crate::kern::kern_event::{kqpoll_exit, kqueue_register};
-    use crate::sys::event::{EV_ADD, EV_ONESHOT, ev_set, klist_empty};
+    use crate::sys::event::{EV_ADD, EV_ONESHOT, ev_set};
     use crate::sys::filio::FIONBIO;
     use crate::sys::poll::{POLLHUP, POLLIN, POLLNVAL, POLLOUT, Pollfd};
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
@@ -847,7 +826,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    fn the_klists_are_recycled() {
+    fn the_sigio_stores_are_recycled() {
         let _g = setup();
         let p = fd_thread();
         let pair = installed_pair(p);
@@ -882,17 +861,14 @@ mod tests {
         let mut out = [Kevent::default(); 4];
 
         let mut kev = ev_set(3, EVFILT_READ, EV_ADD, 0, 0, 7);
-        assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
-        assert!(
-            !klist_empty(&pair.glue(Dir::Rd).store.klist),
-            "hooked on the read side"
-        );
-        assert_eq!(scan(p, kq, &mut out), (0, Ok(())), "empty");
+        assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
+        assert!(!pair.klist_empty(Dir::Rd), "hooked on the read side");
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())), "empty");
 
         // The write wakes the reader's knote (pipe_wakeup's knote_locked).
         assert_eq!(write(wf, b"hello"), (Ok(()), 5));
-        assert_eq!(kq.kq_count.get(), 1);
-        assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
+        assert_eq!(kq.count(), 1);
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].filter), (3, EVFILT_READ));
         assert_eq!(
             (out[0].data, out[0].udata, out[0].flags & EV_EOF),
@@ -901,30 +877,30 @@ mod tests {
 
         // Drained: the next scan finds nothing.
         assert_eq!(read(rf, 5).1, b"hello");
-        assert_eq!(scan(p, kq, &mut out), (0, Ok(())));
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
 
         // EVFILT_WRITE on the write end: room for the whole buffer, hooked on its peer.
         let mut kev = ev_set(4, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, 8);
-        assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
-        assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
+        assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].data), (4, PIPE_SIZE as i64));
         // EVFILT_EXCEPT is poll's only.
         let mut kev = ev_set(3, EVFILT_EXCEPT, EV_ADD, 0, 0, 0);
         assert_eq!(
-            kqueue_register(kq, &mut kev, 0, Some(p)),
+            kqueue_register(&kq, &mut kev, 0, Some(p)),
             Err(Errno::EINVAL)
         );
 
         // The writer goes away: EOF on the reader's knote.
         drop(wf_ref);
         close_fd(p, 4);
-        assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!(out[0].flags & EV_EOF, EV_EOF);
 
         drop(pair);
         drop(rf_ref);
         close_fd(p, 3);
-        assert_eq!(kq.kq_nknotes.get(), 0);
+        assert_eq!(kq.nknotes(), 0);
         close_kqueue(p, kq);
     }
 

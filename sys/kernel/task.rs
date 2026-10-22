@@ -85,6 +85,11 @@
 //!   protocol on its own queue.
 //! - `task_add_local` (LZ's `unsafe fn` for a task on a stack frame) is gone: [`task_add`]
 //!   takes `Pin<&Task>`, which a stack frame gives with `core::pin::pin!`.
+//! - N4.4: a task whose function dereferenced its `void *` (kqueue's `kqueue_task`, the
+//!   kqueue) takes a counted, erased argument instead ([`Task::set_shared`],
+//!   `hal::pool::AnyArc`): the task holds the handle until it is set again or cleared
+//!   ([`Task::clear`]), a worker clones it with the copy it takes, and the function gets its
+//!   object back by naming its type.
 
 use core::ffi::c_void;
 use core::ops::Deref;
@@ -95,7 +100,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use hal::intr::{IPL_HIGH, IPL_NONE};
 use hal::mutex::Mutexed;
 use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::pool::{AnyArc, PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::Rwlocked;
 use hal::sleep::{INFSLP, PWAIT};
 
@@ -107,6 +112,10 @@ use crate::thread::{self, Start};
 /// dereferenced here).
 pub type TaskFn = fn(*mut c_void);
 
+/// The function of a task set by [`Task::set_shared`]: its argument is the counted handle the
+/// task holds, lent for the call.
+pub type SharedTaskFn = fn(&AnyArc);
+
 /// `TASK_ONQUEUE`: the task is on a queue's worklist (`t_flags`, as legacy callers spell
 /// it; here the task's entry is linked).
 pub const TASK_ONQUEUE: u32 = 1;
@@ -114,12 +123,24 @@ pub const TASK_ONQUEUE: u32 = 1;
 /// `TASKQ_MPSAFE`: the queue's threads run without the kernel lock.
 pub const TASKQ_MPSAFE: u32 = 1 << 0;
 
+/// `t_func`: the C's `void (*)(void *)` with `t_arg`, or a function of a counted argument.
+#[derive(Clone, Copy)]
+enum Func {
+    /// The C's function, called with `t_arg`.
+    Raw(TaskFn),
+    /// A function of the handle in [`Body::shared`].
+    Shared(SharedTaskFn),
+}
+
 /// `t_func` and `t_arg`.
 struct Body {
     /// `t_func` (`None`: a task `task_set` never named).
-    func: Option<TaskFn>,
+    func: Option<Func>,
     /// `t_arg`.
     arg: AtomicPtr<c_void>,
+    /// The argument of a [`Func::Shared`] function, held until the task is set again or
+    /// cleared.
+    shared: Option<AnyArc>,
 }
 
 /// `struct task`. Not `Unpin`: it is linked through `Pin<&Task>` and must stay where it is
@@ -141,7 +162,7 @@ hal::pin_adapter!(
 impl Task {
     /// `TASK_INITIALIZER(func, arg)`.
     pub const fn new(func: TaskFn, arg: *mut c_void) -> Self {
-        Self::with(Some(func), arg, false)
+        Self::with(Some(Func::Raw(func)), arg, false)
     }
 
     /// A task that `task_set` has not seen (all zero, a `static struct task`).
@@ -149,7 +170,7 @@ impl Task {
         Self::with(None, ptr::null_mut(), false)
     }
 
-    const fn with(func: Option<TaskFn>, arg: *mut c_void, barrier: bool) -> Self {
+    const fn with(func: Option<Func>, arg: *mut c_void, barrier: bool) -> Self {
         Self {
             entry: PinEntry::new(),
             body: Mutexed::new(
@@ -157,6 +178,7 @@ impl Task {
                 Body {
                     func,
                     arg: AtomicPtr::new(arg),
+                    shared: None,
                 },
             ),
             barrier,
@@ -167,9 +189,43 @@ impl Task {
     /// C's contract, which the C does not check: a worker that copies the task meanwhile
     /// gets the old pair or the new one, never a mix).
     pub fn set(&self, func: TaskFn, arg: *mut c_void) {
+        let old = self.set_func(Some(Func::Raw(func)), arg, None);
+        drop(old);
+    }
+
+    /// `task_set(t, fn, arg)` with a counted argument (the module's redesign): `func` is
+    /// called with `arg`, which the task holds until it is set again or
+    /// [cleared](Task::clear). A task that holds a handle to the object that holds it is a
+    /// cycle its owner breaks with `clear` (after `taskq_del_barrier`).
+    pub fn set_shared(&self, func: SharedTaskFn, arg: AnyArc) {
+        let old = self.set_func(Some(Func::Shared(func)), ptr::null_mut(), Some(arg));
+        drop(old);
+    }
+
+    /// `task_set(t, NULL, NULL)` of a task set by [`Task::set_shared`]: its argument given
+    /// back (dropped after the task's mutex), its function gone. For its owner once the task
+    /// is neither pending nor running (`taskq_del_barrier`).
+    pub fn clear(&self) {
+        let old = {
+            let mut b = self.body.lock();
+            b.func = None;
+            b.shared.take()
+        };
+        drop(old);
+    }
+
+    /// [`Task::set`]'s work under the task's mutex: the argument it held before comes back,
+    /// for its caller to drop after the mutex.
+    fn set_func(
+        &self,
+        func: Option<Func>,
+        arg: *mut c_void,
+        shared: Option<AnyArc>,
+    ) -> Option<AnyArc> {
         let mut b = self.body.lock();
-        b.func = Some(func);
+        b.func = func;
         b.arg.store(arg, Ordering::Relaxed);
+        core::mem::replace(&mut b.shared, shared)
     }
 
     /// `task_pending(t)`: is the task on a queue, waiting to run? (Read without the lock, as
@@ -542,6 +598,8 @@ pub fn task_del(tq: &Taskq, w: &Task) -> bool {
 enum Work {
     /// A task's function and argument, copied.
     Run(TaskFn, *mut c_void),
+    /// A task's shared function and a clone of its argument.
+    RunShared(SharedTaskFn, AnyArc),
     /// A barrier's task.
     Barrier,
 }
@@ -569,9 +627,10 @@ fn taskq_next_work(tq: &Taskq) -> Option<Work> {
         } else {
             // *work = *next: copy to caller to avoid races
             let b = next.body.lock();
-            match b.func {
-                Some(func) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
-                None => kpanic(format_args!(
+            match (b.func, &b.shared) {
+                (Some(Func::Raw(func)), _) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
+                (Some(Func::Shared(func)), Some(arg)) => Work::RunShared(func, arg.clone()),
+                _ => kpanic(format_args!(
                     "taskq_thread: {}: a task without a function",
                     Name(tq.name)
                 )),
@@ -633,6 +692,7 @@ fn taskq_worker(tq: &Taskq) -> Option<*const u32> {
         // WITNESS_LOCK; NKCOV > 0: kcov_remote_enter.
         match work {
             Work::Run(func, arg) => func(arg),
+            Work::RunShared(func, arg) => func(&arg),
             Work::Barrier => taskq_barrier_task(tq),
         }
         // WITNESS_UNLOCK; NKCOV > 0: kcov_remote_leave.
@@ -683,11 +743,19 @@ pub fn run_by_hand(tq: &Taskq) {
 pub fn run_next_by_hand(tq: &Taskq) {
     match taskq_next_work(tq) {
         Some(Work::Run(func, arg)) => func(arg),
+        Some(Work::RunShared(func, arg)) => func(&arg),
         Some(Work::Barrier) => taskq_barrier_task(tq),
         None => {}
     }
 }
 
+/// Test hook: `taskq_init` once per test process (the pool, the system queues' threads),
+/// for every test module that needs them running.
+#[cfg(test)]
+pub(crate) fn taskq_init_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(taskq_init);
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -716,15 +784,15 @@ mod tests {
 
     /// `taskq_init` once per process (the pool, the system queues' creators).
     fn init() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
         testutil::install();
-        ONCE.call_once(taskq_init);
+        taskq_init_once();
     }
 
     /// What the payload of a test task reads back.
     fn arg_of(w: Work) -> usize {
         match w {
             Work::Run(_, a) => a.addr(),
+            Work::RunShared(_, a) => a.downcast_ref::<usize>().map_or(0, |n| *n),
             Work::Barrier => usize::MAX,
         }
     }
@@ -956,6 +1024,34 @@ mod tests {
         assert!(task_del(&Q1, &T));
         assert!(task_add(&Q2, pinned(&T)), "free again");
         assert!(task_del(&Q2, &T));
+    }
+
+    fn shared_nothing(_arg: &AnyArc) {}
+
+    #[test]
+    fn a_shared_task_hands_out_a_clone_of_its_counted_argument_until_cleared() {
+        init();
+        static TQ: Taskq = taskq_unthreaded(b"tqshared");
+        static P: TypedPool<usize> = TypedPool::new();
+        static MADE: std::sync::Once = std::sync::Once::new();
+        MADE.call_once(|| P.init(0, PR_WAITOK, "sharedtq").unwrap());
+        static T: Task = Task::unset();
+        TQ.st.lock().life = TqState::Running;
+        let v = P.get_shared(PR_WAITOK, || 42).unwrap();
+        T.set_shared(shared_nothing, PoolArc::erase(v.clone()));
+        assert_eq!(PoolArc::count(&v), 2, "the task holds one");
+        assert!(task_add(&TQ, pinned(&T)));
+        let w = taskq_next_work(&TQ).expect("T");
+        assert_eq!(PoolArc::count(&v), 3, "the worker's copy is a clone");
+        assert_eq!(arg_of(w), 42);
+        assert_eq!(PoolArc::count(&v), 2);
+        // Set with the C's function: the held argument goes back; set shared again, cleared.
+        T.set(nothing, arg(1));
+        assert_eq!(PoolArc::count(&v), 1);
+        T.set_shared(shared_nothing, PoolArc::erase(v.clone()));
+        T.clear();
+        assert_eq!(PoolArc::count(&v), 1, "clear gives it back");
+        assert!(T.body.lock().func.is_none());
     }
 }
 /* </TESTS> */
