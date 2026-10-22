@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EmiBSD</title>
+<meta name="description" content="An operating system in Rust, grown from the faithful port of the OpenBSD kernel.">
+<link rel="icon" href="Ferffy.jpg">
+<style>
+  :root {
+    --bg: #fbf7f0;
+    --fg: #1d1b17;
+    --muted: #6b655b;
+    --line: #e4ddd0;
+    --card: #ffffff;
+    --accent: #d9542b;      /* Ferris orange */
+    --accent-2: #f4b400;    /* Puffy yellow */
+    --code: #efe9de;
+    --maxw: 920px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141311;
+      --fg: #ebe6dc;
+      --muted: #a39c8f;
+      --line: #2c2924;
+      --card: #1c1a17;
+      --accent: #ff7a45;
+      --accent-2: #ffcf4d;
+      --code: #24211c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+  }
+  code { background: var(--code); padding: 0.1em 0.4em; border-radius: 4px; }
+  pre {
+    background: var(--code);
+    padding: 1rem 1.2rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 1rem; }
+
+  header.site {
+    border-bottom: 1px solid var(--line);
+  }
+  header.site .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.9rem 1rem;
+  }
+  .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; color: var(--fg); }
+  .brand img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
+  nav a { margin-left: 1.2rem; color: var(--muted); font-size: 0.95rem; }
+  nav a:hover { color: var(--fg); }
+
+  .hero { text-align: center; padding: 3.5rem 0 2.5rem; }
+  .hero img {
+    width: min(300px, 70vw);
+    border-radius: 16px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+  }
+  .hero h1 {
+    font-size: clamp(2.2rem, 6vw, 3.4rem);
+    margin: 1.5rem 0 0.4rem;
+    letter-spacing: -0.02em;
+  }
+  .hero .tag {
+    font-size: 1.25rem;
+    color: var(--muted);
+    max-width: 38em;
+    margin: 0 auto;
+  }
+  .hero .mascot { color: var(--muted); font-size: 0.9rem; margin-top: 0.6rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem;
+    margin: 1.4rem 0 0; padding: 0; list-style: none;
+  }
+  .meta li {
+    border: 1px solid var(--line);
+    background: var(--card);
+    border-radius: 999px;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .cta { margin-top: 1.8rem; display: flex; gap: 0.8rem; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block;
+    padding: 0.65rem 1.3rem;
+    border-radius: 8px;
+    font-weight: 600;
+    border: 1px solid var(--accent);
+  }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { text-decoration: none; filter: brightness(1.08); }
+  .btn.ghost { color: var(--accent); }
+  .btn.ghost:hover { text-decoration: none; background: var(--card); }
+
+  .warn {
+    border-left: 4px solid var(--accent-2);
+    background: var(--card);
+    border-radius: 0 8px 8px 0;
+    padding: 0.9rem 1.2rem;
+    margin: 2rem auto;
+    max-width: 44em;
+  }
+  .warn strong { color: var(--fg); }
+
+  section { padding: 2.2rem 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 1.5rem; margin: 0 0 1rem; letter-spacing: -0.01em; }
+  .lead { color: var(--muted); max-width: 44em; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 0.9rem;
+    margin: 0; padding: 0; list-style: none;
+  }
+  .grid li {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+  }
+  .grid li a.title { font-weight: 600; font-size: 1.02rem; color: var(--fg); }
+  .grid li a.title:hover { color: var(--accent); }
+  .grid li p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.93rem; }
+
+  .status {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.9rem;
+  }
+  .status div {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+  }
+  .status .k { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  .status .v { font-size: 1.15rem; font-weight: 600; margin-top: 0.2rem; }
+  .status .s { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+
+  footer { padding: 2rem 0 3rem; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="Ferffy.jpg" alt="">EmiBSD</a>
+    <nav>
+      <a href="#docs">Docs</a>
+      <a href="#status">Status</a>
+      <a href="https://github.com/enavarre-cl/EmiBSD">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="hero">
+    <img src="Ferffy.jpg" alt="Ferffy, the EmiBSD mascot: a spiky orange crab in front of a shield">
+    <h1>EmiBSD</h1>
+    <p class="tag">An operating system in Rust, grown from the faithful port of the OpenBSD kernel.</p>
+    <p class="mascot">Ferffy — half Ferris (Rust's crab), half Puffy (OpenBSD's pufferfish).</p>
+    <ul class="meta">
+      <li>License: ISC</li>
+      <li>Rust: stable</li>
+      <li>Targets: amd64 · arm64</li>
+      <li>Runs in: QEMU</li>
+    </ul>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/enavarre-cl/EmiBSD">View on GitHub</a>
+      <a class="btn ghost" href="SETUP">Build it</a>
+    </div>
+  </div>
+
+  <div class="warn">
+    <strong>Not for production.</strong> EmiBSD is an experiment. It runs only in QEMU, and its
+    crypto, network and storage code is unaudited. Do not use it to protect real data or real networks.
+  </div>
+
+  <section id="what">
+    <h2>What is this</h2>
+    <p class="lead">
+      EmiBSD is derived from <a href="https://github.com/enavarre-cl/EmiBSD.LZ">EmiBSD.LZ</a>,
+      the file-by-file port of the OpenBSD kernel to Rust. LZ ports OpenBSD; EmiBSD redesigns what
+      LZ ported.
+    </p>
+    <ul class="lead">
+      <li><strong>OpenBSD's behaviour is the specification.</strong> The system-call ABI and everything
+        userland sees never change: OpenBSD's own userland runs unmodified.</li>
+      <li><strong>The inside changes, subsystem by subsystem.</strong> The goal is zero <code>unsafe</code>
+        in the kernel: <code>sys/kernel/</code> and <code>sys/abi/</code> are
+        <code>#![forbid(unsafe_code)]</code> crates; <code>sys/hal/</code> is the only crate with
+        <code>unsafe</code>, every site proved.</li>
+      <li><strong>A standalone <code>#![no_std]</code> kernel</strong> for amd64 and arm64, booted by its
+        own boot(8)/efiboot or by Limine, run in QEMU.</li>
+    </ul>
+  </section>
+
+  <section id="status">
+    <h2>Status</h2>
+    <div class="status">
+      <div>
+        <div class="k">Milestone met</div>
+        <div class="v">N3 — Memory</div>
+        <div class="s">2026-10-18 · <code>kernel::vm</code> whole, both pmaps in <code>hal</code></div>
+      </div>
+      <div>
+        <div class="k">Under way</div>
+        <div class="v">N4 — Processes</div>
+        <div class="s">timeout, task, extent done (N4.1); proc, credentials, fork, exit, scheduling next</div>
+      </div>
+      <div>
+        <div class="k">Unsafe in crates (2026-10-21)</div>
+        <div class="v">kernel 0 · abi 0 · hal 106</div>
+        <div class="s">bsd (LZ tree, being replaced) 10 103</div>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:1rem">
+      Full detail in <a href="STATUS">STATUS</a>, the plan in <a href="ROADMAP">ROADMAP</a>,
+      the record of what went well and what failed in <a href="JOURNAL">JOURNAL</a>.
+    </p>
+  </section>
+
+  <section id="docs">
+    <h2>Documentation</h2>
+    <ul class="grid">
+      <li><a class="title" href="SETUP">Setup</a><p>Build and run EmiBSD in QEMU on macOS (Apple Silicon) or Linux.</p></li>
+      <li><a class="title" href="ARCHITECTURE">Architecture</a><p>Why the tree looks the way it does: crates, boundaries, the HAL.</p></li>
+      <li><a class="title" href="ZERO_UNSAFE">Zero unsafe in the kernel</a><p>The design and the decisions behind a kernel the compiler refuses to build with one <code>unsafe</code>.</p></li>
+      <li><a class="title" href="ROADMAP">Roadmap</a><p>Native milestones N0 onward, each with its exit criteria.</p></li>
+      <li><a class="title" href="STATUS">Status</a><p>Where the work is right now: last milestone met, what is next, blockers.</p></li>
+      <li><a class="title" href="PHASE2">The native process</a><p>How a subsystem moves from the LZ tree into the native kernel.</p></li>
+      <li><a class="title" href="C_TO_RUST">C → Rust idioms</a><p>One row per settled idiom: what OpenBSD C does, what we write, why.</p></li>
+      <li><a class="title" href="IDIOMS">LZ shape → native shape</a><p>What the faithful port writes to mirror C, and what the native system writes instead.</p></li>
+      <li><a class="title" href="JOURNAL">Journal</a><p>One section per milestone: what worked, what failed, rules that had to change.</p></li>
+      <li><a class="title" href="SYNC">Syncing with EmiBSD.LZ</a><p>The monthly procedure for pulling the port's commits into this tree.</p></li>
+      <li><a class="title" href="ZERO_UNSAFE_V1">Zero unsafe, v1</a><p>The superseded first version, kept as the record of how it was measured and why it was dropped.</p></li>
+    </ul>
+  </section>
+
+  <section id="quickstart">
+    <h2>Quick start</h2>
+    <pre><code>git clone https://github.com/enavarre-cl/EmiBSD
+cd EmiBSD
+just build      # arm64 kernel (amd64 waits for N10)
+just run-arm64  # boots it in QEMU, serial on stdio</code></pre>
+    <p class="lead">Toolchain and QEMU setup, per platform, in <a href="SETUP">SETUP</a>.</p>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>EmiBSD · ISC license</span>
+    <span><a href="https://github.com/enavarre-cl/EmiBSD">GitHub</a> · <a href="https://github.com/enavarre-cl/EmiBSD.LZ">EmiBSD.LZ</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
