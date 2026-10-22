@@ -162,3 +162,6 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - A kernel type's inherent method shadows a bsd extension trait's method of the same name (Thread::vmspace vs ProcExt::vmspace): keep kernel names off bsd's frozen accessors.
 - Once a bsd type becomes an alias of a kernel type, bsd's `impl Proc {}` blocks stop compiling (E0116): move them to the glue's member type, which auto-deref reaches.
 - s_count is held by ttys (TIOCSCTTY's sesshold) and tprintf_open too, not only by groups: a counted SessionRef needs holders there.
+- A same-session bench/unsafe 'before' without amending: back up `git diff HEAD --binary`, `git stash push -m <tag>` (tracked only), move new untracked .rs aside, measure, `git stash apply <sha>`, compare the diff byte for byte, drop by tag.
+- After a big call-site switch, `cargo fix --lib --tests -p bsd --allow-dirty --allow-staged` clears the unused imports; kernel benches need `--features doubles`; run `git commit` as a command of its own (chained or redirected, the sandbox refuses it).
+- bsd's MpLock depth is per `cpu_number()`, 0 for every host test thread: a check on the kernel lock's depth or on hal::klock's witness count in kern_lock.rs is `#[cfg(not(test))]`; host tests that reach `[K]` readers take `kernel_lock()` as the syscall would.
