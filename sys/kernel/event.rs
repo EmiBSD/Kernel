@@ -878,15 +878,6 @@ impl KernelHold {
         klock::kernel_lock();
         Self
     }
-
-    /// The kernel lock of a `bsd` caller of a `_locked` form, which holds it (asserted under
-    /// `diagnostic`, as the C's `KLIST_ASSERT_LOCKED`), taken once more, recursively, so the
-    /// witness the form takes is this CPU's whatever the caller's path.
-    fn legacy() -> Self {
-        #[cfg(feature = "diagnostic")]
-        klock::kernel_assert_locked();
-        Self::take()
-    }
 }
 
 impl Drop for KernelHold {
@@ -1005,13 +996,12 @@ impl<G: ProcGlue> Klist<G> {
     }
 
     /// `klist_insert_locked(klist, kn)` of a `bsd` caller that holds the list's lock as the
-    /// C knows it: the kernel lock (asserted under `diagnostic`, the C's
-    /// `KLIST_ASSERT_LOCKED`, and taken once more, recursively, for the witness), or, for an
-    /// `Own` klist, the owner's lock, inside which the own mutex is taken.
+    /// C knows it: the kernel lock (its witness taken here: `panic(9)` when it is not held,
+    /// the C's `KLIST_ASSERT_LOCKED`), or, for an `Own` klist, the owner's lock, inside which
+    /// the own mutex is taken.
     pub fn insert_legacy(&self, kn: &Knote<G>) {
         match self.kind() {
             KlistKind::Kernel => {
-                let _k = KernelHold::legacy();
                 let mut w = klock::witness();
                 self.insert_locked(&mut w, kn);
             }
@@ -1027,7 +1017,6 @@ impl<G: ProcGlue> Klist<G> {
     pub fn remove_legacy(&self, kn: &Knote<G>) {
         match self.kind() {
             KlistKind::Kernel => {
-                let _k = KernelHold::legacy();
                 let mut w = klock::witness();
                 self.remove_locked(&mut w, kn);
             }
@@ -1077,7 +1066,6 @@ impl<G: ProcGlue> Klist<G> {
         }
         match self.kind() {
             KlistKind::Kernel => {
-                let _k = KernelHold::legacy();
                 let r = klock::reader();
                 self.knote_locked(&r, hint);
             }

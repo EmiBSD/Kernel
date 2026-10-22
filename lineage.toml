@@ -5868,7 +5868,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_sync.rs"
