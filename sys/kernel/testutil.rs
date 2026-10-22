@@ -1440,4 +1440,226 @@ static TEST_VM_MACHINE: crate::vm::init::VmMachine = crate::vm::init::VmMachine 
     have_uspace_guard: true,
     dma_constraint: &crate::vm::km::NO_CONSTRAINT,
 };
+
+/// The object of a test glue's file ([`test_file_glue!`](crate::test_file_glue)): an id
+/// (`kinfo_file.f_data`'s address stand-in) and what the vnode and socket hooks answer.
+#[derive(Debug, Default)]
+pub struct TestFileData {
+    /// The object's number, its "address".
+    pub id: usize,
+    /// `VISTTY` of the vnode.
+    pub tty: bool,
+    /// `SS_DNS` of the socket.
+    pub dns: bool,
+}
+
+/// The `struct stat` of a test glue.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TestStat {
+    /// `st_size`.
+    pub st_size: u64,
+    /// `st_gen`.
+    pub st_gen: u32,
+    /// `st_mode`.
+    pub st_mode: u32,
+}
+
+hal::abi_pod!(TestStat {
+    st_size: u64,
+    st_gen: u32,
+    st_mode: u32
+});
+
+/// The vnode of a test glue's `fd_cdir`/`fd_rdir`: its use count.
+#[derive(Debug, Default)]
+pub struct TestVnode {
+    /// `v_usecount`.
+    pub refs: core::sync::atomic::AtomicI32,
+}
+
+std::thread_local! {
+    static FILE_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static MAXFILES: Cell<i32> = const { Cell::new(1000) };
+}
+
+/// Records a test glue's hook call.
+pub fn file_log_push(s: String) {
+    FILE_LOG.with(|l| l.borrow_mut().push(s));
+}
+
+/// The hook calls this thread's test glues recorded since the last call, in order.
+pub fn file_log() -> Vec<String> {
+    FILE_LOG.with(|l| core::mem::take(&mut *l.borrow_mut()))
+}
+
+/// `maxfiles` of this thread's test glues (1000 until set).
+pub fn test_maxfiles() -> i32 {
+    MAXFILES.with(Cell::get)
+}
+
+/// Sets `maxfiles` of this thread's test glues.
+pub fn set_test_maxfiles(n: i32) {
+    MAXFILES.with(|m| m.set(n));
+}
+
+/// Declares `$name`, a `kernel::file::FileGlue` of the tests over the process glue `$proc`:
+/// per-thread tables (a leaked `FileTables` per test thread, so tests share nothing), the
+/// operations a `dyn FileOps`, the object a [`TestFileData`], and every hook recorded in
+/// [`file_log`]. `$crate::test_file_glue!(Files, Procs);` then `type FileGlue = Files;` in
+/// the process glue.
+#[macro_export]
+macro_rules! test_file_glue {
+    ($name:ident, $proc:ty) => {
+        /// A file glue of the tests (`kernel::test_file_glue!`).
+        pub struct $name;
+
+        $crate::file_glue_links!($name);
+
+        std::thread_local! {
+            static FILE_TABLES: &'static $crate::file::FileTables<$name> =
+                std::boxed::Box::leak(std::boxed::Box::new($crate::file::FileTables::new(0)));
+        }
+
+        impl $crate::file::FileGlue for $name {
+            type Proc = $proc;
+            type Ops = dyn $crate::file::FileOps<$name>;
+            type Data = $crate::testutil::TestFileData;
+            type Knote = ();
+            type Stat = $crate::testutil::TestStat;
+            type Vnode = $crate::testutil::TestVnode;
+            type FileList = FileListLink;
+            type FdKq = ();
+
+            fn tables() -> &'static $crate::file::FileTables<Self> {
+                FILE_TABLES.with(|t| *t)
+            }
+            fn maxfiles() -> i32 {
+                $crate::testutil::test_maxfiles()
+            }
+            fn tablefull(tab: &str) {
+                $crate::testutil::file_log_push(std::format!("tablefull {tab}"));
+            }
+            fn stall_wait() {
+                $crate::testutil::file_log_push(std::string::String::from("stall"));
+            }
+            fn data_addr(d: &Self::Data) -> usize {
+                d.id
+            }
+            fn vref(v: &'static Self::Vnode) {
+                v.refs.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            fn vrele(v: &'static Self::Vnode) {
+                v.refs.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            fn advlock(
+                d: &Self::Data,
+                owner: $crate::file::LockOwner,
+                op: i32,
+                fl: &mut hal::sys::fcntl::Flock,
+                flags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::file_log_push(std::format!(
+                    "advlock {} {:?} {} {} {} {:#x}",
+                    d.id,
+                    owner,
+                    op,
+                    fl.l_type,
+                    fl.l_start,
+                    flags
+                ));
+                Ok(())
+            }
+            fn pathconf(
+                _d: &Self::Data,
+                name: i32,
+            ) -> Result<hal::sys::types::Register, hal::sys::errno::Errno> {
+                Ok(1000 + name as hal::sys::types::Register)
+            }
+            fn isatty(d: &Self::Data) -> bool {
+                d.tty
+            }
+            fn position_check(
+                _d: &Self::Data,
+                off: hal::sys::types::Off,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                if off < 0 {
+                    Err(hal::sys::errno::Errno::EINVAL)
+                } else {
+                    Ok(())
+                }
+            }
+            fn dns_socket(d: &Self::Data) -> bool {
+                d.dns
+            }
+            fn knote_fdclose(_p: &$crate::proc::Thread<$proc>, fd: i32) {
+                $crate::testutil::file_log_push(std::format!("knote_fdclose {fd}"));
+            }
+            fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
+                $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));
+            }
+            fn pledge_fcntl(
+                _p: &$crate::proc::Thread<$proc>,
+                _cmd: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            fn pledge_flock(
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            fn pledge_ioctl(
+                _p: &$crate::proc::Thread<$proc>,
+                _com: u64,
+                _fp: &$crate::file::File<Self>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            fn stat_hide_gen(st: &mut Self::Stat) {
+                st.st_gen = 0;
+            }
+            fn fdkq_free(_kq: &Self::FdKq) {}
+        }
+    };
+}
+
+/// Declares `$name`, a `kernel::proc::ProcGlue` of the tests whose descriptors are the file
+/// glue `$files` ([`test_file_glue!`](crate::test_file_glue)): no member of `bsd`'s, per-thread
+/// tables, every hook a no-op. For the tests of the modules over the processes
+/// (`kernel::descrip`), which need threads with tables and credentials.
+#[macro_export]
+macro_rules! test_proc_glue {
+    ($name:ident, $files:ty) => {
+        /// A process glue of the tests (`kernel::test_proc_glue!`).
+        pub struct $name;
+
+        $crate::proc_glue_links!($name);
+
+        std::thread_local! {
+            static PROC_TABLES: &'static $crate::proc::ProcTables<$name> =
+                std::boxed::Box::leak(std::boxed::Box::new($crate::proc::ProcTables::new()));
+        }
+
+        impl $crate::proc::ProcGlue for $name {
+            type ProcessG = ();
+            type ThreadG = ();
+            type PgrpG = ();
+            type SessionG = ();
+            type RunqEntry = ();
+            type FileGlue = $files;
+            $crate::proc_glue_link_types!();
+
+            fn tables() -> &'static $crate::proc::ProcTables<Self> {
+                PROC_TABLES.with(|t| *t)
+            }
+            fn pgsignal(_pg: &$crate::proc::Pgrp<Self>, _sig: i32, _checkctty: bool) {}
+            fn prsignal(_pr: &$crate::proc::Process<Self>, _sig: i32) {}
+            fn pgrp_destroy(_pg: &$crate::proc::Pgrp<Self>) {}
+            fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
+            fn session_placed(_sess: &$crate::proc::Session<Self>) {}
+            fn session_destroy(_sess: &$crate::proc::Session<Self>) {}
+        }
+    };
+}
 /* </CODE> */

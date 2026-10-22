@@ -9090,6 +9090,30 @@ status = "redesigned"
 notes = "N4.3: uio.h's types in the kernel crate, Uio<'a, G: ProcGlue> generic over the glue (uio_procp an Option<&Thread<G>>), and sys_generic.c's iovec_copyin over an IovBuf (the stack eight or an owned MArray<Iovec>, M_IOV) that frees itself; UioMove moved here from kernel::pipe (re-exported there). uiomove and ureadc stay bsd's (kern_subr.rs) while UIO_SYSSPACE iovecs are raw kernel addresses"
 
 [[module]]
+rust = "sys/kernel/file.rs"
+crate = "kernel"
+lz = ["sys/sys/file.rs"]
+status = "redesigned"
+notes = "N4.3: struct file as a TypedPool item (filepl, recorded) behind FileRef (a PoolArc: f_count is the handle count; FREF a clone, FRELE PoolArc::try_last -> fdrop with the close's error, a plain last drop closes with no thread); f_ops/f_data/f_type installed once (Installed, OnceStatic), f_mtx a Mutexed<FileStats>, filehead a PinList under fhdlk (FileTables); a message's descriptor a parked reference (forget/adopt). FileGlue: the bsd hooks (vnode, socket, kqueue, pledge, signals), a bridge row"
+
+[[module]]
+rust = "sys/kernel/descrip.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_descrip.rs", "sys/sys/filedesc.rs", "sys/kern/sys_generic.rs"]
+status = "redesigned"
+notes = "N4.3: kern_descrip.c and sys_generic.c's read/write/ioctl/utrace over a Filedesc<G> in fdescpl (FdRef): the slots and flags in fd_fplock's Mutexed, the bitmaps and marks in fd_lock's Rwlocked (FdGuard), the arrays filedesc0's or owned MArrays; fd_refcnt the processes sharing it, the last fdfree empties it"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Process::fd"
+native = ["sys/kernel/proc.rs::Process::fd"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Proc::fd"
+native = ["sys/kernel/proc.rs::Thread::fd"]
+kind = "renamed"
+
+[[module]]
 rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]

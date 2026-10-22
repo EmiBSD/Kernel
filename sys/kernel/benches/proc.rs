@@ -248,6 +248,7 @@ static BENCH_POOLS: BenchPools = BenchPools;
 pub struct BenchGlue;
 
 kernel::proc_glue_links!(BenchGlue);
+kernel::test_file_glue!(BenchFiles, BenchGlue);
 
 static TABLES: ProcTables<BenchGlue> = ProcTables::new();
 
@@ -257,6 +258,7 @@ impl ProcGlue for BenchGlue {
     type PgrpG = ();
     type SessionG = ();
     type RunqEntry = ();
+    type FileGlue = BenchFiles;
     kernel::proc_glue_link_types!();
 
     fn tables() -> &'static ProcTables<Self> {

@@ -209,6 +209,8 @@ use hal::thread::MachineSlot;
 
 use crate::assert::kpanic;
 use crate::cred::{CredRef, Ucred};
+use crate::descrip::{FdRef, Filedesc};
+use crate::file::FileGlue;
 use crate::resource::{LimitCache, PlimitRef, Rusage, TimespecWord, Tusage};
 use crate::vm::map::{InentryCache, VmspaceRef};
 
@@ -688,6 +690,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type ThreadOwned: OwnedAdapter<Elem = Thread<Self>>;
     /// `pg_hash`: the pgrp hash chains.
     type PgrpHash: PinAdapter<Elem = Pgrp<Self>>;
+    /// The descriptors of this glue's processes (`ps_fd`, `kernel::descrip`).
+    type FileGlue: FileGlue<Proc = Self>;
 
     /// The lists, hashes and pools of this glue's processes (one `static` of `bsd`'s).
     fn tables() -> &'static ProcTables<Self>;
@@ -1244,6 +1248,9 @@ pub struct Process<G: ProcGlue> {
     pub ps_kbind_addr: UsizeWord,
     /// `ps_start`: starting uptime.
     pub ps_start: TimespecWord,
+    /// `ps_fd`: the descriptor table, set once before the process's first thread runs
+    /// (`fork1`, `main` for process 0) and never taken back (`fdfree` empties it).
+    fd: OnceStatic<FdRef<G::FileGlue>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1307,7 +1314,33 @@ impl<G: ProcGlue> Process<G> {
             ps_kbind_cookie: I64Word::new(0),
             ps_kbind_addr: UsizeWord::new(0),
             ps_start: TimespecWord::new(),
+            fd: OnceStatic::new(),
             g,
+        }
+    }
+
+    /// `pr->ps_fd`: the process's descriptor table (`panic(9)` before it has one).
+    pub fn fd(&self) -> &Filedesc<G::FileGlue> {
+        self.fd_ref()
+    }
+
+    /// `pr->ps_fd`, `None` before the process has one.
+    pub fn fd_opt(&self) -> Option<&Filedesc<G::FileGlue>> {
+        self.fd.get().map(|f| &**f)
+    }
+
+    /// `pr->ps_fd`'s counted handle (`fdshare`'s clone, `kinfo_proc.p_fd`'s address).
+    pub fn fd_ref(&self) -> &FdRef<G::FileGlue> {
+        match self.fd.get() {
+            Some(f) => f,
+            None => kpanic(format_args!("process {}: no ps_fd", self.ps_pid)),
+        }
+    }
+
+    /// `pr->ps_fd = fdp`: once, before a thread of the process runs (`panic(9)` twice).
+    pub fn set_fd(&self, fdp: FdRef<G::FileGlue>) {
+        if self.fd.set(fdp).is_err() {
+            kpanic(format_args!("process {}: ps_fd set twice", self.ps_pid));
         }
     }
 
@@ -1726,6 +1759,12 @@ impl<G: ProcGlue> Thread<G> {
     /// `p->p_p`, a counted reference (what pins the process for its lists).
     pub fn process_ref(&self) -> &ProcessRef<G> {
         &self.p_p
+    }
+
+    /// `p->p_fd`: the descriptor table of the thread's process (the C's per-thread copy of
+    /// `ps_fd`, which every thread of a process shares).
+    pub fn fd(&self) -> &Filedesc<G::FileGlue> {
+        self.p_p.fd()
     }
 
     /// `p_stat`.
@@ -2256,6 +2295,7 @@ mod tests {
     pub struct TestGlue;
 
     crate::proc_glue_links!(TestGlue);
+    crate::test_file_glue!(TestFiles, TestGlue);
 
     std::thread_local! {
         static TABLES: &'static ProcTables<TestGlue> = Box::leak(Box::new(ProcTables::new()));
@@ -2271,6 +2311,7 @@ mod tests {
         type PgrpG = ();
         type SessionG = ();
         type RunqEntry = ();
+        type FileGlue = TestFiles;
         crate::proc_glue_link_types!();
 
         fn tables() -> &'static ProcTables<Self> {
