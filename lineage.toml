@@ -5162,7 +5162,7 @@ rust = "sys/kern/kern_fork.rs"
 lz = ["sys/kern/kern_fork.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs"]
-notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK()"
+notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK(); N4.5a: own logic beside the call sites (kept adapted: lz check refuses redesigned for a module whose mod line is not forbid, and kern_fork keeps OLDPIDS's unsafe): the thread functions' table (STARTS, thread_start_word: the number a new thread's frame carries, no code address into hal) and thread_start, the start hal::thread calls (kernel::sched::trampoline_mi, then the function); p_sleep_to set once the tid is known (kernel::sched::sleep_timeout_init); proc_trampoline_mi moved into kernel::sched"
 
 [[module]]
 rust = "sys/kern/kern_intrmap.rs"
@@ -9300,9 +9300,40 @@ kind = "renamed"
 [[module]]
 rust = "sys/kernel/sched.rs"
 crate = "kernel"
-lz = ["sys/kern/kern_synch.rs", "sys/kern/kern_sched.rs", "sys/kern/sched_bsd.rs", "sys/sys/sched.rs"]
+lz = ["sys/kern/kern_synch.rs", "sys/kern/kern_sched.rs", "sys/kern/sched_bsd.rs", "sys/sys/sched.rs", "sys/kern/kern_exit.rs", "sys/kern/kern_fork.rs"]
 status = "redesigned"
-notes = "N4.5a: the scheduler over hal::thread: the sleep queues and tsleep/wakeup (sleep_setup, sleep_finish with p_sleep_to a kernel Timeout named by tid, endtsleep, unsleep, wakeup_n, wakeup_proc), the run queues and CPU choice (setrunqueue, remrunqueue, sched_chooseproc returning a Next, sched_choosecpu(_fork), sched_steal_proc, the cost), mi_switch (hold by value, dropped after the switch), trampoline_mi, the idle loop and the dead threads (sched_idle, sched_exit, sched_toidle, exit2, reaper_next under deadproc_mutex), the 4.4BSD priorities and load average (setpriority, decay_aftersleep, schedcpu, update_loadavg, roundrobin, schedclock, yield, preempt, sched_yield), pegging and barriers, the CPU sets by number, and KernelSleep (hal::sleep::Sleep over it). Queues are PinLists bound to SCHED_LOCK, moved in two phases; per-CPU SchedCpu allocated at sched_init_cpu; what is still bsd's through ProcGlue's scheduler hooks. Tests over hal's host switch double. bsd keeps its own scheduler until the switch-over (N4.5a a5)"
+notes = "N4.5a: the scheduler over hal::thread: the sleep queues and tsleep/wakeup (sleep_setup, sleep_finish with p_sleep_to a kernel Timeout named by tid, endtsleep, unsleep, wakeup_n, wakeup_proc), the run queues and CPU choice (setrunqueue, remrunqueue, sched_chooseproc returning a Next, sched_choosecpu(_fork), sched_steal_proc, the cost), mi_switch (hold by value, dropped after the switch), trampoline_mi, the idle loop and the dead threads (sched_idle, sched_exit, sched_toidle, exit2, reaper_next under deadproc_mutex), the 4.4BSD priorities and load average (setpriority, decay_aftersleep, schedcpu, update_loadavg, roundrobin, schedclock, yield, preempt, sched_yield), pegging and barriers, the CPU sets by number, and KernelSleep (hal::sleep::Sleep over it). Queues are PinLists bound to SCHED_LOCK, moved in two phases; per-CPU SchedCpu allocated at sched_init_cpu; what is still bsd's through ProcGlue's scheduler hooks. Tests over hal's host switch double. bsd runs on it since the switch-over (N4.5a a5, e38bed36); exit2 and the deadproc queue and lock (kern_exit.c) and proc_trampoline_mi (kern_fork.c) are its too"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::exit2"
+native = ["exit2"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DEADPROC"
+native = ["SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DeadprocHead"
+native = ["SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DEADPROC_MUTEX"
+native = ["DEAD_LOCK"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DEADPROC_MUTEX_FLAGS"
+native = []
+kind = "dropped"
+reason = "MTX_NOWITNESS, kept by LZ for the record: WITNESS is not configured, and DEAD_LOCK is a hal Mutexed, which has no witness flags"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::proc_trampoline_mi"
+native = ["trampoline_mi"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/uio.rs"
