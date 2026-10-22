@@ -676,7 +676,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type ProcessG: Send + Sync;
     /// The members of `struct proc` of `bsd`'s subsystems (`p_exited`).
     type ThreadG: Send + Sync;
-    /// The members of `struct pgrp` of `bsd`'s (`pg_sigiolst`).
+    /// The members of `struct pgrp` of `bsd`'s (none since N4.5b: `pg_sigiolst` is
+    /// `kernel::sigio`'s registry).
     type PgrpG: Send + Sync;
     /// The members of `struct session` of `bsd`'s (`s_ttyvp`, `s_ttyp`, `s_verauthto`).
     type SessionG: Send + Sync;
@@ -777,7 +778,7 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn stathz() -> i32 {
         100
     }
-    /// `pgdelete`'s calls out: `sigio_freelist(&pgrp->pg_sigiolst)` and, when the session's
+    /// `pgdelete`'s call out (after `kernel::sigio`'s `sigio_freelist`): when the session's
     /// terminal names this group, `tp->t_pgrp = NULL`.
     fn pgrp_destroy(pg: &Pgrp<Self>);
     /// `killjobc`'s controlling-terminal part, for a session leader whose session has a
@@ -1216,7 +1217,7 @@ pub struct Pgrp<G: ProcGlue> {
     pub pg_id: I32Word,
     /// `pg_jobc`: # procs qualifying pgrp for job control.
     pub pg_jobc: I32Word,
-    /// The members of `bsd`'s subsystems (`pg_sigiolst`).
+    /// The members of `bsd`'s subsystems (none since N4.5b).
     pub g: G::PgrpG,
 }
 
@@ -2427,6 +2428,7 @@ pub fn leavepgrp<G: ProcGlue>(pr: &ProcessRef<G>) {
 /// terminal's pointer to it go (the glue), and its session reference drops (`SESSRELE`)
 /// after the lock's witness, with the group's last reference.
 pub fn pgdelete<G: ProcGlue>(pgrp: PgrpRef<G>) {
+    crate::sigio::sigio_freelist_pgrp(&pgrp);
     G::pgrp_destroy(&pgrp);
     let sess = {
         let mut w = klock::witness();

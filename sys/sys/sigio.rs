@@ -50,111 +50,19 @@
 
 /* <CODE> */
 //! `<sys/sigio.h>`: the registration of a process or process group to receive `SIGIO`/
-//! `SIGURG` for a file.
+//! `SIGURG` for a file: `kernel::sigio`'s since N4.5b, named here for `bsd`'s sockets, `bpf`,
+//! `wscons` and pipes.
 //!
 //! Upstream: sys/sys/sigio.h @ 3ce1f3f79392
+//! LZ: sys/sys/sigio.rs@3c62ede68802
 //!
-//! Status: `ported` (with `kern_sig.c`, which implements the functions it declares).
-//!
-//! ## Deviations
-//! - The union `sio_u` (`sio_proc` or `sio_pgrp`, chosen by the sign of `sio_pgid`) is two
-//!   side-by-side pointer fields; the one the sign does not select stays null.
-//! - `LIST_HEAD(sigiolst, sigio)` is a `hal::list::List` (N4.2, interim until N4.4's sigio):
-//!   its links are atomics, so the lists can be members of the kernel's pooled `Process`
-//!   and `Pgrp` (`Send + Sync` by composition), and every insert and remove is safe. The
-//!   list's premise is elements never freed; a sigio is freed (`sigio_del`) only after it
-//!   left its list, and the `&'static` the inserts take is the deref of its `malloc(9)`
-//!   item (`sigio_setown`, `sigio_copy`), the convention every sigio reference rests on.
-//!   `LIST_REMOVE` names no head; `hal::list` does, so `sigio_unlink` reads the owner's
-//!   list from `sio_proc` or `sio_pgrp` before clearing it.
+//! ## Redesign
+//! - N4.5b: `struct sigio_ref` is `kernel::sigio::SigioRef`, one atomic word valid all zero
+//!   (the softcs and sockets that embed one are `M_ZERO`/`PR_ZERO`); `struct sigio` and the
+//!   lists of a process's and a group's registrations (`ps_sigiolst`, `pg_sigiolst`) are the
+//!   kernel's registry under `sigio_lock`, which owns every registration (LZ: raw `Cell`
+//!   links under two `unsafe impl Sync`). This module re-exports the names (0 `unsafe`,
+//!   LZ 2).
 
-use core::cell::Cell;
-use core::ptr;
-
-use crate::sys::proc::{Pgrp, Process};
-use crate::sys::types::Pid;
-use crate::sys::ucred::CredSlot;
-
-/// `struct sigio_ref`: sigio registration.
-///
-/// Locking: S: `sigio_lock`.
-pub struct SigioRef {
-    /// \[S\] `sir_sigio`: associated sigio struct.
-    pub sir_sigio: Cell<*const Sigio>,
-}
-
-// SAFETY: `sir_sigio` is written under `sigio_lock`.
-unsafe impl Sync for SigioRef {}
-
-impl SigioRef {
-    /// `sigio_init`: an empty registration.
-    pub const fn new() -> Self {
-        Self {
-            sir_sigio: Cell::new(ptr::null()),
-        }
-    }
-}
-
-impl Default for SigioRef {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `struct sigio`: this structure holds the information needed to send a SIGIO or a SIGURG
-/// signal to a process or process group when new data arrives on a device or socket. The
-/// structure is placed on an LIST belonging to the proc or pgrp so that the entire list may
-/// be revoked when the process exits or the process group disappears.
-///
-/// Locking: I: immutable after creation; S: `sigio_lock`.
-pub struct Sigio {
-    /// \[I\] `sio_proc` (`sio_u.siu_proc`): process to receive SIGIO/SIGURG.
-    pub sio_proc: Cell<*const Process>,
-    /// \[I\] `sio_pgrp` (`sio_u.siu_pgrp`): process group to receive ...
-    pub sio_pgrp: Cell<*const Pgrp>,
-    /// \[S\] `sio_pgsigio`: sigio's for process or group.
-    pub sio_pgsigio: hal::list::ListEntry<Sigio>,
-    /// \[I\] `sio_myref`: location of the pointer that holds the reference to this structure.
-    pub sio_myref: Cell<*const SigioRef>,
-    /// \[I\] `sio_ucred`: current credentials.
-    pub sio_ucred: CredSlot,
-    /// \[I\] `sio_pgid`: pgid for signals.
-    pub sio_pgid: Cell<Pid>,
-}
-
-// SAFETY: the links are touched under `sigio_lock`, the rest is immutable after creation.
-unsafe impl Sync for Sigio {}
-
-impl Sigio {
-    /// An unlinked, empty `struct sigio`.
-    pub const fn new() -> Self {
-        Self {
-            sio_proc: Cell::new(ptr::null()),
-            sio_pgrp: Cell::new(ptr::null()),
-            sio_pgsigio: hal::list::ListEntry::new(),
-            sio_myref: Cell::new(ptr::null()),
-            sio_ucred: CredSlot::new(),
-            sio_pgid: Cell::new(0),
-        }
-    }
-}
-
-impl Default for Sigio {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-hal::list_adapter!(
-    /// `LIST_ENTRY(sigio) sio_pgsigio`: a process's or process group's sigios.
-    pub SigioPgsigio: Sigio, sio_pgsigio
-);
-
-/// `LIST_HEAD(sigiolst, sigio)`.
-pub type Sigiolst = hal::list::List<SigioPgsigio>;
-
-/// `sigio_init(sir)`.
-pub fn sigio_init(sir: &SigioRef) {
-    sir.sir_sigio.set(ptr::null());
-}
+pub use kernel::sigio::{SigioRef, sigio_init};
 /* </CODE> */

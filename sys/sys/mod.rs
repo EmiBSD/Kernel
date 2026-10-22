@@ -109,6 +109,7 @@ pub use hal::sys::select;
 pub mod selinfo;
 pub mod sensors;
 pub use hal::sys::siginfo;
+#[forbid(unsafe_code)]
 pub mod sigio;
 pub use hal::sys::signal;
 #[forbid(unsafe_code)]

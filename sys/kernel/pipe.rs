@@ -81,10 +81,10 @@
 //! `PRIBIO | PCATCH`, and `pipe_destroy`'s rundown (`pipecl`, `PRIBIO`).
 //!
 //! The kernel holds every decision here; what is still `bsd`'s (the file, the descriptor
-//! table, the filterops' file lookup, the sigio registration, the `uio`) is reached through
-//! three traits that `bsd`'s glue implements (`sys/kern/pipe_glue.rs`, `bridges.toml`):
-//! [`PipeGlue`] (one value per pipe, inside the pair: the sigio, the clock, the filterops),
-//! [`UioMove`] (the copy) and [`PipeFiles`] (`dopipe`'s descriptor work).
+//! table, the filterops' file lookup, the `uio`) is reached through three traits that
+//! `bsd`'s glue implements (`sys/kern/pipe_glue.rs`, `bridges.toml`): [`PipeGlue`] (the
+//! clock, the filterops), [`UioMove`] (the copy) and [`PipeFiles`] (`dopipe`'s descriptor
+//! work). A pipe's `SIGIO` registration is [`crate::sigio`]'s (N4.5b).
 //!
 //! ## Deviations
 //! - A pair is allocated with `PR_WAITOK`, and `hal`'s pool answers `None` only where
@@ -122,9 +122,9 @@
 //!   anything else (decision 11), so the three `unsafe` slices of LZ are safe slices; only
 //!   the holder of `PIPE_LOCK` takes it.
 //! - The kernel names nothing of `bsd`: the pair is generic over the glue type, `G:
-//!   PipeGlue`, which `bsd` instantiates once (`Pipes<BsdPipeGlue>`): its sigio sits in the
-//!   pair as LZ's did, with no cast and no indirection, and the klist is the kernel's
-//!   (`Klist<G::Proc>`, by value in each pipe, since N4.4). The ioctl commands and the
+//!   PipeGlue`, which `bsd` instantiates once (`Pipes<BsdPipeGlue>`); the klist is the
+//!   kernel's (`Klist<G::Proc>`, by value in each pipe, since N4.4) and so is the sigio
+//!   registration (`SigioRef`, one word in each pipe, since N4.5b). The ioctl commands and the
 //!   kqueue filters arrive as [`PipeIoctl`] and [`PipeFilter`], translated by the glue from
 //!   `bsd`'s numbers; `pipe_stat` returns a [`PipeStat`] and `kern_sysctl`'s fill a
 //!   [`PipeKinfo`], which the glue writes into `bsd`'s structures.
@@ -141,6 +141,7 @@ use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
 use hal::sleep::{PCATCH, wakeup};
 use hal::sys::errno::Errno;
+use hal::sys::signal::SIGIO;
 use hal::user::UserPtr;
 
 pub use crate::uio::UioMove;
@@ -148,6 +149,7 @@ pub use crate::uio::UioMove;
 use crate::assert::{kassert, kpanic};
 use crate::event::{Filterops, Klist, Knote};
 use crate::proc::ProcGlue;
+use crate::sigio::{SigioRef, pgsigio, sigio_free, sigio_getown, sigio_setown};
 
 /// `PIPE_SIZE`: pipe buffer size, keep moderate in value, pipes take kva space.
 pub const PIPE_SIZE: usize = 16384;
@@ -308,8 +310,8 @@ struct PairState {
 /// The write guard of a pair: the witness the atomics' setters take.
 type Guard<'a> = WriteGuard<'a, PairState>;
 
-/// `struct pipe` outside the lock: the words readable without it, its klist, and the glue's
-/// part.
+/// `struct pipe` outside the lock: the words readable without it, its klist and its sigio
+/// registration.
 struct Pipe<G: PipeGlue> {
     /// `[p]` `pipe_state` (`PIPE_*`): stored only under the pair's write guard; read under
     /// it, and without it only by `kern_sysctl` ([`PipePair::kinfo`]), the C's racy read.
@@ -322,19 +324,19 @@ struct Pipe<G: PipeGlue> {
     size: AtomicU32,
     /// `[p]` `pipe_klist`: the knotes on this pipe, an `Own` klist (see the deviations).
     klist: Klist<G::Proc>,
-    /// The sigio registration (`[S]`) of `bsd`'s glue.
-    glue: G,
+    /// `[S]` `pipe_sigio`: the `SIGIO` registration (`kernel::sigio`, `sigio_lock`).
+    sigio: SigioRef,
 }
 
 impl<G: PipeGlue> Pipe<G> {
-    fn new(glue: G) -> Self {
+    fn new() -> Self {
         Self {
             state: AtomicU32::new(0),
             peer_alive: AtomicBool::new(true),
             cnt: AtomicU32::new(0),
             size: AtomicU32::new(0),
             klist: Klist::new(),
-            glue,
+            sigio: SigioRef::new(),
         }
     }
 
@@ -541,33 +543,18 @@ impl<G: PipeGlue> Pipes<G> {
     }
 }
 
-/// `bsd`'s part of one pipe (`sys/kern/pipe_glue.rs`): its sigio registration, made by
-/// [`PipeGlue::new`] as `pipe_create` sets it up (`sigio_init`), and given back by its drop;
-/// the clock; and the filterops of a pipe file, which find the pair through the knote's file.
-/// The kernel calls [`PipeGlue::pgsigio`] and [`PipeGlue::sigio_free`] with the pair's write
-/// guard held, [`PipeGlue::sigio_setown`] and [`PipeGlue::sigio_getown`] (the C's `[S]`,
-/// `sigio_lock`) without it. A bridge (`bridges.toml`): one call into `bsd` per method, no
-/// logic.
+/// What a pipe needs of `bsd` (`sys/kern/pipe_glue.rs`): the clock, and the filterops of a
+/// pipe file, which find the pair through the knote's file. A bridge (`bridges.toml`): one
+/// call into `bsd` per function, no logic. (N4.5b: a pipe's `sigio` registration is the
+/// kernel's own, [`crate::sigio`]; the glue holds nothing per pipe.)
 pub trait PipeGlue: Send + Sync + Sized + 'static {
     /// The processes whose knotes a pipe's klist holds.
     type Proc: ProcGlue;
-
-    /// One pipe's sigio registration, set up; `ENOMEM` when it cannot be had (`pipe(2)` then
-    /// fails as for a pool item that cannot be had).
-    fn new() -> Result<Self, Errno>;
 
     /// `getnanotime(9)`.
     fn nanotime() -> Timespec;
     /// `pipe_rfiltops`, `pipe_wfiltops`, `pipe_efiltops`: the filterops of `filter`.
     fn filterops(filter: PipeFilter) -> &'static Filterops<Self::Proc>;
-    /// `pgsigio(&pipe_sigio, SIGIO, 0)`.
-    fn pgsigio(&self);
-    /// `sigio_free(&pipe_sigio)`.
-    fn sigio_free(&self);
-    /// `sigio_setown(&pipe_sigio, cmd, &arg)`.
-    fn sigio_setown(&self, cmd: u64, arg: i32) -> Result<(), Errno>;
-    /// `sigio_getown(&pipe_sigio, cmd, &pgid)`: the owner.
-    fn sigio_getown(&self, cmd: u64) -> i32;
 }
 
 /// `dopipe`'s descriptor work, which stays `bsd`'s until descriptors move (N4): two
@@ -637,10 +624,9 @@ impl<G: PipeGlue> Pipes<G> {
     /// `pipe_pair_create()`: a new pair with both buffers, as its two ends (`pp_rpipe`,
     /// `pp_wpipe`); `ENOMEM` when the pool, the glue or a buffer cannot be had.
     pub fn create(&'static self) -> Result<(PipeEnd<G>, PipeEnd<G>), Errno> {
-        let glue = [G::new()?, G::new()?];
         let pair = self
             .pool
-            .get_shared(PR_WAITOK, || PipePair::new(self, glue))
+            .get_shared(PR_WAITOK, || PipePair::new(self))
             .ok_or(Errno::ENOMEM)?;
         // klist_init_rwlock(&pipe_klist, &pipe_lock): placed, before any use.
         for end in &pair.ends {
@@ -671,10 +657,8 @@ impl<G: PipeGlue> Pipes<G> {
 
 impl<G: PipeGlue> PipePair<G> {
     /// A pair as `pipe_pair_create` links it, before `pipe_create`: each pipe the other's
-    /// peer, the lock `pipelk`, the glue's klists and sigio set up (`glue`, indexed by
-    /// [`Dir`]).
-    fn new(pipes: &'static Pipes<G>, glue: [G; 2]) -> Self {
-        let [rglue, wglue] = glue;
+    /// peer, the lock `pipelk`, the klists and the sigio registrations set up (`sigio_init`).
+    fn new(pipes: &'static Pipes<G>) -> Self {
         Self {
             pipes,
             lock: Rwlocked::new(
@@ -683,19 +667,12 @@ impl<G: PipeGlue> PipePair<G> {
                     ends: [PipeState::new(), PipeState::new()],
                 },
             ),
-            ends: [Pipe::new(rglue), Pipe::new(wglue)],
+            ends: [Pipe::new(), Pipe::new()],
         }
     }
 
     fn end(&self, dir: Dir) -> &Pipe<G> {
         &self.ends[dir.index()]
-    }
-
-    /// The glue's part of pipe `dir`, for tests only: outside them the glue is reached only
-    /// through the kernel's calls, under the pair's guard where the C holds the lock.
-    #[cfg(any(test, feature = "doubles"))]
-    pub fn glue(&self, dir: Dir) -> &G {
-        &self.end(dir).glue
     }
 
     /// `klist_empty(&pipe_klist)` of pipe `dir`, for tests only.
@@ -734,7 +711,8 @@ impl<G: PipeGlue> PipePair<G> {
         Ok(())
     }
 
-    /// Initialize and allocate VM and memory for pipe (`sigio_init` is `PipeGlue::new`).
+    /// Initialize and allocate VM and memory for pipe (`sigio_init` is the pair's
+    /// `Pipe::new`).
     fn pipe_create(&self, g: &mut Guard<'_>, dir: Dir) -> Result<(), Errno> {
         self.buffer_realloc(g, dir, PIPE_SIZE)?;
 
@@ -804,7 +782,7 @@ impl<G: PipeGlue> PipePair<G> {
         cpipe.klist.knote(0);
 
         if cpipe.has(PIPE_ASYNC) {
-            cpipe.glue.pgsigio();
+            pgsigio::<G::Proc>(&cpipe.sigio, SIGIO, false);
         }
     }
 
@@ -1100,8 +1078,10 @@ impl<G: PipeGlue> PipePair<G> {
                 let _g = self.lock.read();
                 Ok(Some(mpipe.cnt() as i32))
             }
-            PipeIoctl::SetOwn { cmd, arg } => mpipe.glue.sigio_setown(cmd, arg).map(|()| None),
-            PipeIoctl::GetOwn { cmd } => Ok(Some(mpipe.glue.sigio_getown(cmd))),
+            PipeIoctl::SetOwn { cmd, arg } => {
+                sigio_setown::<G::Proc>(&mpipe.sigio, cmd, arg).map(|()| None)
+            }
+            PipeIoctl::GetOwn { cmd } => Ok(Some(sigio_getown(&mpipe.sigio, cmd))),
             PipeIoctl::Other => Err(Errno::ENOTTY),
         }
     }
@@ -1135,7 +1115,7 @@ impl<G: PipeGlue> PipePair<G> {
         let mut g = self.lock.write();
 
         self.pipe_wakeup(&mut g, dir);
-        cpipe.glue.sigio_free();
+        sigio_free(&cpipe.sigio);
 
         // If the other side is blocked, wake it up saying that we want to close it down.
         cpipe.set(&mut g, PIPE_EOF);
@@ -1335,11 +1315,12 @@ impl<G: PipeGlue> Drop for PipePair<G> {
 mod tests {
     // Host tests for pipes over `hal`'s runtime and this crate's doubles of its bridges
     // (`crate::testutil`): every pair comes from `Pipes::create`, its buffers are
-    // `PIPE_SIZE` bytes of the page double, and `TestGlue` records what the kernel asked of
-    // the glue (SIGIOs, the owner); the knotes are `kernel::event`'s, on a test kqueue. A test that counts the pool's items or the big
+    // `PIPE_SIZE` bytes of the page double, and `TestGlue` gives the clock and the filterops;
+    // the knotes are `kernel::event`'s, on a test kqueue, and the sigio registrations
+    // `kernel::sigio`'s, of a test process. A test that counts the pool's items or the big
     // pipes uses a `Pipes` of its own, since the tests run in parallel.
 
-    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64};
+    use std::sync::atomic::{AtomicBool, AtomicI64};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -1351,13 +1332,8 @@ mod tests {
     use crate::event::{FILTEROP_ISFD, FILTEROP_MPSAFE};
     use crate::testutil;
 
-    /// The glue of the tests: counts what the kernel asks of it.
-    #[derive(Default)]
-    struct TestGlue {
-        sigios: AtomicU32,
-        sigio_freed: AtomicU32,
-        owner: AtomicI32,
-    }
+    /// The glue of the tests.
+    struct TestGlue;
 
     /// How many times a pipe's klist called a test filter's event (`knote_locked`).
     static FILTER_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -1393,10 +1369,6 @@ mod tests {
     impl PipeGlue for TestGlue {
         type Proc = Kg;
 
-        fn new() -> Result<Self, Errno> {
-            Ok(Self::default())
-        }
-
         fn nanotime() -> Timespec {
             Timespec {
                 tv_sec: CLOCK.fetch_add(1, Ordering::Relaxed) + 1,
@@ -1407,23 +1379,27 @@ mod tests {
         fn filterops(filter: PipeFilter) -> &'static Filterops<Kg> {
             &TEST_FILTOPS[filter_index(filter)]
         }
+    }
 
-        fn pgsigio(&self) {
-            self.sigios.fetch_add(1, Ordering::Relaxed);
+    /// A process `pid` of `Kg` with its actions, `SIGIO` caught, and one thread on its list,
+    /// the test thread's `curproc`: an owner `sigio_setown` accepts and `pgsigio` signals.
+    fn sigio_owner(pid: i32) -> &'static crate::proc::Process<Kg> {
+        let t = crate::event::tests::setup(pid);
+        let pr = t.process();
+        crate::sig::test_sigacts(pr);
+        {
+            let mut g = pr.ps_mtx.lock();
+            pr.ps_threads
+                .insert_tail(&mut g, hal::pin::pin_static::<crate::proc::Thread<Kg>>(t));
         }
-
-        fn sigio_free(&self) {
-            self.sigio_freed.fetch_add(1, Ordering::Relaxed);
-        }
-
-        fn sigio_setown(&self, _cmd: u64, arg: i32) -> Result<(), Errno> {
-            self.owner.store(arg, Ordering::Relaxed);
-            Ok(())
-        }
-
-        fn sigio_getown(&self, _cmd: u64) -> i32 {
-            self.owner.load(Ordering::Relaxed)
-        }
+        pr.ps_threadcnt.set(1);
+        Kg::set_curproc(Some(t));
+        let mut sa = hal::sys::signal::Sigaction {
+            sa_handler: 0x4000,
+            ..Default::default()
+        };
+        crate::sig::setsigvec(t, SIGIO, &mut sa);
+        pr
     }
 
     /// The pipes most tests share.
@@ -1767,13 +1743,21 @@ mod tests {
 
     #[test]
     fn eof_after_the_writer_closes() {
+        let owner = sigio_owner(9202);
         let (r, w, pp) = pair();
 
+        // The writer's registration goes with it (`pipe_destroy`'s `sigio_free`).
+        let set = PipeIoctl::SetOwn {
+            cmd: 0,
+            arg: owner.ps_pid,
+        };
+        assert_eq!(pp.ioctl(Dir::Wr, set), Ok(None));
+        assert_ne!(pp.end(Dir::Wr).sigio.sigio_addr(), 0);
         assert_eq!(write(&pp, Dir::Wr, b"bye", false), (Ok(()), 3));
         w.close();
         assert!(pp.end(Dir::Rd).has(PIPE_EOF));
         assert!(!pp.end(Dir::Rd).peer_alive());
-        assert_eq!(pp.glue(Dir::Wr).sigio_freed.load(Ordering::Relaxed), 1);
+        assert_eq!(pp.end(Dir::Wr).sigio.sigio_addr(), 0);
 
         // What was written is still read, then EOF: 0 bytes, no error, no waiting.
         assert_eq!(read(&pp, Dir::Rd, 8, false), (Ok(()), b"bye".to_vec()));
@@ -1801,25 +1785,34 @@ mod tests {
 
     #[test]
     fn ioctl_and_stat() {
+        let owner = sigio_owner(9201);
         let (r, w, pp) = pair();
 
         assert_eq!(write(&pp, Dir::Wr, b"abc", false), (Ok(()), 3));
         assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Nread), Ok(Some(3)));
 
-        assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Async(true)), Ok(None));
-        assert!(pp.end(Dir::Rd).has(PIPE_ASYNC));
-        // An async pipe's reader gets SIGIO when data arrives.
-        assert_eq!(write(&pp, Dir::Wr, b"d", false), (Ok(()), 1));
-        assert_eq!(pp.glue(Dir::Rd).sigios.load(Ordering::Relaxed), 1);
-        assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Async(false)), Ok(None));
-        assert!(!pp.end(Dir::Rd).has(PIPE_ASYNC));
-
-        let set = PipeIoctl::SetOwn { cmd: 1, arg: -42 };
+        let set = PipeIoctl::SetOwn {
+            cmd: 1,
+            arg: owner.ps_pid,
+        };
         assert_eq!(pp.ioctl(Dir::Rd, set), Ok(None));
         assert_eq!(
             pp.ioctl(Dir::Rd, PipeIoctl::GetOwn { cmd: 2 }),
-            Ok(Some(-42))
+            Ok(Some(owner.ps_pid))
         );
+        assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Async(true)), Ok(None));
+        assert!(pp.end(Dir::Rd).has(PIPE_ASYNC));
+        // An async pipe's reader gets SIGIO when data arrives: its owner has it pending.
+        assert_eq!(write(&pp, Dir::Wr, b"d", false), (Ok(()), 1));
+        assert_eq!(
+            owner.ps_siglist.load(Ordering::Relaxed),
+            hal::sys::signal::sigmask(SIGIO)
+        );
+        assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Async(false)), Ok(None));
+        assert!(!pp.end(Dir::Rd).has(PIPE_ASYNC));
+        // A group that does not exist is refused.
+        let set = PipeIoctl::SetOwn { cmd: 1, arg: -42 };
+        assert_eq!(pp.ioctl(Dir::Rd, set), Err(Errno::ESRCH));
         // sys_ioctl handles FIONBIO itself; the pipe does not.
         assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Other), Err(Errno::ENOTTY));
 

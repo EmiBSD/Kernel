@@ -166,7 +166,7 @@ use kernel::proc::{
 };
 
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
-use crate::kern::kern_sig::{pgsignal as sig_pgsignal, sigio_freelist};
+use crate::kern::kern_sig::pgsignal as sig_pgsignal;
 use crate::kern::kern_timeout::{timeout_del, timeout_set};
 use crate::kern::tty::ttywait;
 use crate::kern::vfs_subr::vrele;
@@ -177,7 +177,6 @@ use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Siginfo;
-use crate::sys::sigio::Sigiolst;
 use crate::sys::signal::{SIGHUP, Sig, Sigset};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
@@ -245,8 +244,6 @@ impl IsizeWord {
 
 /// The members of `struct process` of `bsd`'s subsystems; a process dereferences to them.
 pub struct BsdProcessG {
-    /// `ps_sigiolst`: list of sigio structures.
-    pub ps_sigiolst: Sigiolst,
     /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
     pub ps_textvp: Link<Vnode>,
     /// \[K|m\] `ps_opptr`: old parent during ptrace (null: ptrace is not ported).
@@ -276,7 +273,6 @@ impl BsdProcessG {
     /// The members of a new process.
     pub const fn new() -> Self {
         Self {
-            ps_sigiolst: Sigiolst::new(),
             ps_textvp: Link::new(),
             ps_opptr: PtrWord::new(),
             ps_rucheck_to: Timeout::zeroed(),
@@ -323,18 +319,14 @@ impl Default for BsdThreadG {
     }
 }
 
-/// The members of `struct pgrp` of `bsd`'s subsystems.
-pub struct BsdPgrpG {
-    /// `pg_sigiolst`: list of sigio structures.
-    pub pg_sigiolst: Sigiolst,
-}
+/// The members of `struct pgrp` of `bsd`'s subsystems: none since N4.5b (`pg_sigiolst` is
+/// `kernel::sigio`'s registry).
+pub struct BsdPgrpG;
 
 impl BsdPgrpG {
-    /// No sigio.
+    /// The members of a new group.
     pub const fn new() -> Self {
-        Self {
-            pg_sigiolst: Sigiolst::new(),
-        }
+        Self
     }
 }
 
@@ -563,10 +555,9 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_clock::STATHZ.load(Ordering::Relaxed)
     }
 
-    /// `sigio_freelist(&pgrp->pg_sigiolst)`, then the session's terminal forgets the group
-    /// if it was its foreground one.
+    /// The session's terminal forgets the group if it was its foreground one (the group's
+    /// sigio registrations went before, `kernel::sigio`).
     fn pgrp_destroy(pg: &Pgrp) {
-        sigio_freelist(&pg.pg_sigiolst);
         let r = hal::klock::reader();
         if let Some(sess) = pg.session(&r)
             && let Some(tp) = sess.s_ttyp.get()
@@ -911,7 +902,6 @@ pub(crate) fn proc_test_reset() {
 const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<Timeout>();
-    send_sync::<Sigiolst>();
     send_sync::<Pinsyscall>();
     send_sync::<BsdProcessG>();
     send_sync::<BsdThreadG>();
@@ -986,7 +976,9 @@ mod tests {
         // and N4.5a. N4.5b (signals into kernel::sig): processpl 1360 -> 1376 (ps_sigacts a
         // set-once handle of process 0's static or a sigapl box in kernel::proc's Process,
         // where the glue's link was); procpl unchanged (p_sigstk and p_sigval moved from the
-        // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it).
+        // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the
+        // sigio registrations moved into kernel::sigio's registry: processpl 1376 -> 1360 and
+        // pgrppl 152 -> 136 (ps_sigiolst and pg_sigiolst gone from the glue's members).
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1026,8 +1018,8 @@ mod tests {
         assert_eq!(
             sizes,
             [
-                ("processpl", 1376),
-                ("pgrppl", 152),
+                ("processpl", 1360),
+                ("pgrppl", 136),
                 ("sessionpl", 144),
                 ("filepl", 184),
                 ("fdescpl", 560),

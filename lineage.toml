@@ -5159,14 +5159,14 @@ notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEA
 rust = "sys/kern/kern_exit.rs"
 lz = ["sys/kern/kern_exit.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs", "sys/hal/sys/siginfo.rs", "sys/kernel/sig.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs", "sys/hal/sys/siginfo.rs", "sys/kernel/sig.rs", "sys/kernel/sigio.rs"]
 notes = "M6-b: sys_exit, exit1 (single_thread_set, process_suspend_signal, stopprofclock, fdfree, SAS_NOCLDWAIT, lim_free, process_untrace reported), exit2 with deadproc, proc_free (crfree reported), reaper (prsignal reported), process_clear_orphan, process_reparent, process_zap (vrele, sigactsfree/lim_free/crfree reported); process 0 adopts orphans while initprocess is null; sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait, process_untrace are M6-c/M7; M6-b2: exit1 calls uvm_purge for user processes and the reaper uvm_exit; under feature qemu init's exit (pid 1) logs 'init exited with status N' and ends the run with that status instead of the C's panic; M7a-3b: lim_free of p_limit and of ps_limit in process_zap; kern_descrip.c: exit1 calls fdfree; kern_sig.c: single_thread_set(SINGLE_EXIT), process_suspend_signal, sigio_freelist, SAS_NOCLDWAIT, the SIGKILL to a traced child (process_untrace still reported), the reaper's prsignal(SIGCHLD), sigactsfree in process_zap; M8: exit1 calls killjobc and process_zap leavepgrp (kern_proc.c); M8: exit1 frees ps_pin/ps_libcpin (pin_free), process_zap vreles ps_textvp; M8: sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait (ruadd, scheduler_wait_hook, off zombprocess, freepid, process_zap), process_untrace (exit1 calls it for a traced child); acct_process in exit1 (ACCOUNTING); ps_opptr always null (no ptrace); kern_unveil.c: exit1 calls unveil_destroy; kern_event.c: kqpoll_exit in exit1 and knote_processexit in the reaper are real; M11e: exit1 releases every hold of the kernel lock (__mp_release_all) around uvm_purge and takes it back after; the reaper starts with KERNEL_UNLOCK and takes the lock only around the zombie's notification, as the C"
 
 [[module]]
 rust = "sys/kern/kern_fork.rs"
 lz = ["sys/kern/kern_fork.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/sigio.rs"]
 notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK(); N4.5a: own logic beside the call sites (kept adapted: lz check refuses redesigned for a module whose mod line is not forbid, and kern_fork keeps OLDPIDS's unsafe): the thread functions' table (STARTS, thread_start_word: the number a new thread's frame carries, no code address into hal) and thread_start, the start hal::thread calls (kernel::sched::trampoline_mi, then the function); p_sleep_to set once the tid is known (kernel::sched::sleep_timeout_init); proc_trampoline_mi moved into kernel::sched"
 
 [[module]]
@@ -5565,8 +5565,8 @@ adapted_by = ["sys/kernel/task.rs"]
 [[module]]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/hal/sys/signal.rs", "sys/hal/sys/siginfo.rs", "sys/kernel/sig.rs"]
+status = "redesigned"
+notes = "N4.5b: bsd's edge of kernel::sig and kernel::sigio: the sysent rows (sys_sigaction .. sys___thrsigdivert, sys_nosys, sys_sigreturn), coredump (the file systems), and the LZ signatures over bsd's Proc (psignal, ptsignal, trapsignal, userret, sigabort pin the thread; pgsigio and sigio_setown/getown over kernel::sigio), 0 unsafe (LZ 17), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/kern_smr.rs"
@@ -5945,7 +5945,7 @@ status = "inherited"
 rust = "sys/kern/uipc_socket.rs"
 lz = ["sys/kern/uipc_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
@@ -7859,8 +7859,8 @@ notes = "N4.5b: moved into hal so kernel::sig and bsd share siginfo_t; the AbiPo
 [[module]]
 rust = "sys/sys/sigio.rs"
 lz = ["sys/sys/sigio.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/list.rs", "sys/kernel/cred.rs"]
+status = "redesigned"
+notes = "N4.5b: sigio.h is sys/kernel/sigio.rs's (SigioRef one atomic word; struct sigio and the owners' lists the registry under sigio_lock); this path re-exports SigioRef and sigio_init, 0 unsafe (LZ 2), forbid on its mod line"
 
 [[module]]
 rust = "sys/hal/sys/signal.rs"
@@ -9362,6 +9362,27 @@ lz = "sys/sys/signalvar.rs::Sigacts::default"
 native = []
 kind = "dropped"
 reason = "a Sigacts is made under its process's ps_mtx (new_static for sigacts0, sigactsinit's pool item): there is no lock-less default"
+
+[[module]]
+rust = "sys/kernel/sigio.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_sig.rs", "sys/sys/sigio.rs"]
+status = "redesigned"
+notes = "N4.5b: the SIGIO/SIGURG registrations: sigio_lock (a Mutexed at IPL_HIGH) owns every registration (a chain of MBox<Sigio> of M_SIGIO, each its own malloc block as in C); a SigioRef is one atomic word (the registration's address, compared), valid all zero; the owner is sio_pgid, found with prfind/pgfind under the kernel lock at pgsigio; sigio_freelist_process/_pgrp take an owner's registrations at its death (exit1, pgdelete); ps_sigiolst and pg_sigiolst are gone"
+[[module.fn]]
+lz = "sys/sys/sigio.rs::Sigio::new"
+native = []
+kind = "dropped"
+reason = "a registration is made whole where it is registered (sigio_setown, sigio_copy): no empty sigio exists"
+[[module.fn]]
+lz = "sys/sys/sigio.rs::Sigio::default"
+native = []
+kind = "dropped"
+reason = "as Sigio::new: no empty sigio exists"
+[[module.fn]]
+lz = "sys/sys/sigio.rs::Sigiolst"
+native = ["SIGIO_LOCK"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/sched.rs"

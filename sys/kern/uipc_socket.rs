@@ -2826,7 +2826,7 @@ pub fn so_print(so: &Socket, pr: PrFn) {
     pr(format_args!("so_proto: {:p}\n", so.so_proto));
     pr(format_args!(
         "so_sigio: {:p}\n",
-        so.so_sigio.sir_sigio.get()
+        core::ptr::without_provenance::<u8>(so.so_sigio.sigio_addr())
     ));
 
     pr(format_args!("so_head: {:p}\n", sock(so.so_head.get())));

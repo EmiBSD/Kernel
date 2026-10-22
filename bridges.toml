@@ -114,12 +114,13 @@ trait = "BufCacheStats"
 for = ["sys/kernel/vm/pmemrange.rs"]
 paid_by = "N5"
 
-# bsd: one value per pipe inside the pair, its sigio registration (sys/sys/sigio.rs: pgsigio,
-# sigio_free, sigio_setown/getown), getnanotime and the three pipe filterops (which find the
-# pair through the knote's file); implemented by sys/kern/pipe_glue.rs (BsdPipeGlue), the
-# pair's generic parameter, not a registered slot. N4.4: the klist is the kernel's, by value in
-# each pipe (kernel::event::Klist, Own kind): Knote, knote, klist_insert, klist_remove and
-# klist_free left the trait. What stays goes with sigio (N4.5) and the clock (N4.8).
+# bsd: getnanotime and the three pipe filterops (which find the pair through the knote's
+# file); implemented by sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not
+# a registered slot. N4.4: the klist is the kernel's, by value in each pipe
+# (kernel::event::Klist, Own kind): Knote, knote, klist_insert, klist_remove and klist_free
+# left the trait. N4.5b: the sigio registration is the kernel's too (kernel::sigio::SigioRef in
+# each pipe): new, pgsigio, sigio_free, sigio_setown and sigio_getown left the trait, and the
+# glue holds nothing per pipe. What stays goes with the clock (N4.8).
 # kernel::pipe::PipeGlue
 [[bridge]]
 trait = "PipeGlue"

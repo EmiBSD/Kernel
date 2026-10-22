@@ -101,8 +101,8 @@
 //! What stays `bsd`'s is reached through [`ProcGlue`]: `exit1` (`kern_exit.c`, N4.6), the
 //! core dump (the file systems, N5), and the machine's part (`sendsig`, the thread's stack
 //! pointer and TCB, `signotify`'s AST and kick, N4.8). The system calls' argument decoding,
-//! `pledge_kill` and `sys_sigreturn` are `bsd`'s `sysent[]` rows (`sys/kern/kern_sig.rs`),
-//! as the `sigio` registrations are, for now.
+//! `pledge_kill` and `sys_sigreturn` are `bsd`'s `sysent[]` rows (`sys/kern/kern_sig.rs`);
+//! the `sigio` registrations are [`crate::sigio`]'s.
 //!
 //! Locks, as the C's annotations: `[m]` the process's `ps_mtx` (the signal actions, the
 //! thread list), `[S]` `SCHED_LOCK` (`hal::thread::sched_lock`: a thread's state, its sleep),

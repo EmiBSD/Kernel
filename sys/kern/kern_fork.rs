@@ -304,8 +304,8 @@ pub fn process_initialize(pr: &Process, p: &'static Proc) {
     // prof_fork(pr): subr_prof.c (M6).
     let _ = unported!("process_initialize: prof_fork (M6)");
 
-    // A new process's lists (children, orphans, sigio) are empty.
-    kassert!(pr.ps_sigiolst.is_empty());
+    // A new process's lists (children, orphans) are empty; LIST_INIT(&pr->ps_sigiolst): no
+    // sigio registration names its pid yet (kernel::sigio's registry).
 
     crate::kern::kern_timeout::timeout_set_flags(
         &pr.ps_realit_to,

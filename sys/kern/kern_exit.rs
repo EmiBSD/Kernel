@@ -109,7 +109,7 @@ use crate::kern::kern_fork::{NPROCESSES, NTHREADS, freepid};
 use crate::kern::kern_resource::{calcru, ruadd, tuagg_add_process, tuagg_add_runtime};
 use crate::kern::kern_sched::sched_exit;
 use crate::kern::kern_sig::{
-    process_suspend_signal, prsignal, psignal, ptsignal, sigio_freelist, single_thread_set,
+    process_suspend_signal, prsignal, psignal, ptsignal, sigio_freelist_process, single_thread_set,
 };
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, wakeup};
 use crate::kern::kern_timeout::timeout_del;
@@ -303,7 +303,7 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
         }
         // prof_write(p): subr_prof.c (M7).
 
-        sigio_freelist(&pr.ps_sigiolst);
+        sigio_freelist_process(pr);
 
         // close open files and release open-file table
         fdfree(p);

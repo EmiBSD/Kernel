@@ -57,6 +57,7 @@
 //! Signals: `kern/kern_sig.c`, `bsd`'s half over `kernel::sig`.
 //!
 //! Upstream: sys/kern/kern_sig.c @ 3ce1f3f79392
+//! LZ: sys/kern/kern_sig.rs@3c62ede68802
 //!
 //! N4.5b: the signals' logic is `kernel::sig` (`sys/kernel/sig.rs`): the actions, the
 //! generation and delivery of signals, job control and the debugger's stops,
@@ -68,7 +69,8 @@
 //!   (`psignal`, `ptsignal`, `trapsignal`, `userret`, `sigabort`, `sigonstack`, ...),
 //!   which pin a thread where the kernel makes it runnable;
 //! - `coredump` (the file systems), reached by the kernel through `BsdProcGlue`;
-//! - the `sigio` registrations (`sigio_*`, `pgsigio`) until they move too.
+//! - the `sigio` functions' LZ signatures (`sigio_setown(sir, cmd, &data)`, ...) over
+//!   `kernel::sigio`.
 //!
 //! ## Deviations
 //! - Calls into subsystems that are not ported are reported with `unported!`: in
@@ -83,35 +85,31 @@
 //!   call table finds `pub fn sys_*` only under `sys/kern` and `sys/uvm`, so the entry here
 //!   forwards to `machine::MachineSignal::sys_sigreturn`.
 //! - `sigio_setown`/`sigio_getown` take the `int` that `data` points to as `&i32`/`&mut i32`.
-//!   A sigio's credentials are its own counted reference (`CredSlot`), given back by
-//!   `sigio_del`.
+//!
+//! ## Redesign
+//! - N4.5b: the module is `bsd`'s edge of `kernel::sig` and `kernel::sigio` (LZ: the whole of
+//!   `kern_sig.c`, 17 `unsafe`: the `sigacts` pool item written in place, `initprocess`'s
+//!   pointer, the sigio links); what it keeps is listed above, with 0 `unsafe`.
 
 use core::pin::Pin;
-use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_pledge::pledge_kill;
 use crate::kern::kern_prot::suser;
-use crate::kern::proc_glue::{BsdProcGlue, pgfind, prfind};
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::sched_bsd::r#yield;
-use crate::kern::subr_prf::{Str, log, panic, snprintf};
+use crate::kern::subr_prf::{Str, log, snprintf};
 use crate::machine::Machine;
-use crate::machine::cpu::curproc;
-use crate::machine::intr::IPL_HIGH;
 use crate::machine::signal::MachineSignal;
 use crate::sys::errno::Errno;
-use crate::sys::malloc::{M_SIGIO, M_WAITOK};
-use crate::sys::mutex::{Mutex, mutex_assert_locked};
+use crate::sys::malloc::M_SIGIO;
 use crate::sys::param::{MAXPATHLEN, MAXPHYS, USPACE};
 use crate::sys::proc::ProcExt;
-use crate::sys::proc::{PS_CONTROLT, PS_COREDUMP, PS_EXITING, PS_SUGID, Pgrp, Proc, Process};
+use crate::sys::proc::{PS_COREDUMP, PS_SUGID, Pgrp, Proc, Process};
 use crate::sys::resource::RLIMIT_CORE;
 use crate::sys::resourcevar::lim_cur;
 use crate::sys::siginfo::{Siginfo, Sigval};
-use crate::sys::sigio::{Sigio, SigioRef, Sigiolst};
+use crate::sys::sigio::SigioRef;
 use crate::sys::signal::{SIGKILL, Sigaction, Sigaltstack, Sigset, sigmask};
 use crate::sys::signalvar::SignalType;
 use crate::sys::syscallargs::{
@@ -119,16 +117,15 @@ use crate::sys::syscallargs::{
     SysThrkillArgs, SysThrsigdivertArgs,
 };
 use crate::sys::syslog::LOG_ERR;
-use crate::sys::systm::{SysArgs, kernel_lock, kernel_unlock, sysargs};
+use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
-use crate::sys::types::{Pid, Register};
+use crate::sys::types::Register;
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
-use hal::klock;
 use hal::pin::pin_static;
 use hal::user::UserPtr;
 use hal::vm::param::ptoa;
-use kernel::sig::{UserTimespec, cansigio};
+use kernel::sig::UserTimespec;
 use kernel::vm::map::uvm_unmap;
 
 pub use kernel::sig::{
@@ -138,6 +135,7 @@ pub use kernel::sig::{
     setsigctx, setsigvec, siginit, sigismasked, signal_init, sigstkinit, single_thread_clear,
     single_thread_set,
 };
+pub use kernel::sigio::{sigio_copy, sigio_free, sigio_freelist_process};
 
 /// `struct coredump_iostate`: what `coredump_write` and `coredump_unmap` work on.
 pub struct CoredumpIostate<'a> {
@@ -153,14 +151,6 @@ pub struct CoredumpIostate<'a> {
 
 /// `nosuidcoredump` \[a\].
 pub static NOSUIDCOREDUMP: AtomicI32 = AtomicI32::new(1);
-
-/// `sigio_lock`.
-static SIGIO_LOCK: Mutex = Mutex::new(IPL_HIGH);
-
-/// The address of `pr`'s session (`pr->ps_session`), 0 without one: what the C compares.
-fn session_addr(r: &klock::KernelReader, pr: &Process) -> usize {
-    pr.session(r).map_or(0, |s| ptr::from_ref(s).addr())
-}
 
 /// The thread `p`, pinned, for the kernel's calls that make it runnable: a thread of `bsd`
 /// is a `procpl` box its process owns (or `proc0`), at its address until `proc_free`
@@ -315,45 +305,28 @@ pub fn sys_sigreturn(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
 }
 
 /// `pgsigio`: send a SIGIO or SIGURG signal to a process or process group using stored
-/// credentials rather than those of the current process.
+/// credentials rather than those of the current process (`kernel::sigio`).
 pub fn pgsigio(sir: &SigioRef, sig: i32, checkctty: bool) {
-    if sir.sir_sigio.get().is_null() {
-        return;
-    }
-
-    kernel_lock(); // KERNEL_LOCK()
-    mtx_enter(&SIGIO_LOCK);
-    // SAFETY: a registered sigio stays allocated until `sigio_del`, which runs after it is
-    // unlinked under `sigio_lock`.
-    if let Some(sigio) = unsafe { sir.sir_sigio.get().as_ref() }
-        && let Some(cred) = sigio.sio_ucred.cred()
-    {
-        let cred: &Ucred = &cred;
-        if sigio.sio_pgid.get() > 0 {
-            // SAFETY: the process unlinks its sigios (`sigio_freelist`) before it goes.
-            if let Some(pr) = unsafe { sigio.sio_proc.get().as_ref() }
-                && cansigio(cred, pr)
-            {
-                prsignal(pr, sig);
-            }
-        } else if sigio.sio_pgid.get() < 0 {
-            // SAFETY: as above, for the process group.
-            if let Some(pg) = unsafe { sigio.sio_pgrp.get().as_ref() } {
-                let r = klock::reader();
-                for pr in pg.pg_members.iter(&r) {
-                    if cansigio(cred, pr)
-                        && (!checkctty || pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0)
-                    {
-                        prsignal(pr, sig);
-                    }
-                }
-            }
-        }
-    }
-    // out:
-    mtx_leave(&SIGIO_LOCK);
-    kernel_unlock(); // KERNEL_UNLOCK()
+    kernel::sigio::pgsigio::<BsdProcGlue>(sir, sig, checkctty);
 }
+
+/// `sigio_setown`: registers the process (`*data` > 0) or process group (< 0, or
+/// `TIOCSPGRP`) to receive `SIGIO`/`SIGURG` through `sir`; 0 unregisters.
+pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
+    kernel::sigio::sigio_setown::<BsdProcGlue>(sir, cmd, *data)
+}
+
+/// `sigio_getown`: the pgid registered through `sir` (negated for `TIOCGPGRP`).
+pub fn sigio_getown(sir: &SigioRef, cmd: u64, data: &mut i32) {
+    *data = kernel::sigio::sigio_getown(sir, cmd);
+}
+
+// The ioctl numbers `kernel::sigio` compares are `<sys/ttycom.h>`'s.
+const _: () = {
+    assert!(kernel::sigio::TIOCSPGRP == TIOCSPGRP);
+    assert!(kernel::sigio::TIOCGPGRP == TIOCGPGRP);
+    assert!(kernel::sigio::M_SIGIO == M_SIGIO);
+};
 
 /// `coredump`: dump core, into a file named "progname.core", unless the process was
 /// setuid/setgid. The file is written by the filesystems, which are not ported: see the
@@ -515,262 +488,4 @@ pub fn coredump_unmap(io: &CoredumpIostate<'_>, start: usize, end: usize) {
     uvm_unmap(&io.io_proc.vmspace().vm_map, start, end);
 }
 
-/// `sigio_del`: frees the sigios on `rmlist`.
-pub fn sigio_del(rmlist: &Sigiolst) {
-    while let Some(sigio) = rmlist.pop_head() {
-        // The sigio's reference to its credentials, dropped here.
-        drop(sigio.sio_ucred.take());
-        free(
-            NonNull::from(sigio).cast::<u8>(),
-            M_SIGIO,
-            size_of::<Sigio>(),
-        );
-    }
-}
-
-/// `sigio_unlink`: detaches the sigio of `sir` from its owner and moves it to `rmlist`.
-pub fn sigio_unlink(sir: &SigioRef, rmlist: &Sigiolst) {
-    mutex_assert_locked(&SIGIO_LOCK, "sigio_unlink");
-
-    // SAFETY: a registered sigio stays allocated until `sigio_del`, after this.
-    if let Some(sigio) = unsafe { sir.sir_sigio.get().as_ref() } {
-        kassert!(ptr::eq(sigio.sio_myref.get(), sir));
-        sir.sir_sigio.set(ptr::null());
-
-        // SAFETY: a registered sigio is on its owner's list, under `sigio_lock`, and the
-        // owner is alive while it is: `exit1` and `pgdelete` empty the list
-        // (`sigio_freelist`) before the process or group is freed; the sign of `sio_pgid`
-        // says which of `sio_proc`/`sio_pgrp` names the owner (the C's union).
-        let owner: &Sigiolst = unsafe {
-            if sigio.sio_pgid.get() > 0 {
-                &(&*sigio.sio_proc.get()).ps_sigiolst
-            } else {
-                &(&*sigio.sio_pgrp.get()).pg_sigiolst
-            }
-        };
-        if sigio.sio_pgid.get() > 0 {
-            sigio.sio_proc.set(ptr::null());
-        } else {
-            sigio.sio_pgrp.set(ptr::null());
-        }
-        // It moves to `rmlist`, which outlives it until `sigio_del`.
-        owner.remove(sigio);
-        rmlist.insert_head(sigio);
-    }
-}
-
-/// `sigio_free`: unregisters `sir`.
-pub fn sigio_free(sir: &SigioRef) {
-    if sir.sir_sigio.get().is_null() {
-        return;
-    }
-
-    let rmlist = Sigiolst::new();
-
-    mtx_enter(&SIGIO_LOCK);
-    sigio_unlink(sir, &rmlist);
-    mtx_leave(&SIGIO_LOCK);
-
-    sigio_del(&rmlist);
-}
-
-/// `sigio_freelist`: unregisters every sigio on a process's or group's list.
-pub fn sigio_freelist(sigiolst: &Sigiolst) {
-    if sigiolst.is_empty() {
-        return;
-    }
-
-    let rmlist = Sigiolst::new();
-
-    mtx_enter(&SIGIO_LOCK);
-    while let Some(sigio) = sigiolst.first() {
-        // SAFETY: a sigio's `sio_myref` names the registration that holds it.
-        sigio_unlink(unsafe { &*sigio.sio_myref.get() }, &rmlist);
-    }
-    mtx_leave(&SIGIO_LOCK);
-
-    sigio_del(&rmlist);
-}
-
-/// `sigio_setown`: registers the process (`*data` > 0) or process group (< 0, or
-/// `TIOCSPGRP`) to receive `SIGIO`/`SIGURG` through `sir`; 0 unregisters.
-pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
-    let Some(p) = curproc() else {
-        return Err(Errno::ESRCH);
-    };
-    let mut pgid: Pid = *data;
-
-    if pgid == 0 {
-        sigio_free(sir);
-        return Ok(());
-    }
-
-    if cmd == TIOCSPGRP {
-        if pgid < 0 {
-            return Err(Errno::EINVAL);
-        }
-        pgid = -pgid;
-    }
-
-    let Some(mem) = malloc(size_of::<Sigio>(), M_SIGIO, M_WAITOK) else {
-        panic(format_args!("sigio_setown: malloc"));
-    };
-    let new = mem.cast::<Sigio>();
-    // SAFETY: a fresh allocation of `size_of::<Sigio>()` bytes, aligned by malloc(9),
-    // written once before anything else sees it.
-    unsafe { new.as_ptr().write(Sigio::new()) };
-    // SAFETY: as above; it lives until `sigio_del` (or the failure path below) frees it.
-    let sigio: &'static Sigio = unsafe { new.as_ref() };
-    sigio.sio_pgid.set(pgid);
-    sigio.sio_ucred.set(p.cred_ref());
-    sigio.sio_myref.set(sir);
-
-    let rmlist = Sigiolst::new();
-
-    // The kernel lock, and not sleeping between prfind()/pgfind() and linking of the sigio
-    // ensure that the process or process group does not disappear unexpectedly.
-    kernel_lock(); // KERNEL_LOCK()
-    mtx_enter(&SIGIO_LOCK);
-
-    let result = 'fail: {
-        let r = klock::reader();
-        if pgid > 0 {
-            let Some(pr) = prfind(&r, pgid) else {
-                break 'fail Err(Errno::ESRCH);
-            };
-
-            // Policy - Don't allow a process to FSETOWN a process in another session.
-            //
-            // Remove this test to allow maximum flexibility or restrict FSETOWN to the
-            // current process or process group for maximum safety.
-            if session_addr(&r, pr) != session_addr(&r, p.process()) {
-                break 'fail Err(Errno::EPERM);
-            }
-
-            if pr.ps_flags.load(Ordering::Relaxed) & PS_EXITING != 0 {
-                break 'fail Err(Errno::ESRCH);
-            }
-            sigio.sio_proc.set(pr);
-            // A new sigio on no list; it stays until unlinked by `sigio_unlink`.
-            pr.ps_sigiolst.insert_head(sigio);
-        } else {
-            // if (pgid < 0)
-            let Some(pgrp) = pgfind(&r, -pgid) else {
-                break 'fail Err(Errno::ESRCH);
-            };
-
-            // Policy - Don't allow a process to FSETOWN a process in another session.
-            //
-            // Remove this test to allow maximum flexibility or restrict FSETOWN to the
-            // current process or process group for maximum safety.
-            let pgsess = pgrp.session(&r).map_or(0, |s| ptr::from_ref(s).addr());
-            if pgsess != session_addr(&r, p.process()) {
-                break 'fail Err(Errno::EPERM);
-            }
-            sigio.sio_pgrp.set(pgrp);
-            pgrp.pg_sigiolst.insert_head(sigio);
-        }
-        Ok(())
-    };
-
-    if let Err(error) = result {
-        // fail:
-        mtx_leave(&SIGIO_LOCK);
-        kernel_unlock(); // KERNEL_UNLOCK()
-
-        // The reference taken above.
-        drop(sigio.sio_ucred.take());
-        free(new.cast::<u8>(), M_SIGIO, size_of::<Sigio>());
-
-        return Err(error);
-    }
-
-    sigio_unlink(sir, &rmlist);
-    sir.sir_sigio.set(sigio);
-
-    mtx_leave(&SIGIO_LOCK);
-    kernel_unlock(); // KERNEL_UNLOCK()
-
-    sigio_del(&rmlist);
-
-    Ok(())
-}
-
-/// `sigio_getown`: the pgid registered through `sir` (negated for `TIOCGPGRP`).
-pub fn sigio_getown(sir: &SigioRef, cmd: u64, data: &mut i32) {
-    let mut pgid: Pid = 0;
-
-    mtx_enter(&SIGIO_LOCK);
-    // SAFETY: a registered sigio stays allocated while `sigio_lock` is held.
-    if let Some(sigio) = unsafe { sir.sir_sigio.get().as_ref() } {
-        pgid = sigio.sio_pgid.get();
-    }
-    mtx_leave(&SIGIO_LOCK);
-
-    if cmd == TIOCGPGRP {
-        pgid = -pgid;
-    }
-
-    *data = pgid;
-}
-
-/// `sigio_copy`: registers the owner of `src` in `dst` too.
-pub fn sigio_copy(dst: &SigioRef, src: &SigioRef) {
-    sigio_free(dst);
-
-    if src.sir_sigio.get().is_null() {
-        return;
-    }
-
-    let Some(mem) = malloc(size_of::<Sigio>(), M_SIGIO, M_WAITOK) else {
-        panic(format_args!("sigio_copy: malloc"));
-    };
-    let new = mem.cast::<Sigio>();
-    // SAFETY: a fresh allocation, written once before anything else sees it.
-    unsafe { new.as_ptr().write(Sigio::new()) };
-    // SAFETY: as above.
-    let newsigio: &'static Sigio = unsafe { new.as_ref() };
-    let rmlist = Sigiolst::new();
-
-    mtx_enter(&SIGIO_LOCK);
-
-    // SAFETY: a registered sigio stays allocated while `sigio_lock` is held.
-    let Some(sigio) = (unsafe { src.sir_sigio.get().as_ref() }) else {
-        mtx_leave(&SIGIO_LOCK);
-        free(new.cast::<u8>(), M_SIGIO, size_of::<Sigio>());
-        return;
-    };
-
-    newsigio.sio_pgid.set(sigio.sio_pgid.get());
-    // The source holds a reference to its credentials: one more for the copy.
-    if let Some(cr) = sigio.sio_ucred.cred() {
-        newsigio.sio_ucred.set(cr);
-    }
-    newsigio.sio_myref.set(dst);
-    if newsigio.sio_pgid.get() > 0 {
-        newsigio.sio_proc.set(sigio.sio_proc.get());
-        // SAFETY: the owner is alive (its sigio is registered); the new sigio is on no
-        // list.
-        unsafe {
-            (&*newsigio.sio_proc.get())
-                .ps_sigiolst
-                .insert_head(newsigio)
-        };
-    } else {
-        newsigio.sio_pgrp.set(sigio.sio_pgrp.get());
-        // SAFETY: as above, for the process group.
-        unsafe {
-            (&*newsigio.sio_pgrp.get())
-                .pg_sigiolst
-                .insert_head(newsigio)
-        };
-    }
-
-    sigio_unlink(dst, &rmlist);
-    dst.sir_sigio.set(newsigio);
-
-    mtx_leave(&SIGIO_LOCK);
-
-    sigio_del(&rmlist);
-}
 /* </CODE> */
