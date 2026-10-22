@@ -35,6 +35,95 @@
 - A standalone `#![no_std]` kernel for amd64 and arm64, booted by its own boot(8)/efiboot or by
   Limine, run in QEMU.
 
+## The target: the kernel at N9
+
+The module view of the one architecture diagram ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md)
+section 0.1, which stays the source): three crates, the arrows down only, `bsd` (the LZ tree)
+deleted and the bridges at zero. Each `kernel` box names the milestone that moves it
+(section 0.8); `crypto` is there since N2, its users arrive at N8; `arch/amd64` is frozen from
+N4 and homologated at N10.
+
+```mermaid
+flowchart TB
+    U["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
+
+    subgraph ABI["1 · abi · sys/abi/ · abi_openbsd.ko · forbid(unsafe) · no logic"]
+        direction LR
+        A1["sysent: the syscall table, every entry Native"]
+        A2["bytes ⇄ the kernel's types · errno from Result"]
+        A3["ko/: the loadable module (a second .ko = a second userland)"]
+    end
+
+    subgraph K["2 · kernel · sys/kernel/ · forbid(unsafe) at the root · every decision of the OS"]
+        direction TB
+        KA["api: KernelApi, the vtable the module calls"]
+        subgraph K3["N3 · memory"]
+            VM["vm: map · fault · amap · anon · object · aobj · page · pmemrange · km · pager · vnode · swap · pdaemon · mmap"]
+        end
+        subgraph K4["N4 · processes and scheduling"]
+            PR["proc: proc · cred · fork · exit · signals · resource · sysctl core"]
+            SC["sched: sleep queues · run queues · kthread · smr"]
+            TM["timeout · task · extent · clock"]
+            FD["fs: descriptors (FileData) · pipe"]
+            EV["event: kqueue"]
+            TT["tty · pty · log"]
+            AC["autoconf · bufq · disk"]
+        end
+        subgraph K5["N5 · VFS"]
+            VF["vfs: lookup · cache · syscalls · bio"]
+            FS["fs: ufs · isofs · msdosfs · nfs · ntfs · tmpfs"]
+        end
+        subgraph K6["N6 · network"]
+            NT["net: if · route · bpf · mbuf logic"]
+            IN["netinet · netinet6 · sockets"]
+        end
+        subgraph K7["N7 · devices"]
+            DV["dev: the drivers' logic over hal::Mmio / hal::DmaBuf"]
+            SI["scsi"]
+        end
+        subgraph K8["N8 · security, last, with extra tests"]
+            SE["exec · pledge · unveil"]
+            PF["pf · pflog · pfsync"]
+            IP["ipsec · wireguard"]
+        end
+        CR["crypto: blf · chacha · poly1305 · sha · md5 · hmac · rmd160 …"]
+    end
+
+    subgraph HAL["3 · hal · sys/hal/ · the ONLY unsafe · every site with a SAFETY proof · ceiling raised only by the user"]
+        direction LR
+        subgraph HW["hardware"]
+            H1["arch/arm64 · arch/amd64 (homologated at N10) · arch/host (the test double)"]
+            H2["machine: the contract generic code sees"]
+            H3["pmap · cpu · intr · softintr · trap and syscall entry · clock handler"]
+            H4["cons · bootmem · Mmio · DmaBuf"]
+        end
+        subgraph RT["runtime"]
+            R1["locks: mutex · rwlock · klock · netlock · Guarded"]
+            R2["memory: pool · malloc · mapped · kmbuf"]
+            R3["owned structures: owned (list, tree) · pinlist · link"]
+            R4["once · percpu · refcnt · sleep"]
+            R5["user: UserPtr, the typed copy from userland"]
+            R6["module: the ELF loader of the .ko · bridges: only KernelApi left"]
+            R7["random · trust · sys/ shared types (errno, syscall, limits, pledge …)"]
+        end
+    end
+
+    LEAF["libkern · libz · leaf crates below hal"]
+    STAND["sys/stand · the boot loaders · separate binaries, outside the crates"]
+    M["4 · hardware · QEMU arm64 / amd64, real machines"]
+
+    U -->|"syscall"| ABI
+    ABI -->|"KernelApi, one entry per syscall"| K
+    K -->|"safe API"| HAL
+    HAL --> M
+    HAL -.-> LEAF
+    STAND -.->|"loads the kernel and the .ko"| HAL
+```
+
+What goes up (the syscall handler, `KernelApi`) is a registration in `hal` at boot, never a
+dependency. Today's numbers are under [Status](#status); the exit criterion per milestone is
+in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Status
 
 Status: N3 (memory: uvm in `kernel::vm`, the pmaps in `hal`) met on 2026-10-18; N4 (processes

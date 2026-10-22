@@ -16,6 +16,8 @@ v1 and its measurements are docs/ZERO_UNSAFE_V1.md.
 
 The one diagram of the architecture. Every other drawing (a chat, a slide, a session's notes)
 is a copy of this one or wrong.
+The module view of it, the three crates at N9 box by box, is in `README.md` ("The target: the
+kernel at N9", 2026-10-21); it follows this section and 0.8, never the reverse.
 
 ```mermaid
 flowchart TB
