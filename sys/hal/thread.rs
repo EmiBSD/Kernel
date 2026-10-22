@@ -90,6 +90,11 @@
 //!   the pcb of a thread that runs here or that the switch takes (the machine's switch refuses
 //!   a thread without a u-area); no safe function stores a caller's address there. `p_cpu` is
 //!   compared, never followed.
+//! - E5 (with K1 of the closing review): `curproc` and `curpcb` of a CPU that runs a thread
+//!   change only by the switch: [`set_current_static`] takes a thread only on a CPU running
+//!   none (`curproc` null, or the same thread again), and the machine's `clear_current_pcb`
+//!   only while `curproc` is null, so no safe call rewrites them under a running thread (whose
+//!   context `switch_to` would then save elsewhere, or whose stack `take_uarea` would free).
 //! - E5: the running CPU's core (`TPIDR_EL1` on arm64) is installed once per CPU
 //!   (`hal::cpu::set_current` refuses another core once one is installed); `ci_curpcb` is
 //!   written by the switch (the new thread's u-area pcb), by [`boot_uarea`] (`proc0`'s, `hal`'s
@@ -571,14 +576,20 @@ pub fn current_addr() -> usize {
 }
 
 /// `curproc = p` on this CPU for a thread that lives for ever (`main`'s `curproc = &proc0`),
-/// or none (`None`: a secondary CPU before its idle thread runs). Panics for a thread another
-/// CPU runs (E5).
+/// or none (`None`: a secondary CPU before its idle thread runs). On the machine only a CPU
+/// running no thread takes one (the C writes `curproc` in `main` and the switch alone, E5):
+/// `curproc` must be null or `t` already, else `panic(9)`; so no running thread's `curproc`
+/// is rewritten under it. The host's tests set and clear it freely (each test thread is a CPU
+/// of its own). Panics everywhere for a thread another CPU runs.
 pub fn set_current_static<T: ThreadLayout>(t: Option<Pin<&'static T>>) {
     check_type::<T>();
     let me = crate::cpu::curcpu();
     let p = t.map_or(core::ptr::null(), |t| {
         core::ptr::from_ref(t.get_ref()).cast::<()>()
     });
+    if cfg!(target_os = "none") && !me.curproc().is_null() && me.curproc() != p {
+        hal_panic(format_args!("curproc: this CPU runs a thread already"));
+    }
     if !p.is_null() && crate::cpu::cores().any(|c| !core::ptr::eq(c, me) && c.curproc() == p) {
         hal_panic(format_args!("curproc: the thread runs on another CPU"));
     }

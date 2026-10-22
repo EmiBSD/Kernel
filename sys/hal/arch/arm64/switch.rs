@@ -226,9 +226,15 @@ pub(crate) fn with_curpcb<R>(f: impl FnOnce(Option<&Pcb>) -> R) -> R {
 }
 
 /// `ci->ci_curpcb = NULL` on this CPU: a secondary CPU's start, before its first thread (E5:
-/// the other writers are the switch and `hal::thread::boot_uarea`).
+/// the other writers are the switch and `hal::thread::boot_uarea`). Refused (`panic(9)`)
+/// while the CPU runs a thread (`curproc` not null): a running thread's pcb is the one its
+/// copy faults and the switch save into.
 pub fn clear_current_pcb() {
-    crate::cpu::curcpu().set_curpcb(ptr::null());
+    let me = crate::cpu::curcpu();
+    if !me.curproc().is_null() {
+        hal_panic(format_args!("curpcb: this CPU runs a thread"));
+    }
+    me.set_curpcb(ptr::null());
 }
 
 /// `cpu_switchto(old, new)`: the old thread's FP state saved and the FPU dropped (when there
