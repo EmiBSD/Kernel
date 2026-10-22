@@ -91,7 +91,6 @@ use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::eventvar::KqList;
 use crate::sys::file::File;
 use crate::sys::mutex::Mutex;
-use crate::sys::queue::ListHead;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::types::Mode;
 use crate::sys::vnode::Vnode;
@@ -173,7 +172,7 @@ pub struct Filedesc {
     /// `fd_fplock`: lock for reading `fd_ofiles` without `fd_lock`.
     pub fd_fplock: Mutex,
     /// \[f\] `fd_kqlist`: kqueues attached to this filedesc.
-    pub fd_kqlist: ListHead<KqList>,
+    pub fd_kqlist: hal::list::List<KqList>,
     /// \[a\] `fd_flags`: flags on this filedesc (`FD_ADVLOCK`).
     pub fd_flags: AtomicI32,
     /// \[a\] `fd_nuserevents`: number of kqueue user events.
@@ -198,7 +197,7 @@ impl Filedesc {
             fd_refcnt: Cell::new(0),
             fd_lock: Rwlock::new("fdlock"),
             fd_fplock: Mutex::new(IPL_MPFLOOR),
-            fd_kqlist: ListHead::new(),
+            fd_kqlist: hal::list::List::new(),
             fd_flags: AtomicI32::new(0),
             fd_nuserevents: AtomicU32::new(0),
         }
@@ -365,5 +364,21 @@ const _: () = {
     assert!(ndhislots(NDFILE) == NDENTRIES >> NDENTRYSHIFT);
     assert!(ndloslots(NDFILE) == NDENTRIES);
     assert!(core::mem::offset_of!(Filedesc0, fd_fd) == 0);
+};
+
+// N4.3's probe (BRIEF-N4.3 section 9, commit 3): what `kernel::file`'s `File<G>` and
+// `kernel::descrip`'s `Filedesc<G>` will hold of `bsd`'s, as pool items (`PoolArc` needs
+// `Send + Sync`): a file's object by kind (a vnode link, a socket's address word, a pipe's
+// typed slot, a kqueue link), its credentials, and the table's kqueue list. N4.2's switch-over
+// stopped twice on members that were not (bsd's queue.rs links); this refuses to compile if
+// one of them is not.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<hal::link::Link<crate::sys::vnode::Vnode>>();
+    send_sync::<hal::link::PtrWord<crate::sys::socketvar::Socket>>();
+    send_sync::<crate::kern::pipe_glue::PipeFile>();
+    send_sync::<hal::link::Link<crate::sys::eventvar::Kqueue>>();
+    send_sync::<kernel::cred::CredRef>();
+    send_sync::<hal::list::List<KqList>>();
 };
 /* </CODE> */

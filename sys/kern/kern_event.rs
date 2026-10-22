@@ -138,7 +138,7 @@ use crate::sys::event::{
     NOTE_SECONDS, NOTE_SIGNAL, NOTE_TRACK, NOTE_TRACKERR, NOTE_TRIGGER, NOTE_USECONDS, klist_empty,
     knote_modify, knote_process,
 };
-use crate::sys::eventvar::{KQ_DYING, KQ_NEVENTS, KQ_SLEEP, KQ_TASK, KQEXTENT, KqList, Kqueue};
+use crate::sys::eventvar::{KQ_DYING, KQ_NEVENTS, KQ_SLEEP, KQ_TASK, KQEXTENT, Kqueue};
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
 use crate::sys::file::{DTYPE_KQUEUE, DTYPE_VNODE, File, Fileops, frele};
 use crate::sys::filedesc::{Filedesc, UF_EXCLOSE, fdpassertlocked, fdplock, fdpunlock};
@@ -148,7 +148,7 @@ use crate::sys::param::{PCATCH, PNORELOCK, PSOCK};
 use crate::sys::pledge::PLEDGE_PROC;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::{PID_MAX, PS_EXITING, PS_PLEDGE, Proc, Process};
-use crate::sys::queue::{ListHead, SlistHead, TailqHead};
+use crate::sys::queue::{SlistHead, TailqHead};
 use crate::sys::rwlock::{RW_WRITE, Rwlock};
 use crate::sys::signal::NSIG;
 use crate::sys::stat::{S_IFIFO, Stat};
@@ -408,15 +408,14 @@ pub unsafe fn KQRELE(kq: &Kqueue) {
         return;
     }
 
+    // Every kqueue is on its table's `fd_kqlist` (`dokqueue`, `kqpoll_init`), under the
+    // table's lock; `hal::list`'s remove panics for one on no list or on another table's.
     let fdp = kq.fdp();
     if rw_status(&fdp.fd_lock) == RW_WRITE {
-        // SAFETY: every kqueue is on its table's `fd_kqlist` (`dokqueue`, `kqpoll_init`),
-        // whose lock is held.
-        unsafe { ListHead::<KqList>::remove(kq) };
+        fdp.fd_kqlist.remove(kq);
     } else {
         fdplock(fdp);
-        // SAFETY: as above.
-        unsafe { ListHead::<KqList>::remove(kq) };
+        fdp.fd_kqlist.remove(kq);
         fdpunlock(fdp);
     }
 
@@ -1233,9 +1232,9 @@ pub fn kqpoll_init(p: &Proc, num: u32) -> Result<(), Errno> {
         p.p_kq_serial.set(u64::from(crate::dev::rnd::arc4random()));
         let fdp = p.fd();
         fdplock(fdp);
-        // SAFETY: the kqueue is new and on no list; it stays until `KQRELE` takes it off,
-        // under the table's lock.
-        unsafe { fdp.fd_kqlist.insert_head(kq) };
+        // The kqueue is new and on no list; it stays until `KQRELE` takes it off, under the
+        // table's lock.
+        fdp.fd_kqlist.insert_head(kq);
         fdpunlock(fdp);
     }
 
@@ -1340,9 +1339,8 @@ pub fn dokqueue(p: &Proc, flags: i32, retval: &mut [Register; 2]) -> Result<(), 
     fp.f_ops.set(Some(&KQUEUEOPS));
     fp.f_data.set(ptr::from_ref(kq).cast_mut().cast());
     retval[0] = fd as Register;
-    // SAFETY: the kqueue is new and on no list; `KQRELE` takes it off under the table's
-    // lock.
-    unsafe { fdp.fd_kqlist.insert_head(kq) };
+    // The kqueue is new and on no list; `KQRELE` takes it off under the table's lock.
+    fdp.fd_kqlist.insert_head(kq);
     fdinsert(fdp, fd, cloexec, fp);
     let _ = frele(fp, p);
     // out:
@@ -1585,7 +1583,7 @@ pub fn kqueue_register(
                 kn.kn_status.set(KN_PROCESSING);
                 // apply reference count to knote structure, and do not release it at the
                 // end of this routine.
-                kn.kn_fp().set(fp.take());
+                *kn.kn_fp().lock() = fp.take();
                 kn.kn_kq.set(kq);
                 kn.kn_fop.set(Some(fops));
 
@@ -1893,8 +1891,13 @@ pub fn kqueue_scan(
                 // Invalidate knotes whose vnodes have been revoked. This is a workaround; it
                 // is tricky to clear existing knotes and prevent new ones from being
                 // registered with the current revocation mechanism.
-                if kn.fop().f_flags & FILTEROP_ISFD != 0
-                    && let Some(fp) = kn.kn_fp().get()
+                // The slot read alone: its guard must not live through the body.
+                let isfd_fp = if kn.fop().f_flags & FILTEROP_ISFD != 0 {
+                    *kn.kn_fp().lock()
+                } else {
+                    None
+                };
+                if let Some(fp) = isfd_fp
                     && fp.f_type.get() == DTYPE_VNODE
                 {
                     let vp = fp.vnode();
@@ -2350,7 +2353,8 @@ pub fn knote_remove(p: Option<&Proc>, kq: &Kqueue, hash: bool, idx: usize, purge
             && !ptr::eq(kn.fop(), &BADFD_FILTOPS)
         {
             kassert!(kn.fop().f_flags & FILTEROP_ISFD != 0);
-            if let Some(fp) = kn.kn_fp().take() {
+            let fp = kn.kn_fp().lock().take();
+            if let Some(fp) = fp {
                 let _ = frele(fp, p);
             }
 
@@ -2472,10 +2476,12 @@ pub unsafe fn knote_drop(kn: &Knote, p: Option<&Proc>) {
     }
     mtx_leave(&kq.kq_lock);
 
-    if kn.fop().f_flags & FILTEROP_ISFD != 0
-        && let Some(fp) = kn.kn_fp().take()
-    {
-        let _ = frele(fp, p);
+    if kn.fop().f_flags & FILTEROP_ISFD != 0 {
+        // The slot's guard ends with the statement: `frele` may sleep in the file's close.
+        let fp = kn.kn_fp().lock().take();
+        if let Some(fp) = fp {
+            let _ = frele(fp, p);
+        }
     }
     pool_put(&KNOTE_POOL, NonNull::from(kn).cast());
 }
@@ -2814,8 +2820,8 @@ pub(crate) mod tests {
         let fdp = p.fd();
         let kq = kqueue_alloc(fdp).unwrap();
         fdplock(fdp);
-        // SAFETY: a new kqueue, on no list; `close_kqueue` takes it off.
-        unsafe { fdp.fd_kqlist.insert_head(kq) };
+        // A new kqueue, on no list; `close_kqueue` takes it off.
+        fdp.fd_kqlist.insert_head(kq);
         fdpunlock(fdp);
         kq
     }

@@ -1178,7 +1178,8 @@ pub fn fdinit() -> &'static Filedesc {
     let fd = &newfdp.fd_fd;
     rw_init(&fd.fd_lock, "fdlock");
     mtx_init(&fd.fd_fplock, IPL_MPFLOOR);
-    fd.fd_kqlist.init();
+    // LIST_INIT: a hal::list head written new is empty.
+    kassert!(fd.fd_kqlist.is_empty());
 
     // Create the file descriptor table.
     fd.fd_refcnt.set(1);

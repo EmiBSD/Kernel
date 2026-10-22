@@ -5121,13 +5121,13 @@ notes = "M5: clockintr_cpu_init, clockintr_trigger, clockintr_dispatch, clockint
 rust = "sys/kern/kern_descrip.rs"
 lz = ["sys/kern/kern_descrip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/list.rs"]
 
 [[module]]
 rust = "sys/kern/kern_event.rs"
 lz = ["sys/kern/kern_event.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/list.rs", "sys/hal/mutex.rs"]
 
 [[module]]
 rust = "sys/kern/kern_exec.rs"
@@ -5794,7 +5794,7 @@ status = "inherited"
 rust = "sys/kern/uipc_socket.rs"
 lz = ["sys/kern/uipc_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
@@ -7419,13 +7419,13 @@ status = "inherited"
 rust = "sys/sys/event.rs"
 lz = ["sys/sys/event.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/mutex.rs"]
 
 [[module]]
 rust = "sys/sys/eventvar.rs"
 lz = ["sys/sys/eventvar.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/list.rs"]
 
 [[module]]
 rust = "sys/sys/exec.rs"
@@ -7469,7 +7469,7 @@ adapted_by = ["sys/kernel/pipe.rs", "sys/kernel/cred.rs"]
 rust = "sys/sys/filedesc.rs"
 lz = ["sys/sys/filedesc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/list.rs"]
 
 [[module]]
 rust = "sys/hal/sys/filio.rs"
