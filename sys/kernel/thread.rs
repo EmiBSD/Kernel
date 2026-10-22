@@ -77,6 +77,10 @@
 //! ## Deviations
 //! - A deferred creation that cannot be queued (no memory to grow the queue) panics "unable to
 //!   allocate kthread_q", as the C's `malloc(M_NOWAIT)` failure does.
+//! - The queue's storage is the global allocator's, itself `malloc(M_TEMP, M_NOWAIT)`
+//!   (`bsd`'s `rust_alloc`), so `vmstat -m`'s `temp` row counts the queue's buffer (allocated
+//!   as it grows, given back once the queue ran) where the C counts one `M_TEMP` block per
+//!   entry: the same row, fewer calls, nothing left in use after boot.
 //!
 //! ## Redesign
 //! - `kthread_create(func, arg, NULL, name)` with `arg` cast back by `func` -> [`create`] with
@@ -233,6 +237,8 @@ pub fn kthread_run_deferred_queue() {
     // No longer need to defer kthread creation.
     KTHREAD_CREATE_NOW.store(true, Ordering::Relaxed);
     drain();
+    // The queue's buffer goes back too (the C freed each entry).
+    *DEFERRED.lock() = VecDeque::new();
 }
 
 /// The deferred creations run, first to last, until the queue is empty.
