@@ -109,7 +109,9 @@ pub fn cpu_fork(
 
     pmap_activate(p2);
 
+    let h = hal::thread::sched_lock();
     hal::thread::thread_setup(
+        &h,
         hal::pin::pin_static(p1.as_static()),
         hal::pin::pin_static(p2.as_static()),
         stack.addr(),
@@ -117,6 +119,7 @@ pub fn cpu_fork(
         thread_start_word(func),
         arg.expose_provenance(),
     );
+    drop(h);
 }
 
 /// `cpu_exit`: nothing to do on arm64.

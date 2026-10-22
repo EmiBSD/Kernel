@@ -318,6 +318,25 @@ pub fn uvm_uarea_free(va: Vaddr) {
     km_free(va, machine().uspace, &kv_uarea(), &KP_ZERO);
 }
 
+/// The kernel's u-areas as `hal::thread`'s provider (`UAreaMemory`, its E4): [`uvm_uarea_alloc`]
+/// and [`uvm_uarea_free`], zeroed wired `USPACE` bytes of `kernel_map` (`kv_uarea`,
+/// `KP_ZERO`), each given out once until it comes back. Registered by the boot (`bsd`'s
+/// `uvm_init`).
+pub struct UAreas;
+
+impl hal::thread::UAreaMemory for UAreas {
+    fn alloc(&self) -> Option<core::num::NonZeroUsize> {
+        uvm_uarea_alloc().and_then(|va| core::num::NonZeroUsize::new(va.as_usize()))
+    }
+
+    fn free(&self, va: core::num::NonZeroUsize) {
+        uvm_uarea_free(Vaddr::new(va.get()));
+    }
+}
+
+/// The provider [`UAreas`].
+pub static UAREAS: UAreas = UAreas;
+
 /// The initial limits `uvm_init_limits` sets on `limit0`: `(cur, max)` of `RLIMIT_STACK` and
 /// `RLIMIT_DATA`, and `RLIMIT_RSS`'s current value (its maximum is left as it was).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -701,12 +701,16 @@ pub fn set_idleproc<G: ProcGlue>(n: usize, p: Pin<&Thread<G>>) {
     set_thread_cpu(p.get_ref(), n);
 }
 
-/// `f` on CPU `n`'s idle thread, under the scheduler's hold (`spc->spc_idleproc`, for the
-/// machine that re-creates its frames when the CPU hatches); `None` before it is set.
-pub fn with_idleproc<G: ProcGlue, R>(n: usize, f: impl FnOnce(Pin<&Thread<G>>) -> R) -> Option<R> {
+/// `f` on CPU `n`'s idle thread, under the scheduler's hold `f` is lent
+/// (`spc->spc_idleproc`, for the machine that re-creates its frames when the CPU hatches,
+/// `hal::thread::thread_restart`); `None` before it is set.
+pub fn with_idleproc<G: ProcGlue, R>(
+    n: usize,
+    f: impl FnOnce(&SchedHold, Pin<&Thread<G>>) -> R,
+) -> Option<R> {
     let c = tables::<G>().cpu(n)?;
     let h = sched_lock();
-    let r = c.idleq.first_pinned(&h).map(f);
+    let r = c.idleq.first_pinned(&h).map(|p| f(&h, p));
     drop(h);
     r
 }
@@ -2394,7 +2398,9 @@ mod tests {
                 sched_init_cpu::<SchedGlue>(n);
                 let idle = thread(900 + i as i32, 127);
                 set_idleproc(n, idle);
-                hal::thread::thread_restart(idle, START_IDLE, n);
+                let h = sched_lock();
+                hal::thread::thread_restart(&h, idle, START_IDLE, n);
+                drop(h);
                 SCHED.all_cpus.add(n);
             }
         });
@@ -2608,8 +2614,8 @@ mod tests {
         let me = thread(50, 50);
         run_as(n, me);
         let other = thread(51, 50);
-        hal::thread::thread_setup(me, other, 0, 0, START_BODY, idx);
         let mut h = sched_lock();
+        hal::thread::thread_setup(&h, me, other, 0, 0, START_BODY, idx);
         setrunqueue(&mut h, Some(n), other, 50);
         drop(h);
         let before = RAN.load(Ordering::Relaxed);

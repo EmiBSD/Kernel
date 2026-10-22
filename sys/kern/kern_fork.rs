@@ -138,7 +138,6 @@ use crate::sys::systm::{INFSLP, SysArgs, sysargs};
 use crate::sys::time::Timeval;
 use crate::sys::types::{Pid, Register, Uid};
 use crate::sys::unistd::Tfork;
-use crate::sys::user::User;
 use crate::sys::vmmeter::Forkstat;
 use crate::unported;
 use hal::klock;
@@ -236,7 +235,7 @@ pub fn sys___tfork(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<
 
 /// `thread_new`: allocates a thread of `pr`, copying `parent`'s inheritable fields, with its
 /// u-area at `uaddr`; its box, which the caller makes join the process ([`thread_join`]).
-fn thread_new(parent: &Proc, pr: &ProcessRef, uaddr: NonNull<u8>) -> PoolBox<Proc> {
+fn thread_new(parent: &Proc, pr: &ProcessRef, uarea: hal::thread::UArea) -> PoolBox<Proc> {
     let p = kernel::proc::thread_alloc(pr, BsdThreadG::new());
 
     p.set_stat(SIDL); // protect against others
@@ -259,7 +258,7 @@ fn thread_new(parent: &Proc, pr: &ProcessRef, uaddr: NonNull<u8>) -> PoolBox<Pro
 
     // crhold(p->p_ucred): the thread's own copy of the parent's, and its reference.
     drop(p.set_cred(parent.cred_ref()));
-    p.set_uarea(uaddr.as_ptr().cast::<User>());
+    p.install_uarea(uarea);
 
     // Initialize the timeouts: `p_sleep_to` is named by the thread's tid, set once it has
     // one (`kernel::sched::sleep_timeout_init`, in `fork1` and `thread_fork`).

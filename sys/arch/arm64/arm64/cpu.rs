@@ -2553,7 +2553,7 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     // Start from a clean slate regardless of whether this is the initial power up or a
     // wakeup of a suspended CPU.
     hal::thread::set_current_static::<Proc>(None);
-    hal::arch::arm64::switch::set_current_pcb(None);
+    hal::arch::arm64::switch::clear_current_pcb();
     ci.ci_curpm.set(ptr::null());
     ci.ci_cpl.set(IPL_NONE as u32);
     ci.ci_ipending.set(0);
@@ -2569,8 +2569,8 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     let idle: fn(*mut c_void) = sched_idle;
     let start = thread_start_word(idle);
     let restarted =
-        kernel::sched::with_idleproc::<crate::kern::proc_glue::BsdProcGlue, _>(n, |p| {
-            hal::thread::thread_restart(p, start, n);
+        kernel::sched::with_idleproc::<crate::kern::proc_glue::BsdProcGlue, _>(n, |h, p| {
+            hal::thread::thread_restart(h, p, start, n);
         });
     if restarted.is_none() {
         panic(format_args!("cpu_init_secondary: no idle thread"));

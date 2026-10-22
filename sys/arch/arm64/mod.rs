@@ -63,7 +63,6 @@ use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
 use crate::sys::types::{Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
-use crate::sys::user::User;
 use kernel::vm::types::UvmConstraintRange;
 
 /// The arm64 implementation of the machine interface.
@@ -165,10 +164,6 @@ impl Cpu for Machine {
     fn set_curproc(ci: &include::cpu::CpuInfo, p: Option<&'static Proc>) {
         crate::kassert!(core::ptr::eq(ci, include::cpu::curcpu()));
         hal::thread::set_current_static(p.map(hal::pin::pin_static));
-    }
-
-    fn proc0paddr() -> &'static User {
-        arm64::machdep::proc0paddr()
     }
 
     fn cpu_rnd_messybits() -> u32 {

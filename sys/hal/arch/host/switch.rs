@@ -44,6 +44,24 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use crate::cpu::CpuCore;
 use crate::thread::{MachineSlot, SONPROC};
 
+/// `proc0`'s u-area on the host: bytes enough for `bsd`'s host `struct user` (whose pcb is a
+/// word), page aligned; the host builds no frames in it.
+#[repr(C, align(4096))]
+struct BootUarea([core::sync::atomic::AtomicU8; 4096]);
+
+/// `proc0`'s u-area (`hal::thread::boot_uarea`).
+static PROC0_UAREA: BootUarea = BootUarea([const { core::sync::atomic::AtomicU8::new(0) }; 4096]);
+
+/// The address of `proc0`'s u-area.
+pub(crate) fn boot_uarea_word() -> usize {
+    core::ptr::from_ref(&PROC0_UAREA).expose_provenance()
+}
+
+/// `curpcb = &proc0paddr->u_pcb` on this host thread's core.
+pub(crate) fn set_boot_pcb() {
+    crate::cpu::curcpu().set_curpcb(core::ptr::with_exposed_provenance::<()>(boot_uarea_word()));
+}
+
 /// A thread's gate: the core a switch handed it, until its host thread takes it.
 #[derive(Default)]
 struct Gate {

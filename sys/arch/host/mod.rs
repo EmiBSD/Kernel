@@ -74,7 +74,6 @@ use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
 use crate::sys::types::{Dev, Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
-use crate::sys::user::User;
 use kernel::vm::types::UvmConstraintRange;
 
 /// The host's `<machine/*.h>` types where generic code names them: amd64's.
@@ -268,9 +267,6 @@ static HOST_CPU_INFO: HostCpuInfo = HostCpuInfo {
     ci_randseed: Cell::new(1),
 };
 
-/// The host's `proc0paddr`.
-static HOST_PROC0PADDR: User = User::new();
-
 /// The host's kernel text for `etext`: 128 KB plus a page, zeroed (`random_start` reads the
 /// 8 KB that start 128 KB before `etext`).
 static HOST_TEXT: [u8; 136 * 1024] = [0; 136 * 1024];
@@ -401,10 +397,6 @@ impl Cpu for Machine {
     /// The running thread's core's, as [`Cpu::ci_curproc`] reads it.
     fn set_curproc(_ci: &HostCpuInfo, p: Option<&'static Proc>) {
         hal::thread::set_current_static(p.map(hal::pin::pin_static));
-    }
-
-    fn proc0paddr() -> &'static User {
-        &HOST_PROC0PADDR
     }
 
     /// The host has no cycle counter to read; the monotonic clock's nanoseconds stand in.

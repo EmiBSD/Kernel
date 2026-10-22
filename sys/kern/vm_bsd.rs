@@ -1182,6 +1182,8 @@ pub fn uvm_init() {
     // and the shutdown state through bridges (N3.4e); the map, the system calls and the
     // sysctls reach curproc and the sysctl helpers (N3.5): registered before the first use.
     crate::kern::hal_bridges::hal_bridges_register_vm();
+    // The u-areas `fork1` gives its threads (hal::thread's E4 provider).
+    let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
     uvn_install_sysinfo();
     let _ = kernel::vm::proc::install(&BSD_VM_PROC);
     let _ = kernel::vm::meter::install(&BSD_VM_SYSCTL);
@@ -1281,19 +1283,14 @@ pub fn uvmspace_fork_or_share(parent: &Process, pr: &Process, share: bool) {
 
 /// `uvm_uarea_alloc`: a thread's u-area (`kernel::vm::glue::uvm_uarea_alloc`), as the
 /// legacy pointer `thread_new` stores in `p_addr`.
-pub fn uvm_uarea_alloc() -> Option<NonNull<u8>> {
-    let va = kernel::vm::glue::uvm_uarea_alloc()?;
-    NonNull::new(core::ptr::with_exposed_provenance_mut::<u8>(va.as_usize()))
+pub fn uvm_uarea_alloc() -> Option<hal::thread::UArea> {
+    hal::thread::UArea::alloc()
 }
 
 /// `uvm_uarea_free(p)`: frees `p`'s u-area (`kernel::vm::glue::uvm_uarea_free`) and clears
 /// `p_addr`.
 pub fn uvm_uarea_free(p: &Proc) {
-    let va = p.uarea().addr();
-    if va != 0 {
-        kernel::vm::glue::uvm_uarea_free(Vaddr::new(va));
-    }
-    p.set_uarea(core::ptr::null());
+    drop(p.take_uarea());
 }
 
 /// `uvm_init_limits`: init per-process VM limits, the kernel's numbers

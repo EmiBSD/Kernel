@@ -77,11 +77,28 @@
 //!   linked), and the thread a [`Next`] names was taken off a queue under the hold the switch
 //!   is made under (the generation, under `DIAGNOSTIC`), so the addresses it holds are alive
 //!   when the switch uses them.
+//! - E4: a slot's `p_addr` (`MachineSlot::addr`) is 0 or the address of a u-area the slot
+//!   owns: set only from 0, by [`MachineSlot::install_uarea`] with a [`UArea`] (minted by the
+//!   registered [`UAreaMemory`] provider alone, under its contract, `sys/hal/trust.rs`) or by
+//!   [`boot_uarea`] with `hal`'s own `proc0` u-area; cleared only by
+//!   [`MachineSlot::take_uarea`], under [`SCHED_LOCK`], for a thread no CPU runs, which gives
+//!   the memory back to its owner. `hal` writes through it ([`thread_setup`],
+//!   [`thread_restart`]) only under the scheduler's hold, for a thread no CPU runs, and reads
+//!   the pcb of a thread that runs here or that the switch takes (the machine's switch refuses
+//!   a thread without a u-area); no safe function stores a caller's address there. `p_cpu` is
+//!   compared, never followed.
+//! - E5: the running CPU's core (`TPIDR_EL1` on arm64) is installed once per CPU
+//!   (`hal::cpu::set_current` refuses another core once one is installed); `ci_curpcb` is
+//!   written by the switch (the new thread's u-area pcb), by [`boot_uarea`] (`proc0`'s, `hal`'s
+//!   static) and cleared at a CPU's start; `ci_curproc` by the switch and by
+//!   [`set_current_static`], which refuses a thread another CPU runs. No caller-chosen address
+//!   reaches either.
 
 use core::any::TypeId;
+use core::num::NonZeroUsize;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU8, AtomicUsize};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(feature = "diagnostic")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -108,18 +125,19 @@ impl Mdproc {
 }
 
 /// The members of a thread the machine reaches by offset, first in the thread
-/// (`#[repr(C)]`), so their offsets are the same from the thread and from the slot.
+/// (`#[repr(C)]`), so their offsets are the same from the thread and from the slot. Its
+/// members are `hal`'s: `p_addr` is written only as E4 says.
 #[repr(C)]
 #[derive(Default)]
 pub struct MachineSlot {
     /// `p_stat`: the thread's `S*` state (`SONPROC` stored by the switch).
-    pub stat: AtomicU8,
+    pub(crate) stat: AtomicU8,
     /// `p_cpu`: the `cpu_info` word of the CPU the thread runs or last ran on, 0 before it
     /// first runs.
-    pub cpu: AtomicUsize,
+    pub(crate) cpu: AtomicUsize,
     /// `p_addr`: the address of the thread's u-area (`struct user`, whose `u_pcb` is first),
-    /// 0 before `cpu_fork`.
-    pub addr: AtomicUsize,
+    /// 0 before `cpu_fork` (E4).
+    pub(crate) addr: AtomicUsize,
     /// `p_md`.
     pub md: Mdproc,
 }
@@ -135,6 +153,177 @@ impl MachineSlot {
             md: Mdproc::new(),
         }
     }
+
+    /// `p_stat`.
+    #[inline]
+    pub fn stat(&self) -> u8 {
+        self.stat.load(AtomicOrdering::Relaxed)
+    }
+
+    /// `p_stat = s`.
+    #[inline]
+    pub fn set_stat(&self, s: u8) {
+        self.stat.store(s, AtomicOrdering::Relaxed);
+    }
+
+    /// `p_cpu` as the `cpu_info` word the switch stores: compared, never followed (E4).
+    #[inline]
+    pub fn cpu_word(&self) -> usize {
+        self.cpu.load(AtomicOrdering::Relaxed)
+    }
+
+    /// `p_cpu = ci` as a CPU's word (`hal::cpu::CpuCore::word`).
+    #[inline]
+    pub fn set_cpu_word(&self, w: usize) {
+        self.cpu.store(w, AtomicOrdering::Relaxed);
+    }
+
+    /// `p_addr` as a word (0: no u-area): compared or followed by its owner's code only.
+    #[inline]
+    pub fn addr_word(&self) -> usize {
+        self.addr.load(AtomicOrdering::Relaxed)
+    }
+
+    /// `p->p_addr = uaddr` of `thread_new`: the slot takes `u` for good (until
+    /// [`take_uarea`](Self::take_uarea)). Panics when the slot has one already.
+    pub fn install_uarea(&self, u: UArea) {
+        let va = u.into_word();
+        if self
+            .addr
+            .compare_exchange(0, va, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed)
+            .is_err()
+        {
+            hal_panic(format_args!("p_addr: the thread has a u-area already"));
+        }
+    }
+
+    /// The reaper's `uvm_uarea_free(p)` and `p->p_addr = NULL`: the u-area given back, its
+    /// owner's to free (drop), for a thread no CPU runs, under the scheduler's lock so no
+    /// switch to the thread is half made (E4); `None` for a slot without one. Panics for a
+    /// running thread and for `proc0`'s static u-area.
+    #[cfg(not(feature = "module-rt"))]
+    pub fn take_uarea(&self) -> Option<UArea> {
+        let h = sched_lock();
+        if running_slot(self) {
+            hal_panic(format_args!("uvm_uarea_free: the thread runs"));
+        }
+        let va = self.addr.swap(0, AtomicOrdering::AcqRel);
+        drop(h);
+        let va = NonZeroUsize::new(va)?;
+        if va.get() == crate::arch::current::switch::boot_uarea_word() {
+            hal_panic(format_args!("uvm_uarea_free: proc0's u-area"));
+        }
+        Some(UArea { va })
+    }
+}
+
+/// The kernel's u-areas (`uvm_uarea_alloc`/`uvm_uarea_free`), registered once with
+/// [`register_uarea_memory`] (the kernel's `kernel::vm::glue`; the host tests' double).
+///
+/// The provider's contract (`sys/hal/trust.rs`): `alloc` returns `None` or the address of
+/// `USPACE` bytes (the machine's) of zeroed, wired kernel memory, at least 16-byte aligned,
+/// mapped and writable, that nothing else references until `free` gets that address back.
+/// `hal` checks the alignment of every answer.
+pub trait UAreaMemory: Sync {
+    /// `uvm_uarea_alloc()`: a u-area's address, `None` when memory is short.
+    fn alloc(&self) -> Option<NonZeroUsize>;
+    /// `uvm_uarea_free(va)`: the contract's other half, for an address `alloc` gave.
+    fn free(&self, va: NonZeroUsize);
+}
+
+/// The registered u-area provider.
+static UAREA_MEMORY: OnceStatic<&'static dyn UAreaMemory> = OnceStatic::new();
+
+/// Registers the u-area provider, once; a second registration keeps the first.
+pub fn register_uarea_memory(
+    m: &'static dyn UAreaMemory,
+) -> Result<(), crate::bridges::AlreadyRegistered> {
+    UAREA_MEMORY
+        .set(m)
+        .map_err(|_| crate::bridges::AlreadyRegistered("UAreaMemory"))
+}
+
+/// A thread's u-area, owned (`uvm_uarea_alloc` to `uvm_uarea_free`): from the registered
+/// provider alone, so its address is never a caller's (E4). Freed on drop; a slot keeps it
+/// as its `p_addr` ([`MachineSlot::install_uarea`]).
+#[derive(Debug)]
+pub struct UArea {
+    va: NonZeroUsize,
+}
+
+impl UArea {
+    /// `uvm_uarea_alloc()`: `None` when memory is short or no provider is registered yet.
+    pub fn alloc() -> Option<UArea> {
+        let mem = UAREA_MEMORY.get()?;
+        let va = mem.alloc()?;
+        if !va.get().is_multiple_of(16) {
+            hal_panic(format_args!(
+                "UAreaMemory: a u-area at {:#x} is not 16-byte aligned",
+                va.get()
+            ));
+        }
+        Some(UArea { va })
+    }
+
+    /// The u-area's address (what `p_addr` holds once installed).
+    pub fn addr(&self) -> usize {
+        self.va.get()
+    }
+
+    /// The address, the value given up to a slot that owns it from now on.
+    fn into_word(self) -> usize {
+        let va = self.va.get();
+        core::mem::forget(self);
+        va
+    }
+}
+
+impl Drop for UArea {
+    /// `uvm_uarea_free`.
+    fn drop(&mut self) {
+        match UAREA_MEMORY.get() {
+            Some(mem) => mem.free(self.va),
+            None => hal_panic(format_args!("uvm_uarea_free: no UAreaMemory registered")),
+        }
+    }
+}
+
+/// `p->p_addr = proc0paddr` (`main`, the machine's `cpu_startup`): `t`, the running thread,
+/// gets `hal`'s static `proc0` u-area (E4), and this CPU's `ci_curpcb` its pcb (`curpcb =
+/// &proc0paddr->u_pcb`). Again on `t`, nothing; on another thread, `panic(9)`: the static
+/// u-area is one thread's.
+#[cfg(not(feature = "module-rt"))]
+pub fn boot_uarea<T: ThreadLayout>(t: Pin<&'static T>) {
+    check_type::<T>();
+    let slot = t.get_ref().machine();
+    if crate::cpu::curcpu().curproc() != core::ptr::from_ref(t.get_ref()).cast::<()>() {
+        hal_panic(format_args!("proc0paddr: the thread is not this CPU's"));
+    }
+    let va = crate::arch::current::switch::boot_uarea_word();
+    static CLAIMED: AtomicUsize = AtomicUsize::new(0);
+    let me = core::ptr::from_ref(slot).addr();
+    match CLAIMED.compare_exchange(0, me, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed) {
+        Ok(_) => {}
+        Err(owner) if owner == me => {}
+        Err(_) => hal_panic(format_args!(
+            "proc0paddr: proc0's u-area is another thread's"
+        )),
+    }
+    let _ = slot
+        .addr
+        .compare_exchange(0, va, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed);
+    if slot.addr_word() != va {
+        hal_panic(format_args!("proc0paddr: the thread has another u-area"));
+    }
+    crate::arch::current::switch::set_boot_pcb();
+}
+
+#[cfg(not(feature = "module-rt"))]
+/// Whether some CPU runs the thread whose slot is `slot` (its address is the thread's, the
+/// slot being first, `ThreadLayout`).
+fn running_slot(slot: &MachineSlot) -> bool {
+    let me = core::ptr::from_ref(slot).cast::<()>();
+    crate::cpu::curcpu().curproc() == me || crate::cpu::cores().any(|c| c.curproc() == me)
 }
 
 /// `SONPROC`: the `p_stat` the switch stores in the new thread's slot (`<sys/proc.h>`; the
@@ -254,6 +443,12 @@ impl Next {
         let t = t.get_ref();
         #[cfg(not(feature = "diagnostic"))]
         let _ = h;
+        // E4: the switch reads the pcb at `p_addr`; a thread without a u-area is refused here,
+        // under the hold the switch is made under, so no `take_uarea` comes between (the
+        // host's switch double reads none).
+        if cfg!(target_os = "none") && t.machine().addr_word() == 0 {
+            hal_panic(format_args!("cpu_switchto: the thread has no u-area"));
+        }
         Next {
             thread: NonNull::from(t).cast(),
             slot: NonNull::from(t.machine()),
@@ -319,10 +514,10 @@ pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
     check_type::<T>();
     next.check(h);
     let old = old.get_ref();
-    #[cfg(feature = "diagnostic")]
-    crate::assert::kassert!(
-        crate::cpu::curcpu().curproc() == core::ptr::from_ref(old).cast::<()>()
-    );
+    // The context saved is the running one: `old` must be this CPU's thread (E4).
+    if crate::cpu::curcpu().curproc() != core::ptr::from_ref(old).cast::<()>() {
+        hal_panic(format_args!("cpu_switchto: old is not the running thread"));
+    }
     crate::arch::current::switch::switch(Some(old.machine()), next.slot, next.thread);
 }
 
@@ -372,13 +567,18 @@ pub fn current_addr() -> usize {
 }
 
 /// `curproc = p` on this CPU for a thread that lives for ever (`main`'s `curproc = &proc0`),
-/// or none (`None`: a secondary CPU before its idle thread runs).
+/// or none (`None`: a secondary CPU before its idle thread runs). Panics for a thread another
+/// CPU runs (E5).
 pub fn set_current_static<T: ThreadLayout>(t: Option<Pin<&'static T>>) {
     check_type::<T>();
+    let me = crate::cpu::curcpu();
     let p = t.map_or(core::ptr::null(), |t| {
         core::ptr::from_ref(t.get_ref()).cast::<()>()
     });
-    crate::cpu::curcpu().set_curproc(p);
+    if !p.is_null() && crate::cpu::cores().any(|c| !core::ptr::eq(c, me) && c.curproc() == p) {
+        hal_panic(format_args!("curproc: the thread runs on another CPU"));
+    }
+    me.set_curproc(p);
 }
 
 /// Whether `t` is the running thread of any attached CPU (the release check of the threads'
@@ -391,9 +591,11 @@ pub fn running_anywhere<T: ThreadLayout>(t: &T) -> bool {
 /// `cpu_fork(parent, child, stack, tcb, func, arg)`: the child's pcb and frames, so that its
 /// first switch runs the trampoline with `start` and `arg` (the registered start's words);
 /// `stack` and `tcb`, when not 0, its user stack pointer and TCB. The parent's FP state is
-/// saved first when it is the running thread (the CPU holds it).
+/// saved first when it is the running thread (the CPU holds it). Under the scheduler's hold
+/// `h` (E4: no u-area is given back meanwhile); panics for a child some CPU runs.
 #[cfg(not(feature = "module-rt"))]
 pub fn thread_setup<T: ThreadLayout>(
+    h: &SchedHold,
     parent: Pin<&T>,
     child: Pin<&T>,
     stack: usize,
@@ -402,6 +604,10 @@ pub fn thread_setup<T: ThreadLayout>(
     arg: usize,
 ) {
     check_type::<T>();
+    let _ = h;
+    if running_slot(child.get_ref().machine()) {
+        hal_panic(format_args!("cpu_fork: the child runs"));
+    }
     let runs = crate::cpu::curcpu().curproc() == core::ptr::from_ref(parent.get_ref()).cast();
     crate::arch::current::switch::thread_setup(
         parent.get_ref().machine(),
@@ -415,10 +621,15 @@ pub fn thread_setup<T: ThreadLayout>(
 }
 
 /// The frames of a thread that runs nowhere and starts afresh with `start` and `arg` (a
-/// secondary CPU's idle thread, `cpu_init_secondary`).
+/// secondary CPU's idle thread, `cpu_init_secondary`), under the scheduler's hold `h` (E4);
+/// panics for a thread some CPU runs.
 #[cfg(not(feature = "module-rt"))]
-pub fn thread_restart<T: ThreadLayout>(t: Pin<&T>, start: usize, arg: usize) {
+pub fn thread_restart<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>, start: usize, arg: usize) {
     check_type::<T>();
+    let _ = h;
+    if running_slot(t.get_ref().machine()) {
+        hal_panic(format_args!("cpu_init_secondary: the thread runs"));
+    }
     crate::arch::current::switch::thread_restart(t.get_ref().machine(), start, arg);
 }
 
@@ -585,6 +796,105 @@ mod tests {
     #[should_panic(expected = "no thread runs on this CPU")]
     fn no_current_thread_is_a_panic_for_with_current() {
         with_current::<TestThread, _>(|_| ());
+    }
+
+    /// The tests' u-area provider: leaked, page-aligned zero pages, never given back, which
+    /// counts what it was asked to free.
+    struct TestUAreas;
+
+    /// A test u-area's page.
+    #[repr(C, align(4096))]
+    struct Page([u8; 4096]);
+
+    /// How many u-areas went back to the provider.
+    static FREED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    impl UAreaMemory for TestUAreas {
+        fn alloc(&self) -> Option<NonZeroUsize> {
+            let b: &'static mut Page = std::boxed::Box::leak(std::boxed::Box::new(Page([0; 4096])));
+            NonZeroUsize::new(core::ptr::from_mut(b).expose_provenance())
+        }
+
+        fn free(&self, _va: NonZeroUsize) {
+            FREED.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    static TEST_UAREAS: TestUAreas = TestUAreas;
+
+    /// A thread of the tests, leaked.
+    fn test_thread() -> &'static TestThread {
+        std::boxed::Box::leak(std::boxed::Box::new(TestThread {
+            machine: MachineSlot::new(),
+            n: 0,
+        }))
+    }
+
+    /// E4: a slot takes a u-area once, gives it back once to its owner, and refuses a second
+    /// one while it has one.
+    #[test]
+    fn a_slot_owns_its_u_area_from_install_to_take() {
+        crate::testutil::install();
+        let _ = register_uarea_memory(&TEST_UAREAS);
+        let t = test_thread();
+        let Some(u) = UArea::alloc() else {
+            panic!("no u-area");
+        };
+        let va = u.addr();
+        assert_ne!(va, 0);
+        t.machine.install_uarea(u);
+        assert_eq!(t.machine.addr_word(), va);
+        let before = FREED.load(AtomicOrdering::Relaxed);
+        let back = t.machine.take_uarea();
+        assert_eq!(back.as_ref().map(UArea::addr), Some(va));
+        assert_eq!(t.machine.addr_word(), 0);
+        drop(back);
+        assert_eq!(FREED.load(AtomicOrdering::Relaxed), before + 1);
+        assert!(t.machine.take_uarea().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "has a u-area already")]
+    fn a_second_u_area_is_refused() {
+        crate::testutil::install();
+        let _ = register_uarea_memory(&TEST_UAREAS);
+        let t = test_thread();
+        let (Some(a), Some(b)) = (UArea::alloc(), UArea::alloc()) else {
+            panic!("no u-area");
+        };
+        t.machine.install_uarea(a);
+        t.machine.install_uarea(b);
+    }
+
+    /// E4: the u-area of a thread a CPU runs is not given back.
+    #[test]
+    #[should_panic(expected = "the thread runs")]
+    fn a_running_thread_keeps_its_u_area() {
+        crate::testutil::install();
+        let _ = register_uarea_memory(&TEST_UAREAS);
+        let t = test_thread();
+        let Some(u) = UArea::alloc() else {
+            panic!("no u-area");
+        };
+        t.machine.install_uarea(u);
+        crate::cpu::curcpu().set_curproc(core::ptr::from_ref(t).cast());
+        let _ = t.machine.take_uarea();
+    }
+
+    /// E5: a thread another CPU runs cannot be made this CPU's current one.
+    #[test]
+    fn a_thread_running_elsewhere_is_not_made_current() {
+        crate::testutil::install();
+        let t = test_thread();
+        let other: &'static crate::cpu::CpuCore =
+            std::boxed::Box::leak(std::boxed::Box::new(crate::cpu::CpuCore::new()));
+        crate::cpu::attach(other, 249);
+        other.set_curproc(core::ptr::from_ref(t).cast());
+        let r = std::panic::catch_unwind(|| set_current_static(Some(crate::pin::pin_static(t))));
+        assert!(r.is_err());
+        other.set_curproc(core::ptr::null());
+        set_current_static(Some(crate::pin::pin_static(t)));
+        set_current_static::<TestThread>(None);
     }
 }
 /* </TESTS> */

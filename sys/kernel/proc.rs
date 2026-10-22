@@ -1858,37 +1858,42 @@ impl<G: ProcGlue> Thread<G> {
     /// `p_stat`.
     #[inline]
     pub fn stat(&self) -> u8 {
-        self.machine.stat.load(Ordering::Relaxed)
+        self.machine.stat()
     }
 
     /// `p->p_stat = s`.
     #[inline]
     pub fn set_stat(&self, s: u8) {
-        self.machine.stat.store(s, Ordering::Relaxed);
+        self.machine.set_stat(s);
     }
 
     /// `p_cpu`: the `cpu_info` word of the CPU the thread runs or last ran on.
     #[inline]
     pub fn cpu_word(&self) -> usize {
-        self.machine.cpu.load(Ordering::Relaxed)
+        self.machine.cpu_word()
     }
 
     /// `p->p_cpu = ci` (`fork1`, `sched_choosecpu`).
     #[inline]
     pub fn set_cpu_word(&self, ci: usize) {
-        self.machine.cpu.store(ci, Ordering::Relaxed);
+        self.machine.set_cpu_word(ci);
     }
 
-    /// `p_addr`: the u-area's address, 0 before `cpu_fork`.
+    /// `p_addr`: the u-area's address, 0 before `cpu_fork` (set and cleared through the
+    /// slot alone: `hal::thread::MachineSlot::install_uarea`, `take_uarea`, E4).
     #[inline]
     pub fn addr_word(&self) -> usize {
-        self.machine.addr.load(Ordering::Relaxed)
+        self.machine.addr_word()
     }
 
-    /// `p->p_addr = uaddr`.
-    #[inline]
-    pub fn set_addr_word(&self, uaddr: usize) {
-        self.machine.addr.store(uaddr, Ordering::Relaxed);
+    /// `p->p_addr = uaddr` of `thread_new`: the thread takes the u-area `u` (`hal`'s E4).
+    pub fn install_uarea(&self, u: hal::thread::UArea) {
+        self.machine.install_uarea(u);
+    }
+
+    /// The reaper's `uvm_uarea_free(p)`: the u-area given back, for a thread no CPU runs.
+    pub fn take_uarea(&self) -> Option<hal::thread::UArea> {
+        self.machine.take_uarea()
     }
 
     /// `p_name` up to its NUL.
@@ -2585,7 +2590,7 @@ mod tests {
         assert_eq!(pr.comm().len(), _MAXCOMLEN - 1);
         assert_eq!(t.stat(), 0);
         t.set_stat(SONPROC);
-        assert_eq!(t.machine.stat.load(Ordering::Relaxed), SONPROC);
+        assert_eq!(t.machine.stat(), SONPROC);
         assert_eq!(core::mem::offset_of!(Thread<TestGlue>, machine), 0);
         drop(t);
         unlink(&pr);

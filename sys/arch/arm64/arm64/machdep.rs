@@ -199,7 +199,6 @@ use crate::sys::reboot::{
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
-use crate::sys::user::{Uarea, User};
 use crate::unported;
 use hal::pmap::{BootstrapParams, KernelImage};
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
@@ -280,18 +279,10 @@ pub static CPU_INFO: [CiPtr<CpuInfo>; MAXCPUS as usize] = {
 /// `cpu_start_secondary` (`cpu.rs`): written once by `initarm` on the boot CPU.
 pub static BOOT_MP: StaticCell<Option<BootMp>> = StaticCell::new(None);
 
-/// `proc0paddr`: proc0's u-area (its pcb; the boot stack is Limine's).
-pub static PROC0_UAREA: Uarea = Uarea::new();
-
 /// `cpu_info_list` (`cpu.c`): the attached CPUs, linked through `ci_next`, headed by the
 /// boot CPU.
 pub fn cpu_info_list() -> &'static CpuInfo {
     &CPU_INFO_PRIMARY
-}
-
-/// `proc0paddr`: proc0's `struct user`, at the bottom of its u-area.
-pub fn proc0paddr() -> &'static User {
-    &PROC0_UAREA.u
 }
 
 /// `etext` (`conf/kernel.ld`): the address of the end of the kernel text.
@@ -1241,7 +1232,8 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
 
 /// `cpu_startup`: machine-dependent startup code (see the module's deviations).
 pub fn cpu_startup() {
-    PROC0.set_uarea(proc0paddr());
+    // proc0.p_addr = proc0paddr, curpcb = &proc0paddr->u_pcb: hal's static u-area (E4).
+    hal::thread::boot_uarea(hal::pin::pin_static(&PROC0));
 
     // The message buffer mapping and initmsgbuf: the message buffer is static (M2).
 
@@ -1292,8 +1284,8 @@ pub fn cpu_startup() {
         ptoa(free) / 1024 / 1024
     );
 
-    let curpcb = &proc0paddr().u_pcb;
-    hal::arch::arm64::switch::set_current_pcb(Some(curpcb));
+    // curpcb = &proc0paddr->u_pcb (hal::thread::boot_uarea, above).
+    let curpcb = PROC0.pcb();
     curpcb.pcb_flags.set(0);
     curpcb.pcb_tf.set(PROC0TF.as_ptr());
 

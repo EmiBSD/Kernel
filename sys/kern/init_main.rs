@@ -415,7 +415,7 @@ pub fn main() -> ! {
     let prev = PROCESS0.set_vmspace(Some(vm0));
     crate::kassert!(prev.is_none()); // process 0 had none
 
-    p.set_uarea(Machine::proc0paddr()); // XXX
+    hal::thread::boot_uarea(pin_static(p)); // XXX (hal's proc0 u-area, E4)
 
     // Charge root for one process.
     chgproccnt(0, 1);

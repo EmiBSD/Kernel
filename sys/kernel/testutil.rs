@@ -665,6 +665,28 @@ impl crate::thread::Kthread for TestKthread {
 
 static TEST_KTHREAD: TestKthread = TestKthread;
 
+/// A page of a test u-area, page aligned.
+#[repr(C, align(4096))]
+struct TestPage([u8; 4096]);
+
+/// The u-area double (`hal::thread::UAreaMemory`): zeroed, page-aligned heap pages of the
+/// machine's `uspace`, leaked (a test's u-area is never given back to the heap; `free` keeps
+/// nothing).
+struct TestUAreas;
+
+impl hal::thread::UAreaMemory for TestUAreas {
+    fn alloc(&self) -> Option<core::num::NonZeroUsize> {
+        let pages = TEST_VM_MACHINE.uspace.div_ceil(4096);
+        let v: Vec<TestPage> = (0..pages).map(|_| TestPage([0; 4096])).collect();
+        let b: &'static mut [TestPage] = Box::leak(v.into_boxed_slice());
+        core::num::NonZeroUsize::new(b.as_ptr().expose_provenance())
+    }
+
+    fn free(&self, _va: core::num::NonZeroUsize) {}
+}
+
+static TEST_UAREAS: TestUAreas = TestUAreas;
+
 /// What a [`MemVnode`] saw during its last read.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadSeen {
@@ -907,6 +929,7 @@ pub fn install() {
         let _ = bridges::register_softintr(&TEST_SOFT_INTR);
         let _ = crate::clock::install_uptime(&TEST_UPTIME);
         let _ = crate::thread::install_kthread(&TEST_KTHREAD);
+        let _ = hal::thread::register_uarea_memory(&TEST_UAREAS);
         // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
         // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
         if cfg!(test) {

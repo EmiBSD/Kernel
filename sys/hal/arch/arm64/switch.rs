@@ -121,7 +121,7 @@
 use core::arch::global_asm;
 use core::mem::offset_of;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::arch::arm64::fpu;
 use crate::arch::arm64::include::frame::{SWITCHFRAME_SZ, Switchframe, Trapframe};
@@ -140,6 +140,27 @@ pub const USPACE: usize = UPAGES * PAGE_SIZE;
 /// `STACKALIGN(p)`: a stack pointer rounded down to 16 bytes.
 const fn stackalign(p: usize) -> usize {
     p & !(16 - 1)
+}
+
+/// `proc0paddr`: `proc0`'s u-area, `USPACE` zero bytes, page aligned (`locore`'s reservation
+/// in the C), `hal`'s own so that its address is never a caller's (`hal::thread`'s E4). Bytes
+/// as atomics: the pcb at its bottom and the stack above it are written through the address
+/// (by `proc0` itself and the switch), which a shared reference to cells permits.
+#[repr(C, align(4096))]
+struct BootUarea([AtomicU8; USPACE]);
+
+/// `proc0`'s u-area.
+static PROC0_UAREA: BootUarea = BootUarea([const { AtomicU8::new(0) }; USPACE]);
+
+/// The address of `proc0`'s u-area (`hal::thread::boot_uarea`).
+pub(crate) fn boot_uarea_word() -> usize {
+    ptr::from_ref(&PROC0_UAREA).expose_provenance()
+}
+
+/// `curpcb = &proc0paddr->u_pcb` on this CPU (`hal::thread::boot_uarea`): the pcb at the
+/// bottom of `proc0`'s u-area, zero bytes as `Pcb::new()` makes it.
+pub(crate) fn set_boot_pcb() {
+    crate::cpu::curcpu().set_curpcb(ptr::with_exposed_provenance::<()>(boot_uarea_word()));
 }
 
 global_asm!(
@@ -176,11 +197,14 @@ unsafe extern "C" {
 fn with_pcb_of<R>(slot: &MachineSlot, f: impl FnOnce(Option<&Pcb>) -> R) -> R {
     let addr = slot.addr.load(Ordering::Relaxed);
     let pcb = ptr::with_exposed_provenance::<Pcb>(addr);
-    // SAFETY: `p_addr` is 0 or the exposed address of the thread's u-area, a `struct user`
-    // whose first member is the pcb (the kernel's `thread_new`, `main`'s `proc0paddr`),
-    // allocated before the thread is reachable and freed by the reaper after the thread's
-    // last switch away, when nothing names it but its owner (E2); the slot is borrowed from a
-    // thread the caller holds, which is alive, so its u-area is too. A pcb is only ever
+    // SAFETY: `p_addr` is 0 or the exposed address of the u-area the slot owns (E4: a
+    // `UArea` from the registered provider, whose contract gives `USPACE` bytes of zeroed
+    // kernel memory nothing else references, or `hal`'s own `PROC0_UAREA`; no safe function
+    // stores another address there), whose bottom is a `struct user` with the pcb first (zero
+    // bytes are `Pcb::new()`). It is given back only by `take_uarea`, under the scheduler's
+    // lock and for a thread no CPU runs; the callers here hold the lock or run the thread
+    // (`thread_setup`, `thread_restart`, the switch's old thread), so the u-area is alive for
+    // `f`. A pcb is only ever
     // shared (`&Pcb`, its members cells written by the thread, its switch and `cpu_fork`
     // before it runs), so this reference aliases no `&mut`; it ends with `f`.
     let pcb = unsafe { pcb.as_ref() };
@@ -190,18 +214,20 @@ fn with_pcb_of<R>(slot: &MachineSlot, f: impl FnOnce(Option<&Pcb>) -> R) -> R {
 /// The running thread's pcb (`ci_curpcb`), for `f`; `None` before the first thread.
 pub(crate) fn with_curpcb<R>(f: impl FnOnce(Option<&Pcb>) -> R) -> R {
     let pcb = crate::cpu::curcpu().curpcb().cast::<Pcb>();
-    // SAFETY: `ci_curpcb` is null or the running thread's pcb: the switch stores the new
-    // thread's `p_addr` there (its u-area's `u_pcb`), and `set_current_pcb` a `'static` one
-    // (`proc0`'s); it is written by this CPU alone. The running thread is not freed while it
-    // runs (E2), nor its u-area, so the pcb is alive for `f`; pcbs are only shared, as above.
+    // SAFETY: `ci_curpcb` is null or the running thread's pcb (E5): the switch stores the new
+    // thread's `p_addr` there (its u-area's `u_pcb`, E4), `hal::thread::boot_uarea` `proc0`'s
+    // (`hal`'s static), `clear_current_pcb` null; it is written by this CPU alone. The running
+    // thread is not freed while it runs (E2), nor is its u-area given back (`take_uarea`
+    // refuses a running thread, E4), so the pcb is alive for `f`; pcbs are only shared, as
+    // above.
     let pcb = unsafe { pcb.as_ref() };
     f(pcb)
 }
 
-/// `ci->ci_curpcb = pcb` on this CPU: `main`'s `curpcb = &proc0paddr->u_pcb` and a secondary
-/// CPU's start (`None`).
-pub fn set_current_pcb(pcb: Option<&'static Pcb>) {
-    crate::cpu::curcpu().set_curpcb(pcb.map_or(ptr::null(), |p| ptr::from_ref(p).cast()));
+/// `ci->ci_curpcb = NULL` on this CPU: a secondary CPU's start, before its first thread (E5:
+/// the other writers are the switch and `hal::thread::boot_uarea`).
+pub fn clear_current_pcb() {
+    crate::cpu::curcpu().set_curpcb(ptr::null());
 }
 
 /// `cpu_switchto(old, new)`: the old thread's FP state saved and the FPU dropped (when there

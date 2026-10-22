@@ -84,8 +84,19 @@ pub(crate) fn current() -> Option<&'static CpuCore> {
     }
 }
 
-/// Installs `core` in `TPIDR_EL1` on the running CPU (the boot CPU's `initarm`).
+/// Installs `core` in `TPIDR_EL1` on the running CPU (the boot CPU's `initarm`). Once a core
+/// is installed, installing another one on this CPU is refused (`hal::thread`'s E5: a core
+/// names one CPU, whose owner word every lock it holds carries); installing the same one
+/// again changes nothing.
 pub(crate) fn set_current(c: &'static CpuCore) {
+    if let Some(cur) = current() {
+        if core::ptr::eq(cur, c) {
+            return;
+        }
+        crate::assert::hal_panic(format_args!(
+            "hal::cpu::set_current: this CPU's core is installed already"
+        ));
+    }
     // SAFETY: `msr` of `TPIDR_EL1` writes a system register that only `curcpu()` reads (here
     // and in `bsd`'s copy and assembly, which read the same `cpu_info` through it): no memory
     // operand, no stack, no flags. The value is a `CpuCore` that lives for ever (`'static`),

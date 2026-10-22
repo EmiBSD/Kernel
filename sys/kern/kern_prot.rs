@@ -988,16 +988,14 @@ mod tests {
     // `crget`/`crhold`/`crfree`/`crcopy`/`crdup`, `groupmember`, `suser`, and the permission
     // rules of the set*id calls against threads built by hand.
 
-    use std::boxed::Box;
     use std::sync::MutexGuard;
     use std::{assert, assert_eq, assert_ne};
 
     use super::*;
     use crate::kern::proc_glue::{procinit, test_process, test_thread};
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::sys::proc::{ProcExt, refreshcreds};
+    use crate::sys::proc::refreshcreds;
     use crate::sys::ucred::Xucred;
-    use crate::sys::user::User;
 
     /// Real memory and the process pools and hashes.
     fn setup() -> MutexGuard<'static, ()> {
@@ -1029,7 +1027,10 @@ mod tests {
     fn thread(cr: CredRef) -> &'static Proc {
         let pr = test_process(1000);
         let p = test_thread(pr);
-        p.set_uarea(Box::leak(Box::new(User::new())));
+        let Some(u) = hal::thread::UArea::alloc() else {
+            std::panic!("no test u-area");
+        };
+        p.install_uarea(u);
         chgproccnt(cr.cr_ruid.get(), 1);
         drop(p.set_cred(cr.clone()));
         drop(pr.set_ucred(cr));

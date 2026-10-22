@@ -60,6 +60,13 @@
 //! machine's pmap views a frame through the direct map only after [`check_frame`]: the frame
 //! page-aligned, its whole page inside the direct map the boot glue described.
 //!
+//! The u-area provider (`hal::thread::UAreaMemory`, N4.5a; the kernel's
+//! `kernel::vm::glue::UAREAS`, registered once by the boot path) is under the same contract
+//! for the u-areas it hands out: `USPACE` bytes of zeroed, wired kernel memory, mapped and
+//! writable, nothing else's until `free` gets the address back. `hal` writes a thread's frames
+//! and reads its pcb there (`hal::thread`'s E4); it checks the alignment of every answer, and
+//! no other address reaches a slot's `p_addr`.
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.

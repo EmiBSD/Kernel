@@ -49,7 +49,6 @@ use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::types::Vaddr;
-use crate::sys::user::User;
 
 /// Outcome reported through [`Exit::exit`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,9 +180,6 @@ pub trait Cpu {
     /// `curproc = &proc0`, a test's thread), or none: `hal::thread::set_current_static` (the
     /// switch writes it itself).
     fn set_curproc(ci: &Self::CpuInfo, p: Option<&'static Proc>);
-
-    /// `proc0paddr`: the u-area of `proc0` (`locore` reserves it in C).
-    fn proc0paddr() -> &'static User;
 
     /// `cpu_rnd_messybits()` (`<machine/cpu.h>`): a cheap, fast-changing counter value (the
     /// time stamp counter, the virtual counter) that `dev/rnd.c` adds to each entropy event.

@@ -194,8 +194,6 @@ pub trait ProcExt {
     fn pcb(&self) -> &Pcb;
     /// `p->p_addr` as the C's pointer.
     fn uarea(&self) -> *const User;
-    /// `p->p_addr = uaddr`.
-    fn set_uarea(&self, uaddr: *const User);
     /// `p->p_wchan` as the C's pointer (compared, never followed).
     fn wchan(&self) -> *const c_void;
     /// `p->p_wchan = ident`.
@@ -231,19 +229,16 @@ impl ProcExt for Proc {
     fn pcb(&self) -> &Pcb {
         let u = ptr::with_exposed_provenance::<User>(self.addr_word());
         kassert!(!u.is_null());
-        // SAFETY: `p_addr` is the exposed address of the thread's u-area (`set_uarea` in
-        // `thread_new`, `proc0paddr` for `proc0`), allocated before the thread exists and
-        // freed by the reaper's `uvm_uarea_free` after the thread is dead; the borrow is
-        // the thread's.
+        // SAFETY: `p_addr` is the exposed address of the u-area the thread's slot owns
+        // (`hal::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
+        // `proc0`), zeroed memory whose bottom is a `struct user` (`u_pcb` first); it is given
+        // back only by the reaper's `uvm_uarea_free` (`take_uarea`), after the thread is dead;
+        // the borrow is the thread's.
         unsafe { &(*u).u_pcb }
     }
 
     fn uarea(&self) -> *const User {
         ptr::with_exposed_provenance(self.addr_word())
-    }
-
-    fn set_uarea(&self, uaddr: *const User) {
-        self.set_addr_word(uaddr.expose_provenance());
     }
 
     fn wchan(&self) -> *const c_void {
