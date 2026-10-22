@@ -272,7 +272,7 @@ fn thread_new(parent: &Proc, pr: &ProcessRef, uaddr: NonNull<u8>) -> PoolBox<Pro
 
     // Initialize the timeouts.
     timeout_set(
-        &p.p_sleep_to,
+        &p.p_sleep_to_legacy,
         endtsleep,
         PoolBox::as_ptr(&p).cast_mut().cast(),
     );

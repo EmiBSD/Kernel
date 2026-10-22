@@ -75,6 +75,12 @@ pub trait KernelLock: Sync {
     fn assert_locked(&self);
     /// `_kernel_lock_held()`: whether the running CPU holds it.
     fn held(&self) -> bool;
+    /// `__mp_release_all(&kernel_lock)`: releases every hold of the running CPU (the switch
+    /// away); how many there were.
+    fn release_all(&self) -> u32;
+    /// `__mp_acquire_count(&kernel_lock, count)`: takes it back `count` times (the switch
+    /// back).
+    fn acquire_count(&self, count: u32);
 }
 
 /// The identity of the kernel lock's cells and lists: a word no lock owns, compared and never
@@ -200,6 +206,21 @@ pub fn kernel_lock() {
 pub fn kernel_unlock() {
     if let Some(b) = bridges::kernel_lock() {
         b.unlock();
+    }
+}
+
+/// `__mp_release_all(&kernel_lock)`: every hold of the running CPU released, their count
+/// returned (0 before the bridge is registered: nothing to release). A witness out here is
+/// `panic(9)` (its holder would go on reading cells another CPU may change).
+pub fn release_all() -> u32 {
+    assert_unwitnessed("__mp_release_all");
+    bridges::kernel_lock().map_or(0, |b| b.release_all())
+}
+
+/// `__mp_acquire_count(&kernel_lock, count)`: the kernel lock taken back `count` times.
+pub fn acquire_count(count: u32) {
+    if let Some(b) = bridges::kernel_lock() {
+        b.acquire_count(count);
     }
 }
 

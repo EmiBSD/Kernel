@@ -397,7 +397,7 @@ pub fn main() -> ! {
 
     // Init timeouts
     timeout_set(
-        &p.p_sleep_to,
+        &p.p_sleep_to_legacy,
         endtsleep,
         core::ptr::from_ref(p).cast_mut().cast(),
     );

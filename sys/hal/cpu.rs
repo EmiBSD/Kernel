@@ -273,6 +273,19 @@ pub fn by_number(n: usize) -> Option<&'static CpuCore> {
     CORES.get(n).and_then(|c| c.get().copied())
 }
 
+/// The number of the attached CPU whose core's word is `w` (a thread's `p_cpu`, which the
+/// switch writes as the running CPU's `TPIDR_EL1`), `None` for 0 or a word no attached core
+/// has: a walk of the attached cores (`ncpus` compares).
+pub fn number_of_word(w: usize) -> Option<usize> {
+    if w == 0 {
+        return None;
+    }
+    if curcpu().word() == w {
+        return Some(curcpu().number());
+    }
+    cores().find(|c| c.word() == w).map(CpuCore::number)
+}
+
 /// `ncpusfound` as the per-CPU readers walk it: one past the highest attached number (the
 /// host: [`MAXCPUS`], every test thread being a CPU of its own), at least 1.
 pub fn ncpus() -> usize {

@@ -419,8 +419,8 @@ pub struct BsdThreadG {
     /// \[o\] `p_kq`: for select/poll (`kqpoll_init`), null until the first call; the thread
     /// holds a reference (`p.kq()`).
     pub p_kq: PtrWord<Kqueue>,
-    /// `p_sleep_to`: timeout for tsleep().
-    pub p_sleep_to: Timeout,
+    /// `p_sleep_to`: timeout for tsleep() (the legacy scheduler's, until N4.5a's switch-over).
+    pub p_sleep_to_legacy: Timeout,
     /// `p_sigstk`: sp & on stack state variable.
     pub p_sigstk: SigaltstackWord,
     /// `p_sigval`: for core dump/debugger XXX.
@@ -437,7 +437,7 @@ impl BsdThreadG {
     pub const fn new() -> Self {
         Self {
             p_kq: PtrWord::new(),
-            p_sleep_to: Timeout::zeroed(),
+            p_sleep_to_legacy: Timeout::zeroed(),
             p_sigstk: SigaltstackWord::new(),
             p_sigval: SigvalWord::new(),
             p_self: Link::new(),
@@ -507,6 +507,9 @@ pub struct BsdProcGlue;
 
 kernel::proc_glue_links!(BsdProcGlue);
 
+/// The scheduler's queues and CPUs of `bsd`'s threads (`kernel::sched`).
+static SCHED_TABLES: kernel::sched::SchedTables<BsdProcGlue> = kernel::sched::SchedTables::new();
+
 /// The process lists and hash tables of `bsd`'s processes.
 #[cfg(not(test))]
 static PROC_TABLES: ProcTables<BsdProcGlue> = ProcTables::new();
@@ -541,6 +544,10 @@ impl ProcGlue for BsdProcGlue {
 
     fn tables() -> &'static ProcTables<Self> {
         proc_tables()
+    }
+
+    fn sched() -> &'static kernel::sched::SchedTables<Self> {
+        &SCHED_TABLES
     }
 
     fn pgsignal(pg: &Pgrp, sig: i32, checkctty: bool) {

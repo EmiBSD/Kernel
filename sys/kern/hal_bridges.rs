@@ -450,6 +450,14 @@ impl KernelLock for BsdKernelLock {
     fn held(&self) -> bool {
         crate::kern::kern_lock::_kernel_lock_held()
     }
+
+    fn release_all(&self) -> u32 {
+        crate::kern::kern_lock::__mp_release_all(&crate::kern::kern_lock::KERNEL_LOCK)
+    }
+
+    fn acquire_count(&self, count: u32) {
+        crate::kern::kern_lock::__mp_acquire_count(&crate::kern::kern_lock::KERNEL_LOCK, count);
+    }
 }
 
 /// The soft interrupts (`sys/kern/kern_softintr.rs`). `softintr_establish` takes a

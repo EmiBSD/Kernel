@@ -424,13 +424,6 @@ pub fn thread_restart<T: ThreadLayout>(t: Pin<&T>, start: usize, arg: usize) {
 /// the lock the switch to this new thread kept, adopted, and the registered start called
 /// with it and the two words.
 #[cfg(not(feature = "module-rt"))]
-#[cfg_attr(
-    not(target_os = "none"),
-    allow(
-        dead_code,
-        reason = "the machine's trampoline calls it; the host double from N4.5a a4"
-    )
-)]
 pub(crate) fn trampoline(start: usize, arg: usize) {
     let hold = SchedHold::adopt();
     match START.get() {

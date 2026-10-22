@@ -143,7 +143,7 @@ pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
 
 hal::list_adapter!(
     /// `TAILQ_ENTRY(proc) p_runq`: the run, sleep and dead-thread queues.
-    pub ProcRunq: Proc, p_runq
+    pub ProcRunq: Proc, p_runq_legacy
 );
 
 /// `struct pinsyscall`: the system call pin table of a text region.

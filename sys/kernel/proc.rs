@@ -138,7 +138,8 @@
 //! the kqueues, the klist, the timeouts, the tty) are the glue's: one value per object of a
 //! type `bsd` chooses ([`ProcGlue`]: `ProcessG`, `ThreadG`, `PgrpG`, `SessionG`), which each
 //! kernel type dereferences to, so `pr.ps_sigacts` names the glue's member as LZ named its
-//! own. The run-queue link `p_runq` is a member of the thread itself (`G::RunqEntry`): `bsd`'s
+//! own. The run-queue link `p_runq` is a member of the thread itself (a `PinEntry` of the
+//! scheduler's queues, N4.5a; `bsd`'s legacy one, `G::RunqEntry`, until its switch-over): `bsd`'s
 //! list adapters take its offset in the thread.
 //!
 //! Locks, as the C's annotations: `[K]` the kernel lock (the lists, the hashes, the parent,
@@ -204,6 +205,7 @@ use hal::pool::{BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
 use hal::refcnt::Refcnt;
 use hal::rwlock::{Guarded, RawRwlock, Witness};
 use hal::seqlock::StrSlot;
+use hal::sys::errno::Errno;
 use hal::sys::types::{Pid, Uid};
 use hal::thread::MachineSlot;
 
@@ -671,8 +673,10 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type PgrpG: Send + Sync;
     /// The members of `struct session` of `bsd`'s (`s_ttyvp`, `s_ttyp`, `s_verauthto`).
     type SessionG: Send + Sync;
-    /// `TAILQ_ENTRY(proc) p_runq`: the run and sleep queues' link, `bsd`'s until N4.5.
+    /// `bsd`'s legacy run and sleep queues' link, until the scheduler's switch-over (N4.5a).
     type RunqEntry: Send + Sync;
+    /// `p_runq`: the scheduler's queues (`kernel::sched`).
+    type ThreadRunq: PinAdapter<Elem = Thread<Self>>;
     /// `ps_list`: `allprocess`, `zombprocess`.
     type ProcessList: PinAdapter<Elem = Process<Self>>;
     /// `ps_hash`: the pid hash chains.
@@ -698,6 +702,73 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
 
     /// The lists, hashes and pools of this glue's processes (one `static` of `bsd`'s).
     fn tables() -> &'static ProcTables<Self>;
+    /// The scheduler's queues and CPUs of this glue's threads (one `static` of `bsd`'s).
+    fn sched() -> &'static crate::sched::SchedTables<Self>;
+
+    // The scheduler's calls into what is still `bsd`'s (`kernel::sched`). The defaults are
+    // what a glue without that subsystem does (the kernel's own tests): nothing, or the
+    // answer of a machine with nothing else running.
+
+    /// `sleep_signal_check(p, after_sleep)` (`kern_sig.c`, N4.5b): the signals and stops of a
+    /// `PCATCH` sleep.
+    fn sleep_signal_check(_p: &Thread<Self>, _after_sleep: bool) -> Result<(), Errno> {
+        Ok(())
+    }
+    /// `cold || panicstr`: a sleep returns at once.
+    fn cold() -> bool {
+        false
+    }
+    /// That early return's work: `splhigh`, `splx(safepri)`, the kernel lock bounced.
+    fn cold_yield() {}
+    /// `tuagg_add_runtime()` (`kern_resource.c`): the running thread's run time accounted.
+    fn tuagg_add_runtime() {}
+    /// The optional clock interrupts of the running CPU stopped (`clockintr_cancel` of
+    /// `spc_itimer` and `spc_profclock`, as asked).
+    fn clocks_stop(_itimer: bool, _profclock: bool) {}
+    /// The optional clock interrupts of the running thread started (`clockintr_advance`, as
+    /// asked) and its start time recorded (`spc_runtime = nanouptime()`).
+    fn clocks_start(_itimer: bool, _profclock: bool) {}
+    /// `assertwaitok()` (`subr_xxx.c`).
+    fn assertwaitok() {}
+    /// `smr_idle()` (`kern_smr.c`): this CPU passes a quiescent state.
+    fn smr_idle() {}
+    /// `spl0()`.
+    fn spl0() {}
+    /// `exit2`'s accounting of a dead thread (`tuagg_add_process` under `ps_mtx`).
+    fn exit_account(_p: &Thread<Self>) {}
+    /// `cpu_unidle(ci)`: CPU `n`, idle, is kicked out of its wait.
+    fn cpu_unidle(_n: usize) {}
+    /// `need_resched(ci)`: CPU `n` reschedules at its next chance (its AST, a kick).
+    fn need_resched(_n: usize) {}
+    /// `cpu_idle_enter()`.
+    fn idle_enter() {}
+    /// `cpu_idle_cycle()`: waits for an interrupt.
+    fn idle_cycle() {
+        core::hint::spin_loop();
+    }
+    /// `cpu_idle_leave()`.
+    fn idle_leave() {}
+    /// `CPU_IS_PRIMARY(ci)` of CPU `n`.
+    fn cpu_is_primary(n: usize) -> bool {
+        n == 0
+    }
+    /// `CPU_IS_RUNNING(ci)` of CPU `n`.
+    fn cpu_is_running(_n: usize) -> bool {
+        true
+    }
+    /// `ci->ci_cputype` of CPU `n` (`CPUTYP_*`, 0: no topology known).
+    fn cputype(_n: usize) -> i32 {
+        0
+    }
+    /// `pmap_resident_count(p->p_vmspace->vm_map.pmap)`, read without `ps_mtx` (the
+    /// scheduler's cost estimate holds `SCHED_LOCK`, which `ps_mtx` comes before).
+    fn resident_count(_p: &Thread<Self>) -> Option<i64> {
+        None
+    }
+    /// `stathz`.
+    fn stathz() -> i32 {
+        100
+    }
     /// `pgsignal(pg, sig, checkctty)`.
     fn pgsignal(pg: &Pgrp<Self>, sig: i32, checkctty: bool);
     /// `prsignal(pr, sig)`.
@@ -754,6 +825,10 @@ macro_rules! proc_glue_links {
             /// `p_thr_link`.
             pub ThreadThrLink: $crate::proc::Thread<$glue>, p_thr_link
         );
+        hal::pin_adapter!(
+            /// `p_runq`: the scheduler's queues.
+            pub ThreadRunqLink: $crate::proc::Thread<$glue>, p_runq
+        );
         hal::owned_adapter!(
             /// A process's thread boxes, by the order they joined.
             pub ThreadOwnedLink: $crate::proc::Thread<$glue>,
@@ -779,6 +854,7 @@ macro_rules! proc_glue_link_types {
         type ThreadList = ThreadListLink;
         type ThreadHash = ThreadHashLink;
         type ThreadLink = ThreadThrLink;
+        type ThreadRunq = ThreadRunqLink;
         type ThreadOwned = ThreadOwnedLink;
         type PgrpHash = PgrpHashLink;
     };
@@ -1608,8 +1684,15 @@ pub struct Thread<G: ProcGlue> {
     pub p_owned: OwnedEntry<Thread<G>>,
     /// \[m\] The thread's joining order.
     pub p_seq: U64Word,
-    /// \[S\] `p_runq`: the run and sleep queues' link (`bsd`'s until N4.5).
-    pub p_runq: G::RunqEntry,
+    /// `bsd`'s legacy run and sleep queues' link, until its scheduler is the kernel's
+    /// (N4.5a, the switch-over).
+    pub p_runq_legacy: G::RunqEntry,
+    /// \[S\] `p_runq`: the run, sleep and idle queues' link (`kernel::sched`), and the dead
+    /// threads' (`deadproc_mutex`).
+    pub p_runq: PinEntry<Thread<G>>,
+    /// `p_sleep_to`: the timeout of a timed sleep (`endtsleep`, named by the thread's tid:
+    /// `kernel::sched::sleep_timeout_init`).
+    pub p_sleep_to: crate::timeout::Timeout,
     /// \[I\] `p_p`.
     p_p: ProcessRef<G>,
     /// `p_tid`.
@@ -1713,7 +1796,9 @@ impl<G: ProcGlue> Thread<G> {
             p_thr_link: PinEntry::new(),
             p_owned: OwnedEntry::new(),
             p_seq: U64Word::new(0),
-            p_runq: runq,
+            p_runq_legacy: runq,
+            p_runq: PinEntry::new(),
+            p_sleep_to: crate::timeout::Timeout::unset(),
             p_p,
             p_tid: I32Word::new(0),
             p_flag: AtomicI32::new(0),
@@ -2331,6 +2416,11 @@ mod tests {
             TABLES_OVERRIDE
                 .with(core::cell::Cell::get)
                 .unwrap_or_else(|| TABLES.with(|t| *t))
+        }
+
+        fn sched() -> &'static crate::sched::SchedTables<Self> {
+            static SCHED: crate::sched::SchedTables<TestGlue> = crate::sched::SchedTables::new();
+            &SCHED
         }
 
         fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}

@@ -276,6 +276,7 @@ kernel::proc_glue_links!(BenchGlue);
 kernel::test_file_glue!(BenchFiles, BenchGlue);
 
 static TABLES: ProcTables<BenchGlue> = ProcTables::new();
+static SCHED: kernel::sched::SchedTables<BenchGlue> = kernel::sched::SchedTables::new();
 
 impl ProcGlue for BenchGlue {
     type ProcessG = ();
@@ -288,6 +289,10 @@ impl ProcGlue for BenchGlue {
 
     fn tables() -> &'static ProcTables<Self> {
         &TABLES
+    }
+
+    fn sched() -> &'static kernel::sched::SchedTables<Self> {
+        &SCHED
     }
 
     fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}

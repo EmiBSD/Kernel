@@ -505,6 +505,14 @@ impl KernelLock for TestKernelLock {
     fn held(&self) -> bool {
         KLOCK_DEPTH.with(Cell::get) > 0
     }
+
+    fn release_all(&self) -> u32 {
+        KLOCK_DEPTH.with(|d| d.replace(0))
+    }
+
+    fn acquire_count(&self, count: u32) {
+        KLOCK_DEPTH.with(|d| d.set(d.get() + count));
+    }
 }
 
 /// How many times this thread holds the kernel lock double.
@@ -1635,6 +1643,10 @@ macro_rules! test_proc_glue {
 
             fn tables() -> &'static $crate::proc::ProcTables<Self> {
                 PROC_TABLES.with(|t| *t)
+            }
+            fn sched() -> &'static $crate::sched::SchedTables<Self> {
+                static SCHED: $crate::sched::SchedTables<$name> = $crate::sched::SchedTables::new();
+                &SCHED
             }
             fn pgsignal(_pg: &$crate::proc::Pgrp<Self>, _sig: i32, _checkctty: bool) {}
             fn prsignal(_pr: &$crate::proc::Process<Self>, _sig: i32) {}

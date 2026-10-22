@@ -9140,6 +9140,13 @@ crate = "kernel"
 reason = "kernel glue, written new (N4.1): kthread_create(9)/kthread_create_deferred/kthread_exit and the primary-CPU peg for the kernel's threads over the Kthread bridge (bridges.toml, bsd's kern_kthread/kern_sched until N4.5), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code)"
 
 [[module]]
+rust = "sys/kernel/sched.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_synch.rs", "sys/kern/kern_sched.rs", "sys/kern/sched_bsd.rs", "sys/sys/sched.rs"]
+status = "redesigned"
+notes = "N4.5a: the scheduler over hal::thread: the sleep queues and tsleep/wakeup (sleep_setup, sleep_finish with p_sleep_to a kernel Timeout named by tid, endtsleep, unsleep, wakeup_n, wakeup_proc), the run queues and CPU choice (setrunqueue, remrunqueue, sched_chooseproc returning a Next, sched_choosecpu(_fork), sched_steal_proc, the cost), mi_switch (hold by value, dropped after the switch), trampoline_mi, the idle loop and the dead threads (sched_idle, sched_exit, sched_toidle, exit2, reaper_next under deadproc_mutex), the 4.4BSD priorities and load average (setpriority, decay_aftersleep, schedcpu, update_loadavg, roundrobin, schedclock, yield, preempt, sched_yield), pegging and barriers, the CPU sets by number, and KernelSleep (hal::sleep::Sleep over it). Queues are PinLists bound to SCHED_LOCK, moved in two phases; per-CPU SchedCpu allocated at sched_init_cpu; what is still bsd's through ProcGlue's scheduler hooks. Tests over hal's host switch double. bsd keeps its own scheduler until the switch-over (N4.5a a5)"
+
+[[module]]
 rust = "sys/kernel/uio.rs"
 crate = "kernel"
 lz = ["sys/sys/uio.rs", "sys/kern/sys_generic.rs"]

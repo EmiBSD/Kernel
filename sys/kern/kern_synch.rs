@@ -413,7 +413,7 @@ pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
 
     if nsecs != INFSLP {
         kassert!(p.p_flag.load(Ordering::Relaxed) & (P_TIMEOUT | P_TIMEOUTRAN) == 0);
-        timeout_add_nsec(&p.p_sleep_to, nsecs);
+        timeout_add_nsec(&p.p_sleep_to_legacy, nsecs);
     }
 
     let mut catch = p.p_flag.load(Ordering::Relaxed) & P_SINTR != 0;
@@ -483,7 +483,7 @@ pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
     // We spin instead of sleeping because endtsleep() takes the sched lock to do all it's
     // work. If we wanted to go to sleep to wait for endtsleep to run, we'd also have to take
     // the sched lock, so we'd be spinning against it anyway.
-    if nsecs != INFSLP && !timeout_del(&p.p_sleep_to) {
+    if nsecs != INFSLP && !timeout_del(&p.p_sleep_to_legacy) {
         // Wait for endtsleep timeout to finish running
         let mut flag;
         loop {
