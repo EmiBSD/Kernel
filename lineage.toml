@@ -7871,7 +7871,8 @@ status = "redesigned"
 [[module]]
 rust = "sys/sys/uio.rs"
 lz = ["sys/sys/uio.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.3: the adapter of kernel::uio: re-exports Iovec, UioRw, UioSeg, UIO_SMALLIOV, UIO_MAXIOV and names Uio<'a> = kernel::uio::Uio<'a, BsdProcGlue>, so its users (the 5 frozen amd64 files among them) compile unchanged"
 
 [[module]]
 rust = "sys/sys/un.rs"
@@ -9080,6 +9081,13 @@ reason = "a fixed extent's storage is ExtentFixed<N>, sized by its N descriptors
 rust = "sys/kernel/thread.rs"
 crate = "kernel"
 reason = "kernel glue, written new (N4.1): kthread_create(9)/kthread_create_deferred/kthread_exit and the primary-CPU peg for the kernel's threads over the Kthread bridge (bridges.toml, bsd's kern_kthread/kern_sched until N4.5), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code)"
+
+[[module]]
+rust = "sys/kernel/uio.rs"
+crate = "kernel"
+lz = ["sys/sys/uio.rs", "sys/kern/sys_generic.rs"]
+status = "redesigned"
+notes = "N4.3: uio.h's types in the kernel crate, Uio<'a, G: ProcGlue> generic over the glue (uio_procp an Option<&Thread<G>>), and sys_generic.c's iovec_copyin over an IovBuf (the stack eight or an owned MArray<Iovec>, M_IOV) that frees itself; UioMove moved here from kernel::pipe (re-exported there). uiomove and ureadc stay bsd's (kern_subr.rs) while UIO_SYSSPACE iovecs are raw kernel addresses"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

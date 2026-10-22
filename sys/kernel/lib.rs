@@ -51,5 +51,6 @@ pub mod task;
 pub mod testutil;
 pub mod thread;
 pub mod timeout;
+pub mod uio;
 pub mod vm;
 /* </CODE> */

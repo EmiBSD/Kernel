@@ -48,122 +48,58 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/uio.h>`: scatter/gather I/O descriptions: `struct iovec`, the `uio_rw` and
-//! `uio_seg` enums and the kernel's `struct uio`.
+//! `<sys/uio.h>` for `bsd`: the kernel's scatter/gather types (`kernel::uio`), with `Uio`
+//! bound to `bsd`'s threads.
 //!
 //! Upstream: sys/sys/uio.h @ 3ce1f3f79392
+//! LZ: sys/sys/uio.rs@3c62ede68802
 //!
-//! ## Deviations
-//! - `uio_iov`/`uio_iovcnt` are one mutable slice of iovecs: advancing to the next iovec
-//!   (`uio->uio_iov++; uio->uio_iovcnt--`) shortens the slice, and `uio_iovcnt()` is its
-//!   length.
-//! - `uio_procp` is `Option<&Proc>` (the C's NULL is `None`).
-//! - [`Iovec::from_bytes`] is the `copyin` of one user `struct iovec`; the structure is two
-//!   words without padding.
-//! - The prototypes of `ureadc`, `iovec_copyin`, `iovec_free`, `dofilereadv` and
-//!   `dofilewritev` are their functions in `kern/kern_subr.rs` and `kern/sys_generic.rs`;
-//!   the userland ones (`readv`, `preadv`, ...) are not kernel material.
+//! ## Redesign
+//! - N4.3: `struct iovec`, `enum uio_rw`, `enum uio_seg` and `struct uio` moved into
+//!   `kernel::uio` with the descriptor code that reads them; this module re-exports them and
+//!   names the one `Uio` that `bsd` builds (`kernel::uio::Uio<'a, BsdProcGlue>`, whose
+//!   `uio_procp` is `bsd`'s `Proc`), so its 98 users (the 5 frozen amd64 files among them,
+//!   decision 44) keep their paths, struct literals and fields. LZ's deviations went with the
+//!   types (`kernel::uio`).
 
-use core::ffi::c_void;
-use core::ptr;
+pub use kernel::uio::{Iovec, UIO_MAXIOV, UIO_SMALLIOV, UioRw, UioSeg};
 
-use crate::sys::proc::Proc;
-use crate::sys::types::Off;
+use crate::kern::proc_glue::BsdProcGlue;
 
-/// `UIO_SMALLIOV`: 8 on stack, else malloc.
-pub const UIO_SMALLIOV: usize = 8;
-
-/// `UIO_MAXIOV`: deprecated, use `IOV_MAX` instead.
-pub const UIO_MAXIOV: usize = 1024;
-
-/// `struct iovec`: one segment of a scatter/gather list.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct Iovec {
-    /// `iov_base`: base address (a user address under `UIO_USERSPACE`).
-    pub iov_base: *mut c_void,
-    /// `iov_len`: length.
-    pub iov_len: usize,
-}
-
-impl Iovec {
-    /// The structure's size in user space.
-    pub const SIZE: usize = size_of::<Iovec>();
-
-    /// An empty iovec.
-    pub const fn new() -> Self {
-        Self {
-            iov_base: ptr::null_mut(),
-            iov_len: 0,
-        }
-    }
-
-    /// The iovec read from its user-space bytes (`copyin`).
-    pub fn from_bytes(b: &[u8; Self::SIZE]) -> Self {
-        let mut base = [0u8; size_of::<usize>()];
-        let mut len = [0u8; size_of::<usize>()];
-        base.copy_from_slice(&b[..size_of::<usize>()]);
-        len.copy_from_slice(&b[size_of::<usize>()..]);
-        Self {
-            iov_base: ptr::without_provenance_mut(usize::from_ne_bytes(base)),
-            iov_len: usize::from_ne_bytes(len),
-        }
-    }
-}
-
-impl Default for Iovec {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `enum uio_rw`: the direction of a transfer.
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)] // OpenBSD names, verbatim
-pub enum UioRw {
-    /// `UIO_READ`: from the kernel buffer to the iovecs.
-    UIO_READ,
-    /// `UIO_WRITE`: from the iovecs to the kernel buffer.
-    UIO_WRITE,
-}
-
-/// `enum uio_seg`: segment flag values.
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)] // OpenBSD names, verbatim
-pub enum UioSeg {
-    /// `UIO_USERSPACE`: from user data space.
-    UIO_USERSPACE,
-    /// `UIO_SYSSPACE`: from system space.
-    UIO_SYSSPACE,
-}
-
-/// `struct uio`: a scatter/gather transfer in progress.
-///
-/// A `UIO_SYSSPACE` uio's iovecs are kernel buffers: whoever builds one vouches for them, as
-/// in C (`uiomove` copies with `kcopy`, which catches a fault but not a wrong address).
-pub struct Uio<'a> {
-    /// `uio_iov`/`uio_iovcnt`: the iovecs not yet consumed.
-    pub uio_iov: &'a mut [Iovec],
-    /// `uio_offset`: offset into file this uio corresponds to.
-    pub uio_offset: Off,
-    /// `uio_resid`: residual i/o count.
-    pub uio_resid: usize,
-    /// `uio_segflg`: see [`UioSeg`].
-    pub uio_segflg: UioSeg,
-    /// `uio_rw`: see [`UioRw`].
-    pub uio_rw: UioRw,
-    /// `uio_procp`: associated thread or NULL.
-    pub uio_procp: Option<&'a Proc>,
-}
-
-impl Uio<'_> {
-    /// `uio_iovcnt`: number of iovecs left in the array.
-    pub fn uio_iovcnt(&self) -> usize {
-        self.uio_iov.len()
-    }
-}
-
-const _: () = assert!(size_of::<Iovec>() == 2 * size_of::<usize>());
+/// `struct uio` of `bsd`'s threads: a scatter/gather transfer in progress.
+pub type Uio<'a> = kernel::uio::Uio<'a, BsdProcGlue>;
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bsd_uio_is_written_as_before() {
+        let mut iov = [
+            Iovec {
+                iov_base: core::ptr::null_mut(),
+                iov_len: 4,
+            },
+            Iovec::new(),
+        ];
+        let mut uio = Uio {
+            uio_iov: &mut iov,
+            uio_offset: 7,
+            uio_resid: 4,
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_WRITE,
+            uio_procp: None,
+        };
+        assert_eq!(uio.uio_iovcnt(), 2);
+        // `uio->uio_iov++; uio->uio_iovcnt--`: the slice shortens.
+        let rest = core::mem::take(&mut uio.uio_iov);
+        uio.uio_iov = &mut rest[1..];
+        assert_eq!(uio.uio_iovcnt(), 1);
+        assert_eq!(uio.uio_iov[0].iov_len, 0);
+        assert_eq!(UIO_SMALLIOV, 8);
+        assert_eq!(UIO_MAXIOV, 1024);
+    }
+}
+/* </TESTS> */
