@@ -1586,7 +1586,7 @@ pub fn kqueue_register(
                 kn.kn_status.set(KN_PROCESSING);
                 // apply reference count to knote structure, and do not release it at the
                 // end of this routine.
-                *kn.kn_fp().lock() = fp.take();
+                drop(kn.kn_fp().lock().set(fp.take()));
                 kn.kn_kq.set(kq);
                 kn.kn_fop.set(Some(fops));
 
@@ -1899,7 +1899,7 @@ pub fn kqueue_scan(
                 let isfd_vp = if kn.fop().f_flags & FILTEROP_ISFD != 0 {
                     kn.kn_fp()
                         .lock()
-                        .as_ref()
+                        .get()
                         .filter(|fp| fp.f_type() == DTYPE_VNODE)
                         .map(|fp| fp.vnode())
                 } else {

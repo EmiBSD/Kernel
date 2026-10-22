@@ -218,8 +218,8 @@ use hal::user::UserPtr;
 use crate::assert::{kassert, kpanic};
 use crate::file::{
     DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, FDUP_MAX_COUNT, FIF_HASLOCK, FIF_INSERTED,
-    FO_POSITION, File, FileGlue, FileOps, FileRef, LockOwner, VFS_STALLING, fnew, foffset,
-    vfs_stall_barrier,
+    FO_POSITION, File, FileGlue, FileOps, FileRef, FileSlot, LockOwner, VFS_STALLING, fnew,
+    foffset, vfs_stall_barrier,
 };
 use crate::proc::{PS_PLEDGE, PS_SUGID, PS_SUGIDEXEC, ProcGlue, Process, Thread, suser};
 use crate::resource::RLIMIT_NOFILE;
@@ -399,7 +399,7 @@ impl FdState {
 /// \[m\] What `fd_fplock` guards: `fd_ofiles` and `fd_ofileflags`.
 struct Slots<G: FileGlue> {
     /// `fd_ofiles`: the file at each descriptor, with the reference the slot holds.
-    files: Store<Option<FileRef<G>>, NDFILE>,
+    files: Store<FileSlot<G>, NDFILE>,
     /// `fd_ofileflags`: the `UF_*` flags of each descriptor.
     flags: Store<u8, NDFILE>,
 }
@@ -407,13 +407,13 @@ struct Slots<G: FileGlue> {
 impl<G: FileGlue> Slots<G> {
     fn new() -> Self {
         Self {
-            files: Store::Inline(core::array::from_fn(|_| None)),
+            files: Store::Inline([const { FileSlot::new() }; NDFILE]),
             flags: Store::Inline([0; NDFILE]),
         }
     }
 
     fn file(&self, fd: usize) -> Option<&FileRef<G>> {
-        self.files.as_slice().get(fd).and_then(Option::as_ref)
+        self.files.as_slice().get(fd).and_then(FileSlot::get)
     }
 
     fn flags(&self, fd: usize) -> u8 {
@@ -427,7 +427,7 @@ impl<G: FileGlue> Slots<G> {
         }
     }
 
-    fn slot(&mut self, fd: usize) -> &mut Option<FileRef<G>> {
+    fn slot(&mut self, fd: usize) -> &mut FileSlot<G> {
         match self.files.as_mut_slice().get_mut(fd) {
             Some(s) => s,
             None => kpanic(format_args!("filedesc: fd_ofiles[{fd}] out of range")),
@@ -634,7 +634,7 @@ impl<'a, G: FileGlue> FdGuard<'a, G> {
         let mut s = self.fdp.slots.lock();
         let slot = s.slot(fd as usize);
         kassert!(slot.is_none());
-        *slot = Some(fp);
+        drop(slot.replace(fp));
         s.set_flags(fd as usize, flags);
     }
 
@@ -1242,7 +1242,7 @@ pub fn fdinsert<G: FileGlue>(g: &mut FdGuard<'_, G>, fd: i32, flags: u8, fp: &Fi
     let mut s = g.fdp.slots.lock();
     let slot = s.slot(fd as usize);
     kassert!(slot.is_none());
-    *slot = Some(fp.clone());
+    drop(slot.replace(fp.clone()));
     let f = s.flags(fd as usize) | (flags & (UF_EXCLOSE | UF_FORKCLOSE | UF_PLEDGEOPEN));
     s.set_flags(fd as usize, f);
 }
@@ -1428,8 +1428,8 @@ pub fn fdexpand<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         2 * oldnfiles
     };
 
-    let newofile: MArray<Option<FileRef<G>>> =
-        MArray::new(M_FILEDESC, M_WAITOK, nfiles, |_| None).ok_or(Errno::ENOMEM)?;
+    let newofile: MArray<FileSlot<G>> =
+        MArray::new(M_FILEDESC, M_WAITOK, nfiles, |_| FileSlot::new()).ok_or(Errno::ENOMEM)?;
     let newflags: MArray<u8> =
         MArray::new(M_FILEDESC, M_WAITOK, nfiles, |_| 0).ok_or(Errno::ENOMEM)?;
     // Allocate all required chunks before the swap, so that the arrays stay valid if we go
@@ -1457,7 +1457,7 @@ pub fn fdexpand<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         let mut newofile = newofile;
         let mut newflags = newflags;
         for (to, from) in newofile.iter_mut().zip(s.files.as_mut_slice().iter_mut()) {
-            *to = from.take();
+            core::mem::swap(to, from);
         }
         newflags[..oldnfiles].copy_from_slice(&s.flags.as_slice()[..oldnfiles]);
         (
@@ -1547,7 +1547,7 @@ pub fn fdcopy<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(pr: &Process<P>)
             i /= 2;
         }
         let (Some(files), Some(flags)) = (
-            MArray::new(M_FILEDESC, M_WAITOK, i, |_| None),
+            MArray::new(M_FILEDESC, M_WAITOK, i, |_| FileSlot::new()),
             MArray::new(M_FILEDESC, M_WAITOK, i, |_| 0u8),
         ) else {
             kpanic(format_args!("fdcopy: no memory for {i} descriptors"));
@@ -1602,7 +1602,7 @@ pub fn fdcopy<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(pr: &Process<P>)
             drop(fp);
             continue;
         }
-        *slots.slot(i as usize) = Some(fp);
+        drop(slots.slot(i as usize).replace(fp));
         slots.set_flags(i as usize, fileflags);
         st.fd_used(i, &openfd);
     }
@@ -1778,7 +1778,7 @@ pub fn dupfdopen<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     let mut s = g.fdp.slots.lock();
     let slot = s.slot(indx as usize);
     kassert!(slot.is_none());
-    *slot = Some(wfp);
+    drop(slot.replace(wfp));
     let f = (s.flags(indx as usize) & (UF_EXCLOSE | UF_FORKCLOSE))
         | (s.flags(dupfd as usize) & !(UF_EXCLOSE | UF_FORKCLOSE));
     s.set_flags(indx as usize, f);

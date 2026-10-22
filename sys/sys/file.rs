@@ -88,6 +88,9 @@ pub type File = kernel::file::File<BsdFileGlue>;
 /// A counted reference to a `struct file` (`f_count`).
 pub type FileRef = kernel::file::FileRef<BsdFileGlue>;
 
+/// A holder of at most one file reference, one word (`kn_fp`, `ns_fp`).
+pub type FileSlot = kernel::file::FileSlot<BsdFileGlue>;
+
 /// `struct fileops`: file operations. `fo_read`, `fo_write` and `fo_close` could be called
 /// without the kernel lock held.
 pub struct Fileops {

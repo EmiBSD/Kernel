@@ -2940,7 +2940,7 @@ mod tests {
     /// A knote on `fp` for calling the filters directly: `filter`, `flags` and `sfflags` set.
     fn knote_on(fp: &FileRef, filter: i16, flags: u16, sfflags: u32) -> Knote {
         let kn = Knote::new();
-        *kn.kn_fp().lock() = Some(fp.clone());
+        drop(kn.kn_fp().lock().replace(fp.clone()));
         kn.kn_filter().set(filter);
         kn.kn_flags().set(flags);
         kn.kn_sfflags.set(sfflags);

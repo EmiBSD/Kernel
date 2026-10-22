@@ -84,8 +84,14 @@
 //!   `TypedPool` item behind [`FileRef`], a `PoolArc`: `FREF` is a clone, `FRELE` is
 //!   [`FileRef::frele`] (`PoolArc::try_last`: the last one gets the item at count 0 and
 //!   closes it, returning the close's error, which a `Drop` could not), and a handle dropped
-//!   without one (`(void)FRELE(fp, NULL)`) closes it the same way with no thread. The item
-//!   cannot be freed while a handle exists, and a handle cannot outlive the item.
+//!   without one (`(void)FRELE(fp, NULL)`) closes it the same way with no thread, in
+//!   `FileRef`'s own drop, before the value's: the close (the unlink from `filehead`, the
+//!   object's `fo_close`) always runs on the item at count 0 and before the value is
+//!   dropped, never inside it (review S2 of N4.3: a close inside `File`'s drop ran while
+//!   `filehead`'s walkers could still reach the value). The item cannot be freed while a
+//!   handle exists, and a handle cannot outlive the item. A holder that may be empty (a
+//!   descriptor's slot, a knote's `kn_fp`, nfsd's `ns_fp`) is a [`FileSlot`], one word as the
+//!   C's pointer.
 //! - `f_data` is installed once with its type ([`Installed`]), so it is read by reference
 //!   (no cast; the pipe needs no slot of its own) and a close sees the object by reference
 //!   (`fo_close(fp, p)`), which drops with the item after `numfiles` falls.
@@ -96,7 +102,7 @@
 //!   C counts it, adopted once.
 
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
@@ -202,8 +208,6 @@ pub struct File<G: FileGlue> {
     cred: CredRef,
     /// \[I\] `f_ops`, `f_data`: set once between `fnew` and the first `fdinsert`.
     installed: OnceStatic<Installed<G>>,
-    /// Whether `fdrop`'s close ran (the last handle's, or its drop's).
-    closed: AtomicBool,
     /// `f_mtx` and what it guards.
     stats: Mutexed<FileStats>,
 }
@@ -221,7 +225,6 @@ impl<G: FileGlue> File<G> {
             f_type: AtomicI32::new(0),
             cred,
             installed: OnceStatic::new(),
-            closed: AtomicBool::new(false),
             // We need to block interrupts as long as `f_mtx` is being taken with and without
             // the kernel lock.
             stats: Mutexed::new(hal::intr::mpfloor(), FileStats::default()),
@@ -288,13 +291,10 @@ impl<G: FileGlue> File<G> {
         core::ptr::from_ref(self).addr()
     }
 
-    /// `fdrop`'s work, once: unlink from `filehead`, `fo_close` of an installed file,
-    /// `numfiles--`. The item itself goes back with the last handle, credentials and object
-    /// with it (`crfree`, the object's drop).
-    fn close_once(&self, p: Option<&Thread<G::Proc>>) -> Result<(), Errno> {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
+    /// `fdrop`'s work, on the item at count 0 ([`fdrop`] alone calls it, once per item):
+    /// unlink from `filehead`, `fo_close` of an installed file, `numfiles--`. The item itself
+    /// goes back after, credentials and object with it (`crfree`, the object's drop).
+    fn close(&self, p: Option<&Thread<G::Proc>>) -> Result<(), Errno> {
         let t = G::tables();
         if self.f_iflags.load(Ordering::Acquire) & FIF_INSERTED != 0 {
             let mut g = t.fhdlk.lock();
@@ -309,18 +309,20 @@ impl<G: FileGlue> File<G> {
     }
 }
 
-impl<G: FileGlue> Drop for File<G> {
-    /// A file whose last handle was dropped without [`FileRef::frele`] (the C's `(void)FRELE`
-    /// of a file with no thread: `unp_discard`, a knote's): its close, with no thread.
-    fn drop(&mut self) {
-        let _ = self.close_once(None);
-    }
-}
-
-/// A counted reference to an open file (`struct file *` with a reference: `f_count`).
-pub struct FileRef<G: FileGlue>(PoolArc<File<G>>);
+/// A counted reference to an open file (`struct file *` with a reference: `f_count`). Its
+/// handle is `None` only inside an empty [`FileSlot`] and between a release and the end of
+/// the reference's own drop; no `FileRef` a caller holds is ever empty.
+pub struct FileRef<G: FileGlue>(Option<PoolArc<File<G>>>);
 
 impl<G: FileGlue> FileRef<G> {
+    /// The handle: present in every `FileRef` but an empty slot's (see the type).
+    fn arc(&self) -> &PoolArc<File<G>> {
+        match &self.0 {
+            Some(a) => a,
+            None => kpanic(format_args!("FileRef: an empty reference read")),
+        }
+    }
+
     /// `FREF(fp)`: one more reference, after `vfs_stall_barrier()`.
     pub fn fref(&self) -> Self {
         vfs_stall_barrier::<G>();
@@ -329,8 +331,8 @@ impl<G: FileGlue> FileRef<G> {
 
     /// `FRELE(fp, p)`: gives the reference back; the last one closes the file (`fdrop`) and
     /// returns the close's error.
-    pub fn frele(self, p: Option<&Thread<G::Proc>>) -> Result<(), Errno> {
-        match PoolArc::try_last(self.0) {
+    pub fn frele(mut self, p: Option<&Thread<G::Proc>>) -> Result<(), Errno> {
+        match self.0.take().and_then(PoolArc::try_last) {
             Some(last) => fdrop(last, p),
             None => Ok(()),
         }
@@ -338,49 +340,76 @@ impl<G: FileGlue> FileRef<G> {
 
     /// `fp->f_count`: the references alive now (slots, holders, knotes, messages in flight).
     pub fn count(&self) -> u32 {
-        PoolArc::count(&self.0) as u32
+        PoolArc::count(self.arc()) as u32
     }
 
     /// The file's address (`kinfo_file.f_fileaddr`).
     pub fn addr(&self) -> usize {
-        self.0.addr()
+        self.arc().addr()
     }
 
     /// Whether two references name the same file.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        PoolArc::ptr_eq(&a.0, &b.0)
+        PoolArc::ptr_eq(a.arc(), b.arc())
     }
 
     /// The file, pinned (for `filehead`).
     pub fn as_pin(&self) -> Pin<&File<G>> {
-        self.0.as_pin()
+        self.arc().as_pin()
     }
 
     /// Gives the reference up as a word in legacy memory (a descriptor in flight in a
     /// message, `unp_internalize`'s `FREF`): still counted, taken back by one
     /// [`FileRef::adopt`].
-    pub fn forget(self) {
-        PoolArc::forget(self.0);
+    pub fn forget(mut self) {
+        if let Some(a) = self.0.take() {
+            PoolArc::forget(a);
+        }
     }
 
     /// The reference a [`FileRef::forget`] parked on `fp` (a message received or discarded).
     /// `None` when none is parked: a word adopted twice.
     pub fn adopt(fp: &File<G>) -> Option<Self> {
-        PoolArc::adopt(fp).map(Self)
+        PoolArc::adopt(fp).map(|a| Self(Some(a)))
     }
 
     /// One more reference to a file a list lends (`fd_iterfile`'s CAS from a non-zero
     /// count): `None` for a file whose last reference is gone, its close under way.
     pub fn try_from_ref(fp: &File<G>) -> Option<Self> {
-        PoolArc::try_from_ref(fp).map(Self)
+        PoolArc::try_from_ref(fp).map(|a| Self(Some(a)))
     }
+}
+
+impl<G: FileGlue> Drop for FileRef<G> {
+    /// A reference dropped without [`FileRef::frele`] (the C's `(void)FRELE(fp, NULL)`:
+    /// `unp_discard`, a knote's, a table freed with its slots): the last one closes the file
+    /// with no thread (`fdrop`), its error dropped as the C drops it.
+    #[inline]
+    fn drop(&mut self) {
+        // An empty slot's reference (the common drop of a table's slots) is a load and a
+        // compare, no store.
+        if self.0.is_none() {
+            return;
+        }
+        if let Some(last) = self.0.take().and_then(PoolArc::try_last) {
+            fdrop_unthreaded(last);
+        }
+    }
+}
+
+/// The last reference's close from a drop, out of line: every drop site keeps only the
+/// decrement inline (the close is the rare path).
+#[cold]
+#[inline(never)]
+fn fdrop_unthreaded<G: FileGlue>(last: Last<File<G>>) {
+    let _ = fdrop(last, None);
 }
 
 impl<G: FileGlue> Clone for FileRef<G> {
     /// One more reference without `vfs_stall_barrier()` (a knote's slot read, a table's copy
     /// of a reference the caller holds).
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(Some(self.arc().clone()))
     }
 }
 
@@ -388,7 +417,66 @@ impl<G: FileGlue> core::ops::Deref for FileRef<G> {
     type Target = File<G>;
 
     fn deref(&self) -> &File<G> {
-        &self.0
+        self.arc()
+    }
+}
+
+/// A holder of at most one reference to an open file, one word as the C's `struct file *`
+/// (`fd_ofiles[fd]`, a knote's `kn_fp`, nfsd's `ns_fp`): empty, or a [`FileRef`] whose drop
+/// closes the file when it is the last. `Option<FileRef>` is two words (the reference's
+/// own handle is optional), which would grow `fdescpl`, the knotes and `nfssvc_sock`.
+pub struct FileSlot<G: FileGlue>(FileRef<G>);
+
+impl<G: FileGlue> FileSlot<G> {
+    /// An empty slot (the C's NULL).
+    pub const fn new() -> Self {
+        Self(FileRef(None))
+    }
+
+    /// A slot holding `fp`, or empty.
+    pub fn with(fp: Option<FileRef<G>>) -> Self {
+        fp.map_or_else(Self::new, Self)
+    }
+
+    /// The reference held, if any.
+    pub fn get(&self) -> Option<&FileRef<G>> {
+        self.0.0.is_some().then_some(&self.0)
+    }
+
+    /// Whether the slot holds a file.
+    pub fn is_some(&self) -> bool {
+        self.0.0.is_some()
+    }
+
+    /// Whether the slot is empty.
+    pub fn is_none(&self) -> bool {
+        self.0.0.is_none()
+    }
+
+    /// The reference held, the slot left empty.
+    pub fn take(&mut self) -> Option<FileRef<G>> {
+        let fp = core::mem::replace(&mut self.0, FileRef(None));
+        fp.0.is_some().then_some(fp)
+    }
+
+    /// `fp` put in the slot; the reference it held before, if any.
+    pub fn replace(&mut self, fp: FileRef<G>) -> Option<FileRef<G>> {
+        let old = core::mem::replace(&mut self.0, fp);
+        old.0.is_some().then_some(old)
+    }
+
+    /// `fp` (or nothing) put in the slot; the reference it held before, if any.
+    pub fn set(&mut self, fp: Option<FileRef<G>>) -> Option<FileRef<G>> {
+        match fp {
+            Some(fp) => self.replace(fp),
+            None => self.take(),
+        }
+    }
+}
+
+impl<G: FileGlue> Default for FileSlot<G> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -554,7 +642,7 @@ pub fn fnew<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) -> 
     }
     let cred = p.cred_ref();
     match t.filepl.get_homed(hal::pool::PR_WAITOK, || File::new(cred)) {
-        Some(fp) => Some(FileRef(fp)),
+        Some(fp) => Some(FileRef(Some(fp))),
         None => {
             t.numfiles.fetch_sub(1, Ordering::AcqRel);
             None
@@ -565,7 +653,7 @@ pub fn fnew<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) -> 
 /// `fdrop(fp, p)`: the last reference is gone: unlink the file, close it and free it, the
 /// close's error returned.
 pub fn fdrop<G: FileGlue>(last: Last<File<G>>, p: Option<&Thread<G::Proc>>) -> Result<(), Errno> {
-    let error = last.close_once(p);
+    let error = last.close(p);
     drop(last);
     error
 }
@@ -712,6 +800,33 @@ mod tests {
         assert!(file_log().is_empty());
         assert_eq!(fp.frele(Some(&p)), Ok(()));
         assert_eq!(file_log(), vec![String::from("close 8 true")]);
+    }
+
+    /// A slot is one word, empty or holding a reference; the reference it drops closes the
+    /// file when it is the last, before the value's drop (review S2: no close inside
+    /// `File`'s drop).
+    #[test]
+    fn a_slot_is_one_word_and_its_last_reference_closes_the_file() {
+        assert_eq!(size_of::<FileSlot<Files>>(), size_of::<usize>());
+        assert_eq!(size_of::<FileRef<Files>>(), size_of::<usize>());
+        let (_pr, p) = thread(16);
+        let mut slot = FileSlot::<Files>::new();
+        assert!(slot.is_none() && slot.get().is_none() && slot.take().is_none());
+        let fp = fnew(&p).unwrap();
+        install(&fp, 6);
+        assert!(slot.replace(fp.clone()).is_none());
+        assert!(slot.is_some());
+        assert_eq!(fp.count(), 2);
+        assert!(FileRef::ptr_eq(slot.get().unwrap(), &fp));
+        let back = slot.take().unwrap();
+        assert!(slot.is_none());
+        assert!(slot.set(Some(back)).is_none());
+        assert_eq!(fp.frele(Some(&p)), Ok(()));
+        assert!(file_log().is_empty());
+        assert_eq!(numfiles(), 1);
+        drop(slot);
+        assert_eq!(file_log(), vec![String::from("close 6 false")]);
+        assert_eq!(numfiles(), 0);
     }
 
     #[test]

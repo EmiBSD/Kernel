@@ -147,7 +147,7 @@ use crate::nfs::nfsproto::{NFS_MAXPACKET, NFS_NPROCS};
 #[cfg(feature = "nfsserver")]
 use crate::nfs::nfsrvcache::{RC_DOIT, RC_DROPIT, RC_REPLY};
 #[cfg(feature = "nfsserver")]
-use crate::sys::file::{FileRef, fref, frele};
+use crate::sys::file::{FileRef, FileSlot, fref, frele};
 #[cfg(feature = "nfsserver")]
 use crate::sys::malloc::{M_NFSD, M_NFSSVC, M_WAITOK, M_ZERO};
 #[cfg(feature = "nfsserver")]
@@ -456,7 +456,7 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
     };
     slp.ns_so.set(Some(so));
     slp.ns_nam.set(mynam);
-    slp.ns_fp.set(Some(fref(fp)));
+    slp.ns_fp.set(FileSlot::with(Some(fref(fp))));
     so.so_upcallarg
         .set(core::ptr::from_ref(slp).cast_mut().cast::<c_void>());
     so.so_upcall.set(Some(nfsrv_rcv));
@@ -764,7 +764,7 @@ fn nfssvc_nfsd(nfsd: &'static Nfsd) -> Result<(), Errno> {
 pub fn nfsrv_zapsock(slp: &NfssvcSock) {
     slp.ns_flag.set(slp.ns_flag.get() & !SLP_ALLFLAGS);
     // FREF(fp); slp->ns_fp = NULL: the slot's reference, which `closef` gives back.
-    if let Some(fp) = slp.ns_fp.take() {
+    if let Some(fp) = slp.ns_fp.take().take() {
         if let Some(so) = slp.ns_so.get() {
             so.so_upcall.set(None);
             let _ = soshutdown(so, SHUT_RDWR);

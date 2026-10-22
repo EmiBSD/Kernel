@@ -105,7 +105,7 @@ use crate::nfs::nfsproto::{NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_NPROCS, NFS_V2MAXD
 use crate::queue_adapter;
 use crate::sys::buf::B_INVAL;
 use crate::sys::errno::Errno;
-use crate::sys::file::FileRef;
+use crate::sys::file::FileSlot;
 use crate::sys::mbuf::Mbuf;
 use crate::sys::mount::NFSMNT_NFSV3;
 use crate::sys::pool::Pool;
@@ -526,7 +526,7 @@ pub struct NfssvcSock {
     /// `ns_chain`: list of all `nfssvc_sock`s.
     pub ns_chain: TailqEntry<NfssvcSock>,
     /// `ns_fp`: fp from the...
-    pub ns_fp: Cell<Option<FileRef>>,
+    pub ns_fp: Cell<FileSlot>,
     /// `ns_so`: ...socket this struct wraps.
     pub ns_so: Cell<Option<&'static Socket>>,
     /// `ns_nam`: `MT_SONAME` of client.
@@ -561,7 +561,7 @@ impl NfssvcSock {
     pub const fn new() -> Self {
         Self {
             ns_chain: TailqEntry::new(),
-            ns_fp: Cell::new(None),
+            ns_fp: Cell::new(FileSlot::new()),
             ns_so: Cell::new(None),
             ns_nam: Cell::new(None),
             ns_raw: Cell::new(None),
