@@ -599,8 +599,9 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     {
         let this = ManuallyDrop::new(this);
         // The parked count never exceeds the references, which `MAX_REFS` bounds below the
-        // half's top, so this cannot carry out of the word.
-        this.inner().refs.fetch_add(PARKED_ONE, Ordering::Relaxed);
+        // half's top, so this cannot carry out of the word. Release: what this handle's
+        // holder wrote happens before the adopter's reads (`adopt`'s Acquire pairs with it).
+        this.inner().refs.fetch_add(PARKED_ONE, Ordering::Release);
     }
 
     /// A handle for one reference [`PoolArc::forget`] parked on the item holding `value`
