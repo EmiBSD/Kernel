@@ -441,18 +441,22 @@ pub fn checkdirs(olddp: &'static Vnode) {
     let Some(newdp) = olddp.v_mountedhere().and_then(|mp| VFS_ROOT(mp).ok()) else {
         panic(format_args!("mount: lost mount"));
     };
-    let r = hal::klock::reader();
-    for pr in proc_tables().allprocess.iter(&r) {
-        let fdp = pr.fd();
-        if fdp.fd_cdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
-            free_count += 1;
-            vref(newdp);
-            fdp.fd_cdir.set(Some(newdp));
-        }
-        if fdp.fd_rdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
-            free_count += 1;
-            vref(newdp);
-            fdp.fd_rdir.set(Some(newdp));
+    {
+        // The walk alone holds the kernel lock's reader: vrele and vput below may sleep, and
+        // a sleep with a witness out stops the kernel (kern_lock.rs's assert_unwitnessed).
+        let r = hal::klock::reader();
+        for pr in proc_tables().allprocess.iter(&r) {
+            let fdp = pr.fd();
+            if fdp.fd_cdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
+                free_count += 1;
+                vref(newdp);
+                fdp.fd_cdir.set(Some(newdp));
+            }
+            if fdp.fd_rdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
+                free_count += 1;
+                vref(newdp);
+                fdp.fd_rdir.set(Some(newdp));
+            }
         }
     }
     if rootvnode().is_some_and(|r| ptr::eq(r, olddp)) {
