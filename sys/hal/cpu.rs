@@ -69,10 +69,15 @@
 //! - The registry of attached cores ([`attach`], [`cores`], [`by_number`]) replaces
 //!   `CPU_INFO_FOREACH` and `cpuset_infos` for the runtime and the kernel crate, which cannot
 //!   name the machine's `cpu_info`.
-//! - `cpl`, `ipending` and `idepth` stay the machine's `cpu_info` members until `spl(9)`'s
-//!   generic half moves in (N4.5c).
+//! - N4.5c: `ci_cpl`, `ci_ipending` and `ci_idepth` are the core's too (`spl(9)`'s generic
+//!   half is [`crate::intr`]'s), and the machine's interrupt mask is reached through
+//!   [`intr_disable`], a guard whose drop is `intr_restore` (LZ: `bsd`'s `intr_disable()`
+//!   and the `unsafe fn intr_restore(s)` it pairs with).
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::marker::PhantomData;
+use core::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use crate::arch::current::cpu as machine;
 use crate::once::OnceStatic;
@@ -105,6 +110,13 @@ pub struct CpuCore {
     spinning: AtomicU32,
     /// `ci_cpuid` as [`attach`] recorded it: [`cpu_number`] on this CPU.
     number: AtomicU32,
+    /// `ci_cpl`: the current interrupt priority level (the CPU's own; `crate::intr`).
+    cpl: AtomicI32,
+    /// `ci_ipending`: the soft interrupts pending on this CPU, one bit per `SOFTINTR_*`
+    /// (64 bits: amd64's width, its hardware sources share the word).
+    ipending: AtomicU64,
+    /// `ci_idepth`: the interrupt nesting depth.
+    idepth: AtomicU32,
 }
 
 impl CpuCore {
@@ -117,7 +129,68 @@ impl CpuCore {
             mutex_level: AtomicI32::new(0),
             spinning: AtomicU32::new(0),
             number: AtomicU32::new(0),
+            cpl: AtomicI32::new(0),
+            ipending: AtomicU64::new(0),
+            idepth: AtomicU32::new(0),
         }
+    }
+
+    /// `ci_cpl`: this CPU's interrupt priority level.
+    #[inline]
+    pub fn cpl(&self) -> i32 {
+        self.cpl.load(Ordering::Relaxed)
+    }
+
+    /// `ci->ci_cpl = ipl`: the level's record, which the machine's `setipl` writes beside the
+    /// interrupt controller's mask (`agintc_setipl`, `ampintc_setipl`, `crate::intr`'s
+    /// default). The CPU's own word: only code running on this CPU writes it.
+    #[inline]
+    pub fn set_cpl(&self, ipl: i32) {
+        self.cpl.store(ipl, Ordering::Relaxed);
+    }
+
+    /// `ci_ipending`: the soft interrupts pending on this CPU.
+    #[inline]
+    pub fn ipending(&self) -> u64 {
+        self.ipending.load(Ordering::Relaxed)
+    }
+
+    /// `ci->ci_ipending |= bits`.
+    #[inline]
+    pub(crate) fn mark_pending(&self, bits: u64) {
+        self.ipending.fetch_or(bits, Ordering::Relaxed);
+    }
+
+    /// `ci->ci_ipending &= ~bits`.
+    #[inline]
+    pub(crate) fn clear_pending(&self, bits: u64) {
+        self.ipending.fetch_and(!bits, Ordering::Relaxed);
+    }
+
+    /// `ci_idepth`: the interrupt nesting depth.
+    #[inline]
+    pub fn idepth(&self) -> u32 {
+        self.idepth.load(Ordering::Relaxed)
+    }
+
+    /// `ci->ci_idepth++` (an interrupt handler's entry) or `--` (its exit), as `delta` says.
+    #[inline]
+    pub fn idepth_add(&self, delta: i32) {
+        if delta >= 0 {
+            self.idepth
+                .fetch_add(delta.unsigned_abs(), Ordering::Relaxed);
+        } else {
+            self.idepth
+                .fetch_sub(delta.unsigned_abs(), Ordering::Relaxed);
+        }
+    }
+
+    /// A CPU's start (`cpu_init_secondary`): `ci_cpl = IPL_NONE`, `ci_ipending = 0`,
+    /// `ci_idepth = 0`.
+    pub fn reset_intr_state(&self) {
+        self.cpl.store(0, Ordering::Relaxed);
+        self.ipending.store(0, Ordering::Relaxed);
+        self.idepth.store(0, Ordering::Relaxed);
     }
 
     /// `ci_curproc`: the address of the thread running on this CPU, null before the first.
@@ -340,6 +413,32 @@ pub fn set_db_active(on: bool) {
 #[inline]
 pub fn past_caring() -> bool {
     PANICKING.load(Ordering::Acquire) || DB_ACTIVE.load(Ordering::Acquire)
+}
+
+/// The machine's interrupts masked on this CPU (`intr_disable()`) until the guard drops
+/// (`intr_restore(s)` of the state it saved). Not `Send`: the state is this CPU's.
+#[must_use = "dropping the guard at once restores the interrupts"]
+pub struct IntrGuard {
+    /// The interrupt state `intr_disable` saved (arm64: `DAIF`).
+    saved: u64,
+    _not_send: PhantomData<*const ()>,
+}
+
+/// `intr_disable()`: masks the machine's interrupts on this CPU (arm64: IRQ and FIQ) until
+/// the guard drops, which restores the state saved here.
+#[inline]
+pub(crate) fn intr_disable() -> IntrGuard {
+    IntrGuard {
+        saved: machine::intr_disable(),
+        _not_send: PhantomData,
+    }
+}
+
+impl Drop for IntrGuard {
+    #[inline]
+    fn drop(&mut self) {
+        machine::intr_restore(self.saved);
+    }
 }
 
 /// `ci_mutex_level += delta` under `DIAGNOSTIC`.

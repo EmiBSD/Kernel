@@ -96,9 +96,8 @@
 
 use core::cell::Cell;
 use core::ffi::c_void;
-use core::ptr::NonNull;
 
-use crate::kern::kern_softintr::SoftintrHand;
+use crate::kern::kern_softintr::SoftHandle;
 use crate::machine::bus::{BusAddr, BusSpaceHandle, BusSpaceTag};
 use crate::sys::device::{Device, Softc};
 use crate::sys::errno::Errno;
@@ -202,7 +201,7 @@ pub struct ComSoftc {
     /// `sc_diag_tmo`: reports overflows.
     pub sc_diag_tmo: Timeout,
     /// `sc_si`: the soft interrupt that drains the input ring.
-    pub sc_si: Cell<Option<NonNull<SoftintrHand>>>,
+    pub sc_si: Cell<Option<SoftHandle>>,
 
     /// `sc_overflows`: input ring overflows seen.
     pub sc_overflows: Cell<i32>,

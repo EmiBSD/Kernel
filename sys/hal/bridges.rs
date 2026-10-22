@@ -55,7 +55,7 @@
 //!   (`register_*` refuses a second implementation), and a reader gets an `Option`.
 
 use crate::cons::Console;
-use crate::intr::IntrLevel;
+use crate::intr::IntrHardware;
 use crate::klock::KernelLock;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
@@ -70,7 +70,6 @@ use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
 use crate::prf::Printf;
 use crate::sleep::Sleep;
-use crate::softintr::SoftIntr;
 use crate::user::UserCopy;
 
 /// A second registration of a bridge, which keeps the first; names the trait.
@@ -99,10 +98,12 @@ macro_rules! bridge {
 }
 
 bridge!(
-    /// Registers the machine's `spl(9)` (`sys/machine/intr.rs`). Paid by N4 (the hardware enters hal with its kernel owner, N4.1/N4.5).
-    INTR_LEVEL: IntrLevel,
-    register_intr_level,
-    intr_level
+    /// Registers the machine's interrupt controller (`struct arm_intr_func`: what the
+    /// controller's attach gave `arm_set_intr_handler`, `sys/arch/arm64/arm64/intr.rs`).
+    /// Paid by N7 (the GIC drivers).
+    INTR_HARDWARE: IntrHardware,
+    register_intr_hardware,
+    intr_hardware
 );
 
 bridge!(
@@ -110,15 +111,6 @@ bridge!(
     SLEEP: Sleep,
     register_sleep,
     sleep
-);
-
-bridge!(
-    /// Registers the soft interrupts (`softintr_establish`, `softintr_schedule` of
-    /// `sys/kern/kern_softintr.rs`), for timeout(9)'s `softclock` (`hal::softintr`, N4.1).
-    /// Paid by N4 (the soft interrupts enter hal with the interrupt level, N4.8).
-    SOFT_INTR: SoftIntr,
-    register_softintr,
-    softintr
 );
 
 bridge!(
@@ -236,29 +228,17 @@ mod tests {
 
     struct Other;
 
-    impl IntrLevel for Other {
-        fn splraise(&self, _ipl: i32) -> i32 {
-            0
-        }
-        fn splx(&self, _s: i32) {}
-        fn mpfloor(&self) -> i32 {
-            0
-        }
-        fn ipl_high(&self) -> i32 {
-            0
-        }
-        fn splassert(&self, _wantipl: i32, _func: &str) {}
-    }
+    impl IntrHardware for Other {}
 
     static OTHER: Other = Other;
 
     #[test]
     fn a_bridge_is_registered_once() {
         testutil::install();
-        assert!(intr_level().is_some());
+        assert!(intr_hardware().is_some());
         assert_eq!(
-            register_intr_level(&OTHER),
-            Err(AlreadyRegistered("IntrLevel"))
+            register_intr_hardware(&OTHER),
+            Err(AlreadyRegistered("IntrHardware"))
         );
     }
 }

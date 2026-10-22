@@ -25,8 +25,8 @@
 //! asserts on it (the interrupt level, the spin count), so tests running in parallel do not
 //! see each other's.
 //!
-//! - `IntrLevel`: a per-thread level; `splraise` never lowers it, `splx` restores; the
-//!   `IPL_MPFLOOR` of the host double of `bsd` (9).
+//! - `IntrHardware`: the default levels (`hal::intr`'s, each test thread's core), whose
+//!   `splassert` fails the test.
 //! - The running CPU is no bridge (N4.5a): `hal::cpu`'s host backend makes every test thread
 //!   a CPU of its own, so two test threads contend for a lock and update per-CPU counters as
 //!   two CPUs do.
@@ -46,8 +46,8 @@
 //!   memory of [`FOREIGN_LEN`] bytes at [`foreign_base`] (the pages a `ForeignWindow` would
 //!   name); anything outside it faults (`EFAULT`).
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
-//! - `SoftIntr`: a handler runs at once when scheduled, on the scheduling thread; the handle
-//!   is the handler's index in a table, plus one.
+//! - The soft interrupts are no bridge (N4.5c): `hal::softintr`'s own queues; a test runs a
+//!   level's queue itself (`dispatch`), or lowers its level below it.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::boxed::Box;
@@ -61,20 +61,19 @@ use std::time::{Duration, Instant};
 
 use crate::bridges;
 use crate::cons::Console;
-use crate::intr::IntrLevel;
+use crate::intr::IntrHardware;
 use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
 use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 use crate::pool::{PoolBackend, RawPool};
 use crate::prf::Printf;
 use crate::sleep::{INFSLP, Sleep};
-use crate::softintr::SoftIntr;
+
 use crate::sys::errno::Errno;
 use crate::sys::types::{Paddr, Vaddr};
 use crate::user::UserCopy;
 
 std::thread_local! {
-    static SPL: Cell<i32> = const { Cell::new(0) };
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
@@ -84,9 +83,6 @@ std::thread_local! {
     static PAGES_OUT: Cell<isize> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, isize>> = const { RefCell::new(BTreeMap::new()) };
 }
-
-/// The `IPL_HIGH` of the interrupt-level double (the host double of `bsd`'s).
-pub(crate) const IPL_HIGH: i32 = 0xd;
 
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
@@ -124,32 +120,13 @@ static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
 
-/// The interrupt-level double.
+/// The interrupt controller double: the default levels (`crate::intr`'s, the host thread's
+/// core), and a `splassert` that fails the test.
 struct TestIntr;
 
-impl IntrLevel for TestIntr {
-    fn splraise(&self, ipl: i32) -> i32 {
-        SPL.with(|l| {
-            let old = l.get();
-            l.set(old.max(ipl));
-            old
-        })
-    }
-
-    fn splx(&self, s: i32) {
-        SPL.with(|l| l.set(s));
-    }
-
-    fn mpfloor(&self) -> i32 {
-        9
-    }
-
-    fn ipl_high(&self) -> i32 {
-        IPL_HIGH
-    }
-
+impl IntrHardware for TestIntr {
     fn splassert(&self, wantipl: i32, func: &str) {
-        let at = SPL.with(Cell::get);
+        let at = crate::cpu::curcpu().cpl();
         assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
     }
 }
@@ -490,25 +467,6 @@ impl Printf for TestPrintf {
 /// What the `printf(9)` double was given.
 static PRINTF_OUT: Mutex<String> = Mutex::new(String::new());
 
-/// The soft interrupt double: a handler runs at once, on the thread that schedules it.
-struct TestSoftIntr;
-
-/// The handlers established, in order.
-static SOFT_HANDLERS: Mutex<std::vec::Vec<fn()>> = Mutex::new(std::vec::Vec::new());
-
-impl SoftIntr for TestSoftIntr {
-    fn establish(&self, _ipl: i32, run: fn()) -> Option<usize> {
-        let mut h = lock(&SOFT_HANDLERS);
-        h.push(run);
-        Some(h.len())
-    }
-
-    fn schedule(&self, handle: usize) {
-        let run = lock(&SOFT_HANDLERS)[handle - 1];
-        run();
-    }
-}
-
 /// A double's state, a panicking test's poison ignored.
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -523,13 +481,12 @@ static TEST_USER: TestUser = TestUser;
 static TEST_CONS: TestCons = TestCons;
 static TEST_PRINTF: TestPrintf = TestPrintf;
 static TEST_RANDOM: TestRandom = TestRandom;
-static TEST_SOFTINTR: TestSoftIntr = TestSoftIntr;
 
 /// Registers every double, once per process.
 pub(crate) fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = bridges::register_intr_level(&TEST_INTR);
+        let _ = bridges::register_intr_hardware(&TEST_INTR);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);
@@ -537,7 +494,6 @@ pub(crate) fn install() {
         let _ = bridges::register_console(&TEST_CONS);
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_random(&TEST_RANDOM);
-        let _ = bridges::register_softintr(&TEST_SOFTINTR);
     });
 }
 
@@ -587,9 +543,9 @@ pub(crate) fn pages_out() -> isize {
     PAGES_OUT.with(Cell::get)
 }
 
-/// This thread's interrupt level, as the double keeps it.
+/// This thread's interrupt level (its core's `ci_cpl`).
 pub(crate) fn spl_level() -> i32 {
-    SPL.with(Cell::get)
+    crate::cpu::curcpu().cpl()
 }
 
 /// The last high-water mark `set_hiwat` gave the pool named `wchan` (0: never) and whether its

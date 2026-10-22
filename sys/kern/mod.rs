@@ -68,6 +68,7 @@ pub mod kern_sensors;
 #[forbid(unsafe_code)]
 pub mod kern_sig;
 pub mod kern_smr;
+#[forbid(unsafe_code)]
 pub mod kern_softintr;
 pub mod kern_subr;
 #[forbid(unsafe_code)]

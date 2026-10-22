@@ -413,6 +413,10 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         .set(ptr::from_ref(&CPU_INFO_PRIMARY));
     // tpidr_el1 names the boot CPU's cpu_info, whose head is its core (hal::cpu).
     hal::cpu::set_current(&CPU_INFO_PRIMARY.core);
+    // `arm_intr_func` as `hal::intr` calls it: the C's defaults until a controller attaches
+    // (`arm_set_intr_handler`), `arm_splassert_check` from the first `spl` on.
+    let _ =
+        hal::bridges::register_intr_hardware(&crate::arch::arm64::arm64::intr::ARM_INTR_HARDWARE);
     // SAFETY: system register writes that install this kernel's stack selection and vector
     // table on the boot CPU, before any exception can be taken. The SPSel switch keeps the
     // stack pointer's value, so the compiler's view of the stack is unchanged.

@@ -128,6 +128,16 @@ pub(crate) fn release_current() {
     CURRENT.with(|cur| cur.set(None));
 }
 
+/// `intr_disable()` of the host double: a host thread takes no interrupts; nothing to mask.
+#[inline]
+pub(crate) fn intr_disable() -> u64 {
+    0
+}
+
+/// `intr_restore(s)` of the host double: nothing was masked.
+#[inline]
+pub(crate) fn intr_restore(_s: u64) {}
+
 /// `ncpusfound` as the per-CPU readers walk it: every slot, as any thread may be a CPU.
 #[inline]
 pub(crate) fn ncpus(_attached: usize) -> usize {

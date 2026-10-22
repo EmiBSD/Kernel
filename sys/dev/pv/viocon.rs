@@ -69,7 +69,7 @@
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::fmt::Write as _;
-use core::ptr::{self, NonNull};
+use core::ptr;
 
 use crate::dev::pv::virtio::{
     virtio_alloc_vq, virtio_attach_finish, virtio_check_vq, virtio_dequeue, virtio_dequeue_commit,
@@ -84,7 +84,7 @@ use crate::dev::pv::virtiovar::{
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::suser;
-use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
+use crate::kern::kern_softintr::{SoftHandle, softintr_establish, softintr_schedule};
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::tty::{ttioctl, ttsetwater, ttwakeupwr, ttychars, ttyclose, ttymalloc};
 use crate::kern::tty_conf::linesw;
@@ -212,7 +212,7 @@ pub struct VioconPort {
     /// `vp_tx`.
     pub vp_tx: Cell<*const Virtqueue>,
     /// `vp_si`.
-    pub vp_si: Cell<Option<NonNull<SoftintrHand>>>,
+    pub vp_si: Cell<Option<SoftHandle>>,
     /// `vp_tty`.
     pub vp_tty: Cell<*const Tty>,
     /// `vp_name`.

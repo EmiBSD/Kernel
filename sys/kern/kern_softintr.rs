@@ -33,227 +33,65 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Machine-independent soft interrupts: `kern/kern_softintr.c` (`__USE_MI_SOFTINTR`).
+//! Machine-independent soft interrupts: `kern/kern_softintr.c` (`__USE_MI_SOFTINTR`), the
+//! names `bsd`'s drivers and machines call, over `hal::softintr` (N4.5c).
 //!
 //! Upstream: sys/kern/kern_softintr.c @ 3ce1f3f79392
-//!
-//! Status: `ported`. Milestone M4 ports `softintr_init`, `softintr_dispatch`,
-//! `softintr_establish`, `softintr_disestablish` and `softintr_schedule`; M11a the kernel
-//! lock in `softintr_dispatch`, `assertwaitok` and `sched_barrier` in
-//! `softintr_disestablish`; M11e honours `SIF_MPSAFE` as the C does: such a handler runs
-//! without the kernel lock, every other one under it (nothing without `MULTIPROCESSOR`). No
-//! handler is established `IPL_MPSAFE` today (`softclock`, `comsoft`, `pluart_softint`).
+//! LZ: sys/kern/kern_softintr.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The handle is a `NonNull<SoftintrHand>` where the C passes `void *`.
+//! - The handle is a `hal::softintr::SoftHandle` (`Copy`) where the C passes `void *`.
+//!
+//! ## Redesign
+//! - The queues, the handlers and `softintr_lock` are `hal::softintr`'s (the module's
+//!   `## Redesign` says how they are owned); this module keeps the C's function names for
+//!   `bsd`, and `softintr_disestablish`'s wait for a running handler (`sched_barrier`, the
+//!   kernel scheduler's, between `hal`'s two steps).
 
-use core::cell::Cell;
-use core::ffi::c_void;
-use core::ptr::{self, NonNull};
-use core::sync::atomic::Ordering;
+use hal::softintr::SoftintrFn;
 
-use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_sched::sched_barrier;
-use crate::kern::subr_prf::panic;
+use crate::kern::kern_sched::{cpu_info_by_number, sched_barrier};
 use crate::kern::subr_xxx::assertwaitok;
-use crate::machine::cpu::{CpuInfo, curcpu};
-use crate::machine::intr::{
-    IPL_HIGH, IPL_MPSAFE, IPL_SOFTCLOCK, IPL_SOFTNET, IPL_SOFTTTY, IPL_TTY, softintr,
+
+pub use hal::softintr::{
+    SIF_MPSAFE, SIS_DYING, SIS_PENDING, SIS_RESTART, SoftHandle, SoftintrHand,
 };
-use crate::queue_adapter;
-use crate::sys::malloc::{M_DEVBUF, M_NOWAIT};
-use crate::sys::mutex::Mutex;
-use crate::sys::queue::{TailqEntry, TailqHead};
-use crate::sys::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
-use crate::sys::systm::{kernel_lock, kernel_unlock};
-use hal::vm::uvmexp::UVMEXP;
 
-/// A soft interrupt handler's function.
-pub type SoftintrFn = fn(*mut c_void);
-
-/// `struct softintr_hand`: an established soft interrupt handler.
-pub struct SoftintrHand {
-    /// `sih_q`: the queue link, when pending.
-    pub sih_q: TailqEntry<SoftintrHand>,
-    /// `sih_fn`.
-    pub sih_fn: SoftintrFn,
-    /// `sih_arg`.
-    pub sih_arg: *mut c_void,
-    /// `sih_runner`: the CPU running the handler, if one is.
-    pub sih_runner: Cell<*const CpuInfo>,
-    /// `sih_level`: `SOFTINTR_*`.
-    pub sih_level: i32,
-    /// `SIF_*`.
-    pub sih_flags: u16,
-    /// `SIS_*`.
-    pub sih_state: Cell<u16>,
-}
-
-/// `SIF_MPSAFE`: the handler runs without the kernel lock.
-pub const SIF_MPSAFE: u16 = 0x0001;
-
-/// `SIS_DYING`: being disestablished.
-pub const SIS_DYING: u16 = 0x0001;
-/// `SIS_PENDING`: queued.
-pub const SIS_PENDING: u16 = 0x0002;
-/// `SIS_RESTART`: scheduled again while running.
-pub const SIS_RESTART: u16 = 0x0004;
-
-queue_adapter!(
-    /// `TAILQ_HEAD(softintr_queue, softintr_hand)`.
-    pub SoftintrQueue: SoftintrHand, sih_q => TailqEntry<SoftintrHand>
-);
-
-/// `softintr_queue[NSOFTINTR]`: one queue per level, under `softintr_lock`.
-struct SoftintrQueues([TailqHead<SoftintrQueue>; NSOFTINTR]);
-
-// SAFETY: every access is under `SOFTINTR_LOCK`.
-unsafe impl Sync for SoftintrQueues {}
-
-/// `softintr_queue`.
-static SOFTINTR_QUEUE: SoftintrQueues = SoftintrQueues([const { TailqHead::new() }; NSOFTINTR]);
-/// `softintr_lock`.
-static SOFTINTR_LOCK: Mutex = Mutex::new(IPL_HIGH);
-
-/// `softintr_init`: the queues.
+/// `softintr_init`: the queues (`hal::softintr::init`).
 pub fn softintr_init() {
-    for queue in &SOFTINTR_QUEUE.0 {
-        queue.init();
-    }
+    hal::softintr::init();
 }
 
 /// `softintr_dispatch`: runs the handlers pending at `level`, from the soft interrupt stub.
 pub fn softintr_dispatch(level: i32) {
-    let ci = ptr::from_ref(curcpu());
-    let queue = &SOFTINTR_QUEUE.0[level as usize];
-
-    mtx_enter(&SOFTINTR_LOCK);
-    while let Some(sih) = queue.first() {
-        kassert!((sih.sih_state.get() & (SIS_PENDING | SIS_RESTART)) == SIS_PENDING);
-        kassert!(sih.sih_runner.get().is_null());
-
-        sih.sih_state.set(sih.sih_state.get() & !SIS_PENDING);
-        // SAFETY: `sih` is on this queue (it was its first element), under the lock.
-        unsafe { queue.remove(sih) };
-        sih.sih_runner.set(ci);
-        mtx_leave(&SOFTINTR_LOCK);
-
-        if sih.sih_flags & SIF_MPSAFE != 0 {
-            (sih.sih_fn)(sih.sih_arg);
-        } else {
-            kernel_lock(); // KERNEL_LOCK()
-            (sih.sih_fn)(sih.sih_arg);
-            kernel_unlock(); // KERNEL_UNLOCK()
-        }
-
-        mtx_enter(&SOFTINTR_LOCK);
-        kassert!((sih.sih_state.get() & SIS_PENDING) == 0);
-        sih.sih_runner.set(ptr::null());
-        if sih.sih_state.get() & SIS_RESTART != 0 {
-            // SAFETY: `sih` is established and not queued (its runner just finished).
-            unsafe { queue.insert_tail(sih) };
-            sih.sih_state.set(sih.sih_state.get() | SIS_PENDING);
-            sih.sih_state.set(sih.sih_state.get() & !SIS_RESTART);
-        }
-
-        UVMEXP.softs.fetch_add(1, Ordering::Relaxed);
+    if let Ok(level) = usize::try_from(level) {
+        hal::softintr::dispatch(level);
     }
-    mtx_leave(&SOFTINTR_LOCK);
 }
 
-/// `softintr_establish`: registers `func(arg)` to run at the soft level that serves `ipl`.
+/// `softintr_establish`: registers `func(arg)` to run at the soft level that serves `ipl`;
+/// `None` when no memory can be had.
 pub fn softintr_establish(
     ipl: i32,
     func: SoftintrFn,
-    arg: *mut c_void,
-) -> Option<NonNull<SoftintrHand>> {
-    let mut flags = 0;
-
-    if ipl & IPL_MPSAFE != 0 {
-        flags |= SIF_MPSAFE;
-    }
-    let ipl = ipl & !IPL_MPSAFE;
-
-    // IPL_SOFT: not defined on amd64 or arm64.
-    let level = match ipl {
-        l if l == IPL_SOFTCLOCK => SOFTINTR_CLOCK,
-        l if l == IPL_SOFTNET => SOFTINTR_NET,
-        l if l == IPL_TTY || l == IPL_SOFTTTY => SOFTINTR_TTY,
-        _ => panic(format_args!("softintr_establish: unhandled ipl {ipl}")),
-    };
-
-    let sih = malloc(size_of::<SoftintrHand>(), M_DEVBUF, M_NOWAIT)?.cast::<SoftintrHand>();
-    // SAFETY: a fresh allocation of the right size and alignment, written once before use.
-    unsafe {
-        sih.write(SoftintrHand {
-            sih_q: TailqEntry::new(),
-            sih_fn: func,
-            sih_arg: arg,
-            sih_runner: Cell::new(ptr::null()),
-            sih_level: level,
-            sih_flags: flags,
-            sih_state: Cell::new(0),
-        });
-    }
-    Some(sih)
+    arg: *mut core::ffi::c_void,
+) -> Option<SoftHandle> {
+    hal::softintr::establish(ipl, func, arg)
 }
 
-/// `softintr_disestablish`: removes a handler, waiting for it if it is running elsewhere.
-///
-/// # Safety
-///
-/// `sih` must come from `softintr_establish` and not be used afterwards.
-pub unsafe fn softintr_disestablish(sih: NonNull<SoftintrHand>) {
+/// `softintr_disestablish`: removes a handler, waiting for it if it is running elsewhere;
+/// the handle is dead afterwards (a later use is `panic(9)`).
+pub fn softintr_disestablish(sih: SoftHandle) {
     assertwaitok();
-    // SAFETY: the caller's guarantee: an established handler.
-    let hand = unsafe { sih.as_ref() };
-
-    mtx_enter(&SOFTINTR_LOCK);
-    hand.sih_state.set(hand.sih_state.get() | SIS_DYING);
-    hand.sih_state.set(hand.sih_state.get() & !SIS_RESTART);
-    if hand.sih_state.get() & SIS_PENDING != 0 {
-        hand.sih_state.set(hand.sih_state.get() & !SIS_PENDING);
-        // SAFETY: pending means queued on its level's queue, under the lock.
-        unsafe { SOFTINTR_QUEUE.0[hand.sih_level as usize].remove(hand) };
+    if let Some(runner) = sih.disestablish() {
+        sched_barrier(cpu_info_by_number(runner));
     }
-    let runner = hand.sih_runner.get();
-    mtx_leave(&SOFTINTR_LOCK);
-
-    // SAFETY: a runner is a CPU's static `cpu_info` (`softintr_dispatch`).
-    if let Some(runner) = unsafe { runner.as_ref() } {
-        sched_barrier(Some(runner));
-    }
-
-    kassert!((hand.sih_state.get() & (SIS_PENDING | SIS_RESTART)) == 0);
-    kassert!(hand.sih_runner.get().is_null());
-
-    free(sih.cast::<u8>(), M_DEVBUF, size_of::<SoftintrHand>());
+    sih.release();
 }
 
 /// `softintr_schedule`: queues the handler (or marks it for a restart if it is running) and
 /// raises the soft interrupt.
-pub fn softintr_schedule(sih: NonNull<SoftintrHand>) {
-    // SAFETY: an established handler (`softintr_establish`), alive until disestablished.
-    let hand = unsafe { sih.as_ref() };
-    let queue = &SOFTINTR_QUEUE.0[hand.sih_level as usize];
-
-    mtx_enter(&SOFTINTR_LOCK);
-    kassert!((hand.sih_state.get() & SIS_DYING) == 0);
-    if hand.sih_runner.get().is_null() {
-        kassert!((hand.sih_state.get() & SIS_RESTART) == 0);
-        if hand.sih_state.get() & SIS_PENDING == 0 {
-            // SAFETY: not pending, so not on any queue; under the lock.
-            unsafe { queue.insert_tail(hand) };
-            hand.sih_state.set(hand.sih_state.get() | SIS_PENDING);
-            // Call softintr() while SPL is still at IPL_HIGH.
-            softintr(hand.sih_level);
-        }
-    } else {
-        kassert!((hand.sih_state.get() & SIS_PENDING) == 0);
-        hand.sih_state.set(hand.sih_state.get() | SIS_RESTART);
-    }
-    mtx_leave(&SOFTINTR_LOCK);
+pub fn softintr_schedule(sih: SoftHandle) {
+    sih.schedule();
 }
 /* </CODE> */

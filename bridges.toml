@@ -28,13 +28,16 @@
 #             ("N3".."N9"; a slice "N4.1" where one is meant)
 # The comment above each row says what implements it today.
 
-# bsd: splraise/splx, IPL_MPFLOOR, IPL_HIGH and splassert (N3.3: the kernel page caches' DIAGNOSTIC
-# check at IPL_BIO) of sys/machine/intr.rs.
-# hal::intr::IntrLevel
+# bsd: the interrupt controller's part of spl(9) (struct arm_intr_func: raise, lower, x, setipl,
+# and arm_splassert_check), implemented by sys/arch/arm64/arm64/intr.rs (ArmIntrHardware, over
+# the table the GIC drivers give arm_set_intr_handler) and registered by arm64's initarm (N4.5c,
+# replacing IntrLevel: the level itself is hal's). Decision 46: the C's function table as a
+# trait. Paid when the GIC drivers move (N7).
+# hal::intr::IntrHardware
 [[bridge]]
-trait = "IntrLevel"
-for = ["sys/hal/intr.rs", "sys/hal/mutex.rs"]
-paid_by = "N4"
+trait = "IntrHardware"
+for = ["sys/hal/intr.rs"]
+paid_by = "N7"
 
 # bsd: kern_fork.rs's thread_start (kernel::sched::trampoline_mi, which releases the hold the
 # switch kept, then the function cpu_fork numbered in its table, thread_start_word): what a new
@@ -201,11 +204,6 @@ paid_by = "N4"
 [[bridge]]
 trait = "Uptime"
 for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
-paid_by = "N4"
-
-[[bridge]]
-trait = "SoftIntr"
-for = ["sys/hal/softintr.rs", "sys/kernel/timeout.rs"]
 paid_by = "N4"
 
 [[bridge]]

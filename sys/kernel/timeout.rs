@@ -133,7 +133,8 @@
 //!   never while the node is still on the queue.
 //! - `timeout_startup` takes `hz`, `tick` and `tick_nsec` as data (`bsd`'s `conf/param.rs`,
 //!   never changed after boot); `softintr_establish` and `kthread_create[_deferred]` go through
-//!   `hal::softintr` and `kernel::thread` (bridges `SoftIntr`, `Kthread`), `nanouptime` through
+//!   `hal::softintr` (`hal`'s own since N4.5c) and `kernel::thread` (bridge `Kthread`),
+//!   `nanouptime` through
 //!   `kernel::clock` (`Uptime`).
 //! - `timeout_sysctl` stays at the ABI's side (`sys/sys/timeout.rs`): [`stats`] is the copy of
 //!   `tostat` it takes under the lock, in the C's field order.
@@ -888,9 +889,9 @@ pub fn startup(hz: i32, tick: i32, tick_nsec: i32) {
 /// `softclock` threads deferred until threads can be made. Panics, as the C, when the soft
 /// interrupt cannot be had.
 pub fn proc_init() {
-    let si = match hal::softintr::establish(IPL_SOFTCLOCK, softclock) {
-        Ok(si) => si,
-        Err(_) => kpanic(format_args!(
+    let si = match hal::softintr::establish(IPL_SOFTCLOCK, softclock_si, core::ptr::null_mut()) {
+        Some(si) => si,
+        None => kpanic(format_args!(
             "timeout_proc_init: unable to register softclock interrupt"
         )),
     };
@@ -1109,6 +1110,11 @@ fn process_tick(time: i32, flags: u32, new: bool, b: &mut Bumps) -> Dest {
         return Dest::Queue(Ctx::proc_of(flags).todo());
     }
     Dest::Run
+}
+
+/// `softclock(NULL)` as the soft interrupt calls it (its argument unused).
+fn softclock_si(_arg: *mut core::ffi::c_void) {
+    softclock();
 }
 
 /// `softclock()`: the soft interrupt's work, at `IPL_SOFTCLOCK` rather than in

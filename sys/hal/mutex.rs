@@ -104,14 +104,12 @@
 //! owner word and then restores the level it replaced. It never sleeps. `ci_mutex_level` is
 //! counted under `DIAGNOSTIC`.
 //!
-//! The machine's `spl(9)` arrives through the `IntrLevel` bridge (`intr.rs`), the CPU's
-//! identity from `hal::cpu` (its core, N4.5a); before the bridge is registered there are no
-//! interrupts, before the boot CPU's core is installed one CPU, and a mutex is a
-//! compare-and-swap of its owner word, which is all its exclusion ever rests on. The level
-//! a mutex raises to is fixed when it is entered, and the guard restores only a level it
-//! raised: a mutex entered before the `IntrLevel` bridge exists and left
-//! after it was registered restores nothing (the C fixes `mtx_wantipl` at init; this
-//! mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry).
+//! The level is `hal::intr`'s (the running CPU's core, N4.5c), the CPU's identity
+//! `hal::cpu`'s (its core, N4.5a); before the boot CPU's core is installed one CPU runs, and
+//! a mutex is a compare-and-swap of its owner word, which is all its exclusion ever rests
+//! on. The level a mutex raises to is fixed when it is entered (the C fixes `mtx_wantipl` at
+//! init; this mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry), and its
+//! guard restores the level it replaced.
 //!
 //! ## Deviations
 //! - The parking lots of the C's slow path (`mtx_park`, `mtx_enter_park`: a CPU that spun 40

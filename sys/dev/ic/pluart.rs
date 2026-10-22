@@ -68,7 +68,7 @@
 
 use core::cell::Cell;
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
 use libkern::StaticCell;
@@ -76,7 +76,7 @@ use libkern::StaticCell;
 use crate::dev::cons::{CN_MIDPRI, Consdev, cn_tab, set_cn_tab};
 use crate::dev::ic::com::comopen;
 use crate::kern::kern_prot::suser;
-use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
+use crate::kern::kern_softintr::{SoftHandle, softintr_establish, softintr_schedule};
 use crate::kern::kern_synch::wakeup;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_set};
 use crate::kern::subr_prf::{DB_CONSOLE, panic, printf};
@@ -345,7 +345,7 @@ pub struct PluartSoftc {
     /// `sc_ioh`.
     pub sc_ioh: Cell<Option<BusSpaceHandle>>,
     /// `sc_si`: the soft interrupt that drains the input ring.
-    pub sc_si: Cell<Option<NonNull<SoftintrHand>>>,
+    pub sc_si: Cell<Option<SoftHandle>>,
     /// `sc_irq`: the interrupt handle.
     pub sc_irq: Cell<*mut c_void>,
     /// `sc_tty`: NULL until the first open.

@@ -1758,7 +1758,7 @@ pub fn agintc_setipl(ipl: i32) {
 
     // disable here is only to keep hardware in sync with ci->ci_cpl
     let psw = intr_disable();
-    ci.ci_cpl.set(ipl as u32);
+    ci.core.set_cpl(ipl);
 
     let prival = agintc_prival(ipl, sc.sc_pmr_shift.get());
     icc_write!(ICC_PMR, u64::from(prival));
@@ -1914,7 +1914,7 @@ pub fn agintc_calc_irq(sc: &AgintcSoftc, irq: i32) {
 pub fn agintc_splx(new: i32) {
     let ci = curcpu();
 
-    if ci.ci_ipending.get() & arm_smask(new) != 0 {
+    if ci.core.ipending() & arm_smask(new) != 0 {
         arm_do_pending_intr(new);
     }
 
@@ -1924,7 +1924,7 @@ pub fn agintc_splx(new: i32) {
 /// `agintc_spllower`.
 pub fn agintc_spllower(new: i32) -> i32 {
     let ci = curcpu();
-    let old = ci.ci_cpl.get() as i32;
+    let old = ci.core.cpl();
 
     agintc_splx(new);
     old
@@ -1936,7 +1936,7 @@ pub fn agintc_spllower(new: i32) -> i32 {
 /// `splraise` completely messing up spl protection.
 pub fn agintc_splraise(new: i32) -> i32 {
     let ci = curcpu();
-    let old = ci.ci_cpl.get() as i32;
+    let old = ci.core.cpl();
 
     let new = if old > new { old } else { new };
 
@@ -2365,7 +2365,7 @@ pub fn agintc_ipi_ddb(_v: *mut c_void) -> i32 {
 pub fn agintc_ipi_halt(v: *mut c_void) -> i32 {
     // SAFETY: the IPI handler's argument, the static softc.
     let sc = unsafe { &*v.cast::<AgintcSoftc>() };
-    let old = curcpu().ci_cpl.get() as i32;
+    let old = curcpu().core.cpl();
 
     intr_disable();
     agintc_eoi(sc.sc_ipi_num.load(Ordering::Relaxed) as u32);

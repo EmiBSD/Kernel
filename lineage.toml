@@ -1670,7 +1670,7 @@ notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cp
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1721,7 +1721,7 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/intr.rs"]
 notes = "M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list"
 
 [[module]]
@@ -1766,7 +1766,7 @@ adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs"
 rust = "sys/arch/arm64/arm64/trap.rs"
 lz = ["sys/arch/arm64/arm64/trap.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/intr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
@@ -1788,7 +1788,8 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/dev/agintc.rs"
 lz = ["sys/arch/arm64/dev/agintc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/intr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/dev/agtimer.rs"
@@ -1799,7 +1800,7 @@ status = "inherited"
 rust = "sys/arch/arm64/dev/ampintc.rs"
 lz = ["sys/arch/arm64/dev/ampintc.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/intr.rs"]
 notes = "M4: the registers, ampintc_match/attach (from fdt_attach_args autoconf.rs builds; one static softc AMPINTC), init, set_priority, setipl, intr_enable/disable/config, calc_mask/calc_irq, splx/spllower/splraise, iack/eoi, route, cpuinit (the IPI EOI waits for MULTIPROCESSOR), route_irq, intr_barrier (sched_barrier reported, M5), run_handler, irq_handler, intr_establish_fdt, intr_establish, intr_disestablish; ampintc_activate (resume), the IPIs, the GICv2m MSI frame and simplebus_attach of the children are M5; M7b: ampintc_ca/ampintc_cd (ca_devsize is a bare struct device, the rest of the softc stays the static AMPINTC; no ampintc_activate yet), ampintc_match/ampintc_attach take the cfattach arguments and mainbus attaches the GIC (ampintc* at fdt? early 1), printing the C's ' nirq N, ncpu N'; M11a: the MULTIPROCESSOR side: ampintc_attach finds the IPI's SGI (the IPRn probe), establishes ampintc_ipi_handler at IPL_IPI|IPL_MPSAFE ('ipi 0' on the attach line) and installs ampintc_send_ipi as intr_send_ipi_func; ampintc_ipi_ddb (db_enter; M11c), ampintc_ipi_halt (cpu_halt), ampintc_ipi_handler (atomic swap of sc_ipi_reason), ampintc_send_ipi (ICD_SGIR to the target's mask); ampintc_cpuinit's IPI EOI (the APs' per-CPU init of their banked SGI/PPI registers and target mask); sc_cpu_mask/sc_ipi_reason atomics; ampintc_run_handler takes the kernel lock below IPL_SCHED unless the handler is IPL_MPSAFE (since M11e exactly the C's rule; M11a also locked IPL_MPSAFE handlers at or below IPL_MPFLOOR); SPIs stay routed to the boot CPU; ampintc_ipi_count (feature qemu, the self-check's IPI counter); ; M12: ampintc_attach ends with simplebus_attach for the GIC's children (ampintc_ca's ca_devsize is now the struct simplebus_softc that heads the C's softc), and the GICv2m frame: GICV2M_* registers, struct ampintc_msi_softc (repr(C); sc_ic an UnsafeCell written once before arm_intr_register_fdt; sc_spi Cell slots, the MSI cookie is the slot's address), ampintcmsi_ca/cd (ampintcmsi* at fdt? early 1), ampintc_msi_match/attach (pmap_extract of the mapping for the doorbell address, ' nspi N'), ampintc_intr_establish_msi (edge SPI on the parent GIC, addr = frame + GICV2M_SETSPI_NS, data = SPI), ampintc_intr_disestablish_msi, ampintc_intr_barrier_msi"
 
 [[module]]
@@ -1882,7 +1883,7 @@ notes = "M2: struct bus_space with single-register accessors, map/unmap/subregio
 rust = "sys/arch/arm64/include/cpu.rs"
 lz = ["sys/arch/arm64/include/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/cpu.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/cpu.rs", "sys/hal/intr.rs"]
 notes = "M0: DAIF helpers (restore_daif, enable/disable_irq_daif[_ret], intr_enable/disable/restore); M4: struct cpu_info (the fields the exception and interrupt paths use, in C order), curcpu (tpidr_el1), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING, CPUF_*, CI_DDB_*; the topology fields, the scheduler state, CTL_MACHDEP and the cache helpers come with M4-b/M5; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = trapframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; M11a: struct cpu_info complete (topology, PSCI idle state, opp table/idx/max, cpu supply, capacity, prev_sleep/last_itime; srp hazards, xcall and ci_uvm still out); fields other CPUs touch are atomics (ci_flags, ci_want_resched, ci_opp_idx/max, ci_ddb_paused) or CiPtr (ci_next, ci_curproc, ci_curpm); ci_dev is a *const Device; CPU_IS_RUNNING true without MULTIPROCESSOR, CPU_INFO_UNIT from ci_dev with it; CPU_BUSY_CYCLE; M16d: cpu_rnd_messybits (CNTVCT_EL0 XOR its bit reversal, low 32 bits), machine::Cpu::cpu_rnd_messybits"
 
 [[module]]
@@ -3256,7 +3257,8 @@ notes = "M16c: AX88190 registers"
 [[module]]
 rust = "sys/dev/ic/com.rs"
 lz = ["sys/dev/ic/com.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/softintr.rs"]
 
 [[module]]
 rust = "sys/dev/ic/comreg.rs"
@@ -3266,7 +3268,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/ic/comvar.rs"
 lz = ["sys/dev/ic/comvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/softintr.rs"]
 
 [[module]]
 rust = "sys/dev/ic/dc.rs"
@@ -3478,7 +3481,8 @@ notes = "M16d: the whole header: PckbcInternal (Cells; tag and handles Option un
 [[module]]
 rust = "sys/dev/ic/pluart.rs"
 lz = ["sys/dev/ic/pluart.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/softintr.rs"]
 
 [[module]]
 rust = "sys/dev/ic/re.rs"
@@ -4308,7 +4312,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pv/viocon.rs"
 lz = ["sys/dev/pv/viocon.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/softintr.rs"]
 notes = "M16d: the whole file: virtio_console_control(_resize), viocon_ca/cd, match, attach (one port, malloc'ed sc_vqs and sc_ports), viocon_port_create (queues p0rx/p0tx, the soft interrupt, the buffers in DMA memory, the tty), tx_drain, tx_intr, rx_fill, rx_intr, rx_soft, vioconstart, vioconhwiflow, vioconparam, vioconopen/close/read/write/tty/stop/ioctl, the CTASSERT; compiled on every build; cargo feature viocon (amd64 GENERIC's commented-out line) adds viocon* at virtio? to amd64's ioconf and NVIOCON 1 to cdevsw 94 (0 without it: ENXIO, as config(8) counts it); deviations: dev2sc/dev2port return Option (ENXIO or nothing where the C would dereference a missing unit), Result returns; no smoke (in neither GENERIC)"
 
 [[module]]
@@ -4691,7 +4696,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/usb/usb.rs"
 lz = ["sys/dev/usb/usb.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/softintr.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -4740,7 +4746,8 @@ license = "NetBSD Foundation BSD-2 notice"
 [[module]]
 rust = "sys/dev/usb/usbdivar.rs"
 lz = ["sys/dev/usb/usbdivar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/softintr.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -5577,8 +5584,8 @@ adapted_by = ["sys/kernel/sched.rs"]
 [[module]]
 rust = "sys/kern/kern_softintr.rs"
 lz = ["sys/kern/kern_softintr.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs"]
+status = "redesigned"
+notes = "N4.5c: bsd's names over hal::softintr (softintr_init checks the queues, softintr_dispatch, softintr_establish, softintr_disestablish with its sched_barrier between hal's two steps, softintr_schedule); 0 unsafe (LZ 10), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/kern_subr.rs"
@@ -8652,11 +8659,6 @@ native = ["PinRing::is_empty"]
 kind = "renamed"
 
 [[extra]]
-rust = "sys/hal/softintr.rs"
-crate = "hal"
-reason = "hal runtime, written new (N4.1 P5): softintr_establish(9)/softintr_schedule(9) for the kernel over the SoftIntr bridge (bridges.toml, bsd's sys/kern/kern_softintr.rs behind sys/kern/hal_bridges.rs), a handler a plain fn(), the handle an opaque word; until the soft interrupts enter hal (N4.5, N4.8)"
-
-[[extra]]
 rust = "sys/hal/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
@@ -8680,11 +8682,6 @@ reason = "hal runtime, written new: OnceStatic<T>, the init-once static that rep
 rust = "sys/hal/bridges.rs"
 crate = "hal"
 reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
-
-[[extra]]
-rust = "sys/hal/intr.rs"
-crate = "hal"
-reason = "hal runtime, written new: the interrupt-level guard and the IntrLevel bridge; docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
 rust = "sys/hal/netlock.rs"
@@ -8741,6 +8738,28 @@ notes = "N4.5a: fpu.c's register moves and CPACR_EL1 writes, on the running thre
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/fpu.rs::sve_save"
 native = ["save"]
+kind = "merged"
+
+[[module]]
+rust = "sys/hal/intr.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/intr.rs"]
+status = "redesigned"
+notes = "N2: the interrupt-level guard (SplGuard). N4.5c: spl(9)'s generic half from arm64's intr.c: ci_cpl/ci_ipending in the core (hal::cpu), the arm_dflt_* defaults, arm_smask as a table of atomics (init_smask), softintr(), arm_do_pending_intr over hal::cpu's interrupt guard; struct arm_intr_func is the IntrHardware trait (decision 46), registered by the machine (arm64's initarm over the table arm_set_intr_handler fills); the IntrLevel bridge removed; amd64's spl is N10's"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::ARM_SMASK"
+native = ["SMASK"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/hal/softintr.rs"
+crate = "hal"
+lz = ["sys/kern/kern_softintr.rs"]
+status = "redesigned"
+notes = "N4.1 P5: the kernel's soft interrupts over a SoftIntr bridge. N4.5c: kern_softintr.c itself: the queues pinned lists bound to softintr_lock (a Mutexed holding the free entries), a handler's mutable members a Guarded cell of that lock, the handle a Copy SoftHandle (entry + generation; entries kept for reuse, a stale handle refused); the SoftIntr bridge removed; softintr_disestablish in two steps around the caller's sched_barrier; the handler stays fn(*mut c_void) + arg, a callback (decision 46's reason)"
+[[module.fn]]
+lz = "sys/kern/kern_softintr.rs::SoftintrQueues"
+native = ["SOFTINTR_QUEUE"]
 kind = "merged"
 
 [[module]]
