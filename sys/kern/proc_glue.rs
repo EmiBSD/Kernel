@@ -129,9 +129,7 @@
 //! - `fork1` takes the new process's klist store first (its only allocation that can fail:
 //!   `ENOMEM`, fork(2)'s, before anything is visible) and makes the process (its pid chosen
 //!   before the item, `process_alloc(allocpid(), ..)`) before the thread, where the C makes
-//!   the thread first; the child joins its group's members at the head (the kernel's lists
-//!   have no `LIST_INSERT_AFTER(curpr, pr, ps_pglist)`): the order of `pg_members` decides
-//!   only the order in which a group's members are signalled.
+//!   the thread first.
 //! - The orphan's owner (`ps_opptr`, ptrace) is looked up by address among the processes
 //!   (`process_clear_orphan`), where the C follows the pointer.
 //! - `sysctl_doproc` reads a process's threads one at a time by position under `ps_mtx`
@@ -757,6 +755,18 @@ pub fn pgrp_ref(pg: &Pgrp) -> PgrpRef {
     }
 }
 
+/// `pr->ps_pgrp = curpr->ps_pgrp; LIST_INSERT_AFTER(curpr, pr, ps_pglist)`: `fork1`'s child
+/// `pr` joins its parent's group right after the parent among the members, the order
+/// `setpriority(PRIO_PGRP)` (the last member's nice) and `ttyinfo`'s tie-break read. A
+/// parent in no group leaves the child in none.
+pub fn fork_join_pgrp(w: &mut hal::klock::KernelWitness, curpr: &Process, pr: &ProcessRef) {
+    let pgrp = curpr.pgrp(&*w).cloned();
+    if let Some(pg) = &pgrp {
+        pg.pg_members.insert_after(w, curpr, pr.as_pin());
+    }
+    drop(pr.set_pgrp(w, pgrp));
+}
+
 /// A process of the host tests with pid `pid` and its own klist store, leaked (never
 /// freed: the tests' processes live for the run).
 #[cfg(test)]
@@ -1094,6 +1104,46 @@ mod tests {
                 parent.ps_children.remove(&mut w, pr);
             }
         }
+        kernel_unlock();
+    }
+
+    #[test]
+    fn a_forked_child_follows_its_parent_among_the_group_s_members() {
+        // fork1's LIST_INSERT_AFTER(curpr, pr, ps_pglist): after two forks of `parent` in a
+        // group where `other` joined later (enterpgrp inserts at the head), the members are
+        // other, parent, the second child, the first child: setpriority(PRIO_PGRP) returns
+        // the first child's nice (the last member's), ttyinfo breaks ties in that order.
+        let _g = setup();
+        let parent = test_pooled_process(600);
+        let other = test_pooled_process(601);
+        let (pg, _sess) = test_setsid(parent);
+        kernel_lock();
+        {
+            let mut w = hal::klock::witness();
+            pg.pg_members.insert_head(&mut w, Pin::static_ref(other));
+            drop(other.set_pgrp(&mut w, Some(pg.clone())));
+        }
+        let first = process_ref(test_pooled_process(602));
+        let second = process_ref(test_pooled_process(603));
+        {
+            let mut w = hal::klock::witness();
+            fork_join_pgrp(&mut w, parent, &first);
+            fork_join_pgrp(&mut w, parent, &second);
+        }
+        {
+            let r = hal::klock::reader();
+            let pids: std::vec::Vec<Pid> = pg.pg_members.iter(&r).map(|p| p.ps_pid).collect();
+            assert_eq!(pids, [601, 600, 603, 602]);
+            assert!(StaticOrPooled::ptr_eq(
+                first.pgrp(&r).expect("a group"),
+                &pg
+            ));
+            assert!(StaticOrPooled::ptr_eq(
+                second.pgrp(&r).expect("a group"),
+                &pg
+            ));
+        }
+        // The group stays linked with its members, all leaked, as the tests' processes.
         kernel_unlock();
     }
 }

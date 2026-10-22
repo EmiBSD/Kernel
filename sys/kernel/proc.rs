@@ -149,9 +149,6 @@
 //! members are atomic words, and its credentials an embedded copy ([`Thread::ucred`]).
 //!
 //! ## Deviations
-//! - `fork1`'s `LIST_INSERT_AFTER(curpr, pr, ps_pglist)` becomes an insert at the head of the
-//!   group's members (the pinned lists have no insert-after): the order in which `pgsignal`
-//!   reaches a group's members differs; no answer userland reads depends on it.
 //! - The thread's credentials are a copy of its process's (the user's decision of
 //!   2026-10-21, shape A): `dorefreshcreds` copies the ids where the C swaps a pointer, and
 //!   `procpl`'s item is about 100 bytes larger.

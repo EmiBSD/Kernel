@@ -89,9 +89,8 @@
 //!   before it commits, as for the u-area. A thread joins its process (`ps_threads`) through
 //!   the kernel's `insert_thread_locked`, which hands back the box's address; `thread_join`
 //!   turns it into the `&'static Proc` every thread reference here is (LZ's `curthread`
-//!   convention). The child joins its parent's process group at the head of the members,
-//!   not after the parent (`kernel::proc`'s deviation: no answer userland reads depends on
-//!   the order).
+//!   convention). The child joins its parent's process group right after the parent
+//!   (`proc_glue::fork_join_pgrp`, the C's `LIST_INSERT_AFTER`).
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
@@ -116,8 +115,8 @@ use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_time::ratecheck;
 use crate::kern::kern_timeout::timeout_set;
 use crate::kern::proc_glue::{
-    chgproccnt, pgfind, prfind, proc_tables, process_ref, store_alloc, store_free, tfind,
-    zombiefind,
+    chgproccnt, fork_join_pgrp, pgfind, prfind, proc_tables, process_ref, store_alloc, store_free,
+    tfind, zombiefind,
 };
 use crate::kern::sched_bsd::{
     SCHED_LOCK, sched_assert_locked, sched_assert_unlocked, sched_lock, sched_unlock,
@@ -626,13 +625,7 @@ pub fn fork1(
         t.tidhash(p.p_tid.get()).insert_head(&mut w, pin_static(p));
         t.pidhash(pr.ps_pid).insert_head(&mut w, pr.as_pin());
 
-        // The parent's group: the child joins its members (at the head, see
-        // sys/kern/proc_glue.rs's deviations) and the parent's children.
-        let pgrp = curpr.pgrp(&w).cloned();
-        if let Some(pg) = &pgrp {
-            pg.pg_members.insert_head(&mut w, pr.as_pin());
-        }
-        drop(pr.set_pgrp(&mut w, pgrp));
+        fork_join_pgrp(&mut w, curpr, &pr);
         curpr.ps_children.insert_head(&mut w, pr.as_pin());
     }
 
