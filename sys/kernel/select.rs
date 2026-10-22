@@ -553,6 +553,10 @@ pub fn pselcollect<G: ProcGlue>(
 
 /// `selwakeup(sip)`: do a wakeup when a selectable event occurs.
 pub fn selwakeup<G: ProcGlue>(sip: &Selinfo<G>) {
+    // No knote on it (nothing ever polled the object): no kernel lock to take.
+    if sip.si_note.is_empty() {
+        return;
+    }
     hal::klock::kernel_lock();
     sip.si_note.knote_legacy(i64::from(NOTE_SUBMIT));
     hal::klock::kernel_unlock();

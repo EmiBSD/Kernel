@@ -462,6 +462,9 @@ pub struct Filedesc<G: FileGlue> {
     pub(crate) kqlist: PinList<<G::Proc as ProcGlue>::KqNext>,
     /// `fd_kqlist`'s mutex.
     pub(crate) kqlist_mtx: SharedMutex,
+    /// \[k\] The kqueues on `fd_kqlist`, written under its mutex and read without it by
+    /// `knote_fdclose`'s empty-list test (a table that never made a kqueue takes no lock).
+    pub(crate) nkqueues: AtomicU32,
     /// \[a\] `fd_nuserevents`: number of kqueue user events.
     pub fd_nuserevents: AtomicU32,
 }
@@ -484,6 +487,7 @@ impl<G: FileGlue> Filedesc<G> {
             rdir: Link::new(),
             kqlist: PinList::new(),
             kqlist_mtx: Mutexed::new(hal::intr::IPL_HIGH, ()),
+            nkqueues: AtomicU32::new(0),
             fd_nuserevents: AtomicU32::new(0),
         }
     }

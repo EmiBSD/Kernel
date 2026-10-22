@@ -1071,6 +1071,10 @@ impl<G: ProcGlue> Klist<G> {
     /// `knote_locked(list, hint)` of a `bsd` caller that holds the list's lock as the C
     /// knows it (as [`Klist::insert_legacy`]; the kernel lock's walk needs its reader only).
     pub fn knote_legacy(&self, hint: i64) {
+        // An empty list has nothing to walk: no lock taken (the C's KNOTE tests it too).
+        if self.is_empty() {
+            return;
+        }
         match self.kind() {
             KlistKind::Kernel => {
                 let _k = KernelHold::legacy();
@@ -1239,6 +1243,11 @@ pub struct Kqueue<G: ProcGlue> {
     count: AtomicI32,
     /// \[q\] `kq_state`: `KQ_*` (read without the lock by `kinfo_file`).
     state: AtomicI32,
+    /// \[q\] `kq_nknotes`, mirrored: written under `kq_lock` beside `KqState::nknotes`,
+    /// read without it by `kqpoll_done`, as the C.
+    nknotes_word: AtomicU32,
+    /// \[q\] `kq_knlistsize`, mirrored as `nknotes_word`.
+    knlistsize_word: AtomicI32,
     /// \[L\] `kq_klist`: knotes of other kqueues.
     klist: Klist<G>,
     /// \[I\] `kq_fdp`: fd table of this kq.
@@ -1264,9 +1273,9 @@ impl<G: ProcGlue> Kqueue<G> {
         self.state.load(Ordering::Relaxed)
     }
 
-    /// `kq_knotes`, read under `kq_lock`.
+    /// `kq_nknotes`, read without `kq_lock` (its mirror).
     pub fn nknotes(&self) -> u32 {
-        self.lock.lock().nknotes
+        self.nknotes_word.load(Ordering::Relaxed)
     }
 
     /// `kq_klist`.
@@ -1405,6 +1414,7 @@ impl<G: ProcGlue> Drop for Kqueue<G> {
             let fdp = &self.fdp;
             let mut g = fdp.kqlist_mtx.lock();
             fdp.kqlist.remove(&mut g, self);
+            fdp.nkqueues.fetch_sub(1, Ordering::Relaxed);
         }
         let st = self.lock.get_mut();
         kassert!(st.nknotes == 0);
@@ -2365,6 +2375,7 @@ pub fn fd_kqlist_insert<G: ProcGlue>(kq: &KqRef<G>) {
     let fdp = &kq.fdp;
     let mut g = fdp.kqlist_mtx.lock();
     fdp.kqlist.insert_head(&mut g, kq.0.as_pin());
+    fdp.nkqueues.fetch_add(1, Ordering::Relaxed);
 }
 
 /// `kqpoll_init(num)`: initialize the thread `p` for poll/select system call. `num`
@@ -2407,10 +2418,9 @@ pub fn kqpoll_done<G: ProcGlue>(p: &Thread<G>, num: u32) {
     // infrequent, or does not happen at all, with normal programs. A single pollfd entry can
     // use up to three knotes. Typically there is no significant overlap of fd and events
     // between different entries in the pollfd array.
-    let (nknotes, knlistsize) = {
-        let g = kq.lock.lock();
-        (g.nknotes, g.knlistsize)
-    };
+    // Read without kq_lock, as the C: a stale count only moves the purge by one call.
+    let nknotes = kq.nknotes_word.load(Ordering::Relaxed);
+    let knlistsize = kq.knlistsize_word.load(Ordering::Relaxed);
     if u64::from(nknotes) > 4 * knlistsize as u64 {
         kqueue_purge(Some(p), kq);
     }
@@ -2445,6 +2455,8 @@ pub fn kqueue_alloc<G: ProcGlue>(fdp: &FdRef<Files<G>>) -> Result<KqRef<G>, Errn
             head: PinList::new(),
             count: AtomicI32::new(0),
             state: AtomicI32::new(0),
+            nknotes_word: AtomicU32::new(0),
+            knlistsize_word: AtomicI32::new(0),
             klist: Klist::owner(),
             fdp: fdp.clone(),
             next: PinEntry::new(),
@@ -2958,6 +2970,10 @@ pub fn kqueue_scan<G: ProcGlue>(
                 continue;
             }
 
+            // The counted reference outlives `g`, which the filter calls below run without:
+            // `kn`, borrowed from the queue under `g`, cannot (the C keeps a plain pointer,
+            // trusting KN_PROCESSING). It costs one count of the knote's entry, taken and
+            // given back once per knote collected.
             let h = KnHold::of(kn);
             let Some(h) = knote_acquire(&mut g, h) else {
                 // knote_acquire() has slept and taken kq_lock again.
@@ -2988,7 +3004,10 @@ pub fn kqueue_scan<G: ProcGlue>(
             // Invalidate knotes whose vnodes have been revoked. This is a workaround; it is
             // tricky to clear existing knotes and prevent new ones from being registered
             // with the current revocation mechanism. The file read under the slot alone (no
-            // reference taken: the knote holds one).
+            // reference taken: the knote holds one). The C reads kn_fp plainly under
+            // KN_PROCESSING; the slot keeps its leaf mutex (one uncontended lock, only for a
+            // descriptor filter) because a lock-free set-once slot would have to be emptied by
+            // knote_drop through `&mut` of a pinned pool item, which hal does not lend.
             let revoked =
                 kn.fop().f_flags & FILTEROP_ISFD != 0
                     && kn.fp.lock().get().is_some_and(|fp| {
@@ -3237,6 +3256,7 @@ fn kqueue_expand_list<'a, G: ProcGlue>(
         }
         g.knlist = Some(list);
         g.knlistsize = size;
+        kq.knlistsize_word.store(size, Ordering::Relaxed);
         drop(g);
         drop(olist);
     } else {
@@ -3393,6 +3413,12 @@ pub fn knote_fdclose<G: ProcGlue>(p: &Thread<G>, fd: i32) {
         fdpassertlocked(fdp);
     }
 
+    // No kqueue on the table: nothing to walk, no lock to take. A kqueue made meanwhile is
+    // as one made after the walk (its registration checks the descriptor, fd_checkclosed).
+    if fdp.nkqueues.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+
     let mut cur: Option<KqRef<G>> = None;
     loop {
         let next = {
@@ -3511,6 +3537,7 @@ fn knote_attach<G: ProcGlue>(g: &mut KqGuard<'_, G>, kn: PoolBox<Knote<G>>) -> K
 
     let isfd = kn.fop().f_flags & FILTEROP_ISFD != 0;
     let ident = kn.kn_id().get();
+    kn.kq().nknotes_word.fetch_add(1, Ordering::Relaxed);
     let st: &mut KqState<G> = g;
     st.nknotes += 1;
     let Some(list) = st.slot_mut(isfd, ident) else {
@@ -3543,6 +3570,7 @@ fn knote_drop<G: ProcGlue>(kq: &Kqueue<G>, h: KnHold<G>, p: Option<&Thread<G>>) 
     let isfd = kn.fop().f_flags & FILTEROP_ISFD != 0;
     let ident = kn.kn_id().get();
     let b = {
+        kq.nknotes_word.fetch_sub(1, Ordering::Relaxed);
         let st: &mut KqState<G> = &mut g;
         st.nknotes -= 1;
         match st.slot_mut(isfd, ident) {
@@ -4842,7 +4870,7 @@ pub(crate) mod tests {
         // The C's knote is 120 bytes, LZ's about 200; the kqueue grew with its chains'
         // owners and the knote with its three entries and its counted members (the user's
         // decision of 2026-10-22: accepted, pinned here).
-        assert_eq!(sizes, [288, 328, 88], "knotepl, kqueuepl, kqtimerpl");
+        assert_eq!(sizes, [288, 336, 88], "knotepl, kqueuepl, kqtimerpl");
     }
 
     // A knote, a kqueue and a klist are shared between CPUs by composition (no `unsafe impl`).
