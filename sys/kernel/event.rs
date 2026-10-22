@@ -186,6 +186,12 @@
 //! - The scan markers are knotes the caller pins on its stack ([`Knote::marker`]); the scan's
 //!   state unlinks its end marker and drops its reference when it is dropped
 //!   (`kqueue_scan_finish`).
+//! - `filt_proc` runs under `ps_mtx` inside the walk of `ps_klist` and cannot drop it: what
+//!   the C does there dropping `ps_mtx` runs after the walk, under `kqueue_ps_list_lock`.
+//!   `NOTE_EXIT`'s unlink of the knote from the process's klist is made by
+//!   `knote_processexit` once the walk is over; `NOTE_TRACK`'s registration on the child by
+//!   `knote_processfork`, which then activates the parent's knote if it has an event, so the
+//!   order of the queue (the child's `NOTE_CHILD` first) and `NOTE_TRACKERR` are the C's.
 //! - `fd_kqlist` is a `PinList` under its own spin mutex in the table (the C's `fdplock`),
 //!   walked by `knote_fdclose` one counted kqueue at a time, so no table lock is held when a
 //!   kqueue's last reference drops and unlinks it (the C's `rw_status == RW_WRITE` test is
@@ -1748,8 +1754,10 @@ fn filt_procdetach<G: ProcGlue>(kn: &Knote<G>) {
 
 /// `filt_proc`: records the process event the user asked for. `NOTE_EXIT` detaches the
 /// knote (it leaves the process's klist after the walk, `knote_processexit`); `NOTE_FORK`
-/// with `NOTE_TRACK` asks for a knote on the child (registered after the walk,
-/// `knote_processfork`, where the C drops `ps_mtx` inside it).
+/// with `NOTE_TRACK` asks for a knote on the child: registered after the walk, where the C
+/// drops `ps_mtx` inside it, and only then is the knote activated if it has an event
+/// (`knote_processfork`), so the child's `NOTE_CHILD` knote is queued first and a failed
+/// registration's `NOTE_TRACKERR` is reported, as the C's order.
 fn filt_proc<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
     // mask off extra data
     let event = (hint as u32) & NOTE_PCTRLMASK;
@@ -1787,6 +1795,8 @@ fn filt_proc<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
     if event == NOTE_FORK && kn.kn_sfflags.get() & NOTE_TRACK != 0 {
         kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
         kn.pmark.fetch_or(PMARK_TRACK, Ordering::Relaxed);
+        // The C returns `kn_fflags != 0` after the registration: knote_processfork activates.
+        return false;
     }
 
     kn.kn_fflags().get() != 0
@@ -3443,7 +3453,8 @@ pub fn knote_processexit<G: ProcGlue>(pr: &Process<G>) {
 
 /// `knote_processfork(pr, pid)`: `NOTE_FORK` with the child's pid; then the `NOTE_TRACK`
 /// knotes' registrations on the child, with `ps_mtx` released (the C makes them inside the
-/// walk, dropping `ps_mtx` there).
+/// walk, dropping `ps_mtx` there), each knote activated after its registration as the C's
+/// `filt_proc` return does.
 pub fn knote_processfork<G: ProcGlue>(pr: &Process<G>, pid: Pid) {
     // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
     let _w = KQUEUE_PS_LIST_LOCK.write();
@@ -3464,8 +3475,17 @@ pub fn knote_processfork<G: ProcGlue>(pr: &Process<G>, pid: Pid) {
         let Some(h) = h else {
             break;
         };
-        h.kn().pmark.fetch_and(!PMARK_TRACK, Ordering::Relaxed);
-        filt_proc_track(h.kn(), pid);
+        let kn = h.kn();
+        kn.pmark.fetch_and(!PMARK_TRACK, Ordering::Relaxed);
+        filt_proc_track(kn, pid);
+        // filt_proc's answer, after the registration (the child's knote is queued first):
+        // `knote_locked`'s activation of a knote whose filter returned true. The knote stays
+        // linked: its detach waits on kqueue_ps_list_lock, held here.
+        if kn.kn_fflags().get() != 0 {
+            let kq = kn.kq();
+            let mut g = kq.lock.lock();
+            knote_activate(kq, &mut g, kn);
+        }
     }
 }
 
@@ -4567,23 +4587,37 @@ pub(crate) mod tests {
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].fflags), (21, NOTE_EXEC));
 
-        // NOTE_FORK with NOTE_TRACK: a knote on the grandchild with NOTE_CHILD and the parent.
+        // NOTE_FORK with NOTE_TRACK: a knote on the grandchild with NOTE_CHILD and the parent,
+        // queued before the parent's (the C registers inside filt_proc, which then returns).
         let _gc = thread_of(22);
         knote_processfork(&cpr, 22);
         assert_eq!(scan(p, &kq, &mut out), (2, Ok(())));
-        let fork = out[..2].iter().find(|k| k.ident == 21).unwrap();
-        assert_eq!(fork.fflags, NOTE_FORK);
-        let tracked = out[..2].iter().find(|k| k.ident == 22).unwrap();
         assert_eq!(
-            (tracked.fflags, tracked.data, tracked.udata),
-            (NOTE_CHILD, 21, 5)
+            (out[0].ident, out[0].fflags, out[0].data, out[0].udata),
+            (22, NOTE_CHILD, 21, 5)
         );
+        assert_eq!((out[1].ident, out[1].fflags), (21, NOTE_FORK));
         assert_eq!(kq.nknotes(), 2);
 
         // A fork to a pid that does not exist: NOTE_TRACKERR.
         knote_processfork(&cpr, 23);
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!(out[0].fflags, NOTE_FORK | NOTE_TRACKERR);
+
+        // NOTE_TRACK without NOTE_FORK: no fork event, but a failed registration is reported.
+        let other = thread_of(24);
+        let opr = other.process_ref().clone();
+        assert_eq!(
+            reg(p, &kq, ev_set(24, EVFILT_PROC, EV_ADD, NOTE_TRACK, 0, 6)),
+            Ok(())
+        );
+        knote_processfork(&opr, 25);
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
+        assert_eq!((out[0].ident, out[0].fflags), (24, NOTE_TRACKERR));
+        assert_eq!(
+            reg(p, &kq, ev_set(24, EVFILT_PROC, EV_DELETE, 0, 0, 0)),
+            Ok(())
+        );
 
         // NOTE_EXIT: the exit status, EV_EOF, and the knote is gone once reported.
         cpr.ps_xexit.set(3);
