@@ -56,7 +56,6 @@
 
 use crate::cons::Console;
 use crate::intr::IntrHardware;
-use crate::klock::KernelLock;
 use crate::malloc::Malloc;
 use crate::module::ModulePlatform;
 use crate::netlock::NetLock;
@@ -165,15 +164,6 @@ bridge!(
     MODULE_PLATFORM: ModulePlatform,
     register_module_platform,
     module_platform
-);
-
-bridge!(
-    /// Registers the kernel lock (`KERNEL_LOCK`, `KERNEL_UNLOCK`, `KERNEL_ASSERT_LOCKED` of
-    /// `sys/kern/kern_lock.rs`), for the kernel crate's vnode pager and object functions
-    /// (`hal::klock`, N3.4c). Paid by N4 (`kern_lock` moves).
-    KERNEL_LOCK: KernelLock,
-    register_kernel_lock,
-    kernel_lock
 );
 
 bridge!(

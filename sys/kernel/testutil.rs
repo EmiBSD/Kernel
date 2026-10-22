@@ -47,8 +47,8 @@
 //!   copies) reach one run of "foreign" kernel memory of [`FOREIGN_LEN`] bytes at
 //!   [`FOREIGN_BASE`] ([`foreign_bytes`], [`set_foreign_bytes`]); anything outside it faults.
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
-//! - `KernelLock`: a per-thread depth, no exclusion (the tests that take it hold [`MEMORY`]);
-//!   the assertion panics on a thread that does not hold it ([`kernel_lock_depth`]).
+//! - The kernel lock is `hal::klock`'s own since N4.5c, a per-thread depth on the host (no
+//!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
 //! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
 //! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
 //! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
@@ -87,7 +87,6 @@ use std::vec::Vec;
 
 use hal::bridges;
 use hal::intr::IntrHardware;
-use hal::klock::KernelLock;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::link::Link;
 use hal::malloc::Malloc;
@@ -138,7 +137,6 @@ std::thread_local! {
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
-    static KLOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -462,46 +460,11 @@ fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errn
     Ok(start..end)
 }
 
-/// The kernel lock double.
-struct TestKernelLock;
-
-impl KernelLock for TestKernelLock {
-    fn lock(&self) {
-        KLOCK_DEPTH.with(|d| d.set(d.get() + 1));
-    }
-
-    fn unlock(&self) {
-        KLOCK_DEPTH.with(|d| match d.get().checked_sub(1) {
-            Some(n) => d.set(n),
-            None => crate::assert::kpanic(format_args!("kernel_unlock: not locked")),
-        });
-    }
-
-    fn assert_locked(&self) {
-        if KLOCK_DEPTH.with(Cell::get) == 0 {
-            crate::assert::kpanic(format_args!("kernel lock not held"));
-        }
-    }
-
-    fn held(&self) -> bool {
-        KLOCK_DEPTH.with(Cell::get) > 0
-    }
-
-    fn release_all(&self) -> u32 {
-        KLOCK_DEPTH.with(|d| d.replace(0))
-    }
-
-    fn acquire_count(&self, count: u32) {
-        KLOCK_DEPTH.with(|d| d.set(d.get() + count));
-    }
-}
-
-/// How many times this thread holds the kernel lock double.
+/// How many times this thread holds the kernel lock (`hal::klock`'s host double, a
+/// per-thread depth).
 pub fn kernel_lock_depth() -> u32 {
-    KLOCK_DEPTH.with(Cell::get)
+    hal::klock::depth()
 }
-
-static TEST_KERNEL_LOCK: TestKernelLock = TestKernelLock;
 
 /// The network lock double.
 struct TestNetLock;
@@ -885,7 +848,6 @@ pub fn install() {
         let _ = MEMORY_DOUBLES.set(pools && malloc);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
-        let _ = bridges::register_kernel_lock(&TEST_KERNEL_LOCK);
         let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
         let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);

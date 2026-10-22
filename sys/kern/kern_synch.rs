@@ -190,13 +190,13 @@ pub fn msleep_nsec<T: ?Sized>(
         // After a panic, or during autoconfiguration, just give interrupts a chance, then just
         // return; don't run any other procs or panic below, in case this is the idle process
         // and already asleep.
-        let spl = mtx.mtx_oldipl.get();
-        mtx.mtx_oldipl.set(SAFEPRI.load(Ordering::Relaxed));
+        let spl = mtx.oldipl();
+        mtx.set_oldipl(SAFEPRI.load(Ordering::Relaxed));
         mtx_leave(mtx);
         kernel_lock_bounce();
         if priority & PNORELOCK == 0 {
             mtx_enter(mtx);
-            mtx.mtx_oldipl.set(spl);
+            mtx.set_oldipl(spl);
         } else {
             splx(spl);
         }

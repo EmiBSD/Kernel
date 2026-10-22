@@ -441,6 +441,21 @@ impl Drop for IntrGuard {
     }
 }
 
+/// `s = intr_disable()` for a holder that keeps the state beyond one scope: the debugger's
+/// mutex (`crate::mutex::DbMutex`), entered and left by separate calls on its owner, which
+/// alone stores and reads the state.
+#[inline]
+pub(crate) fn intr_disable_raw() -> u64 {
+    machine::intr_disable()
+}
+
+/// `intr_restore(s)` of a state [`intr_disable_raw`] returned on this CPU (`DbMutex::leave`,
+/// with what its owner's `enter` stored).
+#[inline]
+pub(crate) fn intr_restore_raw(s: u64) {
+    machine::intr_restore(s);
+}
+
 /// `ci_mutex_level += delta` under `DIAGNOSTIC`.
 #[cfg(feature = "diagnostic")]
 pub(crate) fn mutex_level(delta: i32) {

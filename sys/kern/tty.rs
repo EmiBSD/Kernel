@@ -3082,6 +3082,9 @@ mod tests {
         let p = thread();
         let (kq, h) = owned_knote(p);
         let tp = test_tty();
+        // ttyinput runs under the kernel lock (the line discipline is not MPSAFE): its signal
+        // path opens the process groups through a witness of it.
+        crate::sys::systm::kernel_lock();
 
         // A read knote hooked as ttkqfilter hooks it (the test tty has no device switch entry).
         let kn = h.kn();
@@ -3118,6 +3121,7 @@ mod tests {
 
         filt_ttyrdetach(kn);
         assert!(tp.t_rsel.si_note.is_empty());
+        crate::sys::systm::kernel_unlock();
         owned_knote_drop(p, kq, h);
     }
 }

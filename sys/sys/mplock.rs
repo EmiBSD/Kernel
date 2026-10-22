@@ -44,69 +44,20 @@
 //! `<sys/mplock.h>`: the machine-independent ticket lock behind the kernel lock.
 //!
 //! Upstream: sys/sys/mplock.h @ 3ce1f3f79392
+//! LZ: sys/sys/mplock.rs@3c62ede68802
 //!
 //! Both architectures' `<machine/mplock.h>` say `__USE_MI_MPLOCK`, so this is the only
-//! `struct __mp_lock`. The functions (`__mp_lock`, `__mp_unlock`, `__mp_release_all`,
-//! `__mp_acquire_count`, `__mp_lock_held`) and `kernel_lock` itself live in
-//! `kern/kern_lock.rs`, which defines them only with `MULTIPROCESSOR`, as the C does.
+//! `struct __mp_lock`: `hal::klock::MpLock`, whose methods are `kern_lock.c`'s functions
+//! (`kern/kern_lock.rs` keeps their C names).
 //!
 //! ## Deviations
-//! - `mpl_cpus[]`, `mpl_ticket` and `mpl_users` are atomics: each CPU writes its own
-//!   `__mp_lock_cpu` but `__mp_lock_held` reads every CPU's, and the ticket is the C's
-//!   `volatile` word. `WITNESS` (`mpl_lock_obj`) is not configured.
+//! - `mpl_cpus[]`, `mpl_ticket` and `mpl_users` are atomics (private to `hal::klock`): each
+//!   CPU writes its own `__mp_lock_cpu` but `__mp_lock_held` reads every CPU's, and the
+//!   ticket is the C's `volatile` word. `WITNESS` (`mpl_lock_obj`) is not configured.
+//!
+//! ## Redesign
+//! - N4.5c: `struct __mp_lock` and `struct __mp_lock_cpu` moved into `hal::klock` with the
+//!   kernel lock; this module re-exports the lock's type under its header's path.
 
-use core::sync::atomic::AtomicU32;
-
-use crate::machine::cpu::MAXCPUS;
-
-/// `struct __mp_lock_cpu`: one CPU's hold on an [`MpLock`].
-pub struct MpLockCpu {
-    /// `mplc_ticket`: the ticket this CPU drew when it first asked for the lock.
-    pub mplc_ticket: AtomicU32,
-    /// `mplc_depth`: how many times this CPU holds the lock (it is recursive).
-    pub mplc_depth: AtomicU32,
-}
-
-impl MpLockCpu {
-    /// A CPU that holds nothing.
-    pub const fn new() -> Self {
-        Self {
-            mplc_ticket: AtomicU32::new(0),
-            mplc_depth: AtomicU32::new(0),
-        }
-    }
-}
-
-impl Default for MpLockCpu {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `struct __mp_lock`: a recursive ticket lock, one [`MpLockCpu`] per possible CPU.
-pub struct MpLock {
-    /// `mpl_cpus[MAXCPUS]`, indexed by `cpu_number()`.
-    pub mpl_cpus: [MpLockCpu; MAXCPUS as usize],
-    /// `mpl_ticket` (volatile): the ticket now being served.
-    pub mpl_ticket: AtomicU32,
-    /// `mpl_users`: the last ticket handed out.
-    pub mpl_users: AtomicU32,
-}
-
-impl MpLock {
-    /// What `___mp_lock_init` leaves: nobody holds it and ticket 1 is served next.
-    pub const fn new() -> Self {
-        Self {
-            mpl_cpus: [const { MpLockCpu::new() }; MAXCPUS as usize],
-            mpl_ticket: AtomicU32::new(1),
-            mpl_users: AtomicU32::new(0),
-        }
-    }
-}
-
-impl Default for MpLock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use hal::klock::MpLock;
 /* </CODE> */

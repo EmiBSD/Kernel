@@ -47,7 +47,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
-use hal::klock::KernelLock;
 use hal::malloc::Malloc;
 use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
@@ -333,36 +332,6 @@ impl Printf for BsdPrintf {
     }
 }
 
-/// `KERNEL_LOCK`, `KERNEL_UNLOCK`, `KERNEL_ASSERT_LOCKED` of `sys/sys/systm.rs`
-/// (`kern_lock.rs`), for the kernel's objects and vnode pager (N3.4e).
-struct BsdKernelLock;
-
-impl KernelLock for BsdKernelLock {
-    fn lock(&self) {
-        crate::sys::systm::kernel_lock();
-    }
-
-    fn unlock(&self) {
-        crate::sys::systm::kernel_unlock();
-    }
-
-    fn assert_locked(&self) {
-        crate::sys::systm::kernel_assert_locked();
-    }
-
-    fn held(&self) -> bool {
-        crate::kern::kern_lock::_kernel_lock_held()
-    }
-
-    fn release_all(&self) -> u32 {
-        crate::kern::kern_lock::__mp_release_all(&crate::kern::kern_lock::KERNEL_LOCK)
-    }
-
-    fn acquire_count(&self, count: u32) {
-        crate::kern::kern_lock::__mp_acquire_count(&crate::kern::kern_lock::KERNEL_LOCK, count);
-    }
-}
-
 /// The kernel crate's clocks (`kernel::clock::Uptime`) over `nanouptime`, `getnanouptime`
 /// and `nanotime` of `sys/kern/kern_tc.rs`, the userland-shaped `Timespec` turned into the
 /// kernel's.
@@ -455,7 +424,6 @@ static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
-static BSD_KERNEL_LOCK: BsdKernelLock = BsdKernelLock;
 static BSD_NET_LOCK: BsdNetLock = BsdNetLock;
 
 /// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
@@ -485,10 +453,9 @@ pub fn hal_bridges_register() {
     }
 }
 
-/// Registers the bridges of the kernel's VM objects and vnode pager (`KernelLock`, `NetLock`),
+/// Registers the bridge of the kernel's vnode pager (`NetLock`; the kernel lock is `hal`'s own),
 /// once: called by `uvm_init` before the first object is made (bridges.toml).
 pub fn hal_bridges_register_vm() {
-    let _ = hal::bridges::register_kernel_lock(&BSD_KERNEL_LOCK);
     let _ = hal::bridges::register_net_lock(&BSD_NET_LOCK);
 }
 

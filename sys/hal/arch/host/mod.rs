@@ -36,6 +36,7 @@
 //! with them.
 
 pub(crate) mod cpu;
+pub(crate) mod klock;
 pub mod param;
 pub(crate) mod pmap;
 #[cfg(not(feature = "module-rt"))]

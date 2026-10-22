@@ -5191,7 +5191,7 @@ notes = "N4.5a: the 0-unsafe adapter: kthread_create over fork1 and kthread_exit
 rust = "sys/kern/kern_lock.rs"
 lz = ["sys/kern/kern_lock.rs"]
 status = "redesigned"
-notes = "M4: the uniprocessor mutex (__mtx_init, _mtx_init, mtx_init, mtx_init_flags, mtx_enter, mtx_enter_try, mtx_leave) through the machine::intr spl and Cpu::curcpu_ptr contracts; M5: pc_lock_init, pc_sprod_enter/leave, pc_mprod_enter/leave (= sprod without MULTIPROCESSOR), pc_cons_enter/leave (membar_* are fences); M11a (feature multiprocessor): kernel_lock (KERNEL_LOCK static), _kernel_lock_init/_kernel_lock/_kernel_unlock/_kernel_lock_held, the ticket lock (___mp_lock_init, __mp_lock_spin, __mp_lock, __mp_unlock, __mp_release_all, __mp_acquire_count, __mp_lock_held indexed by ci_cpuid), the spinning mutex with its 128 parking lots (mtx_init_parking, mtx_park, mtx_enter_park/leave_park, mtx_cas, mtx_enter with the slow path split out as mtx_enter_slow, mtx_enter_try, mtx_leave), the interlocking pc_mprod_enter/leave; db_mtx_enter/leave and mtx_print_parks are ddb on MP (M11c); WITNESS and MP_LOCKDEBUG not configured; M11c: db_mtx_enter/db_mtx_leave (DDB, uniprocessor too; CPU_MIN_BUSY_CYCLES and CPU_MAX_BUSY_CYCLES = ncpusfound back-off); mtx_print_parks (a printer nothing calls) is not here"
+notes = "M4: the uniprocessor mutex (__mtx_init, _mtx_init, mtx_init, mtx_init_flags, mtx_enter, mtx_enter_try, mtx_leave) through the machine::intr spl and Cpu::curcpu_ptr contracts; M5: pc_lock_init, pc_sprod_enter/leave, pc_mprod_enter/leave (= sprod without MULTIPROCESSOR), pc_cons_enter/leave (membar_* are fences); M11a (feature multiprocessor): kernel_lock (KERNEL_LOCK static), _kernel_lock_init/_kernel_lock/_kernel_unlock/_kernel_lock_held, the ticket lock (___mp_lock_init, __mp_lock_spin, __mp_lock, __mp_unlock, __mp_release_all, __mp_acquire_count, __mp_lock_held indexed by ci_cpuid), the spinning mutex with its 128 parking lots (mtx_init_parking, mtx_park, mtx_enter_park/leave_park, mtx_cas, mtx_enter with the slow path split out as mtx_enter_slow, mtx_enter_try, mtx_leave), the interlocking pc_mprod_enter/leave; db_mtx_enter/leave and mtx_print_parks are ddb on MP (M11c); WITNESS and MP_LOCKDEBUG not configured; M11c: db_mtx_enter/db_mtx_leave (DDB, uniprocessor too; CPU_MIN_BUSY_CYCLES and CPU_MAX_BUSY_CYCLES = ncpusfound back-off); mtx_print_parks (a printer nothing calls) is not here. N4.5c: bsd's names over hal::klock and hal::mutex (the kernel lock, the ticket lock, the mutexes and the lots moved into hal), the pc_lock functions kept; 0 unsafe (LZ 8), forbid on its mod line; the uniprocessor branches gone (decision 40)"
 
 [[module]]
 rust = "sys/kern/kern_malloc.rs"
@@ -5903,7 +5903,7 @@ license = "none"
 rust = "sys/kern/tty.rs"
 lz = ["sys/kern/tty.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/hal/klock.rs"]
 
 [[module]]
 rust = "sys/kern/tty_conf.rs"
@@ -7723,7 +7723,8 @@ adapted_by = ["sys/kernel/cred.rs"]
 [[module]]
 rust = "sys/sys/mplock.rs"
 lz = ["sys/sys/mplock.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.5c: struct __mp_lock is hal::klock::MpLock, re-exported; forbid on its mod line"
 
 [[module]]
 rust = "sys/sys/msgbuf.rs"
@@ -7739,7 +7740,7 @@ status = "inherited"
 rust = "sys/sys/mutex.rs"
 lz = ["sys/sys/mutex.rs"]
 status = "redesigned"
-notes = "M4: struct mutex (the MI one), MUTEX_INITIALIZER (Mutex::new), __MUTEX_IPL (the ipl without MULTIPROCESSOR; M11a: at least IPL_MPFLOOR with it), mtx_curcpu/mtx_owner/mtx_owned, MUTEX_ASSERT_LOCKED/UNLOCKED, MTX_NOWITNESS/DUPOK; WITNESS is not configured; M11c: struct db_mutex (DbMutex: the owner as mtx_curcpu() in an AtomicUsize, mtx_intr_state a Cell) and DB_MUTEX_INITIALIZER (DbMutex::new)"
+notes = "M4: struct mutex (the MI one), MUTEX_INITIALIZER (Mutex::new), __MUTEX_IPL (the ipl without MULTIPROCESSOR; M11a: at least IPL_MPFLOOR with it), mtx_curcpu/mtx_owner/mtx_owned, MUTEX_ASSERT_LOCKED/UNLOCKED, MTX_NOWITNESS/DUPOK; WITNESS is not configured; M11c: struct db_mutex (DbMutex: the owner as mtx_curcpu() in an AtomicUsize, mtx_intr_state a Cell) and DB_MUTEX_INITIALIZER (DbMutex::new). N4.5c: struct mutex is hal::mutex::RawMutex (re-exported as Mutex), struct db_mutex hal::mutex::DbMutex; the helpers over their methods; 0 unsafe (LZ 2), forbid on its mod line"
 
 [[module]]
 rust = "sys/sys/namei.rs"
@@ -8689,11 +8690,6 @@ crate = "hal"
 reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
 
 [[extra]]
-rust = "sys/hal/klock.rs"
-crate = "hal"
-reason = "hal runtime, written new: the KernelLock bridge (KERNEL_LOCK, KERNEL_UNLOCK, KERNEL_ASSERT_LOCKED of kern_lock.rs) for the kernel crate's pagers (N3.4c); paid by N4; N4.2: the kernel lock's witnesses (KernelWitness exclusive, KernelReader shared, a per-CPU count keeping them apart on the CPU that holds the lock, assert_unwitnessed for the release paths) for the [K] state of kernel::proc, and KernelLock::held"
-
-[[extra]]
 rust = "sys/hal/seqlock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'static str one writer replaces and any CPU reads without a lock behind a generation counter (p_wmesg: written under sched_lock, read unlocked by kinfo_proc, ddb, the tty status line); 1 unsafe (the str rebuilt from the two words of one set)"
@@ -8782,11 +8778,63 @@ crate = "hal"
 reason = "hal host tests: the doubles of the bridges, registered once per test process (cfg(test) only)"
 
 [[module]]
+rust = "sys/hal/klock.rs"
+crate = "hal"
+lz = ["sys/kern/kern_lock.rs", "sys/sys/mplock.rs"]
+status = "redesigned"
+notes = "N3.4c: the KernelLock bridge for the kernel crate's pagers; N4.2: the kernel lock's witnesses (KernelWitness, KernelReader, assert_unwitnessed). N4.5c: the lock itself: struct __mp_lock as MpLock (the ticket lock, its per-CPU holds under hal::cpu's interrupt guard: LZ's intr_disable/intr_restore pairs), KERNEL_LOCK, _kernel_lock/_kernel_unlock/_kernel_lock_held/__mp_release_all/__mp_acquire_count with the release checks on every machine; the KernelLock bridge removed; on the host a per-thread depth double (arch/host/klock.rs: every host thread is a CPU)"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::___mp_lock_init"
+native = ["MpLock::init"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::__mp_lock_spin"
+native = ["MpLock::spin"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::__mp_lock_held"
+native = ["MpLock::held_by"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/mplock.rs::MpLockCpu::default"
+native = []
+kind = "dropped"
+reason = "MpLockCpu is private to hal::klock, built only by MpLockCpu::new in MpLock::new; nothing needs a Default"
+
+[[module]]
 rust = "sys/hal/mutex.rs"
 crate = "hal"
 lz = ["sys/kern/kern_lock.rs", "sys/sys/mutex.rs", "sys/kern/kern_synch.rs"]
 status = "redesigned"
-notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: MutexedGuard::sleep_nsec, msleep_nsec on the guard (kern_synch.c's, hence kern_synch.rs in lz, which also holds rwsleep_nsec for rwlock.rs), its cold || panicstr early return through the Sleep bridge's cold/cold_yield. N3.5 S0: Mutexed::id and the guard as a hal::rwlock witness (Exclusive, Divisible), so Guarded cells key to a mutex (an INTRSAFE map's vm_map.mtx)"
+notes = "N2.3: Mutexed<T>, mtx_enter(9)'s behaviour re-expressed as a lock that owns its data; the legacy Mutex and kern_lock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: MutexedGuard::sleep_nsec, msleep_nsec on the guard (kern_synch.c's, hence kern_synch.rs in lz, which also holds rwsleep_nsec for rwlock.rs), its cold || panicstr early return through the Sleep bridge's cold/cold_yield. N3.5 S0: Mutexed::id and the guard as a hal::rwlock witness (Exclusive, Divisible), so Guarded cells key to a mutex (an INTRSAFE map's vm_map.mtx). N4.5c: the parking lots (mtx_park, mtx_enter_park/leave_park under hal::cpu's interrupt guard, the waiter pin!ned on the stack in a PinList bound to the lot's Mutexed, taken by Mutexed::lock_masked) for Mutexed and RawMutex (bsd's struct mutex: enter, enter_try, leave, the saved level, the after-a-panic early returns), DbMutex (struct db_mutex), mutex_ipl, mtx_curcpu; the deviation of no parking lots closed"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::mtx_init_parking"
+native = ["init_parking"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::mtx_enter_park"
+native = ["Mutexed::lock_masked"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::mtx_leave_park"
+native = ["Mutexed::lock_masked"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::mtx_cas"
+native = ["cas"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_lock.rs::mtx_enter_slow"
+native = ["enter_slow"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/mutex.rs::Mutex"
+native = ["RawMutex"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/mutex.rs::Mutex::new"
+native = ["RawMutex::new"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/hal/percpu.rs"

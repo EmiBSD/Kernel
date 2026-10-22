@@ -130,14 +130,17 @@ pub(crate) fn intr_disable() -> u64 {
 }
 
 /// `intr_restore(s)`: `DAIF` set back to what [`intr_disable`] returned
-/// (`restore_daif`); only `hal::cpu::IntrGuard`'s drop calls it, with its own saved state.
+/// (`restore_daif`); its callers are `hal::cpu::IntrGuard`'s drop, with its own saved state,
+/// and `hal::mutex::DbMutex::leave`, with the state its owner's `enter` saved on this CPU.
 #[inline]
 pub(crate) fn intr_restore(daif: u64) {
     // SAFETY: `msr daif` writes this CPU's interrupt mask: no memory operand, no stack, no
-    // flags. The value is the one `intr_disable` read on this CPU (the guard is not `Send`
-    // and holds it), so the mask returns to what it was before the section, as the C's
-    // `intr_restore` does; unmasking cannot make an access unsound. Without `nomem`, so the
-    // section's memory accesses stay before it.
+    // flags. The value is one `intr_disable` read on this CPU (the guard is not `Send` and
+    // holds it; the debugger's mutex is left by the CPU that entered it, which alone wrote
+    // the word), so the mask returns to what it was before the section, as the C's
+    // `intr_restore` does; whatever the mask, no memory access becomes unsound: it only
+    // decides when this CPU's handlers run. Without `nomem`, so the section's memory
+    // accesses stay before it.
     unsafe { asm!("msr daif, {}", in(reg) daif, options(nostack, preserves_flags)) };
 }
 

@@ -183,12 +183,6 @@ trait = "Random"
 for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
 paid_by = "N7"
 
-# bsd: KERNEL_LOCK, KERNEL_UNLOCK and KERNEL_ASSERT_LOCKED (_kernel_lock, _kernel_unlock,
-# _kernel_lock_held of sys/kern/kern_lock.rs), for the kernel crate's object functions
-# (uvm_obj_free's assertion) and the vnode pager (N3.4c); implemented by sys/kern/hal_bridges.rs
-# (BsdKernelLock) and registered by bsd's uvm_init (N3.4e); nothing before registration. N4,
-# with kern_lock.
-# hal::klock::KernelLock
 # kernel::thread::Kthread (bsd's BsdKthread over kern_kthread.rs: kthread_create, kthread_exit,
 # sched_peg_curproc of the primary CPU; the deferred queue is kernel::thread's since N4.5a):
 # re-dated to N4.6, with fork1 (decision 8 of N4.5).
@@ -204,11 +198,6 @@ paid_by = "N4"
 [[bridge]]
 trait = "Uptime"
 for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
-paid_by = "N4"
-
-[[bridge]]
-trait = "KernelLock"
-for = ["sys/hal/klock.rs", "sys/kernel/vm/object.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N4"
 
 # bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode

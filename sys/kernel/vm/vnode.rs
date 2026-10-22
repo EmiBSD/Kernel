@@ -122,8 +122,8 @@
 //!   call; `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset
 //!   (`bsd` builds the `UIO_SYSSPACE` uio over them with `curproc`'s credentials, as pipe's
 //!   `UioMove` does). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
-//!   the VOP, the unlocks) is composed here from those one-call methods and the `KernelLock`
-//!   and `NetLock` bridges (`hal::klock`, `hal::netlock`); `ratecheck`'s clock and `rebooting`
+//!   the VOP, the unlocks) is composed here from those one-call methods, the kernel lock
+//!   (`hal::klock`, `hal`'s own since N4.5c) and the `NetLock` bridge (`hal::netlock`); `ratecheck`'s clock and `rebooting`
 //!   are the [`SysInfo`] bridge's.
 //! - `ratecheck(9)` (`kern_time.c`) is `bsd`'s until N4: the kernel has its own copy for
 //!   [`uvn_flush`]'s rate-limited error message, over [`SysInfo`]'s uptime. The C's
