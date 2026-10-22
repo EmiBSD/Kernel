@@ -1923,8 +1923,16 @@ notes = "M4: struct fdt_attach_args (slices for fa_reg/fa_intr; M7b: fa_dmat) an
 [[module]]
 rust = "sys/arch/arm64/include/frame.rs"
 lz = ["sys/arch/arm64/include/frame.rs"]
-status = "inherited"
-notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod)"
+status = "adapted"
+adapted_by = ["sys/hal/arch/arm64/include/frame.rs"]
+notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod); N4.5a: callframe, trapframe, switchframe and the sizes are hal's (re-exported), sigframe stays until N4.5b"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/frame.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/frame.rs"]
+status = "redesigned"
+notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b)"
 
 [[module]]
 rust = "sys/arch/arm64/include/hypervisor.rs"

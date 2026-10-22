@@ -22,6 +22,7 @@
 pub mod _types;
 pub mod disklabel;
 pub mod elf;
+pub mod frame;
 pub mod mplock;
 pub mod mutex;
 pub mod param;
