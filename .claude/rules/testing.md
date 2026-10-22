@@ -99,8 +99,10 @@ Four tiers. Every change lands with the tier it belongs to.
 5. **Lineage and budget checks**, part of `just ci`: `cargo xtask lz check` (`lineage.md`),
    `cargo xtask lz drift --strict` (no untriaged LZ commit, `lz-sync.md`) and
    `cargo xtask unsafe-report --check` (`unsafe-budget.md`). A milestone close is `just ci`,
-   `just ci-full`, `just diff-openbsd` equal, `cargo xtask lz drift --security` empty, and the
-   numbers in the closing commit.
+   `just ci-full`, `just diff-openbsd` equal, `cargo xtask lz drift --security` empty, the
+   numbers in the closing commit, and the annotated tag `n<N>-<name>` on that `docs:` commit,
+   created and pushed by the main session with the user's OK (`git-commits.md`, Tags; the
+   user's decision of 2026-10-22).
 
 Always:
 

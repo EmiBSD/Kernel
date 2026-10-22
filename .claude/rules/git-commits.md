@@ -32,3 +32,26 @@
 - Never commit `reference/openbsd-src/`, `reference/emibsd-lz/`, `target/`, `*.img` or editor
   files. `.gitignore` covers them; check `git status` before committing anyway.
 - Default branch is `main`. If the user wants branches: `n<N>/<topic>` or `sync/<lz-12-hex>`.
+
+## Tags (the user's decision of 2026-10-22)
+
+- Every `N` milestone is tagged when it closes: the `docs:` commit that declares it met in
+  `docs/ROADMAP.md`, `docs/STATUS.md` and `docs/JOURNAL.md` receives an annotated tag
+  `n<N>-<name>`, lowercase, the name being the ROADMAP row's first word (`n0-bootstrap`,
+  `n1-leaves`, `n2-foundations`, `n3-memory`, `n4-processes`, `n5-vfs`, ...). The main
+  session creates it at that close, on `main`, with
+  `git tag -a n<N>-<name> <commit> -F <message>`, and pushes it with `git push origin <tag>`
+  beside the close's push, with the user's OK for each close, as for the push. Subagents
+  never tag or push (the guard hook refuses both).
+- The tag message is the close's summary: the LZ pin, the totals of `cargo xtask
+  unsafe-report` per crate (`kernel`, `abi`, `hal`, `bsd`), the result of `just ci` and
+  `just ci-full` (rc and wall time) and of `just diff-openbsd`, and the modules the milestone
+  redesigned.
+- A tag never moves. If a close has to be corrected, the milestone is reopened and closed
+  again with another commit and another tag, `n<N>-<name>-2`. `lz-origin` is LZ's tag and
+  is never touched.
+- No semantic versions: the kernel stays `EmiBSD 8.0` to userland; the milestone's name is
+  the version. GitHub releases (`gh release`) are not made for now: tags only, to be decided
+  at the N4 close, when an arm64 image is worth attaching.
+- N0 to N3 were tagged retroactively on 2026-10-22 on the `docs:` commits that declared them
+  met, with the numbers those commits and `docs/JOURNAL.md` record.
