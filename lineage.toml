@@ -8385,6 +8385,13 @@ status = "redesigned"
 notes = "N4.2: credentials in the kernel crate: struct ucred plain data with Ro<T> members (get() kept for the 60 readers, set() only through &mut of a value being built, decision 10), placed in the recorded pool ucredpl (IPL_MPFLOOR) and shared as CredRef (Clone = crhold, Drop = crfree, from_ref = crhold of a borrowed struct ucred *); crset/crcopy/crdup/crfromxucred/groupmember/suser_ucred; crcopy always copies (a recorded pool gives no value mutably, a stated deviation); bsd's kern_prot.rs keeps the set*id syscalls and switches to these with the rest of N4.2"
 
 [[module]]
+rust = "sys/kernel/resource.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_resource.rs", "sys/sys/resource.rs", "sys/sys/resourcevar.rs"]
+status = "redesigned"
+notes = "N4.2: struct rlimit, struct plimit as plain data placed in plimitpl (PlimitRef: Clone = lim_fork's refcnt_take, Drop = lim_free; lim_write_begin copies always, a stated deviation), a thread's p_limit as a read copy of the values (LimitCache, a stated deviation: no lock, no reference on lim_cur's path), struct rusage/tusage counters as relaxed atomic words keeping get()/set() (Word, TimevalWord, TimespecWord), tu_enter/tu_leave and tuagg_sumup's pc_lock protocol over hal's PcLock, lim_startup, calctsru, calcru, ruadd; the functions over a process come with kernel::proc, the five syscalls stay in bsd's kern_resource.rs until N4.6"
+
+[[module]]
 rust = "sys/kernel/timeout.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_timeout.rs", "sys/sys/timeout.rs"]
