@@ -33,6 +33,12 @@
 //! - `prim.sleep-queue-insert`: `sleep_setup(ident, PWAIT, ..)` of the current thread (which
 //!   takes and releases the scheduler lock itself) and its `unsleep` under the lock: a
 //!   thread's trip through a sleep queue without the switch.
+//! - `prim.tsleep-wakeup`: `sleep_setup` of the current thread, `wakeup` of its channel, then
+//!   `sleep_finish(INFSLP, true)`, which finds the thread awake and returns without a switch:
+//!   a sleep that lost its race with the wakeup (N4.5a).
+//! - `prim.sched-lock`: the scheduler lock taken and released (`SCHED_LOCK`/`SCHED_UNLOCK`).
+//! - `prim.mtx-enter-leave`: a `mutex(9)` at `IPL_NONE` entered and left (the control: no
+//!   scheduler change touches it).
 
 #![forbid(unsafe_code)]
 
@@ -43,14 +49,18 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use bsd::kern::kern_lock::{mtx_enter, mtx_leave};
 use bsd::kern::kern_sched::{remrunqueue, setrunqueue};
-use bsd::kern::kern_synch::{sleep_setup, unsleep};
+use bsd::kern::kern_synch::{sleep_finish, sleep_setup, unsleep, wakeup};
 use bsd::kern::proc_glue::{BsdProcessG, BsdThreadG, ProcStore};
 use bsd::kern::sched_bsd::{sched_lock, sched_lock_init, sched_unlock};
 use bsd::machine::cpu::curcpu;
+use bsd::machine::intr::IPL_NONE;
 use bsd::machine::{Cpu, Machine};
+use bsd::sys::mutex::Mutex;
 use bsd::sys::param::PWAIT;
 use bsd::sys::proc::{P_INSCHED, Proc, ProcExt, Process, SONPROC};
+use bsd::sys::systm::INFSLP;
 
 /// Threads per round.
 const N: usize = 1000;
@@ -104,6 +114,9 @@ fn main() {
         "prim.setrunqueue",
         "prim.remrunqueue",
         "prim.sleep-queue-insert",
+        "prim.tsleep-wakeup",
+        "prim.sched-lock",
+        "prim.mtx-enter-leave",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -182,6 +195,49 @@ fn main() {
         });
         Machine::set_curproc(ci, None);
         report(names[2], r);
+    }
+
+    if wanted(names[3]) {
+        let p = threads[0];
+        p.set_stat(SONPROC);
+        Machine::set_curproc(ci, Some(p));
+        let ident = ptr::from_ref(&threads).cast::<core::ffi::c_void>();
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                sleep_setup(black_box(ident), PWAIT, "bench");
+                wakeup(black_box(ident));
+                let _ = black_box(sleep_finish(INFSLP, true));
+            }
+            t.elapsed()
+        });
+        Machine::set_curproc(ci, None);
+        report(names[3], r);
+    }
+
+    if wanted(names[4]) {
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                sched_lock();
+                sched_unlock();
+            }
+            t.elapsed()
+        });
+        report(names[4], r);
+    }
+
+    if wanted(names[5]) {
+        let mtx = Mutex::new(IPL_NONE);
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                mtx_enter(black_box(&mtx));
+                mtx_leave(&mtx);
+            }
+            t.elapsed()
+        });
+        report(names[5], r);
     }
 }
 /* </CODE> */
