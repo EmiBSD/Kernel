@@ -1,0 +1,45 @@
+name: Difference from OpenBSD
+description: OpenBSD's userland sees something on EmiBSD that it would not see on OpenBSD 8.0.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        OpenBSD's behaviour is the specification: what userland sees must be the same.
+        Gaps that are known and inherited are listed in `tools/xtask/diff-openbsd/expected.toml`;
+        please check there first.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse HEAD`"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Commands
+      description: What you ran inside the guest (or the program you used).
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: openbsd
+    attributes:
+      label: Output on OpenBSD 8.0
+      description: Same commands on OpenBSD; say which snapshot or release.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: emibsd
+    attributes:
+      label: Output on EmiBSD
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: scenario
+    attributes:
+      label: diff-openbsd scenario
+      description: The scenario that shows it, if one does, or "none".

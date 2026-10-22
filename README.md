@@ -641,7 +641,8 @@ lessons persist in [.claude/agent-memory/](.claude/agent-memory/).
 
 Problems go to [Issues](https://github.com/enavarre-cl/EmiBSD/issues). Problems of the port
 itself go to [EmiBSD.LZ's Issues](https://github.com/enavarre-cl/EmiBSD.LZ/issues). External
-pull requests are not accepted, for now.
+pull requests are not accepted, for now ([CONTRIBUTING.md](.github/CONTRIBUTING.md)).
+Vulnerabilities are reported privately ([SECURITY.md](.github/SECURITY.md)).
 
 ## Mascot
 
