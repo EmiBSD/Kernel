@@ -114,10 +114,12 @@ trait = "BufCacheStats"
 for = ["sys/kernel/vm/pmemrange.rs"]
 paid_by = "N5"
 
-# bsd: one value per pipe inside the pair, its klist and sigio registration (sys/sys/event.rs,
-# sys/sys/sigio.rs) with knote_locked, klist_insert_locked/klist_remove_locked/klist_free,
-# pgsigio, sigio_free, sigio_setown/getown and getnanotime; implemented by
-# sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not a registered slot.
+# bsd: one value per pipe inside the pair, its sigio registration (sys/sys/sigio.rs: pgsigio,
+# sigio_free, sigio_setown/getown), getnanotime and the three pipe filterops (which find the
+# pair through the knote's file); implemented by sys/kern/pipe_glue.rs (BsdPipeGlue), the
+# pair's generic parameter, not a registered slot. N4.4: the klist is the kernel's, by value in
+# each pipe (kernel::event::Klist, Own kind): Knote, knote, klist_insert, klist_remove and
+# klist_free left the trait. What stays goes with sigio (N4.5) and the clock (N4.8).
 # kernel::pipe::PipeGlue
 [[bridge]]
 trait = "PipeGlue"
@@ -140,12 +142,14 @@ paid_by = "N7"
 # bsd (sys/kern/kern_descrip.rs, BsdFileGlue, the glue kernel::file and kernel::descrip are
 # instantiated with: the objects (vnode, socket, pipe, kqueue), struct fileops, the vnode
 # layer's VOP_ADVLOCK/VOP_PATHCONF/VISTTY and the positioned-I/O checks (N5), SS_DNS (N6),
-# knote_fdclose and a table's fd_kqlist (N4.4), SIGPIPE (N4.5), the stall wait (N5), pledge's
-# fcntl/flock/ioctl hooks (N8, the last), maxfiles and tablefull).
+# SIGPIPE (N4.5), the stall wait (N5), pledge's fcntl/flock/ioctl hooks (N8, the last),
+# maxfiles and tablefull). N4.4: knote_fdclose, fdkq_free and the Knote/FdKq types left (kqueue
+# is kernel::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
+# file's revocation (vnode_revoked, N5) came.
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
-for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 paid_by = "N8"
 
 # bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
@@ -189,9 +193,13 @@ trait = "Kthread"
 for = ["sys/kernel/thread.rs", "sys/kernel/timeout.rs", "sys/kernel/task.rs"]
 paid_by = "N4"
 
+# bsd: nanouptime, getnanouptime and nanotime of sys/kern/kern_tc.rs (the last two N4.4,
+# kqueue's sleep and EVFILT_TIMER's NOTE_ABSTIME), implemented by sys/kern/hal_bridges.rs
+# (BsdUptime). N4.8, with kern_tc.
+# kernel::clock::Uptime
 [[bridge]]
 trait = "Uptime"
-for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs"]
+for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
 paid_by = "N4"
 
 [[bridge]]
@@ -263,14 +271,17 @@ paid_by = "N4"
 # the run-queue link), the tables' storage, and the hooks into kern_sig (pgsignal, prsignal),
 # tty (a session's hang-up, a group's terminal) and kern_timeout (s_verauthto); implemented by
 # sys/kern/proc_glue.rs (BsdProcGlue, N4.2), which kernel::proc receives as its type
-# parameter. N4.5a: the scheduler's hooks (kernel::sched): sleep_signal_check (kern_sig, N4.5b),
-# cold and cold_yield, tuagg_add_runtime and exit_account (kern_resource), the clock
-# interrupts' stop and start (kern_clockintr, spc_runtime), assertwaitok, smr_idle, spl0, the
-# machine's idle cycle, cpu_unidle and need_resched, the CPU topology and pmap_resident_count;
-# the scheduler's hal::sleep::Sleep is kernel::sched::KernelSleep (the Sleep row is gone,
-# decision 39). N4.7, when the signals, the descriptors and the terminal move.
+# parameter. N4.4: the knote and kqueue list adapters (proc_glue_links!), curproc (N4.5),
+# pledge_fail (N4.7) and process_ref (filt_procattach's counted process); the klist store
+# left (ps_klist is the kernel's). N4.5a: the scheduler's hooks (kernel::sched):
+# sleep_signal_check (kern_sig, N4.5b), cold and cold_yield, tuagg_add_runtime and
+# exit_account (kern_resource), the clock interrupts' stop and start (kern_clockintr,
+# spc_runtime), assertwaitok, smr_idle, spl0, the machine's idle cycle, cpu_unidle and
+# need_resched, the CPU topology and pmap_resident_count; the scheduler's hal::sleep::Sleep is
+# kernel::sched::KernelSleep (the Sleep row is gone, decision 39). N4.7, when the signals, the
+# descriptors and the terminal move.
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/sched.rs"]
+for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs"]
 paid_by = "N4"

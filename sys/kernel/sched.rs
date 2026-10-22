@@ -2454,6 +2454,26 @@ mod tests {
         fn session_placed(_sess: &crate::proc::Session<Self>) {}
         fn session_destroy(_sess: &crate::proc::Session<Self>) {}
 
+        fn curproc() -> Option<&'static Thread<Self>> {
+            None
+        }
+
+        fn pledge_fail(
+            _p: &Thread<Self>,
+            error: hal::sys::errno::Errno,
+            _code: u64,
+        ) -> hal::sys::errno::Errno {
+            error
+        }
+
+        fn process_ref(pr: &Process<Self>) -> crate::proc::ProcessRef<Self> {
+            match hal::pool::PoolArc::from_ref(pr) {
+                Some(a) => crate::proc::StaticOrPooled::Pooled(a),
+                None if core::ptr::eq(pr, &PR) => crate::proc::StaticOrPooled::Static(&PR),
+                None => std::panic!("process_ref: not a process of the tests"),
+            }
+        }
+
         fn idle_cycle() {
             std::thread::sleep(Duration::from_micros(50));
         }

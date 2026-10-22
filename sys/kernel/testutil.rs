@@ -613,9 +613,21 @@ struct TestUptime;
 /// The double's uptime, in nanoseconds, from one second.
 static UPTIME_NS: AtomicU64 = AtomicU64::new(1_000_000_000);
 
+/// The double's time of day at its uptime 0 (2026-10-22).
+const BOOTTIME_SEC: i64 = 1_792_627_200;
+
 impl crate::clock::Uptime for TestUptime {
     fn nanouptime(&self) -> crate::clock::Timespec {
         crate::clock::Timespec::from_nsec(UPTIME_NS.fetch_add(1_000, Ordering::Relaxed))
+    }
+
+    fn getnanouptime(&self) -> crate::clock::Timespec {
+        crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed))
+    }
+
+    fn nanotime(&self) -> crate::clock::Timespec {
+        let up = crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed));
+        up.add(crate::clock::Timespec::new(BOOTTIME_SEC, 0))
     }
 }
 
@@ -1434,15 +1446,31 @@ static TEST_VM_MACHINE: crate::vm::init::VmMachine = crate::vm::init::VmMachine 
 };
 
 /// The object of a test glue's file ([`test_file_glue!`](crate::test_file_glue)): an id
-/// (`kinfo_file.f_data`'s address stand-in) and what the vnode and socket hooks answer.
-#[derive(Debug, Default)]
-pub struct TestFileData {
+/// (`kinfo_file.f_data`'s address stand-in), what the vnode and socket hooks answer, and a
+/// kqueue file's kqueue.
+pub struct TestFileData<P: crate::proc::ProcGlue> {
     /// The object's number, its "address".
     pub id: usize,
     /// `VISTTY` of the vnode.
     pub tty: bool,
     /// `SS_DNS` of the socket.
     pub dns: bool,
+    /// The vnode was revoked (`vnode_revoked`).
+    pub revoked: core::sync::atomic::AtomicBool,
+    /// A kqueue file's kqueue.
+    pub kq: Option<crate::event::KqRef<P>>,
+}
+
+impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            tty: false,
+            dns: false,
+            revoked: core::sync::atomic::AtomicBool::new(false),
+            kq: None,
+        }
+    }
 }
 
 /// The `struct stat` of a test glue.
@@ -1530,15 +1558,71 @@ macro_rules! test_file_glue {
                 )));
         }
 
+        /// The operations of a test glue's kqueue file (`kqueueops`).
+        pub struct TestKqueueOps;
+
+        impl $crate::file::FileOps<$name> for TestKqueueOps {
+            fn read(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _fflags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::event::kqueue_rw()
+            }
+            fn write(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _fflags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::event::kqueue_rw()
+            }
+            fn ioctl(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _com: u64,
+                _data: &mut [u8],
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::event::kqueue_ioctl()
+            }
+            fn kqfilter(
+                &self,
+                fp: &$crate::file::File<$name>,
+                kn: &$crate::event::Knote<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::event::kqueue_kqfilter::<$proc>(fp, kn)
+            }
+            fn stat(
+                &self,
+                fp: &$crate::file::File<$name>,
+                st: &mut $crate::testutil::TestStat,
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                let (size, _blksize) = $crate::event::kqueue_stat::<$proc>(fp);
+                *st = $crate::testutil::TestStat::default();
+                st.st_size = size as u64;
+                Ok(())
+            }
+            fn close(
+                &self,
+                fp: &$crate::file::File<$name>,
+                p: Option<&$crate::proc::Thread<$proc>>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::event::kqueue_close::<$proc>(fp, p)
+            }
+        }
+
+        static TEST_KQUEUE_OPS: TestKqueueOps = TestKqueueOps;
+
         impl $crate::file::FileGlue for $name {
             type Proc = $proc;
             type Ops = dyn $crate::file::FileOps<$name>;
-            type Data = $crate::testutil::TestFileData;
-            type Knote = ();
+            type Data = $crate::testutil::TestFileData<$proc>;
             type Stat = $crate::testutil::TestStat;
             type Vnode = $crate::testutil::TestVnode;
             type FileList = FileListLink;
-            type FdKq = ();
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)
@@ -1598,10 +1682,21 @@ macro_rules! test_file_glue {
             fn dns_socket(d: &Self::Data) -> bool {
                 d.dns
             }
-            fn knote_fdclose(_p: &$crate::proc::Thread<$proc>, fd: i32) {
-                if $crate::testutil::file_log_on() {
-                    $crate::testutil::file_log_push(std::format!("knote_fdclose {fd}"));
-                }
+            fn kqueue_file(kq: $crate::event::KqRef<$proc>) -> (&'static Self::Ops, Self::Data) {
+                (
+                    &TEST_KQUEUE_OPS,
+                    $crate::testutil::TestFileData {
+                        id: kq.addr(),
+                        kq: Some(kq),
+                        ..$crate::testutil::TestFileData::default()
+                    },
+                )
+            }
+            fn kqueue_of(d: &Self::Data) -> Option<&$crate::event::KqRef<$proc>> {
+                d.kq.as_ref()
+            }
+            fn vnode_revoked(d: &Self::Data) -> bool {
+                d.revoked.load(core::sync::atomic::Ordering::Relaxed)
             }
             fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
                 $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));
@@ -1630,7 +1725,6 @@ macro_rules! test_file_glue {
             fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), hal::sys::errno::Errno> {
                 hal::user::UserPtr::<$crate::testutil::TestStat>::new(sb).copyout(st)
             }
-            fn fdkq_free(_kq: &Self::FdKq) {}
         }
     };
 }
@@ -1650,6 +1744,16 @@ macro_rules! test_proc_glue {
         std::thread_local! {
             static PROC_TABLES: &'static $crate::proc::ProcTables<$name> =
                 std::boxed::Box::leak(std::boxed::Box::new($crate::proc::ProcTables::new()));
+            static CURPROC: core::cell::Cell<Option<&'static $crate::proc::Thread<$name>>> =
+                const { core::cell::Cell::new(None) };
+        }
+
+        #[allow(dead_code, reason = "the tests that need a curproc call it")]
+        impl $name {
+            /// This test thread's `curproc`.
+            pub fn set_curproc(p: Option<&'static $crate::proc::Thread<$name>>) {
+                CURPROC.with(|c| c.set(p));
+            }
         }
 
         impl $crate::proc::ProcGlue for $name {
@@ -1673,6 +1777,23 @@ macro_rules! test_proc_glue {
             fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
             fn session_placed(_sess: &$crate::proc::Session<Self>) {}
             fn session_destroy(_sess: &$crate::proc::Session<Self>) {}
+            fn curproc() -> Option<&'static $crate::proc::Thread<Self>> {
+                CURPROC.with(core::cell::Cell::get)
+            }
+            fn pledge_fail(
+                _p: &$crate::proc::Thread<Self>,
+                error: hal::sys::errno::Errno,
+                code: u64,
+            ) -> hal::sys::errno::Errno {
+                $crate::testutil::file_log_push(std::format!("pledge_fail {code:#x}"));
+                error
+            }
+            fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
+                match hal::pool::PoolArc::from_ref(pr) {
+                    Some(a) => $crate::proc::StaticOrPooled::Pooled(a),
+                    None => std::panic!("process_ref: not a pooled process"),
+                }
+            }
         }
     };
 }

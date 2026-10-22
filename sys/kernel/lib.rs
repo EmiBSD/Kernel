@@ -42,6 +42,7 @@ pub mod clock;
 pub mod cred;
 pub mod crypto;
 pub mod descrip;
+pub mod event;
 pub mod extent;
 pub mod file;
 pub mod pipe;
@@ -49,6 +50,7 @@ pub mod prf;
 pub mod proc;
 pub mod resource;
 pub mod sched;
+pub mod select;
 pub mod task;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;

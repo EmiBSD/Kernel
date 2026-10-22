@@ -1,0 +1,57 @@
+name: Bug report
+description: A panic, a hang, a wrong result, or a build or smoke that fails.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A vulnerability goes through SECURITY.md, not here.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse HEAD`"
+      placeholder: fc32a602...
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      description: Only arm64 is built and tested until milestone N10; amd64 is frozen.
+      options:
+        - arm64
+        - amd64
+        - host (just test)
+    validations:
+      required: true
+  - type: input
+    id: how
+    attributes:
+      label: How it was run
+      description: The recipe or command, e.g. `just run-arm64`, `just smoke-mp`, `just test`, the QEMU `-smp` count.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, step by step, and what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: If it is what OpenBSD does, say so; a difference from OpenBSD has its own form.
+  - type: textarea
+    id: log
+    attributes:
+      label: Serial output or log
+      description: The panic, the last serial lines, or the failing test's output. `target/smoke/<recipe>/` holds a smoke's logs.
+      render: text
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: OS, QEMU version (`qemu-system-aarch64 --version`), rustc version.

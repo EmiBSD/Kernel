@@ -197,7 +197,8 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use hal::link::Link;
 use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::Mutexed;
+use hal::mutex::{Mutexed, SharedMutex};
+use hal::pinlist::PinList;
 use hal::pool::{PR_WAITOK, PoolArc};
 use hal::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
 use hal::sys::errno::Errno;
@@ -456,8 +457,16 @@ pub struct Filedesc<G: FileGlue> {
     cdir: Link<G::Vnode>,
     /// \[K\] `fd_rdir`: root directory.
     rdir: Link<G::Vnode>,
-    /// `fd_kqlist`, `fd_nuserevents`: kqueue's members (`bsd`'s until N4.4).
-    kq: G::FdKq,
+    /// \[k\] `fd_kqlist`: kqueues attached to this filedesc, under [`Filedesc::kqlist_mtx`]
+    /// (the C's `fdplock`; `kernel::event` walks it one counted kqueue at a time).
+    pub(crate) kqlist: PinList<<G::Proc as ProcGlue>::KqNext>,
+    /// `fd_kqlist`'s mutex.
+    pub(crate) kqlist_mtx: SharedMutex,
+    /// \[k\] The kqueues on `fd_kqlist`, written under its mutex and read without it by
+    /// `knote_fdclose`'s empty-list test (a table that never made a kqueue takes no lock).
+    pub(crate) nkqueues: AtomicU32,
+    /// \[a\] `fd_nuserevents`: number of kqueue user events.
+    pub fd_nuserevents: AtomicU32,
 }
 
 impl<G: FileGlue> Filedesc<G> {
@@ -476,7 +485,10 @@ impl<G: FileGlue> Filedesc<G> {
             cmask: AtomicU32::new(CMASK_DEFAULT),
             cdir: Link::new(),
             rdir: Link::new(),
-            kq: G::FdKq::default(),
+            kqlist: PinList::new(),
+            kqlist_mtx: Mutexed::new(hal::intr::IPL_HIGH, ()),
+            nkqueues: AtomicU32::new(0),
+            fd_nuserevents: AtomicU32::new(0),
         }
     }
 
@@ -541,11 +553,6 @@ impl<G: FileGlue> Filedesc<G> {
     /// `fd_rdir = vp` (as [`Filedesc::set_cdir`]).
     pub fn set_rdir(&self, vp: Option<&'static G::Vnode>) {
         self.rdir.set(vp);
-    }
-
-    /// `fd_kqlist`, `fd_nuserevents`.
-    pub fn kq(&self) -> &G::FdKq {
-        &self.kq
     }
 
     /// `rw_status(&fdp->fd_lock)`: `RW_WRITE` when the running thread holds the table.
@@ -1210,7 +1217,7 @@ pub fn finishdup<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
 
     match oldfp {
         Some(oldfp) => {
-            G::knote_fdclose(p, new);
+            crate::event::knote_fdclose(p, new);
             drop(g);
             let _ = closef(oldfp, Some(p));
         }
@@ -1284,7 +1291,7 @@ pub fn fdrelease<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         return Err(Errno::EBADF);
     };
     g.fd_unused(fd);
-    G::knote_fdclose(p, fd);
+    crate::event::knote_fdclose(p, fd);
     drop(g);
     closef(fp, Some(p))
 }
@@ -1646,7 +1653,7 @@ pub fn fdfree<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) {
     for fd in 0..=lastfile {
         let fp = fdp.slots.lock().slot(fd as usize).take();
         if let Some(fp) = fp {
-            G::knote_fdclose(p, fd);
+            crate::event::knote_fdclose(p, fd);
             let _ = closef(fp, Some(p));
         }
     }
@@ -1668,7 +1675,7 @@ pub fn fdfree<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) {
         fdp.rdir.set(None);
         G::vrele(rdir);
     }
-    G::fdkq_free(&fdp.kq);
+    kassert!(fdp.fd_nuserevents.load(Ordering::SeqCst) == 0);
 }
 
 /// Internal form of close (`closef`): the reference a slot (or a message) held. POSIX record
@@ -2272,7 +2279,7 @@ mod tests {
             }
             Err(Errno::ENOTTY)
         }
-        fn kqfilter(&self, _: &File<Files>, _: &()) -> Result<(), Errno> {
+        fn kqfilter(&self, _: &File<Files>, _: &crate::event::Knote<Procs>) -> Result<(), Errno> {
             Err(Errno::EINVAL)
         }
         fn stat(&self, _: &File<Files>, st: &mut TestStat, _: &Thread<Procs>) -> Result<(), Errno> {
@@ -2332,7 +2339,7 @@ mod tests {
         )
     }
 
-    fn open_with(p: &Thread<Procs>, ty: i32, flag: i32, data: TestFileData) -> i32 {
+    fn open_with(p: &Thread<Procs>, ty: i32, flag: i32, data: TestFileData<Procs>) -> i32 {
         let mut g = fdplock(p.fd());
         let (fp, fd) = falloc(p, &mut g).unwrap();
         fp.f_flag.store(flag as u32, Ordering::SeqCst);

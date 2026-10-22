@@ -143,10 +143,15 @@ pub static TICKS: AtomicI32 = AtomicI32::new(i32::MAX - (15 * 60 * HZ));
 static UPTIME: OnceStatic<&'static dyn Uptime> = OnceStatic::new();
 
 /// The uptime clock (`nanouptime(9)` over the timecounters of `sys/kern/kern_tc.rs`), until
-/// `kern_tc` moves (N4.8): bridges.toml `Uptime`.
+/// `kern_tc` moves (N4.8): bridges.toml `Uptime`. N4.4: the coarse uptime and the precise
+/// time of day too (kqueue's `kqueue_sleep` and `EVFILT_TIMER`'s `NOTE_ABSTIME`).
 pub trait Uptime: Sync {
     /// `nanouptime(&ts)`: the time since boot, monotonic.
     fn nanouptime(&self) -> Timespec;
+    /// `getnanouptime(&ts)`: the time since boot as of the last tick.
+    fn getnanouptime(&self) -> Timespec;
+    /// `nanotime(&ts)`: the time of day (`CLOCK_REALTIME`).
+    fn nanotime(&self) -> Timespec;
 }
 
 /// Registers the [`Uptime`] bridge, once; a second call keeps the first and names it.
@@ -163,6 +168,55 @@ pub fn ticks() -> i32 {
 /// yet).
 pub fn nanouptime() -> Timespec {
     UPTIME.get().map_or(Timespec::ZERO, |u| u.nanouptime())
+}
+
+/// `getnanouptime(9)`: the time since boot as of the last tick (zero before the bridge is
+/// registered).
+pub fn getnanouptime() -> Timespec {
+    UPTIME.get().map_or(Timespec::ZERO, |u| u.getnanouptime())
+}
+
+/// `nanotime(9)`: the time of day (zero before the bridge is registered).
+pub fn nanotime() -> Timespec {
+    UPTIME.get().map_or(Timespec::ZERO, |u| u.nanotime())
+}
+
+/// `tstohz(ts)`: the ticks of `ts`, rounded up, plus one for the current tick to expire
+/// (`tvtohz` of `ts` rounded up to a microsecond); 0 for a time not after zero, `INT_MAX` at
+/// most.
+pub fn tstohz(ts: &Timespec) -> i32 {
+    let mut sec = ts.tv_sec;
+    let mut usec = ts.tv_nsec / 1000;
+    // Round up.
+    if ts.tv_nsec % 1000 != 0 {
+        usec += 1;
+        if usec >= 1_000_000 {
+            usec -= 1_000_000;
+            sec += 1;
+        }
+    }
+
+    // If the number of usecs in the whole seconds part of the time fits in a long, then the
+    // total number of usecs will fit in an unsigned long: the total converted to ticks,
+    // rounding up and adding 1 to allow for the current tick to expire. Otherwise, if the
+    // number of ticks in the whole seconds part fits in a long, the parts converted
+    // separately and added. Otherwise the maximum representable value.
+    let tick = crate::timeout::tick() as u64;
+    let hz = i64::from(crate::timeout::hz());
+    let nticks: u64 = if sec < 0 || (sec == 0 && usec <= 0) {
+        0
+    } else if sec <= i64::MAX / 1_000_000 {
+        (sec as u64)
+            .wrapping_mul(1_000_000)
+            .wrapping_add(usec as u64)
+            .div_ceil(tick)
+            + 1
+    } else if sec <= i64::MAX / hz {
+        (sec as u64).wrapping_mul(hz as u64) + (usec as u64).div_ceil(tick) + 1
+    } else {
+        i64::MAX as u64
+    };
+    nticks.min(i32::MAX as u64) as i32
 }
 /* </CODE> */
 
@@ -193,6 +247,18 @@ mod tests {
         assert_eq!(Timespec::from_nsec(3_000_000_001), Timespec::new(3, 1));
         assert!(a < b && Timespec::new(1, 5) < Timespec::new(1, 6));
         assert!(Timespec::new(2, 0) > Timespec::new(1, 999_999_999));
+    }
+
+    #[test]
+    fn tstohz_rounds_up_and_adds_the_current_tick() {
+        // hz 100, tick 10 ms: the wheel's (every test's `startup` passes these).
+        assert_eq!(tstohz(&Timespec::new(0, 0)), 0);
+        assert_eq!(tstohz(&Timespec::new(-1, 0)), 0);
+        assert_eq!(tstohz(&Timespec::new(0, 1)), 2, "1 ns: one tick, plus one");
+        assert_eq!(tstohz(&Timespec::new(0, 10_000_000)), 2);
+        assert_eq!(tstohz(&Timespec::new(0, 10_000_001)), 3);
+        assert_eq!(tstohz(&Timespec::new(1, 0)), 101);
+        assert_eq!(tstohz(&Timespec::new(i64::MAX, 0)), i32::MAX);
     }
 }
 /* </TESTS> */

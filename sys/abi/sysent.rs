@@ -31,7 +31,9 @@
 //! (`KernelApi::vm`, `sys/kernel/vm/mmap.rs` and `unix.rs`): written in S1, `Native` since
 //! the flip (S2). N4.3: the descriptor tables' twenty (`KernelApi::fd`,
 //! `sys/kernel/descrip.rs`: `read(2)`, `write(2)`, `close(2)`, `dup(2)`, `fcntl(2)`,
-//! `ioctl(2)`, ...), which write the return registers themselves.
+//! `ioctl(2)`, ...), which write the return registers themselves. N4.4: the event system
+//! calls' seven (`KernelApi::event`, `sys/kernel/event.rs` and `select.rs`: `kqueue(2)`,
+//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -42,11 +44,11 @@ use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
     SYS_MAXSYSCALL, SYS_break, SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl,
-    SYS_flock, SYS_fpathconf, SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_kbind, SYS_madvise,
-    SYS_mimmutable, SYS_minherit, SYS_mlock, SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery,
-    SYS_msync, SYS_munlock, SYS_munlockall, SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2,
-    SYS_pread, SYS_preadv, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_utrace, SYS_write,
-    SYS_writev,
+    SYS_flock, SYS_fpathconf, SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_kbind, SYS_kevent,
+    SYS_kqueue, SYS_kqueue1, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock, SYS_mlockall,
+    SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall, SYS_munmap,
+    SYS_pinsyscalls, SYS_pipe, SYS_pipe2, SYS_poll, SYS_ppoll, SYS_pread, SYS_preadv, SYS_pselect,
+    SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_utrace, SYS_write, SYS_writev,
 };
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -62,7 +64,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 37;
+pub const NATIVE: u32 = 44;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -110,6 +112,13 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_fpathconf as usize] = Sysent::Native(sys_fpathconf);
     table[SYS_utrace as usize] = Sysent::Native(sys_utrace);
     table[SYS_closefrom as usize] = Sysent::Native(sys_closefrom);
+    table[SYS_select as usize] = Sysent::Native(sys_select);
+    table[SYS_kevent as usize] = Sysent::Native(sys_kevent);
+    table[SYS_ppoll as usize] = Sysent::Native(sys_ppoll);
+    table[SYS_pselect as usize] = Sysent::Native(sys_pselect);
+    table[SYS_poll as usize] = Sysent::Native(sys_poll);
+    table[SYS_kqueue as usize] = Sysent::Native(sys_kqueue);
+    table[SYS_kqueue1 as usize] = Sysent::Native(sys_kqueue1);
     table
 };
 
@@ -476,6 +485,77 @@ pub fn sys_closefrom(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -
     (api.fd.closefrom)(SYS_closefrom as Register, args[0] as i32, rval)
 }
 
+/// 71 = `select(int nd, fd_set *in, fd_set *ou, fd_set *ex, struct timeval *tv)`.
+pub fn sys_select(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.select)(
+        SYS_select as Register,
+        args[0] as i32,
+        [args[1] as usize, args[2] as usize, args[3] as usize],
+        args[4] as usize,
+        rval,
+    )
+}
+
+/// 72 = `kevent(int fd, const struct kevent *changelist, int nchanges, struct kevent
+/// *eventlist, int nevents, const struct timespec *timeout)`.
+pub fn sys_kevent(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.kevent)(
+        SYS_kevent as Register,
+        args[0] as i32,
+        (args[1] as usize, args[2] as i32),
+        (args[3] as usize, args[4] as i32),
+        args[5] as usize,
+        rval,
+    )
+}
+
+/// 109 = `ppoll(struct pollfd *fds, u_int nfds, const struct timespec *ts, const sigset_t
+/// *mask)`.
+pub fn sys_ppoll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.ppoll)(
+        SYS_ppoll as Register,
+        args[0] as usize,
+        args[1] as u32,
+        args[2] as usize,
+        args[3] as usize,
+        rval,
+    )
+}
+
+/// 110 = `pselect(int nd, fd_set *in, fd_set *ou, fd_set *ex, const struct timespec *ts,
+/// const sigset_t *mask)`.
+pub fn sys_pselect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.pselect)(
+        SYS_pselect as Register,
+        args[0] as i32,
+        [args[1] as usize, args[2] as usize, args[3] as usize],
+        args[4] as usize,
+        args[5] as usize,
+        rval,
+    )
+}
+
+/// 252 = `poll(struct pollfd *fds, u_int nfds, int timeout)`.
+pub fn sys_poll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.poll)(
+        SYS_poll as Register,
+        args[0] as usize,
+        args[1] as u32,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 269 = `kqueue(void)`.
+pub fn sys_kqueue(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.kqueue)(SYS_kqueue as Register, rval)
+}
+
+/// 270 = `kqueue1(int flags)`.
+pub fn sys_kqueue1(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.event.kqueue1)(SYS_kqueue1 as Register, args[0] as i32, rval)
+}
+
 /// The entry of number `nr`, if the table has one (a negative number has none).
 fn entry(table: &[Sysent], nr: Register) -> Option<&Sysent> {
     match usize::try_from(nr) {
@@ -650,7 +730,69 @@ mod tests {
         closefrom: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD);
+    /// The event entries of the test table: the arguments as digits, in order.
+    fn ev_select(nr: Register, nd: i32, s: [usize; 3], tv: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nd * 10000 + (s[0] * 1000 + s[1] * 100 + s[2] * 10 + tv) as i32)
+    }
+    fn ev_kevent(
+        nr: Register,
+        fd: i32,
+        c: (usize, i32),
+        e: (usize, i32),
+        t: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(fd * 100_000
+            + c.0 as i32 * 10_000
+            + c.1 * 1000
+            + e.0 as i32 * 100
+            + e.1 * 10
+            + t as i32)
+    }
+    fn ev_ppoll(nr: Register, f: usize, n: u32, t: usize, m: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err((f * 1000 + n as usize * 100 + t * 10 + m) as i32)
+    }
+    fn ev_pselect(
+        nr: Register,
+        nd: i32,
+        s: [usize; 3],
+        t: usize,
+        m: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(nd * 100_000 + (s[0] * 10_000 + s[1] * 1000 + s[2] * 100 + t * 10 + m) as i32)
+    }
+    fn ev_poll(nr: Register, f: usize, n: u32, t: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(f as i32 * 100 + n as i32 * 10 + t)
+    }
+
+    const EVENT: hal::api::EventEntries = hal::api::EventEntries {
+        select: ev_select,
+        kevent: ev_kevent,
+        ppoll: ev_ppoll,
+        pselect: ev_pselect,
+        poll: ev_poll,
+        kqueue: count,
+        kqueue1: fd1,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+
+    /// The event system calls N4.4 made `Native` (`KernelApi::event`).
+    const EVENT_CALLS: [i32; 7] = [
+        SYS_select,
+        SYS_kevent,
+        SYS_ppoll,
+        SYS_pselect,
+        SYS_poll,
+        SYS_kqueue,
+        SYS_kqueue1,
+    ];
 
     /// The vm system calls N3.5's flip made `Native` (`KernelApi::vm`).
     const VM_CALLS: [i32; 15] = [
@@ -742,12 +884,13 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_and_fd_is_legacy() {
+    fn every_entry_but_pipe_vm_fd_and_event_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
+                || EVENT_CALLS.iter().any(|&v| v as Register == nr)
             {
                 continue;
             }
@@ -895,7 +1038,36 @@ mod tests {
             assert_eq!(r, Err(0), "SYS {nr} reached its fd entry");
             assert_eq!(rval[0], nr as Register);
         }
-        assert_eq!(NATIVE, 37);
+    }
+
+    /// Each event translation calls its own entry with its own number, the arguments in
+    /// `<sys/syscallargs.h>`'s order and the trap's return registers.
+    #[test]
+    fn the_event_calls_are_native_and_pass_their_number_arguments_and_rval() {
+        for nr in EVENT_CALLS {
+            assert!(
+                matches!(SYSENT[nr as usize], Sysent::Native(_)),
+                "SYS {nr} is Native"
+            );
+        }
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let cases: [(NativeFn, i32, i32); 7] = [
+            (sys_select, SYS_select, 12345),
+            (sys_kevent, SYS_kevent, 123_456),
+            (sys_ppoll, SYS_ppoll, 1234),
+            (sys_pselect, SYS_pselect, 123_456),
+            (sys_poll, SYS_poll, 123),
+            (sys_kqueue, SYS_kqueue, 0),
+            (sys_kqueue1, SYS_kqueue1, 1),
+        ];
+        for (f, nr, want) in cases {
+            let mut rval = [-7; 2];
+            assert_eq!(f(&API, &a, &mut rval), Err(want), "SYS {nr}");
+            assert_eq!(rval, [nr as Register, -7], "SYS {nr} wrote rval[0] only");
+            let mut rval = [-7; 2];
+            assert_eq!(syscall(&API, nr as Register, &a, &mut rval), Err(want));
+        }
+        assert_eq!(NATIVE, 44);
     }
 }
 /* </TESTS> */

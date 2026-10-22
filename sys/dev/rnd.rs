@@ -1252,7 +1252,7 @@ mod tests {
 
     #[test]
     fn filters_report_what_can_move() {
-        let kn = Knote::default();
+        let kn = Knote::detached();
         assert!(filt_randomread(&kn, 0));
         assert_eq!(kn.kn_data().get(), RND_MAIN_MAX_BYTES as i64);
         assert!(filt_randomwrite(&kn, 0));

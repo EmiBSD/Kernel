@@ -105,14 +105,6 @@
 //! `[K]` annotation asks for.
 //!
 //! ## Deviations
-//! - A process's `ps_klist` and the mutex that locks it live in a [`ProcStore`] the glue
-//!   allocates (the global allocator, never freed) and recycles when the process goes, as the
-//!   pipe glue's klists (`sys/kern/pipe_glue.rs`): a `Klist` is not `Send` (its lock word is a
-//!   raw pointer), so it cannot sit in a pooled kernel `Process`. About 100 bytes per process
-//!   at the peak (`maxprocess` 1310: about 130 KB), gone at N4.4 (the klist in the kernel
-//!   crate). The klist is locked by the store's own mutex where the C locks it with `ps_mtx`
-//!   (`[Q,m]`), so a path that holds `ps_mtx` and fires `ps_klist` (`ptsignal`'s
-//!   `NOTE_SIGNAL`) takes that mutex inside it.
 //! - The session's `s_verauthto` timeout finds its session by address among the sessions of
 //!   the groups in `pgrphash` (`kernel::proc::session_find`) where the C casts its `void *`
 //!   argument: a session without a group has no process that could read what the timeout
@@ -126,10 +118,8 @@
 //!   `curthread`).
 //!
 //! The switch-over's, in the callers it adapted (N4.2; none is visible to userland):
-//! - `fork1` takes the new process's klist store first (its only allocation that can fail:
-//!   `ENOMEM`, fork(2)'s, before anything is visible) and makes the process (its pid chosen
-//!   before the item, `process_alloc(allocpid(), ..)`) before the thread, where the C makes
-//!   the thread first.
+//! - `fork1` makes the process (its pid chosen before the item,
+//!   `process_alloc(allocpid(), ..)`) before the thread, where the C makes the thread first.
 //! - The orphan's owner (`ps_opptr`, ptrace) is looked up by address among the processes
 //!   (`process_clear_orphan`), where the C follows the pointer.
 //! - `sysctl_doproc` reads a process's threads one at a time by position under `ps_mtx`
@@ -148,7 +138,7 @@
 //!
 //! ## Redesign
 //! - LZ's `Cell<*const T>` members of `struct process`/`struct proc` (`ps_fd`, `ps_opptr`,
-//!   `p_fd`, `p_kq`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
+//!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
 //!   dereferenced by the legacy code as before); `ps_sigacts`, `ps_textvp`, `s_ttyvp` and
 //!   `s_ttyp`, whose targets the legacy code treats as `'static`, are `hal::link::Link`s,
 //!   read without `unsafe`; the plain members are atomic words with LZ's `get()`/`set()`
@@ -159,7 +149,6 @@
 //!   [`proc_test_reset`]).
 
 use core::ffi::c_void;
-use core::ops::Deref;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicIsize, AtomicUsize, Ordering};
 
@@ -181,12 +170,8 @@ use crate::kern::vfs_subr::vrele;
 use crate::kern::vfs_vops::VOP_REVOKE;
 use crate::machine::Machine;
 use crate::machine::cpu::{Cpu, curcpu};
-use crate::machine::intr::IPL_HIGH;
 use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
-use crate::sys::event::Klist;
-use crate::sys::eventvar::Kqueue;
-use crate::sys::mutex::Mutex;
 use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Sigval;
 use crate::sys::sigio::Sigiolst;
@@ -312,35 +297,8 @@ impl IsizeWord {
     }
 }
 
-/// A process's `ps_klist` and the mutex that locks it, allocated by the glue and recycled.
-pub struct ProcStore {
-    /// \[Q\] `ps_klist`: knotes attached to the process, locked by [`ProcStore::ps_klmtx`]
-    /// once `process_initialize` ran `klist_init_mutex`.
-    pub ps_klist: Klist,
-    /// The klist's lock (the C's `ps_mtx` for this member).
-    pub ps_klmtx: Mutex,
-}
-
-impl ProcStore {
-    /// An empty klist and a free mutex.
-    pub const fn new() -> Self {
-        Self {
-            ps_klist: Klist::new(),
-            ps_klmtx: Mutex::new(IPL_HIGH),
-        }
-    }
-}
-
-impl Default for ProcStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// The members of `struct process` of `bsd`'s subsystems; a process dereferences to them.
 pub struct BsdProcessG {
-    /// The process's klist and its lock (process 0's `static` one, or one of the glue's).
-    store: &'static ProcStore,
     /// `ps_sigiolst`: list of sigio structures.
     pub ps_sigiolst: Sigiolst,
     /// \[I\] `ps_sigacts`: signal actions, state (`sigactsinit`'s, or `sigacts0`).
@@ -371,10 +329,9 @@ pub struct BsdProcessG {
 }
 
 impl BsdProcessG {
-    /// The members of a new process, its klist in `store`.
-    pub const fn new(store: &'static ProcStore) -> Self {
+    /// The members of a new process.
+    pub const fn new() -> Self {
         Self {
-            store,
             ps_sigiolst: Sigiolst::new(),
             ps_sigacts: Link::new(),
             ps_textvp: Link::new(),
@@ -401,27 +358,14 @@ impl BsdProcessG {
     }
 }
 
-impl Deref for BsdProcessG {
-    type Target = ProcStore;
-
-    fn deref(&self) -> &ProcStore {
-        self.store
-    }
-}
-
-impl Drop for BsdProcessG {
-    /// The process is gone (its last reference dropped): its store goes back for the next one.
-    fn drop(&mut self) {
-        store_recycle(self.store);
+impl Default for BsdProcessG {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 /// The members of `struct proc` of `bsd`'s subsystems; a thread dereferences to them.
 pub struct BsdThreadG {
-    /// \[o\] `p_kq`: for select/poll (`kqpoll_init`), null until the first call; the thread
-    /// holds a reference (`p.kq()`).
-    pub p_kq: PtrWord<Kqueue>,
-
     /// `p_sigstk`: sp & on stack state variable.
     pub p_sigstk: SigaltstackWord,
     /// `p_sigval`: for core dump/debugger XXX.
@@ -437,8 +381,6 @@ impl BsdThreadG {
     /// The members of a new thread.
     pub const fn new() -> Self {
         Self {
-            p_kq: PtrWord::new(),
-
             p_sigstk: SigaltstackWord::new(),
             p_sigval: SigvalWord::new(),
             p_self: Link::new(),
@@ -756,6 +698,18 @@ impl ProcGlue for BsdProcGlue {
     fn session_destroy(sess: &Session) {
         timeout_del(&sess.s_verauthto);
     }
+
+    fn curproc() -> Option<&'static Proc> {
+        crate::machine::cpu::curproc()
+    }
+
+    fn pledge_fail(p: &Proc, error: Errno, code: u64) -> Errno {
+        crate::kern::kern_pledge::pledge_fail(p, error, code)
+    }
+
+    fn process_ref(pr: &Process) -> ProcessRef {
+        process_ref(pr)
+    }
 }
 
 /// `s_verauthto`'s function: `zapverauth` of the session at `arg` (a timeout without
@@ -764,37 +718,6 @@ fn zapverauth_timeout(arg: *mut c_void) {
     let r = hal::klock::reader();
     if let Some(sess) = kernel::proc::session_find::<BsdProcGlue, _>(&r, arg.addr()) {
         zapverauth(sess);
-    }
-}
-
-/// The stores given back, for the next process. The mutex covers a pop or a push.
-static FREE_STORES: Mutexed<alloc::vec::Vec<&'static ProcStore>> =
-    Mutexed::new(IPL_HIGH, alloc::vec::Vec::new());
-
-/// A store for a new process: a recycled one, or a fresh one from the global allocator,
-/// never freed; `ENOMEM` when it cannot be had (`try_reserve`, never the allocator's panic).
-pub fn store_alloc() -> Result<&'static ProcStore, Errno> {
-    if let Some(s) = FREE_STORES.lock().pop() {
-        return Ok(s);
-    }
-    let mut v: alloc::vec::Vec<ProcStore> = alloc::vec::Vec::new();
-    v.try_reserve_exact(1).map_err(|_| Errno::ENOMEM)?;
-    v.push(ProcStore::new());
-    let block: &'static [ProcStore] = v.leak();
-    block.first().ok_or(Errno::ENOMEM)
-}
-
-/// A store [`store_alloc`] gave that no process took (`fork1` failing before it commits).
-pub fn store_free(store: &'static ProcStore) {
-    store_recycle(store);
-}
-
-/// Gives `store` back for the next process; one that the list cannot take (its growth
-/// failed) stays allocated, unused. Process 0's `static` store never comes here.
-fn store_recycle(store: &'static ProcStore) {
-    let mut free = FREE_STORES.lock();
-    if free.try_reserve(1).is_ok() {
-        free.push(store);
     }
 }
 
@@ -932,15 +855,11 @@ pub fn with_uidinfo<R>(
     kernel::proc::with_uidinfo::<BsdProcGlue, R>(uid, f)
 }
 
-/// A process of the host tests with pid `pid` and its own klist store, leaked (never
-/// freed: the tests' processes live for the run).
+/// A process of the host tests with pid `pid`, leaked (never freed: the tests' processes
+/// live for the run).
 #[cfg(test)]
 pub(crate) fn test_process(pid: Pid) -> &'static Process {
-    let store: &'static ProcStore = std::boxed::Box::leak(std::boxed::Box::new(ProcStore::new()));
-    std::boxed::Box::leak(std::boxed::Box::new(Process::new(
-        pid,
-        BsdProcessG::new(store),
-    )))
+    std::boxed::Box::leak(std::boxed::Box::new(Process::new(pid, BsdProcessG::new())))
 }
 
 /// A thread of the host tests of `pr`, placed, leaked, on none of the process's lists.
@@ -959,9 +878,7 @@ pub(crate) fn test_thread(pr: &'static Process) -> &'static Proc {
 /// [`procinit`].
 #[cfg(test)]
 pub(crate) fn test_pooled_process(pid: Pid) -> &'static Process {
-    let store = store_alloc()
-        .unwrap_or_else(|e| crate::kern::subr_prf::panic(format_args!("test store: {e:?}")));
-    match kernel::proc::process_alloc::<BsdProcGlue>(pid, BsdProcessG::new(store)) {
+    match kernel::proc::process_alloc::<BsdProcGlue>(pid, BsdProcessG::new()) {
         StaticOrPooled::Pooled(a) => PoolArc::leak(a),
         StaticOrPooled::Static(s) => s,
     }
@@ -1042,7 +959,6 @@ const _: () = {
     send_sync::<Timeout>();
     send_sync::<Sigiolst>();
     send_sync::<Pinsyscall>();
-    send_sync::<&'static ProcStore>();
     send_sync::<BsdProcessG>();
     send_sync::<BsdThreadG>();
     send_sync::<BsdPgrpG>();
@@ -1109,7 +1025,11 @@ mod tests {
         // moved the run queues and the sleep timeout into the kernel: procpl 1056 -> 1128
         // (p_runq a PinEntry and p_sleep_to the kernel's Timeout in kernel::proc's Thread,
         // where bsd's list entry and timeout were), then 1136 (p_cpuno, the CPU number beside
-        // the slot), pending the user's word as N4.2's were.
+        // the slot), pending the user's word as N4.2's were. N4.4 (kqueue into kernel::event)
+        // gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in kernel::proc's
+        // Process) and fdescpl 520 -> 560, and its p_kq, a set-once counted kqueue in the
+        // kernel's Thread where bsd's word was, takes procpl 1136 -> 1168 at the merge of N4.4
+        // and N4.5a.
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1145,15 +1065,15 @@ mod tests {
             ),
         ];
         std::println!("procpl {proc}, {sizes:?}");
-        assert!(proc <= 1152, "procpl {proc}");
+        assert!(proc <= 1168, "procpl {proc}");
         assert_eq!(
             sizes,
             [
-                ("processpl", 1296),
+                ("processpl", 1360),
                 ("pgrppl", 152),
                 ("sessionpl", 144),
                 ("filepl", 184),
-                ("fdescpl", 520),
+                ("fdescpl", 560),
                 ("ucredpl", 120),
                 ("plimitpl", 160),
                 ("zombiepl", 144),
@@ -1214,16 +1134,6 @@ mod tests {
         }
         unlink(pr);
         kernel_unlock();
-    }
-
-    #[test]
-    fn a_store_given_back_serves_the_next_process() {
-        let _g = setup();
-        let a = store_alloc().expect("a store");
-        store_free(a);
-        let b = store_alloc().expect("a store");
-        assert!(ptr::eq(a, b), "the recycled store comes back first");
-        store_free(b);
     }
 
     #[test]

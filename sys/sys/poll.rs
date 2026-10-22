@@ -42,60 +42,21 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/poll.h>`: `struct pollfd` and the `POLL*` event bits of `poll(2)`.
+//! `<sys/poll.h>`: `struct pollfd` and the `POLL*` event bits of `poll(2)`, as `bsd` names
+//! them: the kernel crate's (`kernel::select`).
 //!
 //! Upstream: sys/sys/poll.h @ 3ce1f3f79392
+//! LZ: sys/sys/poll.rs@3c62ede68802
 //!
-//! Status: `ported`. The user-space prototypes and the `sigset_t`/`timespec` repeats are
-//! libc's and `sys/signal.rs`/`sys/time.rs`'s.
+//! The user-space prototypes and the `sigset_t`/`timespec` repeats are libc's and
+//! `sys/signal.rs`/`sys/time.rs`'s.
+//!
+//! ## Redesign
+//! - N4.4: `struct pollfd` is `kernel::select::Pollfd`, `hal::abi_pod!`'s (LZ: an `unsafe
+//!   impl AbiPod`).
 
-/// `struct pollfd` (`pollfd_t`).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Pollfd {
-    /// `fd`.
-    pub fd: i32,
-    /// `events`.
-    pub events: i16,
-    /// `revents`.
-    pub revents: i16,
-}
-
-// SAFETY: `#[repr(C)]` of an `int` and two `short`s: 8 bytes, no padding, any bit pattern.
-unsafe impl crate::machine::copy::AbiPod for Pollfd {}
-
-/// `nfds_t`.
-pub type Nfds = u32;
-
-/// `POLLIN`.
-pub const POLLIN: i16 = 0x0001;
-/// `POLLPRI`.
-pub const POLLPRI: i16 = 0x0002;
-/// `POLLOUT`.
-pub const POLLOUT: i16 = 0x0004;
-/// `POLLERR`.
-pub const POLLERR: i16 = 0x0008;
-/// `POLLHUP`.
-pub const POLLHUP: i16 = 0x0010;
-/// `POLLNVAL`.
-pub const POLLNVAL: i16 = 0x0020;
-/// `POLLRDNORM`.
-pub const POLLRDNORM: i16 = 0x0040;
-/// `POLLNORM`.
-pub const POLLNORM: i16 = POLLRDNORM;
-/// `POLLWRNORM`.
-pub const POLLWRNORM: i16 = POLLOUT;
-/// `POLLRDBAND`.
-pub const POLLRDBAND: i16 = 0x0080;
-/// `POLLWRBAND`.
-pub const POLLWRBAND: i16 = 0x0100;
-/// `POLL_NOHUP`: internal use only.
-pub const POLL_NOHUP: i16 = 0x1000;
-
-/// `INFTIM`: an infinite `poll(2)` timeout.
-pub const INFTIM: i32 = -1;
-
-const _: () = {
-    assert!(size_of::<Pollfd>() == 8);
+pub use kernel::select::{
+    INFTIM, Nfds, POLL_NOHUP, POLLERR, POLLHUP, POLLIN, POLLNORM, POLLNVAL, POLLOUT, POLLPRI,
+    POLLRDBAND, POLLRDNORM, POLLWRBAND, POLLWRNORM, Pollfd,
 };
 /* </CODE> */

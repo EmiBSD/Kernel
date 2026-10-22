@@ -137,6 +137,12 @@
 //!   `kernel::clock` (`Uptime`).
 //! - `timeout_sysctl` stays at the ABI's side (`sys/sys/timeout.rs`): [`stats`] is the copy of
 //!   `tostat` it takes under the lock, in the C's field order.
+//! - N4.4: a timeout whose function dereferenced its `void *` (kqueue's `filt_timerexpire`,
+//!   the knote) takes a counted, erased argument instead ([`Timeout::set_shared`],
+//!   `hal::pool::AnyArc`): the timeout holds the handle until it is set again or cleared
+//!   ([`Timeout::clear`]), the wheel clones it under its lock for the call, and the function
+//!   gets its object back by naming its type. The C's `fn(void *)` stays for the callers that
+//!   pass an address or nothing (`TimeoutFn`, the legacy adapter's).
 
 use core::ffi::c_void;
 use core::pin::Pin;
@@ -148,6 +154,7 @@ use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
 use hal::pin::pin_static;
 use hal::pinlist::{BoundRing, PinEntry, PinRing};
+use hal::pool::AnyArc;
 use hal::rwlock::Guarded;
 use hal::sleep::{INFSLP, PSWP, PWAIT};
 use hal::softintr::SoftHandle;
@@ -159,6 +166,10 @@ use crate::thread::{self, Start};
 /// `void (*to_func)(void *)`: the function a timeout calls, with its argument (which the
 /// kernel never dereferences: it is the caller's).
 pub type TimeoutFn = fn(*mut c_void);
+
+/// The function of a timeout set by [`Timeout::set_shared`]: its argument is the counted
+/// handle the timeout holds, lent for the call.
+pub type SharedFn = fn(&AnyArc);
 
 /// `TIMEOUT_PROC`: needs a process context.
 pub const TIMEOUT_PROC: u32 = 0x01;
@@ -201,15 +212,34 @@ const TIMEOUT_LEVEL_WIDTH: [i64; WHEELCOUNT] = {
     w
 };
 
-/// A timeout's `[T]` fields that the `Guarded` cell keeps.
+/// `to_func`: the C's `void (*)(void *)` with `to_arg`, or a function of a counted argument.
 #[derive(Clone, Copy)]
+enum Func {
+    /// The C's function, called with `to_arg`.
+    Raw(TimeoutFn),
+    /// A function of the handle in [`ToState::shared`].
+    Shared(SharedFn),
+}
+
+/// A timeout's `[T]` fields that the `Guarded` cell keeps.
 struct ToState {
     /// `to_func`: the function (`None` for one `timeout_set` never named, the C's `NULL`).
-    func: Option<TimeoutFn>,
+    func: Option<Func>,
     /// `to_kclock`: the kernel clock of `abstime`, or `KCLOCK_NONE`.
     kclock: i32,
     /// `to_abstime`: the absolute time to run at (`KCLOCK_UPTIME`).
     abstime: Timespec,
+    /// The argument of a [`Func::Shared`] function, held until the timeout is set again or
+    /// cleared.
+    shared: Option<AnyArc>,
+}
+
+/// What a timeout taken off its queue runs, copied under the wheel's lock.
+enum Call {
+    /// `to_func(to_arg)`.
+    Raw(TimeoutFn, *mut c_void),
+    /// A shared function and a clone of its argument.
+    Shared(SharedFn, AnyArc),
 }
 
 /// `struct timeout`. Not `Unpin`: it is linked into the wheel's queues through `Pin<&Self>`
@@ -240,9 +270,10 @@ impl Timeout {
             st: Guarded::new_static_mutexed(
                 &WHEEL,
                 ToState {
-                    func: Some(func),
+                    func: Some(Func::Raw(func)),
                     kclock,
                     abstime: Timespec::ZERO,
+                    shared: None,
                 },
             ),
             arg: AtomicPtr::new(arg),
@@ -267,6 +298,7 @@ impl Timeout {
                     func: None,
                     kclock: 0,
                     abstime: Timespec::ZERO,
+                    shared: None,
                 },
             ),
             arg: AtomicPtr::new(ptr::null_mut()),
@@ -282,15 +314,62 @@ impl Timeout {
     /// deletable: `TIMEOUT_PROC`, `TIMEOUT_MPSAFE`, the clock, the function and the argument
     /// change, and `TIMEOUT_TRIGGERED` is cleared as the C's whole store clears it.
     pub fn set(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
+        let old = self.set_func(func.map(Func::Raw), None, arg, kclock, flags);
+        drop(old);
+    }
+
+    /// `timeout_set_flags(to, func, arg, kclock, flags)` with a counted argument (the
+    /// module's redesign): `func` is called with `arg`, which the timeout holds until it is
+    /// set again or [cleared](Timeout::clear). A timeout that holds a handle to the object
+    /// that holds it is a cycle its owner breaks with `clear` (after `del_barrier`), as the C's
+    /// owner frees the object only once its timeout is gone.
+    pub fn set_shared(&self, func: SharedFn, arg: AnyArc, kclock: i32, flags: u32) {
+        let old = self.set_func(
+            Some(Func::Shared(func)),
+            Some(arg),
+            ptr::null_mut(),
+            kclock,
+            flags,
+        );
+        drop(old);
+    }
+
+    /// `timeout_set(to, NULL, NULL)` of a timeout set by [`Timeout::set_shared`]: its
+    /// argument given back (dropped after the wheel's lock), its function gone. For its owner
+    /// once the timeout is neither pending nor running (`del_barrier`); a cleared timeout that
+    /// runs calls nothing.
+    pub fn clear(&self) {
+        let old = {
+            let mut g = WHEEL.lock();
+            let st = self.st.get_mut(&mut g);
+            st.func = None;
+            st.shared.take()
+        };
+        drop(old);
+    }
+
+    /// [`Timeout::set`]'s work under the wheel's lock: the argument it held before comes back,
+    /// for its caller to drop after the lock (its last drop may free a value whose own timeout
+    /// takes the lock).
+    fn set_func(
+        &self,
+        func: Option<Func>,
+        shared: Option<AnyArc>,
+        arg: *mut c_void,
+        kclock: i32,
+        flags: u32,
+    ) -> Option<AnyArc> {
         set_checks(kclock, flags);
         let mut g = WHEEL.lock();
         let st = self.st.get_mut(&mut g);
         st.func = func;
         st.kclock = kclock;
+        let old = core::mem::replace(&mut st.shared, shared);
         self.arg.store(arg, Ordering::Relaxed);
         let state = self.flags.load(Ordering::Relaxed) & TIMEOUT_ONQUEUE;
         self.flags
             .store(flags | TIMEOUT_INITIALIZED | state, Ordering::Relaxed);
+        old
     }
 
     /// `timeout_set_flags` of a fresh `struct timeout` (all its state the new one's), over a
@@ -308,13 +387,16 @@ impl Timeout {
             g.stat.tos_pending -= 1;
         }
         let st = self.st.get_mut(&mut g);
-        st.func = func;
+        st.func = func.map(Func::Raw);
         st.kclock = kclock;
         st.abstime = Timespec::ZERO;
+        let old = st.shared.take();
         self.arg.store(arg, Ordering::Relaxed);
         self.time.store(0, Ordering::Relaxed);
         self.flags
             .store(flags | TIMEOUT_INITIALIZED, Ordering::Relaxed);
+        drop(g);
+        drop(old);
     }
 
     /// `timeout_add(to, to_ticks)`: due in `to_ticks` ticks; `true` when it was not pending
@@ -744,6 +826,16 @@ static TICK: AtomicI32 = AtomicI32::new(10_000);
 /// \[I\] `tick_nsec`.
 static TICK_NSEC: AtomicI32 = AtomicI32::new(10_000_000);
 
+/// `hz`: the clock ticks per second (`kernel::clock::tstohz`).
+pub fn hz() -> i32 {
+    HZ.load(Ordering::Relaxed)
+}
+
+/// `tick`: the microseconds per clock tick (`kernel::clock::tstohz`).
+pub fn tick() -> i32 {
+    TICK.load(Ordering::Relaxed)
+}
+
 /// A wheel queue, pinned: the queues are a `static`.
 #[inline]
 fn ring(r: &'static PinRing<ToList>) -> Pin<&'static PinRing<ToList>> {
@@ -915,16 +1007,19 @@ pub fn hardclock_update() {
 fn run_taken<'w>(
     mut g: MutexedGuard<'w, WheelState>,
     ctx: Ctx,
-    func: Option<TimeoutFn>,
-    arg: *mut c_void,
+    call: Option<Call>,
     addr: usize,
 ) -> MutexedGuard<'w, WheelState> {
     // needsproc: WITNESS only. NKCOV > 0: kcov_process.
     g.running[ctx as usize] = addr;
     drop(g);
     // timeout_sync_enter(needsproc): WITNESS.
-    if let Some(func) = func {
-        func(arg);
+    match call {
+        Some(Call::Raw(func, arg)) => func(arg),
+        // The clone goes before the lock is taken again: its drop may free the value that
+        // holds this timeout, whose drop takes the lock.
+        Some(Call::Shared(func, arg)) => func(&arg),
+        None => {}
     }
     // timeout_sync_leave(needsproc): WITNESS.
     let mut g = WHEEL.lock();
@@ -940,35 +1035,33 @@ fn run_first<'w>(
 ) -> (MutexedGuard<'w, WheelState>, bool) {
     // The context's queue bound once for the look and the removal.
     let mut q = ring(ctx.todo()).bound(&mut g);
-    let Some((func, arg, addr)) = q.first().map(|to| {
+    let Some((call, addr)) = q.first().map(|to| {
         let flags = to.flags.load(Ordering::Relaxed);
-        take_for_run(to, flags, to.st.get(q.witness()).func)
+        take_for_run(to, flags, to.st.get(q.witness()))
     }) else {
         return (g, false);
     };
     q.remove_first();
     q.data_mut().stat.tos_pending -= 1;
-    (run_taken(g, ctx, func, arg, addr), true)
+    (run_taken(g, ctx, call, addr), true)
 }
 
-/// A timeout about to run, still first on its queue (its `flags` and `func` read under the
+/// A timeout about to run, still first on its queue (its `flags` and its state read under the
 /// lock by the caller, once): `TIMEOUT_ONQUEUE` cleared, `TIMEOUT_TRIGGERED` set (under the
-/// lock, as the C); its function, argument and address.
+/// lock, as the C); what to call (its function and argument, a shared argument cloned) and
+/// its address.
 #[inline]
-fn take_for_run(
-    to: &Timeout,
-    flags: u32,
-    func: Option<TimeoutFn>,
-) -> (Option<TimeoutFn>, *mut c_void, usize) {
+fn take_for_run(to: &Timeout, flags: u32, st: &ToState) -> (Option<Call>, usize) {
     to.flags.store(
         (flags & !TIMEOUT_ONQUEUE) | TIMEOUT_TRIGGERED,
         Ordering::Relaxed,
     );
-    (
-        func,
-        to.arg.load(Ordering::Relaxed),
-        ptr::from_ref(to).addr(),
-    )
+    let call = match st.func {
+        Some(Func::Raw(func)) => Some(Call::Raw(func, to.arg.load(Ordering::Relaxed))),
+        Some(Func::Shared(func)) => st.shared.clone().map(|arg| Call::Shared(func, arg)),
+        None => None,
+    };
+    (call, ptr::from_ref(to).addr())
 }
 
 /// What `softclock`'s processing of one timeout adds to `tostat`.
@@ -1052,7 +1145,7 @@ pub fn softclock() {
                 ),
                 other => kpanic(format_args!("softclock: invalid to_clock: {other}")),
             };
-            let run = matches!(dest, Dest::Run).then(|| take_for_run(to, flags, st.func));
+            let run = matches!(dest, Dest::Run).then(|| take_for_run(to, flags, st));
             (dest, run)
         }) else {
             break;
@@ -1062,10 +1155,10 @@ pub fn softclock() {
             (Dest::Queue(q), _) => {
                 todo.move_first(ring(q));
             }
-            (Dest::Run, Some((func, arg, addr))) => {
+            (Dest::Run, Some((call, addr))) => {
                 todo.remove_first();
                 g.stat.tos_pending -= 1;
-                g = run_taken(g, Ctx::Si, func, arg, addr);
+                g = run_taken(g, Ctx::Si, call, addr);
                 g.stat.tos_run_softclock += 1;
             }
             (Dest::Run, None) => {}
@@ -1600,6 +1693,76 @@ mod tests {
         assert_eq!(FIRED_MP.load(Ordering::SeqCst), before + 1);
         to.del_barrier();
         assert!(stats()[8] >= 1, "run from the thread");
+    }
+
+    /// The object a shared timeout's argument names: its count of calls.
+    struct Shared {
+        calls: AtomicU32,
+        drops: std::sync::Arc<AtomicU32>,
+    }
+
+    impl Drop for Shared {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn fire_shared(arg: &AnyArc) {
+        if let Some(s) = arg.downcast_ref::<Shared>() {
+            s.calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn a_shared_timeout_runs_with_its_counted_argument_until_cleared() {
+        let _g = setup();
+        static P: hal::pool::TypedPool<Shared> = hal::pool::TypedPool::new();
+        static MADE: std::sync::Once = std::sync::Once::new();
+        MADE.call_once(|| P.init(0, hal::pool::PR_WAITOK, "sharedto").unwrap());
+        let drops = std::sync::Arc::new(AtomicU32::new(0));
+        let s = P
+            .get_shared(hal::pool::PR_WAITOK, || Shared {
+                calls: AtomicU32::new(0),
+                drops: std::sync::Arc::clone(&drops),
+            })
+            .unwrap();
+        static TO: Timeout = Timeout::unset();
+        let to = pinned(&TO);
+        to.set_shared(
+            fire_shared,
+            hal::pool::PoolArc::erase(s.clone()),
+            KCLOCK_NONE,
+            0,
+        );
+        assert_eq!(hal::pool::PoolArc::count(&s), 2, "the timeout holds one");
+        assert!(to.add(1));
+        for _ in 0..3 {
+            tick_once();
+        }
+        assert_eq!(s.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(hal::pool::PoolArc::count(&s), 2, "the call's clone is gone");
+        // Set again with the C's function: the held argument goes back.
+        to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
+        assert_eq!(hal::pool::PoolArc::count(&s), 1);
+        to.set_shared(
+            fire_shared,
+            hal::pool::PoolArc::erase(s.clone()),
+            KCLOCK_NONE,
+            0,
+        );
+        to.clear();
+        assert_eq!(hal::pool::PoolArc::count(&s), 1, "clear gives it back");
+        assert!(to.add(1));
+        for _ in 0..3 {
+            tick_once();
+        }
+        assert_eq!(
+            s.calls.load(Ordering::Relaxed),
+            1,
+            "a cleared timeout calls nothing"
+        );
+        drop(s);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 }
 /* </TESTS> */

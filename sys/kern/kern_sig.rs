@@ -99,8 +99,8 @@
 //!   back; `single_thread_set` sleeps on the guard (`msleep` with `ps_mtx` as interlock).
 //!   The parent and the group the C reads under `ps_mtx` (`[K|m]`) are the process's
 //!   `ps_mtx`-side copies (`Process::pptr_locked`, `pgrp_locked`); the walks over a group or
-//!   every process run under the kernel lock's reader. `ps_klist` has its own mutex
-//!   (`kern/proc_glue.rs`): `ptsignal`'s `NOTE_SIGNAL` takes it inside `ps_mtx`.
+//!   every process run under the kernel lock's reader. `ptsignal`'s `NOTE_SIGNAL` fires
+//!   `ps_klist` under `ps_mtx`, its lock (`kernel::event::knote_process_locked`).
 //!   `cansignal`'s "same credentials" shortcut compares the thread's source credentials
 //!   (`Proc::cred_ref`) with the process's. A sigio's credentials are its own counted
 //!   reference (`CredSlot`), given back by `sigio_del`.
@@ -111,7 +111,6 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering, fence};
 
 use crate::kassert;
 use crate::kern::init_main::{INITPROCESS, PROCESS0};
-use crate::kern::kern_event::knote_locked;
 use crate::kern::kern_exit::exit1;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
@@ -174,6 +173,7 @@ use crate::unported;
 use hal::klock;
 use hal::thread::SchedHold;
 use hal::vm::param::ptoa;
+use kernel::event::knote_process_locked;
 use kernel::vm::map::{uvm_map_remap_as_stack, uvm_unmap};
 
 /// `NSIG` as an array length.
@@ -1056,10 +1056,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
         }
     }
 
-    // ps_klist's own mutex, inside ps_mtx (see the module's deviations).
-    mtx_enter(&pr.ps_klmtx);
-    knote_locked(&pr.ps_klist, i64::from(NOTE_SIGNAL) | i64::from(signum));
-    mtx_leave(&pr.ps_klmtx);
+    knote_process_locked(pr, g, i64::from(NOTE_SIGNAL) | i64::from(signum));
 
     let mut prop = sigprop(signum);
     let mut action;

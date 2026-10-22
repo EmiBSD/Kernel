@@ -2773,6 +2773,9 @@ pub(crate) mod tests {
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Proc) {
         let guard = setup_real_memory();
         crate::machine::cons::consinit();
+        // The VOPs run under the kernel lock, as the system calls that reach them take it:
+        // VN_KNOTE (knote_locked on v_klist) needs it held. The test thread keeps it.
+        crate::sys::systm::kernel_lock();
         procinit();
         filedesc_init();
         NUMVNODES.store(0, Ordering::SeqCst);

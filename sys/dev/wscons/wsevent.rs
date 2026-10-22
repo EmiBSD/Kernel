@@ -164,8 +164,7 @@ pub fn wsevent_init(ev: &Wseventvar) -> Result<(), Errno> {
     }
 
     mtx_init_flags(&ev.ws_mtx, IPL_TTY, Some("wsmtx"), 0);
-    // SAFETY: `ws_mtx` is a member of the same queue, which outlives its klist.
-    unsafe { klist_init_mutex(&ev.ws_klist, &ev.ws_mtx) };
+    klist_init_mutex(&ev.ws_klist, &ev.ws_mtx);
 
     ev.ws_q.set(queue.as_ptr().cast());
     ev.ws_get.set(0);
@@ -444,7 +443,7 @@ mod tests {
         let _g = setup_real_memory();
         let ev = Wseventvar::new();
         wsevent_init(&ev).unwrap();
-        let kn = Knote::new();
+        let kn = Knote::detached();
         kn.kn_hook.set(ptr::from_ref(&ev).cast_mut().cast());
 
         assert!(!filt_wseventread(&kn, 0));

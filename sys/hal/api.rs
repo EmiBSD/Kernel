@@ -38,13 +38,15 @@
 //! and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`), one typed entry each. Version 4
 //! (N4.3): [`FdEntries`], the twenty system calls of the descriptor tables and their I/O
 //! (`read(2)`, `close(2)`, `dup(2)`, `fcntl(2)`, `ioctl(2)`, ...), one typed entry each.
+//! Version 5 (N4.4): [`EventEntries`], the seven of kqueue and select/poll (`kqueue(2)`,
+//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`).
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 4;
+pub const KERNEL_API_VERSION: u32 = 5;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -186,6 +188,42 @@ pub struct FdEntries {
     pub closefrom: FdEntry,
 }
 
+/// A user array of `kevent(2)` and its count: `(changelist, nchanges)`, `(eventlist,
+/// nevents)`.
+pub type KeventList = (usize, i32);
+/// `kevent(2)`'s entry: `(nr, fd, changes, events, timeout, rval)`.
+pub type KeventEntry = fn(Register, i32, KeventList, KeventList, usize, &mut Rval) -> SysResult;
+
+/// The event system calls' entries (version 5): each takes the system call's number first
+/// (the prologue still `bsd`'s checks it: pledge, the pinned syscalls), then the arguments
+/// as `<sys/syscallargs.h>` types them, the three `fd_set` pointers of `select(2)` and
+/// `pselect(2)` and the (list, count) pairs of `kevent(2)` grouped, and last the trap's
+/// return registers.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EventEntries {
+    /// 71 = `select(int nd, fd_set *in, fd_set *ou, fd_set *ex, struct timeval *tv)`:
+    /// `(nr, nd, [in, ou, ex], tv, rval)`.
+    pub select: fn(Register, i32, [usize; 3], usize, &mut Rval) -> SysResult,
+    /// 72 = `kevent(int fd, const struct kevent *changelist, int nchanges, struct kevent
+    /// *eventlist, int nevents, const struct timespec *timeout)`: `(nr, fd, (changelist,
+    /// nchanges), (eventlist, nevents), timeout, rval)`.
+    pub kevent: KeventEntry,
+    /// 109 = `ppoll(struct pollfd *fds, u_int nfds, const struct timespec *ts, const
+    /// sigset_t *mask)`: `(nr, fds, nfds, ts, mask, rval)`.
+    pub ppoll: fn(Register, usize, u32, usize, usize, &mut Rval) -> SysResult,
+    /// 110 = `pselect(int nd, fd_set *in, fd_set *ou, fd_set *ex, const struct timespec
+    /// *ts, const sigset_t *mask)`: `(nr, nd, [in, ou, ex], ts, mask, rval)`.
+    pub pselect: fn(Register, i32, [usize; 3], usize, usize, &mut Rval) -> SysResult,
+    /// 252 = `poll(struct pollfd *fds, u_int nfds, int timeout)`: `(nr, fds, nfds, timeout,
+    /// rval)`.
+    pub poll: fn(Register, usize, u32, i32, &mut Rval) -> SysResult,
+    /// 269 = `kqueue(void)`: `(nr, rval)`.
+    pub kqueue: fn(Register, &mut Rval) -> SysResult,
+    /// 270 = `kqueue1(int flags)`: `(nr, flags, rval)`.
+    pub kqueue1: fn(Register, i32, &mut Rval) -> SysResult,
+}
+
 /// The vtable handed to the module.
 #[repr(C)]
 pub struct KernelApi {
@@ -209,10 +247,16 @@ pub struct KernelApi {
     pub vm: VmEntries,
     /// The descriptor system calls (version 4).
     pub fd: FdEntries,
+    /// The event system calls (version 5).
+    pub event: EventEntries,
 }
 
 impl KernelApi {
     /// The table of this version over the given functions.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per member of the table, as its layout"
+    )]
     pub const fn new(
         register_syscall_handler: fn(&'static KernelApi, SyscallHandler, HandlerInfo),
         syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
@@ -221,6 +265,7 @@ impl KernelApi {
         pipe2: fn(Register, usize, Register) -> SysResult,
         vm: VmEntries,
         fd: FdEntries,
+        event: EventEntries,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -231,6 +276,7 @@ impl KernelApi {
             pipe2,
             vm,
             fd,
+            event,
         }
     }
 }
@@ -277,8 +323,10 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 4 only adds: the version 3 fields keep their places, `fd` comes last.
-    assert!(offset_of!(KernelApi, fd) == size_of::<KernelApi>() - size_of::<FdEntries>());
+    // Version 5 only adds: the version 4 fields keep their places, `event` comes last.
+    assert!(offset_of!(KernelApi, event) == size_of::<KernelApi>() - size_of::<EventEntries>());
+    assert!(offset_of!(KernelApi, event) == offset_of!(KernelApi, fd) + size_of::<FdEntries>());
+    assert!(size_of::<EventEntries>() == 7 * size_of::<fn()>());
     assert!(offset_of!(KernelApi, fd) == offset_of!(KernelApi, vm) + size_of::<VmEntries>());
     assert!(size_of::<FdEntries>() == 20 * size_of::<fn()>());
     assert!(size_of::<VmEntries>() == 15 * size_of::<fn()>());
@@ -443,13 +491,58 @@ mod tests {
         closefrom: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD);
+    fn select(nr: Register, nd: i32, s: [usize; 3], tv: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + nd + (s[0] + s[1] + s[2] + tv) as i32)
+    }
+    fn kevent(
+        nr: Register,
+        fd: i32,
+        c: (usize, i32),
+        e: (usize, i32),
+        t: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + c.0 as i32 + c.1 + e.0 as i32 + e.1 + t as i32)
+    }
+    fn ppoll(nr: Register, f: usize, n: u32, t: usize, m: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + (f + n as usize + t + m) as i32)
+    }
+    fn pselect(
+        nr: Register,
+        nd: i32,
+        s: [usize; 3],
+        t: usize,
+        m: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + nd + (s[0] + s[1] + s[2] + t + m) as i32)
+    }
+    fn poll(nr: Register, f: usize, n: u32, t: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + f as i32 + n as i32 + t)
+    }
+
+    const EVENT: EventEntries = EventEntries {
+        select,
+        kevent,
+        ppoll,
+        pselect,
+        poll,
+        kqueue: count,
+        kqueue1: fd1,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 4);
+        assert_eq!(KERNEL_API_VERSION, 5);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
     }
 
@@ -476,6 +569,26 @@ mod tests {
         assert_eq!((API.fd.ioctl)(54, 1, 2, 3, &mut rval), Err(60));
         assert_eq!((API.fd.closefrom)(287, 1, &mut rval), Err(288));
         assert_eq!(rval, [287, 0]);
+    }
+
+    #[test]
+    fn the_event_entries_are_the_callers_and_write_the_return_registers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.event.select)(71, 1, [2, 3, 4], 5, &mut rval), Err(86));
+        assert_eq!(rval, [71, 0]);
+        assert_eq!(
+            (API.event.kevent)(72, 1, (2, 3), (4, 5), 6, &mut rval),
+            Err(93)
+        );
+        assert_eq!((API.event.ppoll)(109, 1, 2, 3, 4, &mut rval), Err(119));
+        assert_eq!(
+            (API.event.pselect)(110, 1, [2, 3, 4], 5, 6, &mut rval),
+            Err(131)
+        );
+        assert_eq!((API.event.poll)(252, 1, 2, 3, &mut rval), Err(258));
+        assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
+        assert_eq!((API.event.kqueue1)(270, 1, &mut rval), Err(271));
+        assert_eq!(rval, [270, 0]);
     }
 
     #[test]

@@ -78,7 +78,8 @@ use core::slice;
 use core::sync::atomic::Ordering;
 
 use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fd_getfile, fdinsert, fdremove};
-use crate::kern::kern_event::knote;
+use crate::kern::kern_event::knote_locked;
+use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::kern_pledge::{pledge_fail, pledge_sendit, pledge_socket, pledge_sockopt};
 use crate::kern::kern_prot::suser;
@@ -565,8 +566,11 @@ pub fn doaccept(
                 0
             };
 
-            // connection has been removed from the listen queue
-            knote(&head.so_rcv.sb_klist, 0);
+            // connection has been removed from the listen queue (knote(): the klist's
+            // lock is sb_mtx)
+            mtx_enter(&head.so_rcv.sb_mtx);
+            knote_locked(&head.so_rcv.sb_klist, 0);
+            mtx_leave(&head.so_rcv.sb_mtx);
 
             sounlock_nonet(head);
 

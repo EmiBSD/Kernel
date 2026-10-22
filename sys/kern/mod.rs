@@ -45,6 +45,7 @@ pub mod kern_clock;
 pub mod kern_clockintr;
 #[forbid(unsafe_code)]
 pub mod kern_descrip;
+#[forbid(unsafe_code)]
 pub mod kern_event;
 pub mod kern_exec;
 pub mod kern_exit;
@@ -110,6 +111,7 @@ pub mod subr_userconf;
 #[forbid(unsafe_code)]
 pub mod subr_xxx;
 pub mod sys_futex;
+#[forbid(unsafe_code)]
 pub mod sys_generic;
 pub mod sys_socket;
 #[forbid(unsafe_code)]

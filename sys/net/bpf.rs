@@ -1058,8 +1058,7 @@ pub fn bpfopen(dev: Dev, _flag: i32, _mode: i32, _p: &Proc) -> Result<(), Errno>
     timeout_set(&bd.bd_wait_tmo, bpf_wait_cb, bd_ptr.cast());
     smr_init(&bd.bd_smr);
     sigio_init(&bd.bd_sigio);
-    // SAFETY: `bd_mtx` is a member of the same descriptor, which outlives its klist.
-    unsafe { klist_init_mutex(&bd.bd_klist, &bd.bd_mtx) };
+    klist_init_mutex(&bd.bd_klist, &bd.bd_mtx);
 
     bd.bd_rtout.set(0); // no timeout by default
     bd.bd_wtout.set(INFSLP); // wait for the buffer to fill by default

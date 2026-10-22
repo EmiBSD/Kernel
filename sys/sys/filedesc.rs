@@ -86,6 +86,5 @@ const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<crate::kern::kern_descrip::BsdFileData>();
     send_sync::<kernel::cred::CredRef>();
-    send_sync::<crate::kern::kern_descrip::BsdFdKq>();
 };
 /* </CODE> */

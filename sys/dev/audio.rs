@@ -562,8 +562,7 @@ fn audio_buf_wakeup(buf: &AudioBuf) {
 fn audio_buf_init(sc: &AudioSoftc, buf: &AudioBuf, dir: i32) -> Result<(), Errno> {
     let ops = sc.ops();
 
-    // SAFETY: `AUDIO_LOCK` is a static, which outlives every klist.
-    unsafe { klist_init_mutex(&buf.klist, &AUDIO_LOCK) };
+    klist_init_mutex(&buf.klist, &AUDIO_LOCK);
     match ops.round_buffersize {
         // SAFETY: `sc.arg` is the handle the driver attached `sc.ops` with.
         Some(f) => buf
@@ -1531,8 +1530,7 @@ pub fn audio_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) 
         return;
     }
 
-    // SAFETY: `AUDIO_LOCK` is a static, which outlives every klist.
-    unsafe { klist_init_mutex(&sc.mix_klist, &AUDIO_LOCK) };
+    klist_init_mutex(&sc.mix_klist, &AUDIO_LOCK);
 
     // set defaults
     sc.sw_enc.set(if BYTE_ORDER == LITTLE_ENDIAN {

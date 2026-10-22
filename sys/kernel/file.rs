@@ -120,6 +120,7 @@ use hal::sys::types::{Off, Register};
 use crate::assert::kpanic;
 use crate::cred::CredRef;
 use crate::descrip::Filedesc;
+use crate::event::{Knote, KqRef};
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::Uio;
 
@@ -562,7 +563,7 @@ pub trait FileOps<G: FileGlue>: Sync {
         p: &Thread<G::Proc>,
     ) -> Result<(), Errno>;
     /// `fo_kqfilter(fp, kn)`: attaches the knote to the file's object.
-    fn kqfilter(&self, fp: &File<G>, kn: &G::Knote) -> Result<(), Errno>;
+    fn kqfilter(&self, fp: &File<G>, kn: &Knote<G::Proc>) -> Result<(), Errno>;
     /// `fo_stat(fp, ub, p)`.
     fn stat(&self, fp: &File<G>, st: &mut G::Stat, p: &Thread<G::Proc>) -> Result<(), Errno>;
     /// `fo_close(fp, p)`: `p` is `None` for a file closed with no thread (one that was in a
@@ -581,10 +582,11 @@ pub trait FileOps<G: FileGlue>: Sync {
 }
 
 /// What the descriptors need of the subsystems still in `bsd` (decision 9): the object a
-/// file holds and the operations on it, the vnodes of `fd_cdir`/`fd_rdir`, the kqueue members
-/// of a table, the tables themselves, and the calls `kern_descrip.c` and `sys_generic.c` make
-/// into the vnode layer, the sockets, kqueue, signals and pledge. One instantiation, `bsd`'s
-/// (`sys/kern/descrip_glue.rs`); a bridge of `bridges.toml` while `bsd` implements it.
+/// file holds and the operations on it, the vnodes of `fd_cdir`/`fd_rdir`, the tables
+/// themselves, the kqueue file's operations and object (N4.4: kqueue is the kernel's, the
+/// `struct fileops` table the glue's), and the calls `kern_descrip.c` and `sys_generic.c`
+/// make into the vnode layer, the sockets, signals and pledge. One instantiation, `bsd`'s
+/// (`sys/kern/kern_descrip.rs`); a bridge of `bridges.toml` while `bsd` implements it.
 pub trait FileGlue: Send + Sync + Sized + 'static {
     /// The threads whose tables these are.
     type Proc: ProcGlue<FileGlue = Self>;
@@ -592,16 +594,12 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type Ops: ?Sized + FileOps<Self> + 'static;
     /// `f_data`: the object of a file (a vnode, a socket, a pipe, a kqueue).
     type Data: Send + Sync + 'static;
-    /// `struct knote`, for [`FileOps::kqfilter`].
-    type Knote: ?Sized;
     /// `struct stat`, as `fo_stat` fills it.
     type Stat: Default;
     /// `struct vnode` (`fd_cdir`, `fd_rdir`).
     type Vnode: Sync + 'static;
     /// `f_list`: `filehead`'s adapter ([`file_glue_links!`](crate::file_glue_links)).
     type FileList: PinAdapter<Elem = File<Self>>;
-    /// `fd_kqlist`, `fd_nuserevents`: a table's kqueue members (kqueue's, N4.4).
-    type FdKq: Send + Sync + Default;
 
     /// The open files, `fhdlk` and the pools (one `static` of `bsd`'s).
     fn tables() -> &'static FileTables<Self>;
@@ -633,8 +631,14 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn position_check(d: &Self::Data, off: Off) -> Result<(), Errno>;
     /// Whether a socket file's socket is a DNS one (`SS_DNS`: `ioctl(2)` refuses it).
     fn dns_socket(d: &Self::Data) -> bool;
-    /// `knote_fdclose(p, fd)`.
-    fn knote_fdclose(p: &Thread<Self::Proc>, fd: i32);
+    /// `kqueueops` and the object of a new kqueue file (`dokqueue`'s `f_ops`, `f_data`).
+    fn kqueue_file(kq: KqRef<Self::Proc>) -> (&'static Self::Ops, Self::Data);
+    /// The kqueue a kqueue file's object is (`fp->f_data` of a `DTYPE_KQUEUE` file); `None`
+    /// for another object.
+    fn kqueue_of(d: &Self::Data) -> Option<&KqRef<Self::Proc>>;
+    /// Whether a vnode file's vnode was revoked (its operations are deadfs's:
+    /// `kqueue_scan`'s `vp->v_op == &dead_vops`); `false` for any other object.
+    fn vnode_revoked(d: &Self::Data) -> bool;
     /// `ptsignal(p, SIGPIPE, STHREAD)`.
     fn sigpipe(p: &Thread<Self::Proc>);
     /// `pledge_fcntl(p, cmd)`.
@@ -647,9 +651,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn stat_hide_gen(st: &mut Self::Stat);
     /// `copyout(&ub, sb, sizeof(ub))` of `fstat(2)`: the structure's user bytes at `sb`.
     fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), Errno>;
-    /// `fdfree`'s check of a table's kqueue members once its descriptors are closed
-    /// (`fd_nuserevents == 0`).
-    fn fdkq_free(kq: &Self::FdKq);
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in
@@ -736,7 +737,7 @@ mod tests {
         ) -> Result<(), Errno> {
             Err(Errno::ENOTTY)
         }
-        fn kqfilter(&self, _: &File<Files>, _: &()) -> Result<(), Errno> {
+        fn kqfilter(&self, _: &File<Files>, _: &crate::event::Knote<Procs>) -> Result<(), Errno> {
             Err(Errno::EINVAL)
         }
         fn stat(

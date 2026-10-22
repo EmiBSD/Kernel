@@ -300,6 +300,18 @@ impl ProcGlue for BenchGlue {
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}
+    fn curproc() -> Option<&'static proc::Thread<Self>> {
+        None
+    }
+    fn pledge_fail(_p: &proc::Thread<Self>, error: Errno, _code: u64) -> Errno {
+        error
+    }
+    fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
+        match hal::pool::PoolArc::from_ref(pr) {
+            Some(a) => proc::StaticOrPooled::Pooled(a),
+            None => std::process::exit(1),
+        }
+    }
 }
 
 /// The bench's files' operations: nothing is read or written through them.
@@ -331,7 +343,11 @@ impl FileOps<BenchFiles> for BenchOps {
     ) -> Result<(), Errno> {
         Err(Errno::ENOTTY)
     }
-    fn kqfilter(&self, _: &File<BenchFiles>, _: &()) -> Result<(), Errno> {
+    fn kqfilter(
+        &self,
+        _: &File<BenchFiles>,
+        _: &kernel::event::Knote<BenchGlue>,
+    ) -> Result<(), Errno> {
         Err(Errno::EINVAL)
     }
     fn stat(

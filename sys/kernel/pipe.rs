@@ -81,9 +81,9 @@
 //! `PRIBIO | PCATCH`, and `pipe_destroy`'s rundown (`pipecl`, `PRIBIO`).
 //!
 //! The kernel holds every decision here; what is still `bsd`'s (the file, the descriptor
-//! table, the knotes and their klist, the sigio registration, the `uio`) is reached through
+//! table, the filterops' file lookup, the sigio registration, the `uio`) is reached through
 //! three traits that `bsd`'s glue implements (`sys/kern/pipe_glue.rs`, `bridges.toml`):
-//! [`PipeGlue`] (one value per pipe, inside the pair: the klist, the sigio, the clock),
+//! [`PipeGlue`] (one value per pipe, inside the pair: the sigio, the clock, the filterops),
 //! [`UioMove`] (the copy) and [`PipeFiles`] (`dopipe`'s descriptor work).
 //!
 //! ## Deviations
@@ -96,6 +96,10 @@
 //!   caller: there it is a `KASSERT` on `rw_status` under `diagnostic`, as the C's.
 //! - `pipe_rundown` returns `bool` (the C's "non-zero if a rundown is ongoing").
 //! - `KTRACE` is not configured (`ktrfds`), as in LZ.
+//! - A pipe's klist (`kernel::event`'s, N4.4) is locked by its own `IPL_HIGH` mutex
+//!   (`KlistKind::Own`), taken inside the pair's write lock, where the C locks it with
+//!   `pipe_lock` itself (`klist_init_rwlock`): the pair's `Rwlocked` write guard is no
+//!   `hal` witness. The pair's lock is still held around every klist call, as the C's.
 //! - The `#ifndef PIPE_SIZE`/`BIG_PIPE_SIZE` overrides are not configurable; both are `usize`.
 //!
 //! ## Redesign
@@ -118,8 +122,9 @@
 //!   anything else (decision 11), so the three `unsafe` slices of LZ are safe slices; only
 //!   the holder of `PIPE_LOCK` takes it.
 //! - The kernel names nothing of `bsd`: the pair is generic over the glue type, `G:
-//!   PipeGlue`, which `bsd` instantiates once (`Pipes<BsdPipeGlue>`): its klist and sigio sit
-//!   in the pair as LZ's did, with no cast and no indirection. The ioctl commands and the
+//!   PipeGlue`, which `bsd` instantiates once (`Pipes<BsdPipeGlue>`): its sigio sits in the
+//!   pair as LZ's did, with no cast and no indirection, and the klist is the kernel's
+//!   (`Klist<G::Proc>`, by value in each pipe, since N4.4). The ioctl commands and the
 //!   kqueue filters arrive as [`PipeIoctl`] and [`PipeFilter`], translated by the glue from
 //!   `bsd`'s numbers; `pipe_stat` returns a [`PipeStat`] and `kern_sysctl`'s fill a
 //!   [`PipeKinfo`], which the glue writes into `bsd`'s structures.
@@ -141,6 +146,8 @@ use hal::user::UserPtr;
 pub use crate::uio::UioMove;
 
 use crate::assert::{kassert, kpanic};
+use crate::event::{Filterops, Klist, Knote};
+use crate::proc::ProcGlue;
 
 /// `PIPE_SIZE`: pipe buffer size, keep moderate in value, pipes take kva space.
 pub const PIPE_SIZE: usize = 16384;
@@ -301,8 +308,9 @@ struct PairState {
 /// The write guard of a pair: the witness the atomics' setters take.
 type Guard<'a> = WriteGuard<'a, PairState>;
 
-/// `struct pipe` outside the lock: the words readable without it, and the glue's part.
-struct Pipe<G> {
+/// `struct pipe` outside the lock: the words readable without it, its klist, and the glue's
+/// part.
+struct Pipe<G: PipeGlue> {
     /// `[p]` `pipe_state` (`PIPE_*`): stored only under the pair's write guard; read under
     /// it, and without it only by `kern_sysctl` ([`PipePair::kinfo`]), the C's racy read.
     state: AtomicU32,
@@ -312,17 +320,20 @@ struct Pipe<G> {
     cnt: AtomicU32,
     /// `[p]` `pipe_buffer.size`: the buffer's size, stored only under the guard.
     size: AtomicU32,
-    /// The klist (`[p]`) and the sigio registration (`[S]`) of `bsd`'s glue.
+    /// `[p]` `pipe_klist`: the knotes on this pipe, an `Own` klist (see the deviations).
+    klist: Klist<G::Proc>,
+    /// The sigio registration (`[S]`) of `bsd`'s glue.
     glue: G,
 }
 
-impl<G> Pipe<G> {
+impl<G: PipeGlue> Pipe<G> {
     fn new(glue: G) -> Self {
         Self {
             state: AtomicU32::new(0),
             peer_alive: AtomicBool::new(true),
             cnt: AtomicU32::new(0),
             size: AtomicU32::new(0),
+            klist: Klist::new(),
             glue,
         }
     }
@@ -530,32 +541,25 @@ impl<G: PipeGlue> Pipes<G> {
     }
 }
 
-/// `bsd`'s part of one pipe (`sys/kern/pipe_glue.rs`): its klist and its sigio registration,
-/// made by [`PipeGlue::new`] as `pipe_pair_create` and `pipe_create` set them up (an empty
-/// klist, `sigio_init`), and given back by its drop. The kernel calls every method with the pair's write guard held, so one that
-/// reaches a filter finds the lock taken, as the C's `knote_locked` does; but
-/// [`PipeGlue::sigio_setown`] and [`PipeGlue::sigio_getown`] (the C's `[S]`, `sigio_lock`),
-/// and [`PipeGlue::klist_free`], called by the pair's last drop, when nothing reaches it.
-/// A bridge (`bridges.toml`): one call into `bsd` per method, no logic.
+/// `bsd`'s part of one pipe (`sys/kern/pipe_glue.rs`): its sigio registration, made by
+/// [`PipeGlue::new`] as `pipe_create` sets it up (`sigio_init`), and given back by its drop;
+/// the clock; and the filterops of a pipe file, which find the pair through the knote's file.
+/// The kernel calls [`PipeGlue::pgsigio`] and [`PipeGlue::sigio_free`] with the pair's write
+/// guard held, [`PipeGlue::sigio_setown`] and [`PipeGlue::sigio_getown`] (the C's `[S]`,
+/// `sigio_lock`) without it. A bridge (`bridges.toml`): one call into `bsd` per method, no
+/// logic.
 pub trait PipeGlue: Send + Sync + Sized + 'static {
-    /// `struct knote`, which the kernel only passes through.
-    type Knote: ?Sized;
+    /// The processes whose knotes a pipe's klist holds.
+    type Proc: ProcGlue;
 
-    /// One pipe's klist and sigio registration, set up; `ENOMEM` when they cannot be had
-    /// (`pipe(2)` then fails as for a pool item that cannot be had).
+    /// One pipe's sigio registration, set up; `ENOMEM` when it cannot be had (`pipe(2)` then
+    /// fails as for a pool item that cannot be had).
     fn new() -> Result<Self, Errno>;
 
     /// `getnanotime(9)`.
     fn nanotime() -> Timespec;
-    /// `knote_locked(&pipe_klist, hint)`.
-    fn knote(&self, hint: i64);
-    /// `pipe_kqfilter`'s attach: `kn_fop` for `filter`, `kn_hook` the pipe `hook`, then
-    /// `klist_insert_locked(&pipe_klist, kn)`.
-    fn klist_insert(&self, kn: &Self::Knote, filter: PipeFilter, hook: Dir);
-    /// `filt_pipedetach`'s `klist_remove(&pipe_klist, kn)`, the lock held.
-    fn klist_remove(&self, kn: &Self::Knote);
-    /// `klist_free(&pipe_klist)`: the list must be empty (`pipe_pair_destroy`).
-    fn klist_free(&self);
+    /// `pipe_rfiltops`, `pipe_wfiltops`, `pipe_efiltops`: the filterops of `filter`.
+    fn filterops(filter: PipeFilter) -> &'static Filterops<Self::Proc>;
     /// `pgsigio(&pipe_sigio, SIGIO, 0)`.
     fn pgsigio(&self);
     /// `sigio_free(&pipe_sigio)`.
@@ -638,6 +642,10 @@ impl<G: PipeGlue> Pipes<G> {
             .pool
             .get_shared(PR_WAITOK, || PipePair::new(self, glue))
             .ok_or(Errno::ENOMEM)?;
+        // klist_init_rwlock(&pipe_klist, &pipe_lock): placed, before any use.
+        for end in &pair.ends {
+            end.klist.init_own();
+        }
         let wpipe = PipeEnd {
             pair: pair.clone(),
             dir: Dir::Wr,
@@ -688,6 +696,12 @@ impl<G: PipeGlue> PipePair<G> {
     #[cfg(any(test, feature = "doubles"))]
     pub fn glue(&self, dir: Dir) -> &G {
         &self.end(dir).glue
+    }
+
+    /// `klist_empty(&pipe_klist)` of pipe `dir`, for tests only.
+    #[cfg(any(test, feature = "doubles"))]
+    pub fn klist_empty(&self, dir: Dir) -> bool {
+        self.end(dir).klist.is_empty()
     }
 
     /// Allocate kva for pipe circular buffer, the space is pageable. This routine will
@@ -787,7 +801,7 @@ impl<G: PipeGlue> PipePair<G> {
     fn pipe_wakeup(&self, _g: &mut Guard<'_>, dir: Dir) {
         let cpipe = self.end(dir);
 
-        cpipe.glue.knote(0);
+        cpipe.klist.knote(0);
 
         if cpipe.has(PIPE_ASYNC) {
             cpipe.glue.pgsigio();
@@ -1187,13 +1201,15 @@ impl<G: PipeGlue> PipePair<G> {
         filter: Option<PipeFilter>,
         select: bool,
         poll: bool,
-        kn: &G::Knote,
+        kn: &Knote<G::Proc>,
     ) -> Result<(), Errno> {
         let _g = self.lock.write();
         let wdir = self.peer_of(dir);
 
         let attach = |which: PipeFilter, hook: Dir| -> Result<(), Errno> {
-            self.end(hook).glue.klist_insert(kn, which, hook);
+            kn.kn_fop.set(Some(G::filterops(which)));
+            kn.kn_hook.set(ptr::without_provenance_mut(hook.index()));
+            self.end(hook).klist.insert(kn);
             Ok(())
         };
         match filter {
@@ -1213,14 +1229,14 @@ impl<G: PipeGlue> PipePair<G> {
 
     /// `filt_pipedetach(kn)`: unhooks the knote from the klist of pipe `hook` (its
     /// `kn_hook`), under the pair's lock.
-    pub fn detach(&self, hook: Dir, kn: &G::Knote) {
+    pub fn detach(&self, hook: Dir, kn: &Knote<G::Proc>) {
         let _g = self.lock.write();
-        self.end(hook).glue.klist_remove(kn);
+        self.end(hook).klist.remove(kn);
     }
 
     /// `filt_piperead`, `filt_pipewrite`, `filt_pipeexcept` for a knote on the file of pipe
     /// `dir` (`poll`: its `__EV_POLL`). The caller holds the pair's write lock: the filter
-    /// is called back by kqueue from [`PipeGlue::knote`] or under [`PipePair::with_lock`].
+    /// is called back by kqueue from the pipe's klist or under [`PipePair::with_lock`].
     pub fn filter(&self, dir: Dir, which: PipeFilter, poll: bool) -> FilterAnswer {
         kassert!(self.lock.status() == RW_WRITE);
 
@@ -1308,7 +1324,7 @@ impl<G: PipeGlue> Drop for PipePair<G> {
     /// after this (`PoolArc`'s last drop).
     fn drop(&mut self) {
         for end in &self.ends {
-            end.glue.klist_free();
+            end.klist.free();
         }
     }
 }
@@ -1320,7 +1336,7 @@ mod tests {
     // Host tests for pipes over `hal`'s runtime and this crate's doubles of its bridges
     // (`crate::testutil`): every pair comes from `Pipes::create`, its buffers are
     // `PIPE_SIZE` bytes of the page double, and `TestGlue` records what the kernel asked of
-    // the glue (knotes, SIGIOs, the klist). A test that counts the pool's items or the big
+    // the glue (SIGIOs, the owner); the knotes are `kernel::event`'s, on a test kqueue. A test that counts the pool's items or the big
     // pipes uses a `Pipes` of its own, since the tests run in parallel.
 
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64};
@@ -1331,24 +1347,43 @@ mod tests {
     use std::{assert, assert_eq, vec};
 
     use super::*;
+    use crate::event::tests::Kg;
+    use crate::event::{FILTEROP_ISFD, FILTEROP_MPSAFE};
     use crate::testutil;
-
-    /// A knote as the tests hand it to the glue: a name.
-    struct TestKnote(usize);
 
     /// The glue of the tests: counts what the kernel asks of it.
     #[derive(Default)]
     struct TestGlue {
-        knotes: AtomicU32,
         sigios: AtomicU32,
         sigio_freed: AtomicU32,
         owner: AtomicI32,
-        klist: Mutex<Vec<(usize, PipeFilter, Dir)>>,
     }
 
-    impl TestGlue {
-        fn klist(&self) -> Vec<(usize, PipeFilter, Dir)> {
-            self.klist.lock().unwrap().clone()
+    /// How many times a pipe's klist called a test filter's event (`knote_locked`).
+    static FILTER_CALLS: AtomicU32 = AtomicU32::new(0);
+
+    fn filt_test(_kn: &Knote<Kg>, _hint: i64) -> bool {
+        FILTER_CALLS.fetch_add(1, Ordering::Relaxed);
+        false
+    }
+
+    /// The test filterops, one per [`PipeFilter`] (told apart by address).
+    static TEST_FILTOPS: [Filterops<Kg>; 3] = [const {
+        Filterops {
+            f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
+            f_attach: None,
+            f_detach: None,
+            f_event: Some(filt_test),
+            f_modify: None,
+            f_process: None,
+        }
+    }; 3];
+
+    fn filter_index(filter: PipeFilter) -> usize {
+        match filter {
+            PipeFilter::Read => 0,
+            PipeFilter::Write => 1,
+            PipeFilter::Except => 2,
         }
     }
 
@@ -1356,7 +1391,7 @@ mod tests {
     static CLOCK: AtomicI64 = AtomicI64::new(0);
 
     impl PipeGlue for TestGlue {
-        type Knote = TestKnote;
+        type Proc = Kg;
 
         fn new() -> Result<Self, Errno> {
             Ok(Self::default())
@@ -1369,23 +1404,8 @@ mod tests {
             }
         }
 
-        fn knote(&self, _hint: i64) {
-            self.knotes.fetch_add(1, Ordering::Relaxed);
-        }
-
-        fn klist_insert(&self, kn: &TestKnote, filter: PipeFilter, hook: Dir) {
-            self.klist.lock().unwrap().push((kn.0, filter, hook));
-        }
-
-        fn klist_remove(&self, kn: &TestKnote) {
-            self.klist.lock().unwrap().retain(|e| e.0 != kn.0);
-        }
-
-        fn klist_free(&self) {
-            assert!(
-                self.klist.lock().unwrap().is_empty(),
-                "klist_free: not empty"
-            );
+        fn filterops(filter: PipeFilter) -> &'static Filterops<Kg> {
+            &TEST_FILTOPS[filter_index(filter)]
         }
 
         fn pgsigio(&self) {
@@ -1870,78 +1890,74 @@ mod tests {
     #[test]
     fn kqfilter_hooks_each_filter_where_the_c_does() {
         let (r, w, pp) = pair();
+        let p = crate::event::tests::setup(70);
+        let (_kfd, kq) = crate::event::tests::new_kqueue(p);
+        let kns: Vec<_> = (1..=5).map(|i| crate::event::test_knote(&kq, i)).collect();
+        let kn = |i: usize| kns[i - 1].kn();
+        // Where a knote was hooked: its filterops and its `kn_hook`.
+        let hooked = |i: usize, filter: PipeFilter, dir: Dir| {
+            ptr::eq(kn(i).fop(), &TEST_FILTOPS[filter_index(filter)])
+                && kn(i).kn_hook.get().addr() == dir.index()
+        };
 
         // EVFILT_READ on rf: rf's own pipe.
         assert_eq!(
-            pp.kqfilter(Dir::Rd, Some(PipeFilter::Read), false, false, &TestKnote(1)),
+            pp.kqfilter(Dir::Rd, Some(PipeFilter::Read), false, false, kn(1)),
             Ok(())
         );
         // EVFILT_WRITE on wf: the pipe wf writes into, its peer.
         assert_eq!(
-            pp.kqfilter(
-                Dir::Wr,
-                Some(PipeFilter::Write),
-                false,
-                false,
-                &TestKnote(2)
-            ),
+            pp.kqfilter(Dir::Wr, Some(PipeFilter::Write), false, false, kn(2)),
             Ok(())
         );
-        assert_eq!(
-            pp.glue(Dir::Rd).klist(),
-            vec![
-                (1, PipeFilter::Read, Dir::Rd),
-                (2, PipeFilter::Write, Dir::Rd)
-            ]
-        );
+        assert!(hooked(1, PipeFilter::Read, Dir::Rd));
+        assert!(hooked(2, PipeFilter::Write, Dir::Rd));
+        assert!(!pp.end(Dir::Rd).klist.is_empty() && pp.end(Dir::Wr).klist.is_empty());
         // EVFILT_EXCEPT: poll's only.
         let except = Some(PipeFilter::Except);
         assert_eq!(
-            pp.kqfilter(Dir::Rd, except, true, true, &TestKnote(3)),
+            pp.kqfilter(Dir::Rd, except, true, true, kn(3)),
             Err(Errno::EPERM)
         );
         assert_eq!(
-            pp.kqfilter(Dir::Rd, except, false, false, &TestKnote(3)),
+            pp.kqfilter(Dir::Rd, except, false, false, kn(3)),
             Err(Errno::EINVAL)
         );
+        assert_eq!(pp.kqfilter(Dir::Rd, except, false, true, kn(3)), Ok(()));
+        assert!(hooked(3, PipeFilter::Except, Dir::Rd));
         assert_eq!(
-            pp.kqfilter(Dir::Rd, except, false, true, &TestKnote(3)),
-            Ok(())
-        );
-        assert_eq!(
-            pp.kqfilter(Dir::Rd, None, false, false, &TestKnote(4)),
+            pp.kqfilter(Dir::Rd, None, false, false, kn(4)),
             Err(Errno::EINVAL)
         );
-        assert_eq!(pp.glue(Dir::Rd).klist().len(), 3);
+        assert!(
+            !TEST_FILTOPS.iter().any(|f| ptr::eq(kn(4).fop(), f)),
+            "nothing hooked"
+        );
 
-        // A write wakes the reader's knotes (pipe_wakeup's knote_locked).
-        let before = pp.glue(Dir::Rd).knotes.load(Ordering::Relaxed);
+        // A write wakes the reader's knotes (pipe_wakeup's knote_locked): each filter runs.
+        let before = FILTER_CALLS.load(Ordering::Relaxed);
         assert_eq!(write(&pp, Dir::Wr, b"x", false), (Ok(()), 1));
-        assert!(pp.glue(Dir::Rd).knotes.load(Ordering::Relaxed) > before);
+        assert!(FILTER_CALLS.load(Ordering::Relaxed) >= before + 3);
 
-        for kn in [1, 2, 3] {
-            pp.detach(Dir::Rd, &TestKnote(kn));
+        for i in [1, 2, 3] {
+            pp.detach(Dir::Rd, kn(i));
         }
-        assert!(pp.glue(Dir::Rd).klist().is_empty());
+        assert!(pp.end(Dir::Rd).klist.is_empty());
 
         // The reader gone, EVFILT_WRITE hooks on wf's own pipe.
         r.close();
         assert_eq!(
-            pp.kqfilter(
-                Dir::Wr,
-                Some(PipeFilter::Write),
-                false,
-                false,
-                &TestKnote(5)
-            ),
+            pp.kqfilter(Dir::Wr, Some(PipeFilter::Write), false, false, kn(5)),
             Ok(())
         );
-        assert_eq!(
-            pp.glue(Dir::Wr).klist(),
-            vec![(5, PipeFilter::Write, Dir::Wr)]
-        );
-        pp.detach(Dir::Wr, &TestKnote(5));
+        assert!(hooked(5, PipeFilter::Write, Dir::Wr));
+        assert!(!pp.end(Dir::Wr).klist.is_empty());
+        pp.detach(Dir::Wr, kn(5));
+        assert!(pp.end(Dir::Wr).klist.is_empty());
 
+        for h in kns {
+            crate::event::test_knote_drop(&kq, h);
+        }
         drop(pp);
         w.close();
     }

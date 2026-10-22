@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn filters_report_writability_and_vnode_events() {
         use crate::sys::event::{NOTE_DELETE, NOTE_WRITE};
-        let kn = Knote::new();
+        let kn = Knote::detached();
         assert!(filt_cd9660write(&kn, 0));
         assert_eq!(kn.kn_data().get(), 0);
         kn.kn_sfflags.set(NOTE_WRITE);

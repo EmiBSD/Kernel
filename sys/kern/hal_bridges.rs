@@ -443,13 +443,24 @@ impl hal::softintr::SoftIntr for BsdSoftIntr {
 
 static BSD_SOFTINTR: BsdSoftIntr = BsdSoftIntr;
 
-/// The kernel crate's uptime clock (`kernel::clock::Uptime`) over `nanouptime` of
-/// `sys/kern/kern_tc.rs`, the userland-shaped `Timespec` turned into the kernel's.
+/// The kernel crate's clocks (`kernel::clock::Uptime`) over `nanouptime`, `getnanouptime`
+/// and `nanotime` of `sys/kern/kern_tc.rs`, the userland-shaped `Timespec` turned into the
+/// kernel's.
 struct BsdUptime;
 
 impl kernel::clock::Uptime for BsdUptime {
     fn nanouptime(&self) -> kernel::clock::Timespec {
         let ts = crate::kern::kern_tc::nanouptime();
+        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
+    }
+
+    fn getnanouptime(&self) -> kernel::clock::Timespec {
+        let ts = crate::kern::kern_tc::getnanouptime();
+        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
+    }
+
+    fn nanotime(&self) -> kernel::clock::Timespec {
+        let ts = crate::kern::kern_tc::nanotime();
         kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
     }
 }

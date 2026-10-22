@@ -158,7 +158,7 @@ use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
 use crate::sys::param::{NZERO, PAGE_SIZE, PVM, PWAIT};
 use crate::sys::proc::{
     BsdPgrpG, BsdProcessG, BsdSessionG, BsdThreadG, FORK_FORK, P_SYSTEM, PS_SYSTEM, Pgrp, PgrpRef,
-    Proc, ProcExt, ProcStore, Process, SONPROC, Session, SessionRef,
+    Proc, ProcExt, Process, SONPROC, Session, SessionRef,
 };
 use crate::sys::reboot::{RB_GOODRANDOM, RB_SINGLE};
 use crate::sys::resourcevar::{Plimit, PlimitRef};
@@ -253,11 +253,8 @@ pub const LIMIT0: Plimit = Plimit::new();
 pub static START_INIT_EXEC: AtomicI32 = AtomicI32::new(0);
 /// The `init` module the bootloader loaded, if any (see the module's deviations).
 static INIT_MODULE: StaticCell<Option<BootModule>> = StaticCell::new(None);
-/// `process0`: process slot for kernel threads (a `static`, P4), its klist in
-/// [`PROCESS0_STORE`].
-pub static PROCESS0: Process = Process::new(0, BsdProcessG::new(&PROCESS0_STORE));
-/// Process 0's klist and its lock (`kern/proc_glue.rs`'s store, never recycled).
-pub static PROCESS0_STORE: ProcStore = ProcStore::new();
+/// `process0`: process slot for kernel threads (a `static`, P4).
+pub static PROCESS0: Process = Process::new(0, BsdProcessG::new());
 
 /// `sigacts0`: process 0's signal actions.
 pub static SIGACTS0: Sigacts = Sigacts::new();

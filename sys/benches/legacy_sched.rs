@@ -57,7 +57,7 @@ use bsd::kern::kern_lock::{mtx_enter, mtx_leave};
 use bsd::kern::kern_sched::{remrunqueue, setrunqueue};
 use bsd::kern::kern_synch::{sleep_finish, sleep_setup, unsleep, wakeup};
 use bsd::kern::proc_glue::BsdProcGlue;
-use bsd::kern::proc_glue::{BsdProcessG, BsdThreadG, ProcStore};
+use bsd::kern::proc_glue::{BsdProcessG, BsdThreadG};
 use bsd::kern::sched_bsd::{sched_lock, sched_unlock};
 use bsd::machine::cpu::curcpu;
 use bsd::machine::intr::{IPL_NONE, IPL_SCHED};
@@ -96,8 +96,7 @@ fn spread(mut v: Vec<f64>) -> (f64, f64, f64) {
 /// A thread on no queue, placed, as `thread_new` leaves one, of a process of its own
 /// (leaked: the bench's threads live for the run).
 fn thread() -> &'static Proc {
-    let store: &'static ProcStore = Box::leak(Box::new(ProcStore::new()));
-    let pr: &'static Process = Box::leak(Box::new(Process::new(1, BsdProcessG::new(store))));
+    let pr: &'static Process = Box::leak(Box::new(Process::new(1, BsdProcessG::new())));
     let p: &'static Proc = Box::leak(Box::new(Proc::new_static(pr, BsdThreadG::new())));
     p.place();
     p

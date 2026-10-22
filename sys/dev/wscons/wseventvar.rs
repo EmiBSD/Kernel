@@ -113,7 +113,7 @@ use core::cell::Cell;
 use core::ptr;
 
 use crate::dev::wscons::wsconsio::WsconsEvent;
-use crate::kern::kern_event::knote;
+use crate::kern::kern_event::knote_locked;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sig::pgsigio;
 use crate::kern::kern_synch::wakeup;
@@ -228,7 +228,10 @@ pub const PWSEVENT: i32 = 23;
 pub fn wsevent_wakeup(ev: &Wseventvar) {
     let mut dosigio = false;
 
-    knote(&ev.ws_klist, 0);
+    // knote(&ev->ws_klist, 0): the klist's lock is ws_mtx.
+    mtx_enter(&ev.ws_mtx);
+    knote_locked(&ev.ws_klist, 0);
+    mtx_leave(&ev.ws_mtx);
 
     mtx_enter(&ev.ws_mtx);
     if ev.ws_wanted.get() != 0 {

@@ -2995,23 +2995,25 @@ mod tests {
         assert_eq!(VOP_PATHCONF(vp, 9999, &mut v), Err(Errno::EINVAL));
 
         // EVFILT_VNODE: only the subscribed notes are recorded; revocation ends it
-        let kn = Knote::new();
+        let (kq, h) = crate::kern::kern_event::tests::owned_knote(p);
+        let kn = h.kn();
         kn.kn_filter().set(EVFILT_VNODE);
-        VOP_KQFILTER(vp, 0, &kn).expect("kqfilter");
+        VOP_KQFILTER(vp, 0, kn).expect("kqfilter");
         assert!(
             kn.kn_fop
                 .get()
                 .is_some_and(|f| ptr::eq(f, &MSDOSFSVNODE_FILTOPS))
         );
         kn.kn_sfflags.set(NOTE_WRITE | NOTE_DELETE);
-        assert!(!filt_msdosfsvnode(&kn, i64::from(NOTE_ATTRIB)));
-        assert!(filt_msdosfsvnode(&kn, i64::from(NOTE_WRITE)));
+        assert!(!filt_msdosfsvnode(kn, i64::from(NOTE_ATTRIB)));
+        assert!(filt_msdosfsvnode(kn, i64::from(NOTE_WRITE)));
         assert_eq!(kn.kn_fflags().get(), NOTE_WRITE);
-        assert!(filt_msdosfsvnode(&kn, i64::from(NOTE_REVOKE)) && kn.has_flags(EV_EOF));
-        filt_msdosfsdetach(&kn);
+        assert!(filt_msdosfsvnode(kn, i64::from(NOTE_REVOKE)) && kn.has_flags(EV_EOF));
+        filt_msdosfsdetach(kn);
+        crate::kern::kern_event::tests::owned_knote_drop(p, kq, h);
 
         // EVFILT_WRITE: always writable; an unknown filter is refused
-        let kn = Knote::new();
+        let kn = Knote::detached();
         assert!(filt_msdosfswrite(&kn, 0) && kn.kn_data().get() == 0);
         assert!(filt_msdosfswrite(&kn, i64::from(NOTE_REVOKE)));
         assert!(kn.has_flags(EV_EOF) && kn.has_flags(EV_ONESHOT));
