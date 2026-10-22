@@ -260,6 +260,13 @@ pub fn sys_setsid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<
         drop(newsess);
         Err(Errno::EPERM)
     } else {
+        // DIAGNOSTIC: a session is made only for the running process (the C's check in
+        // enternewpgrp's mksession branch; setsid(2) is its only caller with a new session,
+        // and kernel::proc has no curproc).
+        #[cfg(feature = "diagnostic")]
+        if !crate::machine::cpu::curproc().is_some_and(|c| core::ptr::eq(c.process(), pr)) {
+            crate::kern::subr_prf::panic(format_args!("enternewpgrp: mksession but not curproc"));
+        }
         kernel::proc::enternewpgrp(p.process_ref(), newpgrp, Some(newsess));
         retval[0] = pid as Register;
         Ok(())
