@@ -254,7 +254,8 @@ clock interrupt as a registered handler) (1 d). 2. `kern_proc`, `kern_prot` (cre
 `CredRef` shape), `kern_fork`, `kern_exit`, `kern_resource`, `kern_sysctl`'s core (2 d). 3.
 Descriptors: `sys/sys/file.rs`, `kern_descrip.rs`, `sys_generic` (the `FileData` shape; the `Fd`
 bridge of N2 removed) (1.5 d). 4. kqueue: `kern_event.rs`, `sys/sys/event.rs` (the typed hook
-over `dyn Any`, `KlistLock`; the `Kq` bridge removed) (1.5 d). 5. `kern_sig`, `kern_synch`,
+over `dyn Any`, `KlistLock`; the `Kq` bridge removed) (1.5 d). 4b. `Filter<G>` over N4.4's
+`Filterops<G>`, the corrective slice of decision 46 (0.11), after 5 lands (0.5 d). 5. `kern_sig`, `kern_synch`,
 `kern_sched`, `sched_bsd`, `kern_kthread`, `kern_smr`'s logic (the sleep queues and run queues in
 `kernel` over `hal::cpu_switch`; the `Sigio` bridge removed) (2.5 d). 6. `tty`, `tty_pty`,
 `tty_tty`, `tty_conf`, `subr_log` (1.5 d). 7. `kern_bufq`, `subr_disk`, `subr_autoconf`,
@@ -522,6 +523,182 @@ arch/arm64 943 -> 881, arch/host 38 -> 35, machine 85 -> 79, kern 1,126 -> 1,117
 246, sys 327 -> 328, uvm 215 -> no row; `forbid` 320 -> 348 of 1,218 modules; `lz check`
 1,170 modules (937 inherited, 123 adapted, 110 redesigned), 594 fn rows, 68 extras; 21 bridges
 open. Host tests 3,229 -> 3,775 (bsd 2,396, kernel 308, hal 292, abi 9, xtask 260). The close: `just jobs=3 ci` at a043de71: 86 of 86 smokes in 18 min 32 s, rc=1 only at `check-drift` (the record of LZ 602141098d1d named the deleted `sys/uvm/uvm_init.rs`), fixed in 614d65af, the steps after it rc=0; `just jobs=3 ci-full` at 614d65af rc=0 in 2,248 s (its `ci` on four CPUs, 86 of 86 smokes in 21 min 18 s, no retry, then the eight installer recipes); `just diff-openbsd` rc=0 (107 steps per arch, 104 equal, 3 expected, 0 unexpected, as at N2); `just bench` printed 14 of 14 ratios; against the baselines (`bench compare`), the page fault and fork are slower on both machines (amd64 `pagefault` 7,956 -> 12,269 ns, `forkexit` 459,233 -> 680,755 ns; arm64 `forkexit` 1,686,982 -> 2,672,794 ns), boot, pipe and tcpbench unchanged within their spreads but arm64 boot (8.33 -> 8.65 s) and amd64 tcpbench (767.3 -> 787.6 Mbps); the table is in docs/JOURNAL.md.
+
+### 0.11 The C's switch tables and their traits (decision 46, 2026-10-22)
+
+OpenBSD dispatches through structs of function pointers: a `struct fileops` per file type, a
+`struct vops` per vnode kind, a `struct protosw` per protocol. Each one is a trait in `kernel`,
+or a reason why not. This table is the inventory, kept current at every close; a milestone's
+planner names in the brief the trait each of its rows becomes, with its methods, before the
+redesigner starts (the rule of decision 46). The sketches give the shape; the brief fixes the
+signatures against the C and the glue generics the crate already uses (`FileOps<G: FileGlue>`).
+What userland sees is unchanged by any of them: a trait reproduces the C's dispatch, it never
+adds an operation the C's switch lacks.
+
+| C table | `reference/openbsd-src/sys/` | Trait | Milestone | State |
+|---|---|---|---|---|
+| `struct fileops` | `sys/file.h` | `FileOps<G>` | N4.3 | done, `sys/kernel/file.rs` |
+| `struct pool_allocator` | `sys/pool.h` | `PoolBackend`, `RawPool` | N2 | done, `hal` |
+| `struct uvm_pagerops` | `uvm/uvm_pager.h` | `PageObject`, `FaultObject`; the vnode pager behind `VnodeOps` until N5 | N3 | done |
+| `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
+| `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the module's vtable | N2 | done, `abi` |
+| `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 44 statics | N4.4b | **corrective slice** (below) |
+| `struct linesw` | `sys/conf.h` | `LineDiscipline` | N4.6 | to name in the brief |
+| `struct timecounter`, `struct todr_chip_handle` | `sys/timetc.h`, `dev/clock_subr.h` | `Timecounter`, `Todr` | N4.7 | to name |
+| the `*_sysctl` dispatch, `vfs_sysctl`, `pr_sysctl` | `kern/kern_sysctl.c` | `SysctlNode` (`VmSysctl` is the precedent) | N4.7, then N5 and N6 register theirs | to name |
+| `struct vops`, `struct vfsops` | `sys/vnode.h`, `sys/mount.h` | `Vnops`, `Vfs` | N5.1 | to name |
+| `struct protosw`, `struct pr_usrreqs`, `struct domain` | `sys/protosw.h`, `sys/domain.h` | `Protocol`, `Usrreqs`, `Domain` | N6.4 | to name |
+| `if_output`/`if_ll_output` of `struct ifnet` | `net/if_var.h:212` | `LinkLayer` (the driver side is decision 45's `NetDevice`) | N6.1 | to name |
+| `struct cfattach`, `cdevsw`/`bdevsw`, the driver side of `ifnet` | `sys/device.h`, `sys/conf.h` | `Driver`, `Bus`, `NetDevice`, `BlockDevice`, `CharDevice`, `Console` | N7.2 | decision 45 |
+| `wsdisplay_accessops`, `wsdisplay_emulops`, `wskbd_accessops`, `wsmouse_accessops` | `dev/wscons/*var.h` | `WsDisplay`, `WsEmul`, `WsKbd`, `WsMouse` | N7.3 | to name |
+| `struct audio_hw_if` | `dev/audio_if.h` | `AudioHw` | N7.7 | to name |
+| `struct scsi_adapter` | `scsi/scsiconf.h` | `ScsiAdapter` | N7.6 | to name |
+| `struct mii_phy_funcs` | `dev/mii/miivar.h` | `MiiPhy` | N7.7 | to name |
+| `struct execsw` | `sys/exec.h` | `ExecFormat` (`struct emul` no longer exists in the C) | N8 | to name |
+| `struct cryptocap` | `crypto/cryptodev.h` | `CryptoDriver` | N8 | to name |
+| `struct db_command` | `ddb/db_command.h` | `DbCommand` | N9.1 | to name |
+
+Not traits: the per-architecture backends of `hal` (the pmaps, `bus_space`, `cpu_switch`) are
+`cfg`, one implementation per machine; only the host double needs a trait, and `MachineExec`,
+`MachineParam`, `VmParam` already are. `struct emul` and `execsw`'s emulation hooks are gone
+from the C at the pin.
+
+**The sketches.** `Errno` results, slices and owned handles at the API; the `void *` argument
+of the C becomes `&self` or the typed first argument; a `NULL` entry becomes a default method
+whose body is what `vfs_default`, `knote_modify` or `sys_nosys` does.
+
+```rust
+// N4.4b. The C's six members; FLAGS carries FILTEROP_ISFD/MPSAFE and the DEAD/BADFD/USER bits.
+pub trait Filter<G: ProcGlue>: 'static {
+    const FLAGS: FilterFlags;
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> { Ok(()) }        // f_attach
+    fn detach(kn: &Knote<G>);                                        // f_detach
+    fn event(kn: &Knote<G>, hint: Hint) -> bool { false }            // f_event, through knote()
+    fn modify(kev: &Kevent, kn: &Knote<G>) -> bool;                  // f_modify, default knote_modify
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool;     // f_process, default knote_process
+}
+impl<G: ProcGlue> Filterops<G> { pub const fn of<F: Filter<G>>() -> Self { /* the erased table */ } }
+
+// N4.6. struct linesw: one impl per line discipline (termios, nmea, msts, endrun, ...).
+pub trait LineDiscipline: Sync {
+    fn open(&self, dev: Dev, tp: &Tty, p: &Proc) -> Result<(), Errno>;
+    fn close(&self, tp: &Tty, flags: OpenFlags, p: &Proc) -> Result<(), Errno>;
+    fn read(&self, tp: &Tty, uio: &mut Uio, flag: IoFlag) -> Result<(), Errno>;
+    fn write(&self, tp: &Tty, uio: &mut Uio, flag: IoFlag) -> Result<(), Errno>;
+    fn ioctl(&self, tp: &Tty, cmd: Ioctl, data: &mut [u8], flag: IoFlag, p: &Proc) -> Result<Handled, Errno>;
+    fn rint(&self, c: RintChar, tp: &Tty) -> Result<(), Errno>;      // the TTY_FE/TTY_PE bits ride in RintChar
+    fn start(&self, tp: &Tty) -> Result<(), Errno>;
+    fn modem(&self, tp: &Tty, carrier: bool) -> Result<bool, Errno>;
+}
+
+// N4.7. tc_priv is self; the [I] fields are constants or getters.
+pub trait Timecounter: Sync + 'static {
+    const NAME: &'static str; const QUALITY: i32; const USER: bool;
+    fn counter_mask(&self) -> u32; fn frequency(&self) -> u64;
+    fn get_timecount(&self) -> u32;
+}
+pub trait Todr: Sync {
+    const QUALITY: i32;
+    fn gettime(&self) -> Result<Timeval, Errno>; fn settime(&self, t: Timeval) -> Result<(), Errno>;
+    fn set_write_enable(&self, on: bool) -> Result<(), Errno>;
+}
+pub trait SysctlNode: Sync {   // one per top-level MIB (kern, hw, vm, net, fs, ddb, vfs) and per pr_sysctl/vfs_sysctl
+    fn sysctl(&self, name: &[i32], old: Option<UserBuf>, new: Option<UserBuf>, p: &Proc) -> Result<usize, Errno>;
+}
+
+// N5.1. struct vops's 34 entries, grouped; vfs_default's bodies are the default methods;
+// spec, fifo and dead are impls. lock/unlock/islocked are not methods: holding the vnode
+// is a guard type (the N5 planner's decision to write down).
+pub trait Vnops: Sync {
+    // namespace
+    fn lookup(&self, dvp: &Vnode, cnp: &mut ComponentName) -> Result<Lookup, Errno>;
+    fn create(&self, ...); fn mknod(&self, ...); fn link(&self, ...); fn remove(&self, ...);
+    fn rename(&self, ...); fn mkdir(&self, ...); fn rmdir(&self, ...); fn symlink(&self, ...);
+    // data
+    fn open(&self, vp: &Vnode, mode: OpenMode, cred: &Cred, p: &Proc) -> Result<(), Errno>;
+    fn close(&self, ...); fn read(&self, vp: &Vnode, uio: &mut Uio, ioflag: IoFlag, cred: &Cred) -> Result<(), Errno>;
+    fn write(&self, ...); fn ioctl(&self, ...); fn kqfilter(&self, ...); fn fsync(&self, ...);
+    fn strategy(&self, ...); fn bmap(&self, ...); fn bwrite(&self, ...); fn readdir(&self, ...); fn readlink(&self, ...);
+    // attributes
+    fn access(&self, ...); fn getattr(&self, ...); fn setattr(&self, ...); fn pathconf(&self, ...); fn advlock(&self, ...);
+    // lifecycle
+    fn inactive(&self, ...); fn reclaim(&self, ...); fn revoke(&self, ...); fn abortop(&self, ...); fn print(&self, ...);
+}
+pub trait Vfs: Sync + 'static {   // struct vfsops, one per file system; NAME is vfsconf's vfc_name
+    const NAME: &'static str;
+    fn mount(&self, mp: &Mount, path: &str, data: UserPtr<u8>, ndp: &mut Nameidata, p: &Proc) -> Result<(), Errno>;
+    fn start(&self, ...); fn unmount(&self, ...); fn root(&self, mp: &Mount) -> Result<VnodeRef, Errno>;
+    fn quotactl(&self, ...); fn statfs(&self, ...); fn sync(&self, ...);
+    fn vget(&self, mp: &Mount, ino: Ino) -> Result<VnodeRef, Errno>;
+    fn fhtovp(&self, ...); fn vptofh(&self, ...); fn init(&self, ...); fn checkexp(&self, ...);
+    fn sysctl(&self) -> Option<&dyn SysctlNode>;
+}
+
+// N6. struct protosw + pr_usrreqs + domain; the stack side of ifnet.
+pub trait Protocol: Sync + 'static {
+    const TYPE: SockType; const NUMBER: i32; const FLAGS: PrFlags;
+    type Usrreqs: Usrreqs;
+    fn input(&self, m: Mbuf, off: usize, proto: i32, af: Af, ns: &mut Netstack) -> Result<Input, Errno>;
+    fn ctlinput(&self, cmd: PrcCmd, sa: &Sockaddr, rdomain: u32, arg: CtlArg);
+    fn ctloutput(&self, op: SockoptOp, so: &Socket, level: i32, name: i32, m: &mut Mbuf) -> Result<(), Errno>;
+    fn init(&self) {} fn fasttimo(&self) {} fn slowtimo(&self) {}
+    fn sysctl(&self) -> Option<&dyn SysctlNode> { None }
+}
+pub trait Usrreqs: Sync {        // the 19 pru_* entries, same names without the prefix
+    fn attach(&self, so: &Socket, proto: i32, wait: Wait) -> Result<(), Errno>;
+    fn detach(&self, so: &Socket) -> Result<(), Errno>;
+    fn bind(&self, ...); fn listen(&self, ...); fn connect(&self, ...); fn accept(&self, ...);
+    fn disconnect(&self, ...); fn shutdown(&self, ...); fn rcvd(&self, so: &Socket);
+    fn send(&self, so: &Socket, m: Mbuf, nam: Option<Mbuf>, control: Option<Mbuf>) -> Result<(), Errno>;
+    fn abort(&self, so: &Socket); fn control(&self, ...); fn sense(&self, so: &Socket) -> Result<Stat, Errno>;
+    fn rcvoob(&self, ...); fn sendoob(&self, ...); fn sockaddr(&self, ...); fn peeraddr(&self, ...);
+    fn flowid(&self, ...); fn connect2(&self, ...);
+}
+pub trait Domain: Sync + 'static {
+    const FAMILY: Af; const NAME: &'static str; const SASIZE: usize; const RTOFFSET: usize; const MAXPLEN: u32;
+    fn init(&self) {} fn externalize(&self, m: &mut Mbuf, len: usize, flags: i32) -> Result<(), Errno>;
+    fn dispose(&self, m: Mbuf);
+    fn protocols(&self) -> &'static [&'static dyn ProtocolDyn];
+}
+pub trait LinkLayer: Sync {     // if_output / if_ll_output: ether, loop, wg, ...; NetDevice (decision 45) is the driver's half
+    fn output(&self, ifp: &Ifnet, m: Mbuf, dst: &Sockaddr, rt: Option<&Rtentry>) -> Result<(), Errno>;
+    fn ll_output(&self, ifp: &Ifnet, m: Mbuf) -> Result<(), Errno>;
+}
+
+// N7, the fine roles under decision 45's four: one trait per accessops/hw_if, the C's entries one to one.
+pub trait WsDisplay: Sync { fn ioctl; fn mmap; fn alloc_screen; fn free_screen; fn show_screen; fn load_font;
+    fn list_font; fn scrollback; fn getchar; fn burn_screen; fn pollc; fn enter_ddb; }
+pub trait WsEmul: Sync { fn cursor; fn mapchar; fn putchar; fn copycols; fn erasecols; fn copyrows; fn eraserows;
+    fn pack_attr; fn unpack_attr; }
+pub trait WsKbd: Sync { fn enable; fn set_leds; fn ioctl; }
+pub trait WsMouse: Sync { fn enable; fn disable; fn ioctl; }
+pub trait AudioHw: Sync { fn open; fn close; fn set_params; fn round_blocksize; fn commit_settings; fn init_output;
+    fn init_input; fn start_output; fn start_input; fn halt_output; fn halt_input; fn set_port; fn get_port;
+    fn query_devinfo; fn allocm; fn freem; fn round_buffersize; fn trigger_output; fn trigger_input;
+    fn copy_output; fn underrun; fn set_blksz; fn set_nblks; fn display_name; }
+pub trait ScsiAdapter: Sync { fn scsi_cmd(&self, xs: ScsiXfer); fn dev_minphys; fn dev_probe; fn dev_free; fn ioctl; }
+pub trait MiiPhy: Sync { fn service(&self, sc: &MiiSoftc, mii: &MiiData, cmd: MiiCmd) -> Result<(), Errno>; fn status; fn reset; }
+
+// N8.
+pub trait ExecFormat: Sync { const HDRSZ: usize; fn check(&self, epp: &mut ExecPackage) -> Result<(), Errno>; }
+pub trait CryptoDriver: Sync {
+    const FLAGS: CryptoCapFlags;                         // SOFTWARE, MPSAFE
+    fn algorithms(&self) -> &'static [Algorithm];
+    fn newsession(&self, cri: &CryptoIni) -> Result<SessionId, Errno>;
+    fn process(&self, crp: CryptoOp) -> Result<(), Errno>;
+    fn freesession(&self, sid: SessionId) -> Result<(), Errno>;
+}
+```
+
+**N4.4b, the corrective slice (the user, 2026-10-22: "para N4.4 tomemos una medida correctiva
+en un slice adicional").** N4.4 landed `Filterops<G>` as the C's struct of `Option<fn>`
+pointers (`sys/kernel/event.rs:509`), with the six kernel filters as `const` tables and 44
+statics in 20 `bsd` files. N4.4b adds `Filter<G>` above it: the six kernel filters become
+impls, `Filterops::of::<F>()` builds the erased table from an impl at compile time, and
+`kn_fop: Link<Filterops<G>>` and every `bsd` static stay as they are; `bsd`'s owners move
+their filters to impls in N5 (vnodes), N6 (sockets) and N7 (devices), and `Filterops` goes
+with the last one. No behaviour changes; `sys/kernel/benches/event.rs` runs before and after
+(decision 43); one review. Runs after N4.5 lands and before N4.6. Estimate: 0.5 d.
 
 ## 10. Decisions
 
@@ -1047,3 +1224,15 @@ Taken by the user on 2026-10-18:
     line states the limit: until phase 3 a "new driver" is one OpenBSD has, or one behind a
     major and an interface that exist, since a new major, ioctl or `/dev` node is visible to
     userland. N7.2's trait design is a design fork for `/insight`.
+
+46. **Every struct of function pointers in the C is a trait, named in the brief** (the user,
+    2026-10-22: "dale, define los traits"). Section 0.11 is the inventory: the C table, its
+    file, the trait, the milestone and its state, with a sketch of every trait still to
+    write. A planner names, in the brief, the trait each table of its slice becomes, with
+    its methods against the C's entries, or the reason it is not one (`cfg` per machine, a
+    guard type instead of lock/unlock entries); the close of each milestone updates the
+    table's state column. The reason: N4.4 reproduced `struct filterops` as a struct of
+    `Option<fn>` because nothing asked for the trait, and `struct vops` at N5 is 34 entries
+    that a redesigner should not shape on the fly. The corrective slice for N4.4 is N4.4b
+    (0.11). Rejected: retrofitting every table now (the traits are written with their first
+    `kernel` user, like the runtime's pieces, decision 20's rule).

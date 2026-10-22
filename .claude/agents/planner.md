@@ -37,6 +37,10 @@ inventory can be wrong.
 - Prefer the smallest API the first user needs. Name every `unsafe` the design keeps, where it
   lives (which `hal` file), and its soundness argument in one line; name every bridge the step
   creates or removes and the milestone that pays it.
+- Every struct of function pointers the slice's C uses (a `struct vops`, `protosw`,
+  `filterops`, `linesw`, `audio_hw_if`, ...) is a trait named in the brief with its methods
+  against the C's entries, or a written reason it is not one (decision 46; the inventory and
+  the sketches are docs/ZERO_UNSAFE.md 0.11, updated by the brief when it fixes one).
 - Say plainly what the design does not fix and which slice will (a `'static` that is still a
   lie until its owner's slice, a race the C has and keeps).
 
