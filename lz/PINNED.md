@@ -1,4 +1,4 @@
-# Pinned EmiBSD.LZ commit
+# Pinned LandingZone commit
 
 Repository: https://github.com/EmiBSD/LandingZone
 Branch: main
