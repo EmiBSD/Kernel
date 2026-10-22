@@ -1,0 +1,51 @@
+---
+name: redesigner-hal-machine
+description: hal, unsafe and SAFETY, arm64/amd64 machine code, pmaps, boot, asm, the runtime primitives
+metadata:
+  type: feedback
+---
+
+- A file with no `unsafe` token still fails under forbid when it invokes a macro whose body has one (28 such macro_rules: byte_view!, scsi_wire!, usb_wire!, ...); lex macro bodies and grep invocations before trusting a sweep.
+- Under forbid, pf tests keep IPv4 addresses in the descriptor's own header copy (`PfLoc::Hdr(..)`) instead of `unsafe { PfLoc::local(ptr) }`.
+- Before promising "module X becomes forbid", list every `unsafe` in X: `unsafe impl AbiPod` on repr(C) structs (~200) and raw accessor derefs block it until a core mechanism exists.
+- Taking a value out of an `OnceCell` through `&T` at proven exclusivity: `(*ptr::from_ref(&x.cell).cast_mut()).take()` (all UnsafeCell); never cast the whole struct to `&mut`.
+- A `no_std` bin linking `alloc` needs a `#[global_allocator]`; keep the crates a stateless module links (hal, kernel) free of `extern crate alloc`, or give the module an allocator over its vtable.
+- hal reaches panic(9) without naming bsd: `core::panic!` goes to the image's `#[panic_handler]` (bsd calls panic(9)) and unwinds on the host for `#[should_panic]`.
+- Moving a legacy module into hal moves its `pub unsafe fn`s, which 0.2 forbids there (the lists and trees had 52 and moved back): `grep -c "pub unsafe fn"` first; hal pieces are written new with a safe API.
+- amd64's kernel_map never executes (pg_nx on every directory entry); executable kernel pages live only under the KERNBASE slot. arm64's executes unless PXN is set on its tables.
+- Under Limine a kprintf inside pmap_bootstrap did not reach the transcript (boot(8)'s did): prove early-boot code by an effect printed later.
+- `#[forbid(unsafe_code)]` also refuses an `unsafe fn` declared in the module: a wrapper needing a caller promise goes in the non-forbid caller.
+- arm64's `ap_bits_user[PROT_EXEC]` is execute-only (AP 0b10): write PTE asserts from the C's table, not intuition.
+- `PoolBox`/`SharedBox` are two words (item + pool): a one-word page slot (arm64's vp3 `vp[]`) needs `SharedBox::into_raw`/`from_raw`. `Option<PoolArc<T>>` (and a `Cell` of it) is one word: it replaces a raw pointer field without moving a `vmstat -m` size (assert with `const _`).
+- `in` is a keyword: an `asm!` operand named `in = out(reg) _` does not parse.
+- bsd's host tests run on kernel::testutil's doubles for every hal bridge (installed once per process by arch/host's lazy pmap bootstrap), never bsd's subr_pool; a kernel bridge's doubles get their own installer (km_install); where legacy code feeds a kernel assertion (KERNEL_LOCK held) register bsd's real bridge first; a bsd static over a kernel provider needs a `#[cfg(test)]` const (PIPE_PAGES).
+- arm64 hal: `Backend::virtual_space()` sets PMAP_VIRTUAL_SPACE_CALLED (vp tables stop being stolen): bootstrap code uses VM_MIN/MAX_KERNEL_ADDRESS or `stolen_bounds()`.
+- arm64 layout: the image (0xffffffff80000000) is L1 slot 510, kernel_map/vmmap L1 slots 0..15 of L0 slot 511, the direct map L0 slot 0; grep hal's inherited include/pte.rs before adding a C constant (Lx_PT_PXN was there).
+- hal::module::load's `LOADING` once-guard is process-wide: test later steps through `place_and_map`, never a second `load_with`.
+- arm64 at pmap_bootstrap: TTBR0 holds only bsd's 1 GiB device map (PXN) on both loaders, so no executable identity map exists; a TTBR1 switch that changes the block size of live global entries needs break-before-make (the C and Linux run it at its physical address).
+- A global_asm! routine's address with one unsafe site: its words as a `safe static` with #[link_name] in an `unsafe extern` block, then `ptr::addr_of!`.
+- Limine 12.9.3 writes TCR_EL1 = T0SZ/T1SZ | 0xb5003500 | IPS<<32 | DS (no HPD, AS, A1): `llvm-objdump -d` of BOOTAA64.EFI answers what Limine leaves in a register.
+- Before kmeminit (pmap_init and uvm_init_early sit before it) the Rust global allocator is unavailable ("memory allocation of N bytes failed" right after the copyright): every TypedPool/BoxPool made then takes one of hal_bridges.rs's NSTATIC_POOLS static `struct pool`s, past them boot panics "more than NSTATIC_POOLS"; count the pools a change or a flip makes there (uao_init, rw_obj_init).
+- A pmap window computed from loader input is checked non-empty at bootstrap (amd64's kernel window under Limine depends on QEMU's map: HHDM to ~1 TiB puts it in slot 258); test the arithmetic with layout.rs's table, the 1 TiB case included.
+- `hal::pmap::bootstrap` runs once per test process: a crate's test modules share one bootstrap (`testutil::pmap_boot`), with a provider whose `page_init_done` is false while tests steal memory.
+- hal `List`/`Tree` elements stay `linked` until removed: drain a stack `Pglist` (`pop_head`) before it leaves scope, empty an object's tree by removal; there is no TAILQ_INIT/RBT_INIT over a non-empty head.
+- hal's `pmap` module is forbid on its `mod` line: a pmap piece with `unsafe` goes in a file of its own (`sys/hal/mapped.rs`, an `[[extra]]`) with an inherent `impl KernelMapper` there.
+- Kernel test doubles: hal's malloc double serves `malloc(0)` (`mallocarray(0, ..)`, tmpfs's `uao_create(0)`); `pages_install` needs 256 pages (64 left `uvm_pagealloc` at None); the pool double never fails but `testutil::fail_pool(wchan, n)`; `uvm_page_unbusy` asserts `!PG_FAKE` under diagnostic (clear it in the test).
+- A safe byte view over a frame (`MappedBytes`) needs a per-frame claim bit only hal sets (`PG_HAL_VIEW`) and a capability (`KernelMapper`); "not a frame backing kernel memory" stays the token holder's contract until typed pages: say so, never "as KmBuf's".
+- Host pager tests: `km_alloc` with `KP_NONE`/pageable is `None` on the host (`PMAP_NOMMU`): seed `PSEGS[0..2].start` and keep windows to one page; the host pmap double has no pv chain and never fails `pmap_enter` (and grows no logic): put such decisions in a `PageMd` helper the host tests and say what stays untested.
+- A kernel test acting "inside VOP_READ" uses `testutil::MemVnode::during_read(f)`; one acting while everything is unlocked uses fault.rs's swap-get stand-in or a scripted `FaultObject`.
+- Before writing a kernel module over a frozen hal API, grep the C for every primitive it calls (arc4random, sched_pause, ratecheck, `(struct outer *)field` casts) and check each is kernel-reachable: `bridge!` readers are `pub(crate)` to hal.
+- Before embedding a kernel type by value in a legacy struct, check it is valid all zero: autoconf softcs (and other M_ZERO memory) are cast under `unsafe impl Softc` proofs that cite their members' all-zero validity, and a hal `Guarded::new_static*` key holds a `&'static` (not zero-valid): kernel::timeout::Timeout could not go into sys/sys/timeout.rs (N4.1 path (a'), an address-keyed node).
+- `hal::tree::Tree::find_by`/`OwnedTree::find_by`/`take_by` take `key.cmp(&node.field)` (key first, the C's cmp(key, n)); the reverse finds the root only.
+- hal::owned's OwnedTree::next(e) re-checks the entry's identity per call: walk with one `iter()` (peekable, `next_if`) where the C walks a list; it cut extent's best-fit op 144 -> 123 ns.
+- A legacy holder that hands out `&'static T` from a `Cell` (softc fields read by `get()` beside a destroyer) cannot hold a freeable counted handle safely (no by-reference read of a `Cell<Option<Arc>>`, take/clone/set exposes None, OnceStatic never empties): only holders with their own unsafe deref (wg's AtomicPtr) or a local handle can free; check before promising a free.
+- A kernel pool made only by an init function bsd's host tests never call (taskq_init's taskqpl) aborts every bsd test that reaches it, and a legacy adapter over kernel locks aborts a filtered test that installed no doubles: make pools at first use and call kernel::testutil::install from the adapter's test paths; prove with the module run alone against pre-N4.1 main.
+- An owned tree that must admit equal keys (the C's list admits them) needs no hal change: key by (fields, element address), unique; the in-place edits must keep that order, and removal is by the exact key of the element the walk held.
+- hal has no pin projection: a kernel `Timeout` embedded in a pooled struct cannot be `add`ed (it needs `Pin<&Timeout>`); keep such timeouts in a glue member or give them their own item.
+- hal::owned::OwnedList has only push/pop: an owner list with removal of any element (a process's threads) is an OwnedTree keyed by an insertion sequence, which keeps the C's TAILQ order.
+- `hal::pin_adapter!`/`owned_adapter!` declare adapters for a concrete element only: a kernel type generic over a glue takes its adapters as associated types of the glue trait, declared by the glue's crate (`kernel::proc_glue_links!`); the adapter structs are `pub`, so a test glue is a `pub struct` too (E0446).
+- bsd's sys/sys/queue.rs links are its own `Cell<Option<NonNull>>` (not hal's Link): TailqEntry, ListHead, Sigiolst are neither Send nor Sync; probe a legacy member with `const fn f<T: Send + Sync>()` before planning it into a pooled kernel object.
+- A hal pool's vmstat -m size is `pr_size`, not `size_of::<T>()`: a TypedPool item is T + 16 (count, pool); read it with `TypedPool/BoxPool::item_size()` (RawPool::size).
+- hal::thread admits one thread type per process (`check_type`): kernel test glues other than the scheduler's cannot read curproc through `try_with_current`; a glue method lending curproc (`ProcGlue::with_curproc`) lets bsd use hal's and the tests keep a thread-local.
+- Once hal owns the kernel lock, a host test that ran legacy code needing it (ttyinput's pgsignal witness) must take it: before, the unregistered bridge answered held for every thread.
+- Process-wide hal tables (the parking lots, the softintr queues) are shared by parallel tests: assert emptiness only of what the test owns (its own mutex's waiter bit), never of a whole table.
