@@ -141,8 +141,10 @@
 //!   placed copies (`CredRef::new`), where the C `crdup`s and edits in place.
 //! - ddb's `show proc /t` answers "kernel lock not held" when ddb was entered on a CPU that
 //!   does not hold the kernel lock (the tid hash opens only through its reader).
-//! - The `assert_unwitnessed` hooks of `kern_lock.rs` are the kernel's only: the host tests'
-//!   threads all run as CPU 0.
+//! - The `assert_unwitnessed` hooks of `kern_lock.rs` stand aside after a panic and in ddb
+//!   (which hold the kernel lock by fiat). On the host they run only in a test thread that
+//!   arms them (`kernel_lock_checks_arm`, its own depth): every host thread runs as CPU 0,
+//!   whose one depth they all share.
 //!
 //! ## Redesign
 //! - LZ's `Cell<*const T>` members of `struct process`/`struct proc` (`ps_fd`, `ps_opptr`,
