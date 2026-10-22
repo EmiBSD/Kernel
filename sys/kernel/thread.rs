@@ -27,10 +27,14 @@
 //! **The start ticket.** The C hands a new thread a function and a `void *` (`softclock_thread`
 //! and `NULL`, `taskq_thread` and the queue), which the thread casts back. Here no pointer
 //! crosses: the kernel files what the new thread is to run as a [`Start`] in [`STARTS`] and
-//! hands the bridge the slot's number, a ticket; `bsd`'s thread function calls [`run`] (or,
-//! for a deferred creation, [`run_deferred`]) with it, which takes the `Start` back out, in
-//! safe code: what a ticket names is a value of this crate's own types (a queue's counted
-//! handle), never a re-typed address. A ticket that cannot be filed (no memory to grow the
+//! hands the bridge the slot's number plus one, a ticket; `bsd`'s thread function calls
+//! [`run`] (or, for a deferred creation, [`run_deferred`]) with it, which takes the `Start`
+//! back out, in safe code: what a ticket names is a value of this crate's own types (a
+//! queue's counted handle), never a re-typed address. A ticket is never 0: `bsd` carries it
+//! as the thread's `void *`, and `fork1` hands a thread whose argument is `NULL` its own `p`
+//! instead (`kern_fork.c:437`, `arg ? arg : p`; `kern_fork.rs:581`), so a ticket 0 would
+//! come back as the new thread's address (the first boot of N4.1 panicked so, "ticket
+//! 0xffffff80184dd4d0 names no thread"). A ticket that cannot be filed (no memory to grow the
 //! table) is the C's failure of the allocation behind it: `kthread_create`'s `ENOMEM`, or
 //! `kthread_create_deferred`'s "unable to allocate kthread_q" panic.
 //!
@@ -99,24 +103,27 @@ fn bridge() -> &'static dyn Kthread {
     }
 }
 
-/// Files `s` under a ticket: a free slot, or a new one when the table can grow; `s` back
-/// when it cannot.
+/// Files `s` under a ticket, the slot's index plus one (never 0: `fork1` replaces a `NULL`
+/// argument by the new thread's `p`, the module docs): a free slot, or a new one when the
+/// table can grow; `s` back when it cannot.
 fn ticket(s: Start) -> Result<usize, Start> {
     let mut v = STARTS.lock();
     if let Some(i) = v.iter().position(Option::is_none) {
         v[i] = Some(s);
-        return Ok(i);
+        return Ok(i + 1);
     }
     if v.try_reserve(1).is_err() {
         return Err(s);
     }
     v.push(Some(s));
-    Ok(v.len() - 1)
+    Ok(v.len())
 }
 
-/// The start filed under `t`, taken out (`None` for a ticket not filed or taken already).
+/// The start filed under `t`, taken out (`None` for a ticket not filed or taken already,
+/// and for 0, which names no slot).
 fn take(t: usize) -> Option<Start> {
-    STARTS.lock().get_mut(t).and_then(Option::take)
+    let i = t.checked_sub(1)?;
+    STARTS.lock().get_mut(i).and_then(Option::take)
 }
 
 /// `kthread_create(9)`: a kernel thread named `name` that runs `s`. `ENOMEM` when the ticket
@@ -169,3 +176,27 @@ pub(crate) fn peg_to_primary_cpu() {
     bridge().peg_to_primary_cpu();
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil;
+
+    /// The word that crosses to `bsd` is never 0 (`fork1` would hand the thread its own `p`
+    /// for it), 0 names nothing, and a ticket round-trips once.
+    #[test]
+    fn a_ticket_is_never_zero_and_round_trips_once() {
+        testutil::install();
+        let t = ticket(Start::Softclock).ok().unwrap();
+        assert_ne!(t, 0);
+        assert!(take(0).is_none());
+        assert!(matches!(take(t), Some(Start::Softclock)));
+        assert!(take(t).is_none());
+        // The freed slot is reused, still never as 0.
+        let again = ticket(Start::SoftclockMp).ok().unwrap();
+        assert_eq!(again, t);
+        assert!(matches!(take(again), Some(Start::SoftclockMp)));
+    }
+}
+/* </TESTS> */
