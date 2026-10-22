@@ -2505,6 +2505,10 @@ mod tests {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
             crate::testutil::install();
+            // The tid hash `endtsleep` looks its thread up in.
+            hal::klock::kernel_lock();
+            crate::proc::procinit::<SchedGlue>(64, 64);
+            hal::klock::kernel_unlock();
             let _ = hal::thread::register_start(test_start);
             for (i, &n) in VCPUS.iter().enumerate() {
                 let core: &'static hal::cpu::CpuCore =
@@ -2522,9 +2526,12 @@ mod tests {
         g
     }
 
-    /// The calling host thread becomes `p` running on virtual CPU `n`.
+    /// The calling host thread becomes `p` running on virtual CPU `n`, pegged there
+    /// (`P_CPUPEG`): woken, it resumes on `n`, so a test ends on the vCPU it started on and the
+    /// next test's thread takes that vCPU over from a host thread that is gone.
     fn run_as(n: usize, p: Pin<&'static T>) {
         hal::cpu::set_current(vcpu(n));
+        p.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
         p.set_stat(SONPROC);
         set_thread_cpu(p.get_ref(), n);
         hal::thread::set_current_static(Some(p));
@@ -2871,6 +2878,197 @@ mod tests {
         assert!(barrier_waiting(n, a, ta.as_ref().get_ref()));
         let _ = crate::task::task_del(&TQ, ta.as_ref().get_ref());
         assert!(!barrier_waiting(n, a, ta.as_ref().get_ref()));
+    }
+
+    /// A timed sleep that times out: the timeout's handler (`endtsleep`, found by tid under the
+    /// kernel lock) wakes the sleeper from another vCPU, and `sleep_finish`, finding the
+    /// timeout gone from the wheel, waits for `P_TIMEOUTRAN` and returns `EWOULDBLOCK`.
+    #[test]
+    fn a_timed_sleep_times_out_through_endtsleep() {
+        let _g = setup();
+        let [a, b] = VCPUS;
+        let me = thread(70, 50);
+        sleep_timeout_init(me.get_ref());
+        run_as(a, me);
+        {
+            hal::klock::kernel_lock();
+            let mut w = hal::klock::witness();
+            TABLES.tidhash(70).insert_head(&mut w, me);
+            drop(w);
+            hal::klock::kernel_unlock();
+        }
+        let chan = ptr::from_ref(&NOWAKE).addr() + 0x300;
+        let timer = std::thread::spawn(move || {
+            let w = thread(71, 50);
+            run_as(b, w);
+            // Asleep: queued on the channel and out of `sleep_finish`'s window.
+            while !(me.stat() == SSLEEP
+                && me.p_wchan.get() == chan
+                && me.p_flag.load(Ordering::Relaxed) & P_INSCHED == 0)
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // The softclock thread took the timeout off the wheel and runs its handler.
+            assert!(hal::pin::project(me, |t| &t.p_sleep_to).del());
+            hal::klock::kernel_lock();
+            endtsleep::<SchedGlue>(ptr::without_provenance_mut(70));
+            hal::klock::kernel_unlock();
+            hal::thread::set_current_static::<T>(None);
+        });
+        hal::klock::kernel_lock();
+        let r = tsleep_nsec::<SchedGlue>(chan, PWAIT, "tmo", 3_600_000_000_000);
+        hal::klock::kernel_unlock();
+        assert_eq!(r, Err(Errno::EWOULDBLOCK));
+        assert_eq!(
+            me.p_flag.load(Ordering::Relaxed) & (P_TIMEOUT | P_TIMEOUTRAN),
+            0
+        );
+        assert_eq!(me.p_wchan.get(), 0);
+        timer.join().unwrap();
+        hal::klock::kernel_lock();
+        let mut w = hal::klock::witness();
+        TABLES.tidhash(70).remove(&mut w, me.get_ref());
+        drop(w);
+        hal::klock::kernel_unlock();
+        hal::thread::set_current_static::<T>(None);
+    }
+
+    /// A wakeup from another vCPU between `sleep_setup` and `sleep_finish`: the thread, still
+    /// in `P_INSCHED`, leaves the sleep queue but is not queued to run, and `sleep_finish`
+    /// returns at once (`p_wchan` is 0).
+    #[test]
+    fn a_wakeup_from_another_cpu_between_setup_and_finish() {
+        let _g = setup();
+        let [a, b] = VCPUS;
+        let me = thread(72, 50);
+        run_as(a, me);
+        let chan = ptr::from_ref(&NOWAKE).addr() + 0x400;
+        sleep_setup::<SchedGlue>(chan, PWAIT, "race");
+        let waker = std::thread::spawn(move || {
+            let w = thread(73, 50);
+            run_as(b, w);
+            wakeup_n::<SchedGlue>(chan, -1);
+            hal::thread::set_current_static::<T>(None);
+        });
+        waker.join().unwrap();
+        assert_eq!(me.p_wchan.get(), 0);
+        assert_eq!(me.stat(), SSLEEP);
+        assert!(!me.p_runq.is_linked());
+        assert_eq!(sleep_finish::<SchedGlue>(INFSLP, true), Ok(()));
+        assert_eq!(me.stat(), SONPROC);
+        hal::thread::set_current_static::<T>(None);
+    }
+
+    /// `setrunnable` of a stopped thread: on a run queue at its user priority when it is out of
+    /// the switch; back to its sleep (`SSLEEP`) or running (`SONPROC`) when it is still in it
+    /// (`P_INSCHED`), not queued.
+    #[test]
+    fn setrunnable_of_a_stopped_thread() {
+        let _g = setup();
+        let n = VCPUS[0];
+        let me = thread(74, 50);
+        run_as(n, me);
+        let stopped = thread(75, 40);
+        stopped.set_stat(SSTOP);
+        set_thread_cpu(stopped.get_ref(), n);
+        let mut h = sched_lock();
+        setrunnable(&mut h, stopped);
+        assert_eq!(stopped.stat(), SRUN);
+        assert_eq!(stopped.p_runpri.get(), 40);
+        assert!(stopped.p_runq.is_linked());
+        remrunqueue(&mut h, stopped.get_ref());
+
+        let insched = thread(76, 40);
+        insched.set_stat(SSTOP);
+        insched.p_flag.fetch_or(P_INSCHED, Ordering::Relaxed);
+        setrunnable(&mut h, insched);
+        assert_eq!(insched.stat(), SONPROC);
+        assert!(!insched.p_runq.is_linked());
+        insched.set_stat(SSTOP);
+        insched.p_wchan.set(0x5000);
+        setrunnable(&mut h, insched);
+        assert_eq!(insched.stat(), SSLEEP);
+        assert!(!insched.p_runq.is_linked());
+        drop(h);
+        hal::thread::set_current_static::<T>(None);
+    }
+
+    /// The kthread ping-pong of the selftest on two vCPUs: two threads, one per vCPU, hand a
+    /// turn to each other `ROUNDS` times through sleep and wakeup, while the vCPUs' first
+    /// threads wait for both to finish.
+    #[test]
+    fn a_ping_pong_across_two_cpus() {
+        const ROUNDS: u32 = 40;
+        static TURN: AtomicU32 = AtomicU32::new(0);
+        static PINGS: AtomicU32 = AtomicU32::new(0);
+        static FINISHED: AtomicU32 = AtomicU32::new(0);
+        fn chan(i: u32) -> usize {
+            ptr::from_ref(&TURN).addr() + 0x500 + i as usize * 0x100
+        }
+        fn done_chan() -> usize {
+            ptr::from_ref(&FINISHED).addr() + 0x800
+        }
+        fn player(mine: u32) {
+            for _ in 0..ROUNDS {
+                loop {
+                    sleep_setup::<SchedGlue>(chan(mine), PWAIT, "ping");
+                    let turn = TURN.load(Ordering::Acquire) == mine;
+                    let _ = sleep_finish::<SchedGlue>(INFSLP, !turn);
+                    if turn {
+                        break;
+                    }
+                }
+                PINGS.fetch_add(1, Ordering::Relaxed);
+                TURN.store(1 - mine, Ordering::Release);
+                wakeup_n::<SchedGlue>(chan(1 - mine), -1);
+            }
+            FINISHED.fetch_add(1, Ordering::Release);
+            wakeup_n::<SchedGlue>(done_chan(), -1);
+        }
+        fn wait_done() {
+            loop {
+                sleep_setup::<SchedGlue>(done_chan(), PWAIT, "pdone");
+                let done = FINISHED.load(Ordering::Acquire) == 2;
+                let _ = sleep_finish::<SchedGlue>(INFSLP, !done);
+                if done {
+                    break;
+                }
+            }
+        }
+        fn ping() {
+            player(0);
+        }
+        fn pong() {
+            player(1);
+        }
+        let _g = setup();
+        let [a, b] = VCPUS;
+        let idx = {
+            let mut bodies = lock(&BODIES);
+            bodies.push(ping);
+            bodies.push(pong);
+            bodies.len() - 2
+        };
+        let me = thread(80, 50);
+        run_as(a, me);
+        let other = std::thread::spawn(move || {
+            let w = thread(81, 50);
+            run_as(b, w);
+            wait_done();
+            hal::thread::set_current_static::<T>(None);
+        });
+        let p0 = thread(82, 50);
+        let p1 = thread(83, 50);
+        let mut h = sched_lock();
+        hal::thread::thread_setup(&h, me, p0, 0, 0, START_BODY, idx);
+        hal::thread::thread_setup(&h, me, p1, 0, 0, START_BODY, idx + 1);
+        setrunqueue(&mut h, Some(a), p0, 50);
+        setrunqueue(&mut h, Some(b), p1, 50);
+        drop(h);
+        wait_done();
+        other.join().unwrap();
+        assert_eq!(PINGS.load(Ordering::Relaxed), 2 * ROUNDS);
+        hal::thread::set_current_static::<T>(None);
     }
 }
 /* </TESTS> */
