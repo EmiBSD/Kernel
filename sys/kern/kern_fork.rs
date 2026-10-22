@@ -829,7 +829,11 @@ static STARTS: [hal::once::OnceStatic<fn(*mut c_void)>; NSTARTS] =
     [const { hal::once::OnceStatic::new() }; NSTARTS];
 
 /// The number [`thread_start`] knows `f` by: its slot, filled the first time. Panics when
-/// more than [`NSTARTS`] functions are used.
+/// more than [`NSTARTS`] functions are used. Two pointers to one function may compare unequal
+/// (`fn_addr_eq` across codegen units, which may each hold a copy): such a function takes two
+/// slots, both of which call it, so the table only grows; the kernel has 24 call sites of
+/// `kthread_create` and `fork1` (some in tests), each naming one function, under the 64 slots
+/// even if every site's pointer were its own.
 pub fn thread_start_word(f: fn(*mut c_void)) -> usize {
     for (i, slot) in STARTS.iter().enumerate() {
         if slot.get().is_none() {
