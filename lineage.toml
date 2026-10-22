@@ -5626,7 +5626,7 @@ rust = "sys/kern/sys_generic.rs"
 lz = ["sys/kern/sys_generic.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/descrip.rs", "sys/kernel/uio.rs"]
-notes = "N4.3: read, readv, write, writev, ioctl and utrace are sysent[] rows over kernel::descrip; select/poll stay (N4.4)"
+notes = "N4.3: own items moved out: iovec_copyin (sys/kernel/uio.rs), iovec_free (dropped, a row under uio.rs), dofilereadv and dofilewritev (sys/kernel/descrip.rs); the bodies of sys_read, sys_readv, sys_write, sys_writev, sys_ioctl and sys_utrace replaced by sysent[] rows over kernel::descrip's entries of the same names; select/poll, selwakeup and pollout stay (N4.4). Kept adapted, not redesigned (review S5 of N4.3): lz check refuses `redesigned` here, 'redesigned outside unsafe-core.toml but its mod declaration is not #[forbid(unsafe_code)]', since select/poll keep 3 unsafe until N4.4"
 
 [[module]]
 rust = "sys/kern/pipe_glue.rs"
