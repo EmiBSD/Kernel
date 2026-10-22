@@ -194,6 +194,7 @@
 
 use core::cmp::Ordering;
 use core::marker::PhantomData;
+use core::pin::Pin;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{
     AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering as Mem,
@@ -1006,6 +1007,65 @@ impl<A: OwnedAdapter> OwnedList<A> {
         Some(reclaim(x, pool))
     }
 
+    /// `TAILQ_REMOVE(e)` (`SLIST_REMOVE` then `pool_put`) of the element `r` points at,
+    /// wherever it is on the list: `r` uncounted, the element unlinked, its box given back. The
+    /// reference is how a holder that dropped the list's lock kept the element (a knote being
+    /// processed, `kern_event.c`'s `knote_drop`): an element that only a borrow of the list
+    /// lends cannot be named across the `&mut self` this needs. Panics, before anything is
+    /// changed, when `r` points at nothing or at an element this list does not own (I2), and
+    /// while another secondary links the element (I4).
+    pub fn take(&mut self, r: SecondaryRef<A>) -> PoolBox<A::Elem> {
+        self.check("TAILQ_REMOVE");
+        let Some(x) = get(&r.to) else {
+            hal_panic(format_args!(
+                "TAILQ_REMOVE: the reference points at nothing"
+            ));
+        };
+        let e = counted_ref(&r, x);
+        let ent = self.ent(e, "TAILQ_REMOVE");
+        if ent.indexed() != 1 {
+            hal_panic(format_args!(
+                "TAILQ_REMOVE: the element is still linked from a secondary tree"
+            ));
+        }
+        let changing = Mutating(&self.poisoned);
+        // From here the element is reached as this list's (its identity checked above, and
+        // `&mut self` keeps any other change out): `r` gives its count back first.
+        put(&r.to, None);
+        ent.count_down();
+        let prev = get(&ent.left);
+        let next = get(&ent.right);
+        if (prev.is_none() && get(&self.head) != Some(x))
+            || (next.is_none() && get(&self.tail) != Some(x))
+        {
+            hal_panic(format_args!("TAILQ_REMOVE: the list's ends are broken"));
+        }
+        match prev {
+            Some(p) => put(&self.ent(self.node(p), "TAILQ_REMOVE").right, next),
+            None => put(&self.head, next),
+        }
+        match next {
+            Some(n) => put(&self.ent(self.node(n), "TAILQ_REMOVE").left, prev),
+            None => put(&self.tail, prev),
+        }
+        // The adapter's `entry` ran on the neighbours: looked at again with nothing run in
+        // between from here to the box (as `pop`).
+        if ent.indexed() != 0 {
+            hal_panic(format_args!(
+                "TAILQ_REMOVE: the element was linked from a secondary while being removed"
+            ));
+        }
+        let pool = ent.pool.get();
+        ent.clear();
+        core::mem::forget(changing);
+        let Some(pool) = pool else {
+            hal_panic(format_args!(
+                "TAILQ_REMOVE: an owned element without its pool"
+            ));
+        };
+        reclaim(x, pool)
+    }
+
     /// Links `x`, whose entry carries this list's identity already, at the tail.
     fn link_tail(&self, x: NonNull<A::Elem>) {
         let ent = self.ent(self.node(x), "TAILQ_INSERT_TAIL");
@@ -1425,6 +1485,28 @@ pub trait SecondaryAdapter: 'static {
     fn entry(e: &Elem<Self>) -> &SecondaryEntry<Elem<Self>>;
     /// The order of the tree.
     fn cmp(a: &Elem<Self>, b: &Elem<Self>) -> Ordering;
+}
+
+/// `e`, pinned, when an owning container owns it through `A`'s entry: a knote that its
+/// kqueue's chain owns, linked by address on its pending queue and its object's klist
+/// (`hal::pinlist`, which takes `Pin<&T>`). `None` for an element no container owns now (a
+/// value on a stack, a box not given to a container yet).
+pub fn pinned<A: OwnedAdapter>(e: &A::Elem) -> Option<Pin<&A::Elem>> {
+    if !entry_of::<A>(e).is_linked() {
+        return None;
+    }
+    // SAFETY: `Pin`'s contract: the value is not moved, nor its memory invalidated or reused,
+    // before its drop runs. The entry `A` names lies within `e` (checked by `entry_of`) and
+    // carries an owner's identity, which only an owning container writes, after consuming the
+    // element's `PoolBox` (I1, `link`/`push`): so `e` is the value of a `BoxPool` item (a pool
+    // item or an arena slot). Such a value is written in place by `BoxPool::get` before its box
+    // exists and never leaves its item: a box lends it by reference only (mutably only for an
+    // `Unpin` value, for which pinning promises nothing), an owning container lends shared
+    // references and gives back the same box (`reclaim`), and the box's drop drops the value in
+    // place before the item goes back to its pool. That holds for the item's whole life, not
+    // only while the container owns it, so the pin is sound however long the borrow it carries
+    // (the caller's `&e`) lasts.
+    Some(unsafe { Pin::new_unchecked(e) })
 }
 
 /// What the red-black engine needs from a tree: its root, a node's links (checked to be
@@ -2562,6 +2644,93 @@ mod tests {
         assert!(t.left(t.root().unwrap()).is_some_and(|n| n.key == 1));
         TRAP_ARMED.store(true, Mem::Relaxed);
         let _ = t.take_by(|n| 2u64.cmp(&n.key));
+    }
+
+    #[test]
+    fn take_gives_back_the_element_a_reference_names_wherever_it_is() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        for k in 0..5u64 {
+            l.push(node(k, 0, &drops));
+        }
+        let held = |l: &OwnedList<ByKey>, k: u64| {
+            let mut r = SecondaryRef::<ByKey>::new();
+            r.set(l.iter().find(|n| n.key == k));
+            r
+        };
+        // The middle, the head and the tail.
+        for (k, rest) in [(2, &[0u64, 1, 3, 4][..]), (0, &[1, 3, 4]), (4, &[1, 3])] {
+            let r = held(&l, k);
+            assert_eq!(r.get().unwrap().link.indexed(), 1);
+            let b = l.take(r);
+            assert_eq!(b.key, k);
+            assert!(!b.link.is_linked() && b.link.indexed() == 0);
+            assert_eq!(l.iter().map(|n| n.key).collect::<Vec<_>>(), rest);
+            assert_eq!(l.first().unwrap().key, rest[0]);
+            assert_eq!(l.last().unwrap().key, *rest.last().unwrap());
+            drop(b);
+        }
+        // The last two: the list empties and takes elements again.
+        let r = held(&l, 3);
+        drop(l.take(r));
+        let r = held(&l, 1);
+        drop(l.take(r));
+        assert!(l.is_empty() && l.first().is_none() && l.last().is_none());
+        l.push(node(9, 0, &drops));
+        assert_eq!(l.first().unwrap().key, 9);
+        drop(l);
+        assert_eq!(drops.load(Mem::Relaxed), 6);
+    }
+
+    #[test]
+    #[should_panic(expected = "still linked from a secondary tree")]
+    fn take_refuses_an_element_another_secondary_links() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        let mut a = SecondaryRef::<ByKey>::new();
+        a.set(l.first());
+        let mut b = SecondaryRef::<ByKey>::new();
+        b.set(l.first());
+        let _ = l.take(a);
+    }
+
+    #[test]
+    #[should_panic(expected = "not on this list")]
+    fn take_refuses_an_element_of_another_list() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        let mut m = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        m.push(node(2, 0, &drops));
+        let mut r = SecondaryRef::<ByKey>::new();
+        r.set(m.first());
+        let _ = l.take(r);
+    }
+
+    #[test]
+    #[should_panic(expected = "points at nothing")]
+    fn take_refuses_an_empty_reference() {
+        let mut l = OwnedList::<ByKey>::new();
+        let _ = l.take(SecondaryRef::new());
+    }
+
+    #[test]
+    fn an_owned_element_is_pinned_and_a_loose_one_is_not() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let b = node(1, 0, &drops);
+        assert!(pinned::<ByKey>(&b).is_none(), "a box no container owns");
+        let mut l = OwnedList::<ByKey>::new();
+        l.push(b);
+        let e = l.first().unwrap();
+        let p = pinned::<ByKey>(e).unwrap();
+        assert!(ptr::eq(p.get_ref(), e));
+        assert!(
+            pinned::<ByKeyOther>(e).is_none(),
+            "owned through the other entry only"
+        );
+        drop(l);
+        assert_eq!(drops.load(Mem::Relaxed), 1);
     }
 }
 /* </TESTS> */
