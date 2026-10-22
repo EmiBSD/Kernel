@@ -1226,20 +1226,22 @@ pub fn finishdup<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
 /// descriptor 0, where the C puts it).
 pub fn fdinsert<G: FileGlue>(g: &mut FdGuard<'_, G>, fd: i32, flags: u8, fp: &FileRef<G>) {
     let t = G::tables();
-    let first = g.ofile(0);
+    // One section of `fd_fplock` for the whole insertion: descriptor 0's file is read in
+    // place (no reference taken: the slot keeps it while the mutex is held) and `fhdlk` is
+    // taken inside it. That nesting is the only one of the two mutexes (`filehead`'s walkers
+    // never take `fd_fplock`, and no file is closed with either held), so it cannot invert.
+    let mut s = g.fdp.slots.lock();
     {
         let mut h = t.fhdlk.lock();
         if fp.f_iflags.load(Ordering::SeqCst) & FIF_INSERTED == 0 {
             fp.f_iflags.fetch_or(FIF_INSERTED, Ordering::SeqCst);
-            match &first {
+            match s.file(0) {
                 Some(fq) => t.filehead.insert_after(&mut h, fq, fp.as_pin()),
                 None => t.filehead.insert_head(&mut h, fp.as_pin()),
             }
         }
     }
-    drop(first);
 
-    let mut s = g.fdp.slots.lock();
     let slot = s.slot(fd as usize);
     kassert!(slot.is_none());
     drop(slot.replace(fp.clone()));
