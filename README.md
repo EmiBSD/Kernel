@@ -21,7 +21,7 @@
 
 ## What is this
 
-- An operating system in Rust derived from [EmiBSD.LZ](https://github.com/enavarre-cl/EmiBSD.LZ),
+- An operating system in Rust derived from [EmiBSD.LZ](https://github.com/EmiBSD/LandingZone),
   the faithful file-by-file port of the OpenBSD kernel, synced to its commit `3c62ede68802`
   (forked at `lz-origin`, `f5985f1d055a`; [lz/PINNED.md](lz/PINNED.md)). LZ ports OpenBSD; EmiBSD redesigns what LZ ported.
 - OpenBSD's behaviour is the specification. The system-call ABI and everything userland sees
@@ -640,7 +640,7 @@ every plan and approves every commit. `/progress` measures the redesign per mile
 lessons persist in [.claude/agent-memory/](.claude/agent-memory/).
 
 Problems go to [Issues](https://github.com/enavarre-cl/EmiBSD/issues). Problems of the port
-itself go to [EmiBSD.LZ's Issues](https://github.com/enavarre-cl/EmiBSD.LZ/issues). External
+itself go to [EmiBSD.LZ's Issues](https://github.com/EmiBSD/LandingZone/issues). External
 pull requests are not accepted, for now ([CONTRIBUTING.md](.github/CONTRIBUTING.md)).
 Vulnerabilities are reported privately ([SECURITY.md](.github/SECURITY.md)).
 

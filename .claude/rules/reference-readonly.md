@@ -20,7 +20,7 @@ Widening or narrowing the sparse set at the same pin is `git -C reference/openbs
 sparse-checkout add|set ...`, a user decision recorded in LZ's `docs/ROADMAP.md`; this tree
 keeps the same set, at the pin LZ records at the pinned LZ commit.
 
-`reference/emibsd-lz/` is a full-history clone of https://github.com/enavarre-cl/EmiBSD.LZ,
+`reference/emibsd-lz/` is a full-history clone of https://github.com/EmiBSD/LandingZone,
 the faithful port this system derives from, pinned at the commit in `lz/PINNED.md`. It is the
 shape every native module started from and the history `cargo xtask lz drift` reads. It is
 gitignored, never edited, and never pushed to: LZ does not know this repository exists.

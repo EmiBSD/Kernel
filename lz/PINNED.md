@@ -1,6 +1,6 @@
 # Pinned EmiBSD.LZ commit
 
-Repository: https://github.com/enavarre-cl/EmiBSD.LZ
+Repository: https://github.com/EmiBSD/LandingZone
 Branch: main
 Tag: lz-origin
 Commit: 3c62ede688029454763f1734a2cc3748a168b430

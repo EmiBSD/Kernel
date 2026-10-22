@@ -34,7 +34,7 @@ A useful report gives:
 One person maintains EmiBSD, so answers are best effort. The report is confirmed, fixed on
 `main`, and credited in the fix's commit and the advisory unless you ask otherwise.
 
-Most of the kernel derives from OpenBSD through [EmiBSD.LZ](https://github.com/enavarre-cl/EmiBSD.LZ),
+Most of the kernel derives from OpenBSD through [EmiBSD.LZ](https://github.com/EmiBSD/LandingZone),
 the file-by-file port. If the bug is also in OpenBSD itself, please report it to OpenBSD as
 well (security@openbsd.org); EmiBSD is not affiliated with the OpenBSD project.
 

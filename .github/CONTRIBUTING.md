@@ -17,7 +17,7 @@ Use the issue forms; they ask for what is needed to reproduce. Vulnerabilities g
 the private channel in [SECURITY.md](SECURITY.md), never a public issue.
 
 A problem in the port itself (also present in EmiBSD.LZ) can go to
-[EmiBSD.LZ's issues](https://github.com/enavarre-cl/EmiBSD.LZ/issues) instead.
+[EmiBSD.LZ's issues](https://github.com/EmiBSD/LandingZone/issues) instead.
 
 ## Pull requests
 

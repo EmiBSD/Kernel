@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/enavarre-cl/EmiBSD/security/advisories/new
     about: Security problems go here, privately, never in a public issue (SECURITY.md).
   - name: A problem in the port itself (EmiBSD.LZ)
-    url: https://github.com/enavarre-cl/EmiBSD.LZ/issues
+    url: https://github.com/EmiBSD/LandingZone/issues
     about: A bug also present in EmiBSD.LZ, the file-by-file port EmiBSD derives from.
