@@ -1994,7 +1994,8 @@ native = ["KERNBASE"]
 kind = "moved"
 
 [[module]]
-rust = "sys/arch/arm64/include/pcb.rs"
+rust = "sys/hal/arch/arm64/include/pcb.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/pcb.rs"]
 status = "inherited"
 

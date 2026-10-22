@@ -38,7 +38,7 @@ pub mod intr;
 pub use hal::arch::arm64::include::mplock;
 pub use hal::arch::arm64::include::mutex;
 pub mod param;
-pub mod pcb;
+pub use hal::arch::arm64::include::pcb;
 pub mod pci_machdep;
 pub use hal::arch::arm64::include::proc;
 pub use hal::arch::arm64::include::pte;

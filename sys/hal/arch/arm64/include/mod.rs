@@ -26,6 +26,7 @@ pub mod frame;
 pub mod mplock;
 pub mod mutex;
 pub mod param;
+pub mod pcb;
 pub mod proc;
 pub mod pte;
 pub mod reg;
