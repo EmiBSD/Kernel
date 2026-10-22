@@ -596,8 +596,10 @@ pub const CCPU: u32 = (0.951_229_424_500_714 * FSCALE as f64) as u32;
 /// `CCPU_SHIFT`: 1 - exp(-1/20) ~= 0.0487 ~= 0.0488 == 1 (fixed pt, *11* bits).
 const CCPU_SHIFT: u32 = 11;
 
-/// The per-CPU generation `sched_barrier`'s task signals, by CPU number.
+/// The highest barrier ticket whose task passed through each CPU, by CPU number.
 static BARRIER_DONE: [AtomicU64; MAXCPUS] = [const { AtomicU64::new(0) }; MAXCPUS];
+/// The last barrier ticket handed out for each CPU, by CPU number.
+static BARRIER_TICKET: [AtomicU64; MAXCPUS] = [const { AtomicU64::new(0) }; MAXCPUS];
 
 /// `schedcpu`'s and `update_loadavg`'s timeouts, set by [`scheduler_start`].
 static SCHEDCPU_TO: Timeout = Timeout::unset();
@@ -1377,11 +1379,28 @@ pub fn sched_stop_secondary_cpus<G: ProcGlue>() {
 /// `sched_barrier_task`: runs on `systqmp` with the CPU's number as its argument, moves
 /// itself there, then signals the CPU's barrier generation.
 fn sched_barrier_task<G: ProcGlue>(arg: *mut c_void) {
-    let n = arg.addr();
+    let (n, ticket) = barrier_unpack(arg.addr());
     sched_peg_curproc::<G>(n);
-    BARRIER_DONE[n].fetch_add(1, Ordering::Release);
+    // cond_signal(&sb->cond): this caller's pass through CPU `n` is done.
+    BARRIER_DONE[n].fetch_max(ticket, Ordering::Release);
     wakeup(ptr::from_ref(&BARRIER_DONE[n]).addr());
     sched_unpeg_curproc::<G>();
+}
+
+/// Whether the caller of `sched_barrier` with `ticket` on CPU `n` still waits: no pass at or
+/// past its ticket through the CPU yet, or its own task `t` still queued.
+fn barrier_waiting(n: usize, ticket: u64, t: &crate::task::Task) -> bool {
+    BARRIER_DONE[n].load(Ordering::Acquire) < ticket || t.pending()
+}
+
+/// A barrier task's argument: CPU `n` and the caller's ticket.
+fn barrier_pack(n: usize, ticket: u64) -> usize {
+    (ticket as usize) << 9 | n
+}
+
+/// The CPU and the ticket a barrier task's argument names.
+fn barrier_unpack(w: usize) -> (usize, u64) {
+    (w & 0x1ff, (w >> 9) as u64)
 }
 
 /// `sched_barrier(ci)`: returns once CPU `n` (the primary CPU for `None`) has gone through
@@ -1402,18 +1421,24 @@ pub fn sched_barrier<G: ProcGlue>(n: Option<usize>) {
         return;
     }
 
-    let want = BARRIER_DONE[n].load(Ordering::Acquire) + 1;
-    // Pinned on this frame: the worker takes it off the queue before it runs it, so before
-    // the generation reaches `want` and the frame goes.
+    // The C's per-caller `struct sched_barrier_state`: this caller's ticket, taken in call
+    // order, which its own task sets as the CPU's done mark once it ran there; a later
+    // caller's task passing first satisfies it too (it passed after this call).
+    let ticket = BARRIER_TICKET[n].fetch_add(1, Ordering::AcqRel) + 1;
     let task = core::pin::pin!(crate::task::Task::new(
         sched_barrier_task::<G>,
-        ptr::without_provenance_mut(n)
+        ptr::without_provenance_mut(barrier_pack(n, ticket))
     ));
     let _ = crate::task::task_add(&crate::task::SYSTQMP, task.as_ref());
+    // Pinned on this frame: wait for this CPU's pass (the mark at or past this ticket) and
+    // for this caller's own task to have left the queue, so the frame never goes with the
+    // task linked (another caller's pass may come first: kern_sched.c keeps one cond per
+    // caller).
     let done = &BARRIER_DONE[n];
-    while done.load(Ordering::Acquire) < want {
+    let waiting = |t: &crate::task::Task| barrier_waiting(n, ticket, t);
+    while waiting(task.as_ref().get_ref()) {
         sleep_setup::<G>(ptr::from_ref(done).addr(), PWAIT, "sbar");
-        let _ = sleep_finish::<G>(INFSLP, done.load(Ordering::Acquire) < want);
+        let _ = sleep_finish::<G>(INFSLP, waiting(task.as_ref().get_ref()));
     }
 }
 
@@ -2729,6 +2754,33 @@ mod tests {
         spc.clear_schedflags(SPCF_SHOULDHALT);
         SCHED.all_cpus.add(n);
         hal::thread::set_current_static::<T>(None);
+    }
+
+    /// Two barriers on one CPU: the later caller's pass satisfies the earlier one's mark, but
+    /// the earlier caller still waits while its own task is queued (its frame keeps it), and
+    /// goes once the task left the queue; tickets and the task's argument round-trip.
+    #[test]
+    fn two_barriers_each_wait_for_their_own_task() {
+        static TQ: crate::task::Taskq = crate::task::Taskq::new(b"sbartest", 1, 0, 0);
+        let _g = setup();
+        let n = VCPUS[1];
+        let a = BARRIER_TICKET[n].fetch_add(1, Ordering::AcqRel) + 1;
+        let b = BARRIER_TICKET[n].fetch_add(1, Ordering::AcqRel) + 1;
+        assert!(b > a);
+        assert_eq!(barrier_unpack(barrier_pack(n, b)), (n, b));
+        let ta = core::pin::pin!(crate::task::Task::new(|_| {}, ptr::null_mut()));
+        let tb = core::pin::pin!(crate::task::Task::new(|_| {}, ptr::null_mut()));
+        let _ = crate::task::task_add(&TQ, ta.as_ref());
+        let _ = crate::task::task_add(&TQ, tb.as_ref());
+        assert!(barrier_waiting(n, a, ta.as_ref().get_ref()));
+        // B's task runs first: its pass marks the CPU past A's ticket.
+        let _ = crate::task::task_del(&TQ, tb.as_ref().get_ref());
+        BARRIER_DONE[n].fetch_max(b, Ordering::Release);
+        assert!(!barrier_waiting(n, b, tb.as_ref().get_ref()));
+        // A's mark is met, but its task is still queued: A waits (kern_sched.c's own cond).
+        assert!(barrier_waiting(n, a, ta.as_ref().get_ref()));
+        let _ = crate::task::task_del(&TQ, ta.as_ref().get_ref());
+        assert!(!barrier_waiting(n, a, ta.as_ref().get_ref()));
     }
 }
 /* </TESTS> */

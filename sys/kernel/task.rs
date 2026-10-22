@@ -237,7 +237,7 @@ pub struct Taskq {
 
 impl Taskq {
     /// A queue in `TQ_S_CREATED` (`taskq_sys`'s initialiser, `taskq_create`'s).
-    const fn new(name: &'static [u8], nthreads: u32, ipl: i32, flags: u32) -> Self {
+    pub(crate) const fn new(name: &'static [u8], nthreads: u32, ipl: i32, flags: u32) -> Self {
         Self {
             st: Mutexed::new(
                 ipl,
