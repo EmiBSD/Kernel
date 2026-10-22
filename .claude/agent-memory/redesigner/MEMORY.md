@@ -173,3 +173,6 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - A legacy bsd module with `unsafe` outside unsafe-core.toml (kern_event.rs, 82) cannot be `redesigned` even when the review decides it: lz check wants its mod line forbid; that is the user's call.
 - The LZ scratch bench of list-insert-remove (kern_prot.rs tests at 4417c4c8) is dev 1.9 vs release 10.4 ns in one session: the dev<release asymmetry is that harness's, not a typo.
 - A diagnostic arm64 bsd compiles once ucom.rs is patched locally (one import): check a `cfg(feature = "diagnostic")` change that way, then `git checkout` ucom.rs.
+- `if c && let Some(x) = slot.lock().take() { body }` keeps the guard alive through `body` (if-let temporaries): take into a `let` first when `body` may sleep (frele, a close).
+- Worktree sandbox: `python3 $D/x.py` (a variable path) is refused; spell the absolute script path. A replacer block with an empty NEW needs a context line, or it has no separator.
+- A kernel test that writes the user-copy double's memory (64 KiB, shared by parallel tests) takes a range of its own; kernel::pipe's tests use USER_BASE + 64.
