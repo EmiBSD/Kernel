@@ -181,9 +181,27 @@ pub(crate) fn restore(old: Option<i32>) {
     }
 }
 
-/// `IPL_MPFLOOR` (`IPL_NONE` before the bridge is registered: no interrupts yet).
+/// [`mpfloor`]'s answer once the bridge gave it; -1 before.
+static MPFLOOR: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
+
+/// `IPL_MPFLOOR` (`IPL_NONE` before the bridge is registered: no interrupts yet). The
+/// machine's constant, asked of the bridge once and kept (the C's `__MUTEX_IPL` is a
+/// compile-time value): every mutex's enter reads it, one relaxed load instead of a call
+/// through the bridge.
+#[inline]
 pub fn mpfloor() -> i32 {
-    bridges::intr_level().map_or(IPL_NONE, |b| b.mpfloor())
+    let cached = MPFLOOR.load(core::sync::atomic::Ordering::Relaxed);
+    if cached >= 0 {
+        return cached;
+    }
+    match bridges::intr_level() {
+        Some(b) => {
+            let v = b.mpfloor();
+            MPFLOOR.store(v, core::sync::atomic::Ordering::Relaxed);
+            v
+        }
+        None => IPL_NONE,
+    }
 }
 /* </CODE> */
 
