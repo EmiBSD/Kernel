@@ -70,9 +70,11 @@ pub fn project<'a, T, F>(p: Pin<&'a T>, f: fn(&T) -> &F) -> Pin<&'a F> {
     // memory goes. What could still move the field is a `&mut T`: none is reached through a
     // pinned `T` that is not `Unpin` (and a field that is not `Unpin` makes `T` so, no
     // `impl Unpin` being allowed outside `hal`, `cargo xtask hal-check`), except by `T`'s own
-    // `Drop`, which the types this serves do not write to move a field out (a linked entry
-    // moved out of its element stops the kernel at its drop, `hal::pinlist`'s I1). If `F` is
-    // `Unpin`, pinning it promises nothing.
+    // `Drop`. That case rests on `hal::pinlist`'s I1: what relies on a projected field's
+    // address is a list it is linked on (the field is a `PinEntry` or holds one, as a
+    // `Timeout` does), and a `PinEntry` moved out of its place while linked panics at its
+    // drop, so no list is ever left naming a moved field. If `F` is `Unpin`, pinning it
+    // promises nothing.
     unsafe { Pin::new_unchecked(field) }
 }
 /* </CODE> */

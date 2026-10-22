@@ -362,6 +362,10 @@ pub fn refreshcreds(p: &Proc) {
 
 /// A `Timeval`-typed helper the resource code shares: the zero interval.
 pub const ZERO_TIMEVAL: Timeval = Timeval::new(0, 0);
+const _: () = assert!(
+    core::mem::offset_of!(Proc, machine) == 0,
+    "the machine's slot is the thread's first member: ci_curproc names both (hal::thread)"
+);
 /* </CODE> */
 
 /* <TESTS> */

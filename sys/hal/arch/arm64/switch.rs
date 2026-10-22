@@ -111,7 +111,8 @@
 //!   `offset_of!(Proc, machine.*)` and wrote `ci_curproc` from the same register; here the
 //!   assembly takes the two slots and the new thread apart (`hal_cpu_switchto(oldslot,
 //!   newslot, newproc)`), so `hal` names no thread type and assumes no offset of the slot in
-//!   it (the kernel keeps it first for its own readers of `ci_curproc`, and asserts it).
+//!   it (the kernel keeps it first for its own readers of `ci_curproc`: `kernel::proc`'s tests
+//!   check the offset 0 of its generic thread, `bsd` asserts it of its own at compile time).
 //! - LZ's `machdep.rs` `cpu_switchto` (the FPU state saved and dropped for the old thread,
 //!   then the assembly) is [`switch`]; `vm_machdep.rs` `cpu_fork`'s frames are
 //!   [`thread_setup`], and `cpu_init_secondary`'s rebuild of the idle thread's switch frame

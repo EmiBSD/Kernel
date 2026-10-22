@@ -72,7 +72,10 @@
 //!   holds the lock when the hold drops).
 //! - E2: a thread's memory is not freed while it is some CPU's current thread: the kernel's
 //!   pool of threads refuses to free one (`BoxPool::init_checked`'s release check), after
-//!   the thread's last switch away updated the CPU's current thread.
+//!   the thread's last switch away updated the CPU's current thread. A borrow of the current
+//!   thread ([`with_current`]) spans the thread's own switches (its frame is suspended, not
+//!   gone), and its box is dropped only by the reaper after `sched_exit`'s switch away, when
+//!   no CPU runs it.
 //! - E3: a thread on a run queue is never freed (its queue entry's drop panics while it is
 //!   linked), and the thread a [`Next`] names was taken off a queue under the hold the switch
 //!   is made under (the generation, under `DIAGNOSTIC`), so the addresses it holds are alive
@@ -331,7 +334,8 @@ fn running_slot(slot: &MachineSlot) -> bool {
 pub const SONPROC: u8 = 7;
 
 /// What the context switch needs of a thread type: the slot the machine reaches, which the
-/// kernel's thread keeps first (`#[repr(C)]`, asserted there at compile time, so the thread's
+/// kernel's thread keeps first (`#[repr(C)]`; generic, so `kernel::proc`'s tests check the offset
+/// 0 and `bsd`'s concrete thread asserts it at compile time, so the thread's
 /// address is the slot's for the assembly that reads `ci_curproc` by offset).
 pub trait ThreadLayout: Sync + 'static {
     /// The thread's [`MachineSlot`].
