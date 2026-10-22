@@ -318,11 +318,19 @@ pub(crate) fn spinning(delta: isize) {
 
 /// `panicstr` is set: `bsd`'s `panic` (and the trap handlers' claim of `panicstr`) call it
 /// once the kernel has panicked.
+///
+/// A trust boundary (`sys/hal/trust.rs`): past caring ([`set_panicking`], [`set_db_active`])
+/// the kernel lock's release stops checking that no witness of it is out, and mutexes answer
+/// `owned` to every CPU, as the C's checks give up after a panic or in ddb. The two are
+/// called only by `bsd`'s `panic` and ddb's entry and exit (no other caller exists, a
+/// reviewer's grep); a caller that set them otherwise would let a witness holder read `[K]`
+/// cells another CPU changes. They move with `panic(9)` and ddb (N9), when `hal` owns both.
 pub fn set_panicking() {
     PANICKING.store(true, Ordering::Release);
 }
 
-/// `db_active = on`: ddb is entered (`true`) or left (`false`) on some CPU.
+/// `db_active = on`: ddb is entered (`true`) or left (`false`) on some CPU. Under the
+/// premise of [`set_panicking`]: ddb's entry and exit alone call it.
 pub fn set_db_active(on: bool) {
     DB_ACTIVE.store(on, Ordering::Release);
 }
