@@ -1586,7 +1586,10 @@ pub fn kqueue_register(
                 kn.kn_status.set(KN_PROCESSING);
                 // apply reference count to knote structure, and do not release it at the
                 // end of this routine.
-                drop(kn.kn_fp().lock().set(fp.take()));
+                // The slot's old value is dropped after its IPL_HIGH guard (as at
+                // knote_drop): a last reference's close never runs under the guard.
+                let old = kn.kn_fp().lock().set(fp.take());
+                drop(old);
                 kn.kn_kq.set(kq);
                 kn.kn_fop.set(Some(fops));
 

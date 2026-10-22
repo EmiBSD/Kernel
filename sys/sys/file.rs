@@ -182,7 +182,7 @@ pub fn frele<'a>(fp: FileRef, p: impl Into<Option<&'a Proc>>) -> Result<(), Errn
     fp.frele(p.into())
 }
 
-/// `foffset(fp)`: the file's offset, read under `f_mtx`.
+/// `foffset(fp)`: the file's offset (the C's read under `f_mtx`; one atomic load).
 pub fn foffset(fp: &File) -> Off {
     kernel::file::foffset(fp)
 }

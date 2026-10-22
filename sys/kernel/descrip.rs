@@ -1402,8 +1402,8 @@ fn fdalloc_search<G: FileGlue>(
                 // A section of `fd_fplock`, where the C stores `fd_ofileflags[i]` plainly
                 // under fdplock: the flags live with the slots inside that mutex because the
                 // C also reads them with no lock at all (`UF_PLEDGEOPEN` in `dofilewritev`,
-                // `fchmod`, `fchown`, `futimens`, `ftruncate`; `unp_internalize`'s
-                // `UF_PLEDGED`), and those readers take the mutex here instead of racing.
+                // `fchmod`, `fchown`, `futimens`, `ftruncate`; `unp_internalize` reads them
+                // under fdplock), and those readers take the mutex here instead of racing.
                 // Under fdlock alone they would have to take that sleeping lock, a new sleep
                 // point on the write path.
                 g.set_ofileflags(i, if pledged { UF_PLEDGED } else { 0 });
