@@ -332,7 +332,7 @@ impl Drop for UArea {
 #[cfg(not(feature = "module-rt"))]
 pub fn boot_uarea<T: ThreadLayout>(t: Pin<&'static T>) {
     check_type::<T>();
-    let slot = t.get_ref().machine();
+    let slot = slot_of(t.get_ref());
     if crate::cpu::curcpu().curproc() != core::ptr::from_ref(t.get_ref()).cast::<()>() {
         hal_panic(format_args!("proc0paddr: the thread is not this CPU's"));
     }
@@ -375,6 +375,21 @@ pub const CTX_DEAD: u8 = 3;
 pub trait ThreadLayout: Sync + 'static {
     /// The thread's [`MachineSlot`].
     fn machine(&self) -> &MachineSlot;
+}
+
+/// `t`'s slot, checked to be its own and first (`ThreadLayout` is a safe trait: an
+/// implementation could name another value's slot): the slot's address must be the thread's,
+/// which `ci_curproc` holds and the assembly reads by offset. One address compare; `panic(9)`
+/// otherwise.
+#[inline]
+fn slot_of<T: ThreadLayout>(t: &T) -> &MachineSlot {
+    let slot = t.machine();
+    if core::ptr::from_ref(slot).addr() != core::ptr::from_ref(t).addr() {
+        hal_panic(format_args!(
+            "ThreadLayout: the slot is not the thread's first member"
+        ));
+    }
+    slot
 }
 
 /// `SCHED_LOCK`: the scheduler's mutex (`sched_lock`), at `IPL_SCHED` from its making (the
@@ -476,25 +491,26 @@ impl Next {
     pub fn of<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>) -> Next {
         check_type::<T>();
         let t = t.get_ref();
+        let slot = slot_of(t);
         // E4: the switch reads the pcb at `p_addr`; a thread without a u-area is refused here,
         // under the hold the switch is made under, so no `take_uarea` comes between (the
         // host's switch double reads none).
-        if cfg!(target_os = "none") && t.machine().addr_word() == 0 {
+        if cfg!(target_os = "none") && slot.addr_word() == 0 {
             hal_panic(format_args!("cpu_switchto: the thread has no u-area"));
         }
         // E6: a dead thread never runs again, and on the machine a thread runs only from the
         // frames `thread_setup`/`thread_restart` built or a switch away saved (the host's
         // tests choose bare threads off their queues). Chosen, its context lives.
-        match t.machine().ctx() {
+        match slot.ctx() {
             CTX_DEAD => hal_panic(format_args!("cpu_switchto: the thread is dead")),
             CTX_NONE if cfg!(target_os = "none") => {
                 hal_panic(format_args!("cpu_switchto: the thread has no context"))
             }
-            _ => t.machine().ctx.store(CTX_LIVE, AtomicOrdering::Release),
+            _ => slot.ctx.store(CTX_LIVE, AtomicOrdering::Release),
         }
         Next {
             thread: NonNull::from(t).cast(),
-            slot: NonNull::from(t.machine()),
+            slot: NonNull::from(slot),
             generation: h.generation(),
         }
     }
@@ -637,14 +653,12 @@ pub fn set_current_static<T: ThreadLayout>(t: Option<Pin<&'static T>>) {
         if crate::cpu::cores().any(|c| !core::ptr::eq(c, me) && c.curproc() == p) {
             hal_panic(format_args!("curproc: the thread runs on another CPU"));
         }
-        if t.get_ref().machine().ctx() == CTX_DEAD {
+        let slot = slot_of(t.get_ref());
+        if slot.ctx() == CTX_DEAD {
             hal_panic(format_args!("curproc: the thread is dead"));
         }
         // It runs here from now on (E6).
-        t.get_ref()
-            .machine()
-            .ctx
-            .store(CTX_LIVE, AtomicOrdering::Release);
+        slot.ctx.store(CTX_LIVE, AtomicOrdering::Release);
     }
     me.set_curproc(p);
 }
@@ -1004,6 +1018,33 @@ mod tests {
         other.set_curproc(core::ptr::null());
         set_current_static(Some(crate::pin::pin_static(t)));
         set_current_static::<TestThread>(None);
+    }
+
+    /// A `ThreadLayout` naming a slot that is not the value's first member is refused.
+    #[test]
+    fn a_slot_elsewhere_is_refused() {
+        struct Elsewhere {
+            _tail: u64,
+            slot: MachineSlot,
+        }
+        impl ThreadLayout for Elsewhere {
+            fn machine(&self) -> &MachineSlot {
+                &self.slot
+            }
+        }
+        let e = Elsewhere {
+            _tail: 0,
+            slot: MachineSlot::new(),
+        };
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = slot_of(&e);
+        }));
+        assert!(r.is_err());
+        let t = TestThread {
+            machine: MachineSlot::new(),
+            n: 0,
+        };
+        assert!(core::ptr::eq(slot_of(&t), &t.machine));
     }
 }
 /* </TESTS> */
