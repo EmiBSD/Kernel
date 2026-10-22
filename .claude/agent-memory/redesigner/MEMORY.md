@@ -176,3 +176,6 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - `if c && let Some(x) = slot.lock().take() { body }` keeps the guard alive through `body` (if-let temporaries): take into a `let` first when `body` may sleep (frele, a close).
 - Worktree sandbox: `python3 $D/x.py` (a variable path) is refused; spell the absolute script path. A replacer block with an empty NEW needs a context line, or it has no separator.
 - A kernel test that writes the user-copy double's memory (64 KiB, shared by parallel tests) takes a range of its own; kernel::pipe's tests use USER_BASE + 64.
+- Widening `hal::api::KernelApi::new`/`kernel::api::table`: grep every caller incl. the tests of hal/api.rs, hal/module/load.rs, kernel/api.rs, abi/sysent.rs and run `cargo test -p kernel` (a 6th argument once broke kernel's own test).
+- Host bench costs: hal::Mutexed on the doubles is 4.8 ns (dev 6.7) vs bsd's mtx 3.0, so a kernel op's rise over LZ is about locks x 1.8 ns (count setters like set_ofileflags too); hal pools in bsd tests are the double (274 ns a get/put): measure allocation in kernel benches' recycling backend.
+- In kernel benches turn the test glue's hook log off (`testutil::set_file_log(false)`): its format!+push (~25 ns) swamps fd ops; `kassert!` compiles out without `diagnostic`, never a dev-profile hypothesis.
