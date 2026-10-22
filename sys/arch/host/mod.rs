@@ -399,8 +399,8 @@ impl Cpu for Machine {
     }
 
     /// The running thread's core's, as [`Cpu::ci_curproc`] reads it.
-    fn set_curproc(_ci: &HostCpuInfo, p: *const Proc) {
-        hal::cpu::curcpu().set_curproc(p.cast());
+    fn set_curproc(_ci: &HostCpuInfo, p: Option<&'static Proc>) {
+        hal::thread::set_current_static(p.map(hal::pin::pin_static));
     }
 
     fn proc0paddr() -> &'static User {

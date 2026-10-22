@@ -166,7 +166,7 @@ fn main() {
     if wanted(names[2]) {
         let p = threads[0];
         p.set_stat(SONPROC);
-        Machine::set_curproc(ci, p);
+        Machine::set_curproc(ci, Some(p));
         let ident = ptr::from_ref(&threads).cast::<core::ffi::c_void>();
         let r = measure(N * ROUNDS, || {
             let t = Instant::now();
@@ -180,7 +180,7 @@ fn main() {
             }
             t.elapsed()
         });
-        Machine::set_curproc(ci, ptr::null());
+        Machine::set_curproc(ci, None);
         report(names[2], r);
     }
 }

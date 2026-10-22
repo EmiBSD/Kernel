@@ -134,9 +134,9 @@ use crate::arch::arm64::arm64::cpu::cpu_kick;
 use crate::arch::arm64::arm64::cpu::cpu_unidle;
 use crate::arch::arm64::arm64::cpufunc::cpu_dcache_wb_range;
 use crate::arch::arm64::arm64::cpufunc::cpu_wfi;
-use crate::arch::arm64::arm64::cpuswitch::cpu_switchto_asm;
+
 use crate::arch::arm64::arm64::exception::exception_vectors_addr;
-use crate::arch::arm64::arm64::fpu::{fpu_drop, fpu_save};
+use crate::arch::arm64::arm64::fpu::fpu_drop;
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
@@ -1293,7 +1293,7 @@ pub fn cpu_startup() {
     );
 
     let curpcb = &proc0paddr().u_pcb;
-    CPU_INFO_PRIMARY.set_curpcb_ptr(curpcb);
+    hal::arch::arm64::switch::set_current_pcb(Some(curpcb));
     curpcb.pcb_flags.set(0);
     curpcb.pcb_tf.set(PROC0TF.as_ptr());
 
@@ -1470,32 +1470,28 @@ pub fn cpu_idle_leave() {
     unsafe { enable_irq_daif() };
 }
 
-/// `cpu_switchto(old, new)`: drops `old`'s FPU state (saving it first if it was in use) and
-/// switches (`cpuswitch.S`).
+/// `cpu_switchto(old, new)`: `hal::thread`'s switch (the FPU state of `old` saved and
+/// dropped, then `cpuswitch.S`), made under `hal`'s scheduler hold, taken inside the legacy
+/// `SCHED_LOCK` the caller holds and handed over by the same switch (N4.5a, until the
+/// scheduler is `kernel::sched`'s): the hold `old` keeps here lies dormant until a switch
+/// back to `old`, and is released when this returns; a thread that starts releases the one
+/// it adopts (`kern_fork.rs`'s `thread_start`). Without `old` (a dead thread, a CPU's first
+/// switch) the hold goes with the switch and this never returns.
 ///
 /// # Safety
 ///
 /// As `machine::cpu::Cpu::cpu_switchto`: the scheduler lock is held, `new` is runnable and
 /// off every queue, `old` (when given) is the running thread.
 pub unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc) {
-    if let Some(old) = old {
-        let pcb = old.pcb();
-
-        if pcb.pcb_flags.get() & PCB_FPU != 0 {
-            fpu_save(old);
+    let mut h = hal::thread::sched_lock();
+    let next = hal::thread::Next::of(&h, hal::pin::pin_static(new.as_static()));
+    match old {
+        Some(old) => {
+            hal::thread::switch_to(&mut h, hal::pin::pin_static(old.as_static()), next);
+            drop(h);
         }
-
-        fpu_drop();
+        None => hal::thread::exit_to_idle(h, next),
     }
-
-    // SAFETY: forwarded from the caller; the assembly only touches the pcbs, the stacks and
-    // the per-CPU pointers.
-    unsafe {
-        cpu_switchto_asm(
-            old.map_or(ptr::null(), |p| ptr::from_ref(p).cast()),
-            ptr::from_ref(new).cast(),
-        )
-    };
 }
 
 /// `boot(9)`: halts or reboots according to `howto`.

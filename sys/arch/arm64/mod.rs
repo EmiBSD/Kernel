@@ -162,8 +162,9 @@ impl Cpu for Machine {
         ci.curproc_ptr()
     }
 
-    fn set_curproc(ci: &include::cpu::CpuInfo, p: *const Proc) {
-        ci.set_curproc_ptr(p);
+    fn set_curproc(ci: &include::cpu::CpuInfo, p: Option<&'static Proc>) {
+        crate::kassert!(core::ptr::eq(ci, include::cpu::curcpu()));
+        hal::thread::set_current_static(p.map(hal::pin::pin_static));
     }
 
     fn proc0paddr() -> &'static User {

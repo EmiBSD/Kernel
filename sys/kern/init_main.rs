@@ -275,7 +275,7 @@ pub fn main() -> ! {
     let ci = curcpu();
     let p: &'static Proc = &PROC0;
     p.place();
-    Machine::set_curproc(ci, p);
+    Machine::set_curproc(ci, Some(p));
     p.set_cpu(ci);
 
     // Initialize timeouts.

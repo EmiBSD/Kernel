@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn mfs_strategy_does_the_io_in_the_file_system_process_and_queues_for_others() {
         let (_g, p) = setup(Vec::new());
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         let mem: &'static mut [u8] = Box::leak(
             (0..8192u32)
                 .map(|i| (i % 251) as u8)

@@ -326,6 +326,9 @@ pub const SDEAD: u8 = 6;
 /// `SONPROC`: thread is currently on a CPU.
 pub const SONPROC: u8 = 7;
 
+// The switch stores `hal::thread`'s `SONPROC` into the new thread's slot.
+const _: () = assert!(hal::thread::SONPROC == SONPROC);
+
 /*
  * These flags are per-thread and kept in p_flag
  */
@@ -1926,6 +1929,16 @@ impl<G: ProcGlue> Deref for Thread<G> {
 
     fn deref(&self) -> &G::ThreadG {
         &self.g
+    }
+}
+
+/// What `hal::thread`'s switch reaches of a thread: its slot, first in the `#[repr(C)]`
+/// thread (decision P1), so the thread's address, `ci_curproc`, is the slot's for the
+/// assembly that reads the slot by `ci_curproc` plus an offset (arm64's `exception.S`).
+impl<G: ProcGlue> hal::thread::ThreadLayout for Thread<G> {
+    #[inline]
+    fn machine(&self) -> &MachineSlot {
+        &self.machine
     }
 }
 

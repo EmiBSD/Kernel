@@ -68,20 +68,16 @@
 //! ## Deviations
 //! - The pointer authentication keys (`pm_ap*key`) the C copies from the parent's pmap wait
 //!   for user pmaps (M6): kernel threads share the kernel pmap.
-//! - The switch frame's `sf_x19` holds the thread function as a pointer, which
-//!   `proc_trampoline_run` (`cpuswitch.rs`) turns back into a Rust `fn`: Rust function
-//!   pointers have no C calling convention to `blr` from assembly.
+//! - The switch frame's `sf_x19` holds the thread function's number in `kern_fork.rs`'s
+//!   table (`thread_start_word`), which the trampoline hands back to `thread_start`: no code
+//!   address crosses into `hal`, whose `thread_setup` builds the frames (N4.5a).
 //! - `vmapbuf` panics if a user page of the request is not mapped, where the C enters the
 //!   uninitialised address `pmap_extract` left (the pages are wired, so it cannot happen).
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use crate::arch::arm64::arm64::cpuswitch::proc_trampoline;
-use crate::arch::arm64::arm64::fpu::fpu_save;
-use crate::arch::arm64::include::frame::{Switchframe, Trapframe};
-use crate::arch::arm64::include::param::{USPACE, stackalign};
-use crate::arch::arm64::include::pcb::PCB_FPU;
+use crate::kern::kern_fork::thread_start_word;
 use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::pmap::pmap_activate;
@@ -91,14 +87,16 @@ use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::proc::Proc;
 use crate::sys::proc::ProcExt;
-use crate::sys::types::{Register, Vaddr, Vsize};
+use crate::sys::types::{Vaddr, Vsize};
 use hal::vm::param::{round_page, trunc_page};
 use kernel::vm::km::{KD_WAITOK, KP_NONE};
 use kernel::vm::km::{KmemVaMode, KvMap};
 
 /// `cpu_fork`: finish a fork operation, with process `p2` nearly set up. Copy and update the
 /// kernel stack and pcb, making the child ready to run, and marking it so that it can return
-/// differently than the parent.
+/// differently than the parent: `hal::thread::thread_setup` (the parent's FP state saved, the
+/// pcb copied, the trap frame copied with the user stack and TCB, the switch frame into the
+/// trampoline with `func`'s number and `arg`).
 pub fn cpu_fork(
     p1: &Proc,
     p2: &Proc,
@@ -107,48 +105,18 @@ pub fn cpu_fork(
     func: fn(*mut c_void),
     arg: *mut c_void,
 ) {
-    let pcb = p2.pcb();
-    let pcb1 = p1.pcb();
-
     // pm->pm_ap{ia,da,ib,db,ga}key = pm1's: user pmaps (M6).
-
-    // Save FPU state to PCB if necessary.
-    if pcb1.pcb_flags.get() & PCB_FPU != 0 {
-        fpu_save(p1);
-    }
-
-    // Copy the pcb.
-    pcb.copy_from(pcb1);
 
     pmap_activate(p2);
 
-    let tf =
-        stackalign(p2.uarea() as usize + USPACE - size_of::<Trapframe>() - 0x10) as *mut Trapframe;
-    pcb.pcb_tf.set(tf);
-    // SAFETY: `tf` is inside p2's fresh u-area, below its top; p1's `pcb_tf` points at its
-    // own trap frame (proc0's static one, or the frame of the syscall that forked).
-    unsafe { tf.write(pcb1.pcb_tf.get().read()) };
-
-    if !stack.is_null() {
-        // SAFETY: `tf` was just written above.
-        unsafe { (*tf).tf_sp = stackalign(stack as usize) as Register };
-    }
-    if !tcb.is_null() {
-        pcb.pcb_tcb.set(tcb.cast());
-    }
-
-    let sf = (tf as *mut Switchframe).wrapping_sub(1);
-    // SAFETY: `sf` is right below the trap frame, still inside the u-area (USPACE is far
-    // larger than both frames).
-    unsafe {
-        sf.write(Switchframe {
-            sf_x19: func as *const () as usize as Register,
-            sf_x20: arg as usize as Register,
-            sf_lr: proc_trampoline as *const () as usize as Register,
-            ..Switchframe::default()
-        });
-    }
-    pcb.pcb_sp.set(sf as u64);
+    hal::thread::thread_setup(
+        hal::pin::pin_static(p1.as_static()),
+        hal::pin::pin_static(p2.as_static()),
+        stack.addr(),
+        tcb.expose_provenance(),
+        thread_start_word(func),
+        arg.expose_provenance(),
+    );
 }
 
 /// `cpu_exit`: nothing to do on arm64.

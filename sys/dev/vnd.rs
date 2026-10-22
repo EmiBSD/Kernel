@@ -1015,12 +1015,12 @@ mod tests {
 
     /// The current thread for the VOPs' `assert_curproc`, and the `NVND` units.
     fn begin(p: &'static Proc) {
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         vndattach(NVND);
     }
 
     fn end() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// A busy buffer of `len` bytes for `dev`, at `blkno`, reading or writing.

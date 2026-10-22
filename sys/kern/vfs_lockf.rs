@@ -922,13 +922,13 @@ mod tests {
     fn setup() -> (std::sync::MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         lf_init();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         (g, p)
     }
 
     /// Clears `curproc` again, so later tests see the boot state.
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     const A: *const c_void = 0x1000 as *const c_void;

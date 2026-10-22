@@ -615,6 +615,7 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
     let _ = hal::bridges::register_softintr(&BSD_SOFTINTR);
+    let _ = hal::thread::register_start(crate::kern::kern_fork::thread_start);
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     let _ = kernel::clock::install_uptime(&BSD_UPTIME);
     let _ = kernel::thread::install_kthread(&BSD_KTHREAD);

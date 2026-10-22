@@ -741,7 +741,7 @@ pub(crate) mod tests {
     /// device list and counters, no simulated daemon.
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         rw_obj_init();
         fuseattach(NFUSE);
         STAT_FBUFS_IN.store(0, Ordering::Relaxed);

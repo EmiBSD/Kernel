@@ -2310,7 +2310,7 @@ pub(crate) mod tests {
         let (g, t) = crate::netinet::ip_input::tests::setup();
         crate::kern::proc_glue::procinit();
         let p = crate::kern::proc_glue::test_proc(1, crget());
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         soinit();
         in_init();
         (g, t, p)
@@ -2318,7 +2318,7 @@ pub(crate) mod tests {
 
     /// Undoes what outlives the reset memory: `curproc`.
     pub(crate) fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// An address mbuf holding `sin`.

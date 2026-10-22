@@ -177,8 +177,10 @@ pub trait Cpu {
     /// `ci->ci_curproc`: the thread running on the CPU, null before `proc0` is set up.
     fn ci_curproc(ci: &Self::CpuInfo) -> *const Proc;
 
-    /// `ci->ci_curproc = p`: what `cpu_switchto` and `main`'s `curproc = &proc0` do.
-    fn set_curproc(ci: &Self::CpuInfo, p: *const Proc);
+    /// `ci->ci_curproc = p` on the running CPU `ci` for a thread that lives for ever (`main`'s
+    /// `curproc = &proc0`, a test's thread), or none: `hal::thread::set_current_static` (the
+    /// switch writes it itself).
+    fn set_curproc(ci: &Self::CpuInfo, p: Option<&'static Proc>);
 
     /// `proc0paddr`: the u-area of `proc0` (`locore` reserves it in C).
     fn proc0paddr() -> &'static User;

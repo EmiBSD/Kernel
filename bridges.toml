@@ -41,6 +41,16 @@ paid_by = "N4"
 # N3.4a: cold (cold || panicstr) and cold_yield (splhigh, splx(safepri), the kernel lock's
 # bounce), msleep_nsec's early return for MutexedGuard::sleep_nsec; N3.5 S1: sched_pause(yield)
 # (sys/sys/sched.rs's SPCF_SHOULDYIELD test with sched_bsd's yield), for uvm_map_teardown.
+# bsd: kern_fork.rs's thread_start (the hold released, proc_trampoline_mi, then the function
+# cpu_fork numbered in its table, thread_start_word): what a new thread's trampoline calls
+# (N4.5a); a fn registered with hal::thread::register_start. Paid when the kernel's scheduler
+# registers its own trampoline_mi (N4.5a step a5) and fork1 moves (N4.6).
+# hal::thread::register_start
+[[bridge]]
+trait = "ThreadStart"
+for = ["sys/hal/thread.rs"]
+paid_by = "N4"
+
 # hal::sleep::Sleep
 [[bridge]]
 trait = "Sleep"

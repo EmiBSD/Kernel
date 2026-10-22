@@ -130,7 +130,7 @@ impl CpuCore {
     /// `ci->ci_curproc = p`: what `main`'s `curproc = &proc0` and a secondary CPU's start do
     /// (the context switch writes it from assembly).
     #[inline]
-    pub fn set_curproc(&self, p: *const ()) {
+    pub(crate) fn set_curproc(&self, p: *const ()) {
         self.curproc.store(p.cast_mut(), Ordering::Relaxed);
     }
 
@@ -142,7 +142,11 @@ impl CpuCore {
 
     /// `ci->ci_curpcb = pcb` (`main`'s for `proc0`, a secondary CPU's start).
     #[inline]
-    pub fn set_curpcb(&self, pcb: *const ()) {
+    #[cfg_attr(
+        any(not(target_os = "none"), feature = "module-rt"),
+        allow(dead_code, reason = "the machine's switch alone writes it")
+    )]
+    pub(crate) fn set_curpcb(&self, pcb: *const ()) {
         self.curpcb.store(pcb.cast_mut(), Ordering::Relaxed);
     }
 

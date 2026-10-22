@@ -344,8 +344,8 @@ impl Mutexed<()> {
     /// For `()` alone: the guard opens only [`crate::rwlock::Guarded`] cells, whose
     /// exclusion its caller argues (one live guard per CPU that holds the lock).
     #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the trampoline's, N4.5a step a2")
+        feature = "module-rt",
+        allow(dead_code, reason = "the switch is not the ABI module's")
     )]
     pub(crate) fn adopt(&self) -> MutexedGuard<'_, ()> {
         if self.owner.load(Ordering::Relaxed) != self_word() {

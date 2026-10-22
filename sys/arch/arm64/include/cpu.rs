@@ -344,22 +344,10 @@ impl CpuInfo {
         self.core.curproc().cast()
     }
 
-    /// `ci->ci_curproc = p`.
-    #[inline]
-    pub fn set_curproc_ptr(&self, p: *const Proc) {
-        self.core.set_curproc(p.cast());
-    }
-
     /// `ci->ci_curpcb`: the running thread's pcb, null before `proc0` runs.
     #[inline]
     pub fn curpcb_ptr(&self) -> *const Pcb {
         self.core.curpcb().cast()
-    }
-
-    /// `ci->ci_curpcb = pcb`.
-    #[inline]
-    pub fn set_curpcb_ptr(&self, pcb: *const Pcb) {
-        self.core.set_curpcb(pcb.cast());
     }
 }
 

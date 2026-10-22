@@ -862,4 +862,44 @@ pub fn proc_trampoline_mi() {
     spc.spc_runtime.set(nanouptime());
     kernel_lock(); // KERNEL_LOCK()
 }
+
+/// How many distinct thread functions `cpu_fork` can start threads with ([`STARTS`]).
+const NSTARTS: usize = 64;
+
+/// The functions threads were started with, by number: a new thread's switch frame carries
+/// the number (`hal::thread::thread_setup`'s start word, N4.5a), and its trampoline calls the
+/// function again through [`thread_start`]. Filled on first use, never emptied (the C keeps
+/// the function itself in the frame; here no code address crosses into `hal`).
+static STARTS: [hal::once::OnceStatic<fn(*mut c_void)>; NSTARTS] =
+    [const { hal::once::OnceStatic::new() }; NSTARTS];
+
+/// The number [`thread_start`] knows `f` by: its slot, filled the first time. Panics when
+/// more than [`NSTARTS`] functions are used.
+pub fn thread_start_word(f: fn(*mut c_void)) -> usize {
+    for (i, slot) in STARTS.iter().enumerate() {
+        if slot.get().is_none() {
+            // A racing claim of another function takes the slot first: look on.
+            let _ = slot.set(f);
+        }
+        if slot.get().is_some_and(|g| core::ptr::fn_addr_eq(*g, f)) {
+            return i;
+        }
+    }
+    panic(format_args!(
+        "cpu_fork: more than {NSTARTS} thread functions"
+    ))
+}
+
+/// The start `hal::thread` calls on a new thread (registered by `hal_bridges_register`,
+/// bridges.toml `ThreadStart`), with `hal`'s scheduler hold the switch to it kept and the
+/// two words `cpu_fork` gave: the hold released first (it is taken inside the legacy
+/// `SCHED_LOCK`), then `proc_trampoline_mi` (which releases that one), then `func(arg)`.
+pub fn thread_start(hold: hal::thread::SchedHold, start: usize, arg: usize) {
+    drop(hold);
+    proc_trampoline_mi();
+    let Some(f) = STARTS.get(start).and_then(|s| s.get()).copied() else {
+        panic(format_args!("proc_trampoline: no thread function {start}"));
+    };
+    f(ptr::with_exposed_provenance_mut(arg));
+}
 /* </CODE> */

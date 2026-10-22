@@ -156,8 +156,6 @@ use crate::{kassert, queue_adapter};
 use kernel::vm::km::{KD_WAITOK, KP_ZERO, KV_ANY};
 
 #[cfg(feature = "multiprocessor")]
-use crate::arch::arm64::arm64::cpuswitch::proc_trampoline;
-#[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::intr::{arm_intr_cpu_enable, arm_send_ipi, cpu_startclock, delay};
@@ -165,12 +163,10 @@ use crate::arch::arm64::arm64::intr::{arm_intr_cpu_enable, arm_send_ipi, cpu_sta
 use crate::arch::arm64::arm64::machdep::{BOOT_MP, CPU_INFO};
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::include::cpu::{CPUF_AP, CPUF_GO, intr_disable, intr_restore};
-#[cfg(feature = "multiprocessor")]
-use crate::arch::arm64::include::frame::{Switchframe, Trapframe};
+
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::include::intr::{ARM_IPI_NOP, IPL_HIGH, IPL_NONE};
-#[cfg(feature = "multiprocessor")]
-use crate::arch::arm64::include::param::stackalign;
+
 #[cfg(feature = "multiprocessor")]
 use crate::dev::rnd::arc4random;
 #[cfg(feature = "multiprocessor")]
@@ -178,15 +174,17 @@ use crate::kern::init_main::NCPUS;
 #[cfg(feature = "multiprocessor")]
 use crate::kern::kern_clockintr::clockqueue_init;
 #[cfg(feature = "multiprocessor")]
+use crate::kern::kern_fork::thread_start_word;
+#[cfg(feature = "multiprocessor")]
 use crate::kern::kern_sched::{sched_idle, sched_init_cpu, sched_toidle};
 #[cfg(feature = "multiprocessor")]
 use crate::kern::sched_bsd::sched_assert_unlocked;
 #[cfg(feature = "multiprocessor")]
 use crate::machine::intr::{spllower, splraise};
 #[cfg(feature = "multiprocessor")]
-use crate::sys::systm::kernel_assert_unlocked;
+use crate::sys::proc::Proc;
 #[cfg(feature = "multiprocessor")]
-use crate::sys::types::Register;
+use crate::sys::systm::kernel_assert_unlocked;
 
 // CPU Identification
 
@@ -2555,8 +2553,8 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
 
     // Start from a clean slate regardless of whether this is the initial power up or a
     // wakeup of a suspended CPU.
-    ci.set_curproc_ptr(ptr::null());
-    ci.set_curpcb_ptr(ptr::null());
+    hal::thread::set_current_static::<Proc>(None);
+    hal::arch::arm64::switch::set_current_pcb(None);
     ci.ci_curpm.set(ptr::null());
     ci.ci_cpl.set(IPL_NONE as u32);
     ci.ci_ipending.set(0);
@@ -2572,25 +2570,13 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     let Some(p) = (unsafe { spc.spc_idleproc.get().as_ref() }) else {
         panic(format_args!("cpu_init_secondary: no idle thread"));
     };
-    let pcb = p.pcb();
-
-    let tf =
-        stackalign(p.uarea() as usize + USPACE - size_of::<Trapframe>() - 0x10) as *mut Trapframe;
-    pcb.pcb_tf.set(tf);
-
-    let sf = (tf as *mut Switchframe).wrapping_sub(1);
+    // The frames are `hal::thread`'s (N4.5a): `sched_idle(ci)` by its number.
     let idle: fn(*mut c_void) = sched_idle;
-    // SAFETY: `sf` is right below the trap frame, inside the idle thread's u-area, which
-    // nothing runs on yet.
-    unsafe {
-        sf.write(Switchframe {
-            sf_x19: idle as usize as Register,
-            sf_x20: ptr::from_ref(ci) as usize as Register,
-            sf_lr: proc_trampoline as *const () as usize as Register,
-            ..Switchframe::default()
-        });
-    }
-    pcb.pcb_sp.set(sf as u64);
+    hal::thread::thread_restart(
+        hal::pin::pin_static(p.as_static()),
+        thread_start_word(idle),
+        ptr::from_ref(ci).expose_provenance(),
+    );
 
     let _s = splraise(IPL_HIGH);
     arm_intr_cpu_enable();

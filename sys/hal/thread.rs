@@ -20,13 +20,20 @@
 //! The part of a thread the machine reaches by offset: `struct proc`'s `p_stat`, `p_cpu`,
 //! `p_addr` and `p_md`, which both machines' context switch, syscall entry and exception
 //! return read and write from assembly (`genassym.cf`'s `P_STAT`, `P_CPU`, `P_ADDR`,
-//! `P_MD_ASTPENDING`, and amd64's `P_MD_REGS`, `P_MD_FLAGS`).
+//! `P_MD_ASTPENDING`, and amd64's `P_MD_REGS`, `P_MD_FLAGS`); and since N4.5a the
+//! machine-independent half of the context switch: the scheduler's lock and its hold, the
+//! chosen thread's token, `cpu_switchto`, `cpu_fork`'s and the trampoline's halves, and
+//! `curproc`.
 //!
-//! Not an OpenBSD file. The kernel's thread (`kernel::proc::Thread`) is `#[repr(C)]` with a
-//! [`MachineSlot`] as its first field, so a thread's address is its slot's: `ci_curproc`
-//! keeps holding the thread, as `CPUVAR(CURPROC)` and `CI_CURPROC` do, and the assembly's
-//! offsets are `offset_of!(MachineSlot, field)`, the same whether the code naming them is
-//! `bsd`'s today or `hal`'s at N4.5, which cannot name the kernel's type.
+//! Upstream: sys/arch/arm64/arm64/cpuswitch.S @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/arm64/cpuswitch.rs@3c62ede68802
+//!
+//! The kernel's thread (`kernel::proc::Thread`) is `#[repr(C)]` with a [`MachineSlot`] as
+//! its first field, so a thread's address is its slot's: `ci_curproc` keeps holding the
+//! thread, as `CPUVAR(CURPROC)` and `CI_CURPROC` do, and the assembly's offsets are
+//! `offset_of!(MachineSlot, field)`, the same whether the code naming them is `bsd`'s or
+//! `hal`'s, which cannot name the kernel's type. The machine halves of the switch are
+//! `arch/<machine>/switch.rs` (arm64's; the host refuses a switch until its double).
 //!
 //! ## Redesign
 //! - The four members are atomics: the switch writes `p_stat` (`SONPROC`) and `p_cpu` while
@@ -130,6 +137,10 @@ impl MachineSlot {
     }
 }
 
+/// `SONPROC`: the `p_stat` the switch stores in the new thread's slot (`<sys/proc.h>`; the
+/// kernel's `proc.rs` asserts it equals its own).
+pub const SONPROC: u8 = 7;
+
 /// What the context switch needs of a thread type: the slot the machine reaches, which the
 /// kernel's thread keeps first (`#[repr(C)]`, asserted there at compile time, so the thread's
 /// address is the slot's for the assembly that reads `ci_curproc` by offset).
@@ -162,8 +173,8 @@ impl SchedHold {
     /// with the lock the switch to it kept (`proc_trampoline_mi`'s `mtx_leave`). Restores no
     /// level. Panics unless this CPU holds the lock.
     #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the trampoline's, N4.5a step a2")
+        feature = "module-rt",
+        allow(dead_code, reason = "the switch is not the ABI module's")
     )]
     pub(crate) fn adopt() -> SchedHold {
         SchedHold(SCHED_LOCK.adopt())
@@ -224,7 +235,10 @@ pub struct Next {
     /// The thread, with its provenance.
     thread: NonNull<()>,
     /// Its slot.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the switch's, N4.5a step a2"))]
+    #[cfg_attr(
+        feature = "module-rt",
+        allow(dead_code, reason = "the switch is not the ABI module's")
+    )]
     slot: NonNull<MachineSlot>,
     /// The hold's generation (`DIAGNOSTIC`).
     #[cfg(feature = "diagnostic")]
@@ -252,7 +266,7 @@ impl Next {
     }
 
     /// The thread's slot address.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the switch's, N4.5a step a2"))]
+    #[cfg(test)]
     pub(crate) fn slot_addr(&self) -> usize {
         self.slot.addr().get()
     }
@@ -260,7 +274,10 @@ impl Next {
     /// Checks that `h` is the hold this token was made under (`DIAGNOSTIC`): a token kept
     /// across an unlock and a new lock is `panic(9)`.
     #[inline]
-    #[cfg_attr(not(test), expect(dead_code, reason = "the switch's, N4.5a step a2"))]
+    #[cfg_attr(
+        feature = "module-rt",
+        allow(dead_code, reason = "the switch is not the ABI module's")
+    )]
     pub(crate) fn check(&self, h: &SchedHold) {
         #[cfg(feature = "diagnostic")]
         if self.generation != h.generation() {
@@ -272,6 +289,153 @@ impl Next {
         }
         #[cfg(not(feature = "diagnostic"))]
         let _ = h;
+    }
+}
+
+/// The start a new thread's trampoline calls with the scheduler's hold it adopted and the
+/// two words its maker gave [`thread_setup`] (the C's `proc_trampoline_mi` and `func(arg)`):
+/// registered once (bridges.toml `ThreadStart` while `bsd`'s `fork1` makes the threads).
+static START: OnceStatic<fn(SchedHold, usize, usize)> = OnceStatic::new();
+
+/// Registers the start of new threads, once; a second registration keeps the first.
+pub fn register_start(
+    f: fn(SchedHold, usize, usize),
+) -> Result<(), crate::bridges::AlreadyRegistered> {
+    START
+        .set(f)
+        .map_err(|_| crate::bridges::AlreadyRegistered("ThreadStart"))
+}
+
+/// `cpu_switchto(old, next)` under the scheduler's hold `h`: the running thread `old` leaves
+/// this CPU (its FP state saved, its registers and stack in its pcb) and `next` runs. Returns
+/// on `old`'s stack when a switch back to it is made, on whichever CPU, with `h` still
+/// borrowed: the hold lies dormant in this suspended frame (E1) and its drop, after this
+/// returns, releases the lock that CPU holds then. `next` must have been made under `h` (the
+/// generation, under `DIAGNOSTIC`).
+#[cfg(not(feature = "module-rt"))]
+pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
+    check_type::<T>();
+    next.check(h);
+    let old = old.get_ref();
+    #[cfg(feature = "diagnostic")]
+    crate::assert::kassert!(
+        crate::cpu::curcpu().curproc() == core::ptr::from_ref(old).cast::<()>()
+    );
+    crate::arch::current::switch::switch(Some(old.machine()), next.slot, next.thread);
+}
+
+/// `sched_toidle`'s switch: the running context is not saved (the thread is dead, or none
+/// ran yet on this CPU) and `next` runs; the hold goes with it (the lock stays this CPU's,
+/// released by `next`'s own hold), so this never returns.
+#[cfg(not(feature = "module-rt"))]
+pub fn exit_to_idle(h: SchedHold, next: Next) -> ! {
+    next.check(&h);
+    // The lock passes to `next`, whose dormant hold (or adopted one) releases it.
+    core::mem::forget(h);
+    crate::arch::current::switch::switch(None, next.slot, next.thread);
+    hal_panic(format_args!("cpu_switchto returned"))
+}
+
+/// The running thread (`curproc`), pinned, for `f`; `panic(9)` when none runs (before the
+/// first thread, on a CPU that has not started one).
+pub fn with_current<T: ThreadLayout, R>(f: impl FnOnce(Pin<&T>) -> R) -> R {
+    try_with_current(|p| match p {
+        Some(p) => f(p),
+        None => hal_panic(format_args!("curproc: no thread runs on this CPU")),
+    })
+}
+
+/// The running thread (`curproc`), pinned, for `f`; `None` before the first thread.
+pub fn try_with_current<T: ThreadLayout, R>(f: impl FnOnce(Option<Pin<&T>>) -> R) -> R {
+    check_type::<T>();
+    let p = crate::cpu::curcpu().curproc().cast::<T>();
+    // SAFETY: `ci_curproc` is this CPU's word, written by this CPU alone: by the switch, with
+    // a `Next`'s thread, and by `set_current_static`, with a `Pin<&'static T>`, both of the
+    // kernel's one thread type (`check_type`, which `T` passed just above), or null. The
+    // thread it names is the one running here, and a running thread is not freed (E2): its
+    // pool refuses to free it while any CPU's `ci_curproc` names it, and the reaper frees a
+    // dead thread only after its last switch away replaced it there. So the pointer is null
+    // or names a live `T`. It was pinned when it was stored (a `Next` is made from `Pin<&T>`,
+    // the static one is pinned), and a pinned value stays pinned for its whole life. Threads
+    // are only ever shared (`&T`, their state atomics and cells under locks), so the shared
+    // reference aliases no `&mut`; it lives for `f` alone, while this thread runs.
+    let t = unsafe { p.as_ref().map(|t| Pin::new_unchecked(t)) };
+    f(t)
+}
+
+/// The running thread's address (`curproc` as a word, 0 when none runs): compared, never
+/// followed (a lock's owner, a map's `busy`).
+pub fn current_addr() -> usize {
+    crate::cpu::curcpu().curproc().addr()
+}
+
+/// `curproc = p` on this CPU for a thread that lives for ever (`main`'s `curproc = &proc0`),
+/// or none (`None`: a secondary CPU before its idle thread runs).
+pub fn set_current_static<T: ThreadLayout>(t: Option<Pin<&'static T>>) {
+    check_type::<T>();
+    let p = t.map_or(core::ptr::null(), |t| {
+        core::ptr::from_ref(t.get_ref()).cast::<()>()
+    });
+    crate::cpu::curcpu().set_curproc(p);
+}
+
+/// Whether `t` is the running thread of any attached CPU (the release check of the threads'
+/// pool, E2): an `ncpus` walk, for a thread being freed (the reaper's cold path).
+pub fn running_anywhere<T: ThreadLayout>(t: &T) -> bool {
+    let me = core::ptr::from_ref(t).cast::<()>();
+    crate::cpu::curcpu().curproc() == me || crate::cpu::cores().any(|c| c.curproc() == me)
+}
+
+/// `cpu_fork(parent, child, stack, tcb, func, arg)`: the child's pcb and frames, so that its
+/// first switch runs the trampoline with `start` and `arg` (the registered start's words);
+/// `stack` and `tcb`, when not 0, its user stack pointer and TCB. The parent's FP state is
+/// saved first when it is the running thread (the CPU holds it).
+#[cfg(not(feature = "module-rt"))]
+pub fn thread_setup<T: ThreadLayout>(
+    parent: Pin<&T>,
+    child: Pin<&T>,
+    stack: usize,
+    tcb: usize,
+    start: usize,
+    arg: usize,
+) {
+    check_type::<T>();
+    let runs = crate::cpu::curcpu().curproc() == core::ptr::from_ref(parent.get_ref()).cast();
+    crate::arch::current::switch::thread_setup(
+        parent.get_ref().machine(),
+        runs,
+        child.get_ref().machine(),
+        stack,
+        tcb,
+        start,
+        arg,
+    );
+}
+
+/// The frames of a thread that runs nowhere and starts afresh with `start` and `arg` (a
+/// secondary CPU's idle thread, `cpu_init_secondary`).
+#[cfg(not(feature = "module-rt"))]
+pub fn thread_restart<T: ThreadLayout>(t: Pin<&T>, start: usize, arg: usize) {
+    check_type::<T>();
+    crate::arch::current::switch::thread_restart(t.get_ref().machine(), start, arg);
+}
+
+/// The trampoline's machine-independent part (`proc_trampoline_mi`'s first step): the hold of
+/// the lock the switch to this new thread kept, adopted, and the registered start called
+/// with it and the two words.
+#[cfg(not(feature = "module-rt"))]
+#[cfg_attr(
+    not(target_os = "none"),
+    allow(
+        dead_code,
+        reason = "the machine's trampoline calls it; the host double from N4.5a a4"
+    )
+)]
+pub(crate) fn trampoline(start: usize, arg: usize) {
+    let hold = SchedHold::adopt();
+    match START.get() {
+        Some(f) => f(hold, start, arg),
+        None => hal_panic(format_args!("proc_trampoline: no start registered")),
     }
 }
 
@@ -403,6 +567,29 @@ mod tests {
         let next = Next::of(&sched_lock(), t.as_ref());
         let h = sched_lock();
         next.check(&h);
+    }
+
+    /// The running thread is read back pinned, as the type that set it; no thread, `None`.
+    #[test]
+    fn the_current_thread_is_read_back_pinned() {
+        let t: &'static TestThread = std::boxed::Box::leak(std::boxed::Box::new(TestThread {
+            machine: MachineSlot::new(),
+            n: 41,
+        }));
+        assert!(try_with_current::<TestThread, _>(|p| p.is_none()));
+        set_current_static(Some(crate::pin::pin_static(t)));
+        assert_eq!(current_addr(), core::ptr::from_ref(t).addr());
+        assert_eq!(with_current::<TestThread, _>(|p| p.n), 41);
+        assert!(running_anywhere(t));
+        set_current_static::<TestThread>(None);
+        assert_eq!(current_addr(), 0);
+        assert!(!running_anywhere(t));
+    }
+
+    #[test]
+    #[should_panic(expected = "no thread runs on this CPU")]
+    fn no_current_thread_is_a_panic_for_with_current() {
+        with_current::<TestThread, _>(|_| ());
     }
 }
 /* </TESTS> */
