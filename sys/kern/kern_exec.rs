@@ -71,6 +71,10 @@
 //! with the arguments `start_init` copied out to the user stack as for `sys_execve`.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::cred`): the set-id exec builds the new credentials as a value and places
+//!   a copy (`CredRef::new`), given to the thread (`set_cred`) and the process, where the C
+//!   `crdup`s the shared credentials and edits them in place; the ids that result are the
+//!   C's.
 //! - [`exec_image`] is this port's name for "`sys_execve` of a memory image": `check_exec`
 //!   skips `namei` and the attribute, mount, access and open checks (an image has no vnode,
 //!   no set[ug]id bits, no realpath), `ep_hdr` is the image's first `exec_maxhdrsz` bytes
@@ -95,7 +99,7 @@ use crate::kern::kern_descrip::{closef, falloc, fd_getfile, fdprepforexec, fdrel
 use crate::kern::kern_event::knote;
 use crate::kern::kern_exit::{exit1, pin_free};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_prot::{crcopy, crfree, crhold, proc_cansugid};
+use crate::kern::kern_prot::proc_cansugid;
 use crate::kern::kern_sig::{execsigs, psignal, single_thread_clear, single_thread_set};
 use crate::kern::kern_synch::wakeup;
 use crate::kern::kern_time::cancel_all_itimers;
@@ -139,6 +143,7 @@ use crate::sys::namei::{
 };
 use crate::sys::param::{MAXPATHLEN, NCARGS, PAGE_MASK};
 use crate::sys::pledge::PLEDGE_EXEC;
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{
     EXIT_NORMAL, PS_EXEC, PS_EXECPLEDGE, PS_INEXEC, PS_ISPWAIT, PS_PLEDGE, PS_PPWAIT, PS_SUGID,
     PS_SUGIDEXEC, PS_TRACED, PS_WAITEVENT, PSI_NOBTCFI, PSI_PROFILE, PSI_WXNEEDED, Proc, Process,
@@ -154,6 +159,7 @@ use crate::sys::systm::{SysArgs, kernel_lock, kernel_unlock, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timetc::{TK_VERSION, Timekeep};
 use crate::sys::types::{Register, Vaddr, Vsize};
+use crate::sys::ucred::CredRef;
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
 use crate::unported;
@@ -326,7 +332,7 @@ pub fn check_exec(
     };
     epp.ep_vp = Some(vp);
 
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
     // bad1: free the namei pathname buffer, and put the vnode (which we don't yet have
     // open).
     let bad1 = |ndp: &mut Nameidata<'_>, error: Errno| -> Result<(), Errno> {
@@ -520,7 +526,9 @@ fn execve_common(
     uenvp: usize,
     image: Option<&[u8]>,
 ) -> Result<(), Errno> {
-    let mut cred = p.ucred();
+    // The thread's credentials (its own copy): `cred` follows the changes below, as the C's
+    // `cred` follows `p->p_ucred`.
+    let cred = p.ucred();
     let pr = p.process();
 
     // Copy into kernel for realpath-like calculations
@@ -692,7 +700,7 @@ fn execve_common(
         <Machine as VmParam>::VM_MAXUSER_ADDRESS,
     );
 
-    let vm = pr.vmspace();
+    let vm = p.vmspace();
     // Now map address space
     vm.vm_taddr
         .store(trunc_page(pack.ep_taddr), Ordering::Relaxed);
@@ -717,7 +725,7 @@ fn execve_common(
     // exit noting failure.
     let exec_abort = |pack: &mut ExecPackage<'_>, nid: &mut Nameidata<'_>| -> ! {
         uvm_unmap(
-            &pr.vmspace().vm_map,
+            &p.vmspace().vm_map,
             <Machine as VmParam>::VM_MIN_ADDRESS,
             <Machine as VmParam>::VM_MAXUSER_ADDRESS,
         );
@@ -850,11 +858,14 @@ fn execve_common(
     pr.ps_flags.fetch_or(PS_EXEC, Ordering::Relaxed);
     if pr.ps_flags.load(Ordering::Relaxed) & PS_PPWAIT != 0 {
         pr.ps_flags.fetch_and(!PS_PPWAIT, Ordering::Relaxed);
-        // SAFETY: a process's parent is live while the child is.
-        if let Some(pptr) = unsafe { pr.ps_pptr.get().as_ref() } {
+        let pptr = {
+            let r = hal::klock::reader();
+            pr.pptr(&r).cloned()
+        };
+        if let Some(pptr) = pptr {
             pptr.ps_flags.fetch_and(!PS_ISPWAIT, Ordering::Relaxed);
             pptr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-            wakeup(ptr::from_ref(pptr));
+            wakeup(ptr::from_ref::<Process>(&pptr));
         }
     }
 
@@ -891,14 +902,16 @@ fn execve_common(
             .fetch_or(PS_SUGID | PS_SUGIDEXEC, Ordering::Relaxed);
 
         // KTRACE: not configured.
-        cred = crcopy(cred);
-        p.p_ucred.set(cred);
+        // cred = crcopy(cred); p->p_ucred = cred: a copy changed, placed and taken by the
+        // thread (see the module's deviations).
+        let mut newcred = cred.clone();
         if attr.va_mode & VSUID != 0 {
-            cred.cr_uid.set(attr.va_uid);
+            newcred.cr_uid.set(attr.va_uid);
         }
         if attr.va_mode & VSGID != 0 {
-            cred.cr_gid.set(attr.va_gid);
+            newcred.cr_gid.set(attr.va_gid);
         }
+        drop(p.set_cred(CredRef::new(newcred)));
 
         // For set[ug]id processes, a few caveats apply to stdin, stdout, and stderr.
         let mut error = Ok(());
@@ -946,17 +959,17 @@ fn execve_common(
     // been changed
     if cred.cr_uid.get() != cred.cr_svuid.get() || cred.cr_gid.get() != cred.cr_svgid.get() {
         // make sure we have unshared ucreds
-        cred = crcopy(cred);
-        p.p_ucred.set(cred);
-        cred.cr_svuid.set(cred.cr_uid.get());
-        cred.cr_svgid.set(cred.cr_gid.get());
+        let mut newcred = cred.clone();
+        let (uid, gid) = (newcred.cr_uid.get(), newcred.cr_gid.get());
+        newcred.cr_svuid.set(uid);
+        newcred.cr_svgid.set(gid);
+        drop(p.set_cred(CredRef::new(newcred)));
     }
 
-    if !ptr::eq(pr.ps_ucred.get(), cred) {
-        let ocred = pr.ucred();
-        crhold(cred);
-        pr.ps_ucred.set(cred);
-        crfree(ocred);
+    // pr->ps_ucred != cred: the process takes the thread's credentials (one more
+    // reference), its old ones dropped.
+    if p.cred_stale() {
+        drop(pr.set_ucred(p.cred_ref()));
     }
 
     if pr.ps_flags.load(Ordering::Relaxed) & PS_SUGIDEXEC != 0 {
@@ -964,7 +977,7 @@ fn execve_common(
     }
 
     // reset CPU time usage for the thread, but not the process
-    p.p_tu.tu_runtime.set(Timespec::new(0, 0));
+    p.p_tu.tu_runtime.set(Timespec::new(0, 0).into());
     for ticks in &p.p_tu.tu_ticks {
         ticks.set(0);
     }
@@ -1195,7 +1208,10 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
 
     pr.ps_sigcode.set(0); // no hint
     sigobject.reference();
-    let map = &pr.vmspace().vm_map;
+    let Some(vm) = pr.vmspace_share() else {
+        panic(format_args!("exec_sigcode_map: no address space"));
+    };
+    let map = &vm.vm_map;
     let mut addr = pr.ps_sigcode.get();
     if uvm_map(
         map,
@@ -1285,7 +1301,10 @@ pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
 
     pr.ps_timekeep.set(0); // no hint
     object.reference();
-    let map = &pr.vmspace().vm_map;
+    let Some(vm) = pr.vmspace_share() else {
+        panic(format_args!("exec_timekeep_map: no address space"));
+    };
+    let map = &vm.vm_map;
     let mut addr = pr.ps_timekeep.get();
     if uvm_map(
         map,
@@ -1403,7 +1422,7 @@ mod tests {
     #[test]
     fn exec_comm_is_the_last_component() {
         let nid_path = b"/sbin/init\0";
-        let p = std::boxed::Box::leak(std::boxed::Box::new(Proc::new()));
+        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
         let nid = ndinit(LOOKUP, NOFOLLOW, NiDirp::Sys(nid_path), p);
         // no lookup ran: the path's last component, as for a memory image
         assert_eq!(exec_comm(&nid, b"/sbin/init"), b"init");

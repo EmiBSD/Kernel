@@ -192,6 +192,7 @@ use crate::sys::errno::Errno;
 use crate::sys::exec::{EXEC_NOBTCFI, ExecPackage, PsStrings};
 use crate::sys::param::{NCARGS, roundup};
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::reboot::{
     RB_DUMP, RB_HALT, RB_KDB, RB_NOSYNC, RB_POWERDOWN, RB_RESET, RB_TIMEBAD, RB_USERREQ,
 };
@@ -1243,7 +1244,7 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
 
 /// `cpu_startup`: machine-dependent startup code (see the module's deviations).
 pub fn cpu_startup() {
-    PROC0.p_addr.set(proc0paddr());
+    PROC0.set_uarea(proc0paddr());
 
     // The message buffer mapping and initmsgbuf: the message buffer is static (M2).
 
@@ -1417,7 +1418,7 @@ pub fn need_resched(ci: &CpuInfo) {
 
 /// `aston(p)`: `p->p_md.md_astpending = 1`.
 pub fn aston(p: &Proc) {
-    p.p_md.md_astpending.store(1, Ordering::Relaxed);
+    p.machine.md.md_astpending.store(1, Ordering::Relaxed);
 }
 
 /// `setsoftast()`: `aston(curcpu()->ci_curproc)`.
@@ -1435,7 +1436,7 @@ pub fn setsoftast() {
 pub fn signotify(p: &Proc) {
     aston(p);
     // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
-    if let Some(ci) = unsafe { p.p_cpu.get().as_ref() } {
+    if let Some(ci) = unsafe { p.cpu_ptr().as_ref() } {
         cpu_unidle(ci);
     }
 }

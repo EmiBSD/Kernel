@@ -59,11 +59,12 @@
 //!
 //! ## Deviations
 //! - `tpr_t` (`struct session *`, NULL when the process has no controlling terminal) is the
-//!   type alias [`Tpr`], an `Option` of a session reference.
+//!   type alias [`Tpr`], an `Option` of a counted session reference (`SESSHOLD` is its
+//!   clone, `SESSRELE` its drop).
 
-use crate::sys::proc::Session;
+use crate::sys::proc::SessionRef;
 
 /// `tpr_t`: a `tprintf_open` handle, the session whose controlling terminal gets the message,
 /// or `None` (the C's NULL) when the process cannot be printed to.
-pub type Tpr = Option<&'static Session>;
+pub type Tpr = Option<SessionRef>;
 /* </CODE> */

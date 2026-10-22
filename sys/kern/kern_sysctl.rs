@@ -77,6 +77,10 @@
 //! `vm` tree is `uvm/uvm_meter.rs`.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): `sysctl_doproc` reads a process's threads one at a time, by
+//!   position, each under the process's `ps_mtx` (dropped for the copyout), where the C
+//!   walks `ps_threads` under the kernel lock alone; a thread that joins or leaves between
+//!   two reads shifts the positions, as one that exits during the C's copyout sleep would.
 //! - Names are slices (`&[i32]`), `oldp`/`newp` user addresses as `usize` (0 is NULL),
 //!   `oldlenp` a `&mut usize` (every caller has one: `sys_sysctl` passes its `oldlen`), and
 //!   errors `Result<(), Errno>`. A string is `&[u8]` up to its first NUL, a writable string
@@ -127,6 +131,7 @@
 //! - `hw.sensors.<dev>.<type>.<numt>` with a `type` outside `enum sensor_type` finds no
 //!   sensor (`ENOENT`, after the device lookup's own errors), as the C's comparison would.
 
+use core::ops::ControlFlow;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
@@ -145,9 +150,8 @@ use crate::kern::kern_fork::{FORKSTAT, NPROCESSES, NTHREADS};
 use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray, sysctl_malloc};
 use crate::kern::kern_pledge::pledge_sysctl;
-use crate::kern::kern_proc::{ALLPROCESS, ZOMBPROCESS, prfind};
 use crate::kern::kern_prot::suser;
-use crate::kern::kern_resource::{calctsru, tuagg_get_proc, tuagg_get_process};
+use crate::kern::kern_resource::{calctsru, tuagg_get_proc};
 use crate::kern::kern_rwlock::{
     rw_enter, rw_enter_read, rw_enter_write, rw_exit_read, rw_exit_write,
 };
@@ -156,11 +160,11 @@ use crate::kern::kern_sched::{
 };
 use crate::kern::kern_sensors::{sensor_find, sensordev_get};
 use crate::kern::kern_sig::NOSUIDCOREDUMP;
-use crate::kern::kern_synch::{refcnt_rele_wake, refcnt_take};
 use crate::kern::kern_tc::{microboottime, nanoboottime, nanotime, sysctl_tc, tc_setrealtimeclock};
 use crate::kern::kern_timeout::timeout_sysctl;
 use crate::kern::kern_watchdog::sysctl_wdog;
 use crate::kern::pipe_glue::pipe_kinfo;
+use crate::kern::proc_glue::{prfind_ref, proc_tables, process_ref};
 use crate::kern::sched_bsd;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
@@ -207,13 +211,14 @@ use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::msgbuf::{MSG_MAGIC, Msgbuf};
 use crate::sys::param::{MAXPATHLEN, MAXPHYS, NODEV, OpenBSD, PAGE_MASK, PAGE_SIZE};
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{
     PS_CONTROLT, PS_EMBRYO, PS_EXITING, PS_INEXEC, PS_NOBROADCASTKILL, PS_PLEDGE, PS_SYSTEM,
-    PS_ZOMBIE, Proc, ProcThrLink, Process, SDEAD, SIDL, SONPROC, SRUN, SSLEEP, SSTOP,
+    PS_ZOMBIE, Proc, Process, ProcessRef, PsGuard, SDEAD, SIDL, SONPROC, SRUN, SSLEEP, SSTOP,
     THREAD_PID_OFFSET, TU_ITICKS, TU_STICKS, TU_UTICKS, Tusage,
 };
-use crate::sys::queue::{SlistHead, TailqHead};
-use crate::sys::resource::RLIMIT_RSS;
+use crate::sys::queue::SlistHead;
+use crate::sys::resource::{RLIMIT_RSS, Rusage};
 use crate::sys::rwlock::{RW_INTR, RW_WRITE, Rwlock};
 use crate::sys::sched::{CPUSTATES, CPUSTATS_ONLINE, Cpustats};
 use crate::sys::sensors::{Sensor, SensorType, Sensordev};
@@ -226,7 +231,6 @@ use crate::sys::systm::{
     PHYSMEM, SysArgs, kernel_assert_locked, kernel_lock, kernel_unlock, net_lock_shared,
     net_unlock_shared, sysargs,
 };
-use crate::sys::time::timeradd;
 use crate::sys::types::{Dev, Off, Register};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::un::SockaddrUn;
@@ -239,6 +243,7 @@ use crate::{
     netinet::tcp_usrreq::TCB6TABLE, netinet::udp_usrreq::UDB6TABLE,
     netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE,
 };
+use hal::klock;
 use hal::vm::param::atop;
 use hal::vm::uvmexp::UVMEXP;
 use kernel::vm::glue::{uvm_vslock, uvm_vsunlock};
@@ -1240,7 +1245,7 @@ fn sysctl_securelevel(
         let newval = i32::from_ne_bytes(b);
         let mut oldval = SECURELEVEL.load(Ordering::Relaxed);
         loop {
-            if (oldval > 0 || newval < -1) && newval < oldval && p.process().ps_pid.get() != 1 {
+            if (oldval > 0 || newval < -1) && newval < oldval && p.process().ps_pid != 1 {
                 return Err(Errno::EPERM);
             }
             match SECURELEVEL.compare_exchange(oldval, newval, Ordering::Relaxed, Ordering::Relaxed)
@@ -1650,11 +1655,11 @@ pub fn fill_file(
     // per-process information for KERN_FILE_BY[PU]ID
     if let Some(pr) = pr {
         let cred = pr.ucred();
-        kf.p_pid = pr.ps_pid.get() as u32;
+        kf.p_pid = pr.ps_pid as u32;
         kf.p_uid = cred.cr_uid.get();
         kf.p_gid = cred.cr_gid.get();
         kf.p_tid = -1i32 as u32;
-        strlcpy(&mut kf.p_comm, pr.comm());
+        strlcpy(&mut kf.p_comm, &pr.comm());
     }
     if let Some(fdp) = fdp {
         fdplock(fdp);
@@ -1683,7 +1688,7 @@ fn fill_file_vnode(kf: &mut KinfoFile, vp: &'static Vnode, p: &Proc, show_pointe
     }
 
     let mut va = Vattr::new();
-    if VOP_GETATTR(vp, &mut va, p.p_ucred.get(), p).is_ok() {
+    if VOP_GETATTR(vp, &mut va, p.ucred_ptr(), p).is_ok() {
         kf.va_fileid = va.va_fileid;
         kf.va_mode = makeimode(va.va_type, va.va_mode);
         kf.va_size = va.va_size;
@@ -1944,6 +1949,49 @@ fn file_skips(pr: &Process) -> bool {
     pr.ps_flags.load(Ordering::Relaxed) & (PS_SYSTEM | PS_EMBRYO | PS_EXITING) != 0
 }
 
+/// `LIST_FOREACH(pr, &allprocess, ps_list)` with `refcnt_take(&pr->ps_refcnt)` around the
+/// work on a process, for a holder of the kernel lock: `pick` chooses under the lock's
+/// reader (it must not sleep), and takes the process's refcnt there, as the C does after
+/// its skip test; `work` runs without the reader (it may sleep) while the refcnt keeps the
+/// process from `exit1`'s unlink, so the walk goes on from it. `Break` ends the walk.
+fn allprocess_foreach(
+    mut pick: impl FnMut(&Process) -> bool,
+    mut work: impl FnMut(&Process) -> ControlFlow<Result<(), Errno>>,
+) -> Result<(), Errno> {
+    let mut resume: Option<ProcessRef> = None;
+    loop {
+        let next = {
+            let r = klock::reader();
+            let t = proc_tables();
+            let mut cur = match &resume {
+                None => t.allprocess.first(&r),
+                Some(pr) => t.allprocess.next(&r, pr),
+            };
+            loop {
+                match cur {
+                    None => break None,
+                    Some(pr) if pick(pr) => {
+                        pr.ps_refcnt.take();
+                        break Some(process_ref(pr));
+                    }
+                    Some(pr) => cur = t.allprocess.next(&r, pr),
+                }
+            }
+        };
+        if let Some(done) = resume.take() {
+            done.ps_refcnt.rele_wake();
+        }
+        let Some(pr) = next else {
+            return Ok(());
+        };
+        if let ControlFlow::Break(r) = work(&pr) {
+            pr.ps_refcnt.rele_wake();
+            return r;
+        }
+        resume = Some(pr);
+    }
+}
+
 /// `sysctl_file`: get file structures (`kern.file`; `name` is op, arg, element size,
 /// element count).
 pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> Result<(), Errno> {
@@ -2025,31 +2073,21 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
             }
             let mut matched = false;
             kernel_lock();
-            let r = 'scan: {
-                for pr in ALLPROCESS.0.iter() {
-                    if file_skips(pr) {
-                        continue;
-                    }
-                    if arg >= 0 && pr.ps_pid.get() != arg {
-                        // not the pid we are looking for
-                        continue;
-                    }
-
-                    refcnt_take(&pr.ps_refcnt);
+            let r = allprocess_foreach(
+                // not the pid we are looking for: skipped
+                |pr| !file_skips(pr) && (arg < 0 || pr.ps_pid == arg),
+                |pr| {
                     matched = true;
-                    let r = w.fill_process(pr, true);
-                    refcnt_rele_wake(&pr.ps_refcnt);
-                    if r.is_err() {
-                        break 'scan r;
+                    if let Err(e) = w.fill_process(pr, true) {
+                        return ControlFlow::Break(Err(e));
                     }
-
                     // pid is unique, stop searching
                     if arg >= 0 {
-                        break;
+                        return ControlFlow::Break(Ok(()));
                     }
-                }
-                Ok(())
-            };
+                    ControlFlow::Continue(())
+                },
+            );
             kernel_unlock();
             r?;
             if !matched {
@@ -2058,25 +2096,14 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
         }
         KERN_FILE_BYUID => {
             kernel_lock();
-            let r = 'scan: {
-                for pr in ALLPROCESS.0.iter() {
-                    if file_skips(pr) {
-                        continue;
-                    }
-                    if arg >= 0 && pr.ucred().cr_uid.get() != arg as u32 {
-                        // not the uid we are looking for
-                        continue;
-                    }
-
-                    refcnt_take(&pr.ps_refcnt);
-                    let r = w.fill_process(pr, false);
-                    refcnt_rele_wake(&pr.ps_refcnt);
-                    if r.is_err() {
-                        break 'scan r;
-                    }
-                }
-                Ok(())
-            };
+            let r = allprocess_foreach(
+                // not the uid we are looking for: skipped
+                |pr| !file_skips(pr) && (arg < 0 || pr.ucred().cr_uid.get() == arg as u32),
+                |pr| match w.fill_process(pr, false) {
+                    Err(e) => ControlFlow::Break(Err(e)),
+                    Ok(()) => ControlFlow::Continue(()),
+                },
+            );
             kernel_unlock();
             r?;
         }
@@ -2117,10 +2144,15 @@ pub fn sysctl_doproc(name: &[i32], where_: usize, sizep: &mut usize) -> Result<(
 
     let mut kproc = KinfoProc::zeroed();
 
-    for list in [&ALLPROCESS, &ZOMBPROCESS] {
-        for pr in list.0.iter() {
+    // The lists under the kernel lock's reader (`sysctl_vslock` took the lock and wired the
+    // user buffer, so the copyouts do not sleep); a process's threads under its `ps_mtx`, one
+    // at a time, its entry filled under the mutex and copied out after it.
+    let r = klock::reader();
+    let t = proc_tables();
+    for list in [&t.allprocess, &t.zombprocess] {
+        for pr in list.iter(&r) {
             // XXX skip processes in the middle of being created or zapped
-            if pr.ps_pgrp.get().is_null() {
+            if pr.pgrp(&r).is_none() {
                 continue;
             }
 
@@ -2130,12 +2162,15 @@ pub fn sysctl_doproc(name: &[i32], where_: usize, sizep: &mut usize) -> Result<(
                 continue;
             }
 
-            if !doproc_matches(pr, op, arg)? {
+            if !doproc_matches(&r, pr, op, arg)? {
                 continue;
             }
 
             if buflen >= elem_size && elem_count > 0 {
-                fill_kproc(pr, &mut kproc, None, show_pointers);
+                {
+                    let g = pr.ps_mtx.lock();
+                    fill_kproc(&r, pr, &mut kproc, None, show_pointers, &g);
+                }
                 copyout(&kproc.as_bytes()[..elem_size], dp)?;
                 dp += elem_size;
                 buflen -= elem_size;
@@ -2148,17 +2183,31 @@ pub fn sysctl_doproc(name: &[i32], where_: usize, sizep: &mut usize) -> Result<(
                 continue;
             }
 
-            let mut q = pr.ps_threads.first();
-            while let Some(p) = q {
+            let mut i = 0;
+            loop {
+                let more = {
+                    let g = pr.ps_mtx.lock();
+                    match pr.ps_threads.iter(&g).nth(i) {
+                        None => false,
+                        Some(p) => {
+                            if buflen >= elem_size && elem_count > 0 {
+                                fill_kproc(&r, pr, &mut kproc, Some(p), show_pointers, &g);
+                            }
+                            true
+                        }
+                    }
+                };
+                if !more {
+                    break;
+                }
                 if buflen >= elem_size && elem_count > 0 {
-                    fill_kproc(pr, &mut kproc, Some(p), show_pointers);
                     copyout(&kproc.as_bytes()[..elem_size], dp)?;
                     dp += elem_size;
                     buflen -= elem_size;
                     elem_count -= 1;
                 }
                 needed += elem_size;
-                q = TailqHead::<ProcThrLink>::next(p);
+                i += 1;
             }
         }
     }
@@ -2177,29 +2226,21 @@ pub fn sysctl_doproc(name: &[i32], where_: usize, sizep: &mut usize) -> Result<(
 
 /// The `switch (op)` of `sysctl_doproc`: whether `pr` is selected; `EINVAL` for an unknown
 /// op.
-fn doproc_matches(pr: &Process, op: i32, arg: i32) -> Result<bool, Errno> {
-    // SAFETY: a process in a list has its pgrp and session until process_zap, and the
-    // caller skipped the ones without a pgrp.
-    let sess = unsafe { pr.session().as_ref() };
+fn doproc_matches(r: &klock::KernelReader, pr: &Process, op: i32, arg: i32) -> Result<bool, Errno> {
+    // A process in a list has its pgrp and session until process_zap, and the caller
+    // skipped the ones without a pgrp.
+    let sess = pr.session(r);
     Ok(match op {
         // could do this with just a lookup
-        KERN_PROC_PID => pr.ps_pid.get() == arg,
+        KERN_PROC_PID => pr.ps_pid == arg,
         // could do this by traversing pgrp
-        KERN_PROC_PGRP => pr.pgid() == arg,
-        KERN_PROC_SESSION => {
-            // SAFETY: a session leader stays allocated while the session exists.
-            let leader = sess.and_then(|s| unsafe { s.s_leader.get().as_ref() });
-            leader.is_some_and(|l| l.ps_pid.get() == arg)
-        }
+        KERN_PROC_PGRP => pr.pgid(r) == arg,
+        KERN_PROC_SESSION => sess.and_then(|s| s.leader_pid()) == Some(arg),
         KERN_PROC_TTY => {
-            if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0
-                || sess.is_none_or(|s| s.s_ttyp.get().is_null())
-            {
+            if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0 {
                 false
             } else {
-                // SAFETY: a controlling tty belongs to its driver's softc, which keeps it
-                // until the device detaches (`ttyfree`); the C reads it the same way.
-                sess.and_then(|s| unsafe { s.s_ttyp.get().as_ref() })
+                sess.and_then(|s| s.s_ttyp.get())
                     .is_some_and(|tp| tp.t_dev.get() == arg as Dev)
             }
         }
@@ -2214,7 +2255,7 @@ fn doproc_matches(pr: &Process, op: i32, arg: i32) -> Result<bool, Errno> {
 
 /// `_getcompatprio` (`<sys/sysctl.h>`): the priority `ps(1)` shows.
 fn getcompatprio(p: &Proc) -> u8 {
-    match p.p_stat.get() {
+    match p.stat() {
         SRUN => p.p_runpri.get(),
         SSLEEP => p.p_slppri.get(),
         _ => p.p_usrpri.get(),
@@ -2231,19 +2272,28 @@ const fn w_exitcode(ret: u32, sig: i32) -> u32 {
     (ret << 8) | sig as u32
 }
 
-/// `fill_kproc`: fills in a `kinfo_proc` for process `pr`, or for its thread `p`.
-pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_pointers: bool) {
+/// `fill_kproc`: fills in a `kinfo_proc` for process `pr`, or for its thread `p`, under the
+/// kernel lock's reader (`r`) and the process's `ps_mtx` (`g`, the C's `PR_LOCK` taken for
+/// the whole fill: the thread list is the mutex's).
+pub fn fill_kproc(
+    r: &klock::KernelReader,
+    pr: &Process,
+    ki: &mut KinfoProc,
+    p: Option<&Proc>,
+    show_pointers: bool,
+    g: &PsGuard<'_>,
+) {
     let flags = pr.ps_flags.load(Ordering::Relaxed);
-    // SAFETY: the callers skip processes without a pgrp; pgrp and session stay allocated
-    // while the process is in them.
-    let (pg, s) = unsafe { (&*pr.ps_pgrp.get(), &*pr.session()) };
+    // The callers skip processes without a pgrp; a group has a session.
+    let pg = pr.pgrp(r);
+    let s = pg.and_then(|pg| pg.session(r));
 
     // exiting/zombie process might no longer have VM space.
     let mut vm: Option<VmspaceRef> = None;
     if flags & PS_EXITING == 0 {
         // vm = pr->ps_vmspace; uvmspace_addref(vm): a process that is not exiting holds
         // its vmspace, and the reference keeps it while it is read.
-        vm = pr.vmspace_share();
+        vm = g.vmspace.clone();
     }
 
     let tu = Tusage::new();
@@ -2258,11 +2308,18 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
             let Some(mainp) = (unsafe { pr.ps_mainproc.get().as_ref() }) else {
                 panic(format_args!("fill_kproc: process without a main thread"));
             };
-            tuagg_get_process(&tu, pr);
+            // tuagg_get_process(&tu, pr), under the caller's ps_mtx.
+            tu.clear();
+            crate::kern::kern_resource::tuagg_sumup(&tu, &pr.ps_tu);
+            for t in pr.ps_threads.iter(g) {
+                crate::kern::kern_resource::tuagg_sumup(&tu, &t.p_tu);
+            }
             mainp
         }
     };
-    let uc = pr.ucred();
+    let Some(uc) = g.cred.clone() else {
+        panic(format_args!("fill_kproc: process without credentials"));
+    };
 
     // FILL_KPROC(ki, strlcpy, p, pr, pr->ps_ucred, pr->ps_pgrp, p, pr, s, vm,
     //     pr->ps_limit, pr->ps_sigacts, &tu, isthread, show_pointers)
@@ -2271,19 +2328,26 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     if show_pointers {
         ki.p_paddr = ptrtoint64(p);
         ki.p_fd = ptrtoint64(pr.ps_fd.get());
-        ki.p_limit = ptrtoint64(pr.ps_limit.get());
-        ki.p_vmspace = ptrtoint64(pr.vmspace_ptr());
-        ki.p_sigacts = ptrtoint64(pr.ps_sigacts.get());
-        ki.p_sess = ptrtoint64(pg.pg_session.get());
-        ki.p_ru = ptrtoint64(pr.ps_ru.get());
+        ki.p_limit = pr.limit_word() as u64;
+        ki.p_vmspace = pr.vmspace_word() as u64;
+        ki.p_sigacts = pr
+            .ps_sigacts
+            .get()
+            .map_or(0, |sa| ptrtoint64(ptr::from_ref(sa)));
+        ki.p_sess = s.map_or(0, |s| ptrtoint64(ptr::from_ref(s)));
+        ki.p_ru = pr
+            .ps_ru
+            .get(r)
+            .as_ref()
+            .map_or(0, |ru| ptrtoint64(ptr::from_ref::<Rusage>(ru)));
     }
     ki.p_stats = 0;
     ki.p_exitsig = 0;
     ki.p_flag = p.p_flag.load(Ordering::Relaxed);
-    ki.p_pid = pr.ps_pid.get();
+    ki.p_pid = pr.ps_pid;
     ki.p_psflags = flags;
 
-    ki.p__pgid = pg.pg_id.get();
+    ki.p__pgid = pg.map_or(0, |pg| pg.pg_id.get());
 
     ki.p_uid = uc.cr_uid.get();
     ki.p_ruid = uc.cr_ruid.get();
@@ -2297,12 +2361,12 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     }
     ki.p_ngroups = uc.cr_ngroups.get();
 
-    ki.p_jobc = pg.pg_jobc.get() as i16;
+    ki.p_jobc = pg.map_or(0, |pg| pg.pg_jobc.get()) as i16;
 
     ki.p_estcpu = p.p_estcpu.get();
     if isthread {
         ki.p_tid = p.p_tid.get() + THREAD_PID_OFFSET;
-        strlcpy(&mut ki.p_name, p.name());
+        strlcpy(&mut ki.p_name, &p.name());
     } else {
         ki.p_tid = -1;
     }
@@ -2320,21 +2384,20 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
         (p.p_siglist.load(Ordering::Relaxed) | pr.ps_siglist.load(Ordering::Relaxed)) as i32;
     ki.p_sigmask = p.p_sigmask.get();
 
-    mtx_enter(&pr.ps_mtx); // PR_LOCK(pr)
+    // PR_LOCK(pr): the caller's.
     ki.p_ppid = pr.ps_ppid.get();
-    // SAFETY: a live process's sigacts stays allocated until process_zap; ps_mtx is held.
-    if let Some(sa) = unsafe { pr.ps_sigacts.get().as_ref() } {
+    if let Some(sa) = pr.ps_sigacts.get() {
         ki.p_sigignore = sa.ps_sigignore.get();
         ki.p_sigcatch = sa.ps_sigcatch.get();
     }
 
-    // SAFETY: a process holds a reference to its limits; ps_mtx keeps them from changing.
-    if let Some(lim) = unsafe { pr.ps_limit.get().as_ref() } {
-        ki.p_rlim_rss_cur = lim.pl_rlimit[RLIMIT_RSS].get().rlim_cur;
+    // A process holds a reference to its limits; ps_mtx keeps them from changing.
+    if let Some(lim) = g.limit.as_ref() {
+        ki.p_rlim_rss_cur = lim.pl_rlimit[RLIMIT_RSS].rlim_cur;
     }
-    mtx_leave(&pr.ps_mtx); // PR_UNLOCK(pr)
+    // PR_UNLOCK(pr): the caller's.
 
-    ki.p_stat = p.p_stat.get() as i8;
+    ki.p_stat = p.stat() as i8;
     ki.p_nice = pr.ps_nice.get();
 
     ki.p_xstat = w_exitcode(pr.ps_xexit.get(), pr.ps_xsig.get()) as u16;
@@ -2342,12 +2405,13 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     ki.p_pledge = pr.ps_pledge.load(Ordering::Relaxed);
 
     strlcpy(&mut ki.p_emul, b"native");
-    strlcpy(&mut ki.p_comm, pr.comm());
-    // SAFETY: s_login is written by setlogin(2) under the kernel lock; read for copying.
-    strlcpy(&mut ki.p_login, unsafe { &*s.s_login.get() });
+    strlcpy(&mut ki.p_comm, &pr.comm());
+    if let Some(s) = s {
+        strlcpy(&mut ki.p_login, s.s_login.get(r));
 
-    if !s.s_ttyvp.get().is_null() {
-        ki.p_eflag |= EPROC_CTTY;
+        if s.s_ttyvp.get().is_some() {
+            ki.p_eflag |= EPROC_CTTY;
+        }
     }
     if !pr.ps_uvpaths.get().is_null() {
         ki.p_eflag |= EPROC_UNVEIL;
@@ -2365,19 +2429,19 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
             ki.p_vm_dsize = vm.vm_dused.load(Ordering::Relaxed);
             ki.p_vm_ssize = vm.vm_ssize.load(Ordering::Relaxed);
         }
-        ki.p_stat = p.p_stat.get() as i8;
+        ki.p_stat = p.stat() as i8;
         ki.p_slptime = p.p_slptime.get();
         ki.p_holdcnt = 1;
         ki.p_priority = getcompatprio(p);
         ki.p_usrpri = p.p_usrpri.get();
-        if !p.p_wchan.get().is_null()
+        if !p.wchan().is_null()
             && let Some(wmesg) = p.p_wmesg.get()
         {
             strlcpy(&mut ki.p_wmesg, wmesg.as_bytes());
         }
         if show_pointers {
-            ki.p_wchan = ptrtoint64(p.p_wchan.get());
-            ki.p_addr = ptrtoint64(p.p_addr.get());
+            ki.p_wchan = ptrtoint64(p.wchan());
+            ki.p_addr = ptrtoint64(p.uarea());
         }
     }
 
@@ -2400,7 +2464,7 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
         ki.p_uru_nvcsw = ru.ru_nvcsw.get() as u64;
         ki.p_uru_nivcsw = ru.ru_nivcsw.get() as u64;
 
-        let tv = timeradd(&pr.ps_cru.ru_utime.get(), &pr.ps_cru.ru_stime.get());
+        let tv = pr.ps_cru.ru_utime.get().add(pr.ps_cru.ru_stime.get());
         ki.p_uctime_sec = tv.tv_sec as u32;
         ki.p_uctime_usec = tv.tv_usec as u32;
     }
@@ -2410,13 +2474,11 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     // end of FILL_KPROC
 
     // stuff that's too painful to generalize into the macros
-    // SAFETY: a session leader stays allocated while the session exists.
-    if let Some(leader) = unsafe { s.s_leader.get().as_ref() } {
-        ki.p_sid = leader.ps_pid.get();
+    if let Some(leader) = s.and_then(|s| s.leader_pid()) {
+        ki.p_sid = leader;
     }
 
-    // SAFETY: as in `KERN_PROC_TTY`: the driver keeps the tty until it detaches.
-    if let Some(tp) = unsafe { s.s_ttyp.get().as_ref() }
+    if let Some(tp) = s.and_then(|s| s.s_ttyp.get())
         && flags & PS_CONTROLT != 0
     {
         ki.p_tdev = tp.t_dev.get() as u32;
@@ -2442,7 +2504,7 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
 
         // Convert starting uptime to a starting UTC time.
         let booted = nanoboottime();
-        let utc = crate::sys::time::timespecadd(&booted, &pr.ps_start.get());
+        let utc = crate::sys::time::timespecadd(&booted, &pr.ps_start.get().into());
         ki.p_ustart_sec = utc.tv_sec as u64;
         ki.p_ustart_usec = (utc.tv_nsec / 1000) as u32;
 
@@ -2459,15 +2521,14 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
     // get %cpu and schedule state: just one thread or sum of all?
     if isthread {
         ki.p_pctcpu = p.p_pctcpu.load(Ordering::Relaxed);
-        ki.p_stat = p.p_stat.get() as i8;
+        ki.p_stat = p.stat() as i8;
     } else {
         ki.p_pctcpu = 0;
         let mut stat = if flags & PS_EXITING != 0 { SDEAD } else { SIDL };
-        let mut q = pr.ps_threads.first();
-        while let Some(t) = q {
+        for t in pr.ps_threads.iter(g) {
             ki.p_pctcpu += t.p_pctcpu.load(Ordering::Relaxed);
             // find best state: ONPROC > RUN > STOP > SLEEP > ..
-            let ts = t.p_stat.get();
+            let ts = t.stat();
             if ts == SONPROC || stat == SONPROC {
                 stat = SONPROC;
             } else if ts == SRUN || stat == SRUN {
@@ -2477,7 +2538,6 @@ pub fn fill_kproc(pr: &Process, ki: &mut KinfoProc, p: Option<&Proc>, show_point
             } else if ts == SSLEEP {
                 stat = SSLEEP;
             }
-            q = TailqHead::<ProcThrLink>::next(t);
         }
         ki.p_stat = stat as i8;
     }
@@ -2503,7 +2563,7 @@ pub fn sysctl_proc_args(
         _ => return Err(Errno::EOPNOTSUPP),
     }
 
-    let Some(vpr) = prfind(pid) else {
+    let Some(vpr) = prfind_ref(pid) else {
         return Err(Errno::ESRCH);
     };
 
@@ -2696,7 +2756,7 @@ pub fn sysctl_proc_cwd(
         return Err(Errno::EINVAL);
     };
 
-    let Some(findpr) = prfind(pid) else {
+    let Some(findpr) = prfind_ref(pid) else {
         return Err(Errno::ESRCH);
     };
 
@@ -2779,7 +2839,7 @@ pub fn sysctl_proc_nobroadcastkill(
         return Err(Errno::EINVAL);
     };
 
-    let Some(findpr) = prfind(pid) else {
+    let Some(findpr) = prfind_ref(pid) else {
         return Err(Errno::ESRCH);
     };
 
@@ -2835,10 +2895,10 @@ pub fn sysctl_proc_vmmap(
         return Ok(());
     }
 
-    if pid == cp.process().ps_pid.get() {
+    if pid == cp.process().ps_pid {
         // Self process mapping.
     } else if pid > 0 {
-        let Some(findpr) = prfind(pid) else {
+        let Some(findpr) = prfind_ref(pid) else {
             return Err(Errno::ESRCH);
         };
 
@@ -3233,11 +3293,10 @@ mod tests {
     use std::sync::MutexGuard;
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::proc_glue::{procinit, test_process, test_setsid, test_thread};
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::sys::proc::{Pgrp, Session};
     use crate::sys::time::{Clockinfo, Timeval};
+    use crate::sys::ucred::CredRef;
     use crate::sys::ucred::Ucred;
 
     /// A user address for a buffer of the test.
@@ -3502,22 +3561,18 @@ mod tests {
     /// A thread of a fresh process with credentials `uid`, in its own session and process
     /// group, as `fork1` would leave it.
     fn thread(uid: u32) -> &'static Proc {
-        let cr: &'static Ucred = crget();
-        cr.cr_uid.set(uid);
-        cr.cr_ruid.set(uid);
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        let pg: &'static Pgrp = Box::leak(Box::new(Pgrp::new()));
-        let sess: &'static Session = Box::leak(Box::new(Session::new()));
-        pg.pg_session.set(sess);
-        pg.pg_id.set(42);
-        sess.s_leader.set(pr);
-        p.p_p.set(pr);
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let mut v = Ucred::new();
+        v.cr_uid.set(uid);
+        v.cr_ruid.set(uid);
+        let cr = CredRef::new(v);
+        let pr = test_process(42);
+        let p = test_thread(pr);
+        drop(p.set_cred(cr.clone()));
+        drop(pr.set_ucred(cr));
         pr.ps_mainproc.set(p);
-        pr.ps_pgrp.set(pg);
-        pr.ps_pid.set(42);
+        // The group (pgid 42) and the session it leads: the test's references are leaked
+        // with the process.
+        core::mem::forget(test_setsid(pr));
         pr.set_comm(b"test");
         p
     }
@@ -3624,6 +3679,8 @@ mod tests {
     fn doproc_sizes_the_answer_and_checks_its_arguments() {
         let _g = setup();
         let size = size_of::<KinfoProc>() as i32;
+        // The process lists are walked under the kernel lock (sysctl_vslock's).
+        kernel_lock();
 
         let mut len = 0;
         assert_eq!(
@@ -3640,6 +3697,7 @@ mod tests {
             sysctl_doproc(&[KERN_PROC_PID, 999_999, size, 10], 0, &mut len),
             Ok(())
         );
+        kernel_unlock();
         assert_eq!(len, KERN_PROCSLOP * size as usize);
     }
 
@@ -3650,7 +3708,14 @@ mod tests {
         let pr = p.process();
 
         let mut ki = KinfoProc::zeroed();
-        fill_kproc(pr, &mut ki, None, false);
+        {
+            kernel_lock();
+            let r = hal::klock::reader();
+            let g = pr.ps_mtx.lock();
+            fill_kproc(&r, pr, &mut ki, None, false, &g);
+            drop((g, r));
+            kernel_unlock();
+        }
         assert_eq!((ki.p_pid, ki.p__pgid, ki.p_sid, ki.p_tid), (42, 42, 42, -1));
         assert_eq!((ki.p_uid, ki.p_ruid), (1000, 1000));
         assert_eq!(&ki.p_comm[..5], b"test\0");
@@ -3662,7 +3727,14 @@ mod tests {
         // As a thread: its tid and name.
         p.p_tid.set(7);
         p.set_name(b"worker");
-        fill_kproc(pr, &mut ki, Some(p), true);
+        {
+            kernel_lock();
+            let r = hal::klock::reader();
+            let g = pr.ps_mtx.lock();
+            fill_kproc(&r, pr, &mut ki, Some(p), true, &g);
+            drop((g, r));
+            kernel_unlock();
+        }
         assert_eq!(ki.p_tid, 7 + THREAD_PID_OFFSET);
         assert_eq!(&ki.p_name[..7], b"worker\0");
         assert_eq!(ki.p_paddr, p as *const Proc as u64);
@@ -3705,11 +3777,11 @@ mod tests {
         let p = thread(1000);
         let pr = p.process();
 
-        let cr: &'static Ucred = crget();
-        cr.cr_uid.set(1000);
-        cr.cr_gid.set(20);
+        let mut v = Ucred::new();
+        v.cr_uid.set(1000);
+        v.cr_gid.set(20);
         let fp: &'static File = Box::leak(Box::new(File::new()));
-        fp.f_cred.set(cr);
+        fp.f_cred.set(CredRef::new(v));
         fp.f_type.set(crate::sys::file::DTYPE_DMABUF);
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::Relaxed);
         fp.f_count.store(2, Ordering::Relaxed);

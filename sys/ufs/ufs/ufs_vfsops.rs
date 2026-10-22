@@ -111,7 +111,7 @@ pub fn ufs_check_export(
     };
 
     *exflagsp = np.netc_exflags.get();
-    *credanonp = ptr::from_ref(&np.netc_anon);
+    *credanonp = ptr::from_ref(&*np.netc_anon);
     Ok(())
 }
 

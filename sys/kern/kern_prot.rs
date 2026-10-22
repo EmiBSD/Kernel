@@ -54,48 +54,67 @@
 
 /* <CODE> */
 //! System calls related to processes and protection: the process, group and session ids,
-//! the user and group ids, the credentials (`ucred_pool`, `crget`/`crhold`/`crfree`),
+//! the user and group ids, the credentials (`crget`/`crhold`/`crfree`, the kernel crate's),
 //! `suser`, the login name, the thread control block and the thread names.
 //!
 //! Upstream: sys/kern/kern_prot.c @ 3ce1f3f79392
+//! LZ: sys/kern/kern_prot.rs@3c62ede68802
 //!
-//! Status: `ported`. Every function of the C file is here.
+//! Status: `ported`. Every function of the C file is here or, for the credentials
+//! themselves, in `kernel::cred` (`crget`, `crhold`, `crfree`, `crset`, `crcopy`, `crdup`,
+//! `crfromxucred`, `groupmember`, `suser_ucred`), re-exported.
 //!
 //! ## Deviations
-//! - Credentials are pool items handed around as `&'static Ucred`, as `uvmspace_alloc`/
-//!   `uvmspace_free` hand out `&'static Vmspace`: `crget` and `crhold` return the reference
-//!   the caller now owns, `crfree` gives one back (and the memory, with the last one). The
-//!   process and thread fields are `Cell<*const Ucred>` with `ucred()` accessors.
-//! - `crset` copies the members after `cr_refcnt` by name instead of `memcpy` from
-//!   `offsetof(cr_startcopy)`; `crcopy`/`crdup` do `*newcr = *cr` the same way (then
-//!   `refcnt_init`, as the C).
+//! - Credentials are the kernel crate's `CredRef`s (N4.2): `crhold` is a clone, `crfree` a
+//!   drop, and a shared credential is never written. So the set*id calls build the new
+//!   credentials as a value from the process's (`crset` into a fresh copy), place it
+//!   (`crget`'s `pool_get`, which may sleep) and install it with `Process::set_ucred`; when
+//!   the process's credentials changed during that sleep (another thread's set*id or exec),
+//!   the value is built again from the new ones, which is what the C's `crset` after `crget`
+//!   copies. The permission checks run before, against the thread's credentials and the
+//!   process's, as the C's.
+//! - A thread's `p_ucred` is its own copy (`kernel::proc::Thread::ucred`); `dorefreshcreds`
+//!   copies the process's under `ps_mtx` where the C swaps a pointer.
 //! - `suser`, `suser_ucred` and `crfromxucred` return `Result<(), Errno>`; `groupmember` and
 //!   `proc_cansugid` return `bool`. `(uid_t)-1`/`(gid_t)-1` ("leave unchanged") are
 //!   `Uid::MAX`/`Gid::MAX`.
+//! - `getsid(2)` reads the leader's pid the session keeps with its address
+//!   (`Session::leader_pid`) instead of following `s_leader`.
 //! - `sys___set_tcb`/`sys___get_tcb` go through `machine::tcb` (`TCB_SET`, `TCB_GET`,
 //!   `TCB_INVALID`); the TCB is a `usize`.
+//! - `setsid(2)` makes the DIAGNOSTIC check of `enternewpgrp`'s new-session branch ("mksession
+//!   but not curproc") itself, before `kernel::proc::enternewpgrp`, which has no curproc.
+//!
+//! ## Redesign
+//! - LZ's credentials were `*const Ucred` with a manual `cr_refcnt`, written in place by the
+//!   set*id calls after `crget` (N4.2): they are the kernel crate's `CredRef`s, never written
+//!   once shared. The set*id calls build the new credentials as a value
+//!   (`sugid_change`: `crset` into a fresh `Ucred`, then the call's change), place it, and
+//!   install it with `Process::set_ucred` only if the process's credentials are still the
+//!   ones the value was built from; otherwise (another thread's set*id or exec during
+//!   `crget`'s sleep) they build it again from the new ones. The permission checks are the
+//!   C's, unchanged, against the thread's and the process's credentials.
+//! - The ids and the groups are read through the thread's own copy (`Thread::ucred`) and
+//!   the process's counted handle (`Process::ucred`); `dorefreshcreds` copies the process's
+//!   into the thread's under `ps_mtx` when its word changed (`cred_stale`).
+//! - The group and session lookups (`getpgid`, `getsid`, `setpgid`) run under the kernel
+//!   lock's reader or writer witness (`hal::klock`), the C's `[K]` annotation made a type;
+//!   `getpgid`/`getsid`'s "same session" rule is one helper (`sameses_target`).
 
-use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
+use hal::klock;
 use libkern::strlcpy;
 
-use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_proc::{
-    PGRP_POOL, SESSION_POOL, UCRED_POOL, chgproccnt, enternewpgrp, enterthispgrp, inferior, pgfind,
-    prfind, tfind_user,
+use crate::kern::proc_glue::{
+    chgproccnt, inferior, pgfind, pgrp_ref, prfind, process_ref, tfind_user,
 };
-use crate::kern::kern_synch::{refcnt_init, refcnt_rele, refcnt_shared, refcnt_take};
-use crate::kern::subr_pool::{pool_get, pool_put};
-use crate::kern::subr_prf::panic;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::tcb::{tcb_get, tcb_invalid, tcb_set};
 use crate::sys::errno::Errno;
-use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::proc::{
-    _MAXCOMLEN, PS_EXEC, PS_SUGID, PS_SUGIDEXEC, PS_TRACED, Proc, Process, Session,
-    THREAD_PID_OFFSET, sess_leader,
+    _MAXCOMLEN, BsdPgrpG, BsdSessionG, PS_EXEC, PS_SUGID, PS_SUGIDEXEC, PS_TRACED, Proc, Process,
+    THREAD_PID_OFFSET,
 };
 use crate::sys::syscallargs::{
     SysGetgroupsArgs, SysGetloginRArgs, SysGetpgidArgs, SysGetresgidArgs, SysGetresuidArgs,
@@ -105,28 +124,16 @@ use crate::sys::syscallargs::{
 };
 use crate::sys::syslimits::{LOGIN_NAME_MAX, NGROUPS_MAX};
 use crate::sys::systm::{SysArgs, kernel_lock, kernel_unlock, sysargs};
-use crate::sys::types::{Gid, Register, Uid};
-use crate::sys::ucred::{Ucred, Xucred};
+use crate::sys::types::{Gid, Pid, Register, Uid};
+use crate::sys::ucred::{CredRef, Ucred};
 
-/// `crset`: copies everything after the reference count of `cr` into `newcr`.
-#[inline]
-pub fn crset(newcr: &Ucred, cr: &Ucred) {
-    kassert!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed) > 0);
-    newcr.cr_uid.set(cr.cr_uid.get());
-    newcr.cr_ruid.set(cr.cr_ruid.get());
-    newcr.cr_svuid.set(cr.cr_svuid.get());
-    newcr.cr_gid.set(cr.cr_gid.get());
-    newcr.cr_rgid.set(cr.cr_rgid.get());
-    newcr.cr_svgid.set(cr.cr_svgid.get());
-    newcr.cr_ngroups.set(cr.cr_ngroups.get());
-    for (to, from) in newcr.cr_groups.iter().zip(&cr.cr_groups) {
-        to.set(from.get());
-    }
-}
+pub use kernel::cred::{
+    crcopy, crdup, crfree, crfromxucred, crget, crhold, crset, groupmember, suser_ucred,
+};
 
 /// `getpid(2)`.
 pub fn sys_getpid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = p.process().ps_pid.get() as Register;
+    retval[0] = p.process().ps_pid as Register;
     Ok(())
 }
 
@@ -139,46 +146,48 @@ pub fn sys_getthrid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Resul
 /// `getppid(2)`.
 pub fn sys_getppid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let pr = p.process();
-    mtx_enter(&pr.ps_mtx);
+    let g = pr.ps_mtx.lock();
     retval[0] = pr.ps_ppid.get() as Register;
-    mtx_leave(&pr.ps_mtx);
+    drop(g);
     Ok(())
 }
 
 /// `getpgrp(2)`: get process group ID; note that POSIX getpgrp takes no parameter.
 pub fn sys_getpgrp(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = p.process().pgid() as Register;
+    let r = klock::reader();
+    retval[0] = p.process().pgid(&r) as Register;
     Ok(())
 }
 
-/// `ps_session`: the session of `pr`, which every process has once it is in a process group.
-fn session_of(pr: &Process) -> &Session {
-    let s = pr.session();
-    kassert!(!s.is_null());
-    // SAFETY: a process's session outlives its membership in it (`Process::session`).
-    unsafe { &*s }
+/// The address of `pr`'s session (`pr->ps_session`), 0 without one: what the C compares.
+fn session_addr<W: hal::rwlock::Witness + ?Sized>(w: &W, pr: &Process) -> usize {
+    pr.session(w).map_or(0, |s| core::ptr::from_ref(s).addr())
 }
 
-/// The process `pid` names for `getpgid`/`getsid`: the caller's own for 0 or its pid,
-/// otherwise one in the caller's session.
-fn sameses_target(curp: &Proc, pid: i32) -> Result<&Process, Errno> {
+/// The process `pid` names for `getpgid`/`getsid` (the caller's own for 0 or its pid,
+/// otherwise one in the caller's session), given to `f` under the kernel lock's reader.
+fn sameses_target<R>(
+    curp: &Proc,
+    pid: Pid,
+    f: impl FnOnce(&klock::KernelReader, &Process) -> R,
+) -> Result<R, Errno> {
+    let r = klock::reader();
     let curpr = curp.process();
-    if pid == 0 || pid == curpr.ps_pid.get() {
-        return Ok(curpr);
+    if pid == 0 || pid == curpr.ps_pid {
+        return Ok(f(&r, curpr));
     }
-    let targpr = prfind(pid).ok_or(Errno::ESRCH)?;
-    if !ptr::eq(targpr.session(), curpr.session()) {
+    let targpr = prfind(&r, pid).ok_or(Errno::ESRCH)?;
+    if session_addr(&r, targpr) != session_addr(&r, curpr) {
         return Err(Errno::EPERM);
     }
-    Ok(targpr)
+    Ok(f(&r, targpr))
 }
 
 /// `getpgid(2)`: SysVR.4 compatible getpgid().
 pub fn sys_getpgid(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetpgidArgs = sysargs(v);
 
-    let targpr = sameses_target(curp, uap.pid.get())?;
-    retval[0] = targpr.pgid() as Register;
+    retval[0] = sameses_target(curp, uap.pid.get(), |r, targpr| targpr.pgid(r))? as Register;
     Ok(())
 }
 
@@ -186,13 +195,14 @@ pub fn sys_getpgid(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resu
 pub fn sys_getsid(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetsidArgs = sysargs(v);
 
-    let targpr = sameses_target(curp, uap.pid.get())?;
+    let leader = sameses_target(curp, uap.pid.get(), |r, targpr| {
+        targpr.session(r).and_then(|s| s.leader_pid())
+    })?;
     // Skip exiting processes
-    // SAFETY: a session leader stays allocated while it leads (exit clears `s_leader`).
-    let Some(leader) = (unsafe { session_of(targpr).s_leader.get().as_ref() }) else {
+    let Some(leader) = leader else {
         return Err(Errno::ESRCH);
     };
-    retval[0] = leader.ps_pid.get() as Register;
+    retval[0] = leader as Register;
     Ok(())
 }
 
@@ -254,21 +264,29 @@ pub fn sys_getgroups(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
 /// `setsid(2)`.
 pub fn sys_setsid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let pr = p.process();
-    let pid = pr.ps_pid.get();
+    let pid = pr.ps_pid;
 
-    let (Some(newsess), Some(newpgrp)) = (
-        pool_get(&SESSION_POOL, PR_WAITOK),
-        pool_get(&PGRP_POOL, PR_WAITOK),
-    ) else {
-        panic(format_args!("sys_setsid: pool_get"));
+    let newsess = kernel::proc::session_alloc(BsdSessionG::new());
+    let newpgrp = kernel::proc::pgrp_alloc(BsdPgrpG::new());
+
+    let taken = {
+        let r = klock::reader();
+        pr.pgid(&r) == pid || pgfind(&r, pid).is_some()
     };
-
-    if pr.pgid() == pid || pgfind(pid).is_some() {
-        pool_put(&PGRP_POOL, newpgrp);
-        pool_put(&SESSION_POOL, newsess);
+    if taken {
+        // The new group and session go with their only references.
+        drop(newpgrp);
+        drop(newsess);
         Err(Errno::EPERM)
     } else {
-        enternewpgrp(pr, newpgrp, Some(newsess));
+        // DIAGNOSTIC: a session is made only for the running process (the C's check in
+        // enternewpgrp's mksession branch; setsid(2) is its only caller with a new session,
+        // and kernel::proc has no curproc).
+        #[cfg(feature = "diagnostic")]
+        if !crate::machine::cpu::curproc().is_some_and(|c| core::ptr::eq(c.process(), pr)) {
+            crate::kern::subr_prf::panic(format_args!("enternewpgrp: mksession but not curproc"));
+        }
+        kernel::proc::enternewpgrp(p.process_ref(), newpgrp, Some(newsess));
         retval[0] = pid as Register;
         Ok(())
     }
@@ -293,17 +311,25 @@ pub fn sys_setpgid(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
         return Err(Errno::EINVAL);
     }
 
-    let Some(newpgrp) = pool_get(&PGRP_POOL, PR_WAITOK) else {
-        panic(format_args!("sys_setpgid: pool_get"));
-    };
-    let mut newpgrp = Some(newpgrp);
+    let newpgrp = kernel::proc::pgrp_alloc(BsdPgrpG::new());
 
-    let result = 'out: {
-        let targpr: &Process = if pid != 0 && pid != curpr.ps_pid.get() {
-            let Some(targpr) = prfind(pid).filter(|t| inferior(t, curpr)) else {
+    /// What the checks under the reader decided.
+    enum Move {
+        /// Nothing to do.
+        None,
+        /// Into a new group of id `pgid`.
+        New(crate::sys::proc::ProcessRef),
+        /// Into the existing group.
+        This(crate::sys::proc::ProcessRef, crate::sys::proc::PgrpRef),
+    }
+
+    let decided: Result<Move, Errno> = 'out: {
+        let r = klock::reader();
+        let targpr: &Process = if pid != 0 && pid != curpr.ps_pid {
+            let Some(targpr) = prfind(&r, pid).filter(|t| inferior(&r, t, curpr)) else {
                 break 'out Err(Errno::ESRCH);
             };
-            if !ptr::eq(targpr.session(), curpr.session()) {
+            if session_addr(&r, targpr) != session_addr(&r, curpr) {
                 break 'out Err(Errno::EPERM);
             }
             if targpr.ps_flags.load(Ordering::Relaxed) & PS_EXEC != 0 {
@@ -313,43 +339,49 @@ pub fn sys_setpgid(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
         } else {
             curpr
         };
-        if sess_leader(targpr) {
+        if targpr.sess_leader(&r) {
             break 'out Err(Errno::EPERM);
         }
         if pgid == 0 {
-            pgid = targpr.ps_pid.get();
+            pgid = targpr.ps_pid;
         }
 
-        match pgfind(pgid) {
+        match pgfind(&r, pgid) {
             None => {
                 // can only create a new process group with pgid == pid
-                if pgid != targpr.ps_pid.get() {
+                if pgid != targpr.ps_pid {
                     Err(Errno::EPERM)
-                } else if let Some(pg) = newpgrp.take() {
-                    enternewpgrp(targpr, pg, None);
-                    Ok(())
                 } else {
-                    Ok(())
+                    Ok(Move::New(process_ref(targpr)))
                 }
             }
             // anything to do?
-            Some(pgrp) if !ptr::eq(pgrp, targpr.ps_pgrp.get()) => {
-                if pgid != targpr.ps_pid.get() && !ptr::eq(pgrp.pg_session.get(), curpr.session()) {
+            Some(pgrp)
+                if !targpr
+                    .pgrp(&r)
+                    .is_some_and(|cur| core::ptr::eq::<crate::sys::proc::Pgrp>(&**cur, pgrp)) =>
+            {
+                let pgsess = pgrp
+                    .session(&r)
+                    .map_or(0, |s| core::ptr::from_ref(s).addr());
+                if pgid != targpr.ps_pid && pgsess != session_addr(&r, curpr) {
                     Err(Errno::EPERM)
                 } else {
-                    enterthispgrp(targpr, pgrp);
-                    Ok(())
+                    Ok(Move::This(process_ref(targpr), pgrp_ref(pgrp)))
                 }
             }
-            Some(_) => Ok(()),
+            Some(_) => Ok(Move::None),
         }
     };
 
-    // out:
-    if let Some(newpgrp) = newpgrp {
-        pool_put(&PGRP_POOL, newpgrp);
+    // The moves take the kernel lock's writer themselves: the reader is gone.
+    match decided? {
+        Move::None => {}
+        Move::New(targpr) => kernel::proc::enternewpgrp(&targpr, newpgrp, None),
+        Move::This(targpr, pgrp) => kernel::proc::enterthispgrp(&targpr, pgrp),
     }
-    result
+    // out: an unused new group goes with its only reference.
+    Ok(())
 }
 
 /// `copyout` of one id to a user pointer, skipped when the pointer is NULL.
@@ -358,6 +390,31 @@ fn copyout_id(id: u32, uaddr: *mut u32) -> Result<(), Errno> {
         return Ok(());
     }
     copyout(&id.to_ne_bytes(), uaddr as usize)
+}
+
+/// The set*id calls' change: the process's credentials copied (`crget` + `crset`), changed
+/// by `change(pruc, newcred)` and installed as `pr->ps_ucred` with `PS_SUGID`; the
+/// credentials replaced are returned, for the caller's process count and `crfree`.
+///
+/// `crget`'s `pool_get` may sleep: when the process's credentials changed meanwhile, the
+/// copy is made again from the new ones (the C copies after `crget`, see the module's
+/// deviations).
+fn sugid_change(pr: &Process, change: impl Fn(&Ucred, &mut Ucred)) -> CredRef {
+    loop {
+        // Copy credentials so other references do not see our changes. ps_ucred may change
+        // during the crget().
+        let pruc = pr.ucred();
+        let mut newcred = Ucred::new();
+        crset(&mut newcred, &pruc);
+        change(&pruc, &mut newcred);
+        let newcred = CredRef::new(newcred);
+        if pr.ucred_word() != CredRef::as_ptr(&pruc).addr() {
+            continue;
+        }
+        drop(pr.set_ucred(newcred));
+        pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+        return pruc;
+    }
 }
 
 /// `getresuid(2)`.
@@ -391,6 +448,7 @@ pub fn sys_setresuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
     {
         return Ok(()); // no change
     }
+    drop(pruc);
 
     // Any of the real, effective, and saved uids may be changed to the current value of one
     // of the three (root is not limited).
@@ -405,25 +463,19 @@ pub fn sys_setresuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-
     // Note that unlike the other set*uid() calls, each uid type is set independently of the
     // others.
-    if ruid != Uid::MAX {
-        newcred.cr_ruid.set(ruid);
-    }
-    if euid != Uid::MAX {
-        newcred.cr_uid.set(euid);
-    }
-    if suid != Uid::MAX {
-        newcred.cr_svuid.set(suid);
-    }
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let pruc = sugid_change(pr, |_, newcred| {
+        if ruid != Uid::MAX {
+            newcred.cr_ruid.set(ruid);
+        }
+        if euid != Uid::MAX {
+            newcred.cr_uid.set(euid);
+        }
+        if suid != Uid::MAX {
+            newcred.cr_svuid.set(suid);
+        }
+    });
 
     // now that we can sleep, transfer proc count to new user
     if ruid != Uid::MAX && ruid != pruc.cr_ruid.get() {
@@ -466,6 +518,7 @@ pub fn sys_setresgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
     {
         return Ok(()); // no change
     }
+    drop(pruc);
 
     // Any of the real, effective, and saved gids may be changed to the current value of one
     // of the three (root is not limited).
@@ -480,25 +533,19 @@ pub fn sys_setresgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-
     // Note that unlike the other set*gid() calls, each gid type is set independently of the
     // others.
-    if rgid != Gid::MAX {
-        newcred.cr_rgid.set(rgid);
-    }
-    if egid != Gid::MAX {
-        newcred.cr_gid.set(egid);
-    }
-    if sgid != Gid::MAX {
-        newcred.cr_svgid.set(sgid);
-    }
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let pruc = sugid_change(pr, |_, newcred| {
+        if rgid != Gid::MAX {
+            newcred.cr_rgid.set(rgid);
+        }
+        if egid != Gid::MAX {
+            newcred.cr_gid.set(egid);
+        }
+        if sgid != Gid::MAX {
+            newcred.cr_svgid.set(sgid);
+        }
+    });
     crfree(pruc);
     Ok(())
 }
@@ -519,7 +566,6 @@ pub fn sys_setregid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     // real gid is specified *and* either it's changing _or_ the saved gid won't equal the
     // effective gid. So, the svgid *won't* change when the rgid isn't specified or when the
     // rgid isn't changing and the svgid equals the requested egid.
-    let pruc = pr.ucred();
     let new_egid = |cr: &Ucred| {
         if egid != Gid::MAX {
             egid
@@ -527,13 +573,15 @@ pub fn sys_setregid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
             cr.cr_gid.get()
         }
     };
+    let pruc = pr.ucred();
     if (rgid == Gid::MAX || rgid == pruc.cr_rgid.get())
         && (egid == Gid::MAX || egid == pruc.cr_gid.get())
         && (rgid == Gid::MAX
-            || (rgid == pruc.cr_rgid.get() && pruc.cr_svgid.get() == new_egid(pruc)))
+            || (rgid == pruc.cr_rgid.get() && pruc.cr_svgid.get() == new_egid(&pruc)))
     {
         return Ok(()); // no change
     }
+    drop(pruc);
 
     // Any of the real, effective, and saved gids may be changed to the current value of one
     // of the three (root is not limited).
@@ -545,27 +593,22 @@ pub fn sys_setregid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
+    let pruc = sugid_change(pr, |pruc, newcred| {
+        if rgid != Gid::MAX {
+            newcred.cr_rgid.set(rgid);
+        }
+        if egid != Gid::MAX {
+            newcred.cr_gid.set(egid);
+        }
 
-    if rgid != Gid::MAX {
-        newcred.cr_rgid.set(rgid);
-    }
-    if egid != Gid::MAX {
-        newcred.cr_gid.set(egid);
-    }
-
-    // The saved gid presents a bit of a dilemma, as it did not exist when setregid(2) was
-    // conceived. We only set the saved gid when the real gid is specified and either its
-    // value would change, or where the saved and effective gids are different.
-    if rgid != Gid::MAX && (rgid != pruc.cr_rgid.get() || pruc.cr_svgid.get() != new_egid(pruc)) {
-        newcred.cr_svgid.set(rgid);
-    }
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+        // The saved gid presents a bit of a dilemma, as it did not exist when setregid(2)
+        // was conceived. We only set the saved gid when the real gid is specified and either
+        // its value would change, or where the saved and effective gids are different.
+        if rgid != Gid::MAX && (rgid != pruc.cr_rgid.get() || pruc.cr_svgid.get() != new_egid(pruc))
+        {
+            newcred.cr_svgid.set(rgid);
+        }
+    });
     crfree(pruc);
     Ok(())
 }
@@ -586,7 +629,6 @@ pub fn sys_setreuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     // real uid is specified *and* either it's changing _or_ the saved uid won't equal the
     // effective uid. So, the svuid *won't* change when the ruid isn't specified or when the
     // ruid isn't changing and the svuid equals the requested euid.
-    let pruc = pr.ucred();
     let new_euid = |cr: &Ucred| {
         if euid != Uid::MAX {
             euid
@@ -594,13 +636,15 @@ pub fn sys_setreuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
             cr.cr_uid.get()
         }
     };
+    let pruc = pr.ucred();
     if (ruid == Uid::MAX || ruid == pruc.cr_ruid.get())
         && (euid == Uid::MAX || euid == pruc.cr_uid.get())
         && (ruid == Uid::MAX
-            || (ruid == pruc.cr_ruid.get() && pruc.cr_svuid.get() == new_euid(pruc)))
+            || (ruid == pruc.cr_ruid.get() && pruc.cr_svuid.get() == new_euid(&pruc)))
     {
         return Ok(()); // no change
     }
+    drop(pruc);
 
     // Any of the real, effective, and saved uids may be changed to the current value of one
     // of the three (root is not limited).
@@ -612,27 +656,22 @@ pub fn sys_setreuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
+    let pruc = sugid_change(pr, |pruc, newcred| {
+        if ruid != Uid::MAX {
+            newcred.cr_ruid.set(ruid);
+        }
+        if euid != Uid::MAX {
+            newcred.cr_uid.set(euid);
+        }
 
-    if ruid != Uid::MAX {
-        newcred.cr_ruid.set(ruid);
-    }
-    if euid != Uid::MAX {
-        newcred.cr_uid.set(euid);
-    }
-
-    // The saved uid presents a bit of a dilemma, as it did not exist when setreuid(2) was
-    // conceived. We only set the saved uid when the real uid is specified and either its
-    // value would change, or where the saved and effective uids are different.
-    if ruid != Uid::MAX && (ruid != pruc.cr_ruid.get() || pruc.cr_svuid.get() != new_euid(pruc)) {
-        newcred.cr_svuid.set(ruid);
-    }
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+        // The saved uid presents a bit of a dilemma, as it did not exist when setreuid(2)
+        // was conceived. We only set the saved uid when the real uid is specified and either
+        // its value would change, or where the saved and effective uids are different.
+        if ruid != Uid::MAX && (ruid != pruc.cr_ruid.get() || pruc.cr_svuid.get() != new_euid(pruc))
+        {
+            newcred.cr_svuid.set(ruid);
+        }
+    });
 
     // now that we can sleep, transfer proc count to new user
     if ruid != Uid::MAX && ruid != pruc.cr_ruid.get() {
@@ -656,29 +695,26 @@ pub fn sys_setuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     if pruc.cr_uid.get() == uid && pruc.cr_ruid.get() == uid && pruc.cr_svuid.get() == uid {
         return Ok(());
     }
+    drop(pruc);
 
     if uid != uc.cr_ruid.get() && uid != uc.cr_svuid.get() && uid != uc.cr_uid.get() {
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-
     // Everything's okay, do it.
-    let did_real = uid == pruc.cr_uid.get() || suser(p).is_ok();
-    if did_real {
-        newcred.cr_ruid.set(uid);
-        newcred.cr_svuid.set(uid);
-    }
-    newcred.cr_uid.set(uid);
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let root = suser(p).is_ok();
+    let did_real = core::cell::Cell::new(false);
+    let pruc = sugid_change(pr, |pruc, newcred| {
+        did_real.set(uid == pruc.cr_uid.get() || root);
+        if did_real.get() {
+            newcred.cr_ruid.set(uid);
+            newcred.cr_svuid.set(uid);
+        }
+        newcred.cr_uid.set(uid);
+    });
 
     // Transfer proc count to new user.
-    if did_real && uid != pruc.cr_ruid.get() {
+    if did_real.get() && uid != pruc.cr_ruid.get() {
         chgproccnt(pruc.cr_ruid.get(), -1);
         chgproccnt(uid, 1);
     }
@@ -703,14 +739,7 @@ pub fn sys_seteuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-    newcred.cr_uid.set(euid);
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let pruc = sugid_change(pr, |_, newcred| newcred.cr_uid.set(euid));
     crfree(pruc);
     Ok(())
 }
@@ -727,24 +756,20 @@ pub fn sys_setgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     if pruc.cr_gid.get() == gid && pruc.cr_rgid.get() == gid && pruc.cr_svgid.get() == gid {
         return Ok(());
     }
+    drop(pruc);
 
     if gid != uc.cr_rgid.get() && gid != uc.cr_svgid.get() && gid != uc.cr_gid.get() {
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-
-    if gid == pruc.cr_gid.get() || suser(p).is_ok() {
-        newcred.cr_rgid.set(gid);
-        newcred.cr_svgid.set(gid);
-    }
-    newcred.cr_gid.set(gid);
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let root = suser(p).is_ok();
+    let pruc = sugid_change(pr, |pruc, newcred| {
+        if gid == pruc.cr_gid.get() || root {
+            newcred.cr_rgid.set(gid);
+            newcred.cr_svgid.set(gid);
+        }
+        newcred.cr_gid.set(gid);
+    });
     crfree(pruc);
     Ok(())
 }
@@ -765,14 +790,7 @@ pub fn sys_setegid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
         suser(p)?;
     }
 
-    // Copy credentials so other references do not see our changes. ps_ucred may change
-    // during the crget().
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-    newcred.cr_gid.set(egid);
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let pruc = sugid_change(pr, |_, newcred| newcred.cr_gid.set(egid));
     crfree(pruc);
     Ok(())
 }
@@ -793,26 +811,14 @@ pub fn sys_setgroups(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
     let mut groups = [[0u8; size_of::<Gid>()]; NGROUPS_MAX];
     copyin(uap.gidset.get() as usize, groups[..ngrp].as_flattened_mut())?;
 
-    let newcred = crget();
-    let pruc = pr.ucred();
-    crset(newcred, pruc);
-    for (gid, &bytes) in newcred.cr_groups.iter().zip(&groups[..ngrp]) {
-        gid.set(Gid::from_ne_bytes(bytes));
-    }
-    newcred.cr_ngroups.set(ngrp as i16);
-    pr.ps_ucred.set(newcred);
-    pr.ps_flags.fetch_or(PS_SUGID, Ordering::Relaxed);
+    let pruc = sugid_change(pr, |_, newcred| {
+        for (gid, &bytes) in newcred.cr_groups.iter_mut().zip(&groups[..ngrp]) {
+            gid.set(Gid::from_ne_bytes(bytes));
+        }
+        newcred.cr_ngroups.set(ngrp as i16);
+    });
     crfree(pruc);
     Ok(())
-}
-
-/// `groupmember`: check if `gid` is a member of the group set.
-pub fn groupmember(gid: Gid, cred: &Ucred) -> bool {
-    if cred.cr_gid.get() == gid {
-        return true;
-    }
-    let ngroups = usize::try_from(cred.cr_ngroups.get()).unwrap_or(0);
-    cred.cr_groups[..ngroups].iter().any(|g| g.get() == gid)
 }
 
 /// `suser`: test whether this process has special user powers.
@@ -825,92 +831,18 @@ pub fn suser(p: &Proc) -> Result<(), Errno> {
     Err(Errno::EPERM)
 }
 
-/// `suser_ucred`: replacement for old suser, for callers who don't have a process.
-pub fn suser_ucred(cred: &Ucred) -> Result<(), Errno> {
-    if cred.cr_uid.get() == 0 {
-        return Ok(());
-    }
-    Err(Errno::EPERM)
-}
-
-/// `crget`: allocate a zeroed cred structure, with one reference (the caller's).
-pub fn crget() -> &'static Ucred {
-    let Some(mem) = pool_get(&UCRED_POOL, PR_WAITOK | PR_ZERO) else {
-        panic(format_args!("crget: ucred_pool is empty"));
-    };
-    let cr = mem.cast::<Ucred>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<Ucred>()` bytes, written
-    // once before anything else sees it.
-    unsafe { cr.as_ptr().write(Ucred::new()) };
-    // SAFETY: as above; the item stays allocated until the last `crfree`.
-    let cr: &'static Ucred = unsafe { cr.as_ref() };
-    refcnt_init(&cr.cr_refcnt);
-    cr
-}
-
-/// `crhold`: increment the reference count of a cred structure. Returns the passed
-/// structure.
-pub fn crhold(cr: &'static Ucred) -> &'static Ucred {
-    refcnt_take(&cr.cr_refcnt);
-    cr
-}
-
-/// `crfree`: free a cred structure. Throws away space when ref count gets to 0. The caller
-/// gives up its reference and must not use `cr` afterwards.
-pub fn crfree(cr: &'static Ucred) {
-    if refcnt_rele(&cr.cr_refcnt) {
-        pool_put(&UCRED_POOL, NonNull::from(cr).cast::<u8>());
-    }
-}
-
-/// `crcopy`: copy cred structure to a new one and free the old one (unless the caller holds
-/// the only reference, in which case `cr` itself is returned).
-pub fn crcopy(cr: &'static Ucred) -> &'static Ucred {
-    if !refcnt_shared(&cr.cr_refcnt) {
-        return cr;
-    }
-    let newcr = crget();
-    crset(newcr, cr);
-    crfree(cr);
-    refcnt_init(&newcr.cr_refcnt);
-    newcr
-}
-
-/// `crdup`: dup cred struct to a new held one.
-pub fn crdup(cr: &Ucred) -> &'static Ucred {
-    let newcr = crget();
-    crset(newcr, cr);
-    refcnt_init(&newcr.cr_refcnt);
-    newcr
-}
-
-/// `crfromxucred`: convert the userspace xucred to a kernel ucred.
-pub fn crfromxucred(cr: &Ucred, xcr: &Xucred) -> Result<(), Errno> {
-    let Ok(ngroups) = usize::try_from(xcr.cr_ngroups) else {
-        return Err(Errno::EINVAL);
-    };
-    if ngroups > NGROUPS_MAX {
-        return Err(Errno::EINVAL);
-    }
-    refcnt_init(&cr.cr_refcnt);
-    cr.cr_uid.set(xcr.cr_uid);
-    cr.cr_gid.set(xcr.cr_gid);
-    cr.cr_ngroups.set(xcr.cr_ngroups);
-    for (to, &from) in cr.cr_groups.iter().zip(&xcr.cr_groups[..ngroups]) {
-        to.set(from);
-    }
-    Ok(())
-}
-
 /// `getlogin_r(2)`: get login name, if available. The error is the return value, as in C.
 pub fn sys_getlogin_r(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetloginRArgs = sysargs(v);
-    let s = session_of(p.process());
     let mut buf = [0u8; LOGIN_NAME_MAX];
 
     let namelen = uap.namelen.get().min(LOGIN_NAME_MAX);
-    // SAFETY: `s_login` is written only by `setlogin` under the kernel lock; this is a read.
-    strlcpy(&mut buf, unsafe { &*s.s_login.get() });
+    {
+        let r = klock::reader();
+        if let Some(s) = p.process().session(&r) {
+            strlcpy(&mut buf, s.s_login.get(&r));
+        }
+    }
     let error = match copyoutstr(&buf[..namelen], uap.namebuf.get() as usize) {
         Ok(_) => 0,
         Err(Errno::ENAMETOOLONG) => Errno::ERANGE as i32,
@@ -928,9 +860,17 @@ pub fn sys_setlogin(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     suser(p)?;
     match copyinstr(uap.namebuf.get() as usize, &mut buf) {
         Ok(_) => {
-            let s = session_of(p.process());
-            // SAFETY: as in `sys_getlogin_r`: the one writer, under the kernel lock.
-            strlcpy(unsafe { &mut *s.s_login.get() }, &buf);
+            // The session, counted, so the writer below may open its name.
+            let sess = {
+                let r = klock::reader();
+                p.process()
+                    .pgrp(&r)
+                    .and_then(|pg| pg.pg_session.get(&r).clone())
+            };
+            if let Some(s) = sess {
+                let mut w = klock::witness();
+                strlcpy(s.s_login.get_mut(&mut w), &buf);
+            }
             Ok(())
         }
         Err(Errno::ENAMETOOLONG) => Err(Errno::EINVAL),
@@ -980,15 +920,16 @@ pub fn sys_getthrname(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> R
     let mut buf = [0u8; _MAXCOMLEN];
     let tid = uap.tid.get();
 
-    let p = if tid != 0 {
-        tfind_user(tid, curp.process())
+    let name = if tid != 0 {
+        let r = klock::reader();
+        tfind_user(&r, tid, curp.process()).map(|p| p.name())
     } else {
-        Some(curp)
+        Some(curp.name())
     };
-    let Some(p) = p else {
+    let Some(name) = name else {
         return Err(Errno::ESRCH);
     };
-    strlcpy(&mut buf, p.name());
+    strlcpy(&mut buf, &name);
 
     let len = uap.len.get().min(buf.len());
     let error = match copyoutstr(&buf[..len], uap.name.get() as usize) {
@@ -1015,30 +956,26 @@ pub fn sys_setthrname(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> R
         Err(e) => e as i32,
     };
     if error == 0 {
-        let p = if tid != 0 {
-            tfind_user(tid, curp.process())
-        } else {
-            Some(curp)
-        };
-        let Some(p) = p else {
-            return Err(Errno::ESRCH);
-        };
         let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        p.set_name(&buf[..n]);
+        if tid != 0 {
+            let r = klock::reader();
+            let Some(p) = tfind_user(&r, tid, curp.process()) else {
+                return Err(Errno::ESRCH);
+            };
+            p.set_name(&buf[..n]);
+        } else {
+            curp.set_name(&buf[..n]);
+        }
     }
     retval[0] = error as Register;
     Ok(())
 }
 
-/// `dorefreshcreds`: refresh the thread's reference to the process's credentials.
-pub fn dorefreshcreds(pr: &Process, p: &Proc) {
-    let uc = p.ucred();
-
+/// `dorefreshcreds`: refresh the thread's copy of the process's credentials.
+pub fn dorefreshcreds(_pr: &Process, p: &Proc) {
     kernel_lock(); // KERNEL_LOCK() (XXX should be PROCESS_RLOCK(pr))
-    if !ptr::eq(uc, pr.ps_ucred.get()) {
-        let cr = crhold(pr.ucred());
-        p.p_ucred.set(cr);
-        crfree(uc);
+    if p.cred_stale() {
+        p.refresh_cred();
     }
     kernel_unlock(); // KERNEL_UNLOCK()
 }
@@ -1056,12 +993,13 @@ mod tests {
     use std::{assert, assert_eq, assert_ne};
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
+    use crate::kern::proc_glue::{procinit, test_process, test_thread};
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::sys::proc::refreshcreds;
+    use crate::sys::proc::{ProcExt, refreshcreds};
+    use crate::sys::ucred::Xucred;
     use crate::sys::user::User;
 
-    /// Real memory and the process pools (`ucred_pool` among them) and hashes.
+    /// Real memory and the process pools and hashes.
     fn setup() -> MutexGuard<'static, ()> {
         let guard = setup_real_memory();
         crate::machine::cons::consinit();
@@ -1069,9 +1007,9 @@ mod tests {
         guard
     }
 
-    /// Credentials with one reference whose real, effective and saved ids are `uid`/`gid`.
-    fn cred(uid: Uid, gid: Gid) -> &'static Ucred {
-        let cr = crget();
+    /// Credentials whose real, effective and saved ids are `uid`/`gid`.
+    fn ids(uid: Uid, gid: Gid) -> Ucred {
+        let mut cr = Ucred::new();
         cr.cr_uid.set(uid);
         cr.cr_ruid.set(uid);
         cr.cr_svuid.set(uid);
@@ -1081,17 +1019,20 @@ mod tests {
         cr
     }
 
-    /// A thread of a fresh process, both holding `cr` (the thread `cr`'s reference, the process
-    /// one more), with a u-area for the TCB, charged to its real uid as `fork1` does.
-    fn thread(cr: &'static Ucred) -> &'static Proc {
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        p.p_addr.set(Box::leak(Box::new(User::new())));
-        pr.ps_mainproc.set(p);
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+    /// Placed credentials with one reference whose ids are `uid`/`gid`.
+    fn cred(uid: Uid, gid: Gid) -> CredRef {
+        CredRef::new(ids(uid, gid))
+    }
+
+    /// A thread of a fresh process, both holding `cr`, with a u-area for the TCB, charged to
+    /// its real uid as `fork1` does.
+    fn thread(cr: CredRef) -> &'static Proc {
+        let pr = test_process(1000);
+        let p = test_thread(pr);
+        p.set_uarea(Box::leak(Box::new(User::new())));
         chgproccnt(cr.cr_ruid.get(), 1);
+        drop(p.set_cred(cr.clone()));
+        drop(pr.set_ucred(cr));
         p
     }
 
@@ -1113,68 +1054,64 @@ mod tests {
     #[test]
     fn crget_crhold_crfree_count_references() {
         let _g = setup();
-        let nout = UCRED_POOL.pr_nout.get();
+        let nout = kernel::cred::ucred_nout();
 
         let cr = crget();
-        assert_eq!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
-        assert_eq!(uids(cr), (0, 0, 0));
+        assert_eq!(CredRef::count(&cr), 1);
+        assert_eq!(uids(&cr), (0, 0, 0));
         assert_eq!(cr.cr_ngroups.get(), 0);
-        assert_eq!(UCRED_POOL.pr_nout.get(), nout + 1);
+        assert_eq!(kernel::cred::ucred_nout(), nout + 1);
 
-        assert!(ptr::eq(crhold(cr), cr));
-        assert_eq!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed), 2);
+        let held = crhold(&cr);
+        assert!(CredRef::ptr_eq(&held, &cr));
+        assert_eq!(CredRef::count(&cr), 2);
+        crfree(held);
+        assert_eq!(CredRef::count(&cr), 1);
+        assert_eq!(kernel::cred::ucred_nout(), nout + 1);
         crfree(cr);
-        assert_eq!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
-        assert_eq!(UCRED_POOL.pr_nout.get(), nout + 1);
-        crfree(cr);
-        assert_eq!(UCRED_POOL.pr_nout.get(), nout);
+        assert_eq!(kernel::cred::ucred_nout(), nout);
     }
 
     #[test]
-    fn crcopy_copies_only_shared_credentials_and_crdup_always() {
+    fn crcopy_and_crdup_give_private_copies() {
         let _g = setup();
 
-        let cr = cred(1000, 100);
-        cr.cr_ngroups.set(2);
-        cr.cr_groups[0].set(100);
-        cr.cr_groups[1].set(20);
-        assert!(ptr::eq(crcopy(cr), cr)); // the only reference: nothing to copy
+        let mut v = ids(1000, 100);
+        v.cr_ngroups.set(2);
+        v.cr_groups[0].set(100);
+        v.cr_groups[1].set(20);
+        let cr = CredRef::new(v);
 
-        crhold(cr);
-        let copy = crcopy(cr);
-        assert!(!ptr::eq(copy, cr));
-        assert_eq!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
-        assert_eq!(copy.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
-        assert_eq!(uids(copy), (1000, 1000, 1000));
+        let other = crhold(&cr);
+        let copy = crcopy(other);
+        assert_eq!(CredRef::count(&cr), 1);
+        assert_eq!(uids(&copy), (1000, 1000, 1000));
         assert_eq!(copy.cr_svgid.get(), 100);
         assert_eq!(copy.cr_ngroups.get(), 2);
         assert_eq!(copy.cr_groups[1].get(), 20);
 
-        let dup = crdup(cr);
-        assert!(!ptr::eq(dup, cr));
-        assert_eq!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
-        assert_eq!(dup.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
-        assert_eq!(uids(dup), (1000, 1000, 1000));
-        for c in [cr, copy, dup] {
-            crfree(c);
-        }
+        let dup = crdup(&cr);
+        assert!(!CredRef::ptr_eq(&dup, &cr));
+        assert_eq!(CredRef::count(&cr), 1);
+        assert_eq!(CredRef::count(&dup), 1);
+        assert_eq!(uids(&dup), (1000, 1000, 1000));
     }
 
     #[test]
     fn groupmember_suser_and_crfromxucred() {
         let _g = setup();
 
-        let cr = cred(1000, 100);
+        let mut cr = ids(1000, 100);
         cr.cr_ngroups.set(2);
         cr.cr_groups[0].set(100);
         cr.cr_groups[1].set(20);
         cr.cr_groups[2].set(30); // beyond cr_ngroups
-        assert!(groupmember(100, cr));
-        assert!(groupmember(20, cr));
-        assert!(!groupmember(30, cr));
-        assert_eq!(suser_ucred(cr), Err(Errno::EPERM));
+        assert!(groupmember(100, &cr));
+        assert!(groupmember(20, &cr));
+        assert!(!groupmember(30, &cr));
+        assert_eq!(suser_ucred(&cr), Err(Errno::EPERM));
         cr.cr_uid.set(0);
-        assert_eq!(suser_ucred(cr), Ok(()));
+        assert_eq!(suser_ucred(&cr), Ok(()));
 
         let mut x = Xucred {
             cr_uid: 5,
@@ -1182,18 +1119,26 @@ mod tests {
             cr_ngroups: 1,
             cr_groups: [7; NGROUPS_MAX],
         };
-        let k = Ucred::new();
-        assert_eq!(crfromxucred(&k, &x), Ok(()));
+        let mut k = Ucred::new();
+        assert_eq!(
+            crfromxucred(&mut k, x.cr_uid, x.cr_gid, x.cr_ngroups, &x.cr_groups),
+            Ok(())
+        );
         assert_eq!(
             (k.cr_uid.get(), k.cr_gid.get(), k.cr_ngroups.get()),
             (5, 6, 1)
         );
         assert_eq!((k.cr_groups[0].get(), k.cr_groups[1].get()), (7, 0));
         x.cr_ngroups = NGROUPS_MAX as i16 + 1;
-        assert_eq!(crfromxucred(&k, &x), Err(Errno::EINVAL));
+        assert_eq!(
+            crfromxucred(&mut k, x.cr_uid, x.cr_gid, x.cr_ngroups, &x.cr_groups),
+            Err(Errno::EINVAL)
+        );
         x.cr_ngroups = -1;
-        assert_eq!(crfromxucred(&k, &x), Err(Errno::EINVAL));
-        crfree(cr);
+        assert_eq!(
+            crfromxucred(&mut k, x.cr_uid, x.cr_gid, x.cr_ngroups, &x.cr_groups),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]
@@ -1202,9 +1147,10 @@ mod tests {
         let mut rv: [Register; 2] = [0; 2];
 
         // A user whose saved uid is still root may become root again, nothing else.
-        let cr = cred(1000, 100);
-        cr.cr_svuid.set(0);
-        let p = thread(cr);
+        let mut v = ids(1000, 100);
+        v.cr_svuid.set(0);
+        let cr = CredRef::new(v);
+        let p = thread(cr.clone());
         let pr = p.process();
         assert_eq!(
             sys_setresuid(p, &args(&[NONE, NONE, NONE]), &mut rv),
@@ -1215,18 +1161,19 @@ mod tests {
             sys_setresuid(p, &args(&[NONE, 2000, NONE]), &mut rv),
             Err(Errno::EPERM)
         );
-        assert!(ptr::eq(pr.ucred(), cr));
+        assert!(CredRef::ptr_eq(&pr.ucred(), &cr));
         assert_eq!(sys_setresuid(p, &args(&[NONE, 0, NONE]), &mut rv), Ok(()));
 
         // The process has new credentials; the thread keeps its own until it refreshes them.
-        assert!(!ptr::eq(pr.ucred(), cr));
-        assert_eq!(uids(pr.ucred()), (1000, 0, 0));
+        assert!(!CredRef::ptr_eq(&pr.ucred(), &cr));
+        assert_eq!(uids(&pr.ucred()), (1000, 0, 0));
         assert_ne!(pr.ps_flags.load(Ordering::Relaxed) & PS_SUGID, 0);
         assert_eq!(uids(p.ucred()), (1000, 1000, 0));
-        assert_eq!(cr.cr_refcnt.r_refs.load(Ordering::Relaxed), 1);
+        assert!(p.cred_stale());
         refreshcreds(p);
-        assert!(ptr::eq(p.ucred(), pr.ucred()));
-        assert_eq!(p.ucred().cr_refcnt.r_refs.load(Ordering::Relaxed), 2);
+        assert!(!p.cred_stale());
+        assert_eq!(uids(p.ucred()), (1000, 0, 0));
+        assert!(CredRef::ptr_eq(&p.cred_ref(), &pr.ucred()));
 
         // Now root: any uid at all, and the process count moves to the new real uid.
         assert_eq!(
@@ -1250,11 +1197,11 @@ mod tests {
         let pr = p.process();
         // Only the effective uid: the saved uid stays.
         assert_eq!(sys_setreuid(p, &args(&[NONE, 1000]), &mut rv), Ok(()));
-        assert_eq!(uids(pr.ucred()), (0, 1000, 0));
+        assert_eq!(uids(&pr.ucred()), (0, 1000, 0));
         refreshcreds(p);
         // The real uid changes: the saved one follows it.
         assert_eq!(sys_setreuid(p, &args(&[1000, NONE]), &mut rv), Ok(()));
-        assert_eq!(uids(pr.ucred()), (1000, 1000, 1000));
+        assert_eq!(uids(&pr.ucred()), (1000, 1000, 1000));
         refreshcreds(p);
         assert_eq!(
             sys_setreuid(p, &args(&[0, NONE]), &mut rv),
@@ -1267,17 +1214,17 @@ mod tests {
         let _g = setup();
         let mut rv: [Register; 2] = [0; 2];
 
-        let cr = cred(1000, 100);
-        cr.cr_svuid.set(0);
-        let p = thread(cr);
+        let mut v = ids(1000, 100);
+        v.cr_svuid.set(0);
+        let p = thread(CredRef::new(v));
         let pr = p.process();
         // setuid(0) is allowed (0 is the saved uid) but, not being root, only the effective
         // uid changes.
         assert_eq!(sys_setuid(p, &args(&[0]), &mut rv), Ok(()));
-        assert_eq!(uids(pr.ucred()), (1000, 0, 0));
+        assert_eq!(uids(&pr.ucred()), (1000, 0, 0));
         assert_eq!(sys_seteuid(p, &args(&[2000]), &mut rv), Err(Errno::EPERM));
         assert_eq!(sys_seteuid(p, &args(&[1000]), &mut rv), Ok(()));
-        assert_eq!(uids(pr.ucred()), (1000, 1000, 0));
+        assert_eq!(uids(&pr.ucred()), (1000, 1000, 0));
         refreshcreds(p);
         // setgid to a group the thread does not have needs root.
         assert_eq!(sys_setgid(p, &args(&[200]), &mut rv), Err(Errno::EPERM));
@@ -1289,8 +1236,8 @@ mod tests {
         let _g = setup();
         let mut rv: [Register; 2] = [0; 2];
 
-        let cr = cred(1000, 100);
-        cr.cr_svuid.set(7);
+        let mut v = ids(1000, 100);
+        v.cr_svuid.set(7);
         let p = thread(cred(0, 0));
         let (mut r, e, mut s): (Uid, Uid, Uid) = (9, 9, 9);
         let ptrs = |a: &mut Uid| a as *mut Uid as Register;
@@ -1314,7 +1261,7 @@ mod tests {
         );
         assert_eq!((rv[0], back), (3, [100, 20, 30, 0]));
 
-        let q = thread(cr);
+        let q = thread(CredRef::new(v));
         assert_eq!(
             sys_getresuid(q, &args(&[ptrs(&mut r), 0, ptrs(&mut s)]), &mut rv),
             Ok(())
@@ -1341,7 +1288,7 @@ mod tests {
             sys_setthrname(p, &args(&[0, name.as_ptr() as Register]), &mut rv),
             Ok(())
         );
-        assert_eq!((rv[0], p.name()), (0, &b"worker"[..]));
+        assert_eq!((rv[0], &*p.name()), (0, &b"worker"[..]));
         let mut out = [0xffu8; 4];
         assert_eq!(
             sys_getthrname(p, &args(&[0, out.as_mut_ptr() as Register, 4]), &mut rv),
@@ -1358,10 +1305,11 @@ mod tests {
             Ok(())
         );
         assert_eq!((rv[0], &out[..7]), (0, &name[..]));
-        assert_eq!(
-            sys_getthrname(p, &args(&[12345, out.as_mut_ptr() as Register, 4]), &mut rv),
-            Err(Errno::ESRCH)
-        );
+        // A tid lookup walks the tid hash: under the kernel lock, as a system call runs.
+        kernel_lock();
+        let r = sys_getthrname(p, &args(&[12345, out.as_mut_ptr() as Register, 4]), &mut rv);
+        kernel_unlock();
+        assert_eq!(r, Err(Errno::ESRCH));
     }
 }
 /* </TESTS> */

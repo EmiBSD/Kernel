@@ -146,7 +146,7 @@ pub fn diskmapioctl(
     fdplock(fdp);
     let bad = |error: Errno| -> Result<(), Errno> {
         fdpunlock(fdp);
-        let _ = vn_close(vp, fflag as i32, p.p_ucred.get(), Some(p));
+        let _ = vn_close(vp, fflag as i32, p.ucred_ptr(), Some(p));
         let _ = frele(fp0, p);
         Err(error)
     };

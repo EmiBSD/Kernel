@@ -146,6 +146,7 @@ use crate::sys::mount::MNT_NOEXEC;
 use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, Nameidata, NiDirp, UNVEIL_READ};
 use crate::sys::param::{MAXPATHLEN, PAGE_SIZE};
 use crate::sys::pledge::PLEDGE_RPATH;
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{BOGO_PC, Proc};
 use crate::sys::syscall::{SYS_MAXSYSCALL, SYS_kbind};
 use crate::sys::uio::{UioRw, UioSeg};
@@ -346,7 +347,7 @@ pub fn elf_read_from(p: &Proc, vp: ExecFile<'_>, off: u64, buf: &mut [u8]) -> Re
                 off as i64,
                 UioSeg::UIO_SYSSPACE,
                 0,
-                p.p_ucred.get(),
+                p.ucred_ptr(),
                 Some(&mut resid),
                 Some(p),
             )?;
@@ -487,14 +488,14 @@ pub fn elf_load_file(p: &Proc, path: &[u8], epp: &mut ExecPackage<'_>) -> Result
     if let Err((error, opened)) = result {
         // bad1: the C closes the vnode whether or not anything opened it.
         if opened {
-            let _ = VOP_CLOSE(vp, FREAD, p.p_ucred.get(), Some(p));
+            let _ = VOP_CLOSE(vp, FREAD, p.ucred_ptr(), Some(p));
         }
         // bad:
         vput(vp);
         return Err(error);
     }
     // bad1: VOP_CLOSE on the success path too, as the C falls through.
-    let _ = VOP_CLOSE(vp, FREAD, p.p_ucred.get(), Some(p));
+    let _ = VOP_CLOSE(vp, FREAD, p.ucred_ptr(), Some(p));
     vput(vp);
     Ok(())
 }
@@ -517,7 +518,7 @@ fn elf_load_file_vnode(
     if vp.v_type.get() != VREG {
         return Err((Errno::EACCES, false));
     }
-    VOP_GETATTR(vp, &mut epp.ep_vap, p.p_ucred.get(), p).map_err(|e| (e, false))?;
+    VOP_GETATTR(vp, &mut epp.ep_vap, p.ucred_ptr(), p).map_err(|e| (e, false))?;
     if vp
         .v_mount
         .get()
@@ -525,7 +526,7 @@ fn elf_load_file_vnode(
     {
         return Err((Errno::EACCES, false));
     }
-    VOP_ACCESS(vp, VREAD, p.p_ucred.get(), p).map_err(|e| (e, true))?;
+    VOP_ACCESS(vp, VREAD, p.ucred_ptr(), p).map_err(|e| (e, true))?;
     let mut ehbytes = [0u8; size_of::<ElfEhdr>()];
     elf_read_from(p, file, 0, &mut ehbytes).map_err(|e| (e, true))?;
     let Some(eh) = read_image!(ElfEhdr, &ehbytes, 0) else {
@@ -869,7 +870,7 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
                     pp.p_offset as i64,
                     UioSeg::UIO_SYSSPACE,
                     IO_UNIT,
-                    p.p_ucred.get(),
+                    p.ucred_ptr(),
                     None,
                     Some(p),
                 ),
@@ -1240,7 +1241,6 @@ mod tests {
     // program headers, OpenBSD note, `PT_OPENBSD_SYSCALLS` table and the vmcmds a PIE load
     // produces.
 
-    use std::boxed::Box;
     use std::path::PathBuf;
     use std::vec::Vec;
     use std::{assert, assert_eq, eprintln, fs, vec};
@@ -1252,7 +1252,7 @@ mod tests {
 
     /// A thread for the reads: an image read never looks at it.
     fn test_proc() -> &'static Proc {
-        Box::leak(Box::new(Proc::new()))
+        crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1))
     }
 
     /// A note: the header, the name padded to 4 bytes, the descriptor padded to 4 bytes.

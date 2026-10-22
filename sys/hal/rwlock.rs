@@ -240,6 +240,11 @@
 //!   ([`Guarded::new_static_mutexed`], a key holding the mutex's owner word, as
 //!   [`Guarded::new_static`] holds a static rwlock): the fields of every timeout under
 //!   timeout(9)'s one `timeout_mutex`, initialised by `TIMEOUT_INITIALIZER`.
+//! - N4.2: the kernel lock's witnesses, `hal::klock::KernelWitness` (exclusive, divisible)
+//!   and `KernelReader` (shared), open cells made by [`Guarded::new_kernel`] (the C's `[K]`
+//!   state: the process lists and links); the lock is held by the running CPU while one
+//!   lives and the per-CPU count of `hal::klock` keeps the writer and the readers apart on it
+//!   (that module's notes).
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -250,6 +255,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::{hal_panic, kassert};
 use crate::bridges;
+use crate::klock::{self, KernelReader, KernelWitness};
 use crate::mutex::{Mutexed, MutexedGuard};
 use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
 use crate::sleep::{self, INFSLP, PCATCH, PLOCK, PRIMASK, chan};
@@ -1381,6 +1387,16 @@ impl<T> Guarded<T> {
         }
     }
 
+    /// `value`, kept under the kernel lock (the C's `[K]` members), made in a `const`
+    /// context (a `static` process, a value being built); its witnesses are
+    /// `hal::klock::witness` and `hal::klock::reader`.
+    pub const fn new_kernel(value: T) -> Self {
+        Self {
+            key: Key::StaticMutex(&klock::KERNEL_LOCK_ID),
+            data: UnsafeCell::new(value),
+        }
+    }
+
     /// The value, for the holder of `w`, a witness that opens the cell (of its lock, in
     /// either mode; a part of its part); any other witness is `panic(9)`. The reference
     /// borrows the cell and the witness, so it ends before the witness sleeps, upgrades or
@@ -1389,7 +1405,10 @@ impl<T> Guarded<T> {
     pub fn get<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> &'a T {
         self.check(w);
         // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, an
-        // `RwWitness` holding one of the two, a `MutexedGuard`, or a `WitnessPart`) that opens
+        // `RwWitness` holding one of the two, a `MutexedGuard`, a `WitnessPart`, or the kernel
+        // lock's `KernelWitness` or `KernelReader`, which `hal::klock` keeps apart per CPU as
+        // the lock keeps them apart across CPUs, and whose lock is not released while one is
+        // out, its release paths' contract) that opens
         // this cell (checked just above), so its lock is held and every reference alive into
         // the data comes from the witnesses that open it (the type's invariant). A `&mut T`
         // exists only through `get_mut`, which needs the one exclusive witness that opens the
@@ -1409,8 +1428,9 @@ impl<T> Guarded<T> {
     #[inline]
     pub fn get_mut<'a, W: Exclusive + ?Sized>(&'a self, w: &'a mut W) -> &'a mut T {
         self.check(w);
-        // SAFETY: `w` is an exclusive witness (sealed: a `WriteWitness`, a `MutexedGuard` or a
-        // `WitnessPart`) that opens this cell (checked above): the lock is held alone (no
+        // SAFETY: `w` is an exclusive witness (sealed: a `WriteWitness`, a `MutexedGuard`, a
+        // `WitnessPart`, or the kernel lock's `KernelWitness`, alone on its CPU by
+        // `hal::klock`'s count) that opens this cell (checked above): the lock is held alone (no
         // read witness and no other writer or guard exists), and of its witnesses only `w`
         // opens the cell now. A whole witness opens nothing while it is split (its parts
         // borrow it mutably), so if `w` is whole no part exists; if `w` is a part, its whole
@@ -1522,10 +1542,11 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// A proof of holding a lock: a reader-writer lock in either mode, or a [`Mutexed`]; what
-/// [`Guarded::get`] checks. Sealed: [`WriteWitness`], [`ReadWitness`], [`RwWitness`] (which
-/// is one of them), a [`MutexedGuard`] and a [`WitnessPart`] are the only witnesses, so no
-/// other type can claim a lock it does not hold.
+/// A proof of holding a lock: a reader-writer lock in either mode, a [`Mutexed`], or the
+/// kernel lock; what [`Guarded::get`] checks. Sealed: [`WriteWitness`], [`ReadWitness`],
+/// [`RwWitness`] (which is one of them), a [`MutexedGuard`], a [`WitnessPart`],
+/// [`KernelWitness`] and [`KernelReader`] are the only witnesses, so no other type can claim
+/// a lock it does not hold.
 pub trait Witness: sealed::Sealed {
     /// The identity of the lock this witness holds.
     fn lock_id(&self) -> LockId;
@@ -1539,12 +1560,12 @@ pub trait Witness: sealed::Sealed {
 
 /// A witness that holds its lock alone and so opens its cells mutably
 /// ([`Guarded::get_mut`]): [`WriteWitness`], a [`MutexedGuard`] (the one holder of a
-/// mutex, the same proof as a writer's), and a [`WitnessPart`] (for its part). Sealed, as
-/// [`Witness`].
+/// mutex, the same proof as a writer's), [`KernelWitness`], and a [`WitnessPart`] (for its
+/// part). Sealed, as [`Witness`].
 pub trait Exclusive: Witness {}
 
 /// An exclusive witness of a whole lock, divisible into parts that open disjoint cells at
-/// once: [`WriteWitness`] and [`MutexedGuard`]. Sealed, as [`Witness`].
+/// once: [`WriteWitness`], [`MutexedGuard`] and [`KernelWitness`]. Sealed, as [`Witness`].
 pub trait Divisible: Exclusive {
     /// The witness divided into `N` parts (`N` at most [`WITNESS_PARTS`]), numbered `0..N`,
     /// each opening the cells of its number ([`Guarded::keyed`]); the witness is borrowed
@@ -1615,6 +1636,28 @@ impl Witness for ReadWitness<'_> {
     #[inline]
     fn lock_id(&self) -> LockId {
         self.lock.id()
+    }
+}
+
+impl sealed::Sealed for KernelWitness {}
+
+impl Witness for KernelWitness {
+    #[inline]
+    fn lock_id(&self) -> LockId {
+        klock::kernel_lock_id()
+    }
+}
+
+impl Exclusive for KernelWitness {}
+
+impl Divisible for KernelWitness {}
+
+impl sealed::Sealed for KernelReader {}
+
+impl Witness for KernelReader {
+    #[inline]
+    fn lock_id(&self) -> LockId {
+        klock::kernel_lock_id()
     }
 }
 

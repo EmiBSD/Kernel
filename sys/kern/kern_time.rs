@@ -80,7 +80,6 @@ use crate::kern::kern_clock::{STATHZ, hardclock_period};
 use crate::kern::kern_clockintr::clockrequest_advance;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_pledge::pledge_adjtime;
-use crate::kern::kern_proc::tfind_user;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_resource::{tuagg_get_proc, tuagg_get_process};
 use crate::kern::kern_rwlock::{
@@ -95,6 +94,7 @@ use crate::kern::kern_tc::{
     tc_adjfreq, tc_adjtime, tc_getfrequency, tc_getprecision, tc_setclock, tc_setrealtimeclock,
 };
 use crate::kern::kern_timeout::{timeout_abs_ts, timeout_add_sec, timeout_del};
+use crate::kern::proc_glue::tfind_user;
 use crate::kprintf;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin_obj, copyout, copyout_obj};
@@ -175,25 +175,28 @@ pub fn clock_gettime(p: &Proc, clock_id: Clockid) -> Result<Timespec, Errno> {
             let tp = nanouptime();
             tuagg_get_process(&tu, p.process());
             let tp = timespecsub(&tp, &spc_runtime());
-            Ok(timespecadd(&tp, &tu.tu_runtime.get()))
+            Ok(timespecadd(&tp, &tu.tu_runtime.get().into()))
         }
         CLOCK_THREAD_CPUTIME_ID => {
             let tu = Tusage::new();
             let tp = nanouptime();
             tuagg_get_proc(&tu, p);
             let tp = timespecsub(&tp, &spc_runtime());
-            Ok(timespecadd(&tp, &tu.tu_runtime.get()))
+            Ok(timespecadd(&tp, &tu.tu_runtime.get().into()))
         }
         _ => {
             // check for clock from pthread_getcpuclockid()
             if clock_type(clock_id) == CLOCK_THREAD_CPUTIME_ID {
                 kernel_lock(); // KERNEL_LOCK()
-                let error = match tfind_user(clock_ptid(clock_id), p.process()) {
-                    None => Err(Errno::ESRCH),
-                    Some(q) => {
-                        let tu = Tusage::new();
-                        tuagg_get_proc(&tu, q);
-                        Ok(tu.tu_runtime.get())
+                let error = {
+                    let r = hal::klock::reader();
+                    match tfind_user(&r, clock_ptid(clock_id), p.process()) {
+                        None => Err(Errno::ESRCH),
+                        Some(q) => {
+                            let tu = Tusage::new();
+                            tuagg_get_proc(&tu, q);
+                            Ok(tu.tu_runtime.get().into())
+                        }
                     }
                 };
                 kernel_unlock(); // KERNEL_UNLOCK()
@@ -262,12 +265,15 @@ pub fn sys_clock_getres(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> R
             // check for clock from pthread_getcpuclockid()
             if clock_type(clock_id) == CLOCK_THREAD_CPUTIME_ID {
                 kernel_lock(); // KERNEL_LOCK()
-                let error = match tfind_user(clock_ptid(clock_id), p.process()) {
-                    None => Err(Errno::ESRCH),
-                    Some(_) => {
-                        ts.tv_nsec = 1_000_000_000 / stathz();
-                        Ok(())
-                    }
+                let found = {
+                    let r = hal::klock::reader();
+                    tfind_user(&r, clock_ptid(clock_id), p.process()).is_some()
+                };
+                let error = if found {
+                    ts.tv_nsec = 1_000_000_000 / stathz();
+                    Ok(())
+                } else {
+                    Err(Errno::ESRCH)
                 };
                 kernel_unlock(); // KERNEL_UNLOCK()
                 error
@@ -510,12 +516,14 @@ pub fn setitimer(which: i32, itv: Option<&Itimerval>, olditv: Option<&mut Itimer
         it_interval: timeval_to_timespec(&itv.it_interval),
     });
 
-    if which == ITIMER_REAL {
-        mtx_enter(&pr.ps_mtx);
+    let g_pr = if which == ITIMER_REAL {
+        let g = pr.ps_mtx.lock();
         now = nanouptime();
+        Some(g)
     } else {
         mtx_enter(&ITIMER_MTX);
-    }
+        None
+    };
 
     let mut oldits = Itimerspec::new();
     if olditv.is_some() {
@@ -538,7 +546,7 @@ pub fn setitimer(which: i32, itv: Option<&Itimerval>, olditv: Option<&mut Itimer
     }
 
     if which == ITIMER_REAL {
-        mtx_leave(&pr.ps_mtx);
+        drop(g_pr);
     } else {
         mtx_leave(&ITIMER_MTX);
     }
@@ -631,7 +639,7 @@ pub fn realitexpire(arg: *mut c_void) {
     let tp = &pr.ps_timer[ITIMER_REAL as usize];
     let mut need_signal = false;
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
 
     'out: {
         let mut t = tp.get();
@@ -662,7 +670,7 @@ pub fn realitexpire(arg: *mut c_void) {
         }
     }
 
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 
     if need_signal {
         prsignal(pr, SIGALRM);

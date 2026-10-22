@@ -330,7 +330,7 @@ mod tests {
     // other commands, and `bio_status`'s message buffer.
 
     use std::alloc::{Layout, alloc_zeroed};
-    use std::boxed::Box;
+
     use std::ffi::CString;
     use std::string::String;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -354,7 +354,7 @@ mod tests {
     }
 
     fn proc() -> &'static Proc {
-        Box::leak(Box::new(Proc::new()))
+        crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1))
     }
 
     /// The last command a fake controller was handed.

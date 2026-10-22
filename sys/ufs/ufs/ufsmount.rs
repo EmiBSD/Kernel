@@ -72,12 +72,11 @@
 //!   case.
 
 use core::cell::Cell;
-use core::ptr;
 
 use crate::kern::subr_prf::panic;
 use crate::sys::mount::{Mount, Netexport};
 use crate::sys::types::{Daddr, Dev, Time};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::CredSlot;
 use crate::sys::vnode::Vnode;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ext2fs::ext2fs::{Ext2fs, MExt2fs};
@@ -102,8 +101,9 @@ pub struct Ufsmount {
     pub um_e2fs: Cell<Option<&'static MExt2fs>>,
     /// `um_quotas`: pointer to quota files.
     pub um_quotas: [Cell<Option<&'static Vnode>>; MAXQUOTAS],
-    /// `um_cred`: quota file access cred.
-    pub um_cred: [Cell<*const Ucred>; MAXQUOTAS],
+    /// `um_cred`: quota file access cred (the mount's reference while the quota file is
+    /// open; empty, the C's NULL or `NOCRED`, while it is not).
+    pub um_cred: [CredSlot; MAXQUOTAS],
     /// `um_nindir`: indirect ptrs per block.
     pub um_nindir: Cell<u64>,
     /// `um_bptrtodb`: indir ptr to disk block.
@@ -140,7 +140,7 @@ impl Ufsmount {
             #[cfg(feature = "ext2fs")]
             um_e2fs: Cell::new(None),
             um_quotas: [const { Cell::new(None) }; MAXQUOTAS],
-            um_cred: [const { Cell::new(ptr::null()) }; MAXQUOTAS],
+            um_cred: [const { CredSlot::new() }; MAXQUOTAS],
             um_nindir: Cell::new(0),
             um_bptrtodb: Cell::new(0),
             um_seqinc: Cell::new(0),

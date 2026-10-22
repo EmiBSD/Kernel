@@ -247,3 +247,15 @@ paid_by = "N4"
 trait = "VmSysctl"
 for = ["sys/kernel/vm/meter.rs"]
 paid_by = "N4"
+
+# bsd: the members of bsd's subsystems a process, thread, group and session carry (sigacts,
+# the descriptor tables, the kqueues, the timeouts, the unveil table, the klist and its mutex,
+# the run-queue link), the tables' storage, and the hooks into kern_sig (pgsignal, prsignal),
+# tty (a session's hang-up, a group's terminal) and kern_timeout (s_verauthto); implemented by
+# sys/kern/proc_glue.rs (BsdProcGlue, N4.2), which kernel::proc receives as its type
+# parameter. N4.7, when the signals, the descriptors and the terminal move.
+# kernel::proc::ProcGlue
+[[bridge]]
+trait = "ProcGlue"
+for = ["sys/kernel/proc.rs"]
+paid_by = "N4"

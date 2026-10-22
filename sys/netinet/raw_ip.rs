@@ -732,7 +732,7 @@ mod tests {
     use std::{assert, assert_eq, vec};
 
     use super::*;
-    use crate::kern::kern_prot::crget;
+
     use crate::kern::uipc_mbuf::{m_copydata, m_gethdr};
     use crate::kern::uipc_socket::{soclose, socreate};
     use crate::kern::uipc_socket2::{solock, sounlock};
@@ -918,9 +918,9 @@ mod tests {
         soclose(any, 0).expect("close");
 
         // An unprivileged process may not open a raw socket.
-        let cr = crget();
+        let mut cr = crate::sys::ucred::Ucred::new();
         cr.cr_uid.set(1000);
-        p.p_ucred.set(cr);
+        drop(p.set_cred(crate::sys::ucred::CredRef::new(cr)));
         assert_eq!(
             socreate(i32::from(AF_INET), SOCK_RAW, IPPROTO_ICMP).err(),
             Some(Errno::EACCES)

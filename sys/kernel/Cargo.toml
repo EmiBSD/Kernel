@@ -44,5 +44,14 @@ path = "benches/timeout.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of N4.2's hot paths (decision 43; benches/proc.rs): the credentials,
+# the limit read, the process lists, over the doubles, never a kernel image:
+# `cargo bench -p kernel --features doubles --bench proc [--profile dev]`.
+[[bench]]
+name = "proc"
+path = "benches/proc.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

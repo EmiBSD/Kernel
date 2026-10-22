@@ -52,6 +52,7 @@ use core::arch::asm;
 use core::ptr;
 
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 
 /// `__aarch64_set_tcb(tcb)`: loads the user thread pointer register.
 #[inline]

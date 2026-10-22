@@ -181,7 +181,7 @@ use crate::sys::stat::{
 };
 use crate::sys::systm::{INFSLP, kernel_assert_locked};
 use crate::sys::types::{Dev, Gid, Mode, Uid, major, makedev, minor};
-use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::ucred::{NOCRED, Ucred, Xucred};
 use crate::sys::vnode::VN_KNOTE;
 use crate::sys::vnode::{
     BVnbufs, Buflists, DOCLOSE, FORCECLOSE, IGNORECLEAN, REVOKEALL, SKIPSYSTEM, V_SAVE, V_SAVEMETA,
@@ -1462,6 +1462,15 @@ const KEYLEN_PAD: usize = 64;
 /// Build hash lists of net addresses and hang them off the mount point. Called by
 /// `vfs_export()` to set up the lists of export addresses.
 #[cfg(feature = "nfsserver")]
+/// `crfromxucred(&np->netc_anon, &argp->ex_anon)`: the entry's anonymous credential takes
+/// the ids userland gave, or stays as it was when they are invalid.
+fn netc_anon_fill(np: &Netcred, x: &Xucred) -> Result<(), Errno> {
+    let mut cr = Ucred::new();
+    crfromxucred(&mut cr, x.cr_uid, x.cr_gid, x.cr_ngroups, &x.cr_groups)?;
+    np.netc_anon.assign(&cr);
+    Ok(())
+}
+
 fn vfs_hang_addrlist(
     mp: &'static Mount,
     nep: &'static Netexport,
@@ -1473,7 +1482,7 @@ fn vfs_hang_addrlist(
         }
         let np = &nep.ne_defexported;
         // fill in the kernel's ucred from userspace's xucred
-        crfromxucred(&np.netc_anon, &argp.ex_anon)?;
+        netc_anon_fill(np, &argp.ex_anon)?;
         mp.mnt_flag.set(mp.mnt_flag.get() | MNT_DEFEXPORTED);
         np.netc_exflags.set(argp.ex_flags);
         return Ok(());
@@ -1534,7 +1543,7 @@ fn vfs_hang_addrlist(
         smask = m;
     }
     // fill in the kernel's ucred from userspace's xucred
-    if let Err(e) = crfromxucred(&np.netc_anon, &argp.ex_anon) {
+    if let Err(e) = netc_anon_fill(np, &argp.ex_anon) {
         free_np();
         return Err(e);
     }
@@ -1810,7 +1819,7 @@ pub fn vfs_stall(p: &Proc, stall: bool) -> Result<(), Errno> {
                 continue;
             }
             uvm_vnp_sync(Some(mp));
-            if let Err(error) = VFS_SYNC(mp, MNT_WAIT, 1, p.p_ucred.get(), p) {
+            if let Err(error) = VFS_SYNC(mp, MNT_WAIT, 1, p.ucred_ptr(), p) {
                 kprintf!("{}: failed to sync\n", name);
                 vfs_unbusy(mp);
                 allerror = Err(error);
@@ -2298,16 +2307,15 @@ pub(crate) mod tests {
     // `namei`, name cache and `getcwd` tests share.
 
     use std::sync::MutexGuard;
-    use std::{assert, assert_eq, boxed::Box};
+    use std::{assert, assert_eq};
 
     use super::*;
     use crate::kern::kern_descrip::{fdinit, filedesc_init};
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
+    use crate::kern::proc_glue::{procinit, test_proc};
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::kern::vfs_cache::{NUMCACHE, NUMNEG};
     use crate::kern::vfs_init::{set_rootvnode, vfsinit};
-    use crate::sys::proc::Process;
 
     /// `testfs`: the file system the vfs tests mount as root.
     pub(crate) mod testfs {
@@ -2785,13 +2793,8 @@ pub(crate) mod tests {
         testfs::reset();
         set_rootvnode(None);
 
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let p = test_proc(1, crget());
+        let pr = p.process();
         let fdp = fdinit();
         pr.ps_fd.set(fdp);
         p.p_fd.set(fdp);
@@ -2819,27 +2822,27 @@ pub(crate) mod tests {
     #[test]
     fn vaccess_checks_owner_then_group_then_others() {
         let _g = setup();
-        let cr = crget();
+        let mut cr = Ucred::new();
         cr.cr_uid.set(1000);
         cr.cr_gid.set(10);
         cr.cr_ngroups.set(1);
         cr.cr_groups[0].set(10);
         // The owner's bits decide for the owner, even when others may.
         assert_eq!(
-            vaccess(VREG, 0o077, 1000, 20, VREAD, cr),
+            vaccess(VREG, 0o077, 1000, 20, VREAD, &cr),
             Err(Errno::EACCES)
         );
-        assert_eq!(vaccess(VREG, 0o600, 1000, 20, VREAD | VWRITE, cr), Ok(()));
+        assert_eq!(vaccess(VREG, 0o600, 1000, 20, VREAD | VWRITE, &cr), Ok(()));
         // Then the group.
-        assert_eq!(vaccess(VREG, 0o040, 0, 10, VREAD, cr), Ok(()));
-        assert_eq!(vaccess(VREG, 0o040, 0, 10, VWRITE, cr), Err(Errno::EACCES));
+        assert_eq!(vaccess(VREG, 0o040, 0, 10, VREAD, &cr), Ok(()));
+        assert_eq!(vaccess(VREG, 0o040, 0, 10, VWRITE, &cr), Err(Errno::EACCES));
         // Then everyone else.
-        assert_eq!(vaccess(VDIR, 0o001, 0, 0, VEXEC, cr), Ok(()));
+        assert_eq!(vaccess(VDIR, 0o001, 0, 0, VEXEC, &cr), Ok(()));
         // Root reads anything, but executes only something executable (directories search).
         cr.cr_uid.set(0);
-        assert_eq!(vaccess(VREG, 0o000, 1, 1, VREAD | VWRITE, cr), Ok(()));
-        assert_eq!(vaccess(VREG, 0o644, 1, 1, VEXEC, cr), Err(Errno::EACCES));
-        assert_eq!(vaccess(VDIR, 0o000, 1, 1, VEXEC, cr), Ok(()));
+        assert_eq!(vaccess(VREG, 0o000, 1, 1, VREAD | VWRITE, &cr), Ok(()));
+        assert_eq!(vaccess(VREG, 0o644, 1, 1, VEXEC, &cr), Err(Errno::EACCES));
+        assert_eq!(vaccess(VDIR, 0o000, 1, 1, VEXEC, &cr), Ok(()));
     }
 
     #[test]

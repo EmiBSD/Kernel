@@ -145,6 +145,7 @@ use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::param::USPACE;
+use crate::sys::proc::ProcExt;
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::sys::sched::{CPUTYP_E, CPUTYP_L, CPUTYP_P};
 use crate::sys::task::Task;
@@ -2571,8 +2572,8 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     };
     let pcb = p.pcb();
 
-    let tf = stackalign(p.p_addr.get() as usize + USPACE - size_of::<Trapframe>() - 0x10)
-        as *mut Trapframe;
+    let tf =
+        stackalign(p.uarea() as usize + USPACE - size_of::<Trapframe>() - 0x10) as *mut Trapframe;
     pcb.pcb_tf.set(tf);
 
     let sf = (tf as *mut Switchframe).wrapping_sub(1);

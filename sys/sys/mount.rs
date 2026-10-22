@@ -107,7 +107,7 @@ use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::sysctl::Sysctlfn;
 use crate::sys::types::{Gid, Ino, Mode, Off, Uid};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::vnode::{VMntvnodes, Vnode};
 
 /// `fsid_t`: file system id type.
@@ -1096,8 +1096,9 @@ pub struct Netcred {
     pub netc_exflags: Cell<i32>,
     /// `netc_len`: size of the allocation.
     pub netc_len: Cell<i32>,
-    /// `netc_anon`: the credentials anonymous clients map to.
-    pub netc_anon: Ucred,
+    /// `netc_anon`: the credentials anonymous clients map to (the entry's own, filled in
+    /// place by `vfs_hang_addrlist`).
+    pub netc_anon: UcredCell,
 }
 
 // SAFETY: the members are changed under the kernel lock while the file system's export
@@ -1112,7 +1113,7 @@ impl Netcred {
             netc_rnodes: [RadixNode::new(), RadixNode::new()],
             netc_exflags: Cell::new(0),
             netc_len: Cell::new(0),
-            netc_anon: Ucred::new(),
+            netc_anon: UcredCell::new(),
         }
     }
 }

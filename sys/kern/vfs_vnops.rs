@@ -152,7 +152,7 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
     // SAFETY: `cn_proc` is the thread doing the open (`ndinitat`), which outlives it; the
     // reference is detached from `ndp` so `ndp` can be changed below.
     let p: &Proc = unsafe { &*ndp.ni_cnd.cn_proc };
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
     let mut va = Vattr::new();
 
     // The only valid flags to pass in here from NDINIT are KERNELPATH or BYPASSUNVEIL. This
@@ -525,7 +525,7 @@ pub fn vn_statfile(fp: &File, sb: &mut Stat, p: &Proc) -> Result<(), Errno> {
 pub fn vn_stat(vp: &'static Vnode, sb: &mut Stat, p: &Proc) -> Result<(), Errno> {
     let mut va = Vattr::new();
 
-    VOP_GETATTR(vp, &mut va, p.p_ucred.get(), p)?;
+    VOP_GETATTR(vp, &mut va, p.ucred_ptr(), p)?;
     // Copy from vattr table
     *sb = Stat::default();
     sb.st_dev = va.va_fsid as i32;
@@ -570,7 +570,7 @@ pub fn vn_ioctl(fp: &File, com: u64, data: &mut [u8], p: &Proc) -> Result<(), Er
     match vp.v_type.get() {
         VREG | VDIR => {
             if com == FIONREAD {
-                error = VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p);
+                error = VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p);
                 if error.is_ok() {
                     let n = (vattr.va_size as i64).wrapping_sub(crate::sys::file::foffset(fp));
                     if let Some(out) = data.get_mut(..size_of::<i32>()) {
@@ -584,17 +584,17 @@ pub fn vn_ioctl(fp: &File, com: u64, data: &mut [u8], p: &Proc) -> Result<(), Er
         }
 
         VFIFO | VCHR | VBLK => {
-            error = VOP_IOCTL(vp, com, data, fp.flag(), p.p_ucred.get(), p);
-            if error.is_ok() && com == TIOCSCTTY {
-                // SAFETY: the process's group and session are alive while it is.
-                let s = unsafe { &*p.process().session() };
+            error = VOP_IOCTL(vp, com, data, fp.flag(), p.ucred_ptr(), p);
+            if error.is_ok()
+                && com == TIOCSCTTY
+                && let Some(s) = crate::kern::proc_glue::session_of(p.process())
+            {
+                // `s_ttyvp` holds a use count on its vnode; vnodes are never freed.
                 let ovp = s.s_ttyvp.get();
-                s.s_ttyvp.set(ptr::from_ref(vp).cast());
+                s.s_ttyvp.set(Some(vp));
                 vref(vp);
-                if !ovp.is_null() {
-                    // SAFETY: `s_ttyvp` only ever holds a vnode stored here, which holds a
-                    // use count on it; vnodes are never freed.
-                    vrele(unsafe { &*ovp.cast::<Vnode>() });
+                if let Some(ovp) = ovp {
+                    vrele(ovp);
                 }
             }
         }
@@ -687,7 +687,7 @@ pub fn vn_kqfilter(fp: &File, kn: &Knote) -> Result<(), Errno> {
 
 /// `vn_seek(fp, offset, whence, p)`: the file table's `lseek` of a vnode.
 pub fn vn_seek(fp: &File, offset: &mut Off, whence: i32, p: &Proc) -> Result<(), Errno> {
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
     let vp = fp.vnode();
     let mut vattr = Vattr::new();
 
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(st.st_mode, S_IFREG | 0o755);
         assert_eq!((st.st_ino, st.st_size, st.st_blocks), (102, 512, 1));
         let _ = VOP_UNLOCK(vp);
-        vn_close(vp, FREAD, p.p_ucred.get(), Some(p)).unwrap();
+        vn_close(vp, FREAD, p.ucred_ptr(), Some(p)).unwrap();
         assert!(!any_locked());
 
         // A directory cannot be opened for writing; O_DIRECTORY wants one; a symbolic link

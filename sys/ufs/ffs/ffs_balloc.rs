@@ -126,7 +126,7 @@ unsafe fn bdata(bp: &Buf) -> &mut [u8] {
 /// `VOP_FSYNC(vp, p->p_ucred, MNT_WAIT, p)` with `curproc`.
 fn fsync_wait(vp: &'static Vnode) {
     if let Some(p) = curproc() {
-        let _ = VOP_FSYNC(vp, p.p_ucred.get(), MNT_WAIT, p);
+        let _ = VOP_FSYNC(vp, p.ucred_ptr(), MNT_WAIT, p);
     }
 }
 

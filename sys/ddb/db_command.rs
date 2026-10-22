@@ -84,6 +84,9 @@
 //! run commands end the loop.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): `show proc /t` answers "kernel lock not held" when ddb was
+//!   entered on a CPU that does not hold the kernel lock (the tid hash opens only through
+//!   the lock's reader).
 //! - `db_error` does not `longjmp` to `db_recover`: it returns a [`DbError`], which every
 //!   function that can reach it propagates as the `Err` of a [`DbResult`] up to
 //!   `db_command_loop`, where the C's `setjmp` was (`docs/C_TO_RUST.md`). Commands are
@@ -134,8 +137,8 @@ use crate::ddb::db_run::{
 };
 use crate::ddb::db_variables::{DB_MAXOFF, db_read_variable, db_set_cmd};
 use crate::kern::init_main::PROC0;
-use crate::kern::kern_proc::tfind;
 use crate::kern::kern_xxx::reboot;
+use crate::kern::proc_glue::tfind;
 use crate::kern::subr_log::msgbufp;
 use crate::kern::subr_pool::{PoolWalkPr, pool_walk};
 use crate::kern::subr_prf::{Str, db_printf, panicstr_message};
@@ -623,7 +626,14 @@ fn db_proc_print_cmd(addr: DbExpr, have_addr: bool, _count: DbExpr, modif: &[u8]
         addr = curproc().map_or(0, |p| core::ptr::from_ref(p) as DbExpr);
     }
     if modif.first() == Some(&b't') {
-        addr = tfind(addr as i32).map_or(0, |p| core::ptr::from_ref(p) as DbExpr);
+        // The tid hash is `[K]`: it opens through a reader of the kernel lock, which only
+        // the CPU holding that lock can make; ddb entered without it says so.
+        if !hal::klock::kernel_lock_held() {
+            db_printf(format_args!("kernel lock not held\n"));
+            return Ok(());
+        }
+        let r = hal::klock::reader();
+        addr = tfind(&r, addr as i32).map_or(0, |p| core::ptr::from_ref(p) as DbExpr);
         if addr == 0 {
             db_printf(format_args!("not found\n"));
             return Ok(());

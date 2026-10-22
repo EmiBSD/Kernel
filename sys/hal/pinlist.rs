@@ -507,6 +507,39 @@ impl<A: PinAdapter> PinList<A> {
         self.append(n);
     }
 
+    /// `TAILQ_INSERT_AFTER(head, after, e)` (and `LIST_INSERT_AFTER`): `e` follows `after`,
+    /// which must be on this list; constant time. Panics, before anything is changed, when
+    /// `after` is on no list of this lock or is the last element of another list, and when
+    /// `e` is on a list.
+    pub fn insert_after<W: Divisible + ?Sized>(
+        &self,
+        w: &mut W,
+        after: &A::Elem,
+        e: Pin<&A::Elem>,
+    ) {
+        let id = id_of(w);
+        bind(&self.key, id, "TAILQ_INSERT_AFTER");
+        let at = linked_entry::<A>(after, id, "TAILQ_INSERT_AFTER");
+        let me = Some(at.addr());
+        let next = at.next.get();
+        // The one end this insert writes through the head: refused when `after` ends
+        // another list (in the middle, `after`'s own links keep its list whole).
+        if next.is_none() && self.head.prev.get() != me {
+            hal_panic(format_args!(
+                "TAILQ_INSERT_AFTER: the element is on another list"
+            ));
+        }
+        let n = link::<A>(e, id, "TAILQ_INSERT_AFTER");
+        let ent = entry_at(n);
+        ent.next.set(next);
+        ent.prev.set(me);
+        match next {
+            Some(nx) => entry_at(nx).prev.set(Some(n)),
+            None => self.head.prev.set(Some(n)),
+        }
+        at.next.set(Some(n));
+    }
+
     /// `TAILQ_INSERT_TAIL` of an element that may be on a list already (of this lock, or of
     /// another whose holder linked it meanwhile): `false`, nothing changed, when it is. The
     /// test that decides is the claim of its entry itself, so it races with no other insert
@@ -1202,6 +1235,87 @@ mod tests {
         l1.remove(&mut m1.lock(), &a);
         assert!(l2.try_insert_tail(&mut m2.lock(), a.as_ref()), "free again");
         l2.remove(&mut m2.lock(), &a);
+    }
+
+    #[test]
+    fn insert_after_puts_the_element_behind_its_neighbour() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut g = m.lock();
+        let l: PinList<ByE> = PinList::new();
+        let a = core::pin::pin!(Node::new(1));
+        let b = core::pin::pin!(Node::new(2));
+        let c = core::pin::pin!(Node::new(3));
+        let d = core::pin::pin!(Node::new(4));
+        l.insert_head(&mut g, a.as_ref());
+        // After the last element: it becomes the tail.
+        l.insert_after(&mut g, &a, b.as_ref());
+        assert_eq!(values(l.iter(&g)), [1, 2]);
+        assert_eq!(l.last(&g).map(|n| n.v), Some(2));
+        // In the middle: both neighbours' links follow.
+        l.insert_after(&mut g, &a, c.as_ref());
+        assert_eq!(values(l.iter(&g)), [1, 3, 2]);
+        l.insert_after(&mut g, &b, d.as_ref());
+        assert_eq!(values(l.iter(&g)), [1, 3, 2, 4]);
+        assert_eq!(l.next(&g, &c).map(|n| n.v), Some(2));
+        // The links stay whole for removal from either end and the middle.
+        l.remove(&mut g, &c);
+        l.remove(&mut g, &d);
+        assert_eq!(l.last(&g).map(|n| n.v), Some(2));
+        l.remove(&mut g, &a);
+        assert_eq!(l.first(&g).map(|n| n.v), Some(2));
+        l.remove(&mut g, &b);
+        assert!(l.is_empty(&g));
+    }
+
+    #[test]
+    #[should_panic(expected = "TAILQ_INSERT_AFTER: the element is on another list")]
+    fn insert_after_the_tail_of_another_list_is_refused() {
+        testutil::install();
+        let m = Box::leak(Box::new(Mutexed::new(IPL_NONE, ())));
+        let mut g = m.lock();
+        let l1: &PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let l2: &PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let a: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(1))));
+        let b: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(2))));
+        l1.insert_tail(&mut g, a);
+        l2.insert_after(&mut g, &a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "TAILQ_INSERT_AFTER: the element is not on a list of this lock")]
+    fn insert_after_an_unlinked_element_is_refused() {
+        testutil::install();
+        let m = Box::leak(Box::new(Mutexed::new(IPL_NONE, ())));
+        let mut g = m.lock();
+        let l: &PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let a: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(1))));
+        let b: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(2))));
+        l.insert_after(&mut g, &a, b);
+    }
+
+    #[test]
+    fn insert_after_leaves_everything_as_it_was_when_refused() {
+        // A refused insert (the element on a list already) changed nothing: the new element
+        // is claimed only after every check, so its own list is intact too.
+        testutil::install();
+        let m = Box::leak(Box::new(Mutexed::new(IPL_NONE, ())));
+        let l: &PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let a: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(1))));
+        let b: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(2))));
+        {
+            let mut g = m.lock();
+            l.insert_tail(&mut g, a);
+            l.insert_tail(&mut g, b);
+        }
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut g = m.lock();
+            l.insert_after(&mut g, &a, b);
+        }));
+        assert!(r.is_err());
+        let g = m.lock();
+        assert_eq!(values(l.iter(&g)), [1, 2]);
+        assert_eq!(l.last(&g).map(|n| n.v), Some(2));
     }
 }
 /* </TESTS> */

@@ -193,7 +193,7 @@ pub fn ntfs_checkexp(
     };
 
     *exflagsp = np.netc_exflags.get();
-    *credanonp = ptr::from_ref(&np.netc_anon);
+    *credanonp = ptr::from_ref(&*np.netc_anon);
     Ok(())
 }
 
@@ -334,7 +334,7 @@ pub fn ntfs_mountfs(
         return Err(Errno::EBUSY);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = vinvalbuf(devvp, V_SAVE, p.p_ucred.get(), Some(p), 0, INFSLP);
+    let error = vinvalbuf(devvp, V_SAVE, p.ucred_ptr(), Some(p), 0, INFSLP);
     let _ = VOP_UNLOCK(devvp);
     error?;
 

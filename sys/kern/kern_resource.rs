@@ -64,117 +64,84 @@
 //! `lim_write_begin`/`lim_write_commit`, `lim_read_enter`, `lim_cur_proc`), `rucheck`,
 //! `dosetrlimit`, `sys_setrlimit`, `sys_getrlimit`, `sys_getrusage` and `dogetrusage`, and
 //! with the credentials the priority syscalls (`sys_getpriority`, `sys_setpriority`,
-//! `donice`). The file is complete but for the KTRACE hooks, which are not configured.
+//! `donice`). The file is complete but for the KTRACE hooks, which are not configured. N4.2:
+//! the limits, the usage counters and their arithmetic are the kernel crate's
+//! (`kernel::resource`: `Plimit`/`PlimitRef`, `Rusage`, `Tusage`, `tuagg_sumup`, `calctsru`,
+//! `calcru`, `ruadd`, `lim_startup`, `lim_copy`, `lim_free`), re-exported here.
 //!
 //! ## Deviations
-//! - `tuagg_sumup` reads the source's fields one by one inside the `pc_cons` loop instead of
-//!   copying the struct: the fields are `Cell`s.
+//! - `struct plimit` is plain data shared through counted `PlimitRef`s, never written once
+//!   placed: `lim_write_begin` hands out a copy (always: a placed structure is never
+//!   writable, where the C writes in place when it is not shared) and `lim_write_commit`
+//!   places it. A thread's read reference `p_limit` is its own copy of the values
+//!   (`kernel::resource::LimitCache`), refreshed by `lim_read_enter` when the process's
+//!   limits changed.
+//! - The walks over a process's threads (`tuagg_get_process`, `dogetrusage`, `rucheck`,
+//!   `donice`) hold its `ps_mtx`, whose guard the thread list asks for; the C's
+//!   `dogetrusage` walks it under the kernel lock alone.
 //!   KTRACE is not configured.
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
+
+use hal::klock;
 
 use crate::conf::param::{MAXFILES, MAXPROCESS};
 use crate::kassert;
 use crate::kern::kern_clock::STATHZ;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
-use crate::kern::kern_proc::{ALLPROCESS, pgfind, prfind};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write};
 use crate::kern::kern_sig::prsignal;
-use crate::kern::kern_synch::{refcnt_init, refcnt_rele, refcnt_shared, refcnt_take};
 use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_timeout::timeout_add_msec;
+use crate::kern::proc_glue::{pgfind, prfind, proc_tables};
 use crate::kern::sched_bsd::{sched_lock, sched_unlock, setpriority};
-use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::{Cpu, curcpu, curproc};
-use crate::machine::intr::IPL_MPFLOOR;
 use crate::machine::{Machine as Md, VmParam};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
-use crate::sys::mutex::mutex_assert_locked;
 use crate::sys::param::NZERO;
-use crate::sys::param::{MAXUPRC, NOFILE, NOFILE_MAX};
-use crate::sys::pool::{PR_WAITOK, Pool};
-use crate::sys::proc::p_hassibling;
-use crate::sys::proc::{
-    Proc, ProcThrLink, Process, SDEAD, TU_ITICKS, TU_STICKS, TU_UTICKS, Tusage, tu_enter, tu_leave,
-};
-use crate::sys::queue::TailqHead;
-use crate::sys::resource::Rusage;
+use crate::sys::proc::{Proc, ProcExt, Process, SDEAD, Tusage, tu_enter, tu_leave};
 use crate::sys::resource::{PRIO_MAX, PRIO_MIN, PRIO_PGRP, PRIO_PROCESS, PRIO_USER};
 use crate::sys::resource::{
-    RLIM_INFINITY, RLIM_NLIMITS, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_NOFILE,
-    RLIMIT_NPROC, RLIMIT_RSS, RLIMIT_STACK, RUSAGE_CHILDREN, RUSAGE_SELF, RUSAGE_THREAD, Rlimit,
+    RLIM_INFINITY, RLIM_NLIMITS, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_NOFILE, RLIMIT_NPROC,
+    RLIMIT_STACK, RUSAGE_CHILDREN, RUSAGE_SELF, RUSAGE_THREAD, Rlimit, Rusage,
 };
-use crate::sys::resourcevar::{Plimit, lim_read_leave};
+use crate::sys::resourcevar::{LimitCache, Plimit, PlimitRef, lim_read_leave};
 use crate::sys::rwlock::Rwlock;
 use crate::sys::signal::{SIGKILL, SIGXCPU};
 use crate::sys::syscallargs::{
     SysGetpriorityArgs, SysGetrlimitArgs, SysGetrusageArgs, SysSetpriorityArgs, SysSetrlimitArgs,
 };
 use crate::sys::systm::{SysArgs, kernel_assert_locked, sysargs};
-use crate::sys::time::{
-    Timespec, Timeval, timeradd, timespec_to_timeval, timespecadd, timespecsub,
-};
+use crate::sys::time::{Timespec, timespecsub};
 use crate::sys::types::Pid;
 use crate::sys::types::{Register, Rlim};
-use hal::vm::param::{ptoa, round_page, trunc_page};
-use hal::vm::uvmexp::UVMEXP;
+use hal::vm::param::{round_page, trunc_page};
 use kernel::vm::map::UVM_ET_STACK;
 use kernel::vm::map::uvm_map_protect;
 
-/// `tuagg_sumup`: add the counts from `from` to `tu`, ensuring a consistent read of `from`.
-pub fn tuagg_sumup(tu: &Tusage, from: &Tusage) {
-    let mut generation = 0;
-    let (mut uticks, mut sticks, mut iticks, mut ixrss, mut idrss, mut isrss, mut runtime);
-
-    pc_cons_enter(&from.tu_pcl, &mut generation);
-    loop {
-        uticks = from.tu_ticks[TU_UTICKS].get();
-        sticks = from.tu_ticks[TU_STICKS].get();
-        iticks = from.tu_ticks[TU_ITICKS].get();
-        ixrss = from.tu_ixrss.get();
-        idrss = from.tu_idrss.get();
-        isrss = from.tu_isrss.get();
-        runtime = from.tu_runtime.get();
-        if !pc_cons_leave(&from.tu_pcl, &mut generation) {
-            break;
-        }
-    }
-
-    tu.tu_ticks[TU_UTICKS].set(tu.tu_ticks[TU_UTICKS].get().wrapping_add(uticks));
-    tu.tu_ticks[TU_STICKS].set(tu.tu_ticks[TU_STICKS].get().wrapping_add(sticks));
-    tu.tu_ticks[TU_ITICKS].set(tu.tu_ticks[TU_ITICKS].get().wrapping_add(iticks));
-    tu.tu_ixrss.set(tu.tu_ixrss.get().wrapping_add(ixrss));
-    tu.tu_idrss.set(tu.tu_idrss.get().wrapping_add(idrss));
-    tu.tu_isrss.set(tu.tu_isrss.get().wrapping_add(isrss));
-    tu.tu_runtime
-        .set(timespecadd(&tu.tu_runtime.get(), &runtime));
-}
+pub use kernel::resource::{lim_copy, lim_free, ruadd, tuagg_sumup};
 
 /// `tuagg_get_proc`: the usage of one thread.
 pub fn tuagg_get_proc(tu: &Tusage, p: &Proc) {
-    tuagg_clear(tu);
+    tu.clear();
     tuagg_sumup(tu, &p.p_tu);
 }
 
 /// `tuagg_get_process`: the usage of a process: its own plus all living threads.
 pub fn tuagg_get_process(tu: &Tusage, pr: &Process) {
-    tuagg_clear(tu);
+    tu.clear();
 
-    mtx_enter(&pr.ps_mtx);
+    let g = pr.ps_mtx.lock();
     tuagg_sumup(tu, &pr.ps_tu);
     // add on all living threads
-    let mut q = pr.ps_threads.first();
-    while let Some(thread) = q {
+    for thread in pr.ps_threads.iter(&g) {
         tuagg_sumup(tu, &thread.p_tu);
-        q = TailqHead::<ProcThrLink>::next(thread);
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g);
 }
 
 /// `tuagg_add_process`: update the process `ps_tu` usage with the values from proc `p`
@@ -182,27 +149,15 @@ pub fn tuagg_get_process(tu: &Tusage, pr: &Process) {
 /// `curproc` or `SDEAD` and that the IPL is higher than `IPL_STATCLOCK`. `ps_mtx` uses
 /// `IPL_HIGH` so this should always be the case.
 pub fn tuagg_add_process(pr: &Process, p: &Proc) {
-    mutex_assert_locked(&pr.ps_mtx, "tuagg_add_process");
-    kassert!(curproc().is_some_and(|cur| core::ptr::eq(cur, p)) || p.p_stat.get() == SDEAD);
+    kassert!(pr.ps_mtx.owned());
+    kassert!(curproc().is_some_and(|cur| core::ptr::eq(cur, p)) || p.stat() == SDEAD);
 
     let generation = tu_enter(&pr.ps_tu);
     tuagg_sumup(&pr.ps_tu, &p.p_tu);
     tu_leave(&pr.ps_tu, generation);
 
     // Now reset CPU time usage for the thread.
-    tuagg_clear(&p.p_tu);
-}
-
-/// `memset(tu, 0, sizeof(*tu))` and `timespecclear` plus the tick and rss resets: every
-/// counter of `tu` to zero (the lock is left alone).
-fn tuagg_clear(tu: &Tusage) {
-    tu.tu_runtime.set(Timespec::new(0, 0));
-    for ticks in &tu.tu_ticks {
-        ticks.set(0);
-    }
-    tu.tu_ixrss.set(0);
-    tu.tu_idrss.set(0);
-    tu.tu_isrss.set(0);
+    p.p_tu.clear();
 }
 
 /// `tuagg_add_runtime`: compute the amount of time during which the current process was
@@ -222,75 +177,26 @@ pub fn tuagg_add_runtime() {
     };
     // update spc_runtime
     spc.spc_runtime.set(ts);
-    let generation = tu_enter(&p.p_tu);
-    p.p_tu
-        .tu_runtime
-        .set(timespecadd(&p.p_tu.tu_runtime.get(), &delta));
-    tu_leave(&p.p_tu, generation);
+    p.p_tu.add_runtime(delta.into());
 }
 
 /// `calctsru`: transform the running time and tick information in a struct tusage into
-/// user, system, and interrupt time usage.
+/// user, system, and interrupt time usage, at the statistics clock's rate.
 pub fn calctsru(tup: &Tusage) -> (Timespec, Timespec, Timespec) {
-    let st = tup.tu_ticks[TU_STICKS].get();
-    let ut = tup.tu_ticks[TU_UTICKS].get();
-    let it = tup.tu_ticks[TU_ITICKS].get();
-
-    if st + ut + it == 0 {
-        return (
-            Timespec::new(0, 0),
-            Timespec::new(0, 0),
-            Timespec::new(0, 0),
-        );
-    }
-
-    let stathz = u64::try_from(STATHZ.load(Ordering::Relaxed))
-        .unwrap_or(0)
-        .max(1);
-    let to_ts = |ticks: u64| {
-        let ns = ticks * 1_000_000_000 / stathz;
-        Timespec::new((ns / 1_000_000_000) as i64, (ns % 1_000_000_000) as i64)
-    };
-    (to_ts(ut), to_ts(st), to_ts(it))
+    let (u, s, i) = kernel::resource::calctsru(tup, STATHZ.load(Ordering::Relaxed));
+    (u.into(), s.into(), i.into())
 }
 
-/// `calcru`: `calctsru` in `timeval`s: (user, system, interrupt).
-pub fn calcru(tup: &Tusage) -> (Timeval, Timeval, Timeval) {
-    let (u, s, i) = calctsru(tup);
-    (
-        timespec_to_timeval(&u),
-        timespec_to_timeval(&s),
-        timespec_to_timeval(&i),
-    )
-}
-
-/// `ruadd`: adds `ru2` into `ru`: the times, the larger `ru_maxrss`, the sums of the rest.
-pub fn ruadd(ru: &Rusage, ru2: &Rusage) {
-    ru.ru_utime
-        .set(timeradd(&ru.ru_utime.get(), &ru2.ru_utime.get()));
-    ru.ru_stime
-        .set(timeradd(&ru.ru_stime.get(), &ru2.ru_stime.get()));
-    if ru.ru_maxrss.get() < ru2.ru_maxrss.get() {
-        ru.ru_maxrss.set(ru2.ru_maxrss.get());
-    }
-    // ru_first .. ru_last: ru_ixrss through ru_nivcsw
-    for (a, b) in [
-        (&ru.ru_ixrss, &ru2.ru_ixrss),
-        (&ru.ru_idrss, &ru2.ru_idrss),
-        (&ru.ru_isrss, &ru2.ru_isrss),
-        (&ru.ru_minflt, &ru2.ru_minflt),
-        (&ru.ru_majflt, &ru2.ru_majflt),
-        (&ru.ru_nswap, &ru2.ru_nswap),
-        (&ru.ru_inblock, &ru2.ru_inblock),
-        (&ru.ru_oublock, &ru2.ru_oublock),
-        (&ru.ru_msgsnd, &ru2.ru_msgsnd),
-        (&ru.ru_msgrcv, &ru2.ru_msgrcv),
-        (&ru.ru_nsignals, &ru2.ru_nsignals),
-        (&ru.ru_nvcsw, &ru2.ru_nvcsw),
-        (&ru.ru_nivcsw, &ru2.ru_nivcsw),
-    ] {
-        a.set(a.get().wrapping_add(b.get()));
-    }
+/// `calcru`: `calctsru` in `timeval`s: (user, system, interrupt), as `struct rusage` keeps
+/// them.
+pub fn calcru(
+    tup: &Tusage,
+) -> (
+    kernel::resource::Timeval,
+    kernel::resource::Timeval,
+    kernel::resource::Timeval,
+) {
+    kernel::resource::calcru(tup, STATHZ.load(Ordering::Relaxed))
 }
 
 /// `RUCHECK_INTERVAL`: resource usage check interval in msec.
@@ -315,13 +221,14 @@ pub fn sys_getpriority(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> 
     let uap: &SysGetpriorityArgs = sysargs(v);
     let mut low = NZERO + PRIO_MAX + 1;
     let who = uap.who.get();
+    let r = klock::reader();
 
     match uap.which.get() {
         PRIO_PROCESS => {
             let pr = if who == 0 {
                 Some(curp.process())
             } else {
-                prfind(who as Pid)
+                prfind(&r, who as Pid)
             };
             if let Some(pr) = pr
                 && i32::from(pr.ps_nice.get()) < low
@@ -332,13 +239,12 @@ pub fn sys_getpriority(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> 
 
         PRIO_PGRP => {
             let pg = if who == 0 {
-                // SAFETY: a live process's pgrp outlives it while it is a member.
-                unsafe { curp.process().ps_pgrp.get().as_ref() }
+                curp.process().pgrp(&r).map(|pg| &**pg)
             } else {
-                pgfind(who as Pid)
+                pgfind(&r, who as Pid)
             };
             if let Some(pg) = pg {
-                for pr in pg.pg_members.iter() {
+                for pr in pg.pg_members.iter(&r) {
                     if i32::from(pr.ps_nice.get()) < low {
                         low = i32::from(pr.ps_nice.get());
                     }
@@ -352,7 +258,7 @@ pub fn sys_getpriority(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> 
             } else {
                 who
             };
-            for pr in ALLPROCESS.0.iter() {
+            for pr in proc_tables().allprocess.iter(&r) {
                 if pr.ucred().cr_uid.get() == who && i32::from(pr.ps_nice.get()) < low {
                     low = i32::from(pr.ps_nice.get());
                 }
@@ -375,13 +281,14 @@ pub fn sys_setpriority(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) ->
     let prio = uap.prio.get();
     let mut found = false;
     let mut error = Ok(());
+    let r = klock::reader();
 
     match uap.which.get() {
         PRIO_PROCESS => {
             let pr = if who == 0 {
                 Some(curp.process())
             } else {
-                prfind(who as Pid)
+                prfind(&r, who as Pid)
             };
             if let Some(pr) = pr {
                 error = donice(curp, pr, prio);
@@ -391,13 +298,12 @@ pub fn sys_setpriority(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) ->
 
         PRIO_PGRP => {
             let pg = if who == 0 {
-                // SAFETY: a live process's pgrp outlives it while it is a member.
-                unsafe { curp.process().ps_pgrp.get().as_ref() }
+                curp.process().pgrp(&r).map(|pg| &**pg)
             } else {
-                pgfind(who as Pid)
+                pgfind(&r, who as Pid)
             };
             if let Some(pg) = pg {
-                for pr in pg.pg_members.iter() {
+                for pr in pg.pg_members.iter(&r) {
                     error = donice(curp, pr, prio);
                     found = true;
                 }
@@ -410,7 +316,7 @@ pub fn sys_setpriority(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) ->
             } else {
                 who
             };
-            for pr in ALLPROCESS.0.iter() {
+            for pr in proc_tables().allprocess.iter(&r) {
                 if pr.ucred().cr_uid.get() == who {
                     error = donice(curp, pr, prio);
                     found = true;
@@ -429,11 +335,12 @@ pub fn sys_setpriority(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) ->
 /// `donice`: sets the nice value of `chgpr` to `n` on behalf of `curp`.
 pub fn donice(curp: &Proc, chgpr: &Process, n: i32) -> Result<(), Errno> {
     let ucred = curp.ucred();
+    let chguid = chgpr.ucred().cr_uid.get();
 
     if ucred.cr_uid.get() != 0
         && ucred.cr_ruid.get() != 0
-        && ucred.cr_uid.get() != chgpr.ucred().cr_uid.get()
-        && ucred.cr_ruid.get() != chgpr.ucred().cr_uid.get()
+        && ucred.cr_uid.get() != chguid
+        && ucred.cr_ruid.get() != chguid
     {
         return Err(Errno::EPERM);
     }
@@ -442,15 +349,13 @@ pub fn donice(curp: &Proc, chgpr: &Process, n: i32) -> Result<(), Errno> {
         return Err(Errno::EACCES);
     }
     chgpr.ps_nice.set(n as u8);
-    mtx_enter(&chgpr.ps_mtx);
+    let g = chgpr.ps_mtx.lock();
     sched_lock();
-    let mut q = chgpr.ps_threads.first();
-    while let Some(p) = q {
+    for p in chgpr.ps_threads.iter(&g) {
         setpriority(p, p.p_estcpu.get(), n as u8);
-        q = TailqHead::<ProcThrLink>::next(p);
     }
     sched_unlock();
-    mtx_leave(&chgpr.ps_mtx);
+    drop(g);
     Ok(())
 }
 
@@ -464,6 +369,15 @@ pub fn sys_setrlimit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
     dosetrlimit(p, uap.which.get() as u32, &mut alim)
 }
 
+/// The process's limits (`pr->ps_limit`), which every process has from `fork1` (`limit0`
+/// for process 0).
+fn ps_limit(pr: &Process) -> PlimitRef {
+    match pr.limit() {
+        Some(l) => l,
+        None => crate::kern::subr_prf::panic(format_args!("ps_limit: none")),
+    }
+}
+
 /// `dosetrlimit`: sets limit `which` of `p`'s process to `limp`, clamped to the system's
 /// maximum.
 pub fn dosetrlimit(p: &Proc, which: u32, limp: &mut Rlimit) -> Result<(), Errno> {
@@ -474,9 +388,7 @@ pub fn dosetrlimit(p: &Proc, which: u32, limp: &mut Rlimit) -> Result<(), Errno>
 
     rw_enter_write(&RLIMIT_LOCK);
 
-    // SAFETY: a process's ps_limit is set at creation and replaced only under rlimit_lock,
-    // which we hold.
-    let alimp = unsafe { &*p.process().ps_limit.get() }.pl_rlimit[which].get();
+    let alimp = ps_limit(p.process()).pl_rlimit[which];
     if limp.rlim_max > alimp.rlim_max
         && let Err(error) = suser(p)
     {
@@ -485,8 +397,8 @@ pub fn dosetrlimit(p: &Proc, which: u32, limp: &mut Rlimit) -> Result<(), Errno>
     }
 
     // Get exclusive write access to the limit structure.
-    let limit = lim_write_begin();
-    let alimp = limit.pl_rlimit[which].get();
+    let mut limit = lim_write_begin();
+    let alimp = limit.pl_rlimit[which];
 
     let maxlim: Rlim = match which {
         RLIMIT_DATA => MAXDMAP.load(Ordering::Relaxed),
@@ -540,7 +452,7 @@ pub fn dosetrlimit(p: &Proc, which: u32, limp: &mut Rlimit) -> Result<(), Errno>
         }
     }
 
-    limit.pl_rlimit[which].set(*limp);
+    limit.pl_rlimit[which] = *limp;
 
     lim_write_commit(limit);
     rw_exit_write(&RLIMIT_LOCK);
@@ -556,7 +468,7 @@ pub fn sys_getrlimit(_p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
         return Err(Errno::EINVAL);
     }
     let limit = lim_read_enter();
-    let alimp = limit.pl_rlimit[which as usize].get();
+    let alimp = limit.get(which as usize);
     lim_read_leave(limit);
     // KTRACE: not configured.
     copyout(&rlimit_to_bytes(&alimp), uap.rlp.get() as usize)
@@ -602,21 +514,22 @@ pub fn dogetrusage(p: &Proc, who: i32, rup: &Rusage) -> Result<(), Errno> {
     match who {
         RUSAGE_SELF => {
             // start with the sum of dead threads, if any
-            // SAFETY: ps_ru is null or the process's own rusage, set once at its first
-            // thread exit and freed with the process.
-            match unsafe { pr.ps_ru.get().as_ref() } {
-                Some(ru) => rup.copy_from(ru),
-                None => rup.copy_from(&Rusage::default()),
+            {
+                let r = klock::reader();
+                match pr.ps_ru.get(&r) {
+                    Some(ru) => rup.copy_from(ru),
+                    None => rup.copy_from(&Rusage::default()),
+                }
             }
             tuagg_sumup(&tu, &pr.ps_tu);
 
             // add on all living threads
-            let mut q = pr.ps_threads.first();
-            while let Some(thread) = q {
+            let g = pr.ps_mtx.lock();
+            for thread in pr.ps_threads.iter(&g) {
                 ruadd(rup, &thread.p_ru);
                 tuagg_sumup(&tu, &thread.p_tu);
-                q = TailqHead::<ProcThrLink>::next(thread);
             }
+            drop(g);
 
             let (ut, st, _) = calcru(&tu);
             rup.ru_utime.set(ut);
@@ -648,16 +561,16 @@ pub fn rucheck(arg: *mut c_void) {
 
     kernel_assert_locked(); // KERNEL_ASSERT_LOCKED()
 
-    mtx_enter(&pr.ps_mtx);
-    // SAFETY: a live process's ps_limit is valid; ps_mtx is held.
-    let rlim = unsafe { &*pr.ps_limit.get() }.pl_rlimit[RLIMIT_CPU].get();
+    let g = pr.ps_mtx.lock();
+    let rlim = g
+        .limit
+        .as_ref()
+        .map_or(Rlimit::default(), |l| l.pl_rlimit[RLIMIT_CPU]);
     tuagg_sumup(&tu, &pr.ps_tu);
-    let mut q = pr.ps_threads.first();
-    while let Some(thread) = q {
+    for thread in pr.ps_threads.iter(&g) {
         tuagg_sumup(&tu, &thread.p_tu);
-        q = TailqHead::<ProcThrLink>::next(thread);
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g);
 
     let runtime = tu.tu_runtime.get().tv_sec;
 
@@ -673,192 +586,76 @@ pub fn rucheck(arg: *mut c_void) {
     timeout_add_msec(&pr.ps_rucheck_to, RUCHECK_INTERVAL);
 }
 
-/// `plimit_pool`.
-static PLIMIT_POOL: Pool = Pool::new();
-
-/// `lim_startup`: the pool, and the limits of process 0 in `limit0`.
-pub fn lim_startup(limit0: &Plimit) {
-    pool_init(
-        &PLIMIT_POOL,
-        size_of::<Plimit>(),
-        0,
-        IPL_MPFLOOR,
-        PR_WAITOK,
-        "plimitpl",
-        None,
-    );
-
-    for l in &limit0.pl_rlimit {
-        l.set(Rlimit {
-            rlim_cur: RLIM_INFINITY,
-            rlim_max: RLIM_INFINITY,
-        });
-    }
+/// `lim_startup`: the pool (the kernel crate's, made at its first need), and the limits of
+/// process 0 into `limit0`, which the caller places.
+pub fn lim_startup(limit0: &mut Plimit) {
     let maxfiles = MAXFILES.load(Ordering::Relaxed) as usize;
-    limit0.pl_rlimit[RLIMIT_NOFILE].set(Rlimit {
-        rlim_cur: NOFILE as Rlim,
-        rlim_max: NOFILE_MAX.min(if maxfiles - NOFILE > NOFILE {
-            maxfiles - NOFILE
-        } else {
-            NOFILE
-        }) as Rlim,
-    });
-    set_cur(limit0, RLIMIT_NPROC, MAXUPRC as Rlim);
-    let lim = ptoa(UVMEXP.free.load(Ordering::Relaxed) as usize) as Rlim;
-    set_max(limit0, RLIMIT_RSS, lim);
-    let lim = ptoa(64 * 1024) as Rlim; // Default to very low
-    set_max(limit0, RLIMIT_MEMLOCK, lim);
-    set_cur(limit0, RLIMIT_MEMLOCK, lim / 3);
-    refcnt_init(&limit0.pl_refcnt);
-}
-
-/// Sets `rlim_cur` of limit `which`.
-fn set_cur(limit: &Plimit, which: usize, v: Rlim) {
-    let mut r = limit.pl_rlimit[which].get();
-    r.rlim_cur = v;
-    limit.pl_rlimit[which].set(r);
-}
-
-/// Sets `rlim_max` of limit `which`.
-fn set_max(limit: &Plimit, which: usize, v: Rlim) {
-    let mut r = limit.pl_rlimit[which].get();
-    r.rlim_max = v;
-    limit.pl_rlimit[which].set(r);
-}
-
-/// `lim_copy`: make a copy of the plimit structure. We share these structures copy-on-write
-/// after fork, and copy when a limit is changed.
-pub fn lim_copy(lim: &Plimit) -> &'static Plimit {
-    let Some(mem) = pool_get(&PLIMIT_POOL, PR_WAITOK) else {
-        crate::kern::subr_prf::panic(format_args!("lim_copy: plimit_pool is empty"));
-    };
-    let newlim = mem.cast::<Plimit>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<Plimit>()` bytes, written once
-    // before anything else sees it; it lives until `lim_free` drops the last reference.
-    let newlim: &'static Plimit = unsafe {
-        newlim.as_ptr().write(Plimit::new());
-        newlim.as_ref()
-    };
-    for (n, o) in newlim.pl_rlimit.iter().zip(lim.pl_rlimit.iter()) {
-        n.set(o.get());
-    }
-    refcnt_init(&newlim.pl_refcnt);
-    newlim
-}
-
-/// `lim_free`: drops a reference; the last returns the structure to the pool.
-pub fn lim_free(lim: &Plimit) {
-    if !refcnt_rele(&lim.pl_refcnt) {
-        return;
-    }
-    pool_put(&PLIMIT_POOL, NonNull::from(lim).cast::<u8>());
+    let free =
+        hal::vm::param::ptoa(hal::vm::uvmexp::UVMEXP.free.load(Ordering::Relaxed) as usize) as Rlim;
+    *limit0 = kernel::resource::lim_startup(maxfiles, free, crate::sys::param::PAGE_SIZE);
 }
 
 /// `lim_fork`: `child` shares `parent`'s limits.
 pub fn lim_fork(parent: &Process, child: &Process) {
-    mtx_enter(&parent.ps_mtx);
-    let limit = parent.ps_limit.get();
-    // SAFETY: a live process's ps_limit is valid; ps_mtx is held.
-    refcnt_take(&unsafe { &*limit }.pl_refcnt);
-    mtx_leave(&parent.ps_mtx);
+    let limit = ps_limit(parent);
+    let cpu = limit.pl_rlimit[RLIMIT_CPU].rlim_cur;
+    drop(child.set_limit(limit));
 
-    child.ps_limit.set(limit);
-
-    // SAFETY: as above; the child now holds a reference.
-    if unsafe { &*limit }.pl_rlimit[RLIMIT_CPU].get().rlim_cur != RLIM_INFINITY {
+    if cpu != RLIM_INFINITY {
         timeout_add_msec(&child.ps_rucheck_to, RUCHECK_INTERVAL);
     }
 }
 
-/// `lim_write_begin`: return an exclusive write reference to the process' resource limit
-/// structure. The caller has to release the structure by calling `lim_write_commit()`.
+/// `lim_write_begin`: an exclusive copy of the process' resource limits to change; the
+/// caller has to place it by calling `lim_write_commit()` (see the module's deviations).
 ///
 /// This invalidates any plimit read reference held by the calling thread.
-pub fn lim_write_begin() -> &'static Plimit {
+pub fn lim_write_begin() -> Plimit {
     let p = curproc_ref();
 
     rw_assert_wrlock(&RLIMIT_LOCK);
 
-    // SAFETY: p_limit is null or a reference this thread holds.
-    if let Some(l) = unsafe { p.p_limit.get().as_ref() } {
-        lim_free(l);
-    }
-    p.p_limit.set(ptr::null());
+    p.p_limit.clear();
 
     // It is safe to access ps_limit here without holding ps_mtx because rlimit_lock excludes
     // other writers.
-
-    // SAFETY: a live process's ps_limit is valid and stays so while rlimit_lock is held.
-    let limit: &'static Plimit = unsafe { &*p.process().ps_limit.get() };
-    if p_hassibling(p) || refcnt_shared(&limit.pl_refcnt) {
-        return lim_copy(limit);
-    }
-
-    limit
+    *ps_limit(p.process())
 }
 
 /// `lim_write_commit`: finish exclusive write access to the plimit structure. This makes the
 /// structure visible to other threads in the process.
-pub fn lim_write_commit(limit: &'static Plimit) {
+pub fn lim_write_commit(limit: Plimit) {
     let p = curproc_ref();
 
     rw_assert_wrlock(&RLIMIT_LOCK);
 
     let pr = p.process();
-    if !ptr::eq(limit, pr.ps_limit.get()) {
-        mtx_enter(&pr.ps_mtx);
-        let olimit = pr.ps_limit.get();
-        pr.ps_limit.set(limit);
-        mtx_leave(&pr.ps_mtx);
-
-        // SAFETY: the process held a reference to the old structure, now ours to drop.
-        lim_free(unsafe { &*olimit });
+    if *ps_limit(pr) != limit {
+        let olimit = pr.set_limit(PlimitRef::new(limit));
+        drop(olimit);
     }
 }
 
-/// `lim_read_enter`: begin read access to the process' resource limit structure. The access
-/// has to be finished by calling `lim_read_leave()`.
+/// `lim_read_enter`: begin read access to the process' resource limits: the calling
+/// thread's copy, refreshed when the process's changed. The access has to be finished by
+/// calling `lim_read_leave()`.
 ///
 /// Sections denoted by `lim_read_enter()` and `lim_read_leave()` cannot nest.
-pub fn lim_read_enter() -> &'static Plimit {
+pub fn lim_read_enter() -> &'static LimitCache {
     let p = curproc_ref();
-    let pr = p.process();
 
     // This thread might not observe the latest value of ps_limit if another thread updated
     // the limits very recently on another CPU. However, the anomaly should disappear quickly,
     // especially if there is any synchronization activity between the threads (or the CPUs).
-
-    let mut limit = p.p_limit.get();
-    if !ptr::eq(limit, pr.ps_limit.get()) {
-        mtx_enter(&pr.ps_mtx);
-        limit = pr.ps_limit.get();
-        // SAFETY: a live process's ps_limit is valid; ps_mtx is held.
-        refcnt_take(&unsafe { &*limit }.pl_refcnt);
-        mtx_leave(&pr.ps_mtx);
-        // SAFETY: p_limit is null or a reference this thread holds.
-        if let Some(l) = unsafe { p.p_limit.get().as_ref() } {
-            lim_free(l);
-        }
-        p.p_limit.set(limit);
-    }
-    kassert!(!limit.is_null());
-    // SAFETY: this thread holds a reference (p_limit) until it next refreshes or exits.
-    unsafe { &*limit }
+    let _ = p.lim_cur(RLIMIT_CPU);
+    &p.p_limit
 }
 
 /// `lim_cur_proc`: get the value of the resource limit in given process.
 pub fn lim_cur_proc(p: &Proc, which: usize) -> Rlim {
-    let pr = p.process();
-
     kassert!(which < RLIM_NLIMITS);
 
-    mtx_enter(&pr.ps_mtx);
-    // SAFETY: a live process's ps_limit is valid; ps_mtx is held.
-    let val = unsafe { &*pr.ps_limit.get() }.pl_rlimit[which]
-        .get()
-        .rlim_cur;
-    mtx_leave(&pr.ps_mtx);
-    val
+    ps_limit(p.process()).pl_rlimit[which].rlim_cur
 }
 
 /// `curproc`, which a limit operation always has.

@@ -65,6 +65,11 @@
 //! `kq_lock` across them.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): a process's `ps_klist` and the mutex that locks it live in the
+//!   glue's recycled `ProcStore` (`kern/proc_glue.rs`), since a `Klist` is not `Send` and
+//!   cannot sit in a pooled kernel `Process`: the klist is locked by the store's own mutex
+//!   where the C locks it with `ps_mtx` (`[Q,m]`), so `ptsignal`'s `NOTE_SIGNAL` takes it
+//!   inside `ps_mtx`.
 //! - Pool items: knotes and kqueues are handed around as `&Knote`/`&'static Kqueue` (the
 //!   `crget`/`crfree` idiom); the functions that return them to their pool (`knote_drop`,
 //!   `KQRELE`) are `unsafe` and state that the caller does not use them afterwards.
@@ -106,7 +111,6 @@ use crate::kern::kern_descrip::{falloc, fd_checkclosed, fd_getfile, fdinsert};
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_pledge::pledge_fail;
-use crate::kern::kern_proc::prfind;
 use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write, rw_status};
 use crate::kern::kern_subr::hashsize;
 use crate::kern::kern_synch::{
@@ -115,6 +119,7 @@ use crate::kern::kern_synch::{
 use crate::kern::kern_task::{SYSTQMP, task_add, task_set, taskq_del_barrier};
 use crate::kern::kern_tc::{getnanouptime, nanotime};
 use crate::kern::kern_timeout::{timeout_add, timeout_del_barrier, timeout_set};
+use crate::kern::proc_glue::prfind_ref;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::machine::copy::{copyin, copyin_obj, copyout};
@@ -552,7 +557,7 @@ pub fn filt_procattach(kn: &Knote) -> Result<(), Errno> {
     }
 
     kernel_lock();
-    let Some(pr) = prfind(kn.kn_id().get() as Pid) else {
+    let Some(pr) = prfind_ref(kn.kn_id().get() as Pid) else {
         kernel_unlock();
         return Err(Errno::ESRCH);
     };
@@ -563,7 +568,7 @@ pub fn filt_procattach(kn: &Knote) -> Result<(), Errno> {
         return Err(Errno::ESRCH);
     }
 
-    kn.kn_ptr.p_process.set(pr);
+    kn.kn_ptr.p_process.set(ptr::from_ref(&*pr));
     kn.set_flags(EV_CLEAR); // automatically set
 
     // internal flag indicating registration done by kernel
@@ -579,9 +584,9 @@ pub fn filt_procattach(kn: &Knote) -> Result<(), Errno> {
     if !nolock {
         rw_enter_write(&KQUEUE_PS_LIST_LOCK);
     }
-    mtx_enter(&pr.ps_mtx);
+    mtx_enter(&pr.ps_klmtx);
     klist_insert_locked(&pr.ps_klist, kn);
-    mtx_leave(&pr.ps_mtx);
+    mtx_leave(&pr.ps_klmtx);
     if !nolock {
         rw_exit_write(&KQUEUE_PS_LIST_LOCK);
     }
@@ -604,9 +609,9 @@ pub fn filt_procdetach(kn: &Knote) {
     if kn.kn_status.get() & KN_DETACHED == 0 {
         let pr = kn_process(kn);
 
-        mtx_enter(&pr.ps_mtx);
+        mtx_enter(&pr.ps_klmtx);
         klist_remove_locked(&pr.ps_klist, kn);
-        mtx_leave(&pr.ps_mtx);
+        mtx_leave(&pr.ps_klmtx);
     }
     rw_exit_write(&KQUEUE_PS_LIST_LOCK);
 }
@@ -659,9 +664,9 @@ pub fn filt_proc(kn: &Knote, hint: i64) -> bool {
         };
 
         rw_assert_wrlock(&KQUEUE_PS_LIST_LOCK);
-        mtx_leave(&pr.ps_mtx);
+        mtx_leave(&pr.ps_klmtx);
         let error = kqueue_register(kq, &mut kev, 0, None);
-        mtx_enter(&pr.ps_mtx);
+        mtx_enter(&pr.ps_klmtx);
 
         if error.is_err() {
             kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_TRACKERR);
@@ -677,9 +682,9 @@ pub fn filt_procmodify(kev: &mut Kevent, kn: &Knote) -> bool {
     let active = if kn.kn_status.get() & KN_DETACHED == 0 {
         let pr = kn_process(kn);
 
-        mtx_enter(&pr.ps_mtx);
+        mtx_enter(&pr.ps_klmtx);
         let active = knote_modify(kev, kn);
-        mtx_leave(&pr.ps_mtx);
+        mtx_leave(&pr.ps_klmtx);
         active
     } else {
         knote_assign(kev, kn);
@@ -701,9 +706,9 @@ pub fn filt_procprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
     let active = if kn.kn_status.get() & KN_DETACHED == 0 {
         let pr = kn_process(kn);
 
-        mtx_enter(&pr.ps_mtx);
+        mtx_enter(&pr.ps_klmtx);
         let active = knote_process(kn, kev);
-        mtx_leave(&pr.ps_mtx);
+        mtx_leave(&pr.ps_klmtx);
         active
     } else {
         let active = kn.kn_fflags().get() != 0;
@@ -738,9 +743,9 @@ pub fn filt_sigattach(kn: &Knote) -> Result<(), Errno> {
 
     // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
     rw_enter_write(&KQUEUE_PS_LIST_LOCK);
-    mtx_enter(&pr.ps_mtx);
+    mtx_enter(&pr.ps_klmtx);
     klist_insert_locked(&pr.ps_klist, kn);
-    mtx_leave(&pr.ps_mtx);
+    mtx_leave(&pr.ps_klmtx);
     rw_exit_write(&KQUEUE_PS_LIST_LOCK);
 
     Ok(())
@@ -751,9 +756,9 @@ pub fn filt_sigdetach(kn: &Knote) {
     let pr = kn_process(kn);
 
     rw_enter_write(&KQUEUE_PS_LIST_LOCK);
-    mtx_enter(&pr.ps_mtx);
+    mtx_enter(&pr.ps_klmtx);
     klist_remove_locked(&pr.ps_klist, kn);
-    mtx_leave(&pr.ps_mtx);
+    mtx_leave(&pr.ps_klmtx);
     rw_exit_write(&KQUEUE_PS_LIST_LOCK);
 }
 
@@ -2387,9 +2392,9 @@ pub fn knote_fdclose(p: &Proc, fd: i32) {
 pub fn knote_processexit(pr: &Process) {
     // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
     rw_enter_write(&KQUEUE_PS_LIST_LOCK);
-    mtx_enter(&pr.ps_mtx);
+    mtx_enter(&pr.ps_klmtx);
     knote_locked(&pr.ps_klist, i64::from(NOTE_EXIT));
-    mtx_leave(&pr.ps_mtx);
+    mtx_leave(&pr.ps_klmtx);
     rw_exit_write(&KQUEUE_PS_LIST_LOCK);
 
     // remove other knotes hanging off the process
@@ -2400,9 +2405,9 @@ pub fn knote_processexit(pr: &Process) {
 pub fn knote_processfork(pr: &Process, pid: Pid) {
     // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
     rw_enter_write(&KQUEUE_PS_LIST_LOCK);
-    mtx_enter(&pr.ps_mtx);
+    mtx_enter(&pr.ps_klmtx);
     knote_locked(&pr.ps_klist, i64::from(NOTE_FORK) | i64::from(pid));
-    mtx_leave(&pr.ps_mtx);
+    mtx_leave(&pr.ps_klmtx);
     rw_exit_write(&KQUEUE_PS_LIST_LOCK);
 }
 
@@ -2770,16 +2775,16 @@ pub(crate) mod tests {
     // the descriptor.
 
     use core::cell::Cell;
-    use std::boxed::Box;
+
     use std::sync::MutexGuard;
     use std::{assert, assert_eq};
 
     use super::*;
     use crate::kern::kern_clock::TICKS;
     use crate::kern::kern_descrip::{closef, fd_used, fdinit, fdremove, filedesc_init, fnew};
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
     use crate::kern::kern_timeout::{softclock, timeout_hardclock_update, timeout_startup};
+    use crate::kern::proc_glue::procinit;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::event::{EVFILT_TIMER, EVFILT_USER, NOTE_FFOR, ev_set};
     use crate::sys::file::{DTYPE_PIPE, fref};
@@ -2796,13 +2801,8 @@ pub(crate) mod tests {
 
     /// A thread of a fresh process with credentials and a new descriptor table.
     pub(crate) fn thread() -> &'static Proc {
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let p = crate::kern::proc_glue::test_proc(1, crget());
+        let pr = p.process();
         let fdp = fdinit();
         pr.ps_fd.set(fdp);
         p.p_fd.set(fdp);

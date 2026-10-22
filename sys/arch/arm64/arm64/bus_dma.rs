@@ -125,6 +125,7 @@ use crate::sys::mbuf::Mbuf;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::{NBPG, PAGE_MASK, PAGE_SIZE, PGOFSET, PGSHIFT};
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::types::{Off, Paddr, Vaddr};
 use crate::sys::uio::{Uio, UioSeg::UIO_USERSPACE};
 use crate::unported;

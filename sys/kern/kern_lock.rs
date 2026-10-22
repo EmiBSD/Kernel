@@ -72,6 +72,11 @@
 //!   `<sys/mutex.h>`), the level given without; LZ's asserted the uniprocessor value alone.
 //! - Its uniprocessor branches stay, unbuilt, until N4 redesigns the file (the user's
 //!   decision 40 answer, 2026-10-17: the inherited UP code goes at each file's N4 redesign).
+//! - N4.2: the last `KERNEL_UNLOCK` (`_kernel_unlock` at depth 1) and the kernel lock's
+//!   `__mp_release_all` (the switch, the sleeps, the exit) call `hal::klock::assert_unwitnessed`,
+//!   the contract of `hal::klock`'s witnesses: no reader or writer of the `[K]` state stays out
+//!   on a CPU that lets the lock go. Kernel builds only: the host tests' threads all run as
+//!   CPU 0, one witness count and one depth for every test.
 
 #[cfg(feature = "multiprocessor")]
 use core::ptr;
@@ -167,17 +172,88 @@ pub fn _kernel_lock_init() {
     mtx_init_parking();
 }
 
+/// Whether a release of the kernel lock checks that no witness of it is out: not after a
+/// panic nor in ddb, which hold the lock by fiat ([`_kernel_lock_held`]) and may sync or
+/// yield from inside a witness section (a panic in one, `cold_yield`'s `__mp_release_all`),
+/// where a second panic would hide the first.
+#[cfg(feature = "multiprocessor")]
+fn release_check_due(panicking: bool, in_ddb: bool) -> bool {
+    !panicking && !in_ddb
+}
+
+/// The kernel lock is about to be released whole by this CPU (`what`: the last
+/// `KERNEL_UNLOCK`, or `__mp_release_all`): `panic(9)` when a witness of it is out here,
+/// whose holder would go on reading `[K]` cells another CPU may then change (hal::klock),
+/// except after a panic or in ddb ([`release_check_due`]).
+#[cfg(feature = "multiprocessor")]
+fn kernel_lock_release_check(what: &str) {
+    if release_check_due(panicstr(), DB_ACTIVE.load(Ordering::Relaxed)) {
+        hal::klock::assert_unwitnessed(what);
+    }
+}
+
+/// This CPU's depth in the kernel lock, as the release checks read it.
+#[cfg(all(feature = "multiprocessor", not(test)))]
+fn kernel_lock_depth() -> Option<u32> {
+    Some(
+        KERNEL_LOCK.mpl_cpus[Machine::cpu_number() as usize]
+            .mplc_depth
+            .load(Ordering::Relaxed),
+    )
+}
+
+/// On the host every test thread runs as CPU 0, whose one depth all of them share: the
+/// release checks read the thread's own depth instead, kept only for a test that arms it
+/// ([`kernel_lock_checks_arm`]); `None`, no check, in every other test.
+#[cfg(all(feature = "multiprocessor", test))]
+fn kernel_lock_depth() -> Option<u32> {
+    TEST_KL_DEPTH.with(|d| d.get().map(|(depth, _)| depth))
+}
+
+#[cfg(all(feature = "multiprocessor", test))]
+std::thread_local! {
+    /// The armed test thread's depth in the kernel lock and the depth its last
+    /// `__mp_release_all` gave up (`None`: not armed).
+    static TEST_KL_DEPTH: core::cell::Cell<Option<(u32, u32)>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// The armed test thread's `(depth, saved)` changed by `f`.
+#[cfg(all(feature = "multiprocessor", test))]
+fn test_kl_depth(f: impl FnOnce((u32, u32)) -> (u32, u32)) {
+    TEST_KL_DEPTH.with(|d| {
+        if let Some(v) = d.get() {
+            d.set(Some(f(v)));
+        }
+    });
+}
+
+/// Arms the release checks for this host test thread, which holds no level of the kernel
+/// lock yet: its own depth is kept from now on.
+#[cfg(all(feature = "multiprocessor", test))]
+pub(crate) fn kernel_lock_checks_arm() {
+    TEST_KL_DEPTH.with(|d| d.set(Some((0, 0))));
+}
+
 /// `_kernel_lock`: acquire the kernel lock. Intended for use in the scheduler and the lower
 /// half of the kernel.
 #[cfg(feature = "multiprocessor")]
 pub fn _kernel_lock() {
     sched_assert_unlocked();
     __mp_lock(&KERNEL_LOCK);
+    #[cfg(test)]
+    test_kl_depth(|(d, s)| (d + 1, s));
 }
 
 /// `_kernel_unlock`: release the kernel lock.
 #[cfg(feature = "multiprocessor")]
 pub fn _kernel_unlock() {
+    // The last level: no witness of the kernel lock may be out on this CPU.
+    if kernel_lock_depth() == Some(1) {
+        kernel_lock_release_check("KERNEL_UNLOCK");
+    }
+    #[cfg(test)]
+    test_kl_depth(|(d, s)| (d.saturating_sub(1), s));
     __mp_unlock(&KERNEL_LOCK);
 }
 
@@ -262,6 +338,13 @@ pub fn __mp_unlock(mpl: &MpLock) {
 pub fn __mp_release_all(mpl: &MpLock) -> u32 {
     let cpu = &mpl.mpl_cpus[Machine::cpu_number() as usize];
 
+    // The switch and the sleeps release the kernel lock whole: no witness of it may be out
+    // on this CPU (hal::klock); on the host, in an armed test thread only.
+    if core::ptr::eq(mpl, &KERNEL_LOCK) && kernel_lock_depth().is_some() {
+        kernel_lock_release_check("__mp_release_all");
+        #[cfg(test)]
+        test_kl_depth(|(d, _)| (0, d));
+    }
     let s = intr_disable();
     let rv = cpu.mplc_depth.load(Ordering::Relaxed);
     // WITNESS_UNLOCK for each level: not configured.
@@ -279,6 +362,10 @@ pub fn __mp_release_all(mpl: &MpLock) -> u32 {
 pub fn __mp_acquire_count(mpl: &MpLock, count: u32) {
     for _ in 0..count {
         __mp_lock(mpl);
+    }
+    #[cfg(test)]
+    if core::ptr::eq(mpl, &KERNEL_LOCK) {
+        test_kl_depth(|(_, s)| (s, 0));
     }
 }
 
@@ -859,6 +946,70 @@ mod tests {
         }
         #[cfg(not(feature = "multiprocessor"))]
         assert_eq!(m.mtx_wantipl.get(), 5);
+    }
+
+    #[cfg(feature = "multiprocessor")]
+    #[test]
+    fn the_release_checks_stand_aside_after_a_panic_and_in_ddb() {
+        // (panicking, in ddb) -> whether the release checks the witnesses.
+        let table = [
+            ((false, false), true),
+            ((true, false), false),
+            ((false, true), false),
+            ((true, true), false),
+        ];
+        for ((panicking, in_ddb), due) in table {
+            assert_eq!(release_check_due(panicking, in_ddb), due);
+        }
+    }
+
+    #[cfg(feature = "multiprocessor")]
+    #[test]
+    fn the_last_kernel_unlock_with_a_witness_out_panics() {
+        // An armed thread: a nested unlock with a reader out passes, the last one panics
+        // before the lock is released; the reader dropped, it releases.
+        let _m = crate::kern::subr_pool::tests::setup_real_memory();
+        kernel_lock_checks_arm();
+        _kernel_lock();
+        _kernel_lock();
+        let r = hal::klock::reader();
+        _kernel_unlock();
+        assert_eq!(kernel_lock_depth(), Some(1));
+        let got = std::panic::catch_unwind(|| _kernel_unlock());
+        let msg = got
+            .err()
+            .and_then(|e| e.downcast_ref::<std::string::String>().cloned())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("KERNEL_UNLOCK: the kernel lock released with a witness out (1)"),
+            "{msg}"
+        );
+        assert_eq!(kernel_lock_depth(), Some(1), "nothing was released");
+        drop(r);
+        _kernel_unlock();
+        assert_eq!(kernel_lock_depth(), Some(0));
+    }
+
+    #[cfg(feature = "multiprocessor")]
+    #[test]
+    fn a_whole_release_with_a_witness_out_panics() {
+        // `__mp_release_all` (the switch, the sleeps) refuses before it touches the lock.
+        let _m = crate::kern::subr_pool::tests::setup_real_memory();
+        kernel_lock_checks_arm();
+        _kernel_lock();
+        let w = hal::klock::witness();
+        let got = std::panic::catch_unwind(|| __mp_release_all(&KERNEL_LOCK));
+        let msg = got
+            .err()
+            .and_then(|e| e.downcast_ref::<std::string::String>().cloned())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("__mp_release_all: the kernel lock released with a witness out"),
+            "{msg}"
+        );
+        drop(w);
+        _kernel_unlock();
+        assert_eq!(kernel_lock_depth(), Some(0));
     }
 }
 /* </TESTS> */

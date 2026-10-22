@@ -98,7 +98,7 @@ use crate::sys::proc::Proc;
 use crate::sys::queue::ListEntry;
 use crate::sys::stat::Stat;
 use crate::sys::types::Off;
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::CredSlot;
 use crate::sys::uio::Uio;
 
 /// `DTYPE_VNODE`: file.
@@ -167,7 +167,7 @@ pub struct File {
     /// \[a\] `f_count`: reference count.
     pub f_count: AtomicU32,
     /// \[I\] `f_cred`: credentials associated with descriptor; the file holds a reference.
-    pub f_cred: Cell<*const Ucred>,
+    pub f_cred: CredSlot,
     /// \[I\] `f_ops`: file operation pointers.
     pub f_ops: Cell<Option<&'static Fileops>>,
     /// \[f,v\] `f_offset`: offset.
@@ -199,7 +199,7 @@ impl File {
             f_iflags: AtomicU32::new(0),
             f_type: Cell::new(0),
             f_count: AtomicU32::new(0),
-            f_cred: Cell::new(ptr::null()),
+            f_cred: CredSlot::new(),
             f_ops: Cell::new(None),
             f_offset: Cell::new(0),
             f_data: Cell::new(ptr::null_mut()),

@@ -92,6 +92,7 @@ use crate::machine::Machine;
 use crate::machine::cpu::Cpu;
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::refreshcreds;
 use crate::sys::siginfo::{
     BUS_ADRALN, BUS_OBJERR, ILL_BTCFI, ILL_ILLOPC, SEGV_ACCERR, SEGV_MAPERR, Sigval, TRAP_BRKPT,

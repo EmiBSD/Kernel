@@ -90,6 +90,7 @@ use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::{DEV_BSHIFT, DEV_BSIZE, MAXPHYS, PRIBIO};
 use crate::sys::pool::{PR_WAITOK, PR_ZERO};
+use crate::sys::proc::ProcExt;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::uio::Uio;

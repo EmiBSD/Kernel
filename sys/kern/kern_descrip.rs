@@ -99,7 +99,7 @@ use crate::kern::kern_event::knote_fdclose;
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock};
-use crate::kern::kern_prot::{crfree, crhold, suser};
+use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::rw_init;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{panic, tablefull};
@@ -1158,7 +1158,7 @@ pub fn fnew(p: &Proc) -> Option<&'static File> {
     // KERNEL_LOCK().
     mtx_init(&fp.f_mtx, IPL_MPFLOOR);
     fp.f_count.store(1, Ordering::SeqCst);
-    fp.f_cred.set(crhold(p.ucred()));
+    fp.f_cred.set(p.cred_ref());
 
     Some(fp)
 }
@@ -1393,8 +1393,8 @@ pub fn fdrop(fp: &'static File, p: Option<&Proc>) -> Result<(), Errno> {
         None => Ok(()),
     };
 
-    // SAFETY: `fnew` gave every file a credential reference, which this drops.
-    crfree(unsafe { &*fp.f_cred.get() });
+    // `fnew` gave every file a credential reference, which this drops.
+    drop(fp.f_cred.take());
     NUMFILES.fetch_sub(1, Ordering::SeqCst);
     pool_put(&FILE_POOL, NonNull::from(fp).cast());
 
@@ -1579,14 +1579,13 @@ mod tests {
     // without disturbing the others, so the tests drive `fdalloc_search` with the limit as an
     // argument.
 
-    use std::boxed::Box;
     use std::sync::MutexGuard;
     use std::sync::atomic::AtomicUsize;
     use std::{assert, assert_eq, vec::Vec};
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
     use crate::kern::kern_prot::crget;
+    use crate::kern::proc_glue::procinit;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::event::Knote;
     use crate::sys::file::Fileops;
@@ -1604,13 +1603,8 @@ mod tests {
 
     /// A thread of a fresh process with credentials and a new descriptor table.
     fn thread() -> &'static Proc {
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let p = crate::kern::proc_glue::test_proc(1, crget());
+        let pr = p.process();
         let fdp = fdinit();
         pr.ps_fd.set(fdp);
         p.p_fd.set(fdp);

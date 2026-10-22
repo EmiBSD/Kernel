@@ -1637,14 +1637,16 @@ mod tests {
         assert_eq!((bn, runp), (5, 0));
 
         // Writes are refused; others than root get the mount's mode bits.
-        let cred = p.ucred();
-        assert_eq!(VOP_ACCESS(hello, VWRITE, cred, p).err(), Some(Errno::EROFS));
+        let mut cred = p.ucred().clone();
+        assert_eq!(
+            VOP_ACCESS(hello, VWRITE, &cred, p).err(),
+            Some(Errno::EROFS)
+        );
         cred.cr_uid.set(1000);
-        assert!(VOP_ACCESS(hello, VREAD, cred, p).is_ok());
+        assert!(VOP_ACCESS(hello, VREAD, &cred, p).is_ok());
         cred.cr_uid.set(2000);
         cred.cr_ngroups.set(0);
-        assert!(VOP_ACCESS(hello, VREAD | VEXEC, cred, p).is_ok());
-        cred.cr_uid.set(0);
+        assert!(VOP_ACCESS(hello, VREAD | VEXEC, &cred, p).is_ok());
 
         vput(hello);
         vput(root);

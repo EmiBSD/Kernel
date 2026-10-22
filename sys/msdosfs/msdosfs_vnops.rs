@@ -2169,7 +2169,7 @@ mod tests {
     use std::{assert, assert_eq, assert_ne};
 
     use super::*;
-    use crate::kern::kern_prot::crget;
+
     use crate::kern::vfs_init::set_rootvnode;
     use crate::kern::vfs_lookup::{namei, ndinit};
     use crate::kern::vfs_subr::{vattr_null, vref};
@@ -2830,12 +2830,12 @@ mod tests {
         vrele(dvp);
 
         // access: the mask and the read-only attribute, for another user
-        let other = crget();
+        let mut other = Ucred::new();
         other.cr_uid.set(1000);
         other.cr_gid.set(1000);
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        assert_eq!(VOP_ACCESS(vp, VWRITE, other, p), Err(Errno::EACCES));
-        VOP_ACCESS(vp, crate::sys::vnode::VREAD, other, p).expect("readable");
+        assert_eq!(VOP_ACCESS(vp, VWRITE, &other, p), Err(Errno::EACCES));
+        VOP_ACCESS(vp, crate::sys::vnode::VREAD, &other, p).expect("readable");
         VOP_ACCESS(vp, VWRITE, p.ucred(), p).expect("root writes");
         let _ = VOP_UNLOCK(vp);
 

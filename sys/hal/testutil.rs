@@ -366,6 +366,10 @@ impl RawPool for TestPool {
         self.nout.load(Ordering::Relaxed)
     }
 
+    fn size(&self) -> usize {
+        self.layout.size()
+    }
+
     /// The double keeps no idle item: it records the bound for [`pool_knobs`].
     fn set_hiwat(&self, n: u32) {
         lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).0 = n;

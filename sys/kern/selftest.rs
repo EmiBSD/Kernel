@@ -427,7 +427,6 @@ pub fn pmap_reuse() {
         kprintf!("selftest: pmap reuse FAILED: no curproc\n");
         return;
     };
-    let ovm = p.vmspace();
     let vm = uvmspace_alloc(
         <Machine as VmParam>::VM_MIN_ADDRESS,
         <Machine as VmParam>::VM_MAXUSER_ADDRESS,
@@ -435,13 +434,13 @@ pub fn pmap_reuse() {
         true,
     );
     pmap_deactivate(p);
-    p.p_vmspace.set(kernel::vm::map::VmspaceRef::as_ptr(&vm));
+    let ovm = p.set_vmspace(Some(vm.clone()));
     pmap_activate(p);
 
     let result = pmap_reuse_kernel().and_then(|()| pmap_reuse_user(vm.vm_map.pmap()));
 
     pmap_deactivate(p);
-    p.p_vmspace.set(ptr::from_ref(ovm));
+    drop(p.set_vmspace(ovm));
     pmap_activate(p);
     uvmspace_free(vm);
 
@@ -1399,7 +1398,7 @@ fn taskq_selftest_task(arg: *mut core::ffi::c_void) {
 
 /// Sleeps (at most a second per wait) until task `bit` ran; returns the name of the thread
 /// that ran it, or `None`.
-fn taskq_wait(bit: usize) -> Option<&'static [u8]> {
+fn taskq_wait(bit: usize) -> Option<kernel::proc::Name> {
     mtx_enter(&TASKQ_MTX);
     while TASKQ_RAN.load(Ordering::Relaxed) & (1 << bit) == 0 {
         if msleep_nsec(
@@ -1475,26 +1474,28 @@ pub fn taskq_check() {
 
     let ran = TASKQ_RAN.load(Ordering::Relaxed);
     let ok = ran == 0b1101
-        && sys_runner == Some(b"systq".as_slice())
-        && mp_runner == Some(b"systqmp".as_slice())
-        && new_runner == Some(b"tqtest".as_slice())
+        && sys_runner.as_deref() == Some(b"systq".as_slice())
+        && mp_runner.as_deref() == Some(b"systqmp".as_slice())
+        && new_runner.as_deref() == Some(b"tqtest".as_slice())
         && nthreads_after == nthreads_before - 1;
-    let name = |r: Option<&'static [u8]>| Str(r.unwrap_or(b"none"));
+    fn name(r: &Option<kernel::proc::Name>) -> Str<'_> {
+        Str(r.as_deref().unwrap_or(b"none"))
+    }
     if ok {
         kprintf!(
             "selftest: taskq ok: systq ran in {}, task_del took back a pending task, systqmp ran in {}, barrier returned, {} ran and was destroyed ({} threads left)\n",
-            name(sys_runner),
-            name(mp_runner),
-            name(new_runner),
+            name(&sys_runner),
+            name(&mp_runner),
+            name(&new_runner),
             nthreads_after
         );
     } else {
         kprintf!(
             "selftest: taskq FAILED: ran {:#b}, runners {} {} {}, {} threads before the destroy, {} after\n",
             ran,
-            name(sys_runner),
-            name(mp_runner),
-            name(new_runner),
+            name(&sys_runner),
+            name(&mp_runner),
+            name(&new_runner),
             nthreads_before,
             nthreads_after
         );

@@ -89,7 +89,6 @@ use crate::kern::kern_lock::{
     __mp_acquire_count, __mp_release_all, _kernel_lock_held, KERNEL_LOCK,
 };
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
-use crate::kern::kern_proc::ALLPROC;
 use crate::kern::kern_resource::tuagg_add_runtime;
 use crate::kern::kern_sched::{
     SCHED_ALL_CPUS, SCHED_IDLE_CPUS, cpuset_cardinality, cpuset_complement, remrunqueue,
@@ -98,6 +97,7 @@ use crate::kern::kern_sched::{
 use crate::kern::kern_smr::smr_idle;
 use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_timeout::timeout_add_sec;
+use crate::kern::proc_glue::proc_tables;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_prof::profclock_period;
 use crate::kern::subr_xxx::assertwaitok;
@@ -107,6 +107,7 @@ use crate::machine::intr::{IPL_NONE, IPL_SCHED};
 use crate::sys::clockintr::Clockrequest;
 use crate::sys::mutex::{Mutex, mutex_assert_locked, mutex_assert_unlocked};
 use crate::sys::param::{FSCALE, FSHIFT, MAXPRI, NZERO, PUSER};
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{P_INSCHED, PS_ITIMER, PS_PROFIL, Proc, SONPROC, SRUN, SSLEEP, SSTOP};
 use crate::sys::resource::Loadavg;
 use crate::sys::sched::{
@@ -336,7 +337,8 @@ pub fn schedcpu(_unused: *mut c_void) {
     let loadfac = loadfactor(AVERUNNABLE.ldavg[0].load(Ordering::Relaxed));
     let stathz = STATHZ.load(Ordering::Relaxed).max(1) as u32;
 
-    for p in ALLPROC.0.iter() {
+    let r = hal::klock::reader();
+    for p in proc_tables().allproc.iter(&r) {
         // Idle threads are never placed on the runqueue, therefore computing their priority
         // is pointless.
         if let Some(ci) = p.cpu()
@@ -345,7 +347,7 @@ pub fn schedcpu(_unused: *mut c_void) {
             continue;
         }
         // Increment sleep time (if sleeping). We ignore overflow.
-        if p.p_stat.get() == SSLEEP || p.p_stat.get() == SSTOP {
+        if p.stat() == SSLEEP || p.stat() == SSTOP {
             p.p_slptime.set(p.p_slptime.get().wrapping_add(1));
         }
         let mut pctcpu =
@@ -370,7 +372,7 @@ pub fn schedcpu(_unused: *mut c_void) {
         p.p_cpticks2.set(cpt);
         let newcpu = decay_cpu(loadfac, p.p_estcpu.get());
         setpriority(p, newcpu, p.process().ps_nice.get());
-        if p.p_stat.get() == SRUN
+        if p.stat() == SRUN
             && u32::from(p.p_runpri.get()) / SCHED_PPQ != u32::from(p.p_usrpri.get()) / SCHED_PPQ
         {
             remrunqueue(p);
@@ -441,7 +443,7 @@ pub fn mi_switch() {
     let spc = Machine::ci_schedstate(ci);
     let p = current();
 
-    kassert!(p.p_stat.get() != SONPROC);
+    kassert!(p.stat() != SONPROC);
     sched_assert_locked();
 
     // Release the kernel_lock, as we are about to yield the CPU.
@@ -486,7 +488,7 @@ pub fn mi_switch() {
         // TRACEPOINT(sched, on__cpu, NULL).
     } else {
         // TRACEPOINT(sched, remain__cpu, NULL).
-        p.p_stat.set(SONPROC);
+        p.set_stat(SONPROC);
     }
 
     Machine::clear_resched(curcpu());
@@ -504,7 +506,7 @@ pub fn mi_switch() {
 
     // We're running again; record our new start time. We might be running on a new CPU
     // now, so refetch the schedstate_percpu pointer.
-    kassert!(ptr::eq(p.p_cpu.get(), curcpu()));
+    kassert!(ptr::eq(p.cpu_ptr(), curcpu()));
     let spc = Machine::ci_schedstate(curcpu());
 
     // Start any optional clock interrupts needed by the thread.
@@ -534,16 +536,16 @@ pub fn setrunnable(p: &Proc) {
 
     sched_assert_locked();
 
-    let prio = match p.p_stat.get() {
+    let prio = match p.stat() {
         SSTOP => {
             let prio = p.p_usrpri.get();
             // TRACEPOINT(sched, unstop, ...): dt(4), not configured.
             // If not yet stopped or asleep, unstop but don't add to runq
             if p.p_flag.load(Ordering::Relaxed) & P_INSCHED != 0 {
-                if !p.p_wchan.get().is_null() {
-                    p.p_stat.set(SSLEEP);
+                if !p.wchan().is_null() {
+                    p.set_stat(SSLEEP);
                 } else {
-                    p.p_stat.set(SONPROC);
+                    p.set_stat(SONPROC);
                 }
                 return;
             }

@@ -343,6 +343,7 @@ fn namei(
         &mut nfsd.nd_dpos,
         retdirp,
         p,
+        &nfsd.nd_cr,
     )
 }
 
@@ -468,7 +469,7 @@ pub fn nfsrv3_access(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -528,7 +529,7 @@ pub fn nfsrv_getattr(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -563,7 +564,7 @@ pub fn nfsrv_setattr(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -692,7 +693,7 @@ pub fn nfsrv_lookup(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -764,7 +765,7 @@ pub fn nfsrv_readlink(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -874,7 +875,7 @@ pub fn nfsrv_read(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1095,7 +1096,7 @@ pub fn nfsrv_write(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     if nfsd.nd_mrep.is_none() {
@@ -1348,7 +1349,7 @@ pub fn nfsrv_create(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1572,7 +1573,7 @@ pub fn nfsrv_mknod(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -1679,7 +1680,7 @@ pub fn nfsrv_mknod(
             nd.ni_cnd.cn_nameiop = LOOKUP;
             nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART);
             nd.ni_cnd.cn_proc = procp;
-            nd.ni_cnd.cn_cred = procp.p_ucred.get();
+            nd.ni_cnd.cn_cred = procp.ucred_ptr();
             let r = vfs_lookup(&mut nd);
             pnbuf_put(&mut nd.ni_cnd);
             if let Err(e) = r {
@@ -1746,7 +1747,7 @@ pub fn nfsrv_remove(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1861,7 +1862,7 @@ pub fn nfsrv_rename(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(fnfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1918,7 +1919,7 @@ pub fn nfsrv_rename(
         Ok(l) => l,
         Err(e) => return nfsrv_rename_nfsmout(&mut fromnd, fdirp, Some(fvp), Err(e)),
     };
-    nfsd.nd_cr.cr_uid.set(saved_uid);
+    nfsd.nd_cr.set_uid(saved_uid);
 
     let mut tond = ndinit(
         RENAME,
@@ -2061,7 +2062,7 @@ pub fn nfsrv_link(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2199,7 +2200,7 @@ pub fn nfsrv_symlink(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2366,7 +2367,7 @@ pub fn nfsrv_mkdir(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2486,7 +2487,7 @@ pub fn nfsrv_rmdir(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2694,7 +2695,7 @@ pub fn nfsrv_readdir(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2899,7 +2900,7 @@ pub fn nfsrv_readdirplus(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -3132,7 +3133,7 @@ pub fn nfsrv_commit(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -3185,7 +3186,7 @@ pub fn nfsrv_statfs(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -3246,7 +3247,7 @@ pub fn nfsrv_fsinfo(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -3311,7 +3312,7 @@ pub fn nfsrv_pathconf(
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &nfsd.nd_cr;
+    let cred: *const Ucred = &*nfsd.nd_cr;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());

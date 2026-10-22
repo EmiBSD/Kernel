@@ -586,7 +586,7 @@ pub fn uipc_bind(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<()
         unp.unp_connid.set(Sockpeercred {
             uid: cred.cr_uid.get(),
             gid: cred.cr_gid.get(),
-            pid: p.process().ps_pid.get(),
+            pid: p.process().ps_pid,
         });
         unp.set_flags(UNP_FEIDSBIND);
         let _ = VOP_UNLOCK(vp);
@@ -927,7 +927,7 @@ pub fn uipc_connect2(so: &'static Socket, so2: &'static Socket) -> Result<(), Er
     let connid = Sockpeercred {
         uid: cred.cr_uid.get(),
         gid: cred.cr_gid.get(),
-        pid: p.process().ps_pid.get(),
+        pid: p.process().ps_pid,
     };
     unp.unp_connid.set(connid);
     unp.set_flags(UNP_FEIDS);
@@ -1102,7 +1102,7 @@ pub fn unp_connect(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<
             if vp.v_type.get() != VSOCK {
                 break 'put Err(Errno::ENOTSOCK);
             }
-            if let Err(e) = VOP_ACCESS(vp, VWRITE, p.p_ucred.get(), p) {
+            if let Err(e) = VOP_ACCESS(vp, VWRITE, p.ucred_ptr(), p) {
                 break 'put Err(e);
             }
             let Some(so2) = vp.v_socket() else {
@@ -1143,7 +1143,7 @@ pub fn unp_connect(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<
                 unp3.unp_connid.set(Sockpeercred {
                     uid: cred.cr_uid.get(),
                     gid: cred.cr_gid.get(),
-                    pid: p.process().ps_pid.get(),
+                    pid: p.process().ps_pid,
                 });
                 unp3.set_flags(UNP_FEIDS);
 
@@ -1973,8 +1973,7 @@ pub(crate) mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::mbuf::MT_SOOPTS;
-    use crate::sys::resource::{RLIM_INFINITY, RLIMIT_NOFILE, Rlimit};
-    use crate::sys::resourcevar::Plimit;
+
     use crate::sys::socket::{
         MSG_DONTWAIT, MSG_NOSIGNAL, MSG_TRUNC, Msghdr, SHUT_WR, SO_PEERCRED, SO_TYPE,
     };
@@ -1997,19 +1996,7 @@ pub(crate) mod tests {
         UNP_GCING.store(0, Ordering::Relaxed);
         Machine::set_curproc(Machine::curcpu(), p);
         // fdalloc reads RLIMIT_NOFILE; no other limit matters here.
-        let limit: &'static Plimit = std::boxed::Box::leak(std::boxed::Box::new(Plimit::new()));
-        for l in &limit.pl_rlimit {
-            l.set(Rlimit {
-                rlim_cur: RLIM_INFINITY,
-                rlim_max: RLIM_INFINITY,
-            });
-        }
-        limit.pl_rlimit[RLIMIT_NOFILE].set(Rlimit {
-            rlim_cur: 64,
-            rlim_max: 64,
-        });
-        p.process().ps_limit.set(limit);
-        p.p_limit.set(limit);
+        crate::kern::proc_glue::test_set_limits(p, 64);
         (g, p)
     }
 

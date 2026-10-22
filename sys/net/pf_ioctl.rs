@@ -2437,7 +2437,7 @@ fn pfioctl_locked(dev: Dev, cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), E
             }
             let r = nrule.get_mut();
             r.cuid = p.ucred().cr_ruid.get();
-            r.cpid = p.process().ps_pid.get();
+            r.cpid = p.process().ps_pid;
             let rule = nrule.publish();
 
             let tail = ruleset.inactive_ptr().last();
@@ -2654,7 +2654,7 @@ fn pfioctl_locked(dev: Dev, cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), E
                 Some(mut nr) => {
                     let r = nr.get_mut();
                     r.cuid = p.ucred().cr_ruid.get();
-                    r.cpid = p.process().ps_pid.get();
+                    r.cpid = p.process().ps_pid;
                     Some(nr.publish())
                 }
             };
@@ -4347,11 +4347,11 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::proc_glue::procinit;
+
     use crate::net::if_::tests::setup_net;
     use crate::sys::fcntl::FREAD;
-    use crate::sys::proc::Process;
+
     use crate::sys::ucred::Ucred;
 
     /// The network test lock with fresh memory, the process tables, and pf attached (every test
@@ -4366,16 +4366,9 @@ mod tests {
 
     /// A thread of a process with credentials, as `fork1` would leave it.
     fn thread() -> &'static Proc {
-        let cr: &'static Ucred = crget();
+        let mut cr = Ucred::new();
         cr.cr_ruid.set(1000);
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
-        pr.ps_mainproc.set(p);
-        pr.ps_pid.set(42);
-        p
+        crate::kern::proc_glue::test_proc(42, crate::sys::ucred::CredRef::new(cr))
     }
 
     /// The minor of the first clone of the device.

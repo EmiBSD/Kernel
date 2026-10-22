@@ -39,10 +39,13 @@ pub use hal::sys;
 pub mod api;
 pub(crate) mod assert;
 pub mod clock;
+pub mod cred;
 pub mod crypto;
 pub mod extent;
 pub mod pipe;
 pub mod prf;
+pub mod proc;
+pub mod resource;
 pub mod task;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;

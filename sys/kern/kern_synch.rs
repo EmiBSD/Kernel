@@ -72,6 +72,12 @@
 //! - `safepri` and `cold` are `sys/systm.rs` statics (see there).
 //! - The `cold || panicstr` path's release and reacquisition of the kernel lock, written
 //!   twice in C, is one helper, `kernel_lock_bounce`.
+//! - `slpque` and `wakeup_n`'s local queue are `hal::list::List`s (N4.2, interim until
+//!   N4.5's sleep queues as `PinList`s under a typed `SCHED_LOCK`), so the table needs no
+//!   `Sync` premise and `p_runq` is `Send + Sync`. The list's premise is elements never
+//!   freed; a thread is freed only after it left every queue, and the `&'static` the
+//!   inserts take is the deref convention every thread reference here rests on
+//!   (`curproc()`, the queues' own elements).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -102,11 +108,11 @@ use crate::sys::mutex::Mutex;
 use crate::sys::param::{PCATCH, PNORELOCK, PRIMASK, PWAIT};
 #[cfg(feature = "diagnostic")]
 use crate::sys::proc::P_CANTSLEEP;
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{
     Cond, P_INSCHED, P_SINTR, P_SUSPSIG, P_TIMEOUT, P_TIMEOUTRAN, P_WEXIT, PS_STOPPING, Proc,
     ProcRunq, SINGLE_SUSPEND, SONPROC, SSLEEP, SSTOP,
 };
-use crate::sys::queue::TailqHead;
 use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::signal::sigmask;
@@ -115,6 +121,7 @@ use crate::sys::signalvar::Sigctx;
 use crate::sys::syslog::LOG_WARNING;
 use crate::sys::systm::{COLD, INFSLP, SAFEPRI, SysArgs};
 use crate::sys::types::Register;
+use hal::list::List;
 
 /// `TABLESIZE`: we're only looking at 7 bits of the address; everything is aligned to 4,
 /// lots of things are aligned to greater powers of 2. Shift right by 8, i.e. drop the bottom
@@ -126,18 +133,17 @@ fn lookup(x: *const c_void) -> usize {
     ((x as usize) >> 8) & (TABLESIZE - 1)
 }
 
-/// `slpque[TABLESIZE]`'s table, made `Sync`: touched under the scheduler lock.
-struct Slpque([TailqHead<ProcRunq>; TABLESIZE]);
-// SAFETY: see the type's doc.
-unsafe impl Sync for Slpque {}
+/// `slpque[TABLESIZE]`'s table.
+type Slpque = [List<ProcRunq>; TABLESIZE];
 
-/// `slpque`: the sleep queues.
-static SLPQUE: Slpque = Slpque([const { TailqHead::new() }; TABLESIZE]);
+/// `slpque`: the sleep queues, touched under the scheduler lock.
+static SLPQUE: Slpque = [const { List::new() }; TABLESIZE];
 
-/// `sleep_queue_init`.
+/// `sleep_queue_init`: `TAILQ_INIT` of each queue; a `hal::list` head is empty from the
+/// start, so this only checks it.
 pub fn sleep_queue_init() {
-    for q in SLPQUE.0.iter() {
-        q.init();
+    for q in SLPQUE.iter() {
+        kassert!(q.is_empty());
     }
 }
 
@@ -348,7 +354,7 @@ pub fn sleep_setup(ident: *const c_void, prio: i32, wmesg: &'static str) {
         if p.p_flag.load(Ordering::Relaxed) & P_CANTSLEEP != 0 {
             panic(format_args!(
                 "sleep: {} failed insomnia",
-                Str(p.process().comm())
+                Str(&p.process().comm())
             ));
         }
         if p.p_flag.load(Ordering::Relaxed) & P_SINTR != 0 {
@@ -357,8 +363,8 @@ pub fn sleep_setup(ident: *const c_void, prio: i32, wmesg: &'static str) {
         if ident.is_null() {
             panic(format_args!("sleep: no ident"));
         }
-        if p.p_stat.get() != SONPROC {
-            panic(format_args!("sleep: not SONPROC but {}", p.p_stat.get()));
+        if p.stat() != SONPROC {
+            panic(format_args!("sleep: not SONPROC but {}", p.stat()));
         }
     }
     // exiting processes are not allowed to catch signals
@@ -370,18 +376,17 @@ pub fn sleep_setup(ident: *const c_void, prio: i32, wmesg: &'static str) {
 
     // TRACEPOINT(sched, sleep, NULL): dt(4), not configured.
 
-    p.p_wchan.set(ident);
+    p.set_wchan(ident);
     p.p_wmesg.set(Some(wmesg));
     p.p_slptime.set(0);
     p.p_slppri.set((prio & PRIMASK) as u8);
     p.p_flag.fetch_or(P_INSCHED, Ordering::Relaxed);
-    // SAFETY: `p` is on no run or sleep queue (it is SONPROC), and stays valid: a thread
-    // outlives its sleeps.
-    unsafe { SLPQUE.0[lookup(ident)].insert_tail(p) };
+    // `p` is on no run or sleep queue (it is SONPROC).
+    SLPQUE[lookup(ident)].insert_tail(p);
     if prio & PCATCH != 0 {
         p.p_flag.fetch_or(P_SINTR, Ordering::Relaxed);
     }
-    p.p_stat.set(SSLEEP);
+    p.set_stat(SSLEEP);
 
     sched_unlock();
 }
@@ -399,8 +404,8 @@ pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
             LOG_WARNING,
             format_args!(
                 "sleep_finish: {}[{}]: {}: trying to sleep zero nanoseconds\n",
-                Str(p.process().comm()),
-                p.process().ps_pid.get(),
+                Str(&p.process().comm()),
+                p.process().ps_pid,
                 p.p_wmesg.get().unwrap_or("")
             ),
         );
@@ -426,29 +431,29 @@ pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
     //   unwind immediately but still check for possible signals and timeouts.
     // - If the sleep is aborted call unsleep and take us of the sleep queue.
     // - If requested to stop force a switch even if the sleep condition got cleared.
-    if p.p_wchan.get().is_null() {
+    if p.wchan().is_null() {
         do_sleep = false;
     }
     if !do_sleep {
         unsleep(p);
     }
-    if p.p_stat.get() == SSTOP {
+    if p.stat() == SSTOP {
         do_sleep = true;
     }
     p.p_flag.fetch_and(!P_INSCHED, Ordering::Relaxed);
 
     if do_sleep {
-        kassert!(p.p_stat.get() == SSLEEP || p.p_stat.get() == SSTOP);
+        kassert!(p.stat() == SSLEEP || p.stat() == SSTOP);
         p.p_ru.ru_nvcsw.set(p.p_ru.ru_nvcsw.get() + 1);
         mi_switch();
     } else {
-        kassert!(p.p_stat.get() == SONPROC || p.p_stat.get() == SSLEEP);
-        p.p_stat.set(SONPROC);
+        kassert!(p.stat() == SONPROC || p.stat() == SSLEEP);
+        p.set_stat(SONPROC);
         sched_unlock();
     }
 
     #[cfg(feature = "diagnostic")]
-    if p.p_stat.get() != SONPROC {
+    if p.stat() != SONPROC {
         panic(format_args!("sleep_finish !SONPROC"));
     }
 
@@ -525,13 +530,13 @@ pub fn sleep_signal_check(p: &Proc, after_sleep: bool) -> Result<(), Errno> {
 
         // requested to stop
         if !after_sleep {
-            mtx_enter(&pr.ps_mtx);
-            process_suspend_signal(pr);
+            let g_pr = pr.ps_mtx.lock();
+            process_suspend_signal(pr, &g_pr);
 
             sched_lock();
-            p.p_stat.set(SSTOP);
+            p.set_stat(SSTOP);
             sched_unlock();
-            mtx_leave(&pr.ps_mtx);
+            drop(g_pr);
         }
     }
 
@@ -539,21 +544,21 @@ pub fn sleep_signal_check(p: &Proc, after_sleep: bool) -> Result<(), Errno> {
     if sig != 0 {
         if ctx.sig_stop {
             if !after_sleep {
-                mtx_enter(&pr.ps_mtx);
+                let g_pr = pr.ps_mtx.lock();
                 pr.ps_xsig.set(sig);
                 // This is for stop signals delivered before sleep_setup() was called. We need
                 // to do the full dance here before going to sleep.
                 p.p_siglist.fetch_and(!sigmask(sig), Ordering::Relaxed);
                 pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
                 sched_lock();
-                process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+                process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr);
                 sched_unlock();
                 p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
-                process_suspend_signal(pr);
+                process_suspend_signal(pr, &g_pr);
                 sched_lock();
-                p.p_stat.set(SSTOP);
+                p.set_stat(SSTOP);
                 sched_unlock();
-                mtx_leave(&pr.ps_mtx);
+                drop(g_pr);
             }
         } else if ctx.sig_intr && !ctx.sig_ignore {
             return Err(Errno::EINTR);
@@ -572,18 +577,18 @@ pub fn wakeup_proc(p: &Proc) -> bool {
 
     sched_assert_locked();
 
-    if !p.p_wchan.get().is_null() {
+    if !p.wchan().is_null() {
         awakened = true;
         #[cfg(feature = "diagnostic")]
-        if p.p_stat.get() != SSLEEP && p.p_stat.get() != SSTOP {
+        if p.stat() != SSLEEP && p.stat() != SSTOP {
             panic(format_args!(
                 "thread {} p_stat is {}",
                 p.p_tid.get(),
-                p.p_stat.get()
+                p.stat()
             ));
         }
         unsleep(p);
-        if p.p_stat.get() == SSLEEP {
+        if p.stat() == SSLEEP {
             setrunnable(p);
         }
     }
@@ -617,11 +622,10 @@ pub fn endtsleep(arg: *mut c_void) {
 pub fn unsleep(p: &Proc) {
     sched_assert_locked();
 
-    if !p.p_wchan.get().is_null() {
-        // SAFETY: a thread with a wchan is on that channel's sleep queue, under the
-        // scheduler lock.
-        unsafe { SLPQUE.0[lookup(p.p_wchan.get())].remove(p) };
-        p.p_wchan.set(ptr::null());
+    if !p.wchan().is_null() {
+        // A thread with a wchan is on that channel's sleep queue, under the scheduler lock.
+        SLPQUE[lookup(p.wchan())].remove(p);
+        p.set_wchan(ptr::null());
         p.p_wmesg.set(None);
         // TRACEPOINT(sched, unsleep, ...): dt(4), not configured.
     }
@@ -630,42 +634,38 @@ pub fn unsleep(p: &Proc) {
 /// `wakeup_n`: make a number of processes sleeping on the specified identifier runnable.
 pub fn wakeup_n<T: ?Sized>(ident: *const T, n: i32) {
     let ident = ident.cast::<c_void>();
-    let wakeq: TailqHead<ProcRunq> = TailqHead::new();
+    let wakeq: List<ProcRunq> = List::new();
     let mut n = n;
 
     sched_lock();
-    let qp = &SLPQUE.0[lookup(ident)];
+    let qp = &SLPQUE[lookup(ident)];
     let mut next = qp.first();
     while let Some(p) = next
         && n != 0
     {
-        next = TailqHead::<ProcRunq>::next(p);
+        next = List::<ProcRunq>::next(p);
         #[cfg(feature = "diagnostic")]
-        if p.p_stat.get() != SSLEEP && p.p_stat.get() != SSTOP {
+        if p.stat() != SSLEEP && p.stat() != SSTOP {
             panic(format_args!(
                 "thread {} p_stat is {}",
                 p.p_tid.get(),
-                p.p_stat.get()
+                p.stat()
             ));
         }
-        kassert!(!p.p_wchan.get().is_null());
-        if ptr::eq(p.p_wchan.get(), ident) {
-            // SAFETY: `p` is on `qp`, under the scheduler lock; it moves to `wakeq`, a local
-            // queue that is emptied below before it goes out of scope.
-            unsafe {
-                qp.remove(p);
-                p.p_wchan.set(ptr::null());
-                p.p_wmesg.set(None);
-                wakeq.insert_tail(p);
-            }
+        kassert!(!p.wchan().is_null());
+        if ptr::eq(p.wchan(), ident) {
+            // `p` is on `qp`, under the scheduler lock; it moves to `wakeq`, a local queue
+            // emptied below before it goes out of scope.
+            qp.remove(p);
+            p.set_wchan(ptr::null());
+            p.p_wmesg.set(None);
+            wakeq.insert_tail(p);
             n -= 1;
         }
     }
-    while let Some(p) = wakeq.first() {
-        // SAFETY: `p` is on `wakeq`.
-        unsafe { wakeq.remove(p) };
+    while let Some(p) = wakeq.pop_head() {
         // TRACEPOINT(sched, unsleep, ...): dt(4), not configured.
-        if p.p_stat.get() == SSLEEP {
+        if p.stat() == SSLEEP {
             setrunnable(p);
         }
     }
@@ -683,12 +683,12 @@ pub fn sys_sched_yield(p: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> R
     // If one of the threads of a multi-threaded process called sched_yield(2), drop its
     // priority to ensure its siblings can make some progress.
     let pr = p.process();
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     let mut newprio = p.p_usrpri.get();
-    for q in pr.ps_threads.iter() {
+    for q in pr.ps_threads.iter(&g_pr) {
         newprio = newprio.max(q.p_runpri.get());
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 
     sched_lock();
     setrunqueue(p.cpu(), p, newprio);

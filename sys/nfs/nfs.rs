@@ -117,7 +117,7 @@ use crate::sys::socketvar::Socket;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_STRUCT, Ctlname};
 use crate::sys::time::Timeval;
 use crate::sys::types::Uid;
-use crate::sys::ucred::{Ucred, Xucred};
+use crate::sys::ucred::{UcredCell, Xucred};
 use crate::sys::vnode::Vnode;
 
 /// `NFS_TICKINTVL`: desired time for a tick (msec).
@@ -658,8 +658,9 @@ pub struct NfsrvDescript {
     pub nd_repstat: i32,
     /// `nd_retxid`: reply xid, in host order (`nfs_getreq` converts it, `nfs_rephead` converts back).
     pub nd_retxid: u32,
-    /// `nd_cr`: credentials.
-    pub nd_cr: Ucred,
+    /// `nd_cr`: credentials, the request's own, updated in place (`nfsrv_fhtovp`'s
+    /// anonymous mapping).
+    pub nd_cr: UcredCell,
 }
 
 impl NfsrvDescript {
@@ -675,7 +676,7 @@ impl NfsrvDescript {
             nd_flag: 0,
             nd_repstat: 0,
             nd_retxid: 0,
-            nd_cr: Ucred::new(),
+            nd_cr: UcredCell::new(),
         }
     }
 }

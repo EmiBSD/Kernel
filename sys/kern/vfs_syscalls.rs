@@ -68,6 +68,9 @@
 //! `EINVAL` (no descriptor can be a vnode before something is opened).
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::cred`): `access(2)`/`faccessat(2)` give the thread a placed copy of its
+//!   credentials with the real ids as effective ones (`CredRef::new`) for the check and put
+//!   the old ones back after, where the C `crdup`s and edits in place.
 //! - `VFS_STATFS(mp, &mp->mnt_stat, p)` works on a copy of `mnt_stat` that is stored back
 //!   (`statfs_mnt`); `mnt_stat` is a `Cell` (`sys/mount.rs`).
 //! - `getvnode` returns the file instead of filling `*fpp`; `dorenameat`'s `error = -1` ("the
@@ -86,12 +89,12 @@ use core::sync::atomic::Ordering;
 use crate::kern::kern_descrip::{closef, dupfdopen, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_pledge::{pledge_chown, pledge_flock};
-use crate::kern::kern_proc::ALLPROCESS;
-use crate::kern::kern_prot::{crdup, crfree, suser};
+use crate::kern::kern_prot::suser;
 use crate::kern::kern_resource::lim_cur_proc;
 use crate::kern::kern_sig::{psignal, single_thread_clear, single_thread_set};
 use crate::kern::kern_tc::{getnanotime, gettime};
 use crate::kern::kern_unveil::{unveil_add, unveil_removevnode};
+use crate::kern::proc_glue::proc_tables;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::sys_generic::{dofilereadv, dofilewritev};
@@ -156,6 +159,7 @@ use crate::sys::syscallargs::*;
 use crate::sys::systm::{INFSLP, SysArgs, kernel_lock, kernel_unlock, sysargs};
 use crate::sys::time::{Timespec, Timeval, timeval_to_timespec};
 use crate::sys::types::{Dev, Gid, Mode, Off, Register, Uid, major};
+use crate::sys::ucred::CredRef;
 use crate::sys::uio::{Iovec, UIO_SMALLIOV, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{R_OK, SEEK_SET, W_OK, X_OK};
 use crate::sys::vnode::{
@@ -287,7 +291,7 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             vput(vp);
             return Err(Errno::EPERM);
         }
-        if let Err(e) = vinvalbuf(vp, V_SAVE, p.p_ucred.get(), Some(p), 0, INFSLP) {
+        if let Err(e) = vinvalbuf(vp, V_SAVE, p.ucred_ptr(), Some(p), 0, INFSLP) {
             vput(vp);
             return Err(e);
         }
@@ -440,17 +444,22 @@ pub fn checkdirs(olddp: &'static Vnode) {
     let Some(newdp) = olddp.v_mountedhere().and_then(|mp| VFS_ROOT(mp).ok()) else {
         panic(format_args!("mount: lost mount"));
     };
-    for pr in ALLPROCESS.0.iter() {
-        let fdp = pr.fd();
-        if fdp.fd_cdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
-            free_count += 1;
-            vref(newdp);
-            fdp.fd_cdir.set(Some(newdp));
-        }
-        if fdp.fd_rdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
-            free_count += 1;
-            vref(newdp);
-            fdp.fd_rdir.set(Some(newdp));
+    {
+        // The walk alone holds the kernel lock's reader: vrele and vput below may sleep, and
+        // a sleep with a witness out stops the kernel (kern_lock.rs's assert_unwitnessed).
+        let r = hal::klock::reader();
+        for pr in proc_tables().allprocess.iter(&r) {
+            let fdp = pr.fd();
+            if fdp.fd_cdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
+                free_count += 1;
+                vref(newdp);
+                fdp.fd_cdir.set(Some(newdp));
+            }
+            if fdp.fd_rdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
+                free_count += 1;
+                vref(newdp);
+                fdp.fd_rdir.set(Some(newdp));
+            }
         }
     }
     if rootvnode().is_some_and(|r| ptr::eq(r, olddp)) {
@@ -596,7 +605,7 @@ pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
     let mut error = if mp.mnt_flag.get() & MNT_RDONLY != 0 {
         Ok(())
     } else {
-        VFS_SYNC(mp, MNT_WAIT, 0, p.p_ucred.get(), p)
+        VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p)
     };
     if error.is_ok() || flags & MNT_FORCE != 0 {
         error = VFS_UNMOUNT(mp, flags, p);
@@ -637,7 +646,7 @@ pub fn sys_sync(p: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             let asyncflag = mp.mnt_flag.get() & MNT_ASYNC;
             mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_ASYNC);
             uvm_vnp_sync(Some(mp));
-            let _ = VFS_SYNC(mp, MNT_NOWAIT, 0, p.p_ucred.get(), p);
+            let _ = VFS_SYNC(mp, MNT_NOWAIT, 0, p.ucred_ptr(), p);
             if asyncflag != 0 {
                 mp.mnt_flag.set(mp.mnt_flag.get() | MNT_ASYNC);
             }
@@ -793,7 +802,7 @@ pub fn sys_fchdir(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     vref(vp);
     let _ = frele(fp, p);
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let mut error = VOP_ACCESS(vp, VEXEC, p.p_ucred.get(), p);
+    let mut error = VOP_ACCESS(vp, VEXEC, p.ucred_ptr(), p);
 
     while error.is_ok()
         && let Some(mp) = vp.v_mountedhere()
@@ -878,7 +887,7 @@ fn change_dir(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
     let error = if vp.v_type.get() != VDIR {
         Err(Errno::ENOTDIR)
     } else {
-        VOP_ACCESS(vp, VEXEC, p.p_ucred.get(), p)
+        VOP_ACCESS(vp, VEXEC, p.ucred_ptr(), p)
     };
     if error.is_err() {
         vput(vp);
@@ -1091,7 +1100,7 @@ fn unveil_path(p: &Proc, path: usize, permissions: &[u8]) -> Result<(), Errno> {
     namei(&mut nd)?;
 
     // XXX Any access to the file or directory will allow us to pledge path it
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
     let any_access = |vp: &'static Vnode| {
         [VREAD, VWRITE, VEXEC]
             .into_iter()
@@ -1390,7 +1399,7 @@ pub fn sys_getfh(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFhopenArgs = sysargs(v);
     let fdp = p.fd();
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
 
     // Must be super user
     suser(p)?;
@@ -1945,8 +1954,8 @@ pub fn dofaccessat(p: &Proc, fd: i32, path: *const u8, amode: i32, flag: i32) ->
         return Err(Errno::EINVAL);
     }
 
-    let mut newcred = None;
-    let oldcred = p.p_ucred.get();
+    // The thread's own reference while it borrows the real ids (`oldcred`).
+    let mut oldcred = None;
     let old = p.ucred();
 
     // If access as real ids was requested and they really differ, give the thread new creds
@@ -1954,11 +1963,11 @@ pub fn dofaccessat(p: &Proc, fd: i32, path: *const u8, amode: i32, flag: i32) ->
     if flag & AT_EACCESS == 0
         && (old.cr_uid.get() != old.cr_ruid.get() || old.cr_gid.get() != old.cr_rgid.get())
     {
-        let cr = crdup(old);
-        cr.cr_uid.set(cr.cr_ruid.get());
-        cr.cr_gid.set(cr.cr_rgid.get());
-        p.p_ucred.set(cr);
-        newcred = Some(cr);
+        let mut cr = old.clone();
+        let (ruid, rgid) = (cr.cr_ruid.get(), cr.cr_rgid.get());
+        cr.cr_uid.set(ruid);
+        cr.cr_gid.set(rgid);
+        oldcred = p.set_cred(CredRef::new(cr));
     }
 
     let mut nd = ndinitat(LOOKUP, FOLLOW | LOCKLEAF, fd, upath(path), p);
@@ -1980,7 +1989,7 @@ pub fn dofaccessat(p: &Proc, fd: i32, path: *const u8, amode: i32, flag: i32) ->
         // Flags == 0 means only check for existence.
         let mut error = Ok(());
         if amode != 0 {
-            error = VOP_ACCESS(vp, vflags, p.p_ucred.get(), p);
+            error = VOP_ACCESS(vp, vflags, p.ucred_ptr(), p);
             if error.is_ok() && vflags & VWRITE != 0 {
                 error = vn_writechk(vp);
             }
@@ -1988,10 +1997,9 @@ pub fn dofaccessat(p: &Proc, fd: i32, path: *const u8, amode: i32, flag: i32) ->
         vput(vp);
         error
     });
-    // out:
-    if let Some(newcred) = newcred {
-        p.p_ucred.set(oldcred);
-        crfree(newcred);
+    // out: the thread's credentials back; the borrowed ones go.
+    if let Some(oldcred) = oldcred {
+        drop(p.set_cred(oldcred));
     }
     error
 }
@@ -2169,7 +2177,7 @@ pub fn doreadlinkat(
             uio_rw: UioRw::UIO_READ,
             uio_procp: Some(p),
         };
-        let error = VOP_READLINK(vp, &mut auio, p.p_ucred.get());
+        let error = VOP_READLINK(vp, &mut auio, p.ucred_ptr());
         retval[0] = (count - auio.uio_resid) as Register;
         error
     };
@@ -2253,7 +2261,7 @@ pub fn dovchflags(p: &Proc, vp: &'static Vnode, flags: u32) -> Result<(), Errno>
             break 'out Err(Errno::EINVAL);
         }
         if suser(p).is_err() {
-            if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p) {
+            if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p) {
                 break 'out Err(e);
             }
             if vattr.va_type == VCHR || vattr.va_type == VBLK {
@@ -2262,7 +2270,7 @@ pub fn dovchflags(p: &Proc, vp: &'static Vnode, flags: u32) -> Result<(), Errno>
         }
         vattr_null(&mut vattr);
         vattr.va_flags = u64::from(flags);
-        VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p)
+        VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
     };
     vput(vp);
     error
@@ -2328,7 +2336,7 @@ pub fn dofchmodat(
     } else {
         vattr_null(&mut vattr);
         vattr.va_mode = mode & ALLPERMS;
-        VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p)
+        VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
     };
     vput(vp);
     error
@@ -2361,7 +2369,7 @@ pub fn sys_fchmod(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     } else {
         vattr_null(&mut vattr);
         vattr.va_mode = mode & ALLPERMS;
-        VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p)
+        VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
     };
     let _ = VOP_UNLOCK(vp);
     let _ = frele(fp, p);
@@ -2396,7 +2404,7 @@ fn chown_vnode(p: &Proc, vp: &'static Vnode, uid: Uid, gid: Gid) -> Result<(), E
 
     pledge_chown(p, uid, gid)?;
     let mode = if (uid != VNOVAL as Uid || gid != VNOVAL as Gid) && !vnoperm(vp) {
-        VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p)?;
+        VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p)?;
         let mode = vattr.va_mode & !(VSUID | VSGID);
         if mode == vattr.va_mode {
             VNOVAL as Mode
@@ -2410,7 +2418,7 @@ fn chown_vnode(p: &Proc, vp: &'static Vnode, uid: Uid, gid: Gid) -> Result<(), E
     vattr.va_uid = uid;
     vattr.va_gid = gid;
     vattr.va_mode = mode;
-    VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p)
+    VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
 }
 
 /// `dofchownat(p, fd, path, uid, gid, flag)`.
@@ -2643,7 +2651,7 @@ pub fn dovutimens(p: &Proc, vp: &'static Vnode, ts: &mut [Timespec; 2]) -> Resul
     {
         Err(Errno::EROFS)
     } else {
-        VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p)
+        VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
     };
     vput(vp);
     error
@@ -2687,7 +2695,7 @@ pub fn dotruncate(p: &Proc, vp: &'static Vnode, len: Off) -> Result<(), Errno> {
     }
     vn_writechk(vp)?;
     if vp.v_type.get() == crate::sys::vnode::VREG && len as u64 > lim_cur_proc(p, RLIMIT_FSIZE) {
-        VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p)?;
+        VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p)?;
         if len as u64 > vattr.va_size {
             // if extending over the limit, send signal and fail
             psignal(p, SIGXFSZ);
@@ -2696,7 +2704,7 @@ pub fn dotruncate(p: &Proc, vp: &'static Vnode, len: Off) -> Result<(), Errno> {
     }
     vattr_null(&mut vattr);
     vattr.va_size = len as u64;
-    VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p)
+    VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
 }
 
 /// Truncate a file given its path name.
@@ -2709,8 +2717,8 @@ pub fn sys_truncate(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = VOP_ACCESS(vp, VWRITE, p.p_ucred.get(), p)
-        .and_then(|()| dotruncate(p, vp, uap.length.get()));
+    let error =
+        VOP_ACCESS(vp, VWRITE, p.ucred_ptr(), p).and_then(|()| dotruncate(p, vp, uap.length.get()));
     vput(vp);
     error
 }
@@ -2994,7 +3002,7 @@ pub fn sys_revoke(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         {
             break 'out Err(Errno::ENOTTY);
         }
-        if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p) {
+        if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p) {
             break 'out Err(e);
         }
         if p.ucred().cr_uid.get() != vattr.va_uid

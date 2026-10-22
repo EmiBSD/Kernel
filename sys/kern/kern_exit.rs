@@ -79,6 +79,20 @@
 //!   and `process_zap`, the real uid `process_zap` uncharges) are real since `kern_prot.c`.
 //! - `initprocess` is null until `init` exists (M6-b): until then process 0 adopts the
 //!   orphans `exit1` and `process_reparent` would hand to `init`.
+//! - `deadproc` is a `hal::list::List` (N4.2, interim until N4.5): no `Sync` premise on its
+//!   head, and `p_runq` is `Send + Sync`. The list's premise is elements never freed; the
+//!   reaper takes a thread off it before `proc_free`, and the `&'static` it holds is the
+//!   dead CPU list's own element.
+//! - N4.2: the process and its threads are the kernel crate's (`kernel::proc`). A thread
+//!   leaves `ps_threads` in `exit1` by taking its box back from the process
+//!   (`remove_thread_locked`), which it keeps (`p_exited`) until `proc_free` drops it: the
+//!   reaper's for a thread, `process_zap`'s for the main thread, as the C's `pool_put`s. A
+//!   process goes with its last reference (`process_zap`'s, after the main thread's box),
+//!   taking its credentials and limits with it. The lists move under the kernel lock's
+//!   writer (`hal::klock::witness`), the walks run under its reader, and a process kept past
+//!   one is counted (`process_ref`). `process_clear_orphan` names the orphan list's owner
+//!   where `LIST_REMOVE` needs none: the caller's, or the process at `ps_opptr`'s address
+//!   (unreachable while `ptrace(2)` is not ported: nothing sets `PS_ORPHAN`).
 //! - `dowait6` takes its out-parameters as `Option<&mut>`; `ps_opptr` (ptrace's old parent)
 //!   is always null, since `ptrace(2)` (`sys_process.c`) is not ported, so
 //!   `proc_finish_wait` always takes the zombie's branch.
@@ -88,25 +102,21 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
 use crate::kassert;
-use crate::kern::init_main::{INITPROCESS, PROCESS0};
+use crate::kern::init_main::{INITPROCESS, PROC0, PROCESS0};
 use crate::kern::kern_descrip::fdfree;
 use crate::kern::kern_event::{knote_processexit, kqpoll_exit};
 use crate::kern::kern_fork::{NPROCESSES, NTHREADS, freepid};
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_proc::{
-    PROC_POOL, PROCESS_POOL, RUSAGE_POOL, ZOMBPROCESS, chgproccnt, killjobc, leavepgrp,
-};
-use crate::kern::kern_prot::crfree;
-use crate::kern::kern_resource::{calcru, lim_free, ruadd, tuagg_add_process, tuagg_add_runtime};
+use crate::kern::kern_resource::{calcru, ruadd, tuagg_add_process, tuagg_add_runtime};
 use crate::kern::kern_sched::sched_exit;
 use crate::kern::kern_sig::{
     process_suspend_signal, prsignal, psignal, ptsignal, sigactsfree, sigio_freelist,
     single_thread_set,
 };
-use crate::kern::kern_synch::{msleep_nsec, refcnt_finalize, sleep_finish, sleep_setup, wakeup};
+use crate::kern::kern_synch::{msleep_nsec, sleep_finish, sleep_setup, wakeup};
 use crate::kern::kern_timeout::timeout_del;
+use crate::kern::proc_glue::{chgproccnt, proc_tables, process_ref};
 use crate::kern::sched_bsd::sched_assert_unlocked;
-use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::uvm_uarea_free;
 use crate::kern::vm_bsd::{uvm_exit, uvm_purge};
@@ -120,16 +130,14 @@ use crate::machine::pmap::pmap_deactivate;
 #[cfg(feature = "qemu")]
 use crate::machine::{Exit, ExitStatus};
 use crate::sys::errno::Errno;
-use crate::sys::mutex::{MTX_NOWITNESS, Mutex, mutex_assert_locked};
+use crate::sys::mutex::{MTX_NOWITNESS, Mutex};
 use crate::sys::param::{PCATCH, PVM, PWAIT};
-use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::proc::{
     EXIT_NORMAL, EXIT_THREAD, P_SYSTEM, P_THREAD, P_WEXIT, PS_CONTINUED, PS_EXITING, PS_ISPWAIT,
     PS_NOZOMBIE, PS_ORPHAN, PS_PPWAIT, PS_PROFIL, PS_STOPPED, PS_STOPPING, PS_TRACED, PS_TRAPPED,
-    PS_WAITED, PS_WAITEVENT, PS_ZOMBIE, Proc, ProcHash, ProcList, ProcRunq, Process, ProcessHash,
-    ProcessList, ProcessOrphan, ProcessSibling, SDEAD, SINGLE_EXIT, p_hassibling,
+    PS_WAITED, PS_WAITEVENT, PS_ZOMBIE, Proc, ProcRunq, Process, ProcessRef, PsGuard, SDEAD,
+    SINGLE_EXIT, p_hassibling,
 };
-use crate::sys::queue::{ListHead, TailqHead};
 use crate::sys::resource::Rusage;
 use crate::sys::sched::scheduler_wait_hook;
 use crate::sys::siginfo::{
@@ -145,6 +153,8 @@ use crate::sys::wait::{
     WNOWAIT, WSTOPPED, WTRAPPED, WUNTRACED, w_exitcode, w_stopcode, wcoredump, wstatus,
 };
 use crate::unported;
+use hal::klock;
+use hal::list::List;
 
 /// `sys_exit`: death of process.
 pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
@@ -199,7 +209,7 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
     }
 
     if flags == EXIT_NORMAL && pr.ps_flags.load(Ordering::Relaxed) & PS_EXITING == 0 {
-        if pr.ps_pid.get() == 1 {
+        if pr.ps_pid == 1 {
             // Under QEMU init's exit ends the run: the M6 exit criterion (see the module's
             // deviations). The C panics, as it has nothing to run.
             #[cfg(feature = "qemu")]
@@ -226,24 +236,30 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
             let pptr = parent(pr);
             pptr.ps_flags.fetch_and(!PS_ISPWAIT, Ordering::Relaxed);
             pptr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-            wakeup(ptr::from_ref(pptr));
+            wakeup(ptr::from_ref::<Process>(&pptr));
         }
 
         // Wait for concurrent `allprocess' loops
-        refcnt_finalize(&pr.ps_refcnt, "psdtor");
+        pr.ps_refcnt.finalize("psdtor");
     }
 
     // unlink ourselves from the active threads
-    mtx_enter(&pr.ps_mtx);
-    // SAFETY: `p` is on its process's thread list, under `ps_mtx`.
-    unsafe { pr.ps_threads.remove(p) };
+    let mut g = pr.ps_mtx.lock();
+    let mybox = if ptr::eq(p, &PROC0) {
+        pr.remove_static_thread_locked(&mut g, &PROC0);
+        None
+    } else {
+        let b = pr.remove_thread_locked(&mut g, p.p_seq.get());
+        kassert!(b.as_ref().is_some_and(|b| ptr::eq(&**b, p)));
+        b
+    };
     pr.ps_threadcnt.set(pr.ps_threadcnt.get() - 1);
     pr.ps_exitcnt.set(pr.ps_exitcnt.get() + 1);
 
     // if somebody else wants to take us to single threaded mode or stop us, count ourselves
     // out.
     if !pr.ps_single.get().is_null() || pr.ps_flags.load(Ordering::Relaxed) & PS_STOPPING != 0 {
-        process_suspend_signal(pr);
+        process_suspend_signal(pr, &g);
     }
 
     // proc is off ps_threads list so update accounting of process now
@@ -253,38 +269,30 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
     if p.p_flag.load(Ordering::Relaxed) & P_THREAD == 0 {
         // main thread gotta wait because it has the pid, et al
         while pr.ps_threadcnt.get() + pr.ps_exitcnt.get() > 1 {
-            let _ = msleep_nsec(
-                ptr::addr_of!(pr.ps_threads),
-                &pr.ps_mtx,
-                PWAIT,
-                "thrdeath",
-                INFSLP,
-            );
+            let _ = g.sleep_nsec(ptr::addr_of!(pr.ps_threads), PWAIT, "thrdeath", INFSLP);
         }
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g);
+    // The thread keeps its own box until `proc_free` (see the module's deviations).
+    if let Some(b) = mybox {
+        drop(p.p_exited.lock().replace(b));
+    }
 
-    let rup: &Rusage = match NonNull::new(pr.ps_ru.get().cast_mut()) {
-        // SAFETY: the process's rusage, a pool item alive until `process_zap`.
-        Some(rup) => unsafe { rup.as_ref() },
-        None => {
-            let Some(mem) = pool_get(&RUSAGE_POOL, PR_WAITOK | PR_ZERO) else {
-                panic(format_args!("exit1: rusage_pool is empty"));
-            };
-            let new = mem.cast::<Rusage>();
-            // SAFETY: a fresh, zeroed pool item, written once before anything else sees it.
-            unsafe { new.as_ptr().write(Rusage::new()) };
-            if pr.ps_ru.get().is_null() {
-                pr.ps_ru.set(new.as_ptr());
-                // SAFETY: as above; the process owns it now.
-                unsafe { new.as_ref() }
-            } else {
-                pool_put(&RUSAGE_POOL, mem);
-                // SAFETY: another thread installed the process's rusage meanwhile.
-                unsafe { &*pr.ps_ru.get() }
-            }
-        }
+    // The process's rusage (`ps_ru`), made by the first thread to exit.
+    let need_ru = {
+        let r = klock::reader();
+        pr.ps_ru.get(&r).is_none()
     };
+    if need_ru {
+        let ru = kernel::proc::rusage_alloc();
+        let mut w = klock::witness();
+        let slot = pr.ps_ru.get_mut(&mut w);
+        if slot.is_none() {
+            *slot = Some(ru);
+        }
+        // else another thread installed the process's rusage meanwhile; `ru` goes back
+        // after the witness.
+    }
     p.p_siglist.store(0, Ordering::Relaxed);
     if p.p_flag.load(Ordering::Relaxed) & P_THREAD == 0 {
         pr.ps_siglist.store(0, Ordering::Relaxed);
@@ -309,7 +317,7 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
 
         timeout_del(&pr.ps_rucheck_to);
         // SYSVSEM: not configured.
-        killjobc(pr);
+        kernel::proc::killjobc(p.process_ref());
         let _ = crate::kern::kern_acct::acct_process(p);
         // KTRACE: not configured.
 
@@ -337,12 +345,8 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
 
     p.p_fd.set(ptr::null()); // zap the thread's copy
 
-    // Release the thread's read reference of resource limit structure.
-    // SAFETY: p_limit is null or a reference this thread holds.
-    if let Some(limit) = unsafe { p.p_limit.get().as_ref() } {
-        p.p_limit.set(ptr::null());
-        lim_free(limit);
-    }
+    // Release the thread's read reference of resource limit structure (its copy).
+    p.p_limit.clear();
 
     // Remove proc from pidhash chain and allproc so looking it up won't work. We will put
     // the proc on the deadproc list later (using the p_runq member), and wake up the reaper
@@ -350,47 +354,53 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
     // the process on the zombprocess list below.
     //
     // NOTE: WE ARE NO LONGER ALLOWED TO SLEEP!
-    p.p_stat.set(SDEAD);
+    p.set_stat(SDEAD);
 
-    // SAFETY: `p` is on the tid hash chain and on allproc (fork1 put it there), under the
-    // kernel lock.
-    unsafe {
-        ListHead::<ProcHash>::remove(p);
-        ListHead::<ProcList>::remove(p);
+    {
+        let mut w = klock::witness();
+        let t = proc_tables();
+        t.tidhash(p.p_tid.get()).remove(&mut w, p);
+        t.allproc.remove(&mut w, p);
     }
 
     if p.p_flag.load(Ordering::Relaxed) & P_THREAD == 0 {
-        // SAFETY: `pr` is on the pid hash chain and on allprocess, under the kernel lock.
-        unsafe {
-            ListHead::<ProcessHash>::remove(pr);
-            ListHead::<ProcessList>::remove(pr);
+        {
+            let mut w = klock::witness();
+            let t = proc_tables();
+            t.pidhash(pr.ps_pid).remove(&mut w, pr);
+            t.allprocess.remove(&mut w, pr);
+            if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE == 0 {
+                t.zombprocess.insert_head(&mut w, p.process_ref().as_pin());
+            }
         }
-
-        if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE == 0 {
-            // SAFETY: `pr` is off allprocess (above) and not on zombprocess yet.
-            unsafe { ZOMBPROCESS.0.insert_head(pr) };
-        } else {
+        if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE != 0 {
             // Not going to be a zombie, so it's now off all the lists scanned by
             // ispidtaken(), so block fast reuse of the pid now.
-            freepid(pr.ps_pid.get());
+            freepid(pr.ps_pid);
         }
 
         // Reparent children to their original parent, in case they were being traced, or to
         // init(8).
-        let initprocess = initprocess_or_process0();
-        let mut qr = pr.ps_children.first();
-        if qr.is_some() {
+        let initprocess = process_ref(initprocess_or_process0());
+        let any = {
+            let r = klock::reader();
+            !pr.ps_children.is_empty(&r)
+        };
+        if any {
             // only need this if any child is S_ZOMB
-            wakeup(ptr::from_ref(initprocess));
+            wakeup(ptr::from_ref::<Process>(&initprocess));
         }
-        while let Some(child) = qr {
-            qr = ListHead::<ProcessSibling>::next(child);
+        // Each pass takes the first child off this process's list (reparenting moves it).
+        while let Some(child) = {
+            let r = klock::reader();
+            pr.ps_children.first(&r).map(process_ref)
+        } {
             // Traced processes are killed since their existence means someone is screwing
             // up.
-            mtx_enter(&child.ps_mtx);
+            let mut cg = child.ps_mtx.lock();
             if child.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
-                process_untrace(child);
-                mtx_leave(&child.ps_mtx);
+                process_untrace(&child, &mut cg);
+                drop(cg);
 
                 if child.ps_flags.load(Ordering::Relaxed) & PS_EXITING == 0 {
                     // If single threading is active, direct the signal to the active thread
@@ -398,26 +408,34 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
                     // SAFETY: a non-null `ps_single` is a live thread of `child`.
                     match unsafe { child.ps_single.get().as_ref() } {
                         Some(single) => ptsignal(single, SIGKILL, SignalType::STHREAD),
-                        None => prsignal(child, SIGKILL),
+                        None => prsignal(&child, SIGKILL),
                     }
                 }
             } else {
-                process_reparent(child, initprocess);
-                mtx_leave(&child.ps_mtx);
+                process_reparent(&child, &mut cg, &initprocess);
+                drop(cg);
             }
         }
 
         // Make sure orphans won't remember the exiting process.
-        while let Some(orphan) = pr.ps_orphans.first() {
-            mtx_enter(&orphan.ps_mtx);
+        while let Some(orphan) = {
+            let r = klock::reader();
+            pr.ps_orphans.first(&r).map(process_ref)
+        } {
+            let og = orphan.ps_mtx.lock();
             // KASSERT(qr->ps_opptr == pr); qr->ps_opptr = NULL: ptrace (M7).
-            process_clear_orphan(orphan);
-            mtx_leave(&orphan.ps_mtx);
+            process_clear_orphan(&orphan, Some(pr));
+            drop(og);
         }
     }
 
     // add thread's accumulated rusage into the process's total
-    ruadd(rup, &p.p_ru);
+    {
+        let r = klock::reader();
+        if let Some(rup) = pr.ps_ru.get(&r) {
+            ruadd(rup, &p.p_ru);
+        }
+    }
 
     // clear %cpu usage during swap
     p.p_pctcpu.store(0, Ordering::Relaxed);
@@ -425,36 +443,41 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
     if p.p_flag.load(Ordering::Relaxed) & P_THREAD == 0 {
         // Final thread has died, so add on our children's rusage and calculate the total
         // times.
-        let (utime, stime, _) = calcru(&pr.ps_tu);
-        rup.ru_utime.set(utime);
-        rup.ru_stime.set(stime);
-        rup.ru_ixrss.set(pr.ps_tu.tu_ixrss.get() as i64);
-        rup.ru_idrss.set(pr.ps_tu.tu_idrss.get() as i64);
-        rup.ru_isrss.set(pr.ps_tu.tu_isrss.get() as i64);
-        ruadd(rup, &pr.ps_cru);
+        {
+            let r = klock::reader();
+            if let Some(rup) = pr.ps_ru.get(&r) {
+                let (utime, stime, _) = calcru(&pr.ps_tu);
+                rup.ru_utime.set(utime);
+                rup.ru_stime.set(stime);
+                rup.ru_ixrss.set(pr.ps_tu.tu_ixrss.get() as i64);
+                rup.ru_idrss.set(pr.ps_tu.tu_idrss.get() as i64);
+                rup.ru_isrss.set(pr.ps_tu.tu_isrss.get() as i64);
+                ruadd(rup, &pr.ps_cru);
+            }
+        }
 
         // Notify parent that we're gone. If we're not going to become a zombie, reparent to
         // process 1 (init) so that we can wake our original parent to possibly unblock
         // wait4() to return ECHILD.
-        mtx_enter(&pr.ps_mtx);
+        let mut g = pr.ps_mtx.lock();
         if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE != 0 {
-            let ppr = parent(pr);
-            process_reparent(pr, initprocess_or_process0());
+            let ppr = parent_locked(pr, &g);
+            process_reparent(pr, &mut g, &process_ref(initprocess_or_process0()));
             ppr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-            wakeup(ptr::from_ref(ppr));
+            wakeup(ptr::from_ref::<Process>(&ppr));
         }
-        mtx_leave(&pr.ps_mtx);
+        drop(g);
     }
 
     // just a thread? check if last one standing.
     if p.p_flag.load(Ordering::Relaxed) & P_THREAD != 0 {
         // scheduler_wait_hook(pr->ps_mainproc, p); XXX
-        mtx_enter(&pr.ps_mtx);
+        let g = pr.ps_mtx.lock();
         pr.ps_exitcnt.set(pr.ps_exitcnt.get() - 1);
         if pr.ps_threadcnt.get() + pr.ps_exitcnt.get() == 1 {
             wakeup(ptr::addr_of!(pr.ps_threads));
         }
-        mtx_leave(&pr.ps_mtx);
+        drop(g);
     }
 
     // Other substructures are freed from reaper and wait().
@@ -472,10 +495,22 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
     // panic("sched_exit returned"): sched_exit never returns.
 }
 
-/// `pr->ps_pptr`: a process always has a parent (process 0 is its own).
-fn parent(pr: &Process) -> &'static Process {
-    // SAFETY: `ps_pptr` is set at creation and only ever re-pointed at a live process.
-    unsafe { pr.ps_pptr.get().as_ref() }.unwrap_or(&PROCESS0)
+/// `pr->ps_pptr`, counted, for a holder of the kernel lock: a process always has a parent
+/// (process 0 is its own).
+fn parent(pr: &Process) -> ProcessRef {
+    let r = klock::reader();
+    match pr.pptr(&r) {
+        Some(pp) => pp.clone(),
+        None => process_ref(&PROCESS0),
+    }
+}
+
+/// `pr->ps_pptr`, counted, for a holder of its `ps_mtx` (`[K|m]`).
+fn parent_locked(pr: &Process, g: &PsGuard<'_>) -> ProcessRef {
+    match pr.pptr_locked(g) {
+        Some(pp) => pp.clone(),
+        None => process_ref(&PROCESS0),
+    }
 }
 
 /// `deadproc_mutex`: locking of this prochead is special; it's accessed in a critical
@@ -483,13 +518,8 @@ fn parent(pr: &Process) -> &'static Process {
 /// spin lock for this prochead. We use the `p_runq` member to linkup to deadproc.
 static DEADPROC_MUTEX: Mutex = Mutex::new(IPL_NONE);
 
-/// `deadproc`'s head, made `Sync`: touched under `deadproc_mutex`.
-struct DeadprocHead(TailqHead<ProcRunq>);
-// SAFETY: see the type's doc.
-unsafe impl Sync for DeadprocHead {}
-
-/// `deadproc`: the threads waiting for the reaper.
-static DEADPROC: DeadprocHead = DeadprocHead(TailqHead::new());
+/// `deadproc`: the threads waiting for the reaper, touched under `deadproc_mutex`.
+static DEADPROC: List<ProcRunq> = List::new();
 
 /// `deadproc_mutex`'s `MUTEX_INITIALIZER_FLAGS(IPL_NONE, "deadproc", MTX_NOWITNESS)`: the
 /// witness flag is kept for the record.
@@ -500,27 +530,28 @@ const DEADPROC_MUTEX_FLAGS: i32 = MTX_NOWITNESS;
 ///
 /// We lock the deadproc list, place the proc on that list (using the `p_runq` member), and
 /// wake up the reaper.
-pub fn exit2(p: &Proc) {
+pub fn exit2(p: &'static Proc) {
     // account the remainder of time spent in exit1()
-    mtx_enter(&p.process().ps_mtx);
-    tuagg_add_process(p.process(), p);
-    mtx_leave(&p.process().ps_mtx);
+    let pr = p.process();
+    let g = pr.ps_mtx.lock();
+    tuagg_add_process(pr, p);
+    drop(g);
 
     mtx_enter(&DEADPROC_MUTEX);
-    // SAFETY: `p` is SDEAD and on no queue (the idle thread took it off `spc_deadproc`);
-    // under `deadproc_mutex`.
-    unsafe { DEADPROC.0.insert_tail(p) };
+    // `p` is SDEAD and on no queue (the idle thread took it off `spc_deadproc`).
+    DEADPROC.insert_tail(p);
     mtx_leave(&DEADPROC_MUTEX);
 
     wakeup(ptr::addr_of!(DEADPROC));
     let _ = DEADPROC_MUTEX_FLAGS;
 }
 
-/// `proc_free`: returns a dead thread to the pool.
+/// `proc_free`: returns a dead thread to the pool: the box it kept since `exit1` dropped
+/// (its credentials' reference, its vmspace handle and its process's reference with it).
 pub fn proc_free(p: &Proc) {
-    crfree(p.ucred());
-    pool_put(&PROC_POOL, NonNull::from(p).cast::<u8>());
+    let b = p.p_exited.lock().take();
     NTHREADS.fetch_sub(1, Ordering::Relaxed);
+    drop(b);
 }
 
 /// `reaper`: process reaper. This is run by a kernel thread to free the resources of a
@@ -534,7 +565,7 @@ pub fn reaper(_arg: *mut c_void) {
     loop {
         mtx_enter(&DEADPROC_MUTEX);
         let p = loop {
-            if let Some(p) = DEADPROC.0.first() {
+            if let Some(p) = DEADPROC.first() {
                 break p;
             }
             let _ = msleep_nsec(
@@ -547,8 +578,7 @@ pub fn reaper(_arg: *mut c_void) {
         };
 
         // Remove us from the deadproc list.
-        // SAFETY: `p` is the first element, under `deadproc_mutex`.
-        unsafe { DEADPROC.0.remove(p) };
+        DEADPROC.remove(p);
         mtx_leave(&DEADPROC_MUTEX);
 
         // WITNESS_THREAD_EXIT(p): not configured.
@@ -556,16 +586,16 @@ pub fn reaper(_arg: *mut c_void) {
         // Free the VM resources we're still holding on to. We must do this from a valid
         // thread because doing so may block.
         uvm_uarea_free(p);
-        p.p_vmspace.set(ptr::null()); // zap the thread's copy
+        drop(p.set_vmspace(None)); // zap the thread's copy
 
         if p.p_flag.load(Ordering::Relaxed) & P_THREAD != 0 {
             // Just a thread
             proc_free(p);
         } else {
-            let pr = p.process();
+            let pr = process_ref(p.process());
 
             // Release the rest of the process's vmspace
-            uvm_exit(pr);
+            uvm_exit(&pr);
 
             kernel_lock(); // KERNEL_LOCK()
             if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE == 0 {
@@ -574,14 +604,14 @@ pub fn reaper(_arg: *mut c_void) {
             }
 
             // Notify listeners of our demise and clean up.
-            knote_processexit(pr);
+            knote_processexit(&pr);
 
             if pr.ps_flags.load(Ordering::Relaxed) & PS_ZOMBIE != 0 {
                 // Post SIGCHLD and wake up parent.
-                let pptr = parent(pr);
-                prsignal(pptr, SIGCHLD);
+                let pptr = parent(&pr);
+                prsignal(&pptr, SIGCHLD);
                 pptr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-                wakeup(ptr::from_ref(pptr));
+                wakeup(ptr::from_ref::<Process>(&pptr));
             } else {
                 // No one will wait for us, just zap it.
                 process_zap(pr);
@@ -592,20 +622,34 @@ pub fn reaper(_arg: *mut c_void) {
 }
 
 /// The id `dowait6` compares a process with: its pid or its process group's id.
-fn wait_matches(pr: &Process, idtype: Idtype, id: i64) -> bool {
-    !((idtype == P_PID && id != i64::from(pr.ps_pid.get()))
-        || (idtype == P_PGID && id != i64::from(pr.pgid())))
+fn wait_matches(r: &klock::KernelReader, pr: &Process, idtype: Idtype, id: i64) -> bool {
+    !((idtype == P_PID && id != i64::from(pr.ps_pid))
+        || (idtype == P_PGID && id != i64::from(pr.pgid(r))))
 }
 
-/// The `siginfo_t` `dowait6` fills for a child: who, as whom, and the `CLD_*` code.
-fn wait_info(pr: &Process, code: i32, status: i32) -> Siginfo {
+/// The `siginfo_t` `dowait6` fills for a child: who, as whom, and the `CLD_*` code; read
+/// under the child's `ps_mtx` (`g`), which `dowait6` holds (the C reads
+/// `pr->ps_ucred->cr_uid` in the same section; `pr.ucred()` would take the mutex again).
+fn wait_info(pr: &Process, g: &PsGuard<'_>, code: i32, status: i32) -> Siginfo {
     let mut info = Siginfo::zeroed();
-    info.set_si_pid(pr.ps_pid.get());
-    info.set_si_uid(pr.ucred().cr_uid.get());
+    info.set_si_pid(pr.ps_pid);
+    info.set_si_uid(g.ucred().cr_uid.get());
     info.si_signo = SIGCHLD;
     info.si_code = code;
     info.set_si_status(status);
     info
+}
+
+/// What `dowait6` found among the children, decided under the kernel lock's reader.
+enum Found {
+    /// A child reported: its pid in `retval`.
+    Reported,
+    /// A zombie to collect (`proc_finish_wait`), held past the reader.
+    Zombie(ProcessRef),
+    /// Children matched, none had anything to report.
+    Waiting,
+    /// No child matched.
+    None,
 }
 
 /// `dowait6`: the body of `wait4(2)` and `waitid(2)`: finds a child of `q` that matches
@@ -631,133 +675,145 @@ pub fn dowait6(
 
     loop {
         qr.ps_flags.fetch_and(!PS_WAITEVENT, Ordering::Relaxed);
-        let mut nfound = 0;
-        for pr in qr.ps_children.iter() {
-            mtx_enter(&pr.ps_mtx);
-            let flags = pr.ps_flags.load(Ordering::Relaxed);
-            if flags & PS_NOZOMBIE != 0 || !wait_matches(pr, idtype, id) {
-                mtx_leave(&pr.ps_mtx);
-                continue;
-            }
-            nfound += 1;
-            if options & WEXITED != 0 && flags & PS_ZOMBIE != 0 {
-                retval[0] = pr.ps_pid.get() as Register;
-                if let Some(info) = info.as_deref_mut() {
-                    let xsig = pr.ps_xsig.get();
-                    *info = if xsig == 0 {
-                        wait_info(pr, CLD_EXITED, pr.ps_xexit.get() as i32)
-                    } else if wcoredump(xsig) {
-                        wait_info(pr, CLD_DUMPED, wstatus(xsig))
-                    } else {
-                        wait_info(pr, CLD_KILLED, wstatus(xsig))
-                    };
-                }
-
-                if let Some(statusp) = statusp.as_deref_mut() {
-                    *statusp = w_exitcode(pr.ps_xexit.get() as i32, pr.ps_xsig.get());
-                }
-                if let Some(rusage) = rusage {
-                    // SAFETY: a zombie keeps its `ps_ru` (a `rusage_pool` item) until
-                    // `process_zap`.
-                    if let Some(ru) = unsafe { pr.ps_ru.get().as_ref() } {
-                        rusage.copy_from(ru);
-                    }
-                }
-                mtx_leave(&pr.ps_mtx);
-                if options & WNOWAIT == 0 {
-                    proc_finish_wait(q, pr);
-                }
-                return Ok(());
-            }
-            if options & WTRAPPED != 0
-                && flags & PS_TRACED != 0
-                && flags & PS_WAITED == 0
-                && flags & PS_STOPPED != 0
-                && flags & PS_TRAPPED != 0
-            {
-                if options & WNOWAIT == 0 {
-                    pr.ps_flags.fetch_or(PS_WAITED, Ordering::Relaxed);
-                }
-
-                retval[0] = pr.ps_pid.get() as Register;
-                if let Some(info) = info.as_deref_mut() {
-                    *info = wait_info(pr, CLD_TRAPPED, pr.ps_xsig.get());
-                }
-
-                if let Some(statusp) = statusp.as_deref_mut() {
-                    *statusp = w_stopcode(pr.ps_xsig.get());
-                }
-                mtx_leave(&pr.ps_mtx);
-                if let Some(rusage) = rusage {
-                    rusage.copy_from(&Rusage::default());
-                }
-                return Ok(());
-            }
-            if (flags & PS_TRACED != 0 || options & WUNTRACED != 0)
-                && flags & PS_WAITED == 0
-                && flags & PS_STOPPED != 0
-                && flags & PS_TRAPPED == 0
-            {
-                if options & WNOWAIT == 0 {
-                    pr.ps_flags.fetch_or(PS_WAITED, Ordering::Relaxed);
-                }
-
-                retval[0] = pr.ps_pid.get() as Register;
-                if let Some(info) = info.as_deref_mut() {
-                    *info = wait_info(pr, CLD_STOPPED, pr.ps_xsig.get());
-                }
-
-                if let Some(statusp) = statusp.as_deref_mut() {
-                    *statusp = w_stopcode(pr.ps_xsig.get());
-                }
-                mtx_leave(&pr.ps_mtx);
-                if let Some(rusage) = rusage {
-                    rusage.copy_from(&Rusage::default());
-                }
-                return Ok(());
-            }
-            if options & WCONTINUED != 0 && flags & PS_CONTINUED != 0 {
-                if options & WNOWAIT == 0 {
-                    pr.ps_flags.fetch_and(!PS_CONTINUED, Ordering::Relaxed);
-                }
-
-                retval[0] = pr.ps_pid.get() as Register;
-                if let Some(info) = info.as_deref_mut() {
-                    *info = wait_info(pr, CLD_CONTINUED, SIGCONT);
-                }
-
-                mtx_leave(&pr.ps_mtx);
-                if let Some(statusp) = statusp.as_deref_mut() {
-                    *statusp = _WCONTINUED;
-                }
-                if let Some(rusage) = rusage {
-                    rusage.copy_from(&Rusage::default());
-                }
-                return Ok(());
-            }
-            mtx_leave(&pr.ps_mtx);
-        }
-        // Look in the orphans list too, to allow the parent to collect its child's exit
-        // status even if child is being debugged.
-        //
-        // Debugger detaches from the parent upon successful switch-over from parent to
-        // child. At this point due to re-parenting the parent loses the child to debugger
-        // and a wait4(2) call would report that it has no children to wait for. By
-        // maintaining a list of orphans we allow the parent to successfully wait until the
-        // child becomes a zombie.
-        if nfound == 0 {
-            for pr in qr.ps_orphans.iter() {
-                if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE != 0
-                    || !wait_matches(pr, idtype, id)
-                {
+        let found = 'scan: {
+            let r = klock::reader();
+            let mut nfound = 0;
+            for pr in qr.ps_children.iter(&r) {
+                let g = pr.ps_mtx.lock();
+                let flags = pr.ps_flags.load(Ordering::Relaxed);
+                if flags & PS_NOZOMBIE != 0 || !wait_matches(&r, pr, idtype, id) {
+                    drop(g);
                     continue;
                 }
                 nfound += 1;
-                break;
+                if options & WEXITED != 0 && flags & PS_ZOMBIE != 0 {
+                    retval[0] = pr.ps_pid as Register;
+                    if let Some(info) = info.as_deref_mut() {
+                        let xsig = pr.ps_xsig.get();
+                        *info = if xsig == 0 {
+                            wait_info(pr, &g, CLD_EXITED, pr.ps_xexit.get() as i32)
+                        } else if wcoredump(xsig) {
+                            wait_info(pr, &g, CLD_DUMPED, wstatus(xsig))
+                        } else {
+                            wait_info(pr, &g, CLD_KILLED, wstatus(xsig))
+                        };
+                    }
+
+                    if let Some(statusp) = statusp.as_deref_mut() {
+                        *statusp = w_exitcode(pr.ps_xexit.get() as i32, pr.ps_xsig.get());
+                    }
+                    if let Some(rusage) = rusage
+                        && let Some(ru) = pr.ps_ru.get(&r)
+                    {
+                        rusage.copy_from(ru);
+                    }
+                    drop(g);
+                    if options & WNOWAIT == 0 {
+                        break 'scan Found::Zombie(process_ref(pr));
+                    }
+                    break 'scan Found::Reported;
+                }
+                if options & WTRAPPED != 0
+                    && flags & PS_TRACED != 0
+                    && flags & PS_WAITED == 0
+                    && flags & PS_STOPPED != 0
+                    && flags & PS_TRAPPED != 0
+                {
+                    if options & WNOWAIT == 0 {
+                        pr.ps_flags.fetch_or(PS_WAITED, Ordering::Relaxed);
+                    }
+
+                    retval[0] = pr.ps_pid as Register;
+                    if let Some(info) = info.as_deref_mut() {
+                        *info = wait_info(pr, &g, CLD_TRAPPED, pr.ps_xsig.get());
+                    }
+
+                    if let Some(statusp) = statusp.as_deref_mut() {
+                        *statusp = w_stopcode(pr.ps_xsig.get());
+                    }
+                    drop(g);
+                    if let Some(rusage) = rusage {
+                        rusage.copy_from(&Rusage::default());
+                    }
+                    break 'scan Found::Reported;
+                }
+                if (flags & PS_TRACED != 0 || options & WUNTRACED != 0)
+                    && flags & PS_WAITED == 0
+                    && flags & PS_STOPPED != 0
+                    && flags & PS_TRAPPED == 0
+                {
+                    if options & WNOWAIT == 0 {
+                        pr.ps_flags.fetch_or(PS_WAITED, Ordering::Relaxed);
+                    }
+
+                    retval[0] = pr.ps_pid as Register;
+                    if let Some(info) = info.as_deref_mut() {
+                        *info = wait_info(pr, &g, CLD_STOPPED, pr.ps_xsig.get());
+                    }
+
+                    if let Some(statusp) = statusp.as_deref_mut() {
+                        *statusp = w_stopcode(pr.ps_xsig.get());
+                    }
+                    drop(g);
+                    if let Some(rusage) = rusage {
+                        rusage.copy_from(&Rusage::default());
+                    }
+                    break 'scan Found::Reported;
+                }
+                if options & WCONTINUED != 0 && flags & PS_CONTINUED != 0 {
+                    if options & WNOWAIT == 0 {
+                        pr.ps_flags.fetch_and(!PS_CONTINUED, Ordering::Relaxed);
+                    }
+
+                    retval[0] = pr.ps_pid as Register;
+                    if let Some(info) = info.as_deref_mut() {
+                        *info = wait_info(pr, &g, CLD_CONTINUED, SIGCONT);
+                    }
+
+                    drop(g);
+                    if let Some(statusp) = statusp.as_deref_mut() {
+                        *statusp = _WCONTINUED;
+                    }
+                    if let Some(rusage) = rusage {
+                        rusage.copy_from(&Rusage::default());
+                    }
+                    break 'scan Found::Reported;
+                }
+                drop(g);
             }
-        }
-        if nfound == 0 {
-            return Err(Errno::ECHILD);
+            // Look in the orphans list too, to allow the parent to collect its child's exit
+            // status even if child is being debugged.
+            //
+            // Debugger detaches from the parent upon successful switch-over from parent to
+            // child. At this point due to re-parenting the parent loses the child to
+            // debugger and a wait4(2) call would report that it has no children to wait
+            // for. By maintaining a list of orphans we allow the parent to successfully wait
+            // until the child becomes a zombie.
+            if nfound == 0 {
+                for pr in qr.ps_orphans.iter(&r) {
+                    if pr.ps_flags.load(Ordering::Relaxed) & PS_NOZOMBIE != 0
+                        || !wait_matches(&r, pr, idtype, id)
+                    {
+                        continue;
+                    }
+                    nfound += 1;
+                    break;
+                }
+            }
+            if nfound == 0 {
+                Found::None
+            } else {
+                Found::Waiting
+            }
+        };
+        match found {
+            Found::Reported => return Ok(()),
+            Found::Zombie(pr) => {
+                proc_finish_wait(q, pr);
+                return Ok(());
+            }
+            Found::None => return Err(Errno::ECHILD),
+            Found::Waiting => {}
         }
         if options & WNOHANG != 0 {
             retval[0] = 0;
@@ -770,7 +826,6 @@ pub fn dowait6(
         )?;
     }
 }
-
 /// `wait4(2)`.
 pub fn sys_wait4(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWait4Args = sysargs(v);
@@ -785,7 +840,8 @@ pub fn sys_wait4(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
     options |= WEXITED | WTRAPPED;
 
     let (idtype, id) = if pid == WAIT_MYPGRP {
-        (P_PGID, i64::from(q.process().pgid()))
+        let r = klock::reader();
+        (P_PGID, i64::from(q.process().pgid(&r)))
     } else if pid == WAIT_ANY {
         (P_ALL, 0)
     } else if pid < 0 {
@@ -855,90 +911,129 @@ pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 
 /// `proc_finish_wait`: the waiter collected `pr`: give a ptrace-attached child back to its
 /// old parent, or account for it and free it.
-pub fn proc_finish_wait(waiter: &Proc, pr: &Process) {
+pub fn proc_finish_wait(waiter: &Proc, pr: ProcessRef) {
     // If we got the child via a ptrace 'attach', we need to give it back to the old
     // parent.
-    mtx_enter(&pr.ps_mtx);
+    let mut g = pr.ps_mtx.lock();
     // SAFETY: a non-null `ps_opptr` is a live process (ptrace keeps it).
     let opptr = unsafe { pr.ps_opptr.get().as_ref() };
+    let pptr_addr = pr
+        .pptr_locked(&g)
+        .map_or(0, |pp| ptr::from_ref::<Process>(pp).addr());
     match opptr {
-        Some(tr) if !ptr::eq(tr, pr.ps_pptr.get()) => {
+        Some(tr) if ptr::from_ref(tr).addr() != pptr_addr => {
             pr.ps_opptr.set(ptr::null());
             pr.ps_flags.fetch_and(!PS_TRACED, Ordering::Relaxed);
-            process_reparent(pr, tr);
-            mtx_leave(&pr.ps_mtx);
-            prsignal(tr, SIGCHLD);
+            let tr = process_ref(tr);
+            process_reparent(&pr, &mut g, &tr);
+            drop(g);
+            prsignal(&tr, SIGCHLD);
             tr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-            wakeup(ptr::from_ref(tr));
+            wakeup(ptr::from_ref::<Process>(&tr));
         }
         _ => {
-            mtx_leave(&pr.ps_mtx);
+            drop(g);
             // SAFETY: a zombie keeps its main thread until `process_zap`.
             if let Some(child) = unsafe { pr.ps_mainproc.get().as_ref() } {
                 scheduler_wait_hook(waiter, child);
             }
             let rup = &waiter.process().ps_cru;
-            // SAFETY: as in `dowait6`.
-            if let Some(ru) = unsafe { pr.ps_ru.get().as_ref() } {
-                ruadd(rup, ru);
+            {
+                let r = klock::reader();
+                if let Some(ru) = pr.ps_ru.get(&r) {
+                    ruadd(rup, ru);
+                }
             }
-            // SAFETY: a zombie is on `zombprocess`, under the kernel lock.
-            unsafe { ListHead::<ProcessList>::remove(pr) }; // off zombprocess
-            freepid(pr.ps_pid.get());
+            {
+                let mut w = klock::witness();
+                proc_tables().zombprocess.remove(&mut w, &pr); // off zombprocess
+            }
+            freepid(pr.ps_pid);
             process_zap(pr);
         }
     }
 }
 
 /// `process_untrace`: give process back to original parent or init(8).
-pub fn process_untrace(pr: &Process) {
+pub fn process_untrace(pr: &ProcessRef, g: &mut PsGuard<'_>) {
     kassert!(pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0);
-    mutex_assert_locked(&pr.ps_mtx, "process_untrace");
 
     // SAFETY: as in `proc_finish_wait`.
-    let ppr = unsafe { pr.ps_opptr.get().as_ref() }.filter(|op| !ptr::eq(*op, pr.ps_pptr.get()));
+    let opptr = unsafe { pr.ps_opptr.get().as_ref() };
+    let pptr_addr = pr
+        .pptr_locked(g)
+        .map_or(0, |pp| ptr::from_ref::<Process>(pp).addr());
+    let ppr = opptr
+        .filter(|op| ptr::from_ref(*op).addr() != pptr_addr)
+        .map(process_ref);
 
     // not being traced any more
     pr.ps_opptr.set(ptr::null());
     pr.ps_flags.fetch_and(!PS_TRACED, Ordering::Relaxed);
-    process_reparent(pr, ppr.unwrap_or_else(initprocess_or_process0));
+    let to = ppr.unwrap_or_else(|| process_ref(initprocess_or_process0()));
+    process_reparent(pr, g, &to);
 }
 
-/// `process_clear_orphan`.
-pub fn process_clear_orphan(pr: &Process) {
+/// `process_clear_orphan`: `pr` leaves the orphan list it is on, which is `owner`'s when the
+/// caller knows it, else the one of the process `ps_opptr` names (found by address: see the
+/// module's deviations).
+pub fn process_clear_orphan(pr: &Process, owner: Option<&Process>) {
     if pr.ps_flags.load(Ordering::Relaxed) & PS_ORPHAN != 0 {
-        // SAFETY: an orphan is on its parent's orphan list, under the parent's `ps_mtx`.
-        unsafe { ListHead::<ProcessOrphan>::remove(pr) };
+        let owner: Option<ProcessRef> = match owner {
+            Some(o) => Some(process_ref(o)),
+            None => {
+                let r = klock::reader();
+                let at = pr.ps_opptr.get().addr();
+                proc_tables()
+                    .allprocess
+                    .iter(&r)
+                    .find(|q| ptr::from_ref::<Process>(q).addr() == at)
+                    .map(process_ref)
+            }
+        };
+        if let Some(owner) = owner {
+            let mut w = klock::witness();
+            owner.ps_orphans.remove(&mut w, pr);
+        }
         pr.ps_flags.fetch_and(!PS_ORPHAN, Ordering::Relaxed);
     }
 }
 
-/// `process_reparent`: make process `parent` the new parent of process `child`.
-pub fn process_reparent(child: &Process, parent: &Process) {
-    if ptr::eq(child.ps_pptr.get(), parent) {
+/// `process_reparent`: make process `parent` the new parent of process `child`, whose
+/// `ps_mtx` the caller holds (`g`).
+pub fn process_reparent(child: &Process, g: &mut PsGuard<'_>, parent: &ProcessRef) {
+    let old = child.pptr_locked(g).cloned();
+    if old
+        .as_ref()
+        .is_some_and(|o| ptr::eq::<Process>(&**o, &**parent))
+    {
         return;
     }
 
     // KASSERT(child->ps_opptr == NULL || child->ps_opptr == child->ps_pptr): ptrace (M7).
 
-    // SAFETY: `child` is on its old parent's children list; it moves to the new one, under
-    // the kernel lock.
-    unsafe {
-        ListHead::<ProcessSibling>::remove(child);
-        parent.ps_children.insert_head(child);
+    {
+        let mut w = klock::witness();
+        if let Some(old) = &old {
+            old.ps_children.remove(&mut w, child);
+        }
+        parent
+            .ps_children
+            .insert_head(&mut w, process_ref(child).as_pin());
     }
 
-    process_clear_orphan(child);
+    process_clear_orphan(child, None);
     if child.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
         child.ps_flags.fetch_or(PS_ORPHAN, Ordering::Relaxed);
-        // SAFETY: the old parent is alive (it is reparenting its child) and `child` is on
-        // no orphan list after `process_clear_orphan`.
-        unsafe { self::parent(child).ps_orphans.insert_head(child) };
+        if let Some(old) = &old {
+            let mut w = klock::witness();
+            old.ps_orphans
+                .insert_head(&mut w, process_ref(child).as_pin());
+        }
     }
 
-    mutex_assert_locked(&child.ps_mtx, "process_reparent");
-    child.ps_pptr.set(parent);
-    child.ps_ppid.set(parent.ps_pid.get());
+    let mut w = klock::witness();
+    drop(child.set_pptr_locked(&mut w, g, parent.clone()));
 
     // WITNESS_SETCHILD: not configured.
 }
@@ -946,51 +1041,62 @@ pub fn process_reparent(child: &Process, parent: &Process) {
 /// `free(pr->ps_pin.pn_pins, M_PINSYSCALL, ...)` (and `ps_libcpin`): gives a process's pin
 /// table back.
 pub fn pin_free(pin: &crate::sys::proc::Pinsyscall) {
-    if let Some(pins) = NonNull::new(pin.pn_pins.get()) {
+    if let Some(pins) = NonNull::new(pin.pn_pins.get_mut()) {
         crate::kern::kern_malloc::free(
             pins.cast::<u8>(),
             crate::sys::malloc::M_PINSYSCALL,
             pin.pn_npins.get().max(0) as usize * size_of::<u32>(),
         );
     }
-    pin.pn_pins.set(ptr::null_mut());
+    pin.pn_pins.set(ptr::null());
 }
 
 /// `process_zap`: finally finished with old proc entry. Unlink it from its process group and
-/// free it.
-pub fn process_zap(pr: &Process) {
+/// free it: the main thread's box goes with `proc_free`, the process with its last
+/// reference (`pr`, the caller's), taking its credentials and limits with it.
+pub fn process_zap(pr: ProcessRef) {
     // SAFETY: a process always has its main thread until it is zapped here.
     let Some(p) = (unsafe { pr.ps_mainproc.get().as_ref() }) else {
         panic(format_args!("process_zap: no main thread"));
     };
 
-    leavepgrp(pr);
-    // SAFETY: `pr` is on its parent's children list, under the kernel lock.
-    unsafe { ListHead::<ProcessSibling>::remove(pr) };
-    process_clear_orphan(pr);
+    kernel::proc::leavepgrp(&pr);
+    {
+        let mut w = klock::witness();
+        let parent = pr.pptr(&w).cloned();
+        if let Some(parent) = parent {
+            parent.ps_children.remove(&mut w, &pr);
+        }
+    }
+    process_clear_orphan(&pr, None);
 
     // Decrement the count of procs running with this uid.
     chgproccnt(pr.ucred().cr_ruid.get(), -1);
 
     // Release reference to text vnode
-    let otvp = pr.ps_textvp.take();
+    let otvp = pr.ps_textvp.get();
+    pr.ps_textvp.set(None);
     if let Some(otvp) = otvp {
         crate::kern::vfs_subr::vrele(otvp);
     }
 
     kassert!(pr.ps_threadcnt.get() == 0);
     kassert!(pr.ps_exitcnt.get() == 1);
-    if let Some(ru) = NonNull::new(pr.ps_ru.get().cast_mut()) {
-        pool_put(&RUSAGE_POOL, ru.cast::<u8>());
+    let ru = {
+        let mut w = klock::witness();
+        pr.ps_ru.get_mut(&mut w).take()
+    };
+    drop(ru);
+    {
+        let g = pr.ps_mtx.lock();
+        kassert!(pr.ps_threads.is_empty(&g));
+        drop(g);
     }
-    kassert!(pr.ps_threads.is_empty());
     sigactsfree(pr.sigacts());
-    // SAFETY: the process's own reference, dropped once as it is freed.
-    lim_free(unsafe { &*pr.ps_limit.get() });
-    crfree(pr.ucred());
-    pool_put(&PROCESS_POOL, NonNull::from(pr).cast::<u8>());
+    // lim_free(pr->ps_limit), crfree(pr->ps_ucred): the process's references go with it.
     NPROCESSES.fetch_sub(1, Ordering::Relaxed);
 
     proc_free(p);
+    drop(pr);
 }
 /* </CODE> */

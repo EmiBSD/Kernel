@@ -113,10 +113,6 @@ use crate::kern::kern_exec::{exec_image, sys_execve};
 use crate::kern::kern_exit::reaper;
 use crate::kern::kern_fork::{fork1, process_initialize};
 use crate::kern::kern_kthread::{kthread_create, kthread_run_deferred_queue};
-use crate::kern::kern_proc::{
-    ALLPROC, ALLPROCESS, chgproccnt, pgrphash, pidhash, procinit, tidhash,
-};
-use crate::kern::kern_prot::crget;
 use crate::kern::kern_resource::lim_startup;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
 use crate::kern::kern_sig::{siginit, signal_init};
@@ -125,6 +121,7 @@ use crate::kern::kern_synch::{endtsleep, sleep_queue_init, tsleep_nsec, wakeup};
 use crate::kern::kern_task::taskq_init;
 use crate::kern::kern_timeout::{timeout_proc_init, timeout_set, timeout_startup};
 use crate::kern::pipe_glue::pipe_init;
+use crate::kern::proc_glue::{chgproccnt, proc_tables, procinit};
 use crate::kern::sched_bsd::{sched_lock_init, scheduler_start};
 use crate::kern::subr_autoconf::{
     CONFIG_PENDING, config_init, config_process_deferred_mountroot, config_rootfound,
@@ -159,15 +156,20 @@ use crate::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_READ, PROT_WRITE};
 use crate::sys::mount::{MNT_ROOTFS, VFS_ROOT};
 use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
 use crate::sys::param::{NZERO, PAGE_SIZE, PVM, PWAIT};
-use crate::sys::proc::{FORK_FORK, P_SYSTEM, PS_SYSTEM, Pgrp, Proc, Process, SONPROC, Session};
+use crate::sys::proc::{
+    BsdPgrpG, BsdProcessG, BsdSessionG, BsdThreadG, FORK_FORK, P_SYSTEM, PS_SYSTEM, Pgrp, PgrpRef,
+    Proc, ProcExt, ProcStore, Process, SONPROC, Session, SessionRef,
+};
 use crate::sys::reboot::{RB_GOODRANDOM, RB_SINGLE};
-use crate::sys::resourcevar::Plimit;
+use crate::sys::resourcevar::{Plimit, PlimitRef};
 use crate::sys::signalvar::Sigacts;
 use crate::sys::systm::{INFSLP, MOUNTROOT, SysArgs, kernel_lock, kernel_lock_init, kernel_unlock};
 use crate::sys::types::Register;
+use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
+use hal::klock;
+use hal::pin::pin_static;
 use hal::vm::param::{round_page, trunc_page};
-use kernel::vm::map::VmspaceRef;
 use kernel::vm::map::{uvm_map, uvmspace_alloc_kernel};
 use kernel::vm::types::{
     PROT_MASK, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_OVERLAY, UVM_FLAG_STACK,
@@ -202,8 +204,9 @@ pub static PDEVINIT_DONE: AtomicBool = AtomicBool::new(false);
 
 /// `initprocess`: the process of `init(8)`, null until `start_init` forks it (M6-b).
 pub static INITPROCESS: AtomicPtr<Process> = AtomicPtr::new(core::ptr::null_mut());
-/// `proc0`: process slot for swapper.
-pub static PROC0: Proc = Proc::new();
+/// `proc0`: process slot for swapper (process 0's `static` thread, P4).
+pub static PROC0: Proc =
+    Proc::new_static(&PROCESS0, hal::list::ListEntry::new(), BsdThreadG::new());
 
 /// `rootvp`: the vnode of the root device (`rootdev`), made by the root file system's
 /// `mountroot` (`ffs_mountroot`).
@@ -243,21 +246,26 @@ pub fn set_swapdev_vp(vp: Option<&'static crate::sys::vnode::Vnode>) {
     SWAPDEV_VP.store(p, core::sync::atomic::Ordering::Release);
 }
 
-/// `limit0`: the resource limits of process 0, shared with its descendants.
-pub static LIMIT0: Plimit = Plimit::new();
+/// `limit0`: the resource limits of process 0 as a `static struct plimit` starts (all
+/// zero); `main` fills a copy (`lim_startup`, then `uvm_init_limits`) and places it as
+/// process 0's, which its descendants share.
+pub const LIMIT0: Plimit = Plimit::new();
 /// `start_init_exec`: semaphore for `start_init()`.
 pub static START_INIT_EXEC: AtomicI32 = AtomicI32::new(0);
 /// The `init` module the bootloader loaded, if any (see the module's deviations).
 static INIT_MODULE: StaticCell<Option<BootModule>> = StaticCell::new(None);
-/// `process0`: process slot for kernel threads.
-pub static PROCESS0: Process = Process::new();
+/// `process0`: process slot for kernel threads (a `static`, P4), its klist in
+/// [`PROCESS0_STORE`].
+pub static PROCESS0: Process = Process::new(0, BsdProcessG::new(&PROCESS0_STORE));
+/// Process 0's klist and its lock (`kern/proc_glue.rs`'s store, never recycled).
+pub static PROCESS0_STORE: ProcStore = ProcStore::new();
 
 /// `sigacts0`: process 0's signal actions.
 pub static SIGACTS0: Sigacts = Sigacts::new();
 /// `pgrp0`.
-pub static PGRP0: Pgrp = Pgrp::new();
+pub static PGRP0: Pgrp = Pgrp::new(BsdPgrpG::new());
 /// `session0`.
-pub static SESSION0: Session = Session::new();
+pub static SESSION0: Session = Session::new(BsdSessionG::new());
 
 /// `main`: the machine-independent entry point, called by each architecture's early init once
 /// the machine is set up.
@@ -266,8 +274,9 @@ pub fn main() -> ! {
     // simplify trap processing.
     let ci = curcpu();
     let p: &'static Proc = &PROC0;
+    p.place();
     Machine::set_curproc(ci, p);
-    p.p_cpu.set(ci);
+    p.set_cpu(ci);
 
     // Initialize timeouts.
     timeout_startup();
@@ -346,39 +355,43 @@ pub fn main() -> ! {
     let _ = unported!("tslp_init");
 
     // Create credentials.
-    p.p_ucred.set(crget());
-    p.ucred().cr_ngroups.set(1); // group 0
+    let mut cr = Ucred::new();
+    cr.cr_ngroups.set(1); // group 0
+    drop(p.set_cred(CredRef::new(cr)));
 
     // Create process 0 (the swapper).
     let pr: &'static Process = &PROCESS0;
+    pr.insert_static_thread(p);
     process_initialize(pr, p);
 
-    // SAFETY: process0 is static and in no list yet; proc0 and pgrp0 likewise.
-    unsafe {
-        ALLPROCESS.0.insert_head(pr);
-        pidhash(0).insert_head(pr);
+    // The lists are the kernel lock's: `main` takes it around them (one CPU runs).
+    kernel_lock();
+    {
+        let mut w = klock::witness();
+        let t = proc_tables();
+        t.allprocess.insert_head(&mut w, pin_static(pr));
+        t.pidhash(0).insert_head(&mut w, pin_static(pr));
     }
     pr.ps_flags.fetch_or(PS_SYSTEM, Ordering::Relaxed);
 
     // Set the default routing table/domain.
     pr.ps_rtableid.store(0, Ordering::Relaxed);
 
-    // SAFETY: as above.
-    unsafe {
-        ALLPROC.0.insert_head(p);
-        pr.ps_pgrp.set(&PGRP0);
-        tidhash(0).insert_head(p);
-        pgrphash(0).insert_head(&PGRP0);
-        PGRP0.pg_members.init();
-        PGRP0.pg_members.insert_head(pr);
+    {
+        let mut w = klock::witness();
+        let t = proc_tables();
+        t.allproc.insert_head(&mut w, pin_static(p));
+        drop(pr.set_pgrp(&mut w, Some(PgrpRef::Static(&PGRP0))));
+        t.tidhash(0).insert_head(&mut w, pin_static(p));
+        t.pgrphash(0).insert_head(&mut w, pin_static(&PGRP0));
+        PGRP0.pg_members.insert_head(&mut w, pin_static(pr));
+        *PGRP0.pg_session.get_mut(&mut w) = Some(SessionRef::Static(&SESSION0));
     }
-
-    PGRP0.pg_session.set(&SESSION0);
-    SESSION0.s_count.set(1);
-    SESSION0.s_leader.set(pr);
+    SESSION0.set_leader(Some(pr));
+    kernel_unlock();
 
     p.p_flag.fetch_or(P_SYSTEM, Ordering::Relaxed);
-    p.p_stat.set(SONPROC);
+    p.set_stat(SONPROC);
     pr.ps_nice.set(NZERO as u8);
     pr.set_comm(b"swapper");
 
@@ -392,23 +405,24 @@ pub fn main() -> ! {
     // Init signal state, file descriptor table, limits and the prototype map of process 0.
     signal_init();
     siginit(&SIGACTS0);
-    pr.ps_sigacts.set(&SIGACTS0);
+    pr.ps_sigacts.set(Some(&SIGACTS0));
     let fdp = fdinit();
     pr.ps_fd.set(fdp);
     p.p_fd.set(fdp);
-    lim_startup(&LIMIT0);
-    pr.ps_limit.set(&LIMIT0);
+    let mut limit0 = LIMIT0;
+    lim_startup(&mut limit0);
+    drop(pr.set_limit(PlimitRef::new(limit0)));
     // vmspace0: uvmspace_init(&vmspace0, pmap_kernel(), ..), an item of "vmsppl" (the
     // kernel's vmspaces have one constructor), which process 0 holds for ever.
     let vm0 = uvmspace_alloc_kernel(
         round_page(0),
         trunc_page(<Machine as VmParam>::VM_MAX_ADDRESS),
     );
-    p.p_vmspace.set(VmspaceRef::as_ptr(&vm0));
-    let prev = PROCESS0.set_vmspace(vm0);
+    drop(p.set_vmspace(Some(vm0.clone())));
+    let prev = PROCESS0.set_vmspace(Some(vm0));
     crate::kassert!(prev.is_none()); // process 0 had none
 
-    p.p_addr.set(Machine::proc0paddr()); // XXX
+    p.set_uarea(Machine::proc0paddr()); // XXX
 
     // Charge root for one process.
     chgproccnt(0, 1);
@@ -442,8 +456,13 @@ pub fn main() -> ! {
         crate::kern::selftest::uart_echo();
     }
 
-    // Configure virtual memory system, set vm rlimits.
-    uvm_init_limits(&LIMIT0);
+    // Configure virtual memory system, set vm rlimits: process 0's limits, which nothing
+    // shares yet (no fork has run), placed again.
+    if let Some(l) = PROCESS0.limit() {
+        let mut limit0 = *l;
+        uvm_init_limits(&mut limit0);
+        drop(PROCESS0.set_limit(PlimitRef::new(limit0)));
+    }
 
     // Per CPU memory allocation
     crate::kern::subr_percpu::percpu_init();

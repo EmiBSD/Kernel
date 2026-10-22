@@ -55,6 +55,7 @@ use crate::kern::abi_module;
 use crate::kern::subr_prf::panic;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::syscall_mi::{mi_child_return, mi_syscall_return};
 use crate::sys::systm::{SysArgs, kernel_unlock};
 use crate::sys::types::Register;

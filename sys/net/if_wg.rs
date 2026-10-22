@@ -4200,20 +4200,18 @@ mod tests {
     // They run as a root thread made `curproc`, with the uptime past the 20 ms in which Noise
     // refuses initiations.
 
-    use std::boxed::Box;
     use std::sync::MutexGuard;
     use std::vec;
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
+    use crate::kern::proc_glue::procinit;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::net::if_::{IFG_HEAD, IFNETLIST, if_unit};
     use crate::net::wg_noise::tests::{advance_uptime, hex, uptime_past_reject_interval};
     use crate::sys::mbuf::M_DONTWAIT;
-    use crate::sys::proc::{Proc, Process};
 
     type Guards = (
         MutexGuard<'static, ()>,
@@ -4275,13 +4273,7 @@ mod tests {
         // (testing.md tier 1).
         core::mem::forget(WG_TASKQ_REFS.lock().take());
 
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let p = crate::kern::proc_glue::test_proc(1, crget());
         Machine::set_curproc(Machine::curcpu(), p);
         (tc, m, t)
     }

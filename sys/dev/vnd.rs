@@ -139,7 +139,7 @@ use crate::sys::namei::{NiDirp, UNVEIL_READ, UNVEIL_WRITE};
 use crate::sys::param::{DEV_BSIZE, dbtob};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Dev, Off, major};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::{CredRef, CredSlot};
 use crate::sys::uio::{Uio, UioRw, UioSeg};
 use crate::sys::vnode::{IO_NOCACHE, IO_NOLIMIT, IO_SYNC, VBLK, Vattr, Vnode};
 
@@ -177,8 +177,9 @@ pub struct VndSoftc {
     pub sc_ntracks: Cell<usize>,
     /// `sc_vp`: vnode.
     pub sc_vp: Cell<Option<&'static Vnode>>,
-    /// `sc_cred`: credentials.
-    pub sc_cred: Cell<Option<&'static Ucred>>,
+    /// `sc_cred`: credentials, the unit's counted reference (`crdup` in `vndsetcred`,
+    /// `crfree` in `vndclear`).
+    pub sc_cred: CredSlot,
     /// `sc_keyctx`: key context (a `malloc`'d Blowfish context), `None` without a key.
     pub sc_keyctx: Cell<Option<NonNull<BlfCtx>>>,
 }
@@ -258,7 +259,10 @@ pub fn vndattach(num: i32) {
     for i in 0..n {
         // SAFETY: `n` zeroed softcs, aligned (malloc's chunks are aligned to their
         // power-of-two size); all-zero is a valid `VndSoftc` (the device and the disk are
-        // all-zero valid, the `Option`s are `None`), never freed.
+        // all-zero valid, the `Option`s are `None`, and `sc_cred` is an unlocked
+        // `hal::mutex::Mutexed` at `IPL_NONE` (0) around `Option<CredRef>`, whose `None` is
+        // the all-zero word: a `CredRef` is one non-null pointer, so its `Option` takes the
+        // null niche, as the size assertion in `sys/ucred.rs` checks), never freed.
         let sc: &'static VndSoftc = unsafe { &*base.as_ptr().add(i) };
 
         sc.sc_dev.dv_unit.set(i as i32);
@@ -435,8 +439,8 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
                 "{}: sloppy {} from proc {} ({}): blkno {} bcount {}\n",
                 sc.sc_dev.xname(),
                 if bp.isset(B_READ) { "read" } else { "write" },
-                pr.ps_pid.get(),
-                core::str::from_utf8(pr.comm()).unwrap_or("?"),
+                pr.ps_pid,
+                core::str::from_utf8(&pr.comm()).unwrap_or("?"),
                 bp.b_blkno.get(),
                 origbcount
             ));
@@ -482,7 +486,7 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
             off,
             UioSeg::UIO_SYSSPACE,
             IO_NOCACHE | IO_SYNC | IO_NOLIMIT,
-            sc.sc_cred.get().map_or(ptr::null(), ptr::from_ref),
+            sc.sc_cred.get(),
             Some(&mut resid),
             curproc(),
         ),
@@ -598,7 +602,7 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
             match sc.sc_vp.get() {
                 Some(vp) if sc.sc_flags.get() & VNF_INITED != 0 => {
                     let mut vattr = Vattr::new();
-                    VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p)?;
+                    VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p)?;
 
                     strlcpy(&mut vnu.vnu_file, &sc.sc_file.get());
                     vnu.vnu_dev = vattr.va_fsid as Dev;
@@ -744,11 +748,11 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
         }
     };
     let mut vplocked = true;
-    let mut cred: Option<&'static Ucred> = None;
+    let mut cred: Option<CredRef> = None;
 
     let error: Errno = 'fail: {
         let mut vattr = Vattr::new();
-        if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.p_ucred.get(), p) {
+        if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p) {
             break 'fail e;
         }
 
@@ -814,7 +818,9 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
         }
 
         sc.sc_vp.set(Some(vp));
-        sc.sc_cred.set(cred);
+        if let Some(cred) = cred {
+            sc.sc_cred.set(cred);
+        }
         vio.vnd_size = (sc.sc_size.get() as u64).wrapping_mul(sc.sc_secsize.get() as u64) as Off;
         sc.sc_flags.set(sc.sc_flags.get() | VNF_INITED);
 
@@ -836,10 +842,9 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
     if vplocked {
         let _ = VOP_UNLOCK(vp);
     }
-    let _ = vn_close(vp, rw, p.p_ucred.get(), Some(p));
-    if let Some(cred) = cred {
-        crfree(cred);
-    }
+    let _ = vn_close(vp, rw, p.ucred_ptr(), Some(p));
+    // crfree(cred): the unit's reference, never placed, goes.
+    drop(cred);
     Err(error)
 }
 
@@ -853,7 +858,7 @@ fn copyout_label(lp: &Disklabel, addr: &mut [u8]) {
 /// the result of a SET ioctl and only root can do that, any future access to this "disk"
 /// is essentially as root. Note that credentials may change if some other uid can write
 /// directly to the mapped file (NFS).
-pub fn vndsetcred(p: &Proc, vp: &'static Vnode, _vio: &VndIoctl) -> Result<&'static Ucred, Errno> {
+pub fn vndsetcred(p: &Proc, vp: &'static Vnode, _vio: &VndIoctl) -> Result<CredRef, Errno> {
     let new = crdup(p.ucred());
     let Some(buf) = malloc(DEV_BSIZE, M_TEMP, M_WAITOK) else {
         panic(format_args!("vndsetcred: out of memory"));
@@ -868,7 +873,7 @@ pub fn vndsetcred(p: &Proc, vp: &'static Vnode, _vio: &VndIoctl) -> Result<&'sta
         0,
         UioSeg::UIO_SYSSPACE,
         0,
-        ptr::from_ref(new),
+        CredRef::as_ptr(&new),
         None,
         curproc(),
     );
@@ -890,14 +895,17 @@ pub fn vndclear(sc: &VndSoftc) {
     };
     let p = curproc(); // XXX
 
-    let cred = sc.sc_cred.get();
-    let _ = vn_close(vp, vndrw(sc), cred.map_or(ptr::null(), ptr::from_ref), p);
-    if let Some(cred) = cred {
-        crfree(cred);
-    }
+    let cred = sc.sc_cred.take();
+    let _ = vn_close(
+        vp,
+        vndrw(sc),
+        cred.as_ref().map_or(ptr::null(), CredRef::as_ptr),
+        p,
+    );
+    // crfree(cred): the unit's reference goes.
+    drop(cred);
     sc.sc_flags.set(0);
     sc.sc_vp.set(None);
-    sc.sc_cred.set(None);
     sc.sc_size.set(0);
     sc.sc_file.set([0; VNDNLEN]);
 }
@@ -1059,7 +1067,7 @@ mod tests {
             sc.sc_keyctx.set(Some(NonNull::from(ctx)));
         }
         sc.sc_vp.set(Some(vp));
-        sc.sc_cred.set(Some(cred));
+        sc.sc_cred.set(cred);
         sc.sc_flags.set(VNF_INITED);
         sc.sc_dk.dk_name.set(*b"vnd0\0\0\0\0\0\0\0\0\0\0\0\0");
         disk_attach(Some(&sc.sc_dev), &sc.sc_dk);
@@ -1289,7 +1297,7 @@ mod tests {
         vndioctl(raw, VNDIOCCLR, &mut data, FREAD, p).expect("VNDIOCCLR");
         vndclose(raw, FREAD, S_IFCHR as i32, Some(p)).expect("close");
         assert_eq!(sc.sc_flags.get(), 0);
-        assert!(sc.sc_vp.get().is_none() && sc.sc_cred.get().is_none());
+        assert!(sc.sc_vp.get().is_none() && sc.sc_cred.get().is_null());
         assert!(sc.sc_dk.label().is_none());
         assert_eq!(sc.sc_file.get()[0], 0);
         end();

@@ -104,6 +104,7 @@ use crate::sys::errno::Errno;
 use crate::sys::param::PZERO;
 #[cfg(feature = "multiprocessor")]
 use crate::sys::proc::Cond;
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{
     _MAXCOMLEN, Cpuset, FORK_IDLE, FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM,
     P_CPUPEG, P_INSCHED, Proc, SRUN, SSLEEP, cpuset_asize,
@@ -183,8 +184,9 @@ pub fn sched_init() {
 pub fn sched_init_cpu(ci: &'static CpuInfo) {
     let spc = Machine::ci_schedstate(ci);
 
+    // TAILQ_INIT: a new `hal::list` head is empty already.
     for q in spc.spc_qs.iter() {
-        q.init();
+        kassert!(q.is_empty());
     }
 
     spc.spc_idleproc.set(ptr::null());
@@ -196,7 +198,7 @@ pub fn sched_init_cpu(ci: &'static CpuInfo) {
 
     kthread_create_deferred(sched_kthreads_create, ptr::from_ref(ci).cast_mut().cast());
 
-    spc.spc_deadproc.init();
+    kassert!(spc.spc_deadproc.is_empty());
     spc.spc_deferred.init();
 
     // Slight hack here until the cpuset code handles cpu_info structures.
@@ -248,21 +250,19 @@ pub fn sched_idle(v: *mut c_void) {
 
     kassert!(ptr::eq(ci, curcpu()));
     kassert!(ptr::eq(p, spc.spc_idleproc.get()));
-    kassert!(ptr::eq(p.p_cpu.get(), ci));
+    kassert!(ptr::eq(p.cpu_ptr(), ci));
 
     sched_lock();
-    p.p_stat.set(SSLEEP);
+    p.set_stat(SSLEEP);
     mi_switch();
 
     loop {
         while spc.spc_whichqs.load(Ordering::Relaxed) != 0 {
             sched_lock();
-            p.p_stat.set(SSLEEP);
+            p.set_stat(SSLEEP);
             mi_switch();
 
-            while let Some(dead) = spc.spc_deadproc.first() {
-                // SAFETY: `dead` is on this CPU's dead list, which only this thread empties.
-                unsafe { spc.spc_deadproc.remove(dead) };
+            while let Some(dead) = spc.spc_deadproc.pop_head() {
                 exit2(dead);
             }
         }
@@ -306,9 +306,9 @@ pub fn sched_idle(v: *mut c_void) {
 pub fn sched_exit(p: &Proc) -> ! {
     let spc = Machine::ci_schedstate(curcpu());
 
-    // SAFETY: `p` is the exiting thread; it stays allocated until `exit2` frees it from the
-    // dead list.
-    unsafe { spc.spc_deadproc.insert_tail(p) };
+    // The exiting thread stays allocated until the reaper frees it, after `exit2` moved it
+    // from this list to `deadproc`.
+    spc.spc_deadproc.insert_tail(p.as_static());
 
     tuagg_add_runtime();
 
@@ -347,7 +347,7 @@ pub fn sched_toidle() -> ! {
     let Some(idle) = (unsafe { spc.spc_idleproc.get().as_ref() }) else {
         panic(format_args!("sched_toidle: no idleproc"));
     };
-    idle.p_stat.set(SRUN);
+    idle.set_stat(SRUN);
 
     UVMEXP.swtch.fetch_add(1, Ordering::Relaxed);
     // TRACEPOINT(sched, off__cpu, ...): dt(4), not configured.
@@ -367,20 +367,19 @@ pub fn setrunqueue(ci: Option<&'static CpuInfo>, p: &Proc, prio: u8) {
     };
 
     sched_assert_locked();
-    kassert!(p.p_wchan.get().is_null());
+    kassert!(p.wchan().is_null());
     kassert!(p.p_flag.load(Ordering::Relaxed) & P_INSCHED == 0);
 
-    p.p_cpu.set(ci);
-    p.p_stat.set(SRUN);
+    p.set_cpu(ci);
+    p.set_stat(SRUN);
     p.p_runpri.set(prio);
 
     let spc = Machine::ci_schedstate(ci);
     spc.spc_nrun.fetch_add(1, Ordering::Relaxed);
     // TRACEPOINT(sched, enqueue, ...): dt(4), not configured.
 
-    // SAFETY: `p` is on no run queue (it is being made runnable), under the scheduler lock,
-    // and a thread outlives its stay on a run queue.
-    unsafe { spc.spc_qs[queue].insert_tail(p) };
+    // `p` is on no run queue (it is being made runnable), under the scheduler lock.
+    spc.spc_qs[queue].insert_tail(p.as_static());
     spc.spc_whichqs.fetch_or(1 << queue, Ordering::Relaxed);
     cpuset_add(&SCHED_QUEUED_CPUS, ci);
 
@@ -406,8 +405,8 @@ pub fn remrunqueue(p: &Proc) {
     spc.spc_nrun.fetch_sub(1, Ordering::Relaxed);
     // TRACEPOINT(sched, dequeue, ...): dt(4), not configured.
 
-    // SAFETY: `p` is SRUN on `queue` of its CPU, under the scheduler lock.
-    unsafe { spc.spc_qs[queue].remove(p) };
+    // `p` is SRUN on `queue` of its CPU, under the scheduler lock.
+    spc.spc_qs[queue].remove(p);
     if spc.spc_qs[queue].is_empty() {
         spc.spc_whichqs.fetch_and(!(1 << queue), Ordering::Relaxed);
         if spc.spc_whichqs.load(Ordering::Relaxed) == 0 {
@@ -433,7 +432,7 @@ pub fn sched_chooseproc() -> &'static Proc {
                 while let Some(p) = q.first() {
                     remrunqueue(p);
                     setrunqueue(None, p, p.p_runpri.get());
-                    if ptr::eq(p.p_cpu.get(), curcpu()) {
+                    if ptr::eq(p.cpu_ptr(), curcpu()) {
                         kassert!(p.p_flag.load(Ordering::Relaxed) & P_CPUPEG != 0);
                         again = true; // goto again
                         break 'queues;
@@ -443,8 +442,8 @@ pub fn sched_chooseproc() -> &'static Proc {
         }
         if !again {
             let p = idleproc(ci);
-            p.p_stat.set(SRUN);
-            kassert!(p.p_wchan.get().is_null());
+            p.set_stat(SRUN);
+            kassert!(p.wchan().is_null());
             return p;
         }
     }
@@ -460,11 +459,11 @@ pub fn sched_chooseproc() -> &'static Proc {
         };
         remrunqueue(p);
         SCHED_NOIDLE.fetch_add(1, Ordering::Relaxed);
-        if p.p_stat.get() != SRUN {
+        if p.stat() != SRUN {
             panic(format_args!(
                 "thread {} not in SRUN: {}",
                 p.p_tid.get(),
-                p.p_stat.get()
+                p.stat()
             ));
         }
         p
@@ -472,11 +471,11 @@ pub fn sched_chooseproc() -> &'static Proc {
         p
     } else {
         let p = idleproc(ci);
-        p.p_stat.set(SRUN);
+        p.set_stat(SRUN);
         p
     };
 
-    kassert!(p.p_wchan.get().is_null());
+    kassert!(p.wchan().is_null());
     kassert!(p.p_flag.load(Ordering::Relaxed) & P_INSCHED == 0);
     p
 }
@@ -581,7 +580,7 @@ pub fn sched_choosecpu(p: &Proc) -> &'static CpuInfo {
             cpuset_del(&set, ci);
         }
 
-        if choice.is_some_and(|c| ptr::eq(p.p_cpu.get(), c)) {
+        if choice.is_some_and(|c| ptr::eq(p.cpu_ptr(), c)) {
             SCHED_NOMIGRATIONS.fetch_add(1, Ordering::Relaxed);
         } else {
             SCHED_NMIGRATIONS.fetch_add(1, Ordering::Relaxed);
@@ -646,7 +645,7 @@ pub fn sched_steal_proc(self_: &'static CpuInfo) -> Option<&'static Proc> {
         // TRACEPOINT(sched, steal, ...): dt(4), not configured.
 
         remrunqueue(best);
-        best.p_cpu.set(self_);
+        best.set_cpu(self_);
 
         SCHED_STOLEN.fetch_add(1, Ordering::Relaxed);
         Some(best)
@@ -758,7 +757,7 @@ pub fn sched_proc_to_cpu_cost(ci: &CpuInfo, p: &Proc) -> i32 {
     {
         let spc = Machine::ci_schedstate(ci);
         let resident =
-            (ptr::eq(p.p_cpu.get(), ci) && p.p_slptime.get() == 0 && !p.p_vmspace.get().is_null())
+            (ptr::eq(p.cpu_ptr(), ci) && p.p_slptime.get() == 0 && p.vmspace_word() != 0)
                 .then(|| pmap_resident_count(p.vmspace().vm_map.pmap()));
         cpu_cost(CpuCostInputs {
             idle: cpuset_isset(&SCHED_IDLE_CPUS, ci),

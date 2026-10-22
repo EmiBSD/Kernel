@@ -125,7 +125,7 @@ use crate::sys::socket::{AF_INET, SOCK_STREAM};
 use crate::sys::syslimits::NGROUPS_MAX;
 use crate::sys::time::Timespec;
 use crate::sys::types::{SaFamily, major, minor};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::vnode::{VA_UTIMES_CHANGE, VA_UTIMES_NULL, VFIFO, Vattr, Vnode};
 
 /// `nfs_namei(ndp, fhp, len, slp, nam, mdp, dposp, retdirp, p)`: sets up the `nameidata` for
@@ -153,6 +153,7 @@ pub fn nfs_namei(
     dposp: &mut *mut u8,
     retdirp: &mut Option<&'static Vnode>,
     p: &Proc,
+    cred: &UcredCell,
 ) -> Result<(), i32> {
     *retdirp = None;
     let Some(buf) = pool_get(&NAMEI_POOL, PR_WAITOK) else {
@@ -161,7 +162,7 @@ pub fn nfs_namei(
     };
     ndp.ni_cnd.cn_pnbuf = buf.as_ptr();
 
-    let r = namei_lookup(ndp, buf, fhp, len, slp, nam, mdp, dposp, retdirp, p);
+    let r = namei_lookup(ndp, buf, fhp, len, slp, nam, mdp, dposp, retdirp, p, cred);
 
     // Check for saved name request
     if r.is_ok() && ndp.ni_cnd.cn_flags & (SAVENAME | SAVESTART) != 0 {
@@ -188,6 +189,7 @@ fn namei_lookup(
     dposp: &mut *mut u8,
     retdirp: &mut Option<&'static Vnode>,
     p: &Proc,
+    cred: &UcredCell,
 ) -> Result<(), i32> {
     if len >= MAXPATHLEN {
         return Err(Errno::ENAMETOOLONG.as_i32());
@@ -217,7 +219,7 @@ fn namei_lookup(
     ndp.ni_cnd.cn_nameptr = buf.as_ptr();
 
     // Extract and set starting directory.
-    let (dp, rdonly) = nfsrv_fhtovp(fhp, false, ndp.ni_cnd.cred(), slp, nam)?;
+    let (dp, rdonly) = nfsrv_fhtovp(fhp, false, cred, slp, nam)?;
     if dp.v_type.get() != crate::sys::vnode::VDIR {
         vrele(dp);
         return Err(Errno::ENOTDIR.as_i32());
@@ -412,7 +414,7 @@ pub fn nfsm_srvfattr(nfsd: &NfsrvDescript, vap: &Vattr) -> NfsFattr {
 pub fn nfsrv_fhtovp(
     fhp: &Fhandle,
     lockflag: bool,
-    cred: &Ucred,
+    cred: &UcredCell,
     slp: &NfssvcSock,
     nam: &Mbuf,
 ) -> Result<(&'static Vnode, bool), i32> {
@@ -452,14 +454,14 @@ pub fn nfsrv_fhtovp(
             vput(vp);
             return Err(Errno::EACCES.as_i32());
         };
-        cred.cr_uid.set(anon.cr_uid.get());
-        cred.cr_gid.set(anon.cr_gid.get());
+        cred.set_uid(anon.cr_uid.get());
+        cred.set_gid(anon.cr_gid.get());
         let mut i = 0;
         while i < anon.cr_ngroups.get() as usize && i < NGROUPS_MAX {
-            cred.cr_groups[i].set(anon.cr_groups[i].get());
+            cred.set_group(i, anon.cr_groups[i].get());
             i += 1;
         }
-        cred.cr_ngroups.set(i as i16);
+        cred.set_ngroups(i as i16);
     }
     let rdonly = exflags & MNT_EXRDONLY != 0;
     if !lockflag {
@@ -956,7 +958,7 @@ mod tests {
             let mut md = Some(head);
             let mut dpos = mtod::<u8>(head);
             let mut nd = ndinit(LOOKUP, flags, NiDirp::Sys(b""), p);
-            nd.ni_cnd.cn_cred = cred;
+            nd.ni_cnd.cn_cred = &**cred;
             let mut retdir = None;
             let r = nfs_namei(
                 &mut nd,
@@ -968,6 +970,7 @@ mod tests {
                 &mut dpos,
                 &mut retdir,
                 p,
+                cred,
             );
             if r.is_ok() {
                 // The cursor is past the name and its padding.
@@ -1001,7 +1004,7 @@ mod tests {
 
         // A name copied in two chunks, across mbufs: "ln" is a symbolic link. Without FOLLOW
         // (what the server's lookups ask for) the lookup returns the link itself ...
-        cred.cr_uid.set(0);
+        cred.set_uid(0);
         let (r, nd, retdir) = run(&dirfh, 2, &[b"l", b"n\0\0"], client, LOCKLEAF);
         assert_eq!(r, Ok(()));
         let vp = nd.ni_vp.expect("the link");
@@ -1075,9 +1078,9 @@ mod tests {
         vrele(retdir.expect("the directory"));
 
         // nfsrv_fhtovp alone: a non-root caller keeps its credentials; lockflag keeps the lock.
-        let user = Ucred::new();
-        user.cr_uid.set(1000);
-        user.cr_gid.set(1000);
+        let user = UcredCell::new();
+        user.set_uid(1000);
+        user.set_gid(1000);
         let (vp, rdonly) = nfsrv_fhtovp(&filefh, true, &user, &slp, client).expect("a vnode");
         assert!(rdonly, "exported read-only");
         assert_eq!((user.cr_uid.get(), user.cr_gid.get()), (1000, 1000));
@@ -1117,8 +1120,8 @@ mod tests {
     }
 
     /// Root's credentials for a request: uid 0, gid 0, no groups.
-    fn nd_cred_root() -> &'static Ucred {
-        std::boxed::Box::leak(std::boxed::Box::new(Ucred::new()))
+    fn nd_cred_root() -> &'static UcredCell {
+        std::boxed::Box::leak(std::boxed::Box::new(UcredCell::new()))
     }
 }
 /* </TESTS> */

@@ -1075,7 +1075,7 @@ mod tests {
     fn setattr(t: crate::sys::vnode::Vtype, vap: &mut Vattr) -> Result<(), Errno> {
         let vp: &'static Vnode = std::boxed::Box::leak(std::boxed::Box::new(Vnode::new()));
         vp.v_type.set(t);
-        let p = crate::sys::proc::Proc::new();
+        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
         let mut a = VopSetattrArgs {
             a_vp: vp,
             a_vap: vap,

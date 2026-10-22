@@ -96,7 +96,7 @@ use crate::sys::rwlock::{Rrwlock, Rwlock};
 use crate::sys::time::Timespec;
 use crate::sys::tree::RbtEntry;
 use crate::sys::types::{Off, Time, Uid};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::CredSlot;
 use crate::sys::vnode::{VT_NFS, Vattr, Vnode};
 use crate::tree_adapter;
 
@@ -123,8 +123,8 @@ pub const NCHG: i16 = 0x0400;
 /// `struct sillyrename`: silly rename structure that hangs off the nfsnode until the name
 /// can be removed by `nfs_inactive()`.
 pub struct Sillyrename {
-    /// `s_cred`: the credential the rename was done with.
-    pub s_cred: &'static Ucred,
+    /// `s_cred`: the credential the rename was done with (the structure's reference).
+    pub s_cred: CredSlot,
     /// `s_dvp`: the directory.
     pub s_dvp: &'static Vnode,
     /// `s_namlen`: the length of `s_name`.
@@ -204,9 +204,9 @@ pub struct NfsNode {
     /// `n_accerror`: last returned error.
     pub n_accerror: Cell<i32>,
     /// `n_rcred`: the credential of the last read (held with `crhold`).
-    pub n_rcred: Cell<*const Ucred>,
+    pub n_rcred: CredSlot,
     /// `n_wcred`: the credential of the last write (held with `crhold`).
-    pub n_wcred: Cell<*const Ucred>,
+    pub n_wcred: CredSlot,
     /// `n_pushedlo`: 1st blk in committed range.
     pub n_pushedlo: Cell<Off>,
     /// `n_pushedhi`: last block in range.
@@ -252,8 +252,8 @@ impl NfsNode {
             n_accuid: Cell::new(0),
             n_accmode: Cell::new(0),
             n_accerror: Cell::new(0),
-            n_rcred: Cell::new(core::ptr::null()),
-            n_wcred: Cell::new(core::ptr::null()),
+            n_rcred: CredSlot::new(),
+            n_wcred: CredSlot::new(),
             n_pushedlo: Cell::new(0),
             n_pushedhi: Cell::new(0),
             n_pushlo: Cell::new(0),

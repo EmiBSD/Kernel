@@ -184,8 +184,8 @@ pub fn scdebug_call(p: &Proc, code: Register, args: &crate::sys::systm::SysArgs)
     let pr = p.process();
     let _ = printf(format_args!(
         "proc {} ({}): num ",
-        pr.ps_pid.get(),
-        Str(pr.comm())
+        pr.ps_pid,
+        Str(&pr.comm())
     ));
     match usize::try_from(code).ok().filter(|&c| c < SYSENT.len()) {
         None => {
@@ -218,8 +218,8 @@ pub fn scdebug_ret(p: &Proc, code: Register, error: i32, retval: &[Register; 2])
     let pr = p.process();
     let _ = printf(format_args!(
         "proc {} ({}): num ",
-        pr.ps_pid.get(),
-        crate::kern::subr_prf::Str(pr.comm())
+        pr.ps_pid,
+        crate::kern::subr_prf::Str(&pr.comm())
     ));
     match usize::try_from(code).ok().filter(|&c| c < SYSENT.len()) {
         None => {

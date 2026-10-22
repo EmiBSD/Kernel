@@ -105,6 +105,7 @@ use crate::machine::copy::{copyin_obj, copyout, copyout_obj};
 use crate::machine::cpu::{Cpu, curproc};
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{SIGILL, SS_DISABLE, Sig, Sigset};
 use crate::sys::signalvar::sigcantmask;

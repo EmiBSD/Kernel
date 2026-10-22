@@ -1140,7 +1140,7 @@ mod tests {
         cnp.cn_nameiop = nameiop;
         cnp.cn_flags = flags;
         cnp.cn_proc = p;
-        cnp.cn_cred = p.p_ucred.get();
+        cnp.cn_cred = p.ucred_ptr();
         cnp.cn_nameptr = name.as_ptr();
         cnp.cn_namelen = name.len() as i64;
         cnp
@@ -1587,7 +1587,7 @@ mod tests {
         };
         assert_eq!(blkoff, 32);
         assert_ne!(cluster, full);
-        msdosfs_sync(mp, MNT_WAIT, 0, p.p_ucred.get(), p).unwrap();
+        msdosfs_sync(mp, MNT_WAIT, 0, p.ucred_ptr(), p).unwrap();
         {
             // The chain on the disk: the directory's cluster, then the new one.
             let d = DISK.lock().unwrap();

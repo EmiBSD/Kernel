@@ -975,7 +975,7 @@ fn rtm_report(rt: &'static Rtentry, type_: u8, seq: i32, tableid: u32) -> RtmBuf
     rtm.rtm_tableid = tableid as u16;
     rtm.rtm_priority = rt.rt_priority.get() & RTP_MASK;
     rtm.rtm_flags = rt.rt_flags.get() as i32;
-    rtm.rtm_pid = curproc_or_panic("rtm_report").process().ps_pid.get();
+    rtm.rtm_pid = curproc_or_panic("rtm_report").process().ps_pid;
     rtm.rtm_seq = seq;
     rtm_getmetrics(rt, &mut rtm.rtm_rmx);
     rtm.rtm_addrs = info.rti_addrs;
@@ -1067,7 +1067,7 @@ fn route_output_unlocked(
     }
 
     let p = curproc_or_panic("route_output");
-    rtm.rtm_pid = p.process().ps_pid.get();
+    rtm.rtm_pid = p.process().ps_pid;
 
     // Verify that the caller has the appropriate privilege; RTM_GET is the only operation
     // the non-superuser is allowed.
@@ -2350,7 +2350,7 @@ fn sysctl_dumpentry(rt: &Rtentry, w: &mut Walkarg, id: u32) -> Result<(), Errno>
         // SAFETY: `rtm_msg2` built the message in `w_tmem`, at least a `struct rt_msghdr`.
         let rtm = unsafe { tmem_hdr::<RtMsghdr>(t) };
 
-        rtm.rtm_pid = curproc_or_panic("sysctl_dumpentry").process().ps_pid.get();
+        rtm.rtm_pid = curproc_or_panic("sysctl_dumpentry").process().ps_pid;
         rtm.rtm_flags = (RTF_DONE | rt.rt_flags.get()) as i32;
         rtm.rtm_priority = rt.rt_priority.get() & RTP_MASK;
         rtm_getmetrics(rt, &mut rtm.rtm_rmx);
@@ -2810,14 +2810,13 @@ mod tests {
     // The tests run as a thread with root credentials made `curproc` (the requests check
     // `suser` and stamp `rtm_pid`); they clear `curproc` before they return.
 
-    use std::boxed::Box;
     use std::sync::MutexGuard;
     use std::vec;
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
+    use crate::kern::proc_glue::procinit;
     use crate::kern::uipc_mbuf::m_get;
     use crate::kern::uipc_socket::{soclose, socreate, soinit, soreceive, sosend};
     use crate::machine::Machine;
@@ -2828,7 +2827,7 @@ mod tests {
     use crate::netinet::in_::sintosa;
     use crate::netinet::ip_input::tests::{configure, sin, test_ether, unconfigure};
     use crate::sys::mbuf::MT_SOOPTS;
-    use crate::sys::proc::Process;
+
     use crate::sys::socket::MSG_DONTWAIT;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
@@ -2849,14 +2848,7 @@ mod tests {
         route_prinit();
         RTPTABLE.rtp_count.store(0, Ordering::Relaxed);
 
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        pr.ps_pid.set(PID);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let p = crate::kern::proc_glue::test_proc(PID, crget());
         Machine::set_curproc(Machine::curcpu(), p);
         g
     }
