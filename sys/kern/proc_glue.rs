@@ -699,8 +699,8 @@ impl ProcGlue for BsdProcGlue {
         timeout_del(&sess.s_verauthto);
     }
 
-    fn curproc() -> Option<&'static Proc> {
-        crate::machine::cpu::curproc()
+    fn with_curproc<R>(f: impl FnOnce(Option<&Proc>) -> R) -> R {
+        hal::thread::try_with_current::<Proc, R>(|p| f(p.map(core::pin::Pin::get_ref)))
     }
 
     fn pledge_fail(p: &Proc, error: Errno, code: u64) -> Errno {

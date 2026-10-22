@@ -285,8 +285,8 @@ impl ProcGlue for BenchGlue {
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}
-    fn curproc() -> Option<&'static Thread<Self>> {
-        None
+    fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
+        f(None)
     }
     fn pledge_fail(_p: &Thread<Self>, error: Errno, _code: u64) -> Errno {
         error

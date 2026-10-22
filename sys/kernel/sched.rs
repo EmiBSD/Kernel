@@ -2454,8 +2454,8 @@ mod tests {
         fn session_placed(_sess: &crate::proc::Session<Self>) {}
         fn session_destroy(_sess: &crate::proc::Session<Self>) {}
 
-        fn curproc() -> Option<&'static Thread<Self>> {
-            None
+        fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
+            hal::thread::try_with_current::<Thread<Self>, R>(|p| f(p.map(Pin::get_ref)))
         }
 
         fn pledge_fail(
@@ -3181,6 +3181,19 @@ mod tests {
         wait_done();
         helper.join().unwrap();
         hal::thread::set_current_static::<T>(None);
+    }
+
+    /// The kernel's glue lends the thread hal names running (`with_curproc`, what the kqueue's
+    /// `filt_procattach` and `filt_sigattach` read), and none once it is cleared.
+    #[test]
+    fn the_glue_lends_the_running_thread() {
+        let _g = setup();
+        let me = thread(93, 50);
+        run_as(VCPUS[0], me);
+        let seen = SchedGlue::with_curproc(|p| p.map(addr_of));
+        assert_eq!(seen, Some(addr_of(me.get_ref())));
+        hal::thread::set_current_static::<T>(None);
+        assert_eq!(SchedGlue::with_curproc(|p| p.map(addr_of)), None);
     }
 }
 /* </TESTS> */

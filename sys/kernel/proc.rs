@@ -797,9 +797,12 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn session_placed(sess: &Session<Self>);
     /// The last reference to a session dropped (`SESSRELE`'s `timeout_del(&s_verauthto)`).
     fn session_destroy(sess: &Session<Self>);
-    /// `curproc`: the thread running on this CPU (`None` before the first one, and on a
-    /// host test thread that set none), until the scheduler moves (N4.5).
-    fn curproc() -> Option<&'static Thread<Self>>;
+    /// `curproc`, lent to `f`: the thread running on this CPU (`None` before the first one,
+    /// and on a host test thread that set none). The kernel's glue reads hal's
+    /// (`hal::thread::try_with_current`, the thread type `kernel::sched` switches); the test
+    /// glues of other thread types keep their own, since hal admits one thread type per
+    /// process. The reference lives for `f` alone: nothing claims the thread past it.
+    fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R;
     /// `pledge_fail(p, error, code)`: reports a pledge violation of `p` and returns the
     /// error the system call fails with (`kern_pledge`'s, N4.7).
     fn pledge_fail(
@@ -2502,8 +2505,8 @@ mod tests {
         fn session_hangup(_sess: &Session<Self>) {}
         fn session_placed(_sess: &Session<Self>) {}
         fn session_destroy(_sess: &Session<Self>) {}
-        fn curproc() -> Option<&'static Thread<Self>> {
-            None
+        fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
+            f(None)
         }
         fn pledge_fail(
             _p: &Thread<Self>,

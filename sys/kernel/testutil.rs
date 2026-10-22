@@ -1777,8 +1777,8 @@ macro_rules! test_proc_glue {
             fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
             fn session_placed(_sess: &$crate::proc::Session<Self>) {}
             fn session_destroy(_sess: &$crate::proc::Session<Self>) {}
-            fn curproc() -> Option<&'static $crate::proc::Thread<Self>> {
-                CURPROC.with(core::cell::Cell::get)
+            fn with_curproc<R>(f: impl FnOnce(Option<&$crate::proc::Thread<Self>>) -> R) -> R {
+                f(CURPROC.with(core::cell::Cell::get))
             }
             fn pledge_fail(
                 _p: &$crate::proc::Thread<Self>,

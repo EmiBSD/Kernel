@@ -271,7 +271,8 @@ paid_by = "N4"
 # the run-queue link), the tables' storage, and the hooks into kern_sig (pgsignal, prsignal),
 # tty (a session's hang-up, a group's terminal) and kern_timeout (s_verauthto); implemented by
 # sys/kern/proc_glue.rs (BsdProcGlue, N4.2), which kernel::proc receives as its type
-# parameter. N4.4: the knote and kqueue list adapters (proc_glue_links!), curproc (N4.5),
+# parameter. N4.4: the knote and kqueue list adapters (proc_glue_links!), with_curproc
+# (bsd's reads hal::thread's curproc since N4.5a),
 # pledge_fail (N4.7) and process_ref (filt_procattach's counted process); the klist store
 # left (ps_klist is the kernel's). N4.5a: the scheduler's hooks (kernel::sched):
 # sleep_signal_check (kern_sig, N4.5b), cold and cold_yield, tuagg_add_runtime and
