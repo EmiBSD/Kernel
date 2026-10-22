@@ -116,15 +116,19 @@
 //!   handle, so a credential freed while held cannot be written. `cr_refcnt` is the handle's
 //!   count.
 //! - The members, LZ's `Cell`s written through the shared pointer while "unshared", are
-//!   plain data read by `get()` ([`Ro`], decision 10: the 60 files that read `cr.cr_uid.get()`
-//!   compile unchanged) and written only through `&mut Ucred`: a credential is built as a
-//!   value (`crset` into a copy, the ids changed) and then placed ([`CredRef::new`]), so a
-//!   shared credential is immutable by type, not by convention.
+//!   relaxed atomic cells read by `get(&self)` (decision 10's reader: the 60 files that read
+//!   `cr.cr_uid.get()` compile unchanged) and written by `set(&mut self)`: a credential is
+//!   built as a value (`crset` into a copy, the ids changed) and then placed
+//!   ([`CredRef::new`]), so a shared credential is immutable by type. The one write through
+//!   `&self` is [`Ucred::copy_from`], crate-private, the refresh of a thread's own copy in
+//!   `kernel::proc` (the user's decision of 2026-10-21, shape A: the thread embeds its copy,
+//!   so `p.ucred()` is a reference into the thread with no load and no lock, and no other
+//!   thread reads it, as no other thread reads `p_ucred` in the C).
 //! - The `NOCRED`/`FSCRED` sentinels stay `bsd`'s pointer constants while the VFS passes
 //!   `*const Ucred` (N5).
 
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU32, Ordering};
 
 use hal::pool::{PR_WAITOK, PoolArc, PoolHome, TypedPool};
 use hal::rwlock::Rwlocked;
@@ -136,51 +140,76 @@ use crate::assert::kpanic;
 /// `NGROUPS_MAX`: the most supplementary groups a credential holds (`<sys/syslimits.h>`).
 pub const NGROUPS_MAX: usize = 16;
 
-/// A member read with `get()`, written only through `&mut` (decision 10): the reader of
-/// LZ's `Cell` member, for data that is never changed while shared.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct Ro<T>(T);
+/// Declares a member cell of `struct ucred`: a relaxed atomic read by `get(&self)` (decision
+/// 10's reader), written by `set(&mut self)` on a value being built and by the crate's
+/// `store(&self)` in a thread's refresh only.
+macro_rules! cred_cell {
+    ($(#[$m:meta])* $name:ident, $atomic:ty, $t:ty) => {
+        $(#[$m])*
+        #[derive(Debug, Default)]
+        #[repr(transparent)]
+        pub struct $name($atomic);
 
-impl<T: Copy> Ro<T> {
-    /// `v`.
-    pub const fn new(v: T) -> Self {
-        Self(v)
-    }
+        impl $name {
+            /// `v`.
+            pub const fn new(v: $t) -> Self {
+                Self(<$atomic>::new(v))
+            }
 
-    /// The value.
-    #[inline]
-    pub const fn get(&self) -> T {
-        self.0
-    }
+            /// The value.
+            #[inline]
+            pub fn get(&self) -> $t {
+                self.0.load(Ordering::Relaxed)
+            }
 
-    /// Stores `v`: only through the exclusive reference of a value being built.
-    #[inline]
-    pub fn set(&mut self, v: T) {
-        self.0 = v;
-    }
+            /// Stores `v` into a value being built (the exclusive reference).
+            #[inline]
+            pub fn set(&mut self, v: $t) {
+                *self.0.get_mut() = v;
+            }
+
+            /// Stores `v` through a shared reference: [`Ucred::copy_from`] alone.
+            #[inline]
+            fn store(&self, v: $t) {
+                self.0.store(v, Ordering::Relaxed);
+            }
+        }
+    };
 }
 
-/// `struct ucred`: the ids of a process or of what it opened. Plain data, built as a value
-/// and shared through [`CredRef`]s once placed.
+cred_cell!(
+    /// A user or group id member (`uid_t`, `gid_t`).
+    IdCell,
+    AtomicU32,
+    u32
+);
+cred_cell!(
+    /// The group count member (`short cr_ngroups`).
+    CountCell,
+    AtomicI16,
+    i16
+);
+
+/// `struct ucred`: the ids of a process or of what it opened, built as a value and shared
+/// through [`CredRef`]s once placed; a thread embeds a copy of its process's.
 pub struct Ucred {
     // The following fields are all copied by crset() (cr_startcopy = cr_uid).
     /// `cr_uid`: effective user id.
-    pub cr_uid: Ro<Uid>,
+    pub cr_uid: IdCell,
     /// `cr_ruid`: real user id.
-    pub cr_ruid: Ro<Uid>,
+    pub cr_ruid: IdCell,
     /// `cr_svuid`: saved effective user id.
-    pub cr_svuid: Ro<Uid>,
+    pub cr_svuid: IdCell,
     /// `cr_gid`: effective group id.
-    pub cr_gid: Ro<Gid>,
+    pub cr_gid: IdCell,
     /// `cr_rgid`: real group id.
-    pub cr_rgid: Ro<Gid>,
+    pub cr_rgid: IdCell,
     /// `cr_svgid`: saved effective group id.
-    pub cr_svgid: Ro<Gid>,
+    pub cr_svgid: IdCell,
     /// `cr_ngroups`: number of groups.
-    pub cr_ngroups: Ro<i16>,
+    pub cr_ngroups: CountCell,
     /// `cr_groups`: groups.
-    pub cr_groups: [Ro<Gid>; NGROUPS_MAX],
+    pub cr_groups: [IdCell; NGROUPS_MAX],
     /// Where the pool placed it ([`CredRef::from_ref`]); empty for a value of a caller's own
     /// (nfs's per-request credential, an export's anonymous one).
     home: PoolHome<Ucred>,
@@ -190,23 +219,41 @@ impl Ucred {
     /// Root's credentials, no groups (what `crget` returns zeroed).
     pub const fn new() -> Self {
         Self {
-            cr_uid: Ro(0),
-            cr_ruid: Ro(0),
-            cr_svuid: Ro(0),
-            cr_gid: Ro(0),
-            cr_rgid: Ro(0),
-            cr_svgid: Ro(0),
-            cr_ngroups: Ro(0),
-            cr_groups: [Ro(0); NGROUPS_MAX],
+            cr_uid: IdCell::new(0),
+            cr_ruid: IdCell::new(0),
+            cr_svuid: IdCell::new(0),
+            cr_gid: IdCell::new(0),
+            cr_rgid: IdCell::new(0),
+            cr_svgid: IdCell::new(0),
+            cr_ngroups: CountCell::new(0),
+            cr_groups: [const { IdCell::new(0) }; NGROUPS_MAX],
             home: PoolHome::new(),
         }
     }
 
     /// The supplementary groups in use (`cr_groups[0..cr_ngroups]`); a count outside
     /// `0..=NGROUPS_MAX` reads as none.
-    pub fn groups(&self) -> &[Ro<Gid>] {
+    pub fn groups(&self) -> &[IdCell] {
         let n = usize::try_from(self.cr_ngroups.get()).unwrap_or(0);
         self.cr_groups.get(..n).unwrap_or(&[])
+    }
+}
+
+impl Ucred {
+    /// Every member of `cr` into `self` (`crset`'s copy, `memcpy` from `cr_startcopy`) through
+    /// a shared reference: [`crset`] on a value being built, and `kernel::proc`'s refresh of a
+    /// thread's own copy, which the thread alone reads.
+    pub(crate) fn copy_from(&self, cr: &Ucred) {
+        self.cr_uid.store(cr.cr_uid.get());
+        self.cr_ruid.store(cr.cr_ruid.get());
+        self.cr_svuid.store(cr.cr_svuid.get());
+        self.cr_gid.store(cr.cr_gid.get());
+        self.cr_rgid.store(cr.cr_rgid.get());
+        self.cr_svgid.store(cr.cr_svgid.get());
+        self.cr_ngroups.store(cr.cr_ngroups.get());
+        for (to, from) in self.cr_groups.iter().zip(&cr.cr_groups) {
+            to.store(from.get());
+        }
     }
 }
 
@@ -307,14 +354,7 @@ impl Deref for CredRef {
 /// `crset(newcr, cr)`: every member after the reference count of `cr` into `newcr`.
 #[inline]
 pub fn crset(newcr: &mut Ucred, cr: &Ucred) {
-    newcr.cr_uid = cr.cr_uid;
-    newcr.cr_ruid = cr.cr_ruid;
-    newcr.cr_svuid = cr.cr_svuid;
-    newcr.cr_gid = cr.cr_gid;
-    newcr.cr_rgid = cr.cr_rgid;
-    newcr.cr_svgid = cr.cr_svgid;
-    newcr.cr_ngroups = cr.cr_ngroups;
-    newcr.cr_groups = cr.cr_groups;
+    newcr.copy_from(cr);
 }
 
 /// `groupmember(gid, cred)`: whether `gid` is the effective group or one of the groups.
@@ -384,7 +424,8 @@ pub fn crfromxucred(
 }
 
 const _: () = {
-    assert!(size_of::<Ro<u32>>() == size_of::<u32>());
+    assert!(size_of::<IdCell>() == size_of::<Uid>());
+    assert!(size_of::<IdCell>() == size_of::<Gid>());
 };
 /* </CODE> */
 

@@ -8387,7 +8387,7 @@ rust = "sys/kernel/cred.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_prot.rs", "sys/sys/ucred.rs"]
 status = "redesigned"
-notes = "N4.2: credentials in the kernel crate: struct ucred plain data with Ro<T> members (get() kept for the 60 readers, set() only through &mut of a value being built, decision 10), placed in the recorded pool ucredpl (IPL_MPFLOOR) and shared as CredRef (Clone = crhold, Drop = crfree, from_ref = crhold of a borrowed struct ucred *); crset/crcopy/crdup/crfromxucred/groupmember/suser_ucred; crcopy always copies (a recorded pool gives no value mutably, a stated deviation); bsd's kern_prot.rs keeps the set*id syscalls and switches to these with the rest of N4.2"
+notes = "N4.2: credentials in the kernel crate: struct ucred with relaxed atomic member cells (IdCell, CountCell: get(&self) kept for the 60 readers, set(&mut self) on a value being built, copy_from the crate's refresh of a thread's embedded copy; decision 10's reader, the user's shape A of 2026-10-21), placed in the recorded pool ucredpl (IPL_MPFLOOR) and shared as CredRef (Clone = crhold, Drop = crfree, from_ref = crhold of a borrowed struct ucred *); crset/crcopy/crdup/crfromxucred/groupmember/suser_ucred; crcopy always copies (a recorded pool gives no value mutably, a stated deviation); bsd's kern_prot.rs keeps the set*id syscalls and switches to these with the rest of N4.2"
 
 [[module]]
 rust = "sys/kernel/resource.rs"
