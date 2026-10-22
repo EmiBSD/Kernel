@@ -508,6 +508,34 @@ pub const fn bintime_to_nsec(bt: &Bintime) -> u64 {
 pub fn ticks_to_nsec(ticks: u64) -> u64 {
     ticks.wrapping_mul(TICK_NSEC.load(core::sync::atomic::Ordering::Relaxed) as u64)
 }
+
+/// The kernel crate's `struct timespec` (`kernel::clock::Timespec`): the same two words.
+impl From<kernel::clock::Timespec> for Timespec {
+    fn from(t: kernel::clock::Timespec) -> Self {
+        Timespec::new(t.tv_sec, t.tv_nsec)
+    }
+}
+
+/// `bsd`'s `struct timespec` as the kernel crate's.
+impl From<Timespec> for kernel::clock::Timespec {
+    fn from(t: Timespec) -> Self {
+        kernel::clock::Timespec::new(t.tv_sec, t.tv_nsec)
+    }
+}
+
+/// The kernel crate's `struct timeval` (`kernel::resource::Timeval`): the same two words.
+impl From<kernel::resource::Timeval> for Timeval {
+    fn from(t: kernel::resource::Timeval) -> Self {
+        Timeval::new(t.tv_sec, t.tv_usec as Suseconds)
+    }
+}
+
+/// `bsd`'s `struct timeval` as the kernel crate's.
+impl From<Timeval> for kernel::resource::Timeval {
+    fn from(t: Timeval) -> Self {
+        kernel::resource::Timeval::new(t.tv_sec, t.tv_usec as i64)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */

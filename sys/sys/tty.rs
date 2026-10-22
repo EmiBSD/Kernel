@@ -76,8 +76,10 @@
 //!   named after the `#define t_lflag t_termios.c_lflag` shorthands (`tp.t_lflag()`,
 //!   `tp.set_t_lflag(..)`, `tp.t_cc(VERASE)`); `t_state` and `t_lflag` also have
 //!   `SET`/`CLR`/`ISSET` helpers.
-//! - `t_pgrp` and `t_session` are raw pointers in `Cell`s, as the process structures keep
-//!   theirs (`Process::ps_pgrp`); `t_oproc`, `t_param` and `t_hwiflow` are `Option<fn>`s
+//! - `t_pgrp` and `t_session` are raw pointers in `Cell`s; the tty's reference to its
+//!   session (`SESSHOLD`) is the kernel crate's counted `SessionRef` in `t_sessref` (N4.2),
+//!   dropped where the C's `SESSRELE` is. `t_oproc`, `t_param` and `t_hwiflow` are
+//!   `Option<fn>`s
 //!   in `Cell`s. `t_param` returns `Result` and takes the requested termios by reference
 //!   (the drivers' own termios is passed as a copy, which reads the same values).
 //! - `struct itty` has its padding as named members (`_pad0`, `_pad1`), so `sysctl_rdstruct`
@@ -96,7 +98,7 @@ use crate::machine::copy::AbiPod;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::_ior;
-use crate::sys::proc::{PS_CONTROLT, Pgrp, Process, Session};
+use crate::sys::proc::{PS_CONTROLT, Pgrp, Process, Session, SessionRef};
 use crate::sys::queue::{TailqEntry, TailqHead};
 use crate::sys::selinfo::Selinfo;
 use crate::sys::sysctl::{CTLTYPE_QUAD, CTLTYPE_STRUCT, Ctlname, SysctlPlain};
@@ -261,6 +263,9 @@ pub struct Tty {
     pub t_pgrp: Cell<*const Pgrp>,
     /// `t_session`: enclosing session.
     pub t_session: Cell<*const Session>,
+    /// The tty's reference to `t_session` (`SESSHOLD` in `TIOCSCTTY`, `SESSRELE` in
+    /// `ttyclose` and the next `TIOCSCTTY`).
+    pub t_sessref: Cell<Option<SessionRef>>,
     /// `t_rsel`: tty read/oob select.
     pub t_rsel: Selinfo,
     /// `t_wsel`: tty write select.
@@ -316,6 +321,7 @@ impl Tty {
             t_flags: Cell::new(0),
             t_pgrp: Cell::new(ptr::null()),
             t_session: Cell::new(ptr::null()),
+            t_sessref: Cell::new(None),
             t_rsel: Selinfo::new(),
             t_wsel: Selinfo::new(),
             t_termios: Cell::new(Termios::zeroed()),
@@ -631,15 +637,23 @@ pub const TTY_FE: i32 = 0x0100_0000;
 /// Parity error.
 pub const TTY_PE: i32 = 0x0200_0000;
 
-/// `isctty(pr, tp)`: is `tp` controlling terminal for `pr`?
+/// `isctty(pr, tp)`: is `tp` controlling terminal for `pr`? Under the kernel lock (the
+/// process's session is `[K]`).
 pub fn isctty(pr: &Process, tp: &Tty) -> bool {
-    ptr::eq(pr.session(), tp.t_session.get())
+    let r = hal::klock::reader();
+    pr.session(&r).map_or(ptr::null(), ptr::from_ref) == tp.t_session.get()
         && pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0
 }
 
 /// `isbackground(pr, tp)`: is `pr` in background of `tp`?
 pub fn isbackground(pr: &Process, tp: &Tty) -> bool {
-    isctty(pr, tp) && !ptr::eq(pr.ps_pgrp.get(), tp.t_pgrp.get())
+    if !isctty(pr, tp) {
+        return false;
+    }
+    let r = hal::klock::reader();
+    pr.pgrp(&r)
+        .map_or(ptr::null(), |pg| ptr::from_ref::<Pgrp>(pg))
+        != tp.t_pgrp.get()
 }
 
 /// `TAILQ_HEAD(ttylist_head, tty)`: the ttylist is a TAILQ; made `Sync`, as the other

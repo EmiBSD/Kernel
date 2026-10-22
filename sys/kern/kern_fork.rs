@@ -80,6 +80,18 @@
 //!   `kern_prot.c`.
 //! - `sys_fork` never asks for `FORK_PTRACE`/`fork_return`: the `ptrace(2)` event mask
 //!   (`ps_ptmask`, `sys_process.c`) is not ported, so no process wants fork reports.
+//! - N4.2: the process and the thread are the kernel crate's (`kernel::proc`): `fork1` makes
+//!   the process first (`process_alloc`, with the pid `allocpid` chose, so the pid is chosen
+//!   before the item's `pool_get` rather than after it; the C's pid is not in the hash until
+//!   `fork1` inserts it either), then its thread (`thread_alloc`, which needs the process),
+//!   then fills the process (`process_new`). A process's klist lives in a store the glue
+//!   allocates (`kern/proc_glue.rs`): when none can be had, `fork1` fails with `ENOMEM`
+//!   before it commits, as for the u-area. A thread joins its process (`ps_threads`) through
+//!   the kernel's `insert_thread_locked`, which hands back the box's address; `thread_join`
+//!   turns it into the `&'static Proc` every thread reference here is (LZ's `curthread`
+//!   convention). The child joins its parent's process group at the head of the members,
+//!   not after the parent (`kernel::proc`'s deviation: no answer userland reads depends on
+//!   the order).
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
@@ -94,25 +106,22 @@ use crate::kern::kern_clock::hardclock_period;
 use crate::kern::kern_clockintr::clockintr_advance;
 use crate::kern::kern_descrip::{fdcopy, fdshare};
 use crate::kern::kern_event::{klist_init_mutex, knote_processfork};
-use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
-use crate::kern::kern_proc::{
-    ALLPROC, ALLPROCESS, PROC_POOL, PROCESS_POOL, chgproccnt, pgfind, pidhash, prfind, tfind,
-    tidhash, zombiefind,
-};
-use crate::kern::kern_prot::crhold;
+use crate::kern::kern_lock::mtx_leave;
 use crate::kern::kern_resource::{lim_fork, rucheck};
-use crate::kern::kern_rwlock::rw_init;
 use crate::kern::kern_sched::{sched_choosecpu_fork, setrunqueue};
 use crate::kern::kern_sig::{psignal, sigactsinit, sigstkinit};
 use crate::kern::kern_smr::smr_idle;
-use crate::kern::kern_synch::{endtsleep, refcnt_init, tsleep_nsec};
+use crate::kern::kern_synch::{endtsleep, tsleep_nsec};
 use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_time::ratecheck;
 use crate::kern::kern_timeout::timeout_set;
+use crate::kern::proc_glue::{
+    chgproccnt, pgfind, prfind, proc_tables, process_ref, store_alloc, store_free, tfind,
+    zombiefind,
+};
 use crate::kern::sched_bsd::{
     SCHED_LOCK, sched_assert_locked, sched_assert_unlocked, sched_lock, sched_unlock,
 };
-use crate::kern::subr_pool::pool_get;
 use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::subr_prof::profclock_period;
 use crate::kern::subr_xxx::assertwaitok;
@@ -120,20 +129,18 @@ use crate::kern::vm_bsd::{uvm_uarea_alloc, uvmspace_fork_or_share};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::{Cpu, CpuInfo, child_return, curcpu, curproc};
-use crate::machine::intr::{IPL_HIGH, spl0};
+use crate::machine::intr::spl0;
 use crate::machine::tcb::tcb_invalid;
 use crate::sys::acct::AFORK;
 use crate::sys::errno::Errno;
 use crate::sys::param::PWAIT;
-use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::{
-    FORK_FORK, FORK_IDLE, FORK_NOZOMBIE, FORK_PPWAIT, FORK_PTRACE, FORK_SHAREFILES, FORK_SHAREVM,
-    FORK_SYSTEM, FORK_VFORK, P_CPUPEG, P_SUSPSIG, P_SUSPSINGLE, P_SYSTEM, P_THREAD, PID_MAX,
-    PS_EMBRYO, PS_FLAGS_INHERITED_ON_FORK, PS_ISPWAIT, PS_ITIMER, PS_NOZOMBIE, PS_PPWAIT,
-    PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, Proc, Process, ProcessPglist, SIDL,
-    THREAD_PID_OFFSET, TID_MASK,
+    BsdProcessG, BsdThreadG, FORK_FORK, FORK_IDLE, FORK_NOZOMBIE, FORK_PPWAIT, FORK_PTRACE,
+    FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM, FORK_VFORK, P_CPUPEG, P_SUSPSIG, P_SUSPSINGLE,
+    P_SYSTEM, P_THREAD, PID_MAX, PS_EMBRYO, PS_FLAGS_INHERITED_ON_FORK, PS_ISPWAIT, PS_ITIMER,
+    PS_NOZOMBIE, PS_PPWAIT, PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, Proc, ProcExt, Process,
+    ProcessRef, PsGuard, SIDL, THREAD_PID_OFFSET, TID_MASK,
 };
-use crate::sys::queue::ListHead;
 use crate::sys::sched::{SPCF_ITIMER, SPCF_PROFCLOCK};
 use crate::sys::signal::{SIGSEGV, SIGTRAP};
 use crate::sys::syscallargs::SysTforkArgs;
@@ -144,6 +151,9 @@ use crate::sys::unistd::Tfork;
 use crate::sys::user::User;
 use crate::sys::vmmeter::Forkstat;
 use crate::unported;
+use hal::klock;
+use hal::pin::pin_static;
+use hal::pool::PoolBox;
 use hal::vm::uvmexp::UVMEXP;
 
 /// `nprocesses`: process 0.
@@ -155,11 +165,9 @@ pub static NTHREADS: AtomicI32 = AtomicI32::new(1);
 pub static FORKSTAT: Forkstat = Forkstat::new();
 
 /// The calling thread as the `&'static Proc` `fork1` and `thread_fork` keep (the child's
-/// parent links and `cpu_fork`'s frame copy).
+/// parent links and `cpu_fork`'s frame copy): its placed self (`ProcExt::as_static`).
 fn curthread(p: &Proc) -> &'static Proc {
-    // SAFETY: a thread is a `proc_pool` item freed only by the reaper after it exited; the
-    // thread making this system call is running, so it outlives every use made of it here.
-    unsafe { &*ptr::from_ref(p) }
+    p.as_static()
 }
 
 /// `fork_return`: the first thing a forked child runs when the parent asked `ptrace(2)` to
@@ -184,7 +192,7 @@ pub fn sys_fork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
     // mask is sys_process.c's, which is not ported, so no process asks for fork reports.
 
     let child = fork1(curthread(p), flags, func, ptr::null_mut())?;
-    retval[0] = child.process().ps_pid.get() as Register;
+    retval[0] = child.process().ps_pid as Register;
     Ok(())
 }
 
@@ -196,7 +204,7 @@ pub fn sys_vfork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         child_return,
         ptr::null_mut(),
     )?;
-    retval[0] = child.process().ps_pid.get() as Register;
+    retval[0] = child.process().ps_pid as Register;
     Ok(())
 }
 
@@ -236,80 +244,88 @@ pub fn sys___tfork(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<
     )
 }
 
-/// `thread_new`: allocates a thread, copying `parent`'s inheritable fields, with its u-area
-/// at `uaddr`.
-fn thread_new(parent: &Proc, uaddr: NonNull<u8>) -> &'static Proc {
-    let Some(mem) = pool_get(&PROC_POOL, PR_WAITOK) else {
-        panic(format_args!("thread_new: proc_pool is empty"));
-    };
-    let pp = mem.cast::<Proc>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<Proc>()` bytes, written once
-    // before anything else sees it.
-    unsafe { pp.as_ptr().write(Proc::new()) };
-    // SAFETY: as above; the thread lives until `exit2` returns it to the pool.
-    let p: &'static Proc = unsafe { pp.as_ref() };
-    p.place();
+/// `thread_new`: allocates a thread of `pr`, copying `parent`'s inheritable fields, with its
+/// u-area at `uaddr`; its box, which the caller makes join the process ([`thread_join`]).
+fn thread_new(parent: &Proc, pr: &ProcessRef, uaddr: NonNull<u8>) -> PoolBox<Proc> {
+    let p = kernel::proc::thread_alloc(pr, hal::list::ListEntry::new(), BsdThreadG::new());
 
-    p.p_stat.set(SIDL); // protect against others
+    p.set_stat(SIDL); // protect against others
     p.p_runpri.set(0);
     p.p_flag.store(0, Ordering::Relaxed);
 
     // Make a proc table entry for the new process. Start by zeroing the section of proc
-    // that is zero-initialized (`Proc::new()` did), then copy the section that is copied
+    // that is zero-initialized (`thread_alloc` did), then copy the section that is copied
     // directly from the parent (p_startcopy .. p_endcopy).
     p.p_sigmask.set(parent.p_sigmask.get());
-    // SAFETY: `p_name` is this thread's and the parent's (which is running, hence not
-    // renaming itself); plain copies.
-    unsafe { ptr::write(p.p_name.get(), ptr::read(parent.p_name.get())) };
+    p.set_name(&parent.name());
     p.p_slppri.set(parent.p_slppri.get());
     p.p_usrpri.set(parent.p_usrpri.get());
     p.p_estcpu.set(parent.p_estcpu.get());
     p.p_pledge_syscall.set(parent.p_pledge_syscall.get());
     p.p_pledge.set(parent.p_pledge.get());
-    p.p_ucred.set(parent.p_ucred.get());
     p.p_sigstk.set(parent.p_sigstk.get());
     p.p_prof_addr.set(parent.p_prof_addr.get());
     p.p_prof_ticks.set(parent.p_prof_ticks.get());
 
-    crhold(p.ucred());
-    p.p_addr.set(uaddr.as_ptr().cast::<User>());
+    // crhold(p->p_ucred): the thread's own copy of the parent's, and its reference.
+    drop(p.set_cred(parent.cred_ref()));
+    p.set_uarea(uaddr.as_ptr().cast::<User>());
 
     // Initialize the timeouts.
-    timeout_set(&p.p_sleep_to, endtsleep, ptr::from_ref(p).cast_mut().cast());
+    timeout_set(
+        &p.p_sleep_to,
+        endtsleep,
+        PoolBox::as_ptr(&p).cast_mut().cast(),
+    );
 
     p
 }
 
-/// `process_initialize`: initialize common bits of a process structure, given the initial
-/// thread.
-pub fn process_initialize(pr: &'static Process, p: &'static Proc) {
-    refcnt_init(&pr.ps_refcnt);
+/// The thread box `t` joins its process `pr` (`TAILQ_INSERT_TAIL(&pr->ps_threads, p,
+/// p_thr_link)`); `then` runs in the same `ps_mtx` section (the counts). The thread placed,
+/// as the `&'static Proc` every thread reference here is.
+fn thread_join(
+    pr: &Process,
+    t: PoolBox<Proc>,
+    then: impl FnOnce(&mut PsGuard<'_>, &Proc),
+) -> &'static Proc {
+    let mut g = pr.ps_mtx.lock();
+    let at = pr.insert_thread_locked(&mut g, t);
+    // SAFETY: `at` is the address of the thread box the process now owns
+    // (`insert_thread_locked`): a `procpl` item, which stays at that address until `exit1`
+    // takes the box back from the process and `proc_free` drops it (the reaper's, or
+    // `process_zap`'s for the main thread), after the thread has left every list, hash and
+    // queue and no other thread names it. Until then the item is a live, initialised thread
+    // that nothing mutates but through its atomics and cells (shared references only), so a
+    // shared reference to it is valid; `'static` is LZ's convention for a thread reference
+    // (the C's `struct proc *` from `pool_get` to `pool_put`), the one `curproc()` and the
+    // run queues rest on.
+    let p: &'static Proc = unsafe { &*at };
+    then(&mut g, p);
+    drop(g);
+    p.place();
+    p
+}
 
+/// `process_initialize`: initialize common bits of a process structure, given the initial
+/// thread (which has joined it).
+pub fn process_initialize(pr: &Process, p: &'static Proc) {
     // initialize the thread links
     pr.ps_mainproc.set(p);
-    pr.ps_threads.init();
-    // SAFETY: `p` outlives its process and is in no thread list yet.
-    unsafe { pr.ps_threads.insert_tail(p) };
     pr.ps_threadcnt.set(1);
-    p.p_p.set(pr);
 
     // give the process the same creds as the initial thread
-    pr.ps_ucred.set(p.p_ucred.get());
-    crhold(pr.ucred());
-    // new thread and new process
-    kassert!(p.ucred().cr_refcnt.r_refs.load(Ordering::Relaxed) >= 2);
+    drop(pr.set_ucred(p.cred_ref()));
 
     // prof_fork(pr): subr_prof.c (M6).
     let _ = unported!("process_initialize: prof_fork (M6)");
 
-    pr.ps_children.init();
-    pr.ps_orphans.init();
-    kassert!(pr.ps_sigiolst.is_empty()); // LIST_INIT: a new hal::list head is empty
+    // A new process's lists (children, orphans, sigio) are empty.
+    kassert!(pr.ps_sigiolst.is_empty());
 
-    rw_init(&pr.ps_lock, "pslock");
-    mtx_init(&pr.ps_mtx, IPL_HIGH);
-    // SAFETY: `ps_mtx` is a member of the same process, alive as long as its `ps_klist`.
-    unsafe { klist_init_mutex(&pr.ps_klist, &pr.ps_mtx) };
+    // SAFETY: the klist's mutex is a member of the same store, alive as long as its klist
+    // (a store is never freed: `kern/proc_glue.rs`).
+    unsafe { klist_init_mutex(&pr.ps_klist, &pr.ps_klmtx) };
 
     crate::kern::kern_timeout::timeout_set_flags(
         &pr.ps_realit_to,
@@ -325,24 +341,14 @@ pub fn process_initialize(pr: &'static Process, p: &'static Proc) {
     );
 }
 
-/// `process_new`: allocate and initialize a new process.
-fn process_new(p: &'static Proc, parent: &'static Process, flags: i32) -> &'static Process {
-    let Some(mem) = pool_get(&PROCESS_POOL, PR_WAITOK) else {
-        panic(format_args!("process_new: process_pool is empty"));
-    };
-    let pp = mem.cast::<Process>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<Process>()` bytes, written
-    // once before anything else sees it.
-    unsafe { pp.as_ptr().write(Process::new()) };
-    // SAFETY: as above; the process lives until `process_zap`/`exit2` free it.
-    let pr: &'static Process = unsafe { pp.as_ref() };
-
+/// `process_new`: initialize the new process `pr` (made by `fork1` with its pid, its main
+/// thread `p` joined) from `parent`.
+fn process_new(p: &'static Proc, pr: &ProcessRef, parent: &Process, flags: i32) {
     // Make a process structure for the new process. Start by zeroing the section of proc
-    // that is zero-initialized (`Process::new()` did), then copy the section that is copied
-    // directly from the parent (ps_startcopy .. ps_endcopy).
-    pr.ps_limit.set(parent.ps_limit.get());
-    pr.ps_pgrp.set(parent.ps_pgrp.get());
-    pr.set_comm(parent.comm());
+    // that is zero-initialized (`process_alloc` did), then copy the section that is copied
+    // directly from the parent (ps_startcopy .. ps_endcopy); ps_limit and ps_pgrp are set
+    // by lim_fork and fork1.
+    pr.set_comm(&parent.comm());
     pr.ps_strings.set(parent.ps_strings.get());
     pr.ps_auxinfo.set(parent.ps_auxinfo.get());
     pr.ps_timekeep.set(parent.ps_timekeep.get());
@@ -363,13 +369,13 @@ fn process_new(p: &'static Proc, parent: &'static Process, flags: i32) -> &'stat
     pr.ps_kbind_addr.set(parent.ps_kbind_addr.get());
 
     process_initialize(pr, p);
-    pr.ps_pid.set(allocpid());
     lim_fork(parent, pr);
 
     // post-copy fixups
-    pr.ps_pptr.set(parent);
-    pr.ps_pgrp.set(ptr::null());
-    pr.ps_ppid.set(parent.ps_pid.get());
+    {
+        let mut w = klock::witness();
+        drop(pr.set_pptr(&mut w, process_ref(parent)));
+    }
     // WITNESS_SETCHILD: not configured.
 
     // bump references to the text vnode (for sysctl)
@@ -385,10 +391,13 @@ fn process_new(p: &'static Proc, parent: &'static Process, flags: i32) -> &'stat
         parent.ps_flags.load(Ordering::Relaxed) & PS_FLAGS_INHERITED_ON_FORK,
         Ordering::Relaxed,
     );
-    // SAFETY: a process always has a session, a static or pool item alive while the
-    // process is.
-    let session = unsafe { &*parent.session() };
-    if !session.s_ttyvp.get().is_null() {
+    let ctty = {
+        let r = klock::reader();
+        parent
+            .session(&r)
+            .is_some_and(|s| s.s_ttyvp.get().is_some())
+    };
+    if ctty {
         pr.ps_flags.fetch_or(
             parent.ps_flags.load(Ordering::Relaxed) & crate::sys::proc::PS_CONTROLT,
             Ordering::Relaxed,
@@ -404,7 +413,7 @@ fn process_new(p: &'static Proc, parent: &'static Process, flags: i32) -> &'stat
     } else {
         pr.ps_fd.set(fdcopy(parent));
     }
-    pr.ps_sigacts.set(sigactsinit(parent));
+    pr.ps_sigacts.set(Some(sigactsinit(parent)));
     uvmspace_fork_or_share(parent, pr, flags & FORK_SHAREVM != 0);
 
     if parent.ps_flags.load(Ordering::Relaxed) & PS_PROFIL != 0 {
@@ -430,10 +439,8 @@ fn process_new(p: &'static Proc, parent: &'static Process, flags: i32) -> &'stat
     fence(Ordering::Release); // membar_producer()
 
     // it's sufficiently inited to be globally visible
-    // SAFETY: `pr` is static-lived (see above) and in no list yet.
-    unsafe { ALLPROCESS.0.insert_head(pr) };
-
-    pr
+    let mut w = klock::witness();
+    proc_tables().allprocess.insert_head(&mut w, pr.as_pin());
 }
 
 /// `process_new`'s copy of a pin table (`ps_pin`, `ps_libcpin`): the bounds come with the
@@ -443,7 +450,7 @@ fn pin_copy(from: &crate::sys::proc::Pinsyscall, to: &crate::sys::proc::Pinsysca
     to.pn_end.set(from.pn_end.get());
     to.pn_npins.set(from.pn_npins.get());
     to.pn_pins.set(ptr::null_mut());
-    let Some(src) = NonNull::new(from.pn_pins.get()) else {
+    let Some(src) = NonNull::new(from.pn_pins.get_mut()) else {
         return;
     };
     let n = from.pn_npins.get().max(0) as usize;
@@ -551,7 +558,18 @@ pub fn fork1(
         let _ = unported!("fork1: lim_cur(RLIMIT_NPROC) (M6)");
     }
 
+    // The new process's klist store (see the module's deviations).
+    let store = match store_alloc() {
+        Ok(store) => store,
+        Err(error) => {
+            chgproccnt(uid, -1);
+            NPROCESSES.fetch_sub(1, Ordering::Relaxed);
+            NTHREADS.fetch_sub(1, Ordering::Relaxed);
+            return Err(error);
+        }
+    };
     let Some(uaddr) = uvm_uarea_alloc() else {
+        store_free(store);
         chgproccnt(uid, -1);
         NPROCESSES.fetch_sub(1, Ordering::Relaxed);
         NTHREADS.fetch_sub(1, Ordering::Relaxed);
@@ -559,11 +577,12 @@ pub fn fork1(
     };
 
     // From now on, we're committed to the fork and cannot fail.
-    let p = thread_new(curp, uaddr);
-    let pr = process_new(p, curpr, flags);
+    let pr = kernel::proc::process_alloc(allocpid(), BsdProcessG::new(store));
+    let p = thread_join(&pr, thread_new(curp, &pr, uaddr), |_, _| {});
+    process_new(p, &pr, curpr, flags);
 
     p.p_fd.set(pr.ps_fd.get());
-    p.p_vmspace.set(pr.vmspace_ptr());
+    drop(p.set_vmspace(pr.vmspace_share()));
     if pr.ps_flags.load(Ordering::Relaxed) & PS_SYSTEM != 0 {
         p.p_flag.fetch_or(P_SYSTEM, Ordering::Relaxed);
     }
@@ -586,7 +605,7 @@ pub fn fork1(
     };
     Machine::cpu_fork(curp, p, ptr::null_mut(), ptr::null_mut(), func, arg);
 
-    let vm = pr.vmspace();
+    let vm = p.vmspace();
     let vmsize = (vm.vm_dsize.load(Ordering::Relaxed) + vm.vm_ssize.load(Ordering::Relaxed)) as u64;
     if flags & FORK_FORK != 0 {
         FORKSTAT.cntfork.fetch_add(1, Ordering::Relaxed);
@@ -600,37 +619,38 @@ pub fn fork1(
     }
 
     p.p_tid.set(alloctid());
-    // SAFETY: `p` and `pr` are static-lived pool items in no list or hash chain yet; the
-    // lists are the kernel lock's.
-    unsafe {
-        ALLPROC.0.insert_head(p);
-        tidhash(p.p_tid.get()).insert_head(p);
-        pidhash(pr.ps_pid.get()).insert_head(pr);
+    {
+        let mut w = klock::witness();
+        let t = proc_tables();
+        t.allproc.insert_head(&mut w, pin_static(p));
+        t.tidhash(p.p_tid.get()).insert_head(&mut w, pin_static(p));
+        t.pidhash(pr.ps_pid).insert_head(&mut w, pr.as_pin());
+
+        // The parent's group: the child joins its members (at the head, see
+        // sys/kern/proc_glue.rs's deviations) and the parent's children.
+        let pgrp = curpr.pgrp(&w).cloned();
+        if let Some(pg) = &pgrp {
+            pg.pg_members.insert_head(&mut w, pr.as_pin());
+        }
+        drop(pr.set_pgrp(&mut w, pgrp));
+        curpr.ps_children.insert_head(&mut w, pr.as_pin());
     }
 
-    pr.ps_pgrp.set(curpr.ps_pgrp.get());
-    // SAFETY: `curpr` is on its pgrp's member list; `pr` joins it behind, and the children
-    // list of `curpr`, which it is not on yet.
-    unsafe {
-        ListHead::<ProcessPglist>::insert_after(curpr, pr);
-        curpr.ps_children.insert_head(pr);
-    }
-
-    mtx_enter(&pr.ps_mtx);
+    let g = pr.ps_mtx.lock();
     if pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
         // ps_opptr, process_reparent, the ptrace status: ptrace (M6).
         let _ = unported!("fork1: ptrace (process_reparent, ps_ptstat, M6)");
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g);
 
     // For new processes, set accounting bits and mark as complete.
-    pr.ps_start.set(nanouptime());
+    pr.ps_start.set(nanouptime().into());
     pr.ps_acflag.set(AFORK);
     pr.ps_flags.fetch_and(!PS_EMBRYO, Ordering::Relaxed);
 
     // Idle threads are just assigned to the CPU but not added to any runqueue.
     if flags & FORK_IDLE != 0 {
-        p.p_cpu.set(arg.cast::<CpuInfo>());
+        p.set_cpu(arg.cast::<CpuInfo>());
         // for consistency mark idle procs as pegged
         p.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
     } else {
@@ -638,7 +658,7 @@ pub fn fork1(
     }
 
     // Notify any interested parties about the new process.
-    knote_processfork(curpr, pr.ps_pid.get());
+    knote_processfork(curpr, pr.ps_pid);
 
     // Update stats now that we know the fork was successful.
     UVMEXP.forks.fetch_add(1, Ordering::Relaxed);
@@ -691,54 +711,51 @@ pub fn thread_fork(
     };
 
     // From now on, we're committed to the fork and cannot fail.
-    let p = thread_new(curp, uaddr);
+    let p = thread_new(curp, curp.process_ref(), uaddr);
     p.p_flag.fetch_or(P_THREAD, Ordering::Relaxed);
     sigstkinit(&p.p_sigstk);
     p.set_name(b"");
 
-    // other links
-    p.p_p.set(pr);
+    // other links: p_p, made with the thread (thread_alloc).
 
     // local copies
     p.p_fd.set(pr.ps_fd.get());
-    p.p_vmspace.set(pr.vmspace_ptr());
+    drop(p.set_vmspace(pr.vmspace_share()));
 
     // Finish creating the child thread. cpu_fork() will copy and update the pcb and make
     // the child ready to run. The child will exit directly to user mode via child_return()
     // on its first time slice and will not return here.
     Machine::cpu_fork(
         curp,
-        p,
+        &p,
         stack as *mut u8,
         tcb as *mut u8,
         child_return,
-        ptr::from_ref(p).cast_mut().cast::<c_void>(),
+        PoolBox::as_ptr(&p).cast_mut().cast::<c_void>(),
     );
 
     p.p_tid.set(alloctid());
 
-    // SAFETY: `p` is a static-lived pool item in no list or hash chain yet; the lists are
-    // the kernel lock's.
-    unsafe {
-        ALLPROC.0.insert_head(p);
-        tidhash(p.p_tid.get()).insert_head(p);
+    {
+        let mut w = klock::witness();
+        let t = proc_tables();
+        t.allproc.insert_head(&mut w, p.as_pin());
+        t.tidhash(p.p_tid.get()).insert_head(&mut w, p.as_pin());
     }
 
-    mtx_enter(&pr.ps_mtx);
-    // SAFETY: `p` is on no thread list yet; `ps_threads` is `ps_mtx`'s, held.
-    unsafe { pr.ps_threads.insert_tail(p) };
-    pr.ps_threadcnt.set(pr.ps_threadcnt.get() + 1);
+    let p = thread_join(pr, p, |_, p| {
+        pr.ps_threadcnt.set(pr.ps_threadcnt.get() + 1);
 
-    // if somebody else wants to take us to single threaded mode or suspend the process,
-    // count ourselves in.
-    if !pr.ps_single.get().is_null() || pr.ps_flags.load(Ordering::Relaxed) & PS_STOPPING != 0 {
-        pr.ps_suspendcnt.set(pr.ps_suspendcnt.get() + 1);
-        p.p_flag.fetch_or(
-            curp.p_flag.load(Ordering::Relaxed) & (P_SUSPSINGLE | P_SUSPSIG),
-            Ordering::Relaxed,
-        );
-    }
-    mtx_leave(&pr.ps_mtx);
+        // if somebody else wants to take us to single threaded mode or suspend the
+        // process, count ourselves in.
+        if !pr.ps_single.get().is_null() || pr.ps_flags.load(Ordering::Relaxed) & PS_STOPPING != 0 {
+            pr.ps_suspendcnt.set(pr.ps_suspendcnt.get() + 1);
+            p.p_flag.fetch_or(
+                curp.p_flag.load(Ordering::Relaxed) & (P_SUSPSINGLE | P_SUSPSIG),
+                Ordering::Relaxed,
+            );
+        }
+    });
 
     // Return tid to parent thread and copy it out to userspace
     let tid: Pid = p.p_tid.get() + THREAD_PID_OFFSET;
@@ -762,7 +779,8 @@ pub fn alloctid() -> Pid {
     loop {
         // (0 .. TID_MASK+1]
         let tid = 1 + (arc4random() as Pid & TID_MASK);
-        if tfind(tid).is_none() {
+        let r = klock::reader();
+        if tfind(&r, tid).is_none() {
             return tid;
         }
     }
@@ -778,13 +796,14 @@ pub fn ispidtaken(pid: Pid) -> bool {
         return true;
     }
 
-    if prfind(pid).is_some() {
+    let r = klock::reader();
+    if prfind(&r, pid).is_some() {
         return true;
     }
-    if pgfind(pid).is_some() {
+    if pgfind(&r, pid).is_some() {
         return true;
     }
-    if zombiefind(pid).is_some() {
+    if zombiefind(&r, pid).is_some() {
         return true;
     }
     false

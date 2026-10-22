@@ -44,6 +44,7 @@ use crate::machine::cpu::CpuInfo;
 use crate::machine::db_machdep::{DbMachdep, PrFn};
 use crate::machine::pci_machdep::{PciIntrFn, PciIntrStr, PciMachdep};
 use crate::sys::device::Device;
+use crate::sys::proc::ProcExt;
 
 use crate::machine::copy::UserCopy;
 use crate::machine::exec::MachineExec;

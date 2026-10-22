@@ -126,6 +126,11 @@
 //!   thread reads it, as no other thread reads `p_ucred` in the C).
 //! - The `NOCRED`/`FSCRED` sentinels stay `bsd`'s pointer constants while the VFS passes
 //!   `*const Ucred` (N5).
+//! - A credential its holder owns alone and updates in place, which the C embeds in a
+//!   structure and writes through a pointer (the NFS server's per-request `nd_cr`, mapped to
+//!   an export's anonymous ids by `nfsrv_fhtovp` while the request's code holds pointers to
+//!   it), is a [`UcredCell`]: its writes go through `&self`, and it is never placed (no
+//!   [`CredRef`] can name it), so the immutability of shared credentials is untouched (N4.2).
 
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU32, Ordering};
@@ -260,6 +265,59 @@ impl Ucred {
 impl Default for Ucred {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// An unplaced credential its holder updates in place through a shared reference: the C's
+/// `struct ucred` embedded in a structure and written through pointers to it (an NFS
+/// request's `nd_cr`). Dereferences to the [`Ucred`] the VFS reads; no [`CredRef`] can name
+/// it ([`CredRef::from_ref`] refuses it: no pool placed it), so it is never shared as a
+/// counted credential.
+pub struct UcredCell(Ucred);
+
+impl UcredCell {
+    /// Root's credentials, no groups.
+    pub const fn new() -> Self {
+        Self(Ucred::new())
+    }
+
+    /// Every id of `cr` (`*cred = *cr`).
+    pub fn assign(&self, cr: &Ucred) {
+        self.0.copy_from(cr);
+    }
+
+    /// `cred->cr_uid = uid`.
+    pub fn set_uid(&self, uid: Uid) {
+        self.0.cr_uid.store(uid);
+    }
+
+    /// `cred->cr_gid = gid`.
+    pub fn set_gid(&self, gid: Gid) {
+        self.0.cr_gid.store(gid);
+    }
+
+    /// `cred->cr_groups[i] = gid` (`i < NGROUPS_MAX`).
+    pub fn set_group(&self, i: usize, gid: Gid) {
+        self.0.cr_groups[i].store(gid);
+    }
+
+    /// `cred->cr_ngroups = n`.
+    pub fn set_ngroups(&self, n: i16) {
+        self.0.cr_ngroups.store(n);
+    }
+}
+
+impl Default for UcredCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for UcredCell {
+    type Target = Ucred;
+
+    fn deref(&self) -> &Ucred {
+        &self.0
     }
 }
 
@@ -548,6 +606,30 @@ mod tests {
             crfromxucred(&mut x, 1, 1, NGROUPS_MAX as i16, &groups),
             Ok(())
         );
+    }
+
+    #[test]
+    fn a_request_s_credential_is_updated_in_place_and_never_shared() {
+        testutil::install();
+        let cell = UcredCell::new();
+        assert_eq!(uids(&cell), (0, 0, 0));
+        // nfsrv_fhtovp's mapping to the export's anonymous ids, through `&self`.
+        cell.assign(&ids(1000, 100));
+        assert_eq!(uids(&cell), (1000, 1000, 1000));
+        cell.set_uid(65534);
+        cell.set_gid(65533);
+        cell.set_ngroups(2);
+        cell.set_group(0, 20);
+        cell.set_group(1, 30);
+        assert_eq!((cell.cr_uid.get(), cell.cr_gid.get()), (65534, 65533));
+        assert!(groupmember(30, &cell));
+        assert!(!groupmember(40, &cell));
+        // No pool placed it: no counted reference can name it.
+        assert!(CredRef::from_ref(&cell).is_none());
+        // A copy made from it is placed and shared like any other.
+        let dup = crdup(&cell);
+        assert_eq!(CredRef::count(&dup), 1);
+        assert_eq!(dup.cr_uid.get(), 65534);
     }
 }
 /* </TESTS> */

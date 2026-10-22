@@ -67,6 +67,7 @@ use crate::sys::futex::{
 };
 use crate::sys::mman::MAP_INHERIT_SHARE;
 use crate::sys::param::{PCATCH, PWAIT};
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{Proc, Process};
 use crate::sys::queue::{TailqEntry, TailqHead};
 use crate::sys::rwlock::Rwlock;

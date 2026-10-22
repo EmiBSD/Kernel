@@ -400,7 +400,7 @@ pub fn socreate(dom: i32, type_: i32, proto: i32) -> Result<&'static Socket, Err
     so.so_euid.set(cred.cr_uid.get());
     so.so_rgid.set(cred.cr_rgid.get());
     so.so_egid.set(cred.cr_gid.get());
-    so.so_cpid.set(p.process().ps_pid.get());
+    so.so_cpid.set(p.process().ps_pid);
     so.so_snd.sb_timeo_nsecs.set(INFSLP);
     so.so_rcv.sb_timeo_nsecs.set(INFSLP);
 

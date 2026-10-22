@@ -64,6 +64,7 @@ use kernel::vm::km::LegacyLend;
 use crate::kern::subr_prf::panic;
 use crate::machine::Machine;
 use crate::sys::errno::Errno;
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{Proc, Process};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use kernel::vm::map::Vmspace;
@@ -302,7 +303,9 @@ pub fn pmap_remove_holes(_vm: &Vmspace) {}
 /// `pr`'s address space visible to instruction fetch (an I-cache sync where the caches are
 /// not coherent).
 pub fn pmap_proc_iflush(pr: &Process, va: Vaddr, len: Vsize) {
-    pr.vmspace().vm_map.pmap().proc_iflush(va, len);
+    if let Some(vm) = pr.vmspace_share() {
+        vm.vm_map.pmap().proc_iflush(va, len);
+    }
 }
 
 /// `pmap_zero_page`: zero-fills the page.

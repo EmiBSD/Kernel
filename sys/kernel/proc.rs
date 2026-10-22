@@ -947,6 +947,9 @@ pub struct Session<G: ProcGlue> {
     /// `s_leader`: the session leader's address (compared with a process's, never followed),
     /// 0 when it has none.
     pub s_leader: UsizeWord,
+    /// `s_leader->ps_pid`, kept with the address ([`Session::set_leader`]): what `getsid(2)`
+    /// answers, read without following the address.
+    s_leaderpid: I32Word,
     /// \[K\] `s_login`: setlogin() name.
     pub s_login: Guarded<[u8; LOGIN_NAME_MAX]>,
     /// `s_verauthppid`.
@@ -965,6 +968,7 @@ impl<G: ProcGlue> Session<G> {
         Self {
             home: PoolHome::new(),
             s_leader: UsizeWord::new(0),
+            s_leaderpid: I32Word::new(0),
             s_login: Guarded::new_kernel([0; LOGIN_NAME_MAX]),
             s_verauthppid: I32Word::new(0),
             s_verauthuid: U32Word::new(0),
@@ -975,6 +979,17 @@ impl<G: ProcGlue> Session<G> {
     /// Whether `pr` leads the session (`SESS_LEADER`).
     pub fn led_by(&self, pr: &Process<G>) -> bool {
         self.s_leader.get() == ptr::from_ref(pr).addr()
+    }
+
+    /// `sess->s_leader = pr` (`None`: `NULL`, its leader gone).
+    pub fn set_leader(&self, pr: Option<&Process<G>>) {
+        self.s_leaderpid.set(pr.map_or(0, |p| p.ps_pid));
+        self.s_leader.set(pr.map_or(0, |p| ptr::from_ref(p).addr()));
+    }
+
+    /// `sess->s_leader->ps_pid`, `None` once the leader is gone (`getsid`'s `ESRCH`).
+    pub fn leader_pid(&self) -> Option<Pid> {
+        (self.s_leader.get() != 0).then(|| self.s_leaderpid.get())
     }
 }
 
@@ -1078,6 +1093,11 @@ pub struct PsMtx<G: ProcGlue> {
     pub vmspace: Option<VmspaceRef>,
     /// `ps_limit` (`[m,R]`): the limits, written under `rlimit_lock` too.
     pub limit: Option<PlimitRef>,
+    /// `ps_pptr` (`[K|m]`) for a holder of `ps_mtx` alone: the parent the kernel lock's cell
+    /// holds, set with it ([`Process::set_pptr_locked`]).
+    pptr: Option<ProcessRef<G>>,
+    /// `ps_pgrp` (`[K|m]`) for a holder of `ps_mtx` alone, set with the kernel lock's cell.
+    pgrp: Option<PgrpRef<G>>,
     /// The boxes of the process's threads (not process 0's `static` one), by joining order.
     threads: OwnedTree<G::ThreadOwned>,
     /// The order number the next thread to join takes.
@@ -1091,6 +1111,8 @@ impl<G: ProcGlue> PsMtx<G> {
             cred: None,
             vmspace: None,
             limit: None,
+            pptr: None,
+            pgrp: None,
             threads: OwnedTree::new(),
             next_seq: 0,
         }
@@ -1311,14 +1333,17 @@ impl<G: ProcGlue> Process<G> {
     }
 
     /// `vm = pr->ps_vmspace; uvmspace_addref(vm)`: a handle to the address space, `None` once
-    /// `uvm_exit` took it.
-    pub fn vmspace(&self) -> Option<VmspaceRef> {
+    /// `uvm_exit` took it (LZ's `vmspace_share`).
+    pub fn vmspace_share(&self) -> Option<VmspaceRef> {
         self.ps_mtx.lock().vmspace.clone()
     }
 
-    /// `pr->ps_vmspace = vm`: the previous handle.
+    /// `pr->ps_vmspace = vm`: the previous handle. The word keeps the address exposed
+    /// (`bsd`'s readers of `p_vmspace` until N4.5).
     pub fn set_vmspace(&self, vm: Option<VmspaceRef>) -> Option<VmspaceRef> {
-        let addr = vm.as_ref().map_or(0, |v| PoolArc::as_ptr(v).addr());
+        let addr = vm
+            .as_ref()
+            .map_or(0, |v| PoolArc::as_ptr(v).expose_provenance());
         let old = core::mem::replace(&mut self.ps_mtx.lock().vmspace, vm);
         self.vmspace_word.store(addr, Ordering::Release);
         old
@@ -1354,10 +1379,46 @@ impl<G: ProcGlue> Process<G> {
     }
 
     /// `pr->ps_pptr = parent; pr->ps_ppid = parent->ps_pid` (`fork1`, `process_reparent`):
-    /// the old parent's reference.
+    /// the old parent's reference. Takes `ps_mtx` (the C's `[K|m]`).
     pub fn set_pptr(&self, w: &mut KernelWitness, parent: ProcessRef<G>) -> Option<ProcessRef<G>> {
+        let mut g = self.ps_mtx.lock();
+        self.set_pptr_locked(w, &mut g, parent)
+    }
+
+    /// [`Process::set_pptr`] under the caller's guard of this process's `ps_mtx`
+    /// (`process_reparent`'s `MUTEX_ASSERT_LOCKED`); a guard of another mutex is refused
+    /// (`panic(9)`) once the thread list is bound to its own (`process_alloc`).
+    pub fn set_pptr_locked(
+        &self,
+        w: &mut KernelWitness,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        parent: ProcessRef<G>,
+    ) -> Option<ProcessRef<G>> {
+        // The thread list checks the guard is this process's.
+        let _ = self.ps_threads.is_empty(g);
         self.ps_ppid.set(parent.ps_pid);
+        g.pptr = Some(parent.clone());
         self.tree.get_mut(w).pptr.replace(parent)
+    }
+
+    /// `ps_pptr`, for a holder of this process's `ps_mtx` (`[K|m]`) who may not hold the
+    /// kernel lock; a guard of another mutex is refused (as for `set_pptr_locked`).
+    pub fn pptr_locked<'a>(
+        &self,
+        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    ) -> Option<&'a ProcessRef<G>> {
+        let _ = self.ps_threads.is_empty(g);
+        g.pptr.as_ref()
+    }
+
+    /// `ps_pgrp`, for a holder of this process's `ps_mtx` (`[K|m]`) who may not hold the
+    /// kernel lock; a guard of another mutex is refused (as for `set_pptr_locked`).
+    pub fn pgrp_locked<'a>(
+        &self,
+        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    ) -> Option<&'a PgrpRef<G>> {
+        let _ = self.ps_threads.is_empty(g);
+        g.pgrp.as_ref()
     }
 
     /// `ps_pgrp`, for a holder of the kernel lock.
@@ -1367,8 +1428,13 @@ impl<G: ProcGlue> Process<G> {
 
     /// `pr->ps_pgrp = pgrp` (under `ps_mtx` too, as the C): the old group's reference.
     pub fn set_pgrp(&self, w: &mut KernelWitness, pgrp: Option<PgrpRef<G>>) -> Option<PgrpRef<G>> {
-        let _m = self.ps_mtx.lock();
-        core::mem::replace(&mut self.tree.get_mut(w).pgrp, pgrp)
+        let mut m = self.ps_mtx.lock();
+        // The mirror's old reference goes after the lock (a group's last drop may sleep).
+        let mirror = core::mem::replace(&mut m.pgrp, pgrp.clone());
+        let old = core::mem::replace(&mut self.tree.get_mut(w).pgrp, pgrp);
+        drop(m);
+        drop(mirror);
+        old
     }
 
     /// `pr->ps_pgrp->pg_id` (0 without a group).
@@ -1390,10 +1456,22 @@ impl<G: ProcGlue> Process<G> {
     /// thread's address, which `bsd`'s lists still take (its scheduler's queues).
     pub fn insert_thread(&self, t: PoolBox<Thread<G>>) -> *const Thread<G> {
         let mut g = self.ps_mtx.lock();
+        self.insert_thread_locked(&mut g, t)
+    }
+
+    /// [`Process::insert_thread`] under the caller's guard of this process's `ps_mtx` (the
+    /// C's `TAILQ_INSERT_TAIL` inside the section that also counts the thread in); a guard
+    /// of another mutex is refused by the thread list (`panic(9)`).
+    pub fn insert_thread_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        t: PoolBox<Thread<G>>,
+    ) -> *const Thread<G> {
+        // The list first: it checks the guard is this process's.
+        self.ps_threads.insert_tail(g, t.as_pin());
         let seq = g.next_seq;
         g.next_seq += 1;
         t.p_seq.set(seq);
-        self.ps_threads.insert_tail(&mut g, t.as_pin());
         let at = PoolBox::as_ptr(&t);
         if g.threads.insert(t).is_some() {
             kpanic(format_args!("insert_thread: a thread joined twice"));
@@ -1412,10 +1490,29 @@ impl<G: ProcGlue> Process<G> {
     /// from `allproc` and its tid chain with the box in hand, then drops it (`proc_free`).
     pub fn remove_thread(&self, tid: Pid) -> Option<PoolBox<Thread<G>>> {
         let mut g = self.ps_mtx.lock();
+        self.remove_thread_locked(&mut g, tid)
+    }
+
+    /// [`Process::remove_thread`] under the caller's guard of this process's `ps_mtx` (`exit1`
+    /// unlinks the thread inside the section that counts it out).
+    pub fn remove_thread_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        tid: Pid,
+    ) -> Option<PoolBox<Thread<G>>> {
         let seq = g.threads.iter().find(|t| t.p_tid.get() == tid)?.p_seq.get();
         let b = g.threads.take_by(|e| seq.cmp(&e.p_seq.get()))?;
-        self.ps_threads.remove(&mut g, &b);
+        self.ps_threads.remove(g, &b);
         Some(b)
+    }
+
+    /// `TAILQ_REMOVE` of process 0's `static` thread under the caller's guard.
+    pub fn remove_static_thread_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        t: &'static Thread<G>,
+    ) {
+        self.ps_threads.remove(g, t);
     }
 
     /// `TAILQ_REMOVE` of process 0's `static` thread.
@@ -1440,7 +1537,12 @@ pub fn process_alloc<G: ProcGlue>(pid: Pid, g: G::ProcessG) -> ProcessRef<G> {
         .processpl
         .get_homed(PR_WAITOK, || Process::new(pid, g))
     {
-        Some(p) => StaticOrPooled::Pooled(p),
+        Some(p) => {
+            // The thread list bound to the process's own `ps_mtx` from the start, so a guard
+            // of another mutex is refused by every `_locked` method.
+            let _ = p.ps_threads.is_empty(&p.ps_mtx.lock());
+            StaticOrPooled::Pooled(p)
+        }
         None => kpanic(format_args!("process_new: process_pool is empty")),
     }
 }
@@ -1668,6 +1770,14 @@ impl<G: ProcGlue> Thread<G> {
         &self.cred
     }
 
+    /// The address of the thread's credentials, for `bsd`'s VFS, which passes `struct ucred *`
+    /// (with its `NOCRED`/`FSCRED` sentinels) until N5: valid while the thread is, and changed
+    /// only by the thread itself ([`Thread::refresh_cred`], [`Thread::set_cred`]).
+    #[inline]
+    pub fn ucred_ptr(&self) -> *const Ucred {
+        &raw const self.cred
+    }
+
     /// `crhold(p->p_ucred)`: the reference the thread's copy came from (`falloc`, sockets,
     /// the signal owner, `fork1`).
     pub fn cred_ref(&self) -> CredRef {
@@ -1718,15 +1828,18 @@ impl<G: ProcGlue> Thread<G> {
     }
 
     /// `p->p_vmspace`'s handle (`None` after the reaper took it).
-    pub fn vmspace(&self) -> Option<VmspaceRef> {
+    pub fn vmspace_share(&self) -> Option<VmspaceRef> {
         let g = self.p_p.ps_mtx.lock();
         self.vmspace.get(&g).clone()
     }
 
     /// `p->p_vmspace = vm` (`fork1`'s copy of the process's, exec's, the reaper's `NULL`): the
-    /// old handle.
+    /// old handle. The word keeps the address exposed: `bsd`'s `vmspace()` turns it back into
+    /// a reference until N4.5.
     pub fn set_vmspace(&self, vm: Option<VmspaceRef>) -> Option<VmspaceRef> {
-        let addr = vm.as_ref().map_or(0, |v| PoolArc::as_ptr(v).addr());
+        let addr = vm
+            .as_ref()
+            .map_or(0, |v| PoolArc::as_ptr(v).expose_provenance());
         let mut g = self.p_p.ps_mtx.lock();
         let old = core::mem::replace(self.vmspace.get_mut(&mut g), vm);
         self.vmspace_word.store(addr, Ordering::Release);
@@ -1893,6 +2006,18 @@ pub fn zombiefind<G: ProcGlue, W: Witness + ?Sized>(w: &W, pid: Pid) -> Option<&
     G::tables().zombprocess.iter(w).find(|pr| pr.ps_pid == pid)
 }
 
+/// The session at address `addr` among the sessions of the groups in `pgrphash`, for a
+/// callback that was handed the session's address as its argument (`s_verauthto`'s
+/// `zapverauth`, where the C casts its `void *`): `None` once no group holds it, when no
+/// process could read what the callback would change.
+pub fn session_find<G: ProcGlue, W: Witness + ?Sized>(w: &W, addr: usize) -> Option<&Session<G>> {
+    let tbl = G::tables().pgrphash.get()?;
+    tbl.iter()
+        .flat_map(|chain| chain.iter(w))
+        .filter_map(|pg| pg.session(w))
+        .find(|s| ptr::from_ref::<Session<G>>(s).addr() == addr)
+}
+
 /// `enternewpgrp(pr, pgrp, newsess)`: `pr` moves to the new group `pgrp` (from
 /// [`pgrp_alloc`], made before the caller's checks as the C's), of the new session `newsess`
 /// (from [`session_alloc`]; `pr` leads it) or of its own session. Takes the kernel lock's
@@ -1917,7 +2042,7 @@ pub fn enternewpgrp<G: ProcGlue>(
         let sess = match newsess {
             Some(s) => {
                 // New session. Initialize it completely.
-                s.s_leader.set(pr.addr());
+                s.set_leader(Some(pr));
                 let login = pr.session(&w).map(|old| *old.s_login.get(&w));
                 if let Some(login) = login {
                     *s.s_login.get_mut(&mut w) = login;
@@ -2080,7 +2205,7 @@ pub fn killjobc<G: ProcGlue>(pr: &ProcessRef<G>) {
     };
     if let Some(sp) = sess {
         G::session_hangup(&sp);
-        sp.s_leader.set(0);
+        sp.set_leader(None);
     }
     let r = klock::reader();
     if let Some(pg) = pr.pgrp(&r) {
@@ -2388,6 +2513,91 @@ mod tests {
     fn a_negative_count_is_refused() {
         setup();
         chgproccnt(64_002, -1);
+    }
+
+    #[test]
+    fn a_session_s_leader_and_its_lookup_by_address() {
+        setup();
+        let a = process(50);
+        let sess = session_alloc::<TestGlue>(());
+        enternewpgrp(&a, pgrp_alloc::<TestGlue>(()), Some(sess.clone()));
+        assert_eq!(sess.leader_pid(), Some(50));
+        assert!(sess.led_by(&a));
+        {
+            let r = klock::reader();
+            let found = session_find::<TestGlue, _>(&r, sess.addr()).unwrap();
+            assert!(ptr::eq(found, &*sess));
+            assert!(session_find::<TestGlue, _>(&r, sess.addr() + 1).is_none());
+        }
+        // The leader gone (exit1's `sp->s_leader = NULL`): getsid's ESRCH.
+        sess.set_leader(None);
+        assert_eq!(sess.leader_pid(), None);
+        assert!(!sess.led_by(&a));
+        drop(sess);
+        leavepgrp(&a);
+        unlink(&a);
+    }
+
+    #[test]
+    fn the_parent_and_group_read_under_ps_mtx_follow_their_changes() {
+        setup();
+        let a = process(60);
+        let b = process(61);
+        enternewpgrp(
+            &a,
+            pgrp_alloc::<TestGlue>(()),
+            Some(session_alloc::<TestGlue>(())),
+        );
+        {
+            let mut w = klock::witness();
+            drop(b.set_pptr(&mut w, a.clone()));
+            a.ps_children.insert_head(&mut w, b.as_pin());
+        }
+        let group = {
+            let r = klock::reader();
+            a.pgrp(&r).unwrap().clone()
+        };
+        enterthispgrp(&b, group.clone());
+        {
+            let g = b.ps_mtx.lock();
+            assert!(StaticOrPooled::ptr_eq(b.pptr_locked(&g).unwrap(), &a));
+            assert!(StaticOrPooled::ptr_eq(b.pgrp_locked(&g).unwrap(), &group));
+        }
+        drop(group);
+        leavepgrp(&b);
+        assert!(b.pgrp_locked(&b.ps_mtx.lock()).is_none());
+        leavepgrp(&a);
+        unlink(&b);
+        unlink(&a);
+    }
+
+    #[test]
+    #[should_panic]
+    fn a_guard_of_another_process_s_mutex_is_refused() {
+        setup();
+        // On no list: nothing panics again while the test unwinds.
+        let a = process_alloc::<TestGlue>(70, ());
+        let b = process_alloc::<TestGlue>(71, ());
+        let g = a.ps_mtx.lock();
+        let _ = b.pptr_locked(&g);
+    }
+
+    #[test]
+    fn a_thread_joins_and_leaves_under_the_caller_s_guard() {
+        setup();
+        let pr = process(80);
+        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        t.p_tid.set(6000);
+        let mut g = pr.ps_mtx.lock();
+        let at = pr.insert_thread_locked(&mut g, t);
+        assert_eq!(pr.ps_threads.iter(&g).count(), 1);
+        assert!(pr.remove_thread_locked(&mut g, 6001).is_none());
+        let b = pr.remove_thread_locked(&mut g, 6000).unwrap();
+        assert!(ptr::eq(PoolBox::as_ptr(&b), at));
+        assert_eq!(pr.ps_threads.iter(&g).count(), 0);
+        drop(g);
+        drop(b);
+        unlink(&pr);
     }
 }
 /* </TESTS> */

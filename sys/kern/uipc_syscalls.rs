@@ -1766,7 +1766,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     let mut data = [0u8; Ypbinding::SIZE];
     let error: Result<(), Errno> = 'verror: {
         let mut va = Vattr::new();
-        if let Err(e) = VOP_GETATTR(vp, &mut va, p.p_ucred.get(), p) {
+        if let Err(e) = VOP_GETATTR(vp, &mut va, p.ucred_ptr(), p) {
             break 'verror Err(e);
         }
         if vp.v_type.get() != VREG || va.va_size != Ypbinding::SIZE as u64 {
@@ -1808,7 +1808,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
             uio_procp: Some(p),
         };
 
-        VOP_READ(vp, &mut uio, 0, p.p_ucred.get())
+        VOP_READ(vp, &mut uio, 0, p.ucred_ptr())
     };
     vput(vp);
     kernel_unlock();

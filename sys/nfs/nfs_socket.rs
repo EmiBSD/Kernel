@@ -105,7 +105,7 @@ use crate::kern::init_main::PROC0;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 #[cfg(feature = "nfsserver")]
 use crate::kern::kern_synch::wakeup_one;
-use crate::kern::kern_synch::{nowake, refcnt_init, tsleep_nsec, wakeup};
+use crate::kern::kern_synch::{nowake, tsleep_nsec, wakeup};
 use crate::kern::kern_timeout::timeout_add;
 #[cfg(feature = "nfsclient")]
 use crate::kern::kern_timeout::timeout_del;
@@ -1782,10 +1782,9 @@ pub fn nfs_getreq(
         }
         nfsd_adv(nd, nfsm_rndup(len as usize))?;
         let tl = words::<3>(&nfsd_dissect(nd, 3 * NFSX_UNSIGNED)?);
-        nd.nd_cr = Ucred::new();
-        refcnt_init(&nd.nd_cr.cr_refcnt);
-        nd.nd_cr.cr_uid.set(fxdr_unsigned(tl[0]));
-        nd.nd_cr.cr_gid.set(fxdr_unsigned(tl[1]));
+        nd.nd_cr.assign(&Ucred::new());
+        nd.nd_cr.set_uid(fxdr_unsigned(tl[0]));
+        nd.nd_cr.set_gid(fxdr_unsigned(tl[1]));
         let len = fxdr_unsigned(tl[2]) as i32;
         if len < 0 || len as usize > RPCAUTH_UNIXGIDS {
             m_freem(nd.nd_mrep.take());
@@ -1796,10 +1795,10 @@ pub fn nfs_getreq(
             let tl = nfsd_dissect(nd, (len + 2) * NFSX_UNSIGNED)?;
             core::array::from_fn(|j| if j < len + 2 { tl.get(j) } else { 0 })
         };
-        for (group, w) in nd.nd_cr.cr_groups.iter().zip(&tl[..len]) {
-            group.set(fxdr_unsigned(*w)); // the groups past NGROUPS_MAX are skipped
+        for (i, w) in tl[..len].iter().enumerate().take(NGROUPS_MAX) {
+            nd.nd_cr.set_group(i, fxdr_unsigned(*w)); // the groups past NGROUPS_MAX are skipped
         }
-        nd.nd_cr.cr_ngroups.set(min(len, NGROUPS_MAX) as i16);
+        nd.nd_cr.set_ngroups(min(len, NGROUPS_MAX) as i16);
         // tl[len]: the verifier's flavor; tl[len + 1]: its length.
         let len = fxdr_unsigned(tl[len + 1]) as i32;
         if len < 0 || len as usize > RPCAUTH_MAXSIZ {
@@ -1827,7 +1826,7 @@ pub fn nfs_msg(rep: &NfsReq, msg: &str) {
     };
 
     tprintf(
-        tpr,
+        &tpr,
         format_args!("nfs server {}: {}\n", Str(&nm_mntfromname(r_nmp(rep))), msg),
     );
     tprintf_close(tpr);

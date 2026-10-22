@@ -52,57 +52,24 @@
 //!
 //! Upstream: sys/sys/resourcevar.h @ 3ce1f3f79392
 //!
-//! Status: `ported` except `ADDUPROF`, which waits for `addupc_task` (`subr_prof.c`, with
-//! the profiling AST). The prototypes are the functions of `kern/kern_resource.rs`.
+//! Status: an adapter (N4.2) except `ADDUPROF`, which waits for `addupc_task`
+//! (`subr_prof.c`, with the profiling AST). `struct plimit` is the kernel crate's
+//! (`kernel::resource::Plimit`, plain data placed and shared through `PlimitRef`); the
+//! prototypes are the functions of `kern/kern_resource.rs`.
 //!
 //! ## Deviations
-//! - `pl_rlimit` is an array of `Cell<Rlimit>`: a `plimit` is shared copy-on-write and only
-//!   written by `lim_write_begin`'s exclusive copy, under `rlimit_lock`.
-
-use core::cell::Cell;
+//! - A thread's read reference (`p_limit`) is its own copy of the limits
+//!   (`kernel::resource::LimitCache`), which `lim_read_enter` refreshes and lends.
 
 use crate::kassert;
 use crate::kern::kern_resource::lim_read_enter;
-use crate::sys::refcnt::Refcnt;
-use crate::sys::resource::{RLIM_NLIMITS, Rlimit};
+use crate::sys::resource::RLIM_NLIMITS;
 use crate::sys::types::Rlim;
 
-/// `struct plimit`: kernel shareable process resource limits. Because this structure is
-/// moderately large but changes infrequently, it is shared copy-on-write after forks.
-pub struct Plimit {
-    /// `pl_rlimit`.
-    pub pl_rlimit: [Cell<Rlimit>; RLIM_NLIMITS],
-    /// `pl_refcnt`.
-    pub pl_refcnt: Refcnt,
-}
-
-// SAFETY: a plimit is written only through the exclusive copy `lim_write_begin` hands out
-// under `rlimit_lock`, before `lim_write_commit` publishes it; readers hold a reference.
-unsafe impl Sync for Plimit {}
-
-impl Plimit {
-    /// A `plimit` with every limit zero (what `limit0` holds before `lim_startup`).
-    pub const fn new() -> Self {
-        Self {
-            pl_rlimit: [const {
-                Cell::new(Rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                })
-            }; RLIM_NLIMITS],
-            pl_refcnt: Refcnt::new(),
-        }
-    }
-}
-
-impl Default for Plimit {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use kernel::resource::{LimitCache, Plimit, PlimitRef};
 
 /// `lim_read_leave`: finish read access to resource limits.
-pub fn lim_read_leave(_limit: &Plimit) {
+pub fn lim_read_leave(_limit: &LimitCache) {
     // nothing
 }
 
@@ -111,7 +78,7 @@ pub fn lim_cur(which: usize) -> Rlim {
     kassert!(which < RLIM_NLIMITS);
 
     let limit = lim_read_enter();
-    let val = limit.pl_rlimit[which].get().rlim_cur;
+    let val = limit.cur(which);
     lim_read_leave(limit);
     val
 }

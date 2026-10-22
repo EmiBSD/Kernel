@@ -81,9 +81,9 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_proc::{uid_find, uid_release};
 use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write};
 use crate::kern::kern_synch::{rwsleep_nsec, wakeup_one};
+use crate::kern::proc_glue::with_uidinfo;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::machine::cpu::curproc;
@@ -278,22 +278,24 @@ fn ls_rele(ls: &'static LockfState) {
 /// `lf_alloc`: a lock charged to `uid`. 3 options for allowfail: 0 - always allocate. 1 -
 /// cutoff at limit. 2 - cutoff at double limit.
 fn lf_alloc(uid: Uid, allowfail: i32) -> Option<&'static Lockf> {
-    let uip = uid_find(uid);
+    // uid_find(uid) ... uid_release(uip): the entry under `uidinfolk`.
     let max = i64::from(MAXLOCKSPERUID.load(Ordering::Relaxed));
-    if uid != 0
-        && allowfail != 0
-        && uip.ui_lockcnt.get() > if allowfail == 1 { max } else { max * 2 }
-    {
-        uid_release(uip);
+    let charged = with_uidinfo(uid, |uip| {
+        if uid != 0
+            && allowfail != 0
+            && uip.ui_lockcnt.get() > if allowfail == 1 { max } else { max * 2 }
+        {
+            return false;
+        }
+        uip.ui_lockcnt.set(uip.ui_lockcnt.get() + 1);
+        true
+    });
+    if !charged {
         return None;
     }
-    uip.ui_lockcnt.set(uip.ui_lockcnt.get() + 1);
-    uid_release(uip);
     let Some(mem) = pool_get(&LOCKF_POOL, PR_WAITOK) else {
         // PR_WAITOK cannot sleep yet (see the module's deviations): give the charge back.
-        let uip = uid_find(uid);
-        uip.ui_lockcnt.set(uip.ui_lockcnt.get() - 1);
-        uid_release(uip);
+        with_uidinfo(uid, |uip| uip.ui_lockcnt.set(uip.ui_lockcnt.get() - 1));
         return None;
     };
     let lock = mem.cast::<Lockf>();
@@ -315,9 +317,9 @@ fn lf_free(lock: &'static Lockf) {
 
     ls_rele(lock.state());
 
-    let uip = uid_find(lock.lf_uid.get());
-    uip.ui_lockcnt.set(uip.ui_lockcnt.get() - 1);
-    uid_release(uip);
+    with_uidinfo(lock.lf_uid.get(), |uip| {
+        uip.ui_lockcnt.set(uip.ui_lockcnt.get() - 1);
+    });
     pool_put(&LOCKF_POOL, NonNull::from(lock).cast());
 }
 
@@ -404,7 +406,7 @@ pub fn lf_advlock(
         lock.lf_state.set(Some(ls));
         lock.lf_blk.set(None);
         lock.lf_pid.set(if flags & F_POSIX != 0 {
-            p.process().ps_pid.get()
+            p.process().ps_pid
         } else {
             -1
         });
@@ -1076,7 +1078,7 @@ mod tests {
         let mut q = fl(F_WRLCK, 0, 0);
         lf_advlock(&slot, 0, B, F_GETLK, &mut q, F_POSIX).unwrap();
         assert_eq!((q.l_type, q.l_start, q.l_len), (F_RDLCK, 0, 10));
-        assert_eq!(q.l_pid, p.process().ps_pid.get());
+        assert_eq!(q.l_pid, p.process().ps_pid);
         let mut q = fl(F_RDLCK, 0, 15);
         lf_advlock(&slot, 0, B, F_GETLK, &mut q, F_POSIX).unwrap();
         assert_eq!(q.l_type, F_UNLCK);
@@ -1138,12 +1140,7 @@ mod tests {
     fn locks_are_charged_to_the_owners_uid() {
         let (_g, p) = setup();
         let uid = p.ucred().cr_uid.get();
-        let count = || {
-            let uip = uid_find(uid);
-            let n = uip.ui_lockcnt.get();
-            uid_release(uip);
-            n
-        };
+        let count = || with_uidinfo(uid, |uip| uip.ui_lockcnt.get());
         let before = count();
         let slot = LockfStateSlot::new(None);
         setlk(&slot, A, F_WRLCK, 0, 100).unwrap();

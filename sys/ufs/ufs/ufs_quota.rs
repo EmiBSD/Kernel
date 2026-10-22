@@ -105,7 +105,7 @@ use core::sync::atomic::{AtomicI64, Ordering};
 use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_malloc::malloc;
-use crate::kern::kern_prot::{crfree, crhold, suser};
+use crate::kern::kern_prot::suser;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_tc::gettime;
@@ -131,7 +131,7 @@ use crate::sys::proc::Proc;
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Off, Time, Uid};
-use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::ucred::{CredRef, CredSlot, NOCRED, Ucred};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{VNON, VREG, VSYSTEM, Vnode, cred_ref};
 use crate::ufs::ufs::inode::{Inode, vtoi};
@@ -179,8 +179,8 @@ pub struct Dquot {
     pub dq_id: Cell<u32>,
     /// `dq_vp`: file backing this quota.
     pub dq_vp: Cell<Option<&'static Vnode>>,
-    /// `dq_cred`: credentials for writing file (`None` is `NOCRED`).
-    pub dq_cred: Cell<Option<&'static Ucred>>,
+    /// `dq_cred`: credentials for writing file, the dquot's reference (empty is `NOCRED`).
+    pub dq_cred: CredSlot,
     /// `dq_dqb`: actual usage & quotas.
     pub dq_dqb: Cell<Dqblk>,
     /// Whether `dq_hash` links the dquot into a hash chain (the module's deviations).
@@ -198,7 +198,7 @@ impl Dquot {
             dq_cnt: Cell::new(0),
             dq_id: Cell::new(0),
             dq_vp: Cell::new(None),
-            dq_cred: Cell::new(None),
+            dq_cred: CredSlot::new(),
             dq_dqb: Cell::new(Dqblk {
                 dqb_bhardlimit: 0,
                 dqb_bsoftlimit: 0,
@@ -681,11 +681,9 @@ fn quotaon_vnode(vp: &'static Vnode) -> Result<(), Errno> {
     error
 }
 
-/// The credential `quotaon` keeps in `um_cred[type]`, if any.
-fn um_cred(ump: &Ufsmount, type_: usize) -> Option<&'static Ucred> {
-    // SAFETY: `um_cred[type]` is NULL, `NOCRED` or the credential `quotaon` took a reference
-    // to with `crhold`, which `quotaoff` releases only after clearing the slot.
-    unsafe { cred_ref(ump.um_cred[type_].get()) }
+/// The credential `quotaon` keeps in `um_cred[type]`, if any: one more reference.
+fn um_cred(ump: &Ufsmount, type_: usize) -> Option<CredRef> {
+    ump.um_cred[type_].cred()
 }
 
 /// `quotaon` (`Q_QUOTAON`): set up a quota file for a particular file system. `fname` is
@@ -705,7 +703,7 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
     };
     let _ = VOP_UNLOCK(vp);
     if vp.v_type.get() != VREG {
-        let _ = vn_close(vp, FREAD | FWRITE, p.p_ucred.get(), Some(p));
+        let _ = vn_close(vp, FREAD | FWRITE, p.ucred_ptr(), Some(p));
         return Err(Errno::EACCES);
     }
 
@@ -713,20 +711,20 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
     if !ump.um_quotas[type_].get().is_some_and(|q| ptr::eq(q, vp)) {
         let _ = quotaoff(p, mp, type_);
         ump.um_quotas[type_].set(Some(vp));
-        let cr = crhold(p.ucred());
-        ump.um_cred[type_].set(ptr::from_ref(cr));
+        ump.um_cred[type_].set(p.cred_ref());
     } else {
-        let ocred = ump.um_cred[type_].get();
+        let ocred = ump.um_cred[type_].cred();
 
-        let _ = vn_close(vp, FREAD | FWRITE, ocred, Some(p));
-        if !ptr::eq(ocred, p.p_ucred.get()) {
-            let cr = crhold(p.ucred());
-            ump.um_cred[type_].set(ptr::from_ref(cr));
-            // SAFETY: `ocred` is the reference `quotaon` took before (see `um_cred`), given
-            // up here after the slot was replaced.
-            if let Some(ocred) = unsafe { cred_ref(ocred) } {
-                crfree(ocred);
-            }
+        let _ = vn_close(
+            vp,
+            FREAD | FWRITE,
+            ocred.as_ref().map_or(NOCRED, CredRef::as_ptr),
+            Some(p),
+        );
+        let mine = p.cred_ref();
+        if !ocred.is_some_and(|o| CredRef::ptr_eq(&o, &mine)) {
+            // The slot's old reference goes as it is replaced.
+            ump.um_cred[type_].set(mine);
         }
     }
 
@@ -791,13 +789,10 @@ pub fn quotaoff(p: &Proc, mp: &'static Mount, type_: usize) -> Result<(), Errno>
     // being closed.
     let _ = vfs_mount_foreach_vnode(mp, &mut |vp| quotaoff_vnode(vp, type_));
 
-    let error = vn_close(qvp, FREAD | FWRITE, p.p_ucred.get(), Some(p));
+    let error = vn_close(qvp, FREAD | FWRITE, p.ucred_ptr(), Some(p));
     ump.um_quotas[type_].set(None);
-    let cred = um_cred(ump, type_);
-    ump.um_cred[type_].set(NOCRED);
-    if let Some(cred) = cred {
-        crfree(cred);
-    }
+    // um_cred[type] = NOCRED; crfree(cred): the mount's reference goes.
+    drop(ump.um_cred[type_].take());
     ump.um_qflags[type_].set(ump.um_qflags[type_].get() & !QTF_CLOSING);
     if ump.um_quotas.iter().all(|q| q.get().is_none()) {
         mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_QUOTA);
@@ -1053,7 +1048,10 @@ fn dqio(dqvp: &'static Vnode, dq: &Dquot, rw: UioRw) -> (Result<(), Errno>, usiz
         uio_rw: rw,
         uio_procp: None,
     };
-    let cred = dq.dq_cred.get().map_or(NOCRED, ptr::from_ref);
+    let cred = match dq.dq_cred.get() {
+        c if c.is_null() => NOCRED,
+        c => c,
+    };
     let error = if rw == UioRw::UIO_READ {
         VOP_READ(dqvp, &mut auio, 0, cred)
     } else {
@@ -1118,9 +1116,7 @@ pub fn dqget(
                     ListHead::<DqHash>::remove(dq);
                 }
             }
-            if let Some(cr) = dq.dq_cred.take() {
-                crfree(cr);
-            }
+            drop(dq.dq_cred.take());
             dq
         };
     // Initialize the contents of the dquot structure.
@@ -1136,7 +1132,7 @@ pub fn dqget(
     dq.dq_vp.set(Some(dqvp));
     dq.dq_type.set(type_ as u16);
     if let Some(cr) = um_cred(ump, type_) {
-        dq.dq_cred.set(Some(crhold(cr)));
+        dq.dq_cred.set(cr);
     }
     let (error, resid) = dqio(dqvp, dq, UioRw::UIO_READ);
     if resid == size_of::<Dqblk>() && error.is_ok() {
@@ -1328,7 +1324,7 @@ mod tests {
 
     use super::*;
     use crate::kern::kern_descrip::sys_close;
-    use crate::kern::kern_prot::crget;
+
     use crate::kern::sys_generic::sys_write;
     use crate::kern::vfs_syscalls::{sys_chown, sys_open, sys_quotactl, sys_unlink};
     use crate::sys::fcntl::{O_CREAT, O_RDWR};
@@ -1541,15 +1537,15 @@ mod tests {
     }
 
     /// Runs the thread as `uid` (a new credential) until the returned one is put back.
-    fn become_user(p: &Proc, uid: Uid) -> *const Ucred {
-        let cr = crget();
-        for c in [&cr.cr_uid, &cr.cr_ruid, &cr.cr_svuid] {
+    fn become_user(p: &Proc, uid: Uid) -> Option<CredRef> {
+        let mut cr = Ucred::new();
+        for c in [&mut cr.cr_uid, &mut cr.cr_ruid, &mut cr.cr_svuid] {
             c.set(uid);
         }
-        for c in [&cr.cr_gid, &cr.cr_rgid, &cr.cr_svgid] {
+        for c in [&mut cr.cr_gid, &mut cr.cr_rgid, &mut cr.cr_svgid] {
             c.set(uid);
         }
-        p.p_ucred.replace(ptr::from_ref(cr))
+        p.set_cred(CredRef::new(cr))
     }
 
     #[test]
@@ -1608,9 +1604,8 @@ mod tests {
         assert_eq!((b.dqb_curblocks, b.dqb_curinodes), (96, 1));
         assert_eq!(getq(p, 0), Err(Errno::EPERM));
         assert_eq!(quotactl(p, Q_QUOTAOFF, 0, 0), Err(Errno::EPERM));
-        let user = p.p_ucred.replace(root);
-        // SAFETY: `become_user`'s credential, whose reference the thread gives up.
-        crfree(unsafe { &*user });
+        // `become_user`'s credential goes as the thread takes root's back.
+        drop(p.set_cred(root.expect("root's credentials")));
 
         // Q_SYNC writes the usage into the quota file.
         quotactl(p, Q_SYNC, 0, 0).unwrap();

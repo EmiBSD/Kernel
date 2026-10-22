@@ -215,7 +215,7 @@ pub fn syncer_thread(_arg: *mut core::ffi::c_void) {
                 continue;
             }
             splx(s);
-            let _ = VOP_FSYNC(vp, p.p_ucred.get(), MNT_LAZY, p);
+            let _ = VOP_FSYNC(vp, p.ucred_ptr(), MNT_LAZY, p);
             vput(vp);
             s = splbio();
             if slp.first().is_some_and(|f| ptr::eq(f, vp)) {

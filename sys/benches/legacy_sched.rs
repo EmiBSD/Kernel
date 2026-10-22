@@ -45,11 +45,12 @@ use std::vec::Vec;
 
 use bsd::kern::kern_sched::{remrunqueue, setrunqueue};
 use bsd::kern::kern_synch::{sleep_setup, unsleep};
+use bsd::kern::proc_glue::{BsdProcessG, BsdThreadG, ProcStore};
 use bsd::kern::sched_bsd::{sched_lock, sched_lock_init, sched_unlock};
 use bsd::machine::cpu::curcpu;
 use bsd::machine::{Cpu, Machine};
 use bsd::sys::param::PWAIT;
-use bsd::sys::proc::{P_INSCHED, Proc, SONPROC};
+use bsd::sys::proc::{P_INSCHED, Proc, ProcExt, Process, SONPROC};
 
 /// Threads per round.
 const N: usize = 1000;
@@ -77,9 +78,16 @@ fn spread(mut v: Vec<f64>) -> (f64, f64, f64) {
     (v[0], v[v.len() / 2], v[v.len() - 1])
 }
 
-/// A thread on no queue, placed, as `thread_new` leaves one.
+/// A thread on no queue, placed, as `thread_new` leaves one, of a process of its own
+/// (leaked: the bench's threads live for the run).
 fn thread() -> &'static Proc {
-    let p: &'static Proc = Box::leak(Box::new(Proc::new()));
+    let store: &'static ProcStore = Box::leak(Box::new(ProcStore::new()));
+    let pr: &'static Process = Box::leak(Box::new(Process::new(1, BsdProcessG::new(store))));
+    let p: &'static Proc = Box::leak(Box::new(Proc::new_static(
+        pr,
+        hal::list::ListEntry::new(),
+        BsdThreadG::new(),
+    )));
     p.place();
     p
 }
@@ -157,7 +165,7 @@ fn main() {
 
     if wanted(names[2]) {
         let p = threads[0];
-        p.p_stat.set(SONPROC);
+        p.set_stat(SONPROC);
         Machine::set_curproc(ci, p);
         let ident = ptr::from_ref(&threads).cast::<core::ffi::c_void>();
         let r = measure(N * ROUNDS, || {
@@ -166,7 +174,7 @@ fn main() {
                 sleep_setup(black_box(ident), PWAIT, "bench");
                 sched_lock();
                 unsleep(p);
-                p.p_stat.set(SONPROC);
+                p.set_stat(SONPROC);
                 p.p_flag.fetch_and(!P_INSCHED, Ordering::Relaxed);
                 sched_unlock();
             }

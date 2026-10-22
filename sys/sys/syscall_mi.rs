@@ -201,8 +201,8 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
     kprintf!(
         "{}[{}]: pinsyscalls addr {:x} code {}, pinoff {:#x} (pin{} {} {:x}-{:x} {:x}) \
          (libcpin{} {} {:x}-{:x} {:x}) error {}\n",
-        Str(pr.comm()),
-        pr.ps_pid.get(),
+        Str(&pr.comm()),
+        pr.ps_pid,
         addr,
         code,
         pinoff as u32,

@@ -45,6 +45,7 @@ use crate::arch::arm64::include::cpu::curcpu;
 use crate::arch::arm64::include::frame::Trapframe;
 use crate::kern::kern_sig::userret;
 use crate::kern::subr_prf::panic;
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::refreshcreds;
 use crate::sys::syscall_mi::mi_ast;
 use hal::vm::uvmexp::UVMEXP;

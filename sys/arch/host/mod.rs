@@ -67,6 +67,7 @@ use crate::sys::exec_elf::{ELFCLASS64, ELFDATA2LSB};
 use crate::sys::mbuf::Mbuf;
 use crate::sys::param::NODEV;
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{Sig, Sigset};

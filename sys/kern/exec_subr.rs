@@ -92,6 +92,7 @@ use crate::sys::mman::{
 };
 use crate::sys::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::resource::RLIMIT_STACK;
 use crate::sys::resourcevar::lim_cur;
 use crate::sys::sched::sched_pause;
@@ -282,7 +283,7 @@ pub fn vmcmd_map_readvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno> 
             cmd.ev_offset as i64,
             UioSeg::UIO_USERSPACE,
             IO_UNIT,
-            p.p_ucred.get(),
+            p.ucred_ptr(),
             None,
             Some(p),
         )?,

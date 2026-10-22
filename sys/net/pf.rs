@@ -10422,17 +10422,16 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
     use crate::kern::kern_timeout::timeout_del;
+    use crate::kern::proc_glue::procinit;
     use crate::net::if_::if_attach;
     use crate::net::if_::tests::{setup_net, test_ifnet, test_packet};
     use crate::net::pf_ioctl::{pfattach, pfioctl};
     use crate::net::pf_ruleset::pf_main_ruleset;
     use crate::sys::fcntl::{FREAD, FWRITE};
     use crate::sys::ioctl::ioctl_ret;
-    use crate::sys::proc::{Proc, Process};
-    use crate::sys::ucred::Ucred;
+    use crate::sys::proc::Proc;
 
     /// An address from its eight 16-bit groups.
     fn pf6(g: [u16; 8]) -> PfAddr {
@@ -10652,14 +10651,7 @@ mod tests {
 
     /// A thread of a root process, for `/dev/pf`.
     fn thread() -> &'static Proc {
-        let cr: &'static Ucred = crget();
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
-        pr.ps_mainproc.set(p);
-        p
+        crate::kern::proc_glue::test_proc(1, crget())
     }
 
     fn ioctl(cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), Errno> {

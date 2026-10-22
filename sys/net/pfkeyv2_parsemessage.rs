@@ -555,7 +555,7 @@ pub fn pfkeyv2_parsemessage(p: &mut [u8], headers: &mut SadbHeaders) -> Result<(
         return Err(Errno::EINVAL);
     }
 
-    let pid = curproc().map_or(0, |cp| cp.process().ps_pid.get());
+    let pid = curproc().map_or(0, |cp| cp.process().ps_pid);
     if sadb_msg.sadb_msg_pid != pid as u32 {
         dprintf!("bad PID value");
         return Err(Errno::EINVAL);

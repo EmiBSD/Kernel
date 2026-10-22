@@ -2142,7 +2142,7 @@ pub(crate) mod tests {
         req.r_mreq.set(Some(m));
         req.r_nmp.set(Some(nmp));
         req.r_procnum.set(NFSPROC_GETATTR);
-        let cr = Ucred::new();
+        let mut cr = Ucred::new();
         cr.cr_uid.set(1000);
         cr.cr_gid.set(10);
         cr.cr_ngroups.set(2);

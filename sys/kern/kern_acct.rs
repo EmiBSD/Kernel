@@ -169,7 +169,7 @@ pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
         };
         let _ = VOP_UNLOCK(vp);
         if vp.v_type.get() != VREG {
-            let _ = vn_close(vp, FWRITE, p.p_ucred.get(), Some(p));
+            let _ = vn_close(vp, FWRITE, p.ucred_ptr(), Some(p));
             return Err(Errno::EACCES);
         }
         newvp = Some(vp);
@@ -183,7 +183,7 @@ pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
     // and (if no new file was specified, leave).
     if let Some(old) = acct.acctp.or(acct.savacctp) {
         wakeup(ptr::from_ref(&ACCT_PROC));
-        let _ = vn_close(old, FWRITE, p.p_ucred.get(), Some(p));
+        let _ = vn_close(old, FWRITE, p.ucred_ptr(), Some(p));
         acct.acctp = None;
         acct.savacctp = None;
     }
@@ -194,7 +194,7 @@ pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
         error = acct_start();
         if error.is_err() {
             acct.acctp = None;
-            let _ = vn_close(vp, FWRITE, p.p_ucred.get(), Some(p));
+            let _ = vn_close(vp, FWRITE, p.ucred_ptr(), Some(p));
         }
     }
 
@@ -240,8 +240,8 @@ pub fn acct_process(p: &Proc) -> Result<(), Errno> {
     // (3) The elapsed time the command ran (and its starting time)
     let uptime = nanouptime();
     let booted = nanoboottime();
-    let realstart = timespecadd(&booted, &pr.ps_start.get());
-    let elapsed = timespecsub(&uptime, &pr.ps_start.get());
+    let realstart = timespecadd(&booted, &pr.ps_start.get().into());
+    let elapsed = timespecsub(&uptime, &pr.ps_start.get().into());
 
     // (4) The average amount of memory used
     let r = &p.p_ru;
@@ -271,7 +271,7 @@ pub fn acct_process(p: &Proc) -> Result<(), Errno> {
         // session's s_ttyp->t_dev (see the module's deviations).
         ac_tty: -1,
         // Extensions
-        ac_pid: pr.ps_pid.get(),
+        ac_pid: pr.ps_pid,
         // (8) The flags that tell how process terminated or misbehaved.
         ac_flag: pr.ps_acflag.get(),
     };
@@ -285,7 +285,7 @@ pub fn acct_process(p: &Proc) -> Result<(), Errno> {
         0,
         UioSeg::UIO_SYSSPACE,
         IO_APPEND | IO_UNIT | IO_NOLIMIT,
-        p.p_ucred.get(),
+        p.ucred_ptr(),
         None,
         Some(p),
     );

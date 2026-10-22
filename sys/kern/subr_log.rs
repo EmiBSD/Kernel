@@ -463,7 +463,7 @@ pub fn sys_sendsyslog(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     if let Err(e) = error
         && e != Errno::EFAULT
     {
-        let _ = logstash_insert(buf, nbyte, e, p.process().ps_pid.get());
+        let _ = logstash_insert(buf, nbyte, e, p.process().ps_pid);
     }
     error
 }

@@ -241,7 +241,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
     // borrowed mutably below.
     let p: &Proc = unsafe { &*ptr::from_ref(p) };
 
-    ndp.ni_cnd.cn_cred = p.p_ucred.get();
+    ndp.ni_cnd.cn_cred = p.ucred_ptr();
     #[cfg(feature = "diagnostic")]
     {
         if ndp.ni_cnd.cn_cred.is_null() {

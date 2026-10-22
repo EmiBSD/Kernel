@@ -1444,20 +1444,7 @@ mod tests {
     fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), p);
-        let limit: &'static crate::sys::resourcevar::Plimit =
-            Box::leak(Box::new(crate::sys::resourcevar::Plimit::new()));
-        for l in &limit.pl_rlimit {
-            l.set(crate::sys::resource::Rlimit {
-                rlim_cur: crate::sys::resource::RLIM_INFINITY,
-                rlim_max: crate::sys::resource::RLIM_INFINITY,
-            });
-        }
-        limit.pl_rlimit[crate::sys::resource::RLIMIT_NOFILE].set(crate::sys::resource::Rlimit {
-            rlim_cur: 128,
-            rlim_max: 128,
-        });
-        p.process().ps_limit.set(limit);
-        p.p_limit.set(limit);
+        crate::kern::proc_glue::test_set_limits(p, 128);
 
         BUFHEAD.0.init();
         for c in [

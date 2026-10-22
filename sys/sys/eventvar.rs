@@ -71,7 +71,6 @@ use crate::queue_adapter;
 use crate::sys::event::{Klist, KnTqe, Knlist};
 use crate::sys::filedesc::Filedesc;
 use crate::sys::mutex::Mutex;
-use crate::sys::proc::Proc;
 use crate::sys::queue::{ListEntry, TailqHead};
 use crate::sys::refcnt::Refcnt;
 use crate::sys::task::Task;
@@ -193,7 +192,7 @@ impl Default for Kqueue {
     }
 }
 
-impl Proc {
+impl crate::sys::proc::BsdThreadG {
     /// `p->p_kq`: the thread's poll kqueue, which `kqpoll_init` made.
     pub fn kq(&self) -> &'static Kqueue {
         let kq = self.p_kq.get();

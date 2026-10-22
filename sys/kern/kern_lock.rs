@@ -72,6 +72,11 @@
 //!   `<sys/mutex.h>`), the level given without; LZ's asserted the uniprocessor value alone.
 //! - Its uniprocessor branches stay, unbuilt, until N4 redesigns the file (the user's
 //!   decision 40 answer, 2026-10-17: the inherited UP code goes at each file's N4 redesign).
+//! - N4.2: the last `KERNEL_UNLOCK` (`_kernel_unlock` at depth 1) and the kernel lock's
+//!   `__mp_release_all` (the switch, the sleeps, the exit) call `hal::klock::assert_unwitnessed`,
+//!   the contract of `hal::klock`'s witnesses: no reader or writer of the `[K]` state stays out
+//!   on a CPU that lets the lock go. Kernel builds only: the host tests' threads all run as
+//!   CPU 0, one witness count and one depth for every test.
 
 #[cfg(feature = "multiprocessor")]
 use core::ptr;
@@ -178,6 +183,16 @@ pub fn _kernel_lock() {
 /// `_kernel_unlock`: release the kernel lock.
 #[cfg(feature = "multiprocessor")]
 pub fn _kernel_unlock() {
+    // The last level: no witness of the kernel lock may be out on this CPU, whose holder
+    // would go on reading `[K]` cells another CPU may then change (hal::klock).
+    #[cfg(not(test))]
+    if KERNEL_LOCK.mpl_cpus[Machine::cpu_number() as usize]
+        .mplc_depth
+        .load(Ordering::Relaxed)
+        == 1
+    {
+        hal::klock::assert_unwitnessed("KERNEL_UNLOCK");
+    }
     __mp_unlock(&KERNEL_LOCK);
 }
 
@@ -262,6 +277,13 @@ pub fn __mp_unlock(mpl: &MpLock) {
 pub fn __mp_release_all(mpl: &MpLock) -> u32 {
     let cpu = &mpl.mpl_cpus[Machine::cpu_number() as usize];
 
+    // The switch and the sleeps release the kernel lock whole: no witness of it may be out
+    // on this CPU (hal::klock). The host tests' threads all run as CPU 0, one count for
+    // every test, so the check is the kernel's only.
+    #[cfg(not(test))]
+    if core::ptr::eq(mpl, &KERNEL_LOCK) {
+        hal::klock::assert_unwitnessed("__mp_release_all");
+    }
     let s = intr_disable();
     let rv = cpu.mplc_depth.load(Ordering::Relaxed);
     // WITNESS_UNLOCK for each level: not configured.

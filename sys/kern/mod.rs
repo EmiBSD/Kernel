@@ -55,7 +55,6 @@ pub mod kern_malloc;
 pub mod kern_physio;
 #[forbid(unsafe_code)]
 pub mod kern_pledge;
-pub mod kern_proc;
 pub mod kern_prot;
 pub mod kern_resource;
 pub mod kern_rwlock;
@@ -80,6 +79,8 @@ pub mod kern_watchdog;
 pub mod kern_xxx;
 #[forbid(unsafe_code)]
 pub mod pipe_glue;
+#[forbid(unsafe_code)]
+pub mod proc_glue;
 #[cfg(feature = "alloc")]
 pub mod rust_alloc;
 pub mod sched_bsd;

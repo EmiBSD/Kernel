@@ -90,6 +90,7 @@ use crate::sys::buf::{B_PHYS, Buf};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::sys::types::{Register, Vaddr, Vsize};
 use hal::vm::param::{round_page, trunc_page};
 use kernel::vm::km::{KD_WAITOK, KP_NONE};
@@ -121,8 +122,8 @@ pub fn cpu_fork(
 
     pmap_activate(p2);
 
-    let tf = stackalign(p2.p_addr.get() as usize + USPACE - size_of::<Trapframe>() - 0x10)
-        as *mut Trapframe;
+    let tf =
+        stackalign(p2.uarea() as usize + USPACE - size_of::<Trapframe>() - 0x10) as *mut Trapframe;
     pcb.pcb_tf.set(tf);
     // SAFETY: `tf` is inside p2's fresh u-area, below its top; p1's `pcb_tf` points at its
     // own trap frame (proc0's static one, or the frame of the syscall that forked).

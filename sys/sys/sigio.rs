@@ -73,7 +73,7 @@ use core::ptr;
 
 use crate::sys::proc::{Pgrp, Process};
 use crate::sys::types::Pid;
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::CredSlot;
 
 /// `struct sigio_ref`: sigio registration.
 ///
@@ -117,7 +117,7 @@ pub struct Sigio {
     /// \[I\] `sio_myref`: location of the pointer that holds the reference to this structure.
     pub sio_myref: Cell<*const SigioRef>,
     /// \[I\] `sio_ucred`: current credentials.
-    pub sio_ucred: Cell<*const Ucred>,
+    pub sio_ucred: CredSlot,
     /// \[I\] `sio_pgid`: pgid for signals.
     pub sio_pgid: Cell<Pid>,
 }
@@ -133,7 +133,7 @@ impl Sigio {
             sio_pgrp: Cell::new(ptr::null()),
             sio_pgsigio: hal::list::ListEntry::new(),
             sio_myref: Cell::new(ptr::null()),
-            sio_ucred: Cell::new(ptr::null()),
+            sio_ucred: CredSlot::new(),
             sio_pgid: Cell::new(0),
         }
     }

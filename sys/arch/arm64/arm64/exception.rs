@@ -53,7 +53,7 @@ global_asm!(
     TF_SP = const offset_of!(Trapframe, tf_sp),
     CI_CURPROC = const offset_of!(CpuInfo, ci_curproc),
     CI_CURPCB = const offset_of!(CpuInfo, ci_curpcb),
-    P_ASTPENDING = const offset_of!(Proc, p_md.md_astpending),
+    P_ASTPENDING = const offset_of!(Proc, machine.md.md_astpending),
     PCB_FLAGS = const offset_of!(Pcb, pcb_flags),
     DBG_MDSCR_SS = const DBG_MDSCR_SS,
 );

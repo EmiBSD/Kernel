@@ -125,7 +125,7 @@ pub fn kthread_exit(ecode: i32) -> ! {
     {
         printf(format_args!(
             "WARNING: thread `{}' ({}) exits with status {}\n",
-            Str(p.process().comm()),
+            Str(&p.process().comm()),
             p.p_tid.get(),
             ecode
         ));

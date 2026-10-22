@@ -86,9 +86,9 @@ use crate::dev::wscons::wsdisplay_usl_io::{
 };
 use crate::dev::wscons::wsdisplayvar::{ShowScreenCb, WsconsSyncops};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_proc::prfind;
 use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_del, timeout_set};
+use crate::kern::proc_glue::prfind;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::FWRITE;
 use crate::sys::ioctl::{ioctl_arg, ioctl_ret};
@@ -170,7 +170,7 @@ fn usl_sync_init(
             UslSyncdata {
                 s_scr: NonNull::from(scr),
                 s_process: pr,
-                s_pid: pr.ps_pid.get(),
+                s_pid: pr.ps_pid,
                 s_flags: Cell::new(0),
                 s_acqsig: acqsig,
                 s_relsig: relsig,
@@ -229,7 +229,11 @@ unsafe fn usl_sync_done(sdp: NonNull<UslSyncdata>) {
 unsafe fn usl_sync_check(sdp: NonNull<UslSyncdata>) -> bool {
     // SAFETY: the caller's contract.
     let sd = unsafe { sdp.as_ref() };
-    if prfind(sd.s_pid).is_some_and(|pr| ptr::eq(pr, sd.s_process)) {
+    let alive = {
+        let r = hal::klock::reader();
+        prfind(&r, sd.s_pid).is_some_and(|pr| ptr::eq(pr, sd.s_process))
+    };
+    if alive {
         return true;
     }
     // usl_sync_check: process %d died

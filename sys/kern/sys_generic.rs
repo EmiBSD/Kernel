@@ -1219,7 +1219,7 @@ pub fn ppollcollect(p: &Proc, kevp: &Kevent, pl: &mut [Pollfd]) -> usize {
     } {
         kprintf!(
             "{}[{}]: poll index {} fd {} events 0x{:x} filter {}/0x{:x} unclaimed\n",
-            Str(p.process().comm()),
+            Str(&p.process().comm()),
             p.p_tid.get(),
             i,
             pfd.fd,
@@ -1247,7 +1247,6 @@ mod tests {
     // pollfd turns into and what a failed registration leaves in `revents`, the events turned
     // back into `revents` and fd set bits, and `pollout` copying only `revents` out.
 
-    use std::boxed::Box;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
@@ -1255,7 +1254,7 @@ mod tests {
 
     /// A thread for the conversions: they only read its name and id.
     fn test_proc() -> &'static Proc {
-        Box::leak(Box::new(Proc::new()))
+        crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1))
     }
 
     fn pfd(fd: i32, events: i16) -> Pollfd {

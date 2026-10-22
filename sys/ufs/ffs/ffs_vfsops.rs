@@ -371,7 +371,7 @@ pub fn ffs_mount(
 
                 if ronly == 0 && mp.mnt_flag.get() & MNT_RDONLY != 0 {
                     // Flush any dirty data
-                    let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.p_ucred.get(), p);
+                    let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p);
 
                     // Get rid of files open for writing.
                     let mut flags = WRITECLOSE;
@@ -762,7 +762,7 @@ pub const SBTRY: [i32; 4] = SBLOCKSEARCH;
 /// file system dirty when mounting read-write.
 pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
     let dev = devvp.v_rdev();
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot). Flush
     // out any old buffers remaining from a previous use.
@@ -1148,7 +1148,7 @@ pub fn ffs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
     // Flush filesystem metadata.
     let devvp = ump.devvp();
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = VOP_FSYNC(devvp, p.p_ucred.get(), MNT_WAIT, p);
+    let error = VOP_FSYNC(devvp, p.ucred_ptr(), MNT_WAIT, p);
     let _ = VOP_UNLOCK(devvp);
     error
 }
@@ -2475,20 +2475,7 @@ pub(crate) mod tests {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), p);
         // No resource limits (write(2) checks RLIMIT_FSIZE).
-        let limit: &'static crate::sys::resourcevar::Plimit =
-            std::boxed::Box::leak(std::boxed::Box::new(crate::sys::resourcevar::Plimit::new()));
-        for l in &limit.pl_rlimit {
-            l.set(crate::sys::resource::Rlimit {
-                rlim_cur: crate::sys::resource::RLIM_INFINITY,
-                rlim_max: crate::sys::resource::RLIM_INFINITY,
-            });
-        }
-        limit.pl_rlimit[crate::sys::resource::RLIMIT_NOFILE].set(crate::sys::resource::Rlimit {
-            rlim_cur: 128,
-            rlim_max: 128,
-        });
-        p.process().ps_limit.set(limit);
-        p.p_limit.set(limit);
+        crate::kern::proc_glue::test_set_limits(p, 128);
 
         BUFHEAD.0.init();
         for c in [

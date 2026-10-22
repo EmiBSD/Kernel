@@ -74,10 +74,10 @@ use core::slice;
 
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
-use crate::kern::kern_proc::ALLPROCESS;
 use crate::kern::kern_rwlock::{
     rw_enter_read, rw_enter_write, rw_exit_read, rw_exit_write, rw_init,
 };
+use crate::kern::proc_glue::allprocess_rescan;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_init::rootvnode;
 use crate::kern::vfs_subr::{vget, vput, vref, vrele};
@@ -370,7 +370,7 @@ pub fn unveil_destroy(ps: &Process) {
     }
 
     kassert!(ps.ps_uvncount.get() == 0);
-    if let Some(paths) = NonNull::new(ps.ps_uvpaths.get()) {
+    if let Some(paths) = NonNull::new(ps.ps_uvpaths.get_mut()) {
         free(
             paths.cast::<u8>(),
             M_PROC,
@@ -432,7 +432,7 @@ pub fn unveil_find_cover(dp: &'static Vnode, p: &Proc) -> isize {
         cn.cn_nameiop = LOOKUP;
         cn.cn_flags = ISLASTCN | ISDOTDOT | RDONLY;
         cn.cn_proc = p;
-        cn.cn_cred = p.p_ucred.get();
+        cn.cn_cred = p.ucred_ptr();
         cn.cn_pnbuf = ptr::null_mut();
         cn.cn_nameptr = b"..".as_ptr();
         cn.cn_namelen = 2;
@@ -838,25 +838,28 @@ pub fn unveil_removevnode(vp: &'static Vnode) {
 
     vref(vp); // make sure it is held till we are done
 
-    for pr in ALLPROCESS.0.iter() {
-        if let Some(uv) = unveil_lookup(vp, pr, None)
-            && uv.uv_vp.get().is_some()
-        {
-            uv.uv_vp.set(None);
-            uv.uv_flags.set(0);
+    // vrele may sleep: the walk is the glue's rescan (a process whose unveil of `vp` was
+    // dropped is not picked again).
+    allprocess_rescan(
+        |pr| unveil_lookup(vp, pr, None).is_some_and(|uv| uv.uv_vp.get().is_some()),
+        |pr| {
+            if let Some(uv) = unveil_lookup(vp, pr, None) {
+                uv.uv_vp.set(None);
+                uv.uv_flags.set(0);
 
-            if vp.v_uvcount.get() > 0 {
-                vrele(vp);
-                vp.v_uvcount.set(vp.v_uvcount.get() - 1);
-            } else {
-                panic(format_args!(
-                    "vp {:p}, v_uvcount of {} should be 0",
-                    vp,
-                    vp.v_uvcount.get()
-                ));
+                if vp.v_uvcount.get() > 0 {
+                    vrele(vp);
+                    vp.v_uvcount.set(vp.v_uvcount.get() - 1);
+                } else {
+                    panic(format_args!(
+                        "vp {:p}, v_uvcount of {} should be 0",
+                        vp,
+                        vp.v_uvcount.get()
+                    ));
+                }
             }
-        }
-    }
+        },
+    );
     kassert!(vp.v_uvcount.get() == 0);
 
     vrele(vp); // release our ref
@@ -876,14 +879,13 @@ mod tests {
     use std::{assert, assert_eq, boxed::Box, vec::Vec};
 
     use super::*;
+    use crate::kern::proc_glue::{proc_tables, test_pooled_process, test_process, test_thread};
     use crate::kern::vfs_lookup::{namei, ndinit};
     use crate::kern::vfs_subr::tests::testfs::{self, A, C, LONG, N, ROOT, any_locked, usecounts};
     use crate::kern::vfs_syscalls::sys_unveil;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::namei::{FOLLOW, NiDirp};
-    use crate::sys::proc::ProcessList;
-    use crate::sys::queue::ListHead;
     use crate::sys::systm::SysArgs;
     use crate::sys::types::Register;
 
@@ -914,7 +916,7 @@ mod tests {
 
     #[test]
     fn flagmatch_requires_every_requested_bit() {
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
+        let p = test_thread(test_process(1));
         let mut ni = ndinit(LOOKUP, 0, NiDirp::Sys(b"x"), p);
         let all = UNVEIL_READ | UNVEIL_WRITE | UNVEIL_EXEC | UNVEIL_CREATE;
         for want in 0..=all {
@@ -1174,7 +1176,7 @@ mod tests {
         assert_eq!(unveil(p, Some(b"/a/b"), Some(b"w")), Ok(()));
         pr.ps_uvdone.set(1);
 
-        let child: &'static Process = Box::leak(Box::new(Process::new()));
+        let child = test_pooled_process(2);
         unveil_copy(pr, child);
         assert_eq!(child.ps_uvdone.get(), 1);
         assert_eq!(child.ps_uvvcount.get(), 2);
@@ -1188,16 +1190,20 @@ mod tests {
         );
 
         // A process with nothing unveiled copies nothing.
-        let empty: &'static Process = Box::leak(Box::new(Process::new()));
-        let grandchild: &'static Process = Box::leak(Box::new(Process::new()));
+        let empty = test_process(3);
+        let grandchild = test_process(4);
         unveil_copy(empty, grandchild);
         assert!(grandchild.ps_uvpaths.get().is_null());
 
         // Both processes on allprocess: unmount drops their unveils of /a/c.
-        // SAFETY: two leaked processes in no list, taken off again below.
-        unsafe {
-            ALLPROCESS.0.insert_head(pr);
-            ALLPROCESS.0.insert_head(child);
+        // Two leaked processes in no list, taken off again below; the lists and the walk
+        // of unveil_removevnode are under the kernel lock, as in a system call.
+        crate::sys::systm::kernel_lock();
+        {
+            let mut w = hal::klock::witness();
+            let all = &proc_tables().allprocess;
+            all.insert_head(&mut w, core::pin::Pin::static_ref(pr));
+            all.insert_head(&mut w, core::pin::Pin::static_ref(child));
         }
         let cvp = testfs::vnode_of(C).unwrap();
         unveil_removevnode(cvp);
@@ -1206,11 +1212,13 @@ mod tests {
         assert!(unveil_lookup(cvp, pr, Some(&mut pos)).is_none());
         assert_eq!(pos, -1);
         assert_eq!(pr.ps_uvvcount.get(), 2); // the slot stays, zapped
-        // SAFETY: both are on the list (inserted above).
-        unsafe {
-            ListHead::<ProcessList>::remove(child);
-            ListHead::<ProcessList>::remove(pr);
+        {
+            let mut w = hal::klock::witness();
+            let all = &proc_tables().allprocess;
+            all.remove(&mut w, child);
+            all.remove(&mut w, pr);
         }
+        crate::sys::systm::kernel_unlock();
 
         unveil_destroy(child);
         unveil_destroy(pr);

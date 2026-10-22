@@ -1273,7 +1273,7 @@ pub fn pfkeyv2_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(),
             kcb_list: TailqEntry::new(),
             kcb_flags: AtomicI32::new(0),
             kcb_reg: AtomicU32::new(0),
-            kcb_pid: p.process().ps_pid.get(),
+            kcb_pid: p.process().ps_pid,
             kcb_rdomain: rtable_l2(p.process().ps_rtableid.load(Ordering::Relaxed)),
         })
     };
@@ -2314,7 +2314,7 @@ pub fn pfkeyv2_dosend(so: &'static Socket, mut message: Vec<u8>) -> Result<(), E
             };
 
             // Initialize encapsulating header
-            let pid = curproc_or_panic("pfkeyv2_dosend").process().ps_pid.get();
+            let pid = curproc_or_panic("pfkeyv2_dosend").process().ps_pid;
             promisc_header(&mut freeme, len, pid as u32);
 
             freeme[size_of::<SadbMsg>()..].copy_from_slice(&message);
@@ -3836,7 +3836,6 @@ mod tests {
     // `SS_PRIV`, and the messages carry the process's pid); they clear `curproc` before they
     // return.
 
-    use std::boxed::Box;
     use std::sync::MutexGuard;
     use std::vec;
     use std::vec::Vec;
@@ -3844,8 +3843,8 @@ mod tests {
     use super::*;
     use crate::crypto::crypto::crypto_reset;
     use crate::crypto::cryptosoft::swcr_init;
-    use crate::kern::kern_proc::procinit;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
+    use crate::kern::proc_glue::procinit;
     use crate::kern::uipc_socket::{soclose, socreate, soinit, soreceive, sosend};
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
@@ -3859,7 +3858,7 @@ mod tests {
     };
     use crate::netinet::ip_spd::{ipsp_spd_lookup, spd_reset};
     use crate::sys::endian::htonl;
-    use crate::sys::proc::Process;
+
     use crate::sys::socket::{MSG_DONTWAIT, PF_KEY as PFK};
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
@@ -3888,14 +3887,7 @@ mod tests {
         pfkey_reset();
         pfkey_init();
 
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        pr.ps_pid.set(PID);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        let p = crate::kern::proc_glue::test_proc(PID, crget());
         Machine::set_curproc(Machine::curcpu(), p);
         (g, s)
     }

@@ -356,7 +356,7 @@ pub fn udf_mountfs(
         return Err(Errno::EBUSY);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = vinvalbuf(devvp, V_SAVE, p.p_ucred.get(), Some(p), 0, INFSLP);
+    let error = vinvalbuf(devvp, V_SAVE, p.ucred_ptr(), Some(p), 0, INFSLP);
     let _ = VOP_UNLOCK(devvp);
     error?;
 

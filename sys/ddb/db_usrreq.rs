@@ -148,13 +148,11 @@ fn ddb_on_console(p: &Proc) -> bool {
     let Some(cn) = cn_tab() else {
         return false;
     };
-    // SAFETY: a process's session lives while the process is in it.
-    let Some(s) = (unsafe { pr.session().as_ref() }) else {
+    let Some(s) = crate::kern::proc_glue::session_of(pr) else {
         return false;
     };
-    // SAFETY: with PS_CONTROLT the session has its terminal, which the driver keeps until it
-    // detaches.
-    let Some(tp) = (unsafe { s.s_ttyp.get().as_ref() }) else {
+    // With PS_CONTROLT the session has its terminal.
+    let Some(tp) = s.s_ttyp.get() else {
         return false;
     };
     cn.cn_dev.get() == tp.t_dev.get()
@@ -207,7 +205,7 @@ mod tests {
 
     #[test]
     fn names_and_sizes() {
-        let p = Proc::new();
+        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
         let mut oldlen = 0;
         assert_eq!(
             ddb_sysctl(&[DBCTL_RADIX, 1], 0, &mut oldlen, 0, 0, &p),

@@ -52,73 +52,72 @@
 //!
 //! Upstream: sys/sys/ucred.h @ 3ce1f3f79392
 //!
-//! Status: `ported`. Milestone M5 ports `struct ucred` and `struct xucred` (the process
-//! structures point at one); `NOCRED` and `FSCRED` come with `kern_prot.c`, whose module
-//! (`kern/kern_prot.rs`) holds the functions this header declares (`crget`, `crhold`,
-//! `crfree`, `crset`, `crcopy`, `crdup`, `crfromxucred`, `suser`, `suser_ucred`).
+//! Status: an adapter (N4.2). `struct ucred` is the kernel crate's (`kernel::cred::Ucred`,
+//! whose members are atomic cells read with `get()`; a placed credential is shared through
+//! the counted `CredRef`, whose `Clone` is `crhold` and whose `Drop` is `crfree`); this header
+//! keeps `NOCRED`, `FSCRED` and `struct xucred`. `kern/kern_prot.rs` holds the functions it
+//! declares.
 //!
 //! ## Deviations
-//! - The members after `cr_refcnt` are `Cell`s: a credential is filled in (`crset`, exec's
-//!   `crcopy`) through the same shared pointer the processes hold, while it is unshared.
+//! - `NOCRED` and `FSCRED` stay the C's pointer sentinels: the VFS still passes credentials
+//!   as `*const Ucred` (a thread's own copy, `Proc::ucred_ptr`, or a holder's `CredRef`)
+//!   until N5.
 //! - `cr_startcopy` (the `#define` naming where `crset` starts copying) is a comment: `crset`
 //!   copies the members by name.
 
-use core::cell::Cell;
 use core::ptr;
 
-use crate::sys::refcnt::Refcnt;
+use hal::intr::IPL_NONE;
+use hal::mutex::Mutexed;
+
 use crate::sys::syslimits::NGROUPS_MAX;
 use crate::sys::types::{Gid, Uid};
+
+pub use kernel::cred::{CountCell, CredRef, IdCell, Ucred, UcredCell};
 
 /// `NOCRED`: no credential available.
 pub const NOCRED: *const Ucred = ptr::without_provenance(usize::MAX);
 /// `FSCRED`: filesystem credential.
 pub const FSCRED: *const Ucred = ptr::without_provenance(usize::MAX - 1);
 
-/// `struct ucred`.
-pub struct Ucred {
-    /// `cr_refcnt`: reference count.
-    pub cr_refcnt: Refcnt,
-    // The following fields are all copied by crset() (cr_startcopy = cr_uid).
-    /// `cr_uid`: effective user id.
-    pub cr_uid: Cell<Uid>,
-    /// `cr_ruid`: real user id.
-    pub cr_ruid: Cell<Uid>,
-    /// `cr_svuid`: saved effective user id.
-    pub cr_svuid: Cell<Uid>,
-    /// `cr_gid`: effective group id.
-    pub cr_gid: Cell<Gid>,
-    /// `cr_rgid`: real group id.
-    pub cr_rgid: Cell<Gid>,
-    /// `cr_svgid`: saved effective group id.
-    pub cr_svgid: Cell<Gid>,
-    /// `cr_ngroups`: number of groups.
-    pub cr_ngroups: Cell<i16>,
-    /// `cr_groups`: groups.
-    pub cr_groups: [Cell<Gid>; NGROUPS_MAX],
-}
+/// A holder's counted reference to credentials: a `struct ucred *` the holder `crhold`s and
+/// `crfree`s (a file's `f_cred`, a sigio's `sio_ucred`, an nfs node's, a quota's), kept in
+/// a cell of its own so the reference is given back by dropping it, never by a raw count.
+/// `get()` keeps LZ's reader, the address the legacy VFS passes (null when empty).
+pub struct CredSlot(Mutexed<Option<CredRef>>);
 
-// SAFETY: credentials are written once (`crset`) before they are shared; the count is atomic.
-unsafe impl Sync for Ucred {}
-
-impl Ucred {
-    /// Root's credentials with one reference (what `crget` returns zeroed).
+impl CredSlot {
+    /// No credentials (`NULL`).
     pub const fn new() -> Self {
-        Self {
-            cr_refcnt: Refcnt::new(),
-            cr_uid: Cell::new(0),
-            cr_ruid: Cell::new(0),
-            cr_svuid: Cell::new(0),
-            cr_gid: Cell::new(0),
-            cr_rgid: Cell::new(0),
-            cr_svgid: Cell::new(0),
-            cr_ngroups: Cell::new(0),
-            cr_groups: [const { Cell::new(0) }; NGROUPS_MAX],
-        }
+        Self(Mutexed::new(IPL_NONE, None))
+    }
+
+    /// The credentials' address, null when there are none: valid while the slot holds
+    /// them.
+    pub fn get(&self) -> *const Ucred {
+        self.0.lock().as_ref().map_or(ptr::null(), CredRef::as_ptr)
+    }
+
+    /// One more reference to the credentials (`crhold(holder->cred)`), `None` when there
+    /// are none.
+    pub fn cred(&self) -> Option<CredRef> {
+        self.0.lock().clone()
+    }
+
+    /// `holder->cred = cr`: the slot holds `cr`; the reference it held before is dropped
+    /// (`crfree`) after the slot's lock.
+    pub fn set(&self, cr: CredRef) {
+        let old = self.0.lock().replace(cr);
+        drop(old);
+    }
+
+    /// The reference the slot held, the slot left empty (the holder's `crfree`).
+    pub fn take(&self) -> Option<CredRef> {
+        self.0.lock().take()
     }
 }
 
-impl Default for Ucred {
+impl Default for CredSlot {
     fn default() -> Self {
         Self::new()
     }
@@ -137,4 +136,10 @@ pub struct Xucred {
     /// `cr_groups`: groups.
     pub cr_groups: [Gid; NGROUPS_MAX],
 }
+
+// A `CredRef` is one non-null pointer: `Option<CredRef>` takes its null niche, so an
+// all-zero `CredSlot` (a zeroed softc's) holds `None`.
+const _: () = {
+    assert!(size_of::<Option<CredRef>>() == size_of::<usize>());
+};
 /* </CODE> */

@@ -637,7 +637,7 @@ pub fn ext2fs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Re
 /// `ext2fs_mountfs`: common code for mount and mountroot.
 pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
     let dev = devvp.v_rdev();
-    let cred = p.p_ucred.get();
+    let cred = p.ucred_ptr();
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot).
     // Flush out any old buffers remaining from a previous use.
@@ -799,7 +799,7 @@ pub fn ext2fs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(),
     // Flush filesystem metadata.
     let devvp = ump.devvp();
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = VOP_FSYNC(devvp, p.p_ucred.get(), MNT_WAIT, p);
+    let error = VOP_FSYNC(devvp, p.ucred_ptr(), MNT_WAIT, p);
     let _ = VOP_UNLOCK(devvp);
     error
 }
@@ -1704,7 +1704,7 @@ pub(crate) mod tests {
             iov_len: buf.len(),
         }];
         let mut u = uio(&mut iov, offset, UioRw::UIO_WRITE);
-        VOP_WRITE(vp, &mut u, 0, p.p_ucred.get()).unwrap();
+        VOP_WRITE(vp, &mut u, 0, p.ucred_ptr()).unwrap();
         assert_eq!(u.uio_resid, 0);
     }
 
@@ -1845,7 +1845,7 @@ pub(crate) mod tests {
         let root = VFS_ROOT(mp).unwrap();
         let hello = VFS_VGET(mp, 12).unwrap();
         let ip = vtoi(hello);
-        let cred = p.p_ucred.get();
+        let cred = p.ucred_ptr();
 
         // Grow hello.txt to three blocks: two new ones, the first 8 free ones of the group.
         let data = pattern(3000, 1);

@@ -206,7 +206,7 @@ pub fn msdosfs_mount(
         let mut error = Ok(());
         if pmp.pm_flags.get() & MSDOSFSMNT_RONLY == 0 && mp.mnt_flag.get() & MNT_RDONLY != 0 {
             mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_RDONLY);
-            let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.p_ucred.get(), p);
+            let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p);
             mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
 
             let mut flags = WRITECLOSE;
@@ -333,7 +333,7 @@ pub fn msdosfs_mountfs(
         return Err(Errno::EBUSY);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = vinvalbuf(devvp, V_SAVE, p.p_ucred.get(), Some(p), 0, INFSLP);
+    let error = vinvalbuf(devvp, V_SAVE, p.ucred_ptr(), Some(p), 0, INFSLP);
     let _ = VOP_UNLOCK(devvp);
     error?;
 
@@ -798,7 +798,7 @@ pub fn msdosfs_check_export(
     };
 
     *exflagsp = np.netc_exflags.get();
-    *credanonp = ptr::from_ref(&np.netc_anon);
+    *credanonp = ptr::from_ref(&*np.netc_anon);
     Ok(())
 }
 /* </CODE> */
@@ -1455,7 +1455,7 @@ pub(crate) mod tests {
 
         // The root vnode needs the vnode operations of msdosfs_vnops.c (deget locks it), which
         // are not here yet; sync and unmount do not.
-        msdosfs_sync(mp, MNT_WAIT, 0, p.p_ucred.get(), p).unwrap();
+        msdosfs_sync(mp, MNT_WAIT, 0, p.ucred_ptr(), p).unwrap();
         unmount(p, mp);
         assert!(devvp.v_specinfo().unwrap().si_mountpoint.get().is_none());
         teardown();

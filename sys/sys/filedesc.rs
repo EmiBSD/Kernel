@@ -91,7 +91,6 @@ use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::eventvar::KqList;
 use crate::sys::file::File;
 use crate::sys::mutex::Mutex;
-use crate::sys::proc::{Proc, Process};
 use crate::sys::queue::ListHead;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::types::Mode;
@@ -324,7 +323,7 @@ impl Default for Filedesc0 {
     }
 }
 
-impl Process {
+impl crate::sys::proc::BsdProcessG {
     /// `pr->ps_fd`: the process's descriptor table, which it holds a reference to from
     /// `process_new` (`fdinit` for process 0) until `fdfree`.
     pub fn fd(&self) -> &'static Filedesc {
@@ -336,7 +335,7 @@ impl Process {
     }
 }
 
-impl Proc {
+impl crate::sys::proc::BsdThreadG {
     /// `p->p_fd`: the thread's copy of its process's descriptor table.
     pub fn fd(&self) -> &'static Filedesc {
         let fdp = self.p_fd.get();

@@ -114,7 +114,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use crate::kassert;
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_prot::{crdup, crfree};
+use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::tsleep_nsec;
@@ -146,9 +146,7 @@ use crate::machine::intr::{splbio, splx};
 use crate::nfs::nfs::{NFS_DIRBLKSIZ, NFS_READDIRBLKSIZ, nfs_cmpfh, nfs_isv3};
 use crate::nfs::nfs_bio::{nfs_asyncio, nfs_bioread, nfs_doio, nfs_vinvalbuf, nfs_write};
 use crate::nfs::nfs_kq::nfs_kqfilter;
-use crate::nfs::nfs_node::{
-    nfs_crfree, nfs_crhold, nfs_inactive, nfs_nget, nfs_reclaim, vfstonfs_vp,
-};
+use crate::nfs::nfs_node::{nfs_crset, nfs_inactive, nfs_nget, nfs_reclaim, vfstonfs_vp};
 use crate::nfs::nfs_socket::{nfs_request, nfs_sigintr};
 use crate::nfs::nfs_subs::nfs_attrtimeo;
 use crate::nfs::nfs_subs::{
@@ -204,7 +202,7 @@ use crate::sys::syslimits::{LINK_MAX, NAME_MAX};
 use crate::sys::systm::INFSLP;
 use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Daddr, Off, Register, Time, Uid, major, minor};
-use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::ucred::{CredSlot, FSCRED, NOCRED, Ucred};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{
     _PC_2_SYMLINKS, _PC_ALLOC_SIZE_MIN, _PC_CHOWN_RESTRICTED, _PC_FILESIZEBITS, _PC_LINK_MAX,
@@ -795,14 +793,10 @@ pub fn nfs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     // Initialize read and write creds here, for swapfiles and other paths that don't set the
     // creds themselves.
     if ap.a_mode & FREAD != 0 {
-        nfs_crfree(np.n_rcred.get());
-        np.n_rcred.set(ap.a_cred);
-        nfs_crhold(np.n_rcred.get());
+        nfs_crset(&np.n_rcred, ap.a_cred);
     }
     if ap.a_mode & FWRITE != 0 {
-        nfs_crfree(np.n_wcred.get());
-        np.n_wcred.set(ap.a_cred);
-        nfs_crhold(np.n_wcred.get());
+        nfs_crset(&np.n_wcred, ap.a_cred);
     }
 
     if np.isset(NMODIFIED) {
@@ -2052,7 +2046,7 @@ pub fn nfs_removeit(sp: &Sillyrename) -> Result<(), Errno> {
     nfs_removerpc(
         sp.s_dvp,
         &sp.s_name[..sp.s_namlen as usize],
-        ptr::from_ref(sp.s_cred),
+        sp.s_cred.get(),
         None,
     )
 }
@@ -3096,11 +3090,12 @@ pub fn nfs_sillyrename(
         panic(format_args!("nfs_sillyrename: malloc"));
     };
     let mut sp = Sillyrename {
-        s_cred: crdup(cnp.cred()),
+        s_cred: CredSlot::new(),
         s_dvp: dvp,
         s_namlen: 0,
         s_name: [0; 24],
     };
+    sp.s_cred.set(crdup(cnp.cred()));
     vref(dvp);
 
     let error = 'bad: {
@@ -3122,15 +3117,7 @@ pub fn nfs_sillyrename(
             sp.s_name = name;
             sp.s_namlen = len as i64;
 
-            if nfs_lookitup(
-                dvp,
-                &sp.s_name[..len],
-                ptr::from_ref(sp.s_cred),
-                cn_proc(cnp),
-                None,
-            )
-            .is_err()
-            {
+            if nfs_lookitup(dvp, &sp.s_name[..len], sp.s_cred.get(), cn_proc(cnp), None).is_err() {
                 break;
             }
         }
@@ -3142,7 +3129,7 @@ pub fn nfs_sillyrename(
         let _ = nfs_lookitup(
             dvp,
             &sp.s_name[..sp.s_namlen as usize],
-            ptr::from_ref(sp.s_cred),
+            sp.s_cred.get(),
             cn_proc(cnp),
             Some(&mut npp),
         );
@@ -3157,7 +3144,7 @@ pub fn nfs_sillyrename(
 
     // bad:
     let _ = vrele(sp.s_dvp);
-    crfree(sp.s_cred);
+    drop(sp.s_cred.take());
     free(mem, M_NFSREQ, size_of::<Sillyrename>());
     error
 }

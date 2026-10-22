@@ -77,7 +77,7 @@ use core::ptr::{self, NonNull};
 
 use crate::kassert;
 use crate::kern::kern_malloc::free;
-use crate::kern::kern_prot::{crfree, crhold};
+use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_init_flags, rw_init};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
@@ -99,7 +99,7 @@ use crate::sys::malloc::M_NFSREQ;
 use crate::sys::mount::Mount;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
-use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::ucred::{CredRef, CredSlot, FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{VDIR, VLARVAL, VT_NFS, Vnode, VopInactiveArgs, VopReclaimArgs};
 
 /// The nfsmount of an NFS vnode (`VFSTONFS(vp->v_mount)`).
@@ -121,17 +121,18 @@ fn nfs_realcred(cred: *const Ucred) -> Option<&'static Ucred> {
     Some(unsafe { &*cred })
 }
 
-/// `crhold(cred)` of a credential pointer about to be kept in `n_rcred`/`n_wcred`.
-pub(crate) fn nfs_crhold(cred: *const Ucred) {
-    if let Some(cr) = nfs_realcred(cred) {
-        crhold(cr);
-    }
+/// `crhold(cred)` of a credential pointer about to be kept in `n_rcred`/`n_wcred`: one
+/// more reference to placed credentials, or placed copies of a thread's own (which no pool
+/// counts); `None` for NULL, `NOCRED` and `FSCRED`.
+pub(crate) fn nfs_crhold(cred: *const Ucred) -> Option<CredRef> {
+    nfs_realcred(cred).map(|cr| CredRef::from_ref(cr).unwrap_or_else(|| crdup(cr)))
 }
 
-/// `if (cred) crfree(cred)` of a long-lived credential pointer (`n_rcred`, `n_wcred`).
-pub(crate) fn nfs_crfree(cred: *const Ucred) {
-    if let Some(cr) = nfs_realcred(cred) {
-        crfree(cr);
+/// `if (slot) crfree(slot); slot = cred; crhold(cred)`: `n_rcred`/`n_wcred` take `cred`.
+pub(crate) fn nfs_crset(slot: &CredSlot, cred: *const Ucred) {
+    match nfs_crhold(cred) {
+        Some(cr) => slot.set(cr),
+        None => drop(slot.take()),
     }
 }
 
@@ -238,7 +239,7 @@ pub fn nfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
         // filled; it was just taken off the node, so this function owns it until the `free`
         // below.
         let s = unsafe { sp.as_ref() };
-        let _ = nfs_vinvalbuf(vp, 0, ptr::from_ref(s.s_cred), curproc());
+        let _ = nfs_vinvalbuf(vp, 0, s.s_cred.get(), curproc());
     }
     np.n_flag
         .set(np.n_flag.get() & (NMODIFIED | NFLUSHINPROG | NFLUSHWANT));
@@ -251,7 +252,7 @@ pub fn nfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
         // Remove the silly file that was rename'd earlier
         let _ = vn_lock(s.s_dvp, LK_EXCLUSIVE | LK_RETRY);
         let _ = nfs_removeit(s);
-        crfree(s.s_cred);
+        drop(s.s_cred.take());
         vput(s.s_dvp);
         free(
             sp.cast::<u8>(),
@@ -289,8 +290,11 @@ pub fn nfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     // `nfs_nget`, and only this function takes it out.
     unsafe { nmp.nm_ntree.remove(np) };
 
-    nfs_crfree(np.n_rcred.get());
-    nfs_crfree(np.n_wcred.get());
+    drop(np.n_rcred.take());
+    drop(np.n_wcred.take());
+    // The pool takes the node back without dropping it: its credential slots, the only
+    // fields that own anything, are empty now.
+    crate::kassert!(np.n_rcred.get().is_null() && np.n_wcred.get().is_null());
 
     cache_purge(vp);
     match NonNull::new(vp.v_data.get()) {
@@ -302,7 +306,6 @@ pub fn nfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     Ok(())
 }
 
-const _: () = assert!(!core::mem::needs_drop::<NfsNode>());
 /* </CODE> */
 
 /* <TESTS> */

@@ -2292,7 +2292,7 @@ pub(crate) mod tests {
     use std::{assert, assert_eq};
 
     use super::*;
-    use crate::kern::kern_prot::{crget, crhold};
+    use crate::kern::kern_prot::crget;
     use crate::kern::uipc_mbuf::m_get;
     use crate::kern::uipc_socket::{soalloc, soinit};
     use crate::kern::uipc_socket2::{solock, sounlock};
@@ -2300,7 +2300,6 @@ pub(crate) mod tests {
     use crate::machine::cpu::Cpu;
     use crate::netinet::in_proto::INETSW;
     use crate::sys::mbuf::{M_DONTWAIT, MT_SONAME};
-    use crate::sys::proc::Process;
 
     /// The network setup, a `curproc` with credentials, sockets and control blocks.
     pub(crate) fn setup() -> (
@@ -2309,14 +2308,8 @@ pub(crate) mod tests {
         &'static Proc,
     ) {
         let (g, t) = crate::netinet::ip_input::tests::setup();
-        crate::kern::kern_proc::procinit();
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        let cr = crget();
-        p.p_ucred.set(cr);
-        pr.ps_ucred.set(crhold(cr));
+        crate::kern::proc_glue::procinit();
+        let p = crate::kern::proc_glue::test_proc(1, crget());
         Machine::set_curproc(Machine::curcpu(), p);
         soinit();
         in_init();

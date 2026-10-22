@@ -95,7 +95,6 @@ use crate::dev::cons::{cn_tab, constty, set_constty};
 use crate::dev::rnd::enqueue_randomness;
 use crate::kern::kern_event::{klist_insert_locked, klist_invalidate, klist_remove_locked};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_proc::{pgfind, prfind};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_resource::{calctsru, tuagg_get_process};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write};
@@ -105,6 +104,7 @@ use crate::kern::kern_synch::{nowake, tsleep_nsec, wakeup};
 use crate::kern::kern_sysctl::{sysctl_rdquad, sysctl_rdstruct};
 use crate::kern::kern_tc::microtime;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set};
+use crate::kern::proc_glue::{pgfind, pgrp_of, prfind, session_leader};
 use crate::kern::sched_bsd::AVERUNNABLE;
 use crate::kern::subr_log::{consbufp, msgbuf_putchar};
 use crate::kern::subr_prf::panic;
@@ -136,10 +136,10 @@ use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp, UNVEIL_READ, UNVEIL_WRITE};
 use crate::sys::param::{FSCALE, FSHIFT, PCATCH, PZERO};
 use crate::sys::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
 use crate::sys::proc::{
-    NO_PID, P_WEXIT, PS_CONTROLT, PS_EMBRYO, PS_EXITING, PS_PPWAIT, Proc, ProcThrLink, Process,
-    ProcessPglist, SONPROC, SRUN, Tusage, sess_leader, sesshold, sessrele,
+    NO_PID, P_WEXIT, PS_CONTROLT, PS_EMBRYO, PS_EXITING, PS_PPWAIT, Pgrp, Proc, Process, SONPROC,
+    SRUN, Session, Tusage,
 };
-use crate::sys::queue::{ListHead, TailqHead};
+use crate::sys::queue::TailqHead;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::signal::{
     SIGHUP, SIGINFO, SIGINT, SIGIO, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH,
@@ -175,6 +175,7 @@ use crate::sys::ttydefaults::{CEOT, TTYDEFCHARS, ctrl};
 use crate::sys::types::{Dev, Fixpt, major};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{IO_NDELAY, VREAD};
+use hal::klock;
 
 // Symbolic sleep message strings.
 
@@ -473,9 +474,8 @@ pub fn ttyclose(tp: &Tty) -> Result<(), Errno> {
 
     tp.t_gen.set(tp.t_gen.get().wrapping_add(1));
     tp.t_pgrp.set(ptr::null());
-    if let Some(s) = tp.session() {
-        sessrele(s);
-    }
+    // SESSRELE(tp->t_session): the tty's reference goes.
+    drop(tp.t_sessref.take());
     tp.t_session.set(ptr::null());
     tp.t_state.set(0);
     Ok(())
@@ -977,7 +977,13 @@ pub fn ttyoutput(c: i32, tp: &Tty) -> i32 {
 /// `ttioctl`: ioctls for all tty devices. Called after line-discipline specific ioctl has
 /// been called to do discipline-specific functions and/or reject any of these ioctl
 /// commands. `Ok(false)` where the C returns `-1`: not a tty ioctl.
-pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Result<bool, Errno> {
+pub fn ttioctl(
+    tp: &'static Tty,
+    cmd: u64,
+    data: &mut [u8],
+    flag: i32,
+    p: &Proc,
+) -> Result<bool, Errno> {
     let pr = p.process();
 
     // If the ioctl involves modification, hang if in the background.
@@ -1000,12 +1006,15 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
             && pr.ps_flags.load(Ordering::Relaxed) & PS_PPWAIT == 0
             && !sigismasked(p, SIGTTOU)
         {
-            // SAFETY: a process in the background of a tty is in a process group.
-            let pgrp = unsafe { &*pr.ps_pgrp.get() };
+            // A process in the background of a tty is in a process group.
+            let Some(pgrp) = pgrp_of(pr) else {
+                return Err(Errno::EIO);
+            };
             if pgrp.pg_jobc.get() == 0 {
                 return Err(Errno::EIO);
             }
-            pgsignal(Some(pgrp), SIGTTOU, true);
+            pgsignal(Some(&pgrp), SIGTTOU, true);
+            drop(pgrp);
             ttysleep_nsec(tp, nowake(), TTOPRI | PCATCH, TTYBG, sec_to_nsec(1))?;
         }
     }
@@ -1063,7 +1072,7 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
                     return Err(Errno::ENOENT);
                 };
                 let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-                let error = VOP_ACCESS(vp, VREAD, p.p_ucred.get(), p);
+                let error = VOP_ACCESS(vp, VREAD, p.ucred_ptr(), p);
                 let _ = VOP_UNLOCK(vp);
                 vrele(vp);
                 error?;
@@ -1113,15 +1122,12 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
             if !isctty(pr, tp) {
                 return Err(Errno::ENOTTY);
             }
-            // SAFETY: a session leader stays allocated while it leads the session.
-            let leader = tp
-                .session()
-                .and_then(|s| unsafe { s.s_leader.get().as_ref() });
+            let leader = tp.session().and_then(Session::leader_pid);
             let Some(leader) = leader else {
                 // XXX session stored wrong
                 return Err(Errno::ENOTTY);
             };
-            ioctl_ret(data, &leader.ps_pid.get());
+            ioctl_ret(data, &leader);
         }
         TIOCNXCL => {
             // reset exclusive use of tty
@@ -1173,12 +1179,8 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
                 tp.set_t_cflag(t.c_cflag);
                 tp.set_t_ispeed(t.c_ispeed);
                 tp.set_t_ospeed(t.c_ospeed);
-                if t.c_ospeed == 0
-                    && let Some(sess) = tp.session()
-                    // SAFETY: a session leader stays allocated while it leads the session.
-                    && let Some(leader) = unsafe { sess.s_leader.get().as_ref() }
-                {
-                    prsignal(leader, SIGHUP);
+                if t.c_ospeed == 0 {
+                    hangup_leader(tp);
                 }
                 ttsetwater(tp);
             }
@@ -1246,24 +1248,27 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
         TIOCSCTTY => {
             // become controlling tty
             // Session ctty vnode pointer set in vnode layer.
-            // SAFETY: a process's session lives while the process is in it.
-            let Some(sess) = (unsafe { pr.session().as_ref() }) else {
+            let r = klock::reader();
+            let Some(pgrp) = pr.pgrp(&r) else {
                 return Err(Errno::EPERM);
             };
-            if !sess_leader(pr)
-                || ((!sess.s_ttyvp.get().is_null() || !tp.t_session.get().is_null())
-                    && !ptr::eq(tp.t_session.get(), sess))
+            let Some(sess) = pgrp.pg_session.get(&r).clone() else {
+                return Err(Errno::EPERM);
+            };
+            let sessp = ptr::from_ref::<Session>(&sess);
+            if !sess.led_by(pr)
+                || ((sess.s_ttyvp.get().is_some() || !tp.t_session.get().is_null())
+                    && tp.t_session.get() != sessp)
             {
                 return Err(Errno::EPERM);
             }
-            if let Some(old) = tp.session() {
-                sessrele(old);
-            }
-            sesshold(sess);
-            tp.t_session.set(sess);
-            tp.t_pgrp.set(pr.ps_pgrp.get());
-            sess.s_ttyp.set(tp);
+            tp.t_session.set(sessp);
+            tp.t_pgrp.set(ptr::from_ref::<Pgrp>(pgrp));
+            sess.s_ttyp.set(Some(tp));
             pr.ps_flags.fetch_or(PS_CONTROLT, Ordering::SeqCst);
+            drop(r);
+            // SESSRELE(old), SESSHOLD(sess): the tty's reference moves to the new session.
+            drop(tp.t_sessref.replace(Some(sess)));
         }
         FIOSETOWN => {
             // set pgrp of tty
@@ -1272,18 +1277,19 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
             if !isctty(pr, tp) {
                 return Err(Errno::ENOTTY);
             }
+            let r = klock::reader();
             let pgrp = if pgid < 0 {
-                pgfind(-pgid)
+                pgfind(&r, -pgid)
             } else {
-                let Some(pr1) = prfind(pgid) else {
+                let Some(pr1) = prfind(&r, pgid) else {
                     return Err(Errno::ESRCH);
                 };
-                // SAFETY: a live process is in a live process group.
-                unsafe { pr1.ps_pgrp.get().as_ref() }
+                pr1.pgrp(&r).map(|pg| &**pg)
             };
+            let mysess = pr.session(&r).map_or(0, |s| ptr::from_ref(s).addr());
             match pgrp {
                 None => return Err(Errno::EINVAL),
-                Some(pgrp) if !ptr::eq(pgrp.pg_session.get(), pr.session()) => {
+                Some(pgrp) if pgrp.session(&r).map_or(0, |s| ptr::from_ref(s).addr()) != mysess => {
                     return Err(Errno::EPERM);
                 }
                 Some(pgrp) => tp.t_pgrp.set(pgrp),
@@ -1291,14 +1297,15 @@ pub fn ttioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Resu
         }
         TIOCSPGRP => {
             // set pgrp of tty
-            let pgrp = pgfind(ioctl_arg::<i32>(data));
-
             if !isctty(pr, tp) {
                 return Err(Errno::ENOTTY);
             }
+            let r = klock::reader();
+            let pgrp = pgfind(&r, ioctl_arg::<i32>(data));
+            let mysess = pr.session(&r).map_or(0, |s| ptr::from_ref(s).addr());
             match pgrp {
                 None => return Err(Errno::EINVAL),
-                Some(pgrp) if !ptr::eq(pgrp.pg_session.get(), pr.session()) => {
+                Some(pgrp) if pgrp.session(&r).map_or(0, |s| ptr::from_ref(s).addr()) != mysess => {
                     return Err(Errno::EPERM);
                 }
                 Some(pgrp) => tp.t_pgrp.set(pgrp),
@@ -1660,11 +1667,11 @@ pub fn ttymodem(tp: &Tty, flag: i32) -> i32 {
 /// `if (tp->t_session && tp->t_session->s_leader) prsignal(tp->t_session->s_leader,
 /// SIGHUP)`.
 fn hangup_leader(tp: &Tty) {
-    if let Some(sess) = tp.session()
-        // SAFETY: a session leader stays allocated while it leads the session.
-        && let Some(leader) = unsafe { sess.s_leader.get().as_ref() }
-    {
-        prsignal(leader, SIGHUP);
+    if let Some(sess) = tp.session() {
+        let r = klock::reader();
+        if let Some(leader) = session_leader(&r, sess) {
+            prsignal(leader, SIGHUP);
+        }
     }
 }
 
@@ -1741,15 +1748,16 @@ pub fn ttread(tp: &Tty, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
             && isbackground(p.process(), tp)
         {
             let pr = p.process();
-            // SAFETY: a process in the background of a tty is in a process group.
-            let pgrp = unsafe { &*pr.ps_pgrp.get() };
+            // A process in the background of a tty is in a process group.
+            let pgrp = pgrp_of(pr);
             if sigismasked(p, SIGTTIN)
                 || pr.ps_flags.load(Ordering::Relaxed) & PS_PPWAIT != 0
-                || pgrp.pg_jobc.get() == 0
+                || pgrp.as_ref().is_none_or(|pg| pg.pg_jobc.get() == 0)
             {
                 break 'out Err(Errno::EIO);
             }
-            pgsignal(Some(pgrp), SIGTTIN, true);
+            pgsignal(pgrp.as_deref(), SIGTTIN, true);
+            drop(pgrp);
             if let Err(e) = ttysleep_nsec(tp, nowake(), TTIPRI | PCATCH, TTYBG, sec_to_nsec(1)) {
                 break 'out Err(e);
             }
@@ -2029,12 +2037,13 @@ pub fn ttwrite(tp: &Tty, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
                 && pr.ps_flags.load(Ordering::Relaxed) & PS_PPWAIT == 0
                 && !sigismasked(p, SIGTTOU)
             {
-                // SAFETY: a process in the background of a tty is in a process group.
-                let pgrp = unsafe { &*pr.ps_pgrp.get() };
-                if pgrp.pg_jobc.get() == 0 {
+                // A process in the background of a tty is in a process group.
+                let pgrp = pgrp_of(pr);
+                if pgrp.as_ref().is_none_or(|pg| pg.pg_jobc.get() == 0) {
                     break 'top WriteExit::Out(Err(Errno::EIO));
                 }
-                pgsignal(Some(pgrp), SIGTTOU, true);
+                pgsignal(pgrp.as_deref(), SIGTTOU, true);
+                drop(pgrp);
                 if let Err(e) = ttysleep_nsec(tp, nowake(), TTIPRI | PCATCH, TTYBG, sec_to_nsec(1))
                 {
                     break 'top WriteExit::Out(Err(e));
@@ -2394,8 +2403,10 @@ pub fn ttsetwater(tp: &Tty) {
 fn process_sum(pr: &Process) -> (bool, Fixpt) {
     let mut ret = false;
     let mut pctcpu: Fixpt = 0;
-    for p in pr.ps_threads.iter() {
-        if p.p_stat.get() == SRUN || p.p_stat.get() == SONPROC {
+    // The thread list is ps_mtx's (the C walks it under the kernel lock alone).
+    let g = pr.ps_mtx.lock();
+    for p in pr.ps_threads.iter(&g) {
+        if p.stat() == SRUN || p.stat() == SONPROC {
             ret = true;
         }
         pctcpu = pctcpu.wrapping_add(p.p_pctcpu.load(Ordering::Relaxed));
@@ -2414,12 +2425,13 @@ pub fn ttyinfo(tp: &Tty) {
         (AVERUNNABLE.ldavg[0].load(Ordering::Relaxed) as i64 * 100 + FSCALE as i64 / 2) >> FSHIFT;
     ttyprintf(tp, format_args!("load: {}.{:02} ", tmp / 100, tmp % 100));
 
-    let first = tp.pgrp().and_then(|pg| pg.pg_members.first());
+    let r = klock::reader();
+    let first = tp.pgrp().and_then(|pg| pg.pg_members.first(&r));
     if tp.t_session.get().is_null() {
         ttyprintf(tp, format_args!("not a controlling terminal\n"));
     } else if tp.t_pgrp.get().is_null() {
         ttyprintf(tp, format_args!("no foreground process group\n"));
-    } else if let Some(pr) = first {
+    } else if let (Some(pr), Some(pg)) = (first, tp.pgrp()) {
         // Pick the most active process:
         //  - prefer at least one running/runnable thread
         //  - prefer higher total pctcpu
@@ -2427,9 +2439,7 @@ pub fn ttyinfo(tp: &Tty) {
         // Otherwise take the most recently added to this process group
         let mut pickpr = pr;
         let (mut run, mut pctcpu) = process_sum(pickpr);
-        let mut next = ListHead::<ProcessPglist>::next(pr);
-        while let Some(pr) = next {
-            next = ListHead::<ProcessPglist>::next(pr);
+        for pr in pg.pg_members.iter(&r).skip(1) {
             let (run2, pctcpu2) = process_sum(pr);
             if run {
                 // pick is running; is p running w/same or more cpu?
@@ -2454,7 +2464,7 @@ pub fn ttyinfo(tp: &Tty) {
         let mut rss: i64 = 0;
         if pickpr.ps_flags.load(Ordering::Relaxed) & (PS_EMBRYO | PS_EXITING) == 0
             // a live process holds its vmspace.
-            && let Some(vm) = pickpr.vmspace_opt()
+            && let Some(vm) = pickpr.vmspace_share()
         {
             rss = i64::from(vm.vm_rssize.load(Ordering::Relaxed));
         }
@@ -2482,18 +2492,17 @@ pub fn ttyinfo(tp: &Tty) {
         //  - prefer higher pctcpu
         //  - prefer living
         // Otherwise take the newest thread
-        match pickpr.ps_threads.first() {
+        let g = pickpr.ps_mtx.lock();
+        match pickpr.ps_threads.first(&g) {
             None => {
                 ttyprintf(tp, format_args!("empty foreground process group\n"));
             }
             Some(p) => {
                 let mut pick = p;
-                let mut run = p.p_stat.get() == SRUN || p.p_stat.get() == SONPROC;
+                let mut run = p.stat() == SRUN || p.stat() == SONPROC;
                 let mut pctcpu = p.p_pctcpu.load(Ordering::Relaxed);
-                let mut next = TailqHead::<ProcThrLink>::next(p);
-                while let Some(p) = next {
-                    next = TailqHead::<ProcThrLink>::next(p);
-                    let run2 = p.p_stat.get() == SRUN || p.p_stat.get() == SONPROC;
+                for p in pickpr.ps_threads.iter(&g).skip(1) {
+                    let run2 = p.stat() == SRUN || p.stat() == SONPROC;
                     let pctcpu2 = p.p_pctcpu.load(Ordering::Relaxed);
                     if run {
                         // pick is running; is p running w/same or more cpu?
@@ -2512,9 +2521,9 @@ pub fn ttyinfo(tp: &Tty) {
                     run = run2;
                     pctcpu = p.p_pctcpu.load(Ordering::Relaxed);
                 }
-                let state = if pick.p_stat.get() == SONPROC {
+                let state = if pick.stat() == SONPROC {
                     "running"
-                } else if pick.p_stat.get() == SRUN {
+                } else if pick.stat() == SRUN {
                     "runnable"
                 } else {
                     pick.p_wmesg.get().unwrap_or("iowait")
@@ -2524,8 +2533,8 @@ pub fn ttyinfo(tp: &Tty) {
                     tp,
                     format_args!(
                         " cmd: {} {} [{}] {}.{:02}u {}.{:02}s {}% {}k\n",
-                        Str(pickpr.comm()),
-                        pickpr.ps_pid.get(),
+                        Str(&pickpr.comm()),
+                        pickpr.ps_pid,
                         state,
                         utime.tv_sec,
                         utime.tv_nsec / 10_000_000,
@@ -2693,11 +2702,7 @@ fn ttystats_init() -> (Option<NonNull<Itty>>, usize, usize) {
             },
             _pad0: 0,
             t_state: tp.t_state.get(),
-            t_session_id: tp
-                .session()
-                // SAFETY: a session leader stays allocated while it leads the session.
-                .and_then(|s| unsafe { s.s_leader.get().as_ref() })
-                .map_or(0, |l| l.ps_pid.get()),
+            t_session_id: tp.session().and_then(Session::leader_pid).unwrap_or(0),
             t_pgrp_pg_id: tp.pgrp().map_or(0, |pg| pg.pg_id.get()),
             t_line: tp.t_line.get(),
             _pad1: [0; 3],
@@ -2784,7 +2789,6 @@ mod tests {
 
     use super::*;
     use crate::kern::tty_subr::qmem;
-    use crate::sys::proc::{Pgrp, Process};
     use crate::sys::termios::{OPOST, VEOF, VINTR, VKILL};
     use crate::sys::ttydefaults::{TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
     use crate::sys::types::makedev;
@@ -2841,22 +2845,17 @@ mod tests {
         }
     }
 
-    /// A process with a group, for the ioctls (`ttioctl` reads `p->p_p`).
+    /// A thread of a process, for the ioctls (`ttioctl` reads `p->p_p`); no group and no
+    /// controlling terminal, so nothing it does is in the background.
     struct World {
-        pr: Process,
-        p: Proc,
-        pg: Pgrp,
+        p: &'static Proc,
     }
 
-    fn world() -> Box<World> {
-        let w = Box::new(World {
-            pr: Process::new(),
-            p: Proc::new(),
-            pg: Pgrp::new(),
-        });
-        w.pr.ps_pgrp.set(&w.pg);
-        w.p.p_p.set(&w.pr);
-        w
+    fn world() -> World {
+        let pr = crate::kern::proc_glue::test_process(1);
+        World {
+            p: crate::kern::proc_glue::test_thread(pr),
+        }
     }
 
     /// Reads up to `n` bytes through `ttread`, without waiting.
@@ -2996,6 +2995,9 @@ mod tests {
     fn termios_and_window_size_ioctls() {
         let tp = test_tty();
         let w = world();
+        // The ioctls run under the kernel lock, as a system call's (TIOCSETA asks whether
+        // the caller is in the background: the session is `[K]`).
+        crate::sys::systm::kernel_lock();
         let mut t = [0u8; size_of::<Termios>()];
         assert_eq!(ttioctl(tp, TIOCGETA, &mut t, 0, &w.p), Ok(true));
         let mut termios: Termios = ioctl_arg(&t);
@@ -3026,6 +3028,7 @@ mod tests {
         // Not a tty ioctl.
         let mut pg = [0u8; 4];
         assert_eq!(ttioctl(tp, 0x2000_7400, &mut pg, 0, &w.p), Ok(false));
+        crate::sys::systm::kernel_unlock();
     }
 
     #[test]

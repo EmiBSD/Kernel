@@ -58,13 +58,13 @@
 //! ## Deviations
 //! - `cttyvp(p)` is a function returning `Option<&'static Vnode>`.
 
-use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 
 use crate::kern::kern_event::seltrue_kqfilter;
-use crate::kern::kern_proc::zapverauth;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_del};
+use crate::kern::proc_glue::session_of;
+use crate::kern::proc_glue::zapverauth;
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_IOCTL, VOP_KQFILTER, VOP_OPEN, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::machine::cpu::curproc;
@@ -73,7 +73,7 @@ use crate::sys::event::{__EV_POLL, __EV_SELECT, Knote};
 use crate::sys::fcntl::{FREAD, FWRITE};
 use crate::sys::ioctl::ioctl_arg;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::proc::{PS_CONTROLT, Proc, Session, sess_leader};
+use crate::sys::proc::{PS_CONTROLT, Proc, SessionRef};
 use crate::sys::ttycom::{TIOCCHKVERAUTH, TIOCCLRVERAUTH, TIOCNOTTY, TIOCSCTTY, TIOCSETVERAUTH};
 use crate::sys::types::Dev;
 use crate::sys::ucred::NOCRED;
@@ -86,15 +86,13 @@ fn cttyvp(p: &Proc) -> Option<&'static Vnode> {
     if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0 {
         return None;
     }
-    // SAFETY: a process's session lives while the process is in it; `s_ttyvp` holds a use
-    // count on its vnode, and vnodes are never freed.
-    unsafe { pr.session().as_ref()?.s_ttyvp.get().as_ref() }
+    // `s_ttyvp` holds a use count on its vnode, and vnodes are never freed.
+    session_of(pr)?.s_ttyvp.get()
 }
 
-/// The session of `p`'s process group (`p->p_p->ps_pgrp->pg_session`).
-fn pgrp_session(p: &Proc) -> Option<&'static Session> {
-    // SAFETY: as for `cttyvp`.
-    unsafe { p.process().session().as_ref() }
+/// The session of `p`'s process group (`p->p_p->ps_pgrp->pg_session`), counted.
+fn pgrp_session(p: &Proc) -> Option<SessionRef> {
+    session_of(p.process())
 }
 
 /// `cttyopen`.
@@ -141,7 +139,11 @@ pub fn cttyioctl(_dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> R
             return Err(Errno::EINVAL);
         }
         TIOCNOTTY => {
-            if !sess_leader(p.process()) {
+            let leader = {
+                let r = hal::klock::reader();
+                p.process().sess_leader(&r)
+            };
+            if !leader {
                 p.process()
                     .ps_flags
                     .fetch_and(!PS_CONTROLT, Ordering::SeqCst);
@@ -167,7 +169,7 @@ pub fn cttyioctl(_dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> R
         TIOCCLRVERAUTH => {
             if let Some(sess) = pgrp_session(p) {
                 timeout_del(&sess.s_verauthto);
-                zapverauth(core::ptr::from_ref(sess).cast_mut().cast::<c_void>());
+                zapverauth(&sess);
             }
             return Ok(());
         }

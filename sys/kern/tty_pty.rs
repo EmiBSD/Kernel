@@ -89,6 +89,7 @@ use crate::kern::kern_sig::{pgsignal, sigismasked};
 use crate::kern::kern_subr::{uiomove, ureadc};
 use crate::kern::kern_synch::{nowake, tsleep, tsleep_nsec, wakeup};
 use crate::kern::kern_tc::getnanotime;
+use crate::kern::proc_glue::pgrp_of;
 use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::sys_generic::selwakeup;
 use crate::kern::tty::ttymalloc;
@@ -141,6 +142,7 @@ use crate::sys::ttycom::{
 };
 use crate::sys::ttydefaults::{TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG, ctrl};
 use crate::sys::types::{Dev, major, makedev, minor};
+use crate::sys::ucred::CredRef;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{IO_NDELAY, REVOKEALL, VA_UTIMES_NULL, VALIASED, VCHR, Vattr};
 
@@ -446,15 +448,16 @@ pub fn ptsread(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
             if let Some(p) = curproc() {
                 let pr = p.process();
                 while isbackground(pr, tp) {
-                    // SAFETY: a process in the background of a tty is in a process group.
-                    let pgrp = unsafe { &*pr.ps_pgrp.get() };
+                    // A process in the background of a tty is in a process group.
+                    let pgrp = pgrp_of(pr);
                     if sigismasked(p, SIGTTIN)
-                        || pgrp.pg_jobc.get() == 0
+                        || pgrp.as_ref().is_none_or(|pg| pg.pg_jobc.get() == 0)
                         || pr.ps_flags.load(Ordering::Relaxed) & PS_PPWAIT != 0
                     {
                         return Err(Errno::EIO);
                     }
-                    pgsignal(Some(pgrp), SIGTTIN, true);
+                    pgsignal(pgrp.as_deref(), SIGTTIN, true);
+                    drop(pgrp);
                     ttysleep_nsec(tp, nowake(), TTIPRI | PCATCH, TTYBG, sec_to_nsec(1))?;
                 }
             }
@@ -1150,7 +1153,7 @@ fn ptm_vn_open(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
 
     // Get us a fresh cred with root privileges.
     let cred = crget();
-    let error = VOP_OPEN(vp, FREAD | FWRITE, cred, p);
+    let error = VOP_OPEN(vp, FREAD | FWRITE, CredRef::as_ptr(&cred), p);
     if error.is_ok() {
         // update atime/mtime
         let mut vattr = Vattr::new();
@@ -1158,7 +1161,7 @@ fn ptm_vn_open(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
         vattr.va_atime = getnanotime();
         vattr.va_mtime = vattr.va_atime;
         vattr.va_vaflags |= VA_UTIMES_NULL;
-        let _ = VOP_SETATTR(vp, &mut vattr, p.p_ucred.get(), p);
+        let _ = VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p);
     }
     crfree(cred);
 
@@ -1299,7 +1302,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
             vattr.va_mode = (S_IRUSR | S_IWUSR | S_IWGRP) & ALLPERMS;
             // Get a fake cred to pretend we're root.
             let cred = crget();
-            let error = VOP_SETATTR(svp, &mut vattr, cred, p);
+            let error = VOP_SETATTR(svp, &mut vattr, CredRef::as_ptr(&cred), p);
             crfree(cred);
             if let Err(e) = error {
                 vput(svp);
@@ -1378,28 +1381,22 @@ mod tests {
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::machine::conf::cdevsw;
     use crate::sys::conf::D_TTY;
-    use crate::sys::proc::{Pgrp, Process};
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
-    use std::boxed::Box;
+
     use std::vec;
     use std::vec::Vec;
 
-    /// A thread in a process with a group (what the entry points read through `p`).
+    /// A thread of a process (what the entry points read through `p`); no group and no
+    /// controlling terminal.
     struct World {
-        pr: Process,
-        p: Proc,
-        pg: Pgrp,
+        p: &'static Proc,
     }
 
-    fn world() -> Box<World> {
-        let w = Box::new(World {
-            pr: Process::new(),
-            p: Proc::new(),
-            pg: Pgrp::new(),
-        });
-        w.pr.ps_pgrp.set(&w.pg);
-        w.p.p_p.set(&w.pr);
-        w
+    fn world() -> World {
+        let pr = crate::kern::proc_glue::test_process(1);
+        World {
+            p: crate::kern::proc_glue::test_thread(pr),
+        }
     }
 
     /// Moves `buf` through `f` as a kernel-space uio in direction `rw`; the bytes moved.
@@ -1488,8 +1485,8 @@ mod tests {
             Ok(())
         );
 
-        assert_eq!(ptsclose(slave, FREAD | FWRITE, 0, Some(&w.p)), Ok(()));
-        assert_eq!(ptcclose(master, FREAD | FWRITE, 0, Some(&w.p)), Ok(()));
+        assert_eq!(ptsclose(slave, FREAD | FWRITE, 0, Some(w.p)), Ok(()));
+        assert_eq!(ptcclose(master, FREAD | FWRITE, 0, Some(w.p)), Ok(()));
         assert!(pty_isfree(3));
     }
 }

@@ -108,7 +108,7 @@ use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::nfs::nfs::B_INVAFTERWRITE;
 use crate::nfs::nfs::nfs_isv3;
-use crate::nfs::nfs_node::{nfs_crfree, nfs_crhold, vfstonfs_vp};
+use crate::nfs::nfs_node::{nfs_crset, vfstonfs_vp};
 use crate::nfs::nfs_socket::nfs_sigintr;
 use crate::nfs::nfs_subs::{
     NFSSTATS, nfs_add_tobecommitted_range, nfs_clearcommit, nfs_del_committed_range,
@@ -256,9 +256,7 @@ pub fn nfs_bioread(
     }
 
     // update the cache read creds for this vnode
-    nfs_crfree(np.n_rcred.get());
-    np.n_rcred.set(cred);
-    nfs_crhold(cred);
+    nfs_crset(&np.n_rcred, cred);
 
     loop {
         if vp.v_flag.get() & VROOT != 0 && vp.v_type.get() == VLNK {
@@ -441,9 +439,7 @@ pub fn nfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     let overrun = vn_fsizechk(vp, uio, ioflag)?;
 
     // update the cache write creds for this node.
-    nfs_crfree(np.n_wcred.get());
-    np.n_wcred.set(cred);
-    nfs_crhold(cred);
+    nfs_crset(&np.n_wcred, cred);
 
     // I use nm_rsize, not nm_wsize so that all buffer cache blocks will be the same size
     // within a filesystem. nfs_writerpc will still use nm_wsize when sizing the rpc's.
@@ -786,7 +782,7 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
                 NFSSTATS.readlink_bios.fetch_add(1, Ordering::Relaxed);
                 BCSTATS.pendingreads.fetch_add(1, Ordering::Relaxed);
                 BCSTATS.numreads.fetch_add(1, Ordering::Relaxed);
-                let cred = curproc().map_or(NOCRED, |cp| cp.p_ucred.get());
+                let cred = curproc().map_or(NOCRED, |cp| cp.ucred_ptr());
                 error = nfs_readlinkrpc(vp, &mut uio, cred);
             }
             t => panic(format_args!("nfs_doio:  type {:x} unexpected", t as i32)),

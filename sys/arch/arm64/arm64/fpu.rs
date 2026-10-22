@@ -65,6 +65,7 @@ use crate::arch::arm64::include::reg::Fpreg;
 use crate::kassert;
 use crate::machine::cpu::curproc;
 use crate::sys::proc::Proc;
+use crate::sys::proc::ProcExt;
 use crate::unported;
 
 /// `fpu_save`: saves `p`'s FP (or SVE) registers into its pcb, if the FPU is enabled.

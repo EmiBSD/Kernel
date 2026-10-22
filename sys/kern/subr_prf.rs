@@ -102,6 +102,8 @@ use crate::dev::cons::{cnputc, constty, set_constty};
 use crate::kern::init_main::DB_ACTIVE;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_xxx::reboot;
+#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
+use crate::kern::proc_glue::session_of;
 use crate::kern::subr_log::{LOG_OPEN, logwakeup, msgbuf_putchar, msgbufmapped, msgbufp};
 use crate::kern::tty::tputchar;
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
@@ -110,8 +112,7 @@ use crate::machine::db_machdep::db_enter;
 use crate::machine::intr::{IPL_HIGH, splhigh, splx};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::proc::PS_CONTROLT;
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-use crate::sys::proc::{Proc, sesshold, sessrele};
+use crate::sys::proc::Proc;
 use crate::sys::reboot::{RB_AUTOBOOT, RB_DUMP, RB_NOSYNC};
 use crate::sys::syslog::LOG_ERR;
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
@@ -482,14 +483,12 @@ pub fn uprintf(args: fmt::Arguments<'_>) {
     };
     let pr = p.process();
 
-    // SAFETY: a process's session lives while the process is in it.
-    let Some(sess) = (unsafe { pr.session().as_ref() }) else {
+    // A process's session lives while the process is in it (counted here).
+    let Some(sess) = session_of(pr) else {
         return;
     };
-    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && !sess.s_ttyvp.get().is_null() {
-        // SAFETY: a session's terminal stays allocated while the session refers to it.
-        let tp = unsafe { sess.s_ttyp.get().as_ref() };
-        kprintf_tp(args, TOTTY, tp, None);
+    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.s_ttyvp.get().is_some() {
+        kprintf_tp(args, TOTTY, sess.s_ttyp.get(), None);
     }
 }
 
@@ -507,11 +506,9 @@ pub fn uprintf(args: fmt::Arguments<'_>) {
 pub fn tprintf_open(p: &Proc) -> Tpr {
     let pr = p.process();
 
-    // SAFETY: a process's session lives while the process is in it, and the reference taken
-    // below keeps it alive until `tprintf_close`.
-    let sess = unsafe { pr.session().as_ref() }?;
-    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && !sess.s_ttyvp.get().is_null() {
-        sesshold(sess);
+    // The session, counted (SESSHOLD) until `tprintf_close`.
+    let sess = session_of(pr)?;
+    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.s_ttyvp.get().is_some() {
         return Some(sess);
     }
     None
@@ -520,24 +517,22 @@ pub fn tprintf_open(p: &Proc) -> Tpr {
 /// `tprintf_close`: dispose of a tprintf handle obtained with `tprintf_open`.
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
 pub fn tprintf_close(sess: Tpr) {
-    if let Some(sess) = sess {
-        sessrele(sess);
-    }
+    // SESSRELE: the handle's reference goes.
+    drop(sess);
 }
 
 /// `tprintf`: given a tprintf handle to a process (obtained with `tprintf_open`), send a
 /// message to the controlling tty for that process; also sends the message to /dev/klog.
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-pub fn tprintf(tpr: Tpr, args: fmt::Arguments<'_>) {
+pub fn tprintf(tpr: &Tpr, args: fmt::Arguments<'_>) {
     let mut tp: Option<&Tty> = None;
     let mut flags = TOLOG;
 
     logpri(LOG_INFO);
     if let Some(sess) = tpr
-        && !sess.s_ttyvp.get().is_null()
+        && sess.s_ttyvp.get().is_some()
     {
-        // SAFETY: a session's terminal stays allocated while the session refers to it.
-        let t = unsafe { sess.s_ttyp.get().as_ref() };
+        let t = sess.s_ttyp.get();
         if let Some(t) = t
             && ttycheckoutq(t, false)
         {
@@ -855,40 +850,55 @@ mod tests {
     #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
     #[test]
     fn tprintf_handles_follow_the_controlling_terminal() {
-        use crate::sys::proc::{Pgrp, Proc, Process, Session};
+        use crate::kern::proc_glue::{procinit, test_process, test_setsid, test_thread};
+        use crate::sys::proc::SessionRef;
         use crate::sys::vnode::Vnode;
+        use kernel::proc::StaticOrPooled;
         use std::boxed::Box;
 
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        let pg: &'static Pgrp = Box::leak(Box::new(Pgrp::new()));
-        let sess: &'static Session = Box::leak(Box::new(Session::new()));
-        pg.pg_session.set(sess);
-        sess.s_count.set(1);
-        p.p_p.set(pr);
-        pr.ps_mainproc.set(p);
-        pr.ps_pgrp.set(pg);
+        /// The session's references (`s_count`).
+        fn count(s: &SessionRef) -> usize {
+            match s {
+                StaticOrPooled::Pooled(a) => hal::pool::PoolArc::count(a),
+                StaticOrPooled::Static(_) => 0,
+            }
+        }
 
+        let _g = crate::kern::subr_pool::tests::setup_real_memory();
+        procinit();
+        let pr = test_process(1);
+        let p = test_thread(pr);
+        pr.ps_mainproc.set(p);
+        let (_pg, sess) = test_setsid(pr);
+        let base = count(&sess);
+
+        // NFS opens its handles under the kernel lock (the session is `[K]`).
+        crate::sys::systm::kernel_lock();
         // No controlling terminal: no handle, and closing none is fine.
         assert!(tprintf_open(p).is_none());
         tprintf_close(None);
         // The flag without a controlling vnode is no terminal either.
         pr.ps_flags.fetch_or(PS_CONTROLT, Ordering::Relaxed);
         assert!(tprintf_open(p).is_none());
-        assert_eq!(sess.s_count.get(), 1);
+        assert_eq!(count(&sess), base);
 
         let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
-        sess.s_ttyvp.set(vp);
+        sess.s_ttyvp.set(Some(vp));
         let handle = tprintf_open(p);
-        assert!(handle.is_some_and(|h| ptr::eq(h, sess)));
-        assert_eq!(sess.s_count.get(), 2, "the handle holds the session");
+        assert!(
+            handle
+                .as_ref()
+                .is_some_and(|h| StaticOrPooled::ptr_eq(h, &sess))
+        );
+        assert_eq!(count(&sess), base + 1, "the handle holds the session");
+        crate::sys::systm::kernel_unlock();
 
         crate::kern::subr_log::init_static_msgbuf();
         let mbp = msgbufp().unwrap();
         let mut text = std::vec::Vec::new();
         for _ in 0..100 {
             let before = mbp.bufx();
-            tprintf(handle, format_args!("nfs server not responding"));
+            tprintf(&handle, format_args!("nfs server not responding"));
             let after = mbp.bufx();
             text = (before..after)
                 .map(|i| mbp.bufc()[i as usize].get())
@@ -899,10 +909,10 @@ mod tests {
         }
         assert_eq!(text, b"<6>nfs server not responding");
         // Without a handle the message still goes to the log.
-        tprintf(None, format_args!("x"));
+        tprintf(&None, format_args!("x"));
 
         tprintf_close(handle);
-        assert_eq!(sess.s_count.get(), 1);
+        assert_eq!(count(&sess), base);
     }
 }
 /* </TESTS> */

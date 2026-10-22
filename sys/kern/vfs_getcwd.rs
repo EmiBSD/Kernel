@@ -111,7 +111,7 @@ pub fn vfs_getcwd_scandir(
     // If we want the filename, get some info we need while the current directory is still
     // locked.
     if buf.is_some()
-        && let Err(error) = VOP_GETATTR(lvp, &mut va, p.p_ucred.get(), p)
+        && let Err(error) = VOP_GETATTR(lvp, &mut va, p.ucred_ptr(), p)
     {
         vput(lvp);
         *lvpp = None;
@@ -123,7 +123,7 @@ pub fn vfs_getcwd_scandir(
     cn.cn_nameiop = LOOKUP;
     cn.cn_flags = ISLASTCN | ISDOTDOT | RDONLY;
     cn.cn_proc = p;
-    cn.cn_cred = p.p_ucred.get();
+    cn.cn_cred = p.ucred_ptr();
     cn.cn_pnbuf = ptr::null_mut();
     cn.cn_nameptr = DOTDOT.as_ptr();
     cn.cn_namelen = 2;
@@ -183,7 +183,7 @@ pub fn vfs_getcwd_scandir(
             let mut eofflag = 0;
 
             // Call VOP_READDIR of parent
-            let error = VOP_READDIR(uvp, &mut uio, p.p_ucred.get(), &mut eofflag);
+            let error = VOP_READDIR(uvp, &mut uio, p.ucred_ptr(), &mut eofflag);
 
             off = uio.uio_offset;
 
@@ -389,7 +389,7 @@ pub fn vfs_getcwd_common(
 
             // Check for access if caller cares
             if flags & GETCWD_CHECK_ACCESS != 0 {
-                if let Err(error) = VOP_ACCESS(cur, perms, p.p_ucred.get(), p) {
+                if let Err(error) = VOP_ACCESS(cur, perms, p.ucred_ptr(), p) {
                     break 'out Err(error);
                 }
                 perms = VEXEC | VREAD;

@@ -496,15 +496,11 @@ pub fn spec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
             // session), release the reference from the session.
             if vcount(vp) == 2
                 && let Some(p) = p
-                && !p.process().ps_pgrp.get().is_null()
+                && let Some(s) = crate::kern::proc_glue::session_of(p.process())
+                && s.s_ttyvp.points_to(vp)
             {
-                let s = p.process().session();
-                // SAFETY: the process's group and session are alive while it is.
-                let s = unsafe { &*s };
-                if ptr::eq(s.s_ttyvp.get(), vp) {
-                    vrele(vp);
-                    s.s_ttyvp.set(ptr::null());
-                }
+                vrele(vp);
+                s.s_ttyvp.set(None);
             }
             if cdevsw(major(dev)).d_flags & D_CLONE != 0 {
                 clone = true;

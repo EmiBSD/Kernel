@@ -528,15 +528,14 @@ use kernel::vm::vnode::{SysInfo, Uvn, VType, VnodeOps, install_sysinfo};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::fd_getfile;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::nkmempages;
 use crate::kern::kern_pledge::pledge_protexec;
-use crate::kern::kern_proc::ALLPROC;
 use crate::kern::kern_sig::{sigexit, trapsignal};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::{sysctl_int, sysctl_rdint, sysctl_rdstruct, sysctl_string};
 use crate::kern::kern_tc::getmicrouptime;
 use crate::kern::kern_xxx::REBOOTING;
+use crate::kern::proc_glue::proc_tables;
 use crate::kern::sched_bsd::averunnable;
 use crate::kern::subr_prf::{log, panic};
 use crate::kern::vfs_subr::{vget, vref, vrele};
@@ -553,6 +552,7 @@ use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::mount::MNT_WXALLOWED;
 use crate::sys::mount::Mount;
 use crate::sys::param::{USPACE, USPACE_ALIGN};
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{PSI_WXNEEDED, Proc, Process, p_hassibling};
 use crate::sys::resource::{RLIMIT_DATA, RLIMIT_RSS, RLIMIT_STACK};
 use crate::sys::resourcevar::{Plimit, lim_cur};
@@ -633,7 +633,7 @@ fn vmspace_of(p: &Proc) -> &'static KVmspace {
 
 /// `vm = pr->ps_vmspace; pr->ps_vmspace = NULL`: the process's handle.
 fn vmspace_take(pr: &Process) -> Option<VmspaceRef> {
-    pr.take_vmspace()
+    pr.set_vmspace(None)
 }
 
 /// `pr->ps_libcpin = { base, end, pins, npins }`, the kernel's table handed over.
@@ -678,7 +678,7 @@ impl VmProc for BsdVmProc {
     }
 
     fn pid(&self) -> i32 {
-        curp("pid").process().ps_pid.get()
+        curp("pid").process().ps_pid
     }
 
     fn tid(&self) -> i32 {
@@ -742,7 +742,7 @@ impl VmProc for BsdVmProc {
 
     fn with_kbind(&self, f: &mut dyn FnMut(&mut KbindSlot)) {
         let pr = curp("kbind").process();
-        mtx_enter(&pr.ps_mtx);
+        let g_pr = pr.ps_mtx.lock();
         let mut slot = KbindSlot {
             addr: pr.ps_kbind_addr.get(),
             cookie: pr.ps_kbind_cookie.get() as u64,
@@ -750,7 +750,7 @@ impl VmProc for BsdVmProc {
         f(&mut slot);
         pr.ps_kbind_addr.set(slot.addr);
         pr.ps_kbind_cookie.set(slot.cookie as i64);
-        mtx_leave(&pr.ps_mtx);
+        drop(g_pr);
     }
 
     fn pin_table_set(&self, base: usize, end: usize, pins: MArray<u32>) {
@@ -821,12 +821,13 @@ impl VmSysctl for BsdVmSysctl {
     }
 
     fn for_each_proc(&self, f: &mut dyn FnMut(ProcState)) {
-        for p in ALLPROC.0.iter() {
+        let r = hal::klock::reader();
+        for p in proc_tables().allproc.iter(&r) {
             let idle = p
                 .cpu()
                 .is_some_and(|ci| core::ptr::eq(Machine::ci_schedstate(ci).spc_idleproc.get(), p));
             f(ProcState {
-                stat: i32::from(p.p_stat.get()),
+                stat: i32::from(p.stat()),
                 idle,
             });
         }
@@ -1246,11 +1247,13 @@ pub fn uvmspace_exec(p: &Proc, start: usize, end: usize) {
     let pr = p.process();
     // The kernel's tells a vmspace only this process holds by its vm_refcnt; it reads the
     // vmspace, not the process's handle, and the slot is changed only below, after it.
-    if let Some(nvm) = kernel::vm::map::uvmspace_exec(pr.vmspace(), start, end) {
+    if let Some(nvm) = kernel::vm::map::uvmspace_exec(p.vmspace(), start, end) {
         // install new vmspace and drop our ref to the old one.
         crate::machine::pmap::pmap_deactivate(p);
-        p.p_vmspace.set(VmspaceRef::as_ptr(&nvm));
-        let ovm = pr.set_vmspace(nvm);
+        // p->p_vmspace: the thread's handle and word; the old handle goes with the process's.
+        let oldp = p.set_vmspace(Some(nvm.clone()));
+        let ovm = pr.set_vmspace(Some(nvm));
+        drop(oldp);
         crate::machine::pmap::pmap_activate(p);
         if let Some(ovm) = ovm {
             uvmspace_free(ovm);
@@ -1267,9 +1270,12 @@ pub fn uvmspace_fork_or_share(parent: &Process, pr: &Process, share: bool) {
             None => panic(format_args!("process_new: the parent has no vmspace")),
         }
     } else {
-        kernel::vm::map::uvmspace_fork(parent.vmspace())
+        match parent.vmspace_share() {
+            Some(pvm) => kernel::vm::map::uvmspace_fork(&pvm),
+            None => panic(format_args!("process_new: the parent has no vmspace")),
+        }
     };
-    let prev = pr.set_vmspace(vm);
+    let prev = pr.set_vmspace(Some(vm));
     // process_new's child had no address space before this.
     kassert!(prev.is_none());
 }
@@ -1284,24 +1290,23 @@ pub fn uvm_uarea_alloc() -> Option<NonNull<u8>> {
 /// `uvm_uarea_free(p)`: frees `p`'s u-area (`kernel::vm::glue::uvm_uarea_free`) and clears
 /// `p_addr`.
 pub fn uvm_uarea_free(p: &Proc) {
-    let va = p.p_addr.get().addr();
+    let va = p.uarea().addr();
     if va != 0 {
         kernel::vm::glue::uvm_uarea_free(Vaddr::new(va));
     }
-    p.p_addr.set(core::ptr::null());
+    p.set_uarea(core::ptr::null());
 }
 
 /// `uvm_init_limits`: init per-process VM limits, the kernel's numbers
 /// (`kernel::vm::glue::default_limits`) on `limit0`.
-pub fn uvm_init_limits(limit0: &Plimit) {
+pub fn uvm_init_limits(limit0: &mut Plimit) {
     let l = kernel::vm::glue::default_limits();
-    let set = |which: usize, cur: Rlim, max: Option<Rlim>| {
-        let mut r = limit0.pl_rlimit[which].get();
+    let mut set = |which: usize, cur: Rlim, max: Option<Rlim>| {
+        let r = &mut limit0.pl_rlimit[which];
         r.rlim_cur = cur;
         if let Some(m) = max {
             r.rlim_max = m;
         }
-        limit0.pl_rlimit[which].set(r);
     };
     set(RLIMIT_STACK, l.stack.0 as Rlim, Some(l.stack.1 as Rlim));
     set(RLIMIT_DATA, l.data.0 as Rlim, Some(l.data.1 as Rlim));
@@ -1560,7 +1565,7 @@ fn vop_rw(
         uio_resid: len,
         uio_procp: p,
     };
-    let cred = p.map_or(core::ptr::null(), |p| p.p_ucred.get());
+    let cred = p.map_or(core::ptr::null(), |p| p.ucred_ptr());
     if rw == UioRw::UIO_READ {
         VOP_READ(vp, &mut uio, ioflag, cred)?;
     } else {
@@ -1585,7 +1590,7 @@ impl VnodeOps for Vnode {
             panic(format_args!("uvn_attach: no curproc"));
         };
         let mut vattr = Vattr::new();
-        VOP_GETATTR(self, &mut vattr, p.p_ucred.get(), p)?;
+        VOP_GETATTR(self, &mut vattr, p.ucred_ptr(), p)?;
         Ok(vattr.va_size)
     }
 
@@ -1671,7 +1676,7 @@ impl VnodeOps for Vnode {
             panic(format_args!("mmap: no curproc"));
         };
         let mut vattr = Vattr::new();
-        VOP_GETATTR(self, &mut vattr, p.p_ucred.get(), p)?;
+        VOP_GETATTR(self, &mut vattr, p.ucred_ptr(), p)?;
         Ok(vattr.va_flags)
     }
 }
@@ -1815,8 +1820,6 @@ pub(crate) fn uvm_km_test_init() {
 mod tests {
     // Over the host's memory (`setup_real_memory`, which runs uvm_km_test_init).
 
-    use std::boxed::Box;
-
     use super::*;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::malloc::{M_PINSYSCALL, M_WAITOK};
@@ -1856,9 +1859,8 @@ mod tests {
         // sys_pinsyscalls builds the table in an MArray and VmProc::pin_table_set hands it to
         // the process (Pinsyscall::install): pin_check, at every system call, reads it.
         let _g = setup_real_memory();
-        let pr = Box::new(Process::new());
-        let p = Box::new(Proc::new());
-        p.p_p.set(&*pr);
+        let pr = crate::kern::proc_glue::test_process(1);
+        let p = crate::kern::proc_glue::test_thread(pr);
         let mut pins =
             MArray::new(M_PINSYSCALL, M_WAITOK, SYS_MAXSYSCALL, |_| 0u32).expect("the table");
         // The host has no user mode: the system call instruction is at 0 (PROC_PC is 0, no
@@ -1881,7 +1883,7 @@ mod tests {
     fn the_vm_sysctls_go_through_the_kernel() {
         let _g = setup_real_memory();
         let _ = kernel::vm::meter::install(&BSD_VM_SYSCTL);
-        let p = Box::new(Proc::new());
+        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
         // No old buffer: sysctl_rdint answers the size of an int (VM_MAXSLP).
         let mut len = 0usize;
         assert_eq!(

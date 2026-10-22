@@ -91,6 +91,19 @@
 //!   sigctx *` as `&mut Sigctx`, since the callers reuse one context across a loop.
 //!   Booleans that the C passes as `int` (`deep`, `all`, `checkctty`, `reset`) are `bool`.
 //! - `sigio_setown`/`sigio_getown` take the `int` that `data` points to as `&i32`/`&mut i32`.
+//! - N4.2: `ps_mtx` is the kernel crate's `Mutexed` (`kernel::proc`), whose guard is the
+//!   witness its thread list asks for: the functions the C runs "with `ps_mtx` held"
+//!   (`ptsignal_locked`, `process_continue`, `process_stop`, `process_suspend_signal`) take
+//!   the caller's guard, and those that leave it and take it again around a sleep or a
+//!   switch (`proc_stop_finish`, `proc_suspend_check_locked`) take it by value and give it
+//!   back; `single_thread_set` sleeps on the guard (`msleep` with `ps_mtx` as interlock).
+//!   The parent and the group the C reads under `ps_mtx` (`[K|m]`) are the process's
+//!   `ps_mtx`-side copies (`Process::pptr_locked`, `pgrp_locked`); the walks over a group or
+//!   every process run under the kernel lock's reader. `ps_klist` has its own mutex
+//!   (`kern/proc_glue.rs`): `ptsignal`'s `NOTE_SIGNAL` takes it inside `ps_mtx`.
+//!   `cansignal`'s "same credentials" shortcut compares the thread's source credentials
+//!   (`Proc::cred_ref`) with the process's. A sigio's credentials are its own counted
+//!   reference (`CredSlot`), given back by `sigio_del`.
 
 use core::cell::Cell;
 use core::ptr::{self, NonNull};
@@ -103,9 +116,9 @@ use crate::kern::kern_exit::exit1;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_pledge::pledge_kill;
-use crate::kern::kern_proc::{ALLPROCESS, pgfind, prfind, tfind_user, zombiefind};
-use crate::kern::kern_prot::{crdup, crfree, crhold, suser};
-use crate::kern::kern_synch::{msleep_nsec, nowake, tsleep_nsec, unsleep, wakeup};
+use crate::kern::kern_prot::suser;
+use crate::kern::kern_synch::{nowake, tsleep_nsec, unsleep, wakeup};
+use crate::kern::proc_glue::{pgfind, prfind, proc_tables, process_ref, tfind_user, zombiefind};
 use crate::kern::sched_bsd::{mi_switch, sched_lock, sched_unlock, setrunnable, r#yield};
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{Str, log, panic, panicstr, printf, snprintf};
@@ -122,6 +135,7 @@ use crate::sys::malloc::{M_SIGIO, M_WAITOK};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::param::{MAXPATHLEN, MAXPHYS, NZERO, PCATCH, PPAUSE, PUSER, PWAIT, USPACE};
 use crate::sys::pool::{PR_WAITOK, Pool};
+use crate::sys::proc::ProcExt;
 use crate::sys::proc::{
     EXIT_NORMAL, EXIT_THREAD_NOCHECK, P_ALRMPEND, P_INSCHED, P_PROFPEND, P_SIGSUSPEND, P_SINTR,
     P_SUSPSIG, P_SUSPSINGLE, P_TRACESINGLE, P_WEXIT, PS_CONTINUED, PS_CONTROLT, PS_COREDUMP,
@@ -130,6 +144,7 @@ use crate::sys::proc::{
     Process, SDEAD, SIDL, SINGLE_DEEP, SINGLE_EXIT, SINGLE_MASK, SINGLE_SUSPEND, SINGLE_UNWIND,
     SONPROC, SRUN, SSLEEP, SSTOP, p_hassibling,
 };
+use crate::sys::proc::{ProcessRef, PsGuard};
 use crate::sys::resource::RLIMIT_CORE;
 use crate::sys::resourcevar::lim_cur;
 use crate::sys::siginfo::{ILL_BTCFI, SI_USER, Siginfo, Sigval};
@@ -154,8 +169,9 @@ use crate::sys::systm::{INFSLP, SysArgs, kernel_lock, kernel_unlock, sysargs};
 use crate::sys::time::{Timespec, timespec_to_nsec};
 use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Pid, Register};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
+use hal::klock;
 use hal::vm::param::ptoa;
 use kernel::vm::map::{uvm_map_remap_as_stack, uvm_unmap};
 
@@ -243,19 +259,24 @@ const fn ffs(mask: Sigset) -> i32 {
     }
 }
 
-/// `pr->ps_pgrp`: every process is in a process group.
-fn pgrp(pr: &Process) -> &Pgrp {
-    let pg = pr.ps_pgrp.get();
-    kassert!(!pg.is_null());
-    // SAFETY: a process's group is set before the process is visible and outlives its
-    // membership.
-    unsafe { &*pg }
+/// `pr->ps_pgrp->pg_jobc == 0` for a holder of `pr`'s `ps_mtx`: whether the process's group
+/// is orphaned (every process is in a group: one without counts as orphaned).
+fn pgrp_orphaned(pr: &Process, g: &PsGuard<'_>) -> bool {
+    pr.pgrp_locked(g).is_none_or(|pg| pg.pg_jobc.get() == 0)
 }
 
-/// `pr->ps_pptr`: a process always has a parent (process 0 is its own).
-fn parent(pr: &Process) -> &'static Process {
-    // SAFETY: `ps_pptr` is set at creation and only ever re-pointed at a live process.
-    unsafe { pr.ps_pptr.get().as_ref() }.unwrap_or(&PROCESS0)
+/// `pr->ps_pptr`, counted, for a holder of `pr`'s `ps_mtx`: a process always has a parent
+/// (process 0 is its own).
+fn parent_locked(pr: &Process, g: &PsGuard<'_>) -> ProcessRef {
+    match pr.pptr_locked(g) {
+        Some(pp) => pp.clone(),
+        None => process_ref(&PROCESS0),
+    }
+}
+
+/// The address of `pr`'s session (`pr->ps_session`), 0 without one: what the C compares.
+fn session_addr(r: &klock::KernelReader, pr: &Process) -> usize {
+    pr.session(r).map_or(0, |s| ptr::from_ref(s).addr())
 }
 
 /// `p == curproc`.
@@ -278,12 +299,15 @@ pub fn cansignal(p: &Proc, qr: &Process, signum: i32) -> bool {
     }
 
     // optimization: if the same creds then the tests below will pass
-    if ptr::eq(uc, quc) {
+    if CredRef::ptr_eq(&p.cred_ref(), &quc) {
         return true;
     }
 
-    if signum == SIGCONT && ptr::eq(qr.session(), pr.session()) {
-        return true; // SIGCONT in session
+    if signum == SIGCONT {
+        let r = klock::reader();
+        if session_addr(&r, qr) == session_addr(&r, pr) {
+            return true; // SIGCONT in session
+        }
     }
 
     // Using kill(), only certain signals can be sent to setugid child processes
@@ -328,7 +352,7 @@ pub fn signal_init() {
 }
 
 /// `sigstkinit`: initialize a new sigaltstack structure.
-pub fn sigstkinit(ss: &Cell<Sigaltstack>) {
+pub fn sigstkinit(ss: &crate::kern::proc_glue::SigaltstackWord) {
     ss.set(Sigaltstack {
         ss_flags: SS_DISABLE,
         ss_size: 0,
@@ -372,7 +396,7 @@ pub fn sys_sigaction(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
     }
     let s = signum as usize;
     if osa != 0 {
-        mtx_enter(&pr.ps_mtx);
+        let g_pr = pr.ps_mtx.lock();
         let mut sa = Sigaction {
             sa_handler: ps.ps_sigact[s].get(),
             sa_mask: ps.ps_catchmask[s].get(),
@@ -400,7 +424,7 @@ pub fn sys_sigaction(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
                 sa.sa_flags |= SA_NOCLDWAIT;
             }
         }
-        mtx_leave(&pr.ps_mtx);
+        drop(g_pr);
         if sa.sa_mask & bit == 0 {
             sa.sa_flags |= SA_NODEFER;
         }
@@ -425,7 +449,7 @@ pub fn setsigvec(p: &Proc, signum: i32, sa: &mut Sigaction) {
 
     let bit = sigmask(signum);
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     ps.ps_sigact[s].set(sa.sa_handler);
     if sa.sa_flags & SA_NODEFER == 0 {
         sa.sa_mask |= sigmask(signum);
@@ -443,7 +467,7 @@ pub fn setsigvec(p: &Proc, signum: i32, sa: &mut Sigaction) {
         // XXX exit1 rework means this is unnecessary?
         // SAFETY: a non-null `initprocess` is init's process, which never goes away.
         let init_is_us = unsafe { INITPROCESS.load(Ordering::Relaxed).as_ref() }
-            .is_some_and(|init| ptr::eq(init.ps_sigacts.get(), ps));
+            .is_some_and(|init| init.ps_sigacts.points_to(ps));
         if !init_is_us && (sa.sa_flags & SA_NOCLDWAIT != 0 || sa.sa_handler == SIG_IGN) {
             ps.ps_sigflags.fetch_or(SAS_NOCLDWAIT, Ordering::Relaxed);
         } else {
@@ -475,7 +499,7 @@ pub fn setsigvec(p: &Proc, signum: i32, sa: &mut Sigaction) {
         set(&ps.ps_sigignore, false);
         set(&ps.ps_sigcatch, sa.sa_handler != SIG_DFL);
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 }
 
 /// `siginit`: initialize signal state for process 0; set to ignore signals that are ignored
@@ -494,7 +518,7 @@ pub fn siginit(ps: &Sigacts) {
 pub fn execsigs(p: &Proc) {
     let pr = p.process();
     let ps = pr.sigacts();
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
 
     // Reset caught signals. Held signals remain held through p_sigmask (unless they were
     // caught, and are now ignored by default).
@@ -518,7 +542,7 @@ pub fn execsigs(p: &Proc) {
     if ps.ps_sigact[SIGCHLD as usize].get() == SIG_IGN {
         ps.ps_sigact[SIGCHLD as usize].set(SIG_DFL);
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 }
 
 /// `sys_sigprocmask`: manipulate signal mask. Note that we receive new mask, not pointer,
@@ -638,9 +662,10 @@ pub fn sys_kill(cp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
         return Err(Errno::EINVAL);
     }
     if pid > 0 {
-        let (pr, zombie) = match prfind(pid) {
+        let r = klock::reader();
+        let (pr, zombie) = match prfind(&r, pid) {
             Some(pr) => (pr, false),
-            None => match zombiefind(pid) {
+            None => match zombiefind(&r, pid) {
                 Some(pr) => (pr, true),
                 None => return Err(Errno::ESRCH),
             },
@@ -672,8 +697,9 @@ pub fn sys_thrkill(cp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
         return Err(Errno::EINVAL);
     }
 
+    let r = klock::reader();
     let p: &Proc = if tid != 0 {
-        match tfind_user(tid, cp.process()) {
+        match tfind_user(&r, tid, cp.process()) {
             Some(p) => p,
             None => return Err(Errno::ESRCH),
         }
@@ -696,11 +722,12 @@ pub fn sys_thrkill(cp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
 /// `killpg1`: common code for kill process group/broadcast kill. `cp` is calling process.
 pub fn killpg1(cp: &Proc, signum: i32, pgid: Pid, all: bool) -> Result<(), Errno> {
     let mut nfound = 0;
+    let r = klock::reader();
 
     if all {
         // broadcast
-        for pr in ALLPROCESS.0.iter() {
-            if pr.ps_pid.get() <= 1
+        for pr in proc_tables().allprocess.iter(&r) {
+            if pr.ps_pid <= 1
                 || pr.ps_flags.load(Ordering::Relaxed) & (PS_SYSTEM | PS_NOBROADCASTKILL) != 0
                 || ptr::eq(pr, cp.process())
                 || !cansignal(cp, pr, signum)
@@ -715,15 +742,18 @@ pub fn killpg1(cp: &Proc, signum: i32, pgid: Pid, all: bool) -> Result<(), Errno
     } else {
         let pgrp = if pgid == 0 {
             // zero pgid means send to my process group.
-            pgrp(cp.process())
+            match cp.process().pgrp(&r) {
+                Some(pg) => &**pg,
+                None => return Err(Errno::ESRCH),
+            }
         } else {
-            match pgfind(pgid) {
+            match pgfind(&r, pgid) {
                 Some(pg) => pg,
                 None => return Err(Errno::ESRCH),
             }
         };
-        for pr in pgrp.pg_members.iter() {
-            if pr.ps_pid.get() <= 1
+        for pr in pgrp.pg_members.iter(&r) {
+            if pr.ps_pid <= 1
                 || pr.ps_flags.load(Ordering::Relaxed) & PS_SYSTEM != 0
                 || !cansignal(cp, pr, signum)
             {
@@ -763,7 +793,8 @@ fn cansigio(cr: &Ucred, pr: &Process) -> bool {
 /// which have a controlling terminal.
 pub fn pgsignal(pgrp: Option<&Pgrp>, signum: i32, checkctty: bool) {
     if let Some(pgrp) = pgrp {
-        for pr in pgrp.pg_members.iter() {
+        let r = klock::reader();
+        for pr in pgrp.pg_members.iter(&r) {
             if !checkctty || pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 {
                 prsignal(pr, signum);
             }
@@ -782,9 +813,10 @@ pub fn pgsigio(sir: &SigioRef, sig: i32, checkctty: bool) {
     mtx_enter(&SIGIO_LOCK);
     // SAFETY: a registered sigio stays allocated until `sigio_del`, which runs after it is
     // unlinked under `sigio_lock`.
-    if let Some(sigio) = unsafe { sir.sir_sigio.get().as_ref() } {
-        // SAFETY: the sigio holds a reference to its credentials.
-        let cred = unsafe { &*sigio.sio_ucred.get() };
+    if let Some(sigio) = unsafe { sir.sir_sigio.get().as_ref() }
+        && let Some(cred) = sigio.sio_ucred.cred()
+    {
+        let cred: &Ucred = &cred;
         if sigio.sio_pgid.get() > 0 {
             // SAFETY: the process unlinks its sigios (`sigio_freelist`) before it goes.
             if let Some(pr) = unsafe { sigio.sio_proc.get().as_ref() }
@@ -795,7 +827,8 @@ pub fn pgsigio(sir: &SigioRef, sig: i32, checkctty: bool) {
         } else if sigio.sio_pgid.get() < 0 {
             // SAFETY: as above, for the process group.
             if let Some(pg) = unsafe { sigio.sio_pgrp.get().as_ref() } {
-                for pr in pg.pg_members.iter() {
+                let r = klock::reader();
+                for pr in pg.pg_members.iter(&r) {
                     if cansigio(cred, pr)
                         && (!checkctty || pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0)
                     {
@@ -820,13 +853,13 @@ pub fn postsig_done(p: &Proc, signum: i32, catchmask: Sigset, reset: bool) {
         let pr = p.process();
         let ps = pr.sigacts();
 
-        mtx_enter(&pr.ps_mtx);
+        let g_pr = pr.ps_mtx.lock();
         ps.ps_sigcatch.set(ps.ps_sigcatch.get() & !mask);
         if signum != SIGCONT && sigprop(signum) & SA_IGNORE != 0 {
             ps.ps_sigignore.set(ps.ps_sigignore.get() | mask);
         }
         ps.ps_sigact[signum as usize].set(SIG_DFL);
-        mtx_leave(&pr.ps_mtx);
+        drop(g_pr);
     }
 }
 
@@ -902,7 +935,7 @@ pub fn trapsignal(p: &Proc, signum: i32, trapno: u64, code: i32, sigval: Sigval)
         if pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED == 0
             && sigprop(signum) & SA_KILL != 0
             && (p.p_sigmask.get() & mask != 0 || ctx.sig_ignore)
-            && pr.ps_pid.get() != 1
+            && pr.ps_pid != 1
         {
             kernel_lock(); // KERNEL_LOCK()
             sigexit(p, signum);
@@ -930,16 +963,16 @@ pub fn psignal(p: &Proc, signum: i32) {
 /// `prsignal`: send the signal to the process `pr` (to its first thread, from where
 /// `ptsignal_locked` picks the thread that takes it).
 pub fn prsignal(pr: &Process, signum: i32) {
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     // Ignore signal if the target process is exiting
     if pr.ps_flags.load(Ordering::Relaxed) & PS_EXITING != 0 {
-        mtx_leave(&pr.ps_mtx);
+        drop(g_pr);
         return;
     }
-    if let Some(p) = pr.ps_threads.first() {
-        ptsignal_locked(p, signum, SignalType::SPROCESS);
+    if let Some(p) = pr.ps_threads.first(&g_pr) {
+        ptsignal_locked(p, signum, SignalType::SPROCESS, &g_pr);
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 }
 
 /// `ptsignal`: `type_` = `SPROCESS`: process signal, can be diverted (sigwait());
@@ -947,19 +980,19 @@ pub fn prsignal(pr: &Process, signum: i32) {
 pub fn ptsignal(p: &Proc, signum: i32, type_: SignalType) {
     let pr = p.process();
 
-    mtx_enter(&pr.ps_mtx);
-    ptsignal_locked(p, signum, type_);
-    mtx_leave(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
+    ptsignal_locked(p, signum, type_, &g_pr);
+    drop(g_pr);
 }
 
-/// `ptsignal_locked`: `ptsignal` with the process's `ps_mtx` held.
-pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
+/// `ptsignal_locked`: `ptsignal` with the process's `ps_mtx` held (`g`).
+pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>) {
     let pr = p.process();
     let mut p = p;
     let mut altaction = SIG_DFL;
     let mut wakeparent = false;
 
-    mutex_assert_locked(&pr.ps_mtx, "ptsignal_locked");
+    crate::kassert!(pr.ps_mtx.owned());
 
     #[cfg(feature = "diagnostic")]
     if (signum as u32) >= NSIG as u32 || signum == 0 {
@@ -997,7 +1030,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
             // sigwait() for this signal. If there isn't such a thread, then pick a thread
             // that doesn't have it blocked so that the stop/kill consideration isn't
             // delayed. Otherwise, mark it pending on the main thread.
-            for q in pr.ps_threads.iter() {
+            for q in pr.ps_threads.iter(g) {
                 // ignore exiting threads
                 if q.p_flag.load(Ordering::Relaxed) & P_WEXIT != 0 {
                     continue;
@@ -1022,7 +1055,10 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
         }
     }
 
+    // ps_klist's own mutex, inside ps_mtx (see the module's deviations).
+    mtx_enter(&pr.ps_klmtx);
     knote_locked(&pr.ps_klist, i64::from(NOTE_SIGNAL) | i64::from(signum));
+    mtx_leave(&pr.ps_klmtx);
 
     let mut prop = sigprop(signum);
     let mut action;
@@ -1058,7 +1094,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
             // If sending a tty stop signal to a member of an orphaned process group,
             // discard the signal here if the action is default; don't stop the process
             // below if sleeping, and don't clear any pending SIGCONT.
-            if prop & SA_TTYSTOP != 0 && pgrp(pr).pg_jobc.get() == 0 {
+            if prop & SA_TTYSTOP != 0 && pgrp_orphaned(pr, g) {
                 return;
             }
         }
@@ -1074,7 +1110,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
     sched_lock();
 
     'out: {
-        match p.p_stat.get() {
+        match p.stat() {
             SSTOP => {
                 // If traced process is already stopped, then no further action is
                 // necessary.
@@ -1116,7 +1152,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
                         unsleep(p);
                     }
 
-                    process_continue(pr, P_SUSPSIG);
+                    process_continue(pr, P_SUSPSIG, g);
                     wakeparent = true;
                     break 'out;
                 }
@@ -1173,7 +1209,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
 
                         // Discard tty stop signals sent to an orphaned process group, see
                         // above.
-                        if prop & SA_TTYSTOP != 0 && pgrp(pr).pg_jobc.get() == 0 {
+                        if prop & SA_TTYSTOP != 0 && pgrp_orphaned(pr, g) {
                             mask = 0;
                             prop = 0;
                             break 'out;
@@ -1197,7 +1233,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
                     mask = 0;
                     pr.ps_xsig.set(signum);
                     pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
-                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, g);
                     wakeparent = true;
                     break 'out;
                 }
@@ -1243,11 +1279,11 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType) {
     sched_unlock();
     if wakeparent {
         if prop & SA_STOP != 0 {
-            process_suspend_signal(pr);
+            process_suspend_signal(pr, g);
         } else {
-            let pptr = parent(pr);
+            let pptr = parent_locked(pr, g);
             pptr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-            wakeup(ptr::from_ref(pptr));
+            wakeup(ptr::from_ref::<Process>(&pptr));
         }
     }
 }
@@ -1259,7 +1295,7 @@ pub fn setsigctx(p: &Proc, signum: i32, sctx: &mut Sigctx) {
     let ps = pr.sigacts();
     let s = signum as usize;
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     let mask = sigmask(signum);
     sctx.sig_action = ps.ps_sigact[s].get();
     sctx.sig_catchmask = ps.ps_catchmask[s].get();
@@ -1273,13 +1309,13 @@ pub fn setsigctx(p: &Proc, signum: i32, sctx: &mut Sigctx) {
     if sctx.sig_stop {
         // If the process is a member of an orphaned process group, ignore tty stop signals.
         if pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0
-            || (pgrp(pr).pg_jobc.get() == 0 && sigprop(signum) & SA_TTYSTOP != 0)
+            || (pgrp_orphaned(pr, &g_pr) && sigprop(signum) & SA_TTYSTOP != 0)
         {
             sctx.sig_stop = false;
             sctx.sig_ignore = true;
         }
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 }
 
 /// `cursig`: determine signal that should be delivered to process `p`, the current process,
@@ -1392,30 +1428,29 @@ pub fn cursig(p: &Proc, sctx: &mut Sigctx, deep: bool) -> i32 {
         match sctx.sig_action {
             SIG_DFL => {
                 // Don't take default actions on system processes.
-                if pr.ps_pid.get() <= 1 {
+                if pr.ps_pid <= 1 {
                     // Are you sure you want to ignore SIGSEGV in init? XXX
                     #[cfg(feature = "diagnostic")]
                     printf(format_args!(
                         "Process (pid {}) got signal {}\n",
-                        pr.ps_pid.get(),
-                        signum
+                        pr.ps_pid, signum
                     ));
                     continue; // == ignore
                 }
                 // If there is a pending stop signal to process with default action, stop
                 // here, then clear the signal.
                 if sctx.sig_stop {
-                    mtx_enter(&pr.ps_mtx);
+                    let g_pr = pr.ps_mtx.lock();
                     pr.ps_xsig.set(signum);
                     pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
                     sched_lock();
-                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr);
                     p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
                     proc_stop_setup(p);
                     sched_unlock();
-                    process_suspend_signal(pr);
-                    proc_stop_finish(p);
-                    mtx_leave(&pr.ps_mtx);
+                    process_suspend_signal(pr, &g_pr);
+                    let g_pr = proc_stop_finish(pr, p, g_pr);
+                    drop(g_pr);
                     continue;
                 } else if prop & SA_IGNORE != 0 {
                     // Except for SIGCONT, shouldn't get here. Default action is to ignore;
@@ -1456,22 +1491,22 @@ pub fn cursig(p: &Proc, sctx: &mut Sigctx, deep: bool) -> i32 {
 pub fn proc_trap(p: &Proc, signum: i32) -> i32 {
     let pr = p.process();
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     // Wait until any other suspend condition cleared, including other traps.
-    let _ = proc_suspend_check_locked(p, false);
+    let (g_pr, _) = proc_suspend_check_locked(pr, p, g_pr, false);
 
     pr.ps_flags
         .fetch_or(PS_STOPPING | PS_TRAPPED, Ordering::Relaxed);
     sched_lock();
-    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr);
     p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
     proc_stop_setup(p);
     sched_unlock();
     pr.ps_xsig.set(signum);
     pr.ps_trapped.set(p);
 
-    process_suspend_signal(pr);
-    proc_stop_finish(p);
+    process_suspend_signal(pr, &g_pr);
+    let g_pr = proc_stop_finish(pr, p, g_pr);
     // Clear all flags for proc and process by hand here since ptrace just calls setrunnable
     // on the thread without clearing anything.
     p.p_flag.fetch_and(!P_SUSPSIG, Ordering::Relaxed);
@@ -1484,24 +1519,24 @@ pub fn proc_trap(p: &Proc, signum: i32) -> i32 {
 
     if p.p_flag.load(Ordering::Relaxed) & P_TRACESINGLE == 0 {
         sched_lock();
-        process_continue(pr, P_SUSPSIG);
+        process_continue(pr, P_SUSPSIG, &g_pr);
         sched_unlock();
     }
     p.p_flag.fetch_and(!P_TRACESINGLE, Ordering::Relaxed);
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 
     signum
 }
 
 /// `process_continue`: continue all threads of a process that were stopped because of
-/// `flag`.
-pub fn process_continue(pr: &Process, flag: i32) {
-    mutex_assert_locked(&pr.ps_mtx, "process_continue");
+/// `flag`, under its `ps_mtx` (`g`).
+pub fn process_continue(pr: &Process, flag: i32, g: &PsGuard<'_>) {
+    crate::kassert!(pr.ps_mtx.owned());
 
     // skip curproc if it is part of pr
     let me = curproc().filter(|c| ptr::eq(c.process(), pr));
 
-    for q in pr.ps_threads.iter() {
+    for q in pr.ps_threads.iter(g) {
         if me.is_some_and(|me| ptr::eq(me, q)) {
             continue;
         }
@@ -1518,22 +1553,21 @@ pub fn process_continue(pr: &Process, flag: i32) {
         // be skipped.
         //
         // Clearing either makes the thread runnable or puts it back into some sleep queue.
-        if q.p_stat.get() == SSTOP
-            && q.p_flag.load(Ordering::Relaxed) & (P_SUSPSIG | P_SUSPSINGLE) == 0
-        {
-            if q.p_wchan.get().is_null() {
+        if q.stat() == SSTOP && q.p_flag.load(Ordering::Relaxed) & (P_SUSPSIG | P_SUSPSINGLE) == 0 {
+            if q.wchan().is_null() {
                 setrunnable(q);
             } else {
-                q.p_stat.set(SSLEEP);
+                q.set_stat(SSLEEP);
             }
         }
     }
 }
 
-/// `process_stop`: signal all but `p` threads of a process `pr` to stop because of `flag`.
-/// Depending on `mode` stopped and sleeping threads may be woken up.
-pub fn process_stop(pr: &Process, flag: i32, mode: i32) {
-    mutex_assert_locked(&pr.ps_mtx, "process_stop");
+/// `process_stop`: signal all but `p` threads of a process `pr` to stop because of `flag`,
+/// under its `ps_mtx` (`g`). Depending on `mode` stopped and sleeping threads may be woken
+/// up.
+pub fn process_stop(pr: &Process, flag: i32, mode: i32, g: &PsGuard<'_>) {
+    crate::kassert!(pr.ps_mtx.owned());
 
     // skip curproc if it is part of pr, caller takes care of that
     let me = curproc().filter(|c| ptr::eq(c.process(), pr));
@@ -1542,7 +1576,7 @@ pub fn process_stop(pr: &Process, flag: i32, mode: i32) {
     }
 
     pr.ps_suspendcnt.set(pr.ps_threadcnt.get());
-    for q in pr.ps_threads.iter() {
+    for q in pr.ps_threads.iter(g) {
         if me.is_some_and(|me| ptr::eq(me, q)) {
             continue;
         }
@@ -1552,7 +1586,7 @@ pub fn process_stop(pr: &Process, flag: i32, mode: i32) {
         // that is fixed.
         crate::kern::sched_bsd::sched_assert_locked();
 
-        match q.p_stat.get() {
+        match q.stat() {
             SSTOP => {
                 if mode == SINGLE_EXIT {
                     unsleep(q);
@@ -1566,7 +1600,7 @@ pub fn process_stop(pr: &Process, flag: i32, mode: i32) {
                 if q.p_flag.load(Ordering::Relaxed) & P_SINTR != 0 {
                     // merely need to suspend? just stop it
                     if mode == SINGLE_SUSPEND {
-                        q.p_stat.set(SSTOP);
+                        q.set_stat(SSTOP);
                         pr.ps_suspendcnt.set(pr.ps_suspendcnt.get().wrapping_sub(1));
                     } else {
                         // need to unwind or exit, so wake it
@@ -1584,7 +1618,7 @@ pub fn process_stop(pr: &Process, flag: i32, mode: i32) {
 
 /// `proc_stop_setup`: prepare a proc to be stopped.
 pub fn proc_stop_setup(p: &Proc) {
-    mutex_assert_locked(&p.process().ps_mtx, "proc_stop_setup");
+    crate::kassert!(p.process().ps_mtx.owned());
     // XXX in ptsignal the SCHED_LOCK is already held so we can't grab it here until that is
     // fixed.
     crate::kern::sched_bsd::sched_assert_locked();
@@ -1592,33 +1626,32 @@ pub fn proc_stop_setup(p: &Proc) {
     // TRACEPOINT(sched, stop, NULL): dt(4), not configured.
 
     p.p_flag.fetch_or(P_INSCHED, Ordering::Relaxed);
-    p.p_stat.set(SSTOP);
+    p.set_stat(SSTOP);
 }
 
-/// `proc_stop_finish`: finish stopping a process if the condition still holds.
-pub fn proc_stop_finish(p: &Proc) {
-    let pr = p.process();
-
-    mutex_assert_locked(&pr.ps_mtx, "proc_stop_finish");
-    mtx_leave(&pr.ps_mtx);
+/// `proc_stop_finish`: finish stopping a process if the condition still holds: `ps_mtx`
+/// (`g`) is left around the switch and the guard of its reentry returned.
+pub fn proc_stop_finish<'a>(pr: &'a Process, p: &Proc, g: PsGuard<'a>) -> PsGuard<'a> {
+    crate::kassert!(pr.ps_mtx.owned());
+    drop(g);
     sched_lock();
 
     p.p_flag.fetch_and(!P_INSCHED, Ordering::Relaxed);
-    if p.p_stat.get() == SSTOP {
+    if p.stat() == SSTOP {
         p.p_ru.ru_nvcsw.set(p.p_ru.ru_nvcsw.get() + 1);
         mi_switch();
     } else {
-        kassert!(p.p_stat.get() == SONPROC);
+        kassert!(p.stat() == SONPROC);
         sched_unlock();
     }
-    mtx_enter(&pr.ps_mtx);
+    pr.ps_mtx.lock()
 }
 
 /// `process_suspend_signal`: signal either the parent process or the `ps_single` thread
 /// depending on the mode. Only do this if the suspendcnt dropped to 0. If curproc part of
-/// the process count it out first.
-pub fn process_suspend_signal(pr: &Process) {
-    mutex_assert_locked(&pr.ps_mtx, "process_suspend_signal");
+/// the process count it out first. Under `pr`'s `ps_mtx` (`g`).
+pub fn process_suspend_signal(pr: &Process, g: &PsGuard<'_>) {
+    crate::kassert!(pr.ps_mtx.owned());
 
     // if part of the process, count us out
     if curproc().is_some_and(|c| ptr::eq(c.process(), pr)) {
@@ -1634,12 +1667,12 @@ pub fn process_suspend_signal(pr: &Process) {
             .fetch_and(!(PS_STOPPING | PS_WAITED | PS_CONTINUED), Ordering::Relaxed);
         pr.ps_flags.fetch_or(PS_STOPPED, Ordering::Relaxed);
 
-        let pptr = parent(pr);
+        let pptr = parent_locked(pr, g);
         if pptr.sigacts().ps_sigflags.load(Ordering::Relaxed) & SAS_NOCLDSTOP == 0 {
-            prsignal(pptr, SIGCHLD);
+            prsignal(&pptr, SIGCHLD);
         }
         pptr.ps_flags.fetch_or(PS_WAITEVENT, Ordering::Relaxed);
-        wakeup(ptr::from_ref(pptr));
+        wakeup(ptr::from_ref::<Process>(&pptr));
     } else {
         wakeup(ptr::addr_of!(pr.ps_suspendcnt));
     }
@@ -1761,10 +1794,10 @@ pub fn sigismasked(p: &Proc, sig: i32) -> bool {
 
     kassert!(is_curproc(p));
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     let rv = pr.sigacts().ps_sigignore.get() & sigmask(sig) != 0
         || p.p_sigmask.get() & sigmask(sig) != 0;
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 
     rv
 }
@@ -1775,7 +1808,6 @@ pub fn sigismasked(p: &Proc, sig: i32) -> bool {
 pub fn coredump(p: &Proc) -> Result<(), Errno> {
     // SMALL_KERNEL: not configured.
     let pr = p.process();
-    let mut cred = p.ucred();
     let vm = p.vmspace();
     let dir = "/var/crash";
     let nosuidcoredump_local = NOSUIDCOREDUMP.load(Ordering::Relaxed);
@@ -1808,17 +1840,17 @@ pub fn coredump(p: &Proc) -> Result<(), Errno> {
             // fail.
             len = snprintf(
                 &mut name,
-                format_args!("{}/{}/{}.core", dir, Str(pr.comm()), pr.ps_pid.get() as u32),
+                format_args!("{}/{}/{}.core", dir, Str(&pr.comm()), pr.ps_pid as u32),
             );
             incrash = true; // KERNELPATH
         } else if nosuidcoredump_local == 2 {
-            len = snprintf(&mut name, format_args!("{}/{}.core", dir, Str(pr.comm())));
+            len = snprintf(&mut name, format_args!("{}/{}.core", dir, Str(&pr.comm())));
             incrash = true; // KERNELPATH
         } else {
             return Err(Errno::EPERM);
         }
     } else {
-        len = snprintf(&mut name, format_args!("{}.core", Str(pr.comm())));
+        len = snprintf(&mut name, format_args!("{}.core", Str(&pr.comm())));
         incrash = false;
     }
 
@@ -1828,19 +1860,23 @@ pub fn coredump(p: &Proc) -> Result<(), Errno> {
 
     // Control the UID used to write out. The normal case uses the real UID. If the sugid
     // case is going to write into the controlled directory, we do so as root.
-    if !incrash {
-        cred = crdup(cred);
-        cred.cr_uid.set(cred.cr_ruid.get());
-        cred.cr_gid.set(cred.cr_rgid.get());
+    let cred: CredRef = if !incrash {
+        let mut c = (*p.ucred()).clone();
+        let (ruid, rgid) = (c.cr_ruid.get(), c.cr_rgid.get());
+        c.cr_uid.set(ruid);
+        c.cr_gid.set(rgid);
+        CredRef::new(c)
     } else {
         // p->p_fd->fd_rdir: no file descriptor table, so no root directory to release.
-        p.p_ucred.set(crdup(p.ucred()));
-        crfree(cred);
-        cred = p.ucred();
-        crhold(cred);
-        cred.cr_uid.set(0);
-        cred.cr_gid.set(0);
-    }
+        // The thread's own credentials become a copy with root's user and group
+        // (`p->p_ucred = crdup(p->p_ucred)` and the stores through it).
+        let mut c = (*p.ucred()).clone();
+        c.cr_uid.set(0);
+        c.cr_gid.set(0);
+        let c = CredRef::new(c);
+        drop(p.set_cred(c.clone()));
+        c
+    };
 
     // incrash should be 0 or KERNELPATH only
     // NDINIT(&nd, 0, BYPASSUNVEIL | incrash, UIO_SYSSPACE, name, p) and vn_open(&nd,
@@ -1851,7 +1887,7 @@ pub fn coredump(p: &Proc) -> Result<(), Errno> {
     let error = unported!("coredump: vn_open of the core file (vfs)");
 
     // out:
-    crfree(cred);
+    drop(cred);
     Err(error)
 }
 
@@ -1891,8 +1927,8 @@ pub fn coredump_write(
                     LOG_ERR,
                     format_args!(
                         "coredump of {}({}) failed, filesystem full\n",
-                        Str(pr.comm()),
-                        pr.ps_pid.get()
+                        Str(&pr.comm()),
+                        pr.ps_pid
                     ),
                 );
             } else {
@@ -1900,8 +1936,8 @@ pub fn coredump_write(
                     LOG_ERR,
                     format_args!(
                         "coredump of {}({}), write failed: errno {}\n",
-                        Str(pr.comm()),
-                        pr.ps_pid.get(),
+                        Str(&pr.comm()),
+                        pr.ps_pid,
                         error as i32
                     ),
                 );
@@ -2083,17 +2119,23 @@ pub fn userret(p: &Proc) {
 }
 
 /// `proc_suspend_check_locked`: suspend (or, `deep`, report how to unwind) the thread `p`
-/// while its process is being single-threaded or stopped.
-pub fn proc_suspend_check_locked(p: &Proc, deep: bool) -> Result<(), Errno> {
-    let pr = p.process();
+/// while its process `pr` is being single-threaded or stopped; under `pr`'s `ps_mtx` (`g`),
+/// which a suspension leaves and takes again: its guard is given back.
+pub fn proc_suspend_check_locked<'a>(
+    pr: &'a Process,
+    p: &Proc,
+    g: PsGuard<'a>,
+    deep: bool,
+) -> (PsGuard<'a>, Result<(), Errno>) {
+    let mut g = g;
 
-    mutex_assert_locked(&pr.ps_mtx, "proc_suspend_check_locked");
+    crate::kassert!(pr.ps_mtx.owned());
 
     let single = pr.ps_single.get();
     if (single.is_null() || ptr::eq(single, p))
         && pr.ps_flags.load(Ordering::Relaxed) & PS_STOPPING == 0
     {
-        return Ok(());
+        return (g, Ok(()));
     }
 
     // if we're in deep, we need to unwind to the edge
@@ -2101,19 +2143,19 @@ pub fn proc_suspend_check_locked(p: &Proc, deep: bool) -> Result<(), Errno> {
         let mut err = Ok(());
 
         if pr.ps_flags.load(Ordering::Relaxed) & (PS_SINGLEUNWIND | PS_SINGLEEXIT) != 0 {
-            return Err(Errno::ERESTART);
+            return (g, Err(Errno::ERESTART));
         }
         sched_lock();
-        if p.p_stat.get() != SSTOP {
+        if p.stat() != SSTOP {
             err = Err(Errno::EWOULDBLOCK);
         }
         sched_unlock();
-        return err;
+        return (g, err);
     }
 
     loop {
         if pr.ps_flags.load(Ordering::Relaxed) & PS_SINGLEEXIT != 0 {
-            mtx_leave(&pr.ps_mtx);
+            drop(g);
             kernel_lock(); // KERNEL_LOCK()
             exit1(p, 0, 0, EXIT_THREAD_NOCHECK);
             // NOTREACHED
@@ -2122,26 +2164,26 @@ pub fn proc_suspend_check_locked(p: &Proc, deep: bool) -> Result<(), Errno> {
         sched_lock();
         proc_stop_setup(p);
         sched_unlock();
-        process_suspend_signal(pr);
+        process_suspend_signal(pr, &g);
 
         // not exiting and don't need to unwind, so suspend
-        proc_stop_finish(p);
+        g = proc_stop_finish(pr, p, g);
 
         if pr.ps_single.get().is_null() && pr.ps_flags.load(Ordering::Relaxed) & PS_STOPPING == 0 {
             break;
         }
     }
 
-    Ok(())
+    (g, Ok(()))
 }
 
 /// `proc_suspend_check`: `proc_suspend_check_locked` under the process's `ps_mtx`.
 pub fn proc_suspend_check(p: &Proc, deep: bool) -> Result<(), Errno> {
     let pr = p.process();
 
-    mtx_enter(&pr.ps_mtx);
-    let error = proc_suspend_check_locked(p, deep);
-    mtx_leave(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
+    let (g_pr, error) = proc_suspend_check_locked(pr, p, g_pr, deep);
+    drop(g_pr);
 
     error
 }
@@ -2159,9 +2201,10 @@ pub fn single_thread_set(p: &Proc, flags: i32) -> Result<(), Errno> {
 
     kassert!(is_curproc(p));
 
-    mtx_enter(&pr.ps_mtx);
-    if let Err(error) = proc_suspend_check_locked(p, flags & SINGLE_DEEP != 0) {
-        mtx_leave(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
+    let (mut g_pr, checked) = proc_suspend_check_locked(pr, p, g_pr, flags & SINGLE_DEEP != 0);
+    if let Err(error) = checked {
+        drop(g_pr);
         return Err(error);
     }
 
@@ -2183,7 +2226,7 @@ pub fn single_thread_set(p: &Proc, flags: i32) -> Result<(), Errno> {
     pr.ps_single.set(p);
 
     sched_lock();
-    process_stop(pr, P_SUSPSINGLE, mode);
+    process_stop(pr, P_SUSPSINGLE, mode, &g_pr);
     sched_unlock();
 
     // count ourself out
@@ -2191,15 +2234,9 @@ pub fn single_thread_set(p: &Proc, flags: i32) -> Result<(), Errno> {
 
     // wait until all other threads suspended
     while pr.ps_suspendcnt.get() > 0 {
-        let _ = msleep_nsec(
-            ptr::addr_of!(pr.ps_suspendcnt),
-            &pr.ps_mtx,
-            PWAIT,
-            "suspend",
-            INFSLP,
-        );
+        let _ = g_pr.sleep_nsec(ptr::addr_of!(pr.ps_suspendcnt), PWAIT, "suspend", INFSLP);
     }
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
     kassert!(
         ptr::eq(pr.ps_single.get(), p) && p.p_flag.load(Ordering::Relaxed) & P_SUSPSINGLE == 0
     );
@@ -2213,23 +2250,23 @@ pub fn single_thread_clear(p: &Proc) {
     kassert!(ptr::eq(pr.ps_single.get(), p));
     kassert!(is_curproc(p));
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     pr.ps_single.set(ptr::null());
     pr.ps_flags
         .fetch_and(!(PS_SINGLEUNWIND | PS_SINGLEEXIT), Ordering::Relaxed);
 
     sched_lock();
-    process_continue(pr, P_SUSPSINGLE);
+    process_continue(pr, P_SUSPSINGLE, &g_pr);
     sched_unlock();
 
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 }
 
 /// `sigio_del`: frees the sigios on `rmlist`.
 pub fn sigio_del(rmlist: &Sigiolst) {
     while let Some(sigio) = rmlist.pop_head() {
-        // SAFETY: the sigio holds a reference to its credentials, dropped here.
-        crfree(unsafe { &*sigio.sio_ucred.get() });
+        // The sigio's reference to its credentials, dropped here.
+        drop(sigio.sio_ucred.take());
         free(
             NonNull::from(sigio).cast::<u8>(),
             M_SIGIO,
@@ -2253,9 +2290,9 @@ pub fn sigio_unlink(sir: &SigioRef, rmlist: &Sigiolst) {
         // says which of `sio_proc`/`sio_pgrp` names the owner (the C's union).
         let owner: &Sigiolst = unsafe {
             if sigio.sio_pgid.get() > 0 {
-                &(*sigio.sio_proc.get()).ps_sigiolst
+                &(&*sigio.sio_proc.get()).ps_sigiolst
             } else {
-                &(*sigio.sio_pgrp.get()).pg_sigiolst
+                &(&*sigio.sio_pgrp.get()).pg_sigiolst
             }
         };
         if sigio.sio_pgid.get() > 0 {
@@ -2332,7 +2369,7 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
     // SAFETY: as above; it lives until `sigio_del` (or the failure path below) frees it.
     let sigio: &'static Sigio = unsafe { new.as_ref() };
     sigio.sio_pgid.set(pgid);
-    sigio.sio_ucred.set(crhold(p.ucred()));
+    sigio.sio_ucred.set(p.cred_ref());
     sigio.sio_myref.set(sir);
 
     let rmlist = Sigiolst::new();
@@ -2343,8 +2380,9 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
     mtx_enter(&SIGIO_LOCK);
 
     let result = 'fail: {
+        let r = klock::reader();
         if pgid > 0 {
-            let Some(pr) = prfind(pgid) else {
+            let Some(pr) = prfind(&r, pgid) else {
                 break 'fail Err(Errno::ESRCH);
             };
 
@@ -2352,7 +2390,7 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
             //
             // Remove this test to allow maximum flexibility or restrict FSETOWN to the
             // current process or process group for maximum safety.
-            if !ptr::eq(pr.session(), p.process().session()) {
+            if session_addr(&r, pr) != session_addr(&r, p.process()) {
                 break 'fail Err(Errno::EPERM);
             }
 
@@ -2364,7 +2402,7 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
             pr.ps_sigiolst.insert_head(sigio);
         } else {
             // if (pgid < 0)
-            let Some(pgrp) = pgfind(-pgid) else {
+            let Some(pgrp) = pgfind(&r, -pgid) else {
                 break 'fail Err(Errno::ESRCH);
             };
 
@@ -2372,7 +2410,8 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
             //
             // Remove this test to allow maximum flexibility or restrict FSETOWN to the
             // current process or process group for maximum safety.
-            if !ptr::eq(pgrp.pg_session.get(), p.process().session()) {
+            let pgsess = pgrp.session(&r).map_or(0, |s| ptr::from_ref(s).addr());
+            if pgsess != session_addr(&r, p.process()) {
                 break 'fail Err(Errno::EPERM);
             }
             sigio.sio_pgrp.set(pgrp);
@@ -2386,8 +2425,8 @@ pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
         mtx_leave(&SIGIO_LOCK);
         kernel_unlock(); // KERNEL_UNLOCK()
 
-        // SAFETY: the reference taken above.
-        crfree(unsafe { &*sigio.sio_ucred.get() });
+        // The reference taken above.
+        drop(sigio.sio_ucred.take());
         free(new.cast::<u8>(), M_SIGIO, size_of::<Sigio>());
 
         return Err(error);
@@ -2450,20 +2489,28 @@ pub fn sigio_copy(dst: &SigioRef, src: &SigioRef) {
     };
 
     newsigio.sio_pgid.set(sigio.sio_pgid.get());
-    // SAFETY: the source holds a reference to its credentials.
-    newsigio
-        .sio_ucred
-        .set(crhold(unsafe { &*sigio.sio_ucred.get() }));
+    // The source holds a reference to its credentials: one more for the copy.
+    if let Some(cr) = sigio.sio_ucred.cred() {
+        newsigio.sio_ucred.set(cr);
+    }
     newsigio.sio_myref.set(dst);
     if newsigio.sio_pgid.get() > 0 {
         newsigio.sio_proc.set(sigio.sio_proc.get());
         // SAFETY: the owner is alive (its sigio is registered); the new sigio is on no
         // list.
-        unsafe { (*newsigio.sio_proc.get()).ps_sigiolst.insert_head(newsigio) };
+        unsafe {
+            (&*newsigio.sio_proc.get())
+                .ps_sigiolst
+                .insert_head(newsigio)
+        };
     } else {
         newsigio.sio_pgrp.set(sigio.sio_pgrp.get());
         // SAFETY: as above, for the process group.
-        unsafe { (*newsigio.sio_pgrp.get()).pg_sigiolst.insert_head(newsigio) };
+        unsafe {
+            (&*newsigio.sio_pgrp.get())
+                .pg_sigiolst
+                .insert_head(newsigio)
+        };
     }
 
     sigio_unlink(dst, &rmlist);
@@ -2480,33 +2527,24 @@ pub fn sigio_copy(dst: &SigioRef, src: &SigioRef) {
 mod tests {
     use super::*;
 
-    use crate::sys::proc::Pgrp;
     use crate::sys::signal::{SIGEMT, SIGINFO, SIGIO, SIGQUIT, SIGTHR, SIGTRAP, SIGURG, SIGWINCH};
     use crate::sys::signalvar::SA_CANTMASK;
 
-    /// A process with one thread, its own `sigacts` and a process group, laid out by the test
-    /// (nothing here is linked into the kernel's lists).
+    /// A process with one thread and its own `sigacts`, built by the test (nothing here is
+    /// linked into the kernel's lists; no group: no test here stops a process).
     struct World {
-        pr: Process,
-        p: Proc,
-        ps: Sigacts,
-        pg: Pgrp,
+        pr: &'static Process,
+        p: &'static Proc,
+        ps: &'static Sigacts,
     }
 
     impl World {
-        fn new(pid: Pid) -> std::boxed::Box<Self> {
-            let w = std::boxed::Box::new(World {
-                pr: Process::new(),
-                p: Proc::new(),
-                ps: Sigacts::new(),
-                pg: Pgrp::new(),
-            });
-            w.pr.ps_pid.set(pid);
-            w.pr.ps_sigacts.set(&w.ps);
-            w.pg.pg_jobc.set(1);
-            w.pr.ps_pgrp.set(&w.pg);
-            w.p.p_p.set(&w.pr);
-            w
+        fn new(pid: Pid) -> Self {
+            let pr = crate::kern::proc_glue::test_process(pid);
+            let p = crate::kern::proc_glue::test_thread(pr);
+            let ps: &'static Sigacts = std::boxed::Box::leak(std::boxed::Box::new(Sigacts::new()));
+            pr.ps_sigacts.set(Some(ps));
+            World { pr, p, ps }
         }
     }
 

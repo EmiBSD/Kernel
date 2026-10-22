@@ -72,7 +72,6 @@ use core::sync::atomic::Ordering;
 use crate::dev::audio::audioopen;
 use crate::dev::biovar::{BIOCDISK, BIOCINQ, BIOCINSTALLBOOT, BIOCVOL};
 use crate::dev::diskmap::diskmapioctl;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_prot::groupmember;
 use crate::kern::kern_sig::{sigabort, single_thread_clear, single_thread_set};
 use crate::kern::subr_prf::{Str, panic, uprintf};
@@ -551,7 +550,7 @@ pub fn sys_pledge(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         execpromises = parsepledges(p, "pledgeexecreq", uexecpromises)?;
     }
 
-    mtx_enter(&pr.ps_mtx);
+    let g_pr = pr.ps_mtx.lock();
     let error = 'fail: {
         let flags = pr.ps_flags.load(Ordering::Relaxed);
 
@@ -604,7 +603,7 @@ pub fn sys_pledge(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         }
         Ok(())
     };
-    mtx_leave(&pr.ps_mtx);
+    drop(g_pr);
 
     if unveil_cleanup {
         // Kill off unveil and drop unveil vnode refs if we no longer are holding any
@@ -672,8 +671,8 @@ pub fn pledge_fail(p: &Proc, error: Errno, code: u64) -> Errno {
     kernel_lock();
     uprintf(format_args!(
         "{}[{}]: pledge \"{}\", syscall {}\n",
-        Str(pr.comm()),
-        pr.ps_pid.get(),
+        Str(&pr.comm()),
+        pr.ps_pid,
         Str(codes),
         p.p_pledge_syscall.get()
     ));
@@ -1533,7 +1532,7 @@ pub fn pledge_kill(p: &Proc, pid: Pid) -> Result<(), Errno> {
         return Ok(());
     }
 
-    if pid == 0 || pid == p.process().ps_pid.get() {
+    if pid == 0 || pid == p.process().ps_pid {
         return Ok(());
     }
 
@@ -1576,13 +1575,12 @@ mod tests {
     use super::*;
     use crate::kern::vfs_lookup::ndinit;
     use crate::sys::namei::{LOOKUP, NiDirp};
-    use crate::sys::proc::Process;
 
     /// A thread of a process pledged to `promises` (plus "error").
     fn pledged(promises: u64) -> &'static Proc {
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
+        let pr = crate::kern::proc_glue::test_process(1);
+        let p = crate::kern::proc_glue::test_thread(pr);
+        pr.ps_mainproc.set(p);
         pr.ps_flags.fetch_or(PS_PLEDGE, Ordering::Relaxed);
         pr.ps_pledge
             .store(promises | PLEDGE_ERROR, Ordering::Relaxed);
@@ -1592,9 +1590,9 @@ mod tests {
 
     /// An unpledged thread.
     fn unpledged() -> &'static Proc {
-        let pr: &'static Process = Box::leak(Box::new(Process::new()));
-        let p: &'static Proc = Box::leak(Box::new(Proc::new()));
-        p.p_p.set(pr);
+        let pr = crate::kern::proc_glue::test_process(1);
+        let p = crate::kern::proc_glue::test_thread(pr);
+        pr.ps_mainproc.set(p);
         p
     }
 
