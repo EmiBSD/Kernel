@@ -105,6 +105,7 @@ pub mod prf;
 pub mod random;
 pub mod refcnt;
 pub mod rwlock;
+pub mod seqlock;
 pub mod sleep;
 #[forbid(unsafe_code)]
 pub mod softintr;

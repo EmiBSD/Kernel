@@ -8227,6 +8227,11 @@ crate = "hal"
 reason = "hal runtime, written new: the KernelLock bridge (KERNEL_LOCK, KERNEL_UNLOCK, KERNEL_ASSERT_LOCKED of kern_lock.rs) for the kernel crate's pagers (N3.4c); paid by N4; N4.2: the kernel lock's witnesses (KernelWitness exclusive, KernelReader shared, a per-CPU count keeping them apart on the CPU that holds the lock, assert_unwitnessed for the release paths) for the [K] state of kernel::proc, and KernelLock::held"
 
 [[extra]]
+rust = "sys/hal/seqlock.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'static str one writer replaces and any CPU reads without a lock behind a generation counter (p_wmesg: written under sched_lock, read unlocked by kinfo_proc, ddb, the tty status line); 1 unsafe (the str rebuilt from the two words of one set)"
+
+[[extra]]
 rust = "sys/hal/thread.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread so the thread's address is the slot's; N4.5 fills the module (cpu_switchto, proc_trampoline, cpu_fork)"

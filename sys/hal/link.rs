@@ -34,6 +34,11 @@
 //! links consistent (a list's, a tree's) is the owner's business: a race between two writers
 //! can make a list wrong, never a reference dangle.
 //!
+//! [`PtrWord<T>`] (N4.2) is the other half of LZ's `Cell<*const T>`: an address that the type
+//! never follows, for a member whose target is not `'static` and is still dereferenced by
+//! legacy code under its own `unsafe` (`ps_fd`, `ps_sigacts`, `p_kq` while those subsystems
+//! are `bsd`'s): a word, so the struct that holds it may be `Send` and `Sync`.
+//!
 //! ## Redesign
 //! - `Cell<*const T>` with "valid while linked" -> `Link<T>` over `'static` targets: the
 //!   validity is the type's, so it is checked by the compiler at `set`, not promised at every
@@ -114,6 +119,56 @@ impl<T: 'static> core::fmt::Debug for Link<T> {
         write!(f, "Link({:p})", self.ptr.load(Ordering::Relaxed))
     }
 }
+
+/// An address kept as a word (`struct filedesc *ps_fd` while the descriptors are `bsd`'s): LZ's
+/// `Cell<*const T>` with its `get()`/`set()`, made `Send` and `Sync` by being an atomic, not by
+/// a premise. Nothing here follows the pointer: whoever dereferences what `get` returns does
+/// it in its own `unsafe` block with its own argument, as LZ's sites do today.
+#[repr(transparent)]
+pub struct PtrWord<T>(AtomicPtr<T>);
+
+impl<T> PtrWord<T> {
+    /// `NULL`.
+    pub const fn new() -> Self {
+        Self(AtomicPtr::new(ptr::null_mut()))
+    }
+
+    /// The address (relaxed: the word is written and read under the lock its owner names).
+    #[inline]
+    pub fn get(&self) -> *const T {
+        self.0.load(Ordering::Relaxed).cast_const()
+    }
+
+    /// The address, for a member the C declares non-`const` (`ps_uvpaths`).
+    #[inline]
+    pub fn get_mut(&self) -> *mut T {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Stores `p`.
+    #[inline]
+    pub fn set(&self, p: *const T) {
+        self.0.store(p.cast_mut(), Ordering::Relaxed);
+    }
+
+    /// Stores `p`, returning the address it replaces.
+    #[inline]
+    pub fn replace(&self, p: *const T) -> *const T {
+        self.0.swap(p.cast_mut(), Ordering::Relaxed).cast_const()
+    }
+}
+
+impl<T> Default for PtrWord<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> core::fmt::Debug for PtrWord<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PtrWord({:p})", self.0.load(Ordering::Relaxed))
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -141,6 +196,18 @@ mod tests {
         l.set(None);
         assert!(l.is_none());
         assert_eq!(Link::to(&A).get(), Some(&7));
+    }
+
+    #[test]
+    fn an_address_word_is_only_kept() {
+        let w = PtrWord::<u32>::new();
+        assert!(w.get().is_null());
+        w.set(&raw const A);
+        assert!(ptr::eq(w.get(), &raw const A));
+        assert!(ptr::eq(w.replace(&raw const B), &raw const A));
+        assert!(ptr::eq(w.get_mut().cast_const(), &raw const B));
+        fn shared<T: Send + Sync>() {}
+        shared::<PtrWord<core::cell::Cell<u8>>>();
     }
 
     #[test]
