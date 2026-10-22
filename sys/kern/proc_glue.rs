@@ -195,7 +195,7 @@ use crate::sys::tty::Tty;
 use crate::sys::types::Pid;
 use crate::sys::vnode::{REVOKEALL, Vnode};
 
-pub use kernel::proc::{chgproccnt, inferior, with_uidinfo, zapverauth};
+pub use kernel::proc::{inferior, zapverauth};
 
 /// `stack_t p_sigstk`: the thread's signal stack, three words written whole by the thread.
 #[derive(Debug, Default)]
@@ -767,6 +767,20 @@ pub fn fork_join_pgrp(w: &mut hal::klock::KernelWitness, curpr: &Process, pr: &P
     drop(pr.set_pgrp(w, pgrp));
 }
 
+/// `chgproccnt(uid, diff)` in `bsd`'s uid table ([`kernel::proc::chgproccnt`]).
+pub fn chgproccnt(uid: crate::sys::types::Uid, diff: i64) -> i64 {
+    kernel::proc::chgproccnt::<BsdProcGlue>(uid, diff)
+}
+
+/// `uid_find(uid)` ... `uid_release(uip)` in `bsd`'s uid table
+/// ([`kernel::proc::with_uidinfo`]).
+pub fn with_uidinfo<R>(
+    uid: crate::sys::types::Uid,
+    f: impl FnOnce(&kernel::proc::Uidinfo) -> R,
+) -> R {
+    kernel::proc::with_uidinfo::<BsdProcGlue, R>(uid, f)
+}
+
 /// A process of the host tests with pid `pid` and its own klist store, leaked (never
 /// freed: the tests' processes live for the run).
 #[cfg(test)]
@@ -855,10 +869,19 @@ pub(crate) fn test_setsid(pr: &'static Process) -> (PgrpRef, crate::sys::proc::S
     (pgrp, sess)
 }
 
-/// Fresh, empty tables for this host test thread; the old ones (and the processes on them)
-/// are forgotten, never freed (`testing.md`, the `*_test_reset` rule).
+/// Fresh, empty tables for this host test thread, the uid table among them; the old ones
+/// (and the processes and uid entries on them) are forgotten, never freed (`testing.md`, the
+/// `*_test_reset` rule). The kernel's process-wide pools (`ucredpl`, `plimitpl`,
+/// `zombiepl`) are made once per test process and kept: their items come from
+/// `kernel::testutil`'s heap doubles, never from the memory `setup_real_memory` loads, which
+/// is checked here.
 #[cfg(test)]
 pub(crate) fn proc_test_reset() {
+    if kernel::testutil::memory_is_the_doubles() == Some(false) {
+        crate::kern::subr_prf::panic(format_args!(
+            "proc_test_reset: the kernel's pools are not the heap doubles"
+        ));
+    }
     let t: &'static ProcTables<BsdProcGlue> =
         std::boxed::Box::leak(std::boxed::Box::new(ProcTables::new()));
     TEST_TABLES.with(|c| c.set(t));
@@ -1145,6 +1168,19 @@ mod tests {
         }
         // The group stays linked with its members, all leaked, as the tests' processes.
         kernel_unlock();
+    }
+
+    #[test]
+    fn procinit_gives_each_test_fresh_user_counts() {
+        // The uid table lives in the tables proc_test_reset replaces: a count an earlier
+        // test left is not seen after the next procinit. The kernel's process-wide pools are
+        // kept, which is sound because they are the heap doubles (checked by the reset).
+        let _g = setup();
+        assert_eq!(chgproccnt(64_010, 2), 2);
+        assert_eq!(with_uidinfo(64_010, |u| u.ui_proccnt.get()), 2);
+        procinit();
+        assert_eq!(chgproccnt(64_010, 1), 1);
+        assert_eq!(kernel::testutil::memory_is_the_doubles(), Some(true));
     }
 }
 /* </TESTS> */

@@ -5209,8 +5209,8 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::UIHASHTBL"
-native = ["sys/kernel/proc.rs::UIHASH"]
-kind = "renamed"
+native = ["sys/kernel/proc.rs::ProcTables"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::TIDHASHTBL"

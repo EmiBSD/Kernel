@@ -911,6 +911,18 @@ static PRINTF_OUT: Mutex<String> = Mutex::new(String::new());
 
 static TEST_PRINTF: TestPrintf = TestPrintf;
 
+/// Whether [`install`] registered the pool and `malloc(9)` doubles (`None` before it ran).
+static MEMORY_DOUBLES: OnceLock<bool> = OnceLock::new();
+
+/// Whether the kernel's pools and `malloc(9)` are this module's heap doubles: then what they
+/// hand out never comes from the memory a dependent crate's tests load and replace (`bsd`'s
+/// `setup_real_memory`), so a process-wide kernel pool (`ucredpl`, `plimitpl`, `zombiepl`)
+/// needs no reset between tests. `None` before [`install`]; `Some(false)` when another
+/// backend held the slots first.
+pub fn memory_is_the_doubles() -> Option<bool> {
+    MEMORY_DOUBLES.get().copied()
+}
+
 /// Registers every double, once per process.
 pub fn install() {
     static ONCE: Once = Once::new();
@@ -918,8 +930,9 @@ pub fn install() {
         let _ = bridges::register_intr_level(&TEST_INTR);
         let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
-        let _ = bridges::register_pool_backend(&TEST_POOLS);
-        let _ = bridges::register_malloc(&TEST_MALLOC);
+        let pools = bridges::register_pool_backend(&TEST_POOLS).is_ok();
+        let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();
+        let _ = MEMORY_DOUBLES.set(pools && malloc);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_kernel_lock(&TEST_KERNEL_LOCK);

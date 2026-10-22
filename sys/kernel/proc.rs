@@ -166,8 +166,9 @@
 //!   process or thread dropped while linked stops the kernel (the C's "unlink before
 //!   `pool_put`" made a check). The adapters are `bsd`'s (`proc_glue_links!`), because the
 //!   types are generic over the glue.
-//! - The hash tables of `hashinit` are `MArray<PinList<_>>`s made by [`procinit`]; `uihashtbl`
-//!   is a static's, under the `uidinfo` reader-writer lock whose witness [`uid_find`] returns.
+//! - The hash tables of `hashinit` are `MArray<PinList<_>>`s made by [`procinit`], in the
+//!   glue's [`ProcTables`] (one per kernel; a host test thread's own), `uihashtbl` among them,
+//!   under the `uidinfo` reader-writer lock ([`with_uidinfo`]).
 //! - `struct process *ps_pptr`, `struct pgrp *ps_pgrp`, `struct session *pg_session` are counted
 //!   handles in kernel-lock cells (a parent outlives no reference to it; a group lives while a
 //!   member holds it, a session while a group does: `s_count` is that count); `s_leader` is the
@@ -791,6 +792,8 @@ pub struct ProcTables<G: ProcGlue> {
     tidhash: OnceStatic<MArray<PinList<G::ThreadHash>>>,
     /// `pgrphashtbl`.
     pgrphash: OnceStatic<MArray<PinList<G::PgrpHash>>>,
+    /// `uihashtbl` (`[U]`): the users' process and lock counts.
+    uihash: OnceStatic<MArray<PinList<UidinfoHash>>>,
     /// `proc_pool`, `procpl`.
     pub procpl: BoxPool<Thread<G>>,
     /// `process_pool`, `processpl` (recorded: a lent `&Process` can be counted again).
@@ -811,6 +814,7 @@ impl<G: ProcGlue> ProcTables<G> {
             pidhash: OnceStatic::new(),
             tidhash: OnceStatic::new(),
             pgrphash: OnceStatic::new(),
+            uihash: OnceStatic::new(),
             procpl: BoxPool::new(),
             processpl: TypedPool::new(),
             pgrppl: TypedPool::new(),
@@ -866,23 +870,19 @@ static RUSAGE_POOL: BoxPool<Rusage> = BoxPool::new();
 
 /// `uidinfolk`.
 static UIDINFOLK: RawRwlock = RawRwlock::new("uidinfo");
-/// `uihashtbl` (`[U]`), made by the first [`procinit`].
-static UIHASH: OnceStatic<MArray<PinList<UidinfoHash>>> = OnceStatic::new();
 
 /// `procinit()`: the hash tables (`maxthread / 4` tid chains, `maxprocess / 4` pid and pgrp
 /// chains, `maxprocess / 16` uid chains) and the pools `procpl`, `processpl`, `zombiepl`,
 /// `pgrppl`, `sessionpl` (`ucredpl` is `kernel::cred`'s, made at its first use). Once per
-/// glue at boot; the uid table once per kernel.
+/// glue at boot (one glue per kernel; a host test thread's fresh tables, each).
 pub fn procinit<G: ProcGlue>(maxthread: i32, maxprocess: i32) {
     let t = G::tables();
     let made = t.tidhash.set(hashinit(maxthread / 4)).is_ok()
         && t.pidhash.set(hashinit(maxprocess / 4)).is_ok()
-        && t.pgrphash.set(hashinit(maxprocess / 4)).is_ok();
+        && t.pgrphash.set(hashinit(maxprocess / 4)).is_ok()
+        && t.uihash.set(hashinit(maxprocess / 16)).is_ok();
     if !made {
         kpanic(format_args!("procinit: called twice"));
-    }
-    if !UIHASH.is_set() {
-        let _ = UIHASH.set(hashinit(maxprocess / 16));
     }
     let pools = t.procpl.init(IPL_NONE, PR_WAITOK, "procpl").is_ok()
         && t.processpl
@@ -1915,10 +1915,10 @@ pub fn suser<G: ProcGlue>(p: &Thread<G>) -> Result<(), hal::sys::errno::Errno> {
     crate::cred::suser_ucred(p.ucred())
 }
 
-/// `uid_find(uid)` ... `uid_release(uip)`: `f` runs on the entry of `uid` (made on first need)
-/// with `uidinfolk` held for writing, as between the C's pair.
-pub fn with_uidinfo<R>(uid: Uid, f: impl FnOnce(&Uidinfo) -> R) -> R {
-    let Some(tbl) = UIHASH.get() else {
+/// `uid_find(uid)` ... `uid_release(uip)`: `f` runs on the entry of `uid` in the glue's
+/// table (made on first need) with `uidinfolk` held for writing, as between the C's pair.
+pub fn with_uidinfo<G: ProcGlue, R>(uid: Uid, f: impl FnOnce(&Uidinfo) -> R) -> R {
+    let Some(tbl) = G::tables().uihash.get() else {
         kpanic(format_args!("uid_find: before procinit"));
     };
     let chain = &tbl[(uid as usize) & (tbl.len() - 1)];
@@ -1943,8 +1943,8 @@ pub fn with_uidinfo<R>(uid: Uid, f: impl FnOnce(&Uidinfo) -> R) -> R {
 }
 
 /// `chgproccnt(uid, diff)`: the threads `uid` has, changed by `diff`; `panic(9)` below 0.
-pub fn chgproccnt(uid: Uid, diff: i64) -> i64 {
-    let count = with_uidinfo(uid, |uip| {
+pub fn chgproccnt<G: ProcGlue>(uid: Uid, diff: i64) -> i64 {
+    let count = with_uidinfo::<G, _>(uid, |uip| {
         let c = uip.ui_proccnt.get() + diff;
         uip.ui_proccnt.set(c);
         c
@@ -2258,6 +2258,9 @@ mod tests {
     std::thread_local! {
         static TABLES: &'static ProcTables<TestGlue> = Box::leak(Box::new(ProcTables::new()));
         static SIGNALS: RefCell<Vec<(Pid, i32)>> = const { RefCell::new(Vec::new()) };
+        /// Tables a test puts in place of the thread's own for a while.
+        static TABLES_OVERRIDE: core::cell::Cell<Option<&'static ProcTables<TestGlue>>> =
+            const { core::cell::Cell::new(None) };
     }
 
     impl ProcGlue for TestGlue {
@@ -2269,7 +2272,9 @@ mod tests {
         crate::proc_glue_link_types!();
 
         fn tables() -> &'static ProcTables<Self> {
-            TABLES.with(|t| *t)
+            TABLES_OVERRIDE
+                .with(core::cell::Cell::get)
+                .unwrap_or_else(|| TABLES.with(|t| *t))
         }
 
         fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}
@@ -2506,21 +2511,38 @@ mod tests {
     #[test]
     fn a_user_s_process_count() {
         setup();
-        assert_eq!(chgproccnt(64_001, 1), 1);
-        assert_eq!(chgproccnt(64_001, 2), 3);
-        assert_eq!(chgproccnt(64_001, -3), 0);
-        with_uidinfo(64_001, |u| {
+        assert_eq!(chgproccnt::<TestGlue>(64_001, 1), 1);
+        assert_eq!(chgproccnt::<TestGlue>(64_001, 2), 3);
+        assert_eq!(chgproccnt::<TestGlue>(64_001, -3), 0);
+        with_uidinfo::<TestGlue, _>(64_001, |u| {
             assert_eq!(u.ui_uid, 64_001);
             u.ui_lockcnt.set(u.ui_lockcnt.get() + 1);
         });
-        assert_eq!(with_uidinfo(64_001, |u| u.ui_lockcnt.get()), 1);
+        assert_eq!(
+            with_uidinfo::<TestGlue, _>(64_001, |u| u.ui_lockcnt.get()),
+            1
+        );
+    }
+
+    #[test]
+    fn fresh_tables_count_every_user_from_zero() {
+        // The uid table is the glue's (a test thread's own): a count left by earlier tables
+        // (another test, before a reset) is not seen by fresh ones.
+        setup();
+        assert_eq!(chgproccnt::<TestGlue>(64_003, 2), 2);
+        let fresh: &'static ProcTables<TestGlue> = Box::leak(Box::new(ProcTables::new()));
+        TABLES_OVERRIDE.with(|o| o.set(Some(fresh)));
+        procinit::<TestGlue>(64, 64);
+        assert_eq!(chgproccnt::<TestGlue>(64_003, 1), 1);
+        TABLES_OVERRIDE.with(|o| o.set(None));
+        assert_eq!(chgproccnt::<TestGlue>(64_003, 1), 3);
     }
 
     #[test]
     #[should_panic(expected = "procs < 0")]
     fn a_negative_count_is_refused() {
         setup();
-        chgproccnt(64_002, -1);
+        chgproccnt::<TestGlue>(64_002, -1);
     }
 
     #[test]
