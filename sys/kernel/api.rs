@@ -163,7 +163,67 @@ mod tests {
         munlockall: nr,
     };
 
-    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM);
+    fn fd1(nr: Register, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn fd2(nr: Register, _: i32, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn io(nr: Register, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn iov(nr: Register, _: i32, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn pio(nr: Register, _: i32, _: usize, _: usize, _: i64, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn piov(nr: Register, _: i32, _: usize, _: i32, _: i64, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn count(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn fstat(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn ioctl(nr: Register, _: i32, _: u64, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn fcntl(nr: Register, _: i32, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn dup3(nr: Register, _: i32, _: i32, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn utrace(nr: Register, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
+    const FD: FdEntries = FdEntries {
+        read: io,
+        write: io,
+        close: fd1,
+        getdtablecount: count,
+        dup: fd1,
+        fstat,
+        ioctl,
+        dup2: fd2,
+        fcntl,
+        dup3,
+        readv: iov,
+        writev: iov,
+        flock: fd2,
+        pread: pio,
+        pwrite: pio,
+        preadv: piov,
+        pwritev: piov,
+        fpathconf: fd2,
+        utrace,
+        closefrom: fd1,
+    };
+
+    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD);
 
     #[test]
     fn the_table_is_this_version_with_the_kernels_registration() {
@@ -180,6 +240,8 @@ mod tests {
         assert_eq!((API.pipe2)(263, 0, 0), Err(263));
         assert_eq!((API.vm.mmap)(49, 0, 0, 0, 0, 0, 0), Err(49));
         assert_eq!((API.vm.munlockall)(272), Err(272));
+        assert_eq!((API.fd.read)(3, 0, 0, 0, &mut rval), Err(3));
+        assert_eq!((API.fd.closefrom)(287, 0, &mut rval), Err(287));
     }
 }
 /* </TESTS> */
