@@ -634,14 +634,15 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     where
         T: Homed,
     {
-        Self::take(&Self::homed_view(value)?, how)
+        let view = Self::homed_view(value)?;
+        Self::take(&view, how)
     }
 
     /// A view of the item holding `value` (no reference of its own, never dropped), for
     /// [`PoolArc::homed`] and [`PoolArc::count_of`] to read or raise its count while `value`
-    /// is borrowed; `None` for a value no recorded pool placed. The view is never kept past
-    /// the caller's use of `value`.
-    fn homed_view(value: &T) -> Option<ManuallyDrop<Self>>
+    /// is borrowed; `None` for a value no recorded pool placed. The view borrows `value`
+    /// ([`View`]), so it cannot outlive it.
+    fn homed_view(value: &T) -> Option<View<'_, T>>
     where
         T: Homed,
     {
@@ -662,11 +663,15 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         // item is not put back during the call: `value` is borrowed for it, and an item goes
         // back only after its value's drop, which no `&T` survives but one a pinned list
         // lends, whose element's drop stops the kernel while it is linked (hal::pinlist's
-        // I1) before its memory goes back. The view lives no longer than the caller's
-        // borrow of `value` (`homed` and `count_of` use it at once); a count of 0 is refused
+        // I1) before its memory goes back. The view borrows `value` (`View`'s lifetime), so
+        // it lives no longer than the caller's borrow; a count of 0 is refused
         // by `take` (a panic or `None`, as `how` says), never taken back to 1; an adoption
         // takes a parked reference, which only exists while the count is above 0.
-        Some(unsafe { Self::view(at) })
+        let arc = unsafe { Self::view(at) };
+        Some(View {
+            arc,
+            _value: PhantomData,
+        })
     }
 
     /// Whether two handles name the same item.
@@ -779,7 +784,7 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     /// A handle to the item `view` names, as `how` says: one more reference (panicking at a
     /// count of 0, or answering `None` there), or a parked reference adopted (`None` when
     /// none is parked).
-    fn take(view: &ManuallyDrop<Self>, how: Rebuild) -> Option<Self> {
+    fn take(view: &Self, how: Rebuild) -> Option<Self> {
         let inner = view.inner;
         let refs = &view.inner().refs;
         let taken = match how {
@@ -846,6 +851,22 @@ unsafe impl<T: Send + Sync + 'static> Send for PoolArc<T> {}
 // SAFETY: `&PoolArc<T>` gives `&T` and clones (an atomic increment); with `T: Sync` sharing it
 // across CPUs is sound, and a clone moved elsewhere is covered by `Send` above.
 unsafe impl<T: Send + Sync + 'static> Sync for PoolArc<T> {}
+
+/// A [`PoolArc`] that counts nothing, built over a borrowed value ([`PoolArc::homed_view`])
+/// to read or raise the item's count: it borrows the value for `'a`, so the item cannot go
+/// back (its value's drop cannot start) while the view lives, and it is never dropped.
+struct View<'a, T: Send + Sync + 'static> {
+    arc: ManuallyDrop<PoolArc<T>>,
+    _value: PhantomData<&'a T>,
+}
+
+impl<T: Send + Sync + 'static> Deref for View<'_, T> {
+    type Target = PoolArc<T>;
+
+    fn deref(&self) -> &PoolArc<T> {
+        &self.arc
+    }
+}
 
 /// How [`PoolArc::take`] makes its handle.
 #[derive(Clone, Copy)]
