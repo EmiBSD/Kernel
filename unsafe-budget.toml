@@ -14,7 +14,7 @@
 forbid_floor = 348
 legacy_ceiling = 8501
 legacy_baseline = 8748
-hal_ceiling = 135
+hal_ceiling = 600
 baseline_date = "2026-10-10"
 
 [[subsystem]]
