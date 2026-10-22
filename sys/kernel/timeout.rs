@@ -826,6 +826,16 @@ static TICK: AtomicI32 = AtomicI32::new(10_000);
 /// \[I\] `tick_nsec`.
 static TICK_NSEC: AtomicI32 = AtomicI32::new(10_000_000);
 
+/// `hz`: the clock ticks per second (`kernel::clock::tstohz`).
+pub fn hz() -> i32 {
+    HZ.load(Ordering::Relaxed)
+}
+
+/// `tick`: the microseconds per clock tick (`kernel::clock::tstohz`).
+pub fn tick() -> i32 {
+    TICK.load(Ordering::Relaxed)
+}
+
 /// A wheel queue, pinned: the queues are a `static`.
 #[inline]
 fn ring(r: &'static PinRing<ToList>) -> Pin<&'static PinRing<ToList>> {

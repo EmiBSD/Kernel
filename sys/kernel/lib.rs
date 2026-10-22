@@ -42,6 +42,7 @@ pub mod clock;
 pub mod cred;
 pub mod crypto;
 pub mod descrip;
+pub mod event;
 pub mod extent;
 pub mod file;
 pub mod pipe;

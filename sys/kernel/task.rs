@@ -749,6 +749,13 @@ pub fn run_next_by_hand(tq: &Taskq) {
     }
 }
 
+/// Test hook: `taskq_init` once per test process (the pool, the system queues' threads),
+/// for every test module that needs them running.
+#[cfg(test)]
+pub(crate) fn taskq_init_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(taskq_init);
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -777,9 +784,8 @@ mod tests {
 
     /// `taskq_init` once per process (the pool, the system queues' creators).
     fn init() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
         testutil::install();
-        ONCE.call_once(taskq_init);
+        taskq_init_once();
     }
 
     /// What the payload of a test task reads back.

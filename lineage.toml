@@ -9245,6 +9245,18 @@ kind = "dropped"
 reason = "a table is made by fdinit (or fdcopy) alone, in fdescpl"
 
 [[module]]
+rust = "sys/kernel/event.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_event.rs", "sys/sys/event.rs", "sys/sys/eventvar.rs"]
+status = "redesigned"
+notes = "N4.4: kern_event.c, event.h and eventvar.h over Knote<G>/Kqueue<G>/Klist<G>: knotes owned by their kqueue's chains (hal OwnedList per knlist slot and hash bucket, taken back through the KnHold SecondaryRef a processing holder keeps), kq_head and the klists hal PinLists, klists of three kinds (kernel lock, owner's witness, own IPL_HIGH mutex for bsd's legacy-locked owners), the kqueue a counted kqueuepl item (KqRef), the timer a kqtimerpl item whose timeout holds it as an erased argument; pools knotepl 288, kqueuepl 328, kqtimerpl 88 bytes"
+
+[[module.fn]]
+lz = "sys/sys/eventvar.rs::Proc::kq"
+native = ["thread_kq"]
+kind = "renamed"
+
+[[module]]
 rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]

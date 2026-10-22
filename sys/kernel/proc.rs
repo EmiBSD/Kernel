@@ -189,7 +189,8 @@ use core::ops::Deref;
 use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{
-    AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    AtomicI16, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
+    Ordering,
 };
 
 use hal::intr::{IPL_HIGH, IPL_NONE};
@@ -210,6 +211,7 @@ use hal::thread::MachineSlot;
 use crate::assert::kpanic;
 use crate::cred::{CredRef, Ucred};
 use crate::descrip::{FdRef, Filedesc};
+use crate::event::{Klist, Knote, KqPools, KqRef, Kqueue};
 use crate::file::FileGlue;
 use crate::resource::{LimitCache, PlimitRef, Rusage, TimespecWord, Tusage};
 use crate::vm::map::{InentryCache, VmspaceRef};
@@ -475,6 +477,12 @@ word!(
     u16
 );
 word!(
+    /// A `short` member.
+    I16Word,
+    AtomicI16,
+    i16
+);
+word!(
     /// A `u_int` member.
     U32Word,
     AtomicU32,
@@ -692,6 +700,14 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type PgrpHash: PinAdapter<Elem = Pgrp<Self>>;
     /// The descriptors of this glue's processes (`ps_fd`, `kernel::descrip`).
     type FileGlue: FileGlue<Proc = Self>;
+    /// `kn_link`: the chain of a kqueue that owns a knote (`kernel::event`).
+    type KnLink: OwnedAdapter<Elem = Knote<Self>>;
+    /// `kn_tqe`: a kqueue's pending queue.
+    type KnTqe: PinAdapter<Elem = Knote<Self>>;
+    /// `kn_selnext`: an object's klist.
+    type KnSelnext: PinAdapter<Elem = Knote<Self>>;
+    /// `kq_next`: a table's `fd_kqlist`.
+    type KqNext: PinAdapter<Elem = Kqueue<Self>>;
 
     /// The lists, hashes and pools of this glue's processes (one `static` of `bsd`'s).
     fn tables() -> &'static ProcTables<Self>;
@@ -710,6 +726,19 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn session_placed(sess: &Session<Self>);
     /// The last reference to a session dropped (`SESSRELE`'s `timeout_del(&s_verauthto)`).
     fn session_destroy(sess: &Session<Self>);
+    /// `curproc`: the thread running on this CPU (`None` before the first one, and on a
+    /// host test thread that set none), until the scheduler moves (N4.5).
+    fn curproc() -> Option<&'static Thread<Self>>;
+    /// `pledge_fail(p, error, code)`: reports a pledge violation of `p` and returns the
+    /// error the system call fails with (`kern_pledge`'s, N4.7).
+    fn pledge_fail(
+        p: &Thread<Self>,
+        error: hal::sys::errno::Errno,
+        code: u64,
+    ) -> hal::sys::errno::Errno;
+    /// A counted reference to `pr` (process 0's `static`, or a `processpl` item), for a
+    /// holder that keeps a process found under a witness past it (`filt_procattach`).
+    fn process_ref(pr: &Process<Self>) -> ProcessRef<Self>;
 }
 
 /// Declares the list adapters of the glue `$glue` (`hal::pin_adapter!` and
@@ -761,6 +790,24 @@ macro_rules! proc_glue_links {
             /// `pg_hash`.
             pub PgrpHashLink: $crate::proc::Pgrp<$glue>, pg_hash
         );
+        hal::owned_adapter!(
+            /// `kn_link`: a kqueue's chains own their knotes (a list: the order is unused).
+            pub KnLinkLink: $crate::event::Knote<$glue>,
+            link,
+            |_a, _b| ::core::cmp::Ordering::Equal
+        );
+        hal::pin_adapter!(
+            /// `kn_tqe`: a kqueue's pending queue.
+            pub KnTqeLink: $crate::event::Knote<$glue>, tqe
+        );
+        hal::pin_adapter!(
+            /// `kn_selnext`: an object's klist.
+            pub KnSelnextLink: $crate::event::Knote<$glue>, selnext
+        );
+        hal::pin_adapter!(
+            /// `kq_next`: a table's `fd_kqlist`.
+            pub KqNextLink: $crate::event::Kqueue<$glue>, next
+        );
     };
 }
 
@@ -778,6 +825,10 @@ macro_rules! proc_glue_link_types {
         type ThreadLink = ThreadThrLink;
         type ThreadOwned = ThreadOwnedLink;
         type PgrpHash = PgrpHashLink;
+        type KnLink = KnLinkLink;
+        type KnTqe = KnTqeLink;
+        type KnSelnext = KnSelnextLink;
+        type KqNext = KqNextLink;
     };
 }
 
@@ -806,6 +857,8 @@ pub struct ProcTables<G: ProcGlue> {
     pub pgrppl: TypedPool<Pgrp<G>>,
     /// `session_pool`, `sessionpl` (recorded).
     pub sessionpl: TypedPool<Session<G>>,
+    /// `kqueue_pool`, `knote_pool` and the timers' pool (`kernel::event::kqueue_init`).
+    pub kq: KqPools<G>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -823,6 +876,7 @@ impl<G: ProcGlue> ProcTables<G> {
             processpl: TypedPool::new(),
             pgrppl: TypedPool::new(),
             sessionpl: TypedPool::new(),
+            kq: KqPools::new(),
         }
     }
 
@@ -1251,6 +1305,9 @@ pub struct Process<G: ProcGlue> {
     /// `ps_fd`: the descriptor table, set once before the process's first thread runs
     /// (`fork1`, `main` for process 0) and never taken back (`fdfree` empties it).
     fd: OnceStatic<FdRef<G::FileGlue>>,
+    /// \[Q,m\] `ps_klist`: knotes attached to this process, locked by `ps_mtx` (with
+    /// `kqueue_ps_list_lock`, `kernel::event`).
+    pub ps_klist: Klist<G>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1315,6 +1372,7 @@ impl<G: ProcGlue> Process<G> {
             ps_kbind_addr: UsizeWord::new(0),
             ps_start: TimespecWord::new(),
             fd: OnceStatic::new(),
+            ps_klist: Klist::owner(),
             g,
         }
     }
@@ -1639,6 +1697,9 @@ pub struct Thread<G: ProcGlue> {
     pub p_limit: LimitCache,
     /// \[o\] `p_kq_serial`.
     pub p_kq_serial: U64Word,
+    /// \[o\] `p_kq`: for select/poll (`kernel::event::kqpoll_init`), set at the first call
+    /// and kept until the thread's memory goes (`kqpoll_exit` empties it).
+    pub p_kq: OnceStatic<KqRef<G>>,
     /// \[a\] `p_siglist`.
     pub p_siglist: AtomicU32,
     /// \[o\] `p_sigmask`.
@@ -1727,6 +1788,7 @@ impl<G: ProcGlue> Thread<G> {
             p_tu: Tusage::new(),
             p_limit: LimitCache::new(),
             p_kq_serial: U64Word::new(0),
+            p_kq: OnceStatic::new(),
             p_siglist: AtomicU32::new(0),
             p_sigmask: U32Word::new(0),
             p_name: NameWord::new(),
@@ -2332,6 +2394,19 @@ mod tests {
         fn session_hangup(_sess: &Session<Self>) {}
         fn session_placed(_sess: &Session<Self>) {}
         fn session_destroy(_sess: &Session<Self>) {}
+        fn curproc() -> Option<&'static Thread<Self>> {
+            None
+        }
+        fn pledge_fail(
+            _p: &Thread<Self>,
+            error: hal::sys::errno::Errno,
+            _code: u64,
+        ) -> hal::sys::errno::Errno {
+            error
+        }
+        fn process_ref(pr: &Process<Self>) -> ProcessRef<Self> {
+            StaticOrPooled::Pooled(PoolArc::from_ref(pr).unwrap())
+        }
     }
 
     type P = ProcessRef<TestGlue>;
