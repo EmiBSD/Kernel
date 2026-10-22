@@ -190,3 +190,4 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - A release build of bsd's lib tests takes ~30 min; the dev profile is optimized: profile with it, `/usr/bin/sample <pid> 10` on the test binary (`pgrep -x <binary name>`, not -f, which finds the zsh wrapper).
 - A witness-taking form called from legacy code (VN_KNOTE's knote_locked) panics in the file systems' host tests, which run VOPs without the kernel lock: the legacy form takes the lock recursively itself.
 - Adding `#[forbid(unsafe_code)]` to a mod line by sed: grep -B1 first; a line already carrying it gives clippy duplicated_attributes.
+- hal::thread admits one thread type per process (`check_type`): kernel test glues other than the scheduler's cannot read curproc through `try_with_current`; a glue method lending curproc (`ProcGlue::with_curproc`) lets bsd use hal's and the tests keep a thread-local.
