@@ -169,8 +169,17 @@ pub fn seltrue_kqfilter(_dev: Dev, kn: &Knote) -> Result<(), Errno> {
     kernel::event::seltrue_kqfilter(kn)
 }
 
-/// `knote(list, hint)`: takes the list's lock.
+/// `knote(list, hint)`: takes the list's lock, which for a kernel-lock list is the kernel
+/// lock. An `Own` list (`klist_init_mutex`/`klist_init_rwlock`) stands for its owner's lock,
+/// which the C's `knote` takes and its filters read under: its caller takes that lock and
+/// calls [`knote_locked`] instead; `knote` on one stops the kernel.
 pub fn knote(list: &Klist, hint: i64) {
+    if list.kind() == kernel::event::KlistKind::Own {
+        panic(format_args!(
+            "knote: klist {:p} is its owner's lock's: take it and call knote_locked",
+            list
+        ));
+    }
     list.knote(hint);
 }
 

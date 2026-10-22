@@ -4878,7 +4878,8 @@ adapted_by = ["sys/kernel/event.rs"]
 [[module]]
 rust = "sys/dev/wscons/wseventvar.rs"
 lz = ["sys/dev/wscons/wseventvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/event.rs"]
 
 [[module]]
 rust = "sys/dev/wscons/wskbd.rs"
@@ -5810,7 +5811,7 @@ status = "inherited"
 rust = "sys/kern/uipc_syscalls.rs"
 lz = ["sys/kern/uipc_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_usrreq.rs"

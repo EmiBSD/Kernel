@@ -90,7 +90,9 @@ use core::slice;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_event::{klist_free, klist_init_mutex, klist_insert, klist_remove, knote};
+use crate::kern::kern_event::{
+    klist_free, klist_init_mutex, klist_insert, klist_remove, knote_locked,
+};
 use crate::kern::kern_lock::{mtx_enter, mtx_init_flags, mtx_leave};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_init, rw_init_flags_trace};
@@ -2558,7 +2560,11 @@ pub fn sogetopt(
 /// `sohasoutofband(so)`: out-of-band data arrived: `SIGURG` and the except knotes.
 pub fn sohasoutofband(so: &Socket) {
     pgsigio(&so.so_sigio, SIGURG, false);
-    knote(&so.so_rcv.sb_klist, 0);
+    // knote(&so->so_rcv.sb_klist, 0): the klist's lock is sb_mtx, which the filters read
+    // under.
+    mtx_enter(&so.so_rcv.sb_mtx);
+    knote_locked(&so.so_rcv.sb_klist, 0);
+    mtx_leave(&so.so_rcv.sb_mtx);
 }
 
 /// `fo_kqfilter` of a socket: attaches a read, write or except knote.
@@ -2987,6 +2993,10 @@ mod tests {
         // EVFILT_EXCEPT for out-of-band data: hooked on a's receive buffer, quiet.
         let mut kev = ev_set(a as usize, EVFILT_EXCEPT, EV_ADD, NOTE_OOB, 0, 0);
         assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
+        assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
+        // sohasoutofband walks a's receive klist under sb_mtx (its Own mutex inside it, as
+        // the C's knote takes sb_mtx); no out-of-band mark yet: still quiet.
+        sohasoutofband(so_a);
         assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
 
         // Sockets have no vnode filter.
