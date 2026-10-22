@@ -1,4 +1,4 @@
-# Syncing with EmiBSD.LZ, step by step
+# Syncing with LandingZone, step by step
 
 The rule is `.claude/rules/lz-sync.md`; this is what is executed, usually once a month and
 always before an `N` milestone is marked met. LZ is read, never written.

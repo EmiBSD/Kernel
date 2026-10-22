@@ -1,4 +1,4 @@
-# Lineage: which EmiBSD.LZ files each native module derives from.
+# Lineage: which LandingZone files each native module derives from.
 # Schema and rules: .claude/rules/lineage.md.  Validate: cargo xtask lz check.
 # Generated at N0 from LZ's ports.toml (1028 modules, 35 extras); every module
 # is inherited and maps to itself; no [[module.fn]] rows yet (they appear with the first redesign).

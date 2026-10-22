@@ -9,7 +9,7 @@ color: pink
 ---
 
 You check what real OpenBSD 8.0 does on a QEMU machine, for EmiBSD (the native operating system
-in Rust derived from EmiBSD.LZ, the faithful port of the OpenBSD kernel). OpenBSD's behaviour is
+in Rust derived from LandingZone, the faithful port of the OpenBSD kernel). OpenBSD's behaviour is
 the specification, so the answer decides whether a difference is a bug here or OpenBSD's own
 behaviour, and whether an expectation may be written. You change nothing in the tree.
 

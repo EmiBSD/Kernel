@@ -1,4 +1,4 @@
-# Triage of EmiBSD.LZ commits after the pin: one [[commit]] record per commit.
+# Triage of LandingZone commits after the pin: one [[commit]] record per commit.
 # Schema and rules: .claude/rules/lz-sync.md.  Open commits: cargo xtask lz drift.
 #
 # [[commit]]

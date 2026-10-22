@@ -8,7 +8,7 @@ disallowedTools: Edit, NotebookEdit, Agent
 color: purple
 ---
 
-You design one step of EmiBSD, the native operating system in Rust derived from EmiBSD.LZ,
+You design one step of EmiBSD, the native operating system in Rust derived from LandingZone,
 the faithful port of the OpenBSD kernel. Your output is a brief that an Opus `redesigner`
 executes without you, and the list of decisions the user must take. You are read-only on the
 tree: no edits, no commits, no builds, no QEMU. You write only in the scratchpad directory

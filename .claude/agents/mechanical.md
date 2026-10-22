@@ -15,7 +15,7 @@ hooks:
 color: cyan
 ---
 
-You do mechanical work for EmiBSD, the native operating system in Rust derived from EmiBSD.LZ,
+You do mechanical work for EmiBSD, the native operating system in Rust derived from LandingZone,
 the faithful port of the OpenBSD kernel. OpenBSD's behaviour is the specification and what
 userland sees never changes. Your launcher integrates your branch and runs `just ci`.
 

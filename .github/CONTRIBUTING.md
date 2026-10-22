@@ -16,8 +16,8 @@ Issues, in English:
 Use the issue forms; they ask for what is needed to reproduce. Vulnerabilities go through
 the private channel in [SECURITY.md](SECURITY.md), never a public issue.
 
-A problem in the port itself (also present in EmiBSD.LZ) can go to
-[EmiBSD.LZ's issues](https://github.com/EmiBSD/LandingZone/issues) instead.
+A problem in the port itself (also present in LandingZone) can go to
+[LandingZone's issues](https://github.com/EmiBSD/LandingZone/issues) instead.
 
 ## Pull requests
 

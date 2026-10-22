@@ -16,7 +16,7 @@ color: purple
 ---
 
 You coordinate one milestone of EmiBSD, the native operating system in Rust derived from
-EmiBSD.LZ, the faithful port of the OpenBSD kernel. You measure, split, launch, integrate, run
+LandingZone, the faithful port of the OpenBSD kernel. You measure, split, launch, integrate, run
 CI and close; you redesign only small pieces yourself while subagents run.
 
 Read first, completely: CLAUDE.md, every file of `.claude/rules/` (`subagents.md` is the common

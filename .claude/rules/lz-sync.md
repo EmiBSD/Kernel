@@ -1,6 +1,6 @@
-# Syncing with EmiBSD.LZ
+# Syncing with LandingZone
 
-LZ keeps porting OpenBSD; native EmiBSD absorbs that work deliberately, commit by commit, and
+LZ (LandingZone) keeps porting OpenBSD; Kernel absorbs that work deliberately, commit by commit, and
 records every decision. LZ is never written to: `reference/emibsd-lz/` is a read-only clone
 (`reference-readonly.md`), and nothing in LZ refers to this repository.
 

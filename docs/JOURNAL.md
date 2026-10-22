@@ -6,7 +6,7 @@ numbers. Only what the history shows; `Effort` and `Time` are left for the user.
 
 ## Origin
 
-This repository is EmiBSD.LZ's history up to `lz-origin` (`f5985f1d055a`, `docs: M16b met`,
+This repository is LandingZone's (then EmiBSD.LZ's) history up to `lz-origin` (`f5985f1d055a`, `docs: M16b met`,
 2026-10-08), the faithful port of OpenBSD: milestones M0..M16b, 542 commits, 1860 `Upstream:`
 trailers, 1042 ported and 140 wip entries of its `ports.toml`. Their journal is LZ's
 `docs/JOURNAL.md` at that commit (`git show lz-origin:docs/JOURNAL.md`). From here on the port

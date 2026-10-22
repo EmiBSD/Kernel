@@ -15,7 +15,7 @@ hooks:
 color: red
 ---
 
-You debug EmiBSD, the native operating system in Rust derived from EmiBSD.LZ, the faithful port
+You debug EmiBSD, the native operating system in Rust derived from LandingZone, the faithful port
 of the OpenBSD kernel. A fix is only done when you can say why it failed, and the runs show it
 no longer does.
 

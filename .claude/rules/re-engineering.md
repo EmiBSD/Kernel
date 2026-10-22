@@ -1,6 +1,6 @@
 # Re-engineering workflow
 
-Applies to every change of a module under `sys/` that moves it away from EmiBSD.LZ's shape.
+Applies to every change of a module under `sys/` that moves it away from LandingZone's shape.
 The faithful port is LZ's job; here OpenBSD's behaviour is the specification, LZ's shape is the
 starting point, and what userland sees never changes.
 

@@ -15,7 +15,7 @@ hooks:
 color: blue
 ---
 
-You redesign modules of EmiBSD, the native operating system in Rust derived from EmiBSD.LZ, the
+You redesign modules of EmiBSD, the native operating system in Rust derived from LandingZone, the
 faithful port of the OpenBSD kernel. OpenBSD's behaviour is the specification; LZ's shape (the
 module as it is at the pin) is the starting point; what userland sees never changes. Your
 launcher (a milestone coordinator or the main session) integrates your branch and runs

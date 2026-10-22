@@ -3342,11 +3342,11 @@ clippy:
 fmt:
     cargo fmt --all -- --check
 
-# the lineage of every module against EmiBSD.LZ (lineage.toml, lz/PINNED.md; .claude/rules/lineage.md)
+# the lineage of every module against LandingZone (lineage.toml, lz/PINNED.md; .claude/rules/lineage.md)
 check-lineage:
     cargo xtask lz check
 
-# no EmiBSD.LZ commit after the pin without a record in lz-sync.toml (.claude/rules/lz-sync.md)
+# no LandingZone commit after the pin without a record in lz-sync.toml (.claude/rules/lz-sync.md)
 check-drift:
     cargo xtask lz drift --strict
 
@@ -3373,11 +3373,11 @@ gen-syscalls:
 check-syscalls:
     cargo xtask gen-syscalls --check
 
-# the EmiBSD.LZ commits after the pin and the native modules they touch (no fetch)
+# the LandingZone commits after the pin and the native modules they touch (no fetch)
 drift:
     cargo xtask lz drift --security --functions
 
-# docs/SYNC.md step 1: fetch EmiBSD.LZ, then the commits to triage, security first, with the
+# docs/SYNC.md step 1: fetch LandingZone, then the commits to triage, security first, with the
 # native modules and items each one touches
 lz-sync:
     cargo xtask lz drift --fetch --security --functions

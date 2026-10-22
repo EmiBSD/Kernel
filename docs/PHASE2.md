@@ -1,7 +1,7 @@
 # The native process
 
-EmiBSD is an operating system in Rust, derived from EmiBSD.LZ, the faithful file-by-file port of
-the OpenBSD kernel. LZ ports; EmiBSD redesigns. This document is the process: where the code
+EmiBSD is an operating system in Rust, derived from LandingZone (LZ, formerly EmiBSD.LZ), the
+faithful file-by-file port of the OpenBSD kernel. LZ ports; this repository, Kernel, redesigns. This document is the process: where the code
 comes from, what never changes, how a change is made, measured and reviewed, how LZ's later
 work is absorbed, and the decisions that shaped all of it. The design itself is in
 `docs/ARCHITECTURE.md`; the rules Claude follows are in `.claude/rules/`.
@@ -9,7 +9,7 @@ work is absorbed, and the decisions that shaped all of it. The design itself is 
 ## Origin
 
 EmiBSD started as the port itself. On 2026-10-09 the port's repository became
-[EmiBSD.LZ](https://github.com/EmiBSD/LandingZone), with its whole history (tag `lz-origin`,
+[LandingZone](https://github.com/EmiBSD/LandingZone) (then named EmiBSD.LZ), with its whole history (tag `lz-origin`,
 commit `f5985f1d055a`, `docs: M16b met`), and this repository, which keeps that history up to that
 commit, became the native system from there on (milestone N0). `lz/PINNED.md` records the LZ commit EmiBSD is synced to;
 `lineage.toml` records what every module derives from; `docs/JOURNAL.md` keeps the port's
@@ -60,7 +60,7 @@ LZ milestone that touches them to close (`.claude/rules/re-engineering.md`).
 
 Since 2026-10-10 the redesign is done by Claude Code subagents with fixed roles, defined in
 `.claude/agents/` and sharing one contract, `.claude/rules/subagents.md` (setup in a worktree,
-the machine lock, the long-run watcher, when to stop, what to report). The set-up is EmiBSD.LZ's
+the machine lock, the long-run watcher, when to stop, what to report). The set-up is LandingZone's
 (its commit `b0901dd3`, where 196 hand-written launch prompts had carried the same rules),
 adapted: the porter became the redesigner, `ports.toml` became `lineage.toml`, the trailers are
 this repository's, and there is no bug-log role, since LZ is never told this repository exists.
@@ -165,6 +165,7 @@ commit; crypto, IPsec, WireGuard and softraid CRYPTO change last of all, with ex
 | 2026-10-18 | Decisions 42 and 43 (`docs/ZERO_UNSAFE.md` section 10): N3's performance regression measured before N4 (a release diagnostic, host microbenchmarks over the real `kernel::vm`, seven optimizations: host fork and exec -36 to -49 %; under QEMU amd64 `forkexit` -12 %, `forkexec` -10 %, arm64 unchanged, the rest in the pmaps and the trap), and the hot-path rule: `Bench:` lines before every hot-path commit, an op more than 10 % slower without a reason stops the agent. |
 | 2026-10-18 | **Decision 44: arm64 first.** Only arm64 is built, booted and measured until N10 homologates amd64 (`EMIBSD_ARCHS`, landed by N4.0); no amd64 code is written or fixed before then; the planner records the amd64 constraints of every `hal` boundary type; N9 closes on arm64 with the amd64 tree frozen; N10 homologates amd64, N11 verifies (the TRACTOR gaps of 2026-10-17), N12 closes performance on both archs. The user's reason: the tokens spent advancing two architectures in parallel. |
 | 2026-10-22 | EmiBSD.LZ's repository moved to the EmiBSD organisation as `EmiBSD/LandingZone` (public; GitHub redirects the old URL). `lz/PINNED.md` and every link follow; the name of the stage stays EmiBSD.LZ. |
+| 2026-10-22 | The user's decision: the repositories are named for what they hold. EmiBSD.LZ is **LandingZone** (`EmiBSD/LandingZone`), the native system's repository is **Kernel** (`EmiBSD/Kernel`), and the website is `EmiBSD/Portal` (www.emibsd.org); the operating system keeps the name EmiBSD. `LZ` stays LandingZone's short name in the tooling (`lz/`, `cargo xtask lz`, the `LZ:` trailer and `//! LZ:` lines). Supersedes the row above's last clause; older rows keep the names of their day. The old landing page in `docs/` (emibsd.github.io/Kernel) is retired, GitHub Pages turned off for this repository, and LandingZone's Issues are turned on (they had been off since the transfer). |
 
 ## Later
 

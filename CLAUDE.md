@@ -1,10 +1,10 @@
 # EmiBSD
 
-An operating system in Rust, derived from EmiBSD.LZ (`lz/PINNED.md`), the faithful file-by-file
-port of the OpenBSD kernel: a standalone `#![no_std]` kernel for amd64 and arm64, booted by its
+An operating system in Rust, derived from LandingZone (LZ, formerly EmiBSD.LZ; `lz/PINNED.md`),
+the faithful file-by-file port of the OpenBSD kernel: a standalone `#![no_std]` kernel for amd64 and arm64, booted by its
 own boot(8)/efiboot or by Limine, running in QEMU, with OpenBSD's own userland unmodified.
 OpenBSD's behaviour is the specification; LZ's shape is the starting point. What userland sees
-never changes; the inside may: this repository redesigns, LZ ports. `docs/PHASE2.md` is the
+never changes; the inside may: this repository, `EmiBSD/Kernel`, redesigns; LZ ports. `docs/PHASE2.md` is the
 process.
 
 Everything in this repository (code, comments, docs, commits) is in English.
@@ -46,7 +46,7 @@ Everything in this repository (code, comments, docs, commits) is in English.
 
 ```
 reference/openbsd-src/       OpenBSD C source at LZ's pin: sparse clone, gitignored, READ-ONLY (the behavioural spec)
-reference/emibsd-lz/         EmiBSD.LZ, full history, gitignored, READ-ONLY (what every module started from)
+reference/emibsd-lz/         LandingZone, full history, gitignored, READ-ONLY (what every module started from)
 lz/PINNED.md                 the LZ commit this tree is synced to (machine-read by `cargo xtask lz check`)
 lineage.toml                 native module -> LZ files and items, the source of truth for provenance
 lz-sync.toml                 one triage record per LZ commit after the pin

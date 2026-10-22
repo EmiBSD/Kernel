@@ -1,6 +1,6 @@
 # Subagents: the common contract
 
-The project's subagents are defined in `.claude/agents/*.md` (the set-up EmiBSD.LZ adopted on
+The project's subagents are defined in `.claude/agents/*.md` (the set-up LandingZone adopted on
 2026-10-09, adapted here on 2026-10-10; it replaces the ad-hoc `general-purpose` prompts of
 N1). Every definition there points here; this file is the part they share. The rules it
 summarises stay authoritative in their own files (`re-engineering.md`, `large-changes.md`,
@@ -91,7 +91,7 @@ has none on purpose: it reads every change with fresh eyes. `agent-memory-local/
 
 ## The machine lock
 
-`/tmp/emibsd/ci.lock` is shared with EmiBSD.LZ on purpose: both repositories run QEMU on the
+`/tmp/emibsd/ci.lock` is shared with LandingZone on purpose: both repositories run QEMU on the
 same Mac, and the Mac is the bottleneck (the rule of 2026-10-07: no competing CI). Two
 repositories sharing one lock never run two `ci`s at once. A launching session may name a lock
 of its own in its scratchpad instead. There is no batch workflow: the main session (or a

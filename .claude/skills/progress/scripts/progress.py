@@ -16,7 +16,7 @@
 #
 """Redesign progress of EmiBSD, one row per milestone of docs/ROADMAP.md.
 
-Adapted from EmiBSD.LZ's .claude/skills/progress/scripts/progress.py (b0901dd3), which
+Adapted from LandingZone's .claude/skills/progress/scripts/progress.py (b0901dd3), which
 measured the port from ports.toml; this one measures the zero-unsafe redesign
 (docs/ZERO_UNSAFE.md section 0: the kernel crate with no unsafe) from
 `cargo xtask unsafe-report --json`.
@@ -448,7 +448,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     hal_ceiling = ratchet.get("hal_ceiling")
     baseline = (f"; baseline {base:,} on {since}, {days} active day{'s' if days != 1 else ''} "
                 "since" if base is not None and since else "")
-    print(f"EmiBSD redesign progress — {_dt.date.today()} — EmiBSD.LZ pin {pin[:12] or '?'} — "
+    print(f"EmiBSD redesign progress — {_dt.date.today()} — LandingZone pin {pin[:12] or '?'} — "
           f"docs/ZERO_UNSAFE.md v2 — bsd unsafe {crate_unsafe['bsd']:,}{baseline}")
     print()
     print("| Milestone | Title | Status | Files in bsd | Unsafe in bsd | Moved | Bridges open | "
@@ -622,7 +622,7 @@ def lineage_report(root: Path, want: str | None, plan: Plan, modules: list[dict]
     def with_unknown(n: int, unknown: int) -> str:
         return fmt(n) + (f" (+{unknown} unknown)" if unknown else "")
 
-    print(f"EmiBSD redesign progress — {_dt.date.today()} — EmiBSD.LZ pin {pin[:12] or '?'} — "
+    print(f"EmiBSD redesign progress — {_dt.date.today()} — LandingZone pin {pin[:12] or '?'} — "
           f"{len(modules)} modules ({len(extras)} extras not counted) — "
           f"{days} active day{'s' if days != 1 else ''} since lz-origin"
           f"{' (' + commit_dates[0] + ')' if commit_dates else ''}")

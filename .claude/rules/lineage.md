@@ -1,6 +1,6 @@
 # lineage.toml
 
-The record of what each native module derives from in EmiBSD.LZ. `cargo xtask lz check`
+The record of what each native module derives from in LandingZone. `cargo xtask lz check`
 validates it; `just ci` runs that. It replaces LZ's `ports.toml`: native never tracks C files,
 it tracks LZ files.
 

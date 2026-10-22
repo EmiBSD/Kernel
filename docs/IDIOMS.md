@@ -1,6 +1,6 @@
 # LZ shape -> native shape
 
-One row per settled native idiom: what the faithful port (EmiBSD.LZ) writes to mirror the C,
+One row per settled native idiom: what the faithful port (LandingZone) writes to mirror the C,
 what this system writes instead, and why. A row is added in the commit that first uses the
 idiom, not before. `docs/C_TO_RUST.md` (C -> LZ shape) is frozen and stays the key to reading
 LZ code; this table starts where it ends.
