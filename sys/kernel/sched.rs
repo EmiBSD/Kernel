@@ -935,12 +935,19 @@ pub fn sched_exit<G: ProcGlue>(p: Pin<&Thread<G>>) -> ! {
     G::tuagg_add_runtime();
 
     hal::klock::kernel_assert_locked();
-    sched_toidle::<G>()
+    toidle(Some(p))
 }
 
-/// `sched_toidle()`: switches to the idle thread without saving the current context (the
-/// current thread is dead, or none ran on this CPU yet).
+/// `sched_toidle()`: switches to the idle thread without saving the current context (no
+/// thread ran on this CPU yet: a secondary CPU's start; a dying thread goes by
+/// [`sched_exit`]).
 pub fn sched_toidle<G: ProcGlue>() -> ! {
+    toidle::<G>(None)
+}
+
+/// `sched_toidle`'s work, for the dead thread `old` (`sched_exit`'s), which `hal` marks dead
+/// as it leaves it (its u-area can then go, `hal::thread`'s E6), or for none.
+fn toidle<G: ProcGlue>(old: Option<Pin<&Thread<G>>>) -> ! {
     let spc = tables::<G>().curcpu();
 
     // This process no longer needs to hold the kernel lock.
@@ -957,7 +964,7 @@ pub fn sched_toidle<G: ProcGlue>() -> ! {
 
     UVMEXP.swtch.fetch_add(1, Ordering::Relaxed);
     // TRACEPOINT(sched, off__cpu, ...): dt(4), not configured.
-    hal::thread::exit_to_idle(h, next)
+    hal::thread::exit_to_idle(h, old, next)
 }
 
 /// Stops the optional clock interrupts of the running CPU (`mi_switch`, `sched_toidle`).

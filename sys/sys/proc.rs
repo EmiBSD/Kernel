@@ -232,8 +232,9 @@ impl ProcExt for Proc {
         // SAFETY: `p_addr` is the exposed address of the u-area the thread's slot owns
         // (`hal::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
         // `proc0`), zeroed memory whose bottom is a `struct user` (`u_pcb` first); it is given
-        // back only by the reaper's `uvm_uarea_free` (`take_uarea`), after the thread is dead;
-        // the borrow is the thread's.
+        // back only by the reaper's `uvm_uarea_free` (`take_uarea`), which `hal` refuses while
+        // the thread's context lives (E6: only once it switched away for good, dead); the
+        // borrow is the thread's, so the thread is alive and its u-area is too.
         unsafe { &(*u).u_pcb }
     }
 

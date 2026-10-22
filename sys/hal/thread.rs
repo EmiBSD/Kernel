@@ -95,6 +95,17 @@
 //!   none (`curproc` null, or the same thread again), and the machine's `clear_current_pcb`
 //!   only while `curproc` is null, so no safe call rewrites them under a running thread (whose
 //!   context `switch_to` would then save elsewhere, or whose stack `take_uarea` would free).
+//! - E6 (K2 of the closing review): a u-area is given back, or its first frames built, only
+//!   while no context of its thread lives on it. The slot's context state says so in O(1):
+//!   none, then fresh (`thread_setup`/`thread_restart`, refused for a live or dead thread),
+//!   then live (a `Next` made of it, `set_current_static`), then dead (`exit_to_idle` from
+//!   it, under the hold, so the lock's release on the next thread comes after this CPU left
+//!   its stack). `take_uarea` refuses a live context (running, or suspended in a switch:
+//!   frames, and pinned and linked items, are on that stack); `Next::of` refuses a dead
+//!   thread, and on the machine one with no context; `install_uarea` refuses a thread with
+//!   one. Premise: `sched_exit`'s caller leaves nothing pinned and linked on its stack (it
+//!   never returns; the C's `exit1` holds nothing either), as the C frees the u-area only in
+//!   the reaper after `exit2` (kern_exit.c:494) and runs `cpu_fork` on an `SIDL` child alone.
 //! - E5: the running CPU's core (`TPIDR_EL1` on arm64) is installed once per CPU
 //!   (`hal::cpu::set_current` refuses another core once one is installed); `ci_curpcb` is
 //!   written by the switch (the new thread's u-area pcb), by [`boot_uarea`] (`proc0`'s, `hal`'s
@@ -140,6 +151,12 @@ impl Mdproc {
 pub struct MachineSlot {
     /// `p_stat`: the thread's `S*` state (`SONPROC` stored by the switch).
     pub(crate) stat: AtomicU8,
+    /// The state of the thread's context on its u-area (E6): [`CTX_NONE`] before any frame,
+    /// [`CTX_FRESH`] once `thread_setup`/`thread_restart` built the first ones,
+    /// [`CTX_LIVE`] from its first run (a switch to it, `set_current_static`), [`CTX_DEAD`]
+    /// once it switched away for good (`exit_to_idle`). Not the C's (a member of `hal`'s, in the
+    /// padding after `p_stat`).
+    pub(crate) ctx: AtomicU8,
     /// `p_cpu`: the `cpu_info` word of the CPU the thread runs or last ran on, 0 before it
     /// first runs.
     pub(crate) cpu: AtomicUsize,
@@ -156,6 +173,7 @@ impl MachineSlot {
     pub const fn new() -> Self {
         Self {
             stat: AtomicU8::new(0),
+            ctx: AtomicU8::new(CTX_NONE),
             cpu: AtomicUsize::new(0),
             addr: AtomicUsize::new(0),
             md: Mdproc::new(),
@@ -193,8 +211,12 @@ impl MachineSlot {
     }
 
     /// `p->p_addr = uaddr` of `thread_new`: the slot takes `u` for good (until
-    /// [`take_uarea`](Self::take_uarea)). Panics when the slot has one already.
+    /// [`take_uarea`](Self::take_uarea)). Panics when the slot has one already, or for a
+    /// thread whose context exists already (not [`CTX_NONE`]).
     pub fn install_uarea(&self, u: UArea) {
+        if self.ctx.load(AtomicOrdering::Acquire) != CTX_NONE {
+            hal_panic(format_args!("p_addr: the thread has a context already"));
+        }
         let va = u.into_word();
         if self
             .addr
@@ -206,22 +228,30 @@ impl MachineSlot {
     }
 
     /// The reaper's `uvm_uarea_free(p)` and `p->p_addr = NULL`: the u-area given back, its
-    /// owner's to free (drop), for a thread no CPU runs, under the scheduler's lock so no
-    /// switch to the thread is half made (E4); `None` for a slot without one. Panics for a
-    /// running thread and for `proc0`'s static u-area.
+    /// owner's to free (drop), for a thread with no live context on it (E6: never run, only
+    /// set up, or dead after its last switch away), under the scheduler's lock so no switch to
+    /// or away from the thread is half made (E4); `None` for a slot without one. Panics for a
+    /// thread whose context lives (running or suspended: frames of it are on the u-area) and
+    /// for `proc0`'s static u-area, before anything changes.
     #[cfg(not(feature = "module-rt"))]
     pub fn take_uarea(&self) -> Option<UArea> {
         let h = sched_lock();
-        if running_slot(self) {
-            hal_panic(format_args!("uvm_uarea_free: the thread runs"));
+        if self.ctx.load(AtomicOrdering::Acquire) == CTX_LIVE {
+            hal_panic(format_args!("uvm_uarea_free: the thread's context lives"));
+        }
+        if self.addr_word() == crate::arch::current::switch::boot_uarea_word() {
+            hal_panic(format_args!("uvm_uarea_free: proc0's u-area"));
         }
         let va = self.addr.swap(0, AtomicOrdering::AcqRel);
         drop(h);
         let va = NonZeroUsize::new(va)?;
-        if va.get() == crate::arch::current::switch::boot_uarea_word() {
-            hal_panic(format_args!("uvm_uarea_free: proc0's u-area"));
-        }
         Some(UArea { va })
+    }
+
+    /// The context's state ([`CTX_NONE`], [`CTX_FRESH`], [`CTX_LIVE`], [`CTX_DEAD`]).
+    #[inline]
+    pub fn ctx(&self) -> u8 {
+        self.ctx.load(AtomicOrdering::Acquire)
     }
 }
 
@@ -326,17 +356,18 @@ pub fn boot_uarea<T: ThreadLayout>(t: Pin<&'static T>) {
     crate::arch::current::switch::set_boot_pcb();
 }
 
-#[cfg(not(feature = "module-rt"))]
-/// Whether some CPU runs the thread whose slot is `slot` (its address is the thread's, the
-/// slot being first, `ThreadLayout`).
-fn running_slot(slot: &MachineSlot) -> bool {
-    let me = core::ptr::from_ref(slot).cast::<()>();
-    crate::cpu::curcpu().curproc() == me || crate::cpu::cores().any(|c| c.curproc() == me)
-}
-
 /// `SONPROC`: the `p_stat` the switch stores in the new thread's slot (`<sys/proc.h>`; the
 /// kernel's `proc.rs` asserts it equals its own).
 pub const SONPROC: u8 = 7;
+
+/// A thread's context state (E6): no frame on its u-area yet.
+pub const CTX_NONE: u8 = 0;
+/// Its first frames built (`thread_setup`, `thread_restart`), never run.
+pub const CTX_FRESH: u8 = 1;
+/// It ran: running now or suspended in a switch, its frames live on its u-area.
+pub const CTX_LIVE: u8 = 2;
+/// It switched away for good (`exit_to_idle` from it): nothing of it runs or will run.
+pub const CTX_DEAD: u8 = 3;
 
 /// What the context switch needs of a thread type: the slot the machine reaches, which the
 /// kernel's thread keeps first (`#[repr(C)]`; generic, so `kernel::proc`'s tests check the offset
@@ -458,6 +489,16 @@ impl Next {
         if cfg!(target_os = "none") && t.machine().addr_word() == 0 {
             hal_panic(format_args!("cpu_switchto: the thread has no u-area"));
         }
+        // E6: a dead thread never runs again, and on the machine a thread runs only from the
+        // frames `thread_setup`/`thread_restart` built or a switch away saved (the host's
+        // tests choose bare threads off their queues). Chosen, its context lives.
+        match t.machine().ctx() {
+            CTX_DEAD => hal_panic(format_args!("cpu_switchto: the thread is dead")),
+            CTX_NONE if cfg!(target_os = "none") => {
+                hal_panic(format_args!("cpu_switchto: the thread has no context"))
+            }
+            _ => t.machine().ctx.store(CTX_LIVE, AtomicOrdering::Release),
+        }
         Next {
             thread: NonNull::from(t).cast(),
             slot: NonNull::from(t.machine()),
@@ -530,12 +571,25 @@ pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
     crate::arch::current::switch::switch(Some(old.machine()), next.slot, next.thread);
 }
 
-/// `sched_toidle`'s switch: the running context is not saved (the thread is dead, or none
-/// ran yet on this CPU) and `next` runs; the hold goes with it (the lock stays this CPU's,
-/// released by `next`'s own hold), so this never returns.
+/// `sched_toidle`'s switch: the running context is not saved (the thread `old` is dead, or
+/// none ran yet on this CPU) and `next` runs; the hold goes with it (the lock stays this
+/// CPU's, released by `next`'s own hold), so this never returns. `old`, the running thread,
+/// is marked dead under the hold (E6: its u-area can be given back once the lock is
+/// released, which happens on `next`, after this CPU left `old`'s stack).
 #[cfg(not(feature = "module-rt"))]
-pub fn exit_to_idle(h: SchedHold, next: Next) -> ! {
+pub fn exit_to_idle<T: ThreadLayout>(h: SchedHold, old: Option<Pin<&T>>, next: Next) -> ! {
+    check_type::<T>();
     next.check(&h);
+    if let Some(old) = old {
+        let old = old.get_ref();
+        if crate::cpu::curcpu().curproc() != core::ptr::from_ref(old).cast::<()>() {
+            hal_panic(format_args!("sched_toidle: old is not the running thread"));
+        }
+        old.machine().ctx.store(CTX_DEAD, AtomicOrdering::Release);
+    } else if !crate::cpu::curcpu().curproc().is_null() {
+        // A CPU's first switch: no thread ran here (a dead one names itself, above).
+        hal_panic(format_args!("sched_toidle: a thread runs here"));
+    }
     // The lock passes to `next`, whose dormant hold (or adopted one) releases it.
     core::mem::forget(h);
     crate::arch::current::switch::switch(None, next.slot, next.thread);
@@ -590,8 +644,18 @@ pub fn set_current_static<T: ThreadLayout>(t: Option<Pin<&'static T>>) {
     if cfg!(target_os = "none") && !me.curproc().is_null() && me.curproc() != p {
         hal_panic(format_args!("curproc: this CPU runs a thread already"));
     }
-    if !p.is_null() && crate::cpu::cores().any(|c| !core::ptr::eq(c, me) && c.curproc() == p) {
-        hal_panic(format_args!("curproc: the thread runs on another CPU"));
+    if let Some(t) = t {
+        if crate::cpu::cores().any(|c| !core::ptr::eq(c, me) && c.curproc() == p) {
+            hal_panic(format_args!("curproc: the thread runs on another CPU"));
+        }
+        if t.get_ref().machine().ctx() == CTX_DEAD {
+            hal_panic(format_args!("curproc: the thread is dead"));
+        }
+        // It runs here from now on (E6).
+        t.get_ref()
+            .machine()
+            .ctx
+            .store(CTX_LIVE, AtomicOrdering::Release);
     }
     me.set_curproc(p);
 }
@@ -607,7 +671,8 @@ pub fn running_anywhere<T: ThreadLayout>(t: &T) -> bool {
 /// first switch runs the trampoline with `start` and `arg` (the registered start's words);
 /// `stack` and `tcb`, when not 0, its user stack pointer and TCB. The parent's FP state is
 /// saved first when it is the running thread (the CPU holds it). Under the scheduler's hold
-/// `h` (E4: no u-area is given back meanwhile); panics for a child some CPU runs.
+/// `h` (E4: no u-area is given back meanwhile); panics for a child whose context lives or
+/// is dead (E6: the C's `cpu_fork` runs on an `SIDL` child alone, kern_fork.c:437, :583).
 #[cfg(not(feature = "module-rt"))]
 pub fn thread_setup<T: ThreadLayout>(
     h: &SchedHold,
@@ -620,9 +685,7 @@ pub fn thread_setup<T: ThreadLayout>(
 ) {
     check_type::<T>();
     let _ = h;
-    if running_slot(child.get_ref().machine()) {
-        hal_panic(format_args!("cpu_fork: the child runs"));
-    }
+    fresh(child.get_ref().machine(), "cpu_fork");
     let runs = crate::cpu::curcpu().curproc() == core::ptr::from_ref(parent.get_ref()).cast();
     crate::arch::current::switch::thread_setup(
         parent.get_ref().machine(),
@@ -635,17 +698,28 @@ pub fn thread_setup<T: ThreadLayout>(
     );
 }
 
-/// The frames of a thread that runs nowhere and starts afresh with `start` and `arg` (a
-/// secondary CPU's idle thread, `cpu_init_secondary`), under the scheduler's hold `h` (E4);
-/// panics for a thread some CPU runs.
+/// The frames of a thread that has never run and starts with `start` and `arg` (a secondary
+/// CPU's idle thread, `cpu_init_secondary`), under the scheduler's hold `h` (E4); panics for
+/// a thread whose context lives or is dead (E6).
 #[cfg(not(feature = "module-rt"))]
 pub fn thread_restart<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>, start: usize, arg: usize) {
     check_type::<T>();
     let _ = h;
-    if running_slot(t.get_ref().machine()) {
-        hal_panic(format_args!("cpu_init_secondary: the thread runs"));
-    }
+    fresh(t.get_ref().machine(), "cpu_init_secondary");
     crate::arch::current::switch::thread_restart(t.get_ref().machine(), start, arg);
+}
+
+/// The frames of `slot`'s thread are about to be built: refused (`panic(9)`, naming `what`)
+/// for a context that lives (frames of it are on the u-area, running or suspended) or is
+/// dead; the slot is [`CTX_FRESH`] from now on (E6).
+#[cfg(not(feature = "module-rt"))]
+fn fresh(slot: &MachineSlot, what: &str) {
+    match slot.ctx() {
+        CTX_NONE | CTX_FRESH => slot.ctx.store(CTX_FRESH, AtomicOrdering::Release),
+        _ => hal_panic(format_args!(
+            "{what}: the thread's context lives or is dead"
+        )),
+    }
 }
 
 /// The trampoline's machine-independent part (`proc_trampoline_mi`'s first step): the hold of
@@ -881,10 +955,11 @@ mod tests {
         t.machine.install_uarea(b);
     }
 
-    /// E4: the u-area of a thread a CPU runs is not given back.
+    /// E6: a thread chosen to run (its `Next` made) has a live context: suspended or running,
+    /// its u-area is not given back.
     #[test]
-    #[should_panic(expected = "the thread runs")]
-    fn a_running_thread_keeps_its_u_area() {
+    #[should_panic(expected = "context lives")]
+    fn a_suspended_thread_keeps_its_u_area() {
         crate::testutil::install();
         let _ = register_uarea_memory(&TEST_UAREAS);
         let t = test_thread();
@@ -892,8 +967,39 @@ mod tests {
             panic!("no u-area");
         };
         t.machine.install_uarea(u);
-        crate::cpu::curcpu().set_curproc(core::ptr::from_ref(t).cast());
+        let h = sched_lock();
+        let _ = Next::of(&h, crate::pin::pin_static(&*t));
+        drop(h);
+        assert_eq!(t.machine.ctx(), CTX_LIVE);
         let _ = t.machine.take_uarea();
+    }
+
+    /// E6: a dead thread gives its u-area back and is never chosen again; a thread with a
+    /// context takes no new u-area.
+    #[test]
+    fn a_dead_thread_gives_its_u_area_back_and_never_runs() {
+        crate::testutil::install();
+        let _ = register_uarea_memory(&TEST_UAREAS);
+        let t = test_thread();
+        let (Some(a), Some(b)) = (UArea::alloc(), UArea::alloc()) else {
+            panic!("no u-area");
+        };
+        t.machine.install_uarea(a);
+        t.machine.ctx.store(CTX_DEAD, AtomicOrdering::Release);
+        assert!(t.machine.take_uarea().is_some());
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.machine.install_uarea(b);
+        }));
+        assert!(refused.is_err());
+        let chosen = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let h = sched_lock();
+            let _ = Next::of(&h, crate::pin::pin_static(&*t));
+        }));
+        assert!(chosen.is_err());
+        // The panic left the scheduler lock held by this test thread's CPU: give it back.
+        if sched_locked() {
+            drop(SchedHold::adopt());
+        }
     }
 
     /// E5: a thread another CPU runs cannot be made this CPU's current one.
