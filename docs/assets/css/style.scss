@@ -22,7 +22,7 @@
   .inner { max-width: 920px; }
   #main_content h2 { border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
   .hero { text-align: center; padding: 3.5rem 0 2.5rem; }
-  .hero img {
+  .hero > img {
     width: min(300px, 70vw);
     border-radius: 16px;
     box-shadow: 0 10px 40px rgba(0,0,0,0.12);
@@ -43,7 +43,7 @@
     display: flex; flex-wrap: wrap; justify-content: center; gap: 4px;
     margin: 1.4rem 0 0;
   }
-  .badges img { height: 20px; display: block; }
+  .badges img { height: 20px; width: auto; display: block; border-radius: 0; box-shadow: none; }
   .cta { margin-top: 1.8rem; display: flex; gap: 0.8rem; justify-content: center; flex-wrap: wrap; }
   .btn {
     display: inline-block;
