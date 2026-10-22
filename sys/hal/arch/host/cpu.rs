@@ -28,6 +28,8 @@ extern crate std;
 use core::cell::Cell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::boxed::Box;
+use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
 
 use crate::cpu::{CpuCore, MAXCPUS};
 
@@ -59,9 +61,71 @@ pub(crate) fn current() -> Option<&'static CpuCore> {
     })
 }
 
-/// Installs `c` on the calling thread.
+/// The installed cores and the host thread each is installed on (the address of that
+/// thread's [`CLAIM`]): one runner per core, as one CPU runs one context at a time.
+static CLAIMS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+
+/// The calling thread's claim on its installed core (the core's address, 0 for none), given
+/// up when the thread ends (its destructor) or hands the core on ([`release_current`]).
+struct Claim(Cell<usize>);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let core = self.0.get();
+        if core != 0 {
+            let me = core::ptr::from_ref(self).addr();
+            let mut claims = CLAIMS.lock().unwrap_or_else(PoisonError::into_inner);
+            if claims.get(&core) == Some(&me) {
+                claims.remove(&core);
+            }
+        }
+    }
+}
+
+std::thread_local! {
+    /// The calling thread's [`Claim`].
+    static CLAIM: Claim = const { Claim(Cell::new(0)) };
+}
+
+/// Installs `c` on the calling thread. Panics when another live host thread runs `c` (a core
+/// is one CPU: two runners would share its owner word and its per-CPU state); the thread's
+/// previous claim, if any, is given up.
 pub(crate) fn set_current(c: &'static CpuCore) {
+    let core = core::ptr::from_ref(c).addr();
+    CLAIM.with(|claim| {
+        let me = core::ptr::from_ref(claim).addr();
+        let mut claims = CLAIMS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(&owner) = claims.get(&core)
+            && owner != me
+        {
+            drop(claims);
+            crate::assert::hal_panic(format_args!(
+                "hal::cpu::set_current: the core runs on another host thread"
+            ));
+        }
+        let old = claim.0.replace(core);
+        if old != 0 && old != core && claims.get(&old) == Some(&me) {
+            claims.remove(&old);
+        }
+        claims.insert(core, me);
+    });
     CURRENT.with(|cur| cur.set(Some(c)));
+}
+
+/// The calling thread gives its installed core up (the switch double hands it to the next
+/// thread's host thread): the thread runs as no CPU until a core is installed again.
+pub(crate) fn release_current() {
+    CLAIM.with(|claim| {
+        let me = core::ptr::from_ref(claim).addr();
+        let core = claim.0.replace(0);
+        if core != 0 {
+            let mut claims = CLAIMS.lock().unwrap_or_else(PoisonError::into_inner);
+            if claims.get(&core) == Some(&me) {
+                claims.remove(&core);
+            }
+        }
+    });
+    CURRENT.with(|cur| cur.set(None));
 }
 
 /// `ncpusfound` as the per-CPU readers walk it: every slot, as any thread may be a CPU.

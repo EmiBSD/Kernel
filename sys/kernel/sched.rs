@@ -3086,5 +3086,81 @@ mod tests {
         assert_eq!(PINGS.load(Ordering::Relaxed), 2 * ROUNDS);
         hal::thread::set_current_static::<T>(None);
     }
+
+    /// An unpegged sleeper woken from another vCPU goes where `sched_choosecpu` sends it (the
+    /// run_as threads are pegged; this one is not) and runs there.
+    #[test]
+    fn an_unpegged_sleeper_is_placed_by_choosecpu() {
+        static ASLEEP: AtomicU32 = AtomicU32::new(0);
+        static DONE: AtomicU32 = AtomicU32::new(0);
+        fn chan() -> usize {
+            ptr::from_ref(&ASLEEP).addr() + 0x900
+        }
+        fn done_chan() -> usize {
+            ptr::from_ref(&DONE).addr() + 0xa00
+        }
+        fn sleeper() {
+            loop {
+                sleep_setup::<SchedGlue>(chan(), PWAIT, "unpeg");
+                let _ = ASLEEP.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+                let go = ASLEEP.load(Ordering::Acquire) == 2;
+                let _ = sleep_finish::<SchedGlue>(INFSLP, !go);
+                if go {
+                    break;
+                }
+            }
+            DONE.store(1, Ordering::Release);
+            wakeup_n::<SchedGlue>(done_chan(), -1);
+        }
+        fn wait_done() {
+            loop {
+                sleep_setup::<SchedGlue>(done_chan(), PWAIT, "udone");
+                let done = DONE.load(Ordering::Acquire) == 1;
+                let _ = sleep_finish::<SchedGlue>(INFSLP, !done);
+                if done {
+                    break;
+                }
+            }
+        }
+        let _g = setup();
+        let [a, b] = VCPUS;
+        let idx = {
+            let mut bodies = lock(&BODIES);
+            bodies.push(sleeper);
+            bodies.len() - 1
+        };
+        let me = thread(90, 50);
+        run_as(a, me);
+        let helper = std::thread::spawn(move || {
+            let w = thread(91, 50);
+            run_as(b, w);
+            wait_done();
+            hal::thread::set_current_static::<T>(None);
+        });
+        let x = thread(92, 50);
+        let mut h = sched_lock();
+        hal::thread::thread_setup(&h, me, x, 0, 0, START_BODY, idx);
+        setrunqueue(&mut h, Some(a), x, 50);
+        drop(h);
+        // Let it run (this thread yields to it) until it sleeps.
+        // Asleep: on its channel and out of `sleep_finish`'s window (not `P_INSCHED`).
+        while ASLEEP.load(Ordering::Acquire) != 1
+            || x.stat() != SSLEEP
+            || x.p_flag.load(Ordering::Relaxed) & P_INSCHED != 0
+        {
+            r#yield::<SchedGlue>();
+        }
+        assert_eq!(x.p_flag.load(Ordering::Relaxed) & P_CPUPEG, 0);
+        let chose = SCHED_CHOOSE.load(Ordering::Relaxed);
+        ASLEEP.store(2, Ordering::Release);
+        wakeup_n::<SchedGlue>(chan(), -1);
+        // The wakeup's setrunnable went through sched_choosecpu (no CPU named).
+        assert!(SCHED_CHOOSE.load(Ordering::Relaxed) > chose);
+        let placed = thread_cpu(x.get_ref());
+        assert!(placed == Some(a) || placed == Some(b));
+        wait_done();
+        helper.join().unwrap();
+        hal::thread::set_current_static::<T>(None);
+    }
 }
 /* </TESTS> */

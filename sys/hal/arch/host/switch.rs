@@ -122,6 +122,8 @@ pub(crate) fn switch(
     }
     core.set_curproc(new_thread.as_ptr());
     let next = gate(new_addr);
+    // The core leaves this host thread before the next one installs it (one runner a core).
+    crate::arch::host::cpu::release_current();
     match old {
         Some(old) => {
             let mine = gate(core::ptr::from_ref(old).addr());

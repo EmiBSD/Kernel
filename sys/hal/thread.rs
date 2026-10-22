@@ -661,6 +661,12 @@ pub fn set_current_static<T: ThreadLayout>(t: Option<Pin<&'static T>>) {
         slot.ctx.store(CTX_LIVE, AtomicOrdering::Release);
     }
     me.set_curproc(p);
+    // The host: a test thread that runs no thread any more gives its core up, so the next
+    // test's thread can install it (one runner a core, `arch/host/cpu.rs`).
+    #[cfg(not(target_os = "none"))]
+    if p.is_null() {
+        crate::arch::current::cpu::release_current();
+    }
 }
 
 /// Whether `t` is the running thread of any attached CPU (the release check of the threads'

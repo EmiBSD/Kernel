@@ -416,5 +416,34 @@ mod tests {
         assert_eq!(me.want_resched(), 1);
         me.set_want_resched(0);
     }
+
+    /// The host: a core runs on one host thread at a time; another thread's install is
+    /// refused while the first holds it, and taken once that thread is gone.
+    #[test]
+    fn a_core_runs_on_one_host_thread() {
+        let core: &'static CpuCore = Box::leak(Box::new(CpuCore::new()));
+        let (hold_tx, hold_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let holder = thread::spawn(move || {
+            set_current(core);
+            hold_tx.send(()).unwrap();
+            go_rx.recv().unwrap();
+        });
+        hold_rx.recv().unwrap();
+        let refused =
+            thread::spawn(move || std::panic::catch_unwind(|| set_current(core)).is_err())
+                .join()
+                .unwrap();
+        assert!(refused);
+        go_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let seen = thread::spawn(move || {
+            set_current(core);
+            curcpu_word()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(seen, core.word());
+    }
 }
 /* </TESTS> */
