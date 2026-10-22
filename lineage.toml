@@ -8390,6 +8390,18 @@ status = "redesigned"
 notes = "N4.2: credentials in the kernel crate: struct ucred with relaxed atomic member cells (IdCell, CountCell: get(&self) kept for the 60 readers, set(&mut self) on a value being built, copy_from the crate's refresh of a thread's embedded copy; decision 10's reader, the user's shape A of 2026-10-21), placed in the recorded pool ucredpl (IPL_MPFLOOR) and shared as CredRef (Clone = crhold, Drop = crfree, from_ref = crhold of a borrowed struct ucred *); crset/crcopy/crdup/crfromxucred/groupmember/suser_ucred; crcopy always copies (a recorded pool gives no value mutably, a stated deviation); bsd's kern_prot.rs keeps the set*id syscalls and switches to these with the rest of N4.2"
 
 [[module]]
+rust = "sys/kernel/proc.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs", "sys/sys/user.rs"]
+status = "redesigned"
+notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's)"
+
+[[module.fn]]
+lz = "sys/sys/proc.rs::PInentry"
+native = ["sys/kernel/vm/map.rs::InentryCache"]
+kind = "moved"
+
+[[module]]
 rust = "sys/kernel/resource.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_resource.rs", "sys/sys/resource.rs", "sys/sys/resourcevar.rs"]

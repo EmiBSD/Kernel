@@ -418,10 +418,19 @@ pub trait Homed: home_sealed::HomeSealed + Send + Sync + Sized + 'static {
 /// `pool_home!(Uidinfo, home);`, `pool_home!(impl[G: Glue] Process<G>, home);`.
 #[macro_export]
 macro_rules! pool_home {
-    ($(impl[$($gen:tt)*])? $ty:ty, $field:ident) => {
-        impl<$($($gen)*)?> $crate::pool::home_sealed::HomeSealed for $ty {}
+    (impl[$($gen:tt)*] $ty:ty, $field:ident) => {
+        impl<$($gen)*> $crate::pool::home_sealed::HomeSealed for $ty {}
 
-        impl<$($($gen)*)?> $crate::pool::Homed for $ty {
+        impl<$($gen)*> $crate::pool::Homed for $ty {
+            fn home(&self) -> &$crate::pool::PoolHome<Self> {
+                &self.$field
+            }
+        }
+    };
+    ($ty:ty, $field:ident) => {
+        impl $crate::pool::home_sealed::HomeSealed for $ty {}
+
+        impl $crate::pool::Homed for $ty {
             fn home(&self) -> &$crate::pool::PoolHome<Self> {
                 &self.$field
             }
