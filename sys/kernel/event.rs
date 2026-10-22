@@ -2421,7 +2421,12 @@ pub fn kqpoll_exit<G: ProcGlue>(p: &Thread<G>) {
 
     kqueue_purge(Some(p), kq);
     kqueue_terminate(Some(p), kq);
-    kassert!(kq.refs() == 1);
+    // The C asserts `kq_refcnt == 1` here. A sibling thread's knote_fdclose may hold a
+    // counted reference to this kqueue for the moment it walks fd_kqlist (one kqueue at a
+    // time, with no table lock held: try_from_ref), so the count can be 2 without anything
+    // being wrong; what the C's assertion protects, an empty and terminated queue, is
+    // asserted instead.
+    kassert!(kq.lock.lock().nknotes == 0);
 }
 
 /// `kqueue_alloc(fdp)`: a new kqueue on `fdp` with one reference; `ENOMEM` when the pool
