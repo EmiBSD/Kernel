@@ -56,8 +56,8 @@
 //!   restore lives in each thread's hold (the guard keeps it), so nothing swaps it around the
 //!   switch, where the C saves and puts back `MUTEX_OLDIPL(&sched_lock)`.
 //! - N4.5a: [`Next`] names the thread a switch goes to, made under the hold from the thread
-//!   pinned (`sched_chooseproc`'s result): two addresses and, under `DIAGNOSTIC`, the
-//!   generation of the hold it was made under, which the switch compares (a token kept across
+//!   pinned (`sched_chooseproc`'s result): two addresses and the generation of the hold it
+//!   was made under (one relaxed add per lock, checked always since the closing review), which the switch compares (a token kept across
 //!   an unlock is refused). [`ThreadLayout`] is what a thread type gives the switch: its
 //!   slot. One thread type per kernel: the first one named is the only one accepted (a
 //!   `TypeId` compared), so an address a switch stored is turned back into that type alone.
@@ -78,7 +78,7 @@
 //!   no CPU runs it.
 //! - E3: a thread on a run queue is never freed (its queue entry's drop panics while it is
 //!   linked), and the thread a [`Next`] names was taken off a queue under the hold the switch
-//!   is made under (the generation, under `DIAGNOSTIC`), so the addresses it holds are alive
+//!   is made under (the generation, compared always), so the addresses it holds are alive
 //!   when the switch uses them.
 //! - E4: a slot's `p_addr` (`MachineSlot::addr`) is 0 or the address of a u-area the slot
 //!   owns: set only from 0, by [`MachineSlot::install_uarea`] with a [`UArea`] (minted by the
@@ -118,7 +118,6 @@ use core::num::NonZeroUsize;
 use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(feature = "diagnostic")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::assert::hal_panic;
@@ -383,9 +382,8 @@ pub trait ThreadLayout: Sync + 'static {
 /// `[S]` members; it is held across the context switch (the module's notes).
 pub static SCHED_LOCK: SharedMutex = Mutexed::new(IPL_SCHED, ());
 
-/// The generation of [`SCHED_LOCK`]'s holds (`DIAGNOSTIC`): bumped by every
+/// The generation of [`SCHED_LOCK`]'s holds: bumped by every
 /// [`sched_lock`], recorded by a [`Next`] and compared by the switch.
-#[cfg(feature = "diagnostic")]
 static GENERATION: AtomicU32 = AtomicU32::new(0);
 
 /// The thread type of this kernel: the first one a token named (see [`ThreadLayout`]).
@@ -409,8 +407,7 @@ impl SchedHold {
         SchedHold(SCHED_LOCK.adopt())
     }
 
-    /// The generation this hold was taken in (`DIAGNOSTIC`).
-    #[cfg(feature = "diagnostic")]
+    /// The generation this hold was taken in.
     fn generation(&self) -> u32 {
         GENERATION.load(Ordering::Relaxed)
     }
@@ -421,7 +418,6 @@ impl SchedHold {
 #[inline]
 pub fn sched_lock() -> SchedHold {
     let g = SCHED_LOCK.lock();
-    #[cfg(feature = "diagnostic")]
     GENERATION.fetch_add(1, Ordering::Relaxed);
     SchedHold(g)
 }
@@ -471,8 +467,7 @@ pub struct Next {
         allow(dead_code, reason = "the switch is not the ABI module's")
     )]
     slot: NonNull<MachineSlot>,
-    /// The hold's generation (`DIAGNOSTIC`).
-    #[cfg(feature = "diagnostic")]
+    /// The hold's generation.
     generation: u32,
 }
 
@@ -481,8 +476,6 @@ impl Next {
     pub fn of<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>) -> Next {
         check_type::<T>();
         let t = t.get_ref();
-        #[cfg(not(feature = "diagnostic"))]
-        let _ = h;
         // E4: the switch reads the pcb at `p_addr`; a thread without a u-area is refused here,
         // under the hold the switch is made under, so no `take_uarea` comes between (the
         // host's switch double reads none).
@@ -502,7 +495,6 @@ impl Next {
         Next {
             thread: NonNull::from(t).cast(),
             slot: NonNull::from(t.machine()),
-            #[cfg(feature = "diagnostic")]
             generation: h.generation(),
         }
     }
@@ -518,7 +510,7 @@ impl Next {
         self.slot.addr().get()
     }
 
-    /// Checks that `h` is the hold this token was made under (`DIAGNOSTIC`): a token kept
+    /// Checks that `h` is the hold this token was made under: a token kept
     /// across an unlock and a new lock is `panic(9)`.
     #[inline]
     #[cfg_attr(
@@ -526,7 +518,6 @@ impl Next {
         allow(dead_code, reason = "the switch is not the ABI module's")
     )]
     pub(crate) fn check(&self, h: &SchedHold) {
-        #[cfg(feature = "diagnostic")]
         if self.generation != h.generation() {
             hal_panic(format_args!(
                 "switch: a Next of generation {} under hold {}",
@@ -534,8 +525,6 @@ impl Next {
                 h.generation()
             ));
         }
-        #[cfg(not(feature = "diagnostic"))]
-        let _ = h;
     }
 }
 
@@ -558,7 +547,7 @@ pub fn register_start(
 /// on `old`'s stack when a switch back to it is made, on whichever CPU, with `h` still
 /// borrowed: the hold lies dormant in this suspended frame (E1) and its drop, after this
 /// returns, releases the lock that CPU holds then. `next` must have been made under `h` (the
-/// generation, under `DIAGNOSTIC`).
+/// generation).
 #[cfg(not(feature = "module-rt"))]
 pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
     check_type::<T>();
@@ -849,8 +838,7 @@ mod tests {
         check_type::<OtherThread>();
     }
 
-    /// Under `DIAGNOSTIC` a token kept across an unlock is refused.
-    #[cfg(feature = "diagnostic")]
+    /// A token kept across an unlock is refused.
     #[test]
     #[should_panic(expected = "a Next of generation")]
     fn a_token_from_an_earlier_hold_is_refused() {
