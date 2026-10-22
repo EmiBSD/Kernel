@@ -49,6 +49,9 @@
 //! - `fd.copy-20`: `fdcopy` of the table then its last handle dropped (LZ: `fdcopy` +
 //!   `fdfree`).
 //! - `fd.prepforexec-20`: `fdprepforexec` over the 19 descriptors, none close-on-exec.
+//! - `prim.vn-read-offset`: `vn_read`'s use of the offset: `foffset(fp)` read, then the
+//!   update `f_offset += n` under `f_mtx` (N4.3 review S3: the read takes no `f_mtx`, the
+//!   update one section, as the C's).
 //! - `prim.mutexed`: a `hal::Mutexed` taken and released (`fd_fplock`'s cost on these
 //!   doubles; LZ's `mtx_enter`/`mtx_leave` over `bsd`'s was 3.0 ns in the same run as the
 //!   "before").
@@ -76,7 +79,7 @@ use kernel::descrip::{
     falloc, fd_getfile, fdalloc, fdcopy, fdinit, fdinsert, fdplock, fdprepforexec, fdrelease,
     filedesc_init, finishdup,
 };
-use kernel::file::{DTYPE_PIPE, File, FileOps};
+use kernel::file::{DTYPE_PIPE, File, FileOps, foffset};
 use kernel::proc::{self, Pgrp, ProcGlue, ProcTables, Process, Session};
 use kernel::resource::{self, PlimitRef, RLIMIT_NOFILE};
 use kernel::testutil;
@@ -505,6 +508,19 @@ fn main() {
         name: "prim.mutexed",
         ops: PRIM,
         f: Box::new(prim(|| *black_box(&mtx).lock() += 1)),
+    });
+    let Some(fpo) = fd_getfile(t3.fd(), 3) else {
+        eprintln!("bench: no descriptor 3");
+        std::process::exit(1);
+    };
+    let fpo: &'static _ = Box::leak(Box::new(fpo));
+    benches.push(Bench {
+        name: "prim.vn-read-offset",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            black_box(foffset(fpo));
+            fpo.advance_offset(black_box(1));
+        })),
     });
     let pr3 = &pr;
     benches.push(Bench {

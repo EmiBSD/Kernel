@@ -440,10 +440,7 @@ pub fn vn_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
         };
         let error = VOP_READ(vp, uio, ioflag, cred);
         if fflags & FO_POSITION == 0 {
-            {
-                let mut st = fp.stats();
-                st.f_offset += (count - uio.uio_resid) as Off;
-            }
+            fp.advance_offset((count - uio.uio_resid) as Off);
         }
         error
     };
@@ -482,13 +479,10 @@ pub fn vn_write(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> 
     let count = uio.uio_resid;
     let error = VOP_WRITE(vp, uio, ioflag, cred);
     if fflags & FO_POSITION == 0 {
-        {
-            let mut st = fp.stats();
-            if ioflag & IO_APPEND != 0 {
-                st.f_offset = uio.uio_offset;
-            } else {
-                st.f_offset += (count - uio.uio_resid) as Off;
-            }
+        if ioflag & IO_APPEND != 0 {
+            fp.set_offset(uio.uio_offset);
+        } else {
+            fp.advance_offset((count - uio.uio_resid) as Off);
         }
     }
     let _ = VOP_UNLOCK(vp);
@@ -704,10 +698,7 @@ pub fn vn_seek(fp: &File, offset: &mut Off, whence: i32, p: &Proc) -> Result<(),
         if !special && newoff < 0 {
             break 'out Err(Errno::EINVAL);
         }
-        {
-            let mut st = fp.stats();
-            st.f_offset = newoff;
-        }
+        fp.set_offset(newoff);
         *offset = newoff;
         Ok(())
     };

@@ -2958,7 +2958,7 @@ pub fn sys_getdents(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result
             uio_procp: Some(p),
         };
         let error = VOP_READDIR(vp, &mut auio, fp.f_cred_ptr(), &mut eofflag);
-        fp.stats().f_offset = auio.uio_offset;
+        fp.set_offset(auio.uio_offset);
         let _ = VOP_UNLOCK(vp);
         if let Err(e) = error {
             break 'bad Err(e);

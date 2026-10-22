@@ -73,7 +73,12 @@
 //!   object's address ([`FileGlue::data_addr`]) and the operations' address as before.
 //! - `f_count` is the handle count ([`FileRef::count`]): the slots, the holders, the knotes
 //!   and the messages in flight (parked references, [`FileRef::forget`]).
-//! - `f_mtx` holds the members it guards ([`FileStats`], `f_offset` and the counters).
+//! - `f_mtx` holds the counters it guards ([`FileStats`]); `f_offset` is an atomic beside
+//!   them, written under `f_mtx` as the C writes it ([`File::set_offset`],
+//!   [`File::advance_offset`]) and read without it ([`File::offset`], `foffset`): the C's
+//!   reads under the vnode lock alone (`vn_read`, `vn_write`, `vn_seek`'s `SEEK_CUR`) take no
+//!   `f_mtx` section, and `foffset`'s `f_mtx` (a 64-bit read that cannot tear) is the atomic
+//!   load.
 //!
 //! ## Redesign
 //! - LZ's `struct file` was a raw `file_pool` item handed out as `&'static File`, its
@@ -102,7 +107,7 @@
 //!   C counts it, adopted once.
 
 use core::pin::Pin;
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
@@ -175,11 +180,9 @@ pub struct Installed<G: FileGlue> {
     pub data: G::Data,
 }
 
-/// \[f\] The members `f_mtx` guards.
+/// \[f\] The counters `f_mtx` guards (`f_offset`, written under it, is [`File::offset`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FileStats {
-    /// \[f,v\] `f_offset`.
-    pub f_offset: Off,
     /// `f_rxfer`: total number of read transfers.
     pub f_rxfer: u64,
     /// `f_wxfer`: total number of write transfers.
@@ -208,7 +211,9 @@ pub struct File<G: FileGlue> {
     cred: CredRef,
     /// \[I\] `f_ops`, `f_data`: set once between `fnew` and the first `fdinsert`.
     installed: OnceStatic<Installed<G>>,
-    /// `f_mtx` and what it guards.
+    /// \[f,v\] `f_offset`: written with `f_mtx` held, read without it.
+    f_offset: AtomicI64,
+    /// `f_mtx` and the counters it guards.
     stats: Mutexed<FileStats>,
 }
 
@@ -225,6 +230,7 @@ impl<G: FileGlue> File<G> {
             f_type: AtomicI32::new(0),
             cred,
             installed: OnceStatic::new(),
+            f_offset: AtomicI64::new(0),
             // We need to block interrupts as long as `f_mtx` is being taken with and without
             // the kernel lock.
             stats: Mutexed::new(hal::intr::mpfloor(), FileStats::default()),
@@ -281,9 +287,29 @@ impl<G: FileGlue> File<G> {
         self.installed.get().map(|i| &i.data)
     }
 
-    /// `f_mtx` held, and the members it guards.
+    /// `f_mtx` held, and the counters it guards.
     pub fn stats(&self) -> MutexedGuard<'_, FileStats> {
         self.stats.lock()
+    }
+
+    /// `fp->f_offset`, read without `f_mtx` (one atomic load: the C's reads under the vnode
+    /// lock, and `foffset`'s).
+    pub fn offset(&self) -> Off {
+        self.f_offset.load(Ordering::Relaxed)
+    }
+
+    /// `fp->f_offset = off` under `f_mtx` (`vn_seek`, `vn_write`'s append, `getdents`).
+    pub fn set_offset(&self, off: Off) {
+        let _f_mtx = self.stats.lock();
+        self.f_offset.store(off, Ordering::Relaxed);
+    }
+
+    /// `fp->f_offset += n` under `f_mtx` (`vn_read`, `vn_write`): the writers are serialised
+    /// by the mutex, so the load and the store are one update.
+    pub fn advance_offset(&self, n: Off) {
+        let _f_mtx = self.stats.lock();
+        let off = self.f_offset.load(Ordering::Relaxed);
+        self.f_offset.store(off.wrapping_add(n), Ordering::Relaxed);
     }
 
     /// The file's address (`kinfo_file.f_fileaddr`, `flock(2)`'s lock owner).
@@ -658,9 +684,9 @@ pub fn fdrop<G: FileGlue>(last: Last<File<G>>, p: Option<&Thread<G::Proc>>) -> R
     error
 }
 
-/// `foffset(fp)`: the file's offset, read under `f_mtx`.
+/// `foffset(fp)`: the file's offset (the C's read under `f_mtx`; here one atomic load).
 pub fn foffset<G: FileGlue>(fp: &File<G>) -> Off {
-    fp.stats().f_offset
+    fp.offset()
 }
 /* </CODE> */
 
@@ -888,15 +914,20 @@ mod tests {
     }
 
     #[test]
-    fn the_stats_and_the_offset_are_under_f_mtx() {
+    fn the_stats_are_under_f_mtx_and_the_offset_beside_them() {
         let (_pr, p) = thread(16);
         let fp = fnew(&p).unwrap();
-        {
-            let mut s = fp.stats();
-            s.f_offset = 42;
-            s.f_rxfer += 1;
-        }
+        fp.stats().f_rxfer += 1;
+        fp.set_offset(40);
+        fp.advance_offset(2);
         assert_eq!(foffset(&fp), 42);
+        assert_eq!(fp.offset(), 42);
+        // The counters' guard does not cover the offset's read (no f_mtx in foffset).
+        {
+            let s = fp.stats();
+            assert_eq!(foffset(&fp), 42);
+            assert_eq!(s.f_rxfer, 1);
+        }
         assert_eq!(fp.stats().f_rxfer, 1);
         assert!(CredRef::ptr_eq(fp.cred(), &p.cred_ref()));
     }

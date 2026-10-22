@@ -1585,7 +1585,7 @@ pub fn fill_file(
         if suser(p).is_ok() || p.ucred().cr_uid.get() == cred.cr_uid.get() {
             {
                 let st = fp.stats();
-                kf.f_offset = st.f_offset as u64;
+                kf.f_offset = fp.offset() as u64;
                 kf.f_rxfer = st.f_rxfer;
                 kf.f_rwfer = st.f_wxfer;
                 kf.f_seek = st.f_seek;
@@ -3808,7 +3808,7 @@ mod tests {
         );
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::Relaxed);
         let other_ref = fp.clone();
-        fp.stats().f_offset = 77;
+        fp.set_offset(77);
 
         let mut kf = KinfoFile::zeroed();
         fill_file(&mut kf, Some(&fp), None, 3, None, Some(pr), p, None, false);
