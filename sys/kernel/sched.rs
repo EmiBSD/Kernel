@@ -2634,5 +2634,28 @@ mod tests {
         waker.join().unwrap();
         hal::thread::set_current_static::<T>(None);
     }
+
+    /// The load average's and `p_pctcpu`'s constants are the C's doubles in `FSCALE` fixed
+    /// point (LZ's sched_bsd.rs test, carried with the code).
+    #[test]
+    fn decay_constants_match_the_c_doubles() {
+        // 0.9200444146293232 * 2048, 0.9834714538216174 * 2048, 0.9944598480048967 * 2048
+        assert_eq!(CEXP, [1884, 2014, 2036]);
+        // 0.95122942450071400909 * 2048
+        assert_eq!(CCPU, 1948);
+    }
+
+    /// `decay_cpu` forgets 90 % of `p_estcpu` in about 5 * loadav decays (LZ's sched_bsd.rs
+    /// test, carried with the code).
+    #[test]
+    fn decay_cpu_forgets_ninety_percent_in_five_loadav() {
+        // loadav 1.0: loadfac 2*FSCALE; after 5 decays 100 -> about 10.
+        let loadfac = loadfactor(FSCALE);
+        let mut cpu = 100;
+        for _ in 0..5 {
+            cpu = decay_cpu(loadfac, cpu);
+        }
+        assert!((8..=16).contains(&cpu), "{cpu}");
+    }
 }
 /* </TESTS> */
