@@ -154,3 +154,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - Before planning a type move, check every frozen accessor against its field's lock class: `[o]` handle fields (`p.ucred() -> &Ucred`, `p.vmspace()`) cannot keep a `&` API in a kernel type without a per-thread token (N4.5's `current()`) or an embedded atomic copy.
 - hal::owned::OwnedList has only push/pop: an owner list with removal of any element (a process's threads) is an OwnedTree keyed by an insertion sequence, which keeps the C's TAILQ order.
 - zsh: an unquoted `grep --include=*.rs` fails "no matches found" before grep runs; quote the glob (or put the loop in a script file).
+- A macro arm `$(impl[..])? $ty:ty` is ambiguous (`impl Trait` is a type): give the generic form its own arm first, keyed on the literal `impl`.
+- `hal::pin_adapter!`/`owned_adapter!` declare adapters for a concrete element only: a kernel type generic over a glue takes its adapters as associated types of the glue trait, declared by the glue's crate (`kernel::proc_glue_links!`); the adapter structs are `pub`, so a test glue is a `pub struct` too (E0446).
+- A host test that drops an element linked on two pinned lists aborts the whole test binary (the second PinEntry panics during the unwind): link it on one list only in a should_panic test.
+- A bench "before" over LZ needs no checkout while bsd is untouched on the branch: append the scratch test to the inherited module, run dev and release (release about 10 min, in the background), restore the file before the next commit.
