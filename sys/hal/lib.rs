@@ -79,7 +79,6 @@ pub mod netlock;
 pub mod once;
 pub mod owned;
 pub mod percpu;
-#[forbid(unsafe_code)]
 pub mod pin;
 pub mod pinlist;
 // pmap(9) (N3.1). A machine's build has the module once its backend is in

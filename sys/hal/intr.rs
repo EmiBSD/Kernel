@@ -86,6 +86,16 @@ pub const IPL_VM: i32 = 0xa;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub const IPL_VM: i32 = 8;
 
+/// `IPL_SCHED`: the scheduler's lock (`SCHED_LOCK`, `hal::thread`): `IPL_CLOCK` on both
+/// machines (amd64 `<machine/intrdefs.h>` 0xc, the host double's too); asserted equal to the
+/// machine's by `bsd`'s `sys/machine/intr.rs`.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+pub const IPL_SCHED: i32 = 0xc;
+/// `IPL_SCHED`: the scheduler's lock, `IPL_CLOCK` (arm64 `<machine/intr.h>` 10); asserted
+/// equal to the machine's by `bsd`'s `sys/machine/intr.rs`.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub const IPL_SCHED: i32 = 10;
+
 /// `IPL_HIGH`: everything (arm64's `pmap_asid_mtx`). The machine's number (amd64 0xd, the
 /// host double's too); asserted equal to the machine's by `bsd`'s `sys/machine/intr.rs`.
 #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]

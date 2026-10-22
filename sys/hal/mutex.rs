@@ -334,6 +334,34 @@ impl<T> Mutexed<T> {
     }
 }
 
+impl Mutexed<()> {
+    /// The guard of the mutex that this CPU holds already, made for a frame that did not
+    /// take it: `SCHED_LOCK` handed over by the context switch (`hal::thread`), whose old
+    /// thread keeps its own guard dormant in its suspended frame while the new thread, in its
+    /// trampoline, releases the lock. Restores no level (the trampoline lowers to `IPL_NONE`
+    /// itself, `spl0()`), counts no `ci_mutex_level` (the dormant guard counted it on this
+    /// CPU, and this one's drop uncounts it here). Panics unless this CPU holds the mutex.
+    /// For `()` alone: the guard opens only [`crate::rwlock::Guarded`] cells, whose
+    /// exclusion its caller argues (one live guard per CPU that holds the lock).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the trampoline's, N4.5a step a2")
+    )]
+    pub(crate) fn adopt(&self) -> MutexedGuard<'_, ()> {
+        if self.owner.load(Ordering::Relaxed) != self_word() {
+            crate::assert::hal_panic(format_args!(
+                "mtx {:p}: adopted by a CPU that does not hold it",
+                core::ptr::from_ref(self)
+            ));
+        }
+        MutexedGuard {
+            lock: self,
+            restore: None,
+            _not_send: PhantomData,
+        }
+    }
+}
+
 /// A mutex that guards no data of its own but the [`crate::rwlock::Guarded`] cells keyed to it
 /// (`Guarded::new_mutexed`, `Guarded::new_static_mutexed`): its guard is their witness. The
 /// C's `struct mutex` beside the fields it guards in other objects (`timeout_mutex`,

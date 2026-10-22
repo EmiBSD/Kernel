@@ -313,6 +313,19 @@ fn entry_at<'a, T>(p: NonNull<PinEntry<T>>) -> &'a PinEntry<T> {
     unsafe { p.as_ref() }
 }
 
+/// The element of a linked entry, pinned: it was linked through `Pin<&T>` (I1).
+#[inline]
+fn pinned_of<'a, T>(n: &PinEntry<T>) -> Pin<&'a T> {
+    let t: &'a T = elem_of(n);
+    // SAFETY: `Pin`'s contract for the element: it is not moved, nor its memory invalidated or
+    // reused, before its drop runs. The element is linked (reached through a link under the
+    // lock, I2), and an element is linked only through a `Pin<&T>` of a type that is not
+    // `Unpin` (I1, `pin_adapter!`'s refusal), whose maker promised exactly that for the
+    // element's whole life; this reference names the same element (`this`, I3), so the
+    // promise covers it. Its lifetime is the caller's borrows, during which it stays linked.
+    unsafe { Pin::new_unchecked(t) }
+}
+
 /// The element a linked entry was linked for, for as long as the caller's borrows of the list
 /// and the witness.
 #[inline]
@@ -591,8 +604,103 @@ impl<A: PinAdapter> PinList<A> {
         }
     }
 
+    /// `TAILQ_FIRST`, pinned: the element was linked through `Pin<&T>` (I1), so the reference
+    /// to it is one to a pinned value, for as long as the borrows of the list and the witness
+    /// (during which it stays linked). For what takes a thread pinned (`hal::thread::Next`).
+    pub fn first_pinned<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> Option<Pin<&'a A::Elem>> {
+        bind(&self.key, id_of(w), "TAILQ_FIRST");
+        self.head.next.get().map(|p| pinned_of(entry_at(p)))
+    }
+
+    /// The elements in order, pinned (as [`PinList::first_pinned`]).
+    pub fn iter_pinned<'a, W: Witness + ?Sized>(
+        &'a self,
+        w: &'a W,
+    ) -> impl Iterator<Item = Pin<&'a A::Elem>> + 'a {
+        self.iter(w).map(|e| pinned_of(A::entry(e)))
+    }
+
+    /// `TAILQ_REMOVE` of the first element `pred` accepts (a walk from the head):
+    /// whether one was found. `pred` sees each element for the call only; it cannot keep it.
+    pub fn remove_where<W: Divisible + ?Sized>(
+        &self,
+        w: &mut W,
+        mut pred: impl FnMut(&A::Elem) -> bool,
+    ) -> bool {
+        bind(&self.key, id_of(w), "TAILQ_REMOVE");
+        let mut cur = self.head.next.get();
+        while let Some(p) = cur {
+            let ent = entry_at(p);
+            cur = ent.next.get();
+            if pred(elem_of(ent)) {
+                self.unlink(ent);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `TAILQ_REMOVE` of the first element and `TAILQ_INSERT_TAIL` of it on `dst`, a list of
+    /// the same lock, without handing it out (`wakeup_n`'s move to its local queue, a
+    /// thread's move to a run queue): whether there was one. Panics when `dst` is this list.
+    pub fn move_first_to<W: Divisible + ?Sized>(&self, w: &mut W, dst: &Self) -> bool {
+        let id = id_of(w);
+        bind(&self.key, id, "TAILQ_REMOVE");
+        bind(&dst.key, id, "TAILQ_INSERT_TAIL");
+        if ptr::eq(self, dst) {
+            hal_panic(format_args!("TAILQ: a move onto the same list"));
+        }
+        match self.head.next.get() {
+            Some(f) => {
+                self.detach(entry_at(f));
+                dst.append(f);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Moves to `dst`'s tail, in order, the elements `pred` accepts, at most `max` of them
+    /// (`wakeup_n`'s walk of a sleep queue): how many moved. `dst` is a list of the same lock,
+    /// not this one; `pred` sees each element for the call only.
+    pub fn move_where<W: Divisible + ?Sized>(
+        &self,
+        w: &mut W,
+        max: usize,
+        mut pred: impl FnMut(&A::Elem) -> bool,
+        dst: &Self,
+    ) -> usize {
+        let id = id_of(w);
+        bind(&self.key, id, "TAILQ_REMOVE");
+        bind(&dst.key, id, "TAILQ_INSERT_TAIL");
+        if ptr::eq(self, dst) {
+            hal_panic(format_args!("TAILQ: a move onto the same list"));
+        }
+        let mut moved = 0;
+        let mut cur = self.head.next.get();
+        while let Some(p) = cur
+            && moved < max
+        {
+            let ent = entry_at(p);
+            cur = ent.next.get();
+            if pred(elem_of(ent)) {
+                self.detach(ent);
+                dst.append(p);
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     /// Unlinks `ent`, which is linked under this list's lock, checking its ends first.
     fn unlink(&self, ent: &PinEntry<A::Elem>) {
+        self.detach(ent);
+        ent.release();
+    }
+
+    /// Takes `ent` off this list, keeping its claim (identity and `this`) for a list of the
+    /// same lock to append it; checks its ends first.
+    fn detach(&self, ent: &PinEntry<A::Elem>) {
         let me = Some(ent.addr());
         let n = ent.next.get();
         let p = ent.prev.get();
@@ -610,7 +718,6 @@ impl<A: PinAdapter> PinList<A> {
             Some(p) => entry_at(p).next.set(n),
             None => self.head.next.set(n),
         }
-        ent.release();
     }
 
     /// `TAILQ_CONCAT(self, other)`: `other`'s elements appended, in order; `other` left empty.
@@ -1006,6 +1113,63 @@ mod tests {
         l.remove(&mut g, &b);
         assert!(l.is_empty(&g));
         assert!(!l.remove_first(&mut g));
+    }
+
+    /// The pinned reads, the removal of a matching element and the moves between two lists
+    /// of one lock (the scheduler's queues, N4.5a).
+    #[test]
+    fn elements_move_between_lists_of_one_lock_without_being_handed_out() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut g = m.lock();
+        let src: PinList<ByE> = PinList::new();
+        let dst: PinList<ByE> = PinList::new();
+        let a = core::pin::pin!(Node::new(1));
+        let b = core::pin::pin!(Node::new(2));
+        let c = core::pin::pin!(Node::new(3));
+        let d = core::pin::pin!(Node::new(4));
+        for n in [a.as_ref(), b.as_ref(), c.as_ref(), d.as_ref()] {
+            src.insert_tail(&mut g, n);
+        }
+        let first: Pin<&Node> = src.first_pinned(&g).unwrap();
+        assert_eq!(first.v, 1);
+        assert_eq!(
+            src.iter_pinned(&g).map(|n| n.v).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        // The odd ones, at most one: 1 moves, 3 stays.
+        assert_eq!(src.move_where(&mut g, 1, |n| n.v % 2 == 1, &dst), 1);
+        assert_eq!(values(src.iter(&g)), [2, 3, 4]);
+        assert_eq!(values(dst.iter(&g)), [1]);
+        // Every even one.
+        assert_eq!(
+            src.move_where(&mut g, usize::MAX, |n| n.v % 2 == 0, &dst),
+            2
+        );
+        assert_eq!(values(src.iter(&g)), [3]);
+        assert_eq!(values(dst.iter(&g)), [1, 2, 4]);
+        assert!(dst.move_first_to(&mut g, &src));
+        assert_eq!(values(src.iter(&g)), [3, 1]);
+        assert!(a.e.is_linked());
+        assert!(src.remove_where(&mut g, |n| n.v == 1));
+        assert!(!a.e.is_linked());
+        assert!(!src.remove_where(&mut g, |n| n.v == 9));
+        assert!(src.remove_first(&mut g));
+        assert!(dst.remove_first(&mut g) && dst.remove_first(&mut g));
+        assert!(src.is_empty(&g) && dst.is_empty(&g));
+        assert!(!dst.move_first_to(&mut g, &src));
+    }
+
+    #[test]
+    #[should_panic(expected = "a move onto the same list")]
+    fn a_move_onto_the_same_list_is_refused() {
+        testutil::install();
+        let m = Box::leak(Box::new(Mutexed::new(IPL_NONE, ())));
+        let mut g = m.lock();
+        let l: &PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let a: Pin<&Node> = pin_static(Box::leak(Box::new(Node::new(1))));
+        l.insert_tail(&mut g, a);
+        l.move_first_to(&mut g, l);
     }
 
     #[test]

@@ -8545,7 +8545,7 @@ reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'st
 [[extra]]
 rust = "sys/hal/thread.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.2, decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread so the thread's address is the slot's; N4.5 fills the module (cpu_switchto, proc_trampoline, cpu_fork)"
+reason = "hal runtime, written new (N4.2, decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread so the thread's address is the slot's; N4.5a: SCHED_LOCK (sched_lock, a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check; then the switch, the trampoline and cpu_fork"
 
 [[module]]
 rust = "sys/hal/cpu.rs"
