@@ -1493,22 +1493,24 @@ impl<G: ProcGlue> Process<G> {
         self.ps_threads.insert_tail(&mut g, pin_static(t));
     }
 
-    /// `TAILQ_REMOVE(&pr->ps_threads, p, p_thr_link)` of the thread `tid` and its box given
-    /// back (`None` when no box of the process has that tid); the caller unlinks the thread
-    /// from `allproc` and its tid chain with the box in hand, then drops it (`proc_free`).
-    pub fn remove_thread(&self, tid: Pid) -> Option<PoolBox<Thread<G>>> {
+    /// `TAILQ_REMOVE(&pr->ps_threads, p, p_thr_link)` of the thread whose joining order is
+    /// `seq` (its own `p_seq`, which the exiting thread reads from itself, as the C names `p`)
+    /// and its box given back (`None` when no box of the process has that order); the
+    /// caller unlinks the thread from `allproc` and its tid chain with the box in hand, then
+    /// drops it (`proc_free`).
+    pub fn remove_thread(&self, seq: u64) -> Option<PoolBox<Thread<G>>> {
         let mut g = self.ps_mtx.lock();
-        self.remove_thread_locked(&mut g, tid)
+        self.remove_thread_locked(&mut g, seq)
     }
 
     /// [`Process::remove_thread`] under the caller's guard of this process's `ps_mtx` (`exit1`
-    /// unlinks the thread inside the section that counts it out).
+    /// unlinks the thread inside the section that counts it out): one search of the threads'
+    /// tree by its key, no walk.
     pub fn remove_thread_locked(
         &self,
         g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
-        tid: Pid,
+        seq: u64,
     ) -> Option<PoolBox<Thread<G>>> {
-        let seq = g.threads.iter().find(|t| t.p_tid.get() == tid)?.p_seq.get();
         let b = g.threads.take_by(|e| seq.cmp(&e.p_seq.get()))?;
         self.ps_threads.remove(g, &b);
         Some(b)
@@ -2383,7 +2385,12 @@ mod tests {
             let g = pr.ps_mtx.lock();
             assert_eq!(pr.ps_threads.iter(&g).count(), 1);
         }
-        let b = pr.remove_thread(5000).unwrap();
+        let seq = {
+            let g = pr.ps_mtx.lock();
+            pr.ps_threads.iter(&g).next().unwrap().p_seq.get()
+        };
+        let b = pr.remove_thread(seq).unwrap();
+        assert_eq!(b.p_tid.get(), 5000);
         {
             let mut w = klock::witness();
             let tb = TestGlue::tables();
@@ -2391,7 +2398,7 @@ mod tests {
             tb.tidhash(5000).remove(&mut w, &b);
         }
         drop(b);
-        assert!(pr.remove_thread(5000).is_none());
+        assert!(pr.remove_thread(seq).is_none());
         unlink(&pr);
     }
 
@@ -2621,8 +2628,9 @@ mod tests {
         let mut g = pr.ps_mtx.lock();
         let at = pr.insert_thread_locked(&mut g, t);
         assert_eq!(pr.ps_threads.iter(&g).count(), 1);
-        assert!(pr.remove_thread_locked(&mut g, 6001).is_none());
-        let b = pr.remove_thread_locked(&mut g, 6000).unwrap();
+        let seq = pr.ps_threads.iter(&g).next().unwrap().p_seq.get();
+        assert!(pr.remove_thread_locked(&mut g, seq + 1).is_none());
+        let b = pr.remove_thread_locked(&mut g, seq).unwrap();
         assert!(ptr::eq(PoolBox::as_ptr(&b), at));
         assert_eq!(pr.ps_threads.iter(&g).count(), 0);
         drop(g);

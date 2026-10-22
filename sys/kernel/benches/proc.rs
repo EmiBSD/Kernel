@@ -37,6 +37,9 @@
 //! - `prim.lim-read`: `lim_cur(RLIMIT_NOFILE)` of a thread whose copy is current.
 //! - `proc.list-insert-remove`: a process put on `allprocess` and its pid chain and taken
 //!   off both, under the kernel lock's writer (LZ: four `LIST_*` macros, no lock object).
+//! - `proc.thread-join-leave`: a thread box joins a process of eight threads and leaves it
+//!   again under its `ps_mtx` (`thread_join`'s and `exit1`'s moves: the C's
+//!   `TAILQ_INSERT_TAIL` and `TAILQ_REMOVE` of `ps_threads`).
 
 #![forbid(unsafe_code)]
 
@@ -294,6 +297,18 @@ fn main() {
     drop(t.set_cred(pr.ucred()));
     let other = proc::process_alloc::<BenchGlue>(4242, ());
     let pid: Pid = 4242;
+    let joined = proc::process_alloc::<BenchGlue>(43, ());
+    {
+        let mut g = joined.ps_mtx.lock();
+        for i in 0..8 {
+            let b = proc::thread_alloc::<BenchGlue>(&joined, (), ());
+            b.p_tid.set(100_000 + i);
+            joined.insert_thread_locked(&mut g, b);
+        }
+    }
+    let leaver = std::cell::Cell::new(Some(proc::thread_alloc::<BenchGlue>(&joined, (), ())));
+    // The joining thread's order number, as `exit1` reads it from the thread (`p_seq`).
+    let next_seq = std::cell::Cell::new(8u64);
 
     let mut benches: Vec<Bench<'_>> = Vec::new();
     benches.push(Bench {
@@ -341,6 +356,22 @@ fn main() {
             tb.pidhash(pid).insert_head(&mut w, other.as_pin());
             tb.pidhash(pid).remove(&mut w, &other);
             tb.allprocess.remove(&mut w, &other);
+        })),
+    });
+
+    benches.push(Bench {
+        name: "proc.thread-join-leave",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let Some(b) = leaver.take() else {
+                return;
+            };
+            b.p_tid.set(100_100);
+            let mut g = joined.ps_mtx.lock();
+            joined.insert_thread_locked(&mut g, b);
+            let seq = next_seq.get();
+            next_seq.set(seq + 1);
+            leaver.set(joined.remove_thread_locked(&mut g, seq));
         })),
     });
 

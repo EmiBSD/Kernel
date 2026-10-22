@@ -249,7 +249,9 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
         pr.remove_static_thread_locked(&mut g, &PROC0);
         None
     } else {
-        pr.remove_thread_locked(&mut g, p.p_tid.get())
+        let b = pr.remove_thread_locked(&mut g, p.p_seq.get());
+        kassert!(b.as_ref().is_some_and(|b| ptr::eq(&**b, p)));
+        b
     };
     pr.ps_threadcnt.set(pr.ps_threadcnt.get() - 1);
     pr.ps_exitcnt.set(pr.ps_exitcnt.get() + 1);
