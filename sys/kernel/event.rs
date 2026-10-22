@@ -1031,8 +1031,9 @@ impl<G: ProcGlue> Klist<G> {
     /// `knote_locked(list, hint)`: walk down the list, activating the knotes whose event has
     /// triggered, with a witness of its lock.
     pub fn knote_locked<W: Witness + ?Sized>(&self, w: &W, hint: i64) {
+        let mut locked = false;
         for kn in self.list.iter(w) {
-            if filter_event(kn, hint) {
+            if filter_event(kn, hint, &mut locked) {
                 let kq = kn.kq();
                 let mut g = kq.lock.lock();
                 knote_activate(kq, &mut g, kn);
@@ -1138,7 +1139,7 @@ impl<G: ProcGlue> Klist<G> {
             filter_detach(h.kn());
             if h.kn().fop().f_flags & FILTEROP_ISFD != 0 {
                 h.kn().kn_fop.set(Some(&Kqueue::<G>::DEAD_FILTOPS));
-                filter_event(h.kn(), 0);
+                filter_event(h.kn(), 0, &mut false);
                 let mut g = kq.lock.lock();
                 knote_activate(&kq, &mut g, h.kn());
                 knote_release(&mut g, h);
@@ -2287,10 +2288,13 @@ fn filter_detach<G: ProcGlue>(kn: &Knote<G>) {
     }
 }
 
-/// `filter_event(kn, hint)`.
-fn filter_event<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
-    if kn.fop().f_flags & FILTEROP_MPSAFE == 0 {
+/// `filter_event(kn, hint)`. `locked` says whether the caller already asserted the kernel
+/// lock held (the C's `KERNEL_ASSERT_LOCKED` of a filter that is not `FILTEROP_MPSAFE`): a
+/// walk asserts it once, at its first such filter, not once per knote.
+fn filter_event<G: ProcGlue>(kn: &Knote<G>, hint: i64, locked: &mut bool) -> bool {
+    if !*locked && kn.fop().f_flags & FILTEROP_MPSAFE == 0 {
         klock::kernel_assert_locked();
+        *locked = true;
     }
 
     fop_event(kn, hint)
@@ -3370,7 +3374,7 @@ fn knote_remove<'a, G: ProcGlue>(
             }
 
             kn.kn_fop.set(Some(&Kqueue::<G>::BADFD_FILTOPS));
-            filter_event(kn, 0);
+            filter_event(kn, 0, &mut false);
             g = kq.lock.lock();
             knote_activate(kq, &mut g, kn);
             knote_release(&mut g, h);
