@@ -132,14 +132,29 @@ trait = "PipeGlue"
 for = ["sys/kernel/pipe.rs"]
 paid_by = "N4"
 
-# bsd: the Uio of a read or write and uiomove (sys/sys/uio.rs, sys/kern/kern_subr.rs), passed
-# down by the glue's fo_read/fo_write as &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io
-# (kern.proc_args).
-# kernel::pipe::UioMove
+# bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
+# N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as
+# &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io (kern.proc_args). N4.3: paid by
+# N7, with the last UIO_SYSSPACE builder (uiomove's kernel-address leg copies to an
+# address its builder vouched for, which no safe hal function may do; VFS, net, the
+# drivers and crypto type theirs in their slices).
+# kernel::uio::UioMove (re-exported by kernel::pipe)
 [[bridge]]
 trait = "UioMove"
 for = ["sys/kernel/pipe.rs", "sys/kernel/vm/io.rs"]
-paid_by = "N4"
+paid_by = "N7"
+
+# bsd: what a file is open on and the calls the descriptors make into the subsystems still in
+# bsd (sys/kern/kern_descrip.rs, BsdFileGlue, the glue kernel::file and kernel::descrip are
+# instantiated with: the objects (vnode, socket, pipe, kqueue), struct fileops, the vnode
+# layer's VOP_ADVLOCK/VOP_PATHCONF/VISTTY and the positioned-I/O checks (N5), SS_DNS (N6),
+# knote_fdclose and a table's fd_kqlist (N4.4), SIGPIPE (N4.5), the stall wait (N5), pledge's
+# fcntl/flock/ioctl hooks (N8, the last), maxfiles and tablefull).
+# kernel::file::FileGlue
+[[bridge]]
+trait = "FileGlue"
+for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+paid_by = "N8"
 
 # bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
 # (sys/kern/kern_descrip.rs, sys/sys/filedesc.rs), implemented by sys/kern/pipe_glue.rs.

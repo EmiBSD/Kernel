@@ -92,7 +92,8 @@ use crate::sys::fcntl::{
     F_FLOCK, F_UNLCK, FFSYNC, FNONBLOCK, FREAD, FWRITE, Flock, O_APPEND, O_CREAT, O_DIRECTORY,
     O_EXCL, O_NOFOLLOW, O_TRUNC,
 };
-use crate::sys::file::{DTYPE_VNODE, FIF_HASLOCK, FO_POSITION, File, Fileops};
+use crate::sys::file::FileExt;
+use crate::sys::file::{FIF_HASLOCK, FO_POSITION, File, Fileops, foffset};
 use crate::sys::filio::{FIOASYNC, FIONREAD};
 use crate::sys::limits::LLONG_MAX;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
@@ -131,20 +132,6 @@ pub static VNOPS: Fileops = Fileops {
     fo_close: vn_closefile,
     fo_seek: Some(vn_seek),
 };
-
-impl File {
-    /// `(struct vnode *)fp->f_data` of a `DTYPE_VNODE` file.
-    pub fn vnode(&self) -> &'static Vnode {
-        let vp = self.f_data.get().cast::<Vnode>();
-        if self.f_type.get() != DTYPE_VNODE || vp.is_null() {
-            crate::kern::subr_prf::panic(format_args!("file {:p}: not a vnode", self));
-        }
-        // SAFETY: a `DTYPE_VNODE` file's `f_data` is the vnode `doopenat` (or `sys_fhopen`)
-        // stored, written once before the file was inserted; the file holds a use count on
-        // it, and vnodes are never freed.
-        unsafe { &*vp }
-    }
-}
 
 /// Common code for vnode open operations. Check permissions, and call the `VOP_OPEN` or
 /// `VOP_CREATE` routine.
@@ -422,7 +409,7 @@ pub fn vn_rdwr(
 /// File table vnode read routine.
 pub fn vn_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
     let vp = fp.vnode();
-    let cred = fp.f_cred.get();
+    let cred = fp.f_cred_ptr();
     let count = uio.uio_resid;
 
     kernel_lock();
@@ -430,7 +417,7 @@ pub fn vn_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 
     let offset = if fflags & FO_POSITION == 0 {
-        uio.uio_offset = fp.f_offset.get();
+        uio.uio_offset = foffset(fp);
         uio.uio_offset
     } else {
         uio.uio_offset
@@ -453,10 +440,7 @@ pub fn vn_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
         };
         let error = VOP_READ(vp, uio, ioflag, cred);
         if fflags & FO_POSITION == 0 {
-            mtx_enter(&fp.f_mtx);
-            fp.f_offset
-                .set(fp.f_offset.get() + (count - uio.uio_resid) as Off);
-            mtx_leave(&fp.f_mtx);
+            fp.advance_offset((count - uio.uio_resid) as Off);
         }
         error
     };
@@ -468,7 +452,7 @@ pub fn vn_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
 /// File table vnode write routine.
 pub fn vn_write(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
     let vp = fp.vnode();
-    let cred = fp.f_cred.get();
+    let cred = fp.f_cred_ptr();
     let mut ioflag = IO_UNIT;
 
     kernel_lock();
@@ -490,19 +474,16 @@ pub fn vn_write(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> 
     }
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
     if fflags & FO_POSITION == 0 {
-        uio.uio_offset = fp.f_offset.get();
+        uio.uio_offset = foffset(fp);
     }
     let count = uio.uio_resid;
     let error = VOP_WRITE(vp, uio, ioflag, cred);
     if fflags & FO_POSITION == 0 {
-        mtx_enter(&fp.f_mtx);
         if ioflag & IO_APPEND != 0 {
-            fp.f_offset.set(uio.uio_offset);
+            fp.set_offset(uio.uio_offset);
         } else {
-            fp.f_offset
-                .set(fp.f_offset.get() + (count - uio.uio_resid) as Off);
+            fp.advance_offset((count - uio.uio_resid) as Off);
         }
-        mtx_leave(&fp.f_mtx);
     }
     let _ = VOP_UNLOCK(vp);
 
@@ -672,7 +653,7 @@ pub fn vn_closefile(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
             F_FLOCK,
         );
     }
-    let error = vn_close(vp, fp.flag(), fp.f_cred.get(), p);
+    let error = vn_close(vp, fp.flag(), fp.f_cred_ptr(), p);
     kernel_unlock();
     error
 }
@@ -701,7 +682,7 @@ pub fn vn_seek(fp: &File, offset: &mut Off, whence: i32, p: &Proc) -> Result<(),
 
     let error = 'out: {
         let newoff = match whence {
-            SEEK_CUR => fp.f_offset.get().wrapping_add(*offset),
+            SEEK_CUR => foffset(fp).wrapping_add(*offset),
             SEEK_END => {
                 kernel_lock();
                 let error = VOP_GETATTR(vp, &mut vattr, cred, p);
@@ -717,9 +698,7 @@ pub fn vn_seek(fp: &File, offset: &mut Off, whence: i32, p: &Proc) -> Result<(),
         if !special && newoff < 0 {
             break 'out Err(Errno::EINVAL);
         }
-        mtx_enter(&fp.f_mtx);
-        fp.f_offset.set(newoff);
-        mtx_leave(&fp.f_mtx);
+        fp.set_offset(newoff);
         *offset = newoff;
         Ok(())
     };

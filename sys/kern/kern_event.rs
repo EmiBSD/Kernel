@@ -107,7 +107,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::kassert;
 use crate::kern::kern_clock::tstohz;
-use crate::kern::kern_descrip::{falloc, fd_checkclosed, fd_getfile, fdinsert};
+use crate::kern::kern_descrip::{BsdFileData, falloc, fd_checkclosed, fd_getfile, fdinsert};
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_pledge::pledge_fail;
@@ -138,9 +138,10 @@ use crate::sys::event::{
     NOTE_SECONDS, NOTE_SIGNAL, NOTE_TRACK, NOTE_TRACKERR, NOTE_TRIGGER, NOTE_USECONDS, klist_empty,
     knote_modify, knote_process,
 };
-use crate::sys::eventvar::{KQ_DYING, KQ_NEVENTS, KQ_SLEEP, KQ_TASK, KQEXTENT, KqList, Kqueue};
+use crate::sys::eventvar::{KQ_DYING, KQ_NEVENTS, KQ_SLEEP, KQ_TASK, KQEXTENT, Kqueue};
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
-use crate::sys::file::{DTYPE_KQUEUE, DTYPE_VNODE, File, Fileops, frele};
+use crate::sys::file::FileExt;
+use crate::sys::file::{DTYPE_KQUEUE, DTYPE_VNODE, File, FileRef, Fileops, frele};
 use crate::sys::filedesc::{Filedesc, UF_EXCLOSE, fdpassertlocked, fdplock, fdpunlock};
 use crate::sys::malloc::{M_KEVENT, M_WAITOK};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
@@ -148,7 +149,7 @@ use crate::sys::param::{PCATCH, PNORELOCK, PSOCK};
 use crate::sys::pledge::PLEDGE_PROC;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::{PID_MAX, PS_EXITING, PS_PLEDGE, Proc, Process};
-use crate::sys::queue::{ListHead, SlistHead, TailqHead};
+use crate::sys::queue::{SlistHead, TailqHead};
 use crate::sys::rwlock::{RW_WRITE, Rwlock};
 use crate::sys::signal::NSIG;
 use crate::sys::stat::{S_IFIFO, Stat};
@@ -357,14 +358,14 @@ const fn kn_hash(val: u64, mask: u64) -> u64 {
 
 /// `kn->kn_fp->f_data` of a kqueue file: its kqueue.
 pub fn fp_kqueue(fp: &File) -> &'static Kqueue {
-    if fp.f_type.get() != DTYPE_KQUEUE {
-        panic(format_args!("file {:p}: not a kqueue", fp));
-    }
-    // SAFETY: `dokqueue` points the `f_data` of every `DTYPE_KQUEUE` file at its kqueue,
-    // which the file holds a reference to until `kqueue_close` clears `f_data`.
-    match unsafe { fp.f_data.get().cast::<Kqueue>().as_ref() } {
-        Some(kq) => kq,
-        None => panic(format_args!("file {:p}: kqueue already closed", fp)),
+    // `dokqueue` installs every `DTYPE_KQUEUE` file with its kqueue, which the file holds a
+    // reference to until `kqueue_close` clears the link.
+    match fp.data() {
+        Some(BsdFileData::Kqueue(kq)) if fp.f_type() == DTYPE_KQUEUE => match kq.get() {
+            Some(kq) => kq,
+            None => panic(format_args!("file {:#x}: kqueue already closed", fp.addr())),
+        },
+        _ => panic(format_args!("file {:#x}: not a kqueue", fp.addr())),
     }
 }
 
@@ -408,16 +409,15 @@ pub unsafe fn KQRELE(kq: &Kqueue) {
         return;
     }
 
+    // Every kqueue is on its table's `fd_kqlist` (`dokqueue`, `kqpoll_init`), under the
+    // table's lock; `hal::list`'s remove panics for one on no list or on another table's.
     let fdp = kq.fdp();
-    if rw_status(&fdp.fd_lock) == RW_WRITE {
-        // SAFETY: every kqueue is on its table's `fd_kqlist` (`dokqueue`, `kqpoll_init`),
-        // whose lock is held.
-        unsafe { ListHead::<KqList>::remove(kq) };
+    if fdp.lock_status() == RW_WRITE {
+        fdp.kq().fd_kqlist.remove(kq);
     } else {
-        fdplock(fdp);
-        // SAFETY: as above.
-        unsafe { ListHead::<KqList>::remove(kq) };
-        fdpunlock(fdp);
+        let g = fdplock(fdp);
+        fdp.kq().fd_kqlist.remove(kq);
+        fdpunlock(g);
     }
 
     kassert!(kq.kq_head.is_empty());
@@ -470,12 +470,12 @@ pub fn kqueue_init_percpu() {
 pub fn filt_fileattach(kn: &Knote) -> Result<(), Errno> {
     let fp = kn.fp();
 
-    (fp.ops().fo_kqfilter)(fp, kn)
+    (fp.ops().fo_kqfilter)(&fp, kn)
 }
 
 /// `kqueue_kqfilter`: a kqueue is readable when it has pending events.
 pub fn kqueue_kqfilter(_fp: &File, kn: &Knote) -> Result<(), Errno> {
-    let kq = fp_kqueue(kn.fp());
+    let kq = fp_kqueue(&kn.fp());
 
     if kn.kn_filter().get() != EVFILT_READ {
         return Err(Errno::EINVAL);
@@ -488,7 +488,7 @@ pub fn kqueue_kqfilter(_fp: &File, kn: &Knote) -> Result<(), Errno> {
 
 /// `filt_kqdetach`.
 pub fn filt_kqdetach(kn: &Knote) {
-    let kq = fp_kqueue(kn.fp());
+    let kq = fp_kqueue(&kn.fp());
 
     klist_remove(&kq.kq_klist, kn);
 }
@@ -504,7 +504,7 @@ pub fn filt_kqueue_common(kn: &Knote, kq: &Kqueue) -> bool {
 
 /// `filt_kqueue`.
 pub fn filt_kqueue(kn: &Knote, _hint: i64) -> bool {
-    let kq = fp_kqueue(kn.fp());
+    let kq = fp_kqueue(&kn.fp());
 
     mtx_enter(&kq.kq_lock);
     let active = filt_kqueue_common(kn, kq);
@@ -515,7 +515,7 @@ pub fn filt_kqueue(kn: &Knote, _hint: i64) -> bool {
 
 /// `filt_kqueuemodify`.
 pub fn filt_kqueuemodify(kev: &mut Kevent, kn: &Knote) -> bool {
-    let kq = fp_kqueue(kn.fp());
+    let kq = fp_kqueue(&kn.fp());
 
     mtx_enter(&kq.kq_lock);
     knote_assign(kev, kn);
@@ -527,7 +527,7 @@ pub fn filt_kqueuemodify(kev: &mut Kevent, kn: &Knote) -> bool {
 
 /// `filt_kqueueprocess`.
 pub fn filt_kqueueprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
-    let kq = fp_kqueue(kn.fp());
+    let kq = fp_kqueue(&kn.fp());
 
     mtx_enter(&kq.kq_lock);
     let active = if kev.is_some() && kn.has_flags(EV_ONESHOT) {
@@ -871,9 +871,9 @@ pub fn filt_timerattach(kn: &Knote) -> Result<(), Errno> {
 
     let ts = filt_timervalidate(kn.kn_sfflags.get(), kn.kn_sdata.get())?;
 
-    let nuserevents = fdp.fd_nuserevents.fetch_add(1, Ordering::SeqCst) + 1;
+    let nuserevents = fdp.kq().fd_nuserevents.fetch_add(1, Ordering::SeqCst) + 1;
     if nuserevents > KQ_USEREVENTSMAX.load(Ordering::Relaxed) {
-        fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+        fdp.kq().fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
         return Err(Errno::ENOMEM);
     }
 
@@ -883,7 +883,7 @@ pub fn filt_timerattach(kn: &Knote) -> Result<(), Errno> {
 
     let Some(mem) = malloc(size_of::<FiltTimer>(), M_KEVENT, M_WAITOK) else {
         // M_WAITOK cannot sleep yet (see the module's deviations).
-        fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+        fdp.kq().fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
         return Err(Errno::ENOMEM);
     };
     let ftp = mem.cast::<FiltTimer>().as_ptr();
@@ -919,7 +919,7 @@ pub fn filt_timerdetach(kn: &Knote) {
     timeout_del_barrier(&ft.ft_to);
     kn.kn_hook.set(ptr::null_mut());
     free(NonNull::from(ft).cast(), M_KEVENT, size_of::<FiltTimer>());
-    fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+    fdp.kq().fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// `filt_timermodify`: resets the timer to the new period; any pending events are
@@ -984,9 +984,9 @@ pub fn filt_timerprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
 pub fn filt_userattach(kn: &Knote) -> Result<(), Errno> {
     let fdp = kn.kq().fdp();
 
-    let nuserevents = fdp.fd_nuserevents.fetch_add(1, Ordering::SeqCst) + 1;
+    let nuserevents = fdp.kq().fd_nuserevents.fetch_add(1, Ordering::SeqCst) + 1;
     if nuserevents > KQ_USEREVENTSMAX.load(Ordering::Relaxed) {
-        fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+        fdp.kq().fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
         return Err(Errno::ENOMEM);
     }
 
@@ -1003,7 +1003,7 @@ pub fn filt_userattach(kn: &Knote) -> Result<(), Errno> {
 pub fn filt_userdetach(kn: &Knote) {
     let fdp = kn.kq().fdp();
 
-    fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+    fdp.kq().fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// `filt_usermodify`: `NOTE_TRIGGER` activates, the `NOTE_FF*` control combines `fflags`.
@@ -1232,11 +1232,11 @@ pub fn kqpoll_init(p: &Proc, num: u32) -> Result<(), Errno> {
         p.p_kq.set(kq);
         p.p_kq_serial.set(u64::from(crate::dev::rnd::arc4random()));
         let fdp = p.fd();
-        fdplock(fdp);
-        // SAFETY: the kqueue is new and on no list; it stays until `KQRELE` takes it off,
-        // under the table's lock.
-        unsafe { fdp.fd_kqlist.insert_head(kq) };
-        fdpunlock(fdp);
+        let g = fdplock(fdp);
+        // The kqueue is new and on no list; it stays until `KQRELE` takes it off, under the
+        // table's lock.
+        fdp.kq().fd_kqlist.insert_head(kq);
+        fdpunlock(g);
     }
 
     let serial = p.p_kq_serial.get();
@@ -1322,12 +1322,12 @@ pub fn dokqueue(p: &Proc, flags: i32, retval: &mut [Register; 2]) -> Result<(), 
 
     let kq = kqueue_alloc(fdp)?;
 
-    fdplock(fdp);
-    let (fp, fd) = match falloc(p) {
+    let mut g = fdplock(fdp);
+    let (fp, fd) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(error) => {
             // out:
-            fdpunlock(fdp);
+            fdpunlock(g);
             pool_put(&KQUEUE_POOL, NonNull::from(kq).cast());
             return Err(error);
         }
@@ -1336,17 +1336,18 @@ pub fn dokqueue(p: &Proc, flags: i32, retval: &mut [Register; 2]) -> Result<(), 
         (FREAD | FWRITE | (flags & FNONBLOCK)) as u32,
         Ordering::SeqCst,
     );
-    fp.f_type.set(DTYPE_KQUEUE);
-    fp.f_ops.set(Some(&KQUEUEOPS));
-    fp.f_data.set(ptr::from_ref(kq).cast_mut().cast());
+    fp.install(
+        DTYPE_KQUEUE,
+        &KQUEUEOPS,
+        BsdFileData::Kqueue(hal::link::Link::to(kq)),
+    );
     retval[0] = fd as Register;
-    // SAFETY: the kqueue is new and on no list; `KQRELE` takes it off under the table's
-    // lock.
-    unsafe { fdp.fd_kqlist.insert_head(kq) };
-    fdinsert(fdp, fd, cloexec, fp);
+    // The kqueue is new and on no list; `KQRELE` takes it off under the table's lock.
+    fdp.kq().fd_kqlist.insert_head(kq);
+    fdinsert(&mut g, fd, cloexec, &fp);
     let _ = frele(fp, p);
     // out:
-    fdpunlock(fdp);
+    fdpunlock(g);
     Ok(())
 }
 
@@ -1396,7 +1397,7 @@ pub fn sys_kevent(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
     };
 
     let error: Result<(), Errno> = 'done: {
-        if fp.f_type.get() != DTYPE_KQUEUE {
+        if fp.f_type() != DTYPE_KQUEUE {
             break 'done Err(Errno::EBADF);
         }
 
@@ -1414,7 +1415,7 @@ pub fn sys_kevent(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
             tsp = Some(ts);
         }
 
-        let kq = fp_kqueue(fp);
+        let kq = fp_kqueue(&fp);
         let mut nerrors: Register = 0;
 
         while nchanges > 0 {
@@ -1519,7 +1520,7 @@ pub fn kqueue_register(
     if kev.flags & EV_ADD != 0 {
         newkn = Some(knote_alloc()?);
     }
-    let mut fp: Option<&'static File> = None;
+    let mut fp: Option<FileRef> = None;
 
     let error: Result<(), Errno> = 'done: loop {
         // again:
@@ -1585,7 +1586,10 @@ pub fn kqueue_register(
                 kn.kn_status.set(KN_PROCESSING);
                 // apply reference count to knote structure, and do not release it at the
                 // end of this routine.
-                kn.kn_fp().set(fp.take());
+                // The slot's old value is dropped after its IPL_HIGH guard (as at
+                // knote_drop): a last reference's close never runs under the guard.
+                let old = kn.kn_fp().lock().set(fp.take());
+                drop(old);
                 kn.kn_kq.set(kq);
                 kn.kn_fop.set(Some(fops));
 
@@ -1608,7 +1612,7 @@ pub fn kqueue_register(
                 // If this is a file descriptor filter, check if fd was closed while the knote
                 // was being added. knote_fdclose() has missed kn if the function ran before
                 // kn appeared in kq_knlist.
-                if isfd && fd_checkclosed(fdp, kev.ident as i32, kn.fp()) {
+                if isfd && fd_checkclosed(fdp, kev.ident as i32, &kn.fp()) {
                     // Drop the knote silently without error because another thread might
                     // already have seen it. This corresponds to the insert happening in
                     // full before the close.
@@ -1893,27 +1897,32 @@ pub fn kqueue_scan(
                 // Invalidate knotes whose vnodes have been revoked. This is a workaround; it
                 // is tricky to clear existing knotes and prevent new ones from being
                 // registered with the current revocation mechanism.
-                if kn.fop().f_flags & FILTEROP_ISFD != 0
-                    && let Some(fp) = kn.kn_fp().get()
-                    && fp.f_type.get() == DTYPE_VNODE
+                // The vnode read under the slot alone (no reference taken: the knote holds
+                // one); the slot's guard does not live through the body.
+                let isfd_vp = if kn.fop().f_flags & FILTEROP_ISFD != 0 {
+                    kn.kn_fp()
+                        .lock()
+                        .get()
+                        .filter(|fp| fp.f_type() == DTYPE_VNODE)
+                        .map(|fp| fp.vnode())
+                } else {
+                    None
+                };
+                if let Some(vp) = isfd_vp
+                    && vp.v_op.get().is_some_and(|ops| ptr::eq(ops, &DEAD_VOPS))
+                    && !ptr::eq(kn.fop(), &DEAD_FILTOPS)
                 {
-                    let vp = fp.vnode();
+                    filter_detach(kn);
+                    kn.kn_fop.set(Some(&DEAD_FILTOPS));
 
-                    if vp.v_op.get().is_some_and(|ops| ptr::eq(ops, &DEAD_VOPS))
-                        && !ptr::eq(kn.fop(), &DEAD_FILTOPS)
-                    {
+                    // Check if the event should be delivered. Use f_event directly
+                    // because this is a special situation.
+                    if !fop_event(kn, 0) {
                         filter_detach(kn);
-                        kn.kn_fop.set(Some(&DEAD_FILTOPS));
-
-                        // Check if the event should be delivered. Use f_event directly
-                        // because this is a special situation.
-                        if !fop_event(kn, 0) {
-                            filter_detach(kn);
-                            // SAFETY: as above.
-                            unsafe { knote_drop(kn, Some(p)) };
-                            mtx_enter(&kq.kq_lock);
-                            continue;
-                        }
+                        // SAFETY: as above.
+                        unsafe { knote_drop(kn, Some(p)) };
+                        mtx_enter(&kq.kq_lock);
+                        continue;
                     }
                 }
 
@@ -2091,7 +2100,9 @@ pub fn kqueue_terminate(_p: Option<&Proc>, kq: &Kqueue) {
 pub fn kqueue_close(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
     let kq = fp_kqueue(fp);
 
-    fp.f_data.set(ptr::null_mut());
+    if let Some(BsdFileData::Kqueue(link)) = fp.data() {
+        link.set(None);
+    }
 
     kqueue_purge(p, kq);
     kqueue_terminate(p, kq);
@@ -2350,7 +2361,8 @@ pub fn knote_remove(p: Option<&Proc>, kq: &Kqueue, hash: bool, idx: usize, purge
             && !ptr::eq(kn.fop(), &BADFD_FILTOPS)
         {
             kassert!(kn.fop().f_flags & FILTEROP_ISFD != 0);
-            if let Some(fp) = kn.kn_fp().take() {
+            let fp = kn.kn_fp().lock().take();
+            if let Some(fp) = fp {
                 let _ = frele(fp, p);
             }
 
@@ -2374,11 +2386,11 @@ pub fn knote_fdclose(p: &Proc, fd: i32) {
 
     // fdplock can be ignored if the file descriptor table is being freed because no other
     // thread can access the fdp.
-    if fdp.fd_refcnt.get() != 0 {
+    if fdp.shares() != 0 {
         fdpassertlocked(fdp);
     }
 
-    for kq in fdp.fd_kqlist.iter() {
+    for kq in fdp.kq().fd_kqlist.iter() {
         mtx_enter(&kq.kq_lock);
         if fd < kq.kq_knlistsize.get() {
             knote_remove(Some(p), kq, false, fd as usize, false);
@@ -2472,10 +2484,12 @@ pub unsafe fn knote_drop(kn: &Knote, p: Option<&Proc>) {
     }
     mtx_leave(&kq.kq_lock);
 
-    if kn.fop().f_flags & FILTEROP_ISFD != 0
-        && let Some(fp) = kn.kn_fp().take()
-    {
-        let _ = frele(fp, p);
+    if kn.fop().f_flags & FILTEROP_ISFD != 0 {
+        // The slot's guard ends with the statement: `frele` may sleep in the file's close.
+        let fp = kn.kn_fp().lock().take();
+        if let Some(fp) = fp {
+            let _ = frele(fp, p);
+        }
     }
     pool_put(&KNOTE_POOL, NonNull::from(kn).cast());
 }
@@ -2781,13 +2795,13 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::kern_clock::TICKS;
-    use crate::kern::kern_descrip::{closef, fd_used, fdinit, fdremove, filedesc_init, fnew};
+    use crate::kern::kern_descrip::{closef, fdinit, fdremove, filedesc_init, fnew};
     use crate::kern::kern_prot::crget;
     use crate::kern::kern_timeout::{softclock, timeout_hardclock_update, timeout_startup};
     use crate::kern::proc_glue::procinit;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::event::{EVFILT_TIMER, EVFILT_USER, NOTE_FFOR, ev_set};
-    use crate::sys::file::{DTYPE_PIPE, fref};
+    use crate::sys::file::DTYPE_PIPE;
 
     /// Real memory, the process, file and kqueue pools.
     pub(crate) fn setup() -> MutexGuard<'static, ()> {
@@ -2802,10 +2816,7 @@ pub(crate) mod tests {
     /// A thread of a fresh process with credentials and a new descriptor table.
     pub(crate) fn thread() -> &'static Proc {
         let p = crate::kern::proc_glue::test_proc(1, crget());
-        let pr = p.process();
-        let fdp = fdinit();
-        pr.ps_fd.set(fdp);
-        p.p_fd.set(fdp);
+        p.process().set_fd(fdinit());
         p
     }
 
@@ -2813,10 +2824,10 @@ pub(crate) mod tests {
     pub(crate) fn new_kqueue(p: &Proc) -> &'static Kqueue {
         let fdp = p.fd();
         let kq = kqueue_alloc(fdp).unwrap();
-        fdplock(fdp);
-        // SAFETY: a new kqueue, on no list; `close_kqueue` takes it off.
-        unsafe { fdp.fd_kqlist.insert_head(kq) };
-        fdpunlock(fdp);
+        let g = fdplock(fdp);
+        // A new kqueue, on no list; `close_kqueue` takes it off.
+        fdp.kq().fd_kqlist.insert_head(kq);
+        fdpunlock(g);
         kq
     }
 
@@ -2842,24 +2853,21 @@ pub(crate) mod tests {
         (ready, error)
     }
 
-    /// Places `fp` (fresh from `fnew`) at descriptor `fd`, as `falloc` and `fdinsert` do.
-    pub(crate) fn install(p: &Proc, fd: i32, fp: &'static File) {
-        let fdp = p.fd();
-        fdplock(fdp);
-        fd_used(fdp, fd);
-        fdinsert(fdp, fd, 0, fp);
-        fdpunlock(fdp);
+    /// Places `fp` (fresh from `fnew`) at descriptor `fd`, as `falloc` and `fdinsert` do:
+    /// the slot takes its own reference.
+    pub(crate) fn install(p: &Proc, fd: i32, fp: &FileRef) {
+        let mut g = fdplock(p.fd());
+        g.fd_used(fd);
+        fdinsert(&mut g, fd, 0, fp);
+        fdpunlock(g);
     }
 
     /// `fdrelease` without `curproc`: off the table, its knotes removed, closed.
     pub(crate) fn close_fd(p: &Proc, fd: i32) {
-        let fdp = p.fd();
-        fdplock(fdp);
-        let fp = fdp.ofile(fd as usize).unwrap();
-        fref(fp);
-        fdremove(fdp, fd);
+        let mut g = fdplock(p.fd());
+        let fp = fdremove(&mut g, fd).unwrap();
         knote_fdclose(p, fd);
-        fdpunlock(fdp);
+        fdpunlock(g);
         closef(fp, p).unwrap();
     }
 
@@ -2999,13 +3007,12 @@ pub(crate) mod tests {
         fo_seek: None,
     };
 
-    /// A test file at `fd`.
-    fn open_test_file(p: &Proc, fd: i32) -> &'static File {
+    /// A test file at `fd`, and the test's own reference to it.
+    fn open_test_file(p: &Proc, fd: i32) -> FileRef {
         let fp = fnew(p).unwrap();
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
-        fp.f_type.set(DTYPE_PIPE);
-        fp.f_ops.set(Some(&TESTOPS));
-        install(p, fd, fp);
+        fp.install(DTYPE_PIPE, &TESTOPS, BsdFileData::None);
+        install(p, fd, &fp);
         fp
     }
 
@@ -3023,9 +3030,9 @@ pub(crate) mod tests {
         assert!(!klist_empty(&TEST_KLIST), "fo_kqfilter hooked the knote");
         assert_eq!(kq.kq_nknotes.get(), 1);
         assert_eq!(
-            fp.f_count.load(Ordering::SeqCst),
-            2,
-            "the knote holds the file"
+            fp.count(),
+            3,
+            "the slot, the test and the knote hold the file"
         );
         assert_eq!(scan(p, kq, &mut out), (0, Ok(())), "not ready yet");
 
@@ -3058,7 +3065,7 @@ pub(crate) mod tests {
         assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
         assert!(klist_empty(&TEST_KLIST));
         assert_eq!(kq.kq_nknotes.get(), 0);
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 1);
+        assert_eq!(fp.count(), 2);
         assert_eq!(
             kqueue_register(kq, &mut kev, 0, Some(p)),
             Err(Errno::ENOENT)
@@ -3125,7 +3132,7 @@ pub(crate) mod tests {
 
         let mut kev = ev_set(1, EVFILT_USER, EV_ADD | EV_CLEAR, 0x0f, 7, 0);
         assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
-        assert_eq!(p.fd().fd_nuserevents.load(Ordering::SeqCst), 1);
+        assert_eq!(p.fd().kq().fd_nuserevents.load(Ordering::SeqCst), 1);
         assert_eq!(scan(p, kq, &mut out), (0, Ok(())), "not triggered");
 
         // NOTE_TRIGGER without EV_ADD goes through f_modify; NOTE_FFOR merges the flags.
@@ -3142,7 +3149,7 @@ pub(crate) mod tests {
 
         let mut kev = ev_set(1, EVFILT_USER, EV_DELETE, 0, 0, 0);
         assert_eq!(kqueue_register(kq, &mut kev, 0, Some(p)), Ok(()));
-        assert_eq!(p.fd().fd_nuserevents.load(Ordering::SeqCst), 0);
+        assert_eq!(p.fd().kq().fd_nuserevents.load(Ordering::SeqCst), 0);
         close_kqueue(p, kq);
     }
 
@@ -3180,7 +3187,7 @@ pub(crate) mod tests {
             (5, EVFILT_TIMER, 1)
         );
         assert_eq!(kq.kq_nknotes.get(), 0, "EV_ONESHOT dropped it");
-        assert_eq!(p.fd().fd_nuserevents.load(Ordering::SeqCst), 0);
+        assert_eq!(p.fd().kq().fd_nuserevents.load(Ordering::SeqCst), 0);
 
         // A periodic timer counts its expirations between scans (EV_CLEAR is implied).
         let mut kev = ev_set(6, EVFILT_TIMER, EV_ADD, 0, 10, 0);
@@ -3201,7 +3208,7 @@ pub(crate) mod tests {
         );
 
         close_kqueue(p, kq);
-        assert_eq!(p.fd().fd_nuserevents.load(Ordering::SeqCst), 0);
+        assert_eq!(p.fd().kq().fd_nuserevents.load(Ordering::SeqCst), 0);
     }
 
     #[test]

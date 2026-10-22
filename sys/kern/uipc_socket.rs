@@ -74,7 +74,7 @@
 //!   `MbufTail`, which remembers the last mbuf of the chain being built.
 //! - `soread_filtops`, `sowrite_filtops` and `soexcept_filtops` are the statics
 //!   [`SOREAD_FILTOPS`], [`SOWRITE_FILTOPS`] and [`SOEXCEPT_FILTOPS`]; the filters find the
-//!   socket through the knote's file (`fp_socket(kn.fp())`, the C's `kn->kn_fp->f_data`).
+//!   socket through the knote's file (`fp_socket(&kn.fp())`, the C's `kn->kn_fp->f_data`).
 //! - `somaxconn`, `sominconn` keep their C names (lowercase statics), beside the
 //!   `SOMAXCONN` constant of `<sys/socket.h>`.
 //! - `WITNESS` is not configured (`soalloc`'s `inet46` lock name); `DIAGNOSTIC`'s panics are
@@ -1637,7 +1637,7 @@ pub fn sosplice(so: &'static Socket, fd: i32, max: Off, tv: Option<&Timeval>) ->
     // Find sosp, the drain socket where data will be spliced into.
     let p = curproc_or_panic("sosplice");
     let fp = getsock(p, fd)?;
-    let sosp = crate::kern::sys_socket::fp_socket(fp);
+    let sosp = crate::kern::sys_socket::fp_socket(&fp);
 
     let error: Result<(), Errno> = 'frele: {
         let send = |s: &Socket| s.so_proto.pr_usrreqs.and_then(|u| u.pru_send);
@@ -2567,7 +2567,7 @@ pub fn sohasoutofband(so: &Socket) {
 
 /// `fo_kqfilter` of a socket: attaches a read, write or except knote.
 pub fn soo_kqfilter(_fp: &File, kn: &Knote) -> Result<(), Errno> {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     let (fop, sb): (&'static Filterops, &Sockbuf) = match kn.kn_filter().get() {
         EVFILT_READ => (&SOREAD_FILTOPS, &so.so_rcv),
@@ -2584,14 +2584,14 @@ pub fn soo_kqfilter(_fp: &File, kn: &Knote) -> Result<(), Errno> {
 
 /// `filt_sordetach(kn)`: unhooks the knote from `so_rcv`'s list.
 pub fn filt_sordetach(kn: &Knote) {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     klist_remove(&so.so_rcv.sb_klist, kn);
 }
 
 /// `filt_soread(kn, hint)`: readable data, or a listener with connections to accept.
 pub fn filt_soread(kn: &Knote, _hint: i64) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
     let state = so.so_state.get();
     let error = so.so_error.load(Ordering::Relaxed);
 
@@ -2638,14 +2638,14 @@ pub fn filt_soread(kn: &Knote, _hint: i64) -> bool {
 
 /// `filt_sowdetach(kn)`: unhooks the knote from `so_snd`'s list.
 pub fn filt_sowdetach(kn: &Knote) {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     klist_remove(&so.so_snd.sb_klist, kn);
 }
 
 /// `filt_sowrite(kn, hint)`: room to send.
 pub fn filt_sowrite(kn: &Knote, _hint: i64) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
     let state = so.so_state.get();
     let error = so.so_error.load(Ordering::Relaxed);
 
@@ -2672,7 +2672,7 @@ pub fn filt_sowrite(kn: &Knote, _hint: i64) -> bool {
 
 /// `filt_soexcept(kn, hint)`: out-of-band data, or a hang-up for poll.
 pub fn filt_soexcept(kn: &Knote, _hint: i64) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
     let mut rv = false;
 
     crate::sys::mutex::mutex_assert_locked(&so.so_rcv.sb_mtx, "filt_soexcept");
@@ -2702,7 +2702,7 @@ pub fn filt_soexcept(kn: &Knote, _hint: i64) -> bool {
 
 /// `filt_sowmodify(kev, kn)`: `knote_modify` under `so_snd`'s mutex.
 pub fn filt_sowmodify(kev: &mut Kevent, kn: &Knote) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     mtx_enter(&so.so_snd.sb_mtx);
     let rv = knote_modify(kev, kn);
@@ -2713,7 +2713,7 @@ pub fn filt_sowmodify(kev: &mut Kevent, kn: &Knote) -> bool {
 
 /// `filt_sowprocess(kn, kev)`: `knote_process` under `so_snd`'s mutex.
 pub fn filt_sowprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     mtx_enter(&so.so_snd.sb_mtx);
     let rv = knote_process(kn, kev);
@@ -2725,7 +2725,7 @@ pub fn filt_sowprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
 /// `filt_sormodify(kev, kn)`: `knote_modify` under `so_rcv`'s mutex (and the socket lock
 /// for a protocol that wants `PRU_RCVD`).
 pub fn filt_sormodify(kev: &mut Kevent, kn: &Knote) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     if so.pr_flags(PR_WANTRCVD) {
         solock_shared(so);
@@ -2743,7 +2743,7 @@ pub fn filt_sormodify(kev: &mut Kevent, kn: &Knote) -> bool {
 /// `filt_sorprocess(kn, kev)`: `knote_process` under `so_rcv`'s mutex (and the socket lock
 /// for a protocol that wants `PRU_RCVD`).
 pub fn filt_sorprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     if so.pr_flags(PR_WANTRCVD) {
         solock_shared(so);
@@ -2760,7 +2760,7 @@ pub fn filt_sorprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
 
 /// `filt_soemodify(kev, kn)`: `knote_modify` under `so_rcv`'s mutex.
 pub fn filt_soemodify(kev: &mut Kevent, kn: &Knote) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     mtx_enter(&so.so_rcv.sb_mtx);
     let rv = knote_modify(kev, kn);
@@ -2771,7 +2771,7 @@ pub fn filt_soemodify(kev: &mut Kevent, kn: &Knote) -> bool {
 
 /// `filt_soeprocess(kn, kev)`: `knote_process` under `so_rcv`'s mutex.
 pub fn filt_soeprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
-    let so = fp_socket(kn.fp());
+    let so = fp_socket(&kn.fp());
 
     mtx_enter(&so.so_rcv.sb_mtx);
     let rv = knote_process(kn, kev);
@@ -2921,18 +2921,26 @@ mod tests {
     use crate::kern::kern_event::tests::{close_kqueue, new_kqueue, scan};
     use crate::kern::uipc_usrreq::tests::{close, recv, send, setup, socketpair, teardown};
     use crate::sys::event::{EV_ADD, EV_ONESHOT, EVFILT_VNODE, ev_set, klist_empty};
+    use crate::sys::file::FileRef;
     use crate::sys::proc::Proc;
 
     /// The socket of descriptor `fd` of `p`, with its file.
-    fn sock(p: &Proc, fd: i32) -> (&'static File, &'static Socket) {
+    fn sock(p: &Proc, fd: i32) -> (FileRef, &'static Socket) {
         let fp = p.fd().ofile(fd as usize).expect("an open descriptor");
-        (fp, fp_socket(fp))
+        let so = fp_socket(&fp);
+        (fp, so)
+    }
+
+    /// Gives back the file reference a test knote holds (as `knote_drop` would), so that the
+    /// descriptor's close is the file's last.
+    fn knote_off(kn: &Knote) {
+        drop(kn.kn_fp().lock().take());
     }
 
     /// A knote on `fp` for calling the filters directly: `filter`, `flags` and `sfflags` set.
-    fn knote_on(fp: &'static File, filter: i16, flags: u16, sfflags: u32) -> Knote {
+    fn knote_on(fp: &FileRef, filter: i16, flags: u16, sfflags: u32) -> Knote {
         let kn = Knote::new();
-        kn.kn_fp().set(Some(fp));
+        drop(kn.kn_fp().lock().replace(fp.clone()));
         kn.kn_filter().set(filter);
         kn.kn_flags().set(flags);
         kn.kn_sfflags.set(sfflags);
@@ -3013,7 +3021,7 @@ mod tests {
         let (fb, so_b) = sock(p, b);
 
         // NOTE_LOWAT: readable from the user's mark on, not the buffer's.
-        let rd = knote_on(fa, EVFILT_READ, 0, NOTE_LOWAT);
+        let rd = knote_on(&fa, EVFILT_READ, 0, NOTE_LOWAT);
         rd.kn_sdata.set(3);
         assert_eq!(send(so_b, b"ab", 0), Ok(2));
         mtx_enter(&so_a.so_rcv.sb_mtx);
@@ -3027,29 +3035,37 @@ mod tests {
         mtx_leave(&so_a.so_rcv.sb_mtx);
 
         // The writer has room on a connected stream.
-        let wr = knote_on(fb, EVFILT_WRITE, 0, 0);
+        let wr = knote_on(&fb, EVFILT_WRITE, 0, 0);
         mtx_enter(&so_b.so_snd.sb_mtx);
         assert!(filt_sowrite(&wr, 0));
         assert!(wr.kn_data().get() > 0 && !wr.has_flags(EV_EOF));
         mtx_leave(&so_b.so_snd.sb_mtx);
+        knote_off(&rd);
+        knote_off(&wr);
+        drop(fb);
 
         // b goes away: for poll, a reads EOF and a hang-up, and so does its except filter.
         close(p, b);
-        let rd = knote_on(fa, EVFILT_READ, __EV_POLL, 0);
-        let ex = knote_on(fa, EVFILT_EXCEPT, __EV_POLL, 0);
+        let rd = knote_on(&fa, EVFILT_READ, __EV_POLL, 0);
+        let ex = knote_on(&fa, EVFILT_EXCEPT, __EV_POLL, 0);
         mtx_enter(&so_a.so_rcv.sb_mtx);
         assert!(filt_soread(&rd, 0));
         assert!(rd.has_flags(EV_EOF) && rd.has_flags(__EV_HUP));
         assert!(filt_soexcept(&ex, 0) && ex.has_flags(__EV_HUP));
         mtx_leave(&so_a.so_rcv.sb_mtx);
+        knote_off(&rd);
+        knote_off(&ex);
         // Through kevent(2) (no __EV_POLL): EOF without the hang-up; no except event.
-        let rd = knote_on(fa, EVFILT_READ, 0, 0);
-        let ex = knote_on(fa, EVFILT_EXCEPT, 0, 0);
+        let rd = knote_on(&fa, EVFILT_READ, 0, 0);
+        let ex = knote_on(&fa, EVFILT_EXCEPT, 0, 0);
         mtx_enter(&so_a.so_rcv.sb_mtx);
         assert!(filt_soread(&rd, 0));
         assert!(rd.has_flags(EV_EOF) && !rd.has_flags(__EV_HUP));
         assert!(!filt_soexcept(&ex, 0));
         mtx_leave(&so_a.so_rcv.sb_mtx);
+        knote_off(&rd);
+        knote_off(&ex);
+        drop(fa);
 
         close(p, a);
         teardown();

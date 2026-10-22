@@ -114,6 +114,7 @@ use crate::sys::conf::{D_DISK, DevTypeIoctl, DevTypeOpen};
 use crate::sys::dkio::{DIOCGDINFO, DIOCGPDINFO, DIOCMAP, DIOCRLDINFO, DIOCWDINFO};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::F_SETOWN;
+use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_DMABUF, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_SYNC, DTYPE_VNODE, File};
 use crate::sys::filio::{FIOCLEX, FIONBIO, FIONCLEX, FIONREAD};
 use crate::sys::mman::PROT_EXEC;
@@ -816,7 +817,7 @@ pub fn pledge_namei(p: &Proc, ni: &mut Nameidata<'_>, path: &[u8]) -> Result<(),
 /// The descriptors `pledge_recvfd` and `pledge_sendfd` let through: sockets, pipes, DMA
 /// buffers, sync files and vnodes other than directories.
 fn pledge_safefd(fp: &File) -> bool {
-    match fp.f_type.get() {
+    match fp.f_type() {
         DTYPE_SOCKET | DTYPE_PIPE | DTYPE_DMABUF | DTYPE_SYNC => true,
         DTYPE_VNODE => fp.vnode().v_type.get() != VDIR,
         _ => false,
@@ -1112,8 +1113,8 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
     }
 
     // fp != NULL was already checked
-    let is_socket = fp.f_type.get() == DTYPE_SOCKET;
-    let vp = if fp.f_type.get() == DTYPE_VNODE {
+    let is_socket = fp.f_type() == DTYPE_SOCKET;
+    let vp = if fp.f_type() == DTYPE_VNODE {
         let vp = fp.vnode();
         if vp.v_type.get() == VBAD {
             return Err(Errno::ENOTTY);
@@ -1168,7 +1169,7 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
                 | AUDIO_MIXER_READ
                 | AUDIO_MIXER_WRITE
         )
-        && fp.f_type.get() == DTYPE_VNODE
+        && fp.f_type() == DTYPE_VNODE
         && vchr.is_some_and(|vp| cdev_is(vp, audioopen as DevTypeOpen))
     {
         return Ok(());
@@ -1188,7 +1189,7 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
                 }
             }
             DIOCMAP
-                if fp.f_type.get() == DTYPE_VNODE
+                if fp.f_type() == DTYPE_VNODE
                     && vchr.is_some_and(|vp| {
                         ptr::fn_addr_eq(
                             cdevsw(major(vp.v_rdev())).d_ioctl,
@@ -2001,9 +2002,16 @@ mod tests {
 
     #[test]
     fn ipv6_interface_ioctls() {
-        let sock = Box::leak(Box::new(File::new()));
-        sock.f_type.set(DTYPE_SOCKET);
+        crate::kern::kern_descrip::filedesc_init();
         let route = pledged(PLEDGE_STDIO | PLEDGE_ROUTE);
+        drop(route.set_cred(kernel::cred::crget()));
+        let fp = crate::kern::kern_descrip::fnew(route).unwrap();
+        fp.install(
+            DTYPE_SOCKET,
+            &crate::kern::sys_socket::SOCKETOPS,
+            crate::kern::kern_descrip::BsdFileData::Socket(hal::link::PtrWord::new()),
+        );
+        let sock: &File = &fp;
         for com in [
             SIOCGIFAFLAG_IN6,
             SIOCGIFALIFETIME_IN6,

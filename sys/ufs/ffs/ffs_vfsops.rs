@@ -2533,7 +2533,7 @@ pub(crate) mod tests {
         unsafe { MOUNTLIST.0.insert_tail(mp) };
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
         mp
@@ -2541,7 +2541,7 @@ pub(crate) mod tests {
 
     /// Undoes `mount_root` and unmounts.
     pub(crate) fn unmount_root(p: &'static Proc, mp: &'static Mount) {
-        if let Some(cdir) = p.fd().fd_cdir.take() {
+        if let Some(cdir) = p.fd().replace_cdir(None) {
             vrele(cdir);
         }
         if let Some(root) = crate::kern::vfs_init::rootvnode() {

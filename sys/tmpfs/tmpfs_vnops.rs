@@ -2343,7 +2343,7 @@ pub fn filt_tmpfsread(kn: &Knote, hint: i64) -> bool {
         return true;
     }
 
-    kn.kn_data().set(node.tn_size.get() - foffset(kn.fp()));
+    kn.kn_data().set(node.tn_size.get() - foffset(&kn.fp()));
     if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {
         kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_EOF);
         return true;
@@ -2429,7 +2429,7 @@ mod tests {
         vfs_unbusy(mp);
         let root = tmpfs_root(mp).expect("root");
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
         (g, p)

@@ -94,7 +94,9 @@ use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use crate::conf::param::MAXFILES;
 use crate::kassert;
-use crate::kern::kern_descrip::{closef, fd_getfile, fdalloc, fdexpand, fdremove};
+use crate::kern::kern_descrip::{
+    BsdFileData, closef, fd_getfile, fdalloc, fdexpand, fdremove, file_count,
+};
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_pledge::{pledge_recvfd, pledge_sendfd};
@@ -105,6 +107,7 @@ use crate::kern::kern_task::{SYSTQMP, task_add};
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
+use crate::kern::sys_socket::socket_of;
 use crate::kern::uipc_mbuf::{m_copym, m_freem, m_getclr, m_purge, m_trailingspace};
 use crate::kern::uipc_proto::UNIXDOMAIN;
 use crate::kern::uipc_socket::sofree;
@@ -123,8 +126,9 @@ use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_SOFTNET;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
+use crate::sys::file::FileExt;
 use crate::sys::file::{
-    DTYPE_KQUEUE, DTYPE_SOCKET, DTYPE_VMM, DTYPE_VNODE, FDUP_MAX_COUNT, File, fref, frele,
+    DTYPE_KQUEUE, DTYPE_SOCKET, DTYPE_VMM, DTYPE_VNODE, FDUP_MAX_COUNT, File, FileRef, frele,
 };
 use crate::sys::filedesc::{
     UF_EXCLOSE, UF_FORKCLOSE, UF_PLEDGED, UF_PLEDGEOPEN, fdplock, fdpunlock,
@@ -567,7 +571,7 @@ pub fn uipc_bind(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<()
         let mut vattr = Vattr::new();
         vattr_null(&mut vattr);
         vattr.va_type = VSOCK;
-        vattr.va_mode = ACCESSPERMS & !p.fd().fd_cmask.get();
+        vattr.va_mode = ACCESSPERMS & !p.fd().cmask();
         let error = VOP_CREATE(dvp, &mut nd.ni_vp, &mut nd.ni_cnd, &mut vattr);
         vput(dvp);
         if let Err(error) = error {
@@ -1252,11 +1256,13 @@ pub fn unp_disconnect(unp: &'static Unpcb) {
 
 /// `fptounp(fp)`: the control block of a UNIX domain socket file, `None` for any other.
 fn fptounp(fp: &File) -> Option<&'static Unpcb> {
-    if fp.f_type.get() != DTYPE_SOCKET {
+    if fp.f_type() != DTYPE_SOCKET {
         return None;
     }
-    // SAFETY: a socket file's `f_data` is its socket, or NULL once closed.
-    let so = unsafe { fp.f_data.get().cast::<Socket>().cast_const().as_ref() }?;
+    let so = match fp.data() {
+        Some(BsdFileData::Socket(word)) => socket_of(word)?,
+        _ => return None,
+    };
     if !ptr::eq(so.so_proto.pr_domain, &UNIXDOMAIN) {
         return None;
     }
@@ -1324,8 +1330,8 @@ pub fn unp_externalize(
 
             // No to block devices. If passing a directory, make sure that it is underneath
             // the root.
-            if let Some(rdir) = fdp.fd_rdir.get()
-                && fp.f_type.get() == DTYPE_VNODE
+            if let Some(rdir) = fdp.rdir()
+                && fp.f_type() == DTYPE_VNODE
             {
                 let vp = fp.vnode();
 
@@ -1358,30 +1364,33 @@ pub fn unp_externalize(
             &mut []
         };
 
-        fdplock(fdp);
+        let mut g = fdplock(fdp);
         // restart:
         // First loop -- allocate file descriptor table slots for the new descriptors.
         'restart: loop {
             for i in 0..nfds {
-                let fd = match fdalloc(p, 0) {
+                let fd = match fdalloc(p, &mut g, 0) {
                     Ok(fd) => fd,
                     Err(e) => {
-                        // Back out what we've done so far.
+                        // Back out what we've done so far: each slot's reference goes back
+                        // to the message.
                         for &fd in fdv[..i].iter().rev() {
-                            fdremove(fdp, fd);
+                            if let Some(fp) = fdremove(&mut g, fd) {
+                                fp.forget();
+                            }
                         }
 
                         if e == Errno::ENOSPC {
-                            match fdexpand(p) {
+                            match fdexpand(p, &mut g) {
                                 Ok(()) => continue 'restart,
                                 Err(e) => {
-                                    fdpunlock(fdp);
+                                    fdpunlock(g);
                                     break 'out Err(e);
                                 }
                             }
                         }
 
-                        fdpunlock(fdp);
+                        fdpunlock(g);
 
                         // This is the error that has historically been returned, and some
                         // callers may expect it.
@@ -1397,10 +1406,12 @@ pub fn unp_externalize(
                 let rp = unsafe { rp0.wrapping_add(i).read_unaligned() };
                 // SAFETY: as above.
                 let fp = unsafe { fdpass_file(rp0.wrapping_add(i)) };
-                mtx_enter(&fdp.fd_fplock);
-                kassert!(fdp.ofile(fd as usize).is_none());
-                fdp.set_ofile(fd as usize, Some(fp));
-                mtx_leave(&fdp.fd_fplock);
+                // The message's reference becomes the slot's.
+                let Some(fp) = FileRef::adopt(fp) else {
+                    panic(format_args!(
+                        "unp_externalize: a file the message does not hold"
+                    ));
+                };
 
                 let mut ofl = rp.flags as u8 & UF_PLEDGED;
                 if flags & MSG_CMSG_CLOEXEC != 0 {
@@ -1409,7 +1420,7 @@ pub fn unp_externalize(
                 if flags & MSG_CMSG_CLOFORK != 0 {
                     ofl |= UF_FORKCLOSE;
                 }
-                fdp.set_ofileflags(fd as usize, ofl);
+                g.place_ofile(fd, fp, ofl);
             }
             break;
         }
@@ -1428,7 +1439,7 @@ pub fn unp_externalize(
                 rw_exit_write(&UNP_GC_LOCK);
             }
         }
-        fdpunlock(fdp);
+        fdpunlock(g);
 
         mtx_enter(&UNP_RIGHTS_MTX);
         UNP_RIGHTS.fetch_sub(nfds as i32, Ordering::Relaxed);
@@ -1539,11 +1550,11 @@ pub fn unp_internalize(control: &'static Mbuf, p: &Proc) -> Result<(), Errno> {
 
         let ip0 = cmsg_data_of(control).cast::<i32>();
         let rp0 = cmsg_data_of(control).cast::<Fdpass>();
-        fdplock(fdp);
+        let g = fdplock(fdp);
         // The entries are filled from the last one down: a `struct fdpass` written at index
         // j covers the ints at 4j and above, which have been read by then.
         let mut i = 0;
-        let mut failed: Option<(Errno, Option<&'static File>)> = None;
+        let mut failed: Option<(Errno, Option<FileRef>)> = None;
         while i < nfds {
             let j = nfds - 1 - i;
             // SAFETY: the ints of the message are inside the (grown) mbuf.
@@ -1552,39 +1563,43 @@ pub fn unp_internalize(control: &'static Mbuf, p: &Proc) -> Result<(), Errno> {
                 failed = Some((Errno::EBADF, None));
                 break;
             };
-            if fp.f_count.load(Ordering::SeqCst) >= FDUP_MAX_COUNT {
+            if fp.count() >= FDUP_MAX_COUNT {
                 failed = Some((Errno::EDEADLK, Some(fp)));
                 break;
-            } else if fdp.ofileflags(fd as usize) & UF_PLEDGEOPEN != 0 {
+            } else if fdp.ofileflags(fd) & UF_PLEDGEOPEN != 0 {
                 failed = Some((Errno::EPERM, Some(fp)));
                 break;
             }
-            if let Err(e) = pledge_sendfd(p, fp) {
+            if let Err(e) = pledge_sendfd(p, &fp) {
                 failed = Some((e, Some(fp)));
                 break;
             }
 
             // kqueue and vmm descriptors cannot be copied
-            if fp.f_type.get() == DTYPE_KQUEUE || fp.f_type.get() == DTYPE_VMM {
+            if fp.f_type() == DTYPE_KQUEUE || fp.f_type() == DTYPE_VMM {
                 failed = Some((Errno::EINVAL, Some(fp)));
                 break;
             }
             // NKCOV: kcov(4) is not configured.
             let entry = Fdpass {
-                fp: ptr::from_ref(fp),
-                flags: i32::from(fdp.ofileflags(fd as usize) & UF_PLEDGED),
+                fp: ptr::from_ref::<File>(&fp),
+                flags: i32::from(fdp.ofileflags(fd) & UF_PLEDGED),
             };
             // SAFETY: the entry lies inside the mbuf, grown to `CMSG_SPACE` of them.
             unsafe { rp0.add(j).write_unaligned(entry) };
-            if let Some(unp) = fptounp(fp) {
+            if let Some(unp) = fptounp(&fp) {
                 rw_enter_write(&UNP_GC_LOCK);
                 unp.unp_msgcount.set(unp.unp_msgcount.get() + 1);
-                unp.unp_file.set(Some(fp));
+                // SAFETY: the entry written above names `fp`, whose reference the message
+                // holds from here on (parked below).
+                unp.unp_file.set(Some(unsafe { fdpass_file(rp0.add(j)) }));
                 rw_exit_write(&UNP_GC_LOCK);
             }
+            // fd_getfile's reference is the message's (`FREF` into the message).
+            fp.forget();
             i += 1;
         }
-        fdpunlock(fdp);
+        fdpunlock(g);
         let Some((error, fp)) = failed else {
             return Ok(());
         };
@@ -1601,7 +1616,9 @@ pub fn unp_internalize(control: &'static Mbuf, p: &Proc) -> Result<(), Errno> {
                 unp.unp_msgcount.set(unp.unp_msgcount.get() - 1);
                 rw_exit_write(&UNP_GC_LOCK);
             }
-            let _ = frele(fp, p);
+            if let Some(fp) = FileRef::adopt(fp) {
+                let _ = frele(fp, p);
+            }
         }
         Err(error)
     };
@@ -1651,9 +1668,10 @@ pub fn unp_gc(_arg: *mut c_void) {
                 mtx_enter(&UNP_RIGHTS_MTX);
                 UNP_RIGHTS.fetch_sub(1, Ordering::Relaxed);
                 mtx_leave(&UNP_RIGHTS_MTX);
-                // closef() expects a refcount of 2
-                fref(fp);
-                let _ = closef(fp, None::<&Proc>);
+                // FREF(fp); closef(fp, NULL): the deferral's reference.
+                if let Some(fp) = FileRef::adopt(fp) {
+                    let _ = closef(fp, None::<&Proc>);
+                }
             }
             free(NonNull::from(defer).cast(), M_TEMP, UnpDeferral::size(n));
             rw_enter_write(&UNP_DF_LOCK);
@@ -1676,7 +1694,7 @@ pub fn unp_gc(_arg: *mut c_void) {
             let Some(fp) = unp.unp_file.get() else {
                 continue;
             };
-            if i64::from(fp.f_count.load(Ordering::SeqCst)) == unp.unp_msgcount.get() {
+            if i64::from(file_count(fp)) == unp.unp_msgcount.get() {
                 unp.unp_gcflags.set(unp.unp_gcflags.get() | UNP_GCDEAD);
                 unp.unp_gcrefs.set(unp.unp_msgcount.get());
                 nunref += 1;
@@ -2414,7 +2432,7 @@ pub(crate) mod tests {
         assert_eq!((cm.cmsg_level, cm.cmsg_type), (SOL_SOCKET, SCM_RIGHTS));
         assert_eq!(UNP_RIGHTS.load(Ordering::Relaxed), 0);
         let fp_new = crate::kern::kern_descrip::fd_getfile(p.fd(), newfd).expect("the new fd");
-        assert!(ptr::eq(fp_new, fp_b0));
+        assert!(FileRef::ptr_eq(&fp_new, &fp_b0));
         let _ = frele(fp_new, p);
         let _ = frele(fp_b0, p);
 
@@ -2440,12 +2458,12 @@ pub(crate) mod tests {
         let [a0, a1] = socketpair(p);
         let [b0, b1] = socketpair(p);
         let fp_b0 = crate::kern::kern_descrip::fd_getfile(p.fd(), b0).expect("b0");
-        let count = |fp: &File| fp.f_count.load(Ordering::SeqCst);
+        let count = |fp: &FileRef| fp.count();
         // The table's reference and ours.
-        assert_eq!(count(fp_b0), 2);
+        assert_eq!(count(&fp_b0), 2);
 
         send_fd(p, a0, b0);
-        assert_eq!(count(fp_b0), 3);
+        assert_eq!(count(&fp_b0), 3);
 
         // The receiver goes away with the message in its buffer: the file is handed to the
         // collector, which closes the message's reference.
@@ -2453,7 +2471,7 @@ pub(crate) mod tests {
         assert!(UNP_DEFERRED.0.first().is_some());
         unp_gc(ptr::null_mut());
         assert!(UNP_DEFERRED.0.first().is_none());
-        assert_eq!(count(fp_b0), 2);
+        assert_eq!(count(&fp_b0), 2);
         assert_eq!(UNP_RIGHTS.load(Ordering::Relaxed), 0);
         let _ = frele(fp_b0, p);
 

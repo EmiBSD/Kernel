@@ -2116,7 +2116,7 @@ pub fn filt_msdosfsread(kn: &Knote, hint: i64) -> bool {
     }
 
     kn.kn_data()
-        .set(i64::from(dep.de_FileSize.get()) - foffset(kn.fp()));
+        .set(i64::from(dep.de_FileSize.get()) - foffset(&kn.fp()));
     if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {
         kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_EOF);
         return true;
@@ -2229,7 +2229,7 @@ mod tests {
         mp.mnt_stat.set(sb);
         let root = msdosfs_root(mp).expect("root");
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
         (g, p, mp)
@@ -2936,7 +2936,7 @@ mod tests {
         crate::kern::vfs_subr::vfs_unbusy(tmp);
         let root = tmpfs_root(tmp).expect("root");
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
         domkdirat(p, AT_FDCWD, c("/mnt").as_ptr(), 0o755).expect("mkdir /mnt");

@@ -293,7 +293,7 @@ pub fn check_exec(
             cwdbuf[bp] = 0;
 
             kernel_lock(); // KERNEL_LOCK()
-            let error = match p.fd().fd_cdir.get() {
+            let error = match p.fd().cdir() {
                 None => Err(Errno::ENOENT), // no root file system yet
                 Some(cdir) => vfs_getcwd_common(
                     cdir,
@@ -595,9 +595,9 @@ fn execve_common(
         // kill any opened file descriptor, if necessary
         if pack.ep_flags & EXEC_HASFD != 0 {
             pack.ep_flags &= !EXEC_HASFD;
-            fdplock(p.fd());
+            let g = fdplock(p.fd());
             // fdrelease unlocks p->p_fd.
-            let _ = fdrelease(p, pack.ep_fd);
+            let _ = fdrelease(p, g, pack.ep_fd);
         }
         exec_free_package(pack);
         // close and put the exec'd file
@@ -916,7 +916,7 @@ fn execve_common(
         // For set[ug]id processes, a few caveats apply to stdin, stdout, and stderr.
         let mut error = Ok(());
         let fdp = p.fd();
-        fdplock(fdp);
+        let mut g = fdplock(fdp);
         for i in 0..3 {
             // NOTE - This will never return NULL because of immature fds. The file
             // descriptor table is not shared because we're suid.
@@ -926,7 +926,7 @@ fn execve_common(
                     // Ensure that stdin, stdout, and stderr are already allocated. We do
                     // not want userland to accidentally allocate descriptors in this range
                     // which has implied meaning to libc.
-                    let (fp, indx) = match falloc(p) {
+                    let (fp, indx) = match falloc(p, &mut g) {
                         Ok(r) => r,
                         Err(e) => {
                             error = Err(e);
@@ -939,7 +939,7 @@ fn execve_common(
                     }
                     // cdevvp(getnulldev(), &vp), VOP_OPEN, the DTYPE_VNODE file: the device
                     // switch is not ported (see the module's deviations).
-                    fdremove(fdp, indx);
+                    let _ = fdremove(&mut g, indx);
                     let _ = closef(fp, p);
                     error = Err(unported!("sys_execve: cdevvp(getnulldev()) (<sys/conf.h>)"));
                     break;
@@ -947,7 +947,7 @@ fn execve_common(
             };
             let _ = frele(fp, p);
         }
-        fdpunlock(fdp);
+        fdpunlock(g);
         if error.is_err() {
             exec_abort(&mut pack, &mut nid);
         }

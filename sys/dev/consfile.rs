@@ -58,12 +58,12 @@ use crate::dev::cons::{
     CONSMAJOR, cn_tab, cnclose, cngetc, cnioctl, cnkqfilter, cnopen, cnpollc, cnputc, cnread,
     cnwrite,
 };
-use crate::kern::kern_descrip::{falloc, fdalloc, fdexpand, fdinsert};
+use crate::kern::kern_descrip::{BsdFileData, falloc, fdalloc, fdexpand, fdinsert};
 use crate::kern::kern_subr::{uiomove, ureadc};
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
-use crate::sys::file::{File, Fileops, fref, frele};
+use crate::sys::file::{File, Fileops, frele};
 use crate::sys::filedesc::{fdplock, fdpunlock};
 use crate::sys::filio::{FIOASYNC, FIONBIO};
 use crate::sys::proc::Proc;
@@ -214,25 +214,24 @@ pub fn consfile_attach(p: &Proc) -> Result<(), Errno> {
         && cn_tab().is_some_and(|cp| cp.cn_dev.get() != crate::sys::param::NODEV);
     CONSFILE_TTY.store(opened, Ordering::Relaxed);
 
-    fdplock(fdp);
-    let (fp, fd) = match falloc(p) {
+    let mut g = fdplock(fdp);
+    let (fp, fd) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(e) => {
-            fdpunlock(fdp);
+            fdpunlock(g);
             return Err(e);
         }
     };
     fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
-    fp.f_type.set(DTYPE_CONSFILE);
-    fp.f_ops.set(Some(&CONSFILEOPS));
-    fdinsert(fdp, fd, 0, fp);
+    fp.install(DTYPE_CONSFILE, &CONSFILEOPS, BsdFileData::None);
+    fdinsert(&mut g, fd, 0, &fp);
 
     let mut error = Ok(());
     for want in fd + 1..=2 {
         let new = loop {
-            match fdalloc(p, want) {
+            match fdalloc(p, &mut g, want) {
                 Err(Errno::ENOSPC) => {
-                    if let Err(e) = fdexpand(p) {
+                    if let Err(e) = fdexpand(p, &mut g) {
                         break Err(e);
                     }
                 }
@@ -240,17 +239,14 @@ pub fn consfile_attach(p: &Proc) -> Result<(), Errno> {
             }
         };
         match new {
-            Ok(new) => {
-                fref(fp);
-                fdinsert(fdp, new, 0, fp);
-            }
+            Ok(new) => fdinsert(&mut g, new, 0, &fp),
             Err(e) => {
                 error = Err(e);
                 break;
             }
         }
     }
-    fdpunlock(fdp);
+    fdpunlock(g);
 
     let _ = frele(fp, p);
     error

@@ -76,11 +76,10 @@
 //!   here.
 
 use core::cell::Cell;
-use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use crate::kern::kern_descrip::{closef, falloc, fdinsert, fdremove};
+use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fdinsert, fdremove};
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::{crfree, crget, suser};
@@ -1211,25 +1210,25 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
         return Err(Errno::EINVAL);
     }
 
-    fdplock(fdp);
+    let mut g = fdplock(fdp);
     // Grab two filedescriptors.
-    let (cfp, cindx) = match falloc(p) {
+    let (cfp, cindx) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(e) => {
-            fdpunlock(fdp);
+            fdpunlock(g);
             return Err(e);
         }
     };
-    let (sfp, sindx) = match falloc(p) {
+    let (sfp, sindx) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(e) => {
-            fdremove(fdp, cindx);
-            fdpunlock(fdp);
+            let _ = fdremove(&mut g, cindx);
+            fdpunlock(g);
             let _ = closef(cfp, p);
             return Err(e);
         }
     };
-    fdpunlock(fdp);
+    fdpunlock(g);
 
     let result = 'bad: loop {
         // retry:
@@ -1260,10 +1259,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
             break 'bad Err(Errno::ENOENT);
         };
         cfp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
-        cfp.f_type.set(DTYPE_VNODE);
-        cfp.f_ops.set(Some(&VNOPS));
-        cfp.f_data
-            .set(ptr::from_ref(cvp).cast_mut().cast::<c_void>());
+        cfp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(cvp));
         let _ = VOP_UNLOCK(cvp);
 
         // Open the slave.
@@ -1332,10 +1328,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
             break 'bad Err(Errno::ENOENT);
         };
         sfp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
-        sfp.f_type.set(DTYPE_VNODE);
-        sfp.f_ops.set(Some(&VNOPS));
-        sfp.f_data
-            .set(ptr::from_ref(svp).cast_mut().cast::<c_void>());
+        sfp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(svp));
         let _ = VOP_UNLOCK(svp);
 
         // now, put the indexen and names into struct ptmget
@@ -1349,23 +1342,24 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
         ioctl_ret(data, &ptm);
 
         // insert files now that we've passed all errors
-        fdplock(fdp);
-        fdinsert(fdp, cindx, 0, cfp);
-        fdinsert(fdp, sindx, 0, sfp);
-        fdpunlock(fdp);
-        let _ = frele(cfp, p);
-        let _ = frele(sfp, p);
+        let mut g = fdplock(fdp);
+        fdinsert(&mut g, cindx, 0, &cfp);
+        fdinsert(&mut g, sindx, 0, &sfp);
+        fdpunlock(g);
         break 'bad Ok(());
     };
 
     if result.is_err() {
         // bad:
-        fdplock(fdp);
-        fdremove(fdp, cindx);
-        fdremove(fdp, sindx);
-        fdpunlock(fdp);
+        let mut g = fdplock(fdp);
+        let _ = fdremove(&mut g, cindx);
+        let _ = fdremove(&mut g, sindx);
+        fdpunlock(g);
         let _ = closef(cfp, p);
         let _ = closef(sfp, p);
+    } else {
+        let _ = frele(cfp, p);
+        let _ = frele(sfp, p);
     }
     result
 }

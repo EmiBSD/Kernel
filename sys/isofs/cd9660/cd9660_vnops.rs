@@ -1011,7 +1011,7 @@ pub fn filt_cd9660read(kn: &Knote, hint: i64) -> bool {
     }
 
     kn.kn_data()
-        .set((node.i_size.get() as i64).wrapping_sub(foffset(kn.fp())));
+        .set((node.i_size.get() as i64).wrapping_sub(foffset(&kn.fp())));
     if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {
         kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_EOF);
         return true;

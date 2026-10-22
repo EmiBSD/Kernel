@@ -138,6 +138,8 @@ use hal::sleep::{PCATCH, wakeup};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;
 
+pub use crate::uio::UioMove;
+
 use crate::assert::{kassert, kpanic};
 
 /// `PIPE_SIZE`: pipe buffer size, keep moderate in value, pipes take kva space.
@@ -562,24 +564,6 @@ pub trait PipeGlue: Send + Sync + Sized + 'static {
     fn sigio_setown(&self, cmd: u64, arg: i32) -> Result<(), Errno>;
     /// `sigio_getown(&pipe_sigio, cmd, &pgid)`: the owner.
     fn sigio_getown(&self, cmd: u64) -> i32;
-}
-
-/// The `uio` of a read or a write, as the pipe moves bytes through it (`bsd`'s `Uio` and
-/// `uiomove`, through the glue). A bridge (`bridges.toml`).
-pub trait UioMove {
-    /// `uio_resid`: the bytes still to move.
-    fn resid(&self) -> usize;
-    /// `uiomove(buf, buf.len(), uio)`: moves `buf` (at most `resid` bytes of it) in the
-    /// uio's direction: out of `buf` for a read, into it for a write. It may fault and
-    /// sleep, so the pipe calls it with its lock released.
-    fn uiomove(&mut self, buf: &mut [u8]) -> Result<(), Errno>;
-    /// `fp->f_flag & FNONBLOCK` of the file the I/O is on, read now: the pipe asks at every
-    /// check, as the C reads `f_flag` each time round its loops (`fcntl(F_SETFL)` from
-    /// another thread changes it while a reader or a writer sleeps).
-    fn nonblock(&self) -> bool;
-    /// `uio_rw == UIO_WRITE`: the bytes flow out of the uio (`uiomove` fills `buf`); a read
-    /// moves them into it. `uvm_io` asks which way to copy through its window.
-    fn is_write(&self) -> bool;
 }
 
 /// `dopipe`'s descriptor work, which stays `bsd`'s until descriptors move (N4): two

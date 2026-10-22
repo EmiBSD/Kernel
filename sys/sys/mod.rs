@@ -55,20 +55,18 @@ pub use hal::sys::exec_elf;
 pub mod exec_script;
 #[forbid(unsafe_code)]
 pub mod extent;
-#[forbid(unsafe_code)]
-pub mod fcntl;
+pub use hal::sys::fcntl;
 #[forbid(unsafe_code)]
 pub mod file;
-pub mod filedesc;
 #[forbid(unsafe_code)]
-pub mod filio;
+pub mod filedesc;
+pub use hal::sys::filio;
 #[cfg(feature = "fuse")]
 pub mod fusebuf;
 pub use hal::sys::futex;
 pub mod gpio;
 pub use hal::sys::intrmap;
-#[forbid(unsafe_code)]
-pub mod ioccom;
+pub use hal::sys::ioccom;
 pub mod ioctl;
 pub use hal::sys::kernel;
 pub use hal::sys::limits;
@@ -128,8 +126,7 @@ pub use hal::sys::syscall;
 pub mod syscall_mi;
 pub mod syscallargs;
 pub mod sysctl;
-#[forbid(unsafe_code)]
-pub mod syslimits;
+pub use hal::sys::syslimits;
 #[forbid(unsafe_code)]
 pub mod syslog;
 pub mod systm;

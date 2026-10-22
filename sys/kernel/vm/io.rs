@@ -89,7 +89,7 @@ use hal::vm::param::{round_page, trunc_page};
 use super::km::{page_memory, uvm_map_extract_window};
 use super::map::{UVM_EXTRACT_FIXPROT, VmMap};
 use super::types::UVM_IO_FIXPROT;
-use crate::pipe::UioMove;
+use crate::uio::UioMove;
 
 /// `MAXBSIZE` (`<sys/param.h>`): the largest chunk `uvm_io` extracts at once.
 pub const MAXBSIZE: usize = 64 * 1024;

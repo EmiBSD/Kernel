@@ -41,7 +41,9 @@ pub(crate) mod assert;
 pub mod clock;
 pub mod cred;
 pub mod crypto;
+pub mod descrip;
 pub mod extent;
+pub mod file;
 pub mod pipe;
 pub mod prf;
 pub mod proc;
@@ -51,5 +53,6 @@ pub mod task;
 pub mod testutil;
 pub mod thread;
 pub mod timeout;
+pub mod uio;
 pub mod vm;
 /* </CODE> */

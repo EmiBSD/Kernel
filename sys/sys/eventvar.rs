@@ -64,14 +64,15 @@
 use core::cell::Cell;
 use core::ptr;
 
+use hal::list::ListEntry;
+
 use crate::kassert;
 use crate::kern::subr_prf::panic;
 use crate::machine::intr::IPL_HIGH;
-use crate::queue_adapter;
 use crate::sys::event::{Klist, KnTqe, Knlist};
 use crate::sys::filedesc::Filedesc;
 use crate::sys::mutex::Mutex;
-use crate::sys::queue::{ListEntry, TailqHead};
+use crate::sys::queue::TailqHead;
 use crate::sys::refcnt::Refcnt;
 use crate::sys::task::Task;
 
@@ -104,7 +105,8 @@ pub struct Kqueue {
     pub kq_klist: Klist,
     /// \[I\] `kq_fdp`: fd table of this kq.
     pub kq_fdp: Cell<*const Filedesc>,
-    /// `kq_next`: the link in the table's `fd_kqlist`.
+    /// `kq_next`: the link in the table's `fd_kqlist` (a `hal::list` entry: atomic links, so
+    /// the table's list is `Send + Sync`).
     pub kq_next: ListEntry<Kqueue>,
     /// \[q\] `kq_nknotes`: # of registered knotes.
     pub kq_nknotes: Cell<u32>,
@@ -203,9 +205,13 @@ impl crate::sys::proc::BsdThreadG {
     }
 }
 
-queue_adapter!(
+hal::list_adapter!(
     /// `LIST_HEAD(, kqueue) fd_kqlist`: the kqueues attached to a descriptor table, through
-    /// `kq_next`.
-    pub KqList: Kqueue, kq_next => ListEntry<Kqueue>
+    /// `kq_next`. A `hal::list` over the `&'static Kqueue` that `kqueue_alloc` hands out:
+    /// `hal::list`'s premise is elements that are never freed, and a kqueue is freed by its
+    /// last `KQRELE`, which takes it off this list first, under the table's lock (LZ's
+    /// convention for its `&'static` pool items).
+    pub KqList: Kqueue,
+    kq_next
 );
 /* </CODE> */

@@ -91,13 +91,16 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 
+use hal::mutex::Mutexed;
+
 use crate::kern::kern_event::{knote_assign, knote_submit};
 use crate::kern::subr_prf::panic;
 use crate::machine::copy::AbiPod;
+use crate::machine::intr::IPL_HIGH;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
 use crate::sys::eventvar::Kqueue;
-use crate::sys::file::File;
+use crate::sys::file::{FileRef, FileSlot};
 use crate::sys::proc::Process;
 use crate::sys::queue::{SlistEntry, SlistHead, TailqEntry};
 
@@ -397,8 +400,11 @@ impl Default for KnKevent {
 /// `kn_ptr`: what a knote points at, by filter (see the module's deviations).
 pub struct KnPtr {
     /// \[o\] `p_fp`: file data pointer (`kn_fp`), for the `FILTEROP_ISFD` filters; the knote
-    /// holds a reference to the file.
-    pub p_fp: Cell<Option<&'static File>>,
+    /// holds a reference to the file. A slot under a leaf mutex at `IPL_HIGH` (taken from any
+    /// filter, at any level, only to read or swap the file), so the reference it holds can be
+    /// an owned handle that is cloned out and taken back (N4.3's `FileRef`, one word in its
+    /// `FileSlot`).
+    pub p_fp: Mutexed<FileSlot>,
     /// `p_process`: process pointer (`EVFILT_PROC`, `EVFILT_SIGNAL`).
     pub p_process: Cell<*const Process>,
     /// `p_useract`: user event active (`EVFILT_USER`).
@@ -409,7 +415,7 @@ impl KnPtr {
     /// Nothing pointed at.
     pub const fn new() -> Self {
         Self {
-            p_fp: Cell::new(None),
+            p_fp: Mutexed::new(IPL_HIGH, FileSlot::new()),
             p_process: Cell::new(ptr::null()),
             p_useract: Cell::new(0),
         }
@@ -502,14 +508,16 @@ impl Knote {
         &self.kn_kevent.udata
     }
 
-    /// `kn_fp`: `kn_ptr.p_fp` \[o\].
-    pub fn kn_fp(&self) -> &Cell<Option<&'static File>> {
+    /// `kn_fp`: `kn_ptr.p_fp` \[o\], its slot.
+    pub fn kn_fp(&self) -> &Mutexed<FileSlot> {
         &self.kn_ptr.p_fp
     }
 
-    /// `kn->kn_fp`, which every attached `FILTEROP_ISFD` knote has.
-    pub fn fp(&self) -> &'static File {
-        match self.kn_ptr.p_fp.get() {
+    /// `kn->kn_fp`, which every attached `FILTEROP_ISFD` knote has: a reference of the
+    /// caller's (the knote keeps its own until it is dropped).
+    pub fn fp(&self) -> FileRef {
+        let fp = self.kn_ptr.p_fp.lock().get().cloned();
+        match fp {
             Some(fp) => fp,
             None => panic(format_args!("knote {:p}: no kn_fp", self)),
         }

@@ -350,7 +350,7 @@ pub fn vfs_getcwd_common(
     let fdp = p.fd();
     let mut perms = VEXEC;
 
-    let Some(rvp) = rvp.or(fdp.fd_rdir.get()).or_else(rootvnode) else {
+    let Some(rvp) = rvp.or(fdp.rdir()).or_else(rootvnode) else {
         // No root file system (see the module's deviations).
         return Err(Errno::ENOENT);
     };
@@ -503,7 +503,7 @@ pub fn sys___getcwd(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
 
     // 5th argument here is "max number of vnodes to traverse". Since each entry takes up at
     // least 2 bytes in the output buffer, limit it to N/2 vnodes for an N byte buffer.
-    let error = match p.fd().fd_cdir.get() {
+    let error = match p.fd().cdir() {
         None => Err(Errno::ENOENT), // no root file system yet
         Some(cdir) => vfs_getcwd_common(
             cdir,

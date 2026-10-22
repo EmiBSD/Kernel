@@ -548,6 +548,7 @@ use crate::machine::param::MachineParam;
 use crate::machine::{Machine, Pmap, VmParam};
 use crate::sys::acct::AMAP;
 use crate::sys::errno::Errno;
+use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::mount::MNT_WXALLOWED;
 use crate::sys::mount::Mount;
@@ -730,7 +731,7 @@ impl VmProc for BsdVmProc {
         let Some(fp) = fd_getfile(p.fd(), fd) else {
             return Err(Errno::EBADF);
         };
-        let vp: Option<&'static dyn VnodeOps> = if fp.f_type.get() == DTYPE_VNODE {
+        let vp: Option<&'static dyn VnodeOps> = if fp.f_type() == DTYPE_VNODE {
             Some(fp.vnode())
         } else {
             None

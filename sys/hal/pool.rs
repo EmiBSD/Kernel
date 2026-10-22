@@ -111,6 +111,18 @@
 //!   once by [`TypedPool::get_homed`] after the value is written into its item, so a value
 //!   made anywhere else (proc0's `static`, a stack) has an empty home and gets `None`, never
 //!   a handle to memory no pool owns. [`TypedPool::init_recorded`] is public for such pools.
+//! - N4.3: three more forms of the count, for `struct file`'s `f_count` (`kernel::file`).
+//!   [`PoolArc::try_last`] is `FRELE`'s decrement that tells the last one: it gives back a
+//!   [`Last<T>`], the item at count 0 that only reads the value (`fdrop` calls the file's
+//!   fallible close through it and returns its error) and frees it when dropped; a handle's
+//!   own last drop is the same path. [`PoolArc::try_from_ref`] is `from_ref` answering `None`
+//!   for a value at count 0 instead of stopping the kernel (`fd_iterfile` skips a file whose
+//!   last `FRELE` is under way while `filehead` still lends it). [`PoolArc::forget`] and
+//!   [`PoolArc::adopt`] park a count and take it back: a reference held by a word in legacy
+//!   memory (a descriptor in flight in a unix-domain message, `syslogf`), counted by
+//!   [`PoolArc::count`] as the C's `f_count` counts it, adopted once into a handle again. The
+//!   word `Inner::refs` holds both: the references (handles and parked ones) in its low half,
+//!   the parked ones among them in its high half, so an item never grows.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -137,9 +149,27 @@ pub const PR_NOWAIT: i32 = 0x0002;
 /// `PR_LIMITFAIL`: `pool_get` fails at the hard limit even with `PR_WAITOK`.
 pub const PR_LIMITFAIL: i32 = 0x0004;
 
+/// Where the parked references start in `Inner::refs` ([`PoolArc::forget`]): the low half
+/// counts every reference (handles and parked ones), the high half the parked ones among
+/// them.
+const PARK_SHIFT: u32 = usize::BITS / 2;
+
+/// One parked reference in `Inner::refs`.
+const PARKED_ONE: usize = 1 << PARK_SHIFT;
+
+/// The references in `Inner::refs` (its low half).
+const REFS_MASK: usize = PARKED_ONE - 1;
+
 /// The most references a [`PoolArc`] counts: past it a clone panics, before the count could
-/// wrap and free a live item.
-const MAX_REFS: usize = isize::MAX as usize;
+/// reach the parked half and free a live item. `MAXCPUS` below the half's top, so the clones
+/// in flight on the other CPUs when one panics cannot carry into it; a C-shaped limit below
+/// this one (`FDUP_MAX_COUNT`, `UINT_MAX - 2 * MAXCPUS`) refuses before it panics.
+const MAX_REFS: usize = REFS_MASK - crate::cpu::MAXCPUS;
+
+const _: () = assert!(
+    usize::BITS == 64,
+    "the count's two halves need a 64-bit word"
+);
 
 /// One pool of `bsd`'s `pool(9)`, as [`PoolBackend::create`] returns it.
 ///
@@ -449,6 +479,9 @@ macro_rules! pool_home {
 
 /// What an item of a [`TypedPool<T>`] holds: the count, the pool it goes back to, the value.
 struct Inner<T: 'static> {
+    /// The references in the low half ([`REFS_MASK`]: the live handles and the parked
+    /// references), the parked ones among them in the high half ([`PARKED_ONE`]); the parked
+    /// count never exceeds the references.
     refs: AtomicUsize,
     pool: &'static TypedPool<T>,
     value: T,
@@ -457,12 +490,18 @@ struct Inner<T: 'static> {
 /// An owned, counted handle to a pool item holding a `T`: `Deref<Target = T>`, `Clone` adds a
 /// reference, the last drop drops the `T` and puts the item back into its pool.
 ///
-/// Invariant: `inner` names an initialised `Inner<T>` of `inner.pool`, whose `refs` counts the
-/// live handles to it, this one included (a handle given up by [`PoolArc::leak`] stays
-/// counted for ever); the item is put back only when that count reaches 0, so it outlives
-/// every handle. While handles live only shared references to the item are made, except the
+/// Invariant: `inner` names an initialised `Inner<T>` of `inner.pool`, whose `refs` counts (in
+/// its low half) the live handles to it, this one included, and the references parked by
+/// [`PoolArc::forget`] (a handle given up by [`PoolArc::leak`] stays counted for ever); the
+/// item is put back only when that count reaches 0, so it outlives every handle and every
+/// parked reference. While handles live only shared references to the item are made, except the
 /// `&mut T` of [`PoolArc::get_mut`], made only when its handle is the one counted and is
-/// borrowed mutably, in a pool that no record reaches.
+/// borrowed mutably, in a pool that no record reaches. One kind of `PoolArc` counts nothing:
+/// the views [`PoolArc::view`] builds ([`View`] through [`PoolArc::homed_view`]), never
+/// dropped, which only read `refs` ([`PoolArc::count_of`], at any count, 0 included) or raise
+/// it from a non-zero count ([`PoolArc::take`]); they are sound because the caller's borrow of
+/// the value (a `View`'s lifetime) or the lock keeping its record keeps the item's last drop
+/// from finishing, so the item is not put back while a view exists.
 pub struct PoolArc<T: Send + Sync + 'static> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,
@@ -489,7 +528,8 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         T: Unpin,
     {
         let inner = this.inner();
-        // Acquire: the drops of the other handles (Release) happen before this access.
+        // Acquire: the drops of the other handles (Release) happen before this access. The
+        // whole word: one reference and none parked.
         if inner.refs.load(Ordering::Acquire) != 1 || inner.pool.recorded() {
             return None;
         }
@@ -540,11 +580,82 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     where
         T: Homed,
     {
+        Self::homed(value, Rebuild::Count)
+    }
+
+    /// [`PoolArc::from_ref`] for a value whose last handle may be gone: `None` then (its
+    /// drop under way, the item about to go back), never a handle to it. `fd_iterfile`'s skip
+    /// of a file whose `f_count` is 0 while `filehead` still lends it under `fhdlk`.
+    pub fn try_from_ref(value: &T) -> Option<Self>
+    where
+        T: Homed,
+    {
+        Self::homed(value, Rebuild::CountUnlessLast)
+    }
+
+    /// Gives the handle up and parks its reference: the count stays (so [`PoolArc::count`]
+    /// still includes it and the item stays alive), and one [`PoolArc::adopt`] of the value
+    /// takes it back as a handle. The reference a word in legacy memory holds (a descriptor
+    /// in flight in a unix-domain message, the C's `FREF` in `unp_internalize`); a parked
+    /// reference never adopted keeps its item for ever, as a leaked handle does.
+    pub fn forget(this: Self)
+    where
+        T: Homed,
+    {
+        let this = ManuallyDrop::new(this);
+        // The parked count never exceeds the references, which `MAX_REFS` bounds below the
+        // half's top, so this cannot carry out of the word. Release: what this handle's
+        // holder wrote happens before the adopter's reads (`adopt`'s Acquire pairs with it).
+        this.inner().refs.fetch_add(PARKED_ONE, Ordering::Release);
+    }
+
+    /// A handle for one reference [`PoolArc::forget`] parked on the item holding `value`
+    /// (the C's message whose descriptor `unp_externalize` installs or `unp_discard` drops):
+    /// the count does not change. `None` when no reference is parked there, or for a value no
+    /// recorded pool placed. Parked references are counted, not named: adopting one more
+    /// than were parked answers `None`, never a second handle for one reference.
+    pub fn adopt(value: &T) -> Option<Self>
+    where
+        T: Homed,
+    {
+        Self::homed(value, Rebuild::Adopt)
+    }
+
+    /// The references alive now on the item holding `value` (a snapshot, as
+    /// [`PoolArc::count`]), read without a handle: the C's `fp->f_count` read where taking
+    /// a reference could make its holder the last one (`unp_gc` under `unp_gc_lock`, whose
+    /// last close would take that lock again). 0 for a value no recorded pool placed, and
+    /// for one whose last handle is gone.
+    pub fn count_of(value: &T) -> usize
+    where
+        T: Homed,
+    {
+        Self::homed_view(value).map_or(0, |v| Self::count(&v))
+    }
+
+    /// The handle [`PoolArc::from_ref`], [`PoolArc::try_from_ref`] and [`PoolArc::adopt`]
+    /// rebuild for `value`, as `how` says.
+    fn homed(value: &T, how: Rebuild) -> Option<Self>
+    where
+        T: Homed,
+    {
+        let view = Self::homed_view(value)?;
+        Self::take(&view, how)
+    }
+
+    /// A view of the item holding `value` (no reference of its own, never dropped), for
+    /// [`PoolArc::homed`] and [`PoolArc::count_of`] to read or raise its count while `value`
+    /// is borrowed; `None` for a value no recorded pool placed. The view borrows `value`
+    /// ([`View`]), so it cannot outlive it.
+    fn homed_view(value: &T) -> Option<View<'_, T>>
+    where
+        T: Homed,
+    {
         if !value.home().names(value) {
             return None;
         }
         let at = NonNull::from(value);
-        // SAFETY: `from_value`'s contract. `at` is the address of the value of an item of a
+        // SAFETY: `view`'s contract. `at` is the address of the value of an item of a
         // `TypedPool<T>` made by `init_recorded`: the home checked above is a direct field of
         // `value` (`Homed` is implemented by `pool_home!` alone, sealed, and names a field of
         // the type) holding `value`'s own address, and the only store of a non-zero address
@@ -557,9 +668,15 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         // item is not put back during the call: `value` is borrowed for it, and an item goes
         // back only after its value's drop, which no `&T` survives but one a pinned list
         // lends, whose element's drop stops the kernel while it is linked (hal::pinlist's
-        // I1) before its memory goes back. A count of 0 is refused by `from_value` with a
-        // panic, never taken back to 1.
-        Some(unsafe { Self::from_value(at) })
+        // I1) before its memory goes back. The view borrows `value` (`View`'s lifetime), so
+        // it lives no longer than the caller's borrow; a count of 0 is refused
+        // by `take` (a panic or `None`, as `how` says), never taken back to 1; an adoption
+        // takes a parked reference, which only exists while the count is above 0.
+        let arc = unsafe { Self::view(at) };
+        Some(View {
+            arc,
+            _value: PhantomData,
+        })
     }
 
     /// Whether two handles name the same item.
@@ -567,9 +684,39 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         a.inner == b.inner
     }
 
-    /// The handles alive now (a snapshot).
+    /// The references alive now (a snapshot): the handles and the parked references
+    /// ([`PoolArc::forget`]), as the C's `f_count` counts the slots, the holders and the
+    /// messages in flight.
     pub fn count(this: &Self) -> usize {
-        this.inner().refs.load(Ordering::Relaxed)
+        this.inner().refs.load(Ordering::Relaxed) & REFS_MASK
+    }
+
+    /// `FRELE`'s decrement: gives the handle up, and when it held the last reference returns
+    /// the item at count 0 ([`Last`]), which the caller reads (a fallible close, `fdrop`'s
+    /// `fo_close`) and drops to free it; `None` when other references remain.
+    pub fn try_last(this: Self) -> Option<Last<T>> {
+        let this = ManuallyDrop::new(this);
+        this.release()
+    }
+
+    /// Releases this handle's reference; the last one returns the item at count 0. The
+    /// caller does not use the handle after this (a drop, or a handle given up).
+    fn release(&self) -> Option<Last<T>> {
+        let old = self.inner().refs.fetch_sub(1, Ordering::Release);
+        if old & REFS_MASK != 1 {
+            return None;
+        }
+        if old >> PARK_SHIFT != 0 {
+            hal_panic(format_args!(
+                "PoolArc: a parked reference outlived the count"
+            ));
+        }
+        // The last reference: every other handle's writes happen before what follows.
+        fence(Ordering::Acquire);
+        Some(Last {
+            inner: self.inner,
+            _owns: PhantomData,
+        })
     }
 
     /// The value's address, for what reports it as a number (`kinfo_file`'s `f_data`); never
@@ -585,6 +732,28 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     ///
     /// # Safety
     ///
+    /// As [`PoolArc::view`]'s.
+    #[cfg_attr(
+        not(target_os = "none"),
+        allow(dead_code, reason = "the pmap backends' alone; the host has none")
+    )]
+    pub(crate) unsafe fn from_value(value: NonNull<T>) -> Self {
+        // SAFETY: the caller keeps `view`'s contract (this function's own); the view is used
+        // at once, inside it.
+        let view = unsafe { Self::view(value) };
+        match Self::take(&view, Rebuild::Count) {
+            Some(h) => h,
+            None => hal_panic(format_args!("PoolArc::from_value: no handle rebuilt")),
+        }
+    }
+
+    /// A view of the item whose value `value` points at: a `PoolArc` that holds no reference
+    /// of its own and is never dropped, through which [`PoolArc::take`] makes a handle or the
+    /// count is read. The item is reached back from the value by `offset_of!`, with the
+    /// provenance `get_shared` exposed for the whole item.
+    ///
+    /// # Safety
+    ///
     /// `value` is the address of the value of an item of a `TypedPool<T>` made by
     /// [`TypedPool::init_recorded`] (one `get_shared` made; such a pool never gives its values
     /// mutably, so no `&mut` from `get_mut` can be alive beside the handle made here; the
@@ -593,9 +762,12 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     /// the caller holds the lock that keeps the record of the pointer, and the object's drop
     /// refuses to finish while a record is left (a pmap with a pv entry: `hal::pmap`'s last
     /// drop panics, and a drop that does not finish never puts the item back). The count may
-    /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused with
-    /// a panic here, never taken back to 1, so no second last drop can follow.
-    pub(crate) unsafe fn from_value(value: NonNull<T>) -> Self {
+    /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused by
+    /// [`PoolArc::take`] with a panic or `None` (as its `how` says), never taken back to 1, so
+    /// no second last drop can follow, and only read by [`PoolArc::count_of`]; a parked
+    /// reference exists only while the count is above 0. The view is used only while those
+    /// hold (the caller's lock or borrow), never kept.
+    unsafe fn view(value: NonNull<T>) -> ManuallyDrop<Self> {
         let addr = value.as_ptr().addr() - offset_of!(Inner<T>, value);
         let Some(inner) = NonNull::new(ptr::with_exposed_provenance_mut::<Inner<T>>(addr)) else {
             hal_panic(format_args!("PoolArc::from_value: a null item"));
@@ -611,22 +783,40 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
                 "PoolArc::from_value: an item of a pool no record reaches"
             ));
         }
-        let counted =
-            borrowed
-                .inner()
-                .refs
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
-                    (c != 0 && c < MAX_REFS).then(|| c + 1)
-                });
-        match counted {
-            Ok(_) => PoolArc {
+        borrowed
+    }
+
+    /// A handle to the item `view` names, as `how` says: one more reference (panicking at a
+    /// count of 0, or answering `None` there), or a parked reference adopted (`None` when
+    /// none is parked).
+    fn take(view: &Self, how: Rebuild) -> Option<Self> {
+        let inner = view.inner;
+        let refs = &view.inner().refs;
+        let taken = match how {
+            Rebuild::Count | Rebuild::CountUnlessLast => {
+                refs.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                    let n = c & REFS_MASK;
+                    (n != 0 && n < MAX_REFS).then(|| c + 1)
+                })
+            }
+            // Acquire: the parking handle's writes happen before the adopter's reads.
+            Rebuild::Adopt => refs.fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
+                (c >> PARK_SHIFT != 0).then(|| c - PARKED_ONE)
+            }),
+        };
+        match (taken, how) {
+            (Ok(_), _) => Some(PoolArc {
                 inner,
                 _owns: PhantomData,
+            }),
+            (Err(_), Rebuild::Adopt) => None,
+            (Err(c), _) if c & REFS_MASK == 0 => match how {
+                Rebuild::CountUnlessLast => None,
+                _ => hal_panic(format_args!(
+                    "PoolArc::from_value: an item whose last handle is gone"
+                )),
             },
-            Err(0) => hal_panic(format_args!(
-                "PoolArc::from_value: an item whose last handle is gone"
-            )),
-            Err(_) => hal_panic(format_args!("PoolArc: reference count overflow")),
+            (Err(_), _) => hal_panic(format_args!("PoolArc: reference count overflow")),
         }
     }
 }
@@ -642,7 +832,7 @@ impl<T: Send + Sync + 'static> Deref for PoolArc<T> {
 impl<T: Send + Sync + 'static> Clone for PoolArc<T> {
     fn clone(&self) -> Self {
         let old = self.inner().refs.fetch_add(1, Ordering::Relaxed);
-        if old >= MAX_REFS {
+        if old & REFS_MASK >= MAX_REFS {
             hal_panic(format_args!("PoolArc: reference count overflow"));
         }
         PoolArc {
@@ -654,21 +844,8 @@ impl<T: Send + Sync + 'static> Clone for PoolArc<T> {
 
 impl<T: Send + Sync + 'static> Drop for PoolArc<T> {
     fn drop(&mut self) {
-        let inner = self.inner();
-        if inner.refs.fetch_sub(1, Ordering::Release) != 1 {
-            return;
-        }
-        // The last handle: every other handle's writes happen before what follows.
-        fence(Ordering::Acquire);
-        let pool = inner.pool;
-        let Some(raw) = pool.raw() else {
-            hal_panic(format_args!("PoolArc: an item of a pool never made"));
-        };
-        // SAFETY: the count reached 0, so no other handle, hence no other reference to the
-        // item, exists (the invariant) and none can be made; the value is initialised and
-        // dropped once, here, before its memory goes back to the pool it came from.
-        unsafe { core::ptr::drop_in_place(&raw mut (*self.inner.as_ptr()).value) };
-        raw.put(self.inner.cast());
+        // The last reference frees the item (`Last`'s drop); `self` is not used after.
+        drop(self.release());
     }
 }
 
@@ -679,6 +856,90 @@ unsafe impl<T: Send + Sync + 'static> Send for PoolArc<T> {}
 // SAFETY: `&PoolArc<T>` gives `&T` and clones (an atomic increment); with `T: Sync` sharing it
 // across CPUs is sound, and a clone moved elsewhere is covered by `Send` above.
 unsafe impl<T: Send + Sync + 'static> Sync for PoolArc<T> {}
+
+/// A [`PoolArc`] that counts nothing, built over a borrowed value ([`PoolArc::homed_view`])
+/// to read or raise the item's count: it borrows the value for `'a`, so the item cannot go
+/// back (its value's drop cannot start) while the view lives, and it is never dropped.
+struct View<'a, T: Send + Sync + 'static> {
+    arc: ManuallyDrop<PoolArc<T>>,
+    _value: PhantomData<&'a T>,
+}
+
+impl<T: Send + Sync + 'static> Deref for View<'_, T> {
+    type Target = PoolArc<T>;
+
+    fn deref(&self) -> &PoolArc<T> {
+        &self.arc
+    }
+}
+
+/// How [`PoolArc::take`] makes its handle.
+#[derive(Clone, Copy)]
+enum Rebuild {
+    /// One more reference; a count of 0 is `panic(9)`.
+    Count,
+    /// One more reference; `None` at a count of 0.
+    CountUnlessLast,
+    /// A parked reference taken back; `None` when none is parked.
+    Adopt,
+}
+
+/// An item of a [`TypedPool<T>`] whose last reference is gone ([`PoolArc::try_last`]): the
+/// value can still be read (`Deref`), and dropping this drops the `T` in place and puts the
+/// item back. `fdrop`'s `struct file` between its last `FRELE` and `pool_put`: its close
+/// runs through it and its error goes back to the caller.
+///
+/// Invariant: `inner` names an initialised `Inner<T>` of `inner.pool` whose count is 0 and
+/// that nothing parks a reference on: no handle to it exists and none can be made
+/// ([`PoolArc::take`] refuses a count of 0, an adoption needs a parked reference), so
+/// this is its one owner until its drop; only shared references to the value are made from
+/// it. A view ([`View`]) may still exist over a value a pinned list lends at count 0: it
+/// counts nothing, only reads `refs` ([`PoolArc::count_of`] answers 0, [`PoolArc::take`]
+/// refuses), and ends with the borrow of the value it was built over, before the unlink this
+/// owner makes ahead of its drop.
+pub struct Last<T: Send + Sync + 'static> {
+    inner: NonNull<Inner<T>>,
+    _owns: PhantomData<Inner<T>>,
+}
+
+impl<T: Send + Sync + 'static> Last<T> {
+    /// The whole item, shared: its count, its pool, its value.
+    fn item(&self) -> &Inner<T> {
+        // SAFETY: the item is initialised and is not put back before this `Last` is dropped
+        // (the invariant: it is the item's one owner, and only its drop frees it), and that
+        // drop cannot run while the returned reference, which borrows `self`, lives. Only
+        // shared references to the item are made while it is at count 0: this one, the ones
+        // to the value a pinned list lends its walkers, and the shared reads of `refs` the
+        // views built over such a value make (`count_of`, `take`'s refusal), all of which end
+        // with the unlink the owner makes before dropping (hal::pinlist's I1 stops the kernel
+        // otherwise); none is `&mut`.
+        unsafe { self.inner.as_ref() }
+    }
+}
+
+impl<T: Send + Sync + 'static> Deref for Last<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.item().value
+    }
+}
+
+impl<T: Send + Sync + 'static> Drop for Last<T> {
+    fn drop(&mut self) {
+        let Some(raw) = self.item().pool.raw() else {
+            hal_panic(format_args!("PoolArc: an item of a pool never made"));
+        };
+        // SAFETY: the count is 0 and this is the item's one owner (the invariant): no handle,
+        // hence no reference made through one, exists and none can be made; the references
+        // `item` made borrowed `self` and have ended (the one above, once `raw` was read),
+        // and a pinned list's walkers no longer reach the value (its element is unlinked
+        // before the value's drop, hal::pinlist's I1). The value is initialised and dropped
+        // once, here, before its memory goes back to the pool it came from.
+        unsafe { core::ptr::drop_in_place(&raw mut (*self.inner.as_ptr()).value) };
+        raw.put(self.inner.cast());
+    }
+}
 
 /// A pool of `T`s whose items have one owner each (`struct pool` sized for the type): a
 /// `static`, initialised once at boot. Its items are exactly `T`s (no count, no back
@@ -1642,6 +1903,209 @@ mod tests {
         let pinned = b.as_pin();
         assert!(core::ptr::eq(pinned.get_ref(), &*b));
         assert_eq!(pinned.v, 4);
+    }
+
+    /// A homed value that counts its drops (`struct file` in `kernel::file`'s shape).
+    struct Filey {
+        v: u32,
+        home: PoolHome<Filey>,
+        drops: Arc<AtomicU32>,
+    }
+
+    impl Drop for Filey {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    crate::pool_home!(Filey, home);
+
+    fn filey(pool: &'static TypedPool<Filey>, v: u32, drops: &Arc<AtomicU32>) -> PoolArc<Filey> {
+        pool.get_homed(PR_WAITOK, || Filey {
+            v,
+            home: PoolHome::new(),
+            drops: drops.clone(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_last_release_hands_the_item_over_and_its_drop_frees_it() {
+        testutil::install();
+        static P: TypedPool<Pair> = TypedPool::new();
+        let pool = made(&P);
+        let drops = Arc::new(AtomicU32::new(0));
+        let one = pool
+            .get_shared(PR_WAITOK, || Pair {
+                a: 9,
+                drops: drops.clone(),
+            })
+            .unwrap();
+        let two = one.clone();
+        // Not the last: the reference goes, nothing else.
+        assert!(PoolArc::try_last(one).is_none());
+        assert_eq!(PoolArc::count(&two), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        // The last: the value is still there to read (a close), then the drop frees it.
+        let last = PoolArc::try_last(two).unwrap();
+        assert_eq!(last.a, 9);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(pool.nout(), 1);
+        drop(last);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(pool.nout(), 0);
+    }
+
+    #[test]
+    fn a_value_at_count_zero_is_skipped_never_counted_again() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "lastpl"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let h = filey(&P, 1, &drops);
+        // A live value: one more reference.
+        let again = PoolArc::try_from_ref(&*h).unwrap();
+        assert_eq!(PoolArc::count(&h), 2);
+        drop(again);
+        // Its last reference gone, the item still readable through the `Last` (as a list
+        // under its lock lends it): `fd_iterfile` skips it.
+        let last = PoolArc::try_last(h).unwrap();
+        assert!(PoolArc::try_from_ref(&*last).is_none());
+        assert!(PoolArc::adopt(&*last).is_none());
+        drop(last);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(P.nout(), 0);
+        // A value no pool placed: nothing.
+        let local = Filey {
+            v: 0,
+            home: PoolHome::new(),
+            drops: drops.clone(),
+        };
+        assert!(PoolArc::try_from_ref(&local).is_none());
+        assert!(PoolArc::adopt(&local).is_none());
+    }
+
+    /// `count_of` reads the count through the value with no handle made: the count does not
+    /// move, a parked reference is counted, and a value at count 0 or of no pool reads 0.
+    #[test]
+    fn count_of_reads_the_count_without_a_reference() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "countpl"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let h = filey(&P, 4, &drops);
+        assert_eq!(PoolArc::count_of(&*h), 1);
+        assert_eq!(PoolArc::count(&h), 1);
+        let two = h.clone();
+        PoolArc::forget(two);
+        assert_eq!(PoolArc::count_of(&*h), 2);
+        let back = PoolArc::adopt(&*h).unwrap();
+        drop(back);
+        assert_eq!(PoolArc::count_of(&*h), 1);
+        // The last handle's drop is never started by the read: the value is still there.
+        let last = PoolArc::try_last(h).unwrap();
+        assert_eq!(PoolArc::count_of(&*last), 0);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(last);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        let local = Filey {
+            v: 0,
+            home: PoolHome::new(),
+            drops: drops.clone(),
+        };
+        assert_eq!(PoolArc::count_of(&local), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "an item whose last handle is gone")]
+    fn counting_a_value_at_count_zero_again_stops_the_kernel() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "lastpanic"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let last = PoolArc::try_last(filey(&P, 2, &drops)).unwrap();
+        let _ = PoolArc::from_ref(&*last);
+    }
+
+    #[test]
+    fn a_parked_reference_is_counted_and_adopted_once() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "parkpl"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        // The C's f_count through a message: the slot's reference, FREF'd into the message
+        // (unp_internalize), the slot closed, the message received (unp_externalize).
+        let slot = filey(&P, 3, &drops);
+        assert_eq!(PoolArc::count(&slot), 1);
+        PoolArc::forget(slot.clone());
+        assert_eq!(PoolArc::count(&slot), 2);
+        let other = slot.clone();
+        drop(slot);
+        assert_eq!(PoolArc::count(&other), 2);
+        let received = PoolArc::adopt(&*other).unwrap();
+        assert!(PoolArc::ptr_eq(&received, &other));
+        assert_eq!(PoolArc::count(&other), 2);
+        // One reference was parked: a second adoption finds none.
+        assert!(PoolArc::adopt(&*other).is_none());
+        assert_eq!(PoolArc::count(&other), 2);
+        drop(other);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(received.v, 3);
+        drop(received);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(P.nout(), 0);
+    }
+
+    #[test]
+    fn a_parked_reference_keeps_its_item_after_every_handle() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "parkkeep"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let h = filey(&P, 4, &drops);
+        let lent = PoolArc::leak(h.clone());
+        PoolArc::forget(h);
+        // The leaked handle and the parked reference.
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        let back = PoolArc::adopt(lent).unwrap();
+        assert_eq!(PoolArc::count(&back), 2);
+        assert!(PoolArc::try_last(back).is_none());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(P.nout(), 1);
+    }
+
+    #[test]
+    fn parked_references_cross_cpus_and_the_last_release_frees_once() {
+        testutil::install();
+        static P: TypedPool<Filey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "parkmp"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let h = filey(&P, 5, &drops);
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let mine = h.clone();
+                thread::spawn(move || {
+                    for _ in 0..1000 {
+                        PoolArc::forget(mine.clone());
+                        let back = PoolArc::adopt(&*mine).unwrap();
+                        assert!(PoolArc::count(&back) >= 2);
+                        drop(back);
+                    }
+                    PoolArc::try_last(mine).is_some()
+                })
+            })
+            .collect();
+        let lasts = workers
+            .into_iter()
+            .map(|w| w.join().unwrap())
+            .filter(|&last| last)
+            .count();
+        assert_eq!(lasts, 0);
+        assert_eq!(PoolArc::count(&h), 1);
+        assert!(PoolArc::adopt(&*h).is_none());
+        drop(h);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(P.nout(), 0);
     }
 }
 

@@ -89,6 +89,7 @@ use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_LOOKUP, VOP_READLINK, VOP_UNLOCK};
 use crate::machine::copy::copyinstr;
 use crate::sys::errno::Errno;
+use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mount::{MNT_RDONLY, VB_READ, VB_WAIT, VFS_ROOT};
@@ -306,7 +307,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
     ndp.ni_loopcnt = 0;
 
     // Get starting point for the translation.
-    ndp.ni_rootdir = fdp.fd_rdir.get();
+    ndp.ni_rootdir = fdp.rdir();
     if ndp.ni_rootdir.is_none() || ndp.ni_cnd.cn_flags & KERNELPATH != 0 {
         ndp.ni_rootdir = rootvnode();
     }
@@ -333,7 +334,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
             ndp.ni_cnd.cn_rpi = 1;
         }
     } else if ndp.ni_dirfd == AT_FDCWD {
-        let Some(cdir) = fdp.fd_cdir.get() else {
+        let Some(cdir) = fdp.cdir() else {
             // No current directory before a root is mounted (see the module's deviations).
             return namei_fail(ndp, Errno::ENOENT);
         };
@@ -345,7 +346,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
         let Some(fp) = fd_getfile(fdp, ndp.ni_dirfd) else {
             return namei_fail(ndp, Errno::EBADF);
         };
-        if fp.f_type.get() != DTYPE_VNODE || fp.vnode().v_type.get() != VDIR {
+        if fp.f_type() != DTYPE_VNODE || fp.vnode().v_type.get() != VDIR {
             let _ = frele(fp, p);
             return namei_fail(ndp, Errno::ENOTDIR);
         }

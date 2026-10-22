@@ -68,6 +68,9 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
+use hal::link::PtrWord;
+
+use crate::kern::kern_descrip::BsdFileData;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sig::{sigio_getown, sigio_setown};
 use crate::kern::subr_prf::panic;
@@ -101,16 +104,22 @@ pub static SOCKETOPS: Fileops = Fileops {
 
 /// `(struct socket *)fp->f_data` of a socket file.
 pub fn fp_socket(fp: &File) -> &'static Socket {
-    if fp.f_type.get() != DTYPE_SOCKET {
-        panic(format_args!("file {:p}: not a socket", fp));
+    let word = match fp.data() {
+        Some(BsdFileData::Socket(word)) if fp.f_type() == DTYPE_SOCKET => word,
+        _ => panic(format_args!("file {:#x}: not a socket", fp.addr())),
+    };
+    match socket_of(word) {
+        Some(so) => so,
+        None => panic(format_args!("file {:#x}: socket already closed", fp.addr())),
     }
+}
+
+/// The socket a socket file's `f_data` word names, `None` once `soo_close` cleared it.
+pub fn socket_of(word: &PtrWord<Socket>) -> Option<&'static Socket> {
     // SAFETY: every `DTYPE_SOCKET` file's `f_data` is set to a live socket before the file
     // is inserted in a table; the file holds the socket's file reference until `soo_close`
-    // (which clears `f_data`) runs on its last reference, after every user of the file.
-    match unsafe { fp.f_data.get().cast::<Socket>().cast_const().as_ref() } {
-        Some(so) => so,
-        None => panic(format_args!("file {:p}: socket already closed", fp)),
-    }
+    // (which clears the word) runs on its last reference, after every user of the file.
+    unsafe { word.get().as_ref() }
 }
 
 /// The `int` an `ioctl` argument holds.
@@ -250,15 +259,17 @@ pub fn soo_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
 pub fn soo_close(fp: &File, _p: Option<&Proc>) -> Result<(), Errno> {
     let mut error = Ok(());
 
-    if !fp.f_data.get().is_null() {
-        let flags = if fp.f_flag.load(Ordering::Relaxed) & FNONBLOCK as u32 != 0 {
-            MSG_DONTWAIT
-        } else {
-            0
-        };
-        error = soclose(fp_socket(fp), flags);
+    if let Some(BsdFileData::Socket(word)) = fp.data() {
+        if let Some(so) = socket_of(word) {
+            let flags = if fp.f_flag.load(Ordering::Relaxed) & FNONBLOCK as u32 != 0 {
+                MSG_DONTWAIT
+            } else {
+                0
+            };
+            error = soclose(so, flags);
+        }
+        word.set(ptr::null());
     }
-    fp.f_data.set(ptr::null_mut());
     error
 }
 /* </CODE> */

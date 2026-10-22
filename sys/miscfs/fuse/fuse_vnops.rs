@@ -310,7 +310,7 @@ pub fn filt_fusefsread(kn: &Knote, hint: i64) -> bool {
         return true;
     }
 
-    kn.kn_data().set(ip.filesize.get() - foffset(kn.fp()));
+    kn.kn_data().set(ip.filesize.get() - foffset(&kn.fp()));
     if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {
         kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_EOF);
         return true;
@@ -1146,7 +1146,7 @@ pub fn fusefs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
 
     fbuf.op_set(&FuseMknodIn {
         mode,
-        umask: p.fd().fd_cmask.get(),
+        umask: p.fd().cmask(),
         ..FuseMknodIn::default()
     });
     fb_put_name(fbuf, 0, name);
@@ -1208,7 +1208,7 @@ pub fn fusefs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
 
     let mut mknod = FuseMknodIn {
         mode: makeimode(ap.a_vap.va_type, ap.a_vap.va_mode),
-        umask: p.fd().fd_cmask.get(),
+        umask: p.fd().cmask(),
         ..FuseMknodIn::default()
     };
     if ap.a_vap.va_rdev != VNOVAL {
@@ -1548,7 +1548,7 @@ pub fn fusefs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 
         fbuf.op_set(&FuseMkdirIn {
             mode: makeimode(ap.a_vap.va_type, ap.a_vap.va_mode),
-            umask: p.fd().fd_cmask.get(),
+            umask: p.fd().cmask(),
         });
         fb_put_name(fbuf, 0, name);
 

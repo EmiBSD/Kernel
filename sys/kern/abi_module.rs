@@ -55,14 +55,16 @@ use crate::sys::systm::SysArgs;
 use crate::sys::types::Register;
 
 /// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
-/// pipe(2) and the vm system calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`) are the kernel
-/// crate's, entered through `bsd`'s system call prologue.
+/// pipe(2), the vm system calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`) and the descriptor
+/// system calls (`KernelApi::fd`, `sys/kern/kern_descrip.rs`) are the kernel crate's,
+/// entered through `bsd`'s system call prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
     legacy_syscall,
     api_copyin,
     api_copyout,
     crate::kern::pipe_glue::native_pipe2,
     crate::kern::vm_bsd::VM_ENTRIES,
+    crate::kern::kern_descrip::FD_ENTRIES,
 );
 
 /// The module file the boot loader handed over (`set_image`): its kernel virtual address.

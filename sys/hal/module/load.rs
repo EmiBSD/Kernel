@@ -462,7 +462,7 @@ mod tests {
         Ok(())
     }
 
-    use crate::syscall::{HandlerInfo, SysResult};
+    use crate::syscall::{HandlerInfo, Rval, SysResult};
 
     fn pipe2(_: isize, _: usize, _: isize) -> SysResult {
         Ok(())
@@ -512,7 +512,68 @@ mod tests {
         munlockall: nr,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
+    fn fd1(_: isize, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn fd2(_: isize, _: i32, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn io(_: isize, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn iov(_: isize, _: i32, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn pio(_: isize, _: i32, _: usize, _: usize, _: i64, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn piov(_: isize, _: i32, _: usize, _: i32, _: i64, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn count(_: isize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn fstat(_: isize, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn ioctl(_: isize, _: i32, _: u64, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn fcntl(_: isize, _: i32, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn dup3(_: isize, _: i32, _: i32, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn utrace(_: isize, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
+    /// Version 4's entries, every one answering `Ok`.
+    const FD: crate::api::FdEntries = crate::api::FdEntries {
+        read: io,
+        write: io,
+        close: fd1,
+        getdtablecount: count,
+        dup: fd1,
+        fstat,
+        ioctl,
+        dup2: fd2,
+        fcntl,
+        dup3,
+        readv: iov,
+        writev: iov,
+        flock: fd2,
+        pread: pio,
+        pwrite: pio,
+        preadv: piov,
+        pwritev: piov,
+        fpathconf: fd2,
+        utrace,
+        closefrom: fd1,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD);
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -534,7 +595,7 @@ mod tests {
                 version: 1,
                 size: 40,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM)
+            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD)
         };
         assert_eq!(
             load_with(&Empty, &Empty, &OTHER),
