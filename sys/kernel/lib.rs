@@ -51,6 +51,7 @@ pub mod proc;
 pub mod resource;
 pub mod sched;
 pub mod select;
+pub mod sig;
 pub mod task;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;

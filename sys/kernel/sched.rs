@@ -341,9 +341,10 @@ use hal::vm::uvmexp::UVMEXP;
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::{
-    P_CPUPEG, P_INSCHED, P_SINTR, P_TIMEOUT, P_TIMEOUTRAN, P_WEXIT, PS_ITIMER, PS_PROFIL, ProcGlue,
-    SONPROC, SRUN, SSLEEP, SSTOP, Thread,
+    P_CPUPEG, P_INSCHED, P_SINTR, P_SUSPSIG, P_TIMEOUT, P_TIMEOUTRAN, P_WEXIT, PS_ITIMER,
+    PS_PROFIL, PS_STOPPING, ProcGlue, SINGLE_SUSPEND, SONPROC, SRUN, SSLEEP, SSTOP, Thread,
 };
+use crate::sig::{self, Sigctx};
 use crate::timeout::{TIMEOUT_PROC, Timeout};
 
 /// `TABLESIZE`: we're only looking at 7 bits of the address; everything is aligned to 4,
@@ -2077,6 +2078,62 @@ pub fn set_curpriority<G: ProcGlue>(p: &Thread<G>) {
     }
 }
 
+/// `sleep_signal_check(p, after_sleep)`: the signals and stops of a `PCATCH` sleep of `p`
+/// (the running thread): `EINTR` or `ERESTART` for a signal to deliver (as its action says),
+/// `ERESTART` or the stop for a suspension; a stop asked before the sleep (`after_sleep`
+/// false) is done here, the thread left `SSTOP` for the switch.
+fn sleep_signal_check<G: ProcGlue>(p: &Thread<G>, after_sleep: bool) -> Result<(), Errno> {
+    let pr = p.process();
+    let mut ctx = Sigctx::default();
+
+    if let Err(err) = sig::proc_suspend_check(p, true) {
+        if err != Errno::EWOULDBLOCK {
+            return Err(err);
+        }
+
+        // requested to stop
+        if !after_sleep {
+            let g = pr.ps_mtx.lock();
+            sig::process_suspend_signal(pr, &g);
+
+            let h = sched_lock();
+            p.set_stat(SSTOP);
+            drop(h);
+            drop(g);
+        }
+    }
+
+    let signo = sig::cursig(p, &mut ctx, true);
+    if signo != 0 {
+        if ctx.sig_stop {
+            if !after_sleep {
+                let g = pr.ps_mtx.lock();
+                pr.ps_xsig.set(signo);
+                // This is for stop signals delivered before sleep_setup() was called. We need
+                // to do the full dance here before going to sleep.
+                p.p_siglist
+                    .fetch_and(!hal::sys::signal::sigmask(signo), Ordering::Relaxed);
+                pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
+                let mut h = sched_lock();
+                sig::process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g, &mut h);
+                drop(h);
+                p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
+                sig::process_suspend_signal(pr, &g);
+                let h = sched_lock();
+                p.set_stat(SSTOP);
+                drop(h);
+                drop(g);
+            }
+        } else if ctx.sig_intr && !ctx.sig_ignore {
+            return Err(Errno::EINTR);
+        } else {
+            return Err(Errno::ERESTART);
+        }
+    }
+
+    Ok(())
+}
+
 /// `sleep_finish(nsecs, do_sleep)`: sleeps (or not) after `sleep_setup`; returns the
 /// sleep's error.
 pub fn sleep_finish<G: ProcGlue>(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
@@ -2104,7 +2161,7 @@ pub fn sleep_finish<G: ProcGlue>(nsecs: u64, do_sleep: bool) -> Result<(), Errno
 
         let mut catch = p.p_flag.load(Ordering::Relaxed) & P_SINTR != 0;
         if catch {
-            error = G::sleep_signal_check(p.get_ref(), false);
+            error = sleep_signal_check(p.get_ref(), false);
             if error.is_err() {
                 catch = false;
                 do_sleep = false;
@@ -2186,7 +2243,7 @@ pub fn sleep_finish<G: ProcGlue>(nsecs: u64, do_sleep: bool) -> Result<(), Errno
         // Check if thread was woken up because of a unwind or signal but ignore any pending
         // stop condition.
         if catch {
-            error = G::sleep_signal_check(p.get_ref(), true);
+            error = sleep_signal_check(p.get_ref(), true);
         }
 
         // Signal errors are higher priority than timeouts.
@@ -2447,8 +2504,6 @@ mod tests {
             &SCHED
         }
 
-        fn pgsignal(_pg: &crate::proc::Pgrp<Self>, _sig: i32, _checkctty: bool) {}
-        fn prsignal(_pr: &Process<Self>, _sig: i32) {}
         fn pgrp_destroy(_pg: &crate::proc::Pgrp<Self>) {}
         fn session_hangup(_sess: &crate::proc::Session<Self>) {}
         fn session_placed(_sess: &crate::proc::Session<Self>) {}
@@ -2456,6 +2511,10 @@ mod tests {
 
         fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
             hal::thread::try_with_current::<Thread<Self>, R>(|p| f(p.map(Pin::get_ref)))
+        }
+
+        fn exit1(_p: &Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+            std::panic!("exit1 of a test thread (signal {xsig})")
         }
 
         fn pledge_fail(

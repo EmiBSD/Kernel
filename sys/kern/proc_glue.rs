@@ -139,18 +139,21 @@
 //! ## Redesign
 //! - LZ's `Cell<*const T>` members of `struct process`/`struct proc` (`ps_fd`, `ps_opptr`,
 //!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
-//!   dereferenced by the legacy code as before); `ps_sigacts`, `ps_textvp`, `s_ttyvp` and
-//!   `s_ttyp`, whose targets the legacy code treats as `'static`, are `hal::link::Link`s,
-//!   read without `unsafe`; the plain members are atomic words with LZ's `get()`/`set()`
-//!   ([`SigaltstackWord`], [`SigvalWord`], [`ItimerWord`], [`IsizeWord`]), so every value is
-//!   `Send` and `Sync` without a premise, as a pooled kernel object requires.
+//!   dereferenced by the legacy code as before); `ps_textvp`, `s_ttyvp` and `s_ttyp`,
+//!   whose targets the legacy code treats as `'static`, are `hal::link::Link`s, read without
+//!   `unsafe`; the plain members are atomic words with LZ's `get()`/`set()` ([`ItimerWord`],
+//!   [`IsizeWord`]), so every value is `Send` and `Sync` without a premise, as a pooled
+//!   kernel object requires.
+//! - N4.5b: `ps_sigacts`, `p_sigstk` and `p_sigval` are `kernel::proc`'s own members
+//!   (`kernel::sig`); the glue gives the signals `exit1`, the core dump and the machine's
+//!   `sendsig`, `signotify`, `PROC_STACK` and `TCB_GET`.
 //! - `allprocess`, `zombprocess`, `allproc` and the hash tables are a
 //!   `kernel::proc::ProcTables` (one `static`; each host test thread its own,
 //!   [`proc_test_reset`]).
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicIsize, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 
 use hal::intr::IPL_NONE;
 use hal::link::{Link, PtrWord};
@@ -163,7 +166,7 @@ use kernel::proc::{
 };
 
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
-use crate::kern::kern_sig::{pgsignal as sig_pgsignal, prsignal as sig_prsignal, sigio_freelist};
+use crate::kern::kern_sig::{pgsignal as sig_pgsignal, sigio_freelist};
 use crate::kern::kern_timeout::{timeout_del, timeout_set};
 use crate::kern::tty::ttywait;
 use crate::kern::vfs_subr::vrele;
@@ -173,10 +176,9 @@ use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
-use crate::sys::siginfo::Sigval;
+use crate::sys::siginfo::Siginfo;
 use crate::sys::sigio::Sigiolst;
-use crate::sys::signal::{SIGHUP, Sigaltstack};
-use crate::sys::signalvar::Sigacts;
+use crate::sys::signal::{SIGHUP, Sig, Sigset};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
 use crate::sys::tty::Tty;
@@ -184,63 +186,7 @@ use crate::sys::types::Pid;
 use crate::sys::vnode::{REVOKEALL, Vnode};
 
 pub use kernel::proc::{inferior, zapverauth};
-
-/// `stack_t p_sigstk`: the thread's signal stack, three words written whole by the thread.
-#[derive(Debug, Default)]
-pub struct SigaltstackWord {
-    sp: AtomicUsize,
-    size: AtomicUsize,
-    flags: AtomicI32,
-}
-
-impl SigaltstackWord {
-    /// No stack.
-    pub const fn new() -> Self {
-        Self {
-            sp: AtomicUsize::new(0),
-            size: AtomicUsize::new(0),
-            flags: AtomicI32::new(0),
-        }
-    }
-
-    /// The stack.
-    pub fn get(&self) -> Sigaltstack {
-        Sigaltstack {
-            ss_sp: self.sp.load(Ordering::Relaxed),
-            ss_size: self.size.load(Ordering::Relaxed),
-            ss_flags: self.flags.load(Ordering::Relaxed),
-            _pad: 0,
-        }
-    }
-
-    /// Stores `ss`.
-    pub fn set(&self, ss: Sigaltstack) {
-        self.sp.store(ss.ss_sp, Ordering::Relaxed);
-        self.size.store(ss.ss_size, Ordering::Relaxed);
-        self.flags.store(ss.ss_flags, Ordering::Relaxed);
-    }
-}
-
-/// `union sigval p_sigval`: one word.
-#[derive(Debug, Default)]
-pub struct SigvalWord(AtomicUsize);
-
-impl SigvalWord {
-    /// `sival_ptr` 0.
-    pub const fn new() -> Self {
-        Self(AtomicUsize::new(0))
-    }
-
-    /// The value.
-    pub fn get(&self) -> Sigval {
-        Sigval::from_ptr(self.0.load(Ordering::Relaxed))
-    }
-
-    /// Stores `v`.
-    pub fn set(&self, v: Sigval) {
-        self.0.store(v.sival_ptr(), Ordering::Relaxed);
-    }
-}
+pub use kernel::sig::{SigaltstackWord, SigvalWord};
 
 /// `struct itimerspec ps_timer[i]`: four words, written whole under `itimer_mtx` (or the
 /// process's `ps_mtx` for `ITIMER_REAL`) and read under it.
@@ -301,8 +247,6 @@ impl IsizeWord {
 pub struct BsdProcessG {
     /// `ps_sigiolst`: list of sigio structures.
     pub ps_sigiolst: Sigiolst,
-    /// \[I\] `ps_sigacts`: signal actions, state (`sigactsinit`'s, or `sigacts0`).
-    pub ps_sigacts: Link<Sigacts>,
     /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
     pub ps_textvp: Link<Vnode>,
     /// \[K|m\] `ps_opptr`: old parent during ptrace (null: ptrace is not ported).
@@ -333,7 +277,6 @@ impl BsdProcessG {
     pub const fn new() -> Self {
         Self {
             ps_sigiolst: Sigiolst::new(),
-            ps_sigacts: Link::new(),
             ps_textvp: Link::new(),
             ps_opptr: PtrWord::new(),
             ps_rucheck_to: Timeout::zeroed(),
@@ -347,15 +290,6 @@ impl BsdProcessG {
             ps_libcpin: Pinsyscall::new(),
         }
     }
-
-    /// `pr->ps_sigacts`: the process's signal actions, which it holds from `process_new`
-    /// (`sigacts0` for process 0) until `process_zap`.
-    pub fn sigacts(&self) -> &'static Sigacts {
-        match self.ps_sigacts.get() {
-            Some(ps) => ps,
-            None => crate::kern::subr_prf::panic(format_args!("ps_sigacts: none")),
-        }
-    }
 }
 
 impl Default for BsdProcessG {
@@ -366,10 +300,6 @@ impl Default for BsdProcessG {
 
 /// The members of `struct proc` of `bsd`'s subsystems; a thread dereferences to them.
 pub struct BsdThreadG {
-    /// `p_sigstk`: sp & on stack state variable.
-    pub p_sigstk: SigaltstackWord,
-    /// `p_sigval`: for core dump/debugger XXX.
-    pub p_sigval: SigvalWord,
     /// \[I\] The thread's own `&'static`, recorded where it is placed (`thread_new`,
     /// `proc0`): what `ProcExt::as_static` lends the queues' inserts. Not the C's.
     pub p_self: Link<Proc>,
@@ -381,8 +311,6 @@ impl BsdThreadG {
     /// The members of a new thread.
     pub const fn new() -> Self {
         Self {
-            p_sigstk: SigaltstackWord::new(),
-            p_sigval: SigvalWord::new(),
             p_self: Link::new(),
             p_exited: Mutexed::new(IPL_NONE, None),
         }
@@ -521,11 +449,6 @@ impl ProcGlue for BsdProcGlue {
         sched_tables()
     }
 
-    /// `kern_synch.c`'s `sleep_signal_check` (`kern_synch.rs`, over `kern_sig.rs`).
-    fn sleep_signal_check(p: &Proc, after_sleep: bool) -> Result<(), Errno> {
-        crate::kern::kern_synch::sleep_signal_check(p, after_sleep)
-    }
-
     fn cold() -> bool {
         crate::sys::systm::COLD.load(Ordering::Relaxed) || crate::kern::subr_prf::panicstr()
     }
@@ -640,14 +563,6 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_clock::STATHZ.load(Ordering::Relaxed)
     }
 
-    fn pgsignal(pg: &Pgrp, sig: i32, checkctty: bool) {
-        sig_pgsignal(Some(pg), sig, checkctty);
-    }
-
-    fn prsignal(pr: &Process, sig: i32) {
-        sig_prsignal(pr, sig);
-    }
-
     /// `sigio_freelist(&pgrp->pg_sigiolst)`, then the session's terminal forgets the group
     /// if it was its foreground one.
     fn pgrp_destroy(pg: &Pgrp) {
@@ -709,6 +624,45 @@ impl ProcGlue for BsdProcGlue {
 
     fn process_ref(pr: &Process) -> ProcessRef {
         process_ref(pr)
+    }
+
+    fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
+        crate::kern::kern_exit::exit1(p, xexit, xsig, flags)
+    }
+
+    fn coredump(p: &Proc) -> Result<(), Errno> {
+        crate::kern::kern_sig::coredump(p)
+    }
+
+    /// The machine's `sendsig`, which builds the frame of the running thread (`p`).
+    fn sendsig(
+        _p: &Proc,
+        catcher: Sig,
+        sig: i32,
+        mask: Sigset,
+        ksip: &Siginfo,
+        info: bool,
+        onstack: bool,
+    ) -> Result<(), Errno> {
+        crate::machine::signal::sendsig(catcher, sig, mask, ksip, info, onstack)
+    }
+
+    fn signotify(p: &Proc) {
+        Machine::signotify(p);
+    }
+
+    fn proc_stack(p: &Proc) -> usize {
+        Machine::proc_stack(p)
+    }
+
+    fn tcb_get(p: &Proc) -> usize {
+        crate::machine::tcb::tcb_get(p)
+    }
+
+    fn initprocess_addr() -> usize {
+        crate::kern::init_main::INITPROCESS
+            .load(Ordering::Relaxed)
+            .addr()
     }
 }
 
@@ -1029,7 +983,10 @@ mod tests {
         // gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in kernel::proc's
         // Process) and fdescpl 520 -> 560, and its p_kq, a set-once counted kqueue in the
         // kernel's Thread where bsd's word was, takes procpl 1136 -> 1168 at the merge of N4.4
-        // and N4.5a.
+        // and N4.5a. N4.5b (signals into kernel::sig): processpl 1360 -> 1376 (ps_sigacts a
+        // set-once handle of process 0's static or a sigapl box in kernel::proc's Process,
+        // where the glue's link was); procpl unchanged (p_sigstk and p_sigval moved from the
+        // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it).
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1069,7 +1026,7 @@ mod tests {
         assert_eq!(
             sizes,
             [
-                ("processpl", 1360),
+                ("processpl", 1376),
                 ("pgrppl", 152),
                 ("sessionpl", 144),
                 ("filepl", 184),

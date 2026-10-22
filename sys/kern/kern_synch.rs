@@ -63,8 +63,8 @@
 //! signatures for `bsd`'s callers (a wait channel as any pointer, compared, never followed):
 //! `tsleep`, `msleep` and `rwsleep` with their interlocks, the `wakeup` family, the reference
 //! counts (`refcnt_*`), the condition variables (`cond_init`, `cond_wait`) and
-//! `sched_yield(2)`; and `sleep_signal_check`, the signal half of a `PCATCH` sleep, which is
-//! `kern_sig.c`'s until N4.5b (the scheduler calls it through `ProcGlue`).
+//! `sched_yield(2)`. `sleep_signal_check`, the signal half of a `PCATCH` sleep, is
+//! `kernel::sched`'s since N4.5b (over `kernel::sig`).
 //!
 //! ## Deviations
 //! - The sleep functions return `Result<(), Errno>` (`EWOULDBLOCK` on timeout, `EINTR`/
@@ -97,19 +97,15 @@ use crate::kern::kern_lock::{
     __mp_acquire_count, __mp_release_all, _kernel_lock_held, KERNEL_LOCK, mtx_enter, mtx_leave,
 };
 use crate::kern::kern_rwlock::{rw_assert_anylock, rw_enter, rw_exit, rw_status};
-use crate::kern::kern_sig::{cursig, proc_suspend_check, process_stop, process_suspend_signal};
 use crate::kern::proc_glue::BsdProcGlue;
-use crate::kern::sched_bsd::{sched_lock, sched_unlock};
 use crate::kern::subr_prf::{panic, panicstr};
 use crate::machine::intr::splx;
 use crate::sys::errno::Errno;
 use crate::sys::mutex::Mutex;
 use crate::sys::param::{PCATCH, PNORELOCK, PRIMASK, PWAIT};
-use crate::sys::proc::{Cond, P_SUSPSIG, PS_STOPPING, Proc, ProcExt, SINGLE_SUSPEND, SSTOP};
+use crate::sys::proc::{Cond, Proc, ProcExt};
 use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
-use crate::sys::signal::sigmask;
-use crate::sys::signalvar::Sigctx;
 use crate::sys::systm::{COLD, INFSLP, SAFEPRI, SysArgs};
 use crate::sys::types::Register;
 
@@ -299,61 +295,6 @@ pub fn sleep_setup(ident: *const c_void, prio: i32, wmesg: &'static str) {
 #[inline]
 pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
     kernel::sched::sleep_finish::<G>(nsecs, do_sleep)
-}
-
-/// `sleep_signal_check`: check and handle signals and suspensions around a sleep cycle. The
-/// 2nd call in `sleep_finish()` sets `after_sleep`. In this case any pending suspend event
-/// came in after the wakeup / unsleep and can therefor be ignored. Once the process hits
-/// userret the event will be picked up again.
-pub fn sleep_signal_check(p: &Proc, after_sleep: bool) -> Result<(), Errno> {
-    let pr = p.process();
-    let mut ctx = Sigctx::default();
-
-    if let Err(err) = proc_suspend_check(p, true) {
-        if err != Errno::EWOULDBLOCK {
-            return Err(err);
-        }
-
-        // requested to stop
-        if !after_sleep {
-            let g_pr = pr.ps_mtx.lock();
-            process_suspend_signal(pr, &g_pr);
-
-            let h = sched_lock();
-            p.set_stat(SSTOP);
-            sched_unlock(h);
-            drop(g_pr);
-        }
-    }
-
-    let sig = cursig(p, &mut ctx, true);
-    if sig != 0 {
-        if ctx.sig_stop {
-            if !after_sleep {
-                let g_pr = pr.ps_mtx.lock();
-                pr.ps_xsig.set(sig);
-                // This is for stop signals delivered before sleep_setup() was called. We need
-                // to do the full dance here before going to sleep.
-                p.p_siglist.fetch_and(!sigmask(sig), Ordering::Relaxed);
-                pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
-                let mut h = sched_lock();
-                process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr, &mut h);
-                sched_unlock(h);
-                p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
-                process_suspend_signal(pr, &g_pr);
-                let h = sched_lock();
-                p.set_stat(SSTOP);
-                sched_unlock(h);
-                drop(g_pr);
-            }
-        } else if ctx.sig_intr && !ctx.sig_ignore {
-            return Err(Errno::EINTR);
-        } else {
-            return Err(Errno::ERESTART);
-        }
-    }
-
-    Ok(())
 }
 
 /// `wakeup_proc`: if process hasn't been awakened (wchan non-zero), undo the sleep. If proc is

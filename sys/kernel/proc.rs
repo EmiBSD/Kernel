@@ -215,6 +215,7 @@ use crate::descrip::{FdRef, Filedesc};
 use crate::event::{Klist, Knote, KqPools, KqRef, Kqueue};
 use crate::file::FileGlue;
 use crate::resource::{LimitCache, PlimitRef, Rusage, TimespecWord, Tusage};
+use crate::sig::{Sigacts, SigactsRef, SigaltstackWord, SigvalWord};
 use crate::vm::map::{InentryCache, VmspaceRef};
 
 /// `_MAXCOMLEN`: the command and thread names, NUL included.
@@ -670,11 +671,10 @@ pub type SessionRef<G> = StaticOrPooled<Session<G>>;
 /// `kern_proc.c` makes into them. One instantiation, `bsd`'s (`sys/kern/proc_glue.rs`); a
 /// bridge of `bridges.toml` while `bsd` implements it.
 pub trait ProcGlue: Sized + Send + Sync + 'static {
-    /// The members of `struct process` of `bsd`'s subsystems (`ps_klist`, `ps_sigacts`,
-    /// `ps_fd`, `ps_textvp`, the unveil table, the pins, the timeouts, the interval timers).
+    /// The members of `struct process` of `bsd`'s subsystems (`ps_textvp`, the unveil table,
+    /// the pins, the timeouts, the interval timers).
     type ProcessG: Send + Sync;
-    /// The members of `struct proc` of `bsd`'s subsystems (`p_fd`, `p_kq`, `p_sleep_to`,
-    /// `p_sigstk`, `p_sigval`).
+    /// The members of `struct proc` of `bsd`'s subsystems (`p_exited`).
     type ThreadG: Send + Sync;
     /// The members of `struct pgrp` of `bsd`'s (`pg_sigiolst`).
     type PgrpG: Send + Sync;
@@ -722,11 +722,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     // what a glue without that subsystem does (the kernel's own tests): nothing, or the
     // answer of a machine with nothing else running.
 
-    /// `sleep_signal_check(p, after_sleep)` (`kern_sig.c`, N4.5b): the signals and stops of a
-    /// `PCATCH` sleep.
-    fn sleep_signal_check(_p: &Thread<Self>, _after_sleep: bool) -> Result<(), Errno> {
-        Ok(())
-    }
     /// `cold || panicstr`: a sleep returns at once.
     fn cold() -> bool {
         false
@@ -782,10 +777,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn stathz() -> i32 {
         100
     }
-    /// `pgsignal(pg, sig, checkctty)`.
-    fn pgsignal(pg: &Pgrp<Self>, sig: i32, checkctty: bool);
-    /// `prsignal(pr, sig)`.
-    fn prsignal(pr: &Process<Self>, sig: i32);
     /// `pgdelete`'s calls out: `sigio_freelist(&pgrp->pg_sigiolst)` and, when the session's
     /// terminal names this group, `tp->t_pgrp = NULL`.
     fn pgrp_destroy(pg: &Pgrp<Self>);
@@ -813,6 +804,50 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// A counted reference to `pr` (process 0's `static`, or a `processpl` item), for a
     /// holder that keeps a process found under a witness past it (`filt_procattach`).
     fn process_ref(pr: &Process<Self>) -> ProcessRef<Self>;
+
+    // The signals' calls into what is still `bsd`'s (`kernel::sig`, N4.5b). The defaults are
+    // what a glue without user mode does (the kernel's own tests).
+
+    /// `exit1(p, xexit, xsig, flags)` (`kern_exit.c`, N4.6): the thread (or its process)
+    /// exits; never returns.
+    fn exit1(p: &Thread<Self>, xexit: i32, xsig: i32, flags: i32) -> !;
+    /// `coredump(p)` (the file systems, N5): whether a core was written.
+    fn coredump(_p: &Thread<Self>) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// `sendsig(catcher, sig, mask, ksip, info, onstack)` (`machdep.c`, N4.8): the signal
+    /// frame of `p`, the running thread, built on its user stack for `catcher`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the C's six arguments and the thread"
+    )]
+    fn sendsig(
+        _p: &Thread<Self>,
+        _catcher: hal::sys::signal::Sig,
+        _sig: i32,
+        _mask: hal::sys::signal::Sigset,
+        _ksip: &hal::sys::siginfo::Siginfo,
+        _info: bool,
+        _onstack: bool,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    /// `signotify(p)` (`<machine/cpu.h>`, N4.8): the running thread `p` notices its signal at
+    /// its next return to user mode (an AST, and a kick of its CPU).
+    fn signotify(_p: &Thread<Self>) {}
+    /// `PROC_STACK(p)` (N4.8): the user stack pointer of `p`'s trap frame.
+    fn proc_stack(_p: &Thread<Self>) -> usize {
+        0
+    }
+    /// `TCB_GET(p)` (N4.8): `p`'s thread control block address.
+    fn tcb_get(_p: &Thread<Self>) -> usize {
+        0
+    }
+    /// The address of `initprocess` (init(8)'s process), 0 before it exists: compared, never
+    /// followed (`setsigvec`'s `SAS_NOCLDWAIT`).
+    fn initprocess_addr() -> usize {
+        0
+    }
 }
 
 /// Declares the list adapters of the glue `$glue` (`hal::pin_adapter!` and
@@ -1395,6 +1430,8 @@ pub struct Process<G: ProcGlue> {
     /// \[Q,m\] `ps_klist`: knotes attached to this process, locked by `ps_mtx` (with
     /// `kqueue_ps_list_lock`, `kernel::event`).
     pub ps_klist: Klist<G>,
+    /// \[I\] `ps_sigacts`: signal actions, state (`sigactsinit`'s, or `sigacts0`).
+    ps_sigacts: OnceStatic<SigactsRef>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1460,7 +1497,29 @@ impl<G: ProcGlue> Process<G> {
             ps_start: TimespecWord::new(),
             fd: OnceStatic::new(),
             ps_klist: Klist::owner(),
+            ps_sigacts: OnceStatic::new(),
             g,
+        }
+    }
+
+    /// `pr->ps_sigacts`: the process's signal actions, which it holds from `process_new`
+    /// (`sigacts0` for process 0) until it goes (`panic(9)` before it has them).
+    pub fn sigacts(&self) -> &Sigacts {
+        match self.ps_sigacts.get() {
+            Some(ps) => ps,
+            None => kpanic(format_args!("ps_sigacts: none")),
+        }
+    }
+
+    /// `pr->ps_sigacts`, `None` before `process_new` gave it (`fill_kproc` of an embryo).
+    pub fn sigacts_opt(&self) -> Option<&Sigacts> {
+        self.ps_sigacts.get().map(|ps| &**ps)
+    }
+
+    /// `pr->ps_sigacts = ps`, once, before the process is visible (`panic(9)` on a second).
+    pub fn set_sigacts(&self, ps: SigactsRef) {
+        if self.ps_sigacts.set(ps).is_err() {
+            kpanic(format_args!("ps_sigacts: set twice"));
         }
     }
 
@@ -1799,6 +1858,10 @@ pub struct Thread<G: ProcGlue> {
     pub p_siglist: AtomicU32,
     /// \[o\] `p_sigmask`.
     pub p_sigmask: U32Word,
+    /// \[o\] `p_sigstk`: sp & on stack state variable.
+    pub p_sigstk: SigaltstackWord,
+    /// `p_sigval`: for core dump/debugger XXX.
+    pub p_sigval: SigvalWord,
     /// `p_name`.
     p_name: NameWord,
     /// \[S\] `p_slppri`.
@@ -1887,6 +1950,8 @@ impl<G: ProcGlue> Thread<G> {
             p_kq: OnceStatic::new(),
             p_siglist: AtomicU32::new(0),
             p_sigmask: U32Word::new(0),
+            p_sigstk: SigaltstackWord::new(),
+            p_sigval: SigvalWord::new(),
             p_name: NameWord::new(),
             p_slppri: U8Word::new(0),
             p_usrpri: U8Word::new(0),
@@ -2205,6 +2270,24 @@ pub fn tfind_user<'a, G: ProcGlue, W: Witness + ?Sized>(
     ptr::eq(p.process(), pr).then_some(p)
 }
 
+/// [`tfind_user`], the thread pinned (as its hash chain links it): for a caller that makes
+/// it runnable (`thrkill`).
+pub fn tfind_user_pinned<'a, G: ProcGlue, W: Witness + ?Sized>(
+    w: &'a W,
+    tid: Pid,
+    pr: &Process<G>,
+) -> Option<Pin<&'a Thread<G>>> {
+    if tid < THREAD_PID_OFFSET {
+        return None;
+    }
+    let tid = tid - THREAD_PID_OFFSET;
+    G::tables()
+        .tidhash(tid)
+        .iter_pinned(w)
+        .find(|p| p.p_tid.get() == tid)
+        .filter(|p| ptr::eq(p.process(), pr))
+}
+
 /// `prfind(pid)`: the process `pid` (a caller that keeps it takes `PoolArc::from_ref`).
 pub fn prfind<G: ProcGlue, W: Witness + ?Sized>(w: &W, pid: Pid) -> Option<&Process<G>> {
     G::tables().pidhash(pid).iter(w).find(|pr| pr.ps_pid == pid)
@@ -2439,8 +2522,8 @@ fn orphanpg<G: ProcGlue, W: Witness + ?Sized>(w: &W, pg: &Pgrp<G>) {
         .any(|pr| pr.ps_flags.load(Ordering::Relaxed) & PS_STOPPED != 0)
     {
         for pr in pg.pg_members.iter(w) {
-            G::prsignal(pr, SIGHUP);
-            G::prsignal(pr, SIGCONT);
+            crate::sig::prsignal(pr, SIGHUP);
+            crate::sig::prsignal(pr, SIGCONT);
         }
     }
 }
@@ -2452,8 +2535,6 @@ fn orphanpg<G: ProcGlue, W: Witness + ?Sized>(w: &W, pg: &Pgrp<G>) {
 #[cfg(test)]
 mod tests {
     use std::boxed::Box;
-    use std::cell::RefCell;
-    use std::vec::Vec;
 
     use super::*;
     use crate::cred::{CredRef, Ucred};
@@ -2467,7 +2548,6 @@ mod tests {
 
     std::thread_local! {
         static TABLES: &'static ProcTables<TestGlue> = Box::leak(Box::new(ProcTables::new()));
-        static SIGNALS: RefCell<Vec<(Pid, i32)>> = const { RefCell::new(Vec::new()) };
         /// Tables a test puts in place of the thread's own for a while.
         static TABLES_OVERRIDE: core::cell::Cell<Option<&'static ProcTables<TestGlue>>> =
             const { core::cell::Cell::new(None) };
@@ -2493,20 +2573,15 @@ mod tests {
             &SCHED
         }
 
-        fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}
-
-        fn prsignal(pr: &Process<Self>, sig: i32) {
-            // A signal path that walks the lists takes its own reader: allowed here.
-            let _r = klock::reader();
-            SIGNALS.with(|s| s.borrow_mut().push((pr.ps_pid, sig)));
-        }
-
         fn pgrp_destroy(_pg: &Pgrp<Self>) {}
         fn session_hangup(_sess: &Session<Self>) {}
         fn session_placed(_sess: &Session<Self>) {}
         fn session_destroy(_sess: &Session<Self>) {}
         fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
             f(None)
+        }
+        fn exit1(_p: &Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+            std::panic!("exit1 of a test thread (signal {xsig})")
         }
         fn pledge_fail(
             _p: &Thread<Self>,
@@ -2682,7 +2757,6 @@ mod tests {
     #[test]
     fn groups_sessions_and_job_control() {
         setup();
-        SIGNALS.with(|s| s.borrow_mut().clear());
         // A leads a new session and its group; B, A's child, starts in A's group.
         let a = process(40);
         enternewpgrp(
@@ -2719,15 +2793,25 @@ mod tests {
             b.pgrp(&r).unwrap().clone()
         };
         assert_eq!(g2.pg_jobc.get(), 1);
-        // The group is orphaned with a stopped member: hung up and continued.
+        // The group is orphaned with a stopped member: hung up and continued (`prsignal` of
+        // both to B, whose one thread is not running: both stay pending on the process).
+        crate::sig::test_sigacts(&b);
+        b.insert_thread(thread_alloc::<TestGlue>(&b, ()));
         b.ps_flags.fetch_or(PS_STOPPED, Ordering::Relaxed);
         {
             let r = klock::reader();
             fixjobc(&r, &b, &g2, false);
         }
         assert_eq!(g2.pg_jobc.get(), 0);
-        let sigs = SIGNALS.with(|s| s.borrow().clone());
-        assert_eq!(sigs, [(41, SIGHUP), (41, SIGCONT)]);
+        assert_eq!(
+            b.ps_siglist.load(Ordering::Relaxed),
+            hal::sys::signal::sigmask(SIGHUP) | hal::sys::signal::sigmask(SIGCONT)
+        );
+        let seq = {
+            let g = b.ps_mtx.lock();
+            b.ps_threads.first(&g).unwrap().p_seq.get()
+        };
+        drop(b.remove_thread(seq));
         // Leaving: the groups go with their last members, the session with its last group.
         drop(g2);
         drop(g1);

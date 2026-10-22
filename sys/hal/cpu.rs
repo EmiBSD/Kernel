@@ -338,7 +338,7 @@ pub fn set_db_active(on: bool) {
 /// `panicstr || db_active`: after a panic or inside ddb the locks stop excluding, so a CPU
 /// that stopped holding one cannot deadlock the debugger or the dump.
 #[inline]
-pub(crate) fn past_caring() -> bool {
+pub fn past_caring() -> bool {
     PANICKING.load(Ordering::Acquire) || DB_ACTIVE.load(Ordering::Acquire)
 }
 

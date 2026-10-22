@@ -170,6 +170,7 @@ use crate::unported;
 use hal::klock;
 use hal::pin::pin_static;
 use hal::vm::param::{round_page, trunc_page};
+use kernel::sig::SigactsRef;
 use kernel::vm::map::{uvm_map, uvmspace_alloc_kernel};
 use kernel::vm::types::{
     PROT_MASK, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_OVERLAY, UVM_FLAG_STACK,
@@ -257,7 +258,7 @@ static INIT_MODULE: StaticCell<Option<BootModule>> = StaticCell::new(None);
 pub static PROCESS0: Process = Process::new(0, BsdProcessG::new());
 
 /// `sigacts0`: process 0's signal actions.
-pub static SIGACTS0: Sigacts = Sigacts::new();
+pub static SIGACTS0: Sigacts = Sigacts::new_static(&PROCESS0.ps_mtx);
 /// `pgrp0`.
 pub static PGRP0: Pgrp = Pgrp::new(BsdPgrpG::new());
 /// `session0`.
@@ -396,8 +397,8 @@ pub fn main() -> ! {
 
     // Init signal state, file descriptor table, limits and the prototype map of process 0.
     signal_init();
-    siginit(&SIGACTS0);
-    pr.ps_sigacts.set(Some(&SIGACTS0));
+    pr.set_sigacts(SigactsRef::Static(&SIGACTS0));
+    siginit(pr);
     pr.set_fd(fdinit());
     let mut limit0 = LIMIT0;
     lim_startup(&mut limit0);

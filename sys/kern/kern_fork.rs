@@ -393,7 +393,7 @@ fn process_new(p: &'static Proc, pr: &ProcessRef, parent: &Process, flags: i32) 
     } else {
         pr.set_fd(fdcopy(parent));
     }
-    pr.ps_sigacts.set(Some(sigactsinit(parent)));
+    sigactsinit(pr, parent);
     uvmspace_fork_or_share(parent, pr, flags & FORK_SHAREVM != 0);
 
     if parent.ps_flags.load(Ordering::Relaxed) & PS_PROFIL != 0 {

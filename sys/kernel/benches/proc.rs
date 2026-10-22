@@ -56,6 +56,15 @@
 //!   doubles; LZ's `mtx_enter`/`mtx_leave` over `bsd`'s was 3.0 ns in the same run as the
 //!   "before").
 //!
+//! N4.5b's signals (`kernel::sig`; the "before" a scratch test of `bsd`'s kern_sig.rs at
+//! 14a259df, the LZ shape):
+//! - `sig.sigactsinit`: `fork1`'s copy of the parent's actions (`sigactsinit`), then its
+//!   drop (LZ: `sigactsinit` + `sigactsfree`).
+//! - `sig.ptsignal-pending`: a thread signal (`SIGUSR1`, default action) to a thread that is
+//!   not running, which leaves it pending; the pending set then cleared.
+//! - `sig.userret-empty`: `userret` of a thread with nothing pending (every return to user
+//!   mode).
+//!
 //! The test glue's hooks are the kernel's doubles (`kernel::test_file_glue!`), with their
 //! record of `knote_fdclose` turned off.
 
@@ -294,14 +303,15 @@ impl ProcGlue for BenchGlue {
         &SCHED
     }
 
-    fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}
-    fn prsignal(_pr: &Process<Self>, _sig: i32) {}
     fn pgrp_destroy(_pg: &Pgrp<Self>) {}
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}
     fn with_curproc<R>(f: impl FnOnce(Option<&proc::Thread<Self>>) -> R) -> R {
         f(None)
+    }
+    fn exit1(_p: &proc::Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+        std::panic!("exit1 in a bench (signal {xsig})")
     }
     fn pledge_fail(_p: &proc::Thread<Self>, error: Errno, _code: u64) -> Errno {
         error
@@ -552,6 +562,37 @@ fn main() {
         name: "fd.prepforexec-20",
         ops: PRIM,
         f: Box::new(prim(|| fdprepforexec(t3))),
+    });
+
+    // N4.5b: the signals' paths over a process with its actions and a thread not running.
+    kernel::sig::test_sigacts(&pr);
+    let st: &'static proc::Thread<BenchGlue> =
+        Box::leak(Box::new(proc::thread_alloc::<BenchGlue>(&pr, ())));
+    let sp = hal::pin::pin_static(st);
+    let pr4 = &pr;
+    benches.push(Bench {
+        name: "sig.sigactsinit",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            drop(black_box(kernel::sig::sigacts_copy(pr4, pr4)))
+        })),
+    });
+    benches.push(Bench {
+        name: "sig.ptsignal-pending",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            kernel::sig::ptsignal(
+                sp,
+                black_box(hal::sys::signal::SIGUSR1),
+                kernel::sig::SignalType::STHREAD,
+            );
+            st.p_siglist.store(0, Ordering::Relaxed);
+        })),
+    });
+    benches.push(Bench {
+        name: "sig.userret-empty",
+        ops: PRIM,
+        f: Box::new(prim(|| kernel::sig::userret(black_box(sp)))),
     });
 
     let reps = 7;

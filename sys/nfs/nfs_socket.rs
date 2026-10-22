@@ -1472,7 +1472,7 @@ pub fn nfs_sigintr(nmp: &NfsMount, rep: Option<&NfsReq>, p: Option<&Proc>) -> Re
         return Ok(());
     }
     if let Some(p) = p
-        && sigpending(p) & !p.process().sigacts().ps_sigignore.get() & NFSINT_SIGMASK != 0
+        && sigpending(p) & !kernel::sig::sigignore(p.process()) & NFSINT_SIGMASK != 0
     {
         return Err(Errno::EINTR);
     }

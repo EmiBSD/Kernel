@@ -279,14 +279,15 @@ impl ProcGlue for BenchGlue {
         &SCHED
     }
 
-    fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}
-    fn prsignal(_pr: &Process<Self>, _sig: i32) {}
     fn pgrp_destroy(_pg: &Pgrp<Self>) {}
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}
     fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
         f(None)
+    }
+    fn exit1(_p: &Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+        std::panic!("exit1 in a bench (signal {xsig})")
     }
     fn pledge_fail(_p: &Thread<Self>, error: Errno, _code: u64) -> Errno {
         error

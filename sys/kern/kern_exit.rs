@@ -109,8 +109,7 @@ use crate::kern::kern_fork::{NPROCESSES, NTHREADS, freepid};
 use crate::kern::kern_resource::{calcru, ruadd, tuagg_add_process, tuagg_add_runtime};
 use crate::kern::kern_sched::sched_exit;
 use crate::kern::kern_sig::{
-    process_suspend_signal, prsignal, psignal, ptsignal, sigactsfree, sigio_freelist,
-    single_thread_set,
+    process_suspend_signal, prsignal, psignal, ptsignal, sigio_freelist, single_thread_set,
 };
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, wakeup};
 use crate::kern::kern_timeout::timeout_del;
@@ -1043,7 +1042,7 @@ pub fn process_zap(pr: ProcessRef) {
         kassert!(pr.ps_threads.is_empty(&g));
         drop(g);
     }
-    sigactsfree(pr.sigacts());
+    // sigactsfree(pr->ps_sigacts): the process's actions go with it (its `PoolBox`).
     // lim_free(pr->ps_limit), crfree(pr->ps_ucred): the process's references go with it.
     NPROCESSES.fetch_sub(1, Ordering::Relaxed);
 

@@ -1771,14 +1771,15 @@ macro_rules! test_proc_glue {
                 static SCHED: $crate::sched::SchedTables<$name> = $crate::sched::SchedTables::new();
                 &SCHED
             }
-            fn pgsignal(_pg: &$crate::proc::Pgrp<Self>, _sig: i32, _checkctty: bool) {}
-            fn prsignal(_pr: &$crate::proc::Process<Self>, _sig: i32) {}
             fn pgrp_destroy(_pg: &$crate::proc::Pgrp<Self>) {}
             fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
             fn session_placed(_sess: &$crate::proc::Session<Self>) {}
             fn session_destroy(_sess: &$crate::proc::Session<Self>) {}
             fn with_curproc<R>(f: impl FnOnce(Option<&$crate::proc::Thread<Self>>) -> R) -> R {
                 f(CURPROC.with(core::cell::Cell::get))
+            }
+            fn exit1(_p: &$crate::proc::Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+                std::panic!("exit1 of a test thread (signal {xsig})")
             }
             fn pledge_fail(
                 _p: &$crate::proc::Thread<Self>,

@@ -111,6 +111,7 @@ pub mod sensors;
 pub use hal::sys::siginfo;
 pub mod sigio;
 pub use hal::sys::signal;
+#[forbid(unsafe_code)]
 pub mod signalvar;
 pub mod smr;
 pub mod socket;
