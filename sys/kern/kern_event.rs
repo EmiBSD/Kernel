@@ -68,6 +68,7 @@
 //!   `bsd`'s `struct stat` from the kernel's count.
 
 use hal::user::UserPtr;
+use kernel::api::{EventEntries, SysResult};
 use kernel::event::Kqueue as KKqueue;
 
 pub use kernel::event::{
@@ -75,9 +76,10 @@ pub use kernel::event::{
     kqueue_register, kqueue_scan, kqueue_scan_setup,
 };
 
-use crate::kern::kern_descrip::BsdFileData;
+use crate::kern::kern_descrip::{BsdFileData, native};
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
+use crate::kern::sys_generic::{native_poll, native_ppoll, native_pselect, native_select};
 use crate::sys::errno::Errno;
 use crate::sys::event::{Filterops, Klist, Knote};
 use crate::sys::eventvar::KqRef;
@@ -86,6 +88,7 @@ use crate::sys::mutex::Mutex;
 use crate::sys::proc::Proc;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::stat::{S_IFIFO, Stat};
+use crate::sys::syscall::{SYS_kevent, SYS_kqueue, SYS_kqueue1};
 use crate::sys::syscallargs::{SysKeventArgs, SysKqueue1Args};
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Register};
@@ -244,6 +247,49 @@ pub fn sys_kevent(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         uap.timeout.get().addr(),
     )? as Register;
     Ok(())
+}
+
+/// `KernelApi::event`: the `Native` entries of the event system calls (`kqueue(2)`,
+/// `kqueue1(2)`, `kevent(2)` here; `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)` in
+/// `sys_generic.rs`), each running `mi_syscall` on its own `sysent[]` row.
+pub const EVENT_ENTRIES: EventEntries = EventEntries {
+    select: native_select,
+    kevent: native_kevent,
+    ppoll: native_ppoll,
+    pselect: native_pselect,
+    poll: native_poll,
+    kqueue: native_kqueue,
+    kqueue1: native_kqueue1,
+};
+
+/// `KernelApi::event.kevent`.
+pub fn native_kevent(
+    nr: Register,
+    fd: i32,
+    changes: (usize, i32),
+    events: (usize, i32),
+    timeout: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        changes.0 as Register,
+        changes.1 as Register,
+        events.0 as Register,
+        events.1 as Register,
+        timeout as Register,
+    ];
+    native(nr, SYS_kevent, args, rval)
+}
+
+/// `KernelApi::event.kqueue`.
+pub fn native_kqueue(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_kqueue, [0; 6], rval)
+}
+
+/// `KernelApi::event.kqueue1`.
+pub fn native_kqueue1(nr: Register, flags: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_kqueue1, [flags as Register, 0, 0, 0, 0, 0], rval)
 }
 
 /// `kinfo_file`'s kqueue fields of a kqueue file: `kq_count`, `kq_state` (unlocked reads, as

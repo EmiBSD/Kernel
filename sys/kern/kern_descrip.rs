@@ -507,11 +507,16 @@ pub const FD_ENTRIES: FdEntries = FdEntries {
     closefrom: native_closefrom,
 };
 
-/// A `Native` descriptor entry: the thread on this CPU runs `mi_syscall` on row `nr` of
-/// `sysent[]` (which must be `want`'s, else `ENOSYS`) with `args` and the trap's return
-/// registers: the prologue (pledge, the pinned syscalls, the kernel lock) and the row above,
-/// as on the `Legacy` path.
-fn native(nr: Register, want: i32, args: SysArgs, rval: &mut [Register; 2]) -> SysResult {
+/// A `Native` entry (the descriptors', `kern_event.rs`'s and `sys_generic.rs`'s): the
+/// thread on this CPU runs `mi_syscall` on row `nr` of `sysent[]` (which must be `want`'s,
+/// else `ENOSYS`) with `args` and the trap's return registers: the prologue (pledge, the
+/// pinned syscalls, the kernel lock) and the row above, as on the `Legacy` path.
+pub(crate) fn native(
+    nr: Register,
+    want: i32,
+    args: SysArgs,
+    rval: &mut [Register; 2],
+) -> SysResult {
     if nr != want as Register {
         return Err(Errno::ENOSYS.as_i32());
     }

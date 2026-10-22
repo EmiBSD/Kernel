@@ -74,7 +74,9 @@
 //!   `dosigsuspend` at the kernel's call, the C's point.
 
 use hal::user::UserPtr;
+use kernel::api::SysResult;
 
+use crate::kern::kern_descrip::native;
 use crate::kern::kern_sig::dosigsuspend;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::errno::Errno;
@@ -82,6 +84,7 @@ use crate::sys::proc::Proc;
 use crate::sys::selinfo::Selinfo;
 use crate::sys::signal::Sigset;
 use crate::sys::signalvar::sigcantmask;
+use crate::sys::syscall::{SYS_poll, SYS_ppoll, SYS_pselect, SYS_select};
 use crate::sys::syscallargs::{
     SysIoctlArgs, SysPollArgs, SysPpollArgs, SysPselectArgs, SysReadArgs, SysReadvArgs,
     SysSelectArgs, SysWriteArgs, SysWritevArgs,
@@ -214,6 +217,84 @@ pub fn sys_ppoll(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
     )?;
     retval[0] = n as Register;
     Ok(())
+}
+
+/// `KernelApi::event.select`.
+pub fn native_select(
+    nr: Register,
+    nd: i32,
+    sets: [usize; 3],
+    tv: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        nd as Register,
+        sets[0] as Register,
+        sets[1] as Register,
+        sets[2] as Register,
+        tv as Register,
+        0,
+    ];
+    native(nr, SYS_select, args, rval)
+}
+
+/// `KernelApi::event.pselect`.
+pub fn native_pselect(
+    nr: Register,
+    nd: i32,
+    sets: [usize; 3],
+    ts: usize,
+    mask: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        nd as Register,
+        sets[0] as Register,
+        sets[1] as Register,
+        sets[2] as Register,
+        ts as Register,
+        mask as Register,
+    ];
+    native(nr, SYS_pselect, args, rval)
+}
+
+/// `KernelApi::event.poll`.
+pub fn native_poll(
+    nr: Register,
+    fds: usize,
+    nfds: u32,
+    timeout: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fds as Register,
+        nfds as Register,
+        timeout as Register,
+        0,
+        0,
+        0,
+    ];
+    native(nr, SYS_poll, args, rval)
+}
+
+/// `KernelApi::event.ppoll`.
+pub fn native_ppoll(
+    nr: Register,
+    fds: usize,
+    nfds: u32,
+    ts: usize,
+    mask: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fds as Register,
+        nfds as Register,
+        ts as Register,
+        mask as Register,
+        0,
+        0,
+    ];
+    native(nr, SYS_ppoll, args, rval)
 }
 
 /// `utrace(2)`: a user record for the process's `ktrace(1)` trace. `KTRACE` is not

@@ -24,15 +24,17 @@
 //!
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
 //! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
-//! system's fifteen (`VmEntries`, N3.5) and the descriptors' twenty (`FdEntries`, N4.3),
-//! which run the system call prologue still in `bsd` (pledge, the pinned syscalls) before
-//! `kernel::pipe`, `kernel::vm` and `kernel::descrip`, `sys/kern/pipe_glue.rs`,
-//! `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`); an entry moves to a `kernel` function
+//! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
+//! the event system calls' seven (`EventEntries`, N4.4), which run the system call prologue
+//! still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`,
+//! `kernel::descrip`, `kernel::event` and `kernel::select`, `sys/kern/pipe_glue.rs`,
+//! `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`,
+//! `sys/kern/sys_generic.rs`); an entry moves to a `kernel` function
 //! when its subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
-    AbiInit, AbiModuleHeader, ApiPrefix, FdEntries, KERNEL_API_VERSION, KernelApi, SyscallHandler,
-    VmEntries,
+    AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, KERNEL_API_VERSION, KernelApi,
+    SyscallHandler, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -55,6 +57,7 @@ pub const fn table(
     pipe2: fn(Register, usize, Register) -> SysResult,
     vm: VmEntries,
     fd: FdEntries,
+    event: EventEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -64,6 +67,7 @@ pub const fn table(
         pipe2,
         vm,
         fd,
+        event,
     )
 }
 
@@ -223,7 +227,40 @@ mod tests {
         closefrom: fd1,
     };
 
-    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD);
+    fn select(nr: Register, _: i32, _: [usize; 3], _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn kevent(
+        nr: Register,
+        _: i32,
+        _: (usize, i32),
+        _: (usize, i32),
+        _: usize,
+        _: &mut Rval,
+    ) -> SysResult {
+        Err(nr as i32)
+    }
+    fn ppoll(nr: Register, _: usize, _: u32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn pselect(nr: Register, _: i32, _: [usize; 3], _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn poll(nr: Register, _: usize, _: u32, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
+    const EVENT: EventEntries = EventEntries {
+        select,
+        kevent,
+        ppoll,
+        pselect,
+        poll,
+        kqueue: count,
+        kqueue1: fd1,
+    };
+
+    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD, EVENT);
 
     #[test]
     fn the_table_is_this_version_with_the_kernels_registration() {
@@ -242,6 +279,11 @@ mod tests {
         assert_eq!((API.vm.munlockall)(272), Err(272));
         assert_eq!((API.fd.read)(3, 0, 0, 0, &mut rval), Err(3));
         assert_eq!((API.fd.closefrom)(287, 0, &mut rval), Err(287));
+        assert_eq!(
+            (API.event.kevent)(72, 0, (0, 0), (0, 0), 0, &mut rval),
+            Err(72)
+        );
+        assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
     }
 }
 /* </TESTS> */
