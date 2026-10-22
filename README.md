@@ -138,10 +138,10 @@ homologates amd64 (`docs/ZERO_UNSAFE.md` section 10).
 
 | Milestone | Scope | State |
 |---|---|---|
-| N0 | Bootstrap: governance, lineage, the `lz` tooling, the unsafe budget, the baseline | met |
-| N1 | Leaves: libkern, libz, the crypto primitives | met |
-| N2 | Foundations: the crates `hal`, `kernel`, `abi`; the runtime; the loadable ABI module; pipe(2) by the new path | met |
-| N3 | Memory: uvm into `kernel::vm`, the pmaps into `hal` behind `hal::Pmap` | met |
+| N0 | Bootstrap: governance, lineage, the `lz` tooling, the unsafe budget, the baseline | done |
+| N1 | Leaves: libkern, libz, the crypto primitives | done |
+| N2 | Foundations: the crates `hal`, `kernel`, `abi`; the runtime; the loadable ABI module; pipe(2) by the new path | done |
+| N3 | Memory: uvm into `kernel::vm`, the pmaps into `hal` behind `hal::Pmap` | done |
 | N4 | Processes and scheduling (kern) | next |
 | N5 | VFS and file systems | next |
 | N6 | Network stack | next |
