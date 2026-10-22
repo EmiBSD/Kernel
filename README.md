@@ -8,7 +8,13 @@
 
 <p align="center"><strong>An operating system in Rust, grown from the faithful port of the OpenBSD kernel.</strong></p>
 
-<p align="center">License: ISC · Rust: stable (1.98.1) · Targets: amd64, arm64 · Runs in: QEMU</p>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-ISC-007ec6" alt="License: ISC"></a>
+  <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fenavarre-cl%2FEmiBSD%2Fmain%2Frust-toolchain.toml&query=%24.toolchain.channel&suffix=%20stable&label=rust&color=b7410e" alt="Rust: stable, the version pinned in rust-toolchain.toml"></a>
+  <a href="docs/ROADMAP.md"><img src="https://img.shields.io/github/v/tag/enavarre-cl/EmiBSD?label=milestone" alt="Milestone: the latest n&lt;N&gt;-&lt;name&gt; tag"></a>
+  <a href="docs/ROADMAP.md"><img src="https://img.shields.io/badge/status-experimental-e05d44" alt="Status: experimental"></a>
+  <a href="https://emibsd.org"><img src="https://img.shields.io/badge/docs-emibsd.org-9f9f9f" alt="Docs: emibsd.org"></a>
+</p>
 
 > **Not for production.** EmiBSD is an experiment. It runs only in QEMU, and its crypto,
 > network and storage code is unaudited. Do not use it to protect real data or real networks.

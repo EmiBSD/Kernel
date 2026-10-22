@@ -39,18 +39,11 @@
     margin: 0 auto;
   }
   .hero .mascot { color: var(--muted); font-size: 0.9rem; margin-top: 0.6rem; }
-  .meta {
-    display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem;
-    margin: 1.4rem 0 0; padding: 0; list-style: none;
+  .badges {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 4px;
+    margin: 1.4rem 0 0;
   }
-  .meta li {
-    border: 1px solid var(--line);
-    background: var(--card);
-    border-radius: 999px;
-    padding: 0.25rem 0.8rem;
-    font-size: 0.85rem;
-    color: var(--muted);
-  }
+  .badges img { height: 20px; display: block; }
   .cta { margin-top: 1.8rem; display: flex; gap: 0.8rem; justify-content: center; flex-wrap: wrap; }
   .btn {
     display: inline-block;
