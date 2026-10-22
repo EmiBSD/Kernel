@@ -3911,6 +3911,17 @@ pub(crate) mod tests {
         kqueue_scan(&s, n, out, Some(&mut ts), p)
     }
 
+    /// Serialises the test that lowers the global `KQ_USEREVENTSMAX` (writer) with the tests
+    /// that make user events or timers, which count against it (readers).
+    static USEREVENTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    /// A reader of [`USEREVENTS`].
+    fn userevents_shared() -> std::sync::RwLockReadGuard<'static, ()> {
+        USEREVENTS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) fn reg(p: T, kq: &KqRef<Kg>, kev: Kevent) -> Result<(), Errno> {
         let mut kev = kev;
         kqueue_register(kq, &mut kev, 0, Some(p))
@@ -3995,6 +4006,7 @@ pub(crate) mod tests {
 
     #[test]
     fn bad_filters_descriptors_and_identifiers_are_refused() {
+        let _u = userevents_shared();
         let p = setup(11);
         let (_kfd, kq) = new_kqueue(p);
         let (oid, _o) = obj(KlistKind::Kernel);
@@ -4114,6 +4126,7 @@ pub(crate) mod tests {
 
     #[test]
     fn receipt_and_the_change_list_errors_come_back_through_kevent() {
+        let _u = userevents_shared();
         let p = setup(13);
         let (kfd, _kq) = new_kqueue(p);
         // The user space of the double: a change list of three at 0x100, events at 0x400.
@@ -4181,6 +4194,10 @@ pub(crate) mod tests {
 
     #[test]
     fn user_events_trigger_combine_fflags_and_count_against_the_limit() {
+        // It lowers kq_usereventsmax, which every test making user events or timers reads.
+        let _u = USEREVENTS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let p = setup(14);
         let (_kfd, kq) = new_kqueue(p);
         let mut out = [Kevent::default(); 2];
@@ -4252,6 +4269,7 @@ pub(crate) mod tests {
 
     #[test]
     fn timers_fire_through_the_wheel_count_expiries_and_reset_on_modify() {
+        let _u = userevents_shared();
         let _w = wheel();
         let p = setup(15);
         let (_kfd, kq) = new_kqueue(p);
@@ -4462,6 +4480,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_descriptor_table_and_the_hash_grow_on_demand() {
+        let _u = userevents_shared();
         let p = setup(18);
         let (_kfd, kq) = new_kqueue(p);
         let (oid, _o) = obj(KlistKind::Kernel);
@@ -4503,6 +4522,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_kqueue_is_readable_by_another_while_events_are_pending() {
+        let _u = userevents_shared();
         let p = setup(19);
         crate::task::taskq_init_once();
         let (wfd, watched) = new_kqueue(p);
@@ -4734,6 +4754,7 @@ pub(crate) mod tests {
 
     #[test]
     fn two_scans_step_over_each_other_s_markers() {
+        let _u = userevents_shared();
         let p = setup(42);
         let (_kfd, kq) = new_kqueue(p);
         for id in 1..=3usize {
@@ -4768,6 +4789,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_processing_knote_makes_the_others_wait() {
+        let _u = userevents_shared();
         let p = setup(43);
         let (_kfd, kq) = new_kqueue(p);
         assert_eq!(reg(p, &kq, ev_set(1, EVFILT_USER, EV_ADD, 0, 0, 0)), Ok(()));
