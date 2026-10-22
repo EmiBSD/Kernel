@@ -7454,7 +7454,8 @@ license = "NetBSD Foundation BSD-2-clause notice"
 notes = "N4.1: the legacy extent(9) API over kernel::extent (sys/kernel/extent.rs), reached as crate::kern::subr_extent too: the types and constants re-exported, the C-named functions safe over the kernel's methods; extent_create leaks the kernel's MBox for the callers' &'static (extent_destroy frees the regions and unlinks, the block stays: a stated deviation, one arm64 destroy site, ppb_detach); a fixed extent's storage is an ExtentFixed<N> passed as a FixedRegions; a caller's descriptor is a Descr made in advance (extent_descr) and given to the extent"
 
 [[module]]
-rust = "sys/sys/fcntl.rs"
+rust = "sys/hal/sys/fcntl.rs"
+crate = "hal"
 lz = ["sys/sys/fcntl.rs"]
 status = "inherited"
 
@@ -7471,7 +7472,8 @@ status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 
 [[module]]
-rust = "sys/sys/filio.rs"
+rust = "sys/hal/sys/filio.rs"
+crate = "hal"
 lz = ["sys/sys/filio.rs"]
 status = "inherited"
 
@@ -7498,7 +7500,8 @@ lz = ["sys/sys/intrmap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/ioccom.rs"
+rust = "sys/hal/sys/ioccom.rs"
+crate = "hal"
 lz = ["sys/sys/ioccom.rs"]
 status = "inherited"
 

@@ -26,15 +26,28 @@ pub mod errno;
 #[forbid(unsafe_code)]
 pub mod exec_elf;
 #[forbid(unsafe_code)]
+pub mod fcntl;
+#[forbid(unsafe_code)]
+pub mod filio;
+#[forbid(unsafe_code)]
 pub mod futex;
 #[forbid(unsafe_code)]
 pub mod intrmap;
+#[forbid(unsafe_code)]
+pub mod ioccom;
 #[forbid(unsafe_code)]
 pub mod kernel;
 #[forbid(unsafe_code)]
 pub mod limits;
 #[forbid(unsafe_code)]
 pub mod mman;
+/// `<sys/param.h>`'s page size for the headers moved here (`ioccom.h`'s `IOCPARM_MAX`): the
+/// machine's (`<machine/param.h>`), so `crate::sys::param::PAGE_SIZE` names the same constant in
+/// both crates.
+#[forbid(unsafe_code)]
+pub mod param {
+    pub use crate::arch::current::param::PAGE_SIZE;
+}
 #[forbid(unsafe_code)]
 pub mod pclock;
 #[forbid(unsafe_code)]
