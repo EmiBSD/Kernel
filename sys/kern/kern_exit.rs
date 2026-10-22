@@ -79,6 +79,10 @@
 //!   and `process_zap`, the real uid `process_zap` uncharges) are real since `kern_prot.c`.
 //! - `initprocess` is null until `init` exists (M6-b): until then process 0 adopts the
 //!   orphans `exit1` and `process_reparent` would hand to `init`.
+//! - `deadproc` is a `hal::list::List` (N4.2, interim until N4.5): no `Sync` premise on its
+//!   head, and `p_runq` is `Send + Sync`. The list's premise is elements never freed; the
+//!   reaper takes a thread off it before `proc_free`, and the `&'static` it holds is the
+//!   dead CPU list's own element.
 //! - `dowait6` takes its out-parameters as `Option<&mut>`; `ps_opptr` (ptrace's old parent)
 //!   is always null, since `ptrace(2)` (`sys_process.c`) is not ported, so
 //!   `proc_finish_wait` always takes the zombie's branch.
@@ -129,7 +133,7 @@ use crate::sys::proc::{
     PS_WAITED, PS_WAITEVENT, PS_ZOMBIE, Proc, ProcHash, ProcList, ProcRunq, Process, ProcessHash,
     ProcessList, ProcessOrphan, ProcessSibling, SDEAD, SINGLE_EXIT, p_hassibling,
 };
-use crate::sys::queue::{ListHead, TailqHead};
+use crate::sys::queue::ListHead;
 use crate::sys::resource::Rusage;
 use crate::sys::sched::scheduler_wait_hook;
 use crate::sys::siginfo::{
@@ -145,6 +149,7 @@ use crate::sys::wait::{
     WNOWAIT, WSTOPPED, WTRAPPED, WUNTRACED, w_exitcode, w_stopcode, wcoredump, wstatus,
 };
 use crate::unported;
+use hal::list::List;
 
 /// `sys_exit`: death of process.
 pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
@@ -483,13 +488,8 @@ fn parent(pr: &Process) -> &'static Process {
 /// spin lock for this prochead. We use the `p_runq` member to linkup to deadproc.
 static DEADPROC_MUTEX: Mutex = Mutex::new(IPL_NONE);
 
-/// `deadproc`'s head, made `Sync`: touched under `deadproc_mutex`.
-struct DeadprocHead(TailqHead<ProcRunq>);
-// SAFETY: see the type's doc.
-unsafe impl Sync for DeadprocHead {}
-
-/// `deadproc`: the threads waiting for the reaper.
-static DEADPROC: DeadprocHead = DeadprocHead(TailqHead::new());
+/// `deadproc`: the threads waiting for the reaper, touched under `deadproc_mutex`.
+static DEADPROC: List<ProcRunq> = List::new();
 
 /// `deadproc_mutex`'s `MUTEX_INITIALIZER_FLAGS(IPL_NONE, "deadproc", MTX_NOWITNESS)`: the
 /// witness flag is kept for the record.
@@ -500,16 +500,15 @@ const DEADPROC_MUTEX_FLAGS: i32 = MTX_NOWITNESS;
 ///
 /// We lock the deadproc list, place the proc on that list (using the `p_runq` member), and
 /// wake up the reaper.
-pub fn exit2(p: &Proc) {
+pub fn exit2(p: &'static Proc) {
     // account the remainder of time spent in exit1()
     mtx_enter(&p.process().ps_mtx);
     tuagg_add_process(p.process(), p);
     mtx_leave(&p.process().ps_mtx);
 
     mtx_enter(&DEADPROC_MUTEX);
-    // SAFETY: `p` is SDEAD and on no queue (the idle thread took it off `spc_deadproc`);
-    // under `deadproc_mutex`.
-    unsafe { DEADPROC.0.insert_tail(p) };
+    // `p` is SDEAD and on no queue (the idle thread took it off `spc_deadproc`).
+    DEADPROC.insert_tail(p);
     mtx_leave(&DEADPROC_MUTEX);
 
     wakeup(ptr::addr_of!(DEADPROC));
@@ -534,7 +533,7 @@ pub fn reaper(_arg: *mut c_void) {
     loop {
         mtx_enter(&DEADPROC_MUTEX);
         let p = loop {
-            if let Some(p) = DEADPROC.0.first() {
+            if let Some(p) = DEADPROC.first() {
                 break p;
             }
             let _ = msleep_nsec(
@@ -547,8 +546,7 @@ pub fn reaper(_arg: *mut c_void) {
         };
 
         // Remove us from the deadproc list.
-        // SAFETY: `p` is the first element, under `deadproc_mutex`.
-        unsafe { DEADPROC.0.remove(p) };
+        DEADPROC.remove(p);
         mtx_leave(&DEADPROC_MUTEX);
 
         // WITNESS_THREAD_EXIT(p): not configured.

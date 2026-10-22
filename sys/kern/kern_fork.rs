@@ -248,6 +248,7 @@ fn thread_new(parent: &Proc, uaddr: NonNull<u8>) -> &'static Proc {
     unsafe { pp.as_ptr().write(Proc::new()) };
     // SAFETY: as above; the thread lives until `exit2` returns it to the pool.
     let p: &'static Proc = unsafe { pp.as_ref() };
+    p.place();
 
     p.p_stat.set(SIDL); // protect against others
     p.p_runpri.set(0);

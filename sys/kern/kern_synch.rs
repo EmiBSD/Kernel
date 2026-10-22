@@ -72,6 +72,12 @@
 //! - `safepri` and `cold` are `sys/systm.rs` statics (see there).
 //! - The `cold || panicstr` path's release and reacquisition of the kernel lock, written
 //!   twice in C, is one helper, `kernel_lock_bounce`.
+//! - `slpque` and `wakeup_n`'s local queue are `hal::list::List`s (N4.2, interim until
+//!   N4.5's sleep queues as `PinList`s under a typed `SCHED_LOCK`), so the table needs no
+//!   `Sync` premise and `p_runq` is `Send + Sync`. The list's premise is elements never
+//!   freed; a thread is freed only after it left every queue, and the `&'static` the
+//!   inserts take is the deref convention every thread reference here rests on
+//!   (`curproc()`, the queues' own elements).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -106,7 +112,6 @@ use crate::sys::proc::{
     Cond, P_INSCHED, P_SINTR, P_SUSPSIG, P_TIMEOUT, P_TIMEOUTRAN, P_WEXIT, PS_STOPPING, Proc,
     ProcRunq, SINGLE_SUSPEND, SONPROC, SSLEEP, SSTOP,
 };
-use crate::sys::queue::TailqHead;
 use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
 use crate::sys::signal::sigmask;
@@ -115,6 +120,7 @@ use crate::sys::signalvar::Sigctx;
 use crate::sys::syslog::LOG_WARNING;
 use crate::sys::systm::{COLD, INFSLP, SAFEPRI, SysArgs};
 use crate::sys::types::Register;
+use hal::list::List;
 
 /// `TABLESIZE`: we're only looking at 7 bits of the address; everything is aligned to 4,
 /// lots of things are aligned to greater powers of 2. Shift right by 8, i.e. drop the bottom
@@ -126,18 +132,17 @@ fn lookup(x: *const c_void) -> usize {
     ((x as usize) >> 8) & (TABLESIZE - 1)
 }
 
-/// `slpque[TABLESIZE]`'s table, made `Sync`: touched under the scheduler lock.
-struct Slpque([TailqHead<ProcRunq>; TABLESIZE]);
-// SAFETY: see the type's doc.
-unsafe impl Sync for Slpque {}
+/// `slpque[TABLESIZE]`'s table.
+type Slpque = [List<ProcRunq>; TABLESIZE];
 
-/// `slpque`: the sleep queues.
-static SLPQUE: Slpque = Slpque([const { TailqHead::new() }; TABLESIZE]);
+/// `slpque`: the sleep queues, touched under the scheduler lock.
+static SLPQUE: Slpque = [const { List::new() }; TABLESIZE];
 
-/// `sleep_queue_init`.
+/// `sleep_queue_init`: `TAILQ_INIT` of each queue; a `hal::list` head is empty from the
+/// start, so this only checks it.
 pub fn sleep_queue_init() {
-    for q in SLPQUE.0.iter() {
-        q.init();
+    for q in SLPQUE.iter() {
+        kassert!(q.is_empty());
     }
 }
 
@@ -375,9 +380,8 @@ pub fn sleep_setup(ident: *const c_void, prio: i32, wmesg: &'static str) {
     p.p_slptime.set(0);
     p.p_slppri.set((prio & PRIMASK) as u8);
     p.p_flag.fetch_or(P_INSCHED, Ordering::Relaxed);
-    // SAFETY: `p` is on no run or sleep queue (it is SONPROC), and stays valid: a thread
-    // outlives its sleeps.
-    unsafe { SLPQUE.0[lookup(ident)].insert_tail(p) };
+    // `p` is on no run or sleep queue (it is SONPROC).
+    SLPQUE[lookup(ident)].insert_tail(p);
     if prio & PCATCH != 0 {
         p.p_flag.fetch_or(P_SINTR, Ordering::Relaxed);
     }
@@ -618,9 +622,8 @@ pub fn unsleep(p: &Proc) {
     sched_assert_locked();
 
     if !p.p_wchan.get().is_null() {
-        // SAFETY: a thread with a wchan is on that channel's sleep queue, under the
-        // scheduler lock.
-        unsafe { SLPQUE.0[lookup(p.p_wchan.get())].remove(p) };
+        // A thread with a wchan is on that channel's sleep queue, under the scheduler lock.
+        SLPQUE[lookup(p.p_wchan.get())].remove(p);
         p.p_wchan.set(ptr::null());
         p.p_wmesg.set(None);
         // TRACEPOINT(sched, unsleep, ...): dt(4), not configured.
@@ -630,16 +633,16 @@ pub fn unsleep(p: &Proc) {
 /// `wakeup_n`: make a number of processes sleeping on the specified identifier runnable.
 pub fn wakeup_n<T: ?Sized>(ident: *const T, n: i32) {
     let ident = ident.cast::<c_void>();
-    let wakeq: TailqHead<ProcRunq> = TailqHead::new();
+    let wakeq: List<ProcRunq> = List::new();
     let mut n = n;
 
     sched_lock();
-    let qp = &SLPQUE.0[lookup(ident)];
+    let qp = &SLPQUE[lookup(ident)];
     let mut next = qp.first();
     while let Some(p) = next
         && n != 0
     {
-        next = TailqHead::<ProcRunq>::next(p);
+        next = List::<ProcRunq>::next(p);
         #[cfg(feature = "diagnostic")]
         if p.p_stat.get() != SSLEEP && p.p_stat.get() != SSTOP {
             panic(format_args!(
@@ -650,20 +653,16 @@ pub fn wakeup_n<T: ?Sized>(ident: *const T, n: i32) {
         }
         kassert!(!p.p_wchan.get().is_null());
         if ptr::eq(p.p_wchan.get(), ident) {
-            // SAFETY: `p` is on `qp`, under the scheduler lock; it moves to `wakeq`, a local
-            // queue that is emptied below before it goes out of scope.
-            unsafe {
-                qp.remove(p);
-                p.p_wchan.set(ptr::null());
-                p.p_wmesg.set(None);
-                wakeq.insert_tail(p);
-            }
+            // `p` is on `qp`, under the scheduler lock; it moves to `wakeq`, a local queue
+            // emptied below before it goes out of scope.
+            qp.remove(p);
+            p.p_wchan.set(ptr::null());
+            p.p_wmesg.set(None);
+            wakeq.insert_tail(p);
             n -= 1;
         }
     }
-    while let Some(p) = wakeq.first() {
-        // SAFETY: `p` is on `wakeq`.
-        unsafe { wakeq.remove(p) };
+    while let Some(p) = wakeq.pop_head() {
         // TRACEPOINT(sched, unsleep, ...): dt(4), not configured.
         if p.p_stat.get() == SSLEEP {
             setrunnable(p);

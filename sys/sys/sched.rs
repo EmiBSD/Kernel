@@ -105,6 +105,12 @@
 //!   other CPUs' cost estimates) is an `AtomicU32`, and `spc_cp_time` (written by the
 //!   CPU's `statclock`, read by sysctl under the `pc_lock` generation protocol) holds
 //!   `AtomicU64`s; relaxed accesses compile to the C's plain loads and stores.
+//! - `spc_qs` and `spc_deadproc` are `hal::list::List`s (N4.2, interim until N4.5's run
+//!   queues as `PinList`s under a typed `SCHED_LOCK`): their links are atomics, so a thread
+//!   holding the entry is `Send + Sync` and can sit in the kernel's pooled `Thread`. The
+//!   list's premise is elements never freed; threads are freed (`proc_free`) after they
+//!   left every queue, and the `&'static` the inserts take is `Proc::as_static`, the deref
+//!   convention every thread reference here rests on (`curproc()`, `thread_new`).
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64};
@@ -112,9 +118,10 @@ use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64};
 use crate::sys::clockintr::Clockintr;
 use crate::sys::pclock::PcLock;
 use crate::sys::proc::{Proc, ProcRunq};
-use crate::sys::queue::{SimpleqHead, TailqHead};
+use crate::sys::queue::SimpleqHead;
 use crate::sys::smr::SmrEntryList;
 use crate::sys::time::Timespec;
+use hal::list::List;
 
 /*
  * CPU states.
@@ -161,9 +168,9 @@ pub struct SchedstatePercpu {
     /// runs threads, read-only afterwards (other CPUs read it in `schedcpu` and SMR).
     pub spc_idleproc: Cell<*const Proc>,
     /// `spc_qs`: the run queues, one per `SCHED_PPQ` priorities. Protected by: `sched_lock`.
-    pub spc_qs: [TailqHead<ProcRunq>; SCHED_NQS],
+    pub spc_qs: [List<ProcRunq>; SCHED_NQS],
     /// \[o\] `spc_deadproc`: the dead threads waiting for the reaper.
-    pub spc_deadproc: TailqHead<ProcRunq>,
+    pub spc_deadproc: List<ProcRunq>,
     /// \[o\] `spc_runtime`: time curproc started running.
     pub spc_runtime: Cell<Timespec>,
     /// `spc_schedflags` (volatile): flags; see below.
@@ -217,8 +224,8 @@ impl SchedstatePercpu {
     pub const fn new() -> Self {
         Self {
             spc_idleproc: Cell::new(core::ptr::null()),
-            spc_qs: [const { TailqHead::new() }; SCHED_NQS],
-            spc_deadproc: TailqHead::new(),
+            spc_qs: [const { List::new() }; SCHED_NQS],
+            spc_deadproc: List::new(),
             spc_runtime: Cell::new(Timespec::new(0, 0)),
             spc_schedflags: AtomicI32::new(0),
             spc_schedticks: Cell::new(0),

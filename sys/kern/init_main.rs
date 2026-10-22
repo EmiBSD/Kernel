@@ -266,6 +266,7 @@ pub fn main() -> ! {
     // simplify trap processing.
     let ci = curcpu();
     let p: &'static Proc = &PROC0;
+    p.place();
     Machine::set_curproc(ci, p);
     p.p_cpu.set(ci);
 

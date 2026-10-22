@@ -183,8 +183,9 @@ pub fn sched_init() {
 pub fn sched_init_cpu(ci: &'static CpuInfo) {
     let spc = Machine::ci_schedstate(ci);
 
+    // TAILQ_INIT: a new `hal::list` head is empty already.
     for q in spc.spc_qs.iter() {
-        q.init();
+        kassert!(q.is_empty());
     }
 
     spc.spc_idleproc.set(ptr::null());
@@ -196,7 +197,7 @@ pub fn sched_init_cpu(ci: &'static CpuInfo) {
 
     kthread_create_deferred(sched_kthreads_create, ptr::from_ref(ci).cast_mut().cast());
 
-    spc.spc_deadproc.init();
+    kassert!(spc.spc_deadproc.is_empty());
     spc.spc_deferred.init();
 
     // Slight hack here until the cpuset code handles cpu_info structures.
@@ -260,9 +261,7 @@ pub fn sched_idle(v: *mut c_void) {
             p.p_stat.set(SSLEEP);
             mi_switch();
 
-            while let Some(dead) = spc.spc_deadproc.first() {
-                // SAFETY: `dead` is on this CPU's dead list, which only this thread empties.
-                unsafe { spc.spc_deadproc.remove(dead) };
+            while let Some(dead) = spc.spc_deadproc.pop_head() {
                 exit2(dead);
             }
         }
@@ -306,9 +305,9 @@ pub fn sched_idle(v: *mut c_void) {
 pub fn sched_exit(p: &Proc) -> ! {
     let spc = Machine::ci_schedstate(curcpu());
 
-    // SAFETY: `p` is the exiting thread; it stays allocated until `exit2` frees it from the
-    // dead list.
-    unsafe { spc.spc_deadproc.insert_tail(p) };
+    // The exiting thread stays allocated until the reaper frees it, after `exit2` moved it
+    // from this list to `deadproc`.
+    spc.spc_deadproc.insert_tail(p.as_static());
 
     tuagg_add_runtime();
 
@@ -378,9 +377,8 @@ pub fn setrunqueue(ci: Option<&'static CpuInfo>, p: &Proc, prio: u8) {
     spc.spc_nrun.fetch_add(1, Ordering::Relaxed);
     // TRACEPOINT(sched, enqueue, ...): dt(4), not configured.
 
-    // SAFETY: `p` is on no run queue (it is being made runnable), under the scheduler lock,
-    // and a thread outlives its stay on a run queue.
-    unsafe { spc.spc_qs[queue].insert_tail(p) };
+    // `p` is on no run queue (it is being made runnable), under the scheduler lock.
+    spc.spc_qs[queue].insert_tail(p.as_static());
     spc.spc_whichqs.fetch_or(1 << queue, Ordering::Relaxed);
     cpuset_add(&SCHED_QUEUED_CPUS, ci);
 
@@ -406,8 +404,8 @@ pub fn remrunqueue(p: &Proc) {
     spc.spc_nrun.fetch_sub(1, Ordering::Relaxed);
     // TRACEPOINT(sched, dequeue, ...): dt(4), not configured.
 
-    // SAFETY: `p` is SRUN on `queue` of its CPU, under the scheduler lock.
-    unsafe { spc.spc_qs[queue].remove(p) };
+    // `p` is SRUN on `queue` of its CPU, under the scheduler lock.
+    spc.spc_qs[queue].remove(p);
     if spc.spc_qs[queue].is_empty() {
         spc.spc_whichqs.fetch_and(!(1 << queue), Ordering::Relaxed);
         if spc.spc_whichqs.load(Ordering::Relaxed) == 0 {

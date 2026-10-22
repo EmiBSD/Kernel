@@ -823,8 +823,12 @@ pub use kernel::vm::map::InentryCache as PInentry;
 /// - o: owned (modified only) by this thread
 /// - m: this proc's `p->p_p->ps_mtx`
 pub struct Proc {
-    /// \[S\] `p_runq`: current run/sleep queue.
-    pub p_runq: TailqEntry<Proc>,
+    /// \[S\] `p_runq`: current run/sleep queue (a `hal::list` entry: the run, sleep and
+    /// dead-thread queues hold `&'static` threads, see `p_self`).
+    pub p_runq: hal::list::ListEntry<Proc>,
+    /// \[I\] The thread's own `&'static`, recorded once where it is placed (`thread_new`'s
+    /// pool item, `proc0`): what [`Proc::as_static`] lends the queues' inserts. Not the C's.
+    pub p_self: hal::link::Link<Proc>,
     /// `p_list`: list of all threads.
     pub p_list: ListEntry<Proc>,
 
@@ -948,7 +952,8 @@ impl Proc {
     /// A zero thread (what `static struct proc proc0` holds).
     pub const fn new() -> Self {
         Self {
-            p_runq: TailqEntry::new(),
+            p_runq: hal::list::ListEntry::new(),
+            p_self: hal::link::Link::new(),
             p_list: ListEntry::new(),
             p_p: Cell::new(ptr::null()),
             p_thr_link: TailqEntry::new(),
@@ -1033,6 +1038,25 @@ impl Proc {
         unsafe { &*cr }
     }
 
+    /// Records the thread's own `&'static` (`p_self`), once, where it is placed: `thread_new`
+    /// for a pool item, `main` for `proc0`, a test for a leaked one.
+    pub fn place(&'static self) {
+        self.p_self.set(Some(self));
+    }
+
+    /// The thread as the `&'static` the run, sleep and dead-thread queues hold (`p_self`);
+    /// panics for a thread never placed. The lifetime is the deref convention every thread
+    /// reference in this tree already rests on (`curproc()`, `thread_new`'s pool item): a
+    /// thread is freed only after it left every queue (`proc_free`, after the reaper).
+    pub fn as_static(&self) -> &'static Proc {
+        match self.p_self.get() {
+            Some(s) if ptr::eq(s, self) => s,
+            _ => {
+                crate::kern::subr_prf::panic(format_args!("thread {} not placed", self.p_tid.get()))
+            }
+        }
+    }
+
     /// `p->p_p`: the thread's process.
     pub fn process(&self) -> &Process {
         // SAFETY: `p_p` is set before the thread is visible and the process outlives its
@@ -1076,9 +1100,9 @@ impl Default for Proc {
     }
 }
 
-queue_adapter!(
-    /// `TAILQ_ENTRY(proc) p_runq`: the run and sleep queues.
-    pub ProcRunq: Proc, p_runq => TailqEntry<Proc>
+hal::list_adapter!(
+    /// `TAILQ_ENTRY(proc) p_runq`: the run, sleep and dead-thread queues.
+    pub ProcRunq: Proc, p_runq
 );
 queue_adapter!(
     /// `LIST_ENTRY(proc) p_list`: `allproc`.
