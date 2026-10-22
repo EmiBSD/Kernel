@@ -181,8 +181,9 @@ paid_by = "N7"
 # (BsdKernelLock) and registered by bsd's uvm_init (N3.4e); nothing before registration. N4,
 # with kern_lock.
 # hal::klock::KernelLock
-# kernel::thread::Kthread (bsd's BsdKthread over kern_kthread.rs): re-dated to N4.6, with
-# fork1 (decision 8 of N4.5).
+# kernel::thread::Kthread (bsd's BsdKthread over kern_kthread.rs: kthread_create, kthread_exit,
+# sched_peg_curproc of the primary CPU; the deferred queue is kernel::thread's since N4.5a):
+# re-dated to N4.6, with fork1 (decision 8 of N4.5).
 [[bridge]]
 trait = "Kthread"
 for = ["sys/kernel/thread.rs", "sys/kernel/timeout.rs", "sys/kernel/task.rs"]

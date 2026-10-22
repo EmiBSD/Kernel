@@ -5172,8 +5172,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/kern_kthread.rs"
 lz = ["sys/kern/kern_kthread.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+status = "redesigned"
+notes = "N4.5a: the 0-unsafe adapter: kthread_create over fork1 and kthread_exit over exit1 (bsd's until N4.6); the deferred queue is kernel::thread's, re-exported under its names"
 
 [[module]]
 rust = "sys/kern/kern_lock.rs"
@@ -9270,10 +9270,27 @@ native = []
 kind = "dropped"
 reason = "a fixed extent's storage is ExtentFixed<N>, sized by its N descriptors (EXTENT_FIXED_STORAGE_SIZE's role); no byte count is computed"
 
-[[extra]]
+[[module]]
 rust = "sys/kernel/thread.rs"
 crate = "kernel"
-reason = "kernel glue, written new (N4.1): kthread_create(9)/kthread_create_deferred/kthread_exit and the primary-CPU peg for the kernel's threads over the Kthread bridge (bridges.toml, bsd's kern_kthread/kern_sched until N4.5), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code)"
+lz = ["sys/kern/kern_kthread.rs"]
+status = "redesigned"
+notes = "N4.1 (an extra then): kthread_create(9) and kthread_exit for the kernel's threads over the Kthread bridge (fork1 and exit1 are bsd's until N4.6), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code), the primary-CPU peg; N4.5a: the deferred creations, kernel's and bsd's, in one ordered VecDeque inside a Mutexed (kthread_create_deferred with bsd's function and its argument's exposed address, kthread_run_deferred_queue, KTHREAD_CREATE_NOW), where LZ had a malloc'd SIMPLEQ behind an unsafe impl Sync"
+
+[[module.fn]]
+lz = "sys/kern/kern_kthread.rs::KthreadQ"
+native = ["Deferred"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_kthread.rs::KthreadQHead"
+native = ["DEFERRED"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_kthread.rs::KTHREAD_Q"
+native = ["DEFERRED"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/sched.rs"

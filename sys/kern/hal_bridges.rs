@@ -54,7 +54,7 @@ use hal::prf::Printf;
 use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
-use crate::kern::kern_kthread::{kthread_create, kthread_create_deferred, kthread_exit};
+use crate::kern::kern_kthread::{kthread_create, kthread_exit};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sched::sched_peg_curproc;
 use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
@@ -456,10 +456,10 @@ impl kernel::clock::Uptime for BsdUptime {
 
 static BSD_UPTIME: BsdUptime = BsdUptime;
 
-/// The kernel crate's threads (`kernel::thread::Kthread`) over `kthread_create`,
-/// `kthread_create_deferred` and `kthread_exit` of `sys/kern/kern_kthread.rs`: the argument
-/// the C passes is the kernel's ticket, an address without provenance that the thread function
-/// turns back into the number (never dereferenced) and hands to `kernel::thread`.
+/// The kernel crate's threads (`kernel::thread::Kthread`) over `kthread_create` and
+/// `kthread_exit` of `sys/kern/kern_kthread.rs`: the argument the C passes is the kernel's
+/// ticket, an address without provenance that the thread function turns back into the number
+/// (never dereferenced) and hands to `kernel::thread`.
 struct BsdKthread;
 
 /// A kernel thread's function: runs the start its ticket names.
@@ -467,18 +467,9 @@ fn kthread_start(arg: *mut c_void) {
     kernel::thread::run(arg.addr());
 }
 
-/// A deferred creation's function: calls the start its ticket names.
-fn kthread_deferred(arg: *mut c_void) {
-    kernel::thread::run_deferred(arg.addr());
-}
-
 impl kernel::thread::Kthread for BsdKthread {
     fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno> {
         kthread_create(kthread_start, ptr::without_provenance_mut(ticket), name).map(drop)
-    }
-
-    fn create_deferred(&self, ticket: usize) {
-        kthread_create_deferred(kthread_deferred, ptr::without_provenance_mut(ticket));
     }
 
     fn exit(&self, ecode: i32) -> ! {

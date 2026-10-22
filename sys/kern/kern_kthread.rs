@@ -47,39 +47,39 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Kernel thread handling: `kern/kern_kthread.c`.
+//! Kernel thread handling: `kern/kern_kthread.c`, `bsd`'s half.
 //!
 //! Upstream: sys/kern/kern_kthread.c @ 3ce1f3f79392
+//! LZ: sys/kern/kern_kthread.rs@3c62ede68802
 //!
-//! Status: `ported` (M5-b1: `kthread_create_deferred` and `kthread_run_deferred_queue`;
-//! M5-b2: `kthread_create`; M6-b: `kthread_exit` over `exit1`; M11a: the kernel lock in
-//! `kthread_create`).
+//! `kthread_create` (over `fork1`, which is `bsd`'s until N4.6) and `kthread_exit` (over
+//! `exit1`). The deferred creations (`kthread_create_deferred`, `kthread_run_deferred_queue`,
+//! `kthread_create_now`) are `kernel::thread`'s since N4.5a, re-exported here under their
+//! names.
 //!
 //! ## Deviations
 //! - `kthread_create` returns the new thread (`Result<&Proc, Errno>`) instead of an `int`
 //!   plus an out-pointer.
+//!
+//! ## Redesign
+//! - LZ kept the deferred queue here, a `SIMPLEQ` of `malloc`'d entries behind an
+//!   `unsafe impl Sync`; it is `kernel::thread`'s `VecDeque` inside a mutex, where the
+//!   kernel's own deferred creations wait in the same order.
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_exit::exit1;
 use crate::kern::kern_fork::fork1;
-use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::machine::cpu::curproc;
-use crate::queue_adapter;
 use crate::sys::errno::Errno;
-use crate::sys::malloc::{M_NOWAIT, M_TEMP, M_ZERO};
 use crate::sys::proc::{
     EXIT_NORMAL, FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM, Proc,
 };
-use crate::sys::queue::{SimpleqEntry, SimpleqHead};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 
-/// `kthread_create_now`: set once the standard kernel threads exist.
-pub static KTHREAD_CREATE_NOW: AtomicBool = AtomicBool::new(false);
+pub use kernel::thread::{KTHREAD_CREATE_NOW, kthread_create_deferred, kthread_run_deferred_queue};
 
 /// `kthread_create`: fork a kernel thread. Any process can request this to be done. The VM
 /// space and limits, etc. will be shared with proc0. Returns the new thread (the C's
@@ -135,76 +135,5 @@ pub fn kthread_exit(ecode: i32) -> ! {
         panic(format_args!("kthread_exit: no curproc"));
     };
     exit1(p, ecode, 0, EXIT_NORMAL)
-}
-
-/// `struct kthread_q`: a deferred creation.
-struct KthreadQ {
-    /// `kq_q`.
-    kq_q: SimpleqEntry<KthreadQ>,
-    /// `kq_func`.
-    kq_func: fn(*mut c_void),
-    /// `kq_arg`.
-    kq_arg: *mut c_void,
-}
-
-queue_adapter!(
-    /// `SIMPLEQ_HEAD(, kthread_q) kthread_q`.
-    KthreadQList: KthreadQ, kq_q => SimpleqEntry<KthreadQ>
-);
-
-/// `kthread_q`'s head, made `Sync`: filled and emptied during boot, by the boot CPU alone
-/// (`cpu_attach` runs there; the queue is run before `cpu_boot_secondary_processors`).
-struct KthreadQHead(SimpleqHead<KthreadQList>);
-// SAFETY: see the type's doc.
-unsafe impl Sync for KthreadQHead {}
-
-/// `kthread_q`.
-static KTHREAD_Q: KthreadQHead = KthreadQHead(SimpleqHead::new());
-
-/// `kthread_create_deferred`: defer the creation of a kernel thread. Once the standard
-/// kernel threads and processes have been created, this queue will be run to callback to the
-/// caller to create threads for e.g. file systems and device drivers.
-pub fn kthread_create_deferred(func: fn(*mut c_void), arg: *mut c_void) {
-    if KTHREAD_CREATE_NOW.load(Ordering::Relaxed) {
-        func(arg);
-        return;
-    }
-
-    let Some(kq) = malloc(size_of::<KthreadQ>(), M_TEMP, M_NOWAIT | M_ZERO) else {
-        panic(format_args!("unable to allocate kthread_q"));
-    };
-    let kq = kq.cast::<KthreadQ>();
-    // SAFETY: a fresh allocation, written once before it is linked.
-    unsafe {
-        kq.as_ptr().write(KthreadQ {
-            kq_q: SimpleqEntry::new(),
-            kq_func: func,
-            kq_arg: arg,
-        })
-    };
-    // SAFETY: as above; the entry stays allocated until `kthread_run_deferred_queue` frees it.
-    let kq: &'static KthreadQ = unsafe { kq.as_ref() };
-
-    // SAFETY: `kq` is in no queue and lives until it is removed below.
-    unsafe { KTHREAD_Q.0.insert_tail(kq) };
-}
-
-/// `kthread_run_deferred_queue`: runs the deferred creations, in order.
-pub fn kthread_run_deferred_queue() {
-    // No longer need to defer kthread creation.
-    KTHREAD_CREATE_NOW.store(true, Ordering::Relaxed);
-
-    while let Some(kq) = KTHREAD_Q.0.first() {
-        // SAFETY: `kq` is the first element, under the boot CPU's exclusive use.
-        unsafe { KTHREAD_Q.0.remove_head() };
-        (kq.kq_func)(kq.kq_arg);
-        // `kq` was allocated by `kthread_create_deferred` and is now unlinked.
-        free(
-            NonNull::from(kq).cast::<u8>(),
-            M_TEMP,
-            size_of::<KthreadQ>(),
-        );
-    }
-    let _ = ptr::null::<KthreadQ>();
 }
 /* </CODE> */

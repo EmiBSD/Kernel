@@ -627,9 +627,9 @@ pub fn uptime_advance(ns: u64) {
 }
 
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
-/// double (as a kernel thread starts under the kernel lock), a deferred creation runs at once
-/// in this crate's tests (as after `kthread_run_deferred_queue`) and is held, never run, in
-/// `bsd`'s (its ticket stays filed: a queue destroyed then is in `TQ_S_CREATED` and makes no
+/// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
+/// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
+/// in `kernel::thread`'s queue in `bsd`'s (a queue destroyed then is in `TQ_S_CREATED` and makes no
 /// thread), and `kthread_exit` unwinds the host thread with [`KthreadExit`], which its
 /// spawner catches.
 struct TestKthread;
@@ -654,14 +654,6 @@ impl crate::thread::Kthread for TestKthread {
             })
             .map(drop)
             .map_err(|_| Errno::EAGAIN)
-    }
-
-    fn create_deferred(&self, ticket: usize) {
-        // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
-        // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
-        if cfg!(test) {
-            crate::thread::run_deferred(ticket);
-        }
     }
 
     fn exit(&self, _ecode: i32) -> ! {
@@ -915,6 +907,11 @@ pub fn install() {
         let _ = bridges::register_softintr(&TEST_SOFT_INTR);
         let _ = crate::clock::install_uptime(&TEST_UPTIME);
         let _ = crate::thread::install_kthread(&TEST_KTHREAD);
+        // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
+        // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
+        if cfg!(test) {
+            crate::thread::kthread_run_deferred_queue();
+        }
         crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
     });
 }
