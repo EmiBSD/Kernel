@@ -65,6 +65,11 @@
 //! `kq_lock` across them.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): a process's `ps_klist` and the mutex that locks it live in the
+//!   glue's recycled `ProcStore` (`kern/proc_glue.rs`), since a `Klist` is not `Send` and
+//!   cannot sit in a pooled kernel `Process`: the klist is locked by the store's own mutex
+//!   where the C locks it with `ps_mtx` (`[Q,m]`), so `ptsignal`'s `NOTE_SIGNAL` takes it
+//!   inside `ps_mtx`.
 //! - Pool items: knotes and kqueues are handed around as `&Knote`/`&'static Kqueue` (the
 //!   `crget`/`crfree` idiom); the functions that return them to their pool (`knote_drop`,
 //!   `KQRELE`) are `unsafe` and state that the caller does not use them afterwards.

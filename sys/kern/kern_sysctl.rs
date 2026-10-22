@@ -77,6 +77,10 @@
 //! `vm` tree is `uvm/uvm_meter.rs`.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): `sysctl_doproc` reads a process's threads one at a time, by
+//!   position, each under the process's `ps_mtx` (dropped for the copyout), where the C
+//!   walks `ps_threads` under the kernel lock alone; a thread that joins or leaves between
+//!   two reads shifts the positions, as one that exits during the C's copyout sleep would.
 //! - Names are slices (`&[i32]`), `oldp`/`newp` user addresses as `usize` (0 is NULL),
 //!   `oldlenp` a `&mut usize` (every caller has one: `sys_sysctl` passes its `oldlen`), and
 //!   errors `Result<(), Errno>`. A string is `&[u8]` up to its first NUL, a writable string

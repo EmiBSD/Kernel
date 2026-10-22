@@ -51,12 +51,13 @@
 //! `<sys/ucred.h>`: credentials.
 //!
 //! Upstream: sys/sys/ucred.h @ 3ce1f3f79392
+//! LZ: sys/sys/ucred.rs@3c62ede68802
 //!
-//! Status: an adapter (N4.2). `struct ucred` is the kernel crate's (`kernel::cred::Ucred`,
-//! whose members are atomic cells read with `get()`; a placed credential is shared through
-//! the counted `CredRef`, whose `Clone` is `crhold` and whose `Drop` is `crfree`); this header
-//! keeps `NOCRED`, `FSCRED` and `struct xucred`. `kern/kern_prot.rs` holds the functions it
-//! declares.
+//! `struct ucred` is the kernel crate's (`kernel::cred::Ucred`, whose members are atomic
+//! cells read with `get()`; a placed credential is shared through the counted `CredRef`,
+//! whose `Clone` is `crhold` and whose `Drop` is `crfree`); this header keeps `NOCRED`,
+//! `FSCRED`, `struct xucred`, and [`CredSlot`], a holder's reference. `kern/kern_prot.rs`
+//! holds the functions it declares.
 //!
 //! ## Deviations
 //! - `NOCRED` and `FSCRED` stay the C's pointer sentinels: the VFS still passes credentials
@@ -64,6 +65,14 @@
 //!   until N5.
 //! - `cr_startcopy` (the `#define` naming where `crset` starts copying) is a comment: `crset`
 //!   copies the members by name.
+//!
+//! ## Redesign
+//! - LZ's `struct ucred` (here, `Cell` members after `cr_refcnt`, filled in through the
+//!   shared pointer the processes held) moved to `kernel::cred` (N4.2), re-exported.
+//! - The holders of a `struct ucred *` that `crhold` and `crfree` it by hand (a file's
+//!   `f_cred`, a sigio's `sio_ucred`, an nfs node's, a quota's) hold a [`CredSlot`]: the
+//!   counted reference in a mutex-guarded cell, given back by dropping it, never by a raw
+//!   count; `get()` keeps the address the legacy VFS passes as `*const Ucred`.
 
 use core::ptr;
 

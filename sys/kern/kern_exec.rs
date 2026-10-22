@@ -71,6 +71,10 @@
 //! with the arguments `start_init` copied out to the user stack as for `sys_execve`.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::cred`): the set-id exec builds the new credentials as a value and places
+//!   a copy (`CredRef::new`), given to the thread (`set_cred`) and the process, where the C
+//!   `crdup`s the shared credentials and edits them in place; the ids that result are the
+//!   C's.
 //! - [`exec_image`] is this port's name for "`sys_execve` of a memory image": `check_exec`
 //!   skips `namei` and the attribute, mount, access and open checks (an image has no vnode,
 //!   no set[ug]id bits, no realpath), `ep_hdr` is the image's first `exec_maxhdrsz` bytes

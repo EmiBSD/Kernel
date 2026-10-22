@@ -58,6 +58,7 @@
 //! `suser`, the login name, the thread control block and the thread names.
 //!
 //! Upstream: sys/kern/kern_prot.c @ 3ce1f3f79392
+//! LZ: sys/kern/kern_prot.rs@3c62ede68802
 //!
 //! Status: `ported`. Every function of the C file is here or, for the credentials
 //! themselves, in `kernel::cred` (`crget`, `crhold`, `crfree`, `crset`, `crcopy`, `crdup`,
@@ -81,6 +82,24 @@
 //!   (`Session::leader_pid`) instead of following `s_leader`.
 //! - `sys___set_tcb`/`sys___get_tcb` go through `machine::tcb` (`TCB_SET`, `TCB_GET`,
 //!   `TCB_INVALID`); the TCB is a `usize`.
+//! - `setsid(2)` makes the DIAGNOSTIC check of `enternewpgrp`'s new-session branch ("mksession
+//!   but not curproc") itself, before `kernel::proc::enternewpgrp`, which has no curproc.
+//!
+//! ## Redesign
+//! - LZ's credentials were `*const Ucred` with a manual `cr_refcnt`, written in place by the
+//!   set*id calls after `crget` (N4.2): they are the kernel crate's `CredRef`s, never written
+//!   once shared. The set*id calls build the new credentials as a value
+//!   (`sugid_change`: `crset` into a fresh `Ucred`, then the call's change), place it, and
+//!   install it with `Process::set_ucred` only if the process's credentials are still the
+//!   ones the value was built from; otherwise (another thread's set*id or exec during
+//!   `crget`'s sleep) they build it again from the new ones. The permission checks are the
+//!   C's, unchanged, against the thread's and the process's credentials.
+//! - The ids and the groups are read through the thread's own copy (`Thread::ucred`) and
+//!   the process's counted handle (`Process::ucred`); `dorefreshcreds` copies the process's
+//!   into the thread's under `ps_mtx` when its word changed (`cred_stale`).
+//! - The group and session lookups (`getpgid`, `getsid`, `setpgid`) run under the kernel
+//!   lock's reader or writer witness (`hal::klock`), the C's `[K]` annotation made a type;
+//!   `getpgid`/`getsid`'s "same session" rule is one helper (`sameses_target`).
 
 use core::sync::atomic::Ordering;
 

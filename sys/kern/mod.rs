@@ -55,6 +55,7 @@ pub mod kern_malloc;
 pub mod kern_physio;
 #[forbid(unsafe_code)]
 pub mod kern_pledge;
+#[forbid(unsafe_code)]
 pub mod kern_prot;
 pub mod kern_resource;
 pub mod kern_rwlock;

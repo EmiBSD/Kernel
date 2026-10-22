@@ -66,6 +66,10 @@
 //! writers, `^T` status (`ttyinfo`) and the global tty list behind `kern.tty`.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): `ttyinfo` walks the chosen process's threads (and
+//!   `process_sum` sums them) under the process's `ps_mtx`, where the C walks `ps_threads`
+//!   under the kernel lock alone; the group's members are walked under the kernel lock's
+//!   reader, in the C's order.
 //! - Every function takes `&Tty` (the tty's members are `Cell`s, `sys/tty.rs`). Functions
 //!   returning an errno return `Result`; [`ttioctl`] returns `Ok(false)` for the C's `-1`
 //!   ("not a tty ioctl"). The C lets an `ERESTART` from a background sleep in `ttioctl`

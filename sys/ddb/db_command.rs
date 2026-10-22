@@ -84,6 +84,9 @@
 //! run commands end the loop.
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::proc`): `show proc /t` answers "kernel lock not held" when ddb was
+//!   entered on a CPU that does not hold the kernel lock (the tid hash opens only through
+//!   the lock's reader).
 //! - `db_error` does not `longjmp` to `db_recover`: it returns a [`DbError`], which every
 //!   function that can reach it propagates as the `Err` of a [`DbResult`] up to
 //!   `db_command_loop`, where the C's `setjmp` was (`docs/C_TO_RUST.md`). Commands are

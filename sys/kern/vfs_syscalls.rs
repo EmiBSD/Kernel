@@ -68,6 +68,9 @@
 //! `EINVAL` (no descriptor can be a vnode before something is opened).
 //!
 //! ## Deviations
+//! - N4.2 (`kernel::cred`): `access(2)`/`faccessat(2)` give the thread a placed copy of its
+//!   credentials with the real ids as effective ones (`CredRef::new`) for the check and put
+//!   the old ones back after, where the C `crdup`s and edits in place.
 //! - `VFS_STATFS(mp, &mp->mnt_stat, p)` works on a copy of `mnt_stat` that is stored back
 //!   (`statfs_mnt`); `mnt_stat` is a `Cell` (`sys/mount.rs`).
 //! - `getvnode` returns the file instead of filling `*fpp`; `dorenameat`'s `error = -1` ("the
