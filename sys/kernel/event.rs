@@ -3661,8 +3661,6 @@ pub fn knote_process<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bo
     active
 }
 
-// A knote, a kqueue and a klist are shared between CPUs by composition (no `unsafe impl`):
-// the kernel's own glue proves it below for the tests' `TestGlue`, `bsd` for its own.
 /// The filterops of a [`test_knote`]: no file, no event, nothing to detach (the test unhooks
 /// the knote itself).
 #[cfg(any(test, feature = "doubles"))]
@@ -4873,7 +4871,8 @@ pub(crate) mod tests {
         assert_eq!(sizes, [288, 336, 88], "knotepl, kqueuepl, kqtimerpl");
     }
 
-    // A knote, a kqueue and a klist are shared between CPUs by composition (no `unsafe impl`).
+    // A knote, a kqueue and a klist are shared between CPUs by composition (no `unsafe impl`):
+    // proved here for the tests' glue; `bsd` proves it for its own (sys/kern/kern_event.rs).
     const _: () = {
         const fn send_sync<T: Send + Sync>() {}
         send_sync::<Knote<Kg>>();
