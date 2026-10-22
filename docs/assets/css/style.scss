@@ -18,18 +18,6 @@
     --code: #efe9de;
     --maxw: 920px;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #141311;
-      --fg: #ebe6dc;
-      --muted: #a39c8f;
-      --line: #2c2924;
-      --card: #1c1a17;
-      --accent: #ff7a45;
-      --accent-2: #ffcf4d;
-      --code: #24211c;
-    }
-  }
 
   .inner { max-width: 920px; }
   #main_content h2 { border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
