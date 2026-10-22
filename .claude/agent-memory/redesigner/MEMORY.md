@@ -158,3 +158,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - `hal::pin_adapter!`/`owned_adapter!` declare adapters for a concrete element only: a kernel type generic over a glue takes its adapters as associated types of the glue trait, declared by the glue's crate (`kernel::proc_glue_links!`); the adapter structs are `pub`, so a test glue is a `pub struct` too (E0446).
 - A host test that drops an element linked on two pinned lists aborts the whole test binary (the second PinEntry panics during the unwind): link it on one list only in a should_panic test.
 - A bench "before" over LZ needs no checkout while bsd is untouched on the branch: append the scratch test to the inherited module, run dev and release (release about 10 min, in the background), restore the file before the next commit.
+- bsd's sys/sys/queue.rs links are its own `Cell<Option<NonNull>>` (not hal's Link): TailqEntry, ListHead, Sigiolst are neither Send nor Sync; probe a legacy member with `const fn f<T: Send + Sync>()` before planning it into a pooled kernel object.
+- A kernel type's inherent method shadows a bsd extension trait's method of the same name (Thread::vmspace vs ProcExt::vmspace): keep kernel names off bsd's frozen accessors.
+- Once a bsd type becomes an alias of a kernel type, bsd's `impl Proc {}` blocks stop compiling (E0116): move them to the glue's member type, which auto-deref reaches.
+- s_count is held by ttys (TIOCSCTTY's sesshold) and tprintf_open too, not only by groups: a counted SessionRef needs holders there.
