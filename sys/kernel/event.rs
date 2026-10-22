@@ -1689,8 +1689,12 @@ fn ps_list_write() -> Option<hal::rwlock::WriteWitness<'static>> {
 
 /// `filt_procattach`: hooks the knote on the process `kn_id`.
 fn filt_procattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    if let Some(cp) = G::curproc()
-        && cp.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0
+    // The C reads curproc unconditionally: a registration always runs on a thread, so the
+    // pledge check below cannot be skipped by a missing one.
+    let Some(cp) = G::curproc() else {
+        kpanic(format_args!("filt_procattach: no curproc"));
+    };
+    if cp.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0
         && cp.p_pledge.get() & PLEDGE_PROC == 0
     {
         return Err(G::pledge_fail(cp, Errno::EPERM, PLEDGE_PROC));
