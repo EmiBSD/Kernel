@@ -14,6 +14,7 @@ $ difftest syscalls links
 $ difftest syscalls fifo
 $ difftest syscalls perms
 $ difftest syscalls procs
+$ difftest syscalls signals
 $ difftest syscalls script
 $ difftest syscalls ipc
 $ difftest syscalls kqueue

@@ -53,7 +53,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -796,6 +798,165 @@ t_procs(void)
 	R("getentropy 257 bytes", getentropy(e, 257));
 }
 
+static volatile sig_atomic_t got_alrm, got_usr2, usr2_on_altstack;
+static char *altbase;
+static size_t altsize;
+
+static void
+on_alrm(int sig)
+{
+	(void)sig;
+	got_alrm++;
+}
+
+static void
+on_usr2(int sig)
+{
+	char here;
+
+	(void)sig;
+	got_usr2++;
+	usr2_on_altstack = (&here >= altbase && &here < altbase + altsize);
+}
+
+/* Waits up to 2 s for child `pid` to stop; whether it did. */
+static int
+stops_within(pid_t pid)
+{
+	struct timespec ts = { 0, 20000000 };
+	int i, status;
+
+	for (i = 0; i < 100; i++) {
+		if (waitpid(pid, &status, WUNTRACED | WNOHANG) == pid)
+			return WIFSTOPPED(status) ? WSTOPSIG(status) : -1;
+		nanosleep(&ts, NULL);
+	}
+	return 0;
+}
+
+static void
+child_priority(void)
+{
+	R("sched_yield", sched_yield());
+	R("setpriority self 5", setpriority(PRIO_PROCESS, 0, 5));
+	errno = 0;
+	R("getpriority self", getpriority(PRIO_PROCESS, 0));
+	R("setpriority bad which", setpriority(99, 0, 5));
+}
+
+/*
+ * Job control and delivery (N4.5b): stop and continue a sleeping child, SIGTSTP to a job of
+ * its own, sigsuspend(2), the alternate signal stack, a signal interrupting nanosleep(2), and
+ * the priorities.
+ */
+static void
+t_signals(void)
+{
+	struct sigaction sa;
+	struct timespec ts, rem;
+	sigset_t set, empty, old;
+	stack_t ss, oss;
+	pid_t pid;
+	int status, p[2], q[2];
+	char c;
+
+	section("signals");
+
+	/* A child asleep in read(2), stopped and continued; it exits when the pipe closes. */
+	if (pipe(p) == 0) {
+		fflush(stdout);
+		if ((pid = fork()) == 0) {
+			close(p[1]);
+			(void)read(p[0], &c, 1);
+			_exit(0);
+		}
+		close(p[0]);
+		R("kill SIGSTOP", kill(pid, SIGSTOP));
+		R("waitpid WUNTRACED", waitpid(pid, &status, WUNTRACED) == pid ? 0 : -1);
+		printf("stopped %d signal %d\n", WIFSTOPPED(status), WSTOPSIG(status));
+		R("kill SIGCONT", kill(pid, SIGCONT));
+		R("waitpid WCONTINUED", waitpid(pid, &status, WCONTINUED) == pid ? 0 : -1);
+		printf("continued %d\n", WIFCONTINUED(status));
+		close(p[1]);
+		R("waitpid exit", waitpid(pid, &status, 0) == pid ? 0 : -1);
+		printf("exit %d\n", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+	}
+
+	/* SIGTSTP to a child in a process group of its own (in this session: not orphaned). */
+	if (pipe(q) == 0) {
+		fflush(stdout);
+		if ((pid = fork()) == 0) {
+			setpgid(0, 0);
+			close(q[0]);
+			(void)write(q[1], "r", 1);
+			for (;;)
+				pause();
+		}
+		close(q[1]);
+		(void)read(q[0], &c, 1);
+		close(q[0]);
+		R("kill SIGTSTP", kill(pid, SIGTSTP));
+		printf("tstp stopped by signal %d\n", stops_within(pid));
+		R("kill SIGKILL", kill(pid, SIGKILL));
+		R("waitpid killed", waitpid(pid, &status, 0) == pid ? 0 : -1);
+		printf("killed %d signal %d\n", WIFSIGNALED(status), WTERMSIG(status));
+	}
+
+	/* sigsuspend(2) returns at once for a pending signal it unblocks, after its handler. */
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_usr1;
+	sigaction(SIGUSR1, &sa, NULL);
+	got_usr1 = 0;
+	sigemptyset(&set);
+	sigaddset(&set, SIGUSR1);
+	sigemptyset(&empty);
+	sigprocmask(SIG_BLOCK, &set, &old);
+	R("raise SIGUSR1 blocked", raise(SIGUSR1));
+	R("sigsuspend", sigsuspend(&empty));
+	printf("handled in sigsuspend: %d\n", (int)got_usr1);
+	sigprocmask(SIG_SETMASK, &old, NULL);
+
+	/* The alternate signal stack: refused below MINSIGSTKSZ, then a handler runs on it. */
+	altsize = SIGSTKSZ;
+	if ((altbase = malloc(altsize)) != NULL) {
+		ss.ss_sp = altbase;
+		ss.ss_size = MINSIGSTKSZ - 1;
+		ss.ss_flags = 0;
+		R("sigaltstack too small", sigaltstack(&ss, NULL));
+		ss.ss_flags = SS_ONSTACK;
+		R("sigaltstack bad flags", sigaltstack(&ss, NULL));
+		ss.ss_size = altsize;
+		ss.ss_flags = 0;
+		R("sigaltstack", sigaltstack(&ss, &oss));
+		printf("old stack disabled %d\n", (oss.ss_flags & SS_DISABLE) != 0);
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = on_usr2;
+		sa.sa_flags = SA_ONSTACK;
+		sigaction(SIGUSR2, &sa, NULL);
+		R("raise SIGUSR2", raise(SIGUSR2));
+		printf("handled %d on altstack %d\n", (int)got_usr2, (int)usr2_on_altstack);
+		ss.ss_flags = SS_DISABLE;
+		R("sigaltstack disable", sigaltstack(&ss, NULL));
+		R("sigaltstack query", sigaltstack(NULL, &oss));
+		printf("now disabled %d\n", (oss.ss_flags & SS_DISABLE) != 0);
+		free(altbase);
+	}
+
+	/* A caught SIGALRM interrupts nanosleep(2), which reports the time left. */
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_alrm;
+	sigaction(SIGALRM, &sa, NULL);
+	alarm(1);
+	ts.tv_sec = 3;
+	ts.tv_nsec = 0;
+	memset(&rem, 0, sizeof(rem));
+	R("nanosleep interrupted", nanosleep(&ts, &rem));
+	printf("alarm handled %d, time left %d\n", (int)got_alrm,
+	    rem.tv_sec > 0 || rem.tv_nsec > 0);
+
+	in_child("priorities", child_priority);
+}
+
 static void
 t_ipc(void)
 {
@@ -1198,6 +1359,7 @@ static const struct {
 	{ "fifo", t_fifo },
 	{ "perms", t_perms },
 	{ "procs", t_procs },
+	{ "signals", t_signals },
 	{ "script", t_script },
 	{ "ipc", t_ipc },
 	{ "kqueue", t_kqueue },
