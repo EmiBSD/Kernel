@@ -3593,7 +3593,7 @@ pub fn knote_process<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bo
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Host tests for `kern_event.c` over the kernel's test glue: knotes registered on test
     // objects of each klist kind, activated, scanned and deleted; every `EV_*` action; the
     // system filters (proc, signal, timer through the wheel, user, kqueue on kqueue, dead,
@@ -3616,14 +3616,16 @@ mod tests {
     crate::test_file_glue!(Kf, Kg);
     crate::test_proc_glue!(Kg, Kf);
 
-    type T = &'static Thread<Kg>;
+    pub(crate) type T = &'static Thread<Kg>;
 
     /// A test object: its klist, whether its event is ready, its owner's lock (an `Owner`
     /// klist's).
-    struct Obj {
-        klist: Klist<Kg>,
-        ready: AtomicBool,
+    pub(crate) struct Obj {
+        pub(crate) sel: crate::select::Selinfo<Kg>,
+        pub(crate) ready: AtomicBool,
         lock: SharedMutex,
+        /// A FIFO's: `EVFILT_WRITE` is `EPERM`, `EVFILT_EXCEPT` attaches (`filt_fifo*`).
+        pub(crate) fifo: AtomicBool,
     }
 
     std::thread_local! {
@@ -3631,17 +3633,20 @@ mod tests {
     }
 
     /// A new object whose klist is of `kind`, and its id (its files' object).
-    fn obj(kind: KlistKind) -> (usize, &'static Obj) {
+    pub(crate) fn obj(kind: KlistKind) -> (usize, &'static Obj) {
         let o: &'static Obj = Box::leak(Box::new(Obj {
-            klist: match kind {
-                KlistKind::Owner => Klist::owner(),
-                _ => Klist::new(),
+            sel: crate::select::Selinfo {
+                si_note: match kind {
+                    KlistKind::Owner => Klist::owner(),
+                    _ => Klist::new(),
+                },
             },
             ready: AtomicBool::new(false),
             lock: Mutexed::new(IPL_HIGH, ()),
+            fifo: AtomicBool::new(false),
         }));
         if kind == KlistKind::Own {
-            o.klist.init_own();
+            o.sel.si_note.init_own();
         }
         OBJS.with(|v| {
             let mut v = v.borrow_mut();
@@ -3650,30 +3655,30 @@ mod tests {
         })
     }
 
-    fn obj_of(fp: &File<Kf>) -> &'static Obj {
+    pub(crate) fn obj_of(fp: &File<Kf>) -> &'static Obj {
         let id = fp.data().map_or(0, |d| d.id);
         OBJS.with(|v| v.borrow()[id - 1])
     }
 
     /// The object posts an event (`knote`/`knote_locked` as its kind takes it).
-    fn post(o: &Obj) {
-        match o.klist.kind() {
+    pub(crate) fn post(o: &Obj) {
+        match o.sel.si_note.kind() {
             KlistKind::Owner => {
                 let g = o.lock.lock();
-                o.klist.knote_locked(&g, 0);
+                o.sel.si_note.knote_locked(&g, 0);
             }
-            _ => o.klist.knote(0),
+            _ => o.sel.si_note.knote(0),
         }
     }
 
     fn filt_testdetach(kn: &Knote<Kg>) {
         let o = obj_of(&kn.fp());
-        match o.klist.kind() {
+        match o.sel.si_note.kind() {
             KlistKind::Owner => {
                 let mut g = o.lock.lock();
-                o.klist.remove_locked(&mut g, kn);
+                o.sel.si_note.remove_locked(&mut g, kn);
             }
-            _ => o.klist.remove(kn),
+            _ => o.sel.si_note.remove(kn),
         }
     }
 
@@ -3714,17 +3719,21 @@ mod tests {
             Err(Errno::ENOTTY)
         }
         fn kqfilter(&self, fp: &File<Kf>, kn: &Knote<Kg>) -> Result<(), Errno> {
-            if kn.kn_filter().get() != EVFILT_READ {
-                return Err(Errno::EINVAL);
+            let fifo = obj_of(fp).fifo.load(Ordering::Relaxed);
+            match kn.kn_filter().get() {
+                EVFILT_READ => {}
+                EVFILT_WRITE if fifo => return Err(Errno::EPERM),
+                EVFILT_EXCEPT if fifo => {}
+                _ => return Err(Errno::EINVAL),
             }
             kn.kn_fop.set(Some(&TEST_FILTOPS));
             let o = obj_of(fp);
-            match o.klist.kind() {
+            match o.sel.si_note.kind() {
                 KlistKind::Owner => {
                     let mut g = o.lock.lock();
-                    o.klist.insert_locked(&mut g, kn);
+                    o.sel.si_note.insert_locked(&mut g, kn);
                 }
-                _ => o.klist.insert(kn),
+                _ => o.sel.si_note.insert(kn),
             }
             Ok(())
         }
@@ -3739,7 +3748,7 @@ mod tests {
     static TOPS: TOps = TOps;
 
     /// Fresh tables, pools and a thread of process `pid` on the process lists.
-    fn setup(pid: i32) -> T {
+    pub(crate) fn setup(pid: i32) -> T {
         testutil::install();
         hal::klock::kernel_lock();
         procinit::<Kg>(64, 64);
@@ -3752,7 +3761,7 @@ mod tests {
 
     /// A thread of a new process `pid` (on `allprocess` and its pid chain, never taken off:
     /// the tests' processes live for the run).
-    fn thread_of(pid: i32) -> T {
+    pub(crate) fn thread_of(pid: i32) -> T {
         let pr = process_alloc::<Kg>(pid, ());
         drop(pr.set_ucred(CredRef::new(Ucred::new())));
         pr.set_fd(fdinit());
@@ -3774,7 +3783,7 @@ mod tests {
     }
 
     /// A test file on object `oid` at the lowest free descriptor.
-    fn open_obj(p: T, oid: usize) -> i32 {
+    pub(crate) fn open_obj(p: T, oid: usize) -> i32 {
         let mut g = fdplock(p.fd());
         let (fp, fd) = crate::descrip::falloc(p, &mut g).unwrap();
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
@@ -3793,12 +3802,12 @@ mod tests {
     }
 
     /// `close(2)` of `fd`.
-    fn close_fd(p: T, fd: i32) {
+    pub(crate) fn close_fd(p: T, fd: i32) {
         assert_eq!(fdrelease(p, fdplock(p.fd()), fd), Ok(()));
     }
 
     /// A kqueue made by `kqueue(2)`: its descriptor and a reference.
-    fn new_kqueue(p: T) -> (i32, KqRef<Kg>) {
+    pub(crate) fn new_kqueue(p: T) -> (i32, KqRef<Kg>) {
         let fd = sys_kqueue(p).unwrap();
         let fp = fd_getfile(p.fd(), fd).unwrap();
         let kq = fp_kqueue::<Kg>(&fp);
@@ -3807,7 +3816,7 @@ mod tests {
     }
 
     /// One non-blocking scan: the events, and the scan's error.
-    fn scan(p: T, kq: &KqRef<Kg>, out: &mut [Kevent]) -> (usize, Result<(), Errno>) {
+    pub(crate) fn scan(p: T, kq: &KqRef<Kg>, out: &mut [Kevent]) -> (usize, Result<(), Errno>) {
         let start = core::pin::pin!(Knote::marker(kq));
         let end = core::pin::pin!(Knote::marker(kq));
         let s = kqueue_scan_setup(kq, start.as_ref(), end.as_ref());
@@ -3816,7 +3825,7 @@ mod tests {
         kqueue_scan(&s, n, out, Some(&mut ts), p)
     }
 
-    fn reg(p: T, kq: &KqRef<Kg>, kev: Kevent) -> Result<(), Errno> {
+    pub(crate) fn reg(p: T, kq: &KqRef<Kg>, kev: Kevent) -> Result<(), Errno> {
         let mut kev = kev;
         kqueue_register(kq, &mut kev, 0, Some(p))
     }
@@ -3840,7 +3849,7 @@ mod tests {
                 Ok(())
             );
             assert!(
-                !o.klist.is_empty(),
+                !o.sel.si_note.is_empty(),
                 "{kind:?}: fo_kqfilter hooked the knote"
             );
             assert_eq!(kq.nknotes(), 1);
@@ -3886,7 +3895,7 @@ mod tests {
             // EV_DELETE detaches it from the object and drops the file reference.
             let del = ev_set(fd as usize, EVFILT_READ, EV_DELETE, 0, 0, 0);
             assert_eq!(reg(p, &kq, del), Ok(()));
-            assert!(o.klist.is_empty());
+            assert!(o.sel.si_note.is_empty());
             assert_eq!(kq.nknotes(), 0);
             assert_eq!(fp.count(), 2);
             assert_eq!(reg(p, &kq, del), Err(Errno::ENOENT), "deleted twice");
@@ -3976,7 +3985,7 @@ mod tests {
         );
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!(kq.nknotes(), 0);
-        assert!(o.klist.is_empty());
+        assert!(o.sel.si_note.is_empty());
         assert_eq!(scan(p, &kq, &mut out), (0, Ok(())));
 
         // EV_DISPATCH: reported once, then disabled until re-enabled.
@@ -4013,7 +4022,7 @@ mod tests {
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
 
         close_fd(p, fd as i32);
-        assert!(o.klist.is_empty(), "knote_fdclose detached it");
+        assert!(o.sel.si_note.is_empty(), "knote_fdclose detached it");
         assert_eq!(kq.nknotes(), 0);
     }
 
@@ -4277,7 +4286,7 @@ mod tests {
 
         // knote_fdclose rewires the knote to badfd_filtops instead of dropping it.
         close_fd(p, fd);
-        assert!(o.klist.is_empty());
+        assert!(o.sel.si_note.is_empty());
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!(out[0].flags & EV_ERROR, EV_ERROR);
         assert_eq!(out[0].data, i64::from(Errno::EBADF.as_i32()));
@@ -4324,7 +4333,7 @@ mod tests {
         );
         assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
         assert_eq!(kq.nknotes(), 1, "the badfd knote made room for the new one");
-        assert!(!o.klist.is_empty());
+        assert!(!o.sel.si_note.is_empty());
 
         close_fd(p, fd);
         kqpoll_exit(p);
@@ -4354,7 +4363,7 @@ mod tests {
         assert_eq!(kq.nknotes(), 4 * KQEXTENT as u32 + 1);
         kqpoll_done(p, 1);
         assert_eq!(kq.nknotes(), 0);
-        assert!(o.klist.is_empty());
+        assert!(o.sel.si_note.is_empty());
         // The serial about to wrap: everything attached is purged, the serial restarts at 0.
         p.p_kq_serial.set(u64::MAX - 1);
         let mut kev = ev_set(fd, EVFILT_READ, EV_ADD | __EV_POLL, 0, 0, 0);
@@ -4590,10 +4599,10 @@ mod tests {
                 Ok(())
             );
             match kind {
-                KlistKind::Owner => o.klist.invalidate_with(|| o.lock.lock()),
-                _ => o.klist.invalidate(),
+                KlistKind::Owner => o.sel.si_note.invalidate_with(|| o.lock.lock()),
+                _ => o.sel.si_note.invalidate(),
             }
-            assert!(o.klist.is_empty());
+            assert!(o.sel.si_note.is_empty());
             assert_eq!(scan(p, &kq, &mut out), (1, Ok(())), "{kind:?}");
             assert_eq!(out[0].flags & (EV_EOF | EV_ONESHOT), EV_EOF | EV_ONESHOT);
             assert_eq!(kq.nknotes(), 0);
@@ -4618,7 +4627,7 @@ mod tests {
         fp.frele(Some(p)).unwrap();
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!(out[0].flags & EV_EOF, EV_EOF);
-        assert!(o.klist.is_empty(), "detached from its object");
+        assert!(o.sel.si_note.is_empty(), "detached from its object");
         assert_eq!(kq.nknotes(), 0, "EV_ONESHOT dropped it");
         close_fd(p, fd);
     }

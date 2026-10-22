@@ -8747,6 +8747,13 @@ kind = "dropped"
 reason = "a plimit is made only by its const new (limit0) or as a copy (lim_write_begin); nothing made a default one"
 
 [[module]]
+rust = "sys/kernel/select.rs"
+crate = "kernel"
+lz = ["sys/kern/sys_generic.rs", "sys/sys/selinfo.rs", "sys/sys/poll.rs"]
+status = "redesigned"
+notes = "N4.4: sys_generic.c's select/pselect/poll/ppoll half (L557-L1233) over kernel::event's thread poll kqueue, selwakeup, struct selinfo (a kernel-lock Klist) and struct pollfd (abi_pod!); the fd sets and the pollfd array copied as typed words, malloc(M_TEMP) past the C's stack sizes; POLL_LASTERR a Mutexed; the signal mask installed by the caller's closure (dosigsuspend, N4.5)"
+
+[[module]]
 rust = "sys/kernel/timeout.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_timeout.rs", "sys/sys/timeout.rs"]
