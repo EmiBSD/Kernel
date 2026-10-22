@@ -625,11 +625,13 @@ fn wait_matches(r: &klock::KernelReader, pr: &Process, idtype: Idtype, id: i64) 
         || (idtype == P_PGID && id != i64::from(pr.pgid(r))))
 }
 
-/// The `siginfo_t` `dowait6` fills for a child: who, as whom, and the `CLD_*` code.
-fn wait_info(pr: &Process, code: i32, status: i32) -> Siginfo {
+/// The `siginfo_t` `dowait6` fills for a child: who, as whom, and the `CLD_*` code; read
+/// under the child's `ps_mtx` (`g`), which `dowait6` holds (the C reads
+/// `pr->ps_ucred->cr_uid` in the same section; `pr.ucred()` would take the mutex again).
+fn wait_info(pr: &Process, g: &PsGuard<'_>, code: i32, status: i32) -> Siginfo {
     let mut info = Siginfo::zeroed();
     info.set_si_pid(pr.ps_pid);
-    info.set_si_uid(pr.ucred().cr_uid.get());
+    info.set_si_uid(g.ucred().cr_uid.get());
     info.si_signo = SIGCHLD;
     info.si_code = code;
     info.set_si_status(status);
@@ -687,11 +689,11 @@ pub fn dowait6(
                     if let Some(info) = info.as_deref_mut() {
                         let xsig = pr.ps_xsig.get();
                         *info = if xsig == 0 {
-                            wait_info(pr, CLD_EXITED, pr.ps_xexit.get() as i32)
+                            wait_info(pr, &g, CLD_EXITED, pr.ps_xexit.get() as i32)
                         } else if wcoredump(xsig) {
-                            wait_info(pr, CLD_DUMPED, wstatus(xsig))
+                            wait_info(pr, &g, CLD_DUMPED, wstatus(xsig))
                         } else {
-                            wait_info(pr, CLD_KILLED, wstatus(xsig))
+                            wait_info(pr, &g, CLD_KILLED, wstatus(xsig))
                         };
                     }
 
@@ -721,7 +723,7 @@ pub fn dowait6(
 
                     retval[0] = pr.ps_pid as Register;
                     if let Some(info) = info.as_deref_mut() {
-                        *info = wait_info(pr, CLD_TRAPPED, pr.ps_xsig.get());
+                        *info = wait_info(pr, &g, CLD_TRAPPED, pr.ps_xsig.get());
                     }
 
                     if let Some(statusp) = statusp.as_deref_mut() {
@@ -744,7 +746,7 @@ pub fn dowait6(
 
                     retval[0] = pr.ps_pid as Register;
                     if let Some(info) = info.as_deref_mut() {
-                        *info = wait_info(pr, CLD_STOPPED, pr.ps_xsig.get());
+                        *info = wait_info(pr, &g, CLD_STOPPED, pr.ps_xsig.get());
                     }
 
                     if let Some(statusp) = statusp.as_deref_mut() {
@@ -763,7 +765,7 @@ pub fn dowait6(
 
                     retval[0] = pr.ps_pid as Register;
                     if let Some(info) = info.as_deref_mut() {
-                        *info = wait_info(pr, CLD_CONTINUED, SIGCONT);
+                        *info = wait_info(pr, &g, CLD_CONTINUED, SIGCONT);
                     }
 
                     drop(g);

@@ -994,5 +994,78 @@ mod tests {
         assert!(ptr::eq(a, b), "the recycled store comes back first");
         store_free(b);
     }
+
+    #[test]
+    fn waitid_reports_who_and_as_whom_under_the_child_s_mutex() {
+        // dowait6 fills the siginfo_t under the child's ps_mtx (the C's PR_LOCK section):
+        // a zombie, a stopped and a continued child, each reported with its pid, its
+        // effective uid and its CLD_* code, without taking the mutex a second time
+        // (hal's mutex panics "locking against myself").
+        use crate::kern::kern_exit::dowait6;
+        use crate::sys::proc::{PS_CONTINUED, PS_STOPPED, PS_ZOMBIE};
+        use crate::sys::siginfo::{CLD_CONTINUED, CLD_EXITED, CLD_STOPPED, Siginfo};
+        use crate::sys::signal::{SIGCHLD, SIGCONT, SIGSTOP};
+        use crate::sys::wait::{P_PID, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED};
+        use kernel::cred::CredRef;
+
+        let _g = setup();
+        let parent = test_pooled_process(500);
+        let q = test_thread(parent);
+        let child = |pid: Pid, uid: u32, flags: u32| {
+            let pr = test_pooled_process(pid);
+            let mut cr = crate::sys::ucred::Ucred::new();
+            cr.cr_uid.set(uid);
+            cr.cr_ruid.set(uid);
+            drop(pr.set_ucred(CredRef::new(cr)));
+            pr.ps_flags
+                .fetch_or(flags, core::sync::atomic::Ordering::Relaxed);
+            pr
+        };
+        let zombie = child(501, 1001, PS_ZOMBIE);
+        zombie.ps_xexit.set(7);
+        let stopped = child(502, 1002, PS_STOPPED);
+        stopped.ps_xsig.set(SIGSTOP);
+        let continued = child(503, 1003, PS_CONTINUED);
+        kernel_lock();
+        {
+            let mut w = hal::klock::witness();
+            for pr in [zombie, stopped, continued] {
+                parent.ps_children.insert_head(&mut w, Pin::static_ref(pr));
+            }
+        }
+        let cases = [
+            (501, WEXITED, CLD_EXITED, 7),
+            (502, WUNTRACED, CLD_STOPPED, SIGSTOP),
+            (503, WCONTINUED, CLD_CONTINUED, SIGCONT),
+        ];
+        for (pid, opt, code, status) in cases {
+            let mut info = Siginfo::zeroed();
+            let mut retval = [0; 2];
+            let r = dowait6(
+                q,
+                P_PID,
+                i64::from(pid),
+                None,
+                opt | WNOHANG | WNOWAIT,
+                None,
+                Some(&mut info),
+                &mut retval,
+            );
+            assert_eq!(r, Ok(()), "pid {pid}");
+            assert_eq!(retval[0], pid as crate::sys::types::Register, "pid {pid}");
+            assert_eq!(info.si_signo, SIGCHLD);
+            assert_eq!(info.si_code, code, "pid {pid}");
+            assert_eq!(info.si_pid(), pid);
+            assert_eq!(info.si_uid(), 1000 + pid as u32 - 500);
+            assert_eq!(info.si_status(), status, "pid {pid}");
+        }
+        {
+            let mut w = hal::klock::witness();
+            for pr in [zombie, stopped, continued] {
+                parent.ps_children.remove(&mut w, pr);
+            }
+        }
+        kernel_unlock();
+    }
 }
 /* </TESTS> */

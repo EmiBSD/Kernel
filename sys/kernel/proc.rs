@@ -1117,6 +1117,15 @@ impl<G: ProcGlue> PsMtx<G> {
             next_seq: 0,
         }
     }
+
+    /// `pr->ps_ucred` read inside a `ps_mtx` section (`panic(9)` before the process has
+    /// any): what a holder of the mutex reads, since [`Process::ucred`] takes it again.
+    pub fn ucred(&self) -> &CredRef {
+        match &self.cred {
+            Some(c) => c,
+            None => kpanic(format_args!("ps_ucred: no credentials")),
+        }
+    }
 }
 
 impl<G: ProcGlue> Default for PsMtx<G> {
@@ -1312,10 +1321,7 @@ impl<G: ProcGlue> Process<G> {
 
     /// `crhold(pr->ps_ucred)`: the process's credentials (`panic(9)` before it has any).
     pub fn ucred(&self) -> CredRef {
-        match &self.ps_mtx.lock().cred {
-            Some(c) => c.clone(),
-            None => kpanic(format_args!("ps_ucred: no credentials")),
-        }
+        self.ps_mtx.lock().ucred().clone()
     }
 
     /// `pr->ps_ucred = new` (the set*id calls, exec, `process_initialize`): the old
