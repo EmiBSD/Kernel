@@ -63,7 +63,10 @@
 //!   table of the CPUs [`sched_init_cpu`] saw.
 //! - The idle thread's argument is its CPU's number (`fork1`'s `FORK_IDLE` places the thread
 //!   on that CPU), so neither the thread nor the hatching CPU turns an address back into a
-//!   `cpu_info`.
+//!   `cpu_info`. The word carries the number plus one ([`idle_arg`], [`idle_arg_cpu`]): the C's
+//!   argument is the `cpu_info`, never `NULL`, and `fork1` hands a thread started with `NULL`
+//!   its own `p` instead (`arg ? arg : p`), so CPU 0's bare number would reach `sched_idle` as
+//!   the idle thread's address.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -119,6 +122,29 @@ pub fn cpu_info_by_number(n: usize) -> Option<&'static CpuInfo> {
     }
 }
 
+/// The word CPU `n`'s idle thread is created and started with (`sched_kthreads_create`,
+/// `fork1`'s `FORK_IDLE`, `sched_idle`, the hatching CPU's restart): `n + 1`, never `NULL`,
+/// since `fork1` replaces a `NULL` argument by the new thread (the C passes the `cpu_info`,
+/// never `NULL`). [`idle_arg_cpu`] reads the number back.
+pub fn idle_arg(n: usize) -> *mut c_void {
+    ptr::without_provenance_mut(n + 1)
+}
+
+/// The CPU number of an idle thread's word ([`idle_arg`]); `panic(9)` for a word that names
+/// no CPU ([`idle_word_cpu`]).
+pub fn idle_arg_cpu(v: *mut c_void) -> usize {
+    match idle_word_cpu(v.addr()) {
+        Some(n) => n,
+        None => panic(format_args!("sched_idle: {:#x} names no CPU", v.addr())),
+    }
+}
+
+/// The CPU an idle thread's word `w` names: `w - 1` below `MAXCPUS`; `None` for 0 (`NULL`)
+/// and for anything larger (a thread's address, which `fork1` gives for `NULL`).
+fn idle_word_cpu(w: usize) -> Option<usize> {
+    w.checked_sub(1).filter(|&n| n < hal::cpu::MAXCPUS)
+}
+
 /// `sched_init`: called in `main()` before calling `sched_init_cpu(curcpu())`. Setup the
 /// bare minimum to allow things like `setrunqueue()` to work even before the scheduler is
 /// actually started.
@@ -143,21 +169,22 @@ pub fn sched_init_cpu(ci: &'static CpuInfo) {
     clockintr_bind(&spc.spc_roundrobin, ci, roundrobin, ptr::null_mut());
     clockintr_bind(&spc.spc_statclock, ci, statclock, ptr::null_mut());
 
-    kthread_create_deferred(sched_kthreads_create, ptr::without_provenance_mut(n));
+    kthread_create_deferred(sched_kthreads_create, idle_arg(n));
 
     spc.spc_deferred.init();
 }
 
-/// `sched_kthreads_create`: creates the CPU's idle thread; its argument is the CPU's number.
+/// `sched_kthreads_create`: creates the CPU's idle thread; its argument is the CPU's word
+/// ([`idle_arg`]).
 pub fn sched_kthreads_create(v: *mut c_void) {
     static NUM: AtomicI32 = AtomicI32::new(0);
 
-    let n = v.addr();
+    let n = idle_arg_cpu(v);
     let Ok(p) = fork1(
         &PROC0,
         FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM | FORK_IDLE,
         sched_idle,
-        v,
+        idle_arg(n),
     ) else {
         panic(format_args!("fork idle"));
     };
@@ -170,10 +197,10 @@ pub fn sched_kthreads_create(v: *mut c_void) {
     p.process().set_comm(&comm[..len]);
 }
 
-/// `sched_idle`: the idle thread of the CPU whose number is its argument. It runs without the
-/// kernel lock and never returns.
+/// `sched_idle`: the idle thread of the CPU whose word ([`idle_arg`]) is its argument. It runs
+/// without the kernel lock and never returns.
 pub fn sched_idle(v: *mut c_void) {
-    kernel::sched::sched_idle::<G>(v.addr())
+    kernel::sched::sched_idle::<G>(idle_arg_cpu(v))
 }
 
 /// `sched_exit`: the exiting thread `p` (the running one) goes to its CPU's dead threads and
@@ -331,6 +358,23 @@ mod tests {
         if CPU_INFOS[n].get().is_none() {
             assert!(cpu_info_by_number(n).is_none());
         }
+    }
+
+    #[test]
+    fn an_idle_word_is_never_null_and_gives_its_cpu_back() {
+        for n in [0, 1, hal::cpu::MAXCPUS - 1] {
+            let v = idle_arg(n);
+            assert!(!v.is_null(), "cpu{n}'s word would be replaced by fork1");
+            assert_eq!(idle_arg_cpu(v), n);
+        }
+    }
+
+    #[test]
+    fn null_and_a_thread_address_name_no_cpu() {
+        assert_eq!(idle_word_cpu(0), None);
+        assert_eq!(idle_word_cpu(hal::cpu::MAXCPUS + 1), None);
+        // The idle thread's address `fork1` passed for CPU 0's NULL (the N4.5a boot panic).
+        assert_eq!(idle_word_cpu(0xffff_ff80_465f_ede0), None);
     }
 
     #[test]

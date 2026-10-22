@@ -175,7 +175,7 @@ use crate::kern::kern_clockintr::clockqueue_init;
 #[cfg(feature = "multiprocessor")]
 use crate::kern::kern_fork::thread_start_word;
 #[cfg(feature = "multiprocessor")]
-use crate::kern::kern_sched::{sched_idle, sched_init_cpu, sched_toidle};
+use crate::kern::kern_sched::{idle_arg, sched_idle, sched_init_cpu, sched_toidle};
 #[cfg(feature = "multiprocessor")]
 use crate::kern::sched_bsd::sched_assert_unlocked;
 #[cfg(feature = "multiprocessor")]
@@ -2564,13 +2564,13 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
 
     // Re-create the switchframe for this CPUs idle process: `sched_kthreads_create` forked
     // it before the boot CPU set CPUF_GO, and it never exits. The frames are `hal::thread`'s
-    // (N4.5a): `sched_idle` with the CPU's number.
+    // (N4.5a): `sched_idle` with the CPU's word (`idle_arg`, never 0).
     let n = crate::kern::kern_sched::cpu_number_of(ci);
     let idle: fn(*mut c_void) = sched_idle;
     let start = thread_start_word(idle);
     let restarted =
         kernel::sched::with_idleproc::<crate::kern::proc_glue::BsdProcGlue, _>(n, |h, p| {
-            hal::thread::thread_restart(h, p, start, n);
+            hal::thread::thread_restart(h, p, start, idle_arg(n).addr());
         });
     if restarted.is_none() {
         panic(format_args!("cpu_init_secondary: no idle thread"));
