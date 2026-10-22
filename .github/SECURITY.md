@@ -12,7 +12,7 @@ Only `main`. The `n<N>-<name>` tags mark closed milestones; they get no fixes of
 ## Reporting a vulnerability
 
 Report it privately, through GitHub:
-[Report a vulnerability](https://github.com/enavarre-cl/EmiBSD/security/advisories/new)
+[Report a vulnerability](https://github.com/EmiBSD/Kernel/security/advisories/new)
 (the repository's **Security** tab, **Report a vulnerability**). If you cannot use GitHub,
 write to enavarre@outlook.com with `EmiBSD security` in the subject.
 

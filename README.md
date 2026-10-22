@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-ISC-007ec6" alt="License: ISC"></a>
   <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fenavarre-cl%2FEmiBSD%2Fmain%2Frust-toolchain.toml&query=%24.toolchain.channel&suffix=%20stable&label=rust&color=b7410e" alt="Rust: stable, the version pinned in rust-toolchain.toml"></a>
-  <a href="docs/ROADMAP.md"><img src="https://img.shields.io/github/v/tag/enavarre-cl/EmiBSD?label=milestone" alt="Milestone: the latest n&lt;N&gt;-&lt;name&gt; tag"></a>
+  <a href="docs/ROADMAP.md"><img src="https://img.shields.io/github/v/tag/EmiBSD/Kernel?label=milestone" alt="Milestone: the latest n&lt;N&gt;-&lt;name&gt; tag"></a>
   <a href="docs/ROADMAP.md"><img src="https://img.shields.io/badge/status-experimental-e05d44" alt="Status: experimental"></a>
   <a href="https://emibsd.org"><img src="https://img.shields.io/badge/docs-emibsd.org-9f9f9f" alt="Docs: emibsd.org"></a>
 </p>
@@ -639,7 +639,7 @@ one in their own worktrees, has every branch reviewed, integrates and runs `just
 every plan and approves every commit. `/progress` measures the redesign per milestone; the agents'
 lessons persist in [.claude/agent-memory/](.claude/agent-memory/).
 
-Problems go to [Issues](https://github.com/enavarre-cl/EmiBSD/issues). Problems of the port
+Problems go to [Issues](https://github.com/EmiBSD/Kernel/issues). Problems of the port
 itself go to [EmiBSD.LZ's Issues](https://github.com/EmiBSD/LandingZone/issues). External
 pull requests are not accepted, for now ([CONTRIBUTING.md](.github/CONTRIBUTING.md)).
 Vulnerabilities are reported privately ([SECURITY.md](.github/SECURITY.md)).

@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a vulnerability
-    url: https://github.com/enavarre-cl/EmiBSD/security/advisories/new
+    url: https://github.com/EmiBSD/Kernel/security/advisories/new
     about: Security problems go here, privately, never in a public issue (SECURITY.md).
   - name: A problem in the port itself (EmiBSD.LZ)
     url: https://github.com/EmiBSD/LandingZone/issues
