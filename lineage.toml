@@ -9194,7 +9194,8 @@ reason = "the arrays are slices: an index past fd_nfiles panics in the slice's o
 [[module.fn]]
 lz = "sys/sys/filedesc.rs::Filedesc::set_ofile"
 native = ["FdGuard::place_ofile", "FdGuard::take_ofile"]
-kind = "renamed"
+kind = "split"
+lines = "L232-L238"
 
 [[module.fn]]
 lz = "sys/sys/filedesc.rs::Filedesc::set_ofileflags"
