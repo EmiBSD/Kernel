@@ -362,6 +362,11 @@ pub fn ucred_nout() -> u64 {
     UCRED_POOL.nout()
 }
 
+/// `ucredpl`'s item size (`pr_size`, what `vmstat -m` shows), the pool made if it was not.
+pub fn ucred_item_size() -> Option<usize> {
+    ucred_pool().item_size()
+}
+
 /// A counted reference to placed credentials (`struct ucred *` with its `cr_refcnt`
 /// reference): `Clone` is `crhold`, `Drop` is `crfree`; `Deref<Target = Ucred>`.
 #[derive(Clone)]

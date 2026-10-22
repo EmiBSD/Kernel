@@ -912,6 +912,11 @@ pub fn rusage_alloc() -> PoolBox<Rusage> {
     }
 }
 
+/// `zombiepl`'s item size (`pr_size`, what `vmstat -m` shows); `None` before [`procinit`].
+pub fn rusage_item_size() -> Option<usize> {
+    RUSAGE_POOL.item_size()
+}
+
 /// `struct uidinfo`: a user's process and lock counts.
 pub struct Uidinfo {
     /// \[U\] `ui_hash`.

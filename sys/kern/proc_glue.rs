@@ -907,26 +907,55 @@ mod tests {
 
     #[test]
     fn the_pool_items_are_the_measured_sizes() {
-        // vmstat -m's item sizes, which userland reads: pinned at the sizes this shape has
-        // (64-bit), so a change that moves one is seen and said in its commit. The thread may
-        // move (its machine part and the kernel's words), below a bound. N4.2's switch-over
-        // moved them from LZ's shape (smoke-diag's table): procpl 632 (arm64) -> 1064 (the
-        // thread's own credential copy and limit cache), processpl 1048 -> 1272, pgrppl 48
-        // -> 136 (the pinned lists and the kernel-lock key), sessionpl 144 -> 128, filepl
-        // +16 (the credential slot).
-        let proc = core::mem::size_of::<Proc>();
-        let process = core::mem::size_of::<Process>();
-        let pgrp = core::mem::size_of::<Pgrp>();
-        let session = core::mem::size_of::<Session>();
-        let file = core::mem::size_of::<crate::sys::file::File>();
-        std::println!(
-            "procpl {proc}, processpl {process}, pgrppl {pgrp}, sessionpl {session}, filepl {file}"
-        );
-        assert!(proc <= 1152, "{proc}");
+        // vmstat -m's item sizes, which userland reads, as each pool reports them (`pr_size`,
+        // the size it was made with: a counted pool's item holds the count and the pool's
+        // address beside the value, 16 bytes more than the value): pinned at the sizes this
+        // shape has (64-bit), so a change that moves one is seen and said in its commit. The
+        // thread may move (its machine part and the kernel's words), below a bound. N4.2 moved
+        // them from LZ's shape (smoke-diag's table of 2026-10-10, arm64): procpl 632 -> 1072
+        // on arm64, 1064 here (the thread's own credential copy and limit cache, the machine
+        // part), processpl 1048 -> 1288, pgrppl 48 -> 152 (the pinned lists and the
+        // kernel-lock key), sessionpl 144 -> 144, filepl 120 -> 176, ucredpl 104 -> 120,
+        // plimitpl 152 -> 160, zombiepl 144 -> 144; on arm64 (the kernel target, measured by
+        // a compile-time probe of the values' sizes) the others are as pinned here. Whether
+        // these sizes are acceptable is the user's decision (N4.2's review, S2), pending.
+        let _g = setup();
+        crate::kern::kern_descrip::filedesc_init();
+        let t = proc_tables();
+        let size =
+            |s: Option<usize>, name: &str| s.unwrap_or_else(|| std::panic!("{name} is not made"));
+        let proc = size(t.procpl.item_size(), "procpl");
+        let sizes = [
+            ("processpl", size(t.processpl.item_size(), "processpl")),
+            ("pgrppl", size(t.pgrppl.item_size(), "pgrppl")),
+            ("sessionpl", size(t.sessionpl.item_size(), "sessionpl")),
+            (
+                "filepl",
+                crate::kern::kern_descrip::FILE_POOL.pr_size.get() as usize,
+            ),
+            ("ucredpl", size(kernel::cred::ucred_item_size(), "ucredpl")),
+            (
+                "plimitpl",
+                size(kernel::resource::plimit_item_size(), "plimitpl"),
+            ),
+            (
+                "zombiepl",
+                size(kernel::proc::rusage_item_size(), "zombiepl"),
+            ),
+        ];
+        std::println!("procpl {proc}, {sizes:?}");
+        assert!(proc <= 1152, "procpl {proc}");
         assert_eq!(
-            (process, pgrp, session, file),
-            (1272, 136, 128, 176),
-            "processpl, pgrppl, sessionpl, filepl"
+            sizes,
+            [
+                ("processpl", 1288),
+                ("pgrppl", 152),
+                ("sessionpl", 144),
+                ("filepl", 176),
+                ("ucredpl", 120),
+                ("plimitpl", 160),
+                ("zombiepl", 144),
+            ]
         );
     }
 

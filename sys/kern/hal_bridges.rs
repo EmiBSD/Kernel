@@ -218,6 +218,10 @@ impl RawPool for Pool {
         u64::from(self.pr_nout.get())
     }
 
+    fn size(&self) -> usize {
+        self.pr_size.get() as usize
+    }
+
     fn set_hiwat(&self, n: u32) {
         pool_sethiwat(self, n);
     }

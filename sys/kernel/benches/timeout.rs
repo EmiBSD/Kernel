@@ -211,6 +211,10 @@ impl RawPool for BenchPool {
         self.nout.load(Ordering::Relaxed)
     }
 
+    fn size(&self) -> usize {
+        self.size
+    }
+
     fn set_hiwat(&self, _n: u32) {}
 
     fn cache_init(&self) {}

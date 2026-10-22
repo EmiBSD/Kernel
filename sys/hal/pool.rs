@@ -158,6 +158,9 @@ pub trait RawPool: Sync {
     fn put(&self, item: NonNull<u8>);
     /// `pr_nout`: the items out of the pool now.
     fn nout(&self) -> u64;
+    /// `pr_size`: the size of one item, the one `vmstat -m` reports for the pool (at least
+    /// the size it was created with).
+    fn size(&self) -> usize;
     /// `pool_sethiwat(pp, n)`: the pool keeps at most `n` idle items (its pages beyond them
     /// go back to the system).
     fn set_hiwat(&self, n: u32);
@@ -301,6 +304,12 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// `pr_nout`: the items out of the pool now (0 before `init`).
     pub fn nout(&self) -> u64 {
         self.raw().map_or(0, |r| r.nout())
+    }
+
+    /// `pr_size` of the pool once made, as `vmstat -m` reports it: an item holds the count
+    /// and the pool's address beside the `T`. `None` before `init`.
+    pub fn item_size(&self) -> Option<usize> {
+        self.raw().map(|r| r.size())
     }
 
     /// `pool_sethiwat(9)`: the pool keeps at most `n` idle items (`uvm_anon_init`'s
@@ -730,6 +739,12 @@ impl<T: 'static> BoxPool<T> {
         self.raw.get().map_or(0, |r| r.nout())
     }
 
+    /// `pr_size` of the pool once made, as `vmstat -m` reports it (an item is exactly a
+    /// `T`; an arena's slot carries its free-list link too). `None` before `init`.
+    pub fn item_size(&self) -> Option<usize> {
+        self.raw.get().map(|r| r.size())
+    }
+
     /// `pool_sethiwat(9)`: the pool keeps at most `n` idle items (`amap_init`'s 4096 chunks).
     /// Nothing before `init`: a pool never made holds no item.
     pub fn set_hiwat(&self, n: u32) {
@@ -1094,6 +1109,10 @@ impl<T: Send + 'static, const N: usize> RawPool for ArenaCore<T, N> {
         self.nout.load(Ordering::Relaxed)
     }
 
+    fn size(&self) -> usize {
+        size_of::<Slot<T>>()
+    }
+
     /// An arena keeps every slot: nothing to give back.
     fn set_hiwat(&self, _n: u32) {}
 
@@ -1255,6 +1274,21 @@ mod tests {
         let b = P.get(PR_NOWAIT, || 7).unwrap();
         assert_eq!(*b, 7);
         assert!(PoolBox::as_ptr(&b).addr().is_multiple_of(align_of::<u64>()));
+    }
+
+    #[test]
+    fn the_item_size_is_the_pool_s_own() {
+        // `pr_size` as the pool reports it (vmstat -m): a box's item is its value, a counted
+        // item adds the count and the pool's address; nothing before `init`.
+        static B: BoxPool<[u64; 3]> = BoxPool::new();
+        static T: TypedPool<[u64; 3]> = TypedPool::new();
+        testutil::install();
+        assert_eq!(B.item_size(), None);
+        assert_eq!(T.item_size(), None);
+        assert_eq!(B.init(0, 0, "testbsz"), Ok(()));
+        assert_eq!(T.init(0, 0, "testtsz"), Ok(()));
+        assert_eq!(B.item_size(), Some(24));
+        assert_eq!(T.item_size(), Some(24 + 2 * size_of::<usize>()));
     }
 
     #[test]

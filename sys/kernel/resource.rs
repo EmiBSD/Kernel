@@ -271,6 +271,11 @@ pub fn plimit_nout() -> u64 {
     PLIMIT_POOL.nout()
 }
 
+/// `plimitpl`'s item size (`pr_size`, what `vmstat -m` shows), the pool made if it was not.
+pub fn plimit_item_size() -> Option<usize> {
+    plimit_pool().item_size()
+}
+
 /// A counted reference to placed limits (`struct plimit *` with a `pl_refcnt` reference):
 /// `Clone` is `refcnt_take`, `Drop` is `lim_free`; `Deref<Target = Plimit>`.
 #[derive(Clone)]
