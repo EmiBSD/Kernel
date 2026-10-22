@@ -410,25 +410,22 @@ impl<G: FileGlue> Drop for FileRef<G> {
     /// A reference dropped without [`FileRef::frele`] (the C's `(void)FRELE(fp, NULL)`:
     /// `unp_discard`, a knote's, a table freed with its slots): the last one closes the file
     /// with no thread (`fdrop`), its error dropped as the C drops it.
-    #[inline]
+    #[inline(always)]
     fn drop(&mut self) {
-        // An empty slot's reference (the common drop of a table's slots) is a load and a
-        // compare, no store.
-        if self.0.is_none() {
-            return;
-        }
-        if let Some(last) = self.0.take().and_then(PoolArc::try_last) {
-            fdrop_unthreaded(last);
+        // An empty reference (every empty slot of a table being dropped) is a load and a
+        // compare inline, no call.
+        if self.0.is_some() {
+            drop_slow(self);
         }
     }
 }
 
-/// The last reference's close from a drop, out of line: every drop site keeps only the
-/// decrement inline (the close is the rare path).
-#[cold]
+/// A held reference's drop, out of line: the decrement, and the close when it was the last.
 #[inline(never)]
-fn fdrop_unthreaded<G: FileGlue>(last: Last<File<G>>) {
-    let _ = fdrop(last, None);
+fn drop_slow<G: FileGlue>(r: &mut FileRef<G>) {
+    if let Some(last) = r.0.take().and_then(PoolArc::try_last) {
+        let _ = fdrop(last, None);
+    }
 }
 
 impl<G: FileGlue> Clone for FileRef<G> {
@@ -483,6 +480,18 @@ impl<G: FileGlue> FileSlot<G> {
     pub fn take(&mut self) -> Option<FileRef<G>> {
         let fp = core::mem::replace(&mut self.0, FileRef(None));
         fp.0.is_some().then_some(fp)
+    }
+
+    /// `fp` put in a slot known to be empty (`fdinsert`, a placed or duplicated descriptor,
+    /// `fdcopy`'s new table): no old reference to drop, so no close can run here (under
+    /// `fd_fplock`); an occupied slot stops the kernel, the C's `KASSERT(fd_ofiles[fd] ==
+    /// NULL)` made unconditional.
+    pub fn fill(&mut self, fp: FileRef<G>) {
+        if self.is_some() {
+            kpanic(format_args!("FileSlot::fill: the slot holds a file"));
+        }
+        // The old value is empty, as checked: its drop is the inline compare alone.
+        drop(core::mem::replace(&mut self.0, fp));
     }
 
     /// `fp` put in the slot; the reference it held before, if any.
@@ -853,6 +862,19 @@ mod tests {
         drop(slot);
         assert_eq!(file_log(), vec![String::from("close 6 false")]);
         assert_eq!(numfiles(), 0);
+    }
+
+    /// `fill` takes a known-empty slot and never drops an old reference: an occupied slot
+    /// stops the kernel instead of closing a file under the caller's lock.
+    #[test]
+    #[should_panic(expected = "the slot holds a file")]
+    fn filling_an_occupied_slot_stops_the_kernel() {
+        let (_pr, p) = thread(17);
+        let fp = fnew(&p).unwrap();
+        let mut slot = FileSlot::<Files>::new();
+        slot.fill(fp.clone());
+        assert_eq!(fp.count(), 2);
+        slot.fill(fp);
     }
 
     #[test]

@@ -632,9 +632,7 @@ impl<'a, G: FileGlue> FdGuard<'a, G> {
     pub fn place_ofile(&mut self, fd: i32, fp: FileRef<G>, flags: u8) {
         kassert!(fp.f_iflags.load(Ordering::Relaxed) & FIF_INSERTED != 0);
         let mut s = self.fdp.slots.lock();
-        let slot = s.slot(fd as usize);
-        kassert!(slot.is_none());
-        drop(slot.replace(fp));
+        s.slot(fd as usize).fill(fp);
         s.set_flags(fd as usize, flags);
     }
 
@@ -1242,9 +1240,7 @@ pub fn fdinsert<G: FileGlue>(g: &mut FdGuard<'_, G>, fd: i32, flags: u8, fp: &Fi
         }
     }
 
-    let slot = s.slot(fd as usize);
-    kassert!(slot.is_none());
-    drop(slot.replace(fp.clone()));
+    s.slot(fd as usize).fill(fp.clone());
     let f = s.flags(fd as usize) | (flags & (UF_EXCLOSE | UF_FORKCLOSE | UF_PLEDGEOPEN));
     s.set_flags(fd as usize, f);
 }
@@ -1611,7 +1607,7 @@ pub fn fdcopy<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(pr: &Process<P>)
             drop(fp);
             continue;
         }
-        drop(slots.slot(i as usize).replace(fp));
+        slots.slot(i as usize).fill(fp);
         slots.set_flags(i as usize, fileflags);
         st.fd_used(i, &openfd);
     }
@@ -1785,9 +1781,7 @@ pub fn dupfdopen<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
 
     // The reference fd_getfile took becomes the slot's.
     let mut s = g.fdp.slots.lock();
-    let slot = s.slot(indx as usize);
-    kassert!(slot.is_none());
-    drop(slot.replace(wfp));
+    s.slot(indx as usize).fill(wfp);
     let f = (s.flags(indx as usize) & (UF_EXCLOSE | UF_FORKCLOSE))
         | (s.flags(dupfd as usize) & !(UF_EXCLOSE | UF_FORKCLOSE));
     s.set_flags(indx as usize, f);
