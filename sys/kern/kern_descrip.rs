@@ -102,12 +102,15 @@
 //!   `fd_kqlist` and `fd_nuserevents`, kqueue's until N4.4), the hooks of
 //!   [`BsdFileGlue`] (a `bridges.toml` row, `FileGlue`), the open files' tables, the
 //!   `sysent[]` rows (`sys_dup` ... `sys_getdtablecount`, which call the kernel's typed
-//!   entries) and `filedescopen`. The module keeps LZ's path, which the frozen amd64
+//!   entries), `filedescopen`, and the twenty `Native` entries of `KernelApi::fd`
+//!   ([`FD_ENTRIES`]: each runs `mi_syscall` on its own `sysent[]` row, so the prologue,
+//!   pledge and the pinned syscalls stay on the path as for the vm calls). The module keeps LZ's path, which the frozen amd64
 //!   `conf.rs` imports `filedescopen` from (decision 44).
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use hal::link::{Link, PtrWord};
+use kernel::api::{FdEntries, SysResult};
 use kernel::file::{FileGlue, FileTables, LockOwner};
 
 pub use kernel::descrip::{
@@ -117,16 +120,18 @@ pub use kernel::descrip::{
 pub use kernel::file::fdrop;
 
 use crate::conf::param::MAXFILES;
+use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_event::knote_fdclose;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::pipe_glue::PipeFile;
-use crate::kern::subr_prf::tablefull;
+use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::vfs_subr::{VFS_STALL_LOCK, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
 use crate::machine::copy::copyout;
+use crate::machine::cpu::curproc;
 #[cfg(not(test))]
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
@@ -141,6 +146,12 @@ use crate::sys::signal::SIGPIPE;
 use crate::sys::signalvar::SignalType;
 use crate::sys::socketvar::{SS_DNS, Socket};
 use crate::sys::stat::Stat;
+use crate::sys::syscall::{
+    SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl, SYS_flock, SYS_fpathconf,
+    SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_pread, SYS_preadv, SYS_pwrite, SYS_pwritev,
+    SYS_read, SYS_readv, SYS_utrace, SYS_write, SYS_writev,
+};
+use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::syscallargs::{
     SysCloseArgs, SysClosefromArgs, SysDup2Args, SysDup3Args, SysDupArgs, SysFcntlArgs,
     SysFlockArgs, SysFpathconfArgs, SysFstatArgs,
@@ -469,6 +480,301 @@ pub fn sys_getdtablecount(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) ->
     retval[0] = kernel::descrip::sys_getdtablecount(p) as Register;
     Ok(())
 }
+
+/// `KernelApi::fd`: the `Native` entries of the descriptor system calls.
+pub const FD_ENTRIES: FdEntries = FdEntries {
+    read: native_read,
+    write: native_write,
+    close: native_close,
+    getdtablecount: native_getdtablecount,
+    dup: native_dup,
+    fstat: native_fstat,
+    ioctl: native_ioctl,
+    dup2: native_dup2,
+    fcntl: native_fcntl,
+    dup3: native_dup3,
+    readv: native_readv,
+    writev: native_writev,
+    flock: native_flock,
+    pread: native_pread,
+    pwrite: native_pwrite,
+    preadv: native_preadv,
+    pwritev: native_pwritev,
+    fpathconf: native_fpathconf,
+    utrace: native_utrace,
+    closefrom: native_closefrom,
+};
+
+/// A `Native` descriptor entry: the thread on this CPU runs `mi_syscall` on row `nr` of
+/// `sysent[]` (which must be `want`'s, else `ENOSYS`) with `args` and the trap's return
+/// registers: the prologue (pledge, the pinned syscalls, the kernel lock) and the row above,
+/// as on the `Legacy` path.
+fn native(nr: Register, want: i32, args: SysArgs, rval: &mut [Register; 2]) -> SysResult {
+    if nr != want as Register {
+        return Err(Errno::ENOSYS.as_i32());
+    }
+    let Some(p) = curproc() else {
+        panic(format_args!("native fd syscall: no curproc"));
+    };
+    mi_syscall(p, nr, &SYSENT[nr as usize], &args, rval).map_err(Errno::as_i32)
+}
+
+/// `KernelApi::fd.read`.
+pub fn native_read(
+    nr: Register,
+    fd: i32,
+    buf: usize,
+    nbyte: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [fd as Register, buf as Register, nbyte as Register, 0, 0, 0];
+    native(nr, SYS_read, args, rval)
+}
+
+/// `KernelApi::fd.write`.
+pub fn native_write(
+    nr: Register,
+    fd: i32,
+    buf: usize,
+    nbyte: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [fd as Register, buf as Register, nbyte as Register, 0, 0, 0];
+    native(nr, SYS_write, args, rval)
+}
+
+/// `KernelApi::fd.close`.
+pub fn native_close(nr: Register, fd: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_close, [fd as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::fd.getdtablecount`.
+pub fn native_getdtablecount(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getdtablecount, [0; 6], rval)
+}
+
+/// `KernelApi::fd.dup`.
+pub fn native_dup(nr: Register, fd: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_dup, [fd as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::fd.fstat`.
+pub fn native_fstat(nr: Register, fd: i32, sb: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fstat,
+        [fd as Register, sb as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::fd.ioctl`.
+pub fn native_ioctl(
+    nr: Register,
+    fd: i32,
+    com: u64,
+    data: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [fd as Register, com as Register, data as Register, 0, 0, 0];
+    native(nr, SYS_ioctl, args, rval)
+}
+
+/// `KernelApi::fd.dup2`.
+pub fn native_dup2(nr: Register, from: i32, to: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_dup2,
+        [from as Register, to as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::fd.fcntl`.
+pub fn native_fcntl(
+    nr: Register,
+    fd: i32,
+    cmd: i32,
+    arg: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [fd as Register, cmd as Register, arg as Register, 0, 0, 0];
+    native(nr, SYS_fcntl, args, rval)
+}
+
+/// `KernelApi::fd.dup3`.
+pub fn native_dup3(
+    nr: Register,
+    from: i32,
+    to: i32,
+    flags: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [from as Register, to as Register, flags as Register, 0, 0, 0];
+    native(nr, SYS_dup3, args, rval)
+}
+
+/// `KernelApi::fd.readv`.
+pub fn native_readv(
+    nr: Register,
+    fd: i32,
+    iovp: usize,
+    iovcnt: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        iovp as Register,
+        iovcnt as Register,
+        0,
+        0,
+        0,
+    ];
+    native(nr, SYS_readv, args, rval)
+}
+
+/// `KernelApi::fd.writev`.
+pub fn native_writev(
+    nr: Register,
+    fd: i32,
+    iovp: usize,
+    iovcnt: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        iovp as Register,
+        iovcnt as Register,
+        0,
+        0,
+        0,
+    ];
+    native(nr, SYS_writev, args, rval)
+}
+
+/// `KernelApi::fd.flock`.
+pub fn native_flock(nr: Register, fd: i32, how: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_flock,
+        [fd as Register, how as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::fd.pread`.
+pub fn native_pread(
+    nr: Register,
+    fd: i32,
+    buf: usize,
+    nbyte: usize,
+    offset: i64,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        buf as Register,
+        nbyte as Register,
+        offset as Register,
+        0,
+        0,
+    ];
+    native(nr, SYS_pread, args, rval)
+}
+
+/// `KernelApi::fd.pwrite`.
+pub fn native_pwrite(
+    nr: Register,
+    fd: i32,
+    buf: usize,
+    nbyte: usize,
+    offset: i64,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        buf as Register,
+        nbyte as Register,
+        offset as Register,
+        0,
+        0,
+    ];
+    native(nr, SYS_pwrite, args, rval)
+}
+
+/// `KernelApi::fd.preadv`.
+pub fn native_preadv(
+    nr: Register,
+    fd: i32,
+    iovp: usize,
+    iovcnt: i32,
+    offset: i64,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        iovp as Register,
+        iovcnt as Register,
+        offset as Register,
+        0,
+        0,
+    ];
+    native(nr, SYS_preadv, args, rval)
+}
+
+/// `KernelApi::fd.pwritev`.
+pub fn native_pwritev(
+    nr: Register,
+    fd: i32,
+    iovp: usize,
+    iovcnt: i32,
+    offset: i64,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        fd as Register,
+        iovp as Register,
+        iovcnt as Register,
+        offset as Register,
+        0,
+        0,
+    ];
+    native(nr, SYS_pwritev, args, rval)
+}
+
+/// `KernelApi::fd.fpathconf`.
+pub fn native_fpathconf(nr: Register, fd: i32, name: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fpathconf,
+        [fd as Register, name as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::fd.utrace`.
+pub fn native_utrace(
+    nr: Register,
+    label: usize,
+    addr: usize,
+    len: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        label as Register,
+        addr as Register,
+        len as Register,
+        0,
+        0,
+        0,
+    ];
+    native(nr, SYS_utrace, args, rval)
+}
+
+/// `KernelApi::fd.closefrom`.
+pub fn native_closefrom(nr: Register, fd: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_closefrom, [fd as Register, 0, 0, 0, 0, 0], rval)
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -566,6 +872,24 @@ mod tests {
             sys_close(p, &args(&[i64::from(fd)]), &mut retval),
             Err(Errno::EBADF)
         );
+    }
+
+    /// An entry of `KernelApi::fd` reached with another call's number answers `ENOSYS`
+    /// before it looks for a thread, and leaves the return registers alone.
+    #[test]
+    fn a_native_entry_refuses_another_number() {
+        let enosys = Err(Errno::ENOSYS.as_i32());
+        let mut rval: [Register; 2] = [-7, -7];
+        let nr = crate::sys::syscall::SYS_dup as Register;
+        assert_eq!(native_close(nr, 3, &mut rval), enosys);
+        assert_eq!(native_read(nr, 3, 0, 0, &mut rval), enosys);
+        assert_eq!(native_pwritev(nr, 3, 0, 0, 0, &mut rval), enosys);
+        assert_eq!(native_getdtablecount(nr, &mut rval), enosys);
+        assert_eq!(
+            (FD_ENTRIES.dup)(SYS_close as Register, 3, &mut rval),
+            enosys
+        );
+        assert_eq!(rval, [-7, -7]);
     }
 
     #[test]

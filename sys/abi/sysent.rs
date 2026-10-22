@@ -29,7 +29,9 @@
 //! `kernel` flips its entries to `Native` and raises [`NATIVE`]: N2.6, pipe(2) and pipe2(2)
 //! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`). N3.5: the virtual memory system's fifteen
 //! (`KernelApi::vm`, `sys/kernel/vm/mmap.rs` and `unix.rs`): written in S1, `Native` since
-//! the flip (S2).
+//! the flip (S2). N4.3: the descriptor tables' twenty (`KernelApi::fd`,
+//! `sys/kernel/descrip.rs`: `read(2)`, `write(2)`, `close(2)`, `dup(2)`, `fcntl(2)`,
+//! `ioctl(2)`, ...), which write the return registers themselves.
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -39,9 +41,12 @@ use hal::api::KernelApi;
 use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
-    SYS_MAXSYSCALL, SYS_break, SYS_kbind, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock,
-    SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall,
-    SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2,
+    SYS_MAXSYSCALL, SYS_break, SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl,
+    SYS_flock, SYS_fpathconf, SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_kbind, SYS_madvise,
+    SYS_mimmutable, SYS_minherit, SYS_mlock, SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery,
+    SYS_msync, SYS_munlock, SYS_munlockall, SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2,
+    SYS_pread, SYS_preadv, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_utrace, SYS_write,
+    SYS_writev,
 };
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -57,7 +62,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 17;
+pub const NATIVE: u32 = 37;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -85,6 +90,26 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_msync as usize] = Sysent::Native(sys_msync);
     table[SYS_mlockall as usize] = Sysent::Native(sys_mlockall);
     table[SYS_munlockall as usize] = Sysent::Native(sys_munlockall);
+    table[SYS_read as usize] = Sysent::Native(sys_read);
+    table[SYS_write as usize] = Sysent::Native(sys_write);
+    table[SYS_close as usize] = Sysent::Native(sys_close);
+    table[SYS_getdtablecount as usize] = Sysent::Native(sys_getdtablecount);
+    table[SYS_dup as usize] = Sysent::Native(sys_dup);
+    table[SYS_fstat as usize] = Sysent::Native(sys_fstat);
+    table[SYS_ioctl as usize] = Sysent::Native(sys_ioctl);
+    table[SYS_dup2 as usize] = Sysent::Native(sys_dup2);
+    table[SYS_fcntl as usize] = Sysent::Native(sys_fcntl);
+    table[SYS_dup3 as usize] = Sysent::Native(sys_dup3);
+    table[SYS_readv as usize] = Sysent::Native(sys_readv);
+    table[SYS_writev as usize] = Sysent::Native(sys_writev);
+    table[SYS_flock as usize] = Sysent::Native(sys_flock);
+    table[SYS_pread as usize] = Sysent::Native(sys_pread);
+    table[SYS_pwrite as usize] = Sysent::Native(sys_pwrite);
+    table[SYS_preadv as usize] = Sysent::Native(sys_preadv);
+    table[SYS_pwritev as usize] = Sysent::Native(sys_pwritev);
+    table[SYS_fpathconf as usize] = Sysent::Native(sys_fpathconf);
+    table[SYS_utrace as usize] = Sysent::Native(sys_utrace);
+    table[SYS_closefrom as usize] = Sysent::Native(sys_closefrom);
     table
 };
 
@@ -265,6 +290,192 @@ pub fn sys_munlockall(api: &'static KernelApi, _args: &SysArgs, _rval: &mut Rval
     (api.vm.munlockall)(SYS_munlockall as Register)
 }
 
+/// 3 = `read(int fd, void *buf, size_t nbyte)`.
+pub fn sys_read(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.read)(
+        SYS_read as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 4 = `write(int fd, const void *buf, size_t nbyte)`.
+pub fn sys_write(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.write)(
+        SYS_write as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 6 = `close(int fd)`.
+pub fn sys_close(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.close)(SYS_close as Register, args[0] as i32, rval)
+}
+
+/// 18 = `getdtablecount(void)`.
+pub fn sys_getdtablecount(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.getdtablecount)(SYS_getdtablecount as Register, rval)
+}
+
+/// 41 = `dup(int fd)`.
+pub fn sys_dup(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.dup)(SYS_dup as Register, args[0] as i32, rval)
+}
+
+/// 53 = `fstat(int fd, struct stat *sb)`.
+pub fn sys_fstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.fstat)(
+        SYS_fstat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 54 = `ioctl(int fd, u_long com, void *data)`.
+pub fn sys_ioctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.ioctl)(
+        SYS_ioctl as Register,
+        args[0] as i32,
+        args[1] as u64,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 90 = `dup2(int from, int to)`.
+pub fn sys_dup2(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.dup2)(SYS_dup2 as Register, args[0] as i32, args[1] as i32, rval)
+}
+
+/// 92 = `fcntl(int fd, int cmd, void *arg)`.
+pub fn sys_fcntl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.fcntl)(
+        SYS_fcntl as Register,
+        args[0] as i32,
+        args[1] as i32,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 102 = `dup3(int from, int to, int flags)`.
+pub fn sys_dup3(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.dup3)(
+        SYS_dup3 as Register,
+        args[0] as i32,
+        args[1] as i32,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 120 = `readv(int fd, const struct iovec *iovp, int iovcnt)`.
+pub fn sys_readv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.readv)(
+        SYS_readv as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 121 = `writev(int fd, const struct iovec *iovp, int iovcnt)`.
+pub fn sys_writev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.writev)(
+        SYS_writev as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 131 = `flock(int fd, int how)`.
+pub fn sys_flock(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.flock)(SYS_flock as Register, args[0] as i32, args[1] as i32, rval)
+}
+
+/// 169 = `pread(int fd, void *buf, size_t nbyte, off_t offset)`.
+pub fn sys_pread(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.pread)(
+        SYS_pread as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as i64,
+        rval,
+    )
+}
+
+/// 170 = `pwrite(int fd, const void *buf, size_t nbyte, off_t offset)`.
+pub fn sys_pwrite(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.pwrite)(
+        SYS_pwrite as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as i64,
+        rval,
+    )
+}
+
+/// 171 = `preadv(int fd, const struct iovec *iovp, int iovcnt, off_t offset)`.
+pub fn sys_preadv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.preadv)(
+        SYS_preadv as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as i64,
+        rval,
+    )
+}
+
+/// 172 = `pwritev(int fd, const struct iovec *iovp, int iovcnt, off_t offset)`.
+pub fn sys_pwritev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.pwritev)(
+        SYS_pwritev as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as i64,
+        rval,
+    )
+}
+
+/// 192 = `fpathconf(int fd, int name)`.
+pub fn sys_fpathconf(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.fpathconf)(
+        SYS_fpathconf as Register,
+        args[0] as i32,
+        args[1] as i32,
+        rval,
+    )
+}
+
+/// 209 = `utrace(const char *label, const void *addr, size_t len)`.
+pub fn sys_utrace(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.utrace)(
+        SYS_utrace as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 287 = `closefrom(int fd)`.
+pub fn sys_closefrom(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.fd.closefrom)(SYS_closefrom as Register, args[0] as i32, rval)
+}
+
 /// The entry of number `nr`, if the table has one (a negative number has none).
 fn entry(table: &[Sysent], nr: Register) -> Option<&Sysent> {
     match usize::try_from(nr) {
@@ -365,7 +576,81 @@ mod tests {
         munlockall: nr,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
+    // The fd entries of the test table: each writes its number in rval[0] and answers
+    // with the arguments, each at its own decimal place.
+    fn fd1(nr: Register, a: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a)
+    }
+    fn fd2(nr: Register, a: i32, b: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 10 + b)
+    }
+    fn io(nr: Register, a: i32, b: usize, c: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 100 + b as i32 * 10 + c as i32)
+    }
+    fn iov(nr: Register, a: i32, b: usize, c: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 100 + b as i32 * 10 + c)
+    }
+    fn pio(nr: Register, a: i32, b: usize, c: usize, d: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 1000 + b as i32 * 100 + c as i32 * 10 + d as i32)
+    }
+    fn piov(nr: Register, a: i32, b: usize, c: i32, d: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 1000 + b as i32 * 100 + c * 10 + d as i32)
+    }
+    fn count(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    fn fstat(nr: Register, a: i32, b: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 10 + b as i32)
+    }
+    fn ioctl(nr: Register, a: i32, b: u64, c: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 100 + b as i32 * 10 + c as i32)
+    }
+    fn fcntl(nr: Register, a: i32, b: i32, c: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 100 + b * 10 + c as i32)
+    }
+    fn dup3(nr: Register, a: i32, b: i32, c: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(a * 100 + b * 10 + c)
+    }
+    fn utrace(nr: Register, a: usize, b: usize, c: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err((a * 100 + b * 10 + c) as i32)
+    }
+
+    const FD: hal::api::FdEntries = hal::api::FdEntries {
+        read: io,
+        write: io,
+        close: fd1,
+        getdtablecount: count,
+        dup: fd1,
+        fstat,
+        ioctl,
+        dup2: fd2,
+        fcntl,
+        dup3,
+        readv: iov,
+        writev: iov,
+        flock: fd2,
+        pread: pio,
+        pwrite: pio,
+        preadv: piov,
+        pwritev: piov,
+        fpathconf: fd2,
+        utrace,
+        closefrom: fd1,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD);
 
     /// The vm system calls N3.5's flip made `Native` (`KernelApi::vm`).
     const VM_CALLS: [i32; 15] = [
@@ -384,6 +669,30 @@ mod tests {
         SYS_msync,
         SYS_mlockall,
         SYS_munlockall,
+    ];
+
+    /// The descriptor system calls N4.3 made `Native` (`KernelApi::fd`).
+    const FD_CALLS: [i32; 20] = [
+        SYS_read,
+        SYS_write,
+        SYS_close,
+        SYS_getdtablecount,
+        SYS_dup,
+        SYS_fstat,
+        SYS_ioctl,
+        SYS_dup2,
+        SYS_fcntl,
+        SYS_dup3,
+        SYS_readv,
+        SYS_writev,
+        SYS_flock,
+        SYS_pread,
+        SYS_pwrite,
+        SYS_preadv,
+        SYS_pwritev,
+        SYS_fpathconf,
+        SYS_utrace,
+        SYS_closefrom,
     ];
 
     /// A `Native` entry of the test table.
@@ -433,11 +742,12 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_and_vm_is_legacy() {
+    fn every_entry_but_pipe_vm_and_fd_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
+                || FD_CALLS.iter().any(|&v| v as Register == nr)
             {
                 continue;
             }
@@ -536,7 +846,56 @@ mod tests {
             let legacy = r == Err(ENOSYS) && rval[0] == nr as Register;
             assert!(!legacy, "SYS {nr} reached the legacy fallback");
         }
-        assert_eq!(NATIVE, 17);
+    }
+
+    /// Each descriptor translation calls its own entry with its own number, the arguments in
+    /// `<sys/syscallargs.h>`'s order and the trap's return registers.
+    #[test]
+    fn the_fd_translations_pass_their_number_arguments_and_rval() {
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let cases: [(NativeFn, i32, i32); 20] = [
+            (sys_read, SYS_read, 123),
+            (sys_write, SYS_write, 123),
+            (sys_close, SYS_close, 1),
+            (sys_getdtablecount, SYS_getdtablecount, 0),
+            (sys_dup, SYS_dup, 1),
+            (sys_fstat, SYS_fstat, 12),
+            (sys_ioctl, SYS_ioctl, 123),
+            (sys_dup2, SYS_dup2, 12),
+            (sys_fcntl, SYS_fcntl, 123),
+            (sys_dup3, SYS_dup3, 123),
+            (sys_readv, SYS_readv, 123),
+            (sys_writev, SYS_writev, 123),
+            (sys_flock, SYS_flock, 12),
+            (sys_pread, SYS_pread, 1234),
+            (sys_pwrite, SYS_pwrite, 1234),
+            (sys_preadv, SYS_preadv, 1234),
+            (sys_pwritev, SYS_pwritev, 1234),
+            (sys_fpathconf, SYS_fpathconf, 12),
+            (sys_utrace, SYS_utrace, 123),
+            (sys_closefrom, SYS_closefrom, 1),
+        ];
+        for (f, nr, want) in cases {
+            let mut rval = [-7; 2];
+            assert_eq!(f(&API, &a, &mut rval), Err(want), "SYS {nr}");
+            assert_eq!(rval, [nr as Register, -7], "SYS {nr} wrote rval[0] only");
+        }
+    }
+
+    #[test]
+    fn the_fd_calls_are_native_and_reach_their_translation() {
+        for nr in FD_CALLS {
+            assert!(
+                matches!(SYSENT[nr as usize], Sysent::Native(_)),
+                "SYS {nr} is Native"
+            );
+            let mut rval = [0; 2];
+            // The fallback answers ENOSYS; every fd entry of the test table answers 0 here.
+            let r = syscall(&API, nr as Register, &[0; 6], &mut rval);
+            assert_eq!(r, Err(0), "SYS {nr} reached its fd entry");
+            assert_eq!(rval[0], nr as Register);
+        }
+        assert_eq!(NATIVE, 37);
     }
 }
 /* </TESTS> */

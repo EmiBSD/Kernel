@@ -24,13 +24,15 @@
 //!
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
 //! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
-//! system's fifteen (`VmEntries`, N3.5), which run the system call prologue still in `bsd`
-//! (pledge, the pinned syscalls) before `kernel::pipe` and `kernel::vm`,
-//! `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`); an entry moves to a `kernel` function when its
-//! subsystem does, and at N9 the kernel builds the table alone.
+//! system's fifteen (`VmEntries`, N3.5) and the descriptors' twenty (`FdEntries`, N4.3),
+//! which run the system call prologue still in `bsd` (pledge, the pinned syscalls) before
+//! `kernel::pipe`, `kernel::vm` and `kernel::descrip`, `sys/kern/pipe_glue.rs`,
+//! `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`); an entry moves to a `kernel` function
+//! when its subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
-    AbiInit, AbiModuleHeader, ApiPrefix, KERNEL_API_VERSION, KernelApi, SyscallHandler, VmEntries,
+    AbiInit, AbiModuleHeader, ApiPrefix, FdEntries, KERNEL_API_VERSION, KernelApi, SyscallHandler,
+    VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -52,6 +54,7 @@ pub const fn table(
     copyout: fn(&[u8], usize) -> Result<(), i32>,
     pipe2: fn(Register, usize, Register) -> SysResult,
     vm: VmEntries,
+    fd: FdEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -60,6 +63,7 @@ pub const fn table(
         copyout,
         pipe2,
         vm,
+        fd,
     )
 }
 

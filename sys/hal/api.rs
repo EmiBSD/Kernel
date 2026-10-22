@@ -35,14 +35,16 @@
 //! raw user copy the module's own `UserPtr` work needs. Version 2 (N2.6): `pipe2`, the
 //! kernel's entry for pipe(2) and pipe2(2), the first `Native` system calls. Version 3
 //! (N3.5): [`VmEntries`], the fifteen system calls of the virtual memory system (`mmap(2)`
-//! and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`), one typed entry each.
+//! and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`), one typed entry each. Version 4
+//! (N4.3): [`FdEntries`], the twenty system calls of the descriptor tables and their I/O
+//! (`read(2)`, `close(2)`, `dup(2)`, `fcntl(2)`, `ioctl(2)`, ...), one typed entry each.
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 3;
+pub const KERNEL_API_VERSION: u32 = 4;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -118,6 +120,72 @@ pub struct VmEntries {
     pub munlockall: fn(Register) -> SysResult,
 }
 
+/// A descriptor call, `(nr, fd, rval)`: `close`, `dup`, `closefrom`.
+pub type FdEntry = fn(Register, i32, &mut Rval) -> SysResult;
+/// A descriptor call with an `int`, `(nr, fd, arg, rval)`: `dup2` (`to`), `flock` (`how`),
+/// `fpathconf` (`name`).
+pub type FdIntEntry = fn(Register, i32, i32, &mut Rval) -> SysResult;
+/// One buffer, `(nr, fd, buf, nbyte, rval)`: `read`, `write`.
+pub type IoEntry = fn(Register, i32, usize, usize, &mut Rval) -> SysResult;
+/// An iovec array, `(nr, fd, iovp, iovcnt, rval)`: `readv`, `writev`.
+pub type IovEntry = fn(Register, i32, usize, i32, &mut Rval) -> SysResult;
+/// One buffer at an offset, `(nr, fd, buf, nbyte, offset, rval)`: `pread`, `pwrite`.
+pub type PioEntry = fn(Register, i32, usize, usize, i64, &mut Rval) -> SysResult;
+/// An iovec array at an offset, `(nr, fd, iovp, iovcnt, offset, rval)`: `preadv`,
+/// `pwritev`.
+pub type PiovEntry = fn(Register, i32, usize, i32, i64, &mut Rval) -> SysResult;
+
+/// The descriptor system calls' entries (version 4): each takes the system call's number
+/// first (the prologue still `bsd`'s checks it: pledge, the pinned syscalls), then the
+/// arguments as `<sys/syscallargs.h>` types them, and last the trap's return registers,
+/// which the call writes as the C's `retval` (the count of `read(2)`, the new descriptor
+/// of `dup(2)`, ...) and leaves alone where the C does.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FdEntries {
+    /// 3 = `read`.
+    pub read: IoEntry,
+    /// 4 = `write`.
+    pub write: IoEntry,
+    /// 6 = `close`.
+    pub close: FdEntry,
+    /// 18 = `getdtablecount(void)`: `(nr, rval)`.
+    pub getdtablecount: fn(Register, &mut Rval) -> SysResult,
+    /// 41 = `dup`.
+    pub dup: FdEntry,
+    /// 53 = `fstat(int fd, struct stat *sb)`: `(nr, fd, sb, rval)`.
+    pub fstat: fn(Register, i32, usize, &mut Rval) -> SysResult,
+    /// 54 = `ioctl(int fd, u_long com, void *data)`: `(nr, fd, com, data, rval)`.
+    pub ioctl: fn(Register, i32, u64, usize, &mut Rval) -> SysResult,
+    /// 90 = `dup2`.
+    pub dup2: FdIntEntry,
+    /// 92 = `fcntl(int fd, int cmd, void *arg)`: `(nr, fd, cmd, arg, rval)`.
+    pub fcntl: fn(Register, i32, i32, usize, &mut Rval) -> SysResult,
+    /// 102 = `dup3(int from, int to, int flags)`: `(nr, from, to, flags, rval)`.
+    pub dup3: fn(Register, i32, i32, i32, &mut Rval) -> SysResult,
+    /// 120 = `readv`.
+    pub readv: IovEntry,
+    /// 121 = `writev`.
+    pub writev: IovEntry,
+    /// 131 = `flock`.
+    pub flock: FdIntEntry,
+    /// 169 = `pread`.
+    pub pread: PioEntry,
+    /// 170 = `pwrite`.
+    pub pwrite: PioEntry,
+    /// 171 = `preadv`.
+    pub preadv: PiovEntry,
+    /// 172 = `pwritev`.
+    pub pwritev: PiovEntry,
+    /// 192 = `fpathconf`.
+    pub fpathconf: FdIntEntry,
+    /// 209 = `utrace(const char *label, const void *addr, size_t len)`: `(nr, label, addr,
+    /// len, rval)`.
+    pub utrace: fn(Register, usize, usize, usize, &mut Rval) -> SysResult,
+    /// 287 = `closefrom`.
+    pub closefrom: FdEntry,
+}
+
 /// The vtable handed to the module.
 #[repr(C)]
 pub struct KernelApi {
@@ -139,6 +207,8 @@ pub struct KernelApi {
     pub pipe2: fn(Register, usize, Register) -> SysResult,
     /// The virtual memory system's system calls (version 3).
     pub vm: VmEntries,
+    /// The descriptor system calls (version 4).
+    pub fd: FdEntries,
 }
 
 impl KernelApi {
@@ -150,6 +220,7 @@ impl KernelApi {
         copyout: fn(&[u8], usize) -> Result<(), i32>,
         pipe2: fn(Register, usize, Register) -> SysResult,
         vm: VmEntries,
+        fd: FdEntries,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -159,6 +230,7 @@ impl KernelApi {
             copyout,
             pipe2,
             vm,
+            fd,
         }
     }
 }
@@ -205,8 +277,10 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 3 only adds: the version 2 fields keep their places, `vm` comes last.
-    assert!(offset_of!(KernelApi, vm) == size_of::<KernelApi>() - size_of::<VmEntries>());
+    // Version 4 only adds: the version 3 fields keep their places, `fd` comes last.
+    assert!(offset_of!(KernelApi, fd) == size_of::<KernelApi>() - size_of::<FdEntries>());
+    assert!(offset_of!(KernelApi, fd) == offset_of!(KernelApi, vm) + size_of::<VmEntries>());
+    assert!(size_of::<FdEntries>() == 20 * size_of::<fn()>());
     assert!(size_of::<VmEntries>() == 15 * size_of::<fn()>());
     // Version 2's fields, the prefix and five entries, keep their offsets: `vm` follows them.
     assert!(offset_of!(KernelApi, vm) == size_of::<ApiPrefix>() + 5 * size_of::<fn()>());
@@ -295,13 +369,87 @@ mod tests {
         munlockall: nr,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM);
+    // The fd entries of the test table: the number plus the arguments in the error, the
+    // number in rval[0].
+    fn fd1(nr: Register, fd: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd)
+    }
+    fn fd2(nr: Register, fd: i32, v: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + v)
+    }
+    fn io(nr: Register, fd: i32, b: usize, n: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + (b + n) as i32)
+    }
+    fn iov(nr: Register, fd: i32, b: usize, n: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + b as i32 + n)
+    }
+    fn pio(nr: Register, fd: i32, b: usize, n: usize, o: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + (b + n) as i32 + o as i32)
+    }
+    fn piov(nr: Register, fd: i32, b: usize, n: i32, o: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + b as i32 + n + o as i32)
+    }
+    fn count(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32)
+    }
+    fn fstat(nr: Register, fd: i32, sb: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + sb as i32)
+    }
+    fn ioctl(nr: Register, fd: i32, c: u64, d: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + c as i32 + d as i32)
+    }
+    fn fcntl(nr: Register, fd: i32, c: i32, a: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + fd + c + a as i32)
+    }
+    fn dup3(nr: Register, f: i32, t: i32, fl: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + f + t + fl)
+    }
+    fn utrace(nr: Register, l: usize, a: usize, n: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + (l + a + n) as i32)
+    }
+
+    const FD: FdEntries = FdEntries {
+        read: io,
+        write: io,
+        close: fd1,
+        getdtablecount: count,
+        dup: fd1,
+        fstat,
+        ioctl,
+        dup2: fd2,
+        fcntl,
+        dup3,
+        readv: iov,
+        writev: iov,
+        flock: fd2,
+        pread: pio,
+        pwrite: pio,
+        preadv: piov,
+        pwritev: piov,
+        fpathconf: fd2,
+        utrace,
+        closefrom: fd1,
+    };
+
+    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD);
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 3);
+        assert_eq!(KERNEL_API_VERSION, 4);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
     }
 
@@ -316,6 +464,18 @@ mod tests {
         assert_eq!((API.vm.obreak)(17, 1), Err(18));
         assert_eq!((API.vm.mlockall)(271, 1), Err(272));
         assert_eq!((API.vm.munlockall)(272), Err(272));
+    }
+
+    #[test]
+    fn the_fd_entries_are_the_callers_and_write_the_return_registers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.fd.read)(3, 1, 2, 3, &mut rval), Err(9));
+        assert_eq!(rval, [3, 0]);
+        assert_eq!((API.fd.pwritev)(172, 1, 2, 3, 4, &mut rval), Err(182));
+        assert_eq!((API.fd.getdtablecount)(18, &mut rval), Err(18));
+        assert_eq!((API.fd.ioctl)(54, 1, 2, 3, &mut rval), Err(60));
+        assert_eq!((API.fd.closefrom)(287, 1, &mut rval), Err(288));
+        assert_eq!(rval, [287, 0]);
     }
 
     #[test]
