@@ -408,9 +408,9 @@ fn process_new(p: &'static Proc, pr: &ProcessRef, parent: &Process, flags: i32) 
 
     // Duplicate sub-structures as needed. Increase reference counts on shared objects.
     if flags & FORK_SHAREFILES != 0 {
-        pr.ps_fd.set(fdshare(parent));
+        pr.set_fd(fdshare(parent));
     } else {
-        pr.ps_fd.set(fdcopy(parent));
+        pr.set_fd(fdcopy(parent));
     }
     pr.ps_sigacts.set(Some(sigactsinit(parent)));
     uvmspace_fork_or_share(parent, pr, flags & FORK_SHAREVM != 0);
@@ -580,7 +580,7 @@ pub fn fork1(
     let p = thread_join(&pr, thread_new(curp, &pr, uaddr), |_, _| {});
     process_new(p, &pr, curpr, flags);
 
-    p.p_fd.set(pr.ps_fd.get());
+    // p_fd: the thread reads its process's table (`Thread::fd`).
     drop(p.set_vmspace(pr.vmspace_share()));
     if pr.ps_flags.load(Ordering::Relaxed) & PS_SYSTEM != 0 {
         p.p_flag.fetch_or(P_SYSTEM, Ordering::Relaxed);
@@ -711,8 +711,7 @@ pub fn thread_fork(
 
     // other links: p_p, made with the thread (thread_alloc).
 
-    // local copies
-    p.p_fd.set(pr.ps_fd.get());
+    // local copies (p_fd: the thread reads its process's table, `Thread::fd`)
     drop(p.set_vmspace(pr.vmspace_share()));
 
     // Finish creating the child thread. cpu_fork() will copy and update the pcb and make

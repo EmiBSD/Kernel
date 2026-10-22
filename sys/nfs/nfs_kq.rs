@@ -340,7 +340,7 @@ pub fn filt_nfsread(kn: &Knote, hint: i64) -> bool {
 
     // The C subtracts in u_quad_t and keeps the int64_t.
     kn.kn_data()
-        .set((np.n_size.get() as i64).wrapping_sub(foffset(kn.fp())));
+        .set((np.n_size.get() as i64).wrapping_sub(foffset(&kn.fp())));
     #[cfg(feature = "debug")]
     printf(format_args!("nfsread event. {}\n", kn.kn_data().get()));
     if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {

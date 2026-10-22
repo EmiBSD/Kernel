@@ -86,6 +86,9 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::Ordering;
 
+use hal::user::UserPtr;
+
+use crate::kern::kern_descrip::BsdFileData;
 use crate::kern::kern_descrip::{closef, dupfdopen, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_pledge::{pledge_chown, pledge_flock};
@@ -97,7 +100,6 @@ use crate::kern::kern_unveil::{unveil_add, unveil_removevnode};
 use crate::kern::proc_glue::proc_tables;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
-use crate::kern::sys_generic::{dofilereadv, dofilewritev};
 use crate::kern::vfs_cache::{cache_purge, cache_purgevfs};
 use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_init::{NAMEI_POOL, rootvnode, set_rootvnode, vfs_byname};
@@ -123,7 +125,8 @@ use crate::sys::fcntl::{
     F_SETLK, F_WAIT, F_WRLCK, FMASK, FNONBLOCK, FREAD, FWRITE, Flock, O_ACCMODE, O_CLOEXEC,
     O_CLOFORK, O_CREAT, O_DIRECTORY, O_EXLOCK, O_RDONLY, O_RDWR, O_SHLOCK, O_TRUNC, fflags,
 };
-use crate::sys::file::{DTYPE_VNODE, FIF_HASLOCK, FO_POSITION, File, frele};
+use crate::sys::file::FileExt;
+use crate::sys::file::{DTYPE_VNODE, FIF_HASLOCK, FileRef, foffset, frele};
 use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, UF_PLEDGEOPEN, fdplock, fdpunlock};
 use crate::sys::limits::INT_MAX;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
@@ -160,7 +163,7 @@ use crate::sys::systm::{INFSLP, SysArgs, kernel_lock, kernel_unlock, sysargs};
 use crate::sys::time::{Timespec, Timeval, timeval_to_timespec};
 use crate::sys::types::{Dev, Gid, Mode, Off, Register, Uid, major};
 use crate::sys::ucred::CredRef;
-use crate::sys::uio::{Iovec, UIO_SMALLIOV, Uio, UioRw, UioSeg};
+use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{R_OK, SEEK_SET, W_OK, X_OK};
 use crate::sys::vnode::{
     GETCWD_CHECK_ACCESS, REVOKEALL, V_SAVE, VA_UTIMES_CHANGE, VA_UTIMES_NULL, VALIASED, VBAD, VBLK,
@@ -450,15 +453,15 @@ pub fn checkdirs(olddp: &'static Vnode) {
         let r = hal::klock::reader();
         for pr in proc_tables().allprocess.iter(&r) {
             let fdp = pr.fd();
-            if fdp.fd_cdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
+            if fdp.cdir().is_some_and(|d| ptr::eq(d, olddp)) {
                 free_count += 1;
                 vref(newdp);
-                fdp.fd_cdir.set(Some(newdp));
+                fdp.set_cdir(Some(newdp));
             }
-            if fdp.fd_rdir.get().is_some_and(|d| ptr::eq(d, olddp)) {
+            if fdp.rdir().is_some_and(|d| ptr::eq(d, olddp)) {
                 free_count += 1;
                 vref(newdp);
-                fdp.fd_rdir.set(Some(newdp));
+                fdp.set_rdir(Some(newdp));
             }
         }
     }
@@ -794,7 +797,7 @@ pub fn sys_fchdir(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let Some(fp) = fd_getfile(fdp, uap.fd.get()) else {
         return Err(Errno::EBADF);
     };
-    if fp.f_type.get() != DTYPE_VNODE || fp.vnode().v_type.get() != VDIR {
+    if fp.f_type() != DTYPE_VNODE || fp.vnode().v_type.get() != VDIR {
         let _ = frele(fp, p);
         return Err(Errno::ENOTDIR);
     }
@@ -828,8 +831,8 @@ pub fn sys_fchdir(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         return Err(e);
     }
     let _ = VOP_UNLOCK(vp);
-    let old_cdir = fdp.fd_cdir.get();
-    fdp.fd_cdir.set(Some(vp));
+    let old_cdir = fdp.cdir();
+    fdp.set_cdir(Some(vp));
     if let Some(old) = old_cdir {
         vrele(old);
     }
@@ -845,8 +848,8 @@ pub fn sys_chdir(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     nd.ni_pledge = PLEDGE_RPATH;
     nd.ni_unveil = UNVEIL_READ;
     change_dir(&mut nd, p)?;
-    let old_cdir = fdp.fd_cdir.get();
-    fdp.fd_cdir.set(nd.ni_vp);
+    let old_cdir = fdp.cdir();
+    fdp.set_cdir(nd.ni_vp);
     if let Some(old) = old_cdir {
         vrele(old);
     }
@@ -862,19 +865,19 @@ pub fn sys_chroot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let mut nd = ndinit(LOOKUP, FOLLOW | LOCKLEAF, upath(uap.path.get()), p);
     change_dir(&mut nd, p)?;
     let vp = ndvp(nd.ni_vp);
-    if let Some(old_rdir) = fdp.fd_rdir.get() {
+    if let Some(old_rdir) = fdp.rdir() {
         // A chroot() done inside a changed root environment does an automatic chdir to avoid
         // the out-of-tree experience.
         vref(vp);
-        let old_cdir = fdp.fd_cdir.get();
-        fdp.fd_rdir.set(Some(vp));
-        fdp.fd_cdir.set(Some(vp));
+        let old_cdir = fdp.cdir();
+        fdp.set_rdir(Some(vp));
+        fdp.set_cdir(Some(vp));
         vrele(old_rdir);
         if let Some(old_cdir) = old_cdir {
             vrele(old_cdir);
         }
     } else {
-        fdp.fd_rdir.set(Some(vp));
+        fdp.set_rdir(Some(vp));
     }
     p.process().ps_flags.fetch_or(PS_CHROOT, Ordering::SeqCst);
     Ok(())
@@ -979,7 +982,7 @@ pub fn sys___realpath(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
         cwdbuf[bp] = 0;
 
         kernel_lock();
-        let error = match p.fd().fd_cdir.get() {
+        let error = match p.fd().cdir() {
             None => Err(Errno::ENOENT), // no root file system yet
             Some(cdir) => vfs_getcwd_common(
                 cdir,
@@ -1245,15 +1248,15 @@ pub fn doopenat(
         0
     };
 
-    fdplock(fdp);
-    let (fp, indx) = match falloc(p) {
+    let mut g = fdplock(fdp);
+    let (fp, indx) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(e) => {
-            fdpunlock(fdp);
+            fdpunlock(g);
             return Err(e);
         }
     };
-    fdpunlock(fdp);
+    fdpunlock(g);
 
     let mut flags = fflags(oflags);
     if flags & FREAD != 0 {
@@ -1269,7 +1272,7 @@ pub fn doopenat(
         ni_unveil |= UNVEIL_CREATE;
     }
 
-    let mut cmode = ((mode & !fdp.fd_cmask.get()) & ALLPERMS) & !S_ISTXT;
+    let mut cmode = ((mode & !fdp.cmask()) & ALLPERMS) & !S_ISTXT;
     if p.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0 {
         cmode &= ACCESSPERMS;
     }
@@ -1282,19 +1285,19 @@ pub fn doopenat(
         flags &= !O_TRUNC; // Must do truncate ourselves
     }
     kernel_lock();
-    let error: Result<(), Errno> = 'error: {
+    let (error, g) = 'error: {
         if let Err(error) = vn_open(&mut nd, flags, cmode) {
-            fdplock(fdp);
+            let mut g = fdplock(fdp);
             if error == Errno::ENODEV && p.p_dupfd.get() >= 0 {
                 // XXX from fdopen
-                match dupfdopen(p, indx, flags) {
+                match dupfdopen(p, &mut g, indx, flags) {
                     Ok(()) => {
                         retval[0] = indx as Register;
-                        break 'error Ok(());
+                        break 'error (Ok(()), g);
                     }
                     Err(e) => {
-                        fdremove(fdp, indx);
-                        break 'error Err(e);
+                        let _ = fdremove(&mut g, indx);
+                        break 'error (Err(e), g);
                     }
                 }
             }
@@ -1303,8 +1306,8 @@ pub fn doopenat(
             } else {
                 error
             };
-            fdremove(fdp, indx);
-            break 'error Err(error);
+            let _ = fdremove(&mut g, indx);
+            break 'error (Err(error), g);
         }
         p.p_dupfd.set(0);
         let vp = ndvp(nd.ni_vp);
@@ -1312,17 +1315,16 @@ pub fn doopenat(
             fdflags |= UF_PLEDGEOPEN;
         }
         fp.f_flag.store((flags & FMASK) as u32, Ordering::SeqCst);
-        fp.f_type.set(DTYPE_VNODE);
-        fp.f_ops.set(Some(&VNOPS));
-        fp.f_data.set(ptr::from_ref(vp).cast_mut().cast::<c_void>());
+        fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(vp));
         if flags & (O_EXLOCK | O_SHLOCK) != 0 {
             let (mut lf, type_) = open_flock(flags);
             let _ = VOP_UNLOCK(vp);
-            if let Err(error) = VOP_ADVLOCK(vp, ptr::from_ref(fp).cast(), F_SETLK, &mut lf, type_) {
-                fdplock(fdp);
+            let id = ptr::without_provenance(fp.addr());
+            if let Err(error) = VOP_ADVLOCK(vp, id, F_SETLK, &mut lf, type_) {
+                let mut g = fdplock(fdp);
                 // closef will vn_close the file for us.
-                fdremove(fdp, indx);
-                break 'error Err(error);
+                let _ = fdremove(&mut g, indx);
+                break 'error (Err(error), g);
             }
             let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
             fp.f_iflags.fetch_or(FIF_HASLOCK, Ordering::SeqCst);
@@ -1343,29 +1345,29 @@ pub fn doopenat(
                     let mut vattr = Vattr::new();
                     vattr_null(&mut vattr);
                     vattr.va_size = 0;
-                    VOP_SETATTR(vp, &mut vattr, fp.f_cred.get(), p)
+                    VOP_SETATTR(vp, &mut vattr, fp.f_cred_ptr(), p)
                 })
             };
             if let Err(error) = error {
                 let _ = VOP_UNLOCK(vp);
-                fdplock(fdp);
+                let mut g = fdplock(fdp);
                 // closef will close the file for us.
-                fdremove(fdp, indx);
-                break 'error Err(error);
+                let _ = fdremove(&mut g, indx);
+                break 'error (Err(error), g);
             }
         }
         let _ = VOP_UNLOCK(vp);
         kernel_unlock();
         retval[0] = indx as Register;
-        fdplock(fdp);
-        fdinsert(fdp, indx, fdflags, fp);
-        fdpunlock(fdp);
+        let mut g = fdplock(fdp);
+        fdinsert(&mut g, indx, fdflags, &fp);
+        fdpunlock(g);
         let _ = frele(fp, p);
         return Ok(());
     };
     // error:
     kernel_unlock();
-    fdpunlock(fdp);
+    fdpunlock(g);
     let _ = closef(fp, p);
     error
 }
@@ -1422,15 +1424,15 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         0
     };
 
-    fdplock(fdp);
-    let (fp, indx) = match falloc(p) {
+    let mut g = fdplock(fdp);
+    let (fp, indx) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(e) => {
-            fdpunlock(fdp);
+            fdpunlock(g);
             return Err(e);
         }
     };
-    fdpunlock(fdp);
+    fdpunlock(g);
 
     let mut vp: Option<&'static Vnode> = None;
     let error: Errno = 'bad: {
@@ -1486,13 +1488,12 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 
         // done with modified vn_open, now finish what sys_open does.
         fp.f_flag.store((flags & FMASK) as u32, Ordering::SeqCst);
-        fp.f_type.set(DTYPE_VNODE);
-        fp.f_ops.set(Some(&VNOPS));
-        fp.f_data.set(ptr::from_ref(v).cast_mut().cast::<c_void>());
+        fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(v));
         if flags & (O_EXLOCK | O_SHLOCK) != 0 {
             let (mut lf, type_) = open_flock(flags);
             let _ = VOP_UNLOCK(v);
-            if let Err(e) = VOP_ADVLOCK(v, ptr::from_ref(fp).cast(), F_SETLK, &mut lf, type_) {
+            let id = ptr::without_provenance(fp.addr());
+            if let Err(e) = VOP_ADVLOCK(v, id, F_SETLK, &mut lf, type_) {
                 vp = None; // closef will vn_close the file
                 break 'bad e;
             }
@@ -1501,17 +1502,17 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         }
         let _ = VOP_UNLOCK(v);
         retval[0] = indx as Register;
-        fdplock(fdp);
-        fdinsert(fdp, indx, fdflags, fp);
-        fdpunlock(fdp);
+        let mut g = fdplock(fdp);
+        fdinsert(&mut g, indx, fdflags, &fp);
+        fdpunlock(g);
         let _ = frele(fp, p);
         return Ok(());
     };
 
     // bad:
-    fdplock(fdp);
-    fdremove(fdp, indx);
-    fdpunlock(fdp);
+    let mut g = fdplock(fdp);
+    let _ = fdremove(&mut g, indx);
+    fdpunlock(g);
     let _ = closef(fp, p);
     if let Some(vp) = vp {
         vput(vp);
@@ -1602,7 +1603,7 @@ pub fn domknodat(p: &Proc, fd: i32, path: *const u8, mode: Mode, dev: Dev) -> Re
             {
                 break 'out Err(e);
             }
-            if p.fd().fd_rdir.get().is_some() {
+            if p.fd().rdir().is_some() {
                 break 'out Err(Errno::EINVAL);
             }
         }
@@ -1610,7 +1611,7 @@ pub fn domknodat(p: &Proc, fd: i32, path: *const u8, mode: Mode, dev: Dev) -> Re
             break 'out Err(Errno::EEXIST);
         }
         vattr_null(&mut vattr);
-        vattr.va_mode = (mode & ALLPERMS) & !p.fd().fd_cmask.get();
+        vattr.va_mode = (mode & ALLPERMS) & !p.fd().cmask();
         if p.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0 {
             vattr.va_mode &= ACCESSPERMS;
         }
@@ -1815,7 +1816,7 @@ pub fn dosymlinkat(p: &Proc, upath_: *const u8, fd: i32, link: *const u8) -> Res
         return Err(Errno::EEXIST);
     }
     vattr_null(&mut vattr);
-    vattr.va_mode = ACCESSPERMS & !p.fd().fd_cmask.get();
+    vattr.va_mode = ACCESSPERMS & !p.fd().cmask();
     VOP_SYMLINK(
         dvp,
         &mut nd.ni_vp,
@@ -1909,14 +1910,12 @@ pub fn sys_lseek(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
         };
         let mut offset: Off = uap.offset.get();
 
-        if let Err(e) = seek(fp, &mut offset, uap.whence.get(), p) {
+        if let Err(e) = seek(&fp, &mut offset, uap.whence.get(), p) {
             break 'bad Err(e);
         }
 
         retval[0] = offset as Register;
-        crate::kern::kern_lock::mtx_enter(&fp.f_mtx);
-        fp.f_seek.set(fp.f_seek.get() + 1);
-        crate::kern::kern_lock::mtx_leave(&fp.f_mtx);
+        fp.stats().f_seek += 1;
         Ok(())
     };
     let _ = frele(fp, p);
@@ -2234,7 +2233,7 @@ pub fn sys_fchflags(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     let uap: &SysFchflagsArgs = sysargs(v);
 
     let fp = getvnode(p, uap.fd.get())?;
-    if p.fd().ofileflags(uap.fd.get() as usize) & UF_PLEDGEOPEN != 0 {
+    if p.fd().ofileflags(uap.fd.get()) & UF_PLEDGEOPEN != 0 {
         let _ = frele(fp, p);
         return Err(Errno::EPERM);
     }
@@ -2364,7 +2363,7 @@ pub fn sys_fchmod(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
     {
         Err(Errno::EROFS)
-    } else if p.fd().ofileflags(uap.fd.get() as usize) & UF_PLEDGEOPEN != 0 {
+    } else if p.fd().ofileflags(uap.fd.get()) & UF_PLEDGEOPEN != 0 {
         Err(Errno::EPERM)
     } else {
         vattr_null(&mut vattr);
@@ -2498,7 +2497,7 @@ pub fn sys_fchown(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
     {
         Err(Errno::EROFS)
-    } else if p.fd().ofileflags(uap.fd.get() as usize) & UF_PLEDGEOPEN != 0 {
+    } else if p.fd().ofileflags(uap.fd.get()) & UF_PLEDGEOPEN != 0 {
         Err(Errno::EPERM)
     } else {
         chown_vnode(p, vp, uid, gid)
@@ -2730,7 +2729,7 @@ pub fn sys_ftruncate(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
     let fp = getvnode(p, uap.fd.get())?;
     let error = if fp.flag() & FWRITE == 0 {
         Err(Errno::EINVAL)
-    } else if p.fd().ofileflags(uap.fd.get() as usize) & UF_PLEDGEOPEN != 0 {
+    } else if p.fd().ofileflags(uap.fd.get()) & UF_PLEDGEOPEN != 0 {
         Err(Errno::EPERM)
     } else {
         let vp = fp.vnode();
@@ -2750,7 +2749,7 @@ pub fn sys_fsync(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     let fp = getvnode(p, uap.fd.get())?;
     let vp = fp.vnode();
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = VOP_FSYNC(vp, fp.f_cred.get(), MNT_WAIT, p);
+    let error = VOP_FSYNC(vp, fp.f_cred_ptr(), MNT_WAIT, p);
 
     let _ = VOP_UNLOCK(vp);
     let _ = frele(fp, p);
@@ -2902,7 +2901,7 @@ pub fn domkdirat(p: &Proc, fd: i32, path: *const u8, mode: Mode) -> Result<(), E
     }
     vattr_null(&mut vattr);
     vattr.va_type = VDIR;
-    vattr.va_mode = (mode & ACCESSPERMS) & !p.fd().fd_cmask.get();
+    vattr.va_mode = (mode & ACCESSPERMS) & !p.fd().cmask();
     let error = VOP_MKDIR(dvp, &mut nd.ni_vp, &mut nd.ni_cnd, &mut vattr);
     if error.is_ok()
         && let Some(vp) = nd.ni_vp
@@ -2941,7 +2940,7 @@ pub fn sys_getdents(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result
 
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 
-        if fp.f_offset.get() < 0 {
+        if foffset(&fp) < 0 {
             let _ = VOP_UNLOCK(vp);
             break 'bad Err(Errno::EINVAL);
         }
@@ -2952,16 +2951,14 @@ pub fn sys_getdents(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result
         }];
         let mut auio = Uio {
             uio_iov: &mut aiov,
-            uio_offset: fp.f_offset.get(),
+            uio_offset: foffset(&fp),
             uio_resid: buflen,
             uio_segflg: UioSeg::UIO_USERSPACE,
             uio_rw: UioRw::UIO_READ,
             uio_procp: Some(p),
         };
-        let error = VOP_READDIR(vp, &mut auio, fp.f_cred.get(), &mut eofflag);
-        crate::kern::kern_lock::mtx_enter(&fp.f_mtx);
-        fp.f_offset.set(auio.uio_offset);
-        crate::kern::kern_lock::mtx_leave(&fp.f_mtx);
+        let error = VOP_READDIR(vp, &mut auio, fp.f_cred_ptr(), &mut eofflag);
+        fp.stats().f_offset = auio.uio_offset;
         let _ = VOP_UNLOCK(vp);
         if let Err(e) = error {
             break 'bad Err(e);
@@ -2978,10 +2975,10 @@ pub fn sys_umask(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
     let uap: &SysUmaskArgs = sysargs(v);
     let fdp = p.fd();
 
-    fdplock(fdp);
-    retval[0] = fdp.fd_cmask.get() as Register;
-    fdp.fd_cmask.set(uap.newmask.get() & ACCESSPERMS);
-    fdpunlock(fdp);
+    let g = fdplock(fdp);
+    retval[0] = fdp.cmask() as Register;
+    fdp.set_cmask(uap.newmask.get() & ACCESSPERMS);
+    fdpunlock(g);
     Ok(())
 }
 
@@ -3021,12 +3018,12 @@ pub fn sys_revoke(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
 
 /// Convert a user file descriptor to a kernel file entry. The file is returned with a
 /// reference (`FREF`).
-pub fn getvnode(p: &Proc, fd: i32) -> Result<&'static File, Errno> {
+pub fn getvnode(p: &Proc, fd: i32) -> Result<FileRef, Errno> {
     let Some(fp) = fd_getfile(p.fd(), fd) else {
         return Err(Errno::EBADF);
     };
 
-    if fp.f_type.get() != DTYPE_VNODE {
+    if fp.f_type() != DTYPE_VNODE {
         let _ = frele(fp, p);
         return Err(Errno::EINVAL);
     }
@@ -3039,101 +3036,59 @@ pub fn getvnode(p: &Proc, fd: i32) -> Result<&'static File, Errno> {
     Ok(fp)
 }
 
-/// Positional read system call.
+/// Positional read system call (`sysent[]`'s row: `kernel::descrip::sys_pread`).
 pub fn sys_pread(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPreadArgs = sysargs(v);
-
-    let mut iov = [Iovec {
-        iov_base: uap.buf.get(),
-        iov_len: uap.nbyte.get(),
-    }];
-    if iov[0].iov_len > crate::sys::limits::SSIZE_MAX as usize {
-        return Err(Errno::EINVAL);
-    }
-    let resid = iov[0].iov_len;
-
-    let mut auio = Uio {
-        uio_iov: &mut iov,
-        uio_offset: uap.offset.get(),
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_READ,
-        uio_procp: Some(p),
-    };
-
-    dofilereadv(p, uap.fd.get(), &mut auio, FO_POSITION, retval)
+    let n = kernel::descrip::sys_pread(
+        p,
+        uap.fd.get(),
+        uap.buf.get().addr(),
+        uap.nbyte.get(),
+        uap.offset.get(),
+    )?;
+    retval[0] = n as Register;
+    Ok(())
 }
 
-/// Positional scatter read system call.
+/// Positional scatter read system call (`sysent[]`'s row: `kernel::descrip::sys_preadv`).
 pub fn sys_preadv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPreadvArgs = sysargs(v);
-    let iovcnt = uap.iovcnt.get() as u32;
-    let mut aiov = [Iovec::new(); UIO_SMALLIOV];
-
-    let (iov, resid) =
-        crate::kern::sys_generic::iovec_copyin(uap.iovp.get() as usize, &mut aiov, iovcnt)?;
-
-    let mut auio = Uio {
-        uio_iov: &mut *iov,
-        uio_offset: uap.offset.get(),
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_READ,
-        uio_procp: Some(p),
-    };
-
-    let error = dofilereadv(p, uap.fd.get(), &mut auio, FO_POSITION, retval);
-    // SAFETY: `iov` came from `iovec_copyin` with `iovcnt`; the uio borrowing it is gone.
-    unsafe { crate::kern::sys_generic::iovec_free(iov, iovcnt) };
-    error
+    let n = kernel::descrip::sys_preadv(
+        p,
+        uap.fd.get(),
+        UserPtr::new(uap.iovp.get().addr()),
+        uap.iovcnt.get(),
+        uap.offset.get(),
+    )?;
+    retval[0] = n as Register;
+    Ok(())
 }
 
-/// Positional write system call.
+/// Positional write system call (`sysent[]`'s row: `kernel::descrip::sys_pwrite`).
 pub fn sys_pwrite(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPwriteArgs = sysargs(v);
-
-    let mut iov = [Iovec {
-        iov_base: uap.buf.get().cast_mut(),
-        iov_len: uap.nbyte.get(),
-    }];
-    if iov[0].iov_len > crate::sys::limits::SSIZE_MAX as usize {
-        return Err(Errno::EINVAL);
-    }
-    let resid = iov[0].iov_len;
-
-    let mut auio = Uio {
-        uio_iov: &mut iov,
-        uio_offset: uap.offset.get(),
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_WRITE,
-        uio_procp: Some(p),
-    };
-
-    dofilewritev(p, uap.fd.get(), &mut auio, FO_POSITION, retval)
+    let n = kernel::descrip::sys_pwrite(
+        p,
+        uap.fd.get(),
+        uap.buf.get().addr(),
+        uap.nbyte.get(),
+        uap.offset.get(),
+    )?;
+    retval[0] = n as Register;
+    Ok(())
 }
 
-/// Positional gather write system call.
+/// Positional gather write system call (`sysent[]`'s row: `kernel::descrip::sys_pwritev`).
 pub fn sys_pwritev(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPwritevArgs = sysargs(v);
-    let iovcnt = uap.iovcnt.get() as u32;
-    let mut aiov = [Iovec::new(); UIO_SMALLIOV];
-
-    let (iov, resid) =
-        crate::kern::sys_generic::iovec_copyin(uap.iovp.get() as usize, &mut aiov, iovcnt)?;
-
-    let mut auio = Uio {
-        uio_iov: &mut *iov,
-        uio_offset: uap.offset.get(),
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_WRITE,
-        uio_procp: Some(p),
-    };
-
-    let error = dofilewritev(p, uap.fd.get(), &mut auio, FO_POSITION, retval);
-    // SAFETY: `iov` came from `iovec_copyin` with `iovcnt`; the uio borrowing it is gone.
-    unsafe { crate::kern::sys_generic::iovec_free(iov, iovcnt) };
-    error
+    let n = kernel::descrip::sys_pwritev(
+        p,
+        uap.fd.get(),
+        UserPtr::new(uap.iovp.get().addr()),
+        uap.iovcnt.get(),
+        uap.offset.get(),
+    )?;
+    retval[0] = n as Register;
+    Ok(())
 }
 /* </CODE> */

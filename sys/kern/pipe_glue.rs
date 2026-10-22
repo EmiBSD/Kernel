@@ -110,7 +110,7 @@ use kernel::pipe::{
 };
 
 use crate::kern::init_sysent::SYSENT;
-use crate::kern::kern_descrip::{closef, falloc, fdinsert, fdrelease, fdremove};
+use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fdinsert, fdrelease, fdremove};
 use crate::kern::kern_event::{klist_free, klist_insert_locked, klist_remove_locked, knote_locked};
 use crate::kern::kern_sig::{pgsigio, sigio_free, sigio_getown, sigio_setown};
 use crate::kern::kern_subr::uiomove;
@@ -125,7 +125,7 @@ use crate::sys::event::{
 };
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
 use crate::sys::file::{DTYPE_PIPE, File, Fileops, frele};
-use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, fdplock, fdpunlock};
+use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, fdplock};
 use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use crate::sys::proc::Proc;
 use crate::sys::sigio::{SigioRef, sigio_init};
@@ -397,27 +397,26 @@ impl PipeFiles<BsdPipeGlue> for BsdFiles<'_> {
     }
 }
 
-/// The pair and the pipe of a pipe file: the slot is locked only for the clone.
-pub fn pipe_of(fp: &File) -> (PoolArc<PipePair<BsdPipeGlue>>, Dir) {
-    let found = fp
-        .f_pipe
-        .lock()
-        .as_ref()
-        .map(|pf| (pf.end.pair().clone(), pf.end.dir()));
-    match found {
-        Some(found) => found,
-        None => panic(format_args!("file {:p}: not an open pipe", fp)),
+/// A pipe file's object (`f_data`): its end and the opener's ids.
+fn pipe_file_of(fp: &File) -> Option<&PipeFile> {
+    match fp.data() {
+        Some(BsdFileData::Pipe(pf)) => Some(pf),
+        _ => None,
     }
 }
 
-/// `kern_sysctl`'s `fill_file` of a pipe file: `None` once it is closed.
+/// The pair and the pipe of a pipe file (the pair counted again: a filter's file is a
+/// temporary handle).
+pub fn pipe_of(fp: &File) -> (PoolArc<PipePair<BsdPipeGlue>>, Dir) {
+    match pipe_file_of(fp) {
+        Some(pf) => (pf.end.pair().clone(), pf.end.dir()),
+        None => panic(format_args!("file {:#x}: not an open pipe", fp.addr())),
+    }
+}
+
+/// `kern_sysctl`'s `fill_file` of a pipe file.
 pub fn pipe_kinfo(fp: &File) -> Option<PipeKinfo> {
-    let found = fp
-        .f_pipe
-        .lock()
-        .as_ref()
-        .map(|pf| (pf.end.pair().clone(), pf.end.dir()));
-    found.map(|(pair, dir)| pair.kinfo(dir))
+    pipe_file_of(fp).map(|pf| pf.end.pair().kinfo(pf.end.dir()))
 }
 
 /// The int an `ioctl` argument holds.
@@ -474,13 +473,15 @@ fn pipe_file(fp: &File, end: PipeEnd<BsdPipeGlue>, flags: PipeFlags, p: &Proc) {
     let fflag = (FREAD | FWRITE | if flags.nonblock { FNONBLOCK } else { 0 }) as u32;
     let cred = p.ucred();
     fp.f_flag.store(fflag, Ordering::SeqCst);
-    fp.f_type.set(DTYPE_PIPE);
-    *fp.f_pipe.lock() = Some(PipeFile {
-        end,
-        uid: cred.cr_uid.get(),
-        gid: cred.cr_gid.get(),
-    });
-    fp.f_ops.set(Some(&PIPEOPS));
+    fp.install(
+        DTYPE_PIPE,
+        &PIPEOPS,
+        BsdFileData::Pipe(PipeFile {
+            end,
+            uid: cred.cr_uid.get(),
+            gid: cred.cr_gid.get(),
+        }),
+    );
 }
 
 /// `dopipe(p, ufds, flags)` from the new pair on: installs its two files at the lowest free
@@ -497,47 +498,47 @@ pub fn dopipe(
     let fdflags = (if flags.cloexec { UF_EXCLOSE } else { 0 })
         | (if flags.clofork { UF_FORKCLOSE } else { 0 });
 
-    fdplock(fdp);
+    let mut g = fdplock(fdp);
 
-    let (rf, fd0) = match falloc(p) {
+    let (rf, fd0) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(error) => {
             // free2:
-            fdpunlock(fdp);
+            drop(g);
             drop(wpipe);
             drop(rpipe);
             return Err(error);
         }
     };
-    pipe_file(rf, rpipe, flags, p);
+    pipe_file(&rf, rpipe, flags, p);
 
-    let (wf, fd1) = match falloc(p) {
+    let (wf, fd1) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(error) => {
-            // free3:
-            fdremove(fdp, fd0);
-            // The last reference to `rf` closes it, which destroys `rpipe`.
+            // free3: the descriptor (no slot holds the file yet) and the file, whose last
+            // reference closes it, which destroys `rpipe`.
+            let _ = fdremove(&mut g, fd0);
             let _ = closef(rf, p);
             // free2:
-            fdpunlock(fdp);
+            drop(g);
             drop(wpipe);
             return Err(error);
         }
     };
-    pipe_file(wf, wpipe, flags, p);
+    pipe_file(&wf, wpipe, flags, p);
 
-    fdinsert(fdp, fd0, fdflags, rf);
-    fdinsert(fdp, fd1, fdflags, wf);
+    fdinsert(&mut g, fd0, fdflags, &rf);
+    fdinsert(&mut g, fd1, fdflags, &wf);
 
     let error = copyout([fd0, fd1]);
     if error.is_ok() {
-        fdpunlock(fdp);
+        drop(g);
         // KTRACE (ktrfds): not configured.
     } else {
         // fdrelease() unlocks fdp.
-        let _ = fdrelease(p, fd0);
-        fdplock(fdp);
-        let _ = fdrelease(p, fd1);
+        let _ = fdrelease(p, g, fd0);
+        let g = fdplock(fdp);
+        let _ = fdrelease(p, g, fd1);
     }
 
     let _ = frele(rf, p);
@@ -580,11 +581,7 @@ pub fn pipe_ioctl(fp: &File, cmd: u64, data: &mut [u8], _p: &Proc) -> Result<(),
 /// `fo_stat` of a pipe: a FIFO whose size is what is buffered.
 pub fn pipe_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
     let (pair, dir) = pipe_of(fp);
-    let (uid, gid) = fp
-        .f_pipe
-        .lock()
-        .as_ref()
-        .map_or((0, 0), |pf| (pf.uid, pf.gid));
+    let (uid, gid) = pipe_file_of(fp).map_or((0, 0), |pf| (pf.uid, pf.gid));
     let st = pair.stat(dir);
 
     *ub = Stat::default();
@@ -602,18 +599,15 @@ pub fn pipe_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `fo_close` of a pipe: the file's last reference is gone. The end is taken out under the
-/// slot's mutex and dropped (`pipe_destroy`) after it is released.
-pub fn pipe_close(fp: &File, _p: Option<&Proc>) -> Result<(), Errno> {
-    let pf = fp.f_pipe.lock().take();
-    fp.f_ops.set(None);
-    drop(pf);
+/// `fo_close` of a pipe: the file's last reference is gone. The end is the file's object,
+/// dropped with the file's item (`pipe_destroy`), after `numfiles` falls: nothing to do here.
+pub fn pipe_close(_fp: &File, _p: Option<&Proc>) -> Result<(), Errno> {
     Ok(())
 }
 
 /// `fo_kqfilter` of a pipe: `bsd`'s filter and flags as the kernel's.
 pub fn pipe_kqfilter(_fp: &File, kn: &Knote) -> Result<(), Errno> {
-    let (pair, dir) = pipe_of(kn.fp());
+    let (pair, dir) = pipe_of(&kn.fp());
     let filter = match kn.kn_filter().get() {
         EVFILT_READ => Some(PipeFilter::Read),
         EVFILT_WRITE => Some(PipeFilter::Write),
@@ -631,7 +625,7 @@ pub fn pipe_kqfilter(_fp: &File, kn: &Knote) -> Result<(), Errno> {
 
 /// `filt_pipedetach(kn)`: unhooks the knote from the klist `kn_hook` names.
 pub fn filt_pipedetach(kn: &Knote) {
-    let (pair, _) = pipe_of(kn.fp());
+    let (pair, _) = pipe_of(&kn.fp());
     let Some(hook) = Dir::from_index(kn.kn_hook.get().addr()) else {
         panic(format_args!("knote {:p}: no pipe", kn));
     };
@@ -640,7 +634,7 @@ pub fn filt_pipedetach(kn: &Knote) {
 
 /// One filter's answer written into the knote.
 fn filt_pipe(kn: &Knote, which: PipeFilter) -> bool {
-    let (pair, dir) = pipe_of(kn.fp());
+    let (pair, dir) = pipe_of(&kn.fp());
     let answer = pair.filter(dir, which, kn.has_flags(__EV_POLL));
     if let Some(data) = answer.data {
         kn.kn_data().set(data);
@@ -671,13 +665,13 @@ pub fn filt_pipeexcept(kn: &Knote, _hint: i64) -> bool {
 
 /// `filt_pipemodify(kev, kn)`: `knote_modify` under the pipe's lock.
 pub fn filt_pipemodify(kev: &mut Kevent, kn: &Knote) -> bool {
-    let (pair, _) = pipe_of(kn.fp());
+    let (pair, _) = pipe_of(&kn.fp());
     pair.with_lock(|| knote_modify(kev, kn))
 }
 
 /// `filt_pipeprocess(kn, kev)`: `knote_process` under the pipe's lock.
 pub fn filt_pipeprocess(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
-    let (pair, _) = pipe_of(kn.fp());
+    let (pair, _) = pipe_of(&kn.fp());
     pair.with_lock(|| knote_process(kn, kev))
 }
 
@@ -736,8 +730,8 @@ mod tests {
         let pair = r.pair().clone();
         for (fd, end) in [(3, r), (4, w)] {
             let fp = fnew(p).unwrap();
-            pipe_file(fp, end, PipeFlags::default(), p);
-            install(p, fd, fp);
+            pipe_file(&fp, end, PipeFlags::default(), p);
+            install(p, fd, &fp);
         }
         pair
     }
@@ -784,10 +778,15 @@ mod tests {
         let _g = setup();
         let p = fd_thread();
         let pair = installed_pair(p);
-        let rf = p.fd().ofile(3).unwrap();
-        let wf = p.fd().ofile(4).unwrap();
+        let rf_ref = p.fd().ofile(3).unwrap();
+        let rf: &File = &rf_ref;
+        let wf_ref = p.fd().ofile(4).unwrap();
+        let wf: &File = &wf_ref;
         assert_eq!(rf.flag() & (FREAD | FWRITE), FREAD | FWRITE);
-        assert!(rf.f_data.get().is_null(), "a pipe keeps f_data null");
+        assert!(
+            matches!(rf.data(), Some(BsdFileData::Pipe(_))),
+            "a pipe's object is its end"
+        );
 
         assert_eq!(write(wf, b"abc"), (Ok(()), 3));
         let mut data = [0u8; 8];
@@ -825,14 +824,18 @@ mod tests {
         let _g = setup();
         let p = fd_thread();
         let pair = installed_pair(p);
-        let rf = p.fd().ofile(3).unwrap();
-        let wf = p.fd().ofile(4).unwrap();
+        let rf_ref = p.fd().ofile(3).unwrap();
+        let rf: &File = &rf_ref;
+        let wf_ref = p.fd().ofile(4).unwrap();
+        let wf: &File = &wf_ref;
 
         let rk = pipe_kinfo(rf).unwrap();
         let wk = pipe_kinfo(wf).unwrap();
         assert_eq!((rk.peer, wk.peer), (wk.addr, rk.addr));
         assert_eq!(rk.addr.max(rk.peer), wk.addr.max(wk.peer));
 
+        // The test's reference goes first: the close is the last one.
+        drop(wf_ref);
         close_fd(p, 4);
         let rk = pipe_kinfo(rf).unwrap();
         assert_eq!(rk.peer, 0);
@@ -872,8 +875,10 @@ mod tests {
         let p = fd_thread();
         let pair = installed_pair(p);
         let kq = new_kqueue(p);
-        let wf = p.fd().ofile(4).unwrap();
-        let rf = p.fd().ofile(3).unwrap();
+        let wf_ref = p.fd().ofile(4).unwrap();
+        let wf: &File = &wf_ref;
+        let rf_ref = p.fd().ofile(3).unwrap();
+        let rf: &File = &rf_ref;
         let mut out = [Kevent::default(); 4];
 
         let mut kev = ev_set(3, EVFILT_READ, EV_ADD, 0, 0, 7);
@@ -911,11 +916,13 @@ mod tests {
         );
 
         // The writer goes away: EOF on the reader's knote.
+        drop(wf_ref);
         close_fd(p, 4);
         assert_eq!(scan(p, kq, &mut out), (1, Ok(())));
         assert_eq!(out[0].flags & EV_EOF, EV_EOF);
 
         drop(pair);
+        drop(rf_ref);
         close_fd(p, 3);
         assert_eq!(kq.kq_nknotes.get(), 0);
         close_kqueue(p, kq);
@@ -926,7 +933,8 @@ mod tests {
         let _g = setup();
         let p = fd_thread();
         let pair = installed_pair(p);
-        let wf = p.fd().ofile(4).unwrap();
+        let wf_ref = p.fd().ofile(4).unwrap();
+        let wf: &File = &wf_ref;
         let pfd = |fd, events| Pollfd {
             fd,
             events,
@@ -947,6 +955,7 @@ mod tests {
         assert_eq!(select_once(p, 5, 1 << 3, 1 << 4), Ok([1 << 3, 1 << 4, 0]));
 
         // The writer is gone: the reader sees EOF as POLLIN | POLLHUP, and select as readable.
+        drop(wf_ref);
         close_fd(p, 4);
         let mut pl = [pfd(3, POLLIN)];
         assert_eq!(poll_once(p, &mut pl), 1);

@@ -79,10 +79,9 @@
 
 use alloc::format;
 use alloc::vec::Vec;
-use core::ptr;
 use core::sync::atomic::Ordering;
 
-use crate::kern::kern_descrip::{falloc, fdinsert, fdrelease};
+use crate::kern::kern_descrip::{BsdFileData, falloc, fdinsert, fdrelease};
 use crate::kern::kern_exec::{check_exec, namei_pnbuf_put};
 use crate::kern::vfs_lookup::ndinitat;
 use crate::kern::vfs_vnops::{VNOPS, vn_close, vn_lock};
@@ -196,22 +195,20 @@ pub fn exec_script_makecmds(
         }
 
         let fdp = p.fd();
-        fdplock(fdp);
-        let (fp, fd) = match falloc(p) {
+        let mut g = fdplock(fdp);
+        let (fp, fd) = match falloc(p, &mut g) {
             Ok(got) => got,
             Err(error) => {
-                fdpunlock(fdp);
+                fdpunlock(g);
                 return exec_script_fail(p, epp, ndp, scriptvp, error);
             }
         };
         epp.ep_fd = fd;
         epp.ep_flags |= EXEC_HASFD;
-        fp.f_type.set(DTYPE_VNODE);
-        fp.f_ops.set(Some(&VNOPS));
-        fp.f_data.set(ptr::from_ref(scriptvp).cast_mut().cast());
+        fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(scriptvp));
         fp.f_flag.store(FREAD as u32, Ordering::SeqCst);
-        fdinsert(fdp, fd, 0, fp);
-        fdpunlock(fdp);
+        fdinsert(&mut g, fd, 0, &fp);
+        fdpunlock(g);
         let _ = frele(fp, p);
     }
 
@@ -303,9 +300,9 @@ fn exec_script_fail(
     // kill the opened file descriptor, else close the file
     if epp.ep_flags & EXEC_HASFD != 0 {
         epp.ep_flags &= !EXEC_HASFD;
-        fdplock(p.fd());
+        let g = fdplock(p.fd());
         // fdrelease() unlocks p->p_fd.
-        let _ = fdrelease(p, epp.ep_fd);
+        let _ = fdrelease(p, g, epp.ep_fd);
     } else {
         let _ = vn_close(scriptvp, FREAD, p.ucred_ptr(), Some(p));
     }

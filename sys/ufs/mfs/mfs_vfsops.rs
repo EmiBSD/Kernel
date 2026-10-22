@@ -354,7 +354,7 @@ mod tests {
         unsafe { MOUNTLIST.0.insert_tail(mp) };
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
         mp
@@ -464,7 +464,7 @@ mod tests {
         mfsp.mfs_shutdown.store(0, Ordering::Relaxed);
 
         // Unmount: the close of the device tells the process to exit, the image is clean.
-        if let Some(cdir) = p.fd().fd_cdir.take() {
+        if let Some(cdir) = p.fd().replace_cdir(None) {
             crate::kern::vfs_subr::vrele(cdir);
         }
         if let Some(root) = crate::kern::vfs_init::rootvnode() {

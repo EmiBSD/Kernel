@@ -218,7 +218,8 @@ use hal::user::UserPtr;
 use crate::assert::{kassert, kpanic};
 use crate::file::{
     DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, FDUP_MAX_COUNT, FIF_HASLOCK, FIF_INSERTED,
-    FO_POSITION, File, FileGlue, FileOps, FileRef, LockOwner, fnew, foffset, vfs_stall_barrier,
+    FO_POSITION, File, FileGlue, FileOps, FileRef, LockOwner, VFS_STALLING, fnew, foffset,
+    vfs_stall_barrier,
 };
 use crate::proc::{PS_PLEDGE, PS_SUGID, PS_SUGIDEXEC, ProcGlue, Process, Thread, suser};
 use crate::resource::RLIMIT_NOFILE;
@@ -494,6 +495,12 @@ impl<G: FileGlue> Filedesc<G> {
         self.slots.lock().files.as_slice().len()
     }
 
+    /// `fd_ofiles[fd]`, read now with a reference taken (no `vfs_stall_barrier`: a walk of
+    /// the table, `kinfo_file`'s); `None` for an empty slot or past the table.
+    pub fn ofile(&self, fd: usize) -> Option<FileRef<G>> {
+        self.slots.lock().file(fd).cloned()
+    }
+
     /// `fd_ofileflags[fd]`, read now (0 past the table).
     pub fn ofileflags(&self, fd: i32) -> u8 {
         self.slots.lock().flags(fd as u32 as usize)
@@ -517,6 +524,13 @@ impl<G: FileGlue> Filedesc<G> {
     /// `fd_cdir = vp` (the caller holds the use count it gives, `vref`).
     pub fn set_cdir(&self, vp: Option<&'static G::Vnode>) {
         self.cdir.set(vp);
+    }
+
+    /// `fd_cdir = vp`, the old value back (its use count the caller's).
+    pub fn replace_cdir(&self, vp: Option<&'static G::Vnode>) -> Option<&'static G::Vnode> {
+        let old = self.cdir.get();
+        self.cdir.set(vp);
+        old
     }
 
     /// `fd_rdir`.
@@ -599,6 +613,29 @@ impl<'a, G: FileGlue> FdGuard<'a, G> {
     /// `fd_ofiles[fd]`, a reference taken (no `vfs_stall_barrier`: the table's own read).
     pub fn ofile(&self, fd: i32) -> Option<FileRef<G>> {
         self.fdp.slots.lock().file(fd as u32 as usize).cloned()
+    }
+
+    /// `fd_ofiles[fd] = NULL; fd_ofileflags[fd] = 0` under `fd_fplock`, the descriptor's
+    /// number kept allocated: the slot's reference and flags come back (diskmap's swap of a
+    /// descriptor's file, which `fdinsert` refills).
+    pub fn take_ofile(&mut self, fd: i32) -> (Option<FileRef<G>>, u8) {
+        let mut s = self.fdp.slots.lock();
+        let fp = s.slot(fd as usize).take();
+        let flags = s.flags(fd as usize);
+        s.set_flags(fd as usize, 0);
+        (fp, flags)
+    }
+
+    /// `fdp->fd_ofiles[fd] = fp` under `fd_fplock` of an allocated, empty descriptor, the
+    /// slot taking the caller's reference, and its flags (`unp_externalize`'s placement of a
+    /// received file, already in `filehead`).
+    pub fn place_ofile(&mut self, fd: i32, fp: FileRef<G>, flags: u8) {
+        kassert!(fp.f_iflags.load(Ordering::Relaxed) & FIF_INSERTED != 0);
+        let mut s = self.fdp.slots.lock();
+        let slot = s.slot(fd as usize);
+        kassert!(slot.is_none());
+        *slot = Some(fp);
+        s.set_flags(fd as usize, flags);
     }
 
     /// `fd_inuse(fdp, fd)`.
@@ -1147,20 +1184,20 @@ pub fn finishdup<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         return Err(Errno::EDEADLK);
     }
 
-    let had = g.fdp.slots.lock().file(new as usize).is_some();
-    if dupflags & DUPF_DUP2 != 0 && !had {
-        if g.fd_inuse(new) {
-            drop(g);
-            let _ = fp.frele(Some(p));
-            return Err(Errno::EBUSY);
-        }
-        g.fd_used(new);
-    }
-
     // Under `fd_fplock`, so that fd_getfile() no longer creates a new reference to the old
     // file: the slot's reference to it comes out here.
+    let fdp = g.fdp;
     let oldfp = {
-        let mut s = g.fdp.slots.lock();
+        let mut s = fdp.slots.lock();
+        if dupflags & DUPF_DUP2 != 0 && s.file(new as usize).is_none() {
+            if g.fd_inuse(new) {
+                drop(s);
+                drop(g);
+                let _ = fp.frele(Some(p));
+                return Err(Errno::EBUSY);
+            }
+            g.fd_used(new);
+        }
         let oldfp = s.slot(new as usize).replace(fp);
         let mut flags = s.flags(old as usize) & !(UF_EXCLOSE | UF_FORKCLOSE);
         if dupflags & DUPF_CLOEXEC != 0 {
@@ -1232,17 +1269,26 @@ pub fn fdrelease<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     fd: i32,
 ) -> Result<(), Errno> {
     vfs_stall_barrier::<G>();
-    if g.fdp.slots.lock().file(fd as u32 as usize).is_none() {
+    // fd_getfile's check and fdremove's slot, in one section of `fd_fplock`.
+    let fp = {
+        let mut s = g.fdp.slots.lock();
+        let i = fd as u32 as usize;
+        if s.file(i).is_none() {
+            None
+        } else {
+            let fp = s.slot(i).take();
+            s.set_flags(i, 0);
+            fp
+        }
+    };
+    let Some(fp) = fp else {
         drop(g);
         return Err(Errno::EBADF);
-    }
-    let fp = fdremove(&mut g, fd);
+    };
+    g.fd_unused(fd);
     G::knote_fdclose(p, fd);
     drop(g);
-    match fp {
-        Some(fp) => closef(fp, Some(p)),
-        None => Ok(()),
-    }
+    closef(fp, Some(p))
 }
 
 /// Close a file descriptor (`close(2)`).
@@ -1259,7 +1305,7 @@ pub fn sys_close<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
 pub fn sys_fstat<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     p: &Thread<P>,
     fd: i32,
-    sb: UserPtr<G::Stat>,
+    sb: usize,
 ) -> Result<(), Errno> {
     let fp = fd_getfile(p.fd(), fd).ok_or(Errno::EBADF)?;
     let mut ub = G::Stat::default();
@@ -1270,7 +1316,7 @@ pub fn sys_fstat<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     if suser(p).is_err() {
         G::stat_hide_gen(&mut ub);
     }
-    sb.copyout(&ub)
+    G::stat_copyout(&ub, sb)
 }
 
 /// Return pathconf information about a file descriptor (`fpathconf(2)`).
@@ -1528,14 +1574,18 @@ pub fn fdcopy<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(pr: &Process<P>)
     // The new table is ours alone until it is returned: its state and slots are filled
     // before it exists, with no lock.
     let openfd = AtomicI32::new(0);
+    let mut src = fdp.slots.lock();
     for i in 0..=lastfile {
-        vfs_stall_barrier::<G>();
-        let (fp, fileflags) = {
-            let s = fdp.slots.lock();
-            match s.file(i as usize) {
-                Some(fp) => (fp.clone(), s.flags(i as usize)),
-                None => continue,
-            }
+        // FREF's vfs_stall_barrier: one load; the wait, if any, with the mutex let go (the
+        // slots cannot change: the table's lock is held).
+        if VFS_STALLING.load(Ordering::Relaxed) != 0 {
+            drop(src);
+            vfs_stall_barrier::<G>();
+            src = fdp.slots.lock();
+        }
+        let (fp, fileflags) = match src.file(i as usize) {
+            Some(fp) => (fp.clone(), src.flags(i as usize)),
+            None => continue,
         };
         // If the UF_FORKCLOSE flag is set, skip the fd. XXX Gruesome hack. If count gets too
         // high, fail to copy an fd, since fdcopy()'s callers do not permit it to indicate
@@ -1556,6 +1606,7 @@ pub fn fdcopy<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(pr: &Process<P>)
         slots.set_flags(i as usize, fileflags);
         st.fd_used(i, &openfd);
     }
+    drop(src);
 
     let newfdp = Filedesc::with(st, slots);
     newfdp
@@ -1740,15 +1791,33 @@ pub fn fdprepforexec<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Threa
     let fdp = p.fd();
     let mut g = fdplock(fdp);
     let mut fd = 0;
-    while fd <= g.st.lastfile {
-        let flags = g.ofileflags(fd) & !(UF_PLEDGED | UF_FORKCLOSE);
-        g.set_ofileflags(fd, flags);
-        if flags & UF_EXCLOSE != 0 {
-            // fdrelease() unlocks fdp.
-            let _ = fdrelease(p, g, fd);
-            g = fdplock(fdp);
-        }
-        fd += 1;
+    loop {
+        // The flags of the descriptors up to the next close-on-exec one, under one section
+        // of `fd_fplock` (`fd_lastfile` read under the table's lock, as the C's loop).
+        let last = g.st.lastfile;
+        let close = {
+            let mut s = fdp.slots.lock();
+            let flags = s.flags.as_mut_slice();
+            // `fd_lastfile` is below `fd_nfiles` (-1 for an empty table).
+            let end = usize::try_from(last.saturating_add(1))
+                .unwrap_or(0)
+                .min(flags.len());
+            let start = usize::try_from(fd).unwrap_or(0).min(end);
+            flags[start..end]
+                .iter_mut()
+                .position(|f| {
+                    *f &= !(UF_PLEDGED | UF_FORKCLOSE);
+                    *f & UF_EXCLOSE != 0
+                })
+                .map(|k| (start + k) as i32)
+        };
+        let Some(cfd) = close else {
+            break;
+        };
+        // fdrelease() unlocks fdp.
+        let _ = fdrelease(p, g, cfd);
+        g = fdplock(fdp);
+        fd = cfd + 1;
     }
     drop(g);
 }
@@ -2778,18 +2847,15 @@ mod tests {
         let (_pr, root) = thread(16);
         let fd = open(&root, 1);
         let sb = testutil::USER_BASE + 0x3c00;
-        assert_eq!(sys_fstat(&root, fd, UserPtr::<TestStat>::new(sb)), Ok(()));
+        assert_eq!(sys_fstat(&root, fd, sb), Ok(()));
         let st = UserPtr::<TestStat>::new(sb).copyin().unwrap();
         assert_eq!((st.st_size, st.st_gen), (11, 7));
         let (_qr, user) = thread_as(17, 1000, 512);
         let ufd = open(&user, 2);
-        assert_eq!(sys_fstat(&user, ufd, UserPtr::<TestStat>::new(sb)), Ok(()));
+        assert_eq!(sys_fstat(&user, ufd, sb), Ok(()));
         let st = UserPtr::<TestStat>::new(sb).copyin().unwrap();
         assert_eq!((st.st_size, st.st_gen), (11, 0));
-        assert_eq!(
-            sys_fstat(&user, 9, UserPtr::<TestStat>::new(sb)),
-            Err(Errno::EBADF)
-        );
+        assert_eq!(sys_fstat(&user, 9, sb), Err(Errno::EBADF));
 
         assert_eq!(
             sys_fpathconf(&root, fd, _PC_PIPE_BUF),

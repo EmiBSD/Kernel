@@ -1795,8 +1795,8 @@ pub fn vnoperm(vp: &'static Vnode) -> bool {
 
 /// `vfs_stall_lock`.
 pub static VFS_STALL_LOCK: Rwlock = Rwlock::new("vfs_stall");
-/// `vfs_stalling`.
-pub static VFS_STALLING: AtomicU32 = AtomicU32::new(0);
+/// `vfs_stalling`: the kernel's counter, which every `FREF` reads (`kernel::file`).
+pub use kernel::file::VFS_STALLING;
 
 /// `vfs_stall(p, stall)`: syncs and busies every file system (suspend), or releases them.
 pub fn vfs_stall(p: &Proc, stall: bool) -> Result<(), Errno> {
@@ -2749,7 +2749,7 @@ pub(crate) mod tests {
                 std::panic!("testfs: no root");
             };
             set_rootvnode(Some(root));
-            p.fd().fd_cdir.set(Some(root));
+            p.fd().set_cdir(Some(root));
             vref(root);
             let _ = VOP_UNLOCK(root);
             mp
@@ -2795,9 +2795,7 @@ pub(crate) mod tests {
 
         let p = test_proc(1, crget());
         let pr = p.process();
-        let fdp = fdinit();
-        pr.ps_fd.set(fdp);
-        p.p_fd.set(fdp);
+        pr.set_fd(fdinit());
         (guard, p)
     }
 

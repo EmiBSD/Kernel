@@ -77,9 +77,8 @@ use core::ptr::NonNull;
 use core::slice;
 use core::sync::atomic::Ordering;
 
-use crate::kern::kern_descrip::{closef, falloc, fd_getfile, fdinsert, fdremove};
+use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_event::knote;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::kern_pledge::{pledge_fail, pledge_sendit, pledge_socket, pledge_sockopt};
 use crate::kern::kern_prot::suser;
@@ -105,7 +104,7 @@ use crate::netinet::in_::{IPPORT_RESERVED, InAddr, SockaddrIn};
 use crate::netinet::in_pcb::{INP_LOWPORT, sotoinpcb};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
-use crate::sys::file::{DTYPE_SOCKET, File, frele};
+use crate::sys::file::{DTYPE_SOCKET, FileRef, frele};
 use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, fdplock, fdpunlock};
 use crate::sys::limits::{SSIZE_MAX, UCHAR_MAX};
 use crate::sys::malloc::{M_IOV, M_WAITOK};
@@ -326,21 +325,19 @@ pub fn sys_socket(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 
     let so = socreate(domain, type_, uap.protocol.get())?;
 
-    fdplock(fdp);
-    match falloc(p) {
+    let mut g = fdplock(fdp);
+    match falloc(p, &mut g) {
         Err(error) => {
-            fdpunlock(fdp);
+            fdpunlock(g);
             let _ = soclose(so, MSG_DONTWAIT);
             Err(error)
         }
         Ok((fp, fd)) => {
             fp.f_flag.store(fflag as u32, Ordering::SeqCst);
-            fp.f_type.set(DTYPE_SOCKET);
-            fp.f_ops.set(Some(&SOCKETOPS));
             so.set_state(ss);
-            fp.f_data.set(core::ptr::from_ref(so).cast_mut().cast());
-            fdinsert(fdp, fd, fdflags, fp);
-            fdpunlock(fdp);
+            fp.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(so));
+            fdinsert(&mut g, fd, fdflags, &fp);
+            fdpunlock(g);
             let _ = frele(fp, p);
             retval[0] = fd as Register;
             Ok(())
@@ -392,7 +389,7 @@ pub fn sys_bind(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
     let uap: &SysBindArgs = sysargs(v);
 
     let fp = getsock(p, uap.s.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error = 'out: {
         if so.has_state(SS_YP) {
             break 'out Err(Errno::ENOTSOCK);
@@ -424,7 +421,7 @@ pub fn sys_listen(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let uap: &SysListenArgs = sysargs(v);
 
     let fp = getsock(p, uap.s.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error = if so.has_state(SS_YP) {
         Err(Errno::ENOTSOCK)
     } else {
@@ -498,9 +495,9 @@ pub fn doaccept(
     }
     let headfp = getsock(p, sock)?;
 
-    fdplock(fdp);
-    let alloc = falloc(p);
-    fdpunlock(fdp);
+    let mut g = fdplock(fdp);
+    let alloc = falloc(p, &mut g);
+    fdpunlock(g);
     let (fp, tmpfd) = match alloc {
         Ok(r) => r,
         Err(error) => {
@@ -511,7 +508,7 @@ pub fn doaccept(
 
     let nam = m_get(M_WAIT, MT_SONAME);
 
-    let head = fp_socket(headfp);
+    let head = fp_socket(&headfp);
     solock_shared(head);
 
     let error: Result<(), Errno> = 'out: {
@@ -573,11 +570,9 @@ pub fn doaccept(
 
             sounlock_nonet(head);
 
-            fp.f_type.set(DTYPE_SOCKET);
             fp.f_flag
                 .store((FREAD | FWRITE | nflag) as u32, Ordering::SeqCst);
-            fp.f_ops.set(Some(&SOCKETOPS));
-            fp.f_data.set(core::ptr::from_ref(so).cast_mut().cast());
+            fp.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(so));
 
             let error = crate::kern::uipc_socket::soaccept(so, nam);
 
@@ -593,9 +588,9 @@ pub fn doaccept(
                 break 'out Err(e);
             }
 
-            fdplock(fdp);
-            fdinsert(fdp, tmpfd, fdflags, fp);
-            fdpunlock(fdp);
+            let mut g = fdplock(fdp);
+            fdinsert(&mut g, tmpfd, fdflags, &fp);
+            fdpunlock(g);
             let _ = frele(fp, p);
             retval[0] = tmpfd as Register;
 
@@ -608,10 +603,10 @@ pub fn doaccept(
         sounlock_shared(head);
         error
     };
-    // out:
-    fdplock(fdp);
-    fdremove(fdp, tmpfd);
-    fdpunlock(fdp);
+    // out: the descriptor (no slot holds the file) and the file.
+    let mut g = fdplock(fdp);
+    let _ = fdremove(&mut g, tmpfd);
+    fdpunlock(g);
     let _ = closef(fp, p);
 
     m_freem(nam);
@@ -631,7 +626,7 @@ pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
     let mut interrupted = false;
 
     let fp = getsock(p, uap.s.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error: Result<(), Errno> = 'out: {
         if so.has_state(SS_YP) {
             break 'out Err(Errno::ENOTSOCK);
@@ -748,55 +743,55 @@ pub fn sys_socketpair(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
                 break 'free2 Err(e);
             }
         }
-        let mut fp1: Option<&'static File> = None;
-        let mut fp2: Option<&'static File> = None;
-        fdplock(fdp);
+        let mut fp1: Option<FileRef> = None;
+        let mut fp2: Option<FileRef> = None;
+        let mut g = fdplock(fdp);
         let error: Result<(), Errno> = 'free3: {
-            let (f1, sv0) = match falloc(p) {
+            let (f1, sv0) = match falloc(p, &mut g) {
                 Ok(r) => r,
                 Err(e) => break 'free3 Err(e),
             };
-            fp1 = Some(f1);
             f1.f_flag.store(fflag, Ordering::SeqCst);
-            f1.f_type.set(DTYPE_SOCKET);
-            f1.f_ops.set(Some(&SOCKETOPS));
-            f1.f_data.set(core::ptr::from_ref(s1).cast_mut().cast());
-            let (f2, sv1) = match falloc(p) {
+            f1.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(s1));
+            let f1 = fp1.insert(f1);
+            let (f2, sv1) = match falloc(p, &mut g) {
                 Ok(r) => r,
                 Err(e) => {
                     // free4:
-                    fdremove(fdp, sv0);
+                    let _ = fdremove(&mut g, sv0);
                     break 'free3 Err(e);
                 }
             };
-            fp2 = Some(f2);
             f2.f_flag.store(fflag, Ordering::SeqCst);
-            f2.f_type.set(DTYPE_SOCKET);
-            f2.f_ops.set(Some(&SOCKETOPS));
-            f2.f_data.set(core::ptr::from_ref(s2).cast_mut().cast());
+            f2.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(s2));
+            let f2 = fp2.insert(f2);
             let mut sv = [0u8; 2 * size_of::<i32>()];
             sv[..4].copy_from_slice(&sv0.to_ne_bytes());
             sv[4..].copy_from_slice(&sv1.to_ne_bytes());
             match copyout(&sv, uap.rsv.get() as usize) {
                 Ok(()) => {
-                    fdinsert(fdp, sv0, fdflags, f1);
-                    fdinsert(fdp, sv1, fdflags, f2);
-                    fdpunlock(fdp);
+                    fdinsert(&mut g, sv0, fdflags, f1);
+                    fdinsert(&mut g, sv1, fdflags, f2);
+                    fdpunlock(g);
                     // KTRACE: not configured.
-                    let _ = frele(f1, p);
-                    let _ = frele(f2, p);
+                    if let Some(f1) = fp1 {
+                        let _ = frele(f1, p);
+                    }
+                    if let Some(f2) = fp2 {
+                        let _ = frele(f2, p);
+                    }
                     return Ok(());
                 }
                 Err(e) => {
-                    fdremove(fdp, sv1);
+                    let _ = fdremove(&mut g, sv1);
                     // free4:
-                    fdremove(fdp, sv0);
+                    let _ = fdremove(&mut g, sv0);
                     break 'free3 Err(e);
                 }
             }
         };
         // free3:
-        fdpunlock(fdp);
+        fdpunlock(g);
 
         if let Some(f2) = fp2 {
             let _ = closef(f2, p);
@@ -984,7 +979,7 @@ pub fn sendit(
     let mut flags = flags;
 
     let fp = getsock(p, s)?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     if fp.flag() & FNONBLOCK != 0 {
         flags |= MSG_DONTWAIT;
     }
@@ -1054,10 +1049,11 @@ pub fn sendit(
         }
         if error.is_ok() {
             *retsize = (len - auio.uio_resid) as Register;
-            mtx_enter(&fp.f_mtx);
-            fp.f_wxfer.set(fp.f_wxfer.get() + 1);
-            fp.f_wbytes.set(fp.f_wbytes.get() + *retsize as u64);
-            mtx_leave(&fp.f_mtx);
+            {
+                let mut st = fp.stats();
+                st.f_wxfer += 1;
+                st.f_wbytes += *retsize as u64;
+            }
         }
         // KTRACE: not configured.
         error
@@ -1257,7 +1253,7 @@ pub fn sys_recvmmsg(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result
         && dgrams > 0
     {
         if let Ok(fp) = getsock(p, s) {
-            let so = fp_socket(fp);
+            let so = fp_socket(&fp);
             so.set_error(Some(e));
 
             let _ = frele(fp, p);
@@ -1309,7 +1305,7 @@ pub fn recvit(
         let want_control = !mp.msg_control.is_null();
         let mut msg_flags = mp.msg_flags;
         let mut error = soreceive(
-            fp_socket(fp),
+            fp_socket(&fp),
             Some(&mut from),
             &mut auio,
             None,
@@ -1394,10 +1390,11 @@ pub fn recvit(
             mp.msg_controllen = clen as Socklen;
         }
         if error.is_ok() {
-            mtx_enter(&fp.f_mtx);
-            fp.f_rxfer.set(fp.f_rxfer.get() + 1);
-            fp.f_rbytes.set(fp.f_rbytes.get() + *retsize as u64);
-            mtx_leave(&fp.f_mtx);
+            {
+                let mut st = fp.stats();
+                st.f_rxfer += 1;
+                st.f_rbytes += *retsize as u64;
+            }
         }
         error
     };
@@ -1413,7 +1410,7 @@ pub fn sys_shutdown(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     let uap: &SysShutdownArgs = sysargs(v);
 
     let fp = getsock(p, uap.s.get())?;
-    let error = soshutdown(fp_socket(fp), uap.how.get());
+    let error = soshutdown(fp_socket(&fp), uap.how.get());
     let _ = frele(fp, p);
     error
 }
@@ -1424,7 +1421,7 @@ pub fn sys_setsockopt(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     let mut m: Option<&'static Mbuf> = None;
 
     let fp = getsock(p, uap.s.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error = 'bad: {
         if let Err(e) = pledge_sockopt(p, true, so.so_proto, uap.level.get(), uap.name.get()) {
             break 'bad Err(e);
@@ -1465,7 +1462,7 @@ pub fn sys_getsockopt(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     let uap: &SysGetsockoptArgs = sysargs(v);
 
     let fp = getsock(p, uap.s.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error = 'out: {
         if let Err(e) = pledge_sockopt(p, false, so.so_proto, uap.level.get(), uap.name.get()) {
             break 'out Err(e);
@@ -1506,7 +1503,7 @@ pub fn sys_getsockname(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
     let mut m: Option<&'static Mbuf> = None;
 
     let fp = getsock(p, uap.fdes.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error = 'out: {
         if so.has_state(SS_YP) {
             break 'out Err(Errno::ENOTSOCK);
@@ -1540,7 +1537,7 @@ pub fn sys_getpeername(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
     let mut m: Option<&'static Mbuf> = None;
 
     let fp = getsock(p, uap.fdes.get())?;
-    let so = fp_socket(fp);
+    let so = fp_socket(&fp);
     let error = 'bad: {
         if so.has_state(SS_YP) {
             break 'bad Err(Errno::ENOTSOCK);
@@ -1614,11 +1611,11 @@ pub fn sockargs(buf: usize, buflen: usize, type_: i32) -> Result<&'static Mbuf, 
 
 /// `getsock(p, fdes, fpp)`: the socket file of the descriptor `fdes`, with a reference;
 /// `ENOTSOCK` for another kind of file.
-pub fn getsock(p: &Proc, fdes: i32) -> Result<&'static File, Errno> {
+pub fn getsock(p: &Proc, fdes: i32) -> Result<FileRef, Errno> {
     let Some(fp) = fd_getfile(p.fd(), fdes) else {
         return Err(Errno::EBADF);
     };
-    if fp.f_type.get() != DTYPE_SOCKET {
+    if fp.f_type() != DTYPE_SOCKET {
         let _ = frele(fp, p);
         return Err(Errno::ENOTSOCK);
     }
@@ -1873,11 +1870,11 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
         return Err(error);
     }
 
-    fdplock(fdp);
-    let (fp, fd) = match falloc(p) {
+    let mut g = fdplock(fdp);
+    let (fp, fd) = match falloc(p, &mut g) {
         Ok(r) => r,
         Err(error) => {
-            fdpunlock(fdp);
+            fdpunlock(g);
             let _ = soclose(so, MSG_DONTWAIT);
             return Err(error);
         }
@@ -1885,11 +1882,9 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
 
     fp.f_flag
         .store((FREAD | FWRITE | FNONBLOCK) as u32, Ordering::SeqCst);
-    fp.f_type.set(DTYPE_SOCKET);
-    fp.f_ops.set(Some(&SOCKETOPS));
-    fp.f_data.set(core::ptr::from_ref(so).cast_mut().cast());
-    fdinsert(fdp, fd, UF_EXCLOSE, fp);
-    fdpunlock(fdp);
+    fp.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(so));
+    fdinsert(&mut g, fd, UF_EXCLOSE, &fp);
+    fdpunlock(g);
     let _ = frele(fp, p);
     retval[0] = fd as Register;
     Ok(())

@@ -1866,7 +1866,7 @@ mod tests {
         unsafe { MOUNTLIST.0.insert_tail(mp) };
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
         ((t, g), p, mp)
@@ -1874,8 +1874,8 @@ mod tests {
 
     /// Lets go of the root and unmounts (`dounmount`: `ext2fs_sync`, `ext2fs_unmount`).
     fn unmount(p: &'static Proc, mp: &'static Mount) {
-        let root = p.fd().fd_cdir.get().unwrap();
-        p.fd().fd_cdir.set(None);
+        let root = p.fd().cdir().unwrap();
+        p.fd().set_cdir(None);
         set_rootvnode(None);
         vrele(root);
         vrele(root);

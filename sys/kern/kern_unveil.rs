@@ -218,7 +218,7 @@ fn vp_eq(a: Option<&Vnode>, b: Option<&Vnode>) -> bool {
 
 /// The process's root for the walks up: its `chroot(2)` directory, else `rootvnode`.
 fn proc_root(p: &Proc) -> Option<&'static Vnode> {
-    p.fd().fd_rdir.get().or_else(rootvnode)
+    p.fd().rdir().or_else(rootvnode)
 }
 
 /// The NUL-terminated name at `cn_nameptr`, without its NUL: what `strlen(cn_nameptr)`
@@ -1124,14 +1124,14 @@ mod tests {
         // chdir /a/c, which is not itself unveiled: covered by /a.
         let cdir = testfs::vget_node(mp, C).unwrap();
         let _ = crate::kern::vfs_vops::VOP_UNLOCK(cdir);
-        let old = p.fd().fd_cdir.replace(Some(cdir));
+        let old = p.fd().replace_cdir(Some(cdir));
         assert_eq!(access(p, b".", UNVEIL_READ), Ok(()));
         assert_eq!(access(p, b"../b", UNVEIL_READ), Ok(()));
         assert_eq!(access(p, b"../b", UNVEIL_WRITE), Err(Errno::EACCES));
         // Above the cover nothing is visible.
         assert_eq!(access(p, b"../..", UNVEIL_READ), Err(Errno::ENOENT));
         assert_eq!(access(p, b"../../l", UNVEIL_READ), Ok(())); // l -> a/c
-        p.fd().fd_cdir.set(old);
+        p.fd().set_cdir(old);
         vrele(cdir);
         assert!(!any_locked());
         unveil_destroy(pr);

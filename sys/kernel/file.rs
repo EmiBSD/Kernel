@@ -105,7 +105,6 @@ use hal::pool::{Last, PoolArc, PoolHome, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
 use hal::sys::types::{Off, Register};
-use hal::user::AbiPod;
 
 use crate::assert::kpanic;
 use crate::cred::CredRef;
@@ -140,13 +139,14 @@ pub const FIF_INSERTED: u32 = 0x80;
 /// `hal`'s handle limit, so a duplication is refused before a clone could panic).
 pub const FDUP_MAX_COUNT: u32 = u32::MAX - 2 * hal::cpu::MAXCPUS as u32;
 
-/// Whether `vfs_stall(9)` is stalling the file systems (`vfs_stalling`): read by every
-/// `FREF`, set by `bsd`'s `vfs_stall`; while it is, `FREF` waits ([`FileGlue::stall_wait`]).
-pub static VFS_STALLING: AtomicBool = AtomicBool::new(false);
+/// `vfs_stalling`: whether `vfs_stall(9)` is stalling the file systems (non-zero), read by
+/// every `FREF`, counted by `bsd`'s `vfs_stall`; while it is, `FREF` waits
+/// ([`FileGlue::stall_wait`]).
+pub static VFS_STALLING: AtomicU32 = AtomicU32::new(0);
 
 /// `vfs_stall_barrier()`: one relaxed load, and a wait while the file systems are stalled.
 pub fn vfs_stall_barrier<G: FileGlue>() {
-    if VFS_STALLING.load(Ordering::Relaxed) {
+    if VFS_STALLING.load(Ordering::Relaxed) != 0 {
         G::stall_wait();
     }
 }
@@ -397,20 +397,20 @@ pub struct FileTables<G: FileGlue> {
     pub filepl: TypedPool<File<G>>,
     /// `fdesc_pool`, `fdescpl`.
     pub fdescpl: TypedPool<Filedesc<G>>,
-    /// `numfiles`: actual number of open files.
-    pub numfiles: AtomicI32,
+    /// `numfiles`: actual number of open files (the glue's static: `kern.nfiles` reads it).
+    pub numfiles: &'static AtomicI32,
 }
 
 impl<G: FileGlue> FileTables<G> {
-    /// Empty tables whose `fhdlk` is at `ipl` (`IPL_MPFLOOR`); `filedesc_init` makes the
-    /// pools.
-    pub const fn new(ipl: i32) -> Self {
+    /// Empty tables whose `fhdlk` is at `ipl` (`IPL_MPFLOOR`), counting the open files in
+    /// `numfiles`; `filedesc_init` makes the pools.
+    pub const fn new(ipl: i32, numfiles: &'static AtomicI32) -> Self {
         Self {
             fhdlk: Mutexed::new(ipl, ()),
             filehead: PinList::new(),
             filepl: TypedPool::new(),
             fdescpl: TypedPool::new(),
-            numfiles: AtomicI32::new(0),
+            numfiles,
         }
     }
 }
@@ -463,8 +463,8 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type Data: Send + Sync + 'static;
     /// `struct knote`, for [`FileOps::kqfilter`].
     type Knote: ?Sized;
-    /// `struct stat`, as `fstat(2)` copies it out.
-    type Stat: AbiPod + Default;
+    /// `struct stat`, as `fo_stat` fills it.
+    type Stat: Default;
     /// `struct vnode` (`fd_cdir`, `fd_rdir`).
     type Vnode: Sync + 'static;
     /// `f_list`: `filehead`'s adapter ([`file_glue_links!`](crate::file_glue_links)).
@@ -481,8 +481,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `vfs_stall_barrier()`'s wait while [`VFS_STALLING`] is set (`rw_enter_read` and
     /// `rw_exit_read` of `vfs_stall_lock`).
     fn stall_wait();
-    /// The object's address, as `kinfo_file.f_data` prints it.
-    fn data_addr(d: &Self::Data) -> usize;
     /// `vref(vp)`.
     fn vref(v: &'static Self::Vnode);
     /// `vrele(vp)`.
@@ -516,6 +514,8 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn pledge_ioctl(p: &Thread<Self::Proc>, com: u64, fp: &File<Self>) -> Result<(), Errno>;
     /// `fstat(2)` for a caller that is not root: `ub.st_gen = 0`.
     fn stat_hide_gen(st: &mut Self::Stat);
+    /// `copyout(&ub, sb, sizeof(ub))` of `fstat(2)`: the structure's user bytes at `sb`.
+    fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), Errno>;
     /// `fdfree`'s check of a table's kqueue members once its descriptors are closed
     /// (`fd_nuserevents == 0`).
     fn fdkq_free(kq: &Self::FdKq);

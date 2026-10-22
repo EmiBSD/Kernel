@@ -406,9 +406,7 @@ pub fn main() -> ! {
     signal_init();
     siginit(&SIGACTS0);
     pr.ps_sigacts.set(Some(&SIGACTS0));
-    let fdp = fdinit();
-    pr.ps_fd.set(fdp);
-    p.p_fd.set(fdp);
+    pr.set_fd(fdinit());
     let mut limit0 = LIMIT0;
     lim_startup(&mut limit0);
     drop(pr.set_limit(PlimitRef::new(limit0)));
@@ -584,17 +582,17 @@ pub fn main() -> ! {
             panic(format_args!("cannot find root vnode"));
         };
         set_rootvnode(Some(root));
-        p.fd().fd_cdir.set(Some(root));
+        p.fd().set_cdir(Some(root));
         vref(root);
         let _ = VOP_UNLOCK(root);
-        p.fd().fd_rdir.set(None);
+        p.fd().set_rdir(None);
 
         // Now that root is mounted, we can fixup initprocess's CWD info. All other
         // processes are kthreads, which merely share proc0's CWD info.
         let initpr = initproc.process();
-        initpr.fd().fd_cdir.set(Some(root));
+        initpr.fd().set_cdir(Some(root));
         vref(root);
-        initpr.fd().fd_rdir.set(None);
+        initpr.fd().set_rdir(None);
     }
 
     // Now can look at time, having had a chance to verify the time from the file system.

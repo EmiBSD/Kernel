@@ -100,7 +100,7 @@ use crate::machine::intr::IPL_HIGH;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
 use crate::sys::eventvar::Kqueue;
-use crate::sys::file::File;
+use crate::sys::file::FileRef;
 use crate::sys::proc::Process;
 use crate::sys::queue::{SlistEntry, SlistHead, TailqEntry};
 
@@ -403,7 +403,7 @@ pub struct KnPtr {
     /// holds a reference to the file. A slot under a leaf mutex at `IPL_HIGH` (taken from any
     /// filter, at any level, only to read or swap the file), so the reference it holds can be
     /// an owned handle that is cloned out and taken back (N4.3's `FileRef`).
-    pub p_fp: Mutexed<Option<&'static File>>,
+    pub p_fp: Mutexed<Option<FileRef>>,
     /// `p_process`: process pointer (`EVFILT_PROC`, `EVFILT_SIGNAL`).
     pub p_process: Cell<*const Process>,
     /// `p_useract`: user event active (`EVFILT_USER`).
@@ -508,13 +508,14 @@ impl Knote {
     }
 
     /// `kn_fp`: `kn_ptr.p_fp` \[o\], its slot.
-    pub fn kn_fp(&self) -> &Mutexed<Option<&'static File>> {
+    pub fn kn_fp(&self) -> &Mutexed<Option<FileRef>> {
         &self.kn_ptr.p_fp
     }
 
-    /// `kn->kn_fp`, which every attached `FILTEROP_ISFD` knote has.
-    pub fn fp(&self) -> &'static File {
-        let fp = *self.kn_ptr.p_fp.lock();
+    /// `kn->kn_fp`, which every attached `FILTEROP_ISFD` knote has: a reference of the
+    /// caller's (the knote keeps its own until it is dropped).
+    pub fn fp(&self) -> FileRef {
+        let fp = self.kn_ptr.p_fp.lock().clone();
         match fp {
             Some(fp) => fp,
             None => panic(format_args!("knote {:p}: no kn_fp", self)),

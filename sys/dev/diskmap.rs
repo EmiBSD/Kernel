@@ -47,12 +47,10 @@
 //!   `disk_map` writes the mapped name into a second one, where the C maps in place.
 
 use alloc::vec;
-use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::kassert;
-use crate::kern::kern_descrip::{closef, fdinsert, fnew};
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
+use crate::kern::kern_descrip::{BsdFileData, closef, fdinsert, fnew};
 use crate::kern::subr_disk::disk_map;
 use crate::kern::vfs_lookup::ndinit;
 use crate::kern::vfs_syscalls::getvnode;
@@ -61,8 +59,8 @@ use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::copy::{copyinstr, copyoutstr};
 use crate::sys::dkio::{DIOCMAP, DkDiskmap};
 use crate::sys::errno::Errno;
-use crate::sys::file::{DTYPE_VNODE, frele};
-use crate::sys::filedesc::{fdplock, fdpunlock};
+use crate::sys::file::{DTYPE_VNODE, FileRef, frele};
+use crate::sys::filedesc::{FdGuard, fdplock, fdpunlock};
 use crate::sys::namei::{NiDirp, UNVEIL_READ};
 use crate::sys::pledge::PLEDGE_RPATH;
 use crate::sys::proc::Proc;
@@ -143,9 +141,9 @@ pub fn diskmapioctl(
     let _ = VOP_UNLOCK(vp);
 
     let fdp = p.fd();
-    fdplock(fdp);
-    let bad = |error: Errno| -> Result<(), Errno> {
-        fdpunlock(fdp);
+    let mut g = fdplock(fdp);
+    let bad = |g: FdGuard<'_>, fp0: FileRef, error: Errno| -> Result<(), Errno> {
+        fdpunlock(g);
         let _ = vn_close(vp, fflag as i32, p.ucred_ptr(), Some(p));
         let _ = frele(fp0, p);
         Err(error)
@@ -154,30 +152,27 @@ pub fn diskmapioctl(
     // Stop here if the 'struct file *' has been replaced, for example by another thread
     // calling dup2(2), while this thread was sleeping in vn_open(). Note that this would
     // not happen for correct usages of "/dev/diskmap".
-    if !fdp.ofile(fd as usize).is_some_and(|f| ptr::eq(f, fp0)) {
-        return bad(Errno::EAGAIN);
+    if !g.ofile(fd).is_some_and(|f| FileRef::ptr_eq(&f, &fp0)) {
+        return bad(g, fp0, Errno::EAGAIN);
     }
 
     let Some(fp) = fnew(p) else {
-        return bad(Errno::ENFILE);
+        return bad(g, fp0, Errno::ENFILE);
     };
 
-    // Zap old file.
-    mtx_enter(&fdp.fd_fplock);
-    kassert!(fdp.ofile(fd as usize).is_some_and(|f| ptr::eq(f, fp0)));
-    let flags = fdp.ofileflags(fd as usize);
-    fdp.set_ofile(fd as usize, None);
-    fdp.set_ofileflags(fd as usize, 0);
-    mtx_leave(&fdp.fd_fplock);
+    // Zap old file: the slot's reference comes out, the descriptor stays allocated.
+    let (old, flags) = g.take_ofile(fd);
+    kassert!(old.as_ref().is_some_and(|f| FileRef::ptr_eq(f, &fp0)));
 
     // Insert new file.
     fp.f_flag.store(fflag, Ordering::SeqCst);
-    fp.f_type.set(DTYPE_VNODE);
-    fp.f_ops.set(Some(&VNOPS));
-    fp.f_data.set(ptr::from_ref(vp).cast_mut().cast());
-    fdinsert(fdp, fd, flags, fp);
-    fdpunlock(fdp);
+    fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(vp));
+    fdinsert(&mut g, fd, flags, &fp);
+    fdpunlock(g);
+    drop(fp);
 
+    // The slot's reference and getvnode's (the C's closef of a count of 2).
+    drop(old);
     let _ = closef(fp0, p);
 
     Ok(())

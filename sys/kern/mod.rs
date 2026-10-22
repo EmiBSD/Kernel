@@ -43,6 +43,7 @@ pub mod kern_acct;
 pub mod kern_bufq;
 pub mod kern_clock;
 pub mod kern_clockintr;
+#[forbid(unsafe_code)]
 pub mod kern_descrip;
 pub mod kern_event;
 pub mod kern_exec;

@@ -3087,7 +3087,7 @@ notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab a
 rust = "sys/dev/diskmap.rs"
 lz = ["sys/dev/diskmap.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/dev/efi/efi.rs"
@@ -4996,13 +4996,13 @@ status = "inherited"
 rust = "sys/isofs/cd9660/cd9660_vfsops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/iso.rs"
@@ -5071,7 +5071,7 @@ notes = "M8: elf_check_header, elf_load_psection, elf_read_from (vn_rdwr, or a s
 rust = "sys/kern/exec_script.rs"
 lz = ["sys/kern/exec_script.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/exec_subr.rs"
@@ -5083,7 +5083,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5119,35 +5119,35 @@ notes = "M5: clockintr_cpu_init, clockintr_trigger, clockintr_dispatch, clockint
 
 [[module]]
 rust = "sys/kern/kern_descrip.rs"
-lz = ["sys/kern/kern_descrip.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/list.rs"]
+lz = ["sys/kern/kern_descrip.rs", "sys/sys/file.rs"]
+status = "redesigned"
+notes = "N4.3: the glue of bsd's descriptors over kernel::file and kernel::descrip (BsdFileGlue, BsdFileData, BsdFdKq, the open files' tables and NUMFILES, the sysent[] rows of dup..getdtablecount, filedescopen, the bsd-signature wrappers falloc/fnew/closef/fd_getfile_mode/file_count); LZ's path kept (the frozen amd64 conf.rs imports filedescopen from it), so no [[dropped]]"
 
 [[module]]
 rust = "sys/kern/kern_event.rs"
 lz = ["sys/kern/kern_event.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/list.rs", "sys/hal/mutex.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/list.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/kern_exec.rs"
 lz = ["sys/kern/kern_exec.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/vm/aobj.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/vm/aobj.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEAF|SAVENAME|EXECPATH with the cwd realpath through vfs_getcwd_common, VREG, VOP_GETATTR, MNT_NOEXEC, the execpromises/SUID refusal, MNT_NOSUID, VOP_ACCESS(VEXEC) and the x bits, VOP_OPEN, VOP_UNLOCK, the header through vn_rdwr, the exec switch with EXEC_DESTR, the entry and MAXTSIZ/lim_cur(RLIMIT_DATA) checks, bad1/bad2), sys_execve (the pathname and realpath namei buffers, single_thread_set, the NCARGS argument buffer from exec_map through kv_exec, the EXEC_HASARGL fake args, argv/envp copied with copyinstr (E2BIG), stackgap_random's sgap, the stack size check with ELF_AUX_WORDS, uvmspace_exec, ps_strings and ep_execpath below vm_minsaddr, copyargs, ps_auxinfo, the execpath copyoutstr, the pin tables into ps_pin and ps_libcpin freed, ps_comm from cn_nameptr, ps_textvp, PSI_* from EXEC_*, PS_PPWAIT, PS_SUGIDEXEC, the pledge hand-over, set[ug]id executables, the saved ids, exec_timekeep_map, exec_elf_fixup, setregs, exec_sigcode_map, p_descfd, exec_abort and free_pack_abort), copyargs, exec_sigcode_map, exec_timekeep_map (timekeep_object, the wired timekeep page kern_tc.c writes), stackgap_random, kv_exec; exec_conf.c's execsw[] (scripts, then ELF; M14) is here. exec_image(p, path, argp, envp, image) is the same body for the init boot module while there is no root file system (no vnode checks). Reported: prof_exec and stopprofclock (subr_prof.c), cancel_all_itimers (kern_time.c), cdevvp(getnulldev()) for a set[ug]id exec with stdin/stdout/stderr closed (<sys/conf.h>); KTRACE not configured; TooLs GmbH 4-clause licence accepted at M2; kern_time.c: cancel_all_itimers is real for a PS_SUGIDEXEC exec; kern_unveil.c: without execpromises sys_execve calls unveil_destroy and clears ps_uvdone; kern_event.c: knote(&ps_klist, NOTE_EXEC) is real; ; M11e: check_exec's KERNEL_LOCK/KERNEL_UNLOCK around vfs_getcwd_common are real calls"
 
 [[module]]
 rust = "sys/kern/kern_exit.rs"
 lz = ["sys/kern/kern_exit.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 notes = "M6-b: sys_exit, exit1 (single_thread_set, process_suspend_signal, stopprofclock, fdfree, SAS_NOCLDWAIT, lim_free, process_untrace reported), exit2 with deadproc, proc_free (crfree reported), reaper (prsignal reported), process_clear_orphan, process_reparent, process_zap (vrele, sigactsfree/lim_free/crfree reported); process 0 adopts orphans while initprocess is null; sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait, process_untrace are M6-c/M7; M6-b2: exit1 calls uvm_purge for user processes and the reaper uvm_exit; under feature qemu init's exit (pid 1) logs 'init exited with status N' and ends the run with that status instead of the C's panic; M7a-3b: lim_free of p_limit and of ps_limit in process_zap; kern_descrip.c: exit1 calls fdfree; kern_sig.c: single_thread_set(SINGLE_EXIT), process_suspend_signal, sigio_freelist, SAS_NOCLDWAIT, the SIGKILL to a traced child (process_untrace still reported), the reaper's prsignal(SIGCHLD), sigactsfree in process_zap; M8: exit1 calls killjobc and process_zap leavepgrp (kern_proc.c); M8: exit1 frees ps_pin/ps_libcpin (pin_free), process_zap vreles ps_textvp; M8: sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait (ruadd, scheduler_wait_hook, off zombprocess, freepid, process_zap), process_untrace (exit1 calls it for a traced child); acct_process in exit1 (ACCOUNTING); ps_opptr always null (no ptrace); kern_unveil.c: exit1 calls unveil_destroy; kern_event.c: kqpoll_exit in exit1 and knote_processexit in the reaper are real; M11e: exit1 releases every hold of the kernel lock (__mp_release_all) around uvm_purge and takes it back after; the reaper starts with KERNEL_UNLOCK and takes the lock only around the zombie's notification, as the C"
 
 [[module]]
 rust = "sys/kern/kern_fork.rs"
 lz = ["sys/kern/kern_fork.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK()"
 
 [[module]]
@@ -5184,7 +5184,7 @@ adapted_by = ["sys/kernel/vm/glue.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue
 rust = "sys/kern/kern_pledge.rs"
 lz = ["sys/kern/kern_pledge.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/proc_glue.rs"
@@ -5492,7 +5492,7 @@ notes = "wakeup(9) and wakeup_one(9) report themselves unported: nothing sleeps 
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 
 [[module]]
@@ -5510,7 +5510,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resourc
 rust = "sys/kern/kern_unveil.rs"
 lz = ["sys/kern/kern_unveil.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/kern_watchdog.rs"
@@ -5556,7 +5556,7 @@ status = "inherited"
 rust = "sys/kern/subr_log.rs"
 lz = ["sys/kern/subr_log.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 notes = "M2: initmsgbuf, msgbuf_putchar, msgbuf_putchar_locked, logwakeup, initconsbuf (malloc reported unported), log_open/msgbufmapped/msgbufp/consbufp; init_static_msgbuf (ours) hands a .bss area to initmsgbuf until pmap (M3); /dev/klog, logtick, dosendsyslog, sys_sendsyslog are M7; M8: logstash_full/increment/insert/remove/sendsyslog (cursors as indices), sys_sendsyslog, dosendsyslog (syslogf is never set without the log device: LOG_CONS messages go to cnputc and the call answers ENOTCONN, others are stashed; sosend reported); sockets: dosendsyslog sends to syslogd(8)'s socket with sosend (syslogf is still never set without the log device); M11a: dosendsyslog's console path takes the kernel lock as the C; M11e: log_mtx (IPL_HIGH, pub LOG_MTX) taken by msgbuf_putchar; M13: initmsgbuf's header check and repair is initmsgbuf_header, so the host test runs it on a private buffer (tests print through the global one in parallel; it flaked)"
 
 [[module]]
@@ -5625,7 +5625,8 @@ adapted_by = ["sys/kernel/vm/amap.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/pa
 rust = "sys/kern/sys_generic.rs"
 lz = ["sys/kern/sys_generic.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/descrip.rs", "sys/kernel/uio.rs"]
+notes = "N4.3: read, readv, write, writev, ioctl and utrace are sysent[] rows over kernel::descrip; select/poll stay (N4.4)"
 
 [[module]]
 rust = "sys/kern/pipe_glue.rs"
@@ -5733,7 +5734,8 @@ notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd
 [[module]]
 rust = "sys/kern/sys_socket.rs"
 lz = ["sys/kern/sys_socket.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/syscalls.rs"
@@ -5756,7 +5758,7 @@ status = "inherited"
 rust = "sys/kern/tty_pty.rs"
 lz = ["sys/kern/tty_pty.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/tty_subr.rs"
@@ -5794,7 +5796,7 @@ status = "inherited"
 rust = "sys/kern/uipc_socket.rs"
 lz = ["sys/kern/uipc_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
@@ -5805,13 +5807,13 @@ status = "inherited"
 rust = "sys/kern/uipc_syscalls.rs"
 lz = ["sys/kern/uipc_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_usrreq.rs"
 lz = ["sys/kern/uipc_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_bio.rs"
@@ -5839,7 +5841,7 @@ status = "inherited"
 rust = "sys/kern/vfs_getcwd.rs"
 lz = ["sys/kern/vfs_getcwd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_init.rs"
@@ -5856,13 +5858,13 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 rust = "sys/kern/vfs_lookup.rs"
 lz = ["sys/kern/vfs_lookup.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_sync.rs"
@@ -5874,13 +5876,13 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_vnops.rs"
 lz = ["sys/kern/vfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
@@ -6316,13 +6318,14 @@ status = "inherited"
 [[module]]
 rust = "sys/miscfs/fuse/fuse_vfsops.rs"
 lz = ["sys/miscfs/fuse/fuse_vfsops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fuse_vnops.rs"
 lz = ["sys/miscfs/fuse/fuse_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fusebuf.rs"
@@ -6396,7 +6399,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/msdosfs/msdosfs_vnops.rs"
 lz = ["sys/msdosfs/msdosfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfsmount.rs"
@@ -6994,7 +6997,7 @@ adapted_by = ["sys/crypto/idgen.rs"]
 rust = "sys/nfs/nfs.rs"
 lz = ["sys/nfs/nfs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_bio.rs"
@@ -7016,7 +7019,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_kq.rs"
 lz = ["sys/nfs/nfs_kq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_node.rs"
@@ -7056,7 +7059,8 @@ adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.
 [[module]]
 rust = "sys/nfs/nfs_syscalls.rs"
 lz = ["sys/nfs/nfs_syscalls.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_var.rs"
@@ -7419,7 +7423,7 @@ status = "inherited"
 rust = "sys/sys/event.rs"
 lz = ["sys/sys/event.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/mutex.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/sys/eventvar.rs"
@@ -7462,14 +7466,14 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/file.rs"
 lz = ["sys/sys/file.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/kernel/cred.rs"]
+status = "redesigned"
+notes = "N4.3: the adapter of kernel::file: File/FileRef over BsdFileGlue, the DTYPE/FIF/FO constants, struct fileops as bsd's vectors are written (FileOps implemented over its fn pointers), FileExt (vnode, f_cred_ptr), fref/frele/foffset"
 
 [[module]]
 rust = "sys/sys/filedesc.rs"
 lz = ["sys/sys/filedesc.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/list.rs"]
+status = "redesigned"
+notes = "N4.3: the adapter of kernel::descrip: Filedesc/FdRef/FdGuard over BsdFileGlue, the constants and the lock calls re-exported, OFILESIZE, the Send + Sync probe of the members"
 
 [[module]]
 rust = "sys/hal/sys/filio.rs"
@@ -7956,7 +7960,7 @@ adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/hal/vm/uvmexp.r
 rust = "sys/tmpfs/tmpfs_vnops.rs"
 lz = ["sys/tmpfs/tmpfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs.rs"
@@ -8035,7 +8039,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/ufs/ext2fs/ext2fs_vnops.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_alloc.rs"
@@ -8074,7 +8078,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
@@ -8095,7 +8099,8 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/mfs/mfs_vfsops.rs"
 lz = ["sys/ufs/mfs/mfs_vfsops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfs_vnops.rs"
@@ -8141,7 +8146,7 @@ status = "inherited"
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -8181,7 +8186,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/ufs/ufs/ufs_vnops.rs"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufsmount.rs"
@@ -9089,12 +9094,24 @@ lz = ["sys/sys/uio.rs", "sys/kern/sys_generic.rs"]
 status = "redesigned"
 notes = "N4.3: uio.h's types in the kernel crate, Uio<'a, G: ProcGlue> generic over the glue (uio_procp an Option<&Thread<G>>), and sys_generic.c's iovec_copyin over an IovBuf (the stack eight or an owned MArray<Iovec>, M_IOV) that frees itself; UioMove moved here from kernel::pipe (re-exported there). uiomove and ureadc stay bsd's (kern_subr.rs) while UIO_SYSSPACE iovecs are raw kernel addresses"
 
+[[module.fn]]
+lz = "sys/kern/sys_generic.rs::iovec_free"
+native = []
+kind = "dropped"
+reason = "the iovec array is an owned IovBuf (an MArray past UIO_SMALLIOV) freed by its drop"
+
 [[module]]
 rust = "sys/kernel/file.rs"
 crate = "kernel"
 lz = ["sys/sys/file.rs"]
 status = "redesigned"
 notes = "N4.3: struct file as a TypedPool item (filepl, recorded) behind FileRef (a PoolArc: f_count is the handle count; FREF a clone, FRELE PoolArc::try_last -> fdrop with the close's error, a plain last drop closes with no thread); f_ops/f_data/f_type installed once (Installed, OnceStatic), f_mtx a Mutexed<FileStats>, filehead a PinList under fhdlk (FileTables); a message's descriptor a parked reference (forget/adopt). FileGlue: the bsd hooks (vnode, socket, kqueue, pledge, signals), a bridge row"
+
+[[module.fn]]
+lz = "sys/sys/file.rs::File::default"
+native = []
+kind = "dropped"
+reason = "a file is made by fnew alone, in filepl, with the opener's credentials"
 
 [[module]]
 rust = "sys/kernel/descrip.rs"
@@ -9112,6 +9129,119 @@ kind = "moved"
 lz = "sys/sys/filedesc.rs::Proc::fd"
 native = ["sys/kernel/proc.rs::Thread::fd"]
 kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::FileListHead"
+native = ["sys/kernel/file.rs::FileTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::FHDLK"
+native = ["sys/kernel/file.rs::FileTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::FILEHEAD"
+native = ["sys/kernel/file.rs::FileTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::FILE_POOL"
+native = ["sys/kernel/file.rs::FileTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::FDESC_POOL"
+native = ["sys/kernel/file.rs::FileTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::himap_or_full"
+native = ["word_or_full"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::lomap_or_full"
+native = ["word_or_full"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::fd_inuse"
+native = ["FdState::fd_inuse", "FdGuard::fd_inuse"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::fd_used"
+native = ["FdState::fd_used", "FdGuard::fd_used"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::fd_unused"
+native = ["FdState::fd_unused", "FdGuard::fd_unused"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_descrip.rs::fdrop"
+native = ["sys/kernel/file.rs::fdrop"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::check"
+native = []
+kind = "dropped"
+reason = "the arrays are slices: an index past fd_nfiles panics in the slice's own bounds check"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::set_ofile"
+native = ["FdGuard::place_ofile", "FdGuard::take_ofile"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::set_ofileflags"
+native = ["FdGuard::set_ofileflags"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::lomap"
+native = ["FdState::lomap"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::set_lomap"
+native = ["FdState::fd_used", "FdState::fd_unused"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::himap"
+native = ["FdState::fd_used", "FdState::fd_unused"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::set_himap"
+native = ["FdState::fd_used", "FdState::fd_unused"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc::default"
+native = []
+kind = "dropped"
+reason = "a table is made by fdinit (or fdcopy) alone, in fdescpl"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc0"
+native = ["Filedesc::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc0::new"
+native = ["Filedesc::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/filedesc.rs::Filedesc0::default"
+native = []
+kind = "dropped"
+reason = "a table is made by fdinit (or fdcopy) alone, in fdescpl"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

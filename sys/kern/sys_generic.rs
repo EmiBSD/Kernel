@@ -60,24 +60,15 @@
 //! Upstream: sys/kern/sys_generic.c @ 3ce1f3f79392
 //!
 //! Status: `wip`. Milestone M6 (part b) ported `sys_write` for the console; M7b
-//! (`kern_descrip.c`) makes the read and write paths real: `iovec_copyin`/`iovec_free`,
-//! `sys_read`, `sys_readv`, `dofilereadv`, `sys_write`, `sys_writev`, `dofilewritev` and
-//! `sys_ioctl` reach the file through `fd_getfile_mode` and call its `fileops`. M8:
-//! `sys_select`, `sys_pselect`, `dopselect`, `pselregister`, `pselcollect`, `selwakeup`,
-//! `pollout`, `sys_poll`, `sys_ppoll`, `doppoll`, `ppollregister_evts`, `ppollregister`,
-//! `ppollcollect` and `sys_utrace` (`KTRACE` is not configured: it succeeds and records
-//! nothing, the C's `#else`); the file is complete.
+//! (`kern_descrip.c`) made the read and write paths real. M8: `sys_select`, `sys_pselect`,
+//! `dopselect`, `pselregister`, `pselcollect`, `selwakeup`, `pollout`, `sys_poll`,
+//! `sys_ppoll`, `doppoll`, `ppollregister_evts`, `ppollregister`, `ppollcollect` and
+//! `sys_utrace`. N4.3: `iovec_copyin`, `dofilereadv`, `dofilewritev`, the bodies of
+//! `sys_read`, `sys_readv`, `sys_write`, `sys_writev`, `sys_ioctl` and `sys_utrace` moved
+//! into `kernel::descrip` (and `kernel::uio`); the `sysent[]` rows here call them.
+//! `select(2)`/`poll(2)` stay until kqueue moves (N4.4).
 //!
 //! ## Deviations
-//! - `iovec_copyin(uiov, aiov, iovcnt)` returns the iovecs (the caller's `aiov` or a
-//!   `malloc(M_IOV)` array) and the residual count, and frees its own array when it fails,
-//!   so `iovec_free` (`unsafe`: it frees) is only called on a successful result. The user
-//!   array is copied in one iovec at a time, each read through `Iovec::from_bytes`.
-//! - `dofilereadv`/`dofilewritev` take a `Uio` whose iovecs borrow the caller's array; the
-//!   positioned checks (`FO_POSITION`) answer `ESPIPE` for every file that is not a vnode
-//!   (and for fifos and ttys), as in C.
-//! - `sys_ioctl`'s argument buffer is a byte slice of `max(IOCPARM_LEN(com), sizeof(caddr_t))`
-//!   bytes, from the 128-byte stack buffer or `malloc(M_IOCTLOPS)`.
 //! - `KTRACE` is not configured.
 //! - `select(2)`/`poll(2)` are OpenBSD's, built on the thread's poll kqueue
 //!   (`kern_event.rs`): `kqpoll_init` and `kqpoll_done` take the thread, and `kqpoll_init`
@@ -85,21 +76,17 @@
 //!   sets and the pollfd array are one allocation each (the C keeps small ones on its
 //!   stack).
 
-use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
+
+use hal::user::UserPtr;
 
 use crate::conf::param::MAXFILES;
 use crate::kassert;
-use crate::kern::kern_descrip::fd_getfile_mode;
 use crate::kern::kern_event::{
     knote_locked, kqpoll_done, kqpoll_init, kqueue_register, kqueue_scan, kqueue_scan_finish,
     kqueue_scan_setup,
 };
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_malloc::{free, malloc, mallocarray};
-use crate::kern::kern_pledge::pledge_ioctl;
 use crate::kern::kern_sig::dosigsuspend;
-use crate::kern::kern_sig::ptsignal;
 use crate::kern::kern_synch::{nowake, tsleep_nsec};
 use crate::kern::kern_time::ratecheck;
 use crate::kern::subr_prf::Str;
@@ -112,13 +99,6 @@ use crate::sys::event::{
     EVFILT_WRITE, Kevent, KqueueScanState, NOTE_OOB, NOTE_SUBMIT, ev_set,
 };
 use crate::sys::eventvar::KQ_NEVENTS;
-use crate::sys::fcntl::{FASYNC, FNONBLOCK, FREAD, FWRITE};
-use crate::sys::file::{DTYPE_SOCKET, DTYPE_VNODE, FO_POSITION, File, frele};
-use crate::sys::filedesc::{UF_EXCLOSE, UF_PLEDGEOPEN, fdplock, fdpunlock};
-use crate::sys::filio::{FIOASYNC, FIOCLEX, FIONBIO, FIONCLEX};
-use crate::sys::ioccom::{IOC_IN, IOC_OUT, IOC_VOID, IOCPARM_MAX, iocparm_len};
-use crate::sys::limits::SSIZE_MAX;
-use crate::sys::malloc::{M_IOCTLOPS, M_IOV, M_WAITOK};
 use crate::sys::param::{PCATCH, PSOCK};
 use crate::sys::poll::{
     INFTIM, POLL_NOHUP, POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLPRI, POLLRDBAND,
@@ -129,429 +109,67 @@ use crate::sys::resource::RLIMIT_NOFILE;
 use crate::sys::resourcevar::lim_cur;
 use crate::sys::select::{FdMask, NFDBITS, fd_set, howmany};
 use crate::sys::selinfo::Selinfo;
-use crate::sys::signal::SIGPIPE;
 use crate::sys::signal::Sigset;
-use crate::sys::signalvar::SignalType;
 use crate::sys::signalvar::sigcantmask;
 use crate::sys::syscallargs::{
     SysIoctlArgs, SysReadArgs, SysReadvArgs, SysWriteArgs, SysWritevArgs,
 };
 use crate::sys::syscallargs::{SysPollArgs, SysPpollArgs, SysPselectArgs, SysSelectArgs};
-use crate::sys::syslimits::IOV_MAX;
 use crate::sys::systm::{INFSLP, MAXTSLP};
 use crate::sys::systm::{SysArgs, kernel_lock, kernel_unlock, sysargs};
 use crate::sys::time::{Timespec, Timeval, timespec_to_nsec, timeval_to_timespec};
-use crate::sys::types::{Off, Register};
-use crate::sys::uio::{Iovec, UIO_SMALLIOV, Uio, UioRw, UioSeg};
-use crate::sys::vnode::{VCHR, VFIFO, VISTTY};
+use crate::sys::types::Register;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::offset_of;
 use libkern::StaticCell;
 
-/// `STK_PARAMS`: the ioctl argument bytes `sys_ioctl` keeps on its stack.
-const STK_PARAMS: usize = 128;
-
-/// `iovec_copyin(uiov, &iov, aiov, iovcnt, &resid)`: copies in the user's `iovcnt` iovecs
-/// at `uiov`, into `aiov` when they fit (`UIO_SMALLIOV`), else into a `malloc(M_IOV)` array;
-/// returns the iovecs and their total length.
-pub fn iovec_copyin(
-    uiov: usize,
-    aiov: &mut [Iovec; UIO_SMALLIOV],
-    iovcnt: u32,
-) -> Result<(&mut [Iovec], usize), Errno> {
-    let n = iovcnt as usize;
-    let iov: &mut [Iovec] = if n > UIO_SMALLIOV {
-        if n > IOV_MAX {
-            return Err(Errno::EINVAL);
-        }
-        let Some(mem) = mallocarray(n, size_of::<Iovec>(), M_IOV, M_WAITOK) else {
-            return Err(Errno::ENOMEM);
-        };
-        let mem = mem.cast::<Iovec>().as_ptr();
-        for i in 0..n {
-            // SAFETY: a fresh allocation of `n` iovecs, suitably aligned.
-            unsafe { mem.add(i).write(Iovec::new()) };
-        }
-        // SAFETY: as above, now initialised; ours until `iovec_free`.
-        unsafe { core::slice::from_raw_parts_mut(mem, n) }
-    } else if n > 0 {
-        &mut aiov[..n]
-    } else {
-        return Err(Errno::EINVAL);
-    };
-
-    let mut resid: usize = 0;
-    let mut error = Ok(());
-    for (i, slot) in iov.iter_mut().enumerate() {
-        let mut bytes = [0u8; Iovec::SIZE];
-        if let Err(e) = copyin(uiov + i * Iovec::SIZE, &mut bytes) {
-            error = Err(e);
-            break;
-        }
-        *slot = Iovec::from_bytes(&bytes);
-        resid += slot.iov_len;
-        // Writes return ssize_t because -1 is returned on error. Therefore we must restrict
-        // the length to SSIZE_MAX to avoid garbage return values. Note that the addition is
-        // guaranteed to not wrap because SSIZE_MAX * 2 < SIZE_MAX.
-        if slot.iov_len > SSIZE_MAX as usize || resid > SSIZE_MAX as usize {
-            error = Err(Errno::EINVAL);
-            break;
-        }
-    }
-
-    match error {
-        Ok(()) => Ok((iov, resid)),
-        Err(e) => {
-            // SAFETY: `iov` is what this function made for `iovcnt`, and is dropped here.
-            unsafe { iovec_free(iov, iovcnt) };
-            Err(e)
-        }
-    }
-}
-
-/// `iovec_free(iov, iovcnt)`: releases the array `iovec_copyin` allocated, if it did.
-///
-/// # Safety
-///
-/// `iov` was returned by `iovec_copyin` for the same `iovcnt` and is not used afterwards.
-pub unsafe fn iovec_free(iov: &mut [Iovec], iovcnt: u32) {
-    if iovcnt as usize > UIO_SMALLIOV
-        && let Some(p) = NonNull::new(iov.as_mut_ptr())
-    {
-        free(p.cast(), M_IOV, iovcnt as usize * size_of::<Iovec>());
-    }
-}
-
-/// Read system call.
+/// Read system call (`sysent[]`'s row: `kernel::descrip::sys_read`).
 pub fn sys_read(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysReadArgs = sysargs(v);
-
-    let mut iov = [Iovec {
-        iov_base: uap.buf.get(),
-        iov_len: uap.nbyte.get(),
-    }];
-    if iov[0].iov_len > SSIZE_MAX as usize {
-        return Err(Errno::EINVAL);
-    }
-    let resid = iov[0].iov_len;
-
-    let mut auio = Uio {
-        uio_iov: &mut iov,
-        uio_offset: 0,
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_READ,
-        uio_procp: Some(p),
-    };
-
-    dofilereadv(p, uap.fd.get(), &mut auio, 0, retval)
-}
-
-/// Scatter read system call.
-pub fn sys_readv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    let uap: &SysReadvArgs = sysargs(v);
-    let iovcnt = uap.iovcnt.get() as u32;
-    let mut aiov = [Iovec::new(); UIO_SMALLIOV];
-
-    let (iov, resid) = iovec_copyin(uap.iovp.get() as usize, &mut aiov, iovcnt)?;
-
-    let mut auio = Uio {
-        uio_iov: &mut *iov,
-        uio_offset: 0,
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_READ,
-        uio_procp: Some(p),
-    };
-
-    let error = dofilereadv(p, uap.fd.get(), &mut auio, 0, retval);
-    // SAFETY: `iov` came from `iovec_copyin` with `iovcnt`; the uio borrowing it is gone.
-    unsafe { iovec_free(iov, iovcnt) };
-    error
-}
-
-/// The positioned-I/O checks of `dofilereadv`/`dofilewritev` (`FO_POSITION`).
-fn position_check(fp: &File, offset: Off) -> Result<(), Errno> {
-    if fp.f_type.get() != DTYPE_VNODE {
-        return Err(Errno::ESPIPE);
-    }
-    let vp = fp.vnode();
-    if vp.v_type.get() == VFIFO || vp.v_flag.get() & VISTTY != 0 {
-        return Err(Errno::ESPIPE);
-    }
-
-    if offset < 0 && vp.v_type.get() != VCHR {
-        return Err(Errno::EINVAL);
-    }
+    let n = kernel::descrip::sys_read(p, uap.fd.get(), uap.buf.get().addr(), uap.nbyte.get())?;
+    retval[0] = n as Register;
     Ok(())
 }
 
-/// The errors that come after some data was moved are dropped: `ERESTART`, `EINTR` and
-/// `EWOULDBLOCK` when `uio_resid` is no longer `cnt`.
-fn partial_ok(error: Result<(), Errno>, resid: usize, cnt: usize) -> Result<(), Errno> {
-    match error {
-        Err(Errno::ERESTART | Errno::EINTR | Errno::EAGAIN) if resid != cnt => Ok(()),
-        e => e,
-    }
+/// Scatter read system call (`sysent[]`'s row: `kernel::descrip::sys_readv`).
+pub fn sys_readv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysReadvArgs = sysargs(v);
+    let n = kernel::descrip::sys_readv(
+        p,
+        uap.fd.get(),
+        UserPtr::new(uap.iovp.get().addr()),
+        uap.iovcnt.get(),
+    )?;
+    retval[0] = n as Register;
+    Ok(())
 }
 
-/// `dofilereadv(p, fd, uio, flags, retval)`: reads descriptor `fd` into the user iovecs of
-/// `uio`; `retval` is the byte count.
-pub fn dofilereadv<'a>(
-    p: &'a Proc,
-    fd: i32,
-    uio: &mut Uio<'a>,
-    flags: i32,
-    retval: &mut [Register; 2],
-) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    kassert!(uio.uio_iovcnt() > 0);
-
-    let Some(fp) = fd_getfile_mode(fdp, fd, FREAD) else {
-        return Err(Errno::EBADF);
-    };
-
-    let error = 'done: {
-        // Checks for positioned read.
-        if flags & FO_POSITION != 0
-            && let Err(e) = position_check(fp, uio.uio_offset)
-        {
-            break 'done Err(e);
-        }
-
-        uio.uio_rw = UioRw::UIO_READ;
-        uio.uio_segflg = UioSeg::UIO_USERSPACE;
-        uio.uio_procp = Some(p);
-        let cnt = uio.uio_resid;
-        let error = (fp.ops().fo_read)(fp, uio, flags);
-        let error = partial_ok(error, uio.uio_resid, cnt);
-        let cnt = cnt - uio.uio_resid;
-
-        mtx_enter(&fp.f_mtx);
-        fp.f_rxfer.set(fp.f_rxfer.get() + 1);
-        fp.f_rbytes.set(fp.f_rbytes.get() + cnt as u64);
-        mtx_leave(&fp.f_mtx);
-        retval[0] = cnt as Register;
-        error
-    };
-    let _ = frele(fp, p);
-    error
-}
-
-/// Write system call.
+/// Write system call (`sysent[]`'s row: `kernel::descrip::sys_write`).
 pub fn sys_write(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWriteArgs = sysargs(v);
-
-    let mut iov = [Iovec {
-        iov_base: uap.buf.get().cast_mut(),
-        iov_len: uap.nbyte.get(),
-    }];
-    if iov[0].iov_len > SSIZE_MAX as usize {
-        return Err(Errno::EINVAL);
-    }
-    let resid = iov[0].iov_len;
-
-    let mut auio = Uio {
-        uio_iov: &mut iov,
-        uio_offset: 0,
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_WRITE,
-        uio_procp: Some(p),
-    };
-
-    dofilewritev(p, uap.fd.get(), &mut auio, 0, retval)
+    let n = kernel::descrip::sys_write(p, uap.fd.get(), uap.buf.get().addr(), uap.nbyte.get())?;
+    retval[0] = n as Register;
+    Ok(())
 }
 
-/// Gather write system call.
+/// Gather write system call (`sysent[]`'s row: `kernel::descrip::sys_writev`).
 pub fn sys_writev(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWritevArgs = sysargs(v);
-    let iovcnt = uap.iovcnt.get() as u32;
-    let mut aiov = [Iovec::new(); UIO_SMALLIOV];
-
-    let (iov, resid) = iovec_copyin(uap.iovp.get() as usize, &mut aiov, iovcnt)?;
-
-    let mut auio = Uio {
-        uio_iov: &mut *iov,
-        uio_offset: 0,
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_USERSPACE,
-        uio_rw: UioRw::UIO_WRITE,
-        uio_procp: Some(p),
-    };
-
-    let error = dofilewritev(p, uap.fd.get(), &mut auio, 0, retval);
-    // SAFETY: `iov` came from `iovec_copyin` with `iovcnt`; the uio borrowing it is gone.
-    unsafe { iovec_free(iov, iovcnt) };
-    error
+    let n = kernel::descrip::sys_writev(
+        p,
+        uap.fd.get(),
+        UserPtr::new(uap.iovp.get().addr()),
+        uap.iovcnt.get(),
+    )?;
+    retval[0] = n as Register;
+    Ok(())
 }
 
-/// `dofilewritev(p, fd, uio, flags, retval)`: writes the user iovecs of `uio` to
-/// descriptor `fd`; `retval` is the byte count.
-pub fn dofilewritev<'a>(
-    p: &'a Proc,
-    fd: i32,
-    uio: &mut Uio<'a>,
-    flags: i32,
-    retval: &mut [Register; 2],
-) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    kassert!(uio.uio_iovcnt() > 0);
-
-    let Some(fp) = fd_getfile_mode(fdp, fd, FWRITE) else {
-        return Err(Errno::EBADF);
-    };
-
-    let error = 'done: {
-        if fdp.ofileflags(fd as usize) & UF_PLEDGEOPEN != 0 {
-            break 'done Err(Errno::EPERM);
-        }
-
-        // Checks for positioned write.
-        if flags & FO_POSITION != 0
-            && let Err(e) = position_check(fp, uio.uio_offset)
-        {
-            break 'done Err(e);
-        }
-
-        uio.uio_rw = UioRw::UIO_WRITE;
-        uio.uio_segflg = UioSeg::UIO_USERSPACE;
-        uio.uio_procp = Some(p);
-        let cnt = uio.uio_resid;
-        let error = (fp.ops().fo_write)(fp, uio, flags);
-        let error = partial_ok(error, uio.uio_resid, cnt);
-        if error == Err(Errno::EPIPE) {
-            ptsignal(p, SIGPIPE, SignalType::STHREAD);
-        }
-        let cnt = cnt - uio.uio_resid;
-
-        mtx_enter(&fp.f_mtx);
-        fp.f_wxfer.set(fp.f_wxfer.get() + 1);
-        fp.f_wbytes.set(fp.f_wbytes.get() + cnt as u64);
-        mtx_leave(&fp.f_mtx);
-        retval[0] = cnt as Register;
-        error
-    };
-    let _ = frele(fp, p);
-    error
-}
-
-/// Ioctl system call.
+/// Ioctl system call (`sysent[]`'s row: `kernel::descrip::sys_ioctl`).
 pub fn sys_ioctl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysIoctlArgs = sysargs(v);
-    let fd = uap.fd.get();
-    let com = uap.com.get();
-    let udata = uap.data.get() as usize;
-    let fdp = p.fd();
-    let mut size = 0usize;
-    let mut memp: Option<NonNull<u8>> = None;
-    let mut stkbuf = [0u8; STK_PARAMS];
-
-    let Some(fp) = fd_getfile_mode(fdp, fd, FREAD | FWRITE) else {
-        return Err(Errno::EBADF);
-    };
-
-    let error = 'out: {
-        if fp.f_type.get() == DTYPE_SOCKET {
-            let so = crate::kern::sys_socket::fp_socket(fp);
-
-            if so.has_state(crate::sys::socketvar::SS_DNS) {
-                break 'out Err(Errno::EINVAL);
-            }
-        }
-
-        if let Err(error) = pledge_ioctl(p, com, fp) {
-            break 'out Err(error);
-        }
-
-        if com == FIONCLEX || com == FIOCLEX {
-            fdplock(fdp);
-            let flags = fdp.ofileflags(fd as usize);
-            fdp.set_ofileflags(
-                fd as usize,
-                if com == FIONCLEX {
-                    flags & !UF_EXCLOSE
-                } else {
-                    flags | UF_EXCLOSE
-                },
-            );
-            fdpunlock(fdp);
-            break 'out Ok(());
-        }
-
-        // Interpret high order word to find amount of data to be copied to/from the user's
-        // address space.
-        size = iocparm_len(com) as usize;
-        if size > IOCPARM_MAX {
-            break 'out Err(Errno::ENOTTY);
-        }
-        let data: &mut [u8] = if size > STK_PARAMS {
-            let Some(m) = malloc(size, M_IOCTLOPS, M_WAITOK) else {
-                break 'out Err(Errno::ENOMEM);
-            };
-            memp = Some(m);
-            // SAFETY: a fresh allocation of `size` bytes, ours until the `free` below;
-            // zeroed before the slice is made.
-            unsafe {
-                m.as_ptr().write_bytes(0, size);
-                core::slice::from_raw_parts_mut(m.as_ptr(), size)
-            }
-        } else {
-            &mut stkbuf[..size.max(size_of::<usize>())]
-        };
-        let udata_bytes = udata.to_ne_bytes();
-        if com & IOC_IN != 0 {
-            if size != 0 {
-                if let Err(e) = copyin(udata, &mut data[..size]) {
-                    break 'out Err(e);
-                }
-            } else {
-                data[..udata_bytes.len()].copy_from_slice(&udata_bytes);
-            }
-        } else if com & IOC_OUT != 0 && size != 0 {
-            // Zero the buffer so the user always gets back something deterministic.
-            data[..size].fill(0);
-        } else if com & IOC_VOID != 0 {
-            data[..udata_bytes.len()].copy_from_slice(&udata_bytes);
-        }
-
-        let int_arg = |data: &[u8]| i32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
-        let error = match com {
-            FIONBIO => {
-                if int_arg(data) != 0 {
-                    fp.f_flag.fetch_or(FNONBLOCK as u32, Ordering::SeqCst);
-                } else {
-                    fp.f_flag.fetch_and(!(FNONBLOCK as u32), Ordering::SeqCst);
-                }
-                Ok(())
-            }
-            FIOASYNC => {
-                let tmp = int_arg(data);
-                if tmp != 0 {
-                    fp.f_flag.fetch_or(FASYNC as u32, Ordering::SeqCst);
-                } else {
-                    fp.f_flag.fetch_and(!(FASYNC as u32), Ordering::SeqCst);
-                }
-                let mut tmp = tmp.to_ne_bytes();
-                (fp.ops().fo_ioctl)(fp, FIOASYNC, &mut tmp, p)
-            }
-            _ => (fp.ops().fo_ioctl)(fp, com, data, p),
-        };
-        // Copy any data to user, size was already set and checked above.
-        if error.is_ok() && com & IOC_OUT != 0 && size != 0 {
-            copyout(&data[..size], udata)
-        } else {
-            error
-        }
-    };
-    let _ = frele(fp, p);
-    if let Some(m) = memp {
-        free(m, M_IOCTLOPS, size);
-    }
-    error
+    kernel::descrip::sys_ioctl(p, uap.fd.get(), uap.com.get(), uap.data.get().addr())
 }
 
 /// Select system call.
@@ -637,7 +255,7 @@ pub fn dopselect(
         return Err(Errno::EINVAL);
     }
 
-    let nfiles = p.fd().fd_nfiles.load(Ordering::Relaxed);
+    let nfiles = p.fd().nfiles() as i32;
     let nd = nd.min(nfiles) as usize;
 
     // ni bytes per set; the six sets (three in, three out) are one zeroed allocation (the C
@@ -1234,9 +852,9 @@ pub fn ppollcollect(p: &Proc, kevp: &Kevent, pl: &mut [Pollfd]) -> usize {
 
 /// `utrace(2)`: a user record for the process's `ktrace(1)` trace. `KTRACE` is not
 /// configured, so there is no trace to add to and the call succeeds, as the C's `#else`.
-pub fn sys_utrace(_curp: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
-    // KTRACE: ktruser(curp, label, addr, len).
-    Ok(())
+pub fn sys_utrace(curp: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    // KTRACE: ktruser(curp, label, addr, len) (`kernel::descrip::sys_utrace`).
+    kernel::descrip::sys_utrace(curp)
 }
 /* </CODE> */
 

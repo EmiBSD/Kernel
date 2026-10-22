@@ -184,7 +184,6 @@ use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
 use crate::sys::event::Klist;
 use crate::sys::eventvar::Kqueue;
-use crate::sys::filedesc::Filedesc;
 use crate::sys::mutex::Mutex;
 use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Sigval;
@@ -346,8 +345,6 @@ pub struct BsdProcessG {
     pub ps_sigacts: Link<Sigacts>,
     /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
     pub ps_textvp: Link<Vnode>,
-    /// `ps_fd`: ptr to open files structure; the process holds a reference (`fd()`).
-    pub ps_fd: PtrWord<Filedesc>,
     /// \[K|m\] `ps_opptr`: old parent during ptrace (null: ptrace is not ported).
     pub ps_opptr: PtrWord<Process>,
     /// `ps_rucheck_to`: resource limit check timer.
@@ -379,7 +376,6 @@ impl BsdProcessG {
             ps_sigiolst: Sigiolst::new(),
             ps_sigacts: Link::new(),
             ps_textvp: Link::new(),
-            ps_fd: PtrWord::new(),
             ps_opptr: PtrWord::new(),
             ps_rucheck_to: Timeout::zeroed(),
             ps_realit_to: Timeout::zeroed(),
@@ -420,8 +416,6 @@ impl Drop for BsdProcessG {
 
 /// The members of `struct proc` of `bsd`'s subsystems; a thread dereferences to them.
 pub struct BsdThreadG {
-    /// `p_fd`: copy of `p_p->ps_fd` (`fd()`).
-    pub p_fd: PtrWord<Filedesc>,
     /// \[o\] `p_kq`: for select/poll (`kqpoll_init`), null until the first call; the thread
     /// holds a reference (`p.kq()`).
     pub p_kq: PtrWord<Kqueue>,
@@ -442,7 +436,6 @@ impl BsdThreadG {
     /// The members of a new thread.
     pub const fn new() -> Self {
         Self {
-            p_fd: PtrWord::new(),
             p_kq: PtrWord::new(),
             p_sleep_to: Timeout::zeroed(),
             p_sigstk: SigaltstackWord::new(),
@@ -543,6 +536,7 @@ impl ProcGlue for BsdProcGlue {
     type PgrpG = BsdPgrpG;
     type SessionG = BsdSessionG;
     type RunqEntry = hal::list::ListEntry<Proc>;
+    type FileGlue = crate::kern::kern_descrip::BsdFileGlue;
     kernel::proc_glue_link_types!();
 
     fn tables() -> &'static ProcTables<Self> {
@@ -952,8 +946,12 @@ mod tests {
         // part), processpl 1048 -> 1288, pgrppl 48 -> 152 (the pinned lists and the
         // kernel-lock key), sessionpl 144 -> 144, filepl 120 -> 176, ucredpl 104 -> 120,
         // plimitpl 152 -> 160, zombiepl 144 -> 144; on arm64 (the kernel target, measured by
-        // a compile-time probe of the values' sizes) the others are as pinned here. Whether
-        // these sizes are acceptable is the user's decision (N4.2's review, S2), pending.
+        // a compile-time probe of the values' sizes) the others are as pinned here. N4.3 moved
+        // the descriptors into the kernel: filepl 176 -> 184 (kernel::file's File, its object
+        // and stats inside, a counted item), fdescpl (LZ's struct filedesc0) -> 520 (the
+        // kernel's table, its slots and maps inline), processpl 1288 -> 1296 (ps_fd a set-once
+        // counted handle), procpl 1064 -> 1056 (p_fd gone: a thread reads its process's).
+        // The user accepted these sizes (N4.2's and N4.3's decision 1, 2026-10-22).
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -966,7 +964,17 @@ mod tests {
             ("sessionpl", size(t.sessionpl.item_size(), "sessionpl")),
             (
                 "filepl",
-                crate::kern::kern_descrip::FILE_POOL.pr_size.get() as usize,
+                size(
+                    crate::kern::kern_descrip::file_tables().filepl.item_size(),
+                    "filepl",
+                ),
+            ),
+            (
+                "fdescpl",
+                size(
+                    crate::kern::kern_descrip::file_tables().fdescpl.item_size(),
+                    "fdescpl",
+                ),
             ),
             ("ucredpl", size(kernel::cred::ucred_item_size(), "ucredpl")),
             (
@@ -983,10 +991,11 @@ mod tests {
         assert_eq!(
             sizes,
             [
-                ("processpl", 1288),
+                ("processpl", 1296),
                 ("pgrppl", 152),
                 ("sessionpl", 144),
-                ("filepl", 176),
+                ("filepl", 184),
+                ("fdescpl", 520),
                 ("ucredpl", 120),
                 ("plimitpl", 160),
                 ("zombiepl", 144),

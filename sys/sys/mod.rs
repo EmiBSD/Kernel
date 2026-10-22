@@ -58,6 +58,7 @@ pub mod extent;
 pub use hal::sys::fcntl;
 #[forbid(unsafe_code)]
 pub mod file;
+#[forbid(unsafe_code)]
 pub mod filedesc;
 pub use hal::sys::filio;
 #[cfg(feature = "fuse")]

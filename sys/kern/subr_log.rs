@@ -98,7 +98,7 @@ use crate::machine::intr::IPL_HIGH;
 use crate::machine::{Machine, MachineParam};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::FNONBLOCK;
-use crate::sys::file::{File, fref, frele};
+use crate::sys::file::{File, FileRef, frele};
 use crate::sys::malloc::{M_LOG, M_WAITOK};
 use crate::sys::msgbuf::{CONSBUFSIZE, MSG_MAGIC, Msgbuf};
 use crate::sys::mutex::Mutex;
@@ -502,12 +502,13 @@ pub fn dosendsyslog(p: &Proc, buf: SyslogBuf, nbyte: usize, flags: i32) -> Resul
 
     // Global variable syslogf may change during sleep, use local copy.
     rw_enter_read(&SYSLOGF_RWLOCK);
-    // SAFETY: a non-null `syslogf` is a file the log device holds a reference on; it is
-    // read under `syslogf_rwlock`.
-    let fp: Option<&'static File> = unsafe { SYSLOGF.load(Ordering::Acquire).as_ref() };
-    if let Some(fp) = fp {
-        fref(fp);
-    }
+    // SAFETY: a non-null `syslogf` is a file the log device holds a (parked) reference on;
+    // it is read under `syslogf_rwlock`.
+    let fp: Option<FileRef> = unsafe { SYSLOGF.load(Ordering::Acquire).as_ref() }.and_then(|f| {
+        // FREF(fp)
+        kernel::file::vfs_stall_barrier::<crate::kern::kern_descrip::BsdFileGlue>();
+        FileRef::try_from_ref(f)
+    });
     rw_exit(&SYSLOGF_RWLOCK);
 
     if fp.is_none() {
@@ -540,7 +541,7 @@ pub fn dosendsyslog(p: &Proc, buf: SyslogBuf, nbyte: usize, flags: i32) -> Resul
 
     // KTRACE: not configured.
     let mut len = nbyte;
-    let error = match fp {
+    let error = match &fp {
         Some(fp) => {
             let (base, segflg) = match buf {
                 SyslogBuf::User(addr) => (addr + start, UioSeg::UIO_USERSPACE),

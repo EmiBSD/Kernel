@@ -886,7 +886,7 @@ pub fn proc_cansugid(p: &Proc) -> bool {
     }
 
     // processes with shared filedescriptors shouldn't.
-    if p.fd().fd_refcnt.get() > 1 {
+    if p.fd().shares() > 1 {
         return false;
     }
 

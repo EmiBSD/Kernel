@@ -1826,7 +1826,7 @@ pub fn filt_ufsread(kn: &Knote, hint: i64) -> bool {
     };
     #[cfg(not(feature = "ext2fs"))]
     let size = ip.dip_size() as i64;
-    kn.kn_data().set(size - foffset(kn.fp()));
+    kn.kn_data().set(size - foffset(&kn.fp()));
     if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {
         kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_EOF);
         return true;

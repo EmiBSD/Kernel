@@ -144,7 +144,7 @@ use crate::dev::cons::cn_tab;
 use crate::dev::usb::ucom::sysctl_ucominit;
 use crate::kern::init_main::{NCPUS, NCPUSFOUND};
 use crate::kern::kern_clock::sysctl_clockrate;
-use crate::kern::kern_descrip::{NUMFILES, fd_getfile, fd_iterfile};
+use crate::kern::kern_descrip::{BsdFileData, NUMFILES, fd_getfile, fd_iterfile};
 use crate::kern::kern_event::fp_kqueue;
 use crate::kern::kern_fork::{FORKSTAT, NPROCESSES, NTHREADS};
 use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
@@ -203,7 +203,8 @@ use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
 use crate::sys::exec::PsStrings;
 use crate::sys::fcntl::{FREAD, FWRITE};
-use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File, frele};
+use crate::sys::file::FileExt;
+use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File, FileRef, frele};
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
 use crate::sys::malloc::{M_SYSCTL, M_TEMP, M_WAITOK, M_ZERO};
@@ -1544,7 +1545,7 @@ fn unp_path_copy(dst: &mut [u8; KI_UNPPATHLEN], addr: &[u8]) {
 #[allow(clippy::too_many_arguments)] // the C's arguments
 pub fn fill_file(
     kf: &mut KinfoFile,
-    fp: Option<&File>,
+    fp: Option<&FileRef>,
     fdp: Option<&Filedesc>,
     fd: i32,
     vp: Option<&'static Vnode>,
@@ -1558,38 +1559,39 @@ pub fn fill_file(
     kf.fd_fd = fd; // might not really be an fd
 
     if let Some(fp) = fp {
-        // SAFETY: an open file holds a reference to its credentials from `fnew` until
-        // `fdrop`, and the caller holds a reference to the file.
-        let cred = unsafe { &*fp.f_cred.get() };
+        // An open file holds its credentials from `fnew` until its item goes, and the caller
+        // holds a reference to the file.
+        let cred = fp.cred();
         if show_pointers {
-            kf.f_fileaddr = ptrtoint64(fp);
+            kf.f_fileaddr = fp.addr() as u64;
         }
         kf.f_flag = fp.f_flag.load(Ordering::Relaxed);
         kf.f_iflags = fp.f_iflags.load(Ordering::Relaxed);
-        kf.f_type = fp.f_type.get() as u32;
-        kf.f_count = fp.f_count.load(Ordering::Relaxed);
+        kf.f_type = fp.f_type() as u32;
+        kf.f_count = fp.count();
         if show_pointers {
-            kf.f_ucred = ptrtoint64(fp.f_cred.get());
+            kf.f_ucred = ptrtoint64(fp.f_cred_ptr());
         }
         kf.f_uid = cred.cr_uid.get();
         kf.f_gid = cred.cr_gid.get();
         if show_pointers {
-            kf.f_ops = fp.f_ops.get().map_or(0, |ops| ptrtoint64(ops));
+            kf.f_ops = fp.installed().map_or(0, |i| ptrtoint64(i.ops));
         }
         if show_pointers {
-            kf.f_data = ptrtoint64(fp.f_data.get());
+            kf.f_data = file_data_addr(fp);
         }
         kf.f_usecount = 0;
 
         if suser(p).is_ok() || p.ucred().cr_uid.get() == cred.cr_uid.get() {
-            mtx_enter(&fp.f_mtx);
-            kf.f_offset = fp.f_offset.get() as u64;
-            kf.f_rxfer = fp.f_rxfer.get();
-            kf.f_rwfer = fp.f_wxfer.get();
-            kf.f_seek = fp.f_seek.get();
-            kf.f_rbytes = fp.f_rbytes.get();
-            kf.f_wbytes = fp.f_wbytes.get();
-            mtx_leave(&fp.f_mtx);
+            {
+                let st = fp.stats();
+                kf.f_offset = st.f_offset as u64;
+                kf.f_rxfer = st.f_rxfer;
+                kf.f_rwfer = st.f_wxfer;
+                kf.f_seek = st.f_seek;
+                kf.f_rbytes = st.f_rbytes;
+                kf.f_wbytes = st.f_wbytes;
+            }
         } else {
             kf.f_offset = -1i64 as u64;
         }
@@ -1662,9 +1664,20 @@ pub fn fill_file(
         strlcpy(&mut kf.p_comm, &pr.comm());
     }
     if let Some(fdp) = fdp {
-        fdplock(fdp);
-        kf.fd_ofileflags = u32::from(fdp.ofileflags(fd as usize));
-        fdpunlock(fdp);
+        let g = fdplock(fdp);
+        kf.fd_ofileflags = u32::from(g.ofileflags(fd));
+        fdpunlock(g);
+    }
+}
+
+/// `fp->f_data`'s address, as `kinfo_file` prints it: the vnode, the socket or the kqueue (a
+/// pipe's own address is its own column, set by the caller; a file with no object prints 0).
+fn file_data_addr(fp: &File) -> u64 {
+    match fp.data() {
+        Some(BsdFileData::Vnode(v)) => v.get().map_or(0, |vp| ptrtoint64(vp)),
+        Some(BsdFileData::Socket(word)) => ptrtoint64(word.get()),
+        Some(BsdFileData::Kqueue(k)) => k.get().map_or(0, |kq| ptrtoint64(kq)),
+        _ => 0,
     }
 }
 
@@ -1837,7 +1850,7 @@ impl FileWalk<'_> {
     /// `FILLIT(fp, fdp, i, vp, pr)`.
     fn fillit(
         &mut self,
-        fp: Option<&File>,
+        fp: Option<&FileRef>,
         fdp: Option<&Filedesc>,
         i: i32,
         vp: Option<&'static Vnode>,
@@ -1923,17 +1936,17 @@ impl FileWalk<'_> {
         if text && let Some(vp) = pr.ps_textvp.get() {
             self.fillit(None, None, KERN_FILE_TEXT, Some(vp), Some(pr))?;
         }
-        if let Some(vp) = fdp.fd_cdir.get() {
+        if let Some(vp) = fdp.cdir() {
             self.fillit(None, None, KERN_FILE_CDIR, Some(vp), Some(pr))?;
         }
-        if let Some(vp) = fdp.fd_rdir.get() {
+        if let Some(vp) = fdp.rdir() {
             self.fillit(None, None, KERN_FILE_RDIR, Some(vp), Some(pr))?;
         }
         // ps_tracevp (KERN_FILE_TRACE) does not exist: KTRACE is not configured.
         let mut i = 0;
-        while i < fdp.fd_nfiles.load(Ordering::Relaxed) {
+        while i < fdp.nfiles() as i32 {
             if let Some(fp) = fd_getfile(fdp, i) {
-                let r = self.fillit(Some(fp), Some(fdp), i, None, Some(pr));
+                let r = self.fillit(Some(&fp), Some(fdp), i, None, Some(pr));
                 let _ = frele(fp, self.p);
                 r?;
             }
@@ -2042,13 +2055,13 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
                 #[cfg(feature = "inet6")]
                 w.fillinptable(&DIVB6TABLE)?;
             }
-            let mut fp = None;
+            let mut fp: Option<FileRef> = None;
             loop {
-                fp = fd_iterfile(fp, p);
-                let Some(f) = fp else {
+                fp = fd_iterfile(fp.take(), p);
+                let Some(f) = fp.as_ref() else {
                     break;
                 };
-                if arg != 0 && f.f_type.get() != arg {
+                if arg != 0 && f.f_type() != arg {
                     continue;
                 }
                 let skip = arg == DTYPE_SOCKET && {
@@ -2060,7 +2073,9 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
                     let r = w.fillit(Some(f), None, 0, None, None);
                     kernel_unlock();
                     if let Err(e) = r {
-                        let _ = frele(f, p);
+                        if let Some(f) = fp.take() {
+                            let _ = frele(f, p);
+                        }
                         return Err(e);
                     }
                 }
@@ -2327,7 +2342,7 @@ pub fn fill_kproc(
 
     if show_pointers {
         ki.p_paddr = ptrtoint64(p);
-        ki.p_fd = ptrtoint64(pr.ps_fd.get());
+        ki.p_fd = pr.fd_opt().map_or(0, |fdp| fdp.addr() as u64);
         ki.p_limit = pr.limit_word() as u64;
         ki.p_vmspace = pr.vmspace_word() as u64;
         ki.p_sigacts = pr
@@ -2784,7 +2799,7 @@ pub fn sysctl_proc_cwd(
     *oldlenp = 0;
 
     // snag a reference to the vnode before we can sleep
-    let Some(vp) = findpr.fd().fd_cdir.get() else {
+    let Some(vp) = findpr.fd().cdir() else {
         // No current directory before a root file system is mounted.
         return Err(Errno::ENOENT);
     };
@@ -3780,15 +3795,23 @@ mod tests {
         let mut v = Ucred::new();
         v.cr_uid.set(1000);
         v.cr_gid.set(20);
-        let fp: &'static File = Box::leak(Box::new(File::new()));
-        fp.f_cred.set(CredRef::new(v));
-        fp.f_type.set(crate::sys::file::DTYPE_DMABUF);
+        crate::kern::kern_descrip::filedesc_init();
+        let opener = test_thread(test_process(43));
+        drop(opener.set_cred(CredRef::new(v)));
+        let fp = crate::kern::kern_descrip::fnew(opener).unwrap();
+        // Never closed: the file and its second reference (a table's) are leaked with the
+        // test.
+        fp.install(
+            crate::sys::file::DTYPE_DMABUF,
+            &crate::kern::vfs_vnops::VNOPS,
+            BsdFileData::None,
+        );
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::Relaxed);
-        fp.f_count.store(2, Ordering::Relaxed);
-        fp.f_offset.set(77);
+        let other_ref = fp.clone();
+        fp.stats().f_offset = 77;
 
         let mut kf = KinfoFile::zeroed();
-        fill_file(&mut kf, Some(fp), None, 3, None, Some(pr), p, None, false);
+        fill_file(&mut kf, Some(&fp), None, 3, None, Some(pr), p, None, false);
         assert_eq!((kf.fd_fd, kf.f_type, kf.f_count), (3, 5, 2));
         assert_eq!((kf.f_flag, kf.f_uid, kf.f_gid), (3, 1000, 20));
         // The owner sees the offset; no pointers without root.
@@ -3798,10 +3821,12 @@ mod tests {
 
         // Another user does not.
         let other = thread(1001);
-        fill_file(&mut kf, Some(fp), None, 3, None, None, other, None, true);
+        fill_file(&mut kf, Some(&fp), None, 3, None, None, other, None, true);
         assert_eq!(kf.f_offset, u64::MAX);
-        assert_eq!(kf.f_fileaddr, fp as *const File as u64);
+        assert_eq!(kf.f_fileaddr, fp.addr() as u64);
         assert_eq!(kf.p_pid, 0);
+        core::mem::forget(other_ref);
+        core::mem::forget(fp);
     }
 
     #[test]

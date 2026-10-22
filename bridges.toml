@@ -144,6 +144,18 @@ trait = "UioMove"
 for = ["sys/kernel/pipe.rs", "sys/kernel/vm/io.rs"]
 paid_by = "N7"
 
+# bsd: what a file is open on and the calls the descriptors make into the subsystems still in
+# bsd (sys/kern/kern_descrip.rs, BsdFileGlue, the glue kernel::file and kernel::descrip are
+# instantiated with: the objects (vnode, socket, pipe, kqueue), struct fileops, the vnode
+# layer's VOP_ADVLOCK/VOP_PATHCONF/VISTTY and the positioned-I/O checks (N5), SS_DNS (N6),
+# knote_fdclose and a table's fd_kqlist (N4.4), SIGPIPE (N4.5), the stall wait (N5), pledge's
+# fcntl/flock/ioctl hooks (N8, the last), maxfiles and tablefull).
+# kernel::file::FileGlue
+[[bridge]]
+trait = "FileGlue"
+for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+paid_by = "N8"
+
 # bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
 # (sys/kern/kern_descrip.rs, sys/sys/filedesc.rs), implemented by sys/kern/pipe_glue.rs.
 # kernel::pipe::PipeFiles

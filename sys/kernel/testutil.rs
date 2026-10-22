@@ -1518,7 +1518,12 @@ macro_rules! test_file_glue {
 
         std::thread_local! {
             static FILE_TABLES: &'static $crate::file::FileTables<$name> =
-                std::boxed::Box::leak(std::boxed::Box::new($crate::file::FileTables::new(0)));
+                std::boxed::Box::leak(std::boxed::Box::new($crate::file::FileTables::new(
+                    0,
+                    std::boxed::Box::leak(std::boxed::Box::new(
+                        core::sync::atomic::AtomicI32::new(0),
+                    )),
+                )));
         }
 
         impl $crate::file::FileGlue for $name {
@@ -1542,9 +1547,6 @@ macro_rules! test_file_glue {
             }
             fn stall_wait() {
                 $crate::testutil::file_log_push(std::string::String::from("stall"));
-            }
-            fn data_addr(d: &Self::Data) -> usize {
-                d.id
             }
             fn vref(v: &'static Self::Vnode) {
                 v.refs.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -1618,6 +1620,9 @@ macro_rules! test_file_glue {
             }
             fn stat_hide_gen(st: &mut Self::Stat) {
                 st.st_gen = 0;
+            }
+            fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), hal::sys::errno::Errno> {
+                hal::user::UserPtr::<$crate::testutil::TestStat>::new(sb).copyout(st)
             }
             fn fdkq_free(_kq: &Self::FdKq) {}
         }

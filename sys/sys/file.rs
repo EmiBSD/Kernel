@@ -48,84 +48,45 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/file.h>`: the kernel descriptor table entry, `struct file`, with its operations
-//! vector `struct fileops`, the `DTYPE_*` descriptor types, the `FIF_*` internal flags and
-//! the reference macros `FREF`/`FRELE`.
+//! `<sys/file.h>` for `bsd`: the kernel's open file (`kernel::file`) bound to `bsd`'s glue,
+//! `struct fileops` as `bsd`'s operations vectors are written, and the reference macros.
 //!
 //! Upstream: sys/sys/file.h @ 3ce1f3f79392
+//! LZ: sys/sys/file.rs@3c62ede68802
 //!
-//! A `struct file` is a pool item (`file_pool`, `kern_descrip.rs`) that every descriptor
-//! table pointing at it, and every thread using it, holds a reference to; it is handed around
-//! as `&'static File` (the `crget`/`crfree` idiom of `docs/C_TO_RUST.md`) and goes back to the
-//! pool in `fdrop` when the last reference goes.
-//!
-//! ## Deviations
-//! - `struct fileops` is a struct of `fn` pointers returning `Result<(), Errno>`. `fo_ioctl`'s
-//!   `caddr_t data` is the kernel copy of the argument as a byte slice; `fo_close` takes
-//!   `Option<&Proc>` (a file passed in a message is closed with no process); `fo_seek` is an
-//!   `Option` because the C leaves it NULL for most types.
-//! - The `[a]`/`[f]`/`[I]` members are atomics (`f_flag`, `f_iflags`, `f_count`) or `Cell`s;
-//!   `f_ops`, `f_type`, `f_data` and `f_cred` are written once, right after `falloc`, before
-//!   the file is inserted in a table, as in C.
-//! - `FREF`/`FRELE` are the functions [`fref`]/[`frele`]; `frele` takes the thread as
-//!   `impl Into<Option<&Proc>>`, as the C passes NULL from the socket garbage collector.
-//!   `FREF` calls `vfs_stall_barrier()` (`vfs_subr.rs`) as in C.
-//! - A pipe file keeps its pipe in [`File::f_pipe`], a typed slot beside `f_data` (which stays
-//!   null for it), set by `dopipe` and taken by its `fo_close` (`kern/pipe_glue.rs`): pipe(2)
-//!   lives in the kernel crate (`sys/kernel/pipe.rs`), and reading its pair back out of the
-//!   type-erased `f_data` would need a cast. Gone at N4 with `FileData` (decision 14).
-//! - `maxfiles` is `conf/param.rs`'s `MAXFILES`; `numfiles` is `kern_descrip.rs`'s
-//!   `NUMFILES`; `vnops` is `kern/vfs_vnops.rs`'s `VNOPS`; `socketops` is
-//!   `kern/sys_socket.rs`'s `SOCKETOPS`.
+//! ## Redesign
+//! - N4.3: `struct file` moved into `kernel::file` (a counted pool item, its object installed
+//!   once); this module names its one instance (`File`, `FileRef` over `BsdFileGlue`,
+//!   `sys/kern/kern_descrip.rs`), re-exports the `DTYPE_*`, `FIF_*` and `FO_POSITION`
+//!   constants, and keeps `struct fileops` as `bsd`'s vectors are written (`VNOPS`,
+//!   `SOCKETOPS`, `PIPEOPS`, `KQUEUEOPS`, `CONSFILEOPS`): the kernel calls them through
+//!   [`FileOps`](kernel::file::FileOps), implemented here over the function pointers.
+//!   `FREF`/`FRELE` are [`fref`]/[`frele`] over the handle, and the object of a file is read
+//!   through [`FileExt`] (a vnode) and the subsystems' own accessors (`fp_socket`,
+//!   `fp_kqueue`, `pipe_of`), by reference: `f_data` is no longer cast.
 
-use core::cell::Cell;
-use core::ffi::c_void;
-use core::ptr;
-use core::sync::atomic::{AtomicU32, Ordering};
+use kernel::file::FileOps;
 
-use hal::mutex::Mutexed;
+pub use kernel::file::{
+    DTYPE_DMABUF, DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_SYNC, DTYPE_VMM, DTYPE_VNODE,
+    FDUP_MAX_COUNT, FIF_HASLOCK, FIF_INSERTED, FO_POSITION, FileStats,
+};
 
-use crate::kern::kern_descrip::fdrop;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::pipe_glue::PipeFile;
-use crate::machine::cpu::MAXCPUS;
-use crate::machine::intr::IPL_MPFLOOR;
-use crate::queue_adapter;
+use crate::kern::kern_descrip::{BsdFileData, BsdFileGlue};
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
-use crate::sys::mutex::Mutex;
 use crate::sys::proc::Proc;
-use crate::sys::queue::ListEntry;
 use crate::sys::stat::Stat;
 use crate::sys::types::Off;
-use crate::sys::ucred::CredSlot;
+use crate::sys::ucred::Ucred;
 use crate::sys::uio::Uio;
+use crate::sys::vnode::Vnode;
 
-/// `DTYPE_VNODE`: file.
-pub const DTYPE_VNODE: i32 = 1;
-/// `DTYPE_SOCKET`: communications endpoint.
-pub const DTYPE_SOCKET: i32 = 2;
-/// `DTYPE_PIPE`: pipe.
-pub const DTYPE_PIPE: i32 = 3;
-/// `DTYPE_KQUEUE`: event queue.
-pub const DTYPE_KQUEUE: i32 = 4;
-/// `DTYPE_DMABUF`: DMA buffer (for DRM).
-pub const DTYPE_DMABUF: i32 = 5;
-/// `DTYPE_SYNC`: sync file (for DRM).
-pub const DTYPE_SYNC: i32 = 6;
-/// `DTYPE_VMM`: `vmm(4)` virtual machine.
-pub const DTYPE_VMM: i32 = 7;
+/// `struct file` of `bsd`'s descriptors.
+pub type File = kernel::file::File<BsdFileGlue>;
 
-/// `FO_POSITION`: positioned read/write.
-pub const FO_POSITION: i32 = 0x0000_0001;
-
-/// `FIF_HASLOCK`: descriptor holds advisory lock.
-pub const FIF_HASLOCK: u32 = 0x01;
-/// `FIF_INSERTED`: present in `filehead`.
-pub const FIF_INSERTED: u32 = 0x80;
-
-/// `FDUP_MAX_COUNT`: the reference count past which a file is no longer duplicated.
-pub const FDUP_MAX_COUNT: u32 = u32::MAX - 2 * MAXCPUS;
+/// A counted reference to a `struct file` (`f_count`).
+pub type FileRef = kernel::file::FileRef<BsdFileGlue>;
 
 /// `struct fileops`: file operations. `fo_read`, `fo_write` and `fo_close` could be called
 /// without the kernel lock held.
@@ -149,114 +110,77 @@ pub struct Fileops {
 /// The type of `fo_seek(fp, offset, whence, p)`.
 pub type FoSeek = fn(&File, &mut Off, i32, &Proc) -> Result<(), Errno>;
 
-/// `struct file`: kernel descriptor table. One entry for each open kernel vnode and socket.
-///
-/// Locks: \[I\] immutable after creation, \[F\] global `fhdlk` mutex, \[a\] atomic
-/// operations, \[f\] per file `f_mtx`, \[v\] vnode lock.
-pub struct File {
-    /// \[F\] `f_list`: list of active files.
-    pub f_list: ListEntry<File>,
-    /// `f_mtx`.
-    pub f_mtx: Mutex,
-    /// \[a\] `f_flag`: see `fcntl.h` (`FREAD`, `FWRITE`, `FNONBLOCK`, ...).
-    pub f_flag: AtomicU32,
-    /// \[a\] `f_iflags`: internal flags (`FIF_*`).
-    pub f_iflags: AtomicU32,
-    /// \[I\] `f_type`: descriptor type (`DTYPE_*`).
-    pub f_type: Cell<i32>,
-    /// \[a\] `f_count`: reference count.
-    pub f_count: AtomicU32,
-    /// \[I\] `f_cred`: credentials associated with descriptor; the file holds a reference.
-    pub f_cred: CredSlot,
-    /// \[I\] `f_ops`: file operation pointers.
-    pub f_ops: Cell<Option<&'static Fileops>>,
-    /// \[f,v\] `f_offset`: offset.
-    pub f_offset: Cell<Off>,
-    /// \[I\] `f_data`: private data, whose type `f_type` names (null for a pipe).
-    pub f_data: Cell<*mut c_void>,
-    /// A `DTYPE_PIPE` file's pipe (`kern/pipe_glue.rs`): set once by `dopipe`, taken by
-    /// `fo_close`; the mutex is held only to clone or take it.
-    pub f_pipe: Mutexed<Option<PipeFile>>,
-    /// \[f\] `f_rxfer`: total number of read transfers.
-    pub f_rxfer: Cell<u64>,
-    /// \[f\] `f_wxfer`: total number of write transfers.
-    pub f_wxfer: Cell<u64>,
-    /// \[f\] `f_seek`: total independent seek operations.
-    pub f_seek: Cell<u64>,
-    /// \[f\] `f_rbytes`: total bytes read.
-    pub f_rbytes: Cell<u64>,
-    /// \[f\] `f_wbytes`: total bytes written.
-    pub f_wbytes: Cell<u64>,
-}
-
-impl File {
-    /// A zeroed file, as `pool_get(&file_pool, PR_ZERO)` returns it.
-    pub const fn new() -> Self {
-        Self {
-            f_list: ListEntry::new(),
-            f_mtx: Mutex::new(IPL_MPFLOOR),
-            f_flag: AtomicU32::new(0),
-            f_iflags: AtomicU32::new(0),
-            f_type: Cell::new(0),
-            f_count: AtomicU32::new(0),
-            f_cred: CredSlot::new(),
-            f_ops: Cell::new(None),
-            f_offset: Cell::new(0),
-            f_data: Cell::new(ptr::null_mut()),
-            f_pipe: Mutexed::new(IPL_MPFLOOR, None),
-            f_rxfer: Cell::new(0),
-            f_wxfer: Cell::new(0),
-            f_seek: Cell::new(0),
-            f_rbytes: Cell::new(0),
-            f_wbytes: Cell::new(0),
-        }
+impl FileOps<BsdFileGlue> for Fileops {
+    fn read(&self, fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
+        (self.fo_read)(fp, uio, fflags)
     }
 
-    /// `fp->f_flag` as the `int` the `fcntl.h` constants are.
-    pub fn flag(&self) -> i32 {
-        self.f_flag.load(Ordering::Relaxed) as i32
+    fn write(&self, fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
+        (self.fo_write)(fp, uio, fflags)
     }
 
-    /// `fp->f_ops`, which every inserted file has.
-    pub fn ops(&self) -> &'static Fileops {
-        match self.f_ops.get() {
-            Some(ops) => ops,
-            None => crate::kern::subr_prf::panic(format_args!("file {:p}: no f_ops", self)),
+    fn ioctl(&self, fp: &File, com: u64, data: &mut [u8], p: &Proc) -> Result<(), Errno> {
+        (self.fo_ioctl)(fp, com, data, p)
+    }
+
+    fn kqfilter(&self, fp: &File, kn: &Knote) -> Result<(), Errno> {
+        (self.fo_kqfilter)(fp, kn)
+    }
+
+    fn stat(&self, fp: &File, st: &mut Stat, p: &Proc) -> Result<(), Errno> {
+        (self.fo_stat)(fp, st, p)
+    }
+
+    fn close(&self, fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
+        (self.fo_close)(fp, p)
+    }
+
+    fn seek(&self, fp: &File, off: &mut Off, whence: i32, p: &Proc) -> Result<(), Errno> {
+        match self.fo_seek {
+            Some(seek) => seek(fp, off, whence, p),
+            None => Err(Errno::ESPIPE),
         }
     }
 }
 
-impl Default for File {
-    fn default() -> Self {
-        Self::new()
+/// What `bsd` reads of a file's object and credentials.
+pub trait FileExt {
+    /// `(struct vnode *)fp->f_data` of a `DTYPE_VNODE` file (`panic(9)` for another).
+    fn vnode(&self) -> &'static Vnode;
+    /// `fp->f_cred`, as the vnode layer takes it (a pointer the file keeps alive).
+    fn f_cred_ptr(&self) -> *const Ucred;
+}
+
+impl FileExt for File {
+    fn vnode(&self) -> &'static Vnode {
+        match self.data() {
+            Some(BsdFileData::Vnode(vp)) if self.f_type() == DTYPE_VNODE => match vp.get() {
+                Some(vp) => vp,
+                None => {
+                    crate::kern::subr_prf::panic(format_args!("file {:#x}: no vnode", self.addr()))
+                }
+            },
+            _ => crate::kern::subr_prf::panic(format_args!("file {:#x}: not a vnode", self.addr())),
+        }
+    }
+
+    fn f_cred_ptr(&self) -> *const Ucred {
+        kernel::cred::CredRef::as_ptr(self.cred())
     }
 }
 
-queue_adapter!(
-    /// `LIST_HEAD(filelist, file)`: the list of open files, through `f_list`.
-    pub FileList: File, f_list => ListEntry<File>
-);
-
-/// `FREF(fp)`: takes a reference to `fp`.
-pub fn fref(fp: &File) {
-    crate::kern::vfs_subr::vfs_stall_barrier();
-    fp.f_count.fetch_add(1, Ordering::SeqCst);
+/// `FREF(fp)`: one more reference to `fp`.
+pub fn fref(fp: &FileRef) -> FileRef {
+    fp.fref()
 }
 
-/// `FRELE(fp, p)`: drops a reference to `fp`; the last one closes it (`fdrop`).
-pub fn frele<'a>(fp: &'static File, p: impl Into<Option<&'a Proc>>) -> Result<(), Errno> {
-    if fp.f_count.fetch_sub(1, Ordering::SeqCst) == 1 {
-        fdrop(fp, p.into())
-    } else {
-        Ok(())
-    }
+/// `FRELE(fp, p)`: gives a reference back; the last one closes the file (`fdrop`).
+pub fn frele<'a>(fp: FileRef, p: impl Into<Option<&'a Proc>>) -> Result<(), Errno> {
+    fp.frele(p.into())
 }
 
 /// `foffset(fp)`: the file's offset, read under `f_mtx`.
 pub fn foffset(fp: &File) -> Off {
-    mtx_enter(&fp.f_mtx);
-    let offset = fp.f_offset.get();
-    mtx_leave(&fp.f_mtx);
-    offset
+    kernel::file::foffset(fp)
 }
 /* </CODE> */

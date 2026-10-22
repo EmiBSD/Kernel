@@ -82,6 +82,7 @@ use crate::miscfs::fuse::fusefs_node::{
     FUFH_INVALID, FUFH_MAXTYPE, FufhType, FusefsFilehandle, FusefsNode, VTOI,
 };
 use crate::sys::errno::Errno;
+use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::fusebuf::{
     FUSE_DESTROY, FUSE_INIT, FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID,
@@ -157,7 +158,7 @@ pub fn fusefs_mount(
     };
 
     let error = 'bad: {
-        if fp.f_type.get() != DTYPE_VNODE {
+        if fp.f_type() != DTYPE_VNODE {
             break 'bad Err(Errno::EINVAL);
         }
 
@@ -729,9 +730,12 @@ mod tests {
     fn install_dev_fd(p: &'static Proc, dev: Dev, fd: i32) {
         let vp = cdevvp(dev).expect("cdevvp").expect("a vnode");
         let fp = fnew(p).expect("a file");
-        fp.f_type.set(DTYPE_VNODE);
-        fp.f_data.set(ptr::from_ref(vp).cast_mut().cast());
-        install(p, fd, fp);
+        fp.install(
+            DTYPE_VNODE,
+            &crate::kern::vfs_vnops::VNOPS,
+            crate::kern::kern_descrip::BsdFileData::Vnode(hal::link::Link::to(vp)),
+        );
+        install(p, fd, &fp);
     }
 
     /// A component name for `name`, with the thread's credentials and no pathname buffer.

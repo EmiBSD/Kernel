@@ -50,1403 +50,398 @@
  *
  *	@(#)kern_descrip.c	8.6 (Berkeley) 4/19/94
  */
+
+/*
+ * Copyright (c) 1982, 1986, 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)file.h	8.2 (Berkeley) 8/20/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
-//! Descriptor management: `kern/kern_descrip.c`. The per-process descriptor tables
-//! (`fdinit`, `fdcopy`, `fdshare`, `fdfree`), descriptor allocation over the two-level free
-//! bitmap (`fdalloc`, `fdexpand`), the open file structures (`falloc`, `fnew`, `closef`,
-//! `fdrop`, the global `filehead` list) and the descriptor system calls (`dup`, `dup2`,
-//! `dup3`, `fcntl`, `close`, `fstat`, `fpathconf`, `flock`, `closefrom`,
-//! `getdtablecount`).
+//! `bsd`'s descriptors over the kernel's (`kernel::file`, `kernel::descrip`): the glue the
+//! kernel's open files and tables are instantiated with ([`BsdFileGlue`]: the objects a
+//! file holds, the hooks into the vnode layer, the sockets, kqueue, signals and pledge), the
+//! `sysent[]` rows of the descriptor system calls, and the `/dev/fd` driver.
 //!
 //! Upstream: sys/kern/kern_descrip.c @ 3ce1f3f79392
+//! Upstream: sys/sys/file.h @ 3ce1f3f79392
+//! LZ: sys/kern/kern_descrip.rs@3c62ede68802
+//! LZ: sys/sys/file.rs@3c62ede68802
 //!
-//! The functions keep the C's locking: `fd_lock` (`fdplock`) serialises the table's
-//! writers, `fd_fplock` lets `fd_getfile` read a slot without it, and `fhdlk` guards
-//! `filehead`. Several functions return with the table unlocked as in C (`fdrelease`,
-//! `finishdup`); their comments say so.
-//!
-//! ## Deviations
-//! - Out-parameters are return values: `fdalloc(p, want)` returns the descriptor,
-//!   `falloc(p)` the file and the descriptor, `fd_getfile` an `Option<&'static File>` (the
-//!   C's NULL is `None`). `closef` takes a file (the C's NULL early return has no caller
-//!   here).
-//! - `fdexpand` returns `ENOMEM` when `malloc(9)` cannot serve it: `M_WAITOK` cannot sleep
-//!   in this kernel yet (`kern_malloc.rs`), and failing the call that needed the descriptor
-//!   is better than a panic. Its callers pass the error up. `fnew` likewise fails (`ENFILE`)
-//!   when `file_pool` is empty; `fdinit` and `fdcopy`, whose callers cannot fail, panic.
-//! - `fdalloc` reads the limit (`lim_cur(RLIMIT_NOFILE)`, `maxfiles`) once and hands the
-//!   search to `fdalloc_search`, which the host tests drive without a `curproc`; the C
-//!   re-reads the limit when it restarts the search, with nothing in between that could
-//!   change it.
-//! - `find_next_zero` reads the words past the end of a bitmap as full, where the C reads
-//!   past the array; the C rejects whatever it finds there (`i < last`), so the result is
-//!   the same.
-//! - The vnode paths (`VOP_ADVLOCK` of the record locks, `flock` and `closef`,
-//!   `VOP_PATHCONF`, `VISTTY` for `F_ISATTY`, `vref`/`vrele` of `fd_cdir`/`fd_rdir`) are
-//!   the vfs core's (`vfs_vops.rs`, `vfs_subr.rs`). `F_ISATTY` answers 0/`ENOTTY` for every
-//!   file that is not a vnode, as in C, so the console stand-in is not a tty to `isatty(3)`.
-//! - `KTRACE` is not configured. `KASSERTMSG` is `kassert!`.
+//! ## Redesign
+//! - N4.3: `kern_descrip.c`'s descriptor management moved into `kernel::descrip` and
+//!   `struct file` into `kernel::file`; this module is what stays `bsd`'s until the
+//!   subsystems a file points at move: [`BsdFileData`] (`f_data` by kind: a vnode link, a
+//!   socket's address word, a pipe's end, a kqueue link), [`BsdFdKq`] (a table's
+//!   `fd_kqlist` and `fd_nuserevents`, kqueue's until N4.4), the hooks of
+//!   [`BsdFileGlue`] (a `bridges.toml` row, `FileGlue`), the open files' tables, the
+//!   `sysent[]` rows (`sys_dup` ... `sys_getdtablecount`, which call the kernel's typed
+//!   entries) and `filedescopen`. The module keeps LZ's path, which the frozen amd64
+//!   `conf.rs` imports `filedescopen` from (decision 44).
 
-use core::ffi::c_void;
-use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+
+use hal::link::{Link, PtrWord};
+use kernel::file::{FileGlue, FileTables, LockOwner};
+
+pub use kernel::descrip::{
+    dupfdopen, fd_checkclosed, fd_getfile, fd_getfile_flags, fd_iterfile, fdalloc, fdcopy,
+    fdexpand, fdfree, fdinit, fdinsert, fdprepforexec, fdrelease, fdremove, fdshare, finishdup,
+};
+pub use kernel::file::fdrop;
 
 use crate::conf::param::MAXFILES;
-use crate::kassert;
 use crate::kern::kern_event::knote_fdclose;
-use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
-use crate::kern::kern_malloc::{free, mallocarray};
-use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock};
-use crate::kern::kern_prot::suser;
-use crate::kern::kern_rwlock::rw_init;
-use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
-use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::vfs_subr::{vfs_stall_barrier, vref, vrele};
+use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
+use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
+use crate::kern::kern_sig::ptsignal;
+use crate::kern::pipe_glue::PipeFile;
+use crate::kern::subr_prf::tablefull;
+use crate::kern::vfs_subr::{VFS_STALL_LOCK, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
-use crate::machine::copy::{copyin, copyout};
-use crate::machine::cpu::curproc;
-use crate::machine::intr::{IPL_MPFLOOR, IPL_NONE};
+use crate::machine::copy::copyout;
+#[cfg(not(test))]
+use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
-use crate::sys::fcntl::{
-    F_DUPFD, F_DUPFD_CLOEXEC, F_DUPFD_CLOFORK, F_FLOCK, F_GETFD, F_GETFL, F_GETLK, F_GETOWN,
-    F_ISATTY, F_POSIX, F_RDLCK, F_SETFD, F_SETFL, F_SETLK, F_SETLKW, F_SETOWN, F_UNLCK, F_WAIT,
-    F_WRLCK, FASYNC, FCNTLFLAGS, FD_CLOEXEC, FD_CLOFORK, FREAD, FWRITE, Flock, LOCK_EX, LOCK_NB,
-    LOCK_SH, LOCK_UN, O_CLOEXEC, O_CLOFORK, fflags, oflags,
-};
-use crate::sys::file::{
-    DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, FDUP_MAX_COUNT, FIF_HASLOCK, FIF_INSERTED,
-    File, FileList, foffset, fref, frele,
-};
-use crate::sys::filedesc::{
-    FD_ADVLOCK, Filedesc, Filedesc0, NDENTRIES, NDENTRYMASK, NDENTRYSHIFT, NDEXTENT, NDFILE,
-    OFILESIZE, UF_EXCLOSE, UF_FORKCLOSE, UF_PLEDGED, UF_PLEDGEOPEN, fdpassertlocked, fdplock,
-    fdpunlock, ndhislots, ndloslots,
-};
-use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIOSETOWN};
+use crate::sys::event::Knote;
+use crate::sys::eventvar::{KqList, Kqueue};
+use crate::sys::fcntl::Flock;
+use crate::sys::file::{File, FileRef, Fileops};
+use crate::sys::filedesc::FdGuard;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::malloc::{M_FILEDESC, M_WAITOK, M_ZERO};
-use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
-use crate::sys::proc::{PS_PLEDGE, PS_SUGID, PS_SUGIDEXEC, Proc, Process};
-use crate::sys::queue::ListHead;
-use crate::sys::resource::RLIMIT_NOFILE;
-use crate::sys::resourcevar::lim_cur;
-use crate::sys::stat::{S_IWGRP, S_IWOTH, Stat};
+use crate::sys::proc::Proc;
+use crate::sys::signal::SIGPIPE;
+use crate::sys::signalvar::SignalType;
+use crate::sys::socketvar::{SS_DNS, Socket};
+use crate::sys::stat::Stat;
 use crate::sys::syscallargs::{
     SysCloseArgs, SysClosefromArgs, SysDup2Args, SysDup3Args, SysDupArgs, SysFcntlArgs,
     SysFlockArgs, SysFpathconfArgs, SysFstatArgs,
 };
-use crate::sys::syslimits::PIPE_BUF;
 use crate::sys::systm::{SysArgs, sysargs};
-use crate::sys::types::{Dev, Register, minor};
-use crate::sys::unistd::{_PC_PIPE_BUF, SEEK_CUR, SEEK_SET};
-use crate::sys::vnode::VISTTY;
+use crate::sys::types::{Dev, Off, Register, minor};
+use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
 
-/// `DUPF_CLOEXEC`.
-const DUPF_CLOEXEC: i32 = 0x01;
-/// `DUPF_DUP2`.
-const DUPF_DUP2: i32 = 0x02;
-/// `DUPF_CLOFORK`.
-const DUPF_CLOFORK: i32 = 0x04;
+/// `f_data`: what a `bsd` file is open on.
+pub enum BsdFileData {
+    /// `DTYPE_VNODE`: the vnode the file holds a use count on.
+    Vnode(Link<Vnode>),
+    /// `DTYPE_SOCKET`: the socket, as an address (`Socket` is not `Sync`; `fp_socket` keeps
+    /// its deref until the sockets move, N6), cleared by `soo_close`.
+    Socket(PtrWord<Socket>),
+    /// `DTYPE_PIPE`: the pipe this file reads, and the opener's ids for `pipe_stat`.
+    Pipe(PipeFile),
+    /// `DTYPE_KQUEUE`: the kqueue, cleared by `kqueue_close`.
+    Kqueue(Link<Kqueue>),
+    /// A file with no object (the console stand-in, `DTYPE_CONSFILE`).
+    None,
+}
 
-/// `struct filelist filehead`'s type: the list made `Sync`, its lock being `fhdlk`.
-pub struct FileListHead(pub ListHead<FileList>);
-// SAFETY: the list is only read or changed with `FHDLK` held.
-unsafe impl Sync for FileListHead {}
+impl BsdFileData {
+    /// A vnode file's object.
+    pub fn vnode(vp: &'static Vnode) -> Self {
+        Self::Vnode(Link::to(vp))
+    }
 
-/// `fhdlk`: protects `filehead`. Interrupts are blocked as long as it is held, with and
-/// without the kernel lock.
-pub static FHDLK: crate::sys::mutex::Mutex = crate::sys::mutex::Mutex::new(IPL_MPFLOOR);
-/// `filehead`: head of list of open files.
-pub static FILEHEAD: FileListHead = FileListHead(ListHead::new());
-/// `numfiles`: actual number of open files.
+    /// A socket file's object.
+    pub fn socket(so: &Socket) -> Self {
+        let word = PtrWord::new();
+        word.set(core::ptr::from_ref(so));
+        Self::Socket(word)
+    }
+}
+
+/// A table's kqueue members (kqueue's, N4.4): `fd_kqlist` and `fd_nuserevents`.
+#[derive(Default)]
+pub struct BsdFdKq {
+    /// \[f\] `fd_kqlist`: kqueues attached to this filedesc.
+    pub fd_kqlist: hal::list::List<KqList>,
+    /// \[a\] `fd_nuserevents`: number of kqueue user events.
+    pub fd_nuserevents: AtomicU32,
+}
+
+/// `bsd`'s instantiation of `kernel::file` and `kernel::descrip` (a `bridges.toml` row while
+/// `bsd` implements it).
+pub struct BsdFileGlue;
+
+kernel::file_glue_links!(BsdFileGlue);
+
+/// `numfiles`: actual number of open files (`kern.nfiles`).
 pub static NUMFILES: AtomicI32 = AtomicI32::new(0);
 
-/// `file_pool`.
-pub static FILE_POOL: Pool = Pool::new();
-/// `fdesc_pool`.
-pub static FDESC_POOL: Pool = Pool::new();
+/// The open files and the pools of `bsd`'s descriptors.
+#[cfg(not(test))]
+static FILE_TABLES: FileTables<BsdFileGlue> = FileTables::new(IPL_MPFLOOR, &NUMFILES);
 
-/// `filedesc_init`: the pools of open files and descriptor tables.
+#[cfg(test)]
+std::thread_local! {
+    /// Each host test thread's own tables ([`filedesc_init`] makes fresh ones).
+    static TEST_TABLES: core::cell::Cell<&'static FileTables<BsdFileGlue>> =
+        core::cell::Cell::new(std::boxed::Box::leak(std::boxed::Box::new(FileTables::new(0, &NUMFILES))));
+}
+
+/// The tables of `bsd`'s open files.
+pub fn file_tables() -> &'static FileTables<BsdFileGlue> {
+    #[cfg(not(test))]
+    {
+        &FILE_TABLES
+    }
+    #[cfg(test)]
+    {
+        TEST_TABLES.with(core::cell::Cell::get)
+    }
+}
+
+/// The vnode of a vnode file's object.
+fn vnode_of(d: &BsdFileData) -> &'static Vnode {
+    match d {
+        BsdFileData::Vnode(v) => match v.get() {
+            Some(vp) => vp,
+            None => crate::kern::subr_prf::panic(format_args!("vnode file: no vnode")),
+        },
+        _ => crate::kern::subr_prf::panic(format_args!("not a vnode file")),
+    }
+}
+
+/// A record lock owner as `VOP_ADVLOCK`'s `id` (compared, never followed).
+fn owner_id(owner: LockOwner) -> *const core::ffi::c_void {
+    match owner {
+        LockOwner::Table(a) | LockOwner::File(a) => core::ptr::without_provenance(a),
+    }
+}
+
+impl FileGlue for BsdFileGlue {
+    type Proc = crate::kern::proc_glue::BsdProcGlue;
+    type Ops = Fileops;
+    type Data = BsdFileData;
+    type Knote = Knote;
+    type Stat = Stat;
+    type Vnode = Vnode;
+    type FileList = FileListLink;
+    type FdKq = BsdFdKq;
+
+    fn tables() -> &'static FileTables<Self> {
+        file_tables()
+    }
+
+    fn maxfiles() -> i32 {
+        MAXFILES.load(Ordering::Relaxed)
+    }
+
+    fn tablefull(tab: &str) {
+        tablefull(tab);
+    }
+
+    fn stall_wait() {
+        rw_enter_read(&VFS_STALL_LOCK);
+        rw_exit_read(&VFS_STALL_LOCK);
+    }
+
+    fn vref(v: &'static Vnode) {
+        vref(v);
+    }
+
+    fn vrele(v: &'static Vnode) {
+        vrele(v);
+    }
+
+    fn advlock(
+        d: &BsdFileData,
+        owner: LockOwner,
+        op: i32,
+        fl: &mut Flock,
+        flags: i32,
+    ) -> Result<(), Errno> {
+        VOP_ADVLOCK(vnode_of(d), owner_id(owner), op, fl, flags)
+    }
+
+    fn pathconf(d: &BsdFileData, name: i32) -> Result<Register, Errno> {
+        let vp = vnode_of(d);
+        let mut retval: Register = 0;
+        let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+        let error = VOP_PATHCONF(vp, name, &mut retval);
+        let _ = VOP_UNLOCK(vp);
+        error.map(|()| retval)
+    }
+
+    fn isatty(d: &BsdFileData) -> bool {
+        vnode_of(d).v_flag.get() & VISTTY != 0
+    }
+
+    fn position_check(d: &BsdFileData, offset: Off) -> Result<(), Errno> {
+        let vp = vnode_of(d);
+        if vp.v_type.get() == VFIFO || vp.v_flag.get() & VISTTY != 0 {
+            return Err(Errno::ESPIPE);
+        }
+        if offset < 0 && vp.v_type.get() != VCHR {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    fn dns_socket(d: &BsdFileData) -> bool {
+        match d {
+            BsdFileData::Socket(so) => {
+                crate::kern::sys_socket::socket_of(so).is_some_and(|so| so.has_state(SS_DNS))
+            }
+            _ => false,
+        }
+    }
+
+    fn knote_fdclose(p: &Proc, fd: i32) {
+        knote_fdclose(p, fd);
+    }
+
+    fn sigpipe(p: &Proc) {
+        ptsignal(p, SIGPIPE, SignalType::STHREAD);
+    }
+
+    fn pledge_fcntl(p: &Proc, cmd: i32) -> Result<(), Errno> {
+        pledge_fcntl(p, cmd)
+    }
+
+    fn pledge_flock(p: &Proc) -> Result<(), Errno> {
+        pledge_flock(p)
+    }
+
+    fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
+        pledge_ioctl(p, com, fp)
+    }
+
+    fn stat_hide_gen(st: &mut Stat) {
+        st.st_gen = 0;
+    }
+
+    fn stat_copyout(st: &Stat, sb: usize) -> Result<(), Errno> {
+        copyout(&st.to_bytes(), sb)
+    }
+
+    fn fdkq_free(kq: &BsdFdKq) {
+        crate::kassert!(kq.fd_nuserevents.load(Ordering::SeqCst) == 0);
+    }
+}
+
+/// `filedesc_init`: the pools of open files and descriptor tables. A host test calls it once
+/// per test: its thread gets fresh tables first.
 pub fn filedesc_init() {
-    pool_init(
-        &FILE_POOL,
-        size_of::<File>(),
-        0,
-        IPL_MPFLOOR,
-        PR_WAITOK,
-        "filepl",
-        None,
-    );
-    pool_init(
-        &FDESC_POOL,
-        size_of::<Filedesc0>(),
-        0,
-        IPL_NONE,
-        PR_WAITOK,
-        "fdescpl",
-        None,
-    );
-    FILEHEAD.0.init();
-}
-
-/// `find_next_zero(bitmap, want, bits)`: the first clear bit at or after bit `want` in the
-/// first `NDLOSLOTS(bits)` words of `bitmap`, or -1.
-fn find_next_zero(bitmap: &dyn Fn(usize) -> u32, want: i32, bits: u32) -> i32 {
-    if want as u32 > bits {
-        return -1;
-    }
-
-    let mut off = (want as u32 >> NDENTRYSHIFT) as usize;
-    let i = want as u32 & NDENTRYMASK as u32;
-    let sub = 'found: {
-        if i != 0 {
-            let sub = bitmap(off) | (!0u32 >> (NDENTRIES as u32 - i));
-            if sub != !0 {
-                break 'found sub;
-            }
-            off += 1;
-        }
-
-        let maxoff = ndloslots(bits as usize);
-        while off < maxoff {
-            let sub = bitmap(off);
-            if sub != !0 {
-                break 'found sub;
-            }
-            off += 1;
-        }
-
-        return -1;
-    };
-
-    ((off << NDENTRYSHIFT) as u32 + (!sub).trailing_zeros()) as i32
-}
-
-/// `fdp->fd_himap[off]`, a word past the end reading as full (see the deviations).
-fn himap_or_full(fdp: &Filedesc, off: usize) -> u32 {
-    if off < ndhislots(fdp.nfiles()) {
-        fdp.himap(off)
-    } else {
-        !0
+    #[cfg(test)]
+    TEST_TABLES.with(|t| {
+        t.set(std::boxed::Box::leak(std::boxed::Box::new(
+            FileTables::new(0, &NUMFILES),
+        )))
+    });
+    if kernel::descrip::filedesc_init::<BsdFileGlue>().is_err() {
+        crate::kern::subr_prf::panic(format_args!("filedesc_init: cannot make the pools"));
     }
 }
 
-/// `fdp->fd_lomap[off]`, a word past the end reading as full (see the deviations).
-fn lomap_or_full(fdp: &Filedesc, off: usize) -> u32 {
-    if off < ndloslots(fdp.nfiles()) {
-        fdp.lomap(off)
-    } else {
-        !0
-    }
+/// `fp->f_count` of a file a holder names without a reference (`unp_gc`'s `unp_file`, a
+/// message's word): the references alive besides the one this read takes, 0 once the last
+/// is gone.
+pub fn file_count(fp: &File) -> u32 {
+    FileRef::try_from_ref(fp).map_or(0, |r| r.count() - 1)
 }
 
-/// `find_last_set(fd, last)`: the highest descriptor below `last` that is in use, or 0.
-pub fn find_last_set(fd: &Filedesc, last: i32) -> i32 {
-    let mut off = (last - 1) >> NDENTRYSHIFT;
-
-    while off >= 0 && fd.lomap(off as usize) == 0 {
-        off -= 1;
-    }
-    if off < 0 {
-        return 0;
-    }
-
-    let mut i = ((off + 1) << NDENTRYSHIFT) - 1;
-    if i >= last {
-        i = last - 1;
-    }
-
-    while i > 0 && !fd_inuse(fd, i) {
-        i -= 1;
-    }
-    i
+/// `falloc(p)` with the table locked: a new file (the caller's reference) and its descriptor.
+pub fn falloc(p: &Proc, g: &mut FdGuard<'_>) -> Result<(FileRef, i32), Errno> {
+    kernel::descrip::falloc(p, g)
 }
 
-/// `fd_inuse(fdp, fd)`: whether descriptor `fd` is allocated.
-fn fd_inuse(fdp: &Filedesc, fd: i32) -> bool {
-    let off = (fd as u32 >> NDENTRYSHIFT) as usize;
-
-    fdp.lomap(off) & (1u32 << (fd as u32 & NDENTRYMASK as u32)) != 0
+/// `fnew(p)`: a new open file with one reference and the thread's credentials.
+pub fn fnew(p: &Proc) -> Option<FileRef> {
+    kernel::file::fnew(p)
 }
 
-/// `fd_used(fdp, fd)`: marks descriptor `fd` allocated.
-pub(crate) fn fd_used(fdp: &Filedesc, fd: i32) {
-    let off = (fd as u32 >> NDENTRYSHIFT) as usize;
-
-    fdp.set_lomap(
-        off,
-        fdp.lomap(off) | 1u32 << (fd as u32 & NDENTRYMASK as u32),
-    );
-    if fdp.lomap(off) == !0 {
-        let hi = off >> NDENTRYSHIFT;
-        fdp.set_himap(hi, fdp.himap(hi) | 1u32 << (off & NDENTRYMASK));
-    }
-
-    if fd > fdp.fd_lastfile.get() {
-        fdp.fd_lastfile.set(fd);
-    }
-    fdp.fd_openfd
-        .store(fdp.fd_openfd.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+/// `closef(fp, p)`: the reference a slot or a message held, given back after the table's
+/// POSIX locks are released (a thread's close).
+pub fn closef<'a>(fp: FileRef, p: impl Into<Option<&'a Proc>>) -> Result<(), Errno> {
+    kernel::descrip::closef(fp, p.into())
 }
 
-/// `fd_unused(fdp, fd)`: marks descriptor `fd` free.
-fn fd_unused(fdp: &Filedesc, fd: i32) {
-    let off = (fd as u32 >> NDENTRYSHIFT) as usize;
-
-    if fd < fdp.fd_freefile.get() {
-        fdp.fd_freefile.set(fd);
-    }
-
-    if fdp.lomap(off) == !0 {
-        let hi = off >> NDENTRYSHIFT;
-        fdp.set_himap(hi, fdp.himap(hi) & !(1u32 << (off & NDENTRYMASK)));
-    }
-    fdp.set_lomap(
-        off,
-        fdp.lomap(off) & !(1u32 << (fd as u32 & NDENTRYMASK as u32)),
-    );
-
-    #[cfg(feature = "diagnostic")]
-    if fd > fdp.fd_lastfile.get() {
-        panic(format_args!("fd_unused: fd_lastfile inconsistent"));
-    }
-    if fd == fdp.fd_lastfile.get() {
-        fdp.fd_lastfile.set(find_last_set(fdp, fd));
-    }
-    fdp.fd_openfd
-        .store(fdp.fd_openfd.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+/// `fd_getfile_mode(fdp, fd, mode)` of `p`'s table.
+pub fn fd_getfile_mode(p: &Proc, fd: i32, mode: i32) -> Option<FileRef> {
+    kernel::descrip::fd_getfile_mode(p, fd, mode)
 }
-
-/// `fd_iterfile(fp, p)`: the open file after `fp` (the first one when `None`) in `filehead`,
-/// with a reference taken; the reference on `fp` is dropped.
-pub fn fd_iterfile(fp: Option<&'static File>, p: &Proc) -> Option<&'static File> {
-    mtx_enter(&FHDLK);
-    let mut nfp = match fp {
-        None => FILEHEAD.0.first(),
-        Some(fp) => ListHead::<FileList>::next(fp),
-    };
-
-    // don't refcount when f_count == 0 to avoid race in fdrop()
-    while let Some(n) = nfp {
-        let count = n.f_count.load(Ordering::SeqCst);
-        if count == 0 {
-            nfp = ListHead::<FileList>::next(n);
-            continue;
-        }
-        if n.f_count
-            .compare_exchange(count, count + 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            break;
-        }
-    }
-    mtx_leave(&FHDLK);
-
-    if let Some(fp) = fp {
-        let _ = frele(fp, p);
-    }
-
-    nfp
-}
-
-/// `fd_getfile(fdp, fd)`: the file at descriptor `fd`, with a reference taken, or `None`.
-pub fn fd_getfile(fdp: &Filedesc, fd: i32) -> Option<&'static File> {
-    vfs_stall_barrier();
-
-    if fd as u32 >= fdp.fd_nfiles.load(Ordering::Relaxed) as u32 {
-        return None;
-    }
-
-    mtx_enter(&fdp.fd_fplock);
-    let fp = fdp.ofile(fd as usize);
-    if let Some(fp) = fp {
-        fp.f_count.fetch_add(1, Ordering::SeqCst);
-    }
-    mtx_leave(&fdp.fd_fplock);
-
-    fp
-}
-
-/// `fd_getfile_mode(fdp, fd, mode)`: as `fd_getfile`, `None` also when the file is not open
-/// for `mode` (`FREAD`, `FWRITE`).
-pub fn fd_getfile_mode(fdp: &Filedesc, fd: i32, mode: i32) -> Option<&'static File> {
-    kassert!(mode != 0);
-
-    let fp = fd_getfile(fdp, fd)?;
-
-    if fp.flag() & mode == 0 {
-        let _ = frele(fp, curproc());
-        return None;
-    }
-
-    Some(fp)
-}
-
-/// `fd_checkclosed(fdp, fd, fp)`: whether descriptor `fd` no longer refers to `fp`.
-pub fn fd_checkclosed(fdp: &Filedesc, fd: i32, fp: &File) -> bool {
-    mtx_enter(&fdp.fd_fplock);
-    kassert!(fd < fdp.fd_nfiles.load(Ordering::Relaxed));
-    let closed = !fdp.ofile(fd as usize).is_some_and(|f| ptr::eq(f, fp));
-    mtx_leave(&fdp.fd_fplock);
-    closed
-}
-
-/*
- * System calls on descriptors.
- */
 
 /// Duplicate a file descriptor.
 pub fn sys_dup(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysDupArgs = sysargs(v);
-    let fdp = p.fd();
-    let old = uap.fd.get();
-
-    loop {
-        let Some(fp) = fd_getfile(fdp, old) else {
-            return Err(Errno::EBADF);
-        };
-        fdplock(fdp);
-        match fdalloc(p, 0) {
-            Err(Errno::ENOSPC) => {
-                let expanded = fdexpand(p);
-                fdpunlock(fdp);
-                let _ = frele(fp, p);
-                expanded?;
-                // restart
-            }
-            Err(error) => {
-                fdpunlock(fdp);
-                let _ = frele(fp, p);
-                return Err(error);
-            }
-            // No need for FRELE(), finishdup() uses current ref.
-            Ok(new) => return finishdup(p, fp, old, new, retval, 0),
-        }
-    }
+    retval[0] = kernel::descrip::sys_dup(p, uap.fd.get())? as Register;
+    Ok(())
 }
 
 /// Duplicate a file descriptor to a particular value.
 pub fn sys_dup2(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysDup2Args = sysargs(v);
-
-    dodup3(p, uap.from.get(), uap.to.get(), 0, retval)
+    retval[0] = kernel::descrip::sys_dup2(p, uap.from.get(), uap.to.get())? as Register;
+    Ok(())
 }
 
 /// `dup3(2)`: `dup2` with `O_CLOEXEC`/`O_CLOFORK`, refusing `from == to`.
 pub fn sys_dup3(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysDup3Args = sysargs(v);
-
-    if uap.from.get() == uap.to.get() {
-        return Err(Errno::EINVAL);
-    }
-    if uap.flags.get() & !(O_CLOEXEC | O_CLOFORK) != 0 {
-        return Err(Errno::EINVAL);
-    }
-    dodup3(p, uap.from.get(), uap.to.get(), uap.flags.get(), retval)
-}
-
-/// `dodup3(p, old, new, flags, retval)`: the common part of `dup2` and `dup3`.
-pub fn dodup3(
-    p: &Proc,
-    old: i32,
-    new: i32,
-    flags: i32,
-    retval: &mut [Register; 2],
-) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    loop {
-        let Some(fp) = fd_getfile(fdp, old) else {
-            return Err(Errno::EBADF);
-        };
-        if old == new {
-            // NOTE! This doesn't clear the close-on-exec flag. This might or might not be
-            // the intended behavior from the start, but this is what everyone else does.
-            retval[0] = new as Register;
-            let _ = frele(fp, p);
-            return Ok(());
-        }
-        if u64::from(new as u32) >= lim_cur(RLIMIT_NOFILE)
-            || new as u32 >= MAXFILES.load(Ordering::Relaxed) as u32
-        {
-            let _ = frele(fp, p);
-            return Err(Errno::EBADF);
-        }
-        fdplock(fdp);
-        if new >= fdp.fd_nfiles.load(Ordering::Relaxed) {
-            match fdalloc(p, new) {
-                Err(Errno::ENOSPC) => {
-                    let expanded = fdexpand(p);
-                    fdpunlock(fdp);
-                    let _ = frele(fp, p);
-                    expanded?;
-                    continue; // restart
-                }
-                Err(error) => {
-                    fdpunlock(fdp);
-                    let _ = frele(fp, p);
-                    return Err(error);
-                }
-                Ok(i) => {
-                    if new != i {
-                        panic(format_args!("dup2: fdalloc"));
-                    }
-                    fd_unused(fdp, new);
-                }
-            }
-        }
-
-        let mut dupflags = DUPF_DUP2;
-        if flags & O_CLOEXEC != 0 {
-            dupflags |= DUPF_CLOEXEC;
-        }
-        if flags & O_CLOFORK != 0 {
-            dupflags |= DUPF_CLOFORK;
-        }
-
-        // No need for FRELE(), finishdup() uses current ref.
-        return finishdup(p, fp, old, new, retval, dupflags);
-    }
-}
-
-/// The `l_whence == SEEK_CUR` adjustment `fcntl`'s record locks make against the file
-/// offset.
-fn flock_seek_cur(fp: &File, fl: &mut Flock) {
-    if i32::from(fl.l_whence) == SEEK_CUR {
-        let offset = foffset(fp);
-
-        if fl.l_start == 0 && fl.l_len < 0 {
-            // lockf(3) compliance hack
-            fl.l_len = -fl.l_len;
-            fl.l_start = offset - fl.l_len;
-        } else {
-            fl.l_start += offset;
-        }
-    }
-}
-
-/// `fcntl` with an `int` argument handed to the file's ioctl: `(*fp->f_ops->fo_ioctl)(fp,
-/// com, (caddr_t)&tmp, p)`. Returns the error and `tmp` as the ioctl left it.
-fn fo_ioctl_int(fp: &File, com: u64, tmp: i32, p: &Proc) -> (Result<(), Errno>, i32) {
-    let mut data = tmp.to_ne_bytes();
-    let error = (fp.ops().fo_ioctl)(fp, com, &mut data, p);
-    (error, i32::from_ne_bytes(data))
+    retval[0] =
+        kernel::descrip::sys_dup3(p, uap.from.get(), uap.to.get(), uap.flags.get())? as Register;
+    Ok(())
 }
 
 /// The file control system call.
 pub fn sys_fcntl(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFcntlArgs = sysargs(v);
-    let fd = uap.fd.get();
-    let cmd = uap.cmd.get();
-    let arg = uap.arg.get() as usize;
-    let fdp = p.fd();
-    let mut flg = F_POSIX;
-
-    pledge_fcntl(p, cmd)?;
-
-    'restart: loop {
-        let Some(fp) = fd_getfile(fdp, fd) else {
-            return Err(Errno::EBADF);
-        };
-        let error: Result<(), Errno> = 'out: {
-            match cmd {
-                F_DUPFD | F_DUPFD_CLOEXEC | F_DUPFD_CLOFORK => {
-                    let newmin = arg as isize as i32;
-                    if u64::from(newmin as u32) >= lim_cur(RLIMIT_NOFILE)
-                        || newmin as u32 >= MAXFILES.load(Ordering::Relaxed) as u32
-                    {
-                        break 'out Err(Errno::EINVAL);
-                    }
-                    fdplock(fdp);
-                    match fdalloc(p, newmin) {
-                        Err(Errno::ENOSPC) => {
-                            let expanded = fdexpand(p);
-                            fdpunlock(fdp);
-                            let _ = frele(fp, p);
-                            expanded?;
-                            continue 'restart;
-                        }
-                        Err(error) => {
-                            fdpunlock(fdp);
-                            let _ = frele(fp, p);
-                            return Err(error);
-                        }
-                        Ok(i) => {
-                            let mut dupflags = 0;
-                            if cmd == F_DUPFD_CLOEXEC {
-                                dupflags |= DUPF_CLOEXEC;
-                            }
-                            if cmd == F_DUPFD_CLOFORK {
-                                dupflags |= DUPF_CLOFORK;
-                            }
-
-                            // No need for FRELE(), finishdup() uses current ref.
-                            return finishdup(p, fp, fd, i, retval, dupflags);
-                        }
-                    }
-                }
-
-                F_GETFD => {
-                    fdplock(fdp);
-                    let flags = fdp.ofileflags(fd as usize);
-                    retval[0] = (if flags & UF_EXCLOSE != 0 {
-                        FD_CLOEXEC
-                    } else {
-                        0
-                    } | if flags & UF_FORKCLOSE != 0 {
-                        FD_CLOFORK
-                    } else {
-                        0
-                    }) as Register;
-                    fdpunlock(fdp);
-                    Ok(())
-                }
-
-                F_SETFD => {
-                    fdplock(fdp);
-                    let arg = arg as isize;
-                    let i = (if arg & FD_CLOEXEC as isize != 0 {
-                        UF_EXCLOSE
-                    } else {
-                        0
-                    }) | (if arg & FD_CLOFORK as isize != 0 {
-                        UF_FORKCLOSE
-                    } else {
-                        0
-                    });
-                    fdp.set_ofileflags(
-                        fd as usize,
-                        (fdp.ofileflags(fd as usize) & !(UF_EXCLOSE | UF_FORKCLOSE)) | i,
-                    );
-                    fdpunlock(fdp);
-                    Ok(())
-                }
-
-                F_GETFL => {
-                    retval[0] = oflags(fp.flag()) as Register;
-                    Ok(())
-                }
-
-                F_ISATTY => {
-                    if fp.f_type.get() == DTYPE_VNODE && fp.vnode().v_flag.get() & VISTTY != 0 {
-                        retval[0] = 1;
-                        Ok(())
-                    } else {
-                        retval[0] = 0;
-                        Err(Errno::ENOTTY)
-                    }
-                }
-
-                F_SETFL => {
-                    let mut prev = fp.f_flag.load(Ordering::SeqCst);
-                    loop {
-                        let tmp = (prev & !(FCNTLFLAGS as u32))
-                            | (fflags(arg as isize as i32) & FCNTLFLAGS) as u32;
-                        match fp.f_flag.compare_exchange(
-                            prev,
-                            tmp,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            Ok(_) => break,
-                            Err(cur) => prev = cur,
-                        }
-                    }
-                    let tmp = fp.flag() & FASYNC;
-                    fo_ioctl_int(fp, FIOASYNC, tmp, p).0
-                }
-
-                F_GETOWN => {
-                    let (error, tmp) = fo_ioctl_int(fp, FIOGETOWN, 0, p);
-                    retval[0] = tmp as Register;
-                    error
-                }
-
-                F_SETOWN => fo_ioctl_int(fp, FIOSETOWN, arg as isize as i32, p).0,
-
-                F_SETLKW | F_SETLK => {
-                    if cmd == F_SETLKW {
-                        flg |= F_WAIT;
-                    }
-
-                    if let Err(error) = pledge_flock(p) {
-                        break 'out Err(error);
-                    }
-
-                    if fp.f_type.get() != DTYPE_VNODE {
-                        break 'out Err(Errno::EINVAL);
-                    }
-                    let vp = fp.vnode();
-                    // Copy in the lock structure
-                    let mut bytes = [0u8; Flock::SIZE];
-                    if let Err(e) = copyin(arg, &mut bytes) {
-                        break 'out Err(e);
-                    }
-                    let mut fl = Flock::from_bytes(&bytes);
-                    flock_seek_cur(fp, &mut fl);
-                    let id = ptr::from_ref(fdp).cast::<c_void>();
-                    let error = match fl.l_type {
-                        F_RDLCK => {
-                            if fp.flag() & FREAD == 0 {
-                                break 'out Err(Errno::EBADF);
-                            }
-                            fdp.fd_flags.fetch_or(FD_ADVLOCK, Ordering::SeqCst);
-                            VOP_ADVLOCK(vp, id, F_SETLK, &mut fl, flg)
-                        }
-                        F_WRLCK => {
-                            if fp.flag() & FWRITE == 0 {
-                                break 'out Err(Errno::EBADF);
-                            }
-                            fdp.fd_flags.fetch_or(FD_ADVLOCK, Ordering::SeqCst);
-                            VOP_ADVLOCK(vp, id, F_SETLK, &mut fl, flg)
-                        }
-                        F_UNLCK => {
-                            break 'out VOP_ADVLOCK(vp, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
-                        }
-                        _ => break 'out Err(Errno::EINVAL),
-                    };
-
-                    if fd_checkclosed(fdp, fd, fp) {
-                        // We have lost the race with close() or dup2(); unlock, pretend that
-                        // we've won the race and that lock had been removed by close()
-                        fl.l_whence = SEEK_SET as i16;
-                        fl.l_start = 0;
-                        fl.l_len = 0;
-                        let _ = VOP_ADVLOCK(vp, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
-                        // fl.l_type = F_UNLCK: F_SETLK copies nothing out, so the C's
-                        // assignment is never read.
-                    }
-                    error
-                }
-
-                F_GETLK => {
-                    if let Err(error) = pledge_flock(p) {
-                        break 'out Err(error);
-                    }
-
-                    if fp.f_type.get() != DTYPE_VNODE {
-                        break 'out Err(Errno::EINVAL);
-                    }
-                    let vp = fp.vnode();
-                    // Copy in the lock structure
-                    let mut bytes = [0u8; Flock::SIZE];
-                    if let Err(e) = copyin(arg, &mut bytes) {
-                        break 'out Err(e);
-                    }
-                    let mut fl = Flock::from_bytes(&bytes);
-                    flock_seek_cur(fp, &mut fl);
-                    if fl.l_type != F_RDLCK
-                        && fl.l_type != F_WRLCK
-                        && fl.l_type != F_UNLCK
-                        && fl.l_type != 0
-                    {
-                        break 'out Err(Errno::EINVAL);
-                    }
-                    let id = ptr::from_ref(fdp).cast::<c_void>();
-                    if let Err(e) = VOP_ADVLOCK(vp, id, F_GETLK, &mut fl, F_POSIX) {
-                        break 'out Err(e);
-                    }
-                    copyout(&fl.to_bytes(), arg)
-                }
-
-                _ => Err(Errno::EINVAL),
-            }
-        };
-        let _ = frele(fp, p);
-        return error;
-    }
-}
-
-/// Common code for `dup`, `dup2`, and `fcntl(F_DUPFD)`. Called with the table locked; returns
-/// with it unlocked, and consumes the caller's reference to `fp`.
-pub fn finishdup(
-    p: &Proc,
-    fp: &'static File,
-    old: i32,
-    new: i32,
-    retval: &mut [Register; 2],
-    dupflags: i32,
-) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    fdpassertlocked(fdp);
-    kassert!(fp.f_iflags.load(Ordering::Relaxed) & FIF_INSERTED != 0);
-
-    let fail = |error: Errno| {
-        fdpunlock(fdp);
-        let _ = frele(fp, p);
-        Err(error)
-    };
-
-    if fp.f_count.load(Ordering::SeqCst) >= FDUP_MAX_COUNT {
-        return fail(Errno::EDEADLK);
-    }
-
-    let oldfp = fd_getfile(fdp, new);
-    if dupflags & DUPF_DUP2 != 0 && oldfp.is_none() {
-        if fd_inuse(fdp, new) {
-            return fail(Errno::EBUSY);
-        }
-        fd_used(fdp, new);
-    }
-
-    // Use `fd_fplock' to synchronize with fd_getfile() so that the function no longer
-    // creates a new reference to the old file.
-    mtx_enter(&fdp.fd_fplock);
-    fdp.set_ofile(new as usize, Some(fp));
-    mtx_leave(&fdp.fd_fplock);
-
-    let mut flags = fdp.ofileflags(old as usize) & !(UF_EXCLOSE | UF_FORKCLOSE);
-    if dupflags & DUPF_CLOEXEC != 0 {
-        flags |= UF_EXCLOSE;
-    }
-    if dupflags & DUPF_CLOFORK != 0 {
-        flags |= UF_FORKCLOSE;
-    }
-    fdp.set_ofileflags(new as usize, flags);
-    retval[0] = new as Register;
-
-    if let Some(oldfp) = oldfp {
-        knote_fdclose(p, new);
-        fdpunlock(fdp);
-        let _ = closef(oldfp, p);
-    } else {
-        fdpunlock(fdp);
-    }
-
+    retval[0] = kernel::descrip::sys_fcntl(p, uap.fd.get(), uap.cmd.get(), uap.arg.get() as usize)?;
     Ok(())
-}
-
-/// `fdinsert(fdp, fd, flags, fp)`: installs `fp` at descriptor `fd` (allocated by
-/// `fdalloc`), linking it in `filehead` the first time.
-pub fn fdinsert(fdp: &Filedesc, fd: i32, flags: u8, fp: &'static File) {
-    fdpassertlocked(fdp);
-
-    mtx_enter(&FHDLK);
-    if fp.f_iflags.load(Ordering::SeqCst) & FIF_INSERTED == 0 {
-        fp.f_iflags.fetch_or(FIF_INSERTED, Ordering::SeqCst);
-        match fdp.ofile(0) {
-            // SAFETY: the file at descriptor 0 was inserted (FIF_INSERTED) and stays linked
-            // until its `fdrop`; `fp` is a new pool item in no list, which stays in place
-            // until its own `fdrop` unlinks it. `FHDLK` is held.
-            Some(fq) => unsafe { ListHead::<FileList>::insert_after(fq, fp) },
-            // SAFETY: as above; the head is a static.
-            None => unsafe { FILEHEAD.0.insert_head(fp) },
-        }
-    }
-    mtx_leave(&FHDLK);
-
-    mtx_enter(&fdp.fd_fplock);
-    kassert!(fdp.ofile(fd as usize).is_none());
-    fdp.set_ofile(fd as usize, Some(fp));
-    mtx_leave(&fdp.fd_fplock);
-
-    fdp.set_ofileflags(
-        fd as usize,
-        fdp.ofileflags(fd as usize) | (flags & (UF_EXCLOSE | UF_FORKCLOSE | UF_PLEDGEOPEN)),
-    );
-}
-
-/// `fdremove(fdp, fd)`: empties descriptor `fd` and frees its number.
-pub fn fdremove(fdp: &Filedesc, fd: i32) {
-    fdpassertlocked(fdp);
-
-    // Use `fd_fplock' to synchronize with fd_getfile() so that the function no longer
-    // creates a new reference to the file.
-    mtx_enter(&fdp.fd_fplock);
-    fdp.set_ofile(fd as usize, None);
-    mtx_leave(&fdp.fd_fplock);
-
-    fdp.set_ofileflags(fd as usize, 0);
-
-    fd_unused(fdp, fd);
-}
-
-/// `fdrelease(p, fd)`: closes descriptor `fd`. Called with the table locked; returns with it
-/// unlocked.
-pub fn fdrelease(p: &Proc, fd: i32) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    fdpassertlocked(fdp);
-
-    let Some(fp) = fd_getfile(fdp, fd) else {
-        fdpunlock(fdp);
-        return Err(Errno::EBADF);
-    };
-    fdremove(fdp, fd);
-    knote_fdclose(p, fd);
-    fdpunlock(fdp);
-    closef(fp, p)
 }
 
 /// Close a file descriptor.
 pub fn sys_close(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysCloseArgs = sysargs(v);
-    let fdp = p.fd();
-
-    fdplock(fdp);
-    // fdrelease unlocks fdp.
-    fdrelease(p, uap.fd.get())
+    kernel::descrip::sys_close(p, uap.fd.get())
 }
 
 /// Return status information about a file descriptor.
 pub fn sys_fstat(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFstatArgs = sysargs(v);
-    let fdp = p.fd();
-
-    let Some(fp) = fd_getfile(fdp, uap.fd.get()) else {
-        return Err(Errno::EBADF);
-    };
-    let mut ub = Stat::default();
-    let error = (fp.ops().fo_stat)(fp, &mut ub, p);
-    let _ = frele(fp, p);
-    error?;
-    // Don't let non-root see generation numbers (for NFS security)
-    if suser(p).is_err() {
-        ub.st_gen = 0;
-    }
-    copyout(&ub.to_bytes(), uap.sb.get() as usize)
+    kernel::descrip::sys_fstat(p, uap.fd.get(), uap.sb.get() as usize)
 }
 
 /// Return pathconf information about a file descriptor.
 pub fn sys_fpathconf(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFpathconfArgs = sysargs(v);
-    let fdp = p.fd();
-
-    let Some(fp) = fd_getfile(fdp, uap.fd.get()) else {
-        return Err(Errno::EBADF);
-    };
-    let error = match fp.f_type.get() {
-        DTYPE_PIPE | DTYPE_SOCKET => {
-            if uap.name.get() != _PC_PIPE_BUF {
-                Err(Errno::EINVAL)
-            } else {
-                retval[0] = PIPE_BUF as Register;
-                Ok(())
-            }
-        }
-        DTYPE_VNODE => {
-            let vp = fp.vnode();
-            let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-            let error = VOP_PATHCONF(vp, uap.name.get(), &mut retval[0]);
-            let _ = VOP_UNLOCK(vp);
-            error
-        }
-        _ => Err(Errno::EOPNOTSUPP),
-    };
-    let _ = frele(fp, p);
-    error
-}
-
-/// Allocate a file descriptor for the process: the lowest free one at or above `want`.
-/// `ENOSPC` asks the caller to `fdexpand` and retry; `EMFILE` is the limit. Called with the
-/// table locked.
-pub fn fdalloc(p: &Proc, want: i32) -> Result<i32, Errno> {
-    let fdp = p.fd();
-
-    fdpassertlocked(fdp);
-
-    let lim = (lim_cur(RLIMIT_NOFILE) as i32).min(MAXFILES.load(Ordering::Relaxed));
-    let pledged = p.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0;
-    fdalloc_search(fdp, want, lim, pledged)
-}
-
-/// The search of `fdalloc` once the limit is known: the lowest free descriptor of `fdp` at
-/// or above `want` and below `lim`, marked `UF_PLEDGED` for a pledged process.
-fn fdalloc_search(fdp: &Filedesc, want: i32, lim: i32, pledged: bool) -> Result<i32, Errno> {
-    let mut want = want;
-
-    // Search for a free descriptor starting at the higher of want or fd_freefile. If that
-    // fails, consider expanding the ofile array.
-    loop {
-        let last = fdp.fd_nfiles.load(Ordering::Relaxed).min(lim);
-        let mut i = want;
-        if i < fdp.fd_freefile.get() {
-            i = fdp.fd_freefile.get();
-        }
-        let off = i >> NDENTRYSHIFT;
-        let new = find_next_zero(
-            &|o| himap_or_full(fdp, o),
-            off,
-            ((last + NDENTRIES as i32 - 1) >> NDENTRYSHIFT) as u32,
-        );
-        if new != -1 {
-            let j = find_next_zero(
-                &|o| lomap_or_full(fdp, new as usize + o),
-                if new > off { 0 } else { i & NDENTRYMASK as i32 },
-                NDENTRIES as u32,
-            );
-            if j == -1 {
-                // Free file descriptor in this block was below want, try again with higher
-                // want.
-                want = (new + 1) << NDENTRYSHIFT;
-                continue;
-            }
-            let i = j + (new << NDENTRYSHIFT);
-            if i < last {
-                fd_used(fdp, i);
-                if want <= fdp.fd_freefile.get() {
-                    fdp.fd_freefile.set(i);
-                }
-                fdp.set_ofileflags(i as usize, if pledged { UF_PLEDGED } else { 0 });
-                return Ok(i);
-            }
-        }
-        if fdp.fd_nfiles.load(Ordering::Relaxed) >= lim {
-            return Err(Errno::EMFILE);
-        }
-
-        return Err(Errno::ENOSPC);
-    }
-}
-
-/// `fdexpand(p)`: grows the table to `NDEXTENT` descriptors, then doubles it. Called with the
-/// table locked. `ENOMEM` when `malloc(9)` fails (see the deviations).
-pub fn fdexpand(p: &Proc) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    fdpassertlocked(fdp);
-
-    let oldnfiles = fdp.nfiles();
-    let oldofile = fdp.fd_ofiles.get();
-
-    // No space in current array.
-    let nfiles = if oldnfiles < NDEXTENT {
-        NDEXTENT
-    } else {
-        2 * oldnfiles
-    };
-
-    let Some(newofile) = mallocarray(nfiles, OFILESIZE, M_FILEDESC, M_WAITOK) else {
-        return Err(Errno::ENOMEM);
-    };
-    // Allocate all required chunks before calling free(9) to make sure that ``fd_ofiles''
-    // stays valid if we go to sleep.
-    let grow_maps = ndhislots(nfiles) > ndhislots(oldnfiles);
-    let maps = if grow_maps {
-        let himap = mallocarray(ndhislots(nfiles), size_of::<u32>(), M_FILEDESC, M_WAITOK);
-        let lomap = mallocarray(ndloslots(nfiles), size_of::<u32>(), M_FILEDESC, M_WAITOK);
-        match (himap, lomap) {
-            (Some(h), Some(l)) => Some((h.cast::<u32>(), l.cast::<u32>())),
-            (h, l) => {
-                if let Some(h) = h {
-                    free(h, M_FILEDESC, ndhislots(nfiles) * size_of::<u32>());
-                }
-                if let Some(l) = l {
-                    free(l, M_FILEDESC, ndloslots(nfiles) * size_of::<u32>());
-                }
-                free(newofile, M_FILEDESC, nfiles * OFILESIZE);
-                return Err(Errno::ENOMEM);
-            }
-        }
-    } else {
-        None
-    };
-    let newofile = newofile.cast::<*const File>().as_ptr();
-    // SAFETY: the allocation holds `nfiles` pointers followed by `nfiles` flag bytes.
-    let newofileflags = unsafe { newofile.add(nfiles) }.cast::<u8>();
-
-    // Copy the existing ofile and ofileflags arrays and zero the new portion of each array.
-    // SAFETY: the old arrays hold `oldnfiles` entries and the new ones `nfiles >
-    // oldnfiles`; they are different allocations.
-    unsafe {
-        ptr::copy_nonoverlapping(oldofile, newofile, oldnfiles);
-        for i in oldnfiles..nfiles {
-            newofile.add(i).write(ptr::null());
-        }
-        ptr::copy_nonoverlapping(fdp.fd_ofileflags.get(), newofileflags, oldnfiles);
-        ptr::write_bytes(newofileflags.add(oldnfiles), 0, nfiles - oldnfiles);
-    }
-
-    if let Some((newhimap, newlomap)) = maps {
-        let (newhimap, newlomap) = (newhimap.as_ptr(), newlomap.as_ptr());
-        // SAFETY: as above, for maps of NDHISLOTS/NDLOSLOTS words.
-        unsafe {
-            let old = ndhislots(oldnfiles);
-            ptr::copy_nonoverlapping(fdp.fd_himap.get(), newhimap, old);
-            ptr::write_bytes(newhimap.add(old), 0, ndhislots(nfiles) - old);
-
-            let old = ndloslots(oldnfiles);
-            ptr::copy_nonoverlapping(fdp.fd_lomap.get(), newlomap, old);
-            ptr::write_bytes(newlomap.add(old), 0, ndloslots(nfiles) - old);
-        }
-
-        if ndhislots(oldnfiles) > ndhislots(NDFILE) {
-            if let Some(h) = NonNull::new(fdp.fd_himap.get()) {
-                free(
-                    h.cast(),
-                    M_FILEDESC,
-                    ndhislots(oldnfiles) * size_of::<u32>(),
-                );
-            }
-            if let Some(l) = NonNull::new(fdp.fd_lomap.get()) {
-                free(
-                    l.cast(),
-                    M_FILEDESC,
-                    ndloslots(oldnfiles) * size_of::<u32>(),
-                );
-            }
-        }
-        fdp.fd_himap.set(newhimap);
-        fdp.fd_lomap.set(newlomap);
-    }
-
-    mtx_enter(&fdp.fd_fplock);
-    fdp.fd_ofiles.set(newofile);
-    mtx_leave(&fdp.fd_fplock);
-
-    fdp.fd_ofileflags.set(newofileflags);
-    fdp.fd_nfiles.store(nfiles as i32, Ordering::Relaxed);
-
-    if oldnfiles > NDFILE
-        && let Some(old) = NonNull::new(oldofile)
-    {
-        free(old.cast(), M_FILEDESC, oldnfiles * OFILESIZE);
-    }
+    retval[0] = kernel::descrip::sys_fpathconf(p, uap.fd.get(), uap.name.get())?;
     Ok(())
 }
 
-/// Create a new open file structure and allocate a file descriptor for the process that
-/// refers to it. Returns the file, with a reference for the caller besides the one the
-/// table will hold, and the descriptor, which the caller fills with `fdinsert`. Called with
-/// the table locked.
-pub fn falloc(p: &Proc) -> Result<(&'static File, i32), Errno> {
-    fdpassertlocked(p.fd());
-
-    let i = loop {
-        match fdalloc(p, 0) {
-            Ok(i) => break i,
-            Err(Errno::ENOSPC) => fdexpand(p)?,
-            Err(error) => return Err(error),
-        }
-    };
-
-    let Some(fp) = fnew(p) else {
-        fd_unused(p.fd(), i);
-        return Err(Errno::ENFILE);
-    };
-
-    fref(fp);
-    Ok((fp, i))
-}
-
-/// `fnew(p)`: a new open file with one reference and the thread's credentials, or `None`
-/// when `maxfiles` is reached.
-pub fn fnew(p: &Proc) -> Option<&'static File> {
-    let nfiles = NUMFILES.fetch_add(1, Ordering::SeqCst) + 1;
-    if nfiles > MAXFILES.load(Ordering::Relaxed) {
-        NUMFILES.fetch_sub(1, Ordering::SeqCst);
-        tablefull("file");
-        return None;
-    }
-
-    let Some(mem) = pool_get(&FILE_POOL, PR_WAITOK | PR_ZERO) else {
-        // PR_WAITOK cannot sleep yet (see the module's deviations).
-        NUMFILES.fetch_sub(1, Ordering::SeqCst);
-        return None;
-    };
-    let fp = mem.cast::<File>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<File>()` bytes, written once
-    // before anything else sees it.
-    unsafe { fp.as_ptr().write(File::new()) };
-    // SAFETY: as above; the item stays allocated until `fdrop`.
-    let fp: &'static File = unsafe { fp.as_ref() };
-    // We need to block interrupts as long as `f_mtx' is being taken with and without the
-    // KERNEL_LOCK().
-    mtx_init(&fp.f_mtx, IPL_MPFLOOR);
-    fp.f_count.store(1, Ordering::SeqCst);
-    fp.f_cred.set(p.cred_ref());
-
-    Some(fp)
-}
-
-/// Build a new filedesc structure.
-pub fn fdinit() -> &'static Filedesc {
-    let Some(mem) = pool_get(&FDESC_POOL, PR_WAITOK | PR_ZERO) else {
-        panic(format_args!("fdinit: fdesc_pool is empty"));
-    };
-    let newfdp = mem.cast::<Filedesc0>();
-    // SAFETY: a fresh, suitably aligned pool item of `size_of::<Filedesc0>()` bytes, written
-    // once before anything else sees it.
-    unsafe { newfdp.as_ptr().write(Filedesc0::new()) };
-    // SAFETY: as above; the item stays allocated until `fdfree`, and never moves, so the
-    // pointers into its own arrays stay valid.
-    let newfdp: &'static Filedesc0 = unsafe { newfdp.as_ref() };
-    let fd = &newfdp.fd_fd;
-    rw_init(&fd.fd_lock, "fdlock");
-    mtx_init(&fd.fd_fplock, IPL_MPFLOOR);
-    // LIST_INIT: a hal::list head written new is empty.
-    kassert!(fd.fd_kqlist.is_empty());
-
-    // Create the file descriptor table.
-    fd.fd_refcnt.set(1);
-    fd.fd_cmask.set(S_IWGRP | S_IWOTH);
-    fd.fd_ofiles.set(newfdp.fd_dfiles.get().cast());
-    fd.fd_ofileflags.set(newfdp.fd_dfileflags.get().cast());
-    fd.fd_nfiles.store(NDFILE as i32, Ordering::Relaxed);
-    fd.fd_himap.set(newfdp.fd_dhimap.get().cast());
-    fd.fd_lomap.set(newfdp.fd_dlomap.get().cast());
-
-    fd.fd_freefile.set(0);
-    fd.fd_lastfile.set(0);
-
-    fd
-}
-
-/// Share a filedesc structure.
-pub fn fdshare(pr: &Process) -> &'static Filedesc {
-    let fdp = pr.fd();
-    fdp.fd_refcnt.set(fdp.fd_refcnt.get() + 1);
-    fdp
-}
-
-/// Copy a filedesc structure.
-pub fn fdcopy(pr: &Process) -> &'static Filedesc {
-    let fdp = pr.fd();
-
-    let newfdp = fdinit();
-
-    fdplock(fdp);
-    newfdp.fd_cdir.set(fdp.fd_cdir.get());
-    if let Some(cdir) = newfdp.fd_cdir.get() {
-        vref(cdir);
-    }
-    newfdp.fd_rdir.set(fdp.fd_rdir.get());
-    if let Some(rdir) = newfdp.fd_rdir.get() {
-        vref(rdir);
-    }
-
-    // If the number of open files fits in the internal arrays of the open file structure,
-    // use them, otherwise allocate additional memory for the number of descriptors
-    // currently in use.
-    let lastfile = fdp.fd_lastfile.get();
-    if lastfile >= NDFILE as i32 {
-        // Compute the smallest multiple of NDEXTENT needed for the file descriptors
-        // currently in use, allowing the table to shrink.
-        let mut i = fdp.nfiles();
-        while i >= 2 * NDEXTENT && i > lastfile as usize * 2 {
-            i /= 2;
-        }
-        let Some(mem) = mallocarray(i, OFILESIZE, M_FILEDESC, M_WAITOK | M_ZERO) else {
-            panic(format_args!("fdcopy: no memory for {i} descriptors"));
-        };
-        let ofiles = mem.cast::<*const File>().as_ptr();
-        newfdp.fd_ofiles.set(ofiles);
-        // SAFETY: the allocation holds `i` pointers followed by `i` flag bytes.
-        newfdp.fd_ofileflags.set(unsafe { ofiles.add(i) }.cast());
-        newfdp.fd_nfiles.store(i as i32, Ordering::Relaxed);
-    }
-    if ndhislots(newfdp.nfiles()) > ndhislots(NDFILE) {
-        let n = newfdp.nfiles();
-        let himap = mallocarray(
-            ndhislots(n),
-            size_of::<u32>(),
-            M_FILEDESC,
-            M_WAITOK | M_ZERO,
-        );
-        let lomap = mallocarray(
-            ndloslots(n),
-            size_of::<u32>(),
-            M_FILEDESC,
-            M_WAITOK | M_ZERO,
-        );
-        let (Some(himap), Some(lomap)) = (himap, lomap) else {
-            panic(format_args!(
-                "fdcopy: no memory for the maps of {n} descriptors"
-            ));
-        };
-        newfdp.fd_himap.set(himap.cast().as_ptr());
-        newfdp.fd_lomap.set(lomap.cast().as_ptr());
-    }
-    newfdp.fd_freefile.set(fdp.fd_freefile.get());
-    newfdp
-        .fd_flags
-        .store(fdp.fd_flags.load(Ordering::SeqCst), Ordering::SeqCst);
-    newfdp.fd_cmask.set(fdp.fd_cmask.get());
-
-    for i in 0..=lastfile {
-        let Some(fp) = fdp.ofile(i as usize) else {
-            continue;
-        };
-        let fileflags = fdp.ofileflags(i as usize);
-        // If the UF_FORKCLOSE flag is set, skip the fd. XXX Gruesome hack. If count gets
-        // too high, fail to copy an fd, since fdcopy()'s callers do not permit it to
-        // indicate failure yet. Meanwhile, kqueue files have to be tied to the process
-        // that opened them to enforce their internal consistency, so close them here.
-        if fp.f_count.load(Ordering::SeqCst) >= FDUP_MAX_COUNT
-            || fileflags & UF_FORKCLOSE != 0
-            || fp.f_type.get() == DTYPE_KQUEUE
-        {
-            if i < newfdp.fd_freefile.get() {
-                newfdp.fd_freefile.set(i);
-            }
-            continue;
-        }
-
-        fref(fp);
-        newfdp.set_ofile(i as usize, Some(fp));
-        newfdp.set_ofileflags(i as usize, fileflags);
-        fd_used(newfdp, i);
-    }
-    fdpunlock(fdp);
-
-    newfdp
-}
-
-/// Release a filedesc structure.
-pub fn fdfree(p: &Proc) {
-    let fdp = p.fd();
-
-    fdp.fd_refcnt.set(fdp.fd_refcnt.get() - 1);
-    if fdp.fd_refcnt.get() > 0 {
-        return;
-    }
-    for fd in 0..=fdp.fd_lastfile.get() {
-        if let Some(fp) = fdp.ofile(fd as usize) {
-            fdp.set_ofile(fd as usize, None);
-            knote_fdclose(p, fd);
-            // closef() expects a refcount of 2
-            fref(fp);
-            let _ = closef(fp, p);
-        }
-    }
-    p.p_fd.set(ptr::null());
-    let nfiles = fdp.nfiles();
-    if nfiles > NDFILE
-        && let Some(ofiles) = NonNull::new(fdp.fd_ofiles.get())
-    {
-        free(ofiles.cast(), M_FILEDESC, nfiles * OFILESIZE);
-    }
-    if ndhislots(nfiles) > ndhislots(NDFILE) {
-        if let Some(h) = NonNull::new(fdp.fd_himap.get()) {
-            free(h.cast(), M_FILEDESC, ndhislots(nfiles) * size_of::<u32>());
-        }
-        if let Some(l) = NonNull::new(fdp.fd_lomap.get()) {
-            free(l.cast(), M_FILEDESC, ndloslots(nfiles) * size_of::<u32>());
-        }
-    }
-    if let Some(cdir) = fdp.fd_cdir.get() {
-        vrele(cdir);
-    }
-    if let Some(rdir) = fdp.fd_rdir.get() {
-        vrele(rdir);
-    }
-    kassert!(fdp.fd_nuserevents.load(Ordering::SeqCst) == 0);
-    // The table is the `fd_fd` member, at offset 0, of the `struct filedesc0` `fdinit` took
-    // from the pool.
-    pool_put(&FDESC_POOL, NonNull::from(fdp).cast());
-}
-
-/// Internal form of close. Decrement reference count on file structure. `p` may be `None`
-/// when closing a file that was being passed in a message.
-///
-/// The fp must have its usecount bumped and will be FRELEd here.
-pub fn closef<'a>(fp: &'static File, p: impl Into<Option<&'a Proc>>) -> Result<(), Errno> {
-    let p = p.into();
-
-    kassert!(fp.f_count.load(Ordering::SeqCst) >= 2);
-
-    fp.f_count.fetch_sub(1, Ordering::SeqCst);
-
-    // POSIX record locking dictates that any close releases ALL locks owned by this
-    // process. This is handled by setting a flag in the unlock to free ONLY locks obeying
-    // POSIX semantics, and not to free BSD-style file locks. If the descriptor was in a
-    // message, POSIX-style locks aren't passed with the descriptor.
-    if let Some(p) = p {
-        // SAFETY: a thread's table pointer is null or the live table it holds a reference
-        // to (`fdfree` runs this loop before dropping it).
-        if let Some(fdp) = unsafe { p.p_fd.get().as_ref() }
-            && fdp.fd_flags.load(Ordering::SeqCst) & FD_ADVLOCK != 0
-            && fp.f_type.get() == DTYPE_VNODE
-        {
-            let vp = fp.vnode();
-            let mut lf = Flock {
-                l_whence: SEEK_SET as i16,
-                l_start: 0,
-                l_len: 0,
-                l_type: F_UNLCK,
-                ..Flock::default()
-            };
-            let id = ptr::from_ref(fdp).cast::<c_void>();
-            let _ = VOP_ADVLOCK(vp, id, i32::from(F_UNLCK), &mut lf, F_POSIX);
-        }
-    }
-
-    frele(fp, p)
-}
-
-/// `fdrop(fp, p)`: the last reference to `fp` is gone: unlink it, close it, free it.
-pub fn fdrop(fp: &'static File, p: Option<&Proc>) -> Result<(), Errno> {
-    kassert!(fp.f_count.load(Ordering::SeqCst) == 0);
-
-    mtx_enter(&FHDLK);
-    if fp.f_iflags.load(Ordering::SeqCst) & FIF_INSERTED != 0 {
-        // SAFETY: an inserted file is in `filehead` until here; `FHDLK` is held.
-        unsafe { ListHead::<FileList>::remove(fp) };
-    }
-    mtx_leave(&FHDLK);
-
-    let error = match fp.f_ops.get() {
-        Some(ops) => (ops.fo_close)(fp, p),
-        None => Ok(()),
-    };
-
-    // `fnew` gave every file a credential reference, which this drops.
-    drop(fp.f_cred.take());
-    NUMFILES.fetch_sub(1, Ordering::SeqCst);
-    pool_put(&FILE_POOL, NonNull::from(fp).cast());
-
-    error
-}
-
 /// Apply an advisory lock on a file descriptor.
-///
-/// Just attempt to get a record lock of the requested type on the entire file (`l_whence =
-/// SEEK_SET`, `l_start = 0`, `l_len = 0`).
 pub fn sys_flock(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFlockArgs = sysargs(v);
-    let how = uap.how.get();
-    let fdp = p.fd();
-
-    let Some(fp) = fd_getfile(fdp, uap.fd.get()) else {
-        return Err(Errno::EBADF);
-    };
-    let error = 'out: {
-        if fp.f_type.get() != DTYPE_VNODE {
-            break 'out Err(Errno::EOPNOTSUPP);
-        }
-        let vp = fp.vnode();
-        let id = ptr::from_ref(fp).cast::<c_void>();
-        let mut lf = Flock {
-            l_whence: SEEK_SET as i16,
-            l_start: 0,
-            l_len: 0,
-            ..Flock::default()
-        };
-        if how & LOCK_UN != 0 {
-            lf.l_type = F_UNLCK;
-            fp.f_iflags.fetch_and(!FIF_HASLOCK, Ordering::SeqCst);
-            break 'out VOP_ADVLOCK(vp, id, i32::from(F_UNLCK), &mut lf, F_FLOCK);
-        }
-        if how & LOCK_EX != 0 {
-            lf.l_type = F_WRLCK;
-        } else if how & LOCK_SH != 0 {
-            lf.l_type = F_RDLCK;
-        } else {
-            break 'out Err(Errno::EINVAL);
-        }
-        fp.f_iflags.fetch_or(FIF_HASLOCK, Ordering::SeqCst);
-        if how & LOCK_NB != 0 {
-            VOP_ADVLOCK(vp, id, F_SETLK, &mut lf, F_FLOCK)
-        } else {
-            VOP_ADVLOCK(vp, id, F_SETLK, &mut lf, F_FLOCK | F_WAIT)
-        }
-    };
-    let _ = frele(fp, p);
-    error
+    kernel::descrip::sys_flock(p, uap.fd.get(), uap.how.get())
 }
 
 /// File Descriptor pseudo-device driver (`/dev/fd/`).
@@ -1463,106 +458,15 @@ pub fn filedescopen(dev: Dev, _mode: i32, _type: i32, p: &Proc) -> Result<(), Er
     Err(Errno::ENODEV)
 }
 
-/// Duplicate the specified descriptor to a free descriptor.
-pub fn dupfdopen(p: &Proc, indx: i32, mode: i32) -> Result<(), Errno> {
-    let fdp = p.fd();
-    let dupfd = p.p_dupfd.get();
-
-    fdpassertlocked(fdp);
-
-    // Assume that the filename was user-specified; applications do not tend to open
-    // /dev/fd/# when they can just call dup()
-    if p.process().ps_flags.load(Ordering::Relaxed) & (PS_SUGIDEXEC | PS_SUGID) != 0 {
-        if p.p_descfd.get() == 255 {
-            return Err(Errno::EPERM);
-        }
-        if i32::from(p.p_descfd.get()) != dupfd {
-            return Err(Errno::EPERM);
-        }
-    }
-
-    // If the to-be-dup'd fd number is greater than the allowed number of file descriptors,
-    // or the fd to be dup'd has already been closed, reject. Note, there is no need to
-    // check for new == old because fd_getfile will return NULL if the file at indx is newly
-    // created by falloc.
-    let Some(wfp) = fd_getfile(fdp, dupfd) else {
-        return Err(Errno::EBADF);
-    };
-
-    // Check that the mode the file is being opened for is a subset of the mode of the
-    // existing descriptor.
-    if ((mode & (FREAD | FWRITE)) | wfp.flag()) != wfp.flag() {
-        let _ = frele(wfp, p);
-        return Err(Errno::EACCES);
-    }
-    if wfp.f_count.load(Ordering::SeqCst) >= FDUP_MAX_COUNT {
-        let _ = frele(wfp, p);
-        return Err(Errno::EDEADLK);
-    }
-
-    kassert!(wfp.f_iflags.load(Ordering::SeqCst) & FIF_INSERTED != 0);
-
-    mtx_enter(&fdp.fd_fplock);
-    kassert!(fdp.ofile(indx as usize).is_none());
-    fdp.set_ofile(indx as usize, Some(wfp));
-    mtx_leave(&fdp.fd_fplock);
-
-    fdp.set_ofileflags(
-        indx as usize,
-        (fdp.ofileflags(indx as usize) & (UF_EXCLOSE | UF_FORKCLOSE))
-            | (fdp.ofileflags(dupfd as usize) & !(UF_EXCLOSE | UF_FORKCLOSE)),
-    );
-
-    Ok(())
-}
-
-/// Doing an exec, so handle fd flags: do close-on-exec and clear pledged and close-on-fork.
-pub fn fdprepforexec(p: &Proc) {
-    let fdp = p.fd();
-
-    fdplock(fdp);
-    let mut fd = 0;
-    while fd <= fdp.fd_lastfile.get() {
-        let flags = fdp.ofileflags(fd as usize) & !(UF_PLEDGED | UF_FORKCLOSE);
-        fdp.set_ofileflags(fd as usize, flags);
-        if flags & UF_EXCLOSE != 0 {
-            // fdrelease() unlocks fdp.
-            let _ = fdrelease(p, fd);
-            fdplock(fdp);
-        }
-        fd += 1;
-    }
-    fdpunlock(fdp);
-}
-
 /// `closefrom(2)`: closes every descriptor from `fd` on.
 pub fn sys_closefrom(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysClosefromArgs = sysargs(v);
-    let fdp = p.fd();
-
-    let startfd = uap.fd.get() as u32;
-    fdplock(fdp);
-
-    if startfd > fdp.fd_lastfile.get() as u32 {
-        fdpunlock(fdp);
-        return Err(Errno::EBADF);
-    }
-
-    let mut i = startfd;
-    while i <= fdp.fd_lastfile.get() as u32 {
-        // fdrelease() unlocks fdp.
-        let _ = fdrelease(p, i as i32);
-        fdplock(fdp);
-        i += 1;
-    }
-
-    fdpunlock(fdp);
-    Ok(())
+    kernel::descrip::sys_closefrom(p, uap.fd.get())
 }
 
 /// `getdtablecount(2)`: the number of descriptors open.
 pub fn sys_getdtablecount(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = p.fd().fd_openfd.load(Ordering::Relaxed) as Register;
+    retval[0] = kernel::descrip::sys_getdtablecount(p) as Register;
     Ok(())
 }
 /* </CODE> */
@@ -1570,273 +474,116 @@ pub fn sys_getdtablecount(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) ->
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // Host tests for the descriptor tables: the bitmap search (`find_next_zero`, `fd_used`,
-    // `fd_unused`, `find_last_set`), descriptor allocation and expansion (`fdalloc`'s search,
-    // `fdexpand`, past the 1024 descriptors of the internal maps), the open file life cycle
-    // (`fnew`, `fdinsert`, `fd_getfile`, `fdrelease`, `closef`, `fdrop`), `finishdup`, `fdcopy`,
-    // `fdprepforexec` and `fdfree`.
-    //
-    // The limit `fdalloc` reads needs a `curproc`, which the host's one CPU cannot give a test
-    // without disturbing the others, so the tests drive `fdalloc_search` with the limit as an
-    // argument.
-
-    use std::sync::MutexGuard;
-    use std::sync::atomic::AtomicUsize;
-    use std::{assert, assert_eq, vec::Vec};
-
     use super::*;
-    use crate::kern::kern_prot::crget;
-    use crate::kern::proc_glue::procinit;
-    use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::sys::event::Knote;
-    use crate::sys::file::Fileops;
-    use crate::sys::filedesc::NDENTRIES;
+    use crate::kern::kern_event::tests::{setup, thread};
+    use crate::sys::fcntl::{F_GETFD, F_SETFD, FD_CLOEXEC, FREAD, FWRITE};
+    use crate::sys::file::{DTYPE_PIPE, frele};
+    use crate::sys::filedesc::fdplock;
     use crate::sys::uio::Uio;
 
-    /// Real memory, the process pools (for the credentials) and the file pools.
-    fn setup() -> MutexGuard<'static, ()> {
-        let guard = setup_real_memory();
-        crate::machine::cons::consinit();
-        procinit();
-        filedesc_init();
-        guard
-    }
-
-    /// A thread of a fresh process with credentials and a new descriptor table.
-    fn thread() -> &'static Proc {
-        let p = crate::kern::proc_glue::test_proc(1, crget());
-        let pr = p.process();
-        let fdp = fdinit();
-        pr.ps_fd.set(fdp);
-        p.p_fd.set(fdp);
-        p
-    }
-
-    /// How many times `test_close` ran.
-    static CLOSES: AtomicUsize = AtomicUsize::new(0);
-
-    fn test_rw(_fp: &File, _uio: &mut Uio<'_>, _flags: i32) -> Result<(), Errno> {
+    fn ok_rw(_: &File, _: &mut Uio<'_>, _: i32) -> Result<(), Errno> {
         Ok(())
     }
-
-    fn test_ioctl(_fp: &File, _com: u64, _data: &mut [u8], _p: &Proc) -> Result<(), Errno> {
+    fn no_ioctl(_: &File, _: u64, _: &mut [u8], _: &Proc) -> Result<(), Errno> {
         Err(Errno::ENOTTY)
     }
-
-    fn test_kqfilter(_fp: &File, _kn: &Knote) -> Result<(), Errno> {
+    fn no_kq(_: &File, _: &Knote) -> Result<(), Errno> {
         Err(Errno::EINVAL)
     }
-
-    fn test_stat(_fp: &File, _ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
+    fn ok_stat(_: &File, _: &mut Stat, _: &Proc) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn ok_close(_: &File, _: Option<&Proc>) -> Result<(), Errno> {
         Ok(())
     }
 
-    fn test_close(_fp: &File, _p: Option<&Proc>) -> Result<(), Errno> {
-        CLOSES.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
+    /// A file of no object for the rows' tests.
     static TESTOPS: Fileops = Fileops {
-        fo_read: test_rw,
-        fo_write: test_rw,
-        fo_ioctl: test_ioctl,
-        fo_kqfilter: test_kqfilter,
-        fo_stat: test_stat,
-        fo_close: test_close,
+        fo_read: ok_rw,
+        fo_write: ok_rw,
+        fo_ioctl: no_ioctl,
+        fo_kqfilter: no_kq,
+        fo_stat: ok_stat,
+        fo_close: ok_close,
         fo_seek: None,
     };
 
-    /// `falloc` + `fdinsert` with the limit given: a new file at the lowest free descriptor,
-    /// the caller's extra reference dropped.
-    fn open_file(p: &Proc, lim: i32) -> (i32, &'static File) {
-        let fdp = p.fd();
-        fdplock(fdp);
-        let fd = loop {
-            match fdalloc_search(fdp, 0, lim, false) {
-                Ok(fd) => break fd,
-                Err(Errno::ENOSPC) => fdexpand(p).unwrap(),
-                Err(e) => panic!("fdalloc: {e:?}"),
-            }
-        };
-        let fp = fnew(p).unwrap();
-        fref(fp);
-        fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
-        fp.f_type.set(DTYPE_PIPE);
-        fp.f_ops.set(Some(&TESTOPS));
-        fdinsert(fdp, fd, 0, fp);
-        fdpunlock(fdp);
+    fn args(a: &[i64]) -> SysArgs {
+        let mut v: SysArgs = [0; 6];
+        for (slot, &x) in v.iter_mut().zip(a) {
+            *slot = x as Register;
+        }
+        v
+    }
+
+    /// A file at the lowest free descriptor of `p`'s table.
+    fn open(p: &Proc) -> i32 {
+        let mut g = fdplock(p.fd());
+        let (fp, fd) = falloc(p, &mut g).unwrap();
+        fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::Relaxed);
+        fp.install(DTYPE_PIPE, &TESTOPS, BsdFileData::None);
+        fdinsert(&mut g, fd, 0, &fp);
+        drop(g);
         frele(fp, p).unwrap();
-        (fd, fp)
+        fd
     }
 
     #[test]
-    fn find_next_zero_scans_words_from_want() {
-        let map = [!0u32, 0xffff_00ff, 0];
-        let at = |o: usize| map.get(o).copied().unwrap_or(!0);
-        assert_eq!(find_next_zero(&at, 0, 96), 40);
-        assert_eq!(find_next_zero(&at, 41, 96), 41);
-        assert_eq!(find_next_zero(&at, 48, 96), 64);
-        assert_eq!(find_next_zero(&at, 97, 96), -1);
-        let full = |_| !0u32;
-        assert_eq!(find_next_zero(&full, 0, 32), -1);
-        // bits rounds up to whole high-map words: NDLOSLOTS(1) is 32 words.
-        let one = |o: usize| if o == 31 { 0xfffe_ffff } else { !0 };
-        assert_eq!(find_next_zero(&one, 0, 1), 31 * 32 + 16);
-    }
-
-    #[test]
-    fn fdinit_builds_an_empty_table() {
+    fn the_sysent_rows_reach_the_kernel_s_descriptors() {
         let _g = setup();
         let p = thread();
-        let fdp = p.fd();
-        assert_eq!(fdp.fd_nfiles.load(Ordering::Relaxed), NDFILE as i32);
-        assert_eq!(fdp.fd_refcnt.get(), 1);
-        assert_eq!(fdp.fd_cmask.get(), S_IWGRP | S_IWOTH);
-        assert_eq!(fdp.fd_openfd.load(Ordering::Relaxed), 0);
-        assert!((0..NDFILE).all(|fd| fdp.ofile(fd).is_none()));
-        fdfree(p);
-        assert!(p.p_fd.get().is_null());
-    }
-
-    #[test]
-    fn fdalloc_takes_the_lowest_free_descriptor() {
-        let _g = setup();
-        let p = thread();
-        let fdp = p.fd();
-        fdplock(fdp);
-        for want in 0..3 {
-            assert_eq!(fdalloc_search(fdp, 0, 1000, false), Ok(want));
-        }
-        assert_eq!(fdalloc_search(fdp, 7, 1000, true), Ok(7));
-        assert_eq!(fdp.ofileflags(7), UF_PLEDGED);
-        assert_eq!(fdp.fd_lastfile.get(), 7);
-        assert_eq!(fdp.fd_openfd.load(Ordering::Relaxed), 4);
-
-        fd_unused(fdp, 1);
-        assert_eq!(fdp.fd_freefile.get(), 1);
-        assert_eq!(fdalloc_search(fdp, 0, 1000, false), Ok(1));
-        fd_unused(fdp, 7);
-        assert_eq!(fdp.fd_lastfile.get(), 2);
-        assert_eq!(find_last_set(fdp, 3), 2);
-
-        // The table is full at NDFILE: ENOSPC asks for an expansion, EMFILE is the limit.
-        while fdalloc_search(fdp, 0, 1000, false).is_ok() {}
-        assert_eq!(fdp.fd_openfd.load(Ordering::Relaxed), NDFILE as i32);
-        assert_eq!(fdalloc_search(fdp, 0, 1000, false), Err(Errno::ENOSPC));
-        assert_eq!(
-            fdalloc_search(fdp, 0, NDFILE as i32, false),
-            Err(Errno::EMFILE)
-        );
-        fdpunlock(fdp);
-    }
-
-    #[test]
-    fn fdexpand_grows_the_table_and_the_maps() {
-        let _g = setup();
-        let p = thread();
-        let fdp = p.fd();
-        fdplock(fdp);
-        let mut sizes = Vec::new();
-        let mut fd = 0;
-        while fd < 1100 {
-            match fdalloc_search(fdp, 0, 4096, false) {
-                Ok(got) => {
-                    assert_eq!(got, fd);
-                    fd += 1;
-                }
-                Err(Errno::ENOSPC) => {
-                    fdexpand(p).unwrap();
-                    sizes.push(fdp.fd_nfiles.load(Ordering::Relaxed));
-                }
-                Err(e) => panic!("fdalloc: {e:?}"),
-            }
-        }
-        assert_eq!(sizes, [50, 100, 200, 400, 800, 1600]);
-        // Past 1024 descriptors the maps left the internal arrays: 2 high words, 64 low.
-        assert_eq!(ndhislots(fdp.nfiles()), 2);
-        assert_eq!(fdp.himap(0), !0);
-        assert_eq!(fdp.lomap(31), !0);
-        assert_eq!(fdp.lomap(34), (1 << (1100 - 34 * NDENTRIES)) - 1);
-        assert_eq!(fdp.fd_lastfile.get(), 1099);
-
-        // A hole is found again through the high map.
-        fd_unused(fdp, 40);
-        assert_eq!(fdp.himap(0) & 2, 0);
-        assert_eq!(fdalloc_search(fdp, 0, 4096, false), Ok(40));
-        assert_eq!(fdalloc_search(fdp, 2000, 4096, false), Err(Errno::ENOSPC));
-        fdpunlock(fdp);
-        fdfree(p);
-    }
-
-    #[test]
-    fn files_are_counted_shared_and_closed() {
-        let _g = setup();
-        let p = thread();
-        let fdp = p.fd();
-        let closes = CLOSES.load(Ordering::SeqCst);
-        let numfiles = NUMFILES.load(Ordering::SeqCst);
-
-        let (fd, fp) = open_file(p, 1000);
-        assert_eq!(fd, 0);
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 1);
-        assert!(fp.f_iflags.load(Ordering::SeqCst) & FIF_INSERTED != 0);
-        assert!(ptr::eq(FILEHEAD.0.first().unwrap(), fp));
-        assert_eq!(NUMFILES.load(Ordering::SeqCst), numfiles + 1);
-
-        // fd_getfile takes a reference; fd_getfile_mode refuses a mode the file lacks.
-        let got = fd_getfile(fdp, fd).unwrap();
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 2);
-        frele(got, p).unwrap();
-        fp.f_flag.store(FREAD as u32, Ordering::SeqCst);
-        assert!(fd_getfile_mode(fdp, fd, FWRITE).is_none());
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 1);
-        assert!(fd_getfile(fdp, 5).is_none());
-        assert!(fd_getfile(fdp, -1).is_none());
-
-        // dup: finishdup puts the same file at a second descriptor.
+        crate::kern::proc_glue::test_set_limits(p, 64);
+        let fd = open(p);
         let mut retval = [0; 2];
-        fdplock(fdp);
-        let new = fdalloc_search(fdp, 3, 1000, false).unwrap();
-        fdp.set_ofileflags(fd as usize, UF_EXCLOSE);
-        let dup = fd_getfile(fdp, fd).unwrap();
+        assert_eq!(sys_dup(p, &args(&[i64::from(fd)]), &mut retval), Ok(()));
+        let dup = retval[0] as i32;
+        assert_eq!(dup, fd + 1);
+        let fp = fd_getfile(p.fd(), dup).unwrap();
+        // The two slots and ours; file_count reads them without its own.
+        assert_eq!(fp.count(), 3);
+        assert_eq!(file_count(&fp), 3);
+        drop(fp);
         assert_eq!(
-            finishdup(p, dup, fd, new, &mut retval, DUPF_CLOFORK),
+            sys_fcntl(
+                p,
+                &args(&[i64::from(dup), i64::from(F_SETFD), i64::from(FD_CLOEXEC)]),
+                &mut retval
+            ),
             Ok(())
         );
-        assert_eq!(retval[0], 3);
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 2);
-        assert_eq!(fdp.ofileflags(3), UF_FORKCLOSE);
-        assert!(!fd_checkclosed(fdp, 3, fp));
+        assert_eq!(
+            sys_fcntl(p, &args(&[i64::from(dup), i64::from(F_GETFD)]), &mut retval),
+            Ok(())
+        );
+        assert_eq!(retval[0], FD_CLOEXEC as Register);
+        assert_eq!(sys_getdtablecount(p, &args(&[]), &mut retval), Ok(()));
+        assert_eq!(retval[0], 2);
+        assert_eq!(sys_close(p, &args(&[i64::from(dup)]), &mut retval), Ok(()));
+        assert_eq!(sys_closefrom(p, &args(&[0]), &mut retval), Ok(()));
+        assert_eq!(sys_getdtablecount(p, &args(&[]), &mut retval), Ok(()));
+        assert_eq!(retval[0], 0);
+        assert_eq!(
+            sys_close(p, &args(&[i64::from(fd)]), &mut retval),
+            Err(Errno::EBADF)
+        );
+    }
 
-        // fdcopy skips the close-on-fork descriptor and shares the file.
-        let child = fdcopy(p.process());
-        assert!(ptr::eq(child.ofile(0).unwrap(), fp));
-        assert!(child.ofile(3).is_none());
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 3);
-
-        // exec closes the close-on-exec descriptor.
-        fdprepforexec(p);
-        assert!(fdp.ofile(0).is_none());
-        assert_eq!(fdp.ofileflags(3), 0);
-        assert_eq!(fp.f_count.load(Ordering::SeqCst), 2);
-        assert_eq!(CLOSES.load(Ordering::SeqCst), closes);
-
-        // close(3), then the child's table goes: the last reference closes the file.
-        fdplock(fdp);
-        assert_eq!(fdrelease(p, 3), Ok(()));
-        fdplock(fdp);
-        assert_eq!(fdrelease(p, 3), Err(Errno::EBADF));
-        assert_eq!(fdp.fd_openfd.load(Ordering::Relaxed), 0);
-        let q = thread();
-        let qfd = q.fd();
-        q.p_fd.set(child);
-        fdfree(q);
-        assert_eq!(CLOSES.load(Ordering::SeqCst), closes + 1);
-        assert_eq!(NUMFILES.load(Ordering::SeqCst), numfiles);
-        assert!(FILEHEAD.0.first().is_none_or(|f| !ptr::eq(f, fp)));
-        q.p_fd.set(qfd);
-        fdfree(q);
-        fdfree(p);
+    #[test]
+    fn a_socket_file_s_object_is_its_socket_s_word() {
+        use crate::kern::uipc_usrreq::tests::{close, setup as unix_setup, socketpair, teardown};
+        let (_g, p) = unix_setup();
+        let [a, b] = socketpair(p);
+        let fp = fd_getfile(p.fd(), a).unwrap();
+        let Some(BsdFileData::Socket(word)) = fp.data() else {
+            panic!("a socket's object");
+        };
+        let so = crate::kern::sys_socket::socket_of(word).unwrap();
+        assert!(core::ptr::eq(so, crate::kern::sys_socket::fp_socket(&fp)));
+        assert!(!BsdFileGlue::dns_socket(fp.data().unwrap()));
+        drop(fp);
+        close(p, a);
+        close(p, b);
+        teardown();
     }
 }
 /* </TESTS> */

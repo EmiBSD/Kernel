@@ -343,7 +343,7 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
         }
     }
 
-    p.p_fd.set(ptr::null()); // zap the thread's copy
+    // p->p_fd = NULL: the thread's copy is its process's table, emptied by fdfree.
 
     // Release the thread's read reference of resource limit structure (its copy).
     p.p_limit.clear();
