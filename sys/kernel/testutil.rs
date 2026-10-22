@@ -1480,7 +1480,19 @@ pub struct TestVnode {
 
 std::thread_local! {
     static FILE_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static FILE_LOG_ON: Cell<bool> = const { Cell::new(true) };
     static MAXFILES: Cell<i32> = const { Cell::new(1000) };
+}
+
+/// Whether this thread's test glues record their hot hooks (`knote_fdclose`): on for the
+/// tests, off for a bench that measures the descriptors and not the record.
+pub fn file_log_on() -> bool {
+    FILE_LOG_ON.with(Cell::get)
+}
+
+/// Turns the record of [`file_log_on`] on or off for this thread.
+pub fn set_file_log(on: bool) {
+    FILE_LOG_ON.with(|c| c.set(on));
 }
 
 /// Records a test glue's hook call.
@@ -1595,7 +1607,9 @@ macro_rules! test_file_glue {
                 d.dns
             }
             fn knote_fdclose(_p: &$crate::proc::Thread<$proc>, fd: i32) {
-                $crate::testutil::file_log_push(std::format!("knote_fdclose {fd}"));
+                if $crate::testutil::file_log_on() {
+                    $crate::testutil::file_log_push(std::format!("knote_fdclose {fd}"));
+                }
             }
             fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
                 $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));

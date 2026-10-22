@@ -677,7 +677,7 @@ pub fn fdpassertlocked<G: FileGlue>(fdp: &Filedesc<G>) {
 
 /// The first clear bit at or after bit `want` in the first `NDLOSLOTS(bits)` words of the
 /// map `word` reads (`find_next_zero(bitmap, want, bits)`), or -1.
-fn find_next_zero(word: &dyn Fn(usize) -> u32, want: i32, bits: u32) -> i32 {
+fn find_next_zero(word: impl Fn(usize) -> u32, want: i32, bits: u32) -> i32 {
     if want as u32 > bits {
         return -1;
     }
@@ -1375,7 +1375,7 @@ fn fdalloc_search<G: FileGlue>(
         let new = {
             let hi = g.st.himap.as_slice();
             find_next_zero(
-                &|o| word_or_full(hi, o),
+                |o| word_or_full(hi, o),
                 off,
                 ((last + NDENTRIES as i32 - 1) >> NDENTRYSHIFT) as u32,
             )
@@ -1384,7 +1384,7 @@ fn fdalloc_search<G: FileGlue>(
             let j = {
                 let lo = g.st.lomap.as_slice();
                 find_next_zero(
-                    &|o| word_or_full(lo, new as usize + o),
+                    |o| word_or_full(lo, new as usize + o),
                     if new > off { 0 } else { i & NDENTRYMASK as i32 },
                     NDENTRIES as u32,
                 )
@@ -2352,15 +2352,15 @@ mod tests {
     fn find_next_zero_scans_words_from_want() {
         let map = [!0u32, 0xffff_00ff, 0];
         let at = |o: usize| word_or_full(&map, o);
-        assert_eq!(find_next_zero(&at, 0, 96), 40);
-        assert_eq!(find_next_zero(&at, 41, 96), 41);
-        assert_eq!(find_next_zero(&at, 48, 96), 64);
-        assert_eq!(find_next_zero(&at, 97, 96), -1);
+        assert_eq!(find_next_zero(at, 0, 96), 40);
+        assert_eq!(find_next_zero(at, 41, 96), 41);
+        assert_eq!(find_next_zero(at, 48, 96), 64);
+        assert_eq!(find_next_zero(at, 97, 96), -1);
         let full = |_| !0u32;
-        assert_eq!(find_next_zero(&full, 0, 32), -1);
+        assert_eq!(find_next_zero(full, 0, 32), -1);
         // bits rounds up to whole high-map words: NDLOSLOTS(1) is 32 words.
         let one = |o: usize| if o == 31 { 0xfffe_ffff } else { !0 };
-        assert_eq!(find_next_zero(&one, 0, 1), 31 * 32 + 16);
+        assert_eq!(find_next_zero(one, 0, 1), 31 * 32 + 16);
     }
 
     #[test]

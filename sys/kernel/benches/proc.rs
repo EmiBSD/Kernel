@@ -40,6 +40,21 @@
 //! - `proc.thread-join-leave`: a thread box joins a process of eight threads and leaves it
 //!   again under its `ps_mtx` (`thread_join`'s and `exit1`'s moves: the C's
 //!   `TAILQ_INSERT_TAIL` and `TAILQ_REMOVE` of `ps_threads`).
+//!
+//! N4.3's descriptors (`kernel::descrip`), over a table of 19 open files (the "before" a
+//! scratch test of `bsd`'s kern_descrip.rs at abfbed96, whose pools were `bsd`'s):
+//! - `prim.fd-get`: `fd_getfile(fdp, 3)` then `FRELE`.
+//! - `prim.fd-dup-close`: `dup(3)` as the C makes it (`fd_getfile`, `fdalloc`,
+//!   `finishdup`) then `close` of the new descriptor (`fdrelease`).
+//! - `fd.copy-20`: `fdcopy` of the table then its last handle dropped (LZ: `fdcopy` +
+//!   `fdfree`).
+//! - `fd.prepforexec-20`: `fdprepforexec` over the 19 descriptors, none close-on-exec.
+//! - `prim.mutexed`: a `hal::Mutexed` taken and released (`fd_fplock`'s cost on these
+//!   doubles; LZ's `mtx_enter`/`mtx_leave` over `bsd`'s was 3.0 ns in the same run as the
+//!   "before").
+//!
+//! The test glue's hooks are the kernel's doubles (`kernel::test_file_glue!`), with their
+//! record of `knote_fdclose` turned off.
 
 #![forbid(unsafe_code)]
 
@@ -53,8 +68,15 @@ use std::vec::Vec;
 
 use hal::klock;
 use hal::pool::{PoolBackend, RawPool};
+use hal::sys::errno::Errno;
+use hal::sys::types::Off;
 use hal::sys::types::Pid;
 use kernel::cred::{CredRef, Ucred, crdup};
+use kernel::descrip::{
+    falloc, fd_getfile, fdalloc, fdcopy, fdinit, fdinsert, fdplock, fdprepforexec, fdrelease,
+    filedesc_init, finishdup,
+};
+use kernel::file::{DTYPE_PIPE, File, FileOps};
 use kernel::proc::{self, Pgrp, ProcGlue, ProcTables, Process, Session};
 use kernel::resource::{self, PlimitRef, RLIMIT_NOFILE};
 use kernel::testutil;
@@ -273,6 +295,66 @@ impl ProcGlue for BenchGlue {
     fn session_destroy(_sess: &Session<Self>) {}
 }
 
+/// The bench's files' operations: nothing is read or written through them.
+struct BenchOps;
+
+impl FileOps<BenchFiles> for BenchOps {
+    fn read(
+        &self,
+        _: &File<BenchFiles>,
+        _: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _: i32,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn write(
+        &self,
+        _: &File<BenchFiles>,
+        _: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _: i32,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn ioctl(
+        &self,
+        _: &File<BenchFiles>,
+        _: u64,
+        _: &mut [u8],
+        _: &proc::Thread<BenchGlue>,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOTTY)
+    }
+    fn kqfilter(&self, _: &File<BenchFiles>, _: &()) -> Result<(), Errno> {
+        Err(Errno::EINVAL)
+    }
+    fn stat(
+        &self,
+        _: &File<BenchFiles>,
+        _: &mut testutil::TestStat,
+        _: &proc::Thread<BenchGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn close(
+        &self,
+        _: &File<BenchFiles>,
+        _: Option<&proc::Thread<BenchGlue>>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn seek(
+        &self,
+        _: &File<BenchFiles>,
+        _: &mut Off,
+        _: i32,
+        _: &proc::Thread<BenchGlue>,
+    ) -> Result<(), Errno> {
+        Err(Errno::ESPIPE)
+    }
+}
+
+static BENCH_OPS: BenchOps = BenchOps;
+
 fn ids(uid: u32) -> CredRef {
     let mut c = Ucred::new();
     c.cr_uid.set(uid);
@@ -297,6 +379,22 @@ fn main() {
     drop(pr.set_limit(PlimitRef::new(lim)));
     let t = proc::thread_alloc::<BenchGlue>(&pr, (), ());
     drop(t.set_cred(pr.ucred()));
+    // N4.3: a table of 19 open files (descriptors 0..18).
+    let _ = filedesc_init::<BenchFiles>();
+    testutil::set_test_maxfiles(4096);
+    testutil::set_file_log(false);
+    pr.set_fd(fdinit());
+    for _ in 0..19 {
+        let mut g = fdplock(t.fd());
+        let Ok((fp, fd)) = falloc(&t, &mut g) else {
+            eprintln!("bench: falloc failed");
+            std::process::exit(1);
+        };
+        fp.install(DTYPE_PIPE, &BENCH_OPS, testutil::TestFileData::default());
+        fdinsert(&mut g, fd, 0, &fp);
+        drop(g);
+        let _ = fp.frele(Some(&t));
+    }
     let other = proc::process_alloc::<BenchGlue>(4242, ());
     let pid: Pid = 4242;
     let joined = proc::process_alloc::<BenchGlue>(43, ());
@@ -375,6 +473,49 @@ fn main() {
             next_seq.set(seq + 1);
             leaver.set(joined.remove_thread_locked(&mut g, seq));
         })),
+    });
+
+    let t3 = &t;
+    benches.push(Bench {
+        name: "prim.fd-get",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            if let Some(fp) = fd_getfile(t3.fd(), black_box(3)) {
+                let _ = fp.frele(Some(t3));
+            }
+        })),
+    });
+    benches.push(Bench {
+        name: "prim.fd-dup-close",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let Some(fp) = fd_getfile(t3.fd(), 3) else {
+                return;
+            };
+            let mut g = fdplock(t3.fd());
+            let Ok(new) = fdalloc(t3, &mut g, 0) else {
+                return;
+            };
+            let _ = finishdup(t3, g, fp, 3, new, 0);
+            let _ = fdrelease(t3, fdplock(t3.fd()), new);
+        })),
+    });
+    let mtx = hal::mutex::Mutexed::new(hal::intr::mpfloor(), 0u32);
+    benches.push(Bench {
+        name: "prim.mutexed",
+        ops: PRIM,
+        f: Box::new(prim(|| *black_box(&mtx).lock() += 1)),
+    });
+    let pr3 = &pr;
+    benches.push(Bench {
+        name: "fd.copy-20",
+        ops: PRIM,
+        f: Box::new(prim(|| drop(black_box(fdcopy(pr3))))),
+    });
+    benches.push(Bench {
+        name: "fd.prepforexec-20",
+        ops: PRIM,
+        f: Box::new(prim(|| fdprepforexec(t3))),
     });
 
     let reps = 7;
