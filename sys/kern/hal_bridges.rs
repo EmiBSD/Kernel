@@ -481,6 +481,10 @@ impl KernelLock for BsdKernelLock {
     fn assert_locked(&self) {
         crate::sys::systm::kernel_assert_locked();
     }
+
+    fn held(&self) -> bool {
+        crate::kern::kern_lock::_kernel_lock_held()
+    }
 }
 
 /// The soft interrupts (`sys/kern/kern_softintr.rs`). `softintr_establish` takes a

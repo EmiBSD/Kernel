@@ -111,6 +111,8 @@ pub mod softintr;
 #[cfg(test)]
 pub(crate) mod testutil;
 #[forbid(unsafe_code)]
+pub mod thread;
+#[forbid(unsafe_code)]
 pub mod tree;
 pub(crate) mod trust;
 pub mod user;

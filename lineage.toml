@@ -8224,7 +8224,12 @@ reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw
 [[extra]]
 rust = "sys/hal/klock.rs"
 crate = "hal"
-reason = "hal runtime, written new: the KernelLock bridge (KERNEL_LOCK, KERNEL_UNLOCK, KERNEL_ASSERT_LOCKED of kern_lock.rs) for the kernel crate's pagers (N3.4c); paid by N4"
+reason = "hal runtime, written new: the KernelLock bridge (KERNEL_LOCK, KERNEL_UNLOCK, KERNEL_ASSERT_LOCKED of kern_lock.rs) for the kernel crate's pagers (N3.4c); paid by N4; N4.2: the kernel lock's witnesses (KernelWitness exclusive, KernelReader shared, a per-CPU count keeping them apart on the CPU that holds the lock, assert_unwitnessed for the release paths) for the [K] state of kernel::proc, and KernelLock::held"
+
+[[extra]]
+rust = "sys/hal/thread.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.2, decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread so the thread's address is the slot's; N4.5 fills the module (cpu_switchto, proc_trampoline, cpu_fork)"
 
 [[extra]]
 rust = "sys/hal/cpu.rs"
@@ -8315,7 +8320,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"

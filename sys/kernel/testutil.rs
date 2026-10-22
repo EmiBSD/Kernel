@@ -531,6 +531,10 @@ impl KernelLock for TestKernelLock {
             crate::assert::kpanic(format_args!("kernel lock not held"));
         }
     }
+
+    fn held(&self) -> bool {
+        KLOCK_DEPTH.with(Cell::get) > 0
+    }
 }
 
 /// How many times this thread holds the kernel lock double.

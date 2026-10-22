@@ -104,6 +104,13 @@
 //!   lives and is dropped in place before it goes back (the pinned lists' elements,
 //!   `hal::pinlist`: a legacy timeout's node, a task queue). [`PoolArc::get_mut`], the one
 //!   `&mut T`, is for `T: Unpin` only, so it can never move a pinned value.
+//! - N4.2: [`PoolBox::as_pin`], as `PoolArc`'s (a thread on its process's lists while its one
+//!   owner keeps it), its `DerefMut` for `T: Unpin` only; [`PoolArc::from_ref`], a counted
+//!   handle back from a `&T` a list lends (`prfind`'s caller that keeps the process): a value
+//!   of a recorded pool records its own place in a [`PoolHome`] field ([`pool_home!`]), set
+//!   once by [`TypedPool::get_homed`] after the value is written into its item, so a value
+//!   made anywhere else (proc0's `static`, a stack) has an empty home and gets `None`, never
+//!   a handle to memory no pool owns. [`TypedPool::init_recorded`] is public for such pools.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -211,7 +218,7 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// pool never gives a value mutably ([`PoolArc::get_mut`] answers `None`), since a record
     /// may rebuild a handle to it at any time; the choice is made with the pool, before any
     /// item exists.
-    pub(crate) fn init_recorded(
+    pub fn init_recorded(
         &'static self,
         ipl: i32,
         flags: i32,
@@ -313,10 +320,113 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     }
 }
 
+impl<T: Homed> TypedPool<T> {
+    /// `pool_get(9)` and the item's initialisation for a pool of [`TypedPool::init_recorded`]
+    /// whose values record their place ([`PoolHome`]): as [`TypedPool::get_shared`], then the
+    /// value's home is set to the value's address, so a `&T` a list lends can be counted again
+    /// ([`PoolArc::from_ref`]). A pool made by [`TypedPool::init`] is `panic(9)`: a handle
+    /// rebuilt beside a `get_mut` would alias it.
+    pub fn get_homed(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<PoolArc<T>> {
+        if self.made.get().is_some_and(|m| !m.recorded) {
+            hal_panic(format_args!(
+                "TypedPool::get_homed: a pool not made by init_recorded"
+            ));
+        }
+        let arc = self.get_shared(flags, init)?;
+        arc.home().record(&arc);
+        Some(arc)
+    }
+}
+
 impl<T: Send + Sync + 'static> Default for TypedPool<T> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Where a value of a recorded pool is: the address of the value it was recorded for, set
+/// once by [`TypedPool::get_homed`] right after the value is written into its item, never
+/// changed after. A field of the value ([`pool_home!`] names it), so it is born empty with
+/// the value ([`PoolHome::new`] is its only constructor; it is neither `Clone` nor `Copy`) and
+/// only a value placed by `get_homed` carries its own address in it.
+pub struct PoolHome<T> {
+    /// The value's address, 0 while it is in no item.
+    at: AtomicUsize,
+    _t: PhantomData<fn() -> T>,
+}
+
+impl<T> PoolHome<T> {
+    /// An empty home (a value not placed in a pool item yet, or never: a `static`).
+    pub const fn new() -> Self {
+        Self {
+            at: AtomicUsize::new(0),
+            _t: PhantomData,
+        }
+    }
+
+    /// Whether this home lies within `value`'s own bytes.
+    fn inside(&self, value: &T) -> bool {
+        let start = ptr::from_ref(value).addr();
+        let me = ptr::from_ref(self).addr();
+        me >= start && me + size_of::<Self>() <= start + size_of::<T>()
+    }
+
+    /// Records `value`'s address, once (`get_homed`); a home outside its value or recorded
+    /// twice is `panic(9)`.
+    fn record(&self, value: &T) {
+        if !self.inside(value) {
+            hal_panic(format_args!("PoolHome: a home outside its value"));
+        }
+        let at = ptr::from_ref(value).addr();
+        if self
+            .at
+            .compare_exchange(0, at, Ordering::Release, Ordering::Relaxed)
+            .is_err()
+        {
+            hal_panic(format_args!("PoolHome: a value placed twice"));
+        }
+    }
+
+    /// Whether this home, inside `value`, recorded `value`'s own address.
+    fn names(&self, value: &T) -> bool {
+        self.inside(value) && self.at.load(Ordering::Acquire) == ptr::from_ref(value).addr()
+    }
+}
+
+impl<T> Default for PoolHome<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The seal of [`Homed`]: implemented by [`pool_home!`]'s expansion alone.
+#[doc(hidden)]
+pub mod home_sealed {
+    /// The supertrait only [`crate::pool_home!`] implements.
+    pub trait HomeSealed {}
+}
+
+/// A value that records its place in a pool item in one of its own fields
+/// ([`PoolArc::from_ref`]). Implemented by [`pool_home!`] alone (sealed), whose `home` is a
+/// direct field of the type, never a home elsewhere.
+pub trait Homed: home_sealed::HomeSealed + Send + Sync + Sized + 'static {
+    /// The value's home field.
+    fn home(&self) -> &PoolHome<Self>;
+}
+
+/// Declares the [`Homed`] of a type whose field `$field` is its [`PoolHome`]:
+/// `pool_home!(Uidinfo, home);`, `pool_home!(impl[G: Glue] Process<G>, home);`.
+#[macro_export]
+macro_rules! pool_home {
+    ($(impl[$($gen:tt)*])? $ty:ty, $field:ident) => {
+        impl<$($($gen)*)?> $crate::pool::home_sealed::HomeSealed for $ty {}
+
+        impl<$($($gen)*)?> $crate::pool::Homed for $ty {
+            fn home(&self) -> &$crate::pool::PoolHome<Self> {
+                &self.$field
+            }
+        }
+    };
 }
 
 /// What an item of a [`TypedPool<T>`] holds: the count, the pool it goes back to, the value.
@@ -404,6 +514,36 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         unsafe { Pin::new_unchecked(&self.inner().value) }
     }
 
+    /// One more handle to the item holding `value`, counted as a clone: `refcnt_take` of a
+    /// pointer a list lends (`prfind`'s caller that keeps the process while it sleeps). `None`
+    /// for a value no recorded pool placed (its [`PoolHome`] empty: proc0's `static`, a value
+    /// on a stack). A value whose last handle is gone, its drop under way, is `panic(9)`.
+    pub fn from_ref(value: &T) -> Option<Self>
+    where
+        T: Homed,
+    {
+        if !value.home().names(value) {
+            return None;
+        }
+        let at = NonNull::from(value);
+        // SAFETY: `from_value`'s contract. `at` is the address of the value of an item of a
+        // `TypedPool<T>` made by `init_recorded`: the home checked above is a direct field of
+        // `value` (`Homed` is implemented by `pool_home!` alone, sealed, and names a field of
+        // the type) holding `value`'s own address, and the only store of a non-zero address
+        // into a home is `get_homed`'s, into the home of the value it has just written into an
+        // item of a recorded pool, of that value's address (a home is born empty with its
+        // value, `PoolHome::new` being its only constructor, neither `Clone` nor `Copy`; a
+        // recorded pool never gives its values mutably and no API moves a value out of an
+        // item, so a home's bytes never leave the value they were recorded in). So `value`
+        // is that value, still in its item; `from_value` checks the pool's flag again. The
+        // item is not put back during the call: `value` is borrowed for it, and an item goes
+        // back only after its value's drop, which no `&T` survives but one a pinned list
+        // lends, whose element's drop stops the kernel while it is linked (hal::pinlist's
+        // I1) before its memory goes back. A count of 0 is refused by `from_value` with a
+        // panic, never taken back to 1.
+        Some(unsafe { Self::from_value(at) })
+    }
+
     /// Whether two handles name the same item.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.inner == b.inner
@@ -437,10 +577,6 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
     /// drop panics, and a drop that does not finish never puts the item back). The count may
     /// be anything: a count of 0 (the last handle dropped, its drop under way) is refused with
     /// a panic here, never taken back to 1, so no second last drop can follow.
-    #[allow(
-        dead_code,
-        reason = "the pmap backends' (pmap_page_remove), N3.1 commits 4 and 5"
-    )]
     pub(crate) unsafe fn from_value(value: NonNull<T>) -> Self {
         let addr = value.as_ptr().addr() - offset_of!(Inner<T>, value);
         let Some(inner) = NonNull::new(ptr::with_exposed_provenance_mut::<Inner<T>>(addr)) else {
@@ -633,6 +769,20 @@ impl<T: 'static> PoolBox<T> {
         a.item == b.item
     }
 
+    /// The value, pinned: it stays where it is until this handle drops it in place (a thread
+    /// on its process's lists while its one owner keeps its box).
+    pub fn as_pin(&self) -> Pin<&T> {
+        // SAFETY: `Pin`'s contract: the value is not moved, nor its memory invalidated or
+        // reused, before its drop runs. It lives in its pool item from `BoxPool::get`'s write
+        // until the drop of the handle that owns the item, which drops it in place before the
+        // item goes back (the invariant). Nothing in between moves it: `DerefMut` exists only
+        // for `T: Unpin` (for which pinning promises nothing), no API reads the value out of
+        // its item, and the raw forms (`into_raw`/`from_raw`, `SharedBox::into_raw`) hand the
+        // same item, unmoved, to an owner that gives it back as a handle or drops it in place
+        // the same way (`hal::owned`'s containers give a removed element back as its box).
+        unsafe { Pin::new_unchecked(&**self) }
+    }
+
     /// Gives the handle up for the item's pointer (with the item's whole provenance) and its
     /// pool: whoever keeps them owns the item from now on and gives it back as a handle by
     /// [`PoolBox::from_raw`]. The item is not freed here; dropped, the pair leaks it. The
@@ -673,7 +823,7 @@ impl<T: 'static> Deref for PoolBox<T> {
     }
 }
 
-impl<T: 'static> DerefMut for PoolBox<T> {
+impl<T: Unpin + 'static> DerefMut for PoolBox<T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as for `deref`, and the handle is borrowed mutably, so no other reference
         // through it is alive; this `PoolBox` is not a `SharedBox`'s (whose field is private
@@ -1371,6 +1521,84 @@ mod tests {
         let pinned = other.as_pin();
         assert!(core::ptr::eq(pinned.get_ref(), &*h));
         assert_eq!(pinned.v, 3);
+    }
+
+    /// A value that records its place: `PoolArc::from_ref` counts it again.
+    struct Homey {
+        v: u32,
+        home: PoolHome<Homey>,
+        _pin: core::marker::PhantomPinned,
+    }
+
+    crate::pool_home!(Homey, home);
+
+    #[test]
+    fn a_lent_reference_is_counted_again_only_for_a_placed_value() {
+        testutil::install();
+        static P: TypedPool<Homey> = TypedPool::new();
+        assert_eq!(P.init_recorded(0, PR_WAITOK, "homepl"), Ok(()));
+        let h = P
+            .get_homed(PR_WAITOK, || Homey {
+                v: 5,
+                home: PoolHome::new(),
+                _pin: core::marker::PhantomPinned,
+            })
+            .unwrap();
+        let lent: &Homey = &h;
+        let two = PoolArc::from_ref(lent).unwrap();
+        assert!(PoolArc::ptr_eq(&h, &two));
+        assert_eq!(PoolArc::count(&h), 2);
+        drop(h);
+        assert_eq!(two.v, 5);
+        drop(two);
+        assert_eq!(P.nout(), 0);
+        // A value made outside a pool has an empty home.
+        let local = Homey {
+            v: 1,
+            home: PoolHome::new(),
+            _pin: core::marker::PhantomPinned,
+        };
+        assert!(PoolArc::from_ref(&local).is_none());
+        // A value written by get_shared (not get_homed) has one too.
+        static Q: TypedPool<Homey> = TypedPool::new();
+        assert_eq!(Q.init_recorded(0, PR_WAITOK, "homeq"), Ok(()));
+        let plain = Q
+            .get_shared(PR_WAITOK, || Homey {
+                v: 2,
+                home: PoolHome::new(),
+                _pin: core::marker::PhantomPinned,
+            })
+            .unwrap();
+        assert!(PoolArc::from_ref(&*plain).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "a pool not made by init_recorded")]
+    fn a_homed_value_needs_a_recorded_pool() {
+        testutil::install();
+        static P: TypedPool<Homey> = TypedPool::new();
+        assert_eq!(P.init(0, PR_WAITOK, "homeplain"), Ok(()));
+        let _ = P.get_homed(PR_WAITOK, || Homey {
+            v: 0,
+            home: PoolHome::new(),
+            _pin: core::marker::PhantomPinned,
+        });
+    }
+
+    #[test]
+    fn a_box_value_is_pinned_where_its_owner_sees_it() {
+        testutil::install();
+        static P: BoxPool<Fixed> = BoxPool::new();
+        assert_eq!(P.init(0, PR_WAITOK, "pinbox"), Ok(()));
+        let b = P
+            .get(PR_WAITOK, || Fixed {
+                v: 4,
+                _pin: core::marker::PhantomPinned,
+            })
+            .unwrap();
+        let pinned = b.as_pin();
+        assert!(core::ptr::eq(pinned.get_ref(), &*b));
+        assert_eq!(pinned.v, 4);
     }
 }
 
