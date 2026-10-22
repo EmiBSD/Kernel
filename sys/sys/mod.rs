@@ -106,7 +106,6 @@ pub mod sched;
 pub mod scsiio;
 pub use hal::sys::select;
 #[forbid(unsafe_code)]
-#[forbid(unsafe_code)]
 pub mod selinfo;
 pub mod sensors;
 pub mod siginfo;
