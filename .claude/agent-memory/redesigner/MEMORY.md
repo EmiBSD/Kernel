@@ -164,4 +164,12 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - s_count is held by ttys (TIOCSCTTY's sesshold) and tprintf_open too, not only by groups: a counted SessionRef needs holders there.
 - A same-session bench/unsafe 'before' without amending: back up `git diff HEAD --binary`, `git stash push -m <tag>` (tracked only), move new untracked .rs aside, measure, `git stash apply <sha>`, compare the diff byte for byte, drop by tag.
 - After a big call-site switch, `cargo fix --lib --tests -p bsd --allow-dirty --allow-staged` clears the unused imports; kernel benches need `--features doubles`; run `git commit` as a command of its own (chained or redirected, the sandbox refuses it).
-- bsd's MpLock depth is per `cpu_number()`, 0 for every host test thread: a check on the kernel lock's depth or on hal::klock's witness count in kern_lock.rs is `#[cfg(not(test))]`; host tests that reach `[K]` readers take `kernel_lock()` as the syscall would.
+- bsd's MpLock depth is per `cpu_number()`, 0 for every host test thread: kern_lock.rs's release checks read a test-only per-thread depth that a test arms (`kernel_lock_checks_arm`), none elsewhere; never call `__mp_release_all` unarmed in a test (it zeroes CPU 0's depth every thread shares); host tests that reach `[K]` readers take `kernel_lock()` as the syscall would.
+- A hal pool's vmstat -m size is `pr_size`, not `size_of::<T>()`: a TypedPool item is T + 16 (count, pool); read it with `TypedPool/BoxPool::item_size()` (RawPool::size).
+- `cargo test -p bsd --lib a b` refuses a second filter: put several after `--` (`cargo test -p bsd --lib -- kern::a kern::b`).
+- An API that removes an element given `&T` cannot be fed a `&T` borrowed from the same guard (E0502): take the element's key (`p_seq`), which the owner reads from itself.
+- Bench closures pushed into a `Vec<Bench>` capture locals: declare those locals before the Vec, or E0597 at the drop order.
+- Worktree sandbox: `sh script` and multi-line `sed a\` are refused; a script made executable (`chmod +x`) and run by path, or a repl.py spec, passes.
+- A legacy bsd module with `unsafe` outside unsafe-core.toml (kern_event.rs, 82) cannot be `redesigned` even when the review decides it: lz check wants its mod line forbid; that is the user's call.
+- The LZ scratch bench of list-insert-remove (kern_prot.rs tests at 4417c4c8) is dev 1.9 vs release 10.4 ns in one session: the dev<release asymmetry is that harness's, not a typo.
+- A diagnostic arm64 bsd compiles once ucom.rs is patched locally (one import): check a `cfg(feature = "diagnostic")` change that way, then `git checkout` ucom.rs.
