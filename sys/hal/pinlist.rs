@@ -1026,6 +1026,25 @@ mod tests {
     }
 
     #[test]
+    fn an_all_zero_list_is_an_empty_one() {
+        // A zeroed object (`M_ZERO`, `PR_ZERO`) that embeds a list (a klist) holds a valid
+        // empty list: every field's zero is its `new()` value.
+        testutil::install();
+        // SAFETY: `PinList` is a `PinEntry` (three `Cell<Option<NonNull<_>>>`, whose all-zero
+        // pattern is `None`, an `AtomicUsize` and a zero-sized marker), an `AtomicUsize` and a
+        // zero-sized marker: all zero bytes are a valid value of each field, so of the list.
+        let l: PinList<ByE> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut g = m.lock();
+        assert!(l.is_empty(&g));
+        let a = core::pin::pin!(Node::new(1));
+        l.insert_tail(&mut g, a.as_ref());
+        assert_eq!(values(l.iter(&g)), [1]);
+        l.remove(&mut g, &a);
+        assert!(l.is_empty(&g));
+    }
+
+    #[test]
     fn a_tail_queue_inserts_removes_and_walks_in_order() {
         testutil::install();
         let m = Mutexed::new(IPL_NONE, ());

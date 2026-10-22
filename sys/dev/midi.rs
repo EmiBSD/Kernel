@@ -592,10 +592,8 @@ pub fn midiattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         return;
     }
 
-    // SAFETY: `AUDIO_LOCK` is a static, which outlives every klist.
-    unsafe { klist_init_mutex(&sc.inbuf.klist, &AUDIO_LOCK) };
-    // SAFETY: as above.
-    unsafe { klist_init_mutex(&sc.outbuf.klist, &AUDIO_LOCK) };
+    klist_init_mutex(&sc.inbuf.klist, &AUDIO_LOCK);
+    klist_init_mutex(&sc.outbuf.klist, &AUDIO_LOCK);
 
     sc.hw_if.set(hwif);
     sc.hw_hdl.set(hdl);

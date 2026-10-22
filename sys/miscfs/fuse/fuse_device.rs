@@ -319,8 +319,7 @@ pub fn fuseopen(dev: Dev, flags: i32, _fmt: i32, _p: &Proc) -> Result<(), Errno>
     fd.fd_fbufs_in.init();
     fd.fd_fbufs_wait.init();
     rw_init(&fd.fd_lock, "fusedlk");
-    // SAFETY: `fd_lock` is a member of the same device, which outlives its klist.
-    unsafe { klist_init_rwlock(&fd.fd_rklist, &fd.fd_lock) };
+    klist_init_rwlock(&fd.fd_rklist, &fd.fd_lock);
     refcnt_init(&fd.fd_refcnt);
 
     // SAFETY: a new device, on no list; it stays in place until `fuseclose` unlinks it.
@@ -1225,7 +1224,8 @@ pub(crate) mod tests {
         let dev = open_dev(p, 0);
         fuse_device_set_fmp(fake_fmp(dev, FUSEBUFMAXSIZE as i32), true);
 
-        let kn: &'static Knote = Box::leak(Box::new(Knote::new()));
+        let (kq, h) = crate::kern::kern_event::tests::owned_knote(p);
+        let kn = h.kn();
         kn.kn_filter().set(EVFILT_READ);
         fusekqfilter(dev, kn).expect("kqfilter");
         assert!(
@@ -1243,7 +1243,7 @@ pub(crate) mod tests {
         };
         assert!(!event());
         filt_fuse_rdetach(kn);
-        assert!(fd.fd_rklist.kl_list.is_empty());
+        assert!(fd.fd_rklist.is_empty());
 
         // Queueing activates the knotes on the list (`knote_locked`), which needs a kqueue: the
         // knote is attached again once the request waits.
@@ -1256,11 +1256,12 @@ pub(crate) mod tests {
         filt_fuse_rdetach(kn);
         reply(dev, f.fb_uuid(), 0, abi_bytes(&FuseAttrOut::default()), &[]).expect("reply");
         fb_delete(f);
+        crate::kern::kern_event::tests::owned_knote_drop(p, kq, h);
 
-        let wk: &'static Knote = Box::leak(Box::new(Knote::new()));
+        let wk: &'static Knote = Box::leak(Box::new(Knote::detached()));
         wk.kn_filter().set(EVFILT_WRITE);
         fusekqfilter(dev, wk).expect("write filter: always true");
-        let bad: &'static Knote = Box::leak(Box::new(Knote::new()));
+        let bad: &'static Knote = Box::leak(Box::new(Knote::detached()));
         bad.kn_filter().set(crate::sys::event::EVFILT_VNODE);
         assert_eq!(fusekqfilter(dev, bad), Err(Errno::EINVAL));
 

@@ -311,8 +311,8 @@ pub fn sys_pselect<G: ProcGlue>(
 }
 
 /// A `struct timespec` timeout from userland: `None` for `NULL`, `EINVAL` for a negative or
-/// unnormalised one.
-fn copyin_timespec(ts: UserPtr<[i64; 2]>) -> Result<Option<Timespec>, Errno> {
+/// unnormalised one (`pselect(2)` and `ppoll(2)` check it before they copy the mask in).
+pub fn copyin_timespec(ts: UserPtr<[i64; 2]>) -> Result<Option<Timespec>, Errno> {
     if ts.is_null() {
         return Ok(None);
     }

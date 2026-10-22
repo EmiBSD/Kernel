@@ -2923,7 +2923,8 @@ mod tests {
         assert_eq!(VOP_PATHCONF(vp, 9999, &mut v), Err(Errno::EINVAL));
 
         // a vnode filter hooks onto the vnode's list and comes off it
-        let kn: &'static Knote = Box::leak(Box::new(Knote::new()));
+        let (kq, h) = crate::kern::kern_event::tests::owned_knote(p);
+        let kn = h.kn();
         kn.kn_filter().set(EVFILT_VNODE);
         VOP_KQFILTER(vp, 0, kn).expect("kqfilter");
         assert!(
@@ -2932,21 +2933,22 @@ mod tests {
                 .is_some_and(|f| ptr::eq(f, &TMPFSVNODE_FILTOPS))
         );
         assert!(ptr::eq(kn_vnode(kn), vp));
-        assert!(vp.v_klist.kl_list.first().is_some());
+        assert!(!vp.v_klist.is_empty());
         filt_tmpfsdetach(kn);
-        assert!(vp.v_klist.kl_list.first().is_none());
-        let bad: &'static Knote = Box::leak(Box::new(Knote::new()));
+        assert!(vp.v_klist.is_empty());
+        crate::kern::kern_event::tests::owned_knote_drop(p, kq, h);
+        let bad: &'static Knote = Box::leak(Box::new(Knote::detached()));
         bad.kn_filter().set(-100);
         assert_eq!(VOP_KQFILTER(vp, 0, bad), Err(Errno::EINVAL));
 
         // the events: only the subscribed notes are recorded; revocation ends it
-        let kn = Knote::new();
+        let kn = Knote::detached();
         kn.kn_sfflags.set(NOTE_WRITE | NOTE_RENAME);
         assert!(!filt_tmpfsvnode(&kn, i64::from(NOTE_LINK)));
         assert!(filt_tmpfsvnode(&kn, i64::from(NOTE_RENAME)));
         assert_eq!(kn.kn_fflags().get(), NOTE_RENAME);
         assert!(filt_tmpfsvnode(&kn, i64::from(NOTE_REVOKE)) && kn.has_flags(EV_EOF));
-        let kn = Knote::new();
+        let kn = Knote::detached();
         assert!(filt_tmpfswrite(&kn, 0) && kn.kn_data().get() == 0);
         assert!(filt_tmpfswrite(&kn, i64::from(NOTE_REVOKE)));
         assert!(kn.has_flags(EV_EOF) && kn.has_flags(EV_ONESHOT));

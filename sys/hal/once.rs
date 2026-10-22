@@ -140,6 +140,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_all_zero_cell_is_an_empty_one() {
+        // A zeroed object that embeds a cell (a klist's own mutex) holds an empty cell.
+        // SAFETY: `OnceStatic` is an `AtomicU8` (zero is `EMPTY`) and an
+        // `UnsafeCell<MaybeUninit<T>>`, valid with any bytes: all zero bytes are a valid,
+        // empty cell.
+        let c: OnceStatic<u32> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(c.get().is_none() && !c.is_set());
+        assert_eq!(c.set(7), Ok(()));
+        assert_eq!(c.get(), Some(&7));
+    }
+
+    #[test]
     fn empty_until_set_then_the_value() {
         let c = OnceStatic::<u32>::new();
         assert!(c.get().is_none());

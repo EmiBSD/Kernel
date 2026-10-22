@@ -660,7 +660,7 @@ mod tests {
         let _g = setup_real_memory();
         let sc = softc();
         clalloc(&sc.sc_q, UHID_BSIZE, false);
-        let kn = Knote::new();
+        let kn = Knote::detached();
         kn.kn_hook.set(ptr::from_ref(&*sc).cast_mut().cast());
 
         assert!(!filt_uhidread(&kn, 0));

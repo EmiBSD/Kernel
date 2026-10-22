@@ -50,28 +50,18 @@
 /* <CODE> */
 //! `<sys/selinfo.h>`: used to maintain information about processes that wish to be notified
 //! when I/O becomes possible (`select(2)`, `poll(2)` or `kevent(2)` on one of a driver's
-//! objects).
+//! objects), as `bsd` names it: the kernel crate's (`kernel::select`), instantiated with
+//! `bsd`'s process glue.
 //!
 //! Upstream: sys/sys/selinfo.h @ 3ce1f3f79392
+//! LZ: sys/sys/selinfo.rs@3c62ede68802
 //!
-//! `si_note` is the object's `struct klist`: the driver's `*_kqfilter` hooks knotes on it,
-//! and `selwakeup` (`sys_generic.rs`) posts `NOTE_SUBMIT` to them.
+//! ## Redesign
+//! - N4.4: `struct selinfo` is `kernel::select::Selinfo`, whose `si_note` is a kernel-lock
+//!   `kernel::event::Klist`; `selwakeup` is `kernel::select::selwakeup`.
 
-use crate::sys::event::Klist;
+use crate::kern::proc_glue::BsdProcGlue;
 
-/// `struct selinfo`.
-#[derive(Default)]
-pub struct Selinfo {
-    /// `si_note`: kernel note list.
-    pub si_note: Klist,
-}
-
-impl Selinfo {
-    /// A zeroed record: no knotes, the list locked by the kernel lock.
-    pub const fn new() -> Self {
-        Self {
-            si_note: Klist::new(),
-        }
-    }
-}
+/// `struct selinfo` of `bsd`'s processes.
+pub type Selinfo = kernel::select::Selinfo<BsdProcGlue>;
 /* </CODE> */

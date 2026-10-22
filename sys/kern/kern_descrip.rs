@@ -98,8 +98,7 @@
 //! - N4.3: `kern_descrip.c`'s descriptor management moved into `kernel::descrip` and
 //!   `struct file` into `kernel::file`; this module is what stays `bsd`'s until the
 //!   subsystems a file points at move: [`BsdFileData`] (`f_data` by kind: a vnode link, a
-//!   socket's address word, a pipe's end, a kqueue link), [`BsdFdKq`] (a table's
-//!   `fd_kqlist` and `fd_nuserevents`, kqueue's until N4.4), the hooks of
+//!   socket's address word, a pipe's end, a counted kqueue), the hooks of
 //!   [`BsdFileGlue`] (a `bridges.toml` row, `FileGlue`), the open files' tables, the
 //!   `sysent[]` rows (`sys_dup` ... `sys_getdtablecount`, which call the kernel's typed
 //!   entries), `filedescopen`, and the twenty `Native` entries of `KernelApi::fd`
@@ -107,7 +106,7 @@
 //!   pledge and the pinned syscalls stay on the path as for the vm calls). The module keeps LZ's path, which the frozen amd64
 //!   `conf.rs` imports `filedescopen` from (decision 44).
 
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::link::{Link, PtrWord};
 use kernel::api::{FdEntries, SysResult};
@@ -121,7 +120,6 @@ pub use kernel::file::fdrop;
 
 use crate::conf::param::MAXFILES;
 use crate::kern::init_sysent::SYSENT;
-use crate::kern::kern_event::knote_fdclose;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
 use crate::kern::kern_sig::ptsignal;
@@ -135,8 +133,7 @@ use crate::machine::cpu::curproc;
 #[cfg(not(test))]
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
-use crate::sys::event::Knote;
-use crate::sys::eventvar::{KqList, Kqueue};
+use crate::sys::eventvar::KqRef;
 use crate::sys::fcntl::Flock;
 use crate::sys::file::{File, FileRef, Fileops};
 use crate::sys::filedesc::FdGuard;
@@ -169,8 +166,9 @@ pub enum BsdFileData {
     Socket(PtrWord<Socket>),
     /// `DTYPE_PIPE`: the pipe this file reads, and the opener's ids for `pipe_stat`.
     Pipe(PipeFile),
-    /// `DTYPE_KQUEUE`: the kqueue, cleared by `kqueue_close`.
-    Kqueue(Link<Kqueue>),
+    /// `DTYPE_KQUEUE`: the kqueue, a counted reference the file drops with its last
+    /// reference (`kqueue_close` terminates the queue first).
+    Kqueue(KqRef),
     /// A file with no object (the console stand-in, `DTYPE_CONSFILE`).
     None,
 }
@@ -187,15 +185,6 @@ impl BsdFileData {
         word.set(core::ptr::from_ref(so));
         Self::Socket(word)
     }
-}
-
-/// A table's kqueue members (kqueue's, N4.4): `fd_kqlist` and `fd_nuserevents`.
-#[derive(Default)]
-pub struct BsdFdKq {
-    /// \[f\] `fd_kqlist`: kqueues attached to this filedesc.
-    pub fd_kqlist: hal::list::List<KqList>,
-    /// \[a\] `fd_nuserevents`: number of kqueue user events.
-    pub fd_nuserevents: AtomicU32,
 }
 
 /// `bsd`'s instantiation of `kernel::file` and `kernel::descrip` (a `bridges.toml` row while
@@ -252,11 +241,9 @@ impl FileGlue for BsdFileGlue {
     type Proc = crate::kern::proc_glue::BsdProcGlue;
     type Ops = Fileops;
     type Data = BsdFileData;
-    type Knote = Knote;
     type Stat = Stat;
     type Vnode = Vnode;
     type FileList = FileListLink;
-    type FdKq = BsdFdKq;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()
@@ -326,8 +313,26 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
-    fn knote_fdclose(p: &Proc, fd: i32) {
-        knote_fdclose(p, fd);
+    fn kqueue_file(kq: KqRef) -> (&'static Fileops, BsdFileData) {
+        (&crate::kern::kern_event::KQUEUEOPS, BsdFileData::Kqueue(kq))
+    }
+
+    fn kqueue_of(d: &BsdFileData) -> Option<&KqRef> {
+        match d {
+            BsdFileData::Kqueue(kq) => Some(kq),
+            _ => None,
+        }
+    }
+
+    fn vnode_revoked(d: &BsdFileData) -> bool {
+        match d {
+            BsdFileData::Vnode(v) => v.get().is_some_and(|vp| {
+                vp.v_op.get().is_some_and(|ops| {
+                    core::ptr::eq(ops, &crate::miscfs::deadfs::dead_vnops::DEAD_VOPS)
+                })
+            }),
+            _ => false,
+        }
     }
 
     fn sigpipe(p: &Proc) {
@@ -352,10 +357,6 @@ impl FileGlue for BsdFileGlue {
 
     fn stat_copyout(st: &Stat, sb: usize) -> Result<(), Errno> {
         copyout(&st.to_bytes(), sb)
-    }
-
-    fn fdkq_free(kq: &BsdFdKq) {
-        crate::kassert!(kq.fd_nuserevents.load(Ordering::SeqCst) == 0);
     }
 }
 
@@ -783,6 +784,7 @@ pub fn native_closefrom(nr: Register, fd: i32, rval: &mut [Register; 2]) -> SysR
 mod tests {
     use super::*;
     use crate::kern::kern_event::tests::{setup, thread};
+    use crate::sys::event::Knote;
     use crate::sys::fcntl::{F_GETFD, F_SETFD, FD_CLOEXEC, FREAD, FWRITE};
     use crate::sys::file::{DTYPE_PIPE, frele};
     use crate::sys::filedesc::fdplock;

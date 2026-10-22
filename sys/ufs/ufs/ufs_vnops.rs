@@ -1873,7 +1873,7 @@ mod tests {
     #[test]
     fn vnode_filters_record_the_events_asked_for() {
         // EVFILT_VNODE: only the subscribed notes are recorded; revocation ends it.
-        let kn = Knote::new();
+        let kn = Knote::detached();
         kn.kn_sfflags.set(NOTE_WRITE | NOTE_DELETE);
         assert!(!filt_ufsvnode(&kn, i64::from(NOTE_ATTRIB)));
         assert!(filt_ufsvnode(&kn, i64::from(NOTE_WRITE)));
@@ -1881,7 +1881,7 @@ mod tests {
         assert!(filt_ufsvnode(&kn, i64::from(NOTE_REVOKE)) && kn.has_flags(EV_EOF));
 
         // EVFILT_WRITE: always writable, EOF and one-shot once revoked.
-        let kn = Knote::new();
+        let kn = Knote::detached();
         assert!(filt_ufswrite(&kn, 0) && kn.kn_data().get() == 0);
         assert!(filt_ufswrite(&kn, i64::from(NOTE_REVOKE)));
         assert!(kn.has_flags(EV_EOF) && kn.has_flags(EV_ONESHOT));

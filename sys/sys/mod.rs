@@ -46,7 +46,9 @@ pub mod domain;
 pub use hal::sys::endian;
 pub use hal::sys::errno;
 pub mod evcount;
+#[forbid(unsafe_code)]
 pub mod event;
+#[forbid(unsafe_code)]
 pub mod eventvar;
 #[forbid(unsafe_code)]
 pub mod exec;
@@ -89,6 +91,7 @@ pub mod param;
 pub use hal::sys::pclock;
 pub mod percpu;
 pub use hal::sys::pledge;
+#[forbid(unsafe_code)]
 pub mod poll;
 pub mod pool;
 pub mod proc;
@@ -102,6 +105,7 @@ pub mod rwlock;
 pub mod sched;
 pub mod scsiio;
 pub use hal::sys::select;
+#[forbid(unsafe_code)]
 #[forbid(unsafe_code)]
 pub mod selinfo;
 pub mod sensors;

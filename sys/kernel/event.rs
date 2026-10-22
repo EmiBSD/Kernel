@@ -646,15 +646,19 @@ pub struct Knote<G: ProcGlue> {
     timer: OnceStatic<PoolArc<FiltTimer<G>>>,
 }
 
+/// The lock a [`Knote::detached`]'s status is keyed to (host tests only; never taken).
+#[cfg(any(test, feature = "doubles"))]
+static DETACHED_KNOTE_LOCK: Mutexed<()> = Mutexed::new(IPL_HIGH, ());
+
 impl<G: ProcGlue> Knote<G> {
-    /// A knote of `kq`, as `pool_get(&knote_pool, PR_ZERO)` and `kqueue_register` make one.
-    fn new(kq: &KqRef<G>) -> Self {
+    /// A zeroed knote (`PR_ZERO`) whose status `status` keys to its lock, of kqueue `kq`.
+    fn zeroed(status: Guarded<i32>, kq: Option<KqRef<G>>) -> Self {
         Self {
             link: OwnedEntry::new(),
             tqe: PinEntry::new(),
             selnext: PinEntry::new(),
-            status: Guarded::new_mutexed(&kq.lock, 0),
-            kq: Some(kq.clone()),
+            status,
+            kq,
             kn_kevent: KnKevent::new(),
             kn_sfflags: U32Word::new(0),
             kn_sdata: I64Word::new(0),
@@ -669,29 +673,24 @@ impl<G: ProcGlue> Knote<G> {
         }
     }
 
+    /// A knote of `kq`, as `pool_get(&knote_pool, PR_ZERO)` and `kqueue_register` make one.
+    fn new(kq: &KqRef<G>) -> Self {
+        Self::zeroed(Guarded::new_mutexed(&kq.lock, 0), Some(kq.clone()))
+    }
+
     /// A scan marker of `kq` (`kqueue_scan_setup`'s `kqs_start`/`kqs_end`): `EVFILT_MARKER`,
     /// `KN_PROCESSING`, no kqueue, to be pinned on the scanning thread's stack.
     pub fn marker(kq: &Kqueue<G>) -> Self {
-        let kn = Self {
-            link: OwnedEntry::new(),
-            tqe: PinEntry::new(),
-            selnext: PinEntry::new(),
-            status: Guarded::new_mutexed(&kq.lock, KN_PROCESSING),
-            kq: None,
-            kn_kevent: KnKevent::new(),
-            kn_sfflags: U32Word::new(0),
-            kn_sdata: I64Word::new(0),
-            useract: AtomicBool::new(false),
-            pmark: AtomicU8::new(0),
-            process: Mutexed::new(IPL_HIGH, None),
-            kn_pollid: U32Word::new(0),
-            fp: Mutexed::new(IPL_HIGH, FileSlot::new()),
-            kn_fop: Link::new(),
-            kn_hook: HookWord::new(),
-            timer: OnceStatic::new(),
-        };
+        let kn = Self::zeroed(Guarded::new_mutexed(&kq.lock, KN_PROCESSING), None);
         kn.kn_kevent.filter.set(EVFILT_MARKER);
         kn
+    }
+
+    /// A knote of no kqueue, never attached nor linked, for host tests of a filter's event
+    /// function alone (what it reads of `kn_sfflags`/`kn_sdata` and writes into the kevent).
+    #[cfg(any(test, feature = "doubles"))]
+    pub fn detached() -> Self {
+        Self::zeroed(Guarded::new_static_mutexed(&DETACHED_KNOTE_LOCK, 0), None)
     }
 
     /// `kn_id`: `kn_kevent.ident` \[I\].
@@ -873,6 +872,15 @@ impl KernelHold {
         klock::kernel_lock();
         Self
     }
+
+    /// The kernel lock of a `bsd` caller of a `_locked` form, which holds it (asserted under
+    /// `diagnostic`, as the C's `KLIST_ASSERT_LOCKED`), taken once more, recursively, so the
+    /// witness the form takes is this CPU's whatever the caller's path.
+    fn legacy() -> Self {
+        #[cfg(feature = "diagnostic")]
+        klock::kernel_assert_locked();
+        Self::take()
+    }
 }
 
 impl Drop for KernelHold {
@@ -882,7 +890,9 @@ impl Drop for KernelHold {
 }
 
 impl<G: ProcGlue> Klist<G> {
-    /// An empty klist of the kernel lock (`kl_ops == NULL`), all zero.
+    /// An empty klist of the kernel lock (`kl_ops == NULL`), all zero: a zeroed object
+    /// (`M_ZERO`) that embeds one holds this klist (every field's zero is its `new()`: the
+    /// atomics, and hal's `PinList` and `OnceStatic`, whose tests check it).
     pub const fn new() -> Self {
         Self {
             list: PinList::new(),
@@ -989,12 +999,13 @@ impl<G: ProcGlue> Klist<G> {
     }
 
     /// `klist_insert_locked(klist, kn)` of a `bsd` caller that holds the list's lock as the
-    /// C knows it: the kernel lock (its witness taken here: `panic(9)` when it is not held,
-    /// the C's assertion), or, for an `Own` klist, the owner's lock, inside which the own
-    /// mutex is taken.
+    /// C knows it: the kernel lock (asserted under `diagnostic`, the C's
+    /// `KLIST_ASSERT_LOCKED`, and taken once more, recursively, for the witness), or, for an
+    /// `Own` klist, the owner's lock, inside which the own mutex is taken.
     pub fn insert_legacy(&self, kn: &Knote<G>) {
         match self.kind() {
             KlistKind::Kernel => {
+                let _k = KernelHold::legacy();
                 let mut w = klock::witness();
                 self.insert_locked(&mut w, kn);
             }
@@ -1010,6 +1021,7 @@ impl<G: ProcGlue> Klist<G> {
     pub fn remove_legacy(&self, kn: &Knote<G>) {
         match self.kind() {
             KlistKind::Kernel => {
+                let _k = KernelHold::legacy();
                 let mut w = klock::witness();
                 self.remove_locked(&mut w, kn);
             }
@@ -1055,6 +1067,7 @@ impl<G: ProcGlue> Klist<G> {
     pub fn knote_legacy(&self, hint: i64) {
         match self.kind() {
             KlistKind::Kernel => {
+                let _k = KernelHold::legacy();
                 let r = klock::reader();
                 self.knote_locked(&r, hint);
             }
@@ -1371,6 +1384,10 @@ impl<G: ProcGlue> Kqueue<G> {
         f_modify: Some(filt_seltruemodify::<G>),
         f_process: Some(filt_seltrueprocess::<G>),
     };
+
+    /// A [`test_knote`]'s filterops.
+    #[cfg(any(test, feature = "doubles"))]
+    const TEST_FILTOPS: Filterops<G> = test_filtops();
 }
 
 impl<G: ProcGlue> Drop for Kqueue<G> {
@@ -2329,8 +2346,8 @@ fn is_thread_kq<G: ProcGlue>(p: &Thread<G>, kq: &Kqueue<G>) -> bool {
 }
 
 /// `LIST_INSERT_HEAD(&fdp->fd_kqlist, kq, kq_next)`, under the list's mutex (the C's
-/// `fdplock`).
-fn fd_kqlist_insert<G: ProcGlue>(kq: &KqRef<G>) {
+/// `fdplock`): a new kqueue on its table's list, where `knote_fdclose` finds it.
+pub fn fd_kqlist_insert<G: ProcGlue>(kq: &KqRef<G>) {
     let fdp = &kq.fdp;
     let mut g = fdp.kqlist_mtx.lock();
     fdp.kqlist.insert_head(&mut g, kq.0.as_pin());
@@ -3589,6 +3606,46 @@ pub fn knote_process<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bo
 
 // A knote, a kqueue and a klist are shared between CPUs by composition (no `unsafe impl`):
 // the kernel's own glue proves it below for the tests' `TestGlue`, `bsd` for its own.
+/// The filterops of a [`test_knote`]: no file, no event, nothing to detach (the test unhooks
+/// the knote itself).
+#[cfg(any(test, feature = "doubles"))]
+const fn test_filtops<G: ProcGlue>() -> Filterops<G> {
+    Filterops {
+        f_flags: FILTEROP_MPSAFE,
+        f_attach: None,
+        f_detach: None,
+        f_event: None,
+        f_modify: None,
+        f_process: None,
+    }
+}
+
+/// A knote of `kq` that its chain owns (the hash slot of `ident`, as `EVFILT_USER`'s),
+/// attached to no object and held `KN_PROCESSING`, for host tests that hook it on a klist
+/// themselves (the kernel's and `bsd`'s filter tests); [`test_knote_drop`] gives it back.
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_knote<G: ProcGlue>(kq: &KqRef<G>, ident: usize) -> KnHold<G> {
+    let Some(kn) = G::tables().kq.knotepl.get(PR_WAITOK, || Knote::new(kq)) else {
+        kpanic(format_args!("test_knote: no knote"));
+    };
+    let (mut g, e) = kqueue_expand_hash(kq, kq.lock.lock());
+    if e.is_err() {
+        kpanic(format_args!("test_knote: no hash"));
+    }
+    *kn.status_mut(&mut g) = KN_PROCESSING;
+    kn.kn_fop.set(Some(&Kqueue::<G>::TEST_FILTOPS));
+    kn.kn_kevent.ident.set(ident);
+    kn.kn_kevent.filter.set(EVFILT_USER);
+    knote_attach(&mut g, kn)
+}
+
+/// Gives back a [`test_knote`], unhooked from every klist by the test (its filterops put
+/// back first: they name its chain).
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_knote_drop<G: ProcGlue>(kq: &KqRef<G>, h: KnHold<G>) {
+    h.kn().kn_fop.set(Some(&Kqueue::<G>::TEST_FILTOPS));
+    knote_drop(kq, h, None);
+}
 /* </CODE> */
 
 /* <TESTS> */
