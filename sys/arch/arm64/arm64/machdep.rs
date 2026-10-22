@@ -134,9 +134,9 @@ use crate::arch::arm64::arm64::cpu::cpu_kick;
 use crate::arch::arm64::arm64::cpu::cpu_unidle;
 use crate::arch::arm64::arm64::cpufunc::cpu_dcache_wb_range;
 use crate::arch::arm64::arm64::cpufunc::cpu_wfi;
-use crate::arch::arm64::arm64::cpuswitch::cpu_switchto_asm;
+
 use crate::arch::arm64::arm64::exception::exception_vectors_addr;
-use crate::arch::arm64::arm64::fpu::{fpu_drop, fpu_save};
+use crate::arch::arm64::arm64::fpu::fpu_drop;
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
@@ -199,7 +199,6 @@ use crate::sys::reboot::{
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
-use crate::sys::user::{Uarea, User};
 use crate::unported;
 use hal::pmap::{BootstrapParams, KernelImage};
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
@@ -280,18 +279,10 @@ pub static CPU_INFO: [CiPtr<CpuInfo>; MAXCPUS as usize] = {
 /// `cpu_start_secondary` (`cpu.rs`): written once by `initarm` on the boot CPU.
 pub static BOOT_MP: StaticCell<Option<BootMp>> = StaticCell::new(None);
 
-/// `proc0paddr`: proc0's u-area (its pcb; the boot stack is Limine's).
-pub static PROC0_UAREA: Uarea = Uarea::new();
-
 /// `cpu_info_list` (`cpu.c`): the attached CPUs, linked through `ci_next`, headed by the
 /// boot CPU.
 pub fn cpu_info_list() -> &'static CpuInfo {
     &CPU_INFO_PRIMARY
-}
-
-/// `proc0paddr`: proc0's `struct user`, at the bottom of its u-area.
-pub fn proc0paddr() -> &'static User {
-    &PROC0_UAREA.u
 }
 
 /// `etext` (`conf/kernel.ld`): the address of the end of the kernel text.
@@ -420,7 +411,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     CPU_INFO_PRIMARY
         .ci_self
         .set(ptr::from_ref(&CPU_INFO_PRIMARY));
-    // SAFETY: system register writes that install this kernel's per-CPU pointer and vector
+    // tpidr_el1 names the boot CPU's cpu_info, whose head is its core (hal::cpu).
+    hal::cpu::set_current(&CPU_INFO_PRIMARY.core);
+    // SAFETY: system register writes that install this kernel's stack selection and vector
     // table on the boot CPU, before any exception can be taken. The SPSel switch keeps the
     // stack pointer's value, so the compiler's view of the stack is unchanged.
     unsafe {
@@ -432,11 +425,6 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
             "mov sp, {tmp}",
             "isb",
             tmp = out(reg) _,
-            options(nomem, nostack, preserves_flags)
-        );
-        asm!(
-            "msr tpidr_el1, {}",
-            in(reg) ptr::from_ref(&CPU_INFO_PRIMARY) as usize,
             options(nomem, nostack, preserves_flags)
         );
         asm!(
@@ -1244,7 +1232,8 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
 
 /// `cpu_startup`: machine-dependent startup code (see the module's deviations).
 pub fn cpu_startup() {
-    PROC0.set_uarea(proc0paddr());
+    // proc0.p_addr = proc0paddr, curpcb = &proc0paddr->u_pcb: hal's static u-area (E4).
+    hal::thread::boot_uarea(hal::pin::pin_static(&PROC0));
 
     // The message buffer mapping and initmsgbuf: the message buffer is static (M2).
 
@@ -1295,8 +1284,8 @@ pub fn cpu_startup() {
         ptoa(free) / 1024 / 1024
     );
 
-    let curpcb = &proc0paddr().u_pcb;
-    CPU_INFO_PRIMARY.ci_curpcb.set(curpcb);
+    // curpcb = &proc0paddr->u_pcb (hal::thread::boot_uarea, above).
+    let curpcb = PROC0.pcb();
     curpcb.pcb_flags.set(0);
     curpcb.pcb_tf.set(PROC0TF.as_ptr());
 
@@ -1405,12 +1394,12 @@ fn atoi(s: &[u8]) -> i32 {
 
 /// `need_resched`: asks `ci` to reschedule.
 pub fn need_resched(ci: &CpuInfo) {
-    ci.ci_want_resched.store(1, Ordering::Relaxed);
+    ci.core.set_want_resched(1);
 
     // There's a risk we'll be called before the idle threads start
     // SAFETY: `ci_curproc` names a thread on the CPU, hence alive (a thread is freed only
     // after it switched away for good).
-    if let Some(p) = unsafe { ci.ci_curproc.get().as_ref() } {
+    if let Some(p) = unsafe { ci.curproc_ptr().as_ref() } {
         aston(p);
         cpu_kick(ci);
     }
@@ -1424,7 +1413,7 @@ pub fn aston(p: &Proc) {
 /// `setsoftast()`: `aston(curcpu()->ci_curproc)`.
 pub fn setsoftast() {
     // SAFETY: `ci_curproc` names the thread on this CPU, hence alive.
-    if let Some(p) = unsafe { curcpu().ci_curproc.get().as_ref() } {
+    if let Some(p) = unsafe { curcpu().curproc_ptr().as_ref() } {
         aston(p);
     }
 }
@@ -1435,15 +1424,14 @@ pub fn setsoftast() {
 /// `setsoftast()` is not called here).
 pub fn signotify(p: &Proc) {
     aston(p);
-    // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
-    if let Some(ci) = unsafe { p.cpu_ptr().as_ref() } {
+    if let Some(ci) = p.cpu() {
         cpu_unidle(ci);
     }
 }
 
 /// `clear_resched(ci)`.
 pub fn clear_resched(ci: &CpuInfo) {
-    ci.ci_want_resched.store(0, Ordering::Relaxed);
+    ci.core.set_want_resched(0);
 }
 
 /// `cpu_idle_enter`: the idle thread checks the run queues with interrupts masked, so an
@@ -1471,34 +1459,6 @@ pub fn cpu_idle_cycle() {
 pub fn cpu_idle_leave() {
     // SAFETY: as for `cpu_idle_cycle`.
     unsafe { enable_irq_daif() };
-}
-
-/// `cpu_switchto(old, new)`: drops `old`'s FPU state (saving it first if it was in use) and
-/// switches (`cpuswitch.S`).
-///
-/// # Safety
-///
-/// As `machine::cpu::Cpu::cpu_switchto`: the scheduler lock is held, `new` is runnable and
-/// off every queue, `old` (when given) is the running thread.
-pub unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc) {
-    if let Some(old) = old {
-        let pcb = old.pcb();
-
-        if pcb.pcb_flags.get() & PCB_FPU != 0 {
-            fpu_save(old);
-        }
-
-        fpu_drop();
-    }
-
-    // SAFETY: forwarded from the caller; the assembly only touches the pcbs, the stacks and
-    // the per-CPU pointers.
-    unsafe {
-        cpu_switchto_asm(
-            old.map_or(ptr::null(), |p| ptr::from_ref(p).cast()),
-            ptr::from_ref(new).cast(),
-        )
-    };
 }
 
 /// `boot(9)`: halts or reboots according to `howto`.

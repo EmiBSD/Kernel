@@ -1118,9 +1118,12 @@ impl<G: ProcGlue> Klist<G> {
 
     /// `klist_invalidate(list)` with `lock` taking the list's lock and returning its witness
     /// (an `Owner` klist: `ps_klist` under `ps_mtx`).
-    pub fn invalidate_with<W: Divisible>(&self, mut lock: impl FnMut() -> W) {
-        let p = G::curproc();
+    pub fn invalidate_with<W: Divisible>(&self, lock: impl FnMut() -> W) {
+        G::with_curproc(|p| self.invalidate_as(lock, p));
+    }
 
+    /// `klist_invalidate`'s body, `p` the running thread (`curproc`).
+    fn invalidate_as<W: Divisible>(&self, mut lock: impl FnMut() -> W, p: Option<&Thread<G>>) {
         kassert!(!hal::netlock::net_lock_write_held());
 
         loop {
@@ -1697,14 +1700,17 @@ fn ps_list_write() -> Option<hal::rwlock::WriteWitness<'static>> {
 fn filt_procattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
     // The C reads curproc unconditionally: a registration always runs on a thread, so the
     // pledge check below cannot be skipped by a missing one.
-    let Some(cp) = G::curproc() else {
-        kpanic(format_args!("filt_procattach: no curproc"));
-    };
-    if cp.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0
-        && cp.p_pledge.get() & PLEDGE_PROC == 0
-    {
-        return Err(G::pledge_fail(cp, Errno::EPERM, PLEDGE_PROC));
-    }
+    G::with_curproc(|cp| {
+        let Some(cp) = cp else {
+            kpanic(format_args!("filt_procattach: no curproc"));
+        };
+        if cp.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0
+            && cp.p_pledge.get() & PLEDGE_PROC == 0
+        {
+            return Err(G::pledge_fail(cp, Errno::EPERM, PLEDGE_PROC));
+        }
+        Ok(())
+    })?;
 
     if kn.kn_id().get() > PID_MAX as usize {
         return Err(Errno::ESRCH);
@@ -1867,10 +1873,10 @@ fn filt_procprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> boo
 /// hint in order to differentiate them from process hints. This could be avoided by using
 /// a signal-specific knote list, but probably isn't worth the trouble.
 fn filt_sigattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    let Some(cp) = G::curproc() else {
-        kpanic(format_args!("filt_sigattach: no curproc"));
-    };
-    let pr = cp.process_ref().clone();
+    let pr = G::with_curproc(|cp| match cp {
+        Some(cp) => cp.process_ref().clone(),
+        None => kpanic(format_args!("filt_sigattach: no curproc")),
+    });
 
     if kn.kn_id().get() >= NSIG {
         return Err(Errno::EINVAL);
@@ -3886,7 +3892,7 @@ pub(crate) mod tests {
             t.allprocess.insert_head(&mut w, pr.as_pin());
             t.pidhash(pid).insert_head(&mut w, pr.as_pin());
         }
-        let t = thread_alloc::<Kg>(&pr, (), ());
+        let t = thread_alloc::<Kg>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         core::mem::forget(pr);
         let t: &'static PoolBox<Thread<Kg>> = Box::leak(Box::new(t));

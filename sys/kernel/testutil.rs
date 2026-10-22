@@ -28,8 +28,6 @@
 //! other as two processes do.
 //!
 //! - `IntrLevel`: a per-thread level, as hal's double.
-//! - `CpuId`: each test thread a CPU (its index from a counter, its word a per-thread
-//!   static's address).
 //! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
 //!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
@@ -81,14 +79,13 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::vec;
 use std::vec::Vec;
 
 use hal::bridges;
-use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::klock::KernelLock;
 use hal::kmbuf::{PageKind, PageMemory};
@@ -131,9 +128,7 @@ struct Page([u8; TEST_PAGE]);
 
 std::thread_local! {
     static SPL: Cell<i32> = const { Cell::new(0) };
-    static WORD: u8 = const { 0 };
     static PROC: u8 = const { 0 };
-    static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
     static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
@@ -149,9 +144,6 @@ std::thread_local! {
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
 }
-
-/// The index the next test thread gets.
-static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 /// The generation number of every wait channel a wakeup touched.
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
@@ -206,32 +198,6 @@ impl IntrLevel for TestIntr {
     fn splassert(&self, wantipl: i32, func: &str) {
         let at = SPL.with(Cell::get);
         assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
-    }
-}
-
-/// The CPU double.
-struct TestCpu;
-
-impl CpuId for TestCpu {
-    fn cpu_number(&self) -> usize {
-        CPU.with(|c| *c) % hal::cpu::MAXCPUS
-    }
-
-    fn curcpu_word(&self) -> usize {
-        // Distinct per live thread, never 0, the locks' low flag bits clear.
-        WORD.with(|w| std::ptr::from_ref(w).addr() & !0xf) | 0x10
-    }
-
-    fn spinning(&self, _delta: isize) {}
-
-    fn past_caring(&self) -> bool {
-        false
-    }
-
-    fn mutex_level(&self, _delta: i32) {}
-
-    fn ncpus(&self) -> usize {
-        hal::cpu::MAXCPUS
     }
 }
 
@@ -539,6 +505,14 @@ impl KernelLock for TestKernelLock {
     fn held(&self) -> bool {
         KLOCK_DEPTH.with(Cell::get) > 0
     }
+
+    fn release_all(&self) -> u32 {
+        KLOCK_DEPTH.with(|d| d.replace(0))
+    }
+
+    fn acquire_count(&self, count: u32) {
+        KLOCK_DEPTH.with(|d| d.set(d.get() + count));
+    }
 }
 
 /// How many times this thread holds the kernel lock double.
@@ -665,9 +639,9 @@ pub fn uptime_advance(ns: u64) {
 }
 
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
-/// double (as a kernel thread starts under the kernel lock), a deferred creation runs at once
-/// in this crate's tests (as after `kthread_run_deferred_queue`) and is held, never run, in
-/// `bsd`'s (its ticket stays filed: a queue destroyed then is in `TQ_S_CREATED` and makes no
+/// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
+/// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
+/// in `kernel::thread`'s queue in `bsd`'s (a queue destroyed then is in `TQ_S_CREATED` and makes no
 /// thread), and `kthread_exit` unwinds the host thread with [`KthreadExit`], which its
 /// spawner catches.
 struct TestKthread;
@@ -694,14 +668,6 @@ impl crate::thread::Kthread for TestKthread {
             .map_err(|_| Errno::EAGAIN)
     }
 
-    fn create_deferred(&self, ticket: usize) {
-        // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
-        // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
-        if cfg!(test) {
-            crate::thread::run_deferred(ticket);
-        }
-    }
-
     fn exit(&self, _ecode: i32) -> ! {
         std::panic::resume_unwind(Box::new(KthreadExit))
     }
@@ -710,6 +676,28 @@ impl crate::thread::Kthread for TestKthread {
 }
 
 static TEST_KTHREAD: TestKthread = TestKthread;
+
+/// A page of a test u-area, page aligned.
+#[repr(C, align(4096))]
+struct TestPage([u8; 4096]);
+
+/// The u-area double (`hal::thread::UAreaMemory`): zeroed, page-aligned heap pages of the
+/// machine's `uspace`, leaked (a test's u-area is never given back to the heap; `free` keeps
+/// nothing).
+struct TestUAreas;
+
+impl hal::thread::UAreaMemory for TestUAreas {
+    fn alloc(&self) -> Option<core::num::NonZeroUsize> {
+        let pages = TEST_VM_MACHINE.uspace.div_ceil(4096);
+        let v: Vec<TestPage> = (0..pages).map(|_| TestPage([0; 4096])).collect();
+        let b: &'static mut [TestPage] = Box::leak(v.into_boxed_slice());
+        core::num::NonZeroUsize::new(b.as_ptr().expose_provenance())
+    }
+
+    fn free(&self, _va: core::num::NonZeroUsize) {}
+}
+
+static TEST_UAREAS: TestUAreas = TestUAreas;
 
 /// What a [`MemVnode`] saw during its last read.
 #[derive(Clone, Copy, Debug)]
@@ -902,7 +890,6 @@ pub fn mem_vnode(contents: Vec<u8>) -> &'static MemVnode {
     }))
 }
 static TEST_INTR: TestIntr = TestIntr;
-static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
@@ -940,7 +927,6 @@ pub fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = bridges::register_intr_level(&TEST_INTR);
-        let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let pools = bridges::register_pool_backend(&TEST_POOLS).is_ok();
         let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();
@@ -955,6 +941,12 @@ pub fn install() {
         let _ = bridges::register_softintr(&TEST_SOFT_INTR);
         let _ = crate::clock::install_uptime(&TEST_UPTIME);
         let _ = crate::thread::install_kthread(&TEST_KTHREAD);
+        let _ = hal::thread::register_uarea_memory(&TEST_UAREAS);
+        // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
+        // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
+        if cfg!(test) {
+            crate::thread::kthread_run_deferred_queue();
+        }
         crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
     });
 }
@@ -1769,12 +1761,15 @@ macro_rules! test_proc_glue {
             type ThreadG = ();
             type PgrpG = ();
             type SessionG = ();
-            type RunqEntry = ();
             type FileGlue = $files;
             $crate::proc_glue_link_types!();
 
             fn tables() -> &'static $crate::proc::ProcTables<Self> {
                 PROC_TABLES.with(|t| *t)
+            }
+            fn sched() -> &'static $crate::sched::SchedTables<Self> {
+                static SCHED: $crate::sched::SchedTables<$name> = $crate::sched::SchedTables::new();
+                &SCHED
             }
             fn pgsignal(_pg: &$crate::proc::Pgrp<Self>, _sig: i32, _checkctty: bool) {}
             fn prsignal(_pr: &$crate::proc::Process<Self>, _sig: i32) {}
@@ -1782,8 +1777,8 @@ macro_rules! test_proc_glue {
             fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
             fn session_placed(_sess: &$crate::proc::Session<Self>) {}
             fn session_destroy(_sess: &$crate::proc::Session<Self>) {}
-            fn curproc() -> Option<&'static $crate::proc::Thread<Self>> {
-                CURPROC.with(core::cell::Cell::get)
+            fn with_curproc<R>(f: impl FnOnce(Option<&$crate::proc::Thread<Self>>) -> R) -> R {
+                f(CURPROC.with(core::cell::Cell::get))
             }
             fn pledge_fail(
                 _p: &$crate::proc::Thread<Self>,

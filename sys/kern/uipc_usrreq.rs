@@ -2012,7 +2012,7 @@ pub(crate) mod tests {
         UNP_RIGHTS.store(0, Ordering::Relaxed);
         UNP_DEFER.store(0, Ordering::Relaxed);
         UNP_GCING.store(0, Ordering::Relaxed);
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         // fdalloc reads RLIMIT_NOFILE; no other limit matters here.
         crate::kern::proc_glue::test_set_limits(p, 64);
         (g, p)
@@ -2023,7 +2023,7 @@ pub(crate) mod tests {
         let _ = task_del(SYSTQMP, &UNP_GC_TASK);
         UNP_HEAD.0.init();
         UNP_DEFERRED.0.init();
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// `sosend` of `bytes` from kernel space; the bytes taken.

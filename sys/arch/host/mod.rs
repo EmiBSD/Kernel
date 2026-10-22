@@ -74,7 +74,6 @@ use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
 use crate::sys::types::{Dev, Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
-use crate::sys::user::User;
 use kernel::vm::types::UvmConstraintRange;
 
 /// The host's `<machine/*.h>` types where generic code names them: amd64's.
@@ -254,13 +253,11 @@ pub struct HostCpuInfo {
     pub ci_schedstate: SchedstatePercpu,
     /// `ci_randseed`.
     pub ci_randseed: Cell<u32>,
-    /// `ci_want_resched`.
-    pub ci_want_resched: Cell<i32>,
-    /// `ci_curproc`.
-    pub ci_curproc: Cell<*const Proc>,
 }
 
-// SAFETY: the one host CPU; the tests that touch the queue serialise on their own lock.
+// SAFETY: the one host CPU; the tests that touch the queue serialise on their own lock. Its
+// `ci_curproc` and `ci_want_resched` are the running thread's `hal::cpu` core's (every host
+// thread a CPU of its own there), so two test threads never share them.
 unsafe impl Sync for HostCpuInfo {}
 
 /// The host's one CPU.
@@ -268,12 +265,7 @@ static HOST_CPU_INFO: HostCpuInfo = HostCpuInfo {
     ci_queue: Clockqueue::new(),
     ci_schedstate: SchedstatePercpu::new(),
     ci_randseed: Cell::new(1),
-    ci_want_resched: Cell::new(0),
-    ci_curproc: Cell::new(core::ptr::null()),
 };
-
-/// The host's `proc0paddr`.
-static HOST_PROC0PADDR: User = User::new();
 
 /// The host's kernel text for `etext`: 128 KB plus a page, zeroed (`random_start` reads the
 /// 8 KB that start 128 KB before `etext`).
@@ -397,16 +389,14 @@ impl Cpu for Machine {
         &ci.ci_randseed
     }
 
-    fn ci_curproc(ci: &HostCpuInfo) -> *const Proc {
-        ci.ci_curproc.get()
+    /// The running thread's core's (`hal::cpu`: every host thread a CPU of its own).
+    fn ci_curproc(_ci: &HostCpuInfo) -> *const Proc {
+        hal::cpu::curcpu().curproc().cast()
     }
 
-    fn set_curproc(ci: &HostCpuInfo, p: *const Proc) {
-        ci.ci_curproc.set(p);
-    }
-
-    fn proc0paddr() -> &'static User {
-        &HOST_PROC0PADDR
+    /// The running thread's core's, as [`Cpu::ci_curproc`] reads it.
+    fn set_curproc(_ci: &HostCpuInfo, p: Option<&'static Proc>) {
+        hal::thread::set_current_static(p.map(hal::pin::pin_static));
     }
 
     /// The host has no cycle counter to read; the monotonic clock's nanoseconds stand in.
@@ -435,12 +425,12 @@ impl Cpu for Machine {
         false
     }
 
-    fn need_resched(ci: &HostCpuInfo) {
-        ci.ci_want_resched.set(1);
+    fn need_resched(_ci: &HostCpuInfo) {
+        hal::cpu::curcpu().set_want_resched(1);
     }
 
-    fn clear_resched(ci: &HostCpuInfo) {
-        ci.ci_want_resched.set(0);
+    fn clear_resched(_ci: &HostCpuInfo) {
+        hal::cpu::curcpu().set_want_resched(0);
     }
 
     /// The host double has no `machdep` tree: `cpu_sysctl` names nothing.
@@ -462,11 +452,6 @@ impl Cpu for Machine {
     fn cpu_idle_cycle() {}
 
     fn cpu_idle_leave() {}
-
-    /// The host has one thread of execution and no kernel stacks to switch between.
-    unsafe fn cpu_switchto(_old: Option<&Proc>, _new: &Proc) {
-        crate::kern::subr_prf::panic(format_args!("host: cpu_switchto has no context switch"))
-    }
 
     fn cpu_exit(_p: &Proc) {}
 

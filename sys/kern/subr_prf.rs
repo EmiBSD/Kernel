@@ -317,6 +317,8 @@ pub fn panicstr_message(buf: &mut [u8]) -> bool {
 /// follows counts as the second one (`RB_NOSYNC`).
 pub fn panicstr_claim(buf: *mut u8) {
     let _ = PANICSTR.compare_exchange(ptr::null_mut(), buf, Ordering::AcqRel, Ordering::Acquire);
+    // The runtime's locks stop excluding from here on, as `panicstr` says (hal::cpu).
+    hal::cpu::set_panicking();
 }
 
 /// `panic`: handle an unresolvable fatal error. Prints "panic: \<message\>" and reboots. If
@@ -336,6 +338,8 @@ pub fn panic(args: fmt::Arguments<'_>) -> ! {
     {
         bootopt |= RB_NOSYNC;
     }
+    // The runtime's locks stop excluding from here on, as `panicstr` says (hal::cpu).
+    hal::cpu::set_panicking();
 
     // do not trigger assertions, we know that we are inconsistent
     SPLASSERT_CTL.store(0, Ordering::Relaxed);

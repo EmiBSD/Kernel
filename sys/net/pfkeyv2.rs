@@ -3888,13 +3888,13 @@ mod tests {
         pfkey_init();
 
         let p = crate::kern::proc_glue::test_proc(PID, crget());
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         (g, s)
     }
 
     /// Undoes what outlives the reset memory: `curproc`.
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// The bytes of a `T` (an ABI structure without padding).

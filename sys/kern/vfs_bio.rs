@@ -1740,7 +1740,7 @@ mod tests {
     /// `i`, and a `blkfs` vnode.
     fn setup() -> (MutexGuard<'static, ()>, &'static Vnode) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
 
         BUFHEAD.0.init();
         for c in [
@@ -1782,7 +1782,7 @@ mod tests {
     }
 
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// Whether `bp` is on `vp`'s list `which` (clean or dirty).

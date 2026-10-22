@@ -273,10 +273,12 @@ fn db_ktrap_inddb(type_: i32, regs: &mut DbRegs) {
 
     let s = splhigh();
     DB_ACTIVE.store(true, Ordering::Relaxed);
+    hal::cpu::set_db_active(true);
     cnpollc(true);
     db_trap(type_, 0 /* code */);
     cnpollc(false);
     DB_ACTIVE.store(false, Ordering::Relaxed);
+    hal::cpu::set_db_active(false);
     splx(s);
 
     // SAFETY: as above; db_trap has returned and no other CPU is in the debugger yet.

@@ -101,33 +101,25 @@ use libkern::StaticCell;
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
 use crate::dev::rnd::{arc4random, arc4random_uniform};
 use crate::kassert;
-use crate::kern::kern_clock::hardclock_period;
-use crate::kern::kern_clockintr::clockintr_advance;
 use crate::kern::kern_descrip::{fdcopy, fdshare};
 use crate::kern::kern_event::knote_processfork;
-use crate::kern::kern_lock::mtx_leave;
 use crate::kern::kern_resource::{lim_fork, rucheck};
 use crate::kern::kern_sched::{sched_choosecpu_fork, setrunqueue};
 use crate::kern::kern_sig::{psignal, sigactsinit, sigstkinit};
-use crate::kern::kern_smr::smr_idle;
-use crate::kern::kern_synch::{endtsleep, tsleep_nsec};
+use crate::kern::kern_synch::tsleep_nsec;
 use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_time::ratecheck;
 use crate::kern::kern_timeout::timeout_set;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::proc_glue::{
     chgproccnt, fork_join_pgrp, pgfind, prfind, proc_tables, process_ref, tfind, zombiefind,
 };
-use crate::kern::sched_bsd::{
-    SCHED_LOCK, sched_assert_locked, sched_assert_unlocked, sched_lock, sched_unlock,
-};
+use crate::kern::sched_bsd::{sched_lock, sched_unlock};
 use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::subr_prof::profclock_period;
-use crate::kern::subr_xxx::assertwaitok;
 use crate::kern::vm_bsd::{uvm_uarea_alloc, uvmspace_fork_or_share};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
-use crate::machine::cpu::{Cpu, CpuInfo, child_return, curcpu, curproc};
-use crate::machine::intr::spl0;
+use crate::machine::cpu::{Cpu, child_return};
 use crate::machine::tcb::tcb_invalid;
 use crate::sys::acct::AFORK;
 use crate::sys::errno::Errno;
@@ -135,18 +127,16 @@ use crate::sys::param::PWAIT;
 use crate::sys::proc::{
     BsdProcessG, BsdThreadG, FORK_FORK, FORK_IDLE, FORK_NOZOMBIE, FORK_PPWAIT, FORK_PTRACE,
     FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM, FORK_VFORK, P_CPUPEG, P_SUSPSIG, P_SUSPSINGLE,
-    P_SYSTEM, P_THREAD, PID_MAX, PS_EMBRYO, PS_FLAGS_INHERITED_ON_FORK, PS_ISPWAIT, PS_ITIMER,
-    PS_NOZOMBIE, PS_PPWAIT, PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, Proc, ProcExt, Process,
-    ProcessRef, PsGuard, SIDL, THREAD_PID_OFFSET, TID_MASK,
+    P_SYSTEM, P_THREAD, PID_MAX, PS_EMBRYO, PS_FLAGS_INHERITED_ON_FORK, PS_ISPWAIT, PS_NOZOMBIE,
+    PS_PPWAIT, PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, Proc, ProcExt, Process, ProcessRef,
+    PsGuard, SIDL, THREAD_PID_OFFSET, TID_MASK,
 };
-use crate::sys::sched::{SPCF_ITIMER, SPCF_PROFCLOCK};
 use crate::sys::signal::{SIGSEGV, SIGTRAP};
 use crate::sys::syscallargs::SysTforkArgs;
-use crate::sys::systm::{INFSLP, SysArgs, kernel_assert_unlocked, kernel_lock, sysargs};
+use crate::sys::systm::{INFSLP, SysArgs, sysargs};
 use crate::sys::time::Timeval;
 use crate::sys::types::{Pid, Register, Uid};
 use crate::sys::unistd::Tfork;
-use crate::sys::user::User;
 use crate::sys::vmmeter::Forkstat;
 use crate::unported;
 use hal::klock;
@@ -244,8 +234,8 @@ pub fn sys___tfork(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<
 
 /// `thread_new`: allocates a thread of `pr`, copying `parent`'s inheritable fields, with its
 /// u-area at `uaddr`; its box, which the caller makes join the process ([`thread_join`]).
-fn thread_new(parent: &Proc, pr: &ProcessRef, uaddr: NonNull<u8>) -> PoolBox<Proc> {
-    let p = kernel::proc::thread_alloc(pr, hal::list::ListEntry::new(), BsdThreadG::new());
+fn thread_new(parent: &Proc, pr: &ProcessRef, uarea: hal::thread::UArea) -> PoolBox<Proc> {
+    let p = kernel::proc::thread_alloc(pr, BsdThreadG::new());
 
     p.set_stat(SIDL); // protect against others
     p.p_runpri.set(0);
@@ -267,14 +257,10 @@ fn thread_new(parent: &Proc, pr: &ProcessRef, uaddr: NonNull<u8>) -> PoolBox<Pro
 
     // crhold(p->p_ucred): the thread's own copy of the parent's, and its reference.
     drop(p.set_cred(parent.cred_ref()));
-    p.set_uarea(uaddr.as_ptr().cast::<User>());
+    p.install_uarea(uarea);
 
-    // Initialize the timeouts.
-    timeout_set(
-        &p.p_sleep_to,
-        endtsleep,
-        PoolBox::as_ptr(&p).cast_mut().cast(),
-    );
+    // Initialize the timeouts: `p_sleep_to` is named by the thread's tid, set once it has
+    // one (`kernel::sched::sleep_timeout_init`, in `fork1` and `thread_fork`).
 
     p
 }
@@ -494,11 +480,11 @@ pub fn fork_check_maxthread(uid: Uid) -> Result<(), Errno> {
 
 /// `fork_thread_start`: puts the new thread on a run queue.
 fn fork_thread_start(p: &Proc, parent: &Proc, flags: i32) {
-    sched_lock();
-    let ci = sched_choosecpu_fork(parent, flags);
+    let mut h = sched_lock();
+    let cpu = sched_choosecpu_fork(parent, flags);
     // TRACEPOINT(sched, fork, ...): dt(4), not configured.
-    setrunqueue(Some(ci), p, p.p_usrpri.get());
-    sched_unlock();
+    setrunqueue(&mut h, Some(cpu), p, p.p_usrpri.get());
+    sched_unlock(h);
 }
 
 /// `fork1`: creates a new process (and its first thread) that starts in `func(arg)`
@@ -602,6 +588,7 @@ pub fn fork1(
     }
 
     p.p_tid.set(alloctid());
+    kernel::sched::sleep_timeout_init(p);
     {
         let mut w = klock::witness();
         let t = proc_tables();
@@ -625,9 +612,10 @@ pub fn fork1(
     pr.ps_acflag.set(AFORK);
     pr.ps_flags.fetch_and(!PS_EMBRYO, Ordering::Relaxed);
 
-    // Idle threads are just assigned to the CPU but not added to any runqueue.
+    // Idle threads are just assigned to the CPU but not added to any runqueue (their
+    // argument is the CPU's number, `sched_kthreads_create`).
     if flags & FORK_IDLE != 0 {
-        p.set_cpu(arg.cast::<CpuInfo>());
+        kernel::sched::set_thread_cpu(p, arg.addr());
         // for consistency mark idle procs as pegged
         p.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
     } else {
@@ -711,6 +699,7 @@ pub fn thread_fork(
     );
 
     p.p_tid.set(alloctid());
+    kernel::sched::sleep_timeout_init::<BsdProcGlue>(&p);
 
     {
         let mut w = klock::witness();
@@ -813,37 +802,46 @@ pub fn freepid(pid: Pid) {
     unsafe { OLDPIDS.get_mut()[idx] = pid };
 }
 
-/// `proc_trampoline_mi`: do machine independent parts of switching to a new process. The
-/// first thing a new thread runs, from `proc_trampoline`, with the scheduler lock still
-/// held by the switch that started it.
-pub fn proc_trampoline_mi() {
-    let spc = Machine::ci_schedstate(curcpu());
-    let Some(p) = curproc() else {
-        panic(format_args!("proc_trampoline_mi: no curproc"));
+/// How many distinct thread functions `cpu_fork` can start threads with ([`STARTS`]).
+const NSTARTS: usize = 64;
+
+/// The functions threads were started with, by number: a new thread's switch frame carries
+/// the number (`hal::thread::thread_setup`'s start word, N4.5a), and its trampoline calls the
+/// function again through [`thread_start`]. Filled on first use, never emptied (the C keeps
+/// the function itself in the frame; here no code address crosses into `hal`).
+static STARTS: [hal::once::OnceStatic<fn(*mut c_void)>; NSTARTS] =
+    [const { hal::once::OnceStatic::new() }; NSTARTS];
+
+/// The number [`thread_start`] knows `f` by: its slot, filled the first time. Panics when
+/// more than [`NSTARTS`] functions are used. Two pointers to one function may compare unequal
+/// (`fn_addr_eq` across codegen units, which may each hold a copy): such a function takes two
+/// slots, both of which call it, so the table only grows; the kernel has 24 call sites of
+/// `kthread_create` and `fork1` (some in tests), each naming one function, under the 64 slots
+/// even if every site's pointer were its own.
+pub fn thread_start_word(f: fn(*mut c_void)) -> usize {
+    for (i, slot) in STARTS.iter().enumerate() {
+        if slot.get().is_none() {
+            // A racing claim of another function takes the slot first: look on.
+            let _ = slot.set(f);
+        }
+        if slot.get().is_some_and(|g| core::ptr::fn_addr_eq(*g, f)) {
+            return i;
+        }
+    }
+    panic(format_args!(
+        "cpu_fork: more than {NSTARTS} thread functions"
+    ))
+}
+
+/// The start `hal::thread` calls on a new thread (registered by `hal_bridges_register`,
+/// bridges.toml `ThreadStart`), with `hal`'s scheduler hold the switch to it kept and the
+/// two words `cpu_fork` gave: `proc_trampoline_mi` (`kernel::sched::trampoline_mi`, which
+/// releases the hold), then `func(arg)`.
+pub fn thread_start(hold: hal::thread::SchedHold, start: usize, arg: usize) {
+    kernel::sched::trampoline_mi::<BsdProcGlue>(hold);
+    let Some(f) = STARTS.get(start).and_then(|s| s.get()).copied() else {
+        panic(format_args!("proc_trampoline: no thread function {start}"));
     };
-
-    sched_assert_locked();
-    Machine::clear_resched(curcpu());
-    mtx_leave(&SCHED_LOCK);
-    spl0();
-
-    sched_assert_unlocked();
-    kernel_assert_unlocked(); // KERNEL_ASSERT_UNLOCKED()
-    assertwaitok();
-    smr_idle();
-
-    // Start any optional clock interrupts needed by the thread.
-    if p.process().ps_flags.load(Ordering::Relaxed) & PS_ITIMER != 0 {
-        spc.spc_schedflags.fetch_or(SPCF_ITIMER, Ordering::Relaxed);
-        clockintr_advance(&spc.spc_itimer, hardclock_period());
-    }
-    if p.process().ps_flags.load(Ordering::Relaxed) & PS_PROFIL != 0 {
-        spc.spc_schedflags
-            .fetch_or(SPCF_PROFCLOCK, Ordering::Relaxed);
-        clockintr_advance(&spc.spc_profclock, profclock_period());
-    }
-
-    spc.spc_runtime.set(nanouptime());
-    kernel_lock(); // KERNEL_LOCK()
+    f(ptr::with_exposed_provenance_mut(arg));
 }
 /* </CODE> */

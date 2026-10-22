@@ -56,6 +56,7 @@ pub(crate) mod assert;
 pub mod bootmem;
 pub mod bridges;
 pub mod cons;
+#[forbid(unsafe_code)]
 pub mod cpu;
 pub mod intr;
 #[forbid(unsafe_code)]
@@ -78,7 +79,6 @@ pub mod netlock;
 pub mod once;
 pub mod owned;
 pub mod percpu;
-#[forbid(unsafe_code)]
 pub mod pin;
 pub mod pinlist;
 // pmap(9) (N3.1). A machine's build has the module once its backend is in
@@ -111,7 +111,6 @@ pub mod sleep;
 pub mod softintr;
 #[cfg(test)]
 pub(crate) mod testutil;
-#[forbid(unsafe_code)]
 pub mod thread;
 #[forbid(unsafe_code)]
 pub mod tree;

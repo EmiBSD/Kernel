@@ -76,6 +76,7 @@ use crate::sys::device::Device;
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_QUAD, CTLTYPE_STRING};
+use hal::cpu::CpuCore;
 use hal::pmap::Pmap;
 
 /// `restore_daif`: writes `daif` back into `DAIF`.
@@ -181,19 +182,27 @@ impl<T> CiPtr<T> {
 
 /// `struct cpu_info`: the per-CPU state.
 ///
+/// The members the runtime and the context switch reach (`ci_curproc`, `ci_curpcb`,
+/// `ci_want_resched`, `ci_mutex_level`, the runtime's share of `spc_spinning`) are its
+/// [`CpuCore`], first (`#[repr(C)]`, asserted below), so `TPIDR_EL1` names both the
+/// `cpu_info` and its core (`hal::cpu`, N4.5a).
+///
 /// Who touches what (`MULTIPROCESSOR`): the identity fields (`ci_dev`, `ci_cpuid`,
 /// `ci_mpidr`, `ci_node`, `ci_self`, `ci_el1_stkend`, `ci_ttbr1`, the topology) are written by
 /// the boot CPU in `cpu_attach`/`cpu_start_secondary` before the CPU is started, which
 /// publishes them (`BootMp::start`'s release store); they are read-only afterwards.
 /// `ci_randseed` is written by `cpu_boot_secondary_processors` before `CPUF_GO`. The fields
 /// other CPUs read or write while the CPU runs are atomics: `ci_flags` (the `CPUF_*`
-/// handshake), `ci_want_resched` (`need_resched` from anywhere), `ci_curproc` and `ci_curpm`
-/// (`need_resched`/`cpu_unidle` and `pmap_rollover_asid`, under `pmap_asid_mtx`),
+/// handshake), the core's, `ci_curpm` (`pmap_rollover_asid`, under `pmap_asid_mtx`),
 /// `ci_next`, `ci_opp_idx`/`ci_opp_max` (`cpu_opp_setperf` and the cooling device) and
-/// `ci_ddb_paused`. Everything else (`ci_cpl`, `ci_ipending`, `ci_idepth`, `ci_curpcb`,
-/// the PSCI idle statistics, the panic buffer) belongs to the CPU itself.
+/// `ci_ddb_paused`. Everything else (`ci_cpl`, `ci_ipending`, `ci_idepth`, the PSCI idle
+/// statistics, the panic buffer) belongs to the CPU itself.
 #[repr(C)]
 pub struct CpuInfo {
+    /// The members of `hal::cpu`: `ci_curproc`, `ci_curpcb`, `ci_want_resched`,
+    /// `ci_mutex_level`, the CPU's number. First: the assembly reaches them by the core's
+    /// offsets.
+    pub core: CpuCore,
     /// Device corresponding to this CPU.
     pub ci_dev: Cell<*const Device>,
     /// The next CPU (`cpu_info_list`).
@@ -220,10 +229,6 @@ pub struct CpuInfo {
     pub ci_core_id: Cell<u32>,
     /// `ci_pkg_id`.
     pub ci_pkg_id: Cell<u32>,
-    /// The thread on this CPU.
-    pub ci_curproc: CiPtr<Proc>,
-    /// The thread's pcb.
-    pub ci_curpcb: Cell<*const Pcb>,
     /// The active pmap.
     pub ci_curpm: CiPtr<Pmap>,
     /// `ci_randseed`.
@@ -238,10 +243,6 @@ pub struct CpuInfo {
     pub ci_ipending: Cell<u32>,
     /// `ci_idepth`: the interrupt nesting depth.
     pub ci_idepth: Cell<u32>,
-    /// `DIAGNOSTIC`: the mutex nesting level.
-    pub ci_mutex_level: Cell<i32>,
-    /// The scheduler asks for a reschedule (`need_resched`, from any CPU).
-    pub ci_want_resched: AtomicI32,
     /// `ci_flush_bp`: the branch predictor flush, if the CPU needs one.
     pub ci_flush_bp: Cell<Option<fn()>>,
     /// `ci_serror`: the system error handler, if the CPU has one.
@@ -293,6 +294,7 @@ impl CpuInfo {
     /// A CPU before `cpu_attach`: everything zero, `ci_self` unset.
     pub const fn new() -> Self {
         Self {
+            core: CpuCore::new(),
             ci_dev: Cell::new(ptr::null()),
             ci_next: CiPtr::null(),
             ci_schedstate: SchedstatePercpu::new(),
@@ -306,8 +308,6 @@ impl CpuInfo {
             ci_smt_id: Cell::new(0),
             ci_core_id: Cell::new(0),
             ci_pkg_id: Cell::new(0),
-            ci_curproc: CiPtr::null(),
-            ci_curpcb: Cell::new(ptr::null()),
             ci_curpm: CiPtr::null(),
             ci_randseed: Cell::new(0),
             ci_ctrl: Cell::new(0),
@@ -315,8 +315,6 @@ impl CpuInfo {
             ci_cpl: Cell::new(0),
             ci_ipending: Cell::new(0),
             ci_idepth: Cell::new(0),
-            ci_mutex_level: Cell::new(0),
-            ci_want_resched: AtomicI32::new(0),
             ci_flush_bp: Cell::new(None),
             ci_serror: Cell::new(None),
             ci_ttbr1: Cell::new(0),
@@ -339,11 +337,29 @@ impl CpuInfo {
     }
 }
 
+impl CpuInfo {
+    /// `ci->ci_curproc`: the thread on this CPU, null before `proc0` runs.
+    #[inline]
+    pub fn curproc_ptr(&self) -> *const Proc {
+        self.core.curproc().cast()
+    }
+
+    /// `ci->ci_curpcb`: the running thread's pcb, null before `proc0` runs.
+    #[inline]
+    pub fn curpcb_ptr(&self) -> *const Pcb {
+        self.core.curpcb().cast()
+    }
+}
+
 impl Default for CpuInfo {
     fn default() -> Self {
         Self::new()
     }
 }
+
+// The core is the `cpu_info`'s head: `TPIDR_EL1` names both, and the assembly's `CI_CURPROC`
+// and `CI_CURPCB` are the core's offsets.
+const _: () = assert!(core::mem::offset_of!(CpuInfo, core) == 0);
 
 /// `CI_DDB_RUNNING`.
 pub const CI_DDB_RUNNING: i32 = 0;

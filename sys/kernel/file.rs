@@ -765,7 +765,7 @@ mod tests {
         let pr = process_alloc::<Procs>(pid, ());
         drop(pr.set_ucred(crget()));
         pr.set_fd(fdinit());
-        let t = thread_alloc::<Procs>(&pr, (), ());
+        let t = thread_alloc::<Procs>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         (pr, t)
     }

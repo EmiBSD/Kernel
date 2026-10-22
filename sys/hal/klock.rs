@@ -75,6 +75,12 @@ pub trait KernelLock: Sync {
     fn assert_locked(&self);
     /// `_kernel_lock_held()`: whether the running CPU holds it.
     fn held(&self) -> bool;
+    /// `__mp_release_all(&kernel_lock)`: releases every hold of the running CPU (the switch
+    /// away); how many there were.
+    fn release_all(&self) -> u32;
+    /// `__mp_acquire_count(&kernel_lock, count)`: takes it back `count` times (the switch
+    /// back).
+    fn acquire_count(&self, count: u32);
 }
 
 /// The identity of the kernel lock's cells and lists: a word no lock owns, compared and never
@@ -203,6 +209,32 @@ pub fn kernel_unlock() {
     }
 }
 
+/// `__mp_release_all(&kernel_lock)`: every hold of the running CPU released, their count
+/// returned (0 before the bridge is registered: nothing to release). A witness out here is
+/// `panic(9)` (its holder would go on reading cells another CPU may change), except after a
+/// panic or in ddb, which hold the lock by fiat and may yield from inside a witness section
+/// (`kern_lock.c`'s release check, `bsd`'s `release_check_due`), where a second panic would
+/// hide the first.
+pub fn release_all() -> u32 {
+    if release_check_due(crate::cpu::past_caring()) {
+        assert_unwitnessed("__mp_release_all");
+    }
+    bridges::kernel_lock().map_or(0, |b| b.release_all())
+}
+
+/// Whether a release of the kernel lock checks that no witness of it is out: not when the
+/// kernel is past caring (after a panic, in ddb).
+fn release_check_due(past_caring: bool) -> bool {
+    !past_caring
+}
+
+/// `__mp_acquire_count(&kernel_lock, count)`: the kernel lock taken back `count` times.
+pub fn acquire_count(count: u32) {
+    if let Some(b) = bridges::kernel_lock() {
+        b.acquire_count(count);
+    }
+}
+
 /// `KERNEL_ASSERT_LOCKED()` (holds before the bridge is registered).
 pub fn kernel_assert_locked() {
     if let Some(b) = bridges::kernel_lock() {
@@ -245,6 +277,14 @@ mod tests {
         drop(w);
         assert_unwitnessed("test");
         assert_eq!(kernel_lock_id(), kernel_lock_id());
+    }
+
+    /// `__mp_release_all`'s witness check runs except past caring (a panic, ddb), as
+    /// `kern_lock.c`'s.
+    #[test]
+    fn the_release_check_is_skipped_past_caring() {
+        assert!(release_check_due(false));
+        assert!(!release_check_due(true));
     }
 }
 /* </TESTS> */

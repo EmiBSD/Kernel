@@ -10337,14 +10337,7 @@ pub fn pf_status_read(pfs: &mut PfStatus) -> Result<(), Errno> {
 /// `crate::kern::sched_bsd`'s `SPCF_SHOULDYIELD`: the scheduler asks the running thread to
 /// yield.
 fn should_yield() -> bool {
-    use crate::machine::Machine;
-    use crate::machine::cpu::Cpu;
-    let ci = crate::machine::cpu::curcpu();
-    Machine::ci_schedstate(ci)
-        .spc_schedflags
-        .load(AtomicOrdering::Relaxed)
-        & crate::sys::sched::SPCF_SHOULDYIELD
-        != 0
+    crate::kern::sched_bsd::curcpu_schedflags() & crate::sys::sched::SPCF_SHOULDYIELD != 0
 }
 
 impl PfStatelim {

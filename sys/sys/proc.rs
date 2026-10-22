@@ -141,11 +141,6 @@ pub type SessionRef = kernel::proc::SessionRef<BsdProcGlue>;
 /// The guard of a process's `ps_mtx`.
 pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
 
-hal::list_adapter!(
-    /// `TAILQ_ENTRY(proc) p_runq`: the run, sleep and dead-thread queues.
-    pub ProcRunq: Proc, p_runq
-);
-
 /// `struct pinsyscall`: the system call pin table of a text region.
 #[derive(Debug, Default)]
 pub struct Pinsyscall {
@@ -192,18 +187,13 @@ impl Pinsyscall {
 pub trait ProcExt {
     /// `p->p_vmspace`: the thread's copy of its process's address space.
     fn vmspace(&self) -> &'static Vmspace;
-    /// `p->p_cpu`.
+    /// `p->p_cpu`: the `cpu_info` of the CPU the thread runs or last ran on (its number in
+    /// the slot's word, `kernel::sched::thread_cpu`).
     fn cpu(&self) -> Option<&'static CpuInfo>;
     /// `p->p_addr->u_pcb`: the thread's process control block.
     fn pcb(&self) -> &Pcb;
-    /// `p->p_cpu` as the C's pointer (compared, never followed here).
-    fn cpu_ptr(&self) -> *const CpuInfo;
-    /// `p->p_cpu = ci`.
-    fn set_cpu(&self, ci: *const CpuInfo);
     /// `p->p_addr` as the C's pointer.
     fn uarea(&self) -> *const User;
-    /// `p->p_addr = uaddr`.
-    fn set_uarea(&self, uaddr: *const User);
     /// `p->p_wchan` as the C's pointer (compared, never followed).
     fn wchan(&self) -> *const c_void;
     /// `p->p_wchan = ident`.
@@ -233,35 +223,23 @@ impl ProcExt for Proc {
     }
 
     fn cpu(&self) -> Option<&'static CpuInfo> {
-        // SAFETY: `p_cpu` is 0 or the exposed address of a static `cpu_info` (`set_cpu`'s
-        // stores, the switch's `ci_self`), which lives for the whole run.
-        unsafe { ptr::with_exposed_provenance::<CpuInfo>(self.cpu_word()).as_ref() }
+        kernel::sched::thread_cpu(self).and_then(crate::kern::kern_sched::cpu_info_by_number)
     }
 
     fn pcb(&self) -> &Pcb {
         let u = ptr::with_exposed_provenance::<User>(self.addr_word());
         kassert!(!u.is_null());
-        // SAFETY: `p_addr` is the exposed address of the thread's u-area (`set_uarea` in
-        // `thread_new`, `proc0paddr` for `proc0`), allocated before the thread exists and
-        // freed by the reaper's `uvm_uarea_free` after the thread is dead; the borrow is
-        // the thread's.
+        // SAFETY: `p_addr` is the exposed address of the u-area the thread's slot owns
+        // (`hal::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
+        // `proc0`), zeroed memory whose bottom is a `struct user` (`u_pcb` first); it is given
+        // back only by the reaper's `uvm_uarea_free` (`take_uarea`), which `hal` refuses while
+        // the thread's context lives (E6: only once it switched away for good, dead); the
+        // borrow is the thread's, so the thread is alive and its u-area is too.
         unsafe { &(*u).u_pcb }
-    }
-
-    fn cpu_ptr(&self) -> *const CpuInfo {
-        ptr::with_exposed_provenance(self.cpu_word())
-    }
-
-    fn set_cpu(&self, ci: *const CpuInfo) {
-        self.set_cpu_word(ci.expose_provenance());
     }
 
     fn uarea(&self) -> *const User {
         ptr::with_exposed_provenance(self.addr_word())
-    }
-
-    fn set_uarea(&self, uaddr: *const User) {
-        self.set_addr_word(uaddr.expose_provenance());
     }
 
     fn wchan(&self) -> *const c_void {
@@ -310,6 +288,20 @@ impl Default for Cond {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `cond_signal_handler` (`kern_synch.c`): the timeout/task handler that signals a `cond`,
+/// whose address is its argument.
+pub fn cond_signal_handler(arg: *mut c_void) {
+    // SAFETY: `arg` is the `cond` its waiter armed the handler with (`cond_signal`, the
+    // barrier tasks and timeouts of `smr_barrier` and `ifq_barrier`), which the waiter keeps
+    // on its frame until `cond_wait` sees `c_wait` cleared here; nothing reads it after the
+    // store but `wakeup_one`, which only compares the address.
+    let c = unsafe { &*arg.cast::<Cond>() };
+
+    c.c_wait.store(0, core::sync::atomic::Ordering::Relaxed);
+
+    crate::kern::kern_synch::wakeup_one(ptr::from_ref(c));
 }
 
 /*
@@ -371,6 +363,10 @@ pub fn refreshcreds(p: &Proc) {
 
 /// A `Timeval`-typed helper the resource code shares: the zero interval.
 pub const ZERO_TIMEVAL: Timeval = Timeval::new(0, 0);
+const _: () = assert!(
+    core::mem::offset_of!(Proc, machine) == 0,
+    "the machine's slot is the thread's first member: ci_curproc names both (hal::thread)"
+);
 /* </CODE> */
 
 /* <TESTS> */

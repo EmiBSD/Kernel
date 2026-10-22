@@ -171,6 +171,7 @@ use crate::sys::types::{Pid, Register};
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
 use hal::klock;
+use hal::thread::SchedHold;
 use hal::vm::param::ptoa;
 use kernel::event::knote_process_locked;
 use kernel::vm::map::{uvm_map_remap_as_stack, uvm_unmap};
@@ -1104,7 +1105,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
         &p.p_siglist
     };
 
-    sched_lock();
+    let mut h = sched_lock();
 
     'out: {
         match p.stat() {
@@ -1122,8 +1123,8 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
                     if i32::from(p.p_usrpri.get()) > PUSER {
                         p.p_usrpri.set(PUSER as u8);
                     }
-                    unsleep(p);
-                    setrunnable(p);
+                    unsleep(&mut h, p);
+                    setrunnable(&mut h, p);
                     break 'out;
                 }
 
@@ -1146,10 +1147,10 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
                         if i32::from(p.p_usrpri.get()) > PUSER {
                             p.p_usrpri.set(PUSER as u8);
                         }
-                        unsleep(p);
+                        unsleep(&mut h, p);
                     }
 
-                    process_continue(pr, P_SUSPSIG, g);
+                    process_continue(pr, P_SUSPSIG, g, &mut h);
                     wakeparent = true;
                     break 'out;
                 }
@@ -1171,7 +1172,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
                 // it is continued, it will be made runnable and can look at the signal. But
                 // don't make the process runnable, leave it stopped.
                 if p.p_flag.load(Ordering::Relaxed) & P_SINTR != 0 {
-                    unsleep(p);
+                    unsleep(&mut h, p);
                 }
             }
 
@@ -1185,8 +1186,8 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
                 // Process is sleeping and traced... make it runnable so it can discover the
                 // signal in cursig() and stop for the parent.
                 if pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
-                    unsleep(p);
-                    setrunnable(p);
+                    unsleep(&mut h, p);
+                    setrunnable(&mut h, p);
                     break 'out;
                 }
 
@@ -1230,7 +1231,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
                     mask = 0;
                     pr.ps_xsig.set(signum);
                     pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
-                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, g);
+                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, g, &mut h);
                     wakeparent = true;
                     break 'out;
                 }
@@ -1239,8 +1240,8 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
                 if i32::from(p.p_usrpri.get()) > PUSER {
                     p.p_usrpri.set(PUSER as u8);
                 }
-                unsleep(p);
-                setrunnable(p);
+                unsleep(&mut h, p);
+                setrunnable(&mut h, p);
             }
 
             SONPROC => {
@@ -1273,7 +1274,7 @@ pub fn ptsignal_locked(p: &Proc, signum: i32, type_: SignalType, g: &PsGuard<'_>
         pr.ps_flags.fetch_and(!PS_CONTINUED, Ordering::Relaxed);
     }
 
-    sched_unlock();
+    sched_unlock(h);
     if wakeparent {
         if prop & SA_STOP != 0 {
             process_suspend_signal(pr, g);
@@ -1440,11 +1441,11 @@ pub fn cursig(p: &Proc, sctx: &mut Sigctx, deep: bool) -> i32 {
                     let g_pr = pr.ps_mtx.lock();
                     pr.ps_xsig.set(signum);
                     pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
-                    sched_lock();
-                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr);
+                    let mut h = sched_lock();
+                    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr, &mut h);
                     p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
                     proc_stop_setup(p);
-                    sched_unlock();
+                    sched_unlock(h);
                     process_suspend_signal(pr, &g_pr);
                     let g_pr = proc_stop_finish(pr, p, g_pr);
                     drop(g_pr);
@@ -1494,11 +1495,11 @@ pub fn proc_trap(p: &Proc, signum: i32) -> i32 {
 
     pr.ps_flags
         .fetch_or(PS_STOPPING | PS_TRAPPED, Ordering::Relaxed);
-    sched_lock();
-    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr);
+    let mut h = sched_lock();
+    process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g_pr, &mut h);
     p.p_flag.fetch_or(P_SUSPSIG, Ordering::Relaxed);
     proc_stop_setup(p);
-    sched_unlock();
+    sched_unlock(h);
     pr.ps_xsig.set(signum);
     pr.ps_trapped.set(p);
 
@@ -1515,9 +1516,9 @@ pub fn proc_trap(p: &Proc, signum: i32) -> i32 {
     pr.ps_trapped.set(ptr::null());
 
     if p.p_flag.load(Ordering::Relaxed) & P_TRACESINGLE == 0 {
-        sched_lock();
-        process_continue(pr, P_SUSPSIG, &g_pr);
-        sched_unlock();
+        let mut h = sched_lock();
+        process_continue(pr, P_SUSPSIG, &g_pr, &mut h);
+        sched_unlock(h);
     }
     p.p_flag.fetch_and(!P_TRACESINGLE, Ordering::Relaxed);
     drop(g_pr);
@@ -1527,7 +1528,7 @@ pub fn proc_trap(p: &Proc, signum: i32) -> i32 {
 
 /// `process_continue`: continue all threads of a process that were stopped because of
 /// `flag`, under its `ps_mtx` (`g`).
-pub fn process_continue(pr: &Process, flag: i32, g: &PsGuard<'_>) {
+pub fn process_continue(pr: &Process, flag: i32, g: &PsGuard<'_>, h: &mut SchedHold) {
     crate::kassert!(pr.ps_mtx.owned());
 
     // skip curproc if it is part of pr
@@ -1543,8 +1544,7 @@ pub fn process_continue(pr: &Process, flag: i32, g: &PsGuard<'_>) {
         q.p_flag.fetch_and(!flag, Ordering::Relaxed);
 
         // XXX in ptsignal the SCHED_LOCK is already held so we can't grab it here until
-        // that is fixed.
-        crate::kern::sched_bsd::sched_assert_locked();
+        // that is fixed: the caller's hold `h`.
         // Stopping a process is not an atomic operation so it is possible that some
         // threads are not stopped when process_continue is called. These threads need to
         // be skipped.
@@ -1552,7 +1552,7 @@ pub fn process_continue(pr: &Process, flag: i32, g: &PsGuard<'_>) {
         // Clearing either makes the thread runnable or puts it back into some sleep queue.
         if q.stat() == SSTOP && q.p_flag.load(Ordering::Relaxed) & (P_SUSPSIG | P_SUSPSINGLE) == 0 {
             if q.wchan().is_null() {
-                setrunnable(q);
+                setrunnable(h, q);
             } else {
                 q.set_stat(SSLEEP);
             }
@@ -1563,7 +1563,7 @@ pub fn process_continue(pr: &Process, flag: i32, g: &PsGuard<'_>) {
 /// `process_stop`: signal all but `p` threads of a process `pr` to stop because of `flag`,
 /// under its `ps_mtx` (`g`). Depending on `mode` stopped and sleeping threads may be woken
 /// up.
-pub fn process_stop(pr: &Process, flag: i32, mode: i32, g: &PsGuard<'_>) {
+pub fn process_stop(pr: &Process, flag: i32, mode: i32, g: &PsGuard<'_>, h: &mut SchedHold) {
     crate::kassert!(pr.ps_mtx.owned());
 
     // skip curproc if it is part of pr, caller takes care of that
@@ -1580,14 +1580,13 @@ pub fn process_stop(pr: &Process, flag: i32, mode: i32, g: &PsGuard<'_>) {
         q.p_flag.fetch_or(flag, Ordering::Relaxed);
 
         // XXX in ptsignal the SCHED_LOCK is already held so we can't grab it here until
-        // that is fixed.
-        crate::kern::sched_bsd::sched_assert_locked();
+        // that is fixed: the caller's hold `h`.
 
         match q.stat() {
             SSTOP => {
                 if mode == SINGLE_EXIT {
-                    unsleep(q);
-                    setrunnable(q);
+                    unsleep(h, q);
+                    setrunnable(h, q);
                 } else {
                     pr.ps_suspendcnt.set(pr.ps_suspendcnt.get().wrapping_sub(1));
                 }
@@ -1601,8 +1600,8 @@ pub fn process_stop(pr: &Process, flag: i32, mode: i32, g: &PsGuard<'_>) {
                         pr.ps_suspendcnt.set(pr.ps_suspendcnt.get().wrapping_sub(1));
                     } else {
                         // need to unwind or exit, so wake it
-                        unsleep(q);
-                        setrunnable(q);
+                        unsleep(h, q);
+                        setrunnable(h, q);
                     }
                 }
             }
@@ -1631,15 +1630,15 @@ pub fn proc_stop_setup(p: &Proc) {
 pub fn proc_stop_finish<'a>(pr: &'a Process, p: &Proc, g: PsGuard<'a>) -> PsGuard<'a> {
     crate::kassert!(pr.ps_mtx.owned());
     drop(g);
-    sched_lock();
+    let h = sched_lock();
 
     p.p_flag.fetch_and(!P_INSCHED, Ordering::Relaxed);
     if p.stat() == SSTOP {
         p.p_ru.ru_nvcsw.set(p.p_ru.ru_nvcsw.get() + 1);
-        mi_switch();
+        mi_switch(h);
     } else {
         kassert!(p.stat() == SONPROC);
-        sched_unlock();
+        sched_unlock(h);
     }
     pr.ps_mtx.lock()
 }
@@ -2108,11 +2107,7 @@ pub fn userret(p: &Proc) {
 
     // WITNESS_WARN(WARN_PANIC, NULL, "userret: returning"): not configured.
 
-    if let Some(ci) = p.cpu() {
-        Machine::ci_schedstate(ci)
-            .spc_curpriority
-            .store(p.p_usrpri.get(), Ordering::Relaxed);
-    }
+    kernel::sched::set_curpriority(p);
 }
 
 /// `proc_suspend_check_locked`: suspend (or, `deep`, report how to unwind) the thread `p`
@@ -2142,11 +2137,11 @@ pub fn proc_suspend_check_locked<'a>(
         if pr.ps_flags.load(Ordering::Relaxed) & (PS_SINGLEUNWIND | PS_SINGLEEXIT) != 0 {
             return (g, Err(Errno::ERESTART));
         }
-        sched_lock();
+        let h = sched_lock();
         if p.stat() != SSTOP {
             err = Err(Errno::EWOULDBLOCK);
         }
-        sched_unlock();
+        sched_unlock(h);
         return (g, err);
     }
 
@@ -2158,9 +2153,9 @@ pub fn proc_suspend_check_locked<'a>(
             // NOTREACHED
         }
 
-        sched_lock();
+        let h = sched_lock();
         proc_stop_setup(p);
-        sched_unlock();
+        sched_unlock(h);
         process_suspend_signal(pr, &g);
 
         // not exiting and don't need to unwind, so suspend
@@ -2222,9 +2217,9 @@ pub fn single_thread_set(p: &Proc, flags: i32) -> Result<(), Errno> {
     }
     pr.ps_single.set(p);
 
-    sched_lock();
-    process_stop(pr, P_SUSPSINGLE, mode, &g_pr);
-    sched_unlock();
+    let mut h = sched_lock();
+    process_stop(pr, P_SUSPSINGLE, mode, &g_pr, &mut h);
+    sched_unlock(h);
 
     // count ourself out
     pr.ps_suspendcnt.set(pr.ps_suspendcnt.get().wrapping_sub(1));
@@ -2252,9 +2247,9 @@ pub fn single_thread_clear(p: &Proc) {
     pr.ps_flags
         .fetch_and(!(PS_SINGLEUNWIND | PS_SINGLEEXIT), Ordering::Relaxed);
 
-    sched_lock();
-    process_continue(pr, P_SUSPSINGLE, &g_pr);
-    sched_unlock();
+    let mut h = sched_lock();
+    process_continue(pr, P_SUSPSINGLE, &g_pr, &mut h);
+    sched_unlock(h);
 
     drop(g_pr);
 }

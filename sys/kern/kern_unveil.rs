@@ -1001,7 +1001,7 @@ mod tests {
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            Machine::set_curproc(Machine::curcpu(), ptr::null());
+            Machine::set_curproc(Machine::curcpu(), None);
         }
     }
 
@@ -1010,7 +1010,7 @@ mod tests {
     fn setup_unveil() -> (Guard, &'static Proc, &'static crate::sys::mount::Mount) {
         let (g, p, mp) = testfs::setup_root();
         p.process().ps_threadcnt.set(1);
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         (Guard { _lock: g }, p, mp)
     }
 

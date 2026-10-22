@@ -51,6 +51,7 @@ pub mod kern_exec;
 pub mod kern_exit;
 pub mod kern_fork;
 pub mod kern_intrmap;
+#[forbid(unsafe_code)]
 pub mod kern_kthread;
 pub mod kern_lock;
 pub mod kern_malloc;
@@ -61,12 +62,14 @@ pub mod kern_pledge;
 pub mod kern_prot;
 pub mod kern_resource;
 pub mod kern_rwlock;
+#[forbid(unsafe_code)]
 pub mod kern_sched;
 pub mod kern_sensors;
 pub mod kern_sig;
 pub mod kern_smr;
 pub mod kern_softintr;
 pub mod kern_subr;
+#[forbid(unsafe_code)]
 pub mod kern_synch;
 pub mod kern_sysctl;
 // task(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/task.rs`, still
@@ -86,6 +89,7 @@ pub mod pipe_glue;
 pub mod proc_glue;
 #[cfg(feature = "alloc")]
 pub mod rust_alloc;
+#[forbid(unsafe_code)]
 pub mod sched_bsd;
 #[cfg(feature = "qemu")]
 pub mod selftest;

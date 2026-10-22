@@ -4274,13 +4274,13 @@ mod tests {
         core::mem::forget(WG_TASKQ_REFS.lock().take());
 
         let p = crate::kern::proc_glue::test_proc(1, crget());
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         (tc, m, t)
     }
 
     /// Undoes what outlives the reset memory: `curproc`.
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// `ifconfig wg<unit> create`: the new interface's softc.

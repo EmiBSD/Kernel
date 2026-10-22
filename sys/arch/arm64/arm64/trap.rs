@@ -153,7 +153,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
 
     // SAFETY: `ci_curpcb` is the running thread's pcb, alive while it runs.
     let pcb_onfault: usize =
-        unsafe { ci.ci_curpcb.get().as_ref() }.map_or(0, |pcb| pcb.pcb_onfault.get());
+        unsafe { ci.curpcb_ptr().as_ref() }.map_or(0, |pcb| pcb.pcb_onfault.get());
 
     let va = trunc_page(far as usize);
 
@@ -177,7 +177,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     };
 
     // SAFETY: `ci_curproc` names the thread on this CPU, hence alive.
-    let p = unsafe { ci.ci_curproc.get().as_ref() };
+    let p = unsafe { ci.curproc_ptr().as_ref() };
     let map = match p {
         Some(p) if !kernel_map => &p.vmspace().vm_map,
         _ => kernel::vm::km::kernel_map(),
@@ -297,7 +297,7 @@ pub extern "C" fn do_el1h_error(frame: &mut Trapframe) {
 fn udata_abort(_frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     let ci = curcpu();
     // SAFETY: `ci_curproc` names the thread that trapped from user mode, hence alive.
-    let Some(p) = (unsafe { ci.ci_curproc.get().as_ref() }) else {
+    let Some(p) = (unsafe { ci.curproc_ptr().as_ref() }) else {
         panic(format_args!("udata_abort: no curproc"));
     };
     let access_type = accesstype(esr, exe);
@@ -419,7 +419,7 @@ fn emulate_msr(frame: &mut Trapframe, esr: u64) -> bool {
 pub extern "C" fn do_el0_sync(frame: &mut Trapframe) {
     let ci = curcpu();
     // SAFETY: `ci_curproc` names the thread that trapped from user mode, hence alive.
-    let Some(p) = (unsafe { ci.ci_curproc.get().as_ref() }) else {
+    let Some(p) = (unsafe { ci.curproc_ptr().as_ref() }) else {
         panic(format_args!("do_el0_sync: no curproc"));
     };
 

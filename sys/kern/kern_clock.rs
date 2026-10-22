@@ -84,7 +84,6 @@
 //! - None beyond the module's status: the profiling half of the file is missing.
 
 use core::ffi::c_void;
-use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 // `ticks` and its reader live in the kernel crate (N4.1: timeout(9)'s wheel reads and moves
@@ -285,14 +284,14 @@ pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
         let mut cp_time = if frame.is_some_and(Machine::clkf_intr) {
             tu_tick = Some(TU_ITICKS);
             CP_INTR
-        } else if p.is_some_and(|p| !ptr::eq(p, spc.spc_idleproc.get())) {
+        } else if p.is_some_and(|p| !kernel::sched::is_idle_thread(p)) {
             tu_tick = Some(TU_STICKS);
             CP_SYS
         } else {
             CP_IDLE
         };
 
-        if spc.spc_spinning.load(Ordering::Relaxed) != 0 {
+        if spc.spc_spinning.load(Ordering::Relaxed) != 0 || hal::cpu::curcpu().spinning() != 0 {
             cp_time = CP_SPIN;
         }
         cp_time

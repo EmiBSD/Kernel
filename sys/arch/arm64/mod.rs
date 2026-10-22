@@ -63,7 +63,6 @@ use crate::sys::signal::{Sig, Sigset};
 use crate::sys::systm::SysArgs;
 use crate::sys::types::{Off, Paddr, Register, Vaddr};
 use crate::sys::uio::Uio;
-use crate::sys::user::User;
 use kernel::vm::types::UvmConstraintRange;
 
 /// The arm64 implementation of the machine interface.
@@ -122,12 +121,11 @@ impl Cpu for Machine {
     }
 
     fn curcpu_mutex_level_add(delta: i32) {
-        let ci = include::cpu::curcpu();
-        ci.ci_mutex_level.set(ci.ci_mutex_level.get() + delta);
+        include::cpu::curcpu().core.add_mutex_level(delta);
     }
 
     fn curcpu_mutex_level() -> i32 {
-        include::cpu::curcpu().ci_mutex_level.get()
+        include::cpu::curcpu().core.mutex_level()
     }
 
     fn cpu_info_foreach(f: &mut dyn FnMut(&'static include::cpu::CpuInfo)) {
@@ -160,15 +158,12 @@ impl Cpu for Machine {
     }
 
     fn ci_curproc(ci: &include::cpu::CpuInfo) -> *const Proc {
-        ci.ci_curproc.get()
+        ci.curproc_ptr()
     }
 
-    fn set_curproc(ci: &include::cpu::CpuInfo, p: *const Proc) {
-        ci.ci_curproc.set(p);
-    }
-
-    fn proc0paddr() -> &'static User {
-        arm64::machdep::proc0paddr()
+    fn set_curproc(ci: &include::cpu::CpuInfo, p: Option<&'static Proc>) {
+        crate::kassert!(core::ptr::eq(ci, include::cpu::curcpu()));
+        hal::thread::set_current_static(p.map(hal::pin::pin_static));
     }
 
     fn cpu_rnd_messybits() -> u32 {
@@ -228,12 +223,6 @@ impl Cpu for Machine {
 
     fn cpu_idle_leave() {
         arm64::machdep::cpu_idle_leave()
-    }
-
-    unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc) {
-        // SAFETY: forwarded: the caller holds the scheduler lock with `old`/`new` as the
-        // contract asks.
-        unsafe { arm64::machdep::cpu_switchto(old, new) }
     }
 
     fn cpu_exit(p: &Proc) {
@@ -406,7 +395,7 @@ impl Pmap for Machine {
     fn pmap_activate_md(p: &Proc, pm: &hal::pmap::Pmap) -> bool {
         pm.activate();
         let ci = include::cpu::curcpu();
-        core::ptr::eq(p, ci.ci_curproc.get()) && !core::ptr::eq(pm.as_ptr(), ci.ci_curpm.get())
+        core::ptr::eq(p, ci.curproc_ptr()) && !core::ptr::eq(pm.as_ptr(), ci.ci_curpm.get())
     }
 
     /// `pmap_setttb`'s record: the CPU's pmap, then the branch predictor flush.
@@ -420,14 +409,14 @@ impl Pmap for Machine {
 
     /// `pmap_deactivate`, on the running thread.
     fn pmap_deactivate_md(p: &Proc, pm: &hal::pmap::Pmap) {
-        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().ci_curproc.get()));
+        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().curproc_ptr()));
         pm.deactivate();
     }
 
     /// `pmap_purge`: the last thread of the exiting process, on its CPU.
     fn pmap_purge_md(p: &Proc, pm: &hal::pmap::Pmap) {
         crate::kassert!(p.process().ps_threadcnt.get() == 0);
-        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().ci_curproc.get()));
+        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().curproc_ptr()));
         pm.purge();
     }
 

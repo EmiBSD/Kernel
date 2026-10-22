@@ -33,6 +33,16 @@
 //! - `prim.sleep-queue-insert`: `sleep_setup(ident, PWAIT, ..)` of the current thread (which
 //!   takes and releases the scheduler lock itself) and its `unsleep` under the lock: a
 //!   thread's trip through a sleep queue without the switch.
+//! - `prim.tsleep-wakeup`: `sleep_setup` of the current thread, `wakeup` of its channel, then
+//!   `sleep_finish(INFSLP, true)`, which finds the thread awake and returns without a switch:
+//!   a sleep that lost its race with the wakeup (N4.5a).
+//! - `prim.sched-lock`: the scheduler lock taken and released (`SCHED_LOCK`/`SCHED_UNLOCK`).
+//! - `prim.mtx-enter-leave`: a `mutex(9)` at `IPL_NONE` entered and left (the control: no
+//!   scheduler change touches it).
+//! - `prim.mtx-sched`, `prim.hal-mutex-sched`: a `mutex(9)` and a `hal::mutex::Mutexed` at
+//!   `IPL_SCHED` entered and left: what the legacy and the `hal` scheduler lock are made of.
+//! - `prim.curcpu-hal`: `hal::cpu::curcpu()`, the running CPU's core (a thread-local on the
+//!   host, `TPIDR_EL1` on arm64), which every `hal` mutex reads for its owner word.
 
 #![forbid(unsafe_code)]
 
@@ -43,14 +53,19 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use bsd::kern::kern_lock::{mtx_enter, mtx_leave};
 use bsd::kern::kern_sched::{remrunqueue, setrunqueue};
-use bsd::kern::kern_synch::{sleep_setup, unsleep};
+use bsd::kern::kern_synch::{sleep_finish, sleep_setup, unsleep, wakeup};
+use bsd::kern::proc_glue::BsdProcGlue;
 use bsd::kern::proc_glue::{BsdProcessG, BsdThreadG};
-use bsd::kern::sched_bsd::{sched_lock, sched_lock_init, sched_unlock};
+use bsd::kern::sched_bsd::{sched_lock, sched_unlock};
 use bsd::machine::cpu::curcpu;
+use bsd::machine::intr::{IPL_NONE, IPL_SCHED};
 use bsd::machine::{Cpu, Machine};
+use bsd::sys::mutex::Mutex;
 use bsd::sys::param::PWAIT;
 use bsd::sys::proc::{P_INSCHED, Proc, ProcExt, Process, SONPROC};
+use bsd::sys::systm::INFSLP;
 
 /// Threads per round.
 const N: usize = 1000;
@@ -82,11 +97,7 @@ fn spread(mut v: Vec<f64>) -> (f64, f64, f64) {
 /// (leaked: the bench's threads live for the run).
 fn thread() -> &'static Proc {
     let pr: &'static Process = Box::leak(Box::new(Process::new(1, BsdProcessG::new())));
-    let p: &'static Proc = Box::leak(Box::new(Proc::new_static(
-        pr,
-        hal::list::ListEntry::new(),
-        BsdThreadG::new(),
-    )));
+    let p: &'static Proc = Box::leak(Box::new(Proc::new_static(pr, BsdThreadG::new())));
     p.place();
     p
 }
@@ -97,12 +108,20 @@ fn main() {
         .filter(|a| a != "--bench")
         .collect();
     kernel::testutil::install();
-    sched_lock_init();
+    // The running CPU's scheduler state (`sched_init_cpu`'s scheduler part, N4.5a).
+    kernel::sched::sched_init_cpu::<BsdProcGlue>(hal::cpu::cpu_number());
+    let n = hal::cpu::cpu_number();
 
     let names = [
         "prim.setrunqueue",
         "prim.remrunqueue",
         "prim.sleep-queue-insert",
+        "prim.tsleep-wakeup",
+        "prim.sched-lock",
+        "prim.mtx-enter-leave",
+        "prim.mtx-sched",
+        "prim.hal-mutex-sched",
+        "prim.curcpu-hal",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -136,18 +155,18 @@ fn main() {
             let mut on = Duration::ZERO;
             let mut off = Duration::ZERO;
             for _ in 0..ROUNDS {
-                sched_lock();
+                let mut h = sched_lock();
                 let t = Instant::now();
                 for &p in &threads {
-                    setrunqueue(Some(ci), black_box(p), prio);
+                    setrunqueue(&mut h, Some(n), black_box(p), prio);
                 }
                 on += t.elapsed();
                 let t = Instant::now();
                 for &p in &threads {
-                    remrunqueue(black_box(p));
+                    remrunqueue(&mut h, black_box(p));
                 }
                 off += t.elapsed();
-                sched_unlock();
+                sched_unlock(h);
             }
             if rep > 0 {
                 ons.push(on.as_nanos() as f64 / (N * ROUNDS) as f64);
@@ -165,22 +184,102 @@ fn main() {
     if wanted(names[2]) {
         let p = threads[0];
         p.set_stat(SONPROC);
-        Machine::set_curproc(ci, p);
+        Machine::set_curproc(ci, Some(p));
         let ident = ptr::from_ref(&threads).cast::<core::ffi::c_void>();
         let r = measure(N * ROUNDS, || {
             let t = Instant::now();
             for _ in 0..N * ROUNDS {
                 sleep_setup(black_box(ident), PWAIT, "bench");
-                sched_lock();
-                unsleep(p);
+                let mut h = sched_lock();
+                unsleep(&mut h, p);
                 p.set_stat(SONPROC);
                 p.p_flag.fetch_and(!P_INSCHED, Ordering::Relaxed);
-                sched_unlock();
+                sched_unlock(h);
             }
             t.elapsed()
         });
-        Machine::set_curproc(ci, ptr::null());
+        Machine::set_curproc(ci, None);
         report(names[2], r);
+    }
+
+    if wanted(names[3]) {
+        let p = threads[0];
+        p.set_stat(SONPROC);
+        Machine::set_curproc(ci, Some(p));
+        let ident = ptr::from_ref(&threads).cast::<core::ffi::c_void>();
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                sleep_setup(black_box(ident), PWAIT, "bench");
+                wakeup(black_box(ident));
+                let _ = black_box(sleep_finish(INFSLP, true));
+            }
+            t.elapsed()
+        });
+        Machine::set_curproc(ci, None);
+        report(names[3], r);
+    }
+
+    if wanted(names[4]) {
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                let h = sched_lock();
+                sched_unlock(black_box(h));
+            }
+            t.elapsed()
+        });
+        report(names[4], r);
+    }
+
+    if wanted(names[5]) {
+        let mtx = Mutex::new(IPL_NONE);
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                mtx_enter(black_box(&mtx));
+                mtx_leave(&mtx);
+            }
+            t.elapsed()
+        });
+        report(names[5], r);
+    }
+
+    if wanted(names[6]) {
+        let mtx = Mutex::new(IPL_SCHED);
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                mtx_enter(black_box(&mtx));
+                mtx_leave(&mtx);
+            }
+            t.elapsed()
+        });
+        report(names[6], r);
+    }
+
+    if wanted(names[7]) {
+        let mtx: &'static hal::mutex::Mutexed<()> =
+            Box::leak(Box::new(hal::mutex::Mutexed::new(IPL_SCHED, ())));
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                drop(black_box(mtx.lock()));
+            }
+            t.elapsed()
+        });
+        report(names[7], r);
+    }
+
+    if wanted(names[8]) {
+        let r = measure(N * ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..N * ROUNDS {
+                black_box(hal::cpu::curcpu().number());
+            }
+            t.elapsed()
+        });
+        report(names[8], r);
     }
 }
 /* </CODE> */

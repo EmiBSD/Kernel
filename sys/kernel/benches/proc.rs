@@ -276,18 +276,22 @@ kernel::proc_glue_links!(BenchGlue);
 kernel::test_file_glue!(BenchFiles, BenchGlue);
 
 static TABLES: ProcTables<BenchGlue> = ProcTables::new();
+static SCHED: kernel::sched::SchedTables<BenchGlue> = kernel::sched::SchedTables::new();
 
 impl ProcGlue for BenchGlue {
     type ProcessG = ();
     type ThreadG = ();
     type PgrpG = ();
     type SessionG = ();
-    type RunqEntry = ();
     type FileGlue = BenchFiles;
     kernel::proc_glue_link_types!();
 
     fn tables() -> &'static ProcTables<Self> {
         &TABLES
+    }
+
+    fn sched() -> &'static kernel::sched::SchedTables<Self> {
+        &SCHED
     }
 
     fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}
@@ -296,8 +300,8 @@ impl ProcGlue for BenchGlue {
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}
-    fn curproc() -> Option<&'static proc::Thread<Self>> {
-        None
+    fn with_curproc<R>(f: impl FnOnce(Option<&proc::Thread<Self>>) -> R) -> R {
+        f(None)
     }
     fn pledge_fail(_p: &proc::Thread<Self>, error: Errno, _code: u64) -> Errno {
         error
@@ -396,7 +400,7 @@ fn main() {
     drop(pr.set_ucred(a.clone()));
     let lim = resource::lim_startup(7030, 1 << 30, 4096);
     drop(pr.set_limit(PlimitRef::new(lim)));
-    let t = proc::thread_alloc::<BenchGlue>(&pr, (), ());
+    let t = proc::thread_alloc::<BenchGlue>(&pr, ());
     drop(t.set_cred(pr.ucred()));
     // N4.3: a table of 19 open files (descriptors 0..18).
     let _ = filedesc_init::<BenchFiles>();
@@ -420,12 +424,12 @@ fn main() {
     {
         let mut g = joined.ps_mtx.lock();
         for i in 0..8 {
-            let b = proc::thread_alloc::<BenchGlue>(&joined, (), ());
+            let b = proc::thread_alloc::<BenchGlue>(&joined, ());
             b.p_tid.set(100_000 + i);
             joined.insert_thread_locked(&mut g, b);
         }
     }
-    let leaver = std::cell::Cell::new(Some(proc::thread_alloc::<BenchGlue>(&joined, (), ())));
+    let leaver = std::cell::Cell::new(Some(proc::thread_alloc::<BenchGlue>(&joined, ())));
     // The joining thread's order number, as `exit1` reads it from the thread (`p_seq`).
     let next_seq = std::cell::Cell::new(8u64);
 

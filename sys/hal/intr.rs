@@ -86,6 +86,16 @@ pub const IPL_VM: i32 = 0xa;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub const IPL_VM: i32 = 8;
 
+/// `IPL_SCHED`: the scheduler's lock (`SCHED_LOCK`, `hal::thread`): `IPL_CLOCK` on both
+/// machines (amd64 `<machine/intrdefs.h>` 0xc, the host double's too); asserted equal to the
+/// machine's by `bsd`'s `sys/machine/intr.rs`.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+pub const IPL_SCHED: i32 = 0xc;
+/// `IPL_SCHED`: the scheduler's lock, `IPL_CLOCK` (arm64 `<machine/intr.h>` 10); asserted
+/// equal to the machine's by `bsd`'s `sys/machine/intr.rs`.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub const IPL_SCHED: i32 = 10;
+
 /// `IPL_HIGH`: everything (arm64's `pmap_asid_mtx`). The machine's number (amd64 0xd, the
 /// host double's too); asserted equal to the machine's by `bsd`'s `sys/machine/intr.rs`.
 #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
@@ -171,9 +181,27 @@ pub(crate) fn restore(old: Option<i32>) {
     }
 }
 
-/// `IPL_MPFLOOR` (`IPL_NONE` before the bridge is registered: no interrupts yet).
+/// [`mpfloor`]'s answer once the bridge gave it; -1 before.
+static MPFLOOR: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
+
+/// `IPL_MPFLOOR` (`IPL_NONE` before the bridge is registered: no interrupts yet). The
+/// machine's constant, asked of the bridge once and kept (the C's `__MUTEX_IPL` is a
+/// compile-time value): every mutex's enter reads it, one relaxed load instead of a call
+/// through the bridge.
+#[inline]
 pub fn mpfloor() -> i32 {
-    bridges::intr_level().map_or(IPL_NONE, |b| b.mpfloor())
+    let cached = MPFLOOR.load(core::sync::atomic::Ordering::Relaxed);
+    if cached >= 0 {
+        return cached;
+    }
+    match bridges::intr_level() {
+        Some(b) => {
+            let v = b.mpfloor();
+            MPFLOOR.store(v, core::sync::atomic::Ordering::Relaxed);
+            v
+        }
+        None => IPL_NONE,
+    }
 }
 /* </CODE> */
 

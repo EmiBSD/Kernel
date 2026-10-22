@@ -104,11 +104,12 @@
 //! owner word and then restores the level it replaced. It never sleeps. `ci_mutex_level` is
 //! counted under `DIAGNOSTIC`.
 //!
-//! The machine's `spl(9)` and the CPU's identity arrive through the `IntrLevel` and `CpuId`
-//! bridges (`intr.rs`, `cpu.rs`); before they are registered there are no interrupts and one
-//! CPU, and a mutex is a compare-and-swap of its owner word, which is all its exclusion ever
-//! rests on. The level a mutex raises to is fixed when it is entered, and the guard restores
-//! only a level it raised: a mutex entered before the `IntrLevel` bridge exists and left
+//! The machine's `spl(9)` arrives through the `IntrLevel` bridge (`intr.rs`), the CPU's
+//! identity from `hal::cpu` (its core, N4.5a); before the bridge is registered there are no
+//! interrupts, before the boot CPU's core is installed one CPU, and a mutex is a
+//! compare-and-swap of its owner word, which is all its exclusion ever rests on. The level
+//! a mutex raises to is fixed when it is entered, and the guard restores only a level it
+//! raised: a mutex entered before the `IntrLevel` bridge exists and left
 //! after it was registered restores nothing (the C fixes `mtx_wantipl` at init; this
 //! mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry).
 //!
@@ -140,7 +141,7 @@
 //!   `mtx_leave`. Holding the guard is the proof of the lock; it is not `Send`, as the
 //!   mutex belongs to the CPU that entered it.
 //! - The owner word is never 0 for an owner (the CPU's word with a flag bit set), so the
-//!   compare-and-swap excludes even when the `CpuId` bridge answers wrongly, and a machine
+//!   compare-and-swap excludes even when the CPU's identity is wrong, and a machine
 //!   with one CPU takes the same path: there the swap never fails but on a recursion, which
 //!   panics.
 //! - The kernel is always `MULTIPROCESSOR` (decision 40): the level is always raised to at
@@ -328,6 +329,34 @@ impl<T> Mutexed<T> {
         MutexedGuard {
             lock: self,
             restore,
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl Mutexed<()> {
+    /// The guard of the mutex that this CPU holds already, made for a frame that did not
+    /// take it: `SCHED_LOCK` handed over by the context switch (`hal::thread`), whose old
+    /// thread keeps its own guard dormant in its suspended frame while the new thread, in its
+    /// trampoline, releases the lock. Restores no level (the trampoline lowers to `IPL_NONE`
+    /// itself, `spl0()`), counts no `ci_mutex_level` (the dormant guard counted it on this
+    /// CPU, and this one's drop uncounts it here). Panics unless this CPU holds the mutex.
+    /// For `()` alone: the guard opens only [`crate::rwlock::Guarded`] cells, whose
+    /// exclusion its caller argues (one live guard per CPU that holds the lock).
+    #[cfg_attr(
+        feature = "module-rt",
+        allow(dead_code, reason = "the switch is not the ABI module's")
+    )]
+    pub(crate) fn adopt(&self) -> MutexedGuard<'_, ()> {
+        if self.owner.load(Ordering::Relaxed) != self_word() {
+            crate::assert::hal_panic(format_args!(
+                "mtx {:p}: adopted by a CPU that does not hold it",
+                core::ptr::from_ref(self)
+            ));
+        }
+        MutexedGuard {
+            lock: self,
+            restore: None,
             _not_send: PhantomData,
         }
     }
@@ -530,7 +559,7 @@ mod tests {
                         let v = *g;
                         *g = v + 1;
                     }
-                    testutil::spinning()
+                    crate::cpu::curcpu().spinning()
                 })
             })
             .collect();

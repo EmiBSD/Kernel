@@ -45,34 +45,28 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
-use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::klock::KernelLock;
 use hal::malloc::Malloc;
 use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
-use hal::sleep::Sleep;
 use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
-use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
-use crate::kern::kern_kthread::{kthread_create, kthread_create_deferred, kthread_exit};
+use crate::kern::kern_kthread::{kthread_create, kthread_exit};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sched::sched_peg_curproc;
 use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
-use crate::kern::subr_prf::{panicstr, printf};
+use crate::kern::subr_prf::printf;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
-use crate::machine::cpu::{Cpu, cpu_info_foreach, cpu_number, curcpu, curproc};
-use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splhigh, splraise, splx};
+use crate::machine::cpu::{Cpu, cpu_info_foreach};
+use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splraise, splx};
 use crate::sys::errno::Errno;
-use crate::sys::mutex::mtx_curcpu;
 use crate::sys::pool::Pool;
-use crate::sys::systm::{COLD, SAFEPRI};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// `spl(9)` of `sys/machine/intr.rs`.
@@ -97,110 +91,6 @@ impl IntrLevel for BsdIntr {
 
     fn splassert(&self, wantipl: i32, func: &str) {
         splassert(wantipl, func);
-    }
-}
-
-/// The running CPU of `sys/machine/cpu.rs`.
-struct BsdCpu;
-
-impl CpuId for BsdCpu {
-    fn cpu_number(&self) -> usize {
-        cpu_number() as usize
-    }
-
-    fn curcpu_word(&self) -> usize {
-        mtx_curcpu()
-    }
-
-    fn spinning(&self, delta: isize) {
-        let spc = Machine::ci_schedstate(curcpu());
-        if delta >= 0 {
-            spc.spc_spinning
-                .fetch_add(delta.unsigned_abs() as u32, Ordering::Relaxed);
-        } else {
-            spc.spc_spinning
-                .fetch_sub(delta.unsigned_abs() as u32, Ordering::Relaxed);
-        }
-    }
-
-    fn past_caring(&self) -> bool {
-        panicstr() || DB_ACTIVE.load(Ordering::Relaxed)
-    }
-
-    fn mutex_level(&self, delta: i32) {
-        Machine::curcpu_mutex_level_add(delta);
-    }
-
-    fn ncpus(&self) -> usize {
-        usize::try_from(NCPUSFOUND.load(Ordering::Relaxed)).unwrap_or(1)
-    }
-}
-
-/// The sleep queues of `sys/kern/kern_synch.rs`.
-struct BsdSleep;
-
-impl Sleep for BsdSleep {
-    fn curproc_word(&self) -> usize {
-        curproc().map_or(0, |p| ptr::from_ref(p).addr())
-    }
-
-    fn sleep_setup(&self, ident: *const (), prio: i32, wmesg: &'static str) {
-        sleep_setup(ident.cast::<c_void>(), prio, wmesg);
-    }
-
-    fn sleep_finish(&self, nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
-        sleep_finish(nsecs, do_sleep)
-    }
-
-    fn tsleep_nsec(
-        &self,
-        ident: *const (),
-        prio: i32,
-        wmesg: &'static str,
-        nsecs: u64,
-    ) -> Result<(), Errno> {
-        tsleep_nsec(ident, prio, wmesg, nsecs)
-    }
-
-    fn wakeup(&self, ident: *const ()) {
-        wakeup(ident);
-    }
-
-    fn wakeup_one(&self, ident: *const ()) {
-        wakeup_one(ident);
-    }
-
-    fn kernel_lock_held(&self) -> bool {
-        #[cfg(feature = "multiprocessor")]
-        {
-            crate::kern::kern_lock::_kernel_lock_held()
-        }
-        #[cfg(not(feature = "multiprocessor"))]
-        {
-            false
-        }
-    }
-
-    fn cold(&self) -> bool {
-        COLD.load(Ordering::Relaxed) || panicstr()
-    }
-
-    /// `msleep_nsec`'s and `tsleep_nsec`'s `cold || panicstr` work (`kern_synch.rs`).
-    fn cold_yield(&self) {
-        let s = splhigh();
-        splx(SAFEPRI.load(Ordering::Relaxed));
-        #[cfg(feature = "multiprocessor")]
-        if crate::kern::kern_lock::_kernel_lock_held() {
-            let kl = &crate::kern::kern_lock::KERNEL_LOCK;
-            let hold_count = crate::kern::kern_lock::__mp_release_all(kl);
-            crate::kern::kern_lock::__mp_acquire_count(kl, hold_count);
-        }
-        splx(s);
-    }
-
-    /// `sched_pause(yield)` of `sys/sys/sched.rs` (`SPCF_SHOULDYIELD` on this CPU).
-    fn sched_pause(&self) {
-        crate::sys::sched::sched_pause(crate::kern::sched_bsd::r#yield);
     }
 }
 
@@ -398,7 +288,7 @@ struct BsdTlbCpus;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 impl hal::pmap::TlbCpus for BsdTlbCpus {
     fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::pmap::Pmap)) {
-        let me = curcpu();
+        let me = crate::machine::cpu::curcpu();
         crate::machine::cpu::cpu_info_foreach(&mut |ci| {
             if !ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
                 f(
@@ -430,7 +320,7 @@ impl hal::pmap::TlbCpus for BsdTlbCpus {
     }
 
     fn cflushsz(&self) -> usize {
-        curcpu().ci_cflushsz.get() as usize
+        crate::machine::cpu::curcpu().ci_cflushsz.get() as usize
     }
 }
 
@@ -488,6 +378,14 @@ impl KernelLock for BsdKernelLock {
 
     fn held(&self) -> bool {
         crate::kern::kern_lock::_kernel_lock_held()
+    }
+
+    fn release_all(&self) -> u32 {
+        crate::kern::kern_lock::__mp_release_all(&crate::kern::kern_lock::KERNEL_LOCK)
+    }
+
+    fn acquire_count(&self, count: u32) {
+        crate::kern::kern_lock::__mp_acquire_count(&crate::kern::kern_lock::KERNEL_LOCK, count);
     }
 }
 
@@ -569,10 +467,10 @@ impl kernel::clock::Uptime for BsdUptime {
 
 static BSD_UPTIME: BsdUptime = BsdUptime;
 
-/// The kernel crate's threads (`kernel::thread::Kthread`) over `kthread_create`,
-/// `kthread_create_deferred` and `kthread_exit` of `sys/kern/kern_kthread.rs`: the argument
-/// the C passes is the kernel's ticket, an address without provenance that the thread function
-/// turns back into the number (never dereferenced) and hands to `kernel::thread`.
+/// The kernel crate's threads (`kernel::thread::Kthread`) over `kthread_create` and
+/// `kthread_exit` of `sys/kern/kern_kthread.rs`: the argument the C passes is the kernel's
+/// ticket, an address without provenance that the thread function turns back into the number
+/// (never dereferenced) and hands to `kernel::thread`.
 struct BsdKthread;
 
 /// A kernel thread's function: runs the start its ticket names.
@@ -580,18 +478,9 @@ fn kthread_start(arg: *mut c_void) {
     kernel::thread::run(arg.addr());
 }
 
-/// A deferred creation's function: calls the start its ticket names.
-fn kthread_deferred(arg: *mut c_void) {
-    kernel::thread::run_deferred(arg.addr());
-}
-
 impl kernel::thread::Kthread for BsdKthread {
     fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno> {
         kthread_create(kthread_start, ptr::without_provenance_mut(ticket), name).map(drop)
-    }
-
-    fn create_deferred(&self, ticket: usize) {
-        kthread_create_deferred(kthread_deferred, ptr::without_provenance_mut(ticket));
     }
 
     fn exit(&self, ecode: i32) -> ! {
@@ -636,8 +525,9 @@ impl NetLock for BsdNetLock {
 }
 
 static BSD_INTR: BsdIntr = BsdIntr;
-static BSD_CPU: BsdCpu = BsdCpu;
-static BSD_SLEEP: BsdSleep = BsdSleep;
+/// The kernel's scheduler as `hal::sleep`'s sleeps (`kernel::sched::KernelSleep`).
+static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcGlue> =
+    kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
@@ -658,8 +548,7 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// contract of the module docs.
 pub fn hal_bridges_register() {
     let _ = hal::bridges::register_intr_level(&BSD_INTR);
-    let _ = hal::bridges::register_cpu_id(&BSD_CPU);
-    let _ = hal::bridges::register_sleep(&BSD_SLEEP);
+    let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);
@@ -667,6 +556,7 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
     let _ = hal::bridges::register_softintr(&BSD_SOFTINTR);
+    let _ = hal::thread::register_start(crate::kern::kern_fork::thread_start);
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     let _ = kernel::clock::install_uptime(&BSD_UPTIME);
     let _ = kernel::thread::install_kthread(&BSD_KTHREAD);

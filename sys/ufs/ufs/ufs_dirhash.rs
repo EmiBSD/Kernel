@@ -1443,7 +1443,7 @@ mod tests {
     /// `curproc` (as the ffs tests set up), with the dirhash checks on and no hash memory in use.
     fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         crate::kern::proc_glue::test_set_limits(p, 128);
 
         BUFHEAD.0.init();
@@ -1478,7 +1478,7 @@ mod tests {
 
     fn teardown() {
         UFS_DIRHASHCHECK.store(0, Ordering::Relaxed);
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// Mounts the disk at `/`, as the ffs tests do.

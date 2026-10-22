@@ -49,6 +49,7 @@ pub mod pipe;
 pub mod prf;
 pub mod proc;
 pub mod resource;
+pub mod sched;
 pub mod select;
 pub mod task;
 #[cfg(any(test, feature = "doubles"))]

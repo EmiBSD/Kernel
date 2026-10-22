@@ -60,6 +60,20 @@
 //! machine's pmap views a frame through the direct map only after [`check_frame`]: the frame
 //! page-aligned, its whole page inside the direct map the boot glue described.
 //!
+//! The "past caring" flags (`hal::cpu::set_panicking`, `set_db_active`, N4.5a) are a third
+//! boundary: set, they turn off the kernel lock's witness check on release
+//! (`hal::klock::release_all`, `bsd`'s `kern_lock` checks alike) and make every CPU own every
+//! mutex for the assertions, as the C gives up its checks after a panic or in ddb. Their only
+//! callers are `bsd`'s `panic` and ddb's entry and exit; a soundness argument that reads them
+//! rests on that until `panic(9)` and ddb move into `hal` (N9).
+//!
+//! The u-area provider (`hal::thread::UAreaMemory`, N4.5a; the kernel's
+//! `kernel::vm::glue::UAREAS`, registered once by the boot path) is under the same contract
+//! for the u-areas it hands out: `USPACE` bytes of zeroed, wired kernel memory, mapped and
+//! writable, nothing else's until `free` gets the address back. `hal` writes a thread's frames
+//! and reads its pcb there (`hal::thread`'s E4); it checks the alignment of every answer, and
+//! no other address reaches a slot's `p_addr`.
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.

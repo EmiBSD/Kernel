@@ -987,7 +987,7 @@ fn db_fncall(_addr: DbExpr, _have_addr: bool, _count: DbExpr, _modif: &[u8]) -> 
 fn db_reboot(howto: i32) -> ! {
     spl0();
     if curproc().is_none() {
-        Machine::set_curproc(curcpu(), &PROC0);
+        Machine::set_curproc(curcpu(), Some(&PROC0));
     }
     reboot(howto)
 }

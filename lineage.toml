@@ -1624,7 +1624,7 @@ adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "s
 rust = "sys/arch/arm64/arm64/ast.rs"
 lz = ["sys/arch/arm64/arm64/ast.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/autoconf.rs"
@@ -1653,20 +1653,24 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/arm64/copy.rs"
 lz = ["sys/arch/arm64/arm64/copy.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/cpu.rs"]
 license = "none"
+notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/copystr.rs"
 lz = ["sys/arch/arm64/arm64/copystr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/cpu.rs"]
 license = "none"
+notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1683,7 +1687,8 @@ notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswit
 [[module]]
 rust = "sys/arch/arm64/arm64/db_interface.rs"
 lz = ["sys/arch/arm64/arm64/db_interface.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/cpu.rs"]
 notes = "M2: db_enter; M4: ddb_regs (StaticCell), db_ktrap (no db_recover, splhigh reported, db_active is a bool, the MDSCR single-step handling kept), db_enter = brk #0xf000; M11c: db_regs[] (db_reg_var! entries; x30 is tf_lr, the C's tf_x[30] is past the array), db_machine_command_table (empty: all of arm64's are MULTIPROCESSOR), db_machine_init (MULTIPROCESSOR body); db_validate_address, db_read_bytes/db_write_bytes and db_branch_taken are not ported; M11c (MULTIPROCESSOR): ddb_mp_mutex (DbMutex), ddb_state, ddb_active_cpu, db_switch_cpu (AtomicBool), db_switch_to_cpu, db_ktrap's db_enter_ddb loop (the body the C repeats is db_ktrap_inddb), db_enter_ddb, db_startcpu, db_stopcpu, the ARM_IPI_DDB sends, the MP commands (db_cpuinfo_cmd, db_startproc_cmd, db_stopproc_cmd, db_ddbproc_cmd: cpuinfo, startcpu, stopcpu, ddbcpu first in the table) and db_machine_init's body; splhigh/splx around db_trap; a fault while a command loop runs (db_recover) prints 'Faulted in DDB' and do_el1h_sync panics (no longjmp)"
 
 [[module]]
@@ -1701,7 +1706,7 @@ status = "inherited"
 rust = "sys/arch/arm64/arm64/exception.rs"
 lz = ["sys/arch/arm64/arm64/exception.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 license = "none"
 notes = "M4: save_registers/restore_registers, handle_el1h_sync/irq/fiq/error, exception_vectors, in exception.S (global_asm! with the frame offsets as placeholders: assym.h); x18 is a general register here (the C's -ffixed-x18 curcpu register), so the EL1 paths save and restore it and recover sp from the frame size; do_ast, handle_el0_* and the trampoline return are M6 (their vector slots are vempty); M6-a: do_ast, disable_ss/allow_ss, handle_el0_sync/irq/fiq/error, syscall_return, the 64-bit EL0 vector slots; the return macro is an eret (trampoline.S not ported)"
 
@@ -1709,7 +1714,7 @@ notes = "M4: save_registers/restore_registers, handle_el1h_sync/irq/fiq/error, e
 rust = "sys/arch/arm64/arm64/fpu.rs"
 lz = ["sys/arch/arm64/arm64/fpu.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/arch/arm64/fpu.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -1755,19 +1760,19 @@ adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.r
 rust = "sys/arch/arm64/arm64/syscall.rs"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/trap.rs"
 lz = ["sys/arch/arm64/arm64/trap.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -1877,7 +1882,7 @@ notes = "M2: struct bus_space with single-register accessors, map/unmap/subregio
 rust = "sys/arch/arm64/include/cpu.rs"
 lz = ["sys/arch/arm64/include/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/cpu.rs"]
 notes = "M0: DAIF helpers (restore_daif, enable/disable_irq_daif[_ret], intr_enable/disable/restore); M4: struct cpu_info (the fields the exception and interrupt paths use, in C order), curcpu (tpidr_el1), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING, CPUF_*, CI_DDB_*; the topology fields, the scheduler state, CTL_MACHDEP and the cache helpers come with M4-b/M5; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = trapframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; M11a: struct cpu_info complete (topology, PSCI idle state, opp table/idx/max, cpu supply, capacity, prev_sleep/last_itime; srp hazards, xcall and ci_uvm still out); fields other CPUs touch are atomics (ci_flags, ci_want_resched, ci_opp_idx/max, ci_ddb_paused) or CiPtr (ci_next, ci_curproc, ci_curpm); ci_dev is a *const Device; CPU_IS_RUNNING true without MULTIPROCESSOR, CPU_INFO_UNIT from ci_dev with it; CPU_BUSY_CYCLE; M16d: cpu_rnd_messybits (CNTVCT_EL0 XOR its bit reversal, low 32 bits), machine::Cpu::cpu_rnd_messybits"
 
 [[module]]
@@ -1918,8 +1923,16 @@ notes = "M4: struct fdt_attach_args (slices for fa_reg/fa_intr; M7b: fa_dmat) an
 [[module]]
 rust = "sys/arch/arm64/include/frame.rs"
 lz = ["sys/arch/arm64/include/frame.rs"]
-status = "inherited"
-notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod)"
+status = "adapted"
+adapted_by = ["sys/hal/arch/arm64/include/frame.rs"]
+notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod); N4.5a: callframe, trapframe, switchframe and the sizes are hal's (re-exported), sigframe stays until N4.5b"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/frame.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/frame.rs"]
+status = "redesigned"
+notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b)"
 
 [[module]]
 rust = "sys/arch/arm64/include/hypervisor.rs"
@@ -1981,7 +1994,8 @@ native = ["KERNBASE"]
 kind = "moved"
 
 [[module]]
-rust = "sys/arch/arm64/include/pcb.rs"
+rust = "sys/hal/arch/arm64/include/pcb.rs"
+crate = "hal"
 lz = ["sys/arch/arm64/include/pcb.rs"]
 status = "inherited"
 
@@ -2852,7 +2866,7 @@ adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs", "sys/lib/libz/d
 rust = "sys/ddb/db_command.rs"
 lz = ["sys/ddb/db_command.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/meter.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/vm/meter.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs"]
 license = "Mach notice"
 
 [[module]]
@@ -4766,7 +4780,7 @@ license = "ISC. M12: XHCI_CMD_TIMEOUT/MAX_CMDS/MAX_EVTS/MAX_XFER"
 rust = "sys/dev/vnd.rs"
 lz = ["sys/dev/vnd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/dev/vndioctl.rs"
@@ -5001,7 +5015,7 @@ status = "inherited"
 rust = "sys/isofs/cd9660/cd9660_vfsops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
@@ -5051,7 +5065,7 @@ adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/cred.rs"]
 rust = "sys/isofs/udf/udf_vnops.rs"
 lz = ["sys/isofs/udf/udf_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/kern/clock_subr.rs"
@@ -5088,7 +5102,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5113,7 +5127,7 @@ status = "inherited"
 rust = "sys/kern/kern_clock.rs"
 lz = ["sys/kern/kern_clock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/sched.rs"]
 notes = "M5-a: stathz/profhz/profprocs/ticks/jiffies and the period globals, initclocks, hardclock, tvtohz, tstohz, statclock (the per-thread accounting and schedclock wait for struct proc, M5-b: reported); startprofclock/stopprofclock take a struct process (M5-b); sysctl_clockrate came with kern_sysctl.c; M7b: statclock's user/system/interrupt accounting, p_cpticks, the tusage ticks and sizes and schedclock every fourth tick (its unported! prints from the clock interrupt interleaved with user output and made smoke flaky); M11a: statclock's spc_cp_time update is a single-writer atomic store under the pc_lock"
 
 [[module]]
@@ -5145,15 +5159,15 @@ notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEA
 rust = "sys/kern/kern_exit.rs"
 lz = ["sys/kern/kern_exit.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs"]
 notes = "M6-b: sys_exit, exit1 (single_thread_set, process_suspend_signal, stopprofclock, fdfree, SAS_NOCLDWAIT, lim_free, process_untrace reported), exit2 with deadproc, proc_free (crfree reported), reaper (prsignal reported), process_clear_orphan, process_reparent, process_zap (vrele, sigactsfree/lim_free/crfree reported); process 0 adopts orphans while initprocess is null; sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait, process_untrace are M6-c/M7; M6-b2: exit1 calls uvm_purge for user processes and the reaper uvm_exit; under feature qemu init's exit (pid 1) logs 'init exited with status N' and ends the run with that status instead of the C's panic; M7a-3b: lim_free of p_limit and of ps_limit in process_zap; kern_descrip.c: exit1 calls fdfree; kern_sig.c: single_thread_set(SINGLE_EXIT), process_suspend_signal, sigio_freelist, SAS_NOCLDWAIT, the SIGKILL to a traced child (process_untrace still reported), the reaper's prsignal(SIGCHLD), sigactsfree in process_zap; M8: exit1 calls killjobc and process_zap leavepgrp (kern_proc.c); M8: exit1 frees ps_pin/ps_libcpin (pin_free), process_zap vreles ps_textvp; M8: sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait (ruadd, scheduler_wait_hook, off zombprocess, freepid, process_zap), process_untrace (exit1 calls it for a traced child); acct_process in exit1 (ACCOUNTING); ps_opptr always null (no ptrace); kern_unveil.c: exit1 calls unveil_destroy; kern_event.c: kqpoll_exit in exit1 and knote_processexit in the reaper are real; M11e: exit1 releases every hold of the kernel lock (__mp_release_all) around uvm_purge and takes it back after; the reaper starts with KERNEL_UNLOCK and takes the lock only around the zombie's notification, as the C"
 
 [[module]]
 rust = "sys/kern/kern_fork.rs"
 lz = ["sys/kern/kern_fork.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
-notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK()"
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs"]
+notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK(); N4.5a: own logic beside the call sites (kept adapted: lz check refuses redesigned for a module whose mod line is not forbid, and kern_fork keeps OLDPIDS's unsafe): the thread functions' table (STARTS, thread_start_word: the number a new thread's frame carries, no code address into hal) and thread_start, the start hal::thread calls (kernel::sched::trampoline_mi, then the function); p_sleep_to set once the tid is known (kernel::sched::sleep_timeout_init); proc_trampoline_mi moved into kernel::sched"
 
 [[module]]
 rust = "sys/kern/kern_intrmap.rs"
@@ -5163,8 +5177,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/kern_kthread.rs"
 lz = ["sys/kern/kern_kthread.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+status = "redesigned"
+notes = "N4.5a: the 0-unsafe adapter: kthread_create over fork1 and kthread_exit over exit1 (bsd's until N4.6); the deferred queue is kernel::thread's, re-exported under its names"
 
 [[module]]
 rust = "sys/kern/kern_lock.rs"
@@ -5443,7 +5457,7 @@ status = "redesigned"
 rust = "sys/kern/kern_resource.rs"
 lz = ["sys/kern/kern_resource.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -5454,8 +5468,93 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/kern_sched.rs"
 lz = ["sys/kern/kern_sched.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/task.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+status = "redesigned"
+notes = "N4.5a: the 0-unsafe adapter of kernel::sched's run-queue half, for callers that name a CPU by its cpu_info: sched_init_cpu (kernel::sched's state, then the four clockintr binds, the SMR queue and the idle thread's deferred creation), sched_kthreads_create (fork1 FORK_IDLE with the CPU's number), sched_idle, sched_exit, sched_toidle, setrunqueue/remrunqueue with the caller's hold, sched_choosecpu_fork (a number), pegging, the barrier, the secondary CPUs, hw.ncpuonline, hw.smt, hw.blockcpu; CPU_INFOS (OnceStatic, by number) replaces cpuset_infos and its unsafe impl Sync"
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::SCHED_IDLE_CPUS"
+native = ["sys/kernel/sched.rs::SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::SCHED_QUEUED_CPUS"
+native = ["sys/kernel/sched.rs::SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::SCHED_ALL_CPUS"
+native = ["sys/kernel/sched.rs::SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::idleproc"
+native = ["sys/kernel/sched.rs::idle_next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::SchedBarrierState"
+native = ["sys/kernel/sched.rs::BARRIER_DONE"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::CpusetInfos"
+native = ["CPU_INFOS"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::CPUSET_INFOS"
+native = ["CPU_INFOS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_init_cpu"
+native = ["sched_init_cpu"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_add"
+native = ["sys/kernel/sched.rs::Cpuset::add"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_del"
+native = ["sys/kernel/sched.rs::Cpuset::del"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_isset"
+native = ["sys/kernel/sched.rs::Cpuset::isset"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_copy"
+native = ["sys/kernel/sched.rs::Cpuset::copy"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_words"
+native = ["sys/kernel/sched.rs::Cpuset"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_first"
+native = ["sys/kernel/sched.rs::Cpuset::first"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_intersection"
+native = ["sys/kernel/sched.rs::Cpuset::intersection"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_complement"
+native = ["sys/kernel/sched.rs::Cpuset::complement"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sched.rs::cpuset_cardinality"
+native = ["sys/kernel/sched.rs::Cpuset::cardinality"]
+kind = "renamed"
+
 
 [[module]]
 rust = "sys/kern/kern_sensors.rs"
@@ -5467,12 +5566,13 @@ adapted_by = ["sys/kernel/task.rs"]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs"]
 
 [[module]]
 rust = "sys/kern/kern_smr.rs"
 lz = ["sys/kern/kern_smr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sched.rs"]
 
 [[module]]
 rust = "sys/kern/kern_softintr.rs"
@@ -5489,9 +5589,34 @@ notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (ho
 [[module]]
 rust = "sys/kern/kern_synch.rs"
 lz = ["sys/kern/kern_synch.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-notes = "wakeup(9) and wakeup_one(9) report themselves unported: nothing sleeps before the scheduler (M5); tsleep/msleep/wakeup_n/yield/mi_switch arrive then; M5-b1: refcnt_init[_trace], refcnt_take, refcnt_rele[_wake], refcnt_read, refcnt_shared, cond_init, cond_signal_handler; M5-b2: the sleep queues (sleep_queue_init, slpque), tsleep[_nsec], msleep[_nsec], sleep_setup, sleep_finish (sleep_signal_check reports the signals, M6), wakeup_proc, endtsleep, unsleep, wakeup_n/wakeup/wakeup_one, refcnt_finalize, cond_wait; M7a: rwsleep_nsec and rwsleep; sys_sched_yield and __thrsleep/__thrwakeup M6; kern_sig.c: sleep_signal_check (proc_suspend_check deep, the stop dance before sleeping, cursig deep: EINTR/ERESTART); M8: sys_sched_yield; M11a: the MULTIPROCESSOR KASSERT and kernel lock release/reacquire of the cold||panicstr paths of tsleep_nsec and msleep_nsec (one helper, kernel_lock_bounce)"
+status = "redesigned"
+notes = "N4.5a: the 0-unsafe adapter of kernel::sched's sleep half: tsleep/msleep/rwsleep with their interlocks and LZ's signatures (a channel as any pointer), sleep_setup/sleep_finish/wakeup_n/wakeup/wakeup_one/unsleep/wakeup_proc forwarding (the last two take the caller's scheduler hold), sys_sched_yield, refcnt_*, cond_init/cond_wait, sleep_signal_check (kern_sig.c's until N4.5b, the glue's hook); cond_signal_handler moved to sys/sys/proc.rs (its unsafe deref) and re-exported. Before: wakeup(9) and wakeup_one(9) report themselves unported: nothing sleeps before the scheduler (M5); tsleep/msleep/wakeup_n/yield/mi_switch arrive then; M5-b1: refcnt_init[_trace], refcnt_take, refcnt_rele[_wake], refcnt_read, refcnt_shared, cond_init, cond_signal_handler; M5-b2: the sleep queues (sleep_queue_init, slpque), tsleep[_nsec], msleep[_nsec], sleep_setup, sleep_finish (sleep_signal_check reports the signals, M6), wakeup_proc, endtsleep, unsleep, wakeup_n/wakeup/wakeup_one, refcnt_finalize, cond_wait; M7a: rwsleep_nsec and rwsleep; sys_sched_yield and __thrsleep/__thrwakeup M6; kern_sig.c: sleep_signal_check (proc_suspend_check deep, the stop dance before sleeping, cursig deep: EINTR/ERESTART); M8: sys_sched_yield; M11a: the MULTIPROCESSOR KASSERT and kernel lock release/reacquire of the cold||panicstr paths of tsleep_nsec and msleep_nsec (one helper, kernel_lock_bounce)"
+
+[[module.fn]]
+lz = "sys/kern/kern_synch.rs::Slpque"
+native = ["sys/kernel/sched.rs::SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_synch.rs::SLPQUE"
+native = ["sys/kernel/sched.rs::SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_synch.rs::sleep_queue_init"
+native = []
+kind = "dropped"
+reason = "the sleep queues are kernel::sched's PinLists in SchedTables, empty when made (SchedTables::new): nothing is left to initialise, and main no longer calls it"
+
+[[module.fn]]
+lz = "sys/kern/kern_synch.rs::sleeper"
+native = ["sys/kernel/sched.rs::with_curproc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_synch.rs::cond_signal_handler"
+native = ["sys/sys/proc.rs::cond_signal_handler"]
+kind = "moved"
 
 [[module]]
 rust = "sys/kern/kern_sysctl.rs"
@@ -5515,7 +5640,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resourc
 rust = "sys/kern/kern_unveil.rs"
 lz = ["sys/kern/kern_unveil.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/kern/kern_watchdog.rs"
@@ -5532,9 +5657,29 @@ notes = "M2: reboot() and rebooting; the curproc KASSERT returns with M5, stop_p
 [[module]]
 rust = "sys/kern/sched_bsd.rs"
 lz = ["sys/kern/sched_bsd.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-notes = "M5-a: roundrobin_period, sched_lock with SCHED_LOCK_INIT, roundrobin; the load average, schedcpu, decay_aftersleep, yield, mi_switch, setrunnable, schedclock and the rest arrive with struct proc (M5-b); M5-b2: SCHED_LOCK/UNLOCK/ASSERT_*, cexp/averunnable/update_loadavg (atomics), ccpu/schedcpu, decay_aftersleep, yield (r#yield), preempt, mi_switch (smr_idle and the kernel lock not here), setrunnable, setpriority, schedclock, scheduler_start; the CPU throttling (cpu_setperf, perflevel, setperf_auto, sysctl_hw*) is M7; M11a: mi_switch calls smr_idle and, with MULTIPROCESSOR, drops every kernel lock hold around cpu_switchto (__mp_release_all/__mp_acquire_count); M16e: cpu_setperf (a StaticCell, installed by acpicpu; its callers hw.setperf and perfpolicy are not ported)"
+status = "redesigned"
+notes = "N4.5a: the 0-unsafe adapter of kernel::sched's 4.4BSD half: SCHED_LOCK()/SCHED_UNLOCK() as hal::thread's hold (sched_lock returns it, sched_unlock consumes it), the asserts, roundrobin with the clockintr signature, yield, preempt, mi_switch(hold), setrunnable/setpriority with the hold, schedclock (the CPU's spinning), scheduler_start, averunnable as struct loadavg, the CPU's scheduler state by number (sched_cpu, curcpu_schedflags); CPU_SETPERF stays (acpicpu). Before: M5-a: roundrobin_period, sched_lock with SCHED_LOCK_INIT, roundrobin; the load average, schedcpu, decay_aftersleep, yield, mi_switch, setrunnable, schedclock and the rest arrive with struct proc (M5-b); M5-b2: SCHED_LOCK/UNLOCK/ASSERT_*, cexp/averunnable/update_loadavg (atomics), ccpu/schedcpu, decay_aftersleep, yield (r#yield), preempt, mi_switch (smr_idle and the kernel lock not here), setrunnable, setpriority, schedclock, scheduler_start; the CPU throttling (cpu_setperf, perflevel, setperf_auto, sysctl_hw*) is M7; M11a: mi_switch calls smr_idle and, with MULTIPROCESSOR, drops every kernel lock hold around cpu_switchto (__mp_release_all/__mp_acquire_count); M16e: cpu_setperf (a StaticCell, installed by acpicpu; its callers hw.setperf and perfpolicy are not ported)"
+
+[[module.fn]]
+lz = "sys/kern/sched_bsd.rs::SCHED_LOCK"
+native = ["sys/hal/thread.rs::SCHED_LOCK"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/sched_bsd.rs::Averunnable"
+native = ["sys/kernel/sched.rs::AVERUNNABLE"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/sched_bsd.rs::sched_lock_init"
+native = []
+kind = "dropped"
+reason = "hal::thread::SCHED_LOCK is a static made at IPL_SCHED: SCHED_LOCK_INIT() has nothing left to do, and main no longer calls it"
+
+[[module.fn]]
+lz = "sys/kern/sched_bsd.rs::current"
+native = ["sys/kernel/sched.rs::with_curproc"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kern/spec_vnops.rs"
@@ -5580,7 +5725,7 @@ notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the 
 rust = "sys/kern/subr_prf.rs"
 lz = ["sys/kern/subr_prf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 notes = "format engine is core::fmt (fmt::Arguments replaces fmt+va_list, so printf/vprintf and snprintf/vsnprintf pair up); %b is the Bitmask Display adaptor, %s of a byte string is Str; kprintf!/kprintln!/log!/db_printf! macros; M8 (tty.c): kputchar takes the tty (TOTTY through tputchar, constty redirection with TOCONS), uprintf, ttyprintf; M10e: tprintf_open/tprintf_close/tprintf under feature nfsclient or nfsserver (tpr_t is sys/sys/tprintf.rs's Tpr, an Option<&'static Session>; tprintf takes fmt::Arguments; host test: handles follow PS_CONTROLT and s_ttyvp, the session is held until tprintf_close, the message is logged at LOG_INFO); v_putc fixed to cnputc; panicbuf is a single buffer (per-CPU ci_panicbuf in M5) and panicstr_claim is the trap handlers' atomic_cas_ptr on panicstr; db_panic defaults to 0 (ddb-lite has no command loop); KASSERT/KDASSERT live here as kassert!/kdassert!; M11e: kprintf_mutex (IPL_HIGH) around printf, vprintf and the TOCONS half of log/addlog, MUTEX_ASSERT_LOCKED for TOCONS in kprintf, splhigh around the TOLOG half of log/addlog"
 
 [[module]]
@@ -5624,7 +5769,7 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/kern/sys_futex.rs"
 lz = ["sys/kern/sys_futex.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/amap.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/vm/amap.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/sched.rs"]
 
 [[module]]
 rust = "sys/kern/sys_generic.rs"
@@ -5751,7 +5896,7 @@ license = "none"
 rust = "sys/kern/tty.rs"
 lz = ["sys/kern/tty.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs"]
 
 [[module]]
 rust = "sys/kern/tty_conf.rs"
@@ -5817,13 +5962,13 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/uipc_usrreq.rs"
 lz = ["sys/kern/uipc_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_bio.rs"
 lz = ["sys/kern/vfs_bio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_biomem.rs"
@@ -5856,7 +6001,7 @@ status = "inherited"
 rust = "sys/kern/vfs_lockf.rs"
 lz = ["sys/kern/vfs_lockf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_lookup.rs"
@@ -6302,7 +6447,7 @@ status = "inherited"
 rust = "sys/miscfs/fuse/fuse_device.rs"
 lz = ["sys/miscfs/fuse/fuse_device.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/event.rs"]
+adapted_by = ["sys/hal/thread.rs", "sys/kernel/event.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fuse_file.rs"
@@ -6398,7 +6543,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/msdosfs/msdosfs_vfsops.rs"
 lz = ["sys/msdosfs/msdosfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_vnops.rs"
@@ -6451,7 +6596,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6513,7 +6658,7 @@ status = "inherited"
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/net/ifq.rs"
@@ -6529,7 +6674,7 @@ status = "inherited"
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6576,7 +6721,7 @@ status = "inherited"
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
@@ -6620,7 +6765,7 @@ status = "inherited"
 rust = "sys/net/rtsock.rs"
 lz = ["sys/net/rtsock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/net/toeplitz.rs"
@@ -6684,7 +6829,7 @@ status = "inherited"
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -7167,7 +7312,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/ntfs/ntfs_vnops.rs"
 lz = ["sys/ntfs/ntfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfsmount.rs"
@@ -7632,7 +7777,7 @@ adapted_by = ["sys/kernel/vm/km.rs"]
 rust = "sys/sys/proc.rs"
 lz = ["sys/sys/proc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/hal/thread.rs", "sys/kernel/event.rs"]
 notes = "M5-b1: session, pgrp, tusage, process and proc (the members the scheduler, the sleep queues and the kernel threads use; the sigio/ptrace/unveil/pinsyscall/vnode/ucred/filedesc/plimit/vmspace/sigacts members are opaque pointers or left out, each named in a comment), the S* states, P_*/PS_* flags with their %b strings, THREAD_PID_OFFSET, uidinfo, PID_MAX/TID_MASK/NO_PID, SESS_LEADER, FORK_*/EXIT_*/SINGLE_*, cond, cpuset, tu_enter/tu_leave; the function prototypes live with their .c files; M8: s_ttyvp/s_ttyp are Cell<*const Vnode>/Cell<*const Tty>, SESSHOLD/SESSRELE are sesshold/sessrele; M6-a: refreshcreds (dorefreshcreds reported); M6-b2: ps_vmspace/p_vmspace are *const Vmspace with vmspace() accessors, ps_strings, Proc::set_name; M7a: ps_lock (an Rwlock); M7a-3b: ps_limit/p_limit typed (struct plimit), ps_kbind_cookie/ps_kbind_addr, struct pinsyscall with ps_pin/ps_libcpin, ps_auxinfo/ps_timekeep/ps_sigcode/ps_sigcoderet/ps_sigcookie (zero until exec sets them); kern_prot.c (N4.2, replacing the *const Ucred of M6-a): ps_ucred is the process's counted kernel::cred::CredRef under ps_mtx (Process::ucred, set_ucred), p_ucred the thread's own copy (Thread::ucred, ucred_ptr), refreshcreds calls dorefreshcreds when the process's credential word changed; kern_descrip.c: ps_fd/p_fd are *const Filedesc (the fd() accessors live in sys/sys/filedesc.rs); kern_sig.c: ps_sigacts typed (sigacts() accessor), ps_sigiolst/pg_sigiolst, p_sigstk, p_sigval, p_sitrapno u_long; p_siglist/ps_siglist are AtomicU32 (sigset_t) where the C has int; M6-a: refreshcreds (dorefreshcreds reported); M6-b2: ps_vmspace/p_vmspace are *const Vmspace with vmspace() accessors, ps_strings, Proc::set_name; M7a: ps_lock (an Rwlock); M7a-3b: ps_limit/p_limit typed (struct plimit), ps_kbind_cookie/ps_kbind_addr, struct pinsyscall with ps_pin/ps_libcpin, ps_auxinfo/ps_timekeep/ps_sigcode/ps_sigcoderet/ps_sigcookie (zero until exec sets them); kern_descrip.c: ps_fd/p_fd are *const Filedesc (the fd() accessors live in sys/sys/filedesc.rs); kern_sig.c: ps_sigacts typed (sigacts() accessor), ps_sigiolst/pg_sigiolst, p_sigstk, p_sigval, p_sitrapno u_long; p_siglist/ps_siglist are AtomicU32 (sigset_t) where the C has int; M8: ps_textvp is Option<&'static Vnode>; PSI_WXNEEDED/NOBTCFI/PROFILE and BOGO_PC; M6-a: refreshcreds (dorefreshcreds reported); M6-b2: ps_vmspace/p_vmspace are *const Vmspace with vmspace() accessors, ps_strings, Proc::set_name; M7a: ps_lock (an Rwlock); M7a-3b: ps_limit/p_limit typed (struct plimit), ps_kbind_cookie/ps_kbind_addr, struct pinsyscall with ps_pin/ps_libcpin, ps_auxinfo/ps_timekeep/ps_sigcode/ps_sigcoderet/ps_sigcookie (zero until exec sets them); kern_descrip.c: ps_fd/p_fd are *const Filedesc (the fd() accessors live in sys/sys/filedesc.rs); kern_sig.c: ps_sigacts typed (sigacts() accessor), ps_sigiolst/pg_sigiolst, p_sigstk, p_sigval, p_sitrapno u_long; p_siglist/ps_siglist are AtomicU32 (sigset_t) where the C has int; M8: ps_textvp is Option<&'static Vnode>; PSI_WXNEEDED/NOBTCFI/PROFILE and BOGO_PC; M8: ps_opptr (null: no ptrace); M6-a: refreshcreds (dorefreshcreds reported); M6-b2: ps_vmspace/p_vmspace are *const Vmspace with vmspace() accessors, ps_strings, Proc::set_name; M7a: ps_lock (an Rwlock); M7a-3b: ps_limit/p_limit typed (struct plimit), ps_kbind_cookie/ps_kbind_addr, struct pinsyscall with ps_pin/ps_libcpin, ps_auxinfo/ps_timekeep/ps_sigcode/ps_sigcoderet/ps_sigcookie (zero until exec sets them); kern_descrip.c: ps_fd/p_fd are *const Filedesc (the fd() accessors live in sys/sys/filedesc.rs); kern_sig.c: ps_sigacts typed (sigacts() accessor), ps_sigiolst/pg_sigiolst, p_sigstk, p_sigval, p_sitrapno u_long; p_siglist/ps_siglist are AtomicU32 (sigset_t) where the C has int; M8: ps_textvp is Option<&'static Vnode>; PSI_WXNEEDED/NOBTCFI/PROFILE and BOGO_PC; M8: ps_opptr (null: no ptrace); M8: ps_timer[3] (Itimerspec Cells); kern_unveil.c: ps_uvpaths (*mut Unveil, the malloc'ed table), ps_uvvcount (isize), ps_uvncount, ps_uvdone; kern_event.c: ps_klist (struct klist, klist_init_mutex'd in process_initialize), p_kq (raw pointer, Proc::kq() in eventvar.rs) and p_kq_serial (u64); M11a: the Sync notes of Proc and Process name the C's locks ([S] sched_lock, [o], [K], [m], [a]) instead of the one-CPU argument; ; M11e: ps_pledge is an AtomicU64 (written under ps_mtx, read unlocked by pledge_syscall: the C's READ_ONCE); N3.5 S2 (adapted at the edge, by sys/kernel/vm/map.rs's VmspaceRef): ps_vmspace is the kernel's counted handle in the pointer's word (Cell<Option<VmspaceRef>>), with its own API: vmspace_opt, vmspace_share, vmspace_ptr, set_vmspace, take_vmspace (and vmspace() over them), the slot's one unsafe deref; p_vmspace stays the raw address of the kernel's Vmspace; Pinsyscall::install takes the kernel's MArray table (MArray::into_raw); PInentry (LZ's struct) is now an alias of kernel::vm::map::InentryCache, whose fields are start, end, serial (the C's ie_start, ie_end, ie_serial)"
 
 [[module]]
@@ -7679,7 +7824,7 @@ status = "inherited"
 rust = "sys/sys/sched.rs"
 lz = ["sys/sys/sched.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/list.rs"]
+adapted_by = ["sys/hal/list.rs", "sys/kernel/sched.rs"]
 
 [[module]]
 rust = "sys/sys/scsiio.rs"
@@ -7962,7 +8107,7 @@ adapted_by = ["sys/kernel/vm/aobj.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/pa
 rust = "sys/tmpfs/tmpfs_vfsops.rs"
 lz = ["sys/tmpfs/tmpfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/hal/vm/uvmexp.rs"]
+adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/hal/vm/uvmexp.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/tmpfs/tmpfs_vnops.rs"
@@ -8041,7 +8186,7 @@ status = "inherited"
 rust = "sys/ufs/ext2fs/ext2fs_vfsops.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_vnops.rs"
@@ -8086,7 +8231,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
@@ -8113,7 +8258,8 @@ adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 [[module]]
 rust = "sys/ufs/mfs/mfs_vnops.rs"
 lz = ["sys/ufs/mfs/mfs_vnops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfsnode.rs"
@@ -8154,7 +8300,7 @@ status = "inherited"
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -8545,15 +8691,61 @@ rust = "sys/hal/seqlock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'static str one writer replaces and any CPU reads without a lock behind a generation counter (p_wmesg: written under sched_lock, read unlocked by kinfo_proc, ddb, the tty status line); 1 unsafe (the str rebuilt from the two words of one set)"
 
-[[extra]]
+[[module]]
 rust = "sys/hal/thread.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.2, decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread so the thread's address is the slot's; N4.5 fills the module (cpu_switchto, proc_trampoline, cpu_fork)"
+lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
+status = "redesigned"
+license = "none"
+notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S)"
 
-[[extra]]
+[[module]]
+rust = "sys/hal/arch/arm64/switch.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/vm_machdep.rs", "sys/arch/arm64/arm64/machdep.rs"]
+status = "redesigned"
+notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt does not compile it. cpuswitch.rs (LZ) has no licence text, so license is not none"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/cpuswitch.rs::proc_trampoline_run"
+native = ["trampoline_run"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/machdep.rs::cpu_switchto"
+native = ["sys/hal/thread.rs::switch_to"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/machdep.rs::proc0paddr"
+native = ["sys/hal/thread.rs::boot_uarea", "boot_uarea_word"]
+kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/arm64/fpu.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/fpu.rs"]
+status = "redesigned"
+notes = "N4.5a: fpu.c's register moves and CPACR_EL1 writes, on the running thread's pcb alone (save_current, load_current, drop_state, kernel_enter, kernel_exit, sve_load_current; save for the switch's old thread); the SVE paths reported once (unported: sve_save/sve_load) through hal::prf. bsd's fpu.rs keeps LZ's names as an adapter"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/fpu.rs::sve_save"
+native = ["save"]
+kind = "merged"
+
+[[module]]
 rust = "sys/hal/cpu.rs"
 crate = "hal"
-reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; docs/ZERO_UNSAFE.md 0.1"
+lz = ["sys/arch/arm64/include/cpu.rs"]
+status = "redesigned"
+notes = "N4.5a: CpuCore, the members of struct cpu_info the runtime, the switch and the assembly reach (ci_curproc, ci_curpcb, ci_want_resched, ci_mutex_level, the runtime's spc_spinning, the CPU's number), first in each machine's cpu_info; curcpu() from the machine's per-CPU register (arch/<machine>/cpu.rs); the registry of attached cores (attach, cores, by_number, ncpus); panicstr || db_active as hal flags; the CpuId bridge removed. cpl/ipending/idepth stay bsd's until N4.5c"
+
+[[module]]
+rust = "sys/hal/arch/arm64/cpu.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/cpu.rs"]
+status = "redesigned"
+notes = "N4.5a: curcpu()'s TPIDR_EL1 read as hal::cpu's arm64 backend (the core at the head of the cpu_info the register names), installed by set_current on the boot CPU (initarm), written by the entry code on a secondary CPU (the module's premise)"
 
 [[extra]]
 rust = "sys/hal/testutil.rs"
@@ -9102,10 +9294,65 @@ native = []
 kind = "dropped"
 reason = "a fixed extent's storage is ExtentFixed<N>, sized by its N descriptors (EXTENT_FIXED_STORAGE_SIZE's role); no byte count is computed"
 
-[[extra]]
+[[module]]
 rust = "sys/kernel/thread.rs"
 crate = "kernel"
-reason = "kernel glue, written new (N4.1): kthread_create(9)/kthread_create_deferred/kthread_exit and the primary-CPU peg for the kernel's threads over the Kthread bridge (bridges.toml, bsd's kern_kthread/kern_sched until N4.5), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code)"
+lz = ["sys/kern/kern_kthread.rs"]
+status = "redesigned"
+notes = "N4.1 (an extra then): kthread_create(9) and kthread_exit for the kernel's threads over the Kthread bridge (fork1 and exit1 are bsd's until N4.6), the start ticket (a Start filed in a table, its number the only thing that crosses, taken back in safe code), the primary-CPU peg; N4.5a: the deferred creations, kernel's and bsd's, in one ordered VecDeque inside a Mutexed (kthread_create_deferred with bsd's function and its argument's exposed address, kthread_run_deferred_queue, KTHREAD_CREATE_NOW), where LZ had a malloc'd SIMPLEQ behind an unsafe impl Sync"
+
+[[module.fn]]
+lz = "sys/kern/kern_kthread.rs::KthreadQ"
+native = ["Deferred"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_kthread.rs::KthreadQHead"
+native = ["DEFERRED"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_kthread.rs::KTHREAD_Q"
+native = ["DEFERRED"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/sched.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_synch.rs", "sys/kern/kern_sched.rs", "sys/kern/sched_bsd.rs", "sys/sys/sched.rs", "sys/kern/kern_exit.rs", "sys/kern/kern_fork.rs"]
+status = "redesigned"
+notes = "N4.5a: the scheduler over hal::thread: the sleep queues and tsleep/wakeup (sleep_setup, sleep_finish with p_sleep_to a kernel Timeout named by tid, endtsleep, unsleep, wakeup_n, wakeup_proc), the run queues and CPU choice (setrunqueue, remrunqueue, sched_chooseproc returning a Next, sched_choosecpu(_fork), sched_steal_proc, the cost), mi_switch (hold by value, dropped after the switch), trampoline_mi, the idle loop and the dead threads (sched_idle, sched_exit, sched_toidle, exit2, reaper_next under deadproc_mutex), the 4.4BSD priorities and load average (setpriority, decay_aftersleep, schedcpu, update_loadavg, roundrobin, schedclock, yield, preempt, sched_yield), pegging and barriers, the CPU sets by number, and KernelSleep (hal::sleep::Sleep over it). Queues are PinLists bound to SCHED_LOCK, moved in two phases; per-CPU SchedCpu allocated at sched_init_cpu; what is still bsd's through ProcGlue's scheduler hooks. Tests over hal's host switch double. bsd runs on it since the switch-over (N4.5a a5, e38bed36); exit2 and the deadproc queue and lock (kern_exit.c) and proc_trampoline_mi (kern_fork.c) are its too"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::exit2"
+native = ["exit2"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DEADPROC"
+native = ["SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DeadprocHead"
+native = ["SchedTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DEADPROC_MUTEX"
+native = ["DEAD_LOCK"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::DEADPROC_MUTEX_FLAGS"
+native = []
+kind = "dropped"
+reason = "MTX_NOWITNESS, kept by LZ for the record: WITNESS is not configured, and DEAD_LOCK is a hal Mutexed, which has no witness flags"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::proc_trampoline_mi"
+native = ["trampoline_mi"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/uio.rs"

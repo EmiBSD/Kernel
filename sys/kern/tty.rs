@@ -2425,8 +2425,7 @@ pub fn ttyinfo(tp: &Tty) {
     }
 
     // Print load average.
-    let tmp =
-        (AVERUNNABLE.ldavg[0].load(Ordering::Relaxed) as i64 * 100 + FSCALE as i64 / 2) >> FSHIFT;
+    let tmp = (AVERUNNABLE[0].load(Ordering::Relaxed) as i64 * 100 + FSCALE as i64 / 2) >> FSHIFT;
     ttyprintf(tp, format_args!("load: {}.{:02} ", tmp / 100, tmp % 100));
 
     let r = klock::reader();

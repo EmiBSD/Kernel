@@ -2473,7 +2473,7 @@ pub(crate) mod tests {
     /// `curproc`.
     pub(crate) fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         // No resource limits (write(2) checks RLIMIT_FSIZE).
         crate::kern::proc_glue::test_set_limits(p, 128);
 
@@ -2505,7 +2505,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// The fake disk's block device vnode, referenced.

@@ -168,6 +168,8 @@ use crate::kern::kern_timeout::{timeout_del, timeout_set};
 use crate::kern::tty::ttywait;
 use crate::kern::vfs_subr::vrele;
 use crate::kern::vfs_vops::VOP_REVOKE;
+use crate::machine::Machine;
+use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
@@ -364,8 +366,6 @@ impl Default for BsdProcessG {
 
 /// The members of `struct proc` of `bsd`'s subsystems; a thread dereferences to them.
 pub struct BsdThreadG {
-    /// `p_sleep_to`: timeout for tsleep().
-    pub p_sleep_to: Timeout,
     /// `p_sigstk`: sp & on stack state variable.
     pub p_sigstk: SigaltstackWord,
     /// `p_sigval`: for core dump/debugger XXX.
@@ -381,7 +381,6 @@ impl BsdThreadG {
     /// The members of a new thread.
     pub const fn new() -> Self {
         Self {
-            p_sleep_to: Timeout::zeroed(),
             p_sigstk: SigaltstackWord::new(),
             p_sigval: SigvalWord::new(),
             p_self: Link::new(),
@@ -451,6 +450,37 @@ pub struct BsdProcGlue;
 
 kernel::proc_glue_links!(BsdProcGlue);
 
+/// The scheduler's queues and CPUs of `bsd`'s threads (`kernel::sched`).
+#[cfg(not(test))]
+static SCHED_TABLES: kernel::sched::SchedTables<BsdProcGlue> = kernel::sched::SchedTables::new();
+
+#[cfg(test)]
+std::thread_local! {
+    /// Each host test thread's own scheduler tables, made at its first use with the state of
+    /// the thread's CPU (a host thread is a CPU of its own, `hal::cpu`).
+    static TEST_SCHED: core::cell::Cell<Option<&'static kernel::sched::SchedTables<BsdProcGlue>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// The scheduler's tables of `bsd`'s threads.
+fn sched_tables() -> &'static kernel::sched::SchedTables<BsdProcGlue> {
+    #[cfg(not(test))]
+    {
+        &SCHED_TABLES
+    }
+    #[cfg(test)]
+    {
+        if let Some(t) = TEST_SCHED.with(core::cell::Cell::get) {
+            return t;
+        }
+        let t: &'static kernel::sched::SchedTables<BsdProcGlue> =
+            std::boxed::Box::leak(std::boxed::Box::new(kernel::sched::SchedTables::new()));
+        TEST_SCHED.with(|c| c.set(Some(t)));
+        kernel::sched::sched_init_cpu::<BsdProcGlue>(hal::cpu::cpu_number());
+        t
+    }
+}
+
 /// The process lists and hash tables of `bsd`'s processes.
 #[cfg(not(test))]
 static PROC_TABLES: ProcTables<BsdProcGlue> = ProcTables::new();
@@ -479,12 +509,135 @@ impl ProcGlue for BsdProcGlue {
     type ThreadG = BsdThreadG;
     type PgrpG = BsdPgrpG;
     type SessionG = BsdSessionG;
-    type RunqEntry = hal::list::ListEntry<Proc>;
+
     type FileGlue = crate::kern::kern_descrip::BsdFileGlue;
     kernel::proc_glue_link_types!();
 
     fn tables() -> &'static ProcTables<Self> {
         proc_tables()
+    }
+
+    fn sched() -> &'static kernel::sched::SchedTables<Self> {
+        sched_tables()
+    }
+
+    /// `kern_synch.c`'s `sleep_signal_check` (`kern_synch.rs`, over `kern_sig.rs`).
+    fn sleep_signal_check(p: &Proc, after_sleep: bool) -> Result<(), Errno> {
+        crate::kern::kern_synch::sleep_signal_check(p, after_sleep)
+    }
+
+    fn cold() -> bool {
+        crate::sys::systm::COLD.load(Ordering::Relaxed) || crate::kern::subr_prf::panicstr()
+    }
+
+    /// `splhigh`, `splx(safepri)`, the kernel lock's bounce, `splx` back.
+    fn cold_yield() {
+        let s = crate::machine::intr::splhigh();
+        crate::machine::intr::splx(crate::sys::systm::SAFEPRI.load(Ordering::Relaxed));
+        crate::kern::kern_synch::kernel_lock_bounce();
+        crate::machine::intr::splx(s);
+    }
+
+    fn tuagg_add_runtime() {
+        crate::kern::kern_resource::tuagg_add_runtime();
+    }
+
+    /// `clockintr_cancel` of the running CPU's `spc_itimer` and `spc_profclock`, as asked.
+    fn clocks_stop(itimer: bool, profclock: bool) {
+        let spc = Machine::ci_schedstate(curcpu());
+        if itimer {
+            crate::kern::kern_clockintr::clockintr_cancel(&spc.spc_itimer);
+        }
+        if profclock {
+            crate::kern::kern_clockintr::clockintr_cancel(&spc.spc_profclock);
+        }
+    }
+
+    /// `clockintr_advance` of the running CPU's `spc_itimer` and `spc_profclock`, as asked,
+    /// and `spc_runtime = nanouptime()`.
+    fn clocks_start(itimer: bool, profclock: bool) {
+        let spc = Machine::ci_schedstate(curcpu());
+        if itimer {
+            crate::kern::kern_clockintr::clockintr_advance(
+                &spc.spc_itimer,
+                crate::kern::kern_clock::hardclock_period(),
+            );
+        }
+        if profclock {
+            crate::kern::kern_clockintr::clockintr_advance(
+                &spc.spc_profclock,
+                crate::kern::subr_prof::profclock_period(),
+            );
+        }
+        spc.spc_runtime.set(crate::kern::kern_tc::nanouptime());
+    }
+
+    fn assertwaitok() {
+        crate::kern::subr_xxx::assertwaitok();
+    }
+
+    fn smr_idle() {
+        crate::kern::kern_smr::smr_idle();
+    }
+
+    fn spl0() {
+        crate::machine::intr::spl0();
+    }
+
+    /// `exit2`'s `tuagg_add_process(p->p_p, p)` under `ps_mtx`: the remainder of the time
+    /// spent in `exit1`.
+    fn exit_account(p: &Proc) {
+        let pr = p.process();
+        let g = pr.ps_mtx.lock();
+        crate::kern::kern_resource::tuagg_add_process(pr, p);
+        drop(g);
+    }
+
+    fn cpu_unidle(n: usize) {
+        if let Some(ci) = crate::kern::kern_sched::cpu_info_by_number(n) {
+            Machine::cpu_unidle(ci);
+        }
+    }
+
+    fn need_resched(n: usize) {
+        if let Some(ci) = crate::kern::kern_sched::cpu_info_by_number(n) {
+            Machine::need_resched(ci);
+        }
+    }
+
+    fn idle_enter() {
+        Machine::cpu_idle_enter();
+    }
+
+    fn idle_cycle() {
+        Machine::cpu_idle_cycle();
+    }
+
+    fn idle_leave() {
+        Machine::cpu_idle_leave();
+    }
+
+    fn cpu_is_primary(n: usize) -> bool {
+        crate::kern::kern_sched::cpu_info_by_number(n).is_some_and(Machine::cpu_is_primary)
+    }
+
+    fn cpu_is_running(n: usize) -> bool {
+        crate::kern::kern_sched::cpu_info_by_number(n).is_some_and(Machine::cpu_is_running)
+    }
+
+    fn cputype(n: usize) -> i32 {
+        crate::kern::kern_sched::cpu_info_by_number(n).map_or(0, Machine::ci_cputype)
+    }
+
+    /// `pmap_resident_count(p->p_vmspace->vm_map.pmap)` of a thread with an address space.
+    fn resident_count(p: &Proc) -> Option<i64> {
+        use crate::sys::proc::ProcExt;
+        (p.vmspace_word() != 0)
+            .then(|| crate::machine::pmap::pmap_resident_count(p.vmspace().vm_map.pmap()))
+    }
+
+    fn stathz() -> i32 {
+        crate::kern::kern_clock::STATHZ.load(Ordering::Relaxed)
     }
 
     fn pgsignal(pg: &Pgrp, sig: i32, checkctty: bool) {
@@ -546,8 +699,8 @@ impl ProcGlue for BsdProcGlue {
         timeout_del(&sess.s_verauthto);
     }
 
-    fn curproc() -> Option<&'static Proc> {
-        crate::machine::cpu::curproc()
+    fn with_curproc<R>(f: impl FnOnce(Option<&Proc>) -> R) -> R {
+        hal::thread::try_with_current::<Proc, R>(|p| f(p.map(core::pin::Pin::get_ref)))
     }
 
     fn pledge_fail(p: &Proc, error: Errno, code: u64) -> Errno {
@@ -714,7 +867,6 @@ pub(crate) fn test_process(pid: Pid) -> &'static Process {
 pub(crate) fn test_thread(pr: &'static Process) -> &'static Proc {
     let p: &'static Proc = std::boxed::Box::leak(std::boxed::Box::new(Proc::new_static(
         pr,
-        hal::list::ListEntry::new(),
         BsdThreadG::new(),
     )));
     p.p_self.set(Some(p));
@@ -869,7 +1021,15 @@ mod tests {
         // and stats inside, a counted item), fdescpl (LZ's struct filedesc0) -> 520 (the
         // kernel's table, its slots and maps inline), processpl 1288 -> 1296 (ps_fd a set-once
         // counted handle), procpl 1064 -> 1056 (p_fd gone: a thread reads its process's).
-        // The user accepted these sizes (N4.2's and N4.3's decision 1, 2026-10-22).
+        // The user accepted these sizes (N4.2's and N4.3's decision 1, 2026-10-22). N4.5a
+        // moved the run queues and the sleep timeout into the kernel: procpl 1056 -> 1128
+        // (p_runq a PinEntry and p_sleep_to the kernel's Timeout in kernel::proc's Thread,
+        // where bsd's list entry and timeout were), then 1136 (p_cpuno, the CPU number beside
+        // the slot), pending the user's word as N4.2's were. N4.4 (kqueue into kernel::event)
+        // gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in kernel::proc's
+        // Process) and fdescpl 520 -> 560, and its p_kq, a set-once counted kqueue in the
+        // kernel's Thread where bsd's word was, takes procpl 1136 -> 1168 at the merge of N4.4
+        // and N4.5a.
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -905,7 +1065,7 @@ mod tests {
             ),
         ];
         std::println!("procpl {proc}, {sizes:?}");
-        assert!(proc <= 1152, "procpl {proc}");
+        assert!(proc <= 1168, "procpl {proc}");
         assert_eq!(
             sizes,
             [

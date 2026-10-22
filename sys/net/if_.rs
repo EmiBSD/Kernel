@@ -215,9 +215,7 @@ use crate::kern::subr_prf::{Str, panic, panicstr, printf, snprintf};
 use crate::kern::uipc_mbuf::{
     m_freem, m_resethdr, ml_dequeue, ml_enqueue, ml_init, ml_purge, mq_delist, mq_enqueue, mq_purge,
 };
-use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
-use crate::machine::cpu::{Cpu, curcpu};
 use crate::machine::intr::{IPL_NET, IPL_NONE, splnet, splx};
 use crate::net::bpf::{
     BPF_DIRECTION_IN, BPF_DIRECTION_OUT, bpf_mtap_af, bpf_mtap_ether, bpfdetach,
@@ -2442,12 +2440,7 @@ fn if_netisr(_unused: *mut c_void) {
         }
 
         // Like sched_pause() but with a rwlock dance.
-        if Machine::ci_schedstate(curcpu())
-            .spc_schedflags
-            .load(Ordering::Relaxed)
-            & SPCF_SHOULDYIELD
-            != 0
-        {
+        if crate::kern::sched_bsd::curcpu_schedflags() & SPCF_SHOULDYIELD != 0 {
             net_unlock();
             r#yield();
             net_lock();

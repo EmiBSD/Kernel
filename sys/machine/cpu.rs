@@ -49,7 +49,6 @@ use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::types::Vaddr;
-use crate::sys::user::User;
 
 /// Outcome reported through [`Exit::exit`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,11 +176,10 @@ pub trait Cpu {
     /// `ci->ci_curproc`: the thread running on the CPU, null before `proc0` is set up.
     fn ci_curproc(ci: &Self::CpuInfo) -> *const Proc;
 
-    /// `ci->ci_curproc = p`: what `cpu_switchto` and `main`'s `curproc = &proc0` do.
-    fn set_curproc(ci: &Self::CpuInfo, p: *const Proc);
-
-    /// `proc0paddr`: the u-area of `proc0` (`locore` reserves it in C).
-    fn proc0paddr() -> &'static User;
+    /// `ci->ci_curproc = p` on the running CPU `ci` for a thread that lives for ever (`main`'s
+    /// `curproc = &proc0`, a test's thread), or none: `hal::thread::set_current_static` (the
+    /// switch writes it itself).
+    fn set_curproc(ci: &Self::CpuInfo, p: Option<&'static Proc>);
 
     /// `cpu_rnd_messybits()` (`<machine/cpu.h>`): a cheap, fast-changing counter value (the
     /// time stamp counter, the virtual counter) that `dev/rnd.c` adds to each entropy event.
@@ -233,19 +231,6 @@ pub trait Cpu {
 
     /// `cpu_idle_leave()`: the idle thread found work.
     fn cpu_idle_leave();
-
-    /// `cpu_switchto(old, new)` (`locore.S`, `cpuswitch.S`): saves `old`'s kernel context
-    /// into its pcb (none to save when `old` is `None`: the thread is dead), makes `new`
-    /// `curproc` with `p_stat = SONPROC` and `p_cpu = curcpu()`, loads its pcb, stack and
-    /// address space and resumes it. Returns on `old`'s stack once `old` is switched back
-    /// to.
-    ///
-    /// # Safety
-    ///
-    /// Called with the scheduler lock held, from `mi_switch`/`sched_toidle` only: `new` is
-    /// runnable and off every queue, `old` (when given) is the running thread, and both
-    /// have a kernel stack and a pcb set up by `cpu_fork` or `locore`.
-    unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc);
 
     /// `cpu_exit(p)` (`vm_machdep.c`): the machine-dependent part of a thread's exit, before
     /// its address space goes (nothing on amd64 and arm64).

@@ -1154,7 +1154,7 @@ mod tests {
     /// Memory, the vfs and a fresh buffer cache, `disk` as the disk, the thread as `curproc`.
     fn setup(disk: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         crate::kern::proc_glue::test_set_limits(p, 128);
 
         BUFHEAD.0.init();
@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// The fake disk's block device vnode, referenced.

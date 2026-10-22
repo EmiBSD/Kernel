@@ -2849,13 +2849,13 @@ mod tests {
         RTPTABLE.rtp_count.store(0, Ordering::Relaxed);
 
         let p = crate::kern::proc_glue::test_proc(PID, crget());
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         g
     }
 
     /// Undoes what outlives the reset memory: `curproc`.
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// The `struct rt_msghdr` at `off` in `buf`; zeros past the end of a shorter message (the

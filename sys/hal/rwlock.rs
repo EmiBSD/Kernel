@@ -1544,7 +1544,8 @@ mod sealed {
 
 /// A proof of holding a lock: a reader-writer lock in either mode, a [`Mutexed`], or the
 /// kernel lock; what [`Guarded::get`] checks. Sealed: [`WriteWitness`], [`ReadWitness`],
-/// [`RwWitness`] (which is one of them), a [`MutexedGuard`], a [`WitnessPart`],
+/// [`RwWitness`] (which is one of them), a [`MutexedGuard`] (and the scheduler's hold, one),
+/// a [`WitnessPart`],
 /// [`KernelWitness`] and [`KernelReader`] are the only witnesses, so no other type can claim
 /// a lock it does not hold.
 pub trait Witness: sealed::Sealed {
@@ -1613,6 +1614,20 @@ impl<T> Witness for MutexedGuard<'_, T> {
 impl<T> Exclusive for MutexedGuard<'_, T> {}
 
 impl<T> Divisible for MutexedGuard<'_, T> {}
+
+// The scheduler's hold is its mutex's guard (`hal::thread`): the same proof, by delegation.
+impl sealed::Sealed for crate::thread::SchedHold {}
+
+impl Witness for crate::thread::SchedHold {
+    #[inline]
+    fn lock_id(&self) -> LockId {
+        self.0.lock_id()
+    }
+}
+
+impl Exclusive for crate::thread::SchedHold {}
+
+impl Divisible for crate::thread::SchedHold {}
 
 impl sealed::Sealed for WitnessPart<'_> {}
 

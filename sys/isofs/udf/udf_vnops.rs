@@ -2031,7 +2031,7 @@ mod tests {
     /// the disk, the thread as `curproc`.
     fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
-        Machine::set_curproc(Machine::curcpu(), p);
+        Machine::set_curproc(Machine::curcpu(), Some(p));
         BUFHEAD.0.init();
         for c in [
             &BCSTATS.numbufs,
@@ -2059,7 +2059,7 @@ mod tests {
     }
 
     fn teardown() {
-        Machine::set_curproc(Machine::curcpu(), ptr::null());
+        Machine::set_curproc(Machine::curcpu(), None);
     }
 
     /// `udf_mountfs` of the disk on a fresh read-only mount.

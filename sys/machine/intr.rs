@@ -232,5 +232,6 @@ const _: () = {
     assert!(hal::intr::IPL_BIO == IPL_BIO);
     assert!(hal::intr::IPL_VM == IPL_VM);
     assert!(hal::intr::IPL_HIGH == IPL_HIGH);
+    assert!(hal::intr::IPL_SCHED == IPL_SCHED);
 };
 /* </CODE> */

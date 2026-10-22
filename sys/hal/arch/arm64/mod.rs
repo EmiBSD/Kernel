@@ -19,8 +19,16 @@
 /* <CODE> */
 //! arm64 machine code moved into the HAL.
 
+pub(crate) mod cpu;
+// The context switch and the FP state (N4.5a): the kernel's alone, not the ABI module's
+// runtime (`module-rt`), whose image links no thread code (the switch's assembly calls two
+// symbols of `bsd`'s, `switch.rs`).
+#[cfg(not(feature = "module-rt"))]
+pub mod fpu;
 pub mod include;
 pub mod pmap;
+#[cfg(not(feature = "module-rt"))]
+pub mod switch;
 
 /// `<machine/param.h>` and `<machine/vmparam.h>` as `hal::arch::current` names them.
 pub use self::include::{param, vmparam};

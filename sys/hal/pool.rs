@@ -1076,6 +1076,8 @@ impl<T: Send + Sync + 'static> Drop for Last<T> {
 /// pointer), handed out as [`PoolBox<T>`].
 pub struct BoxPool<T: 'static> {
     raw: OnceStatic<&'static dyn RawPool>,
+    /// What an item must answer `true` to before its drop ([`BoxPool::init_checked`]).
+    check: OnceStatic<fn(&T) -> bool>,
     _t: PhantomData<fn() -> T>,
 }
 
@@ -1084,8 +1086,26 @@ impl<T: 'static> BoxPool<T> {
     pub const fn new() -> Self {
         Self {
             raw: OnceStatic::new(),
+            check: OnceStatic::new(),
             _t: PhantomData,
         }
+    }
+
+    /// [`BoxPool::init`], and `release`, which every item must pass before its drop: an item
+    /// it refuses (`false`) is `panic(9)` instead of being dropped (the kernel's threads,
+    /// which a CPU may still run on: `procpl` refuses a thread that is some CPU's current
+    /// one, `hal::thread`'s premise E2). `release` is recorded once, with the pool.
+    pub fn init_checked(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        release: fn(&T) -> bool,
+    ) -> Result<(), Errno> {
+        self.init(ipl, flags, wchan)?;
+        // `init` succeeded once: the slot is free.
+        let _ = self.check.set(release);
+        Ok(())
     }
 
     /// `pool_init(9)`: the pool of `T`s at `ipl`, with `flags`, named `wchan` (the name
@@ -1253,6 +1273,11 @@ impl<T: 'static> Drop for PoolBox<T> {
         let Some(raw) = self.pool.raw.get() else {
             hal_panic(format_args!("PoolBox: an item of a pool never made"));
         };
+        if let Some(check) = self.pool.check.get()
+            && !check(self)
+        {
+            hal_panic(format_args!("PoolBox: an item released while still in use"));
+        }
         // SAFETY: this handle is the item's only owner (the invariant) and is being dropped, so
         // no reference through it is alive and none can be made (a `SharedBox`'s links are
         // unlinked before its owner drops it, under the lock their readers hold: its
@@ -1654,6 +1679,21 @@ mod tests {
         assert_eq!(seen, [4, 3, 1, 0]);
         drop(head);
         assert_eq!(P.nout(), 0);
+    }
+
+    /// A checked pool asks before every drop; an item it refuses stops the kernel (the
+    /// threads' pool and a CPU's current thread, `hal::thread`'s E2).
+    #[test]
+    fn a_checked_pool_asks_before_the_drop() {
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init_checked(0, 0, "testchk", |v| *v != 13), Ok(()));
+        let ok = P.get(PR_NOWAIT, || 12).unwrap();
+        drop(ok);
+        assert_eq!(P.nout(), 0);
+        let held = P.get(PR_NOWAIT, || 13).unwrap();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(held)));
+        assert!(r.is_err());
     }
 
     #[test]

@@ -117,12 +117,12 @@ use crate::kern::kern_resource::lim_startup;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
 use crate::kern::kern_sig::{siginit, signal_init};
 use crate::kern::kern_smr::{smr_startup, smr_startup_thread};
-use crate::kern::kern_synch::{endtsleep, sleep_queue_init, tsleep_nsec, wakeup};
+use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::taskq_init;
-use crate::kern::kern_timeout::{timeout_proc_init, timeout_set, timeout_startup};
+use crate::kern::kern_timeout::{timeout_proc_init, timeout_startup};
 use crate::kern::pipe_glue::pipe_init;
 use crate::kern::proc_glue::{chgproccnt, proc_tables, procinit};
-use crate::kern::sched_bsd::{sched_lock_init, scheduler_start};
+use crate::kern::sched_bsd::scheduler_start;
 use crate::kern::subr_autoconf::{
     CONFIG_PENDING, config_init, config_process_deferred_mountroot, config_rootfound,
 };
@@ -205,8 +205,7 @@ pub static PDEVINIT_DONE: AtomicBool = AtomicBool::new(false);
 /// `initprocess`: the process of `init(8)`, null until `start_init` forks it (M6-b).
 pub static INITPROCESS: AtomicPtr<Process> = AtomicPtr::new(core::ptr::null_mut());
 /// `proc0`: process slot for swapper (process 0's `static` thread, P4).
-pub static PROC0: Proc =
-    Proc::new_static(&PROCESS0, hal::list::ListEntry::new(), BsdThreadG::new());
+pub static PROC0: Proc = Proc::new_static(&PROCESS0, BsdThreadG::new());
 
 /// `rootvp`: the vnode of the root device (`rootdev`), made by the root file system's
 /// `mountroot` (`ffs_mountroot`).
@@ -272,8 +271,8 @@ pub fn main() -> ! {
     let ci = curcpu();
     let p: &'static Proc = &PROC0;
     p.place();
-    Machine::set_curproc(ci, p);
-    p.set_cpu(ci);
+    Machine::set_curproc(ci, Some(p));
+    kernel::sched::set_thread_cpu(p, hal::cpu::cpu_number());
 
     // Initialize timeouts.
     timeout_startup();
@@ -287,7 +286,7 @@ pub fn main() -> ! {
     // KUBSAN and WITNESS are kernel options this configuration does not have.
 
     kernel_lock_init(); // KERNEL_LOCK_INIT()
-    sched_lock_init(); // SCHED_LOCK_INIT()
+    // SCHED_LOCK_INIT(): hal::thread::SCHED_LOCK is made at IPL_SCHED.
 
     // rw_obj_init(): the lock objects are hal's (`"rwobjpl"`, hal::rwlock::SharedRwlock).
     if hal::rwlock::init_shared().is_err() {
@@ -393,11 +392,7 @@ pub fn main() -> ! {
     pr.set_comm(b"swapper");
 
     // Init timeouts
-    timeout_set(
-        &p.p_sleep_to,
-        endtsleep,
-        core::ptr::from_ref(p).cast_mut().cast(),
-    );
+    kernel::sched::sleep_timeout_init(p);
 
     // Init signal state, file descriptor table, limits and the prototype map of process 0.
     signal_init();
@@ -417,14 +412,14 @@ pub fn main() -> ! {
     let prev = PROCESS0.set_vmspace(Some(vm0));
     crate::kassert!(prev.is_none()); // process 0 had none
 
-    p.set_uarea(Machine::proc0paddr()); // XXX
+    hal::thread::boot_uarea(pin_static(p)); // XXX (hal's proc0 u-area, E4)
 
     // Charge root for one process.
     chgproccnt(0, 1);
 
     // Initialize run queues
     sched_init();
-    sleep_queue_init();
+    // sleep_queue_init(): the sleep queues are kernel::sched's, empty when made.
     clockqueue_init(Machine::ci_queue(ci));
     sched_init_cpu(ci);
     Machine::ci_randseed(ci).set((arc4random() & 0x7fff_ffff) + 1);

@@ -138,8 +138,8 @@
 //! the kqueues, the klist, the timeouts, the tty) are the glue's: one value per object of a
 //! type `bsd` chooses ([`ProcGlue`]: `ProcessG`, `ThreadG`, `PgrpG`, `SessionG`), which each
 //! kernel type dereferences to, so `pr.ps_sigacts` names the glue's member as LZ named its
-//! own. The run-queue link `p_runq` is a member of the thread itself (`G::RunqEntry`): `bsd`'s
-//! list adapters take its offset in the thread.
+//! own. The run-queue link `p_runq` is a member of the thread itself (a `PinEntry` of the
+//! scheduler's queues, `kernel::sched`, N4.5a).
 //!
 //! Locks, as the C's annotations: `[K]` the kernel lock (the lists, the hashes, the parent,
 //! child and group links: [`hal::klock`]'s witnesses), `[m]` the process's `ps_mtx` (its thread
@@ -205,6 +205,7 @@ use hal::pool::{BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
 use hal::refcnt::Refcnt;
 use hal::rwlock::{Guarded, RawRwlock, Witness};
 use hal::seqlock::StrSlot;
+use hal::sys::errno::Errno;
 use hal::sys::types::{Pid, Uid};
 use hal::thread::MachineSlot;
 
@@ -327,6 +328,9 @@ pub const SZOMB: u8 = 5;
 pub const SDEAD: u8 = 6;
 /// `SONPROC`: thread is currently on a CPU.
 pub const SONPROC: u8 = 7;
+
+// The switch stores `hal::thread`'s `SONPROC` into the new thread's slot.
+const _: () = assert!(hal::thread::SONPROC == SONPROC);
 
 /*
  * These flags are per-thread and kept in p_flag
@@ -676,8 +680,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type PgrpG: Send + Sync;
     /// The members of `struct session` of `bsd`'s (`s_ttyvp`, `s_ttyp`, `s_verauthto`).
     type SessionG: Send + Sync;
-    /// `TAILQ_ENTRY(proc) p_runq`: the run and sleep queues' link, `bsd`'s until N4.5.
-    type RunqEntry: Send + Sync;
+    /// `p_runq`: the scheduler's queues (`kernel::sched`).
+    type ThreadRunq: PinAdapter<Elem = Thread<Self>>;
     /// `ps_list`: `allprocess`, `zombprocess`.
     type ProcessList: PinAdapter<Elem = Process<Self>>;
     /// `ps_hash`: the pid hash chains.
@@ -711,6 +715,73 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
 
     /// The lists, hashes and pools of this glue's processes (one `static` of `bsd`'s).
     fn tables() -> &'static ProcTables<Self>;
+    /// The scheduler's queues and CPUs of this glue's threads (one `static` of `bsd`'s).
+    fn sched() -> &'static crate::sched::SchedTables<Self>;
+
+    // The scheduler's calls into what is still `bsd`'s (`kernel::sched`). The defaults are
+    // what a glue without that subsystem does (the kernel's own tests): nothing, or the
+    // answer of a machine with nothing else running.
+
+    /// `sleep_signal_check(p, after_sleep)` (`kern_sig.c`, N4.5b): the signals and stops of a
+    /// `PCATCH` sleep.
+    fn sleep_signal_check(_p: &Thread<Self>, _after_sleep: bool) -> Result<(), Errno> {
+        Ok(())
+    }
+    /// `cold || panicstr`: a sleep returns at once.
+    fn cold() -> bool {
+        false
+    }
+    /// That early return's work: `splhigh`, `splx(safepri)`, the kernel lock bounced.
+    fn cold_yield() {}
+    /// `tuagg_add_runtime()` (`kern_resource.c`): the running thread's run time accounted.
+    fn tuagg_add_runtime() {}
+    /// The optional clock interrupts of the running CPU stopped (`clockintr_cancel` of
+    /// `spc_itimer` and `spc_profclock`, as asked).
+    fn clocks_stop(_itimer: bool, _profclock: bool) {}
+    /// The optional clock interrupts of the running thread started (`clockintr_advance`, as
+    /// asked) and its start time recorded (`spc_runtime = nanouptime()`).
+    fn clocks_start(_itimer: bool, _profclock: bool) {}
+    /// `assertwaitok()` (`subr_xxx.c`).
+    fn assertwaitok() {}
+    /// `smr_idle()` (`kern_smr.c`): this CPU passes a quiescent state.
+    fn smr_idle() {}
+    /// `spl0()`.
+    fn spl0() {}
+    /// `exit2`'s accounting of a dead thread (`tuagg_add_process` under `ps_mtx`).
+    fn exit_account(_p: &Thread<Self>) {}
+    /// `cpu_unidle(ci)`: CPU `n`, idle, is kicked out of its wait.
+    fn cpu_unidle(_n: usize) {}
+    /// `need_resched(ci)`: CPU `n` reschedules at its next chance (its AST, a kick).
+    fn need_resched(_n: usize) {}
+    /// `cpu_idle_enter()`.
+    fn idle_enter() {}
+    /// `cpu_idle_cycle()`: waits for an interrupt.
+    fn idle_cycle() {
+        core::hint::spin_loop();
+    }
+    /// `cpu_idle_leave()`.
+    fn idle_leave() {}
+    /// `CPU_IS_PRIMARY(ci)` of CPU `n`.
+    fn cpu_is_primary(n: usize) -> bool {
+        n == 0
+    }
+    /// `CPU_IS_RUNNING(ci)` of CPU `n`.
+    fn cpu_is_running(_n: usize) -> bool {
+        true
+    }
+    /// `ci->ci_cputype` of CPU `n` (`CPUTYP_*`, 0: no topology known).
+    fn cputype(_n: usize) -> i32 {
+        0
+    }
+    /// `pmap_resident_count(p->p_vmspace->vm_map.pmap)`, read without `ps_mtx` (the
+    /// scheduler's cost estimate holds `SCHED_LOCK`, which `ps_mtx` comes before).
+    fn resident_count(_p: &Thread<Self>) -> Option<i64> {
+        None
+    }
+    /// `stathz`.
+    fn stathz() -> i32 {
+        100
+    }
     /// `pgsignal(pg, sig, checkctty)`.
     fn pgsignal(pg: &Pgrp<Self>, sig: i32, checkctty: bool);
     /// `prsignal(pr, sig)`.
@@ -726,9 +797,12 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn session_placed(sess: &Session<Self>);
     /// The last reference to a session dropped (`SESSRELE`'s `timeout_del(&s_verauthto)`).
     fn session_destroy(sess: &Session<Self>);
-    /// `curproc`: the thread running on this CPU (`None` before the first one, and on a
-    /// host test thread that set none), until the scheduler moves (N4.5).
-    fn curproc() -> Option<&'static Thread<Self>>;
+    /// `curproc`, lent to `f`: the thread running on this CPU (`None` before the first one,
+    /// and on a host test thread that set none). The kernel's glue reads hal's
+    /// (`hal::thread::try_with_current`, the thread type `kernel::sched` switches); the test
+    /// glues of other thread types keep their own, since hal admits one thread type per
+    /// process. The reference lives for `f` alone: nothing claims the thread past it.
+    fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R;
     /// `pledge_fail(p, error, code)`: reports a pledge violation of `p` and returns the
     /// error the system call fails with (`kern_pledge`'s, N4.7).
     fn pledge_fail(
@@ -780,6 +854,10 @@ macro_rules! proc_glue_links {
             /// `p_thr_link`.
             pub ThreadThrLink: $crate::proc::Thread<$glue>, p_thr_link
         );
+        hal::pin_adapter!(
+            /// `p_runq`: the scheduler's queues.
+            pub ThreadRunqLink: $crate::proc::Thread<$glue>, p_runq
+        );
         hal::owned_adapter!(
             /// A process's thread boxes, by the order they joined.
             pub ThreadOwnedLink: $crate::proc::Thread<$glue>,
@@ -823,6 +901,7 @@ macro_rules! proc_glue_link_types {
         type ThreadList = ThreadListLink;
         type ThreadHash = ThreadHashLink;
         type ThreadLink = ThreadThrLink;
+        type ThreadRunq = ThreadRunqLink;
         type ThreadOwned = ThreadOwnedLink;
         type PgrpHash = PgrpHashLink;
         type KnLink = KnLinkLink;
@@ -942,7 +1021,15 @@ pub fn procinit<G: ProcGlue>(maxthread: i32, maxprocess: i32) {
     if !made {
         kpanic(format_args!("procinit: called twice"));
     }
-    let pools = t.procpl.init(IPL_NONE, PR_WAITOK, "procpl").is_ok()
+    let pools = t
+        .procpl
+        .init_checked(
+            IPL_NONE,
+            PR_WAITOK,
+            "procpl",
+            crate::sched::thread_releasable::<G>,
+        )
+        .is_ok()
         && t.processpl
             .init_recorded(IPL_NONE, PR_WAITOK, "processpl")
             .is_ok()
@@ -1653,6 +1740,10 @@ pub fn process_alloc<G: ProcGlue>(pid: Pid, g: G::ProcessG) -> ProcessRef<G> {
 pub struct Thread<G: ProcGlue> {
     /// `p_stat`, `p_cpu`, `p_addr`, `p_md`: what the machine reaches by offset.
     pub machine: MachineSlot,
+    /// \[S\] The number of the CPU `p_cpu` names (`kernel::sched`'s `set_thread_cpu`, which
+    /// writes both), -1 before the thread first ran or was queued: `p_cpu`'s CPU in O(1), beside the slot
+    /// (one cache line with `p_cpu`).
+    pub p_cpuno: I32Word,
     /// \[K\] `p_list`: `allproc`.
     pub p_list: PinEntry<Thread<G>>,
     /// \[K\] `p_hash`.
@@ -1663,8 +1754,12 @@ pub struct Thread<G: ProcGlue> {
     pub p_owned: OwnedEntry<Thread<G>>,
     /// \[m\] The thread's joining order.
     pub p_seq: U64Word,
-    /// \[S\] `p_runq`: the run and sleep queues' link (`bsd`'s until N4.5).
-    pub p_runq: G::RunqEntry,
+    /// \[S\] `p_runq`: the run, sleep and idle queues' link (`kernel::sched`), and the dead
+    /// threads' (`deadproc_mutex`).
+    pub p_runq: PinEntry<Thread<G>>,
+    /// `p_sleep_to`: the timeout of a timed sleep (`endtsleep`, named by the thread's tid:
+    /// `kernel::sched::sleep_timeout_init`).
+    pub p_sleep_to: crate::timeout::Timeout,
     /// \[I\] `p_p`.
     p_p: ProcessRef<G>,
     /// `p_tid`.
@@ -1746,12 +1841,11 @@ pub struct Thread<G: ProcGlue> {
 
 impl<G: ProcGlue> Thread<G> {
     /// Process 0's `static` thread (`proc0`), of `pr` (`process0`).
-    pub const fn new_static(pr: &'static Process<G>, runq: G::RunqEntry, g: G::ThreadG) -> Self {
+    pub const fn new_static(pr: &'static Process<G>, g: G::ThreadG) -> Self {
         Self::make(
             StaticOrPooled::Static(pr),
             Guarded::new_static_mutexed(&pr.ps_mtx, None),
             Guarded::new_static_mutexed(&pr.ps_mtx, None),
-            runq,
             g,
         )
     }
@@ -1761,17 +1855,19 @@ impl<G: ProcGlue> Thread<G> {
         p_p: ProcessRef<G>,
         cred_ref: Guarded<Option<CredRef>>,
         vmspace: Guarded<Option<VmspaceRef>>,
-        runq: G::RunqEntry,
         g: G::ThreadG,
     ) -> Self {
         Self {
             machine: MachineSlot::new(),
+            p_cpuno: I32Word::new(-1),
             p_list: PinEntry::new(),
             p_hash: PinEntry::new(),
             p_thr_link: PinEntry::new(),
             p_owned: OwnedEntry::new(),
             p_seq: U64Word::new(0),
-            p_runq: runq,
+
+            p_runq: PinEntry::new(),
+            p_sleep_to: crate::timeout::Timeout::unset(),
             p_p,
             p_tid: I32Word::new(0),
             p_flag: AtomicI32::new(0),
@@ -1832,37 +1928,42 @@ impl<G: ProcGlue> Thread<G> {
     /// `p_stat`.
     #[inline]
     pub fn stat(&self) -> u8 {
-        self.machine.stat.load(Ordering::Relaxed)
+        self.machine.stat()
     }
 
     /// `p->p_stat = s`.
     #[inline]
     pub fn set_stat(&self, s: u8) {
-        self.machine.stat.store(s, Ordering::Relaxed);
+        self.machine.set_stat(s);
     }
 
     /// `p_cpu`: the `cpu_info` word of the CPU the thread runs or last ran on.
     #[inline]
     pub fn cpu_word(&self) -> usize {
-        self.machine.cpu.load(Ordering::Relaxed)
+        self.machine.cpu_word()
     }
 
     /// `p->p_cpu = ci` (`fork1`, `sched_choosecpu`).
     #[inline]
     pub fn set_cpu_word(&self, ci: usize) {
-        self.machine.cpu.store(ci, Ordering::Relaxed);
+        self.machine.set_cpu_word(ci);
     }
 
-    /// `p_addr`: the u-area's address, 0 before `cpu_fork`.
+    /// `p_addr`: the u-area's address, 0 before `cpu_fork` (set and cleared through the
+    /// slot alone: `hal::thread::MachineSlot::install_uarea`, `take_uarea`, E4).
     #[inline]
     pub fn addr_word(&self) -> usize {
-        self.machine.addr.load(Ordering::Relaxed)
+        self.machine.addr_word()
     }
 
-    /// `p->p_addr = uaddr`.
-    #[inline]
-    pub fn set_addr_word(&self, uaddr: usize) {
-        self.machine.addr.store(uaddr, Ordering::Relaxed);
+    /// `p->p_addr = uaddr` of `thread_new`: the thread takes the u-area `u` (`hal`'s E4).
+    pub fn install_uarea(&self, u: hal::thread::UArea) {
+        self.machine.install_uarea(u);
+    }
+
+    /// The reaper's `uvm_uarea_free(p)`: the u-area given back, for a thread no CPU runs.
+    pub fn take_uarea(&self) -> Option<hal::thread::UArea> {
+        self.machine.take_uarea()
     }
 
     /// `p_name` up to its NUL.
@@ -1991,19 +2092,24 @@ impl<G: ProcGlue> Deref for Thread<G> {
     }
 }
 
+/// What `hal::thread`'s switch reaches of a thread: its slot, first in the `#[repr(C)]`
+/// thread (decision P1), so the thread's address, `ci_curproc`, is the slot's for the
+/// assembly that reads the slot by `ci_curproc` plus an offset (arm64's `exception.S`).
+impl<G: ProcGlue> hal::thread::ThreadLayout for Thread<G> {
+    #[inline]
+    fn machine(&self) -> &MachineSlot {
+        &self.machine
+    }
+}
+
 /// `thread_new`'s `pool_get(&proc_pool, PR_WAITOK)`: a thread of `pr`, its box (the caller
 /// gives it to the process, [`Process::insert_thread`]).
-pub fn thread_alloc<G: ProcGlue>(
-    pr: &ProcessRef<G>,
-    runq: G::RunqEntry,
-    g: G::ThreadG,
-) -> PoolBox<Thread<G>> {
+pub fn thread_alloc<G: ProcGlue>(pr: &ProcessRef<G>, g: G::ThreadG) -> PoolBox<Thread<G>> {
     let make = || {
         Thread::make(
             pr.clone(),
             Guarded::new_mutexed(&pr.ps_mtx, None),
             Guarded::new_mutexed(&pr.ps_mtx, None),
-            runq,
             g,
         )
     };
@@ -2372,7 +2478,7 @@ mod tests {
         type ThreadG = ();
         type PgrpG = ();
         type SessionG = ();
-        type RunqEntry = ();
+
         type FileGlue = TestFiles;
         crate::proc_glue_link_types!();
 
@@ -2380,6 +2486,11 @@ mod tests {
             TABLES_OVERRIDE
                 .with(core::cell::Cell::get)
                 .unwrap_or_else(|| TABLES.with(|t| *t))
+        }
+
+        fn sched() -> &'static crate::sched::SchedTables<Self> {
+            static SCHED: crate::sched::SchedTables<TestGlue> = crate::sched::SchedTables::new();
+            &SCHED
         }
 
         fn pgsignal(_pg: &Pgrp<Self>, _sig: i32, _checkctty: bool) {}
@@ -2394,8 +2505,8 @@ mod tests {
         fn session_hangup(_sess: &Session<Self>) {}
         fn session_placed(_sess: &Session<Self>) {}
         fn session_destroy(_sess: &Session<Self>) {}
-        fn curproc() -> Option<&'static Thread<Self>> {
-            None
+        fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
+            f(None)
         }
         fn pledge_fail(
             _p: &Thread<Self>,
@@ -2478,7 +2589,7 @@ mod tests {
     fn a_thread_joins_its_process_and_leaves_it() {
         setup();
         let pr = process(20);
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         t.p_tid.set(5000);
         {
             let mut w = klock::witness();
@@ -2526,7 +2637,7 @@ mod tests {
         ids.cr_uid.set(1000);
         let first = CredRef::new(ids);
         drop(pr.set_ucred(first.clone()));
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         assert_eq!(t.ucred().cr_uid.get(), 1000);
         assert!(!t.cred_stale());
@@ -2552,7 +2663,7 @@ mod tests {
     fn a_thread_s_sleep_message_and_names() {
         setup();
         let pr = process(31);
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         assert_eq!(t.p_wmesg.get(), None);
         t.p_wmesg.set(Some("nanoslp"));
         assert_eq!(t.p_wmesg.get(), Some("nanoslp"));
@@ -2562,7 +2673,7 @@ mod tests {
         assert_eq!(pr.comm().len(), _MAXCOMLEN - 1);
         assert_eq!(t.stat(), 0);
         t.set_stat(SONPROC);
-        assert_eq!(t.machine.stat.load(Ordering::Relaxed), SONPROC);
+        assert_eq!(t.machine.stat(), SONPROC);
         assert_eq!(core::mem::offset_of!(Thread<TestGlue>, machine), 0);
         drop(t);
         unlink(&pr);
@@ -2739,7 +2850,7 @@ mod tests {
     fn a_thread_joins_and_leaves_under_the_caller_s_guard() {
         setup();
         let pr = process(80);
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         t.p_tid.set(6000);
         let mut g = pr.ps_mtx.lock();
         let at = pr.insert_thread_locked(&mut g, t);
