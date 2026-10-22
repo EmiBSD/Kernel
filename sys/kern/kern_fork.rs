@@ -613,9 +613,9 @@ pub fn fork1(
     pr.ps_flags.fetch_and(!PS_EMBRYO, Ordering::Relaxed);
 
     // Idle threads are just assigned to the CPU but not added to any runqueue (their
-    // argument is the CPU's number, `sched_kthreads_create`).
+    // argument is the CPU's word, `sched_kthreads_create`'s `idle_arg`).
     if flags & FORK_IDLE != 0 {
-        kernel::sched::set_thread_cpu(p, arg.addr());
+        kernel::sched::set_thread_cpu(p, crate::kern::kern_sched::idle_arg_cpu(arg));
         // for consistency mark idle procs as pegged
         p.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
     } else {

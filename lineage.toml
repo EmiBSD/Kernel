@@ -5469,7 +5469,7 @@ status = "inherited"
 rust = "sys/kern/kern_sched.rs"
 lz = ["sys/kern/kern_sched.rs"]
 status = "redesigned"
-notes = "N4.5a: the 0-unsafe adapter of kernel::sched's run-queue half, for callers that name a CPU by its cpu_info: sched_init_cpu (kernel::sched's state, then the four clockintr binds, the SMR queue and the idle thread's deferred creation), sched_kthreads_create (fork1 FORK_IDLE with the CPU's number), sched_idle, sched_exit, sched_toidle, setrunqueue/remrunqueue with the caller's hold, sched_choosecpu_fork (a number), pegging, the barrier, the secondary CPUs, hw.ncpuonline, hw.smt, hw.blockcpu; CPU_INFOS (OnceStatic, by number) replaces cpuset_infos and its unsafe impl Sync"
+notes = "N4.5a: the 0-unsafe adapter of kernel::sched's run-queue half, for callers that name a CPU by its cpu_info: sched_init_cpu (kernel::sched's state, then the four clockintr binds, the SMR queue and the idle thread's deferred creation), sched_kthreads_create (fork1 FORK_IDLE with the CPU's word, its number plus one, never NULL), sched_idle, sched_exit, sched_toidle, setrunqueue/remrunqueue with the caller's hold, sched_choosecpu_fork (a number), pegging, the barrier, the secondary CPUs, hw.ncpuonline, hw.smt, hw.blockcpu; CPU_INFOS (OnceStatic, by number) replaces cpuset_infos and its unsafe impl Sync"
 [[module.fn]]
 lz = "sys/kern/kern_sched.rs::SCHED_IDLE_CPUS"
 native = ["sys/kernel/sched.rs::SchedTables"]
