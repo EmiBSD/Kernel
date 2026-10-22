@@ -122,12 +122,11 @@ impl Cpu for Machine {
     }
 
     fn curcpu_mutex_level_add(delta: i32) {
-        let ci = include::cpu::curcpu();
-        ci.ci_mutex_level.set(ci.ci_mutex_level.get() + delta);
+        include::cpu::curcpu().core.add_mutex_level(delta);
     }
 
     fn curcpu_mutex_level() -> i32 {
-        include::cpu::curcpu().ci_mutex_level.get()
+        include::cpu::curcpu().core.mutex_level()
     }
 
     fn cpu_info_foreach(f: &mut dyn FnMut(&'static include::cpu::CpuInfo)) {
@@ -160,11 +159,11 @@ impl Cpu for Machine {
     }
 
     fn ci_curproc(ci: &include::cpu::CpuInfo) -> *const Proc {
-        ci.ci_curproc.get()
+        ci.curproc_ptr()
     }
 
     fn set_curproc(ci: &include::cpu::CpuInfo, p: *const Proc) {
-        ci.ci_curproc.set(p);
+        ci.set_curproc_ptr(p);
     }
 
     fn proc0paddr() -> &'static User {
@@ -406,7 +405,7 @@ impl Pmap for Machine {
     fn pmap_activate_md(p: &Proc, pm: &hal::pmap::Pmap) -> bool {
         pm.activate();
         let ci = include::cpu::curcpu();
-        core::ptr::eq(p, ci.ci_curproc.get()) && !core::ptr::eq(pm.as_ptr(), ci.ci_curpm.get())
+        core::ptr::eq(p, ci.curproc_ptr()) && !core::ptr::eq(pm.as_ptr(), ci.ci_curpm.get())
     }
 
     /// `pmap_setttb`'s record: the CPU's pmap, then the branch predictor flush.
@@ -420,14 +419,14 @@ impl Pmap for Machine {
 
     /// `pmap_deactivate`, on the running thread.
     fn pmap_deactivate_md(p: &Proc, pm: &hal::pmap::Pmap) {
-        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().ci_curproc.get()));
+        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().curproc_ptr()));
         pm.deactivate();
     }
 
     /// `pmap_purge`: the last thread of the exiting process, on its CPU.
     fn pmap_purge_md(p: &Proc, pm: &hal::pmap::Pmap) {
         crate::kassert!(p.process().ps_threadcnt.get() == 0);
-        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().ci_curproc.get()));
+        crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().curproc_ptr()));
         pm.purge();
     }
 

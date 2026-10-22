@@ -420,7 +420,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     CPU_INFO_PRIMARY
         .ci_self
         .set(ptr::from_ref(&CPU_INFO_PRIMARY));
-    // SAFETY: system register writes that install this kernel's per-CPU pointer and vector
+    // tpidr_el1 names the boot CPU's cpu_info, whose head is its core (hal::cpu).
+    hal::cpu::set_current(&CPU_INFO_PRIMARY.core);
+    // SAFETY: system register writes that install this kernel's stack selection and vector
     // table on the boot CPU, before any exception can be taken. The SPSel switch keeps the
     // stack pointer's value, so the compiler's view of the stack is unchanged.
     unsafe {
@@ -432,11 +434,6 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
             "mov sp, {tmp}",
             "isb",
             tmp = out(reg) _,
-            options(nomem, nostack, preserves_flags)
-        );
-        asm!(
-            "msr tpidr_el1, {}",
-            in(reg) ptr::from_ref(&CPU_INFO_PRIMARY) as usize,
             options(nomem, nostack, preserves_flags)
         );
         asm!(
@@ -1296,7 +1293,7 @@ pub fn cpu_startup() {
     );
 
     let curpcb = &proc0paddr().u_pcb;
-    CPU_INFO_PRIMARY.ci_curpcb.set(curpcb);
+    CPU_INFO_PRIMARY.set_curpcb_ptr(curpcb);
     curpcb.pcb_flags.set(0);
     curpcb.pcb_tf.set(PROC0TF.as_ptr());
 
@@ -1405,12 +1402,12 @@ fn atoi(s: &[u8]) -> i32 {
 
 /// `need_resched`: asks `ci` to reschedule.
 pub fn need_resched(ci: &CpuInfo) {
-    ci.ci_want_resched.store(1, Ordering::Relaxed);
+    ci.core.set_want_resched(1);
 
     // There's a risk we'll be called before the idle threads start
     // SAFETY: `ci_curproc` names a thread on the CPU, hence alive (a thread is freed only
     // after it switched away for good).
-    if let Some(p) = unsafe { ci.ci_curproc.get().as_ref() } {
+    if let Some(p) = unsafe { ci.curproc_ptr().as_ref() } {
         aston(p);
         cpu_kick(ci);
     }
@@ -1424,7 +1421,7 @@ pub fn aston(p: &Proc) {
 /// `setsoftast()`: `aston(curcpu()->ci_curproc)`.
 pub fn setsoftast() {
     // SAFETY: `ci_curproc` names the thread on this CPU, hence alive.
-    if let Some(p) = unsafe { curcpu().ci_curproc.get().as_ref() } {
+    if let Some(p) = unsafe { curcpu().curproc_ptr().as_ref() } {
         aston(p);
     }
 }
@@ -1443,7 +1440,7 @@ pub fn signotify(p: &Proc) {
 
 /// `clear_resched(ci)`.
 pub fn clear_resched(ci: &CpuInfo) {
-    ci.ci_want_resched.store(0, Ordering::Relaxed);
+    ci.core.set_want_resched(0);
 }
 
 /// `cpu_idle_enter`: the idle thread checks the run queues with interrupts masked, so an

@@ -104,11 +104,12 @@
 //! owner word and then restores the level it replaced. It never sleeps. `ci_mutex_level` is
 //! counted under `DIAGNOSTIC`.
 //!
-//! The machine's `spl(9)` and the CPU's identity arrive through the `IntrLevel` and `CpuId`
-//! bridges (`intr.rs`, `cpu.rs`); before they are registered there are no interrupts and one
-//! CPU, and a mutex is a compare-and-swap of its owner word, which is all its exclusion ever
-//! rests on. The level a mutex raises to is fixed when it is entered, and the guard restores
-//! only a level it raised: a mutex entered before the `IntrLevel` bridge exists and left
+//! The machine's `spl(9)` arrives through the `IntrLevel` bridge (`intr.rs`), the CPU's
+//! identity from `hal::cpu` (its core, N4.5a); before the bridge is registered there are no
+//! interrupts, before the boot CPU's core is installed one CPU, and a mutex is a
+//! compare-and-swap of its owner word, which is all its exclusion ever rests on. The level
+//! a mutex raises to is fixed when it is entered, and the guard restores only a level it
+//! raised: a mutex entered before the `IntrLevel` bridge exists and left
 //! after it was registered restores nothing (the C fixes `mtx_wantipl` at init; this
 //! mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry).
 //!
@@ -140,7 +141,7 @@
 //!   `mtx_leave`. Holding the guard is the proof of the lock; it is not `Send`, as the
 //!   mutex belongs to the CPU that entered it.
 //! - The owner word is never 0 for an owner (the CPU's word with a flag bit set), so the
-//!   compare-and-swap excludes even when the `CpuId` bridge answers wrongly, and a machine
+//!   compare-and-swap excludes even when the CPU's identity is wrong, and a machine
 //!   with one CPU takes the same path: there the swap never fails but on a recursion, which
 //!   panics.
 //! - The kernel is always `MULTIPROCESSOR` (decision 40): the level is always raised to at
@@ -530,7 +531,7 @@ mod tests {
                         let v = *g;
                         *g = v + 1;
                     }
-                    testutil::spinning()
+                    crate::cpu::curcpu().spinning()
                 })
             })
             .collect();

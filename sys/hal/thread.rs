@@ -33,7 +33,7 @@
 //!   `mi_switch` holds `sched_lock` but cannot present a witness from assembly, `signotify`
 //!   reads `p_cpu` from another CPU without the lock (`cpu_unidle(p->p_cpu)`), and `sysctl`
 //!   and ddb read `p_stat` unlocked. `cpu` holds the `cpu_info` word the switch stores
-//!   (`hal::cpu::CpuId::curcpu_word`); `addr` the u-area's address, 0 before `cpu_fork` (an
+//!   (`hal::cpu::CpuCore::word`); `addr` the u-area's address, 0 before `cpu_fork` (an
 //!   `Option` of a word would put a discriminant where the assembly reads the address).
 //! - N4.2 writes the struct and its constructor only; N4.5 moves the switch, the trampoline
 //!   and `cpu_fork` here (`hal::thread`). amd64's `Mdproc` is N10's (decision 44): this file

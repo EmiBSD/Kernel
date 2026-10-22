@@ -27,9 +27,9 @@
 //!
 //! - `IntrLevel`: a per-thread level; `splraise` never lowers it, `splx` restores; the
 //!   `IPL_MPFLOOR` of the host double of `bsd` (9).
-//! - `CpuId`: each test thread is a CPU of its own (its index from a counter, its word the
-//!   address of a per-thread static), so two test threads contend for a lock and update
-//!   per-CPU counters as two CPUs do; `ncpusfound` is `MAXCPUS`.
+//! - The running CPU is no bridge (N4.5a): `hal::cpu`'s host backend makes every test thread
+//!   a CPU of its own, so two test threads contend for a lock and update per-CPU counters as
+//!   two CPUs do.
 //! - `Sleep`: each test thread is a process (its word the address of another per-thread
 //!   static); a wait channel has a generation number that every wakeup bumps, `sleep_setup`
 //!   records it and `sleep_finish` waits on one condition variable until it moves (so a wakeup
@@ -61,7 +61,6 @@ use std::time::{Duration, Instant};
 
 use crate::bridges;
 use crate::cons::Console;
-use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
@@ -76,10 +75,6 @@ use crate::user::UserCopy;
 
 std::thread_local! {
     static SPL: Cell<i32> = const { Cell::new(0) };
-    static SPINNING: Cell<isize> = const { Cell::new(0) };
-    static MUTEX_LEVEL: Cell<i32> = const { Cell::new(0) };
-    static WORD: u8 = const { 0 };
-    static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
@@ -129,9 +124,6 @@ static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
 
-/// The index the next test thread gets.
-static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
-
 /// The interrupt-level double.
 struct TestIntr;
 
@@ -159,37 +151,6 @@ impl IntrLevel for TestIntr {
     fn splassert(&self, wantipl: i32, func: &str) {
         let at = SPL.with(Cell::get);
         assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
-    }
-}
-
-/// The CPU double.
-struct TestCpu;
-
-impl CpuId for TestCpu {
-    fn cpu_number(&self) -> usize {
-        CPU.with(|c| *c) % crate::cpu::MAXCPUS
-    }
-
-    fn curcpu_word(&self) -> usize {
-        // The address of a per-thread static: distinct per live thread, never 0, and with
-        // the two low bits clear (the locks' flag bits) once aligned down.
-        WORD.with(|w| core::ptr::from_ref(w).addr() & !0xf) | 0x10
-    }
-
-    fn spinning(&self, delta: isize) {
-        SPINNING.with(|s| s.set(s.get() + delta));
-    }
-
-    fn past_caring(&self) -> bool {
-        false
-    }
-
-    fn mutex_level(&self, delta: i32) {
-        MUTEX_LEVEL.with(|m| m.set(m.get() + delta));
-    }
-
-    fn ncpus(&self) -> usize {
-        crate::cpu::MAXCPUS
     }
 }
 
@@ -554,7 +515,6 @@ fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
 }
 
 static TEST_INTR: TestIntr = TestIntr;
-static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
@@ -570,7 +530,6 @@ pub(crate) fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = bridges::register_intr_level(&TEST_INTR);
-        let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);
@@ -680,11 +639,6 @@ pub(crate) fn set_random_seed(seed: u64) {
 /// pool or of `km_alloc` is.
 pub(crate) fn set_idle(pa: Paddr) {
     lock(&IDLE_FRAMES).insert(pa.as_usize());
-}
-
-/// This thread's spin count, as the double keeps it.
-pub(crate) fn spinning() -> isize {
-    SPINNING.with(Cell::get)
 }
 
 /// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, the

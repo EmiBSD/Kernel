@@ -19,6 +19,7 @@
 /* <CODE> */
 //! arm64 machine code moved into the HAL.
 
+pub(crate) mod cpu;
 pub mod include;
 pub mod pmap;
 

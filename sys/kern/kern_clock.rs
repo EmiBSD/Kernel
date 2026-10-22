@@ -292,7 +292,7 @@ pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
             CP_IDLE
         };
 
-        if spc.spc_spinning.load(Ordering::Relaxed) != 0 {
+        if spc.spc_spinning.load(Ordering::Relaxed) != 0 || hal::cpu::curcpu().spinning() != 0 {
             cp_time = CP_SPIN;
         }
         cp_time

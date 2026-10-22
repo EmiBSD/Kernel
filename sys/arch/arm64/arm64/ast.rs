@@ -56,7 +56,7 @@ use hal::vm::uvmexp::UVMEXP;
 pub extern "C" fn ast(tf: &mut Trapframe) {
     let ci = curcpu();
     // SAFETY: `ci_curproc` names the thread returning to user mode, hence alive.
-    let Some(p) = (unsafe { ci.ci_curproc.get().as_ref() }) else {
+    let Some(p) = (unsafe { ci.curproc_ptr().as_ref() }) else {
         panic(format_args!("ast: no curproc"));
     };
 
@@ -64,7 +64,7 @@ pub extern "C" fn ast(tf: &mut Trapframe) {
 
     refreshcreds(p);
     UVMEXP.softs.fetch_add(1, Ordering::Relaxed);
-    mi_ast(p, ci.ci_want_resched.load(Ordering::Relaxed) != 0);
+    mi_ast(p, ci.core.want_resched() != 0);
     userret(p);
 }
 /* </CODE> */

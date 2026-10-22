@@ -1624,7 +1624,7 @@ adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "s
 rust = "sys/arch/arm64/arm64/ast.rs"
 lz = ["sys/arch/arm64/arm64/ast.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/autoconf.rs"
@@ -1653,20 +1653,24 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/arm64/copy.rs"
 lz = ["sys/arch/arm64/arm64/copy.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/cpu.rs"]
 license = "none"
+notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/copystr.rs"
 lz = ["sys/arch/arm64/arm64/copystr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/cpu.rs"]
 license = "none"
+notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1683,7 +1687,8 @@ notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswit
 [[module]]
 rust = "sys/arch/arm64/arm64/db_interface.rs"
 lz = ["sys/arch/arm64/arm64/db_interface.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/cpu.rs"]
 notes = "M2: db_enter; M4: ddb_regs (StaticCell), db_ktrap (no db_recover, splhigh reported, db_active is a bool, the MDSCR single-step handling kept), db_enter = brk #0xf000; M11c: db_regs[] (db_reg_var! entries; x30 is tf_lr, the C's tf_x[30] is past the array), db_machine_command_table (empty: all of arm64's are MULTIPROCESSOR), db_machine_init (MULTIPROCESSOR body); db_validate_address, db_read_bytes/db_write_bytes and db_branch_taken are not ported; M11c (MULTIPROCESSOR): ddb_mp_mutex (DbMutex), ddb_state, ddb_active_cpu, db_switch_cpu (AtomicBool), db_switch_to_cpu, db_ktrap's db_enter_ddb loop (the body the C repeats is db_ktrap_inddb), db_enter_ddb, db_startcpu, db_stopcpu, the ARM_IPI_DDB sends, the MP commands (db_cpuinfo_cmd, db_startproc_cmd, db_stopproc_cmd, db_ddbproc_cmd: cpuinfo, startcpu, stopcpu, ddbcpu first in the table) and db_machine_init's body; splhigh/splx around db_trap; a fault while a command loop runs (db_recover) prints 'Faulted in DDB' and do_el1h_sync panics (no longjmp)"
 
 [[module]]
@@ -1701,7 +1706,7 @@ status = "inherited"
 rust = "sys/arch/arm64/arm64/exception.rs"
 lz = ["sys/arch/arm64/arm64/exception.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 license = "none"
 notes = "M4: save_registers/restore_registers, handle_el1h_sync/irq/fiq/error, exception_vectors, in exception.S (global_asm! with the frame offsets as placeholders: assym.h); x18 is a general register here (the C's -ffixed-x18 curcpu register), so the EL1 paths save and restore it and recover sp from the frame size; do_ast, handle_el0_* and the trampoline return are M6 (their vector slots are vempty); M6-a: do_ast, disable_ss/allow_ss, handle_el0_sync/irq/fiq/error, syscall_return, the 64-bit EL0 vector slots; the return macro is an eret (trampoline.S not ported)"
 
@@ -1755,13 +1760,13 @@ adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.r
 rust = "sys/arch/arm64/arm64/syscall.rs"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/trap.rs"
 lz = ["sys/arch/arm64/arm64/trap.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
@@ -1877,7 +1882,7 @@ notes = "M2: struct bus_space with single-register accessors, map/unmap/subregio
 rust = "sys/arch/arm64/include/cpu.rs"
 lz = ["sys/arch/arm64/include/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/cpu.rs"]
 notes = "M0: DAIF helpers (restore_daif, enable/disable_irq_daif[_ret], intr_enable/disable/restore); M4: struct cpu_info (the fields the exception and interrupt paths use, in C order), curcpu (tpidr_el1), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING, CPUF_*, CI_DDB_*; the topology fields, the scheduler state, CTL_MACHDEP and the cache helpers come with M4-b/M5; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = trapframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; M11a: struct cpu_info complete (topology, PSCI idle state, opp table/idx/max, cpu supply, capacity, prev_sleep/last_itime; srp hazards, xcall and ci_uvm still out); fields other CPUs touch are atomics (ci_flags, ci_want_resched, ci_opp_idx/max, ci_ddb_paused) or CiPtr (ci_next, ci_curproc, ci_curpm); ci_dev is a *const Device; CPU_IS_RUNNING true without MULTIPROCESSOR, CPU_INFO_UNIT from ci_dev with it; CPU_BUSY_CYCLE; M16d: cpu_rnd_messybits (CNTVCT_EL0 XOR its bit reversal, low 32 bits), machine::Cpu::cpu_rnd_messybits"
 
 [[module]]
@@ -5108,7 +5113,7 @@ status = "inherited"
 rust = "sys/kern/kern_clock.rs"
 lz = ["sys/kern/kern_clock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 notes = "M5-a: stathz/profhz/profprocs/ticks/jiffies and the period globals, initclocks, hardclock, tvtohz, tstohz, statclock (the per-thread accounting and schedclock wait for struct proc, M5-b: reported); startprofclock/stopprofclock take a struct process (M5-b); sysctl_clockrate came with kern_sysctl.c; M7b: statclock's user/system/interrupt accounting, p_cpticks, the tusage ticks and sizes and schedclock every fourth tick (its unported! prints from the clock interrupt interleaved with user output and made smoke flaky); M11a: statclock's spc_cp_time update is a single-writer atomic store under the pc_lock"
 
 [[module]]
@@ -5528,7 +5533,7 @@ notes = "M2: reboot() and rebooting; the curproc KASSERT returns with M5, stop_p
 rust = "sys/kern/sched_bsd.rs"
 lz = ["sys/kern/sched_bsd.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 notes = "M5-a: roundrobin_period, sched_lock with SCHED_LOCK_INIT, roundrobin; the load average, schedcpu, decay_aftersleep, yield, mi_switch, setrunnable, schedclock and the rest arrive with struct proc (M5-b); M5-b2: SCHED_LOCK/UNLOCK/ASSERT_*, cexp/averunnable/update_loadavg (atomics), ccpu/schedcpu, decay_aftersleep, yield (r#yield), preempt, mi_switch (smr_idle and the kernel lock not here), setrunnable, setpriority, schedclock, scheduler_start; the CPU throttling (cpu_setperf, perflevel, setperf_auto, sysctl_hw*) is M7; M11a: mi_switch calls smr_idle and, with MULTIPROCESSOR, drops every kernel lock hold around cpu_switchto (__mp_release_all/__mp_acquire_count); M16e: cpu_setperf (a StaticCell, installed by acpicpu; its callers hw.setperf and perfpolicy are not ported)"
 
 [[module]]
@@ -5575,7 +5580,7 @@ notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the 
 rust = "sys/kern/subr_prf.rs"
 lz = ["sys/kern/subr_prf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
 notes = "format engine is core::fmt (fmt::Arguments replaces fmt+va_list, so printf/vprintf and snprintf/vsnprintf pair up); %b is the Bitmask Display adaptor, %s of a byte string is Str; kprintf!/kprintln!/log!/db_printf! macros; M8 (tty.c): kputchar takes the tty (TOTTY through tputchar, constty redirection with TOCONS), uprintf, ttyprintf; M10e: tprintf_open/tprintf_close/tprintf under feature nfsclient or nfsserver (tpr_t is sys/sys/tprintf.rs's Tpr, an Option<&'static Session>; tprintf takes fmt::Arguments; host test: handles follow PS_CONTROLT and s_ttyvp, the session is held until tprintf_close, the message is logged at LOG_INFO); v_putc fixed to cnputc; panicbuf is a single buffer (per-CPU ci_panicbuf in M5) and panicstr_claim is the trap handlers' atomic_cas_ptr on panicstr; db_panic defaults to 0 (ddb-lite has no command loop); KASSERT/KDASSERT live here as kassert!/kdassert!; M11e: kprintf_mutex (IPL_HIGH) around printf, vprintf and the TOCONS half of log/addlog, MUTEX_ASSERT_LOCKED for TOCONS in kprintf, splhigh around the TOLOG half of log/addlog"
 
 [[module]]
@@ -8542,10 +8547,19 @@ rust = "sys/hal/thread.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread so the thread's address is the slot's; N4.5 fills the module (cpu_switchto, proc_trampoline, cpu_fork)"
 
-[[extra]]
+[[module]]
 rust = "sys/hal/cpu.rs"
 crate = "hal"
-reason = "hal runtime, written new: the running CPU (CpuId bridge) and MAXCPUS; docs/ZERO_UNSAFE.md 0.1"
+lz = ["sys/arch/arm64/include/cpu.rs"]
+status = "redesigned"
+notes = "N4.5a: CpuCore, the members of struct cpu_info the runtime, the switch and the assembly reach (ci_curproc, ci_curpcb, ci_want_resched, ci_mutex_level, the runtime's spc_spinning, the CPU's number), first in each machine's cpu_info; curcpu() from the machine's per-CPU register (arch/<machine>/cpu.rs); the registry of attached cores (attach, cores, by_number, ncpus); panicstr || db_active as hal flags; the CpuId bridge removed. cpl/ipending/idepth stay bsd's until N4.5c"
+
+[[module]]
+rust = "sys/hal/arch/arm64/cpu.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/cpu.rs"]
+status = "redesigned"
+notes = "N4.5a: curcpu()'s TPIDR_EL1 read as hal::cpu's arm64 backend (the core at the head of the cpu_info the register names), installed by set_current on the boot CPU (initarm), written by the entry code on a secondary CPU (the module's premise)"
 
 [[extra]]
 rust = "sys/hal/testutil.rs"

@@ -45,7 +45,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
-use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::klock::KernelLock;
 use hal::malloc::Malloc;
@@ -56,7 +55,6 @@ use hal::sleep::Sleep;
 use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
-use crate::kern::init_main::{DB_ACTIVE, NCPUSFOUND};
 use crate::kern::kern_kthread::{kthread_create, kthread_create_deferred, kthread_exit};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sched::sched_peg_curproc;
@@ -67,10 +65,9 @@ use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, poo
 use crate::kern::subr_prf::{panicstr, printf};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
-use crate::machine::cpu::{Cpu, cpu_info_foreach, cpu_number, curcpu, curproc};
+use crate::machine::cpu::{Cpu, cpu_info_foreach, curproc};
 use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splhigh, splraise, splx};
 use crate::sys::errno::Errno;
-use crate::sys::mutex::mtx_curcpu;
 use crate::sys::pool::Pool;
 use crate::sys::systm::{COLD, SAFEPRI};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -97,42 +94,6 @@ impl IntrLevel for BsdIntr {
 
     fn splassert(&self, wantipl: i32, func: &str) {
         splassert(wantipl, func);
-    }
-}
-
-/// The running CPU of `sys/machine/cpu.rs`.
-struct BsdCpu;
-
-impl CpuId for BsdCpu {
-    fn cpu_number(&self) -> usize {
-        cpu_number() as usize
-    }
-
-    fn curcpu_word(&self) -> usize {
-        mtx_curcpu()
-    }
-
-    fn spinning(&self, delta: isize) {
-        let spc = Machine::ci_schedstate(curcpu());
-        if delta >= 0 {
-            spc.spc_spinning
-                .fetch_add(delta.unsigned_abs() as u32, Ordering::Relaxed);
-        } else {
-            spc.spc_spinning
-                .fetch_sub(delta.unsigned_abs() as u32, Ordering::Relaxed);
-        }
-    }
-
-    fn past_caring(&self) -> bool {
-        panicstr() || DB_ACTIVE.load(Ordering::Relaxed)
-    }
-
-    fn mutex_level(&self, delta: i32) {
-        Machine::curcpu_mutex_level_add(delta);
-    }
-
-    fn ncpus(&self) -> usize {
-        usize::try_from(NCPUSFOUND.load(Ordering::Relaxed)).unwrap_or(1)
     }
 }
 
@@ -398,7 +359,7 @@ struct BsdTlbCpus;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 impl hal::pmap::TlbCpus for BsdTlbCpus {
     fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::pmap::Pmap)) {
-        let me = curcpu();
+        let me = crate::machine::cpu::curcpu();
         crate::machine::cpu::cpu_info_foreach(&mut |ci| {
             if !ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
                 f(
@@ -430,7 +391,7 @@ impl hal::pmap::TlbCpus for BsdTlbCpus {
     }
 
     fn cflushsz(&self) -> usize {
-        curcpu().ci_cflushsz.get() as usize
+        crate::machine::cpu::curcpu().ci_cflushsz.get() as usize
     }
 }
 
@@ -625,7 +586,6 @@ impl NetLock for BsdNetLock {
 }
 
 static BSD_INTR: BsdIntr = BsdIntr;
-static BSD_CPU: BsdCpu = BsdCpu;
 static BSD_SLEEP: BsdSleep = BsdSleep;
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
@@ -647,7 +607,6 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// contract of the module docs.
 pub fn hal_bridges_register() {
     let _ = hal::bridges::register_intr_level(&BSD_INTR);
-    let _ = hal::bridges::register_cpu_id(&BSD_CPU);
     let _ = hal::bridges::register_sleep(&BSD_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);

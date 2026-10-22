@@ -64,8 +64,8 @@
 //! `counters_read` retries a CPU's copy while the number is odd or changed under it, so the
 //! sum it returns is made of whole updates.
 //!
-//! The running CPU's index arrives through the `CpuId` bridge (`cpu.rs`): before
-//! registration it is 0, the boot CPU, and `ncpusfound` is 1.
+//! The running CPU's index is its core's (`cpu.rs`): 0 before the boot CPU's core is
+//! installed, and `ncpusfound` is 1 before any CPU is attached.
 //!
 //! ## Deviations
 //! - `counters_read` waits for an odd generation with `CPU_BUSY_CYCLE` where the C calls
@@ -89,7 +89,6 @@
 
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
 
-use crate::bridges;
 use crate::cpu::{self, MAXCPUS};
 
 /// One CPU's copy, alone on its cache line (`CACHELINESIZE`, 64 on amd64 and arm64).
@@ -286,9 +285,9 @@ impl<const N: usize> Drop for CountersRef<'_, N> {
     }
 }
 
-/// `ncpusfound` (1 before the `CpuId` bridge is registered), at most `MAXCPUS`.
+/// `ncpusfound`, between 1 and `MAXCPUS` (`cpu::ncpus`).
 fn ncpus() -> usize {
-    bridges::cpu_id().map_or(1, |b| b.ncpus().clamp(1, MAXCPUS))
+    cpu::ncpus()
 }
 
 /// One CPU's counters, read whole: a snapshot is kept only when the generation number was

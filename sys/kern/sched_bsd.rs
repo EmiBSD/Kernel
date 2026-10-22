@@ -600,7 +600,10 @@ pub fn schedclock(p: &Proc) {
     let ci = curcpu();
     let spc = Machine::ci_schedstate(ci);
 
-    if ptr::eq(p, spc.spc_idleproc.get()) || spc.spc_spinning.load(Ordering::Relaxed) != 0 {
+    if ptr::eq(p, spc.spc_idleproc.get())
+        || spc.spc_spinning.load(Ordering::Relaxed) != 0
+        || hal::cpu::curcpu().spinning() != 0
+    {
         return;
     }
 

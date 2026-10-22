@@ -33,7 +33,8 @@
 //!
 //! What each primitive does while its bridge is not registered (early boot, host tests that
 //! register none) is written in its module and is never a panic in a hot path: no interrupts
-//! yet (`intr.rs`), one boot CPU (`cpu.rs`).
+//! yet (`intr.rs`). The running CPU is no bridge since N4.5a: its core (`cpu.rs`) is read
+//! from the machine's per-CPU register.
 //!
 //! The kernel's page allocator is not a bridge: `kernel::vm::km` implements `hal`'s
 //! [`crate::kmbuf::PageMemory`] and its callers pass it down as a value (N3.2), as the pmap's
@@ -54,7 +55,6 @@
 //!   (`register_*` refuses a second implementation), and a reader gets an `Option`.
 
 use crate::cons::Console;
-use crate::cpu::CpuId;
 use crate::intr::IntrLevel;
 use crate::klock::KernelLock;
 use crate::malloc::Malloc;
@@ -103,13 +103,6 @@ bridge!(
     INTR_LEVEL: IntrLevel,
     register_intr_level,
     intr_level
-);
-
-bridge!(
-    /// Registers the running CPU's identity (`curcpu()`, `cpu_number()`). Paid by N4 (the hardware enters hal with its kernel owner, N4.1/N4.5).
-    CPU_ID: CpuId,
-    register_cpu_id,
-    cpu_id
 );
 
 bridge!(

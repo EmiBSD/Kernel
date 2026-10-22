@@ -28,8 +28,6 @@
 //! other as two processes do.
 //!
 //! - `IntrLevel`: a per-thread level, as hal's double.
-//! - `CpuId`: each test thread a CPU (its index from a counter, its word a per-thread
-//!   static's address).
 //! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
 //!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
@@ -81,14 +79,13 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::vec;
 use std::vec::Vec;
 
 use hal::bridges;
-use hal::cpu::CpuId;
 use hal::intr::IntrLevel;
 use hal::klock::KernelLock;
 use hal::kmbuf::{PageKind, PageMemory};
@@ -131,9 +128,7 @@ struct Page([u8; TEST_PAGE]);
 
 std::thread_local! {
     static SPL: Cell<i32> = const { Cell::new(0) };
-    static WORD: u8 = const { 0 };
     static PROC: u8 = const { 0 };
-    static CPU: usize = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
     static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
@@ -149,9 +144,6 @@ std::thread_local! {
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
 }
-
-/// The index the next test thread gets.
-static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 /// The generation number of every wait channel a wakeup touched.
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
@@ -206,32 +198,6 @@ impl IntrLevel for TestIntr {
     fn splassert(&self, wantipl: i32, func: &str) {
         let at = SPL.with(Cell::get);
         assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
-    }
-}
-
-/// The CPU double.
-struct TestCpu;
-
-impl CpuId for TestCpu {
-    fn cpu_number(&self) -> usize {
-        CPU.with(|c| *c) % hal::cpu::MAXCPUS
-    }
-
-    fn curcpu_word(&self) -> usize {
-        // Distinct per live thread, never 0, the locks' low flag bits clear.
-        WORD.with(|w| std::ptr::from_ref(w).addr() & !0xf) | 0x10
-    }
-
-    fn spinning(&self, _delta: isize) {}
-
-    fn past_caring(&self) -> bool {
-        false
-    }
-
-    fn mutex_level(&self, _delta: i32) {}
-
-    fn ncpus(&self) -> usize {
-        hal::cpu::MAXCPUS
     }
 }
 
@@ -890,7 +856,6 @@ pub fn mem_vnode(contents: Vec<u8>) -> &'static MemVnode {
     }))
 }
 static TEST_INTR: TestIntr = TestIntr;
-static TEST_CPU: TestCpu = TestCpu;
 static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
@@ -928,7 +893,6 @@ pub fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = bridges::register_intr_level(&TEST_INTR);
-        let _ = bridges::register_cpu_id(&TEST_CPU);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let pools = bridges::register_pool_backend(&TEST_POOLS).is_ok();
         let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();

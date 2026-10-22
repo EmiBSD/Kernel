@@ -64,7 +64,7 @@ use hal::vm::uvmexp::UVMEXP;
 /// `svc_handler`: a system call from EL0 (`do_el0_sync`, `EXCP_SVC`).
 pub fn svc_handler(frame: &mut Trapframe) {
     // SAFETY: `ci_curproc` names the thread that made the system call, hence alive.
-    let Some(p) = (unsafe { curcpu().ci_curproc.get().as_ref() }) else {
+    let Some(p) = (unsafe { curcpu().curproc_ptr().as_ref() }) else {
         panic(format_args!("svc_handler: no curproc"));
     };
 

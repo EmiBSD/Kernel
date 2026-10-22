@@ -40,7 +40,7 @@ use crate::sys::errno::Errno;
 
 global_asm!(
     include_str!("copy.S"),
-    CI_CURPCB = const offset_of!(CpuInfo, ci_curpcb),
+    CI_CURPCB = const offset_of!(CpuInfo, core) + hal::cpu::CORE_CURPCB,
     PCB_ONFAULT = const offset_of!(Pcb, pcb_onfault),
     EFAULT = const Errno::EFAULT as i32,
 );

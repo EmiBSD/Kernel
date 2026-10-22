@@ -2015,6 +2015,8 @@ pub fn cpu_attach(_parent: Option<&Device>, dev: &Device, aux: *mut c_void) {
 
     ci.ci_dev.set(ptr::from_ref(dev));
     ci.ci_cpuid.set(dev.dv_unit.get() as u32);
+    // The runtime's registry of the CPUs, with `ci_cpuid` as the core's number.
+    hal::cpu::attach(&ci.core, dev.dv_unit.get() as usize);
     ci.ci_mpidr.set(faa.fa_reg[0].addr);
     ci.ci_node.set(faa.fa_node);
     ci.ci_self.set(ptr::from_ref(ci));
@@ -2553,15 +2555,15 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
 
     // Start from a clean slate regardless of whether this is the initial power up or a
     // wakeup of a suspended CPU.
-    ci.ci_curproc.set(ptr::null());
-    ci.ci_curpcb.set(ptr::null());
+    ci.set_curproc_ptr(ptr::null());
+    ci.set_curpcb_ptr(ptr::null());
     ci.ci_curpm.set(ptr::null());
     ci.ci_cpl.set(IPL_NONE as u32);
     ci.ci_ipending.set(0);
     ci.ci_idepth.set(0);
 
     // DIAGNOSTIC
-    ci.ci_mutex_level.set(0);
+    ci.core.reset_mutex_level();
 
     // Re-create the switchframe for this CPUs idle process.
     let spc = &ci.ci_schedstate;

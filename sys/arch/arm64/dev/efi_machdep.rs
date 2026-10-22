@@ -458,7 +458,7 @@ pub fn efi_enter(sc: &EfiSoftc) {
     fpu_kernel_enter();
 
     // SAFETY: `ci_curpcb` is the running thread's pcb, alive while it runs.
-    if let Some(pcb) = unsafe { curcpu().ci_curpcb.get().as_ref() } {
+    if let Some(pcb) = unsafe { curcpu().curpcb_ptr().as_ref() } {
         pcb.pcb_onfault.set(efi_fault as *const () as usize);
     }
 }
@@ -470,7 +470,7 @@ pub fn efi_leave(sc: &EfiSoftc) {
     let pm = unsafe { &*ci.ci_curpm.get() };
 
     // SAFETY: as in `efi_enter`.
-    if let Some(pcb) = unsafe { ci.ci_curpcb.get().as_ref() } {
+    if let Some(pcb) = unsafe { ci.curpcb_ptr().as_ref() } {
         pcb.pcb_onfault.set(0);
     }
 

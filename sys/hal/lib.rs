@@ -56,6 +56,7 @@ pub(crate) mod assert;
 pub mod bootmem;
 pub mod bridges;
 pub mod cons;
+#[forbid(unsafe_code)]
 pub mod cpu;
 pub mod intr;
 #[forbid(unsafe_code)]
