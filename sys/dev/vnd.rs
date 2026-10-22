@@ -440,7 +440,7 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
                 sc.sc_dev.xname(),
                 if bp.isset(B_READ) { "read" } else { "write" },
                 pr.ps_pid,
-                core::str::from_utf8(pr.comm()).unwrap_or("?"),
+                core::str::from_utf8(&pr.comm()).unwrap_or("?"),
                 bp.b_blkno.get(),
                 origbcount
             ));
