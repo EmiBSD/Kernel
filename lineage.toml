@@ -8378,6 +8378,13 @@ status = "redesigned"
 notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8)"
 
 [[module]]
+rust = "sys/kernel/cred.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_prot.rs", "sys/sys/ucred.rs"]
+status = "redesigned"
+notes = "N4.2: credentials in the kernel crate: struct ucred plain data with Ro<T> members (get() kept for the 60 readers, set() only through &mut of a value being built, decision 10), placed in the recorded pool ucredpl (IPL_MPFLOOR) and shared as CredRef (Clone = crhold, Drop = crfree, from_ref = crhold of a borrowed struct ucred *); crset/crcopy/crdup/crfromxucred/groupmember/suser_ucred; crcopy always copies (a recorded pool gives no value mutably, a stated deviation); bsd's kern_prot.rs keeps the set*id syscalls and switches to these with the rest of N4.2"
+
+[[module]]
 rust = "sys/kernel/timeout.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_timeout.rs", "sys/sys/timeout.rs"]

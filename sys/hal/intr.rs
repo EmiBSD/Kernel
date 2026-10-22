@@ -172,7 +172,7 @@ pub(crate) fn restore(old: Option<i32>) {
 }
 
 /// `IPL_MPFLOOR` (`IPL_NONE` before the bridge is registered: no interrupts yet).
-pub(crate) fn mpfloor() -> i32 {
+pub fn mpfloor() -> i32 {
     bridges::intr_level().map_or(IPL_NONE, |b| b.mpfloor())
 }
 /* </CODE> */
