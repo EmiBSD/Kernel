@@ -51,7 +51,6 @@ use hal::malloc::Malloc;
 use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
-use hal::sleep::Sleep;
 use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
@@ -60,16 +59,14 @@ use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sched::sched_peg_curproc;
 use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::kern_synch::{sleep_finish, sleep_setup, tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
-use crate::kern::subr_prf::{panicstr, printf};
+use crate::kern::subr_prf::printf;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
-use crate::machine::cpu::{Cpu, cpu_info_foreach, curproc};
-use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splhigh, splraise, splx};
+use crate::machine::cpu::{Cpu, cpu_info_foreach};
+use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::pool::Pool;
-use crate::sys::systm::{COLD, SAFEPRI};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// `spl(9)` of `sys/machine/intr.rs`.
@@ -94,74 +91,6 @@ impl IntrLevel for BsdIntr {
 
     fn splassert(&self, wantipl: i32, func: &str) {
         splassert(wantipl, func);
-    }
-}
-
-/// The sleep queues of `sys/kern/kern_synch.rs`.
-struct BsdSleep;
-
-impl Sleep for BsdSleep {
-    fn curproc_word(&self) -> usize {
-        curproc().map_or(0, |p| ptr::from_ref(p).addr())
-    }
-
-    fn sleep_setup(&self, ident: *const (), prio: i32, wmesg: &'static str) {
-        sleep_setup(ident.cast::<c_void>(), prio, wmesg);
-    }
-
-    fn sleep_finish(&self, nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
-        sleep_finish(nsecs, do_sleep)
-    }
-
-    fn tsleep_nsec(
-        &self,
-        ident: *const (),
-        prio: i32,
-        wmesg: &'static str,
-        nsecs: u64,
-    ) -> Result<(), Errno> {
-        tsleep_nsec(ident, prio, wmesg, nsecs)
-    }
-
-    fn wakeup(&self, ident: *const ()) {
-        wakeup(ident);
-    }
-
-    fn wakeup_one(&self, ident: *const ()) {
-        wakeup_one(ident);
-    }
-
-    fn kernel_lock_held(&self) -> bool {
-        #[cfg(feature = "multiprocessor")]
-        {
-            crate::kern::kern_lock::_kernel_lock_held()
-        }
-        #[cfg(not(feature = "multiprocessor"))]
-        {
-            false
-        }
-    }
-
-    fn cold(&self) -> bool {
-        COLD.load(Ordering::Relaxed) || panicstr()
-    }
-
-    /// `msleep_nsec`'s and `tsleep_nsec`'s `cold || panicstr` work (`kern_synch.rs`).
-    fn cold_yield(&self) {
-        let s = splhigh();
-        splx(SAFEPRI.load(Ordering::Relaxed));
-        #[cfg(feature = "multiprocessor")]
-        if crate::kern::kern_lock::_kernel_lock_held() {
-            let kl = &crate::kern::kern_lock::KERNEL_LOCK;
-            let hold_count = crate::kern::kern_lock::__mp_release_all(kl);
-            crate::kern::kern_lock::__mp_acquire_count(kl, hold_count);
-        }
-        splx(s);
-    }
-
-    /// `sched_pause(yield)` of `sys/sys/sched.rs` (`SPCF_SHOULDYIELD` on this CPU).
-    fn sched_pause(&self) {
-        crate::sys::sched::sched_pause(crate::kern::sched_bsd::r#yield);
     }
 }
 
@@ -594,7 +523,9 @@ impl NetLock for BsdNetLock {
 }
 
 static BSD_INTR: BsdIntr = BsdIntr;
-static BSD_SLEEP: BsdSleep = BsdSleep;
+/// The kernel's scheduler as `hal::sleep`'s sleeps (`kernel::sched::KernelSleep`).
+static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcGlue> =
+    kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
@@ -615,7 +546,7 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// contract of the module docs.
 pub fn hal_bridges_register() {
     let _ = hal::bridges::register_intr_level(&BSD_INTR);
-    let _ = hal::bridges::register_sleep(&BSD_SLEEP);
+    let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);

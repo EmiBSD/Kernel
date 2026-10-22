@@ -461,11 +461,6 @@ impl Cpu for Machine {
 
     fn cpu_idle_leave() {}
 
-    /// The host has one thread of execution and no kernel stacks to switch between.
-    unsafe fn cpu_switchto(_old: Option<&Proc>, _new: &Proc) {
-        crate::kern::subr_prf::panic(format_args!("host: cpu_switchto has no context switch"))
-    }
-
     fn cpu_exit(_p: &Proc) {}
 
     /// Nothing to set up: the host never switches to the thread.

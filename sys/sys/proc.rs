@@ -141,11 +141,6 @@ pub type SessionRef = kernel::proc::SessionRef<BsdProcGlue>;
 /// The guard of a process's `ps_mtx`.
 pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
 
-hal::list_adapter!(
-    /// `TAILQ_ENTRY(proc) p_runq`: the run, sleep and dead-thread queues.
-    pub ProcRunq: Proc, p_runq_legacy
-);
-
 /// `struct pinsyscall`: the system call pin table of a text region.
 #[derive(Debug, Default)]
 pub struct Pinsyscall {
@@ -192,14 +187,11 @@ impl Pinsyscall {
 pub trait ProcExt {
     /// `p->p_vmspace`: the thread's copy of its process's address space.
     fn vmspace(&self) -> &'static Vmspace;
-    /// `p->p_cpu`.
+    /// `p->p_cpu`: the `cpu_info` of the CPU the thread runs or last ran on (its number in
+    /// the slot's word, `kernel::sched::thread_cpu`).
     fn cpu(&self) -> Option<&'static CpuInfo>;
     /// `p->p_addr->u_pcb`: the thread's process control block.
     fn pcb(&self) -> &Pcb;
-    /// `p->p_cpu` as the C's pointer (compared, never followed here).
-    fn cpu_ptr(&self) -> *const CpuInfo;
-    /// `p->p_cpu = ci`.
-    fn set_cpu(&self, ci: *const CpuInfo);
     /// `p->p_addr` as the C's pointer.
     fn uarea(&self) -> *const User;
     /// `p->p_addr = uaddr`.
@@ -233,9 +225,7 @@ impl ProcExt for Proc {
     }
 
     fn cpu(&self) -> Option<&'static CpuInfo> {
-        // SAFETY: `p_cpu` is 0 or the exposed address of a static `cpu_info` (`set_cpu`'s
-        // stores, the switch's `ci_self`), which lives for the whole run.
-        unsafe { ptr::with_exposed_provenance::<CpuInfo>(self.cpu_word()).as_ref() }
+        kernel::sched::thread_cpu(self).and_then(crate::kern::kern_sched::cpu_info_by_number)
     }
 
     fn pcb(&self) -> &Pcb {
@@ -246,14 +236,6 @@ impl ProcExt for Proc {
         // freed by the reaper's `uvm_uarea_free` after the thread is dead; the borrow is
         // the thread's.
         unsafe { &(*u).u_pcb }
-    }
-
-    fn cpu_ptr(&self) -> *const CpuInfo {
-        ptr::with_exposed_provenance(self.cpu_word())
-    }
-
-    fn set_cpu(&self, ci: *const CpuInfo) {
-        self.set_cpu_word(ci.expose_provenance());
     }
 
     fn uarea(&self) -> *const User {
@@ -310,6 +292,20 @@ impl Default for Cond {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `cond_signal_handler` (`kern_synch.c`): the timeout/task handler that signals a `cond`,
+/// whose address is its argument.
+pub fn cond_signal_handler(arg: *mut c_void) {
+    // SAFETY: `arg` is the `cond` its waiter armed the handler with (`cond_signal`, the
+    // barrier tasks and timeouts of `smr_barrier` and `ifq_barrier`), which the waiter keeps
+    // on its frame until `cond_wait` sees `c_wait` cleared here; nothing reads it after the
+    // store but `wakeup_one`, which only compares the address.
+    let c = unsafe { &*arg.cast::<Cond>() };
+
+    c.c_wait.store(0, core::sync::atomic::Ordering::Relaxed);
+
+    crate::kern::kern_synch::wakeup_one(ptr::from_ref(c));
 }
 
 /*

@@ -41,14 +41,22 @@ std::thread_local! {
         c.set_number(NEXT.fetch_add(1, Ordering::Relaxed) % MAXCPUS);
         c
     };
-    /// A core installed on the thread, which answers instead of its own.
+    /// The core the thread runs as: one installed on it, else its own, kept here at its
+    /// first read so a read is one access to a `const` thread-local.
     static CURRENT: Cell<Option<&'static CpuCore>> = const { Cell::new(None) };
 }
 
 /// The running thread's core: the one installed on it, else its own.
 #[inline]
 pub(crate) fn current() -> Option<&'static CpuCore> {
-    Some(CURRENT.with(Cell::get).unwrap_or_else(|| OWN.with(|c| *c)))
+    CURRENT.with(|cur| match cur.get() {
+        Some(c) => Some(c),
+        None => {
+            let own = OWN.with(|c| *c);
+            cur.set(Some(own));
+            Some(own)
+        }
+    })
 }
 
 /// Installs `c` on the calling thread.

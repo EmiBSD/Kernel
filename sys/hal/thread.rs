@@ -189,6 +189,7 @@ impl SchedHold {
 
 /// `SCHED_LOCK()`: takes the scheduler's lock (spinning while another CPU holds it), raising
 /// the level to `IPL_SCHED`.
+#[inline]
 pub fn sched_lock() -> SchedHold {
     let g = SCHED_LOCK.lock();
     #[cfg(feature = "diagnostic")]
@@ -198,6 +199,7 @@ pub fn sched_lock() -> SchedHold {
 
 /// `SCHED_LOCK_ASSERT_LOCKED()`'s test: this CPU holds the scheduler's lock (or the kernel is
 /// past caring, as `mtx_owned`).
+#[inline]
 pub fn sched_locked() -> bool {
     SCHED_LOCK.owned()
 }

@@ -365,7 +365,7 @@ fn futex_wait(p: &Proc, uaddr: usize, val: u32, timeout: usize, flags: i32) -> R
 /// Setting `ft_proc` to NULL releases the futex reference currently held via the slpque
 /// lock. `SCHED_LOCK` is only needed to call `wakeup_proc`.
 fn futex_list_wakeup(fl: &TailqHead<FutexList>) {
-    sched_lock();
+    let mut h = sched_lock();
     let mut f = fl.first();
     while let Some(cur) = f {
         let nf = TailqHead::<FutexList>::next(cur);
@@ -373,11 +373,11 @@ fn futex_list_wakeup(fl: &TailqHead<FutexList>) {
         // `cur` may be gone now: its waiter can return as soon as it sees NULL.
         // SAFETY: `ft_proc` named the waiting thread, alive while it waits.
         if let Some(p) = unsafe { p.as_ref() } {
-            wakeup_proc(p);
+            wakeup_proc(&mut h, p);
         }
         f = nf;
     }
-    sched_unlock();
+    sched_unlock(h);
 }
 
 /// Wakeup at most `n` sibling threads sleeping on a futex at address `uaddr` and requeue

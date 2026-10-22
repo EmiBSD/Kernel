@@ -79,10 +79,10 @@
 //!   and `process_zap`, the real uid `process_zap` uncharges) are real since `kern_prot.c`.
 //! - `initprocess` is null until `init` exists (M6-b): until then process 0 adopts the
 //!   orphans `exit1` and `process_reparent` would hand to `init`.
-//! - `deadproc` is a `hal::list::List` (N4.2, interim until N4.5): no `Sync` premise on its
-//!   head, and `p_runq` is `Send + Sync`. The list's premise is elements never freed; the
-//!   reaper takes a thread off it before `proc_free`, and the `&'static` it holds is the
-//!   dead CPU list's own element.
+//! - `deadproc`, `deadproc_mutex` and `exit2` are the scheduler's (`kernel::sched`, N4.5a):
+//!   the idle thread moves a dead thread to the reaper's queue (its time accounted by the
+//!   glue's `exit_account`), and the reaper takes the first one off it
+//!   (`kernel::sched::reaper_next`).
 //! - N4.2: the process and its threads are the kernel crate's (`kernel::proc`). A thread
 //!   leaves `ps_threads` in `exit1` by taking its box back from the process
 //!   (`remove_thread_locked`), which it keeps (`p_exited`) until `proc_free` drops it: the
@@ -106,16 +106,15 @@ use crate::kern::init_main::{INITPROCESS, PROC0, PROCESS0};
 use crate::kern::kern_descrip::fdfree;
 use crate::kern::kern_event::{knote_processexit, kqpoll_exit};
 use crate::kern::kern_fork::{NPROCESSES, NTHREADS, freepid};
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_resource::{calcru, ruadd, tuagg_add_process, tuagg_add_runtime};
 use crate::kern::kern_sched::sched_exit;
 use crate::kern::kern_sig::{
     process_suspend_signal, prsignal, psignal, ptsignal, sigactsfree, sigio_freelist,
     single_thread_set,
 };
-use crate::kern::kern_synch::{msleep_nsec, sleep_finish, sleep_setup, wakeup};
+use crate::kern::kern_synch::{sleep_finish, sleep_setup, wakeup};
 use crate::kern::kern_timeout::timeout_del;
-use crate::kern::proc_glue::{chgproccnt, proc_tables, process_ref};
+use crate::kern::proc_glue::{BsdProcGlue, chgproccnt, proc_tables, process_ref};
 use crate::kern::sched_bsd::sched_assert_unlocked;
 use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::uvm_uarea_free;
@@ -125,18 +124,16 @@ use crate::kprintf;
 use crate::machine::Machine;
 use crate::machine::copy::{copyout, copyout_obj};
 use crate::machine::cpu::Cpu;
-use crate::machine::intr::IPL_NONE;
 use crate::machine::pmap::pmap_deactivate;
 #[cfg(feature = "qemu")]
 use crate::machine::{Exit, ExitStatus};
 use crate::sys::errno::Errno;
-use crate::sys::mutex::{MTX_NOWITNESS, Mutex};
-use crate::sys::param::{PCATCH, PVM, PWAIT};
+use crate::sys::param::{PCATCH, PWAIT};
 use crate::sys::proc::{
     EXIT_NORMAL, EXIT_THREAD, P_SYSTEM, P_THREAD, P_WEXIT, PS_CONTINUED, PS_EXITING, PS_ISPWAIT,
     PS_NOZOMBIE, PS_ORPHAN, PS_PPWAIT, PS_PROFIL, PS_STOPPED, PS_STOPPING, PS_TRACED, PS_TRAPPED,
-    PS_WAITED, PS_WAITEVENT, PS_ZOMBIE, Proc, ProcRunq, Process, ProcessRef, PsGuard, SDEAD,
-    SINGLE_EXIT, p_hassibling,
+    PS_WAITED, PS_WAITEVENT, PS_ZOMBIE, Proc, Process, ProcessRef, PsGuard, SDEAD, SINGLE_EXIT,
+    p_hassibling,
 };
 use crate::sys::resource::Rusage;
 use crate::sys::sched::scheduler_wait_hook;
@@ -154,7 +151,6 @@ use crate::sys::wait::{
 };
 use crate::unported;
 use hal::klock;
-use hal::list::List;
 
 /// `sys_exit`: death of process.
 pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
@@ -513,39 +509,6 @@ fn parent_locked(pr: &Process, g: &PsGuard<'_>) -> ProcessRef {
     }
 }
 
-/// `deadproc_mutex`: locking of this prochead is special; it's accessed in a critical
-/// section of process exit, and thus locking it can't modify interrupt state. We use a simple
-/// spin lock for this prochead. We use the `p_runq` member to linkup to deadproc.
-static DEADPROC_MUTEX: Mutex = Mutex::new(IPL_NONE);
-
-/// `deadproc`: the threads waiting for the reaper, touched under `deadproc_mutex`.
-static DEADPROC: List<ProcRunq> = List::new();
-
-/// `deadproc_mutex`'s `MUTEX_INITIALIZER_FLAGS(IPL_NONE, "deadproc", MTX_NOWITNESS)`: the
-/// witness flag is kept for the record.
-const DEADPROC_MUTEX_FLAGS: i32 = MTX_NOWITNESS;
-
-/// `exit2`: we are called from `sched_idle()` once it is safe to schedule the dead process's
-/// resources to be freed. So this is not allowed to sleep.
-///
-/// We lock the deadproc list, place the proc on that list (using the `p_runq` member), and
-/// wake up the reaper.
-pub fn exit2(p: &'static Proc) {
-    // account the remainder of time spent in exit1()
-    let pr = p.process();
-    let g = pr.ps_mtx.lock();
-    tuagg_add_process(pr, p);
-    drop(g);
-
-    mtx_enter(&DEADPROC_MUTEX);
-    // `p` is SDEAD and on no queue (the idle thread took it off `spc_deadproc`).
-    DEADPROC.insert_tail(p);
-    mtx_leave(&DEADPROC_MUTEX);
-
-    wakeup(ptr::addr_of!(DEADPROC));
-    let _ = DEADPROC_MUTEX_FLAGS;
-}
-
 /// `proc_free`: returns a dead thread to the pool: the box it kept since `exit1` dropped
 /// (its credentials' reference, its vmspace handle and its process's reference with it).
 pub fn proc_free(p: &Proc) {
@@ -563,23 +526,11 @@ pub fn reaper(_arg: *mut c_void) {
     sched_assert_unlocked();
 
     loop {
-        mtx_enter(&DEADPROC_MUTEX);
-        let p = loop {
-            if let Some(p) = DEADPROC.first() {
-                break p;
-            }
-            let _ = msleep_nsec(
-                ptr::addr_of!(DEADPROC),
-                &DEADPROC_MUTEX,
-                PVM,
-                "reaper",
-                INFSLP,
-            );
-        };
-
-        // Remove us from the deadproc list.
-        DEADPROC.remove(p);
-        mtx_leave(&DEADPROC_MUTEX);
+        // The first dead thread, off the deadproc list (`deadproc_mutex` is the scheduler's,
+        // which `exit2` and the idle threads fill).
+        let p: &'static Proc = kernel::sched::reaper_next::<BsdProcGlue, _>(|p| {
+            crate::sys::proc::ProcExt::as_static(p.get_ref())
+        });
 
         // WITNESS_THREAD_EXIT(p): not configured.
 

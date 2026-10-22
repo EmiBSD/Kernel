@@ -1432,8 +1432,7 @@ pub fn setsoftast() {
 /// `setsoftast()` is not called here).
 pub fn signotify(p: &Proc) {
     aston(p);
-    // SAFETY: `p_cpu` names a CPU's `cpu_info`, which lives forever.
-    if let Some(ci) = unsafe { p.cpu_ptr().as_ref() } {
+    if let Some(ci) = p.cpu() {
         cpu_unidle(ci);
     }
 }
@@ -1468,30 +1467,6 @@ pub fn cpu_idle_cycle() {
 pub fn cpu_idle_leave() {
     // SAFETY: as for `cpu_idle_cycle`.
     unsafe { enable_irq_daif() };
-}
-
-/// `cpu_switchto(old, new)`: `hal::thread`'s switch (the FPU state of `old` saved and
-/// dropped, then `cpuswitch.S`), made under `hal`'s scheduler hold, taken inside the legacy
-/// `SCHED_LOCK` the caller holds and handed over by the same switch (N4.5a, until the
-/// scheduler is `kernel::sched`'s): the hold `old` keeps here lies dormant until a switch
-/// back to `old`, and is released when this returns; a thread that starts releases the one
-/// it adopts (`kern_fork.rs`'s `thread_start`). Without `old` (a dead thread, a CPU's first
-/// switch) the hold goes with the switch and this never returns.
-///
-/// # Safety
-///
-/// As `machine::cpu::Cpu::cpu_switchto`: the scheduler lock is held, `new` is runnable and
-/// off every queue, `old` (when given) is the running thread.
-pub unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc) {
-    let mut h = hal::thread::sched_lock();
-    let next = hal::thread::Next::of(&h, hal::pin::pin_static(new.as_static()));
-    match old {
-        Some(old) => {
-            hal::thread::switch_to(&mut h, hal::pin::pin_static(old.as_static()), next);
-            drop(h);
-        }
-        None => hal::thread::exit_to_idle(h, next),
-    }
 }
 
 /// `boot(9)`: halts or reboots according to `howto`.

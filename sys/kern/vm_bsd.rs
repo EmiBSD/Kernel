@@ -824,9 +824,7 @@ impl VmSysctl for BsdVmSysctl {
     fn for_each_proc(&self, f: &mut dyn FnMut(ProcState)) {
         let r = hal::klock::reader();
         for p in proc_tables().allproc.iter(&r) {
-            let idle = p
-                .cpu()
-                .is_some_and(|ci| core::ptr::eq(Machine::ci_schedstate(ci).spc_idleproc.get(), p));
+            let idle = kernel::sched::is_idle_thread(p);
             f(ProcState {
                 stat: i32::from(p.stat()),
                 idle,

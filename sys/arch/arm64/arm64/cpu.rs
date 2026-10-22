@@ -145,7 +145,6 @@ use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::param::USPACE;
-use crate::sys::proc::ProcExt;
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::sys::sched::{CPUTYP_E, CPUTYP_L, CPUTYP_P};
 use crate::sys::task::Task;
@@ -2563,20 +2562,19 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     // DIAGNOSTIC
     ci.core.reset_mutex_level();
 
-    // Re-create the switchframe for this CPUs idle process.
-    let spc = &ci.ci_schedstate;
-    // SAFETY: `sched_kthreads_create` forked this CPU's idle thread before the boot CPU
-    // set CPUF_GO; it never exits.
-    let Some(p) = (unsafe { spc.spc_idleproc.get().as_ref() }) else {
-        panic(format_args!("cpu_init_secondary: no idle thread"));
-    };
-    // The frames are `hal::thread`'s (N4.5a): `sched_idle(ci)` by its number.
+    // Re-create the switchframe for this CPUs idle process: `sched_kthreads_create` forked
+    // it before the boot CPU set CPUF_GO, and it never exits. The frames are `hal::thread`'s
+    // (N4.5a): `sched_idle` with the CPU's number.
+    let n = crate::kern::kern_sched::cpu_number_of(ci);
     let idle: fn(*mut c_void) = sched_idle;
-    hal::thread::thread_restart(
-        hal::pin::pin_static(p.as_static()),
-        thread_start_word(idle),
-        ptr::from_ref(ci).expose_provenance(),
-    );
+    let start = thread_start_word(idle);
+    let restarted =
+        kernel::sched::with_idleproc::<crate::kern::proc_glue::BsdProcGlue, _>(n, |p| {
+            hal::thread::thread_restart(p, start, n);
+        });
+    if restarted.is_none() {
+        panic(format_args!("cpu_init_secondary: no idle thread"));
+    }
 
     let _s = splraise(IPL_HIGH);
     arm_intr_cpu_enable();

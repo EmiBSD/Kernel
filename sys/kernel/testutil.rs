@@ -1637,7 +1637,6 @@ macro_rules! test_proc_glue {
             type ThreadG = ();
             type PgrpG = ();
             type SessionG = ();
-            type RunqEntry = ();
             type FileGlue = $files;
             $crate::proc_glue_link_types!();
 

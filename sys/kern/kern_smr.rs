@@ -109,10 +109,9 @@ static SMR_GRACE_PERIOD: AtomicU8 = AtomicU8::new(0);
 /// `smr_cpu_is_idle`: `ci` runs its idle thread.
 #[inline]
 fn smr_cpu_is_idle(ci: &CpuInfo) -> bool {
-    ptr::eq(
-        Machine::ci_curproc(ci),
-        Machine::ci_schedstate(ci).spc_idleproc.get(),
-    )
+    let n = crate::kern::kern_sched::cpu_number_of(ci);
+    let idle = crate::kern::sched_bsd::sched_cpu(n).map_or(0, |c| c.idle_addr());
+    Machine::ci_curproc(ci).addr() == idle
 }
 
 /// `smr_startup`: `main` sets the subsystem up, before the scheduler runs.

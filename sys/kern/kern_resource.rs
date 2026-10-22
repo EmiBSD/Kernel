@@ -350,11 +350,11 @@ pub fn donice(curp: &Proc, chgpr: &Process, n: i32) -> Result<(), Errno> {
     }
     chgpr.ps_nice.set(n as u8);
     let g = chgpr.ps_mtx.lock();
-    sched_lock();
+    let h = sched_lock();
     for p in chgpr.ps_threads.iter(&g) {
-        setpriority(p, p.p_estcpu.get(), n as u8);
+        setpriority(&h, p, p.p_estcpu.get(), n as u8);
     }
-    sched_unlock();
+    sched_unlock(h);
     drop(g);
     Ok(())
 }

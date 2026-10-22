@@ -2309,7 +2309,7 @@ mod tests {
         limits.pl_rlimit[RLIMIT_NOFILE].rlim_cur = lim;
         limits.pl_rlimit[RLIMIT_NOFILE].rlim_max = lim;
         drop(pr.set_limit(PlimitRef::new(limits)));
-        let t = thread_alloc::<Procs>(&pr, (), ());
+        let t = thread_alloc::<Procs>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         (pr, t)
     }

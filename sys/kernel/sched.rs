@@ -628,14 +628,19 @@ fn cpu_of<G: ProcGlue>(n: usize) -> &'static SchedCpu<G> {
 /// The number of the CPU `p` runs or last ran on (`p->p_cpu`), from the `cpu_info` word its
 /// slot holds; `None` before it first ran or was queued.
 #[inline]
-fn thread_cpu<G: ProcGlue>(p: &Thread<G>) -> Option<usize> {
+pub fn thread_cpu<G: ProcGlue>(p: &Thread<G>) -> Option<usize> {
     hal::cpu::number_of_word(p.cpu_word())
 }
 
-/// `p->p_cpu = ci` for CPU `n`.
+/// `p->p_cpu = ci` for CPU `n`: the word of CPU `n`'s core, an attached one or the running
+/// CPU's (a host thread's core is its own, never attached).
 #[inline]
-fn set_thread_cpu<G: ProcGlue>(p: &Thread<G>, n: usize) {
-    if let Some(core) = hal::cpu::by_number(n) {
+pub fn set_thread_cpu<G: ProcGlue>(p: &Thread<G>, n: usize) {
+    let core = hal::cpu::by_number(n).or_else(|| {
+        let c = hal::cpu::curcpu();
+        (c.number() == n).then_some(c)
+    });
+    if let Some(core) = core {
         p.set_cpu_word(core.word());
     }
 }
@@ -694,6 +699,16 @@ pub fn set_idleproc<G: ProcGlue>(n: usize, p: Pin<&Thread<G>>) {
     c.idle_addr.store(addr_of(p.get_ref()), Ordering::Relaxed);
     drop(h);
     set_thread_cpu(p.get_ref(), n);
+}
+
+/// `f` on CPU `n`'s idle thread, under the scheduler's hold (`spc->spc_idleproc`, for the
+/// machine that re-creates its frames when the CPU hatches); `None` before it is set.
+pub fn with_idleproc<G: ProcGlue, R>(n: usize, f: impl FnOnce(Pin<&Thread<G>>) -> R) -> Option<R> {
+    let c = tables::<G>().cpu(n)?;
+    let h = sched_lock();
+    let r = c.idleq.first_pinned(&h).map(f);
+    drop(h);
+    r
 }
 
 /// The idle thread of the running CPU as a token, under `h`; `panic(9)` before it is set
@@ -1526,8 +1541,8 @@ fn schedcpu<G: ProcGlue>(_unused: *mut c_void) {
     let _ = hal::pin::pin_static(&SCHEDCPU_TO).add_sec(1);
 }
 
-/// Whether `p` is a CPU's idle thread.
-fn is_idle_thread<G: ProcGlue>(p: &Thread<G>) -> bool {
+/// Whether `p` is a CPU's idle thread (`p == p->p_cpu->ci_schedstate.spc_idleproc`).
+pub fn is_idle_thread<G: ProcGlue>(p: &Thread<G>) -> bool {
     let a = addr_of(p);
     thread_cpu(p)
         .and_then(|n| tables::<G>().cpu(n))
@@ -1905,6 +1920,14 @@ pub fn sleep_setup<G: ProcGlue>(ident: usize, prio: i32, wmesg: &'static str) {
     });
 }
 
+/// `p->p_cpu->ci_schedstate.spc_curpriority = p->p_usrpri` (`sleep_finish`, `userret`): the
+/// priority the CPU `p` runs on is running at.
+pub fn set_curpriority<G: ProcGlue>(p: &Thread<G>) {
+    if let Some(spc) = thread_cpu(p).and_then(|n| tables::<G>().cpu(n)) {
+        spc.set_curpriority(p.p_usrpri.get());
+    }
+}
+
 /// `sleep_finish(nsecs, do_sleep)`: sleeps (or not) after `sleep_setup`; returns the
 /// sleep's error.
 pub fn sleep_finish<G: ProcGlue>(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
@@ -1971,9 +1994,7 @@ pub fn sleep_finish<G: ProcGlue>(nsecs: u64, do_sleep: bool) -> Result<(), Errno
             kpanic(format_args!("sleep_finish !SONPROC"));
         }
 
-        if let Some(spc) = thread_cpu(p.get_ref()).and_then(|n| tables::<G>().cpu(n)) {
-            spc.set_curpriority(p.p_usrpri.get());
-        }
+        set_curpriority(p.get_ref());
 
         // Even though this belongs to the signal handling part of sleep, we need to clear it
         // before the ktrace.
@@ -2267,7 +2288,6 @@ mod tests {
         type ThreadG = ();
         type PgrpG = ();
         type SessionG = ();
-        type RunqEntry = ();
         type FileGlue = SchedFiles;
         crate::proc_glue_link_types!();
 
@@ -2331,7 +2351,7 @@ mod tests {
 
     /// A thread of the tests' process, leaked (it lives for the process), tid `tid`.
     fn thread(tid: i32, prio: u8) -> Pin<&'static T> {
-        let t: &'static T = Box::leak(Box::new(Thread::new_static(&PR, (), ())));
+        let t: &'static T = Box::leak(Box::new(Thread::new_static(&PR, ())));
         t.p_tid.set(tid);
         t.p_usrpri.set(prio);
         t.p_slppri.set(prio);

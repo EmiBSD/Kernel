@@ -36,26 +36,16 @@ trait = "IntrLevel"
 for = ["sys/hal/intr.rs", "sys/hal/mutex.rs"]
 paid_by = "N4"
 
-# bsd: sleep_setup, sleep_finish, tsleep_nsec, wakeup, wakeup_one, curproc and
-# _kernel_lock_held of sys/kern/kern_synch.rs, sys/machine/cpu.rs and sys/kern/kern_lock.rs;
-# N3.4a: cold (cold || panicstr) and cold_yield (splhigh, splx(safepri), the kernel lock's
-# bounce), msleep_nsec's early return for MutexedGuard::sleep_nsec; N3.5 S1: sched_pause(yield)
-# (sys/sys/sched.rs's SPCF_SHOULDYIELD test with sched_bsd's yield), for uvm_map_teardown.
-# bsd: kern_fork.rs's thread_start (the hold released, proc_trampoline_mi, then the function
-# cpu_fork numbered in its table, thread_start_word): what a new thread's trampoline calls
-# (N4.5a); a fn registered with hal::thread::register_start. Paid when the kernel's scheduler
-# registers its own trampoline_mi (N4.5a step a5) and fork1 moves (N4.6).
+# bsd: kern_fork.rs's thread_start (kernel::sched::trampoline_mi, which releases the hold the
+# switch kept, then the function cpu_fork numbered in its table, thread_start_word): what a new
+# thread's trampoline calls (N4.5a); a fn registered with hal::thread::register_start. Paid
+# when fork1 and its function table move (N4.6).
 # hal::thread::register_start
 [[bridge]]
 trait = "ThreadStart"
 for = ["sys/hal/thread.rs"]
 paid_by = "N4"
 
-# hal::sleep::Sleep
-[[bridge]]
-trait = "Sleep"
-for = ["sys/hal/sleep.rs", "sys/hal/rwlock.rs", "sys/hal/refcnt.rs"]
-paid_by = "N4"
 
 # bsd: pool_init/pool_get/pool_put, pr_nout, pool_sethiwat and pool_cache_init (RawPool's
 # set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
@@ -191,6 +181,8 @@ paid_by = "N7"
 # (BsdKernelLock) and registered by bsd's uvm_init (N3.4e); nothing before registration. N4,
 # with kern_lock.
 # hal::klock::KernelLock
+# kernel::thread::Kthread (bsd's BsdKthread over kern_kthread.rs): re-dated to N4.6, with
+# fork1 (decision 8 of N4.5).
 [[bridge]]
 trait = "Kthread"
 for = ["sys/kernel/thread.rs", "sys/kernel/timeout.rs", "sys/kernel/task.rs"]
@@ -270,9 +262,14 @@ paid_by = "N4"
 # the run-queue link), the tables' storage, and the hooks into kern_sig (pgsignal, prsignal),
 # tty (a session's hang-up, a group's terminal) and kern_timeout (s_verauthto); implemented by
 # sys/kern/proc_glue.rs (BsdProcGlue, N4.2), which kernel::proc receives as its type
-# parameter. N4.7, when the signals, the descriptors and the terminal move.
+# parameter. N4.5a: the scheduler's hooks (kernel::sched): sleep_signal_check (kern_sig, N4.5b),
+# cold and cold_yield, tuagg_add_runtime and exit_account (kern_resource), the clock
+# interrupts' stop and start (kern_clockintr, spc_runtime), assertwaitok, smr_idle, spl0, the
+# machine's idle cycle, cpu_unidle and need_resched, the CPU topology and pmap_resident_count;
+# the scheduler's hal::sleep::Sleep is kernel::sched::KernelSleep (the Sleep row is gone,
+# decision 39). N4.7, when the signals, the descriptors and the terminal move.
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs"]
+for = ["sys/kernel/proc.rs", "sys/kernel/sched.rs"]
 paid_by = "N4"

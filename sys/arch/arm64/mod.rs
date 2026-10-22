@@ -230,12 +230,6 @@ impl Cpu for Machine {
         arm64::machdep::cpu_idle_leave()
     }
 
-    unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc) {
-        // SAFETY: forwarded: the caller holds the scheduler lock with `old`/`new` as the
-        // contract asks.
-        unsafe { arm64::machdep::cpu_switchto(old, new) }
-    }
-
     fn cpu_exit(p: &Proc) {
         arm64::vm_machdep::cpu_exit(p)
     }

@@ -236,19 +236,6 @@ pub trait Cpu {
     /// `cpu_idle_leave()`: the idle thread found work.
     fn cpu_idle_leave();
 
-    /// `cpu_switchto(old, new)` (`locore.S`, `cpuswitch.S`): saves `old`'s kernel context
-    /// into its pcb (none to save when `old` is `None`: the thread is dead), makes `new`
-    /// `curproc` with `p_stat = SONPROC` and `p_cpu = curcpu()`, loads its pcb, stack and
-    /// address space and resumes it. Returns on `old`'s stack once `old` is switched back
-    /// to.
-    ///
-    /// # Safety
-    ///
-    /// Called with the scheduler lock held, from `mi_switch`/`sched_toidle` only: `new` is
-    /// runnable and off every queue, `old` (when given) is the running thread, and both
-    /// have a kernel stack and a pcb set up by `cpu_fork` or `locore`.
-    unsafe fn cpu_switchto(old: Option<&Proc>, new: &Proc);
-
     /// `cpu_exit(p)` (`vm_machdep.c`): the machine-dependent part of a thread's exit, before
     /// its address space goes (nothing on amd64 and arm64).
     fn cpu_exit(p: &Proc);

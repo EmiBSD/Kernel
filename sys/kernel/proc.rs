@@ -139,8 +139,7 @@
 //! type `bsd` chooses ([`ProcGlue`]: `ProcessG`, `ThreadG`, `PgrpG`, `SessionG`), which each
 //! kernel type dereferences to, so `pr.ps_sigacts` names the glue's member as LZ named its
 //! own. The run-queue link `p_runq` is a member of the thread itself (a `PinEntry` of the
-//! scheduler's queues, N4.5a; `bsd`'s legacy one, `G::RunqEntry`, until its switch-over): `bsd`'s
-//! list adapters take its offset in the thread.
+//! scheduler's queues, `kernel::sched`, N4.5a).
 //!
 //! Locks, as the C's annotations: `[K]` the kernel lock (the lists, the hashes, the parent,
 //! child and group links: [`hal::klock`]'s witnesses), `[m]` the process's `ps_mtx` (its thread
@@ -673,8 +672,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type PgrpG: Send + Sync;
     /// The members of `struct session` of `bsd`'s (`s_ttyvp`, `s_ttyp`, `s_verauthto`).
     type SessionG: Send + Sync;
-    /// `bsd`'s legacy run and sleep queues' link, until the scheduler's switch-over (N4.5a).
-    type RunqEntry: Send + Sync;
     /// `p_runq`: the scheduler's queues (`kernel::sched`).
     type ThreadRunq: PinAdapter<Elem = Thread<Self>>;
     /// `ps_list`: `allprocess`, `zombprocess`.
@@ -967,7 +964,15 @@ pub fn procinit<G: ProcGlue>(maxthread: i32, maxprocess: i32) {
     if !made {
         kpanic(format_args!("procinit: called twice"));
     }
-    let pools = t.procpl.init(IPL_NONE, PR_WAITOK, "procpl").is_ok()
+    let pools = t
+        .procpl
+        .init_checked(
+            IPL_NONE,
+            PR_WAITOK,
+            "procpl",
+            crate::sched::thread_releasable::<G>,
+        )
+        .is_ok()
         && t.processpl
             .init_recorded(IPL_NONE, PR_WAITOK, "processpl")
             .is_ok()
@@ -1684,9 +1689,6 @@ pub struct Thread<G: ProcGlue> {
     pub p_owned: OwnedEntry<Thread<G>>,
     /// \[m\] The thread's joining order.
     pub p_seq: U64Word,
-    /// `bsd`'s legacy run and sleep queues' link, until its scheduler is the kernel's
-    /// (N4.5a, the switch-over).
-    pub p_runq_legacy: G::RunqEntry,
     /// \[S\] `p_runq`: the run, sleep and idle queues' link (`kernel::sched`), and the dead
     /// threads' (`deadproc_mutex`).
     pub p_runq: PinEntry<Thread<G>>,
@@ -1771,12 +1773,11 @@ pub struct Thread<G: ProcGlue> {
 
 impl<G: ProcGlue> Thread<G> {
     /// Process 0's `static` thread (`proc0`), of `pr` (`process0`).
-    pub const fn new_static(pr: &'static Process<G>, runq: G::RunqEntry, g: G::ThreadG) -> Self {
+    pub const fn new_static(pr: &'static Process<G>, g: G::ThreadG) -> Self {
         Self::make(
             StaticOrPooled::Static(pr),
             Guarded::new_static_mutexed(&pr.ps_mtx, None),
             Guarded::new_static_mutexed(&pr.ps_mtx, None),
-            runq,
             g,
         )
     }
@@ -1786,7 +1787,6 @@ impl<G: ProcGlue> Thread<G> {
         p_p: ProcessRef<G>,
         cred_ref: Guarded<Option<CredRef>>,
         vmspace: Guarded<Option<VmspaceRef>>,
-        runq: G::RunqEntry,
         g: G::ThreadG,
     ) -> Self {
         Self {
@@ -1796,7 +1796,7 @@ impl<G: ProcGlue> Thread<G> {
             p_thr_link: PinEntry::new(),
             p_owned: OwnedEntry::new(),
             p_seq: U64Word::new(0),
-            p_runq_legacy: runq,
+
             p_runq: PinEntry::new(),
             p_sleep_to: crate::timeout::Timeout::unset(),
             p_p,
@@ -2029,17 +2029,12 @@ impl<G: ProcGlue> hal::thread::ThreadLayout for Thread<G> {
 
 /// `thread_new`'s `pool_get(&proc_pool, PR_WAITOK)`: a thread of `pr`, its box (the caller
 /// gives it to the process, [`Process::insert_thread`]).
-pub fn thread_alloc<G: ProcGlue>(
-    pr: &ProcessRef<G>,
-    runq: G::RunqEntry,
-    g: G::ThreadG,
-) -> PoolBox<Thread<G>> {
+pub fn thread_alloc<G: ProcGlue>(pr: &ProcessRef<G>, g: G::ThreadG) -> PoolBox<Thread<G>> {
     let make = || {
         Thread::make(
             pr.clone(),
             Guarded::new_mutexed(&pr.ps_mtx, None),
             Guarded::new_mutexed(&pr.ps_mtx, None),
-            runq,
             g,
         )
     };
@@ -2408,7 +2403,7 @@ mod tests {
         type ThreadG = ();
         type PgrpG = ();
         type SessionG = ();
-        type RunqEntry = ();
+
         type FileGlue = TestFiles;
         crate::proc_glue_link_types!();
 
@@ -2506,7 +2501,7 @@ mod tests {
     fn a_thread_joins_its_process_and_leaves_it() {
         setup();
         let pr = process(20);
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         t.p_tid.set(5000);
         {
             let mut w = klock::witness();
@@ -2554,7 +2549,7 @@ mod tests {
         ids.cr_uid.set(1000);
         let first = CredRef::new(ids);
         drop(pr.set_ucred(first.clone()));
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         assert_eq!(t.ucred().cr_uid.get(), 1000);
         assert!(!t.cred_stale());
@@ -2580,7 +2575,7 @@ mod tests {
     fn a_thread_s_sleep_message_and_names() {
         setup();
         let pr = process(31);
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         assert_eq!(t.p_wmesg.get(), None);
         t.p_wmesg.set(Some("nanoslp"));
         assert_eq!(t.p_wmesg.get(), Some("nanoslp"));
@@ -2767,7 +2762,7 @@ mod tests {
     fn a_thread_joins_and_leaves_under_the_caller_s_guard() {
         setup();
         let pr = process(80);
-        let t = thread_alloc::<TestGlue>(&pr, (), ());
+        let t = thread_alloc::<TestGlue>(&pr, ());
         t.p_tid.set(6000);
         let mut g = pr.ps_mtx.lock();
         let at = pr.insert_thread_locked(&mut g, t);
