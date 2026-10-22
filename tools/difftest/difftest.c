@@ -38,6 +38,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -897,6 +898,181 @@ t_ipc(void)
 }
 
 static void
+on_alarm(int sig)
+{
+	(void)sig;
+}
+
+/* Arms a one-shot ITIMER_REAL of 50 ms whose SIGALRM interrupts (no SA_RESTART). */
+static void
+alarm_soon(void)
+{
+	struct itimerval it;
+	struct sigaction sa;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_alarm;
+	sigaction(SIGALRM, &sa, NULL);
+	memset(&it, 0, sizeof(it));
+	it.it_value.tv_usec = 50000;
+	setitimer(ITIMER_REAL, &it, NULL);
+}
+
+/* One event of `kq` without waiting: the count, and the event's filter, flags and fflags. */
+static void
+kq_one(const char *name, int kq, struct kevent *out)
+{
+	struct timespec zero = { 0, 0 };
+
+	memset(out, 0, sizeof(*out));
+	R(name, kevent(kq, NULL, 0, out, 1, &zero));
+}
+
+static void
+t_kqueue(void)
+{
+	struct kevent kev, out;
+	struct timespec zero = { 0, 0 }, ts;
+	struct timeval tv;
+	struct pollfd pfd;
+	fd_set rs;
+	sigset_t mask;
+	pid_t pid;
+	int p[2], kq, kq2, status, n;
+
+	section("kqueue, select, poll");
+
+	/* EVFILT_PROC on a child: NOTE_EXIT with its wait status. */
+	kq = kqueue();
+	OK("kqueue", kq >= 0);
+	if ((pid = fork()) == 0) {
+		usleep(100000);
+		_exit(7);
+	}
+	EV_SET(&kev, pid, EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, NULL);
+	R("kevent proc add", kevent(kq, &kev, 1, NULL, 0, NULL));
+	memset(&out, 0, sizeof(out));
+	R("kevent proc wait", kevent(kq, NULL, 0, &out, 1, NULL));
+	printf("proc event: filter %d fflags 0x%x data 0x%llx ident is child %d\n",
+	    out.filter, out.fflags, (long long)out.data, out.ident == (uintptr_t)pid);
+	R("waitpid", waitpid(pid, &status, 0) == pid ? WEXITSTATUS(status) : -1);
+	EV_SET(&kev, pid, EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, NULL);
+	R("kevent proc gone", kevent(kq, &kev, 1, NULL, 0, NULL));
+	EV_SET(&kev, 1, EVFILT_PROC, EV_ADD, 0x00ff0000, 0, NULL);
+	R("kevent proc bad fflags", kevent(kq, &kev, 1, NULL, 0, NULL));
+
+	/* NOTE_TRACK: the child's fork reports NOTE_FORK and makes a NOTE_CHILD knote. */
+	if ((pid = fork()) == 0) {
+		usleep(100000);
+		if (fork() == 0)
+			_exit(0);
+		wait(NULL);
+		_exit(0);
+	}
+	EV_SET(&kev, pid, EVFILT_PROC, EV_ADD, NOTE_FORK | NOTE_TRACK | NOTE_EXIT,
+	    0, NULL);
+	R("kevent track add", kevent(kq, &kev, 1, NULL, 0, NULL));
+	waitpid(pid, &status, 0);
+	usleep(100000);
+	for (n = 0; n < 4; n++) {
+		kq_one("kevent track collect", kq, &out);
+		if (out.filter == 0)
+			break;
+		printf("track event: fflags 0x%x child-of-tracked %d\n",
+		    out.fflags & (NOTE_FORK | NOTE_EXIT | NOTE_CHILD | NOTE_TRACKERR),
+		    (out.fflags & NOTE_CHILD) != 0 && out.ident != (uintptr_t)pid);
+	}
+	close(kq);
+
+	/* A kqueue watching a kqueue: readable when the inner one has an event. */
+	kq = kqueue();
+	kq2 = kqueue();
+	R("pipe", pipe(p));
+	EV_SET(&kev, p[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
+	R("inner add", kevent(kq2, &kev, 1, NULL, 0, NULL));
+	EV_SET(&kev, kq2, EVFILT_READ, EV_ADD, 0, 0, NULL);
+	R("outer add", kevent(kq, &kev, 1, NULL, 0, NULL));
+	kq_one("outer before", kq, &out);
+	R("write", write(p[1], "abc", 3));
+	kq_one("outer after", kq, &out);
+	printf("outer event: filter %d data %lld\n", out.filter, (long long)out.data);
+	show_fd("kqueue fstat", kq2);
+	EV_SET(&kev, kq2, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
+	R("kqueue write filter", kevent(kq, &kev, 1, NULL, 0, NULL));
+	R("read kqueue", read(kq2, &n, sizeof(n)));
+	R("write kqueue", write(kq2, &n, sizeof(n)));
+	R("ioctl kqueue", ioctl(kq2, FIONREAD, &n));
+	close(kq2);
+	close(kq);
+
+	/* EV_* errors: ENOENT, EBADF, EINVAL. */
+	kq = kqueue();
+	EV_SET(&kev, p[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
+	R("delete missing", kevent(kq, &kev, 1, NULL, 0, NULL));
+	EV_SET(&kev, p[0], EVFILT_READ, EV_ENABLE, 0, 0, NULL);
+	R("enable missing", kevent(kq, &kev, 1, NULL, 0, NULL));
+	EV_SET(&kev, p[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
+	R("kevent on a pipe fd", kevent(p[0], &kev, 1, NULL, 0, NULL));
+	R("kevent bad nchanges", kevent(kq, &kev, -1, NULL, 0, NULL));
+	ts.tv_sec = 0;
+	ts.tv_nsec = 1000000000;
+	R("kevent bad timeout", kevent(kq, NULL, 0, &out, 1, &ts));
+	EV_SET(&kev, 1, EVFILT_USER, EV_ADD, NOTE_TRIGGER, 0, NULL);
+	R("user add triggered", kevent(kq, &kev, 1, NULL, 0, NULL));
+	kq_one("user collect", kq, &out);
+	printf("user event: filter %d fflags 0x%x\n", out.filter, out.fflags);
+	EV_SET(&kev, 1, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 10, NULL);
+	R("timer add", kevent(kq, &kev, 1, NULL, 0, NULL));
+	memset(&out, 0, sizeof(out));
+	R("timer wait", kevent(kq, NULL, 0, &out, 1, NULL));
+	printf("timer event: filter %d data %lld\n", out.filter, (long long)out.data);
+	R("kqueue1 bad flags", kqueue1(0x40000000));
+	close(kq);
+
+	/* select, pselect, ppoll on a pipe: ready, timeout 0, EINTR by SIGALRM. */
+	FD_ZERO(&rs);
+	FD_SET(p[0], &rs);
+	tv.tv_sec = 0;
+	tv.tv_usec = 0;
+	R("select ready", select(p[0] + 1, &rs, NULL, NULL, &tv));
+	R("read 3", read(p[0], &n, 3));
+	FD_ZERO(&rs);
+	FD_SET(p[0], &rs);
+	R("select timeout 0", select(p[0] + 1, &rs, NULL, NULL, &tv));
+	R("select bit after timeout", FD_ISSET(p[0], &rs));
+	FD_ZERO(&rs);
+	FD_SET(p[0], &rs);
+	alarm_soon();
+	R("select EINTR", select(p[0] + 1, &rs, NULL, NULL, NULL));
+	tv.tv_usec = 1000000;
+	R("select bad timeval", select(p[0] + 1, &rs, NULL, NULL, &tv));
+	R("select bad nd", select(-1, NULL, NULL, NULL, NULL));
+	FD_ZERO(&rs);
+	FD_SET(p[0], &rs);
+	sigemptyset(&mask);
+	alarm_soon();
+	R("pselect EINTR", pselect(p[0] + 1, &rs, NULL, NULL, NULL, &mask));
+	pfd.fd = p[0];
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	R("ppoll timeout 0", ppoll(&pfd, 1, &zero, NULL));
+	alarm_soon();
+	R("ppoll EINTR", ppoll(&pfd, 1, NULL, &mask));
+	R("poll bad timeout", poll(&pfd, 1, -2));
+
+	/* poll on a pipe whose writer is gone: POLLHUP. */
+	close(p[1]);
+	pfd.revents = 0;
+	R("poll closed peer", poll(&pfd, 1, 0));
+	printf("poll closed peer revents: 0x%x\n", pfd.revents);
+	close(p[0]);
+	pfd.revents = 0;
+	R("poll closed fd", poll(&pfd, 1, 0));
+	printf("poll closed fd revents: 0x%x\n", pfd.revents);
+	signal(SIGALRM, SIG_DFL);
+}
+
+static void
 t_memory(void)
 {
 	char *p;
@@ -1024,6 +1200,7 @@ static const struct {
 	{ "procs", t_procs },
 	{ "script", t_script },
 	{ "ipc", t_ipc },
+	{ "kqueue", t_kqueue },
 	{ "memory", t_memory },
 	{ "mmapfile", t_mmapfile },
 	{ "sysctl", t_sysctl },
