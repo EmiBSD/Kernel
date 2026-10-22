@@ -647,6 +647,14 @@ pub static SCHED_NOIDLE: AtomicU64 = AtomicU64::new(0);
 pub static SCHED_STOLEN: AtomicU64 = AtomicU64::new(0);
 /// `sched_choose`: Times we chose a cpu.
 pub static SCHED_CHOOSE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+std::thread_local! {
+    /// The thread the last `sched_choosecpu` of this host thread chose a CPU for (its
+    /// address): the tests' witness that a placement went through it (the global
+    /// `sched_choose` counts every parallel test's).
+    static CHOSE_FOR: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
 /// `sched_wasidle`: Times we came out of idle.
 pub static SCHED_WASIDLE: AtomicU64 = AtomicU64::new(0);
 /// `sched_blockcpu` (`__HAVE_CPU_TOPOLOGY`): types of cpu to not schedule on (`CPUTYP_*`).
@@ -1210,6 +1218,8 @@ pub fn sched_choosecpu<G: ProcGlue>(h: &SchedHold, p: &Thread<G>) -> usize {
     }
 
     SCHED_CHOOSE.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    CHOSE_FOR.with(|c| c.set(ptr::from_ref(p).addr()));
 
     // Look at all cpus that are currently idle and have nothing queued. If there are none,
     // pick the cheapest of those. (idle + queued could mean that the cpu is handling an
@@ -3230,11 +3240,12 @@ mod tests {
             r#yield::<SchedGlue>();
         }
         assert_eq!(x.p_flag.load(Ordering::Relaxed) & P_CPUPEG, 0);
-        let chose = SCHED_CHOOSE.load(Ordering::Relaxed);
+        CHOSE_FOR.with(|c| c.set(0));
         ASLEEP.store(2, Ordering::Release);
         wakeup_n::<SchedGlue>(chan(), -1);
-        // The wakeup's setrunnable went through sched_choosecpu (no CPU named).
-        assert!(SCHED_CHOOSE.load(Ordering::Relaxed) > chose);
+        // The wakeup's setrunnable (this host thread's) went through sched_choosecpu for `x`
+        // (no CPU named).
+        assert_eq!(CHOSE_FOR.with(core::cell::Cell::get), addr_of(x.get_ref()));
         let placed = thread_cpu(x.get_ref());
         assert!(placed == Some(a) || placed == Some(b));
         wait_done();

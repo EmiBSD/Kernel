@@ -968,12 +968,12 @@ mod tests {
         // The user accepted these sizes (N4.2's and N4.3's decision 1, 2026-10-22). N4.5a
         // moved the run queues and the sleep timeout into the kernel: procpl 1056 -> 1128
         // (p_runq a PinEntry and p_sleep_to the kernel's Timeout in kernel::proc's Thread,
-        // where bsd's list entry and timeout were), then 1136 (p_cpuno, the CPU number beside
-        // the slot), pending the user's word as N4.2's were. N4.4 (kqueue into kernel::event)
-        // gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in kernel::proc's
-        // Process) and fdescpl 520 -> 560, and its p_kq, a set-once counted kqueue in the
-        // kernel's Thread where bsd's word was, takes procpl 1136 -> 1168 at the merge of N4.4
-        // and N4.5a. N4.5b (signals into kernel::sig): processpl 1360 -> 1376 (ps_sigacts a
+        // where bsd's list entry and timeout were), then 1136 (p_cpuno +8, the CPU number
+        // beside the slot), pending the user's word as N4.2's were. N4.4 (kqueue into
+        // kernel::event) gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in
+        // kernel::proc's Process) and fdescpl 520 -> 560; at the merge of N4.4 and N4.5a
+        // procpl 1136 -> 1168: p_kq +8 (a set-once counted kqueue in the kernel's Thread where
+        // bsd's word was) and p_sleep_to's ToState +24 (N4.4's kernel Timeout state). N4.5b (signals into kernel::sig): processpl 1360 -> 1376 (ps_sigacts a
         // set-once handle of process 0's static or a sigapl box in kernel::proc's Process,
         // where the glue's link was); procpl unchanged (p_sigstk and p_sigval moved from the
         // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the

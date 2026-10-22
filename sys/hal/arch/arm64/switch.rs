@@ -203,11 +203,11 @@ fn with_pcb_of<R>(slot: &MachineSlot, f: impl FnOnce(Option<&Pcb>) -> R) -> R {
     // kernel memory nothing else references, or `hal`'s own `PROC0_UAREA`; no safe function
     // stores another address there), whose bottom is a `struct user` with the pcb first (zero
     // bytes are `Pcb::new()`). It is given back only by `take_uarea`, under the scheduler's
-    // lock and for a thread no CPU runs; the callers here hold the lock or run the thread
-    // (`thread_setup`, `thread_restart`, the switch's old thread), so the u-area is alive for
-    // `f`. A pcb is only ever
-    // shared (`&Pcb`, its members cells written by the thread, its switch and `cpu_fork`
-    // before it runs), so this reference aliases no `&mut`; it ends with `f`.
+    // lock and for a thread with no live context (E6: none running, none suspended in a
+    // switch); the callers here hold the lock or run the thread (`thread_setup`,
+    // `thread_restart`, the switch's old thread), so the u-area is alive for `f`. A pcb is
+    // only ever shared (`&Pcb`, its members cells written by the thread, its switch and
+    // `cpu_fork` before it runs), so this reference aliases no `&mut`; it ends with `f`.
     let pcb = unsafe { pcb.as_ref() };
     f(pcb)
 }
