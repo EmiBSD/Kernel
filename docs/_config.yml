@@ -1,6 +1,6 @@
 title: EmiBSD
 description: An operating system in Rust, grown from the faithful port of the OpenBSD kernel.
-theme: jekyll-theme-minimal
+theme: jekyll-theme-slate
 logo: Ferffy.jpg
 show_downloads: false
 
