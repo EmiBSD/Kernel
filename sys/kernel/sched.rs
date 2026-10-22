@@ -970,7 +970,9 @@ fn dequeued<G: ProcGlue>(h: &SchedHold, spc: &SchedCpu<G>, queue: usize) {
 
 /// The head of `spc`'s `queue` taken off it and put on the run queue for its priority of
 /// the CPU [`sched_choosecpu`] picks (`sched_chooseproc`'s hand-over of a halting CPU's
-/// threads): the CPU it went to.
+/// threads): the CPU it went to. A thread pegged to this CPU stays here (`sched_choosecpu`
+/// gives its own CPU back): the C's `remrunqueue` and `setrunqueue` of it on the same queue
+/// move it from the head to the tail, through a local queue of the same lock.
 fn requeue_first<G: ProcGlue>(h: &mut SchedHold, spc: &SchedCpu<G>, queue: usize) -> Option<usize> {
     let (n, prio) = {
         let p = spc.qs[queue].first(h)?;
@@ -978,6 +980,10 @@ fn requeue_first<G: ProcGlue>(h: &mut SchedHold, spc: &SchedCpu<G>, queue: usize
         // remrunqueue's accounting, then setrunqueue's look, while `p` is still linked.
         spc.nrun.fetch_sub(1, Ordering::Relaxed);
         let ci = sched_choosecpu(h, p);
+        if ci == spc.number {
+            // KASSERT(p->p_flag & P_CPUPEG): only a pegged thread stays on a halting CPU.
+            kassert!(p.p_flag.load(Ordering::Relaxed) & P_CPUPEG != 0);
+        }
         set_thread_cpu(p, ci);
         p.set_stat(SRUN);
         p.p_runpri.set(prio);
@@ -985,7 +991,14 @@ fn requeue_first<G: ProcGlue>(h: &mut SchedHold, spc: &SchedCpu<G>, queue: usize
         (ci, prio)
     };
     let dst = cpu_of::<G>(n);
-    spc.qs[queue].move_first_to(h, &dst.qs[usize::from(prio >> 2)]);
+    let dstq = &dst.qs[usize::from(prio >> 2)];
+    if ptr::eq(dstq, &spc.qs[queue]) {
+        let rotate: PinList<G::ThreadRunq> = PinList::new();
+        spc.qs[queue].move_first_to(h, &rotate);
+        rotate.move_first_to(h, dstq);
+    } else {
+        spc.qs[queue].move_first_to(h, dstq);
+    }
     dequeued(h, spc, queue);
     queued(dst, prio);
     Some(n)
@@ -2656,6 +2669,60 @@ mod tests {
             cpu = decay_cpu(loadfac, cpu);
         }
         assert!((8..=16).contains(&cpu), "{cpu}");
+    }
+
+    /// A halting CPU (`SPCF_SHOULDHALT`, out of `sched_all_cpus` as
+    /// `sched_stop_secondary_cpus` leaves it) hands its queued threads to the other CPUs; a
+    /// thread pegged to it stays, moved to its queue's tail, and the C's `goto again` picks
+    /// from what is left: the pegged thread once nothing else is queued here.
+    #[test]
+    fn a_halting_cpu_keeps_its_pegged_thread() {
+        let _g = setup();
+        let (n, other) = (VCPUS[0], VCPUS[1]);
+        let me = thread(40, 50);
+        run_as(n, me);
+        let spc = cpu_of::<SchedGlue>(n);
+        let dst = cpu_of::<SchedGlue>(other);
+        SCHED.all_cpus.del(n);
+        spc.set_schedflags(SPCF_SHOULDHALT);
+
+        // An unpegged thread, then a pegged one, on one queue: the first goes to the other
+        // CPU, the pegged one stays and is chosen.
+        let free = thread(41, 60);
+        let pegged = thread(42, 60);
+        pegged.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
+        let mut h = sched_lock();
+        setrunqueue(&mut h, Some(n), free, 60);
+        setrunqueue(&mut h, Some(n), pegged, 60);
+        let next = sched_chooseproc::<SchedGlue>(&mut h);
+        assert_eq!(next.thread_addr(), addr_of(pegged.get_ref()));
+        assert_eq!(thread_cpu(free.get_ref()), Some(other));
+        assert_eq!(dst.nrun(), 1);
+        assert_eq!(spc.nrun(), 0);
+        assert_eq!(spc.whichqs(), 0);
+        remrunqueue(&mut h, free.get_ref());
+
+        // The pegged thread first: it goes to the queue's tail (the same list, no panic), and
+        // `again` takes the head, the thread behind it, as the C does.
+        let behind = thread(43, 60);
+        let pegged2 = thread(44, 60);
+        pegged2.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
+        setrunqueue(&mut h, Some(n), pegged2, 60);
+        setrunqueue(&mut h, Some(n), behind, 60);
+        let next = sched_chooseproc::<SchedGlue>(&mut h);
+        assert_eq!(thread_cpu(pegged2.get_ref()), Some(n));
+        assert_eq!(next.thread_addr(), addr_of(behind.get_ref()));
+        assert!(pegged2.p_runq.is_linked());
+        for p in [behind, pegged2] {
+            if p.p_runq.is_linked() {
+                remrunqueue(&mut h, p.get_ref());
+            }
+        }
+        drop(h);
+
+        spc.clear_schedflags(SPCF_SHOULDHALT);
+        SCHED.all_cpus.add(n);
+        hal::thread::set_current_static::<T>(None);
     }
 }
 /* </TESTS> */
