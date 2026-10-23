@@ -227,7 +227,7 @@ use crate::sys::task::Task;
 use crate::sys::termios::Termios;
 use crate::sys::timeout::Timeout;
 use crate::sys::tty::{
-    TS_BUSY, TS_CARR_ON, TS_FLUSH, TS_ISOPEN, TS_TIMEOUT, TS_TTSTOP, TS_XCLUDE, Tty,
+    Clist, TS_BUSY, TS_CARR_ON, TS_FLUSH, TS_ISOPEN, TS_TIMEOUT, TS_TTSTOP, TS_XCLUDE, Tty,
 };
 use crate::sys::ttydefaults::{
     TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG, TTYDEF_SPEED,
@@ -2030,16 +2030,39 @@ pub fn wsdisplaykqfilter(dev: Dev, kn: &crate::sys::event::Knote) -> Result<(), 
     crate::kern::tty::ttkqfilter(dev, kn)
 }
 
-/// Copies the contiguous bytes at the head of a tty's output queue (`ndqb(&tp->t_outq, 0)`
-/// of them at `tp->t_outq.c_cf`, at most `buf.len()`) into `buf`: how many. They are output
-/// with the queue's lock let go (the emulation may answer back into the tty's input, whose
-/// echo takes the output queue); while `TS_BUSY` is set only this driver takes them off the
-/// queue, and writers append past them.
-fn outq_chunk(tp: &Tty, buf: &mut [u8]) -> usize {
-    tp.t_outq.peek_with(buf.len(), |d| {
+/// Copies the contiguous bytes at the head of a tty's output queue `q` (`ndqb(q, 0)` of them
+/// at `q->c_cf`, at most `buf.len()`) into `buf`: how many. They are output with the queue's
+/// lock let go (the emulation may answer back into the tty's input, whose echo takes the
+/// output queue); while `TS_BUSY` is set only this driver takes them off the queue, and
+/// writers append past them.
+fn outq_chunk(q: &Clist, buf: &mut [u8]) -> usize {
+    q.peek_with(buf.len(), |d| {
         buf[..d.len()].copy_from_slice(d);
         d.len()
     })
+}
+
+/// One of `wsdisplaystart`'s two outputs: the contiguous run at the head of the output queue
+/// `q` (`n = ndqb(q, 0)` bytes at `c_cf`) through `output` (the emulation's, which says how
+/// many it took), each piece taken off by `ndflush(q, done)`. The run is copied out in
+/// pieces of `buf`'s size ([`outq_chunk`]), so the whole run still goes out as the C's one
+/// call does; whether every byte of it went out (the C's `done == n`).
+fn outq_run(q: &Clist, buf: &mut [u8], output: &mut impl FnMut(&[u8]) -> u32) -> bool {
+    let mut left = q.peek_with(usize::MAX, <[u8]>::len);
+    while left > 0 {
+        let piece = left.min(buf.len());
+        let len = outq_chunk(q, &mut buf[..piece]);
+        if len == 0 {
+            break;
+        }
+        let done = output(&buf[..len]);
+        ndflush(q, done as i32);
+        if done as usize != len {
+            return false;
+        }
+        left -= len;
+    }
+    true
 }
 
 /// `wsdisplaystart`: drain a screen's output queue into its emulation.
@@ -2081,35 +2104,25 @@ pub fn wsdisplaystart(tp: &Tty) {
         // ring, the other at the start. For performance, rather than loop here, we output
         // one chunk, see if there's another one, and if so, output it too.
 
-        let mut chunk = [0u8; 512];
-        let len = outq_chunk(tp, &mut chunk);
-        let buf = &chunk[..len];
-        let n = buf.len() as u32;
-        let done = if scr.scr_flags.get() & SCR_GRAPHICS == 0 {
+        let graphics = scr.scr_flags.get() & SCR_GRAPHICS != 0;
+        if !graphics {
             if HAVE_BURNER_SUPPORT {
                 wsdisplay_burn(sc.as_arg(), WSDISPLAY_BURN_OUTPUT);
             }
             if HAVE_WSMOUSED_SUPPORT && sc.focus().is_some_and(|f| ptr::eq(f, scr)) {
                 mouse_remove(scr);
             }
-            scr.dconf().output(buf, false)
-        } else {
-            n
-        };
-        ndflush(&tp.t_outq, done as i32);
-
-        if done == n {
-            let len = outq_chunk(tp, &mut chunk);
-            let buf = &chunk[..len];
-            if !buf.is_empty() {
-                let n = buf.len() as u32;
-                let done = if scr.scr_flags.get() & SCR_GRAPHICS == 0 {
-                    scr.dconf().output(buf, false)
-                } else {
-                    n
-                };
-                ndflush(&tp.t_outq, done as i32);
+        }
+        let mut chunk = [0u8; 512];
+        let mut output = |buf: &[u8]| {
+            if graphics {
+                buf.len() as u32
+            } else {
+                scr.dconf().output(buf, false)
             }
+        };
+        if outq_run(&tp.t_outq, &mut chunk, &mut output) {
+            let _ = outq_run(&tp.t_outq, &mut chunk, &mut output);
         }
 
         let s2 = spltty();
@@ -4277,6 +4290,57 @@ mod tests {
             self.sc.sc_copybuffer_size.set(size as u32);
             buf
         }
+    }
+
+    #[test]
+    fn the_output_queue_drains_whole_runs_in_pieces() {
+        let _g = crate::kern::subr_pool::tests::setup_real_memory();
+        let q: &'static Clist = Box::leak(Box::new(Clist::new()));
+        crate::kern::tty_subr::clalloc(q, 2048, false);
+        let data: Vec<u8> = (0..1500u32).map(|i| (i % 251) as u8).collect();
+        assert_eq!(crate::kern::tty_subr::b_to_q(&data, q), 0);
+        let mut buf = [0u8; 512];
+        // the whole contiguous run, in three pieces of at most 512
+        let mut seen = Vec::new();
+        let mut pieces = 0;
+        let mut all = |b: &[u8]| {
+            pieces += 1;
+            seen.extend_from_slice(b);
+            b.len() as u32
+        };
+        assert!(outq_run(q, &mut buf, &mut all));
+        assert_eq!((pieces, &seen[..]), (3, &data[..]));
+        assert_eq!(q.c_cc.get(), 0);
+        // an emulation that stops early: the rest stays queued, and the run says so
+        assert_eq!(crate::kern::tty_subr::b_to_q(&data, q), 0);
+        let mut first = true;
+        let mut part = |b: &[u8]| {
+            if first {
+                first = false;
+                b.len() as u32
+            } else {
+                10
+            }
+        };
+        assert!(!outq_run(q, &mut buf, &mut part));
+        assert_eq!(q.c_cc.get(), 1500 - 512 - 10);
+        // wrapped: the run up to the ring's end (in two pieces), then the start
+        crate::kern::tty_subr::ndflush(q, 1500 - 522 - 100);
+        let tail: Vec<u8> = (0..1000u32).map(|i| (i % 13) as u8).collect();
+        assert_eq!(crate::kern::tty_subr::b_to_q(&tail, q), 0);
+        let mut seen = Vec::new();
+        let mut take = |b: &[u8]| {
+            seen.extend_from_slice(b);
+            b.len() as u32
+        };
+        assert!(outq_run(q, &mut buf, &mut take));
+        assert!(q.c_cc.get() > 0, "the ring wrapped");
+        assert!(outq_run(q, &mut buf, &mut take));
+        assert_eq!(q.c_cc.get(), 0);
+        let mut want = data[1400..].to_vec();
+        want.extend_from_slice(&tail);
+        assert_eq!(seen, want);
+        crate::kern::tty_subr::clfree(q);
     }
 
     #[test]
