@@ -1997,8 +1997,9 @@ pub fn fill_kproc<G: ProcGlue>(
         ki.p_ustart_sec = utc.tv_sec as u64;
         ki.p_ustart_usec = (utc.tv_nsec / 1000) as u32;
 
-        if let Some(n) = crate::sched::thread_cpu(p) {
-            ki.p_cpuid = G::cpu_unit(n);
+        // if (p->p_cpu != NULL) ki->p_cpuid = CPU_INFO_UNIT(p->p_cpu)
+        if let Some(unit) = crate::sched::thread_cpu(p).and_then(G::cpu_unit) {
+            ki.p_cpuid = unit;
         }
     }
 

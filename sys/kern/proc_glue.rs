@@ -706,8 +706,8 @@ impl ProcGlue for BsdProcGlue {
         }
     }
 
-    fn cpu_unit(n: usize) -> u64 {
-        crate::kern::kern_sched::cpu_info_by_number(n).map_or(n as u64, |ci| {
+    fn cpu_unit(n: usize) -> Option<u64> {
+        crate::kern::kern_sched::cpu_info_by_number(n).map(|ci| {
             u64::from(<crate::machine::Machine as crate::machine::Cpu>::cpu_info_unit(ci))
         })
     }

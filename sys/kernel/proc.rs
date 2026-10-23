@@ -1022,9 +1022,10 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn unveil_state(_pr: &Process<Self>) -> UnveilState {
         UnveilState::default()
     }
-    /// `CPU_INFO_UNIT(ci)` of CPU `n` (its device's unit number, `kinfo_proc.p_cpuid`).
-    fn cpu_unit(n: usize) -> u64 {
-        n as u64
+    /// `CPU_INFO_UNIT(ci)` of CPU `n` (its device's unit number, `kinfo_proc.p_cpuid`);
+    /// `None` when no `cpu_info` answers for `n`.
+    fn cpu_unit(n: usize) -> Option<u64> {
+        Some(n as u64)
     }
 }
 
