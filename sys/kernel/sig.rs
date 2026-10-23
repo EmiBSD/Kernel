@@ -468,13 +468,13 @@ hal::abi_pod!(UserTimespec {
 
 impl UserTimespec {
     /// `timespecisvalid(ts)`.
-    const fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.tv_nsec >= 0 && self.tv_nsec < 1_000_000_000
     }
 
     /// `TIMESPEC_TO_NSEC(ts)`: saturating at `UINT64_MAX` (a negative `tv_sec` compares as
     /// the C's unsigned conversion does).
-    const fn to_nsec(self) -> u64 {
+    pub const fn to_nsec(self) -> u64 {
         if self.tv_sec as u64 > (u64::MAX - self.tv_nsec as u64) / 1_000_000_000 {
             return u64::MAX;
         }

@@ -138,7 +138,11 @@
 //!   are never touched by two CPUs at once, but by readers under a shared witness, which no
 //!   writer accompanies. An element's identity moves from 0 to a lock's under a
 //!   compare-and-swap (`Acquire`) and back to 0 last of all (`Release`), so the cells it hands
-//!   over from one lock's holders to another's are seen whole.
+//!   over from one lock's holders to another's are seen whole. One operation moves it from
+//!   one lock's identity straight to another's ([`PinList::move_where_across`]): its caller
+//!   holds exclusive witnesses of both locks, so no holder of either touches the cells while
+//!   they change hands, and the next holder of the second lock acquires it after the mover
+//!   released it; the identity is never 0 meanwhile (the element stays linked throughout).
 //! - I3, links: every link of a linked element, and of a head, names a linked element's entry
 //!   on the same list (or, in a ring, the ring's own head); an entry's `this` names the element
 //!   it was linked for, with that element's provenance.
@@ -165,6 +169,12 @@
 //!   pinned.
 //! - The lock that keeps the lists, a comment in the C (`[T]`), is a witness every operation
 //!   takes and checks.
+//! - N4.6c: `TAILQ_REMOVE` from a list of one lock then `TAILQ_INSERT_TAIL` on a list of
+//!   another, both locks held (`futex(2)`'s `FUTEX_REQUEUE` between two buckets of
+//!   `futex_slpques`) -> [`PinList::move_where_across`], which retags the element from one
+//!   lock to the other without ever unlinking it, so a reader of
+//!   [`PinEntry::is_linked`] without either lock (the futex's waiter) never sees it off a
+//!   list while it moves.
 
 use core::cell::Cell;
 use core::marker::{PhantomData, PhantomPinned};
@@ -734,6 +744,47 @@ impl<A: PinAdapter> PinList<A> {
         moved
     }
 
+    /// [`PinList::move_where`] onto `dst`, a list of **another** lock, whose exclusive witness
+    /// `wd` the caller holds beside `w` (`futex(2)`'s `FUTEX_REQUEUE` from one bucket to
+    /// another): each element `pred` accepts, at most `max`, leaves this list and is appended
+    /// to `dst` in order, its identity changed from this lock's to `dst`'s in one store, so
+    /// it is linked throughout ([`PinEntry::is_linked`] never reads `false` meanwhile, the
+    /// module's I2). How many moved. Panics when both witnesses are of one lock (use
+    /// [`PinList::move_where`]); `pred` sees each element for the call only.
+    pub fn move_where_across<W: Divisible + ?Sized, V: Divisible + ?Sized>(
+        &self,
+        w: &mut W,
+        max: usize,
+        mut pred: impl FnMut(&A::Elem) -> bool,
+        dst: &Self,
+        wd: &mut V,
+    ) -> usize {
+        let id = id_of(w);
+        let did = id_of(wd);
+        if id == did {
+            hal_panic(format_args!("TAILQ: a move across one lock"));
+        }
+        bind(&self.key, id, "TAILQ_REMOVE");
+        bind(&dst.key, did, "TAILQ_INSERT_TAIL");
+        let mut moved = 0;
+        let mut cur = self.head.next.get();
+        while let Some(p) = cur
+            && moved < max
+        {
+            let ent = entry_at(p);
+            cur = ent.next.get();
+            if pred(elem_of(ent)) {
+                self.detach(ent);
+                // I2: the caller holds both locks exclusively; the next holder of `dst`'s
+                // lock acquires it after this caller released it.
+                ent.owner.store(did, Ordering::Release);
+                dst.append(p);
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     /// Unlinks `ent`, which is linked under this list's lock, checking its ends first.
     fn unlink(&self, ent: &PinEntry<A::Elem>) {
         self.detach(ent);
@@ -1174,6 +1225,81 @@ mod tests {
         l.remove(&mut g, &b);
         assert!(l.is_empty(&g));
         assert!(!l.remove_first(&mut g));
+    }
+
+    /// A move between the lists of two locks, both held (`FUTEX_REQUEUE` across buckets): the
+    /// moved elements stay linked, take the second lock's identity (only its witness reaches
+    /// them afterwards) and keep their order; `max` bounds the move.
+    #[test]
+    fn elements_move_across_two_locks_without_leaving_a_list() {
+        testutil::install();
+        let ma = Mutexed::new(IPL_NONE, ());
+        let mb = Mutexed::new(IPL_NONE, ());
+        let src: PinList<ByE> = PinList::new();
+        let dst: PinList<ByE> = PinList::new();
+        let a = core::pin::pin!(Node::new(1));
+        let b = core::pin::pin!(Node::new(2));
+        let c = core::pin::pin!(Node::new(3));
+        let d = core::pin::pin!(Node::new(4));
+        {
+            let mut ga = ma.lock();
+            for n in [a.as_ref(), b.as_ref(), c.as_ref()] {
+                src.insert_tail(&mut ga, n);
+            }
+        }
+        {
+            let mut gb = mb.lock();
+            dst.insert_tail(&mut gb, d.as_ref());
+        }
+        let mut ga = ma.lock();
+        let mut gb = mb.lock();
+        let mut seen = Vec::new();
+        let moved = src.move_where_across(
+            &mut ga,
+            2,
+            |n| {
+                seen.push(n.v);
+                n.v != 2
+            },
+            &dst,
+            &mut gb,
+        );
+        assert_eq!(moved, 2);
+        // The walk stopped once two had moved: 1 and 3 moved, 2 stayed.
+        assert_eq!(seen, [1, 2, 3]);
+        assert_eq!(values(src.iter(&ga)), [2]);
+        assert_eq!(values(dst.iter(&gb)), [4, 1, 3]);
+        assert!(a.e.is_linked() && c.e.is_linked());
+        // 1 is now on a list of the second lock: removed through its witness only.
+        dst.remove(&mut gb, &a);
+        assert!(!a.e.is_linked());
+        assert!(src.remove_first(&mut ga));
+        assert!(dst.remove_first(&mut gb) && dst.remove_first(&mut gb));
+        assert!(src.is_empty(&ga) && dst.is_empty(&gb));
+    }
+
+    /// An element moved to another lock's list cannot be removed under its first lock.
+    #[test]
+    #[should_panic(expected = "not on a list of this lock")]
+    fn a_moved_element_is_refused_under_its_old_lock() {
+        testutil::install();
+        let ma = Mutexed::new(IPL_NONE, ());
+        let mb = Mutexed::new(IPL_NONE, ());
+        // Leaked, the lists and the element: the panic below leaves the element linked, and
+        // a drop during the unwind would panic again.
+        let src: &'static PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let dst: &'static PinList<ByE> = Box::leak(Box::new(PinList::new()));
+        let a: &'static Node = Box::leak(Box::new(Node::new(1)));
+        let a = pin_static(a);
+        let mut ga = ma.lock();
+        let mut gb = mb.lock();
+        src.insert_tail(&mut ga, a);
+        assert_eq!(
+            src.move_where_across(&mut ga, usize::MAX, |_| true, &dst, &mut gb),
+            1
+        );
+        drop(gb);
+        src.remove(&mut ga, &a);
     }
 
     /// The pinned reads, the removal of a matching element and the moves between two lists

@@ -68,6 +68,12 @@
 //!   [`ForeignWindow`], minted by the kernel map's token, whose `read_at`/`write_at` copy a
 //!   bounded range through the bridge's `kcopy_in`/`kcopy_out`: the copy is the machine's,
 //!   with its fault recovery; the kernel never holds a reference to the foreign pages.
+//! - N4.7a: an ioctl's argument arrives in the kernel as the bytes `sys_ioctl` copied in
+//!   (`FileOps::ioctl`'s `data: &mut [u8]`, the C's `caddr_t data` cast to the command's
+//!   structure); [`pod_from_bytes`] and [`pod_to_bytes`] are that cast for an `AbiPod` type,
+//!   a copy over the byte views below (no `unsafe` of their own), bounded by the slice. LZ's
+//!   `ioctl_arg`/`ioctl_ret` (`sys/sys/ioctl.rs`, three `unsafe` over the legacy trait) stay
+//!   for their legacy users.
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -95,6 +101,10 @@ pub trait UserCopy: Sync {
     fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno>;
     /// `copyoutstr(kbuf, uaddr, kbuf.len(), &done)`: the bytes copied, the NUL included.
     fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno>;
+    /// `copyin32(uaddr, &v)`: the aligned 32-bit word at `uaddr`, read in one access (a
+    /// value another thread writes is never seen torn); `EFAULT` when `uaddr` is not 4-byte
+    /// aligned or not mapped user memory (`futex(2)`).
+    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno>;
     /// `kcopy(kva, kbuf, kbuf.len())`: the bytes at the kernel address `kva` into `kbuf`;
     /// `EFAULT` when a page of the range faults (`pcb_onfault`). `hal` calls it only for a
     /// range inside a [`ForeignWindow`].
@@ -436,6 +446,38 @@ impl UserPtr<u8> {
     }
 }
 
+impl UserPtr<u32> {
+    /// `copyin32(uaddr, &v)`: the 32-bit word at this address in one access, as a futex is
+    /// read; `EFAULT` when it is misaligned or not mapped.
+    pub fn copyin32(self) -> Result<u32, Errno> {
+        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
+        c.copyin32(self.addr)
+    }
+}
+
+/// The `T` an ioctl's argument bytes hold (`*(struct winsize *)data`): its first
+/// `size_of::<T>()` bytes, copied out; `None` when `b` is shorter (the C's `IOCPARM_LEN`
+/// always covers it, so a short slice is a caller's mistake the kernel reports, never reads
+/// past).
+pub fn pod_from_bytes<T: AbiPod>(b: &[u8]) -> Option<T> {
+    let src = b.get(..size_of::<T>())?;
+    let mut v = zeroed::<T>();
+    bytes_of_mut(core::slice::from_mut(&mut v)).copy_from_slice(src);
+    Some(v)
+}
+
+/// `*(struct winsize *)data = *v`: the bytes of `v` into the first `size_of::<T>()` bytes of
+/// an ioctl's argument; `false` (nothing written) when `b` is shorter.
+pub fn pod_to_bytes<T: AbiPod>(v: &T, b: &mut [u8]) -> bool {
+    match b.get_mut(..size_of::<T>()) {
+        Some(dst) => {
+            dst.copy_from_slice(bytes_of(core::slice::from_ref(v)));
+            true
+        }
+        None => false,
+    }
+}
+
 /// The all-zero `T`.
 pub fn zeroed<T: AbiPod>() -> T {
     // SAFETY: every bit pattern of an `AbiPod` type is a valid value (its contract, which
@@ -510,6 +552,39 @@ mod tests {
     }
 
     #[test]
+    fn an_ioctl_argument_reads_and_writes_as_its_structure() {
+        // The bytes of a `struct kevent` as sys_ioctl hands them over (a little longer than
+        // the structure: IOCPARM_LEN rounds nothing here, the slice may be longer).
+        let mut data = [0u8; 40];
+        assert!(pod_to_bytes(&ev(7), &mut data));
+        assert_eq!(&data[..8], &7u64.to_ne_bytes());
+        assert_eq!(&data[8..10], &(-1i16).to_ne_bytes());
+        assert_eq!(
+            &data[32..],
+            &[0u8; 8],
+            "past the structure nothing is written"
+        );
+        assert_eq!(pod_from_bytes::<Kevent>(&data), Some(ev(7)));
+        assert_eq!(
+            pod_from_bytes::<i32>(&[1, 0, 0, 0, 9]),
+            Some(i32::from_ne_bytes([1, 0, 0, 0]))
+        );
+        // A slice shorter than the structure: refused, nothing read or written.
+        assert_eq!(pod_from_bytes::<Kevent>(&data[..31]), None);
+        let mut short = [0xeeu8; 31];
+        assert!(!pod_to_bytes(&ev(1), &mut short));
+        assert_eq!(short, [0xee; 31]);
+        // A nested structure round-trips too.
+        let n = Nested {
+            k: [ev(1), ev(2)],
+            tag: *b"abcdefgh",
+        };
+        let mut nb = [0u8; size_of::<Nested>()];
+        assert!(pod_to_bytes(&n, &mut nb));
+        assert_eq!(pod_from_bytes::<Nested>(&nb), Some(n));
+    }
+
+    #[test]
     fn a_structure_round_trips_through_user_memory() {
         testutil::install();
         let u = UserPtr::<Kevent>::new(testutil::user_base());
@@ -544,6 +619,17 @@ mod tests {
             Err(Errno::EFAULT)
         );
         assert_eq!(UserPtr::<u64>::new(usize::MAX).checked_add(1), None);
+    }
+
+    #[test]
+    fn a_word_is_read_aligned_or_refused() {
+        testutil::install();
+        let at = testutil::user_base() + 3072;
+        UserPtr::<u32>::new(at).copyout(&0x1234_5678).unwrap();
+        assert_eq!(UserPtr::<u32>::new(at).copyin32(), Ok(0x1234_5678));
+        // copyin32's alignment check: a misaligned word is EFAULT even when mapped.
+        assert_eq!(UserPtr::<u32>::new(at + 2).copyin32(), Err(Errno::EFAULT));
+        assert_eq!(UserPtr::<u32>::new(8).copyin32(), Err(Errno::EFAULT));
     }
 
     #[test]

@@ -81,7 +81,6 @@ pub use hal::sys::mman;
 pub mod mount;
 #[forbid(unsafe_code)]
 pub mod mplock;
-pub mod msgbuf;
 #[forbid(unsafe_code)]
 pub mod mtio;
 #[forbid(unsafe_code)]

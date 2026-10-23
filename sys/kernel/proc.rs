@@ -1133,6 +1133,9 @@ pub struct ProcTables<G: ProcGlue> {
     process0: OnceStatic<&'static Process<G>>,
     /// `proc0`: process 0's thread, which `kthread_create` forks from.
     proc0: OnceStatic<Pin<&'static Thread<G>>>,
+    /// `/dev/klog` (`logsoftc`, `log_open`, `syslogf`) and the log stash
+    /// (`kernel::log`): generic over the glue through its klist and `syslogf`'s file.
+    pub log: crate::log::LogDev<G>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -1154,6 +1157,7 @@ impl<G: ProcGlue> ProcTables<G> {
             initprocess: OnceStatic::new(),
             process0: OnceStatic::new(),
             proc0: OnceStatic::new(),
+            log: crate::log::LogDev::new(),
         }
     }
 

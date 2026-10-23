@@ -61,7 +61,8 @@ paid_by = "N9"
 # A safe trait: the user copies only read and write the byte slices they are given and user
 # memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
 # through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
-# window the kernel map's token minted.
+# window the kernel map's token minted. N4.6c: copyin32 (futex(2)'s aligned word, read in one
+# access, EFAULT when misaligned), for kernel::futex.
 # hal::user::UserCopy
 [[bridge]]
 trait = "UserCopy"
@@ -245,6 +246,18 @@ paid_by = "N4"
 trait = "VmSysctl"
 for = ["sys/kernel/vm/meter.rs"]
 paid_by = "N4"
+
+# bsd: the console's half of the device switch that sendsyslog(2) writes through when no
+# syslogd(8) socket is set (dosendsyslog's KERNEL_LOCK leg): cnwrite and its test `constty ||
+# cn_devvp` (dev/cons.c), implemented by sys/kern/subr_log.rs (BsdTtyDevsw, over dev/cons.rs's
+# cnwrite, constty and cn_devvp_set) and registered by bsd's initconsbuf (N4.7a). N4.7b adds the
+# tty's legs (d_stop, d_tty, the pty master test) per its brief. Paid when the console and the
+# device switch move (N7, decision 45's CharDevice).
+# kernel::log::TtyDevsw
+[[bridge]]
+trait = "TtyDevsw"
+for = ["sys/kernel/log.rs"]
+paid_by = "N7"
 
 # bsd: the members of bsd's subsystems a process, thread, group and session carry (sigacts,
 # the descriptor tables, the kqueues, the timeouts, the unveil table, the klist and its mutex,

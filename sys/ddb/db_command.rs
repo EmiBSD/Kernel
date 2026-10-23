@@ -139,7 +139,7 @@ use crate::ddb::db_variables::{DB_MAXOFF, db_read_variable, db_set_cmd};
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_xxx::reboot;
 use crate::kern::proc_glue::tfind;
-use crate::kern::subr_log::msgbufp;
+use crate::kern::subr_log::Buf;
 use crate::kern::subr_pool::{PoolWalkPr, pool_walk};
 use crate::kern::subr_prf::{Str, db_printf, panicstr_message};
 use crate::kern::uipc_mbuf::{m_print, m_print_chain, m_print_packet};
@@ -157,13 +157,13 @@ use crate::nfs::nfs_debug::{
     db_show_all_nfsnodes, db_show_all_nfsreqs, nfs_node_print, nfs_request_print,
 };
 use crate::sys::mbuf::Mbuf;
-use crate::sys::msgbuf::MSG_MAGIC;
 use crate::sys::reboot::{
     RB_AUTOBOOT, RB_DUMP, RB_HALT, RB_NOSYNC, RB_POWERDOWN, RB_RESET, RB_TIMEBAD, RB_USERREQ,
 };
 use crate::sys::socket::{AF_INET, AF_INET6};
 use crate::sys::socketvar::Socket;
 use crate::unported;
+use kernel::log::{msgbuf_header, msgbuf_read};
 use kernel::vm::meter::uvmexp_print;
 
 /// `CS_OWN`: non-standard syntax.
@@ -1024,28 +1024,32 @@ fn db_boot_poweroff_cmd(_addr: DbExpr, _haddr: bool, _count: DbExpr, _modif: &[u
 
 /// `db_dmesg_cmd`: `dmesg`, the kernel message buffer from its oldest byte.
 fn db_dmesg_cmd(_addr: DbExpr, _haddr: bool, _count: DbExpr, _modif: &[u8]) -> DbResult {
-    let Some(mbp) = msgbufp() else {
+    // msgbufp == NULL or a corrupted buffer: nothing (the kernel's reader answers both).
+    let Some(h) = msgbuf_header(Buf::Msgbuf) else {
         return Ok(());
     };
-    if mbp.magic() != MSG_MAGIC {
-        return Ok(());
-    }
-    let bufs = usize::try_from(mbp.bufs()).unwrap_or(0);
-    let bufc = mbp.bufc();
-    let mut off = usize::try_from(mbp.bufx()).unwrap_or(0);
+    let bufs = usize::try_from(h.msg_bufs).unwrap_or(0);
+    let mut off = usize::try_from(h.msg_bufx).unwrap_or(0);
     if off > bufs {
         off = 0;
     }
-    let mut p = off;
-    for _ in 0..bufs {
-        if p >= bufs {
-            p = 0;
+    // From the write pointer to the ring's end, then from its start: the oldest byte first.
+    let mut chunk = [0u8; 64];
+    for (from, to) in [(off, bufs), (0, off)] {
+        let mut p = from;
+        while p < to {
+            let want = (to - p).min(chunk.len());
+            let n = msgbuf_read(Buf::Msgbuf, p, &mut chunk[..want]);
+            if n == 0 {
+                break;
+            }
+            for &c in &chunk[..n] {
+                if c != 0 {
+                    db_putchar(i32::from(c));
+                }
+            }
+            p += n;
         }
-        let c = bufc[p].get();
-        if c != 0 {
-            db_putchar(i32::from(c));
-        }
-        p += 1;
     }
     db_putchar(i32::from(b'\n'));
     Ok(())

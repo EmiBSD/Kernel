@@ -56,9 +56,11 @@ use crate::sys::types::Register;
 
 /// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
 /// pipe(2), the vm system calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`), the descriptor
-/// system calls (`KernelApi::fd`, `sys/kern/kern_descrip.rs`) and the event system calls
-/// (`KernelApi::event`, `sys/kern/kern_event.rs`) are the kernel crate's, entered through
-/// `bsd`'s system call prologue.
+/// system calls (`KernelApi::fd`, `sys/kern/kern_descrip.rs`), the event system calls
+/// (`KernelApi::event`, `sys/kern/kern_event.rs`), sendsyslog(2) (`KernelApi::sendsyslog`,
+/// `sys/kern/subr_log.rs`), futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`) and the
+/// process system calls (`KernelApi::proc`, `sys/kern/proc_glue.rs`) are the kernel crate's,
+/// entered through `bsd`'s system call prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
     legacy_syscall,
     api_copyin,
@@ -67,6 +69,8 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::vm_bsd::VM_ENTRIES,
     crate::kern::kern_descrip::FD_ENTRIES,
     crate::kern::kern_event::EVENT_ENTRIES,
+    crate::kern::subr_log::native_sendsyslog,
+    crate::kern::sys_futex::native_futex,
     crate::kern::proc_glue::PROC_ENTRIES,
 );
 

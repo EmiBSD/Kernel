@@ -168,7 +168,7 @@ use crate::kern::sched_bsd;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
 use crate::kern::subr_evcount::evcount_sysctl;
-use crate::kern::subr_log::{LOG_MTX, consbufp, msgbufp};
+use crate::kern::subr_log::Buf;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::sys_socket::fp_socket;
@@ -209,7 +209,6 @@ use crate::sys::limits::SHRT_MAX;
 use crate::sys::malloc::{M_SYSCTL, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
-use crate::sys::msgbuf::{MSG_MAGIC, Msgbuf};
 use crate::sys::param::{MAXPATHLEN, MAXPHYS, NODEV, OpenBSD, PAGE_MASK, PAGE_SIZE};
 use crate::sys::proc::ProcExt;
 use crate::sys::proc::{
@@ -627,25 +626,23 @@ pub fn kern_sysctl(
             if *top == KERN_CONSBUF {
                 suser(p)?;
             }
-            let mp = if *top == KERN_MSGBUF {
-                msgbufp()
+            let which = if *top == KERN_MSGBUF {
+                Buf::Msgbuf
             } else {
-                consbufp()
+                Buf::Consbuf
             };
-            return sysctl_msgbuf(mp, oldp, oldlenp, newp);
+            return sysctl_msgbuf(which, oldp, oldlenp, newp);
         }
         KERN_CONSBUFSIZE | KERN_MSGBUFSIZE => {
-            let mp = if *top == KERN_MSGBUFSIZE {
-                msgbufp()
+            let which = if *top == KERN_MSGBUFSIZE {
+                Buf::Msgbuf
             } else {
-                consbufp()
+                Buf::Consbuf
             };
 
-            // deal with cases where the message buffer has become corrupted.
-            let Some(mp) = mp.filter(|mp| mp.magic() == MSG_MAGIC) else {
-                return Err(Errno::ENXIO);
-            };
-            return sysctl_rdint(oldp, oldlenp, newp, mp.bufs() as i32);
+            // deal with cases where the message buffer has become corrupted (ENXIO).
+            let bufs = kernel::log::msgbuf_size(which)?;
+            return sysctl_rdint(oldp, oldlenp, newp, bufs as i32);
         }
         // KERN_ALLOWDT: NDT is 0.
         KERN_HOSTID => return sysctl_int(oldp, oldlenp, newp, newlen, &HOSTID),
@@ -757,48 +754,10 @@ pub fn kern_sysctl(
     error
 }
 
-/// The `KERN_MSGBUF`/`KERN_CONSBUF` case of `kern_sysctl`: the header, then the ring.
-fn sysctl_msgbuf(
-    mp: Option<&Msgbuf>,
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-) -> Result<(), Errno> {
-    let hlen = Msgbuf::HEADER_SIZE;
-
-    // deal with cases where the message buffer has become corrupted.
-    let Some(mp) = mp.filter(|mp| mp.magic() == MSG_MAGIC) else {
-        return Err(Errno::ENXIO);
-    };
-    if newp != 0 {
-        return Err(Errno::EPERM);
-    }
-    let bufs = mp.bufs() as usize;
-    if oldp != 0 {
-        if hlen + bufs > *oldlenp {
-            return Err(Errno::ENOMEM);
-        }
-    } else {
-        return Ok(());
-    }
-
-    mtx_enter(&LOG_MTX);
-    let ump: [i64; 5] = [mp.magic(), mp.bufx(), mp.bufr(), mp.bufs(), mp.bufd()];
-    mtx_leave(&LOG_MTX);
-
-    // copy header...
-    copyout(ump.as_bytes(), oldp)?;
-    // ...and the data.
-    let mut chunk = [0u8; 256];
-    let ring = &mp.bufc()[..bufs.min(mp.bufc().len())];
-    for (i, cells) in ring.chunks(chunk.len()).enumerate() {
-        for (b, c) in chunk.iter_mut().zip(cells) {
-            *b = c.get();
-        }
-        copyout(&chunk[..cells.len()], oldp + hlen + i * 256)?;
-    }
-
-    Ok(())
+/// The `KERN_MSGBUF`/`KERN_CONSBUF` case of `kern_sysctl`: the header, then the ring
+/// (the kernel's buffers, `kernel::log`).
+fn sysctl_msgbuf(which: Buf, oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
+    kernel::log::sysctl_msgbuf(which, oldp, oldlenp, newp)
 }
 
 /// `kern_sysctl_locked`: the `kern` leaves served under `sysctl_lock`.

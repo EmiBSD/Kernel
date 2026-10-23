@@ -1648,7 +1648,8 @@ notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, ge
 [[module]]
 rust = "sys/arch/arm64/arm64/conf.rs"
 lz = ["sys/arch/arm64/arm64/conf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/log.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/copy.rs"
@@ -1972,7 +1973,7 @@ rust = "sys/hal/arch/arm64/include/param.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/param.rs"]
 status = "redesigned"
-notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic, pmap and pte.rs"
+notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic, pmap and pte.rs; N4.7a: MSGBUFSIZE, for kernel::log's static message buffer"
 
 [[module.fn]]
 lz = "sys/arch/arm64/include/param.rs::PAGE_SHIFT"
@@ -2867,7 +2868,7 @@ adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs", "sys/lib/libz/d
 rust = "sys/ddb/db_command.rs"
 lz = ["sys/ddb/db_command.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/meter.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/vm/meter.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/kernel/log.rs"]
 license = "Mach notice"
 
 [[module]]
@@ -3096,7 +3097,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/cons.rs"
 lz = ["sys/dev/cons.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/log.rs"]
 notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab are not used (the consoles are attached directly); M8: CONSMAJOR, the cnopen..cnkqfilter prototypes are cons.rs's functions; cons_decl/cons_init macros are the Consdev literal; M2: cngetc/cnputc/cnpollc/cnbell/nullcnpollc on an atomic cn_tab; M8: cnopen, cnclose, cnread, cnwrite, cnstop, cnioctl, cnkqfilter through the device switch, constty and cn_devvp as atomic pointers (constty()/set_constty()); cninit and constab[] are not used: each architecture attaches its console directly (docs/ARCHITECTURE.md)"
 
 [[module]]
@@ -4414,7 +4416,7 @@ status = "inherited"
 rust = "sys/dev/rnd.rs"
 lz = ["sys/dev/rnd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/chacha_private.rs", "sys/kernel/crypto/sha2.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/crypto/chacha_private.rs", "sys/kernel/crypto/sha2.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/kernel/event.rs", "sys/kernel/log.rs"]
 notes = "M16d: the whole file: the entropy input ring (rand_event, rnd_event_space, rnd_event_prod/cons, add_event_data, enqueue_randomness with the rnd_cold path and rnd_timeout), add_entropy_words (twisted GFSR, twist_table), dequeue_randomness, extract_entropy (SHA-512 of the pool copy), suspend_randomness/resume_randomness (no caller: subr_suspend.c not ported), the ChaCha20 generator (_rs_init, _rs_seed, _rs_stir, _rs_stir_if_needed, _rs_rekey, _rs_random_buf, _rs_random_u32 under rndlock IPL_HIGH), _rs_clearseed (km_alloc kv_any/kp_none at kd_prefer, pmap_kenter_pa), arc4random, arc4random_buf, arc4random_ctx_new/free/buf (malloc M_TEMP), arc4random_uniform, rnd_init, rnd_reinit (rnd_task on systq, rndreinit_timeout 10 min), random_start (__guard_local warning, clearseed, msgbuf and etext words, good-seed lines), randomopen/close/read/write/kqfilter/ioctl and the filtops (cdevsw 45), sys_getentropy. entropy_pool0 and rs_buf0 in .openbsd.randomdata (PT_OPENBSD_RANDOMIZE in both kernel.ld), read volatile. Deviations: the C's lock-free shared words are Relaxed atomics; add_entropy_words' two statics live in EntropyPool with the pool; extract_entropy hashes block by block; the generator state is a StaticCell under rndlock, which suspend/resume_randomness also take; _rs_clearseed panics on an unmapped seed page; arc4random_ctx_new returns None (callers ENOMEM) if malloc fails. Boot seed: boot(8)/efiboot fills the segment (loadrandom, mdrandom, fwrandom; RB_GOODRANDOM); Limine fills nothing (unported! in sys/stand/mod.rs; random_start prints the C's no-entropy warning). Licence BSD-3 with a GPL alternative, the BSD terms apply (block now verbatim from the pin); host tests (ChaCha keystream vector, rekey/fill, pool mixing, input ring, uniform bound)"
 
 [[module]]
@@ -5609,7 +5611,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs"]
 
 
 [[module]]
@@ -5692,9 +5694,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/subr_log.rs"
 lz = ["sys/kern/subr_log.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
-notes = "M2: initmsgbuf, msgbuf_putchar, msgbuf_putchar_locked, logwakeup, initconsbuf (malloc reported unported), log_open/msgbufmapped/msgbufp/consbufp; init_static_msgbuf (ours) hands a .bss area to initmsgbuf until pmap (M3); /dev/klog, logtick, dosendsyslog, sys_sendsyslog are M7; M8: logstash_full/increment/insert/remove/sendsyslog (cursors as indices), sys_sendsyslog, dosendsyslog (syslogf is never set without the log device: LOG_CONS messages go to cnputc and the call answers ENOTCONN, others are stashed; sosend reported); sockets: dosendsyslog sends to syslogd(8)'s socket with sosend (syslogf is still never set without the log device); M11a: dosendsyslog's console path takes the kernel lock as the C; M11e: log_mtx (IPL_HIGH, pub LOG_MTX) taken by msgbuf_putchar; M13: initmsgbuf's header check and repair is initmsgbuf_header, so the host test runs it on a private buffer (tests print through the global one in parallel; it flaked)"
+status = "redesigned"
+notes = "N4.7a: the adapter of kernel::log (0 unsafe, forbid): init_static_msgbuf, initconsbuf (which registers the TtyDevsw bridge over dev/cons.rs's cnwrite, constty and cn_devvp), log_open, logwakeup, msgbufmapped and msgbuf_putchar(which, c) re-exported, sendsyslog's sysent row, /dev/klog's five cdevsw entry points (arm64 cdevsw[7]); LZ's 12 unsafe went with the buffers into kernel::log"
 
 [[module]]
 rust = "sys/kern/subr_percpu.rs"
@@ -5705,14 +5706,14 @@ status = "inherited"
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs"]
+adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress"
 
 [[module]]
 rust = "sys/kern/subr_prf.rs"
 lz = ["sys/kern/subr_prf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/log.rs"]
 notes = "format engine is core::fmt (fmt::Arguments replaces fmt+va_list, so printf/vprintf and snprintf/vsnprintf pair up); %b is the Bitmask Display adaptor, %s of a byte string is Str; kprintf!/kprintln!/log!/db_printf! macros; M8 (tty.c): kputchar takes the tty (TOTTY through tputchar, constty redirection with TOCONS), uprintf, ttyprintf; M10e: tprintf_open/tprintf_close/tprintf under feature nfsclient or nfsserver (tpr_t is sys/sys/tprintf.rs's Tpr, an Option<&'static Session>; tprintf takes fmt::Arguments; host test: handles follow PS_CONTROLT and s_ttyvp, the session is held until tprintf_close, the message is logged at LOG_INFO); v_putc fixed to cnputc; panicbuf is a single buffer (per-CPU ci_panicbuf in M5) and panicstr_claim is the trap handlers' atomic_cas_ptr on panicstr; db_panic defaults to 0 (ddb-lite has no command loop); KASSERT/KDASSERT live here as kassert!/kdassert!; M11e: kprintf_mutex (IPL_HIGH) around printf, vprintf and the TOCONS half of log/addlog, MUTEX_ASSERT_LOCKED for TOCONS in kprintf, splhigh around the TOLOG half of log/addlog"
 
 [[module]]
@@ -5755,8 +5756,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 [[module]]
 rust = "sys/kern/sys_futex.rs"
 lz = ["sys/kern/sys_futex.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/amap.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/sched.rs"]
+status = "redesigned"
+notes = "N4.6c: futex(2) itself (the buckets, the waiters, futex_wait/wake/requeue, the keys) moved into sys/kernel/futex.rs; this path keeps the sysent[] row over kernel::futex::sys_futex (the arguments as addresses, the count in retval[0]) and futex_init delegating, 0 unsafe (LZ 9), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/sys_generic.rs"
@@ -5883,7 +5884,7 @@ license = "none"
 rust = "sys/kern/tty.rs"
 lz = ["sys/kern/tty.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/hal/klock.rs"]
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/hal/klock.rs", "sys/kernel/log.rs"]
 
 [[module]]
 rust = "sys/kern/tty_conf.rs"
@@ -7702,11 +7703,6 @@ status = "redesigned"
 notes = "N4.5c: struct __mp_lock is hal::klock::MpLock, re-exported; forbid on its mod line"
 
 [[module]]
-rust = "sys/sys/msgbuf.rs"
-lz = ["sys/sys/msgbuf.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/sys/mtio.rs"
 lz = ["sys/sys/mtio.rs"]
 status = "inherited"
@@ -7941,7 +7937,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/syslog.rs"
 lz = ["sys/sys/syslog.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.7a: the adapter of kernel::log's <sys/syslog.h> (every constant and LOG_PRI/LOG_FAC/LOG_MASK/LOG_UPTO re-exported at the path of its 37 users)"
 
 [[module]]
 rust = "sys/sys/systm.rs"
@@ -8874,7 +8871,7 @@ notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: Mapp
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); docs/ZERO_UNSAFE.md 0.1, decision 17"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
@@ -9348,6 +9345,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's delivery on a kernel-lock klist, kqueue_scan, kqueue_register, poll and select over the poll kqueue, an own-mutex klist) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/futex.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/proc.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.2's hot paths (the credentials' copy, hold and refresh, getuid, lim_cur, the process list and pid chain insert/remove under the kernel lock witness) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -9499,6 +9501,13 @@ kind = "dropped"
 reason = "a Sigacts is made under its process's ps_mtx (new_static for sigacts0, sigactsinit's pool item): there is no lock-less default"
 
 [[module]]
+rust = "sys/kernel/termios.rs"
+crate = "kernel"
+lz = ["sys/sys/termios.rs", "sys/sys/ttycom.rs", "sys/sys/ttydefaults.rs"]
+status = "redesigned"
+notes = "N4.7a: the terminal's ABI headers in one module: struct termios, winsize and tstamps by hal::abi_pod! (LZ's three unsafe impl AbiPod gone), every constant, the TIOC* commands, the defaults; bsd's three headers stay until N4.7b makes them aliases"
+
+[[module]]
 rust = "sys/kernel/sigio.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sig.rs", "sys/sys/sigio.rs"]
@@ -9556,6 +9565,13 @@ reason = "MTX_NOWITNESS, kept by LZ for the record: WITNESS is not configured, a
 lz = "sys/kern/kern_fork.rs::proc_trampoline_mi"
 native = ["trampoline_mi"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/futex.rs"
+crate = "kernel"
+lz = ["sys/kern/sys_futex.rs"]
+status = "redesigned"
+notes = "N4.6c: futex(2) (FUTEX_WAIT/WAKE/REQUEUE and their _PRIVATE forms) into the kernel crate, 0 unsafe (LZ 9): a waiter is a Futex pinned on its stack on a hal::pinlist::PinList bound to its bucket's RawRwlock (futexlk), linked meaning waiting (the C's ft_proc != NULL); the key four addresses compared (FutexKey), ft_fsq the bucket's index; the waker wakes the waiter's own channel (kernel::sched::wakeup_n_locked under one SCHED_LOCK hold) instead of wakeup_proc of a thread pointer; FUTEX_REQUEUE across buckets through PinList::move_where_across (never unlinked while it moves); the word read with UserPtr<u32>::copyin32 (hal::user::UserCopy)"
 
 [[module]]
 rust = "sys/kernel/uio.rs"
@@ -10110,6 +10126,135 @@ lz = "sys/sys/eventvar.rs::Kqueue::default"
 native = []
 kind = "dropped"
 reason = "a kqueue exists only from kqueue_alloc (a kqueuepl item)"
+
+[[module]]
+rust = "sys/kernel/log.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_log.rs", "sys/sys/msgbuf.rs", "sys/sys/syslog.rs"]
+status = "redesigned"
+notes = "N4.7a: the message and console buffers owned by log_mtx (a Mutexed<LogBufs> at IPL_HIGH, the two struct msgbuf as #[repr(C)] header plus ring, no overlay); /dev/klog live (logopen..logkqfilter, logtick, logioctl with LIOCSFD, decision 6) with logsoftc, log_open, syslogf and the stash in ProcTables::log (LogDev<G>); logread_filtops as impl Filter (LogRead); kern.consbuf live (16 KiB static, decision 7); sendsyslog's socket leg through fo_write, a stashed message as a UIO_SYSSPACE uio borrowed from the stash, the console leg through the TtyDevsw bridge (cnwrite when constty or cn_devvp) else cnputc; the stash's messages MArrays of M_LOG; syslog.h's constants"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::MsgbufArea"
+native = ["Msgbuf"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::MSGBUF_AREA"
+native = ["LOG_MTX"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::MSGBUFP"
+native = ["LOG_MTX"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::CONSBUFP"
+native = ["LOG_MTX"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::msgbufp"
+native = ["msgbuf_header"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::consbufp"
+native = ["msgbuf_header"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::LOG_OPEN"
+native = ["log_open"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::LOGSOFTC_NEED_WAKEUP"
+native = ["LogDev"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::initmsgbuf_header"
+native = ["Msgbuf::init"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::msgbuf_putchar_locked"
+native = ["Msgbuf::putchar_locked"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::LogstashMessage"
+native = ["Logstash"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::LOGSTASH"
+native = ["LogDev"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::LOGSTASH_RWLOCK"
+native = ["LogDev"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::SYSLOGF"
+native = ["LogDev"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/subr_log.rs::SYSLOGF_RWLOCK"
+native = ["LogDev"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::HEADER_SIZE"
+native = ["MSG_HDRSIZE"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::MIN_SIZE"
+native = []
+kind = "dropped"
+reason = "initmsgbuf's sanity check of a caller's size: the buffer is the kernel's own static, MSGBUFSIZE long at compile time (kernel::log::LOG_MTX)"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::from_raw"
+native = []
+kind = "dropped"
+reason = "the overlay of a byte area: the buffers are LOG_MTX's own data, #[repr(C)] header and ring, with no cast"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::magic"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::set_magic"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::bufx"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::set_bufx"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::bufr"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::set_bufr"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::bufs"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::set_bufs"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::bufd"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::set_bufd"
+native = ["MsgbufHeader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::bufc"
+native = ["Msgbuf::read_at"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/msgbuf.rs::Msgbuf::clear"
+native = ["Msgbuf::new"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

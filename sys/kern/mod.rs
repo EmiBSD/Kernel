@@ -101,6 +101,7 @@ pub mod subr_evcount;
 // extent(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/extent.rs`, still
 // reached at this path by its callers.
 pub use crate::sys::extent as subr_extent;
+#[forbid(unsafe_code)]
 pub mod subr_log;
 pub mod subr_percpu;
 pub mod subr_pool;
@@ -111,6 +112,7 @@ pub mod subr_tree;
 pub mod subr_userconf;
 #[forbid(unsafe_code)]
 pub mod subr_xxx;
+#[forbid(unsafe_code)]
 pub mod sys_futex;
 #[forbid(unsafe_code)]
 pub mod sys_generic;

@@ -596,6 +596,10 @@ mod tests {
         Ok(())
     }
 
+    fn sendsyslog(_: isize, _: usize, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
     /// Version 5's entries, every one answering `Ok`.
     const EVENT: crate::api::EventEntries = crate::api::EventEntries {
         select,
@@ -907,8 +911,13 @@ mod tests {
         setrtable: p_setrtable,
     };
 
+    /// Version 7's entry, answering `Ok`.
+    fn futex(_: isize, _: usize, _: i32, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, PROC,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
     );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
@@ -932,7 +941,7 @@ mod tests {
                 size: 40,
             },
             ..KernelApi::new(
-                register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, PROC,
+                register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
             )
         };
         assert_eq!(

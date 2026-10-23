@@ -121,7 +121,6 @@
 //!   `PT_OPENBSD_RANDOMIZE` segment, it stays 0 and `random_start` prints the C's "warning: no
 //!   entropy supplied by boot loader"; the boot glue reports that gap (`sys/stand/mod.rs`).
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
@@ -140,7 +139,7 @@ use crate::kern::kern_task::{SYSTQ, task_add};
 use crate::kern::kern_tc::{getnanotime, nanotime};
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_add_sec};
 use crate::kern::sched_bsd::r#yield;
-use crate::kern::subr_log::msgbufp;
+use crate::kern::subr_log::Buf;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::copy::copyout;
@@ -152,7 +151,6 @@ use crate::sys::event::{EVFILT_READ, EVFILT_WRITE, FILTEROP_ISFD, Filterops, Kno
 use crate::sys::filio::FIOASYNC;
 use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
-use crate::sys::msgbuf::MSG_MAGIC;
 use crate::sys::mutex::Mutex;
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::proc::Proc;
@@ -165,6 +163,7 @@ use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{Dev, Register, Vaddr, Vsize};
 use crate::sys::uio::Uio;
 use hal::vm::param::trunc_page;
+use kernel::log::{msgbuf_header, msgbuf_read};
 use kernel::vm::km::KmemDynMode;
 use kernel::vm::km::{KP_NONE, KV_ANY};
 use kernel::vm::types::Voff;
@@ -867,18 +866,27 @@ pub fn random_start(goodseed: bool) {
     _rs_clearseed(RS_BUF0.as_ptr(), RSBUFSZ);
 
     // Message buffer may contain data from previous boot
-    if let Some(mbp) = msgbufp()
-        && mbp.magic() == MSG_MAGIC
-    {
-        let n = mbp.bufs() as usize / size_of::<u32>();
-        ENTROPY_POOL.add_entropy_words(
-            mbp.bufc()
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .take(n)
-                .map(|c| u32::from_ne_bytes(c.each_ref().map(Cell::get))),
-        );
+    if let Some(h) = msgbuf_header(Buf::Msgbuf) {
+        let n = usize::try_from(h.msg_bufs).unwrap_or(0) / size_of::<u32>();
+        // The ring's words, read a chunk at a time (no byte of it is reached outside log_mtx).
+        let mut chunk = [0u8; 256];
+        let mut off = 0;
+        while off < n * size_of::<u32>() {
+            let want = (n * size_of::<u32>() - off).min(chunk.len());
+            let got = msgbuf_read(Buf::Msgbuf, off, &mut chunk[..want]);
+            if got < size_of::<u32>() {
+                break;
+            }
+            let words = got / size_of::<u32>();
+            ENTROPY_POOL.add_entropy_words(
+                chunk[..words * size_of::<u32>()]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| u32::from_ne_bytes(*c)),
+            );
+            off += words * size_of::<u32>();
+        }
     }
     let text = (etext() - 32 * 1024 * size_of::<u32>()) as *const u32;
     // SAFETY: the 8 KB that start 128 KB before `etext` are kernel text, mapped readable

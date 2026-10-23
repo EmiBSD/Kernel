@@ -107,3 +107,5 @@ metadata:
 - A bench "after" clone must be a `git archive` of a commit (a `cp -Rc` of sys/ and tools/ misses workspace members such as `init/`, and cargo refuses to load the workspace).
 - `cat >> file <<EOF` and python heredocs with test words are refused: write the chunk with the Write tool and append it with a scratch `append.py FILE CHUNK`.
 - bridges.toml `paid_by` takes N2..N9 only: a row the user re-dated to N10 keeps `N4` with the N10 in its comment until xtask's schema changes.
+- Widening `KernelApi`: hal/api.rs's const layout asserts name the last field (move them to the new one), and the justfile's `abi_openbsd.ko: 331 syscalls, N native` expectation (three recipes) follows NATIVE; `kernel::api::table` needs the same `#[allow(clippy::too_many_arguments, reason)]` as `KernelApi::new` past 7 args.
+- An `adapted` bsd module cannot lose an LZ item (no rows allowed there): keep a thin wrapper of the same name over the kernel's function (kern_sysctl's `sysctl_msgbuf`).

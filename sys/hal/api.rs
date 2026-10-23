@@ -40,15 +40,17 @@
 //! (`read(2)`, `close(2)`, `dup(2)`, `fcntl(2)`, `ioctl(2)`, ...), one typed entry each.
 //! Version 5 (N4.4): [`EventEntries`], the seven of kqueue and select/poll (`kqueue(2)`,
 //! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). Version 6
-//! (N4.6a): [`ProcEntries`], the forty-six of the processes (fork, exit, wait, the limits,
-//! the ids and credentials, accounting, the TCB, the thread names, the routing table).
+//! (N4.7a): `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`). Version 7 (N4.6c):
+//! `futex`, the kernel's entry for futex(2) ([`FutexEntry`]). Version 8 (N4.6a):
+//! [`ProcEntries`], the forty-six of the processes (fork, exit, wait, the limits, the ids
+//! and credentials, accounting, the TCB, the thread names, the routing table).
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 6;
+pub const KERNEL_API_VERSION: u32 = 8;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -226,7 +228,12 @@ pub struct EventEntries {
     pub kqueue1: fn(Register, i32, &mut Rval) -> SysResult,
 }
 
-/// The process system calls' entries (version 6, N4.6a): `fork(2)` and `vfork(2)`,
+/// 83 = `futex(uint32_t *f, int op, int val, const struct timespec *timeout, uint32_t *g)`:
+/// `(nr, f, op, val, timeout, g, rval)`, the addresses as integers (`timeout` is also
+/// `FUTEX_REQUEUE`'s count), the number woken in `rval[0]`.
+pub type FutexEntry = fn(Register, usize, i32, i32, usize, usize, &mut Rval) -> SysResult;
+
+/// The process system calls' entries (version 8, N4.6a): `fork(2)` and `vfork(2)`,
 /// `__tfork(2)`, `exit(2)` and `__threxit(2)`, `wait4(2)` and `waitid(2)`, the limits and
 /// usage (`getrusage`, `getrlimit`, `setrlimit`, `getpriority`, `setpriority`), `acct(2)`, the
 /// ids and credentials of kern_prot.c, the TCB, the thread names and the routing table: one
@@ -354,7 +361,12 @@ pub struct KernelApi {
     pub fd: FdEntries,
     /// The event system calls (version 5).
     pub event: EventEntries,
-    /// The process system calls (version 6).
+    /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)` (version 6): `(nr, buf,
+    /// nbyte, flags, rval)`.
+    pub sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
+    /// futex(2) (version 7).
+    pub futex: FutexEntry,
+    /// The process system calls (version 8).
     pub proc: ProcEntries,
 }
 
@@ -373,6 +385,8 @@ impl KernelApi {
         vm: VmEntries,
         fd: FdEntries,
         event: EventEntries,
+        sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
+        futex: FutexEntry,
         proc: ProcEntries,
     ) -> Self {
         Self {
@@ -385,6 +399,8 @@ impl KernelApi {
             vm,
             fd,
             event,
+            sendsyslog,
+            futex,
             proc,
         }
     }
@@ -432,12 +448,18 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 6 only adds: the version 5 fields keep their places, `proc` comes last.
+    // Version 8 only adds: the version 7 fields keep their places, `proc` comes last.
     assert!(offset_of!(KernelApi, proc) == size_of::<KernelApi>() - size_of::<ProcEntries>());
-    assert!(
-        offset_of!(KernelApi, proc) == offset_of!(KernelApi, event) + size_of::<EventEntries>()
-    );
+    assert!(offset_of!(KernelApi, proc) == offset_of!(KernelApi, futex) + size_of::<FutexEntry>());
     assert!(size_of::<ProcEntries>() == 46 * size_of::<fn()>());
+    // Version 7 added `futex` after `sendsyslog`.
+    assert!(offset_of!(KernelApi, futex) == offset_of!(KernelApi, sendsyslog) + size_of::<fn()>());
+    // Version 6 added `sendsyslog` after the version 5 fields.
+    assert!(
+        offset_of!(KernelApi, sendsyslog)
+            == offset_of!(KernelApi, event) + size_of::<EventEntries>()
+    );
+    // Version 5 added: the version 4 fields keep their places, `event` follows them.
     assert!(offset_of!(KernelApi, event) == offset_of!(KernelApi, fd) + size_of::<FdEntries>());
     assert!(size_of::<EventEntries>() == 7 * size_of::<fn()>());
     assert!(offset_of!(KernelApi, fd) == offset_of!(KernelApi, vm) + size_of::<VmEntries>());
@@ -637,6 +659,11 @@ mod tests {
     fn poll(nr: Register, f: usize, n: u32, t: i32, rval: &mut Rval) -> SysResult {
         rval[0] = nr;
         Err(nr as i32 + f as i32 + n as i32 + t)
+    }
+
+    fn sendsyslog(nr: Register, b: usize, n: usize, f: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(b as i32 * 100 + n as i32 * 10 + f)
     }
 
     const EVENT: EventEntries = EventEntries {
@@ -961,16 +988,36 @@ mod tests {
         setrtable: p_setrtable,
     };
 
+    fn futex(
+        nr: Register,
+        f: usize,
+        op: i32,
+        val: i32,
+        t: usize,
+        g: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + f as i32 + op + val + t as i32 + g as i32)
+    }
+
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, PROC,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
     );
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 6);
+        assert_eq!(KERNEL_API_VERSION, 8);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
+    }
+
+    #[test]
+    fn the_sendsyslog_entry_is_the_callers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.sendsyslog)(112, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval[0], 112);
     }
 
     #[test]
@@ -1016,6 +1063,13 @@ mod tests {
         assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
         assert_eq!((API.event.kqueue1)(270, 1, &mut rval), Err(271));
         assert_eq!(rval, [270, 0]);
+    }
+
+    #[test]
+    fn the_futex_entry_is_the_caller_and_writes_the_return_registers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.futex)(83, 1, 2, 3, 4, 5, &mut rval), Err(98));
+        assert_eq!(rval, [83, 0]);
     }
 
     #[test]

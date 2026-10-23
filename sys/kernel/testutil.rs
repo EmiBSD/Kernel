@@ -457,6 +457,16 @@ impl UserCopy for TestUser {
         Err(Errno::ENAMETOOLONG)
     }
 
+    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno> {
+        if uaddr % 4 != 0 {
+            return Err(Errno::EFAULT);
+        }
+        let r = user_range(uaddr, 4)?;
+        let mut w = [0u8; 4];
+        w.copy_from_slice(&lock(&USER)[r]);
+        Ok(u32::from_ne_bytes(w))
+    }
+
     fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
         let r = foreign_range(kva, kbuf.len())?;
         kbuf.copy_from_slice(&lock(&FOREIGN)[r]);
