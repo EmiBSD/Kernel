@@ -9329,6 +9329,13 @@ status = "redesigned"
 notes = "N4.8a: timecounters into the kernel crate, 0 unsafe (LZ kern_tc 7 + timetc 1): struct timecounter split into the Timecounter trait (the hardware's half, tc_priv is self) and TcEntry (the kernel's: [I] values copied at tc_init, quality/precision/freq_adj atomics, the tc_list link); the timehands ring all atomics behind the C's generation protocol (TH, ACTIVE), th_counter and timecounter hal::link::Links; windup_mtx a Mutexed<Windup> whose guard tc_windup takes (last_tc inside), tc_lock a RawRwlock whose witness the [T,W] setters take; the timekeep page written through hal::sys::timetc::TimekeepAtomic (timekeep_attach); log(9) and enqueue_randomness over the Printf and Random bridges. bsd's kern_tc.rs runs LZ's until the switch-over commit"
 
 [[module]]
+rust = "sys/kernel/clockintr.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_clockintr.rs", "sys/sys/clockintr.rs"]
+status = "redesigned"
+notes = "N4.8a: clockintr(9) into the kernel crate, 0 unsafe (LZ kern_clockintr 7 + clockintr.h 2): the queue of each CPU a ClockCpu in a hal::percpu::PerCpu (struct clockqueue out of cpu_info), its [m] state one Queue inside the Mutexed (the five binders' slots: expiration, callback, pending; the pending order as an array of slots, equal expirations in insertion order; the running slot; cq_flags), a struct clockintr a Copy handle (CPU, Slot) instead of TAILQ-linked structures with Cell<*const> back pointers; cl_arg dropped (every binder passes NULL); the callback fn(&Clockrequest, &hal::clock::ClockFrame); struct intrclock the Intrclock trait (OnceStatic per CPU); cq_stat seven atomics behind cq_gen; clockintr_unbind(CL_BARRIER) sleeps on the queue's channel (clkbar), LZ's unported closed; ci_randseed the queue's own seed (set_randseed)"
+
+[[module]]
 rust = "sys/kernel/task.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_task.rs", "sys/sys/task.rs"]

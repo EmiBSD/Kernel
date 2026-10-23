@@ -39,6 +39,7 @@ pub use hal::sys;
 pub mod api;
 pub(crate) mod assert;
 pub mod clock;
+pub mod clockintr;
 pub mod cred;
 pub mod crypto;
 pub mod descrip;

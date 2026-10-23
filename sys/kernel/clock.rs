@@ -120,7 +120,7 @@
 //!   `TIMECOUNT_TO_BINTIME` and `*_TO_NSEC` macros methods of the types, the C's modular
 //!   arithmetic spelled `wrapping_*`.
 
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
@@ -412,6 +412,32 @@ pub const fn frac_to_nsec(frac: u64) -> u32 {
 /// `ticks`: the number of hardclock ticks, started close to wrapping.
 pub static TICKS: AtomicI32 = AtomicI32::new(i32::MAX - (15 * 60 * HZ));
 
+/// `jiffies` (volatile): hardclock ticks, not started near a wrap (that triggers a bug in
+/// inteldrm).
+pub static JIFFIES: AtomicU64 = AtomicU64::new(0);
+
+/// `stathz`: the statistics clock's frequency.
+pub static STATHZ: AtomicI32 = AtomicI32::new(0);
+/// `profhz`: the profiling clock's frequency.
+pub static PROFHZ: AtomicI32 = AtomicI32::new(0);
+/// `profprocs`: the number of processes being profiled.
+pub static PROFPROCS: AtomicI32 = AtomicI32::new(0);
+
+/// \[I\] `hardclock_period`: hardclock period (ns).
+pub static HARDCLOCK_PERIOD: AtomicU64 = AtomicU64::new(0);
+/// \[I\] `statclock_avg`: average statclock period (ns).
+pub static STATCLOCK_AVG: AtomicU64 = AtomicU64::new(0);
+/// \[I\] `statclock_min`: minimum statclock period (ns).
+pub static STATCLOCK_MIN: AtomicU64 = AtomicU64::new(0);
+/// \[I\] `statclock_mask`: set of allowed offsets.
+pub static STATCLOCK_MASK: AtomicU32 = AtomicU32::new(0);
+/// \[I\] `statclock_is_randomized`: fixed or pseudorandom period?
+pub static STATCLOCK_IS_RANDOMIZED: AtomicBool = AtomicBool::new(false);
+/// \[I\] `profclock_period`: the profiling clock's period (ns; `subr_prof.c`'s).
+pub static PROFCLOCK_PERIOD: AtomicU64 = AtomicU64::new(0);
+/// \[I\] `roundrobin_period`: the round-robin period (ns; `sched_bsd.c`'s).
+pub static ROUNDROBIN_PERIOD: AtomicU64 = AtomicU64::new(0);
+
 /// The [`Uptime`] bridge, registered once by `bsd` (the host tests' doubles).
 static UPTIME: OnceStatic<&'static dyn Uptime> = OnceStatic::new();
 
@@ -435,6 +461,23 @@ pub fn install_uptime(imp: &'static dyn Uptime) -> Result<(), AlreadyRegistered>
 /// `ticks`.
 pub fn ticks() -> i32 {
     TICKS.load(Ordering::Relaxed)
+}
+
+/// `hardclock_period`.
+#[inline]
+pub fn hardclock_period() -> u64 {
+    HARDCLOCK_PERIOD.load(Ordering::Relaxed)
+}
+
+/// `hardclock`: the real-time timer, interrupting hz times per second: the timehands wound
+/// up every `tc_tick`, `ticks` and `jiffies` counted, the timeout wheel updated.
+pub fn hardclock(_frame: &hal::clock::ClockFrame) {
+    crate::tc::tc_ticktock();
+    TICKS.fetch_add(1, Ordering::Relaxed);
+    JIFFIES.fetch_add(1, Ordering::Relaxed);
+
+    // Update the timeout wheel.
+    crate::timeout::hardclock_update();
 }
 
 /// `nanouptime(9)`: the time since boot (zero before the bridge is registered: no clock runs
