@@ -234,6 +234,42 @@ pub(crate) fn debugger_ktrap(kind: i32, frame: &mut Trapframe) -> Option<bool> {
 pub(crate) fn have_debugger() -> bool {
     DEBUGGER.is_set()
 }
+
+/// `PROC_PC(p)` of the running thread: the user program counter of its trap frame
+/// (`pcb_tf`; the instruction after the `svc` during a system call), 0 for a thread with
+/// none. The running thread's alone: no other thread's frame is read from this CPU.
+#[cfg(any(
+    not(target_os = "none"),
+    all(target_arch = "aarch64", not(feature = "module-rt"))
+))]
+pub fn proc_pc() -> usize {
+    user_regs::proc_pc()
+}
+
+/// `PROC_STACK(p)` of the running thread: the user stack pointer of its trap frame, 0 for a
+/// thread with none.
+#[cfg(any(
+    not(target_os = "none"),
+    all(target_arch = "aarch64", not(feature = "module-rt"))
+))]
+pub fn proc_stack() -> usize {
+    user_regs::proc_stack()
+}
+
+/// The machine's user frame (arm64's `UserFrame`).
+#[cfg(all(
+    target_os = "none",
+    target_arch = "aarch64",
+    not(feature = "module-rt")
+))]
+use crate::arch::arm64::trap as user_regs;
+/// The host's double: the registers a test set.
+#[cfg(not(target_os = "none"))]
+use crate::arch::host::sig as user_regs;
+
+/// The host double's knob for [`proc_pc`] and [`proc_stack`].
+#[cfg(not(target_os = "none"))]
+pub use crate::arch::host::sig::set_user_regs;
 /* </CODE> */
 
 /* <TESTS> */

@@ -258,6 +258,15 @@ impl MachineSlot {
     pub fn ctx(&self) -> u8 {
         self.ctx.load(AtomicOrdering::Acquire)
     }
+
+    /// `aston(p)`: the thread takes an AST at its next return to user mode (arm64's
+    /// `md_astpending`, which `exception.S`'s `do_ast` reads and clears); from any CPU. The
+    /// host has no user mode: nothing.
+    #[inline]
+    pub fn aston(&self) {
+        #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+        self.md.md_astpending.store(1, AtomicOrdering::Relaxed);
+    }
 }
 
 /// The kernel's u-areas (`uvm_uarea_alloc`/`uvm_uarea_free`), registered once with

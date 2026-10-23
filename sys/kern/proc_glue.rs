@@ -174,8 +174,6 @@ use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Proc, Process, ProcessRef, Session};
-use crate::sys::siginfo::Siginfo;
-use crate::sys::signal::{Sig, Sigset};
 use crate::sys::syscall::{
     SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_acct, SYS_exit, SYS_fork,
     SYS_getegid, SYS_geteuid, SYS_getgid, SYS_getgroups, SYS_getlogin_r, SYS_getpgid, SYS_getpgrp,
@@ -595,33 +593,8 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_sig::coredump(p)
     }
 
-    /// The machine's `sendsig`, which builds the frame of the running thread (`p`).
-    fn sendsig(
-        _p: &Proc,
-        catcher: Sig,
-        sig: i32,
-        mask: Sigset,
-        ksip: &Siginfo,
-        info: bool,
-        onstack: bool,
-    ) -> Result<(), Errno> {
-        crate::machine::signal::sendsig(catcher, sig, mask, ksip, info, onstack)
-    }
-
-    fn signotify(p: &Proc) {
-        Machine::signotify(p);
-    }
-
-    fn proc_stack(p: &Proc) -> usize {
-        Machine::proc_stack(p)
-    }
-
     fn tcb_get(p: &Proc) -> usize {
         crate::machine::tcb::tcb_get(p)
-    }
-
-    fn proc_pc(p: &Proc) -> usize {
-        Machine::proc_pc(p)
     }
 
     /// `sigcoderet - sigcodecall` of the machine's signal trampoline (`locore.S`).

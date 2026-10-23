@@ -43,6 +43,5 @@ pub mod machdep;
 pub mod mem;
 #[cfg(feature = "qemu")]
 pub mod qemu;
-pub mod sig_machdep;
 pub mod vm_machdep;
 /* </CODE> */

@@ -40,6 +40,7 @@ pub(crate) mod cpu;
 pub(crate) mod klock;
 pub mod param;
 pub(crate) mod pmap;
+pub mod sig;
 #[cfg(not(feature = "module-rt"))]
 pub(crate) mod switch;
 
@@ -68,13 +69,18 @@ mod amd64_headers {
 #[allow(dead_code)] // compiled for its tests: what reads the constants is built for arm64 only
 pub(crate) mod arm64_headers {
     pub mod include {
+        pub mod _types;
         pub mod armreg;
+        pub mod frame;
         pub mod param;
         pub mod pte;
+        pub mod signal;
         pub mod vmparam;
     }
     pub mod pmap {
         pub mod layout;
     }
+    // The signal frame's arithmetic and checks (N4.8b), on arm64's layouts.
+    pub mod sig;
 }
 /* </CODE> */

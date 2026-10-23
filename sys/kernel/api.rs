@@ -27,18 +27,19 @@
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
 //! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
 //! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
-//! N4.6a) and sysctl(2) (`SysctlEntry`, N4.6b), which run the system call prologue still in
-//! `bsd` (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`,
-//! `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`, `kernel::futex`, the
-//! process modules and `kernel::sysctl`, `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
-//! `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`,
-//! `sys/kern/subr_log.rs`, `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`,
-//! `sys/kern/kern_sysctl.rs`); an entry moves to a `kernel` function
-//! when its subsystem does, and at N9 the kernel builds the table alone.
+//! N4.6a), sysctl(2) (`SysctlEntry`, N4.6b) and sigreturn(2) (`SigreturnEntry`, N4.8b),
+//! which run the system call prologue still in `bsd` (pledge, the pinned syscalls) before
+//! `kernel::pipe`, `kernel::vm`, `kernel::descrip`, `kernel::event`, `kernel::select`,
+//! `kernel::log`, `kernel::futex`, the process modules, `kernel::sysctl` and `kernel::sig`
+//! (`sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`,
+//! `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`, `sys/kern/subr_log.rs`,
+//! `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`, `sys/kern/kern_sysctl.rs`,
+//! `sys/kern/kern_sig.rs`); an entry moves to a `kernel` function when its subsystem does,
+//! and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
-    KernelApi, ProcEntries, SyscallHandler, SysctlEntry, VmEntries,
+    KernelApi, ProcEntries, SigreturnEntry, SyscallHandler, SysctlEntry, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -70,6 +71,7 @@ pub const fn table(
     futex: FutexEntry,
     proc: ProcEntries,
     sysctl: SysctlEntry,
+    sigreturn: SigreturnEntry,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -84,6 +86,7 @@ pub const fn table(
         futex,
         proc,
         sysctl,
+        sigreturn,
     )
 }
 
@@ -497,8 +500,12 @@ mod tests {
         Err(nr as i32)
     }
 
+    fn sigreturn(nr: Register, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
     static API: KernelApi = table(
-        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
+        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, sigreturn,
     );
 
     #[test]
@@ -528,6 +535,7 @@ mod tests {
         assert_eq!((API.proc.fork)(2, &mut rval), Err(2));
         assert_eq!((API.proc.setrtable)(310, 0, &mut rval), Err(310));
         assert_eq!((API.sysctl)(202, 0, 0, 0, 0, 0, 0, &mut rval), Err(202));
+        assert_eq!((API.sigreturn)(103, 0, &mut rval), Err(103));
     }
 }
 /* </TESTS> */

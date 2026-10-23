@@ -1457,6 +1457,8 @@ impl UserCopy for Machine {
 impl MachineSignal for Machine {
     type Sigcontext = include::signal::Sigcontext;
 
+    /// The kernel's (`kernel::sig::sendsig`, over `hal::sig`'s frame, N4.8b) for the running
+    /// thread; `EFAULT` without one.
     fn sendsig(
         catcher: Sig,
         sig: i32,
@@ -1465,11 +1467,21 @@ impl MachineSignal for Machine {
         info: bool,
         onstack: bool,
     ) -> Result<(), Errno> {
-        arm64::sig_machdep::sendsig(catcher, sig, mask, ksip, info, onstack)
+        let Some(p) = crate::machine::cpu::curproc() else {
+            return Err(Errno::EFAULT);
+        };
+        kernel::sig::sendsig::<crate::kern::proc_glue::BsdProcGlue>(
+            p, catcher, sig, mask, ksip, info, onstack,
+        )
     }
 
-    fn sys_sigreturn(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-        arm64::sig_machdep::sys_sigreturn(p, v, retval)
+    /// The kernel's (`kernel::sig::sys_sigreturn`, over `hal::sig`'s frame, N4.8b).
+    fn sys_sigreturn(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+        let uap: &crate::sys::syscallargs::SysSigreturnArgs = crate::sys::systm::sysargs(v);
+        kernel::sig::sys_sigreturn::<crate::kern::proc_glue::BsdProcGlue>(
+            p,
+            uap.sigcntxp.get() as usize,
+        )
     }
 
     fn sigcode() -> &'static [u8] {

@@ -147,6 +147,7 @@ use hal::klock;
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::pool::{BoxPool, PR_WAITOK, PoolBox};
 use hal::rwlock::{Exclusive, Guarded, Witness};
+use hal::sig::{SigDelivery, SigreturnError};
 use hal::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::sys::errno::Errno;
 use hal::sys::siginfo::{ILL_BTCFI, SI_USER, Siginfo, Sigval};
@@ -890,7 +891,7 @@ pub fn sigaltstack<G: ProcGlue>(
     nss: UserPtr<Sigaltstack>,
     oss: UserPtr<Sigaltstack>,
 ) -> Result<(), Errno> {
-    let onstack = on_sigstack(p, G::proc_stack(p));
+    let onstack = on_sigstack(p, hal::trap::proc_stack());
 
     if !oss.is_null() {
         let mut ss = p.p_sigstk.get();
@@ -1106,6 +1107,42 @@ pub fn postsig_done<G: ProcGlue>(p: &Thread<G>, signum: i32, catchmask: Sigset, 
     }
 }
 
+/// `sendsig(catcher, sig, mask, ksip, info, onstack)` for the running thread `p`: the
+/// machine's frame for the handler (`hal::sig::sendsig`), with what the C's reads of
+/// `curproc` itself: the thread's alternate stack, the process's trampoline and cookie.
+/// `Err` when the frame cannot be written (the callers `sigexit(p, SIGILL)`).
+pub fn sendsig<G: ProcGlue>(
+    p: &Thread<G>,
+    catcher: Sig,
+    sig: i32,
+    mask: Sigset,
+    ksip: &Siginfo,
+    info: bool,
+    onstack: bool,
+) -> Result<(), Errno> {
+    let pr = p.process();
+    hal::sig::sendsig(&SigDelivery {
+        catcher,
+        sig,
+        mask,
+        info: info.then_some(ksip),
+        onstack,
+        sigstk: p.p_sigstk.get(),
+        sigcode: pr.ps_sigcode.get(),
+        cookie: pr.ps_sigcookie.get(),
+    })
+}
+
+/// `signotify(p)` (`<machine/cpu.h>`, `MULTIPROCESSOR`): the running thread `p` notices its
+/// signal at its next return to user mode: `aston(p)`, and `cpu_unidle(p->p_cpu)` kicks
+/// its CPU when that is another one.
+fn signotify<G: ProcGlue>(p: &Thread<G>) {
+    p.machine.aston();
+    if let Some(n) = sched::thread_cpu(p) {
+        G::cpu_unidle(n);
+    }
+}
+
 /// `trapsignal`: send a signal caused by a trap to the current thread. If it will be caught
 /// immediately, deliver it with correct code. Otherwise, post it normally.
 pub fn trapsignal<G: ProcGlue>(
@@ -1133,7 +1170,7 @@ pub fn trapsignal<G: ProcGlue>(
     {
         let si = initsiginfo(signum, trapno, code, sigval);
         // KTRACE: not configured.
-        if G::sendsig(
+        if sendsig(
             &p,
             ctx.sig_action,
             signum,
@@ -1513,7 +1550,7 @@ pub fn ptsignal_locked<G: ProcGlue>(
                 // set siglist before issuing the ast
                 siglist.fetch_or(mask, Ordering::Relaxed);
                 mask = 0;
-                G::signotify(&p);
+                signotify(&p);
                 // FALLTHROUGH to the default: nothing more.
             }
 
@@ -1883,7 +1920,7 @@ pub fn process_stop<G: ProcGlue>(
                     }
                 }
             }
-            SONPROC => G::signotify(&q),
+            SONPROC => signotify(&q),
             SRUN | SIDL | SDEAD => {}
             _ => {}
         }
@@ -2002,7 +2039,7 @@ pub fn postsig<G: ProcGlue>(p: &Thread<G>, signum: i32, sctx: &Sigctx) {
             p.p_sigval.set(Sigval::from_ptr(0));
         }
 
-        if G::sendsig(
+        if sendsig(
             p,
             sctx.sig_action,
             signum,
@@ -2048,6 +2085,36 @@ pub fn sigexit<G: ProcGlue>(p: &Thread<G>, signum: i32) -> ! {
     }
     G::exit1(p, 0, signum, EXIT_NORMAL)
     // NOTREACHED
+}
+
+/// `sigreturn(2)` (`sig_machdep.c`'s `sys_sigreturn`, the machine-independent half): clean
+/// up after a signal handler returned through the trampoline. Called from anywhere but the
+/// trampoline's `svc` (`PROC_PC != ps_sigcoderet`) the process is killed (`SIGILL`); the
+/// context at `scp` is the machine's to check and restore (`hal::sig::sigreturn`): a context
+/// it cannot copy is `EFAULT`, one whose cookie is not the one `sendsig` wrote kills the
+/// process (`SIGILL`), one with a privileged mode or masked interrupts is `EINVAL`.
+/// Restored, the thread's signal mask is the context's less what cannot be masked, and the
+/// answer is `EJUSTRETURN` (the registers are the context's, not a return value). The
+/// caller holds the kernel lock (`sigreturn` is not `NOLOCK`).
+pub fn sys_sigreturn<G: ProcGlue>(p: &Thread<G>, scp: usize) -> Result<(), Errno> {
+    let pr = p.process();
+
+    if hal::trap::proc_pc() != pr.ps_sigcoderet.get() {
+        sigexit(p, SIGILL);
+        // return (EPERM): sigexit does not return.
+    }
+
+    match hal::sig::sigreturn(scp, pr.ps_sigcookie.get()) {
+        Ok(mask) => {
+            // Restore signal mask.
+            p.p_sigmask.set(mask & !sigcantmask());
+            Err(Errno::EJUSTRETURN)
+        }
+        Err(SigreturnError::Fault) => Err(Errno::EFAULT),
+        // return (EFAULT): sigexit does not return.
+        Err(SigreturnError::Cookie) => sigexit(p, SIGILL),
+        Err(SigreturnError::Mode) => Err(Errno::EINVAL),
+    }
 }
 
 /// `sigabort`: send uncatchable SIGABRT for coredump.
@@ -2390,6 +2457,7 @@ mod tests {
     use std::boxed::Box;
 
     use hal::pin::pin_static;
+    use hal::sys::siginfo::SEGV_MAPERR;
     use hal::sys::signal::{SIGEMT, SIGINFO, SIGIO, SIGQUIT, SIGTHR, SIGTRAP, SIGURG, SIGWINCH};
 
     use super::*;
@@ -2820,6 +2888,77 @@ mod tests {
             })
             .collect();
         assert_eq!(rows.as_slice(), &SIGPROP[..]);
+    }
+
+    /// A trap signal the thread catches goes to the machine's frame (`hal::sig::sendsig`,
+    /// the host's double records it) with what the C's `sendsig` reads of `curproc`: the
+    /// handler, the mask before the delivery, the `siginfo` for `SA_SIGINFO`, `SA_ONSTACK`,
+    /// the alternate stack, the trampoline and the cookie; then the handler's mask applies.
+    #[test]
+    fn a_caught_trap_signal_is_delivered_through_the_machines_frame() {
+        let w = world(15);
+        let p = &w.p;
+        let _ = hal::sig::take_sent();
+        let mut sa = Sigaction {
+            sa_handler: 0x5000,
+            sa_mask: sigmask(SIGHUP),
+            sa_flags: SA_SIGINFO | SA_ONSTACK,
+        };
+        setsigvec(p, SIGSEGV, &mut sa);
+        w.pr.ps_sigcode.set(0x7f7f_f000);
+        w.pr.ps_sigcookie.set(0x5a5a_1234);
+        p.p_sigmask.set(sigmask(SIGUSR1));
+        let alt = Sigaltstack {
+            ss_sp: 0x10_0000,
+            ss_size: 0x8000,
+            ss_flags: 0,
+            _pad: 0,
+        };
+        p.p_sigstk.set(alt);
+
+        trapsignal(*p, SIGSEGV, 14, SEGV_MAPERR, Sigval::from_ptr(0xdead_0000));
+
+        let sent = hal::sig::take_sent();
+        assert_eq!(sent.len(), 1);
+        let s = sent[0];
+        assert_eq!(
+            (s.catcher, s.sig, s.mask),
+            (0x5000, SIGSEGV, sigmask(SIGUSR1))
+        );
+        let si = s.info.expect("SA_SIGINFO copies the siginfo out");
+        assert_eq!((si.si_signo, si.si_code), (SIGSEGV, SEGV_MAPERR));
+        assert!(s.onstack);
+        assert_eq!((s.sigcode, s.cookie), (0x7f7f_f000, 0x5a5a_1234));
+        // postsig_done: the handler runs with its mask and the signal itself blocked.
+        assert_eq!(
+            p.p_sigmask.get(),
+            sigmask(SIGUSR1) | sigmask(SIGHUP) | sigmask(SIGSEGV)
+        );
+    }
+
+    /// `sigreturn(2)` from the trampoline: the context's mask, less what cannot be masked,
+    /// becomes the thread's and the answer is `EJUSTRETURN`; a context the machine cannot
+    /// copy is `EFAULT`, one with a privileged mode `EINVAL`, and neither changes the mask.
+    #[test]
+    fn sigreturn_installs_the_contexts_mask_less_what_cannot_be_masked() {
+        let w = world(16);
+        let p = &w.p;
+        w.pr.ps_sigcoderet.set(0x7f7f_f010);
+        hal::trap::set_user_regs(0x7f7f_f010, 0x7f00_0000);
+        p.p_sigmask.set(0);
+
+        hal::sig::set_sigreturn(Ok(sigmask(SIGKILL) | sigmask(SIGSTOP) | sigmask(SIGUSR1)));
+        assert_eq!(sys_sigreturn(p, 0x7f00_1000), Err(Errno::EJUSTRETURN));
+        assert_eq!(p.p_sigmask.get(), sigmask(SIGUSR1));
+
+        hal::sig::set_sigreturn(Err(SigreturnError::Fault));
+        assert_eq!(sys_sigreturn(p, 0x7f00_1000), Err(Errno::EFAULT));
+        hal::sig::set_sigreturn(Err(SigreturnError::Mode));
+        assert_eq!(sys_sigreturn(p, 0x7f00_1000), Err(Errno::EINVAL));
+        assert_eq!(p.p_sigmask.get(), sigmask(SIGUSR1));
+
+        hal::sig::set_sigreturn(Err(SigreturnError::Fault));
+        hal::trap::set_user_regs(0, 0);
     }
 }
 /* </TESTS> */

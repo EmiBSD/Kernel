@@ -277,6 +277,18 @@ impl UserFrame {
     }
 }
 
+/// `PROC_PC(p)` of the running thread (`hal::trap::proc_pc`): its user frame's `tf_elr`, 0
+/// without one.
+pub(crate) fn proc_pc() -> usize {
+    UserFrame::current().map_or(0, |f| f.with(|tf| tf.tf_elr as usize))
+}
+
+/// `PROC_STACK(p)` of the running thread (`hal::trap::proc_stack`): its user frame's
+/// `tf_sp`, 0 without one.
+pub(crate) fn proc_stack() -> usize {
+    UserFrame::current().map_or(0, |f| f.with(|tf| tf.tf_sp as usize))
+}
+
 /// `curcpu()->ci_curpcb->pcb_onfault`: the running thread's fault recovery address, 0 for
 /// none (or before the first thread).
 #[inline]

@@ -37,7 +37,8 @@
 //! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/log.rs`). N4.6c: futex(2)
 //! (`KernelApi::futex`, `sys/kernel/futex.rs`). N4.6a: the process system calls'
 //! forty-six (`KernelApi::proc`, `sys/kernel/fork.rs`, `exit.rs`, `resource.rs`, `prot.rs`,
-//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`).
+//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`). N4.8b:
+//! sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig.rs` over `hal::sig`'s frame).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -59,8 +60,8 @@ use hal::sys::syscall::{
     SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_sendsyslog,
     SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
     SYS_setpriority, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_setrlimit,
-    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_sysctl, SYS_utrace, SYS_vfork,
-    SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
+    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_sigreturn, SYS_sysctl, SYS_utrace,
+    SYS_vfork, SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
 };
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -76,7 +77,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 93;
+pub const NATIVE: u32 = 94;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -180,6 +181,7 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_getrtable as usize] = Sysent::Native(sys_getrtable);
     table[SYS_setrtable as usize] = Sysent::Native(sys_setrtable);
     table[SYS_sysctl as usize] = Sysent::Native(sys_sysctl);
+    table[SYS_sigreturn as usize] = Sysent::Native(sys_sigreturn);
     table
 };
 
@@ -641,6 +643,11 @@ pub fn sys_sysctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
         args[5] as usize,
         rval,
     )
+}
+
+/// 103 = `sigreturn(struct sigcontext *sigcntxp)`: `EJUSTRETURN` once the context is restored.
+pub fn sys_sigreturn(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.sigreturn)(SYS_sigreturn as Register, args[0] as usize, rval)
 }
 
 /// 83 = `futex(uint32_t *f, int op, int val, const struct timespec *timeout, uint32_t *g)`:
@@ -1625,8 +1632,14 @@ mod tests {
             + newlen) as i32)
     }
 
+    fn sigreturn(nr: Register, scp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(scp as i32)
+    }
+
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
+        sigreturn,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -1730,13 +1743,14 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_and_sysctl_is_legacy() {
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_and_sigreturn_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
                 || nr == SYS_sendsyslog as Register
                 || nr == SYS_futex as Register
                 || nr == SYS_sysctl as Register
+                || nr == SYS_sigreturn as Register
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
                 || EVENT_CALLS.iter().any(|&v| v as Register == nr)
@@ -1966,7 +1980,23 @@ mod tests {
             syscall(&API, SYS_sysctl as Register, &a, &mut rval),
             Err(123_456)
         );
-        assert_eq!(NATIVE, 93);
+    }
+
+    /// sigreturn(2)'s translation (N4.8b): its number and the context's address, the trap's
+    /// return registers; the table's count with it.
+    #[test]
+    fn sigreturn_is_native_and_passes_its_number_and_context() {
+        assert!(matches!(SYSENT[SYS_sigreturn as usize], Sysent::Native(_)));
+        let a: SysArgs = [4242, 2, 3, 4, 5, 6];
+        let mut rval = [-7; 2];
+        assert_eq!(sys_sigreturn(&API, &a, &mut rval), Err(4242));
+        assert_eq!(rval, [SYS_sigreturn as Register, -7]);
+        let mut rval = [-7; 2];
+        assert_eq!(
+            syscall(&API, SYS_sigreturn as Register, &a, &mut rval),
+            Err(4242)
+        );
+        assert_eq!(NATIVE, 94);
     }
 
     #[test]

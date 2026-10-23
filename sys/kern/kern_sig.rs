@@ -83,7 +83,9 @@
 //! - `KTRACE` is not configured.
 //! - `sys_sigreturn` lives in `machdep.c` (amd64) and `sig_machdep.c` (arm64); the system
 //!   call table finds `pub fn sys_*` only under `sys/kern` and `sys/uvm`, so the entry here
-//!   forwards to `machine::MachineSignal::sys_sigreturn`.
+//!   forwards to `machine::MachineSignal::sys_sigreturn` (since N4.8b arm64's is the
+//!   kernel's `kernel::sig::sys_sigreturn` over `hal::sig`'s frame; `native_sigreturn` is its
+//!   `KernelApi` entry).
 //! - `sigio_setown`/`sigio_getown` take the `int` that `data` points to as `&i32`/`&mut i32`.
 //!
 //! ## Redesign
@@ -302,6 +304,17 @@ pub fn sys___thrsigdivert(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> 
 /// `sys_sigreturn`: the machine-dependent `sigreturn(2)` (see the module's deviations).
 pub fn sys_sigreturn(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     <Machine as MachineSignal>::sys_sigreturn(p, v, retval)
+}
+
+/// `KernelApi::sigreturn` (N4.8b): sigreturn(2) through the system call prologue and its
+/// `sysent[]` row ([`sys_sigreturn`], the kernel's on arm64).
+pub fn native_sigreturn(
+    nr: Register,
+    sigcntxp: usize,
+    rval: &mut [Register; 2],
+) -> hal::syscall::SysResult {
+    let args = [sigcntxp as Register, 0, 0, 0, 0, 0];
+    crate::kern::kern_descrip::native(nr, crate::sys::syscall::SYS_sigreturn, args, rval)
 }
 
 /// `pgsigio`: send a SIGIO or SIGURG signal to a process or process group using stored

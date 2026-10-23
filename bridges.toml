@@ -327,7 +327,9 @@ paid_by = "N7"
 # prologue's calls out joined it (kernel::syscall): proc_pc and sigcode_svc_offset (the
 # machine, N4.8b's b3 or N10), user_vmspace (the thread's word, until its [o] members are
 # typed), pledge_syscall (kern_pledge, N8) and scdebug_call/scdebug_ret (SYSCALL_DEBUG,
-# kern_xxx); hal::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. Re-dated N8 (the user's
+# kern_xxx); hal::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. N4.8b b3:
+# sendsig, signotify, proc_stack and proc_pc left the trait (hal::sig's frame, kernel::sig's
+# signotify over hal::thread's aston and cpu_unidle, hal::trap::proc_pc/proc_stack). Re-dated N8 (the user's
 # decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
 # pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
 # (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine).

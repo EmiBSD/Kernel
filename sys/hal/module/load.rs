@@ -934,8 +934,14 @@ mod tests {
         Ok(())
     }
 
+    /// Version 10's entry, answering `Ok`.
+    fn sigreturn(_: isize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
+        sigreturn,
     );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
@@ -960,7 +966,7 @@ mod tests {
             },
             ..KernelApi::new(
                 register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
-                sysctl,
+                sysctl, sigreturn,
             )
         };
         assert_eq!(

@@ -1722,12 +1722,6 @@ adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/copy.rs"]
 notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through the direct map instead of a pmap_enter at vmmap, copied with kcopy; /dev/null; /dev/zero from a stack buffer), mmmmap, mmioctl; reported: /dev/kmem (uvm_kernacc, uvm_glue.c); APERTURE is not configured; wip until uvm_kernacc"
 
 [[module]]
-rust = "sys/arch/arm64/arm64/sig_machdep.rs"
-lz = ["sys/arch/arm64/arm64/sig_machdep.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-
-[[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "adapted"
@@ -1886,14 +1880,14 @@ rust = "sys/arch/arm64/include/frame.rs"
 lz = ["sys/arch/arm64/include/frame.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/arch/arm64/include/frame.rs"]
-notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod); N4.5a: callframe, trapframe, switchframe and the sizes are hal's (re-exported), sigframe stays until N4.5b"
+notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod); N4.5a: callframe, trapframe, switchframe and the sizes are hal's (re-exported), sigframe stays until N4.5b; N4.8b: sigframe is hal's too (hal::sig's sendsig builds it), re-exported; its unsafe impl AbiPod is gone (hal::abi_pod! in hal's header)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/frame.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/frame.rs"]
 status = "redesigned"
-notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b)"
+notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b); N4.8b: struct sigframe (hal::abi_pod!, Sigframe::zeroed), with the signal context of include/signal.rs"
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/armreg.rs"
@@ -1993,8 +1987,16 @@ status = "inherited"
 
 [[module]]
 rust = "sys/arch/arm64/include/signal.rs"
+adapted_by = ["sys/hal/arch/arm64/include/signal.rs"]
 lz = ["sys/arch/arm64/include/signal.rs"]
-status = "inherited"
+status = "adapted"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/signal.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/signal.rs"]
+status = "redesigned"
+notes = "N4.8b: sig_atomic_t and struct sigcontext beside the signal frame hal::sig builds; LZ's unsafe impl AbiPod (bsd's copy trait) is hal::abi_pod!, which proves the fields tile it; bsd's header re-exports them"
 
 [[module]]
 rust = "sys/arch/arm64/include/simplebusvar.rs"
@@ -5169,7 +5171,7 @@ adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.
 rust = "sys/kern/proc_glue.rs"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs"]
 status = "redesigned"
-notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug)"
+notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug); N4.8b: sendsig, signotify, proc_stack and proc_pc are no longer the glue's"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::HashTable"
@@ -5525,7 +5527,7 @@ adapted_by = ["sys/kernel/task.rs"]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
 status = "redesigned"
-notes = "N4.5b: bsd's edge of kernel::sig and kernel::sigio: the sysent rows (sys_sigaction .. sys___thrsigdivert, sys_nosys, sys_sigreturn), coredump (the file systems), and the LZ signatures over bsd's Proc (psignal, ptsignal, trapsignal, userret, sigabort pin the thread; pgsigio and sigio_setown/getown over kernel::sigio), 0 unsafe (LZ 17), forbid on its mod line"
+notes = "N4.5b: bsd's edge of kernel::sig and kernel::sigio: the sysent rows (sys_sigaction .. sys___thrsigdivert, sys_nosys, sys_sigreturn), coredump (the file systems), and the LZ signatures over bsd's Proc (psignal, ptsignal, trapsignal, userret, sigabort pin the thread; pgsigio and sigio_setown/getown over kernel::sigio), 0 unsafe (LZ 17), forbid on its mod line; N4.8b: native_sigreturn, KernelApi::sigreturn's entry through the prologue and the sysent row, whose arm64 body is the kernel's"
 
 [[module]]
 rust = "sys/kern/kern_smr.rs"
@@ -8638,7 +8640,12 @@ reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above
 [[extra]]
 rust = "sys/hal/trap.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger"
+reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack"
+
+[[extra]]
+rust = "sys/hal/sig.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.8b): the signal frame of the running thread, the machine's (arm64: sys/hal/arch/arm64/sig.rs, from LZ's sig_machdep.rs) behind sendsig(SigDelivery) and sigreturn(scp, cookie) -> mask or SigreturnError; the host's double (sys/hal/arch/host/sig.rs) records and answers; forbid, 0 unsafe; it replaces ProcGlue::sendsig"
 
 [[extra]]
 rust = "sys/hal/bootmem.rs"
@@ -8676,7 +8683,7 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
 status = "redesigned"
 license = "none"
-notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S)"
+notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S); N4.8b: MachineSlot::aston (md_astpending for the kernel's signotify)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/switch.rs"
@@ -8714,7 +8721,7 @@ rust = "sys/hal/arch/arm64/trap.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs", "sys/arch/arm64/arm64/intr.rs"]
 status = "redesigned"
-notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::trap::CpuHooks, db_ktrap through hal::trap::Debugger, the IRQ dispatch through hal::intr::IntrHardware"
+notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::trap::CpuHooks, db_ktrap through hal::trap::Debugger, the IRQ dispatch through hal::intr::IntrHardware; N4.8b b3a: the EL0 handlers hold the user frame as a UserFrame (a pointer borrowed per closure, a per-CPU flag against a second borrow; the frame's one unsafe), never across a call out; b3: proc_pc and proc_stack over it"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/trap.rs::accesstype"
@@ -8727,6 +8734,24 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
 notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/sig.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/sig_machdep.rs"]
+status = "redesigned"
+notes = "N4.8b: sendsig and the machine half of sys_sigreturn (sigreturn) behind hal::sig, on the running thread's UserFrame (trap.rs), borrowed around copyout and copyin, never across them; the process members the C reads from curproc (p_sigstk, ps_sigcode, ps_sigcookie) come in a hal::sig::SigDelivery; the frame arithmetic and the checks (signal_frame, enter_handler, check_cookie, check_mode, restore) are pure and host-tested on arm64's headers; forbid, 0 unsafe (LZ: 2, the raw pcb_tf dereferences); the 4-clause licence of the first block was accepted at M2"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/sig_machdep.rs::process_frame"
+native = ["sys/hal/arch/arm64/trap.rs::UserFrame::current"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/sig_machdep.rs::sys_sigreturn"
+native = ["sigreturn", "sys/kernel/sig.rs::sys_sigreturn"]
+kind = "split"
+lines = "L205-L255"
 
 [[module]]
 rust = "sys/hal/arch/arm64/copy.rs"
@@ -8946,12 +8971,12 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10)"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94)"
 
 [[extra]]
 rust = "sys/hal/module/rt.rs"
@@ -8970,12 +8995,12 @@ reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocati
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn"
 
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl"
 
 [[module]]
 rust = "sys/kernel/clock.rs"
@@ -9001,7 +9026,7 @@ rust = "sys/kernel/proc.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs", "sys/sys/user.rs"]
 status = "redesigned"
-notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret"
+notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret; N4.8b: ProcGlue loses sendsig, signotify, proc_stack and proc_pc (hal::sig, kernel::sig's signotify, hal::trap::proc_pc/proc_stack)"
 
 [[module.fn]]
 lz = "sys/sys/proc.rs::PInentry"
@@ -9576,7 +9601,7 @@ rust = "sys/kernel/sig.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sig.rs", "sys/sys/signalvar.rs"]
 status = "redesigned"
-notes = "N4.5b: signals over kernel::proc and kernel::sched: struct sigacts (its [m] members a Guarded cell of the process's ps_mtx, a BoxPool sigapl item or process 0's static, held by Process), the generation (cansignal, killpg1, pgsignal, prsignal, psignal, ptsignal, ptsignal_locked over pinned threads, trapsignal), the delivery (setsigctx, cursig, postsig, postsig_done, sigexit, userret), job control and the debugger (process_stop, process_continue, proc_stop_setup/finish, process_suspend_signal, proc_trap), single-threading (proc_suspend_check[_locked], single_thread_set/clear), sigaltstack's words, and the system calls' bodies (sigaction, sigprocmask, sigsuspend, sigaltstack, kill, thrkill, thrsigdivert, nosys); exit1, coredump, sendsig, signotify, PROC_STACK, TCB_GET and initprocess through ProcGlue. bsd's kern_sig.rs keeps the sysent rows, coredump and (until b2) the sigio registrations"
+notes = "N4.5b: signals over kernel::proc and kernel::sched: struct sigacts (its [m] members a Guarded cell of the process's ps_mtx, a BoxPool sigapl item or process 0's static, held by Process), the generation (cansignal, killpg1, pgsignal, prsignal, psignal, ptsignal, ptsignal_locked over pinned threads, trapsignal), the delivery (setsigctx, cursig, postsig, postsig_done, sigexit, userret), job control and the debugger (process_stop, process_continue, proc_stop_setup/finish, process_suspend_signal, proc_trap), single-threading (proc_suspend_check[_locked], single_thread_set/clear), sigaltstack's words, and the system calls' bodies (sigaction, sigprocmask, sigsuspend, sigaltstack, kill, thrkill, thrsigdivert, nosys); exit1, coredump, sendsig, signotify, PROC_STACK, TCB_GET and initprocess through ProcGlue. bsd's kern_sig.rs keeps the sysent rows, coredump and (until b2) the sigio registrations; N4.8b: sendsig (the SigDelivery of the running thread for hal::sig::sendsig), signotify (aston on the thread's machine slot and the glue's cpu_unidle of its CPU) and sys_sigreturn (the PROC_PC check, hal::sig::sigreturn, sigexit for a bad cookie, the mask less sigcantmask, EJUSTRETURN): ProcGlue::sendsig, signotify and proc_stack are gone"
 [[module.fn]]
 lz = "sys/kern/kern_sig.rs::WCOREFLAG"
 native = ["sys/hal/sys/wait.rs::WCOREFLAG"]
@@ -10588,7 +10613,7 @@ rust = "sys/kernel/syscall.rs"
 crate = "kernel"
 lz = ["sys/sys/syscall_mi.rs"]
 status = "redesigned"
-notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above)"
+notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above); N4.8b b3: PROC_PC and PROC_STACK from hal::trap (the glue's proc_pc and proc_stack are gone)"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

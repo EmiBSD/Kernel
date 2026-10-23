@@ -44,35 +44,9 @@
 //! `struct trapframe` and `struct switchframe` arrive with the trap and context-switch code
 //! (M4, M5). N4.5a: `callframe`, `trapframe` and `switchframe` are `hal`'s
 //! (`hal::arch::arm64::include::frame`, the switch builds them), re-exported here; `sigframe`
-//! stays.
+//! stays. N4.8b: `sigframe` is `hal`'s too (`hal::sig`'s `sendsig` builds it), re-exported.
 
-use crate::arch::arm64::include::signal::Sigcontext;
-use crate::machine::copy::AbiPod;
-use crate::sys::siginfo::Siginfo;
 pub use hal::arch::arm64::include::frame::{
-    Callframe, SWITCHFRAME_SZ, Switchframe, TF_SIZE, Trapframe,
-};
-
-/// `struct sigframe`: what `sendsig` builds on the user stack for `sigcode`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Sigframe {
-    /// `sf_signum`.
-    pub sf_signum: i32,
-    /// The C compiler's alignment hole before `sf_sc`.
-    pub _pad: i32,
-    /// `sf_sc`.
-    pub sf_sc: Sigcontext,
-    /// `sf_si`.
-    pub sf_si: Siginfo,
-}
-
-// SAFETY: `repr(C)` of two `i32`s and two `AbiPod` structures whose sizes are multiples of 8:
-// no implicit padding, every bit pattern valid.
-unsafe impl AbiPod for Sigframe {}
-
-const _: () = {
-    assert!(core::mem::offset_of!(Sigframe, sf_sc) == 8);
-    assert!(size_of::<Sigframe>() == 8 + size_of::<Sigcontext>() + size_of::<Siginfo>());
+    Callframe, SWITCHFRAME_SZ, Sigframe, Switchframe, TF_SIZE, Trapframe,
 };
 /* </CODE> */

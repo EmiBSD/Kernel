@@ -34,6 +34,10 @@ pub mod exception;
 pub mod fpu;
 pub mod include;
 pub mod pmap;
+// The signal frame (N4.8b): `hal::sig`'s, on the trap code's user frame.
+#[cfg(not(feature = "module-rt"))]
+#[forbid(unsafe_code)]
+pub(crate) mod sig;
 #[cfg(not(feature = "module-rt"))]
 pub mod switch;
 #[cfg(not(feature = "module-rt"))]

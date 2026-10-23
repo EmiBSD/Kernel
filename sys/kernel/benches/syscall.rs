@@ -175,12 +175,6 @@ impl ProcGlue for BenchGlue {
             None => std::process::exit(1),
         }
     }
-    fn proc_pc(_p: &Thread<Self>) -> usize {
-        PC
-    }
-    fn proc_stack(_p: &Thread<Self>) -> usize {
-        SP
-    }
     fn user_vmspace(_p: &Thread<Self>) -> Option<&Vmspace> {
         VM.get().map(|v| &**v)
     }
@@ -198,6 +192,8 @@ fn main() {
         .filter(|a| a != "--bench")
         .collect();
     testutil::install();
+    // The thread's user registers (`PROC_PC`, `PROC_STACK`), in hal's host double.
+    hal::trap::set_user_regs(PC, SP);
     // The prologue's thread: an address space (the map pools over the doubles' pages), a
     // libc pin table naming getpid at PC, a MAP_STACK cache over SP.
     let _pages = testutil::pages_install(256 * 4096);

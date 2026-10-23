@@ -911,30 +911,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn coredump(_p: &Thread<Self>) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    /// `sendsig(catcher, sig, mask, ksip, info, onstack)` (`machdep.c`, N4.8): the signal
-    /// frame of `p`, the running thread, built on its user stack for `catcher`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the C's six arguments and the thread"
-    )]
-    fn sendsig(
-        _p: &Thread<Self>,
-        _catcher: hal::sys::signal::Sig,
-        _sig: i32,
-        _mask: hal::sys::signal::Sigset,
-        _ksip: &hal::sys::siginfo::Siginfo,
-        _info: bool,
-        _onstack: bool,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    /// `signotify(p)` (`<machine/cpu.h>`, N4.8): the running thread `p` notices its signal at
-    /// its next return to user mode (an AST, and a kick of its CPU).
-    fn signotify(_p: &Thread<Self>) {}
-    /// `PROC_STACK(p)` (N4.8): the user stack pointer of `p`'s trap frame.
-    fn proc_stack(_p: &Thread<Self>) -> usize {
-        0
-    }
     /// `TCB_GET(p)` (N4.8): `p`'s thread control block address.
     fn tcb_get(_p: &Thread<Self>) -> usize {
         0
@@ -942,10 +918,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
 
     // The system call prologue's calls into what is still `bsd`'s (`kernel::syscall`, N4.8b).
 
-    /// `PROC_PC(p)`: the user program counter of `p`'s trap frame (`pin_check`).
-    fn proc_pc(_p: &Thread<Self>) -> usize {
-        0
-    }
     /// `sigcoderet - sigcodecall` of the machine's signal trampoline: how far past its system
     /// call instruction a thread's `PROC_PC` lies during the call (`pin_check` points back).
     fn sigcode_svc_offset() -> usize {

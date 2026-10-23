@@ -226,7 +226,7 @@ fn pin_verdict<'t>(
 /// `pin_check`: check if a system call is entered from precisely the correct location.
 pub fn pin_check<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register) -> Result<(), Errno> {
     let pr = p.process();
-    let pc = G::proc_pc(&p);
+    let pc = hal::trap::proc_pc();
 
     // point at start of syscall instruction
     let addr = pc.wrapping_sub(G::sigcode_svc_offset());
@@ -321,7 +321,7 @@ fn stack_in_map_stack<G: ProcGlue>(p: &Thread<G>) -> bool {
     let ok = uvm_map_inentry(
         map,
         &mut ie,
-        G::proc_stack(p),
+        hal::trap::proc_stack(),
         "sp",
         "not MAP_STACK",
         uvm_map_inentry_sp,

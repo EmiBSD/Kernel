@@ -44,7 +44,11 @@
 //!   move from `bsd`'s header, which keeps `struct sigframe` (it names the signal context and
 //!   `siginfo`, `bsd`'s until N4.5b) and re-exports these: the switch and `cpu_fork` are
 //!   `hal`'s and build the frames.
+//! - N4.8b: `struct sigframe` follows (`hal::sig`'s `sendsig` builds it), with the signal
+//!   context (`signal.rs`); LZ's `unsafe impl AbiPod` is `hal::abi_pod!`.
 
+use super::signal::Sigcontext;
+use crate::sys::siginfo::Siginfo;
 use crate::sys::types::Register;
 
 /// `struct callframe`: one link of the frame-pointer chain.
@@ -128,6 +132,48 @@ pub struct Switchframe {
     pub sf_lr: Register,
 }
 
+/// `struct sigframe`: what `sendsig` builds on the user stack for `sigcode`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sigframe {
+    /// `sf_signum`.
+    pub sf_signum: i32,
+    /// The C compiler's alignment hole before `sf_sc`.
+    pub _pad: i32,
+    /// `sf_sc`.
+    pub sf_sc: Sigcontext,
+    /// `sf_si`.
+    pub sf_si: Siginfo,
+}
+
+impl Sigframe {
+    /// An all-zero frame (`bzero(&frame, sizeof(frame))`).
+    pub const fn zeroed() -> Self {
+        Self {
+            sf_signum: 0,
+            _pad: 0,
+            sf_sc: Sigcontext {
+                __sc_unused: 0,
+                sc_mask: 0,
+                sc_sp: 0,
+                sc_lr: 0,
+                sc_elr: 0,
+                sc_spsr: 0,
+                sc_x: [0; 30],
+                sc_cookie: 0,
+            },
+            sf_si: Siginfo::zeroed(),
+        }
+    }
+}
+
+crate::abi_pod!(Sigframe {
+    sf_signum: i32,
+    _pad: i32,
+    sf_sc: Sigcontext,
+    sf_si: Siginfo,
+});
+
 /// `TF_SIZE`: the size of a trap frame.
 pub const TF_SIZE: usize = size_of::<Trapframe>();
 
@@ -138,5 +184,7 @@ const _: () = {
     assert!(TF_SIZE == 34 * 8);
     assert!(core::mem::offset_of!(Trapframe, tf_x) == 32);
     assert!(SWITCHFRAME_SZ == 12 * 8);
+    assert!(core::mem::offset_of!(Sigframe, sf_sc) == 8);
+    assert!(size_of::<Sigframe>() == 8 + size_of::<Sigcontext>() + size_of::<Siginfo>());
 };
 /* </CODE> */

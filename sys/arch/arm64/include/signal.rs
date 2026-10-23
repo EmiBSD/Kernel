@@ -55,46 +55,9 @@
 //!
 //! Upstream: sys/arch/arm64/include/signal.h @ 3ce1f3f79392
 //!
-//! Status: `ported` (with `kern_sig.c`).
+//! Status: `ported` (with `kern_sig.c`). N4.8b: both are `hal`'s
+//! (`hal::arch::arm64::include::signal`, beside the signal frame `hal::sig` builds),
+//! re-exported here.
 
-use crate::machine::copy::AbiPod;
-
-/// `sig_atomic_t`.
-pub type SigAtomic = i32;
-
-/// `struct sigcontext`: information pushed on stack when a signal is delivered. This is used
-/// by the kernel to restore state following execution of the signal handler. It is also made
-/// available to the handler to allow it to restore state properly if a non-standard exit is
-/// performed.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Sigcontext {
-    /// `__sc_unused`.
-    pub __sc_unused: i32,
-    /// `sc_mask`: signal mask to restore.
-    pub sc_mask: i32,
-
-    /// `sc_sp`.
-    pub sc_sp: u64,
-    /// `sc_lr`.
-    pub sc_lr: u64,
-    /// `sc_elr`.
-    pub sc_elr: u64,
-    /// `sc_spsr`.
-    pub sc_spsr: u64,
-    /// `sc_x[30]`.
-    pub sc_x: [u64; 30],
-
-    /// `sc_cookie`.
-    pub sc_cookie: i64,
-}
-
-// SAFETY: `repr(C)`: two 32-bit integers, then 64-bit ones, no padding; every bit pattern is
-// a valid value.
-unsafe impl AbiPod for Sigcontext {}
-
-const _: () = {
-    assert!(size_of::<Sigcontext>() == 8 + 4 * 8 + 30 * 8 + 8);
-    assert!(core::mem::offset_of!(Sigcontext, sc_cookie) == 8 + 34 * 8);
-};
+pub use hal::arch::arm64::include::signal::{SigAtomic, Sigcontext};
 /* </CODE> */
