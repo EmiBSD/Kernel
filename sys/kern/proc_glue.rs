@@ -1758,13 +1758,14 @@ mod tests {
         // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the
         // sigio registrations moved into kernel::sigio's registry: processpl 1376 -> 1360 and
         // pgrppl 152 -> 136 (ps_sigiolst and pg_sigiolst gone from the glue's members).
-        // N4.6a (the process core into kernel::{fork, exit}): processpl 1360 -> 1536: the pin
-        // tables are owned tables in ReadMostly cells (2 x 64 where the glue's two
-        // `struct pinsyscall`s of words were 2 x 32), ps_rucheck_to is the kernel's Timeout
-        // (120 where bsd's was 32), PsMtx gains the main thread's slot (24) and ps_opptr's
-        // counted handle (16) where the glue's word was (8); procpl unchanged (p_exited moved
-        // from the glue into the kernel's Thread as `exited`). Accepted under the user's rule
-        // for N4's sizes (reported, pinned here).
+        // N4.6a (the process core into kernel::{fork, exit}): processpl 1360 -> 1536 (+176,
+        // the size pinned below; the parts are the fields' layouts): the pin tables are owned
+        // tables in ReadMostly cells (2 x 64 where the glue's two `struct pinsyscall`s of
+        // words were 2 x 32: +64), ps_rucheck_to is the kernel's Timeout (120 where bsd's was
+        // 32: +88), PsMtx gains the main thread's slot (a tag and a pointer, 16) and
+        // ps_opptr's counted handle (16): +32, and the glue's ps_mainproc word goes (-8);
+        // procpl unchanged (p_exited moved from the glue into the kernel's Thread as
+        // `exited`). Accepted under the user's rule for N4's sizes (reported, pinned here).
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();

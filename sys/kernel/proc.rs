@@ -2490,7 +2490,7 @@ impl<'a, G: ProcGlue> Placed<'a, G> {
 }
 
 /// `thread_new`'s `pool_get(&proc_pool, PR_WAITOK)`: a thread of `pr`, its box (the caller
-/// gives it to the process, [`Process::insert_thread`]).
+/// gives it to the process: [`Process::set_main_locked`] or [`Process::insert_box_locked`]).
 pub fn thread_alloc<G: ProcGlue>(pr: &ProcessRef<G>, g: G::ThreadG) -> PoolBox<Thread<G>> {
     let make = || {
         Thread::make(
