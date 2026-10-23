@@ -1083,7 +1083,7 @@ rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/arm64/locore.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus; N3.1 commit 8/8b: locore.S's switch_mmu_kernel as hal_switch_mmu_kernel (global_asm!, run at its physical address by the backend), cpu_ttbr1; locore.rs has no licence text (the .S holds it): locore.S's Andrew Turner block is kept whole beside the others"
+notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus; N3.1 commit 8/8b: locore.S's switch_mmu_kernel as hal_switch_mmu_kernel (global_asm!, run at its physical address by the backend), cpu_ttbr1; locore.rs has no licence text (the .S holds it): locore.S's Andrew Turner block is kept whole beside the others; N4.8b: the TLB flushes and cache operations are pub(crate) for hal::arch::arm64::cpufunc, plus cpu_dcache_wb_range (dc cvac, the same macro)"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_setttb"
@@ -1653,9 +1653,17 @@ adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/k
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
+adapted_by = ["sys/hal/arch/arm64/cpufunc.rs"]
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
-status = "inherited"
-notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_REPEAT_TLBI codepatch until M4); M6-b2: cpu_icache_sync_range (line sizes from CTR_EL0); M7b: cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_dcache_inv_range (unsafe: it discards dirty lines) for bus_dma, the cache_handle_range macro as dcache_range! with dcache_line_size read from CTR_EL0; M16f: cpu_idcache_wbinv_range (idcache_line_size from CTR_EL0), called by pmap_kenter_cache for non-cacheable mappings of managed pages (agintc's tables)"
+status = "adapted"
+notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_REPEAT_TLBI codepatch until M4); M6-b2: cpu_icache_sync_range (line sizes from CTR_EL0); M7b: cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_dcache_inv_range (unsafe: it discards dirty lines) for bus_dma, the cache_handle_range macro as dcache_range! with dcache_line_size read from CTR_EL0; M16f: cpu_idcache_wbinv_range (idcache_line_size from CTR_EL0), called by pmap_kenter_cache for non-cacheable mappings of managed pages (agintc's tables); N4.8b: cpu_wfi, the four TLB flushes and the non-discarding cache operations are hal's (hal::arch::arm64::cpufunc), re-exported; smc_call, hvc_call, cpu_setttb and cpu_dcache_inv_range stay (unsafe fn or firmware calls, until typed)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/cpufunc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
+status = "redesigned"
+notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"

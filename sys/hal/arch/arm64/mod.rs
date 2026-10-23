@@ -23,6 +23,8 @@
 #[cfg(not(feature = "module-rt"))]
 pub(crate) mod copy;
 pub(crate) mod cpu;
+// The cache, TLB and idle instructions for the code outside the pmap (N4.8b).
+pub mod cpufunc;
 // The exception entry, the trap handlers and the system call entry (N4.8b): the kernel's
 // alone, as the switch (the ABI module's image takes no trap of its own).
 #[cfg(not(feature = "module-rt"))]
