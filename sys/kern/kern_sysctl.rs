@@ -65,6 +65,7 @@
 //! `hw.machine`, ...), their bounded integers, the disk list's export and `physmem`.
 //!
 //! Upstream: sys/kern/kern_sysctl.c @ 3ce1f3f79392
+//! LZ: sys/kern/kern_sysctl.rs@3c62ede68802
 //!
 //! The system identifies itself as EmiBSD 8.0 (`kern.ostype`, `kern.osrelease`,
 //! `kern.version`, `kern.osversion` come from `conf/vers.rs`); `kern.osrevision` stays the
@@ -102,7 +103,23 @@
 //!   sums at zero instead of dividing by zero.
 //! - `hw.sensors.<dev>.<type>.<numt>` with a `type` outside `enum sensor_type` finds no
 //!   sensor (`ENOENT`, after the device lookup's own errors), as the C's comparison would.
-
+//!
+//! ## Redesign
+//! - N4.6b: the dispatch (`sys_sysctl`, `kern_sysctl`, `hw_sysctl`), `sysctl_vslock`, the
+//!   nodes whose state is the kernel's and `kern.proc` with `fill_kproc` moved into
+//!   `kernel::sysctl` (its `## Redesign` has the shape). What stays here registers `bsd`'s
+//!   nodes with that dispatcher ([`sysctl_register_legacy`], called from the bridges'
+//!   registration): the `CTL_*` trees, the `kern` and `hw` leaves and directories as
+//!   `SysctlNode`s (`Node`, a function over a name and a `SysctlReq`; `ProcNode`, one that
+//!   wants the calling thread), the `kern_vars[]`/`hw_vars[]` entries whose variables are
+//!   `bsd`'s, `hw.machine` and `physmem`.
+//! - `BsdDiskExport` is the `DiskExport` bridge (`bridges.toml`): the disk list walked
+//!   under its lock, each disk's name, DUID and `struct diskstats` handed to the kernel's
+//!   `sysctl_diskinit` as bytes.
+//! - `native_sysctl` is `sysctl(2)`'s entry in the `KernelApi` table (`abi_openbsd.ko`):
+//!   the kernel's `sys_sysctl` over `bsd`'s glue.
+//! - `sysctl_vslock` returns the kernel's `VsLock` guard (its drop is `sysctl_vsunlock`);
+//!   `sysctl_lock` is the kernel's `SYSCTL_LOCK`, the one lock of both halves.
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicI32, Ordering};
 

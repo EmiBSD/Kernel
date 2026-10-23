@@ -5617,6 +5617,7 @@ rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs"]
+notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5)"
 
 
 [[module]]
