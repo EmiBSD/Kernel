@@ -75,7 +75,9 @@
 //!   `%b` is the [`Bitmask`] `Display` adaptor; its `%s` of a NUL-terminated byte string is
 //!   [`Str`].
 //! - `v_putc` is fixed to `cnputc`; `constty` (a `TIOCCONS` redirection) takes the console
-//!   output as in C.
+//!   output as in C, except a character that would wait for that tty (held on this CPU, or
+//!   its state on another, or `SCHED_LOCK` held here: `kernel::tty::tputchar_try`), which
+//!   goes to the real console.
 //! - The `struct tty *tp` of `kprintf`/`kputchar` is an `Option<&Tty>`; `kprintf` keeps its
 //!   three arguments and [`kprintf_tp`] is the form with the tty. `tprintf_open`,
 //!   `tprintf_close` and `tprintf` (`NFSSERVER || NFSCLIENT`) are compiled with feature
@@ -448,25 +450,35 @@ pub fn kputchar(c: i32, flags: i32, tp: Option<&Tty>) {
     } else {
         None
     };
-    let tp = match &cons {
+    let (tp, to_constty) = match &cons {
         Some(cons) => {
             flags |= TOTTY;
-            Some(&**cons)
+            (Some(&**cons), true)
         }
-        None => tp,
+        None => (tp, false),
     };
+    // The constty leg never waits for the tty (kernel::tty::tputchar_try): when the tty is
+    // held where this character comes from, it goes to the console instead.
+    let mut busy = false;
     if flags & TOTTY != 0
         && let Some(t) = tp
-        && tputchar(c, t) < 0
-        && flags & TOCONS != 0
-        && constty().is_some_and(|cons| ptr::eq(&*cons, t))
     {
-        set_constty(None);
+        let r = if to_constty {
+            kernel::tty::tputchar_try(c, t).unwrap_or_else(|| {
+                busy = true;
+                0
+            })
+        } else {
+            tputchar(c, t)
+        };
+        if r < 0 && flags & TOCONS != 0 && constty().is_some_and(|cons| ptr::eq(&*cons, t)) {
+            set_constty(None);
+        }
     }
     if flags & TOLOG != 0 && c != 0 && c != i32::from(b'\r') && c != 0o177 && msgbufmapped() {
         msgbuf_putchar(Buf::Msgbuf, c as u8);
     }
-    if flags & TOCONS != 0 && (constty().is_none() || db_active) && c != 0 {
+    if flags & TOCONS != 0 && (constty().is_none() || db_active || busy) && c != 0 {
         cnputc(c);
     }
     if flags & TODDB != 0 {

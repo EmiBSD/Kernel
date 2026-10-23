@@ -485,6 +485,13 @@ impl Clist {
         self.unlock(g);
     }
 
+    /// Whether this CPU holds the queue's lock (or the kernel is past caring): a caller that
+    /// may run inside a holder's interrupt (`kputchar`'s `constty` leg) tests it before
+    /// touching the queue, since taking it again would be "locking against myself".
+    pub fn locked_here(&self) -> bool {
+        self.ring.owned()
+    }
+
     /// `putc`: put a character into the output queue; -1 when it is full.
     pub fn putc(&self, c: i32) -> i32 {
         let mut g = self.lock();

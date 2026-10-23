@@ -183,6 +183,12 @@
 //! - `ttyfree` retires the tty (off the list, its timeout stopped, its knotes told EOF, its
 //!   rings freed) but its pool item stays: the drivers that free one (com, ucom, wsdisplay)
 //!   still hold it as `&'static` (decision 5 of N4.7, until N7 moves them).
+//! - `printf(9)` redirected by `TIOCCONS` (`kputchar`'s `constty` leg) goes through
+//!   [`tputchar_try`]: a character that would have to wait for the tty (its state or output
+//!   queue held on this CPU, its state held on another, or the scheduler's lock held here)
+//!   goes to the real console instead. The C raises `spltty()` and writes the tty whatever
+//!   it was doing; with the state behind a lock that re-entry would be "locking against
+//!   myself", or a deadlock with a `printf` under `SCHED_LOCK` across CPUs.
 //!
 //! ## Redesign
 //! - LZ's `struct tty` (sys/sys/tty.rs) was a `Cell` per member under an `unsafe impl Sync`
@@ -219,6 +225,8 @@
 //!   taken from its head and given to `ttyinput`, which may append it at its tail; each step
 //!   frees a slot before one is filled, so no unread input is overwritten. The C (and LZ)
 //!   read through a copy of the queue's header over the live ring (LZ's `copy_header`).
+//! - A section lets the state's lock go around `wakeup` too ([`Sect::out`]), so no CPU waits
+//!   for `SCHED_LOCK` while holding a tty's state.
 //! - `d_stop` (`cdevsw[major(t_dev)].d_stop`), `/dev/console`'s write and access check and
 //!   `s_ttyvp` are reached through the [`TtyDevsw`] bridge (bridges.toml, paid at N7 with the
 //!   device switch); `enqueue_randomness` through hal's `Random` bridge.
@@ -2819,8 +2827,10 @@ fn ttyflush_s<G: ProcGlue>(s: &mut Sect<'_, G>, rw: i32) {
         tp.t_state_clr(TS_TTSTOP);
         s.d_stop(rw);
         flushq(&tp.t_outq);
-        hal::sleep::wakeup(ptr::from_ref(&tp.t_outq));
-        s.out(|| selwakeup(&tp.t_wsel));
+        s.out(|| {
+            hal::sleep::wakeup(ptr::from_ref(&tp.t_outq));
+            selwakeup(&tp.t_wsel);
+        });
     }
 }
 
@@ -3695,7 +3705,7 @@ fn ttwakeup_s<G: ProcGlue>(s: &mut Sect<'_, G>) {
     if tp.t_state_isset(TS_ASYNC) {
         s.pgsignal(SIGIO);
     }
-    hal::sleep::wakeup(ptr::from_ref(&tp.t_rawq));
+    s.out(|| hal::sleep::wakeup(ptr::from_ref(&tp.t_rawq)));
 }
 
 /// `ttspeedtab`: look up a code for a specified speed in a conversion table; used by
@@ -3987,6 +3997,29 @@ pub fn ttyprintf<G: ProcGlue>(tp: &Tty<G>, args: fmt::Arguments<'_>) {
 pub fn tputchar<G: ProcGlue>(c: i32, tp: &Tty<G>) -> i32 {
     let mut s = Sect::new(tp);
     tputchar_s(c, &mut s)
+}
+
+/// [`tputchar`] for `kputchar`'s `constty` leg (`printf(9)` redirected by `TIOCCONS`), which
+/// may run at any level, from an interrupt above `IPL_TTY` or under `SCHED_LOCK`: `None`,
+/// without touching the tty, when writing it would wait on this CPU (its state or output
+/// queue held here, or the scheduler's lock, which a driver's start takes through
+/// `wakeup`), or on another CPU that holds the state, so the caller puts the character on
+/// the console instead. The C only raises `spltty()` there and re-enters the tty; the locks
+/// that make its state typed would turn the re-entry into "locking against myself", and a
+/// wait for a state held across `wakeup` into a deadlock with a `printf` under
+/// `SCHED_LOCK`.
+pub fn tputchar_try<G: ProcGlue>(c: i32, tp: &Tty<G>) -> Option<i32> {
+    if hal::thread::sched_locked() || tp.st.owned() || tp.t_outq.locked_here() {
+        return None;
+    }
+    let spl = hal::intr::splraise(IPL_TTY);
+    let g = tp.st.try_lock()?;
+    let mut s = Sect {
+        tp,
+        g: Some(g),
+        _spl: spl,
+    };
+    Some(tputchar_s(c, &mut s))
 }
 
 /// [`tputchar`] inside a section.
@@ -4393,9 +4426,11 @@ mod tests {
     use crate::proc::{Pgrp, Session, enternewpgrp, enterthispgrp, pgrp_alloc, session_alloc};
     use crate::testutil;
 
-    /// What the device switch saw: the `d_stop` calls.
+    /// What the device switch saw: the `d_stop` calls; whether `/dev/console`'s access
+    /// check (`TIOCCONS`'s) fails.
     struct Devsw {
         stops: Mutex<Vec<i32>>,
+        deny: core::sync::atomic::AtomicBool,
     }
 
     impl TtyDevsw<Kg> for Devsw {
@@ -4410,7 +4445,11 @@ mod tests {
             self.stops.lock().unwrap().push(rw);
         }
         fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
-            Ok(())
+            if self.deny.load(Ordering::Relaxed) {
+                Err(Errno::EACCES)
+            } else {
+                Ok(())
+            }
         }
         fn session_has_ttyvp(&self, _sess: &Session<Kg>) -> bool {
             false
@@ -4436,6 +4475,7 @@ mod tests {
         Kg::set_curproc(Some(p));
         let d: &'static Devsw = Box::leak(Box::new(Devsw {
             stops: Mutex::new(Vec::new()),
+            deny: core::sync::atomic::AtomicBool::new(false),
         }));
         register_ttydevsw::<Kg>(d);
         (p, d)
@@ -5247,6 +5287,76 @@ mod tests {
         // 1024 - 200.
         assert_eq!(tp.t_lowat.get(), 256);
         assert_eq!(tp.t_hiwat.get(), 824);
+    }
+
+    /// Whether `constty` is `tp`.
+    fn constty_is(tp: &Tty<Kg>) -> bool {
+        constty::<Kg>().is_some_and(|c| ptr::eq::<Tty<Kg>>(&*c, tp))
+    }
+
+    #[test]
+    fn tioccons_is_refused_while_another_live_tty_has_it_and_checks_the_console() {
+        let (p, d) = world(4710);
+        let a = test_tty();
+        let b = test_tty();
+        assert_eq!(ioctl_int(&a, TIOCCONS, 1, p).0, Ok(true));
+        assert!(constty_is(&a));
+        // another tty, open with carrier: EBUSY; its "TIOCCONS 0" leaves a's
+        assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Err(Errno::EBUSY));
+        assert_eq!(ioctl_int(&b, TIOCCONS, 0, p).0, Ok(true));
+        assert!(constty_is(&a));
+        // a failed access check of /dev/console changes nothing, even for the holder
+        d.deny.store(true, Ordering::Relaxed);
+        assert_eq!(ioctl_int(&a, TIOCCONS, 1, p).0, Err(Errno::EACCES));
+        assert!(constty_is(&a));
+        // without carrier a's hold no longer blocks b, but the check still does
+        a.t_state_clr(TS_CARR_ON);
+        assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Err(Errno::EACCES));
+        assert!(constty_is(&a));
+        d.deny.store(false, Ordering::Relaxed);
+        assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Ok(true));
+        assert!(constty_is(&b));
+        assert_eq!(ioctl_int(&b, TIOCCONS, 0, p).0, Ok(true));
+        assert!(constty::<Kg>().is_none());
+    }
+
+    #[test]
+    fn the_constty_leg_never_waits_for_a_tty_held_here() {
+        let (_p, _d) = world(4711);
+        let tp = test_tty();
+        tp.set_t_oflag(0);
+        // free: the character is queued. The host's threads share one CPU word, so a
+        // scheduler's lock another test holds reads as this CPU's: retry until it is free.
+        let mut r = None;
+        for _ in 0..100_000 {
+            r = tputchar_try(i32::from(b'a'), &tp);
+            if r.is_some() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(r, Some(0));
+        // the state held on this CPU (an interrupt inside a section): nothing touched
+        {
+            let _g = tp.st.lock();
+            assert_eq!(tputchar_try(i32::from(b'b'), &tp), None);
+        }
+        // the output queue's lock held on this CPU (an interrupt inside a clist op)
+        tp.t_outq.peek_with(1, |_| {
+            assert_eq!(tputchar_try(i32::from(b'c'), &tp), None);
+        });
+        assert_eq!(drain(&tp.t_outq), b"a");
+        // a closed tty: -1, as tputchar
+        tp.t_state_clr(TS_ISOPEN);
+        let mut r = None;
+        for _ in 0..100_000 {
+            r = tputchar_try(i32::from(b'd'), &tp);
+            if r.is_some() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(r, Some(-1));
     }
 
     #[test]
