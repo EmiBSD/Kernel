@@ -84,6 +84,7 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::proc::Proc;
+use crate::sys::syscall::SYS_sendsyslog;
 use crate::sys::syscallargs::SysSendsyslogArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Register};
@@ -174,6 +175,27 @@ pub fn logioctl(_dev: Dev, com: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
 /// `logkqfilter` (`cdevsw[7].d_kqfilter`).
 pub fn logkqfilter(_dev: Dev, kn: &Knote) -> Result<(), Errno> {
     kernel::log::logkqfilter::<BsdProcGlue>(kn)
+}
+
+/// `KernelApi::sendsyslog`, the module's `Native` sendsyslog(2): the thread on this CPU runs
+/// `mi_syscall` on `sysent[112]` (the prologue still `bsd`'s: pledge, the pinned syscalls,
+/// `NOLOCK`), whose row is [`sys_sendsyslog`]; another number is `ENOSYS`.
+pub fn native_sendsyslog(
+    nr: Register,
+    buf: usize,
+    nbyte: usize,
+    flags: i32,
+    rval: &mut [Register; 2],
+) -> Result<(), i32> {
+    let args = [
+        buf as Register,
+        nbyte as Register,
+        flags as Register,
+        0,
+        0,
+        0,
+    ];
+    crate::kern::kern_descrip::native(nr, SYS_sendsyslog, args, rval)
 }
 
 /// `sendsyslog(2)` (`sysent[112]`, `NOLOCK`): the kernel's, for the calling thread.

@@ -39,14 +39,15 @@
 //! (N4.3): [`FdEntries`], the twenty system calls of the descriptor tables and their I/O
 //! (`read(2)`, `close(2)`, `dup(2)`, `fcntl(2)`, `ioctl(2)`, ...), one typed entry each.
 //! Version 5 (N4.4): [`EventEntries`], the seven of kqueue and select/poll (`kqueue(2)`,
-//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`).
+//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). Version 6
+//! (N4.7a): `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`).
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 5;
+pub const KERNEL_API_VERSION: u32 = 6;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -249,6 +250,9 @@ pub struct KernelApi {
     pub fd: FdEntries,
     /// The event system calls (version 5).
     pub event: EventEntries,
+    /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)` (version 6): `(nr, buf,
+    /// nbyte, flags, rval)`.
+    pub sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
 }
 
 impl KernelApi {
@@ -266,6 +270,7 @@ impl KernelApi {
         vm: VmEntries,
         fd: FdEntries,
         event: EventEntries,
+        sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -277,6 +282,7 @@ impl KernelApi {
             vm,
             fd,
             event,
+            sendsyslog,
         }
     }
 }
@@ -323,8 +329,12 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 5 only adds: the version 4 fields keep their places, `event` comes last.
-    assert!(offset_of!(KernelApi, event) == size_of::<KernelApi>() - size_of::<EventEntries>());
+    // Version 6 only adds: the version 5 fields keep their places, `sendsyslog` comes last.
+    assert!(offset_of!(KernelApi, sendsyslog) == size_of::<KernelApi>() - size_of::<fn()>());
+    assert!(
+        offset_of!(KernelApi, sendsyslog)
+            == offset_of!(KernelApi, event) + size_of::<EventEntries>()
+    );
     assert!(offset_of!(KernelApi, event) == offset_of!(KernelApi, fd) + size_of::<FdEntries>());
     assert!(size_of::<EventEntries>() == 7 * size_of::<fn()>());
     assert!(offset_of!(KernelApi, fd) == offset_of!(KernelApi, vm) + size_of::<VmEntries>());
@@ -526,6 +536,11 @@ mod tests {
         Err(nr as i32 + f as i32 + n as i32 + t)
     }
 
+    fn sendsyslog(nr: Register, b: usize, n: usize, f: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(b as i32 * 100 + n as i32 * 10 + f)
+    }
+
     const EVENT: EventEntries = EventEntries {
         select,
         kevent,
@@ -536,14 +551,23 @@ mod tests {
         kqueue1: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+    static API: KernelApi = KernelApi::new(
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog,
+    );
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 5);
+        assert_eq!(KERNEL_API_VERSION, 6);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
+    }
+
+    #[test]
+    fn the_sendsyslog_entry_is_the_callers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.sendsyslog)(112, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval[0], 112);
     }
 
     #[test]
