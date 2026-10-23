@@ -57,14 +57,16 @@
 //!   the child is the running thread, whose trap frame is its pcb's `pcb_tf`
 //!   (`hal::thread`'s `thread_setup` built it), and its machine-independent half is the trap
 //!   handler's `child_return` (`mi_child_return`).
+//! - The frame is the running thread's `UserFrame` (`trap.rs`'s frame premise), borrowed
+//!   before and after the call, never across it: the call reaches the same frame through
+//!   `pcb_tf` (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`). `child_return`'s
+//!   frame write is a borrow of it too (LZ: a raw pointer write).
 
-use core::ptr;
 use core::sync::atomic::Ordering;
 
 use super::cpu::intr_enable;
 use super::include::armreg::{PSR_C, PSR_I};
-use super::include::frame::Trapframe;
-use super::switch::with_curpcb;
+use super::trap::UserFrame;
 use crate::assert::hal_panic;
 use crate::sys::errno::Errno;
 use crate::syscall::{Register, Rval, SysArgs};
@@ -91,7 +93,7 @@ const EJUSTRETURN: i32 = Errno::EJUSTRETURN.as_i32();
 /// returned `ENOSYS`). amd64's entry keeps the whole register (`trap.c:781`, a
 /// `register_t`, not truncated). diff-openbsd: `syscalls/entry#1` (`difftest syscalls
 /// entry`), its line `int-syscall`.
-pub(crate) fn svc_handler(frame: &mut Trapframe) {
+pub(crate) fn svc_handler(frame: UserFrame) {
     if crate::cpu::curcpu().curproc().is_null() {
         hal_panic(format_args!("svc_handler: no curproc"));
     }
@@ -99,41 +101,46 @@ pub(crate) fn svc_handler(frame: &mut Trapframe) {
     UVMEXP.syscalls.fetch_add(1, Ordering::Relaxed);
 
     // Re-enable interrupts if they were enabled previously
-    if frame.tf_spsr as u64 & PSR_I == 0 {
+    if frame.with(|tf| tf.tf_spsr as u64 & PSR_I == 0) {
         intr_enable();
     }
 
-    // Skip over speculation-blocking barrier.
-    frame.tf_elr += 8;
+    let (code, args) = frame.with(|tf| {
+        // Skip over speculation-blocking barrier.
+        tf.tf_elr += 8;
 
-    // The C's `int code = frame->tf_x[8]`: the low 32 bits, sign-extended (see above).
-    let code: Register = frame.tf_x[8] as i32 as Register;
-    let args: SysArgs = match frame.tf_x.first_chunk::<6>() {
-        Some(a) => *a,
-        None => [0; 6],
-    };
+        // The C's `int code = frame->tf_x[8]`: the low 32 bits, sign-extended (see above).
+        let code: Register = tf.tf_x[8] as i32 as Register;
+        let args: SysArgs = match tf.tf_x.first_chunk::<6>() {
+            Some(a) => *a,
+            None => [0; 6],
+        };
+        (code, args)
+    });
 
     let mut rval: Rval = [0, 0];
 
+    // The frame is not borrowed across the call: the call may read or rewrite it through
+    // `pcb_tf` (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`).
     let error = crate::syscall::dispatch(code, &args, &mut rval);
 
-    match error {
+    frame.with(|tf| match error {
         Ok(()) => {
-            frame.tf_x[0] = rval[0];
-            frame.tf_spsr &= !(PSR_C as Register); // carry bit
+            tf.tf_x[0] = rval[0];
+            tf.tf_spsr &= !(PSR_C as Register); // carry bit
         }
         Err(ERESTART) => {
             // Reconstruct the pc to point at the svc.
-            frame.tf_elr -= 12;
+            tf.tf_elr -= 12;
         }
         Err(EJUSTRETURN) => {
             // nothing to do
         }
         Err(e) => {
-            frame.tf_x[0] = e as Register;
-            frame.tf_spsr |= PSR_C as Register; // carry bit
+            tf.tf_x[0] = e as Register;
+            tf.tf_spsr |= PSR_C as Register; // carry bit
         }
-    }
+    });
 
     match crate::trap::handler() {
         Some(h) => h.syscall_return(code, error, &rval),
@@ -145,24 +152,15 @@ pub(crate) fn svc_handler(frame: &mut Trapframe) {
 /// with the carry clear in its trap frame, the kernel lock its trampoline took released, then
 /// `mi_child_return`.
 pub fn child_return() {
-    let tf = with_curpcb(|pcb| match pcb {
-        Some(pcb) => pcb.pcb_tf.get(),
-        None => ptr::null_mut(),
-    });
-    if tf.is_null() {
+    // The running thread's `pcb_tf`, which `thread_setup` set to the trap frame it wrote at
+    // the top of this thread's u-area before the thread ever ran (`cpu_fork`'s).
+    let Some(frame) = UserFrame::current() else {
         hal_panic(format_args!("child_return: no trap frame"));
-    }
-    // SAFETY: `tf` is the running thread's `pcb_tf` (its pcb is `ci_curpcb`, `hal::thread`'s
-    // E5), which `thread_setup` set to the trap frame it wrote at the top of this thread's
-    // u-area before the thread ever ran (`cpu_fork`'s `pcb_tf`): aligned, inside the u-area
-    // the thread owns (E4), alive while the thread runs. The thread runs here, on its kernel
-    // stack below that frame, and has not entered user mode yet, so nothing else reads or
-    // writes the frame now and no reference to it exists; the two writes are plain stores
-    // of its own registers.
-    unsafe {
-        (*tf).tf_x[0] = 0;
-        (*tf).tf_spsr &= !(PSR_C as Register); // carry bit
-    }
+    };
+    frame.with(|tf| {
+        tf.tf_x[0] = 0;
+        tf.tf_spsr &= !(PSR_C as Register); // carry bit
+    });
 
     // The kernel lock `proc_trampoline_mi` took for the new thread.
     crate::klock::kernel_unlock();

@@ -98,9 +98,15 @@
 //!
 //! **The frame premise.** Every `extern "C"` handler here is reached only from the assembly
 //! of `exception.S` (`sym` operands, no symbol another object could call), with `x0` the trap
-//! frame it just saved on this CPU's kernel stack: a valid, aligned `struct trapframe` that
-//! nothing else references until the handler returns and the assembly restores from it. So
-//! the handlers take it as `&mut Trapframe`.
+//! frame it just saved on this CPU's kernel stack: a valid, aligned `struct trapframe` the
+//! assembly reads again only after the handler returns. The frame of an entry from user mode
+//! (`do_el0_sync`, `do_el0_error`, `ast`) is the thread's user context, which `pcb_tf` names
+//! and which the code those handlers call out to reads and writes (`sendsig`, `sigreturn`,
+//! `PROC_PC`, `bsd`'s `setregs`): they hold it as a [`UserFrame`], borrowed one closure at a
+//! time, never across such a call. The kernel-mode handlers and the IRQ and FIQ entries take
+//! `&mut Trapframe`: nothing they reach names their frame (`pcb_tf` names the user frame;
+//! an interrupt from user mode delivers no signal before its `ast`, which takes the frame
+//! afresh).
 //!
 //! ## Deviations
 //! - `do_el0_sync`'s `KERNEL_UNLOCK` after `sigexit` is not written: `sigexit` never returns.
@@ -126,8 +132,8 @@
 //!   writes (`cpu_identify_cleanup`).
 
 use core::fmt;
-use core::ptr;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::cpu::intr_enable;
 use super::fpu;
@@ -145,7 +151,7 @@ use super::include::frame::Trapframe;
 use super::include::vmparam::VM_MAXUSER_ADDRESS;
 use super::switch::with_curpcb;
 use crate::assert::hal_panic;
-use crate::cpu::curcpu;
+use crate::cpu::{MAXCPUS, cpu_number, curcpu};
 use crate::sys::errno::Errno;
 use crate::sys::siginfo::{
     BUS_ADRALN, BUS_OBJERR, ILL_BTCFI, ILL_ILLOPC, SEGV_ACCERR, SEGV_MAPERR, TRAP_BRKPT, TRAP_TRACE,
@@ -202,16 +208,73 @@ fn have_curproc() -> bool {
     !curcpu().curproc().is_null()
 }
 
-/// `p->p_addr->u_pcb.pcb_tf = frame`: the running thread's trap frame, for `sendsig`,
-/// `sys_sigreturn`, `ptrace` and the `PROC_PC`/`PROC_STACK` readers.
-#[inline]
-fn set_pcb_tf(frame: &mut Trapframe) {
-    let tf = ptr::from_mut(frame);
-    with_curpcb(|pcb| {
-        if let Some(pcb) = pcb {
-            pcb.pcb_tf.set(tf);
+/// Per CPU, whether a [`UserFrame`] is borrowed on it ([`UserFrame::with`]).
+static USER_FRAME_BORROWED: [AtomicBool; MAXCPUS] = [const { AtomicBool::new(false) }; MAXCPUS];
+
+/// The trap frame of the running thread's user context: the one `handle_el0_sync` or the
+/// return to user mode (`do_ast`) saved at the top of its kernel stack, which `pcb_tf` names
+/// from then on (`cpu_fork` points a new thread's at the frame it built in the same place).
+///
+/// The handler that got it and the code its calls out reach through `pcb_tf` (the signal
+/// frame's `sendsig` and `sigreturn`, `child_return`, `PROC_PC`/`PROC_STACK`, `bsd`'s
+/// `setregs`) all touch it, so no reference to it is kept: each access borrows it for one
+/// closure ([`Self::with`]) that calls nothing which reaches it again, and a second borrow on
+/// the CPU while one is in progress is `panic(9)` rather than a second `&mut`.
+#[derive(Clone, Copy)]
+pub(crate) struct UserFrame(NonNull<Trapframe>);
+
+impl UserFrame {
+    /// The frame an EL0 entry of `exception.S` passes in `x0`; `panic(9)` for null.
+    fn from_entry(frame: *mut Trapframe) -> Self {
+        match NonNull::new(frame) {
+            Some(f) => Self(f),
+            None => hal_panic(format_args!("trap: no frame")),
         }
-    });
+    }
+
+    /// `p->p_addr->u_pcb.pcb_tf` of the running thread: `None` before the first thread or
+    /// for a thread whose pcb names no frame.
+    pub(crate) fn current() -> Option<Self> {
+        with_curpcb(|pcb| pcb.and_then(|pcb| NonNull::new(pcb.pcb_tf.get()))).map(Self)
+    }
+
+    /// `p->p_addr->u_pcb.pcb_tf = frame`: this frame is the running thread's user context
+    /// from here on.
+    fn make_current(self) {
+        with_curpcb(|pcb| {
+            if let Some(pcb) = pcb {
+                pcb.pcb_tf.set(self.0.as_ptr());
+            }
+        });
+    }
+
+    /// `f` on the frame, borrowed for the call alone; `panic(9)` when this CPU borrows it
+    /// already (a closure that reached it again).
+    pub(crate) fn with<R>(self, f: impl FnOnce(&mut Trapframe) -> R) -> R {
+        let borrowed = &USER_FRAME_BORROWED[cpu_number()];
+        if borrowed.swap(true, Ordering::Acquire) {
+            hal_panic(format_args!("trap: the user frame is borrowed twice"));
+        }
+        // SAFETY: valid: the pointer is the frame `exception.S` saved for this EL0 entry (`x0`
+        // of `handle_el0_sync`, `handle_el0_error` or `do_ast`: a whole, aligned
+        // `struct trapframe` it wrote at the top of the running thread's kernel stack, alive
+        // until the handler returns and the assembly restores from it), or the running
+        // thread's `pcb_tf`, which only ever names that same place: `make_current` stores an
+        // EL0 entry's frame (an entry from user mode starts on an empty kernel stack, so its
+        // frame is always at the top), `cpu_fork` (`hal::thread::thread_setup`) the frame it
+        // built at the top of the child's u-area, `bsd`'s `cpu_startup` `proc0`'s static one;
+        // the u-area is alive while its thread runs (`hal::thread` E2, E4) and the kernel
+        // stack below never grows into the frame. Unique: no reference to a user frame is
+        // kept anywhere else (the EL0 handlers hold it as a `UserFrame`, every access in
+        // `hal` goes through this function, `bsd`'s `setregs` writes through the raw pointer
+        // between its own statements, and the assembly reads it only after the handler
+        // returned); the frame belongs to the thread running on this CPU, which no other CPU
+        // reads through `pcb_tf` (`current` names this CPU's thread only), and the flag above
+        // refused a second borrow on this CPU. The reference ends with `f`.
+        let r = f(unsafe { &mut *self.0.as_ptr() });
+        borrowed.store(false, Ordering::Release);
+        r
+    }
 }
 
 /// `curcpu()->ci_curpcb->pcb_onfault`: the running thread's fault recovery address, 0 for
@@ -459,27 +522,27 @@ pub(crate) extern "C" fn do_el1h_sync(frame: &mut Trapframe) {
     }
 }
 
-/// `serror`: reports a system error interrupt and calls the CPU's handler, if any.
-fn serror(frame: &Trapframe) {
+/// `serror`: reports a system error interrupt taken at `elr` (the frame's) and calls the
+/// CPU's handler, if any.
+fn serror(elr: Register) {
     let (esr, far) = esr_far();
 
-    crate::prf::printf(format_args!(
-        "SError: {:x} esr {:x} far {:0x}\n",
-        frame.tf_elr, esr, far
-    ));
+    crate::prf::printf(format_args!("SError: {elr:x} esr {esr:x} far {far:0x}\n"));
 
     crate::trap::serror();
 }
 
 /// `do_el1h_error`: an SError taken at EL1, called from `handle_el1h_error` (`exception.S`).
 pub(crate) extern "C" fn do_el1h_error(frame: &mut Trapframe) {
-    serror(frame);
+    serror(frame.tf_elr);
     hal_panic(format_args!("do_el1h_error"));
 }
 
 /// `do_el0_sync`: the synchronous exception handler for EL0, called from `handle_el0_sync`
-/// (`exception.S`) with the saved registers (the module's frame premise).
-pub(crate) extern "C" fn do_el0_sync(frame: &mut Trapframe) {
+/// (`exception.S`) with the saved registers, the running thread's [`UserFrame`] (the
+/// module's frame premise).
+pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
+    let frame = UserFrame::from_entry(frame);
     if !have_curproc() {
         hal_panic(format_args!("do_el0_sync: no curproc"));
     }
@@ -491,10 +554,10 @@ pub(crate) extern "C" fn do_el0_sync(frame: &mut Trapframe) {
     intr_enable();
     UVMEXP.traps.fetch_add(1, Ordering::Relaxed);
 
-    set_pcb_tf(frame);
+    frame.make_current();
     h.refreshcreds();
 
-    let elr = frame.tf_elr as usize;
+    let (elr, sp) = frame.with(|tf| (tf.tf_elr as usize, tf.tf_sp as usize));
 
     match exception {
         EXCP_UNKNOWN => {
@@ -507,7 +570,7 @@ pub(crate) extern "C" fn do_el0_sync(frame: &mut Trapframe) {
             crate::trap::flush_bp();
             h.trapsignal(SIGILL, esr, ILL_BTCFI, elr);
         }
-        EXCP_MSR if emulate_msr(frame, esr) => {}
+        EXCP_MSR if frame.with(|tf| emulate_msr(tf, esr)) => {}
         EXCP_MSR | EXCP_FPAC => {
             crate::trap::flush_bp();
             h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr);
@@ -520,7 +583,7 @@ pub(crate) extern "C" fn do_el0_sync(frame: &mut Trapframe) {
         }
         EXCP_SP_ALIGN => {
             crate::trap::flush_bp();
-            h.trapsignal(SIGBUS, esr, BUS_ADRALN, frame.tf_sp as usize);
+            h.trapsignal(SIGBUS, esr, BUS_ADRALN, sp);
         }
         EXCP_DATA_ABORT_L => udata_abort(esr, far, false),
         EXCP_BRK => h.trapsignal(SIGTRAP, esr, TRAP_BRKPT, elr),
@@ -530,7 +593,7 @@ pub(crate) extern "C" fn do_el0_sync(frame: &mut Trapframe) {
             // USERLAND MUST NOT PANIC MACHINE
             // only here to debug !?!?
             crate::prf::printf(format_args!("exception {exception:x} esr_el1 {esr:x}\n"));
-            dumpregs(frame);
+            frame.with(|tf| dumpregs(tf));
             crate::trap::flush_bp();
             crate::klock::kernel_lock();
             h.sigexit(SIGILL);
@@ -542,8 +605,9 @@ pub(crate) extern "C" fn do_el0_sync(frame: &mut Trapframe) {
 }
 
 /// `do_el0_error`: an SError taken at EL0, called from `handle_el0_error` (`exception.S`).
-pub(crate) extern "C" fn do_el0_error(frame: &mut Trapframe) {
-    serror(frame);
+pub(crate) extern "C" fn do_el0_error(frame: *mut Trapframe) {
+    let elr = UserFrame::from_entry(frame).with(|tf| tf.tf_elr);
+    serror(elr);
     hal_panic(format_args!("do_el0_error"));
 }
 
@@ -564,14 +628,15 @@ pub fn dumpregs(frame: &Trapframe) {
 }
 
 /// `ast(tf)`: the asynchronous system trap on the way back to user mode (`do_ast` in
-/// `exception.S`), with the frame of the thread returning there.
-pub(crate) extern "C" fn ast(tf: &mut Trapframe) {
+/// `exception.S`), with the frame of the thread returning there, its [`UserFrame`].
+pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
+    let tf = UserFrame::from_entry(tf);
     if !have_curproc() {
         hal_panic(format_args!("ast: no curproc"));
     }
     let h = handler("ast");
 
-    set_pcb_tf(tf);
+    tf.make_current();
 
     h.refreshcreds();
     UVMEXP.softs.fetch_add(1, Ordering::Relaxed);
