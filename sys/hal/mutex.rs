@@ -255,9 +255,10 @@ impl<T> Mutexed<T> {
     }
 
     /// The lock of a parking lot (`mtx_enter_park`): taken by spinning alone (a lot never
-    /// parks), with the machine's interrupts off on this CPU (`_masked` is the proof) and no
-    /// level change.
-    fn lock_masked<'a>(&'a self, _masked: &cpu::IntrGuard) -> MutexedGuard<'a, T> {
+    /// parks), with the machine's interrupts off on this CPU (`_masked` is the proof, borrowed
+    /// for as long as the guard lives, so the mask cannot be lifted while the lot is held) and
+    /// no level change.
+    fn lock_masked<'a>(&'a self, _masked: &'a cpu::IntrGuard) -> MutexedGuard<'a, T> {
         let me = self_word();
         loop {
             let found = self.swap_in(me);
