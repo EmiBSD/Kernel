@@ -8976,9 +8976,9 @@ reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of v
 [[module]]
 rust = "sys/kernel/clock.rs"
 crate = "kernel"
-lz = ["sys/kern/kern_clock.rs"]
+lz = ["sys/kern/kern_clock.rs", "sys/sys/time.rs"]
 status = "redesigned"
-notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8)"
+notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8). N4.8a (decision 8): the kernel's one struct timespec, timeval and bintime, repr(C) and AbiPod (hal::abi_pod!), the time.h macros as methods (bintimeadd/sub/addfrac, TIMECOUNT_TO_BINTIME, BINTIME_TO_*, TIMESPEC_TO_*, *_TO_NSEC, timerisset/isvalid, ...); kernel::resource::Timeval and kernel::pipe::Timespec re-export them"
 
 [[module]]
 rust = "sys/kernel/cred.rs"

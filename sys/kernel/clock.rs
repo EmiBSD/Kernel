@@ -50,6 +50,36 @@
  *
  *	@(#)kern_clock.c	8.5 (Berkeley) 1/21/94
  */
+/*
+ * Copyright (c) 1982, 1986, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)time.h	8.2 (Berkeley) 7/10/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -57,7 +87,9 @@
 //! and the uptime clock as the kernel reaches it (`nanouptime(9)`).
 //!
 //! Upstream: sys/kern/kern_clock.c @ 3ce1f3f79392
+//! Upstream: sys/sys/time.h @ 3ce1f3f79392
 //! LZ: sys/kern/kern_clock.rs@3c62ede68802
+//! LZ: sys/sys/time.rs@3c62ede68802
 //!
 //! `ticks` counts the hardclock interrupts since boot, started close to wrapping (fifteen
 //! minutes of ticks before `INT_MAX`) so that code comparing tick values by subtraction meets
@@ -76,6 +108,17 @@
 //!   nanoseconds: `timespeccmp`'s order); the userland `struct timespec` stays `bsd`'s, at the
 //!   ABI edge, and converts field by field.
 //! - `nanouptime(9)` is [`nanouptime`], over the [`Uptime`] bridge.
+//! - N4.8a (decision 8): the kernel's one `struct timespec`, `struct timeval` and `struct
+//!   bintime` are here, `#[repr(C)]` and `AbiPod` (`hal::abi_pod!`), with the field names
+//!   and types of `<sys/time.h>` (`time_t` and `long` are `i64` on both machines), so
+//!   `bsd`'s `sys/sys/time.rs` names them instead of keeping its own and the system calls
+//!   copy them to and from user space as they are. `kernel::resource::Timeval` and
+//!   `kernel::pipe::Timespec`, the two copies the earlier slices wrote, are these. The
+//!   in-place macros are methods returning the result (`timespecadd(a, b, &c)` is
+//!   `c = a.add(b)`), the comparisons the derived `Ord` (seconds, then the fraction:
+//!   `timespeccmp`'s and `bintimecmp`'s order), the `BINTIME_TO_*`/`*_TO_BINTIME`,
+//!   `TIMECOUNT_TO_BINTIME` and `*_TO_NSEC` macros methods of the types, the C's modular
+//!   arithmetic spelled `wrapping_*`.
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
@@ -86,8 +129,10 @@ use hal::sys::kernel::HZ;
 /// One second in nanoseconds.
 const NSEC_PER_SEC: i64 = 1_000_000_000;
 
-/// `struct timespec` as the kernel keeps time: seconds and nanoseconds (`0..1e9` once
-/// normalised). Ordered as `timespeccmp` orders: seconds, then nanoseconds.
+/// `struct timespec`: seconds and nanoseconds (`0..1e9` once normalised), the layout userland
+/// shares (`#[repr(C)]`, two `i64`). Ordered as `timespeccmp` orders: seconds, then
+/// nanoseconds.
+#[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Timespec {
     /// `tv_sec`.
@@ -134,6 +179,209 @@ impl Timespec {
         }
         Timespec::new(sec, nsec)
     }
+
+    /// `timespecclear(tsp)`.
+    pub fn clear(&mut self) {
+        *self = Timespec::ZERO;
+    }
+
+    /// `timespecisset(tsp)`.
+    pub const fn is_set(&self) -> bool {
+        self.tv_sec != 0 || self.tv_nsec != 0
+    }
+
+    /// `timespecisvalid(tsp)`.
+    pub const fn is_valid(&self) -> bool {
+        self.tv_nsec >= 0 && self.tv_nsec < NSEC_PER_SEC
+    }
+
+    /// `TIMESPEC_TO_NSEC(ts)`: saturates at `UINT64_MAX`.
+    pub const fn to_nsec(&self) -> u64 {
+        if self.tv_sec as u64 > (u64::MAX - self.tv_nsec as u64) / NSEC_PER_SEC as u64 {
+            return u64::MAX;
+        }
+        (self.tv_sec as u64).wrapping_mul(NSEC_PER_SEC as u64) + self.tv_nsec as u64
+    }
+
+    /// `TIMESPEC_TO_BINTIME(ts, bt)`.
+    pub const fn to_bintime(&self) -> Bintime {
+        Bintime {
+            sec: self.tv_sec,
+            // 18446744073 = int(2^64 / 1000000000)
+            frac: (self.tv_nsec as u64).wrapping_mul(18_446_744_073),
+        }
+    }
+}
+
+hal::abi_pod!(Timespec {
+    tv_sec: i64,
+    tv_nsec: i64
+});
+
+/// `struct timeval`: seconds and microseconds, the layout userland shares (`#[repr(C)]`,
+/// `time_t` and `suseconds_t`, both `i64`). Ordered as `timercmp` orders.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct Timeval {
+    /// `tv_sec`.
+    pub tv_sec: i64,
+    /// `tv_usec`.
+    pub tv_usec: i64,
+}
+
+impl Timeval {
+    /// `{ sec, usec }`.
+    pub const fn new(tv_sec: i64, tv_usec: i64) -> Self {
+        Self { tv_sec, tv_usec }
+    }
+
+    /// `timeradd(self, b, &res)`: the sum, the microseconds carried.
+    pub const fn add(self, b: Timeval) -> Timeval {
+        let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
+        let mut usec = self.tv_usec + b.tv_usec;
+        if usec >= 1_000_000 {
+            sec = sec.wrapping_add(1);
+            usec -= 1_000_000;
+        }
+        Timeval::new(sec, usec)
+    }
+
+    /// `timersub(self, b, &res)`: the difference, the microseconds borrowed.
+    pub const fn sub(self, b: Timeval) -> Timeval {
+        let mut sec = self.tv_sec.wrapping_sub(b.tv_sec);
+        let mut usec = self.tv_usec - b.tv_usec;
+        if usec < 0 {
+            sec = sec.wrapping_sub(1);
+            usec += 1_000_000;
+        }
+        Timeval::new(sec, usec)
+    }
+
+    /// `TIMESPEC_TO_TIMEVAL(&tv, &ts)`.
+    pub const fn from_timespec(ts: Timespec) -> Self {
+        Self::new(ts.tv_sec, ts.tv_nsec / 1000)
+    }
+
+    /// `TIMEVAL_TO_TIMESPEC(&tv, &ts)`.
+    pub const fn to_timespec(&self) -> Timespec {
+        Timespec::new(self.tv_sec, self.tv_usec * 1000)
+    }
+
+    /// `timerclear(tvp)`.
+    pub fn clear(&mut self) {
+        *self = Timeval::new(0, 0);
+    }
+
+    /// `timerisset(tvp)`.
+    pub const fn is_set(&self) -> bool {
+        self.tv_sec != 0 || self.tv_usec != 0
+    }
+
+    /// `timerisvalid(tvp)`.
+    pub const fn is_valid(&self) -> bool {
+        self.tv_usec >= 0 && self.tv_usec < 1_000_000
+    }
+}
+
+hal::abi_pod!(Timeval {
+    tv_sec: i64,
+    tv_usec: i64
+});
+
+/// `struct bintime`: seconds and fractions of a second in units of 2^-64. Ordered as
+/// `bintimecmp` orders.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct Bintime {
+    /// `sec`.
+    pub sec: i64,
+    /// `frac`: the fraction of a second, in 1/2^64.
+    pub frac: u64,
+}
+
+impl Bintime {
+    /// Zero.
+    pub const ZERO: Bintime = Bintime::new(0, 0);
+
+    /// A bintime from its parts.
+    pub const fn new(sec: i64, frac: u64) -> Self {
+        Self { sec, frac }
+    }
+
+    /// `bintimeaddfrac(bt, x, &ct)`: `self` plus `x` fractions of a second.
+    pub const fn add_frac(self, x: u64) -> Bintime {
+        let (frac, carry) = self.frac.overflowing_add(x);
+        Bintime {
+            sec: if carry {
+                self.sec.wrapping_add(1)
+            } else {
+                self.sec
+            },
+            frac,
+        }
+    }
+
+    /// `bintimeadd(bt, ct, &dt)`.
+    pub const fn add(self, ct: Bintime) -> Bintime {
+        let (frac, carry) = self.frac.overflowing_add(ct.frac);
+        let sec = self.sec.wrapping_add(ct.sec);
+        Bintime {
+            sec: if carry { sec.wrapping_add(1) } else { sec },
+            frac,
+        }
+    }
+
+    /// `bintimesub(bt, ct, &dt)`.
+    pub const fn sub(self, ct: Bintime) -> Bintime {
+        let (frac, borrow) = self.frac.overflowing_sub(ct.frac);
+        let sec = self.sec.wrapping_sub(ct.sec);
+        Bintime {
+            sec: if borrow { sec.wrapping_sub(1) } else { sec },
+            frac,
+        }
+    }
+
+    /// `TIMECOUNT_TO_BINTIME(count, scale, &bt)`: `count` periods of a counter whose period
+    /// is `scale` fractions of a second.
+    #[inline]
+    pub const fn from_timecount(count: u32, scale: u64) -> Bintime {
+        let count = count as u64;
+        let hi64 = count.wrapping_mul(scale >> 32);
+        let bt = Bintime {
+            sec: (hi64 >> 32) as i64,
+            frac: hi64 << 32,
+        };
+        bt.add_frac(count.wrapping_mul(scale & 0xffff_ffff))
+    }
+
+    /// `BINTIME_TO_TIMESPEC(bt, ts)`: the fraction rounded down (the date changes at
+    /// midnight, not at noon).
+    pub const fn to_timespec(&self) -> Timespec {
+        Timespec::new(self.sec, frac_to_nsec(self.frac) as i64)
+    }
+
+    /// `BINTIME_TO_TIMEVAL(bt, tv)`.
+    pub const fn to_timeval(&self) -> Timeval {
+        Timeval::new(
+            self.sec,
+            ((1_000_000u64 * ((self.frac >> 32) as u32 as u64)) >> 32) as i64,
+        )
+    }
+
+    /// `BINTIME_TO_NSEC(bt)`.
+    pub const fn to_nsec(&self) -> u64 {
+        (self.sec as u64).wrapping_mul(NSEC_PER_SEC as u64) + frac_to_nsec(self.frac) as u64
+    }
+}
+
+hal::abi_pod!(Bintime {
+    sec: i64,
+    frac: u64
+});
+
+/// `FRAC_TO_NSEC(frac)`: a fraction of a second in nanoseconds, rounded down.
+pub const fn frac_to_nsec(frac: u64) -> u32 {
+    (((frac >> 32) * 1_000_000_000) >> 32) as u32
 }
 
 /// `ticks`: the number of hardclock ticks, started close to wrapping.
@@ -259,6 +507,49 @@ mod tests {
         assert_eq!(tstohz(&Timespec::new(0, 10_000_001)), 3);
         assert_eq!(tstohz(&Timespec::new(1, 0)), 101);
         assert_eq!(tstohz(&Timespec::new(i64::MAX, 0)), i32::MAX);
+    }
+
+    #[test]
+    fn bintime_arithmetic_and_conversions_are_the_macros() {
+        // bintimeadd carries the fraction's overflow into the seconds, bintimesub borrows.
+        let half = Bintime::new(1, 1 << 63);
+        assert_eq!(half.add(half), Bintime::new(3, 0));
+        assert_eq!(Bintime::new(3, 0).sub(half), half);
+        assert_eq!(Bintime::new(0, u64::MAX).add_frac(1), Bintime::new(1, 0));
+        // A half second is 500 ms, 500000 us, rounded down as the C.
+        assert_eq!(half.to_timespec(), Timespec::new(1, 500_000_000));
+        assert_eq!(half.to_timeval(), Timeval::new(1, 500_000));
+        assert_eq!(half.to_nsec(), 1_500_000_000);
+        // TIMESPEC_TO_BINTIME then back loses at most a nanosecond (2^64 / 1e9 truncated).
+        let ts = Timespec::new(7, 123_456_789);
+        let back = ts.to_bintime().to_timespec();
+        assert!(back.tv_sec == 7 && (123_456_788..=123_456_789).contains(&back.tv_nsec));
+        // TIMECOUNT_TO_BINTIME: 1e6 counts of a 1 MHz counter are one second.
+        let scale = ((1u64 << 63) / 1_000_000).wrapping_mul(2);
+        let bt = Bintime::from_timecount(1_000_000, scale);
+        assert!(bt.to_nsec().abs_diff(1_000_000_000) <= 1, "{bt:?}");
+        assert_eq!(frac_to_nsec(1 << 63), 500_000_000);
+    }
+
+    #[test]
+    fn timespec_and_timeval_predicates_are_the_macros() {
+        assert!(!Timespec::ZERO.is_set() && Timespec::new(0, 1).is_set());
+        assert!(Timespec::new(0, 999_999_999).is_valid() && !Timespec::new(0, -1).is_valid());
+        assert!(!Timespec::new(0, 1_000_000_000).is_valid());
+        assert_eq!(Timespec::new(2, 5).to_nsec(), 2_000_000_005);
+        assert_eq!(Timespec::new(i64::MAX, 0).to_nsec(), u64::MAX);
+        let mut tv = Timeval::new(1, 999_999);
+        assert!(tv.is_set() && tv.is_valid());
+        assert_eq!(tv.add(Timeval::new(0, 1)), Timeval::new(2, 0));
+        assert_eq!(Timeval::new(2, 0).sub(tv), Timeval::new(0, 1));
+        assert_eq!(tv.to_timespec(), Timespec::new(1, 999_999_000));
+        tv.clear();
+        assert!(!tv.is_set());
+        assert!(!Timeval::new(0, 1_000_000).is_valid());
+        // The layouts userland shares.
+        assert_eq!(core::mem::size_of::<Timespec>(), 16);
+        assert_eq!(core::mem::size_of::<Timeval>(), 16);
+        assert_eq!(core::mem::size_of::<Bintime>(), 16);
     }
 }
 /* </TESTS> */
