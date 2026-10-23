@@ -9286,6 +9286,11 @@ rust = "sys/kernel/benches/timeout.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del, timeout_set, hardclock_update idle and with 1,000 timeouts, softclock; task(9) and extent(9) with their commits) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
+[[extra]]
+rust = "sys/kernel/benches/tty.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of N4.7b's hot paths (the clists' putc/getc and b_to_q/q_to_b; the tty's per-character input raw and canonical with echo, a 512-byte write with ONLCR, the tty's lock) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
 [[module]]
 rust = "sys/kernel/task.rs"
 crate = "kernel"
@@ -10175,6 +10180,13 @@ kind = "merged"
 lz = "sys/sys/msgbuf.rs::Msgbuf::clear"
 native = ["Msgbuf::new"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/clist.rs"
+crate = "kernel"
+lz = ["sys/kern/tty_subr.rs", "sys/sys/tty.rs"]
+status = "redesigned"
+notes = "N4.7b: the clists: struct clist owns its ring (counts, cursors, the ring and quote MArrays of M_TTYS) inside a Mutexed at IPL_TTY, the C's per-operation spltty made a lock; c_cc and c_cn mirrored in relaxed words for the unlocked readers; tty_subr.c's functions as Clist methods (bsd keeps the free names until N4.7b's switch-over); catq and swap lock both rings in address order; peek_with for the drivers' raw head-of-queue reads; all-zero valid (uhid, ugen)"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

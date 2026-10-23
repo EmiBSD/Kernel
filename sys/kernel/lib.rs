@@ -38,6 +38,7 @@ extern crate alloc;
 pub use hal::sys;
 pub mod api;
 pub(crate) mod assert;
+pub mod clist;
 pub mod clock;
 pub mod cred;
 pub mod crypto;
