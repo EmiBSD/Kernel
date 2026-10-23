@@ -1621,12 +1621,6 @@ status = "adapted"
 adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/arm64/ast.rs"
-lz = ["sys/arch/arm64/arm64/ast.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
-
-[[module]]
 rust = "sys/arch/arm64/arm64/autoconf.rs"
 lz = ["sys/arch/arm64/arm64/autoconf.rs"]
 status = "inherited"
@@ -1671,7 +1665,7 @@ notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cp
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1689,7 +1683,7 @@ notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswit
 rust = "sys/arch/arm64/arm64/db_interface.rs"
 lz = ["sys/arch/arm64/arm64/db_interface.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/cpu.rs"]
+adapted_by = ["sys/hal/cpu.rs", "sys/hal/arch/arm64/trap.rs"]
 notes = "M2: db_enter; M4: ddb_regs (StaticCell), db_ktrap (no db_recover, splhigh reported, db_active is a bool, the MDSCR single-step handling kept), db_enter = brk #0xf000; M11c: db_regs[] (db_reg_var! entries; x30 is tf_lr, the C's tf_x[30] is past the array), db_machine_command_table (empty: all of arm64's are MULTIPROCESSOR), db_machine_init (MULTIPROCESSOR body); db_validate_address, db_read_bytes/db_write_bytes and db_branch_taken are not ported; M11c (MULTIPROCESSOR): ddb_mp_mutex (DbMutex), ddb_state, ddb_active_cpu, db_switch_cpu (AtomicBool), db_switch_to_cpu, db_ktrap's db_enter_ddb loop (the body the C repeats is db_ktrap_inddb), db_enter_ddb, db_startcpu, db_stopcpu, the ARM_IPI_DDB sends, the MP commands (db_cpuinfo_cmd, db_startproc_cmd, db_stopproc_cmd, db_ddbproc_cmd: cpuinfo, startcpu, stopcpu, ddbcpu first in the table) and db_machine_init's body; splhigh/splx around db_trap; a fault while a command loop runs (db_recover) prints 'Faulted in DDB' and do_el1h_sync panics (no longjmp)"
 
 [[module]]
@@ -1704,14 +1698,6 @@ lz = ["sys/arch/arm64/arm64/disksubr.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/arm64/exception.rs"
-lz = ["sys/arch/arm64/arm64/exception.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
-license = "none"
-notes = "M4: save_registers/restore_registers, handle_el1h_sync/irq/fiq/error, exception_vectors, in exception.S (global_asm! with the frame offsets as placeholders: assym.h); x18 is a general register here (the C's -ffixed-x18 curcpu register), so the EL1 paths save and restore it and recover sp from the frame size; do_ast, handle_el0_* and the trampoline return are M6 (their vector slots are vempty); M6-a: do_ast, disable_ss/allow_ss, handle_el0_sync/irq/fiq/error, syscall_return, the 64-bit EL0 vector slots; the return macro is an eret (trampoline.S not ported)"
-
-[[module]]
 rust = "sys/arch/arm64/arm64/fpu.rs"
 lz = ["sys/arch/arm64/arm64/fpu.rs"]
 status = "adapted"
@@ -1722,7 +1708,7 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/intr.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/intr.rs", "sys/hal/arch/arm64/trap.rs"]
 notes = "M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
 
 [[module]]
@@ -1756,18 +1742,6 @@ rust = "sys/arch/arm64/arm64/sig_machdep.rs"
 lz = ["sys/arch/arm64/arm64/sig_machdep.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-
-[[module]]
-rust = "sys/arch/arm64/arm64/syscall.rs"
-lz = ["sys/arch/arm64/arm64/syscall.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
-
-[[module]]
-rust = "sys/arch/arm64/arm64/trap.rs"
-lz = ["sys/arch/arm64/arm64/trap.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/intr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
@@ -1936,6 +1910,13 @@ crate = "hal"
 lz = ["sys/arch/arm64/include/frame.rs"]
 status = "redesigned"
 notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/armreg.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/armreg.rs"]
+status = "redesigned"
+notes = "N4.8b: the part of <machine/armreg.h> the trap code reads (INSN_SIZE, ESR_ELx and the exception classes, the data, brk and msr syndrome bits, DBG_MDSCR_SS, the PSR bits), with trap.c's accesstype beside the bits it decodes (host-tested through sys/hal/arch/host/mod.rs); bsd's include/armreg.rs keeps the whole header and its register macros for the CPU, timer and GIC code (N7)"
 
 [[module]]
 rust = "sys/arch/arm64/include/hypervisor.rs"
@@ -8442,7 +8423,7 @@ lines = "L352-L357"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
-native = ["sys/arch/arm64/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
+native = ["sys/hal/arch/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
 lines = "L83-L88"
 
@@ -8671,6 +8652,11 @@ crate = "hal"
 reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above bsd over the Printf bridge (bsd's subr_prf printf: console and message buffer), dropped and counted before registration; bridges.toml Printf, paid by N9"
 
 [[extra]]
+rust = "sys/hal/trap.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger"
+
+[[extra]]
 rust = "sys/hal/bootmem.rs"
 crate = "hal"
 reason = "hal runtime, written new (N3.3): steal_slice/steal_one, typed &'static memory built in place over pmap::steal_memory before the page system is up (uvm_pageboot_alloc's cast); docs/IDIOMS.md"
@@ -8729,6 +8715,34 @@ kind = "renamed"
 lz = "sys/arch/arm64/arm64/machdep.rs::proc0paddr"
 native = ["sys/hal/thread.rs::boot_uarea", "boot_uarea_word"]
 kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/arm64/exception.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/exception.rs"]
+status = "redesigned"
+license = "none"
+notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); the TTBR1_EL1 switch of the trampoline (pmap_tramp) is not configured (deviation)"
+
+
+[[module]]
+rust = "sys/hal/arch/arm64/trap.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs", "sys/arch/arm64/arm64/intr.rs"]
+status = "redesigned"
+notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::trap::CpuHooks, db_ktrap through hal::trap::Debugger, the IRQ dispatch through hal::intr::IntrHardware"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/trap.rs::accesstype"
+native = ["sys/hal/arch/arm64/include/armreg.rs::accesstype"]
+kind = "moved"
+
+[[module]]
+rust = "sys/hal/arch/arm64/syscall.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/syscall.rs"]
+status = "redesigned"
+notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/fpu.rs"
@@ -8914,7 +8928,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"

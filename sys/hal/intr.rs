@@ -236,6 +236,47 @@ pub trait IntrHardware: Sync {
     fn splassert(&self, wantipl: i32, func: &str) {
         let _ = (wantipl, func);
     }
+    /// `(*arm_irq_dispatch)(frame)`: the controller's IRQ dispatch, which `arm_cpu_irq` (the
+    /// machine's trap code) calls with `ci_idepth` raised; the default is `arm_dflt_irq`,
+    /// whose `panic(9)` is what an interrupt before a controller attached meets.
+    #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+    fn dispatch_irq(&self, frame: &mut crate::trap::Trapframe) {
+        let _ = frame;
+        crate::assert::hal_panic(format_args!("arm_dflt_irq"));
+    }
+    /// `(*arm_fiq_dispatch)(frame)`, as [`IntrHardware::dispatch_irq`] (`arm_dflt_fiq`).
+    #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+    fn dispatch_fiq(&self, frame: &mut crate::trap::Trapframe) {
+        let _ = frame;
+        crate::assert::hal_panic(format_args!("arm_dflt_fiq"));
+    }
+}
+
+/// `arm_cpu_irq`'s dispatch: through the registered controller, `arm_dflt_irq`'s `panic(9)`
+/// before one.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[cfg_attr(
+    any(not(target_os = "none"), feature = "module-rt"),
+    allow(dead_code, reason = "the machine's IRQ entry alone calls it")
+)]
+pub(crate) fn dispatch_irq(frame: &mut crate::trap::Trapframe) {
+    match bridges::intr_hardware() {
+        Some(hw) => hw.dispatch_irq(frame),
+        None => crate::assert::hal_panic(format_args!("arm_dflt_irq")),
+    }
+}
+
+/// `arm_cpu_fiq`'s dispatch, as [`dispatch_irq`].
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[cfg_attr(
+    any(not(target_os = "none"), feature = "module-rt"),
+    allow(dead_code, reason = "the machine's FIQ entry alone calls it")
+)]
+pub(crate) fn dispatch_fiq(frame: &mut crate::trap::Trapframe) {
+    match bridges::intr_hardware() {
+        Some(hw) => hw.dispatch_fiq(frame),
+        None => crate::assert::hal_panic(format_args!("arm_dflt_fiq")),
+    }
 }
 
 /// `arm_dflt_splraise`: raise the level in `ci_cpl`.

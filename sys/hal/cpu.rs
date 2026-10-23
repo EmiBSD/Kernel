@@ -117,6 +117,10 @@ pub struct CpuCore {
     ipending: AtomicU64,
     /// `ci_idepth`: the interrupt nesting depth.
     idepth: AtomicU32,
+    /// `ci_trampoline_vectors` (arm64): the vector table the return to user mode installs in
+    /// `VBAR_EL1`, the one of this CPU's Spectre-BHB mitigation (`exception.S`'s `return`
+    /// reads it by offset); 0 before the machine chose one. Unused elsewhere.
+    trampoline_vectors: AtomicUsize,
 }
 
 impl CpuCore {
@@ -132,6 +136,7 @@ impl CpuCore {
             cpl: AtomicI32::new(0),
             ipending: AtomicU64::new(0),
             idepth: AtomicU32::new(0),
+            trampoline_vectors: AtomicUsize::new(0),
         }
     }
 
@@ -274,6 +279,27 @@ impl CpuCore {
     pub fn word(&self) -> usize {
         core::ptr::from_ref(self).addr()
     }
+
+    /// `ci_trampoline_vectors`: the address of the vector table the return to user mode
+    /// installs, 0 before one was chosen (arm64).
+    #[inline]
+    pub fn trampoline_vectors(&self) -> usize {
+        self.trampoline_vectors.load(Ordering::Relaxed)
+    }
+
+    /// `ci->ci_trampoline_vectors = va`: only the machine's exception code, with the address
+    /// of one of its own tables (`arch/arm64/exception.rs`).
+    #[cfg_attr(
+        any(
+            not(all(target_os = "none", target_arch = "aarch64")),
+            feature = "module-rt"
+        ),
+        allow(dead_code, reason = "arm64's exception code alone sets it")
+    )]
+    #[inline]
+    pub(crate) fn set_trampoline_vectors(&self, va: usize) {
+        self.trampoline_vectors.store(va, Ordering::Relaxed);
+    }
 }
 
 impl Default for CpuCore {
@@ -288,6 +314,9 @@ pub const CORE_CURPROC: usize = core::mem::offset_of!(CpuCore, curproc);
 
 /// `CI_CURPCB` within the core.
 pub const CORE_CURPCB: usize = core::mem::offset_of!(CpuCore, curpcb);
+
+/// `CI_TRAMPOLINE_VECTORS` within the core (arm64's `exception.S`).
+pub const CORE_TRAMPOLINE_VECTORS: usize = core::mem::offset_of!(CpuCore, trampoline_vectors);
 
 /// The core that answers before [`set_current`] installed the boot CPU's.
 pub static BOOT_CORE: CpuCore = CpuCore::new();
@@ -328,6 +357,14 @@ pub fn attach(core: &'static CpuCore, number: usize) {
         ));
     }
     core.set_number(number);
+    // `ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none` (`cpu_attach`): the
+    // table without a mitigation, until the CPU's identification chooses one.
+    #[cfg(all(
+        target_os = "none",
+        target_arch = "aarch64",
+        not(feature = "module-rt")
+    ))]
+    crate::arch::arm64::exception::attached(core);
     if CORES[number].set(core).is_err() {
         crate::assert::hal_panic(format_args!("cpu attach: cpu{number} attached twice"));
     }

@@ -67,6 +67,7 @@ mod amd64_headers {
 #[allow(dead_code)] // compiled for its tests: what reads the constants is built for arm64 only
 pub(crate) mod arm64_headers {
     pub mod include {
+        pub mod armreg;
         pub mod param;
         pub mod pte;
         pub mod vmparam;

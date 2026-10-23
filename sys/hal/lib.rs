@@ -113,6 +113,11 @@ pub mod softintr;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod thread;
+// What the machine's trap code asks the kernel (N4.8b): wherever a machine's trap code is
+// (arm64; amd64's is N10's) and on the host, where it has no entry.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod trap;
 #[forbid(unsafe_code)]
 pub mod tree;
 pub(crate) mod trust;

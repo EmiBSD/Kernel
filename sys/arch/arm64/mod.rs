@@ -260,8 +260,9 @@ impl Cpu for Machine {
         arm64::machdep::aston(p)
     }
 
-    fn child_return(arg: *mut c_void) {
-        arm64::syscall::child_return(arg)
+    /// `hal`'s (N4.8b), on the running thread, which `arg` names.
+    fn child_return(_arg: *mut c_void) {
+        hal::arch::arm64::syscall::child_return()
     }
 
     fn proc_pc(p: &Proc) -> usize {

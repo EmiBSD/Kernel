@@ -134,8 +134,6 @@ use crate::arch::arm64::arm64::cpu::cpu_kick;
 use crate::arch::arm64::arm64::cpu::cpu_unidle;
 use crate::arch::arm64::arm64::cpufunc::cpu_dcache_wb_range;
 use crate::arch::arm64::arm64::cpufunc::cpu_wfi;
-
-use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 use crate::arch::arm64::arm64::fpu::fpu_drop;
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
@@ -417,9 +415,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     // (`arm_set_intr_handler`), `arm_splassert_check` from the first `spl` on.
     let _ =
         hal::bridges::register_intr_hardware(&crate::arch::arm64::arm64::intr::ARM_INTR_HARDWARE);
-    // SAFETY: system register writes that install this kernel's stack selection and vector
-    // table on the boot CPU, before any exception can be taken. The SPSel switch keeps the
-    // stack pointer's value, so the compiler's view of the stack is unchanged.
+    // SAFETY: a system register write that installs this kernel's stack selection on the boot
+    // CPU, before any exception can be taken. The SPSel switch keeps the stack pointer's
+    // value, so the compiler's view of the stack is unchanged.
     unsafe {
         // The kernel runs on SP_EL1 (the "EL1h" vectors), as the C does; the boot protocol
         // may have entered with SPSel = 0, whose vectors are empty.
@@ -431,13 +429,13 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
             tmp = out(reg) _,
             options(nomem, nostack, preserves_flags)
         );
-        asm!(
-            "msr vbar_el1, {}",
-            "isb",
-            in(reg) exception_vectors_addr(),
-            options(nostack, preserves_flags)
-        );
     }
+    // The vector table, `hal`'s (N4.8b).
+    hal::arch::arm64::exception::install_vectors();
+    // The machine's per-CPU hooks a trap calls (`ci_flush_bp`, `ci_serror`, `fault()`'s
+    // `ci_panicbuf`) and the kernel debugger's entry (`db_ktrap`), for `hal`'s trap code.
+    let _ = hal::trap::install_cpu_hooks(&crate::arch::arm64::arm64::cpu::ARM_CPU_HOOKS);
+    let _ = hal::trap::install_debugger(&crate::arch::arm64::arm64::db_interface::DDB_DEBUGGER);
 
     // The processors and the way to start them (MULTIPROCESSOR, cpu_start_secondary).
     // SAFETY: once, on the boot CPU, before any reader (cpu_attach runs much later).

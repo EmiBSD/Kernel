@@ -20,6 +20,10 @@
 //! arm64 machine code moved into the HAL.
 
 pub(crate) mod cpu;
+// The exception entry, the trap handlers and the system call entry (N4.8b): the kernel's
+// alone, as the switch (the ABI module's image takes no trap of its own).
+#[cfg(not(feature = "module-rt"))]
+pub mod exception;
 // The context switch and the FP state (N4.5a): the kernel's alone, not the ABI module's
 // runtime (`module-rt`), whose image links no thread code (the switch's assembly calls two
 // symbols of `bsd`'s, `switch.rs`).
@@ -29,6 +33,10 @@ pub mod include;
 pub mod pmap;
 #[cfg(not(feature = "module-rt"))]
 pub mod switch;
+#[cfg(not(feature = "module-rt"))]
+pub mod syscall;
+#[cfg(not(feature = "module-rt"))]
+pub mod trap;
 
 /// `<machine/param.h>` and `<machine/vmparam.h>` as `hal::arch::current` names them.
 pub use self::include::{param, vmparam};

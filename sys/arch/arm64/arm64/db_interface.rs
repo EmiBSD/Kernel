@@ -536,4 +536,16 @@ pub fn db_machine_init() {
         ci.ci_ddb_paused.store(CI_DDB_RUNNING, Ordering::Relaxed);
     }
 }
+
+/// ddb's entry from `hal`'s trap code (`hal::trap::Debugger`, N4.8b): [`db_ktrap`].
+pub struct DdbDebugger;
+
+impl hal::trap::Debugger for DdbDebugger {
+    fn ktrap(&self, kind: i32, frame: &mut DbRegs) -> bool {
+        db_ktrap(kind, frame)
+    }
+}
+
+/// The debugger `initarm` registers.
+pub static DDB_DEBUGGER: DdbDebugger = DdbDebugger;
 /* </CODE> */

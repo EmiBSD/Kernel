@@ -392,12 +392,130 @@ impl NetLock for BsdNetLock {
     }
 }
 
+/// The machine-independent calls of `hal`'s trap code (`hal::trap::TrapHandler`, N4.8b):
+/// `bsd`'s fault, signal and return paths, on the running thread, as arm64's `trap.c`,
+/// `syscall.c` and `ast.c` called them, until `kernel::syscall` answers them itself.
+#[cfg(not(machine_x86))]
+struct BsdTrap;
+
+/// The running thread, which every trap handler acts on; a trap without one is `panic(9)`.
+#[cfg(not(machine_x86))]
+fn trap_curproc(what: &str) -> &'static crate::sys::proc::Proc {
+    match crate::machine::cpu::curproc() {
+        Some(p) => p,
+        None => crate::kern::subr_prf::panic(format_args!("{what}: no curproc")),
+    }
+}
+
+#[cfg(not(machine_x86))]
+impl hal::trap::TrapHandler for BsdTrap {
+    /// `udata_abort`'s and `kdata_abort`'s `pmap_fault_fixup`, `uvm_fault` and `uvm_grow`
+    /// on the map the trap chose (`udata_abort`'s `MAP_STACK` check first).
+    fn page_fault(
+        &self,
+        source: hal::trap::FaultSource,
+        va: usize,
+        access: hal::pmap::VmProt,
+    ) -> Result<(), Errno> {
+        use crate::sys::proc::ProcExt;
+        use hal::trap::FaultSource;
+        use kernel::vm::map::{uvm_map_inentry, uvm_map_inentry_sp};
+
+        let (map, p) = match source {
+            FaultSource::User => {
+                let p = trap_curproc("udata_abort");
+                let map = &p.vmspace().vm_map;
+                // SP must be within MAP_STACK space.
+                let mut ie = p.p_spinentry.get();
+                let ok = uvm_map_inentry(
+                    map,
+                    &mut ie,
+                    <crate::machine::Machine as crate::machine::cpu::Cpu>::proc_stack(p),
+                    "sp",
+                    "not MAP_STACK",
+                    uvm_map_inentry_sp,
+                    map.sserial(),
+                );
+                p.p_spinentry.set(ie);
+                if !ok {
+                    return Ok(());
+                }
+                (map, Some(p))
+            }
+            // map = &p->p_vmspace->vm_map (the kernel map when no thread runs: see trap.rs).
+            FaultSource::KernelUser => match crate::machine::cpu::curproc() {
+                Some(p) => (&p.vmspace().vm_map, Some(p)),
+                None => (kernel::vm::km::kernel_map(), None),
+            },
+            FaultSource::Kernel => (kernel::vm::km::kernel_map(), None),
+        };
+
+        // Handle referenced/modified emulation
+        #[cfg(target_arch = "aarch64")]
+        if map
+            .pmap()
+            .fault_fixup(crate::sys::types::Vaddr::new(va), access)
+        {
+            return Ok(());
+        }
+
+        kernel::vm::fault::uvm_fault(map, va, 0, access)?;
+        if let Some(p) = p {
+            kernel::vm::unix::uvm_grow(p.vmspace(), va);
+        }
+        Ok(())
+    }
+
+    fn trapsignal(&self, sig: i32, trapno: u64, code: i32, addr: usize) {
+        let p = trap_curproc("trapsignal");
+        crate::kern::kern_sig::trapsignal(
+            p,
+            sig,
+            trapno,
+            code,
+            crate::sys::siginfo::Sigval::from_ptr(addr),
+        );
+    }
+
+    fn sigexit(&self, sig: i32) -> ! {
+        crate::kern::kern_sig::sigexit(trap_curproc("sigexit"), sig)
+    }
+
+    fn refreshcreds(&self) {
+        crate::sys::proc::refreshcreds(trap_curproc("refreshcreds"));
+    }
+
+    fn userret(&self) {
+        crate::kern::kern_sig::userret(trap_curproc("userret"));
+    }
+
+    fn syscall_return(
+        &self,
+        code: hal::syscall::Register,
+        error: Result<(), i32>,
+        rval: &[hal::syscall::Register; 2],
+    ) {
+        let error = error.map_err(|e| Errno::from_raw(e).unwrap_or(Errno::EINVAL));
+        crate::sys::syscall_mi::mi_syscall_return(trap_curproc("syscall"), code, error, rval);
+    }
+
+    fn ast(&self, resched: bool) {
+        crate::sys::syscall_mi::mi_ast(trap_curproc("ast"), resched);
+    }
+
+    fn child_return(&self) {
+        crate::sys::syscall_mi::mi_child_return(trap_curproc("child_return"));
+    }
+}
+
 /// The kernel's scheduler as `hal::sleep`'s sleeps (`kernel::sched::KernelSleep`).
 static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcGlue> =
     kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
 static BSD_USER: BsdUser = BsdUser;
+#[cfg(not(machine_x86))]
+static BSD_TRAP: BsdTrap = BsdTrap;
 static BSD_CONS: BsdCons = BsdCons;
 static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
@@ -417,6 +535,9 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     let _ = hal::bridges::register_user_copy(&BSD_USER);
+    // What the machine's trap code asks (N4.8b): before the first thread runs.
+    #[cfg(not(machine_x86))]
+    let _ = hal::trap::install(&BSD_TRAP);
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);

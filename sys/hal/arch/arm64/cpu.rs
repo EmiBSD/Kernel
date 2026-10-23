@@ -145,6 +145,19 @@ pub(crate) fn intr_restore(daif: u64) {
     unsafe { asm!("msr daif, {}", in(reg) daif, options(nostack, preserves_flags)) };
 }
 
+/// `intr_enable()`: unmasks IRQ and FIQ on this CPU (`msr daifclr, #3`,
+/// `enable_irq_daif`): the exception entry's, once the trap frame is saved (`trap.rs`,
+/// `syscall.rs`).
+#[cfg(not(feature = "module-rt"))]
+#[inline]
+pub(crate) fn intr_enable() {
+    // SAFETY: `msr daifclr` clears this CPU's IRQ and FIQ mask bits: no memory operand, no
+    // stack, no flags. As for `intr_restore`, no memory access becomes unsound whatever the
+    // mask: it only decides when this CPU's interrupt handlers run, and they save and restore
+    // what they use. Without `nomem`, so the compiler keeps the frame's reads before it.
+    unsafe { asm!("msr daifclr, #3", options(nostack, preserves_flags)) };
+}
+
 /// `ncpusfound` as the per-CPU readers walk it: one past the highest attached number.
 #[inline]
 pub(crate) fn ncpus(attached: usize) -> usize {

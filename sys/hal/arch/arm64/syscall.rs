@@ -1,0 +1,161 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
+ * Copyright (c) 2015 Dale Rahn <drahn@dalerahn.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! arm64's `syscall.c`: the `svc` system call entry and a forked child's first return.
+//!
+//! Upstream: sys/arch/arm64/arm64/syscall.c @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/arm64/syscall.rs@3c62ede68802
+//!
+//! The entry keeps what the C does around the call: the counter, the interrupts the user had,
+//! the `svc` skipped with the speculation barrier after it, the number and the six argument
+//! registers read from the frame, the return registers, the carry bit, the restart and
+//! `EJUSTRETURN`; the call itself goes to `hal::syscall::dispatch` (the module's handler or
+//! the `Legacy` fallback), and `mi_syscall_return` to the registered trap handler.
+//!
+//! ## Deviations
+//! - The system call number is the whole 64-bit `x8` (`Register`), where the C's `int code`
+//!   keeps its low 32 bits: a number that differs only above them gets `ENOSYS` here and
+//!   another call there. Inherited from LZ, not widened (the range check is the same).
+//!
+//! ## Redesign
+//! - N4.8b: from `bsd` into `hal`. `svc_handler` read `ci_curproc` through a raw pointer and
+//!   called `bsd`'s `abi_module::syscall` and `mi_syscall_return` by name; here the running
+//!   thread is checked in `hal::cpu`'s core, the call is `hal::syscall::dispatch`, and the
+//!   machine-independent return is `hal::trap::TrapHandler::syscall_return`.
+//! - `child_return(void *arg)` cast its argument back to the thread; here it takes nothing:
+//!   the child is the running thread, whose trap frame is its pcb's `pcb_tf`
+//!   (`hal::thread`'s `thread_setup` built it), and its machine-independent half is the trap
+//!   handler's `child_return` (`mi_child_return`).
+
+use core::ptr;
+use core::sync::atomic::Ordering;
+
+use super::cpu::intr_enable;
+use super::include::armreg::{PSR_C, PSR_I};
+use super::include::frame::Trapframe;
+use super::switch::with_curpcb;
+use crate::assert::hal_panic;
+use crate::sys::errno::Errno;
+use crate::syscall::{Register, Rval, SysArgs};
+use crate::vm::uvmexp::UVMEXP;
+
+/// `ERESTART` as the dispatch point returns it.
+const ERESTART: i32 = Errno::ERESTART.as_i32();
+/// `EJUSTRETURN` as the dispatch point returns it.
+const EJUSTRETURN: i32 = Errno::EJUSTRETURN.as_i32();
+
+/// `svc_handler`: a system call from EL0 (`do_el0_sync`, `EXCP_SVC`), on the trap frame of
+/// the running thread.
+pub(crate) fn svc_handler(frame: &mut Trapframe) {
+    if crate::cpu::curcpu().curproc().is_null() {
+        hal_panic(format_args!("svc_handler: no curproc"));
+    }
+
+    UVMEXP.syscalls.fetch_add(1, Ordering::Relaxed);
+
+    // Re-enable interrupts if they were enabled previously
+    if frame.tf_spsr as u64 & PSR_I == 0 {
+        intr_enable();
+    }
+
+    // Skip over speculation-blocking barrier.
+    frame.tf_elr += 8;
+
+    let code: Register = frame.tf_x[8];
+    let args: SysArgs = match frame.tf_x.first_chunk::<6>() {
+        Some(a) => *a,
+        None => [0; 6],
+    };
+
+    let mut rval: Rval = [0, 0];
+
+    let error = crate::syscall::dispatch(code, &args, &mut rval);
+
+    match error {
+        Ok(()) => {
+            frame.tf_x[0] = rval[0];
+            frame.tf_spsr &= !(PSR_C as Register); // carry bit
+        }
+        Err(ERESTART) => {
+            // Reconstruct the pc to point at the svc.
+            frame.tf_elr -= 12;
+        }
+        Err(EJUSTRETURN) => {
+            // nothing to do
+        }
+        Err(e) => {
+            frame.tf_x[0] = e as Register;
+            frame.tf_spsr |= PSR_C as Register; // carry bit
+        }
+    }
+
+    match crate::trap::handler() {
+        Some(h) => h.syscall_return(code, error, &rval),
+        None => hal_panic(format_args!("svc_handler: no trap handler")),
+    }
+}
+
+/// `child_return`: the first thing a forked user thread runs, on itself: a `fork` return of 0
+/// with the carry clear in its trap frame, the kernel lock its trampoline took released, then
+/// `mi_child_return`.
+pub fn child_return() {
+    let tf = with_curpcb(|pcb| match pcb {
+        Some(pcb) => pcb.pcb_tf.get(),
+        None => ptr::null_mut(),
+    });
+    if tf.is_null() {
+        hal_panic(format_args!("child_return: no trap frame"));
+    }
+    // SAFETY: `tf` is the running thread's `pcb_tf` (its pcb is `ci_curpcb`, `hal::thread`'s
+    // E5), which `thread_setup` set to the trap frame it wrote at the top of this thread's
+    // u-area before the thread ever ran (`cpu_fork`'s `pcb_tf`): aligned, inside the u-area
+    // the thread owns (E4), alive while the thread runs. The thread runs here, on its kernel
+    // stack below that frame, and has not entered user mode yet, so nothing else reads or
+    // writes the frame now and no reference to it exists; the two writes are plain stores
+    // of its own registers.
+    unsafe {
+        (*tf).tf_x[0] = 0;
+        (*tf).tf_spsr &= !(PSR_C as Register); // carry bit
+    }
+
+    // The kernel lock `proc_trampoline_mi` took for the new thread.
+    crate::klock::kernel_unlock();
+
+    match crate::trap::handler() {
+        Some(h) => h.child_return(),
+        None => hal_panic(format_args!("child_return: no trap handler")),
+    }
+}
+/* </CODE> */

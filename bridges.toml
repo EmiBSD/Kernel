@@ -32,7 +32,8 @@
 # and arm_splassert_check), implemented by sys/arch/arm64/arm64/intr.rs (ArmIntrHardware, over
 # the table the GIC drivers give arm_set_intr_handler) and registered by arm64's initarm (N4.5c,
 # replacing IntrLevel: the level itself is hal's). Decision 46: the C's function table as a
-# trait. Paid when the GIC drivers move (N7).
+# trait. N4.8b: dispatch_irq and dispatch_fiq (arm_irq_dispatch, arm_fiq_dispatch), which
+# hal's arm_cpu_irq/arm_cpu_fiq call. Paid when the GIC drivers move (N7).
 # hal::intr::IntrHardware
 [[bridge]]
 trait = "IntrHardware"
@@ -69,6 +70,38 @@ paid_by = "N9"
 trait = "UserCopy"
 for = ["sys/hal/user.rs"]
 paid_by = "N4"
+
+# bsd: what the machine's trap code asks in machine-independent code (N4.8b): the page fault on
+# the map the trap chose (pmap_fault_fixup, uvm_fault, uvm_grow, the MAP_STACK check of a user
+# fault), trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast and
+# mi_child_return, implemented by sys/kern/hal_bridges.rs (BsdTrap) over bsd's paths and
+# registered by hal_bridges_register; the row goes when kernel::syscall implements it (N4.8b's
+# b4).
+# hal::trap::TrapHandler
+[[bridge]]
+trait = "TrapHandler"
+for = ["sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/syscall.rs"]
+paid_by = "N4"
+
+# bsd: the machine's per-CPU hooks a trap calls (N4.8b): ci_flush_bp (cpu.c's choice, which
+# PSCI's psci_flush_bp rewrites on its first call), ci_serror (Apple's report) and fault()'s
+# claim of ci_panicbuf, implemented by sys/arch/arm64/arm64/cpu.rs (ArmCpuHooks) over the
+# running CPU's cpu_info and registered by arm64's initarm. Paid when the CPU and PSCI drivers
+# move (N7).
+# hal::trap::CpuHooks
+[[bridge]]
+trait = "CpuHooks"
+for = ["sys/hal/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+paid_by = "N7"
+
+# bsd: ddb's db_ktrap (sys/arch/arm64/arm64/db_interface.rs, DdbDebugger), the kernel
+# debugger's entry from a trap (N4.8b), registered by arm64's initarm; absent, a kernel
+# breakpoint panics as the C without DDB. Paid with ddb (N9).
+# hal::trap::Debugger
+[[bridge]]
+trait = "Debugger"
+for = ["sys/hal/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+paid_by = "N9"
 
 # bsd: cnputc, cngetc, cnpollc of sys/dev/cons.rs, registered once consinit() has run.
 # hal::cons::Console
