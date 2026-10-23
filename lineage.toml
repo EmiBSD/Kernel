@@ -5775,8 +5775,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 [[module]]
 rust = "sys/kern/sys_futex.rs"
 lz = ["sys/kern/sys_futex.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/amap.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/sched.rs"]
+status = "redesigned"
+notes = "N4.6c: futex(2) itself (the buckets, the waiters, futex_wait/wake/requeue, the keys) moved into sys/kernel/futex.rs; this path keeps the sysent[] row over kernel::futex::sys_futex (the arguments as addresses, the count in retval[0]) and futex_init delegating, 0 unsafe (LZ 9), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/sys_generic.rs"

@@ -113,6 +113,7 @@ pub mod subr_tree;
 pub mod subr_userconf;
 #[forbid(unsafe_code)]
 pub mod subr_xxx;
+#[forbid(unsafe_code)]
 pub mod sys_futex;
 #[forbid(unsafe_code)]
 pub mod sys_generic;
