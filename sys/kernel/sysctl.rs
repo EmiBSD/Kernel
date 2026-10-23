@@ -3014,24 +3014,61 @@ mod tests {
     }
 
     /// N4.7 decision 8 (the user's): `p_tsess` is a kernel address, given to root only, as
-    /// every other pointer of `kinfo_proc` (kern_sysctl.c:2108-2109); the terminal's device and
-    /// foreground group are everybody's.
+    /// every other pointer of `kinfo_proc` (kern_sysctl.c:2108-2109, `FILL_KPROC`'s
+    /// `show_addresses`); the terminal's device and foreground group are everybody's.
     #[test]
     fn p_tsess_only_for_root() {
+        /// Every member of `kinfo_proc` that holds a kernel address.
+        fn pointers(ki: &KinfoProc) -> [(&'static str, u64); 14] {
+            [
+                ("p_forw", ki.p_forw),
+                ("p_back", ki.p_back),
+                ("p_paddr", ki.p_paddr),
+                ("p_addr", ki.p_addr),
+                ("p_fd", ki.p_fd),
+                ("p_stats", ki.p_stats),
+                ("p_limit", ki.p_limit),
+                ("p_vmspace", ki.p_vmspace),
+                ("p_sigacts", ki.p_sigacts),
+                ("p_sess", ki.p_sess),
+                ("p_tsess", ki.p_tsess),
+                ("p_ru", ki.p_ru),
+                ("p_tracep", ki.p_tracep),
+                ("p_wchan", ki.p_wchan),
+            ]
+        }
+
         let pr = listed(4444, 1000);
         pr.ps_flags.fetch_or(PS_CONTROLT, Ordering::Relaxed);
-        let user = kproc(pr, false, false);
-        assert_eq!((user.p_tdev, user.p_tpgid), (0x0c01, 4242));
-        assert_eq!(user.p_tsess, 0, "a user sees no kernel address");
-        assert_eq!((user.p_sess, user.p_paddr, user.p_wchan), (0, 0, 0));
+        // A user: no kernel address, for the process and for its thread.
+        for thread in [false, true] {
+            let user = kproc(pr, thread, false);
+            assert_eq!((user.p_tdev, user.p_tpgid), (0x0c01, 4242));
+            for (name, v) in pointers(&user) {
+                assert_eq!(
+                    v, 0,
+                    "a user sees no kernel address: {name} (thread {thread})"
+                );
+            }
+        }
+        // Root: the addresses, the terminal's session among them.
         let root = kproc(pr, false, true);
         assert_eq!((root.p_tdev, root.p_tpgid), (0x0c01, 4242));
-        let sess = {
+        let (sess, main) = {
             let r = klock::reader();
-            ptr::from_ref(pr.session(&r).unwrap()).addr() as u64
+            let g = pr.ps_mtx.lock();
+            let main = pr.main_thread(&g).map(|p| ptrtoint64(p.get_ref()));
+            (ptr::from_ref(pr.session(&r).unwrap()).addr() as u64, main)
         };
         assert_eq!(root.p_tsess, sess);
         assert_eq!(root.p_sess, sess);
+        assert_eq!(Some(root.p_paddr), main);
+        assert_ne!(root.p_paddr, 0);
+        // Never filled, whoever asks: p_forw, p_back, p_stats, p_tracep (no KTRACE).
+        assert_eq!(
+            (root.p_forw, root.p_back, root.p_stats, root.p_tracep),
+            (0, 0, 0, 0)
+        );
     }
 
     #[test]
