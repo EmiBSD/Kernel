@@ -156,12 +156,14 @@ use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 use hal::link::{Link, PtrWord};
 use hal::pool::PoolArc;
 use hal::rwlock::Witness;
+use kernel::api::SysResult;
 use kernel::proc::{
     I32Word, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
     prfind as k_prfind, tfind as k_tfind, tfind_user as k_tfind_user, zombiefind as k_zombiefind,
 };
 
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
+use crate::kern::kern_descrip::native;
 use crate::kern::kern_sig::pgsignal as sig_pgsignal;
 use crate::kern::kern_timeout::{timeout_del, timeout_set};
 use crate::kern::tty::ttywait;
@@ -174,6 +176,15 @@ use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{SIGHUP, Sig, Sigset};
+use crate::sys::syscall::{
+    SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_acct, SYS_exit, SYS_fork,
+    SYS_getegid, SYS_geteuid, SYS_getgid, SYS_getgroups, SYS_getlogin_r, SYS_getpgid, SYS_getpgrp,
+    SYS_getpid, SYS_getppid, SYS_getpriority, SYS_getresgid, SYS_getresuid, SYS_getrlimit,
+    SYS_getrtable, SYS_getrusage, SYS_getsid, SYS_getthrid, SYS_getthrname, SYS_getuid,
+    SYS_issetugid, SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
+    SYS_setpriority, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_setrlimit,
+    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_vfork, SYS_wait4, SYS_waitid,
+};
 use crate::sys::syscallargs::{
     SysAcctArgs, SysExitArgs, SysTforkArgs, SysThrexitArgs, SysWait4Args, SysWaitidArgs,
 };
@@ -1032,6 +1043,541 @@ impl kernel::acct::AcctSink for BsdAcctSink {
         };
         let _ = crate::kern::vfs_vnops::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
     }
+}
+
+/// `KernelApi::proc`: the `Native` entries of the process system calls (N4.6a), each running
+/// `mi_syscall` on its own `sysent[]` row (whose function calls the kernel's).
+pub const PROC_ENTRIES: hal::api::ProcEntries = hal::api::ProcEntries {
+    fork: native_fork,
+    vfork: native_vfork,
+    tfork: native_tfork,
+    exit: native_exit,
+    threxit: native_threxit,
+    wait4: native_wait4,
+    waitid: native_waitid,
+    getrusage: native_getrusage,
+    getrlimit: native_getrlimit,
+    setrlimit: native_setrlimit,
+    getpriority: native_getpriority,
+    setpriority: native_setpriority,
+    acct: native_acct,
+    getpid: native_getpid,
+    getppid: native_getppid,
+    getuid: native_getuid,
+    geteuid: native_geteuid,
+    getgid: native_getgid,
+    getegid: native_getegid,
+    getgroups: native_getgroups,
+    setgroups: native_setgroups,
+    getpgrp: native_getpgrp,
+    getpgid: native_getpgid,
+    getsid: native_getsid,
+    setpgid: native_setpgid,
+    setsid: native_setsid,
+    setuid: native_setuid,
+    seteuid: native_seteuid,
+    setgid: native_setgid,
+    setegid: native_setegid,
+    setreuid: native_setreuid,
+    setregid: native_setregid,
+    setresuid: native_setresuid,
+    setresgid: native_setresgid,
+    getresuid: native_getresuid,
+    getresgid: native_getresgid,
+    issetugid: native_issetugid,
+    getlogin_r: native_getlogin_r,
+    setlogin: native_setlogin,
+    set_tcb: native_set_tcb,
+    get_tcb: native_get_tcb,
+    getthrid: native_getthrid,
+    getthrname: native_getthrname,
+    setthrname: native_setthrname,
+    getrtable: native_getrtable,
+    setrtable: native_setrtable,
+};
+
+/// `KernelApi::proc.fork`: `fork(void)`.
+pub fn native_fork(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_fork, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.vfork`: `vfork(void)`.
+pub fn native_vfork(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_vfork, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.tfork`: `__tfork(const struct __tfork *param, size_t psize)`.
+pub fn native_tfork(
+    nr: Register,
+    param: usize,
+    psize: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS___tfork,
+        [param as Register, psize as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.exit`: `exit(int rval)`.
+pub fn native_exit(nr: Register, status: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_exit, [status as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.threxit`: `__threxit(pid_t *notdead)`.
+pub fn native_threxit(nr: Register, notdead: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS___threxit,
+        [notdead as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.wait4`: `wait4(pid_t pid, int *status, int options, struct rusage *rusage)`.
+pub fn native_wait4(
+    nr: Register,
+    pid: i32,
+    status: usize,
+    options: i32,
+    rusage: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_wait4,
+        [
+            pid as Register,
+            status as Register,
+            options as Register,
+            rusage as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.waitid`: `waitid(int idtype, id_t id, siginfo_t *info, int options)`.
+pub fn native_waitid(
+    nr: Register,
+    idtype: i32,
+    id: u32,
+    info: usize,
+    options: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_waitid,
+        [
+            idtype as Register,
+            id as Register,
+            info as Register,
+            options as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getrusage`: `getrusage(int who, struct rusage *rusage)`.
+pub fn native_getrusage(
+    nr: Register,
+    who: i32,
+    rusage: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getrusage,
+        [who as Register, rusage as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getrlimit`: `getrlimit(int which, struct rlimit *rlp)`.
+pub fn native_getrlimit(
+    nr: Register,
+    which: i32,
+    rlp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getrlimit,
+        [which as Register, rlp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setrlimit`: `setrlimit(int which, const struct rlimit *rlp)`.
+pub fn native_setrlimit(
+    nr: Register,
+    which: i32,
+    rlp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setrlimit,
+        [which as Register, rlp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getpriority`: `getpriority(int which, id_t who)`.
+pub fn native_getpriority(
+    nr: Register,
+    which: i32,
+    who: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getpriority,
+        [which as Register, who as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setpriority`: `setpriority(int which, id_t who, int prio)`.
+pub fn native_setpriority(
+    nr: Register,
+    which: i32,
+    who: u32,
+    prio: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setpriority,
+        [
+            which as Register,
+            who as Register,
+            prio as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.acct`: `acct(const char *path)`.
+pub fn native_acct(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_acct, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getpid`: `getpid(void)`.
+pub fn native_getpid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getpid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getppid`: `getppid(void)`.
+pub fn native_getppid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getppid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getuid`: `getuid(void)`.
+pub fn native_getuid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getuid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.geteuid`: `geteuid(void)`.
+pub fn native_geteuid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_geteuid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getgid`: `getgid(void)`.
+pub fn native_getgid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getgid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getegid`: `getegid(void)`.
+pub fn native_getegid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getegid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getgroups`: `getgroups(int gidsetsize, gid_t *gidset)`.
+pub fn native_getgroups(
+    nr: Register,
+    gidsetsize: i32,
+    gidset: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getgroups,
+        [gidsetsize as Register, gidset as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setgroups`: `setgroups(int gidsetsize, const gid_t *gidset)`.
+pub fn native_setgroups(
+    nr: Register,
+    gidsetsize: i32,
+    gidset: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setgroups,
+        [gidsetsize as Register, gidset as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getpgrp`: `getpgrp(void)`.
+pub fn native_getpgrp(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getpgrp, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getpgid`: `getpgid(pid_t pid)`.
+pub fn native_getpgid(nr: Register, pid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getpgid, [pid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getsid`: `getsid(pid_t pid)`.
+pub fn native_getsid(nr: Register, pid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getsid, [pid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setpgid`: `setpgid(pid_t pid, pid_t pgid)`.
+pub fn native_setpgid(nr: Register, pid: i32, pgid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setpgid,
+        [pid as Register, pgid as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setsid`: `setsid(void)`.
+pub fn native_setsid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setsid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setuid`: `setuid(uid_t uid)`.
+pub fn native_setuid(nr: Register, uid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setuid, [uid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.seteuid`: `seteuid(uid_t euid)`.
+pub fn native_seteuid(nr: Register, euid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_seteuid, [euid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setgid`: `setgid(gid_t gid)`.
+pub fn native_setgid(nr: Register, gid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setgid, [gid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setegid`: `setegid(gid_t egid)`.
+pub fn native_setegid(nr: Register, egid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setegid, [egid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setreuid`: `setreuid(uid_t ruid, uid_t euid)`.
+pub fn native_setreuid(nr: Register, ruid: u32, euid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setreuid,
+        [ruid as Register, euid as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setregid`: `setregid(gid_t rgid, gid_t egid)`.
+pub fn native_setregid(nr: Register, rgid: u32, egid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setregid,
+        [rgid as Register, egid as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setresuid`: `setresuid(uid_t ruid, uid_t euid, uid_t suid)`.
+pub fn native_setresuid(
+    nr: Register,
+    ruid: u32,
+    euid: u32,
+    suid: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setresuid,
+        [
+            ruid as Register,
+            euid as Register,
+            suid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setresgid`: `setresgid(gid_t rgid, gid_t egid, gid_t sgid)`.
+pub fn native_setresgid(
+    nr: Register,
+    rgid: u32,
+    egid: u32,
+    sgid: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setresgid,
+        [
+            rgid as Register,
+            egid as Register,
+            sgid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getresuid`: `getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)`.
+pub fn native_getresuid(
+    nr: Register,
+    ruid: usize,
+    euid: usize,
+    suid: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getresuid,
+        [
+            ruid as Register,
+            euid as Register,
+            suid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getresgid`: `getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)`.
+pub fn native_getresgid(
+    nr: Register,
+    rgid: usize,
+    egid: usize,
+    sgid: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getresgid,
+        [
+            rgid as Register,
+            egid as Register,
+            sgid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.issetugid`: `issetugid(void)`.
+pub fn native_issetugid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_issetugid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getlogin_r`: `getlogin_r(char *namebuf, size_t namelen)`.
+pub fn native_getlogin_r(
+    nr: Register,
+    namebuf: usize,
+    namelen: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getlogin_r,
+        [namebuf as Register, namelen as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setlogin`: `setlogin(const char *namebuf)`.
+pub fn native_setlogin(nr: Register, namebuf: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setlogin, [namebuf as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.set_tcb`: `__set_tcb(void *tcb)`.
+pub fn native_set_tcb(nr: Register, tcb: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS___set_tcb, [tcb as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.get_tcb`: `__get_tcb(void)`.
+pub fn native_get_tcb(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS___get_tcb, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getthrid`: `getthrid(void)`.
+pub fn native_getthrid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getthrid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getthrname`: `getthrname(pid_t tid, char *name, size_t len)`.
+pub fn native_getthrname(
+    nr: Register,
+    tid: i32,
+    name: usize,
+    len: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getthrname,
+        [tid as Register, name as Register, len as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setthrname`: `setthrname(pid_t tid, const char *name)`.
+pub fn native_setthrname(
+    nr: Register,
+    tid: i32,
+    name: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setthrname,
+        [tid as Register, name as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getrtable`: `getrtable(void)`.
+pub fn native_getrtable(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getrtable, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setrtable`: `setrtable(int rtableid)`.
+pub fn native_setrtable(nr: Register, rtableid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setrtable,
+        [rtableid as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
 }
 
 /// A process of the host tests with pid `pid`, leaked (never freed: the tests' processes

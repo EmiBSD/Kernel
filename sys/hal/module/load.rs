@@ -607,7 +607,309 @@ mod tests {
         kqueue1: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_fork(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_vfork(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_tfork(nr: isize, param: usize, psize: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((param as i64) * 10 + (psize as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_exit(nr: isize, status: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((status as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_threxit(nr: isize, notdead: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((notdead as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_wait4(
+        nr: isize,
+        pid: i32,
+        status: usize,
+        options: i32,
+        rusage: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 1000
+            + (status as i64) * 100
+            + (options as i64) * 10
+            + (rusage as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_waitid(
+        nr: isize,
+        idtype: i32,
+        id: u32,
+        info: usize,
+        options: i32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(
+            ((idtype as i64) * 1000 + (id as i64) * 100 + (info as i64) * 10 + (options as i64) * 1)
+                as i32,
+        )
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getrusage(nr: isize, who: i32, rusage: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((who as i64) * 10 + (rusage as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getrlimit(nr: isize, which: i32, rlp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 10 + (rlp as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setrlimit(nr: isize, which: i32, rlp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 10 + (rlp as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpriority(nr: isize, which: i32, who: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 10 + (who as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setpriority(nr: isize, which: i32, who: u32, prio: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 100 + (who as i64) * 10 + (prio as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_acct(nr: isize, path: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((path as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getppid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getuid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_geteuid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getgid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getegid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getgroups(nr: isize, gidsetsize: i32, gidset: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((gidsetsize as i64) * 10 + (gidset as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setgroups(nr: isize, gidsetsize: i32, gidset: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((gidsetsize as i64) * 10 + (gidset as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpgrp(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpgid(nr: isize, pid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getsid(nr: isize, pid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setpgid(nr: isize, pid: i32, pgid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 10 + (pgid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setsid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setuid(nr: isize, uid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((uid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_seteuid(nr: isize, euid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((euid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setgid(nr: isize, gid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((gid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setegid(nr: isize, egid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((egid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setreuid(nr: isize, ruid: u32, euid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((ruid as i64) * 10 + (euid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setregid(nr: isize, rgid: u32, egid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rgid as i64) * 10 + (egid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setresuid(nr: isize, ruid: u32, euid: u32, suid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((ruid as i64) * 100 + (euid as i64) * 10 + (suid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setresgid(nr: isize, rgid: u32, egid: u32, sgid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rgid as i64) * 100 + (egid as i64) * 10 + (sgid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getresuid(nr: isize, ruid: usize, euid: usize, suid: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((ruid as i64) * 100 + (euid as i64) * 10 + (suid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getresgid(nr: isize, rgid: usize, egid: usize, sgid: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rgid as i64) * 100 + (egid as i64) * 10 + (sgid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_issetugid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getlogin_r(nr: isize, namebuf: usize, namelen: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((namebuf as i64) * 10 + (namelen as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setlogin(nr: isize, namebuf: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((namebuf as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_set_tcb(nr: isize, tcb: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((tcb as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_get_tcb(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getthrid(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getthrname(nr: isize, tid: i32, name: usize, len: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((tid as i64) * 100 + (name as i64) * 10 + (len as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setthrname(nr: isize, tid: i32, name: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((tid as i64) * 10 + (name as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getrtable(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setrtable(nr: isize, rtableid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rtableid as i64) * 1) as i32)
+    }
+
+    const PROC: crate::api::ProcEntries = crate::api::ProcEntries {
+        fork: p_fork,
+        vfork: p_vfork,
+        tfork: p_tfork,
+        exit: p_exit,
+        threxit: p_threxit,
+        wait4: p_wait4,
+        waitid: p_waitid,
+        getrusage: p_getrusage,
+        getrlimit: p_getrlimit,
+        setrlimit: p_setrlimit,
+        getpriority: p_getpriority,
+        setpriority: p_setpriority,
+        acct: p_acct,
+        getpid: p_getpid,
+        getppid: p_getppid,
+        getuid: p_getuid,
+        geteuid: p_geteuid,
+        getgid: p_getgid,
+        getegid: p_getegid,
+        getgroups: p_getgroups,
+        setgroups: p_setgroups,
+        getpgrp: p_getpgrp,
+        getpgid: p_getpgid,
+        getsid: p_getsid,
+        setpgid: p_setpgid,
+        setsid: p_setsid,
+        setuid: p_setuid,
+        seteuid: p_seteuid,
+        setgid: p_setgid,
+        setegid: p_setegid,
+        setreuid: p_setreuid,
+        setregid: p_setregid,
+        setresuid: p_setresuid,
+        setresgid: p_setresgid,
+        getresuid: p_getresuid,
+        getresgid: p_getresgid,
+        issetugid: p_issetugid,
+        getlogin_r: p_getlogin_r,
+        setlogin: p_setlogin,
+        set_tcb: p_set_tcb,
+        get_tcb: p_get_tcb,
+        getthrid: p_getthrid,
+        getthrname: p_getthrname,
+        setthrname: p_setthrname,
+        getrtable: p_getrtable,
+        setrtable: p_setrtable,
+    };
+
+    static API: KernelApi = KernelApi::new(
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, PROC,
+    );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -629,7 +931,9 @@ mod tests {
                 version: 1,
                 size: 40,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT)
+            ..KernelApi::new(
+                register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, PROC,
+            )
         };
         assert_eq!(
             load_with(&Empty, &Empty, &OTHER),

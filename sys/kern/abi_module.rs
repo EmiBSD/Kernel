@@ -67,6 +67,7 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::vm_bsd::VM_ENTRIES,
     crate::kern::kern_descrip::FD_ENTRIES,
     crate::kern::kern_event::EVENT_ENTRIES,
+    crate::kern::proc_glue::PROC_ENTRIES,
 );
 
 /// The module file the boot loader handed over (`set_image`): its kernel virtual address.
