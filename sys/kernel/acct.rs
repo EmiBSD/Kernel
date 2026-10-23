@@ -139,7 +139,7 @@ use hal::user::UserPtr;
 
 use crate::assert::kpanic;
 use crate::clock;
-use crate::proc::{_MAXCOMLEN, PS_CONTROLT, ProcGlue, Thread};
+use crate::proc::{_MAXCOMLEN, PS_CONTROLT, ProcGlue, Process, Thread};
 use crate::resource::{Tusage, calctsru, tuagg_get_process};
 
 /// `comp_t`: a 3 bits base 8 exponent, 13 bit fraction "floating point" number; units are
@@ -392,12 +392,7 @@ pub fn acct_process<G: ProcGlue>(p: &Thread<G>) -> Result<(), Errno> {
     };
 
     // (7) The terminal from which the process was started
-    let ac_tty = if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 {
-        let rd = klock::reader();
-        pr.session(&rd).and_then(G::session_ttydev).unwrap_or(-1)
-    } else {
-        -1
-    };
+    let ac_tty = acct_tty(pr);
 
     let cred = pr.ucred();
     let acct = Acct {
@@ -423,6 +418,17 @@ pub fn acct_process<G: ProcGlue>(p: &Thread<G>) -> Result<(), Errno> {
     let error = vp.write(hal::user::bytes_of(core::slice::from_ref(&acct)));
     drop(st);
     error
+}
+
+/// `ac_tty`: the controlling terminal of `pr`'s session when `pr` has one (`PS_CONTROLT`
+/// and the session's `s_ttyp`, kern_acct.c:231-235), -1 otherwise (the user's decision 15
+/// of N4.6; LZ always wrote -1).
+fn acct_tty<G: ProcGlue>(pr: &Process<G>) -> Dev {
+    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0 {
+        return -1;
+    }
+    let rd = klock::reader();
+    pr.session(&rd).and_then(G::session_ttydev).unwrap_or(-1)
 }
 
 /// `encode_comp_t` converts from ticks in seconds and nanoseconds to ticks in 1/AHZ
@@ -650,6 +656,79 @@ mod tests {
         assert!(st.acctp.is_none() && st.savacctp.is_none());
         assert!(closed.load(Ordering::Relaxed));
         assert_eq!(watch(&mut st), Watch::Stop);
+    }
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files, {
+        fn session_ttydev(_sess: &crate::proc::Session<Self>) -> Option<Dev> {
+            Some(0x0c01)
+        }
+    });
+    /// A second glue (its own module: the glues' link types are module items), whose
+    /// sessions have no terminal (`session_ttydev`'s default).
+    mod notty {
+        crate::test_file_glue!(NoTtyFiles, NoTty);
+        crate::test_proc_glue!(NoTty, NoTtyFiles);
+    }
+    use notty::NoTty;
+
+    /// Both glues' tables, once per test thread (they are the thread's).
+    fn setup() {
+        std::thread_local! {
+            static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        crate::testutil::install();
+        if !MADE.with(|m| m.replace(true)) {
+            // As exit1 runs acct_process: the kernel lock held (the double counts it).
+            hal::klock::kernel_lock();
+            crate::proc::procinit::<Procs>(64, 64);
+            crate::proc::procinit::<NoTty>(64, 64);
+        }
+    }
+
+    /// A process `pid` of glue `G`, in a session of its own when `session`, with
+    /// `PS_CONTROLT` when `controlt`; leaked by the caller (a member of its group, which the
+    /// tests do not take apart).
+    fn process_of<G: ProcGlue<ProcessG = (), PgrpG = (), SessionG = ()>>(
+        pid: Pid,
+        session: bool,
+        controlt: bool,
+    ) -> crate::proc::ProcessRef<G> {
+        setup();
+        let pr = crate::proc::process_alloc::<G>(pid, ());
+        if session {
+            crate::proc::enternewpgrp(
+                &pr,
+                crate::proc::pgrp_alloc::<G>(()),
+                Some(crate::proc::session_alloc::<G>(())),
+            );
+        }
+        if controlt {
+            pr.ps_flags.fetch_or(PS_CONTROLT, Ordering::Relaxed);
+        }
+        pr
+    }
+
+    /// The user's decision 15 of N4.6 (kern_acct.c:231-235): `ac_tty` is the session's
+    /// terminal when the process has a controlling one, -1 otherwise.
+    #[test]
+    fn ac_tty_is_the_session_s_terminal_under_controlt() {
+        // (session, PS_CONTROLT, ac_tty with a terminal, ac_tty without one)
+        let rows = [
+            (false, false, -1, -1),
+            (false, true, -1, -1),
+            (true, false, -1, -1),
+            (true, true, 0x0c01, -1),
+        ];
+        for (i, &(session, controlt, tty, notty)) in rows.iter().enumerate() {
+            let pid = 900 + i as Pid;
+            let pr = process_of::<Procs>(pid, session, controlt);
+            assert_eq!(acct_tty(&pr), tty, "row {i}");
+            core::mem::forget(pr);
+            let pr = process_of::<NoTty>(pid, session, controlt);
+            assert_eq!(acct_tty(&pr), notty, "row {i}");
+            core::mem::forget(pr);
+        }
     }
 }
 /* </TESTS> */

@@ -954,3 +954,196 @@ pub fn sys_getrtable<G: ProcGlue>(p: &Thread<G>) -> i32 {
     p.process().ps_rtableid.load(Ordering::Relaxed) as i32
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use hal::pool::PoolBox;
+
+    use super::*;
+    use crate::proc::ProcessRef;
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// The tests' region of the user-copy double.
+    const UGIDS: usize = crate::testutil::USER_BASE + 0xf000;
+
+    /// A thread of a new process `pid` whose real, effective and saved uids are `(r, e, s)`
+    /// (the real uid counted once, as `fork1` would) and whose gids are `(rg, eg, sg)`.
+    fn thread_as(
+        pid: Pid,
+        (r, e, s): (Uid, Uid, Uid),
+        (rg, eg, sg): (Gid, Gid, Gid),
+    ) -> (ProcessRef<Procs>, PoolBox<Thread<Procs>>) {
+        std::thread_local! {
+            static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        crate::testutil::install();
+        if !MADE.with(|m| m.replace(true)) {
+            crate::proc::procinit::<Procs>(64, 64);
+        }
+        let pr = crate::proc::process_alloc::<Procs>(pid, ());
+        let mut ids = Ucred::new();
+        ids.cr_ruid.set(r);
+        ids.cr_uid.set(e);
+        ids.cr_svuid.set(s);
+        ids.cr_rgid.set(rg);
+        ids.cr_gid.set(eg);
+        ids.cr_svgid.set(sg);
+        drop(pr.set_ucred(CredRef::new(ids)));
+        crate::proc::chgproccnt::<Procs>(r, 1);
+        let t = crate::proc::thread_alloc::<Procs>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        (pr, t)
+    }
+
+    fn uids(pr: &Process<Procs>) -> (Uid, Uid, Uid) {
+        let c = pr.ucred();
+        (c.cr_ruid.get(), c.cr_uid.get(), c.cr_svuid.get())
+    }
+
+    fn gids(pr: &Process<Procs>) -> (Gid, Gid, Gid) {
+        let c = pr.ucred();
+        (c.cr_rgid.get(), c.cr_gid.get(), c.cr_svgid.get())
+    }
+
+    fn sugid(pr: &Process<Procs>) -> bool {
+        pr.ps_flags.load(Ordering::Relaxed) & PS_SUGID != 0
+    }
+
+    /// setuid(2) (kern_prot.c:696-751): a user may take one of its three uids, and sets the
+    /// real and saved ones only when the target is its effective uid; root sets all three;
+    /// anything else is `EPERM`; a change sets `PS_SUGID`, the same ids change nothing.
+    #[test]
+    fn setuid_takes_a_held_uid_and_root_any() {
+        let u = (1000, 1001, 1002);
+        // (ids, target, result, ids after)
+        let rows: [((Uid, Uid, Uid), Uid, Result<(), Errno>, (Uid, Uid, Uid)); 7] = [
+            (u, 1000, Ok(()), (1000, 1000, 1002)),
+            (u, 1001, Ok(()), (1001, 1001, 1001)),
+            (u, 1002, Ok(()), (1000, 1002, 1002)),
+            (u, 1003, Err(Errno::EPERM), u),
+            (u, 0, Err(Errno::EPERM), u),
+            ((0, 0, 0), 1000, Ok(()), (1000, 1000, 1000)),
+            ((7, 7, 7), 7, Ok(()), (7, 7, 7)),
+        ];
+        for (i, &(ids, target, result, after)) in rows.iter().enumerate() {
+            let (pr, t) = thread_as(300 + i as Pid, ids, (10, 10, 10));
+            assert_eq!(sys_setuid(&t, target), result, "row {i}");
+            assert_eq!(uids(&pr), after, "row {i}");
+            assert_eq!(sugid(&pr), after != ids, "row {i}");
+        }
+    }
+
+    /// setuid(2) moves the process count to the new real uid (kern_prot.c:744-746).
+    #[test]
+    fn setuid_moves_the_process_count_with_the_real_uid() {
+        let (pr, t) = thread_as(320, (0, 0, 0), (0, 0, 0));
+        let before0 = crate::proc::chgproccnt::<Procs>(0, 0);
+        let before = crate::proc::chgproccnt::<Procs>(4321, 0);
+        assert_eq!(sys_setuid(&t, 4321), Ok(()));
+        assert_eq!(uids(&pr), (4321, 4321, 4321));
+        assert_eq!(crate::proc::chgproccnt::<Procs>(0, 0), before0 - 1);
+        assert_eq!(crate::proc::chgproccnt::<Procs>(4321, 0), before + 1);
+    }
+
+    /// seteuid(2) (kern_prot.c:754-785): the real or saved uid, or anything for root.
+    #[test]
+    fn seteuid_takes_the_real_or_saved_uid() {
+        let u = (1000, 1001, 1002);
+        let rows = [
+            (u, 1000, Ok(()), (1000, 1000, 1002)),
+            (u, 1002, Ok(()), (1000, 1002, 1002)),
+            (u, 1001, Ok(()), u),
+            (u, 1003, Err(Errno::EPERM), u),
+            ((0, 0, 0), 55, Ok(()), (0, 55, 0)),
+        ];
+        for (i, &(ids, target, result, after)) in rows.iter().enumerate() {
+            let (pr, t) = thread_as(330 + i as Pid, ids, (10, 10, 10));
+            assert_eq!(sys_seteuid(&t, target), result, "row {i}");
+            assert_eq!(uids(&pr), after, "row {i}");
+            assert_eq!(sugid(&pr), after != ids, "row {i}");
+        }
+    }
+
+    /// setresuid(2) (kern_prot.c:346-426): each id independently, to one of the three held
+    /// (`-1` leaves it); root is not limited; no change sets nothing.
+    #[test]
+    fn setresuid_takes_held_uids_each_on_its_own() {
+        let u = (1000, 1001, 1002);
+        let m = Uid::MAX;
+        let rows = [
+            (u, (1002, m, 1000), Ok(()), (1002, 1001, 1000)),
+            (u, (m, 1000, m), Ok(()), (1000, 1000, 1002)),
+            (u, (m, m, m), Ok(()), u),
+            (u, (1000, 1001, 1002), Ok(()), u),
+            (u, (5, m, m), Err(Errno::EPERM), u),
+            (u, (m, m, 5), Err(Errno::EPERM), u),
+            ((0, 0, 0), (1, 2, 3), Ok(()), (1, 2, 3)),
+        ];
+        for (i, &(ids, (r, e, s), result, after)) in rows.iter().enumerate() {
+            let (pr, t) = thread_as(340 + i as Pid, ids, (10, 10, 10));
+            assert_eq!(sys_setresuid(&t, r, e, s), result, "row {i}");
+            assert_eq!(uids(&pr), after, "row {i}");
+            assert_eq!(sugid(&pr), after != ids, "row {i}");
+        }
+    }
+
+    /// setgid(2): the gid analogue of setuid(2), over the thread's credentials.
+    #[test]
+    fn setgid_takes_a_held_gid_and_root_any() {
+        let g = (20, 21, 22);
+        let rows = [
+            ((1000, 1000, 1000), 21, Ok(()), (21, 21, 21)),
+            ((1000, 1000, 1000), 20, Ok(()), (20, 20, 22)),
+            ((1000, 1000, 1000), 23, Err(Errno::EPERM), g),
+            ((0, 0, 0), 23, Ok(()), (23, 23, 23)),
+        ];
+        for (i, &(ids, target, result, after)) in rows.iter().enumerate() {
+            let (pr, t) = thread_as(350 + i as Pid, ids, g);
+            assert_eq!(sys_setgid(&t, target), result, "row {i}");
+            assert_eq!(gids(&pr), after, "row {i}");
+            assert_eq!(sugid(&pr), after != g, "row {i}");
+        }
+    }
+
+    /// setgroups(2) (kern_prot.c:866-895): root only, checked first; a count below 0 or over
+    /// `NGROUPS_MAX` is `EINVAL`; the groups copied in become the process's, `PS_SUGID` set.
+    #[test]
+    fn setgroups_is_root_s_and_bounded() {
+        let (pr, t) = thread_as(360, (1000, 1000, 1000), (10, 10, 10));
+        let set = UserPtr::<Gid>::new(UGIDS);
+        assert_eq!(sys_setgroups(&t, 1, set), Err(Errno::EPERM));
+        assert_eq!(sys_setgroups(&t, -1, set), Err(Errno::EPERM));
+        assert_eq!(
+            sys_setgroups(&t, NGROUPS_MAX as i32 + 1, set),
+            Err(Errno::EPERM)
+        );
+        assert!(!sugid(&pr));
+
+        let (pr, t) = thread_as(361, (0, 0, 0), (0, 0, 0));
+        assert_eq!(sys_setgroups(&t, -1, set), Err(Errno::EINVAL));
+        assert_eq!(sys_setgroups(&t, i32::MIN, set), Err(Errno::EINVAL));
+        assert_eq!(
+            sys_setgroups(&t, NGROUPS_MAX as i32 + 1, set),
+            Err(Errno::EINVAL)
+        );
+        assert!(!sugid(&pr));
+
+        let groups: [Gid; NGROUPS_MAX] = core::array::from_fn(|i| 100 + i as Gid);
+        set.copyout_slice(&groups).unwrap();
+        assert_eq!(sys_setgroups(&t, NGROUPS_MAX as i32, set), Ok(()));
+        let c = pr.ucred();
+        assert_eq!(c.cr_ngroups.get(), NGROUPS_MAX as i16);
+        for (i, g) in c.cr_groups.iter().enumerate() {
+            assert_eq!(g.get(), 100 + i as Gid);
+        }
+        assert!(sugid(&pr));
+        drop(c);
+
+        assert_eq!(sys_setgroups(&t, 0, set), Ok(()));
+        assert_eq!(pr.ucred().cr_ngroups.get(), 0);
+    }
+}
+/* </TESTS> */

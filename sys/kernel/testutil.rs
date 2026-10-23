@@ -1681,10 +1681,12 @@ macro_rules! test_file_glue {
 /// Declares `$name`, a `kernel::proc::ProcGlue` of the tests whose descriptors are the file
 /// glue `$files` ([`test_file_glue!`](crate::test_file_glue)): no member of `bsd`'s, per-thread
 /// tables, every hook a no-op. For the tests of the modules over the processes
-/// (`kernel::descrip`), which need threads with tables and credentials.
+/// (`kernel::descrip`), which need threads with tables and credentials. A last argument
+/// `{ fn hook(..) { .. } ... }` adds or overrides members of the glue (`kernel::acct`'s
+/// `session_ttydev`).
 #[macro_export]
 macro_rules! test_proc_glue {
-    ($name:ident, $files:ty) => {
+    ($name:ident, $files:ty $(, { $($extra:tt)* })?) => {
         /// A process glue of the tests (`kernel::test_proc_glue!`).
         pub struct $name;
 
@@ -1744,6 +1746,7 @@ macro_rules! test_proc_glue {
                     None => std::panic!("process_ref: not a pooled process"),
                 }
             }
+            $($($extra)*)?
         }
     };
 }

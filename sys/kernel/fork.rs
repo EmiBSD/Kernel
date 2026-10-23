@@ -101,7 +101,7 @@
 //! - `forkstat.sizkthread` is not accumulated, as the C's (LZ added the kernel threads'
 //!   address-space size; the user's decision 13 of N4.6, `vmstat -f` changes for kernel
 //!   threads only).
-//! - `RLIMIT_NPROC` is enforced for users other than root (`EAGAIN`, as kern_fork.c:352-358;
+//! - `RLIMIT_NPROC` is enforced for users other than root (`EAGAIN`, as kern_fork.c:386-393;
 //!   LZ reported it unported; the user's decision 12 of N4.6).
 
 use core::ffi::c_void;
@@ -581,6 +581,21 @@ pub fn fork_check_maxthread<G: ProcGlue>(uid: Uid) -> Result<(), Errno> {
     Ok(())
 }
 
+/// `fork1`'s statistics (`kern.forkstat`): a fork or a vfork counts with the size of the new
+/// address space (data plus stack); anything else is a kernel thread, counted without one:
+/// `sizkthread` is never added to, as the C's (kern_fork.c:440-449; decision 13 of N4.6).
+fn forkstat_add(fs: &Forkstat, flags: i32, vmsize: u64) {
+    if flags & FORK_FORK != 0 {
+        fs.cntfork.fetch_add(1, Ordering::Relaxed);
+        fs.sizfork.fetch_add(vmsize, Ordering::Relaxed);
+    } else if flags & FORK_VFORK != 0 {
+        fs.cntvfork.fetch_add(1, Ordering::Relaxed);
+        fs.sizvfork.fetch_add(vmsize, Ordering::Relaxed);
+    } else {
+        fs.cntkthread.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// `fork_thread_start`'s choice: the CPU a new thread starts on and its priority.
 fn fork_cpu<G: ProcGlue>() -> usize {
     crate::sched::sched_choosecpu_fork::<G>()
@@ -680,15 +695,7 @@ pub fn fork1_with<G: ProcGlue>(
         (vm.vm_dsize.load(Ordering::Relaxed) as i64 + vm.vm_ssize.load(Ordering::Relaxed) as i64)
             as u64
     });
-    if flags & FORK_FORK != 0 {
-        FORKSTAT.cntfork.fetch_add(1, Ordering::Relaxed);
-        FORKSTAT.sizfork.fetch_add(vmsize, Ordering::Relaxed);
-    } else if flags & FORK_VFORK != 0 {
-        FORKSTAT.cntvfork.fetch_add(1, Ordering::Relaxed);
-        FORKSTAT.sizvfork.fetch_add(vmsize, Ordering::Relaxed);
-    } else {
-        FORKSTAT.cntkthread.fetch_add(1, Ordering::Relaxed);
-    }
+    forkstat_add(&FORKSTAT, flags, vmsize);
 
     let tid = alloctid::<G>();
     p.p_tid.set(tid);
@@ -1039,6 +1046,85 @@ mod tests {
             assert_eq!(last, after);
         }
         assert!(ratecheck(&mut last, &Timespec::ZERO));
+    }
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// A thread of a new process `pid` whose real and effective uid are `uid`, with an
+    /// `RLIMIT_NPROC` of `nproc`.
+    fn thread_as(pid: Pid, uid: Uid, nproc: u64) -> (ProcessRef<Procs>, PoolBox<Thread<Procs>>) {
+        std::thread_local! {
+            static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        crate::testutil::install();
+        if !MADE.with(|m| m.replace(true)) {
+            crate::proc::procinit::<Procs>(64, 64);
+        }
+        let pr = crate::proc::process_alloc::<Procs>(pid, ());
+        let mut ids = crate::cred::Ucred::new();
+        ids.cr_uid.set(uid);
+        ids.cr_ruid.set(uid);
+        drop(pr.set_ucred(crate::cred::CredRef::new(ids)));
+        let mut limits = crate::resource::Plimit::new();
+        limits.pl_rlimit[RLIMIT_NPROC].rlim_cur = nproc;
+        limits.pl_rlimit[RLIMIT_NPROC].rlim_max = nproc;
+        drop(pr.set_limit(crate::resource::PlimitRef::new(limits)));
+        let t = crate::proc::thread_alloc::<Procs>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        (pr, t)
+    }
+
+    /// The user's decision 12 of N4.6 (kern_fork.c:386-393): a user other than root over
+    /// `RLIMIT_NPROC` gets `EAGAIN` from `fork1`, and every count it took is given back (the
+    /// uid's processes, `nprocesses`, `nthreads`), whatever the flags.
+    #[test]
+    fn a_user_over_rlimit_nproc_gets_eagain_and_the_counts_roll_back() {
+        // (processes the uid already has, its limit, the flags)
+        let rows = [
+            (0, 0, FORK_FORK),
+            (1, 1, FORK_FORK),
+            (3, 2, FORK_FORK),
+            (2, 2, FORK_VFORK | FORK_PPWAIT),
+            (0, 0, FORK_FORK | FORK_SHAREVM),
+        ];
+        for (i, &(already, nproc, flags)) in rows.iter().enumerate() {
+            let uid: Uid = 1000 + i as Uid;
+            let (_pr, t) = thread_as(500 + i as Pid, uid, nproc);
+            for _ in 0..already {
+                crate::proc::chgproccnt::<Procs>(uid, 1);
+            }
+            let processes = NPROCESSES.load(Ordering::Relaxed);
+            let threads = NTHREADS.load(Ordering::Relaxed);
+            let r = fork1::<Procs>(t.as_pin(), flags, Start::ChildReturn);
+            assert_eq!(r.err(), Some(Errno::EAGAIN), "row {i}");
+            assert_eq!(NPROCESSES.load(Ordering::Relaxed), processes, "row {i}");
+            assert_eq!(NTHREADS.load(Ordering::Relaxed), threads, "row {i}");
+            assert_eq!(crate::proc::chgproccnt::<Procs>(uid, 0), already, "row {i}");
+        }
+    }
+
+    /// The user's decision 13 of N4.6 (kern_fork.c:440-449): a fork and a vfork count with
+    /// their address space's size, a kernel thread (any other flags) without one:
+    /// `sizkthread` stays 0.
+    #[test]
+    fn forkstat_counts_kernel_threads_without_their_size() {
+        let fs = Forkstat::new();
+        forkstat_add(&fs, FORK_FORK, 10);
+        forkstat_add(&fs, FORK_FORK | FORK_SHAREVM, 5);
+        forkstat_add(&fs, FORK_VFORK | FORK_PPWAIT, 7);
+        forkstat_add(
+            &fs,
+            FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM,
+            99,
+        );
+        forkstat_add(&fs, FORK_IDLE | FORK_SHAREVM | FORK_SYSTEM, 99);
+        let get32 = |a: &AtomicU32| a.load(Ordering::Relaxed);
+        let get64 = |a: &core::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
+        assert_eq!((get32(&fs.cntfork), get64(&fs.sizfork)), (2, 15));
+        assert_eq!((get32(&fs.cntvfork), get64(&fs.sizvfork)), (1, 7));
+        assert_eq!((get32(&fs.cntkthread), get64(&fs.sizkthread)), (2, 0));
+        assert_eq!((get32(&fs.cnttfork), get64(&fs.siztfork)), (0, 0));
     }
 }
 /* </TESTS> */

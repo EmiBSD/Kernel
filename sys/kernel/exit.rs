@@ -1039,3 +1039,121 @@ pub fn with_self<G: ProcGlue, R>(p: &Thread<G>, f: impl FnOnce(Pin<&Thread<G>>) 
     })
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// A thread of a new process `pid`, the tables made once per test thread.
+    fn thread(pid: Pid) -> (ProcessRef<Procs>, PoolBox<Thread<Procs>>) {
+        std::thread_local! {
+            static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        crate::testutil::install();
+        if !MADE.with(|m| m.replace(true)) {
+            // As a system call runs: the kernel lock held (the double counts it per thread).
+            hal::klock::kernel_lock();
+            crate::proc::procinit::<Procs>(64, 64);
+        }
+        let pr = crate::proc::process_alloc::<Procs>(pid, ());
+        drop(pr.set_ucred(crate::cred::CredRef::new(crate::cred::Ucred::new())));
+        let t = crate::proc::thread_alloc::<Procs>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        (pr, t)
+    }
+
+    /// wait4(2)'s options (kern_exit.c:701-702): only `WUNTRACED`, `WNOHANG` and
+    /// `WCONTINUED`; anything else is `EINVAL` before any child is looked at. A valid call
+    /// with no child is `ECHILD`, with `WNOHANG` too (the C checks the children first).
+    #[test]
+    fn wait4_takes_three_options_and_wants_a_child() {
+        let (_pr, q) = thread(700);
+        let null = UserPtr::<i32>::new(0);
+        let none = UserPtr::<u8>::new(0);
+        for bad in [
+            WEXITED,
+            WNOWAIT,
+            WTRAPPED,
+            0x40,
+            i32::MIN,
+            WNOHANG | WNOWAIT,
+        ] {
+            assert_eq!(
+                sys_wait4(&q, WAIT_ANY, null, bad, none),
+                Err(Errno::EINVAL),
+                "options {bad:#x}"
+            );
+        }
+        for ok in [
+            0,
+            WNOHANG,
+            WUNTRACED,
+            WCONTINUED,
+            WUNTRACED | WNOHANG | WCONTINUED,
+        ] {
+            for pid in [WAIT_ANY, 701, -700] {
+                assert_eq!(
+                    sys_wait4(&q, pid, null, ok, none),
+                    Err(Errno::ECHILD),
+                    "options {ok:#x}, pid {pid}"
+                );
+            }
+        }
+    }
+
+    /// waitid(2)'s checks (kern_exit.c:749-754): no unknown option, at least one of the
+    /// events, and an `idtype` of `P_ALL`, `P_PID` or `P_PGID`; each failure `EINVAL`.
+    #[test]
+    fn waitid_wants_known_options_an_event_and_an_idtype() {
+        let (_pr, q) = thread(710);
+        let info = UserPtr::<Siginfo>::new(0);
+        let rows = [
+            (P_ALL, 0x40 | WEXITED, Errno::EINVAL),
+            (P_ALL, WUNTRACED << 8 | WEXITED, Errno::EINVAL),
+            (P_ALL, 0, Errno::EINVAL),
+            (P_ALL, WNOHANG, Errno::EINVAL),
+            (P_ALL, WNOHANG | WNOWAIT, Errno::EINVAL),
+            (3, WEXITED, Errno::EINVAL),
+            (-1, WEXITED, Errno::EINVAL),
+            (P_ALL, WEXITED, Errno::ECHILD),
+            (P_PID, WSTOPPED | WNOHANG, Errno::ECHILD),
+            (P_PGID, WCONTINUED, Errno::ECHILD),
+            (P_ALL, WTRAPPED | WNOWAIT, Errno::ECHILD),
+        ];
+        for (i, &(idtype, options, e)) in rows.iter().enumerate() {
+            assert_eq!(sys_waitid(&q, idtype, 0, info, options), Err(e), "row {i}");
+        }
+    }
+
+    /// A live child with nothing to report: `WNOHANG` answers 0 (kern_exit.c:674-677), and
+    /// `waitid` copies out a zeroed `siginfo_t`.
+    #[test]
+    fn wnohang_with_a_live_child_answers_zero() {
+        let (pr, q) = thread(720);
+        let (child, _ct) = thread(721);
+        {
+            let mut w = klock::witness();
+            pr.ps_children.insert_head(&mut w, child.as_pin());
+        }
+        let null = UserPtr::<i32>::new(0);
+        let none = UserPtr::<u8>::new(0);
+        assert_eq!(sys_wait4(&q, WAIT_ANY, null, WNOHANG, none), Ok(0));
+        assert_eq!(sys_wait4(&q, 721, null, WNOHANG, none), Ok(0));
+        assert_eq!(sys_wait4(&q, 722, null, WNOHANG, none), Err(Errno::ECHILD));
+        let mut si = Siginfo::zeroed();
+        assert_eq!(
+            dowait6(&q, P_PID, 721, None, WEXITED | WNOHANG, None, Some(&mut si)),
+            Ok(0)
+        );
+        assert_eq!(si, Siginfo::zeroed());
+        {
+            let mut w = klock::witness();
+            pr.ps_children.remove(&mut w, &child);
+        }
+    }
+}
+/* </TESTS> */
