@@ -1340,6 +1340,39 @@ t_sysctl(void)
 	len = 2;
 	R("kern.ostype short buffer", sysctl(mib, 2, s, &len, NULL, 0));
 	R("set kern.ostype", sysctl(mib, 2, NULL, NULL, "x", 1));
+
+	/* N4.6b: the dispatcher, kern.proc and kern.proc_args of the kernel crate. */
+	mib[1] = KERN_HOSTNAME;
+	len = sizeof(s);
+	R("kern.hostname", sysctl(mib, 2, s, &len, NULL, 0) == 0 && len > 0);
+	mib[0] = CTL_HW;
+	mib[1] = HW_NCPU;
+	len = sizeof(v);
+	R("hw.ncpu > 0", sysctl(mib, 2, &v, &len, NULL, 0) == 0 && v > 0);
+	{
+		int pmib[6] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid(),
+		    sizeof(struct kinfo_proc), 1 };
+		int amib[4] = { CTL_KERN, KERN_PROC_ARGS, getpid(), KERN_PROC_NARGV };
+		struct kinfo_proc kp;
+		int argc;
+
+		len = sizeof(kp);
+		R("kern.proc self", sysctl(pmib, 6, &kp, &len, NULL, 0) == 0 &&
+		    len == sizeof(kp) && kp.p_pid == getpid());
+		len = sizeof(argc);
+		R("kern.proc_args self argc",
+		    sysctl(amib, 4, &argc, &len, NULL, 0) == 0 ? argc : -1);
+	}
+	mib[0] = CTL_MACHDEP;
+	mib[1] = 99999;
+	len = sizeof(v);
+	R("machdep bad name", sysctl(mib, 2, &v, &len, NULL, 0));
+	{
+		int dmib[3] = { CTL_KERN, 99999, 1 };
+
+		len = sizeof(v);
+		R("unknown kern dir", sysctl(dmib, 3, &v, &len, NULL, 0));
+	}
 }
 
 static void
