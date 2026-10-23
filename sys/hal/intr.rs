@@ -309,25 +309,21 @@ pub fn setipl(ipl: i32) {
 
 /// `arm_do_pending_intr(pcpl)`: runs the soft interrupts pending on this CPU that `pcpl`
 /// leaves unmasked, highest first, each at its level with the machine's interrupts on, until
-/// none is left; then the level is `pcpl`.
+/// none is left; then the level is `pcpl`. Each pass runs what one snapshot of `ci_ipending`
+/// holds, as the C's: a soft interrupt a handler raises during the pass runs in the next
+/// one (a NET raised by a TTY handler after the pass's CLOCK).
 pub fn do_pending_intr(pcpl: i32) {
     let c = curcpu();
     let mut masked = Some(crate::cpu::intr_disable());
 
     loop {
-        for (si, ipl) in [
-            (SOFTINTR_TTY, IPL_SOFTTTY),
-            (SOFTINTR_NET, IPL_SOFTNET),
-            (SOFTINTR_CLOCK, IPL_SOFTCLOCK),
-        ] {
-            let bit = si_to_irqbit(si as usize);
-            if c.ipending() & smask(pcpl) & bit != 0 {
-                c.clear_pending(bit);
-                setipl(ipl);
-                drop(masked.take());
-                crate::softintr::dispatch(si as usize);
-                masked = Some(crate::cpu::intr_disable());
-            }
+        let ipending = c.ipending() & smask(pcpl);
+        for (si, ipl) in pass(ipending) {
+            c.clear_pending(si_to_irqbit(si));
+            setipl(ipl);
+            drop(masked.take());
+            crate::softintr::dispatch(si);
+            masked = Some(crate::cpu::intr_disable());
         }
         // NXCALL > 0: SOFTINTR_XCALL; NXCALL is 0 on arm64 (no xcall(4) in GENERIC).
         if c.ipending() & smask(pcpl) == 0 {
@@ -338,6 +334,18 @@ pub fn do_pending_intr(pcpl: i32) {
     // Don't use splx... we are here already!
     setipl(pcpl);
     drop(masked);
+}
+
+/// One pass of [`do_pending_intr`] over the snapshot `ipending`: the soft interrupts it holds,
+/// with the level each runs at, highest first (`do_softint`'s order: TTY, NET, CLOCK).
+fn pass(ipending: u64) -> impl Iterator<Item = (usize, i32)> {
+    [
+        (SOFTINTR_TTY as usize, IPL_SOFTTTY),
+        (SOFTINTR_NET as usize, IPL_SOFTNET),
+        (SOFTINTR_CLOCK as usize, IPL_SOFTCLOCK),
+    ]
+    .into_iter()
+    .filter(move |&(si, _)| ipending & si_to_irqbit(si) != 0)
 }
 
 /// `splraise(ipl)`: raises this CPU's level to at least `ipl`; the old level (`bsd`'s
@@ -513,6 +521,30 @@ mod tests {
         splx(s);
         assert_eq!(si.disestablish(), None);
         si.release();
+    }
+
+    /// A pass runs what its snapshot holds, highest first; a level raised during it waits
+    /// for the next pass (review finding 3: the C reads `ci_ipending` once per pass).
+    #[test]
+    fn a_pass_runs_its_snapshot_highest_first() {
+        let bit = |si: i32| si_to_irqbit(si as usize);
+        let order = |p: u64| pass(p).map(|(si, _)| si).collect::<std::vec::Vec<_>>();
+        let (tty, net, clock) = (
+            SOFTINTR_TTY as usize,
+            SOFTINTR_NET as usize,
+            SOFTINTR_CLOCK as usize,
+        );
+        // A TTY handler that raises NET: the first pass's snapshot is TTY and CLOCK, so NET
+        // runs after CLOCK, in the second pass.
+        assert_eq!(order(bit(SOFTINTR_TTY) | bit(SOFTINTR_CLOCK)), [tty, clock]);
+        assert_eq!(order(bit(SOFTINTR_NET)), [net]);
+        assert_eq!(
+            order(bit(SOFTINTR_CLOCK) | bit(SOFTINTR_NET) | bit(SOFTINTR_TTY)),
+            [tty, net, clock]
+        );
+        assert!(order(0).is_empty());
+        let levels: std::vec::Vec<_> = pass(u64::MAX).map(|(_, ipl)| ipl).collect();
+        assert_eq!(levels, [IPL_SOFTTTY, IPL_SOFTNET, IPL_SOFTCLOCK]);
     }
 }
 /* </TESTS> */
