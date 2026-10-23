@@ -109,3 +109,5 @@ metadata:
 - bridges.toml `paid_by` takes N2..N9 only: a row the user re-dated to N10 keeps `N4` with the N10 in its comment until xtask's schema changes.
 - Widening `KernelApi`: hal/api.rs's const layout asserts name the last field (move them to the new one), and the justfile's `abi_openbsd.ko: 331 syscalls, N native` expectation (three recipes) follows NATIVE; `kernel::api::table` needs the same `#[allow(clippy::too_many_arguments, reason)]` as `KernelApi::new` past 7 args.
 - An `adapted` bsd module cannot lose an LZ item (no rows allowed there): keep a thin wrapper of the same name over the kernel's function (kern_sysctl's `sysctl_msgbuf`).
+- The pre-commit hook is a PreToolUse hook: it checks fmt before the whole Bash command runs, so `cargo fmt --all && git commit` in one call is refused; run fmt in its own call first (and a refused command's `git add` did not run either).
+- Two findings in one file, one commit each: save the full file to the scratchpad, write the first finding's version (e.g. `head -n <CODE end>`), commit, copy the full file back (no `git add -p` here).
