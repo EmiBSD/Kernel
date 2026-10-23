@@ -104,7 +104,7 @@ use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_xxx::reboot;
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
 use crate::kern::proc_glue::session_of;
-use crate::kern::subr_log::{LOG_OPEN, logwakeup, msgbuf_putchar, msgbufmapped, msgbufp};
+use crate::kern::subr_log::{Buf, log_open, logwakeup, msgbuf_putchar, msgbufmapped};
 use crate::kern::tty::tputchar;
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
 use crate::kern::tty::ttycheckoutq;
@@ -398,7 +398,7 @@ pub fn log(level: i32, args: fmt::Arguments<'_>) {
     logpri(level); // log the level first
     kprintf(args, TOLOG, None);
     splx(s);
-    if !LOG_OPEN.load(Ordering::Relaxed) {
+    if !log_open() {
         mtx_enter(&KPRINTF_MUTEX);
         kprintf(args, TOCONS, None);
         mtx_leave(&KPRINTF_MUTEX);
@@ -423,7 +423,7 @@ pub fn addlog(args: fmt::Arguments<'_>) {
     let s = splhigh();
     kprintf(args, TOLOG, None);
     splx(s);
-    if !LOG_OPEN.load(Ordering::Relaxed) {
+    if !log_open() {
         mtx_enter(&KPRINTF_MUTEX);
         kprintf(args, TOCONS, None);
         mtx_leave(&KPRINTF_MUTEX);
@@ -460,14 +460,8 @@ pub fn kputchar(c: i32, flags: i32, tp: Option<&Tty>) {
     {
         set_constty(None);
     }
-    if flags & TOLOG != 0
-        && c != 0
-        && c != i32::from(b'\r')
-        && c != 0o177
-        && msgbufmapped()
-        && let Some(mbp) = msgbufp()
-    {
-        msgbuf_putchar(mbp, c as u8);
+    if flags & TOLOG != 0 && c != 0 && c != i32::from(b'\r') && c != 0o177 && msgbufmapped() {
+        msgbuf_putchar(Buf::Msgbuf, c as u8);
     }
     if flags & TOCONS != 0 && (constty().is_none() || db_active) && c != 0 {
         cnputc(c);
@@ -814,20 +808,31 @@ mod tests {
         assert!(!panicstr());
     }
 
+    /// The message buffer's write pointer.
+    fn log_bufx() -> usize {
+        let h = kernel::log::msgbuf_header(Buf::Msgbuf).unwrap();
+        h.msg_bufx as usize
+    }
+
+    /// The bytes written to the message buffer from `before` to `after` (empty when the ring
+    /// wrapped in between).
+    fn log_text(before: usize, after: usize) -> std::vec::Vec<u8> {
+        let mut text = std::vec![0u8; after.saturating_sub(before)];
+        let n = kernel::log::msgbuf_read(Buf::Msgbuf, before, &mut text);
+        text.truncate(n);
+        text
+    }
+
     #[test]
     fn logpri_writes_the_level_to_the_log() {
         crate::kern::subr_log::init_static_msgbuf();
-        let mbp = msgbufp().unwrap();
         // The message buffer is global: a test printing on another thread can interleave its
         // bytes. Retry until a window holds only ours; the expectation itself stays exact.
         let mut text = std::vec::Vec::new();
         for _ in 0..100 {
-            let before = mbp.bufx();
+            let before = log_bufx();
             logpri(LOG_ERR);
-            let after = mbp.bufx();
-            text = (before..after)
-                .map(|i| mbp.bufc()[i as usize].get())
-                .collect();
+            text = log_text(before, log_bufx());
             if text.len() == 3 {
                 break;
             }
@@ -898,15 +903,11 @@ mod tests {
         crate::sys::systm::kernel_unlock();
 
         crate::kern::subr_log::init_static_msgbuf();
-        let mbp = msgbufp().unwrap();
         let mut text = std::vec::Vec::new();
         for _ in 0..100 {
-            let before = mbp.bufx();
+            let before = log_bufx();
             tprintf(&handle, format_args!("nfs server not responding"));
-            let after = mbp.bufx();
-            text = (before..after)
-                .map(|i| mbp.bufc()[i as usize].get())
-                .collect();
+            text = log_text(before, log_bufx());
             if text.starts_with(b"<6>") && text.ends_with(b"responding") {
                 break;
             }
