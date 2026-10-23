@@ -240,8 +240,8 @@ pub fn acct_process(p: &Proc) -> Result<(), Errno> {
     // (3) The elapsed time the command ran (and its starting time)
     let uptime = nanouptime();
     let booted = nanoboottime();
-    let realstart = timespecadd(&booted, &pr.ps_start.get().into());
-    let elapsed = timespecsub(&uptime, &pr.ps_start.get().into());
+    let realstart = timespecadd(&booted, &pr.ps_start.get());
+    let elapsed = timespecsub(&uptime, &pr.ps_start.get());
 
     // (4) The average amount of memory used
     let r = &p.p_ru;

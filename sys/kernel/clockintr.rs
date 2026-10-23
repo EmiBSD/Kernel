@@ -116,9 +116,7 @@ use hal::percpu::{PerCpu, PerCpuInit};
 use hal::sleep::{INFSLP, PWAIT};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::{
-    PROFCLOCK_PERIOD, ROUNDROBIN_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period,
-};
+use crate::clock::{PROFCLOCK_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period};
 use crate::sys::errno::Errno;
 use crate::sysctl::{self, SysctlNode, SysctlReq};
 use crate::tc::nsecuptime;
@@ -640,7 +638,10 @@ pub fn clockintr_cpu_init(ic: Option<&'static dyn Intrclock>) {
     if expiration(roundrobin) == 0 {
         clockintr_stagger(roundrobin, hardclock_period(), multiplier as u32, ncpus);
     }
-    clockintr_advance(roundrobin, ROUNDROBIN_PERIOD.load(Ordering::Relaxed));
+    clockintr_advance(
+        roundrobin,
+        crate::sched::ROUNDROBIN_PERIOD.load(Ordering::Relaxed),
+    );
 
     if reset_cq_intrclock {
         cq.q.lock().flags |= CQ_INTRCLOCK;

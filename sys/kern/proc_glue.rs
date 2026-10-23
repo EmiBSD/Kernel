@@ -459,28 +459,31 @@ impl ProcGlue for BsdProcGlue {
 
     /// `clockintr_cancel` of the running CPU's `spc_itimer` and `spc_profclock`, as asked.
     fn clocks_stop(itimer: bool, profclock: bool) {
-        let spc = Machine::ci_schedstate(curcpu());
+        use kernel::clockintr::{Clockintr, Slot, clockintr_cancel};
+        let n = hal::cpu::cpu_number();
         if itimer {
-            crate::kern::kern_clockintr::clockintr_cancel(&spc.spc_itimer);
+            clockintr_cancel(Clockintr::of(n, Slot::Itimer));
         }
         if profclock {
-            crate::kern::kern_clockintr::clockintr_cancel(&spc.spc_profclock);
+            clockintr_cancel(Clockintr::of(n, Slot::Profclock));
         }
     }
 
     /// `clockintr_advance` of the running CPU's `spc_itimer` and `spc_profclock`, as asked,
     /// and `spc_runtime = nanouptime()`.
     fn clocks_start(itimer: bool, profclock: bool) {
+        use kernel::clockintr::{Clockintr, Slot, clockintr_advance};
         let spc = Machine::ci_schedstate(curcpu());
+        let n = hal::cpu::cpu_number();
         if itimer {
-            crate::kern::kern_clockintr::clockintr_advance(
-                &spc.spc_itimer,
+            clockintr_advance(
+                Clockintr::of(n, Slot::Itimer),
                 crate::kern::kern_clock::hardclock_period(),
             );
         }
         if profclock {
-            crate::kern::kern_clockintr::clockintr_advance(
-                &spc.spc_profclock,
+            clockintr_advance(
+                Clockintr::of(n, Slot::Profclock),
                 crate::kern::subr_prof::profclock_period(),
             );
         }

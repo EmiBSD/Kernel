@@ -31,6 +31,7 @@ pub mod ataio;
 pub mod audioio;
 pub mod buf;
 pub mod cdio;
+#[forbid(unsafe_code)]
 pub mod clockintr;
 #[forbid(unsafe_code)]
 pub mod conf;
@@ -138,6 +139,7 @@ pub mod syslog;
 pub mod systm;
 pub mod task;
 pub mod termios;
+#[forbid(unsafe_code)]
 pub mod time;
 #[forbid(unsafe_code)]
 pub mod timeout;

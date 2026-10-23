@@ -170,6 +170,7 @@ use crate::pmap::{
 };
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
+use crate::sys::timetc::TimekeepAtomic;
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 
 /// The bytes of frames mapped into kernel virtual space, `len` of them from [`MappedBytes::va`]
@@ -465,6 +466,38 @@ fn busy_md(what: &str, pa: Paddr) -> &'static PageMd {
 fn release(frames: &[Paddr]) {
     for &pa in frames {
         md("map_frames", pa).release_view();
+    }
+}
+
+impl KernelMapper {
+    /// The page shared with userland for the timehands (`struct timekeep`), viewed at `va` as
+    /// the kernel writes it (`hal::sys::timetc::TimekeepAtomic`): `exec_timekeep_map`'s
+    /// first call maps the timekeep object into the kernel map, wires it, and hands the
+    /// address over (N4.8a; LZ wrote it through a raw `&mut` of the address). `None` for an
+    /// address that is not page-aligned or not mapped in the kernel pmap.
+    ///
+    /// The token holder's contract, as for the pager's windows (the module's docs): `va` is
+    /// the kernel map's wired mapping of the timekeep object, made once and never unmapped,
+    /// and no other kernel reference to its bytes exists (the object's other mappings are
+    /// userland's, read-only).
+    pub fn timekeep_view(&self, va: Vaddr) -> Option<&'static TimekeepAtomic> {
+        let addr = va.as_usize();
+        if addr == 0 || !addr.is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+        pmap::kernel().extract(va)?;
+        let p = ptr::with_exposed_provenance::<TimekeepAtomic>(addr);
+        // SAFETY: `addr` is page-aligned (checked), so aligned for `TimekeepAtomic` (8), and
+        // the 88 bytes of a `TimekeepAtomic` lie inside its one page (`size_of` <=
+        // `PAGE_SIZE`, asserted in `sys/timetc.rs`), which the kernel pmap maps (checked:
+        // `extract`), wired by the token holder and never unmapped (its contract above), so
+        // the reference cannot dangle for `'static`. Every field is an atomic integer: any
+        // bit pattern the page holds (a fresh object's zeroes, userland reads it but cannot
+        // write through its read-only mapping) is a valid value, and the shared reference
+        // only ever reads and writes through the atomics' interior mutability, so the
+        // kernel's other view of these bytes (none: the token holder's contract) or the
+        // hardware's reads by userland cannot make it a data race in Rust's model.
+        Some(unsafe { &*p })
     }
 }
 /* </CODE> */

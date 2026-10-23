@@ -177,14 +177,14 @@ pub fn tuagg_add_runtime() {
     };
     // update spc_runtime
     spc.spc_runtime.set(ts);
-    p.p_tu.add_runtime(delta.into());
+    p.p_tu.add_runtime(delta);
 }
 
 /// `calctsru`: transform the running time and tick information in a struct tusage into
 /// user, system, and interrupt time usage, at the statistics clock's rate.
 pub fn calctsru(tup: &Tusage) -> (Timespec, Timespec, Timespec) {
     let (u, s, i) = kernel::resource::calctsru(tup, STATHZ.load(Ordering::Relaxed));
-    (u.into(), s.into(), i.into())
+    (u, s, i)
 }
 
 /// `calcru`: `calctsru` in `timeval`s: (user, system, interrupt), as `struct rusage` keeps

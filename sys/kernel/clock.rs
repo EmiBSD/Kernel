@@ -438,8 +438,6 @@ pub static STATCLOCK_MASK: AtomicU32 = AtomicU32::new(0);
 pub static STATCLOCK_IS_RANDOMIZED: AtomicBool = AtomicBool::new(false);
 /// \[I\] `profclock_period`: the profiling clock's period (ns; `subr_prof.c`'s).
 pub static PROFCLOCK_PERIOD: AtomicU64 = AtomicU64::new(0);
-/// \[I\] `roundrobin_period`: the round-robin period (ns; `sched_bsd.c`'s).
-pub static ROUNDROBIN_PERIOD: AtomicU64 = AtomicU64::new(0);
 
 /// The [`Uptime`] bridge, registered once by `bsd` (the host tests' doubles).
 static UPTIME: OnceStatic<&'static dyn Uptime> = OnceStatic::new();
@@ -551,7 +549,7 @@ pub fn initclocks() {
     let hz = crate::timeout::hz();
     kassert!((1..=1_000_000_000).contains(&hz));
     HARDCLOCK_PERIOD.store(1_000_000_000 / hz.max(1) as u64, Ordering::Relaxed);
-    ROUNDROBIN_PERIOD.store(hardclock_period() * 10, Ordering::Relaxed);
+    crate::sched::ROUNDROBIN_PERIOD.store(hardclock_period() * 10, Ordering::Relaxed);
 
     let stathz = STATHZ.load(Ordering::Relaxed);
     kassert!((1..=1_000_000_000).contains(&stathz));
@@ -722,7 +720,10 @@ mod tests {
         // var the largest power of two <= 5 ms (2^22 = 4194304 ns), min avg - var/2, mask
         // var - 1; profhz 1000: 1 ms.
         assert_eq!(hardclock_period(), 10_000_000);
-        assert_eq!(ROUNDROBIN_PERIOD.load(Ordering::Relaxed), 100_000_000);
+        assert_eq!(
+            crate::sched::ROUNDROBIN_PERIOD.load(Ordering::Relaxed),
+            100_000_000
+        );
         assert_eq!(STATCLOCK_AVG.load(Ordering::Relaxed), 10_000_000);
         assert_eq!(
             STATCLOCK_MIN.load(Ordering::Relaxed),

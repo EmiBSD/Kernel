@@ -107,7 +107,6 @@
 use core::cell::Cell;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64};
 
-use crate::sys::clockintr::Clockintr;
 use crate::sys::pclock::PcLock;
 use crate::sys::proc::Proc;
 use crate::sys::queue::SimpleqHead;
@@ -165,15 +164,8 @@ pub struct SchedstatePercpu {
     /// `spc_cp_time`: CPU state statistics, written by this CPU under `spc_cp_time_lock`.
     pub spc_cp_time: [AtomicU64; CPUSTATES],
 
-    /// \[o\] `spc_itimer`: `itimer_update` handle.
-    pub spc_itimer: Clockintr,
-    /// \[o\] `spc_profclock`: `profclock` handle.
-    pub spc_profclock: Clockintr,
-    /// \[o\] `spc_roundrobin`: `roundrobin` handle.
-    pub spc_roundrobin: Clockintr,
-    /// \[o\] `spc_statclock`: `statclock` handle.
-    pub spc_statclock: Clockintr,
-
+    // `spc_itimer`, `spc_profclock`, `spc_roundrobin`, `spc_statclock`: the CPU's slots of
+    // `kernel::clockintr`'s queue (`Clockintr::of(cpu, Slot::...)`, N4.8a).
     /// `spc_spinning` (volatile): this cpu is currently spinning.
     pub spc_spinning: AtomicU32,
 
@@ -203,10 +195,7 @@ impl SchedstatePercpu {
             spc_schedticks: Cell::new(0),
             spc_cp_time_lock: PcLock::new(),
             spc_cp_time: [const { AtomicU64::new(0) }; CPUSTATES],
-            spc_itimer: Clockintr::new(),
-            spc_profclock: Clockintr::new(),
-            spc_roundrobin: Clockintr::new(),
-            spc_statclock: Clockintr::new(),
+
             spc_spinning: AtomicU32::new(0),
             spc_deferred: SimpleqHead::new(),
             spc_ndeferred: Cell::new(0),

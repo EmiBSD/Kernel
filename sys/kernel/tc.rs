@@ -844,6 +844,67 @@ pub fn timekeep_attach(tk: &'static TimekeepAtomic) -> Result<(), &'static Timek
     Ok(())
 }
 
+/// `timekeep_object`: the anonymous object holding the page shared with userland, made the
+/// first time (`exec_timekeep_map`'s first call): one page of `uao_create`, mapped into the
+/// kernel map read-write and `MAP_INHERIT_SHARE`, wired, and attached as the page the
+/// windups publish to ([`timekeep_attach`]); later calls return it again. Exec runs under
+/// the kernel lock, so no two callers make one. `ENOMEM` when the object, the mapping or the
+/// wiring fails (each undone, as the C).
+pub fn timekeep_object() -> Result<crate::vm::object::ObjRef, Errno> {
+    use crate::sys::mman::{MADV_RANDOM, MAP_INHERIT_SHARE, PROT_READ, PROT_WRITE};
+    use crate::vm::km::kernel_map;
+
+    static OBJECT: OnceStatic<crate::vm::object::ObjRef> = OnceStatic::new();
+
+    if let Some(obj) = OBJECT.get() {
+        return Ok(obj.clone());
+    }
+
+    let timekeep_sz = hal::vm::param::round_page(core::mem::size_of::<Timekeep>());
+    let Some(obj) = crate::vm::aobj::uao_create(hal::sys::types::Vsize::new(timekeep_sz), 0) else {
+        return Err(Errno::ENOMEM);
+    };
+    obj.reference();
+
+    let mut va = 0usize;
+    if crate::vm::map::uvm_map(
+        kernel_map(),
+        &mut va,
+        timekeep_sz,
+        Some(obj.clone()),
+        0,
+        0,
+        crate::vm::types::uvm_mapflag(
+            PROT_READ | PROT_WRITE,
+            PROT_READ | PROT_WRITE,
+            MAP_INHERIT_SHARE,
+            MADV_RANDOM,
+            0,
+        ),
+    )
+    .is_err()
+    {
+        obj.detach();
+        return Err(Errno::ENOMEM);
+    }
+    if crate::vm::fault::uvm_fault_wire(kernel_map(), va, va + timekeep_sz, PROT_READ | PROT_WRITE)
+        .is_err()
+    {
+        crate::vm::map::uvm_unmap(kernel_map(), va, va + timekeep_sz);
+        obj.detach();
+        return Err(Errno::ENOMEM);
+    }
+
+    let Some(tk) = crate::vm::km::timekeep_view(hal::sys::types::Vaddr::new(va)) else {
+        kpanic(format_args!(
+            "timekeep_object: the wired page at {va:#x} is not mapped"
+        ));
+    };
+    let _ = timekeep_attach(tk);
+    let _ = OBJECT.set(obj.clone());
+    Ok(obj)
+}
+
 /// Checks a witness of `tc_lock` held for writing (`rw_assert_wrlock(&tc_lock)`, under
 /// `DIAGNOSTIC` as the C's).
 #[inline(always)]
@@ -1183,15 +1244,16 @@ pub fn tc_adjfreq(w: &RwWitness<'_>, old: Option<&mut i64>, new: Option<i64>) {
     }
 }
 
-/// `tc_adjtime`: reads and/or sets (`tc_lock` written) the pending adjtime(2) delta.
-pub fn tc_adjtime(w: &WriteWitness<'_>, old: Option<&mut i64>, new: Option<i64>) {
+/// `tc_adjtime`: reads (no lock: `adjtime(2)` with no new delta) and/or sets (`tc_lock`
+/// written, `w`) the pending adjtime(2) delta.
+pub fn tc_adjtime(w: Option<&WriteWitness<'_>>, old: Option<&mut i64>, new: Option<i64>) {
     if let Some(old) = old {
         *old = read_timehands(|th| th.adjtimedelta.load(Ordering::Relaxed));
     }
     if let Some(new) = new {
-        assert_tc_wrlock(Some(w));
+        assert_tc_wrlock(w);
         let mut g = WINDUP.lock();
-        tc_windup(&mut g, Some(w), None, None, Some(new));
+        tc_windup(&mut g, w, None, None, Some(new));
     }
 }
 /* </CODE> */
@@ -1501,11 +1563,11 @@ pub(crate) mod tests {
         let mut old = 0i64;
         {
             let w = TC_LOCK.write();
-            tc_adjtime(&w, Some(&mut old), Some(4_000_000));
-            tc_adjtime(&w, Some(&mut old), None);
+            tc_adjtime(Some(&w), Some(&mut old), Some(4_000_000));
+            tc_adjtime(Some(&w), Some(&mut old), None);
             // The windup that installs the delta also runs one NTP second (5000 ns of it).
             assert_eq!(old, 4_000_000 - 5000);
-            tc_adjtime(&w, None, Some(0));
+            tc_adjtime(Some(&w), None, Some(0));
         }
         let mut f = 0i64;
         let w = RwWitness::Write(TC_LOCK.write());

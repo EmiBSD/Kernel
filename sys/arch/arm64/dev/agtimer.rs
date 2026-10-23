@@ -66,9 +66,12 @@
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use hal::arch::arm64::timer;
+use hal::clock::ClockFrame;
+use kernel::clockintr::Intrclock;
+use kernel::tc::{TcEntry, Timecounter};
 
 use crate::arch::arm64::arm64::intr::{
     arm_clock_register, arm_intr_establish_fdt_idx, arm_intr_route,
@@ -84,11 +87,8 @@ use crate::arch::arm64::include::timetc::{TC_AGTIMER, TC_AGTIMER_SUN50I};
 use crate::dev::ofw::openfirm::{OF_getindex, OF_getpropbool, OF_getpropint, OF_is_compatible};
 use crate::kern::kern_clock::{PROFHZ, STATCLOCK_IS_RANDOMIZED, STATHZ};
 use crate::kern::kern_clockintr::{clockintr_cpu_init, clockintr_dispatch, clockintr_trigger};
-use crate::kern::kern_tc::tc_init;
 use crate::kprintf;
-use crate::sys::clockintr::Intrclock;
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device};
-use crate::sys::timetc::Timecounter;
 
 /// `TIMER_FREQUENCY`: ARM core clock.
 const TIMER_FREQUENCY: i32 = 24 * 1000 * 1000;
@@ -96,15 +96,56 @@ const TIMER_FREQUENCY: i32 = 24 * 1000 * 1000;
 /// `agtimer_frequency`.
 pub static AGTIMER_FREQUENCY: AtomicI32 = AtomicI32::new(TIMER_FREQUENCY);
 
-/// `agtimer_timecounter`.
-static AGTIMER_TIMECOUNTER: Timecounter = Timecounter::new(
-    agtimer_get_timecount_default,
-    0xffff_ffff,
-    0,
-    "agtimer",
-    0,
-    TC_AGTIMER,
-);
+/// The generic timer's virtual counter as the kernel's timecounters read it: the hardware's
+/// half of `agtimer_timecounter` (N4.8a: `kernel::tc::Timecounter`). The frequency is the
+/// attach's (`clock-frequency`, `CNTFRQ_EL0`); the Allwinner A64's erratum switches the
+/// reader (`hal`'s flag) and the `tc_user` userland's libc reads.
+pub struct AgtimerTc {
+    /// `tc_frequency`.
+    freq: AtomicU64,
+    /// `tc_get_timecount == agtimer_get_timecount_sun50i`, `tc_user == TC_AGTIMER_SUN50I`.
+    sun50i: AtomicBool,
+}
+
+impl Timecounter for AgtimerTc {
+    fn get_timecount(&self) -> u32 {
+        // `hal`'s timecount reads around the A64 erratum once the attach chose it.
+        agtimer_get_timecount_default()
+    }
+
+    fn counter_mask(&self) -> u32 {
+        0xffff_ffff
+    }
+
+    fn frequency(&self) -> u64 {
+        self.freq.load(Ordering::Relaxed)
+    }
+
+    fn name(&self) -> &'static str {
+        "agtimer"
+    }
+
+    fn quality(&self) -> i32 {
+        0
+    }
+
+    fn user(&self) -> i32 {
+        if self.sun50i.load(Ordering::Relaxed) {
+            TC_AGTIMER_SUN50I
+        } else {
+            TC_AGTIMER
+        }
+    }
+}
+
+/// The counter's hardware half.
+static AGTIMER_TC: AgtimerTc = AgtimerTc {
+    freq: AtomicU64::new(0),
+    sun50i: AtomicBool::new(false),
+};
+
+/// `agtimer_timecounter`: the kernel's record of the counter.
+static AGTIMER_TIMECOUNTER: TcEntry = TcEntry::new(&AGTIMER_TC);
 
 /// `struct agtimer_softc`.
 pub struct AgtimerSoftc {
@@ -147,12 +188,22 @@ static AGTIMER: AgtimerSoftc = AgtimerSoftc {
     sc_attached: AtomicBool::new(false),
 };
 
+/// `agtimer_intrclock`: the virtual timer as each CPU's interrupt clock (N4.8a:
+/// `kernel::clockintr::Intrclock`; the C's null cookie: the callbacks read [`AGTIMER`]).
+pub struct AgtimerIntrclock;
+
+impl Intrclock for AgtimerIntrclock {
+    fn rearm(&self, nsecs: u64) {
+        agtimer_rearm(nsecs);
+    }
+
+    fn trigger(&self) {
+        agtimer_trigger();
+    }
+}
+
 /// `agtimer_intrclock`.
-pub const AGTIMER_INTRCLOCK: Intrclock = Intrclock {
-    ic_cookie: ptr::null_mut(),
-    ic_rearm: agtimer_rearm,
-    ic_trigger: agtimer_trigger,
-};
+pub static AGTIMER_INTRCLOCK: AgtimerIntrclock = AgtimerIntrclock;
 
 /// `agtimer_readcnt64_default`: reads `CNTVCT_EL0` (`hal`'s register access, around the
 /// Cortex-A73 erratum 858921).
@@ -235,10 +286,7 @@ pub fn agtimer_attach(_parent: Option<&Device>, _self: &Device, aux: *mut c_void
     // be trusted if any of the higher bits are rolling over.
     if OF_getpropbool(sc.sc_node.get(), b"allwinner,erratum-unknown1") {
         timer::set_readcnt64_sun50i();
-        AGTIMER_TIMECOUNTER
-            .tc_get_timecount
-            .set(agtimer_get_timecount_sun50i);
-        AGTIMER_TIMECOUNTER.tc_user.set(TC_AGTIMER_SUN50I);
+        AGTIMER_TC.sun50i.store(true, Ordering::Relaxed);
     }
 
     // private timer and interrupts not enabled until timer configures
@@ -250,30 +298,28 @@ pub fn agtimer_attach(_parent: Option<&Device>, _self: &Device, aux: *mut c_void
         Some(agtimer_startclock),
     );
 
-    AGTIMER_TIMECOUNTER
-        .tc_frequency
-        .set(u64::from(sc.sc_ticks_per_second.get()));
-    AGTIMER_TIMECOUNTER
-        .tc_priv
-        .set(ptr::from_ref(sc).cast::<()>());
-    tc_init(&AGTIMER_TIMECOUNTER);
+    AGTIMER_TC
+        .freq
+        .store(u64::from(sc.sc_ticks_per_second.get()), Ordering::Relaxed);
+    // tc_priv = sc: the counter reads no softc (the hardware half is `AGTIMER_TC`).
+    kernel::tc::tc_init(&AGTIMER_TIMECOUNTER);
 
     // agtimer_intrclock.ic_cookie = sc: the callbacks read AGTIMER (see the deviations).
     sc.sc_attached.store(true, Ordering::Relaxed);
 }
 
 /// `agtimer_get_timecount_default`: the low 32 bits of the counter.
-pub fn agtimer_get_timecount_default(_tc: &Timecounter) -> u32 {
+pub fn agtimer_get_timecount_default() -> u32 {
     timer::timecount()
 }
 
 /// `agtimer_get_timecount_sun50i`.
-pub fn agtimer_get_timecount_sun50i(_tc: &Timecounter) -> u32 {
+pub fn agtimer_get_timecount_sun50i() -> u32 {
     agtimer_readcnt64_sun50i() as u32
 }
 
 /// `agtimer_rearm`: fires the timer in `nsecs`.
-pub fn agtimer_rearm(_cookie: *mut c_void, nsecs: u64) {
+pub fn agtimer_rearm(nsecs: u64) {
     let sc = &AGTIMER;
 
     let nsecs = nsecs.min(sc.sc_nsec_max.get());
@@ -282,13 +328,27 @@ pub fn agtimer_rearm(_cookie: *mut c_void, nsecs: u64) {
 }
 
 /// `agtimer_trigger`: fires the timer now.
-pub fn agtimer_trigger(_unused: *mut c_void) {
+pub fn agtimer_trigger() {
     agtimer_set_tval(0);
 }
 
 /// `agtimer_intr`: the timer's interrupt handler.
 pub fn agtimer_intr(frame: *mut c_void) -> i32 {
-    clockintr_dispatch(frame)
+    // The C never dispatches without a frame; LZ read a null one as not from user mode,
+    // which a kernel-address `tf_elr` keeps.
+    const KERNEL_FRAME: ClockFrame = ClockFrame {
+        tf_sp: 0,
+        tf_lr: 0,
+        tf_elr: 1 << 63,
+        tf_spsr: 0,
+        tf_x: [0; 30],
+    };
+    // SAFETY: the interrupt controller's dispatch hands its handlers the trap frame
+    // `arm_cpu_irq` received from the IRQ entry (`exception.S`), saved on this CPU's stack
+    // and alive for the handler's whole call (it is the entry's frame, popped only after the
+    // dispatch returns); it is read here, never written, and only for the call.
+    let frame = unsafe { frame.cast::<ClockFrame>().as_ref() }.unwrap_or(&KERNEL_FRAME);
+    i32::from(clockintr_dispatch(frame))
 }
 
 /// `agtimer_set_clockrate`: a new counter frequency.
@@ -307,9 +367,10 @@ pub fn agtimer_set_clockrate(new_frequency: i32) {
         .set(u64::from(sc.sc_ticks_per_second.get()) * (1u64 << 32) / 1_000_000_000);
     sc.sc_nsec_max.set(u64::MAX / sc.sc_nsec_cycle_ratio.get());
 
-    AGTIMER_TIMECOUNTER
-        .tc_frequency
-        .set(u64::from(sc.sc_ticks_per_second.get()));
+    AGTIMER_TC
+        .freq
+        .store(u64::from(sc.sc_ticks_per_second.get()), Ordering::Relaxed);
+    AGTIMER_TIMECOUNTER.set_frequency(u64::from(sc.sc_ticks_per_second.get()));
 
     kprintf!(
         "agtimer0: adjusting clock: new tick rate {} kHz\n",
@@ -375,6 +436,8 @@ pub fn agtimer_startclock() {
     }
 
     clockintr_cpu_init(Some(&AGTIMER_INTRCLOCK));
+    // The kernel's dispatch checks every uptime it reads under the smokes (feature qemu).
+    kernel::clockintr::set_uptime_check(cfg!(feature = "qemu"));
 
     let mut reg = agtimer_get_ctrl();
     reg &= !CNTV_CTL_IMASK;

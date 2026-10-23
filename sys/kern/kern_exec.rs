@@ -156,7 +156,7 @@ use crate::sys::syscallargs::SysExecveArgs;
 use crate::sys::syslimits::{ARG_MAX, PATH_MAX};
 use crate::sys::systm::{SysArgs, kernel_lock, kernel_unlock, sysargs};
 use crate::sys::time::Timespec;
-use crate::sys::timetc::{TK_VERSION, Timekeep};
+use crate::sys::timetc::Timekeep;
 use crate::sys::types::{Register, Vaddr, Vsize};
 use crate::sys::ucred::CredRef;
 use crate::sys::uio::{UioRw, UioSeg};
@@ -165,7 +165,6 @@ use crate::unported;
 use hal::once::OnceStatic;
 use hal::vm::param::{atop, round_page, trunc_page};
 use kernel::vm::aobj::uao_create;
-use kernel::vm::fault::uvm_fault_wire;
 use kernel::vm::km::{KD_WAITOK, KP_PAGEABLE, kernel_map};
 use kernel::vm::km::{KmemVaMode, KvMap};
 use kernel::vm::map::{uvm_map, uvm_map_immutable, uvm_map_protect, uvm_unmap};
@@ -182,8 +181,8 @@ pub static SIGCODE_SZ: AtomicUsize = AtomicUsize::new(0);
 /// `timekeep_object`: the shared timekeep object, created by the first
 /// `exec_timekeep_map`.
 static TIMEKEEP_OBJECT: OnceStatic<ObjRef> = OnceStatic::new();
-/// `timekeep`: the timekeep page in `kernel_map` (wired), which `tc_update_timekeep`
-/// (`kern_tc.c`) writes; null until the first exec maps it.
+/// `timekeep`: LZ's pointer to the timekeep page in `kernel_map`. Since N4.8a the page is the
+/// kernel's (`kernel::tc::timekeep_object` makes, wires and publishes it); this stays null.
 pub static TIMEKEEP: AtomicPtr<Timekeep> = AtomicPtr::new(ptr::null_mut());
 
 /// `kv_exec`: the argument buffers, from `exec_map`, waiting for space.
@@ -976,7 +975,7 @@ fn execve_common(
     }
 
     // reset CPU time usage for the thread, but not the process
-    p.p_tu.tu_runtime.set(Timespec::new(0, 0).into());
+    p.p_tu.tu_runtime.set(Timespec::new(0, 0));
     for ticks in &p.p_tu.tu_ticks {
         ticks.set(0);
     }
@@ -1247,51 +1246,12 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
 pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
     let timekeep_sz = round_page(size_of::<Timekeep>());
 
-    // Similar to the sigcode object
+    // Similar to the sigcode object: made, mapped, wired and published once, by the kernel's
+    // timecounters (`kernel::tc::timekeep_object`, N4.8a).
     let object: ObjRef = match TIMEKEEP_OBJECT.get() {
         Some(obj) => obj.clone(),
         None => {
-            let mut va = 0usize;
-
-            let Some(obj) = uao_create(Vsize::new(timekeep_sz), 0) else {
-                return Err(Errno::ENOMEM);
-            };
-            obj.reference();
-
-            if uvm_map(
-                kernel_map(),
-                &mut va,
-                timekeep_sz,
-                Some(obj.clone()),
-                0,
-                0,
-                uvm_mapflag(
-                    PROT_READ | PROT_WRITE,
-                    PROT_READ | PROT_WRITE,
-                    MAP_INHERIT_SHARE,
-                    MADV_RANDOM,
-                    0,
-                ),
-            )
-            .is_err()
-            {
-                obj.detach();
-                return Err(Errno::ENOMEM);
-            }
-            if uvm_fault_wire(kernel_map(), va, va + timekeep_sz, PROT_READ | PROT_WRITE).is_err() {
-                uvm_unmap(kernel_map(), va, va + timekeep_sz);
-                obj.detach();
-                return Err(Errno::ENOMEM);
-            }
-
-            let tk = va as *mut Timekeep;
-            // SAFETY: `va` is the fresh, wired, page-aligned kernel mapping made above, large
-            // enough for a `Timekeep`; nothing else knows it until the store below.
-            unsafe {
-                tk.write(Timekeep::default());
-                (*tk).tk_version = TK_VERSION;
-            }
-            TIMEKEEP.store(tk, Ordering::Release);
+            let obj = kernel::tc::timekeep_object()?;
             // Exec runs under the kernel lock: no other thread made one meanwhile.
             let _ = TIMEKEEP_OBJECT.set(obj.clone());
             obj

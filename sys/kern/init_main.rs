@@ -421,9 +421,17 @@ pub fn main() -> ! {
     // Initialize run queues
     sched_init();
     // sleep_queue_init(): the sleep queues are kernel::sched's, empty when made.
-    clockqueue_init(Machine::ci_queue(ci));
+    clockqueue_init(
+        crate::kern::kern_sched::cpu_number_of(ci),
+        Machine::cpu_is_primary(ci),
+    );
     sched_init_cpu(ci);
     Machine::ci_randseed(ci).set((arc4random() & 0x7fff_ffff) + 1);
+    // The randomized statclock's seed, the queue's own (N4.8a).
+    kernel::clockintr::set_randseed(
+        crate::kern::kern_sched::cpu_number_of(ci),
+        Machine::ci_randseed(ci).get(),
+    );
 
     // Initialize timeouts in process context.
     timeout_proc_init();

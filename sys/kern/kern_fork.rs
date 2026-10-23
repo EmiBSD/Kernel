@@ -608,7 +608,7 @@ pub fn fork1(
     drop(g);
 
     // For new processes, set accounting bits and mark as complete.
-    pr.ps_start.set(nanouptime().into());
+    pr.ps_start.set(nanouptime());
     pr.ps_acflag.set(AFORK);
     pr.ps_flags.fetch_and(!PS_EMBRYO, Ordering::Relaxed);
 

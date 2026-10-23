@@ -438,6 +438,43 @@ static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
 static BSD_NET_LOCK: BsdNetLock = BsdNetLock;
 
+/// The machine's clock hardware (`crate::machine::cpu`'s `cpu_initclocks`, `cpu_startclock`,
+/// `setstatclockrate` and `delay`: arm64's `arm_clock_func`, whose first registration wins,
+/// stays in `intr.rs` behind them until N7).
+struct BsdClockHardware;
+
+impl kernel::clock::ClockHardware for BsdClockHardware {
+    fn initclocks(&self) {
+        crate::machine::cpu::cpu_initclocks();
+    }
+
+    fn startclock(&self) {
+        crate::machine::cpu::cpu_startclock();
+    }
+
+    fn setstatclockrate(&self, newhz: i32) {
+        crate::machine::cpu::setstatclockrate(newhz);
+    }
+
+    fn delay(&self, usecs: u32) {
+        crate::machine::cpu::delay(usecs);
+    }
+}
+
+static BSD_CLOCK_HARDWARE: BsdClockHardware = BsdClockHardware;
+
+/// The machine's `boot(9)` (`crate::machine::cpu::boot`: machdep's, which syncs the file
+/// systems and suspends the devices first), for `kernel::reboot::reboot`.
+struct BsdMachineBoot;
+
+impl kernel::reboot::MachineBoot for BsdMachineBoot {
+    fn boot(&self, howto: i32) -> ! {
+        crate::machine::cpu::boot(howto)
+    }
+}
+
+static BSD_MACHINE_BOOT: BsdMachineBoot = BsdMachineBoot;
+
 /// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
 /// then: `Machine::cpu_boot_secondary_processors`).
 static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -457,6 +494,9 @@ pub fn hal_bridges_register() {
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     let _ = kernel::clock::install_uptime(&BSD_UPTIME);
     let _ = kernel::thread::install_kthread(&BSD_KTHREAD);
+    // N4.8a: the machine's clock hardware and boot(9), for kernel::clock and kernel::reboot.
+    let _ = kernel::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
+    let _ = kernel::reboot::install_machine_boot(&BSD_MACHINE_BOOT);
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]
     {

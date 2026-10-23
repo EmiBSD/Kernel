@@ -88,7 +88,7 @@
 //!   ([`SysctlPlain`]). `int *valp` is `&AtomicI32`, the C's atomic operations on it are the
 //!   atomic's; a C local passed by address is an `AtomicI32` read back with `into_inner`.
 //! - Every node whose subsystem is not ported reports itself with `unported!` and fails with
-//!   `ENOSYS`: `clockintr`, `proc_vmmap` after its checks
+//!   `ENOSYS`: `proc_vmmap` after its checks
 //!   (`fill_vmmap`); `hw.model` (`cpu_model`, `identcpu.c`/arm64 `cpu.c`),
 //!   `setperf`/`perfpolicy` (`sched_bsd.c`). The top-level `machdep` tree is the machine's
 //!   `cpu_sysctl` (`machine::cpu::cpu_sysctl`). `kern.proc_cwd` of a process
@@ -588,9 +588,15 @@ fn kern_sysctl_dirs_locked(
         KERN_INTRCNT => sysctl_intrcnt(name, oldp, oldlenp),
         KERN_WATCHDOG => sysctl_wdog(name, oldp, oldlenp, newp, newlen),
         KERN_EVCOUNT => evcount_sysctl(name, oldp, oldlenp, newp, newlen),
-        KERN_CLOCKINTR => Err(unported!(
-            "kern.clockintr: sysctl_clockintr (kern_clockintr.c)"
-        )),
+        KERN_CLOCKINTR => {
+            let mut req = kernel::sysctl::SysctlReq {
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+            };
+            kernel::clockintr::sysctl_clockintr(name, &mut req)
+        }
         KERN_TTY => sysctl_tty(name, oldp, oldlenp, newp, newlen),
         // KERN_PROF: GPROF and DDBPROF are not configured.
         KERN_TIMECOUNTER => sysctl_tc(name, oldp, oldlenp, newp, newlen),
@@ -2476,7 +2482,7 @@ pub fn fill_kproc(
 
         // Convert starting uptime to a starting UTC time.
         let booted = nanoboottime();
-        let utc = crate::sys::time::timespecadd(&booted, &pr.ps_start.get().into());
+        let utc = crate::sys::time::timespecadd(&booted, &pr.ps_start.get());
         ki.p_ustart_sec = utc.tv_sec as u64;
         ki.p_ustart_usec = (utc.tv_nsec / 1000) as u32;
 
