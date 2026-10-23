@@ -134,6 +134,7 @@ std::thread_local! {
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
+    static TTY_VNODE: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
@@ -1144,6 +1145,8 @@ pub struct VmProcState {
     pub segv: Vec<usize>,
     /// The `log` lines, with their level.
     pub logs: Vec<(i32, String)>,
+    /// The `uprintf` lines.
+    pub uprintfs: Vec<String>,
 }
 
 std::thread_local! {
@@ -1283,6 +1286,11 @@ impl crate::vm::proc::VmProc for TestVmProc {
         let line = std::format!("{args}");
         VM_PROC_STATE.with(|s| s.borrow_mut().logs.push((level, line)));
     }
+
+    fn uprintf(&self, args: core::fmt::Arguments<'_>) {
+        let line = std::format!("{args}");
+        VM_PROC_STATE.with(|s| s.borrow_mut().uprintfs.push(line));
+    }
 }
 
 static TEST_VM_PROC: TestVmProc = TestVmProc;
@@ -1380,6 +1388,17 @@ pub fn pledge_refusal(code: i32) -> Result<(), (Errno, u64)> {
 /// `tval` (`None`: refuse nothing).
 pub fn set_pledge_refusal(r: Option<(i32, Errno, u64)>) {
     PLEDGE_REFUSE.with(|c| c.set(r));
+}
+
+/// What this thread's test glues' `session_has_tty_vnode` answers (`s_ttyvp != NULL`):
+/// `false` until [`set_tty_vnode`] says otherwise.
+pub fn tty_vnode() -> bool {
+    TTY_VNODE.with(Cell::get)
+}
+
+/// Makes this thread's test glues answer `on` for every session's terminal vnode.
+pub fn set_tty_vnode(on: bool) {
+    TTY_VNODE.with(|c| c.set(on));
 }
 
 /// Records a test glue's hook call.
@@ -1669,6 +1688,9 @@ macro_rules! test_proc_glue {
                 _new: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
+            }
+            fn session_has_tty_vnode(_sess: &$crate::proc::Session<Self>) -> bool {
+                $crate::testutil::tty_vnode()
             }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
                 match hal::pool::PoolArc::from_ref(pr) {

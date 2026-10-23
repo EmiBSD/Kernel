@@ -3993,6 +3993,25 @@ pub fn ttyprintf<G: ProcGlue>(tp: &Tty<G>, args: fmt::Arguments<'_>) {
     let _ = fmt::write(&mut TtyWriter { s: &mut s }, args);
 }
 
+/// `uprintf(9)` (`subr_prf.c`): kernel output to the controlling terminal of `pr` (the C's
+/// `curproc->p_p`), through [`ttyprintf`]; nothing when the process has none (`PS_CONTROLT`
+/// clear, no session, or a session whose terminal has no vnode: `s_ttyvp`). The caller holds
+/// the kernel lock, under which the session is read.
+pub fn uprintf<G: ProcGlue>(pr: &Process<G>, args: fmt::Arguments<'_>) {
+    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0 {
+        return;
+    }
+    let tp = {
+        let r = klock::reader();
+        pr.session(&r)
+            .filter(|sess| G::session_has_tty_vnode(sess))
+            .and_then(|sess| session_tty(sess))
+    };
+    if let Some(tp) = tp {
+        ttyprintf(&tp, args);
+    }
+}
+
 /// `tputchar`: output char to tty; console putchar style.
 pub fn tputchar<G: ProcGlue>(c: i32, tp: &Tty<G>) -> i32 {
     let mut s = Sect::new(tp);
@@ -4974,6 +4993,40 @@ mod tests {
         assert_eq!(tp.t_gen.get(), gen_.wrapping_add(1));
         assert_eq!(tp.session_addr(), 0);
         assert!(tp.pgrp().is_none());
+    }
+
+    /// `uprintf` writes to the controlling terminal of a process that has one: `PS_CONTROLT`
+    /// and a session whose terminal has a vnode (`s_ttyvp`); to nothing otherwise, as the
+    /// children of diff-openbsd's `syscalls/entry` (`setsid`, no terminal).
+    #[test]
+    fn uprintf_reaches_only_a_controlling_terminal() {
+        let (p, _d) = world(9030);
+        let pr = p.process();
+        // No session terminal yet: nothing, even with the vnode answer on.
+        crate::testutil::set_tty_vnode(true);
+        uprintf(pr, format_args!("lost\n"));
+        setsid(p);
+        let tp = test_tty();
+        assert_eq!(ioctl_int(&tp, TIOCSCTTY, 0, p).0, Ok(true));
+        assert_ne!(pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT, 0);
+        assert_eq!(tp.t_outq.c_cc.get(), 0);
+
+        // The terminal: the line, its newline as `tputchar` puts it (its own CR, then
+        // `ttyoutput`'s ONLCR pair), as the C's.
+        uprintf(pr, format_args!("[{}]{}: pin\n", "sh", 9030));
+        assert_eq!(drain(&tp.t_outq), b"[sh]9030: pin\r\r\n");
+
+        // A session whose terminal has no vnode (revoked): nothing.
+        crate::testutil::set_tty_vnode(false);
+        uprintf(pr, format_args!("lost\n"));
+        assert_eq!(tp.t_outq.c_cc.get(), 0);
+
+        // PS_CONTROLT clear (setsid's child, a daemon): nothing.
+        crate::testutil::set_tty_vnode(true);
+        pr.ps_flags.fetch_and(!PS_CONTROLT, Ordering::SeqCst);
+        uprintf(pr, format_args!("lost\n"));
+        assert_eq!(tp.t_outq.c_cc.get(), 0);
+        crate::testutil::set_tty_vnode(false);
     }
 
     #[test]

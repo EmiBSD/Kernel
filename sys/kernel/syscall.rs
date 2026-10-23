@@ -66,8 +66,6 @@
 //! the AST and a forked child's first return.
 //!
 //! ## Deviations
-//! - `pin_check`'s message goes to the console with `printf` where the C's `uprintf` writes
-//!   to the process's terminal (LZ's: no `uprintf` yet).
 //! - `KTRACE` and dt(4) are not configured; `SYSCALL_DEBUG` is `bsd`'s feature
 //!   `syscall_debug`, reached through the glue (`ProcGlue::scdebug_call`, `scdebug_ret`).
 //! - `SY_NOLOCK` is honoured as in C for the system calls whose bodies are audited for
@@ -88,8 +86,12 @@
 //!   `None`) fails the check, so a glue cannot skip it by forgetting it.
 //! - `pin_check` reads the pin tables through `hal::slot::ReadMostly` (N4.6a) and the
 //!   machine's facts (`PROC_PC`, the `sigcode` offsets) through the glue; the tables' guards
-//!   end before the kernel lock and the console are taken (a `ReadMostly` reader never
+//!   end before the kernel lock and the terminal are taken (a `ReadMostly` reader never
 //!   waits).
+//! - `pin_check`'s message goes to the process's controlling terminal with
+//!   `kernel::tty::uprintf`, as the C's `uprintf` (LZ printed it on the console: it had no
+//!   `uprintf`); a process without one, as diff-openbsd's `syscalls/entry` children, prints
+//!   nothing.
 //! - `KernelTrap<G>` implements `hal::trap::TrapHandler` (`bsd`'s `BsdTrap` before, N4.8b
 //!   b1): the fault on the map `hal` chose (`pmap_fault_fixup`, `uvm_fault`, `uvm_grow`, the
 //!   `MAP_STACK` check of a user fault), `trapsignal`, `sigexit`, `refreshcreds`, `userret`,
@@ -241,7 +243,7 @@ pub fn pin_check<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register) -> Result<(), 
     // die:
     // What the message prints, copied out of the tables so their read guards end here: a
     // `ReadMostly` reader must not sleep or wait (exec's and exit's replacement spins until
-    // the readers leave), and `KERNEL_LOCK()` and the console may do both.
+    // the readers leave), and `KERNEL_LOCK()` and the terminal may do both.
     let pinoff = pin
         .and_then(|pin| pin_entry(pin, code))
         .map_or(-1i64, i64::from);
@@ -262,26 +264,29 @@ pub fn pin_check<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register) -> Result<(), 
     hal::klock::kernel_lock(); // KERNEL_LOCK()
     // XXX remove or simplify this uprintf() call after OpenBSD 7.5 release
     let comm = pr.comm();
-    hal::prf::printf(format_args!(
-        "{}[{}]: pinsyscalls addr {:x} code {}, pinoff {:#x} (pin{} {} {:x}-{:x} {:x}) \
+    crate::tty::uprintf(
+        pr,
+        format_args!(
+            "{}[{}]: pinsyscalls addr {:x} code {}, pinoff {:#x} (pin{} {} {:x}-{:x} {:x}) \
          (libcpin{} {} {:x}-{:x} {:x}) error {}\n",
-        Comm(&comm),
-        pr.ps_pid,
-        addr,
-        code,
-        pinoff as u32,
-        pin_y,
-        pin_n,
-        pin_start,
-        pin_end,
-        pin_end.wrapping_sub(pin_start),
-        libc_y,
-        libc_n,
-        libc_start,
-        libc_end,
-        libc_end.wrapping_sub(libc_start),
-        error as i32
-    ));
+            Comm(&comm),
+            pr.ps_pid,
+            addr,
+            code,
+            pinoff as u32,
+            pin_y,
+            pin_n,
+            pin_start,
+            pin_end,
+            pin_end.wrapping_sub(pin_start),
+            libc_y,
+            libc_n,
+            libc_start,
+            libc_end,
+            libc_end.wrapping_sub(libc_start),
+            error as i32
+        ),
+    );
     pr.ps_acflag.set(pr.ps_acflag.get() | APINSYS);
 
     // Try to stop threads immediately, because this process is suspect
