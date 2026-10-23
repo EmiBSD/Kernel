@@ -8690,6 +8690,11 @@ crate = "hal"
 reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
 
 [[extra]]
+rust = "sys/hal/slot.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl)"
+
+[[extra]]
 rust = "sys/hal/seqlock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'static str one writer replaces and any CPU reads without a lock behind a generation counter (p_wmesg: written under sched_lock, read unlocked by kinfo_proc, ddb, the tty status line); 1 unsafe (the str rebuilt from the two words of one set)"
