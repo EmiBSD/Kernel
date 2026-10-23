@@ -607,7 +607,14 @@ mod tests {
         kqueue1: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+    /// Version 6's entry, answering `Ok`.
+    fn futex(_: isize, _: usize, _: i32, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
+    static API: KernelApi = KernelApi::new(
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, futex,
+    );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -629,7 +636,9 @@ mod tests {
                 version: 1,
                 size: 40,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT)
+            ..KernelApi::new(
+                register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, futex,
+            )
         };
         assert_eq!(
             load_with(&Empty, &Empty, &OTHER),

@@ -47,10 +47,15 @@
 //!   `unsafe` (LZ: 9, the raw list links, the `ft_proc` and `ft_fsq` pointers, the buckets'
 //!   `Sync`). This row turns the system call's arguments into the kernel's (the word and
 //!   `g` as addresses, `timeout` as the address of a `struct timespec` or, for
-//!   `FUTEX_REQUEUE`, the count to move) and writes the count woken in `retval[0]`.
+//!   `FUTEX_REQUEUE`, the count to move) and writes the count woken in `retval[0]`;
+//!   [`native_futex`], `KernelApi::futex`, runs `mi_syscall` on it (the `Native` entry).
 
+use hal::syscall::SysResult;
+
+use crate::kern::kern_descrip::native;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
+use crate::sys::syscall::SYS_futex;
 use crate::sys::syscallargs::SysFutexArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
@@ -72,5 +77,26 @@ pub fn sys_futex(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
         uap.g.get().addr(),
     )? as Register;
     Ok(())
+}
+
+/// `KernelApi::futex`: [`sys_futex`]'s row through the system call prologue.
+pub fn native_futex(
+    nr: Register,
+    uaddr: usize,
+    op: i32,
+    val: i32,
+    timeout: usize,
+    g: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    let args = [
+        uaddr as Register,
+        op as Register,
+        val as Register,
+        timeout as Register,
+        g as Register,
+        0,
+    ];
+    native(nr, SYS_futex, args, rval)
 }
 /* </CODE> */

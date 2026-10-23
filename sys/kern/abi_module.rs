@@ -56,9 +56,10 @@ use crate::sys::types::Register;
 
 /// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
 /// pipe(2), the vm system calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`), the descriptor
-/// system calls (`KernelApi::fd`, `sys/kern/kern_descrip.rs`) and the event system calls
-/// (`KernelApi::event`, `sys/kern/kern_event.rs`) are the kernel crate's, entered through
-/// `bsd`'s system call prologue.
+/// system calls (`KernelApi::fd`, `sys/kern/kern_descrip.rs`), the event system calls
+/// (`KernelApi::event`, `sys/kern/kern_event.rs`) and futex(2) (`KernelApi::futex`,
+/// `sys/kern/sys_futex.rs`) are the kernel crate's, entered through `bsd`'s system call
+/// prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
     legacy_syscall,
     api_copyin,
@@ -67,6 +68,7 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::vm_bsd::VM_ENTRIES,
     crate::kern::kern_descrip::FD_ENTRIES,
     crate::kern::kern_event::EVENT_ENTRIES,
+    crate::kern::sys_futex::native_futex,
 );
 
 /// The module file the boot loader handed over (`set_image`): its kernel virtual address.

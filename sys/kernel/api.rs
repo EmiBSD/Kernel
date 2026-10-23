@@ -25,16 +25,17 @@
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
 //! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
-//! the event system calls' seven (`EventEntries`, N4.4), which run the system call prologue
-//! still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`,
-//! `kernel::descrip`, `kernel::event` and `kernel::select`, `sys/kern/pipe_glue.rs`,
-//! `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`,
-//! `sys/kern/sys_generic.rs`); an entry moves to a `kernel` function
+//! the event system calls' seven (`EventEntries`, N4.4) and futex(2) (`FutexEntry`, N4.6c),
+//! which run the system call prologue still in `bsd` (pledge, the pinned syscalls) before
+//! `kernel::pipe`, `kernel::vm`, `kernel::descrip`, `kernel::event`, `kernel::select` and
+//! `kernel::futex`, `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`,
+//! `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`, `sys/kern/sys_futex.rs`); an entry
+//! moves to a `kernel` function
 //! when its subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
-    AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, KERNEL_API_VERSION, KernelApi,
-    SyscallHandler, VmEntries,
+    AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
+    KernelApi, SyscallHandler, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -50,6 +51,10 @@ static MODULE: OnceStatic<Module> = OnceStatic::new();
 
 /// The table of this version, with the kernel's registration and the functions the caller
 /// owns.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per member of the table, as its layout"
+)]
 pub const fn table(
     syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
     copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
@@ -58,6 +63,7 @@ pub const fn table(
     vm: VmEntries,
     fd: FdEntries,
     event: EventEntries,
+    futex: FutexEntry,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -68,6 +74,7 @@ pub const fn table(
         vm,
         fd,
         event,
+        futex,
     )
 }
 
@@ -260,7 +267,19 @@ mod tests {
         kqueue1: fd1,
     };
 
-    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+    fn futex(
+        nr: Register,
+        _: usize,
+        _: i32,
+        _: i32,
+        _: usize,
+        _: usize,
+        _: &mut Rval,
+    ) -> SysResult {
+        Err(nr as i32)
+    }
+
+    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD, EVENT, futex);
 
     #[test]
     fn the_table_is_this_version_with_the_kernels_registration() {
@@ -284,6 +303,7 @@ mod tests {
             Err(72)
         );
         assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
+        assert_eq!((API.futex)(83, 0, 0, 0, 0, 0, &mut rval), Err(83));
     }
 }
 /* </TESTS> */
