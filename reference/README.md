@@ -18,7 +18,7 @@ It is gitignored and **read-only**. `PINNED.md` records the exact commit.
 ## Clone (first time)
 
 ```sh
-git clone --depth 1 --filter=blob:none --sparse https://github.com/openbsd/src.git reference/openbsd-src
+git clone --depth 1 --filter=blob:none --sparse https://github.com/EmiBSD/OpenBSD-src.git reference/openbsd-src
 git -C reference/openbsd-src sparse-checkout set sys lib bin sbin usr.bin libexec include \
     gnu/lib/libcompiler_rt gnu/llvm/compiler-rt usr.sbin etc distrib share \
     gnu/llvm gnu/usr.bin/clang gnu/lib/libcxx gnu/lib/libcxxabi gnu/lib/libclang_rt
