@@ -94,6 +94,14 @@ pub fn arc4random() -> u32 {
     }
 }
 
+/// `enqueue_randomness(9)`: `val` into `bsd`'s entropy pool; dropped before the bridge is
+/// registered (a sample lost to the pool, nothing anyone reads back).
+pub fn enqueue_randomness(val: u32) {
+    if let Some(r) = bridges::random() {
+        r.enqueue_randomness(val);
+    }
+}
+
 /// `arc4random_uniform(9)`: a uniformly distributed random number less than `upper_bound`
 /// (0 when `upper_bound < 2`), without "modulo bias": words below `2**32 % upper_bound` are
 /// drawn again, so the ones kept map evenly onto `[0, upper_bound)` (each draw is kept with

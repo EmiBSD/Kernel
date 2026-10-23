@@ -90,7 +90,8 @@ paid_by = "N7"
 # bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
 # implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
 # crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
-# subr_prf goes with the bsd crate.
+# subr_prf goes with the bsd crate. N4.8a: log(9) (Printf::log, subr_prf's log) for kernel::tc's
+# clock-step line.
 # hal::prf::Printf
 [[bridge]]
 trait = "Printf"
@@ -177,7 +178,8 @@ paid_by = "N4"
 
 # bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
-# implemented by sys/kern/hal_bridges.rs (BsdRandom).
+# implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.8a: enqueue_randomness (rnd.rs's) for
+# kernel::tc (the new counter's first readings, the clock steps).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"

@@ -47,6 +47,14 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 pub trait Printf: Sync {
     /// `printf(fmt, ...)`: `args` formatted onto the console and into the message buffer.
     fn printf(&self, args: fmt::Arguments<'_>);
+
+    /// `log(level, fmt, ...)`: `args` into the message buffer at syslog priority `level` (and
+    /// onto the console while no `syslogd` reads `/dev/klog`). The default prints: a double
+    /// with no log.
+    fn log(&self, level: i32, args: fmt::Arguments<'_>) {
+        let _ = level;
+        self.printf(args);
+    }
 }
 
 /// `printf(9)`: `args` to the console and the message buffer; dropped (and counted) before
@@ -54,6 +62,17 @@ pub trait Printf: Sync {
 pub fn printf(args: fmt::Arguments<'_>) {
     match bridges::printf() {
         Some(p) => p.printf(args),
+        None => {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// `log(9)`: `args` to the message buffer at priority `level`; dropped (and counted) before
+/// `printf` is registered.
+pub fn log(level: i32, args: fmt::Arguments<'_>) {
+    match bridges::printf() {
+        Some(p) => p.log(level, args),
         None => {
             DROPPED.fetch_add(1, Ordering::Relaxed);
         }

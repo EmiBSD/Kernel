@@ -7855,6 +7855,13 @@ lz = ["sys/sys/sensors.rs"]
 status = "inherited"
 
 [[module]]
+rust = "sys/hal/sys/timetc.rs"
+crate = "hal"
+lz = ["sys/sys/timetc.rs"]
+status = "redesigned"
+notes = "N4.8a: struct timekeep (the ABI's record, Timekeep with TkBintime) and TimekeepAtomic, the same 88 bytes as atomics (offsets asserted), the view kernel::tc writes the page shared with userland through, with the C's generation protocol; TK_VERSION. struct timecounter is kernel::tc's (the Timecounter trait and TcEntry)"
+
+[[module]]
 rust = "sys/hal/sys/siginfo.rs"
 crate = "hal"
 lz = ["sys/sys/siginfo.rs"]
@@ -9295,6 +9302,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's delivery on a kernel-lock klist, kqueue_scan, kqueue_register, poll and select over the poll kqueue, an own-mutex klist) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/clock.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timecounter readers binuptime, getnanotime, nanouptime and tc_windup; the clock interrupt's dispatch and hardclock as they land) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/futex.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -9308,6 +9320,13 @@ reason = "decision 43: host microbenchmarks of N4.2's hot paths (the credentials
 rust = "sys/kernel/benches/timeout.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del, timeout_set, hardclock_update idle and with 1,000 timeouts, softclock; task(9) and extent(9) with their commits) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[module]]
+rust = "sys/kernel/tc.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_tc.rs", "sys/sys/timetc.rs"]
+status = "redesigned"
+notes = "N4.8a: timecounters into the kernel crate, 0 unsafe (LZ kern_tc 7 + timetc 1): struct timecounter split into the Timecounter trait (the hardware's half, tc_priv is self) and TcEntry (the kernel's: [I] values copied at tc_init, quality/precision/freq_adj atomics, the tc_list link); the timehands ring all atomics behind the C's generation protocol (TH, ACTIVE), th_counter and timecounter hal::link::Links; windup_mtx a Mutexed<Windup> whose guard tc_windup takes (last_tc inside), tc_lock a RawRwlock whose witness the [T,W] setters take; the timekeep page written through hal::sys::timetc::TimekeepAtomic (timekeep_attach); log(9) and enqueue_randomness over the Printf and Random bridges. bsd's kern_tc.rs runs LZ's until the switch-over commit"
 
 [[module]]
 rust = "sys/kernel/task.rs"

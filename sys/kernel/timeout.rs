@@ -832,6 +832,11 @@ pub fn hz() -> i32 {
     HZ.load(Ordering::Relaxed)
 }
 
+/// `tick_nsec`: the nanoseconds per clock tick (`kernel::tc::tc_setclock`).
+pub fn tick_nsec() -> i32 {
+    TICK_NSEC.load(Ordering::Relaxed)
+}
+
 /// `tick`: the microseconds per clock tick (`kernel::clock::tstohz`).
 pub fn tick() -> i32 {
     TICK.load(Ordering::Relaxed)
@@ -1347,7 +1352,7 @@ pub fn start_mp_thread_for_tests() {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // The wheel is driven by hand: `ticks` and `hardclock_update` (`tick_once`), the soft
     // interrupt by calling `softclock`, as LZ's tests did. The wheel is global: the tests
     // serialise on `LOCK` and leave nothing pending.
@@ -1359,7 +1364,9 @@ mod tests {
     use super::*;
     use crate::testutil;
 
-    static LOCK: StdMutex<()> = StdMutex::new(());
+    /// Serialises the tests that drive the wheel (and `kernel::tc`'s clock step, which moves
+    /// it).
+    pub(crate) static LOCK: StdMutex<()> = StdMutex::new(());
 
     static FIRED: AtomicU32 = AtomicU32::new(0);
     static LAST_ARG: AtomicUsize = AtomicUsize::new(0);

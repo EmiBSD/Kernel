@@ -146,11 +146,13 @@ impl Timespec {
     pub const ZERO: Timespec = Timespec::new(0, 0);
 
     /// `{ sec, nsec }`.
+    #[inline]
     pub const fn new(tv_sec: i64, tv_nsec: i64) -> Self {
         Self { tv_sec, tv_nsec }
     }
 
     /// `NSEC_TO_TIMESPEC(nsec, &ts)`.
+    #[inline]
     pub const fn from_nsec(nsec: u64) -> Self {
         Self {
             tv_sec: (nsec / NSEC_PER_SEC as u64) as i64,
@@ -159,6 +161,7 @@ impl Timespec {
     }
 
     /// `timespecadd(self, b, &res)`: the sum, the nanoseconds carried.
+    #[inline]
     pub const fn add(self, b: Timespec) -> Timespec {
         let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
         let mut nsec = self.tv_nsec + b.tv_nsec;
@@ -170,6 +173,7 @@ impl Timespec {
     }
 
     /// `timespecsub(self, b, &res)`: the difference, the nanoseconds borrowed.
+    #[inline]
     pub const fn sub(self, b: Timespec) -> Timespec {
         let mut sec = self.tv_sec.wrapping_sub(b.tv_sec);
         let mut nsec = self.tv_nsec - b.tv_nsec;
@@ -181,21 +185,25 @@ impl Timespec {
     }
 
     /// `timespecclear(tsp)`.
+    #[inline]
     pub fn clear(&mut self) {
         *self = Timespec::ZERO;
     }
 
     /// `timespecisset(tsp)`.
+    #[inline]
     pub const fn is_set(&self) -> bool {
         self.tv_sec != 0 || self.tv_nsec != 0
     }
 
     /// `timespecisvalid(tsp)`.
+    #[inline]
     pub const fn is_valid(&self) -> bool {
         self.tv_nsec >= 0 && self.tv_nsec < NSEC_PER_SEC
     }
 
     /// `TIMESPEC_TO_NSEC(ts)`: saturates at `UINT64_MAX`.
+    #[inline]
     pub const fn to_nsec(&self) -> u64 {
         if self.tv_sec as u64 > (u64::MAX - self.tv_nsec as u64) / NSEC_PER_SEC as u64 {
             return u64::MAX;
@@ -204,6 +212,7 @@ impl Timespec {
     }
 
     /// `TIMESPEC_TO_BINTIME(ts, bt)`.
+    #[inline]
     pub const fn to_bintime(&self) -> Bintime {
         Bintime {
             sec: self.tv_sec,
@@ -231,11 +240,13 @@ pub struct Timeval {
 
 impl Timeval {
     /// `{ sec, usec }`.
+    #[inline]
     pub const fn new(tv_sec: i64, tv_usec: i64) -> Self {
         Self { tv_sec, tv_usec }
     }
 
     /// `timeradd(self, b, &res)`: the sum, the microseconds carried.
+    #[inline]
     pub const fn add(self, b: Timeval) -> Timeval {
         let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
         let mut usec = self.tv_usec + b.tv_usec;
@@ -247,6 +258,7 @@ impl Timeval {
     }
 
     /// `timersub(self, b, &res)`: the difference, the microseconds borrowed.
+    #[inline]
     pub const fn sub(self, b: Timeval) -> Timeval {
         let mut sec = self.tv_sec.wrapping_sub(b.tv_sec);
         let mut usec = self.tv_usec - b.tv_usec;
@@ -258,26 +270,31 @@ impl Timeval {
     }
 
     /// `TIMESPEC_TO_TIMEVAL(&tv, &ts)`.
+    #[inline]
     pub const fn from_timespec(ts: Timespec) -> Self {
         Self::new(ts.tv_sec, ts.tv_nsec / 1000)
     }
 
     /// `TIMEVAL_TO_TIMESPEC(&tv, &ts)`.
+    #[inline]
     pub const fn to_timespec(&self) -> Timespec {
         Timespec::new(self.tv_sec, self.tv_usec * 1000)
     }
 
     /// `timerclear(tvp)`.
+    #[inline]
     pub fn clear(&mut self) {
         *self = Timeval::new(0, 0);
     }
 
     /// `timerisset(tvp)`.
+    #[inline]
     pub const fn is_set(&self) -> bool {
         self.tv_sec != 0 || self.tv_usec != 0
     }
 
     /// `timerisvalid(tvp)`.
+    #[inline]
     pub const fn is_valid(&self) -> bool {
         self.tv_usec >= 0 && self.tv_usec < 1_000_000
     }
@@ -304,11 +321,13 @@ impl Bintime {
     pub const ZERO: Bintime = Bintime::new(0, 0);
 
     /// A bintime from its parts.
+    #[inline]
     pub const fn new(sec: i64, frac: u64) -> Self {
         Self { sec, frac }
     }
 
     /// `bintimeaddfrac(bt, x, &ct)`: `self` plus `x` fractions of a second.
+    #[inline]
     pub const fn add_frac(self, x: u64) -> Bintime {
         let (frac, carry) = self.frac.overflowing_add(x);
         Bintime {
@@ -322,6 +341,7 @@ impl Bintime {
     }
 
     /// `bintimeadd(bt, ct, &dt)`.
+    #[inline]
     pub const fn add(self, ct: Bintime) -> Bintime {
         let (frac, carry) = self.frac.overflowing_add(ct.frac);
         let sec = self.sec.wrapping_add(ct.sec);
@@ -332,6 +352,7 @@ impl Bintime {
     }
 
     /// `bintimesub(bt, ct, &dt)`.
+    #[inline]
     pub const fn sub(self, ct: Bintime) -> Bintime {
         let (frac, borrow) = self.frac.overflowing_sub(ct.frac);
         let sec = self.sec.wrapping_sub(ct.sec);
@@ -356,11 +377,13 @@ impl Bintime {
 
     /// `BINTIME_TO_TIMESPEC(bt, ts)`: the fraction rounded down (the date changes at
     /// midnight, not at noon).
+    #[inline]
     pub const fn to_timespec(&self) -> Timespec {
         Timespec::new(self.sec, frac_to_nsec(self.frac) as i64)
     }
 
     /// `BINTIME_TO_TIMEVAL(bt, tv)`.
+    #[inline]
     pub const fn to_timeval(&self) -> Timeval {
         Timeval::new(
             self.sec,
@@ -369,6 +392,7 @@ impl Bintime {
     }
 
     /// `BINTIME_TO_NSEC(bt)`.
+    #[inline]
     pub const fn to_nsec(&self) -> u64 {
         (self.sec as u64).wrapping_mul(NSEC_PER_SEC as u64) + frac_to_nsec(self.frac) as u64
     }
@@ -380,6 +404,7 @@ hal::abi_pod!(Bintime {
 });
 
 /// `FRAC_TO_NSEC(frac)`: a fraction of a second in nanoseconds, rounded down.
+#[inline]
 pub const fn frac_to_nsec(frac: u64) -> u32 {
     (((frac >> 32) * 1_000_000_000) >> 32) as u32
 }
