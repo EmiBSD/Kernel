@@ -146,7 +146,6 @@ use crate::kern::init_main::{NCPUS, NCPUSFOUND};
 use crate::kern::kern_clock::sysctl_clockrate;
 use crate::kern::kern_descrip::{BsdFileData, NUMFILES, fd_getfile, fd_iterfile};
 use crate::kern::kern_event::kqueue_kinfo;
-use crate::kern::kern_fork::{FORKSTAT, NPROCESSES, NTHREADS};
 use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray, sysctl_malloc};
 use crate::kern::kern_pledge::pledge_sysctl;
@@ -246,6 +245,7 @@ use crate::{
 use hal::klock;
 use hal::vm::param::atop;
 use hal::vm::uvmexp::UVMEXP;
+use kernel::fork::{FORKSTAT, NPROCESSES, NTHREADS};
 use kernel::vm::glue::{uvm_vslock, uvm_vsunlock};
 use kernel::vm::io::uvm_io;
 use kernel::vm::km::NO_CONSTRAINT;
@@ -2276,10 +2276,12 @@ pub fn fill_kproc(
             p
         }
         None => {
-            // SAFETY: a process keeps its main thread until process_zap. XXX, as in C.
-            let Some(mainp) = (unsafe { pr.ps_mainproc.get().as_ref() }) else {
+            // The process's main thread, its slot's, under the caller's ps_mtx (a process
+            // keeps it until process_zap).
+            let Some(mainp) = pr.main_thread(g) else {
                 panic(format_args!("fill_kproc: process without a main thread"));
             };
+            let mainp: &Proc = mainp.get_ref();
             // tuagg_get_process(&tu, pr), under the caller's ps_mtx.
             tu.clear();
             crate::kern::kern_resource::tuagg_sumup(&tu, &pr.ps_tu);
@@ -3541,7 +3543,7 @@ mod tests {
         let p = test_thread(pr);
         drop(p.set_cred(cr.clone()));
         drop(pr.set_ucred(cr));
-        pr.ps_mainproc.set(p);
+        pr.set_main_static(hal::pin::pin_static(p));
         // The group (pgid 42) and the session it leads: the test's references are leaked
         // with the process.
         core::mem::forget(test_setsid(pr));

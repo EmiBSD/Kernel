@@ -25,18 +25,19 @@
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
 //! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
-//! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a) and
-//! futex(2) (`FutexEntry`, N4.6c), which run the system call prologue still in `bsd`
-//! (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`, `kernel::descrip`,
-//! `kernel::event`, `kernel::select`, `kernel::log` and `kernel::futex`,
+//! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
+//! futex(2) (`FutexEntry`, N4.6c) and the process system calls' forty-six (`ProcEntries`,
+//! N4.6a), which run the system call prologue still in `bsd` (pledge, the pinned syscalls)
+//! before `kernel::pipe`, `kernel::vm`, `kernel::descrip`, `kernel::event`,
+//! `kernel::select`, `kernel::log`, `kernel::futex` and the process modules,
 //! `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`,
 //! `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`, `sys/kern/subr_log.rs`,
-//! `sys/kern/sys_futex.rs`); an entry moves to a `kernel` function
+//! `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`); an entry moves to a `kernel` function
 //! when its subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
-    KernelApi, SyscallHandler, VmEntries,
+    KernelApi, ProcEntries, SyscallHandler, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -66,6 +67,7 @@ pub const fn table(
     event: EventEntries,
     sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
     futex: FutexEntry,
+    proc: ProcEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -78,6 +80,7 @@ pub const fn table(
         event,
         sendsyslog,
         futex,
+        proc,
     )
 }
 
@@ -270,6 +273,194 @@ mod tests {
         kqueue1: fd1,
     };
 
+    fn p_fork(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_vfork(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_tfork(nr: Register, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_exit(nr: Register, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_threxit(nr: Register, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_wait4(nr: Register, _: i32, _: usize, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_waitid(nr: Register, _: i32, _: u32, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getrusage(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getrlimit(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setrlimit(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getpriority(nr: Register, _: i32, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setpriority(nr: Register, _: i32, _: u32, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_acct(nr: Register, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getpid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getppid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getuid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_geteuid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getgid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getegid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getgroups(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setgroups(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getpgrp(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getpgid(nr: Register, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getsid(nr: Register, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setpgid(nr: Register, _: i32, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setsid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setuid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_seteuid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setgid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setegid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setreuid(nr: Register, _: u32, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setregid(nr: Register, _: u32, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setresuid(nr: Register, _: u32, _: u32, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setresgid(nr: Register, _: u32, _: u32, _: u32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getresuid(nr: Register, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getresgid(nr: Register, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_issetugid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getlogin_r(nr: Register, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setlogin(nr: Register, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_set_tcb(nr: Register, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_get_tcb(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getthrid(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getthrname(nr: Register, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setthrname(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_getrtable(nr: Register, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn p_setrtable(nr: Register, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
+    const PROC: ProcEntries = ProcEntries {
+        fork: p_fork,
+        vfork: p_vfork,
+        tfork: p_tfork,
+        exit: p_exit,
+        threxit: p_threxit,
+        wait4: p_wait4,
+        waitid: p_waitid,
+        getrusage: p_getrusage,
+        getrlimit: p_getrlimit,
+        setrlimit: p_setrlimit,
+        getpriority: p_getpriority,
+        setpriority: p_setpriority,
+        acct: p_acct,
+        getpid: p_getpid,
+        getppid: p_getppid,
+        getuid: p_getuid,
+        geteuid: p_geteuid,
+        getgid: p_getgid,
+        getegid: p_getegid,
+        getgroups: p_getgroups,
+        setgroups: p_setgroups,
+        getpgrp: p_getpgrp,
+        getpgid: p_getpgid,
+        getsid: p_getsid,
+        setpgid: p_setpgid,
+        setsid: p_setsid,
+        setuid: p_setuid,
+        seteuid: p_seteuid,
+        setgid: p_setgid,
+        setegid: p_setegid,
+        setreuid: p_setreuid,
+        setregid: p_setregid,
+        setresuid: p_setresuid,
+        setresgid: p_setresgid,
+        getresuid: p_getresuid,
+        getresgid: p_getresgid,
+        issetugid: p_issetugid,
+        getlogin_r: p_getlogin_r,
+        setlogin: p_setlogin,
+        set_tcb: p_set_tcb,
+        get_tcb: p_get_tcb,
+        getthrid: p_getthrid,
+        getthrname: p_getthrname,
+        setthrname: p_setthrname,
+        getrtable: p_getrtable,
+        setrtable: p_setrtable,
+    };
+
     fn sendsyslog(nr: Register, _: usize, _: usize, _: i32, _: &mut Rval) -> SysResult {
         Err(nr as i32)
     }
@@ -287,7 +478,7 @@ mod tests {
     }
 
     static API: KernelApi = table(
-        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex,
+        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
     );
 
     #[test]
@@ -314,6 +505,8 @@ mod tests {
         assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
         assert_eq!((API.sendsyslog)(112, 0, 0, 0, &mut rval), Err(112));
         assert_eq!((API.futex)(83, 0, 0, 0, 0, 0, &mut rval), Err(83));
+        assert_eq!((API.proc.fork)(2, &mut rval), Err(2));
+        assert_eq!((API.proc.setrtable)(310, 0, &mut rval), Err(310));
     }
 }
 /* </TESTS> */

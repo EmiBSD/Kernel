@@ -199,7 +199,6 @@ use crate::dev::wscons::wsmux::{
     wsmux_attach_sc, wsmux_detach_sc, wsmux_get_layout, wsmux_getmux, wsmux_set_layout,
 };
 use crate::dev::wscons::wsmuxvar::{Wsevsrc, WsmuxSoftc, Wssrcops};
-use crate::kern::init_main::INITPROCESS;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_prot::suser;
@@ -1874,8 +1873,7 @@ pub fn internal_command(
                     }
                     1 => {
                         kbd_reset.store(0, Ordering::Relaxed);
-                        // SAFETY: NULL until `start_init` forks init(8), which never exits.
-                        if let Some(init) = unsafe { INITPROCESS.load(Ordering::Acquire).as_ref() }
+                        if let Some(init) = crate::kern::proc_glue::proc_tables().initprocess.get()
                         {
                             prsignal(init, SIGUSR1);
                         }

@@ -1581,7 +1581,7 @@ mod tests {
     fn pledged(promises: u64) -> &'static Proc {
         let pr = crate::kern::proc_glue::test_process(1);
         let p = crate::kern::proc_glue::test_thread(pr);
-        pr.ps_mainproc.set(p);
+        pr.set_main_static(hal::pin::pin_static(p));
         pr.ps_flags.fetch_or(PS_PLEDGE, Ordering::Relaxed);
         pr.ps_pledge
             .store(promises | PLEDGE_ERROR, Ordering::Relaxed);
@@ -1593,7 +1593,7 @@ mod tests {
     fn unpledged() -> &'static Proc {
         let pr = crate::kern::proc_glue::test_process(1);
         let p = crate::kern::proc_glue::test_thread(pr);
-        pr.ps_mainproc.set(p);
+        pr.set_main_static(hal::pin::pin_static(p));
         p
     }
 

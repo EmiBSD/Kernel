@@ -53,7 +53,7 @@
 //! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
 //! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
 //!   timecounter), and [`uptime_advance`].
-//! - `thread`'s `Kthread`: a host thread holding the kernel lock double from its start; a
+//! - `thread`'s operations: a host thread holding the kernel lock double from its start; a
 //!   deferred creation runs at once in this crate's own tests and is held everywhere else
 //!   (`bsd`'s host tests, the benches), as LZ's host tests never ran `main`'s
 //!   `kthread_run_deferred_queue`: those tests drive a queue's workers by hand, and a worker
@@ -429,12 +429,32 @@ impl UserCopy for TestUser {
         Ok(())
     }
 
-    fn copyinstr(&self, _uaddr: usize, _kbuf: &mut [u8]) -> Result<usize, Errno> {
-        Err(Errno::EFAULT)
+    /// `copyinstr`: up to the NUL (copied), at most `kbuf.len()` bytes, `ENAMETOOLONG`
+    /// without one; `EFAULT` past the address space.
+    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
+        let user = lock(&USER);
+        for (i, b) in kbuf.iter_mut().enumerate() {
+            let r = user_range(uaddr + i, 1)?;
+            *b = user[r.start];
+            if *b == 0 {
+                return Ok(i + 1);
+            }
+        }
+        Err(Errno::ENAMETOOLONG)
     }
 
-    fn copyoutstr(&self, _kbuf: &[u8], _uaddr: usize) -> Result<usize, Errno> {
-        Err(Errno::EFAULT)
+    /// `copyoutstr`: `kbuf` up to its NUL (copied), at most `kbuf.len()` bytes,
+    /// `ENAMETOOLONG` without one; `EFAULT` past the address space.
+    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
+        let mut user = lock(&USER);
+        for (i, &b) in kbuf.iter().enumerate() {
+            let r = user_range(uaddr + i, 1)?;
+            user[r.start] = b;
+            if b == 0 {
+                return Ok(i + 1);
+            }
+        }
+        Err(Errno::ENAMETOOLONG)
     }
 
     fn copyin32(&self, uaddr: usize) -> Result<u32, Errno> {
@@ -574,8 +594,9 @@ struct TestKthread;
 /// What a test kernel thread's `kthread_exit` unwinds with.
 struct KthreadExit;
 
-impl crate::thread::Kthread for TestKthread {
-    fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno> {
+impl TestKthread {
+    /// `kthread_create` of a ticket: a host thread running `kernel::thread::run`.
+    fn create(name: &'static [u8], ticket: usize) -> Result<(), Errno> {
         std::thread::Builder::new()
             .name(String::from_utf8_lossy(name).into_owned())
             .spawn(move || {
@@ -593,14 +614,14 @@ impl crate::thread::Kthread for TestKthread {
             .map_err(|_| Errno::EAGAIN)
     }
 
-    fn exit(&self, _ecode: i32) -> ! {
+    /// `kthread_exit`: the host thread unwinds.
+    fn exit(_ecode: i32) -> ! {
         std::panic::resume_unwind(Box::new(KthreadExit))
     }
 
-    fn peg_to_primary_cpu(&self) {}
+    /// The peg to the primary CPU: nothing on the host.
+    fn peg() {}
 }
-
-static TEST_KTHREAD: TestKthread = TestKthread;
 
 /// A page of a test u-area, page aligned.
 #[repr(C, align(4096))]
@@ -864,7 +885,11 @@ pub fn install() {
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
 
         let _ = crate::clock::install_uptime(&TEST_UPTIME);
-        let _ = crate::thread::install_kthread(&TEST_KTHREAD);
+        crate::thread::install_test_ops(crate::thread::Ops {
+            create: TestKthread::create,
+            exit: TestKthread::exit,
+            peg: TestKthread::peg,
+        });
         let _ = hal::thread::register_uarea_memory(&TEST_UAREAS);
         // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
         // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
@@ -1656,10 +1681,12 @@ macro_rules! test_file_glue {
 /// Declares `$name`, a `kernel::proc::ProcGlue` of the tests whose descriptors are the file
 /// glue `$files` ([`test_file_glue!`](crate::test_file_glue)): no member of `bsd`'s, per-thread
 /// tables, every hook a no-op. For the tests of the modules over the processes
-/// (`kernel::descrip`), which need threads with tables and credentials.
+/// (`kernel::descrip`), which need threads with tables and credentials. A last argument
+/// `{ fn hook(..) { .. } ... }` adds or overrides members of the glue (`kernel::acct`'s
+/// `session_ttydev`).
 #[macro_export]
 macro_rules! test_proc_glue {
-    ($name:ident, $files:ty) => {
+    ($name:ident, $files:ty $(, { $($extra:tt)* })?) => {
         /// A process glue of the tests (`kernel::test_proc_glue!`).
         pub struct $name;
 
@@ -1719,6 +1746,7 @@ macro_rules! test_proc_glue {
                     None => std::panic!("process_ref: not a pooled process"),
                 }
             }
+            $($($extra)*)?
         }
     };
 }

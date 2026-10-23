@@ -479,14 +479,14 @@ pub fn pod_to_bytes<T: AbiPod>(v: &T, b: &mut [u8]) -> bool {
 }
 
 /// The all-zero `T`.
-fn zeroed<T: AbiPod>() -> T {
+pub fn zeroed<T: AbiPod>() -> T {
     // SAFETY: every bit pattern of an `AbiPod` type is a valid value (its contract, which
     // `abi_pod!` checks and nothing else implements), the all-zero one included.
     unsafe { MaybeUninit::<T>::zeroed().assume_init() }
 }
 
 /// The bytes of `objs`.
-fn bytes_of<T: AbiPod>(objs: &[T]) -> &[u8] {
+pub fn bytes_of<T: AbiPod>(objs: &[T]) -> &[u8] {
     // SAFETY: an `AbiPod` type has no padding (its contract), so every byte of the slice's
     // `size_of_val(objs)` bytes is initialised and may be read as a `u8` while `objs` is
     // borrowed; `u8` has alignment 1.

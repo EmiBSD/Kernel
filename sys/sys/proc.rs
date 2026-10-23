@@ -74,8 +74,6 @@
 //! `unsafe` deref, until N4.5's `current()` retires them with `curproc()`'s.
 //!
 //! ## Deviations
-//! - `struct pinsyscall`'s members are atomic words (`pn_pins` a `hal::link::PtrWord`), so a
-//!   process's pins can be members of the kernel's pooled `Process`.
 //! - `SESSHOLD`/`SESSRELE` are the kernel's counted `SessionRef`s (a clone, a drop); a
 //!   session goes with its last reference.
 //! - A thread's `p_wchan` is the sleep address as a number (`kernel::proc`'s word), compared,
@@ -85,9 +83,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::AtomicU32;
 
-use hal::link::PtrWord;
-use hal::malloc::MArray;
-use kernel::proc::{I32Word, UsizeWord};
+use kernel::proc::Placed;
 use kernel::vm::map::Vmspace;
 
 use crate::kassert;
@@ -140,47 +136,6 @@ pub type PgrpRef = kernel::proc::PgrpRef<BsdProcGlue>;
 pub type SessionRef = kernel::proc::SessionRef<BsdProcGlue>;
 /// The guard of a process's `ps_mtx`.
 pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
-
-/// `struct pinsyscall`: the system call pin table of a text region.
-#[derive(Debug, Default)]
-pub struct Pinsyscall {
-    /// `pn_start`.
-    pub pn_start: UsizeWord,
-    /// `pn_end`.
-    pub pn_end: UsizeWord,
-    /// `pn_pins`: array of offsets indexed by syscall#.
-    pub pn_pins: PtrWord<u32>,
-    /// `pn_npins`: number of entries in table.
-    pub pn_npins: I32Word,
-}
-
-impl Pinsyscall {
-    /// No table.
-    pub const fn new() -> Self {
-        Self {
-            pn_start: UsizeWord::new(0),
-            pn_end: UsizeWord::new(0),
-            pn_pins: PtrWord::new(),
-            pn_npins: I32Word::new(0),
-        }
-    }
-
-    /// `pinsyscalls(2)`'s table for `[base, end)` (the kernel's `sys_pinsyscalls` built it,
-    /// `mallocarray(npins, sizeof(u_int), M_PINSYSCALL)`): the block is the process's from now
-    /// on, read by `pin_check` at every system call and freed by `exit`/`exec`'s `pin_free`
-    /// (`free(pn_pins, M_PINSYSCALL, npins * sizeof(u_int))`), as the C's. The fields are
-    /// stored in the C's order.
-    pub fn install(&self, base: usize, end: usize, pins: MArray<u32>) {
-        let (table, npins) = MArray::into_raw(pins);
-        self.pn_start.set(base);
-        self.pn_end.set(end);
-        self.pn_pins.set(table.as_ptr());
-        // sys_pinsyscalls refuses a table of more than SYS_MAXSYSCALL entries (E2BIG).
-        let npins = i32::try_from(npins).ok();
-        kassert!(npins.is_some());
-        self.pn_npins.set(npins.unwrap_or(0));
-    }
-}
 
 /// What `bsd` reads of a thread through its words: LZ's accessors that turn an address the
 /// thread holds into a reference, each one `unsafe` deref until N4.5's `current()`.
@@ -262,6 +217,31 @@ impl ProcExt for Proc {
             }
         }
     }
+}
+
+/// The glue's `thread_placed` (`kernel::fork`'s `fork1` and `thread_fork`, N4.6a): records
+/// the new thread's own `&'static` (`ProcExt::place`), which `bsd`'s run, sleep and signal
+/// adapters lend the kernel (`as_static`, until N4.8 retires them with `curproc()`'s). Only
+/// the glue calls it, with the kernel's witness: no other safe caller can name a thread here.
+pub(crate) fn place_thread(placed: Placed<'_, BsdProcGlue>) {
+    let at = ptr::from_ref::<Proc>(placed.thread().get_ref());
+    // SAFETY: `placed` is a `kernel::proc::Placed`, which only `kernel::fork` makes (its
+    // constructor is `pub(crate)` in `kernel`, its field private, it is neither `Clone` nor
+    // `Copy`), once per thread, in `fork1` or `thread_fork`, right after linking the thread,
+    // with the pin of a `procpl` box it then gives to the thread's process (its slot for the
+    // main thread, its tree for another). The process keeps the box until `exit1` hands a
+    // secondary thread's box to the thread itself and the reaper or `process_zap` frees it
+    // (`proc_free`), after the thread has left every list, hash and queue and no other thread
+    // names it: the pool item stays at this address, initialised, until then (a pinned item
+    // is not moved), and nothing mutates it but through its atomics and cells (shared
+    // references only), so a shared reference to it is valid for the thread's life.
+    // `'static` is LZ's convention for a thread reference (the C's `struct proc *` from
+    // `pool_get` to `pool_put`), the one `curproc()` and the run queues rest on (LZ's
+    // `thread_join` deref, moved here from `kern_fork.rs` with the creation). This function
+    // is `pub(crate)`; its one caller, `BsdProcGlue::thread_placed`, passes the witness it
+    // was given.
+    let p: &'static Proc = unsafe { &*at };
+    p.place();
 }
 
 /// `P_HASSIBLING(p)`.
@@ -375,12 +355,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cpusets_and_pins_start_empty() {
+    fn cpusets_start_empty() {
         assert_eq!(cpuset_asize(1), 1);
         assert_eq!(cpuset_asize(33), 2);
-        let pin = Pinsyscall::new();
-        assert!(pin.pn_pins.get().is_null());
-        assert_eq!(pin.pn_npins.get(), 0);
         let c = Cpuset::new();
         assert!(
             c.cs_set
