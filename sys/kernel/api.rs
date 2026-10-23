@@ -25,7 +25,8 @@
 //! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
 //! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
-//! the event system calls' seven (`EventEntries`, N4.4), which run the system call prologue
+//! the event system calls' seven (`EventEntries`, N4.4) and `sendsyslog(2)` (N4.7a), which
+//! run the system call prologue
 //! still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`,
 //! `kernel::descrip`, `kernel::event` and `kernel::select`, `sys/kern/pipe_glue.rs`,
 //! `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`,
@@ -50,6 +51,10 @@ static MODULE: OnceStatic<Module> = OnceStatic::new();
 
 /// The table of this version, with the kernel's registration and the functions the caller
 /// owns.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per member of the table, as KernelApi::new"
+)]
 pub const fn table(
     syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
     copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
@@ -58,6 +63,7 @@ pub const fn table(
     vm: VmEntries,
     fd: FdEntries,
     event: EventEntries,
+    sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -68,6 +74,7 @@ pub const fn table(
         vm,
         fd,
         event,
+        sendsyslog,
     )
 }
 
@@ -260,7 +267,11 @@ mod tests {
         kqueue1: fd1,
     };
 
-    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+    fn sendsyslog(nr: Register, _: usize, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
+    static API: KernelApi = table(legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog);
 
     #[test]
     fn the_table_is_this_version_with_the_kernels_registration() {
@@ -284,6 +295,7 @@ mod tests {
             Err(72)
         );
         assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
+        assert_eq!((API.sendsyslog)(112, 0, 0, 0, &mut rval), Err(112));
     }
 }
 /* </TESTS> */

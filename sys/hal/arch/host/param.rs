@@ -30,6 +30,8 @@ pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 pub const PAGE_MASK: usize = PAGE_SIZE - 1;
 /// Start of kernel virtual space (amd64's).
 pub const KERNBASE: usize = 0xffff_ffff_8000_0000;
+/// Default message buffer size (amd64's, the size `bsd`'s host `MachineParam` gives).
+pub const MSGBUFSIZE: usize = 32 * PAGE_SIZE;
 
 /// `VM_MIN_ADDRESS`: the lowest user address.
 pub const VM_MIN_ADDRESS: usize = PAGE_SIZE;

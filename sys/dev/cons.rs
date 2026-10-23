@@ -163,6 +163,12 @@ pub fn constty() -> Option<&'static Tty> {
     unsafe { CONSTTY.load(Ordering::Acquire).as_ref() }
 }
 
+/// `cn_devvp != NULL`: the real console's vnode is held (`cnopen` ran), so `cnwrite` reaches
+/// its tty (the test of `subr_log.c`'s `dosendsyslog`, for `kernel::log`).
+pub fn cn_devvp_set() -> bool {
+    !CN_DEVVP.load(Ordering::Relaxed).is_null()
+}
+
 /// `constty = tp`.
 pub fn set_constty(tp: Option<&Tty>) {
     CONSTTY.store(

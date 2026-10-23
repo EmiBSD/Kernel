@@ -974,6 +974,9 @@ pub struct ProcTables<G: ProcGlue> {
     pub sessionpl: TypedPool<Session<G>>,
     /// `kqueue_pool`, `knote_pool` and the timers' pool (`kernel::event::kqueue_init`).
     pub kq: KqPools<G>,
+    /// `/dev/klog` (`logsoftc`, `log_open`, `syslogf`) and the log stash
+    /// (`kernel::log`): generic over the glue through its klist and `syslogf`'s file.
+    pub log: crate::log::LogDev<G>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -992,6 +995,7 @@ impl<G: ProcGlue> ProcTables<G> {
             pgrppl: TypedPool::new(),
             sessionpl: TypedPool::new(),
             kq: KqPools::new(),
+            log: crate::log::LogDev::new(),
         }
     }
 

@@ -596,6 +596,10 @@ mod tests {
         Ok(())
     }
 
+    fn sendsyslog(_: isize, _: usize, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
     /// Version 5's entries, every one answering `Ok`.
     const EVENT: crate::api::EventEntries = crate::api::EventEntries {
         select,
@@ -607,7 +611,9 @@ mod tests {
         kqueue1: fd1,
     };
 
-    static API: KernelApi = KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT);
+    static API: KernelApi = KernelApi::new(
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog,
+    );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
     /// reported, and the second call is refused.
@@ -629,7 +635,9 @@ mod tests {
                 version: 1,
                 size: 40,
             },
-            ..KernelApi::new(register, legacy, copyin, copyout, pipe2, VM, FD, EVENT)
+            ..KernelApi::new(
+                register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog,
+            )
         };
         assert_eq!(
             load_with(&Empty, &Empty, &OTHER),
