@@ -5561,7 +5561,7 @@ rust = "sys/kern/kern_subr.rs"
 adapted_by = ["sys/hal/arch/arm64/copy.rs"]
 lz = ["sys/kern/kern_subr.rs"]
 status = "adapted"
-notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (hook_establish/disestablish, dohooks) wait for their first user; M7b (kern_descrip.c): uiomove (the kernel buffer as a slice; UIO_SYSSPACE through kcopy) and ureadc; PMAP_CHECK_COPYIN not configured; host tests"
+notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (hook_establish/disestablish, dohooks) wait for their first user; M7b (kern_descrip.c): uiomove (the kernel buffer as a slice; UIO_SYSSPACE through kcopy) and ureadc; PMAP_CHECK_COPYIN not configured; host tests; N4.8b review: kcopy_take, called first by hal_bridges_register before any kernel or ABI code runs, holds hal's one KcopyToken in KCOPY (panic when another took it); kcopy_token reads it"
 
 [[module]]
 rust = "sys/kern/kern_synch.rs"

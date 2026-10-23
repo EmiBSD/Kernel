@@ -1439,15 +1439,24 @@ impl UserCopy for Machine {
     }
 
     /// `kcopy` through `uiomove`'s `hal::user::KcopyToken` (the caller vouches for both
-    /// ranges, the token's contract), a stack buffer at a time.
+    /// ranges, the token's contract), a stack buffer at a time; a range that wraps the
+    /// address space is `EFAULT`, never a copy at a wrapped address.
     unsafe fn kcopy(src: *const u8, dst: *mut u8, len: usize) -> Result<(), Errno> {
         let token = crate::kern::kern_subr::kcopy_token();
         let mut chunk = [0u8; 256];
         let mut off = 0;
         while off < len {
             let n = (len - off).min(chunk.len());
-            token.kcopy_in(src.expose_provenance() + off, &mut chunk[..n])?;
-            token.kcopy_out(&chunk[..n], dst.expose_provenance() + off)?;
+            let from = src
+                .expose_provenance()
+                .checked_add(off)
+                .ok_or(Errno::EFAULT)?;
+            let to = dst
+                .expose_provenance()
+                .checked_add(off)
+                .ok_or(Errno::EFAULT)?;
+            token.kcopy_in(from, &mut chunk[..n])?;
+            token.kcopy_out(&chunk[..n], to)?;
             off += n;
         }
         Ok(())
