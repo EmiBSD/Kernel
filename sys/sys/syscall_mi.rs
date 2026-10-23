@@ -179,8 +179,9 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
     };
 
     // die:
-    // KTRACE (KTR_PINSYSCALL): not configured.
-    kernel_lock(); // KERNEL_LOCK()
+    // What the message prints, copied out of the tables so their read guards end here: a
+    // `ReadMostly` reader must not sleep or wait (exec's and exit's replacement spins until
+    // the readers leave), and `KERNEL_LOCK()` and the console may do both.
     let pinoff = pin
         .and_then(|pin| entry_of(pin, code))
         .map_or(-1i64, i64::from);
@@ -191,6 +192,14 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
             ""
         }
     };
+    let shown = |t: &PinTable| (is(t), t.npins(), t.start, t.end);
+    let (pin_y, pin_n, pin_start, pin_end) = shown(&ppin);
+    let (libc_y, libc_n, libc_start, libc_end) = shown(&plibcpin);
+    drop(ppin);
+    drop(plibcpin);
+
+    // KTRACE (KTR_PINSYSCALL): not configured.
+    kernel_lock(); // KERNEL_LOCK()
     // XXX remove or simplify this uprintf() call after OpenBSD 7.5 release
     kprintf!(
         "{}[{}]: pinsyscalls addr {:x} code {}, pinoff {:#x} (pin{} {} {:x}-{:x} {:x}) \
@@ -200,20 +209,18 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
         addr,
         code,
         pinoff as u32,
-        is(&ppin),
-        ppin.npins(),
-        ppin.start,
-        ppin.end,
-        ppin.end.wrapping_sub(ppin.start),
-        is(&plibcpin),
-        plibcpin.npins(),
-        plibcpin.start,
-        plibcpin.end,
-        plibcpin.end.wrapping_sub(plibcpin.start),
+        pin_y,
+        pin_n,
+        pin_start,
+        pin_end,
+        pin_end.wrapping_sub(pin_start),
+        libc_y,
+        libc_n,
+        libc_start,
+        libc_end,
+        libc_end.wrapping_sub(libc_start),
         error as i32
     );
-    drop(ppin);
-    drop(plibcpin);
     pr.ps_acflag.set(pr.ps_acflag.get() | APINSYS);
 
     // Try to stop threads immediately, because this process is suspect
