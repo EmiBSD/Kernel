@@ -34,3 +34,12 @@ $ ls -1a
 $ sh -c 'ulimit -c unlimited; kill -SEGV $$'; echo status $?; ls -1
 ! cd /
 ! rm -rf /mnt/core
+
+## entry
+# The system call entry's checks (N4.8b), each in a child with no controlling terminal and
+# no core file, its end printed: a call with the stack pointer pivoted off MAP_STACK
+# (stackpivot: SIGSEGV), SYS_getpid with bit 32 set in x8 (int-syscall: the number is an int,
+# the unpinned site SIGABRT), a plain unpinned SYS_getpid (unpinned-svc: SIGABRT). arm64 only
+# (amd64's at N10); it writes no file, so it runs where it is. A set of its own after
+# coredump, so no step id of expected.toml moves; this one is syscalls/entry#1.
+$ difftest syscalls entry
