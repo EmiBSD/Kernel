@@ -531,11 +531,11 @@ pub fn sys_nanosleep<G: ProcGlue>(
         error = Ok(());
     }
 
-    if !rmtp.is_null() {
-        if let Err(copyout_error) = rmtp.copyout(&request) {
-            error = Err(copyout_error);
-        }
-        // KTRACE: not configured.
+    // KTRACE of the remainder: not configured.
+    if !rmtp.is_null()
+        && let Err(copyout_error) = rmtp.copyout(&request)
+    {
+        error = Err(copyout_error);
     }
 
     error
