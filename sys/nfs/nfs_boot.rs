@@ -98,8 +98,6 @@ use core::sync::atomic::Ordering;
 #[cfg(feature = "nfsclient")]
 use libkern::StaticCell;
 
-#[cfg(feature = "nfsclient")]
-use crate::kern::kern_sysctl::{DOMAINNAME, DOMAINNAMELEN, HOSTNAME, HOSTNAMELEN};
 use crate::kern::subr_prf::panic;
 #[cfg(feature = "nfsclient")]
 use crate::kern::subr_prf::{Str, printf};
@@ -140,6 +138,10 @@ use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, SOCK_DGRAM};
 #[cfg(feature = "nfsclient")]
 use crate::sys::sockio::{SIOCAIFADDR, SIOCGIFFLAGS, SIOCSIFFLAGS};
+#[cfg(feature = "nfsclient")]
+use kernel::sysctl::{
+    DOMAINNAMELEN, HOSTNAMELEN, with_domainname_mut, with_hostname, with_hostname_mut,
+};
 
 /// `nfsbootdevname`: the name of the root device when booting from the network (a NUL-padded
 /// copy of `rootdv->dv_xname`), set by `setroot()` through [`set_nfsbootdevname`].
@@ -273,14 +275,13 @@ pub fn nfs_boot_init(nd: &mut NfsDiskless, procp: &Proc) -> Result<(), Errno> {
             e.as_i32()
         )),
     };
-    // SAFETY: HOSTNAME is written only by `bp_whoami` (above) and the kern.hostname sysctl,
-    // neither running concurrently with this single thread of control at boot.
-    let hostname = unsafe { HOSTNAME.get() };
-    printf(format_args!(
-        "nfs_boot: server_addr={} hostname={}\n",
-        Ipv4(bp_sin.sin_addr),
-        Str(hostname)
-    ));
+    with_hostname(|hostname| {
+        printf(format_args!(
+            "nfs_boot: server_addr={} hostname={}\n",
+            Ipv4(bp_sin.sin_addr),
+            Str(hostname)
+        ))
+    });
 
     nd.nd_boot = bp_sin;
 
@@ -483,14 +484,10 @@ fn bp_whoami_reply(
     bpsin.sin_port = (port as u16).to_be();
     bpsin.sin_addr.s_addr = u32::from_ne_bytes([sin[4], sin[5], sin[6], sin[7]]);
 
-    // SAFETY: HOSTNAME and DOMAINNAME are written only here and by the sysctl, neither
-    // running concurrently with this single thread of control at boot.
-    let (hostname, domainname) = unsafe { (HOSTNAME.get_mut(), DOMAINNAME.get_mut()) };
-
-    // client name
+    // client name (hostname and domainname under their locks: kernel::sysctl's)
     let mut len = MAXHOSTNAMELEN - 1;
     HOSTNAMELEN.store(len as i32, Ordering::Relaxed);
-    let Some(m1) = xdr_string_decode(m, hostname, &mut len) else {
+    let Some(m1) = with_hostname_mut(|hostname| xdr_string_decode(m, hostname, &mut len)) else {
         return Err(bad());
     };
     HOSTNAMELEN.store(len as i32, Ordering::Relaxed);
@@ -498,7 +495,8 @@ fn bp_whoami_reply(
     // domain name
     let mut len = MAXHOSTNAMELEN - 1;
     DOMAINNAMELEN.store(len as i32, Ordering::Relaxed);
-    let Some(m2) = xdr_string_decode(m1, domainname, &mut len) else {
+    let Some(m2) = with_domainname_mut(|domainname| xdr_string_decode(m1, domainname, &mut len))
+    else {
         return Err(bad());
     };
     DOMAINNAMELEN.store(len as i32, Ordering::Relaxed);
@@ -529,11 +527,12 @@ fn bp_getfile(
 ) -> Result<(), Errno> {
     // Build request message.
 
-    // client name (hostname)
-    //
-    // SAFETY: HOSTNAME is written only by `bp_whoami` and the sysctl, neither running
-    // concurrently with this single thread of control at boot.
-    let hostname = unsafe { HOSTNAME.get() };
+    // client name (hostname), a copy taken under its lock
+    let hostname = with_hostname(|h| {
+        let mut b = [0u8; MAXHOSTNAMELEN];
+        b.copy_from_slice(h);
+        b
+    });
     let hostnamelen = (HOSTNAMELEN.load(Ordering::Relaxed) as usize).min(hostname.len());
     let m = xdr_string_encode(&hostname[..hostnamelen]).ok_or(Errno::ENOMEM)?;
 
@@ -861,11 +860,15 @@ mod tests {
         assert_eq!(gw.s_addr, u32::from_ne_bytes([10, 0, 2, 1]));
         assert_eq!(bpsin.sin_port, 0x0801u16.to_be());
         assert_eq!(bpsin.sin_addr.s_addr, u32::from_ne_bytes([10, 0, 2, 2]));
-        // SAFETY: nothing else touches the hostname statics in this test.
-        let (host, dom) = unsafe { (HOSTNAME.get(), DOMAINNAME.get()) };
-        assert_eq!(cstr(host), b"client");
+        assert_eq!(
+            kernel::sysctl::with_hostname(|h| cstr(h).to_vec()),
+            b"client"
+        );
         assert_eq!(HOSTNAMELEN.load(Ordering::Relaxed), 6);
-        assert_eq!(cstr(dom), b"example.org");
+        assert_eq!(
+            kernel::sysctl::with_domainname(|d| cstr(d).to_vec()),
+            b"example.org"
+        );
         assert_eq!(DOMAINNAMELEN.load(Ordering::Relaxed), 11);
     }
 

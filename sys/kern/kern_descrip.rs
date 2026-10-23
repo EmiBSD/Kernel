@@ -358,6 +358,25 @@ impl FileGlue for BsdFileGlue {
     fn stat_copyout(st: &Stat, sb: usize) -> Result<(), Errno> {
         copyout(&st.to_bytes(), sb)
     }
+
+    fn getcwd(
+        vp: &'static Vnode,
+        path: &mut [u8],
+        bp: usize,
+        limit: i32,
+        p: &Proc,
+    ) -> Result<usize, Errno> {
+        let mut bp = bp;
+        crate::kern::vfs_getcwd::vfs_getcwd_common(
+            vp,
+            None,
+            Some((path, &mut bp)),
+            limit,
+            crate::sys::vnode::GETCWD_CHECK_ACCESS,
+            p,
+        )?;
+        Ok(bp)
+    }
 }
 
 /// `filedesc_init`: the pools of open files and descriptor tables. A host test calls it once

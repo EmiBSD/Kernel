@@ -687,6 +687,31 @@ impl ProcGlue for BsdProcGlue {
         sess.s_ttyp.get().map(|tp| tp.t_dev.get())
     }
 
+    fn session_tty(sess: &Session) -> Option<kernel::proc::SessionTty> {
+        sess.s_ttyp.get().map(|tp| kernel::proc::SessionTty {
+            dev: tp.t_dev.get(),
+            pgid: tp.pgrp().map(|pg| pg.pg_id.get()),
+            session_addr: tp.t_session.get().addr(),
+        })
+    }
+
+    fn pledge_sysctl(p: &Proc, mib: &[i32], new: usize) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_sysctl(p, mib, new)
+    }
+
+    fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
+        kernel::proc::UnveilState {
+            paths: !pr.ps_uvpaths.get().is_null(),
+            done: pr.ps_uvdone.get() != 0,
+        }
+    }
+
+    fn cpu_unit(n: usize) -> u64 {
+        crate::kern::kern_sched::cpu_info_by_number(n).map_or(n as u64, |ci| {
+            u64::from(<crate::machine::Machine as crate::machine::Cpu>::cpu_info_unit(ci))
+        })
+    }
+
     fn pmap_activate(p: &Proc) {
         crate::machine::pmap::pmap_activate(p);
     }

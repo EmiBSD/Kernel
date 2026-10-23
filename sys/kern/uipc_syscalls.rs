@@ -84,7 +84,6 @@ use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::kern_pledge::{pledge_fail, pledge_sendit, pledge_socket, pledge_sockopt};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_sig::ptsignal;
-use crate::kern::kern_sysctl::{DOMAINNAME, DOMAINNAMELEN};
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::sys_socket::{SOCKETOPS, fp_socket};
 use crate::kern::uipc_mbuf::{m_free, m_freem, m_get, m_getclr};
@@ -139,6 +138,7 @@ use crate::sys::types::{Register, Socklen};
 use crate::sys::uio::{Iovec, UIO_SMALLIOV, Uio, UioRw, UioSeg};
 use crate::sys::unistd::SEEK_SET;
 use crate::sys::vnode::{VREG, Vattr};
+use kernel::sysctl::{DOMAINNAMELEN, MAXHOSTNAMELEN, with_domainname};
 
 /// The size of `struct msghdr` in user space.
 const MSGHDR_SIZE: usize = size_of::<Msghdr>();
@@ -1701,9 +1701,12 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     let fdp = p.fd();
     let type_ = uap.r#type.get();
 
-    // SAFETY: `domainname` is written only by `kern.domainname` under `sysctl_lock`; this is
-    // a read of the bytes the C reads without a lock too.
-    let domainname = unsafe { DOMAINNAME.get() };
+    // A copy of `domainname`, under its lock (the C reads it without one).
+    let domainname = with_domainname(|d| {
+        let mut b = [0u8; MAXHOSTNAMELEN];
+        b.copy_from_slice(d);
+        b
+    });
     let dlen = (DOMAINNAMELEN.load(Ordering::Relaxed).max(0) as usize).min(domainname.len());
     let dname = &domainname[..dlen];
     let dname = &dname[..dname.iter().position(|&c| c == 0).unwrap_or(dname.len())];

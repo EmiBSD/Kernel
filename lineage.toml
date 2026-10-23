@@ -1671,7 +1671,7 @@ notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cp
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1818,7 +1818,8 @@ kind = "moved"
 [[module]]
 rust = "sys/arch/arm64/dev/mainbus.rs"
 lz = ["sys/arch/arm64/dev/mainbus.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/dev/pci_machdep.rs"
@@ -2998,7 +2999,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/acpi/dsdt.rs"
 lz = ["sys/dev/acpi/dsdt.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/dev/acpi/ipmi_acpi.rs"
@@ -3489,7 +3491,8 @@ adapted_by = ["sys/hal/softintr.rs"]
 [[module]]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -5014,7 +5017,8 @@ adapted_by = ["sys/crypto/siphash.rs"]
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_rrip.rs"
 lz = ["sys/isofs/cd9660/cd9660_rrip.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_util.rs"
@@ -5611,7 +5615,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs"]
 
 
 [[module]]
@@ -5911,7 +5915,8 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 [[module]]
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -5944,7 +5949,7 @@ status = "inherited"
 rust = "sys/kern/uipc_syscalls.rs"
 lz = ["sys/kern/uipc_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_usrreq.rs"
@@ -5956,7 +5961,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_bio.rs"
 lz = ["sys/kern/vfs_bio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/hal/thread.rs", "sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_biomem.rs"
@@ -6001,7 +6006,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_sync.rs"
@@ -6741,7 +6746,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/route.rs"
 lz = ["sys/net/route.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/sys/sysctl.rs"]
 notes = "M7b: every constant (RTF_* u32, RTM_* u8, RTA_* i32, RTAX_* usize, RTP_* u8, RTV_* u32), rt_kmetrics (Cells, rmx_mtu atomic, assign for the structure copy), rt_metrics, rtstat, rt_tableinfo, rt_msghdr, sockaddr_rtlabel/rtdns/rtstatic/rtsearch, enum rtstat_counters, ROUTE_FILTER, srtdnstosa; struct rtentry (&'static pool item, Cells and atomics, all-zero valid; rt_use/rt_expire/rt_locks/rt_mtu methods, ifa() panics without an address), rt_addrinfo (rti_flags u32), struct route (Cells; ro_dstsin6/ro_srcin6 are byte arrays until netinet6/in6.h, so wip), rttimer_queue, rttimer (private to route.c in C, here with its queue), rt_label, rtstat_inc (one atomic array: percpu.h not ported); MPLS/BFD/INET6 parts not configured; M9+: ro_dstsin6/ro_srcin6 are SockaddrIn6/In6Addr"
 
 [[module]]
@@ -6872,7 +6878,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_id.rs"
@@ -6882,7 +6889,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6976,7 +6984,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
@@ -7011,7 +7020,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
@@ -7067,7 +7077,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
@@ -7147,7 +7158,8 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
 [[module]]
 rust = "sys/nfs/nfs_boot.rs"
 lz = ["sys/nfs/nfs_boot.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_debug.rs"
@@ -7826,7 +7838,8 @@ notes = "N4.4: struct selinfo is sys/kernel/select.rs's Selinfo<G> (a kernel-loc
 [[module]]
 rust = "sys/sys/sensors.rs"
 lz = ["sys/sys/sensors.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/hal/sys/siginfo.rs"
@@ -7926,8 +7939,8 @@ license = "none"
 [[module]]
 rust = "sys/sys/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/sys/sysctl.rs"]
+status = "redesigned"
+notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats, cpustats and mbstat AbiPod through hal::abi_pod! here; 0 unsafe (LZ 17), forbid on its mod line"
 
 [[module]]
 rust = "sys/hal/sys/sysctl.rs"
@@ -8000,7 +8013,7 @@ status = "redesigned"
 rust = "sys/sys/tty.rs"
 lz = ["sys/sys/tty.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/sys/ttycom.rs"
@@ -10270,6 +10283,77 @@ crate = "kernel"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "redesigned"
 notes = "N4.6b: sysctl's core (N4.7b's SysctlNode/SysctlReq/rdquad/rdstruct kept): the helpers over hal::user::UserPtr, sys_sysctl and its dispatch over a registry of SysctlNodes (the lock sets and the error order the dispatcher's data), sysctl_vslock as the VsLock guard, kern and hw trees, sysctl_doproc and fill_kproc over kernel::proc (p_tsess for root only, N4.7 decision 8), proc_args over uvm_io into an MArray, proc_cwd over FileGlue::getcwd, disknames/diskstats owned by sysctl_disklock's Rwlocked through the DiskExport bridge, hostname/domainname Rwlocked, hw_vendor.. OnceStatics, cpu_cpuspeed and the BatteryCharge setters registered"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::PLEDGE_UNVEIL"
+native = ["sys/hal/sys/pledge.rs::PLEDGE_UNVEIL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::BatterySetFn"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::hw_battery_setchargemode"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::hw_battery_setchargestart"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::hw_battery_setchargestop"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKNAMES"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKNAMESLEN"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKSTATS"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKSTATSLEN"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::ARG_MAX"
+native = ["ARG_MAX_VAR"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::NGROUPS_MAX"
+native = ["NGROUPS_MAX_VAR"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::sysctl_vsunlock"
+native = ["VsLock::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::sysctl_msgbuf"
+native = ["sys/kernel/log.rs::sysctl_msgbuf"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::diskstats_mut"
+native = []
+kind = "dropped"
+reason = "the diskstats array is an MArray owned by sysctl_disklock's Rwlocked state (kernel::sysctl::DiskExports): its slice comes from the guard, no raw view"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

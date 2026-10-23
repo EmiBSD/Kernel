@@ -78,7 +78,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use crate::kern::kern_sysctl::{sysctl_vslock, sysctl_vsunlock};
+use crate::kern::kern_sysctl::sysctl_vslock;
 use crate::kern::kern_timeout::{timeout_add, timeout_add_msec, timeout_set_flags};
 use crate::kern::uipc_mbuf::{MAX_HDR, MAX_LINKHDR, MAX_PROTOHDR};
 use crate::kern::uipc_proto::UNIXDOMAIN;
@@ -264,13 +264,14 @@ pub fn net_sysctl(
             && let Some(sysctl) = pr.pr_sysctl
         {
             let savelen = *oldlenp;
-            if pr.pr_flags & PR_MPSYSCTL == 0 {
-                sysctl_vslock(oldp, savelen)?;
-            }
+            // sysctl_vsunlock(oldp, savelen) is the guard's drop.
+            let vs = if pr.pr_flags & PR_MPSYSCTL == 0 {
+                Some(sysctl_vslock(oldp, savelen)?)
+            } else {
+                None
+            };
             let error = sysctl(&name[2..], oldp, oldlenp, newp, newlen);
-            if pr.pr_flags & PR_MPSYSCTL == 0 {
-                sysctl_vsunlock(oldp, savelen);
-            }
+            drop(vs);
 
             return error;
         }

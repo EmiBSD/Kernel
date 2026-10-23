@@ -440,9 +440,11 @@
 //! LZ: sys/uvm/uvm_vnode.rs@3c62ede68802
 //! LZ: sys/uvm/uvm_km.rs@3c62ede68802
 //!
-//! - The bridges the kernel's vm reaches `bsd` through: [`BsdVmProc`] (`kernel::vm::proc::
-//!   VmProc`, curproc's facts) and [`BsdVmSysctl`] (`kernel::vm::meter::VmSysctl`, the
-//!   sysctl helpers, `nkmempages`, `averunnable`, `allproc`), one call of `bsd`'s each.
+//! - The bridge the kernel's vm reaches `bsd` through: [`BsdVmProc`] (`kernel::vm::proc::
+//!   VmProc`, curproc's facts), one call of `bsd`'s each. N4.6b: `BsdVmSysctl`
+//!   (`kernel::vm::meter::VmSysctl`) is gone: the sysctl helpers, `averunnable` and `allproc`
+//!   are the kernel's, `nkmempages` the `Malloc` bridge's, and `CTL_VM` is dispatched by
+//!   `kernel::sysctl`.
 //! - The fifteen `sysent[]` entries of the vm system calls (`sys_mmap`, ..., `sys_obreak`):
 //!   the `sysargs` unpacked and handed to `kernel::vm::mmap`/`unix` with the process's
 //!   address space; and their `Native` entries for the ABI module (`native_mmap`, ...,
@@ -452,7 +454,7 @@
 //! - `uvm_init` in the C's order around the kernel's two steps, `uvm_purge`, `uvm_exit`,
 //!   `uvm_init_limits`, `uvmspace_exec`'s install of a new vmspace and `fork1`'s
 //!   share-or-copy (operations on `struct proc`, `struct process` and `struct plimit`), the
-//!   u-area with the legacy pointer, and `uvm_sysctl` with `sysctl(2)`'s arguments.
+//!   u-area with the legacy pointer.
 //! - What `sys/uvm/`'s adapters kept for `bsd` (N3.3 to N3.4e), now here: the page system's
 //!   machine inputs (`uvm_page.c`: the segment policy and `uvm_page_physload`'s lines,
 //!   `uvm_page_init` over the machine's constraints with `BsdBufCacheStats`, `uvm_pagealloc`
@@ -501,7 +503,7 @@
 use core::ffi::c_void;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::malloc::MArray;
 use hal::syscall::SysResult;
@@ -514,7 +516,6 @@ use kernel::vm::anon::Anon;
 use kernel::vm::init::VmMachine;
 use kernel::vm::km::{KmemDynMode, KmemPaMode, KmemVaMode, NO_CONSTRAINT, pa_mode};
 use kernel::vm::map::{Vmspace as KVmspace, VmspaceRef, uvmspace_free, uvmspace_purge};
-use kernel::vm::meter::{ProcState, SysctlReq, VmSysctl};
 use kernel::vm::mmap::MmapArgs;
 use kernel::vm::object::{ObjRef, Object};
 use kernel::vm::page::{
@@ -528,15 +529,11 @@ use kernel::vm::vnode::{SysInfo, Uvn, VType, VnodeOps, install_sysinfo};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::fd_getfile;
-use crate::kern::kern_malloc::nkmempages;
 use crate::kern::kern_pledge::pledge_protexec;
 use crate::kern::kern_sig::{sigexit, trapsignal};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::kern_sysctl::{sysctl_int, sysctl_rdint, sysctl_rdstruct, sysctl_string};
 use crate::kern::kern_tc::getmicrouptime;
 use crate::kern::kern_xxx::REBOOTING;
-use crate::kern::proc_glue::proc_tables;
-use crate::kern::sched_bsd::averunnable;
 use crate::kern::subr_prf::{log, panic};
 use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
@@ -581,14 +578,8 @@ use crate::{kassert, kprintf};
 /// `curproc` as `kernel::vm` asks about it (`kernel::vm::proc::VmProc`).
 pub struct BsdVmProc;
 
-/// `CTL_VM`'s reach into `bsd` (`kernel::vm::meter::VmSysctl`).
-pub struct BsdVmSysctl;
-
 /// The registered process bridge.
 pub static BSD_VM_PROC: BsdVmProc = BsdVmProc;
-
-/// The registered sysctl bridge.
-pub static BSD_VM_SYSCTL: BsdVmSysctl = BsdVmSysctl;
 
 /// The machine's constants `kernel::vm` reads (`kernel::vm::init::VmMachine`), handed down
 /// by [`uvm_init`].
@@ -788,55 +779,6 @@ impl VmProc for BsdVmProc {
     }
 }
 
-impl VmSysctl for BsdVmSysctl {
-    fn rdint(&self, req: &mut SysctlReq<'_>, v: i32) -> Result<(), Errno> {
-        sysctl_rdint(req.oldp, req.oldlenp, req.newp, v)
-    }
-
-    fn int(&self, req: &mut SysctlReq<'_>, v: &mut i32) -> Result<(), Errno> {
-        let t = AtomicI32::new(*v);
-        let r = sysctl_int(req.oldp, req.oldlenp, req.newp, req.newlen, &t);
-        *v = t.into_inner();
-        r
-    }
-
-    fn rdstruct(&self, req: &mut SysctlReq<'_>, bytes: &[u8]) -> Result<(), Errno> {
-        sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, bytes)
-    }
-
-    fn rdstruct_uvmexp(
-        &self,
-        req: &mut SysctlReq<'_>,
-        uexp: &hal::vm::uvmexp::UvmexpCopy,
-    ) -> Result<(), Errno> {
-        sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, &uexp.to_ne_bytes())
-    }
-
-    fn string(&self, req: &mut SysctlReq<'_>, buf: &mut [u8]) -> Result<(), Errno> {
-        sysctl_string(req.oldp, req.oldlenp, req.newp, req.newlen, buf)
-    }
-
-    fn nkmempages(&self) -> i32 {
-        nkmempages() as i32
-    }
-
-    fn averunnable(&self) -> ([u32; 3], i64) {
-        let avg = averunnable();
-        (avg.ldavg, avg.fscale)
-    }
-
-    fn for_each_proc(&self, f: &mut dyn FnMut(ProcState)) {
-        let r = hal::klock::reader();
-        for p in proc_tables().allproc.iter(&r) {
-            let idle = kernel::sched::is_idle_thread(p);
-            f(ProcState {
-                stat: i32::from(p.stat()),
-                idle,
-            });
-        }
-    }
-}
-
 /// A `struct uio` as `uvm_io` moves bytes through it (`kernel::pipe::UioMove`): `uiomove`
 /// in the uio's own direction; no file, so never non-blocking.
 pub struct VmUio<'a, 'b>(pub &'a mut Uio<'b>);
@@ -857,26 +799,6 @@ impl UioMove for VmUio<'_, '_> {
     fn is_write(&self) -> bool {
         self.0.uio_rw == UioRw::UIO_WRITE
     }
-}
-
-/// `uvm_sysctl` with `sysctl(2)`'s arguments (`sys_sysctl`'s `CTL_VM` row): the kernel's
-/// over the request; the current process is `curproc` (`p`), which the kernel asks through
-/// `VmProc` (`VM_PSSTRINGS`).
-pub fn uvm_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    _p: &Proc,
-) -> Result<(), Errno> {
-    let mut req = SysctlReq {
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    };
-    kernel::vm::meter::uvm_sysctl(name, &mut req)
 }
 
 /// `sysent[]`'s `mquery(2)`.
@@ -1190,7 +1112,6 @@ pub fn uvm_init() {
     let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
     uvn_install_sysinfo();
     let _ = kernel::vm::proc::install(&BSD_VM_PROC);
-    let _ = kernel::vm::meter::install(&BSD_VM_SYSCTL);
     kernel::vm::init::uvm_machine_init(&VM_MACHINE);
 
     // Init the page sub-system. This includes allocating the vm_page structures, and setting
@@ -1876,30 +1797,6 @@ mod tests {
         assert_eq!(pin_check(&p, SYS_getpid as Register), Ok(()));
         // The table goes with its owner (the kernel test double's malloc).
         drop(pr.ps_libcpin.replace(kernel::proc::PinTable::NONE));
-    }
-
-    #[test]
-    fn the_vm_sysctls_go_through_the_kernel() {
-        let _g = setup_real_memory();
-        let _ = kernel::vm::meter::install(&BSD_VM_SYSCTL);
-        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
-        // No old buffer: sysctl_rdint answers the size of an int (VM_MAXSLP).
-        let mut len = 0usize;
-        assert_eq!(
-            uvm_sysctl(&[hal::vm::uvmexp::VM_MAXSLP], 0, &mut len, 0, 0, &p),
-            Ok(())
-        );
-        assert_eq!(len, core::mem::size_of::<i32>());
-        // A name below a terminal node is ENOTDIR, an unknown one EOPNOTSUPP.
-        let mut len = 0usize;
-        assert_eq!(
-            uvm_sysctl(&[hal::vm::uvmexp::VM_MAXSLP, 1], 0, &mut len, 0, 0, &p),
-            Err(Errno::ENOTDIR)
-        );
-        assert_eq!(
-            uvm_sysctl(&[hal::vm::uvmexp::VM_MAXID], 0, &mut len, 0, 0, &p),
-            Err(Errno::EOPNOTSUPP)
-        );
     }
 }
 /* </TESTS> */

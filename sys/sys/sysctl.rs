@@ -53,17 +53,29 @@
 /* <CODE> */
 //! Definitions for the `sysctl(2)` call: `<sys/sysctl.h>`. The ids, the name tables and the
 //! structures are `hal`'s header (`hal::sys::sysctl`), re-exported here; what stays is what
-//! names `bsd`: the `sysctlfn` prototype and the byte view of the structures `bsd`'s nodes
-//! copy out.
+//! names `bsd`: the `sysctlfn` prototype of the nodes still in `bsd`, and the byte view of
+//! the structures they copy out.
 //!
 //! Upstream: sys/sys/sysctl.h @ 3ce1f3f79392
+//! LZ: sys/sys/sysctl.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - The `sysctlfn` prototype is [`Sysctlfn`]: a name slice instead of `int *` plus `u_int`,
 //!   user addresses as `usize` for `oldp`/`newp`, and `Result<(), Errno>`. The other
-//!   prototypes are the functions in `kern/kern_sysctl.rs` and their subsystems.
-//! - [`SysctlPlain`] is not OpenBSD's: it marks the structures `sysctl_rdstruct` and
-//!   `sysctl_struct` may copy as bytes, which C does with a `void *` and a size.
+//!   prototypes are `kernel::sysctl`'s (`SysctlNode`) and their subsystems'.
+//! - [`SysctlPlain`] is not OpenBSD's: it gives the structures `sysctl_rdstruct` and
+//!   `sysctl_struct` copy their bytes, which C does with a `void *` and a size.
+//!
+//! ## Redesign
+//! - N4.6b: the header (ids, names, `kinfo_proc`, `kinfo_file`, `kinfo_vmentry`,
+//!   `sysctl_bounded_args`) is `hal::sys::sysctl`, shared with `kernel::sysctl`.
+//! - [`SysctlPlain`] is a safe trait implemented for every `hal::user::AbiPod` type (a
+//!   blanket impl), its byte views `hal::user::bytes_of` and `bytes_of_mut`: the `unsafe
+//!   trait`, its two `unsafe` byte views and its 12 `unsafe impl`s (LZ) are gone, and the
+//!   structures this side copies out (`struct timeval`, `struct clockinfo`, `struct
+//!   diskstats`, `struct cpustats`, `struct mbstat`) are `AbiPod` through `hal::abi_pod!`
+//!   here, which checks at compile time that their members tile them (the C's padding
+//!   holes are members, `ds_pad0`).
 
 use crate::sys::disk::Diskstats;
 use crate::sys::errno::Errno;
@@ -80,66 +92,71 @@ pub use hal::sys::sysctl::*;
 /// user addresses, 0 for the C's NULL.
 pub type Sysctlfn = fn(&[i32], usize, &mut usize, usize, usize, &Proc) -> Result<(), Errno>;
 
-/// A structure that `sysctl_rdstruct` and `sysctl_struct` may copy as raw bytes (not
-/// OpenBSD's: C passes a `void *` and a size).
-///
-/// # Safety
-///
-/// The implementor is `#[repr(C)]` (or a primitive, or an array of such), has no padding
-/// bytes, and every bit pattern is a valid value of it.
-pub unsafe trait SysctlPlain: Sized {
+/// A structure that `sysctl_rdstruct` and `sysctl_struct` copy as bytes (not OpenBSD's: C
+/// passes a `void *` and a size): every `hal::user::AbiPod` type, whose bytes are all
+/// initialised and any of whose bit patterns is a value.
+pub trait SysctlPlain: hal::user::AbiPod {
     /// The structure's bytes, as `copyout` reads them.
     fn as_bytes(&self) -> &[u8] {
-        // SAFETY: the trait's contract: no padding, so every byte is initialised, and the
-        // slice borrows `self` for its lifetime.
-        unsafe {
-            core::slice::from_raw_parts(
-                (self as *const Self).cast::<u8>(),
-                core::mem::size_of::<Self>(),
-            )
-        }
+        hal::user::bytes_of(core::slice::from_ref(self))
     }
 
     /// The structure's bytes, as `copyin` writes them.
     fn as_bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: the trait's contract: every bit pattern is a valid value, and the slice
-        // borrows `self` exclusively for its lifetime.
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                (self as *mut Self).cast::<u8>(),
-                core::mem::size_of::<Self>(),
-            )
-        }
+        hal::user::bytes_of_mut(core::slice::from_mut(self))
     }
 }
 
-// SAFETY: primitives have no padding and every bit pattern is valid.
-unsafe impl SysctlPlain for i32 {}
-// SAFETY: as for `i32`.
-unsafe impl SysctlPlain for u32 {}
-// SAFETY: as for `i32`.
-unsafe impl SysctlPlain for i64 {}
-// SAFETY: as for `i32`.
-unsafe impl SysctlPlain for u64 {}
-// SAFETY: an array of padding-free, any-bit-pattern elements is laid out without gaps.
-unsafe impl<T: SysctlPlain, const N: usize> SysctlPlain for [T; N] {}
-// SAFETY: `#[repr(C)]`, two 64-bit words (`time_t`, `suseconds_t` is a `long`), no padding.
-unsafe impl SysctlPlain for Timeval {}
-// SAFETY: `#[repr(C)]`, four `i32`s, no padding.
-unsafe impl SysctlPlain for Clockinfo {}
-// SAFETY: `#[repr(C)]` integers and byte arrays, the one C padding hole made a member
-// (`p_pad0`); the compile-time checks below pin the size and the offsets.
-unsafe impl SysctlPlain for KinfoProc {}
-// SAFETY: `#[repr(C)]` integers and byte arrays, the two C padding holes made members
-// (`kf_pad0`, `kf_pad1`); the compile-time checks below pin the size and the offsets.
-unsafe impl SysctlPlain for KinfoFile {}
-// SAFETY: `#[repr(C)]` integers, a byte array and `Timeval`s, the one C padding hole made a
-// member (`ds_pad0`); the compile-time checks below pin the size and the offsets.
-unsafe impl SysctlPlain for Diskstats {}
-// SAFETY: `#[repr(C)]`, seven `u64`s, no padding.
-unsafe impl SysctlPlain for Cpustats {}
-// SAFETY: `#[repr(C)]`, `u64`s only, no padding.
-unsafe impl SysctlPlain for Mbstat {}
+impl<T: hal::user::AbiPod> SysctlPlain for T {}
+
+// `struct timeval`: `time_t` and `suseconds_t` (a `long`), no padding.
+hal::abi_pod!(Timeval {
+    tv_sec: crate::sys::types::Time,
+    tv_usec: crate::sys::types::Suseconds,
+});
+
+// `struct clockinfo`: four `int`s.
+hal::abi_pod!(Clockinfo {
+    hz: i32,
+    tick: i32,
+    stathz: i32,
+    profhz: i32,
+});
+
+// `struct diskstats`: the C's one padding hole a member (`ds_pad0`).
+hal::abi_pod!(Diskstats {
+    ds_name: [u8; crate::sys::disk::DS_DISKNAMELEN],
+    ds_busy: i32,
+    ds_pad0: u32,
+    ds_rxfer: u64,
+    ds_wxfer: u64,
+    ds_seek: u64,
+    ds_rbytes: u64,
+    ds_wbytes: u64,
+    ds_attachtime: Timeval,
+    ds_timestamp: Timeval,
+    ds_time: Timeval,
+});
+
+// `struct cpustats`: seven `uint64_t`.
+hal::abi_pod!(Cpustats {
+    cs_time: [u64; crate::sys::sched::CPUSTATES],
+    cs_flags: u64,
+});
+
+// `struct mbstat`: `u_long`s only.
+hal::abi_pod!(Mbstat {
+    m_drops: u64,
+    m_wait: u64,
+    m_drain: u64,
+    m_mtypes: [u64; crate::sys::mbuf::MT_NTYPES],
+    m_defrag_alloc: u64,
+    m_prepend_alloc: u64,
+    m_pullup_alloc: u64,
+    m_pullup_copy: u64,
+    m_pulldown_alloc: u64,
+    m_pulldown_copy: u64,
+});
 
 const _: () = {
     use core::mem::{offset_of, size_of};
@@ -165,6 +182,18 @@ mod tests {
         let kf = KinfoFile::zeroed();
         assert_eq!(kf.as_bytes().len(), 632);
         assert_eq!(Cpustats::default().as_bytes().len(), 56);
+        assert_eq!(Diskstats::default().as_bytes().len(), 112);
+    }
+
+    #[test]
+    fn as_bytes_mut_writes_the_structure() {
+        let mut c = Clockinfo::default();
+        c.as_bytes_mut()[..4].copy_from_slice(&100i32.to_ne_bytes());
+        c.as_bytes_mut()[12..].copy_from_slice(&1024i32.to_ne_bytes());
+        assert_eq!((c.hz, c.profhz), (100, 1024));
+        let mut v = 0u64;
+        v.as_bytes_mut().copy_from_slice(&7u64.to_ne_bytes());
+        assert_eq!(v, 7);
     }
 }
 /* </TESTS> */

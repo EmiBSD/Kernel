@@ -51,9 +51,18 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The `sysctl(2)` system call and the `kern` and `hw` trees: `kern/kern_sysctl.c`. Also the
-//! helpers every subsystem's sysctl node is written with (`sysctl_int`, `sysctl_rdint`,
-//! `sysctl_string`, `sysctl_rdstruct`, `sysctl_bounded_arr`, ...).
+//! The `sysctl(2)` system call's `bsd` half: `kern/kern_sysctl.c` minus what moved into the
+//! kernel crate (`kernel::sysctl`: the dispatcher of `sys_sysctl`, `kern_sysctl` and
+//! `hw_sysctl`, the vslock, the nodes whose state is the kernel's, `kern.proc` and its
+//! siblings, the disk exports, the hostname). What stays here is what reaches subsystems
+//! still in `bsd`: `kern.file` (`kinfo_file` over the descriptors, vnodes, sockets and
+//! control blocks: N5, N6), the helpers every `bsd` node is written with (`sysctl_int`,
+//! `sysctl_rdint`, `sysctl_string`, `sysctl_rdstruct`, `sysctl_bounded_arr`, ...), and the
+//! registration of `bsd`'s nodes with the kernel's dispatcher
+//! ([`sysctl_register_legacy`]): the `net`, `vfs`, `machdep` and `ddb` trees, the `kern` and
+//! `hw` leaves and directories whose state is `bsd`'s (`kern.ostype`, `kern.clockrate`,
+//! `kern.mbstat`, `kern.cp_time`, `kern.tty`, `kern.timecounter`, `hw.sensors`,
+//! `hw.machine`, ...), their bounded integers, the disk list's export and `physmem`.
 //!
 //! Upstream: sys/kern/kern_sysctl.c @ 3ce1f3f79392
 //!
@@ -61,46 +70,20 @@
 //! `kern.version`, `kern.osversion` come from `conf/vers.rs`); `kern.osrevision` stays the
 //! `OpenBSD` API date of `<sys/param.h>`, which is what programs test.
 //!
-//! Real nodes: `kern.ostype`, `osrelease`, `osrevision`, `version`, `osversion`, `maxproc`,
-//! `maxfiles`, `argmax`, `securelevel`, `hostname`, `domainname`, `hostid`, `clockrate`,
-//! `posix1version`, `ngroups`, `job_control`, `saved_ids`, `boottime`, `maxpartitions`,
-//! `rawpartition`, `maxthread`, `nthreads`, `fsync`, `sysvmsg`/`sysvsem`/`sysvshm` (0: not
-//! configured), `msgbufsize`, `msgbuf`, `consbufsize`, `consbuf`, `cp_time`, `cp_time2`,
-//! `cpustats`, `forkstat`, `ccpu`, `fscale`, `nprocs`, `allowkmem`, `splassert`, `mbstat`,
-//! `proc` (`kinfo_proc`), `file` (`kinfo_file`), `proc_nobroadcastkill`, `maxclusters`,
-//! `wxabort`, `consdev`,
-//! `netlivelocks`, `pool_debug`, `timeout_stats`, `utc_offset`, `autoconf_serial`; `hw.machine`,
-//! `ncpu`, `ncpufound`, `ncpuonline`, `byteorder`, `physmem`, `usermem`, `physmem64`,
-//! `usermem64`, `pagesize`, `power`, `allowpowerdown`, `ucomnames`, `cpuspeed`, `battery.*`,
-//! `diskcount`, `disknames`, `diskstats`,
-//! `vendor`/`product`/`version`/`serialno`/`uuid` (whatever the machine recorded). The
-//! `vm` tree is `uvm/uvm_meter.rs`.
-//!
 //! ## Deviations
-//! - N4.2 (`kernel::proc`): `sysctl_doproc` reads a process's threads one at a time, by
-//!   position, each under the process's `ps_mtx` (dropped for the copyout), where the C
-//!   walks `ps_threads` under the kernel lock alone; a thread that joins or leaves between
-//!   two reads shifts the positions, as one that exits during the C's copyout sleep would.
 //! - Names are slices (`&[i32]`), `oldp`/`newp` user addresses as `usize` (0 is NULL),
-//!   `oldlenp` a `&mut usize` (every caller has one: `sys_sysctl` passes its `oldlen`), and
-//!   errors `Result<(), Errno>`. A string is `&[u8]` up to its first NUL, a writable string
-//!   `&mut [u8]` whose length is the C's `maxlen`; a structure is its bytes
-//!   ([`SysctlPlain`]). `int *valp` is `&AtomicI32`, the C's atomic operations on it are the
-//!   atomic's; a C local passed by address is an `AtomicI32` read back with `into_inner`.
-//! - Every node whose subsystem is not ported reports itself with `unported!` and fails with
-//!   `ENOSYS`: `clockintr`, `proc_vmmap` after its checks
-//!   (`fill_vmmap`); `hw.model` (`cpu_model`, `identcpu.c`/arm64 `cpu.c`),
-//!   `setperf`/`perfpolicy` (`sched_bsd.c`). The top-level `machdep` tree is the machine's
-//!   `cpu_sysctl` (`machine::cpu::cpu_sysctl`). `kern.proc_cwd` of a process
-//!   without a current directory (none has one before a root file system is mounted) is
-//!   `ENOENT`. `resettodr` after a new `kern.utc_offset` is reported and skipped.
-//! - Options this kernel does not configure are compiled out as in C: `DEBUG_SYSCTL`
-//!   (`debug_sysctl`, `CTL_DEBUG` is `EOPNOTSUPP`), `SYSVMSG`/`SYSVSEM`/`SYSVSHM`
-//!   (`sysctl_sysvipc`), `NAUDIO`/`NVIDEO`/`NDT` (0; `NUCOM` is configured: `hw.ucomnames` is `sysctl_ucominit`), `GPROF`, `WITNESS`,
-//!   `PTRACE` (`kern.global_ptrace`), `KTRACE` (the trace members of `kinfo_proc` stay
-//!   zero). `SMALL_KERNEL` is not set.
-//! - The kernel lock is taken at the C's sites (M11e), and `log_mtx` around the message
-//!   buffer header; sysctl(2) runs without the kernel lock (`SY_NOLOCK`), as in C.
+//!   `oldlenp` a `&mut usize`, and errors `Result<(), Errno>`. A string is `&[u8]` up to its
+//!   first NUL, a writable string `&mut [u8]` whose length is the C's `maxlen`; a structure is
+//!   its bytes ([`SysctlPlain`]). `int *valp` is `&AtomicI32`, the C's atomic operations on it
+//!   are the atomic's; a C local passed by address is an `AtomicI32` read back with
+//!   `into_inner`.
+//! - The helpers here copy through `bsd`'s `copyin`/`copyout` for the nodes still in `bsd`;
+//!   `kernel::sysctl` has the same helpers over `hal::user::UserPtr` for its own nodes (the
+//!   same machine routines through the `UserCopy` bridge). Each `bsd` node moves to the
+//!   kernel's with its subsystem.
+//! - `kern.clockintr` reports itself with `unported!` and fails with `ENOSYS`
+//!   (`sysctl_clockintr`, `kern_clockintr.c`); `resettodr` after a new `kern.utc_offset` is
+//!   reported and skipped.
 //! - `kern.file`: `fill_file` fills the `AF_INET` and `AF_INET6` (feature `inet6`) control
 //!   blocks and the TCP members (`fill_file_tcpcb`, zero for a control block without a
 //!   `tcpcb`). `KERN_FILE_BYFILE` of sockets walks `tcbtable`, `udbtable`, `rawcbtable`,
@@ -112,30 +95,18 @@
 //!   the walk and is returned once the references taken are dropped (the C's `break` only
 //!   left the macro's `do { } while (0)`, so its walk went on and a later `copyout` could
 //!   overwrite the error). `kinfo_file` is copied out as bytes, its two C padding holes
-//!   being members (`sys/sysctl.rs`).
-//! - `disknames`/`diskstats` are `AtomicPtr`s to their `M_SYSCTL` allocations, with their
-//!   lengths in `AtomicUsize`s, all under `sysctl_disklock`. `hw.disknames` and
-//!   `hw.diskstats` read them holding that lock for reading (the C reads them after
-//!   `sysctl_diskinit` let go of it, under the kernel lock), and `hw.diskstats` copies at
-//!   most `diskstatslen` bytes. `sysctl_diskinit` fills at most as many entries as it
-//!   allocated (the C trusts `disk_count` to match the list).
-//! - The morally-const values `sysctl_bounded_arr` reports (`arg_max`, `openbsd`, ...) are
-//!   `AtomicI32` statics like the C's `static int`s; `ccpu` is a constant in `sched_bsd.rs`,
-//!   so the table points at a read-only copy of it.
-//! - `hw_vendor`, `hw_prod`, `hw_uuid`, `hw_serial`, `hw_ver`, `hw_power` and the
-//!   `hw_battery_*` globals keep their lowercase C names: their uppercase spellings are the
-//!   `HW_*` sysctl ids of `<sys/sysctl.h>`.
+//!   being members (`hal::sys::sysctl`).
+//! - The morally-const values `sysctl_bounded_arr` reports (`openbsd`, `maxpartitions`,
+//!   `raw_part`) are `AtomicI32` statics like the C's `static int`s.
 //! - `KERN_CPTIME` with no CPU online (which only the host double can produce) leaves the
-//!   sums at zero instead of dividing by zero; an empty name (never from `sys_sysctl`, which
-//!   wants two components) is `EINVAL`.
+//!   sums at zero instead of dividing by zero.
 //! - `hw.sensors.<dev>.<type>.<numt>` with a `type` outside `enum sensor_type` finds no
 //!   sensor (`ENOENT`, after the device lookup's own errors), as the C's comparison would.
 
 use core::ops::ControlFlow;
-use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
-use libkern::{StaticCell, strlcpy, strnlen};
+use libkern::{strlcpy, strnlen};
 
 use crate::conf::param::{FSCALE, MAXFILES, MAXPROCESS, MAXTHREAD, NMBCLUST, UTC_OFFSET};
 use crate::conf::vers::{OSRELEASE, OSTYPE, OSVERSION, VERSION};
@@ -147,28 +118,18 @@ use crate::kern::kern_clock::sysctl_clockrate;
 use crate::kern::kern_descrip::{BsdFileData, NUMFILES, fd_getfile, fd_iterfile};
 use crate::kern::kern_event::kqueue_kinfo;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
-use crate::kern::kern_malloc::{free, malloc, mallocarray, sysctl_malloc};
-use crate::kern::kern_pledge::pledge_sysctl;
+use crate::kern::kern_malloc::sysctl_malloc;
 use crate::kern::kern_prot::suser;
-use crate::kern::kern_resource::{calctsru, tuagg_get_proc};
-use crate::kern::kern_rwlock::{
-    rw_enter, rw_enter_read, rw_enter_write, rw_exit_read, rw_exit_write,
-};
-use crate::kern::kern_sched::{
-    cpu_is_online, sysctl_hwblockcpu, sysctl_hwncpuonline, sysctl_hwsmt,
-};
+use crate::kern::kern_sched::{cpu_is_online, sysctl_hwblockcpu, sysctl_hwsmt};
 use crate::kern::kern_sensors::{sensor_find, sensordev_get};
 use crate::kern::kern_sig::NOSUIDCOREDUMP;
-use crate::kern::kern_tc::{microboottime, nanoboottime, nanotime, sysctl_tc, tc_setrealtimeclock};
-use crate::kern::kern_timeout::timeout_sysctl;
+use crate::kern::kern_tc::{microboottime, nanotime, sysctl_tc, tc_setrealtimeclock};
 use crate::kern::kern_watchdog::sysctl_wdog;
 use crate::kern::pipe_glue::pipe_kinfo;
-use crate::kern::proc_glue::{prfind_ref, proc_tables, process_ref};
-use crate::kern::sched_bsd;
+use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
 use crate::kern::subr_evcount::evcount_sysctl;
-use crate::kern::subr_log::Buf;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::sys_socket::fp_socket;
@@ -178,16 +139,13 @@ use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
 use crate::kern::vfs_bio::{BUFHIGHPAGES, bufadjust};
 use crate::kern::vfs_cache::NCHSTATS;
-use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_lockf::MAXLOCKSPERUID;
-use crate::kern::vfs_subr::{MAXVNODES, NUMVNODES, vfs_sysctl, vref, vrele};
+use crate::kern::vfs_subr::{MAXVNODES, NUMVNODES, vfs_sysctl};
 use crate::kern::vfs_vops::VOP_GETATTR;
-use crate::kern::vm_bsd::{VmUio, uvm_sysctl};
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::{Cpu, CpuInfo, cpu_info_foreach, curproc};
 use crate::machine::param::MachineInfo;
-use crate::machine::pmap::pmap_resident_count;
 use crate::netinet::in_::IPPROTO_TCP;
 use crate::netinet::in_pcb::{
     Inpcb, InpcbIterator, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort, in_pcbsolock,
@@ -200,42 +158,28 @@ use crate::netinet::tcp_var::intotcpcb;
 use crate::netinet::udp_usrreq::UDBTABLE;
 use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
-use crate::sys::exec::PsStrings;
 use crate::sys::fcntl::{FREAD, FWRITE};
 use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File, FileRef, frele};
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
-use crate::sys::malloc::{M_SYSCTL, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
-use crate::sys::mman::{PROT_READ, PROT_WRITE};
-use crate::sys::param::{MAXPATHLEN, MAXPHYS, NODEV, OpenBSD, PAGE_MASK, PAGE_SIZE};
-use crate::sys::proc::ProcExt;
-use crate::sys::proc::{
-    PS_CONTROLT, PS_EMBRYO, PS_EXITING, PS_INEXEC, PS_NOBROADCASTKILL, PS_PLEDGE, PS_SYSTEM,
-    PS_ZOMBIE, Proc, Process, ProcessRef, PsGuard, SDEAD, SIDL, SONPROC, SRUN, SSLEEP, SSTOP,
-    THREAD_PID_OFFSET, TU_ITICKS, TU_STICKS, TU_UTICKS, Tusage,
-};
+use crate::sys::param::{NODEV, OpenBSD};
+use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
 use crate::sys::queue::SlistHead;
-use crate::sys::resource::{RLIMIT_RSS, Rusage};
-use crate::sys::rwlock::{RW_INTR, RW_WRITE, Rwlock};
 use crate::sys::sched::{CPUSTATES, CPUSTATS_ONLINE, Cpustats};
 use crate::sys::sensors::{Sensor, SensorType, Sensordev};
 use crate::sys::socket::{AF_INET, AF_INET6, AF_UNIX, SOCK_RAW};
 use crate::sys::socketvar::{Socket, isspliced, issplicedback};
 use crate::sys::syscallargs::SysSysctlArgs;
 use crate::sys::sysctl::*;
-use crate::sys::syslimits;
 use crate::sys::systm::{
-    PHYSMEM, SysArgs, kernel_assert_locked, kernel_lock, kernel_unlock, net_lock_shared,
-    net_unlock_shared, sysargs,
+    SysArgs, kernel_lock, kernel_unlock, net_lock_shared, net_unlock_shared, sysargs,
 };
-use crate::sys::types::{Dev, Off, Register};
-use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
+use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
-use crate::sys::unistd::_POSIX_VERSION;
 use crate::sys::unpcb::{UnpRefs, sotounpcb};
-use crate::sys::vnode::{GETCWD_CHECK_ACCESS, Vattr, Vnode, VnodeUn, makeimode};
+use crate::sys::vnode::{Vattr, Vnode, VnodeUn, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
 use crate::{
@@ -243,15 +187,9 @@ use crate::{
     netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE,
 };
 use hal::klock;
-use hal::vm::param::atop;
-use hal::vm::uvmexp::UVMEXP;
-use kernel::fork::{FORKSTAT, NPROCESSES, NTHREADS};
-use kernel::vm::glue::{uvm_vslock, uvm_vsunlock};
-use kernel::vm::io::uvm_io;
+use hal::user::UserPtr;
+use kernel::sysctl::{RdString, SysctlNode, SysctlReq};
 use kernel::vm::km::NO_CONSTRAINT;
-use kernel::vm::map::VmspaceRef;
-use kernel::vm::map::{VmMap, uvmspace_free};
-use kernel::vm::mmap::UVM_WXABORT;
 use kernel::vm::page::uvm_pagecount;
 
 /// `MAXPARTITIONS` (`<machine/disklabel.h>`, 16 on amd64 and arm64): number of partitions.
@@ -259,857 +197,70 @@ use kernel::vm::page::uvm_pagecount;
 const MAXPARTITIONS_C: i32 = 16;
 /// `RAW_PART` (`<sys/disklabel.h>`): the 'c' partition.
 const RAW_PART_C: i32 = 2;
-/// `PLEDGE_UNVEIL` (`<sys/pledge.h>`, not ported): allow unveil().
-const PLEDGE_UNVEIL: u64 = 0x0000_0010_0000_0000;
-/// `BYTE_ORDER` (`<machine/endian.h>`): `LITTLE_ENDIAN` (1234) or `BIG_ENDIAN` (4321).
-const BYTE_ORDER_C: i32 = if cfg!(target_endian = "little") {
-    1234
-} else {
-    4321
+
+pub use kernel::sysctl::{
+    ALLOWKMEM, ALLOWPOWERDOWN, HOSTID, SECURELEVEL, SYSCTL_LOCK, hw_battery_chargemode,
+    hw_battery_chargestart, hw_battery_chargestop, hw_power, hw_prod, hw_serial, hw_uuid,
+    hw_vendor, hw_ver,
 };
-/// `KERN_PROCSLOP`: try over estimating by 5 procs.
-const KERN_PROCSLOP: usize = 5;
-/// `VMMAP_MAXLEN`: arbitrary but reasonable limit for one iteration.
-const VMMAP_MAXLEN: usize = MAXPHYS;
 
-/// `int (*)(int *)`: the type of `cpu_cpuspeed`, which stores the CPU's frequency in MHz.
-pub type CpuSpeedFn = fn(&mut i32) -> Result<(), Errno>;
-/// `int (*)(int)`: the type of the `hw_battery_set*` hooks a battery driver provides.
-pub type BatterySetFn = fn(i32) -> Result<(), Errno>;
-
-/// `sysctl_lock`: avoids too many processes vslocking a large amount of memory at the same
-/// time.
-pub static SYSCTL_LOCK: Rwlock = Rwlock::new("sysctllk");
-/// `sysctl_disklock`.
-pub static SYSCTL_DISKLOCK: Rwlock = Rwlock::new("sysctldlk");
-/// `disknames`: the `hw.disknames` string (`M_SYSCTL`), rebuilt by `sysctl_diskinit` under
-/// `sysctl_disklock`; null until the first call.
-static DISKNAMES: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
-/// `disknameslen`: the size of the `disknames` allocation.
-static DISKNAMESLEN: AtomicUsize = AtomicUsize::new(0);
-/// `diskstats`: the `hw.diskstats` array (`M_SYSCTL`), under `sysctl_disklock` like
-/// `disknames`.
-static DISKSTATS: AtomicPtr<Diskstats> = AtomicPtr::new(ptr::null_mut());
-/// `diskstatslen`: the size of the `diskstats` allocation in bytes.
-static DISKSTATSLEN: AtomicUsize = AtomicUsize::new(0);
-
-/// \[a\] `allowkmem`.
-pub static ALLOWKMEM: AtomicI32 = AtomicI32::new(0);
-/// `cpu_cpuspeed`: the machine's CPU frequency reader, if it has one.
-pub static CPU_CPUSPEED: StaticCell<Option<CpuSpeedFn>> = StaticCell::new(None);
-
-/// `hostname`. Protected by: `sysctl_lock` (written by `kern_sysctl_locked`).
-pub static HOSTNAME: StaticCell<[u8; crate::sys::param::MAXHOSTNAMELEN]> =
-    StaticCell::new([0; crate::sys::param::MAXHOSTNAMELEN]);
-/// `hostnamelen`.
-pub static HOSTNAMELEN: AtomicI32 = AtomicI32::new(0);
-/// `domainname`. Protected by: `sysctl_lock`.
-pub static DOMAINNAME: StaticCell<[u8; crate::sys::param::MAXHOSTNAMELEN]> =
-    StaticCell::new([0; crate::sys::param::MAXHOSTNAMELEN]);
-/// `domainnamelen`.
-pub static DOMAINNAMELEN: AtomicI32 = AtomicI32::new(0);
-/// `hostid`.
-pub static HOSTID: AtomicI32 = AtomicI32::new(0);
-/// `securelevel`: the system security level (`<sys/systm.h>` explains the levels).
-pub static SECURELEVEL: AtomicI32 = AtomicI32::new(0);
-
-/// `arg_max`: morally const, reported by `sysctl_bounded_arr`.
-static ARG_MAX: AtomicI32 = AtomicI32::new(syslimits::ARG_MAX as i32);
-/// `openbsd`.
+/// `openbsd`: morally const, reported by `sysctl_bounded_arr`.
 static OPENBSD: AtomicI32 = AtomicI32::new(OpenBSD as i32);
-/// `posix_version`.
-static POSIX_VERSION: AtomicI32 = AtomicI32::new(_POSIX_VERSION as i32);
-/// `ngroups_max`.
-static NGROUPS_MAX: AtomicI32 = AtomicI32::new(syslimits::NGROUPS_MAX as i32);
-/// `int_zero`.
-static INT_ZERO: AtomicI32 = AtomicI32::new(0);
-/// `int_one`.
-static INT_ONE: AtomicI32 = AtomicI32::new(1);
 /// `maxpartitions`.
 static MAXPARTITIONS: AtomicI32 = AtomicI32::new(MAXPARTITIONS_C);
 /// `raw_part`.
 static RAW_PART: AtomicI32 = AtomicI32::new(RAW_PART_C);
-/// `ccpu`, read-only (see the module's deviations).
-static CCPU: AtomicI32 = AtomicI32::new(sched_bsd::CCPU as i32);
 
-/// `kern_vars[]`: the `kern` integers `sysctl_bounded_arr` serves.
-static KERN_VARS: [SysctlBoundedArgs; 30] = [
+/// `kern_vars[]`, the entries whose variables are `bsd`'s (the kernel has the others):
+/// registered with the kernel's dispatcher, which searches its own entries first.
+static KERN_VARS: [SysctlBoundedArgs; 16] = [
     SysctlBoundedArgs::readonly(KERN_OSREV, &OPENBSD),
     SysctlBoundedArgs::new(KERN_MAXVNODES, &MAXVNODES, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXPROC, &MAXPROCESS, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXFILES, &MAXFILES, 0, i32::MAX),
     SysctlBoundedArgs::readonly(KERN_NFILES, &NUMFILES),
     SysctlBoundedArgs::readonly(KERN_TTYCOUNT, &TTY_COUNT),
-    SysctlBoundedArgs::readonly(KERN_ARGMAX, &ARG_MAX),
-    SysctlBoundedArgs::readonly(KERN_POSIX1, &POSIX_VERSION),
-    SysctlBoundedArgs::readonly(KERN_NGROUPS, &NGROUPS_MAX),
-    SysctlBoundedArgs::readonly(KERN_JOB_CONTROL, &INT_ONE),
-    SysctlBoundedArgs::readonly(KERN_SAVED_IDS, &INT_ONE),
     SysctlBoundedArgs::readonly(KERN_MAXPARTITIONS, &MAXPARTITIONS),
     SysctlBoundedArgs::readonly(KERN_RAWPARTITION, &RAW_PART),
     SysctlBoundedArgs::new(KERN_MAXTHREAD, &MAXTHREAD, 0, i32::MAX),
-    SysctlBoundedArgs::readonly(KERN_NTHREADS, &NTHREADS),
     SysctlBoundedArgs::new(KERN_SOMAXCONN, &somaxconn, 0, SHRT_MAX as i32),
     SysctlBoundedArgs::new(KERN_SOMINCONN, &sominconn, 0, SHRT_MAX as i32),
     SysctlBoundedArgs::new(KERN_NOSUIDCOREDUMP, &NOSUIDCOREDUMP, 0, 3),
-    SysctlBoundedArgs::readonly(KERN_FSYNC, &INT_ONE),
-    // SYSVMSG, SYSVSEM, SYSVSHM: not configured.
-    SysctlBoundedArgs::readonly(KERN_SYSVMSG, &INT_ZERO),
-    SysctlBoundedArgs::readonly(KERN_SYSVSEM, &INT_ZERO),
-    SysctlBoundedArgs::readonly(KERN_SYSVSHM, &INT_ZERO),
     SysctlBoundedArgs::readonly(KERN_FSCALE, &FSCALE),
-    SysctlBoundedArgs::readonly(KERN_CCPU, &CCPU),
-    SysctlBoundedArgs::readonly(KERN_NPROCS, &NPROCESSES),
     SysctlBoundedArgs::new(KERN_SPLASSERT, &SPLASSERT_CTL, 0, 3),
     SysctlBoundedArgs::new(KERN_MAXLOCKSPERUID, &MAXLOCKSPERUID, 0, i32::MAX),
-    SysctlBoundedArgs::new(KERN_WXABORT, &UVM_WXABORT, 0, 1),
-    SysctlBoundedArgs::readonly(KERN_NETLIVELOCKS, &INT_ZERO),
-    // KERN_GLOBAL_PTRACE: PTRACE is not configured.
     SysctlBoundedArgs::readonly(KERN_AUTOCONF_SERIAL, &AUTOCONF_SERIAL),
 ];
 
-/// `hw_vendor`: set by the machine when the firmware names it.
-#[allow(non_upper_case_globals)] // the C's name; `HW_VENDOR` is the sysctl id
-pub static hw_vendor: StaticCell<Option<&'static [u8]>> = StaticCell::new(None);
-/// `hw_prod`.
-#[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
-pub static hw_prod: StaticCell<Option<&'static [u8]>> = StaticCell::new(None);
-/// `hw_uuid`.
-#[allow(non_upper_case_globals)] // the C's name; `HW_UUID` is the sysctl id
-pub static hw_uuid: StaticCell<Option<&'static [u8]>> = StaticCell::new(None);
-/// `hw_serial`.
-#[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
-pub static hw_serial: StaticCell<Option<&'static [u8]>> = StaticCell::new(None);
-/// `hw_ver`.
-#[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
-pub static hw_ver: StaticCell<Option<&'static [u8]>> = StaticCell::new(None);
-/// `allowpowerdown`: allow the power button to shut the machine down.
-pub static ALLOWPOWERDOWN: AtomicI32 = AtomicI32::new(1);
-/// `hw_power`: the machine has wall power.
-#[allow(non_upper_case_globals)] // the C's name; `HW_POWER` is the sysctl id
-pub static hw_power: AtomicI32 = AtomicI32::new(1);
-
-/// `byte_order`: morally const, reported by `sysctl_bounded_arr`.
-static BYTE_ORDER: AtomicI32 = AtomicI32::new(BYTE_ORDER_C);
-
-/// `hw_vars[]`.
-static HW_VARS: [SysctlBoundedArgs; 6] = [
+/// `hw_vars[]`, the entries whose variables are `bsd`'s.
+static HW_VARS: [SysctlBoundedArgs; 3] = [
     SysctlBoundedArgs::readonly(HW_NCPU, &NCPUS),
     SysctlBoundedArgs::readonly(HW_NCPUFOUND, &NCPUSFOUND),
-    SysctlBoundedArgs::readonly(HW_BYTEORDER, &BYTE_ORDER),
-    SysctlBoundedArgs::readonly(HW_PAGESIZE, &UVMEXP.pagesize),
     SysctlBoundedArgs::readonly(HW_DISKCOUNT, &DISK_COUNT),
-    SysctlBoundedArgs::readonly(HW_POWER, &hw_power),
 ];
 
-/// `hw_battery_chargemode`.
-#[allow(non_upper_case_globals)] // the C's name; `HW_BATTERY_CHARGEMODE` is the sysctl id
-pub static hw_battery_chargemode: AtomicI32 = AtomicI32::new(0);
-/// `hw_battery_chargestart`.
-#[allow(non_upper_case_globals)] // the C's name; `HW_BATTERY_CHARGESTART` is the sysctl id
-pub static hw_battery_chargestart: AtomicI32 = AtomicI32::new(0);
-/// `hw_battery_chargestop`.
-#[allow(non_upper_case_globals)] // the C's name; `HW_BATTERY_CHARGESTOP` is the sysctl id
-pub static hw_battery_chargestop: AtomicI32 = AtomicI32::new(0);
-/// `hw_battery_setchargemode`: a battery driver's setter, if one attached.
-#[allow(non_upper_case_globals)] // the C's name, kept beside `hw_battery_chargemode`
-pub static hw_battery_setchargemode: StaticCell<Option<BatterySetFn>> = StaticCell::new(None);
-/// `hw_battery_setchargestart`.
-#[allow(non_upper_case_globals)] // the C's name, kept beside `hw_battery_chargestart`
-pub static hw_battery_setchargestart: StaticCell<Option<BatterySetFn>> = StaticCell::new(None);
-/// `hw_battery_setchargestop`.
-#[allow(non_upper_case_globals)] // the C's name, kept beside `hw_battery_chargestop`
-pub static hw_battery_setchargestop: StaticCell<Option<BatterySetFn>> = StaticCell::new(None);
-
-/// `sysctl_vslock`: takes `sysctl_lock` and wires the user buffer `[addr, addr + len)` so
-/// the copies under the lock cannot sleep on a fault. On success the caller owes a
-/// [`sysctl_vsunlock`].
-pub fn sysctl_vslock(addr: usize, len: usize) -> Result<(), Errno> {
-    rw_enter(&SYSCTL_LOCK, RW_WRITE | RW_INTR)?;
-    kernel_lock();
-
-    if addr != 0 {
-        let wired = UVMEXP.wired.load(Ordering::Relaxed);
-        let wiredmax = UVMEXP.wiredmax.load(Ordering::Relaxed);
-        let error = if atop(len) as i64 > i64::from(wiredmax) - i64::from(wired) {
-            Err(Errno::ENOMEM)
-        } else {
-            let Some(p) = curproc() else {
-                panic(format_args!("sysctl_vslock: no curproc"));
-            };
-            uvm_vslock(&p.vmspace().vm_map, addr, len, PROT_READ | PROT_WRITE)
-        };
-        if let Err(e) = error {
-            kernel_unlock();
-            rw_exit_write(&SYSCTL_LOCK);
-            return Err(e);
-        }
-    }
-
-    Ok(())
+/// `sysctl_vslock(addr, len)` for `curproc` (the network's protocol handlers that are not
+/// `PR_MPSYSCTL`): the kernel's [`kernel::sysctl::VsLock`], whose drop is `sysctl_vsunlock`.
+pub fn sysctl_vslock(addr: usize, len: usize) -> Result<kernel::sysctl::VsLock, Errno> {
+    let Some(p) = curproc() else {
+        panic(format_args!("sysctl_vslock: no curproc"));
+    };
+    kernel::sysctl::sysctl_vslock(p, addr, len)
 }
 
-/// `sysctl_vsunlock`: undoes [`sysctl_vslock`].
-pub fn sysctl_vsunlock(addr: usize, len: usize) {
-    kernel_assert_locked();
-
-    if addr != 0 {
-        let Some(p) = curproc() else {
-            panic(format_args!("sysctl_vsunlock: no curproc"));
-        };
-        uvm_vsunlock(&p.vmspace().vm_map, addr, len);
-    }
-    kernel_unlock();
-    rw_exit_write(&SYSCTL_LOCK);
-}
-
-/// `sysctl(2)`: reads and writes the variable `name` names. `old` (with `*oldlenp` bytes)
-/// receives the old value, `new` (`newlen` bytes) is the value to set.
+/// `sysctl(2)`'s `sysent[]` row: the kernel's [`kernel::sysctl::sys_sysctl`] with the
+/// system call's arguments.
 pub fn sys_sysctl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSysctlArgs = sysargs(v);
-    let namelen = uap.namelen.get() as usize;
-    let old = uap.old.get() as usize;
-    let oldlenp = uap.oldlenp.get() as usize;
-    let new = uap.new.get() as usize;
-    let newlen = uap.newlen.get();
-
-    if new != 0 {
-        suser(p)?;
-    }
-    // all top-level sysctl names are non-terminal
-    if !(2..=CTL_MAXNAME).contains(&namelen) {
-        return Err(Errno::EINVAL);
-    }
-    let mut name = [0i32; CTL_MAXNAME];
-    copyin(
-        uap.name.get() as usize,
-        &mut name.as_bytes_mut()[..namelen * size_of::<i32>()],
-    )?;
-    let name = &name[..namelen];
-
-    pledge_sysctl(p, name, new)?;
-
-    let (dolock, f): (bool, Sysctlfn) = match name[0] {
-        CTL_KERN => (false, kern_sysctl),
-        CTL_HW => (false, hw_sysctl),
-        CTL_NET => (false, crate::kern::uipc_domain::net_sysctl),
-        CTL_VM => (true, uvm_sysctl),
-        CTL_VFS => (true, vfs_sysctl),
-        CTL_MACHDEP => (false, crate::machine::cpu::cpu_sysctl),
-        // CTL_DEBUG: DEBUG_SYSCTL is not configured.
-        CTL_DDB => (false, crate::ddb::db_usrreq::ddb_sysctl),
-        _ => return Err(Errno::EOPNOTSUPP),
-    };
-
-    let mut oldlen: usize = 0;
-    if oldlenp != 0 {
-        let mut b = [0u8; size_of::<usize>()];
-        copyin(oldlenp, &mut b)?;
-        oldlen = usize::from_ne_bytes(b);
-    }
-
-    let mut savelen = 0;
-    if dolock {
-        sysctl_vslock(old, oldlen)?;
-        savelen = oldlen;
-    }
-    let error = f(&name[1..], old, &mut oldlen, new, newlen, p);
-    if dolock {
-        sysctl_vsunlock(old, savelen);
-    }
-
-    error?;
-    if oldlenp != 0 {
-        copyout(&oldlen.to_ne_bytes(), oldlenp)?;
-    }
-    Ok(())
-}
-
-/// `sysctl_bounded_arr(kern_vars, ...)`.
-fn kern_vars(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    sysctl_bounded_arr(&KERN_VARS, name, oldp, oldlenp, newp, newlen)
-}
-
-/// `kern_sysctl_dirs`: the non-terminal `kern` nodes that need no lock, then the others under
-/// `sysctl_lock`.
-fn kern_sysctl_dirs(
-    top_name: i32,
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    match top_name {
-        KERN_FILE => return sysctl_file(name, oldp, oldlenp, p),
-        KERN_MALLOCSTATS => return sysctl_malloc(name, oldp, oldlenp, newp, newlen),
-        KERN_CPTIME2 => return sysctl_cptime2(name, oldp, oldlenp, newp, newlen),
-        KERN_POOL => return sysctl_dopool(name, oldp, oldlenp),
-        KERN_CPUSTATS => return sysctl_cpustats(name, oldp, oldlenp, newp, newlen),
-        // KERN_SYSVIPC_INFO, KERN_SEMINFO, KERN_SHMINFO: SYSV* are not configured.
-        KERN_AUDIO => return sysctl_audio(name, oldp, oldlenp, newp, newlen),
-        // KERN_VIDEO: NVIDEO is 0.
-        _ => {}
-    }
-
-    let savelen = *oldlenp;
-    sysctl_vslock(oldp, savelen)?;
-    let error = kern_sysctl_dirs_locked(top_name, name, oldp, oldlenp, newp, newlen, p);
-    sysctl_vsunlock(oldp, savelen);
-
-    error
-}
-
-/// `kern_sysctl_dirs_locked`.
-fn kern_sysctl_dirs_locked(
-    top_name: i32,
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    match top_name {
-        KERN_PROC => sysctl_doproc(name, oldp, oldlenp),
-        KERN_PROC_ARGS => sysctl_proc_args(name, oldp, oldlenp, p),
-        KERN_PROC_CWD => sysctl_proc_cwd(name, oldp, oldlenp, p),
-        KERN_PROC_NOBROADCASTKILL => {
-            sysctl_proc_nobroadcastkill(name, newp, newlen, oldp, oldlenp, p)
-        }
-        KERN_PROC_VMMAP => sysctl_proc_vmmap(name, oldp, oldlenp, p),
-        KERN_INTRCNT => sysctl_intrcnt(name, oldp, oldlenp),
-        KERN_WATCHDOG => sysctl_wdog(name, oldp, oldlenp, newp, newlen),
-        KERN_EVCOUNT => evcount_sysctl(name, oldp, oldlenp, newp, newlen),
-        KERN_CLOCKINTR => Err(unported!(
-            "kern.clockintr: sysctl_clockintr (kern_clockintr.c)"
-        )),
-        KERN_TTY => sysctl_tty(name, oldp, oldlenp, newp, newlen),
-        // KERN_PROF: GPROF and DDBPROF are not configured.
-        KERN_TIMECOUNTER => sysctl_tc(name, oldp, oldlenp, newp, newlen),
-        // KERN_WITNESSWATCH, KERN_WITNESS: WITNESS is not configured.
-        _ => Err(Errno::ENOTDIR), // overloaded
-    }
-}
-
-/// `kern_sysctl`: kernel related system variables.
-pub fn kern_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    let [top, rest @ ..] = name else {
-        return Err(Errno::EINVAL);
-    };
-
-    // dispatch the non-terminal nodes first
-    if !rest.is_empty() {
-        return kern_sysctl_dirs(*top, rest, oldp, oldlenp, newp, newlen, p);
-    }
-
-    match *top {
-        KERN_OSTYPE => return sysctl_rdstring(oldp, oldlenp, newp, OSTYPE.as_bytes()),
-        KERN_OSRELEASE => return sysctl_rdstring(oldp, oldlenp, newp, OSRELEASE.as_bytes()),
-        KERN_OSVERSION => return sysctl_rdstring(oldp, oldlenp, newp, OSVERSION.as_bytes()),
-        KERN_VERSION => return sysctl_rdstring(oldp, oldlenp, newp, VERSION.as_bytes()),
-        KERN_CONSBUF | KERN_MSGBUF => {
-            if *top == KERN_CONSBUF {
-                suser(p)?;
-            }
-            let which = if *top == KERN_MSGBUF {
-                Buf::Msgbuf
-            } else {
-                Buf::Consbuf
-            };
-            return sysctl_msgbuf(which, oldp, oldlenp, newp);
-        }
-        KERN_CONSBUFSIZE | KERN_MSGBUFSIZE => {
-            let which = if *top == KERN_MSGBUFSIZE {
-                Buf::Msgbuf
-            } else {
-                Buf::Consbuf
-            };
-
-            // deal with cases where the message buffer has become corrupted (ENXIO).
-            let bufs = kernel::log::msgbuf_size(which)?;
-            return sysctl_rdint(oldp, oldlenp, newp, bufs as i32);
-        }
-        // KERN_ALLOWDT: NDT is 0.
-        KERN_HOSTID => return sysctl_int(oldp, oldlenp, newp, newlen, &HOSTID),
-        KERN_CLOCKRATE => return sysctl_clockrate(oldp, oldlenp, newp),
-        KERN_ALLOWKMEM => {
-            return sysctl_securelevel_int(oldp, oldlenp, newp, newlen, &ALLOWKMEM);
-        }
-        KERN_NUMVNODES => {
-            // XXX numvnodes is a long
-            return sysctl_rdint(
-                oldp,
-                oldlenp,
-                newp,
-                NUMVNODES.load(Ordering::Relaxed) as i32,
-            );
-        }
-        KERN_BOOTTIME => {
-            let bt = microboottime();
-            return sysctl_rdstruct(oldp, oldlenp, newp, bt.as_bytes());
-        }
-        KERN_MAXCLUSTERS => {
-            let oldval = NMBCLUST.load(Ordering::Relaxed) as i32;
-            let newval = AtomicI32::new(oldval);
-            let mut error = sysctl_int(oldp, oldlenp, newp, newlen, &newval);
-            let newval = newval.into_inner();
-
-            if error.is_ok() && oldval != newval {
-                rw_enter_write(&SYSCTL_LOCK);
-                error = nmbclust_update(i64::from(newval));
-                rw_exit_write(&SYSCTL_LOCK);
-            }
-
-            return error;
-        }
-        KERN_MBSTAT => {
-            let mut counters = [0u64; MBS_NCOUNTERS];
-            crate::kern::subr_percpu::counters_read(mbstat(), &mut counters, MBS_NCOUNTERS, None);
-            let mut mbs = Mbstat::default();
-            mbs.m_mtypes.copy_from_slice(&counters[..MT_NTYPES]);
-            mbs.m_drops = counters[MbstatCounters::MbsDrops as usize];
-            mbs.m_wait = counters[MbstatCounters::MbsWait as usize];
-            mbs.m_drain = counters[MbstatCounters::MbsDrain as usize];
-            mbs.m_defrag_alloc = counters[MbstatCounters::MbsDefragAlloc as usize];
-            mbs.m_prepend_alloc = counters[MbstatCounters::MbsPrependAlloc as usize];
-            mbs.m_pullup_alloc = counters[MbstatCounters::MbsPullupAlloc as usize];
-            mbs.m_pullup_copy = counters[MbstatCounters::MbsPullupCopy as usize];
-            mbs.m_pulldown_alloc = counters[MbstatCounters::MbsPulldownAlloc as usize];
-            mbs.m_pulldown_copy = counters[MbstatCounters::MbsPulldownCopy as usize];
-            return sysctl_rdstruct(oldp, oldlenp, newp, mbs.as_bytes());
-        }
-        KERN_CPTIME => {
-            let mut cp_time = [0i64; CPUSTATES];
-            let mut n = 0i64;
-
-            cpu_info_foreach(&mut |ci| {
-                if !cpu_is_online(ci) {
-                    return;
-                }
-
-                n += 1;
-                let ci_cp_time = sysctl_ci_cp_time(ci);
-                for (sum, t) in cp_time.iter_mut().zip(ci_cp_time) {
-                    *sum += t as i64;
-                }
-            });
-
-            if n > 0 {
-                for t in &mut cp_time {
-                    *t /= n;
-                }
-            }
-
-            return sysctl_rdstruct(oldp, oldlenp, newp, cp_time.as_bytes());
-        }
-        KERN_POOL_DEBUG => {
-            let oldval = POOL_DEBUG.load(Ordering::Relaxed);
-            let newval = AtomicI32::new(oldval);
-
-            let error = sysctl_int(oldp, oldlenp, newp, newlen, &newval);
-            let newval = newval.into_inner();
-            if error.is_ok()
-                && oldval != newval
-                && POOL_DEBUG
-                    .compare_exchange(oldval, newval, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-            {
-                pool_reclaim_all();
-            }
-
-            return error;
-        }
-        KERN_TIMEOUT_STATS => return timeout_sysctl(oldp, oldlenp, newp, newlen),
-        KERN_MAXPROC | KERN_MAXFILES | KERN_NFILES | KERN_TTYCOUNT | KERN_ARGMAX | KERN_POSIX1
-        | KERN_NGROUPS | KERN_JOB_CONTROL | KERN_SAVED_IDS | KERN_FSYNC | KERN_SYSVMSG
-        | KERN_SYSVSEM | KERN_SYSVSHM | KERN_SOMAXCONN | KERN_SOMINCONN | KERN_NOSUIDCOREDUMP
-        | KERN_WXABORT | KERN_NETLIVELOCKS | KERN_GLOBAL_PTRACE | KERN_AUTOCONF_SERIAL
-        | KERN_OSREV | KERN_MAXPARTITIONS | KERN_RAWPARTITION | KERN_MAXTHREAD | KERN_NTHREADS
-        | KERN_FSCALE | KERN_CCPU | KERN_NPROCS => {
-            return kern_vars(name, oldp, oldlenp, newp, newlen);
-        }
-        _ => {}
-    }
-
-    let savelen = *oldlenp;
-    sysctl_vslock(oldp, savelen)?;
-    let error = kern_sysctl_locked(name, oldp, oldlenp, newp, newlen, p);
-    sysctl_vsunlock(oldp, savelen);
-
-    error
-}
-
-/// The `KERN_MSGBUF`/`KERN_CONSBUF` case of `kern_sysctl`: the header, then the ring
-/// (the kernel's buffers, `kernel::log`).
-fn sysctl_msgbuf(which: Buf, oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
-    kernel::log::sysctl_msgbuf(which, oldp, oldlenp, newp)
-}
-
-/// `kern_sysctl_locked`: the `kern` leaves served under `sysctl_lock`.
-fn kern_sysctl_locked(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    match name[0] {
-        KERN_SECURELVL => sysctl_securelevel(oldp, oldlenp, newp, newlen, p),
-        KERN_HOSTNAME => {
-            // SAFETY: `sysctl_lock` is held for writing (`kern_sysctl` took it through
-            // `sysctl_vslock`), which is what serialises every access to `hostname`.
-            let hostname = unsafe { HOSTNAME.get_mut() };
-            let error = sysctl_tstring(oldp, oldlenp, newp, newlen, hostname);
-            if newp != 0 && error.is_ok() {
-                HOSTNAMELEN.store(newlen as i32, Ordering::Relaxed);
-            }
-            error
-        }
-        KERN_DOMAINNAME => {
-            let error = if SECURELEVEL.load(Ordering::Relaxed) >= 1
-                && DOMAINNAMELEN.load(Ordering::Relaxed) != 0
-                && newp != 0
-            {
-                Err(Errno::EPERM)
-            } else {
-                // SAFETY: as for `hostname`: `sysctl_lock` is held for writing.
-                let domainname = unsafe { DOMAINNAME.get_mut() };
-                sysctl_tstring(oldp, oldlenp, newp, newlen, domainname)
-            };
-            if newp != 0 && error.is_ok() {
-                DOMAINNAMELEN.store(newlen as i32, Ordering::Relaxed);
-            }
-            error
-        }
-        KERN_NCHSTATS => {
-            let mut bytes = [0u8; 12 * size_of::<u64>()];
-            for (chunk, v) in bytes.chunks_mut(size_of::<u64>()).zip(NCHSTATS.snapshot()) {
-                chunk.copy_from_slice(&v.to_ne_bytes());
-            }
-            sysctl_rdstruct(oldp, oldlenp, newp, &bytes)
-        }
-        KERN_FORKSTAT => {
-            // struct forkstat: four ints, then four uint64_t.
-            let mut fs = [0u8; 48];
-            let cnt = [
-                FORKSTAT.cntfork.load(Ordering::Relaxed),
-                FORKSTAT.cntvfork.load(Ordering::Relaxed),
-                FORKSTAT.cnttfork.load(Ordering::Relaxed),
-                FORKSTAT.cntkthread.load(Ordering::Relaxed),
-            ];
-            let siz = [
-                FORKSTAT.sizfork.load(Ordering::Relaxed),
-                FORKSTAT.sizvfork.load(Ordering::Relaxed),
-                FORKSTAT.siztfork.load(Ordering::Relaxed),
-                FORKSTAT.sizkthread.load(Ordering::Relaxed),
-            ];
-            fs[..16].copy_from_slice(cnt.as_bytes());
-            fs[16..].copy_from_slice(siz.as_bytes());
-            sysctl_rdstruct(oldp, oldlenp, newp, &fs)
-        }
-        KERN_STACKGAPRANDOM => {
-            use crate::kern::kern_exec::stackgap_random;
-
-            let stackgap = AtomicI32::new(stackgap_random.load(Ordering::Relaxed));
-            sysctl_int(oldp, oldlenp, newp, newlen, &stackgap)?;
-            let stackgap = stackgap.into_inner();
-            // Safety harness.
-            let alignbytes =
-                <crate::machine::Machine as crate::machine::param::MachineParam>::ALIGNBYTES;
-            let maxssiz = <crate::machine::Machine as crate::machine::VmParam>::MAXSSIZ;
-            if (stackgap < alignbytes as i32 && stackgap != 0)
-                || (stackgap.wrapping_sub(1) & stackgap) != 0
-                || stackgap as i64 >= maxssiz as i64
-            {
-                return Err(Errno::EINVAL);
-            }
-            stackgap_random.store(stackgap, Ordering::Relaxed);
-            Ok(())
-        }
-        KERN_CACHEPCT => {
-            use crate::conf::param::{bufcachepercent, bufpages};
-
-            let opct = bufcachepercent.load(Ordering::Relaxed);
-            sysctl_int(oldp, oldlenp, newp, newlen, &bufcachepercent)?;
-            let pct = bufcachepercent.load(Ordering::Relaxed);
-            if !(5..=90).contains(&pct) {
-                bufcachepercent.store(opct, Ordering::Relaxed);
-                return Err(Errno::EINVAL);
-            }
-            let pages = uvm_pagecount(&NO_CONSTRAINT) as u64;
-            if pct != opct {
-                let pgs = (pct as u64 * pages / 100) as i32;
-                bufadjust(i64::from(pgs)); // adjust bufpages
-                // set high water mark
-                BUFHIGHPAGES.store(bufpages.load(Ordering::Relaxed), Ordering::Relaxed);
-            }
-            Ok(())
-        }
-        KERN_PFSTATUS => crate::net::pf_ioctl::pf_sysctl(oldp, oldlenp, newp, newlen),
-        KERN_CONSDEV => {
-            let dev = cn_tab().map_or(NODEV, |cn| cn.cn_dev.get());
-            sysctl_rdstruct(oldp, oldlenp, newp, dev.as_bytes())
-        }
-        KERN_UTC_OFFSET => sysctl_utc_offset(oldp, oldlenp, newp, newlen),
-        _ => kern_vars(name, oldp, oldlenp, newp, newlen),
-    }
-}
-
-/// `hw_sysctl`: hardware related system variables.
-pub fn hw_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    let Some(&top) = name.first() else {
-        return Err(Errno::EINVAL);
-    };
-
-    // all sysctl names at this level except sensors and battery are terminal
-    if top != HW_SENSORS && top != HW_BATTERY && name.len() != 1 {
-        return Err(Errno::ENOTDIR); // overloaded
-    }
-
-    let physmem = PHYSMEM.load(Ordering::Relaxed) as i64;
-    let wired = i64::from(UVMEXP.wired.load(Ordering::Relaxed));
-
-    match top {
-        HW_MACHINE => sysctl_rdstring(oldp, oldlenp, newp, Machine::MACHINE.as_bytes()),
-        HW_MODEL => Err(unported!(
-            "hw.model: cpu_model (amd64 identcpu.c, arm64 cpu.c)"
-        )),
-        HW_NCPUONLINE => sysctl_rdint(oldp, oldlenp, newp, sysctl_hwncpuonline() as i32),
-        HW_PHYSMEM => sysctl_rdint(oldp, oldlenp, newp, (physmem * PAGE_SIZE as i64) as i32),
-        HW_USERMEM => sysctl_rdint(
-            oldp,
-            oldlenp,
-            newp,
-            ((physmem - wired) * PAGE_SIZE as i64) as i32,
-        ),
-        HW_SENSORS => sysctl_sensors(&name[1..], oldp, oldlenp, newp, newlen),
-        HW_DISKNAMES | HW_DISKSTATS | HW_CPUSPEED | HW_SETPERF | HW_PERFPOLICY | HW_BATTERY
-        | HW_ALLOWPOWERDOWN | HW_UCOMNAMES | HW_SMT | HW_BLOCKCPU => {
-            let savelen = *oldlenp;
-            sysctl_vslock(oldp, savelen)?;
-            let err = hw_sysctl_locked(name, oldp, oldlenp, newp, newlen, p);
-            sysctl_vsunlock(oldp, savelen);
-            err
-        }
-        HW_VENDOR => hw_string(&hw_vendor, oldp, oldlenp, newp),
-        HW_PRODUCT => hw_string(&hw_prod, oldp, oldlenp, newp),
-        HW_VERSION => hw_string(&hw_ver, oldp, oldlenp, newp),
-        HW_SERIALNO => hw_string(&hw_serial, oldp, oldlenp, newp),
-        HW_UUID => hw_string(&hw_uuid, oldp, oldlenp, newp),
-        HW_PHYSMEM64 => sysctl_rdquad(oldp, oldlenp, newp, physmem * PAGE_SIZE as i64),
-        HW_USERMEM64 => sysctl_rdquad(oldp, oldlenp, newp, (physmem - wired) * PAGE_SIZE as i64),
-        _ => sysctl_bounded_arr(&HW_VARS, name, oldp, oldlenp, newp, newlen),
-    }
-}
-
-/// The `HW_VENDOR`.. `HW_UUID` cases of `hw_sysctl`: the string, or `EOPNOTSUPP` when the
-/// machine recorded none.
-fn hw_string(
-    var: &StaticCell<Option<&'static [u8]>>,
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-) -> Result<(), Errno> {
-    // SAFETY: the machine writes these once, at attach time on the boot CPU, before any
-    // process can call sysctl(2).
-    match unsafe { var.read() } {
-        Some(s) => sysctl_rdstring(oldp, oldlenp, newp, s),
-        None => Err(Errno::EOPNOTSUPP),
-    }
-}
-
-/// `hw_sysctl_locked`: the `hw` nodes served under `sysctl_lock`.
-fn hw_sysctl_locked(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    match name[0] {
-        HW_DISKNAMES => {
-            sysctl_diskinit(false, p)?;
-            rw_enter_read(&SYSCTL_DISKLOCK);
-            let names = match NonNull::new(DISKNAMES.load(Ordering::Relaxed)) {
-                // SAFETY: the `disknameslen` bytes `sysctl_diskinit` allocated, which it
-                // replaces only under the lock taken for reading here.
-                Some(n) => unsafe {
-                    core::slice::from_raw_parts(n.as_ptr(), DISKNAMESLEN.load(Ordering::Relaxed))
-                },
-                None => &[],
-            };
-            let err = sysctl_rdstring(oldp, oldlenp, newp, names);
-            rw_exit_read(&SYSCTL_DISKLOCK);
-            err
-        }
-        HW_DISKSTATS => {
-            sysctl_diskinit(true, p)?;
-            rw_enter_read(&SYSCTL_DISKLOCK);
-            let len = (DISK_COUNT.load(Ordering::Relaxed).max(0) as usize * size_of::<Diskstats>())
-                .min(DISKSTATSLEN.load(Ordering::Relaxed));
-            let stats = match NonNull::new(DISKSTATS.load(Ordering::Relaxed)) {
-                // SAFETY: `len` bytes of the `diskstatslen`-byte array `sysctl_diskinit`
-                // allocated and filled (zeroed, padding a member: every byte initialised),
-                // which it replaces only under the lock taken for reading here.
-                Some(sdk) => unsafe { core::slice::from_raw_parts(sdk.as_ptr().cast::<u8>(), len) },
-                None => &[],
-            };
-            let err = sysctl_rdstruct(oldp, oldlenp, newp, stats);
-            rw_exit_read(&SYSCTL_DISKLOCK);
-            err
-        }
-        HW_CPUSPEED => {
-            // SAFETY: the machine sets `cpu_cpuspeed` while attaching its CPUs, before any
-            // process runs.
-            let Some(cpu_cpuspeed) = (unsafe { CPU_CPUSPEED.read() }) else {
-                return Err(Errno::EOPNOTSUPP);
-            };
-            let mut cpuspeed = 0;
-            cpu_cpuspeed(&mut cpuspeed)?;
-            sysctl_rdint(oldp, oldlenp, newp, cpuspeed)
-        }
-        HW_SETPERF => Err(unported!("hw.setperf: sysctl_hwsetperf (sched_bsd.c)")),
-        HW_PERFPOLICY => Err(unported!(
-            "hw.perfpolicy: sysctl_hwperfpolicy (sched_bsd.c)"
-        )),
-        HW_ALLOWPOWERDOWN => sysctl_securelevel_int(oldp, oldlenp, newp, newlen, &ALLOWPOWERDOWN),
-        HW_UCOMNAMES => {
-            let names = sysctl_ucominit();
-            sysctl_rdstring(oldp, oldlenp, newp, names.as_bytes())
-        }
-        HW_SMT => sysctl_hwsmt(oldp, oldlenp, newp, newlen),
-        HW_BLOCKCPU => sysctl_hwblockcpu(oldp, oldlenp, newp, newlen),
-        HW_BATTERY => sysctl_hwbattery(&name[1..], oldp, oldlenp, newp, newlen),
-        _ => Err(Errno::EOPNOTSUPP),
-    }
-}
-
-/// The common body of `sysctl_hwchargemode`, `sysctl_hwchargestart` and
-/// `sysctl_hwchargestop`.
-#[allow(clippy::too_many_arguments)] // the C's arguments plus the variable, setter and bounds
-fn sysctl_hwcharge(
-    var: &AtomicI32,
-    setter: &StaticCell<Option<BatterySetFn>>,
-    minimum: i32,
-    maximum: i32,
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    // SAFETY: a battery driver sets its setter at attach time, before any process runs.
-    let Some(set) = (unsafe { setter.read() }) else {
-        return Err(Errno::EOPNOTSUPP);
-    };
-    let value = AtomicI32::new(var.load(Ordering::Relaxed));
-
-    sysctl_int_bounded(oldp, oldlenp, newp, newlen, &value, minimum, maximum)?;
-
-    if newp != 0 {
-        set(value.into_inner())?;
-    }
-    Ok(())
-}
-
-/// `sysctl_hwchargemode`.
-pub fn sysctl_hwchargemode(
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    sysctl_hwcharge(
-        &hw_battery_chargemode,
-        &hw_battery_setchargemode,
-        -1,
-        1,
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
+    kernel::sysctl::sys_sysctl::<BsdProcGlue>(
+        p,
+        UserPtr::new(uap.name.get() as usize),
+        uap.namelen.get() as u32,
+        uap.old.get() as usize,
+        UserPtr::new(uap.oldlenp.get() as usize),
+        uap.new.get() as usize,
+        uap.newlen.get(),
     )
-}
-
-/// `sysctl_hwchargestart`.
-pub fn sysctl_hwchargestart(
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    sysctl_hwcharge(
-        &hw_battery_chargestart,
-        &hw_battery_setchargestart,
-        0,
-        100,
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    )
-}
-
-/// `sysctl_hwchargestop`.
-pub fn sysctl_hwchargestop(
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    sysctl_hwcharge(
-        &hw_battery_chargestop,
-        &hw_battery_setchargestop,
-        0,
-        100,
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    )
-}
-
-/// `sysctl_hwbattery`: the `hw.battery` node.
-pub fn sysctl_hwbattery(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let [mib] = name else {
-        return Err(Errno::ENOTDIR);
-    };
-
-    match *mib {
-        HW_BATTERY_CHARGEMODE => sysctl_hwchargemode(oldp, oldlenp, newp, newlen),
-        HW_BATTERY_CHARGESTART => sysctl_hwchargestart(oldp, oldlenp, newp, newlen),
-        HW_BATTERY_CHARGESTOP => sysctl_hwchargestop(oldp, oldlenp, newp, newlen),
-        _ => Err(Errno::EOPNOTSUPP),
-    }
 }
 
 /// `sysctl_int_lower`: reads, or writes that lower the value.
@@ -1180,51 +331,6 @@ pub fn sysctl_rdint(oldp: usize, oldlenp: &mut usize, newp: usize, val: i32) -> 
     if oldp != 0 {
         copyout(&val.to_ne_bytes(), oldp)?;
     }
-    Ok(())
-}
-
-/// `sysctl_securelevel`: `kern.securelevel`, which only init (pid 1) may lower once raised.
-fn sysctl_securelevel(
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-    p: &Proc,
-) -> Result<(), Errno> {
-    if oldp != 0 && *oldlenp < size_of::<i32>() {
-        return Err(Errno::ENOMEM);
-    }
-    if newp != 0 && newlen != size_of::<i32>() {
-        return Err(Errno::EINVAL);
-    }
-    *oldlenp = size_of::<i32>();
-
-    if newp != 0 {
-        let mut b = [0u8; 4];
-        copyin(newp, &mut b)?;
-        let newval = i32::from_ne_bytes(b);
-        let mut oldval = SECURELEVEL.load(Ordering::Relaxed);
-        loop {
-            if (oldval > 0 || newval < -1) && newval < oldval && p.process().ps_pid != 1 {
-                return Err(Errno::EPERM);
-            }
-            match SECURELEVEL.compare_exchange(oldval, newval, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                Ok(_) => break,
-                Err(current) => oldval = current,
-            }
-        }
-
-        if oldp != 0 {
-            // new value has been set although user gets error
-            copyout(&oldval.to_ne_bytes(), oldp)?;
-        }
-    } else if oldp != 0 {
-        let oldval = SECURELEVEL.load(Ordering::Relaxed);
-
-        copyout(&oldval.to_ne_bytes(), oldp)?;
-    }
-
     Ok(())
 }
 
@@ -2093,836 +1199,9 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
     error
 }
 
-/// `sysctl_doproc`: the `kern.proc` node, an array of `kinfo_proc` (`name` is op, arg,
-/// element size, element count).
-pub fn sysctl_doproc(name: &[i32], where_: usize, sizep: &mut usize) -> Result<(), Errno> {
-    let mut dp = where_;
-    let mut buflen = if where_ != 0 { *sizep } else { 0 };
-    let mut needed: usize = 0;
-
-    let [op, arg, elem_size, elem_count] = *name else {
-        return Err(Errno::EINVAL);
-    };
-    if elem_size <= 0 || elem_count < 0 || elem_size as usize > size_of::<KinfoProc>() {
-        return Err(Errno::EINVAL);
-    }
-    let elem_size = elem_size as usize;
-    let mut elem_count = elem_count;
-
-    let dothreads = op & KERN_PROC_SHOW_THREADS != 0;
-    let op = op & !KERN_PROC_SHOW_THREADS;
-
-    let show_pointers = curproc().is_some_and(|cp| suser(cp).is_ok());
-
-    let mut kproc = KinfoProc::zeroed();
-
-    // The lists under the kernel lock's reader (`sysctl_vslock` took the lock and wired the
-    // user buffer, so the copyouts do not sleep); a process's threads under its `ps_mtx`, one
-    // at a time, its entry filled under the mutex and copied out after it.
-    let r = klock::reader();
-    let t = proc_tables();
-    for list in [&t.allprocess, &t.zombprocess] {
-        for pr in list.iter(&r) {
-            // XXX skip processes in the middle of being created or zapped
-            if pr.pgrp(&r).is_none() {
-                continue;
-            }
-
-            // Skip embryonic processes.
-            let flags = pr.ps_flags.load(Ordering::Relaxed);
-            if flags & PS_EMBRYO != 0 {
-                continue;
-            }
-
-            if !doproc_matches(&r, pr, op, arg)? {
-                continue;
-            }
-
-            if buflen >= elem_size && elem_count > 0 {
-                {
-                    let g = pr.ps_mtx.lock();
-                    fill_kproc(&r, pr, &mut kproc, None, show_pointers, &g);
-                }
-                copyout(&kproc.as_bytes()[..elem_size], dp)?;
-                dp += elem_size;
-                buflen -= elem_size;
-                elem_count -= 1;
-            }
-            needed += elem_size;
-
-            // Skip per-thread entries if not required by op
-            if !dothreads {
-                continue;
-            }
-
-            let mut i = 0;
-            loop {
-                let more = {
-                    let g = pr.ps_mtx.lock();
-                    match pr.ps_threads.iter(&g).nth(i) {
-                        None => false,
-                        Some(p) => {
-                            if buflen >= elem_size && elem_count > 0 {
-                                fill_kproc(&r, pr, &mut kproc, Some(p), show_pointers, &g);
-                            }
-                            true
-                        }
-                    }
-                };
-                if !more {
-                    break;
-                }
-                if buflen >= elem_size && elem_count > 0 {
-                    copyout(&kproc.as_bytes()[..elem_size], dp)?;
-                    dp += elem_size;
-                    buflen -= elem_size;
-                    elem_count -= 1;
-                }
-                needed += elem_size;
-                i += 1;
-            }
-        }
-    }
-
-    if where_ != 0 {
-        *sizep = dp - where_;
-        if needed > *sizep {
-            return Err(Errno::ENOMEM);
-        }
-    } else {
-        needed += KERN_PROCSLOP * elem_size;
-        *sizep = needed;
-    }
-    Ok(())
-}
-
-/// The `switch (op)` of `sysctl_doproc`: whether `pr` is selected; `EINVAL` for an unknown
-/// op.
-fn doproc_matches(r: &klock::KernelReader, pr: &Process, op: i32, arg: i32) -> Result<bool, Errno> {
-    // A process in a list has its pgrp and session until process_zap, and the caller
-    // skipped the ones without a pgrp.
-    let sess = pr.session(r);
-    Ok(match op {
-        // could do this with just a lookup
-        KERN_PROC_PID => pr.ps_pid == arg,
-        // could do this by traversing pgrp
-        KERN_PROC_PGRP => pr.pgid(r) == arg,
-        KERN_PROC_SESSION => sess.and_then(|s| s.leader_pid()) == Some(arg),
-        KERN_PROC_TTY => {
-            if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0 {
-                false
-            } else {
-                sess.and_then(|s| s.s_ttyp.get())
-                    .is_some_and(|tp| tp.t_dev.get() == arg as Dev)
-            }
-        }
-        KERN_PROC_UID => pr.ucred().cr_uid.get() == arg as u32,
-        KERN_PROC_RUID => pr.ucred().cr_ruid.get() == arg as u32,
-        KERN_PROC_ALL => pr.ps_flags.load(Ordering::Relaxed) & PS_SYSTEM == 0,
-        // no filtering
-        KERN_PROC_KTHREAD => true,
-        _ => return Err(Errno::EINVAL),
-    })
-}
-
-/// `_getcompatprio` (`<sys/sysctl.h>`): the priority `ps(1)` shows.
-fn getcompatprio(p: &Proc) -> u8 {
-    match p.stat() {
-        SRUN => p.p_runpri.get(),
-        SSLEEP => p.p_slppri.get(),
-        _ => p.p_usrpri.get(),
-    }
-}
-
 /// `PTRTOINT64` (`<sys/sysctl.h>`).
 fn ptrtoint64<T>(x: *const T) -> u64 {
     x as usize as u64
-}
-
-/// `W_EXITCODE` (`<sys/wait.h>`, not ported).
-const fn w_exitcode(ret: u32, sig: i32) -> u32 {
-    (ret << 8) | sig as u32
-}
-
-/// `fill_kproc`: fills in a `kinfo_proc` for process `pr`, or for its thread `p`, under the
-/// kernel lock's reader (`r`) and the process's `ps_mtx` (`g`, the C's `PR_LOCK` taken for
-/// the whole fill: the thread list is the mutex's).
-pub fn fill_kproc(
-    r: &klock::KernelReader,
-    pr: &Process,
-    ki: &mut KinfoProc,
-    p: Option<&Proc>,
-    show_pointers: bool,
-    g: &PsGuard<'_>,
-) {
-    let flags = pr.ps_flags.load(Ordering::Relaxed);
-    // The callers skip processes without a pgrp; a group has a session.
-    let pg = pr.pgrp(r);
-    let s = pg.and_then(|pg| pg.session(r));
-
-    // exiting/zombie process might no longer have VM space.
-    let mut vm: Option<VmspaceRef> = None;
-    if flags & PS_EXITING == 0 {
-        // vm = pr->ps_vmspace; uvmspace_addref(vm): a process that is not exiting holds
-        // its vmspace, and the reference keeps it while it is read.
-        vm = g.vmspace.clone();
-    }
-
-    let tu = Tusage::new();
-    let isthread = p.is_some();
-    let p: &Proc = match p {
-        Some(p) => {
-            tuagg_get_proc(&tu, p);
-            p
-        }
-        None => {
-            // The process's main thread, its slot's, under the caller's ps_mtx (a process
-            // keeps it until process_zap).
-            let Some(mainp) = pr.main_thread(g) else {
-                panic(format_args!("fill_kproc: process without a main thread"));
-            };
-            let mainp: &Proc = mainp.get_ref();
-            // tuagg_get_process(&tu, pr), under the caller's ps_mtx.
-            tu.clear();
-            crate::kern::kern_resource::tuagg_sumup(&tu, &pr.ps_tu);
-            for t in pr.ps_threads.iter(g) {
-                crate::kern::kern_resource::tuagg_sumup(&tu, &t.p_tu);
-            }
-            mainp
-        }
-    };
-    let Some(uc) = g.cred.clone() else {
-        panic(format_args!("fill_kproc: process without credentials"));
-    };
-
-    // FILL_KPROC(ki, strlcpy, p, pr, pr->ps_ucred, pr->ps_pgrp, p, pr, s, vm,
-    //     pr->ps_limit, pr->ps_sigacts, &tu, isthread, show_pointers)
-    *ki = KinfoProc::zeroed();
-
-    if show_pointers {
-        ki.p_paddr = ptrtoint64(p);
-        ki.p_fd = pr.fd_opt().map_or(0, |fdp| fdp.addr() as u64);
-        ki.p_limit = pr.limit_word() as u64;
-        ki.p_vmspace = pr.vmspace_word() as u64;
-        ki.p_sigacts = pr
-            .sigacts_opt()
-            .map_or(0, |sa| ptrtoint64(ptr::from_ref(sa)));
-        ki.p_sess = s.map_or(0, |s| ptrtoint64(ptr::from_ref(s)));
-        ki.p_ru = pr
-            .ps_ru
-            .get(r)
-            .as_ref()
-            .map_or(0, |ru| ptrtoint64(ptr::from_ref::<Rusage>(ru)));
-    }
-    ki.p_stats = 0;
-    ki.p_exitsig = 0;
-    ki.p_flag = p.p_flag.load(Ordering::Relaxed);
-    ki.p_pid = pr.ps_pid;
-    ki.p_psflags = flags;
-
-    ki.p__pgid = pg.map_or(0, |pg| pg.pg_id.get());
-
-    ki.p_uid = uc.cr_uid.get();
-    ki.p_ruid = uc.cr_ruid.get();
-    ki.p_gid = uc.cr_gid.get();
-    ki.p_rgid = uc.cr_rgid.get();
-    ki.p_svuid = uc.cr_svuid.get();
-    ki.p_svgid = uc.cr_svgid.get();
-
-    for (dst, g) in ki.p_groups.iter_mut().zip(&uc.cr_groups) {
-        *dst = g.get();
-    }
-    ki.p_ngroups = uc.cr_ngroups.get();
-
-    ki.p_jobc = pg.map_or(0, |pg| pg.pg_jobc.get()) as i16;
-
-    ki.p_estcpu = p.p_estcpu.get();
-    if isthread {
-        ki.p_tid = p.p_tid.get() + THREAD_PID_OFFSET;
-        strlcpy(&mut ki.p_name, &p.name());
-    } else {
-        ki.p_tid = -1;
-    }
-    let runtime = tu.tu_runtime.get();
-    ki.p_rtime_sec = runtime.tv_sec as u32;
-    ki.p_rtime_usec = (runtime.tv_nsec / 1000) as u32;
-    ki.p_uticks = tu.tu_ticks[TU_UTICKS].get();
-    ki.p_sticks = tu.tu_ticks[TU_STICKS].get();
-    ki.p_iticks = tu.tu_ticks[TU_ITICKS].get();
-    ki.p_cpticks = p.p_cpticks.get() as i32;
-
-    // p_tracep, p_traceflag: KTRACE is not configured.
-
-    ki.p_siglist =
-        (p.p_siglist.load(Ordering::Relaxed) | pr.ps_siglist.load(Ordering::Relaxed)) as i32;
-    ki.p_sigmask = p.p_sigmask.get();
-
-    // PR_LOCK(pr): the caller's.
-    ki.p_ppid = pr.ps_ppid.get();
-    if let Some(sa) = pr.sigacts_opt() {
-        let m = sa.get(g);
-        ki.p_sigignore = m.ps_sigignore;
-        ki.p_sigcatch = m.ps_sigcatch;
-    }
-
-    // A process holds a reference to its limits; ps_mtx keeps them from changing.
-    if let Some(lim) = g.limit.as_ref() {
-        ki.p_rlim_rss_cur = lim.pl_rlimit[RLIMIT_RSS].rlim_cur;
-    }
-    // PR_UNLOCK(pr): the caller's.
-
-    ki.p_stat = p.stat() as i8;
-    ki.p_nice = pr.ps_nice.get();
-
-    ki.p_xstat = w_exitcode(pr.ps_xexit.get(), pr.ps_xsig.get()) as u16;
-    ki.p_acflag = pr.ps_acflag.get();
-    ki.p_pledge = pr.ps_pledge.load(Ordering::Relaxed);
-
-    strlcpy(&mut ki.p_emul, b"native");
-    strlcpy(&mut ki.p_comm, &pr.comm());
-    if let Some(s) = s {
-        strlcpy(&mut ki.p_login, s.s_login.get(r));
-
-        if s.s_ttyvp.get().is_some() {
-            ki.p_eflag |= EPROC_CTTY;
-        }
-    }
-    if !pr.ps_uvpaths.get().is_null() {
-        ki.p_eflag |= EPROC_UNVEIL;
-    }
-    if pr.ps_uvdone.get() != 0
-        || (flags & PS_PLEDGE != 0 && pr.ps_pledge.load(Ordering::Relaxed) & PLEDGE_UNVEIL == 0)
-    {
-        ki.p_eflag |= EPROC_LKUNVEIL;
-    }
-
-    if flags & (PS_EMBRYO | PS_ZOMBIE) == 0 {
-        if let Some(vm) = vm.as_deref() {
-            ki.p_vm_rssize = vm.vm_rssize.load(Ordering::Relaxed);
-            ki.p_vm_tsize = vm.vm_tsize.load(Ordering::Relaxed);
-            ki.p_vm_dsize = vm.vm_dused.load(Ordering::Relaxed);
-            ki.p_vm_ssize = vm.vm_ssize.load(Ordering::Relaxed);
-        }
-        ki.p_stat = p.stat() as i8;
-        ki.p_slptime = p.p_slptime.get();
-        ki.p_holdcnt = 1;
-        ki.p_priority = getcompatprio(p);
-        ki.p_usrpri = p.p_usrpri.get();
-        if !p.wchan().is_null()
-            && let Some(wmesg) = p.p_wmesg.get()
-        {
-            strlcpy(&mut ki.p_wmesg, wmesg.as_bytes());
-        }
-        if show_pointers {
-            ki.p_wchan = ptrtoint64(p.wchan());
-            ki.p_addr = ptrtoint64(p.uarea());
-        }
-    }
-
-    if flags & PS_ZOMBIE == 0 {
-        ki.p_uvalid = 1;
-
-        let ru = &p.p_ru;
-        ki.p_uru_maxrss = ru.ru_maxrss.get() as u64;
-        ki.p_uru_ixrss = ru.ru_ixrss.get() as u64;
-        ki.p_uru_idrss = ru.ru_idrss.get() as u64;
-        ki.p_uru_isrss = ru.ru_isrss.get() as u64;
-        ki.p_uru_minflt = ru.ru_minflt.get() as u64;
-        ki.p_uru_majflt = ru.ru_majflt.get() as u64;
-        ki.p_uru_nswap = ru.ru_nswap.get() as u64;
-        ki.p_uru_inblock = ru.ru_inblock.get() as u64;
-        ki.p_uru_oublock = ru.ru_oublock.get() as u64;
-        ki.p_uru_msgsnd = ru.ru_msgsnd.get() as u64;
-        ki.p_uru_msgrcv = ru.ru_msgrcv.get() as u64;
-        ki.p_uru_nsignals = ru.ru_nsignals.get() as u64;
-        ki.p_uru_nvcsw = ru.ru_nvcsw.get() as u64;
-        ki.p_uru_nivcsw = ru.ru_nivcsw.get() as u64;
-
-        let tv = pr.ps_cru.ru_utime.get().add(pr.ps_cru.ru_stime.get());
-        ki.p_uctime_sec = tv.tv_sec as u32;
-        ki.p_uctime_usec = tv.tv_usec as u32;
-    }
-
-    ki.p_cpuid = KI_NOCPU;
-    ki.p_rtableid = pr.ps_rtableid.load(Ordering::Relaxed);
-    // end of FILL_KPROC
-
-    // stuff that's too painful to generalize into the macros
-    if let Some(leader) = s.and_then(|s| s.leader_pid()) {
-        ki.p_sid = leader;
-    }
-
-    if let Some(tp) = s.and_then(|s| s.s_ttyp.get())
-        && flags & PS_CONTROLT != 0
-    {
-        ki.p_tdev = tp.t_dev.get() as u32;
-        ki.p_tpgid = tp.pgrp().map_or(-1, |pg| pg.pg_id.get());
-        ki.p_tsess = tp.t_session.get() as u64;
-    } else {
-        ki.p_tdev = NODEV as u32;
-        ki.p_tpgid = -1;
-    }
-
-    // fixups that can only be done in the kernel
-    if flags & PS_EXITING == 0 {
-        if flags & PS_EMBRYO == 0
-            && let Some(vm) = vm.as_deref()
-        {
-            ki.p_vm_rssize = pmap_resident_count(vm.vm_map.pmap()) as i32;
-        }
-        let (ut, st, _) = calctsru(&tu);
-        ki.p_uutime_sec = ut.tv_sec as u32;
-        ki.p_uutime_usec = (ut.tv_nsec / 1000) as u32;
-        ki.p_ustime_sec = st.tv_sec as u32;
-        ki.p_ustime_usec = (st.tv_nsec / 1000) as u32;
-
-        // Convert starting uptime to a starting UTC time.
-        let booted = nanoboottime();
-        let utc = crate::sys::time::timespecadd(&booted, &pr.ps_start.get().into());
-        ki.p_ustart_sec = utc.tv_sec as u64;
-        ki.p_ustart_usec = (utc.tv_nsec / 1000) as u32;
-
-        #[cfg(feature = "multiprocessor")]
-        if let Some(ci) = p.cpu() {
-            ki.p_cpuid = u64::from(Machine::cpu_info_unit(ci));
-        }
-    }
-
-    if let Some(vm) = vm {
-        uvmspace_free(vm);
-    }
-
-    // get %cpu and schedule state: just one thread or sum of all?
-    if isthread {
-        ki.p_pctcpu = p.p_pctcpu.load(Ordering::Relaxed);
-        ki.p_stat = p.stat() as i8;
-    } else {
-        ki.p_pctcpu = 0;
-        let mut stat = if flags & PS_EXITING != 0 { SDEAD } else { SIDL };
-        for t in pr.ps_threads.iter(g) {
-            ki.p_pctcpu += t.p_pctcpu.load(Ordering::Relaxed);
-            // find best state: ONPROC > RUN > STOP > SLEEP > ..
-            let ts = t.stat();
-            if ts == SONPROC || stat == SONPROC {
-                stat = SONPROC;
-            } else if ts == SRUN || stat == SRUN {
-                stat = SRUN;
-            } else if ts == SSTOP || stat == SSTOP {
-                stat = SSTOP;
-            } else if ts == SSLEEP {
-                stat = SSLEEP;
-            }
-        }
-        ki.p_stat = stat as i8;
-    }
-}
-
-/// `sysctl_proc_args`: `kern.procargs.<pid>.<op>`: the victim's argument or environment
-/// strings (or their count), read from its address space with `uvm_io`.
-pub fn sysctl_proc_args(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    cp: &Proc,
-) -> Result<(), Errno> {
-    if name.len() > 2 {
-        return Err(Errno::ENOTDIR);
-    }
-    let [pid, op] = *name else {
-        return Err(Errno::EINVAL);
-    };
-
-    match op {
-        KERN_PROC_ARGV | KERN_PROC_NARGV | KERN_PROC_ENV | KERN_PROC_NENV => {}
-        _ => return Err(Errno::EOPNOTSUPP),
-    }
-
-    let Some(vpr) = prfind_ref(pid) else {
-        return Err(Errno::ESRCH);
-    };
-
-    if oldp == 0 {
-        *oldlenp = if op == KERN_PROC_NARGV || op == KERN_PROC_NENV {
-            size_of::<i32>()
-        } else {
-            syslimits::ARG_MAX // XXX XXX XXX
-        };
-        return Ok(());
-    }
-
-    let flags = vpr.ps_flags.load(Ordering::Relaxed);
-    // Either system process or exiting/zombie
-    if flags & (PS_SYSTEM | PS_EXITING) != 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    // Execing - danger.
-    if flags & PS_INEXEC != 0 {
-        return Err(Errno::EBUSY);
-    }
-
-    // Only owner or root can get env
-    if (op == KERN_PROC_NENV || op == KERN_PROC_ENV)
-        && vpr.ucred().cr_uid.get() != cp.ucred().cr_uid.get()
-    {
-        suser(cp)?;
-    }
-
-    let ps_strings = vpr.ps_strings.get();
-    // vm = vpr->ps_vmspace; uvmspace_addref(vm) (gone already: exiting since the check)
-    let Some(vm) = vpr.vmspace_share() else {
-        return Err(Errno::EINVAL);
-    };
-
-    let Some(mem) = malloc(PAGE_SIZE, M_TEMP, M_WAITOK) else {
-        uvmspace_free(vm);
-        return Err(Errno::ENOMEM);
-    };
-    // SAFETY: a fresh PAGE_SIZE allocation, freed below and not shared; uvm_io writes it
-    // before it is read.
-    let buf = unsafe { core::slice::from_raw_parts_mut(mem.as_ptr(), PAGE_SIZE) };
-
-    let error = proc_args_copy(&vm.vm_map, ps_strings, op, oldp, oldlenp, buf, cp);
-
-    uvmspace_free(vm);
-    free(mem, M_TEMP, PAGE_SIZE);
-    error
-}
-
-/// The body of `sysctl_proc_args` past its checks (its `goto out` paths are the `?`s; the
-/// caller drops the vmspace reference and the buffer): reads the victim's `ps_strings`, then
-/// lays out an `argv`-style array of `cnt` pointers, a NULL and the strings in the reader's
-/// buffer at `oldp`.
-fn proc_args_copy(
-    map: &VmMap,
-    ps_strings: usize,
-    op: i32,
-    oldp: usize,
-    oldlenp: &mut usize,
-    buf: &mut [u8],
-    cp: &Proc,
-) -> Result<(), Errno> {
-    const PTR: usize = size_of::<usize>();
-
-    // Reads `dst.len()` bytes of the victim's address space at `va`.
-    let victim_read = |va: usize, dst: &mut [u8]| -> Result<(), Errno> {
-        let mut iov = [Iovec {
-            iov_base: dst.as_mut_ptr().cast(),
-            iov_len: dst.len(),
-        }];
-        let mut uio = Uio {
-            uio_iov: &mut iov,
-            uio_offset: va as Off,
-            uio_resid: dst.len(),
-            uio_segflg: UioSeg::UIO_SYSSPACE,
-            uio_rw: UioRw::UIO_READ,
-            uio_procp: Some(cp),
-        };
-        uvm_io(map, &mut VmUio(&mut uio), va, 0)
-    };
-
-    let mut pss = [0u8; size_of::<PsStrings>()];
-    victim_read(ps_strings, &mut pss)?;
-    let word = |b: &[u8]| usize::from_ne_bytes(b[..PTR].try_into().unwrap_or([0; PTR]));
-    let int = |b: &[u8]| i32::from_ne_bytes(b[..4].try_into().unwrap_or([0; 4]));
-    // struct ps_strings: ps_argvstr, ps_nargvstr, ps_envstr, ps_nenvstr (PsStrings::to_bytes).
-    let (argvstr, nargvstr) = (word(&pss[0..]), int(&pss[PTR..]));
-    let (envstr, nenvstr) = (word(&pss[2 * PTR..]), int(&pss[3 * PTR..]));
-
-    if op == KERN_PROC_NARGV {
-        return sysctl_rdint(oldp, oldlenp, 0, nargvstr);
-    }
-    if op == KERN_PROC_NENV {
-        return sysctl_rdint(oldp, oldlenp, 0, nenvstr);
-    }
-
-    let (cnt, mut vargv) = if op == KERN_PROC_ARGV {
-        (nargvstr, argvstr)
-    } else {
-        (nenvstr, envstr)
-    };
-
-    // Clamp to avoid overflow, using ARG_MAX is only an approximation. It is not possible
-    // to execve() with this many elements, so this only happens if a process has changed
-    // its strings. A hard cap, so not ENOMEM: the caller cannot retry. (The C's count is
-    // unsigned: a negative one is over the cap too.)
-    if cnt < 0 || cnt as usize > syslimits::ARG_MAX {
-        return Err(Errno::EINVAL);
-    }
-    let mut cnt = cnt as usize;
-
-    // -1 to have space for a terminating NUL
-    let limit = oldlenp.wrapping_sub(1);
-    *oldlenp = 0;
-
-    // *oldlenp: bytes copied out into the reader's buffer; limit: the most allowed there;
-    // rarg: where the next string goes in the reader's buffer; rargv: where the next rarg
-    // pointer goes; vargv: where the next argument pointer is read in the victim.
-    let mut rargv = oldp;
-    // space for cnt pointers and a NULL
-    let mut rarg = rargv + (cnt + 1) * PTR;
-    *oldlenp += (cnt + 1) * PTR;
-
-    while cnt > 0 && *oldlenp < limit {
-        // Write to the reader's argv.
-        copyout(&rarg.to_ne_bytes(), rargv)?;
-
-        // Read the victim's argv.
-        let mut vargb = [0u8; PTR];
-        victim_read(vargv, &mut vargb)?;
-        let mut varg = usize::from_ne_bytes(vargb);
-        if varg == 0 {
-            break;
-        }
-
-        // Read the victim's string a page at a time, so as not to cross a page boundary
-        // too much and return an error.
-        loop {
-            let len = PAGE_SIZE - (varg & PAGE_MASK);
-            victim_read(varg, &mut buf[..len])?;
-            let vstrlen = buf[..len].iter().position(|&c| c == 0).unwrap_or(len);
-
-            // Don't overflow the reader's buffer.
-            if *oldlenp + vstrlen + 1 >= limit {
-                return Err(Errno::ENOMEM);
-            }
-            copyout(&buf[..vstrlen], rarg)?;
-            *oldlenp += vstrlen;
-            rarg += vstrlen;
-
-            // The string didn't end in this page?
-            if vstrlen == len {
-                varg += vstrlen;
-                continue;
-            }
-            break;
-        }
-
-        // End of string. Terminate it with a NUL.
-        copyout(&[0], rarg)?;
-        *oldlenp += 1;
-        rarg += 1;
-
-        vargv += PTR;
-        rargv += PTR;
-        cnt -= 1;
-    }
-
-    if *oldlenp >= limit {
-        return Err(Errno::ENOMEM);
-    }
-
-    // Write the terminating null.
-    copyout(&0usize.to_ne_bytes(), rargv)
-}
-
-/// `sysctl_proc_cwd`: `kern.proc_cwd.<pid>`, the process's current directory.
-pub fn sysctl_proc_cwd(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    cp: &Proc,
-) -> Result<(), Errno> {
-    if name.len() > 1 {
-        return Err(Errno::ENOTDIR);
-    }
-    let [pid] = *name else {
-        return Err(Errno::EINVAL);
-    };
-
-    let Some(findpr) = prfind_ref(pid) else {
-        return Err(Errno::ESRCH);
-    };
-
-    if oldp == 0 {
-        *oldlenp = MAXPATHLEN * 4;
-        return Ok(());
-    }
-
-    // Either system process or exiting/zombie
-    if findpr.ps_flags.load(Ordering::Relaxed) & (PS_SYSTEM | PS_EXITING) != 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    // Only owner or root can get cwd
-    if findpr.ucred().cr_uid.get() != cp.ucred().cr_uid.get() {
-        suser(cp)?;
-    }
-
-    let mut len = *oldlenp;
-    if len > MAXPATHLEN * 4 {
-        len = MAXPATHLEN * 4;
-    } else if len < 2 {
-        return Err(Errno::ERANGE);
-    }
-    *oldlenp = 0;
-
-    // snag a reference to the vnode before we can sleep
-    let Some(vp) = findpr.fd().cdir() else {
-        // No current directory before a root file system is mounted.
-        return Err(Errno::ENOENT);
-    };
-    vref(vp);
-
-    let Some(mem) = malloc(len, M_TEMP, M_WAITOK) else {
-        vrele(vp);
-        return Err(Errno::ENOMEM);
-    };
-    // SAFETY: a fresh `len`-byte allocation, freed below; every byte is written before it is
-    // read (the path is built backwards from the NUL).
-    let path = unsafe { core::slice::from_raw_parts_mut(mem.as_ptr(), len) };
-
-    let mut bp = len - 1;
-    path[bp] = 0;
-
-    // Same as sys__getcwd
-    let mut error = vfs_getcwd_common(
-        vp,
-        None,
-        Some((&mut *path, &mut bp)),
-        (len / 2) as i32,
-        GETCWD_CHECK_ACCESS,
-        cp,
-    );
-    if error.is_ok() {
-        let lenused = len - bp;
-        *oldlenp = lenused;
-        error = copyout(&path[bp..], oldp);
-    }
-
-    vrele(vp);
-    free(mem, M_TEMP, len);
-
-    error
-}
-
-/// `sysctl_proc_nobroadcastkill`: `kern.proc_nobroadcastkill.<pid>`, the process's
-/// `PS_NOBROADCASTKILL` flag.
-pub fn sysctl_proc_nobroadcastkill(
-    name: &[i32],
-    newp: usize,
-    newlen: usize,
-    oldp: usize,
-    oldlenp: &mut usize,
-    cp: &Proc,
-) -> Result<(), Errno> {
-    if name.len() > 1 {
-        return Err(Errno::ENOTDIR);
-    }
-    let [pid] = *name else {
-        return Err(Errno::EINVAL);
-    };
-
-    let Some(findpr) = prfind_ref(pid) else {
-        return Err(Errno::ESRCH);
-    };
-
-    // Either system process or exiting/zombie
-    if findpr.ps_flags.load(Ordering::Relaxed) & (PS_SYSTEM | PS_EXITING) != 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    // Only root can change PS_NOBROADCASTKILL
-    if newp != 0 {
-        suser(cp)?;
-    }
-
-    // get the PS_NOBROADCASTKILL flag
-    let flag = AtomicI32::new(i32::from(
-        findpr.ps_flags.load(Ordering::Relaxed) & PS_NOBROADCASTKILL != 0,
-    ));
-
-    let error = sysctl_int(oldp, oldlenp, newp, newlen, &flag);
-    if error.is_ok() && newp != 0 {
-        if flag.into_inner() != 0 {
-            findpr
-                .ps_flags
-                .fetch_or(PS_NOBROADCASTKILL, Ordering::Relaxed);
-        } else {
-            findpr
-                .ps_flags
-                .fetch_and(!PS_NOBROADCASTKILL, Ordering::Relaxed);
-        }
-    }
-
-    error
-}
-
-/// `sysctl_proc_vmmap`: `kern.proc_vmmap.<pid>`, the address space as `kinfo_vmentry`s.
-/// The checks are the C's; `fill_vmmap` is reported.
-pub fn sysctl_proc_vmmap(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    cp: &Proc,
-) -> Result<(), Errno> {
-    if name.len() > 1 {
-        return Err(Errno::ENOTDIR);
-    }
-    let [pid] = *name else {
-        return Err(Errno::EINVAL);
-    };
-
-    // Provide max buffer length as hint (oldlenp is never NULL here).
-    if oldp == 0 {
-        *oldlenp = VMMAP_MAXLEN;
-        return Ok(());
-    }
-
-    if pid == cp.process().ps_pid {
-        // Self process mapping.
-    } else if pid > 0 {
-        let Some(findpr) = prfind_ref(pid) else {
-            return Err(Errno::ESRCH);
-        };
-
-        // Either system process or exiting/zombie
-        if findpr.ps_flags.load(Ordering::Relaxed) & (PS_SYSTEM | PS_EXITING) != 0 {
-            return Err(Errno::EINVAL);
-        }
-
-        // XXX Allow only root for now
-        suser(cp)?;
-    } else {
-        // Only root can get kernel_map
-        suser(cp)?;
-    }
-
-    // Check the given size.
-    let oldlen = *oldlenp;
-    if oldlen == 0 || !oldlen.is_multiple_of(size_of::<KinfoVmentry>()) {
-        return Err(Errno::EINVAL);
-    }
-
-    // Deny huge allocation.
-    if oldlen > VMMAP_MAXLEN {
-        return Err(Errno::EINVAL);
-    }
-
-    // Iterate from the given address passed as the first element's kve_start via oldp.
-    let mut start = [0u8; 8];
-    copyin(oldp, &mut start)?;
-
-    Err(unported!("kern.proc_vmmap: fill_vmmap (uvm_glue.c)"))
-}
-
-/// One `snprintf(disknames + l, disknameslen - l, "%s:%s,", name, duid)` of
-/// `sysctl_diskinit`, then `l += strlen(disknames + l)`: appends at `l` what fits of the
-/// entry, NUL-terminated, and returns the new `l`.
-fn diskname_append(buf: &mut [u8], l: usize, name: &[u8], duid: &[u8]) -> usize {
-    let Some(avail) = buf.len().checked_sub(l).filter(|&a| a > 0) else {
-        return l;
-    };
-    let mut n = 0;
-    for &c in name.iter().chain(b":").chain(duid).chain(b",") {
-        if n + 1 >= avail {
-            break;
-        }
-        buf[l + n] = c;
-        n += 1;
-    }
-    buf[l + n] = 0;
-    l + n
 }
 
 /// The per-disk copy of `sysctl_diskinit`: `dk`'s name and statistics into `sdk`.
@@ -2941,109 +1220,349 @@ fn disk_stats_copy(sdk: &mut Diskstats, dk: &Disk) {
     mtx_leave(&dk.dk_mtx);
 }
 
-/// `diskstats` as a slice of its `diskstatslen / sizeof(struct diskstats)` entries.
-///
-/// # Safety
-///
-/// `sysctl_disklock` is held for writing, so no other slice of the array is live and
-/// `sysctl_diskinit` cannot replace it meanwhile.
-#[allow(clippy::mut_from_ref)] // the C's global array, guarded by sysctl_disklock
-unsafe fn diskstats_mut() -> &'static mut [Diskstats] {
-    let Some(sdk) = NonNull::new(DISKSTATS.load(Ordering::Relaxed)) else {
-        return &mut [];
-    };
-    let n = DISKSTATSLEN.load(Ordering::Relaxed) / size_of::<Diskstats>();
-    // SAFETY: `sysctl_diskinit` allocated `n` zeroed entries (all-zero is a valid
-    // `Diskstats`) and frees them only under the lock the caller holds.
-    unsafe { core::slice::from_raw_parts_mut(sdk.as_ptr(), n) }
-}
+/// The disk list (`subr_disk.c`'s `disklist`, `disk_count`, `disk_change`) as the kernel's
+/// `sysctl_diskinit` reads it (`kernel::sysctl::DiskExport`).
+struct BsdDiskExport;
 
-/// `sysctl_diskinit`: initialises `disknames`/`diskstats` for export by sysctl. If `update`
-/// is set, then we simply update the disk statistics information.
-pub fn sysctl_diskinit(update: bool, _p: &Proc) -> Result<(), Errno> {
-    kernel_assert_locked();
-
-    rw_enter(&SYSCTL_DISKLOCK, RW_WRITE | RW_INTR)?;
-
-    let mut changed = false;
-
-    // Run in a loop, disks may change while malloc sleeps.
-    while DISK_CHANGE.load(Ordering::Relaxed) != 0 {
-        DISK_CHANGE.store(0, Ordering::Relaxed);
-
-        let mut tlen = 0;
-        for dk in DISKLIST.0.iter() {
-            tlen += strnlen(&dk.dk_name.get(), DS_DISKNAMELEN);
-            tlen += 18; // label uid + separators
-        }
-        tlen += 1;
-        // disk_count may change when malloc sleeps
-        let count = DISK_COUNT.load(Ordering::Relaxed).max(0) as usize;
-
-        // The sysctl_disklock ensures that no other process can allocate disknames and
-        // diskstats while our malloc sleeps.
-        if let Some(names) = NonNull::new(DISKNAMES.swap(ptr::null_mut(), Ordering::Relaxed)) {
-            free(names, M_SYSCTL, DISKNAMESLEN.load(Ordering::Relaxed));
-        }
-        if let Some(stats) = NonNull::new(DISKSTATS.swap(ptr::null_mut(), Ordering::Relaxed)) {
-            free(stats.cast(), M_SYSCTL, DISKSTATSLEN.load(Ordering::Relaxed));
-        }
-        DISKNAMESLEN.store(0, Ordering::Relaxed);
-        DISKSTATSLEN.store(0, Ordering::Relaxed);
-        if let Some(stats) = mallocarray(count, size_of::<Diskstats>(), M_SYSCTL, M_WAITOK | M_ZERO)
-        {
-            DISKSTATS.store(stats.as_ptr().cast(), Ordering::Relaxed);
-            DISKSTATSLEN.store(count * size_of::<Diskstats>(), Ordering::Relaxed);
-        }
-        if let Some(names) = malloc(tlen, M_SYSCTL, M_WAITOK | M_ZERO) {
-            // disknames[0] = '\0': M_ZERO.
-            DISKNAMES.store(names.as_ptr(), Ordering::Relaxed);
-            DISKNAMESLEN.store(tlen, Ordering::Relaxed);
-        }
-        changed = true;
+impl kernel::sysctl::DiskExport for BsdDiskExport {
+    fn take_change(&self) -> bool {
+        DISK_CHANGE.swap(0, Ordering::Relaxed) != 0
     }
 
-    // SAFETY: SYSCTL_DISKLOCK is held for writing.
-    let stats = unsafe { diskstats_mut() };
-    if changed {
-        let names = match NonNull::new(DISKNAMES.load(Ordering::Relaxed)) {
-            // SAFETY: the `disknameslen` bytes allocated above; only this lock's holder
-            // touches them.
-            Some(n) => unsafe {
-                core::slice::from_raw_parts_mut(n.as_ptr(), DISKNAMESLEN.load(Ordering::Relaxed))
-            },
-            None => &mut [],
-        };
-        let mut l = 0;
-        let mut sdk = stats.iter_mut();
+    fn count(&self) -> usize {
+        DISK_COUNT.load(Ordering::Relaxed).max(0) as usize
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&[u8], Option<&[u8]>, &[u8])) {
         for dk in DISKLIST.0.iter() {
             let label_uid = dk.label().map(|lp| lp.d_uid).filter(|u| !duid_iszero(u));
             let duid = label_uid.map(|u| duid_format(&u));
             let name = dk.dk_name.get();
-            l = diskname_append(
-                names,
-                l,
+            let mut sdk = Diskstats::default();
+            disk_stats_copy(&mut sdk, dk);
+            f(
                 &name[..strnlen(&name, DS_DISKNAMELEN)],
-                duid.as_ref().map_or(&[][..], |d| &d[..]),
+                duid.as_ref().map(|d| &d[..]),
+                sdk.as_bytes(),
             );
-            if let Some(sdk) = sdk.next() {
-                disk_stats_copy(sdk, dk);
-            }
-        }
-
-        // Eliminate trailing comma
-        if l != 0 {
-            names[l - 1] = 0;
-        }
-    } else if update {
-        // Just update, number of drives hasn't changed
-        for (sdk, dk) in stats.iter_mut().zip(DISKLIST.0.iter()) {
-            disk_stats_copy(sdk, dk);
         }
     }
-    rw_exit_write(&SYSCTL_DISKLOCK);
+}
+
+static BSD_DISK_EXPORT: BsdDiskExport = BsdDiskExport;
+
+const _: () = assert!(size_of::<Diskstats>() == kernel::sysctl::DISKSTATS_SIZE);
+
+/// A node of a subsystem still in `bsd` (`kernel::sysctl::SysctlNode`): its function over
+/// the name below it and the request.
+struct Node(fn(&[i32], &mut SysctlReq<'_>) -> Result<(), Errno>);
+
+impl SysctlNode for Node {
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        (self.0)(name, req)
+    }
+}
+
+/// A `sysctlfn` of a subsystem still in `bsd` that takes the calling thread (`net_sysctl`,
+/// `vfs_sysctl`, `cpu_sysctl`, `ddb_sysctl`, `sysctl_file`): `curproc`.
+struct ProcNode(Sysctlfn);
+
+impl SysctlNode for ProcNode {
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        let Some(p) = curproc() else {
+            panic(format_args!("sysctl: no curproc"));
+        };
+        (self.0)(name, req.oldp, req.oldlenp, req.newp, req.newlen, p)
+    }
+}
+
+/// `kern.clockrate`.
+fn kern_clockrate(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_clockrate(req.oldp, req.oldlenp, req.newp)
+}
+
+/// `kern.numvnodes` (XXX numvnodes is a long).
+fn kern_numvnodes(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_rdint(
+        req.oldp,
+        req.oldlenp,
+        req.newp,
+        NUMVNODES.load(Ordering::Relaxed) as i32,
+    )
+}
+
+/// `kern.boottime`.
+fn kern_boottime(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let bt = microboottime();
+    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, bt.as_bytes())
+}
+
+/// `kern.maxclusters`: a change is `nmbclust_update`'s, under `sysctl_lock`.
+fn kern_maxclusters(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let oldval = NMBCLUST.load(Ordering::Relaxed) as i32;
+    let newval = AtomicI32::new(oldval);
+    let mut error = sysctl_int(req.oldp, req.oldlenp, req.newp, req.newlen, &newval);
+    let newval = newval.into_inner();
+
+    if error.is_ok() && oldval != newval {
+        let _w = SYSCTL_LOCK.write();
+        error = nmbclust_update(i64::from(newval));
+    }
+
+    error
+}
+
+/// `kern.mbstat`.
+fn kern_mbstat(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let mut counters = [0u64; MBS_NCOUNTERS];
+    crate::kern::subr_percpu::counters_read(mbstat(), &mut counters, MBS_NCOUNTERS, None);
+    let mut mbs = Mbstat::default();
+    mbs.m_mtypes.copy_from_slice(&counters[..MT_NTYPES]);
+    mbs.m_drops = counters[MbstatCounters::MbsDrops as usize];
+    mbs.m_wait = counters[MbstatCounters::MbsWait as usize];
+    mbs.m_drain = counters[MbstatCounters::MbsDrain as usize];
+    mbs.m_defrag_alloc = counters[MbstatCounters::MbsDefragAlloc as usize];
+    mbs.m_prepend_alloc = counters[MbstatCounters::MbsPrependAlloc as usize];
+    mbs.m_pullup_alloc = counters[MbstatCounters::MbsPullupAlloc as usize];
+    mbs.m_pullup_copy = counters[MbstatCounters::MbsPullupCopy as usize];
+    mbs.m_pulldown_alloc = counters[MbstatCounters::MbsPulldownAlloc as usize];
+    mbs.m_pulldown_copy = counters[MbstatCounters::MbsPulldownCopy as usize];
+    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, mbs.as_bytes())
+}
+
+/// `kern.cp_time`: the online CPUs' `spc_cp_time`, averaged.
+fn kern_cptime(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let mut cp_time = [0i64; CPUSTATES];
+    let mut n = 0i64;
+
+    cpu_info_foreach(&mut |ci| {
+        if !cpu_is_online(ci) {
+            return;
+        }
+
+        n += 1;
+        let ci_cp_time = sysctl_ci_cp_time(ci);
+        for (sum, t) in cp_time.iter_mut().zip(ci_cp_time) {
+            *sum += t as i64;
+        }
+    });
+
+    if n > 0 {
+        for t in &mut cp_time {
+            *t /= n;
+        }
+    }
+
+    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, cp_time.as_bytes())
+}
+
+/// `kern.pool_debug`: a change reclaims every pool.
+fn kern_pool_debug(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let oldval = POOL_DEBUG.load(Ordering::Relaxed);
+    let newval = AtomicI32::new(oldval);
+
+    let error = sysctl_int(req.oldp, req.oldlenp, req.newp, req.newlen, &newval);
+    let newval = newval.into_inner();
+    if error.is_ok()
+        && oldval != newval
+        && POOL_DEBUG
+            .compare_exchange(oldval, newval, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        pool_reclaim_all();
+    }
+
+    error
+}
+
+/// `kern.nchstats`.
+fn kern_nchstats(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let mut bytes = [0u8; 12 * size_of::<u64>()];
+    for (chunk, v) in bytes.chunks_mut(size_of::<u64>()).zip(NCHSTATS.snapshot()) {
+        chunk.copy_from_slice(&v.to_ne_bytes());
+    }
+    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, &bytes)
+}
+
+/// `kern.stackgap_random`: a power of two, at least `ALIGNBYTES` (or 0), under `MAXSSIZ`.
+fn kern_stackgaprandom(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    use crate::kern::kern_exec::stackgap_random;
+
+    let stackgap = AtomicI32::new(stackgap_random.load(Ordering::Relaxed));
+    sysctl_int(req.oldp, req.oldlenp, req.newp, req.newlen, &stackgap)?;
+    let stackgap = stackgap.into_inner();
+    // Safety harness.
+    let alignbytes = <crate::machine::Machine as crate::machine::param::MachineParam>::ALIGNBYTES;
+    let maxssiz = <crate::machine::Machine as crate::machine::VmParam>::MAXSSIZ;
+    if (stackgap < alignbytes as i32 && stackgap != 0)
+        || (stackgap.wrapping_sub(1) & stackgap) != 0
+        || stackgap as i64 >= maxssiz as i64
+    {
+        return Err(Errno::EINVAL);
+    }
+    stackgap_random.store(stackgap, Ordering::Relaxed);
     Ok(())
 }
+
+/// `kern.bufcachepercent`: between 5 and 90; a change adjusts the buffer cache.
+fn kern_cachepct(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    use crate::conf::param::{bufcachepercent, bufpages};
+
+    let opct = bufcachepercent.load(Ordering::Relaxed);
+    sysctl_int(
+        req.oldp,
+        req.oldlenp,
+        req.newp,
+        req.newlen,
+        &bufcachepercent,
+    )?;
+    let pct = bufcachepercent.load(Ordering::Relaxed);
+    if !(5..=90).contains(&pct) {
+        bufcachepercent.store(opct, Ordering::Relaxed);
+        return Err(Errno::EINVAL);
+    }
+    let pages = uvm_pagecount(&NO_CONSTRAINT) as u64;
+    if pct != opct {
+        let pgs = (pct as u64 * pages / 100) as i32;
+        bufadjust(i64::from(pgs)); // adjust bufpages
+        // set high water mark
+        BUFHIGHPAGES.store(bufpages.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// `kern.pfstatus` (`NPF`).
+fn kern_pfstatus(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    crate::net::pf_ioctl::pf_sysctl(req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.consdev`.
+fn kern_consdev(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let dev = cn_tab().map_or(NODEV, |cn| cn.cn_dev.get());
+    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, dev.as_bytes())
+}
+
+/// `kern.utc_offset`.
+fn kern_utc_offset(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_utc_offset(req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.malloc`.
+fn kern_malloc(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_malloc(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.cp_time2`.
+fn kern_cptime2(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_cptime2(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.pool`.
+fn kern_pool(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_dopool(name, req.oldp, req.oldlenp)
+}
+
+/// `kern.cpustats`.
+fn kern_cpustats(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_cpustats(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.audio`.
+fn kern_audio(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_audio(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.intrcnt`.
+fn kern_intrcnt(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_intrcnt(name, req.oldp, req.oldlenp)
+}
+
+/// `kern.watchdog`.
+fn kern_watchdog(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_wdog(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.evcount`.
+fn kern_evcount(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    evcount_sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.clockintr`: `sysctl_clockintr` (`kern_clockintr.c`) is not ported.
+fn kern_clockintr(_name: &[i32], _req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    Err(unported!(
+        "kern.clockintr: sysctl_clockintr (kern_clockintr.c)"
+    ))
+}
+
+/// `kern.tty`.
+fn kern_tty(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_tty(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `kern.timecounter`.
+fn kern_timecounter(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_tc(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `hw.sensors`.
+fn hw_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_sensors(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `hw.ucomnames` (`NUCOM > 0`).
+fn hw_ucomnames(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let names = sysctl_ucominit();
+    sysctl_rdstring(req.oldp, req.oldlenp, req.newp, names.as_bytes())
+}
+
+/// `hw.smt`.
+fn hw_smt(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_hwsmt(req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+/// `hw.blockcpu`.
+fn hw_blockcpu(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    sysctl_hwblockcpu(req.oldp, req.oldlenp, req.newp, req.newlen)
+}
+
+static OSTYPE_NODE: RdString = RdString(OSTYPE.as_bytes());
+static OSRELEASE_NODE: RdString = RdString(OSRELEASE.as_bytes());
+static OSVERSION_NODE: RdString = RdString(OSVERSION.as_bytes());
+static VERSION_NODE: RdString = RdString(VERSION.as_bytes());
+static MACHINE_NODE: RdString = RdString(<Machine as MachineInfo>::MACHINE.as_bytes());
+
+/// The `kern` nodes of `bsd`'s subsystems, by id.
+static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
+    (KERN_OSTYPE, &OSTYPE_NODE),
+    (KERN_OSRELEASE, &OSRELEASE_NODE),
+    (KERN_OSVERSION, &OSVERSION_NODE),
+    (KERN_VERSION, &VERSION_NODE),
+    (KERN_CLOCKRATE, &Node(kern_clockrate)),
+    (KERN_NUMVNODES, &Node(kern_numvnodes)),
+    (KERN_BOOTTIME, &Node(kern_boottime)),
+    (KERN_MAXCLUSTERS, &Node(kern_maxclusters)),
+    (KERN_MBSTAT, &Node(kern_mbstat)),
+    (KERN_CPTIME, &Node(kern_cptime)),
+    (KERN_POOL_DEBUG, &Node(kern_pool_debug)),
+    (KERN_NCHSTATS, &Node(kern_nchstats)),
+    (KERN_STACKGAPRANDOM, &Node(kern_stackgaprandom)),
+    (KERN_CACHEPCT, &Node(kern_cachepct)),
+    (KERN_PFSTATUS, &Node(kern_pfstatus)),
+    (KERN_CONSDEV, &Node(kern_consdev)),
+    (KERN_UTC_OFFSET, &Node(kern_utc_offset)),
+    (KERN_FILE, &ProcNode(sysctl_file_node)),
+    (KERN_MALLOCSTATS, &Node(kern_malloc)),
+    (KERN_CPTIME2, &Node(kern_cptime2)),
+    (KERN_POOL, &Node(kern_pool)),
+    (KERN_CPUSTATS, &Node(kern_cpustats)),
+    (KERN_AUDIO, &Node(kern_audio)),
+    (KERN_INTRCNT, &Node(kern_intrcnt)),
+    (KERN_WATCHDOG, &Node(kern_watchdog)),
+    (KERN_EVCOUNT, &Node(kern_evcount)),
+    (KERN_CLOCKINTR, &Node(kern_clockintr)),
+    (KERN_TTY, &Node(kern_tty)),
+    (KERN_TIMECOUNTER, &Node(kern_timecounter)),
+];
 
 /// `sysctl_intrcnt`: `kern.intrcnt`, served by `evcount_sysctl`.
 pub fn sysctl_intrcnt(name: &[i32], oldp: usize, oldlenp: &mut usize) -> Result<(), Errno> {
@@ -3250,6 +1769,54 @@ pub fn sysctl_utc_offset(
     let _ = unported!("kern.utc_offset: resettodr (kern_time.c)");
 
     Ok(())
+}
+
+/// `kern.file` as a `sysctlfn` (it reads no new value).
+fn sysctl_file_node(
+    name: &[i32],
+    oldp: usize,
+    oldlenp: &mut usize,
+    _newp: usize,
+    _newlen: usize,
+    p: &Proc,
+) -> Result<(), Errno> {
+    sysctl_file(name, oldp, oldlenp, p)
+}
+
+/// The `hw` nodes of `bsd`'s subsystems, by id.
+static HW_NODES: [(i32, &dyn SysctlNode); 5] = [
+    (HW_MACHINE, &MACHINE_NODE),
+    (HW_SENSORS, &Node(hw_sensors)),
+    (HW_UCOMNAMES, &Node(hw_ucomnames)),
+    (HW_SMT, &Node(hw_smt)),
+    (HW_BLOCKCPU, &Node(hw_blockcpu)),
+];
+
+/// The top-level trees of `bsd`'s subsystems, by id (`ddb_sysctl` with `DDB`).
+static TOP_NODES: [(i32, &dyn SysctlNode); 4] = [
+    (CTL_NET, &ProcNode(crate::kern::uipc_domain::net_sysctl)),
+    (CTL_VFS, &ProcNode(vfs_sysctl)),
+    (CTL_MACHDEP, &ProcNode(crate::machine::cpu::cpu_sysctl)),
+    (CTL_DDB, &ProcNode(crate::ddb::db_usrreq::ddb_sysctl)),
+];
+
+/// Registers `bsd`'s sysctl nodes, bounded variables, disk list and `physmem` with the
+/// kernel's dispatcher (`kernel::sysctl`), once, before the first `sysctl(2)` (`main`, with
+/// the other bridges); a second call changes nothing.
+pub fn sysctl_register_legacy() {
+    for &(ctl, n) in &TOP_NODES {
+        let _ = kernel::sysctl::register_top(ctl, n);
+    }
+    for &(id, n) in &KERN_NODES {
+        let _ = kernel::sysctl::register_kern(id, n);
+    }
+    for &(id, n) in &HW_NODES {
+        let _ = kernel::sysctl::register_hw(id, n);
+    }
+    let _ = kernel::sysctl::register_kern_vars(&KERN_VARS);
+    let _ = kernel::sysctl::register_hw_vars(&HW_VARS);
+    let _ = kernel::sysctl::install_disk_export(&BSD_DISK_EXPORT);
+    let _ = kernel::sysctl::register_physmem(&crate::sys::systm::PHYSMEM);
 }
 /* </CODE> */
 
@@ -3559,193 +2126,6 @@ mod tests {
     }
 
     #[test]
-    fn the_kernel_reports_emibsd_7_8() {
-        let _g = setup();
-        let p = thread(1000);
-
-        let mut out = [0u8; 32];
-        let mut len = out.len();
-        assert_eq!(
-            kern_sysctl(&[KERN_OSTYPE], ua(&mut out), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(&out[..len], b"EmiBSD\0");
-
-        let mut len = out.len();
-        assert_eq!(
-            kern_sysctl(&[KERN_OSRELEASE], ua(&mut out), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(&out[..len], b"8.0\0");
-
-        let mut len = 0;
-        assert_eq!(kern_sysctl(&[KERN_VERSION], 0, &mut len, 0, 0, p), Ok(()));
-        assert_eq!(len, VERSION.len() + 1);
-
-        // A read-only node refuses a new value; a missing node is EOPNOTSUPP.
-        let new = *b"OpenBSD\0";
-        assert_eq!(
-            kern_sysctl(&[KERN_OSTYPE], 0, &mut len, ra(&new), 8, p),
-            Err(Errno::EPERM)
-        );
-        let mut v = 0i32;
-        let mut len = 4;
-        assert_eq!(
-            kern_sysctl(&[KERN_ARGMAX], ua(&mut v), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(v, 512 * 1024);
-        assert_eq!(
-            kern_sysctl(&[KERN_OSREV], ua(&mut v), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(v, OpenBSD as i32);
-        assert_eq!(
-            kern_sysctl(&[KERN_GLOBAL_PTRACE], ua(&mut v), &mut len, 0, 0, p),
-            Err(Errno::EOPNOTSUPP)
-        );
-        let one = 1i32;
-        assert_eq!(
-            kern_sysctl(&[KERN_SAVED_IDS], 0, &mut len, ra(&one), 4, p),
-            Err(Errno::EPERM)
-        );
-    }
-
-    #[test]
-    fn hw_nodes_without_hardware() {
-        let _g = setup();
-        let p = thread(0);
-
-        let mut out = [0u8; 16];
-        let mut len = out.len();
-        assert_eq!(
-            hw_sysctl(&[HW_MACHINE], ua(&mut out), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(&out[..len], b"host\0");
-
-        let mut v = 0i32;
-        let mut len = 4;
-        assert_eq!(
-            hw_sysctl(&[HW_BYTEORDER], ua(&mut v), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(v, 1234);
-        assert_eq!(
-            hw_sysctl(&[HW_NCPU, 1], 0, &mut len, 0, 0, p),
-            Err(Errno::ENOTDIR)
-        );
-        assert_eq!(
-            hw_sysctl(&[HW_VENDOR], ua(&mut v), &mut len, 0, 0, p),
-            Err(Errno::EOPNOTSUPP)
-        );
-
-        let mut q = 0i64;
-        let mut len = 8;
-        assert_eq!(
-            hw_sysctl(&[HW_PHYSMEM64], ua(&mut q), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert_eq!(q, (PHYSMEM.load(Ordering::Relaxed) * PAGE_SIZE) as i64);
-    }
-
-    #[test]
-    fn doproc_sizes_the_answer_and_checks_its_arguments() {
-        let _g = setup();
-        let size = size_of::<KinfoProc>() as i32;
-        // The process lists are walked under the kernel lock (sysctl_vslock's).
-        kernel_lock();
-
-        let mut len = 0;
-        assert_eq!(
-            sysctl_doproc(&[KERN_PROC_ALL, 0, size], 0, &mut len),
-            Err(Errno::EINVAL)
-        );
-        assert_eq!(
-            sysctl_doproc(&[KERN_PROC_ALL, 0, size + 1, 1], 0, &mut len),
-            Err(Errno::EINVAL)
-        );
-
-        // No process has this pid: only the slop is asked for.
-        assert_eq!(
-            sysctl_doproc(&[KERN_PROC_PID, 999_999, size, 10], 0, &mut len),
-            Ok(())
-        );
-        kernel_unlock();
-        assert_eq!(len, KERN_PROCSLOP * size as usize);
-    }
-
-    #[test]
-    fn fill_kproc_reports_a_process() {
-        let _g = setup();
-        let p = thread(1000);
-        let pr = p.process();
-
-        let mut ki = KinfoProc::zeroed();
-        {
-            kernel_lock();
-            let r = hal::klock::reader();
-            let g = pr.ps_mtx.lock();
-            fill_kproc(&r, pr, &mut ki, None, false, &g);
-            drop((g, r));
-            kernel_unlock();
-        }
-        assert_eq!((ki.p_pid, ki.p__pgid, ki.p_sid, ki.p_tid), (42, 42, 42, -1));
-        assert_eq!((ki.p_uid, ki.p_ruid), (1000, 1000));
-        assert_eq!(&ki.p_comm[..5], b"test\0");
-        assert_eq!(&ki.p_emul[..7], b"native\0");
-        assert_eq!((ki.p_tdev, ki.p_tpgid), (NODEV as u32, -1));
-        assert_eq!((ki.p_cpuid, ki.p_uvalid, ki.p_paddr), (KI_NOCPU, 1, 0));
-        assert_eq!(ki.p_stat, SIDL as i8);
-
-        // As a thread: its tid and name.
-        p.p_tid.set(7);
-        p.set_name(b"worker");
-        {
-            kernel_lock();
-            let r = hal::klock::reader();
-            let g = pr.ps_mtx.lock();
-            fill_kproc(&r, pr, &mut ki, Some(p), true, &g);
-            drop((g, r));
-            kernel_unlock();
-        }
-        assert_eq!(ki.p_tid, 7 + THREAD_PID_OFFSET);
-        assert_eq!(&ki.p_name[..7], b"worker\0");
-        assert_eq!(ki.p_paddr, p as *const Proc as u64);
-    }
-
-    #[test]
-    fn sysctl_2_reads_kern_ostype() {
-        let _g = setup();
-        let p = thread(1000);
-
-        let name = [CTL_KERN, KERN_OSTYPE];
-        let mut out = [0u8; 16];
-        let mut oldlen = out.len();
-        let mut retval = [0; 2];
-        let args = [
-            ra(&name) as Register,
-            2,
-            ua(&mut out) as Register,
-            ua(&mut oldlen) as Register,
-            0,
-            0,
-        ];
-        assert_eq!(sys_sysctl(p, &args, &mut retval), Ok(()));
-        assert_eq!((oldlen, &out[..7]), (7, &b"EmiBSD\0"[..]));
-
-        // One component is not enough; a new value needs root.
-        let args = [ra(&name) as Register, 1, 0, 0, 0, 0];
-        assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EINVAL));
-        let new = 1i32;
-        let args = [ra(&name) as Register, 2, 0, 0, ra(&new) as Register, 4];
-        assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EPERM));
-        let name = [CTL_DEBUG, 0];
-        let args = [ra(&name) as Register, 2, 0, 0, 0, 0];
-        assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EOPNOTSUPP));
-    }
-
-    #[test]
     fn fill_file_reports_the_file_and_its_process() {
         let _g = setup();
         let p = thread(1000);
@@ -3850,24 +2230,164 @@ mod tests {
         unp_path_copy(&mut path, &[]);
     }
 
+    /// This module's range of the kernel's user-copy double (the kernel dispatcher's copies).
+    const UB: usize = kernel::testutil::USER_BASE + 0x4000;
+
+    /// `n` bytes at the double's user address `at`.
+    fn user(at: usize, n: usize) -> std::vec::Vec<u8> {
+        kernel::testutil::user_bytes(at, n).unwrap()
+    }
+
+    /// The identity nodes `bsd` registers with the kernel's dispatcher: EmiBSD 8.0, and the
+    /// bounded integers of `bsd`'s table after the kernel's own.
     #[test]
-    fn diskname_append_is_snprintf() {
-        let mut buf = [0xffu8; 12];
-        let l = diskname_append(&mut buf, 0, b"rd0", b"");
-        assert_eq!((l, &buf[..6]), (5, &b"rd0:,\0"[..]));
-        // Truncated to what fits, still terminated.
-        let l = diskname_append(&mut buf, l, b"sd0", b"0123456789abcdef");
-        assert_eq!((l, &buf[..]), (11, &b"rd0:,sd0:01\0"[..]));
-        assert_eq!(diskname_append(&mut buf, 12, b"x", b""), 12);
+    fn the_registered_nodes_report_emibsd_8_0() {
+        let _g = setup();
+        sysctl_register_legacy();
+        let p = thread(1000);
+        let out = UB;
+
+        let mut len = 32;
+        let mut req = SysctlReq {
+            oldp: out,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            kernel::sysctl::kern_sysctl(p, &[KERN_OSTYPE], &mut req),
+            Ok(())
+        );
+        assert_eq!(user(out, len), b"EmiBSD\0".to_vec());
+
+        let mut len = 32;
+        let mut req = SysctlReq {
+            oldp: out,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            kernel::sysctl::kern_sysctl(p, &[KERN_OSRELEASE], &mut req),
+            Ok(())
+        );
+        assert_eq!(user(out, len), b"8.0\0".to_vec());
+
+        let mut len = 0;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            kernel::sysctl::kern_sysctl(p, &[KERN_VERSION], &mut req),
+            Ok(())
+        );
+        assert_eq!(len, VERSION.len() + 1);
+
+        // A read-only node refuses a new value; kern.osrevision is bsd's table's.
+        let mut len = 4;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: out,
+            newlen: 8,
+        };
+        assert_eq!(
+            kernel::sysctl::kern_sysctl(p, &[KERN_OSTYPE], &mut req),
+            Err(Errno::EPERM)
+        );
+        let mut len = 4;
+        let mut req = SysctlReq {
+            oldp: out,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            kernel::sysctl::kern_sysctl(p, &[KERN_OSREV], &mut req),
+            Ok(())
+        );
+        assert_eq!(user(out, 4), (OpenBSD as i32).to_ne_bytes().to_vec());
+        // PTRACE is not configured: kern.global_ptrace is nobody's.
+        assert_eq!(
+            kernel::sysctl::kern_sysctl(p, &[KERN_GLOBAL_PTRACE], &mut req),
+            Err(Errno::EOPNOTSUPP)
+        );
+        // hw.machine and hw.ncpu are bsd's.
+        let mut len = 16;
+        let mut req = SysctlReq {
+            oldp: out,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            kernel::sysctl::hw_sysctl(p, &[HW_MACHINE], &mut req),
+            Ok(())
+        );
+        assert_eq!(user(out, len), b"host\0".to_vec());
+        let mut len = 4;
+        let mut req = SysctlReq {
+            oldp: out,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(kernel::sysctl::hw_sysctl(p, &[HW_NCPU], &mut req), Ok(()));
+        assert_eq!(
+            user(out, 4),
+            NCPUS.load(Ordering::Relaxed).to_ne_bytes().to_vec()
+        );
+    }
+
+    /// `sysctl(2)` through its `sysent[]` row, the kernel's dispatcher behind it.
+    #[test]
+    fn sysctl_2_reads_kern_ostype() {
+        let _g = setup();
+        sysctl_register_legacy();
+        let p = thread(1000);
+
+        let name = UB + 0x100;
+        let out = UB + 0x140;
+        let oldlenp = UB + 0x180;
+        let put = |at: usize, b: &[u8]| UserPtr::<u8>::new(at).copyout_slice(b).unwrap();
+        let mut ids = [0u8; 8];
+        ids[..4].copy_from_slice(&CTL_KERN.to_ne_bytes());
+        ids[4..].copy_from_slice(&KERN_OSTYPE.to_ne_bytes());
+        put(name, &ids);
+        put(oldlenp, &16usize.to_ne_bytes());
+        let mut retval = [0; 2];
+        let args = [
+            name as Register,
+            2,
+            out as Register,
+            oldlenp as Register,
+            0,
+            0,
+        ];
+        assert_eq!(sys_sysctl(p, &args, &mut retval), Ok(()));
+        assert_eq!(user(oldlenp, 8), 7usize.to_ne_bytes().to_vec());
+        assert_eq!(user(out, 7), b"EmiBSD\0".to_vec());
+
+        // One component is not enough; a new value needs root.
+        let args = [name as Register, 1, 0, 0, 0, 0];
+        assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EINVAL));
+        let args = [name as Register, 2, 0, 0, out as Register, 4];
+        assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EPERM));
+        let mut ids = [0u8; 8];
+        ids[..4].copy_from_slice(&CTL_DEBUG.to_ne_bytes());
+        put(name, &ids);
+        let args = [name as Register, 2, 0, 0, 0, 0];
+        assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EOPNOTSUPP));
     }
 
     #[test]
-    fn hw_disk_nodes_follow_the_disklist() {
-        use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST};
-        use crate::sys::disk::Disk;
+    fn the_disk_export_follows_the_disklist() {
+        use kernel::sysctl::DiskExport;
 
         let _g = setup();
-        let p = thread(0);
 
         // Other tests may have left their disks on the list: this one is the last.
         let dk: &'static Disk = Box::leak(Box::new(Disk::new()));
@@ -3884,35 +2404,23 @@ mod tests {
         DISK_COUNT.fetch_add(1, Ordering::Relaxed);
         DISK_CHANGE.store(1, Ordering::Relaxed);
 
-        let mut v = 0i32;
-        let mut len = 4;
+        assert!(BSD_DISK_EXPORT.take_change());
+        assert!(!BSD_DISK_EXPORT.take_change());
         assert_eq!(
-            hw_sysctl(&[HW_DISKCOUNT], ua(&mut v), &mut len, 0, 0, p),
-            Ok(())
+            BSD_DISK_EXPORT.count(),
+            DISK_COUNT.load(Ordering::Relaxed) as usize
         );
-        assert_eq!(v, DISK_COUNT.load(Ordering::Relaxed));
-
-        let mut out = [0u8; 256];
-        let mut len = out.len();
-        assert_eq!(
-            hw_sysctl_locked(&[HW_DISKNAMES], ua(&mut out), &mut len, 0, 0, p),
-            Ok(())
-        );
-        assert!(out[..len].ends_with(b"tst9:\0"));
-        assert!(len == 6 || out[len - 7] == b',');
-
         dk.dk_wxfer.set(9);
-        let mut ds = [Diskstats::default(); 16];
-        let mut len = size_of_val(&ds);
-        assert_eq!(
-            hw_sysctl_locked(&[HW_DISKSTATS], ua(&mut ds), &mut len, 0, 0, p),
-            Ok(())
-        );
-        let n = DISK_COUNT.load(Ordering::Relaxed) as usize;
-        assert_eq!(len, n * size_of::<Diskstats>());
-        let last = &ds[n - 1];
-        assert_eq!(&last.ds_name[..5], b"tst9\0");
-        assert_eq!((last.ds_rxfer, last.ds_wxfer, last.ds_rbytes), (5, 9, 4096));
+        let mut last = None;
+        BSD_DISK_EXPORT.for_each(&mut |name, duid, ds| {
+            let mut sdk = Diskstats::default();
+            sdk.as_bytes_mut().copy_from_slice(ds);
+            last = Some((name.to_vec(), duid.map(<[u8]>::to_vec), sdk));
+        });
+        let (name, duid, sdk) = last.unwrap();
+        assert_eq!((&name[..], duid), (&b"tst9"[..], None));
+        assert_eq!(&sdk.ds_name[..5], b"tst9\0");
+        assert_eq!((sdk.ds_rxfer, sdk.ds_wxfer, sdk.ds_rbytes), (5, 9, 4096));
 
         // SAFETY: inserted above; the guard is still held.
         unsafe { DISKLIST.0.remove(dk) };

@@ -228,17 +228,15 @@ pub fn mainbus_attach(_parent: Option<&Device>, self_: &Device, _aux: *mut c_voi
     let len = OF_getprop(sc.sc_node.get(), b"model", &mut prop);
     if len > 0 {
         printf(format_args!(": {}\n", Str(&prop)));
-        // SAFETY: mainbus attaches once, on the boot CPU, before any process can read
-        // hw_prod through sysctl(2).
-        unsafe { *hw_prod.get_mut() = kept_string(&prop, len as usize) };
+        // mainbus attaches once, on the boot CPU: hw_prod is set once.
+        hw_prod.write(kept_string(&prop, len as usize));
     } else {
         printf(format_args!(": unknown model\n"));
     }
 
     let len = OF_getprop(sc.sc_node.get(), b"serial-number", &mut prop);
     if len > 0 {
-        // SAFETY: as for hw_prod.
-        unsafe { *hw_serial.get_mut() = kept_string(&prop, len as usize) };
+        hw_serial.write(kept_string(&prop, len as usize));
     }
 
     mainbus_attach_psci(self_);

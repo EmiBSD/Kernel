@@ -169,7 +169,7 @@ use libkern::StaticCell;
 
 use crate::kassert;
 use crate::kern::kern_sysctl::{
-    sysctl_bounded_arr, sysctl_int_bounded, sysctl_rdstruct, sysctl_vslock, sysctl_vsunlock,
+    sysctl_bounded_arr, sysctl_int_bounded, sysctl_rdstruct, sysctl_vslock,
 };
 use crate::kern::kern_tc::microtime;
 use crate::kern::kern_time::ppsratecheck_shared;
@@ -1633,7 +1633,7 @@ pub fn icmp_sysctl(
         ICMPCTL_REDIRTIMEOUT => {
             let savelen = *oldlenp;
 
-            sysctl_vslock(oldp, savelen)?;
+            let vs = sysctl_vslock(oldp, savelen)?;
             net_lock();
             let error =
                 sysctl_int_bounded(oldp, oldlenp, newp, newlen, &ICMP_REDIRTIMEOUT, 0, INT_MAX);
@@ -1642,7 +1642,7 @@ pub fn icmp_sysctl(
                 ICMP_REDIRTIMEOUT.load(Ordering::Relaxed),
             );
             net_unlock();
-            sysctl_vsunlock(oldp, savelen);
+            drop(vs); // sysctl_vsunlock(oldp, savelen)
             error
         }
         ICMPCTL_STATS => icmp_sysctl_icmpstat(oldp, oldlenp, newp),

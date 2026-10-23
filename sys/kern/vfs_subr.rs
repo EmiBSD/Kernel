@@ -1360,6 +1360,7 @@ pub fn printlockedvnodes() {
 /// `struct vfsconf` as `vfs.generic.conf` copies it out: the operations pointer cleared, the
 /// hole after `vfc_flags` named.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct VfsconfAbi {
     vfc_vfsops: u64,
     vfc_name: [u8; MFSNAMELEN],
@@ -1370,8 +1371,16 @@ struct VfsconfAbi {
     vfc_datasize: u64,
 }
 
-// SAFETY: `#[repr(C)]` integers and bytes with the one hole named; no padding.
-unsafe impl crate::sys::sysctl::SysctlPlain for VfsconfAbi {}
+// `#[repr(C)]` integers and bytes with the one hole named; no padding.
+hal::abi_pod!(VfsconfAbi {
+    vfc_vfsops: u64,
+    vfc_name: [u8; MFSNAMELEN],
+    vfc_typenum: i32,
+    vfc_refcount: u32,
+    vfc_flags: i32,
+    _pad: u32,
+    vfc_datasize: u64,
+});
 
 /// Top level filesystem related information gathering.
 pub fn vfs_sysctl(

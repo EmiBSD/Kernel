@@ -101,7 +101,7 @@ use crate::sys::ioccom::_ior;
 use crate::sys::proc::{PS_CONTROLT, Pgrp, Process, Session, SessionRef};
 use crate::sys::queue::{TailqEntry, TailqHead};
 use crate::sys::selinfo::Selinfo;
-use crate::sys::sysctl::{CTLTYPE_QUAD, CTLTYPE_STRUCT, Ctlname, SysctlPlain};
+use crate::sys::sysctl::{CTLTYPE_QUAD, CTLTYPE_STRUCT, Ctlname};
 use crate::sys::termios::{Cc, Tcflag, Termios};
 use crate::sys::time::Timeval;
 use crate::sys::timeout::Timeout;
@@ -511,9 +511,23 @@ pub struct Itty {
     pub _pad1: [u8; 3],
 }
 
-// SAFETY: `repr(C)` integers with the C's padding as explicit members: 40 bytes, every byte
-// initialised.
-unsafe impl SysctlPlain for Itty {}
+// `repr(C)` integers with the C's padding as explicit members: 40 bytes, every byte
+// initialised (`hal::abi_pod!` checks the tiling).
+hal::abi_pod!(Itty {
+    t_dev: Dev,
+    t_rawq_c_cc: i32,
+    t_canq_c_cc: i32,
+    t_outq_c_cc: i32,
+    t_hiwat: i16,
+    t_lowat: i16,
+    t_column: i16,
+    _pad0: i16,
+    t_state: i32,
+    t_session_id: Pid,
+    t_pgrp_pg_id: Pid,
+    t_line: u8,
+    _pad1: [u8; 3],
+});
 
 /// Sleep priority for tty reads.
 pub const TTIPRI: i32 = 25;

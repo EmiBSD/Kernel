@@ -96,7 +96,7 @@
 //!   read side); `disknames` and `diskstats` are `MArray`s owned by the `Rwlocked` state of
 //!   `sysctl_disklock` (LZ: two `AtomicPtr`s and their lengths, dereferenced in `unsafe`
 //!   blocks), filled through the [`DiskExport`] bridge (the disk list is `bsd`'s, N7).
-//! - `hw_vendor`, `hw_prod`, `hw_uuid`, `hw_serial`, `hw_ver` are `OnceStatic`s the machine
+//! - `hw_vendor`, `hw_prod`, `hw_uuid`, `hw_serial`, `hw_ver` are [`HwString`]s (a `OnceStatic`) the machine
 //!   sets once at attach (LZ: `StaticCell`s read in `unsafe`); `cpu_cpuspeed` is
 //!   [`register_cpuspeed`]'s; the three battery setters are one [`BatteryCharge`] trait over
 //!   the knob (decision 46: the C's three entries one driver fills).
@@ -582,21 +582,52 @@ pub static ALLOWPOWERDOWN: AtomicI32 = AtomicI32::new(1);
 #[allow(non_upper_case_globals)] // the C's name; `HW_POWER` is the sysctl id
 pub static hw_power: AtomicI32 = AtomicI32::new(1);
 
+/// One of the machine's identity strings (`char *hw_vendor`, ...): set once at attach, read
+/// by `hw.vendor` and its siblings and by the drivers that quirk on them. `write` is the C's
+/// assignment (a `NULL` leaves the string unset, and a second one keeps the first: the C's
+/// writers run once, at attach), `read` the C's read of the pointer.
+pub struct HwString(OnceStatic<&'static [u8]>);
+
+impl HwString {
+    /// Unset (`NULL`).
+    pub const fn new() -> Self {
+        Self(OnceStatic::new())
+    }
+
+    /// `hw_x = s`.
+    pub fn write(&self, s: Option<&'static [u8]>) {
+        if let Some(s) = s {
+            let _ = self.0.set(s);
+        }
+    }
+
+    /// `hw_x`: the string, `None` for `NULL`.
+    pub fn read(&self) -> Option<&'static [u8]> {
+        self.0.get().copied()
+    }
+}
+
+impl Default for HwString {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// `hw_vendor`: set by the machine when the firmware names it.
 #[allow(non_upper_case_globals)] // the C's name; `HW_VENDOR` is the sysctl id
-pub static hw_vendor: OnceStatic<&'static [u8]> = OnceStatic::new();
+pub static hw_vendor: HwString = HwString::new();
 /// `hw_prod`.
 #[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
-pub static hw_prod: OnceStatic<&'static [u8]> = OnceStatic::new();
+pub static hw_prod: HwString = HwString::new();
 /// `hw_uuid`.
 #[allow(non_upper_case_globals)] // the C's name; `HW_UUID` is the sysctl id
-pub static hw_uuid: OnceStatic<&'static [u8]> = OnceStatic::new();
+pub static hw_uuid: HwString = HwString::new();
 /// `hw_serial`.
 #[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
-pub static hw_serial: OnceStatic<&'static [u8]> = OnceStatic::new();
+pub static hw_serial: HwString = HwString::new();
 /// `hw_ver`.
 #[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
-pub static hw_ver: OnceStatic<&'static [u8]> = OnceStatic::new();
+pub static hw_ver: HwString = HwString::new();
 
 /// `hw_battery_chargemode`.
 #[allow(non_upper_case_globals)] // the C's name; `HW_BATTERY_CHARGEMODE` is the sysctl id
@@ -670,7 +701,9 @@ static KERN_VARS_EXT: OnceStatic<&'static [SysctlBoundedArgs]> = OnceStatic::new
 /// The `hw_vars[]` entries of `bsd`'s variables.
 static HW_VARS_EXT: OnceStatic<&'static [SysctlBoundedArgs]> = OnceStatic::new();
 /// `cpu_cpuspeed`: the machine's CPU frequency reader, if it has one.
-static CPU_CPUSPEED: OnceStatic<fn(&mut i32) -> Result<(), Errno>> = OnceStatic::new();
+static CPU_CPUSPEED: OnceStatic<CpuSpeedFn> = OnceStatic::new();
+/// `int (*)(int *)`: the type of `cpu_cpuspeed`, which stores the CPU's frequency in MHz.
+pub type CpuSpeedFn = fn(&mut i32) -> Result<(), Errno>;
 /// The battery driver's setters (`hw_battery_set*`).
 static BATTERY: OnceStatic<&'static dyn BatteryCharge> = OnceStatic::new();
 /// The disk list's export (`bsd`'s `disklist`, N7).
@@ -745,7 +778,7 @@ pub fn register_hw_vars(t: &'static [SysctlBoundedArgs]) -> Result<(), AlreadyRe
 }
 
 /// `cpu_cpuspeed = f`: the machine's CPU frequency reader, once.
-pub fn register_cpuspeed(f: fn(&mut i32) -> Result<(), Errno>) -> Result<(), AlreadyRegistered> {
+pub fn register_cpuspeed(f: CpuSpeedFn) -> Result<(), AlreadyRegistered> {
     CPU_CPUSPEED
         .set(f)
         .map_err(|_| AlreadyRegistered("cpu_cpuspeed"))
@@ -999,7 +1032,7 @@ fn top_sysctl<G: ProcGlue>(
     match top {
         Top::Kern => kern_sysctl(p, name, req),
         Top::Hw => hw_sysctl(p, name, req),
-        Top::Vm => crate::vm::meter::uvm_sysctl(name, req),
+        Top::Vm => crate::vm::meter::uvm_sysctl::<G>(name, req),
         Top::Net | Top::Vfs | Top::Machdep | Top::Ddb => match node(&TOP, ctl) {
             Some(n) => n.sysctl(name, req),
             None => Err(Errno::EOPNOTSUPP),
@@ -1368,8 +1401,8 @@ pub fn hw_sysctl<G: ProcGlue>(
 
 /// The `HW_VENDOR`.. `HW_UUID` cases of `hw_sysctl`: the string, or `EOPNOTSUPP` when the
 /// machine recorded none.
-fn hw_string(var: &OnceStatic<&'static [u8]>, req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    match var.get() {
+fn hw_string(var: &HwString, req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    match var.read() {
         Some(s) => rdstring(req, s),
         None => Err(Errno::EOPNOTSUPP),
     }

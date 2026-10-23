@@ -133,7 +133,7 @@ use crate::dev::ofw::fdt::{
 };
 use crate::kern::exec_elf::{HWCAP, HWCAP2};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_sysctl::{CPU_CPUSPEED, hw_prod, hw_vendor};
+use crate::kern::kern_sysctl::{hw_prod, hw_vendor};
 use crate::kern::kern_task::{SYSTQ, task_add, task_set};
 use crate::kern::kern_tc::microuptime;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_set};
@@ -2071,9 +2071,9 @@ pub fn cpu_attach(_parent: Option<&Device>, dev: &Device, aux: *mut c_void) {
 
         // Lenovo X13s ships with broken EL2 firmware that hangs the machine if we enable
         // PAuth.
-        // SAFETY: `hw_vendor`/`hw_prod` are written by mainbus's attach, which precedes the
-        // CPUs', and read-only afterwards.
-        let (vendor, prod) = unsafe { (hw_vendor.read(), hw_prod.read()) };
+        // `hw_vendor`/`hw_prod` are set by mainbus's attach, which precedes the CPUs'
+        // (kernel::sysctl's OnceStatics).
+        let (vendor, prod) = (hw_vendor.read(), hw_prod.read());
         if let (Some(vendor), Some(prod)) = (vendor, prod)
             && cstr(vendor) == b"LENOVO"
             && (prod.starts_with(b"21BX") || prod.starts_with(b"21BY"))
@@ -2088,8 +2088,8 @@ pub fn cpu_attach(_parent: Option<&Device>, dev: &Device, aux: *mut c_void) {
 
         if OF_getproplen(ci.ci_node.get(), b"clocks") > 0 {
             CPU_NODE.store(ci.ci_node.get(), Ordering::Relaxed);
-            // SAFETY: autoconfiguration on the boot CPU, before sysctl(2) can read it.
-            unsafe { CPU_CPUSPEED.write(Some(cpu_clockspeed)) };
+            // cpu_cpuspeed = cpu_clockspeed (the boot CPU's attach registers it once).
+            let _ = kernel::sysctl::register_cpuspeed(cpu_clockspeed);
         }
 
         cpu_init();
