@@ -2271,9 +2271,8 @@ pub fn aml_callosi(scope: &Rc<AmlScope>, _val: Option<&AmlValueRef>) -> Option<A
         .map(|v| v.v_string())
         .unwrap_or_default();
 
-    // SAFETY: `hw_vendor` is written by the machine's attach code before the first table
-    // is parsed, and only read afterwards.
-    let vendor = unsafe { hw_vendor.read() };
+    // `hw_vendor` is set once by the machine's attach code (kernel::sysctl's OnceStatic).
+    let vendor = hw_vendor.read();
     if let Some(vendor) = vendor {
         let vendor = cstr(vendor);
         if vendor == b"Apple Inc." || vendor == b"Apple Computer, Inc." {

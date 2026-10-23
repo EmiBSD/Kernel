@@ -37,7 +37,7 @@
 //! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/log.rs`). N4.6c: futex(2)
 //! (`KernelApi::futex`, `sys/kernel/futex.rs`). N4.6a: the process system calls'
 //! forty-six (`KernelApi::proc`, `sys/kernel/fork.rs`, `exit.rs`, `resource.rs`, `prot.rs`,
-//! `acct.rs`).
+//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -59,8 +59,8 @@ use hal::sys::syscall::{
     SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_sendsyslog,
     SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
     SYS_setpriority, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_setrlimit,
-    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_utrace, SYS_vfork, SYS_wait4,
-    SYS_waitid, SYS_write, SYS_writev,
+    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_sysctl, SYS_utrace, SYS_vfork,
+    SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
 };
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -76,7 +76,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 92;
+pub const NATIVE: u32 = 93;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -179,6 +179,7 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_setthrname as usize] = Sysent::Native(sys_setthrname);
     table[SYS_getrtable as usize] = Sysent::Native(sys_getrtable);
     table[SYS_setrtable as usize] = Sysent::Native(sys_setrtable);
+    table[SYS_sysctl as usize] = Sysent::Native(sys_sysctl);
     table
 };
 
@@ -623,6 +624,21 @@ pub fn sys_sendsyslog(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) 
         args[0] as usize,
         args[1] as usize,
         args[2] as i32,
+        rval,
+    )
+}
+
+/// 202 = `sysctl(const int *name, u_int namelen, void *old, size_t *oldlenp, void *new,
+/// size_t newlen)`.
+pub fn sys_sysctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.sysctl)(
+        SYS_sysctl as Register,
+        args[0] as usize,
+        args[1] as u32,
+        args[2] as usize,
+        args[3] as usize,
+        args[4] as usize,
+        args[5] as usize,
         rval,
     )
 }
@@ -1585,8 +1601,32 @@ mod tests {
         Err((f * 10_000) as i32 + op * 1000 + val * 100 + (t * 10 + g) as i32)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn sysctl(
+        nr: Register,
+        name: usize,
+        namelen: u32,
+        old: usize,
+        oldlenp: usize,
+        new: usize,
+        newlen: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        // The six arguments as the digits of one number, in their order.
+        Err((name * 100_000
+            + namelen as usize * 10_000
+            + old * 1000
+            + oldlenp * 100
+            + new * 10
+            + newlen) as i32)
+    }
+
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -1690,12 +1730,13 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_and_proc_is_legacy() {
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_and_sysctl_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
                 || nr == SYS_sendsyslog as Register
                 || nr == SYS_futex as Register
+                || nr == SYS_sysctl as Register
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
                 || EVENT_CALLS.iter().any(|&v| v as Register == nr)
@@ -1909,7 +1950,23 @@ mod tests {
             syscall(&API, SYS_futex as Register, &a, &mut rval),
             Err(12345)
         );
-        assert_eq!(NATIVE, 92);
+    }
+
+    /// sysctl(2)'s translation (N4.6b): its number, the six arguments in
+    /// `<sys/syscallargs.h>`'s order, the trap's return registers.
+    #[test]
+    fn sysctl_is_native_and_passes_its_number_arguments_and_rval() {
+        assert!(matches!(SYSENT[SYS_sysctl as usize], Sysent::Native(_)));
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let mut rval = [-7; 2];
+        assert_eq!(sys_sysctl(&API, &a, &mut rval), Err(123_456));
+        assert_eq!(rval, [SYS_sysctl as Register, -7]);
+        let mut rval = [-7; 2];
+        assert_eq!(
+            syscall(&API, SYS_sysctl as Register, &a, &mut rval),
+            Err(123_456)
+        );
+        assert_eq!(NATIVE, 93);
     }
 
     #[test]

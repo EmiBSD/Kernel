@@ -130,6 +130,7 @@ pub mod swap;
 pub use hal::sys::syscall;
 pub mod syscall_mi;
 pub mod syscallargs;
+#[forbid(unsafe_code)]
 pub mod sysctl;
 pub use hal::sys::syslimits;
 #[forbid(unsafe_code)]

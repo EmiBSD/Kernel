@@ -127,7 +127,6 @@ use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use alloc::vec;
 
 use crate::kassert;
-use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write};
 use crate::kern::kern_sysctl::{
     SYSCTL_LOCK, sysctl_bounded_arr, sysctl_int_bounded, sysctl_rdstruct,
 };
@@ -1471,10 +1470,10 @@ pub fn ip6_sysctl(
             let error = sysctl_int_bounded(oldp, oldlenp, newp, newlen, &newval, 0, INT_MAX);
             let newval = newval.into_inner();
             if error.is_ok() && oldval != newval {
-                rw_enter_write(&SYSCTL_LOCK);
+                let sysctl_lock = SYSCTL_LOCK.write();
                 IP6_MTUDISC_TIMEOUT.store(newval, Ordering::Relaxed);
                 rt_timer_queue_change(&ICMP6_MTUDISC_TIMEOUT_Q, newval);
-                rw_exit_write(&SYSCTL_LOCK);
+                drop(sysctl_lock);
             }
 
             error

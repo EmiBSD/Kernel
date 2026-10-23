@@ -181,6 +181,10 @@ impl Malloc for BsdMalloc {
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize) {
         free(ptr, ty, size);
     }
+
+    fn nkmempages(&self) -> i32 {
+        crate::kern::kern_malloc::nkmempages() as i32
+    }
 }
 
 /// The user copy of `sys/machine/copy.rs`, and `kcopy` onto a `hal::user::ForeignWindow`
@@ -360,6 +364,11 @@ impl kernel::clock::Uptime for BsdUptime {
         let ts = crate::kern::kern_tc::nanotime();
         kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
     }
+
+    fn nanoboottime(&self) -> kernel::clock::Timespec {
+        let ts = crate::kern::kern_tc::nanoboottime();
+        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
+    }
 }
 
 static BSD_UPTIME: BsdUptime = BsdUptime;
@@ -416,6 +425,9 @@ pub fn hal_bridges_register() {
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     let _ = kernel::clock::install_uptime(&BSD_UPTIME);
     let _ = kernel::acct::install_acct_file(&crate::kern::proc_glue::BSD_ACCT_FILE);
+    // sysctl(2)'s nodes still in bsd, its bounded variables, the disk list's export and
+    // physmem, for kernel::sysctl's dispatcher (N4.6b).
+    crate::kern::kern_sysctl::sysctl_register_legacy();
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]
     {

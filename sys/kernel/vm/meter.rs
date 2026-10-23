@@ -69,14 +69,16 @@
 //! - `maxslp` keeps its lowercase C name: `MAXSLP` is the constant it starts from (LZ's).
 //!
 //! ## Redesign
-//! - The sysctl helpers (`sysctl_rdint`, `sysctl_int`, `sysctl_rdstruct`, `sysctl_string`),
-//!   `nkmempages`, `averunnable` and the process list are `bsd`'s until N4: one registered
-//!   bridge, [`VmSysctl`] (bridges.toml), one call each; the request's user addresses travel
-//!   as a [`SysctlReq`] (`kernel::sysctl`'s since N4.7b, re-exported here). The dispatch,
-//!   every value and every check (the three minimum percentages' sum) are here. `vm.uvmexp`'s copy-out is the bridge's `rdstruct_uvmexp`
-//!   (`bsd`'s byte view of `struct uvmexp`, `SysctlPlain`).
-//! - `uvm_total` classifies the processes the bridge walks ([`ProcState`]: `p_stat` and
-//!   whether the thread is its CPU's idle thread), as `uvm_meter.c` does.
+//! - N4.6b: the sysctl helpers are `kernel::sysctl`'s (`rdint`, `int`, `rdstruct`,
+//!   `string`), `averunnable` `kernel::sched`'s, the thread list the glue's tables
+//!   (`allproc`), `nkmempages` the `Malloc` bridge's member; the request's user addresses
+//!   travel as a [`SysctlReq`] (`kernel::sysctl`'s since N4.7b, re-exported here); the
+//!   dispatch is `kernel::sysctl::sys_sysctl`'s (`CTL_VM`, vslocked). LZ's `VmSysctl` bridge
+//!   (N3.5 to N4.6b) is gone. The dispatch of this tree, every value and every check (the
+//!   three minimum percentages' sum) are here; `vm.uvmexp` is copied out as the bytes of
+//!   `struct uvmexp` (`UvmexpCopy::to_ne_bytes`).
+//! - `uvm_total` classifies the threads of `allproc` ([`ProcState`]: `p_stat` and whether the
+//!   thread is its CPU's idle thread), as `uvm_meter.c` does.
 //! - `malloc_conf` is a `Mutexed<[u8; 16]>` (a lock the C does not take: `sys_sysctl`'s
 //!   `sysctl_lock` serialises every `CTL_VM` call already). `sysctl_string` copies in and out
 //!   of user memory, which may sleep, so it works on a copy taken under the mutex and stores
@@ -86,10 +88,8 @@
 use core::fmt;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::bridges::AlreadyRegistered;
 use hal::intr::IPL_NONE;
 use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::vmmeter::Vmtotal;
 use hal::vm::uvmexp::{
@@ -100,8 +100,9 @@ use hal::vm::uvmexp::{
 
 use super::init::machine;
 use super::proc::vmproc;
-use crate::assert::kpanic;
+use crate::proc::ProcGlue;
 pub use crate::sysctl::SysctlReq;
+use crate::sysctl::{int, rdint, rdstruct, string};
 
 /// `MAXSLP`: the time for a process to be blocked before being very swappable. This is a
 /// number of seconds which the system takes as being a non-trivial amount of real time. You
@@ -138,51 +139,9 @@ pub static maxslp: AtomicI32 = AtomicI32::new(MAXSLP);
 #[allow(non_upper_case_globals)] // the C's name, an array beside `maxslp`
 pub static malloc_conf: Mutexed<[u8; 16]> = Mutexed::new(IPL_NONE, [0; 16]);
 
-/// The registered sysctl bridge ([`install`]).
-static VM_SYSCTL: OnceStatic<&'static dyn VmSysctl> = OnceStatic::new();
-
-/// `uvm_sysctl`'s reach into `bsd` (bridges.toml): the sysctl copy helpers of
-/// `kern_sysctl.c`, `nkmempages`, `averunnable` and `allproc`; registered once by `bsd`'s
-/// `uvm_init`; each method is one call.
-pub trait VmSysctl: Sync {
-    /// `sysctl_rdint(oldp, oldlenp, newp, v)`: a read-only `int`.
-    fn rdint(&self, req: &mut SysctlReq<'_>, v: i32) -> Result<(), Errno>;
-    /// `sysctl_int(oldp, oldlenp, newp, newlen, v)`: an `int` read and maybe set.
-    fn int(&self, req: &mut SysctlReq<'_>, v: &mut i32) -> Result<(), Errno>;
-    /// `sysctl_rdstruct(oldp, oldlenp, newp, bytes, len)`: a read-only structure's bytes.
-    fn rdstruct(&self, req: &mut SysctlReq<'_>, bytes: &[u8]) -> Result<(), Errno>;
-    /// `sysctl_rdstruct` of `struct uvmexp` (`bsd`'s byte view of it).
-    fn rdstruct_uvmexp(&self, req: &mut SysctlReq<'_>, uexp: &UvmexpCopy) -> Result<(), Errno>;
-    /// `sysctl_string(oldp, oldlenp, newp, newlen, buf, sizeof(buf))`.
-    fn string(&self, req: &mut SysctlReq<'_>, buf: &mut [u8]) -> Result<(), Errno>;
-    /// `nkmempages`.
-    fn nkmempages(&self) -> i32;
-    /// `averunnable`: `ldavg[3]` (`fixpt_t`) and `fscale`.
-    fn averunnable(&self) -> ([u32; 3], i64);
-    /// `LIST_FOREACH(p, &allproc, p_list)`: `f` on each thread's state.
-    fn for_each_proc(&self, f: &mut dyn FnMut(ProcState));
-}
-
-/// Registers the sysctl bridge, once (`bsd`'s `uvm_init`; the tests' doubles); a second call
-/// keeps the first and names the bridge.
-pub fn install(imp: &'static dyn VmSysctl) -> Result<(), AlreadyRegistered> {
-    VM_SYSCTL
-        .set(imp)
-        .map_err(|_| AlreadyRegistered("VmSysctl"))
-}
-
-/// The bridge; panics before [`install`] (no sysctl runs before `uvm_init`).
-fn vmsysctl() -> &'static dyn VmSysctl {
-    match VM_SYSCTL.get() {
-        Some(s) => *s,
-        None => kpanic(format_args!("VmSysctl used before uvm_init")),
-    }
-}
-
-/// `uvm_sysctl`: the sysctl hook into UVM (`CTL_VM`), for the current process.
-pub fn uvm_sysctl(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    let s = vmsysctl();
-
+/// `uvm_sysctl`: the sysctl hook into UVM (`CTL_VM`), for the current process (the
+/// threads of `G`'s tables for `vm.vmmeter`).
+pub fn uvm_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     let Some(&top) = name.first() else {
         return Err(Errno::ENOTDIR);
     };
@@ -198,15 +157,18 @@ pub fn uvm_sysctl(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     }
 
     match top {
-        VM_LOADAVG => s.rdstruct(req, &loadavg_bytes(s.averunnable())),
+        VM_LOADAVG => rdstruct(
+            req,
+            &loadavg_bytes((crate::sched::averunnable(), i64::from(crate::sched::FSCALE))),
+        ),
 
-        VM_METER => s.rdstruct(req, &vmtotal_bytes(&uvm_total())),
+        VM_METER => rdstruct(req, &vmtotal_bytes(&uvm_total::<G>())),
 
-        VM_UVMEXP => s.rdstruct_uvmexp(req, &uvmexp_read()),
+        VM_UVMEXP => rdstruct(req, &uvmexp_read().to_ne_bytes()),
 
-        VM_NKMEMPAGES => s.rdint(req, s.nkmempages()),
+        VM_NKMEMPAGES => rdint(req, hal::malloc::nkmempages()),
 
-        VM_PSSTRINGS => s.rdstruct(req, &(vmproc().ps_strings() as u64).to_ne_bytes()),
+        VM_PSSTRINGS => rdstruct(req, &(vmproc().ps_strings() as u64).to_ne_bytes()),
 
         VM_ANONMIN => uvm_minpct(
             req,
@@ -229,13 +191,13 @@ pub fn uvm_sysctl(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
             [&UVMEXP.anonminpct, &UVMEXP.vtextminpct],
         ),
 
-        VM_MAXSLP => s.rdint(req, maxslp.load(Ordering::Relaxed)),
+        VM_MAXSLP => rdint(req, maxslp.load(Ordering::Relaxed)),
 
-        VM_USPACE => s.rdint(req, machine().uspace as i32),
+        VM_USPACE => rdint(req, machine().uspace as i32),
 
         VM_MALLOC_CONF => {
             let mut conf = *malloc_conf.lock();
-            let rv = s.string(req, &mut conf);
+            let rv = string(req, &mut conf);
             if req.newp != 0 {
                 *malloc_conf.lock() = conf;
             }
@@ -254,9 +216,9 @@ fn uvm_minpct(
     min: &AtomicI32,
     others: [&AtomicI32; 2],
 ) -> Result<(), Errno> {
-    let mut t = pct.load(Ordering::Relaxed);
-    vmsysctl().int(req, &mut t)?;
-    minpct_set(t, pct, min, others)
+    let t = AtomicI32::new(pct.load(Ordering::Relaxed));
+    int(req, &t)?;
+    minpct_set(t.into_inner(), pct, min, others)
 }
 
 /// The check and the update of [`uvm_minpct`] once `sysctl_int` gave `t`.
@@ -306,12 +268,21 @@ fn vmtotal_bytes(t: &Vmtotal) -> [u8; 48] {
     b
 }
 
-/// `uvm_total`: calculate the current state of the system.
-pub fn uvm_total() -> Vmtotal {
+/// `uvm_total`: calculate the current state of the system (the threads of `G`'s
+/// `allproc`, under the kernel lock's reader: `sysctl(2)` vslocked `CTL_VM`).
+pub fn uvm_total<G: ProcGlue>() -> Vmtotal {
     let mut total = Vmtotal::default();
 
     // calculate process statistics
-    vmsysctl().for_each_proc(&mut |p| total_count(&mut total, p));
+    let r = hal::klock::reader();
+    for p in G::tables().allproc.iter(&r) {
+        let state = ProcState {
+            stat: i32::from(p.stat()),
+            idle: crate::sched::is_idle_thread(p),
+        };
+        total_count(&mut total, state);
+    }
+    drop(r);
 
     // Calculate object memory usage statistics.
     let free = UVMEXP.free.load(Ordering::Relaxed);
@@ -531,6 +502,47 @@ mod tests {
         assert_eq!(minpct_set(15, &pct, &min, [&a, &b]), Ok(()));
         assert_eq!(pct.load(Ordering::Relaxed), 15);
         assert_eq!(min.load(Ordering::Relaxed), 15 * 256 / 100);
+    }
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// `vm.*` through `uvm_sysctl` itself (LZ's bsd test of the `VmSysctl` bridge, which is
+    /// gone): a size query of a leaf, a name below a terminal node, an unknown id.
+    #[test]
+    fn the_vm_sysctls_answer_as_the_c() {
+        crate::testutil::install();
+        let mut len = 0usize;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(uvm_sysctl::<Procs>(&[VM_MAXSLP], &mut req), Ok(()));
+        assert_eq!(len, core::mem::size_of::<i32>());
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            uvm_sysctl::<Procs>(&[VM_MAXSLP, 1], &mut req),
+            Err(Errno::ENOTDIR)
+        );
+        assert_eq!(
+            uvm_sysctl::<Procs>(&[hal::vm::uvmexp::VM_MAXID], &mut req),
+            Err(Errno::EOPNOTSUPP)
+        );
+        assert_eq!(uvm_sysctl::<Procs>(&[], &mut req), Err(Errno::ENOTDIR));
+        assert_eq!(
+            uvm_sysctl::<Procs>(&[VM_SWAPENCRYPT], &mut req),
+            Err(Errno::EOPNOTSUPP)
+        );
+        // vm.uvmexp's size is struct uvmexp's.
+        assert_eq!(uvm_sysctl::<Procs>(&[VM_UVMEXP], &mut req), Ok(()));
+        assert_eq!(len, core::mem::size_of::<UvmexpCopy>());
     }
 }
 /* </TESTS> */

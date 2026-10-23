@@ -588,6 +588,10 @@ impl crate::clock::Uptime for TestUptime {
         let up = crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed));
         up.add(crate::clock::Timespec::new(BOOTTIME_SEC, 0))
     }
+
+    fn nanoboottime(&self) -> crate::clock::Timespec {
+        crate::clock::Timespec::new(BOOTTIME_SEC, 0)
+    }
 }
 
 static TEST_UPTIME: TestUptime = TestUptime;
@@ -1759,6 +1763,13 @@ macro_rules! test_proc_glue {
             ) -> hal::sys::errno::Errno {
                 $crate::testutil::file_log_push(std::format!("pledge_fail {code:#x}"));
                 error
+            }
+            fn pledge_sysctl(
+                _p: &$crate::proc::Thread<Self>,
+                _mib: &[i32],
+                _new: usize,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
             }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
                 match hal::pool::PoolArc::from_ref(pr) {

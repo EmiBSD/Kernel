@@ -74,6 +74,9 @@
 //!   a copy over the byte views below (no `unsafe` of their own), bounded by the slice. LZ's
 //!   `ioctl_arg`/`ioctl_ret` (`sys/sys/ioctl.rs`, three `unsafe` over the legacy trait) stay
 //!   for their legacy users.
+//! - N4.6b: [`bytes_of`] and [`bytes_of_mut`] are public (no new `unsafe`: the two blocks were
+//!   here), so that `bsd`'s `SysctlPlain` is a blanket over `AbiPod` and its 12 `unsafe impl`s
+//!   go.
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -494,7 +497,7 @@ pub fn bytes_of<T: AbiPod>(objs: &[T]) -> &[u8] {
 }
 
 /// The bytes of `objs`, writable.
-fn bytes_of_mut<T: AbiPod>(objs: &mut [T]) -> &mut [u8] {
+pub fn bytes_of_mut<T: AbiPod>(objs: &mut [T]) -> &mut [u8] {
     // SAFETY: as for `bytes_of`, and since every bit pattern is a valid `T` (the contract),
     // whatever is written through the bytes leaves valid `T`s; `&mut` makes this the only
     // view while it lives.

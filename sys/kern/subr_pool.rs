@@ -2501,6 +2501,9 @@ pub(crate) mod tests {
         // And the log stash's messages and syslogf's file (kernel::log, in bsd's glue's
         // tables), malloc(9)'d and pooled from the memory just replaced.
         kernel::log::log_test_reset::<crate::kern::proc_glue::BsdProcGlue>();
+        // And sysctl's disk exports (kernel::sysctl's disknames and diskstats), malloc(9)'d
+        // from the memory just replaced.
+        kernel::sysctl::sysctl_test_reset();
         guard
     }
 

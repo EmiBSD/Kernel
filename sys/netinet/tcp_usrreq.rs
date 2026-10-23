@@ -126,7 +126,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_prot::suser;
-use crate::kern::kern_rwlock::{rw_enter, rw_exit};
 use crate::kern::kern_sysctl::{
     SECURELEVEL, SYSCTL_LOCK, sysctl_bounded_arr, sysctl_int, sysctl_int_bounded, sysctl_rdstruct,
     sysctl_struct,
@@ -208,7 +207,6 @@ use crate::sys::protosw::{
     PRU_DISCONNECT, PRU_LISTEN, PRU_PEERADDR, PRU_RCVD, PRU_RCVOOB, PRU_SEND, PRU_SENDOOB,
     PRU_SENSE, PRU_SHUTDOWN, PRU_SOCKADDR, PrUsrreqs,
 };
-use crate::sys::rwlock::{RW_INTR, RW_WRITE};
 use crate::sys::socket::{
     AF_INET, MSG_PEEK, PF_INET, SO_ACCEPTCONN, SO_DEBUG, SO_LINGER, SO_OOBINLINE,
 };
@@ -1512,7 +1510,7 @@ pub fn tcp_sysctl(
             let nval = nval.into_inner();
 
             if oval != nval {
-                rw_enter(&SYSCTL_LOCK, RW_WRITE | RW_INTR)?;
+                let sysctl_lock = SYSCTL_LOCK.write_flags(hal::rwlock::RW_INTR)?;
                 let mut error = Ok(());
                 if nval != var.load(Ordering::Relaxed) {
                     error = pool_sethardlimit(pool, nval as u32);
@@ -1520,7 +1518,7 @@ pub fn tcp_sysctl(
                         var.store(nval, Ordering::Relaxed);
                     }
                 }
-                rw_exit(&SYSCTL_LOCK);
+                drop(sysctl_lock);
                 return error;
             }
 

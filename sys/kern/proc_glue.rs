@@ -661,6 +661,23 @@ impl ProcGlue for BsdProcGlue {
         sess.s_ttyvp.get().is_some()
     }
 
+    fn pledge_sysctl(p: &Proc, mib: &[i32], new: usize) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_sysctl(p, mib, new)
+    }
+
+    fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
+        kernel::proc::UnveilState {
+            paths: !pr.ps_uvpaths.get().is_null(),
+            done: pr.ps_uvdone.get() != 0,
+        }
+    }
+
+    fn cpu_unit(n: usize) -> Option<u64> {
+        crate::kern::kern_sched::cpu_info_by_number(n).map(|ci| {
+            u64::from(<crate::machine::Machine as crate::machine::Cpu>::cpu_info_unit(ci))
+        })
+    }
+
     fn pmap_activate(p: &Proc) {
         crate::machine::pmap::pmap_activate(p);
     }

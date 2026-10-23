@@ -43,14 +43,15 @@
 //! (N4.7a): `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`). Version 7 (N4.6c):
 //! `futex`, the kernel's entry for futex(2) ([`FutexEntry`]). Version 8 (N4.6a):
 //! [`ProcEntries`], the forty-six of the processes (fork, exit, wait, the limits, the ids
-//! and credentials, accounting, the TCB, the thread names, the routing table).
+//! and credentials, accounting, the TCB, the thread names, the routing table). Version 9
+//! (N4.6b): `sysctl`, the kernel's entry for sysctl(2) ([`SysctlEntry`]).
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 8;
+pub const KERNEL_API_VERSION: u32 = 9;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -233,6 +234,11 @@ pub struct EventEntries {
 /// `FUTEX_REQUEUE`'s count), the number woken in `rval[0]`.
 pub type FutexEntry = fn(Register, usize, i32, i32, usize, usize, &mut Rval) -> SysResult;
 
+/// 202 = `sysctl(const int *name, u_int namelen, void *old, size_t *oldlenp, void *new,
+/// size_t newlen)`: `(nr, name, namelen, old, oldlenp, new, newlen, rval)`, the addresses as
+/// integers.
+pub type SysctlEntry = fn(Register, usize, u32, usize, usize, usize, usize, &mut Rval) -> SysResult;
+
 /// The process system calls' entries (version 8, N4.6a): `fork(2)` and `vfork(2)`,
 /// `__tfork(2)`, `exit(2)` and `__threxit(2)`, `wait4(2)` and `waitid(2)`, the limits and
 /// usage (`getrusage`, `getrlimit`, `setrlimit`, `getpriority`, `setpriority`), `acct(2)`, the
@@ -368,6 +374,8 @@ pub struct KernelApi {
     pub futex: FutexEntry,
     /// The process system calls (version 8).
     pub proc: ProcEntries,
+    /// sysctl(2) (version 9).
+    pub sysctl: SysctlEntry,
 }
 
 impl KernelApi {
@@ -388,6 +396,7 @@ impl KernelApi {
         sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
         futex: FutexEntry,
         proc: ProcEntries,
+        sysctl: SysctlEntry,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -402,6 +411,7 @@ impl KernelApi {
             sendsyslog,
             futex,
             proc,
+            sysctl,
         }
     }
 }
@@ -448,8 +458,12 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 8 only adds: the version 7 fields keep their places, `proc` comes last.
-    assert!(offset_of!(KernelApi, proc) == size_of::<KernelApi>() - size_of::<ProcEntries>());
+    // Version 9 only adds: the version 8 fields keep their places, `sysctl` comes last.
+    assert!(offset_of!(KernelApi, sysctl) == size_of::<KernelApi>() - size_of::<SysctlEntry>());
+    assert!(
+        offset_of!(KernelApi, sysctl) == offset_of!(KernelApi, proc) + size_of::<ProcEntries>()
+    );
+    // Version 8 added `proc` after `futex`.
     assert!(offset_of!(KernelApi, proc) == offset_of!(KernelApi, futex) + size_of::<FutexEntry>());
     assert!(size_of::<ProcEntries>() == 46 * size_of::<fn()>());
     // Version 7 added `futex` after `sendsyslog`.
@@ -1001,16 +1015,41 @@ mod tests {
         Err(nr as i32 + f as i32 + op + val + t as i32 + g as i32)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn sysctl(
+        nr: Register,
+        name: usize,
+        namelen: u32,
+        old: usize,
+        oldlenp: usize,
+        new: usize,
+        newlen: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + (name + namelen as usize + old + oldlenp + new + newlen) as i32)
+    }
+
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
     );
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 8);
+        assert_eq!(KERNEL_API_VERSION, 9);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
+    }
+
+    #[test]
+    fn the_sysctl_entry_is_the_callers_and_writes_the_return_registers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.sysctl)(202, 1, 2, 3, 4, 5, 6, &mut rval), Err(223));
+        assert_eq!(rval[0], 202);
     }
 
     #[test]

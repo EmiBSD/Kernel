@@ -49,7 +49,8 @@ for = ["sys/hal/pool.rs"]
 paid_by = "N9"
 
 # bsd: malloc/free with the C's malloc types (sys/kern/kern_malloc.rs), so vmstat -m counts an
-# MBox in its type's row; a safe trait, the same boot contract.
+# MBox in its type's row; a safe trait, the same boot contract. N4.6b: nkmempages (vm.nkmempages,
+# the VmSysctl bridge's member that moved here).
 
 # hal::malloc::Malloc
 [[bridge]]
@@ -141,7 +142,8 @@ paid_by = "N7"
 # SIGPIPE (N4.5), the stall wait (N5), pledge's fcntl/flock/ioctl hooks (N8, the last),
 # maxfiles and tablefull). N4.4: knote_fdclose, fdkq_free and the Knote/FdKq types left (kqueue
 # is kernel::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
-# file's revocation (vnode_revoked, N5) came.
+# file's revocation (vnode_revoked, N5) came. N4.6b: getcwd (kern.proc_cwd's
+# vfs_getcwd_common, N5).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
@@ -189,7 +191,7 @@ paid_by = "N5"
 
 # bsd: nanouptime, getnanouptime and nanotime of sys/kern/kern_tc.rs (the last two N4.4,
 # kqueue's sleep and EVFILT_TIMER's NOTE_ABSTIME), implemented by sys/kern/hal_bridges.rs
-# (BsdUptime). N4.8, with kern_tc.
+# (BsdUptime). N4.8, with kern_tc. N4.6b: nanoboottime (kinfo_proc's start times).
 # kernel::clock::Uptime
 [[bridge]]
 trait = "Uptime"
@@ -239,16 +241,36 @@ trait = "VmProc"
 for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs", "sys/kernel/vm/meter.rs"]
 paid_by = "N4"
 
-# bsd: CTL_VM's reach into kern_sysctl.rs (sysctl_rdint, sysctl_int, sysctl_rdstruct,
-# sysctl_string, and sysctl_rdstruct of struct uvmexp through bsd's SysctlPlain byte view),
-# kern_malloc's nkmempages, sched_bsd's averunnable and kern_proc's allproc (each thread's p_stat
-# and whether it is its CPU's idle thread); implemented by sys/kern/vm_bsd.rs (N3.5 S1,
-# registered by bsd's uvm_init at the flip), one bsd call each. N4, with kern_sysctl and proc.
-# kernel::vm::meter::VmSysctl
+# bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
+# kernel::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from
+# hal_bridges_register, N4.6b): the net (N6), vfs (N5), machdep (with arm64's machdep; amd64's
+# at N10) and ddb (N9) trees; kern.ostype/osrelease/osversion/version (conf/vers, N9.1),
+# kern.clockrate, kern.boottime, kern.cp_time, kern.cp_time2, kern.cpustats, kern.timecounter,
+# kern.clockintr and kern.utc_offset (N4.8a), kern.tty (N4.7b), kern.numvnodes, kern.nchstats,
+# kern.bufcachepercent (N5), kern.maxclusters, kern.mbstat, kern.file (N6, its socket half;
+# its vnode half N5), kern.pfstatus (N8), kern.stackgap_random (N8.4), kern.consdev,
+# kern.intrcnt, kern.evcount, kern.watchdog, kern.audio, hw.sensors, hw.ucomnames, hw.machine,
+# hw.smt, hw.blockcpu (N7), kern.malloc, kern.pool, kern.pool_debug (N9); and the bounded
+# integers of kern_vars[]/hw_vars[] whose variables are bsd's (maxvnodes, maxproc, maxfiles,
+# nfiles, ttycount, maxthread, somaxconn, sominconn, nosuidcoredump, fscale, splassert,
+# maxlocksperuid, autoconf_serial, ncpu, ncpufound, diskcount) and physmem's variable. Each
+# registration leaves with its subsystem; N9 the last. Decision 46: the C's sysctlfn dispatch
+# as one trait.
+# kernel::sysctl::SysctlNode
 [[bridge]]
-trait = "VmSysctl"
-for = ["sys/kernel/vm/meter.rs"]
-paid_by = "N4"
+trait = "SysctlNode"
+for = ["sys/kernel/sysctl.rs"]
+paid_by = "N9"
+
+# bsd: the disk list as sysctl_diskinit reads it (sys/kern/subr_disk.rs's disklist,
+# disk_count and disk_change, each disk's name, label uid and struct diskstats under its
+# dk_mtx), implemented by sys/kern/kern_sysctl.rs (BsdDiskExport) and installed by
+# sysctl_register_legacy (N4.6b), for hw.disknames and hw.diskstats. N7, with the disks.
+# kernel::sysctl::DiskExport
+[[bridge]]
+trait = "DiskExport"
+for = ["sys/kernel/sysctl.rs"]
+paid_by = "N7"
 
 # bsd: the console's half of the device switch that sendsyslog(2) writes through when no
 # syslogd(8) socket is set (dosendsyslog's KERNEL_LOCK leg): cnwrite and its test `constty ||
@@ -290,7 +312,9 @@ paid_by = "N7"
 # pmap_activate, pmap_deactivate, pmap_purge, child_return, tcb_invalid and tcb_set (the
 # machine, N4.8/N10), start_init (N9.1), init_exited (the QEMU exit), cancel_all_itimers
 # (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. Re-dated N8 (the user's
-# decision 11 of N4.6): its members reach N5 and N8.
+# decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
+# pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
+# (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"

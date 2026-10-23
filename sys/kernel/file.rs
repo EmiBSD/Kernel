@@ -651,6 +651,19 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn stat_hide_gen(st: &mut Self::Stat);
     /// `copyout(&ub, sb, sizeof(ub))` of `fstat(2)`: the structure's user bytes at `sb`.
     fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), Errno>;
+    /// `vfs_getcwd_common(vp, NULL, &bp, path, limit, GETCWD_CHECK_ACCESS, p)`
+    /// (`kern.proc_cwd`, N4.6b): the path of the directory `vp` written backwards into `path`
+    /// from `bp` (where the caller put the terminating NUL), the new `bp` returned. The
+    /// default is a glue without file systems (the kernel's tests): no path (`ENOENT`).
+    fn getcwd(
+        _vp: &'static Self::Vnode,
+        _path: &mut [u8],
+        _bp: usize,
+        _limit: i32,
+        _p: &Thread<Self::Proc>,
+    ) -> Result<usize, Errno> {
+        Err(Errno::ENOENT)
+    }
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

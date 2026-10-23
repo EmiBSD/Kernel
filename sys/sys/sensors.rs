@@ -53,7 +53,7 @@
 //! - `enum sensor_type` and `enum sensor_status` are `#[repr(i32)]` Rust enums with the C's
 //!   names and values ([`SensorType`], [`SensorStatus`]); the user structures keep plain `i32`
 //!   members (`r#type`, `status`), as `sysctl_rdstruct` needs a type valid for every bit
-//!   pattern ([`SysctlPlain`]).
+//!   pattern (`SysctlPlain`).
 //! - `sensor_type_s[]` is `#ifndef _KERNEL` (userland only) and is not part of the kernel.
 //! - The kernel structures are shared through pointers at `splhigh`, so their members are
 //!   `Cell`s; every one of them is valid as all-zero bytes (a `ksensordev` lives in an
@@ -66,7 +66,6 @@ use core::cell::Cell;
 pub use crate::kern::kern_sensors::SensorTask;
 use crate::queue_adapter;
 use crate::sys::queue::{SlistEntry, SlistHead};
-use crate::sys::sysctl::SysctlPlain;
 use crate::sys::time::Timeval;
 
 /// `enum sensor_type`: sensor types.
@@ -229,9 +228,17 @@ pub struct Sensor {
     pub flags: i32,
 }
 
-// SAFETY: `#[repr(C)]` of a byte array, a `Timeval` (two `i64`s) and integers, laid out
-// without holes (the compile-time checks below), every bit pattern valid.
-unsafe impl SysctlPlain for Sensor {}
+// `#[repr(C)]` of a byte array, a `Timeval` (two `i64`s) and integers, laid out without
+// holes (`hal::abi_pod!` checks it).
+hal::abi_pod!(Sensor {
+    desc: [u8; 32],
+    tv: Timeval,
+    value: i64,
+    r#type: i32,
+    status: i32,
+    numt: i32,
+    flags: i32,
+});
 
 /// `struct sensordev`: sensor device data as `sysctl(2)` returns it. New fields should be
 /// added at the end to encourage backwards compat.
@@ -248,9 +255,13 @@ pub struct Sensordev {
     pub sensors_count: i32,
 }
 
-// SAFETY: `#[repr(C)]` of `i32`s and a byte array, without holes (the compile-time checks
-// below), every bit pattern valid.
-unsafe impl SysctlPlain for Sensordev {}
+// `#[repr(C)]` of `i32`s and a byte array, without holes (`hal::abi_pod!` checks it).
+hal::abi_pod!(Sensordev {
+    num: i32,
+    xname: [u8; 16],
+    maxnumt: [i32; SENSOR_MAX_TYPES],
+    sensors_count: i32,
+});
 
 /// `struct ksensor`: the kernel's sensor data.
 ///
