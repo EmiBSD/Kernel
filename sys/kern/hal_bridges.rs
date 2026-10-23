@@ -21,7 +21,7 @@
 //!
 //! The runtime in `hal` (docs/ZERO_UNSAFE.md 0.1) names nothing of `bsd`: what it needs from
 //! the code still here (`curcpu()`, the sleep queues,
-//! `pool(9)`, `malloc(9)`, the user copy, the console, `printf(9)` (N3.3, the kernel crate's
+//! `pool(9)`, `malloc(9)`, the console, `printf(9)` (N3.3, the kernel crate's
 //! lines), and for the pmap (N3.1) amd64's CPUs
 //! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
 //! bridge, registered once. This file is those implementations: each method is one call into
@@ -42,8 +42,7 @@
 //! from its earliest setup (arm64's `initarm`): generic code cannot name it.
 //! Registering does not call them; a bridge is used only by a piece whose subsystem is up.
 
-use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
@@ -51,17 +50,13 @@ use hal::malloc::Malloc;
 use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
-use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::printf;
-use crate::machine::copy::{copyin, copyin32, copyinstr, copyout, copyoutstr};
 use crate::sys::errno::Errno;
 use crate::sys::pool::Pool;
-use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// One pool of `pool(9)` (`sys/kern/subr_pool.rs`).
 impl RawPool for Pool {
@@ -187,75 +182,6 @@ impl Malloc for BsdMalloc {
     }
 }
 
-/// The user copy of `sys/machine/copy.rs`, and `kcopy` onto a `hal::user::ForeignWindow`
-/// through `uiomove` (`sys/kern/kern_subr.rs`), whose `UIO_SYSSPACE` copy is the machine's.
-struct BsdUser;
-
-impl UserCopy for BsdUser {
-    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        copyin(uaddr, kbuf)
-    }
-
-    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
-        copyout(kbuf, uaddr)
-    }
-
-    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
-        copyinstr(uaddr, kbuf)
-    }
-
-    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
-        copyoutstr(kbuf, uaddr)
-    }
-
-    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno> {
-        copyin32(uaddr)
-    }
-
-    /// The window's bytes into `kbuf`: `uiomove` from a `UIO_SYSSPACE` iovec over the window,
-    /// whose copy is the machine's `kcopy` (a fault is `EFAULT`, `pcb_onfault`).
-    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        sysspace_move(kva, kbuf, UioRw::UIO_WRITE)
-    }
-
-    /// `kbuf` into the window: `uiomove` to a `UIO_SYSSPACE` iovec over it, through a small
-    /// buffer of the stack (`uiomove`'s kernel side is writable).
-    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
-        let mut chunk = [0u8; KCOPY_CHUNK];
-        let mut at = kva;
-        for piece in kbuf.chunks(KCOPY_CHUNK) {
-            let c = &mut chunk[..piece.len()];
-            c.copy_from_slice(piece);
-            sysspace_move(at, c, UioRw::UIO_READ)?;
-            at = at.checked_add(piece.len()).ok_or(Errno::EFAULT)?;
-        }
-        Ok(())
-    }
-}
-
-/// The stack buffer of [`BsdUser::kcopy_out`]'s copies (kbind's parameters fit in one).
-const KCOPY_CHUNK: usize = 256;
-
-/// `uiomove(buf, uio)` over one `UIO_SYSSPACE` iovec at the kernel address `kva`: `rw` says
-/// which way (`UIO_READ`: `buf` to `kva`). The iovec's builder vouches for it (`struct uio`'s
-/// contract): `hal` reaches this only for a range of a `ForeignWindow`.
-fn sysspace_move(kva: usize, buf: &mut [u8], rw: UioRw) -> Result<(), Errno> {
-    let len = buf.len();
-    let mut iov = [Iovec {
-        iov_base: ptr::with_exposed_provenance_mut::<c_void>(kva),
-        iov_len: len,
-    }];
-    let mut uio = Uio {
-        uio_iov: &mut iov,
-        uio_offset: 0,
-        uio_resid: len,
-        uio_segflg: UioSeg::UIO_SYSSPACE,
-        uio_rw: rw,
-        uio_procp: None,
-    };
-    uiomove(buf, &mut uio)
-}
-
 /// The CPUs as amd64's TLB shootdown and cache flush need them (`hal::pmap::TlbCpus`):
 /// `CPU_INFO_FOREACH`, `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`,
 /// `wbinvd_on_all_cpus` and `ci_cflushsz` of `sys/arch/amd64/amd64/{cpu,ipi}.rs`.
@@ -267,7 +193,7 @@ impl hal::pmap::TlbCpus for BsdTlbCpus {
     fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::pmap::Pmap)) {
         let me = crate::machine::cpu::curcpu();
         crate::machine::cpu::cpu_info_foreach(&mut |ci| {
-            if !ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
+            if !core::ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
                 f(
                     ci.ci_cpuid.get() as usize,
                     ci.ci_proc_pmap.load(Ordering::Relaxed).cast_const(),
@@ -513,7 +439,6 @@ static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcG
     kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
-static BSD_USER: BsdUser = BsdUser;
 #[cfg(not(machine_x86))]
 static BSD_TRAP: BsdTrap = BsdTrap;
 static BSD_CONS: BsdCons = BsdCons;
@@ -534,7 +459,6 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
-    let _ = hal::bridges::register_user_copy(&BSD_USER);
     // What the machine's trap code asks (N4.8b): before the first thread runs.
     #[cfg(not(machine_x86))]
     let _ = hal::trap::install(&BSD_TRAP);
@@ -585,7 +509,7 @@ mod tests {
         let mut got: Vec<&'static Pool> = Vec::new();
         while let Some(pp) = static_pool() {
             assert!(
-                !got.iter().any(|q| ptr::eq(*q, pp)),
+                !got.iter().any(|q| core::ptr::eq(*q, pp)),
                 "a pool handed out twice"
             );
             got.push(pp);
@@ -593,7 +517,7 @@ mod tests {
         assert!(got.len() <= NSTATIC_POOLS);
         assert!(
             got.iter()
-                .all(|pp| STATIC_POOLS.iter().any(|q| ptr::eq(q, *pp)))
+                .all(|pp| STATIC_POOLS.iter().any(|q| core::ptr::eq(q, *pp)))
         );
         assert!(static_pool().is_none());
         assert_eq!(STATIC_POOLS_USED.load(Ordering::Relaxed), NSTATIC_POOLS);

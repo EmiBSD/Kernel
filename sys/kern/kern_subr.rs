@@ -67,6 +67,10 @@
 //! - `uiomove(cp, n, uio)` takes the kernel buffer as a slice whose length is `n`.
 //! - `PMAP_CHECK_COPYIN` (the `check_copyin` wrappers of `copyin`/`copyinstr`) is not
 //!   configured: the pinned-syscall regions it checks arrive with `pinsyscalls`.
+//! - N4.8b: `uiomove`'s `UIO_SYSSPACE` leg copies with `hal::user::KcopyToken` (the one
+//!   holder of `kcopy` onto kernel addresses, taken here) where LZ called the machine's
+//!   `unsafe` `kcopy` with the iovec's raw pointer; the vouching is the same (`struct uio`'s
+//!   contract), now `hal`'s documented trust.
 
 use core::ptr::{self, NonNull};
 
@@ -74,12 +78,14 @@ use crate::kassert;
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::sched_bsd::preempt;
 use crate::kern::subr_prf::panic;
-use crate::machine::copy::{copyin, copyout, kcopy};
+use crate::machine::copy::{copyin, copyout};
 use crate::sys::errno::Errno;
 use crate::sys::queue::{ListAdapter, ListHead};
 use crate::sys::sched::sched_pause;
 use crate::sys::types::Off;
 use crate::sys::uio::{Uio, UioRw, UioSeg};
+use hal::once::OnceStatic;
+use hal::user::KcopyToken;
 
 /// `uio->uio_iov++; uio->uio_iovcnt--`: steps past the first iovec.
 fn uio_next_iov(uio: &mut Uio<'_>) {
@@ -132,13 +138,13 @@ pub fn uiomove(cp: &mut [u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
                 }
             }
             UioSeg::UIO_SYSSPACE => {
+                // A UIO_SYSSPACE iovec is a kernel buffer of at least `iov_len` bytes its
+                // builder vouches for (`struct uio`'s contract): the token's (N4.8b).
+                let kva = iov.iov_base.expose_provenance();
                 if uio.uio_rw == UioRw::UIO_READ {
-                    // SAFETY: a UIO_SYSSPACE iovec is a kernel buffer of at least `iov_len`
-                    // bytes its builder vouches for (`struct uio`'s contract); `buf` is ours.
-                    unsafe { kcopy(buf.as_ptr(), iov.iov_base.cast(), cnt) }?;
+                    kcopy_token().kcopy_out(buf, kva)?;
                 } else {
-                    // SAFETY: as above.
-                    unsafe { kcopy(iov.iov_base.cast_const().cast(), buf.as_mut_ptr(), cnt) }?;
+                    kcopy_token().kcopy_in(kva, buf)?;
                 }
             }
         }
@@ -150,6 +156,23 @@ pub fn uiomove(cp: &mut [u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
         n -= cnt;
     }
     Ok(())
+}
+
+/// The one `hal::user::KcopyToken`, `uiomove`'s for its `UIO_SYSSPACE` leg (N4.8b).
+static KCOPY: OnceStatic<&'static KcopyToken> = OnceStatic::new();
+
+/// The token, taken at the first `UIO_SYSSPACE` copy (`hal` hands it to its first taker
+/// alone; a second first user waits for the taker's store, a few instructions).
+pub(crate) fn kcopy_token() -> &'static KcopyToken {
+    loop {
+        if let Some(t) = KCOPY.get() {
+            return t;
+        }
+        if let Some(t) = KcopyToken::take() {
+            let _ = KCOPY.set(t);
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// Give next character to user as result of read.

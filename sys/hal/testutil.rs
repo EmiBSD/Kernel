@@ -41,10 +41,8 @@
 //!   `set_hiwat` and `cache_init` recorded by the pool's name ([`pool_knobs`]).
 //! - `Malloc`: host blocks aligned to `MALLOC_ALIGN`, the bytes out counted per thread and
 //!   malloc type.
-//! - `UserCopy`: one user address space of `USER_LEN` bytes at [`user_base`]; anything
-//!   outside it is `EFAULT`. Its `kcopy_in`/`kcopy_out` reach one run of "foreign" kernel
-//!   memory of [`FOREIGN_LEN`] bytes at [`foreign_base`] (the pages a `ForeignWindow` would
-//!   name); anything outside it faults (`EFAULT`).
+//! - The user copy is no bridge (N4.8b): `hal::arch::host::copy`, the host machine's, whose
+//!   user memory starts at [`user_base`] and whose foreign memory at [`foreign_base`].
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
 //! - The soft interrupts are no bridge (N4.5c): `hal::softintr`'s own queues; a test runs a
 //!   level's queue itself (`dispatch`), or lowers its level below it.
@@ -71,7 +69,6 @@ use crate::sleep::{INFSLP, Sleep};
 
 use crate::sys::errno::Errno;
 use crate::sys::types::{Paddr, Vaddr};
-use crate::user::UserCopy;
 
 std::thread_local! {
     static PROC: u8 = const { 0 };
@@ -87,19 +84,8 @@ std::thread_local! {
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
 
-/// Where the user address space of the double starts.
-const USER_BASE: usize = 0x1000_0000;
-/// Its size.
-const USER_LEN: usize = 64 * 1024;
-
-/// The user address space of the double.
-static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
-/// Where the double's foreign kernel memory starts (`kcopy`'s window side).
-const FOREIGN_BASE: usize = 0x3000_0000;
-/// Its size.
-pub(crate) const FOREIGN_LEN: usize = 64 * 1024;
-/// The double's foreign kernel memory.
-static FOREIGN: Mutex<[u8; FOREIGN_LEN]> = Mutex::new([0; FOREIGN_LEN]);
+/// The host's foreign memory's size (`hal::arch::host::copy`).
+pub(crate) use crate::arch::host::copy::FOREIGN_LEN;
 /// What the console double was given.
 static CONS_OUT: Mutex<std::vec::Vec<u8>> = Mutex::new(std::vec::Vec::new());
 /// What the console double will answer.
@@ -370,88 +356,6 @@ impl Malloc for TestMalloc {
     }
 }
 
-/// The user copy double.
-struct TestUser;
-
-/// The range `[kva, kva + len)` of the double's foreign memory, `EFAULT` outside it.
-fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
-    let start = kva.checked_sub(FOREIGN_BASE).ok_or(Errno::EFAULT)?;
-    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
-    if end > FOREIGN_LEN {
-        return Err(Errno::EFAULT);
-    }
-    Ok(start..end)
-}
-
-/// The range `[uaddr, uaddr + len)` of the double's address space, `EFAULT` outside it.
-fn user_range(uaddr: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
-    let start = uaddr.checked_sub(USER_BASE).ok_or(Errno::EFAULT)?;
-    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
-    if end > USER_LEN {
-        return Err(Errno::EFAULT);
-    }
-    Ok(start..end)
-}
-
-impl UserCopy for TestUser {
-    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        let r = user_range(uaddr, kbuf.len())?;
-        kbuf.copy_from_slice(&lock(&USER)[r]);
-        Ok(())
-    }
-
-    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
-        let r = user_range(uaddr, kbuf.len())?;
-        lock(&USER)[r].copy_from_slice(kbuf);
-        Ok(())
-    }
-
-    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
-        let start = user_range(uaddr, 0)?.start;
-        let user = lock(&USER);
-        for (i, k) in kbuf.iter_mut().enumerate() {
-            let c = *user.get(start + i).ok_or(Errno::EFAULT)?;
-            *k = c;
-            if c == 0 {
-                return Ok(i + 1);
-            }
-        }
-        Err(Errno::ENAMETOOLONG)
-    }
-
-    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
-        let n = kbuf
-            .iter()
-            .position(|&c| c == 0)
-            .map(|i| i + 1)
-            .ok_or(Errno::ENAMETOOLONG)?;
-        self.copyout(&kbuf[..n], uaddr)?;
-        Ok(n)
-    }
-
-    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno> {
-        if uaddr % 4 != 0 {
-            return Err(Errno::EFAULT);
-        }
-        let r = user_range(uaddr, 4)?;
-        let mut w = [0u8; 4];
-        w.copy_from_slice(&lock(&USER)[r]);
-        Ok(u32::from_ne_bytes(w))
-    }
-
-    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        let r = foreign_range(kva, kbuf.len())?;
-        kbuf.copy_from_slice(&lock(&FOREIGN)[r]);
-        Ok(())
-    }
-
-    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
-        let r = foreign_range(kva, kbuf.len())?;
-        lock(&FOREIGN)[r].copy_from_slice(kbuf);
-        Ok(())
-    }
-}
-
 /// The console double.
 struct TestCons;
 
@@ -489,7 +393,6 @@ static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
 static TEST_MALLOC: TestMalloc = TestMalloc;
-static TEST_USER: TestUser = TestUser;
 static TEST_CONS: TestCons = TestCons;
 static TEST_PRINTF: TestPrintf = TestPrintf;
 static TEST_RANDOM: TestRandom = TestRandom;
@@ -502,7 +405,6 @@ pub(crate) fn install() {
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);
-        let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_console(&TEST_CONS);
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_random(&TEST_RANDOM);
@@ -517,17 +419,17 @@ pub(crate) fn page_memory() -> &'static dyn PageMemory {
 
 /// The first address of the double's user address space.
 pub(crate) fn user_base() -> usize {
-    USER_BASE
+    crate::arch::host::copy::USER_BASE
 }
 
 /// The first address of the double's foreign kernel memory.
 pub(crate) fn foreign_base() -> usize {
-    FOREIGN_BASE
+    crate::arch::host::copy::FOREIGN_BASE
 }
 
 /// `len` bytes of the double's foreign memory from `off`.
 pub(crate) fn foreign_bytes(off: usize, len: usize) -> std::vec::Vec<u8> {
-    lock(&FOREIGN)[off..off + len].to_vec()
+    crate::arch::host::copy::foreign_bytes(foreign_base() + off, len).unwrap_or_default()
 }
 
 /// Whether the `printf(9)` double was given `s`, in one piece.

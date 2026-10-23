@@ -80,5 +80,14 @@ path = "benches/futex.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of the system call path (N4.8b, decision 43; benches/syscall.rs): the
+# user copies and the MI prologue, over the doubles, never a kernel image:
+# `cargo bench -p kernel --features doubles --bench syscall [--profile dev]`.
+[[bench]]
+name = "syscall"
+path = "benches/syscall.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

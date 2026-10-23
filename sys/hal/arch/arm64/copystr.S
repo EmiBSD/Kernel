@@ -16,8 +16,8 @@
  */
 
 /*
- * The symbols written as NAME between braces are filled in by copystr.rs
- * (assym.h in C). No retguard: see copystr.rs.
+ * The symbols written as NAME between braces are filled in by copy.rs
+ * (assym.h in C). No retguard: see copy.rs.
  */
 
 	.text

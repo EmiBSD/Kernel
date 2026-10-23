@@ -35,6 +35,7 @@
 //! (N3.1 commit 8b). The two pmap layouts (`pmap/layout.rs`, pure constants) are compiled
 //! with them.
 
+pub mod copy;
 pub(crate) mod cpu;
 pub(crate) mod klock;
 pub mod param;

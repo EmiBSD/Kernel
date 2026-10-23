@@ -29,8 +29,6 @@ pub mod autoconf;
 pub mod bus_dma;
 pub mod bus_space;
 pub mod conf;
-pub mod copy;
-pub mod copystr;
 pub mod cpu;
 pub mod cpufunc;
 pub mod cpuswitch;

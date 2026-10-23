@@ -59,17 +59,6 @@ trait = "Malloc"
 for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
 
-# bsd: copyin, copyout, copyinstr, copyoutstr of sys/machine/copy.rs (copy.S with pcb_onfault).
-# A safe trait: the user copies only read and write the byte slices they are given and user
-# memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
-# through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
-# window the kernel map's token minted. N4.6c: copyin32 (futex(2)'s aligned word, read in one
-# access, EFAULT when misaligned), for kernel::futex.
-# hal::user::UserCopy
-[[bridge]]
-trait = "UserCopy"
-for = ["sys/hal/user.rs"]
-paid_by = "N4"
 
 # bsd: what the machine's trap code asks in machine-independent code (N4.8b): the page fault on
 # the map the trap chose (pmap_fault_fixup, uvm_fault, uvm_grow, the MAP_STACK check of a user

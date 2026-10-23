@@ -1646,22 +1646,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/log.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/arm64/copy.rs"
-lz = ["sys/arch/arm64/arm64/copy.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/cpu.rs"]
-license = "none"
-notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
-
-[[module]]
-rust = "sys/arch/arm64/arm64/copystr.rs"
-lz = ["sys/arch/arm64/arm64/copystr.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/cpu.rs"]
-license = "none"
-notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
-
-[[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
@@ -1734,7 +1718,7 @@ notes = "M2: initarm (the 1 GiB TTBR0 Device-nGnRnE identity block for devices u
 rust = "sys/arch/arm64/arm64/mem.rs"
 lz = ["sys/arch/arm64/arm64/mem.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/copy.rs"]
 notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through the direct map instead of a pmap_enter at vmmap, copied with kcopy; /dev/null; /dev/zero from a stack buffer), mmmmap, mmioctl; reported: /dev/kmem (uvm_kernacc, uvm_glue.c); APERTURE is not configured; wip until uvm_kernacc"
 
 [[module]]
@@ -5557,8 +5541,9 @@ notes = "N4.5c: bsd's names over hal::softintr (softintr_init checks the queues,
 
 [[module]]
 rust = "sys/kern/kern_subr.rs"
+adapted_by = ["sys/hal/arch/arm64/copy.rs"]
 lz = ["sys/kern/kern_subr.rs"]
-status = "inherited"
+status = "adapted"
 notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (hook_establish/disestablish, dohooks) wait for their first user; M7b (kern_descrip.c): uiomove (the kernel buffer as a slice; UIO_SYSSPACE through kcopy) and ureadc; PMAP_CHECK_COPYIN not configured; host tests"
 
 [[module]]
@@ -8745,6 +8730,20 @@ status = "redesigned"
 notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler)"
 
 [[module]]
+rust = "sys/hal/arch/arm64/copy.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/copy.rs", "sys/arch/arm64/arm64/copystr.rs"]
+status = "redesigned"
+license = "none"
+notes = "N4.8b: copy.S and copystr.S (Dale Rahn's and Patrick Wildt's ISC notices in the .S files) pulled in by one global_asm, the safe copies (kernel side a slice, the user side checked by the assembly) behind hal::user; kcopy is kcopy_in/kcopy_out, pub(crate) unsafe, called for a ForeignWindow's range and the KcopyToken only; both LZ sources had license none (the .rs zones hold the author's block)"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/copy.rs::kcopy"
+native = ["kcopy_in", "kcopy_out"]
+kind = "split"
+lines = "L88-L96"
+
+[[module]]
 rust = "sys/hal/arch/arm64/fpu.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/fpu.rs"]
@@ -8914,7 +8913,7 @@ notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: Mapp
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17; N4.8b: the UserCopy bridge is gone: the copies are the machine's, hal's own (arch/arm64/copy.rs, the host's arch/host/copy.rs), an EFAULT stub where hal has none (amd64 until N10, the ABI module's runtime); KcopyToken, the one holder of kcopy onto kernel addresses it names (bsd's uiomove UIO_SYSSPACE leg, decision 13 of N4.8), taken once; ForeignWindow and the token each one unsafe per direction over the machine's kcopy_in/kcopy_out"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
@@ -8928,7 +8927,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -9448,6 +9447,11 @@ reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's deliv
 rust = "sys/kernel/benches/futex.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/benches/syscall.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of the system call path (N4.8b: copyin, copyout and copyinstr through hal::user over the host's user-copy double; the MI prologue and pin_check at b4) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/proc.rs"

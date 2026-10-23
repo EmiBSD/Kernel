@@ -1415,30 +1415,42 @@ impl Tcb for Machine {
     }
 }
 
+/// The machine's copies are `hal`'s since N4.8b (`sys/hal/arch/arm64/copy.rs`, through
+/// `hal::user`'s typed copies).
 impl UserCopy for Machine {
     fn copyin(uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        arm64::copy::copyin(uaddr, kbuf)
+        hal::user::UserPtr::<u8>::new(uaddr).copyin_slice(kbuf)
     }
 
     fn copyout(kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
-        arm64::copy::copyout(kbuf, uaddr)
+        hal::user::UserPtr::<u8>::new(uaddr).copyout_slice(kbuf)
     }
 
     fn copyinstr(uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
-        arm64::copystr::copyinstr(uaddr, kbuf)
+        hal::user::UserPtr::<u8>::new(uaddr).copyinstr(kbuf)
     }
 
     fn copyin32(uaddr: usize) -> Result<u32, Errno> {
-        arm64::copy::copyin32(uaddr)
+        hal::user::UserPtr::<u32>::new(uaddr).copyin32()
     }
 
     fn copyoutstr(kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
-        arm64::copystr::copyoutstr(kbuf, uaddr)
+        hal::user::UserPtr::<u8>::new(uaddr).copyoutstr(kbuf)
     }
 
+    /// `kcopy` through `uiomove`'s `hal::user::KcopyToken` (the caller vouches for both
+    /// ranges, the token's contract), a stack buffer at a time.
     unsafe fn kcopy(src: *const u8, dst: *mut u8, len: usize) -> Result<(), Errno> {
-        // SAFETY: forwarded.
-        unsafe { arm64::copy::kcopy(src, dst, len) }
+        let token = crate::kern::kern_subr::kcopy_token();
+        let mut chunk = [0u8; 256];
+        let mut off = 0;
+        while off < len {
+            let n = (len - off).min(chunk.len());
+            token.kcopy_in(src.expose_provenance() + off, &mut chunk[..n])?;
+            token.kcopy_out(&chunk[..n], dst.expose_provenance() + off)?;
+            off += n;
+        }
+        Ok(())
     }
 }
 

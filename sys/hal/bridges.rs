@@ -20,7 +20,7 @@
 //! The bridge registry: what the runtime needs from code that has not moved into `hal` yet.
 //!
 //! Dependencies go one way, `bsd -> kernel -> hal` (docs/ZERO_UNSAFE.md section 0.1): `hal`
-//! cannot call the machine code still in `bsd` (`spl(9)`, `curcpu()`, the user copy), nor the
+//! cannot call the machine code still in `bsd` (the interrupt controller, the CPU hooks), nor the
 //! sleep queues, `uvm_km`, `malloc(9)` or `pool(9)`. Each of those is a trait declared beside
 //! the primitive that uses it, and `bsd`'s `main()` registers one `&'static dyn Trait`
 //! implementation here, once, before first use. A bridge carries no logic (section 0.3.2):
@@ -69,7 +69,6 @@ use crate::pmap::{Random, TlbCpus};
 use crate::pool::PoolBackend;
 use crate::prf::Printf;
 use crate::sleep::Sleep;
-use crate::user::UserCopy;
 
 /// A second registration of a bridge, which keeps the first; names the trait.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,14 +128,6 @@ bridge!(
     MALLOC: Malloc,
     register_malloc,
     malloc
-);
-
-bridge!(
-    /// Registers the machine's user copy (`copyin`, `copyout`, `copyinstr`, `copyoutstr` of
-    /// `sys/machine/copy.rs`). Paid by N4 (with the trap code, N4.5).
-    USER_COPY: UserCopy,
-    register_user_copy,
-    user_copy
 );
 
 bridge!(

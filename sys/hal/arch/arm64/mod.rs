@@ -19,6 +19,9 @@
 /* <CODE> */
 //! arm64 machine code moved into the HAL.
 
+// The user copies (N4.8b): the kernel's alone (the ABI module copies through `KernelApi`).
+#[cfg(not(feature = "module-rt"))]
+pub(crate) mod copy;
 pub(crate) mod cpu;
 // The exception entry, the trap handlers and the system call entry (N4.8b): the kernel's
 // alone, as the switch (the ABI module's image takes no trap of its own).
