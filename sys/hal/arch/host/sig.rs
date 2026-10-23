@@ -111,6 +111,11 @@ pub(crate) fn proc_stack() -> usize {
     USER_REGS.with(Cell::get).1
 }
 
+/// `PROC_PC(p)` and `PROC_STACK(p)` at once.
+pub(crate) fn proc_regs() -> (usize, usize) {
+    USER_REGS.with(Cell::get)
+}
+
 /// The user program counter and stack pointer this test thread's "trap frame" holds
 /// (`hal::trap::proc_pc`, `proc_stack`).
 pub fn set_user_regs(pc: usize, sp: usize) {

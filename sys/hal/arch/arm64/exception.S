@@ -241,7 +241,7 @@ handle_el0_irq:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	{ARM_CPU_IRQ}
+	bl	{ARM_CPU_IRQ_EL0}
 	do_ast
 	allow_ss
 	restore_registers 0
@@ -253,7 +253,7 @@ handle_el0_fiq:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	{ARM_CPU_FIQ}
+	bl	{ARM_CPU_FIQ_EL0}
 	do_ast
 	allow_ss
 	restore_registers 0

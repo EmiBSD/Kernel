@@ -135,6 +135,8 @@ global_asm!(
     AST = sym super::trap::ast,
     ARM_CPU_IRQ = sym super::trap::arm_cpu_irq,
     ARM_CPU_FIQ = sym super::trap::arm_cpu_fiq,
+    ARM_CPU_IRQ_EL0 = sym super::trap::arm_cpu_irq_el0,
+    ARM_CPU_FIQ_EL0 = sym super::trap::arm_cpu_fiq_el0,
 );
 
 // SAFETY: the two items name tables defined above in this crate by their symbols, as their

@@ -88,11 +88,11 @@ const EJUSTRETURN: i32 = Errno::EJUSTRETURN.as_i32();
 /// but the number fits in 32 (there are about 331), and OpenBSD's arm64 entry reads it
 /// into an `int` (`syscall.c:46`), dropping the high half; so does this one, so that a
 /// malformed number behaves as on OpenBSD (the user's decision of 2026-10-22): its low 32
-/// bits are the number (negative: `ENOSYS`), and `pin_check` kills the process with
-/// `SIGABRT` unless the `svc` is at the site pinned for it (LZ took the whole register and
-/// returned `ENOSYS`). amd64's entry keeps the whole register (`trap.c:781`, a
-/// `register_t`, not truncated). diff-openbsd: `syscalls/entry#1` (`difftest syscalls
-/// entry`), its line `int-syscall`.
+/// bits are the number (0 or negative, the C's `code <= 0`: `ENOSYS`), and `pin_check`
+/// kills the process with `SIGABRT` unless the `svc` is at the site pinned for it (LZ took
+/// the whole register and returned `ENOSYS`). amd64's entry keeps the whole register
+/// (`trap.c:781`, a `register_t`, not truncated). diff-openbsd: `syscalls/entry#1`
+/// (`difftest syscalls entry`), its line `int-syscall`.
 pub(crate) fn svc_handler(frame: UserFrame) {
     if crate::cpu::curcpu().curproc().is_null() {
         hal_panic(format_args!("svc_handler: no curproc"));
@@ -100,12 +100,11 @@ pub(crate) fn svc_handler(frame: UserFrame) {
 
     UVMEXP.syscalls.fetch_add(1, Ordering::Relaxed);
 
-    // Re-enable interrupts if they were enabled previously
-    if frame.with(|tf| tf.tf_spsr as u64 & PSR_I == 0) {
-        intr_enable();
-    }
+    // One borrow of the frame before the call: whether the user had interrupts enabled,
+    // the barrier skipped, the number and the arguments.
+    let (user_irqs, code, args) = frame.with(|tf| {
+        let user_irqs = tf.tf_spsr as u64 & PSR_I == 0;
 
-    let (code, args) = frame.with(|tf| {
         // Skip over speculation-blocking barrier.
         tf.tf_elr += 8;
 
@@ -115,8 +114,13 @@ pub(crate) fn svc_handler(frame: UserFrame) {
             Some(a) => *a,
             None => [0; 6],
         };
-        (code, args)
+        (user_irqs, code, args)
     });
+
+    // Re-enable interrupts if they were enabled previously
+    if user_irqs {
+        intr_enable();
+    }
 
     let mut rval: Rval = [0, 0];
 

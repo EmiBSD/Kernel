@@ -256,6 +256,17 @@ pub fn proc_stack() -> usize {
     user_regs::proc_stack()
 }
 
+/// `PROC_PC(p)` and `PROC_STACK(p)` of the running thread at once (the system call
+/// prologue's `MAP_STACK` check and `pin_check`), `(0, 0)` for a thread with no frame: one
+/// access to the frame where the two would take two.
+#[cfg(any(
+    not(target_os = "none"),
+    all(target_arch = "aarch64", not(feature = "module-rt"))
+))]
+pub fn proc_regs() -> (usize, usize) {
+    user_regs::proc_regs()
+}
+
 /// The machine's user frame (arm64's `UserFrame`).
 #[cfg(all(
     target_os = "none",

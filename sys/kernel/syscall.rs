@@ -107,8 +107,9 @@ use hal::syscall::{Register, Rval, SysArgs, SysResult};
 use hal::trap::{FaultSource, TrapHandler};
 
 use crate::acct::APINSYS;
+use crate::assert::kpanic;
 use crate::proc::{P_OWEUPC, PS_PLEDGE, PinTable, ProcGlue, SINGLE_DEEP, SINGLE_UNWIND, Thread};
-use crate::vm::map::{uvm_map_inentry, uvm_map_inentry_sp};
+use crate::vm::map::{Vmspace, uvm_map_inentry, uvm_map_inentry_sp};
 
 /// `SY_NOLOCK` (`<sys/systm.h>`): a `sysent[]` row whose body runs without the kernel lock.
 pub const SY_NOLOCK: i32 = 0x01;
@@ -224,9 +225,16 @@ fn pin_verdict<'t>(
 }
 
 /// `pin_check`: check if a system call is entered from precisely the correct location.
+#[inline]
 pub fn pin_check<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register) -> Result<(), Errno> {
+    pin_check_at(p, code, hal::trap::proc_pc())
+}
+
+/// [`pin_check`] for a thread whose `PROC_PC(p)` is `pc` (`mi_syscall` read it with the stack
+/// pointer, in one access to the frame).
+#[inline]
+fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> Result<(), Errno> {
     let pr = p.process();
-    let pc = hal::trap::proc_pc();
 
     // point at start of syscall instruction
     let addr = pc.wrapping_sub(G::sigcode_svc_offset());
@@ -309,19 +317,15 @@ fn refreshcreds<G: ProcGlue>(p: &Thread<G>) {
 }
 
 /// `uvm_map_inentry(p, &p->p_spinentry, PROC_STACK(p), ..., uvm_map_inentry_sp, ...)`: the
-/// thread's stack pointer lies in a `MAP_STACK` mapping of its address space; when it does
-/// not, `uvm_map_inentry` has signalled the thread (`SIGSEGV`). A thread without an address
-/// space fails the check.
-fn stack_in_map_stack<G: ProcGlue>(p: &Thread<G>) -> bool {
-    let Some(vm) = G::user_vmspace(p) else {
-        return false;
-    };
+/// thread's stack pointer `sp` lies in a `MAP_STACK` mapping of `vm`, its address space; when
+/// it does not, `uvm_map_inentry` has signalled the thread (`SIGSEGV`).
+fn sp_in_map_stack<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, sp: usize) -> bool {
     let map = &vm.vm_map;
     let mut ie = p.p_spinentry.get();
     let ok = uvm_map_inentry(
         map,
         &mut ie,
-        hal::trap::proc_stack(),
+        sp,
         "sp",
         "not MAP_STACK",
         uvm_map_inentry_sp,
@@ -329,6 +333,35 @@ fn stack_in_map_stack<G: ProcGlue>(p: &Thread<G>) -> bool {
     );
     p.p_spinentry.set(ie);
     ok
+}
+
+/// The system call prologue's `MAP_STACK` check of `p`, whose `PROC_STACK(p)` is `sp`: a
+/// thread without an address space fails it (the glue cannot skip the check by naming none).
+fn stack_in_map_stack<G: ProcGlue>(p: &Thread<G>, sp: usize) -> bool {
+    match G::user_vmspace(p) {
+        Some(vm) => sp_in_map_stack(p, vm, sp),
+        None => false,
+    }
+}
+
+/// `udata_abort`'s fault for `p`, whose `PROC_STACK(p)` is `sp`: the `MAP_STACK` check first
+/// (a stack pointer outside one has had its `SIGSEGV`, and the fault is done), then `fault` on
+/// `p`'s address space. A fault from user mode on a thread with no address space cannot be:
+/// `panic(9)`, as the C's `p->p_vmspace` dereference would, rather than a fault answered
+/// `Ok` that the thread takes again for ever.
+fn user_page_fault<G: ProcGlue>(
+    p: &Thread<G>,
+    sp: usize,
+    fault: impl FnOnce(&Vmspace) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let Some(vm) = G::user_vmspace(p) else {
+        kpanic(format_args!("trap: a user fault with no address space"));
+    };
+    // SP must be within MAP_STACK space
+    if !sp_in_map_stack(p, vm, sp) {
+        return Ok(());
+    }
+    fault(vm)
 }
 
 /// `mi_syscall`: the MD setup for a system call has been done; here's the MI part. `lock`
@@ -350,12 +383,15 @@ pub fn mi_syscall<G: ProcGlue>(
     G::scdebug_call(&p, code, argp);
     // dt(4), KTRACE: not configured.
 
+    // PROC_PC and PROC_STACK, in one access to the frame.
+    let (pc, sp) = hal::trap::proc_regs();
+
     // SP must be within MAP_STACK space
-    if !stack_in_map_stack(&p) {
+    if !stack_in_map_stack(&p, sp) {
         return Err(Errno::EPERM);
     }
 
-    pin_check(p, code)?;
+    pin_check_at(p, code, pc)?;
 
     let pledged = p.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0;
     if pledged && let Err((error, tval)) = G::pledge_syscall(&p, code as i32) {
@@ -457,16 +493,9 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
                 Some(vm) => user_fault(vm),
                 None => kernel_fault(va),
             }),
-            FaultSource::User => with_trapped::<G, _>(|p| {
-                // SP must be within MAP_STACK space
-                if !stack_in_map_stack(&p) {
-                    return Ok(());
-                }
-                match G::user_vmspace(&p) {
-                    Some(vm) => user_fault(vm),
-                    None => Err(Errno::EFAULT),
-                }
-            }),
+            FaultSource::User => {
+                with_trapped::<G, _>(|p| user_page_fault(&p, hal::trap::proc_stack(), user_fault))
+            }
         }
     }
 
@@ -666,6 +695,130 @@ mod tests {
         assert_eq!(r, Err(Errno::EPERM));
         assert!(!ran, "the body ran past a failed MAP_STACK check");
         core::mem::forget(pr);
+    }
+
+    /// The glue of the tests that run the `MAP_STACK` check on a real address space: its
+    /// threads' address space is the one the test thread set in [`VG_VM`].
+    mod vmglue {
+        std::thread_local! {
+            pub(super) static VG_VM: core::cell::Cell<Option<&'static crate::vm::map::Vmspace>> =
+                const { core::cell::Cell::new(None) };
+        }
+
+        crate::test_file_glue!(Vf, Vg);
+        crate::test_proc_glue!(Vg, Vf, {
+            fn user_vmspace(_p: &crate::proc::Thread<Self>) -> Option<&crate::vm::map::Vmspace> {
+                VG_VM.with(core::cell::Cell::get)
+            }
+        });
+    }
+    use vmglue::{VG_VM, Vg};
+
+    /// The prologue's `MAP_STACK` check on the thread's own map: a stack pointer in a
+    /// `MAP_STACK` mapping passes to the body; one in a plain anonymous mapping is `EPERM`
+    /// before the body, with `uvm_map_inentry`'s `SIGSEGV` (syscall_mi.h:158-162).
+    #[test]
+    fn the_map_stack_check_reads_the_threads_map() {
+        use crate::vm::map::{uvm_map_init, uvm_mapanon, uvmspace_alloc};
+        use crate::vm::types::{UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_STACK, uvm_mapflag};
+        use hal::arch::current::param::PAGE_SIZE;
+        use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
+        use hal::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_EXEC, PROT_READ, PROT_WRITE};
+
+        let _pages = testutil::pages_install(1024 * 4096);
+        testutil::init_shared_once();
+        let _ = crate::vm::anon::uvm_anon_init(0);
+        let _ = crate::vm::amap::amap_init(0);
+        let _ = crate::vm::aobj::uao_init();
+        hal::pmap::init();
+        uvm_map_init();
+        crate::vm::fault::uvmfault_init();
+
+        let vm = uvmspace_alloc(VM_MIN_ADDRESS, VM_MAXUSER_ADDRESS, true, false);
+        let rw = PROT_READ | PROT_WRITE;
+        let flags = |extra| {
+            uvm_mapflag(
+                rw,
+                rw | PROT_EXEC,
+                MAP_INHERIT_COPY,
+                MADV_NORMAL,
+                UVM_FLAG_COPYONW | extra,
+            )
+        };
+        let len = 4 * PAGE_SIZE;
+        let mut stk = 0x4800_0000;
+        uvm_mapanon(
+            &vm.vm_map,
+            &mut stk,
+            len,
+            0,
+            flags(UVM_FLAG_FIXED | UVM_FLAG_STACK),
+        )
+        .expect("the stack");
+        let mut plain = 0x4900_0000;
+        uvm_mapanon(&vm.vm_map, &mut plain, len, 0, flags(UVM_FLAG_FIXED)).expect("plain");
+        let vm: &'static crate::vm::map::VmspaceRef =
+            std::boxed::Box::leak(std::boxed::Box::new(vm));
+        VG_VM.with(|c| c.set(Some(&**vm)));
+
+        hal::klock::kernel_lock();
+        procinit::<Vg>(64, 64);
+        let pr = process_alloc::<Vg>(4343, ());
+        drop(pr.set_ucred(CredRef::new(Ucred::new())));
+        let t = thread_alloc::<Vg>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        hal::klock::kernel_unlock();
+        // libc's pins: getpid at its + 0x40, where the thread's pc is.
+        let mut pins = [0u32; 32];
+        pins[SYS_getpid as usize] = 0x40;
+        drop(pr.ps_libcpin.replace(table(0x1000_0000, &pins)));
+        let pc = 0x1000_0040;
+        let t: &'static PoolBox<Thread<Vg>> = std::boxed::Box::leak(std::boxed::Box::new(t));
+        let p = pin_static::<Thread<Vg>>(t);
+        testutil::vmproc_with(|s| {
+            s.segv.clear();
+            s.uprintfs.clear();
+        });
+        let getpid = SYS_getpid as Register;
+
+        hal::trap::set_user_regs(pc, stk + 2 * PAGE_SIZE);
+        let mut ran = false;
+        let r = mi_syscall(p, getpid, false, &[0; 6], &mut [0; 2], |_, _| {
+            ran = true;
+            Ok(())
+        });
+        assert_eq!(r, Ok(()));
+        assert!(ran, "a MAP_STACK stack reaches the body");
+        assert!(testutil::vmproc_with(|s| s.segv.is_empty()));
+
+        hal::trap::set_user_regs(pc, plain + PAGE_SIZE);
+        let mut ran = false;
+        let r = mi_syscall(p, getpid, false, &[0; 6], &mut [0; 2], |_, _| {
+            ran = true;
+            Ok(())
+        });
+        assert_eq!(r, Err(Errno::EPERM));
+        assert!(!ran, "the body ran past a failed MAP_STACK check");
+        assert_eq!(testutil::vmproc_with(|s| s.segv.len()), 1, "SIGSEGV");
+
+        hal::trap::set_user_regs(0, 0);
+        VG_VM.with(|c| c.set(None));
+        core::mem::forget(pr);
+    }
+
+    /// A fault from user mode on a thread with no address space cannot be: `panic(9)`, not a
+    /// fault answered `Ok` that the thread would take again for ever.
+    #[test]
+    #[should_panic(expected = "trap: a user fault with no address space")]
+    fn a_user_fault_without_an_address_space_panics() {
+        testutil::install();
+        hal::klock::kernel_lock();
+        procinit::<Yg>(64, 64);
+        let pr = process_alloc::<Yg>(4244, ());
+        let t = thread_alloc::<Yg>(&pr, ());
+        hal::klock::kernel_unlock();
+        core::mem::forget(pr);
+        let _ = user_page_fault(&t, 0x7f00_0000, |_| Ok(()));
     }
 }
 /* </TESTS> */

@@ -100,13 +100,15 @@
 //! of `exception.S` (`sym` operands, no symbol another object could call), with `x0` the trap
 //! frame it just saved on this CPU's kernel stack: a valid, aligned `struct trapframe` the
 //! assembly reads again only after the handler returns. The frame of an entry from user mode
-//! (`do_el0_sync`, `do_el0_error`, `ast`) is the thread's user context, which `pcb_tf` names
-//! and which the code those handlers call out to reads and writes (`sendsig`, `sigreturn`,
-//! `PROC_PC`, `bsd`'s `setregs`): they hold it as a [`UserFrame`], borrowed one closure at a
-//! time, never across such a call. The kernel-mode handlers and the IRQ and FIQ entries take
-//! `&mut Trapframe`: nothing they reach names their frame (`pcb_tf` names the user frame;
-//! an interrupt from user mode delivers no signal before its `ast`, which takes the frame
-//! afresh).
+//! (`do_el0_sync`, `do_el0_error`, `ast`, and the IRQ and FIQ entries from EL0,
+//! `arm_cpu_irq_el0` and `arm_cpu_fiq_el0`) is the thread's user context, which `pcb_tf`
+//! names (an entry from user mode starts on an empty kernel stack, so its frame is always at
+//! the same place) and which the code those handlers call out to reads and writes
+//! (`sendsig`, `sigreturn`, `PROC_PC`, `bsd`'s `setregs`): they hold it as a [`UserFrame`],
+//! borrowed one closure at a time, never across such a call; an interrupt's dispatch runs
+//! inside its borrow, so a handler that reached the frame again would be `panic(9)`, never a
+//! second `&mut`. The kernel-mode handlers take `&mut Trapframe`: their frame lies below the
+//! user frame on the kernel stack, and nothing names it but the handler.
 //!
 //! ## Deviations
 //! - `do_el0_sync`'s `KERNEL_UNLOCK` after `sigexit` is not written: `sigexit` never returns.
@@ -251,28 +253,35 @@ impl UserFrame {
     /// `f` on the frame, borrowed for the call alone; `panic(9)` when this CPU borrows it
     /// already (a closure that reached it again).
     pub(crate) fn with<R>(self, f: impl FnOnce(&mut Trapframe) -> R) -> R {
+        // The CPU's own flag, read and written by this CPU alone (the closure neither sleeps
+        // nor switches, and an interrupt taken meanwhile runs on this CPU, which sees its own
+        // stores in order): relaxed.
         let borrowed = &USER_FRAME_BORROWED[cpu_number()];
-        if borrowed.swap(true, Ordering::Acquire) {
+        if borrowed.swap(true, Ordering::Relaxed) {
             hal_panic(format_args!("trap: the user frame is borrowed twice"));
         }
         // SAFETY: valid: the pointer is the frame `exception.S` saved for this EL0 entry (`x0`
-        // of `handle_el0_sync`, `handle_el0_error` or `do_ast`: a whole, aligned
-        // `struct trapframe` it wrote at the top of the running thread's kernel stack, alive
-        // until the handler returns and the assembly restores from it), or the running
-        // thread's `pcb_tf`, which only ever names that same place: `make_current` stores an
-        // EL0 entry's frame (an entry from user mode starts on an empty kernel stack, so its
-        // frame is always at the top), `cpu_fork` (`hal::thread::thread_setup`) the frame it
-        // built at the top of the child's u-area, `bsd`'s `cpu_startup` `proc0`'s static one;
-        // the u-area is alive while its thread runs (`hal::thread` E2, E4) and the kernel
-        // stack below never grows into the frame. Unique: no reference to a user frame is
-        // kept anywhere else (the EL0 handlers hold it as a `UserFrame`, every access in
-        // `hal` goes through this function, `bsd`'s `setregs` writes through the raw pointer
-        // between its own statements, and the assembly reads it only after the handler
-        // returned); the frame belongs to the thread running on this CPU, which no other CPU
-        // reads through `pcb_tf` (`current` names this CPU's thread only), and the flag above
-        // refused a second borrow on this CPU. The reference ends with `f`.
+        // of `handle_el0_sync`, `handle_el0_irq`, `handle_el0_fiq`, `handle_el0_error` or
+        // `do_ast`: a whole, aligned `struct trapframe` it wrote at the top of the running
+        // thread's kernel stack, alive until the handler returns and the assembly restores
+        // from it), or the running thread's `pcb_tf`, which only ever names that same place:
+        // `make_current` stores an EL0 entry's frame (an entry from user mode starts on an
+        // empty kernel stack, so its frame is always at the top), `cpu_fork`
+        // (`hal::thread::thread_setup`) the frame it built at the top of the child's u-area,
+        // `bsd`'s `cpu_startup` `proc0`'s static one; the u-area is alive while its thread runs
+        // (`hal::thread` E2, E4) and the kernel stack below never grows into the frame.
+        // Unique: no reference to that storage is kept anywhere else: every EL0 entry (the
+        // synchronous one, the IRQ and FIQ ones, the error and the AST) holds it as a
+        // `UserFrame` and every access in `hal` goes through this function; the kernel-mode
+        // handlers' `&mut Trapframe` are their own frames, below it on the stack; `bsd`'s
+        // `setregs` writes through the raw pointer between its own statements, outside any
+        // borrow (it runs inside a system call's dispatch, which `svc_handler` makes outside
+        // its borrows); the assembly reads it only after the handler returned. The frame
+        // belongs to the thread running on this CPU, which no other CPU reads through
+        // `pcb_tf` (`current` names this CPU's thread only), and the flag above refused a
+        // second borrow on this CPU. The reference ends with `f`.
         let r = f(unsafe { &mut *self.0.as_ptr() });
-        borrowed.store(false, Ordering::Release);
+        borrowed.store(false, Ordering::Relaxed);
         r
     }
 }
@@ -287,6 +296,14 @@ pub(crate) fn proc_pc() -> usize {
 /// `tf_sp`, 0 without one.
 pub(crate) fn proc_stack() -> usize {
     UserFrame::current().map_or(0, |f| f.with(|tf| tf.tf_sp as usize))
+}
+
+/// `PROC_PC(p)` and `PROC_STACK(p)` of the running thread in one borrow
+/// (`hal::trap::proc_regs`, the system call prologue's), `(0, 0)` without a frame.
+pub(crate) fn proc_regs() -> (usize, usize) {
+    UserFrame::current().map_or((0, 0), |f| {
+        f.with(|tf| (tf.tf_elr as usize, tf.tf_sp as usize))
+    })
 }
 
 /// `curcpu()->ci_curpcb->pcb_onfault`: the running thread's fault recovery address, 0 for
@@ -656,9 +673,8 @@ pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
     h.userret();
 }
 
-/// `arm_cpu_irq`: the IRQ entry, called from `handle_el1h_irq` and `handle_el0_irq`
-/// (`exception.S`): `ci_idepth` around the controller's dispatch (`arm_irq_dispatch`).
-pub(crate) extern "C" fn arm_cpu_irq(frame: &mut Trapframe) {
+/// `arm_cpu_irq`: `ci_idepth` around the controller's dispatch (`arm_irq_dispatch`).
+fn irq(frame: &mut Trapframe) {
     let ci = curcpu();
 
     UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
@@ -667,13 +683,35 @@ pub(crate) extern "C" fn arm_cpu_irq(frame: &mut Trapframe) {
     ci.idepth_add(-1);
 }
 
-/// `arm_cpu_fiq`: the FIQ entry, as [`arm_cpu_irq`] (`arm_fiq_dispatch`).
-pub(crate) extern "C" fn arm_cpu_fiq(frame: &mut Trapframe) {
+/// `arm_cpu_fiq`: as [`irq`] (`arm_fiq_dispatch`).
+fn fiq(frame: &mut Trapframe) {
     let ci = curcpu();
 
     UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
     ci.idepth_add(1);
     crate::intr::dispatch_fiq(frame);
     ci.idepth_add(-1);
+}
+
+/// `arm_cpu_irq` from `handle_el1h_irq` (`exception.S`): an interrupt taken in kernel mode,
+/// on its own frame.
+pub(crate) extern "C" fn arm_cpu_irq(frame: &mut Trapframe) {
+    irq(frame);
+}
+
+/// `arm_cpu_fiq` from `handle_el1h_fiq`.
+pub(crate) extern "C" fn arm_cpu_fiq(frame: &mut Trapframe) {
+    fiq(frame);
+}
+
+/// `arm_cpu_irq` from `handle_el0_irq`: an interrupt taken in user mode, whose frame is the
+/// running thread's [`UserFrame`]; the dispatch runs inside its borrow (the frame premise).
+pub(crate) extern "C" fn arm_cpu_irq_el0(frame: *mut Trapframe) {
+    UserFrame::from_entry(frame).with(irq);
+}
+
+/// `arm_cpu_fiq` from `handle_el0_fiq`, as [`arm_cpu_irq_el0`].
+pub(crate) extern "C" fn arm_cpu_fiq_el0(frame: *mut Trapframe) {
+    UserFrame::from_entry(frame).with(fiq);
 }
 /* </CODE> */
