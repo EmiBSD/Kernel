@@ -130,10 +130,12 @@
 //!   wsdisplay's start routines, LZ's two `unsafe` slices over `c_cs`): the contiguous run at
 //!   the head of the queue, lent under the ring's lock.
 //! - A `Clist` that is all zero bytes (a zeroed softc embedding one: `uhid`, `ugen`) is a
-//!   valid, unallocated queue: its lock is a `Mutexed` at `IPL_NONE` (hal's documented zero),
-//!   its counts and cursors 0, its blocks `None` (the `MArray`'s null pointer niche), its
-//!   words 0. Those two drivers keep the C's exclusion (their own `splusb()` and the kernel
-//!   lock) until N7 gives them [`Clist::new_at`] with their level.
+//!   valid, unallocated queue: its lock is a `Mutexed` of level `IPL_NONE` (hal's documented
+//!   zero), its counts and cursors 0, its blocks `None` (the `MArray`'s null pointer niche),
+//!   its words 0. Every mutex raises to at least `IPL_MPFLOOR`, which is `IPL_TTY` on both
+//!   machines (`mutex_ipl`), so that queue's lock blocks the same interrupts as a tty's;
+//!   the two drivers keep their own exclusion around it as well (`splusb()` and the kernel
+//!   lock, the C's) until N7 gives them [`Clist::new_at`] with their level.
 
 use hal::intr::IPL_TTY;
 use hal::malloc::{M_WAITOK, MArray};
