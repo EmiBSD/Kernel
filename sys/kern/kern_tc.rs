@@ -54,6 +54,14 @@
 //!   calibration calls [`tc_set_frequency`] and [`tc_reset_quality`] (which reach the entry
 //!   through the counter's `tc_entry` link) instead of writing the cells. arm64 is not
 //!   affected: agtimer(4) sets its entry's frequency itself.
+//! - The C's `tc_list` takes any number of counters; here a driver's legacy `struct
+//!   timecounter` gets its `TcEntry` from [`ENTRIES`], eight slots, and a ninth `tc_init`
+//!   is `panic(9)` ("tc_init: more than 8 timecounters"). The kernel's own list stays open
+//!   (a `TcEntry` is any `&'static`, the `hal::link::Link` row of `docs/IDIOMS.md`, which
+//!   rejects a capped table for that reason); the cap is only this adapter's, for the
+//!   drivers that have not moved (i8254, the TSC, acpitimer(4), acpihpet(4): four at most
+//!   on one machine, none on arm64, whose agtimer(4) brings its own entry), and it goes
+//!   with them (N7, N10).
 //!
 //! ## Redesign
 //! - N4.8a: the timecounters moved into `kernel::tc` (the `Timecounter` trait and `TcEntry`,

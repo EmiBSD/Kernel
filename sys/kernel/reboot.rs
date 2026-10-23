@@ -63,13 +63,16 @@
 //!   (bridges.toml; `bsd`'s machdep, which syncs the file systems and suspends the devices
 //!   first, until N7), registered at boot; LZ called `crate::machine::cpu::boot` directly.
 //! - `rebooting` is read by the kernel crate here ([`rebooting`]), not through `SysInfo`.
+//! - The C's `KASSERT((howto & RB_NOSYNC) || curproc != NULL)` is kept over
+//!   `hal::sleep::curproc_word` (LZ's `reboot` had dropped it; the N4.8a review).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
+use hal::sys::reboot::RB_NOSYNC;
 
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::time::stop_periodic_resettodr;
 
 /// `rebooting`: set once the system started to go down, for the code that must not sleep
@@ -102,6 +105,9 @@ pub fn rebooting() -> bool {
 /// `reboot`: stops the clock bookkeeping, marks the system going down and hands over to the
 /// machine's `boot(9)` with the `RB_*` flags `howto` (`<sys/reboot.h>`).
 pub fn reboot(howto: i32) -> ! {
+    // Syncing the file systems needs a thread to do it on.
+    kassert!(howto & RB_NOSYNC != 0 || hal::sleep::curproc_word() != 0);
+
     stop_periodic_resettodr();
 
     REBOOTING.store(true, Ordering::Relaxed);
