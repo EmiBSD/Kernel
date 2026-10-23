@@ -51,6 +51,10 @@ static MODULE: OnceStatic<Module> = OnceStatic::new();
 
 /// The table of this version, with the kernel's registration and the functions the caller
 /// owns.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per member of the table, as KernelApi::new"
+)]
 pub const fn table(
     syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
     copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
