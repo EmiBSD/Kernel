@@ -46,6 +46,7 @@ pub mod event;
 pub mod extent;
 pub mod file;
 pub mod futex;
+pub mod log;
 pub mod pipe;
 pub mod prf;
 pub mod proc;
@@ -55,6 +56,7 @@ pub mod select;
 pub mod sig;
 pub mod sigio;
 pub mod task;
+pub mod termios;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;

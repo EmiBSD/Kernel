@@ -33,8 +33,9 @@
 //! `sys/kernel/descrip.rs`: `read(2)`, `write(2)`, `close(2)`, `dup(2)`, `fcntl(2)`,
 //! `ioctl(2)`, ...), which write the return registers themselves. N4.4: the event system
 //! calls' seven (`KernelApi::event`, `sys/kernel/event.rs` and `select.rs`: `kqueue(2)`,
-//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). N4.6c:
-//! futex(2) (`KernelApi::futex`, `sys/kernel/futex.rs`).
+//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). N4.7a:
+//! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/log.rs`). N4.6c: futex(2)
+//! (`KernelApi::futex`, `sys/kernel/futex.rs`).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -49,8 +50,8 @@ use hal::sys::syscall::{
     SYS_kevent, SYS_kqueue, SYS_kqueue1, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock,
     SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall,
     SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2, SYS_poll, SYS_ppoll, SYS_pread, SYS_preadv,
-    SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_utrace, SYS_write,
-    SYS_writev,
+    SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_sendsyslog,
+    SYS_utrace, SYS_write, SYS_writev,
 };
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -66,7 +67,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 45;
+pub const NATIVE: u32 = 46;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -121,6 +122,7 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_poll as usize] = Sysent::Native(sys_poll);
     table[SYS_kqueue as usize] = Sysent::Native(sys_kqueue);
     table[SYS_kqueue1 as usize] = Sysent::Native(sys_kqueue1);
+    table[SYS_sendsyslog as usize] = Sysent::Native(sys_sendsyslog);
     table[SYS_futex as usize] = Sysent::Native(sys_futex);
     table
 };
@@ -559,6 +561,17 @@ pub fn sys_kqueue1(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> 
     (api.event.kqueue1)(SYS_kqueue1 as Register, args[0] as i32, rval)
 }
 
+/// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)`.
+pub fn sys_sendsyslog(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.sendsyslog)(
+        SYS_sendsyslog as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+        rval,
+    )
+}
+
 /// 83 = `futex(uint32_t *f, int op, int val, const struct timespec *timeout, uint32_t *g)`:
 /// the number woken in `rval[0]`.
 pub fn sys_futex(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
@@ -788,6 +801,11 @@ mod tests {
         Err(f as i32 * 100 + n as i32 * 10 + t)
     }
 
+    fn sendsyslog(nr: Register, b: usize, n: usize, f: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(b as i32 * 100 + n as i32 * 10 + f)
+    }
+
     const EVENT: hal::api::EventEntries = hal::api::EventEntries {
         select: ev_select,
         kevent: ev_kevent,
@@ -812,7 +830,7 @@ mod tests {
     }
 
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, futex,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -916,10 +934,11 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_and_futex_is_legacy() {
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_and_futex_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
+                || nr == SYS_sendsyslog as Register
                 || nr == SYS_futex as Register
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
@@ -1102,6 +1121,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sendsyslog_is_native_and_reaches_the_kernels_entry() {
+        assert!(matches!(
+            entry(&SYSENT, SYS_sendsyslog as Register),
+            Some(Sysent::Native(_))
+        ));
+        let a: SysArgs = [1, 2, 3, 0, 0, 0];
+        let mut rval = [-7; 2];
+        assert_eq!(sys_sendsyslog(&API, &a, &mut rval), Err(123));
+        assert_eq!(rval, [SYS_sendsyslog as Register, -7]);
+        let mut rval = [-7; 2];
+        assert_eq!(
+            syscall(&API, SYS_sendsyslog as Register, &a, &mut rval),
+            Err(123)
+        );
+    }
+
     /// futex(2)'s translation (N4.6c): its number, the five arguments in
     /// `<sys/syscallargs.h>`'s order, the trap's return registers.
     #[test]
@@ -1116,7 +1152,7 @@ mod tests {
             syscall(&API, SYS_futex as Register, &a, &mut rval),
             Err(12345)
         );
-        assert_eq!(NATIVE, 45);
+        assert_eq!(NATIVE, 46);
     }
 }
 /* </TESTS> */

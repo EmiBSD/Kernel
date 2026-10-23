@@ -62,6 +62,7 @@
 //!   `bsd`'s file keeps the rest and the trait implementation (the orphan rule pins it to
 //!   `bsd`) and re-exports these. `sys/machine/mod.rs` asserts at compile time that the two
 //!   agree.
+//! - N4.7a: `MSGBUFSIZE`, the size of `kernel::log`'s message buffer (a static there).
 
 /// log2 of the page size.
 pub const PAGE_SHIFT: usize = 12;
@@ -72,6 +73,9 @@ pub const PAGE_MASK: usize = PAGE_SIZE - 1;
 
 /// Start of kernel virtual space.
 pub const KERNBASE: usize = 0xffff_ff80_0000_0000;
+
+/// Default message buffer size.
+pub const MSGBUFSIZE: usize = 16 * PAGE_SIZE;
 /* </CODE> */
 
 /* <TESTS> */

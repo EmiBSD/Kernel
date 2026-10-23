@@ -138,6 +138,9 @@
 //!   iovec as it copied it and answered `EINVAL` there).
 //! - `UioMove`, declared by `kernel::pipe` at N2.6, lives here with the type it moves bytes
 //!   through; `kernel::pipe` re-exports it.
+//! - N4.7a: [`Uio::kernel_write`], a `UIO_SYSSPACE` write out of borrowed kernel bytes (the
+//!   C's `aiov.iov_base = buf` over a kernel buffer, `dosendsyslog`'s): the uio borrows the
+//!   bytes, so the address its iovec carries outlives every `uiomove` through it.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -246,6 +249,34 @@ impl<G: ProcGlue> Uio<'_, G> {
     /// `uio_iovcnt`: number of iovecs left in the array.
     pub fn uio_iovcnt(&self) -> usize {
         self.uio_iov.len()
+    }
+}
+
+impl<'a, G: ProcGlue> Uio<'a, G> {
+    /// A `UIO_SYSSPACE` write out of the kernel bytes `buf` (`aiov.iov_base = buf; auio.uio_segflg
+    /// = UIO_SYSSPACE; auio.uio_rw = UIO_WRITE`: `dosendsyslog`'s stashed message, its `"\r\n"`),
+    /// its one iovec in `iov`, offset 0, all of `buf` to move. The uio borrows `buf` for as long
+    /// as it lives, so the address the iovec carries names bytes that exist for every
+    /// `uiomove` made through it; a write only reads them (`uiomove` copies out of a
+    /// `UIO_WRITE` uio's iovecs), so a shared borrow is all it needs. The kernel's one way to
+    /// build a `UIO_SYSSPACE` uio.
+    pub fn kernel_write(
+        iov: &'a mut [Iovec; 1],
+        buf: &'a [u8],
+        procp: Option<&'a Thread<G>>,
+    ) -> Self {
+        iov[0] = Iovec {
+            iov_base: buf.as_ptr().cast_mut().cast::<c_void>(),
+            iov_len: buf.len(),
+        };
+        Self {
+            uio_iov: iov,
+            uio_offset: 0,
+            uio_resid: buf.len(),
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_WRITE,
+            uio_procp: procp,
+        }
     }
 }
 

@@ -21,3 +21,4 @@ metadata:
 - Kernel tests that need real sleeps reuse kernel::sched's harness (`pub(crate) mod tests`: SchedGlue, setup, thread, run_as, VCPUS, TABLES): one host thread sleeps on vCPU a, a spawned one acts on vCPU b after polling `stat()==SSLEEP && !P_INSCHED`; never write a second harness (one `register_start` per process).
 - `pin!(..)` inside a call argument is not lifetime-extended (E0716): `let f = pin!(x); let f = use_it(f.into_ref());`.
 - kernel::testutil's copyin32 double (a std Mutex over the user memory) is ~9 ns dev vs bsd host's 0.5 ns: bench it as a prim before blaming a futex-like design.
+- kernel::testutil's 64 KiB user-memory double is shared: uio/select use 0x8000..0xC000, kernel::log 0xE000..0x10000 (kern.msgbuf's copy runs to the end and faults); pick an unused range and grep `USER_BASE + ` first.

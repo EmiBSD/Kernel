@@ -40,14 +40,15 @@
 //! (`read(2)`, `close(2)`, `dup(2)`, `fcntl(2)`, `ioctl(2)`, ...), one typed entry each.
 //! Version 5 (N4.4): [`EventEntries`], the seven of kqueue and select/poll (`kqueue(2)`,
 //! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). Version 6
-//! (N4.6c): `futex`, the kernel's entry for futex(2) ([`FutexEntry`]).
+//! (N4.7a): `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`). Version 7 (N4.6c):
+//! `futex`, the kernel's entry for futex(2) ([`FutexEntry`]).
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 6;
+pub const KERNEL_API_VERSION: u32 = 7;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -255,7 +256,10 @@ pub struct KernelApi {
     pub fd: FdEntries,
     /// The event system calls (version 5).
     pub event: EventEntries,
-    /// futex(2) (version 6).
+    /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)` (version 6): `(nr, buf,
+    /// nbyte, flags, rval)`.
+    pub sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
+    /// futex(2) (version 7).
     pub futex: FutexEntry,
 }
 
@@ -274,6 +278,7 @@ impl KernelApi {
         vm: VmEntries,
         fd: FdEntries,
         event: EventEntries,
+        sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
         futex: FutexEntry,
     ) -> Self {
         Self {
@@ -286,6 +291,7 @@ impl KernelApi {
             vm,
             fd,
             event,
+            sendsyslog,
             futex,
         }
     }
@@ -333,12 +339,15 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 6 only adds: the version 5 fields keep their places, `futex` comes last.
+    // Version 7 only adds: the version 6 fields keep their places, `futex` comes last.
     assert!(offset_of!(KernelApi, futex) == size_of::<KernelApi>() - size_of::<FutexEntry>());
+    assert!(offset_of!(KernelApi, futex) == offset_of!(KernelApi, sendsyslog) + size_of::<fn()>());
+    // Version 6 added `sendsyslog` after the version 5 fields.
     assert!(
-        offset_of!(KernelApi, futex) == offset_of!(KernelApi, event) + size_of::<EventEntries>()
+        offset_of!(KernelApi, sendsyslog)
+            == offset_of!(KernelApi, event) + size_of::<EventEntries>()
     );
-    // Version 5 only added: the version 4 fields keep their places, `event` follows them.
+    // Version 5 added: the version 4 fields keep their places, `event` follows them.
     assert!(offset_of!(KernelApi, event) == offset_of!(KernelApi, fd) + size_of::<FdEntries>());
     assert!(size_of::<EventEntries>() == 7 * size_of::<fn()>());
     assert!(offset_of!(KernelApi, fd) == offset_of!(KernelApi, vm) + size_of::<VmEntries>());
@@ -540,6 +549,11 @@ mod tests {
         Err(nr as i32 + f as i32 + n as i32 + t)
     }
 
+    fn sendsyslog(nr: Register, b: usize, n: usize, f: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(b as i32 * 100 + n as i32 * 10 + f)
+    }
+
     const EVENT: EventEntries = EventEntries {
         select,
         kevent,
@@ -564,15 +578,22 @@ mod tests {
     }
 
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, futex,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex,
     );
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 6);
+        assert_eq!(KERNEL_API_VERSION, 7);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
+    }
+
+    #[test]
+    fn the_sendsyslog_entry_is_the_callers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.sendsyslog)(112, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval[0], 112);
     }
 
     #[test]

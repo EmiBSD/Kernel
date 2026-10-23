@@ -110,7 +110,7 @@ use crate::kern::kern_tc::microtime;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set};
 use crate::kern::proc_glue::{pgfind, pgrp_of, prfind, session_leader};
 use crate::kern::sched_bsd::AVERUNNABLE;
-use crate::kern::subr_log::{consbufp, msgbuf_putchar};
+use crate::kern::subr_log::{Buf, msgbuf_putchar};
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_prf::{Str, printf, ttyprintf};
 use crate::kern::sys_generic::selwakeup;
@@ -2083,14 +2083,14 @@ pub fn ttwrite(tp: &Tty, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
                     obufcc = cc;
                 }
 
-                // duplicate /dev/console output into console buffer
-                if let Some(cbp) = consbufp()
-                    && cn_tab().is_some_and(|cn| cn.cn_dev.get() == tp.t_dev.get())
+                // duplicate /dev/console output into console buffer (consbufp == NULL: the
+                // kernel's msgbuf_putchar does nothing until initconsbuf set it up)
+                if cn_tab().is_some_and(|cn| cn.cn_dev.get() == tp.t_dev.get())
                     && tp.t_gen.get() == 0
                 {
                     for &c in &obuf[..cc] {
                         if c != b'\0' && c != b'\r' && c != 0o177 {
-                            msgbuf_putchar(cbp, c);
+                            msgbuf_putchar(Buf::Consbuf, c);
                         }
                     }
                 }
