@@ -406,10 +406,12 @@ impl Bintime {
         )
     }
 
-    /// `BINTIME_TO_NSEC(bt)`.
+    /// `BINTIME_TO_NSEC(bt)`: modulo 2^64, as the C's `uint64_t` arithmetic.
     #[inline]
     pub const fn to_nsec(&self) -> u64 {
-        (self.sec as u64).wrapping_mul(NSEC_PER_SEC as u64) + frac_to_nsec(self.frac) as u64
+        (self.sec as u64)
+            .wrapping_mul(NSEC_PER_SEC as u64)
+            .wrapping_add(frac_to_nsec(self.frac) as u64)
     }
 }
 
@@ -800,6 +802,17 @@ mod tests {
         assert_eq!(core::mem::size_of::<Timespec>(), 16);
         assert_eq!(core::mem::size_of::<Timeval>(), 16);
         assert_eq!(core::mem::size_of::<Bintime>(), 16);
+    }
+
+    #[test]
+    fn bintime_to_nsec_wraps_as_the_c() {
+        // `bt->sec * 1000000000ULL + FRAC_TO_NSEC(bt->frac)` in uint64_t.
+        let bt = Bintime::new(i64::MAX, u64::MAX);
+        let want = (i64::MAX as u64)
+            .wrapping_mul(1_000_000_000)
+            .wrapping_add(u64::from(frac_to_nsec(u64::MAX)));
+        assert_eq!(bt.to_nsec(), want);
+        assert_eq!(Bintime::new(2, 1 << 63).to_nsec(), 2_500_000_000);
     }
 }
 /* </TESTS> */

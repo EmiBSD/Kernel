@@ -1111,24 +1111,35 @@ pub fn tc_select(name: &[u8]) -> Result<(), Errno> {
 /// separated, newest first, written into `out` as the C's `strlcat`s (truncated, always
 /// NUL-terminated); returns the length without the NUL.
 pub fn tc_choice(out: &mut [u8]) -> usize {
+    choice_into(out, TC_LIST.iter().map(|tc| (tc.name(), tc.quality())))
+}
+
+/// [`tc_choice`] over `(name, quality)` pairs: each entry made as the C's
+/// `snprintf(buf, sizeof(buf), "%s%s(%d)", spc, name, quality)` into 32 bytes (so cut at 31),
+/// then `strlcat`ed onto `out` (cut at `out.len() - 1`, NUL-terminated).
+fn choice_into<'a>(out: &mut [u8], counters: impl Iterator<Item = (&'a str, i32)>) -> usize {
     let mut len = 0;
-    let mut push = |b: &[u8]| {
-        for &c in b {
+    for (i, (name, quality)) in counters.enumerate() {
+        // snprintf into `char buf[32]`.
+        let mut buf = [0u8; 32];
+        let mut blen = 0;
+        let mut num = [0u8; 12];
+        let spc: &[u8] = if i > 0 { b" " } else { b"" };
+        for part in [spc, name.as_bytes(), b"(", fmt_i32(quality, &mut num), b")"] {
+            for &c in part {
+                if blen + 1 < buf.len() {
+                    buf[blen] = c;
+                    blen += 1;
+                }
+            }
+        }
+        // strlcat(choices, buf, maxlen).
+        for &c in &buf[..blen] {
             if len + 1 < out.len() {
                 out[len] = c;
                 len += 1;
             }
         }
-    };
-    for (i, tc) in TC_LIST.iter().enumerate() {
-        if i > 0 {
-            push(b" ");
-        }
-        push(tc.name().as_bytes());
-        push(b"(");
-        let mut num = [0u8; 12];
-        push(fmt_i32(tc.quality(), &mut num));
-        push(b")");
     }
     if let Some(nul) = out.get_mut(len) {
         *nul = 0;
@@ -1716,6 +1727,29 @@ pub(crate) mod tests {
         assert_eq!(snap.tk_offset.frac, th.offset.get().frac);
         assert_eq!(snap.tk_counter_mask, th.counter().counter_mask());
         assert!(timekeep_attach(&PAGE).is_err(), "one page");
+    }
+
+    /// `sysctl_tc_choice`'s string as the C builds it: each entry cut at `snprintf`'s 31
+    /// bytes (its leading space included), the whole at the buffer.
+    #[test]
+    fn the_choice_cuts_each_entry_as_snprintf() {
+        let long = "a-timecounter-name-of-thirty-two-b";
+        #[rustfmt::skip]
+        let rows: [(&[(&str, i32)], usize, &str); 5] = [
+            (&[], 64, ""),
+            (&[("agtimer", 0)], 64, "agtimer(0)"),
+            (&[("i8254", 0), ("tsc", -1000)], 64, "i8254(0) tsc(-1000)"),
+            // 34 bytes of name: "name(0)" is cut at 31 bytes, the ")" and more lost.
+            (&[(long, 0), ("tsc", 2000)], 128, "a-timecounter-name-of-thirty-tw tsc(2000)"),
+            // The whole is cut at the buffer, NUL-terminated.
+            (&[("i8254", 0), ("tsc", 2000)], 12, "i8254(0) ts"),
+        ];
+        for (counters, room, want) in rows {
+            let mut out = alloc::vec![0xffu8; room];
+            let n = choice_into(&mut out, counters.iter().copied());
+            assert_eq!(&out[..n], want.as_bytes(), "{counters:?}");
+            assert_eq!(out[n], 0);
+        }
     }
 }
 /* </TESTS> */
