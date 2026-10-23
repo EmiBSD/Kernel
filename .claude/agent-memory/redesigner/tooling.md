@@ -102,3 +102,4 @@ metadata:
 - Adding `#[forbid(unsafe_code)]` to a mod line by sed: grep -B1 first; a line already carrying it gives clippy duplicated_attributes.
 - A host bench's "before" without touching the worktree: an archive of HEAD extracted in the scratchpad (and an APFS `cp -Rc` clone of a built copy plus the changed files for the "after"); a bench that builds in the worktree measures whatever you edit meanwhile.
 - `lineage.toml` notes are TOML strings: a double quote inside one is a parse error reported by line and column only.
+- A scratchpad `run.sh <log> <cmd...>` (absolute PATH export, cd to the worktree, output to a log, prints rc) run as `sh /abs/run.sh log cargo ...` passed the sandbox for every check in N4.4b, where `PATH=.. cargo` and `$S/x` paths were refused.

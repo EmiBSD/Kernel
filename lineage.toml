@@ -9651,7 +9651,7 @@ rust = "sys/kernel/event.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_event.rs", "sys/sys/event.rs", "sys/sys/eventvar.rs"]
 status = "redesigned"
-notes = "N4.4: kern_event.c, event.h and eventvar.h over Knote<G>/Kqueue<G>/Klist<G>: knotes owned by their kqueue's chains (hal OwnedList per knlist slot and hash bucket, taken back through the KnHold SecondaryRef a processing holder keeps), kq_head and the klists hal PinLists, klists of three kinds (kernel lock, owner's witness, own IPL_HIGH mutex for bsd's legacy-locked owners), the kqueue a counted kqueuepl item (KqRef), the timer a kqtimerpl item whose timeout holds it as an erased argument; pools knotepl 288, kqueuepl 328, kqtimerpl 88 bytes"
+notes = "N4.4: kern_event.c, event.h and eventvar.h over Knote<G>/Kqueue<G>/Klist<G>: knotes owned by their kqueue's chains (hal OwnedList per knlist slot and hash bucket, taken back through the KnHold SecondaryRef a processing holder keeps), kq_head and the klists hal PinLists, klists of three kinds (kernel lock, owner's witness, own IPL_HIGH mutex for bsd's legacy-locked owners), the kqueue a counted kqueuepl item (KqRef), the timer a kqtimerpl item whose timeout holds it as an erased argument; pools knotepl 288, kqueuepl 328, kqtimerpl 88 bytes; N4.4b: struct filterops is the Filter<G> trait, the nine kernel filters (kqread, proc, sig, file, timer, user, seltrue, dead, badfd) unit-struct impls, Filterops<G> the erased table Filterops::of builds at compile time, which kn_fop and bsd's statics keep"
 
 [[module.fn]]
 lz = "sys/sys/eventvar.rs::Proc::kq"
@@ -9660,7 +9660,7 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/kern/kern_event.rs::FiltTimer::new"
-native = ["filt_timerattach"]
+native = ["TimerFilter::attach"]
 kind = "merged"
 
 [[module.fn]]
@@ -9702,6 +9702,146 @@ kind = "moved"
 lz = "sys/kern/kern_event.rs::BADFD_FILTOPS"
 native = ["Kqueue::BADFD_FILTOPS"]
 kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_fileattach"
+native = ["FileFilter::attach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_kqdetach"
+native = ["KqreadFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_kqueue"
+native = ["KqreadFilter::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_kqueuemodify"
+native = ["KqreadFilter::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_kqueueprocess"
+native = ["KqreadFilter::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_procattach"
+native = ["ProcFilter::attach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_procdetach"
+native = ["ProcFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_proc"
+native = ["ProcFilter::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_procmodify"
+native = ["ProcFilter::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_procprocess"
+native = ["ProcFilter::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_sigattach"
+native = ["SigFilter::attach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_sigdetach"
+native = ["SigFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_signal"
+native = ["SigFilter::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_timerattach"
+native = ["TimerFilter::attach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_timerdetach"
+native = ["TimerFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_timermodify"
+native = ["TimerFilter::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_timerprocess"
+native = ["TimerFilter::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_userattach"
+native = ["UserFilter::attach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_userdetach"
+native = ["UserFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_usermodify"
+native = ["UserFilter::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_userprocess"
+native = ["UserFilter::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_seltrue"
+native = ["SeltrueFilter::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_seltruemodify"
+native = ["SeltrueFilter::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_seltrueprocess"
+native = ["SeltrueFilter::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_seltruedetach"
+native = ["SeltrueFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_dead"
+native = ["DeadFilter::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_deaddetach"
+native = ["DeadFilter::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_event.rs::filt_badfd"
+native = ["BadfdFilter::event"]
+kind = "renamed"
 
 [[module.fn]]
 lz = "sys/kern/kern_event.rs::KNOTE_POOL"
