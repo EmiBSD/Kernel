@@ -92,7 +92,7 @@ use kernel::descrip::{
     filedesc_init, finishdup,
 };
 use kernel::file::{DTYPE_PIPE, File, FileOps, foffset};
-use kernel::proc::{self, Pgrp, ProcGlue, ProcTables, Process, Session};
+use kernel::proc::{self, ProcGlue, ProcTables, Process, Session};
 use kernel::resource::{self, PlimitRef, RLIMIT_NOFILE};
 use kernel::testutil;
 

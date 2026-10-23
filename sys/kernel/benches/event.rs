@@ -65,7 +65,7 @@ use kernel::event::{
     kqueue_scan_setup, thread_kq,
 };
 use kernel::file::{DTYPE_PIPE, File, FileOps};
-use kernel::proc::{self, Pgrp, ProcGlue, ProcTables, Process, Session, Thread};
+use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::resource::{self, PlimitRef};
 use kernel::select::{
     FdMask, POLLIN, Pollfd, ppollcollect, ppollregister, pselcollect, pselregister,
