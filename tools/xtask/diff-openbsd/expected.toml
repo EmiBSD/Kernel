@@ -18,7 +18,7 @@ EOPNOTSUPP, the C's answer without option FIFO (ffs_vinit and domknodat; ports.t
 of ufs_vnops.c, ffs_subr.c, vfs_syscalls.c)"""
 
 [[difference]]
-step = "syscalls/probes#15"
+step = "syscalls/probes#16"
 cmd = "difftest syscalls ostype"
 reason = """branding: kern.ostype is EmiBSD (the user's decision of 2026-10-03; \
 docs/ARCHITECTURE.md, deviations, "The system's identity"; sys/conf/vers.rs)"""
