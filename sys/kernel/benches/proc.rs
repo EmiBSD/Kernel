@@ -439,12 +439,16 @@ fn main() {
         for i in 0..8 {
             let b = proc::thread_alloc::<BenchGlue>(&joined, ());
             b.p_tid.set(100_000 + i);
-            joined.insert_thread_locked(&mut g, b);
+            joined.join_locked(&mut g, b.as_pin());
+            joined.insert_box_locked(&mut g, b);
         }
     }
     let leaver = std::cell::Cell::new(Some(proc::thread_alloc::<BenchGlue>(&joined, ())));
     // The joining thread's order number, as `exit1` reads it from the thread (`p_seq`).
     let next_seq = std::cell::Cell::new(8u64);
+
+    let mainpr = proc::process_alloc::<BenchGlue>(44, ());
+    let main = std::cell::Cell::new(Some(proc::thread_alloc::<BenchGlue>(&mainpr, ())));
 
     let mut benches: Vec<Bench<'_>> = Vec::new();
     benches.push(Bench {
@@ -504,10 +508,36 @@ fn main() {
             };
             b.p_tid.set(100_100);
             let mut g = joined.ps_mtx.lock();
-            joined.insert_thread_locked(&mut g, b);
+            joined.join_locked(&mut g, b.as_pin());
+            joined.insert_box_locked(&mut g, b);
             let seq = next_seq.get();
             next_seq.set(seq + 1);
-            leaver.set(joined.remove_thread_locked(&mut g, seq));
+            let b = joined.take_box_locked(&mut g, seq);
+            if let Some(b) = &b {
+                joined.leave_locked(&mut g, b);
+            }
+            leaver.set(b);
+        })),
+    });
+
+    // N4.6a: a main thread joins and leaves through its process's slot (fork1's
+    // set_main_locked, exit1's leave, process_zap's take): no tree insert, no search.
+    benches.push(Bench {
+        name: "prim.main-thread",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let Some(b) = main.take() else {
+                return;
+            };
+            let mut g = mainpr.ps_mtx.lock();
+            mainpr.join_locked(&mut g, b.as_pin());
+            mainpr.set_main_locked(&mut g, b);
+            black_box(mainpr.main_thread(&g).is_some());
+            let b = mainpr.take_main_locked(&mut g);
+            if let Some(b) = &b {
+                mainpr.leave_locked(&mut g, b);
+            }
+            main.set(b);
         })),
     });
 

@@ -173,9 +173,16 @@
 //!   handles in kernel-lock cells (a parent outlives no reference to it; a group lives while a
 //!   member holds it, a session while a group does: `s_count` is that count); `s_leader` is the
 //!   leader's address, compared, never followed.
-//! - A thread's process link `p_p` is a counted handle (or process 0's `static`); a process's
-//!   threads are owned by its tree under `ps_mtx` (`hal::owned::OwnedTree` keyed by the order
-//!   they joined), so a thread's memory goes with its box, never behind a raw `pool_put`.
+//! - A thread's process link `p_p` is a counted handle (or process 0's `static`); a process
+//!   owns its main thread's box in a slot (`PsMtx.main`, [`MainThread`], N4.6a: `fork1` sets
+//!   it, `process_zap` takes it; the C's `ps_mainproc`, read under `ps_mtx` with
+//!   [`Process::main_thread`]) and its other threads' boxes in a tree under `ps_mtx`
+//!   (`hal::owned::OwnedTree` keyed by the order they joined, each taken back by its `exit1`),
+//!   so a thread's memory goes with its box, never behind a raw `pool_put`; `ps_threads` is
+//!   the list of the living ones, apart from the boxes.
+//! - The pin tables (`ps_pin`, `ps_libcpin`) are owned [`PinTable`]s in
+//!   `hal::slot::ReadMostly` cells (N4.6a), `ps_opptr` a counted handle under `ps_mtx`,
+//!   `initprocess` the tables' (`ProcTables::initprocess`): no raw word left to dereference.
 //! - `ps_ucred`, `ps_vmspace`, `ps_limit` are counted handles under `ps_mtx`, each with its
 //!   address in a word for the C's unlocked compares (`refreshcreds`, `lim_read_enter`,
 //!   `kinfo_proc`'s pointer fields).
@@ -709,19 +716,29 @@ impl PinTable {
     }
 
     /// `process_new`'s copy (`mallocarray(npins, sizeof(u_int), M_PINSYSCALL, M_WAITOK)` and
-    /// `memcpy`): the same bounds and a table of its own; the bounds alone when the copy
-    /// cannot be had (the C's `M_WAITOK` cannot fail; a child left without a table is killed
-    /// by `pin_check` at its first system call, as a process without one would be).
-    pub fn duplicate(&self) -> PinTable {
-        let pins = self.pins.as_ref().and_then(|src| {
-            MArray::new(crate::vm::mmap::M_PINSYSCALL, M_WAITOK, src.len(), |i| {
-                src[i]
-            })
-        });
-        PinTable {
-            start: self.start,
-            end: self.end,
-            pins,
+    /// `memcpy`) of the table in `cell`: the same bounds and a table of its own; the bounds
+    /// alone when the copy cannot be had (the C's `M_WAITOK` cannot fail; a child left without
+    /// a table is killed by `pin_check` at its first system call, as a process without one
+    /// would be). The allocation, which may sleep, is made with no borrow of the cell held
+    /// (a reader of a `ReadMostly` does not sleep); the copy is made under a borrow, again if
+    /// the table changed size meanwhile.
+    pub fn duplicate(cell: &ReadMostly<PinTable>) -> PinTable {
+        loop {
+            let n = cell.read().pins.as_ref().map(|p| p.len());
+            let mut dst =
+                n.and_then(|n| MArray::new(crate::vm::mmap::M_PINSYSCALL, M_WAITOK, n, |_| 0u32));
+            let src = cell.read();
+            if src.pins.as_ref().map(|p| p.len()) != n {
+                continue;
+            }
+            if let (Some(d), Some(s)) = (dst.as_mut(), src.pins.as_ref()) {
+                d.copy_from_slice(s);
+            }
+            return PinTable {
+                start: src.start,
+                end: src.end,
+                pins: dst,
+            };
         }
     }
 }
@@ -915,12 +932,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn tcb_get(_p: &Thread<Self>) -> usize {
         0
     }
-    /// The address of `initprocess` (init(8)'s process), 0 before it exists: compared, never
-    /// followed (`setsigvec`'s `SAS_NOCLDWAIT`).
-    fn initprocess_addr() -> usize {
-        0
-    }
-
     // The process code's calls into what is still `bsd`'s (`kernel::fork`, `kernel::exit`,
     // N4.6a). The defaults are what a glue without that subsystem does (the kernel's tests).
 
@@ -1560,8 +1571,6 @@ pub struct Process<G: ProcGlue> {
     pub ps_flags: AtomicU32,
     /// \[a\] `ps_siglist`.
     pub ps_siglist: AtomicU32,
-    /// `ps_mainproc`: the original thread's address.
-    pub ps_mainproc: hal::link::PtrWord<Thread<G>>,
     /// \[m\] `ps_single`: thread for single-threading.
     pub ps_single: hal::link::PtrWord<Thread<G>>,
     /// \[m\] `ps_trapped`: thread trapped for ptrace.
@@ -1667,7 +1676,6 @@ impl<G: ProcGlue> Process<G> {
             ps_lock: RawRwlock::new("pslock"),
             ps_flags: AtomicU32::new(0),
             ps_siglist: AtomicU32::new(0),
-            ps_mainproc: hal::link::PtrWord::new(),
             ps_single: hal::link::PtrWord::new(),
             ps_trapped: hal::link::PtrWord::new(),
             ps_suspendcnt: U32Word::new(0),
@@ -1904,77 +1912,6 @@ impl<G: ProcGlue> Process<G> {
     /// `SESS_LEADER(pr)`.
     pub fn sess_leader<W: Witness + ?Sized>(&self, w: &W) -> bool {
         self.session(w).is_some_and(|s| s.led_by(self))
-    }
-
-    /// The thread's box joins the process: last in `ps_threads`, kept by the process. The
-    /// thread's address, which `bsd`'s lists still take (its scheduler's queues).
-    pub fn insert_thread(&self, t: PoolBox<Thread<G>>) -> *const Thread<G> {
-        let mut g = self.ps_mtx.lock();
-        self.insert_thread_locked(&mut g, t)
-    }
-
-    /// [`Process::insert_thread`] under the caller's guard of this process's `ps_mtx` (the
-    /// C's `TAILQ_INSERT_TAIL` inside the section that also counts the thread in); a guard
-    /// of another mutex is refused by the thread list (`panic(9)`).
-    pub fn insert_thread_locked(
-        &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
-        t: PoolBox<Thread<G>>,
-    ) -> *const Thread<G> {
-        // The list first: it checks the guard is this process's.
-        self.ps_threads.insert_tail(g, t.as_pin());
-        let seq = g.next_seq;
-        g.next_seq += 1;
-        t.p_seq.set(seq);
-        let at = PoolBox::as_ptr(&t);
-        if g.threads.insert(t).is_some() {
-            kpanic(format_args!("insert_thread: a thread joined twice"));
-        }
-        at
-    }
-
-    /// Process 0's `static` thread joins it (`main`).
-    pub fn insert_static_thread(&self, t: &'static Thread<G>) {
-        let mut g = self.ps_mtx.lock();
-        self.ps_threads.insert_tail(&mut g, pin_static(t));
-    }
-
-    /// `TAILQ_REMOVE(&pr->ps_threads, p, p_thr_link)` of the thread whose joining order is
-    /// `seq` (its own `p_seq`, which the exiting thread reads from itself, as the C names `p`)
-    /// and its box given back (`None` when no box of the process has that order); the
-    /// caller unlinks the thread from `allproc` and its tid chain with the box in hand, then
-    /// drops it (`proc_free`).
-    pub fn remove_thread(&self, seq: u64) -> Option<PoolBox<Thread<G>>> {
-        let mut g = self.ps_mtx.lock();
-        self.remove_thread_locked(&mut g, seq)
-    }
-
-    /// [`Process::remove_thread`] under the caller's guard of this process's `ps_mtx` (`exit1`
-    /// unlinks the thread inside the section that counts it out): one search of the threads'
-    /// tree by its key, no walk.
-    pub fn remove_thread_locked(
-        &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
-        seq: u64,
-    ) -> Option<PoolBox<Thread<G>>> {
-        let b = g.threads.take_by(|e| seq.cmp(&e.p_seq.get()))?;
-        self.ps_threads.remove(g, &b);
-        Some(b)
-    }
-
-    /// `TAILQ_REMOVE` of process 0's `static` thread under the caller's guard.
-    pub fn remove_static_thread_locked(
-        &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
-        t: &'static Thread<G>,
-    ) {
-        self.ps_threads.remove(g, t);
-    }
-
-    /// `TAILQ_REMOVE` of process 0's `static` thread.
-    pub fn remove_static_thread(&self, t: &'static Thread<G>) {
-        let mut g = self.ps_mtx.lock();
-        self.ps_threads.remove(&mut g, t);
     }
 
     /// `ps_mainproc`, for a holder of this process's `ps_mtx` (a guard of another mutex is
@@ -3033,7 +2970,12 @@ mod tests {
             tb.tidhash(5000).insert_head(&mut w, t.as_pin());
         }
         pr.ps_threadcnt.set(1);
-        let at = pr.insert_thread(t);
+        let at = PoolBox::as_ptr(&t);
+        {
+            let mut g = pr.ps_mtx.lock();
+            pr.join_locked(&mut g, t.as_pin());
+            pr.insert_box_locked(&mut g, t);
+        }
         {
             let r = klock::reader();
             let found = tfind::<TestGlue, _>(&r, 5000).unwrap();
@@ -3051,7 +2993,12 @@ mod tests {
             let g = pr.ps_mtx.lock();
             pr.ps_threads.iter(&g).next().unwrap().p_seq.get()
         };
-        let b = pr.remove_thread(seq).unwrap();
+        let b = {
+            let mut g = pr.ps_mtx.lock();
+            let b = pr.take_box_locked(&mut g, seq).unwrap();
+            pr.leave_locked(&mut g, &b);
+            b
+        };
         assert_eq!(b.p_tid.get(), 5000);
         {
             let mut w = klock::witness();
@@ -3060,7 +3007,7 @@ mod tests {
             tb.tidhash(5000).remove(&mut w, &b);
         }
         drop(b);
-        assert!(pr.remove_thread(seq).is_none());
+        assert!(pr.take_box_locked(&mut pr.ps_mtx.lock(), seq).is_none());
         unlink(&pr);
     }
 
@@ -3156,7 +3103,12 @@ mod tests {
         // The group is orphaned with a stopped member: hung up and continued (`prsignal` of
         // both to B, whose one thread is not running: both stay pending on the process).
         crate::sig::test_sigacts(&b);
-        b.insert_thread(thread_alloc::<TestGlue>(&b, ()));
+        {
+            let t = thread_alloc::<TestGlue>(&b, ());
+            let mut g = b.ps_mtx.lock();
+            b.join_locked(&mut g, t.as_pin());
+            b.insert_box_locked(&mut g, t);
+        }
         b.ps_flags.fetch_or(PS_STOPPED, Ordering::Relaxed);
         {
             let r = klock::reader();
@@ -3171,7 +3123,13 @@ mod tests {
             let g = b.ps_mtx.lock();
             b.ps_threads.first(&g).unwrap().p_seq.get()
         };
-        drop(b.remove_thread(seq));
+        {
+            let mut g = b.ps_mtx.lock();
+            let t = b.take_box_locked(&mut g, seq).unwrap();
+            b.leave_locked(&mut g, &t);
+            drop(g);
+            drop(t);
+        }
         // Leaving: the groups go with their last members, the session with its last group.
         drop(g2);
         drop(g1);
@@ -3297,11 +3255,14 @@ mod tests {
         let t = thread_alloc::<TestGlue>(&pr, ());
         t.p_tid.set(6000);
         let mut g = pr.ps_mtx.lock();
-        let at = pr.insert_thread_locked(&mut g, t);
+        let at = PoolBox::as_ptr(&t);
+        pr.join_locked(&mut g, t.as_pin());
+        pr.insert_box_locked(&mut g, t);
         assert_eq!(pr.ps_threads.iter(&g).count(), 1);
         let seq = pr.ps_threads.iter(&g).next().unwrap().p_seq.get();
-        assert!(pr.remove_thread_locked(&mut g, seq + 1).is_none());
-        let b = pr.remove_thread_locked(&mut g, seq).unwrap();
+        assert!(pr.take_box_locked(&mut g, seq + 1).is_none());
+        let b = pr.take_box_locked(&mut g, seq).unwrap();
+        pr.leave_locked(&mut g, &b);
         assert!(ptr::eq(PoolBox::as_ptr(&b), at));
         assert_eq!(pr.ps_threads.iter(&g).count(), 0);
         drop(g);
@@ -3374,18 +3335,16 @@ mod tests {
             end: 0x2000,
             pins: Some(pins),
         };
-        let d = t.duplicate();
+        let at = t.pins.as_ref().unwrap().as_ptr();
+        let cell = ReadMostly::new(t);
+        let d = PinTable::duplicate(&cell);
         assert_eq!((d.start, d.end, d.npins()), (0x1000, 0x2000, 4));
         assert_eq!(&**d.pins.as_ref().unwrap(), &[0, 8, 16, 24]);
-        assert_ne!(
-            d.pins.as_ref().unwrap().as_ptr(),
-            t.pins.as_ref().unwrap().as_ptr()
-        );
-        let cell = ReadMostly::new(t);
+        assert_ne!(d.pins.as_ref().unwrap().as_ptr(), at);
         let old = cell.replace(PinTable::NONE);
         assert_eq!(old.npins(), 4);
         assert_eq!(cell.read().npins(), 0);
-        assert_eq!(PinTable::NONE.duplicate().npins(), 0);
+        assert_eq!(PinTable::duplicate(&cell).npins(), 0);
     }
 }
 /* </TESTS> */

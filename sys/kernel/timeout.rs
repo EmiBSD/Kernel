@@ -133,7 +133,8 @@
 //!   never while the node is still on the queue.
 //! - `timeout_startup` takes `hz`, `tick` and `tick_nsec` as data (`bsd`'s `conf/param.rs`,
 //!   never changed after boot); `softintr_establish` and `kthread_create[_deferred]` go through
-//!   `hal::softintr` (`hal`'s own since N4.5c) and `kernel::thread` (bridge `Kthread`),
+//!   `hal::softintr` (`hal`'s own since N4.5c) and `kernel::thread` (`kernel::fork`'s since
+//!   N4.6a),
 //!   `nanouptime` through
 //!   `kernel::clock` (`Uptime`).
 //! - `timeout_sysctl` stays at the ABI's side (`sys/sys/timeout.rs`): [`stats`] is the copy of

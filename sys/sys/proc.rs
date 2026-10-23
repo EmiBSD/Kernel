@@ -80,6 +80,7 @@
 //!   never followed.
 
 use core::ffi::c_void;
+use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::AtomicU32;
 
@@ -216,6 +217,26 @@ impl ProcExt for Proc {
             }
         }
     }
+}
+
+/// The glue's `thread_placed` (`kernel::fork`'s `fork1` and `thread_fork`, N4.6a): records
+/// the new thread's own `&'static` (`ProcExt::place`), which `bsd`'s run, sleep and signal
+/// adapters lend the kernel (`as_static`, until N4.8 retires them with `curproc()`'s).
+pub fn place_thread(p: Pin<&Proc>) {
+    let at = ptr::from_ref::<Proc>(p.get_ref());
+    // SAFETY: `kernel::fork` calls this once per thread, right after linking it, with the pin
+    // of a `procpl` box it then gives to the thread's process (its slot for the main thread,
+    // its tree for another), which keeps it until `exit1` hands a secondary thread's box to
+    // the thread itself and the reaper or `process_zap` frees it (`proc_free`), after the
+    // thread has left every list, hash and queue and no other thread names it: the pool item
+    // stays at this address, initialised, until then (a pinned item is not moved), and nothing
+    // mutates it but through its atomics and cells (shared references only), so a shared
+    // reference to it is valid for the thread's life. `'static` is LZ's convention for a
+    // thread reference (the C's `struct proc *` from `pool_get` to `pool_put`), the one
+    // `curproc()` and the run queues rest on (this is LZ's `thread_join` deref, moved here
+    // from `kern_fork.rs` with the creation).
+    let p: &'static Proc = unsafe { &*at };
+    p.place();
 }
 
 /// `P_HASSIBLING(p)`.

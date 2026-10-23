@@ -54,15 +54,11 @@ use hal::prf::Printf;
 use hal::user::UserCopy;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
-use crate::kern::kern_kthread::{kthread_create, kthread_exit};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_sched::sched_peg_curproc;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::printf;
-use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
-use crate::machine::cpu::{Cpu, cpu_info_foreach};
 use crate::sys::errno::Errno;
 use crate::sys::pool::Pool;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -356,44 +352,6 @@ impl kernel::clock::Uptime for BsdUptime {
 
 static BSD_UPTIME: BsdUptime = BsdUptime;
 
-/// The kernel crate's threads (`kernel::thread::Kthread`) over `kthread_create` and
-/// `kthread_exit` of `sys/kern/kern_kthread.rs`: the argument the C passes is the kernel's
-/// ticket, an address without provenance that the thread function turns back into the number
-/// (never dereferenced) and hands to `kernel::thread`.
-struct BsdKthread;
-
-/// A kernel thread's function: runs the start its ticket names.
-fn kthread_start(arg: *mut c_void) {
-    kernel::thread::run(arg.addr());
-}
-
-impl kernel::thread::Kthread for BsdKthread {
-    fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno> {
-        kthread_create(kthread_start, ptr::without_provenance_mut(ticket), name).map(drop)
-    }
-
-    fn exit(&self, ecode: i32) -> ! {
-        kthread_exit(ecode)
-    }
-
-    /// `softclock_thread`'s "be conservative for the moment": the primary CPU, then
-    /// `sched_peg_curproc`.
-    fn peg_to_primary_cpu(&self) {
-        let mut primary = None;
-        cpu_info_foreach(&mut |ci| {
-            if primary.is_none() && Machine::cpu_is_primary(ci) {
-                primary = Some(ci);
-            }
-        });
-        let Some(ci) = primary else {
-            crate::kern::subr_prf::panic(format_args!("softclock_thread: no primary CPU"));
-        };
-        sched_peg_curproc(ci);
-    }
-}
-
-static BSD_KTHREAD: BsdKthread = BsdKthread;
-
 /// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
 /// vnode pager's `uvn_io` (N3.4e).
 struct BsdNetLock;
@@ -441,10 +399,11 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
-    let _ = hal::thread::register_start(crate::kern::kern_fork::thread_start);
+    // The start of every new thread and the kernel's own threads: `kernel::fork` (N4.6a).
+    let _ = kernel::fork::init::<crate::kern::proc_glue::BsdProcGlue>();
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     let _ = kernel::clock::install_uptime(&BSD_UPTIME);
-    let _ = kernel::thread::install_kthread(&BSD_KTHREAD);
+    let _ = kernel::acct::install_acct_file(&crate::kern::proc_glue::BSD_ACCT_FILE);
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]
     {

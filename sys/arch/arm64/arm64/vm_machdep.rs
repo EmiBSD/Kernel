@@ -68,16 +68,17 @@
 //! ## Deviations
 //! - The pointer authentication keys (`pm_ap*key`) the C copies from the parent's pmap wait
 //!   for user pmaps (M6): kernel threads share the kernel pmap.
-//! - The switch frame's `sf_x19` holds the thread function's number in `kern_fork.rs`'s
-//!   table (`thread_start_word`), which the trampoline hands back to `thread_start`: no code
-//!   address crosses into `hal`, whose `thread_setup` builds the frames (N4.5a).
+//! - The switch frame's `sf_x19` holds the start word of `kernel::fork::Start` (for a `bsd`
+//!   function, its slot in the kernel's table), which the trampoline hands back to
+//!   `kernel::fork`'s registered start: no code address crosses into `hal`, whose
+//!   `thread_setup` builds the frames (N4.5a). Since N4.6a the kernel's `fork1` calls
+//!   `thread_setup` itself; `cpu_fork` stays for the machine contract (amd64's, N10).
 //! - `vmapbuf` panics if a user page of the request is not mapped, where the C enters the
 //!   uninitialised address `pmap_extract` left (the pages are wired, so it cannot happen).
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use crate::kern::kern_fork::thread_start_word;
 use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::pmap::pmap_activate;
@@ -116,7 +117,9 @@ pub fn cpu_fork(
         hal::pin::pin_static(p2.as_static()),
         stack.addr(),
         tcb.expose_provenance(),
-        thread_start_word(func),
+        kernel::fork::Start::Legacy(func, arg.expose_provenance())
+            .words(ptr::from_ref(p2).addr())
+            .0,
         arg.expose_provenance(),
     );
     drop(h);

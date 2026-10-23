@@ -87,7 +87,7 @@
 //!   code address crosses into `hal`, nothing is allocated on `fork(2)`'s path, and the C's
 //!   `arg ? arg : p` (a NULL argument is the new thread) is the argument word 0 replaced by the
 //!   thread's address. [`thread_start`] is registered with `hal` once (the `ThreadStart`
-//!   bridge of LZ's `bsd` is gone).
+//!   bridge of `bsd`'s fork is gone).
 //! - The new thread's box stays `fork1`'s while it is made (linked on its process's thread
 //!   list, `allproc` and the tid hash through its pin) and goes to its process's slot
 //!   (`set_main_locked`) or tree (`insert_box_locked`) in the same `ps_mtx` section that puts
@@ -127,7 +127,7 @@ use crate::proc::{
     FORK_FORK, FORK_IDLE, FORK_NOZOMBIE, FORK_PPWAIT, FORK_PTRACE, FORK_SHAREFILES, FORK_SHAREVM,
     FORK_SYSTEM, FORK_VFORK, P_CPUPEG, P_SUSPSIG, P_SUSPSINGLE, P_SYSTEM, P_THREAD, PID_MAX,
     PS_CONTROLT, PS_EMBRYO, PS_FLAGS_INHERITED_ON_FORK, PS_ISPWAIT, PS_NOZOMBIE, PS_PPWAIT,
-    PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, ProcGlue, Process, ProcessRef, SIDL,
+    PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, PinTable, ProcGlue, Process, ProcessRef, SIDL,
     THREAD_PID_OFFSET, TID_MASK, Thread,
 };
 use crate::resource::RLIMIT_NPROC;
@@ -497,8 +497,11 @@ fn process_new<G: ProcGlue>(
         );
     }
 
-    drop(pr.ps_pin.replace(parent.ps_pin.read().duplicate()));
-    drop(pr.ps_libcpin.replace(parent.ps_libcpin.read().duplicate()));
+    drop(pr.ps_pin.replace(PinTable::duplicate(&parent.ps_pin)));
+    drop(
+        pr.ps_libcpin
+            .replace(PinTable::duplicate(&parent.ps_libcpin)),
+    );
 
     // Duplicate sub-structures as needed. Increase reference counts on shared objects.
     if flags & FORK_SHAREFILES != 0 {
@@ -589,6 +592,17 @@ pub fn fork1<G: ProcGlue>(
     curp: Pin<&Thread<G>>,
     flags: i32,
     start: Start,
+) -> Result<ForkChild<G>, Errno> {
+    fork1_with(curp, flags, start, &mut |_| {})
+}
+
+/// [`fork1`] that lends the new thread to `child` once it is linked (and placed by the glue)
+/// and before anything can run it: the C's `*rnewprocp` for a caller that keeps the thread.
+pub fn fork1_with<G: ProcGlue>(
+    curp: Pin<&Thread<G>>,
+    flags: i32,
+    start: Start,
+    child: &mut dyn FnMut(Pin<&Thread<G>>),
 ) -> Result<ForkChild<G>, Errno> {
     let curpr = curp.process_ref().clone();
     let uid: Uid = curp.ucred().cr_ruid.get();
@@ -690,6 +704,7 @@ pub fn fork1<G: ProcGlue>(
         curpr.ps_children.insert_head(&mut w, pr.as_pin());
     }
     G::thread_placed(p);
+    child(p);
 
     if pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
         // ps_opptr, process_reparent, the ptrace status: sys_process.c.
@@ -785,7 +800,7 @@ fn fork_thread_start<G: ProcGlue>(p: Pin<&Thread<G>>) {
 /// `pr->ps_pgrp = curpr->ps_pgrp; LIST_INSERT_AFTER(curpr, pr, ps_pglist)`: the child `pr`
 /// joins its parent's group right after the parent among the members (the order
 /// `setpriority(PRIO_PGRP)` and `ttyinfo` read); a parent in no group leaves it in none.
-fn fork_join_pgrp<G: ProcGlue>(
+pub fn fork_join_pgrp<G: ProcGlue>(
     w: &mut klock::KernelWitness,
     curpr: &Process<G>,
     pr: &ProcessRef<G>,

@@ -109,9 +109,6 @@
 //!   the groups in `pgrphash` (`kernel::proc::session_find`) where the C casts its `void *`
 //!   argument: a session without a group has no process that could read what the timeout
 //!   clears.
-//! - A thread holds its own box ([`BsdThreadG::p_exited`]) from `exit1`'s unlink, where the
-//!   kernel gives it back, until `proc_free` (the reaper's, or `process_zap`'s for the main
-//!   thread) drops it: the C's pool item, alive until `pool_put`.
 //! - [`BsdThreadG::p_self`] records the thread's `&'static` where it is placed (`thread_new`,
 //!   `proc0`): the run, sleep and dead-thread queues (`hal::list`, until N4.5) take one, and
 //!   LZ's convention is that a thread reference lives until the reaper (`curproc()`,
@@ -152,13 +149,12 @@
 //!   [`proc_test_reset`]).
 
 use core::ffi::c_void;
+use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 
-use hal::intr::IPL_NONE;
 use hal::link::{Link, PtrWord};
-use hal::mutex::Mutexed;
-use hal::pool::{PoolArc, PoolBox};
+use hal::pool::PoolArc;
 use hal::rwlock::Witness;
 use kernel::proc::{
     I32Word, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
@@ -178,10 +174,14 @@ use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{SIGHUP, Sig, Sigset};
+use crate::sys::syscallargs::{
+    SysAcctArgs, SysExitArgs, SysTforkArgs, SysThrexitArgs, SysWait4Args, SysWaitidArgs,
+};
+use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
 use crate::sys::tty::Tty;
-use crate::sys::types::Pid;
+use crate::sys::types::{Pid, Register};
 use crate::sys::vnode::{REVOKEALL, Vnode};
 
 pub use kernel::proc::{inferior, zapverauth};
@@ -246,8 +246,6 @@ impl IsizeWord {
 pub struct BsdProcessG {
     /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
     pub ps_textvp: Link<Vnode>,
-    /// \[K|m\] `ps_opptr`: old parent during ptrace (null: ptrace is not ported).
-    pub ps_opptr: PtrWord<Process>,
     /// \[m\] `ps_realit_to`: `ITIMER_REAL` timeout.
     pub ps_realit_to: Timeout,
     /// \[m\] `ps_timer[ITIMER_REAL]`, \[T\] `ps_timer[ITIMER_VIRTUAL, ITIMER_PROF]`.
@@ -268,7 +266,6 @@ impl BsdProcessG {
     pub const fn new() -> Self {
         Self {
             ps_textvp: Link::new(),
-            ps_opptr: PtrWord::new(),
             ps_realit_to: Timeout::zeroed(),
             ps_timer: [const { ItimerWord::new() }; 3],
             ps_uvpaths: PtrWord::new(),
@@ -290,8 +287,6 @@ pub struct BsdThreadG {
     /// \[I\] The thread's own `&'static`, recorded where it is placed (`thread_new`,
     /// `proc0`): what `ProcExt::as_static` lends the queues' inserts. Not the C's.
     pub p_self: Link<Proc>,
-    /// The thread's own box from `exit1`'s unlink until `proc_free` drops it. Not the C's.
-    pub p_exited: Mutexed<Option<PoolBox<Proc>>>,
 }
 
 impl BsdThreadG {
@@ -299,7 +294,6 @@ impl BsdThreadG {
     pub const fn new() -> Self {
         Self {
             p_self: Link::new(),
-            p_exited: Mutexed::new(IPL_NONE, None),
         }
     }
 }
@@ -495,7 +489,7 @@ impl ProcGlue for BsdProcGlue {
     fn exit_account(p: &Proc) {
         let pr = p.process();
         let g = pr.ps_mtx.lock();
-        crate::kern::kern_resource::tuagg_add_process(pr, p);
+        kernel::resource::tuagg_add_process(pr, p, &g);
         drop(g);
     }
 
@@ -608,10 +602,6 @@ impl ProcGlue for BsdProcGlue {
         process_ref(pr)
     }
 
-    fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
-        crate::kern::kern_exit::exit1(p, xexit, xsig, flags)
-    }
-
     fn coredump(p: &Proc) -> Result<(), Errno> {
         crate::kern::kern_sig::coredump(p)
     }
@@ -641,10 +631,119 @@ impl ProcGlue for BsdProcGlue {
         crate::machine::tcb::tcb_get(p)
     }
 
-    fn initprocess_addr() -> usize {
-        crate::kern::init_main::INITPROCESS
-            .load(Ordering::Relaxed)
-            .addr()
+    fn maxprocess() -> i32 {
+        MAXPROCESS.load(Ordering::Relaxed)
+    }
+
+    fn maxthread() -> i32 {
+        MAXTHREAD.load(Ordering::Relaxed)
+    }
+
+    fn log(level: i32, args: core::fmt::Arguments<'_>) {
+        crate::kern::subr_prf::log(level, args);
+    }
+
+    /// The thread's `&'static`, which `bsd`'s run, sleep and signal adapters lend.
+    fn thread_placed(p: Pin<&Proc>) {
+        crate::sys::proc::place_thread(p);
+    }
+
+    /// `timeout_set_flags(&pr->ps_realit_to, realitexpire, pr, KCLOCK_UPTIME, 0)`.
+    fn process_initialized(pr: &Process) {
+        crate::kern::kern_timeout::timeout_set_flags(
+            &pr.ps_realit_to,
+            crate::kern::kern_time::realitexpire,
+            ptr::from_ref(pr).cast_mut().cast::<c_void>(),
+            crate::sys::timeout::KCLOCK_UPTIME,
+            0,
+        );
+    }
+
+    /// The text vnode's reference (for sysctl) and the unveils copied.
+    fn process_forked(parent: &Process, child: &Process) {
+        child.ps_textvp.set(parent.ps_textvp.get());
+        if let Some(vp) = child.ps_textvp.get() {
+            crate::kern::vfs_subr::vref(vp);
+        }
+        crate::kern::kern_unveil::unveil_copy(parent, child);
+    }
+
+    fn session_has_tty_vnode(sess: &Session) -> bool {
+        sess.s_ttyvp.get().is_some()
+    }
+
+    fn session_ttydev(sess: &Session) -> Option<crate::sys::types::Dev> {
+        sess.s_ttyp.get().map(|tp| tp.t_dev.get())
+    }
+
+    fn pmap_activate(p: &Proc) {
+        crate::machine::pmap::pmap_activate(p);
+    }
+
+    fn pmap_deactivate(p: &Proc) {
+        crate::machine::pmap::pmap_deactivate(p);
+    }
+
+    fn pmap_purge(p: &Proc) {
+        crate::machine::pmap::pmap_purge(p);
+    }
+
+    /// The machine's `child_return`, which takes the thread as the C's `void *`.
+    fn child_return(p: &Proc) {
+        crate::machine::cpu::child_return(ptr::from_ref(p).cast_mut().cast::<c_void>());
+    }
+
+    fn start_init(p: &Proc) {
+        crate::kern::init_main::start_init(p);
+    }
+
+    fn tcb_invalid(tcb: usize) -> bool {
+        crate::machine::tcb::tcb_invalid(tcb)
+    }
+
+    fn tcb_set(p: &Proc, tcb: usize) {
+        crate::machine::tcb::tcb_set(p, tcb);
+    }
+
+    fn rtable_exists(id: u32) -> bool {
+        crate::net::rtable::rtable_exists(id)
+    }
+
+    fn pgrp_ref(pg: &Pgrp) -> PgrpRef {
+        pgrp_ref(pg)
+    }
+
+    /// Under QEMU init's exit ends the run: the smokes' criterion. The C panics, as it has
+    /// nothing to run.
+    fn init_exited(xexit: i32, xsig: i32) -> ! {
+        #[cfg(feature = "qemu")]
+        {
+            crate::kprintf!("init exited with status {xexit} (signal {xsig})\n");
+            <crate::machine::Machine as crate::machine::Exit>::exit(if xexit == 0 && xsig == 0 {
+                crate::machine::ExitStatus::Success
+            } else {
+                crate::machine::ExitStatus::Failure
+            });
+        }
+        #[cfg(not(feature = "qemu"))]
+        crate::kern::subr_prf::panic(format_args!("init died (signal {xsig}, exit {xexit})"));
+    }
+
+    fn cancel_all_itimers() {
+        crate::kern::kern_time::cancel_all_itimers();
+    }
+
+    fn unveil_destroy(pr: &Process) {
+        crate::kern::kern_unveil::unveil_destroy(pr);
+    }
+
+    /// `vrele(pr->ps_textvp)`, the reference dropped.
+    fn textvp_release(pr: &Process) {
+        let otvp = pr.ps_textvp.get();
+        pr.ps_textvp.set(None);
+        if let Some(otvp) = otvp {
+            vrele(otvp);
+        }
     }
 }
 
@@ -765,18 +864,6 @@ pub fn pgrp_ref(pg: &Pgrp) -> PgrpRef {
     }
 }
 
-/// `pr->ps_pgrp = curpr->ps_pgrp; LIST_INSERT_AFTER(curpr, pr, ps_pglist)`: `fork1`'s child
-/// `pr` joins its parent's group right after the parent among the members, the order
-/// `setpriority(PRIO_PGRP)` (the last member's nice) and `ttyinfo`'s tie-break read. A
-/// parent in no group leaves the child in none.
-pub fn fork_join_pgrp(w: &mut hal::klock::KernelWitness, curpr: &Process, pr: &ProcessRef) {
-    let pgrp = curpr.pgrp(&*w).cloned();
-    if let Some(pg) = &pgrp {
-        pg.pg_members.insert_after(w, curpr, pr.as_pin());
-    }
-    drop(pr.set_pgrp(w, pgrp));
-}
-
 /// `chgproccnt(uid, diff)` in `bsd`'s uid table ([`kernel::proc::chgproccnt`]).
 pub fn chgproccnt(uid: crate::sys::types::Uid, diff: i64) -> i64 {
     kernel::proc::chgproccnt::<BsdProcGlue>(uid, diff)
@@ -789,6 +876,162 @@ pub fn with_uidinfo<R>(
     f: impl FnOnce(&kernel::proc::Uidinfo) -> R,
 ) -> R {
     kernel::proc::with_uidinfo::<BsdProcGlue, R>(uid, f)
+}
+
+/// The thread `p` of a system call, pinned (`bsd`'s threads are placed, `ProcExt::as_static`).
+fn pinned(p: &Proc) -> Pin<&'static Proc> {
+    hal::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
+}
+
+/// `fork(2)`.
+pub fn sys_fork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    retval[0] = kernel::fork::sys_fork(pinned(p))? as Register;
+    Ok(())
+}
+
+/// `vfork(2)`.
+pub fn sys_vfork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    retval[0] = kernel::fork::sys_vfork(pinned(p))? as Register;
+    Ok(())
+}
+
+/// `__tfork(2)`.
+#[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
+pub fn sys___tfork(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysTforkArgs = sysargs(v);
+    retval[0] =
+        kernel::fork::sys___tfork(pinned(p), uap.param.get().addr(), uap.psize.get())? as Register;
+    Ok(())
+}
+
+/// `exit(2)`.
+pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysExitArgs = sysargs(v);
+    kernel::exit::sys_exit(p, uap.rval.get())
+}
+
+/// `__threxit(2)`.
+#[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
+pub fn sys___threxit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysThrexitArgs = sysargs(v);
+    kernel::exit::sys___threxit(p, hal::user::UserPtr::new(uap.notdead.get().addr()))
+}
+
+/// `wait4(2)`.
+pub fn sys_wait4(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysWait4Args = sysargs(v);
+    retval[0] = kernel::exit::sys_wait4(
+        q,
+        uap.pid.get(),
+        hal::user::UserPtr::new(uap.status.get().addr()),
+        uap.options.get(),
+        hal::user::UserPtr::new(uap.rusage.get().addr()),
+    )? as Register;
+    Ok(())
+}
+
+/// `waitid(2)`.
+pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysWaitidArgs = sysargs(v);
+    kernel::exit::sys_waitid(
+        q,
+        uap.idtype.get(),
+        i64::from(uap.id.get()),
+        hal::user::UserPtr::new(uap.info.get().addr()),
+        uap.options.get(),
+    )?;
+    retval[0] = 0;
+    Ok(())
+}
+
+/// `acct(2)`.
+pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysAcctArgs = sysargs(v);
+    kernel::acct::sys_acct(p, hal::user::UserPtr::new(uap.path.get().addr()))
+}
+
+/// The accounting file of `kernel::acct` (bridges.toml `AcctFile`, N5): `vn_open` of a
+/// regular file for `FWRITE | O_APPEND` with `UNVEIL_WRITE`, unlocked.
+pub struct BsdAcctFile;
+
+/// The registered [`BsdAcctFile`].
+pub static BSD_ACCT_FILE: BsdAcctFile = BsdAcctFile;
+
+/// An open accounting file: its vnode (held open by `vn_open` until `close`).
+struct BsdAcctSink(&'static Vnode);
+
+impl kernel::acct::AcctFile for BsdAcctFile {
+    fn open(
+        &self,
+        path: hal::user::UserPtr<u8>,
+    ) -> Result<alloc::boxed::Box<dyn kernel::acct::AcctSink>, Errno> {
+        let Some(p) = crate::machine::cpu::curproc() else {
+            crate::kern::subr_prf::panic(format_args!("acct: no curproc"));
+        };
+        let mut nd =
+            crate::kern::vfs_lookup::ndinit(0, 0, crate::sys::namei::NiDirp::User(path.addr()), p);
+        nd.ni_unveil = crate::sys::namei::UNVEIL_WRITE;
+        crate::kern::vfs_vnops::vn_open(
+            &mut nd,
+            crate::sys::fcntl::FWRITE | crate::sys::fcntl::O_APPEND,
+            0,
+        )?;
+        let Some(vp) = nd.ni_vp else {
+            return Err(Errno::ENOENT);
+        };
+        let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
+        if vp.v_type.get() != crate::sys::vnode::VREG {
+            let _ = crate::kern::vfs_vnops::vn_close(
+                vp,
+                crate::sys::fcntl::FWRITE,
+                p.ucred_ptr(),
+                Some(p),
+            );
+            return Err(Errno::EACCES);
+        }
+        Ok(alloc::boxed::Box::new(BsdAcctSink(vp)))
+    }
+}
+
+impl kernel::acct::AcctSink for BsdAcctSink {
+    fn write(&self, rec: &[u8]) -> Result<(), Errno> {
+        let p = crate::machine::cpu::curproc();
+        crate::kern::vfs_vnops::vn_rdwr(
+            crate::sys::uio::UioRw::UIO_WRITE,
+            self.0,
+            rec.as_ptr().cast_mut().cast::<c_void>(),
+            rec.len(),
+            0,
+            crate::sys::uio::UioSeg::UIO_SYSSPACE,
+            crate::sys::vnode::IO_APPEND
+                | crate::sys::vnode::IO_UNIT
+                | crate::sys::vnode::IO_NOLIMIT,
+            p.map_or(crate::sys::ucred::NOCRED, |p| p.ucred_ptr()),
+            None,
+            p,
+        )
+    }
+
+    fn free_space(&self) -> Option<(i64, i64)> {
+        let mp = self.0.v_mount.get()?;
+        let p = crate::machine::cpu::curproc()?;
+        let mut sb = crate::sys::mount::Statfs::default();
+        let _ = crate::sys::mount::VFS_STATFS(mp, &mut sb, p);
+        Some((sb.f_bavail, sb.f_blocks as i64))
+    }
+
+    fn is_bad(&self) -> bool {
+        self.0.v_type.get() == crate::sys::vnode::VBAD
+    }
+
+    fn close(self: alloc::boxed::Box<Self>, by_curproc: bool) {
+        let p = crate::machine::cpu::curproc();
+        let cred = match p {
+            Some(p) if by_curproc => p.ucred_ptr(),
+            _ => crate::sys::ucred::NOCRED,
+        };
+        let _ = crate::kern::vfs_vnops::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
+    }
 }
 
 /// A process of the host tests with pid `pid`, leaked (never freed: the tests' processes
@@ -826,7 +1069,7 @@ pub(crate) fn test_pooled_process(pid: Pid) -> &'static Process {
 pub(crate) fn test_proc(pid: Pid, cr: kernel::cred::CredRef) -> &'static Proc {
     let pr = test_pooled_process(pid);
     let p = test_thread(pr);
-    pr.ps_mainproc.set(p);
+    pr.set_main_static(hal::pin::pin_static(p));
     drop(p.set_cred(cr.clone()));
     drop(pr.set_ucred(cr));
     p
@@ -969,6 +1212,13 @@ mod tests {
         // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the
         // sigio registrations moved into kernel::sigio's registry: processpl 1376 -> 1360 and
         // pgrppl 152 -> 136 (ps_sigiolst and pg_sigiolst gone from the glue's members).
+        // N4.6a (the process core into kernel::{fork, exit}): processpl 1360 -> 1536: the pin
+        // tables are owned tables in ReadMostly cells (2 x 64 where the glue's two
+        // `struct pinsyscall`s of words were 2 x 32), ps_rucheck_to is the kernel's Timeout
+        // (120 where bsd's was 32), PsMtx gains the main thread's slot (24) and ps_opptr's
+        // counted handle (16) where the glue's word was (8); procpl unchanged (p_exited moved
+        // from the glue into the kernel's Thread as `exited`). Accepted under the user's rule
+        // for N4's sizes (reported, pinned here).
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1008,7 +1258,7 @@ mod tests {
         assert_eq!(
             sizes,
             [
-                ("processpl", 1360),
+                ("processpl", 1536),
                 ("pgrppl", 136),
                 ("sessionpl", 144),
                 ("filepl", 184),
@@ -1081,12 +1331,12 @@ mod tests {
         // a zombie, a stopped and a continued child, each reported with its pid, its
         // effective uid and its CLD_* code, without taking the mutex a second time
         // (hal's mutex panics "locking against myself").
-        use crate::kern::kern_exit::dowait6;
         use crate::sys::proc::{PS_CONTINUED, PS_STOPPED, PS_ZOMBIE};
         use crate::sys::siginfo::{CLD_CONTINUED, CLD_EXITED, CLD_STOPPED, Siginfo};
         use crate::sys::signal::{SIGCHLD, SIGCONT, SIGSTOP};
         use crate::sys::wait::{P_PID, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED};
         use kernel::cred::CredRef;
+        use kernel::exit::dowait6;
 
         let _g = setup();
         let parent = test_pooled_process(500);
@@ -1120,7 +1370,6 @@ mod tests {
         ];
         for (pid, opt, code, status) in cases {
             let mut info = Siginfo::zeroed();
-            let mut retval = [0; 2];
             let r = dowait6(
                 q,
                 P_PID,
@@ -1129,10 +1378,8 @@ mod tests {
                 opt | WNOHANG | WNOWAIT,
                 None,
                 Some(&mut info),
-                &mut retval,
             );
-            assert_eq!(r, Ok(()), "pid {pid}");
-            assert_eq!(retval[0], pid as crate::sys::types::Register, "pid {pid}");
+            assert_eq!(r, Ok(pid), "pid {pid}");
             assert_eq!(info.si_signo, SIGCHLD);
             assert_eq!(info.si_code, code, "pid {pid}");
             assert_eq!(info.si_pid(), pid);
@@ -1168,8 +1415,8 @@ mod tests {
         let second = process_ref(test_pooled_process(603));
         {
             let mut w = hal::klock::witness();
-            fork_join_pgrp(&mut w, parent, &first);
-            fork_join_pgrp(&mut w, parent, &second);
+            kernel::fork::fork_join_pgrp(&mut w, parent, &first);
+            kernel::fork::fork_join_pgrp(&mut w, parent, &second);
         }
         {
             let r = hal::klock::reader();
