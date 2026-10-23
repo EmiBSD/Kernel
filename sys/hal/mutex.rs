@@ -130,6 +130,8 @@
 //! - "locking against myself" (entering a mutex this CPU holds) panics in every
 //!   configuration, where the C checks it only under `DIAGNOSTIC` (and otherwise spins for
 //!   ever under `MULTIPROCESSOR`, or carries on with two owners without it).
+//! - [`DbMutex::leave`] by a CPU that does not own the mutex panics in every configuration
+//!   (the C's check is `DIAGNOSTIC`'s): the interrupt state it restores is its owner's.
 //! - `mtx_oldipl` is not kept in the mutex: the guard holds the level to restore, which only
 //!   the owner ever read.
 //!
@@ -749,18 +751,19 @@ impl DbMutex {
     }
 
     /// `db_mtx_leave`: releases the mutex and restores the interrupt state its enter saved
-    /// on this CPU.
+    /// on this CPU. `panic(9)` unless this CPU owns it, in every build (the C checks under
+    /// `DIAGNOSTIC` only): the saved state is the owner's, written by its `enter` on this
+    /// CPU, and restoring it anywhere else would hand one CPU another's interrupt mask.
     pub fn leave(&self) {
-        #[cfg(feature = "diagnostic")]
-        {
-            if self.owner.load(Ordering::Relaxed) != self_word() {
-                crate::assert::hal_panic(format_args!(
-                    "db_mtx_leave: mtx {:p}: not owned by this CPU",
-                    core::ptr::from_ref(self)
-                ));
-            }
-            cpu::mutex_level(-1);
+        if self.owner.load(Ordering::Relaxed) != self_word() {
+            crate::assert::hal_panic(format_args!(
+                "db_mtx_leave: mtx {:p}: not owned by this CPU",
+                core::ptr::from_ref(self)
+            ));
         }
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(-1);
+        // The owner's own word: its `enter` stored it on this CPU before returning.
         let s = self.intr_state.load(Ordering::Relaxed);
         fence(Ordering::Release); // membar_exit()
         self.owner.store(0, Ordering::Relaxed);
@@ -1225,6 +1228,24 @@ mod tests {
         assert_eq!(M.owner(), mtx_curcpu());
         M.leave();
         other.join().unwrap();
+        assert_eq!(M.owner(), 0);
+    }
+
+    /// `db_mtx_leave` by a CPU that does not own the mutex, or of a mutex never entered, is
+    /// `panic(9)` in every build: the interrupt state it would restore is not this CPU's
+    /// (review finding 2).
+    #[test]
+    fn a_db_mutex_is_left_only_by_its_owner() {
+        static M: DbMutex = DbMutex::new();
+        assert!(
+            std::panic::catch_unwind(|| M.leave()).is_err(),
+            "never entered"
+        );
+        M.enter();
+        let other = thread::spawn(|| std::panic::catch_unwind(|| M.leave()).is_err());
+        assert!(other.join().unwrap(), "left by another CPU");
+        assert_eq!(M.owner(), mtx_curcpu());
+        M.leave();
         assert_eq!(M.owner(), 0);
     }
 }

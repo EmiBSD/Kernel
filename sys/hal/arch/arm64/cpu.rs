@@ -136,8 +136,9 @@ pub(crate) fn intr_disable() -> u64 {
 pub(crate) fn intr_restore(daif: u64) {
     // SAFETY: `msr daif` writes this CPU's interrupt mask: no memory operand, no stack, no
     // flags. The value is one `intr_disable` read on this CPU (the guard is not `Send` and
-    // holds it; the debugger's mutex is left by the CPU that entered it, which alone wrote
-    // the word), so the mask returns to what it was before the section, as the C's
+    // holds it; `DbMutex::leave` panics, in every build, unless the running CPU owns the
+    // mutex, and its owner's `enter` stored the word on this CPU before returning), so the
+    // mask returns to what it was before the section, as the C's
     // `intr_restore` does; whatever the mask, no memory access becomes unsound: it only
     // decides when this CPU's handlers run. Without `nomem`, so the section's memory
     // accesses stay before it.
