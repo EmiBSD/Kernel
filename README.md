@@ -134,7 +134,8 @@ in [docs/ROADMAP.md](docs/ROADMAP.md).
 ## Status
 
 Status: N3 (memory: uvm in `kernel::vm`, the pmaps in `hal`) met on 2026-10-18; N4 (processes
-and scheduling) next. Since decision 44 (2026-10-18) only arm64 is built and tested until N10
+and scheduling) ongoing: N4.0 to N4.8a merged, N4.8b (the syscall entry), N4.8d (the kernel
+page-table isolation of the trampolines), a6 (the time system calls) and the close left. Since decision 44 (2026-10-18) only arm64 is built and tested until N10
 homologates amd64 (`docs/ZERO_UNSAFE.md` section 10).
 
 | Milestone | Scope | State |
@@ -143,7 +144,7 @@ homologates amd64 (`docs/ZERO_UNSAFE.md` section 10).
 | N1 | Leaves: libkern, libz, the crypto primitives | done |
 | N2 | Foundations: the crates `hal`, `kernel`, `abi`; the runtime; the loadable ABI module; pipe(2) by the new path | done |
 | N3 | Memory: uvm into `kernel::vm`, the pmaps into `hal` behind `hal::Pmap` | done |
-| N4 | Processes and scheduling (kern) | next |
+| N4 | Processes and scheduling (kern) | ongoing |
 | N5 | VFS and file systems | next |
 | N6 | Network stack | next |
 | N7 | Devices: bus_space, DMA, the driver model | next |
