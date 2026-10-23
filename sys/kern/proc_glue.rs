@@ -593,10 +593,6 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_sig::coredump(p)
     }
 
-    fn tcb_get(p: &Proc) -> usize {
-        crate::machine::tcb::tcb_get(p)
-    }
-
     /// `sigcoderet - sigcodecall` of the machine's signal trampoline (`locore.S`).
     fn sigcode_svc_offset() -> usize {
         use crate::machine::signal::MachineSignal;
@@ -711,14 +707,6 @@ impl ProcGlue for BsdProcGlue {
 
     fn start_init(p: &Proc) {
         crate::kern::init_main::start_init(p);
-    }
-
-    fn tcb_invalid(tcb: usize) -> bool {
-        crate::machine::tcb::tcb_invalid(tcb)
-    }
-
-    fn tcb_set(p: &Proc, tcb: usize) {
-        crate::machine::tcb::tcb_set(p, tcb);
     }
 
     fn rtable_exists(id: u32) -> bool {

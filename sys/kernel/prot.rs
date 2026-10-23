@@ -844,17 +844,17 @@ pub fn proc_cansugid<G: ProcGlue>(p: &Thread<G>) -> bool {
 /// the machine refuses).
 #[allow(non_snake_case, reason = "the C name, sys___set_tcb")]
 pub fn sys___set_tcb<G: ProcGlue>(p: &Thread<G>, tcb: usize) -> Result<(), Errno> {
-    if G::tcb_invalid(tcb) {
+    if hal::thread::tcb_invalid(tcb) {
         return Err(Errno::EINVAL);
     }
-    G::tcb_set(p, tcb);
+    hal::thread::tcb_set(p, tcb);
     Ok(())
 }
 
 /// `__get_tcb(2)`: get address of the proc's thread-control-block.
 #[allow(non_snake_case, reason = "the C name, sys___get_tcb")]
 pub fn sys___get_tcb<G: ProcGlue>(p: &Thread<G>) -> usize {
-    G::tcb_get(p)
+    hal::thread::tcb_get(p)
 }
 
 /// `getthrname(2)`: the name of thread `tid` of the caller's process (the caller for 0)

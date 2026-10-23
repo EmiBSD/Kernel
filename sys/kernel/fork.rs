@@ -366,7 +366,7 @@ pub fn sys___tfork<G: ProcGlue>(
     UserPtr::<u8>::new(param).copyin_slice(&mut raw[..psize])?;
     let tf = tfork_from_bytes(&raw);
     // KTRACE: not configured.
-    if G::tcb_invalid(tf.tf_tcb) {
+    if hal::thread::tcb_invalid(tf.tf_tcb) {
         return Err(Errno::EINVAL);
     }
     thread_fork(p, tf.tf_stack, tf.tf_tcb, UserPtr::new(tf.tf_tid))

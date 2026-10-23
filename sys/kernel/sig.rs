@@ -988,7 +988,7 @@ pub fn thrkill<G: ProcGlue>(
     };
 
     // optionally require the target thread to have the given tcb addr
-    if tcb != 0 && tcb != G::tcb_get(&p) {
+    if tcb != 0 && tcb != hal::thread::tcb_get(p.get_ref()) {
         return Err(Errno::ESRCH);
     }
 

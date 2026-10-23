@@ -2007,7 +2007,14 @@ status = "inherited"
 rust = "sys/arch/arm64/include/tcb.rs"
 lz = ["sys/arch/arm64/include/tcb.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/arch/arm64/include/tcb.rs", "sys/hal/thread.rs"]
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/tcb.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/tcb.rs"]
+status = "redesigned"
+notes = "N4.8b: the kernel half of <machine/tcb.h> with the pcb it reads: __aarch64_set_tcb (the msr tpidr_el0, LZ's 1 unsafe, moved from bsd) and TCB_INVALID (none on arm64); TCB_GET and TCB_SET are hal::thread::tcb_get and tcb_set over the switch's pcb access (another thread's read under the scheduler's lock, which the setter takes too); bsd's header keeps the names for its callers"
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/timetc.rs"
@@ -5171,7 +5178,7 @@ adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.
 rust = "sys/kern/proc_glue.rs"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs"]
 status = "redesigned"
-notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug); N4.8b: sendsig, signotify, proc_stack and proc_pc are no longer the glue's"
+notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug); N4.8b: sendsig, signotify, proc_stack and proc_pc are no longer the glue's; N4.8b b3c: tcb_get, tcb_set and tcb_invalid are hal::thread's"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::HashTable"
@@ -8683,14 +8690,14 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
 status = "redesigned"
 license = "none"
-notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S); N4.8b: MachineSlot::aston (md_astpending for the kernel's signotify)"
+notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S); N4.8b: MachineSlot::aston (md_astpending for the kernel's signotify); N4.8b b3c: tcb_get, tcb_set and tcb_invalid (TCB_GET, TCB_SET, TCB_INVALID: another thread's TCB read under the scheduler's lock, which the running thread's set takes too; the machine's half in arch/*/switch.rs, the host's a side table by slot that cpu_fork copies)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/switch.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/vm_machdep.rs", "sys/arch/arm64/arm64/machdep.rs"]
 status = "redesigned"
-notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt does not compile it. cpuswitch.rs (LZ) has no licence text, so license is not none"
+notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt does not compile it. cpuswitch.rs (LZ) has no licence text, so license is not none; N4.8b b3c: tcb_of and set_tcb (pcb_tcb through with_pcb_of, then __aarch64_set_tcb) and tcb_invalid for hal::thread"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/cpuswitch.rs::proc_trampoline_run"
@@ -9026,7 +9033,7 @@ rust = "sys/kernel/proc.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs", "sys/sys/user.rs"]
 status = "redesigned"
-notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret; N4.8b: ProcGlue loses sendsig, signotify, proc_stack and proc_pc (hal::sig, kernel::sig's signotify, hal::trap::proc_pc/proc_stack)"
+notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret; N4.8b: ProcGlue loses sendsig, signotify, proc_stack and proc_pc (hal::sig, kernel::sig's signotify, hal::trap::proc_pc/proc_stack); N4.8b b3c: ProcGlue loses tcb_get, tcb_set and tcb_invalid (hal::thread)"
 
 [[module.fn]]
 lz = "sys/sys/proc.rs::PInentry"
@@ -9049,7 +9056,7 @@ rust = "sys/kernel/fork.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_fork.rs"]
 status = "redesigned"
-notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported"
+notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported; N4.8b: __tfork's TCB_INVALID is hal::thread::tcb_invalid"
 
 [[module.fn]]
 lz = "sys/kern/kern_fork.rs::pin_copy"
@@ -9113,7 +9120,7 @@ rust = "sys/kernel/prot.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_prot.rs"]
 status = "redesigned"
-notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's"
+notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's; N4.8b: __set_tcb and __get_tcb over hal::thread's tcb_invalid, tcb_set and tcb_get"
 
 [[module]]
 rust = "sys/kernel/pty.rs"

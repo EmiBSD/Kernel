@@ -38,9 +38,9 @@
 //!
 //! Upstream: sys/arch/arm64/include/tcb.h @ 3ce1f3f79392
 //!
-//! Status: `ported` (the kernel half). `cpu_switchto` (`cpuswitch.S`) loads `pcb_tcb` into
-//! `TPIDR_EL0` for the thread it switches to; `TCB_SET` also loads it at once, for the
-//! running thread.
+//! Status: `ported` (the kernel half). N4.8b: `hal`'s (`hal::arch::arm64::include::tcb`
+//! and `hal::thread::tcb_get`/`tcb_set`, with the pcb they read); the names stay here for
+//! `bsd`'s callers (exec's `TCB_SET(p, 0)`, the `Tcb` trait).
 //!
 //! ## Deviations
 //! - The macros `TCB_GET(p)`/`TCB_SET(p, addr)` are the functions `tcb_get`/`tcb_set`; the
@@ -48,31 +48,20 @@
 //! - The userland half (`TLS_VARIANT`, `__aarch64_read_tcb`, the userland `TCB_GET()`) is not
 //!   kernel code and is not here.
 
-use core::arch::asm;
-use core::ptr;
-
 use crate::sys::proc::Proc;
-use crate::sys::proc::ProcExt;
 
-/// `__aarch64_set_tcb(tcb)`: loads the user thread pointer register.
-#[inline]
-pub fn __aarch64_set_tcb(tcb: usize) {
-    // SAFETY: TPIDR_EL0 is the user's thread pointer; the kernel never reads it (it uses
-    // TPIDR_EL1 for curcpu), so writing any value only changes what user space sees.
-    unsafe { asm!("msr tpidr_el0, {}", in(reg) tcb, options(nomem, nostack, preserves_flags)) };
-}
+pub use hal::arch::arm64::include::tcb::__aarch64_set_tcb;
 
-/// `TCB_GET(p)`: `p`'s saved TCB address.
+/// `TCB_GET(p)`: `p`'s saved TCB address (`hal::thread::tcb_get`).
 #[inline]
 pub fn tcb_get(p: &Proc) -> usize {
-    p.pcb().pcb_tcb.get() as usize
+    hal::thread::tcb_get(p)
 }
 
 /// `TCB_SET(p, addr)`: records `addr` in `p`'s pcb and loads it into `TPIDR_EL0` (`p` is the
-/// running thread).
+/// running thread; `hal::thread::tcb_set`).
 #[inline]
 pub fn tcb_set(p: &Proc, addr: usize) {
-    p.pcb().pcb_tcb.set(ptr::with_exposed_provenance_mut(addr));
-    __aarch64_set_tcb(addr);
+    hal::thread::tcb_set(p, addr);
 }
 /* </CODE> */

@@ -72,6 +72,10 @@ struct Gate {
 /// The gates, by slot address.
 static GATES: Mutex<BTreeMap<usize, Arc<Gate>>> = Mutex::new(BTreeMap::new());
 
+/// The threads' TCB addresses (the machine's `pcb_tcb`), by slot address; a thread not in it
+/// has none (0).
+static TCBS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+
 /// A mutex's guard, a panicking test's poison ignored.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -142,15 +146,36 @@ pub(crate) fn switch(
 /// `cpu_fork`'s host half: a host thread for the child, which waits for the first switch to
 /// it, then runs the trampoline with `start` and `arg`.
 pub(crate) fn thread_setup(
-    _parent: &MachineSlot,
+    parent: &MachineSlot,
     _parent_runs: bool,
     child: &MachineSlot,
     _stack: usize,
-    _tcb: usize,
+    tcb: usize,
     start: usize,
     arg: usize,
 ) {
+    // The machine's `*pcb = p1->p_addr->u_pcb` copies the parent's TCB; a given one wins.
+    let tcb = if tcb != 0 { tcb } else { tcb_of(parent) };
+    set_tcb(child, tcb);
     spawn(core::ptr::from_ref(child).addr(), start, arg);
+}
+
+/// `TCB_GET(p)` of the thread whose slot is `slot`: what [`set_tcb`] recorded, 0 for none.
+pub(crate) fn tcb_of(slot: &MachineSlot) -> usize {
+    lock(&TCBS)
+        .get(&core::ptr::from_ref(slot).addr())
+        .copied()
+        .unwrap_or(0)
+}
+
+/// `TCB_SET(p, addr)`: recorded for the slot (no register to load on the host).
+pub(crate) fn set_tcb(slot: &MachineSlot, tcb: usize) {
+    lock(&TCBS).insert(core::ptr::from_ref(slot).addr(), tcb);
+}
+
+/// `TCB_INVALID(addr)`: the host refuses no address.
+pub(crate) const fn tcb_invalid(_addr: usize) -> bool {
+    false
 }
 
 /// A thread that runs nowhere starts afresh with `start` and `arg`.

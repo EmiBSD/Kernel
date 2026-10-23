@@ -911,10 +911,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn coredump(_p: &Thread<Self>) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    /// `TCB_GET(p)` (N4.8): `p`'s thread control block address.
-    fn tcb_get(_p: &Thread<Self>) -> usize {
-        0
-    }
 
     // The system call prologue's calls into what is still `bsd`'s (`kernel::syscall`, N4.8b).
 
@@ -991,10 +987,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn child_return(_p: &Thread<Self>) {}
     /// `start_init(p)` (`init_main.c`, N9.1): process 1 execs init.
     fn start_init(_p: &Thread<Self>) {}
-    /// `TCB_INVALID(tcb)` of the machine (`__tfork(2)`, N4.8).
-    fn tcb_invalid(_tcb: usize) -> bool {
-        false
-    }
     /// init's `exit1` (pid 1, `EXIT_NORMAL`): the C panics ("init died"); under QEMU `bsd`
     /// ends the run instead.
     fn init_exited(xexit: i32, xsig: i32) -> ! {
@@ -1006,8 +998,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn unveil_destroy(_pr: &Process<Self>) {}
     /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
     fn textvp_release(_pr: &Process<Self>) {}
-    /// `TCB_SET(p, tcb)` of the machine (`__set_tcb(2)`, N4.8).
-    fn tcb_set(_p: &Thread<Self>, _tcb: usize) {}
     /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
     fn rtable_exists(id: u32) -> bool {
         id == 0
