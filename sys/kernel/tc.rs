@@ -1723,9 +1723,9 @@ pub(crate) mod tests {
     fn the_timekeep_page_follows_the_timehands() {
         let _g = lock();
         static PAGE: TimekeepAtomic = TimekeepAtomic::new();
-        if TIMEKEEP.get().is_none() {
-            assert!(timekeep_attach(&PAGE).is_ok());
-        }
+        // Whichever page attaches first stays (vm::map's timekeep test may attach the real
+        // one through timekeep_object, on another thread): the checks read TIMEKEEP's.
+        let _ = timekeep_attach(&PAGE);
         tc_windup(&mut WINDUP.lock(), None, None, None, None);
         let Some(tk) = TIMEKEEP.get() else {
             panic!("attached")

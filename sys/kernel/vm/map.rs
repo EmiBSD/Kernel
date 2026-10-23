@@ -8406,7 +8406,10 @@ mod tests {
     /// `MADV_RANDOM`), then a read fault, a wired fault (`mlock`) and a fork. Each fault ends
     /// as `uvm_fault_lower` does, clearing `PG_BUSY` on the resident page it found unbusy,
     /// which the view's claim (for good, not on `PG_BUSY`) lets pass; the arm64 boot of
-    /// 12e57ed2 panicked there on every process's first clock read.
+    /// 12e57ed2 panicked there on every process's first clock read. It must stay the only
+    /// caller of `timekeep_object` in the kernel's tests: that object (`kernel::tc`'s
+    /// `OBJECT`) and `hal`'s one timekeep view are made once per process, with no
+    /// `*_test_reset`.
     #[test]
     fn the_timekeep_page_maps_wires_and_forks_under_its_view() {
         let _g = setup();
@@ -8434,6 +8437,10 @@ mod tests {
         assert!(pg.mdpage.in_view(), "hal's timekeep view holds the frame");
         assert!(!pg.mdpage.in_busy_view(), "for good, not on PG_BUSY");
         assert_eq!(pg.flags() & PG_BUSY, 0);
+        // An unlocked uao_get's busy and its unbusy: PG_HAL_KEEP is what lets the unbusy of a
+        // busy, claimed page pass (a pager window's claim would panic here).
+        pg.set_bits(PG_BUSY);
+        pg.clear_bits(PG_BUSY);
         let wired = pg.wire_count();
         assert!(wired >= 1, "the kernel's mapping wired it");
 
