@@ -111,3 +111,7 @@ metadata:
 - An `adapted` bsd module cannot lose an LZ item (no rows allowed there): keep a thin wrapper of the same name over the kernel's function (kern_sysctl's `sysctl_msgbuf`).
 - The pre-commit hook is a PreToolUse hook: it checks fmt before the whole Bash command runs, so `cargo fmt --all && git commit` in one call is refused; run fmt in its own call first (and a refused command's `git add` did not run either).
 - Two findings in one file, one commit each: save the full file to the scratchpad, write the first finding's version (e.g. `head -n <CODE end>`), commit, copy the full file back (no `git add -p` here).
+- amd64's `bios.rs` is compiled into bsd's host tests (`sys/arch/host/mod.rs`'s `#[path]` module): a type it uses (`hw_vendor`'s) must keep the API it calls (`write`/`read`), or `cargo check -p bsd --tests` breaks although amd64 is frozen (N4.6b's `HwString`).
+- A `just build`/`clippy` queued behind the machine lock compiles what is on disk when it starts, not when it was queued: no source edit while one waits (a half-applied KernelApi change failed N4.6b's first build).
+- `lz check`'s "differs from LZ ... set status = redesigned" on an inherited file edited at its call sites is also satisfied by `adapted` with `adapted_by`.
+- A bsd helper that ~30 bsd test modules call with host addresses (`sysctl_int`, `sysctl_rdint`, ...) cannot become a wrapper over a kernel helper on `hal::user::UserPtr` (the 64 KiB double) without moving every test buffer: keep LZ's body in bsd until its callers move.
