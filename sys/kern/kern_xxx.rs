@@ -69,7 +69,6 @@
 use core::sync::atomic::AtomicI32;
 use core::sync::atomic::Ordering;
 
-use crate::kern::init_main::INITPROCESS;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_sysctl::ALLOWPOWERDOWN;
@@ -120,8 +119,7 @@ static POWERDOWN_TASK: Task = Task::new(do_powerdown, core::ptr::null_mut());
 fn do_powerdown(_arg: *mut core::ffi::c_void) {
     if ALLOWPOWERDOWN.load(Ordering::Relaxed) == 1 {
         ALLOWPOWERDOWN.store(0, Ordering::Relaxed);
-        // SAFETY: a non-null `initprocess` is init's process, which never goes away.
-        if let Some(init) = unsafe { INITPROCESS.load(Ordering::Relaxed).as_ref() } {
+        if let Some(init) = crate::kern::proc_glue::proc_tables().initprocess.get() {
             prsignal(init, SIGUSR2);
         }
     }

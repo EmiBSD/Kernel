@@ -733,7 +733,7 @@ pub fn setsigvec<G: ProcGlue>(p: &Thread<G>, signum: i32, sa: &mut Sigaction) {
         // child to PID 1 (init) which will reap the zombie. Because we use init to do our
         // dirty work we never set SAS_NOCLDWAIT for PID 1.
         // XXX exit1 rework means this is unnecessary?
-        let init_is_us = G::initprocess_addr() == ptr::from_ref(pr).addr();
+        let init_is_us = G::tables().initprocess_addr() == ptr::from_ref(pr).addr();
         if !init_is_us && (sa.sa_flags & SA_NOCLDWAIT != 0 || sa.sa_handler == SIG_IGN) {
             ps.ps_sigflags.fetch_or(SAS_NOCLDWAIT, Ordering::Relaxed);
         } else {

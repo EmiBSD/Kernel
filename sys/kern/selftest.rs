@@ -52,7 +52,6 @@ use crate::dev::wscons::wsdisplayvar::{
 };
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_clock::ticks;
-use crate::kern::kern_fork::NTHREADS;
 use crate::kern::kern_kthread::{kthread_create, kthread_exit};
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
@@ -120,6 +119,7 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::IO_NDELAY;
 use hal::pmap::PMAP_WIRED;
 use hal::vm::uvmexp::UVMEXP;
+use kernel::fork::NTHREADS;
 use kernel::vm::fault::{VM_FAULT_INVALID, uvm_fault};
 use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY};
 use kernel::vm::map::Vmspace;

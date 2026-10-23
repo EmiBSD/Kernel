@@ -152,7 +152,7 @@ fn ddb_on_console(p: &Proc) -> bool {
         return false;
     };
     // With PS_CONTROLT the session has its terminal.
-    let Some(tp) = s.s_ttyp.get() else {
+    let Some(tp) = kernel::tty::session_tty(&s) else {
         return false;
     };
     cn.cn_dev.get() == tp.t_dev.get()

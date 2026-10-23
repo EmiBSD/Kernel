@@ -104,21 +104,19 @@ pub fn ioctl_ret<T: AbiPod>(data: &mut [u8], v: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::termios::{ECHO, Termios};
 
     #[test]
     fn arguments_round_trip() {
         let mut data = [0u8; 8];
         ioctl_ret(&mut data, &-5i32);
         assert_eq!(ioctl_arg::<i32>(&data), -5);
-        let mut t = Termios::zeroed();
-        t.c_lflag = ECHO;
-        t.c_cc[3] = 0x7f;
-        let mut buf = [0u8; size_of::<Termios>()];
-        ioctl_ret(&mut buf, &t);
-        assert_eq!(ioctl_arg::<Termios>(&buf), t);
+        // (`struct termios`, the round trip's other type until N4.7b, is the kernel's
+        // `abi_pod!` type now, read and written with `hal::user::pod_from_bytes`.)
+        let mut buf = [0u8; 4];
+        ioctl_ret(&mut buf, &0x0102_0304u32);
+        assert_eq!(ioctl_arg::<u32>(&buf), 0x0102_0304);
         // Too short: zeros out, nothing in.
-        assert_eq!(ioctl_arg::<Termios>(&data), Termios::zeroed());
+        assert_eq!(ioctl_arg::<u32>(&data[..2]), 0);
         let mut short = [1u8; 2];
         ioctl_ret(&mut short, &7i32);
         assert_eq!(short, [1, 1]);

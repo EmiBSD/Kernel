@@ -79,6 +79,8 @@
 //! - `arc4random_uniform` is re-expressed over [`arc4random`] with the C's rejection of the
 //!   low `2**32 % upper_bound` values, so the result is unbiased; `bsd`'s copy in
 //!   `sys/dev/rnd.rs` stays for its legacy callers.
+//! - N4.7b: [`enqueue_randomness`], the bridge's second member, for the terminal's
+//!   per-character call (`ttyinput`).
 
 pub use crate::pmap::Random;
 
@@ -94,20 +96,21 @@ pub fn arc4random() -> u32 {
     }
 }
 
-/// `enqueue_randomness(9)`: `val` into `bsd`'s entropy pool; dropped before the bridge is
-/// registered (a sample lost to the pool, nothing anyone reads back).
-pub fn enqueue_randomness(val: u32) {
-    if let Some(r) = bridges::random() {
-        r.enqueue_randomness(val);
-    }
-}
-
 /// `arc4random_uniform(9)`: a uniformly distributed random number less than `upper_bound`
 /// (0 when `upper_bound < 2`), without "modulo bias": words below `2**32 % upper_bound` are
 /// drawn again, so the ones kept map evenly onto `[0, upper_bound)` (each draw is kept with
 /// probability above one half).
 pub fn arc4random_uniform(upper_bound: u32) -> u32 {
     uniform_with(upper_bound, arc4random)
+}
+
+/// `enqueue_randomness(val)`: `val` mixed into `bsd`'s entropy pool (the terminal's input
+/// characters, `tty.c`'s `ttyinput`; the timecounters' first readings and the clock steps,
+/// `kern_tc.c`); nothing before the bridge is registered (no generator to feed yet).
+pub fn enqueue_randomness(val: u32) {
+    if let Some(r) = bridges::random() {
+        r.enqueue_randomness(val);
+    }
 }
 
 /// [`arc4random_uniform`] over the word source `draw`.

@@ -65,7 +65,7 @@ use kernel::event::{
     kqueue_scan_setup, thread_kq,
 };
 use kernel::file::{DTYPE_PIPE, File, FileOps};
-use kernel::proc::{self, Pgrp, ProcGlue, ProcTables, Process, Session, Thread};
+use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::resource::{self, PlimitRef};
 use kernel::select::{
     FdMask, POLLIN, Pollfd, ppollcollect, ppollregister, pselcollect, pselregister,
@@ -279,7 +279,6 @@ impl ProcGlue for BenchGlue {
         &SCHED
     }
 
-    fn pgrp_destroy(_pg: &Pgrp<Self>) {}
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}

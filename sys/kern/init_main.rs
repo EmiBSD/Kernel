@@ -98,7 +98,6 @@
 //!   sequence runs: `MNT_ROOTFS`, `VFS_ROOT` into `rootvnode`, the current directories of
 //!   process 0 and init.
 
-use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
@@ -110,8 +109,6 @@ use crate::kern::kern_clock::initclocks;
 use crate::kern::kern_clockintr::clockqueue_init;
 use crate::kern::kern_descrip::{fdinit, filedesc_init};
 use crate::kern::kern_exec::{exec_image, sys_execve};
-use crate::kern::kern_exit::reaper;
-use crate::kern::kern_fork::{fork1, process_initialize};
 use crate::kern::kern_kthread::{kthread_create, kthread_run_deferred_queue};
 use crate::kern::kern_resource::lim_startup;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
@@ -121,7 +118,7 @@ use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::taskq_init;
 use crate::kern::kern_timeout::{timeout_proc_init, timeout_startup};
 use crate::kern::pipe_glue::pipe_init;
-use crate::kern::proc_glue::{chgproccnt, proc_tables, procinit};
+use crate::kern::proc_glue::{BsdProcGlue, chgproccnt, proc_tables, procinit};
 use crate::kern::sched_bsd::scheduler_start;
 use crate::kern::subr_autoconf::{
     CONFIG_PENDING, config_init, config_process_deferred_mountroot, config_rootfound,
@@ -170,6 +167,7 @@ use crate::unported;
 use hal::klock;
 use hal::pin::pin_static;
 use hal::vm::param::{round_page, trunc_page};
+use kernel::fork::Start;
 use kernel::sig::SigactsRef;
 use kernel::vm::map::{uvm_map, uvmspace_alloc_kernel};
 use kernel::vm::types::{
@@ -203,8 +201,6 @@ pub static GUARD_LOCAL: i64 = 0;
 /// it.
 pub static PDEVINIT_DONE: AtomicBool = AtomicBool::new(false);
 
-/// `initprocess`: the process of `init(8)`, null until `start_init` forks it (M6-b).
-pub static INITPROCESS: AtomicPtr<Process> = AtomicPtr::new(core::ptr::null_mut());
 /// `proc0`: process slot for swapper (process 0's `static` thread, P4).
 pub static PROC0: Proc = Proc::new_static(&PROCESS0, BsdThreadG::new());
 
@@ -358,8 +354,9 @@ pub fn main() -> ! {
 
     // Create process 0 (the swapper).
     let pr: &'static Process = &PROCESS0;
-    pr.insert_static_thread(p);
-    process_initialize(pr, p);
+    kernel::fork::process_initialize(pr, pin_static(p));
+    pr.set_main_static(pin_static(p));
+    proc_tables().set_process0(pr, pin_static(p));
 
     // The lists are the kernel lock's: `main` takes it around them (one CPU runs).
     kernel_lock();
@@ -522,13 +519,16 @@ pub fn main() -> ! {
 
     // Create process 1 (init(8)). We do this now, as Unix has historically had init be
     // process 1, and changing this would probably upset a lot of people.
-    let Ok(initproc) = fork1(&PROC0, FORK_FORK, start_init, ptr::null_mut()) else {
+    let Ok(initproc) = kernel::fork::fork1(pin_static(&PROC0), FORK_FORK, Start::Init) else {
         panic(format_args!("fork init"));
     };
-    INITPROCESS.store(
-        ptr::from_ref(initproc.process()).cast_mut(),
-        Ordering::Relaxed,
-    );
+    if proc_tables()
+        .initprocess
+        .set(initproc.process.clone())
+        .is_err()
+    {
+        panic(format_args!("fork init: initprocess set twice"));
+    }
 
     // Create any kernel threads whose creation was deferred because initprocess had not yet
     // been created.
@@ -590,7 +590,7 @@ pub fn main() -> ! {
 
         // Now that root is mounted, we can fixup initprocess's CWD info. All other
         // processes are kthreads, which merely share proc0's CWD info.
-        let initpr = initproc.process();
+        let initpr = &initproc.process;
         initpr.fd().set_cdir(Some(root));
         vref(root);
         initpr.fd().set_rdir(None);
@@ -605,7 +605,7 @@ pub fn main() -> ! {
     let _ = unported!("kthread_create (pagedaemon, M7)");
     // The daemon's first act (uvm_pageout): tune the paging parameters.
     kernel::vm::pdaemon::uvmpd_tune();
-    if kthread_create(reaper, core::ptr::null_mut(), b"reaper").is_err() {
+    if kernel::exit::start_reaper::<BsdProcGlue>().is_err() {
         panic(format_args!("fork reaper"));
     }
     // Create the cleaner daemon kernel thread.
@@ -805,11 +805,7 @@ fn start_init_args(addr: usize, path: &[u8]) -> (usize, usize) {
 ///
 /// Without a root file system every path fails with `ENOENT`; then the `init` boot module
 /// is exec'd from memory with the same arguments (`exec_image`, `kern_exec.rs`).
-pub fn start_init(arg: *mut c_void) {
-    // SAFETY: `fork1` passes the new thread itself when the argument is null; it lives as
-    // long as this function runs on it.
-    let p: &Proc = unsafe { &*arg.cast::<Proc>() };
-
+pub fn start_init(p: &Proc) {
     // Now in process 1.
 
     // Wait for main() to tell us that it's safe to exec.

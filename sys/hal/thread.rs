@@ -552,7 +552,7 @@ impl Next {
 
 /// The start a new thread's trampoline calls with the scheduler's hold it adopted and the
 /// two words its maker gave [`thread_setup`] (the C's `proc_trampoline_mi` and `func(arg)`):
-/// registered once (bridges.toml `ThreadStart` while `bsd`'s `fork1` makes the threads).
+/// registered once, by `kernel::fork::init` (N4.6a; `bsd`'s `fork1` registered it before).
 static START: OnceStatic<fn(SchedHold, usize, usize)> = OnceStatic::new();
 
 /// Registers the start of new threads, once; a second registration keeps the first.
@@ -561,7 +561,7 @@ pub fn register_start(
 ) -> Result<(), crate::bridges::AlreadyRegistered> {
     START
         .set(f)
-        .map_err(|_| crate::bridges::AlreadyRegistered("ThreadStart"))
+        .map_err(|_| crate::bridges::AlreadyRegistered("thread start"))
 }
 
 /// `cpu_switchto(old, next)` under the scheduler's hold `h`: the running thread `old` leaves

@@ -78,7 +78,6 @@ use hal::thread::SchedHold;
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_clock::statclock;
 use crate::kern::kern_clockintr::clockintr_bind;
-use crate::kern::kern_fork::fork1;
 use crate::kern::kern_kthread::kthread_create_deferred;
 use crate::kern::kern_sysctl::{sysctl_int_bounded, sysctl_rdstring, sysctl_string};
 use crate::kern::kern_time::itimer_update;
@@ -181,12 +180,14 @@ pub fn sched_kthreads_create(v: *mut c_void) {
     static NUM: AtomicI32 = AtomicI32::new(0);
 
     let n = idle_arg_cpu(v);
-    let Ok(p) = fork1(
-        &PROC0,
+    let mut idle: Option<&'static Proc> = None;
+    let made = kernel::fork::fork1_with(
+        hal::pin::pin_static(&PROC0),
         FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM | FORK_IDLE,
-        sched_idle,
-        idle_arg(n),
-    ) else {
+        kernel::fork::Start::Idle(n),
+        &mut |p| idle = Some(p.as_static()),
+    );
+    let (Ok(_), Some(p)) = (made, idle) else {
         panic(format_args!("fork idle"));
     };
     kernel::sched::set_idleproc::<G>(n, hal::pin::pin_static(p));

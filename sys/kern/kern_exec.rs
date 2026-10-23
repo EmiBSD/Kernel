@@ -97,7 +97,6 @@ use crate::kern::exec_script::exec_script_makecmds;
 use crate::kern::exec_subr::exec_process_vmcmds;
 use crate::kern::kern_descrip::{closef, falloc, fd_getfile, fdprepforexec, fdrelease, fdremove};
 use crate::kern::kern_event::knote_processexec;
-use crate::kern::kern_exit::{exit1, pin_free};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::proc_cansugid;
 use crate::kern::kern_sig::{execsigs, psignal, single_thread_clear, single_thread_set};
@@ -131,7 +130,7 @@ use crate::sys::exec_script::EXEC_SCRIPT_HDRSZ;
 use crate::sys::fcntl::FREAD;
 use crate::sys::file::frele;
 use crate::sys::filedesc::{fdplock, fdpunlock};
-use crate::sys::malloc::{M_PINSYSCALL, M_TEMP, M_WAITOK};
+use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::mman::{
     MADV_RANDOM, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE,
 };
@@ -164,6 +163,8 @@ use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
 use crate::unported;
 use hal::once::OnceStatic;
 use hal::vm::param::{atop, round_page, trunc_page};
+use kernel::exit::exit1;
+use kernel::proc::PinTable;
 use kernel::vm::aobj::uao_create;
 use kernel::vm::km::{KD_WAITOK, KP_PAGEABLE, kernel_map};
 use kernel::vm::km::{KmemVaMode, KvMap};
@@ -217,13 +218,8 @@ pub static EXECSW: [Execsw; 2] = [
 pub fn exec_free_package(pack: &mut ExecPackage<'_>) {
     // pool_put(&namei_pool, pack->ep_interp): the buffer gives itself back.
     pack.ep_interp = None;
-    if let Some(pins) = pack.ep_pins.take() {
-        free(
-            pins.cast::<u8>(),
-            M_PINSYSCALL,
-            pack.ep_npins.max(0) as usize * size_of::<u32>(),
-        );
-    }
+    // The table goes with its owner (`free(M_PINSYSCALL)`).
+    pack.ep_pins = None;
     pack.ep_npins = 0;
 }
 
@@ -794,27 +790,22 @@ fn execve_common(
         pack.ep_execpath = 0;
     }
 
-    pin_free(&pr.ps_pin);
-    match pack.ep_pins.take() {
-        Some(pins) if pack.ep_npins != 0 => {
-            pr.ps_pin.pn_start.set(pack.ep_pinstart);
-            pr.ps_pin.pn_end.set(pack.ep_pinend);
-            pr.ps_pin.pn_pins.set(pins.as_ptr());
-            pr.ps_pin.pn_npins.set(pack.ep_npins);
-        }
+    // free old pintables, set new: the old tables go with their owners.
+    let npins = pack.ep_npins;
+    let main = match pack.ep_pins.take() {
+        Some(pins) if npins != 0 => PinTable {
+            start: pack.ep_pinstart,
+            end: pack.ep_pinend,
+            pins: Some(pins),
+        },
         other => {
             pack.ep_pins = other;
-            pr.ps_pin.pn_start.set(0);
-            pr.ps_pin.pn_end.set(0);
-            pr.ps_pin.pn_pins.set(ptr::null_mut());
-            pr.ps_pin.pn_npins.set(0);
+            PinTable::NONE
         }
-    }
-    if !pr.ps_libcpin.pn_pins.get().is_null() {
-        pin_free(&pr.ps_libcpin);
-        pr.ps_libcpin.pn_start.set(0);
-        pr.ps_libcpin.pn_end.set(0);
-        pr.ps_libcpin.pn_npins.set(0);
+    };
+    drop(pr.ps_pin.replace(main));
+    if pr.ps_libcpin.read().pins.is_some() {
+        drop(pr.ps_libcpin.replace(PinTable::NONE));
     }
 
     // stopprofclock(pr): stop profiling (subr_prof.c, see the deviations).

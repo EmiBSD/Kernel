@@ -112,6 +112,7 @@ pub mod refcnt;
 pub mod rwlock;
 pub mod seqlock;
 pub mod sleep;
+pub mod slot;
 #[forbid(unsafe_code)]
 pub mod softintr;
 #[cfg(test)]

@@ -460,7 +460,9 @@ internet_check := "--send-after login: --send 'root\\n' --send-after Password: -
 # does; `echo diag-$((40+2))` marks the end. vmstat's disk columns are the first two disks
 # of hw.disknames: on both archs now sd0 (the virtio-blk disk) and sd1 (the boot image: on
 # arm64 a vioblk, on amd64 port 0 of q35's AHCI controller since ahci(4), M13; before it the
-# amd64 header read `sd0 rd0`). Part of `smoke`.
+# amd64 header read `sd0 rd0`). Part of `smoke`. N4.7: the login shell's terminal through
+# `/dev/tty` (ctty, the vnode path), script(1) on a pair from `/dev/ptm` (PTMGET, both
+# ioctl paths), and pstat(8)'s `-t` over kern.ttycount and kern.tty.ttyinfo.
 smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test -f target/userland/amd64/ramdisk.ffs -a -f target/userland/arm64/ramdisk.ffs || \
         { echo "smoke-diag: no ramdisk image; run just userland first"; exit 1; }
@@ -478,6 +480,9 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'sysctl kern.timecounter\n' \
         --send-after "# " --send 'echo diag-$((40+2))\n' \
         --send-after "# " --send 'sleep 5 & kill -TERM $!; wait $!; echo rc=$?\n' \
+        --send-after "# " --send 'echo ctty-$((6*7)) > /dev/tty\n' \
+        --send-after "# " --send 'script -c tty /dev/null\n' \
+        --send-after "# " --send 'pstat -t\n' \
         --expect "rc: multi-user" --expect " /sbin/init" --expect " -ksh (ksh)" \
         --expect "root         1  " \
         --expect "USER     CMD          PID   FD MOUNT" --expect "root     ksh" \
@@ -486,6 +491,8 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect "bytes per page" --expect "Memory statistics by bucket size" \
         --expect "Memory resource pool statistics" --expect "/dev/rd0a       " \
         --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" --expect "rc=143" \
+        --expect "ctty-42" --expect "/dev/ttyp" --expect "Script done, output file is /dev/null" \
+        --expect "terminal device" --expect "  tty00 " \
         --expect "kern.timecounter.hardware=" \
         --expect "kern.timecounter.choice=i8254(0) acpihpet0(1000) tsc(" --expect ") acpitimer0(1000)"
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
@@ -502,6 +509,9 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'sysctl kern.timecounter\n' \
         --send-after "# " --send 'echo diag-$((40+2))\n' \
         --send-after "# " --send 'sleep 5 & kill -TERM $!; wait $!; echo rc=$?\n' \
+        --send-after "# " --send 'echo ctty-$((6*7)) > /dev/tty\n' \
+        --send-after "# " --send 'script -c tty /dev/null\n' \
+        --send-after "# " --send 'pstat -t\n' \
         --expect "rc: multi-user" --expect " /sbin/init" --expect " -ksh (ksh)" \
         --expect "root         1  " \
         --expect "USER     CMD          PID   FD MOUNT" --expect "root     ksh" \
@@ -510,6 +520,8 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect "bytes per page" --expect "Memory statistics by bucket size" \
         --expect "Memory resource pool statistics" --expect "/dev/rd0a       " \
         --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" --expect "rc=143" \
+        --expect "ctty-42" --expect "/dev/ttyp" --expect "Script done, output file is /dev/null" \
+        --expect "terminal device" --expect "  tty00 " \
         --expect "kern.timecounter.hardware=agtimer" --expect "kern.timecounter.choice=agtimer(0)"
 
 # M9b/M9c harness: two VMs of one arch at once (`cargo xtask smoke2`), each with vio0 on QEMU's
@@ -1984,7 +1996,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi_openbsd.ko: 331 syscalls, 46 native" --reject "abi_openbsd.ko: not loaded" \
+        --expect "abi_openbsd.ko: 331 syscalls, 92 native" --reject "abi_openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -2007,7 +2019,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi_openbsd.ko: 331 syscalls, 46 native" --reject "abi_openbsd.ko: not loaded" \
+        --expect "abi_openbsd.ko: 331 syscalls, 92 native" --reject "abi_openbsd.ko: not loaded" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2186,7 +2198,7 @@ smoke-abi: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build
 
 # `smoke-abi`'s expectations and session.
 abi_steps := "--reject 'abi_openbsd.ko: not loaded' " + \
-    "--expect 'abi_openbsd.ko: 331 syscalls, 46 native' " + \
+    "--expect 'abi_openbsd.ko: 331 syscalls, 92 native' " + \
     "--send-after 'RETURN for sh:' --send '\\n' " + \
     "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
     "--expect 'abi-ok-42' " + \

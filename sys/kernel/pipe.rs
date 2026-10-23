@@ -1456,6 +1456,10 @@ mod tests {
         fn is_write(&self) -> bool {
             self.source
         }
+
+        fn set_resid(&mut self, resid: usize) {
+            self.pos = self.data.len().saturating_sub(resid);
+        }
     }
 
     /// `write(2)` of `bytes` on the file of pipe `dir`: the result and how much went in.

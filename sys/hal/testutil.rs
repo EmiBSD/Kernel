@@ -242,6 +242,8 @@ impl crate::pmap::Random for TestRandom {
             (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32
         })
     }
+
+    fn enqueue_randomness(&self, _val: u32) {}
 }
 
 /// The kernel map double.

@@ -62,6 +62,15 @@ path = "benches/event.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of the terminal's hot paths (N4.7b, decision 43; benches/tty.rs): the
+# clists, the line discipline's input and output, the tty's lock, over the doubles, never a
+# kernel image: `cargo bench -p kernel --features doubles --bench tty [--profile dev]`.
+[[bench]]
+name = "tty"
+path = "benches/tty.rs"
+harness = false
+required-features = ["doubles"]
+
 # Host microbenchmarks of futex(2) (N4.6c, decision 43; benches/futex.rs) over the doubles,
 # never a kernel image: `cargo bench -p kernel --features doubles --bench futex
 # [--profile dev]`.

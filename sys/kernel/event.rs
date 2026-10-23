@@ -208,6 +208,10 @@
 //!   walked by `knote_fdclose` one counted kqueue at a time, so no table lock is held when a
 //!   kqueue's last reference drops and unlinks it (the C's `rw_status == RW_WRITE` test is
 //!   gone with it).
+//! - `kn_hook` has a counted, typed form beside the address word: one slot set once by the
+//!   attach, holding `EVFILT_TIMER`'s timer or, for a filter of another module, its object
+//!   as an erased handle ([`Knote::set_hook_shared`], [`Knote::hook_shared`]: N4.7b's ttys),
+//!   so such a filter finds its object without a lookup and the knote keeps it alive.
 
 use core::cell::Cell;
 use core::ffi::c_void;
@@ -723,8 +727,17 @@ pub struct Knote<G: ProcGlue> {
     pub kn_fop: Link<Filterops<G>>,
     /// \[o\] `kn_hook`: the object, for the filters that keep its address.
     pub kn_hook: HookWord,
-    /// `EVFILT_TIMER`'s timer (`struct filter_timer`, the C's `kn_hook`).
-    timer: OnceStatic<PoolArc<FiltTimer<G>>>,
+    /// \[o\] `kn_hook` as a counted handle, set once by the attach: `EVFILT_TIMER`'s timer
+    /// (`struct filter_timer`), or the object of a filter of another module (a tty).
+    hook: OnceStatic<KnHook<G>>,
+}
+
+/// What a knote's counted hook holds: the C's `kn_hook`, typed by its user.
+enum KnHook<G: ProcGlue> {
+    /// `EVFILT_TIMER`'s timer.
+    Timer(PoolArc<FiltTimer<G>>),
+    /// The object of a filter of another module, erased ([`Knote::set_hook_shared`]).
+    Shared(AnyArc),
 }
 
 /// The lock a [`Knote::detached`]'s status is keyed to (host tests only; never taken).
@@ -750,7 +763,7 @@ impl<G: ProcGlue> Knote<G> {
             fp: Mutexed::new(IPL_HIGH, FileSlot::new()),
             kn_fop: Link::new(),
             kn_hook: HookWord::new(),
-            timer: OnceStatic::new(),
+            hook: OnceStatic::new(),
         }
     }
 
@@ -772,6 +785,26 @@ impl<G: ProcGlue> Knote<G> {
     #[cfg(any(test, feature = "doubles"))]
     pub fn detached() -> Self {
         Self::zeroed(Guarded::new_static_mutexed(&DETACHED_KNOTE_LOCK, 0), None)
+    }
+
+    /// `kn->kn_hook = obj` of a filter outside this module that keeps a counted handle of
+    /// its object (a tty's `ttkqfilter`): set once, by the filter's attach, and held until
+    /// the knote is freed, so the object outlives every call of the filter. `Err` gives the
+    /// handle back when the knote already has a hook.
+    pub fn set_hook_shared(&self, obj: AnyArc) -> Result<(), AnyArc> {
+        self.hook.set(KnHook::Shared(obj)).map_err(|h| match h {
+            KnHook::Shared(a) => a,
+            KnHook::Timer(_) => kpanic(format_args!("knote {:p}: a timer hook", self)),
+        })
+    }
+
+    /// The object [`Knote::set_hook_shared`] hooked, when it is a `T` (`None` before the
+    /// attach, or for another type).
+    pub fn hook_shared<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        match self.hook.get()? {
+            KnHook::Shared(a) => a.downcast_ref::<T>(),
+            KnHook::Timer(_) => None,
+        }
     }
 
     /// `kn_id`: `kn_kevent.ident` \[I\].
@@ -2049,9 +2082,9 @@ fn filt_timervalidate(sfflags: u32, sdata: i64) -> Result<Timespec, Errno> {
 
 /// `kn->kn_hook` of an `EVFILT_TIMER` knote: its timer.
 fn filt_timer<G: ProcGlue>(kn: &Knote<G>) -> &PoolArc<FiltTimer<G>> {
-    match kn.timer.get() {
-        Some(ft) => ft,
-        None => kpanic(format_args!("knote {:p}: no timer", kn)),
+    match kn.hook.get() {
+        Some(KnHook::Timer(ft)) => ft,
+        _ => kpanic(format_args!("knote {:p}: no timer", kn)),
     }
 }
 
@@ -2176,7 +2209,7 @@ impl<G: ProcGlue> Filter<G> for TimerFilter {
             KCLOCK_NONE,
             0,
         );
-        if kn.timer.set(ft.clone()).is_err() {
+        if kn.hook.set(KnHook::Timer(ft.clone())).is_err() {
             kpanic(format_args!("filt_timerattach: knote {:p} has a timer", kn));
         }
 
@@ -5038,8 +5071,9 @@ pub(crate) mod tests {
         ];
         // The C's knote is 120 bytes, LZ's about 200; the kqueue grew with its chains'
         // owners and the knote with its three entries and its counted members (the user's
-        // decision of 2026-10-22: accepted, pinned here).
-        assert_eq!(sizes, [288, 336, 88], "knotepl, kqueuepl, kqtimerpl");
+        // decision of 2026-10-22: accepted, pinned here). N4.7b: 288 -> 296, the counted
+        // hook (one slot for the timer and a tty's erased handle, `KnHook`).
+        assert_eq!(sizes, [296, 336, 88], "knotepl, kqueuepl, kqtimerpl");
     }
 
     #[test]
@@ -5174,5 +5208,34 @@ pub(crate) mod tests {
         send_sync::<FiltTimer<Kg>>();
         send_sync::<KqRef<Kg>>();
     };
+
+    #[test]
+    fn a_shared_hook_is_set_once_holds_its_object_and_answers_its_type_only() {
+        static HOOKED: TypedPool<u64> = TypedPool::new();
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        testutil::install();
+        ONCE.call_once(|| HOOKED.init(IPL_NONE, 0, "hooktest").unwrap());
+        let obj = HOOKED.get_shared(PR_WAITOK, || 47).unwrap();
+        let kn = Knote::<Kg>::detached();
+        assert!(
+            kn.hook_shared::<u64>().is_none(),
+            "no hook before the attach"
+        );
+        assert!(kn.set_hook_shared(PoolArc::erase(obj.clone())).is_ok());
+        // The knote holds a reference of its own.
+        assert_eq!(PoolArc::count(&obj), 2);
+        assert_eq!(kn.hook_shared::<u64>(), Some(&47));
+        assert!(
+            kn.hook_shared::<u32>().is_none(),
+            "another type is not the hook"
+        );
+        // A second attach is refused and its handle given back.
+        let back = kn.set_hook_shared(PoolArc::erase(obj.clone())).unwrap_err();
+        drop(back);
+        assert_eq!(PoolArc::count(&obj), 2);
+        // The knote's drop gives the object back.
+        drop(kn);
+        assert_eq!(PoolArc::count(&obj), 1);
+    }
 }
 /* </TESTS> */

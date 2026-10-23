@@ -258,6 +258,10 @@ const VARIANTS: &[Variant] = &[
     Variant::statically("usr.sbin/pwd_mkdb"),
     // M16b: usbdevs(8).
     Variant::statically("usr.sbin/usbdevs"),
+    // N4.7: script(1), tty(1), pstat(8).
+    Variant::statically("usr.bin/script"),
+    Variant::statically("usr.bin/tty"),
+    Variant::statically("usr.sbin/pstat"),
     Variant::statically("sbin/dhcpleased"),
     Variant::statically("sbin/resolvd"),
     Variant::statically("sbin/slaacd"),
@@ -458,6 +462,11 @@ const PROGRAMS: &[&str] = &[
     "usr.sbin/pwd_mkdb",
     // M16b: usbdevs(8), the USB device tree over /dev/usb0's USB_DEVICEINFO.
     "usr.sbin/usbdevs",
+    // N4.7: the terminals of `smoke-diag`: script(1) on a pair from /dev/ptm (openpty(3),
+    // libutil), tty(1), and pstat(8)'s `-t` over kern.ttycount and kern.tty.ttyinfo (libkvm).
+    "usr.bin/script",
+    "usr.bin/tty",
+    "usr.sbin/pstat",
 ];
 
 /// Scripts that a Makefile's `afterinstall` rule installs next to the program: (directory, files).

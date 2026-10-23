@@ -237,6 +237,10 @@ impl UioMove for UioAdapter<'_, '_> {
     fn is_write(&self) -> bool {
         self.uio.uio_rw == crate::sys::uio::UioRw::UIO_WRITE
     }
+
+    fn set_resid(&mut self, resid: usize) {
+        self.uio.uio_resid = resid;
+    }
 }
 
 impl PipeFiles<BsdPipeGlue> for BsdFiles<'_> {

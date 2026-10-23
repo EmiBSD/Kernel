@@ -25,8 +25,7 @@
 
 #[forbid(unsafe_code)]
 pub mod _time;
-#[forbid(unsafe_code)]
-pub mod acct;
+pub use ::kernel::acct;
 pub mod ataio;
 pub mod audioio;
 pub mod buf;
@@ -138,6 +137,7 @@ pub use hal::sys::syslimits;
 pub mod syslog;
 pub mod systm;
 pub mod task;
+#[forbid(unsafe_code)]
 pub mod termios;
 #[forbid(unsafe_code)]
 pub mod time;
@@ -147,7 +147,9 @@ pub mod timetc;
 #[forbid(unsafe_code)]
 pub mod tprintf;
 pub mod tree;
+#[forbid(unsafe_code)]
 pub mod tty;
+#[forbid(unsafe_code)]
 pub mod ttycom;
 #[forbid(unsafe_code)]
 pub mod ttydefaults;

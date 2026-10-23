@@ -1773,7 +1773,7 @@ adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", 
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs", "sys/kernel/fork.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -2913,7 +2913,7 @@ license = "Mach notice"
 rust = "sys/ddb/db_usrreq.rs"
 lz = ["sys/ddb/db_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/tty.rs"]
 
 [[module]]
 rust = "sys/ddb/db_var.rs"
@@ -3102,7 +3102,7 @@ notes = "N4.8a: struct todr_chip_handle implements kernel::time::Todr (quality, 
 rust = "sys/dev/cons.rs"
 lz = ["sys/dev/cons.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/log.rs"]
+adapted_by = ["sys/kernel/log.rs", "sys/kernel/tty.rs"]
 notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab are not used (the consoles are attached directly); M8: CONSMAJOR, the cnopen..cnkqfilter prototypes are cons.rs's functions; cons_decl/cons_init macros are the Consdev literal; M2: cngetc/cnputc/cnpollc/cnbell/nullcnpollc on an atomic cn_tab; M8: cnopen, cnclose, cnread, cnwrite, cnstop, cnioctl, cnkqfilter through the device switch, constty and cn_devvp as atomic pointers (constty()/set_constty()); cninit and constab[] are not used: each architecture attaches its console directly (docs/ARCHITECTURE.md)"
 
 [[module]]
@@ -3264,7 +3264,7 @@ notes = "M16c: AX88190 registers"
 rust = "sys/dev/ic/com.rs"
 lz = ["sys/dev/ic/com.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 
 [[module]]
 rust = "sys/dev/ic/comreg.rs"
@@ -3488,7 +3488,7 @@ notes = "M16d: the whole header: PckbcInternal (Cells; tag and handles Option un
 rust = "sys/dev/ic/pluart.rs"
 lz = ["sys/dev/ic/pluart.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 
 [[module]]
 rust = "sys/dev/ic/re.rs"
@@ -4319,7 +4319,7 @@ status = "inherited"
 rust = "sys/dev/pv/viocon.rs"
 lz = ["sys/dev/pv/viocon.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 notes = "M16d: the whole file: virtio_console_control(_resize), viocon_ca/cd, match, attach (one port, malloc'ed sc_vqs and sc_ports), viocon_port_create (queues p0rx/p0tx, the soft interrupt, the buffers in DMA memory, the tty), tx_drain, tx_intr, rx_fill, rx_intr, rx_soft, vioconstart, vioconhwiflow, vioconparam, vioconopen/close/read/write/tty/stop/ioctl, the CTASSERT; compiled on every build; cargo feature viocon (amd64 GENERIC's commented-out line) adds viocon* at virtio? to amd64's ioconf and NVIOCON 1 to cdevsw 94 (0 without it: ENXIO, as config(8) counts it); deviations: dev2sc/dev2port return Option (ENXIO or nothing where the C would dereference a missing unit), Result returns; no smoke (in neither GENERIC)"
 
 [[module]]
@@ -4598,7 +4598,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/usb/ucom.rs"
 lz = ["sys/dev/usb/ucom.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/tty.rs", "sys/kernel/clist.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -4832,7 +4833,7 @@ notes = "M12 hid: ported so far: struct wscons_event, every WSCONS_EVENT_*, IS_*
 rust = "sys/dev/wscons/wsdisplay.rs"
 lz = ["sys/dev/wscons/wsdisplay.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/tty.rs", "sys/kernel/clist.rs"]
 
 [[module]]
 rust = "sys/dev/wscons/wsdisplay_compat_usl.rs"
@@ -4911,7 +4912,8 @@ adapted_by = ["sys/kernel/event.rs"]
 [[module]]
 rust = "sys/dev/wscons/wskbd.rs"
 lz = ["sys/dev/wscons/wskbd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/proc.rs"]
 
 [[module]]
 rust = "sys/dev/wscons/wskbdraw.rs"
@@ -5126,12 +5128,6 @@ adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs"]
 license = "none"
 
 [[module]]
-rust = "sys/kern/kern_acct.rs"
-lz = ["sys/kern/kern_acct.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/clock.rs"]
-
-[[module]]
 rust = "sys/kern/kern_bufq.rs"
 lz = ["sys/kern/kern_bufq.rs"]
 status = "inherited"
@@ -5167,20 +5163,6 @@ lz = ["sys/kern/kern_exec.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/vm/aobj.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/tc.rs"]
 notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEAF|SAVENAME|EXECPATH with the cwd realpath through vfs_getcwd_common, VREG, VOP_GETATTR, MNT_NOEXEC, the execpromises/SUID refusal, MNT_NOSUID, VOP_ACCESS(VEXEC) and the x bits, VOP_OPEN, VOP_UNLOCK, the header through vn_rdwr, the exec switch with EXEC_DESTR, the entry and MAXTSIZ/lim_cur(RLIMIT_DATA) checks, bad1/bad2), sys_execve (the pathname and realpath namei buffers, single_thread_set, the NCARGS argument buffer from exec_map through kv_exec, the EXEC_HASARGL fake args, argv/envp copied with copyinstr (E2BIG), stackgap_random's sgap, the stack size check with ELF_AUX_WORDS, uvmspace_exec, ps_strings and ep_execpath below vm_minsaddr, copyargs, ps_auxinfo, the execpath copyoutstr, the pin tables into ps_pin and ps_libcpin freed, ps_comm from cn_nameptr, ps_textvp, PSI_* from EXEC_*, PS_PPWAIT, PS_SUGIDEXEC, the pledge hand-over, set[ug]id executables, the saved ids, exec_timekeep_map, exec_elf_fixup, setregs, exec_sigcode_map, p_descfd, exec_abort and free_pack_abort), copyargs, exec_sigcode_map, exec_timekeep_map (timekeep_object, the wired timekeep page kern_tc.c writes), stackgap_random, kv_exec; exec_conf.c's execsw[] (scripts, then ELF; M14) is here. exec_image(p, path, argp, envp, image) is the same body for the init boot module while there is no root file system (no vnode checks). Reported: prof_exec and stopprofclock (subr_prof.c), cancel_all_itimers (kern_time.c), cdevvp(getnulldev()) for a set[ug]id exec with stdin/stdout/stderr closed (<sys/conf.h>); KTRACE not configured; TooLs GmbH 4-clause licence accepted at M2; kern_time.c: cancel_all_itimers is real for a PS_SUGIDEXEC exec; kern_unveil.c: without execpromises sys_execve calls unveil_destroy and clears ps_uvdone; kern_event.c: knote(&ps_klist, NOTE_EXEC) is real; ; M11e: check_exec's KERNEL_LOCK/KERNEL_UNLOCK around vfs_getcwd_common are real calls; N4.8a: the timekeep object is kernel::tc::timekeep_object's (made, wired and published by the kernel)"
-
-[[module]]
-rust = "sys/kern/kern_exit.rs"
-lz = ["sys/kern/kern_exit.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs", "sys/hal/sys/siginfo.rs", "sys/kernel/sig.rs", "sys/kernel/sigio.rs", "sys/kernel/clock.rs"]
-notes = "M6-b: sys_exit, exit1 (single_thread_set, process_suspend_signal, stopprofclock, fdfree, SAS_NOCLDWAIT, lim_free, process_untrace reported), exit2 with deadproc, proc_free (crfree reported), reaper (prsignal reported), process_clear_orphan, process_reparent, process_zap (vrele, sigactsfree/lim_free/crfree reported); process 0 adopts orphans while initprocess is null; sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait, process_untrace are M6-c/M7; M6-b2: exit1 calls uvm_purge for user processes and the reaper uvm_exit; under feature qemu init's exit (pid 1) logs 'init exited with status N' and ends the run with that status instead of the C's panic; M7a-3b: lim_free of p_limit and of ps_limit in process_zap; kern_descrip.c: exit1 calls fdfree; kern_sig.c: single_thread_set(SINGLE_EXIT), process_suspend_signal, sigio_freelist, SAS_NOCLDWAIT, the SIGKILL to a traced child (process_untrace still reported), the reaper's prsignal(SIGCHLD), sigactsfree in process_zap; M8: exit1 calls killjobc and process_zap leavepgrp (kern_proc.c); M8: exit1 frees ps_pin/ps_libcpin (pin_free), process_zap vreles ps_textvp; M8: sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait (ruadd, scheduler_wait_hook, off zombprocess, freepid, process_zap), process_untrace (exit1 calls it for a traced child); acct_process in exit1 (ACCOUNTING); ps_opptr always null (no ptrace); kern_unveil.c: exit1 calls unveil_destroy; kern_event.c: kqpoll_exit in exit1 and knote_processexit in the reaper are real; M11e: exit1 releases every hold of the kernel lock (__mp_release_all) around uvm_purge and takes it back after; the reaper starts with KERNEL_UNLOCK and takes the lock only around the zombie's notification, as the C"
-
-[[module]]
-rust = "sys/kern/kern_fork.rs"
-lz = ["sys/kern/kern_fork.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/sigio.rs", "sys/kernel/clock.rs"]
-notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK(); N4.5a: own logic beside the call sites (kept adapted: lz check refuses redesigned for a module whose mod line is not forbid, and kern_fork keeps OLDPIDS's unsafe): the thread functions' table (STARTS, thread_start_word: the number a new thread's frame carries, no code address into hal) and thread_start, the start hal::thread calls (kernel::sched::trampoline_mi, then the function); p_sleep_to set once the tid is known (kernel::sched::sleep_timeout_init); proc_trampoline_mi moved into kernel::sched"
 
 [[module]]
 rust = "sys/kern/kern_intrmap.rs"
@@ -5469,8 +5451,7 @@ status = "redesigned"
 [[module]]
 rust = "sys/kern/kern_resource.rs"
 lz = ["sys/kern/kern_resource.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/clock.rs"]
+status = "redesigned"
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -5635,7 +5616,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/clockintr.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/clockintr.rs"]
 notes = "N4.8a: kern.clockintr served (kernel::clockintr::sysctl_clockintr), LZ's unported! closed"
 
 [[module]]
@@ -5739,7 +5720,7 @@ notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the 
 rust = "sys/kern/subr_prf.rs"
 lz = ["sys/kern/subr_prf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/log.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs"]
 notes = "format engine is core::fmt (fmt::Arguments replaces fmt+va_list, so printf/vprintf and snprintf/vsnprintf pair up); %b is the Bitmask Display adaptor, %s of a byte string is Str; kprintf!/kprintln!/log!/db_printf! macros; M8 (tty.c): kputchar takes the tty (TOTTY through tputchar, constty redirection with TOCONS), uprintf, ttyprintf; M10e: tprintf_open/tprintf_close/tprintf under feature nfsclient or nfsserver (tpr_t is sys/sys/tprintf.rs's Tpr, an Option<&'static Session>; tprintf takes fmt::Arguments; host test: handles follow PS_CONTROLT and s_ttyvp, the session is held until tprintf_close, the message is logged at LOG_INFO); v_putc fixed to cnputc; panicbuf is a single buffer (per-CPU ci_panicbuf in M5) and panicstr_claim is the trap handlers' atomic_cas_ptr on panicstr; db_panic defaults to 0 (ddb-lite has no command loop); KASSERT/KDASSERT live here as kassert!/kdassert!; M11e: kprintf_mutex (IPL_HIGH) around printf, vprintf and the TOCONS half of log/addlog, MUTEX_ASSERT_LOCKED for TOCONS in kprintf, splhigh around the TOLOG half of log/addlog"
 
 [[module]]
@@ -5910,24 +5891,26 @@ license = "none"
 [[module]]
 rust = "sys/kern/tty.rs"
 lz = ["sys/kern/tty.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/hal/klock.rs", "sys/kernel/log.rs"]
+status = "redesigned"
+notes = "N4.7b: the glue of kernel::tty (0 unsafe, forbid): the frozen names for BsdProcGlue, ttymalloc leaking the counted handle (&'static Tty), ttyfree retiring, ttkqfilter through cdevsw d_tty, sysctl_tty over a SysctlReq, TtyUio (uiomove for the kernel's tty), the TtyDevsw bridge's bsd half (d_stop, cnwrite, /dev/console access, s_ttyvp, cn_dev); LZ's eleven unsafe went into the kernel's types"
 
 [[module]]
 rust = "sys/kern/tty_conf.rs"
 lz = ["sys/kern/tty_conf.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.7b: struct linesw is kernel::tty::LineDiscipline; LINESW stays a table of fn's for the drivers, every row forwarding to the tty's discipline (linesw(tp)), until N7"
 
 [[module]]
 rust = "sys/kern/tty_pty.rs"
 lz = ["sys/kern/tty_pty.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+status = "redesigned"
+notes = "N4.7b: the glue of kernel::pty (0 unsafe, forbid): the cdevsw entry names of pts/ptc, ptyioctl's master test over cdevsw, ptmattach's scan, PTMGET's file and vnode work with ptm_vn_open taking the thread (no detached &Proc); LZ's eight unsafe went with the softc array"
 
 [[module]]
 rust = "sys/kern/tty_subr.rs"
 lz = ["sys/kern/tty_subr.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.7b: an adapter of kernel::clist (0 unsafe, forbid): the free functions the drivers call, one method call each; LZ's four unsafe went with the raw ring"
 
 [[module]]
 rust = "sys/kern/tty_tty.rs"
@@ -7511,11 +7494,6 @@ lz = "sys/sys/_time.rs::Itimerspec::new"
 native = ["sys/kernel/time.rs::Itimerspec::new"]
 kind = "moved"
 [[module]]
-rust = "sys/sys/acct.rs"
-lz = ["sys/sys/acct.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/sys/ataio.rs"
 lz = ["sys/sys/ataio.rs"]
 status = "inherited"
@@ -7689,7 +7667,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/ioctl.rs"
 lz = ["sys/sys/ioctl.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/termios.rs"]
 
 [[module]]
 rust = "sys/hal/sys/kernel.rs"
@@ -8007,7 +7986,8 @@ notes = "N4.1: carries kern_task.rs's legacy API (task_add, task_del, taskq_crea
 [[module]]
 rust = "sys/sys/termios.rs"
 lz = ["sys/sys/termios.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.7b: an adapter of kernel::termios (0 unsafe, forbid): every item re-exported; LZ's unsafe impl AbiPod went with the type"
 
 [[module]]
 rust = "sys/sys/time.rs"
@@ -8042,18 +8022,20 @@ status = "redesigned"
 [[module]]
 rust = "sys/sys/tty.rs"
 lz = ["sys/sys/tty.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+status = "redesigned"
+notes = "N4.7b: an adapter of kernel::tty and kernel::clist (0 unsafe, forbid): Tty = kernel::tty::Tty<BsdProcGlue>, Clist, the constants, Itty/Ptmget, CTL_KERN_TTY_NAMES (bsd's sysctl table), ttyhog/isctty/isbackground over the kernel's; LZ's six unsafe went with the types"
 
 [[module]]
 rust = "sys/sys/ttycom.rs"
 lz = ["sys/sys/ttycom.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.7b: an adapter of kernel::termios (0 unsafe, forbid): every item re-exported; LZ's two unsafe impl AbiPod went with the types"
 
 [[module]]
 rust = "sys/sys/ttydefaults.rs"
 lz = ["sys/sys/ttydefaults.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.7b: an adapter of kernel::termios (0 unsafe, forbid): every item re-exported"
 
 [[module]]
 rust = "sys/hal/sys/types.rs"
@@ -8720,6 +8702,11 @@ crate = "hal"
 reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
 
 [[extra]]
+rust = "sys/hal/slot.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl)"
+
+[[extra]]
 rust = "sys/hal/seqlock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'static str one writer replaces and any CPU reads without a lock behind a generation counter (p_wmesg: written under sched_lock, read unlocked by kinfo_proc, ddb, the tty status line); 1 unsafe (the str rebuilt from the two words of one set)"
@@ -8951,6 +8938,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
 reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+
 [[extra]]
 rust = "sys/hal/reftest.rs"
 crate = "hal"
@@ -9046,6 +9034,144 @@ lz = "sys/sys/proc.rs::PInentry"
 native = ["sys/kernel/vm/map.rs::InentryCache"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/sys/proc.rs::Pinsyscall"
+native = ["PinTable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/proc.rs::Pinsyscall::new"
+native = []
+kind = "dropped"
+reason = "PinTable::NONE, the constant of no table (the words of LZ's struct became an owned MArray in a ReadMostly cell)"
+
+[[module]]
+rust = "sys/kernel/fork.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_fork.rs"]
+status = "redesigned"
+notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::pin_copy"
+native = ["sys/kernel/proc.rs::PinTable::duplicate"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::curthread"
+native = []
+kind = "dropped"
+reason = "fork1 and thread_fork take the caller's pinned thread (Pin<&Thread>); bsd's rows pass curproc's placed self"
+
+[[module]]
+rust = "sys/kernel/exit.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_exit.rs"]
+status = "redesigned"
+notes = "N4.6a: exit1, exit(2), __threxit(2), the reaper (Dead::Thread/Dead::Main), dowait6/wait4(2)/waitid(2), proc_finish_wait, process_untrace/process_clear_orphan/process_reparent/process_zap/proc_free; the main thread's box stays its process's until process_zap; stopprofclock reported"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::pin_free"
+native = []
+kind = "dropped"
+reason = "the pin tables are owned MArrays in ReadMostly cells (kernel::proc::PinTable): exit1 and exec replace them with PinTable::NONE and the old table goes with its owner (free(M_PINSYSCALL))"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::initprocess_or_process0"
+native = ["sys/kernel/proc.rs::ProcTables::initprocess_or_process0"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/acct.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_acct.rs", "sys/sys/acct.rs"]
+status = "redesigned"
+notes = "N4.6a: acct(2), acct_process, encode_comp_t, acct_start/acct_thread/acct_shutdown, struct acct (abi_pod!) and the A* flags; acctp/savacctp owned by Rwlocked acctlk as Box<dyn AcctSink> from the AcctFile bridge (N5); ac_tty from the session (decision 15)"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::AcctVnodes"
+native = ["AcctState"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::ACCT_LOCK"
+native = ["ACCT"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::ACCT_PROC"
+native = ["ACCT_RUNNING"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::acct_vnodes"
+native = []
+kind = "dropped"
+reason = "acctp/savacctp are owned by the Rwlocked acct_lock (ACCT): its read and write guards replace the unsafe accessor"
+
+[[module]]
+rust = "sys/kernel/prot.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_prot.rs"]
+status = "redesigned"
+notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's"
+
+[[module]]
+rust = "sys/kernel/pty.rs"
+crate = "kernel"
+lz = ["sys/kern/tty_pty.rs"]
+status = "redesigned"
+notes = "N4.7b: tty_pty.c's kernel half: pt_softc[] a table of NPTY_MAX OnceStatic slots in ProcTables::pty (npty still grows by powers of two for pty_getfree, the array's reallocation gone), each softc an MBox of M_DEVBUF leaked for the kernel's life with a counted TtyRef and atomic flag words; t_oproc = ptsstart is PtsDriver (TtyDriver); the master's three filterops Filter impls, the hook the minor; ptyioctl told its side by bsd's device switch; PTMGET's file and vnode work, ptm_vn_open and ptmattach's cdevsw scan stay bsd's (sys/kern/tty_pty.rs, N5/N7)"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PtArray"
+native = ["PtyTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PT"
+native = ["PtyTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PTS_MAJOR"
+native = ["PtyTables", "set_pts_major", "pts_major"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PT_SOFTC_LOCK"
+native = ["PtyTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PTCREAD_FILTOPS"
+native = ["PtcRead"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PTCWRITE_FILTOPS"
+native = ["PtcWrite"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::PTCEXCEPT_FILTOPS"
+native = ["PtcExcept"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::ptyarralloc"
+native = []
+kind = "dropped"
+reason = "the slots are a fixed table of OnceStatic in PtyTables (NPTY_MAX); npty still grows by powers of two, without an allocation"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::filt_ptcread"
+native = ["PtcRead::event"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::filt_ptcwdetach"
+native = ["PtcWrite::detach"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::filt_ptcwrite"
+native = ["PtcWrite::event"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_pty.rs::filt_ptcexcept"
+native = ["PtcExcept::event"]
+kind = "renamed"
+
 [[module]]
 rust = "sys/kernel/resource.rs"
 crate = "kernel"
@@ -9079,6 +9205,12 @@ lz = "sys/sys/resourcevar.rs::Plimit::default"
 native = []
 kind = "dropped"
 reason = "a plimit is made only by its const new (limit0) or as a copy (lim_write_begin); nothing made a default one"
+
+[[module.fn]]
+lz = "sys/kern/kern_resource.rs::curproc_ref"
+native = []
+kind = "dropped"
+reason = "the kernel's functions take the thread (the C's curproc, which every caller has); bsd's lim_read_enter reads curproc itself"
 
 [[module]]
 rust = "sys/kernel/select.rs"
@@ -9356,6 +9488,11 @@ rust = "sys/kernel/benches/timeout.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del, timeout_set, hardclock_update idle and with 1,000 timeouts, softclock; task(9) and extent(9) with their commits) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
+[[extra]]
+rust = "sys/kernel/benches/tty.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of N4.7b's hot paths (the clists' putc/getc and b_to_q/q_to_b; the tty's per-character input raw and canonical with echo, a 512-byte write with ONLCR, the tty's lock) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
 [[module]]
 rust = "sys/kernel/tc.rs"
 crate = "kernel"
@@ -9532,11 +9669,6 @@ crate = "kernel"
 lz = ["sys/kern/kern_xxx.rs"]
 status = "redesigned"
 notes = "N4.8a: rebooting and reboot(): stop_periodic_resettodr, rebooting set, the machine's boot(9) through the MachineBoot bridge (bsd's machdep until N7); sys_reboot, the power button's path and the SYSCALL_DEBUG printers stay bsd's kern_xxx.rs (they reach the process and the syscall table)"
-
-[[extra]]
-rust = "sys/kernel/sysctl.rs"
-crate = "kernel"
-reason = "N4.8a (the N4.7 amendment: the first lander defines it, N4.6's sysctl core inherits it): the SysctlNode trait a *_sysctl function becomes, SysctlReq (vm::meter's, re-exported), and kern_sysctl.c's rdint, int_bounded, rdstruct, string and rdstring re-expressed over hal::user's copy with the C's checks and errnos; kern_sysctl.c's port is still bsd's kern_sysctl.rs, with the dispatch"
 
 [[module]]
 rust = "sys/kernel/task.rs"
@@ -10434,6 +10566,154 @@ kind = "merged"
 lz = "sys/sys/msgbuf.rs::Msgbuf::clear"
 native = ["Msgbuf::new"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/clist.rs"
+crate = "kernel"
+lz = ["sys/kern/tty_subr.rs", "sys/sys/tty.rs"]
+status = "redesigned"
+notes = "N4.7b: the clists: struct clist owns its ring (counts, cursors, the ring and quote MArrays of M_TTYS) inside a Mutexed at IPL_TTY, the C's per-operation spltty made a lock; c_cc and c_cn mirrored in relaxed words for the unlocked readers; tty_subr.c's functions as Clist methods (bsd keeps the free names until N4.7b's switch-over); catq and swap lock both rings in address order; peek_with for the drivers' raw head-of-queue reads; all-zero valid (uhid, ugen)"
+[[module.fn]]
+lz = "sys/sys/tty.rs::Clist::copy_header"
+native = []
+kind = "dropped"
+reason = "ttypend requeues the raw queue in place (kernel::tty), no second header over a live ring"
+[[module.fn]]
+lz = "sys/kern/tty_subr.rs::ring"
+native = ["Ring::cs"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_subr.rs::quote"
+native = ["Ring::qisset", "Ring::qput", "Ring::qclear"]
+kind = "split"
+[[module.fn]]
+lz = "sys/kern/tty_subr.rs::qisset"
+native = ["Ring::qisset"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/tty_subr.rs::qsetbit"
+native = ["Ring::qput"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty_subr.rs::qclrbit"
+native = ["Ring::qput"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/tty.rs"
+crate = "kernel"
+lz = ["sys/kern/tty.rs", "sys/sys/tty.rs", "sys/kern/tty_conf.rs"]
+status = "redesigned"
+notes = "N4.7b: struct tty an item of the recorded pool ttypl (TtyRef = PoolArc), its multi-word state (c_cc, winsize, column, rocount, rocol, the counted foreground group and session, the driver) a TtyState inside a Mutexed at IPL_TTY, the words the drivers RMW unlocked (t_state, the termios flag words, speeds, t_dev, water marks, t_gen) atomics; every C section a Sect (spltty for its life, the state lock let go around every call out of the module); struct linesw the LineDiscipline trait (TermiosDisc, Defunct, Discipline::TABLE), t_oproc/t_param/t_hwiflow the TtyDriver trait plus a function table for the inherited drivers; the three filterops Filter impls with the tty held by the knote's counted hook; kern.tty a SysctlNode; ttypend requeues in place; ttyfree retires (the item stays for the drivers' &'static, until N7); constty, the console dev, tty_count and ttylist in TtyTables; d_stop, cnwrite, the console access check and s_ttyvp through the TtyDevsw bridge"
+[[module.fn]]
+lz = "sys/kern/tty.rs::parity"
+native = []
+kind = "dropped"
+reason = "the C defines PARITY next to char_type[] and nothing uses it (LZ kept it dead); CHAR_TYPE keeps the parity bit"
+[[module.fn]]
+lz = "sys/kern/tty.rs::TTYLIST"
+native = ["TtyTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty.rs::TTY_COUNT"
+native = ["TtyTables", "tty_count"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty.rs::TTYLIST_LOCK"
+native = ["TtyTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/tty.rs::TTYREAD_FILTOPS"
+native = ["TtyRead"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::TTYWRITE_FILTOPS"
+native = ["TtyWrite"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::TTYEXCEPT_FILTOPS"
+native = ["TtyExcept"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::cceq"
+native = ["cceq_c"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::d_stop"
+native = ["Sect::d_stop"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::filt_ttyread"
+native = ["TtyRead::event"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::filt_ttywdetach"
+native = ["TtyWrite::detach"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::filt_ttywrite"
+native = ["TtyWrite::event"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::filt_ttyexcept"
+native = ["TtyExcept::event"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::ttyblock"
+native = ["ttyblock_s"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::hangup_leader"
+native = ["hangup_leader_s"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::ttyrubo"
+native = ["ttyrubo_s"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty.rs::ttyecho"
+native = ["ttyecho_s"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_conf.rs::ttynodisc"
+native = ["Defunct::open"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_conf.rs::ttyerrclose"
+native = ["Defunct::close"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_conf.rs::ttyerrio"
+native = ["Defunct::read", "Defunct::write"]
+kind = "split"
+[[module.fn]]
+lz = "sys/kern/tty_conf.rs::ttyerrinput"
+native = ["Defunct::rint"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_conf.rs::ttyerrstart"
+native = ["Defunct::start"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/tty_conf.rs::DEFUNCT"
+native = ["Defunct"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/tty.rs::Tty::termios_update"
+native = []
+kind = "dropped"
+reason = "struct termios is no longer one Cell: its flag words and speeds are atomics and c_cc lives in the tty's locked state, each setter updating its own"
+[[module.fn]]
+lz = "sys/sys/tty.rs::TtylistHead"
+native = ["TtyTables"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/sysctl.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_sysctl.rs"]
+status = "redesigned"
+notes = "N4.7b and N4.8a (before N4.6b's sysctl core, which inherits the file; merged on n4/clock): the SysctlNode trait (decision 46: a *_sysctl the C dispatches by hand; nodes kernel::tty's, kernel::tc::TcNode, kernel::clockintr::ClockintrNode), SysctlReq (moved from kernel::vm::meter, re-exported there), sysctl_rdint, sysctl_int_bounded, sysctl_rdquad, sysctl_rdstruct, sysctl_string and sysctl_rdstring as rdint/int_bounded/rdquad/rdstruct/string/rdstring over hal::user::UserPtr with the C's checks and errnos; the dispatch and the other helpers stay bsd's kern_sysctl.rs"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

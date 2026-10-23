@@ -35,7 +35,9 @@
 //! calls' seven (`KernelApi::event`, `sys/kernel/event.rs` and `select.rs`: `kqueue(2)`,
 //! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). N4.7a:
 //! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/log.rs`). N4.6c: futex(2)
-//! (`KernelApi::futex`, `sys/kernel/futex.rs`).
+//! (`KernelApi::futex`, `sys/kernel/futex.rs`). N4.6a: the process system calls'
+//! forty-six (`KernelApi::proc`, `sys/kernel/fork.rs`, `exit.rs`, `resource.rs`, `prot.rs`,
+//! `acct.rs`).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -45,13 +47,20 @@ use hal::api::KernelApi;
 use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
-    SYS_MAXSYSCALL, SYS_break, SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl,
-    SYS_flock, SYS_fpathconf, SYS_fstat, SYS_futex, SYS_getdtablecount, SYS_ioctl, SYS_kbind,
+    SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_MAXSYSCALL, SYS_acct, SYS_break,
+    SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_exit, SYS_fcntl, SYS_flock,
+    SYS_fork, SYS_fpathconf, SYS_fstat, SYS_futex, SYS_getdtablecount, SYS_getegid, SYS_geteuid,
+    SYS_getgid, SYS_getgroups, SYS_getlogin_r, SYS_getpgid, SYS_getpgrp, SYS_getpid, SYS_getppid,
+    SYS_getpriority, SYS_getresgid, SYS_getresuid, SYS_getrlimit, SYS_getrtable, SYS_getrusage,
+    SYS_getsid, SYS_getthrid, SYS_getthrname, SYS_getuid, SYS_ioctl, SYS_issetugid, SYS_kbind,
     SYS_kevent, SYS_kqueue, SYS_kqueue1, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock,
     SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall,
     SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2, SYS_poll, SYS_ppoll, SYS_pread, SYS_preadv,
     SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_sendsyslog,
-    SYS_utrace, SYS_write, SYS_writev,
+    SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
+    SYS_setpriority, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_setrlimit,
+    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_utrace, SYS_vfork, SYS_wait4,
+    SYS_waitid, SYS_write, SYS_writev,
 };
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
@@ -67,7 +76,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 46;
+pub const NATIVE: u32 = 92;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -124,6 +133,52 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_kqueue1 as usize] = Sysent::Native(sys_kqueue1);
     table[SYS_sendsyslog as usize] = Sysent::Native(sys_sendsyslog);
     table[SYS_futex as usize] = Sysent::Native(sys_futex);
+    table[SYS_fork as usize] = Sysent::Native(sys_fork);
+    table[SYS_vfork as usize] = Sysent::Native(sys_vfork);
+    table[SYS___tfork as usize] = Sysent::Native(sys_tfork);
+    table[SYS_exit as usize] = Sysent::Native(sys_exit);
+    table[SYS___threxit as usize] = Sysent::Native(sys_threxit);
+    table[SYS_wait4 as usize] = Sysent::Native(sys_wait4);
+    table[SYS_waitid as usize] = Sysent::Native(sys_waitid);
+    table[SYS_getrusage as usize] = Sysent::Native(sys_getrusage);
+    table[SYS_getrlimit as usize] = Sysent::Native(sys_getrlimit);
+    table[SYS_setrlimit as usize] = Sysent::Native(sys_setrlimit);
+    table[SYS_getpriority as usize] = Sysent::Native(sys_getpriority);
+    table[SYS_setpriority as usize] = Sysent::Native(sys_setpriority);
+    table[SYS_acct as usize] = Sysent::Native(sys_acct);
+    table[SYS_getpid as usize] = Sysent::Native(sys_getpid);
+    table[SYS_getppid as usize] = Sysent::Native(sys_getppid);
+    table[SYS_getuid as usize] = Sysent::Native(sys_getuid);
+    table[SYS_geteuid as usize] = Sysent::Native(sys_geteuid);
+    table[SYS_getgid as usize] = Sysent::Native(sys_getgid);
+    table[SYS_getegid as usize] = Sysent::Native(sys_getegid);
+    table[SYS_getgroups as usize] = Sysent::Native(sys_getgroups);
+    table[SYS_setgroups as usize] = Sysent::Native(sys_setgroups);
+    table[SYS_getpgrp as usize] = Sysent::Native(sys_getpgrp);
+    table[SYS_getpgid as usize] = Sysent::Native(sys_getpgid);
+    table[SYS_getsid as usize] = Sysent::Native(sys_getsid);
+    table[SYS_setpgid as usize] = Sysent::Native(sys_setpgid);
+    table[SYS_setsid as usize] = Sysent::Native(sys_setsid);
+    table[SYS_setuid as usize] = Sysent::Native(sys_setuid);
+    table[SYS_seteuid as usize] = Sysent::Native(sys_seteuid);
+    table[SYS_setgid as usize] = Sysent::Native(sys_setgid);
+    table[SYS_setegid as usize] = Sysent::Native(sys_setegid);
+    table[SYS_setreuid as usize] = Sysent::Native(sys_setreuid);
+    table[SYS_setregid as usize] = Sysent::Native(sys_setregid);
+    table[SYS_setresuid as usize] = Sysent::Native(sys_setresuid);
+    table[SYS_setresgid as usize] = Sysent::Native(sys_setresgid);
+    table[SYS_getresuid as usize] = Sysent::Native(sys_getresuid);
+    table[SYS_getresgid as usize] = Sysent::Native(sys_getresgid);
+    table[SYS_issetugid as usize] = Sysent::Native(sys_issetugid);
+    table[SYS_getlogin_r as usize] = Sysent::Native(sys_getlogin_r);
+    table[SYS_setlogin as usize] = Sysent::Native(sys_setlogin);
+    table[SYS___set_tcb as usize] = Sysent::Native(sys_set_tcb);
+    table[SYS___get_tcb as usize] = Sysent::Native(sys_get_tcb);
+    table[SYS_getthrid as usize] = Sysent::Native(sys_getthrid);
+    table[SYS_getthrname as usize] = Sysent::Native(sys_getthrname);
+    table[SYS_setthrname as usize] = Sysent::Native(sys_setthrname);
+    table[SYS_getrtable as usize] = Sysent::Native(sys_getrtable);
+    table[SYS_setrtable as usize] = Sysent::Native(sys_setrtable);
     table
 };
 
@@ -593,6 +648,345 @@ fn entry(table: &[Sysent], nr: Register) -> Option<&Sysent> {
         Err(_) => None,
     }
 }
+/// `fork(void)`.
+fn sys_fork(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.fork)(SYS_fork as Register, rval)
+}
+
+/// `vfork(void)`.
+fn sys_vfork(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.vfork)(SYS_vfork as Register, rval)
+}
+
+/// `__tfork(const struct __tfork *param, size_t psize)`.
+fn sys_tfork(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.tfork)(
+        SYS___tfork as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `exit(int rval)`.
+fn sys_exit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.exit)(SYS_exit as Register, args[0] as i32, rval)
+}
+
+/// `__threxit(pid_t *notdead)`.
+fn sys_threxit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.threxit)(SYS___threxit as Register, args[0] as usize, rval)
+}
+
+/// `wait4(pid_t pid, int *status, int options, struct rusage *rusage)`.
+fn sys_wait4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.wait4)(
+        SYS_wait4 as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as usize,
+        rval,
+    )
+}
+
+/// `waitid(int idtype, id_t id, siginfo_t *info, int options)`.
+fn sys_waitid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.waitid)(
+        SYS_waitid as Register,
+        args[0] as i32,
+        args[1] as u32,
+        args[2] as usize,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// `getrusage(int who, struct rusage *rusage)`.
+fn sys_getrusage(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getrusage)(
+        SYS_getrusage as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `getrlimit(int which, struct rlimit *rlp)`.
+fn sys_getrlimit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getrlimit)(
+        SYS_getrlimit as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `setrlimit(int which, const struct rlimit *rlp)`.
+fn sys_setrlimit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setrlimit)(
+        SYS_setrlimit as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `getpriority(int which, id_t who)`.
+fn sys_getpriority(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getpriority)(
+        SYS_getpriority as Register,
+        args[0] as i32,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// `setpriority(int which, id_t who, int prio)`.
+fn sys_setpriority(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setpriority)(
+        SYS_setpriority as Register,
+        args[0] as i32,
+        args[1] as u32,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// `acct(const char *path)`.
+fn sys_acct(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.acct)(SYS_acct as Register, args[0] as usize, rval)
+}
+
+/// `getpid(void)`.
+fn sys_getpid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getpid)(SYS_getpid as Register, rval)
+}
+
+/// `getppid(void)`.
+fn sys_getppid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getppid)(SYS_getppid as Register, rval)
+}
+
+/// `getuid(void)`.
+fn sys_getuid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getuid)(SYS_getuid as Register, rval)
+}
+
+/// `geteuid(void)`.
+fn sys_geteuid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.geteuid)(SYS_geteuid as Register, rval)
+}
+
+/// `getgid(void)`.
+fn sys_getgid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getgid)(SYS_getgid as Register, rval)
+}
+
+/// `getegid(void)`.
+fn sys_getegid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getegid)(SYS_getegid as Register, rval)
+}
+
+/// `getgroups(int gidsetsize, gid_t *gidset)`.
+fn sys_getgroups(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getgroups)(
+        SYS_getgroups as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `setgroups(int gidsetsize, const gid_t *gidset)`.
+fn sys_setgroups(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setgroups)(
+        SYS_setgroups as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `getpgrp(void)`.
+fn sys_getpgrp(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getpgrp)(SYS_getpgrp as Register, rval)
+}
+
+/// `getpgid(pid_t pid)`.
+fn sys_getpgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getpgid)(SYS_getpgid as Register, args[0] as i32, rval)
+}
+
+/// `getsid(pid_t pid)`.
+fn sys_getsid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getsid)(SYS_getsid as Register, args[0] as i32, rval)
+}
+
+/// `setpgid(pid_t pid, pid_t pgid)`.
+fn sys_setpgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setpgid)(
+        SYS_setpgid as Register,
+        args[0] as i32,
+        args[1] as i32,
+        rval,
+    )
+}
+
+/// `setsid(void)`.
+fn sys_setsid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setsid)(SYS_setsid as Register, rval)
+}
+
+/// `setuid(uid_t uid)`.
+fn sys_setuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setuid)(SYS_setuid as Register, args[0] as u32, rval)
+}
+
+/// `seteuid(uid_t euid)`.
+fn sys_seteuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.seteuid)(SYS_seteuid as Register, args[0] as u32, rval)
+}
+
+/// `setgid(gid_t gid)`.
+fn sys_setgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setgid)(SYS_setgid as Register, args[0] as u32, rval)
+}
+
+/// `setegid(gid_t egid)`.
+fn sys_setegid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setegid)(SYS_setegid as Register, args[0] as u32, rval)
+}
+
+/// `setreuid(uid_t ruid, uid_t euid)`.
+fn sys_setreuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setreuid)(
+        SYS_setreuid as Register,
+        args[0] as u32,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// `setregid(gid_t rgid, gid_t egid)`.
+fn sys_setregid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setregid)(
+        SYS_setregid as Register,
+        args[0] as u32,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// `setresuid(uid_t ruid, uid_t euid, uid_t suid)`.
+fn sys_setresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setresuid)(
+        SYS_setresuid as Register,
+        args[0] as u32,
+        args[1] as u32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// `setresgid(gid_t rgid, gid_t egid, gid_t sgid)`.
+fn sys_setresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setresgid)(
+        SYS_setresgid as Register,
+        args[0] as u32,
+        args[1] as u32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// `getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)`.
+fn sys_getresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getresuid)(
+        SYS_getresuid as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// `getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)`.
+fn sys_getresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getresgid)(
+        SYS_getresgid as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// `issetugid(void)`.
+fn sys_issetugid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.issetugid)(SYS_issetugid as Register, rval)
+}
+
+/// `getlogin_r(char *namebuf, size_t namelen)`.
+fn sys_getlogin_r(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getlogin_r)(
+        SYS_getlogin_r as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `setlogin(const char *namebuf)`.
+fn sys_setlogin(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setlogin)(SYS_setlogin as Register, args[0] as usize, rval)
+}
+
+/// `__set_tcb(void *tcb)`.
+fn sys_set_tcb(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.set_tcb)(SYS___set_tcb as Register, args[0] as usize, rval)
+}
+
+/// `__get_tcb(void)`.
+fn sys_get_tcb(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.get_tcb)(SYS___get_tcb as Register, rval)
+}
+
+/// `getthrid(void)`.
+fn sys_getthrid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getthrid)(SYS_getthrid as Register, rval)
+}
+
+/// `getthrname(pid_t tid, char *name, size_t len)`.
+fn sys_getthrname(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getthrname)(
+        SYS_getthrname as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// `setthrname(pid_t tid, const char *name)`.
+fn sys_setthrname(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setthrname)(
+        SYS_setthrname as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// `getrtable(void)`.
+fn sys_getrtable(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.getrtable)(SYS_getrtable as Register, rval)
+}
+
+/// `setrtable(int rtableid)`.
+fn sys_setrtable(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.proc.setrtable)(SYS_setrtable as Register, args[0] as i32, rval)
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -816,6 +1210,368 @@ mod tests {
         kqueue1: fd1,
     };
 
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_fork(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_vfork(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_tfork(nr: Register, param: usize, psize: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((param as i64) * 10 + (psize as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_exit(nr: Register, status: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((status as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_threxit(nr: Register, notdead: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((notdead as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_wait4(
+        nr: Register,
+        pid: i32,
+        status: usize,
+        options: i32,
+        rusage: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 1000
+            + (status as i64) * 100
+            + (options as i64) * 10
+            + (rusage as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_waitid(
+        nr: Register,
+        idtype: i32,
+        id: u32,
+        info: usize,
+        options: i32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(
+            ((idtype as i64) * 1000 + (id as i64) * 100 + (info as i64) * 10 + (options as i64) * 1)
+                as i32,
+        )
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getrusage(nr: Register, who: i32, rusage: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((who as i64) * 10 + (rusage as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getrlimit(nr: Register, which: i32, rlp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 10 + (rlp as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setrlimit(nr: Register, which: i32, rlp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 10 + (rlp as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpriority(nr: Register, which: i32, who: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 10 + (who as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setpriority(nr: Register, which: i32, who: u32, prio: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((which as i64) * 100 + (who as i64) * 10 + (prio as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_acct(nr: Register, path: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((path as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getppid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getuid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_geteuid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getgid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getegid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getgroups(nr: Register, gidsetsize: i32, gidset: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((gidsetsize as i64) * 10 + (gidset as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setgroups(nr: Register, gidsetsize: i32, gidset: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((gidsetsize as i64) * 10 + (gidset as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpgrp(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getpgid(nr: Register, pid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getsid(nr: Register, pid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setpgid(nr: Register, pid: i32, pgid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((pid as i64) * 10 + (pgid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setsid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setuid(nr: Register, uid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((uid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_seteuid(nr: Register, euid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((euid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setgid(nr: Register, gid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((gid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setegid(nr: Register, egid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((egid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setreuid(nr: Register, ruid: u32, euid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((ruid as i64) * 10 + (euid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setregid(nr: Register, rgid: u32, egid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rgid as i64) * 10 + (egid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setresuid(nr: Register, ruid: u32, euid: u32, suid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((ruid as i64) * 100 + (euid as i64) * 10 + (suid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setresgid(nr: Register, rgid: u32, egid: u32, sgid: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rgid as i64) * 100 + (egid as i64) * 10 + (sgid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getresuid(
+        nr: Register,
+        ruid: usize,
+        euid: usize,
+        suid: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(((ruid as i64) * 100 + (euid as i64) * 10 + (suid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getresgid(
+        nr: Register,
+        rgid: usize,
+        egid: usize,
+        sgid: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(((rgid as i64) * 100 + (egid as i64) * 10 + (sgid as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_issetugid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getlogin_r(nr: Register, namebuf: usize, namelen: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((namebuf as i64) * 10 + (namelen as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setlogin(nr: Register, namebuf: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((namebuf as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_set_tcb(nr: Register, tcb: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((tcb as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_get_tcb(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getthrid(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getthrname(nr: Register, tid: i32, name: usize, len: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((tid as i64) * 100 + (name as i64) * 10 + (len as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setthrname(nr: Register, tid: i32, name: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((tid as i64) * 10 + (name as i64) * 1) as i32)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_getrtable(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(0)
+    }
+    #[allow(clippy::identity_op, clippy::erasing_op)]
+    fn p_setrtable(nr: Register, rtableid: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(((rtableid as i64) * 1) as i32)
+    }
+
+    const PROC: hal::api::ProcEntries = hal::api::ProcEntries {
+        fork: p_fork,
+        vfork: p_vfork,
+        tfork: p_tfork,
+        exit: p_exit,
+        threxit: p_threxit,
+        wait4: p_wait4,
+        waitid: p_waitid,
+        getrusage: p_getrusage,
+        getrlimit: p_getrlimit,
+        setrlimit: p_setrlimit,
+        getpriority: p_getpriority,
+        setpriority: p_setpriority,
+        acct: p_acct,
+        getpid: p_getpid,
+        getppid: p_getppid,
+        getuid: p_getuid,
+        geteuid: p_geteuid,
+        getgid: p_getgid,
+        getegid: p_getegid,
+        getgroups: p_getgroups,
+        setgroups: p_setgroups,
+        getpgrp: p_getpgrp,
+        getpgid: p_getpgid,
+        getsid: p_getsid,
+        setpgid: p_setpgid,
+        setsid: p_setsid,
+        setuid: p_setuid,
+        seteuid: p_seteuid,
+        setgid: p_setgid,
+        setegid: p_setegid,
+        setreuid: p_setreuid,
+        setregid: p_setregid,
+        setresuid: p_setresuid,
+        setresgid: p_setresgid,
+        getresuid: p_getresuid,
+        getresgid: p_getresgid,
+        issetugid: p_issetugid,
+        getlogin_r: p_getlogin_r,
+        setlogin: p_setlogin,
+        set_tcb: p_set_tcb,
+        get_tcb: p_get_tcb,
+        getthrid: p_getthrid,
+        getthrname: p_getthrname,
+        setthrname: p_setthrname,
+        getrtable: p_getrtable,
+        setrtable: p_setrtable,
+    };
+
+    /// The process system calls N4.6a made `Native` (`KernelApi::proc`).
+    const PROC_CALLS: [i32; 46] = [
+        SYS_fork,
+        SYS_vfork,
+        SYS___tfork,
+        SYS_exit,
+        SYS___threxit,
+        SYS_wait4,
+        SYS_waitid,
+        SYS_getrusage,
+        SYS_getrlimit,
+        SYS_setrlimit,
+        SYS_getpriority,
+        SYS_setpriority,
+        SYS_acct,
+        SYS_getpid,
+        SYS_getppid,
+        SYS_getuid,
+        SYS_geteuid,
+        SYS_getgid,
+        SYS_getegid,
+        SYS_getgroups,
+        SYS_setgroups,
+        SYS_getpgrp,
+        SYS_getpgid,
+        SYS_getsid,
+        SYS_setpgid,
+        SYS_setsid,
+        SYS_setuid,
+        SYS_seteuid,
+        SYS_setgid,
+        SYS_setegid,
+        SYS_setreuid,
+        SYS_setregid,
+        SYS_setresuid,
+        SYS_setresgid,
+        SYS_getresuid,
+        SYS_getresgid,
+        SYS_issetugid,
+        SYS_getlogin_r,
+        SYS_setlogin,
+        SYS___set_tcb,
+        SYS___get_tcb,
+        SYS_getthrid,
+        SYS_getthrname,
+        SYS_setthrname,
+        SYS_getrtable,
+        SYS_setrtable,
+    ];
+
     fn futex(
         nr: Register,
         f: usize,
@@ -830,7 +1586,7 @@ mod tests {
     }
 
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex,
+        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -934,7 +1690,7 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_and_futex_is_legacy() {
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_and_proc_is_legacy() {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
@@ -943,6 +1699,7 @@ mod tests {
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
                 || EVENT_CALLS.iter().any(|&v| v as Register == nr)
+                || PROC_CALLS.iter().any(|&v| v as Register == nr)
             {
                 continue;
             }
@@ -1152,7 +1909,32 @@ mod tests {
             syscall(&API, SYS_futex as Register, &a, &mut rval),
             Err(12345)
         );
-        assert_eq!(NATIVE, 46);
+        assert_eq!(NATIVE, 92);
+    }
+
+    #[test]
+    fn the_proc_translations_pass_their_number_and_arguments_in_order() {
+        // Arguments 1, 2, 3, 4 in the registers: each stub answers them as digits.
+        let args: SysArgs = [1, 2, 3, 4, 0, 0];
+        for nr in PROC_CALLS {
+            let mut rval: Rval = [0; 2];
+            let r = dispatch(&SYSENT, &API, nr as Register, &args, &mut rval);
+            assert_eq!(rval[0], nr as Register, "number {nr}");
+            assert!(r.is_err(), "number {nr}");
+        }
+        let mut rval: Rval = [0; 2];
+        assert_eq!(
+            dispatch(&SYSENT, &API, SYS_wait4 as Register, &args, &mut rval),
+            Err(1234)
+        );
+        assert_eq!(
+            dispatch(&SYSENT, &API, SYS_setpriority as Register, &args, &mut rval),
+            Err(123)
+        );
+        assert_eq!(
+            dispatch(&SYSENT, &API, SYS_getpid as Register, &args, &mut rval),
+            Err(0)
+        );
     }
 }
 /* </TESTS> */

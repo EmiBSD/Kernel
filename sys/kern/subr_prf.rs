@@ -75,7 +75,9 @@
 //!   `%b` is the [`Bitmask`] `Display` adaptor; its `%s` of a NUL-terminated byte string is
 //!   [`Str`].
 //! - `v_putc` is fixed to `cnputc`; `constty` (a `TIOCCONS` redirection) takes the console
-//!   output as in C.
+//!   output as in C, except a character that would wait for that tty (held on this CPU, or
+//!   its state on another, or `SCHED_LOCK` held here: `kernel::tty::tputchar_try`), which
+//!   goes to the real console.
 //! - The `struct tty *tp` of `kprintf`/`kputchar` is an `Option<&Tty>`; `kprintf` keeps its
 //!   three arguments and [`kprintf_tp`] is the form with the tty. `tprintf_open`,
 //!   `tprintf_close` and `tprintf` (`NFSSERVER || NFSCLIENT`) are compiled with feature
@@ -437,33 +439,46 @@ pub fn addlog(args: fmt::Arguments<'_>) {
 /// dmesg/syslog).
 pub fn kputchar(c: i32, flags: i32, tp: Option<&Tty>) {
     let mut flags = flags;
-    let mut tp = tp;
 
     if panicstr() {
         set_constty(None);
     }
 
     let db_active = DB_ACTIVE.load(Ordering::Relaxed);
-    if flags & TOCONS != 0
-        && tp.is_none()
-        && let Some(cons) = constty()
-        && !db_active
-    {
-        tp = Some(cons);
-        flags |= TOTTY;
-    }
+    let cons = if flags & TOCONS != 0 && tp.is_none() && !db_active {
+        constty()
+    } else {
+        None
+    };
+    let (tp, to_constty) = match &cons {
+        Some(cons) => {
+            flags |= TOTTY;
+            (Some(&**cons), true)
+        }
+        None => (tp, false),
+    };
+    // The constty leg never waits for the tty (kernel::tty::tputchar_try): when the tty is
+    // held where this character comes from, it goes to the console instead.
+    let mut busy = false;
     if flags & TOTTY != 0
         && let Some(t) = tp
-        && tputchar(c, t) < 0
-        && flags & TOCONS != 0
-        && constty().is_some_and(|cons| ptr::eq(cons, t))
     {
-        set_constty(None);
+        let r = if to_constty {
+            kernel::tty::tputchar_try(c, t).unwrap_or_else(|| {
+                busy = true;
+                0
+            })
+        } else {
+            tputchar(c, t)
+        };
+        if r < 0 && flags & TOCONS != 0 && constty().is_some_and(|cons| ptr::eq(&*cons, t)) {
+            set_constty(None);
+        }
     }
     if flags & TOLOG != 0 && c != 0 && c != i32::from(b'\r') && c != 0o177 && msgbufmapped() {
         msgbuf_putchar(Buf::Msgbuf, c as u8);
     }
-    if flags & TOCONS != 0 && (constty().is_none() || db_active) && c != 0 {
+    if flags & TOCONS != 0 && (constty().is_none() || db_active || busy) && c != 0 {
         cnputc(c);
     }
     if flags & TODDB != 0 {
@@ -486,7 +501,8 @@ pub fn uprintf(args: fmt::Arguments<'_>) {
         return;
     };
     if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.s_ttyvp.get().is_some() {
-        kprintf_tp(args, TOTTY, sess.s_ttyp.get(), None);
+        let tp = kernel::tty::session_tty(&sess);
+        kprintf_tp(args, TOTTY, tp.as_deref(), None);
     }
 }
 
@@ -523,22 +539,22 @@ pub fn tprintf_close(sess: Tpr) {
 /// message to the controlling tty for that process; also sends the message to /dev/klog.
 #[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
 pub fn tprintf(tpr: &Tpr, args: fmt::Arguments<'_>) {
-    let mut tp: Option<&Tty> = None;
+    let mut tp = None;
     let mut flags = TOLOG;
 
     logpri(LOG_INFO);
     if let Some(sess) = tpr
         && sess.s_ttyvp.get().is_some()
     {
-        let t = sess.s_ttyp.get();
+        let t = kernel::tty::session_tty(sess);
         if let Some(t) = t
-            && ttycheckoutq(t, false)
+            && ttycheckoutq(&t, false)
         {
             flags |= TOTTY;
             tp = Some(t);
         }
     }
-    kprintf_tp(args, flags, tp, None);
+    kprintf_tp(args, flags, tp.as_deref(), None);
     logwakeup();
 }
 
@@ -877,7 +893,7 @@ mod tests {
         procinit();
         let pr = test_process(1);
         let p = test_thread(pr);
-        pr.ps_mainproc.set(p);
+        pr.set_main_static(hal::pin::pin_static(p));
         let (_pg, sess) = test_setsid(pr);
         let base = count(&sess);
 
@@ -900,8 +916,9 @@ mod tests {
                 .is_some_and(|h| StaticOrPooled::ptr_eq(h, &sess))
         );
         assert_eq!(count(&sess), base + 1, "the handle holds the session");
-        crate::sys::systm::kernel_unlock();
 
+        // tprintf reads the session's terminal (`s_ttyp`, `[K]` since N4.7b) under the kernel
+        // lock too, as NFS calls it.
         crate::kern::subr_log::init_static_msgbuf();
         let mut text = std::vec::Vec::new();
         for _ in 0..100 {
@@ -915,6 +932,7 @@ mod tests {
         assert_eq!(text, b"<6>nfs server not responding");
         // Without a handle the message still goes to the log.
         tprintf(&None, format_args!("x"));
+        crate::sys::systm::kernel_unlock();
 
         tprintf_close(handle);
         assert_eq!(count(&sess), base);

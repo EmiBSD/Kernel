@@ -842,12 +842,10 @@ pub trait TlbCpus: Sync {
 pub trait Random: Sync {
     /// `arc4random()`.
     fn random_u32(&self) -> u32;
-
-    /// `enqueue_randomness(val)`: mixes `val` into the entropy pool (the timecounters' first
-    /// readings, the clock steps; N4.8a). The default drops it: a double with no pool.
-    fn enqueue_randomness(&self, val: u32) {
-        let _ = val;
-    }
+    /// `enqueue_randomness(val)`: a word of the system's timing and input mixed into the
+    /// entropy pool (the terminal's every input character, N4.7b; the timecounters' first
+    /// readings and the clock steps, N4.8a).
+    fn enqueue_randomness(&self, val: u32);
 }
 
 /// The arch half of `pmap(9)`: what each backend (`crate::arch::current::pmap::Backend`)

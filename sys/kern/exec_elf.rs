@@ -116,7 +116,7 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::kern::exec_subr::{exec_process_vmcmds, exec_setup_stack};
-use crate::kern::kern_malloc::{free, malloc, mallocarray};
+use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::vput;
 use crate::kern::vfs_syscalls::NameiBuf;
@@ -140,7 +140,7 @@ use crate::sys::exec_elf::{
     elf_trunc, elfround, is_elf,
 };
 use crate::sys::fcntl::FREAD;
-use crate::sys::malloc::{M_PINSYSCALL, M_TEMP, M_WAITOK, M_ZERO};
+use crate::sys::malloc::{M_PINSYSCALL, M_TEMP, M_WAITOK};
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::mount::MNT_NOEXEC;
 use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, Nameidata, NiDirp, UNVEIL_READ};
@@ -151,7 +151,9 @@ use crate::sys::proc::{BOGO_PC, Proc};
 use crate::sys::syscall::{SYS_MAXSYSCALL, SYS_kbind};
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{IO_UNIT, VREAD, VREG, Vnode};
+use hal::malloc::MArray;
 use hal::vm::param::{round_page, trunc_page};
+use kernel::proc::PinTable;
 use kernel::vm::map::{VM_MAP_PINSYSCALL_ONCE, uvm_map_hint, uvm_map_mquery, uvm_map_pie};
 use kernel::vm::types::{UVM_UNKNOWN_OFFSET, VmProt};
 
@@ -381,7 +383,9 @@ fn elf_read_phdrs(p: &Proc, vp: ExecFile<'_>, off: u64, n: usize) -> Result<Vec<
     Ok(ph)
 }
 
-/// The pin table `elf_read_pintable` allocated (`M_PINSYSCALL`), as a slice.
+/// The pin table `elf_read_pintable` allocated (`M_PINSYSCALL`), as a slice. Unused since
+/// N4.6a (the table is an owned `MArray`, `kernel::proc::PinTable`); LZ's item, kept until
+/// exec moves (N8.4).
 ///
 /// # Safety
 ///
@@ -416,7 +420,7 @@ pub fn elf_read_pintable(
     pp: &ElfPhdr,
     is_ldso: bool,
     len: usize,
-) -> (i32, Option<NonNull<u32>>) {
+) -> (i32, Option<MArray<u32>>) {
     const PAIR: u64 = 2 * size_of::<u32>() as u64;
     let mut npins: usize = 0;
 
@@ -452,12 +456,9 @@ pub fn elf_read_pintable(
     npins += 1;
 
     // Fill pintable: 0 = invalid, -1 = allowed, else offset from base
-    let Some(mem) = mallocarray(npins, size_of::<u32>(), M_PINSYSCALL, M_WAITOK | M_ZERO) else {
+    let Some(mut pins) = MArray::new(M_PINSYSCALL, M_WAITOK, npins, |_| 0u32) else {
         return (0, None);
     };
-    let pins_ptr = mem.cast::<u32>();
-    // SAFETY: a fresh, zeroed allocation of `npins` u32s, ours until handed to the caller.
-    let pins = unsafe { pins_slice(pins_ptr, npins as i32) };
     for i in 0..nsyscalls {
         let (offset, sysno) = pair(i);
         let slot = &mut pins[sysno as usize];
@@ -470,7 +471,7 @@ pub fn elf_read_pintable(
     if is_ldso {
         pins[SYS_kbind as usize] = u32::MAX; // XXX see ld.so/loader.c
     }
-    (npins as i32, Some(pins_ptr))
+    (npins as i32, Some(pins))
 }
 
 /// Load a file (interpreter/library) pointed to by path [stolen from coff_load_shlib()].
@@ -716,16 +717,15 @@ fn elf_load_file_vnode(
             let mut len = text_end;
 
             let (npins, pins) = elf_read_pintable(p, file, &ph[s], true, len);
-            if let Some(pins) = pins
+            if let Some(mut pins) = pins
                 && npins != 0
             {
-                // SAFETY: the fresh table `elf_read_pintable` returned, `npins` entries.
-                let table = unsafe { pins_slice(pins, npins) };
-                elf_adjustpins(&mut base, &mut len, table, text_start as u32);
-                pr.ps_pin.pn_start.set(base);
-                pr.ps_pin.pn_end.set(base + len);
-                pr.ps_pin.pn_pins.set(pins.as_ptr());
-                pr.ps_pin.pn_npins.set(npins);
+                elf_adjustpins(&mut base, &mut len, &mut pins, text_start as u32);
+                drop(pr.ps_pin.replace(PinTable {
+                    start: base,
+                    end: base + len,
+                    pins: Some(pins),
+                }));
             }
         }
         // nothing executable or no pin table
@@ -1015,15 +1015,13 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
         let mut len = exe_end.wrapping_sub(exe_base) as usize;
 
         let (npins, pins) = elf_read_pintable(p, file, &ph[s], false, len);
-        if let Some(pins) = pins
+        if let Some(mut pins) = pins
             && npins != 0
         {
-            // SAFETY: the fresh table `elf_read_pintable` returned, `npins` entries.
-            let table = unsafe { pins_slice(pins, npins) };
             elf_adjustpins(
                 &mut base,
                 &mut len,
-                table,
+                &mut pins,
                 (epp.ep_taddr as u64).wrapping_sub(exe_base) as u32,
             );
             epp.ep_pinstart = base;
@@ -1335,17 +1333,6 @@ mod tests {
         }
     }
 
-    /// Gives a table `elf_read_pintable` made back.
-    fn free_pins(npins: i32, pins: Option<NonNull<u32>>) {
-        if let Some(pins) = pins {
-            free(
-                pins.cast::<u8>(),
-                M_PINSYSCALL,
-                npins as usize * size_of::<u32>(),
-            );
-        }
-    }
-
     #[test]
     fn pintable_records_sites_duplicates_and_kbind() {
         let _guard = setup_real_memory();
@@ -1358,10 +1345,8 @@ mod tests {
         let Some(table) = pins else {
             panic!("no pin table");
         };
-        // SAFETY: the fresh table, `npins` entries.
-        let t = unsafe { pins_slice(table, npins) };
-        assert_eq!(t, &[0, 0x100, 0, 0x40, u32::MAX]);
-        free_pins(npins, pins);
+        assert_eq!(&*table, &[0, 0x100, 0, 0x40, u32::MAX]);
+        drop(table);
 
         // ld.so's table always allows kbind(2) from anywhere.
         let (npins, pins) = elf_read_pintable(p, ExecFile::Image(&image), &ph, true, 0x1000);
@@ -1369,10 +1354,8 @@ mod tests {
         let Some(table) = pins else {
             panic!("no pin table");
         };
-        // SAFETY: as above.
-        let t = unsafe { pins_slice(table, npins) };
-        assert_eq!(t[SYS_kbind as usize], u32::MAX);
-        free_pins(npins, pins);
+        assert_eq!(table[SYS_kbind as usize], u32::MAX);
+        drop(table);
     }
 
     #[test]
@@ -1551,12 +1534,15 @@ mod tests {
             let mut len = exe_end - exe_base as usize;
             let (npins, pins) = elf_read_pintable(p, file, sys_ph, false, len);
             assert!(npins > SYS_write, "{}: {npins} pins", path.display());
-            let Some(table) = pins else {
+            let Some(mut t) = pins else {
                 panic!("no pins");
             };
-            // SAFETY: the fresh table, `npins` entries.
-            let t = unsafe { pins_slice(table, npins) };
-            elf_adjustpins(&mut pbase, &mut len, t, (taddr - exe_base as usize) as u32);
+            elf_adjustpins(
+                &mut pbase,
+                &mut len,
+                &mut t,
+                (taddr - exe_base as usize) as u32,
+            );
             assert_eq!(pbase, taddr);
             // libc's startup and exit are pinned; every pinned site lies in the text
             for sysno in [SYS_exit, SYS_mmap, SYS_getentropy] {
@@ -1575,7 +1561,7 @@ mod tests {
                     );
                 }
             }
-            free_pins(npins, pins);
+            drop(t);
             vmcmds.kill();
         }
     }

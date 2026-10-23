@@ -47,93 +47,65 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Kernel thread handling: `kern/kern_kthread.c`, `bsd`'s half.
+//! Kernel thread handling: `kern/kern_kthread.c`, `bsd`'s names over `kernel::thread`.
 //!
 //! Upstream: sys/kern/kern_kthread.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_kthread.rs@3c62ede68802
 //!
-//! `kthread_create` (over `fork1`, which is `bsd`'s until N4.6) and `kthread_exit` (over
-//! `exit1`). The deferred creations (`kthread_create_deferred`, `kthread_run_deferred_queue`,
-//! `kthread_create_now`) are `kernel::thread`'s since N4.5a, re-exported here under their
-//! names.
+//! An adapter (N4.6a): `kthread_create` is `kernel::thread::kthread_create_with` of a
+//! `bsd` thread function and its argument (`kernel::fork::Start::Legacy`: the argument's
+//! address, 0 standing for the new thread, the C's `arg ? arg : p`), and `kthread_exit` the
+//! kernel's. The deferred creations (`kthread_create_deferred`,
+//! `kthread_run_deferred_queue`, `kthread_create_now`) are `kernel::thread`'s since N4.5a,
+//! re-exported here under their names.
 //!
 //! ## Deviations
-//! - `kthread_create` returns the new thread (`Result<&Proc, Errno>`) instead of an `int`
-//!   plus an out-pointer.
+//! - `kthread_create` returns the new thread (`Result<&'static Proc, Errno>`) instead of an
+//!   `int` plus an out-pointer: the kernel lends it before it can run, `bsd` keeps it as its
+//!   placed `&'static` (`ProcExt::as_static`, N4.8).
 //!
 //! ## Redesign
 //! - LZ kept the deferred queue here, a `SIMPLEQ` of `malloc`'d entries behind an
 //!   `unsafe impl Sync`; it is `kernel::thread`'s `VecDeque` inside a mutex, where the
 //!   kernel's own deferred creations wait in the same order.
+//! - N4.6a: the creation and the exit are the kernel's (`kernel::thread::kthread_create`,
+//!   over `kernel::fork::fork1`); LZ's `fork1(&proc0, ..., func, arg)` with the function
+//!   pointer filed by `cpu_fork` became a `Start::Legacy` in two words.
 
 use core::ffi::c_void;
 
-use crate::kern::init_main::PROC0;
-use crate::kern::kern_exit::exit1;
-use crate::kern::kern_fork::fork1;
-use crate::kern::subr_prf::{Str, panic, printf};
-use crate::machine::cpu::curproc;
+use kernel::fork::Start;
+
+use crate::kern::proc_glue::BsdProcGlue;
+use crate::kern::subr_prf::panic;
 use crate::sys::errno::Errno;
-use crate::sys::proc::{
-    EXIT_NORMAL, FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM, Proc,
-};
-use crate::sys::systm::{kernel_lock, kernel_unlock};
+use crate::sys::proc::{Proc, ProcExt};
 
 pub use kernel::thread::{KTHREAD_CREATE_NOW, kthread_create_deferred, kthread_run_deferred_queue};
 
-/// `kthread_create`: fork a kernel thread. Any process can request this to be done. The VM
-/// space and limits, etc. will be shared with proc0. Returns the new thread (the C's
-/// `*newpp`).
+/// `kthread_create`: fork a kernel thread running `func(arg)` (a NULL `arg` is the new
+/// thread itself), named `name`, sharing proc0's address space and descriptors and leaving
+/// no zombie. Returns the new thread (the C's `*newpp`).
 pub fn kthread_create(
     func: fn(*mut c_void),
     arg: *mut c_void,
     name: &[u8],
 ) -> Result<&'static Proc, Errno> {
-    kernel_lock(); // KERNEL_LOCK()
-
-    // First, create the new process. Share the memory, file descriptors and don't leave the
-    // exit status around for the parent to wait for.
-    let p = match fork1(
-        &PROC0,
-        FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM,
-        func,
-        arg,
-    ) {
-        Ok(p) => p,
-        Err(error) => {
-            kernel_unlock(); // KERNEL_UNLOCK()
-            return Err(error);
-        }
-    };
-
-    // Name it as specified.
-    p.process().set_comm(name);
-
-    kernel_unlock(); // KERNEL_UNLOCK()
-
-    // All done!
-    Ok(p)
+    let mut made: Option<&'static Proc> = None;
+    kernel::thread::kthread_create_with::<BsdProcGlue>(
+        name,
+        Start::Legacy(func, arg.expose_provenance()),
+        &mut |p| made = Some(p.as_static()),
+    )?;
+    match made {
+        Some(p) => Ok(p),
+        None => panic(format_args!("kthread_create: no thread lent")),
+    }
 }
 
 /// `kthread_exit`: cause a kernel thread to exit. Assumes the exiting thread is the current
 /// context.
 pub fn kthread_exit(ecode: i32) -> ! {
-    // XXX What do we do with the exit code? Should we even bother with it? The parent
-    // (proc0) isn't going to do much with it.
-    if ecode != 0
-        && let Some(p) = curproc()
-    {
-        printf(format_args!(
-            "WARNING: thread `{}' ({}) exits with status {}\n",
-            Str(&p.process().comm()),
-            p.p_tid.get(),
-            ecode
-        ));
-    }
-
-    let Some(p) = curproc() else {
-        panic(format_args!("kthread_exit: no curproc"));
-    };
-    exit1(p, ecode, 0, EXIT_NORMAL)
+    kernel::thread::kthread_exit::<BsdProcGlue>(ecode)
 }
 /* </CODE> */

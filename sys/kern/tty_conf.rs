@@ -53,23 +53,27 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The line discipline switch: `kern/tty_conf.c`.
+//! The line discipline switch, `kern/tty_conf.c`, for `bsd`'s drivers: `linesw[]` as the
+//! table of functions they call (`(linesw(tp).l_rint)(c, tp)`), every entry forwarding to the
+//! tty's discipline in the kernel (`kernel::tty::LineDiscipline`, N4.7b).
 //!
 //! Upstream: sys/kern/tty_conf.c @ 3ce1f3f79392
+//! LZ: sys/kern/tty_conf.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - `pseudo-device ppp`, `nmea`, `msts` and `endrun` are not configured (their line
-//!   disciplines are not ported), so slots 5, 7, 8 and 9 hold the defunct entries the C
-//!   uses when `NPPP`, `NNMEA`, `NMSTS` or `NENDRUN` is 0.
-//! - `ttynodisc`, `ttyerrclose`, `ttyerrio`, `ttyerrinput` and `ttyerrstart` are the C's
-//!   casts of `enodev`: small functions of each type here. `l_rint` and `l_start` return the
-//!   errno as an `int`, as the cast does.
-//! - `nullioctl` returns `Ok(false)` for the C's `-1` (`docs/C_TO_RUST.md`).
+//!   disciplines are not ported): `kernel::tty::Discipline::TABLE` holds the defunct entries
+//!   the C uses when `NPPP`, `NNMEA`, `NMSTS` or `NENDRUN` is 0 (LZ's).
+//!
+//! ## Redesign
+//! - N4.7b: `struct linesw` is the kernel's `LineDiscipline` trait (decision 46). The drivers
+//!   still call through a `struct linesw` of `fn`s (`crate::sys::conf::Linesw`, until N7):
+//!   [`LINESW`] is that table, every row the same eight functions, which find the tty's
+//!   discipline again from its `t_line` (`kernel::tty::linesw`): one more array index than the
+//!   C's `linesw[tp->t_line]` per received character.
 
-use crate::kern::subr_xxx::enodev;
-use crate::kern::tty::{
-    nullmodem, ttread, ttstart, ttwrite, ttyinput, ttylclose, ttymodem, ttyopen,
-};
+use crate::kern::proc_glue::BsdProcGlue;
+use crate::kern::tty::TtyUio;
 use crate::sys::conf::Linesw;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
@@ -77,92 +81,96 @@ use crate::sys::tty::Tty;
 use crate::sys::types::Dev;
 use crate::sys::uio::Uio;
 
-/// `ttynodisc`: `enodev` as an `l_open`.
-fn ttynodisc(_dev: Dev, _tp: &Tty, _p: &Proc) -> Result<(), Errno> {
-    enodev()
+pub use kernel::tty::NLINESW;
+
+/// `l_open` of every row: the tty's discipline's.
+fn l_open(dev: Dev, tp: &Tty, p: &Proc) -> Result<(), Errno> {
+    kernel::tty::linesw(tp).open(dev, tp, p)
 }
 
-/// `ttyerrclose`: `enodev` as an `l_close`.
-fn ttyerrclose(_tp: &Tty, _flags: i32, _p: Option<&Proc>) -> Result<(), Errno> {
-    enodev()
+/// `l_close`.
+fn l_close(tp: &Tty, flag: i32, p: Option<&Proc>) -> Result<(), Errno> {
+    kernel::tty::linesw(tp).close(tp, flag, p)
 }
 
-/// `ttyerrio`: `enodev` as an `l_read`/`l_write`.
-fn ttyerrio(_tp: &Tty, _uio: &mut Uio<'_>, _flag: i32) -> Result<(), Errno> {
-    enodev()
+/// `l_read`.
+fn l_read(tp: &Tty, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
+    kernel::tty::linesw(tp).read(tp, &mut TtyUio { uio }, flag)
 }
 
-/// `ttyerrinput`: `enodev` as an `l_rint`.
-fn ttyerrinput(_c: i32, _tp: &Tty) -> i32 {
-    Errno::ENODEV as i32
+/// `l_write`.
+fn l_write(tp: &Tty, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
+    kernel::tty::linesw(tp).write(tp, &mut TtyUio { uio }, flag)
 }
 
-/// `ttyerrstart`: `enodev` as an `l_start`.
-fn ttyerrstart(_tp: &Tty) -> i32 {
-    Errno::ENODEV as i32
+/// `l_ioctl`.
+fn l_ioctl(tp: &Tty, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Result<bool, Errno> {
+    kernel::tty::linesw(tp).ioctl(tp, cmd, data, flag, p)
 }
 
-/// A defunct (or not configured) line discipline.
-const DEFUNCT: Linesw = Linesw {
-    l_open: ttynodisc,
-    l_close: ttyerrclose,
-    l_read: ttyerrio,
-    l_write: ttyerrio,
-    l_ioctl: nullioctl,
-    l_rint: ttyerrinput,
-    l_start: ttyerrstart,
-    l_modem: nullmodem,
+/// `l_rint`.
+fn l_rint(c: i32, tp: &Tty) -> i32 {
+    kernel::tty::linesw(tp).rint(c, tp)
+}
+
+/// `l_start`: the C's `int` (0, or the defunct discipline's `ENODEV`).
+fn l_start(tp: &Tty) -> i32 {
+    match kernel::tty::linesw(tp).start(tp) {
+        Ok(()) => 0,
+        Err(e) => e as i32,
+    }
+}
+
+/// `l_modem`.
+fn l_modem(tp: &Tty, flag: i32) -> i32 {
+    i32::from(kernel::tty::linesw(tp).modem(tp, flag != 0))
+}
+
+/// One row of [`LINESW`].
+const FORWARD: Linesw = Linesw {
+    l_open,
+    l_close,
+    l_read,
+    l_write,
+    l_ioctl,
+    l_rint,
+    l_start,
+    l_modem,
 };
 
-/// `linesw[]`: the line disciplines, indexed by `t_line` (`TTYDISC`, ...).
-pub static LINESW: [Linesw; 10] = [
-    // 0- termios
-    Linesw {
-        l_open: ttyopen,
-        l_close: ttylclose,
-        l_read: ttread,
-        l_write: ttwrite,
-        l_ioctl: nullioctl,
-        l_rint: ttyinput,
-        l_start: ttstart,
-        l_modem: ttymodem,
-    },
-    // 1- defunct
-    DEFUNCT,
-    // 2- old NTTYDISC (defunct)
-    DEFUNCT,
-    // 3- TABLDISC (defunct)
-    DEFUNCT,
-    // 4- SLIPDISC (defunct)
-    DEFUNCT,
-    // 5- PPPDISC: NPPP == 0
-    DEFUNCT,
-    // 6- STRIPDISC (defunct)
-    DEFUNCT,
-    // 7- NMEADISC: NNMEA == 0
-    DEFUNCT,
-    // 8- MSTSDISC: NMSTS == 0
-    DEFUNCT,
-    // 9- ENDRUNDISC: NENDRUN == 0
-    DEFUNCT,
-];
-
-/// `nlinesw`.
-pub const NLINESW: usize = LINESW.len();
+/// `linesw[]`: the line disciplines, indexed by `t_line` (`TTYDISC`, ...): every row forwards
+/// to the kernel's `Discipline::<BsdProcGlue>::TABLE`.
+pub static LINESW: [Linesw; NLINESW] = [FORWARD; NLINESW];
 
 /// `linesw[tp->t_line]`.
 pub fn linesw(tp: &Tty) -> &'static Linesw {
-    LINESW.get(usize::from(tp.t_line.get())).unwrap_or(&DEFUNCT)
+    LINESW.get(usize::from(tp.t_line.get())).unwrap_or(&FORWARD)
 }
 
 /// `nullioctl`: do nothing specific version of line discipline specific ioctl command.
-pub fn nullioctl(
-    _tp: &Tty,
-    _cmd: u64,
-    _data: &mut [u8],
-    _flags: i32,
-    _p: &Proc,
-) -> Result<bool, Errno> {
-    Ok(false)
+pub fn nullioctl(tp: &Tty, cmd: u64, data: &mut [u8], flags: i32, p: &Proc) -> Result<bool, Errno> {
+    kernel::tty::nullioctl::<BsdProcGlue>(tp, cmd, data, flags, p)
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_row_forwards_to_the_kernel_s_discipline() {
+        assert_eq!(LINESW.len(), NLINESW);
+        for row in &LINESW {
+            assert!(core::ptr::fn_addr_eq(
+                row.l_rint,
+                l_rint as fn(i32, &Tty) -> i32
+            ));
+            assert!(core::ptr::fn_addr_eq(
+                row.l_start,
+                l_start as fn(&Tty) -> i32
+            ));
+        }
+    }
+}
+/* </TESTS> */

@@ -109,9 +109,6 @@
 //!   the groups in `pgrphash` (`kernel::proc::session_find`) where the C casts its `void *`
 //!   argument: a session without a group has no process that could read what the timeout
 //!   clears.
-//! - A thread holds its own box ([`BsdThreadG::p_exited`]) from `exit1`'s unlink, where the
-//!   kernel gives it back, until `proc_free` (the reaper's, or `process_zap`'s for the main
-//!   thread) drops it: the C's pool item, alive until `pool_put`.
 //! - [`BsdThreadG::p_self`] records the thread's `&'static` where it is placed (`thread_new`,
 //!   `proc0`): the run, sleep and dead-thread queues (`hal::list`, until N4.5) take one, and
 //!   LZ's convention is that a thread reference lives until the reaper (`curproc()`,
@@ -139,8 +136,10 @@
 //! ## Redesign
 //! - LZ's `Cell<*const T>` members of `struct process`/`struct proc` (`ps_fd`, `ps_opptr`,
 //!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
-//!   dereferenced by the legacy code as before); `ps_textvp`, `s_ttyvp` and `s_ttyp`,
-//!   whose targets the legacy code treats as `'static`, are `hal::link::Link`s, read without
+//!   dereferenced by the legacy code as before); `ps_textvp` and `s_ttyvp` (and `s_ttyp`
+//!   until N4.7b, when it became the kernel `Session`'s counted handle and `pgrp_destroy`
+//!   went with it), whose targets the legacy code treats as `'static`, are
+//!   `hal::link::Link`s, read without
 //!   `unsafe`; the plain members are atomic words with LZ's `get()`/`set()` ([`ItimerWord`],
 //!   [`IsizeWord`]), so every value is `Send` and `Sync` without a premise, as a pooled
 //!   kernel object requires.
@@ -152,36 +151,47 @@
 //!   [`proc_test_reset`]).
 
 use core::ffi::c_void;
+use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 
-use hal::intr::IPL_NONE;
 use hal::link::{Link, PtrWord};
-use hal::mutex::Mutexed;
-use hal::pool::{PoolArc, PoolBox};
+use hal::pool::PoolArc;
 use hal::rwlock::Witness;
+use kernel::api::SysResult;
 use kernel::proc::{
-    I32Word, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
+    I32Word, Placed, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
     prfind as k_prfind, tfind as k_tfind, tfind_user as k_tfind_user, zombiefind as k_zombiefind,
 };
 
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
-use crate::kern::kern_sig::pgsignal as sig_pgsignal;
+use crate::kern::kern_descrip::native;
 use crate::kern::kern_timeout::{timeout_del, timeout_set};
-use crate::kern::tty::ttywait;
 use crate::kern::vfs_subr::vrele;
 use crate::kern::vfs_vops::VOP_REVOKE;
 use crate::machine::Machine;
 use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
-use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
+use crate::sys::proc::{Pgrp, PgrpRef, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Siginfo;
-use crate::sys::signal::{SIGHUP, Sig, Sigset};
+use crate::sys::signal::{Sig, Sigset};
+use crate::sys::syscall::{
+    SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_acct, SYS_exit, SYS_fork,
+    SYS_getegid, SYS_geteuid, SYS_getgid, SYS_getgroups, SYS_getlogin_r, SYS_getpgid, SYS_getpgrp,
+    SYS_getpid, SYS_getppid, SYS_getpriority, SYS_getresgid, SYS_getresuid, SYS_getrlimit,
+    SYS_getrtable, SYS_getrusage, SYS_getsid, SYS_getthrid, SYS_getthrname, SYS_getuid,
+    SYS_issetugid, SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
+    SYS_setpriority, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_setrlimit,
+    SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_vfork, SYS_wait4, SYS_waitid,
+};
+use crate::sys::syscallargs::{
+    SysAcctArgs, SysExitArgs, SysTforkArgs, SysThrexitArgs, SysWait4Args, SysWaitidArgs,
+};
+use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
-use crate::sys::tty::Tty;
-use crate::sys::types::Pid;
+use crate::sys::types::{Pid, Register};
 use crate::sys::vnode::{REVOKEALL, Vnode};
 
 pub use kernel::proc::{inferior, zapverauth};
@@ -246,10 +256,6 @@ impl IsizeWord {
 pub struct BsdProcessG {
     /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
     pub ps_textvp: Link<Vnode>,
-    /// \[K|m\] `ps_opptr`: old parent during ptrace (null: ptrace is not ported).
-    pub ps_opptr: PtrWord<Process>,
-    /// `ps_rucheck_to`: resource limit check timer.
-    pub ps_rucheck_to: Timeout,
     /// \[m\] `ps_realit_to`: `ITIMER_REAL` timeout.
     pub ps_realit_to: Timeout,
     /// \[m\] `ps_timer[ITIMER_REAL]`, \[T\] `ps_timer[ITIMER_VIRTUAL, ITIMER_PROF]`.
@@ -263,10 +269,6 @@ pub struct BsdProcessG {
     pub ps_uvncount: UsizeWord,
     /// `ps_uvdone`: no more unveil is permitted.
     pub ps_uvdone: I32Word,
-    /// `ps_pin`: static or ld.so.
-    pub ps_pin: Pinsyscall,
-    /// `ps_libcpin`: libc.so, from pinsyscalls(2).
-    pub ps_libcpin: Pinsyscall,
 }
 
 impl BsdProcessG {
@@ -274,16 +276,12 @@ impl BsdProcessG {
     pub const fn new() -> Self {
         Self {
             ps_textvp: Link::new(),
-            ps_opptr: PtrWord::new(),
-            ps_rucheck_to: Timeout::zeroed(),
             ps_realit_to: Timeout::zeroed(),
             ps_timer: [const { ItimerWord::new() }; 3],
             ps_uvpaths: PtrWord::new(),
             ps_uvvcount: IsizeWord::new(0),
             ps_uvncount: UsizeWord::new(0),
             ps_uvdone: I32Word::new(0),
-            ps_pin: Pinsyscall::new(),
-            ps_libcpin: Pinsyscall::new(),
         }
     }
 }
@@ -299,8 +297,6 @@ pub struct BsdThreadG {
     /// \[I\] The thread's own `&'static`, recorded where it is placed (`thread_new`,
     /// `proc0`): what `ProcExt::as_static` lends the queues' inserts. Not the C's.
     pub p_self: Link<Proc>,
-    /// The thread's own box from `exit1`'s unlink until `proc_free` drops it. Not the C's.
-    pub p_exited: Mutexed<Option<PoolBox<Proc>>>,
 }
 
 impl BsdThreadG {
@@ -308,7 +304,6 @@ impl BsdThreadG {
     pub const fn new() -> Self {
         Self {
             p_self: Link::new(),
-            p_exited: Mutexed::new(IPL_NONE, None),
         }
     }
 }
@@ -341,9 +336,6 @@ pub struct BsdSessionG {
     /// `s_ttyvp`: vnode of controlling terminal, holding a use count (`vref` in `vn_ioctl`'s
     /// `TIOCSCTTY`).
     pub s_ttyvp: Link<Vnode>,
-    /// `s_ttyp`: controlling terminal; not cleared when the session loses it, to remember
-    /// that it once had one.
-    pub s_ttyp: Link<Tty>,
     /// `s_verauthto`.
     pub s_verauthto: Timeout,
 }
@@ -353,7 +345,6 @@ impl BsdSessionG {
     pub const fn new() -> Self {
         Self {
             s_ttyvp: Link::new(),
-            s_ttyp: Link::new(),
             s_verauthto: Timeout::zeroed(),
         }
     }
@@ -507,7 +498,7 @@ impl ProcGlue for BsdProcGlue {
     fn exit_account(p: &Proc) {
         let pr = p.process();
         let g = pr.ps_mtx.lock();
-        crate::kern::kern_resource::tuagg_add_process(pr, p);
+        kernel::resource::tuagg_add_process(pr, p, &g);
         drop(g);
     }
 
@@ -558,32 +549,15 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_clock::STATHZ.load(Ordering::Relaxed)
     }
 
-    /// The session's terminal forgets the group if it was its foreground one (the group's
-    /// sigio registrations went before, `kernel::sigio`).
-    fn pgrp_destroy(pg: &Pgrp) {
-        let r = hal::klock::reader();
-        if let Some(sess) = pg.session(&r)
-            && let Some(tp) = sess.s_ttyp.get()
-            && ptr::eq(tp.t_pgrp.get(), pg)
-        {
-            tp.t_pgrp.set(ptr::null());
-        }
-    }
-
-    /// `killjobc`'s controlling process: signal the foreground group, drain the terminal and
-    /// revoke access to it; the vnode's use count dropped. `s_ttyp` is not zeroed: it says the
-    /// session once had a controlling terminal (for logging and informational purposes).
+    /// `killjobc`'s controlling process: signal the foreground group, drain the controlling
+    /// terminal (`kernel::tty::session_hangup_tty`) and revoke access to it; the vnode's use
+    /// count dropped. `s_ttyp` is not zeroed: it says the session once had a controlling
+    /// terminal (for logging and informational purposes).
     fn session_hangup(sp: &Session) {
         if sp.s_ttyvp.get().is_none() {
             return;
         }
-        if let Some(tp) = sp.s_ttyp.get()
-            && ptr::eq(tp.t_session.get(), sp)
-        {
-            if let Some(pg) = tp.pgrp() {
-                sig_pgsignal(Some(pg), SIGHUP, true);
-            }
-            let _ = ttywait(tp);
+        if kernel::tty::session_hangup_tty(sp) {
             // The tty could have been revoked if we blocked.
             if let Some(vp) = sp.s_ttyvp.get() {
                 let _ = VOP_REVOKE(vp, REVOKEALL);
@@ -620,10 +594,6 @@ impl ProcGlue for BsdProcGlue {
         process_ref(pr)
     }
 
-    fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
-        crate::kern::kern_exit::exit1(p, xexit, xsig, flags)
-    }
-
     fn coredump(p: &Proc) -> Result<(), Errno> {
         crate::kern::kern_sig::coredump(p)
     }
@@ -653,10 +623,115 @@ impl ProcGlue for BsdProcGlue {
         crate::machine::tcb::tcb_get(p)
     }
 
-    fn initprocess_addr() -> usize {
-        crate::kern::init_main::INITPROCESS
-            .load(Ordering::Relaxed)
-            .addr()
+    fn maxprocess() -> i32 {
+        MAXPROCESS.load(Ordering::Relaxed)
+    }
+
+    fn maxthread() -> i32 {
+        MAXTHREAD.load(Ordering::Relaxed)
+    }
+
+    fn log(level: i32, args: core::fmt::Arguments<'_>) {
+        crate::kern::subr_prf::log(level, args);
+    }
+
+    /// The thread's `&'static`, which `bsd`'s run, sleep and signal adapters lend.
+    fn thread_placed(p: Placed<'_, Self>) {
+        crate::sys::proc::place_thread(p);
+    }
+
+    /// `timeout_set_flags(&pr->ps_realit_to, realitexpire, pr, KCLOCK_UPTIME, 0)`.
+    fn process_initialized(pr: &Process) {
+        crate::kern::kern_timeout::timeout_set_flags(
+            &pr.ps_realit_to,
+            crate::kern::kern_time::realitexpire,
+            ptr::from_ref(pr).cast_mut().cast::<c_void>(),
+            crate::sys::timeout::KCLOCK_UPTIME,
+            0,
+        );
+    }
+
+    /// The text vnode's reference (for sysctl) and the unveils copied.
+    fn process_forked(parent: &Process, child: &Process) {
+        child.ps_textvp.set(parent.ps_textvp.get());
+        if let Some(vp) = child.ps_textvp.get() {
+            crate::kern::vfs_subr::vref(vp);
+        }
+        crate::kern::kern_unveil::unveil_copy(parent, child);
+    }
+
+    fn session_has_tty_vnode(sess: &Session) -> bool {
+        sess.s_ttyvp.get().is_some()
+    }
+
+    fn pmap_activate(p: &Proc) {
+        crate::machine::pmap::pmap_activate(p);
+    }
+
+    fn pmap_deactivate(p: &Proc) {
+        crate::machine::pmap::pmap_deactivate(p);
+    }
+
+    fn pmap_purge(p: &Proc) {
+        crate::machine::pmap::pmap_purge(p);
+    }
+
+    /// The machine's `child_return`, which takes the thread as the C's `void *`.
+    fn child_return(p: &Proc) {
+        crate::machine::cpu::child_return(ptr::from_ref(p).cast_mut().cast::<c_void>());
+    }
+
+    fn start_init(p: &Proc) {
+        crate::kern::init_main::start_init(p);
+    }
+
+    fn tcb_invalid(tcb: usize) -> bool {
+        crate::machine::tcb::tcb_invalid(tcb)
+    }
+
+    fn tcb_set(p: &Proc, tcb: usize) {
+        crate::machine::tcb::tcb_set(p, tcb);
+    }
+
+    fn rtable_exists(id: u32) -> bool {
+        crate::net::rtable::rtable_exists(id)
+    }
+
+    fn pgrp_ref(pg: &Pgrp) -> PgrpRef {
+        pgrp_ref(pg)
+    }
+
+    /// Under QEMU init's exit ends the run: the smokes' criterion. The C panics, as it has
+    /// nothing to run.
+    fn init_exited(xexit: i32, xsig: i32) -> ! {
+        #[cfg(feature = "qemu")]
+        {
+            crate::kprintf!("init exited with status {xexit} (signal {xsig})\n");
+            <crate::machine::Machine as crate::machine::Exit>::exit(if xexit == 0 && xsig == 0 {
+                crate::machine::ExitStatus::Success
+            } else {
+                crate::machine::ExitStatus::Failure
+            });
+        }
+        #[cfg(not(feature = "qemu"))]
+        crate::kern::subr_prf::panic(format_args!("init died (signal {xsig}, exit {xexit})"));
+    }
+
+    fn cancel_all_itimers() {
+        crate::kern::kern_time::cancel_all_itimers();
+    }
+
+    fn unveil_destroy(pr: &Process) {
+        crate::kern::kern_unveil::unveil_destroy(pr);
+    }
+
+    /// `vrele(pr->ps_textvp)`, the reference dropped.
+    fn textvp_release(pr: &Process) {
+        let otvp = pr.ps_textvp.get();
+        pr.ps_textvp.set(None);
+        if let Some(otvp) = otvp {
+            vrele(otvp);
+        }
     }
 }
 
@@ -777,18 +852,6 @@ pub fn pgrp_ref(pg: &Pgrp) -> PgrpRef {
     }
 }
 
-/// `pr->ps_pgrp = curpr->ps_pgrp; LIST_INSERT_AFTER(curpr, pr, ps_pglist)`: `fork1`'s child
-/// `pr` joins its parent's group right after the parent among the members, the order
-/// `setpriority(PRIO_PGRP)` (the last member's nice) and `ttyinfo`'s tie-break read. A
-/// parent in no group leaves the child in none.
-pub fn fork_join_pgrp(w: &mut hal::klock::KernelWitness, curpr: &Process, pr: &ProcessRef) {
-    let pgrp = curpr.pgrp(&*w).cloned();
-    if let Some(pg) = &pgrp {
-        pg.pg_members.insert_after(w, curpr, pr.as_pin());
-    }
-    drop(pr.set_pgrp(w, pgrp));
-}
-
 /// `chgproccnt(uid, diff)` in `bsd`'s uid table ([`kernel::proc::chgproccnt`]).
 pub fn chgproccnt(uid: crate::sys::types::Uid, diff: i64) -> i64 {
     kernel::proc::chgproccnt::<BsdProcGlue>(uid, diff)
@@ -801,6 +864,697 @@ pub fn with_uidinfo<R>(
     f: impl FnOnce(&kernel::proc::Uidinfo) -> R,
 ) -> R {
     kernel::proc::with_uidinfo::<BsdProcGlue, R>(uid, f)
+}
+
+/// The thread `p` of a system call, pinned (`bsd`'s threads are placed, `ProcExt::as_static`).
+fn pinned(p: &Proc) -> Pin<&'static Proc> {
+    hal::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
+}
+
+/// `fork(2)`.
+pub fn sys_fork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    retval[0] = kernel::fork::sys_fork(pinned(p))? as Register;
+    Ok(())
+}
+
+/// `vfork(2)`.
+pub fn sys_vfork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    retval[0] = kernel::fork::sys_vfork(pinned(p))? as Register;
+    Ok(())
+}
+
+/// `__tfork(2)`.
+#[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
+pub fn sys___tfork(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysTforkArgs = sysargs(v);
+    retval[0] =
+        kernel::fork::sys___tfork(pinned(p), uap.param.get().addr(), uap.psize.get())? as Register;
+    Ok(())
+}
+
+/// `exit(2)`.
+pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysExitArgs = sysargs(v);
+    kernel::exit::sys_exit(p, uap.rval.get())
+}
+
+/// `__threxit(2)`.
+#[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
+pub fn sys___threxit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysThrexitArgs = sysargs(v);
+    kernel::exit::sys___threxit(p, hal::user::UserPtr::new(uap.notdead.get().addr()))
+}
+
+/// `wait4(2)`.
+pub fn sys_wait4(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysWait4Args = sysargs(v);
+    retval[0] = kernel::exit::sys_wait4(
+        q,
+        uap.pid.get(),
+        hal::user::UserPtr::new(uap.status.get().addr()),
+        uap.options.get(),
+        hal::user::UserPtr::new(uap.rusage.get().addr()),
+    )? as Register;
+    Ok(())
+}
+
+/// `waitid(2)`.
+pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysWaitidArgs = sysargs(v);
+    kernel::exit::sys_waitid(
+        q,
+        uap.idtype.get(),
+        i64::from(uap.id.get()),
+        hal::user::UserPtr::new(uap.info.get().addr()),
+        uap.options.get(),
+    )?;
+    retval[0] = 0;
+    Ok(())
+}
+
+/// `acct(2)`.
+pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysAcctArgs = sysargs(v);
+    kernel::acct::sys_acct(p, hal::user::UserPtr::new(uap.path.get().addr()))
+}
+
+/// The accounting file of `kernel::acct` (bridges.toml `AcctFile`, N5): `vn_open` of a
+/// regular file for `FWRITE | O_APPEND` with `UNVEIL_WRITE`, unlocked.
+pub struct BsdAcctFile;
+
+/// The registered [`BsdAcctFile`].
+pub static BSD_ACCT_FILE: BsdAcctFile = BsdAcctFile;
+
+/// An open accounting file: its vnode (held open by `vn_open` until `close`).
+struct BsdAcctSink(&'static Vnode);
+
+impl kernel::acct::AcctFile for BsdAcctFile {
+    fn open(
+        &self,
+        path: hal::user::UserPtr<u8>,
+    ) -> Result<alloc::boxed::Box<dyn kernel::acct::AcctSink>, Errno> {
+        let Some(p) = crate::machine::cpu::curproc() else {
+            crate::kern::subr_prf::panic(format_args!("acct: no curproc"));
+        };
+        let mut nd =
+            crate::kern::vfs_lookup::ndinit(0, 0, crate::sys::namei::NiDirp::User(path.addr()), p);
+        nd.ni_unveil = crate::sys::namei::UNVEIL_WRITE;
+        crate::kern::vfs_vnops::vn_open(
+            &mut nd,
+            crate::sys::fcntl::FWRITE | crate::sys::fcntl::O_APPEND,
+            0,
+        )?;
+        let Some(vp) = nd.ni_vp else {
+            return Err(Errno::ENOENT);
+        };
+        let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
+        if vp.v_type.get() != crate::sys::vnode::VREG {
+            let _ = crate::kern::vfs_vnops::vn_close(
+                vp,
+                crate::sys::fcntl::FWRITE,
+                p.ucred_ptr(),
+                Some(p),
+            );
+            return Err(Errno::EACCES);
+        }
+        Ok(alloc::boxed::Box::new(BsdAcctSink(vp)))
+    }
+}
+
+impl kernel::acct::AcctSink for BsdAcctSink {
+    fn write(&self, rec: &[u8]) -> Result<(), Errno> {
+        let p = crate::machine::cpu::curproc();
+        crate::kern::vfs_vnops::vn_rdwr(
+            crate::sys::uio::UioRw::UIO_WRITE,
+            self.0,
+            rec.as_ptr().cast_mut().cast::<c_void>(),
+            rec.len(),
+            0,
+            crate::sys::uio::UioSeg::UIO_SYSSPACE,
+            crate::sys::vnode::IO_APPEND
+                | crate::sys::vnode::IO_UNIT
+                | crate::sys::vnode::IO_NOLIMIT,
+            p.map_or(crate::sys::ucred::NOCRED, |p| p.ucred_ptr()),
+            None,
+            p,
+        )
+    }
+
+    fn free_space(&self) -> Option<(i64, i64)> {
+        let mp = self.0.v_mount.get()?;
+        let p = crate::machine::cpu::curproc()?;
+        let mut sb = crate::sys::mount::Statfs::default();
+        let _ = crate::sys::mount::VFS_STATFS(mp, &mut sb, p);
+        Some((sb.f_bavail, sb.f_blocks as i64))
+    }
+
+    fn is_bad(&self) -> bool {
+        self.0.v_type.get() == crate::sys::vnode::VBAD
+    }
+
+    fn close(self: alloc::boxed::Box<Self>, by_curproc: bool) {
+        let p = crate::machine::cpu::curproc();
+        let cred = match p {
+            Some(p) if by_curproc => p.ucred_ptr(),
+            _ => crate::sys::ucred::NOCRED,
+        };
+        let _ = crate::kern::vfs_vnops::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
+    }
+}
+
+/// `KernelApi::proc`: the `Native` entries of the process system calls (N4.6a), each running
+/// `mi_syscall` on its own `sysent[]` row (whose function calls the kernel's).
+pub const PROC_ENTRIES: hal::api::ProcEntries = hal::api::ProcEntries {
+    fork: native_fork,
+    vfork: native_vfork,
+    tfork: native_tfork,
+    exit: native_exit,
+    threxit: native_threxit,
+    wait4: native_wait4,
+    waitid: native_waitid,
+    getrusage: native_getrusage,
+    getrlimit: native_getrlimit,
+    setrlimit: native_setrlimit,
+    getpriority: native_getpriority,
+    setpriority: native_setpriority,
+    acct: native_acct,
+    getpid: native_getpid,
+    getppid: native_getppid,
+    getuid: native_getuid,
+    geteuid: native_geteuid,
+    getgid: native_getgid,
+    getegid: native_getegid,
+    getgroups: native_getgroups,
+    setgroups: native_setgroups,
+    getpgrp: native_getpgrp,
+    getpgid: native_getpgid,
+    getsid: native_getsid,
+    setpgid: native_setpgid,
+    setsid: native_setsid,
+    setuid: native_setuid,
+    seteuid: native_seteuid,
+    setgid: native_setgid,
+    setegid: native_setegid,
+    setreuid: native_setreuid,
+    setregid: native_setregid,
+    setresuid: native_setresuid,
+    setresgid: native_setresgid,
+    getresuid: native_getresuid,
+    getresgid: native_getresgid,
+    issetugid: native_issetugid,
+    getlogin_r: native_getlogin_r,
+    setlogin: native_setlogin,
+    set_tcb: native_set_tcb,
+    get_tcb: native_get_tcb,
+    getthrid: native_getthrid,
+    getthrname: native_getthrname,
+    setthrname: native_setthrname,
+    getrtable: native_getrtable,
+    setrtable: native_setrtable,
+};
+
+/// `KernelApi::proc.fork`: `fork(void)`.
+pub fn native_fork(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_fork, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.vfork`: `vfork(void)`.
+pub fn native_vfork(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_vfork, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.tfork`: `__tfork(const struct __tfork *param, size_t psize)`.
+pub fn native_tfork(
+    nr: Register,
+    param: usize,
+    psize: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS___tfork,
+        [param as Register, psize as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.exit`: `exit(int rval)`.
+pub fn native_exit(nr: Register, status: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_exit, [status as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.threxit`: `__threxit(pid_t *notdead)`.
+pub fn native_threxit(nr: Register, notdead: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS___threxit,
+        [notdead as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.wait4`: `wait4(pid_t pid, int *status, int options, struct rusage *rusage)`.
+pub fn native_wait4(
+    nr: Register,
+    pid: i32,
+    status: usize,
+    options: i32,
+    rusage: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_wait4,
+        [
+            pid as Register,
+            status as Register,
+            options as Register,
+            rusage as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.waitid`: `waitid(int idtype, id_t id, siginfo_t *info, int options)`.
+pub fn native_waitid(
+    nr: Register,
+    idtype: i32,
+    id: u32,
+    info: usize,
+    options: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_waitid,
+        [
+            idtype as Register,
+            id as Register,
+            info as Register,
+            options as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getrusage`: `getrusage(int who, struct rusage *rusage)`.
+pub fn native_getrusage(
+    nr: Register,
+    who: i32,
+    rusage: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getrusage,
+        [who as Register, rusage as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getrlimit`: `getrlimit(int which, struct rlimit *rlp)`.
+pub fn native_getrlimit(
+    nr: Register,
+    which: i32,
+    rlp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getrlimit,
+        [which as Register, rlp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setrlimit`: `setrlimit(int which, const struct rlimit *rlp)`.
+pub fn native_setrlimit(
+    nr: Register,
+    which: i32,
+    rlp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setrlimit,
+        [which as Register, rlp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getpriority`: `getpriority(int which, id_t who)`.
+pub fn native_getpriority(
+    nr: Register,
+    which: i32,
+    who: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getpriority,
+        [which as Register, who as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setpriority`: `setpriority(int which, id_t who, int prio)`.
+pub fn native_setpriority(
+    nr: Register,
+    which: i32,
+    who: u32,
+    prio: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setpriority,
+        [
+            which as Register,
+            who as Register,
+            prio as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.acct`: `acct(const char *path)`.
+pub fn native_acct(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_acct, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getpid`: `getpid(void)`.
+pub fn native_getpid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getpid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getppid`: `getppid(void)`.
+pub fn native_getppid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getppid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getuid`: `getuid(void)`.
+pub fn native_getuid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getuid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.geteuid`: `geteuid(void)`.
+pub fn native_geteuid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_geteuid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getgid`: `getgid(void)`.
+pub fn native_getgid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getgid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getegid`: `getegid(void)`.
+pub fn native_getegid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getegid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getgroups`: `getgroups(int gidsetsize, gid_t *gidset)`.
+pub fn native_getgroups(
+    nr: Register,
+    gidsetsize: i32,
+    gidset: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getgroups,
+        [gidsetsize as Register, gidset as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setgroups`: `setgroups(int gidsetsize, const gid_t *gidset)`.
+pub fn native_setgroups(
+    nr: Register,
+    gidsetsize: i32,
+    gidset: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setgroups,
+        [gidsetsize as Register, gidset as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getpgrp`: `getpgrp(void)`.
+pub fn native_getpgrp(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getpgrp, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getpgid`: `getpgid(pid_t pid)`.
+pub fn native_getpgid(nr: Register, pid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getpgid, [pid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getsid`: `getsid(pid_t pid)`.
+pub fn native_getsid(nr: Register, pid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getsid, [pid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setpgid`: `setpgid(pid_t pid, pid_t pgid)`.
+pub fn native_setpgid(nr: Register, pid: i32, pgid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setpgid,
+        [pid as Register, pgid as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setsid`: `setsid(void)`.
+pub fn native_setsid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setsid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setuid`: `setuid(uid_t uid)`.
+pub fn native_setuid(nr: Register, uid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setuid, [uid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.seteuid`: `seteuid(uid_t euid)`.
+pub fn native_seteuid(nr: Register, euid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_seteuid, [euid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setgid`: `setgid(gid_t gid)`.
+pub fn native_setgid(nr: Register, gid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setgid, [gid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setegid`: `setegid(gid_t egid)`.
+pub fn native_setegid(nr: Register, egid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setegid, [egid as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setreuid`: `setreuid(uid_t ruid, uid_t euid)`.
+pub fn native_setreuid(nr: Register, ruid: u32, euid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setreuid,
+        [ruid as Register, euid as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setregid`: `setregid(gid_t rgid, gid_t egid)`.
+pub fn native_setregid(nr: Register, rgid: u32, egid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setregid,
+        [rgid as Register, egid as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setresuid`: `setresuid(uid_t ruid, uid_t euid, uid_t suid)`.
+pub fn native_setresuid(
+    nr: Register,
+    ruid: u32,
+    euid: u32,
+    suid: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setresuid,
+        [
+            ruid as Register,
+            euid as Register,
+            suid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setresgid`: `setresgid(gid_t rgid, gid_t egid, gid_t sgid)`.
+pub fn native_setresgid(
+    nr: Register,
+    rgid: u32,
+    egid: u32,
+    sgid: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setresgid,
+        [
+            rgid as Register,
+            egid as Register,
+            sgid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getresuid`: `getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)`.
+pub fn native_getresuid(
+    nr: Register,
+    ruid: usize,
+    euid: usize,
+    suid: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getresuid,
+        [
+            ruid as Register,
+            euid as Register,
+            suid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getresgid`: `getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)`.
+pub fn native_getresgid(
+    nr: Register,
+    rgid: usize,
+    egid: usize,
+    sgid: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getresgid,
+        [
+            rgid as Register,
+            egid as Register,
+            sgid as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.issetugid`: `issetugid(void)`.
+pub fn native_issetugid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_issetugid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getlogin_r`: `getlogin_r(char *namebuf, size_t namelen)`.
+pub fn native_getlogin_r(
+    nr: Register,
+    namebuf: usize,
+    namelen: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getlogin_r,
+        [namebuf as Register, namelen as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setlogin`: `setlogin(const char *namebuf)`.
+pub fn native_setlogin(nr: Register, namebuf: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_setlogin, [namebuf as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.set_tcb`: `__set_tcb(void *tcb)`.
+pub fn native_set_tcb(nr: Register, tcb: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS___set_tcb, [tcb as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.get_tcb`: `__get_tcb(void)`.
+pub fn native_get_tcb(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS___get_tcb, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getthrid`: `getthrid(void)`.
+pub fn native_getthrid(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getthrid, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.getthrname`: `getthrname(pid_t tid, char *name, size_t len)`.
+pub fn native_getthrname(
+    nr: Register,
+    tid: i32,
+    name: usize,
+    len: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getthrname,
+        [tid as Register, name as Register, len as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.setthrname`: `setthrname(pid_t tid, const char *name)`.
+pub fn native_setthrname(
+    nr: Register,
+    tid: i32,
+    name: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setthrname,
+        [tid as Register, name as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::proc.getrtable`: `getrtable(void)`.
+pub fn native_getrtable(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_getrtable, [0, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::proc.setrtable`: `setrtable(int rtableid)`.
+pub fn native_setrtable(nr: Register, rtableid: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_setrtable,
+        [rtableid as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
 }
 
 /// A process of the host tests with pid `pid`, leaked (never freed: the tests' processes
@@ -838,7 +1592,7 @@ pub(crate) fn test_pooled_process(pid: Pid) -> &'static Process {
 pub(crate) fn test_proc(pid: Pid, cr: kernel::cred::CredRef) -> &'static Proc {
     let pr = test_pooled_process(pid);
     let p = test_thread(pr);
-    pr.ps_mainproc.set(p);
+    pr.set_main_static(hal::pin::pin_static(p));
     drop(p.set_cred(cr.clone()));
     drop(pr.set_ucred(cr));
     p
@@ -905,7 +1659,6 @@ pub(crate) fn proc_test_reset() {
 const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<Timeout>();
-    send_sync::<Pinsyscall>();
     send_sync::<BsdProcessG>();
     send_sync::<BsdThreadG>();
     send_sync::<BsdPgrpG>();
@@ -982,6 +1735,16 @@ mod tests {
         // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the
         // sigio registrations moved into kernel::sigio's registry: processpl 1376 -> 1360 and
         // pgrppl 152 -> 136 (ps_sigiolst and pg_sigiolst gone from the glue's members).
+        // N4.7b (the terminal into kernel::tty): sessionpl 144 -> 160, s_ttyp a counted tty
+        // handle under the kernel lock in kernel::proc's Session where the glue's link was.
+        // N4.6a (the process core into kernel::{fork, exit}): processpl 1360 -> 1536 (+176,
+        // the size pinned below; the parts are the fields' layouts): the pin tables are owned
+        // tables in ReadMostly cells (2 x 64 where the glue's two `struct pinsyscall`s of
+        // words were 2 x 32: +64), ps_rucheck_to is the kernel's Timeout (120 where bsd's was
+        // 32: +88), PsMtx gains the main thread's slot (a tag and a pointer, 16) and
+        // ps_opptr's counted handle (16): +32, and the glue's ps_mainproc word goes (-8);
+        // procpl unchanged (p_exited moved from the glue into the kernel's Thread as
+        // `exited`). Accepted under the user's rule for N4's sizes (reported, pinned here).
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1021,9 +1784,9 @@ mod tests {
         assert_eq!(
             sizes,
             [
-                ("processpl", 1360),
+                ("processpl", 1536),
                 ("pgrppl", 136),
-                ("sessionpl", 144),
+                ("sessionpl", 160),
                 ("filepl", 184),
                 ("fdescpl", 560),
                 ("ucredpl", 120),
@@ -1094,12 +1857,12 @@ mod tests {
         // a zombie, a stopped and a continued child, each reported with its pid, its
         // effective uid and its CLD_* code, without taking the mutex a second time
         // (hal's mutex panics "locking against myself").
-        use crate::kern::kern_exit::dowait6;
         use crate::sys::proc::{PS_CONTINUED, PS_STOPPED, PS_ZOMBIE};
         use crate::sys::siginfo::{CLD_CONTINUED, CLD_EXITED, CLD_STOPPED, Siginfo};
         use crate::sys::signal::{SIGCHLD, SIGCONT, SIGSTOP};
         use crate::sys::wait::{P_PID, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED};
         use kernel::cred::CredRef;
+        use kernel::exit::dowait6;
 
         let _g = setup();
         let parent = test_pooled_process(500);
@@ -1133,7 +1896,6 @@ mod tests {
         ];
         for (pid, opt, code, status) in cases {
             let mut info = Siginfo::zeroed();
-            let mut retval = [0; 2];
             let r = dowait6(
                 q,
                 P_PID,
@@ -1142,10 +1904,8 @@ mod tests {
                 opt | WNOHANG | WNOWAIT,
                 None,
                 Some(&mut info),
-                &mut retval,
             );
-            assert_eq!(r, Ok(()), "pid {pid}");
-            assert_eq!(retval[0], pid as crate::sys::types::Register, "pid {pid}");
+            assert_eq!(r, Ok(pid), "pid {pid}");
             assert_eq!(info.si_signo, SIGCHLD);
             assert_eq!(info.si_code, code, "pid {pid}");
             assert_eq!(info.si_pid(), pid);
@@ -1181,8 +1941,8 @@ mod tests {
         let second = process_ref(test_pooled_process(603));
         {
             let mut w = hal::klock::witness();
-            fork_join_pgrp(&mut w, parent, &first);
-            fork_join_pgrp(&mut w, parent, &second);
+            kernel::fork::fork_join_pgrp(&mut w, parent, &first);
+            kernel::fork::fork_join_pgrp(&mut w, parent, &second);
         }
         {
             let r = hal::klock::reader();

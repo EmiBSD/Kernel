@@ -19,7 +19,8 @@
 /* <CODE> */
 //! The kernel crate's `printf(9)` and its visible stubs (`.claude/rules/scope-and-stubs.md`).
 //!
-//! Not an OpenBSD file. [`printf`] is `hal::prf::printf`, `bsd`'s `printf(9)` through the
+//! Not an OpenBSD file. [`printf`] is `hal::prf::printf`, and [`log`] `log(9)`, `bsd`'s
+//! `printf(9)` and `log(9)` through the
 //! `Printf` bridge: the console and the message buffer, so a line the C prints shows in
 //! `dmesg` as it did in LZ. [`unported!`] is `bsd`'s `unported!` (`sys/kern/unported.rs`) for
 //! the code that moved here: the first time a site runs it prints `unported: <name>` once,
@@ -28,7 +29,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-pub use hal::prf::printf;
+pub use hal::prf::{log, printf};
 
 use crate::sys::errno::Errno;
 

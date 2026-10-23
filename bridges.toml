@@ -39,17 +39,6 @@ trait = "IntrHardware"
 for = ["sys/hal/intr.rs"]
 paid_by = "N7"
 
-# bsd: kern_fork.rs's thread_start (kernel::sched::trampoline_mi, which releases the hold the
-# switch kept, then the function cpu_fork numbered in its table, thread_start_word): what a new
-# thread's trampoline calls (N4.5a); a fn registered with hal::thread::register_start. Paid
-# when fork1 and its function table move (N4.6).
-# hal::thread::register_start
-[[bridge]]
-trait = "ThreadStart"
-for = ["sys/hal/thread.rs"]
-paid_by = "N4"
-
-
 # bsd: pool_init/pool_get/pool_put, pr_nout, pool_sethiwat and pool_cache_init (RawPool's
 # set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
 # TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
@@ -88,10 +77,10 @@ for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
 # bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
+# and its log(9) (N4.7b: kernel::pty's tablefull; N4.8a: kernel::tc's clock-step line),
 # implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
 # crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
-# subr_prf goes with the bsd crate. N4.8a: log(9) (Printf::log, subr_prf's log) for kernel::tc's
-# clock-step line.
+# subr_prf goes with the bsd crate.
 # hal::prf::Printf
 [[bridge]]
 trait = "Printf"
@@ -137,11 +126,12 @@ paid_by = "N4"
 # &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io (kern.proc_args). N4.3: paid by
 # N7, with the last UIO_SYSSPACE builder (uiomove's kernel-address leg copies to an
 # address its builder vouched for, which no safe hal function may do; VFS, net, the
-# drivers and crypto type theirs in their slices).
+# drivers and crypto type theirs in their slices). N4.7b: set_resid (ttwrite's give-back of
+# what it copied in but did not queue) for the terminal's read and write paths.
 # kernel::uio::UioMove (re-exported by kernel::pipe)
 [[bridge]]
 trait = "UioMove"
-for = ["sys/kernel/pipe.rs", "sys/kernel/vm/io.rs"]
+for = ["sys/kernel/pipe.rs", "sys/kernel/vm/io.rs", "sys/kernel/tty.rs"]
 paid_by = "N7"
 
 # bsd: what a file is open on and the calls the descriptors make into the subsystems still in
@@ -169,7 +159,9 @@ paid_by = "N4"
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
 # for amd64's TLB shootdown and cache flush, implemented by sys/kern/hal_bridges.rs
-# (BsdTlbCpus); arm64 broadcasts tlbi and registers none.
+# (BsdTlbCpus); arm64 broadcasts tlbi and registers none. Re-dated N10 by the user's decision
+# 11 of N4.6 (N4.5's decision 8: amd64 is frozen until N10, decision 44); paid_by stays N4
+# until xtask's schema accepts N10 (it takes N2..N9).
 # hal::pmap::TlbCpus
 [[bridge]]
 trait = "TlbCpus"
@@ -178,21 +170,23 @@ paid_by = "N4"
 
 # bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
-# implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.8a: enqueue_randomness (rnd.rs's) for
-# kernel::tc (the new counter's first readings, the clock steps).
+# implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.7b: enqueue_randomness (the terminal's
+# every input character, tty.c's ttyinput), hal::random::enqueue_randomness; N4.8a: kernel::tc's
+# (the new counter's first readings, the clock steps).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"
 for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
 paid_by = "N7"
 
-# kernel::thread::Kthread (bsd's BsdKthread over kern_kthread.rs: kthread_create, kthread_exit,
-# sched_peg_curproc of the primary CPU; the deferred queue is kernel::thread's since N4.5a):
-# re-dated to N4.6, with fork1 (decision 8 of N4.5).
+# bsd: the accounting file (sys/kern/proc_glue.rs's BsdAcctFile: vn_open of a regular file with
+# UNVEIL_WRITE, and its BsdAcctSink: vn_rdwr of a record, VFS_STATFS, the VBAD check,
+# vn_close), for kernel::acct (N4.6a); registered by hal_bridges_register. N5, with the vnodes.
+# kernel::acct::AcctFile
 [[bridge]]
-trait = "Kthread"
-for = ["sys/kernel/thread.rs", "sys/kernel/timeout.rs", "sys/kernel/task.rs"]
-paid_by = "N4"
+trait = "AcctFile"
+for = ["sys/kernel/acct.rs"]
+paid_by = "N5"
 
 # bsd: nanouptime, getnanouptime and nanotime of sys/kern/kern_tc.rs (the last two N4.4,
 # kqueue's sleep and EVFILT_TIMER's NOTE_ABSTIME), implemented by sys/kern/hal_bridges.rs
@@ -304,19 +298,23 @@ paid_by = "N4"
 # bsd: the console's half of the device switch that sendsyslog(2) writes through when no
 # syslogd(8) socket is set (dosendsyslog's KERNEL_LOCK leg): cnwrite and its test `constty ||
 # cn_devvp` (dev/cons.c), implemented by sys/kern/subr_log.rs (BsdTtyDevsw, over dev/cons.rs's
-# cnwrite, constty and cn_devvp_set) and registered by bsd's initconsbuf (N4.7a). N4.7b adds the
-# tty's legs (d_stop, d_tty, the pty master test) per its brief. Paid when the console and the
-# device switch move (N7, decision 45's CharDevice).
-# kernel::log::TtyDevsw
+# cnwrite, constty and cn_devvp_set) and registered by bsd's initconsbuf (N4.7a). N4.7b moves it
+# to kernel::tty and adds the tty's legs: d_stop (cdevsw[major(t_dev)].d_stop), TIOCCONS's
+# /dev/console access check (namei + VOP_ACCESS, VFS) and s_ttyvp (TIOCSCTTY's vnode test, N5);
+# d_tty and the pty master test stay in bsd's cdevsw adapters (they call the kernel with the tty
+# and the side). Paid when the console and the device switch move (N7, decision 45's CharDevice).
+# kernel::tty::TtyDevsw
 [[bridge]]
 trait = "TtyDevsw"
-for = ["sys/kernel/log.rs"]
+for = ["sys/kernel/log.rs", "sys/kernel/tty.rs"]
 paid_by = "N7"
 
 # bsd: the members of bsd's subsystems a process, thread, group and session carry (sigacts,
 # the descriptor tables, the kqueues, the timeouts, the unveil table, the klist and its mutex,
 # the run-queue link), the tables' storage, and the hooks into kern_sig (pgsignal, prsignal),
-# tty (a session's hang-up, a group's terminal) and kern_timeout (s_verauthto); implemented by
+# tty (a session's hang-up; a group's terminal until N4.7b, when pgdelete calls
+# kernel::tty::pgrp_gone and s_ttyp became the kernel Session's) and kern_timeout
+# (s_verauthto); implemented by
 # sys/kern/proc_glue.rs (BsdProcGlue, N4.2), which kernel::proc receives as its type
 # parameter. N4.4: the knote and kqueue list adapters (proc_glue_links!), with_curproc
 # (bsd's reads hal::thread's curproc since N4.5a),
@@ -328,11 +326,18 @@ paid_by = "N7"
 # need_resched, the CPU topology and pmap_resident_count; the scheduler's hal::sleep::Sleep is
 # kernel::sched::KernelSleep (the Sleep row is gone, decision 39). N4.5b: the signals are
 # kernel::sig's (sleep_signal_check is kernel::sched's, pgsignal and prsignal left the trait);
-# their calls out: exit1 (kern_exit, N4.6), coredump (the file systems, N5), and the
-# machine's sendsig, signotify, PROC_STACK and TCB_GET (N4.8), and initprocess's address.
-# N4.7, when the descriptors and the terminal move.
+# their calls out: coredump (the file systems, N5), and the machine's sendsig, signotify,
+# PROC_STACK and TCB_GET (N4.8). N4.6a: exit1 and initprocess's address left the trait (the
+# kernel's own: kernel::exit, ProcTables::initprocess); the process code's calls out joined
+# it: maxprocess and maxthread (conf/param), log(9), thread_placed (bsd's &'static of a new
+# thread, N4.8), process_initialized (ps_realit_to, N4.8a), process_forked and textvp_release
+# (the text vnode, N5; the unveils, N8), session_has_tty_vnode and session_ttydev (N4.7b),
+# pmap_activate, pmap_deactivate, pmap_purge, child_return, tcb_invalid and tcb_set (the
+# machine, N4.8/N10), start_init (N9.1), init_exited (the QEMU exit), cancel_all_itimers
+# (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. Re-dated N8 (the user's
+# decision 11 of N4.6): its members reach N5 and N8.
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs"]
-paid_by = "N4"
+for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs"]
+paid_by = "N8"
