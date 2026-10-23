@@ -947,7 +947,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn log(_level: i32, _args: core::fmt::Arguments<'_>) {}
     /// A new thread is linked (`fork1`, `thread_fork`): `bsd`'s record of its `&'static`,
     /// which its run, sleep and signal adapters lend (N4.8 retires it with `curproc`'s).
-    fn thread_placed(_p: Pin<&Thread<Self>>) {}
+    /// The witness is the kernel's alone ([`Placed`]).
+    fn thread_placed(_p: Placed<'_, Self>) {}
     /// `process_initialize`'s timeouts of `bsd`'s (`ps_realit_to`, `kern_time.c`, N4.8a).
     fn process_initialized(_pr: &Process<Self>) {}
     /// `process_new`'s `bsd` members: the text vnode's reference (`vref`, N5) and the
@@ -2465,6 +2466,26 @@ impl<G: ProcGlue> hal::thread::ThreadLayout for Thread<G> {
     #[inline]
     fn machine(&self) -> &MachineSlot {
         &self.machine
+    }
+}
+
+/// A thread `kernel::fork` has just linked (`fork1`, `thread_fork`), the one argument of
+/// [`ProcGlue::thread_placed`]. Only this crate makes one ([`Placed::new`] is `pub(crate)`,
+/// the field private, no `Clone`), once per thread, after the thread joined the lists and
+/// before its box goes to its process: so the glue's record of the thread (`bsd`'s
+/// `&'static`, until N4.8) is made of a pool box that lives until `proc_free`, never of a
+/// pin a caller made of anything else.
+pub struct Placed<'a, G: ProcGlue>(Pin<&'a Thread<G>>);
+
+impl<'a, G: ProcGlue> Placed<'a, G> {
+    /// The witness of `p`, which `fork1` or `thread_fork` has just linked.
+    pub(crate) fn new(p: Pin<&'a Thread<G>>) -> Self {
+        Self(p)
+    }
+
+    /// The thread placed.
+    pub fn thread(&self) -> Pin<&'a Thread<G>> {
+        self.0
     }
 }
 

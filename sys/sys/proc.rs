@@ -80,10 +80,10 @@
 //!   never followed.
 
 use core::ffi::c_void;
-use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::AtomicU32;
 
+use kernel::proc::Placed;
 use kernel::vm::map::Vmspace;
 
 use crate::kassert;
@@ -221,20 +221,25 @@ impl ProcExt for Proc {
 
 /// The glue's `thread_placed` (`kernel::fork`'s `fork1` and `thread_fork`, N4.6a): records
 /// the new thread's own `&'static` (`ProcExt::place`), which `bsd`'s run, sleep and signal
-/// adapters lend the kernel (`as_static`, until N4.8 retires them with `curproc()`'s).
-pub fn place_thread(p: Pin<&Proc>) {
-    let at = ptr::from_ref::<Proc>(p.get_ref());
-    // SAFETY: `kernel::fork` calls this once per thread, right after linking it, with the pin
-    // of a `procpl` box it then gives to the thread's process (its slot for the main thread,
-    // its tree for another), which keeps it until `exit1` hands a secondary thread's box to
-    // the thread itself and the reaper or `process_zap` frees it (`proc_free`), after the
-    // thread has left every list, hash and queue and no other thread names it: the pool item
-    // stays at this address, initialised, until then (a pinned item is not moved), and nothing
-    // mutates it but through its atomics and cells (shared references only), so a shared
-    // reference to it is valid for the thread's life. `'static` is LZ's convention for a
-    // thread reference (the C's `struct proc *` from `pool_get` to `pool_put`), the one
-    // `curproc()` and the run queues rest on (this is LZ's `thread_join` deref, moved here
-    // from `kern_fork.rs` with the creation).
+/// adapters lend the kernel (`as_static`, until N4.8 retires them with `curproc()`'s). Only
+/// the glue calls it, with the kernel's witness: no other safe caller can name a thread here.
+pub(crate) fn place_thread(placed: Placed<'_, BsdProcGlue>) {
+    let at = ptr::from_ref::<Proc>(placed.thread().get_ref());
+    // SAFETY: `placed` is a `kernel::proc::Placed`, which only `kernel::fork` makes (its
+    // constructor is `pub(crate)` in `kernel`, its field private, it is neither `Clone` nor
+    // `Copy`), once per thread, in `fork1` or `thread_fork`, right after linking the thread,
+    // with the pin of a `procpl` box it then gives to the thread's process (its slot for the
+    // main thread, its tree for another). The process keeps the box until `exit1` hands a
+    // secondary thread's box to the thread itself and the reaper or `process_zap` frees it
+    // (`proc_free`), after the thread has left every list, hash and queue and no other thread
+    // names it: the pool item stays at this address, initialised, until then (a pinned item
+    // is not moved), and nothing mutates it but through its atomics and cells (shared
+    // references only), so a shared reference to it is valid for the thread's life.
+    // `'static` is LZ's convention for a thread reference (the C's `struct proc *` from
+    // `pool_get` to `pool_put`), the one `curproc()` and the run queues rest on (LZ's
+    // `thread_join` deref, moved here from `kern_fork.rs` with the creation). This function
+    // is `pub(crate)`; its one caller, `BsdProcGlue::thread_placed`, passes the witness it
+    // was given.
     let p: &'static Proc = unsafe { &*at };
     p.place();
 }

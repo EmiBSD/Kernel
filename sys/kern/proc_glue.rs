@@ -158,7 +158,7 @@ use hal::pool::PoolArc;
 use hal::rwlock::Witness;
 use kernel::api::SysResult;
 use kernel::proc::{
-    I32Word, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
+    I32Word, Placed, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
     prfind as k_prfind, tfind as k_tfind, tfind_user as k_tfind_user, zombiefind as k_zombiefind,
 };
 
@@ -655,7 +655,7 @@ impl ProcGlue for BsdProcGlue {
     }
 
     /// The thread's `&'static`, which `bsd`'s run, sleep and signal adapters lend.
-    fn thread_placed(p: Pin<&Proc>) {
+    fn thread_placed(p: Placed<'_, Self>) {
         crate::sys::proc::place_thread(p);
     }
 

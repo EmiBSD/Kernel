@@ -127,8 +127,8 @@ use crate::proc::{
     FORK_FORK, FORK_IDLE, FORK_NOZOMBIE, FORK_PPWAIT, FORK_PTRACE, FORK_SHAREFILES, FORK_SHAREVM,
     FORK_SYSTEM, FORK_VFORK, P_CPUPEG, P_SUSPSIG, P_SUSPSINGLE, P_SYSTEM, P_THREAD, PID_MAX,
     PS_CONTROLT, PS_EMBRYO, PS_FLAGS_INHERITED_ON_FORK, PS_ISPWAIT, PS_NOZOMBIE, PS_PPWAIT,
-    PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, PinTable, ProcGlue, Process, ProcessRef, SIDL,
-    THREAD_PID_OFFSET, TID_MASK, Thread,
+    PS_PROFIL, PS_STOPPING, PS_SYSTEM, PS_TRACED, PinTable, Placed, ProcGlue, Process, ProcessRef,
+    SIDL, THREAD_PID_OFFSET, TID_MASK, Thread,
 };
 use crate::resource::RLIMIT_NPROC;
 
@@ -703,7 +703,7 @@ pub fn fork1_with<G: ProcGlue>(
         fork_join_pgrp(&mut w, &curpr, &pr);
         curpr.ps_children.insert_head(&mut w, pr.as_pin());
     }
-    G::thread_placed(p);
+    G::thread_placed(Placed::new(p));
     child(p);
 
     if pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
@@ -861,7 +861,7 @@ pub fn thread_fork<G: ProcGlue>(
         tb.allproc.insert_head(&mut w, p);
         tb.tidhash(tid).insert_head(&mut w, p);
     }
-    G::thread_placed(p);
+    G::thread_placed(Placed::new(p));
 
     {
         let mut g = pr.ps_mtx.lock();
