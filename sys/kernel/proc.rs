@@ -191,6 +191,10 @@
 //!   are three atomic words ([`NameWord`]).
 //! - `p_stat`, `p_cpu`, `p_addr` and `p_md` are the thread's [`MachineSlot`], first in the
 //!   `#[repr(C)]` thread, where both machines' assembly reaches them (decision P1).
+//! - N4.7b: `s_ttyp` is the session's (a counted `kernel::tty::TtyRef`, `[K]`), and
+//!   `pgdelete` clears the terminal's foreground group itself (`kernel::tty::pgrp_gone`):
+//!   the glue's `pgrp_destroy` is gone. The ttys' tables are `ProcTables::tty`, the ptys'
+//!   `ProcTables::pty`.
 
 use core::ops::Deref;
 use core::pin::Pin;
@@ -799,6 +803,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     type KnSelnext: PinAdapter<Elem = Knote<Self>>;
     /// `kq_next`: a table's `fd_kqlist`.
     type KqNext: PinAdapter<Elem = Kqueue<Self>>;
+    /// `tty_link`: the ttys' list (`kernel::tty`).
+    type TtyLink: PinAdapter<Elem = crate::tty::Tty<Self>>;
 
     /// The lists, hashes and pools of this glue's processes (one `static` of `bsd`'s).
     fn tables() -> &'static ProcTables<Self>;
@@ -864,9 +870,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn stathz() -> i32 {
         100
     }
-    /// `pgdelete`'s call out (after `kernel::sigio`'s `sigio_freelist`): when the session's
-    /// terminal names this group, `tp->t_pgrp = NULL`.
-    fn pgrp_destroy(pg: &Pgrp<Self>);
     /// `killjobc`'s controlling-terminal part, for a session leader whose session has a
     /// terminal vnode: the foreground group hung up, the terminal drained and revoked, the
     /// vnode released and `s_ttyvp` cleared. It may sleep: no witness is out.
@@ -958,9 +961,11 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn session_has_tty_vnode(_sess: &Session<Self>) -> bool {
         false
     }
-    /// `sess->s_ttyp->t_dev` (accounting's `ac_tty`, N4.7b), `None` without a terminal.
-    fn session_ttydev(_sess: &Session<Self>) -> Option<hal::sys::types::Dev> {
-        None
+    /// `sess->s_ttyp->t_dev` (accounting's `ac_tty`), `None` without a terminal: the
+    /// session's own `s_ttyp` since N4.7b (`kernel::tty::session_tty`); a test glue may
+    /// stand in for a terminal it does not make.
+    fn session_ttydev(sess: &Session<Self>) -> Option<hal::sys::types::Dev> {
+        crate::tty::session_tty(sess).map(|tp| tp.t_dev.get())
     }
     /// `pmap_activate(p)` of the machine (`cpu_fork`'s, for the child).
     fn pmap_activate(_p: &Thread<Self>) {}
@@ -1075,6 +1080,10 @@ macro_rules! proc_glue_links {
             /// `kq_next`: a table's `fd_kqlist`.
             pub KqNextLink: $crate::event::Kqueue<$glue>, next
         );
+        hal::pin_adapter!(
+            /// `tty_link`: the ttys' list.
+            pub TtyLinkLink: $crate::tty::Tty<$glue>, tty_link
+        );
     };
 }
 
@@ -1097,6 +1106,7 @@ macro_rules! proc_glue_link_types {
         type KnTqe = KnTqeLink;
         type KnSelnext = KnSelnextLink;
         type KqNext = KqNextLink;
+        type TtyLink = TtyLinkLink;
     };
 }
 
@@ -1137,6 +1147,11 @@ pub struct ProcTables<G: ProcGlue> {
     /// `/dev/klog` (`logsoftc`, `log_open`, `syslogf`) and the log stash
     /// (`kernel::log`): generic over the glue through its klist and `syslogf`'s file.
     pub log: crate::log::LogDev<G>,
+    /// The ttys (`ttypl`, `ttylist`, `tty_count`, `constty`; `kernel::tty`): generic over the
+    /// glue through their knotes and their process groups.
+    pub tty: crate::tty::TtyTables<G>,
+    /// The ptys (`pt_softc[]`, `npty`, `pts_major`; `kernel::pty`).
+    pub pty: crate::pty::PtyTables<G>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -1159,6 +1174,8 @@ impl<G: ProcGlue> ProcTables<G> {
             process0: OnceStatic::new(),
             proc0: OnceStatic::new(),
             log: crate::log::LogDev::new(),
+            tty: crate::tty::TtyTables::new(),
+            pty: crate::pty::PtyTables::new(),
         }
     }
 
@@ -1345,6 +1362,9 @@ pub struct Session<G: ProcGlue> {
     pub s_verauthppid: I32Word,
     /// `s_verauthuid`.
     pub s_verauthuid: U32Word,
+    /// \[K\] `s_ttyp`: controlling terminal, counted; not cleared when the session loses
+    /// it, to remember that it once had one (`TIOCSCTTY`, `kernel::tty`).
+    pub s_ttyp: Guarded<Option<crate::tty::TtyRef<G>>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::SessionG,
 }
@@ -1361,6 +1381,7 @@ impl<G: ProcGlue> Session<G> {
             s_login: Guarded::new_kernel([0; LOGIN_NAME_MAX]),
             s_verauthppid: I32Word::new(0),
             s_verauthuid: U32Word::new(0),
+            s_ttyp: Guarded::new_kernel(None),
             g,
         }
     }
@@ -2748,11 +2769,11 @@ pub fn leavepgrp<G: ProcGlue>(pr: &ProcessRef<G>) {
 }
 
 /// `pgdelete(pgrp)`: a group without members leaves the hash; its sigio list and its
-/// terminal's pointer to it go (the glue), and its session reference drops (`SESSRELE`)
+/// terminal's pointer to it go (`kernel::tty::pgrp_gone`), and its session reference drops (`SESSRELE`)
 /// after the lock's witness, with the group's last reference.
 pub fn pgdelete<G: ProcGlue>(pgrp: PgrpRef<G>) {
     crate::sigio::sigio_freelist_pgrp(&pgrp);
-    G::pgrp_destroy(&pgrp);
+    crate::tty::pgrp_gone(&pgrp);
     let sess = {
         let mut w = klock::witness();
         G::tables().pgrphash(pgrp.pg_id.get()).remove(&mut w, &pgrp);
@@ -2898,7 +2919,6 @@ mod tests {
             &SCHED
         }
 
-        fn pgrp_destroy(_pg: &Pgrp<Self>) {}
         fn session_hangup(_sess: &Session<Self>) {}
         fn session_placed(_sess: &Session<Self>) {}
         fn session_destroy(_sess: &Session<Self>) {}

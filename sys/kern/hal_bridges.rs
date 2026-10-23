@@ -304,6 +304,10 @@ impl hal::pmap::Random for BsdRandom {
     fn random_u32(&self) -> u32 {
         crate::dev::rnd::arc4random()
     }
+
+    fn enqueue_randomness(&self, val: u32) {
+        crate::dev::rnd::enqueue_randomness(val);
+    }
 }
 
 /// The console of `sys/dev/cons.rs`.
@@ -329,6 +333,10 @@ struct BsdPrintf;
 impl Printf for BsdPrintf {
     fn printf(&self, args: core::fmt::Arguments<'_>) {
         let _ = printf(args);
+    }
+
+    fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
+        crate::kern::subr_prf::log(level, args);
     }
 }
 

@@ -284,9 +284,23 @@ impl hal::random::Random for TestRandom {
             (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32
         })
     }
+
+    fn enqueue_randomness(&self, _val: u32) {
+        ENQUEUED.with(|n| n.set(n.get() + 1));
+    }
 }
 
 static TEST_RANDOM: TestRandom = TestRandom;
+
+std::thread_local! {
+    /// The words this thread gave `enqueue_randomness`.
+    static ENQUEUED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// How many words this thread gave `enqueue_randomness` (the terminal's input characters).
+pub fn randomness_enqueued() -> u64 {
+    ENQUEUED.with(core::cell::Cell::get)
+}
 
 /// The kernel map double.
 struct TestPages;
@@ -848,6 +862,13 @@ struct TestPrintf;
 impl Printf for TestPrintf {
     fn printf(&self, args: core::fmt::Arguments<'_>) {
         let _ = core::fmt::Write::write_fmt(&mut *lock(&PRINTF_OUT), args);
+    }
+
+    /// `log(9)`: the line after its `<level>`, as the message buffer holds it.
+    fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
+        let mut out = lock(&PRINTF_OUT);
+        let _ = core::fmt::Write::write_fmt(&mut *out, format_args!("<{level}>"));
+        let _ = core::fmt::Write::write_fmt(&mut *out, args);
     }
 }
 
@@ -1722,7 +1743,6 @@ macro_rules! test_proc_glue {
                 static SCHED: $crate::sched::SchedTables<$name> = $crate::sched::SchedTables::new();
                 &SCHED
             }
-            fn pgrp_destroy(_pg: &$crate::proc::Pgrp<Self>) {}
             fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
             fn session_placed(_sess: &$crate::proc::Session<Self>) {}
             fn session_destroy(_sess: &$crate::proc::Session<Self>) {}

@@ -39,6 +39,7 @@ pub use hal::sys;
 pub mod acct;
 pub mod api;
 pub(crate) mod assert;
+pub mod clist;
 pub mod clock;
 pub mod cred;
 pub mod crypto;
@@ -54,17 +55,20 @@ pub mod pipe;
 pub mod prf;
 pub mod proc;
 pub mod prot;
+pub mod pty;
 pub mod resource;
 pub mod sched;
 pub mod select;
 pub mod sig;
 pub mod sigio;
+pub mod sysctl;
 pub mod task;
 pub mod termios;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;
 pub mod timeout;
+pub mod tty;
 pub mod uio;
 pub mod vm;
 /* </CODE> */

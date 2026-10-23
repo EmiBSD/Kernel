@@ -136,8 +136,10 @@
 //! ## Redesign
 //! - LZ's `Cell<*const T>` members of `struct process`/`struct proc` (`ps_fd`, `ps_opptr`,
 //!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
-//!   dereferenced by the legacy code as before); `ps_textvp`, `s_ttyvp` and `s_ttyp`,
-//!   whose targets the legacy code treats as `'static`, are `hal::link::Link`s, read without
+//!   dereferenced by the legacy code as before); `ps_textvp` and `s_ttyvp` (and `s_ttyp`
+//!   until N4.7b, when it became the kernel `Session`'s counted handle and `pgrp_destroy`
+//!   went with it), whose targets the legacy code treats as `'static`, are
+//!   `hal::link::Link`s, read without
 //!   `unsafe`; the plain members are atomic words with LZ's `get()`/`set()` ([`ItimerWord`],
 //!   [`IsizeWord`]), so every value is `Send` and `Sync` without a premise, as a pooled
 //!   kernel object requires.
@@ -164,9 +166,7 @@ use kernel::proc::{
 
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
 use crate::kern::kern_descrip::native;
-use crate::kern::kern_sig::pgsignal as sig_pgsignal;
 use crate::kern::kern_timeout::{timeout_del, timeout_set};
-use crate::kern::tty::ttywait;
 use crate::kern::vfs_subr::vrele;
 use crate::kern::vfs_vops::VOP_REVOKE;
 use crate::machine::Machine;
@@ -175,7 +175,7 @@ use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Pgrp, PgrpRef, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Siginfo;
-use crate::sys::signal::{SIGHUP, Sig, Sigset};
+use crate::sys::signal::{Sig, Sigset};
 use crate::sys::syscall::{
     SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_acct, SYS_exit, SYS_fork,
     SYS_getegid, SYS_geteuid, SYS_getgid, SYS_getgroups, SYS_getlogin_r, SYS_getpgid, SYS_getpgrp,
@@ -191,7 +191,6 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
-use crate::sys::tty::Tty;
 use crate::sys::types::{Pid, Register};
 use crate::sys::vnode::{REVOKEALL, Vnode};
 
@@ -337,9 +336,6 @@ pub struct BsdSessionG {
     /// `s_ttyvp`: vnode of controlling terminal, holding a use count (`vref` in `vn_ioctl`'s
     /// `TIOCSCTTY`).
     pub s_ttyvp: Link<Vnode>,
-    /// `s_ttyp`: controlling terminal; not cleared when the session loses it, to remember
-    /// that it once had one.
-    pub s_ttyp: Link<Tty>,
     /// `s_verauthto`.
     pub s_verauthto: Timeout,
 }
@@ -349,7 +345,6 @@ impl BsdSessionG {
     pub const fn new() -> Self {
         Self {
             s_ttyvp: Link::new(),
-            s_ttyp: Link::new(),
             s_verauthto: Timeout::zeroed(),
         }
     }
@@ -551,32 +546,15 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_clock::STATHZ.load(Ordering::Relaxed)
     }
 
-    /// The session's terminal forgets the group if it was its foreground one (the group's
-    /// sigio registrations went before, `kernel::sigio`).
-    fn pgrp_destroy(pg: &Pgrp) {
-        let r = hal::klock::reader();
-        if let Some(sess) = pg.session(&r)
-            && let Some(tp) = sess.s_ttyp.get()
-            && ptr::eq(tp.t_pgrp.get(), pg)
-        {
-            tp.t_pgrp.set(ptr::null());
-        }
-    }
-
-    /// `killjobc`'s controlling process: signal the foreground group, drain the terminal and
-    /// revoke access to it; the vnode's use count dropped. `s_ttyp` is not zeroed: it says the
-    /// session once had a controlling terminal (for logging and informational purposes).
+    /// `killjobc`'s controlling process: signal the foreground group, drain the controlling
+    /// terminal (`kernel::tty::session_hangup_tty`) and revoke access to it; the vnode's use
+    /// count dropped. `s_ttyp` is not zeroed: it says the session once had a controlling
+    /// terminal (for logging and informational purposes).
     fn session_hangup(sp: &Session) {
         if sp.s_ttyvp.get().is_none() {
             return;
         }
-        if let Some(tp) = sp.s_ttyp.get()
-            && ptr::eq(tp.t_session.get(), sp)
-        {
-            if let Some(pg) = tp.pgrp() {
-                sig_pgsignal(Some(pg), SIGHUP, true);
-            }
-            let _ = ttywait(tp);
+        if kernel::tty::session_hangup_tty(sp) {
             // The tty could have been revoked if we blocked.
             if let Some(vp) = sp.s_ttyvp.get() {
                 let _ = VOP_REVOKE(vp, REVOKEALL);
@@ -681,10 +659,6 @@ impl ProcGlue for BsdProcGlue {
 
     fn session_has_tty_vnode(sess: &Session) -> bool {
         sess.s_ttyvp.get().is_some()
-    }
-
-    fn session_ttydev(sess: &Session) -> Option<crate::sys::types::Dev> {
-        sess.s_ttyp.get().map(|tp| tp.t_dev.get())
     }
 
     fn pmap_activate(p: &Proc) {
@@ -1758,6 +1732,8 @@ mod tests {
         // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the
         // sigio registrations moved into kernel::sigio's registry: processpl 1376 -> 1360 and
         // pgrppl 152 -> 136 (ps_sigiolst and pg_sigiolst gone from the glue's members).
+        // N4.7b (the terminal into kernel::tty): sessionpl 144 -> 160, s_ttyp a counted tty
+        // handle under the kernel lock in kernel::proc's Session where the glue's link was.
         // N4.6a (the process core into kernel::{fork, exit}): processpl 1360 -> 1536 (+176,
         // the size pinned below; the parts are the fields' layouts): the pin tables are owned
         // tables in ReadMostly cells (2 x 64 where the glue's two `struct pinsyscall`s of
@@ -1807,7 +1783,7 @@ mod tests {
             [
                 ("processpl", 1536),
                 ("pgrppl", 136),
-                ("sessionpl", 144),
+                ("sessionpl", 160),
                 ("filepl", 184),
                 ("fdescpl", 560),
                 ("ucredpl", 120),

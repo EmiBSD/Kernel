@@ -177,8 +177,9 @@
 //!   for its direct `sosend`); a stashed message goes as a `UIO_SYSSPACE` uio borrowed from
 //!   the stash ([`Uio::kernel_write`]).
 //! - The console leg is the C's again: `cnwrite` when `constty` or `cn_devvp` is set, through
-//!   the [`TtyDevsw`] bridge (bridges.toml, paid at N7 with the console), else `cnputc` (LZ
-//!   always took the second, "`constty` and `cn_devvp` are NULL without the tty layer").
+//!   the `kernel::tty::TtyDevsw` bridge (bridges.toml, paid at N7 with the console; declared
+//!   here at N4.7a, moved to the terminal at N4.7b), else `cnputc` (LZ always took the
+//!   second, "`constty` and `cn_devvp` are NULL without the tty layer").
 //! - The stash's messages are `MArray`s of `M_LOG` (LZ: raw `malloc` blocks in
 //!   `Cell<Option<NonNull<u8>>>`s under an `unsafe impl Sync`), owned by the stash inside
 //!   `logstash_rwlock`; freeing one is dropping it.
@@ -191,7 +192,6 @@ use core::sync::atomic::{AtomicBool, AtomicI32, Ordering, fence};
 use hal::klock;
 use hal::malloc::{M_WAITOK, MArray};
 use hal::mutex::{Mutexed, MutexedGuard, SharedMutex};
-use hal::once::OnceStatic;
 use hal::pin::pin_static;
 use hal::rwlock::Rwlocked;
 use hal::sleep::{INFSLP, PCATCH};
@@ -622,8 +622,6 @@ pub struct LogDev<G: ProcGlue> {
     syslogf: Rwlocked<FileSlot<G::FileGlue>>,
     /// The log stash under `logstash_rwlock`.
     stash: Rwlocked<Logstash>,
-    /// The console's `cnwrite` and `constty || cn_devvp` ([`register_ttydevsw`]).
-    devsw: OnceStatic<&'static dyn TtyDevsw<G>>,
 }
 
 impl<G: ProcGlue> LogDev<G> {
@@ -639,7 +637,6 @@ impl<G: ProcGlue> LogDev<G> {
             tick: Timeout::new(logtick::<G>, ptr::null_mut()),
             syslogf: Rwlocked::new("syslogf", FileSlot::new()),
             stash: Rwlocked::new("logstash", Logstash::new()),
-            devsw: OnceStatic::new(),
         }
     }
 
@@ -722,18 +719,6 @@ static MSGBUFMAPPED: AtomicBool = AtomicBool::new(false);
 
 /// What `logread` sleeps on and `logtick` wakes (the C's `msgbufp`).
 static LOG_RDCHAN: u8 = 0;
-
-/// The console half of the device switch that `dosendsyslog` writes through when there is
-/// no `syslogd(8)` socket: `cnwrite` and the test in front of it. `bsd` implements it over
-/// `dev/cons.c` (`sys/kern/subr_log.rs`) and registers it ([`register_ttydevsw`]); a bridge
-/// of `bridges.toml`, paid when the console and the device switch move (N7).
-pub trait TtyDevsw<G: ProcGlue>: Sync {
-    /// `constty || cn_devvp`: the console is a terminal `cnwrite` reaches (a `TIOCCONS`
-    /// redirection, or `/dev/console` opened).
-    fn console_tty(&self) -> bool;
-    /// `cnwrite(0, uio, 0)`.
-    fn console_write(&self, uio: &mut Uio<'_, G>) -> Result<(), Errno>;
-}
 
 /// `logread_filtops`: `EVFILT_READ` on `/dev/klog`.
 pub struct LogRead;
@@ -849,12 +834,6 @@ pub fn msgbuf_size(which: Buf) -> Result<i64, Errno> {
 /// `log_open`: whether `/dev/klog` is open (`log()` writes to the console when it is not).
 pub fn log_open<G: ProcGlue>() -> bool {
     LogDev::<G>::get().open.load(Ordering::Relaxed)
-}
-
-/// Registers the console's half of the device switch (once; a second registration is
-/// ignored).
-pub fn register_ttydevsw<G: ProcGlue>(d: &'static dyn TtyDevsw<G>) {
-    let _ = LogDev::<G>::get().devsw.set(d);
 }
 
 /// `logopen`: `EBUSY` while open; arms the tick.
@@ -1319,7 +1298,7 @@ pub fn dosendsyslog<G: ProcGlue>(
         Some(fp) => fp.ops().write(fp, &mut auio, 0),
         None => {
             let _k = KernelHold::take();
-            match log.devsw.get() {
+            match crate::tty::console_bridge::<G>() {
                 Some(d) if d.console_tty() => {
                     let error = d.console_write(&mut auio);
                     let mut crlf = [Iovec::new()];
@@ -1422,6 +1401,7 @@ mod tests {
     use crate::event::{EVFILT_WRITE, test_knote, test_knote_drop};
     use crate::file::{File, FileOps};
     use crate::testutil::{self, TestFileData, TestStat, USER_BASE};
+    use crate::tty::{TtyDevsw, register_ttydevsw};
 
     /// The tests that use the global buffers (`LOG_MTX`) run one at a time.
     static BUFS: Mutex<()> = Mutex::new(());
@@ -1615,6 +1595,9 @@ mod tests {
         }
         fn is_write(&self) -> bool {
             false
+        }
+        fn set_resid(&mut self, resid: usize) {
+            self.room = self.got.len() + resid;
         }
     }
 
@@ -1866,6 +1849,16 @@ mod tests {
     impl TtyDevsw<Kg> for Console {
         fn console_tty(&self) -> bool {
             self.tty
+        }
+        fn stop(&self, _tp: &crate::tty::Tty<Kg>, _rw: i32) {}
+        fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn session_has_ttyvp(&self, _sess: &crate::proc::Session<Kg>) -> bool {
+            false
+        }
+        fn console_dev(&self) -> Option<hal::sys::types::Dev> {
+            None
         }
         fn console_write(&self, uio: &mut Uio<'_, Kg>) -> Result<(), Errno> {
             let iov = uio.uio_iov[0];

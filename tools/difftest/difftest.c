@@ -43,6 +43,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#include <sys/tty.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 
@@ -59,6 +60,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1385,6 +1388,255 @@ t_ostype(void)
 	printf("kern.ostype value: %s\n", s);
 }
 
+/*
+ * Terminals (tty.c, tty_pty.c, subr_log.c's sendsyslog): pairs from /dev/ptm's PTMGET (what
+ * openpty(3) does, without libutil), never their names, which depend on the ptys in use.
+ */
+static struct ptmget tty_pm;
+static pid_t tty_parent_pgrp;
+
+/* A pair from /dev/ptm; 0 when it opened. */
+static int
+tty_pair(void)
+{
+	int fd, r;
+
+	if ((fd = open(PATH_PTMDEV, O_RDWR)) == -1)
+		return -1;
+	r = ioctl(fd, PTMGET, &tty_pm);
+	close(fd);
+	return r;
+}
+
+static void
+tty_close_pair(void)
+{
+	close(tty_pm.cfd);
+	close(tty_pm.sfd);
+}
+
+/* Prints the bytes as C escapes. */
+static void
+tty_bytes(const char *name, const char *buf, ssize_t n)
+{
+	ssize_t i;
+
+	printf("%s: %zd \"", name, n);
+	for (i = 0; i < n; i++) {
+		if (buf[i] >= 0x20 && buf[i] < 0x7f && buf[i] != '\\' && buf[i] != '"')
+			putchar(buf[i]);
+		else
+			printf("\\x%02x", (unsigned char)buf[i]);
+	}
+	printf("\"\n");
+}
+
+/* One read of fd once poll(2) says it is readable (1 s), so a missing byte cannot hang. */
+static void
+tty_read(const char *name, int fd, size_t len)
+{
+	struct pollfd pfd;
+	char buf[128];
+	ssize_t n;
+
+	pfd.fd = fd;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	if (poll(&pfd, 1, 1000) != 1) {
+		printf("%s: not readable\n", name);
+		return;
+	}
+	if (len > sizeof(buf))
+		len = sizeof(buf);
+	errno = 0;
+	n = read(fd, buf, len);
+	if (n == -1)
+		printf("%s: -1 %s\n", name, ename(errno));
+	else
+		tty_bytes(name, buf, n);
+}
+
+static void
+tty_write(const char *name, int fd, const char *s)
+{
+	R(name, write(fd, s, strlen(s)));
+}
+
+/* A child that is not a session leader. */
+static void
+child_tty_not_leader(void)
+{
+	R("child TIOCSCTTY not a session leader", ioctl(tty_pm.sfd, TIOCSCTTY));
+}
+
+/* A session leader without a terminal, then with the pty's slave as its terminal. */
+static void
+child_tty_session(void)
+{
+	int fd, pg;
+
+	OK("child setsid", setsid() != -1);
+	R("child open /dev/tty without a terminal", open("/dev/tty", O_RDWR));
+	R("child TIOCSPGRP not its terminal", ioctl(tty_pm.sfd, TIOCSPGRP, &tty_parent_pgrp));
+	R("child TIOCSCTTY", ioctl(tty_pm.sfd, TIOCSCTTY));
+	pg = -1;
+	R("child TIOCGPGRP", ioctl(tty_pm.sfd, TIOCGPGRP, &pg));
+	printf("child terminal's group is its own: %d\n", pg == getpgrp());
+	R("child TIOCSPGRP another session's group",
+	    ioctl(tty_pm.sfd, TIOCSPGRP, &tty_parent_pgrp));
+	pg = 0;
+	R("child TIOCSPGRP group 0", ioctl(tty_pm.sfd, TIOCSPGRP, &pg));
+	pg = getpgrp();
+	R("child TIOCSPGRP its own group", ioctl(tty_pm.sfd, TIOCSPGRP, &pg));
+	fd = open("/dev/tty", O_RDWR);
+	OK("child open /dev/tty", fd >= 0);
+	R("child TIOCNOTTY by the leader", ioctl(fd, TIOCNOTTY));
+	close(fd);
+}
+
+static void
+t_tty(void)
+{
+	struct termios t;
+	struct winsize ws, ws2;
+	int mib[3], v, one, zero;
+	size_t i, len;
+
+	section("tty");
+	tty_parent_pgrp = getpgrp();
+	if (tty_pair() == -1) {
+		printf("PTMGET: -1 %s\n", ename(errno));
+		return;
+	}
+	printf("PTMGET: ok\n");
+
+	/* A fresh slave has ttydefaults.h's settings. */
+	R("tcgetattr", tcgetattr(tty_pm.sfd, &t));
+	printf("iflag 0x%x oflag 0x%x cflag 0x%x lflag 0x%x ispeed %d ospeed %d\n",
+	    t.c_iflag, t.c_oflag, t.c_cflag, t.c_lflag, (int)cfgetispeed(&t),
+	    (int)cfgetospeed(&t));
+	printf("cc");
+	for (i = 0; i < NCCS; i++)
+		printf(" %d", t.c_cc[i]);
+	printf("\n");
+	t.c_lflag |= ICANON | ECHO;
+	R("tcsetattr", tcsetattr(tty_pm.sfd, TCSANOW, &t));
+	R("tcgetattr again", tcgetattr(tty_pm.sfd, &t));
+	printf("lflag 0x%x\n", t.c_lflag);
+
+	/* Canonical input: erase and kill, and their echo on the master. */
+	tty_write("write a line with an erase", tty_pm.cfd, "ab\177c\n");
+	tty_read("echo of the line", tty_pm.cfd, 64);
+	tty_read("read the line", tty_pm.sfd, 64);
+	tty_write("write a killed line", tty_pm.cfd, "xyz\025q\n");
+	tty_read("echo of the killed line", tty_pm.cfd, 64);
+	tty_read("read after the kill", tty_pm.sfd, 64);
+
+	/* Raw input: VMIN and VTIME. */
+	t.c_lflag &= ~(ICANON | ECHO);
+	t.c_cc[VMIN] = 1;
+	t.c_cc[VTIME] = 0;
+	R("tcsetattr raw", tcsetattr(tty_pm.sfd, TCSANOW, &t));
+	tty_write("write two bytes", tty_pm.cfd, "xy");
+	v = -1;
+	R("FIONREAD", ioctl(tty_pm.sfd, FIONREAD, &v));
+	printf("FIONREAD value: %d\n", v);
+	tty_read("read VMIN 1 one byte", tty_pm.sfd, 1);
+	tty_read("read VMIN 1 the other", tty_pm.sfd, 64);
+	t.c_cc[VMIN] = 0;
+	t.c_cc[VTIME] = 1;
+	R("tcsetattr VMIN 0 VTIME 1", tcsetattr(tty_pm.sfd, TCSANOW, &t));
+	{
+		char c;
+
+		R("read VMIN 0 VTIME 1 nothing", read(tty_pm.sfd, &c, 1));
+	}
+	v = -1;
+	R("TIOCOUTQ", ioctl(tty_pm.sfd, TIOCOUTQ, &v));
+	printf("TIOCOUTQ value: %d\n", v);
+
+	/* The window size, set on the slave and read on the master. */
+	memset(&ws, 0, sizeof(ws));
+	ws.ws_row = 24;
+	ws.ws_col = 80;
+	R("TIOCSWINSZ", ioctl(tty_pm.sfd, TIOCSWINSZ, &ws));
+	memset(&ws2, 0, sizeof(ws2));
+	R("TIOCGWINSZ master", ioctl(tty_pm.cfd, TIOCGWINSZ, &ws2));
+	printf("winsize %d x %d\n", ws2.ws_row, ws2.ws_col);
+
+	/* Not this process's terminal: root may still read the (absent) group. */
+	v = 0;
+	R("TIOCGPGRP not the terminal", ioctl(tty_pm.sfd, TIOCGPGRP, &v));
+	printf("TIOCGPGRP value: %d\n", v);
+	in_child("TIOCSCTTY by a non-leader", child_tty_not_leader);
+
+	/* Packet mode: a flush of the slave's queues is the master's next read. */
+	one = 1;
+	R("TIOCPKT on", ioctl(tty_pm.cfd, TIOCPKT, &one));
+	tty_write("write before the flush", tty_pm.cfd, "zz");
+	R("tcflush TCIOFLUSH", tcflush(tty_pm.sfd, TCIOFLUSH));
+	tty_read("master read in packet mode", tty_pm.cfd, 64);
+	zero = 0;
+	R("TIOCPKT off", ioctl(tty_pm.cfd, TIOCPKT, &zero));
+
+	/* The master goes away. */
+	R("close master", close(tty_pm.cfd));
+	tty_read("slave read after the master closed", tty_pm.sfd, 64);
+	tty_read("slave read again", tty_pm.sfd, 64);
+	tty_write("slave write after the master closed", tty_pm.sfd, "x");
+	close(tty_pm.sfd);
+
+	/* revoke(2) of the slave's name. */
+	OK("PTMGET for revoke", (one = tty_pair()) == 0);
+	if (one == 0) {
+		R("revoke the slave", revoke(tty_pm.sn));
+		tty_read("slave read after revoke", tty_pm.sfd, 64);
+		tty_write("slave write after revoke", tty_pm.sfd, "x");
+		tty_close_pair();
+	}
+
+	/* A session and its terminal; the leader's exit revokes it. */
+	OK("PTMGET for a session", (one = tty_pair()) == 0);
+	if (one == 0) {
+		in_child("session leader", child_tty_session);
+		tty_read("slave read after the leader exited", tty_pm.sfd, 64);
+		tty_close_pair();
+	}
+
+	/* sendsyslog(2) with a log socket: syslogd's when it runs, ours when /dev/klog is free. */
+	{
+		int klog, sv[2] = { -1, -1 }, fd;
+
+		klog = open("/dev/klog", O_RDONLY);
+		if (klog >= 0 && socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) == 0) {
+			fd = sv[0];
+			if (ioctl(klog, LIOCSFD, &fd) == -1)
+				printf("LIOCSFD: -1 %s\n", ename(errno));
+			close(sv[0]);
+		}
+		R("sendsyslog", sendsyslog("<13>difftest", 12, 0));
+		R("sendsyslog bad pointer", sendsyslog((const char *)1, 5, 0));
+		if (klog >= 0)
+			close(klog);
+		if (sv[1] >= 0)
+			close(sv[1]);
+	}
+
+	/* kern.tty.ttyinfo is an array of struct itty; kern.msgbufsize is positive. */
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_TTY;
+	mib[2] = KERN_TTY_INFO;
+	len = 0;
+	R("kern.tty.ttyinfo size", sysctl(mib, 3, NULL, &len, NULL, 0));
+	printf("sizeof itty %zu, a multiple: %d\n", sizeof(struct itty),
+	    len > 0 && len % sizeof(struct itty) == 0);
+	mib[1] = KERN_MSGBUFSIZE;
+	len = sizeof(v);
+	v = 0;
+	R("kern.msgbufsize", sysctl(mib, 2, &v, &len, NULL, 0));
+	printf("kern.msgbufsize positive: %d\n", v > 0);
+}
+
 static const struct {
 	const char *name;
 	void (*fn)(void);
@@ -1403,6 +1655,7 @@ static const struct {
 	{ "mmapfile", t_mmapfile },
 	{ "sysctl", t_sysctl },
 	{ "ostype", t_ostype },
+	{ "tty", t_tty },
 };
 
 /*

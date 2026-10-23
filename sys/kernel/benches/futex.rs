@@ -48,7 +48,7 @@ use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
 use hal::sys::errno::Errno;
 use hal::sys::futex::{FUTEX_WAIT_PRIVATE, FUTEX_WAKE, FUTEX_WAKE_PRIVATE};
 use hal::user::UserPtr;
-use kernel::proc::{self, Pgrp, ProcGlue, ProcTables, Process, Session, Thread};
+use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
 
 // ---------------------------------------------------------------------------------------
@@ -133,7 +133,6 @@ impl ProcGlue for BenchGlue {
         &SCHED
     }
 
-    fn pgrp_destroy(_pg: &Pgrp<Self>) {}
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}

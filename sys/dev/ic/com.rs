@@ -99,8 +99,9 @@
 //!   line status bytes in pairs, as the C.
 //! - The major number lookups (`cdevsw[maj].d_open == comopen`) compare function addresses
 //!   with `ptr::fn_addr_eq` (`docs/C_TO_RUST.md`).
-//! - `com_detach` frees the tty with `ttyfree` (which is `unsafe`: the tty must be idle),
-//!   after `vdevgone` revoked every vnode of the port, as the C.
+//! - `com_detach` retires the tty with `ttyfree` after `vdevgone` revoked every vnode of
+//!   the port, as the C; the tty itself is never freed (`ttymalloc` leaks its counted
+//!   handle until N7), so the raw `sc_tty` the softc keeps never dangles.
 //! - The interrupt is established under the softc's name, read as a `'static` string from
 //!   `dv_xname` ([`Device::xname`]).
 
@@ -230,7 +231,10 @@ pub fn com_sc(unit: i32) -> Option<&'static ComSoftc> {
 /// The softc and tty of an open port (`sc->sc_tty` is set by `comopen`).
 fn com_sc_tty(dev: Dev) -> Result<(&'static ComSoftc, &'static Tty), Errno> {
     let sc = com_sc(devunit(dev)).ok_or(Errno::ENXIO)?;
-    // SAFETY: `sc_tty` is null or `ttymalloc`'s, freed only by `com_detach`.
+    // SAFETY: `sc_tty` is null or the `&'static` tty `ttymalloc` gave `com_attach_subr`,
+    // whose counted handle was leaked: the tty is never freed (`ttyfree` in `com_detach`
+    // retires it and keeps its pool item), so a non-null `sc_tty` always points at a live
+    // `Tty`.
     let tp = unsafe { sc.sc_tty.get().as_ref() }.ok_or(Errno::ENXIO)?;
     Ok((sc, tp))
 }
@@ -342,9 +346,10 @@ pub fn com_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     // Detach and free the tty.
     if let Some(tp) = NonNull::new(sc.sc_tty.get().cast_mut()) {
         sc.sc_tty.set(ptr::null());
-        // SAFETY: the vnodes are gone, the soft interrupt is disestablished and the port is
-        // marked dead, so nothing uses the tty any more.
-        unsafe { ttyfree(tp) };
+        // SAFETY: `sc_tty` holds the `&'static` tty `ttymalloc` gave `com_attach_subr` (its
+        // handle leaked, so the tty is never freed); the vnodes are gone, the soft interrupt is
+        // disestablished and the port is marked dead, so nothing uses the tty any more.
+        unsafe { ttyfree(tp.as_ref()) };
     }
 
     Ok(())
@@ -465,8 +470,8 @@ pub fn comopen(dev: Dev, flag: i32, _mode: i32, p: &Proc) -> Result<(), Errno> {
     };
     splx(s);
 
-    tp.t_oproc.set(Some(comstart));
-    tp.t_param.set(Some(comparam));
+    tp.set_oproc(Some(comstart));
+    tp.set_param(Some(comparam));
     tp.t_dev.set(dev);
     let s = if !tp.t_state_isset(TS_ISOPEN) {
         tp.t_state_set(TS_WOPEN);
@@ -496,7 +501,7 @@ pub fn comopen(dev: Dev, flag: i32, _mode: i32, p: &Proc) -> Result<(), Errno> {
         let s = spltty();
 
         sc.sc_initialize.set(1);
-        let _ = comparam(tp, &tp.t_termios.get());
+        let _ = comparam(tp, &tp.termios());
         ttsetwater(tp);
 
         sc.sc_ibuf.set(0);

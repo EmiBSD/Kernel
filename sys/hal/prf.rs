@@ -47,6 +47,14 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 pub trait Printf: Sync {
     /// `printf(fmt, ...)`: `args` formatted onto the console and into the message buffer.
     fn printf(&self, args: fmt::Arguments<'_>);
+
+    /// `log(level, fmt, ...)` (`log(9)`): `args` into the message buffer after its
+    /// `<level>` priority, and onto the console while `/dev/klog` is closed. The default
+    /// prints the line (a `printf` without a log).
+    fn log(&self, level: i32, args: fmt::Arguments<'_>) {
+        let _ = level;
+        self.printf(args);
+    }
 }
 
 /// `printf(9)`: `args` to the console and the message buffer; dropped (and counted) before
@@ -54,6 +62,18 @@ pub trait Printf: Sync {
 pub fn printf(args: fmt::Arguments<'_>) {
     match bridges::printf() {
         Some(p) => p.printf(args),
+        None => {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// `log(9)`: `args` at priority `level` (`LOG_ERR`, ...) into the message buffer, and onto the
+/// console while nobody reads `/dev/klog`; dropped (and counted) before `printf` is
+/// registered.
+pub fn log(level: i32, args: fmt::Arguments<'_>) {
+    match bridges::printf() {
+        Some(p) => p.log(level, args),
         None => {
             DROPPED.fetch_add(1, Ordering::Relaxed);
         }
@@ -77,6 +97,14 @@ mod tests {
         testutil::install();
         printf(format_args!("prf{} ok\n", 7));
         assert!(testutil::printf_saw("prf7 ok\n"));
+    }
+
+    #[test]
+    fn a_log_line_reaches_the_bridge() {
+        testutil::install();
+        // the double keeps `Printf::log`'s default: the line through its printf
+        log(3, format_args!("prf log {}\n", 3));
+        assert!(testutil::printf_saw("prf log 3\n"));
     }
 }
 /* </TESTS> */

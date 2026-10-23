@@ -53,127 +53,15 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! System wide defaults for terminal state: `<sys/ttydefaults.h>`.
+//! System wide defaults for terminal state, `<sys/ttydefaults.h>`, for `bsd`: the kernel's
+//! (`kernel::termios`, N4.7a) under the path the drivers name.
 //!
 //! Upstream: sys/sys/ttydefaults.h @ 3ce1f3f79392
+//! LZ: sys/sys/ttydefaults.rs@3c62ede68802
 //!
-//! ## Deviations
-//! - `ttydefchars[]` (behind `TTYDEFCHARS` in C) is always defined, as [`TTYDEFCHARS`].
+//! ## Redesign
+//! - N4.7b: every item is `kernel::termios`'s (one module for termios.h, ttycom.h and
+//!   ttydefaults.h).
 
-use crate::sys::termios::{
-    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS8, Cc, ECHO, ECHOCTL, ECHOE, ECHOKE, HUPCL, ICANON,
-    ICRNL, IEXTEN, IMAXBEL, ISIG, IXANY, IXON, NCCS, ONLCR, OPOST, Speed, Tcflag,
-};
-
-// Defaults on "first" open.
-
-/// Default input flags.
-pub const TTYDEF_IFLAG: Tcflag = BRKINT | ICRNL | IMAXBEL | IXON | IXANY;
-/// Default output flags.
-pub const TTYDEF_OFLAG: Tcflag = OPOST | ONLCR;
-/// Default local flags.
-pub const TTYDEF_LFLAG: Tcflag = ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOKE | ECHOCTL;
-/// Default control flags.
-pub const TTYDEF_CFLAG: Tcflag = CREAD | CS8 | HUPCL;
-/// Default speed.
-pub const TTYDEF_SPEED: Speed = B9600;
-
-// Control Character Defaults
-
-/// `CTRL(x)`: the control character of `x`.
-pub const fn ctrl(x: u8) -> Cc {
-    x & 0o37
-}
-
-/// End of file.
-pub const CEOF: Cc = ctrl(b'd');
-/// End of line (avoids `_POSIX_VDISABLE`).
-pub const CEOL: Cc = 0o377;
-/// Erase.
-pub const CERASE: Cc = 0o177;
-/// Interrupt.
-pub const CINTR: Cc = ctrl(b'c');
-/// Status (avoids `_POSIX_VDISABLE`).
-pub const CSTATUS: Cc = 0o377;
-/// Kill.
-pub const CKILL: Cc = ctrl(b'u');
-/// Minimum characters for a non-canonical read.
-pub const CMIN: Cc = 1;
-/// Quit (FS, `^\`).
-pub const CQUIT: Cc = 0o34;
-/// Suspend.
-pub const CSUSP: Cc = ctrl(b'z');
-/// Timeout for a non-canonical read.
-pub const CTIME: Cc = 0;
-/// Delayed suspend.
-pub const CDSUSP: Cc = ctrl(b'y');
-/// Start output.
-pub const CSTART: Cc = ctrl(b'q');
-/// Stop output.
-pub const CSTOP: Cc = ctrl(b's');
-/// Literal next.
-pub const CLNEXT: Cc = ctrl(b'v');
-/// Discard output.
-pub const CDISCARD: Cc = ctrl(b'o');
-/// Word erase.
-pub const CWERASE: Cc = ctrl(b'w');
-/// Reprint line.
-pub const CREPRINT: Cc = ctrl(b'r');
-/// End of transmission.
-pub const CEOT: Cc = CEOF;
-// compat
-/// Break (compat).
-pub const CBRK: Cc = CEOL;
-/// Reprint (compat).
-pub const CRPRNT: Cc = CREPRINT;
-/// Flush (compat).
-pub const CFLUSH: Cc = CDISCARD;
-
-/// `ttydefchars[NCCS]`: the default control characters, indexed by `V*`.
-pub const TTYDEFCHARS: [Cc; NCCS] = [
-    CEOF,
-    CEOL,
-    CEOL,
-    CERASE,
-    CWERASE,
-    CKILL,
-    CREPRINT,
-    _POSIX_VDISABLE,
-    CINTR,
-    CQUIT,
-    CSUSP,
-    CDSUSP,
-    CSTART,
-    CSTOP,
-    CLNEXT,
-    CDISCARD,
-    CMIN,
-    CTIME,
-    CSTATUS,
-    _POSIX_VDISABLE,
-];
+pub use kernel::termios::*;
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sys::termios::{VEOF, VEOL, VEOL2, VERASE};
-
-    #[test]
-    fn control_characters() {
-        assert_eq!(ctrl(b'd'), 4);
-        assert_eq!(CEOF, 4);
-        assert_eq!(CINTR, 3);
-        assert_eq!(CQUIT, 0o34);
-        assert_eq!(TTYDEFCHARS[VEOF as usize], CEOF);
-        assert_eq!(TTYDEFCHARS[VEOL as usize], CEOL);
-        assert_eq!(TTYDEFCHARS[VEOL2 as usize], CEOL);
-        assert_eq!(TTYDEFCHARS[VERASE as usize], CERASE);
-        assert_eq!(TTYDEFCHARS[7], 0o377);
-        assert_eq!(TTYDEFCHARS[19], 0o377);
-        assert_eq!(TTYDEF_CFLAG, 0x0800 | 0x0300 | 0x4000);
-        assert_eq!(TTYDEF_SPEED, 9600);
-    }
-}
-/* </TESTS> */
