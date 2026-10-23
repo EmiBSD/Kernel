@@ -2541,6 +2541,14 @@ pub(crate) mod tests {
             error
         }
 
+        fn pledge_sysctl(
+            _p: &Thread<Self>,
+            _mib: &[i32],
+            _new: usize,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
+        }
+
         fn process_ref(pr: &Process<Self>) -> crate::proc::ProcessRef<Self> {
             match hal::pool::PoolArc::from_ref(pr) {
                 Some(a) => crate::proc::StaticOrPooled::Pooled(a),

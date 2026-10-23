@@ -679,6 +679,9 @@ daemon:\\
 /// `/etc/rc`, run by `init(8)` as `sh /etc/rc autoboot`: ours, minimal (OpenBSD's full `rc`
 /// belongs to later milestones). The root file system comes up read-only from the ramdisk;
 /// the files `login(1)` writes must exist (`utmp`, `wtmp`, `lastlog`, `failedlogin`).
+/// `dev_mkdb` writes `/var/run/dev.db` as OpenBSD's `rc` does after its `mount -a`
+/// (`etc/rc:597-599`): devname(3) and ttyname(3) look a device up there, and the programs
+/// that unveil only that file (tty(1), pstat(8)) find no name without it.
 const RC: &str = "\
 # /etc/rc of the EmiBSD ramdisk: a minimal version, OpenBSD's full rc comes later.
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
@@ -686,6 +689,9 @@ export PATH
 umask 022
 
 mount -uw / || echo 'rc: mount -uw / failed; the root stays read-only'
+
+# Build the /dev database, as OpenBSD's rc does.
+dev_mkdb
 
 for f in /var/run/utmp /var/log/wtmp /var/log/lastlog /var/log/failedlogin; do
 \t[ -f $f ] || : > $f

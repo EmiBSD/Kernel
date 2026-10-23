@@ -262,6 +262,8 @@ const VARIANTS: &[Variant] = &[
     Variant::statically("usr.bin/script"),
     Variant::statically("usr.bin/tty"),
     Variant::statically("usr.sbin/pstat"),
+    // dev_mkdb(8), which /etc/rc runs as OpenBSD's does.
+    Variant::statically("usr.sbin/dev_mkdb"),
     Variant::statically("sbin/dhcpleased"),
     Variant::statically("sbin/resolvd"),
     Variant::statically("sbin/slaacd"),
@@ -467,6 +469,10 @@ const PROGRAMS: &[&str] = &[
     "usr.bin/script",
     "usr.bin/tty",
     "usr.sbin/pstat",
+    // /var/run/dev.db, which /etc/rc builds at boot as OpenBSD's does (`etc/rc`, "Build kvm(3)
+    // and /dev databases"): devname(3) and ttyname(3) read it, and tty(1) and pstat(8)
+    // unveil it alone, so without it they cannot name a terminal.
+    "usr.sbin/dev_mkdb",
 ];
 
 /// Scripts that a Makefile's `afterinstall` rule installs next to the program: (directory, files).

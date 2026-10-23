@@ -97,6 +97,16 @@ pub trait Malloc: Sync {
     /// calls it (from `MBox`'s drop and `into_inner`), since the registered object never
     /// leaves `hal` (`bridges::malloc` is crate-private).
     fn free(&self, ptr: NonNull<u8>, ty: i32, size: usize);
+    /// `nkmempages`: the pages of `kmem_map` (`vm.nkmempages`, N4.6b); 0 for an allocator
+    /// without one (the tests' doubles).
+    fn nkmempages(&self) -> i32 {
+        0
+    }
+}
+
+/// `nkmempages` of the registered allocator (`vm.nkmempages`); 0 before registration.
+pub fn nkmempages() -> i32 {
+    bridges::malloc().map_or(0, |m| m.nkmempages())
 }
 
 /// A `T` in a block of `malloc(9)` of type `ty`, owned: `Deref`/`DerefMut`, the drop drops the

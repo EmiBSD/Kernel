@@ -1671,7 +1671,7 @@ notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cp
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/clockintr.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1820,7 +1820,8 @@ kind = "moved"
 [[module]]
 rust = "sys/arch/arm64/dev/mainbus.rs"
 lz = ["sys/arch/arm64/dev/mainbus.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/dev/pci_machdep.rs"
@@ -3000,7 +3001,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/acpi/dsdt.rs"
 lz = ["sys/dev/acpi/dsdt.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/dev/acpi/ipmi_acpi.rs"
@@ -3493,7 +3495,8 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 [[module]]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -5019,7 +5022,8 @@ adapted_by = ["sys/crypto/siphash.rs"]
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_rrip.rs"
 lz = ["sys/isofs/cd9660/cd9660_rrip.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_util.rs"
@@ -5616,8 +5620,9 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/clockintr.rs"]
-notes = "N4.8a: kern.clockintr served (kernel::clockintr::sysctl_clockintr), LZ's unported! closed"
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs"]
+notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
+
 
 [[module]]
 rust = "sys/kern/kern_tc.rs"
@@ -5713,7 +5718,7 @@ status = "inherited"
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs"]
+adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress"
 
 [[module]]
@@ -5921,7 +5926,8 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 [[module]]
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -5954,7 +5960,7 @@ status = "inherited"
 rust = "sys/kern/uipc_syscalls.rs"
 lz = ["sys/kern/uipc_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_usrreq.rs"
@@ -5966,7 +5972,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_bio.rs"
 lz = ["sys/kern/vfs_bio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/hal/thread.rs", "sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_biomem.rs"
@@ -6011,7 +6017,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_sync.rs"
@@ -6751,7 +6757,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/route.rs"
 lz = ["sys/net/route.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/sys/sysctl.rs"]
 notes = "M7b: every constant (RTF_* u32, RTM_* u8, RTA_* i32, RTAX_* usize, RTP_* u8, RTV_* u32), rt_kmetrics (Cells, rmx_mtu atomic, assign for the structure copy), rt_metrics, rtstat, rt_tableinfo, rt_msghdr, sockaddr_rtlabel/rtdns/rtstatic/rtsearch, enum rtstat_counters, ROUTE_FILTER, srtdnstosa; struct rtentry (&'static pool item, Cells and atomics, all-zero valid; rt_use/rt_expire/rt_locks/rt_mtu methods, ifa() panics without an address), rt_addrinfo (rti_flags u32), struct route (Cells; ro_dstsin6/ro_srcin6 are byte arrays until netinet6/in6.h, so wip), rttimer_queue, rttimer (private to route.c in C, here with its queue), rt_label, rtstat_inc (one atomic array: percpu.h not ported); MPLS/BFD/INET6 parts not configured; M9+: ro_dstsin6/ro_srcin6 are SockaddrIn6/In6Addr"
 
 [[module]]
@@ -6882,7 +6889,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_id.rs"
@@ -6892,7 +6900,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6986,7 +6995,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
@@ -7021,7 +7031,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
@@ -7077,7 +7088,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
@@ -7157,7 +7169,8 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
 [[module]]
 rust = "sys/nfs/nfs_boot.rs"
 lz = ["sys/nfs/nfs_boot.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sysctl.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_debug.rs"
@@ -7849,7 +7862,8 @@ notes = "N4.4: struct selinfo is sys/kernel/select.rs's Selinfo<G> (a kernel-loc
 [[module]]
 rust = "sys/sys/sensors.rs"
 lz = ["sys/sys/sensors.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/sys/sysctl.rs"]
 
 [[module]]
 rust = "sys/hal/sys/timetc.rs"
@@ -7956,7 +7970,15 @@ license = "none"
 [[module]]
 rust = "sys/sys/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats, cpustats and mbstat AbiPod through hal::abi_pod! here; 0 unsafe (LZ 17), forbid on its mod line"
+
+[[module]]
+rust = "sys/hal/sys/sysctl.rs"
+crate = "hal"
+lz = ["sys/sys/sysctl.rs"]
+status = "redesigned"
+notes = "N4.6b: sysctl.h's ids, name tables and structures moved into hal so kernel::sysctl and bsd share one copy; kinfo_proc and kinfo_file AbiPod through hal::abi_pod! (LZ: two MaybeUninit::zeroed and bsd's SysctlPlain impls); bsd's sys/sys/sysctl.rs re-exports it"
 
 [[module]]
 rust = "sys/hal/sys/syslimits.rs"
@@ -10713,7 +10735,78 @@ rust = "sys/kernel/sysctl.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "redesigned"
-notes = "N4.7b and N4.8a (before N4.6b's sysctl core, which inherits the file; merged on n4/clock): the SysctlNode trait (decision 46: a *_sysctl the C dispatches by hand; nodes kernel::tty's, kernel::tc::TcNode, kernel::clockintr::ClockintrNode), SysctlReq (moved from kernel::vm::meter, re-exported there), sysctl_rdint, sysctl_int_bounded, sysctl_rdquad, sysctl_rdstruct, sysctl_string and sysctl_rdstring as rdint/int_bounded/rdquad/rdstruct/string/rdstring over hal::user::UserPtr with the C's checks and errnos; the dispatch and the other helpers stay bsd's kern_sysctl.rs"
+notes = "N4.6b: sysctl's core (N4.7b's SysctlNode/SysctlReq/rdquad/rdstruct kept): the helpers over hal::user::UserPtr, sys_sysctl and its dispatch over a registry of SysctlNodes (the lock sets and the error order the dispatcher's data), sysctl_vslock as the VsLock guard, kern and hw trees, sysctl_doproc and fill_kproc over kernel::proc (p_tsess for root only, N4.7 decision 8), proc_args over uvm_io into an MArray, proc_cwd over FileGlue::getcwd, disknames/diskstats owned by sysctl_disklock's Rwlocked through the DiskExport bridge, hostname/domainname Rwlocked, hw_vendor.. OnceStatics, cpu_cpuspeed and the BatteryCharge setters registered; N4.8a (merged on n4/clock): rdint, int_bounded, string, rdstring were N4.8a's too, kept as main's, N4.8a's four tests added; kern.timecounter and kern.clockintr are kernel::tc::TcNode and kernel::clockintr::ClockintrNode"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::PLEDGE_UNVEIL"
+native = ["sys/hal/sys/pledge.rs::PLEDGE_UNVEIL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::BatterySetFn"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::hw_battery_setchargemode"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::hw_battery_setchargestart"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::hw_battery_setchargestop"
+native = ["BatteryCharge"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKNAMES"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKNAMESLEN"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKSTATS"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::DISKSTATSLEN"
+native = ["DiskExports"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::ARG_MAX"
+native = ["ARG_MAX_VAR"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::NGROUPS_MAX"
+native = ["NGROUPS_MAX_VAR"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::sysctl_vsunlock"
+native = ["VsLock::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::sysctl_msgbuf"
+native = ["sys/kernel/log.rs::sysctl_msgbuf"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::diskstats_mut"
+native = []
+kind = "dropped"
+reason = "the diskstats array is an MArray owned by sysctl_disklock's Rwlocked state (kernel::sysctl::DiskExports): its slice comes from the guard, no raw view"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

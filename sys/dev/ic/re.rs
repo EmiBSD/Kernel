@@ -2110,9 +2110,9 @@ pub fn re_init(ifp: &'static Ifnet) -> Result<(), Errno> {
     // Default on PC Engines APU1 is to have all LEDs off unless there is network activity.
     // Override to provide a link status LED.
     if sc.sc_hwrev.get() == RL_HWREV_8168E {
-        // SAFETY: `hw_vendor`/`hw_prod` are written once by the machine's attach, which
-        // precedes any interface init.
-        let (vendor, prod) = unsafe { (hw_vendor.read(), hw_prod.read()) };
+        // `hw_vendor`/`hw_prod` are set once by the machine's attach (kernel::sysctl's
+        // OnceStatics), which precedes any interface init.
+        let (vendor, prod) = (hw_vendor.read(), hw_prod.read());
         if vendor == Some(&b"PC Engines"[..]) && prod == Some(&b"APU"[..]) {
             sc.csr_setbit_1(RL_CFG4, RL_CFG4_CUSTOM_LED);
             sc.csr_write_1(RL_LEDSEL, RL_LED_LINK | RL_LED_ACT << 4);

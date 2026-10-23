@@ -26,18 +26,19 @@
 //! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
 //! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
-//! futex(2) (`FutexEntry`, N4.6c) and the process system calls' forty-six (`ProcEntries`,
-//! N4.6a), which run the system call prologue still in `bsd` (pledge, the pinned syscalls)
-//! before `kernel::pipe`, `kernel::vm`, `kernel::descrip`, `kernel::event`,
-//! `kernel::select`, `kernel::log`, `kernel::futex` and the process modules,
-//! `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`, `sys/kern/kern_descrip.rs`,
-//! `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`, `sys/kern/subr_log.rs`,
-//! `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`); an entry moves to a `kernel` function
+//! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
+//! N4.6a) and sysctl(2) (`SysctlEntry`, N4.6b), which run the system call prologue still in
+//! `bsd` (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`,
+//! `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`, `kernel::futex`, the
+//! process modules and `kernel::sysctl`, `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
+//! `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`,
+//! `sys/kern/subr_log.rs`, `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`,
+//! `sys/kern/kern_sysctl.rs`); an entry moves to a `kernel` function
 //! when its subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
-    KernelApi, ProcEntries, SyscallHandler, VmEntries,
+    KernelApi, ProcEntries, SyscallHandler, SysctlEntry, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -68,6 +69,7 @@ pub const fn table(
     sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
     futex: FutexEntry,
     proc: ProcEntries,
+    sysctl: SysctlEntry,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -81,6 +83,7 @@ pub const fn table(
         sendsyslog,
         futex,
         proc,
+        sysctl,
     )
 }
 
@@ -477,8 +480,25 @@ mod tests {
         Err(nr as i32)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn sysctl(
+        nr: Register,
+        _: usize,
+        _: u32,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: &mut Rval,
+    ) -> SysResult {
+        Err(nr as i32)
+    }
+
     static API: KernelApi = table(
-        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
+        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
     );
 
     #[test]
@@ -507,6 +527,7 @@ mod tests {
         assert_eq!((API.futex)(83, 0, 0, 0, 0, 0, &mut rval), Err(83));
         assert_eq!((API.proc.fork)(2, &mut rval), Err(2));
         assert_eq!((API.proc.setrtable)(310, 0, &mut rval), Err(310));
+        assert_eq!((API.sysctl)(202, 0, 0, 0, 0, 0, 0, &mut rval), Err(202));
     }
 }
 /* </TESTS> */

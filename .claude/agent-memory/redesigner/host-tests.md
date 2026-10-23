@@ -28,3 +28,4 @@ metadata:
 - Signals in a kernel test need the thread in `ps_threads`, `siginit` and `test_sigacts` (kernel::tty's `world()`), or pgsignal finds no one to deliver to.
 - A kernel test whose path reaches `klock::reader()`/`witness()` (wait4, acct's session) panics "the kernel lock is not held": take `hal::klock::kernel_lock()` once per test thread in the setup (the double counts it), as a system call would.
 - `kernel::test_proc_glue!(Name, Files, { fn hook(..) {..} })` overrides glue members (N4.6a); a second glue in one test module needs its own `mod` (the link types are module items), and a test process put in a pgrp/session is leaked with `mem::forget` (dropping it linked panics).
+- `test_proc_glue!`'s tables are per test thread (a thread_local `ProcTables`): a list walk (`sysctl_doproc`) sees only the processes its own thread made, so an error that needs a process looked at (an unknown op's EINVAL) needs one put on the list first.

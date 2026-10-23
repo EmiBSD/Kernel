@@ -466,6 +466,9 @@ pub trait Uptime: Sync {
     fn getnanouptime(&self) -> Timespec;
     /// `nanotime(&ts)`: the time of day (`CLOCK_REALTIME`).
     fn nanotime(&self) -> Timespec;
+    /// `nanoboottime(&ts)`: the time of day the system booted (N4.6b, `kinfo_proc`'s
+    /// start times).
+    fn nanoboottime(&self) -> Timespec;
 }
 
 /// Registers the [`Uptime`] bridge, once; a second call keeps the first and names it.
@@ -633,6 +636,12 @@ pub fn sysctl_clockrate(req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Er
     let mut bytes = [0u8; size_of::<crate::time::Clockinfo>()];
     let _ = hal::user::pod_to_bytes(&clkinfo, &mut bytes);
     crate::sysctl::rdstruct(req, &bytes)
+}
+
+/// `nanoboottime(9)`: the time of day the system booted (zero before the bridge is
+/// registered).
+pub fn nanoboottime() -> Timespec {
+    UPTIME.get().map_or(Timespec::ZERO, |u| u.nanoboottime())
 }
 
 /// `tstohz(ts)`: the ticks of `ts`, rounded up, plus one for the current tick to expire

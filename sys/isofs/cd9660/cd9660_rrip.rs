@@ -112,7 +112,7 @@
 //!   a `CE` entry are unsigned, so a corrupt one cannot point before the buffer, which the
 //!   C's `int` fields could. As in C, when a continuation area holds another `CE`, the
 //!   buffer of the earlier area is not released.
-//! - `hostname` is copied out of `kern_sysctl.rs`'s `HOSTNAME` (`hostnamelen` bytes); the
+//! - `hostname` is copied out of `kernel::sysctl`'s `HOSTNAME` (`hostnamelen` bytes); the
 //!   `VOLROOT` component copies `f_mntonname` out of the mount.
 
 use core::sync::atomic::Ordering;
@@ -131,7 +131,6 @@ use crate::isofs::cd9660::iso_rrip::{
     ISO_SUSP_EXTREF, ISO_SUSP_IDFLAG, ISO_SUSP_PLINK, ISO_SUSP_RELDIR, ISO_SUSP_SLINK,
     ISO_SUSP_STOP, ISO_SUSP_TSTAMP, IsoRripAnalyze,
 };
-use crate::kern::kern_sysctl::{HOSTNAME, HOSTNAMELEN};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{bread, brelse};
 use crate::kprintf;
@@ -141,6 +140,7 @@ use crate::sys::param::{DEV_BSHIFT, MAXHOSTNAMELEN, MAXPATHLEN};
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::time::Timespec;
 use crate::sys::types::{Daddr, Dev, Off, major, makedev, minor};
+use kernel::sysctl::{HOSTNAMELEN, with_hostname};
 
 /// `ISO_SUSP_HEADER`.
 #[repr(C)]
@@ -525,9 +525,12 @@ fn reset_out(ana: &mut IsoRripAnalyze<'_>) {
 
 /// `hostname`, `hostnamelen`.
 fn hostname() -> ([u8; MAXHOSTNAMELEN], usize) {
-    // SAFETY: `HOSTNAME` is written by `sysctl(2)` under `sysctl_lock` and read without a
-    // lock here, as in C; a copy is taken at once.
-    let name = unsafe { *HOSTNAME.get() };
+    // A copy of `hostname`, under its lock (the C reads it without one).
+    let name = with_hostname(|h| {
+        let mut b = [0u8; MAXHOSTNAMELEN];
+        b.copy_from_slice(h);
+        b
+    });
     let len = HOSTNAMELEN
         .load(Ordering::Relaxed)
         .clamp(0, MAXHOSTNAMELEN as i32) as usize;
