@@ -9496,9 +9496,9 @@ reason = "decision 43: host microbenchmarks of N4.7b's hot paths (the clists' pu
 [[module]]
 rust = "sys/kernel/tc.rs"
 crate = "kernel"
-lz = ["sys/kern/kern_tc.rs", "sys/sys/timetc.rs"]
+lz = ["sys/kern/kern_tc.rs", "sys/sys/timetc.rs", "sys/kern/kern_exec.rs"]
 status = "redesigned"
-notes = "N4.8a: timecounters into the kernel crate, 0 unsafe (LZ kern_tc 7 + timetc 1): struct timecounter split into the Timecounter trait (the hardware's half, tc_priv is self) and TcEntry (the kernel's: [I] values copied at tc_init, quality/precision/freq_adj atomics, the tc_list link); the timehands ring all atomics behind the C's generation protocol (TH, ACTIVE), th_counter and timecounter hal::link::Links; windup_mtx a Mutexed<Windup> whose guard tc_windup takes (last_tc inside), tc_lock a RawRwlock whose witness the [T,W] setters take; the timekeep page written through hal::sys::timetc::TimekeepAtomic (timekeep_attach); log(9) and enqueue_randomness over the Printf and Random bridges. bsd's kern_tc.rs runs LZ's until the switch-over commit"
+notes = "N4.8a: timecounters into the kernel crate (and exec_timekeep_map's first call, timekeep_object, with kern_exec.c's timekeep pointer), 0 unsafe (LZ kern_tc 7 + timetc 1): struct timecounter split into the Timecounter trait (the hardware's half, tc_priv is self) and TcEntry (the kernel's: [I] values copied at tc_init, quality/precision/freq_adj atomics, the tc_list link); the timehands ring all atomics behind the C's generation protocol (TH, ACTIVE), th_counter and timecounter hal::link::Links; windup_mtx a Mutexed<Windup> whose guard tc_windup takes (last_tc inside), tc_lock a RawRwlock whose witness the [T,W] setters take; the timekeep page written through hal::sys::timetc::TimekeepAtomic (timekeep_attach); log(9) and enqueue_randomness over the Printf and Random bridges. bsd's kern_tc.rs runs LZ's until the switch-over commit"
 
 [[module.fn]]
 lz = "sys/kern/kern_tc.rs::dummy_get_timecount"

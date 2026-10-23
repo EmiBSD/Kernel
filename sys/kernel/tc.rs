@@ -56,6 +56,38 @@
  * If we meet some day, and you think this stuff is worth it, you
  * can buy me a beer in return. Poul-Henning Kamp
  */
+
+/*-
+ * Copyright (C) 1993, 1994 Christopher G. Demetriou
+ * Copyright (C) 1992 Wolfgang Solfrank.
+ * Copyright (C) 1992 TooLs GmbH.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by TooLs GmbH.
+ * 4. The name of TooLs GmbH may not be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY TOOLS GMBH ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL TOOLS GMBH BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -66,8 +98,10 @@
 //!
 //! Upstream: sys/kern/kern_tc.c @ 3ce1f3f79392
 //! Upstream: sys/sys/timetc.h @ 3ce1f3f79392
+//! Upstream: sys/kern/kern_exec.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_tc.rs@3c62ede68802
 //! LZ: sys/sys/timetc.rs@3c62ede68802
+//! LZ: sys/kern/kern_exec.rs@3c62ede68802
 //!
 //! Locks: `[W]` `windup_mtx` ([`WINDUP`], `IPL_CLOCK`; its guard is what [`tc_windup`]
 //! takes), `[T]` `tc_lock` ([`TC_LOCK`], an rwlock: the timecounter choice and the clock
@@ -105,7 +139,10 @@
 //!   [`TC_LOCK`], checked as the C's `rw_assert_wrlock`.
 //! - The timekeep page is written through `hal::sys::timetc::TimekeepAtomic` ([`TIMEKEEP`],
 //!   attached once by whoever maps it), the C's write order kept; LZ wrote it through a raw
-//!   `&mut` of `kern_exec`'s pointer.
+//!   `&mut` of `kern_exec`'s pointer. The object itself is made here too
+//!   ([`timekeep_object`]: `kern_exec.c`'s `exec_timekeep_map` on its first call, the
+//!   `uao_create`, the kernel mapping and its wiring), and `kern_exec.c`'s `timekeep`
+//!   pointer is [`TIMEKEEP`] (`bsd`'s `kern_exec.rs` keeps the per-process mapping).
 //! - `tc_list` is a `hal::list::List` of `&'static TcEntry`, newest first as the C's SLIST.
 //! - The `log(LOG_INFO, ...)` of a clock step and `enqueue_randomness` reach `bsd` through
 //!   the `Printf` and `Random` bridges (`hal::prf::log`, `hal::random::enqueue_randomness`).

@@ -89,7 +89,7 @@
 
 use core::ptr::{self, NonNull};
 use core::slice;
-use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
 use crate::dev::rnd::{arc4random, arc4random_buf};
 use crate::kern::exec_elf::{exec_elf_fixup, exec_elf_makecmds};
@@ -182,9 +182,6 @@ pub static SIGCODE_SZ: AtomicUsize = AtomicUsize::new(0);
 /// `timekeep_object`: the shared timekeep object, created by the first
 /// `exec_timekeep_map`.
 static TIMEKEEP_OBJECT: OnceStatic<ObjRef> = OnceStatic::new();
-/// `timekeep`: LZ's pointer to the timekeep page in `kernel_map`. Since N4.8a the page is the
-/// kernel's (`kernel::tc::timekeep_object` makes, wires and publishes it); this stays null.
-pub static TIMEKEEP: AtomicPtr<Timekeep> = AtomicPtr::new(ptr::null_mut());
 
 /// `kv_exec`: the argument buffers, from `exec_map`, waiting for space.
 pub static KV_EXEC: KmemVaMode = KmemVaMode {
