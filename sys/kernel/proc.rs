@@ -1989,7 +1989,8 @@ impl<G: ProcGlue> Process<G> {
         g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
         t: PoolBox<Thread<G>>,
     ) {
-        let _ = self.ps_threads.is_empty(g);
+        // The tree is the guard's own data (no other lock's): the guard's identity is checked
+        // by the `join_locked` this pairs with, in the same section (one check, decision 43).
         if g.threads.insert(t).is_some() {
             kpanic(format_args!("insert_box: a thread joined twice"));
         }
@@ -2002,7 +2003,7 @@ impl<G: ProcGlue> Process<G> {
         g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
         seq: u64,
     ) -> Option<PoolBox<Thread<G>>> {
-        let _ = self.ps_threads.is_empty(g);
+        // As `insert_box_locked`: the `leave_locked` this pairs with checks the guard.
         g.threads.take_by(|e| seq.cmp(&e.p_seq.get()))
     }
 
