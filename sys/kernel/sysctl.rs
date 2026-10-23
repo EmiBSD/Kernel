@@ -830,8 +830,12 @@ pub trait DiskExport: Sync {
     /// `TAILQ_FOREACH(dk, &disklist, dk_link)`: `f` on each disk's name (up to its NUL), its
     /// label's uid formatted (`None` when the label has none) and its `struct diskstats`
     /// (`DISKSTATS_SIZE` bytes, name and statistics filled under the disk's mutex).
-    fn for_each(&self, f: &mut dyn FnMut(&[u8], Option<&[u8]>, &[u8]));
+    fn for_each(&self, f: &mut DiskVisit<'_>);
 }
+
+/// What [`DiskExport::for_each`] calls on each disk: its name, its label's uid formatted (or
+/// `None`) and its `struct diskstats` bytes.
+pub type DiskVisit<'a> = dyn FnMut(&[u8], Option<&[u8]>, &[u8]) + 'a;
 
 /// Registers the disk list's export, once (`bsd`'s `main`).
 pub fn install_disk_export(d: &'static dyn DiskExport) -> Result<(), AlreadyRegistered> {
@@ -1567,7 +1571,7 @@ pub fn sysctl_diskinit(update: bool) -> Result<(), Errno> {
 
     let DiskExports { names, stats } = &mut *d;
     let stats: &mut [u8] = stats.as_deref_mut().unwrap_or(&mut []);
-    let mut sdk = stats.chunks_exact_mut(DISKSTATS_SIZE);
+    let mut sdk = stats.as_chunks_mut::<DISKSTATS_SIZE>().0.iter_mut();
     if changed {
         let names: &mut [u8] = names.as_deref_mut().unwrap_or(&mut []);
         let mut l = 0;
@@ -1674,7 +1678,7 @@ pub fn sysctl_doproc<G: ProcGlue>(
                         None => false,
                         Some(t) => {
                             if buflen >= elem_size && elem_count > 0 {
-                                fill_kproc(&r, pr, &mut kproc, Some(&t), show_pointers, &g);
+                                fill_kproc(&r, pr, &mut kproc, Some(t), show_pointers, &g);
                             }
                             true
                         }
@@ -3417,7 +3421,7 @@ mod tests {
         fn count(&self) -> usize {
             self.list.lock().unwrap().1.len()
         }
-        fn for_each(&self, f: &mut dyn FnMut(&[u8], Option<&[u8]>, &[u8])) {
+        fn for_each(&self, f: &mut DiskVisit<'_>) {
             let list = self.list.lock().unwrap().1.clone();
             for (name, duid, fill) in list {
                 f(name, duid, &[fill; DISKSTATS_SIZE]);

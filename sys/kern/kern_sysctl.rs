@@ -255,7 +255,7 @@ pub fn sys_sysctl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     kernel::sysctl::sys_sysctl::<BsdProcGlue>(
         p,
         UserPtr::new(uap.name.get() as usize),
-        uap.namelen.get() as u32,
+        uap.namelen.get(),
         uap.old.get() as usize,
         UserPtr::new(uap.oldlenp.get() as usize),
         uap.new.get() as usize,
@@ -1233,7 +1233,7 @@ impl kernel::sysctl::DiskExport for BsdDiskExport {
         DISK_COUNT.load(Ordering::Relaxed).max(0) as usize
     }
 
-    fn for_each(&self, f: &mut dyn FnMut(&[u8], Option<&[u8]>, &[u8])) {
+    fn for_each(&self, f: &mut kernel::sysctl::DiskVisit<'_>) {
         for dk in DISKLIST.0.iter() {
             let label_uid = dk.label().map(|lp| lp.d_uid).filter(|u| !duid_iszero(u));
             let duid = label_uid.map(|u| duid_format(&u));
