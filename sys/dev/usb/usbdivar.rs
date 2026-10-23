@@ -109,7 +109,7 @@ use crate::dev::usb::usb::{
 use crate::dev::usb::usb_mem::UsbDmaBlock;
 use crate::dev::usb::usb_quirks::UsbdQuirks;
 use crate::dev::usb::usbdi::{UsbTask, UsbdCallback, UsbdStatus};
-use crate::kern::kern_softintr::SoftintrHand;
+use crate::kern::kern_softintr::SoftHandle;
 use crate::kern::subr_prf::panic;
 use crate::machine::bus::BusDmaTag;
 use crate::net::bpfdesc::BpfIf;
@@ -345,7 +345,7 @@ pub struct UsbdBus {
     /// `usbrev`: USB revision, `USBREV_*`.
     pub usbrev: Cell<i32>,
     /// `soft`: soft interrupt cookie.
-    pub soft: Cell<Option<NonNull<SoftintrHand>>>,
+    pub soft: Cell<Option<SoftHandle>>,
     /// `dmatag`: DMA tag.
     pub dmatag: Cell<Option<BusDmaTag>>,
     /// `dmaflags`.

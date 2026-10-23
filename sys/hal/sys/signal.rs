@@ -57,13 +57,13 @@
 //! `SIG_*` values and `struct sigaltstack`.
 //!
 //! Upstream: sys/sys/signal.h @ 3ce1f3f79392
+//! LZ: sys/sys/signal.rs@3c62ede68802
 //!
 //! Status: `ported`. Milestone M6 (part b) brought the numbers; `kern_sig.c` the rest:
 //! `sigset_t` ([`Sigset`]), `sig_t` ([`Sig`]), `SIG_DFL`/`SIG_IGN`/`SIG_ERR`,
 //! `struct sigaction`, the `SA_*` flags, `SIG_BLOCK`/`SIG_UNBLOCK`/`SIG_SETMASK`,
-//! `struct sigvec` and `SV_*`, `sigmask()`, `struct sigaltstack` (`stack_t`), `SS_*`,
-//! `MINSIGSTKSZ`/`SIGSTKSZ` and `ucontext_t` (the machine's `struct sigcontext`,
-//! `machine::signal`). `siginfo_t` is `<sys/siginfo.h>` (`siginfo.rs`). The userland
+//! `struct sigvec` and `SV_*`, `sigmask()`, `struct sigaltstack` (`stack_t`), `SS_*` and
+//! `MINSIGSTKSZ`/`SIGSTKSZ`. `siginfo_t` is `<sys/siginfo.h>` (`siginfo.rs`). The userland
 //! `signal()` prototype is not kernel code.
 //!
 //! ## Deviations
@@ -74,11 +74,17 @@
 //! - `struct sigaltstack` spells out its tail padding (`_pad`) so the structure has no
 //!   implicit padding and can be copied in and out as it is (`AbiPod`).
 //! - `MINSIGSTKSZ`/`SIGSTKSZ` are `usize` constants computed from the machine's
-//!   `_MAX_PAGE_SHIFT`.
+//!   `_MAX_PAGE_SHIFT`, 12 on both machines ([`MAX_PAGE_SHIFT`]).
+//!
+//! ## Redesign
+//! - N4.5b: the header is `hal`'s, so that `kernel::sig` and `bsd` name one `sigset_t` and
+//!   one `struct sigaction`. The two `unsafe impl AbiPod` (`Sigaction`, `Sigaltstack`) are
+//!   [`crate::abi_pod!`] declarations, which prove at compile time that the fields tile the
+//!   structure. `ucontext_t`, the machine's `struct sigcontext`, stays `bsd`'s
+//!   (`machine::signal::MachineSignal::Sigcontext`): no code named the alias.
 
-use crate::machine::copy::AbiPod;
-use crate::machine::param::MachineParam;
-use crate::machine::{Machine, MachineSignal};
+/// `_MAX_PAGE_SHIFT` of `<machine/_types.h>`: the largest page shift, 12 on amd64 and arm64.
+pub const MAX_PAGE_SHIFT: usize = 12;
 
 /// `_NSIG`: counting 0 (mask is 1-32).
 pub const _NSIG: i32 = 33;
@@ -186,9 +192,11 @@ impl Sigaction {
     }
 }
 
-// SAFETY: `repr(C)`: a pointer-sized integer and two 32-bit ones, no padding; every bit
-// pattern is a valid value.
-unsafe impl AbiPod for Sigaction {}
+crate::abi_pod!(Sigaction {
+    sa_handler: Sig,
+    sa_mask: Sigset,
+    sa_flags: i32,
+});
 
 /// `SA_ONSTACK`: take signal on signal stack.
 pub const SA_ONSTACK: i32 = 0x0001;
@@ -255,9 +263,12 @@ pub struct Sigaltstack {
     pub _pad: i32,
 }
 
-// SAFETY: `repr(C)`: two pointer-sized integers and two 32-bit ones, no padding; every bit
-// pattern is a valid value.
-unsafe impl AbiPod for Sigaltstack {}
+crate::abi_pod!(Sigaltstack {
+    ss_sp: usize,
+    ss_size: usize,
+    ss_flags: i32,
+    _pad: i32,
+});
 
 /// `stack_t`.
 pub type Stack = Sigaltstack;
@@ -267,16 +278,13 @@ pub const SS_ONSTACK: i32 = 0x0001;
 /// `SS_DISABLE`: disable taking signals on alternate stack.
 pub const SS_DISABLE: i32 = 0x0004;
 /// `MINSIGSTKSZ`: minimum allowable stack.
-pub const MINSIGSTKSZ: usize = 3 << <Machine as MachineParam>::MAX_PAGE_SHIFT;
+pub const MINSIGSTKSZ: usize = 3 << MAX_PAGE_SHIFT;
 /// `SIGSTKSZ`: recommended stack size.
-pub const SIGSTKSZ: usize = if <Machine as MachineParam>::MAX_PAGE_SHIFT < 14 {
-    MINSIGSTKSZ + (1 << <Machine as MachineParam>::MAX_PAGE_SHIFT) * 4
+pub const SIGSTKSZ: usize = if MAX_PAGE_SHIFT < 14 {
+    MINSIGSTKSZ + (1 << MAX_PAGE_SHIFT) * 4
 } else {
-    MINSIGSTKSZ + (1 << <Machine as MachineParam>::MAX_PAGE_SHIFT) * 2
+    MINSIGSTKSZ + (1 << MAX_PAGE_SHIFT) * 2
 };
-
-/// `ucontext_t`: the machine's `struct sigcontext`.
-pub type Ucontext = <Machine as MachineSignal>::Sigcontext;
 
 const _: () = {
     assert!(size_of::<Sigaction>() == 16);

@@ -335,8 +335,8 @@ pub fn com_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     timeout_del(&sc.sc_dtr_tmo);
     timeout_del(&sc.sc_diag_tmo);
     if let Some(si) = sc.sc_si.take() {
-        // SAFETY: the handle `com_attach_subr` established, used by nothing after this.
-        unsafe { softintr_disestablish(si) };
+        // The handle `com_attach_subr` established, used by nothing after this.
+        softintr_disestablish(si);
     }
 
     // Detach and free the tty.

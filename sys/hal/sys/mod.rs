@@ -57,6 +57,10 @@ pub mod reboot;
 #[forbid(unsafe_code)]
 pub mod select;
 #[forbid(unsafe_code)]
+pub mod siginfo;
+#[forbid(unsafe_code)]
+pub mod signal;
+#[forbid(unsafe_code)]
 pub mod softintr;
 #[forbid(unsafe_code)]
 pub mod syscall;

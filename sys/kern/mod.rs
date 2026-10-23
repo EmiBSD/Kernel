@@ -53,6 +53,7 @@ pub mod kern_fork;
 pub mod kern_intrmap;
 #[forbid(unsafe_code)]
 pub mod kern_kthread;
+#[forbid(unsafe_code)]
 pub mod kern_lock;
 pub mod kern_malloc;
 pub mod kern_physio;
@@ -65,8 +66,10 @@ pub mod kern_rwlock;
 #[forbid(unsafe_code)]
 pub mod kern_sched;
 pub mod kern_sensors;
+#[forbid(unsafe_code)]
 pub mod kern_sig;
 pub mod kern_smr;
+#[forbid(unsafe_code)]
 pub mod kern_softintr;
 pub mod kern_subr;
 #[forbid(unsafe_code)]

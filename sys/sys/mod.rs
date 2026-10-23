@@ -80,10 +80,12 @@ pub mod malloc;
 pub mod mbuf;
 pub use hal::sys::mman;
 pub mod mount;
+#[forbid(unsafe_code)]
 pub mod mplock;
 pub mod msgbuf;
 #[forbid(unsafe_code)]
 pub mod mtio;
+#[forbid(unsafe_code)]
 pub mod mutex;
 pub mod namei;
 #[forbid(unsafe_code)]
@@ -108,9 +110,11 @@ pub use hal::sys::select;
 #[forbid(unsafe_code)]
 pub mod selinfo;
 pub mod sensors;
-pub mod siginfo;
+pub use hal::sys::siginfo;
+#[forbid(unsafe_code)]
 pub mod sigio;
-pub mod signal;
+pub use hal::sys::signal;
+#[forbid(unsafe_code)]
 pub mod signalvar;
 pub mod smr;
 pub mod socket;

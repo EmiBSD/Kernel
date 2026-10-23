@@ -1086,30 +1086,30 @@ impl Intr for Machine {
     const IPL_MPSAFE: i32 = 0x100;
     const IPL_WAKEUP: i32 = 0x200;
 
-    /// The host has no interrupts: the level is a number that is tracked and nothing more.
+    /// The host has no interrupts: the level is `hal::intr`'s (the test thread's core), whose
+    /// lowering runs the soft interrupts pending on it, as on the machines.
     fn splraise(ipl: i32) -> i32 {
-        let old = HOST_IPL.load(core::sync::atomic::Ordering::Relaxed);
-        HOST_IPL.store(old.max(ipl), core::sync::atomic::Ordering::Relaxed);
-        old
+        hal::intr::splraise_raw(ipl)
     }
 
     fn spllower(ipl: i32) -> i32 {
-        HOST_IPL.swap(ipl, core::sync::atomic::Ordering::Relaxed)
+        hal::intr::spllower(ipl)
     }
 
     fn splx(s: i32) {
-        HOST_IPL.store(s, core::sync::atomic::Ordering::Relaxed);
+        hal::intr::splx(s);
     }
 
-    fn softintr(_si: i32) {}
+    fn softintr(si: i32) {
+        if let Ok(si) = usize::try_from(si) {
+            hal::intr::softintr(si);
+        }
+    }
 
     fn splassert_check(_wantipl: i32, _func: &str) {}
 
     fn intr_barrier(_cookie: NonNull<c_void>) {}
 }
-
-/// The host double's interrupt priority level.
-static HOST_IPL: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
 
 /// The host's `ioconf`: empty until a test installs one with `Machine::set_ioconf`.
 static HOST_IOCONF: libkern::StaticCell<(&'static [Cfdata], &'static [i16])> =

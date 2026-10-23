@@ -109,8 +109,7 @@ use crate::kern::kern_fork::{NPROCESSES, NTHREADS, freepid};
 use crate::kern::kern_resource::{calcru, ruadd, tuagg_add_process, tuagg_add_runtime};
 use crate::kern::kern_sched::sched_exit;
 use crate::kern::kern_sig::{
-    process_suspend_signal, prsignal, psignal, ptsignal, sigactsfree, sigio_freelist,
-    single_thread_set,
+    process_suspend_signal, prsignal, psignal, ptsignal, sigio_freelist_process, single_thread_set,
 };
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, wakeup};
 use crate::kern::kern_timeout::timeout_del;
@@ -122,7 +121,7 @@ use crate::kern::vm_bsd::{uvm_exit, uvm_purge};
 #[cfg(feature = "qemu")]
 use crate::kprintf;
 use crate::machine::Machine;
-use crate::machine::copy::{copyout, copyout_obj};
+use crate::machine::copy::copyout;
 use crate::machine::cpu::Cpu;
 use crate::machine::pmap::pmap_deactivate;
 #[cfg(feature = "qemu")]
@@ -304,7 +303,7 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
         }
         // prof_write(p): subr_prof.c (M7).
 
-        sigio_freelist(&pr.ps_sigiolst);
+        sigio_freelist_process(pr);
 
         // close open files and release open-file table
         fdfree(p);
@@ -854,7 +853,7 @@ pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         Some(&mut info),
         retval,
     )?;
-    copyout_obj(&info, uap.info.get() as usize)?;
+    hal::user::UserPtr::<Siginfo>::new(uap.info.get() as usize).copyout(&info)?;
     // KTRACE: not configured.
     retval[0] = 0;
     Ok(())
@@ -1043,7 +1042,7 @@ pub fn process_zap(pr: ProcessRef) {
         kassert!(pr.ps_threads.is_empty(&g));
         drop(g);
     }
-    sigactsfree(pr.sigacts());
+    // sigactsfree(pr->ps_sigacts): the process's actions go with it (its `PoolBox`).
     // lim_free(pr->ps_limit), crfree(pr->ps_ucred): the process's references go with it.
     NPROCESSES.fetch_sub(1, Ordering::Relaxed);
 

@@ -35,354 +35,99 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Kernel lock and mutexes: `kern/kern_lock.c`.
+//! Kernel lock and mutexes: `kern/kern_lock.c`, `bsd`'s names over `hal`.
 //!
 //! Upstream: sys/kern/kern_lock.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_lock.rs@3c62ede68802
 //!
-//! Status: `wip`. Milestone M4 ports the uniprocessor mutex: `__mtx_init`, `_mtx_init`,
-//! `mtx_init`, `mtx_init_flags`, `mtx_enter`, `mtx_enter_try` and `mtx_leave`; M5 adds the
-//! `pc_lock` producer/consumer generation lock (`pc_lock_init`, `pc_sprod_*`, `pc_mprod_*`,
-//! `pc_cons_*`). M11a adds the `MULTIPROCESSOR` half: `kernel_lock` with
-//! `_kernel_lock_init`, `_kernel_lock`, `_kernel_unlock` and `_kernel_lock_held`; the ticket
-//! lock (`___mp_lock_init`, `__mp_lock_spin`, `__mp_lock`, `__mp_unlock`,
-//! `__mp_release_all`, `__mp_acquire_count`, `__mp_lock_held`); the spinning mutex with its
-//! parking lots (`mtx_init_parking`, `mtx_park`, `mtx_enter_park`, `mtx_leave_park`,
-//! `mtx_cas`, `mtx_enter`, `mtx_enter_try`, `mtx_leave`); the interlocking `pc_mprod_enter`
-//! and `pc_mprod_leave`. M11c adds the debugger's mutex, `db_mtx_enter`/`db_mtx_leave` (`DDB`;
-//! uniprocessor too, as in the C). `mtx_print_parks` (a debugging printer of the parking lots
-//! that nothing calls) is not here; `WITNESS` and `MP_LOCKDEBUG` are not configured.
+//! The kernel lock (`kernel_lock`, the ticket lock `__mp_lock`) is `hal::klock`'s, the
+//! mutexes (`struct mutex` with its parking lots, `struct db_mutex`) `hal::mutex`'s since
+//! N4.5c; this module keeps the C's functions for `bsd` (`mtx_enter(&m)` in 128 files) and
+//! the producer/consumer generation lock (`pc_lock_init`, `pc_sprod_*`, `pc_mprod_*`,
+//! `pc_cons_*`), which stays here. `mtx_print_parks` (a debugging printer of the parking
+//! lots that nothing calls) is not here; `WITNESS` and `MP_LOCKDEBUG` are not configured.
 //!
 //! ## Deviations
 //! - `membar_producer`/`membar_consumer`/`membar_exit` are `fence`s of the matching
 //!   ordering; `membar_enter_after_atomic` is an `Acquire` fence and `membar_enter` a
-//!   `SeqCst` one. Without `MULTIPROCESSOR`, `pc_mprod_*` are `pc_sprod_*` (the C aliases
-//!   them).
-//! - `KERNEL_LOCK()`/`KERNEL_UNLOCK()` are `sys::systm::kernel_lock()`/`kernel_unlock()`,
-//!   which are nothing without `MULTIPROCESSOR`, as in the C's `<sys/systm.h>`.
-//! - `__mp_lock_held` indexes `mpl_cpus` by `ci_cpuid` (`cpu_number()` on that CPU), where
-//!   the C uses `CPU_INFO_UNIT(ci)`; both are the CPU's number on every machine OpenBSD runs.
-//! - A parked mutex waiter (`struct mtx_waiter`) lives on the waiting CPU's stack as in the C;
-//!   its `wait` flag is an `AtomicU32` (the C's `volatile`).
+//!   `SeqCst` one.
+//! - `KERNEL_LOCK()`/`KERNEL_UNLOCK()` are `sys::systm::kernel_lock()`/`kernel_unlock()`.
+//! - On the host the kernel lock is `hal::klock`'s per-thread double (every test thread is a
+//!   CPU of its own there): `__mp_release_all`/`__mp_acquire_count` of `kernel_lock` reach
+//!   it; `__mp_lock`/`__mp_unlock` of it (amd64's interrupt entry) take the machine's ticket
+//!   lock.
 //!
 //! ## Redesign
-//! - The code is LZ's. Only the host test `init_resets` changed, when `MULTIPROCESSOR`
-//!   became the one kernel built (decision 40): it asserts the level each configuration
-//!   stores, `IPL_MPFLOOR` for a level below it with `MULTIPROCESSOR` (`__MUTEX_IPL`,
-//!   `<sys/mutex.h>`), the level given without; LZ's asserted the uniprocessor value alone.
-//! - Its uniprocessor branches stay, unbuilt, until N4 redesigns the file (the user's
-//!   decision 40 answer, 2026-10-17: the inherited UP code goes at each file's N4 redesign).
-//! - N4.2: the last `KERNEL_UNLOCK` (`_kernel_unlock` at depth 1) and the kernel lock's
-//!   `__mp_release_all` (the switch, the sleeps, the exit) call `hal::klock::assert_unwitnessed`,
-//!   the contract of `hal::klock`'s witnesses: no reader or writer of the `[K]` state stays out
-//!   on a CPU that lets the lock go. Kernel builds only: the host tests' threads all run as
-//!   CPU 0, one witness count and one depth for every test.
+//! - N4.5c: the kernel lock, the mutex and its parking lots, and the debugger's mutex moved
+//!   into `hal` (`hal::klock`, `hal::mutex`), where they are written without `unsafe` (LZ: 8
+//!   here, 2 in `<sys/mutex.h>`): the interrupt masking of the ticket lock and of the lots is
+//!   `hal::cpu`'s guard, a parked waiter a pinned stack element of a list bound to its lot's
+//!   lock. The functions below forward to their methods; the uniprocessor branches LZ kept
+//!   unbuilt are gone (decision 40); the release checks of N4.2 are `hal::klock`'s.
 
-#[cfg(feature = "multiprocessor")]
-use core::ptr;
-#[cfg(feature = "multiprocessor")]
-use core::sync::atomic::{AtomicPtr, AtomicU32};
 use core::sync::atomic::{Ordering, fence};
 
-use crate::kern::init_main::DB_ACTIVE;
-#[cfg(feature = "multiprocessor")]
-use crate::kern::sched_bsd::sched_assert_unlocked;
-use crate::kern::subr_prf::panicstr;
-#[cfg(any(feature = "diagnostic", feature = "multiprocessor"))]
-use crate::machine::Machine;
-#[cfg(any(feature = "diagnostic", feature = "multiprocessor"))]
-use crate::machine::cpu::Cpu;
-#[cfg(feature = "multiprocessor")]
-use crate::machine::cpu::{CpuInfo, curcpu, intr_disable, intr_restore};
-use crate::machine::intr::{IPL_NONE, splraise, splx};
-#[cfg(feature = "multiprocessor")]
-use crate::sys::mplock::MpLock;
-#[cfg(all(feature = "diagnostic", not(feature = "multiprocessor")))]
-use crate::sys::mutex::mtx_owner;
-#[cfg(not(feature = "multiprocessor"))]
-use crate::sys::mutex::mutex_assert_locked;
-use crate::sys::mutex::{DbMutex, Mutex, mtx_curcpu, mutex_ipl};
+use crate::sys::mutex::{DbMutex, Mutex, mutex_ipl};
 use crate::sys::pclock::PcLock;
-#[cfg(feature = "multiprocessor")]
-use crate::sys::queue::{TailqEntry, TailqHead};
 
-/// `MTX_PARKING_BITS`: log2 of the number of parking lots.
-#[cfg(feature = "multiprocessor")]
-const MTX_PARKING_BITS: u32 = 7;
-/// `MTX_PARKING_LOTS`.
-#[cfg(feature = "multiprocessor")]
-const MTX_PARKING_LOTS: usize = 1 << MTX_PARKING_BITS;
-/// `MTX_PARKING_MASK`.
-#[cfg(feature = "multiprocessor")]
-const MTX_PARKING_MASK: usize = MTX_PARKING_LOTS - 1;
+/// The name `kernel_lock` the C's `__mp_*(&kernel_lock)` calls pass: the lock itself is
+/// `hal::klock`'s, reached only through its functions (which refuse a release by a CPU that
+/// does not hold it); this value only says which lock is meant.
+pub struct KernelLockName;
 
-/// `CPU_MIN_BUSY_CYCLES`: the first back-off of `db_mtx_enter`.
-const CPU_MIN_BUSY_CYCLES: u32 = 1;
+/// `kernel_lock`.
+pub static KERNEL_LOCK: KernelLockName = KernelLockName;
 
-/// `struct mtx_waiter`: a CPU waiting for a contended mutex, linked into the mutex's
-/// parking lot from the waiting CPU's stack.
-#[cfg(feature = "multiprocessor")]
-struct MtxWaiter {
-    /// `mtx`: the mutex it waits for.
-    mtx: *const Mutex,
-    /// `wait` (volatile): cleared by the CPU that releases the mutex.
-    wait: AtomicU32,
-    /// `entry`.
-    entry: TailqEntry<MtxWaiter>,
-}
-
-#[cfg(feature = "multiprocessor")]
-crate::queue_adapter!(
-    /// `TAILQ_ENTRY(mtx_waiter) entry`: a parking lot's waiters.
-    MtxWaitlist: MtxWaiter, entry => TailqEntry<MtxWaiter>
-);
-
-/// `struct mtx_park`: a parking lot, one cache line apart from its neighbours.
-#[cfg(feature = "multiprocessor")]
-#[repr(align(64))]
-struct MtxPark {
-    /// `lock` (volatile): the CPU inside the lot, null when free.
-    lock: AtomicPtr<CpuInfo>,
-    /// `waiters`: guarded by `lock`.
-    waiters: TailqHead<MtxWaitlist>,
-}
-
-// SAFETY: `waiters` is only touched between `mtx_enter_park` and `mtx_leave_park`, which
-// make the lot's spinning `lock` exclusive; `lock` is atomic.
-#[cfg(feature = "multiprocessor")]
-unsafe impl Sync for MtxPark {}
-
-/// `kernel_lock`: the big lock serialising whatever is not yet `MPSAFE`.
-#[cfg(feature = "multiprocessor")]
-pub static KERNEL_LOCK: MpLock = MpLock::new();
-
-/// `mtx_parking[MTX_PARKING_LOTS]`.
-#[cfg(feature = "multiprocessor")]
-static MTX_PARKING: [MtxPark; MTX_PARKING_LOTS] = [const {
-    MtxPark {
-        lock: AtomicPtr::new(ptr::null_mut()),
-        waiters: TailqHead::new(),
-    }
-}; MTX_PARKING_LOTS];
-
-/// `_kernel_lock_init`: `KERNEL_LOCK_INIT()`, once, from `main`.
-#[cfg(feature = "multiprocessor")]
+/// `_kernel_lock_init`: `KERNEL_LOCK_INIT()`, once, from `main`: the ticket lock reset and
+/// the parking lots checked empty.
 pub fn _kernel_lock_init() {
-    ___mp_lock_init(&KERNEL_LOCK);
-    mtx_init_parking();
-}
-
-/// Whether a release of the kernel lock checks that no witness of it is out: not after a
-/// panic nor in ddb, which hold the lock by fiat ([`_kernel_lock_held`]) and may sync or
-/// yield from inside a witness section (a panic in one, `cold_yield`'s `__mp_release_all`),
-/// where a second panic would hide the first.
-#[cfg(feature = "multiprocessor")]
-fn release_check_due(panicking: bool, in_ddb: bool) -> bool {
-    !panicking && !in_ddb
-}
-
-/// The kernel lock is about to be released whole by this CPU (`what`: the last
-/// `KERNEL_UNLOCK`, or `__mp_release_all`): `panic(9)` when a witness of it is out here,
-/// whose holder would go on reading `[K]` cells another CPU may then change (hal::klock),
-/// except after a panic or in ddb ([`release_check_due`]).
-#[cfg(feature = "multiprocessor")]
-fn kernel_lock_release_check(what: &str) {
-    if release_check_due(panicstr(), DB_ACTIVE.load(Ordering::Relaxed)) {
-        hal::klock::assert_unwitnessed(what);
-    }
-}
-
-/// This CPU's depth in the kernel lock, as the release checks read it.
-#[cfg(all(feature = "multiprocessor", not(test)))]
-fn kernel_lock_depth() -> Option<u32> {
-    Some(
-        KERNEL_LOCK.mpl_cpus[Machine::cpu_number() as usize]
-            .mplc_depth
-            .load(Ordering::Relaxed),
-    )
-}
-
-/// On the host every test thread runs as CPU 0, whose one depth all of them share: the
-/// release checks read the thread's own depth instead, kept only for a test that arms it
-/// ([`kernel_lock_checks_arm`]); `None`, no check, in every other test.
-#[cfg(all(feature = "multiprocessor", test))]
-fn kernel_lock_depth() -> Option<u32> {
-    TEST_KL_DEPTH.with(|d| d.get().map(|(depth, _)| depth))
-}
-
-#[cfg(all(feature = "multiprocessor", test))]
-std::thread_local! {
-    /// The armed test thread's depth in the kernel lock and the depth its last
-    /// `__mp_release_all` gave up (`None`: not armed).
-    static TEST_KL_DEPTH: core::cell::Cell<Option<(u32, u32)>> =
-        const { core::cell::Cell::new(None) };
-}
-
-/// The armed test thread's `(depth, saved)` changed by `f`.
-#[cfg(all(feature = "multiprocessor", test))]
-fn test_kl_depth(f: impl FnOnce((u32, u32)) -> (u32, u32)) {
-    TEST_KL_DEPTH.with(|d| {
-        if let Some(v) = d.get() {
-            d.set(Some(f(v)));
-        }
-    });
-}
-
-/// Arms the release checks for this host test thread, which holds no level of the kernel
-/// lock yet: its own depth is kept from now on.
-#[cfg(all(feature = "multiprocessor", test))]
-pub(crate) fn kernel_lock_checks_arm() {
-    TEST_KL_DEPTH.with(|d| d.set(Some((0, 0))));
+    hal::klock::init();
+    hal::mutex::init_parking();
 }
 
 /// `_kernel_lock`: acquire the kernel lock. Intended for use in the scheduler and the lower
 /// half of the kernel.
-#[cfg(feature = "multiprocessor")]
 pub fn _kernel_lock() {
-    sched_assert_unlocked();
-    __mp_lock(&KERNEL_LOCK);
-    #[cfg(test)]
-    test_kl_depth(|(d, s)| (d + 1, s));
+    hal::klock::kernel_lock();
 }
 
 /// `_kernel_unlock`: release the kernel lock.
-#[cfg(feature = "multiprocessor")]
 pub fn _kernel_unlock() {
-    // The last level: no witness of the kernel lock may be out on this CPU.
-    if kernel_lock_depth() == Some(1) {
-        kernel_lock_release_check("KERNEL_UNLOCK");
-    }
-    #[cfg(test)]
-    test_kl_depth(|(d, s)| (d.saturating_sub(1), s));
-    __mp_unlock(&KERNEL_LOCK);
+    hal::klock::kernel_unlock();
 }
 
 /// `_kernel_lock_held`: this CPU holds the kernel lock (always true after a panic or in ddb).
-#[cfg(feature = "multiprocessor")]
 pub fn _kernel_lock_held() -> bool {
-    if panicstr() || DB_ACTIVE.load(Ordering::Relaxed) {
-        return true;
-    }
-    __mp_lock_held(&KERNEL_LOCK, curcpu())
+    hal::klock::kernel_lock_held()
 }
 
-/// `___mp_lock_init` (`__mp_lock_init`): nobody holds `mpl`; ticket 1 is served next.
-#[cfg(feature = "multiprocessor")]
-pub fn ___mp_lock_init(mpl: &MpLock) {
-    for cpu in &mpl.mpl_cpus {
-        cpu.mplc_ticket.store(0, Ordering::Relaxed);
-        cpu.mplc_depth.store(0, Ordering::Relaxed);
-    }
-    mpl.mpl_users.store(0, Ordering::Relaxed);
-    mpl.mpl_ticket.store(1, Ordering::Relaxed);
-    // WITNESS: not configured.
+/// `__mp_lock(&kernel_lock)`: takes the kernel lock, recursively (an interrupt handler's
+/// entry: no scheduler assertion).
+pub fn __mp_lock(_mpl: &KernelLockName) {
+    hal::klock::mp_lock();
 }
 
-/// `__mp_lock_spin`: waits until ticket `me` is served.
-#[cfg(feature = "multiprocessor")]
-#[inline]
-fn __mp_lock_spin(mpl: &MpLock, me: u32) {
-    let spc = Machine::ci_schedstate(curcpu());
-    // MP_LOCKDEBUG (the spin-out into ddb): not configured.
-
-    spc.spc_spinning.fetch_add(1, Ordering::Relaxed);
-    while mpl.mpl_ticket.load(Ordering::Relaxed) != me {
-        core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-    }
-    spc.spc_spinning.fetch_sub(1, Ordering::Relaxed);
+/// `__mp_unlock(&kernel_lock)`: drops one level of this CPU's hold (`panic(9)` unless it
+/// holds the lock; the last level refuses a witness out).
+pub fn __mp_unlock(_mpl: &KernelLockName) {
+    hal::klock::kernel_unlock();
 }
 
-/// `__mp_lock`: takes `mpl`, recursively: a CPU that holds it only deepens its hold.
-#[cfg(feature = "multiprocessor")]
-pub fn __mp_lock(mpl: &MpLock) {
-    let cpu = &mpl.mpl_cpus[Machine::cpu_number() as usize];
-
-    // WITNESS_CHECKORDER: not configured.
-
-    let s = intr_disable();
-    if cpu.mplc_depth.fetch_add(1, Ordering::Relaxed) == 0 {
-        // atomic_inc_int_nv
-        let ticket = mpl
-            .mpl_users
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1);
-        cpu.mplc_ticket.store(ticket, Ordering::Relaxed);
-    }
-    // SAFETY: `s` is what `intr_disable` returned just above on this CPU.
-    unsafe { intr_restore(s) };
-
-    __mp_lock_spin(mpl, cpu.mplc_ticket.load(Ordering::Relaxed));
-    fence(Ordering::Acquire); // membar_enter_after_atomic()
-
-    // WITNESS_LOCK: not configured.
+/// `__mp_release_all(&kernel_lock)`: drops every level of this CPU's hold; returns how many
+/// there were (0, releasing nothing, when it holds none).
+pub fn __mp_release_all(_mpl: &KernelLockName) -> u32 {
+    hal::klock::release_all()
 }
 
-/// `__mp_unlock`: drops one level of this CPU's hold; the last one serves the next ticket.
-#[cfg(feature = "multiprocessor")]
-pub fn __mp_unlock(mpl: &MpLock) {
-    let cpu = &mpl.mpl_cpus[Machine::cpu_number() as usize];
-
-    // MP_LOCKDEBUG (the "not held lock" check): not configured. WITNESS_UNLOCK: neither.
-
-    let s = intr_disable();
-    if cpu.mplc_depth.fetch_sub(1, Ordering::Relaxed) == 1 {
-        fence(Ordering::Release); // membar_exit()
-        mpl.mpl_ticket.fetch_add(1, Ordering::Relaxed);
-    }
-    // SAFETY: `s` is what `intr_disable` returned just above on this CPU.
-    unsafe { intr_restore(s) };
-}
-
-/// `__mp_release_all`: drops every level of this CPU's hold; returns how many there were.
-#[cfg(feature = "multiprocessor")]
-pub fn __mp_release_all(mpl: &MpLock) -> u32 {
-    let cpu = &mpl.mpl_cpus[Machine::cpu_number() as usize];
-
-    // The switch and the sleeps release the kernel lock whole: no witness of it may be out
-    // on this CPU (hal::klock); on the host, in an armed test thread only.
-    if core::ptr::eq(mpl, &KERNEL_LOCK) && kernel_lock_depth().is_some() {
-        kernel_lock_release_check("__mp_release_all");
-        #[cfg(test)]
-        test_kl_depth(|(d, _)| (0, d));
-    }
-    let s = intr_disable();
-    let rv = cpu.mplc_depth.load(Ordering::Relaxed);
-    // WITNESS_UNLOCK for each level: not configured.
-    cpu.mplc_depth.store(0, Ordering::Relaxed);
-    fence(Ordering::Release); // membar_exit()
-    mpl.mpl_ticket.fetch_add(1, Ordering::Relaxed);
-    // SAFETY: `s` is what `intr_disable` returned just above on this CPU.
-    unsafe { intr_restore(s) };
-
-    rv
-}
-
-/// `__mp_acquire_count`: takes `mpl` `count` times (what `__mp_release_all` returned).
-#[cfg(feature = "multiprocessor")]
-pub fn __mp_acquire_count(mpl: &MpLock, count: u32) {
-    for _ in 0..count {
-        __mp_lock(mpl);
-    }
-    #[cfg(test)]
-    if core::ptr::eq(mpl, &KERNEL_LOCK) {
-        test_kl_depth(|(_, s)| (s, 0));
-    }
-}
-
-/// `__mp_lock_held`: `ci` holds `mpl`.
-#[cfg(feature = "multiprocessor")]
-pub fn __mp_lock_held(mpl: &MpLock, ci: &CpuInfo) -> bool {
-    let cpu = &mpl.mpl_cpus[Machine::ci_cpuid(ci) as usize];
-
-    cpu.mplc_ticket.load(Ordering::Relaxed) == mpl.mpl_ticket.load(Ordering::Relaxed)
-        && cpu.mplc_depth.load(Ordering::Relaxed) > 0
+/// `__mp_acquire_count(&kernel_lock, count)`: takes it `count` times (what
+/// `__mp_release_all` returned).
+pub fn __mp_acquire_count(_mpl: &KernelLockName, count: u32) {
+    hal::klock::acquire_count(count);
 }
 
 /// `__mtx_init`: a free mutex raising to `wantipl`.
 pub fn __mtx_init(mtx: &Mutex, wantipl: i32) {
-    mtx.mtx_owner.store(0, Ordering::Relaxed);
-    mtx.mtx_wantipl.set(wantipl);
-    mtx.mtx_oldipl.set(IPL_NONE);
+    mtx.init(wantipl);
 }
 
 /// `_mtx_init(mtx, ipl)`: `__mtx_init` at `__MUTEX_IPL(ipl)`.
@@ -400,383 +145,32 @@ pub fn mtx_init(mtx: &Mutex, ipl: i32) {
     mtx_init_flags(mtx, ipl, None, 0);
 }
 
-/// `mtx_init_parking`: every lot free and empty.
-#[cfg(feature = "multiprocessor")]
-fn mtx_init_parking() {
-    for p in &MTX_PARKING {
-        p.lock.store(ptr::null_mut(), Ordering::Relaxed);
-        p.waiters.init();
-    }
-}
-
-/// `mtx_park`: the parking lot of `mtx`, from its address.
-#[cfg(feature = "multiprocessor")]
-fn mtx_park(mtx: &Mutex) -> &'static MtxPark {
-    let mut addr = ptr::from_ref(mtx) as usize;
-    addr >>= 6;
-    addr ^= addr >> MTX_PARKING_BITS;
-    addr &= MTX_PARKING_MASK;
-
-    &MTX_PARKING[addr]
-}
-
-/// `mtx_enter_park`: takes the lot's spin lock with interrupts off; returns their state.
-#[cfg(feature = "multiprocessor")]
-fn mtx_enter_park(p: &MtxPark) -> u64 {
-    let ci = ptr::from_ref(curcpu()).cast_mut();
-
-    let m = intr_disable();
-    while p
-        .lock
-        .compare_exchange(ptr::null_mut(), ci, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-    }
-    fence(Ordering::Acquire); // membar_enter_after_atomic()
-
-    m
-}
-
-/// `mtx_leave_park`: releases the lot and puts the interrupt state `m` back.
-#[cfg(feature = "multiprocessor")]
-fn mtx_leave_park(p: &MtxPark, m: u64) {
-    fence(Ordering::Release); // membar_exit()
-    p.lock.store(ptr::null_mut(), Ordering::Relaxed);
-    // SAFETY: `m` is what `mtx_enter_park` got from `intr_disable` on this CPU.
-    unsafe { intr_restore(m) };
-}
-
-/// `mtx_cas`: `atomic_cas_ulong` on the owner word; returns the value found.
-#[cfg(feature = "multiprocessor")]
-#[inline]
-fn mtx_cas(mtx: &Mutex, e: usize, v: usize) -> usize {
-    match mtx
-        .mtx_owner
-        .compare_exchange(e, v, Ordering::Relaxed, Ordering::Relaxed)
-    {
-        Ok(found) | Err(found) => found,
-    }
-}
-
 /// `mtx_enter_try`: takes the mutex if it is free; `false` (at the old level) otherwise.
-#[cfg(feature = "multiprocessor")]
 pub fn mtx_enter_try(mtx: &Mutex) -> bool {
-    let this = mtx_curcpu();
-
-    // Avoid deadlocks after panic or in DDB
-    if panicstr() || DB_ACTIVE.load(Ordering::Relaxed) {
-        return true;
-    }
-
-    let wantipl = mtx.mtx_wantipl.get();
-    let s = if wantipl != IPL_NONE {
-        splraise(wantipl)
-    } else {
-        IPL_NONE
-    };
-
-    let owner = mtx_cas(mtx, 0, this);
-    if owner == 0 {
-        fence(Ordering::Acquire); // membar_enter_after_atomic()
-        if wantipl != IPL_NONE {
-            mtx.mtx_oldipl.set(s);
-        }
-        #[cfg(feature = "diagnostic")]
-        Machine::curcpu_mutex_level_add(1);
-        // WITNESS_LOCK: not configured.
-        return true;
-    }
-
-    if wantipl != IPL_NONE {
-        splx(s);
-    }
-
-    #[cfg(feature = "diagnostic")]
-    if owner & !1 == this {
-        crate::kern::subr_prf::panic(format_args!("mtx {:p}: locking against myself", mtx));
-    }
-
-    false
+    mtx.enter_try()
 }
 
 /// `mtx_enter`: takes the mutex, raising to its level; spins a little, then parks in the
 /// mutex's lot until the owner hands it over.
-#[cfg(feature = "multiprocessor")]
 pub fn mtx_enter(mtx: &Mutex) {
-    let this = mtx_curcpu();
-    let spc = Machine::ci_schedstate(curcpu());
-
-    // Avoid deadlocks after panic or in DDB
-    if panicstr() || DB_ACTIVE.load(Ordering::Relaxed) {
-        return;
-    }
-
-    // WITNESS_CHECKORDER: not configured.
-
-    let wantipl = mtx.mtx_wantipl.get();
-    let s = if wantipl != IPL_NONE {
-        splraise(wantipl)
-    } else {
-        IPL_NONE
-    };
-
-    let mut owner = mtx_cas(mtx, 0, this);
-    if owner != 0 {
-        #[cfg(feature = "diagnostic")]
-        if owner & !1 == this {
-            crate::kern::subr_prf::panic(format_args!("mtx {:p}: locking against myself", mtx));
-        }
-
-        // we're going to have to spin for it now
-        spc.spc_spinning.fetch_add(1, Ordering::Relaxed);
-
-        let mut spinlocked = false;
-        for _ in 0..40 {
-            if owner & 1 != 0 {
-                // don't spin if cpus are already parked
-                break;
-            }
-            core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-            owner = mtx.mtx_owner.load(Ordering::Relaxed);
-            if owner == 0 {
-                owner = mtx_cas(mtx, 0, this);
-                if owner == 0 {
-                    spinlocked = true;
-                    break;
-                }
-            }
-        }
-
-        if !spinlocked {
-            mtx_enter_slow(mtx, this, owner);
-        }
-        spc.spc_spinning.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    // locked:
-    fence(Ordering::Acquire); // membar_enter_after_atomic()
-    if wantipl != IPL_NONE {
-        mtx.mtx_oldipl.set(s);
-    }
-    #[cfg(feature = "diagnostic")]
-    Machine::curcpu_mutex_level_add(1);
-    // WITNESS_LOCK: not configured.
-}
-
-/// The really slow path of `mtx_enter`: publish this CPU in the mutex's parking lot, mark the
-/// mutex as having waiters (bit 0 of the owner) and wait to be woken, until the mutex is
-/// taken (with bit 0 kept set, since others may still be parked).
-#[cfg(feature = "multiprocessor")]
-fn mtx_enter_slow(mtx: &Mutex, this: usize, mut owner: usize) {
-    let p = mtx_park(mtx);
-
-    // publish our existence in the parking lot
-    let w = MtxWaiter {
-        mtx: ptr::from_ref(mtx),
-        wait: AtomicU32::new(0),
-        entry: TailqEntry::new(),
-    };
-    let m = mtx_enter_park(p);
-    // SAFETY: the lot is locked; `w` is in no queue and stays in place on this stack until
-    // the removal below, which happens before this function returns.
-    unsafe { p.waiters.insert_tail(&w) };
-    mtx_leave_park(p, m);
-
-    loop {
-        w.wait.store(1, Ordering::Relaxed);
-        // ensure wait is visible before attempting the cas
-        fence(Ordering::SeqCst); // membar_enter(): StoreStore | StoreLoad
-        let o = mtx_cas(mtx, owner, owner | 1);
-        if o == owner {
-            while w.wait.load(Ordering::Relaxed) != 0 {
-                core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-                // MP_LOCKDEBUG (the spin-out into ddb): not configured.
-            }
-            fence(Ordering::Acquire); // membar_consumer()
-        } else if o != 0 {
-            owner = o;
-            continue;
-        }
-
-        owner = mtx_cas(mtx, 0, this | 1);
-        if owner == 0 {
-            break;
-        }
-    }
-
-    let m = mtx_enter_park(p);
-    // SAFETY: the lot is locked and `w` was linked into it above.
-    unsafe { p.waiters.remove(&w) };
-    mtx_leave_park(p, m);
+    mtx.enter();
 }
 
 /// `mtx_leave`: releases the mutex; if CPUs are parked on it, wakes the first one waiting
 /// for this mutex, then restores the level it was entered at.
-#[cfg(feature = "multiprocessor")]
 pub fn mtx_leave(mtx: &Mutex) {
-    let this = mtx_curcpu();
-
-    // Avoid deadlocks after panic or in DDB
-    if panicstr() || DB_ACTIVE.load(Ordering::Relaxed) {
-        return;
-    }
-
-    // WITNESS_UNLOCK: not configured.
-
-    #[cfg(feature = "diagnostic")]
-    Machine::curcpu_mutex_level_add(-1);
-
-    let s = mtx.mtx_oldipl.get();
-    let wantipl = mtx.mtx_wantipl.get();
-    fence(Ordering::Release); // membar_exit_before_atomic()
-    let owner = mtx_cas(mtx, this, 0);
-    if owner != this {
-        #[cfg(feature = "diagnostic")]
-        if owner & !1 != this {
-            crate::kern::subr_prf::panic(format_args!("mtx {:p}: not held", mtx));
-        }
-
-        let p = mtx_park(mtx);
-        let m = mtx_enter_park(p);
-        mtx.mtx_owner.store(0, Ordering::Relaxed);
-        fence(Ordering::Release); // membar_producer()
-        for w in p.waiters.iter() {
-            if ptr::eq(w.mtx, mtx) {
-                w.wait.store(0, Ordering::Relaxed);
-                break;
-            }
-        }
-        mtx_leave_park(p, m);
-    }
-
-    if wantipl != IPL_NONE {
-        splx(s);
-    }
-}
-
-#[cfg(not(feature = "multiprocessor"))]
-/// `mtx_enter`: takes the mutex, raising to its level.
-pub fn mtx_enter(mtx: &Mutex) {
-    let this = mtx_curcpu();
-
-    // Avoid deadlocks after panic or in DDB
-    if panicstr() || DB_ACTIVE.load(Ordering::Relaxed) {
-        return;
-    }
-
-    // WITNESS_CHECKORDER: not configured.
-    #[cfg(feature = "diagnostic")]
-    if mtx_owner(mtx) == this {
-        crate::kern::subr_prf::panic(format_args!("mtx {:p}: locking against myself", mtx));
-    }
-
-    if mtx.mtx_wantipl.get() != IPL_NONE {
-        mtx.mtx_oldipl.set(splraise(mtx.mtx_wantipl.get()));
-    }
-
-    mtx.mtx_owner.store(this, Ordering::Relaxed);
-    #[cfg(feature = "diagnostic")]
-    Machine::curcpu_mutex_level_add(1);
-    // WITNESS_LOCK: not configured.
-}
-
-#[cfg(not(feature = "multiprocessor"))]
-/// `mtx_enter_try`: on a uniprocessor the mutex is always free (or the kernel is past caring).
-pub fn mtx_enter_try(mtx: &Mutex) -> bool {
-    mtx_enter(mtx);
-    true
-}
-
-#[cfg(not(feature = "multiprocessor"))]
-/// `mtx_leave`: releases the mutex and restores the level it was entered at.
-pub fn mtx_leave(mtx: &Mutex) {
-    // Avoid deadlocks after panic or in DDB
-    if panicstr() || DB_ACTIVE.load(Ordering::Relaxed) {
-        return;
-    }
-
-    mutex_assert_locked(mtx, "mtx_leave");
-    // WITNESS_UNLOCK: not configured.
-
-    #[cfg(feature = "diagnostic")]
-    Machine::curcpu_mutex_level_add(-1);
-
-    let s = mtx.mtx_oldipl.get();
-    mtx.mtx_owner.store(0, Ordering::Relaxed);
-    if mtx.mtx_wantipl.get() != IPL_NONE {
-        splx(s);
-    }
-}
-
-/// `CPU_MAX_BUSY_CYCLES`: `ncpusfound`, the longest back-off of `db_mtx_enter`.
-fn cpu_max_busy_cycles() -> u32 {
-    u32::try_from(crate::kern::init_main::NCPUSFOUND.load(Ordering::Relaxed)).unwrap_or(1)
+    mtx.leave();
 }
 
 /// `db_mtx_enter`: takes the debugger's mutex with interrupts off, spinning with exponential
 /// back-off while another CPU holds it. Unlike `mtx_enter` it works while `db_active`.
 pub fn db_mtx_enter(mtx: &DbMutex) {
-    let ci = mtx_curcpu();
-    let mut ncycle = CPU_MIN_BUSY_CYCLES;
-
-    #[cfg(feature = "diagnostic")]
-    if mtx.mtx_owner.load(Ordering::Relaxed) == ci {
-        crate::kern::subr_prf::panic(format_args!(
-            "db_mtx_enter: mtx {:p}: locking against myself",
-            mtx
-        ));
-    }
-
-    let s = crate::machine::cpu::intr_disable();
-    loop {
-        // Avoid unconditional atomic operation to prevent cache line contention.
-        let owner = mtx.mtx_owner.load(Ordering::Relaxed);
-        if owner == 0 {
-            if mtx
-                .mtx_owner
-                .compare_exchange(0, ci, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-            // Busy loop with exponential backoff.
-            for _ in 0..ncycle {
-                core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-            }
-            if ncycle < cpu_max_busy_cycles() {
-                ncycle += ncycle;
-            }
-        }
-    }
-    fence(Ordering::Acquire); // membar_enter_after_atomic()
-
-    mtx.mtx_intr_state.set(s);
-
-    #[cfg(feature = "diagnostic")]
-    Machine::curcpu_mutex_level_add(1);
+    mtx.enter();
 }
 
 /// `db_mtx_leave`: releases the debugger's mutex and restores this CPU's interrupt state.
 pub fn db_mtx_leave(mtx: &DbMutex) {
-    #[cfg(feature = "diagnostic")]
-    {
-        if mtx.mtx_owner.load(Ordering::Relaxed) != mtx_curcpu() {
-            crate::kern::subr_prf::panic(format_args!(
-                "db_mtx_leave: mtx {:p}: not owned by this CPU",
-                mtx
-            ));
-        }
-        Machine::curcpu_mutex_level_add(-1);
-    }
-
-    let s = mtx.mtx_intr_state.get();
-    #[cfg(feature = "multiprocessor")]
-    fence(Ordering::Release); // membar_exit()
-    mtx.mtx_owner.store(0, Ordering::Relaxed);
-    // SAFETY: `s` is what `intr_disable` returned on this CPU in `db_mtx_enter`; only the
-    // owner (this CPU) writes `mtx_intr_state`.
-    unsafe { crate::machine::cpu::intr_restore(s) };
+    mtx.leave();
 }
 
 /// `pc_lock_init`.
@@ -802,7 +196,6 @@ pub fn pc_sprod_leave(pcl: &PcLock, generation: u32) {
 
 /// `pc_mprod_enter`: multiple (interlocking) producers: waits for an even generation and
 /// makes it odd with a compare-and-swap; returns the generation entered.
-#[cfg(feature = "multiprocessor")]
 pub fn pc_mprod_enter(pcl: &PcLock) -> u32 {
     let mut generation = pcl.pcl_gen.load(Ordering::Relaxed);
     let next = loop {
@@ -829,23 +222,10 @@ pub fn pc_mprod_enter(pcl: &PcLock) -> u32 {
 }
 
 /// `pc_mprod_leave`.
-#[cfg(feature = "multiprocessor")]
 pub fn pc_mprod_leave(pcl: &PcLock, generation: u32) {
     fence(Ordering::Release); // membar_exit()
     pcl.pcl_gen
         .store(generation.wrapping_add(1), Ordering::Relaxed);
-}
-
-/// `pc_mprod_enter`: without `MULTIPROCESSOR` the single-producer entry (the C's alias).
-#[cfg(not(feature = "multiprocessor"))]
-pub fn pc_mprod_enter(pcl: &PcLock) -> u32 {
-    pc_sprod_enter(pcl)
-}
-
-/// `pc_mprod_leave`: without `MULTIPROCESSOR` the single-producer exit (the C's alias).
-#[cfg(not(feature = "multiprocessor"))]
-pub fn pc_mprod_leave(pcl: &PcLock, generation: u32) {
-    pc_sprod_leave(pcl, generation)
 }
 
 /// `pc_cons_enter`: a consumer waits for a quiescent generation and records it in `genp`.
@@ -889,7 +269,7 @@ pub fn pc_cons_leave(pcl: &PcLock, genp: &mut u32) -> bool {
 mod tests {
     use super::*;
     use crate::machine::intr::IPL_HIGH;
-    use crate::sys::mutex::mtx_owner;
+    use crate::sys::mutex::{mtx_curcpu, mtx_owner};
 
     #[test]
     fn pc_lock_generations() {
@@ -927,89 +307,74 @@ mod tests {
     fn db_mutex_tracks_the_owner() {
         static M: DbMutex = DbMutex::new();
         db_mtx_enter(&M);
-        assert_eq!(M.mtx_owner.load(Ordering::Relaxed), mtx_curcpu());
+        assert_eq!(M.owner(), mtx_curcpu());
         db_mtx_leave(&M);
-        assert_eq!(M.mtx_owner.load(Ordering::Relaxed), 0);
+        assert_eq!(M.owner(), 0);
     }
 
     #[test]
     fn init_resets() {
         let m = Mutex::new(3);
-        m.mtx_owner.store(42, Ordering::Relaxed);
+        mtx_enter(&m);
         mtx_init(&m, 5);
         assert_eq!(mtx_owner(&m), 0);
-        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it under MULTIPROCESSOR.
-        #[cfg(feature = "multiprocessor")]
-        {
-            assert!(5 < crate::machine::intr::IPL_MPFLOOR);
-            assert_eq!(m.mtx_wantipl.get(), crate::machine::intr::IPL_MPFLOOR);
-        }
-        #[cfg(not(feature = "multiprocessor"))]
-        assert_eq!(m.mtx_wantipl.get(), 5);
+        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it.
+        assert!(5 < crate::machine::intr::IPL_MPFLOOR);
+        assert_eq!(m.wantipl(), crate::machine::intr::IPL_MPFLOOR);
     }
 
-    #[cfg(feature = "multiprocessor")]
-    #[test]
-    fn the_release_checks_stand_aside_after_a_panic_and_in_ddb() {
-        // (panicking, in ddb) -> whether the release checks the witnesses.
-        let table = [
-            ((false, false), true),
-            ((true, false), false),
-            ((false, true), false),
-            ((true, true), false),
-        ];
-        for ((panicking, in_ddb), due) in table {
-            assert_eq!(release_check_due(panicking, in_ddb), due);
-        }
-    }
-
-    #[cfg(feature = "multiprocessor")]
+    /// The last `KERNEL_UNLOCK` with a witness out panics before the lock is released; the
+    /// witness dropped, it releases (`hal::klock`'s check, through `bsd`'s names).
     #[test]
     fn the_last_kernel_unlock_with_a_witness_out_panics() {
-        // An armed thread: a nested unlock with a reader out passes, the last one panics
-        // before the lock is released; the reader dropped, it releases.
-        let _m = crate::kern::subr_pool::tests::setup_real_memory();
-        kernel_lock_checks_arm();
-        _kernel_lock();
-        _kernel_lock();
-        let r = hal::klock::reader();
-        _kernel_unlock();
-        assert_eq!(kernel_lock_depth(), Some(1));
-        let got = std::panic::catch_unwind(|| _kernel_unlock());
-        let msg = got
-            .err()
-            .and_then(|e| e.downcast_ref::<std::string::String>().cloned())
-            .unwrap_or_default();
-        assert!(
-            msg.contains("KERNEL_UNLOCK: the kernel lock released with a witness out (1)"),
-            "{msg}"
-        );
-        assert_eq!(kernel_lock_depth(), Some(1), "nothing was released");
-        drop(r);
-        _kernel_unlock();
-        assert_eq!(kernel_lock_depth(), Some(0));
+        std::thread::spawn(|| {
+            _kernel_lock();
+            _kernel_lock();
+            let r = hal::klock::reader();
+            _kernel_unlock();
+            assert_eq!(hal::klock::depth(), 1);
+            let got = std::panic::catch_unwind(_kernel_unlock);
+            let msg = got
+                .err()
+                .and_then(|e| e.downcast_ref::<std::string::String>().cloned())
+                .unwrap_or_default();
+            assert!(
+                msg.contains("KERNEL_UNLOCK: the kernel lock released with a witness out (1)"),
+                "{msg}"
+            );
+            assert_eq!(hal::klock::depth(), 1, "nothing was released");
+            drop(r);
+            _kernel_unlock();
+            assert_eq!(hal::klock::depth(), 0);
+        })
+        .join()
+        .unwrap();
     }
 
-    #[cfg(feature = "multiprocessor")]
+    /// `__mp_release_all(&kernel_lock)` (the switch, the sleeps) refuses before it touches the
+    /// lock.
     #[test]
     fn a_whole_release_with_a_witness_out_panics() {
-        // `__mp_release_all` (the switch, the sleeps) refuses before it touches the lock.
-        let _m = crate::kern::subr_pool::tests::setup_real_memory();
-        kernel_lock_checks_arm();
-        _kernel_lock();
-        let w = hal::klock::witness();
-        let got = std::panic::catch_unwind(|| __mp_release_all(&KERNEL_LOCK));
-        let msg = got
-            .err()
-            .and_then(|e| e.downcast_ref::<std::string::String>().cloned())
-            .unwrap_or_default();
-        assert!(
-            msg.contains("__mp_release_all: the kernel lock released with a witness out"),
-            "{msg}"
-        );
-        drop(w);
-        _kernel_unlock();
-        assert_eq!(kernel_lock_depth(), Some(0));
+        std::thread::spawn(|| {
+            _kernel_lock();
+            let w = hal::klock::witness();
+            let got = std::panic::catch_unwind(|| __mp_release_all(&KERNEL_LOCK));
+            let msg = got
+                .err()
+                .and_then(|e| e.downcast_ref::<std::string::String>().cloned())
+                .unwrap_or_default();
+            assert!(
+                msg.contains("__mp_release_all: the kernel lock released with a witness out"),
+                "{msg}"
+            );
+            drop(w);
+            assert_eq!(__mp_release_all(&KERNEL_LOCK), 1);
+            __mp_acquire_count(&KERNEL_LOCK, 1);
+            _kernel_unlock();
+            assert_eq!(hal::klock::depth(), 0);
+        })
+        .join()
+        .unwrap();
     }
 }
 /* </TESTS> */

@@ -39,92 +39,38 @@
 //! Upstream: sys/sys/mutex.h @ 3ce1f3f79392
 //! LZ: sys/sys/mutex.rs@3c62ede68802
 //!
-//! Status: `wip`. Milestone M4 ports `struct mutex` (the machine-independent one: both
-//! architectures' `<machine/mutex.h>` say `__USE_MI_MUTEX`), `MUTEX_INITIALIZER`,
-//! `mtx_curcpu`, `mtx_owner`, `mtx_owned`, `MUTEX_ASSERT_LOCKED`/`UNLOCKED` and the `MTX_*`
-//! flags. `WITNESS` (`lock_object`, `MTX_LO_INITIALIZER`) is not configured. The functions
-//! live in `kern/kern_lock.rs`. M11a: `__MUTEX_IPL(ipl)` raises to at least `IPL_MPFLOOR` with
-//! `MULTIPROCESSOR`, as in the C. M11c: `struct db_mutex` and `DB_MUTEX_INITIALIZER` (`DDB`,
-//! always configured here).
+//! `bsd`'s names over `hal::mutex` (N4.5c): `struct mutex` is `hal::mutex::RawMutex`,
+//! `struct db_mutex` `hal::mutex::DbMutex`; the functions (`mtx_enter`, ...) stay in
+//! `kern/kern_lock.rs`. `WITNESS` (`lock_object`, `MTX_LO_INITIALIZER`) is not configured.
 //!
 //! ## Deviations
-//! - The fields are an atomic and `Cell`s, so a `static` mutex is entered through `&`.
-//! - `db_mutex`'s owner is the owning CPU as `mtx_curcpu()` gives it (an `AtomicUsize`, 0 when
-//!   free), like `struct mutex`'s, instead of a `struct cpu_info *volatile`.
+//! - The fields are atomics inside `hal`'s types, so a `static` mutex is entered through `&`.
+//! - `db_mutex`'s owner is the owning CPU's word (`mtx_curcpu()`), like `struct mutex`'s,
+//!   instead of a `struct cpu_info *volatile`.
 //!
 //! ## Redesign
-//! - The code is LZ's. Only the host test `initializer_is_free` changed, when
-//!   `MULTIPROCESSOR` became the one kernel built (decision 40): it asserts the level each
-//!   configuration stores, `IPL_MPFLOOR` for a level below it with `MULTIPROCESSOR`
-//!   (`__MUTEX_IPL`), the level given without; LZ's asserted the uniprocessor value alone.
-//! - Its uniprocessor branches stay, unbuilt, until N4 redesigns the file (the user's
-//!   decision 40 answer, 2026-10-17: the inherited UP code goes at each file's N4 redesign).
+//! - N4.5c: `struct mutex` and `struct db_mutex` are `hal`'s (`RawMutex`, `DbMutex`; LZ's
+//!   two `unsafe impl Sync` are gone with their `Cell`s): this module keeps the C's names
+//!   (`Mutex`, `MUTEX_INITIALIZER` as `Mutex::new`, `mtx_owner`, `mtx_owned`,
+//!   `MUTEX_ASSERT_LOCKED`/`UNLOCKED`, `__MUTEX_IPL`, `mtx_curcpu`) for the 128 files that
+//!   use them. The uniprocessor `__MUTEX_IPL` is gone (decision 40).
 
-use core::cell::Cell;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use crate::kern::init_main::DB_ACTIVE;
-use crate::kern::subr_prf::panicstr;
-use crate::machine::Machine;
-use crate::machine::cpu::Cpu;
-use crate::machine::intr::IPL_NONE;
-#[cfg(not(feature = "diagnostic"))]
-#[allow(unused_imports)] // the DIAGNOSTIC asserts are the readers
-use core::hint as _;
-
-/// `__MUTEX_IPL(ipl)`: the level a mutex of `ipl` raises to (see the module's deviations).
-pub const fn mutex_ipl(ipl: i32) -> i32 {
-    #[cfg(feature = "multiprocessor")]
-    if ipl < crate::machine::intr::IPL_MPFLOOR {
-        return crate::machine::intr::IPL_MPFLOOR;
-    }
-    ipl
-}
+pub use hal::mutex::{DbMutex, RawMutex as Mutex, mtx_curcpu, mutex_ipl};
 
 /// `MTX_NOWITNESS`.
 pub const MTX_NOWITNESS: i32 = 0x01;
 /// `MTX_DUPOK`.
 pub const MTX_DUPOK: i32 = 0x02;
 
-/// `struct mutex`.
-pub struct Mutex {
-    /// `mtx_owner`: the owning CPU (`mtx_curcpu()`), 0 when free; bit 0 is the MP waiter flag.
-    pub mtx_owner: AtomicUsize,
-    /// `mtx_wantipl`: the level the mutex raises to.
-    pub mtx_wantipl: Cell<i32>,
-    /// `mtx_oldipl`: the level to restore on leave.
-    pub mtx_oldipl: Cell<i32>,
-}
-
-// SAFETY: the mutex is its own lock: the owner is set and the cells written by the one CPU
-// that entered it, on entry and exit.
-unsafe impl Sync for Mutex {}
-
-impl Mutex {
-    /// `MUTEX_INITIALIZER(ipl)`: a free mutex that raises to `ipl`.
-    pub const fn new(ipl: i32) -> Self {
-        Self {
-            mtx_owner: AtomicUsize::new(0),
-            mtx_wantipl: Cell::new(mutex_ipl(ipl)),
-            mtx_oldipl: Cell::new(IPL_NONE),
-        }
-    }
-}
-
-/// `mtx_curcpu()`: this CPU, as the number `mtx_owner` holds.
-pub fn mtx_curcpu() -> usize {
-    Machine::curcpu_ptr() as usize
-}
-
 /// `mtx_owner(mtx)`: the owning CPU, without the waiter bit.
 pub fn mtx_owner(mtx: &Mutex) -> usize {
-    mtx.mtx_owner.load(Ordering::Relaxed) & !1
+    mtx.owner()
 }
 
 /// `MUTEX_ASSERT_LOCKED(mtx)` (`DIAGNOSTIC`).
 pub fn mutex_assert_locked(mtx: &Mutex, func: &str) {
     #[cfg(feature = "diagnostic")]
-    if mtx_owner(mtx) != mtx_curcpu() && !(panicstr() || DB_ACTIVE.load(Ordering::Relaxed)) {
+    if !mtx.owned() {
         crate::kern::subr_prf::panic(format_args!("mutex {:p} not held in {func}", mtx));
     }
     #[cfg(not(feature = "diagnostic"))]
@@ -134,7 +80,7 @@ pub fn mutex_assert_locked(mtx: &Mutex, func: &str) {
 /// `MUTEX_ASSERT_UNLOCKED(mtx)` (`DIAGNOSTIC`).
 pub fn mutex_assert_unlocked(mtx: &Mutex, func: &str) {
     #[cfg(feature = "diagnostic")]
-    if mtx_owner(mtx) == mtx_curcpu() && !(panicstr() || DB_ACTIVE.load(Ordering::Relaxed)) {
+    if mtx.owner() == mtx_curcpu() && !hal::cpu::past_caring() {
         crate::kern::subr_prf::panic(format_args!("mutex {:p} held in {func}", mtx));
     }
     #[cfg(not(feature = "diagnostic"))]
@@ -143,35 +89,7 @@ pub fn mutex_assert_unlocked(mtx: &Mutex, func: &str) {
 
 /// `mtx_owned(mtx)`: whether this CPU holds `mtx` (or the kernel is past caring).
 pub fn mtx_owned(mtx: &Mutex) -> bool {
-    mtx_owner(mtx) == mtx_curcpu() || panicstr() || DB_ACTIVE.load(Ordering::Relaxed)
-}
-
-/// `struct db_mutex`: the debugger's spinning lock, which keeps interrupts off while held.
-pub struct DbMutex {
-    /// `mtx_owner` (volatile): the owning CPU (`mtx_curcpu()`), 0 when free.
-    pub mtx_owner: AtomicUsize,
-    /// `mtx_intr_state`: what `intr_disable` returned on entry; written by the owner only.
-    pub mtx_intr_state: Cell<u64>,
-}
-
-// SAFETY: `mtx_owner` is atomic; `mtx_intr_state` is written and read by the owning CPU only,
-// between `db_mtx_enter` and `db_mtx_leave`.
-unsafe impl Sync for DbMutex {}
-
-impl DbMutex {
-    /// `DB_MUTEX_INITIALIZER`: a free debugger mutex.
-    pub const fn new() -> Self {
-        Self {
-            mtx_owner: AtomicUsize::new(0),
-            mtx_intr_state: Cell::new(0),
-        }
-    }
-}
-
-impl Default for DbMutex {
-    fn default() -> Self {
-        Self::new()
-    }
+    mtx.owned()
 }
 /* </CODE> */
 
@@ -179,21 +97,18 @@ impl Default for DbMutex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::intr::IPL_NONE;
 
     #[test]
     fn initializer_is_free() {
         let m = Mutex::new(7);
         assert_eq!(mtx_owner(&m), 0);
-        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it under MULTIPROCESSOR.
-        #[cfg(feature = "multiprocessor")]
-        {
-            assert!(7 < crate::machine::intr::IPL_MPFLOOR);
-            assert_eq!(m.mtx_wantipl.get(), crate::machine::intr::IPL_MPFLOOR);
-        }
-        #[cfg(not(feature = "multiprocessor"))]
-        assert_eq!(m.mtx_wantipl.get(), 7);
-        assert_eq!(m.mtx_oldipl.get(), IPL_NONE);
+        // `__MUTEX_IPL`: a level below `IPL_MPFLOOR` is raised to it.
+        assert!(7 < crate::machine::intr::IPL_MPFLOOR);
+        assert_eq!(m.wantipl(), crate::machine::intr::IPL_MPFLOOR);
+        assert_eq!(m.oldipl(), IPL_NONE);
         assert!(!mtx_owned(&m));
+        assert_eq!(mutex_ipl(7), crate::machine::intr::IPL_MPFLOOR);
     }
 }
 /* </TESTS> */

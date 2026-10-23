@@ -2484,8 +2484,8 @@ pub fn usb_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     }
 
     if let Some(soft) = bus.soft.get() {
-        // SAFETY: established by `usb_attach` and not used after this (the field is cleared).
-        unsafe { softintr_disestablish(soft) };
+        // Established by `usb_attach` and not used after this (the field is cleared).
+        softintr_disestablish(soft);
         bus.soft.set(None);
     }
 

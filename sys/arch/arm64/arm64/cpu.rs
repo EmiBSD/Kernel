@@ -2555,9 +2555,8 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     hal::thread::set_current_static::<Proc>(None);
     hal::arch::arm64::switch::clear_current_pcb();
     ci.ci_curpm.set(ptr::null());
-    ci.ci_cpl.set(IPL_NONE as u32);
-    ci.ci_ipending.set(0);
-    ci.ci_idepth.set(0);
+    // ci_cpl = IPL_NONE, ci_ipending = 0, ci_idepth = 0
+    ci.core.reset_intr_state();
 
     // DIAGNOSTIC
     ci.core.reset_mutex_level();

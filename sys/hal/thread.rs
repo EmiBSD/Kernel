@@ -84,17 +84,29 @@
 //!   owns: set only from 0, by [`MachineSlot::install_uarea`] with a [`UArea`] (minted by the
 //!   registered [`UAreaMemory`] provider alone, under its contract, `sys/hal/trust.rs`) or by
 //!   [`boot_uarea`] with `hal`'s own `proc0` u-area; cleared only by
-//!   [`MachineSlot::take_uarea`], under [`SCHED_LOCK`], for a thread no CPU runs, which gives
-//!   the memory back to its owner. `hal` writes through it ([`thread_setup`],
-//!   [`thread_restart`]) only under the scheduler's hold, for a thread no CPU runs, and reads
+//!   [`MachineSlot::take_uarea`], under [`SCHED_LOCK`], for a thread with no live context
+//!   (E6), which gives the memory back to its owner. `hal` writes through it
+//!   ([`thread_setup`], [`thread_restart`]) only under the scheduler's hold, for a thread
+//!   with no live context (E6), and reads
 //!   the pcb of a thread that runs here or that the switch takes (the machine's switch refuses
 //!   a thread without a u-area); no safe function stores a caller's address there. `p_cpu` is
 //!   compared, never followed.
-//! - E5 (with K1 of the closing review): `curproc` and `curpcb` of a CPU that runs a thread
-//!   change only by the switch: [`set_current_static`] takes a thread only on a CPU running
-//!   none (`curproc` null, or the same thread again), and the machine's `clear_current_pcb`
-//!   only while `curproc` is null, so no safe call rewrites them under a running thread (whose
-//!   context `switch_to` would then save elsewhere, or whose stack `take_uarea` would free).
+//! - E5 (with K1 of the closing review): the running CPU's core (`TPIDR_EL1` on arm64) is
+//!   installed once per CPU (`hal::cpu::set_current` refuses another core once one is
+//!   installed). `curproc` and `curpcb` of a CPU that runs a thread change only by the
+//!   switch: `ci_curpcb` is written by the switch (the new thread's u-area pcb), by
+//!   [`boot_uarea`] (`proc0`'s, `hal`'s static) and cleared at a CPU's start by the
+//!   machine's `clear_current_pcb`, only while `curproc` is null; `ci_curproc` by the switch
+//!   and by [`set_current_static`], which takes a thread only on a CPU running none
+//!   (`curproc` null, or the same thread again). So no safe call rewrites them under a
+//!   running thread (whose context `switch_to` would then save elsewhere, or whose stack
+//!   `take_uarea` would free), no caller-chosen address reaches either, and the switch checks
+//!   both (`curproc` is the old thread, and on the machine `curpcb` its pcb). Not covered: a
+//!   CPU that is suspended and resumed (`cpu_resume_secondary`, `unported!` in `bsd`'s
+//!   arm64 `cpu.rs`): the C clears `curproc` and rebuilds a live idle frame on wake-up
+//!   (arm64 `cpu.c` `cpu_init_secondary`, for power-up and wake-up alike), which
+//!   `set_current_static` and E6 refuse; the port of the resume adds a `hal` "CPU powered
+//!   down" reset of the core and the idle thread's context first.
 //! - E6 (K2 of the closing review): a u-area is given back, or its first frames built, only
 //!   while no context of its thread lives on it. The slot's context state says so in O(1):
 //!   none, then fresh (`thread_setup`/`thread_restart`, refused for a live or dead thread),
@@ -106,12 +118,6 @@
 //!   one. Premise: `sched_exit`'s caller leaves nothing pinned and linked on its stack (it
 //!   never returns; the C's `exit1` holds nothing either), as the C frees the u-area only in
 //!   the reaper after `exit2` (kern_exit.c:494) and runs `cpu_fork` on an `SIDL` child alone.
-//! - E5: the running CPU's core (`TPIDR_EL1` on arm64) is installed once per CPU
-//!   (`hal::cpu::set_current` refuses another core once one is installed); `ci_curpcb` is
-//!   written by the switch (the new thread's u-area pcb), by [`boot_uarea`] (`proc0`'s, `hal`'s
-//!   static) and cleared at a CPU's start; `ci_curproc` by the switch and by
-//!   [`set_current_static`], which refuses a thread another CPU runs. No caller-chosen address
-//!   reaches either.
 
 use core::any::TypeId;
 use core::num::NonZeroUsize;
@@ -569,11 +575,18 @@ pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
     check_type::<T>();
     next.check(h);
     let old = old.get_ref();
-    // The context saved is the running one: `old` must be this CPU's thread (E4).
+    let slot = slot_of(old);
+    // The context saved is the running one: `old` must be this CPU's thread (E4), and on the
+    // machine its pcb this CPU's `curpcb` (E5: the switch stores the stack pointer through
+    // `curpcb`, which a CPU's start window leaves null until its first thread).
     if crate::cpu::curcpu().curproc() != core::ptr::from_ref(old).cast::<()>() {
         hal_panic(format_args!("cpu_switchto: old is not the running thread"));
     }
-    crate::arch::current::switch::switch(Some(old.machine()), next.slot, next.thread);
+    #[cfg(target_os = "none")]
+    if crate::cpu::curcpu().curpcb().addr() != slot.addr_word() {
+        hal_panic(format_args!("cpu_switchto: curpcb is not old's pcb"));
+    }
+    crate::arch::current::switch::switch(Some(slot), next.slot, next.thread);
 }
 
 /// `sched_toidle`'s switch: the running context is not saved (the thread `old` is dead, or
@@ -590,7 +603,7 @@ pub fn exit_to_idle<T: ThreadLayout>(h: SchedHold, old: Option<Pin<&T>>, next: N
         if crate::cpu::curcpu().curproc() != core::ptr::from_ref(old).cast::<()>() {
             hal_panic(format_args!("sched_toidle: old is not the running thread"));
         }
-        old.machine().ctx.store(CTX_DEAD, AtomicOrdering::Release);
+        slot_of(old).ctx.store(CTX_DEAD, AtomicOrdering::Release);
     } else if !crate::cpu::curcpu().curproc().is_null() {
         // A CPU's first switch: no thread ran here (a dead one names itself, above).
         hal_panic(format_args!("sched_toidle: a thread runs here"));
@@ -694,12 +707,12 @@ pub fn thread_setup<T: ThreadLayout>(
 ) {
     check_type::<T>();
     let _ = h;
-    fresh(child.get_ref().machine(), "cpu_fork");
+    fresh(slot_of(child.get_ref()), "cpu_fork");
     let runs = crate::cpu::curcpu().curproc() == core::ptr::from_ref(parent.get_ref()).cast();
     crate::arch::current::switch::thread_setup(
-        parent.get_ref().machine(),
+        slot_of(parent.get_ref()),
         runs,
-        child.get_ref().machine(),
+        slot_of(child.get_ref()),
         stack,
         tcb,
         start,
@@ -714,8 +727,8 @@ pub fn thread_setup<T: ThreadLayout>(
 pub fn thread_restart<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>, start: usize, arg: usize) {
     check_type::<T>();
     let _ = h;
-    fresh(t.get_ref().machine(), "cpu_init_secondary");
-    crate::arch::current::switch::thread_restart(t.get_ref().machine(), start, arg);
+    fresh(slot_of(t.get_ref()), "cpu_init_secondary");
+    crate::arch::current::switch::thread_restart(slot_of(t.get_ref()), start, arg);
 }
 
 /// The frames of `slot`'s thread are about to be built: refused (`panic(9)`, naming `what`)

@@ -20,7 +20,7 @@
 //! `bsd`'s implementations of the `hal` runtime's bridges, and their registration.
 //!
 //! The runtime in `hal` (docs/ZERO_UNSAFE.md 0.1) names nothing of `bsd`: what it needs from
-//! the code still here (the machine's `spl(9)` and `curcpu()`, the sleep queues,
+//! the code still here (`curcpu()`, the sleep queues,
 //! `pool(9)`, `malloc(9)`, the user copy, the console, `printf(9)` (N3.3, the kernel crate's
 //! lines), and for the pmap (N3.1) amd64's CPUs
 //! of the TLB shootdown and `arc4random(9)`) arrives as one `&'static dyn Trait` per
@@ -38,6 +38,8 @@
 //! crate's subsystems are initialised from `main()`, after `uvm_init`, `kmeminit` and the
 //! pools). That is the boot contract `hal`'s soundness rests on (`sys/hal/bridges.rs`,
 //! `sys/hal/trust.rs`): the memory bridges are the kernel's own allocators, registered once.
+//! The interrupt controller (`hal::intr::IntrHardware`, N4.5c) is the machine's to register,
+//! from its earliest setup (arm64's `initarm`): generic code cannot name it.
 //! Registering does not call them; a bridge is used only by a piece whose subsystem is up.
 
 use core::ffi::c_void;
@@ -45,8 +47,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
-use hal::intr::IntrLevel;
-use hal::klock::KernelLock;
 use hal::malloc::Malloc;
 use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
@@ -57,42 +57,15 @@ use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::kern_kthread::{kthread_create, kthread_exit};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sched::sched_peg_curproc;
-use crate::kern::kern_softintr::{SoftintrHand, softintr_establish, softintr_schedule};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::printf;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::{Cpu, cpu_info_foreach};
-use crate::machine::intr::{IPL_HIGH, IPL_MPFLOOR, splassert, splraise, splx};
 use crate::sys::errno::Errno;
 use crate::sys::pool::Pool;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
-
-/// `spl(9)` of `sys/machine/intr.rs`.
-struct BsdIntr;
-
-impl IntrLevel for BsdIntr {
-    fn splraise(&self, ipl: i32) -> i32 {
-        splraise(ipl)
-    }
-
-    fn splx(&self, s: i32) {
-        splx(s);
-    }
-
-    fn mpfloor(&self) -> i32 {
-        IPL_MPFLOOR
-    }
-
-    fn ipl_high(&self) -> i32 {
-        IPL_HIGH
-    }
-
-    fn splassert(&self, wantipl: i32, func: &str) {
-        splassert(wantipl, func);
-    }
-}
 
 /// One pool of `pool(9)` (`sys/kern/subr_pool.rs`).
 impl RawPool for Pool {
@@ -359,90 +332,6 @@ impl Printf for BsdPrintf {
     }
 }
 
-/// `KERNEL_LOCK`, `KERNEL_UNLOCK`, `KERNEL_ASSERT_LOCKED` of `sys/sys/systm.rs`
-/// (`kern_lock.rs`), for the kernel's objects and vnode pager (N3.4e).
-struct BsdKernelLock;
-
-impl KernelLock for BsdKernelLock {
-    fn lock(&self) {
-        crate::sys::systm::kernel_lock();
-    }
-
-    fn unlock(&self) {
-        crate::sys::systm::kernel_unlock();
-    }
-
-    fn assert_locked(&self) {
-        crate::sys::systm::kernel_assert_locked();
-    }
-
-    fn held(&self) -> bool {
-        crate::kern::kern_lock::_kernel_lock_held()
-    }
-
-    fn release_all(&self) -> u32 {
-        crate::kern::kern_lock::__mp_release_all(&crate::kern::kern_lock::KERNEL_LOCK)
-    }
-
-    fn acquire_count(&self, count: u32) {
-        crate::kern::kern_lock::__mp_acquire_count(&crate::kern::kern_lock::KERNEL_LOCK, count);
-    }
-}
-
-/// The soft interrupts (`sys/kern/kern_softintr.rs`). `softintr_establish` takes a
-/// `fn(*mut c_void)` and an argument; the kernel's handlers are plain `fn()`s, so each takes
-/// a slot of [`SOFT_RUNS`] and the argument is the slot's number, an address without
-/// provenance that [`soft_run`] turns back into the number (never dereferenced); the handle
-/// the bridge returns is the slot's number plus one, and the `SoftintrHand` it names is kept,
-/// exposed, in [`SOFT_HANDS`].
-struct BsdSoftIntr;
-
-/// How many kernel soft interrupt handlers bsd serves (`softclock` alone today).
-const SOFT_SLOTS: usize = 4;
-
-/// The kernel's handlers, by slot.
-static SOFT_RUNS: [hal::once::OnceStatic<fn()>; SOFT_SLOTS] =
-    [const { hal::once::OnceStatic::new() }; SOFT_SLOTS];
-
-/// The `SoftintrHand` of each slot, its address with its provenance exposed (0: none yet).
-static SOFT_HANDS: [AtomicUsize; SOFT_SLOTS] = [const { AtomicUsize::new(0) }; SOFT_SLOTS];
-
-/// The next slot to hand out.
-static SOFT_NEXT: AtomicUsize = AtomicUsize::new(0);
-
-/// The soft interrupt handler of every slot: runs the kernel's handler of slot `arg`.
-fn soft_run(arg: *mut c_void) {
-    if let Some(run) = SOFT_RUNS.get(arg.addr()).and_then(|s| s.get()) {
-        run();
-    }
-}
-
-impl hal::softintr::SoftIntr for BsdSoftIntr {
-    fn establish(&self, ipl: i32, run: fn()) -> Option<usize> {
-        let slot = SOFT_NEXT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < SOFT_SLOTS).then_some(n + 1)
-            })
-            .ok()?;
-        SOFT_RUNS[slot].set(run).ok()?;
-        let sih = softintr_establish(ipl, soft_run, ptr::without_provenance_mut(slot))?;
-        SOFT_HANDS[slot].store(sih.as_ptr().expose_provenance(), Ordering::Release);
-        Some(slot + 1)
-    }
-
-    fn schedule(&self, handle: usize) {
-        let Some(hand) = handle.checked_sub(1).and_then(|s| SOFT_HANDS.get(s)) else {
-            return;
-        };
-        let p = ptr::with_exposed_provenance_mut::<SoftintrHand>(hand.load(Ordering::Acquire));
-        if let Some(sih) = NonNull::new(p) {
-            softintr_schedule(sih);
-        }
-    }
-}
-
-static BSD_SOFTINTR: BsdSoftIntr = BsdSoftIntr;
-
 /// The kernel crate's clocks (`kernel::clock::Uptime`) over `nanouptime`, `getnanouptime`
 /// and `nanotime` of `sys/kern/kern_tc.rs`, the userland-shaped `Timespec` turned into the
 /// kernel's.
@@ -524,7 +413,6 @@ impl NetLock for BsdNetLock {
     }
 }
 
-static BSD_INTR: BsdIntr = BsdIntr;
 /// The kernel's scheduler as `hal::sleep`'s sleeps (`kernel::sched::KernelSleep`).
 static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcGlue> =
     kernel::sched::KernelSleep::new();
@@ -536,7 +424,6 @@ static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
-static BSD_KERNEL_LOCK: BsdKernelLock = BsdKernelLock;
 static BSD_NET_LOCK: BsdNetLock = BsdNetLock;
 
 /// Whether `hal`'s `TlbCpus` slot holds `bsd`'s CPUs (amd64's processors are started only
@@ -547,7 +434,6 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// keeps its first implementation). Called by `stand::start_kernel` before `main()`: the boot
 /// contract of the module docs.
 pub fn hal_bridges_register() {
-    let _ = hal::bridges::register_intr_level(&BSD_INTR);
     let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
@@ -555,7 +441,6 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
-    let _ = hal::bridges::register_softintr(&BSD_SOFTINTR);
     let _ = hal::thread::register_start(crate::kern::kern_fork::thread_start);
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     let _ = kernel::clock::install_uptime(&BSD_UPTIME);
@@ -568,10 +453,9 @@ pub fn hal_bridges_register() {
     }
 }
 
-/// Registers the bridges of the kernel's VM objects and vnode pager (`KernelLock`, `NetLock`),
+/// Registers the bridge of the kernel's vnode pager (`NetLock`; the kernel lock is `hal`'s own),
 /// once: called by `uvm_init` before the first object is made (bridges.toml).
 pub fn hal_bridges_register_vm() {
-    let _ = hal::bridges::register_kernel_lock(&BSD_KERNEL_LOCK);
     let _ = hal::bridges::register_net_lock(&BSD_NET_LOCK);
 }
 

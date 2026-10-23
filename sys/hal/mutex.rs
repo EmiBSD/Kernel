@@ -104,22 +104,22 @@
 //! owner word and then restores the level it replaced. It never sleeps. `ci_mutex_level` is
 //! counted under `DIAGNOSTIC`.
 //!
-//! The machine's `spl(9)` arrives through the `IntrLevel` bridge (`intr.rs`), the CPU's
-//! identity from `hal::cpu` (its core, N4.5a); before the bridge is registered there are no
-//! interrupts, before the boot CPU's core is installed one CPU, and a mutex is a
-//! compare-and-swap of its owner word, which is all its exclusion ever rests on. The level
-//! a mutex raises to is fixed when it is entered, and the guard restores only a level it
-//! raised: a mutex entered before the `IntrLevel` bridge exists and left
-//! after it was registered restores nothing (the C fixes `mtx_wantipl` at init; this
-//! mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry).
+//! The level is `hal::intr`'s (the running CPU's core, N4.5c), the CPU's identity
+//! `hal::cpu`'s (its core, N4.5a); before the boot CPU's core is installed one CPU runs, and
+//! a mutex is a compare-and-swap of its owner word, which is all its exclusion ever rests
+//! on. The level a mutex raises to is fixed when it is entered (the C fixes `mtx_wantipl` at
+//! init; this mutex's level, `IPL_MPFLOOR`'s floor included, is read once, at entry), and its
+//! guard restores the level it replaced.
+//!
+//! A contended mutex is the C's too (N4.5c): a CPU that finds it held spins up to 40 times
+//! while no CPU is parked on it, then publishes itself in one of 128 parking lots (the
+//! mutex's by its address, a waiter pinned on its own stack, the lot's lock held with the
+//! machine's interrupts off) and marks the owner word (bit 0); the release that finds the
+//! mark wakes the first CPU parked for that mutex. [`RawMutex`] is the same lock without data
+//! of its own, `bsd`'s legacy `Mutex` (with the C's `mtx_oldipl` and its after-a-panic early
+//! returns), and [`DbMutex`] the debugger's.
 //!
 //! ## Deviations
-//! - The parking lots of the C's slow path (`mtx_park`, `mtx_enter_park`: a CPU that spun 40
-//!   times publishes itself in one of 128 lots with interrupts disabled and waits to be
-//!   handed the mutex) need `intr_disable`/`intr_restore`, which `hal` gets with the hardware
-//!   at N4 (intr, N4.1): until then a contended `Mutexed` keeps spinning on its owner word with
-//!   `CPU_BUSY_CYCLE`, the C's behaviour before the lots. Mutual exclusion, the levels and the
-//!   counters are the C's; only who wins a contended release may differ.
 //! - After a panic or inside ddb (`panicstr || db_active`) the C's `mtx_enter` returns
 //!   without the mutex and `mtx_leave` without releasing it, so the debugger and the dump do
 //!   not deadlock on a lock a stopped CPU holds. A `Mutexed` cannot hand out its data without
@@ -130,6 +130,8 @@
 //! - "locking against myself" (entering a mutex this CPU holds) panics in every
 //!   configuration, where the C checks it only under `DIAGNOSTIC` (and otherwise spins for
 //!   ever under `MULTIPROCESSOR`, or carries on with two owners without it).
+//! - [`DbMutex::leave`] by a CPU that does not own the mutex panics in every configuration
+//!   (the C's check is `DIAGNOSTIC`'s): the interrupt state it restores is its owner's.
 //! - `mtx_oldipl` is not kept in the mutex: the guard holds the level to restore, which only
 //!   the owner ever read.
 //!
@@ -166,22 +168,45 @@
 //!   `[T]` fields of every timeout under `timeout_mutex`, `[S]` under `SCHED_LOCK`), is a
 //!   [`SharedMutex`], a `Mutexed<()>` whose guard is the cells' witness; a `static` one keys
 //!   cells made in a `const` context (`Guarded::new_static_mutexed`, `TIMEOUT_INITIALIZER`).
+//! - N4.5c: the parking lots (the deviation N2.3 kept) are here, with the interrupt guard of
+//!   `hal::cpu`: LZ's lots were `TAILQ`s under an `unsafe impl Sync` whose waiters lived on
+//!   the stack as `&'static` lies; here a lot's waiters are a pinned list bound to the lot's
+//!   lock and a waiter is `pin!`ned on the stack and unlinked before its frame returns.
+//!   `bsd`'s `struct mutex` and `struct db_mutex` are [`RawMutex`] and [`DbMutex`] (atomics
+//!   for LZ's `Cell`s and their two `unsafe impl Sync`, `mtx_intr_state` a word only the
+//!   owner writes); `kern_lock.c`'s functions (`mtx_enter`, `mtx_leave`, `db_mtx_enter`, ...)
+//!   are their methods, `bsd`'s names forward to them.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::pin::pin;
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::assert::kassert;
 use crate::bridges;
 use crate::cpu;
-use crate::intr::{self, IPL_NONE};
+use crate::intr::{self, IPL_MPFLOOR, IPL_NONE};
+use crate::pinlist::{PinEntry, PinList};
 use crate::rwlock::LockId;
 use crate::sleep::{INFSLP, PCATCH, PRIMASK, chan};
 use crate::sys::errno::Errno;
 
 /// The flag bit every owner word carries, so an owner's word is never 0 (the free value).
 const MTX_OWNED: usize = 0x2;
+
+/// Bit 0 of an owner word: CPUs are parked on the mutex.
+const MTX_WAITERS: usize = 0x1;
+
+/// `MTX_PARKING_BITS`: log2 of the number of parking lots.
+const MTX_PARKING_BITS: u32 = 7;
+/// `MTX_PARKING_LOTS`.
+const MTX_PARKING_LOTS: usize = 1 << MTX_PARKING_BITS;
+/// `MTX_PARKING_MASK`.
+const MTX_PARKING_MASK: usize = MTX_PARKING_LOTS - 1;
+
+/// `CPU_MIN_BUSY_CYCLES`: the first back-off of `db_mtx_enter`.
+const CPU_MIN_BUSY_CYCLES: u32 = 1;
 
 /// A spinning mutex that owns the `T` it protects (`struct mutex` with its data).
 ///
@@ -215,30 +240,44 @@ impl<T> Mutexed<T> {
         self.held(restore)
     }
 
-    /// `mtx_enter`'s work: the level raised, the owner word taken (spinning while another CPU
-    /// holds it); the level to restore.
+    /// `mtx_enter`'s work: the level raised, the owner word taken (spinning, then parking,
+    /// while another CPU holds it); the level to restore.
     fn enter(&self) -> Option<i32> {
         let restore = self.raise();
         let me = self_word();
         let found = self.swap_in(me);
         if found != 0 {
             self.against_myself(found, me);
-            cpu::spinning(1);
-            while !(self.owner.load(Ordering::Relaxed) == 0 && self.swap_in(me) == 0) {
-                core::hint::spin_loop(); // CPU_BUSY_CYCLE()
-            }
-            cpu::spinning(-1);
+            enter_contended(&self.owner, me, found);
+            fence(Ordering::Acquire); // membar_enter_after_atomic()
         }
         restore
     }
 
+    /// The lock of a parking lot (`mtx_enter_park`): taken by spinning alone (a lot never
+    /// parks), with the machine's interrupts off on this CPU (`_masked` is the proof, borrowed
+    /// for as long as the guard lives, so the mask cannot be lifted while the lot is held) and
+    /// no level change.
+    fn lock_masked<'a>(&'a self, _masked: &'a cpu::IntrGuard) -> MutexedGuard<'a, T> {
+        let me = self_word();
+        loop {
+            let found = self.swap_in(me);
+            if found == 0 {
+                break;
+            }
+            self.against_myself(found, me);
+            core::hint::spin_loop(); // CPU_BUSY_CYCLE()
+        }
+        self.held(None)
+    }
+
     /// `mtx_leave`'s work: `ci_mutex_level` uncounted, the owner word released (Release, so
-    /// the next owner's swap sees every write made under the mutex), then the level `restore`
-    /// says put back.
+    /// the next owner sees every write made under the mutex; a CPU parked on it woken), then
+    /// the level `restore` says put back.
     fn leave(&self, restore: Option<i32>) {
         #[cfg(feature = "diagnostic")]
         cpu::mutex_level(-1);
-        self.owner.store(0, Ordering::Release);
+        release(&self.owner);
         intr::restore(restore);
     }
 
@@ -286,7 +325,7 @@ impl<T> Mutexed<T> {
     /// `mtx_owned(mtx)`: whether this CPU holds the mutex, or the kernel is past caring (after
     /// a panic, in ddb), as the C answers for its assertions.
     pub fn owned(&self) -> bool {
-        self.owner.load(Ordering::Relaxed) == self_word() || cpu::past_caring()
+        self.owner.load(Ordering::Relaxed) & !MTX_WAITERS == self_word() || cpu::past_caring()
     }
 
     /// Raises to `__MUTEX_IPL(mtx_wantipl)` (`MULTIPROCESSOR`'s: at least `IPL_MPFLOOR`),
@@ -314,7 +353,7 @@ impl<T> Mutexed<T> {
     /// The `DIAGNOSTIC` check of the C, kept in every configuration: entering a mutex this
     /// CPU holds would make two guards.
     fn against_myself(&self, found: usize, me: usize) {
-        if found == me {
+        if found & !MTX_WAITERS == me {
             crate::assert::hal_panic(format_args!(
                 "mtx {:p}: locking against myself",
                 core::ptr::from_ref(self)
@@ -348,7 +387,7 @@ impl Mutexed<()> {
         allow(dead_code, reason = "the switch is not the ABI module's")
     )]
     pub(crate) fn adopt(&self) -> MutexedGuard<'_, ()> {
-        if self.owner.load(Ordering::Relaxed) != self_word() {
+        if self.owner.load(Ordering::Relaxed) & !MTX_WAITERS != self_word() {
             crate::assert::hal_panic(format_args!(
                 "mtx {:p}: adopted by a CPU that does not hold it",
                 core::ptr::from_ref(self)
@@ -483,6 +522,452 @@ impl<T> Drop for MutexedGuard<'_, T> {
 /// `mtx_curcpu()` as the owner word: never 0.
 fn self_word() -> usize {
     cpu::curcpu_word() | MTX_OWNED
+}
+
+/// `__MUTEX_IPL(ipl)`: the level a mutex of `ipl` raises to, at least `IPL_MPFLOOR` (the
+/// kernel is always `MULTIPROCESSOR`, decision 40).
+pub const fn mutex_ipl(ipl: i32) -> i32 {
+    if ipl < IPL_MPFLOOR { IPL_MPFLOOR } else { ipl }
+}
+
+/// `mtx_curcpu()`: the running CPU as an owner word holds it (never 0, bit 0 clear).
+pub fn mtx_curcpu() -> usize {
+    self_word()
+}
+
+/// `struct mutex` without data of its own: `bsd`'s legacy `Mutex` (`mtx_enter(&m)` around
+/// fields that live beside it). [`Mutexed`] is the same lock owning its data; both enter and
+/// leave through the same owner word protocol and parking lots.
+///
+/// Its exclusion is the owner word alone (a compare-and-swap from 0 to the CPU's word);
+/// the levels are plain words the owner writes: `wantipl` at init (before any CPU can enter),
+/// `oldipl` between the owner's enter and leave.
+#[repr(C)] // the owner word first: its address is the mutex's (the lot's hash, the messages)
+pub struct RawMutex {
+    /// `mtx_owner`: 0 when free, else the owner's word, bit 0 when CPUs are parked on it.
+    owner: AtomicUsize,
+    /// `mtx_wantipl`: the level entering raises to (`__MUTEX_IPL` applied).
+    wantipl: AtomicI32,
+    /// `mtx_oldipl`: the level to restore on leave, written by the owner.
+    oldipl: AtomicI32,
+}
+
+impl RawMutex {
+    /// `MUTEX_INITIALIZER(ipl)`: a free mutex that raises to `__MUTEX_IPL(ipl)`.
+    pub const fn new(ipl: i32) -> Self {
+        Self {
+            owner: AtomicUsize::new(0),
+            wantipl: AtomicI32::new(mutex_ipl(ipl)),
+            oldipl: AtomicI32::new(IPL_NONE),
+        }
+    }
+
+    /// `__mtx_init(mtx, wantipl)`: free, raising to `wantipl` as given.
+    pub fn init(&self, wantipl: i32) {
+        self.owner.store(0, Ordering::Relaxed);
+        self.wantipl.store(wantipl, Ordering::Relaxed);
+        self.oldipl.store(IPL_NONE, Ordering::Relaxed);
+    }
+
+    /// `mtx_enter(9)`: raises the level, then takes the mutex, spinning a little and then
+    /// parking while another CPU holds it. After a panic or in ddb it returns at once
+    /// without the mutex (the C's: a stopped CPU may hold it).
+    pub fn enter(&self) {
+        // Avoid deadlocks after panic or in DDB
+        if cpu::past_caring() {
+            return;
+        }
+        // WITNESS_CHECKORDER: not configured.
+        let wantipl = self.wantipl.load(Ordering::Relaxed);
+        let s = if wantipl != IPL_NONE {
+            intr::splraise_raw(wantipl)
+        } else {
+            IPL_NONE
+        };
+        let me = self_word();
+        let owner = cas(&self.owner, 0, me);
+        if owner != 0 {
+            #[cfg(feature = "diagnostic")]
+            if owner & !MTX_WAITERS == me {
+                crate::assert::hal_panic(format_args!(
+                    "mtx {:p}: locking against myself",
+                    core::ptr::from_ref(self)
+                ));
+            }
+            enter_contended(&self.owner, me, owner);
+        }
+        // locked:
+        fence(Ordering::Acquire); // membar_enter_after_atomic()
+        if wantipl != IPL_NONE {
+            self.oldipl.store(s, Ordering::Relaxed);
+        }
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(1);
+        // WITNESS_LOCK: not configured.
+    }
+
+    /// `mtx_enter_try(9)`: takes the mutex if it is free; `false` (at the old level)
+    /// otherwise. `true` after a panic or in ddb.
+    pub fn enter_try(&self) -> bool {
+        // Avoid deadlocks after panic or in DDB
+        if cpu::past_caring() {
+            return true;
+        }
+        let wantipl = self.wantipl.load(Ordering::Relaxed);
+        let s = if wantipl != IPL_NONE {
+            intr::splraise_raw(wantipl)
+        } else {
+            IPL_NONE
+        };
+        let me = self_word();
+        let owner = cas(&self.owner, 0, me);
+        if owner == 0 {
+            fence(Ordering::Acquire); // membar_enter_after_atomic()
+            if wantipl != IPL_NONE {
+                self.oldipl.store(s, Ordering::Relaxed);
+            }
+            #[cfg(feature = "diagnostic")]
+            cpu::mutex_level(1);
+            // WITNESS_LOCK: not configured.
+            return true;
+        }
+        if wantipl != IPL_NONE {
+            intr::splx(s);
+        }
+        #[cfg(feature = "diagnostic")]
+        if owner & !MTX_WAITERS == me {
+            crate::assert::hal_panic(format_args!(
+                "mtx {:p}: locking against myself",
+                core::ptr::from_ref(self)
+            ));
+        }
+        false
+    }
+
+    /// `mtx_leave(9)`: releases the mutex (handing it to a CPU parked on it, if one is),
+    /// then restores the level it was entered at. Nothing after a panic or in ddb. A caller
+    /// that does not hold the mutex is `panic(9)` under `DIAGNOSTIC` and releases it
+    /// otherwise, as the C's.
+    pub fn leave(&self) {
+        // Avoid deadlocks after panic or in DDB
+        if cpu::past_caring() {
+            return;
+        }
+        // WITNESS_UNLOCK: not configured.
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(-1);
+        let s = self.oldipl.load(Ordering::Relaxed);
+        let wantipl = self.wantipl.load(Ordering::Relaxed);
+        #[cfg(feature = "diagnostic")]
+        if self.owner() != self_word() {
+            crate::assert::hal_panic(format_args!(
+                "mtx {:p}: not held",
+                core::ptr::from_ref(self)
+            ));
+        }
+        release(&self.owner);
+        if wantipl != IPL_NONE {
+            intr::splx(s);
+        }
+    }
+
+    /// `mtx_owner(mtx)`: the owning CPU's word, without the waiter bit (0: free).
+    pub fn owner(&self) -> usize {
+        self.owner.load(Ordering::Relaxed) & !MTX_WAITERS
+    }
+
+    /// `mtx_owned(mtx)`: whether this CPU holds the mutex, or the kernel is past caring.
+    pub fn owned(&self) -> bool {
+        self.owner() == self_word() || cpu::past_caring()
+    }
+
+    /// `mtx_wantipl`.
+    pub fn wantipl(&self) -> i32 {
+        self.wantipl.load(Ordering::Relaxed)
+    }
+
+    /// `mtx_oldipl`: the level the owner restores on leave.
+    pub fn oldipl(&self) -> i32 {
+        self.oldipl.load(Ordering::Relaxed)
+    }
+
+    /// `mtx->mtx_oldipl = ipl`, by the owner (`msleep`'s cold path lowers through it).
+    pub fn set_oldipl(&self, ipl: i32) {
+        self.oldipl.store(ipl, Ordering::Relaxed);
+    }
+}
+
+/// `struct db_mutex`: the debugger's spinning lock, which keeps the machine's interrupts
+/// off on its owner while held; unlike [`RawMutex`] it works after a panic and in ddb.
+pub struct DbMutex {
+    /// `mtx_owner` (volatile): the owner's word, 0 when free.
+    owner: AtomicUsize,
+    /// `mtx_intr_state`: what the owner's `intr_disable` saved, written by the owner only.
+    intr_state: AtomicU64,
+}
+
+impl DbMutex {
+    /// `DB_MUTEX_INITIALIZER`: a free debugger mutex.
+    pub const fn new() -> Self {
+        Self {
+            owner: AtomicUsize::new(0),
+            intr_state: AtomicU64::new(0),
+        }
+    }
+
+    /// `db_mtx_enter`: takes the mutex with the machine's interrupts off, spinning with
+    /// exponential back-off while another CPU holds it.
+    pub fn enter(&self) {
+        let me = self_word();
+        let mut ncycle = CPU_MIN_BUSY_CYCLES;
+
+        #[cfg(feature = "diagnostic")]
+        if self.owner.load(Ordering::Relaxed) == me {
+            crate::assert::hal_panic(format_args!(
+                "db_mtx_enter: mtx {:p}: locking against myself",
+                core::ptr::from_ref(self)
+            ));
+        }
+
+        let s = cpu::intr_disable_raw();
+        loop {
+            // Avoid unconditional atomic operation to prevent cache line contention.
+            if self.owner.load(Ordering::Relaxed) == 0 {
+                if cas(&self.owner, 0, me) == 0 {
+                    break;
+                }
+                // Busy loop with exponential backoff.
+                for _ in 0..ncycle {
+                    core::hint::spin_loop(); // CPU_BUSY_CYCLE()
+                }
+                if ncycle < cpu_max_busy_cycles() {
+                    ncycle += ncycle;
+                }
+            }
+        }
+        fence(Ordering::Acquire); // membar_enter_after_atomic()
+
+        self.intr_state.store(s, Ordering::Relaxed);
+
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(1);
+    }
+
+    /// `db_mtx_leave`: releases the mutex and restores the interrupt state its enter saved
+    /// on this CPU. `panic(9)` unless this CPU owns it, in every build (the C checks under
+    /// `DIAGNOSTIC` only): the saved state is the owner's, written by its `enter` on this
+    /// CPU, and restoring it anywhere else would hand one CPU another's interrupt mask.
+    pub fn leave(&self) {
+        if self.owner.load(Ordering::Relaxed) != self_word() {
+            crate::assert::hal_panic(format_args!(
+                "db_mtx_leave: mtx {:p}: not owned by this CPU",
+                core::ptr::from_ref(self)
+            ));
+        }
+        #[cfg(feature = "diagnostic")]
+        cpu::mutex_level(-1);
+        // The owner's own word: its `enter` stored it on this CPU before returning.
+        let s = self.intr_state.load(Ordering::Relaxed);
+        fence(Ordering::Release); // membar_exit()
+        self.owner.store(0, Ordering::Relaxed);
+        cpu::intr_restore_raw(s);
+    }
+
+    /// The owner's word (0: free), for assertions.
+    pub fn owner(&self) -> usize {
+        self.owner.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for DbMutex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `struct mtx_waiter`: a CPU waiting for a contended mutex, on its own stack, linked into
+/// the mutex's parking lot while it waits.
+struct MtxWaiter {
+    /// `entry`: the lot's link.
+    entry: PinEntry<MtxWaiter>,
+    /// `mtx`: the address of the mutex's owner word, compared, never followed.
+    mtx: usize,
+    /// `wait` (volatile): cleared by the CPU that releases the mutex.
+    wait: AtomicU32,
+}
+
+crate::pin_adapter!(
+    /// `TAILQ_ENTRY(mtx_waiter) entry`: a parking lot's waiters.
+    MtxWaitlist: MtxWaiter, entry
+);
+
+/// `struct mtx_park`: a parking lot, one cache line apart from its neighbours. Its lock is
+/// held with the machine's interrupts off (`mtx_enter_park`), so it is taken by spinning
+/// alone ([`Mutexed::lock_masked`]): a lot never parks.
+#[repr(align(64))]
+struct MtxPark {
+    /// `lock`: the lot's spinning lock; its guard is the waiters' witness.
+    lock: SharedMutex,
+    /// `waiters`.
+    waiters: PinList<MtxWaitlist>,
+}
+
+/// `mtx_parking[MTX_PARKING_LOTS]`.
+static MTX_PARKING: [MtxPark; MTX_PARKING_LOTS] = [const {
+    MtxPark {
+        lock: Mutexed::new(IPL_NONE, ()),
+        waiters: PinList::new(),
+    }
+}; MTX_PARKING_LOTS];
+
+/// `mtx_init_parking()`: the lots are empty heads from their initializer; what is left is
+/// the C's premise, checked: no CPU parked before the kernel lock's init (`panic(9)`).
+pub fn init_parking() {
+    for p in &MTX_PARKING {
+        let masked = cpu::intr_disable();
+        let g = p.lock.lock_masked(&masked);
+        if !p.waiters.is_empty(&g) {
+            crate::assert::hal_panic(format_args!("mtx_init_parking: a CPU is parked"));
+        }
+        drop(g);
+        drop(masked);
+    }
+}
+
+/// `mtx_park`: the parking lot of the mutex whose owner word is at `addr`.
+fn mtx_park(addr: usize) -> &'static MtxPark {
+    let mut a = addr >> 6;
+    a ^= a >> MTX_PARKING_BITS;
+    a &= MTX_PARKING_MASK;
+    &MTX_PARKING[a]
+}
+
+/// `mtx_cas`: `atomic_cas_ulong` on an owner word; the value found.
+#[inline]
+fn cas(w: &AtomicUsize, e: usize, v: usize) -> usize {
+    match w.compare_exchange(e, v, Ordering::Relaxed, Ordering::Relaxed) {
+        Ok(found) | Err(found) => found,
+    }
+}
+
+/// The contended half of `mtx_enter`, the owner word found held (`owner`): spins a little
+/// while no CPU is parked, then parks in the mutex's lot until the release hands it over;
+/// returns with the word `me`'s (with the waiter bit if CPUs may still be parked). Counted
+/// in the CPU's `spc_spinning`.
+#[cold]
+#[inline(never)]
+fn enter_contended(w: &AtomicUsize, me: usize, mut owner: usize) {
+    // we're going to have to spin for it now
+    cpu::spinning(1);
+    let mut taken = false;
+    for _ in 0..40 {
+        if owner & MTX_WAITERS != 0 {
+            // don't spin if cpus are already parked
+            break;
+        }
+        core::hint::spin_loop(); // CPU_BUSY_CYCLE()
+        owner = w.load(Ordering::Relaxed);
+        if owner == 0 {
+            owner = cas(w, 0, me);
+            if owner == 0 {
+                taken = true;
+                break;
+            }
+        }
+    }
+    if !taken {
+        enter_slow(w, me, owner);
+    }
+    cpu::spinning(-1);
+}
+
+/// The really slow path of `mtx_enter`: this CPU published in the mutex's parking lot (a
+/// waiter pinned on this stack, unlinked before the function returns), the mutex marked as
+/// having waiters (bit 0), and the wait until a release clears this waiter's flag, until the
+/// owner word is taken (with bit 0 kept, since others may still be parked).
+fn enter_slow(w: &AtomicUsize, me: usize, mut owner: usize) {
+    let addr = core::ptr::from_ref(w).addr();
+    let p = mtx_park(addr);
+
+    // publish our existence in the parking lot
+    let waiter = pin!(MtxWaiter {
+        entry: PinEntry::new(),
+        mtx: addr,
+        wait: AtomicU32::new(0),
+    });
+    {
+        let masked = cpu::intr_disable();
+        let mut g = p.lock.lock_masked(&masked);
+        p.waiters.insert_tail(&mut g, waiter.as_ref());
+        drop(g);
+        drop(masked);
+    }
+
+    loop {
+        waiter.wait.store(1, Ordering::Relaxed);
+        // ensure wait is visible before attempting the cas
+        fence(Ordering::SeqCst); // membar_enter(): StoreStore | StoreLoad
+        let o = cas(w, owner, owner | MTX_WAITERS);
+        if o == owner {
+            while waiter.wait.load(Ordering::Relaxed) != 0 {
+                core::hint::spin_loop(); // CPU_BUSY_CYCLE()
+                // MP_LOCKDEBUG (the spin-out into ddb): not configured.
+            }
+            fence(Ordering::Acquire); // membar_consumer()
+        } else if o != 0 {
+            owner = o;
+            continue;
+        }
+
+        owner = cas(w, 0, me | MTX_WAITERS);
+        if owner == 0 {
+            break;
+        }
+    }
+
+    let masked = cpu::intr_disable();
+    let mut g = p.lock.lock_masked(&masked);
+    p.waiters.remove(&mut g, &waiter);
+    drop(g);
+    drop(masked);
+}
+
+/// `mtx_leave`'s release of an owner word the running CPU holds: free again (Release, so the
+/// next owner sees every write made under the mutex), and when CPUs were parked on it (the
+/// waiter bit) the first one waiting for this mutex woken. One swap, where the C compares
+/// and swaps with its own word. For a [`Mutexed`] the guard proves the hold, so the old value
+/// is this CPU's word, with or without the bit. A [`RawMutex`] checks its owner under
+/// `DIAGNOSTIC` only, as the C's `mtx_leave`; without it, a CPU that does not hold the mutex
+/// releases it as the C's does (the C's compare fails and its slow path stores NULL): the
+/// legacy mutex guards no data of `hal`'s, so no `hal` invariant rests on its owner.
+#[inline]
+fn release(w: &AtomicUsize) {
+    if w.swap(0, Ordering::Release) & MTX_WAITERS != 0 {
+        wake_parked(w);
+    }
+}
+
+/// The slow half of `mtx_leave`: the mutex was released with CPUs parked on it; under its
+/// lot's lock the first one waiting for it is woken (it takes the word, keeping the bit for
+/// the others, or parks again if another CPU took it first, as with the C's store of NULL).
+#[cold]
+#[inline(never)]
+fn wake_parked(w: &AtomicUsize) {
+    let addr = core::ptr::from_ref(w).addr();
+    let p = mtx_park(addr);
+    let masked = cpu::intr_disable();
+    let g = p.lock.lock_masked(&masked);
+    fence(Ordering::Release); // membar_producer()
+    if let Some(waiter) = p.waiters.iter(&g).find(|x| x.mtx == addr) {
+        waiter.wait.store(0, Ordering::Relaxed);
+    }
+    drop(g);
+    drop(masked);
+}
+
+/// `CPU_MAX_BUSY_CYCLES`: `ncpusfound`, the longest back-off of `db_mtx_enter`.
+fn cpu_max_busy_cycles() -> u32 {
+    u32::try_from(cpu::ncpus()).unwrap_or(1).max(1)
 }
 /* </CODE> */
 
@@ -640,6 +1125,134 @@ mod tests {
         let mut m = Mutexed::new(IPL_NONE, 3u8);
         *m.get_mut() = 4;
         assert_eq!(m.into_inner(), 4);
+    }
+
+    /// A mutex long held by one CPU: the others spin 40 times, then park in its lot and are
+    /// woken by the release (the owner word's waiter bit is seen set while they wait).
+    #[test]
+    fn contending_cpus_park_and_are_handed_the_mutex() {
+        testutil::install();
+        let m = Arc::new(Mutexed::new(IPL_NONE, 0u64));
+        let g = m.lock();
+        let waiters: Vec<_> = (0..3)
+            .map(|_| {
+                let m = Arc::clone(&m);
+                thread::spawn(move || {
+                    *m.lock() += 1;
+                })
+            })
+            .collect();
+        // Long enough for every waiter to give up spinning and park.
+        let mut parked = false;
+        for _ in 0..2000 {
+            if m.owner.load(Ordering::Relaxed) & MTX_WAITERS != 0 {
+                parked = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(parked, "no waiter parked");
+        drop(g);
+        for t in waiters {
+            t.join().unwrap();
+        }
+        assert_eq!(*m.lock(), 3);
+        // The last release cleared the waiter bit with the word.
+        assert_eq!(m.owner.load(Ordering::Relaxed), 0);
+    }
+
+    /// `bsd`'s `struct mutex`: enter and leave track the owner and the saved level, a second
+    /// CPU's `mtx_enter_try` fails while it is held, and four CPUs exclude each other through
+    /// the spin and the lots.
+    #[test]
+    fn a_raw_mutex_excludes_and_restores_the_level() {
+        testutil::install();
+        static M: RawMutex = RawMutex::new(IPL_NONE);
+        assert_eq!(M.wantipl(), IPL_MPFLOOR);
+        let base = testutil::spl_level();
+        M.enter();
+        assert_eq!(M.owner(), mtx_curcpu());
+        assert!(M.owned());
+        assert!(testutil::spl_level() >= IPL_MPFLOOR);
+        assert_eq!(M.oldipl(), base);
+        assert!(!thread::spawn(|| M.enter_try()).join().unwrap());
+        M.leave();
+        assert_eq!(M.owner(), 0);
+        assert_eq!(testutil::spl_level(), base);
+        assert!(M.enter_try());
+        M.leave();
+
+        static N: RawMutex = RawMutex::new(IPL_NONE);
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        static INSIDE: AtomicUsize = AtomicUsize::new(0);
+        thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..5000 {
+                        N.enter();
+                        assert_eq!(INSIDE.fetch_add(1, Ordering::Relaxed), 0);
+                        COUNT.fetch_add(1, Ordering::Relaxed);
+                        INSIDE.fetch_sub(1, Ordering::Relaxed);
+                        N.leave();
+                    }
+                });
+            }
+        });
+        assert_eq!(COUNT.load(Ordering::Relaxed), 20000);
+        assert_eq!(N.owner(), 0);
+    }
+
+    /// `__mtx_init` resets the owner and takes the level as given; `__MUTEX_IPL` raises a
+    /// level below `IPL_MPFLOOR` to it.
+    #[test]
+    fn init_resets_a_raw_mutex() {
+        let m = RawMutex::new(3);
+        m.owner.store(42, Ordering::Relaxed);
+        m.set_oldipl(5);
+        m.init(mutex_ipl(5));
+        assert_eq!(m.owner(), 0);
+        assert_eq!(m.oldipl(), IPL_NONE);
+        assert_eq!(m.wantipl(), mutex_ipl(5));
+        assert_eq!(mutex_ipl(IPL_NONE), IPL_MPFLOOR);
+        assert_eq!(mutex_ipl(IPL_MPFLOOR + 1), IPL_MPFLOOR + 1);
+    }
+
+    /// The debugger's mutex: owned by the CPU that entered it until it leaves; a second CPU
+    /// waits for it.
+    #[test]
+    fn a_db_mutex_tracks_its_owner_and_excludes() {
+        static M: DbMutex = DbMutex::new();
+        M.enter();
+        assert_eq!(M.owner(), mtx_curcpu());
+        let other = thread::spawn(|| {
+            M.enter();
+            let me = mtx_curcpu();
+            assert_eq!(M.owner(), me);
+            M.leave();
+        });
+        thread::sleep(Duration::from_millis(5));
+        assert_eq!(M.owner(), mtx_curcpu());
+        M.leave();
+        other.join().unwrap();
+        assert_eq!(M.owner(), 0);
+    }
+
+    /// `db_mtx_leave` by a CPU that does not own the mutex, or of a mutex never entered, is
+    /// `panic(9)` in every build: the interrupt state it would restore is not this CPU's
+    /// (review finding 2).
+    #[test]
+    fn a_db_mutex_is_left_only_by_its_owner() {
+        static M: DbMutex = DbMutex::new();
+        assert!(
+            std::panic::catch_unwind(|| M.leave()).is_err(),
+            "never entered"
+        );
+        M.enter();
+        let other = thread::spawn(|| std::panic::catch_unwind(|| M.leave()).is_err());
+        assert!(other.join().unwrap(), "left by another CPU");
+        assert_eq!(M.owner(), mtx_curcpu());
+        M.leave();
+        assert_eq!(M.owner(), 0);
     }
 }
 /* </TESTS> */

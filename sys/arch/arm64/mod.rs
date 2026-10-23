@@ -175,7 +175,7 @@ impl Cpu for Machine {
     }
 
     fn ci_idepth(ci: &include::cpu::CpuInfo) -> u32 {
-        ci.ci_idepth.get()
+        ci.core.idepth()
     }
 
     fn clkf_usermode(frame: &include::cpu::Clockframe) -> bool {

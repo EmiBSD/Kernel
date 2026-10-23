@@ -678,7 +678,7 @@ pub fn ampintc_setipl(new: i32) {
 
     // disable here is only to keep hardware in sync with ci->ci_cpl
     let psw = intr_disable();
-    ci.ci_cpl.set(new as u32);
+    ci.core.set_cpl(new);
 
     // low values are higher priority thus IPL_HIGH - pri
     bus_space_write_4(iot, p, ICPIPMR, ((IPL_HIGH - new) as u32) << ICMIPMR_SH);
@@ -771,7 +771,7 @@ fn ampintc_calc_irq(sc: &AmpintcSoftc, irq: i32) {
 pub fn ampintc_splx(new: i32) {
     let ci = curcpu();
 
-    if ci.ci_ipending.get() & arm_smask(new) != 0 {
+    if ci.core.ipending() & arm_smask(new) != 0 {
         arm_do_pending_intr(new);
     }
 
@@ -781,7 +781,7 @@ pub fn ampintc_splx(new: i32) {
 /// `ampintc_spllower`.
 pub fn ampintc_spllower(new: i32) -> i32 {
     let ci = curcpu();
-    let old = ci.ci_cpl.get() as i32;
+    let old = ci.core.cpl();
     ampintc_splx(new);
     old
 }
@@ -792,7 +792,7 @@ pub fn ampintc_spllower(new: i32) -> i32 {
 /// `splraise` completely messing up spl protection.
 pub fn ampintc_splraise(new: i32) -> i32 {
     let ci = curcpu();
-    let old = ci.ci_cpl.get() as i32;
+    let old = ci.core.cpl();
 
     let new = if old > new { old } else { new };
     ampintc_setipl(new);

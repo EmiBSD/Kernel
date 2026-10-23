@@ -37,7 +37,7 @@
 
 /* <CODE> */
 //! The pipe's glue to what is still `bsd`'s: the call-site adapter of `kernel::pipe`
-//! (`sys/kernel/pipe.rs`), with 0 `unsafe`, until descriptors, kqueue and sigio move into the
+//! (`sys/kernel/pipe.rs`), with 0 `unsafe`, until descriptors and the clock move into the
 //! kernel crate (N4).
 //!
 //! Upstream: sys/kern/sys_pipe.c @ 3ce1f3f79392
@@ -46,8 +46,7 @@
 //! Every decision pipe(2) makes is the kernel crate's; this file holds what N4 owns: the
 //! `struct fileops` (`PIPEOPS`) and the three `struct filterops` of a pipe file, which turn
 //! `bsd`'s `File`, `Uio`, `Knote`, ioctl numbers and `Stat` into the kernel's types; the
-//! descriptor work of `dopipe` ([`PipeFiles`]); the per-pipe sigio registration, the clock
-//! and the filterops ([`PipeGlue`]); the system call entries `bsd`'s `sysent[]` keeps (the `Legacy` path, which
+//! descriptor work of `dopipe` ([`PipeFiles`]); the clock and the filterops ([`PipeGlue`]); the system call entries `bsd`'s `sysent[]` keeps (the `Legacy` path, which
 //! calls the same kernel function as the module's `Native` entry); and `pipe_init`.
 //!
 //! A pipe file holds its pipe in its typed slot, `File::f_pipe` (`sys/sys/file.rs`): the
@@ -59,28 +58,16 @@
 //! only then drops the end, whose drop is `pipe_destroy` (it sleeps on `PIPE_WANTD`, which a
 //! spinning mutex must not be held across).
 //!
-//! A pipe's klist is the kernel's, by value in the pair (`kernel::pipe`, N4.4). Its sigio
-//! registration lives in a [`PipeSigio`] that the glue allocates (`malloc(9)`, `M_TEMP`,
-//! through the global allocator) and recycles instead of freeing: `bsd`'s `SigioRef` is
-//! `Sync` but not `Send`, so the pair (a `PoolArc`, which needs its value `Send`) cannot hold
-//! it by value, and an `unsafe impl Send` in `bsd` was refused (the coordinator's decision of
-//! 2026-10-16, decision 30's pattern); a `&'static` to a never-freed object is `Send`.
+//! A pipe's klist is the kernel's, by value in the pair (`kernel::pipe`, N4.4), and so is its
+//! sigio registration (`kernel::sigio::SigioRef`, N4.5b: one atomic word, `Send` and `Sync`).
 //!
 //! ## Deviations
-//! - The `PipeSigio` objects stay allocated at the peak number of pipes (recycled through a
-//!   free list, never given back) and show under `M_TEMP` in `vmstat -m` instead of inside the
-//!   `pipepl` items; no `diff-openbsd` scenario prints `vmstat -m`. Gone at N4.5, when
-//!   `Sigio` is the kernel's and the pair holds it by value.
 //! - `pipe_stat`'s `st_uid`/`st_gid` are the opener's credentials read when `dopipe` makes
 //!   the files: the very `struct ucred` `fnew` stores in `f_cred`, which is never written once
 //!   shared (`crcopy`), so the values are the C's; reading `f_cred` itself needs `unsafe`
 //!   until descriptors move (N4, `CredRef`).
 //! - `fo_ioctl`'s `data` is the kernel copy of the argument (`sys_ioctl`), at least an `int`
 //!   wide; the `int` is read and written in native byte order (LZ's).
-//! - A `PipeSigio` comes from the global allocator, `malloc(9)` with `M_NOWAIT`
-//!   (`kern/rust_alloc.rs`): when no recycled one is free and memory is short, pipe(2) answers
-//!   `ENOMEM` where the C's `pool_get(PR_WAITOK)` of the pair sleeps for memory (`hal`'s
-//!   `MBox` has no safe way to a `&'static`; one would need `unsafe` in `hal`). Gone at N4.5.
 //! - `KTRACE` is not configured (`ktrfds`), as in LZ.
 //!
 //! ## Redesign
@@ -98,8 +85,6 @@
 
 use core::sync::atomic::Ordering;
 
-#[cfg(feature = "alloc")]
-use hal::mutex::Mutexed;
 use hal::pool::PoolArc;
 use hal::user::UserPtr;
 use kernel::pipe::{
@@ -109,7 +94,6 @@ use kernel::pipe::{
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fdinsert, fdrelease, fdremove};
-use crate::kern::kern_sig::{pgsigio, sigio_free, sigio_getown, sigio_setown};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::proc_glue::BsdProcGlue;
@@ -126,8 +110,6 @@ use crate::sys::file::{DTYPE_PIPE, File, Fileops, frele};
 use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, fdplock};
 use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use crate::sys::proc::Proc;
-use crate::sys::sigio::{SigioRef, sigio_init};
-use crate::sys::signal::SIGIO;
 use crate::sys::sockio::{SIOCGPGRP, SIOCSPGRP};
 use crate::sys::stat::{S_IFIFO, Stat};
 use crate::sys::syscall::{SYS_pipe, SYS_pipe2};
@@ -139,24 +121,8 @@ use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Gid, Register, Uid};
 use crate::sys::uio::Uio;
 
-/// One pipe's `pipe_sigio`, allocated by the glue and recycled.
-pub struct PipeSigio {
-    /// `pipe_sigio`, under `sigio_lock` (`[S]`).
-    sigio: SigioRef,
-}
-
-impl PipeSigio {
-    const fn new() -> Self {
-        Self {
-            sigio: SigioRef::new(),
-        }
-    }
-}
-
-/// `bsd`'s part of one pipe, the kernel's [`PipeGlue`]: its sigio registration.
-pub struct BsdPipeGlue {
-    store: &'static PipeSigio,
-}
+/// `bsd`'s part of the pipes, the kernel's [`PipeGlue`]: the clock and the filterops.
+pub struct BsdPipeGlue;
 
 /// What a pipe file's typed slot holds: its pipe, and the opener's credentials for
 /// `pipe_stat`.
@@ -235,69 +201,8 @@ const PIPE_PAGES: &dyn hal::kmbuf::PageMemory = kernel::testutil::page_memory();
 /// The pipes: `pipe_pair_pool`, `nbigpipe`, `amountpipekva`, over this glue.
 pub static PIPES: Pipes<BsdPipeGlue> = Pipes::new(PIPE_PAGES);
 
-/// The `PipeSigio`s given back, for the next pipe. The mutex covers a pop or a push.
-#[cfg(feature = "alloc")]
-static FREE: Mutexed<alloc::vec::Vec<&'static PipeSigio>> =
-    Mutexed::new(IPL_MPFLOOR, alloc::vec::Vec::new());
-
-/// A `PipeSigio` given back by an earlier pipe, if there is one.
-fn sigio_recycled() -> Option<&'static PipeSigio> {
-    #[cfg(feature = "alloc")]
-    {
-        FREE.lock().pop()
-    }
-    #[cfg(not(feature = "alloc"))]
-    {
-        None
-    }
-}
-
-/// Gives `store` back for the next pipe; one that the list cannot take (its growth failed)
-/// stays allocated, unused.
-fn sigio_recycle(store: &'static PipeSigio) {
-    #[cfg(feature = "alloc")]
-    {
-        let mut free = FREE.lock();
-        if free.try_reserve(1).is_ok() {
-            free.push(store);
-        }
-    }
-    #[cfg(not(feature = "alloc"))]
-    {
-        let _ = store;
-    }
-}
-
-/// A fresh `PipeSigio` from `malloc(9)` (the global allocator), never freed: `ENOMEM` when
-/// it cannot be had (`try_reserve`, never the allocator's panic), or without `alloc`.
-fn sigio_alloc() -> Result<&'static PipeSigio, Errno> {
-    #[cfg(feature = "alloc")]
-    {
-        let mut v: alloc::vec::Vec<PipeSigio> = alloc::vec::Vec::new();
-        v.try_reserve_exact(1).map_err(|_| Errno::ENOMEM)?;
-        v.push(PipeSigio::new());
-        let block: &'static [PipeSigio] = v.leak();
-        let store = block.first().ok_or(Errno::ENOMEM)?;
-        sigio_init(&store.sigio);
-        Ok(store)
-    }
-    #[cfg(not(feature = "alloc"))]
-    {
-        Err(Errno::ENOMEM)
-    }
-}
-
 impl PipeGlue for BsdPipeGlue {
     type Proc = BsdProcGlue;
-
-    /// `sigio_init` of a pipe (`pipe_create`): a recycled `PipeSigio`, or a new one.
-    fn new() -> Result<Self, Errno> {
-        let store = match sigio_recycled() {
-            Some(store) => store,
-            None => sigio_alloc()?,
-        };
-        Ok(Self { store })
-    }
 
     fn nanotime() -> PipeTime {
         let ts = getnanotime();
@@ -313,35 +218,6 @@ impl PipeGlue for BsdPipeGlue {
             PipeFilter::Write => &PIPE_WFILTOPS,
             PipeFilter::Except => &PIPE_EFILTOPS,
         }
-    }
-
-    fn pgsigio(&self) {
-        pgsigio(&self.store.sigio, SIGIO, false);
-    }
-
-    fn sigio_free(&self) {
-        sigio_free(&self.store.sigio);
-    }
-
-    fn sigio_setown(&self, cmd: u64, arg: i32) -> Result<(), Errno> {
-        sigio_setown(&self.store.sigio, cmd, &arg)
-    }
-
-    fn sigio_getown(&self, cmd: u64) -> i32 {
-        let mut pgid = 0;
-        sigio_getown(&self.store.sigio, cmd, &mut pgid);
-        pgid
-    }
-}
-
-impl Drop for BsdPipeGlue {
-    /// The pipe is gone (`pipe_pair_destroy`): its sigio freed and set up again, and the
-    /// object goes back on the free list; one that the list cannot take is left allocated
-    /// (bounded: the list's growth failed).
-    fn drop(&mut self) {
-        sigio_free(&self.store.sigio);
-        sigio_init(&self.store.sigio);
-        sigio_recycle(self.store);
     }
 }
 
@@ -822,30 +698,6 @@ mod tests {
 
         drop(pair);
         close_fd(p, 3);
-    }
-
-    #[test]
-    #[cfg(feature = "alloc")]
-    fn the_sigio_stores_are_recycled() {
-        let _g = setup();
-        let p = fd_thread();
-        let pair = installed_pair(p);
-        let free = FREE.lock().len();
-        drop(pair);
-        close_fd(p, 3);
-        assert_eq!(
-            FREE.lock().len(),
-            free,
-            "the writer's file still holds the pair"
-        );
-        close_fd(p, 4);
-        assert_eq!(FREE.lock().len(), free + 2);
-        // The next pair takes them back.
-        let pair = installed_pair(p);
-        assert_eq!(FREE.lock().len(), free);
-        drop(pair);
-        close_fd(p, 3);
-        close_fd(p, 4);
     }
 
     #[test]

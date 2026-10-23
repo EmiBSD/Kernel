@@ -27,7 +27,8 @@
 //! words, the pending sleep) lets two test threads contend for a lock and sleep and wake each
 //! other as two processes do.
 //!
-//! - `IntrLevel`: a per-thread level, as hal's double.
+//! - `IntrHardware`: `hal::intr`'s default levels (each test thread's core), whose
+//!   `splassert` fails the test.
 //! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
 //!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
@@ -46,11 +47,10 @@
 //!   copies) reach one run of "foreign" kernel memory of [`FOREIGN_LEN`] bytes at
 //!   [`FOREIGN_BASE`] ([`foreign_bytes`], [`set_foreign_bytes`]); anything outside it faults.
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
-//! - `KernelLock`: a per-thread depth, no exclusion (the tests that take it hold [`MEMORY`]);
-//!   the assertion panics on a thread that does not hold it ([`kernel_lock_depth`]).
+//! - The kernel lock is `hal::klock`'s own since N4.5c, a per-thread depth on the host (no
+//!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
 //! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
-//! - `SoftIntr`: a schedule is counted ([`softintr_scheduled`]), the handler not run: the
-//!   tests call `kernel::timeout::softclock` themselves, as LZ's did.
+//! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
 //! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
 //!   timecounter), and [`uptime_advance`].
 //! - `thread`'s `Kthread`: a host thread holding the kernel lock double from its start; a
@@ -86,8 +86,7 @@ use std::vec;
 use std::vec::Vec;
 
 use hal::bridges;
-use hal::intr::IntrLevel;
-use hal::klock::KernelLock;
+use hal::intr::IntrHardware;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::link::Link;
 use hal::malloc::Malloc;
@@ -127,7 +126,7 @@ pub const FOREIGN_LEN: usize = 64 * 1024;
 struct Page([u8; TEST_PAGE]);
 
 std::thread_local! {
-    static SPL: Cell<i32> = const { Cell::new(0) };
+
     static PROC: u8 = const { 0 };
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
@@ -138,7 +137,6 @@ std::thread_local! {
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
-    static KLOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -171,32 +169,13 @@ fn pages(len: usize) -> Option<NonNull<u8>> {
     Some(NonNull::from(block).cast::<u8>())
 }
 
-/// The interrupt-level double.
+/// The interrupt controller double: `hal::intr`'s default levels (each test thread's core),
+/// and a `splassert` that fails the test.
 struct TestIntr;
 
-impl IntrLevel for TestIntr {
-    fn splraise(&self, ipl: i32) -> i32 {
-        SPL.with(|l| {
-            let old = l.get();
-            l.set(old.max(ipl));
-            old
-        })
-    }
-
-    fn splx(&self, s: i32) {
-        SPL.with(|l| l.set(s));
-    }
-
-    fn mpfloor(&self) -> i32 {
-        9
-    }
-
-    fn ipl_high(&self) -> i32 {
-        0xd
-    }
-
+impl IntrHardware for TestIntr {
     fn splassert(&self, wantipl: i32, func: &str) {
-        let at = SPL.with(Cell::get);
+        let at = hal::cpu::curcpu().cpl();
         assert!(at >= wantipl, "splassert: {func}: want {wantipl} have {at}");
     }
 }
@@ -481,46 +460,11 @@ fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errn
     Ok(start..end)
 }
 
-/// The kernel lock double.
-struct TestKernelLock;
-
-impl KernelLock for TestKernelLock {
-    fn lock(&self) {
-        KLOCK_DEPTH.with(|d| d.set(d.get() + 1));
-    }
-
-    fn unlock(&self) {
-        KLOCK_DEPTH.with(|d| match d.get().checked_sub(1) {
-            Some(n) => d.set(n),
-            None => crate::assert::kpanic(format_args!("kernel_unlock: not locked")),
-        });
-    }
-
-    fn assert_locked(&self) {
-        if KLOCK_DEPTH.with(Cell::get) == 0 {
-            crate::assert::kpanic(format_args!("kernel lock not held"));
-        }
-    }
-
-    fn held(&self) -> bool {
-        KLOCK_DEPTH.with(Cell::get) > 0
-    }
-
-    fn release_all(&self) -> u32 {
-        KLOCK_DEPTH.with(|d| d.replace(0))
-    }
-
-    fn acquire_count(&self, count: u32) {
-        KLOCK_DEPTH.with(|d| d.set(d.get() + count));
-    }
-}
-
-/// How many times this thread holds the kernel lock double.
+/// How many times this thread holds the kernel lock (`hal::klock`'s host double, a
+/// per-thread depth).
 pub fn kernel_lock_depth() -> u32 {
-    KLOCK_DEPTH.with(Cell::get)
+    hal::klock::depth()
 }
-
-static TEST_KERNEL_LOCK: TestKernelLock = TestKernelLock;
 
 /// The network lock double.
 struct TestNetLock;
@@ -576,35 +520,6 @@ impl SysInfo for TestSysInfo {
 }
 
 static TEST_SYS_INFO: TestSysInfo = TestSysInfo;
-
-/// The soft interrupt double: a schedule is counted, the handler is not run (the tests call
-/// what it would run themselves, `kernel::timeout::softclock`).
-struct TestSoftIntr;
-
-/// How many schedules the soft interrupt double saw (every test of the process).
-static SOFT_SCHEDULED: AtomicU64 = AtomicU64::new(0);
-
-/// The handlers established, by handle minus one.
-static SOFT_HANDLERS: Mutex<Vec<fn()>> = Mutex::new(Vec::new());
-
-impl hal::softintr::SoftIntr for TestSoftIntr {
-    fn establish(&self, _ipl: i32, run: fn()) -> Option<usize> {
-        let mut h = lock(&SOFT_HANDLERS);
-        h.push(run);
-        Some(h.len())
-    }
-
-    fn schedule(&self, _handle: usize) {
-        SOFT_SCHEDULED.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-static TEST_SOFT_INTR: TestSoftIntr = TestSoftIntr;
-
-/// How many soft interrupt schedules the double saw so far (a process-wide count).
-pub fn softintr_scheduled() -> u64 {
-    SOFT_SCHEDULED.load(Ordering::Relaxed)
-}
 
 /// The uptime double: a clock in nanoseconds that advances a microsecond per read (as LZ's
 /// dummy timecounter did for the wheel's tests), and by [`uptime_advance`].
@@ -926,19 +841,18 @@ pub fn memory_is_the_doubles() -> Option<bool> {
 pub fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = bridges::register_intr_level(&TEST_INTR);
+        let _ = bridges::register_intr_hardware(&TEST_INTR);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let pools = bridges::register_pool_backend(&TEST_POOLS).is_ok();
         let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();
         let _ = MEMORY_DOUBLES.set(pools && malloc);
         let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
-        let _ = bridges::register_kernel_lock(&TEST_KERNEL_LOCK);
         let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
         let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
-        let _ = bridges::register_softintr(&TEST_SOFT_INTR);
+
         let _ = crate::clock::install_uptime(&TEST_UPTIME);
         let _ = crate::thread::install_kthread(&TEST_KTHREAD);
         let _ = hal::thread::register_uarea_memory(&TEST_UAREAS);
@@ -1771,14 +1685,15 @@ macro_rules! test_proc_glue {
                 static SCHED: $crate::sched::SchedTables<$name> = $crate::sched::SchedTables::new();
                 &SCHED
             }
-            fn pgsignal(_pg: &$crate::proc::Pgrp<Self>, _sig: i32, _checkctty: bool) {}
-            fn prsignal(_pr: &$crate::proc::Process<Self>, _sig: i32) {}
             fn pgrp_destroy(_pg: &$crate::proc::Pgrp<Self>) {}
             fn session_hangup(_sess: &$crate::proc::Session<Self>) {}
             fn session_placed(_sess: &$crate::proc::Session<Self>) {}
             fn session_destroy(_sess: &$crate::proc::Session<Self>) {}
             fn with_curproc<R>(f: impl FnOnce(Option<&$crate::proc::Thread<Self>>) -> R) -> R {
                 f(CURPROC.with(core::cell::Cell::get))
+            }
+            fn exit1(_p: &$crate::proc::Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+                std::panic!("exit1 of a test thread (signal {xsig})")
             }
             fn pledge_fail(
                 _p: &$crate::proc::Thread<Self>,

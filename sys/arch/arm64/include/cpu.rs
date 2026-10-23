@@ -195,8 +195,8 @@ impl<T> CiPtr<T> {
 /// other CPUs read or write while the CPU runs are atomics: `ci_flags` (the `CPUF_*`
 /// handshake), the core's, `ci_curpm` (`pmap_rollover_asid`, under `pmap_asid_mtx`),
 /// `ci_next`, `ci_opp_idx`/`ci_opp_max` (`cpu_opp_setperf` and the cooling device) and
-/// `ci_ddb_paused`. Everything else (`ci_cpl`, `ci_ipending`, `ci_idepth`, the PSCI idle
-/// statistics, the panic buffer) belongs to the CPU itself.
+/// `ci_ddb_paused`. Everything else (the PSCI idle statistics, the panic buffer; `ci_cpl`,
+/// `ci_ipending` and `ci_idepth`, the core's since N4.5c) belongs to the CPU itself.
 #[repr(C)]
 pub struct CpuInfo {
     /// The members of `hal::cpu`: `ci_curproc`, `ci_curpcb`, `ci_want_resched`,
@@ -237,12 +237,7 @@ pub struct CpuInfo {
     pub ci_ctrl: Cell<u32>,
     /// `ci_trampoline_vectors`: the EL0 vector table (`cpu.rs`, `TrampolineVectors`).
     pub ci_trampoline_vectors: Cell<u64>,
-    /// `ci_cpl`: the current interrupt priority level.
-    pub ci_cpl: Cell<u32>,
-    /// `ci_ipending`.
-    pub ci_ipending: Cell<u32>,
-    /// `ci_idepth`: the interrupt nesting depth.
-    pub ci_idepth: Cell<u32>,
+
     /// `ci_flush_bp`: the branch predictor flush, if the CPU needs one.
     pub ci_flush_bp: Cell<Option<fn()>>,
     /// `ci_serror`: the system error handler, if the CPU has one.
@@ -312,9 +307,7 @@ impl CpuInfo {
             ci_randseed: Cell::new(0),
             ci_ctrl: Cell::new(0),
             ci_trampoline_vectors: Cell::new(0),
-            ci_cpl: Cell::new(0),
-            ci_ipending: Cell::new(0),
-            ci_idepth: Cell::new(0),
+
             ci_flush_bp: Cell::new(None),
             ci_serror: Cell::new(None),
             ci_ttbr1: Cell::new(0),
@@ -531,7 +524,7 @@ pub fn clkf_usermode(frame: &Clockframe) -> bool {
 /// `CLKF_INTR(frame)`: true if we took the interrupt from inside another interrupt handler.
 #[inline]
 pub fn clkf_intr(_frame: &Clockframe) -> bool {
-    curcpu().ci_idepth.get() > 1
+    curcpu().core.idepth() > 1
 }
 
 /// `CLKF_PC(frame)`: extract the program counter from a clockframe.

@@ -108,6 +108,43 @@ pub(crate) fn set_current(c: &'static CpuCore) {
     INSTALLED.store(true, Ordering::Release);
 }
 
+/// `intr_disable()`: masks IRQ and FIQ on this CPU (`msr daifset, #3`) and returns the
+/// `DAIF` it found (`disable_irq_daif_ret`).
+#[inline]
+pub(crate) fn intr_disable() -> u64 {
+    let daif: u64;
+    // SAFETY: `mrs` of `DAIF` and `msr daifset` read and set this CPU's interrupt mask: no
+    // memory operand, no stack, no flags. Masking interrupts cannot make any access unsound;
+    // it only keeps this CPU's interrupt handlers from running until the mask is restored.
+    // Without `nomem`, so the compiler keeps the memory accesses after it inside the masked
+    // section.
+    unsafe {
+        asm!(
+            "mrs {}, daif",
+            "msr daifset, #3",
+            out(reg) daif,
+            options(nostack, preserves_flags)
+        )
+    };
+    daif
+}
+
+/// `intr_restore(s)`: `DAIF` set back to what [`intr_disable`] returned
+/// (`restore_daif`); its callers are `hal::cpu::IntrGuard`'s drop, with its own saved state,
+/// and `hal::mutex::DbMutex::leave`, with the state its owner's `enter` saved on this CPU.
+#[inline]
+pub(crate) fn intr_restore(daif: u64) {
+    // SAFETY: `msr daif` writes this CPU's interrupt mask: no memory operand, no stack, no
+    // flags. The value is one `intr_disable` read on this CPU (the guard is not `Send` and
+    // holds it; `DbMutex::leave` panics, in every build, unless the running CPU owns the
+    // mutex, and its owner's `enter` stored the word on this CPU before returning), so the
+    // mask returns to what it was before the section, as the C's
+    // `intr_restore` does; whatever the mask, no memory access becomes unsound: it only
+    // decides when this CPU's handlers run. Without `nomem`, so the section's memory
+    // accesses stay before it.
+    unsafe { asm!("msr daif, {}", in(reg) daif, options(nostack, preserves_flags)) };
+}
+
 /// `ncpusfound` as the per-CPU readers walk it: one past the highest attached number.
 #[inline]
 pub(crate) fn ncpus(attached: usize) -> usize {

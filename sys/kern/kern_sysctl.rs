@@ -2344,8 +2344,7 @@ pub fn fill_kproc(
         ki.p_limit = pr.limit_word() as u64;
         ki.p_vmspace = pr.vmspace_word() as u64;
         ki.p_sigacts = pr
-            .ps_sigacts
-            .get()
+            .sigacts_opt()
             .map_or(0, |sa| ptrtoint64(ptr::from_ref(sa)));
         ki.p_sess = s.map_or(0, |s| ptrtoint64(ptr::from_ref(s)));
         ki.p_ru = pr
@@ -2399,9 +2398,10 @@ pub fn fill_kproc(
 
     // PR_LOCK(pr): the caller's.
     ki.p_ppid = pr.ps_ppid.get();
-    if let Some(sa) = pr.ps_sigacts.get() {
-        ki.p_sigignore = sa.ps_sigignore.get();
-        ki.p_sigcatch = sa.ps_sigcatch.get();
+    if let Some(sa) = pr.sigacts_opt() {
+        let m = sa.get(g);
+        ki.p_sigignore = m.ps_sigignore;
+        ki.p_sigcatch = m.ps_sigcatch;
     }
 
     // A process holds a reference to its limits; ps_mtx keeps them from changing.

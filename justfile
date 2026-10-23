@@ -477,6 +477,7 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'mount\n' \
         --send-after "# " --send 'sysctl kern.timecounter\n' \
         --send-after "# " --send 'echo diag-$((40+2))\n' \
+        --send-after "# " --send 'sleep 5 & kill -TERM $!; wait $!; echo rc=$?\n' \
         --expect "rc: multi-user" --expect " /sbin/init" --expect " -ksh (ksh)" \
         --expect "root         1  " \
         --expect "USER     CMD          PID   FD MOUNT" --expect "root     ksh" \
@@ -484,7 +485,7 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect "interrupt                       total     rate" --expect "/com0" \
         --expect "bytes per page" --expect "Memory statistics by bucket size" \
         --expect "Memory resource pool statistics" --expect "/dev/rd0a       " \
-        --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" \
+        --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" --expect "rc=143" \
         --expect "kern.timecounter.hardware=" \
         --expect "kern.timecounter.choice=i8254(0) acpihpet0(1000) tsc(" --expect ") acpitimer0(1000)"
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
@@ -500,6 +501,7 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'mount\n' \
         --send-after "# " --send 'sysctl kern.timecounter\n' \
         --send-after "# " --send 'echo diag-$((40+2))\n' \
+        --send-after "# " --send 'sleep 5 & kill -TERM $!; wait $!; echo rc=$?\n' \
         --expect "rc: multi-user" --expect " /sbin/init" --expect " -ksh (ksh)" \
         --expect "root         1  " \
         --expect "USER     CMD          PID   FD MOUNT" --expect "root     ksh" \
@@ -507,7 +509,7 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect "interrupt                       total     rate" --expect "/pluart0" \
         --expect "bytes per page" --expect "Memory statistics by bucket size" \
         --expect "Memory resource pool statistics" --expect "/dev/rd0a       " \
-        --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" \
+        --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" --expect "rc=143" \
         --expect "kern.timecounter.hardware=agtimer" --expect "kern.timecounter.choice=agtimer(0)"
 
 # M9b/M9c harness: two VMs of one arch at once (`cargo xtask smoke2`), each with vio0 on QEMU's

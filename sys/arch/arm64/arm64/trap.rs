@@ -197,7 +197,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     }
 
     // error != 0:
-    if ci.ci_idepth.get() == 0 && pcb_onfault != 0 {
+    if ci.core.idepth() == 0 && pcb_onfault != 0 {
         frame.tf_elr = pcb_onfault as isize;
         return;
     }
