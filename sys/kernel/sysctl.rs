@@ -2159,7 +2159,8 @@ pub fn sysctl_proc_args<G: ProcGlue>(
         return Err(Errno::ENOMEM);
     };
 
-    let error = proc_args_copy(&vm.vm_map, ps_strings, op, req, &mut buf);
+    let mut victim = |va: usize, dst: &mut [u8]| victim_read(&vm.vm_map, va, dst);
+    let error = proc_args_copy(&mut victim, ps_strings, op, req, &mut buf);
 
     crate::vm::map::uvmspace_free(vm);
     drop(buf);
@@ -2216,7 +2217,7 @@ fn victim_read(map: &VmMap, va: usize, dst: &mut [u8]) -> Result<(), Errno> {
 /// lays out an `argv`-style array of `cnt` pointers, a NULL and the strings in the reader's
 /// buffer at `oldp`.
 fn proc_args_copy(
-    map: &VmMap,
+    victim: &mut impl FnMut(usize, &mut [u8]) -> Result<(), Errno>,
     ps_strings: usize,
     op: i32,
     req: &mut SysctlReq<'_>,
@@ -2226,7 +2227,7 @@ fn proc_args_copy(
     let out = |b: &[u8], uaddr: usize| UserPtr::<u8>::new(uaddr).copyout_slice(b);
 
     let mut pss = [0u8; PS_STRINGS_SIZE];
-    victim_read(map, ps_strings, &mut pss)?;
+    victim(ps_strings, &mut pss)?;
     let word = |b: &[u8]| {
         let mut w = [0u8; PTR];
         w.copy_from_slice(&b[..PTR]);
@@ -2265,12 +2266,15 @@ fn proc_args_copy(
 
     // Clamp to avoid overflow, using ARG_MAX is only an approximation. It is not possible
     // to execve() with this many elements, so this only happens if a process has changed
-    // its strings. A hard cap, so not ENOMEM: the caller cannot retry. (The C's count is
-    // unsigned: a negative one is over the cap too.)
-    if cnt < 0 || cnt as usize > ARG_MAX {
+    // its strings. A hard cap, so not ENOMEM: the caller cannot retry.
+    if i64::from(cnt) > ARG_MAX as i64 {
         return Err(Errno::EINVAL);
     }
-    let mut cnt = cnt as usize;
+    // The count is the C's `int` (`ps_nargvstr`, `ps_nenvstr`): a process that wrote a
+    // negative one gets the C's answer, below: no string is read, and the room for
+    // `cnt + 1` pointers, the C's `int` made a `size_t`, wraps (0 for -1, the terminating
+    // NULL alone; past `limit`, so `ENOMEM`, for less).
+    let mut cnt = cnt;
 
     let oldlenp = &mut *req.oldlenp;
     // -1 to have space for a terminating NUL
@@ -2282,8 +2286,10 @@ fn proc_args_copy(
     // pointer goes; vargv: where the next argument pointer is read in the victim.
     let mut rargv = req.oldp;
     // space for cnt pointers and a NULL
-    let mut rarg = rargv + (cnt + 1) * PTR;
-    *oldlenp += (cnt + 1) * PTR;
+    let room = (i64::from(cnt) + 1).cast_unsigned() as usize;
+    let room = room.wrapping_mul(PTR);
+    let mut rarg = rargv.wrapping_add(room);
+    *oldlenp = oldlenp.wrapping_add(room);
 
     while cnt > 0 && *oldlenp < limit {
         // Write to the reader's argv.
@@ -2291,7 +2297,7 @@ fn proc_args_copy(
 
         // Read the victim's argv.
         let mut vargb = [0u8; PTR];
-        victim_read(map, vargv, &mut vargb)?;
+        victim(vargv, &mut vargb)?;
         let mut varg = usize::from_ne_bytes(vargb);
         if varg == 0 {
             break;
@@ -2301,7 +2307,7 @@ fn proc_args_copy(
         // too much and return an error.
         loop {
             let len = PAGE_SIZE - (varg & PAGE_MASK);
-            victim_read(map, varg, &mut buf[..len])?;
+            victim(varg, &mut buf[..len])?;
             let vstrlen = buf[..len].iter().position(|&c| c == 0).unwrap_or(len);
 
             // Don't overflow the reader's buffer.
@@ -3605,6 +3611,99 @@ mod tests {
         assert_eq!(s.read(), Some(&b"Standard PC (Q35 + ICH9, 2009)"[..]));
         s.write(None);
         assert_eq!(s.read(), None);
+    }
+
+    /// A victim's address space for `proc_args_copy`: `mem` mapped at `base`, `EFAULT`
+    /// outside it (`uvm_io`'s answer for an unmapped address).
+    fn victim_mem(base: usize, mem: &[u8]) -> impl FnMut(usize, &mut [u8]) -> Result<(), Errno> {
+        move |va: usize, dst: &mut [u8]| {
+            let off = va.checked_sub(base).ok_or(Errno::EFAULT)?;
+            let src = mem.get(off..off + dst.len()).ok_or(Errno::EFAULT)?;
+            dst.copy_from_slice(src);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn kern_proc_argv_lays_out_the_strings_and_takes_the_c_s_counts() {
+        // kern.proc_args.<pid>.argv of a victim whose struct ps_strings says nargvstr
+        // (the C's int): the reader's buffer gets the pointers, a NULL and the strings; a
+        // count past ARG_MAX is EINVAL; a negative one is the C's arithmetic (kern_sysctl.c,
+        // sysctl_proc_args: the room for cnt + 1 pointers made a size_t): -1 is the
+        // terminating NULL alone (0 bytes reported), below -1 ENOMEM.
+        const P: usize = size_of::<usize>();
+        testutil::install();
+        let base = 0x1_0000;
+        let mut mem = std::vec![0u8; 0x8_0000];
+        // argv at 0x2000: "ab", "c", NULL; the strings at 0x3000.
+        let put = |mem: &mut [u8], va: usize, b: &[u8]| {
+            mem[va - base..va - base + b.len()].copy_from_slice(b);
+        };
+        put(&mut mem, base + 0x2000, &(base + 0x3000).to_ne_bytes());
+        put(&mut mem, base + 0x2000 + P, &(base + 0x3003).to_ne_bytes());
+        put(&mut mem, base + 0x3000, b"ab\0c\0");
+        let run = |mem: &mut [u8], nargv: i32, oldp: usize, oldlen: usize| {
+            // struct ps_strings at base: ps_argvstr, ps_nargvstr, ps_envstr, ps_nenvstr.
+            put(mem, base, &(base + 0x2000).to_ne_bytes());
+            put(mem, base + P, &nargv.to_ne_bytes());
+            UserPtr::<u8>::new(oldp).copyout_slice(&[0xff; 64]).unwrap();
+            let mut len = oldlen;
+            let mut req = SysctlReq {
+                oldp,
+                oldlenp: &mut len,
+                newp: 0,
+                newlen: 0,
+            };
+            let mut buf = std::vec![0u8; PAGE_SIZE];
+            let mut victim = victim_mem(base, mem);
+            let r = proc_args_copy(&mut victim, base, KERN_PROC_ARGV, &mut req, &mut buf);
+            (r, len)
+        };
+
+        // Two strings.
+        let out = U + 0x400;
+        assert_eq!(run(&mut mem, 2, out, 256), (Ok(()), 3 * P + 5));
+        let got = testutil::user_bytes(out, 3 * P + 5).unwrap();
+        assert_eq!(got[..P], (out + 3 * P).to_ne_bytes());
+        assert_eq!(got[P..2 * P], (out + 3 * P + 3).to_ne_bytes());
+        assert_eq!(got[2 * P..3 * P], [0; P]);
+        assert_eq!(&got[3 * P..], b"ab\0c\0");
+
+        // -1: no pointer room, the NULL written at oldp, 0 bytes reported.
+        let out = U + 0x480;
+        assert_eq!(run(&mut mem, -1, out, 256), (Ok(()), 0));
+        assert_eq!(testutil::user_bytes(out, P).unwrap(), [0; P]);
+        // ... and ENOMEM when the reader's room is 1 (limit 0).
+        assert_eq!(run(&mut mem, -1, out, 1).0, Err(Errno::ENOMEM));
+
+        // Below -1: the wrapped room is past limit.
+        assert_eq!(run(&mut mem, -5, out, 256).0, Err(Errno::ENOMEM));
+        assert_eq!(run(&mut mem, i32::MIN, out, 256).0, Err(Errno::ENOMEM));
+
+        // The hard cap, and ARG_MAX itself (room past the reader's: ENOMEM).
+        assert_eq!(
+            run(&mut mem, ARG_MAX as i32 + 1, out, 256).0,
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            run(&mut mem, ARG_MAX as i32, out, 256).0,
+            Err(Errno::ENOMEM)
+        );
+
+        // The victim's ps_strings unmapped.
+        let mut len = 256;
+        let mut req = SysctlReq {
+            oldp: out,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        let mut buf = std::vec![0u8; PAGE_SIZE];
+        let mut victim = victim_mem(base, &mem);
+        assert_eq!(
+            proc_args_copy(&mut victim, 0x10, KERN_PROC_ARGV, &mut req, &mut buf),
+            Err(Errno::EFAULT)
+        );
     }
 }
 /* </TESTS> */
