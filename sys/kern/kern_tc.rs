@@ -44,6 +44,17 @@
 //! Upstream: sys/kern/kern_tc.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_tc.rs@3c62ede68802
 //!
+//! ## Deviations
+//! - amd64 (frozen until N10, decision 44): `calibrate_tsc_freq` (`tsc.c`:335-337, the same
+//!   function in `sys/arch/amd64/amd64/tsc.rs`, run by `cpu_recalibrate_tsc`) writes the TSC's `tc_frequency` and
+//!   `tc_quality` after `tc_init`, which the C's timecounter code reads from the structure at
+//!   the next windup and the next `tc_choose`. Here `tc_init` copies both into the counter's
+//!   `kernel::tc::TcEntry` once, so on amd64 the recalibrated frequency and the invariant
+//!   TSC's quality 2000 would not be seen. N10's way in, when amd64 is built again: the
+//!   calibration calls [`tc_set_frequency`] and [`tc_reset_quality`] (which reach the entry
+//!   through the counter's `tc_entry` link) instead of writing the cells. arm64 is not
+//!   affected: agtimer(4) sets its entry's frequency itself.
+//!
 //! ## Redesign
 //! - N4.8a: the timecounters moved into `kernel::tc` (the `Timecounter` trait and `TcEntry`,
 //!   the timehands as atomics behind the generation, `windup_mtx` a `Mutexed`, `tc_lock` a
