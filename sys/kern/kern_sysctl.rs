@@ -248,6 +248,33 @@ pub fn sysctl_vslock(addr: usize, len: usize) -> Result<kernel::sysctl::VsLock, 
     kernel::sysctl::sysctl_vslock(p, addr, len)
 }
 
+/// `KernelApi::sysctl`: [`sys_sysctl`]'s row through the system call prologue (`mi_syscall`:
+/// pledge, the pinned syscalls, the kernel-lock rule; the row is `SY_NOLOCK`, as the C's).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the entry's shape: the number, six arguments, the return registers"
+)]
+pub fn native_sysctl(
+    nr: Register,
+    name: usize,
+    namelen: u32,
+    old: usize,
+    oldlenp: usize,
+    new: usize,
+    newlen: usize,
+    rval: &mut [Register; 2],
+) -> hal::syscall::SysResult {
+    let args = [
+        name as Register,
+        namelen as Register,
+        old as Register,
+        oldlenp as Register,
+        new as Register,
+        newlen as Register,
+    ];
+    crate::kern::kern_descrip::native(nr, crate::sys::syscall::SYS_sysctl, args, rval)
+}
+
 /// `sysctl(2)`'s `sysent[]` row: the kernel's [`kernel::sysctl::sys_sysctl`] with the
 /// system call's arguments.
 pub fn sys_sysctl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
