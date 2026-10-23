@@ -7926,7 +7926,15 @@ license = "none"
 [[module]]
 rust = "sys/sys/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/sysctl.rs"]
+
+[[module]]
+rust = "sys/hal/sys/sysctl.rs"
+crate = "hal"
+lz = ["sys/sys/sysctl.rs"]
+status = "redesigned"
+notes = "N4.6b: sysctl.h's ids, name tables and structures moved into hal so kernel::sysctl and bsd share one copy; kinfo_proc and kinfo_file AbiPod through hal::abi_pod! (LZ: two MaybeUninit::zeroed and bsd's SysctlPlain impls); bsd's sys/sys/sysctl.rs re-exports it"
 
 [[module]]
 rust = "sys/hal/sys/syslimits.rs"
