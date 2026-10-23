@@ -2454,5 +2454,86 @@ mod tests {
         DISK_COUNT.fetch_sub(1, Ordering::Relaxed);
         DISK_CHANGE.store(1, Ordering::Relaxed);
     }
+
+    #[test]
+    fn kern_proc_readers_give_back_only_the_reference_they_took() {
+        // kernel::sysctl's fill_kproc and sysctl_proc_args read a live process's vmspace
+        // under a reference of their own (the C's uvmspace_addref ... uvmspace_free,
+        // kern_sysctl.c:2073-2074 and 2124, 2208-2209 and 2362): the process's vm_refcnt is
+        // the same after the read, and its map keeps its entries. Without the addref the free
+        // dropped the process's own reference, and `ps` purged every address space it
+        // listed, its own first (smoke-diag's `uvm_map_pageable: ... has no entry`; main's
+        // 2536a3e6 fixed bsd's copies, this is the kernel's).
+        use crate::sys::param::PAGE_SIZE;
+        use kernel::sysctl::{SysctlReq, fill_kproc, sysctl_proc_args};
+
+        let _g = setup();
+        // The map pools (the pmap's are up: setup_real_memory's pmap_bootstrap_lazy).
+        kernel::vm::map::uvm_map_init();
+        // A pooled process (what prfind counts), in its own group and session.
+        let p = crate::kern::proc_glue::test_proc(43, CredRef::new(Ucred::new()));
+        let pr = p.process();
+        core::mem::forget(test_setsid(pr));
+        let vm = kernel::vm::map::uvmspace_alloc(0x1000, 0x4000_0000, true, false);
+        let rw = crate::sys::mman::PROT_READ | crate::sys::mman::PROT_WRITE;
+        let flags = kernel::vm::types::uvm_mapflag(
+            rw,
+            rw,
+            hal::sys::mman::MAP_INHERIT_COPY,
+            hal::sys::mman::MADV_NORMAL,
+            kernel::vm::types::UVM_FLAG_FIXED | kernel::vm::types::UVM_FLAG_COPYONW,
+        );
+        let mut at = 0x10_0000;
+        assert_eq!(
+            kernel::vm::map::uvm_mapanon(&vm.vm_map, &mut at, PAGE_SIZE, 0, flags),
+            Ok(())
+        );
+        assert!(pr.set_vmspace(Some(vm.clone())).is_none());
+        assert_eq!(vm.vm_refcnt.load(Ordering::Relaxed), 1);
+
+        let mut ki = KinfoProc::zeroed();
+        for _ in 0..2 {
+            kernel_lock();
+            let r = hal::klock::reader();
+            let g = pr.ps_mtx.lock();
+            fill_kproc(&r, pr, &mut ki, None, false, &g);
+            drop((g, r));
+            kernel_unlock();
+        }
+        assert_eq!(vm.vm_refcnt.load(Ordering::Relaxed), 1);
+
+        // kern.procargs.<pid>.nargv: the victim found on the pid hash, its ps_strings (0,
+        // never mapped) read through its map; the answer is an error, the reference is
+        // given back all the same.
+        kernel_lock();
+        {
+            let mut w = hal::klock::witness();
+            let t = crate::kern::proc_glue::proc_tables();
+            t.pidhash(pr.ps_pid)
+                .insert_head(&mut w, core::pin::Pin::static_ref(pr));
+        }
+        let mut len = size_of::<i32>();
+        let mut req = SysctlReq {
+            oldp: UB + 0x200,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert!(sysctl_proc_args(p, &[pr.ps_pid, KERN_PROC_NARGV], &mut req).is_err());
+        {
+            let mut w = hal::klock::witness();
+            let t = crate::kern::proc_glue::proc_tables();
+            t.pidhash(pr.ps_pid).remove(&mut w, pr);
+        }
+        kernel_unlock();
+        assert_eq!(vm.vm_refcnt.load(Ordering::Relaxed), 1);
+
+        // The map still describes the page mapped above.
+        let g = vm.vm_map.lock_read();
+        let e = g.lookup(at);
+        assert!(e.is_some_and(|e| e.start() == at && e.end() == at + PAGE_SIZE));
+        drop(g);
+        drop(pr.set_vmspace(None));
+    }
 }
 /* </TESTS> */

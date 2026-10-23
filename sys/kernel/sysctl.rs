@@ -888,9 +888,10 @@ impl Drop for VsLock {
     /// `sysctl_vsunlock(addr, savelen)`.
     fn drop(&mut self) {
         klock::kernel_assert_locked();
+        // The handle is curproc's address space as the C names it (`p->p_vmspace`), not a
+        // reference: nothing is given back but the handle.
         if let Some((vm, addr, len)) = self.wired.take() {
             crate::vm::glue::uvm_vsunlock(&vm.vm_map, addr, len);
-            crate::vm::map::uvmspace_free(vm);
         }
         klock::kernel_unlock();
     }
@@ -1789,8 +1790,12 @@ pub fn fill_kproc<G: ProcGlue>(
     let mut vm: Option<VmspaceRef> = None;
     if flags & PS_EXITING == 0 {
         // vm = pr->ps_vmspace; uvmspace_addref(vm): a process that is not exiting holds
-        // its vmspace, and the reference keeps it while it is read.
+        // its vmspace, and the reference keeps it while it is read. The handle is the C's
+        // pointer, not a reference: the `uvmspace_free` below gives back the one taken here.
         vm = g.vmspace.clone();
+        if let Some(vm) = &vm {
+            crate::vm::map::uvmspace_addref(vm);
+        }
     }
 
     let tu = Tusage::new();
@@ -2105,10 +2110,12 @@ pub fn sysctl_proc_args<G: ProcGlue>(
     }
 
     let ps_strings = vpr.ps_strings.get();
-    // vm = vpr->ps_vmspace; uvmspace_addref(vm) (gone already: exiting since the check)
+    // vm = vpr->ps_vmspace; uvmspace_addref(vm) (gone already: exiting since the check);
+    // the handle is the C's pointer, the reference the `uvmspace_free`s below give back.
     let Some(vm) = vpr.vmspace_share() else {
         return Err(Errno::EINVAL);
     };
+    crate::vm::map::uvmspace_addref(&vm);
     drop(vpr);
 
     let Some(mut buf) = MArray::new(M_TEMP, M_WAITOK, PAGE_SIZE, |_| 0u8) else {

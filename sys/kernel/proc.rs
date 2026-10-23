@@ -1844,8 +1844,10 @@ impl<G: ProcGlue> Process<G> {
         self.cred_word.load(Ordering::Acquire)
     }
 
-    /// `vm = pr->ps_vmspace; uvmspace_addref(vm)`: a handle to the address space, `None` once
-    /// `uvm_exit` took it (LZ's `vmspace_share`).
+    /// `vm = pr->ps_vmspace`: a handle to the address space, `None` once `uvm_exit` took it.
+    /// The handle keeps the item, not the C's `vm_refcnt`: a reader that pairs it with
+    /// `uvmspace_free` (`fill_kproc`, `sysctl_proc_args`) takes its reference first with
+    /// `uvmspace_addref`, as the C does (LZ's `vmspace_share` did both).
     pub fn vmspace_share(&self) -> Option<VmspaceRef> {
         self.ps_mtx.lock().vmspace.clone()
     }
