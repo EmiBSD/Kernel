@@ -120,3 +120,4 @@ metadata:
 - A `just build`/`clippy` queued behind the machine lock compiles what is on disk when it starts, not when it was queued: no source edit while one waits (a half-applied KernelApi change failed N4.6b's first build).
 - `lz check`'s "differs from LZ ... set status = redesigned" on an inherited file edited at its call sites is also satisfied by `adapted` with `adapted_by`.
 - A bsd helper that ~30 bsd test modules call with host addresses (`sysctl_int`, `sysctl_rdint`, ...) cannot become a wrapper over a kernel helper on `hal::user::UserPtr` (the 64 KiB double) without moving every test buffer: keep LZ's body in bsd until its callers move.
+- `lz check` refuses `status = "redesigned"` for a `bsd` module that keeps any `unsafe` (its `mod` must be `forbid` unless it is in unsafe-core.toml): a bsd half that gained code of its own but keeps a subsystem's unsafe (kern_sysctl.rs's kern.file) stays `adapted`, with a notes line saying why.
