@@ -247,8 +247,13 @@ pub const PG_PMAP2: u32 = 0x0400_0000;
 const PG_HAL_VIEW: u32 = 0x8000_0000;
 /// With [`PG_HAL_VIEW`]: the view is writable, so its mapping may not lose `PROT_WRITE`.
 const PG_HAL_VIEW_W: u32 = 0x4000_0000;
+/// With [`PG_HAL_VIEW`]: the claim is for good and does not rest on `PG_BUSY` (the timekeep
+/// page's view, `KernelMapper::timekeep_view`): the page system may busy and unbusy the page,
+/// as the C's fault path does to every page it maps, since that changes neither its bytes nor
+/// its owner.
+const PG_HAL_KEEP: u32 = 0x2000_0000;
 /// The bits `hal` keeps for itself.
-const PG_HAL_MASK: u32 = PG_HAL_VIEW | PG_HAL_VIEW_W;
+const PG_HAL_MASK: u32 = PG_HAL_VIEW | PG_HAL_VIEW_W | PG_HAL_KEEP;
 
 /// The pool of user pmaps (`pmap_pmap_pool`), named as the C names it on each machine
 /// (`"pmappl"` on amd64, `"pmap"` on arm64), made by [`init`].
@@ -599,6 +604,13 @@ impl PageMd {
         self.attrs.load(Ordering::Acquire) & PG_HAL_VIEW != 0
     }
 
+    /// Whether the frame is held by a view that rests on the page staying busy (a pager
+    /// window, `map_direct`, a zero or copy): the page system must not unbusy it. The
+    /// timekeep page's claim ([`PG_HAL_KEEP`]) is not one.
+    pub fn in_busy_view(&self) -> bool {
+        self.attrs.load(Ordering::Acquire) & (PG_HAL_VIEW | PG_HAL_KEEP) == PG_HAL_VIEW
+    }
+
     /// Claims the frame alone, for a view (`writable` when it may write) or a copy: `true`
     /// when nothing held it (Acquire, so the bytes the last holder wrote are visible), `false`
     /// when something does (and then nothing changes).
@@ -611,6 +623,18 @@ impl PageMd {
         self.attrs
             .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
                 (a & PG_HAL_VIEW == 0).then_some(a | bits)
+            })
+            .is_ok()
+    }
+
+    /// Claims the frame alone and for good, writable, for the timekeep page's view: `true`
+    /// when nothing held it, `false` when something does (and then nothing changes). The
+    /// claim is never given back, and does not rest on `PG_BUSY` ([`PageMd::in_busy_view`] is
+    /// false for it).
+    pub(crate) fn claim_for_good(&self) -> bool {
+        self.attrs
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
+                (a & PG_HAL_VIEW == 0).then_some(a | PG_HAL_VIEW | PG_HAL_VIEW_W | PG_HAL_KEEP)
             })
             .is_ok()
     }

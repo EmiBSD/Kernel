@@ -489,13 +489,17 @@ impl KernelMapper {
     ///   frame is not a managed page (device or boot-stolen memory) or not wired
     ///   (`wire_count` 0: the page daemon could take it), and for every call after the first
     ///   that succeeded: the view is made once per boot.
-    /// - The frame is claimed for this view (`PageMd::claim_view`, writable) and never given
-    ///   back: a frame some byte view, copy or zeroing holds already is `panic(9)`, and from
-    ///   now on the other ways to its bytes refuse it (`map_direct` and `map_frames` panic,
-    ///   `pmap_zero_page` and `pmap_copy_page` refuse it, the page system will not free it,
-    ///   hand it out again nor unbusy it), while `pmap_page_protect` spares the view's own
-    ///   mapping at `va` (recorded as the claim's address) and removes or protects only the
-    ///   others (userland's read-only ones).
+    /// - The frame is claimed for good (`PageMd::claim_for_good`, writable) and never given
+    ///   back: a frame some byte view, copy or zeroing holds already is `panic(9)` (so is a
+    ///   second call racing the first on the same frame: it finds the frame claimed), and
+    ///   from now on the other ways to its bytes refuse it (`map_direct` and `map_frames`
+    ///   panic, `pmap_zero_page` and `pmap_copy_page` refuse it, the page system will not
+    ///   free it nor hand it out again), while `pmap_page_protect` spares the view's own
+    ///   mapping at `va` (recorded as the claim's address) and removes only the others
+    ///   (userland's read-only ones) or panics before write-protecting it. Unlike a pager
+    ///   window's, this claim does not rest on `PG_BUSY`: the fault path busies and unbusies
+    ///   the page as it maps it into a process (`uvm_fault_lower`'s end), which changes
+    ///   neither its bytes nor its owner, so the page system lets it (`PageMd::in_busy_view`).
     ///
     /// The token holder's contract that stays (the module's docs): `va` is the kernel map's
     /// mapping of the timekeep object, never removed through the token (its entry is the
@@ -514,14 +518,15 @@ impl KernelMapper {
         if TIMEKEEP_VIEWED.load(Ordering::Acquire) {
             return None;
         }
-        if !md.claim_view(true) {
+        if !md.claim_for_good() {
             hal_panic(format_args!(
                 "timekeep_view: the frame {:#x} is in another view",
                 pa.as_usize()
             ));
         }
         if TIMEKEEP_VIEWED.swap(true, Ordering::AcqRel) {
-            // Another call made the view in the meantime: the claim just taken goes back, and
+            // Another call, over another frame, made the view in the meantime (one over this
+            // frame would have found it claimed above): the claim just taken goes back, and
             // the frame is as it was.
             md.release_view();
             return None;
@@ -545,7 +550,8 @@ impl KernelMapper {
         // (`TIMEKEEP_VIEWED`, swapped once), and the frame is claimed for it and never
         // released. Upheld: the claim makes the page system refuse to free or hand out the
         // frame (`uvm_pageclean`, `PageMd::clear_attrs` panic on a claimed page), so the
-        // bytes stay this page's for `'static`; `map_direct`, `map_frames`, `zero_page` and
+        // bytes stay this page's for `'static` (busying and unbusying it, which the claim
+        // allows, moves neither the bytes nor the page); `map_direct`, `map_frames`, `zero_page` and
         // `copy_page` refuse a claimed frame, so no other kernel view or copy reaches them;
         // `page_protect` spares the mapping at `addr`, and the token holder never removes the
         // kernel map's entry (the contract above). Why the shared reference cannot race:
@@ -812,6 +818,8 @@ mod tests {
         testutil::set_wired(held[0]);
         mapper.enter(held_va, held[0], rw, PMAP_WIRED | rw).unwrap();
         let direct = mapper.map_direct(held[0]);
+        let held_md = pmap::kernel().pages().md_of(held[0]).unwrap();
+        assert!(held_md.in_busy_view(), "a direct view rests on PG_BUSY");
         let refused = catch_unwind(AssertUnwindSafe(|| mapper.timekeep_view(held_va)));
         assert!(refused.is_err(), "a frame in another view");
         drop(direct);
@@ -849,6 +857,8 @@ mod tests {
         assert!(catch_unwind(AssertUnwindSafe(|| pmap::copy_page(frames[0], dst[0]))).is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| md.clear_attrs())).is_err());
         assert!(md.in_view() && md.spares(true, va.as_usize()));
+        // The claim is for good but not on PG_BUSY: the fault path may unbusy the page.
+        assert!(!md.in_busy_view());
         pmap::page_protect(md, PROT_NONE);
         assert_eq!(pmap::kernel().extract(va), Some(frames[0]));
         assert_eq!(tk.tk_version.load(Ordering::Relaxed), 7);
