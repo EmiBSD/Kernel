@@ -9280,6 +9280,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's delivery on a kernel-lock klist, kqueue_scan, kqueue_register, poll and select over the poll kqueue, an own-mutex klist) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/futex.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/proc.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.2's hot paths (the credentials' copy, hold and refresh, getuid, lim_cur, the process list and pid chain insert/remove under the kernel lock witness) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -9488,6 +9493,13 @@ reason = "MTX_NOWITNESS, kept by LZ for the record: WITNESS is not configured, a
 lz = "sys/kern/kern_fork.rs::proc_trampoline_mi"
 native = ["trampoline_mi"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/futex.rs"
+crate = "kernel"
+lz = ["sys/kern/sys_futex.rs"]
+status = "redesigned"
+notes = "N4.6c: futex(2) (FUTEX_WAIT/WAKE/REQUEUE and their _PRIVATE forms) into the kernel crate, 0 unsafe (LZ 9): a waiter is a Futex pinned on its stack on a hal::pinlist::PinList bound to its bucket's RawRwlock (futexlk), linked meaning waiting (the C's ft_proc != NULL); the key four addresses compared (FutexKey), ft_fsq the bucket's index; the waker wakes the waiter's own channel (kernel::sched::wakeup_n_locked under one SCHED_LOCK hold) instead of wakeup_proc of a thread pointer; FUTEX_REQUEUE across buckets through PinList::move_where_across (never unlinked while it moves); the word read with UserPtr<u32>::copyin32 (hal::user::UserCopy)"
 
 [[module]]
 rust = "sys/kernel/uio.rs"

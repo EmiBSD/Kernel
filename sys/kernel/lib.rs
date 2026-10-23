@@ -45,6 +45,7 @@ pub mod descrip;
 pub mod event;
 pub mod extent;
 pub mod file;
+pub mod futex;
 pub mod pipe;
 pub mod prf;
 pub mod proc;
