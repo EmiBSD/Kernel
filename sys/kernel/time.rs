@@ -109,7 +109,9 @@
 //! - `ratecheck_mtx`/`ppsratecheck_mtx` own nothing in the C; here [`ppsratecheck_locked`]
 //!   runs a caller's closure under the mutex, so a counter shared between CPUs (the
 //!   network's limiters, LZ's `ppsratecheck_shared` raw pointers) is only reached with it
-//!   held, and [`ppsratecheck`] over exclusive references is the same check.
+//!   held, and [`ppsratecheck`] over exclusive references is the same check. Its uptime is
+//!   `microuptime`'s and `maxpps == 0` allows nothing, as the C (LZ read `getmicrouptime` and
+//!   had no `maxpps == 0` branch, so a rate limit set to 0 let one event a second through).
 //! - `resettodr_to`/`resettodr_task` are a kernel `Timeout` and `Task`, pinned statics.
 
 use core::ffi::c_void;
@@ -125,8 +127,8 @@ use crate::prf::printf;
 use crate::sys::errno::Errno;
 use crate::task::{SYSTQ, Task, task_add, task_del};
 use crate::tc::{
-    TC_LOCK, getmicrouptime, microtime, nanotime, tc_getfrequency, tc_getprecision, tc_setclock,
-    tc_setrealtimeclock,
+    TC_LOCK, getmicrouptime, microtime, microuptime, nanotime, tc_getfrequency, tc_getprecision,
+    tc_setclock, tc_setrealtimeclock,
 };
 use crate::timeout::Timeout;
 
@@ -360,10 +362,16 @@ pub fn itimerdecr(itp: &mut Itimerspec, decrement: &Timespec) -> bool {
 /// `ratecheck(9)`: `true` (and `*lasttime` now) at most once per `mininterval`, and the
 /// first time.
 pub fn ratecheck(lasttime: &mut Timeval, mininterval: &Timeval) -> bool {
-    let mut rv = false;
     let tv = getmicrouptime();
-
     let g = RATECHECK_MTX.lock();
+    let rv = rate_step(tv, lasttime, mininterval);
+    drop(g);
+    rv
+}
+
+/// The decision of `ratecheck(9)` at the uptime `tv`, `ratecheck_mtx` held.
+fn rate_step(tv: Timeval, lasttime: &mut Timeval, mininterval: &Timeval) -> bool {
+    let mut rv = false;
     let delta = tv.sub(*lasttime);
 
     // check for 0,0 is so that the message will be seen at least once, even if interval is
@@ -372,15 +380,15 @@ pub fn ratecheck(lasttime: &mut Timeval, mininterval: &Timeval) -> bool {
         *lasttime = tv;
         rv = true;
     }
-    drop(g);
-
     rv
 }
 
-/// `ppsratecheck(9)`: at most `maxpps` events per second (`maxpps < 0`: no limit), the
-/// counter bumped either way.
+/// `ppsratecheck(9)`: at most `maxpps` events per second (`maxpps < 0`: no limit, `0`: none
+/// at all), the counter bumped either way.
 pub fn ppsratecheck(lasttime: &mut Timeval, curpps: &mut i32, maxpps: i32) -> bool {
-    ppsratecheck_locked(|g| ppsratecheck_held(g, lasttime, curpps, maxpps))
+    // The precise uptime, read before the mutex as the C's `microuptime(&tv)`.
+    let tv = microuptime();
+    ppsratecheck_locked(|g| pps_step(g, tv, lasttime, curpps, maxpps))
 }
 
 /// Runs `f` with `ppsratecheck_mtx` held: the way to [`ppsratecheck_held`] for a counter
@@ -392,12 +400,22 @@ pub fn ppsratecheck_locked<R>(f: impl FnOnce(&mut MutexedGuard<'_, ()>) -> R) ->
 
 /// `ppsratecheck(9)`'s body, `ppsratecheck_mtx` held (its guard is the proof).
 pub fn ppsratecheck_held(
-    _g: &mut MutexedGuard<'_, ()>,
+    g: &mut MutexedGuard<'_, ()>,
     lasttime: &mut Timeval,
     curpps: &mut i32,
     maxpps: i32,
 ) -> bool {
-    let tv = getmicrouptime();
+    pps_step(g, microuptime(), lasttime, curpps, maxpps)
+}
+
+/// The decision of `ppsratecheck(9)` at the uptime `tv`, `ppsratecheck_mtx` held.
+fn pps_step(
+    _g: &mut MutexedGuard<'_, ()>,
+    tv: Timeval,
+    lasttime: &mut Timeval,
+    curpps: &mut i32,
+    maxpps: i32,
+) -> bool {
     let delta = tv.sub(*lasttime);
 
     // check for 0,0 is so that the message will be seen at least once. if more than one
@@ -405,7 +423,10 @@ pub fn ppsratecheck_held(
     //
     // we do increment *curpps even in *curpps < maxpps case, as some may try to use *curpps
     // for stat purposes as well.
-    let rv = if (lasttime.tv_sec == 0 && lasttime.tv_usec == 0) || delta.tv_sec >= 1 {
+    let rv = if maxpps == 0 {
+        // no event allowed at all: the window and the counter's reset are left alone
+        false
+    } else if (lasttime.tv_sec == 0 && lasttime.tv_usec == 0) || delta.tv_sec >= 1 {
         *lasttime = tv;
         *curpps = 0;
         true
@@ -722,29 +743,36 @@ mod tests {
     }
 
     #[test]
-    fn ratecheck_and_ppsratecheck_limit() {
+    fn ratecheck_lets_one_event_through_per_interval() {
+        let now = Timeval::new(100, 500);
+        let hour = Timeval::new(3600, 0);
+        // The first time, whatever the interval.
+        let mut last = Timeval::new(0, 0);
+        assert!(rate_step(now, &mut last, &hour), "the first time");
+        assert_eq!(last, now);
+        // Within the hour: refused, the last time kept.
+        assert!(!rate_step(Timeval::new(200, 0), &mut last, &hour));
+        assert_eq!(last, now);
+        // An interval gone by (`>=`, as `timercmp`).
+        assert!(rate_step(Timeval::new(3700, 500), &mut last, &hour));
+        assert_eq!(last, Timeval::new(3700, 500));
+        // A zero interval: always.
+        assert!(rate_step(last, &mut last.clone(), &Timeval::new(0, 0)));
+    }
+
+    #[test]
+    fn ratecheck_and_ppsratecheck_take_their_mutexes() {
         testutil::install();
+        // The first event goes through whatever the uptime is; the counter is bumped.
         let mut last = Timeval::new(0, 0);
         assert!(
             ratecheck(&mut last, &Timeval::new(3600, 0)),
             "the first time"
         );
-        assert!(
-            !ratecheck(&mut last, &Timeval::new(3600, 0)),
-            "within the hour"
-        );
-        assert!(ratecheck(&mut last, &Timeval::new(0, 0)));
-
         let mut last = Timeval::new(0, 0);
-        let mut count = 0;
+        let mut count = 5;
         assert!(ppsratecheck(&mut last, &mut count, 2));
-        assert!(ppsratecheck(&mut last, &mut count, 2));
-        assert!(
-            !ppsratecheck(&mut last, &mut count, 2),
-            "the third in a second"
-        );
-        assert_eq!(count, 3, "counted even when refused");
-        assert!(ppsratecheck(&mut last, &mut count, -1), "no limit");
+        assert_eq!(count, 1, "reset on the first event, then bumped");
         let mut shared = (Timeval::new(0, 0), i32::MAX);
         assert!(ppsratecheck_locked(|g| ppsratecheck_held(
             g,
@@ -753,6 +781,45 @@ mod tests {
             5
         )));
         assert_eq!(shared.1, 1, "reset on the first event, then bumped");
+        let mut none = (Timeval::new(0, 0), 0);
+        assert!(!ppsratecheck(&mut none.0, &mut none.1, 0), "maxpps 0");
+        assert_eq!(none, (Timeval::new(0, 0), 1));
+    }
+
+    /// `kern_time.c`'s decision table, one row per branch, at a fixed uptime: (`*lasttime`,
+    /// `*curpps`, `maxpps`) -> (the answer, `*lasttime` afterwards, `*curpps` afterwards).
+    #[test]
+    fn ppsratecheck_follows_the_c_branch_by_branch() {
+        let now = Timeval::new(100, 500);
+        let recent = Timeval::new(100, 0);
+        let old = Timeval::new(99, 400);
+        let zero = Timeval::new(0, 0);
+        #[rustfmt::skip]
+        let rows: [(Timeval, i32, i32, bool, Timeval, i32); 9] = [
+            // maxpps == 0: never, even the first time; nothing reset, the counter bumped.
+            (zero, 0, 0, false, zero, 1),
+            (old, 7, 0, false, old, 8),
+            (recent, 3, 0, false, recent, 4),
+            // the first event, or a second gone by: allowed, the window restarted.
+            (zero, 9, 2, true, now, 1),
+            (old, 9, 2, true, now, 1),
+            // no limit.
+            (recent, 50, -1, true, recent, 51),
+            // within the second, under and at the limit.
+            (recent, 1, 2, true, recent, 2),
+            (recent, 2, 2, false, recent, 3),
+            // the counter stops at INT_MAX (the C's wrap-around guard).
+            (recent, i32::MAX, 2, false, recent, i32::MAX),
+        ];
+        for (last0, pps0, maxpps, rv, last1, pps1) in rows {
+            let (mut last, mut pps) = (last0, pps0);
+            let got = ppsratecheck_locked(|g| pps_step(g, now, &mut last, &mut pps, maxpps));
+            assert_eq!(
+                (got, last, pps),
+                (rv, last1, pps1),
+                "lasttime {last0:?} curpps {pps0} maxpps {maxpps}"
+            );
+        }
     }
 }
 /* </TESTS> */
