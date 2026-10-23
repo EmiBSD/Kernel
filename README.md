@@ -4,7 +4,7 @@
   <img src="docs/Ferffy.jpg" alt="Ferffy, the EmiBSD mascot: a spiky orange crab in front of a shield, above the EmiBSD name" width="380">
 </p>
 
-<p align="center"><em>Ferffy, the EmiBSD mascot: half Ferris (Rust's crab), half Puffy (OpenBSD's pufferfish).</em></p>
+<p align="center"><em>Ferffy, the EmiBSD mascot: the child of Ferris (Rust's crab) and Puffy (OpenBSD's pufferfish).</em></p>
 
 <p align="center"><strong>An operating system in Rust, grown from the faithful port of the OpenBSD kernel.</strong></p>
 
@@ -648,8 +648,8 @@ Vulnerabilities are reported privately ([SECURITY.md](.github/SECURITY.md)).
 
 ## Mascot
 
-Ferffy is Ferris, Rust's crab, crossed with Puffy, OpenBSD's pufferfish.
-The spikes are Puffy's; the claws are Ferris's.
+Ferffy is the child of Ferris, Rust's crab, and Puffy, OpenBSD's pufferfish:
+the claws from one parent, the spikes from the other.
 
 ## License
 
