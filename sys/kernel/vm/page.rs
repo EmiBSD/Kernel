@@ -1563,7 +1563,7 @@ pub fn uvm_pagecount(constraint: &UvmConstraintRange) -> usize {
 // answers the `PageMd` embedded in the frame's page, the same for ever (the array is never
 // freed); `is_busy` answers the page's `PG_BUSY` as this module keeps it, on which hal's
 // byte views rest (`sys/hal/mapped.rs`: only busy pages are viewed, and `clear_bits` keeps a
-// viewed page busy).
+// viewed page busy); `is_wired` its `wire_count`, on which the timekeep view rests.
 impl PhysPages for PhysPagesImpl {
     fn alloc_ptp(&self) -> Option<Paddr> {
         let pg = uvm_pagealloc(Owner::None, 0, UVM_PGA_USERESERVE | UVM_PGA_ZERO)?;
@@ -1588,6 +1588,10 @@ impl PhysPages for PhysPagesImpl {
 
     fn is_busy(&self, pa: Paddr) -> bool {
         PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.flags() & PG_BUSY != 0)
+    }
+
+    fn is_wired(&self, pa: Paddr) -> bool {
+        PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.wire_count() != 0)
     }
 
     fn steal(&self, npg: usize) -> Option<Paddr> {

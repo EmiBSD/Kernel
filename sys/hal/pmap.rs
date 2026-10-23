@@ -688,6 +688,10 @@ pub trait PhysPages: Sync {
     /// page is held by its owner for I/O, the only pages a pager maps for their bytes
     /// (`uvm_pagermapin`'s `KASSERT(pp->pg_flags & PG_BUSY)`).
     fn is_busy(&self, pa: Paddr) -> bool;
+    /// `pg->wire_count != 0` of the managed frame `pa` (`false` for any other frame): the
+    /// page is wired, so the page daemon never takes it (the timekeep page's check,
+    /// `KernelMapper::timekeep_view`).
+    fn is_wired(&self, pa: Paddr) -> bool;
     /// `uvm_page_physsteal(npg)`: `npg` contiguous frames taken out of the page system before
     /// it is up, not zeroed; `None` when there are none. Panics once `page_init_done` (as the
     /// C does).

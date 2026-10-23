@@ -113,6 +113,9 @@ static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTree
 /// The memory frames [`set_idle`] made not busy.
 static IDLE_FRAMES: Mutex<std::collections::BTreeSet<usize>> =
     Mutex::new(std::collections::BTreeSet::new());
+/// The memory frames [`set_wired`] made wired.
+static WIRED_FRAMES: Mutex<std::collections::BTreeSet<usize>> =
+    Mutex::new(std::collections::BTreeSet::new());
 /// The blocks of host memory that [`memory_frames`] handed out, the managed pages of
 /// [`FAKE_PAGES`]: the first frame's address and a `PageMd` per frame.
 static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
@@ -609,6 +612,11 @@ pub(crate) fn set_idle(pa: Paddr) {
     lock(&IDLE_FRAMES).insert(pa.as_usize());
 }
 
+/// Makes the memory frame `pa` a wired page (`wire_count` above 0), as the timekeep page is.
+pub(crate) fn set_wired(pa: Paddr) {
+    lock(&WIRED_FRAMES).insert(pa.as_usize());
+}
+
 /// The page provider of the host pmap in `hal`'s tests: frame numbers from a counter, the
 /// page system never up (so `steal_memory` serves `bootmem`'s tests). Its managed pages are
 /// the frames of host memory [`memory_frames`] handed out (the host pmap's direct map is the
@@ -639,6 +647,10 @@ impl PhysPages for FakePages {
     /// The memory frames are their test's busy pages, but those [`set_idle`] named.
     fn is_busy(&self, pa: Paddr) -> bool {
         self.md_of(pa).is_some() && !lock(&IDLE_FRAMES).contains(&pa.as_usize())
+    }
+    /// The memory frames [`set_wired`] named.
+    fn is_wired(&self, pa: Paddr) -> bool {
+        self.md_of(pa).is_some() && lock(&WIRED_FRAMES).contains(&pa.as_usize())
     }
     fn steal(&self, npg: usize) -> Option<Paddr> {
         Some(Paddr::new(

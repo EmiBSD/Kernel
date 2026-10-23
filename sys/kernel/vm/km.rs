@@ -660,7 +660,8 @@ pub(super) fn mapper() -> VmMapper {
 
 /// The timekeep page's kernel view at `va` (`hal::pmap::KernelMapper::timekeep_view`): for
 /// `kernel::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
-/// mapping of the timekeep object (the token's contract for this view).
+/// mapping of the timekeep object; `hal` checks the page is managed and wired, claims its
+/// frame for good and makes the view once per boot (`None` otherwise).
 pub(crate) fn timekeep_view(va: Vaddr) -> Option<&'static hal::sys::timetc::TimekeepAtomic> {
     token().timekeep_view(va)
 }

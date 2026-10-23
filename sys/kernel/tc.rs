@@ -897,7 +897,7 @@ pub fn timekeep_object() -> Result<crate::vm::object::ObjRef, Errno> {
 
     let Some(tk) = crate::vm::km::timekeep_view(hal::sys::types::Vaddr::new(va)) else {
         kpanic(format_args!(
-            "timekeep_object: the wired page at {va:#x} is not mapped"
+            "timekeep_object: no view of the wired page at {va:#x}"
         ));
     };
     let _ = timekeep_attach(tk);
