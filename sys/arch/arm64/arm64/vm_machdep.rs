@@ -110,6 +110,10 @@ pub fn cpu_fork(
 
     pmap_activate(p2);
 
+    // Both words of the start: a NULL `arg` is the new thread itself (`words` puts `p2`'s
+    // address in the second), as `kernel::fork`'s own `cpu_fork` passes them.
+    let (start, arg) =
+        kernel::fork::Start::Legacy(func, arg.expose_provenance()).words(ptr::from_ref(p2).addr());
     let h = hal::thread::sched_lock();
     hal::thread::thread_setup(
         &h,
@@ -117,10 +121,8 @@ pub fn cpu_fork(
         hal::pin::pin_static(p2.as_static()),
         stack.addr(),
         tcb.expose_provenance(),
-        kernel::fork::Start::Legacy(func, arg.expose_provenance())
-            .words(ptr::from_ref(p2).addr())
-            .0,
-        arg.expose_provenance(),
+        start,
+        arg,
     );
     drop(h);
 }
