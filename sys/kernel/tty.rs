@@ -4150,8 +4150,10 @@ pub fn tty_count<G: ProcGlue>() -> i32 {
 }
 
 /// `ttystats_init`: the `struct itty` of every tty, in list order, as the bytes
-/// `kern.tty.ttyinfo` copies out (an array of `M_SYSCTL`).
-fn ttystats_init<G: ProcGlue>() -> Option<hal::malloc::MArray<u8>> {
+/// `kern.tty.ttyinfo` copies out (an array of `M_SYSCTL` sized from `tty_count`), and how
+/// many ttys it holds (`*ttycp`: those visited, at most the count, fewer when some were
+/// freed before the list's lock was taken).
+fn ttystats_init<G: ProcGlue>() -> Option<(hal::malloc::MArray<u8>, usize)> {
     let t = tables::<G>();
     let ttyc = usize::try_from(t.tty_count.load(Ordering::Relaxed)).unwrap_or(0);
     let ttystatssiz = ttyc * size_of::<Itty>();
@@ -4164,12 +4166,14 @@ fn ttystats_init<G: ProcGlue>() -> Option<hal::malloc::MArray<u8>> {
         kpanic(format_args!("ttystats_init: out of memory"));
     };
 
+    let mut ntty = 0;
     let w = t.ttylist_lock.write();
     for (tp, slot) in t
         .ttylist
         .iter(&w)
         .zip(out.as_chunks_mut::<{ size_of::<Itty>() }>().0)
     {
+        ntty += 1;
         let (column, session_id, pgrp_id) = {
             let st = tp.st.lock();
             (
@@ -4203,7 +4207,7 @@ fn ttystats_init<G: ProcGlue>() -> Option<hal::malloc::MArray<u8>> {
         let _ = pod_to_bytes(&itp, &mut slot[..]);
     }
     drop(w);
-    Some(out)
+    Some((out, ntty))
 }
 
 /// `sysctl_tty`: return tty-related information (`kern.tty`).
@@ -4219,7 +4223,10 @@ pub fn sysctl_tty<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<
         KERN_TTY_TKCANCC => rdquad(req, TK_CANCC.load(Ordering::Relaxed)),
         KERN_TTY_INFO => {
             let stats = ttystats_init::<G>();
-            rdstruct(req, stats.as_deref().unwrap_or(&[]))
+            let rows = stats
+                .as_ref()
+                .map_or(&[][..], |(s, ntty)| &s[..ntty * size_of::<Itty>()]);
+            rdstruct(req, rows)
         }
         // NPTY > 0
         _ => crate::pty::sysctl_pty(name, req),
@@ -5180,6 +5187,20 @@ mod tests {
         assert_eq!(row.t_state, TS_ISOPEN | TS_CARR_ON);
         assert_eq!(row.t_column, 2, "OPOST: the echo's column");
         assert_eq!((row._pad0, row._pad1), (0, [0; 3]));
+        // A count ahead of the list (a tty freed between the snapshot and the list's lock):
+        // only the rows visited, no zeroed row past them (tty.c's `*ttycp = ntty`).
+        let listed = tty_count::<Kg>() as usize;
+        tables::<Kg>().tty_count.fetch_add(1, Ordering::Relaxed);
+        let mut len = 0;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(node.sysctl(&[KERN_TTY_INFO], &mut req), Ok(()));
+        tables::<Kg>().tty_count.fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(len, size_of::<Itty>() * listed);
 
         let mut len = 8;
         let mut req = SysctlReq {
