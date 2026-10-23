@@ -334,6 +334,10 @@ impl Printf for BsdPrintf {
     fn printf(&self, args: core::fmt::Arguments<'_>) {
         let _ = printf(args);
     }
+
+    fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
+        crate::kern::subr_prf::log(level, args);
+    }
 }
 
 /// The kernel crate's clocks (`kernel::clock::Uptime`) over `nanouptime`, `getnanouptime`

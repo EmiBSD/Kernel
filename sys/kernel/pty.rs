@@ -288,7 +288,8 @@ pub fn check_pty<G: ProcGlue>(dev: Dev) -> Result<(), Errno> {
         // check if the requested pty can be granted
         if minor >= MAXPTYS {
             drop(w);
-            crate::prf::printf(format_args!("pty: table is full\n"));
+            // tablefull("pty"): log(LOG_ERR, "%s: table is full\n", tab)
+            crate::prf::log(crate::log::LOG_ERR, format_args!("pty: table is full\n"));
             return Err(Errno::ENXIO);
         }
 
@@ -1470,10 +1471,13 @@ mod tests {
         // The table grows by powers of two up to maxptys.
         assert_eq!(check_pty::<Kg>(makedev(5, 20)), Ok(()));
         assert_eq!(tables::<Kg>().npty.load(Ordering::Relaxed), 32);
+        let full = crate::testutil::printf_count("<3>pty: table is full\n");
         assert_eq!(
             check_pty::<Kg>(makedev(5, NPTY_MAX as u32)),
             Err(Errno::ENXIO)
         );
+        // tablefull(): log(9) at LOG_ERR, not printf
+        assert!(crate::testutil::printf_count("<3>pty: table is full\n") > full);
         assert!(pt_softc::<Kg>(19).is_none());
         assert!(pt_softc::<Kg>(20).is_some());
         // sysctl_pty knows no name.

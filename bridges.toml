@@ -77,8 +77,9 @@ for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
 # bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
-# implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
-# crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
+# and its log(9) (N4.7b: kernel::pty's tablefull), implemented by sys/kern/hal_bridges.rs
+# (BsdPrintf) and registered before main(); the kernel crate's lines (kernel::prf: unported!,
+# vm::page, vm::pmemrange, vm::km) go through it.
 # subr_prf goes with the bsd crate.
 # hal::prf::Printf
 [[bridge]]

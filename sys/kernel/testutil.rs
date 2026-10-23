@@ -863,6 +863,13 @@ impl Printf for TestPrintf {
     fn printf(&self, args: core::fmt::Arguments<'_>) {
         let _ = core::fmt::Write::write_fmt(&mut *lock(&PRINTF_OUT), args);
     }
+
+    /// `log(9)`: the line after its `<level>`, as the message buffer holds it.
+    fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
+        let mut out = lock(&PRINTF_OUT);
+        let _ = core::fmt::Write::write_fmt(&mut *out, format_args!("<{level}>"));
+        let _ = core::fmt::Write::write_fmt(&mut *out, args);
+    }
 }
 
 /// What the `printf(9)` double was given.
