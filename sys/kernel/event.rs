@@ -183,6 +183,18 @@
 //! - The identity tests of `kn_fop` against `dead_filtops`, `badfd_filtops` and
 //!   `user_filtops` are flag bits of `f_flags` that only those filters carry
 //!   ([`FILTEROP_DEAD`], ...), so a copy of the filter (`bsd`'s statics) is recognised.
+//! - `struct filterops` is the [`Filter`] trait (decision 46, N4.4b): each of the nine
+//!   kernel filters is a unit type whose impl holds the C's `filt_*` functions as its
+//!   methods (`filt_procattach` is `ProcFilter::attach`, ...), and a filter that shares a
+//!   function with another (`sig_filtops`' `filt_procmodify`, `dead_filtops`'
+//!   `filt_seltrue*`) calls that impl's method. [`Filterops`] stays the erased table
+//!   `kn_fop` links to, built from an impl at compile time by [`Filterops::of`] (the
+//!   `Kqueue::*_FILTOPS` consts), so `bsd`'s tables keep working on the same link until
+//!   their owners make them impls (N5, N6, N7). The trait's default methods are what the
+//!   dispatch does with the C's NULL entries (`knote_modify` and `knote_process` at
+//!   `splhigh` for a filter that is not `FILTEROP_MPSAFE`, a stop for a call through NULL),
+//!   so a table made by `of` has no `None` entry and behaves as the C's; the dispatch keeps
+//!   its `None` arms for `bsd`'s tables.
 //! - The scan markers are knotes the caller pins on its stack ([`Knote::marker`]); the scan's
 //!   state unlinks its end marker and drops its reference when it is dropped
 //!   (`kqueue_scan_finish`).
@@ -382,6 +394,9 @@ pub const FILTEROP_DEAD: i32 = 0x0001_0000;
 pub const FILTEROP_BADFD: i32 = 0x0002_0000;
 /// The filter is `user_filtops` (or a copy of it): the C's `kn_fop == &user_filtops`.
 pub const FILTEROP_USER: i32 = 0x0004_0000;
+/// Every `FILTEROP_*` bit: what a [`Filter`]'s `FLAGS` may carry.
+const FILTEROP_ALL: i32 =
+    FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_DEAD | FILTEROP_BADFD | FILTEROP_USER;
 
 /// `KN_ACTIVE`: event has been triggered.
 pub const KN_ACTIVE: i32 = 0x0001;
@@ -506,6 +521,11 @@ pub type FProcess<G> = fn(&Knote<G>, Option<&mut Kevent>) -> bool;
 ///
 /// Concurrency control: the kqueue subsystem serializes calls of `f_attach`, `f_detach`,
 /// `f_modify` and `f_process`.
+///
+/// The erased form of a [`Filter`] impl ([`Filterops::of`]), which `kn_fop` links to; `bsd`'s
+/// filters are still written as these tables until their owners move them to impls (N5,
+/// N6, N7). A `None` entry is the C's NULL one, for those tables only: a table made by
+/// `of` has every entry.
 pub struct Filterops<G: ProcGlue> {
     /// `f_flags`.
     pub f_flags: i32,
@@ -520,6 +540,61 @@ pub struct Filterops<G: ProcGlue> {
     /// `f_process(kn, kev)`.
     pub f_process: Option<FProcess<G>>,
 }
+
+impl<G: ProcGlue> Filterops<G> {
+    /// The table of filter `F`, made at compile time: `f_flags` is `F::FLAGS` (refused at
+    /// compile time if it carries a bit no filter defines) and each entry is `F`'s method,
+    /// the default ones standing for the C's NULL entries. A `const` holds it
+    /// (`Kqueue::PROC_FILTOPS`) and `kn_fop` links to its promoted address; nothing is
+    /// allocated or registered at run time.
+    pub const fn of<F: Filter<G>>() -> Self {
+        const {
+            assert!(
+                F::FLAGS & !FILTEROP_ALL == 0,
+                "a filter's FLAGS carry a bit no filter defines"
+            );
+        }
+        Filterops {
+            f_flags: F::FLAGS,
+            f_attach: Some(F::attach),
+            f_detach: Some(F::detach),
+            f_event: Some(F::event),
+            f_modify: Some(F::modify),
+            f_process: Some(F::process),
+        }
+    }
+}
+
+/// `kqread_filtops`: `EVFILT_READ` on a kqueue, set by its `fo_kqfilter`
+/// ([`kqueue_kqfilter`]).
+pub struct KqreadFilter;
+
+/// `proc_filtops`: `EVFILT_PROC`.
+pub struct ProcFilter;
+
+/// `sig_filtops`: `EVFILT_SIGNAL`.
+pub struct SigFilter;
+
+/// `file_filtops`: the descriptor filters (`EVFILT_READ`, `EVFILT_WRITE`, `EVFILT_VNODE`,
+/// `EVFILT_DEVICE`, `EVFILT_EXCEPT`), whose attach hands the knote to the file's
+/// `fo_kqfilter`, which gives it the object's filter.
+pub struct FileFilter;
+
+/// `timer_filtops`: `EVFILT_TIMER`.
+pub struct TimerFilter;
+
+/// `user_filtops`: `EVFILT_USER`.
+pub struct UserFilter;
+
+/// `seltrue_filtops`: the filter of a device that is always ready ([`seltrue_kqfilter`]).
+pub struct SeltrueFilter;
+
+/// `dead_filtops`: the filter of a knote whose object is gone (a revoked vnode, an
+/// invalidated klist).
+pub struct DeadFilter;
+
+/// `badfd_filtops`: for use with kqpoll, a closed descriptor's knote reporting `EBADF`.
+pub struct BadfdFilter;
 
 /// `kn_kevent`: the knote's `struct kevent`, one word per member: `ident` and `filter` are
 /// `[I]`, the others `[o]` (LZ's `get()`/`set()`, relaxed atomics).
@@ -1308,100 +1383,37 @@ impl<G: ProcGlue> Kqueue<G> {
     }
 
     /// `kqread_filtops`: `EVFILT_READ` on a kqueue.
-    pub const KQREAD_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-        f_attach: None,
-        f_detach: Some(filt_kqdetach::<G>),
-        f_event: Some(filt_kqueue::<G>),
-        f_modify: Some(filt_kqueuemodify::<G>),
-        f_process: Some(filt_kqueueprocess::<G>),
-    };
+    pub const KQREAD_FILTOPS: Filterops<G> = Filterops::of::<KqreadFilter>();
 
     /// `proc_filtops`: `EVFILT_PROC`.
-    pub const PROC_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_MPSAFE,
-        f_attach: Some(filt_procattach::<G>),
-        f_detach: Some(filt_procdetach::<G>),
-        f_event: Some(filt_proc::<G>),
-        f_modify: Some(filt_procmodify::<G>),
-        f_process: Some(filt_procprocess::<G>),
-    };
+    pub const PROC_FILTOPS: Filterops<G> = Filterops::of::<ProcFilter>();
 
     /// `sig_filtops`: `EVFILT_SIGNAL`.
-    pub const SIG_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_MPSAFE,
-        f_attach: Some(filt_sigattach::<G>),
-        f_detach: Some(filt_sigdetach::<G>),
-        f_event: Some(filt_signal::<G>),
-        f_modify: Some(filt_procmodify::<G>),
-        f_process: Some(filt_procprocess::<G>),
-    };
+    pub const SIG_FILTOPS: Filterops<G> = Filterops::of::<SigFilter>();
 
     /// `file_filtops`: the descriptor filters, which the file's `fo_kqfilter` replaces.
-    pub const FILE_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-        f_attach: Some(filt_fileattach::<G>),
-        f_detach: None,
-        f_event: None,
-        f_modify: None,
-        f_process: None,
-    };
+    pub const FILE_FILTOPS: Filterops<G> = Filterops::of::<FileFilter>();
 
     /// `timer_filtops`: `EVFILT_TIMER`.
-    pub const TIMER_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_MPSAFE,
-        f_attach: Some(filt_timerattach::<G>),
-        f_detach: Some(filt_timerdetach::<G>),
-        f_event: None,
-        f_modify: Some(filt_timermodify::<G>),
-        f_process: Some(filt_timerprocess::<G>),
-    };
+    pub const TIMER_FILTOPS: Filterops<G> = Filterops::of::<TimerFilter>();
 
     /// `user_filtops`: `EVFILT_USER`.
-    pub const USER_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_MPSAFE | FILTEROP_USER,
-        f_attach: Some(filt_userattach::<G>),
-        f_detach: Some(filt_userdetach::<G>),
-        f_event: None,
-        f_modify: Some(filt_usermodify::<G>),
-        f_process: Some(filt_userprocess::<G>),
-    };
+    pub const USER_FILTOPS: Filterops<G> = Filterops::of::<UserFilter>();
 
     /// `seltrue_filtops`: the full kqfilter entry for device switch tables, which has the
     /// same effect as a filter using `filt_seltrue()` as filter method.
-    pub const SELTRUE_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-        f_attach: None,
-        f_detach: Some(filt_seltruedetach::<G>),
-        f_event: Some(filt_seltrue::<G>),
-        f_modify: Some(filt_seltruemodify::<G>),
-        f_process: Some(filt_seltrueprocess::<G>),
-    };
+    pub const SELTRUE_FILTOPS: Filterops<G> = Filterops::of::<SeltrueFilter>();
 
     /// `dead_filtops`: the filter of a knote whose object is gone (a revoked vnode, an
     /// invalidated klist).
-    pub const DEAD_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_DEAD,
-        f_attach: None,
-        f_detach: Some(filt_deaddetach::<G>),
-        f_event: Some(filt_dead::<G>),
-        f_modify: Some(filt_seltruemodify::<G>),
-        f_process: Some(filt_seltrueprocess::<G>),
-    };
+    pub const DEAD_FILTOPS: Filterops<G> = Filterops::of::<DeadFilter>();
 
     /// `badfd_filtops`: for use with kqpoll, a closed descriptor's knote reporting `EBADF`.
-    pub const BADFD_FILTOPS: Filterops<G> = Filterops {
-        f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_BADFD,
-        f_attach: None,
-        f_detach: Some(filt_deaddetach::<G>),
-        f_event: Some(filt_badfd::<G>),
-        f_modify: Some(filt_seltruemodify::<G>),
-        f_process: Some(filt_seltrueprocess::<G>),
-    };
+    pub const BADFD_FILTOPS: Filterops<G> = Filterops::of::<BadfdFilter>();
 
     /// A [`test_knote`]'s filterops.
     #[cfg(any(test, feature = "doubles"))]
-    const TEST_FILTOPS: Filterops<G> = test_filtops();
+    const TEST_FILTOPS: Filterops<G> = Filterops::of::<TestFilter>();
 }
 
 impl<G: ProcGlue> Drop for Kqueue<G> {
@@ -1578,6 +1590,79 @@ impl<G: ProcGlue> Default for KqPools<G> {
     }
 }
 
+/// `struct filterops` (`event.h`): an event filter, one impl per filter, its members the
+/// C's six. [`Filterops::of`] erases an impl into the table `kn_fop` links to, at compile
+/// time.
+///
+/// `attach` attaches the knote to the object. `detach` detaches the knote from the object;
+/// the object must not use this knote for delivering events after it has returned. `event`
+/// notifies the filter about an event (called through `knote()`). `modify` modifies the
+/// knote with new state from the user and returns `true` if the knote has become active.
+/// `process` checks if the event is active and returns `true` if the event should be
+/// returned to the user; if `kev` is given and the event is active, it stores the event's
+/// state in it for delivery to the user. The kqueue subsystem serializes calls of `attach`,
+/// `detach`, `modify` and `process`; without `FILTEROP_MPSAFE` in `FLAGS` it calls them
+/// under the kernel lock (`filter_attach`, ...).
+///
+/// A default method is what the C does with a NULL entry: `filter_modify` and
+/// `filter_process` run `knote_modify` and `knote_process` at `splhigh` for a filter that
+/// is not `FILTEROP_MPSAFE`, and call through the NULL pointer for one that is; a NULL
+/// `f_attach`, `f_detach` or `f_event` is always called through. A call through NULL stops
+/// the kernel here, as the dispatch does for a `bsd` table's `None` entry: it is the filter
+/// that is wrong (a descriptor filter whose `fo_kqfilter` did not replace it, a knote
+/// detached twice).
+pub trait Filter<G: ProcGlue>: 'static {
+    /// `f_flags`: `FILTEROP_ISFD`, `FILTEROP_MPSAFE`, and the identity bits
+    /// `FILTEROP_DEAD`, `FILTEROP_BADFD` and `FILTEROP_USER` of the three filters the C
+    /// tells apart by address.
+    const FLAGS: i32;
+
+    /// `f_attach(kn)`.
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> {
+        kpanic(format_args!(
+            "filter_attach: knote {:p} has no f_attach",
+            kn
+        ))
+    }
+
+    /// `f_detach(kn)`.
+    fn detach(kn: &Knote<G>) {
+        kpanic(format_args!(
+            "filter_detach: knote {:p} has no f_detach",
+            kn
+        ))
+    }
+
+    /// `f_event(kn, hint)`: whether the event is active.
+    fn event(kn: &Knote<G>, _hint: i64) -> bool {
+        kpanic(format_args!("knote {:p}: no f_event", kn))
+    }
+
+    /// `f_modify(kev, kn)`: whether the knote has become active.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        if Self::FLAGS & FILTEROP_MPSAFE != 0 {
+            kpanic(format_args!(
+                "filter_modify: knote {:p} has no f_modify",
+                kn
+            ));
+        }
+        let _s = hal::intr::splhigh();
+        knote_modify(kev, kn)
+    }
+
+    /// `f_process(kn, kev)`: whether the event should be returned to the user.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        if Self::FLAGS & FILTEROP_MPSAFE != 0 {
+            kpanic(format_args!(
+                "filter_process: knote {:p} has no f_process",
+                kn
+            ));
+        }
+        let _s = hal::intr::splhigh();
+        knote_process(kn, kev)
+    }
+}
+
 /// `KN_HASH(val, mask)`.
 const fn kn_hash(val: u64, mask: u64) -> u64 {
     (val ^ (val >> 8)) & mask
@@ -1615,11 +1700,17 @@ pub fn kqueue_init_percpu<G: ProcGlue>() {
     G::tables().kq.knotepl.cache_init();
 }
 
-/// `filt_fileattach`: the file's `fo_kqfilter` attaches the knote and picks its filter.
-fn filt_fileattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    let fp = kn.fp();
+/// `file_filtops`: only `f_attach`; the file's `fo_kqfilter` gives the knote its object's
+/// filter, so the other entries are the C's NULL ones.
+impl<G: ProcGlue> Filter<G> for FileFilter {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
 
-    fp.ops().kqfilter(&fp, kn)
+    /// `filt_fileattach`: the file's `fo_kqfilter` attaches the knote and picks its filter.
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> {
+        let fp = kn.fp();
+
+        fp.ops().kqfilter(&fp, kn)
+    }
 }
 
 /// `kqueue_kqfilter`: a kqueue is readable when it has pending events (`fo_kqfilter` of a
@@ -1637,14 +1728,6 @@ pub fn kqueue_kqfilter<G: ProcGlue>(fp: &File<Files<G>>, kn: &Knote<G>) -> Resul
     Ok(())
 }
 
-/// `filt_kqdetach`.
-fn filt_kqdetach<G: ProcGlue>(kn: &Knote<G>) {
-    let kq = fp_kqueue::<G>(&kn.fp());
-
-    let mut g = KQUEUE_KLIST_LOCK.lock();
-    kq.klist.remove_locked(&mut g, kn);
-}
-
 /// `filt_kqueue_common`: `kn_data` is the kqueue's pending count (`kq_lock` held).
 fn filt_kqueue_common<G: ProcGlue>(kn: &Knote<G>, kq: &Kqueue<G>, _g: &KqGuard<'_, G>) -> bool {
     kn.kn_data().set(i64::from(kq.count()));
@@ -1652,38 +1735,51 @@ fn filt_kqueue_common<G: ProcGlue>(kn: &Knote<G>, kq: &Kqueue<G>, _g: &KqGuard<'
     kn.kn_data().get() > 0
 }
 
-/// `filt_kqueue`.
-fn filt_kqueue<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
-    let kq = fp_kqueue::<G>(&kn.fp());
+/// `kqread_filtops`: `f_attach` is NULL (the kqueue's `fo_kqfilter` hooks the knote).
+impl<G: ProcGlue> Filter<G> for KqreadFilter {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
 
-    let g = kq.lock.lock();
-    filt_kqueue_common(kn, &kq, &g)
-}
+    /// `filt_kqdetach`.
+    fn detach(kn: &Knote<G>) {
+        let kq = fp_kqueue::<G>(&kn.fp());
 
-/// `filt_kqueuemodify`.
-fn filt_kqueuemodify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
-    let kq = fp_kqueue::<G>(&kn.fp());
-
-    let g = kq.lock.lock();
-    knote_assign(kev, kn);
-    filt_kqueue_common(kn, &kq, &g)
-}
-
-/// `filt_kqueueprocess`.
-fn filt_kqueueprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
-    let kq = fp_kqueue::<G>(&kn.fp());
-
-    let g = kq.lock.lock();
-    let active = if kev.is_some() && kn.has_flags(EV_ONESHOT) {
-        true
-    } else {
-        filt_kqueue_common(kn, &kq, &g)
-    };
-    if active {
-        knote_submit(kn, kev);
+        let mut g = KQUEUE_KLIST_LOCK.lock();
+        kq.klist.remove_locked(&mut g, kn);
     }
 
-    active
+    /// `filt_kqueue`.
+    fn event(kn: &Knote<G>, _hint: i64) -> bool {
+        let kq = fp_kqueue::<G>(&kn.fp());
+
+        let g = kq.lock.lock();
+        filt_kqueue_common(kn, &kq, &g)
+    }
+
+    /// `filt_kqueuemodify`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        let kq = fp_kqueue::<G>(&kn.fp());
+
+        let g = kq.lock.lock();
+        knote_assign(kev, kn);
+        filt_kqueue_common(kn, &kq, &g)
+    }
+
+    /// `filt_kqueueprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        let kq = fp_kqueue::<G>(&kn.fp());
+
+        let g = kq.lock.lock();
+        let active = if kev.is_some() && kn.has_flags(EV_ONESHOT) {
+            true
+        } else {
+            filt_kqueue_common(kn, &kq, &g)
+        };
+        if active {
+            knote_submit(kn, kev);
+        }
+
+        active
+    }
 }
 
 /// `kqueue_ps_list_lock` taken for writing unless this thread holds it already (the C's
@@ -1696,126 +1792,163 @@ fn ps_list_write() -> Option<hal::rwlock::WriteWitness<'static>> {
     }
 }
 
-/// `filt_procattach`: hooks the knote on the process `kn_id`.
-fn filt_procattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    // The C reads curproc unconditionally: a registration always runs on a thread, so the
-    // pledge check below cannot be skipped by a missing one.
-    G::with_curproc(|cp| {
-        let Some(cp) = cp else {
-            kpanic(format_args!("filt_procattach: no curproc"));
+/// `proc_filtops`.
+impl<G: ProcGlue> Filter<G> for ProcFilter {
+    const FLAGS: i32 = FILTEROP_MPSAFE;
+
+    /// `filt_procattach`: hooks the knote on the process `kn_id`.
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> {
+        // The C reads curproc unconditionally: a registration always runs on a thread, so the
+        // pledge check below cannot be skipped by a missing one.
+        G::with_curproc(|cp| {
+            let Some(cp) = cp else {
+                kpanic(format_args!("filt_procattach: no curproc"));
+            };
+            if cp.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0
+                && cp.p_pledge.get() & PLEDGE_PROC == 0
+            {
+                return Err(G::pledge_fail(cp, Errno::EPERM, PLEDGE_PROC));
+            }
+            Ok(())
+        })?;
+
+        if kn.kn_id().get() > PID_MAX as usize {
+            return Err(Errno::ESRCH);
+        }
+
+        let _k = KernelHold::take();
+        let pr = {
+            let r = klock::reader();
+            prfind::<G, _>(&r, kn.kn_id().get() as Pid).map(G::process_ref)
         };
-        if cp.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0
-            && cp.p_pledge.get() & PLEDGE_PROC == 0
-        {
-            return Err(G::pledge_fail(cp, Errno::EPERM, PLEDGE_PROC));
-        }
-        Ok(())
-    })?;
+        let Some(pr) = pr else {
+            return Err(Errno::ESRCH);
+        };
 
-    if kn.kn_id().get() > PID_MAX as usize {
-        return Err(Errno::ESRCH);
-    }
-
-    let _k = KernelHold::take();
-    let pr = {
-        let r = klock::reader();
-        prfind::<G, _>(&r, kn.kn_id().get() as Pid).map(G::process_ref)
-    };
-    let Some(pr) = pr else {
-        return Err(Errno::ESRCH);
-    };
-
-    // exiting processes can't be specified
-    if pr.ps_flags.load(Ordering::Relaxed) & PS_EXITING != 0 {
-        return Err(Errno::ESRCH);
-    }
-
-    let old = kn.process.lock().replace(pr.clone());
-    drop(old);
-    kn.set_flags(EV_CLEAR); // automatically set
-
-    // internal flag indicating registration done by kernel
-    if kn.has_flags(EV_FLAG1) {
-        kn.kn_data().set(kn.kn_sdata.get()); // ppid
-        kn.kn_fflags().set(NOTE_CHILD);
-        kn.clear_flags(EV_FLAG1);
-        kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
-    }
-
-    // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
-    let _w = ps_list_write();
-    let mut g = pr.ps_mtx.lock();
-    pr.ps_klist.insert_locked(&mut g, kn);
-
-    Ok(())
-}
-
-/// `filt_procdetach`: the knote may be attached to a different process, which may exit,
-/// leaving nothing for the knote to be attached to. So when the process exits, the knote
-/// is marked as `KN_DETACHED` and also flagged as `EV_ONESHOT` so it will be deleted when
-/// read out. However, as part of the knote deletion, this routine is called, so a check is
-/// needed to avoid actually performing a detach, because the original process does not
-/// exist any more.
-fn filt_procdetach<G: ProcGlue>(kn: &Knote<G>) {
-    // We set KN_DETACHED with both kqueue_ps_list_lock rwlock and &kq->kq_lock held. One of
-    // them is enough here.
-    let _w = KQUEUE_PS_LIST_LOCK.write();
-    if kn.pmark.load(Ordering::Relaxed) & PMARK_DETACHED == 0 {
-        let pr = kn.process();
-
-        let mut g = pr.ps_mtx.lock();
-        pr.ps_klist.remove_locked(&mut g, kn);
-    }
-}
-
-/// `filt_proc`: records the process event the user asked for. `NOTE_EXIT` detaches the
-/// knote (it leaves the process's klist after the walk, `knote_processexit`); `NOTE_FORK`
-/// with `NOTE_TRACK` asks for a knote on the child: registered after the walk, where the C
-/// drops `ps_mtx` inside it, and only then is the knote activated if it has an event
-/// (`knote_processfork`), so the child's `NOTE_CHILD` knote is queued first and a failed
-/// registration's `NOTE_TRACKERR` is reported, as the C's order.
-fn filt_proc<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
-    // mask off extra data
-    let event = (hint as u32) & NOTE_PCTRLMASK;
-
-    // if the user is interested in this event, record it.
-    if kn.kn_sfflags.get() & event != 0 {
-        kn.kn_fflags().set(kn.kn_fflags().get() | event);
-    }
-
-    // process is gone, so flag the event as finished and remove it from the process's klist
-    if event == NOTE_EXIT {
-        let pr = kn.process();
-
-        kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
-        {
-            let kq = kn.kq();
-            let mut g = kq.lock.lock();
-            *kn.status_mut(&mut g) |= KN_DETACHED;
-            kn.pmark.fetch_or(PMARK_DETACHED, Ordering::Relaxed);
+        // exiting processes can't be specified
+        if pr.ps_flags.load(Ordering::Relaxed) & PS_EXITING != 0 {
+            return Err(Errno::ESRCH);
         }
 
-        kn.pmark.fetch_or(PMARK_UNLINK, Ordering::Relaxed);
-        kn.set_flags(EV_EOF | EV_ONESHOT);
-        kn.kn_data().set(i64::from(w_exitcode(
-            pr.ps_xexit.get() as i32,
-            pr.ps_xsig.get(),
-        )));
-        let old = kn.process.lock().take();
+        let old = kn.process.lock().replace(pr.clone());
         drop(old);
-        return true;
+        kn.set_flags(EV_CLEAR); // automatically set
+
+        // internal flag indicating registration done by kernel
+        if kn.has_flags(EV_FLAG1) {
+            kn.kn_data().set(kn.kn_sdata.get()); // ppid
+            kn.kn_fflags().set(NOTE_CHILD);
+            kn.clear_flags(EV_FLAG1);
+            kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
+        }
+
+        // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
+        let _w = ps_list_write();
+        let mut g = pr.ps_mtx.lock();
+        pr.ps_klist.insert_locked(&mut g, kn);
+
+        Ok(())
     }
 
-    // process forked, and user wants to track the new process, so attach a new knote to it,
-    // and immediately report an event with the parent's pid.
-    if event == NOTE_FORK && kn.kn_sfflags.get() & NOTE_TRACK != 0 {
-        kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
-        kn.pmark.fetch_or(PMARK_TRACK, Ordering::Relaxed);
-        // The C returns `kn_fflags != 0` after the registration: knote_processfork activates.
-        return false;
+    /// `filt_procdetach`: the knote may be attached to a different process, which may exit,
+    /// leaving nothing for the knote to be attached to. So when the process exits, the knote
+    /// is marked as `KN_DETACHED` and also flagged as `EV_ONESHOT` so it will be deleted when
+    /// read out. However, as part of the knote deletion, this routine is called, so a check is
+    /// needed to avoid actually performing a detach, because the original process does not
+    /// exist any more.
+    fn detach(kn: &Knote<G>) {
+        // We set KN_DETACHED with both kqueue_ps_list_lock rwlock and &kq->kq_lock held. One of
+        // them is enough here.
+        let _w = KQUEUE_PS_LIST_LOCK.write();
+        if kn.pmark.load(Ordering::Relaxed) & PMARK_DETACHED == 0 {
+            let pr = kn.process();
+
+            let mut g = pr.ps_mtx.lock();
+            pr.ps_klist.remove_locked(&mut g, kn);
+        }
     }
 
-    kn.kn_fflags().get() != 0
+    /// `filt_proc`: records the process event the user asked for. `NOTE_EXIT` detaches the
+    /// knote (it leaves the process's klist after the walk, `knote_processexit`); `NOTE_FORK`
+    /// with `NOTE_TRACK` asks for a knote on the child: registered after the walk, where the C
+    /// drops `ps_mtx` inside it, and only then is the knote activated if it has an event
+    /// (`knote_processfork`), so the child's `NOTE_CHILD` knote is queued first and a failed
+    /// registration's `NOTE_TRACKERR` is reported, as the C's order.
+    fn event(kn: &Knote<G>, hint: i64) -> bool {
+        // mask off extra data
+        let event = (hint as u32) & NOTE_PCTRLMASK;
+
+        // if the user is interested in this event, record it.
+        if kn.kn_sfflags.get() & event != 0 {
+            kn.kn_fflags().set(kn.kn_fflags().get() | event);
+        }
+
+        // process is gone, so flag the event as finished and remove it from the process's klist
+        if event == NOTE_EXIT {
+            let pr = kn.process();
+
+            kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
+            {
+                let kq = kn.kq();
+                let mut g = kq.lock.lock();
+                *kn.status_mut(&mut g) |= KN_DETACHED;
+                kn.pmark.fetch_or(PMARK_DETACHED, Ordering::Relaxed);
+            }
+
+            kn.pmark.fetch_or(PMARK_UNLINK, Ordering::Relaxed);
+            kn.set_flags(EV_EOF | EV_ONESHOT);
+            kn.kn_data().set(i64::from(w_exitcode(
+                pr.ps_xexit.get() as i32,
+                pr.ps_xsig.get(),
+            )));
+            let old = kn.process.lock().take();
+            drop(old);
+            return true;
+        }
+
+        // process forked, and user wants to track the new process, so attach a new knote to it,
+        // and immediately report an event with the parent's pid.
+        if event == NOTE_FORK && kn.kn_sfflags.get() & NOTE_TRACK != 0 {
+            kassert!(KQUEUE_PS_LIST_LOCK.status() == RW_WRITE);
+            kn.pmark.fetch_or(PMARK_TRACK, Ordering::Relaxed);
+            // The C returns `kn_fflags != 0` after the registration: knote_processfork activates.
+            return false;
+        }
+
+        kn.kn_fflags().get() != 0
+    }
+
+    /// `filt_procmodify`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        let _w = KQUEUE_PS_LIST_LOCK.write();
+        if kn.pmark.load(Ordering::Relaxed) & PMARK_DETACHED == 0 {
+            let pr = kn.process();
+
+            let _g = pr.ps_mtx.lock();
+            knote_modify(kev, kn)
+        } else {
+            knote_assign(kev, kn);
+            kn.kn_fflags().get() != 0
+        }
+    }
+
+    /// `filt_procprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        let _w = ps_list_write();
+
+        if kn.pmark.load(Ordering::Relaxed) & PMARK_DETACHED == 0 {
+            let pr = kn.process();
+
+            let _g = pr.ps_mtx.lock();
+            knote_process(kn, kev)
+        } else {
+            let active = kn.kn_fflags().get() != 0;
+            if active {
+                knote_submit(kn, kev);
+            }
+            active
+        }
+    }
 }
 
 /// `filt_proc`'s registration of a knote on the child `pid` of a `NOTE_TRACK` knote, made
@@ -1837,82 +1970,66 @@ fn filt_proc_track<G: ProcGlue>(kn: &Knote<G>, pid: Pid) {
     }
 }
 
-/// `filt_procmodify`.
-fn filt_procmodify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
-    let _w = KQUEUE_PS_LIST_LOCK.write();
-    if kn.pmark.load(Ordering::Relaxed) & PMARK_DETACHED == 0 {
+/// `sig_filtops`: its `f_modify` and `f_process` are `proc_filtops`'s (`filt_procmodify`,
+/// `filt_procprocess`).
+impl<G: ProcGlue> Filter<G> for SigFilter {
+    const FLAGS: i32 = FILTEROP_MPSAFE;
+
+    /// `filt_sigattach`: signal knotes are shared with proc knotes, so we apply a mask to the
+    /// hint in order to differentiate them from process hints. This could be avoided by using
+    /// a signal-specific knote list, but probably isn't worth the trouble.
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> {
+        let pr = G::with_curproc(|cp| match cp {
+            Some(cp) => cp.process_ref().clone(),
+            None => kpanic(format_args!("filt_sigattach: no curproc")),
+        });
+
+        if kn.kn_id().get() >= NSIG {
+            return Err(Errno::EINVAL);
+        }
+
+        let old = kn.process.lock().replace(pr.clone());
+        drop(old);
+        kn.set_flags(EV_CLEAR); // automatically set
+
+        // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
+        let _w = KQUEUE_PS_LIST_LOCK.write();
+        let mut g = pr.ps_mtx.lock();
+        pr.ps_klist.insert_locked(&mut g, kn);
+
+        Ok(())
+    }
+
+    /// `filt_sigdetach`.
+    fn detach(kn: &Knote<G>) {
         let pr = kn.process();
 
-        let _g = pr.ps_mtx.lock();
-        knote_modify(kev, kn)
-    } else {
-        knote_assign(kev, kn);
-        kn.kn_fflags().get() != 0
+        let _w = KQUEUE_PS_LIST_LOCK.write();
+        let mut g = pr.ps_mtx.lock();
+        pr.ps_klist.remove_locked(&mut g, kn);
     }
-}
 
-/// `filt_procprocess`.
-fn filt_procprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
-    let _w = ps_list_write();
+    /// `filt_signal`: counts the deliveries of signal `kn_id`.
+    fn event(kn: &Knote<G>, hint: i64) -> bool {
+        if hint & i64::from(NOTE_SIGNAL) != 0 {
+            let hint = hint & !i64::from(NOTE_SIGNAL);
 
-    if kn.pmark.load(Ordering::Relaxed) & PMARK_DETACHED == 0 {
-        let pr = kn.process();
-
-        let _g = pr.ps_mtx.lock();
-        knote_process(kn, kev)
-    } else {
-        let active = kn.kn_fflags().get() != 0;
-        if active {
-            knote_submit(kn, kev);
+            if kn.kn_id().get() as i64 == hint {
+                kn.kn_data().set(kn.kn_data().get() + 1);
+            }
         }
-        active
-    }
-}
-
-/// `filt_sigattach`: signal knotes are shared with proc knotes, so we apply a mask to the
-/// hint in order to differentiate them from process hints. This could be avoided by using
-/// a signal-specific knote list, but probably isn't worth the trouble.
-fn filt_sigattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    let pr = G::with_curproc(|cp| match cp {
-        Some(cp) => cp.process_ref().clone(),
-        None => kpanic(format_args!("filt_sigattach: no curproc")),
-    });
-
-    if kn.kn_id().get() >= NSIG {
-        return Err(Errno::EINVAL);
+        kn.kn_data().get() != 0
     }
 
-    let old = kn.process.lock().replace(pr.clone());
-    drop(old);
-    kn.set_flags(EV_CLEAR); // automatically set
-
-    // this needs both the ps_mtx and exclusive kqueue_ps_list_lock.
-    let _w = KQUEUE_PS_LIST_LOCK.write();
-    let mut g = pr.ps_mtx.lock();
-    pr.ps_klist.insert_locked(&mut g, kn);
-
-    Ok(())
-}
-
-/// `filt_sigdetach`.
-fn filt_sigdetach<G: ProcGlue>(kn: &Knote<G>) {
-    let pr = kn.process();
-
-    let _w = KQUEUE_PS_LIST_LOCK.write();
-    let mut g = pr.ps_mtx.lock();
-    pr.ps_klist.remove_locked(&mut g, kn);
-}
-
-/// `filt_signal`: counts the deliveries of signal `kn_id`.
-fn filt_signal<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
-    if hint & i64::from(NOTE_SIGNAL) != 0 {
-        let hint = hint & !i64::from(NOTE_SIGNAL);
-
-        if kn.kn_id().get() as i64 == hint {
-            kn.kn_data().set(kn.kn_data().get() + 1);
-        }
+    /// `filt_procmodify`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        ProcFilter::modify(kev, kn)
     }
-    kn.kn_data().get() != 0
+
+    /// `filt_procprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        ProcFilter::process(kn, kev)
+    }
 }
 
 /// `filt_timervalidate(sfflags, sdata, ts)`: the timer's period, from its data and unit.
@@ -2014,213 +2131,228 @@ fn userevents_take<G: ProcGlue>(kq: &Kqueue<G>) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `filt_timerattach`: data contains amount of time to sleep.
-fn filt_timerattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    let kq = kn.kq_ref();
+/// `timer_filtops`: `f_event` is NULL (the timeout activates the knote).
+impl<G: ProcGlue> Filter<G> for TimerFilter {
+    const FLAGS: i32 = FILTEROP_MPSAFE;
 
-    let ts = filt_timervalidate(kn.kn_sfflags.get(), kn.kn_sdata.get())?;
+    /// `filt_timerattach`: data contains amount of time to sleep.
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> {
+        let kq = kn.kq_ref();
 
-    userevents_take(kq)?;
+        let ts = filt_timervalidate(kn.kn_sfflags.get(), kn.kn_sdata.get())?;
 
-    if kn.kn_sfflags.get() & NOTE_ABSTIME == 0 {
-        kn.set_flags(EV_CLEAR); // automatically set
-    }
+        userevents_take(kq)?;
 
-    let made = MBox::new(M_KEVENT, M_WAITOK, Timeout::unset()).and_then(|to| {
-        let mut hold = SecondaryRef::new();
-        hold.set(Some(kn));
-        G::tables()
-            .kq
-            .kqtimerpl
-            .get_shared(PR_WAITOK, || FiltTimer {
-                to,
-                st: Mutexed::new(
-                    IPL_SOFTCLOCK,
-                    TimerState {
-                        reschedule: false,
-                        kn: hold,
-                    },
-                ),
-                kq: kq.clone(),
-            })
-    });
-    let Some(ft) = made else {
-        // M_WAITOK cannot fail in the C (see the module's deviations).
-        kq.fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
-        return Err(Errno::ENOMEM);
-    };
-    ft.to.set_shared(
-        filt_timerexpire::<G>,
-        PoolArc::erase(ft.clone()),
-        KCLOCK_NONE,
-        0,
-    );
-    if kn.timer.set(ft.clone()).is_err() {
-        kpanic(format_args!("filt_timerattach: knote {:p} has a timer", kn));
-    }
-
-    let mut st = ft.st.lock();
-    filt_timeradd(&ft, &mut st.reschedule, kn, &ts);
-
-    Ok(())
-}
-
-/// `filt_timerdetach`: stops the timer; its memory goes with the knote.
-fn filt_timerdetach<G: ProcGlue>(kn: &Knote<G>) {
-    let ft = filt_timer(kn);
-
-    ft.st.lock().reschedule = false;
-
-    ft.to.del_barrier();
-    // The timeout's argument and the timer's count on the knote go back: the knote can be
-    // dropped, and the timer with it.
-    ft.to.clear();
-    ft.st.lock().kn.set(None);
-    kn.kq().fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
-}
-
-/// `filt_timermodify`: resets the timer to the new period; any pending events are
-/// discarded.
-fn filt_timermodify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
-    let kq = kn.kq();
-    let ft = filt_timer(kn);
-
-    let ts = match filt_timervalidate(kev.fflags, kev.data) {
-        Ok(ts) => ts,
-        Err(error) => {
-            kev.flags |= EV_ERROR;
-            kev.data = i64::from(error.as_i32());
-            return false;
+        if kn.kn_sfflags.get() & NOTE_ABSTIME == 0 {
+            kn.set_flags(EV_CLEAR); // automatically set
         }
-    };
 
-    // Reset the timer. Any pending events are discarded.
-    ft.st.lock().reschedule = false;
-
-    ft.to.del_barrier();
-
-    let mut st = ft.st.lock();
-    {
-        let mut g = kq.lock.lock();
-        if kn.status(&g) & KN_QUEUED != 0 {
-            knote_dequeue(kq, &mut g, kn);
+        let made = MBox::new(M_KEVENT, M_WAITOK, Timeout::unset()).and_then(|to| {
+            let mut hold = SecondaryRef::new();
+            hold.set(Some(kn));
+            G::tables()
+                .kq
+                .kqtimerpl
+                .get_shared(PR_WAITOK, || FiltTimer {
+                    to,
+                    st: Mutexed::new(
+                        IPL_SOFTCLOCK,
+                        TimerState {
+                            reschedule: false,
+                            kn: hold,
+                        },
+                    ),
+                    kq: kq.clone(),
+                })
+        });
+        let Some(ft) = made else {
+            // M_WAITOK cannot fail in the C (see the module's deviations).
+            kq.fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+            return Err(Errno::ENOMEM);
+        };
+        ft.to.set_shared(
+            filt_timerexpire::<G>,
+            PoolArc::erase(ft.clone()),
+            KCLOCK_NONE,
+            0,
+        );
+        if kn.timer.set(ft.clone()).is_err() {
+            kpanic(format_args!("filt_timerattach: knote {:p} has a timer", kn));
         }
-        *kn.status_mut(&mut g) &= !KN_ACTIVE;
+
+        let mut st = ft.st.lock();
+        filt_timeradd(&ft, &mut st.reschedule, kn, &ts);
+
+        Ok(())
     }
 
-    kn.kn_data().set(0);
-    knote_assign(kev, kn);
-    // Reinit timeout to invoke tick adjustment again.
-    ft.to.set_shared(
-        filt_timerexpire::<G>,
-        PoolArc::erase(ft.clone()),
-        KCLOCK_NONE,
-        0,
-    );
-    filt_timeradd(ft, &mut st.reschedule, kn, &ts);
+    /// `filt_timerdetach`: stops the timer; its memory goes with the knote.
+    fn detach(kn: &Knote<G>) {
+        let ft = filt_timer(kn);
 
-    false
-}
+        ft.st.lock().reschedule = false;
 
-/// `filt_timerprocess`: active once the timer expired since the last delivery.
-fn filt_timerprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
-    let ft = filt_timer(kn);
-
-    let _st = ft.st.lock();
-    let active = kn.kn_data().get() != 0;
-    if active {
-        knote_submit(kn, kev);
+        ft.to.del_barrier();
+        // The timeout's argument and the timer's count on the knote go back: the knote can be
+        // dropped, and the timer with it.
+        ft.to.clear();
+        ft.st.lock().kn.set(None);
+        kn.kq().fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
     }
 
-    active
-}
+    /// `filt_timermodify`: resets the timer to the new period; any pending events are
+    /// discarded.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        let kq = kn.kq();
+        let ft = filt_timer(kn);
 
-/// `filt_userattach`.
-fn filt_userattach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
-    userevents_take(kn.kq())?;
+        let ts = match filt_timervalidate(kev.fflags, kev.data) {
+            Ok(ts) => ts,
+            Err(error) => {
+                kev.flags |= EV_ERROR;
+                kev.data = i64::from(error.as_i32());
+                return false;
+            }
+        };
 
-    kn.useract
-        .store(kn.kn_sfflags.get() & NOTE_TRIGGER != 0, Ordering::Relaxed);
-    kn.kn_fflags().set(kn.kn_sfflags.get() & NOTE_FFLAGSMASK);
-    kn.kn_data().set(kn.kn_sdata.get());
+        // Reset the timer. Any pending events are discarded.
+        ft.st.lock().reschedule = false;
 
-    Ok(())
-}
+        ft.to.del_barrier();
 
-/// `filt_userdetach`.
-fn filt_userdetach<G: ProcGlue>(kn: &Knote<G>) {
-    kn.kq().fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
-}
-
-/// `filt_usermodify`: `NOTE_TRIGGER` activates, the `NOTE_FF*` control combines `fflags`.
-fn filt_usermodify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
-    if kev.fflags & NOTE_TRIGGER != 0 {
-        kn.useract.store(true, Ordering::Relaxed);
-    }
-
-    let ffctrl = kev.fflags & NOTE_FFCTRLMASK;
-    let fflags = kev.fflags & NOTE_FFLAGSMASK;
-    match ffctrl {
-        NOTE_FFNOP => {}
-        NOTE_FFAND => kn.kn_fflags().set(kn.kn_fflags().get() & fflags),
-        NOTE_FFOR => kn.kn_fflags().set(kn.kn_fflags().get() | fflags),
-        NOTE_FFCOPY => kn.kn_fflags().set(fflags),
-        _ => {
-            // ignored, should not happen
+        let mut st = ft.st.lock();
+        {
+            let mut g = kq.lock.lock();
+            if kn.status(&g) & KN_QUEUED != 0 {
+                knote_dequeue(kq, &mut g, kn);
+            }
+            *kn.status_mut(&mut g) &= !KN_ACTIVE;
         }
+
+        kn.kn_data().set(0);
+        knote_assign(kev, kn);
+        // Reinit timeout to invoke tick adjustment again.
+        ft.to.set_shared(
+            filt_timerexpire::<G>,
+            PoolArc::erase(ft.clone()),
+            KCLOCK_NONE,
+            0,
+        );
+        filt_timeradd(ft, &mut st.reschedule, kn, &ts);
+
+        false
     }
 
-    kn.kn_data().set(kev.data);
-    kn.kn_udata().set(kev.udata);
+    /// `filt_timerprocess`: active once the timer expired since the last delivery.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        let ft = filt_timer(kn);
 
-    // Allow clearing of an activated event.
-    if kev.flags & EV_CLEAR != 0 {
-        kn.useract.store(false, Ordering::Relaxed);
+        let _st = ft.st.lock();
+        let active = kn.kn_data().get() != 0;
+        if active {
+            knote_submit(kn, kev);
+        }
+
+        active
     }
-
-    kn.useract.load(Ordering::Relaxed)
 }
 
-/// `filt_userprocess`.
-fn filt_userprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
-    let active = kn.useract.load(Ordering::Relaxed);
-    if active && let Some(kev) = kev {
-        *kev = kn.kn_kevent.get();
-        if kn.has_flags(EV_CLEAR) {
+/// `user_filtops`: `f_event` is NULL (`NOTE_TRIGGER` activates the knote).
+impl<G: ProcGlue> Filter<G> for UserFilter {
+    const FLAGS: i32 = FILTEROP_MPSAFE | FILTEROP_USER;
+
+    /// `filt_userattach`.
+    fn attach(kn: &Knote<G>) -> Result<(), Errno> {
+        userevents_take(kn.kq())?;
+
+        kn.useract
+            .store(kn.kn_sfflags.get() & NOTE_TRIGGER != 0, Ordering::Relaxed);
+        kn.kn_fflags().set(kn.kn_sfflags.get() & NOTE_FFLAGSMASK);
+        kn.kn_data().set(kn.kn_sdata.get());
+
+        Ok(())
+    }
+
+    /// `filt_userdetach`.
+    fn detach(kn: &Knote<G>) {
+        kn.kq().fdp.fd_nuserevents.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// `filt_usermodify`: `NOTE_TRIGGER` activates, the `NOTE_FF*` control combines `fflags`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        if kev.fflags & NOTE_TRIGGER != 0 {
+            kn.useract.store(true, Ordering::Relaxed);
+        }
+
+        let ffctrl = kev.fflags & NOTE_FFCTRLMASK;
+        let fflags = kev.fflags & NOTE_FFLAGSMASK;
+        match ffctrl {
+            NOTE_FFNOP => {}
+            NOTE_FFAND => kn.kn_fflags().set(kn.kn_fflags().get() & fflags),
+            NOTE_FFOR => kn.kn_fflags().set(kn.kn_fflags().get() | fflags),
+            NOTE_FFCOPY => kn.kn_fflags().set(fflags),
+            _ => {
+                // ignored, should not happen
+            }
+        }
+
+        kn.kn_data().set(kev.data);
+        kn.kn_udata().set(kev.udata);
+
+        // Allow clearing of an activated event.
+        if kev.flags & EV_CLEAR != 0 {
             kn.useract.store(false, Ordering::Relaxed);
         }
+
+        kn.useract.load(Ordering::Relaxed)
     }
 
-    active
-}
+    /// `filt_userprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        let active = kn.useract.load(Ordering::Relaxed);
+        if active && let Some(kev) = kev {
+            *kev = kn.kn_kevent.get();
+            if kn.has_flags(EV_CLEAR) {
+                kn.useract.store(false, Ordering::Relaxed);
+            }
+        }
 
-/// `filt_seltrue`: this filter "event" routine simulates `seltrue()`.
-pub fn filt_seltrue<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
-    // We don't know how much data can be read/written, but we know that it *can* be. This
-    // is about as good as select/poll does as well.
-    kn.kn_data().set(0);
-    true
-}
-
-/// `filt_seltruemodify`.
-pub fn filt_seltruemodify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
-    knote_assign(kev, kn);
-    fop_event(kn, 0)
-}
-
-/// `filt_seltrueprocess`.
-pub fn filt_seltrueprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
-    let active = fop_event(kn, 0);
-    if active {
-        knote_submit(kn, kev);
+        active
     }
-    active
 }
 
-/// `filt_seltruedetach`: this provides full kqfilter entry for device switch tables, which
-/// has same effect as filter using `filt_seltrue()` as filter method.
-pub fn filt_seltruedetach<G: ProcGlue>(_kn: &Knote<G>) {
-    // Nothing to do
+/// `seltrue_filtops`: `f_attach` is NULL (`seltrue_kqfilter` gives the knote this filter).
+impl<G: ProcGlue> Filter<G> for SeltrueFilter {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
+
+    /// `filt_seltrue`: this filter "event" routine simulates `seltrue()`.
+    fn event(kn: &Knote<G>, _hint: i64) -> bool {
+        // We don't know how much data can be read/written, but we know that it *can* be. This
+        // is about as good as select/poll does as well.
+        kn.kn_data().set(0);
+        true
+    }
+
+    /// `filt_seltruemodify`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        knote_assign(kev, kn);
+        fop_event(kn, 0)
+    }
+
+    /// `filt_seltrueprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        let active = fop_event(kn, 0);
+        if active {
+            knote_submit(kn, kev);
+        }
+        active
+    }
+
+    /// `filt_seltruedetach`: this provides full kqfilter entry for device switch tables, which
+    /// has same effect as filter using `filt_seltrue()` as filter method.
+    fn detach(_kn: &Knote<G>) {
+        // Nothing to do
+    }
 }
 
 /// `seltrue_kqfilter(dev, kn)`: the kqfilter of a device that is always ready.
@@ -2234,35 +2366,72 @@ pub fn seltrue_kqfilter<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `filt_dead`: the object is gone.
-fn filt_dead<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
-    if kn.kn_filter().get() == EVFILT_EXCEPT {
-        // Do not deliver event because there is no out-of-band data. However, let HUP
-        // condition pass for poll(2).
-        if !kn.has_flags(__EV_POLL) {
-            kn.set_flags(EV_DISABLE);
-            return false;
+/// `dead_filtops`: `f_attach` is NULL (the knote is given this filter in place of its
+/// object's); `f_modify` and `f_process` are `seltrue_filtops`'s.
+impl<G: ProcGlue> Filter<G> for DeadFilter {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_DEAD;
+
+    /// `filt_deaddetach`.
+    fn detach(_kn: &Knote<G>) {
+        // Nothing to do
+    }
+
+    /// `filt_dead`: the object is gone.
+    fn event(kn: &Knote<G>, _hint: i64) -> bool {
+        if kn.kn_filter().get() == EVFILT_EXCEPT {
+            // Do not deliver event because there is no out-of-band data. However, let HUP
+            // condition pass for poll(2).
+            if !kn.has_flags(__EV_POLL) {
+                kn.set_flags(EV_DISABLE);
+                return false;
+            }
         }
+
+        kn.set_flags(EV_EOF | EV_ONESHOT);
+        if kn.has_flags(__EV_POLL) {
+            kn.set_flags(__EV_HUP);
+        }
+        kn.kn_data().set(0);
+        true
     }
 
-    kn.set_flags(EV_EOF | EV_ONESHOT);
-    if kn.has_flags(__EV_POLL) {
-        kn.set_flags(__EV_HUP);
+    /// `filt_seltruemodify`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        SeltrueFilter::modify(kev, kn)
     }
-    kn.kn_data().set(0);
-    true
+
+    /// `filt_seltrueprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        SeltrueFilter::process(kn, kev)
+    }
 }
 
-/// `filt_deaddetach`.
-fn filt_deaddetach<G: ProcGlue>(_kn: &Knote<G>) {
-    // Nothing to do
-}
+/// `badfd_filtops`: `dead_filtops` with its own event; `f_attach` is NULL (`kqpoll`'s
+/// `knote_fdclose` gives a closed descriptor's knote this filter).
+impl<G: ProcGlue> Filter<G> for BadfdFilter {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_BADFD;
 
-/// `filt_badfd`: the descriptor was closed under a poll or select.
-fn filt_badfd<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
-    kn.set_flags(EV_ERROR | EV_ONESHOT);
-    kn.kn_data().set(i64::from(Errno::EBADF.as_i32()));
-    true
+    /// `filt_deaddetach`.
+    fn detach(kn: &Knote<G>) {
+        DeadFilter::detach(kn)
+    }
+
+    /// `filt_badfd`: the descriptor was closed under a poll or select.
+    fn event(kn: &Knote<G>, _hint: i64) -> bool {
+        kn.set_flags(EV_ERROR | EV_ONESHOT);
+        kn.kn_data().set(i64::from(Errno::EBADF.as_i32()));
+        true
+    }
+
+    /// `filt_seltruemodify`.
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        SeltrueFilter::modify(kev, kn)
+    }
+
+    /// `filt_seltrueprocess`.
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        SeltrueFilter::process(kn, kev)
+    }
 }
 
 /// `filter_attach(kn)`.
@@ -3666,18 +3835,14 @@ pub fn knote_process<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bo
     active
 }
 
-/// The filterops of a [`test_knote`]: no file, no event, nothing to detach (the test unhooks
-/// the knote itself).
+/// The filter of a [`test_knote`]: no file, no event, nothing to detach (the test unhooks
+/// the knote itself), so every entry is the C's NULL one.
 #[cfg(any(test, feature = "doubles"))]
-const fn test_filtops<G: ProcGlue>() -> Filterops<G> {
-    Filterops {
-        f_flags: FILTEROP_MPSAFE,
-        f_attach: None,
-        f_detach: None,
-        f_event: None,
-        f_modify: None,
-        f_process: None,
-    }
+struct TestFilter;
+
+#[cfg(any(test, feature = "doubles"))]
+impl<G: ProcGlue> Filter<G> for TestFilter {
+    const FLAGS: i32 = FILTEROP_MPSAFE;
 }
 
 /// A knote of `kq` that its chain owns (the hash slot of `ident`, as `EVFILT_USER`'s),
@@ -3788,39 +3953,40 @@ pub(crate) mod tests {
         }
     }
 
-    fn filt_testdetach(kn: &Knote<Kg>) {
-        let o = obj_of(&kn.fp());
-        match o.sel.si_note.kind() {
-            KlistKind::Owner => {
-                let mut g = o.lock.lock();
-                o.sel.si_note.remove_locked(&mut g, kn);
+    /// A test object's filter: ready when the object says so, hooked by its file's
+    /// `kqfilter` (so `f_attach` is NULL).
+    struct TestObjFilter;
+
+    impl Filter<Kg> for TestObjFilter {
+        const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
+
+        fn detach(kn: &Knote<Kg>) {
+            let o = obj_of(&kn.fp());
+            match o.sel.si_note.kind() {
+                KlistKind::Owner => {
+                    let mut g = o.lock.lock();
+                    o.sel.si_note.remove_locked(&mut g, kn);
+                }
+                _ => o.sel.si_note.remove(kn),
             }
-            _ => o.sel.si_note.remove(kn),
+        }
+
+        fn event(kn: &Knote<Kg>, _hint: i64) -> bool {
+            let ready = obj_of(&kn.fp()).ready.load(Ordering::Relaxed);
+            kn.kn_data().set(i64::from(ready));
+            ready
+        }
+
+        fn modify(kev: &mut Kevent, kn: &Knote<Kg>) -> bool {
+            knote_modify(kev, kn)
+        }
+
+        fn process(kn: &Knote<Kg>, kev: Option<&mut Kevent>) -> bool {
+            knote_process(kn, kev)
         }
     }
 
-    fn filt_test(kn: &Knote<Kg>, _hint: i64) -> bool {
-        let ready = obj_of(&kn.fp()).ready.load(Ordering::Relaxed);
-        kn.kn_data().set(i64::from(ready));
-        ready
-    }
-
-    fn filt_testmodify(kev: &mut Kevent, kn: &Knote<Kg>) -> bool {
-        knote_modify(kev, kn)
-    }
-
-    fn filt_testprocess(kn: &Knote<Kg>, kev: Option<&mut Kevent>) -> bool {
-        knote_process(kn, kev)
-    }
-
-    static TEST_FILTOPS: Filterops<Kg> = Filterops {
-        f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-        f_attach: None,
-        f_detach: Some(filt_testdetach),
-        f_event: Some(filt_test),
-        f_modify: Some(filt_testmodify),
-        f_process: Some(filt_testprocess),
-    };
+    static TEST_FILTOPS: Filterops<Kg> = Filterops::of::<TestObjFilter>();
 
     /// The test files' operations: `EVFILT_READ` hooks the knote on its object's klist.
     struct TOps;
@@ -4874,6 +5040,128 @@ pub(crate) mod tests {
         // owners and the knote with its three entries and its counted members (the user's
         // decision of 2026-10-22: accepted, pinned here).
         assert_eq!(sizes, [288, 336, 88], "knotepl, kqueuepl, kqtimerpl");
+    }
+
+    #[test]
+    fn the_kernel_filters_erase_into_the_c_tables() {
+        // kern_event.c's nine tables: their f_flags (with the identity bits that stand for
+        // the C's address tests) and, made by Filterops::of, every entry filled.
+        let tables: [(&str, &Filterops<Kg>, i32); 9] = [
+            (
+                "kqread",
+                &Kqueue::<Kg>::KQREAD_FILTOPS,
+                FILTEROP_ISFD | FILTEROP_MPSAFE,
+            ),
+            ("proc", &Kqueue::<Kg>::PROC_FILTOPS, FILTEROP_MPSAFE),
+            ("sig", &Kqueue::<Kg>::SIG_FILTOPS, FILTEROP_MPSAFE),
+            (
+                "file",
+                &Kqueue::<Kg>::FILE_FILTOPS,
+                FILTEROP_ISFD | FILTEROP_MPSAFE,
+            ),
+            ("timer", &Kqueue::<Kg>::TIMER_FILTOPS, FILTEROP_MPSAFE),
+            (
+                "user",
+                &Kqueue::<Kg>::USER_FILTOPS,
+                FILTEROP_MPSAFE | FILTEROP_USER,
+            ),
+            (
+                "seltrue",
+                &Kqueue::<Kg>::SELTRUE_FILTOPS,
+                FILTEROP_ISFD | FILTEROP_MPSAFE,
+            ),
+            (
+                "dead",
+                &Kqueue::<Kg>::DEAD_FILTOPS,
+                FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_DEAD,
+            ),
+            (
+                "badfd",
+                &Kqueue::<Kg>::BADFD_FILTOPS,
+                FILTEROP_ISFD | FILTEROP_MPSAFE | FILTEROP_BADFD,
+            ),
+        ];
+        for (name, fop, flags) in tables {
+            assert_eq!(fop.f_flags, flags, "{name}_filtops' f_flags");
+            assert!(
+                fop.f_attach.is_some()
+                    && fop.f_detach.is_some()
+                    && fop.f_event.is_some()
+                    && fop.f_modify.is_some()
+                    && fop.f_process.is_some(),
+                "{name}_filtops has an empty entry"
+            );
+        }
+        for (bit, holder) in [
+            (FILTEROP_DEAD, "dead"),
+            (FILTEROP_BADFD, "badfd"),
+            (FILTEROP_USER, "user"),
+        ] {
+            let holders: Vec<&str> = tables
+                .iter()
+                .filter(|t| t.1.f_flags & bit != 0)
+                .map(|t| t.0)
+                .collect();
+            assert_eq!(holders, [holder], "the identity bit {bit:#x}");
+        }
+        // sysfilt_ops: each system filter's table by EVFILT_* (the C's sysfilt_ops[]).
+        for (filter, flags) in [
+            (EVFILT_READ, FILTEROP_ISFD | FILTEROP_MPSAFE),
+            (EVFILT_PROC, FILTEROP_MPSAFE),
+            (EVFILT_SIGNAL, FILTEROP_MPSAFE),
+            (EVFILT_TIMER, FILTEROP_MPSAFE),
+            (EVFILT_USER, FILTEROP_MPSAFE | FILTEROP_USER),
+        ] {
+            let fop = sysfilt_ops::<Kg>((!filter) as usize).unwrap();
+            assert_eq!(fop.f_flags, flags, "sysfilt_ops({filter})");
+        }
+    }
+
+    /// A filter without `FILTEROP_MPSAFE` that defines only its event, so its `f_modify`
+    /// and `f_process` are the defaults: the C's NULL entries.
+    struct LockedFilter;
+
+    impl Filter<Kg> for LockedFilter {
+        const FLAGS: i32 = FILTEROP_ISFD;
+
+        fn event(kn: &Knote<Kg>, _hint: i64) -> bool {
+            kn.kn_data().set(7);
+            kn.kn_sfflags.get() != 0
+        }
+    }
+
+    static LOCKED_FILTOPS: Filterops<Kg> = Filterops::of::<LockedFilter>();
+
+    #[test]
+    fn a_default_entry_does_what_the_dispatch_does_with_a_null_one() {
+        // filter_modify/filter_process of a filter that is not MPSAFE and has no
+        // f_modify/f_process: knote_modify and knote_process at splhigh, under the kernel
+        // lock (as for a bsd table's None entry).
+        let _p = setup(45);
+        let kn = Knote::<Kg>::detached();
+        kn.kn_fop.set(Some(&LOCKED_FILTOPS));
+        kn.kn_kevent.ident.set(5);
+        kn.kn_kevent.filter.set(EVFILT_READ);
+
+        let mut kev = ev_set(5, EVFILT_READ, 0, 0x3, 11, 0x99);
+        assert!(filter_modify(&mut kev, &kn), "knote_modify ran the event");
+        assert_eq!((kn.kn_sfflags.get(), kn.kn_sdata.get()), (0x3, 11));
+        assert_eq!(kn.kn_udata().get(), 0x99);
+
+        let mut out = Kevent::default();
+        assert!(filter_process(&kn, Some(&mut out)));
+        assert_eq!((out.ident, out.filter, out.data), (5, EVFILT_READ, 7));
+        assert!(!filter_modify(&mut ev_set(5, EVFILT_READ, 0, 0, 0, 0), &kn));
+        assert!(!filter_process(&kn, None), "no flags asked: not active");
+    }
+
+    #[test]
+    #[should_panic(expected = "has no f_modify")]
+    fn an_mpsafe_filter_without_modify_stops_the_kernel() {
+        // filter_modify of an MPSAFE filter calls f_modify unchecked: NULL is a bug.
+        let kn = Knote::<Kg>::detached();
+        kn.kn_fop.set(Some(&Kqueue::<Kg>::TEST_FILTOPS));
+        filter_modify(&mut Kevent::default(), &kn);
     }
 
     // A knote, a kqueue and a klist are shared between CPUs by composition (no `unsafe impl`):

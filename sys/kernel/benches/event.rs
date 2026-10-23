@@ -59,8 +59,8 @@ use hal::sys::errno::Errno;
 use hal::sys::types::Off;
 use kernel::descrip::{falloc, fdinit, fdinsert, fdplock, filedesc_init};
 use kernel::event::{
-    EV_ADD, EV_DELETE, EVFILT_READ, EVFILT_USER, FILTEROP_ISFD, FILTEROP_MPSAFE, Filterops, Kevent,
-    Klist, Knote, KqRef, Kqueue, ev_set, fd_kqlist_insert, knote_modify, knote_process,
+    EV_ADD, EV_DELETE, EVFILT_READ, EVFILT_USER, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops,
+    Kevent, Klist, Knote, KqRef, Kqueue, ev_set, fd_kqlist_insert, knote_modify, knote_process,
     kqpoll_done, kqpoll_init, kqueue_alloc, kqueue_init, kqueue_register, kqueue_scan,
     kqueue_scan_setup, thread_kq,
 };
@@ -304,32 +304,32 @@ impl ProcGlue for BenchGlue {
 static OBJ_KLIST: Klist<BenchGlue> = Klist::new();
 static OBJ_READY: AtomicBool = AtomicBool::new(true);
 
-fn filt_objdetach(kn: &Knote<BenchGlue>) {
-    OBJ_KLIST.remove(kn);
+/// The object's filter, hooked by its files' `kqfilter` (so `f_attach` is NULL).
+struct ObjFilter;
+
+impl Filter<BenchGlue> for ObjFilter {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
+
+    fn detach(kn: &Knote<BenchGlue>) {
+        OBJ_KLIST.remove(kn);
+    }
+
+    fn event(kn: &Knote<BenchGlue>, _hint: i64) -> bool {
+        let ready = OBJ_READY.load(Ordering::Relaxed);
+        kn.kn_data().set(i64::from(ready));
+        ready
+    }
+
+    fn modify(kev: &mut Kevent, kn: &Knote<BenchGlue>) -> bool {
+        knote_modify(kev, kn)
+    }
+
+    fn process(kn: &Knote<BenchGlue>, kev: Option<&mut Kevent>) -> bool {
+        knote_process(kn, kev)
+    }
 }
 
-fn filt_obj(kn: &Knote<BenchGlue>, _hint: i64) -> bool {
-    let ready = OBJ_READY.load(Ordering::Relaxed);
-    kn.kn_data().set(i64::from(ready));
-    ready
-}
-
-fn filt_objmodify(kev: &mut Kevent, kn: &Knote<BenchGlue>) -> bool {
-    knote_modify(kev, kn)
-}
-
-fn filt_objprocess(kn: &Knote<BenchGlue>, kev: Option<&mut Kevent>) -> bool {
-    knote_process(kn, kev)
-}
-
-static OBJ_FILTOPS: Filterops<BenchGlue> = Filterops {
-    f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-    f_attach: None,
-    f_detach: Some(filt_objdetach),
-    f_event: Some(filt_obj),
-    f_modify: Some(filt_objmodify),
-    f_process: Some(filt_objprocess),
-};
+static OBJ_FILTOPS: Filterops<BenchGlue> = Filterops::of::<ObjFilter>();
 
 /// The object's files: `EVFILT_READ` hooks the knote on the object's klist.
 struct BenchOps;
