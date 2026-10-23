@@ -2548,6 +2548,9 @@ pub(crate) mod tests {
         ) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
         }
+        fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
+        }
 
         fn process_ref(pr: &Process<Self>) -> crate::proc::ProcessRef<Self> {
             match hal::pool::PoolArc::from_ref(pr) {

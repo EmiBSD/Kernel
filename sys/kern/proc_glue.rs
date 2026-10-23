@@ -668,6 +668,10 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_sysctl(p, mib, new)
     }
 
+    fn pledge_adjtime(p: &Proc, delta: usize) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_adjtime(p, delta)
+    }
+
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
         kernel::proc::UnveilState {
             paths: !pr.ps_uvpaths.get().is_null(),
@@ -736,6 +740,19 @@ impl ProcGlue for BsdProcGlue {
 
     fn cancel_all_itimers() {
         crate::kern::kern_time::cancel_all_itimers();
+    }
+
+    fn setitimer(
+        which: i32,
+        itv: Option<&kernel::time::Itimerval>,
+        olditv: Option<&mut kernel::time::Itimerval>,
+    ) {
+        crate::kern::kern_time::setitimer(which, itv, olditv);
+    }
+
+    /// `curcpu()->ci_schedstate.spc_runtime`.
+    fn spc_runtime() -> kernel::clock::Timespec {
+        Machine::ci_schedstate(curcpu()).spc_runtime.get()
     }
 
     fn unveil_destroy(pr: &Process) {

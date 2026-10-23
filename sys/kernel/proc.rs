@@ -993,6 +993,28 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     }
     /// `cancel_all_itimers()` (`kern_time.c`, N4.8a): the exiting process's interval timers.
     fn cancel_all_itimers() {}
+    /// `setitimer(which, itv, olditv)` (`kern_time.c`) on the calling process's interval
+    /// timer `which` (`ITIMER_REAL..=ITIMER_PROF`, checked by the caller): the old value
+    /// into `olditv` when asked, then `itv` when given. The timers (`ps_timer`,
+    /// `ps_realit_to`) are `bsd`'s members of `struct process` until they move here
+    /// (`getitimer(2)`, `setitimer(2)`, `kernel::time`); a glue without them keeps none and
+    /// reads zero.
+    fn setitimer(
+        _which: i32,
+        _itv: Option<&crate::time::Itimerval>,
+        _olditv: Option<&mut crate::time::Itimerval>,
+    ) {
+    }
+    /// `curcpu()->ci_schedstate.spc_runtime`: when the running thread's slice began
+    /// (`clock_gettime(2)`'s CPU-time clocks add the running part). A glue without that
+    /// per-CPU state answers the uptime itself: no running part.
+    fn spc_runtime() -> crate::clock::Timespec {
+        crate::tc::nanouptime()
+    }
+    /// `pledge_adjtime(p, delta)` (`kern_pledge.c`, N8): a pledged `p` without
+    /// `PLEDGE_SETTIME` may only read the adjustment (`EPERM` for a non-NULL `delta`).
+    /// Required: a glue cannot drop pledge by forgetting it.
+    fn pledge_adjtime(p: &Thread<Self>, delta: usize) -> Result<(), Errno>;
     /// `unveil_destroy(pr)` (`kern_unveil.c`, N8).
     fn unveil_destroy(_pr: &Process<Self>) {}
     /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
@@ -2989,6 +3011,9 @@ mod tests {
             _mib: &[i32],
             _new: usize,
         ) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
+        }
+        fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
         }
         fn process_ref(pr: &Process<Self>) -> ProcessRef<Self> {

@@ -294,6 +294,9 @@ impl ProcGlue for BenchGlue {
     fn pledge_sysctl(_p: &Thread<Self>, _mib: &[i32], _new: usize) -> Result<(), Errno> {
         Ok(())
     }
+    fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
+        Ok(())
+    }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
         match hal::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
