@@ -80,6 +80,7 @@ use core::sync::atomic::Ordering;
 use crate::dev::clock_subr::TodrChipHandle;
 use crate::kern::kern_clock::hardclock_period;
 use crate::kern::kern_clockintr::clockrequest_advance;
+use crate::kern::kern_descrip::native;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_tc::nanouptime;
@@ -95,6 +96,10 @@ use crate::sys::proc::{
     P_ALRMPEND, P_PROFPEND, P_SYSTEM, P_WEXIT, PS_EXITING, PS_ITIMER, Proc, Process,
 };
 use crate::sys::signal::SIGALRM;
+use crate::sys::syscall::{
+    SYS_adjfreq, SYS_adjtime, SYS_clock_getres, SYS_clock_gettime, SYS_clock_settime,
+    SYS_getitimer, SYS_gettimeofday, SYS_nanosleep, SYS_setitimer, SYS_settimeofday,
+};
 use crate::sys::syscallargs::{
     SysAdjfreqArgs, SysAdjtimeArgs, SysClockGetresArgs, SysClockGettimeArgs, SysClockSettimeArgs,
     SysGetitimerArgs, SysGettimeofdayArgs, SysNanosleepArgs, SysSetitimerArgs, SysSettimeofdayArgs,
@@ -106,6 +111,7 @@ use crate::sys::time::{
 };
 use crate::sys::types::{Register, Time};
 use hal::clock::ClockFrame;
+use hal::syscall::SysResult;
 use hal::user::UserPtr;
 
 /// `itimer_mtx`: the virtual and profiling interval timers.
@@ -282,6 +288,181 @@ pub fn sys_setitimer(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
         uap.which.get(),
         UserPtr::new(uap.itv.get() as usize),
         UserPtr::new(uap.oitv.get() as usize),
+    )
+}
+
+/// `KernelApi::time`: the time system calls' rows and reboot(2)'s through the system call
+/// prologue (`mi_syscall` on each one's own `sysent[]` row: pledge, the pinned syscalls,
+/// the kernel-lock rule), which call `kernel::time` and `kernel::reboot`.
+pub const TIME_ENTRIES: hal::api::TimeEntries = hal::api::TimeEntries {
+    clock_gettime: native_clock_gettime,
+    clock_settime: native_clock_settime,
+    clock_getres: native_clock_getres,
+    nanosleep: native_nanosleep,
+    gettimeofday: native_gettimeofday,
+    settimeofday: native_settimeofday,
+    adjfreq: native_adjfreq,
+    adjtime: native_adjtime,
+    getitimer: native_getitimer,
+    setitimer: native_setitimer,
+    reboot: crate::kern::kern_xxx::native_reboot,
+};
+
+/// `KernelApi::time.clock_gettime`.
+pub fn native_clock_gettime(
+    nr: Register,
+    clock_id: i32,
+    tp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_clock_gettime,
+        [clock_id as Register, tp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.clock_settime`.
+pub fn native_clock_settime(
+    nr: Register,
+    clock_id: i32,
+    tp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_clock_settime,
+        [clock_id as Register, tp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.clock_getres`.
+pub fn native_clock_getres(
+    nr: Register,
+    clock_id: i32,
+    tp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_clock_getres,
+        [clock_id as Register, tp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.nanosleep`.
+pub fn native_nanosleep(
+    nr: Register,
+    rqtp: usize,
+    rmtp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_nanosleep,
+        [rqtp as Register, rmtp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.gettimeofday`.
+pub fn native_gettimeofday(
+    nr: Register,
+    tp: usize,
+    tzp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_gettimeofday,
+        [tp as Register, tzp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.settimeofday`.
+pub fn native_settimeofday(
+    nr: Register,
+    tv: usize,
+    tzp: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_settimeofday,
+        [tv as Register, tzp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.adjfreq`.
+pub fn native_adjfreq(
+    nr: Register,
+    freq: usize,
+    oldfreq: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_adjfreq,
+        [freq as Register, oldfreq as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.adjtime`.
+pub fn native_adjtime(
+    nr: Register,
+    delta: usize,
+    olddelta: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_adjtime,
+        [delta as Register, olddelta as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.getitimer`.
+pub fn native_getitimer(
+    nr: Register,
+    which: i32,
+    itv: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getitimer,
+        [which as Register, itv as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::time.setitimer`.
+pub fn native_setitimer(
+    nr: Register,
+    which: i32,
+    itv: usize,
+    oitv: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_setitimer,
+        [
+            which as Register,
+            itv as Register,
+            oitv as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
     )
 }
 

@@ -95,6 +95,17 @@ pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     }
 }
 
+/// `KernelApi::time.reboot`: [`sys_reboot`]'s row through the system call prologue
+/// (`mi_syscall`: pledge, the pinned syscalls, the kernel-lock rule).
+pub fn native_reboot(nr: Register, opt: i32, rval: &mut [Register; 2]) -> hal::syscall::SysResult {
+    crate::kern::kern_descrip::native(
+        nr,
+        crate::sys::syscall::SYS_reboot,
+        [opt as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
+}
+
 /// `reboot`: the kernel's (`kernel::reboot::reboot`: the clock bookkeeping stopped,
 /// `rebooting` set, the machine's `boot(9)`).
 pub fn reboot(howto: i32) -> ! {

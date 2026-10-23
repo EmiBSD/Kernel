@@ -934,8 +934,37 @@ mod tests {
         Ok(())
     }
 
+    /// Version 10's entries, answering `Ok`.
+    fn t2(_: isize, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn t2u(_: isize, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn t3(_: isize, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+    fn t1(_: isize, _: i32, _: &mut Rval) -> SysResult {
+        Ok(())
+    }
+
+    const TIME: crate::api::TimeEntries = crate::api::TimeEntries {
+        clock_gettime: t2,
+        clock_settime: t2,
+        clock_getres: t2,
+        nanosleep: t2u,
+        gettimeofday: t2u,
+        settimeofday: t2u,
+        adjfreq: t2u,
+        adjtime: t2u,
+        getitimer: t2,
+        setitimer: t3,
+        reboot: t1,
+    };
+
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
+        TIME,
     );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
@@ -960,7 +989,7 @@ mod tests {
             },
             ..KernelApi::new(
                 register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
-                sysctl,
+                sysctl, TIME,
             )
         };
         assert_eq!(
