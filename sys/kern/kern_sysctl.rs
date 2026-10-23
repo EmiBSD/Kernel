@@ -2490,8 +2490,11 @@ mod tests {
             kernel_lock();
             let r = hal::klock::reader();
             let g = pr.ps_mtx.lock();
-            fill_kproc(&r, pr, &mut ki, None, false, &g);
+            let held = fill_kproc(&r, pr, &mut ki, None, false, &g);
             drop((g, r));
+            // The fill's reference outlives ps_mtx: the caller gives it back after it.
+            assert_eq!(vm.vm_refcnt.load(Ordering::Relaxed), 2);
+            drop(held);
             kernel_unlock();
         }
         assert_eq!(vm.vm_refcnt.load(Ordering::Relaxed), 1);

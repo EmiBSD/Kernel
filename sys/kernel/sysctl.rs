@@ -108,6 +108,9 @@
 //!   process's main-thread slot.
 //! - `kern.ttycount` is the kernel's (`kernel::tty::tty_count`, N4.7b) and `kern.tty` is
 //!   `kernel::tty::TtyNode`, which `bsd` registers over its glue.
+//! - `fill_kproc` runs under the caller's `ps_mtx` (a `MutexedGuard` it borrows), so the
+//!   vmspace reference it takes comes back as a [`KprocVm`] the caller drops after the
+//!   guard: the `uvmspace_free` that may tear the space down runs with no mutex held.
 //! - `p_tsess` (`PTRTOINT64(tp->t_session)`) is written only when `show_pointers` (the
 //!   caller is root), as the C: LZ wrote it for every caller, a kernel address `ps(1)` gave
 //!   any user (N4.7 decision 8, the user's).
@@ -1678,10 +1681,12 @@ pub fn sysctl_doproc<G: ProcGlue>(
             }
 
             if buflen >= elem_size && elem_count > 0 {
-                {
+                let vm = {
                     let g = pr.ps_mtx.lock();
-                    fill_kproc(&r, pr, &mut kproc, None, show_pointers, &g);
-                }
+                    fill_kproc(&r, pr, &mut kproc, None, show_pointers, &g)
+                };
+                // uvmspace_free, ps_mtx let go.
+                drop(vm);
                 copy(&kproc, dp)?;
                 dp += elem_size;
                 buflen -= elem_size;
@@ -1696,18 +1701,20 @@ pub fn sysctl_doproc<G: ProcGlue>(
 
             let mut i = 0;
             loop {
-                let more = {
+                let (more, vm) = {
                     let g = pr.ps_mtx.lock();
                     match pr.ps_threads.iter(&g).nth(i) {
-                        None => false,
+                        None => (false, None),
                         Some(t) => {
-                            if buflen >= elem_size && elem_count > 0 {
-                                fill_kproc(&r, pr, &mut kproc, Some(t), show_pointers, &g);
-                            }
-                            true
+                            let vm = (buflen >= elem_size && elem_count > 0).then(|| {
+                                fill_kproc(&r, pr, &mut kproc, Some(t), show_pointers, &g)
+                            });
+                            (true, vm)
                         }
                     }
                 };
+                // uvmspace_free, ps_mtx let go.
+                drop(vm);
                 if !more {
                     break;
                 }
@@ -1782,10 +1789,26 @@ const fn w_exitcode(ret: u32, sig: i32) -> u32 {
     (ret << 8) | sig as u32
 }
 
+/// The vmspace reference [`fill_kproc`] took (`uvmspace_addref`), given back
+/// (`uvmspace_free`) when it is dropped. The caller drops it once `ps_mtx` is let go: the
+/// last reference's free tears the address space down, which a mutex holder must not do
+/// (the C frees after the process's lock is released).
+#[must_use = "the vmspace reference is given back when this drops: drop it after ps_mtx"]
+pub struct KprocVm(Option<VmspaceRef>);
+
+impl Drop for KprocVm {
+    fn drop(&mut self) {
+        if let Some(vm) = self.0.take() {
+            crate::vm::map::uvmspace_free(vm);
+        }
+    }
+}
+
 /// `fill_kproc`: fills in a `kinfo_proc` for process `pr`, or for its thread `p`, under the
 /// kernel lock's reader (`r`) and the process's `ps_mtx` (`g`, the C's `PR_LOCK` taken for
 /// the whole fill: the thread list is the mutex's). The kernel addresses (`p_paddr`,
-/// `p_fd`, ..., `p_tsess`) only when `show_pointers` (the caller is root).
+/// `p_fd`, ..., `p_tsess`) only when `show_pointers` (the caller is root). The vmspace
+/// reference the fill took comes back as a [`KprocVm`], for the caller to drop after `g`.
 pub fn fill_kproc<G: ProcGlue>(
     r: &KernelReader,
     pr: &Process<G>,
@@ -1793,7 +1816,7 @@ pub fn fill_kproc<G: ProcGlue>(
     p: Option<&Thread<G>>,
     show_pointers: bool,
     g: &MutexedGuard<'_, PsMtx<G>>,
-) {
+) -> KprocVm {
     let flags = pr.ps_flags.load(Ordering::Relaxed);
     // The callers skip processes without a pgrp; a group has a session.
     let pg = pr.pgrp(r);
@@ -1804,7 +1827,7 @@ pub fn fill_kproc<G: ProcGlue>(
     if flags & PS_EXITING == 0 {
         // vm = pr->ps_vmspace; uvmspace_addref(vm): a process that is not exiting holds
         // its vmspace, and the reference keeps it while it is read. The handle is the C's
-        // pointer, not a reference: the `uvmspace_free` below gives back the one taken here.
+        // pointer, not a reference: the returned `KprocVm` gives back the one taken here.
         vm = g.vmspace.clone();
         if let Some(vm) = &vm {
             crate::vm::map::uvmspace_addref(vm);
@@ -2031,9 +2054,8 @@ pub fn fill_kproc<G: ProcGlue>(
         }
     }
 
-    if let Some(vm) = vm {
-        crate::vm::map::uvmspace_free(vm);
-    }
+    // uvmspace_free(vm): the caller's, once ps_mtx is let go (the returned KprocVm).
+    let vm = KprocVm(vm);
 
     // get %cpu and schedule state: just one thread or sum of all?
     if isthread {
@@ -2058,6 +2080,7 @@ pub fn fill_kproc<G: ProcGlue>(
         }
         ki.p_stat = stat as i8;
     }
+    vm
 }
 
 /// `pr`, counted, found by `pid` under the kernel lock's reader (`prfind` with the
@@ -2931,7 +2954,9 @@ mod tests {
         let g = pr.ps_mtx.lock();
         let main = pr.main_thread(&g).map(|p| p.get_ref());
         let p = if thread { main } else { None };
-        fill_kproc(&r, pr, &mut ki, p, show_pointers, &g);
+        let vm = fill_kproc(&r, pr, &mut ki, p, show_pointers, &g);
+        drop(g);
+        drop(vm);
         ki
     }
 
