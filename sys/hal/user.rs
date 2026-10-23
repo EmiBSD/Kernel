@@ -95,6 +95,10 @@ pub trait UserCopy: Sync {
     fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno>;
     /// `copyoutstr(kbuf, uaddr, kbuf.len(), &done)`: the bytes copied, the NUL included.
     fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno>;
+    /// `copyin32(uaddr, &v)`: the aligned 32-bit word at `uaddr`, read in one access (a
+    /// value another thread writes is never seen torn); `EFAULT` when `uaddr` is not 4-byte
+    /// aligned or not mapped user memory (`futex(2)`).
+    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno>;
     /// `kcopy(kva, kbuf, kbuf.len())`: the bytes at the kernel address `kva` into `kbuf`;
     /// `EFAULT` when a page of the range faults (`pcb_onfault`). `hal` calls it only for a
     /// range inside a [`ForeignWindow`].
@@ -436,6 +440,15 @@ impl UserPtr<u8> {
     }
 }
 
+impl UserPtr<u32> {
+    /// `copyin32(uaddr, &v)`: the 32-bit word at this address in one access, as a futex is
+    /// read; `EFAULT` when it is misaligned or not mapped.
+    pub fn copyin32(self) -> Result<u32, Errno> {
+        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
+        c.copyin32(self.addr)
+    }
+}
+
 /// The all-zero `T`.
 fn zeroed<T: AbiPod>() -> T {
     // SAFETY: every bit pattern of an `AbiPod` type is a valid value (its contract, which
@@ -544,6 +557,17 @@ mod tests {
             Err(Errno::EFAULT)
         );
         assert_eq!(UserPtr::<u64>::new(usize::MAX).checked_add(1), None);
+    }
+
+    #[test]
+    fn a_word_is_read_aligned_or_refused() {
+        testutil::install();
+        let at = testutil::user_base() + 3072;
+        UserPtr::<u32>::new(at).copyout(&0x1234_5678).unwrap();
+        assert_eq!(UserPtr::<u32>::new(at).copyin32(), Ok(0x1234_5678));
+        // copyin32's alignment check: a misaligned word is EFAULT even when mapped.
+        assert_eq!(UserPtr::<u32>::new(at + 2).copyin32(), Err(Errno::EFAULT));
+        assert_eq!(UserPtr::<u32>::new(8).copyin32(), Err(Errno::EFAULT));
     }
 
     #[test]

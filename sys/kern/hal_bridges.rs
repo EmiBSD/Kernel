@@ -61,7 +61,7 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
 use crate::kern::subr_prf::printf;
 use crate::machine::Machine;
-use crate::machine::copy::{copyin, copyinstr, copyout, copyoutstr};
+use crate::machine::copy::{copyin, copyin32, copyinstr, copyout, copyoutstr};
 use crate::machine::cpu::{Cpu, cpu_info_foreach};
 use crate::sys::errno::Errno;
 use crate::sys::pool::Pool;
@@ -206,6 +206,10 @@ impl UserCopy for BsdUser {
 
     fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
         copyoutstr(kbuf, uaddr)
+    }
+
+    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno> {
+        copyin32(uaddr)
     }
 
     /// The window's bytes into `kbuf`: `uiomove` from a `UIO_SYSSPACE` iovec over the window,
