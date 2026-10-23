@@ -135,16 +135,23 @@ use crate::once::OnceStatic;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub use crate::arch::arm64::include::proc::Mdproc;
 
-/// `struct mdproc` of the host tests: nothing of a machine's.
+/// `struct mdproc` of the host tests: nothing of a machine's but the thread's TCB, which a
+/// machine keeps in the thread's pcb (`pcb_tcb`) and the host's double keeps here, with the
+/// thread, so a new thread starts with none whatever address it reuses.
 #[cfg(not(target_os = "none"))]
 #[derive(Debug, Default)]
-pub struct Mdproc;
+pub struct Mdproc {
+    /// The host's `pcb_tcb` ([`tcb_get`], [`tcb_set`]).
+    pub(crate) tcb: core::sync::atomic::AtomicUsize,
+}
 
 #[cfg(not(target_os = "none"))]
 impl Mdproc {
     /// All zero.
     pub const fn new() -> Self {
-        Self
+        Self {
+            tcb: core::sync::atomic::AtomicUsize::new(0),
+        }
     }
 }
 
@@ -1091,6 +1098,8 @@ mod tests {
     /// A `ThreadLayout` naming a slot that is not the value's first member is refused.
     #[test]
     fn a_slot_elsewhere_is_refused() {
+        // `repr(C)`: the slot really is second (Rust's layout may reorder fields).
+        #[repr(C)]
         struct Elsewhere {
             _tail: u64,
             slot: MachineSlot,
