@@ -23,3 +23,11 @@ date	brief	model	in_tokens	out_tokens	cost_usd	seconds	finish	file
 20261019	cases/C-BRIEF.md	~openai/gpt-astra-latest	15380	2639	0.3242	50	stop	20261019-005754-openai_gpt-astra-latest.md
 20261019	cases/C-BRIEF.md	qwen/qwen3.8-max-prime	18990	12973	0.2316	123	stop	20261019-005754-qwen_qwen3.8-max-prime.md
 20261019	cases/C-BRIEF.md	~deepseek/deepseek-pro-latest	16497	9502	0.0516	40	stop	20261019-005754-deepseek_deepseek-pro-latest.md
+20261021	n4-headsup/BRIEF.md	google/gemini-4-argon	4515	2369	0.0327	48	stop	20261021-155830-google_gemini-4-argon.md
+20261021	n4-headsup/BRIEF.md	~openai/gpt-sol-latest	4193	1035	0.0208	26	stop	20261021-155830-openai_gpt-sol-latest.md
+20261021	n4.2-cred/BRIEF.md	google/gemini-4-argon	8852	3420	0.0519	45	stop	20261021-215043-google_gemini-4-argon.md
+20261021	n4.2-cred/BRIEF.md	~openai/gpt-sol-latest	7071	2073	0.0384	54	stop	20261021-215043-openai_gpt-sol-latest.md
+20261022	n4.5-switch/BRIEF.md	google/gemini-4-argon	9545	4185	0.0609	59	stop	20261022-062107-google_gemini-4-argon.md
+20261022	n4.5-switch/BRIEF.md	~openai/gpt-sol-latest	7740	1697	0.0363	45	stop	20261022-062107-openai_gpt-sol-latest.md
+20261022	n4.6-exit-sysctl/BRIEF.md	google/gemini-4-argon	15093	3482	0.0650	45	stop	20261022-220414-google_gemini-4-argon.md
+20261022	n4.6-exit-sysctl/BRIEF.md	~openai/gpt-sol-latest	11639	1620	0.0453	34	stop	20261022-220414-openai_gpt-sol-latest.md
