@@ -411,16 +411,19 @@ impl Timehands {
         }
     }
 
-    /// `th->th_counter`.
+    /// `th->th_counter`. Both members of [`TH`] start on the dummy and a windup only ever
+    /// sets a counter, so the link is never empty: the dummy fallback is `Link`'s `Option`,
+    /// never taken (a non-empty link would need an `unsafe` read in `hal`, for one compare).
     #[inline(always)]
     fn counter(&self) -> &'static TcEntry {
         self.counter.get().unwrap_or(&DUMMY)
     }
 
     /// `memcpy(th, tho, offsetof(struct timehands, th_generation))`: every field before the
-    /// generation.
-    fn copy_from(&self, tho: &Timehands) {
-        self.counter.set(Some(tho.counter()));
+    /// generation; returns the counter copied (`th->th_counter` from now on).
+    fn copy_from(&self, tho: &Timehands) -> &'static TcEntry {
+        let counter = tho.counter();
+        self.counter.set(Some(counter));
         self.adjtimedelta
             .store(tho.adjtimedelta.load(Ordering::Relaxed), Ordering::Relaxed);
         self.next_ntp_update.set(tho.next_ntp_update.get());
@@ -437,12 +440,18 @@ impl Timehands {
         self.microtime.set(s, u);
         let (s, n) = tho.nanotime.get();
         self.nanotime.set(s, n);
+        counter
     }
 
     /// `tc_delta(th)`: the counts since the timehands' `th_offset_count` was taken.
     #[inline(always)]
     fn delta(&self) -> u32 {
-        let tc = self.counter();
+        self.delta_on(self.counter())
+    }
+
+    /// [`Timehands::delta`] with `th->th_counter` already read (`tc`).
+    #[inline(always)]
+    fn delta_on(&self, tc: &TcEntry) -> u32 {
         tc.get_timecount()
             .wrapping_sub(self.offset_count.load(Ordering::Relaxed))
             & tc.mask.load(Ordering::Relaxed)
@@ -477,10 +486,11 @@ static DUMMY: TcEntry = TcEntry {
 /// `dummy_get_timecount`'s count.
 static DUMMY_NOW: AtomicU32 = AtomicU32::new(0);
 
-/// `th0`, `th1`: the ring. `th0` starts live on the dummy counter at its scale, `th1` empty.
+/// `th0`, `th1`: the ring. `th0` starts live on the dummy counter at its scale; `th1` is
+/// not live (generation 0) but names the dummy too, so no member's link is ever empty.
 static TH: [Timehands; 2] = [
     Timehands::new(Link::to(&DUMMY), u64::MAX / 1_000_000, 1, 1),
-    Timehands::new(Link::new(), 0, 0, 0),
+    Timehands::new(Link::to(&DUMMY), 0, 0, 0),
 ];
 
 /// \[W\] `timehands`: the live member of [`TH`].
@@ -975,19 +985,21 @@ pub fn tc_windup(
     let th = &TH[tho.next];
     th.generation.store(0, Ordering::Relaxed);
     fence(Ordering::Release); // membar_producer()
-    th.copy_from(tho);
+    // `th->th_counter`, read once: only this function changes it, below.
+    let mut counter = th.copy_from(tho);
 
     // Capture a timecounter delta on the current timecounter and if changing timecounters,
     // a counter value from the new timecounter. Update the offset fields accordingly.
-    let delta = th.delta();
-    let ncount = if !core::ptr::eq(th.counter(), active_tc) {
+    let delta = th.delta_on(counter);
+    let switching = !core::ptr::eq(counter, active_tc);
+    let ncount = if switching {
         active_tc.get_timecount()
     } else {
         0
     };
     th.offset_count.store(
         th.offset_count.load(Ordering::Relaxed).wrapping_add(delta)
-            & th.counter().mask.load(Ordering::Relaxed),
+            & counter.mask.load(Ordering::Relaxed),
         Ordering::Relaxed,
     );
     let bt = Bintime::from_timecount(delta, th.scale.load(Ordering::Relaxed));
@@ -1034,9 +1046,10 @@ pub fn tc_windup(
     th.nanotime.set(ts.tv_sec, ts.tv_nsec);
 
     // Now is a good time to change timecounters.
-    if !core::ptr::eq(th.counter(), active_tc) {
+    if switching {
         th.counter.set(Some(active_tc));
         th.offset_count.store(ncount, Ordering::Relaxed);
+        counter = active_tc;
     }
 
     // Recalculate the scaling factor: the number of 1/2^64 fractions of a second per period
@@ -1046,9 +1059,9 @@ pub fn tc_windup(
     // a systematic undercompensation of 10 PPM of th_adjustment (0.05 PPM of a 5000 PPM
     // adjustment), and the lowest of the 64 bits is sacrificed to clarity.
     let mut scale: u64 = 1 << 63;
-    let adj = th.adjustment.load(Ordering::Relaxed) + th.counter().freq_adj.load(Ordering::Relaxed);
+    let adj = th.adjustment.load(Ordering::Relaxed) + counter.freq_adj.load(Ordering::Relaxed);
     scale = scale.wrapping_add(((adj / 1024) * 2199) as u64);
-    scale /= th.counter().frequency().max(1);
+    scale /= counter.frequency().max(1);
     th.scale.store(scale.wrapping_mul(2), Ordering::Relaxed);
 
     // Now that the struct timehands is again consistent, set the new generation number,
