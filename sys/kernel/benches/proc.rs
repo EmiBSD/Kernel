@@ -68,6 +68,17 @@
 //! - `sig.userret-empty`: `userret` of a thread with nothing pending (every return to user
 //!   mode).
 //!
+//! N4.6b's sysctl core (`kernel::sysctl`; not a decision-43 hot path, BRIEF-N4.6 G6: the
+//! numbers show what the registry and the dispatcher cost over the user-copy double):
+//! - `prim.copyout-int`: one `int` copied out through the kernel's user-copy double (the
+//!   floor every `sysctl.*` op below pays at least once).
+//! - `sysctl.rdint`: `sysctl_rdint` of a 4-byte buffer.
+//! - `sysctl.kern-ostype`: `kern_sysctl` of `KERN_OSTYPE`, a registered leaf (one slot
+//!   load, one vtable call) into a 32-byte buffer: `sysctl_rdstring`'s two copies.
+//! - `sysctl.kern-proc-pid`: `sysctl_doproc` of `KERN_PROC_PID` of one process among the
+//!   bench's, one 648-byte `kinfo_proc` filled and copied out, under the kernel lock's
+//!   reader (what `sysctl_vslock` gives the C).
+//!
 //! The test glue's hooks are the kernel's doubles (`kernel::test_file_glue!`), with their
 //! record of `knote_fdclose` turned off.
 
@@ -636,6 +647,87 @@ fn main() {
         name: "sig.userret-empty",
         ops: PRIM,
         f: Box::new(prim(|| kernel::sig::userret(black_box(sp)))),
+    });
+
+    // N4.6b: the sysctl core. A process in a session of its own, with its main thread, on
+    // the lists (pid 4545), and a registered leaf.
+    let listed = proc::process_alloc::<BenchGlue>(4545, ());
+    drop(listed.set_ucred(ids(1000)));
+    proc::enternewpgrp(
+        &listed,
+        proc::pgrp_alloc::<BenchGlue>(()),
+        Some(proc::session_alloc::<BenchGlue>(())),
+    );
+    {
+        let tb = BenchGlue::tables();
+        let mut w = klock::witness();
+        tb.allprocess.insert_head(&mut w, listed.as_pin());
+        tb.pidhash(4545).insert_head(&mut w, listed.as_pin());
+    }
+    {
+        let lt = proc::thread_alloc::<BenchGlue>(&listed, ());
+        drop(lt.set_cred(listed.ucred()));
+        let mut g = listed.ps_mtx.lock();
+        listed.join_locked(&mut g, lt.as_pin());
+        listed.set_main_locked(&mut g, lt);
+    }
+    static OSTYPE: kernel::sysctl::RdString = kernel::sysctl::RdString(b"EmiBSD");
+    let _ = kernel::sysctl::register_kern(hal::sys::sysctl::KERN_OSTYPE, &OSTYPE);
+    let ubuf = testutil::USER_BASE + 0x7000;
+    benches.push(Bench {
+        name: "prim.copyout-int",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let _ = black_box(hal::user::UserPtr::<i32>::new(ubuf).copyout(&black_box(42)));
+        })),
+    });
+    benches.push(Bench {
+        name: "sysctl.rdint",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let mut len = 4usize;
+            let mut req = kernel::sysctl::SysctlReq {
+                oldp: ubuf,
+                oldlenp: &mut len,
+                newp: 0,
+                newlen: 0,
+            };
+            let _ = black_box(kernel::sysctl::rdint(&mut req, black_box(42)));
+        })),
+    });
+    benches.push(Bench {
+        name: "sysctl.kern-ostype",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let mut len = 32usize;
+            let mut req = kernel::sysctl::SysctlReq {
+                oldp: ubuf,
+                oldlenp: &mut len,
+                newp: 0,
+                newlen: 0,
+            };
+            let _ = black_box(kernel::sysctl::kern_sysctl(
+                &t,
+                &[hal::sys::sysctl::KERN_OSTYPE],
+                &mut req,
+            ));
+        })),
+    });
+    let kp_size = size_of::<hal::sys::sysctl::KinfoProc>() as i32;
+    benches.push(Bench {
+        name: "sysctl.kern-proc-pid",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let mut len = kp_size as usize;
+            let mut req = kernel::sysctl::SysctlReq {
+                oldp: ubuf,
+                oldlenp: &mut len,
+                newp: 0,
+                newlen: 0,
+            };
+            let name = [hal::sys::sysctl::KERN_PROC_PID, 4545, kp_size, 1];
+            let _ = black_box(kernel::sysctl::sysctl_doproc(&t, &name, &mut req));
+        })),
     });
 
     let reps = 7;
