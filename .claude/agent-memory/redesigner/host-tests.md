@@ -19,3 +19,6 @@ metadata:
 - A kernel test that writes the user-copy double's memory (64 KiB, shared by parallel tests) takes a range of its own; kernel::pipe's tests use USER_BASE + 64.
 - A witness-taking form called from legacy code (VN_KNOTE's knote_locked) panics in the file systems' host tests, which run VOPs without the kernel lock: the legacy form takes the lock recursively itself.
 - kernel::testutil's 64 KiB user-memory double is shared: uio/select use 0x8000..0xC000, kernel::log 0xE000..0x10000 (kern.msgbuf's copy runs to the end and faults); pick an unused range and grep `USER_BASE + ` first.
+- `klist_invalidate` waits for a knote's KN_PROCESSING to clear; kernel::event's `test_knote` stays processing, so a test of an object whose teardown invalidates its klists (ttyfree) must not attach test knotes or it hangs the run.
+- kernel::tty's defaults leave VSTATUS disabled (CSTATUS 0o377, ttydefaults.h): a ^T test sets c_cc[VSTATUS] first; and `tputchar` emits "\r\r\n" for '\n' (the C's), which assertions must expect.
+- Signals in a kernel test need the thread in `ps_threads`, `siginit` and `test_sigacts` (kernel::tty's `world()`), or pgsignal finds no one to deliver to.

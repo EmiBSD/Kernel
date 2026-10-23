@@ -74,6 +74,8 @@ pub(super) const DEVICE_MAGIC: &str = "emibsd-makefs-device";
 ///
 /// - character (`cdevsw[]`, line numbers amd64 / arm64): `cn` 0 (177 / 127), `ctty` 1
 ///   (178 / 128), `mm` 2 (179 / 129; minors: `mem` 0, `kmem` 1, `null` 2, `zero` 12),
+///   `pts` 5 and `ptc` 6 (182 / 132, 183 / 133: the pseudo-terminals' slave `ttypN` and
+///   master `ptypN`), `ptm` 81 (266 / 216: `/dev/ptm`),
 ///   `log` 7 (184 / 134: `/dev/klog`), `com` 8 (185 / 135: the serial console's tty, minor
 ///   = unit), `bpf` 23 (201 / 151: `/dev/bpf`, cloning; `MAKEDEV` makes it 0600), `rd` 47
 ///   (225 / 175: the raw disk) and `pf` 73 (258 / 208: `/dev/pf`, which
@@ -139,6 +141,20 @@ const DEVICES: &[(&str, char, u32, u32, u32, &str)] = &[
     ("klog", 'c', 7, 0, 0o600, "wheel"),
     ("urandom", 'c', 45, 0, 0o644, "wheel"),
     ("tty00", 'c', 8, 0, 0o600, "wheel"),
+    // N4.7: the pseudo-terminals. `ptm` 81 (`MAKEDEV`'s `ptm`: `M ptm c 81 0 666`), whose
+    // PTMGET opens a free pair by these names (`ptm_vn_open`, which never makes a node), and
+    // the first four pairs of `MAKEDEV`'s `pty0` (`M tty$nam c 5 $n`, `M pty$nam c 6 $n`,
+    // mode 666; PTMGET chowns the slave to the caller, group `tty`, 620): script(1), and
+    // the `tty` section of tools/difftest, which uses one pair at a time.
+    ("ptm", 'c', 81, 0, 0o666, "wheel"),
+    ("ttyp0", 'c', 5, 0, 0o666, "wheel"),
+    ("ttyp1", 'c', 5, 1, 0o666, "wheel"),
+    ("ttyp2", 'c', 5, 2, 0o666, "wheel"),
+    ("ttyp3", 'c', 5, 3, 0o666, "wheel"),
+    ("ptyp0", 'c', 6, 0, 0o666, "wheel"),
+    ("ptyp1", 'c', 6, 1, 0o666, "wheel"),
+    ("ptyp2", 'c', 6, 2, 0o666, "wheel"),
+    ("ptyp3", 'c', 6, 3, 0o666, "wheel"),
     ("bpf", 'c', 23, 0, 0o600, "wheel"),
     ("rd0a", 'b', 17, 0, 0o640, "operator"),
     ("rd0b", 'b', 17, 1, 0o640, "operator"),
