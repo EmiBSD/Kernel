@@ -8987,6 +8987,13 @@ native = ["sys/kernel/vm/map.rs::InentryCache"]
 kind = "moved"
 
 [[module]]
+rust = "sys/kernel/pty.rs"
+crate = "kernel"
+lz = ["sys/kern/tty_pty.rs"]
+status = "redesigned"
+notes = "N4.7b: tty_pty.c's kernel half: pt_softc[] a table of NPTY_MAX OnceStatic slots in ProcTables::pty (npty still grows by powers of two for pty_getfree, the array's reallocation gone), each softc an MBox of M_DEVBUF leaked for the kernel's life with a counted TtyRef and atomic flag words; t_oproc = ptsstart is PtsDriver (TtyDriver); the master's three filterops Filter impls, the hook the minor; ptyioctl told its side by bsd's device switch; PTMGET's file and vnode work, ptm_vn_open and ptmattach's cdevsw scan stay bsd's (sys/kern/tty_pty.rs, N5/N7)"
+
+[[module]]
 rust = "sys/kernel/resource.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_resource.rs", "sys/sys/resource.rs", "sys/sys/resourcevar.rs"]

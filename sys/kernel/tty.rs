@@ -4168,9 +4168,8 @@ pub fn sysctl_tty<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<
             let stats = ttystats_init::<G>();
             rdstruct(req, stats.as_deref().unwrap_or(&[]))
         }
-        // NPTY > 0: sysctl_pty, which knows no name since KERN_TTY_MAXPTYS and
-        // KERN_TTY_NPTYS went.
-        _ => Err(Errno::EOPNOTSUPP),
+        // NPTY > 0
+        _ => crate::pty::sysctl_pty(name, req),
     }
 }
 

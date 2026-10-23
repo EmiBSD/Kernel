@@ -186,7 +186,8 @@
 //!   `#[repr(C)]` thread, where both machines' assembly reaches them (decision P1).
 //! - N4.7b: `s_ttyp` is the session's (a counted `kernel::tty::TtyRef`, `[K]`), and
 //!   `pgdelete` clears the terminal's foreground group itself (`kernel::tty::pgrp_gone`):
-//!   the glue's `pgrp_destroy` is gone. The ttys' tables are `ProcTables::tty`.
+//!   the glue's `pgrp_destroy` is gone. The ttys' tables are `ProcTables::tty`, the ptys'
+//!   `ProcTables::pty`.
 
 use core::ops::Deref;
 use core::pin::Pin;
@@ -987,6 +988,8 @@ pub struct ProcTables<G: ProcGlue> {
     /// The ttys (`ttypl`, `ttylist`, `tty_count`, `constty`; `kernel::tty`): generic over the
     /// glue through their knotes and their process groups.
     pub tty: crate::tty::TtyTables<G>,
+    /// The ptys (`pt_softc[]`, `npty`, `pts_major`; `kernel::pty`).
+    pub pty: crate::pty::PtyTables<G>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -1007,6 +1010,7 @@ impl<G: ProcGlue> ProcTables<G> {
             kq: KqPools::new(),
             log: crate::log::LogDev::new(),
             tty: crate::tty::TtyTables::new(),
+            pty: crate::pty::PtyTables::new(),
         }
     }
 

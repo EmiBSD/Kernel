@@ -50,6 +50,7 @@ pub mod log;
 pub mod pipe;
 pub mod prf;
 pub mod proc;
+pub mod pty;
 pub mod resource;
 pub mod sched;
 pub mod select;
