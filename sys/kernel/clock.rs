@@ -83,8 +83,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The clock's state the kernel crate owns: `ticks` (`kern_clock.c`), the kernel's time value,
-//! and the uptime clock as the kernel reaches it (`nanouptime(9)`).
+//! The clock (`kern_clock.c`): `ticks` and `jiffies`, `hardclock`, `initclocks` with the
+//! clock periods it computes, `kern.clockrate`, the machine's clock hardware as the kernel
+//! reaches it ([`ClockHardware`]), and the kernel's time values (`<sys/time.h>`'s
+//! `struct timespec`, `timeval`, `bintime`).
 //!
 //! Upstream: sys/kern/kern_clock.c @ 3ce1f3f79392
 //! Upstream: sys/sys/time.h @ 3ce1f3f79392
@@ -93,16 +95,26 @@
 //!
 //! `ticks` counts the hardclock interrupts since boot, started close to wrapping (fifteen
 //! minutes of ticks before `INT_MAX`) so that code comparing tick values by subtraction meets
-//! the wrap early. `hardclock` (`bsd`'s `kern_clock.rs` until N4.8, decision 11) increments it
-//! on the primary CPU; timeout(9)'s `timeout_adjust_ticks` moves it forward under the wheel's
-//! lock; everyone else reads it.
+//! the wrap early. [`hardclock`] increments it on the primary CPU (whose `kernel::clockintr`
+//! queue alone binds the hardclock); timeout(9)'s `timeout_adjust_ticks` moves it forward
+//! under the wheel's lock; everyone else reads it.
 //!
-//! The timecounters stay in `bsd` until N4.8 (`kern_tc.rs`): the kernel reads the uptime
-//! through the [`Uptime`] bridge (bridges.toml; paid by N4), registered by `bsd` at boot.
+//! The timecounters are `kernel::tc`'s since N4.8a. [`nanouptime`], [`getnanouptime`] and
+//! [`nanotime`] here still go through the [`Uptime`] bridge (bridges.toml; paid by N4),
+//! which `bsd` registers over `kernel::tc` (through its `kern_tc.rs`); retiring it moves the
+//! kernel tests' uptime double, a later slice.
 //!
 //! ## Redesign
-//! - `ticks` moved here from `kern_clock.rs`, which re-exports it (its readers and
-//!   `hardclock` unchanged): the timeout wheel, now in this crate, reads and moves it.
+//! - `ticks` moved here from `kern_clock.rs`, which re-exports it: the timeout wheel, now in
+//!   this crate, reads and moves it.
+//! - N4.8a: `hardclock`, `initclocks`, `sysctl_clockrate`, `tstohz` and the clock statics
+//!   (`stathz`, `profhz`, `profprocs`, `jiffies`, the hardclock, statclock and profclock
+//!   periods; the round-robin period is `kernel::sched`'s) are here, `bsd`'s `kern_clock.rs`
+//!   re-exporting them; `hardclock` takes the typed `hal::clock::ClockFrame` and does what
+//!   the C's does (the timehands' tick, `ticks`, `jiffies`, the timeout wheel); `statclock`,
+//!   which charges the running thread, stays `bsd`'s until N4.6b. The machine's `cpu_initclocks`,
+//!   `cpu_startclock`, `setstatclockrate` and `delay(9)` are the [`ClockHardware`] bridge
+//!   (bridges.toml; `bsd`'s machine code until N7), which `initclocks` calls.
 //! - `struct timespec` with the `timespecadd`/`timespecsub`/`timespeccmp`/`NSEC_TO_TIMESPEC`
 //!   macros of `<sys/time.h>` is [`Timespec`] with methods and `Ord` (seconds, then
 //!   nanoseconds: `timespeccmp`'s order); the userland `struct timespec` stays `bsd`'s, at the
