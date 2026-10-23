@@ -87,6 +87,7 @@ use crate::kern::subr_prf::{panic, snprintf};
 use crate::kern::subr_prof::profclock;
 use crate::machine::Machine;
 use crate::machine::cpu::{Cpu, CpuInfo, curcpu};
+use crate::sys::clockintr::{Clockintr, Slot};
 use crate::sys::errno::Errno;
 use crate::sys::proc::{
     _MAXCOMLEN, FORK_IDLE, FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM, Proc, ProcExt,
@@ -163,10 +164,10 @@ pub fn sched_init_cpu(ci: &'static CpuInfo) {
     kernel::sched::sched_init_cpu::<G>(n);
 
     let spc = Machine::ci_schedstate(ci);
-    clockintr_bind(&spc.spc_itimer, ci, itimer_update, ptr::null_mut());
-    clockintr_bind(&spc.spc_profclock, ci, profclock, ptr::null_mut());
-    clockintr_bind(&spc.spc_roundrobin, ci, roundrobin, ptr::null_mut());
-    clockintr_bind(&spc.spc_statclock, ci, statclock, ptr::null_mut());
+    clockintr_bind(Clockintr::of(n, Slot::Itimer), itimer_update);
+    clockintr_bind(Clockintr::of(n, Slot::Profclock), profclock);
+    clockintr_bind(Clockintr::of(n, Slot::Roundrobin), roundrobin);
+    clockintr_bind(Clockintr::of(n, Slot::Statclock), statclock);
 
     kthread_create_deferred(sched_kthreads_create, idle_arg(n));
 

@@ -153,8 +153,9 @@ pub type SaFamily = u8;
 pub type Segsz = i32;
 /// Length type for network syscalls (`socklen_t`).
 pub type Socklen = u32;
-/// Microseconds, signed (`suseconds_t`, a `long`).
-pub type Suseconds = isize;
+/// Microseconds, signed (`suseconds_t`, a `long`: 64 bits on both LP64 machines, the type of
+/// `struct timeval`'s `tv_usec` in `kernel::clock`).
+pub type Suseconds = i64;
 /// Epoch time (`time_t`).
 pub type Time = i64;
 /// POSIX timer identifier (`timer_t`).

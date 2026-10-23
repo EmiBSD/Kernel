@@ -71,7 +71,7 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use crate::arch::arm64::arm64::cpu::OppTable;
 use crate::arch::arm64::include::frame::Trapframe;
 use crate::arch::arm64::include::pcb::Pcb;
-use crate::sys::clockintr::Clockqueue;
+
 use crate::sys::device::Device;
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
@@ -274,8 +274,7 @@ pub struct CpuInfo {
     /// `CI_DDB_*` (volatile).
     pub ci_ddb_paused: AtomicI32,
     // ci_gmon, ci_gmonclock: GPROF.
-    /// The clock interrupt queue.
-    pub ci_queue: Clockqueue,
+    // ci_queue: the CPU's clock interrupt queue is `kernel::clockintr::CPUS`' (N4.8a).
     /// The first panic message of this CPU.
     pub ci_panicbuf: UnsafeCell<[u8; 512]>,
 }
@@ -324,7 +323,7 @@ impl CpuInfo {
             ci_last_itime: Cell::new(0),
             ci_flags: AtomicU32::new(0),
             ci_ddb_paused: AtomicI32::new(0),
-            ci_queue: Clockqueue::new(),
+
             ci_panicbuf: UnsafeCell::new([0; 512]),
         }
     }

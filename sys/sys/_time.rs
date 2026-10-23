@@ -50,11 +50,15 @@
 //! thread's CPU clock.
 //!
 //! Upstream: sys/sys/_time.h @ 3ce1f3f79392
+//! LZ: sys/sys/_time.rs@3c62ede68802
 //!
 //! Status: `ported`. `time_t` and `struct timespec`, which this header also declares, are
 //! `sys/time.rs`'s (`Time`, `Timespec`). The `__CLOCK_*` macros are lower-case `const fn`s.
+//!
+//! ## Redesign
+//! - N4.8a: `struct itimerspec` is the kernel's (`kernel::time::Itimerspec`, `AbiPod` by
+//!   `hal::abi_pod!`), re-exported; the clock ids and the `__CLOCK_*` helpers stay here.
 
-use crate::sys::time::Timespec;
 use crate::sys::types::Clockid;
 
 /// `CLOCKS_PER_SEC`.
@@ -88,26 +92,8 @@ pub const CLOCK_UPTIME: Clockid = 5;
 /// `CLOCK_BOOTTIME`.
 pub const CLOCK_BOOTTIME: Clockid = 6;
 
-/// `struct itimerspec`: structure defined by POSIX 1003.1b to be like a itimerval, but with
-/// timespecs. Used in the timer_*() system calls.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Itimerspec {
-    /// `it_interval`: timer interval.
-    pub it_interval: Timespec,
-    /// `it_value`: timer expiration.
-    pub it_value: Timespec,
-}
-
-impl Itimerspec {
-    /// All zero.
-    pub const fn new() -> Self {
-        Self {
-            it_interval: Timespec::new(0, 0),
-            it_value: Timespec::new(0, 0),
-        }
-    }
-}
+/// `struct itimerspec`: the kernel's (`kernel::time`, N4.8a).
+pub use kernel::time::Itimerspec;
 
 /// `TIMER_RELTIME`: relative timer.
 pub const TIMER_RELTIME: i32 = 0x0;

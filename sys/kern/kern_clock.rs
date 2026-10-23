@@ -83,108 +83,30 @@
 //! ## Deviations
 //! - None beyond the module's status: the profiling half of the file is missing.
 
-use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
-// `ticks` and its reader live in the kernel crate (N4.1: timeout(9)'s wheel reads and moves
-// them there); re-exported under their names for `hardclock` and the readers of this path.
-pub use kernel::clock::{TICKS, ticks};
+// The clock's statics, `hardclock`, `initclocks` and `sysctl_clockrate` live in the kernel
+// crate (N4.1: `ticks`; N4.8a: the rest, `kernel::clock`); re-exported under their names for
+// the readers of this path.
+pub use kernel::clock::{
+    HARDCLOCK_PERIOD, JIFFIES, PROFHZ, PROFPROCS, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED,
+    STATCLOCK_MASK, STATCLOCK_MIN, STATHZ, TICKS, hardclock, hardclock_period, initclocks, ticks,
+};
 
 use crate::conf::param::{HZ, TICK};
-use crate::kassert;
 use crate::kern::kern_clockintr::{clockrequest_advance, clockrequest_advance_random};
 use crate::kern::kern_lock::{pc_sprod_enter, pc_sprod_leave};
-use crate::kern::kern_sysctl::sysctl_rdstruct;
-use crate::kern::kern_tc::{inittimecounter, tc_ticktock};
-use crate::kern::kern_timeout::timeout_hardclock_update;
-use crate::kern::sched_bsd::ROUNDROBIN_PERIOD;
 use crate::kern::sched_bsd::schedclock;
-use crate::kern::subr_prof::PROFCLOCK_PERIOD;
 use crate::machine::Machine;
-use crate::machine::cpu::{ClockFrame, Cpu, cpu_initclocks, cpu_startclock, curcpu};
+use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::clockintr::Clockrequest;
 use crate::sys::errno::Errno;
 use crate::sys::param::{NZERO, PAGE_SHIFT};
 use crate::sys::proc::ProcExt;
 use crate::sys::proc::{P_SYSTEM, TU_ITICKS, TU_STICKS, TU_UTICKS, tu_enter, tu_leave};
 use crate::sys::sched::{CP_IDLE, CP_INTR, CP_NICE, CP_SPIN, CP_SYS, CP_USER};
-use crate::sys::sysctl::SysctlPlain;
-use crate::sys::time::{Clockinfo, Timespec, Timeval, timespec_to_timeval};
-
-/// `stathz`: the statistics clock's frequency.
-pub static STATHZ: AtomicI32 = AtomicI32::new(0);
-/// `profhz`: the profiling clock's frequency.
-pub static PROFHZ: AtomicI32 = AtomicI32::new(0);
-/// `profprocs`: the number of processes being profiled.
-pub static PROFPROCS: AtomicI32 = AtomicI32::new(0);
-
-/// `jiffies` (volatile): don't force early wrap around, triggers bug in inteldrm.
-pub static JIFFIES: AtomicU64 = AtomicU64::new(0);
-
-/// \[I\] `hardclock_period`: hardclock period (ns).
-pub static HARDCLOCK_PERIOD: AtomicU64 = AtomicU64::new(0);
-/// \[I\] `statclock_avg`: average statclock period (ns).
-pub static STATCLOCK_AVG: AtomicU64 = AtomicU64::new(0);
-/// \[I\] `statclock_min`: minimum statclock period (ns).
-pub static STATCLOCK_MIN: AtomicU64 = AtomicU64::new(0);
-/// \[I\] `statclock_mask`: set of allowed offsets.
-pub static STATCLOCK_MASK: AtomicU32 = AtomicU32::new(0);
-/// \[I\] `statclock_is_randomized`: fixed or pseudorandom period?
-pub static STATCLOCK_IS_RANDOMIZED: AtomicBool = AtomicBool::new(false);
-
-/// `hardclock_period`.
-pub fn hardclock_period() -> u64 {
-    HARDCLOCK_PERIOD.load(Ordering::Relaxed)
-}
-
-/// `initclocks`: initialize clock frequencies and start both clocks running.
-pub fn initclocks() {
-    // Let the machine-specific code do its bit.
-    cpu_initclocks();
-
-    let hz = HZ.load(Ordering::Relaxed);
-    kassert!((1..=1_000_000_000).contains(&hz));
-    HARDCLOCK_PERIOD.store(1_000_000_000 / hz as u64, Ordering::Relaxed);
-    ROUNDROBIN_PERIOD.store(hardclock_period() * 10, Ordering::Relaxed);
-
-    let stathz = STATHZ.load(Ordering::Relaxed);
-    kassert!((1..=1_000_000_000).contains(&stathz));
-
-    // Compute the average statclock() period. Then find var, the largest 32-bit power of
-    // two such that var <= statclock_avg / 2.
-    let statclock_avg = 1_000_000_000 / stathz as u64;
-    STATCLOCK_AVG.store(statclock_avg, Ordering::Relaxed);
-    let half_avg = statclock_avg / 2;
-    let mut var: u32 = 1 << 31;
-    while u64::from(var) > half_avg {
-        var /= 2;
-    }
-
-    // Set a lower bound for the range using statclock_avg and var. The mask for that range
-    // is just (var - 1).
-    STATCLOCK_MIN.store(statclock_avg - u64::from(var / 2), Ordering::Relaxed);
-    STATCLOCK_MASK.store(var - 1, Ordering::Relaxed);
-
-    let profhz = PROFHZ.load(Ordering::Relaxed);
-    kassert!((stathz..=1_000_000_000).contains(&profhz));
-    kassert!(profhz % stathz == 0);
-    PROFCLOCK_PERIOD.store(1_000_000_000 / profhz as u64, Ordering::Relaxed);
-
-    inittimecounter();
-
-    // Start dispatching clock interrupts on the primary CPU.
-    cpu_startclock();
-}
-
-/// `hardclock`: the real-time timer, interrupting hz times per second.
-pub fn hardclock(_frame: *mut ClockFrame) {
-    tc_ticktock();
-    TICKS.fetch_add(1, Ordering::Relaxed);
-    JIFFIES.fetch_add(1, Ordering::Relaxed);
-
-    // Update the timeout wheel.
-    timeout_hardclock_update();
-}
+use crate::sys::time::{Timespec, Timeval, timespec_to_timeval};
+use hal::clock::ClockFrame;
 
 /// `tvtohz`: compute number of hz in the specified amount of time.
 pub fn tvtohz(tv: &Timeval) -> i32 {
@@ -202,7 +124,7 @@ pub fn tvtohz(tv: &Timeval) -> i32 {
     //
     // If ints have 32 bits, then the maximum value for any timeout in 10ms ticks is 248 days.
     let sec = tv.tv_sec;
-    let usec = tv.tv_usec as i64;
+    let usec = tv.tv_usec;
     let tick = TICK.load(Ordering::Relaxed) as u64;
     let hz = HZ.load(Ordering::Relaxed) as i64;
     let nticks: u64 = if sec < 0 || (sec == 0 && usec <= 0) {
@@ -241,7 +163,7 @@ pub fn tstohz(ts: &Timespec) -> i32 {
 
 /// `statclock`: statistics clock. Grab profile sample, and if divider reaches 0, do process
 /// and kernel statistics.
-pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
+pub fn statclock(cr: &Clockrequest, frame: &ClockFrame) {
     let ci = curcpu();
     let spc = Machine::ci_schedstate(ci);
     let p = Machine::ci_curproc(ci);
@@ -256,11 +178,9 @@ pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
         clockrequest_advance(cr, STATCLOCK_AVG.load(Ordering::Relaxed))
     };
 
-    // SAFETY: the dispatcher passes the clock frame the interrupt entry built.
-    let frame = unsafe { cf.cast::<ClockFrame>().as_ref() };
     // SAFETY: `ci_curproc` names the thread on this CPU, hence alive.
     let p = unsafe { p.as_ref() };
-    let usermode = frame.is_some_and(Machine::clkf_usermode);
+    let usermode = frame.usermode();
     let mut tu_tick: Option<usize> = None;
     let cp_time = if let (true, Some(p)) = (usermode, p) {
         let pr = p.process();
@@ -281,7 +201,7 @@ pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
         // Whichever it is, charge the time as appropriate. Note that we charge interrupts to
         // the current process, regardless of whether they are ``for'' that process, so that we
         // know how much of its real time was spent in ``non-process'' (i.e., interrupt) work.
-        let mut cp_time = if frame.is_some_and(Machine::clkf_intr) {
+        let mut cp_time = if frame.intr() {
             tu_tick = Some(TU_ITICKS);
             CP_INTR
         } else if p.is_some_and(|p| !kernel::sched::is_idle_thread(p)) {
@@ -348,16 +268,16 @@ pub fn statclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
     }
 }
 
-/// `sysctl_clockrate`: return information about system clocks (`kern.clockrate`).
+/// `sysctl_clockrate`: `kern.clockrate`, with `kern_sysctl.c`'s arguments
+/// (`kernel::clock::sysctl_clockrate`).
 pub fn sysctl_clockrate(where_: usize, sizep: &mut usize, newp: usize) -> Result<(), Errno> {
-    // Construct clockinfo structure.
-    let clkinfo = Clockinfo {
-        tick: TICK.load(Ordering::Relaxed),
-        hz: HZ.load(Ordering::Relaxed),
-        profhz: PROFHZ.load(Ordering::Relaxed),
-        stathz: STATHZ.load(Ordering::Relaxed),
+    let mut req = kernel::sysctl::SysctlReq {
+        oldp: where_,
+        oldlenp: sizep,
+        newp,
+        newlen: 0,
     };
-    sysctl_rdstruct(where_, sizep, newp, clkinfo.as_bytes())
+    kernel::clock::sysctl_clockrate(&mut req)
 }
 /* </CODE> */
 

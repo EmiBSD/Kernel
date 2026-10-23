@@ -95,6 +95,26 @@ pub fn todr_settime(ct: &TodrChipHandle, t: &mut Timeval) -> Result<(), Errno> {
     (ct.todr_settime)(ct, t)
 }
 
+/// A driver's chip as the kernel's time-of-day clock reads it (`kernel::time::Todr`, N4.8a):
+/// the handle's quality and its two functions; `todr_setwen` the kernel never calls (no
+/// caller of `todr_wenable` at the pin).
+impl kernel::time::Todr for TodrChipHandle {
+    fn quality(&self) -> i32 {
+        self.todr_quality
+    }
+
+    fn gettime(&self) -> Result<Timeval, Errno> {
+        let mut tv = Timeval::default();
+        todr_gettime(self, &mut tv)?;
+        Ok(tv)
+    }
+
+    fn settime(&self, tv: &Timeval) -> Result<(), Errno> {
+        let mut tv = *tv;
+        todr_settime(self, &mut tv)
+    }
+}
+
 /// `todr_wenable(ct, v)`.
 pub fn todr_wenable(ct: &TodrChipHandle, v: i32) {
     if let Some(setwen) = ct.todr_setwen {

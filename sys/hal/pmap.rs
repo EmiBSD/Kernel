@@ -160,8 +160,8 @@
 //!   (`kernel::vm::page::VmPage`, N3.3): the pv chain under its own mutex, the
 //!   pmap's attribute bits the C keeps in `pg_flags` (`PG_PMAP0`..`2`) in their own atomic
 //!   word, and a PTP's count of valid entries (the C's `wire_count` of a page-table page).
-//!   N3.4a: the word also holds `hal`'s claim (`PG_HAL_VIEW`, `PG_HAL_VIEW_W`, never in
-//!   [`PageMd::attrs`]): a frame held alone by a byte view (`sys/hal/mapped.rs`) or for the
+//!   N3.4a: the word also holds `hal`'s claim (`PG_HAL_VIEW`, `PG_HAL_VIEW_W` and, N4.8a,
+//!   `PG_HAL_KEEP` for the timekeep page's claim for good, never in [`PageMd::attrs`]): a frame held alone by a byte view (`sys/hal/mapped.rs`) or for the
 //!   length of [`zero_page`]/[`copy_page`], which panic on a held frame, as
 //!   [`page_protect`] does when it would write-protect a writable view and
 //!   [`PageMd::clear_attrs`] when the page system hands a held page out again;
@@ -247,8 +247,13 @@ pub const PG_PMAP2: u32 = 0x0400_0000;
 const PG_HAL_VIEW: u32 = 0x8000_0000;
 /// With [`PG_HAL_VIEW`]: the view is writable, so its mapping may not lose `PROT_WRITE`.
 const PG_HAL_VIEW_W: u32 = 0x4000_0000;
+/// With [`PG_HAL_VIEW`]: the claim is for good and does not rest on `PG_BUSY` (the timekeep
+/// page's view, `KernelMapper::timekeep_view`): the page system may busy and unbusy the page
+/// (the fault path clears a `PG_BUSY` it never set on every resident page it maps; the
+/// unlocked `uao_get` busies one), since that changes neither its bytes nor its owner.
+const PG_HAL_KEEP: u32 = 0x2000_0000;
 /// The bits `hal` keeps for itself.
-const PG_HAL_MASK: u32 = PG_HAL_VIEW | PG_HAL_VIEW_W;
+const PG_HAL_MASK: u32 = PG_HAL_VIEW | PG_HAL_VIEW_W | PG_HAL_KEEP;
 
 /// The pool of user pmaps (`pmap_pmap_pool`), named as the C names it on each machine
 /// (`"pmappl"` on amd64, `"pmap"` on arm64), made by [`init`].
@@ -542,7 +547,8 @@ pub struct PageMd {
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) pv: Mutexed<PvHead>,
     /// The `PG_PMAP_*` bits (`PG_PMAP_MOD`, `PG_PMAP_REF`, `PG_PMAP2`), and `hal`'s
-    /// `PG_HAL_VIEW`/`PG_HAL_VIEW_W` (the frame is held alone, by a byte view or a copy).
+    /// `PG_HAL_VIEW`/`PG_HAL_VIEW_W`/`PG_HAL_KEEP` (the frame is held alone, by a byte view or
+    /// a copy, or for good by the timekeep view).
     pub(crate) attrs: AtomicU32,
     /// Of a page-table page: its valid entries plus one (the C's `wire_count` of a PTP;
     /// amd64's alone: arm64's vp tables are found by the walk and freed with their pmap).
@@ -599,6 +605,13 @@ impl PageMd {
         self.attrs.load(Ordering::Acquire) & PG_HAL_VIEW != 0
     }
 
+    /// Whether the frame is held by a view that rests on the page staying busy (a pager
+    /// window, `map_direct`, a zero or copy): the page system must not unbusy it. The
+    /// timekeep page's claim ([`PG_HAL_KEEP`]) is not one.
+    pub fn in_busy_view(&self) -> bool {
+        self.attrs.load(Ordering::Acquire) & (PG_HAL_VIEW | PG_HAL_KEEP) == PG_HAL_VIEW
+    }
+
     /// Claims the frame alone, for a view (`writable` when it may write) or a copy: `true`
     /// when nothing held it (Acquire, so the bytes the last holder wrote are visible), `false`
     /// when something does (and then nothing changes).
@@ -611,6 +624,18 @@ impl PageMd {
         self.attrs
             .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
                 (a & PG_HAL_VIEW == 0).then_some(a | bits)
+            })
+            .is_ok()
+    }
+
+    /// Claims the frame alone and for good, writable, for the timekeep page's view: `true`
+    /// when nothing held it, `false` when something does (and then nothing changes). The
+    /// claim is never given back, and does not rest on `PG_BUSY` ([`PageMd::in_busy_view`] is
+    /// false for it).
+    pub(crate) fn claim_for_good(&self) -> bool {
+        self.attrs
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
+                (a & PG_HAL_VIEW == 0).then_some(a | PG_HAL_VIEW | PG_HAL_VIEW_W | PG_HAL_KEEP)
             })
             .is_ok()
     }
@@ -688,6 +713,10 @@ pub trait PhysPages: Sync {
     /// page is held by its owner for I/O, the only pages a pager maps for their bytes
     /// (`uvm_pagermapin`'s `KASSERT(pp->pg_flags & PG_BUSY)`).
     fn is_busy(&self, pa: Paddr) -> bool;
+    /// `pg->wire_count != 0` of the managed frame `pa` (`false` for any other frame): the
+    /// page is wired, so the page daemon never takes it (the timekeep page's check,
+    /// `KernelMapper::timekeep_view`).
+    fn is_wired(&self, pa: Paddr) -> bool;
     /// `uvm_page_physsteal(npg)`: `npg` contiguous frames taken out of the page system before
     /// it is up, not zeroed; `None` when there are none. Panics once `page_init_done` (as the
     /// C does).
@@ -843,7 +872,8 @@ pub trait Random: Sync {
     /// `arc4random()`.
     fn random_u32(&self) -> u32;
     /// `enqueue_randomness(val)`: a word of the system's timing and input mixed into the
-    /// entropy pool (the terminal's every input character, N4.7b).
+    /// entropy pool (the terminal's every input character, N4.7b; the timecounters' first
+    /// readings and the clock steps, N4.8a).
     fn enqueue_randomness(&self, val: u32);
 }
 

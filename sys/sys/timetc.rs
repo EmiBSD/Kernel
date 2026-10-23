@@ -99,6 +99,9 @@ pub struct Timecounter {
     pub tc_freq_adj: Cell<i64>,
     /// \[I\] `tc_precision`: precision of the counter. Computed in `tc_init()`.
     pub tc_precision: Cell<u64>,
+    /// The kernel's record of this counter (`kernel::tc::TcEntry`), made by `kern_tc`'s
+    /// `tc_init` (N4.8a): the kernel's timehands read the counter through it.
+    pub tc_entry: hal::link::Link<kernel::tc::TcEntry>,
 }
 
 // SAFETY: a timecounter is written by its driver before `tc_init` and by `tc_init` on the
@@ -126,12 +129,41 @@ impl Timecounter {
             tc_next: SlistEntry::new(),
             tc_freq_adj: Cell::new(0),
             tc_precision: Cell::new(0),
+            tc_entry: hal::link::Link::new(),
         }
     }
 
     /// `tc->tc_get_timecount(tc)`.
     pub fn get_timecount(&self) -> u32 {
         (self.tc_get_timecount.get())(self)
+    }
+}
+
+/// A driver's `struct timecounter` as the kernel's timecounters read it (N4.8a): the
+/// hardware's half of `kernel::tc`'s split, over the driver-written cells.
+impl kernel::tc::Timecounter for Timecounter {
+    fn get_timecount(&self) -> u32 {
+        (self.tc_get_timecount.get())(self)
+    }
+
+    fn counter_mask(&self) -> u32 {
+        self.tc_counter_mask.get()
+    }
+
+    fn frequency(&self) -> u64 {
+        self.tc_frequency.get()
+    }
+
+    fn name(&self) -> &'static str {
+        self.tc_name.get()
+    }
+
+    fn quality(&self) -> i32 {
+        self.tc_quality.get()
+    }
+
+    fn user(&self) -> i32 {
+        self.tc_user.get()
     }
 }
 

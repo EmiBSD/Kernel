@@ -658,6 +658,14 @@ pub(super) fn mapper() -> VmMapper {
     VmMapper(token())
 }
 
+/// The timekeep page's kernel view at `va` (`hal::pmap::KernelMapper::timekeep_view`): for
+/// `kernel::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
+/// mapping of the timekeep object; `hal` checks the page is managed and wired, claims its
+/// frame for good and makes the view once per boot (`None` otherwise).
+pub(crate) fn timekeep_view(va: Vaddr) -> Option<&'static hal::sys::timetc::TimekeepAtomic> {
+    token().timekeep_view(va)
+}
+
 /// The token, lent to the holder of the [`LegacyLend`]: `machine::pmap`, for its wrappers
 /// over the kernel pmap. Those are the three `unsafe fn`s (`pmap_kenter_pa`, `pmap_kremove`,
 /// arm64's `pmap_kenter_cache`), whose callers keep their `unsafe` blocks as the proof the

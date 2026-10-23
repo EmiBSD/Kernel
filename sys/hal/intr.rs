@@ -173,6 +173,9 @@ pub use levels::{
     IPL_VM, NIPL,
 };
 
+/// `IPL_CLOCK`: the clock interrupt's level, `IPL_SCHED` on both machines (`<machine/intr.h>`).
+pub const IPL_CLOCK: i32 = IPL_SCHED;
+
 /// `IPL_MPSAFE`: an "mpsafe" interrupt or soft interrupt, run without the kernel lock (a flag
 /// beside the level, both machines).
 pub const IPL_MPSAFE: i32 = 0x100;

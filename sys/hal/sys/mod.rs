@@ -69,6 +69,8 @@ pub mod sysctl;
 #[forbid(unsafe_code)]
 pub mod syslimits;
 #[forbid(unsafe_code)]
+pub mod timetc;
+#[forbid(unsafe_code)]
 pub mod types;
 #[forbid(unsafe_code)]
 pub mod unistd;

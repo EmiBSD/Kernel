@@ -29,6 +29,8 @@ pub mod include;
 pub mod pmap;
 #[cfg(not(feature = "module-rt"))]
 pub mod switch;
+// The generic timer's registers and the clock frame (N4.8a).
+pub mod timer;
 
 /// `<machine/param.h>` and `<machine/vmparam.h>` as `hal::arch::current` names them.
 pub use self::include::{param, vmparam};

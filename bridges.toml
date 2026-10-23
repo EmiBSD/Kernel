@@ -78,9 +78,9 @@ for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
 # bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
-# and its log(9) (N4.7b: kernel::pty's tablefull), implemented by sys/kern/hal_bridges.rs
-# (BsdPrintf) and registered before main(); the kernel crate's lines (kernel::prf: unported!,
-# vm::page, vm::pmemrange, vm::km) go through it.
+# and its log(9) (N4.7b: kernel::pty's tablefull; N4.8a: kernel::tc's clock-step line),
+# implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
+# crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
 # subr_prf goes with the bsd crate.
 # hal::prf::Printf
 [[bridge]]
@@ -173,7 +173,8 @@ paid_by = "N4"
 # bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
 # implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.7b: enqueue_randomness (the terminal's
-# every input character, tty.c's ttyinput), hal::random::enqueue_randomness.
+# every input character, tty.c's ttyinput), hal::random::enqueue_randomness; N4.8a: kernel::tc's
+# (the new counter's first readings, the clock steps).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"
@@ -197,6 +198,50 @@ paid_by = "N5"
 trait = "Uptime"
 for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
 paid_by = "N4"
+
+# bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
+# setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
+# implemented by sys/kern/hal_bridges.rs (BsdClockHardware), for kernel::clock's initclocks.
+# N7, with the clock drivers.
+# kernel::clock::ClockHardware
+[[bridge]]
+trait = "ClockHardware"
+for = ["sys/kernel/clock.rs"]
+paid_by = "N7"
+
+# bsd: the machine's boot(9) (machdep's: vfs_shutdown, config_suspend_all, the halt or reset),
+# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::reboot::reboot. N7.
+# kernel::reboot::MachineBoot
+[[bridge]]
+trait = "MachineBoot"
+for = ["sys/kernel/reboot.rs"]
+paid_by = "N7"
+
+# bsd: the time-of-day chips (struct todr_chip_handle of efi_machdep.rs and plrtc.rs on arm64),
+# implemented by sys/dev/clock_subr.rs (TodrChipHandle), received by kernel::time::todr_attach.
+# N7, with the drivers.
+# kernel::time::Todr
+[[bridge]]
+trait = "Todr"
+for = ["sys/kernel/time.rs"]
+paid_by = "N7"
+
+# bsd: the hardware timecounters: agtimer(4)'s AgtimerTc (sys/arch/arm64/dev/agtimer.rs) and
+# the drivers' struct timecounter (sys/sys/timetc.rs: acpitimer, acpihpet), received by
+# kernel::tc::tc_init through their TcEntry. N7, with the drivers.
+# kernel::tc::Timecounter
+[[bridge]]
+trait = "Timecounter"
+for = ["sys/kernel/tc.rs"]
+paid_by = "N7"
+
+# bsd: each CPU's interrupt clock, agtimer(4)'s AgtimerIntrclock (sys/arch/arm64/dev/agtimer.rs),
+# received by kernel::clockintr::clockintr_cpu_init. N7, with the driver.
+# kernel::clockintr::Intrclock
+[[bridge]]
+trait = "Intrclock"
+for = ["sys/kernel/clockintr.rs"]
+paid_by = "N7"
 
 # bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode
 # pager's uvn_io, which lets go of the net lock a faulting process holds around the VOP (N3.4c);

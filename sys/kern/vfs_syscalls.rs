@@ -2517,8 +2517,8 @@ fn copyin_timevals(uaddr: usize) -> Result<[Timeval; 2], Errno> {
         i64::from_ne_bytes(w)
     };
     Ok([
-        Timeval::new(word(0), word(1) as isize),
-        Timeval::new(word(2), word(3) as isize),
+        Timeval::new(word(0), word(1)),
+        Timeval::new(word(2), word(3)),
     ])
 }
 

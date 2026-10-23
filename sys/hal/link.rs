@@ -77,6 +77,7 @@ impl<T: 'static> Link<T> {
     }
 
     /// The target, `None` when the link is empty.
+    #[inline]
     pub fn get(&self) -> Option<&'static T> {
         let p = self.ptr.load(Ordering::Acquire);
         if p.is_null() {
@@ -92,17 +93,20 @@ impl<T: 'static> Link<T> {
     }
 
     /// Points the link at `to` (`None` empties it).
+    #[inline]
     pub fn set(&self, to: Option<&'static T>) {
         let p = to.map_or(ptr::null_mut(), |r| ptr::from_ref(r).cast_mut());
         self.ptr.store(p, Ordering::Release);
     }
 
     /// Whether the link is empty (`== NULL`).
+    #[inline]
     pub fn is_none(&self) -> bool {
         self.ptr.load(Ordering::Relaxed).is_null()
     }
 
     /// Whether the link names `x` (an address comparison, nothing followed).
+    #[inline]
     pub fn points_to(&self, x: &T) -> bool {
         ptr::eq(self.ptr.load(Ordering::Relaxed), ptr::from_ref(x))
     }

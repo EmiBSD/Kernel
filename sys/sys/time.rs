@@ -51,6 +51,7 @@
 //! `<sys/time.h>`: `timeval`, `timespec`, `bintime` and the arithmetic on them.
 //!
 //! Upstream: sys/sys/time.h @ 3ce1f3f79392
+//! LZ: sys/sys/time.rs@3c62ede68802
 //!
 //! Status: `wip`. Milestone M5 ports the three time structures, `timezone`, `itimerval`,
 //! `clockinfo`, the `timer*`/`timespec*`/`bintime*` operations, the conversions between the
@@ -66,6 +67,14 @@
 //!   return the result: `tv.clear()`, `timeradd(&a, &b)`.
 //! - `bintime` arithmetic overflows deliberately (the carry test `bt->frac > bt->frac + x`);
 //!   `overflowing_add` and `wrapping_*` spell that out.
+//!
+//! ## Redesign
+//! - N4.8a (decision 8): the structures are the kernel's, re-exported: `struct timeval`,
+//!   `struct timespec` and `struct bintime` from `kernel::clock`, `struct timezone`, `struct
+//!   itimerval` and `struct clockinfo` from `kernel::time`, with the C's field names and
+//!   types (`suseconds_t` is `i64`), `AbiPod` through `hal::abi_pod!` (LZ's four `unsafe impl
+//!   AbiPod` gone: `machine::copy`'s legacy trait covers every `hal` `AbiPod` type). The free
+//!   functions of the macros (`timespecadd`, `bintime_to_timespec`, ...) stay here over them.
 
 use core::cell::Cell;
 
@@ -101,137 +110,11 @@ pub const SECYR: i64 = SECDAY * 365;
 /// `POSIX_BASE_YEAR`: traditional POSIX base year.
 pub const POSIX_BASE_YEAR: i32 = 1970;
 
-/// `struct timeval`: structure returned by gettimeofday(2) system call, and used in other
-/// calls.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Timeval {
-    /// `tv_sec`: seconds.
-    pub tv_sec: Time,
-    /// `tv_usec`: and microseconds.
-    pub tv_usec: Suseconds,
-}
-
-impl Timeval {
-    /// A zero timeval.
-    pub const fn new(tv_sec: Time, tv_usec: Suseconds) -> Self {
-        Self { tv_sec, tv_usec }
-    }
-
-    /// `timerclear(tvp)`.
-    pub fn clear(&mut self) {
-        self.tv_sec = 0;
-        self.tv_usec = 0;
-    }
-
-    /// `timerisset(tvp)`.
-    pub const fn is_set(&self) -> bool {
-        self.tv_sec != 0 || self.tv_usec != 0
-    }
-
-    /// `timerisvalid(tvp)`.
-    pub const fn is_valid(&self) -> bool {
-        self.tv_usec >= 0 && self.tv_usec < 1_000_000
-    }
-}
-
-// SAFETY: `repr(C)`: two 64-bit integers (`time_t`, `suseconds_t` is a `long`), no padding;
-// every bit pattern is a valid value (`TIOCGTSTAMP` copies one out).
-unsafe impl crate::machine::copy::AbiPod for Timeval {}
-
-/// `struct timespec`: structure defined by POSIX.1b to be like a timeval.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Timespec {
-    /// `tv_sec`: seconds.
-    pub tv_sec: Time,
-    /// `tv_nsec`: and nanoseconds (a `long`).
-    pub tv_nsec: i64,
-}
-
-impl Timespec {
-    /// A timespec from its parts.
-    pub const fn new(tv_sec: Time, tv_nsec: i64) -> Self {
-        Self { tv_sec, tv_nsec }
-    }
-
-    /// `timespecclear(tsp)`.
-    pub fn clear(&mut self) {
-        self.tv_sec = 0;
-        self.tv_nsec = 0;
-    }
-
-    /// `timespecisset(tsp)`.
-    pub const fn is_set(&self) -> bool {
-        self.tv_sec != 0 || self.tv_nsec != 0
-    }
-
-    /// `timespecisvalid(tsp)`.
-    pub const fn is_valid(&self) -> bool {
-        self.tv_nsec >= 0 && self.tv_nsec < 1_000_000_000
-    }
-}
-
-// SAFETY: `repr(C)`: two 64-bit integers, no padding; every bit pattern is a valid value
-// (`copyin` of a user `struct timespec`, `kern_sig.c`'s `__thrsigdivert`).
-unsafe impl crate::machine::copy::AbiPod for Timespec {}
-
-/// `struct timezone`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Timezone {
-    /// `tz_minuteswest`: minutes west of Greenwich.
-    pub tz_minuteswest: i32,
-    /// `tz_dsttime`: type of dst correction.
-    pub tz_dsttime: i32,
-}
-
-// SAFETY: `#[repr(C)]` of two `int`s: no padding, any bit pattern.
-unsafe impl crate::machine::copy::AbiPod for Timezone {}
-
-/// `struct itimerval`: names of the interval timers, and structure defining a timer setting.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Itimerval {
-    /// `it_interval`: timer interval.
-    pub it_interval: Timeval,
-    /// `it_value`: current value.
-    pub it_value: Timeval,
-}
-
-// SAFETY: `#[repr(C)]` of two `Timeval`s: no padding, any bit pattern.
-unsafe impl crate::machine::copy::AbiPod for Itimerval {}
-
-/// `struct clockinfo`: clock information structure for `sysctl({CTL_KERN, KERN_CLOCKRATE})`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Clockinfo {
-    /// `hz`: clock frequency.
-    pub hz: i32,
-    /// `tick`: micro-seconds per hz tick.
-    pub tick: i32,
-    /// `stathz`: statistics clock frequency.
-    pub stathz: i32,
-    /// `profhz`: profiling clock frequency.
-    pub profhz: i32,
-}
-
-/// `struct bintime`: time expressed as seconds and fractions of a second.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Bintime {
-    /// `sec`.
-    pub sec: Time,
-    /// `frac`: the fraction of a second, in 1/2^64.
-    pub frac: u64,
-}
-
-impl Bintime {
-    /// A bintime from its parts.
-    pub const fn new(sec: Time, frac: u64) -> Self {
-        Self { sec, frac }
-    }
-}
+// The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::clock`) and
+// `struct timezone`, `struct itimerval`, `struct clockinfo` (`kernel::time`), N4.8a (decision
+// 8): the same layouts and field names, `AbiPod` through `hal::abi_pod!`.
+pub use kernel::clock::{Bintime, Timespec, Timeval};
+pub use kernel::time::{Clockinfo, Itimerval, Timezone};
 
 /// A `Timespec` behind a `Cell`, for the statics the clock code updates in place.
 pub type TimespecCell = Cell<Timespec>;
@@ -240,7 +123,7 @@ pub type TimespecCell = Cell<Timespec>;
 pub const fn timeval_to_timespec(tv: &Timeval) -> Timespec {
     Timespec {
         tv_sec: tv.tv_sec,
-        tv_nsec: tv.tv_usec as i64 * 1000,
+        tv_nsec: tv.tv_usec * 1000,
     }
 }
 
@@ -509,33 +392,6 @@ pub fn ticks_to_nsec(ticks: u64) -> u64 {
     ticks.wrapping_mul(TICK_NSEC.load(core::sync::atomic::Ordering::Relaxed) as u64)
 }
 
-/// The kernel crate's `struct timespec` (`kernel::clock::Timespec`): the same two words.
-impl From<kernel::clock::Timespec> for Timespec {
-    fn from(t: kernel::clock::Timespec) -> Self {
-        Timespec::new(t.tv_sec, t.tv_nsec)
-    }
-}
-
-/// `bsd`'s `struct timespec` as the kernel crate's.
-impl From<Timespec> for kernel::clock::Timespec {
-    fn from(t: Timespec) -> Self {
-        kernel::clock::Timespec::new(t.tv_sec, t.tv_nsec)
-    }
-}
-
-/// The kernel crate's `struct timeval` (`kernel::resource::Timeval`): the same two words.
-impl From<kernel::resource::Timeval> for Timeval {
-    fn from(t: kernel::resource::Timeval) -> Self {
-        Timeval::new(t.tv_sec, t.tv_usec as Suseconds)
-    }
-}
-
-/// `bsd`'s `struct timeval` as the kernel crate's.
-impl From<Timeval> for kernel::resource::Timeval {
-    fn from(t: Timeval) -> Self {
-        kernel::resource::Timeval::new(t.tv_sec, t.tv_usec as i64)
-    }
-}
 /* </CODE> */
 
 /* <TESTS> */

@@ -147,6 +147,8 @@ use hal::user::UserPtr;
 pub use crate::uio::UioMove;
 
 use crate::assert::{kassert, kpanic};
+/// `struct timespec` as the pipe keeps its times: the kernel's one (`kernel::clock`, N4.8a).
+pub use crate::clock::Timespec;
 use crate::event::{Filterops, Klist, Knote};
 use crate::proc::ProcGlue;
 use crate::sigio::{SigioRef, pgsigio, sigio_free, sigio_getown, sigio_setown};
@@ -240,15 +242,6 @@ impl Dir {
             _ => None,
         }
     }
-}
-
-/// `struct timespec` as the pipe keeps its times: seconds and nanoseconds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Timespec {
-    /// `tv_sec`.
-    pub tv_sec: i64,
-    /// `tv_nsec`.
-    pub tv_nsec: i64,
 }
 
 /// `struct pipebuf` without `cnt` and `size` (atomics of [`Pipe`]): the in and out pointers

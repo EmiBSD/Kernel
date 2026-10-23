@@ -174,6 +174,8 @@ use hal::vm::param::{round_page, trunc_page};
 
 use crate::assert::{kassert, kpanic};
 use crate::clock::Timespec;
+/// `struct timeval`: the kernel's one (`kernel::clock`, N4.8a).
+pub use crate::clock::Timeval;
 use crate::proc::{ProcGlue, Process, ProcessRef, PsMtx, Thread};
 
 /// `RLIMIT_CPU`: cpu time in milliseconds.
@@ -477,38 +479,6 @@ impl UWord {
     #[inline]
     pub fn set(&self, v: u64) {
         self.0.store(v, Ordering::Relaxed);
-    }
-}
-
-/// `struct timeval`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Timeval {
-    /// `tv_sec`.
-    pub tv_sec: i64,
-    /// `tv_usec`.
-    pub tv_usec: i64,
-}
-
-impl Timeval {
-    /// `{ sec, usec }`.
-    pub const fn new(tv_sec: i64, tv_usec: i64) -> Self {
-        Self { tv_sec, tv_usec }
-    }
-
-    /// `timeradd(self, b, &res)`: the sum, the microseconds carried.
-    pub const fn add(self, b: Timeval) -> Timeval {
-        let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
-        let mut usec = self.tv_usec + b.tv_usec;
-        if usec >= 1_000_000 {
-            sec = sec.wrapping_add(1);
-            usec -= 1_000_000;
-        }
-        Timeval::new(sec, usec)
-    }
-
-    /// `TIMESPEC_TO_TIMEVAL(&tv, &ts)`.
-    pub const fn from_timespec(ts: Timespec) -> Self {
-        Self::new(ts.tv_sec, ts.tv_nsec / 1000)
     }
 }
 

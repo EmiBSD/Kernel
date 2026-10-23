@@ -61,13 +61,12 @@
 //! `prof_write`, `addupc_intr`/`addupc_task` and `startprofclock`/`stopprofclock`
 //! (`kern_clock.c`) are not ported, so no process ever profiles (`PS_PROFIL` is never set).
 
-use core::ffi::c_void;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::kern::kern_clockintr::clockrequest_advance;
 use crate::machine::Machine;
 use crate::machine::cpu::need_resched;
-use crate::machine::cpu::{ClockFrame, Cpu, curcpu};
+use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::clockintr::Clockrequest;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{PSI_PROFILE, Proc};
@@ -75,9 +74,10 @@ use crate::sys::syscallargs::SysProfilArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
 use crate::unported;
+use hal::clock::ClockFrame;
 
-/// `profclock_period`.
-pub static PROFCLOCK_PERIOD: AtomicU64 = AtomicU64::new(0);
+/// `profclock_period`: the kernel's (`kernel::clock`, N4.8a; `initclocks` sets it).
+pub use kernel::clock::PROFCLOCK_PERIOD;
 
 /// `profclock_period`.
 pub fn profclock_period() -> u64 {
@@ -85,15 +85,13 @@ pub fn profclock_period() -> u64 {
 }
 
 /// `profclock`: the profiling clock interrupt.
-pub fn profclock(cr: &Clockrequest, cf: *mut c_void, _arg: *mut c_void) {
+pub fn profclock(cr: &Clockrequest, frame: &ClockFrame) {
     let p = Machine::ci_curproc(curcpu());
 
     // if (count > ULONG_MAX) count = ULONG_MAX: a no-op on LP64.
     let _count = clockrequest_advance(cr, profclock_period());
 
-    // SAFETY: the dispatcher passes the clock frame the interrupt entry built.
-    let frame = unsafe { cf.cast::<ClockFrame>().as_ref() };
-    if frame.is_some_and(Machine::clkf_usermode) || !p.is_null() {
+    if frame.usermode() || !p.is_null() {
         // ISSET(p->p_p->ps_flags, PS_PROFIL): addupc_intr(p, CLKF_PC(frame) / PROC_PC(p),
         // count): struct process (M5-b).
         let _ = unported!("profclock: addupc_intr (struct process, M5-b)");

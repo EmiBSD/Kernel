@@ -63,35 +63,32 @@
 //!   and is reliable, so every `wfe` loop goes on checking its condition. On hardware it
 //!   only costs a few spurious `wfe` returns; Linux keeps it on for the same reason.
 
-use core::arch::asm;
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
-use libkern::StaticCell;
+use hal::arch::arm64::timer;
+use hal::clock::ClockFrame;
+use kernel::clockintr::Intrclock;
+use kernel::tc::{TcEntry, Timecounter};
 
 use crate::arch::arm64::arm64::intr::{
     arm_clock_register, arm_intr_establish_fdt_idx, arm_intr_route,
 };
 use crate::arch::arm64::include::armreg::{
     CNTKCTL_EL0VCTEN, CNTKCTL_EVNTDIR, CNTKCTL_EVNTEN, CNTKCTL_EVNTI_MASK, CNTKCTL_EVNTI_SHIFT,
-    CNTV_CTL_ENABLE, CNTV_CTL_IMASK, CURRENTEL_EL_EL2, CURRENTEL_EL_MASK, read_specialreg,
-    write_specialreg,
+    CNTV_CTL_ENABLE, CNTV_CTL_IMASK, CURRENTEL_EL_EL2, CURRENTEL_EL_MASK,
 };
 use crate::arch::arm64::include::cpu::{cpu_is_primary, curcpu};
 use crate::arch::arm64::include::fdt::FdtAttachArgs;
 use crate::arch::arm64::include::intr::{IPL_CLOCK, IPL_MPSAFE, MachineIntrHandle};
 use crate::arch::arm64::include::timetc::{TC_AGTIMER, TC_AGTIMER_SUN50I};
 use crate::dev::ofw::openfirm::{OF_getindex, OF_getpropbool, OF_getpropint, OF_is_compatible};
-use crate::kassert;
 use crate::kern::kern_clock::{PROFHZ, STATCLOCK_IS_RANDOMIZED, STATHZ};
 use crate::kern::kern_clockintr::{clockintr_cpu_init, clockintr_dispatch, clockintr_trigger};
-use crate::kern::kern_tc::tc_init;
 use crate::kprintf;
-use crate::sys::clockintr::Intrclock;
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device};
-use crate::sys::timetc::Timecounter;
 
 /// `TIMER_FREQUENCY`: ARM core clock.
 const TIMER_FREQUENCY: i32 = 24 * 1000 * 1000;
@@ -99,15 +96,56 @@ const TIMER_FREQUENCY: i32 = 24 * 1000 * 1000;
 /// `agtimer_frequency`.
 pub static AGTIMER_FREQUENCY: AtomicI32 = AtomicI32::new(TIMER_FREQUENCY);
 
-/// `agtimer_timecounter`.
-static AGTIMER_TIMECOUNTER: Timecounter = Timecounter::new(
-    agtimer_get_timecount_default,
-    0xffff_ffff,
-    0,
-    "agtimer",
-    0,
-    TC_AGTIMER,
-);
+/// The generic timer's virtual counter as the kernel's timecounters read it: the hardware's
+/// half of `agtimer_timecounter` (N4.8a: `kernel::tc::Timecounter`). The frequency is the
+/// attach's (`clock-frequency`, `CNTFRQ_EL0`); the Allwinner A64's erratum switches the
+/// reader (`hal`'s flag) and the `tc_user` userland's libc reads.
+pub struct AgtimerTc {
+    /// `tc_frequency`.
+    freq: AtomicU64,
+    /// `tc_get_timecount == agtimer_get_timecount_sun50i`, `tc_user == TC_AGTIMER_SUN50I`.
+    sun50i: AtomicBool,
+}
+
+impl Timecounter for AgtimerTc {
+    fn get_timecount(&self) -> u32 {
+        // `hal`'s timecount reads around the A64 erratum once the attach chose it.
+        agtimer_get_timecount_default()
+    }
+
+    fn counter_mask(&self) -> u32 {
+        0xffff_ffff
+    }
+
+    fn frequency(&self) -> u64 {
+        self.freq.load(Ordering::Relaxed)
+    }
+
+    fn name(&self) -> &'static str {
+        "agtimer"
+    }
+
+    fn quality(&self) -> i32 {
+        0
+    }
+
+    fn user(&self) -> i32 {
+        if self.sun50i.load(Ordering::Relaxed) {
+            TC_AGTIMER_SUN50I
+        } else {
+            TC_AGTIMER
+        }
+    }
+}
+
+/// The counter's hardware half.
+static AGTIMER_TC: AgtimerTc = AgtimerTc {
+    freq: AtomicU64::new(0),
+    sun50i: AtomicBool::new(false),
+};
+
+/// `agtimer_timecounter`: the kernel's record of the counter.
+static AGTIMER_TIMECOUNTER: TcEntry = TcEntry::new(&AGTIMER_TC);
 
 /// `struct agtimer_softc`.
 pub struct AgtimerSoftc {
@@ -150,99 +188,61 @@ static AGTIMER: AgtimerSoftc = AgtimerSoftc {
     sc_attached: AtomicBool::new(false),
 };
 
-/// `agtimer_intrclock`.
-pub const AGTIMER_INTRCLOCK: Intrclock = Intrclock {
-    ic_cookie: ptr::null_mut(),
-    ic_rearm: agtimer_rearm,
-    ic_trigger: agtimer_trigger,
-};
+/// `agtimer_intrclock`: the virtual timer as each CPU's interrupt clock (N4.8a:
+/// `kernel::clockintr::Intrclock`; the C's null cookie: the callbacks read [`AGTIMER`]).
+pub struct AgtimerIntrclock;
 
-/// `agtimer_readcnt64_default`: reads `CNTVCT_EL0`.
-pub fn agtimer_readcnt64_default() -> u64 {
-    let (val0, val1): (u64, u64);
-    // Work around Cortex-A73 errata 858921, where there is a one-cycle window where the read
-    // might return the old value for the low 32 bits and the new value for the high 32 bits
-    // upon roll-over of the low 32 bits.
-    // SAFETY: an `isb` and two counter reads; no memory is touched (the `memory` clobber of
-    // the C keeps the compiler from moving loads across, so no `nomem` here).
-    unsafe {
-        asm!(
-            "isb",
-            "mrs {0}, cntvct_el0",
-            "mrs {1}, cntvct_el0",
-            out(reg) val0,
-            out(reg) val1,
-            options(nostack, preserves_flags)
-        )
-    };
-    if (val0 ^ val1) & 0x1_0000_0000 != 0 {
-        val0
-    } else {
-        val1
+impl Intrclock for AgtimerIntrclock {
+    fn rearm(&self, nsecs: u64) {
+        agtimer_rearm(nsecs);
     }
+
+    fn trigger(&self) {
+        agtimer_trigger();
+    }
+}
+
+/// `agtimer_intrclock`.
+pub static AGTIMER_INTRCLOCK: AgtimerIntrclock = AgtimerIntrclock;
+
+/// `agtimer_readcnt64_default`: reads `CNTVCT_EL0` (`hal`'s register access, around the
+/// Cortex-A73 erratum 858921).
+pub fn agtimer_readcnt64_default() -> u64 {
+    timer::readcnt64_default()
 }
 
 /// `agtimer_readcnt64_sun50i`: reads the counter around the Allwinner A64 erratum.
 pub fn agtimer_readcnt64_sun50i() -> u64 {
-    let mut val: u64 = 0;
-    let mut retry = 0;
-    // SAFETY: as for `agtimer_readcnt64_default`.
-    unsafe { asm!("isb", options(nostack, preserves_flags)) };
-    while retry < 150 {
-        // SAFETY: a counter read with no side effects.
-        unsafe {
-            asm!("mrs {}, cntvct_el0", out(reg) val, options(nomem, nostack, preserves_flags))
-        };
-        if ((val + 1) & 0x1ff) > 1 {
-            break;
-        }
-        retry += 1;
-    }
-    kassert!(retry < 150);
-
-    val
+    timer::readcnt64_sun50i()
 }
 
-/// `agtimer_readcnt64`: the counter reader in use.
-static AGTIMER_READCNT64: StaticCell<fn() -> u64> = StaticCell::new(agtimer_readcnt64_default);
-
-/// `agtimer_readcnt64()`.
+/// `agtimer_readcnt64()`: the counter through the reader the attach chose.
 pub fn agtimer_readcnt64() -> u64 {
-    // SAFETY: written only by `agtimer_attach` on the boot CPU, before the clocks start.
-    (unsafe { AGTIMER_READCNT64.read() })()
+    timer::readcnt64()
 }
 
 /// `agtimer_get_freq`: `CNTFRQ_EL0`.
 #[inline]
 fn agtimer_get_freq() -> u64 {
-    read_specialreg!("cntfrq_el0")
+    timer::cntfrq()
 }
 
 /// `agtimer_get_ctrl`: `CNTV_CTL_EL0`.
 #[inline]
 fn agtimer_get_ctrl() -> u32 {
-    read_specialreg!("cntv_ctl_el0") as u32
+    timer::cntv_ctl()
 }
 
 /// `agtimer_set_ctrl`: writes `CNTV_CTL_EL0`.
 #[inline]
 fn agtimer_set_ctrl(val: u32) {
-    // SAFETY: the virtual timer's control register is the kernel's to program; `isb` makes
-    // the write take effect before the next instruction.
-    unsafe {
-        write_specialreg!("cntv_ctl_el0", u64::from(val));
-        asm!("isb", options(nostack, preserves_flags));
-    }
+    timer::set_cntv_ctl(val);
 }
 
 /// `agtimer_set_tval`: writes `CNTV_TVAL_EL0`.
 #[inline]
 fn agtimer_set_tval(val: u32) {
-    // SAFETY: as for `agtimer_set_ctrl`.
-    unsafe {
-        write_specialreg!("cntv_tval_el0", u64::from(val));
-        asm!("isb", options(nostack, preserves_flags));
-    }
+    timer::set_cntv_tval(val);
 }
 
 /// `agtimer_match`.
@@ -285,12 +285,8 @@ pub fn agtimer_attach(_parent: Option<&Device>, _self: &Device, aux: *mut c_void
     // The Allwinner A64 has an erratum where the bottom 9 bits of the counter register can't
     // be trusted if any of the higher bits are rolling over.
     if OF_getpropbool(sc.sc_node.get(), b"allwinner,erratum-unknown1") {
-        // SAFETY: once, at attach on the boot CPU, before the clocks start.
-        unsafe { AGTIMER_READCNT64.write(agtimer_readcnt64_sun50i) };
-        AGTIMER_TIMECOUNTER
-            .tc_get_timecount
-            .set(agtimer_get_timecount_sun50i);
-        AGTIMER_TIMECOUNTER.tc_user.set(TC_AGTIMER_SUN50I);
+        timer::set_readcnt64_sun50i();
+        AGTIMER_TC.sun50i.store(true, Ordering::Relaxed);
     }
 
     // private timer and interrupts not enabled until timer configures
@@ -302,42 +298,28 @@ pub fn agtimer_attach(_parent: Option<&Device>, _self: &Device, aux: *mut c_void
         Some(agtimer_startclock),
     );
 
-    AGTIMER_TIMECOUNTER
-        .tc_frequency
-        .set(u64::from(sc.sc_ticks_per_second.get()));
-    AGTIMER_TIMECOUNTER
-        .tc_priv
-        .set(ptr::from_ref(sc).cast::<()>());
-    tc_init(&AGTIMER_TIMECOUNTER);
+    AGTIMER_TC
+        .freq
+        .store(u64::from(sc.sc_ticks_per_second.get()), Ordering::Relaxed);
+    // tc_priv = sc: the counter reads no softc (the hardware half is `AGTIMER_TC`).
+    kernel::tc::tc_init(&AGTIMER_TIMECOUNTER);
 
     // agtimer_intrclock.ic_cookie = sc: the callbacks read AGTIMER (see the deviations).
     sc.sc_attached.store(true, Ordering::Relaxed);
 }
 
 /// `agtimer_get_timecount_default`: the low 32 bits of the counter.
-pub fn agtimer_get_timecount_default(_tc: &Timecounter) -> u32 {
-    let val: u64;
-    // No need to work around Cortex-A73 errata 858921 since we only look at the low 32 bits
-    // here.
-    // SAFETY: as for `agtimer_readcnt64_default`.
-    unsafe {
-        asm!(
-            "isb",
-            "mrs {}, cntvct_el0",
-            out(reg) val,
-            options(nostack, preserves_flags)
-        )
-    };
-    val as u32
+pub fn agtimer_get_timecount_default() -> u32 {
+    timer::timecount()
 }
 
 /// `agtimer_get_timecount_sun50i`.
-pub fn agtimer_get_timecount_sun50i(_tc: &Timecounter) -> u32 {
+pub fn agtimer_get_timecount_sun50i() -> u32 {
     agtimer_readcnt64_sun50i() as u32
 }
 
 /// `agtimer_rearm`: fires the timer in `nsecs`.
-pub fn agtimer_rearm(_cookie: *mut c_void, nsecs: u64) {
+pub fn agtimer_rearm(nsecs: u64) {
     let sc = &AGTIMER;
 
     let nsecs = nsecs.min(sc.sc_nsec_max.get());
@@ -346,13 +328,27 @@ pub fn agtimer_rearm(_cookie: *mut c_void, nsecs: u64) {
 }
 
 /// `agtimer_trigger`: fires the timer now.
-pub fn agtimer_trigger(_unused: *mut c_void) {
+pub fn agtimer_trigger() {
     agtimer_set_tval(0);
 }
 
 /// `agtimer_intr`: the timer's interrupt handler.
 pub fn agtimer_intr(frame: *mut c_void) -> i32 {
-    clockintr_dispatch(frame)
+    // The C never dispatches without a frame; LZ read a null one as not from user mode,
+    // which a kernel-address `tf_elr` keeps.
+    const KERNEL_FRAME: ClockFrame = ClockFrame {
+        tf_sp: 0,
+        tf_lr: 0,
+        tf_elr: 1 << 63,
+        tf_spsr: 0,
+        tf_x: [0; 30],
+    };
+    // SAFETY: the interrupt controller's dispatch hands its handlers the trap frame
+    // `arm_cpu_irq` received from the IRQ entry (`exception.S`), saved on this CPU's stack
+    // and alive for the handler's whole call (it is the entry's frame, popped only after the
+    // dispatch returns); it is read here, never written, and only for the call.
+    let frame = unsafe { frame.cast::<ClockFrame>().as_ref() }.unwrap_or(&KERNEL_FRAME);
+    i32::from(clockintr_dispatch(frame))
 }
 
 /// `agtimer_set_clockrate`: a new counter frequency.
@@ -371,9 +367,10 @@ pub fn agtimer_set_clockrate(new_frequency: i32) {
         .set(u64::from(sc.sc_ticks_per_second.get()) * (1u64 << 32) / 1_000_000_000);
     sc.sc_nsec_max.set(u64::MAX / sc.sc_nsec_cycle_ratio.get());
 
-    AGTIMER_TIMECOUNTER
-        .tc_frequency
-        .set(u64::from(sc.sc_ticks_per_second.get()));
+    AGTIMER_TC
+        .freq
+        .store(u64::from(sc.sc_ticks_per_second.get()), Ordering::Relaxed);
+    AGTIMER_TIMECOUNTER.set_frequency(u64::from(sc.sc_ticks_per_second.get()));
 
     kprintf!(
         "agtimer0: adjusting clock: new tick rate {} kHz\n",
@@ -395,7 +392,7 @@ pub fn agtimer_cpu_initclocks() {
     }
 
     // Pick the correct PPI depending on the running EL.
-    let el = read_specialreg!("CurrentEL") & CURRENTEL_EL_MASK;
+    let el = timer::current_el() & CURRENTEL_EL_MASK;
     let mut idx = if el == CURRENTEL_EL_EL2 {
         OF_getindex(sc.sc_node.get(), Some(b"hyp-virt"), b"interrupt-names")
     } else {
@@ -439,6 +436,8 @@ pub fn agtimer_startclock() {
     }
 
     clockintr_cpu_init(Some(&AGTIMER_INTRCLOCK));
+    // The kernel's dispatch checks every uptime it reads under the smokes (feature qemu).
+    kernel::clockintr::set_uptime_check(cfg!(feature = "qemu"));
 
     let mut reg = agtimer_get_ctrl();
     reg &= !CNTV_CTL_IMASK;
@@ -449,8 +448,7 @@ pub fn agtimer_startclock() {
     clockintr_trigger();
 
     // enable userland access to virtual counter
-    // SAFETY: CNTKCTL_EL1 is the kernel's; granting EL0 the virtual counter is the C's intent.
-    unsafe { write_specialreg!("cntkctl_el1", CNTKCTL_EL0VCTEN) };
+    timer::set_cntkctl(CNTKCTL_EL0VCTEN);
     // Not in the C: the write above clears the event stream; keep it on (see the deviations).
     agtimer_evtstrm_enable();
 }
@@ -472,11 +470,9 @@ pub fn agtimer_init() {
 /// the counter frequency itself: an application processor calls it from its first kernel
 /// instructions, before `agtimer_attach` may have run.
 pub fn agtimer_evtstrm_enable() {
-    let reg = read_specialreg!("cntkctl_el1") & !(CNTKCTL_EVNTI_MASK | CNTKCTL_EVNTDIR);
+    let reg = timer::cntkctl() & !(CNTKCTL_EVNTI_MASK | CNTKCTL_EVNTDIR);
     let reg = reg | (agtimer_evtstrm_evnti(agtimer_get_freq()) << CNTKCTL_EVNTI_SHIFT);
-    // SAFETY: CNTKCTL_EL1 is the kernel's; the event stream only ends `wfe` waits early,
-    // and every `wfe` in the kernel sits in a loop that checks its condition again.
-    unsafe { write_specialreg!("cntkctl_el1", reg | CNTKCTL_EVNTEN) };
+    timer::set_cntkctl(reg | CNTKCTL_EVNTEN);
 }
 
 /// The event stream's trigger bit for a counter of `freq` Hz: the lowest counter bit whose

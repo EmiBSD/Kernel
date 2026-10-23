@@ -67,16 +67,14 @@
 
 #[cfg(feature = "syscall_debug")]
 use core::sync::atomic::AtomicI32;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_sysctl::ALLOWPOWERDOWN;
 use crate::kern::kern_task::{SYSTQ, task_add};
-use crate::kern::kern_time::stop_periodic_resettodr;
 #[cfg(feature = "syscall_debug")]
 use crate::kern::subr_prf::printf;
-use crate::machine::cpu::boot;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::signal::SIGUSR2;
@@ -85,9 +83,8 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::task::Task;
 use crate::sys::types::Register;
 
-/// `rebooting`: set once the system started to go down, for the benefit of code that must not
-/// sleep any more.
-pub static REBOOTING: AtomicBool = AtomicBool::new(false);
+/// `rebooting`: the kernel's (`kernel::reboot`, N4.8a).
+pub use kernel::reboot::REBOOTING;
 
 /// `reboot(2)`: root only; goes down with the `RB_*` flags `opt` (`<sys/reboot.h>`).
 pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
@@ -108,13 +105,10 @@ pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     // NOTREACHED
 }
 
-/// `reboot`: stops the clock bookkeeping and hands over to the machine's `boot(9)`.
+/// `reboot`: the kernel's (`kernel::reboot::reboot`: the clock bookkeeping stopped,
+/// `rebooting` set, the machine's `boot(9)`).
 pub fn reboot(howto: i32) -> ! {
-    stop_periodic_resettodr();
-
-    REBOOTING.store(true, Ordering::Relaxed);
-
-    boot(howto)
+    kernel::reboot::reboot(howto)
 }
 
 /// `powerdown_task`: runs `do_powerdown` on the system task queue.

@@ -109,19 +109,8 @@ pub trait SysctlPlain: hal::user::AbiPod {
 
 impl<T: hal::user::AbiPod> SysctlPlain for T {}
 
-// `struct timeval`: `time_t` and `suseconds_t` (a `long`), no padding.
-hal::abi_pod!(Timeval {
-    tv_sec: crate::sys::types::Time,
-    tv_usec: crate::sys::types::Suseconds,
-});
-
-// `struct clockinfo`: four `int`s.
-hal::abi_pod!(Clockinfo {
-    hz: i32,
-    tick: i32,
-    stathz: i32,
-    profhz: i32,
-});
+// `struct timeval` and `struct clockinfo` are the kernel's (`kernel::clock::Timeval`,
+// `kernel::time::Clockinfo`, N4.8a), `AbiPod` where they are defined.
 
 // `struct diskstats`: the C's one padding hole a member (`ds_pad0`).
 hal::abi_pod!(Diskstats {
