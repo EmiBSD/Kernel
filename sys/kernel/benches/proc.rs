@@ -306,7 +306,6 @@ impl ProcGlue for BenchGlue {
         &SCHED
     }
 
-    fn pgrp_destroy(_pg: &Pgrp<Self>) {}
     fn session_hangup(_sess: &Session<Self>) {}
     fn session_placed(_sess: &Session<Self>) {}
     fn session_destroy(_sess: &Session<Self>) {}

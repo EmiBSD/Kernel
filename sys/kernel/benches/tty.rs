@@ -29,6 +29,13 @@
 //! scratch test of `bsd` at the parent commit):
 //! - `prim.clist-putc-getc`: one `putc` then one `getc` on a 1,024-character quoted queue.
 //! - `prim.clist-b_to_q-64`: `b_to_q` of 64 bytes then `q_to_b` of them back.
+//! - `tty.input-char-raw`: `ttyinput` of one character with `ICANON` and `ECHO` off (64 in
+//!   a row, the raw queue emptied after them, which is timed too).
+//! - `tty.input-char-canon-echo`: `ttyinput` of one character of a 64-character line (63
+//!   'a' and '\n') with `ICANON|ECHO`, the echo drained by the driver's start routine (an
+//!   inherited driver's `t_oproc`), the canonical queue emptied after each line.
+//! - `tty.write-512-onlcr`: `ttwrite` of 512 bytes (a '\n' every 64) with `OPOST|ONLCR`,
+//!   the output drained by the driver's start routine.
 //! - `prim.tty-lock`: a `Mutexed` at `IPL_TTY` taken and given back (a queue's lock, the
 //!   tty's); LZ's "before" is a `spltty()`/`splx()` pair, what its queues paid instead.
 //! - `prim.spltty`: `splraise(IPL_TTY)` and its restore, the level alone.
@@ -41,8 +48,13 @@ use std::string::String;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use hal::sys::errno::Errno;
 use kernel::clist::Clist;
+use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
+use kernel::termios::{ECHO, ICANON, TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
 use kernel::testutil;
+use kernel::tty::{TS_CARR_ON, TS_ISOPEN, Tty, TtyRef, ttsetwater, ttychars, ttyinput, ttymalloc};
+use kernel::uio::UioMove;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -98,6 +110,104 @@ fn measure(b: &mut Bench<'_>, reps: usize, target: Duration) -> (f64, f64, f64, 
     (v[0], v[v.len() / 2], v[v.len() - 1], calls)
 }
 
+// ---------------------------------------------------------------------------------------
+// The glue of this bench: no member of bsd's.
+
+/// The bench's glue.
+pub struct BenchGlue;
+
+kernel::proc_glue_links!(BenchGlue);
+kernel::test_file_glue!(BenchFiles, BenchGlue);
+
+static TABLES: ProcTables<BenchGlue> = ProcTables::new();
+static SCHED: kernel::sched::SchedTables<BenchGlue> = kernel::sched::SchedTables::new();
+
+impl ProcGlue for BenchGlue {
+    type ProcessG = ();
+    type ThreadG = ();
+    type PgrpG = ();
+    type SessionG = ();
+    type FileGlue = BenchFiles;
+    kernel::proc_glue_link_types!();
+
+    fn tables() -> &'static ProcTables<Self> {
+        &TABLES
+    }
+
+    fn sched() -> &'static kernel::sched::SchedTables<Self> {
+        &SCHED
+    }
+
+    fn session_hangup(_sess: &Session<Self>) {}
+    fn session_placed(_sess: &Session<Self>) {}
+    fn session_destroy(_sess: &Session<Self>) {}
+    fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
+        f(None)
+    }
+    fn exit1(_p: &Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+        std::panic!("exit1 in a bench (signal {xsig})")
+    }
+    fn pledge_fail(_p: &Thread<Self>, error: Errno, _code: u64) -> Errno {
+        error
+    }
+    fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
+        match hal::pool::PoolArc::from_ref(pr) {
+            Some(a) => proc::StaticOrPooled::Pooled(a),
+            None => std::process::exit(1),
+        }
+    }
+}
+
+/// A tty set up as a driver's open would: default termios at 9600, open, carrier on.
+fn bench_tty() -> TtyRef<BenchGlue> {
+    let tp = ttymalloc::<BenchGlue>(9600);
+    ttychars(&tp);
+    tp.set_t_iflag(TTYDEF_IFLAG);
+    tp.set_t_oflag(TTYDEF_OFLAG);
+    tp.set_t_lflag(TTYDEF_LFLAG);
+    tp.set_t_cflag(TTYDEF_CFLAG);
+    tp.set_t_ispeed(9600);
+    tp.set_t_ospeed(9600);
+    ttsetwater(&tp);
+    tp.t_state_set(TS_ISOPEN | TS_CARR_ON);
+    tp
+}
+
+/// The driver's start routine of the benches: the output queue drained.
+fn drain_out(tp: &Tty<BenchGlue>) {
+    let n = tp.t_outq.c_cc.get();
+    if n > 0 {
+        tp.t_outq.ndflush(n);
+    }
+}
+
+/// A `UIO_SYSSPACE`-like write source over a buffer.
+struct Src<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl UioMove for Src<'_> {
+    fn resid(&self) -> usize {
+        self.data.len() - self.pos
+    }
+    fn uiomove(&mut self, buf: &mut [u8]) -> Result<(), Errno> {
+        let n = buf.len().min(self.resid());
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(())
+    }
+    fn nonblock(&self) -> bool {
+        false
+    }
+    fn is_write(&self) -> bool {
+        true
+    }
+    fn set_resid(&mut self, resid: usize) {
+        self.pos = self.data.len().saturating_sub(resid);
+    }
+}
+
 /// A queue of `size` characters, set up by `clalloc`, for the run.
 fn queue(size: i32, quot: bool) -> &'static Clist {
     let q: &'static Clist = Box::leak(Box::new(Clist::new()));
@@ -117,7 +227,60 @@ fn main() {
     let src = [b'x'; 64];
     let mut dst = [0u8; 64];
 
+    let raw = bench_tty();
+    raw.t_lflag_clr(ICANON | ECHO);
+    let canon = bench_tty();
+    canon.set_oproc(Some(drain_out));
+    let wr = bench_tty();
+    wr.set_oproc(Some(drain_out));
+    let line = [b'a'; 64];
+    let mut cline = [b'a'; 64];
+    cline[63] = b'\n';
+    let mut msg = [b'w'; 512];
+    for i in 0..8 {
+        msg[i * 64 + 63] = b'\n';
+    }
+
     let mut benches: Vec<Bench<'_>> = Vec::new();
+    benches.push(Bench {
+        name: "tty.input-char-raw",
+        ops: 64,
+        f: Box::new(|| {
+            let t = Instant::now();
+            for &c in &line {
+                ttyinput(i32::from(c), &raw);
+            }
+            raw.t_rawq.ndflush(raw.t_rawq.c_cc.get());
+            t.elapsed()
+        }),
+    });
+    benches.push(Bench {
+        name: "tty.input-char-canon-echo",
+        ops: 64,
+        f: Box::new(|| {
+            let t = Instant::now();
+            for &c in &cline {
+                ttyinput(i32::from(c), &canon);
+            }
+            canon.t_canq.ndflush(canon.t_canq.c_cc.get());
+            t.elapsed()
+        }),
+    });
+    benches.push(Bench {
+        name: "tty.write-512-onlcr",
+        ops: 100,
+        f: Box::new(|| {
+            // A hundred writes per timing, as LZ's "before" loop (one clock read pair per
+            // write would add ~45 ns of the host's clock to each).
+            let t = Instant::now();
+            for _ in 0..100 {
+                let mut src = Src { data: &msg, pos: 0 };
+                let _ = black_box(kernel::tty::ttwrite(&wr, &mut src, 0));
+                drain_out(&wr);
+            }
+            t.elapsed()
+        }),
+    });
     benches.push(Bench {
         name: "prim.clist-putc-getc",
         ops: PRIM,
@@ -158,6 +321,35 @@ fn main() {
         for b in &benches {
             println!("{}", b.name);
         }
+        std::process::exit(0);
+    }
+
+    if args.first().map(String::as_str) == Some("--profile") {
+        // Loops one bench for SECS seconds, for a sampling profiler attached to the process
+        // (`sample <pid>`), as vm.rs.
+        let name = args.get(1).cloned().unwrap_or_default();
+        let secs: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+        let Some(b) = benches.iter_mut().find(|b| b.name == name.as_str()) else {
+            eprintln!("tty bench: no bench {name}");
+            std::process::exit(2);
+        };
+        eprintln!(
+            "pid {} profiling {} for {secs} s",
+            std::process::id(),
+            b.name
+        );
+        let end = Instant::now() + Duration::from_secs(secs);
+        let mut calls = 0u64;
+        let mut t = Duration::ZERO;
+        while Instant::now() < end {
+            t += (b.f)();
+            calls += 1;
+        }
+        println!(
+            "{} {:.1} ns/op over {calls} calls",
+            b.name,
+            t.as_nanos() as f64 / (calls as f64 * b.ops as f64)
+        );
         std::process::exit(0);
     }
 

@@ -2514,7 +2514,6 @@ mod tests {
             &SCHED
         }
 
-        fn pgrp_destroy(_pg: &crate::proc::Pgrp<Self>) {}
         fn session_hangup(_sess: &crate::proc::Session<Self>) {}
         fn session_placed(_sess: &crate::proc::Session<Self>) {}
         fn session_destroy(_sess: &crate::proc::Session<Self>) {}

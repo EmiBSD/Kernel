@@ -55,12 +55,14 @@ pub mod sched;
 pub mod select;
 pub mod sig;
 pub mod sigio;
+pub mod sysctl;
 pub mod task;
 pub mod termios;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;
 pub mod timeout;
+pub mod tty;
 pub mod uio;
 pub mod vm;
 /* </CODE> */

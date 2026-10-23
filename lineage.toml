@@ -10189,6 +10189,20 @@ status = "redesigned"
 notes = "N4.7b: the clists: struct clist owns its ring (counts, cursors, the ring and quote MArrays of M_TTYS) inside a Mutexed at IPL_TTY, the C's per-operation spltty made a lock; c_cc and c_cn mirrored in relaxed words for the unlocked readers; tty_subr.c's functions as Clist methods (bsd keeps the free names until N4.7b's switch-over); catq and swap lock both rings in address order; peek_with for the drivers' raw head-of-queue reads; all-zero valid (uhid, ugen)"
 
 [[module]]
+rust = "sys/kernel/tty.rs"
+crate = "kernel"
+lz = ["sys/kern/tty.rs", "sys/sys/tty.rs", "sys/kern/tty_conf.rs"]
+status = "redesigned"
+notes = "N4.7b: struct tty an item of the recorded pool ttypl (TtyRef = PoolArc), its multi-word state (c_cc, winsize, column, rocount, rocol, the counted foreground group and session, the driver) a TtyState inside a Mutexed at IPL_TTY, the words the drivers RMW unlocked (t_state, the termios flag words, speeds, t_dev, water marks, t_gen) atomics; every C section a Sect (spltty for its life, the state lock let go around every call out of the module); struct linesw the LineDiscipline trait (TermiosDisc, Defunct, Discipline::TABLE), t_oproc/t_param/t_hwiflow the TtyDriver trait plus a function table for the inherited drivers; the three filterops Filter impls with the tty held by the knote's counted hook; kern.tty a SysctlNode; ttypend requeues in place; ttyfree retires (the item stays for the drivers' &'static, until N7); constty, the console dev, tty_count and ttylist in TtyTables; d_stop, cnwrite, the console access check and s_ttyvp through the TtyDevsw bridge"
+
+[[module]]
+rust = "sys/kernel/sysctl.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_sysctl.rs"]
+status = "redesigned"
+notes = "N4.7b (before N4.6b's sysctl core, which inherits the file): the SysctlNode trait (decision 46: a *_sysctl the C dispatches by hand), SysctlReq (moved from kernel::vm::meter, re-exported there), sysctl_rdquad and sysctl_rdstruct as rdquad/rdstruct over hal::user::UserPtr; the dispatch and the other helpers stay bsd's kern_sysctl.rs"
+
+[[module]]
 rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]

@@ -79,6 +79,8 @@
 //! - `arc4random_uniform` is re-expressed over [`arc4random`] with the C's rejection of the
 //!   low `2**32 % upper_bound` values, so the result is unbiased; `bsd`'s copy in
 //!   `sys/dev/rnd.rs` stays for its legacy callers.
+//! - N4.7b: [`enqueue_randomness`], the bridge's second member, for the terminal's
+//!   per-character call (`ttyinput`).
 
 pub use crate::pmap::Random;
 
@@ -100,6 +102,15 @@ pub fn arc4random() -> u32 {
 /// probability above one half).
 pub fn arc4random_uniform(upper_bound: u32) -> u32 {
     uniform_with(upper_bound, arc4random)
+}
+
+/// `enqueue_randomness(val)`: `val` mixed into `bsd`'s entropy pool (the terminal's input
+/// characters, `tty.c`'s `ttyinput`); nothing before the bridge is registered (no generator
+/// to feed yet).
+pub fn enqueue_randomness(val: u32) {
+    if let Some(r) = bridges::random() {
+        r.enqueue_randomness(val);
+    }
 }
 
 /// [`arc4random_uniform`] over the word source `draw`.

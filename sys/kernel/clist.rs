@@ -493,6 +493,17 @@ impl Clist {
         r
     }
 
+    /// `putc(a, clp)` then `putc(b, clp)` under one hold of the lock (`ttyoutput`'s `"\r\n"`
+    /// for `ONLCR`): each result as `putc`'s; `b` is not tried when `a` did not fit, as the
+    /// C returns there.
+    pub fn putc2(&self, a: i32, b: i32) -> (i32, i32) {
+        let mut g = self.lock();
+        let ra = g.putc(a);
+        let rb = if ra == 0 { g.putc(b) } else { -1 };
+        self.unlock(g);
+        (ra, rb)
+    }
+
     /// `b_to_q`: copy buffer to clist. Return number of bytes not transferred.
     pub fn b_to_q(&self, cp: &[u8]) -> usize {
         let mut count = cp.len();
