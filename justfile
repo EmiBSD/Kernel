@@ -208,6 +208,10 @@ smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 # `irq N` through the 8259 before), as OpenBSD/amd64 on QEMU does. Since M16e bios0 reads the
 # SMBIOS tables (bios.c) and prints what OpenBSD 8.0 prints on q35/OVMF: the revision, a bare
 # type 0 line (OVMF's BIOS strings lie within 64 bytes of the table's end) and the system.
+# Since N4.8b pin_check reports init's unpinned getpid (`init: processes ok` checks its
+# SIGABRT) with uprintf, as the C does: init has no controlling terminal, so the arm64 boot
+# rejects the console line LZ printed there ("pinsyscalls addr"); amd64's expectation of that
+# line waits for N10 (decision 44).
 smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
     cargo xtask smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --ramdisk none --expect-ramdisk \
         --expect "bsd: booted on amd64" --expect "The Regents of the University of California" \
@@ -287,7 +291,7 @@ smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") buil
         --expect "init: fds ok" --expect "init: signals ok" --expect "init: EmiBSD 8.0" \
         --expect "cannot mount root: no root file system" \
         --expect "warning: /dev/console does not exist" --expect "init: vfs ok (no root file system)" \
-        --expect "init: pipes ok" --expect "init: sockets ok" --expect "init: wg ok" --expect "init: kqueue ok" --expect "init: inet sockets ok" --expect "init: pfkey ok" --expect "init: tcp ok" --expect "init: processes ok" --expect "init: pledge ok" --expect "init: time ok" --expect "init: uptime monotonic ok" --expect "init: unveil ok" --expect "init: sendsyslog ok" --expect "pinsyscalls addr" \
+        --expect "init: pipes ok" --expect "init: sockets ok" --expect "init: wg ok" --expect "init: kqueue ok" --expect "init: inet sockets ok" --expect "init: pfkey ok" --expect "init: tcp ok" --expect "init: processes ok" --expect "init: pledge ok" --expect "init: time ok" --expect "init: uptime monotonic ok" --expect "init: unveil ok" --expect "init: sendsyslog ok" --reject "pinsyscalls addr" \
         --expect "selftest: pmap reuse ok" --expect "selftest: ping 10.0.2.2: echo reply received" \
         --expect "init: tty ok" \
         --expect "init exited with status 0 (signal 0)"
