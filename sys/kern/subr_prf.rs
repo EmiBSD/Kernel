@@ -881,7 +881,7 @@ mod tests {
         procinit();
         let pr = test_process(1);
         let p = test_thread(pr);
-        pr.ps_mainproc.set(p);
+        pr.set_main_static(hal::pin::pin_static(p));
         let (_pg, sess) = test_setsid(pr);
         let base = count(&sess);
 

@@ -2296,7 +2296,7 @@ pub fn wakeup_proc<G: ProcGlue>(h: &mut SchedHold, p: Pin<&Thread<G>>) -> bool {
 /// else). It is only scheduled and used by `sleep_finish()`, which coordinates with this
 /// handler via the `P_TIMEOUT` and `P_TIMEOUTRAN` flags. Its argument is the thread's tid,
 /// found under the kernel lock the softclock thread holds for it (the module's deviations).
-fn endtsleep<G: ProcGlue>(arg: *mut c_void) {
+pub(crate) fn endtsleep<G: ProcGlue>(arg: *mut c_void) {
     let tid = arg.addr() as i32;
     let r = hal::klock::reader();
     let Some(p) = G::tables()
@@ -2338,14 +2338,22 @@ pub fn unsleep<G: ProcGlue>(h: &mut SchedHold, p: &Thread<G>) {
 /// `wakeup_n(ident, n)`: make a number of processes sleeping on the specified identifier
 /// runnable (every one for a negative `n`).
 pub fn wakeup_n<G: ProcGlue>(ident: usize, n: i32) {
+    let mut h = sched_lock();
+    wakeup_n_locked::<G>(&mut h, ident, n);
+    drop(h);
+}
+
+/// [`wakeup_n`] for a holder of `SCHED_LOCK`: `futex(2)`'s wakeup of each waiter it took off
+/// a bucket, under the one hold the C's `futex_list_wakeup` takes for the batch (its
+/// `wakeup_proc` of the thread asleep on the futex's own address).
+pub fn wakeup_n_locked<G: ProcGlue>(h: &mut SchedHold, ident: usize, n: i32) {
     let t = tables::<G>();
     let wakeq: PinList<G::ThreadRunq> = PinList::new();
     let max = usize::try_from(n).unwrap_or(usize::MAX);
 
-    let mut h = sched_lock();
     let qp = &t.slpque[lookup(ident)];
     let _moved = qp.move_where(
-        &mut h,
+        &mut *h,
         max,
         |p| {
             #[cfg(feature = "diagnostic")]
@@ -2364,29 +2372,28 @@ pub fn wakeup_n<G: ProcGlue>(ident: usize, n: i32) {
     // Each moved thread leaves its sleep, then goes to a run queue when it is asleep
     // (`setrunnable`, decided while it is still first on the local queue: its CPU and
     // priority, and the decay of a long sleep, which touch the thread's words alone).
-    while let Some(place) = wakeq.first(&h).map(|p| {
+    while let Some(place) = wakeq.first(&*h).map(|p| {
         p.p_wchan.set(0);
         p.p_wmesg.set(None);
         // TRACEPOINT(sched, unsleep, ...): dt(4), not configured.
         if p.stat() != SSLEEP {
             return None;
         }
-        let prio = runnable_prio(&h, p)?;
-        let spc = queue_place(&h, None, p, prio);
-        runnable_after(&h, p);
+        let prio = runnable_prio(&*h, p)?;
+        let spc = queue_place(&*h, None, p, prio);
+        runnable_after(&*h, p);
         Some((spc, prio))
     }) {
         match place {
             Some((spc, prio)) => {
-                wakeq.move_first_to(&mut h, &spc.qs[usize::from(prio >> 2)]);
+                wakeq.move_first_to(&mut *h, &spc.qs[usize::from(prio >> 2)]);
                 queued(spc, prio);
             }
             None => {
-                wakeq.remove_first(&mut h);
+                wakeq.remove_first(&mut *h);
             }
         }
     }
-    drop(h);
 }
 
 /// `wakeup(chan)`: make all processes sleeping on the specified identifier runnable.
@@ -2479,7 +2486,7 @@ const _: () = assert!(
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::boxed::Box;
     use std::sync::{Mutex, MutexGuard, Once, PoisonError};
     use std::time::Duration;
@@ -2495,7 +2502,7 @@ mod tests {
     crate::proc_glue_links!(SchedGlue);
     crate::test_file_glue!(SchedFiles, SchedGlue);
 
-    static TABLES: ProcTables<SchedGlue> = ProcTables::new();
+    pub(crate) static TABLES: ProcTables<SchedGlue> = ProcTables::new();
     static SCHED: SchedTables<SchedGlue> = SchedTables::new();
 
     impl ProcGlue for SchedGlue {
@@ -2547,13 +2554,13 @@ mod tests {
         }
     }
 
-    type T = Thread<SchedGlue>;
+    pub(crate) type T = Thread<SchedGlue>;
 
     /// The tests' process (process 1 of the glue).
     static PR: Process<SchedGlue> = Process::new(1, ());
 
     /// The virtual CPUs' numbers (high, away from the test threads' own cores' numbers).
-    const VCPUS: [usize; 2] = [250, 251];
+    pub(crate) const VCPUS: [usize; 2] = [250, 251];
 
     /// The start words of the tests' threads.
     const START_IDLE: usize = 0;
@@ -2586,7 +2593,7 @@ mod tests {
     }
 
     /// A thread of the tests' process, leaked (it lives for the process), tid `tid`.
-    fn thread(tid: i32, prio: u8) -> Pin<&'static T> {
+    pub(crate) fn thread(tid: i32, prio: u8) -> Pin<&'static T> {
         let t: &'static T = Box::leak(Box::new(Thread::new_static(&PR, ())));
         t.p_tid.set(tid);
         t.p_usrpri.set(prio);
@@ -2604,7 +2611,7 @@ mod tests {
 
     /// Once per process: the doubles, the start, the virtual CPUs with their scheduler state
     /// and idle threads (each waiting for its first switch).
-    fn setup() -> MutexGuard<'static, ()> {
+    pub(crate) fn setup() -> MutexGuard<'static, ()> {
         let g = lock(&SERIAL);
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
@@ -2633,7 +2640,7 @@ mod tests {
     /// The calling host thread becomes `p` running on virtual CPU `n`, pegged there
     /// (`P_CPUPEG`): woken, it resumes on `n`, so a test ends on the vCPU it started on and the
     /// next test's thread takes that vCPU over from a host thread that is gone.
-    fn run_as(n: usize, p: Pin<&'static T>) {
+    pub(crate) fn run_as(n: usize, p: Pin<&'static T>) {
         hal::cpu::set_current(vcpu(n));
         p.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
         p.set_stat(SONPROC);

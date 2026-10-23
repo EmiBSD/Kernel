@@ -54,18 +54,18 @@
 //! Upstream: sys/kern/kern_kthread.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_kthread.rs@3c62ede68802
 //!
-//! The process code stays in `bsd` until N4.6 (`kern_fork.rs`'s `fork1`, `kern_exit.rs`), so
-//! making a thread, ending one and pegging one arrive through the [`Kthread`] bridge
-//! (bridges.toml; paid by N4.6), registered by `bsd` at boot. The deferred creations are this
-//! module's own since N4.5a: the kernel's ([`Start`]s) and `bsd`'s (a function and its
+//! Making a thread is [`kthread_create`] over `kernel::fork::fork1` (N4.6a); the kernel's own
+//! subsystems (timeout(9), task(9)), which name no glue, reach it through the operations
+//! `kernel::fork::init` registers (`Ops`), as the host tests' doubles do. The deferred
+//! creations are this module's own since N4.5a: the kernel's ([`Start`]s) and `bsd`'s (a function and its
 //! argument, [`kthread_create_deferred`]) wait in one queue, in order, until
 //! [`kthread_run_deferred_queue`].
 //!
 //! **The start ticket.** The C hands a new thread a function and a `void *` (`softclock_thread`
 //! and `NULL`, `taskq_thread` and the queue), which the thread casts back. Here no pointer
 //! crosses: the kernel files what the new thread is to run as a [`Start`] in [`STARTS`] and
-//! hands the bridge the slot's number plus one, a ticket; `bsd`'s thread function calls
-//! [`run`] with it, which takes the `Start` back out, in safe code: what a ticket names is a
+//! hands `fork1` the slot's number plus one, a ticket (`kernel::fork::Start::Kernel`); the
+//! new thread's start calls [`run`] with it, which takes the `Start` back out, in safe code: what a ticket names is a
 //! value of this crate's own types (a queue's counted handle), never a re-typed address. A
 //! ticket is never 0: `bsd` carries it as the thread's `void *`, and `fork1` hands a thread
 //! whose argument is `NULL` its own `p` instead (`kern_fork.c:437`, `arg ? arg : p`;
@@ -98,7 +98,6 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use hal::bridges::AlreadyRegistered;
 use hal::intr::IPL_NONE;
 use hal::mutex::Mutexed;
 use hal::once::OnceStatic;
@@ -140,35 +139,6 @@ static DEFERRED: Mutexed<VecDeque<Deferred>> = Mutexed::new(IPL_NONE, VecDeque::
 /// at once from then on).
 pub static KTHREAD_CREATE_NOW: AtomicBool = AtomicBool::new(false);
 
-/// The [`Kthread`] bridge, registered once by `bsd` (the host tests' doubles).
-static KTHREAD: OnceStatic<&'static dyn Kthread> = OnceStatic::new();
-
-/// The kernel threads of `bsd`'s process code (`sys/kern/kern_kthread.rs`,
-/// `sys/kern/kern_sched.rs`), until they move (N4.6): bridges.toml `Kthread`.
-pub trait Kthread: Sync {
-    /// `kthread_create(func, ticket, NULL, name)`: a kernel thread named `name` whose function
-    /// calls [`run`] with `ticket`; the error of `fork1` (the C's non-zero return).
-    fn create(&self, name: &'static [u8], ticket: usize) -> Result<(), Errno>;
-    /// `kthread_exit(ecode)`: the running kernel thread ends.
-    fn exit(&self, ecode: i32) -> !;
-    /// `sched_peg_curproc(ci)` of the primary CPU (`CPU_INFO_FOREACH` until
-    /// `CPU_IS_PRIMARY(ci)`): the running thread runs only there from now on.
-    fn peg_to_primary_cpu(&self);
-}
-
-/// Registers the [`Kthread`] bridge, once; a second call keeps the first and names it.
-pub fn install_kthread(imp: &'static dyn Kthread) -> Result<(), AlreadyRegistered> {
-    KTHREAD.set(imp).map_err(|_| AlreadyRegistered("Kthread"))
-}
-
-/// The registered bridge: making a thread before `bsd` registered it is a boot-order bug.
-fn bridge() -> &'static dyn Kthread {
-    match KTHREAD.get() {
-        Some(k) => *k,
-        None => kpanic(format_args!("kthread: no Kthread bridge registered")),
-    }
-}
-
 /// Files `s` under a ticket, the slot's index plus one (never 0: `fork1` replaces a `NULL`
 /// argument by the new thread's `p`, the module docs): a free slot, or a new one when the
 /// table can grow; `s` back when it cannot.
@@ -196,7 +166,7 @@ fn take(t: usize) -> Option<Start> {
 /// cannot be filed; `fork1`'s error otherwise (the start is dropped then).
 pub(crate) fn create(name: &'static [u8], s: Start) -> Result<(), Errno> {
     let t = ticket(s).map_err(|_| Errno::ENOMEM)?;
-    bridge().create(name, t).inspect_err(|_| drop(take(t)))
+    (ops().create)(name, t).inspect_err(|_| drop(take(t)))
 }
 
 /// `kthread_create_deferred`'s queueing: `d` waits in [`DEFERRED`], or panics as the C's
@@ -279,12 +249,143 @@ fn run_start_deferred(s: Start) {
 
 /// `kthread_exit(9)`.
 pub(crate) fn exit(ecode: i32) -> ! {
-    bridge().exit(ecode)
+    (ops().exit)(ecode)
 }
 
 /// `sched_peg_curproc` of the primary CPU.
 pub(crate) fn peg_to_primary_cpu() {
-    bridge().peg_to_primary_cpu();
+    (ops().peg)();
+}
+
+/// The registered [`Ops`]: making a thread before `kernel::fork::init` is a boot-order bug.
+fn ops() -> &'static Ops {
+    match OPS.get() {
+        Some(o) => o,
+        None => kpanic(format_args!("kthread: no thread operations registered")),
+    }
+}
+
+/// The host tests' thread operations (`kernel::testutil`'s host threads), installed in
+/// place of a glue's; a second registration keeps the first.
+#[cfg(any(test, feature = "doubles"))]
+pub(crate) fn install_test_ops(ops: Ops) {
+    let _ = OPS.set(ops);
+}
+
+/// What the kernel's own subsystems (timeout(9), task(9)), which name no glue, make and end
+/// their threads with: `kernel::fork::init`'s registration of this glue's
+/// [`kthread_create`], [`kthread_exit`] and the peg (`kernel::fork` and `kernel::exit` are
+/// generic over the glue; these callers are not).
+pub(crate) struct Ops {
+    /// `kthread_create(func, ticket, NULL, name)` of a ticket's start.
+    pub(crate) create: fn(&'static [u8], usize) -> Result<(), Errno>,
+    /// `kthread_exit(ecode)`.
+    pub(crate) exit: fn(i32) -> !,
+    /// `sched_peg_curproc` of the primary CPU.
+    pub(crate) peg: fn(),
+}
+
+/// The registered [`Ops`] (once, by `kernel::fork::init`).
+static OPS: OnceStatic<Ops> = OnceStatic::new();
+
+/// Registers this glue's thread operations for the kernel's own subsystems; a second
+/// registration keeps the first.
+pub(crate) fn install_ops<G: crate::proc::ProcGlue>() {
+    let _ = OPS.set(Ops {
+        create: create_ticket::<G>,
+        exit: kthread_exit::<G>,
+        peg: peg_primary::<G>,
+    });
+}
+
+/// [`Ops::create`]: a kernel thread whose start is the ticket `t` (`kernel::fork::Start::Kernel`).
+fn create_ticket<G: crate::proc::ProcGlue>(name: &'static [u8], t: usize) -> Result<(), Errno> {
+    kthread_create::<G>(name, crate::fork::Start::Kernel(t)).map(drop)
+}
+
+/// [`Ops::peg`]: `softclock_thread`'s "be conservative for the moment": the running thread
+/// pegged to the primary CPU.
+fn peg_primary<G: crate::proc::ProcGlue>() {
+    let t = G::sched();
+    let primary = (0..hal::cpu::MAXCPUS).find(|&n| t.all_cpus.isset(n) && G::cpu_is_primary(n));
+    let Some(n) = primary else {
+        kpanic(format_args!("softclock_thread: no primary CPU"));
+    };
+    crate::sched::sched_peg_curproc::<G>(n);
+}
+
+/// `kthread_create(9)`: a kernel thread named `name` that runs `start`, forked from process
+/// 0 (sharing its address space and descriptors, leaving no zombie); its tid (the C's
+/// `*newpp`, which no caller follows: the four that kept it store the tid or compare it).
+pub fn kthread_create<G: crate::proc::ProcGlue>(
+    name: &[u8],
+    start: crate::fork::Start,
+) -> Result<hal::sys::types::Pid, Errno> {
+    kthread_create_with::<G>(name, start, &mut |_| {})
+}
+
+/// [`kthread_create`] that lends the new thread to `child` once it is linked and before it
+/// can run (`bsd`'s `kthread_create`, whose callers keep the thread, the C's `*newpp`).
+pub fn kthread_create_with<G: crate::proc::ProcGlue>(
+    name: &[u8],
+    start: crate::fork::Start,
+    child: &mut dyn FnMut(core::pin::Pin<&crate::proc::Thread<G>>),
+) -> Result<hal::sys::types::Pid, Errno> {
+    use crate::proc::{FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM};
+
+    hal::klock::kernel_lock(); // KERNEL_LOCK()
+
+    // First, create the new process. Share the memory, file descriptors and don't leave the
+    // exit status around for the parent to wait for.
+    let child = match crate::fork::fork1_with(
+        G::tables().proc0(),
+        FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM,
+        start,
+        child,
+    ) {
+        Ok(c) => c,
+        Err(error) => {
+            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            return Err(error);
+        }
+    };
+
+    // Name it as specified.
+    child.process.set_comm(name);
+
+    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+
+    // All done!
+    Ok(child.tid)
+}
+
+/// `kthread_exit(9)`: the running kernel thread exits (a non-zero code is printed: its
+/// parent, process 0, does nothing with it).
+pub fn kthread_exit<G: crate::proc::ProcGlue>(ecode: i32) -> ! {
+    hal::thread::with_current::<crate::proc::Thread<G>, _>(|p| {
+        if ecode != 0 {
+            let comm = p.process().comm();
+            hal::prf::printf(format_args!(
+                "WARNING: thread `{}' ({}) exits with status {}\n",
+                Bytes(&comm),
+                p.p_tid.get(),
+                ecode
+            ));
+        }
+        G::exit1(&p, ecode, 0, crate::proc::EXIT_NORMAL)
+    })
+}
+
+/// A command name printed as its bytes (`%s`).
+struct Bytes<'a>(&'a [u8]);
+
+impl core::fmt::Display for Bytes<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &b in self.0 {
+            core::fmt::Write::write_char(f, char::from(b))?;
+        }
+        Ok(())
+    }
 }
 /* </CODE> */
 

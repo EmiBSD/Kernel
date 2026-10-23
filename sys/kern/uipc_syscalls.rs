@@ -100,7 +100,6 @@ use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::vput;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_GETATTR, VOP_READ};
 use crate::machine::copy::{copyin, copyin_obj, copyout};
-use crate::net::rtable::rtable_exists;
 use crate::netinet::in_::{IPPORT_RESERVED, InAddr, SockaddrIn};
 use crate::netinet::in_pcb::{INP_LOWPORT, sotoinpcb};
 use crate::sys::errno::Errno;
@@ -1631,29 +1630,12 @@ pub fn getsock(p: &Proc, fdes: i32) -> Result<FileRef, Errno> {
 /// table other than 0.
 pub fn sys_setrtable(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetrtableArgs = sysargs(v);
-    let ps_rtableid = p.process().ps_rtableid.load(Ordering::Relaxed);
-
-    let rtableid = uap.rtableid.get();
-
-    if i64::from(ps_rtableid) == i64::from(rtableid) {
-        return Ok(());
-    }
-    if ps_rtableid != 0 {
-        suser(p)?;
-    }
-    if rtableid < 0 || !rtable_exists(rtableid as u32) {
-        return Err(Errno::EINVAL);
-    }
-
-    p.process()
-        .ps_rtableid
-        .store(rtableid as u32, Ordering::Relaxed);
-    Ok(())
+    kernel::prot::sys_setrtable(p, uap.rtableid.get())
 }
 
 /// `getrtable(2)`: the process's routing table.
 pub fn sys_getrtable(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = p.process().ps_rtableid.load(Ordering::Relaxed) as i32 as Register;
+    retval[0] = kernel::prot::sys_getrtable(p) as Register;
     Ok(())
 }
 

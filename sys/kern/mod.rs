@@ -39,7 +39,6 @@ pub mod hal_bridges;
 pub mod init_main;
 #[forbid(unsafe_code)]
 pub mod init_sysent;
-pub mod kern_acct;
 pub mod kern_bufq;
 pub mod kern_clock;
 pub mod kern_clockintr;
@@ -48,8 +47,6 @@ pub mod kern_descrip;
 #[forbid(unsafe_code)]
 pub mod kern_event;
 pub mod kern_exec;
-pub mod kern_exit;
-pub mod kern_fork;
 pub mod kern_intrmap;
 #[forbid(unsafe_code)]
 pub mod kern_kthread;
@@ -61,6 +58,7 @@ pub mod kern_physio;
 pub mod kern_pledge;
 #[forbid(unsafe_code)]
 pub mod kern_prot;
+#[forbid(unsafe_code)]
 pub mod kern_resource;
 pub mod kern_rwlock;
 #[forbid(unsafe_code)]
@@ -114,6 +112,7 @@ pub mod subr_tree;
 pub mod subr_userconf;
 #[forbid(unsafe_code)]
 pub mod subr_xxx;
+#[forbid(unsafe_code)]
 pub mod sys_futex;
 #[forbid(unsafe_code)]
 pub mod sys_generic;

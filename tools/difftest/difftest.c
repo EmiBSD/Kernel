@@ -618,6 +618,34 @@ child_setuid(void)
 	R("child kill pid 1", kill(1, 0));
 }
 
+/*
+ * As a user, no process left under RLIMIT_NPROC: fork(2) fails EAGAIN
+ * (kern_fork.c's check, skipped for root); acct(2) is root's (EPERM).
+ */
+static void
+child_nproc(void)
+{
+	struct rlimit rl = { 0, 0 };
+	pid_t pid;
+
+	if (setuid(1000) == -1) {
+		printf("setuid: -1 %s\n", ename(errno));
+		return;
+	}
+	R("child acct as a user", acct("x"));
+	R("child setrlimit NPROC 0", setrlimit(RLIMIT_NPROC, &rl));
+	fflush(stdout);
+	errno = 0;
+	pid = fork();
+	if (pid == 0)
+		_exit(0);
+	if (pid > 0) {
+		waitpid(pid, NULL, 0);
+		printf("child fork over RLIMIT_NPROC: 0\n");
+	} else
+		printf("child fork over RLIMIT_NPROC: -1 %s\n", ename(errno));
+}
+
 static void
 child_term(void)
 {
@@ -729,6 +757,7 @@ t_procs(void)
 	write_file("secret", 0600, "");
 	chown("pm", 1000, 1000);
 	in_child("setuid child", child_setuid);
+	in_child("RLIMIT_NPROC child", child_nproc);
 	in_child("raise SIGTERM", child_term);
 	in_child("exit 7", child_exit7);
 	in_child("pledge stdio then open", child_pledge);
@@ -797,6 +826,13 @@ t_procs(void)
 		R("setrlimit soft over hard", setrlimit(RLIMIT_NOFILE, &rl));
 	}
 	R("issetugid", issetugid());
+	R("getpriority bad which", getpriority(99, 0));
+	R("setpriority bad which", setpriority(99, 0, 0));
+	{
+		struct rusage ru;
+
+		R("getrusage bad who", getrusage(99, &ru));
+	}
 	R("getentropy 256 bytes", getentropy(e, 256));
 	R("getentropy 257 bytes", getentropy(e, 257));
 }

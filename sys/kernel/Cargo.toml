@@ -71,5 +71,14 @@ path = "benches/tty.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of futex(2) (N4.6c, decision 43; benches/futex.rs) over the doubles,
+# never a kernel image: `cargo bench -p kernel --features doubles --bench futex
+# [--profile dev]`.
+[[bench]]
+name = "futex"
+path = "benches/futex.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

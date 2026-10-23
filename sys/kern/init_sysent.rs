@@ -35,15 +35,12 @@
 //!   second is the master file's `#else` branch, `sys_nosys`.
 
 use crate::dev::rnd::sys_getentropy;
-use crate::kern::kern_acct::sys_acct;
 use crate::kern::kern_descrip::{
     sys_close, sys_closefrom, sys_dup, sys_dup2, sys_dup3, sys_fcntl, sys_flock, sys_fpathconf,
     sys_fstat, sys_getdtablecount,
 };
 use crate::kern::kern_event::{sys_kevent, sys_kqueue, sys_kqueue1};
 use crate::kern::kern_exec::sys_execve;
-use crate::kern::kern_exit::{sys___threxit, sys_exit, sys_wait4, sys_waitid};
-use crate::kern::kern_fork::{sys___tfork, sys_fork, sys_vfork};
 use crate::kern::kern_pledge::sys_pledge;
 use crate::kern::kern_prot::{
     sys___get_tcb, sys___set_tcb, sys_getegid, sys_geteuid, sys_getgid, sys_getgroups,
@@ -68,6 +65,9 @@ use crate::kern::kern_time::{
 };
 use crate::kern::kern_xxx::sys_reboot;
 use crate::kern::pipe_glue::{sys_pipe, sys_pipe2};
+use crate::kern::proc_glue::{
+    sys___tfork, sys___threxit, sys_acct, sys_exit, sys_fork, sys_vfork, sys_wait4, sys_waitid,
+};
 use crate::kern::subr_log::sys_sendsyslog;
 use crate::kern::subr_prof::sys_profil;
 use crate::kern::sys_futex::sys_futex;

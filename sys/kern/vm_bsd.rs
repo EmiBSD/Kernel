@@ -491,10 +491,10 @@
 //!   `p_vmspace` stays the raw pointer until N4.2. A reader that keeps the vmspace while it
 //!   reads it (`fill_kproc`, `kern.proc_args`) holds a handle of its own
 //!   (`Process::vmspace_share`, the C's `uvmspace_addref`), given back by `uvmspace_free`.
-//! - `pinsyscalls(2)`'s table is the kernel's `MArray` handed to the process
-//!   (`Pinsyscall::install`, `MArray::into_raw`): `pin_check` reads it as before and
-//!   `exit`/`exec`'s `pin_free` frees it with the C's `free(.., M_PINSYSCALL, ..)` of the same
-//!   `malloc(9)`.
+//! - `pinsyscalls(2)`'s table is the kernel's `MArray` handed to the process (its
+//!   `ps_libcpin`, a `hal::slot::ReadMostly<kernel::proc::PinTable>` since N4.6a):
+//!   `pin_check` borrows it, `exit` and `exec` replace it and it goes with its owner (the C's
+//!   `free(.., M_PINSYSCALL, ..)`).
 //! - `uvmexp` goes out to `vm.uvmexp` as the bytes `UvmexpCopy::to_ne_bytes` lays out (hal),
 //!   so `bsd`'s `unsafe impl SysctlPlain for UvmexpCopy` is gone.
 
@@ -639,7 +639,11 @@ fn vmspace_take(pr: &Process) -> Option<VmspaceRef> {
 
 /// `pr->ps_libcpin = { base, end, pins, npins }`, the kernel's table handed over.
 fn pin_install(pr: &Process, base: usize, end: usize, pins: MArray<u32>) {
-    pr.ps_libcpin.install(base, end, pins);
+    drop(pr.ps_libcpin.replace(kernel::proc::PinTable {
+        start: base,
+        end,
+        pins: Some(pins),
+    }));
 }
 
 impl VmProc for BsdVmProc {
@@ -1857,7 +1861,7 @@ mod tests {
     #[test]
     fn a_pinsyscalls_table_is_honoured_at_syscall_entry() {
         // sys_pinsyscalls builds the table in an MArray and VmProc::pin_table_set hands it to
-        // the process (Pinsyscall::install): pin_check, at every system call, reads it.
+        // the process (its ReadMostly ps_libcpin): pin_check, at every system call, reads it.
         let _g = setup_real_memory();
         let pr = crate::kern::proc_glue::test_process(1);
         let p = crate::kern::proc_glue::test_thread(pr);
@@ -1867,16 +1871,15 @@ mod tests {
         // signal trampoline), inside [0, PAGE_SIZE).
         pins[SYS_getpid as usize] = u32::MAX; // "multiple locations"
         pins[SYS_getppid as usize] = 0; // not pinned
-        pr.ps_libcpin.install(0, PAGE_SIZE, pins);
-        assert_eq!(pr.ps_libcpin.pn_start.get(), 0);
-        assert_eq!(pr.ps_libcpin.pn_end.get(), PAGE_SIZE);
-        assert_eq!(pr.ps_libcpin.pn_npins.get(), SYS_MAXSYSCALL as i32);
-        assert!(!pr.ps_libcpin.pn_pins.get().is_null());
+        pin_install(pr, 0, PAGE_SIZE, pins);
+        {
+            let t = pr.ps_libcpin.read();
+            assert_eq!((t.start, t.end), (0, PAGE_SIZE));
+            assert_eq!(t.npins(), SYS_MAXSYSCALL);
+        }
         assert_eq!(pin_check(&p, SYS_getpid as Register), Ok(()));
-        // The block is the kernel test double's (kernel::testutil's malloc), not bsd's
-        // malloc(9), here: it is left allocated rather than freed with pin_free.
-        pr.ps_libcpin.pn_pins.set(core::ptr::null_mut());
-        pr.ps_libcpin.pn_npins.set(0);
+        // The table goes with its owner (the kernel test double's malloc).
+        drop(pr.ps_libcpin.replace(kernel::proc::PinTable::NONE));
     }
 
     #[test]

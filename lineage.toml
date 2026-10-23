@@ -1773,7 +1773,7 @@ adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", 
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs", "sys/kernel/fork.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -4908,7 +4908,8 @@ adapted_by = ["sys/kernel/event.rs"]
 [[module]]
 rust = "sys/dev/wscons/wskbd.rs"
 lz = ["sys/dev/wscons/wskbd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/proc.rs"]
 
 [[module]]
 rust = "sys/dev/wscons/wskbdraw.rs"
@@ -5123,12 +5124,6 @@ adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs"]
 license = "none"
 
 [[module]]
-rust = "sys/kern/kern_acct.rs"
-lz = ["sys/kern/kern_acct.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
-
-[[module]]
 rust = "sys/kern/kern_bufq.rs"
 lz = ["sys/kern/kern_bufq.rs"]
 status = "inherited"
@@ -5164,20 +5159,6 @@ lz = ["sys/kern/kern_exec.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/vm/aobj.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEAF|SAVENAME|EXECPATH with the cwd realpath through vfs_getcwd_common, VREG, VOP_GETATTR, MNT_NOEXEC, the execpromises/SUID refusal, MNT_NOSUID, VOP_ACCESS(VEXEC) and the x bits, VOP_OPEN, VOP_UNLOCK, the header through vn_rdwr, the exec switch with EXEC_DESTR, the entry and MAXTSIZ/lim_cur(RLIMIT_DATA) checks, bad1/bad2), sys_execve (the pathname and realpath namei buffers, single_thread_set, the NCARGS argument buffer from exec_map through kv_exec, the EXEC_HASARGL fake args, argv/envp copied with copyinstr (E2BIG), stackgap_random's sgap, the stack size check with ELF_AUX_WORDS, uvmspace_exec, ps_strings and ep_execpath below vm_minsaddr, copyargs, ps_auxinfo, the execpath copyoutstr, the pin tables into ps_pin and ps_libcpin freed, ps_comm from cn_nameptr, ps_textvp, PSI_* from EXEC_*, PS_PPWAIT, PS_SUGIDEXEC, the pledge hand-over, set[ug]id executables, the saved ids, exec_timekeep_map, exec_elf_fixup, setregs, exec_sigcode_map, p_descfd, exec_abort and free_pack_abort), copyargs, exec_sigcode_map, exec_timekeep_map (timekeep_object, the wired timekeep page kern_tc.c writes), stackgap_random, kv_exec; exec_conf.c's execsw[] (scripts, then ELF; M14) is here. exec_image(p, path, argp, envp, image) is the same body for the init boot module while there is no root file system (no vnode checks). Reported: prof_exec and stopprofclock (subr_prof.c), cancel_all_itimers (kern_time.c), cdevvp(getnulldev()) for a set[ug]id exec with stdin/stdout/stderr closed (<sys/conf.h>); KTRACE not configured; TooLs GmbH 4-clause licence accepted at M2; kern_time.c: cancel_all_itimers is real for a PS_SUGIDEXEC exec; kern_unveil.c: without execpromises sys_execve calls unveil_destroy and clears ps_uvdone; kern_event.c: knote(&ps_klist, NOTE_EXEC) is real; ; M11e: check_exec's KERNEL_LOCK/KERNEL_UNLOCK around vfs_getcwd_common are real calls"
-
-[[module]]
-rust = "sys/kern/kern_exit.rs"
-lz = ["sys/kern/kern_exit.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/sched.rs", "sys/hal/sys/siginfo.rs", "sys/kernel/sig.rs", "sys/kernel/sigio.rs"]
-notes = "M6-b: sys_exit, exit1 (single_thread_set, process_suspend_signal, stopprofclock, fdfree, SAS_NOCLDWAIT, lim_free, process_untrace reported), exit2 with deadproc, proc_free (crfree reported), reaper (prsignal reported), process_clear_orphan, process_reparent, process_zap (vrele, sigactsfree/lim_free/crfree reported); process 0 adopts orphans while initprocess is null; sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait, process_untrace are M6-c/M7; M6-b2: exit1 calls uvm_purge for user processes and the reaper uvm_exit; under feature qemu init's exit (pid 1) logs 'init exited with status N' and ends the run with that status instead of the C's panic; M7a-3b: lim_free of p_limit and of ps_limit in process_zap; kern_descrip.c: exit1 calls fdfree; kern_sig.c: single_thread_set(SINGLE_EXIT), process_suspend_signal, sigio_freelist, SAS_NOCLDWAIT, the SIGKILL to a traced child (process_untrace still reported), the reaper's prsignal(SIGCHLD), sigactsfree in process_zap; M8: exit1 calls killjobc and process_zap leavepgrp (kern_proc.c); M8: exit1 frees ps_pin/ps_libcpin (pin_free), process_zap vreles ps_textvp; M8: sys___threxit, dowait6, sys_wait4, sys_waitid, proc_finish_wait (ruadd, scheduler_wait_hook, off zombprocess, freepid, process_zap), process_untrace (exit1 calls it for a traced child); acct_process in exit1 (ACCOUNTING); ps_opptr always null (no ptrace); kern_unveil.c: exit1 calls unveil_destroy; kern_event.c: kqpoll_exit in exit1 and knote_processexit in the reaper are real; M11e: exit1 releases every hold of the kernel lock (__mp_release_all) around uvm_purge and takes it back after; the reaper starts with KERNEL_UNLOCK and takes the lock only around the zombie's notification, as the C"
-
-[[module]]
-rust = "sys/kern/kern_fork.rs"
-lz = ["sys/kern/kern_fork.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/map.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/sigio.rs"]
-notes = "M5-b1: nprocesses/nthreads, process_initialize (crhold, prof_fork and the realitexpire/rucheck timeouts reported; rw_init of ps_lock since M7a), fork_check_maxthread, alloctid, allocpid, ispidtaken, freepid; thread_new, process_new, fork1, fork_thread_start and proc_trampoline_mi are M5-b2, the fork syscalls and thread_fork M6; M5-b2: forkstat, thread_new, process_new (lim_fork, fdcopy, sigactsinit reported; fdshare copies the parent pointer), fork_thread_start, fork1 (returns the new thread; root uid for proc0; ptrace/psignal reported), proc_trampoline_mi; M6-b2: process_new uses uvmspace_share/uvmspace_fork; fork1 adds vm_dsize + vm_ssize to the forkstat sizes; M7a-3b: lim_fork and the rucheck timeout of process_initialize (realitexpire still reported); kern_prot.c: crhold in thread_new and process_initialize (with the cr_refcnt >= 2 KASSERT), fork1 charges the forking thread's cr_ruid (no more root for everyone); kern_descrip.c: process_new calls fdshare (FORK_SHAREFILES) or fdcopy; kern_sig.c: sigactsinit in process_new, LIST_INIT(ps_sigiolst), thread_new copies p_sigstk, fork1's psignal(SIGTRAP) for FORK_PTRACE; M8: process_new vrefs ps_textvp and duplicates the ps_pin/ps_libcpin tables; M8: fork_return, sys_fork, sys_vfork, sys___tfork (struct __tfork copied in by psize, TCB_INVALID through machine::tcb), thread_fork; child_return is machine::cpu's; the ptrace fork mask is not ported (no FORK_PTRACE); M8: process_initialize sets the realitexpire timeout; kern_unveil.c: process_new calls unveil_copy; kern_event.c: klist_init_mutex of ps_klist in process_initialize and knote_processfork in fork1 are real; M11a: proc_trampoline_mi asserts the kernel lock unlocked, calls smr_idle and ends with KERNEL_LOCK(); N4.5a: own logic beside the call sites (kept adapted: lz check refuses redesigned for a module whose mod line is not forbid, and kern_fork keeps OLDPIDS's unsafe): the thread functions' table (STARTS, thread_start_word: the number a new thread's frame carries, no code address into hal) and thread_start, the start hal::thread calls (kernel::sched::trampoline_mi, then the function); p_sleep_to set once the tid is known (kernel::sched::sleep_timeout_init); proc_trampoline_mi moved into kernel::sched"
 
 [[module]]
 rust = "sys/kern/kern_intrmap.rs"
@@ -5466,8 +5447,7 @@ status = "redesigned"
 [[module]]
 rust = "sys/kern/kern_resource.rs"
 lz = ["sys/kern/kern_resource.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/map.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/sched.rs"]
+status = "redesigned"
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -5776,8 +5756,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 [[module]]
 rust = "sys/kern/sys_futex.rs"
 lz = ["sys/kern/sys_futex.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/amap.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/sched.rs"]
+status = "redesigned"
+notes = "N4.6c: futex(2) itself (the buckets, the waiters, futex_wait/wake/requeue, the keys) moved into sys/kernel/futex.rs; this path keeps the sysent[] row over kernel::futex::sys_futex (the arguments as addresses, the count in retval[0]) and futex_init delegating, 0 unsafe (LZ 9), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/sys_generic.rs"
@@ -7496,11 +7476,6 @@ lz = ["sys/sys/_time.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/acct.rs"
-lz = ["sys/sys/acct.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/sys/ataio.rs"
 lz = ["sys/sys/ataio.rs"]
 status = "inherited"
@@ -8693,6 +8668,11 @@ crate = "hal"
 reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
 
 [[extra]]
+rust = "sys/hal/slot.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl)"
+
+[[extra]]
 rust = "sys/hal/seqlock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.2, BRIEF-N4.2-PART2 1.1): StrSlot, a &'static str one writer replaces and any CPU reads without a lock behind a generation counter (p_wmesg: written under sched_lock, read unlocked by kinfo_proc, ddb, the tty status line); 1 unsafe (the str rebuilt from the two words of one set)"
@@ -8993,6 +8973,88 @@ lz = "sys/sys/proc.rs::PInentry"
 native = ["sys/kernel/vm/map.rs::InentryCache"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/sys/proc.rs::Pinsyscall"
+native = ["PinTable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/proc.rs::Pinsyscall::new"
+native = []
+kind = "dropped"
+reason = "PinTable::NONE, the constant of no table (the words of LZ's struct became an owned MArray in a ReadMostly cell)"
+
+[[module]]
+rust = "sys/kernel/fork.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_fork.rs"]
+status = "redesigned"
+notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::pin_copy"
+native = ["sys/kernel/proc.rs::PinTable::duplicate"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::curthread"
+native = []
+kind = "dropped"
+reason = "fork1 and thread_fork take the caller's pinned thread (Pin<&Thread>); bsd's rows pass curproc's placed self"
+
+[[module]]
+rust = "sys/kernel/exit.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_exit.rs"]
+status = "redesigned"
+notes = "N4.6a: exit1, exit(2), __threxit(2), the reaper (Dead::Thread/Dead::Main), dowait6/wait4(2)/waitid(2), proc_finish_wait, process_untrace/process_clear_orphan/process_reparent/process_zap/proc_free; the main thread's box stays its process's until process_zap; stopprofclock reported"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::pin_free"
+native = []
+kind = "dropped"
+reason = "the pin tables are owned MArrays in ReadMostly cells (kernel::proc::PinTable): exit1 and exec replace them with PinTable::NONE and the old table goes with its owner (free(M_PINSYSCALL))"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::initprocess_or_process0"
+native = ["sys/kernel/proc.rs::ProcTables::initprocess_or_process0"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/acct.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_acct.rs", "sys/sys/acct.rs"]
+status = "redesigned"
+notes = "N4.6a: acct(2), acct_process, encode_comp_t, acct_start/acct_thread/acct_shutdown, struct acct (abi_pod!) and the A* flags; acctp/savacctp owned by Rwlocked acctlk as Box<dyn AcctSink> from the AcctFile bridge (N5); ac_tty from the session (decision 15)"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::AcctVnodes"
+native = ["AcctState"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::ACCT_LOCK"
+native = ["ACCT"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::ACCT_PROC"
+native = ["ACCT_RUNNING"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_acct.rs::acct_vnodes"
+native = []
+kind = "dropped"
+reason = "acctp/savacctp are owned by the Rwlocked acct_lock (ACCT): its read and write guards replace the unsafe accessor"
+
+[[module]]
+rust = "sys/kernel/prot.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_prot.rs"]
+status = "redesigned"
+notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's"
+
 [[module]]
 rust = "sys/kernel/pty.rs"
 crate = "kernel"
@@ -9082,6 +9144,12 @@ lz = "sys/sys/resourcevar.rs::Plimit::default"
 native = []
 kind = "dropped"
 reason = "a plimit is made only by its const new (limit0) or as a copy (lim_write_begin); nothing made a default one"
+
+[[module.fn]]
+lz = "sys/kern/kern_resource.rs::curproc_ref"
+native = []
+kind = "dropped"
+reason = "the kernel's functions take the thread (the C's curproc, which every caller has); bsd's lim_read_enter reads curproc itself"
 
 [[module]]
 rust = "sys/kernel/select.rs"
@@ -9340,6 +9408,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's delivery on a kernel-lock klist, kqueue_scan, kqueue_register, poll and select over the poll kqueue, an own-mutex klist) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/futex.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/proc.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.2's hot paths (the credentials' copy, hold and refresh, getuid, lim_cur, the process list and pid chain insert/remove under the kernel lock witness) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -9560,6 +9633,13 @@ reason = "MTX_NOWITNESS, kept by LZ for the record: WITNESS is not configured, a
 lz = "sys/kern/kern_fork.rs::proc_trampoline_mi"
 native = ["trampoline_mi"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/futex.rs"
+crate = "kernel"
+lz = ["sys/kern/sys_futex.rs"]
+status = "redesigned"
+notes = "N4.6c: futex(2) (FUTEX_WAIT/WAKE/REQUEUE and their _PRIVATE forms) into the kernel crate, 0 unsafe (LZ 9): a waiter is a Futex pinned on its stack on a hal::pinlist::PinList bound to its bucket's RawRwlock (futexlk), linked meaning waiting (the C's ft_proc != NULL); the key four addresses compared (FutexKey), ft_fsq the bucket's index; the waker wakes the waiter's own channel (kernel::sched::wakeup_n_locked under one SCHED_LOCK hold) instead of wakeup_proc of a thread pointer; FUTEX_REQUEUE across buckets through PinList::move_where_across (never unlinked while it moves); the word read with UserPtr<u32>::copyin32 (hal::user::UserCopy)"
 
 [[module]]
 rust = "sys/kernel/uio.rs"

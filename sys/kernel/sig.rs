@@ -468,13 +468,13 @@ hal::abi_pod!(UserTimespec {
 
 impl UserTimespec {
     /// `timespecisvalid(ts)`.
-    const fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.tv_nsec >= 0 && self.tv_nsec < 1_000_000_000
     }
 
     /// `TIMESPEC_TO_NSEC(ts)`: saturating at `UINT64_MAX` (a negative `tv_sec` compares as
     /// the C's unsigned conversion does).
-    const fn to_nsec(self) -> u64 {
+    pub const fn to_nsec(self) -> u64 {
         if self.tv_sec as u64 > (u64::MAX - self.tv_nsec as u64) / 1_000_000_000 {
             return u64::MAX;
         }
@@ -733,7 +733,7 @@ pub fn setsigvec<G: ProcGlue>(p: &Thread<G>, signum: i32, sa: &mut Sigaction) {
         // child to PID 1 (init) which will reap the zombie. Because we use init to do our
         // dirty work we never set SAS_NOCLDWAIT for PID 1.
         // XXX exit1 rework means this is unnecessary?
-        let init_is_us = G::initprocess_addr() == ptr::from_ref(pr).addr();
+        let init_is_us = G::tables().initprocess_addr() == ptr::from_ref(pr).addr();
         if !init_is_us && (sa.sa_flags & SA_NOCLDWAIT != 0 || sa.sa_handler == SIG_IGN) {
             ps.ps_sigflags.fetch_or(SAS_NOCLDWAIT, Ordering::Relaxed);
         } else {
