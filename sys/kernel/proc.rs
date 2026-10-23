@@ -939,6 +939,43 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn tcb_get(_p: &Thread<Self>) -> usize {
         0
     }
+
+    // The system call prologue's calls into what is still `bsd`'s (`kernel::syscall`, N4.8b).
+
+    /// `PROC_PC(p)`: the user program counter of `p`'s trap frame (`pin_check`).
+    fn proc_pc(_p: &Thread<Self>) -> usize {
+        0
+    }
+    /// `sigcoderet - sigcodecall` of the machine's signal trampoline: how far past its system
+    /// call instruction a thread's `PROC_PC` lies during the call (`pin_check` points back).
+    fn sigcode_svc_offset() -> usize {
+        0
+    }
+    /// `p->p_vmspace`: the address space of `p`, which `mi_syscall`'s `MAP_STACK` check and
+    /// the trap handler's faults use; `None` for a thread without one, which fails the check
+    /// (so a glue cannot skip it by forgetting this member).
+    fn user_vmspace(_p: &Thread<Self>) -> Option<&crate::vm::map::Vmspace> {
+        None
+    }
+    /// `pledge_syscall(p, code, &tval)` (`kern_pledge.c`, N8): whether pledged `p` may make
+    /// system call `code`; refused, the error and the promises that would allow it (`tval`)
+    /// for [`ProcGlue::pledge_fail`]. Required: a glue cannot drop pledge by forgetting it.
+    fn pledge_syscall(p: &Thread<Self>, code: i32) -> Result<(), (Errno, u64)>;
+    /// `scdebug_call(p, code, args)` (`SYSCALL_DEBUG`, `bsd`'s feature `syscall_debug`).
+    fn scdebug_call(
+        _p: &Thread<Self>,
+        _code: hal::syscall::Register,
+        _args: &hal::syscall::SysArgs,
+    ) {
+    }
+    /// `scdebug_ret(p, code, error, retval)` (`SYSCALL_DEBUG`).
+    fn scdebug_ret(
+        _p: &Thread<Self>,
+        _code: hal::syscall::Register,
+        _error: Result<(), Errno>,
+        _retval: &hal::syscall::Rval,
+    ) {
+    }
     // The process code's calls into what is still `bsd`'s (`kernel::fork`, `kernel::exit`,
     // N4.6a). The defaults are what a glue without that subsystem does (the kernel's tests).
 
@@ -2983,6 +3020,12 @@ mod tests {
             _code: u64,
         ) -> hal::sys::errno::Errno {
             error
+        }
+        fn pledge_syscall(
+            _p: &Thread<Self>,
+            _code: i32,
+        ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+            Ok(())
         }
         fn pledge_sysctl(
             _p: &Thread<Self>,

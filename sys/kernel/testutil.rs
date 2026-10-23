@@ -133,6 +133,7 @@ std::thread_local! {
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
+    static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
@@ -1366,6 +1367,21 @@ pub fn set_file_log(on: bool) {
     FILE_LOG_ON.with(|c| c.set(on));
 }
 
+/// What this thread's test glues' `pledge_syscall` answers for `code`: the refusal
+/// [`set_pledge_refusal`] armed for it, `Ok` for every other call.
+pub fn pledge_refusal(code: i32) -> Result<(), (Errno, u64)> {
+    match PLEDGE_REFUSE.with(Cell::get) {
+        Some((c, e, tval)) if c == code => Err((e, tval)),
+        _ => Ok(()),
+    }
+}
+
+/// Makes this thread's test glues refuse system call `code` with `error` and the promises
+/// `tval` (`None`: refuse nothing).
+pub fn set_pledge_refusal(r: Option<(i32, Errno, u64)>) {
+    PLEDGE_REFUSE.with(|c| c.set(r));
+}
+
 /// Records a test glue's hook call.
 pub fn file_log_push(s: String) {
     FILE_LOG.with(|l| l.borrow_mut().push(s));
@@ -1640,6 +1656,12 @@ macro_rules! test_proc_glue {
             ) -> hal::sys::errno::Errno {
                 $crate::testutil::file_log_push(std::format!("pledge_fail {code:#x}"));
                 error
+            }
+            fn pledge_syscall(
+                _p: &$crate::proc::Thread<Self>,
+                code: i32,
+            ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+                $crate::testutil::pledge_refusal(code)
             }
             fn pledge_sysctl(
                 _p: &$crate::proc::Thread<Self>,

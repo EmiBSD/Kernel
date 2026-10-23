@@ -5169,7 +5169,7 @@ adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.
 rust = "sys/kern/proc_glue.rs"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs"]
 status = "redesigned"
-notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here"
+notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug)"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::HashTable"
@@ -7897,9 +7897,8 @@ license = "none"
 [[module]]
 rust = "sys/sys/syscall_mi.rs"
 lz = ["sys/sys/syscall_mi.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-notes = "pin_check (SIGABRT through sigabort, the message by printf: no uprintf without a tty; KTRACE not configured), mi_syscall (refreshcreds, pin_check, pledge_syscall/pledge_fail, the MAP_STACK check uvm_map_inentry reported; SYSCALL_DEBUG as feature syscall_debug; KTRACE and dt(4) not configured), mi_syscall_return, mi_child_return, mi_ast (ADDUPROF reported, subr_prof.c); M11a: the kernel lock at the C's sites; M11e: SY_NOLOCK honoured as in C for the audited bodies (kern_prot.c ids, kern_sig.c sigprocmask/sigsuspend/__thrsigdivert, kern_time.c, getrlimit, futex, sched_yield, getentropy, utrace, __set_tcb/__get_tcb; the files audit: open, openat, __pledge_open, stat, lstat, fstatat, __realpath, dup, flock, lseek, kqueue, kqueue1, pipe, pipe2, getrtable, getdtablecount; the uvm audit: munmap, mprotect, minherit, kbind, and setrlimit); MULTIPROCESSOR deviation: SY_NOLOCK_DEFERRED lists the NOLOCK system calls still run under the kernel lock: after the whole M11e audit only the unported __thrsleep/__thrwakeup; host tests check the table against sysent (syscall_mi/tests.rs)"
+status = "redesigned"
+notes = "pin_check (SIGABRT through sigabort, the message by printf: no uprintf without a tty; KTRACE not configured), mi_syscall (refreshcreds, pin_check, pledge_syscall/pledge_fail, the MAP_STACK check uvm_map_inentry reported; SYSCALL_DEBUG as feature syscall_debug; KTRACE and dt(4) not configured), mi_syscall_return, mi_child_return, mi_ast (ADDUPROF reported, subr_prof.c); M11a: the kernel lock at the C's sites; M11e: SY_NOLOCK honoured as in C for the audited bodies (kern_prot.c ids, kern_sig.c sigprocmask/sigsuspend/__thrsigdivert, kern_time.c, getrlimit, futex, sched_yield, getentropy, utrace, __set_tcb/__get_tcb; the files audit: open, openat, __pledge_open, stat, lstat, fstatat, __realpath, dup, flock, lseek, kqueue, kqueue1, pipe, pipe2, getrtable, getdtablecount; the uvm audit: munmap, mprotect, minherit, kbind, and setrlimit); MULTIPROCESSOR deviation: SY_NOLOCK_DEFERRED lists the NOLOCK system calls still run under the kernel lock: after the whole M11e audit only the unported __thrsleep/__thrwakeup; host tests check the table against sysent (syscall_mi/tests.rs); N4.8b: an adapter over kernel::syscall (forbid, 0 unsafe): pin_check, mi_syscall (the row's lock and function as the body), mi_syscall_return, mi_child_return and mi_ast forward on the thread pinned; SY_NOLOCK_DEFERRED re-exported; the MAP_STACK check is made there"
 
 [[module]]
 rust = "sys/sys/syscallargs.rs"
@@ -8727,7 +8726,7 @@ rust = "sys/hal/arch/arm64/syscall.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
-notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler)"
+notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/copy.rs"
@@ -8927,7 +8926,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -9002,7 +9001,7 @@ rust = "sys/kernel/proc.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs", "sys/sys/user.rs"]
 status = "redesigned"
-notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's)"
+notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret"
 
 [[module.fn]]
 lz = "sys/sys/proc.rs::PInentry"
@@ -10583,6 +10582,13 @@ lz = "sys/kern/kern_sysctl.rs::diskstats_mut"
 native = []
 kind = "dropped"
 reason = "the diskstats array is an MArray owned by sysctl_disklock's Rwlocked state (kernel::sysctl::DiskExports): its slice comes from the guard, no raw view"
+
+[[module]]
+rust = "sys/kernel/syscall.rs"
+crate = "kernel"
+lz = ["sys/sys/syscall_mi.rs"]
+status = "redesigned"
+notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above)"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

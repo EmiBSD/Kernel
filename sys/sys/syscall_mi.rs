@@ -48,192 +48,44 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/syscall_mi.h>`: the machine-independent part of a system call, around the
-//! machine-dependent entry (`syscall()` on amd64, `svc_handler()` on arm64).
+//! `<sys/syscall_mi.h>`: `bsd`'s names over the kernel's (`kernel::syscall`, N4.8b), for the
+//! callers still here: the `Legacy` fallback and the `Native` wrappers that run a `sysent[]`
+//! row through the prologue (`abi_module.rs`, `vm_bsd.rs`, `kern_descrip.rs`,
+//! `pipe_glue.rs`), and the machine trap code that still calls the return paths by name
+//! (amd64's, N10).
 //!
 //! Upstream: sys/sys/syscall_mi.h @ 3ce1f3f79392
+//! LZ: sys/sys/syscall_mi.rs@3c62ede68802
 //!
-//! Status: `wip`: `pin_check`, `mi_syscall`, `mi_syscall_return`, `mi_child_return` and
-//! `mi_ast`.
-//!
-//! ## Deviations
-//! - `pin_check` is the C's: a system call must come from the call site the executable's
-//!   `PT_OPENBSD_SYSCALLS` table (`ps_pin`, loaded by `exec`) or `pinsyscalls(2)`
-//!   (`ps_libcpin`) names for its number, or be `sigreturn` from the signal trampoline;
-//!   anything else gets `SIGABRT` (`sigabort`). Its message goes to the console with
-//!   `printf` where the C's `uprintf` writes to the process's terminal (no tty layer yet).
-//! - `mi_syscall` reports the `MAP_STACK` check (`uvm_map_inentry`, with the user map);
-//!   `KTRACE` and dt(4) are not configured (`SYSCALL_DEBUG` is the feature `syscall_debug`;
-//!   `mi_child_return` does not print the child's return).
-//! - `SY_NOLOCK` (M11e): honoured as in C for the system calls whose bodies are audited for
-//!   `MULTIPROCESSOR`; a `NOLOCK` system call whose body is not audited yet is listed in
-//!   [`SY_NOLOCK_DEFERRED`] and still runs under the kernel lock, with the module (and agent
-//!   audit) that unlocks each group. The rest of `mi_syscall` and the return path
-//!   (`refreshcreds`, `pin_check`, `pledge_syscall`, `userret`) run unlocked, taking the lock
-//!   where the C does.
+//! ## Redesign
+//! - N4.8b: `pin_check`, `mi_syscall`, `mi_syscall_return`, `mi_child_return`, `mi_ast` and
+//!   `SY_NOLOCK_DEFERRED` are `kernel::syscall`'s; each function here is one call to its
+//!   kernel namesake on the thread pinned (`bsd`'s threads are placed: `ProcExt::as_static`),
+//!   `mi_syscall` passing the row's lock (`syscall_lock` of its `sy_flags`) and its function as
+//!   the body. The `MAP_STACK` check LZ reported is made there (the module's redesign).
 
-use core::sync::atomic::Ordering;
+use core::pin::Pin;
 
-use crate::kern::kern_pledge::{pledge_fail, pledge_syscall};
-use crate::kern::kern_sig::{sigabort, single_thread_set, userret};
-use crate::kern::sched_bsd::preempt;
-use crate::kern::subr_prf::Str;
-use crate::kprintf;
-use crate::machine::Machine;
-use crate::machine::cpu::Cpu;
-use crate::machine::signal::MachineSignal;
-use crate::sys::acct::APINSYS;
 use crate::sys::errno::Errno;
-use crate::sys::proc::{
-    P_OWEUPC, PS_PLEDGE, Proc, SINGLE_DEEP, SINGLE_UNWIND, p_hassibling, refreshcreds,
-};
-use crate::sys::syscall::*;
-use crate::sys::systm::{SY_NOLOCK, SysArgs, Sysent, kernel_lock, kernel_unlock};
+use crate::sys::proc::{Proc, ProcExt};
+use crate::sys::systm::{SysArgs, Sysent};
 use crate::sys::types::Register;
-use crate::unported;
-use kernel::proc::PinTable;
 
-/// `NOLOCK` system calls (`syscalls.master`) whose bodies are not audited for
-/// `MULTIPROCESSOR`: `mi_syscall` keeps the kernel lock for them although `sysent` marks them
-/// `SY_NOLOCK` (see the module's deviations). Each group names what unlocks it; an entry
-/// leaves the table when its body's locking is the C's. Since the end of the M11e audit
-/// (files, uvm, kern, net and netinet) only the unported calls are left.
-pub const SY_NOLOCK_DEFERRED: &[i32] = &[
-    // __thrsleep(2) and __thrwakeup(2) are not ported (`sys_nosys`, which posts SIGSYS).
-    SYS___thrsleep,
-    SYS___thrwakeup,
-];
+pub use kernel::syscall::SY_NOLOCK_DEFERRED;
 
-/// [`SY_NOLOCK_DEFERRED`] as a table indexed by system call number.
-const SY_NOLOCK_DEFERRED_MAP: [bool; SYS_MAXSYSCALL] = {
-    let mut map = [false; SYS_MAXSYSCALL];
-    let mut i = 0;
-    while i < SY_NOLOCK_DEFERRED.len() {
-        map[SY_NOLOCK_DEFERRED[i] as usize] = true;
-        i += 1;
-    }
-    map
-};
-
-/// Whether `mi_syscall` runs system call `code` (entry `callp`) under the kernel lock: the C's
-/// `!(callp->sy_flags & SY_NOLOCK)`, plus the not yet audited [`SY_NOLOCK_DEFERRED`].
-fn syscall_lock(callp: &Sysent, code: Register) -> bool {
-    callp.sy_flags & SY_NOLOCK == 0
-        || usize::try_from(code)
-            .ok()
-            .and_then(|code| SY_NOLOCK_DEFERRED_MAP.get(code))
-            .is_none_or(|&deferred| deferred)
+/// The thread `p` of a system call, pinned.
+fn pinned(p: &Proc) -> Pin<&'static Proc> {
+    hal::pin::pin_static(p.as_static())
 }
 
-/// Check if a system call is entered from precisely correct location.
+/// `pin_check(p, code)` (`kernel::syscall::pin_check`).
 #[inline]
 pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
-    let pr = p.process();
-    let pc = Machine::proc_pc(p);
-
-    // point at start of syscall instruction
-    let addr = pc.wrapping_sub(
-        <Machine as MachineSignal>::sigcoderet() - <Machine as MachineSignal>::sigcodecall(),
-    );
-    // The two tables, borrowed for the check (`hal::slot::ReadMostly`: exec and exit
-    // replace them only when no thread reads them).
-    let ppin = pr.ps_pin.read();
-    let plibcpin = pr.ps_libcpin.read();
-    let within = |pin: &PinTable| pin.pins.is_some() && addr >= pin.start && addr < pin.end;
-    let entry_of = |pin: &PinTable, code: Register| {
-        usize::try_from(code)
-            .ok()
-            .and_then(|c| pin.pins.as_ref()?.get(c).copied())
-    };
-
-    // System calls come from the following places, checks are ordered by most common case:
-    // 1) dynamic binary: syscalls in libc.so (in the ps_libcpin region)
-    // 2a) static binary: syscalls in main program (in the ps_pin region)
-    // 2b) dynamic binary: syscalls in ld.so (in the ps_pin region)
-    // 3) sigtramp, containing only sigreturn(2)
-    let mut pin: Option<&PinTable> = None;
-    let error = 'check: {
-        if within(&plibcpin) {
-            pin = Some(&plibcpin);
-        } else if within(&ppin) {
-            pin = Some(&ppin);
-        } else if pc == pr.ps_sigcoderet.get() {
-            if code == SYS_sigreturn as Register {
-                return Ok(());
-            }
-            break 'check Errno::EPERM; // goto die
-        }
-        match pin {
-            Some(pin) => match entry_of(pin, code) {
-                None | Some(0) => Errno::ENOSYS,
-                // correct location
-                Some(off) if (off as usize).wrapping_add(pin.start) == addr => {
-                    return Ok(());
-                }
-                // multiple locations, hopefully a boring operation
-                Some(u32::MAX) => return Ok(()),
-                Some(_) => Errno::ENOSYS,
-            },
-            None => Errno::ENOSYS,
-        }
-    };
-
-    // die:
-    // What the message prints, copied out of the tables so their read guards end here: a
-    // `ReadMostly` reader must not sleep or wait (exec's and exit's replacement spins until
-    // the readers leave), and `KERNEL_LOCK()` and the console may do both.
-    let pinoff = pin
-        .and_then(|pin| entry_of(pin, code))
-        .map_or(-1i64, i64::from);
-    let is = |which: &PinTable| {
-        if pin.is_some_and(|pin| core::ptr::eq(pin, which)) {
-            "(Y)"
-        } else {
-            ""
-        }
-    };
-    let shown = |t: &PinTable| (is(t), t.npins(), t.start, t.end);
-    let (pin_y, pin_n, pin_start, pin_end) = shown(&ppin);
-    let (libc_y, libc_n, libc_start, libc_end) = shown(&plibcpin);
-    drop(ppin);
-    drop(plibcpin);
-
-    // KTRACE (KTR_PINSYSCALL): not configured.
-    kernel_lock(); // KERNEL_LOCK()
-    // XXX remove or simplify this uprintf() call after OpenBSD 7.5 release
-    kprintf!(
-        "{}[{}]: pinsyscalls addr {:x} code {}, pinoff {:#x} (pin{} {} {:x}-{:x} {:x}) \
-         (libcpin{} {} {:x}-{:x} {:x}) error {}\n",
-        Str(&pr.comm()),
-        pr.ps_pid,
-        addr,
-        code,
-        pinoff as u32,
-        pin_y,
-        pin_n,
-        pin_start,
-        pin_end,
-        pin_end.wrapping_sub(pin_start),
-        libc_y,
-        libc_n,
-        libc_start,
-        libc_end,
-        libc_end.wrapping_sub(libc_start),
-        error as i32
-    );
-    pr.ps_acflag.set(pr.ps_acflag.get() | APINSYS);
-
-    // Try to stop threads immediately, because this process is suspect
-    if p_hassibling(p) {
-        let _ = single_thread_set(p, SINGLE_UNWIND | SINGLE_DEEP);
-    }
-    // Send uncatchable SIGABRT for coredump
-    sigabort(p);
-    kernel_unlock(); // KERNEL_UNLOCK()
-    Err(error)
+    kernel::syscall::pin_check(pinned(p), code)
 }
 
-/// `mi_syscall`: the MD setup for a system call has been done; here's the MI part.
+/// `mi_syscall(p, code, callp, argp, retval)`: the prologue around row `callp`'s function
+/// (`kernel::syscall::mi_syscall`, under the kernel lock unless the row is `SY_NOLOCK`).
 #[inline]
 pub fn mi_syscall(
     p: &Proc,
@@ -242,46 +94,13 @@ pub fn mi_syscall(
     argp: &SysArgs,
     retval: &mut [Register; 2],
 ) -> Result<(), Errno> {
-    // SY_NOLOCK_DEFERRED: see the module's deviations.
-    let lock = syscall_lock(callp, code);
-
-    // refresh the thread's cache of the process's creds
-    refreshcreds(p);
-
-    #[cfg(feature = "syscall_debug")]
-    {
-        kernel_lock(); // KERNEL_LOCK()
-        crate::kern::kern_xxx::scdebug_call(p, code, argp);
-        kernel_unlock(); // KERNEL_UNLOCK()
-    }
-    // dt(4), KTRACE: not configured.
-
-    // SP must be within MAP_STACK space: uvm_map_inentry(p, &p->p_spinentry, PROC_STACK(p),
-    // ...) with the user map.
-    let _ = unported!("mi_syscall: uvm_map_inentry (the MAP_STACK check)");
-
-    pin_check(p, code)?;
-
-    let pledged = p.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0;
-    let mut tval = 0;
-    if pledged && let Err(error) = pledge_syscall(p, code as i32, &mut tval) {
-        kernel_lock(); // KERNEL_LOCK()
-        let error = pledge_fail(p, error, tval);
-        kernel_unlock(); // KERNEL_UNLOCK()
-        return Err(error);
-    }
-    if lock {
-        kernel_lock(); // KERNEL_LOCK()
-    }
-    let error = (callp.sy_call)(p, argp, retval);
-    if lock {
-        kernel_unlock(); // KERNEL_UNLOCK()
-    }
-
-    error
+    let lock = kernel::syscall::syscall_lock(callp.sy_flags, code);
+    kernel::syscall::mi_syscall(pinned(p), code, lock, argp, retval, |args, rval| {
+        (callp.sy_call)(p, args, rval)
+    })
 }
 
-/// `mi_syscall_return`: finish MI stuff on return, after the registers have been set.
+/// `mi_syscall_return(p, code, error, retval)`.
 #[inline]
 pub fn mi_syscall_return(
     p: &Proc,
@@ -289,37 +108,19 @@ pub fn mi_syscall_return(
     error: Result<(), Errno>,
     retval: &[Register; 2],
 ) {
-    #[cfg(feature = "syscall_debug")]
-    {
-        kernel_lock(); // KERNEL_LOCK()
-        crate::kern::kern_xxx::scdebug_ret(p, code, error.err().map_or(0, |e| e as i32), retval);
-        kernel_unlock(); // KERNEL_UNLOCK()
-    }
-    let _ = (code, error, retval);
-    // dt(4), KTRACE: not configured.
-    userret(p);
+    kernel::syscall::mi_syscall_return(pinned(p), code, error, retval);
 }
 
-/// `mi_child_return`: finish MI stuff for a new process/thread to return.
+/// `mi_child_return(p)`.
 #[inline]
 pub fn mi_child_return(p: &Proc) {
-    // TRACEPOINT(sched, on__cpu, NULL), SYSCALL_DEBUG, dt(4), KTRACE: not configured.
-    userret(p);
+    kernel::syscall::mi_child_return(pinned(p));
 }
 
-/// `mi_ast`: do the specific processing necessary for an AST.
+/// `mi_ast(p, resched)`.
 #[inline]
 pub fn mi_ast(p: &Proc, resched: bool) {
-    if p.p_flag.load(Ordering::Relaxed) & P_OWEUPC != 0 {
-        // KERNEL_LOCK(); ADDUPROF(p); KERNEL_UNLOCK(): the profiling clock (subr_prof.c).
-        let _ = unported!("mi_ast: ADDUPROF (subr_prof.c)");
-    }
-    if resched {
-        preempt();
-    }
-
-    // XXX could move call to userret() here, but hppa calls ast() in syscall return and sh
-    // calls it after userret()
+    kernel::syscall::mi_ast(pinned(p), resched);
 }
 /* </CODE> */
 
@@ -331,6 +132,14 @@ mod tests {
 
     use super::*;
     use crate::kern::init_sysent::SYSENT;
+    use crate::sys::syscall::*;
+    use crate::sys::systm::SY_NOLOCK;
+
+    /// The kernel's `SY_NOLOCK` is `<sys/systm.h>`'s.
+    #[test]
+    fn nolock_is_the_headers() {
+        assert_eq!(kernel::syscall::SY_NOLOCK, SY_NOLOCK);
+    }
 
     /// Every deferred entry is a `NOLOCK` system call, listed once.
     #[test]
@@ -350,9 +159,11 @@ mod tests {
     /// The `NOLOCK` system calls that run without the kernel lock are the audited ones.
     #[test]
     fn audited_nolock_set() {
-        let unlocked: std::vec::Vec<i32> = (0..SYS_MAXSYSCALL as i32)
-            .filter(|&code| !syscall_lock(&SYSENT[code as usize], code as Register))
-            .collect();
+        let lock = |code: i32| {
+            kernel::syscall::syscall_lock(SYSENT[code as usize].sy_flags, code as Register)
+        };
+        let unlocked: std::vec::Vec<i32> =
+            (0..SYS_MAXSYSCALL as i32).filter(|&c| !lock(c)).collect();
         let mut audited = std::vec![
             SYS_getentropy,
             SYS_getpid,
@@ -462,7 +273,10 @@ mod tests {
         audited.sort_unstable();
         assert_eq!(unlocked, audited);
         // A number past the table is locked (`sys_nosys`'s SIGSYS).
-        assert!(syscall_lock(&SYSENT[0], SYS_MAXSYSCALL as Register));
+        assert!(kernel::syscall::syscall_lock(
+            SYSENT[0].sy_flags,
+            SYS_MAXSYSCALL as Register
+        ));
     }
 }
 /* </TESTS> */

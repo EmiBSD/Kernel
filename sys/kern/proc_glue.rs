@@ -620,6 +620,47 @@ impl ProcGlue for BsdProcGlue {
         crate::machine::tcb::tcb_get(p)
     }
 
+    fn proc_pc(p: &Proc) -> usize {
+        Machine::proc_pc(p)
+    }
+
+    /// `sigcoderet - sigcodecall` of the machine's signal trampoline (`locore.S`).
+    fn sigcode_svc_offset() -> usize {
+        use crate::machine::signal::MachineSignal;
+        <Machine as MachineSignal>::sigcoderet() - <Machine as MachineSignal>::sigcodecall()
+    }
+
+    /// The thread's address space, through its word (`ProcExt::vmspace`); `None` once the
+    /// reaper took it (no system call or fault runs then).
+    fn user_vmspace(p: &Proc) -> Option<&kernel::vm::map::Vmspace> {
+        if p.vmspace_word() == 0 {
+            return None;
+        }
+        Some(crate::sys::proc::ProcExt::vmspace(p))
+    }
+
+    fn pledge_syscall(p: &Proc, code: i32) -> Result<(), (Errno, u64)> {
+        let mut tval = 0;
+        crate::kern::kern_pledge::pledge_syscall(p, code, &mut tval).map_err(|e| (e, tval))
+    }
+
+    /// `scdebug_call` under the feature `syscall_debug` (`SYSCALL_DEBUG`), the kernel lock
+    /// around it as the C's.
+    #[cfg(feature = "syscall_debug")]
+    fn scdebug_call(p: &Proc, code: Register, args: &SysArgs) {
+        hal::klock::kernel_lock(); // KERNEL_LOCK()
+        crate::kern::kern_xxx::scdebug_call(p, code, args);
+        hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+    }
+
+    /// `scdebug_ret` under the feature `syscall_debug`.
+    #[cfg(feature = "syscall_debug")]
+    fn scdebug_ret(p: &Proc, code: Register, error: Result<(), Errno>, retval: &[Register; 2]) {
+        hal::klock::kernel_lock(); // KERNEL_LOCK()
+        crate::kern::kern_xxx::scdebug_ret(p, code, error.err().map_or(0, |e| e as i32), retval);
+        hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+    }
+
     fn maxprocess() -> i32 {
         MAXPROCESS.load(Ordering::Relaxed)
     }

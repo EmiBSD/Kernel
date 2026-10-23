@@ -329,6 +329,9 @@ impl ProcGlue for BenchGlue {
     fn pledge_fail(_p: &proc::Thread<Self>, error: Errno, _code: u64) -> Errno {
         error
     }
+    fn pledge_syscall(_p: &proc::Thread<Self>, _code: i32) -> Result<(), (Errno, u64)> {
+        Ok(())
+    }
     fn pledge_sysctl(_p: &proc::Thread<Self>, _mib: &[i32], _new: usize) -> Result<(), Errno> {
         Ok(())
     }

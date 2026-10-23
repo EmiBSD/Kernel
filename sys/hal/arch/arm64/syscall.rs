@@ -44,12 +44,11 @@
 //! `EJUSTRETURN`; the call itself goes to `hal::syscall::dispatch` (the module's handler or
 //! the `Legacy` fallback), and `mi_syscall_return` to the registered trap handler.
 //!
-//! ## Deviations
-//! - The system call number is the whole 64-bit `x8` (`Register`), where the C's `int code`
-//!   keeps its low 32 bits: a number that differs only above them gets `ENOSYS` here and
-//!   another call there. Inherited from LZ, not widened (the range check is the same).
-//!
 //! ## Redesign
+//! - N4.8b: the system call number is `x8` truncated to an `int`, as the C's `int code`
+//!   (`syscall.c:46`; [`svc_handler`] explains why): LZ took the whole 64-bit register, so a
+//!   number that differed only above the low 32 bits got `ENOSYS` (LZ's deviation, gap 2 of
+//!   the brief, closed by the user's decision of 2026-10-22).
 //! - N4.8b: from `bsd` into `hal`. `svc_handler` read `ci_curproc` through a raw pointer and
 //!   called `bsd`'s `abi_module::syscall` and `mi_syscall_return` by name; here the running
 //!   thread is checked in `hal::cpu`'s core, the call is `hal::syscall::dispatch`, and the
@@ -78,6 +77,20 @@ const EJUSTRETURN: i32 = Errno::EJUSTRETURN.as_i32();
 
 /// `svc_handler`: a system call from EL0 (`do_el0_sync`, `EXCP_SVC`), on the trap frame of
 /// the running thread.
+///
+/// The system call number is an identifier, not a count: the index into `sysent[]`,
+/// assigned by OpenBSD in `sys/kern/syscalls.master` (from which libc's `syscall.h` is
+/// generated) and part of the ABI; the low numbers date from the first Unix (exit 1,
+/// fork 2, read 3). libc loads it into `x8` and executes `svc`; the CPU only changes
+/// mode, and the entry saves `x8` in `tf_x[8]`. Every arm64 register is 64 bits wide,
+/// but the number fits in 32 (there are about 331), and OpenBSD's arm64 entry reads it
+/// into an `int` (`syscall.c:46`), dropping the high half; so does this one, so that a
+/// malformed number behaves as on OpenBSD (the user's decision of 2026-10-22): its low 32
+/// bits are the number (negative: `ENOSYS`), and `pin_check` kills the process with
+/// `SIGABRT` unless the `svc` is at the site pinned for it (LZ took the whole register and
+/// returned `ENOSYS`). amd64's entry keeps the whole register (`trap.c:781`, a
+/// `register_t`, not truncated). diff-openbsd: `syscalls/entry#1` (`difftest syscalls
+/// entry`), its line `int-syscall`.
 pub(crate) fn svc_handler(frame: &mut Trapframe) {
     if crate::cpu::curcpu().curproc().is_null() {
         hal_panic(format_args!("svc_handler: no curproc"));
@@ -93,7 +106,8 @@ pub(crate) fn svc_handler(frame: &mut Trapframe) {
     // Skip over speculation-blocking barrier.
     frame.tf_elr += 8;
 
-    let code: Register = frame.tf_x[8];
+    // The C's `int code = frame->tf_x[8]`: the low 32 bits, sign-extended (see above).
+    let code: Register = frame.tf_x[8] as i32 as Register;
     let args: SysArgs = match frame.tf_x.first_chunk::<6>() {
         Some(a) => *a,
         None => [0; 6],

@@ -60,17 +60,6 @@ for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
 
 
-# bsd: what the machine's trap code asks in machine-independent code (N4.8b): the page fault on
-# the map the trap chose (pmap_fault_fixup, uvm_fault, uvm_grow, the MAP_STACK check of a user
-# fault), trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast and
-# mi_child_return, implemented by sys/kern/hal_bridges.rs (BsdTrap) over bsd's paths and
-# registered by hal_bridges_register; the row goes when kernel::syscall implements it (N4.8b's
-# b4).
-# hal::trap::TrapHandler
-[[bridge]]
-trait = "TrapHandler"
-for = ["sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/syscall.rs"]
-paid_by = "N4"
 
 # bsd: the machine's per-CPU hooks a trap calls (N4.8b): ci_flush_bp (cpu.c's choice, which
 # PSCI's psci_flush_bp rewrites on its first call), ci_serror (Apple's report) and fault()'s
@@ -333,7 +322,11 @@ paid_by = "N7"
 # (the text vnode, N5; the unveils, N8), session_has_tty_vnode and session_ttydev (N4.7b),
 # pmap_activate, pmap_deactivate, pmap_purge, child_return, tcb_invalid and tcb_set (the
 # machine, N4.8/N10), start_init (N9.1), init_exited (the QEMU exit), cancel_all_itimers
-# (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. Re-dated N8 (the user's
+# (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. N4.8b: the system call
+# prologue's calls out joined it (kernel::syscall): proc_pc and sigcode_svc_offset (the
+# machine, N4.8b's b3 or N10), user_vmspace (the thread's word, until its [o] members are
+# typed), pledge_syscall (kern_pledge, N8) and scdebug_call/scdebug_ret (SYSCALL_DEBUG,
+# kern_xxx); hal::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. Re-dated N8 (the user's
 # decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
 # pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
 # (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine).
