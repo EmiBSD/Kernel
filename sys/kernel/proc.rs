@@ -205,6 +205,7 @@ use hal::pool::{BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
 use hal::refcnt::Refcnt;
 use hal::rwlock::{Guarded, RawRwlock, Witness};
 use hal::seqlock::StrSlot;
+use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Pid, Uid};
 use hal::thread::MachineSlot;
@@ -658,6 +659,73 @@ impl<T: Send + Sync + 'static> Deref for StaticOrPooled<T> {
     }
 }
 
+/// The main thread of a process (`ps_mainproc`), owned by its process: process 0's `static`
+/// thread, or the box of the thread `fork1` made, which the process keeps from `fork1` until
+/// `process_zap` takes it (`proc_free`). The process's other threads are owned by its tree
+/// ([`PsMtx`]), each until its own `exit1`.
+pub enum MainThread<G: ProcGlue> {
+    /// None yet (a process being made), or none any more (`process_zap` took it).
+    None,
+    /// Process 0's `static` thread (`proc0`).
+    Static(Pin<&'static Thread<G>>),
+    /// A `procpl` box.
+    Owned(PoolBox<Thread<G>>),
+}
+
+impl<G: ProcGlue> MainThread<G> {
+    /// The thread, pinned (a `static`, or a pool item that stays until its box goes).
+    pub fn get(&self) -> Option<Pin<&Thread<G>>> {
+        match self {
+            Self::None => None,
+            Self::Static(t) => Some(*t),
+            Self::Owned(b) => Some(b.as_pin()),
+        }
+    }
+}
+
+/// `struct pinsyscall`: the system call pin table of a text region (`ps_pin`, the program's
+/// or ld.so's from `exec`; `ps_libcpin`, libc's from `pinsyscalls(2)`): `[start, end)` and
+/// the offset of each system call's entry, owned (`M_PINSYSCALL`).
+pub struct PinTable {
+    /// `pn_start`.
+    pub start: usize,
+    /// `pn_end`.
+    pub end: usize,
+    /// `pn_pins` and `pn_npins`: the offsets by system call number, none for no table.
+    pub pins: Option<MArray<u32>>,
+}
+
+impl PinTable {
+    /// No table (`pn_pins == NULL`, the bounds 0).
+    pub const NONE: PinTable = PinTable {
+        start: 0,
+        end: 0,
+        pins: None,
+    };
+
+    /// `pn_npins`.
+    pub fn npins(&self) -> usize {
+        self.pins.as_ref().map_or(0, |p| p.len())
+    }
+
+    /// `process_new`'s copy (`mallocarray(npins, sizeof(u_int), M_PINSYSCALL, M_WAITOK)` and
+    /// `memcpy`): the same bounds and a table of its own; the bounds alone when the copy
+    /// cannot be had (the C's `M_WAITOK` cannot fail; a child left without a table is killed
+    /// by `pin_check` at its first system call, as a process without one would be).
+    pub fn duplicate(&self) -> PinTable {
+        let pins = self.pins.as_ref().and_then(|src| {
+            MArray::new(crate::vm::mmap::M_PINSYSCALL, M_WAITOK, src.len(), |i| {
+                src[i]
+            })
+        });
+        PinTable {
+            start: self.start,
+            end: self.end,
+            pins,
+        }
+    }
+}
+
 /// A counted reference to a process (`struct process *` with a reference).
 pub type ProcessRef<G> = StaticOrPooled<Process<G>>;
 /// A counted reference to a process group.
@@ -974,6 +1042,11 @@ pub struct ProcTables<G: ProcGlue> {
     pub sessionpl: TypedPool<Session<G>>,
     /// `kqueue_pool`, `knote_pool` and the timers' pool (`kernel::event::kqueue_init`).
     pub kq: KqPools<G>,
+    /// `initprocess`: init(8)'s process, set once by `main` when it forked it.
+    pub initprocess: OnceStatic<ProcessRef<G>>,
+    /// `process0`, the swapper: the glue's `static`, recorded by `main`
+    /// ([`ProcTables::set_process0`]); the orphans' parent until init exists.
+    process0: OnceStatic<&'static Process<G>>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -992,7 +1065,39 @@ impl<G: ProcGlue> ProcTables<G> {
             pgrppl: TypedPool::new(),
             sessionpl: TypedPool::new(),
             kq: KqPools::new(),
+            initprocess: OnceStatic::new(),
+            process0: OnceStatic::new(),
         }
+    }
+
+    /// Records process 0 (`main`'s `process0`), once (`panic(9)` on a second).
+    pub fn set_process0(&self, pr: &'static Process<G>) {
+        if self.process0.set(pr).is_err() {
+            kpanic(format_args!("process0 recorded twice"));
+        }
+    }
+
+    /// `process0` (`panic(9)` before `main` recorded it).
+    pub fn process0(&self) -> ProcessRef<G> {
+        match self.process0.get() {
+            Some(pr) => StaticOrPooled::Static(pr),
+            None => kpanic(format_args!("process0 not recorded")),
+        }
+    }
+
+    /// `initprocess`, or process 0 while init does not exist yet (the orphans' parent in
+    /// `exit1` and `process_untrace` before `main` forked init; the C's is never NULL there).
+    pub fn initprocess_or_process0(&self) -> ProcessRef<G> {
+        match self.initprocess.get() {
+            Some(pr) => pr.clone(),
+            None => self.process0(),
+        }
+    }
+
+    /// The address of `initprocess`, 0 before it exists: compared, never followed
+    /// (`setsigvec`'s `SAS_NOCLDWAIT`).
+    pub fn initprocess_addr(&self) -> usize {
+        self.initprocess.get().map_or(0, StaticOrPooled::addr)
     }
 
     /// `PIDHASH(pid)`.
@@ -1283,6 +1388,11 @@ pub struct PsMtx<G: ProcGlue> {
     pgrp: Option<PgrpRef<G>>,
     /// The boxes of the process's threads (not process 0's `static` one), by joining order.
     threads: OwnedTree<G::ThreadOwned>,
+    /// `ps_mainproc`: the main thread, owned (see [`MainThread`]).
+    main: MainThread<G>,
+    /// \[K|m\] `ps_opptr`: the old parent while `ptrace(2)` attached (none: ptrace is not
+    /// ported, so nothing sets it).
+    opptr: Option<ProcessRef<G>>,
     /// The order number the next thread to join takes.
     next_seq: u64,
 }
@@ -1297,6 +1407,8 @@ impl<G: ProcGlue> PsMtx<G> {
             pptr: None,
             pgrp: None,
             threads: OwnedTree::new(),
+            main: MainThread::None,
+            opptr: None,
             next_seq: 0,
         }
     }
@@ -1433,6 +1545,11 @@ pub struct Process<G: ProcGlue> {
     pub ps_klist: Klist<G>,
     /// \[I\] `ps_sigacts`: signal actions, state (`sigactsinit`'s, or `sigacts0`).
     ps_sigacts: OnceStatic<SigactsRef>,
+    /// `ps_pin`: the system call pins of the program or ld.so (`exec`), read at every system
+    /// call (`pin_check`), replaced by `exec` single-threaded and freed by the last `exit1`.
+    pub ps_pin: ReadMostly<PinTable>,
+    /// `ps_libcpin`: libc.so's pins, from `pinsyscalls(2)`; as `ps_pin`.
+    pub ps_libcpin: ReadMostly<PinTable>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1499,6 +1616,8 @@ impl<G: ProcGlue> Process<G> {
             fd: OnceStatic::new(),
             ps_klist: Klist::owner(),
             ps_sigacts: OnceStatic::new(),
+            ps_pin: ReadMostly::new(PinTable::NONE),
+            ps_libcpin: ReadMostly::new(PinTable::NONE),
             g,
         }
     }
@@ -1768,6 +1887,139 @@ impl<G: ProcGlue> Process<G> {
         let mut g = self.ps_mtx.lock();
         self.ps_threads.remove(&mut g, t);
     }
+
+    /// `ps_mainproc`, for a holder of this process's `ps_mtx` (a guard of another mutex is
+    /// refused, as for `set_pptr_locked`): the main thread from `fork1` (or `main` for process
+    /// 0) until `process_zap`.
+    pub fn main_thread<'g>(
+        &self,
+        g: &'g hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    ) -> Option<Pin<&'g Thread<G>>> {
+        let _ = self.ps_threads.is_empty(g);
+        g.main.get()
+    }
+
+    /// `pr->ps_mainproc = p` of `fork1` (`process_initialize`): the process takes its main
+    /// thread's box (`panic(9)` for a second one).
+    pub fn set_main_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        t: PoolBox<Thread<G>>,
+    ) {
+        let _ = self.ps_threads.is_empty(g);
+        if !matches!(g.main, MainThread::None) {
+            kpanic(format_args!(
+                "process {}: a second main thread",
+                self.ps_pid
+            ));
+        }
+        g.main = MainThread::Owned(t);
+    }
+
+    /// Process 0's `static` main thread (`main`'s `process_initialize(&process0, &proc0)`).
+    pub fn set_main_static(&self, t: Pin<&'static Thread<G>>) {
+        let mut g = self.ps_mtx.lock();
+        if !matches!(g.main, MainThread::None) {
+            kpanic(format_args!(
+                "process {}: a second main thread",
+                self.ps_pid
+            ));
+        }
+        g.main = MainThread::Static(t);
+    }
+
+    /// `process_zap`'s `proc_free(pr->ps_mainproc)`: the main thread's box taken back (`None`
+    /// for process 0's `static` one, or once taken).
+    pub fn take_main_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    ) -> Option<PoolBox<Thread<G>>> {
+        let _ = self.ps_threads.is_empty(g);
+        match core::mem::replace(&mut g.main, MainThread::None) {
+            MainThread::Owned(b) => Some(b),
+            s @ MainThread::Static(_) => {
+                g.main = s;
+                None
+            }
+            MainThread::None => None,
+        }
+    }
+
+    /// The thread joins `ps_threads` (`TAILQ_INSERT_TAIL`), last, with its joining order;
+    /// its box stays the caller's (the main thread's goes to [`Process::set_main_locked`], a
+    /// secondary thread's to [`Process::insert_box_locked`]).
+    pub fn join_locked(&self, g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>, t: Pin<&Thread<G>>) {
+        // The list first: it checks the guard is this process's.
+        self.ps_threads.insert_tail(g, t);
+        let seq = g.next_seq;
+        g.next_seq += 1;
+        t.p_seq.set(seq);
+    }
+
+    /// A secondary thread's box (`P_THREAD`), kept by the process's tree until its `exit1`
+    /// ([`Process::take_box_locked`]).
+    pub fn insert_box_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        t: PoolBox<Thread<G>>,
+    ) {
+        let _ = self.ps_threads.is_empty(g);
+        if g.threads.insert(t).is_some() {
+            kpanic(format_args!("insert_box: a thread joined twice"));
+        }
+    }
+
+    /// The box of the secondary thread whose joining order is `seq`, taken back (`exit1`);
+    /// `None` when the tree has none (the main thread's is the slot's).
+    pub fn take_box_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        seq: u64,
+    ) -> Option<PoolBox<Thread<G>>> {
+        let _ = self.ps_threads.is_empty(g);
+        g.threads.take_by(|e| seq.cmp(&e.p_seq.get()))
+    }
+
+    /// `TAILQ_REMOVE(&pr->ps_threads, p, p_thr_link)`: the thread leaves the list; its box
+    /// stays where it is (the slot or the tree), which the caller deals with.
+    pub fn leave_locked(&self, g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>, t: &Thread<G>) {
+        self.ps_threads.remove(g, t);
+    }
+
+    /// The thread of this process at address `addr` (`ps_single`, `ps_trapped`: the C's
+    /// pointers, kept as words), found on `ps_threads` under the caller's guard; `None` when
+    /// none is there (cold: the walk is the C's dereference made checkable).
+    pub fn thread_by_addr<'a>(
+        &'a self,
+        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        addr: usize,
+    ) -> Option<Pin<&'a Thread<G>>> {
+        if addr == 0 {
+            return None;
+        }
+        self.ps_threads
+            .iter_pinned(g)
+            .find(|t| ptr::from_ref::<Thread<G>>(t).addr() == addr)
+    }
+
+    /// `ps_opptr`, for a holder of this process's `ps_mtx` (`[K|m]`).
+    pub fn opptr_locked<'a>(
+        &self,
+        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    ) -> Option<&'a ProcessRef<G>> {
+        let _ = self.ps_threads.is_empty(g);
+        g.opptr.as_ref()
+    }
+
+    /// `pr->ps_opptr = op` under this process's `ps_mtx`: the old one.
+    pub fn set_opptr_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        op: Option<ProcessRef<G>>,
+    ) -> Option<ProcessRef<G>> {
+        let _ = self.ps_threads.is_empty(g);
+        core::mem::replace(&mut g.opptr, op)
+    }
 }
 
 impl<G: ProcGlue> Deref for Process<G> {
@@ -1899,6 +2151,10 @@ pub struct Thread<G: ProcGlue> {
     vmspace: Guarded<Option<VmspaceRef>>,
     /// The address of `vmspace` (`p->p_vmspace`), read without the lock.
     vmspace_word: AtomicUsize,
+    /// A secondary thread's own box, from its `exit1`, where its process gives it back,
+    /// until the reaper takes it (`proc_free`): the C's pool item, alive until `pool_put`.
+    /// Not the C's.
+    pub exited: Mutexed<Option<PoolBox<Thread<G>>>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ThreadG,
 }
@@ -1971,6 +2227,7 @@ impl<G: ProcGlue> Thread<G> {
             cred_ref,
             vmspace,
             vmspace_word: AtomicUsize::new(0),
+            exited: Mutexed::new(IPL_NONE, None),
             g,
         }
     }
@@ -2121,6 +2378,18 @@ impl<G: ProcGlue> Thread<G> {
         let mut g = self.p_p.ps_mtx.lock();
         let old = core::mem::replace(self.vmspace.get_mut(&mut g), vm);
         self.vmspace_word.store(addr, Ordering::Release);
+        old
+    }
+
+    /// `p->p_vmspace = None` under the caller's guard of its process's `ps_mtx` (the reaper's
+    /// zap of a dead main thread's copy, which its process keeps): the old handle, which the
+    /// caller drops outside the lock.
+    pub fn take_vmspace_locked(
+        &self,
+        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    ) -> Option<VmspaceRef> {
+        let old = self.vmspace.get_mut(g).take();
+        self.vmspace_word.store(0, Ordering::Release);
         old
     }
 
@@ -2949,6 +3218,85 @@ mod tests {
         drop(g);
         drop(b);
         unlink(&pr);
+    }
+
+    /// A process owns its main thread's box in its slot and a secondary thread's in its
+    /// tree; both are on `ps_threads`, found by address while they are, and each box comes
+    /// back exactly once (the main one at `process_zap`, a secondary one at its `exit1`).
+    #[test]
+    fn the_main_thread_is_the_slot_s_and_a_secondary_one_the_tree_s() {
+        setup();
+        let pr = process(30);
+        let main = thread_alloc::<TestGlue>(&pr, ());
+        let second = thread_alloc::<TestGlue>(&pr, ());
+        let (main_at, second_at) = (
+            ptr::from_ref::<Thread<TestGlue>>(&main).addr(),
+            ptr::from_ref::<Thread<TestGlue>>(&second).addr(),
+        );
+        {
+            let mut g = pr.ps_mtx.lock();
+            assert!(pr.main_thread(&g).is_none());
+            pr.join_locked(&mut g, main.as_pin());
+            pr.set_main_locked(&mut g, main);
+            pr.join_locked(&mut g, second.as_pin());
+            let seq = second.p_seq.get();
+            pr.insert_box_locked(&mut g, second);
+            let m = pr.main_thread(&g).unwrap();
+            assert_eq!(ptr::from_ref::<Thread<TestGlue>>(&m).addr(), main_at);
+            assert!(pr.thread_by_addr(&g, second_at).is_some());
+            assert!(pr.thread_by_addr(&g, 0).is_none());
+            assert!(pr.thread_by_addr(&g, main_at + 8).is_none());
+            // The secondary thread leaves: off the list, its box back.
+            let b = pr.take_box_locked(&mut g, seq).unwrap();
+            pr.leave_locked(&mut g, &b);
+            assert!(pr.thread_by_addr(&g, second_at).is_none());
+            assert!(pr.take_box_locked(&mut g, seq).is_none());
+            drop(g);
+            drop(b);
+        }
+        let mut g = pr.ps_mtx.lock();
+        let m = pr
+            .main_thread(&g)
+            .map(|m| ptr::from_ref::<Thread<TestGlue>>(&m).addr());
+        assert_eq!(m, Some(main_at));
+        // The main thread leaves the list at its exit1; its box stays for process_zap.
+        let at = pr
+            .thread_by_addr(&g, main_at)
+            .map(|t| ptr::from_ref::<Thread<TestGlue>>(&t));
+        assert!(at.is_some());
+        let main = pr.take_main_locked(&mut g).unwrap();
+        pr.leave_locked(&mut g, &main);
+        assert!(pr.main_thread(&g).is_none());
+        assert!(pr.take_main_locked(&mut g).is_none());
+        drop(g);
+        drop(main);
+        unlink(&pr);
+    }
+
+    /// `process_new`'s copy of a pin table is a table of its own with the same bounds; a
+    /// replacement hands the old table back.
+    #[test]
+    fn a_pin_table_is_duplicated_and_replaced() {
+        testutil::install();
+        let pins =
+            MArray::new(crate::vm::mmap::M_PINSYSCALL, M_WAITOK, 4, |i| i as u32 * 8).unwrap();
+        let t = PinTable {
+            start: 0x1000,
+            end: 0x2000,
+            pins: Some(pins),
+        };
+        let d = t.duplicate();
+        assert_eq!((d.start, d.end, d.npins()), (0x1000, 0x2000, 4));
+        assert_eq!(&**d.pins.as_ref().unwrap(), &[0, 8, 16, 24]);
+        assert_ne!(
+            d.pins.as_ref().unwrap().as_ptr(),
+            t.pins.as_ref().unwrap().as_ptr()
+        );
+        let cell = ReadMostly::new(t);
+        let old = cell.replace(PinTable::NONE);
+        assert_eq!(old.npins(), 4);
+        assert_eq!(cell.read().npins(), 0);
+        assert_eq!(PinTable::NONE.duplicate().npins(), 0);
     }
 }
 /* </TESTS> */
