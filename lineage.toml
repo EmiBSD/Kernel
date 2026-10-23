@@ -10051,6 +10051,13 @@ kind = "dropped"
 reason = "a kqueue exists only from kqueue_alloc (a kqueuepl item)"
 
 [[module]]
+rust = "sys/kernel/log.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_log.rs", "sys/sys/msgbuf.rs", "sys/sys/syslog.rs"]
+status = "redesigned"
+notes = "N4.7a: the message and console buffers owned by log_mtx (a Mutexed<LogBufs> at IPL_HIGH, the two struct msgbuf as #[repr(C)] header plus ring, no overlay); /dev/klog live (logopen..logkqfilter, logtick, logioctl with LIOCSFD, decision 6) with logsoftc, log_open, syslogf and the stash in ProcTables::log (LogDev<G>); logread_filtops as impl Filter (LogRead); kern.consbuf live (16 KiB static, decision 7); sendsyslog's socket leg through fo_write, a stashed message as a UIO_SYSSPACE uio borrowed from the stash, the console leg through the TtyDevsw bridge (cnwrite when constty or cn_devvp) else cnputc; the stash's messages MArrays of M_LOG; syslog.h's constants"
+
+[[module]]
 rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]
