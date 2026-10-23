@@ -74,8 +74,6 @@
 //! `unsafe` deref, until N4.5's `current()` retires them with `curproc()`'s.
 //!
 //! ## Deviations
-//! - `struct pinsyscall`'s members are atomic words (`pn_pins` a `hal::link::PtrWord`), so a
-//!   process's pins can be members of the kernel's pooled `Process`.
 //! - `SESSHOLD`/`SESSRELE` are the kernel's counted `SessionRef`s (a clone, a drop); a
 //!   session goes with its last reference.
 //! - A thread's `p_wchan` is the sleep address as a number (`kernel::proc`'s word), compared,
@@ -85,9 +83,6 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::AtomicU32;
 
-use hal::link::PtrWord;
-use hal::malloc::MArray;
-use kernel::proc::{I32Word, UsizeWord};
 use kernel::vm::map::Vmspace;
 
 use crate::kassert;
@@ -140,47 +135,6 @@ pub type PgrpRef = kernel::proc::PgrpRef<BsdProcGlue>;
 pub type SessionRef = kernel::proc::SessionRef<BsdProcGlue>;
 /// The guard of a process's `ps_mtx`.
 pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
-
-/// `struct pinsyscall`: the system call pin table of a text region.
-#[derive(Debug, Default)]
-pub struct Pinsyscall {
-    /// `pn_start`.
-    pub pn_start: UsizeWord,
-    /// `pn_end`.
-    pub pn_end: UsizeWord,
-    /// `pn_pins`: array of offsets indexed by syscall#.
-    pub pn_pins: PtrWord<u32>,
-    /// `pn_npins`: number of entries in table.
-    pub pn_npins: I32Word,
-}
-
-impl Pinsyscall {
-    /// No table.
-    pub const fn new() -> Self {
-        Self {
-            pn_start: UsizeWord::new(0),
-            pn_end: UsizeWord::new(0),
-            pn_pins: PtrWord::new(),
-            pn_npins: I32Word::new(0),
-        }
-    }
-
-    /// `pinsyscalls(2)`'s table for `[base, end)` (the kernel's `sys_pinsyscalls` built it,
-    /// `mallocarray(npins, sizeof(u_int), M_PINSYSCALL)`): the block is the process's from now
-    /// on, read by `pin_check` at every system call and freed by `exit`/`exec`'s `pin_free`
-    /// (`free(pn_pins, M_PINSYSCALL, npins * sizeof(u_int))`), as the C's. The fields are
-    /// stored in the C's order.
-    pub fn install(&self, base: usize, end: usize, pins: MArray<u32>) {
-        let (table, npins) = MArray::into_raw(pins);
-        self.pn_start.set(base);
-        self.pn_end.set(end);
-        self.pn_pins.set(table.as_ptr());
-        // sys_pinsyscalls refuses a table of more than SYS_MAXSYSCALL entries (E2BIG).
-        let npins = i32::try_from(npins).ok();
-        kassert!(npins.is_some());
-        self.pn_npins.set(npins.unwrap_or(0));
-    }
-}
 
 /// What `bsd` reads of a thread through its words: LZ's accessors that turn an address the
 /// thread holds into a reference, each one `unsafe` deref until N4.5's `current()`.
@@ -375,12 +329,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cpusets_and_pins_start_empty() {
+    fn cpusets_start_empty() {
         assert_eq!(cpuset_asize(1), 1);
         assert_eq!(cpuset_asize(33), 2);
-        let pin = Pinsyscall::new();
-        assert!(pin.pn_pins.get().is_null());
-        assert_eq!(pin.pn_npins.get(), 0);
         let c = Cpuset::new();
         assert!(
             c.cs_set

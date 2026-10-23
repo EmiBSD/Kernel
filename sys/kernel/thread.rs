@@ -196,7 +196,11 @@ fn take(t: usize) -> Option<Start> {
 /// cannot be filed; `fork1`'s error otherwise (the start is dropped then).
 pub(crate) fn create(name: &'static [u8], s: Start) -> Result<(), Errno> {
     let t = ticket(s).map_err(|_| Errno::ENOMEM)?;
-    bridge().create(name, t).inspect_err(|_| drop(take(t)))
+    let made = match OPS.get() {
+        Some(o) => (o.create)(name, t),
+        None => bridge().create(name, t),
+    };
+    made.inspect_err(|_| drop(take(t)))
 }
 
 /// `kthread_create_deferred`'s queueing: `d` waits in [`DEFERRED`], or panics as the C's
@@ -279,12 +283,123 @@ fn run_start_deferred(s: Start) {
 
 /// `kthread_exit(9)`.
 pub(crate) fn exit(ecode: i32) -> ! {
-    bridge().exit(ecode)
+    match OPS.get() {
+        Some(o) => (o.exit)(ecode),
+        None => bridge().exit(ecode),
+    }
 }
 
 /// `sched_peg_curproc` of the primary CPU.
 pub(crate) fn peg_to_primary_cpu() {
-    bridge().peg_to_primary_cpu();
+    match OPS.get() {
+        Some(o) => (o.peg)(),
+        None => bridge().peg_to_primary_cpu(),
+    }
+}
+
+/// What the kernel's own subsystems (timeout(9), task(9)), which name no glue, make and end
+/// their threads with: `kernel::fork::init`'s registration of this glue's
+/// [`kthread_create`], [`kthread_exit`] and the peg (`kernel::fork` and `kernel::exit` are
+/// generic over the glue; these callers are not).
+pub(crate) struct Ops {
+    /// `kthread_create(func, ticket, NULL, name)` of a ticket's start.
+    pub(crate) create: fn(&'static [u8], usize) -> Result<(), Errno>,
+    /// `kthread_exit(ecode)`.
+    pub(crate) exit: fn(i32) -> !,
+    /// `sched_peg_curproc` of the primary CPU.
+    pub(crate) peg: fn(),
+}
+
+/// The registered [`Ops`] (once, by `kernel::fork::init`).
+static OPS: OnceStatic<Ops> = OnceStatic::new();
+
+/// Registers this glue's thread operations for the kernel's own subsystems; a second
+/// registration keeps the first.
+pub(crate) fn install_ops<G: crate::proc::ProcGlue>() {
+    let _ = OPS.set(Ops {
+        create: create_ticket::<G>,
+        exit: kthread_exit::<G>,
+        peg: peg_primary::<G>,
+    });
+}
+
+/// [`Ops::create`]: a kernel thread whose start is the ticket `t` (`kernel::fork::Start::Kernel`).
+fn create_ticket<G: crate::proc::ProcGlue>(name: &'static [u8], t: usize) -> Result<(), Errno> {
+    kthread_create::<G>(name, crate::fork::Start::Kernel(t)).map(drop)
+}
+
+/// [`Ops::peg`]: `softclock_thread`'s "be conservative for the moment": the running thread
+/// pegged to the primary CPU.
+fn peg_primary<G: crate::proc::ProcGlue>() {
+    let t = G::sched();
+    let primary = (0..hal::cpu::MAXCPUS).find(|&n| t.all_cpus.isset(n) && G::cpu_is_primary(n));
+    let Some(n) = primary else {
+        kpanic(format_args!("softclock_thread: no primary CPU"));
+    };
+    crate::sched::sched_peg_curproc::<G>(n);
+}
+
+/// `kthread_create(9)`: a kernel thread named `name` that runs `start`, forked from process
+/// 0 (sharing its address space and descriptors, leaving no zombie); its tid (the C's
+/// `*newpp`, which no caller follows: the four that kept it store the tid or compare it).
+pub fn kthread_create<G: crate::proc::ProcGlue>(
+    name: &[u8],
+    start: crate::fork::Start,
+) -> Result<hal::sys::types::Pid, Errno> {
+    use crate::proc::{FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM};
+
+    hal::klock::kernel_lock(); // KERNEL_LOCK()
+
+    // First, create the new process. Share the memory, file descriptors and don't leave the
+    // exit status around for the parent to wait for.
+    let child = match crate::fork::fork1(
+        G::tables().proc0(),
+        FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM,
+        start,
+    ) {
+        Ok(c) => c,
+        Err(error) => {
+            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            return Err(error);
+        }
+    };
+
+    // Name it as specified.
+    child.process.set_comm(name);
+
+    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+
+    // All done!
+    Ok(child.tid)
+}
+
+/// `kthread_exit(9)`: the running kernel thread exits (a non-zero code is printed: its
+/// parent, process 0, does nothing with it).
+pub fn kthread_exit<G: crate::proc::ProcGlue>(ecode: i32) -> ! {
+    hal::thread::with_current::<crate::proc::Thread<G>, _>(|p| {
+        if ecode != 0 {
+            let comm = p.process().comm();
+            hal::prf::printf(format_args!(
+                "WARNING: thread `{}' ({}) exits with status {}\n",
+                Bytes(&comm),
+                p.p_tid.get(),
+                ecode
+            ));
+        }
+        G::exit1(&p, ecode, 0, crate::proc::EXIT_NORMAL)
+    })
+}
+
+/// A command name printed as its bytes (`%s`).
+struct Bytes<'a>(&'a [u8]);
+
+impl core::fmt::Display for Bytes<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &b in self.0 {
+            core::fmt::Write::write_char(f, char::from(b))?;
+        }
+        Ok(())
+    }
 }
 /* </CODE> */
 

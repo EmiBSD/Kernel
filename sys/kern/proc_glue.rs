@@ -175,7 +175,7 @@ use crate::machine::Machine;
 use crate::machine::cpu::{Cpu, curcpu};
 use crate::sys::_time::Itimerspec;
 use crate::sys::errno::Errno;
-use crate::sys::proc::{Pgrp, PgrpRef, Pinsyscall, Proc, Process, ProcessRef, Session};
+use crate::sys::proc::{Pgrp, PgrpRef, Proc, Process, ProcessRef, Session};
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{SIGHUP, Sig, Sigset};
 use crate::sys::time::Timespec;
@@ -248,8 +248,6 @@ pub struct BsdProcessG {
     pub ps_textvp: Link<Vnode>,
     /// \[K|m\] `ps_opptr`: old parent during ptrace (null: ptrace is not ported).
     pub ps_opptr: PtrWord<Process>,
-    /// `ps_rucheck_to`: resource limit check timer.
-    pub ps_rucheck_to: Timeout,
     /// \[m\] `ps_realit_to`: `ITIMER_REAL` timeout.
     pub ps_realit_to: Timeout,
     /// \[m\] `ps_timer[ITIMER_REAL]`, \[T\] `ps_timer[ITIMER_VIRTUAL, ITIMER_PROF]`.
@@ -263,10 +261,6 @@ pub struct BsdProcessG {
     pub ps_uvncount: UsizeWord,
     /// `ps_uvdone`: no more unveil is permitted.
     pub ps_uvdone: I32Word,
-    /// `ps_pin`: static or ld.so.
-    pub ps_pin: Pinsyscall,
-    /// `ps_libcpin`: libc.so, from pinsyscalls(2).
-    pub ps_libcpin: Pinsyscall,
 }
 
 impl BsdProcessG {
@@ -275,15 +269,12 @@ impl BsdProcessG {
         Self {
             ps_textvp: Link::new(),
             ps_opptr: PtrWord::new(),
-            ps_rucheck_to: Timeout::zeroed(),
             ps_realit_to: Timeout::zeroed(),
             ps_timer: [const { ItimerWord::new() }; 3],
             ps_uvpaths: PtrWord::new(),
             ps_uvvcount: IsizeWord::new(0),
             ps_uvncount: UsizeWord::new(0),
             ps_uvdone: I32Word::new(0),
-            ps_pin: Pinsyscall::new(),
-            ps_libcpin: Pinsyscall::new(),
         }
     }
 }
@@ -902,7 +893,6 @@ pub(crate) fn proc_test_reset() {
 const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<Timeout>();
-    send_sync::<Pinsyscall>();
     send_sync::<BsdProcessG>();
     send_sync::<BsdThreadG>();
     send_sync::<BsdPgrpG>();

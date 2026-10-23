@@ -93,7 +93,7 @@
 //!   (`proc_glue::fork_join_pgrp`, the C's `LIST_INSERT_AFTER`).
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering, fence};
 
 use libkern::StaticCell;
@@ -103,13 +103,12 @@ use crate::dev::rnd::{arc4random, arc4random_uniform};
 use crate::kassert;
 use crate::kern::kern_descrip::{fdcopy, fdshare};
 use crate::kern::kern_event::knote_processfork;
-use crate::kern::kern_resource::{lim_fork, rucheck};
+use crate::kern::kern_resource::lim_fork;
 use crate::kern::kern_sched::{sched_choosecpu_fork, setrunqueue};
 use crate::kern::kern_sig::{psignal, sigactsinit, sigstkinit};
 use crate::kern::kern_synch::tsleep_nsec;
 use crate::kern::kern_tc::nanouptime;
 use crate::kern::kern_time::ratecheck;
-use crate::kern::kern_timeout::timeout_set;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::proc_glue::{
     chgproccnt, fork_join_pgrp, pgfind, prfind, proc_tables, process_ref, tfind, zombiefind,
@@ -314,11 +313,7 @@ pub fn process_initialize(pr: &Process, p: &'static Proc) {
         crate::sys::timeout::KCLOCK_UPTIME,
         0,
     );
-    timeout_set(
-        &pr.ps_rucheck_to,
-        rucheck,
-        ptr::from_ref(pr).cast_mut().cast::<c_void>(),
-    );
+    kernel::resource::rucheck_init(pr);
 }
 
 /// `process_new`: initialize the new process `pr` (made by `fork1` with its pid, its main
@@ -384,8 +379,8 @@ fn process_new(p: &'static Proc, pr: &ProcessRef, parent: &Process, flags: i32) 
         );
     }
 
-    pin_copy(&parent.ps_pin, &pr.ps_pin);
-    pin_copy(&parent.ps_libcpin, &pr.ps_libcpin);
+    drop(pr.ps_pin.replace(parent.ps_pin.read().duplicate()));
+    drop(pr.ps_libcpin.replace(parent.ps_libcpin.read().duplicate()));
 
     // Duplicate sub-structures as needed. Increase reference counts on shared objects.
     if flags & FORK_SHAREFILES != 0 {
@@ -421,35 +416,6 @@ fn process_new(p: &'static Proc, pr: &ProcessRef, parent: &Process, flags: i32) 
     // it's sufficiently inited to be globally visible
     let mut w = klock::witness();
     proc_tables().allprocess.insert_head(&mut w, pr.as_pin());
-}
-
-/// `process_new`'s copy of a pin table (`ps_pin`, `ps_libcpin`): the bounds come with the
-/// copied area, the table itself is duplicated (`mallocarray(M_PINSYSCALL)` + `memcpy`).
-fn pin_copy(from: &crate::sys::proc::Pinsyscall, to: &crate::sys::proc::Pinsyscall) {
-    to.pn_start.set(from.pn_start.get());
-    to.pn_end.set(from.pn_end.get());
-    to.pn_npins.set(from.pn_npins.get());
-    to.pn_pins.set(ptr::null_mut());
-    let Some(src) = NonNull::new(from.pn_pins.get_mut()) else {
-        return;
-    };
-    let n = from.pn_npins.get().max(0) as usize;
-    let Some(mem) = crate::kern::kern_malloc::mallocarray(
-        n,
-        size_of::<u32>(),
-        crate::sys::malloc::M_PINSYSCALL,
-        crate::sys::malloc::M_WAITOK,
-    ) else {
-        // M_WAITOK cannot fail in C; here the child simply has no table (pin_check kills
-        // it at its first system call, as it would a process without one).
-        to.pn_npins.set(0);
-        return;
-    };
-    let dst = mem.cast::<u32>();
-    // SAFETY: `src` is the parent's table of `n` entries (alive while the parent forks),
-    // `dst` a fresh allocation of `n` entries; they do not overlap.
-    unsafe { ptr::copy_nonoverlapping(src.as_ptr(), dst.as_ptr(), n) };
-    to.pn_pins.set(dst.as_ptr());
 }
 
 /// `fork_tfmrate`: print the 'table full' message once per 10 seconds.

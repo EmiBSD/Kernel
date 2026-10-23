@@ -85,12 +85,13 @@ use crate::machine::signal::MachineSignal;
 use crate::sys::acct::APINSYS;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{
-    P_OWEUPC, PS_PLEDGE, Pinsyscall, Proc, SINGLE_DEEP, SINGLE_UNWIND, p_hassibling, refreshcreds,
+    P_OWEUPC, PS_PLEDGE, Proc, SINGLE_DEEP, SINGLE_UNWIND, p_hassibling, refreshcreds,
 };
 use crate::sys::syscall::*;
 use crate::sys::systm::{SY_NOLOCK, SysArgs, Sysent, kernel_lock, kernel_unlock};
 use crate::sys::types::Register;
 use crate::unported;
+use kernel::proc::PinTable;
 
 /// `NOLOCK` system calls (`syscalls.master`) whose bodies are not audited for
 /// `MULTIPROCESSOR`: `mi_syscall` keeps the kernel lock for them although `sysent` marks them
@@ -134,10 +135,15 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
     let addr = pc.wrapping_sub(
         <Machine as MachineSignal>::sigcoderet() - <Machine as MachineSignal>::sigcodecall(),
     );
-    let ppin = &pr.ps_pin;
-    let plibcpin = &pr.ps_libcpin;
-    let within = |pin: &Pinsyscall| {
-        !pin.pn_pins.get().is_null() && addr >= pin.pn_start.get() && addr < pin.pn_end.get()
+    // The two tables, borrowed for the check (`hal::slot::ReadMostly`: exec and exit
+    // replace them only when no thread reads them).
+    let ppin = pr.ps_pin.read();
+    let plibcpin = pr.ps_libcpin.read();
+    let within = |pin: &PinTable| pin.pins.is_some() && addr >= pin.start && addr < pin.end;
+    let entry_of = |pin: &PinTable, code: Register| {
+        usize::try_from(code)
+            .ok()
+            .and_then(|c| pin.pins.as_ref()?.get(c).copied())
     };
 
     // System calls come from the following places, checks are ordered by most common case:
@@ -145,12 +151,12 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
     // 2a) static binary: syscalls in main program (in the ps_pin region)
     // 2b) dynamic binary: syscalls in ld.so (in the ps_pin region)
     // 3) sigtramp, containing only sigreturn(2)
-    let mut pin: Option<&Pinsyscall> = None;
+    let mut pin: Option<&PinTable> = None;
     let error = 'check: {
-        if within(plibcpin) {
-            pin = Some(plibcpin);
-        } else if within(ppin) {
-            pin = Some(ppin);
+        if within(&plibcpin) {
+            pin = Some(&plibcpin);
+        } else if within(&ppin) {
+            pin = Some(&ppin);
         } else if pc == pr.ps_sigcoderet.get() {
             if code == SYS_sigreturn as Register {
                 return Ok(());
@@ -158,23 +164,16 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
             break 'check Errno::EPERM; // goto die
         }
         match pin {
-            Some(pin) => {
-                let npins = pin.pn_npins.get().max(0) as usize;
-                let slot = usize::try_from(code).ok().filter(|&c| c < npins);
-                // SAFETY: a non-null `pn_pins` holds `pn_npins` entries (exec, pinsyscalls),
-                // freed only by this process's exec or exit.
-                let entry = slot.map(|c| unsafe { pin.pn_pins.get().add(c).read() });
-                match entry {
-                    None | Some(0) => Errno::ENOSYS,
-                    // correct location
-                    Some(off) if (off as usize).wrapping_add(pin.pn_start.get()) == addr => {
-                        return Ok(());
-                    }
-                    // multiple locations, hopefully a boring operation
-                    Some(u32::MAX) => return Ok(()),
-                    Some(_) => Errno::ENOSYS,
+            Some(pin) => match entry_of(pin, code) {
+                None | Some(0) => Errno::ENOSYS,
+                // correct location
+                Some(off) if (off as usize).wrapping_add(pin.start) == addr => {
+                    return Ok(());
                 }
-            }
+                // multiple locations, hopefully a boring operation
+                Some(u32::MAX) => return Ok(()),
+                Some(_) => Errno::ENOSYS,
+            },
             None => Errno::ENOSYS,
         }
     };
@@ -183,14 +182,9 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
     // KTRACE (KTR_PINSYSCALL): not configured.
     kernel_lock(); // KERNEL_LOCK()
     let pinoff = pin
-        .zip(usize::try_from(code).ok())
-        .filter(|(pin, c)| *c < pin.pn_npins.get().max(0) as usize)
-        .map_or(-1i64, |(pin, c)| {
-            // SAFETY: as above, `c < pn_npins`.
-            let entry = unsafe { pin.pn_pins.get().add(c).read() };
-            i64::from(entry)
-        });
-    let is = |which: &Pinsyscall| {
+        .and_then(|pin| entry_of(pin, code))
+        .map_or(-1i64, i64::from);
+    let is = |which: &PinTable| {
         if pin.is_some_and(|pin| core::ptr::eq(pin, which)) {
             "(Y)"
         } else {
@@ -206,18 +200,20 @@ pub fn pin_check(p: &Proc, code: Register) -> Result<(), Errno> {
         addr,
         code,
         pinoff as u32,
-        is(ppin),
-        ppin.pn_npins.get(),
-        ppin.pn_start.get(),
-        ppin.pn_end.get(),
-        ppin.pn_end.get().wrapping_sub(ppin.pn_start.get()),
-        is(plibcpin),
-        plibcpin.pn_npins.get(),
-        plibcpin.pn_start.get(),
-        plibcpin.pn_end.get(),
-        plibcpin.pn_end.get().wrapping_sub(plibcpin.pn_start.get()),
+        is(&ppin),
+        ppin.npins(),
+        ppin.start,
+        ppin.end,
+        ppin.end.wrapping_sub(ppin.start),
+        is(&plibcpin),
+        plibcpin.npins(),
+        plibcpin.start,
+        plibcpin.end,
+        plibcpin.end.wrapping_sub(plibcpin.start),
         error as i32
     );
+    drop(ppin);
+    drop(plibcpin);
     pr.ps_acflag.set(pr.ps_acflag.get() | APINSYS);
 
     // Try to stop threads immediately, because this process is suspect

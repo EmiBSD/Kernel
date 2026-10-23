@@ -8994,6 +8994,56 @@ lz = "sys/sys/proc.rs::PInentry"
 native = ["sys/kernel/vm/map.rs::InentryCache"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/sys/proc.rs::Pinsyscall"
+native = ["PinTable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/proc.rs::Pinsyscall::new"
+native = []
+kind = "dropped"
+reason = "PinTable::NONE, the constant of no table (the words of LZ's struct became an owned MArray in a ReadMostly cell)"
+
+[[module]]
+rust = "sys/kernel/fork.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_fork.rs"]
+status = "redesigned"
+notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported"
+
+[[module.fn]]
+lz = "sys/kern/kern_fork.rs::pin_copy"
+native = ["sys/kernel/proc.rs::PinTable::duplicate"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/exit.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_exit.rs"]
+status = "redesigned"
+notes = "N4.6a: exit1, exit(2), __threxit(2), the reaper (Dead::Thread/Dead::Main), dowait6/wait4(2)/waitid(2), proc_finish_wait, process_untrace/process_clear_orphan/process_reparent/process_zap/proc_free; the main thread's box stays its process's until process_zap; stopprofclock reported"
+
+[[module.fn]]
+lz = "sys/kern/kern_exit.rs::pin_free"
+native = []
+kind = "dropped"
+reason = "the pin tables are owned MArrays in ReadMostly cells (kernel::proc::PinTable): exit1 and exec replace them with PinTable::NONE and the old table goes with its owner (free(M_PINSYSCALL))"
+
+[[module]]
+rust = "sys/kernel/acct.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_acct.rs", "sys/sys/acct.rs"]
+status = "redesigned"
+notes = "N4.6a: acct(2), acct_process, encode_comp_t, acct_start/acct_thread/acct_shutdown, struct acct (abi_pod!) and the A* flags; acctp/savacctp owned by Rwlocked acctlk as Box<dyn AcctSink> from the AcctFile bridge (N5); ac_tty from the session (decision 15)"
+
+[[module]]
+rust = "sys/kernel/prot.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_prot.rs"]
+status = "redesigned"
+notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's"
+
 [[module]]
 rust = "sys/kernel/resource.rs"
 crate = "kernel"

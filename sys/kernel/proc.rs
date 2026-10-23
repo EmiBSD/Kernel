@@ -740,15 +740,16 @@ pub type SessionRef<G> = StaticOrPooled<Session<G>>;
 /// bridge of `bridges.toml` while `bsd` implements it.
 pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// The members of `struct process` of `bsd`'s subsystems (`ps_textvp`, the unveil table,
-    /// the pins, the timeouts, the interval timers).
-    type ProcessG: Send + Sync;
-    /// The members of `struct proc` of `bsd`'s subsystems (`p_exited`).
-    type ThreadG: Send + Sync;
+    /// the timeouts, the interval timers); `Default` is a new process's (`fork1`).
+    type ProcessG: Send + Sync + Default;
+    /// The members of `struct proc` of `bsd`'s subsystems; `Default` is a new thread's.
+    type ThreadG: Send + Sync + Default;
     /// The members of `struct pgrp` of `bsd`'s (none since N4.5b: `pg_sigiolst` is
-    /// `kernel::sigio`'s registry).
-    type PgrpG: Send + Sync;
-    /// The members of `struct session` of `bsd`'s (`s_ttyvp`, `s_ttyp`, `s_verauthto`).
-    type SessionG: Send + Sync;
+    /// `kernel::sigio`'s registry); `Default` is a new group's (`setpgid(2)`, `setsid(2)`).
+    type PgrpG: Send + Sync + Default;
+    /// The members of `struct session` of `bsd`'s (`s_ttyvp`, `s_ttyp`, `s_verauthto`);
+    /// `Default` is a new session's (`setsid(2)`).
+    type SessionG: Send + Sync + Default;
     /// `p_runq`: the scheduler's queues (`kernel::sched`).
     type ThreadRunq: PinAdapter<Elem = Thread<Self>>;
     /// `ps_list`: `allprocess`, `zombprocess`.
@@ -879,7 +880,9 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
 
     /// `exit1(p, xexit, xsig, flags)` (`kern_exit.c`, N4.6): the thread (or its process)
     /// exits; never returns.
-    fn exit1(p: &Thread<Self>, xexit: i32, xsig: i32, flags: i32) -> !;
+    fn exit1(p: &Thread<Self>, xexit: i32, xsig: i32, flags: i32) -> ! {
+        crate::exit::exit1(p, xexit, xsig, flags)
+    }
     /// `coredump(p)` (the file systems, N5): whether a core was written.
     fn coredump(_p: &Thread<Self>) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
@@ -916,6 +919,76 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// followed (`setsigvec`'s `SAS_NOCLDWAIT`).
     fn initprocess_addr() -> usize {
         0
+    }
+
+    // The process code's calls into what is still `bsd`'s (`kernel::fork`, `kernel::exit`,
+    // N4.6a). The defaults are what a glue without that subsystem does (the kernel's tests).
+
+    /// `maxprocess` (`conf/param.c`, `kern.maxproc`).
+    fn maxprocess() -> i32 {
+        i32::MAX
+    }
+    /// `maxthread` (`kern.maxthread`).
+    fn maxthread() -> i32 {
+        i32::MAX
+    }
+    /// `log(level, fmt, ...)` (`subr_log.c`): `tablefull`'s and accounting's messages.
+    fn log(_level: i32, _args: core::fmt::Arguments<'_>) {}
+    /// A new thread is linked (`fork1`, `thread_fork`): `bsd`'s record of its `&'static`,
+    /// which its run, sleep and signal adapters lend (N4.8 retires it with `curproc`'s).
+    fn thread_placed(_p: Pin<&Thread<Self>>) {}
+    /// `process_initialize`'s timeouts of `bsd`'s (`ps_realit_to`, `kern_time.c`, N4.8a).
+    fn process_initialized(_pr: &Process<Self>) {}
+    /// `process_new`'s `bsd` members: the text vnode's reference (`vref`, N5) and the
+    /// unveils (`unveil_copy`, N8).
+    fn process_forked(_parent: &Process<Self>, _child: &Process<Self>) {}
+    /// `sess->s_ttyvp != NULL` (the session's controlling terminal vnode, N4.7b).
+    fn session_has_tty_vnode(_sess: &Session<Self>) -> bool {
+        false
+    }
+    /// `sess->s_ttyp->t_dev` (accounting's `ac_tty`, N4.7b), `None` without a terminal.
+    fn session_ttydev(_sess: &Session<Self>) -> Option<hal::sys::types::Dev> {
+        None
+    }
+    /// `pmap_activate(p)` of the machine (`cpu_fork`'s, for the child).
+    fn pmap_activate(_p: &Thread<Self>) {}
+    /// `pmap_deactivate(p)` of the machine (`exit1`'s, on the running thread).
+    fn pmap_deactivate(_p: &Thread<Self>) {}
+    /// `pmap_purge(p)` of the machine (`uvm_purge`'s, `__HAVE_PMAP_PURGE`).
+    fn pmap_purge(_p: &Thread<Self>) {}
+    /// `child_return(p)` of the machine (N4.8): the forked child's return values set, the
+    /// kernel lock its trampoline took released, `mi_child_return`.
+    fn child_return(_p: &Thread<Self>) {}
+    /// `start_init(p)` (`init_main.c`, N9.1): process 1 execs init.
+    fn start_init(_p: &Thread<Self>) {}
+    /// `TCB_INVALID(tcb)` of the machine (`__tfork(2)`, N4.8).
+    fn tcb_invalid(_tcb: usize) -> bool {
+        false
+    }
+    /// init's `exit1` (pid 1, `EXIT_NORMAL`): the C panics ("init died"); under QEMU `bsd`
+    /// ends the run instead.
+    fn init_exited(xexit: i32, xsig: i32) -> ! {
+        kpanic(format_args!("init died (signal {xsig}, exit {xexit})"))
+    }
+    /// `cancel_all_itimers()` (`kern_time.c`, N4.8a): the exiting process's interval timers.
+    fn cancel_all_itimers() {}
+    /// `unveil_destroy(pr)` (`kern_unveil.c`, N8).
+    fn unveil_destroy(_pr: &Process<Self>) {}
+    /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
+    fn textvp_release(_pr: &Process<Self>) {}
+    /// `TCB_SET(p, tcb)` of the machine (`__set_tcb(2)`, N4.8).
+    fn tcb_set(_p: &Thread<Self>, _tcb: usize) {}
+    /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
+    fn rtable_exists(id: u32) -> bool {
+        id == 0
+    }
+    /// A counted reference to the group `pg` (process 0's `static`, or a `pgrppl` item), for
+    /// a holder that keeps a group found under a witness past it (`setpgid(2)`).
+    fn pgrp_ref(pg: &Pgrp<Self>) -> PgrpRef<Self> {
+        match PoolArc::from_ref(pg) {
+            Some(a) => StaticOrPooled::Pooled(a),
+            None => kpanic(format_args!("pgrp_ref: not a pooled group")),
+        }
     }
 }
 
@@ -1047,6 +1120,8 @@ pub struct ProcTables<G: ProcGlue> {
     /// `process0`, the swapper: the glue's `static`, recorded by `main`
     /// ([`ProcTables::set_process0`]); the orphans' parent until init exists.
     process0: OnceStatic<&'static Process<G>>,
+    /// `proc0`: process 0's thread, which `kthread_create` forks from.
+    proc0: OnceStatic<Pin<&'static Thread<G>>>,
 }
 
 impl<G: ProcGlue> ProcTables<G> {
@@ -1067,13 +1142,23 @@ impl<G: ProcGlue> ProcTables<G> {
             kq: KqPools::new(),
             initprocess: OnceStatic::new(),
             process0: OnceStatic::new(),
+            proc0: OnceStatic::new(),
         }
     }
 
-    /// Records process 0 (`main`'s `process0`), once (`panic(9)` on a second).
-    pub fn set_process0(&self, pr: &'static Process<G>) {
-        if self.process0.set(pr).is_err() {
+    /// Records process 0 and its thread (`main`'s `process0`, `proc0`), once (`panic(9)` on
+    /// a second).
+    pub fn set_process0(&self, pr: &'static Process<G>, p: Pin<&'static Thread<G>>) {
+        if self.process0.set(pr).is_err() || self.proc0.set(p).is_err() {
             kpanic(format_args!("process0 recorded twice"));
+        }
+    }
+
+    /// `proc0` (`panic(9)` before `main` recorded it).
+    pub fn proc0(&self) -> Pin<&'static Thread<G>> {
+        match self.proc0.get() {
+            Some(p) => *p,
+            None => kpanic(format_args!("proc0 not recorded")),
         }
     }
 
@@ -1550,6 +1635,9 @@ pub struct Process<G: ProcGlue> {
     pub ps_pin: ReadMostly<PinTable>,
     /// `ps_libcpin`: libc.so's pins, from `pinsyscalls(2)`; as `ps_pin`.
     pub ps_libcpin: ReadMostly<PinTable>,
+    /// `ps_rucheck_to`: the resource limit check timer (`kernel::resource::rucheck`, named by
+    /// the process's pid).
+    pub ps_rucheck_to: crate::timeout::Timeout,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1618,6 +1706,7 @@ impl<G: ProcGlue> Process<G> {
             ps_sigacts: OnceStatic::new(),
             ps_pin: ReadMostly::new(PinTable::NONE),
             ps_libcpin: ReadMostly::new(PinTable::NONE),
+            ps_rucheck_to: crate::timeout::Timeout::unset(),
             g,
         }
     }

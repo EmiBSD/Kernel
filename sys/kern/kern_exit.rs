@@ -98,7 +98,7 @@
 //!   `proc_finish_wait` always takes the zombie's branch.
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::Ordering;
 
 use crate::kassert;
@@ -112,7 +112,6 @@ use crate::kern::kern_sig::{
     process_suspend_signal, prsignal, psignal, ptsignal, sigio_freelist_process, single_thread_set,
 };
 use crate::kern::kern_synch::{sleep_finish, sleep_setup, wakeup};
-use crate::kern::kern_timeout::timeout_del;
 use crate::kern::proc_glue::{BsdProcGlue, chgproccnt, proc_tables, process_ref};
 use crate::kern::sched_bsd::sched_assert_unlocked;
 use crate::kern::subr_prf::panic;
@@ -310,7 +309,7 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
 
         crate::kern::kern_time::cancel_all_itimers();
 
-        timeout_del(&pr.ps_rucheck_to);
+        pr.ps_rucheck_to.del();
         // SYSVSEM: not configured.
         kernel::proc::killjobc(p.process_ref());
         let _ = crate::kern::kern_acct::acct_process(p);
@@ -318,8 +317,8 @@ pub fn exit1(p: &Proc, xexit: i32, xsig: i32, flags: i32) -> ! {
 
         crate::kern::kern_unveil::unveil_destroy(pr);
 
-        pin_free(&pr.ps_pin);
-        pin_free(&pr.ps_libcpin);
+        drop(pr.ps_pin.replace(kernel::proc::PinTable::NONE));
+        drop(pr.ps_libcpin.replace(kernel::proc::PinTable::NONE));
 
         // If parent has the SAS_NOCLDWAIT flag set, we're not going to become a zombie.
         if parent(pr).sigacts().ps_sigflags.load(Ordering::Relaxed) & SAS_NOCLDWAIT != 0 {
@@ -986,19 +985,6 @@ pub fn process_reparent(child: &Process, g: &mut PsGuard<'_>, parent: &ProcessRe
     drop(child.set_pptr_locked(&mut w, g, parent.clone()));
 
     // WITNESS_SETCHILD: not configured.
-}
-
-/// `free(pr->ps_pin.pn_pins, M_PINSYSCALL, ...)` (and `ps_libcpin`): gives a process's pin
-/// table back.
-pub fn pin_free(pin: &crate::sys::proc::Pinsyscall) {
-    if let Some(pins) = NonNull::new(pin.pn_pins.get_mut()) {
-        crate::kern::kern_malloc::free(
-            pins.cast::<u8>(),
-            crate::sys::malloc::M_PINSYSCALL,
-            pin.pn_npins.get().max(0) as usize * size_of::<u32>(),
-        );
-    }
-    pin.pn_pins.set(ptr::null());
 }
 
 /// `process_zap`: finally finished with old proc entry. Unlink it from its process group and

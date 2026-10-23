@@ -81,7 +81,6 @@
 //!   `dogetrusage` walks it under the kernel lock alone.
 //!   KTRACE is not configured.
 
-use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 
 use hal::klock;
@@ -91,9 +90,7 @@ use crate::kassert;
 use crate::kern::kern_clock::STATHZ;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write};
-use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_tc::nanouptime;
-use crate::kern::kern_timeout::timeout_add_msec;
 use crate::kern::proc_glue::{pgfind, prfind, proc_tables};
 use crate::kern::sched_bsd::{sched_lock, sched_unlock, setpriority};
 use crate::machine::Machine;
@@ -111,7 +108,6 @@ use crate::sys::resource::{
 };
 use crate::sys::resourcevar::{LimitCache, Plimit, PlimitRef, lim_read_leave};
 use crate::sys::rwlock::Rwlock;
-use crate::sys::signal::{SIGKILL, SIGXCPU};
 use crate::sys::syscallargs::{
     SysGetpriorityArgs, SysGetrlimitArgs, SysGetrusageArgs, SysSetpriorityArgs, SysSetrlimitArgs,
 };
@@ -198,12 +194,6 @@ pub fn calcru(
 ) {
     kernel::resource::calcru(tup, STATHZ.load(Ordering::Relaxed))
 }
-
-/// `RUCHECK_INTERVAL`: resource usage check interval in msec.
-const RUCHECK_INTERVAL: u64 = 1000;
-
-/// `SIGXCPU_INTERVAL`: SIGXCPU interval in seconds of process runtime.
-const SIGXCPU_INTERVAL: i64 = 5;
 
 /// `maxdmap`: patchable maximum data limit.
 pub static MAXDMAP: core::sync::atomic::AtomicU64 =
@@ -416,7 +406,7 @@ pub fn dosetrlimit(p: &Proc, which: u32, limp: &mut Rlimit) -> Result<(), Errno>
     }
 
     if which == RLIMIT_CPU && limp.rlim_cur != RLIM_INFINITY && alimp.rlim_cur == RLIM_INFINITY {
-        timeout_add_msec(&p.process().ps_rucheck_to, RUCHECK_INTERVAL);
+        kernel::resource::rucheck_arm(p.process_ref());
     }
 
     if which == RLIMIT_STACK {
@@ -551,41 +541,6 @@ pub fn dogetrusage(p: &Proc, who: i32, rup: &Rusage) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `rucheck`: check if the process exceeds its cpu resource allocation. If over max, kill
-/// it.
-pub fn rucheck(arg: *mut c_void) {
-    // SAFETY: the timeout's argument is the process (`process_initialize`), which outlives
-    // its timeouts (they are deleted in `exit1`).
-    let pr = unsafe { &*(arg as *const Process) };
-    let tu = Tusage::new();
-
-    kernel_assert_locked(); // KERNEL_ASSERT_LOCKED()
-
-    let g = pr.ps_mtx.lock();
-    let rlim = g
-        .limit
-        .as_ref()
-        .map_or(Rlimit::default(), |l| l.pl_rlimit[RLIMIT_CPU]);
-    tuagg_sumup(&tu, &pr.ps_tu);
-    for thread in pr.ps_threads.iter(&g) {
-        tuagg_sumup(&tu, &thread.p_tu);
-    }
-    drop(g);
-
-    let runtime = tu.tu_runtime.get().tv_sec;
-
-    if runtime as Rlim >= rlim.rlim_cur {
-        if runtime as Rlim >= rlim.rlim_max {
-            prsignal(pr, SIGKILL);
-        } else if runtime >= pr.ps_nextxcpu.get() {
-            prsignal(pr, SIGXCPU);
-            pr.ps_nextxcpu.set(runtime + SIGXCPU_INTERVAL);
-        }
-    }
-
-    timeout_add_msec(&pr.ps_rucheck_to, RUCHECK_INTERVAL);
-}
-
 /// `lim_startup`: the pool (the kernel crate's, made at its first need), and the limits of
 /// process 0 into `limit0`, which the caller places.
 pub fn lim_startup(limit0: &mut Plimit) {
@@ -602,7 +557,7 @@ pub fn lim_fork(parent: &Process, child: &Process) {
     drop(child.set_limit(limit));
 
     if cpu != RLIM_INFINITY {
-        timeout_add_msec(&child.ps_rucheck_to, RUCHECK_INTERVAL);
+        kernel::resource::rucheck_arm(&crate::kern::proc_glue::process_ref(child));
     }
 }
 
