@@ -644,7 +644,9 @@ impl RawMutex {
     }
 
     /// `mtx_leave(9)`: releases the mutex (handing it to a CPU parked on it, if one is),
-    /// then restores the level it was entered at. Nothing after a panic or in ddb.
+    /// then restores the level it was entered at. Nothing after a panic or in ddb. A caller
+    /// that does not hold the mutex is `panic(9)` under `DIAGNOSTIC` and releases it
+    /// otherwise, as the C's.
     pub fn leave(&self) {
         // Avoid deadlocks after panic or in DDB
         if cpu::past_caring() {
@@ -932,8 +934,11 @@ fn enter_slow(w: &AtomicUsize, me: usize, mut owner: usize) {
 /// `mtx_leave`'s release of an owner word the running CPU holds: free again (Release, so the
 /// next owner sees every write made under the mutex), and when CPUs were parked on it (the
 /// waiter bit) the first one waiting for this mutex woken. One swap, where the C compares
-/// and swaps with its own word: the caller proves the hold (a guard, or `RawMutex`'s
-/// `DIAGNOSTIC` check), so the old value is this CPU's word, with or without the bit.
+/// and swaps with its own word. For a [`Mutexed`] the guard proves the hold, so the old value
+/// is this CPU's word, with or without the bit. A [`RawMutex`] checks its owner under
+/// `DIAGNOSTIC` only, as the C's `mtx_leave`; without it, a CPU that does not hold the mutex
+/// releases it as the C's does (the C's compare fails and its slow path stores NULL): the
+/// legacy mutex guards no data of `hal`'s, so no `hal` invariant rests on its owner.
 #[inline]
 fn release(w: &AtomicUsize) {
     if w.swap(0, Ordering::Release) & MTX_WAITERS != 0 {
