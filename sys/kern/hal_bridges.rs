@@ -304,6 +304,10 @@ impl hal::pmap::Random for BsdRandom {
     fn random_u32(&self) -> u32 {
         crate::dev::rnd::arc4random()
     }
+
+    fn enqueue_randomness(&self, val: u32) {
+        crate::dev::rnd::enqueue_randomness(val);
+    }
 }
 
 /// The console of `sys/dev/cons.rs`.

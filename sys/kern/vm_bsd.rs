@@ -853,6 +853,10 @@ impl UioMove for VmUio<'_, '_> {
     fn is_write(&self) -> bool {
         self.0.uio_rw == UioRw::UIO_WRITE
     }
+
+    fn set_resid(&mut self, resid: usize) {
+        self.0.uio_resid = resid;
+    }
 }
 
 /// `uvm_sysctl` with `sysctl(2)`'s arguments (`sys_sysctl`'s `CTL_VM` row): the kernel's

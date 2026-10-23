@@ -342,9 +342,10 @@ pub fn com_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     // Detach and free the tty.
     if let Some(tp) = NonNull::new(sc.sc_tty.get().cast_mut()) {
         sc.sc_tty.set(ptr::null());
-        // SAFETY: the vnodes are gone, the soft interrupt is disestablished and the port is
-        // marked dead, so nothing uses the tty any more.
-        unsafe { ttyfree(tp) };
+        // SAFETY: `sc_tty` holds the `&'static` tty `ttymalloc` gave `com_attach_subr` (its
+        // handle leaked, so the tty is never freed); the vnodes are gone, the soft interrupt is
+        // disestablished and the port is marked dead, so nothing uses the tty any more.
+        unsafe { ttyfree(tp.as_ref()) };
     }
 
     Ok(())
@@ -465,8 +466,8 @@ pub fn comopen(dev: Dev, flag: i32, _mode: i32, p: &Proc) -> Result<(), Errno> {
     };
     splx(s);
 
-    tp.t_oproc.set(Some(comstart));
-    tp.t_param.set(Some(comparam));
+    tp.set_oproc(Some(comstart));
+    tp.set_param(Some(comparam));
     tp.t_dev.set(dev);
     let s = if !tp.t_state_isset(TS_ISOPEN) {
         tp.t_state_set(TS_WOPEN);
@@ -496,7 +497,7 @@ pub fn comopen(dev: Dev, flag: i32, _mode: i32, p: &Proc) -> Result<(), Errno> {
         let s = spltty();
 
         sc.sc_initialize.set(1);
-        let _ = comparam(tp, &tp.t_termios.get());
+        let _ = comparam(tp, &tp.termios());
         ttsetwater(tp);
 
         sc.sc_ibuf.set(0);

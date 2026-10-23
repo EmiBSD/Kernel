@@ -203,11 +203,11 @@ use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::{
     Taskq, TaskqRef, task_add, task_set, taskq_create, taskq_del_barrier, taskq_destroy_leaked,
 };
-use crate::kern::kern_timeout::{timeout_add, timeout_add_msec, timeout_del, timeout_set};
+use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::tty::{ttioctl, ttsetwater, ttwakeupwr, ttychars, ttyclose, ttyfree, ttymalloc};
 use crate::kern::tty_conf::linesw;
-use crate::kern::tty_subr::{ndflush, ndqb};
+use crate::kern::tty_subr::ndflush;
 use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::copyin;
@@ -869,10 +869,10 @@ unsafe fn wsscreen_detach(scrp: NonNull<Wsscreen>) {
     let (mut ccol, mut crow) = (0u32, 0u32); // XXX
 
     if let Some(tp) = scr.tty() {
-        timeout_del(&tp.t_rstrt_to);
-        // SAFETY: the screen's own tty from `ttymalloc`; its restart timeout is off and the
-        // screen, its only user, goes away.
-        unsafe { ttyfree(NonNull::from(tp)) };
+        tp.restart_cancel();
+        // The screen's own tty from `ttymalloc`; its restart timeout is off and the screen,
+        // its only user, goes away.
+        ttyfree(tp);
     }
     let dconf = scr.dconf();
     if let Some(em) = dconf.wsemul.get() {
@@ -1419,8 +1419,8 @@ pub fn wsdisplayopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), E
     let scr = sc.scr(wsdisplayscreen(dev)).ok_or(Errno::ENXIO)?;
 
     if let Some(tp) = scr.tty() {
-        tp.t_oproc.set(Some(wsdisplaystart));
-        tp.t_param.set(Some(wsdisplayparam));
+        tp.set_oproc(Some(wsdisplaystart));
+        tp.set_param(Some(wsdisplayparam));
         tp.t_dev.set(dev);
         let newopen = !tp.t_state_isset(TS_ISOPEN);
         if newopen {
@@ -1431,7 +1431,7 @@ pub fn wsdisplayopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), E
             tp.set_t_lflag(TTYDEF_LFLAG);
             tp.set_t_ispeed(TTYDEF_SPEED as i32);
             tp.set_t_ospeed(TTYDEF_SPEED as i32);
-            let _ = wsdisplayparam(tp, &tp.t_termios.get());
+            let _ = wsdisplayparam(tp, &tp.termios());
             ttsetwater(tp);
         } else if tp.t_state_isset(TS_XCLUDE) && suser(p).is_err() {
             return Err(Errno::EBUSY);
@@ -1442,11 +1442,11 @@ pub fn wsdisplayopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), E
 
         if newopen {
             // set window sizes as appropriate, and reset the emulation
-            let mut ws = tp.t_winsize.get();
+            let mut ws = tp.winsize();
             let scrdata = scr.dconf().scrdata();
             ws.ws_row = scrdata.nrows as u16;
             ws.ws_col = scrdata.ncols as u16;
-            tp.t_winsize.set(ws);
+            tp.set_winsize(ws);
         }
     }
 
@@ -2030,18 +2030,16 @@ pub fn wsdisplaykqfilter(dev: Dev, kn: &crate::sys::event::Knote) -> Result<(), 
     crate::kern::tty::ttkqfilter(dev, kn)
 }
 
-/// The contiguous bytes at the head of a tty's output queue (`ndqb(&tp->t_outq, 0)` of them
-/// at `tp->t_outq.c_cf`).
-fn outq_chunk(tp: &Tty) -> &[u8] {
-    let q = &tp.t_outq;
-    let n = ndqb(q, 0);
-    if n <= 0 || q.c_cs.get().is_null() {
-        return &[];
-    }
-    // SAFETY: `ndqb` counted `n` characters from `c_cf` up to the ring's end or `c_cl`,
-    // inside the `c_cn` bytes at `c_cs`; while `TS_BUSY` is set only this driver takes them
-    // off the queue, and writers append past them.
-    unsafe { core::slice::from_raw_parts(q.c_cs.get().add(q.c_cf.get()), n as usize) }
+/// Copies the contiguous bytes at the head of a tty's output queue (`ndqb(&tp->t_outq, 0)`
+/// of them at `tp->t_outq.c_cf`, at most `buf.len()`) into `buf`: how many. They are output
+/// with the queue's lock let go (the emulation may answer back into the tty's input, whose
+/// echo takes the output queue); while `TS_BUSY` is set only this driver takes them off the
+/// queue, and writers append past them.
+fn outq_chunk(tp: &Tty, buf: &mut [u8]) -> usize {
+    tp.t_outq.peek_with(buf.len(), |d| {
+        buf[..d.len()].copy_from_slice(d);
+        d.len()
+    })
 }
 
 /// `wsdisplaystart`: drain a screen's output queue into its emulation.
@@ -2083,7 +2081,9 @@ pub fn wsdisplaystart(tp: &Tty) {
         // ring, the other at the start. For performance, rather than loop here, we output
         // one chunk, see if there's another one, and if so, output it too.
 
-        let buf = outq_chunk(tp);
+        let mut chunk = [0u8; 512];
+        let len = outq_chunk(tp, &mut chunk);
+        let buf = &chunk[..len];
         let n = buf.len() as u32;
         let done = if scr.scr_flags.get() & SCR_GRAPHICS == 0 {
             if HAVE_BURNER_SUPPORT {
@@ -2099,7 +2099,8 @@ pub fn wsdisplaystart(tp: &Tty) {
         ndflush(&tp.t_outq, done as i32);
 
         if done == n {
-            let buf = outq_chunk(tp);
+            let len = outq_chunk(tp, &mut chunk);
+            let buf = &chunk[..len];
             if !buf.is_empty() {
                 let n = buf.len() as u32;
                 let done = if scr.scr_flags.get() & SCR_GRAPHICS == 0 {
@@ -2117,7 +2118,7 @@ pub fn wsdisplaystart(tp: &Tty) {
         if tp.t_outq.c_cc.get() != 0 {
             tp.t_state_set(TS_TIMEOUT);
             let hz = HZ.load(Ordering::Relaxed);
-            timeout_add(&tp.t_rstrt_to, if hz > 128 { hz / 128 } else { 1 });
+            tp.restart_in(if hz > 128 { hz / 128 } else { 1 });
         }
         ttwakeupwr(tp);
         splx(s2);
@@ -2691,7 +2692,7 @@ fn wsdisplay_kbdholdscr(scr: &Wsscreen, hold: i32) {
     } else {
         scr.scr_hold_screen.set(0);
         if let Some(tp) = scr.tty() {
-            timeout_add(&tp.t_rstrt_to, 0); // "immediate"
+            tp.restart_in(0); // "immediate"
         }
     }
 }

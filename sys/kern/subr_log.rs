@@ -52,7 +52,7 @@
 //! kernel crate's (`kernel::log`): the names `bsd`'s callers and the frozen machine code use,
 //! the device switch's entry points of `/dev/klog` (character major 7), `sendsyslog(2)`'s
 //! `sysent[]` row, and the console's half of the device switch the kernel writes through
-//! (`kernel::log::TtyDevsw`).
+//! (`kernel::tty::TtyDevsw`, implemented by `kern/tty.rs` since N4.7b).
 //!
 //! Upstream: sys/kern/subr_log.c @ 3ce1f3f79392
 //! LZ: sys/kern/subr_log.rs@3c62ede68802
@@ -67,18 +67,17 @@
 //!   and adds what `/dev/klog` needs from `bsd` now that it is live: the five `cdevsw`
 //!   entry points (`logopen` .. `logkqfilter`, arm64's `cdevsw[7]`), and the console's
 //!   `cnwrite` and `constty || cn_devvp` for the kernel's `TtyDevsw` bridge, registered by
-//!   `initconsbuf`.
+//!   `initconsbuf` (N4.7b: the bridge is the terminal's, `kernel::tty::TtyDevsw`, and its
+//!   implementation `bsd`'s `kern/tty.rs`).
 //! - `log_open` is [`log_open`], a function (LZ: the `LOG_OPEN` static): the flag is the
 //!   kernel's, in the glue's tables.
 //! - `msgbufp()`/`consbufp()` and `msgbuf_putchar(mbp, c)` are `kernel::log`'s
 //!   `msgbuf_putchar(which, c)` and readers (`msgbuf_header`, `msgbuf_read`): no reference
 //!   to a buffer leaves `log_mtx`.
 
-use kernel::log::TtyDevsw;
 pub use kernel::log::{Buf, msgbuf_putchar, msgbufmapped};
 use kernel::uio::UioMove;
 
-use crate::dev::cons::{cn_devvp_set, cnwrite, constty};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::errno::Errno;
@@ -89,23 +88,6 @@ use crate::sys::syscallargs::SysSendsyslogArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Register};
 use crate::sys::uio::{Uio, UioRw};
-
-/// `bsd`'s console for the kernel's log: `dev/cons.c`'s `cnwrite` and what `dosendsyslog`
-/// tests in front of it.
-struct BsdTtyDevsw;
-
-impl TtyDevsw<BsdProcGlue> for BsdTtyDevsw {
-    fn console_tty(&self) -> bool {
-        constty().is_some() || cn_devvp_set()
-    }
-
-    fn console_write(&self, uio: &mut Uio<'_>) -> Result<(), Errno> {
-        cnwrite(0, uio, 0)
-    }
-}
-
-/// The registered console.
-static BSD_TTYDEVSW: BsdTtyDevsw = BsdTtyDevsw;
 
 /// A device read's uio, as the kernel's log device moves bytes into it (`uiomove(9)`).
 struct LogUio<'a, 'b> {
@@ -128,6 +110,10 @@ impl UioMove for LogUio<'_, '_> {
     fn is_write(&self) -> bool {
         self.uio.uio_rw == UioRw::UIO_WRITE
     }
+
+    fn set_resid(&mut self, resid: usize) {
+        self.uio.uio_resid = resid;
+    }
 }
 
 /// Hands the machine's static buffer to `initmsgbuf` (both machines' early init).
@@ -139,7 +125,7 @@ pub fn init_static_msgbuf() {
 /// registers the console the kernel's `sendsyslog(2)` writes through.
 pub fn initconsbuf() {
     kernel::log::initconsbuf();
-    kernel::log::register_ttydevsw::<BsdProcGlue>(&BSD_TTYDEVSW);
+    crate::kern::tty::register_devsw();
 }
 
 /// `log_open`: whether `/dev/klog` is open (`log()` also prints to the console when not).

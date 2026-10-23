@@ -844,8 +844,8 @@ pub fn pluartopen(dev: Dev, flag: i32, _mode: i32, p: &Proc) -> Result<(), Errno
 
     splx(s);
 
-    tp.t_oproc.set(Some(pluart_start));
-    tp.t_param.set(Some(pluart_param));
+    tp.set_oproc(Some(pluart_start));
+    tp.set_param(Some(pluart_param));
     tp.t_dev.set(dev);
 
     let s = if !tp.t_state_isset(TS_ISOPEN) {
@@ -880,7 +880,7 @@ pub fn pluartopen(dev: Dev, flag: i32, _mode: i32, p: &Proc) -> Result<(), Errno
         let s = spltty();
 
         sc.sc_initialize.set(1);
-        let _ = pluart_param(tp, &tp.t_termios.get());
+        let _ = pluart_param(tp, &tp.termios());
         ttsetwater(tp);
         sc.sc_ibuf.set(0);
         sc.sc_ibufp.set(0);

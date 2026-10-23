@@ -173,7 +173,7 @@ use crate::kern::subr_log::Buf;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::sys_socket::fp_socket;
-use crate::kern::tty::{TTY_COUNT, sysctl_tty};
+use crate::kern::tty::{sysctl_tty, tty_count};
 use crate::kern::uipc_mbuf::{MBS_NCOUNTERS, mbstat, nmbclust_update};
 use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
@@ -333,13 +333,12 @@ static RAW_PART: AtomicI32 = AtomicI32::new(RAW_PART_C);
 static CCPU: AtomicI32 = AtomicI32::new(sched_bsd::CCPU as i32);
 
 /// `kern_vars[]`: the `kern` integers `sysctl_bounded_arr` serves.
-static KERN_VARS: [SysctlBoundedArgs; 30] = [
+static KERN_VARS: [SysctlBoundedArgs; 29] = [
     SysctlBoundedArgs::readonly(KERN_OSREV, &OPENBSD),
     SysctlBoundedArgs::new(KERN_MAXVNODES, &MAXVNODES, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXPROC, &MAXPROCESS, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXFILES, &MAXFILES, 0, i32::MAX),
     SysctlBoundedArgs::readonly(KERN_NFILES, &NUMFILES),
-    SysctlBoundedArgs::readonly(KERN_TTYCOUNT, &TTY_COUNT),
     SysctlBoundedArgs::readonly(KERN_ARGMAX, &ARG_MAX),
     SysctlBoundedArgs::readonly(KERN_POSIX1, &POSIX_VERSION),
     SysctlBoundedArgs::readonly(KERN_NGROUPS, &NGROUPS_MAX),
@@ -533,6 +532,20 @@ fn kern_vars(
     newp: usize,
     newlen: usize,
 ) -> Result<(), Errno> {
+    if let [KERN_TTYCOUNT] = name {
+        // `tty_count` is the kernel's (`kernel::tty`, N4.7b): `kern_vars[]`'s read-only entry
+        // over a copy of it.
+        let count = AtomicI32::new(tty_count());
+        return sysctl_int_bounded(
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+            &count,
+            SYSCTL_INT_READONLY.0,
+            SYSCTL_INT_READONLY.1,
+        );
+    }
     sysctl_bounded_arr(&KERN_VARS, name, oldp, oldlenp, newp, newlen)
 }
 
@@ -2212,7 +2225,7 @@ fn doproc_matches(r: &klock::KernelReader, pr: &Process, op: i32, arg: i32) -> R
             if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT == 0 {
                 false
             } else {
-                sess.and_then(|s| s.s_ttyp.get())
+                sess.and_then(kernel::tty::session_tty)
                     .is_some_and(|tp| tp.t_dev.get() == arg as Dev)
             }
         }
@@ -2450,12 +2463,12 @@ pub fn fill_kproc(
         ki.p_sid = leader;
     }
 
-    if let Some(tp) = s.and_then(|s| s.s_ttyp.get())
+    if let Some(tp) = s.and_then(kernel::tty::session_tty)
         && flags & PS_CONTROLT != 0
     {
         ki.p_tdev = tp.t_dev.get() as u32;
         ki.p_tpgid = tp.pgrp().map_or(-1, |pg| pg.pg_id.get());
-        ki.p_tsess = tp.t_session.get() as u64;
+        ki.p_tsess = tp.session_addr() as u64;
     } else {
         ki.p_tdev = NODEV as u32;
         ki.p_tpgid = -1;

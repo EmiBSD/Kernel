@@ -120,10 +120,13 @@ pub mod sys_generic;
 pub mod sys_socket;
 #[forbid(unsafe_code)]
 pub mod syscalls;
+#[forbid(unsafe_code)]
 pub mod tty;
 #[forbid(unsafe_code)]
 pub mod tty_conf;
+#[forbid(unsafe_code)]
 pub mod tty_pty;
+#[forbid(unsafe_code)]
 pub mod tty_subr;
 pub mod tty_tty;
 pub mod uipc_domain;

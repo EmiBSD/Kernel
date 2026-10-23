@@ -1194,8 +1194,8 @@ pub struct TtyTables<G: ProcGlue> {
     tty_count: AtomicI32,
     /// `constty`: the tty `TIOCCONS` made the console's (`cons.c`).
     constty: Mutexed<Option<TtyRef<G>>>,
-    /// `cn_tab->cn_dev` (`ttwrite`'s console buffer copy), `NODEV` (-1) before `cninit`.
-    console_dev: AtomicI32,
+    /// `constty != NULL`, written under `constty`'s lock, read without it.
+    constty_set: core::sync::atomic::AtomicBool,
     /// The device switch's bridge ([`register_ttydevsw`]).
     devsw: OnceStatic<&'static dyn TtyDevsw<G>>,
 }
@@ -1209,7 +1209,7 @@ impl<G: ProcGlue> TtyTables<G> {
             ttylist: PinList::new(),
             tty_count: AtomicI32::new(0),
             constty: Mutexed::new(hal::intr::IPL_HIGH, None),
-            console_dev: AtomicI32::new(-1),
+            constty_set: core::sync::atomic::AtomicBool::new(false),
             devsw: OnceStatic::new(),
         }
     }
@@ -1405,6 +1405,8 @@ pub trait TtyDevsw<G: ProcGlue>: Sync {
     /// `sess->s_ttyvp != NULL`: the session's controlling terminal has a vnode (`TIOCSCTTY`
     /// through the vnode layer).
     fn session_has_ttyvp(&self, sess: &crate::proc::Session<G>) -> bool;
+    /// `cn_tab->cn_dev`, `None` without a console (`ttwrite`'s console buffer copy).
+    fn console_dev(&self) -> Option<Dev>;
 }
 
 /// The glue's tty tables.
@@ -1429,13 +1431,36 @@ pub fn console_bridge<G: ProcGlue>() -> Option<&'static dyn TtyDevsw<G>> {
 }
 
 /// `constty`: the tty `TIOCCONS` made the console's, counted.
+///
+/// `printf(9)` asks for every console character: the common answer (no redirection) is read
+/// from a flag without the lock, and after a panic or inside ddb a held lock answers `None`
+/// (the console's own output), as `kernel::log`'s `log_mtx` does.
 pub fn constty<G: ProcGlue>() -> Option<TtyRef<G>> {
-    tables::<G>().constty.lock().clone()
+    let t = tables::<G>();
+    if !t.constty_set.load(Ordering::Acquire) {
+        return None;
+    }
+    if hal::cpu::past_caring() && t.constty.is_locked() {
+        return None;
+    }
+    t.constty.lock().clone()
 }
 
-/// `constty = tp` (`TIOCCONS`; `None`: `constty = NULL`).
+/// `constty = tp` (`TIOCCONS`; `None`: `constty = NULL`). After a panic or inside ddb with
+/// the lock held elsewhere, `NULL` is the flag alone (the handle stays where it is).
 pub fn set_constty<G: ProcGlue>(tp: Option<TtyRef<G>>) {
-    let old = core::mem::replace(&mut *tables::<G>().constty.lock(), tp);
+    let t = tables::<G>();
+    if hal::cpu::past_caring() && t.constty.is_locked() {
+        if tp.is_none() {
+            t.constty_set.store(false, Ordering::Release);
+        }
+        return;
+    }
+    let old = {
+        let mut c = t.constty.lock();
+        t.constty_set.store(tp.is_some(), Ordering::Release);
+        core::mem::replace(&mut *c, tp)
+    };
     drop(old);
 }
 
@@ -1444,6 +1469,7 @@ fn constty_forget<G: ProcGlue>(tp: &Tty<G>) {
     let old = {
         let mut c = tables::<G>().constty.lock();
         if c.as_deref().is_some_and(|c| ptr::eq(c, tp)) {
+            tables::<G>().constty_set.store(false, Ordering::Release);
             c.take()
         } else {
             None
@@ -1452,16 +1478,10 @@ fn constty_forget<G: ProcGlue>(tp: &Tty<G>) {
     drop(old);
 }
 
-/// `cn_tab->cn_dev`, registered by the console's `cninit` (`ttwrite` copies what is written
-/// to that device into the console buffer).
-pub fn set_console_dev<G: ProcGlue>(dev: Dev) {
-    tables::<G>().console_dev.store(dev, Ordering::Relaxed);
-}
-
-/// `cn_tab->cn_dev`, `None` before `cninit`.
+/// `cn_tab->cn_dev` (`ttwrite` copies what is written to that device into the console
+/// buffer), `None` without a console.
 pub fn console_dev<G: ProcGlue>() -> Option<Dev> {
-    let d = tables::<G>().console_dev.load(Ordering::Relaxed);
-    (d != -1).then_some(d)
+    devsw::<G>().and_then(|d| d.console_dev())
 }
 
 /// `isctty(pr, tp)`: is `tp` the controlling terminal of `pr`? Under the kernel lock (the
@@ -4394,6 +4414,9 @@ mod tests {
         }
         fn session_has_ttyvp(&self, _sess: &Session<Kg>) -> bool {
             false
+        }
+        fn console_dev(&self) -> Option<Dev> {
+            None
         }
     }
 

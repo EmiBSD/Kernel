@@ -1215,6 +1215,9 @@ mod tests {
         fn session_has_ttyvp(&self, _sess: &Session<Kg>) -> bool {
             false
         }
+        fn console_dev(&self) -> Option<Dev> {
+            None
+        }
     }
 
     static DEVSW: Devsw = Devsw;

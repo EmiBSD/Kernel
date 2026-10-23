@@ -137,6 +137,7 @@ pub use hal::sys::syslimits;
 pub mod syslog;
 pub mod systm;
 pub mod task;
+#[forbid(unsafe_code)]
 pub mod termios;
 pub mod time;
 #[forbid(unsafe_code)]
@@ -145,7 +146,9 @@ pub mod timetc;
 #[forbid(unsafe_code)]
 pub mod tprintf;
 pub mod tree;
+#[forbid(unsafe_code)]
 pub mod tty;
+#[forbid(unsafe_code)]
 pub mod ttycom;
 #[forbid(unsafe_code)]
 pub mod ttydefaults;
