@@ -1795,7 +1795,8 @@ adapted_by = ["sys/hal/intr.rs"]
 [[module]]
 rust = "sys/arch/arm64/dev/agtimer.rs"
 lz = ["sys/arch/arm64/dev/agtimer.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/arm64/timer.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/dev/ampintc.rs"
@@ -8657,6 +8658,11 @@ native = ["PinRing::is_empty"]
 kind = "renamed"
 
 [[extra]]
+rust = "sys/hal/clock.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's clock callbacks read it (struct clockframe, CLKF_USERMODE, CLKF_PC, CLKF_INTR over the core's interrupt depth); the machine's frame type comes from arch/<machine>/timer.rs; bsd's include/cpu.rs keeps its CLKF_* for its own callers"
+
+[[extra]]
 rust = "sys/hal/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
@@ -8698,6 +8704,18 @@ lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
 status = "redesigned"
 license = "none"
 notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/timer.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/dev/agtimer.rs"]
+status = "redesigned"
+notes = "N4.8a: agtimer.c's register half: CNTVCT_EL0 read around the Cortex-A73 858921 and Allwinner A64 errata (readcnt64_default, readcnt64_sun50i, readcnt64, timecount), CNTFRQ_EL0, CNTV_CTL_EL0/CNTV_TVAL_EL0 with their isb, CNTKCTL_EL1, CurrentEL, each one asm site; the clock frame (the trap frame, CLKF_USERMODE, CLKF_PC) hal::clock reads. The driver half (attach, timecounter, intrclock, clock registration) stays bsd's agtimer.rs (adapted) over these until N7"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_READCNT64"
+native = ["SUN50I"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/hal/arch/arm64/switch.rs"
