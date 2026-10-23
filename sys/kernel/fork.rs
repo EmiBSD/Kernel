@@ -893,7 +893,15 @@ pub fn thread_fork<G: ProcGlue>(
     }
 
     // The process owns the thread's box from here on; it goes on a run queue in the same
-    // section (see `fork1`).
+    // section (see `fork1`). This is `ps_mtx`'s second section of `thread_fork`, where the C
+    // takes it once (kern_fork.c:590-603; `fork_thread_start`, :614, under SCHED_LOCK alone):
+    // the box cannot move into the tree in the first section, because `p` (its pin) is still
+    // needed after it for the tid's copyout and `fork_thread_start`, and the tree lends its
+    // threads only under the guard; the copyout cannot move into the section (it may fault
+    // and sleep, a mutex may not be held across it), nor before the join or after the
+    // `setrunqueue` (the C's order: a sibling that reads the tid finds the thread on
+    // `ps_threads`, and the new thread never runs before its tid is written). One
+    // uncontended mutex more on `__tfork(2)`, not on fork(2)'s path.
     {
         let mut g = pr.ps_mtx.lock();
         fork_thread_start::<G>(p);
