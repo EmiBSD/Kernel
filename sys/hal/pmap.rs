@@ -160,8 +160,8 @@
 //!   (`kernel::vm::page::VmPage`, N3.3): the pv chain under its own mutex, the
 //!   pmap's attribute bits the C keeps in `pg_flags` (`PG_PMAP0`..`2`) in their own atomic
 //!   word, and a PTP's count of valid entries (the C's `wire_count` of a page-table page).
-//!   N3.4a: the word also holds `hal`'s claim (`PG_HAL_VIEW`, `PG_HAL_VIEW_W`, never in
-//!   [`PageMd::attrs`]): a frame held alone by a byte view (`sys/hal/mapped.rs`) or for the
+//!   N3.4a: the word also holds `hal`'s claim (`PG_HAL_VIEW`, `PG_HAL_VIEW_W` and, N4.8a,
+//!   `PG_HAL_KEEP` for the timekeep page's claim for good, never in [`PageMd::attrs`]): a frame held alone by a byte view (`sys/hal/mapped.rs`) or for the
 //!   length of [`zero_page`]/[`copy_page`], which panic on a held frame, as
 //!   [`page_protect`] does when it would write-protect a writable view and
 //!   [`PageMd::clear_attrs`] when the page system hands a held page out again;
@@ -248,9 +248,9 @@ const PG_HAL_VIEW: u32 = 0x8000_0000;
 /// With [`PG_HAL_VIEW`]: the view is writable, so its mapping may not lose `PROT_WRITE`.
 const PG_HAL_VIEW_W: u32 = 0x4000_0000;
 /// With [`PG_HAL_VIEW`]: the claim is for good and does not rest on `PG_BUSY` (the timekeep
-/// page's view, `KernelMapper::timekeep_view`): the page system may busy and unbusy the page,
-/// as the C's fault path does to every page it maps, since that changes neither its bytes nor
-/// its owner.
+/// page's view, `KernelMapper::timekeep_view`): the page system may busy and unbusy the page
+/// (the fault path clears a `PG_BUSY` it never set on every resident page it maps; the
+/// unlocked `uao_get` busies one), since that changes neither its bytes nor its owner.
 const PG_HAL_KEEP: u32 = 0x2000_0000;
 /// The bits `hal` keeps for itself.
 const PG_HAL_MASK: u32 = PG_HAL_VIEW | PG_HAL_VIEW_W | PG_HAL_KEEP;
@@ -547,7 +547,8 @@ pub struct PageMd {
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) pv: Mutexed<PvHead>,
     /// The `PG_PMAP_*` bits (`PG_PMAP_MOD`, `PG_PMAP_REF`, `PG_PMAP2`), and `hal`'s
-    /// `PG_HAL_VIEW`/`PG_HAL_VIEW_W` (the frame is held alone, by a byte view or a copy).
+    /// `PG_HAL_VIEW`/`PG_HAL_VIEW_W`/`PG_HAL_KEEP` (the frame is held alone, by a byte view or
+    /// a copy, or for good by the timekeep view).
     pub(crate) attrs: AtomicU32,
     /// Of a page-table page: its valid entries plus one (the C's `wire_count` of a PTP;
     /// amd64's alone: arm64's vp tables are found by the walk and freed with their pmap).

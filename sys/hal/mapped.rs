@@ -161,9 +161,10 @@
 //!   kernel's `vm::pager` at N3.4c).
 //! - N4.8a: the timekeep page (`kern_exec.c`'s `timekeep`, written by `kern_tc.c`) is a third
 //!   view, [`KernelMapper::timekeep_view`]: one per boot, over a wired managed page whose
-//!   frame it claims for good with the same `PageMd` claim, so the rules above keep every
-//!   other kernel way to its bytes away (the N4.8a review: the token's word alone was the
-//!   proof before).
+//!   frame it claims for good in its `PageMd` with a claim of its own (`PG_HAL_KEEP`: held
+//!   like a window's, but not resting on `PG_BUSY`), so the rules above keep every other
+//!   kernel way to its bytes away (the N4.8a review: the token's word alone was the proof
+//!   before).
 
 use core::ptr;
 use core::slice;
@@ -497,9 +498,11 @@ impl KernelMapper {
     ///   free it nor hand it out again), while `pmap_page_protect` spares the view's own
     ///   mapping at `va` (recorded as the claim's address) and removes only the others
     ///   (userland's read-only ones) or panics before write-protecting it. Unlike a pager
-    ///   window's, this claim does not rest on `PG_BUSY`: the fault path busies and unbusies
-    ///   the page as it maps it into a process (`uvm_fault_lower`'s end), which changes
-    ///   neither its bytes nor its owner, so the page system lets it (`PageMd::in_busy_view`).
+    ///   window's, this claim does not rest on `PG_BUSY`: the fault path that maps the page
+    ///   into a process ends by clearing a `PG_BUSY` it never set (`uvm_fault_lower`, the
+    ///   page from the locked `uao_get`), and only the unlocked `uao_get` would busy it;
+    ///   neither changes its bytes nor its owner, so the page system lets both
+    ///   (`PageMd::in_busy_view` is false for this claim).
     ///
     /// The token holder's contract that stays (the module's docs): `va` is the kernel map's
     /// mapping of the timekeep object, never removed through the token (its entry is the
@@ -551,7 +554,8 @@ impl KernelMapper {
         // released. Upheld: the claim makes the page system refuse to free or hand out the
         // frame (`uvm_pageclean`, `PageMd::clear_attrs` panic on a claimed page), so the
         // bytes stay this page's for `'static` (busying and unbusying it, which the claim
-        // allows, moves neither the bytes nor the page); `map_direct`, `map_frames`, `zero_page` and
+        // allows: the fault's clear of a `PG_BUSY` it never set, an unlocked `uao_get`'s busy,
+        // move neither the bytes nor the page); `map_direct`, `map_frames`, `zero_page` and
         // `copy_page` refuse a claimed frame, so no other kernel view or copy reaches them;
         // `page_protect` spares the mapping at `addr`, and the token holder never removes the
         // kernel map's entry (the contract above). Why the shared reference cannot race:
@@ -857,7 +861,7 @@ mod tests {
         assert!(catch_unwind(AssertUnwindSafe(|| pmap::copy_page(frames[0], dst[0]))).is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| md.clear_attrs())).is_err());
         assert!(md.in_view() && md.spares(true, va.as_usize()));
-        // The claim is for good but not on PG_BUSY: the fault path may unbusy the page.
+        // The claim is for good but not on PG_BUSY: the page system may busy and unbusy it.
         assert!(!md.in_busy_view());
         pmap::page_protect(md, PROT_NONE);
         assert_eq!(pmap::kernel().extract(va), Some(frames[0]));
