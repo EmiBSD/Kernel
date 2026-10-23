@@ -1,4 +1,5 @@
 # The agents' memories are append-only lists of one-line lessons; two branches that each
 # append lines merge by keeping both sides (git's built-in union driver), so an integration
 # never stops on them. Exact duplicates are still dropped by hand (.claude/rules/subagents.md).
-.claude/agent-memory/**/MEMORY.md merge=union
+# Every .md there: an index (MEMORY.md) and the topic files a role splits its lessons into.
+.claude/agent-memory/**/*.md merge=union
