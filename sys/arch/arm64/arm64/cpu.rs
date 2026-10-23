@@ -174,7 +174,7 @@ use crate::kern::init_main::NCPUS;
 use crate::kern::kern_clockintr::clockqueue_init;
 #[cfg(feature = "multiprocessor")]
 #[cfg(feature = "multiprocessor")]
-use crate::kern::kern_sched::{idle_arg, sched_idle, sched_init_cpu, sched_toidle};
+use crate::kern::kern_sched::{sched_init_cpu, sched_toidle};
 #[cfg(feature = "multiprocessor")]
 use crate::kern::sched_bsd::sched_assert_unlocked;
 #[cfg(feature = "multiprocessor")]
