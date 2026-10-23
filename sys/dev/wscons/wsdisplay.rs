@@ -203,11 +203,11 @@ use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::{
     Taskq, TaskqRef, task_add, task_set, taskq_create, taskq_del_barrier, taskq_destroy_leaked,
 };
-use crate::kern::kern_timeout::{timeout_add, timeout_add_msec, timeout_del, timeout_set};
+use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::tty::{ttioctl, ttsetwater, ttwakeupwr, ttychars, ttyclose, ttyfree, ttymalloc};
 use crate::kern::tty_conf::linesw;
-use crate::kern::tty_subr::{ndflush, ndqb};
+use crate::kern::tty_subr::ndflush;
 use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::copyin;
@@ -227,7 +227,7 @@ use crate::sys::task::Task;
 use crate::sys::termios::Termios;
 use crate::sys::timeout::Timeout;
 use crate::sys::tty::{
-    TS_BUSY, TS_CARR_ON, TS_FLUSH, TS_ISOPEN, TS_TIMEOUT, TS_TTSTOP, TS_XCLUDE, Tty,
+    Clist, TS_BUSY, TS_CARR_ON, TS_FLUSH, TS_ISOPEN, TS_TIMEOUT, TS_TTSTOP, TS_XCLUDE, Tty,
 };
 use crate::sys::ttydefaults::{
     TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG, TTYDEF_SPEED,
@@ -869,10 +869,10 @@ unsafe fn wsscreen_detach(scrp: NonNull<Wsscreen>) {
     let (mut ccol, mut crow) = (0u32, 0u32); // XXX
 
     if let Some(tp) = scr.tty() {
-        timeout_del(&tp.t_rstrt_to);
-        // SAFETY: the screen's own tty from `ttymalloc`; its restart timeout is off and the
-        // screen, its only user, goes away.
-        unsafe { ttyfree(NonNull::from(tp)) };
+        tp.restart_cancel();
+        // The screen's own tty from `ttymalloc`; its restart timeout is off and the screen,
+        // its only user, goes away.
+        ttyfree(tp);
     }
     let dconf = scr.dconf();
     if let Some(em) = dconf.wsemul.get() {
@@ -1419,8 +1419,8 @@ pub fn wsdisplayopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), E
     let scr = sc.scr(wsdisplayscreen(dev)).ok_or(Errno::ENXIO)?;
 
     if let Some(tp) = scr.tty() {
-        tp.t_oproc.set(Some(wsdisplaystart));
-        tp.t_param.set(Some(wsdisplayparam));
+        tp.set_oproc(Some(wsdisplaystart));
+        tp.set_param(Some(wsdisplayparam));
         tp.t_dev.set(dev);
         let newopen = !tp.t_state_isset(TS_ISOPEN);
         if newopen {
@@ -1431,7 +1431,7 @@ pub fn wsdisplayopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), E
             tp.set_t_lflag(TTYDEF_LFLAG);
             tp.set_t_ispeed(TTYDEF_SPEED as i32);
             tp.set_t_ospeed(TTYDEF_SPEED as i32);
-            let _ = wsdisplayparam(tp, &tp.t_termios.get());
+            let _ = wsdisplayparam(tp, &tp.termios());
             ttsetwater(tp);
         } else if tp.t_state_isset(TS_XCLUDE) && suser(p).is_err() {
             return Err(Errno::EBUSY);
@@ -1442,11 +1442,11 @@ pub fn wsdisplayopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), E
 
         if newopen {
             // set window sizes as appropriate, and reset the emulation
-            let mut ws = tp.t_winsize.get();
+            let mut ws = tp.winsize();
             let scrdata = scr.dconf().scrdata();
             ws.ws_row = scrdata.nrows as u16;
             ws.ws_col = scrdata.ncols as u16;
-            tp.t_winsize.set(ws);
+            tp.set_winsize(ws);
         }
     }
 
@@ -2030,18 +2030,39 @@ pub fn wsdisplaykqfilter(dev: Dev, kn: &crate::sys::event::Knote) -> Result<(), 
     crate::kern::tty::ttkqfilter(dev, kn)
 }
 
-/// The contiguous bytes at the head of a tty's output queue (`ndqb(&tp->t_outq, 0)` of them
-/// at `tp->t_outq.c_cf`).
-fn outq_chunk(tp: &Tty) -> &[u8] {
-    let q = &tp.t_outq;
-    let n = ndqb(q, 0);
-    if n <= 0 || q.c_cs.get().is_null() {
-        return &[];
+/// Copies the contiguous bytes at the head of a tty's output queue `q` (`ndqb(q, 0)` of them
+/// at `q->c_cf`, at most `buf.len()`) into `buf`: how many. They are output with the queue's
+/// lock let go (the emulation may answer back into the tty's input, whose echo takes the
+/// output queue); while `TS_BUSY` is set only this driver takes them off the queue, and
+/// writers append past them.
+fn outq_chunk(q: &Clist, buf: &mut [u8]) -> usize {
+    q.peek_with(buf.len(), |d| {
+        buf[..d.len()].copy_from_slice(d);
+        d.len()
+    })
+}
+
+/// One of `wsdisplaystart`'s two outputs: the contiguous run at the head of the output queue
+/// `q` (`n = ndqb(q, 0)` bytes at `c_cf`) through `output` (the emulation's, which says how
+/// many it took), each piece taken off by `ndflush(q, done)`. The run is copied out in
+/// pieces of `buf`'s size ([`outq_chunk`]), so the whole run still goes out as the C's one
+/// call does; whether every byte of it went out (the C's `done == n`).
+fn outq_run(q: &Clist, buf: &mut [u8], output: &mut impl FnMut(&[u8]) -> u32) -> bool {
+    let mut left = q.peek_with(usize::MAX, <[u8]>::len);
+    while left > 0 {
+        let piece = left.min(buf.len());
+        let len = outq_chunk(q, &mut buf[..piece]);
+        if len == 0 {
+            break;
+        }
+        let done = output(&buf[..len]);
+        ndflush(q, done as i32);
+        if done as usize != len {
+            return false;
+        }
+        left -= len;
     }
-    // SAFETY: `ndqb` counted `n` characters from `c_cf` up to the ring's end or `c_cl`,
-    // inside the `c_cn` bytes at `c_cs`; while `TS_BUSY` is set only this driver takes them
-    // off the queue, and writers append past them.
-    unsafe { core::slice::from_raw_parts(q.c_cs.get().add(q.c_cf.get()), n as usize) }
+    true
 }
 
 /// `wsdisplaystart`: drain a screen's output queue into its emulation.
@@ -2083,32 +2104,25 @@ pub fn wsdisplaystart(tp: &Tty) {
         // ring, the other at the start. For performance, rather than loop here, we output
         // one chunk, see if there's another one, and if so, output it too.
 
-        let buf = outq_chunk(tp);
-        let n = buf.len() as u32;
-        let done = if scr.scr_flags.get() & SCR_GRAPHICS == 0 {
+        let graphics = scr.scr_flags.get() & SCR_GRAPHICS != 0;
+        if !graphics {
             if HAVE_BURNER_SUPPORT {
                 wsdisplay_burn(sc.as_arg(), WSDISPLAY_BURN_OUTPUT);
             }
             if HAVE_WSMOUSED_SUPPORT && sc.focus().is_some_and(|f| ptr::eq(f, scr)) {
                 mouse_remove(scr);
             }
-            scr.dconf().output(buf, false)
-        } else {
-            n
-        };
-        ndflush(&tp.t_outq, done as i32);
-
-        if done == n {
-            let buf = outq_chunk(tp);
-            if !buf.is_empty() {
-                let n = buf.len() as u32;
-                let done = if scr.scr_flags.get() & SCR_GRAPHICS == 0 {
-                    scr.dconf().output(buf, false)
-                } else {
-                    n
-                };
-                ndflush(&tp.t_outq, done as i32);
+        }
+        let mut chunk = [0u8; 512];
+        let mut output = |buf: &[u8]| {
+            if graphics {
+                buf.len() as u32
+            } else {
+                scr.dconf().output(buf, false)
             }
+        };
+        if outq_run(&tp.t_outq, &mut chunk, &mut output) {
+            let _ = outq_run(&tp.t_outq, &mut chunk, &mut output);
         }
 
         let s2 = spltty();
@@ -2117,7 +2131,7 @@ pub fn wsdisplaystart(tp: &Tty) {
         if tp.t_outq.c_cc.get() != 0 {
             tp.t_state_set(TS_TIMEOUT);
             let hz = HZ.load(Ordering::Relaxed);
-            timeout_add(&tp.t_rstrt_to, if hz > 128 { hz / 128 } else { 1 });
+            tp.restart_in(if hz > 128 { hz / 128 } else { 1 });
         }
         ttwakeupwr(tp);
         splx(s2);
@@ -2691,7 +2705,7 @@ fn wsdisplay_kbdholdscr(scr: &Wsscreen, hold: i32) {
     } else {
         scr.scr_hold_screen.set(0);
         if let Some(tp) = scr.tty() {
-            timeout_add(&tp.t_rstrt_to, 0); // "immediate"
+            tp.restart_in(0); // "immediate"
         }
     }
 }
@@ -4276,6 +4290,57 @@ mod tests {
             self.sc.sc_copybuffer_size.set(size as u32);
             buf
         }
+    }
+
+    #[test]
+    fn the_output_queue_drains_whole_runs_in_pieces() {
+        let _g = crate::kern::subr_pool::tests::setup_real_memory();
+        let q: &'static Clist = Box::leak(Box::new(Clist::new()));
+        crate::kern::tty_subr::clalloc(q, 2048, false);
+        let data: Vec<u8> = (0..1500u32).map(|i| (i % 251) as u8).collect();
+        assert_eq!(crate::kern::tty_subr::b_to_q(&data, q), 0);
+        let mut buf = [0u8; 512];
+        // the whole contiguous run, in three pieces of at most 512
+        let mut seen = Vec::new();
+        let mut pieces = 0;
+        let mut all = |b: &[u8]| {
+            pieces += 1;
+            seen.extend_from_slice(b);
+            b.len() as u32
+        };
+        assert!(outq_run(q, &mut buf, &mut all));
+        assert_eq!((pieces, &seen[..]), (3, &data[..]));
+        assert_eq!(q.c_cc.get(), 0);
+        // an emulation that stops early: the rest stays queued, and the run says so
+        assert_eq!(crate::kern::tty_subr::b_to_q(&data, q), 0);
+        let mut first = true;
+        let mut part = |b: &[u8]| {
+            if first {
+                first = false;
+                b.len() as u32
+            } else {
+                10
+            }
+        };
+        assert!(!outq_run(q, &mut buf, &mut part));
+        assert_eq!(q.c_cc.get(), 1500 - 512 - 10);
+        // wrapped: the run up to the ring's end (in two pieces), then the start
+        crate::kern::tty_subr::ndflush(q, 1500 - 522 - 100);
+        let tail: Vec<u8> = (0..1000u32).map(|i| (i % 13) as u8).collect();
+        assert_eq!(crate::kern::tty_subr::b_to_q(&tail, q), 0);
+        let mut seen = Vec::new();
+        let mut take = |b: &[u8]| {
+            seen.extend_from_slice(b);
+            b.len() as u32
+        };
+        assert!(outq_run(q, &mut buf, &mut take));
+        assert!(q.c_cc.get() > 0, "the ring wrapped");
+        assert!(outq_run(q, &mut buf, &mut take));
+        assert_eq!(q.c_cc.get(), 0);
+        let mut want = data[1400..].to_vec();
+        want.extend_from_slice(&tail);
+        assert_eq!(seen, want);
+        crate::kern::tty_subr::clfree(q);
     }
 
     #[test]

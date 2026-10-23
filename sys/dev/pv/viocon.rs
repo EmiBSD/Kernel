@@ -571,9 +571,9 @@ pub fn viocon_port_create(sc: &'static VioconSoftc, portidx: usize) -> Result<()
         }
 
         let tp = ttymalloc(1_000_000);
-        tp.t_oproc.set(Some(vioconstart));
-        tp.t_param.set(Some(vioconparam));
-        tp.t_hwiflow.set(Some(vioconhwiflow));
+        tp.set_oproc(Some(vioconstart));
+        tp.set_param(Some(vioconparam));
+        tp.set_hwiflow(Some(vioconhwiflow));
         tp.t_dev
             .set(((sc.sc_dev.dv_unit.get() as u32) << 4 | portidx as u32) as Dev);
         vp.vp_tty.set(tp);
@@ -867,14 +867,14 @@ pub fn vioconopen(dev: Dev, _flag: i32, _mode: i32, p: &Proc) -> Result<(), Errn
         tp.set_t_oflag(TTYDEF_OFLAG);
         tp.set_t_lflag(TTYDEF_LFLAG);
         if vp.vp_cols.get() != 0 {
-            let mut ws = tp.t_winsize.get();
+            let mut ws = tp.winsize();
             ws.ws_col = vp.vp_cols.get();
             ws.ws_row = vp.vp_rows.get();
-            tp.t_winsize.set(ws);
+            tp.set_winsize(ws);
         }
 
         let s = spltty();
-        let _ = vioconparam(tp, &tp.t_termios.get());
+        let _ = vioconparam(tp, &tp.termios());
         ttsetwater(tp);
         splx(s);
     } else if tp.t_state_isset(TS_XCLUDE) && suser(p).is_err() {

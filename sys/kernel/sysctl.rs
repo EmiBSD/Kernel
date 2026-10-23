@@ -101,9 +101,13 @@
 //!   [`register_cpuspeed`]'s; the three battery setters are one [`BatteryCharge`] trait over
 //!   the knob (decision 46: the C's three entries one driver fills).
 //! - `fill_kproc` reads the kernel's process, thread, group, session and credentials; what
-//!   `bsd` still owns comes through the glue: the terminal of a session
-//!   ([`ProcGlue::session_tty`](crate::proc::ProcGlue::session_tty)), its vnode, the unveil
-//!   state and a CPU's unit number. `ps_mainproc` is the process's main-thread slot.
+//!   `bsd` still owns comes through the glue: its vnode, the unveil state and a CPU's unit
+//!   number. The terminal of a session is the kernel's (`s_ttyp`, `kernel::tty`, N4.7b),
+//!   read through [`ProcGlue::session_tty`](crate::proc::ProcGlue::session_tty)'s default
+//!   (a test glue stands in for a terminal it does not make). `ps_mainproc` is the
+//!   process's main-thread slot.
+//! - `kern.ttycount` is the kernel's (`kernel::tty::tty_count`, N4.7b) and `kern.tty` is
+//!   `kernel::tty::TtyNode`, which `bsd` registers over its glue.
 //! - `p_tsess` (`PTRTOINT64(tp->t_session)`) is written only when `show_pointers` (the
 //!   caller is root), as the C: LZ wrote it for every caller, a kernel address `ps(1)` gave
 //!   any user (N4.7 decision 8, the user's).
@@ -167,7 +171,8 @@ use hal::sys::sysctl::{
     KERN_PROC_VMMAP, KERN_RAWPARTITION, KERN_SAVED_IDS, KERN_SECURELVL, KERN_SOMAXCONN,
     KERN_SOMINCONN, KERN_STACKGAPRANDOM, KERN_SYSVMSG, KERN_SYSVSEM, KERN_SYSVSHM,
     KERN_TIMECOUNTER, KERN_TIMEOUT_STATS, KERN_TTY, KERN_TTYCOUNT, KERN_UTC_OFFSET, KERN_VERSION,
-    KERN_WATCHDOG, KERN_WXABORT, KI_NOCPU, KinfoProc, KinfoVmentry, SysctlBoundedArgs,
+    KERN_WATCHDOG, KERN_WXABORT, KI_NOCPU, KinfoProc, KinfoVmentry, SYSCTL_INT_READONLY,
+    SysctlBoundedArgs,
 };
 use hal::sys::syslimits::{ARG_MAX, NGROUPS_MAX, PATH_MAX};
 use hal::sys::types::{Dev, Pid};
@@ -1244,6 +1249,12 @@ fn kern_leaf_unlocked<G: ProcGlue>(
         KERN_HOSTID => int(req, &HOSTID),
         KERN_ALLOWKMEM => securelevel_int(req, &ALLOWKMEM),
         KERN_TIMEOUT_STATS => timeout_stats(req),
+        KERN_TTYCOUNT => {
+            // `kern_vars[]`'s read-only `tty_count`, the kernel's terminals' count
+            // (`kernel::tty`, N4.7b): the entry served over a copy of it.
+            let count = AtomicI32::new(crate::tty::tty_count::<G>());
+            int_bounded(req, &count, SYSCTL_INT_READONLY.0, SYSCTL_INT_READONLY.1)
+        }
         _ if KERN_VARS_UNLOCKED.contains(&id) => kern_vars(name, req),
         _ if KERN_LEAVES_UNLOCKED.contains(&id) => node(&KERN, id)?.sysctl(&[], req),
         _ => return None,
@@ -2162,6 +2173,11 @@ impl UioMove for BufRead<'_> {
 
     fn is_write(&self) -> bool {
         false
+    }
+
+    fn set_resid(&mut self, resid: usize) {
+        // `uio_resid = resid`: the bytes still to fill are the buffer's last `resid`.
+        self.done = self.buf.len().saturating_sub(resid);
     }
 }
 

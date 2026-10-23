@@ -258,6 +258,10 @@ mod tests {
         fn is_write(&self) -> bool {
             self.write
         }
+
+        fn set_resid(&mut self, resid: usize) {
+            self.pos = self.data.len().saturating_sub(resid);
+        }
     }
 
     fn window() -> ForeignWindow<'static> {

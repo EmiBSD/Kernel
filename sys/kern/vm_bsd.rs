@@ -492,7 +492,8 @@
 //!   replaces it ([`uvmspace_exec`]), the reaper takes it ([`uvm_exit`]); the threads' copy
 //!   `p_vmspace` stays the raw pointer until N4.2. A reader that keeps the vmspace while it
 //!   reads it (`fill_kproc`, `kern.proc_args`) holds a handle of its own
-//!   (`Process::vmspace_share`, the C's `uvmspace_addref`), given back by `uvmspace_free`.
+//!   (`Process::vmspace_share`) and a reference (the C's `uvmspace_addref`), given back by
+//!   `uvmspace_free`.
 //! - `pinsyscalls(2)`'s table is the kernel's `MArray` handed to the process (its
 //!   `ps_libcpin`, a `hal::slot::ReadMostly<kernel::proc::PinTable>` since N4.6a):
 //!   `pin_check` borrows it, `exit` and `exec` replace it and it goes with its owner (the C's
@@ -798,6 +799,10 @@ impl UioMove for VmUio<'_, '_> {
 
     fn is_write(&self) -> bool {
         self.0.uio_rw == UioRw::UIO_WRITE
+    }
+
+    fn set_resid(&mut self, resid: usize) {
+        self.0.uio_resid = resid;
     }
 }
 

@@ -122,8 +122,9 @@
 //!   kept with them ([`ACCT_ON`]).
 //! - `acct_proc`, a thread pointer used only as a wait channel and a "running" flag ->
 //!   [`ACCT_RUNNING`], whose address is the channel.
-//! - `ac_tty` is the session's terminal (`s_ttyp->t_dev` under `PS_CONTROLT`, through the
-//!   glue's `session_ttydev` until N4.7b), where LZ wrote -1 (the user's decision 15 of N4.6:
+//! - `ac_tty` is the session's terminal (`s_ttyp->t_dev` under `PS_CONTROLT`, through
+//!   `ProcGlue::session_ttydev`, whose default reads kernel::tty's `s_ttyp` since N4.7b),
+//!   where LZ wrote -1 (the user's decision 15 of N4.6:
 //!   `lastcomm` names the terminal again).
 
 use alloc::boxed::Box;

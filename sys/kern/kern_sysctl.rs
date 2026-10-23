@@ -133,7 +133,6 @@ use crate::kern::subr_evcount::evcount_sysctl;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::sys_socket::fp_socket;
-use crate::kern::tty::{TTY_COUNT, sysctl_tty};
 use crate::kern::uipc_mbuf::{MBS_NCOUNTERS, mbstat, nmbclust_update};
 use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
@@ -213,13 +212,12 @@ static RAW_PART: AtomicI32 = AtomicI32::new(RAW_PART_C);
 
 /// `kern_vars[]`, the entries whose variables are `bsd`'s (the kernel has the others):
 /// registered with the kernel's dispatcher, which searches its own entries first.
-static KERN_VARS: [SysctlBoundedArgs; 16] = [
+static KERN_VARS: [SysctlBoundedArgs; 15] = [
     SysctlBoundedArgs::readonly(KERN_OSREV, &OPENBSD),
     SysctlBoundedArgs::new(KERN_MAXVNODES, &MAXVNODES, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXPROC, &MAXPROCESS, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXFILES, &MAXFILES, 0, i32::MAX),
     SysctlBoundedArgs::readonly(KERN_NFILES, &NUMFILES),
-    SysctlBoundedArgs::readonly(KERN_TTYCOUNT, &TTY_COUNT),
     SysctlBoundedArgs::readonly(KERN_MAXPARTITIONS, &MAXPARTITIONS),
     SysctlBoundedArgs::readonly(KERN_RAWPARTITION, &RAW_PART),
     SysctlBoundedArgs::new(KERN_MAXTHREAD, &MAXTHREAD, 0, i32::MAX),
@@ -1521,11 +1519,6 @@ fn kern_clockintr(_name: &[i32], _req: &mut SysctlReq<'_>) -> Result<(), Errno> 
     ))
 }
 
-/// `kern.tty`.
-fn kern_tty(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_tty(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
 /// `kern.timecounter`.
 fn kern_timecounter(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_tc(name, req.oldp, req.oldlenp, req.newp, req.newlen)
@@ -1587,7 +1580,8 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
     (KERN_WATCHDOG, &Node(kern_watchdog)),
     (KERN_EVCOUNT, &Node(kern_evcount)),
     (KERN_CLOCKINTR, &Node(kern_clockintr)),
-    (KERN_TTY, &Node(kern_tty)),
+    // `kern.tty`: the kernel's node (N4.7b), over this glue's terminals.
+    (KERN_TTY, &kernel::tty::TtyNode::<BsdProcGlue>::NODE),
     (KERN_TIMECOUNTER, &Node(kern_timecounter)),
 ];
 

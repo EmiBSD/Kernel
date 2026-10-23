@@ -460,7 +460,13 @@ internet_check := "--send-after login: --send 'root\\n' --send-after Password: -
 # does; `echo diag-$((40+2))` marks the end. vmstat's disk columns are the first two disks
 # of hw.disknames: on both archs now sd0 (the virtio-blk disk) and sd1 (the boot image: on
 # arm64 a vioblk, on amd64 port 0 of q35's AHCI controller since ahci(4), M13; before it the
-# amd64 header read `sd0 rd0`). Part of `smoke`.
+# amd64 header read `sd0 rd0`). Part of `smoke`. N4.7: the login shell's terminal through
+# `/dev/tty` (ctty, the vnode path), script(1) on a pair from `/dev/ptm` (PTMGET, both
+# ioctl paths), and pstat(8)'s `-t` over kern.ttycount and kern.tty.ttyinfo. The
+# `kill -TERM` step waits until ps(1) shows the background job as `sleep`: a SIGTERM that
+# reaches ksh's forked child before its exec is caught by the trap handler it inherited and
+# then forgotten (bin/ksh/jobs.c exchild, trap.c cleartraps), on OpenBSD too, and the job
+# exits 0; after 500 looks without `sleep` the step says so and `rc=143` is never seen.
 smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test -f target/userland/amd64/ramdisk.ffs -a -f target/userland/arm64/ramdisk.ffs || \
         { echo "smoke-diag: no ramdisk image; run just userland first"; exit 1; }
@@ -477,7 +483,10 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'mount\n' \
         --send-after "# " --send 'sysctl kern.timecounter\n' \
         --send-after "# " --send 'echo diag-$((40+2))\n' \
-        --send-after "# " --send 'sleep 5 & kill -TERM $!; wait $!; echo rc=$?\n' \
+        --send-after "# " --send 'sleep 5 & p=$! n=0; until [ "$(ps -ocomm= -p$p)" = sleep ]; do [ $((n+=1)) -lt 500 ] || break; done; [ $n -lt 500 ] && kill -TERM $p || echo diag: sleep never ran; wait $p; echo rc=$?\n' \
+        --send-after "# " --send 'echo ctty-$((6*7)) > /dev/tty\n' \
+        --send-after "# " --send 'script -c tty /dev/null\n' \
+        --send-after "# " --send 'pstat -t\n' \
         --expect "rc: multi-user" --expect " /sbin/init" --expect " -ksh (ksh)" \
         --expect "root         1  " \
         --expect "USER     CMD          PID   FD MOUNT" --expect "root     ksh" \
@@ -486,6 +495,8 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect "bytes per page" --expect "Memory statistics by bucket size" \
         --expect "Memory resource pool statistics" --expect "/dev/rd0a       " \
         --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" --expect "rc=143" \
+        --expect "ctty-42" --expect "/dev/ttyp" --expect "Script done, output file is /dev/null" \
+        --expect "terminal device" --expect "  tty00 " \
         --expect "kern.timecounter.hardware=" \
         --expect "kern.timecounter.choice=i8254(0) acpihpet0(1000) tsc(" --expect ") acpitimer0(1000)"
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
@@ -501,7 +512,10 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'mount\n' \
         --send-after "# " --send 'sysctl kern.timecounter\n' \
         --send-after "# " --send 'echo diag-$((40+2))\n' \
-        --send-after "# " --send 'sleep 5 & kill -TERM $!; wait $!; echo rc=$?\n' \
+        --send-after "# " --send 'sleep 5 & p=$! n=0; until [ "$(ps -ocomm= -p$p)" = sleep ]; do [ $((n+=1)) -lt 500 ] || break; done; [ $n -lt 500 ] && kill -TERM $p || echo diag: sleep never ran; wait $p; echo rc=$?\n' \
+        --send-after "# " --send 'echo ctty-$((6*7)) > /dev/tty\n' \
+        --send-after "# " --send 'script -c tty /dev/null\n' \
+        --send-after "# " --send 'pstat -t\n' \
         --expect "rc: multi-user" --expect " /sbin/init" --expect " -ksh (ksh)" \
         --expect "root         1  " \
         --expect "USER     CMD          PID   FD MOUNT" --expect "root     ksh" \
@@ -510,6 +524,8 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect "bytes per page" --expect "Memory statistics by bucket size" \
         --expect "Memory resource pool statistics" --expect "/dev/rd0a       " \
         --expect "/dev/rd0a on / type ffs (local)" --expect "diag-42" --expect "rc=143" \
+        --expect "ctty-42" --expect "/dev/ttyp" --expect "Script done, output file is /dev/null" \
+        --expect "terminal device" --expect "  tty00 " \
         --expect "kern.timecounter.hardware=agtimer" --expect "kern.timecounter.choice=agtimer(0)"
 
 # M9b/M9c harness: two VMs of one arch at once (`cargo xtask smoke2`), each with vio0 on QEMU's

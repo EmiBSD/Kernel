@@ -141,6 +141,8 @@
 //! - N4.7a: [`Uio::kernel_write`], a `UIO_SYSSPACE` write out of borrowed kernel bytes (the
 //!   C's `aiov.iov_base = buf` over a kernel buffer, `dosendsyslog`'s): the uio borrows the
 //!   bytes, so the address its iovec carries outlives every `uiomove` through it.
+//! - N4.7b: [`UioMove::set_resid`], the terminal's adjustment of `uio_resid` (the bridge's
+//!   fifth member).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -320,6 +322,10 @@ pub trait UioMove {
     /// `uio_rw == UIO_WRITE`: the bytes flow out of the uio (`uiomove` fills `buf`); a read
     /// moves them into it. `uvm_io` asks which way to copy through its window.
     fn is_write(&self) -> bool;
+    /// `uio->uio_resid = resid`, the iovecs left as they are: `ttwrite`'s give-back of what it
+    /// copied in but did not queue (`uio_resid += cc`, "the uio structure inconsistent ... it
+    /// doesn't matter"), and its `uio_resid = 0` under `FLUSHO`.
+    fn set_resid(&mut self, resid: usize);
 }
 
 /// `iovec_copyin(uiov, &iov, aiov, iovcnt, &resid)`: the `iovcnt` iovecs at `uiov` in

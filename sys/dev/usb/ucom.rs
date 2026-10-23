@@ -379,8 +379,8 @@ pub fn ucom_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     printf(format_args!("\n"));
 
     let tp = ttymalloc(1_000_000);
-    tp.t_oproc.set(Some(ucomstart));
-    tp.t_param.set(Some(ucomparam));
+    tp.set_oproc(Some(ucomstart));
+    tp.set_param(Some(ucomparam));
     sc.sc_tty.set(ptr::from_ref(tp));
     sc.sc_cua.set(0);
 
@@ -442,9 +442,9 @@ pub fn ucom_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
         let _ = ttyclose(tp);
         splx(s);
         sc.sc_tty.set(ptr::null());
-        // SAFETY: the vnodes are gone, the pipes closed and the port is detached, so nothing
-        // uses the tty any more.
-        unsafe { ttyfree(NonNull::from(tp)) };
+        // The vnodes are gone, the pipes closed and the port is detached, so nothing uses the
+        // tty any more.
+        ttyfree(tp);
     }
 
     Ok(())
@@ -1180,11 +1180,6 @@ pub fn ucomstart(tp: &Tty) {
         if cnt <= 0 {
             break 'out;
         }
-        let cs = tp.t_outq.c_cs.get();
-        if cs.is_null() {
-            break 'out;
-        }
-
         tp.t_state_set(TS_BUSY);
 
         if cnt as u32 > sc.sc_obufsize.get() {
@@ -1200,12 +1195,6 @@ pub fn ucomstart(tp: &Tty) {
             tp.t_state_clr(TS_BUSY);
             break 'out;
         }
-        // SAFETY: `c_cs` is the `c_cn`-byte ring of the output queue and `ndqb` counted `cnt`
-        // contiguous bytes from `c_cf` within it, which the output queue keeps (`TS_BUSY`
-        // stops anyone else flushing) until `ucomwritecb`.
-        let data = unsafe {
-            slice::from_raw_parts(cs.add(tp.t_outq.c_cf.get()).cast_const(), cnt as usize)
-        };
         // SAFETY: `sc_obuf` is the output xfer's DMA buffer of `sc_obufsize + sc_opkthdrlen`
         // bytes (`ucom_do_open`), idle while `TS_BUSY` is clear.
         let to = unsafe {
@@ -1214,13 +1203,18 @@ pub fn ucomstart(tp: &Tty) {
                 (sc.sc_obufsize.get() + sc.sc_opkthdrlen.get()) as usize,
             )
         };
-        let cnt = match sc.methods().ucom_write {
-            Some(write) => write(sc.sc_parent.get(), sc.sc_portno.get(), to, data),
-            None => {
-                to[..data.len()].copy_from_slice(data);
-                data.len()
-            }
-        };
+        // The `cnt` contiguous bytes `ndqb` counted at the head of the output queue (its
+        // `c_cf`), which the queue keeps (`TS_BUSY` stops anyone else flushing) until
+        // `ucomwritecb`.
+        let cnt = tp
+            .t_outq
+            .peek_with(cnt as usize, |data| match sc.methods().ucom_write {
+                Some(write) => write(sc.sc_parent.get(), sc.sc_portno.get(), to, data),
+                None => {
+                    to[..data.len()].copy_from_slice(data);
+                    data.len()
+                }
+            });
 
         let Some(pipe) = sc.sc_bulkout_pipe.get().or_else(|| sc.sc_opipe.get()) else {
             tp.t_state_clr(TS_BUSY);

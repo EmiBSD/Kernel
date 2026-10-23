@@ -3,7 +3,9 @@
 # system (`setup` mounted it on /mnt). Each probe prints its return value or `-1 ENAME`, so a
 # different errno is a different line. Probes that hit an unported part of EmiBSD (fifofs,
 # exec_script.c, file mappings) have sections of their own, so that their expected
-# difference (expected.toml) cannot hide another one.
+# difference (expected.toml) cannot hide another one. `tty` (N4.7) follows `ostype`, so no
+# step id of expected.toml moves: pairs from /dev/ptm, the line discipline, the session's
+# terminal, sendsyslog(2) and kern.tty.
 
 ## probes
 ! mkdir /mnt/sc
@@ -22,6 +24,7 @@ $ difftest syscalls memory
 $ difftest syscalls mmapfile
 $ difftest syscalls sysctl
 $ difftest syscalls ostype
+$ difftest syscalls tty
 $ ls -1a
 ! cd /
 

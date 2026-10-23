@@ -23,6 +23,9 @@ metadata:
 - `pin!(..)` inside a call argument is not lifetime-extended (E0716): `let f = pin!(x); let f = use_it(f.into_ref());`.
 - kernel::testutil's copyin32 double (a std Mutex over the user memory) is ~9 ns dev vs bsd host's 0.5 ns: bench it as a prim before blaming a futex-like design.
 - kernel::testutil's 64 KiB user-memory double is shared: uio/select use 0x8000..0xC000, kernel::log 0xE000..0x10000 (kern.msgbuf's copy runs to the end and faults); pick an unused range and grep `USER_BASE + ` first.
+- `klist_invalidate` waits for a knote's KN_PROCESSING to clear; kernel::event's `test_knote` stays processing, so a test of an object whose teardown invalidates its klists (ttyfree) must not attach test knotes or it hangs the run.
+- kernel::tty's defaults leave VSTATUS disabled (CSTATUS 0o377, ttydefaults.h): a ^T test sets c_cc[VSTATUS] first; and `tputchar` emits "\r\r\n" for '\n' (the C's), which assertions must expect.
+- Signals in a kernel test need the thread in `ps_threads`, `siginit` and `test_sigacts` (kernel::tty's `world()`), or pgsignal finds no one to deliver to.
 - A kernel test whose path reaches `klock::reader()`/`witness()` (wait4, acct's session) panics "the kernel lock is not held": take `hal::klock::kernel_lock()` once per test thread in the setup (the double counts it), as a system call would.
 - `kernel::test_proc_glue!(Name, Files, { fn hook(..) {..} })` overrides glue members (N4.6a); a second glue in one test module needs its own `mod` (the link types are module items), and a test process put in a pgrp/session is leaked with `mem::forget` (dropping it linked panics).
 - `test_proc_glue!`'s tables are per test thread (a thread_local `ProcTables`): a list walk (`sysctl_doproc`) sees only the processes its own thread made, so an error that needs a process looked at (an unknown op's EINVAL) needs one put on the list first.

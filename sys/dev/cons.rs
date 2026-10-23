@@ -73,8 +73,9 @@
 //! Status: `wip`.
 //!
 //! ## Deviations
-//! - `cn_tab`, `constty` and `cn_devvp` are behind accessors ([`cn_tab`]/[`set_cn_tab`],
-//!   [`constty`]/[`set_constty`]) over atomic pointers instead of globals.
+//! - `cn_tab` and `cn_devvp` are behind accessors ([`cn_tab`]/[`set_cn_tab`]) over atomic
+//!   pointers instead of globals; `constty` is the kernel's (`kernel::tty::constty`, a
+//!   counted handle, N4.7b: [`constty`], [`set_constty`]).
 //! - `cninit` (the `constab[]` probe loop) is not used: the architectures attach their
 //!   console directly (`docs/ARCHITECTURE.md`, "Console attach").
 //! - `cnpollc` takes a `bool`; its `int on` is only ever 0 or 1.
@@ -84,6 +85,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::kern::kern_prot::suser;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::vfs_subr::{cdevvp, vcount, vfinddev, vrele};
 use crate::machine::conf::cdevsw;
 use crate::sys::errno::Errno;
@@ -95,6 +97,9 @@ use crate::sys::ttycom::TIOCCONS;
 use crate::sys::types::{Dev, major};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{VCHR, Vnode};
+
+/// A counted reference to a tty (`constty`'s).
+type TtyRef = kernel::tty::TtyRef<BsdProcGlue>;
 
 /// Values for `cn_pri`: policy for console selection.
 ///
@@ -150,17 +155,13 @@ pub fn set_cn_tab(cp: &'static Consdev) {
     CN_TAB.store(ptr::from_ref(cp).cast_mut(), Ordering::Release);
 }
 
-/// `constty`: virtual console output device, NULL when none.
-static CONSTTY: AtomicPtr<Tty> = AtomicPtr::new(ptr::null_mut());
-
 /// `cn_devvp`: vnode for underlying device, NULL when none.
 static CN_DEVVP: AtomicPtr<Vnode> = AtomicPtr::new(ptr::null_mut());
 
-/// `constty`: the terminal console output is redirected to (`TIOCCONS`), if any.
-pub fn constty() -> Option<&'static Tty> {
-    // SAFETY: null or a tty stored by `set_constty`; ttys live until `ttyfree`, which runs
-    // after `ttyclose` cleared `constty`.
-    unsafe { CONSTTY.load(Ordering::Acquire).as_ref() }
+/// `constty`: the terminal console output is redirected to (`TIOCCONS`), if any: the
+/// kernel's (`kernel::tty::constty`, a counted handle, N4.7b).
+pub fn constty() -> Option<TtyRef> {
+    kernel::tty::constty::<BsdProcGlue>()
 }
 
 /// `cn_devvp != NULL`: the real console's vnode is held (`cnopen` ran), so `cnwrite` reaches
@@ -169,12 +170,9 @@ pub fn cn_devvp_set() -> bool {
     !CN_DEVVP.load(Ordering::Relaxed).is_null()
 }
 
-/// `constty = tp`.
+/// `constty = tp` (the kernel's, counted: `tp` is a tty of `ttymalloc`, which every tty is).
 pub fn set_constty(tp: Option<&Tty>) {
-    CONSTTY.store(
-        tp.map_or(ptr::null_mut(), |t| ptr::from_ref(t).cast_mut()),
-        Ordering::Release,
-    );
+    kernel::tty::set_constty::<BsdProcGlue>(tp.and_then(hal::pool::PoolArc::from_ref));
 }
 
 /// `cnopen`: always open the 'real' console device, so we don't get nailed later. This
