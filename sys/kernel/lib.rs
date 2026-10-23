@@ -54,6 +54,7 @@ pub mod select;
 pub mod sig;
 pub mod sigio;
 pub mod task;
+pub mod termios;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;

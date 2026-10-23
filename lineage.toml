@@ -9431,6 +9431,13 @@ kind = "dropped"
 reason = "a Sigacts is made under its process's ps_mtx (new_static for sigacts0, sigactsinit's pool item): there is no lock-less default"
 
 [[module]]
+rust = "sys/kernel/termios.rs"
+crate = "kernel"
+lz = ["sys/sys/termios.rs", "sys/sys/ttycom.rs", "sys/sys/ttydefaults.rs"]
+status = "redesigned"
+notes = "N4.7a: the terminal's ABI headers in one module: struct termios, winsize and tstamps by hal::abi_pod! (LZ's three unsafe impl AbiPod gone), every constant, the TIOC* commands, the defaults; bsd's three headers stay until N4.7b makes them aliases"
+
+[[module]]
 rust = "sys/kernel/sigio.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sig.rs", "sys/sys/sigio.rs"]
