@@ -238,6 +238,13 @@ hal::abi_pod!(Clockinfo {
     profhz: i32
 });
 
+/// `ppsratecheck_mtx` held, and the precise uptime read just before taking it: what
+/// [`ppsratecheck_locked`] hands its closure, the proof [`ppsratecheck_held`] takes.
+pub struct PpsLocked<'a> {
+    _guard: MutexedGuard<'a, ()>,
+    tv: Timeval,
+}
+
 /// `ratecheck_mtx`.
 static RATECHECK_MTX: Mutexed<()> = Mutexed::new(IPL_HIGH, ());
 
@@ -386,36 +393,36 @@ fn rate_step(tv: Timeval, lasttime: &mut Timeval, mininterval: &Timeval) -> bool
 /// `ppsratecheck(9)`: at most `maxpps` events per second (`maxpps < 0`: no limit, `0`: none
 /// at all), the counter bumped either way.
 pub fn ppsratecheck(lasttime: &mut Timeval, curpps: &mut i32, maxpps: i32) -> bool {
-    // The precise uptime, read before the mutex as the C's `microuptime(&tv)`.
-    let tv = microuptime();
-    ppsratecheck_locked(|g| pps_step(g, tv, lasttime, curpps, maxpps))
+    ppsratecheck_locked(|l| ppsratecheck_held(l, lasttime, curpps, maxpps))
 }
 
 /// Runs `f` with `ppsratecheck_mtx` held: the way to [`ppsratecheck_held`] for a counter
-/// shared between CPUs, which must be reached only with the mutex held.
-pub fn ppsratecheck_locked<R>(f: impl FnOnce(&mut MutexedGuard<'_, ()>) -> R) -> R {
-    let mut g = PPSRATECHECK_MTX.lock();
-    f(&mut g)
+/// shared between CPUs, which must be reached only with the mutex held. The precise uptime
+/// is read first, outside the `IPL_HIGH` mutex, as the C's `microuptime(&tv)` before its
+/// `mtx_enter`, and travels with the guard.
+pub fn ppsratecheck_locked<R>(f: impl FnOnce(&mut PpsLocked<'_>) -> R) -> R {
+    let tv = microuptime();
+    let mut l = PpsLocked {
+        _guard: PPSRATECHECK_MTX.lock(),
+        tv,
+    };
+    f(&mut l)
 }
 
-/// `ppsratecheck(9)`'s body, `ppsratecheck_mtx` held (its guard is the proof).
+/// `ppsratecheck(9)`'s body, `ppsratecheck_mtx` held (the [`PpsLocked`] is the proof) and
+/// the uptime read before it.
 pub fn ppsratecheck_held(
-    g: &mut MutexedGuard<'_, ()>,
+    l: &mut PpsLocked<'_>,
     lasttime: &mut Timeval,
     curpps: &mut i32,
     maxpps: i32,
 ) -> bool {
-    pps_step(g, microuptime(), lasttime, curpps, maxpps)
+    pps_step(l.tv, lasttime, curpps, maxpps)
 }
 
-/// The decision of `ppsratecheck(9)` at the uptime `tv`, `ppsratecheck_mtx` held.
-fn pps_step(
-    _g: &mut MutexedGuard<'_, ()>,
-    tv: Timeval,
-    lasttime: &mut Timeval,
-    curpps: &mut i32,
-    maxpps: i32,
-) -> bool {
+/// The decision of `ppsratecheck(9)` at the uptime `tv` (its callers hold
+/// `ppsratecheck_mtx`).
+fn pps_step(tv: Timeval, lasttime: &mut Timeval, curpps: &mut i32, maxpps: i32) -> bool {
     let delta = tv.sub(*lasttime);
 
     // check for 0,0 is so that the message will be seen at least once. if more than one
@@ -813,7 +820,7 @@ mod tests {
         ];
         for (last0, pps0, maxpps, rv, last1, pps1) in rows {
             let (mut last, mut pps) = (last0, pps0);
-            let got = ppsratecheck_locked(|g| pps_step(g, now, &mut last, &mut pps, maxpps));
+            let got = pps_step(now, &mut last, &mut pps, maxpps);
             assert_eq!(
                 (got, last, pps),
                 (rv, last1, pps1),
