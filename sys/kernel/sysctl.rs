@@ -96,7 +96,7 @@
 //!   read side); `disknames` and `diskstats` are `MArray`s owned by the `Rwlocked` state of
 //!   `sysctl_disklock` (LZ: two `AtomicPtr`s and their lengths, dereferenced in `unsafe`
 //!   blocks), filled through the [`DiskExport`] bridge (the disk list is `bsd`'s, N7).
-//! - `hw_vendor`, `hw_prod`, `hw_uuid`, `hw_serial`, `hw_ver` are [`HwString`]s (a `OnceStatic`) the machine
+//! - `hw_vendor`, `hw_prod`, `hw_uuid`, `hw_serial`, `hw_ver` are [`HwString`]s (a `ReadMostly`, the last write wins as the C's assignment) the machine
 //!   sets once at attach (LZ: `StaticCell`s read in `unsafe`); `cpu_cpuspeed` is
 //!   [`register_cpuspeed`]'s; the three battery setters are one [`BatteryCharge`] trait over
 //!   the knob (decision 46: the C's three entries one driver fills).
@@ -146,6 +146,7 @@ use hal::malloc::{M_WAITOK, MArray};
 use hal::mutex::MutexedGuard;
 use hal::once::OnceStatic;
 use hal::rwlock::{RW_INTR, RawRwlock, Rwlocked, WriteWitness};
+use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_READ, PROT_WRITE};
 use hal::sys::pledge::PLEDGE_UNVEIL;
@@ -587,28 +588,29 @@ pub static ALLOWPOWERDOWN: AtomicI32 = AtomicI32::new(1);
 #[allow(non_upper_case_globals)] // the C's name; `HW_POWER` is the sysctl id
 pub static hw_power: AtomicI32 = AtomicI32::new(1);
 
-/// One of the machine's identity strings (`char *hw_vendor`, ...): set once at attach, read
-/// by `hw.vendor` and its siblings and by the drivers that quirk on them. `write` is the C's
-/// assignment (a `NULL` leaves the string unset, and a second one keeps the first: the C's
-/// writers run once, at attach), `read` the C's read of the pointer.
-pub struct HwString(OnceStatic<&'static [u8]>);
+/// One of the machine's identity strings (`char *hw_vendor`, ...): set at attach, read by
+/// `hw.vendor` and its siblings and by the drivers that quirk on them. `write` is the C's
+/// assignment, the last one wins (arm64's `mainbus` sets `hw_prod` and `hw_serial` from the
+/// FDT, then `smbios` sets them again from the SMBIOS tables; amd64's `bios` then a board
+/// quirk), `NULL` included; `read` is the C's read of the pointer. The slot is a
+/// [`ReadMostly`]: a reader copies the `&'static` out under a counted borrow, a writer
+/// replaces it once no reader is inside.
+pub struct HwString(ReadMostly<Option<&'static [u8]>>);
 
 impl HwString {
     /// Unset (`NULL`).
     pub const fn new() -> Self {
-        Self(OnceStatic::new())
+        Self(ReadMostly::new(None))
     }
 
     /// `hw_x = s`.
     pub fn write(&self, s: Option<&'static [u8]>) {
-        if let Some(s) = s {
-            let _ = self.0.set(s);
-        }
+        self.0.replace(s);
     }
 
     /// `hw_x`: the string, `None` for `NULL`.
     pub fn read(&self) -> Option<&'static [u8]> {
-        self.0.get().copied()
+        *self.0.read()
     }
 }
 
@@ -3564,6 +3566,20 @@ mod tests {
             Ok(())
         );
         assert_eq!(len, 1);
+    }
+
+    #[test]
+    fn hw_strings_keep_the_last_write_as_the_c() {
+        // arm64's mainbus sets hw_prod from the FDT, smbios sets it again: the C's
+        // assignment keeps the last value, NULL included.
+        let s = HwString::new();
+        assert_eq!(s.read(), None);
+        s.write(Some(b"QEMU KVM Virtual Machine"));
+        assert_eq!(s.read(), Some(&b"QEMU KVM Virtual Machine"[..]));
+        s.write(Some(b"Standard PC (Q35 + ICH9, 2009)"));
+        assert_eq!(s.read(), Some(&b"Standard PC (Q35 + ICH9, 2009)"[..]));
+        s.write(None);
+        assert_eq!(s.read(), None);
     }
 }
 /* </TESTS> */
