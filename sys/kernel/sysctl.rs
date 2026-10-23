@@ -837,6 +837,16 @@ pub trait DiskExport: Sync {
 /// `None`) and its `struct diskstats` bytes.
 pub type DiskVisit<'a> = dyn FnMut(&[u8], Option<&[u8]>, &[u8]) + 'a;
 
+/// The host tests' reset (`testing.md`'s rule: a global holding kernel memory): the disk
+/// exports are forgotten, not freed, since they may be an earlier test's memory, which
+/// `setup_real_memory` replaced.
+#[cfg(any(test, feature = "doubles"))]
+pub fn sysctl_test_reset() {
+    let mut d = SYSCTL_DISKLOCK.write();
+    core::mem::forget(d.names.take());
+    core::mem::forget(d.stats.take());
+}
+
 /// Registers the disk list's export, once (`bsd`'s `main`).
 pub fn install_disk_export(d: &'static dyn DiskExport) -> Result<(), AlreadyRegistered> {
     DISK_EXPORT
