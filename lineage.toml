@@ -9336,6 +9336,25 @@ status = "redesigned"
 notes = "N4.8a: clockintr(9) into the kernel crate, 0 unsafe (LZ kern_clockintr 7 + clockintr.h 2): the queue of each CPU a ClockCpu in a hal::percpu::PerCpu (struct clockqueue out of cpu_info), its [m] state one Queue inside the Mutexed (the five binders' slots: expiration, callback, pending; the pending order as an array of slots, equal expirations in insertion order; the running slot; cq_flags), a struct clockintr a Copy handle (CPU, Slot) instead of TAILQ-linked structures with Cell<*const> back pointers; cl_arg dropped (every binder passes NULL); the callback fn(&Clockrequest, &hal::clock::ClockFrame); struct intrclock the Intrclock trait (OnceStatic per CPU); cq_stat seven atomics behind cq_gen; clockintr_unbind(CL_BARRIER) sleeps on the queue's channel (clkbar), LZ's unported closed; ci_randseed the queue's own seed (set_randseed)"
 
 [[module]]
+rust = "sys/kernel/time.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_time.rs", "sys/dev/clock_subr.rs"]
+status = "redesigned"
+notes = "N4.8a: kern_time.c's parts no process owns, 0 unsafe: settime (securelevel from the caller), clock_getres's timecounter resolution (tc_resolution, under tc_lock read), itimerfix, itimerdecr, ratecheck(9), ppsratecheck(9) with ppsratecheck_locked/ppsratecheck_held (a counter shared between CPUs reached only with ppsratecheck_mtx held, the guard the proof, instead of LZ's ppsratecheck_shared raw pointers), the time-of-day chip: struct todr_chip_handle as the Todr trait (quality, gettime, settime; todr_setwen omitted: no implementer sets it and todr_wenable has no caller), todr_attach keeping the better quality in a Mutexed (LZ: an AtomicPtr deref), inittodr, resettodr and the periodic resettodr (a kernel Timeout and Task on systq); struct itimerspec, itimerval, timezone and clockinfo with abi_pod!. The system calls, setitimer, realitexpire and itimer_update stay bsd's kern_time.rs until struct process's timers move (N4.6)"
+
+[[module]]
+rust = "sys/kernel/reboot.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_xxx.rs"]
+status = "redesigned"
+notes = "N4.8a: rebooting and reboot(): stop_periodic_resettodr, rebooting set, the machine's boot(9) through the MachineBoot bridge (bsd's machdep until N7); sys_reboot, the power button's path and the SYSCALL_DEBUG printers stay bsd's kern_xxx.rs (they reach the process and the syscall table)"
+
+[[extra]]
+rust = "sys/kernel/sysctl.rs"
+crate = "kernel"
+reason = "N4.8a (the N4.7 amendment: the first lander defines it, N4.6's sysctl core inherits it): the SysctlNode trait a *_sysctl function becomes, SysctlReq (vm::meter's, re-exported), and kern_sysctl.c's rdint, int_bounded, rdstruct, string and rdstring re-expressed over hal::user's copy with the C's checks and errnos; kern_sysctl.c's port is still bsd's kern_sysctl.rs, with the dispatch"
+
+[[module]]
 rust = "sys/kernel/task.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_task.rs", "sys/sys/task.rs"]

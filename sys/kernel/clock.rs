@@ -123,7 +123,10 @@
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::bridges::AlreadyRegistered;
+
+use crate::assert::{kassert, kpanic};
 use hal::once::OnceStatic;
+use hal::sys::errno::Errno;
 use hal::sys::kernel::HZ;
 
 /// One second in nanoseconds.
@@ -469,6 +472,116 @@ pub fn hardclock_period() -> u64 {
     HARDCLOCK_PERIOD.load(Ordering::Relaxed)
 }
 
+/// The registered clock hardware, once.
+static CLOCK_HW: OnceStatic<&'static dyn ClockHardware> = OnceStatic::new();
+
+/// The machine's clock hardware: `arm_clock_func` (arm64: `delay`, `initclocks`,
+/// `setstatclockrate`, `mpstartclock`, the first driver's registration winning) and amd64's
+/// `initclock_func`, `startclock_func`, `delay_func` (replaced at attach) with its
+/// `setstatclockrate`. Each machine keeps its own registration policy behind its one
+/// implementation; `bsd` registers it at boot (bridges.toml `ClockHardware`, paid by N7 with
+/// the clock drivers).
+pub trait ClockHardware: Sync {
+    /// `cpu_initclocks()`: the clock interrupts' hardware set up; `stathz`, `profhz` and
+    /// `statclock_is_randomized` set.
+    fn initclocks(&self);
+    /// `cpu_startclock()`: this CPU's clock interrupts started.
+    fn startclock(&self);
+    /// `setstatclockrate(newhz)`.
+    fn setstatclockrate(&self, newhz: i32);
+    /// `delay(usecs)`: busy-waits.
+    fn delay(&self, usecs: u32);
+}
+
+/// Registers the machine's clock hardware, once; a second call keeps the first and names it.
+pub fn install_clock_hardware(imp: &'static dyn ClockHardware) -> Result<(), AlreadyRegistered> {
+    CLOCK_HW
+        .set(imp)
+        .map_err(|_| AlreadyRegistered("ClockHardware"))
+}
+
+/// `cpu_initclocks()`: `panic(9)` before the hardware is registered, as the C's.
+pub fn cpu_initclocks() {
+    match CLOCK_HW.get() {
+        Some(h) => h.initclocks(),
+        None => kpanic(format_args!("initclocks function not initialized yet")),
+    }
+}
+
+/// `cpu_startclock()`: `panic(9)` before the hardware is registered, as the C's.
+pub fn cpu_startclock() {
+    match CLOCK_HW.get() {
+        Some(h) => h.startclock(),
+        None => kpanic(format_args!("startclock function not initialized yet")),
+    }
+}
+
+/// `setstatclockrate(newhz)`: `panic(9)` before the hardware is registered, as the C's.
+pub fn setstatclockrate(newhz: i32) {
+    match CLOCK_HW.get() {
+        Some(h) => h.setstatclockrate(newhz),
+        None => kpanic(format_args!(
+            "arm_clock_func.setstatclockrate not initialized"
+        )),
+    }
+}
+
+/// `delay(9)`: busy-waits `usecs` microseconds through the hardware, or the calibration-free
+/// loop before it is registered (`arm_dflt_delay`: "there is no good way to make this close,
+/// but this isn't supposed to be used after the real clock attaches").
+pub fn delay(usecs: u32) {
+    match CLOCK_HW.get() {
+        Some(h) => h.delay(usecs),
+        None => {
+            for _ in 0..usecs {
+                for _ in 0..100 {
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+}
+
+/// `initclocks`: the clock frequencies and periods computed, the timecounters started, and
+/// the primary CPU's clock interrupts started.
+pub fn initclocks() {
+    // Let the machine-specific code do its bit.
+    cpu_initclocks();
+
+    let hz = crate::timeout::hz();
+    kassert!((1..=1_000_000_000).contains(&hz));
+    HARDCLOCK_PERIOD.store(1_000_000_000 / hz.max(1) as u64, Ordering::Relaxed);
+    ROUNDROBIN_PERIOD.store(hardclock_period() * 10, Ordering::Relaxed);
+
+    let stathz = STATHZ.load(Ordering::Relaxed);
+    kassert!((1..=1_000_000_000).contains(&stathz));
+
+    // Compute the average statclock() period. Then find var, the largest 32-bit power of
+    // two such that var <= statclock_avg / 2.
+    let statclock_avg = 1_000_000_000 / stathz.max(1) as u64;
+    STATCLOCK_AVG.store(statclock_avg, Ordering::Relaxed);
+    let half_avg = statclock_avg / 2;
+    let mut var: u32 = 1 << 31;
+    while u64::from(var) > half_avg {
+        var /= 2;
+    }
+
+    // Set a lower bound for the range using statclock_avg and var. The mask for that range
+    // is just (var - 1).
+    STATCLOCK_MIN.store(statclock_avg - u64::from(var / 2), Ordering::Relaxed);
+    STATCLOCK_MASK.store(var.wrapping_sub(1), Ordering::Relaxed);
+
+    let profhz = PROFHZ.load(Ordering::Relaxed);
+    kassert!((stathz..=1_000_000_000).contains(&profhz));
+    kassert!(profhz % stathz.max(1) == 0);
+    PROFCLOCK_PERIOD.store(1_000_000_000 / profhz.max(1) as u64, Ordering::Relaxed);
+
+    crate::tc::inittimecounter();
+
+    // Start dispatching clock interrupts on the primary CPU.
+    cpu_startclock();
+}
+
 /// `hardclock`: the real-time timer, interrupting hz times per second: the timehands wound
 /// up every `tc_tick`, `ticks` and `jiffies` counted, the timeout wheel updated.
 pub fn hardclock(_frame: &hal::clock::ClockFrame) {
@@ -495,6 +608,19 @@ pub fn getnanouptime() -> Timespec {
 /// `nanotime(9)`: the time of day (zero before the bridge is registered).
 pub fn nanotime() -> Timespec {
     UPTIME.get().map_or(Timespec::ZERO, |u| u.nanotime())
+}
+
+/// `sysctl_clockrate`: `kern.clockrate`, a `struct clockinfo` (tick, hz, profhz, stathz).
+pub fn sysctl_clockrate(req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    let clkinfo = crate::time::Clockinfo {
+        tick: crate::timeout::tick(),
+        hz: crate::timeout::hz(),
+        profhz: PROFHZ.load(Ordering::Relaxed),
+        stathz: STATHZ.load(Ordering::Relaxed),
+    };
+    let mut bytes = [0u8; size_of::<crate::time::Clockinfo>()];
+    let _ = hal::user::pod_to_bytes(&clkinfo, &mut bytes);
+    crate::sysctl::rdstruct(req, &bytes)
 }
 
 /// `tstohz(ts)`: the ticks of `ts`, rounded up, plus one for the current tick to expire
@@ -563,6 +689,49 @@ mod tests {
         assert_eq!(Timespec::from_nsec(3_000_000_001), Timespec::new(3, 1));
         assert!(a < b && Timespec::new(1, 5) < Timespec::new(1, 6));
         assert!(Timespec::new(2, 0) > Timespec::new(1, 999_999_999));
+    }
+
+    struct TestHw {
+        started: core::sync::atomic::AtomicU32,
+    }
+
+    impl ClockHardware for TestHw {
+        fn initclocks(&self) {
+            // agtimer_cpu_initclocks: stathz = hz, profhz = 10 hz, randomized.
+            STATHZ.store(100, Ordering::Relaxed);
+            PROFHZ.store(1000, Ordering::Relaxed);
+            STATCLOCK_IS_RANDOMIZED.store(true, Ordering::Relaxed);
+        }
+        fn startclock(&self) {
+            self.started.fetch_add(1, Ordering::Relaxed);
+        }
+        fn setstatclockrate(&self, _newhz: i32) {}
+        fn delay(&self, _usecs: u32) {}
+    }
+
+    #[test]
+    fn initclocks_computes_the_periods_as_the_c() {
+        crate::testutil::install();
+        static HW: TestHw = TestHw {
+            started: core::sync::atomic::AtomicU32::new(0),
+        };
+        let _ = install_clock_hardware(&HW);
+        let started = HW.started.load(Ordering::Relaxed);
+        initclocks();
+        // hz 100: a 10 ms hardclock, a 100 ms round robin, stathz 100: statclock_avg 10 ms,
+        // var the largest power of two <= 5 ms (2^22 = 4194304 ns), min avg - var/2, mask
+        // var - 1; profhz 1000: 1 ms.
+        assert_eq!(hardclock_period(), 10_000_000);
+        assert_eq!(ROUNDROBIN_PERIOD.load(Ordering::Relaxed), 100_000_000);
+        assert_eq!(STATCLOCK_AVG.load(Ordering::Relaxed), 10_000_000);
+        assert_eq!(
+            STATCLOCK_MIN.load(Ordering::Relaxed),
+            10_000_000 - 2_097_152
+        );
+        assert_eq!(STATCLOCK_MASK.load(Ordering::Relaxed), 4_194_303);
+        assert_eq!(PROFCLOCK_PERIOD.load(Ordering::Relaxed), 1_000_000);
+        assert_eq!(HW.started.load(Ordering::Relaxed), started + 1);
+        assert!(install_clock_hardware(&HW).is_err(), "one registration");
     }
 
     #[test]

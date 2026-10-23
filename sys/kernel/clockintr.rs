@@ -119,6 +119,8 @@ use crate::assert::{kassert, kpanic};
 use crate::clock::{
     PROFCLOCK_PERIOD, ROUNDROBIN_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period,
 };
+use crate::sys::errno::Errno;
+use crate::sysctl::{self, SysctlNode, SysctlReq};
 use crate::tc::nsecuptime;
 
 /// `CQ_INIT`: `clockintr_cpu_init()` done.
@@ -139,6 +141,9 @@ pub const CL_FLAG_MASK: u32 = 0x0000_0001;
 
 /// `CR_RESCHEDULE`: reschedule upon return.
 pub const CR_RESCHEDULE: u32 = 0x0000_0001;
+
+/// `KERN_CLOCKINTR_STATS`: struct: stats.
+pub const KERN_CLOCKINTR_STATS: i32 = 1;
 
 /// The binders' slots of a queue.
 const NSLOTS: usize = 5;
@@ -977,6 +982,33 @@ pub fn stats_sum() -> ClockintrStat {
     sum
 }
 
+/// `kern.clockintr` (`sysctl_clockintr`): a [`SysctlNode`].
+pub struct ClockintrNode;
+
+impl SysctlNode for ClockintrNode {
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        sysctl_clockintr(name, req)
+    }
+}
+
+/// `sysctl_clockintr`: `kern.clockintr.stats`, the CPUs' dispatch statistics summed (a
+/// `struct clockintr_stat`), else `EINVAL`.
+pub fn sysctl_clockintr(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let [what] = name else {
+        return Err(Errno::ENOTDIR);
+    };
+
+    match *what {
+        KERN_CLOCKINTR_STATS => {
+            let sum = stats_sum();
+            let mut bytes = [0u8; core::mem::size_of::<ClockintrStat>()];
+            let _ = hal::user::pod_to_bytes(&sum, &mut bytes);
+            sysctl::rdstruct(req, &bytes)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 /// `ci_randseed = seed` for CPU `cpu`'s randomized statclock (`bsd`'s `init_main` and the
 /// secondary CPUs' start, where they write `ci_randseed`).
 pub fn set_randseed(cpu: usize, seed: u32) {
@@ -1226,6 +1258,37 @@ mod tests {
             assert!(unbinder.join().is_ok());
         });
         assert!(this().q.lock().cl[Slot::Statclock.index()].func.is_none());
+    }
+
+    #[test]
+    fn kern_clockintr_stats_is_56_bytes_of_sums() {
+        as_cpu(206);
+        let u = testutil::USER_BASE + 0xCA00;
+        let mut len = 0;
+        let mut q = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            ClockintrNode.sysctl(&[KERN_CLOCKINTR_STATS], &mut q),
+            Ok(())
+        );
+        assert_eq!(*q.oldlenp, 56);
+        assert_eq!(sysctl_clockintr(&[2], &mut q), Err(Errno::EINVAL));
+        assert_eq!(sysctl_clockintr(&[1, 1], &mut q), Err(Errno::ENOTDIR));
+        let mut len = 56;
+        let mut r = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(sysctl_clockintr(&[KERN_CLOCKINTR_STATS], &mut r), Ok(()));
+        let got: Option<ClockintrStat> =
+            testutil::user_bytes(u, 56).and_then(|b| hal::user::pod_from_bytes(&b));
+        assert!(got.is_some());
     }
 
     #[test]

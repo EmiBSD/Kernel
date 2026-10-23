@@ -125,6 +125,8 @@ pub use hal::sys::timetc::{TK_VERSION, Timekeep, TimekeepAtomic};
 use crate::assert::{kassert, kpanic};
 use crate::clock::{Bintime, Timespec, Timeval};
 use crate::prf::printf;
+use crate::sys::errno::Errno;
+use crate::sysctl::{self, SysctlNode, SysctlReq};
 
 /// `LOG_INFO` (`<sys/syslog.h>`): the priority of a clock step's log line.
 const LOG_INFO: i32 = 6;
@@ -987,7 +989,7 @@ pub fn tc_ticktock() {
 /// `sysctl_tc_hardware`'s change: makes the registered counter named `name` the active one
 /// (warmed up first); `EINVAL` when none has that name. The name of the active counter is
 /// [`timecounter`]`().name()`.
-pub fn tc_select(name: &[u8]) -> Result<(), crate::sys::errno::Errno> {
+pub fn tc_select(name: &[u8]) -> Result<(), Errno> {
     if name == timecounter().name().as_bytes() {
         return Ok(());
     }
@@ -1004,7 +1006,7 @@ pub fn tc_select(name: &[u8]) -> Result<(), crate::sys::errno::Errno> {
         TIMECOUNTER.set(Some(newtc));
         return Ok(());
     }
-    Err(crate::sys::errno::Errno::EINVAL)
+    Err(Errno::EINVAL)
 }
 
 /// `sysctl_tc_choice`'s string: every registered counter as `name(quality)`, space
@@ -1058,6 +1060,68 @@ fn fmt_i32(v: i32, buf: &mut [u8; 12]) -> &[u8] {
 /// The number of registered counters (`sysctl_tc_choice`'s `maxlen` is 32 bytes each).
 pub fn tc_count() -> usize {
     TC_LIST.iter().count()
+}
+
+/// `KERN_TIMECOUNTER_TICK`: int: number of revolutions.
+pub const KERN_TIMECOUNTER_TICK: i32 = 1;
+/// `KERN_TIMECOUNTER_TIMESTEPWARNINGS`: int: log a warning when time changes.
+pub const KERN_TIMECOUNTER_TIMESTEPWARNINGS: i32 = 2;
+/// `KERN_TIMECOUNTER_HARDWARE`: string: tick hardware used.
+pub const KERN_TIMECOUNTER_HARDWARE: i32 = 3;
+/// `KERN_TIMECOUNTER_CHOICE`: string: tick hardware used.
+pub const KERN_TIMECOUNTER_CHOICE: i32 = 4;
+
+/// `kern.timecounter` (`sysctl_tc`): a [`SysctlNode`].
+pub struct TcNode;
+
+impl SysctlNode for TcNode {
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        sysctl_tc(name, req)
+    }
+}
+
+/// `sysctl_tc_hardware`: reports or changes the active timecounter hardware, by name.
+fn sysctl_tc_hardware(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let mut newname = [0u8; 32];
+    let cur = timecounter().name().as_bytes();
+    let n = cur.len().min(newname.len() - 1);
+    newname[..n].copy_from_slice(&cur[..n]);
+
+    sysctl::string(req, &mut newname)?;
+    let len = newname
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(newname.len());
+    tc_select(&newname[..len])
+}
+
+/// `sysctl_tc_choice`: the registered timecounters as `name(quality)`, space separated.
+fn sysctl_tc_choice(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let n = tc_count();
+    if n == 0 {
+        return sysctl::rdstring(req, b"");
+    }
+    // malloc(maxlen, M_TEMP, M_WAITOK): 32 bytes a counter, as the C's.
+    let mut choices = alloc::vec![0u8; n * 32];
+    let _ = tc_choice(&mut choices);
+    sysctl::rdstring(req, &choices)
+}
+
+/// `sysctl_tc`: `kern.timecounter`'s one level: the hardware, the choice, and `tc_vars`
+/// (`tick` read-only, `timestepwarnings` 0 or 1).
+pub fn sysctl_tc(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let [what] = name else {
+        return Err(Errno::ENOTDIR);
+    };
+
+    match *what {
+        KERN_TIMECOUNTER_HARDWARE => sysctl_tc_hardware(req),
+        KERN_TIMECOUNTER_CHOICE => sysctl_tc_choice(req),
+        // sysctl_bounded_arr(tc_vars, ...)
+        KERN_TIMECOUNTER_TICK => sysctl::int_bounded(req, &TC_TICK, 1, 0),
+        KERN_TIMECOUNTER_TIMESTEPWARNINGS => sysctl::int_bounded(req, &TIMESTEPWARNINGS, 0, 1),
+        _ => Err(Errno::EOPNOTSUPP),
+    }
 }
 
 /// `inittimecounter`: the windup period (`tc_tick`, one tick per millisecond of `hz`, at
@@ -1395,7 +1459,7 @@ pub(crate) mod tests {
         let s = core::str::from_utf8(&buf[..n]).unwrap_or("");
         assert!(s.starts_with("testtc(1000) badtc(-1)"), "{s}");
         // kern.timecounter.hardware: an unknown name is refused, a registered one selected.
-        assert_eq!(tc_select(b"nosuch"), Err(crate::sys::errno::Errno::EINVAL));
+        assert_eq!(tc_select(b"nosuch"), Err(Errno::EINVAL));
         assert_eq!(tc_select(b"badtc"), Ok(()));
         assert_eq!(timecounter().name(), "badtc");
         assert_eq!(tc_select(b"testtc"), Ok(()));
@@ -1471,6 +1535,65 @@ pub(crate) mod tests {
             }
             stop.store(true, Ordering::Relaxed);
         });
+    }
+
+    #[test]
+    fn kern_timecounter_answers_as_sysctl_tc() {
+        let _g = lock();
+        let u = testutil::USER_BASE + 0xC900;
+        let mut len = 64;
+        let mut req = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(sysctl_tc(&[1, 2], &mut req), Err(Errno::ENOTDIR));
+        assert_eq!(sysctl_tc(&[9], &mut req), Err(Errno::EOPNOTSUPP));
+        assert_eq!(TcNode.sysctl(&[KERN_TIMECOUNTER_TICK], &mut req), Ok(()));
+        assert_eq!(*req.oldlenp, 4);
+        // timestepwarnings takes 0 or 1 only; tick is read-only.
+        assert!(hal::user::UserPtr::<i32>::new(u + 32).copyout(&2).is_ok());
+        let mut len = 4;
+        let mut set = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: u + 32,
+            newlen: 4,
+        };
+        assert_eq!(
+            sysctl_tc(&[KERN_TIMECOUNTER_TIMESTEPWARNINGS], &mut set),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            sysctl_tc(&[KERN_TIMECOUNTER_TICK], &mut set),
+            Err(Errno::EPERM)
+        );
+        // The hardware: the active counter's name, NUL-terminated.
+        let mut len = 32;
+        let mut req = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(sysctl_tc(&[KERN_TIMECOUNTER_HARDWARE], &mut req), Ok(()));
+        let name = timecounter().name();
+        assert_eq!(*req.oldlenp, name.len() + 1);
+        assert_eq!(
+            testutil::user_bytes(u, name.len()).as_deref(),
+            Some(name.as_bytes())
+        );
+        // A size query of the choice writes its length.
+        let mut len = 0;
+        let mut q = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(sysctl_tc(&[KERN_TIMECOUNTER_CHOICE], &mut q), Ok(()));
+        assert!(len >= 1);
     }
 
     #[test]
