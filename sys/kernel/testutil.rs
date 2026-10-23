@@ -1764,6 +1764,13 @@ macro_rules! test_proc_glue {
                 $crate::testutil::file_log_push(std::format!("pledge_fail {code:#x}"));
                 error
             }
+            fn pledge_sysctl(
+                _p: &$crate::proc::Thread<Self>,
+                _mib: &[i32],
+                _new: usize,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
                 match hal::pool::PoolArc::from_ref(pr) {
                     Some(a) => $crate::proc::StaticOrPooled::Pooled(a),

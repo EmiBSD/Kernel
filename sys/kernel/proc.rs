@@ -891,6 +891,10 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
         error: hal::sys::errno::Errno,
         code: u64,
     ) -> hal::sys::errno::Errno;
+    /// `pledge_sysctl(p, namelen, name, new)` (`kern_pledge.c`, N8): whether a pledged `p`
+    /// may read (or, `new` not NULL, write) the variable `mib` names, `sys_sysctl`'s check
+    /// before any node is asked. Required: a glue cannot drop pledge by forgetting it.
+    fn pledge_sysctl(p: &Thread<Self>, mib: &[i32], new: usize) -> Result<(), Errno>;
     /// A counted reference to `pr` (process 0's `static`, or a `processpl` item), for a
     /// holder that keeps a process found under a witness past it (`filt_procattach`).
     fn process_ref(pr: &Process<Self>) -> ProcessRef<Self>;
@@ -1011,11 +1015,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     // The sysctl tree's calls into what is still `bsd`'s (`kernel::sysctl`, N4.6b). The
     // defaults are what a glue without that subsystem does (the kernel's tests).
 
-    /// `pledge_sysctl(p, namelen, name, new)` (`kern_pledge.c`, N8): whether a pledged `p`
-    /// may read (or, `new` not NULL, write) the variable `mib` names.
-    fn pledge_sysctl(_p: &Thread<Self>, _mib: &[i32], _new: usize) -> Result<(), Errno> {
-        Ok(())
-    }
     /// A session's controlling terminal as `kinfo_proc` and `KERN_PROC_TTY` read it
     /// (`s_ttyp`: its `t_dev`, `t_pgrp`'s id and `t_session`'s address), `None` without one:
     /// the session's own `s_ttyp` (`kernel::tty::session_tty`); a test glue may stand in for
@@ -2984,6 +2983,13 @@ mod tests {
             _code: u64,
         ) -> hal::sys::errno::Errno {
             error
+        }
+        fn pledge_sysctl(
+            _p: &Thread<Self>,
+            _mib: &[i32],
+            _new: usize,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
         }
         fn process_ref(pr: &Process<Self>) -> ProcessRef<Self> {
             StaticOrPooled::Pooled(PoolArc::from_ref(pr).unwrap())
