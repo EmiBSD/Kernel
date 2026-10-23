@@ -123,7 +123,9 @@
 //!   `generic_space_map` takes device mappings from ([`VMMAP`], [`VMMAP_SIZE`]), 1024 pages
 //!   where the C keeps one page (`pmap_bootstrap_bs_map`).
 //! - Pointer authentication (`pm_api*key`, `pmap_setpauthkeys`) and the trampoline pmap
-//!   (`pmap_tramp`, `pmap_postinit`'s `pmap_kvp_map` submap) are not configured, as in LZ;
+//!   (`pmap_tramp`, `pmap_postinit`'s `pmap_kvp_map` submap) are not configured, as in LZ
+//!   (`pmap_tramp` and the trampoline's `TTBR1_EL1` switch are N4.8d's, the user's decision
+//!   of 2026-10-23);
 //!   `pmap_vp_populate`/`__HAVE_PMAP_POPULATE` stays unconfigured (uvm_fault's slice decides,
 //!   N3.6): `uvm_fault` never calls it here.
 //! - `pmap_proc_iflush` syncs every page through its direct-map alias (the C syncs the user

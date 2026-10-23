@@ -25,8 +25,9 @@
  * trampoline's (pmap_tramp, which maps nothing of the kernel but this page),
  * whose pmap half is not configured (sys/hal/arch/arm64/pmap/backend.rs,
  * deviations): the kernel stays mapped while user code runs, and the vectors
- * keep the BHB mitigations and the vector switch. PSCI's tables are always
- * assembled (NPSCI is 1 in this kernel).
+ * keep the BHB mitigations and the vector switch; N4.8d adds it (the user's
+ * decision of 2026-10-23). PSCI's tables are always assembled (NPSCI is 1 in
+ * this kernel).
  */
 
 	.equ	SMCCC_ARCH_WORKAROUND_3, 0x80003fff

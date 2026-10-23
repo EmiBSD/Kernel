@@ -80,17 +80,18 @@
 //!   and bounds every such lost event; Linux keeps it on for the same reason.
 //! - `psci* at fdt?` is configured (M13), so `NPSCI` is 1: `cpu_flush_bp_psci`'s
 //!   `psci_flush_bp`, `smccc_enable_arch_workaround_2` (Spectre-V4) and PSCI
-//!   `CPU_OFF`/`CPU_SUSPEND` in `cpu_halt` are the C's. The firmware Spectre-BHB vectors
-//!   (`smccc_needs_arch_workaround_3`'s SMCCC query for `trampoline_vectors_psci_{hvc,smc}`,
-//!   which `hal` assembles since N4.8b) are not chosen yet; `psci_features` (`cpu_psci_init`,
-//!   only with `cpu-idle-states`) and
+//!   `CPU_OFF`/`CPU_SUSPEND` in `cpu_halt` are the C's, and so (N4.8b) is the firmware's
+//!   Spectre-BHB workaround: a CPU with no loop chosen whose firmware needs
+//!   `SMCCC_ARCH_WORKAROUND_3` takes `trampoline_vectors_psci_hvc` or `_smc` (`hal`'s
+//!   `trampoline.S`) and a no-op `ci_flush_bp`; `psci_features` (`cpu_psci_init`, only with
+//!   `cpu-idle-states`) and
 //!   `psci_cpu_suspend` (`cpu_psci_idle_cycle`) stay reported: no idle state is ever picked.
 //!   `cpu_start_secondary` still starts the APs through Limine, never `psci_cpu_on`.
 //! - `ci_trampoline_vectors` records which `trampoline_vectors_*` table the C picks, as a
 //!   `TRAMPOLINE_VECTORS_*` number; `cpu_mitigate_spectre_bhb` hands the choice to `hal`
 //!   (`hal::arch::arm64::exception::set_bhb_mitigation`, N4.8b), whose `trampoline.S` the
-//!   return to user mode installs (the `TTBR1_EL1` half of the trampoline is not configured:
-//!   `sys/hal/arch/arm64/exception.rs`, deviations).
+//!   return to user mode installs (the `TTBR1_EL1` half of the trampoline is not configured,
+//!   N4.8d's: `sys/hal/arch/arm64/exception.rs`, deviations).
 //! - `codepatch_nop(CPTAG_REPEAT_TLBI)` has nothing to patch: the TLB invalidations never
 //!   repeat yet (`cpufunc.rs`, deviations), which is the patched state; the CPUs the C keeps
 //!   the repeat for (CVE-2025-10263, not QEMU's Cortex-A72) go without it.
@@ -130,7 +131,10 @@ use crate::arch::arm64::include::fdt::FdtAttachArgs;
 use crate::arch::arm64::include::vmparam::USER_SPACE_BITS;
 #[cfg(feature = "multiprocessor")]
 use crate::dev::fdt::psci::{psci_can_suspend, psci_cpu_off};
-use crate::dev::fdt::psci::{psci_flush_bp, smccc_enable_arch_workaround_2};
+use crate::dev::fdt::psci::{
+    psci_flush_bp, psci_method, smccc_enable_arch_workaround_2, smccc_needs_arch_workaround_3,
+};
+use crate::dev::fdt::pscivar::{PSCI_METHOD_HVC, PSCI_METHOD_SMC};
 use crate::dev::ofw::fdt::{
     OF_child, OF_getindex, OF_getnodebyphandle, OF_getprop, OF_getpropbool, OF_getpropint,
     OF_getpropint64, OF_getpropintarray, OF_getproplen, OF_is_compatible, OF_peer,
@@ -387,8 +391,8 @@ const NPSCI: i32 = 1;
 /// `NKSTAT`: `pseudo-device kstat` is not configured.
 const NKSTAT: i32 = 0;
 
-/// The `trampoline_vectors_*` table `ci_trampoline_vectors` names (`trampoline.S`, not
-/// ported: see the module's deviations): `trampoline_vectors_none`.
+/// The `trampoline_vectors_*` table `ci_trampoline_vectors` names (`hal`'s `trampoline.S`,
+/// `hal::arch::arm64::exception::BhbMitigation`): `trampoline_vectors_none`.
 pub const TRAMPOLINE_VECTORS_NONE: u64 = 0;
 /// `trampoline_vectors_loop_8`.
 pub const TRAMPOLINE_VECTORS_LOOP_8: u64 = 1;
@@ -402,6 +406,10 @@ pub const TRAMPOLINE_VECTORS_LOOP_32: u64 = 4;
 pub const TRAMPOLINE_VECTORS_LOOP_132: u64 = 5;
 /// `trampoline_vectors_clrbhb`.
 pub const TRAMPOLINE_VECTORS_CLRBHB: u64 = 6;
+/// `trampoline_vectors_psci_hvc`: the firmware's `SMCCC_ARCH_WORKAROUND_3` through `hvc`.
+pub const TRAMPOLINE_VECTORS_PSCI_HVC: u64 = 7;
+/// `trampoline_vectors_psci_smc`: the same through `smc`.
+pub const TRAMPOLINE_VECTORS_PSCI_SMC: u64 = 8;
 
 /// `struct cpu_cores`: a core of an implementer.
 pub struct CpuCores {
@@ -973,8 +981,19 @@ pub fn cpu_mitigate_spectre_bhb(ci: &CpuInfo) {
     }
 
     // If we're not using a loop, let firmware decide. This also covers the original
-    // Spectre-V2 in addition to Spectre-BHB: smccc_needs_arch_workaround_3() and the
-    // trampoline_vectors_psci_{hvc,smc} tables, NPSCI > 0 only.
+    // Spectre-V2 in addition to Spectre-BHB.
+    if NPSCI > 0
+        && ci.ci_trampoline_vectors.get() == TRAMPOLINE_VECTORS_NONE
+        && smccc_needs_arch_workaround_3() != 0
+    {
+        ci.ci_flush_bp.set(Some(cpu_flush_bp_noop));
+        if psci_method() == PSCI_METHOD_HVC {
+            ci.ci_trampoline_vectors.set(TRAMPOLINE_VECTORS_PSCI_HVC);
+        }
+        if psci_method() == PSCI_METHOD_SMC {
+            ci.ci_trampoline_vectors.set(TRAMPOLINE_VECTORS_PSCI_SMC);
+        }
+    }
 
     // Prefer CLRBHB to mitigate Spectre-BHB.
     let id = read_specialreg!("id_aa64isar2_el1");
@@ -1003,6 +1022,8 @@ pub fn cpu_mitigate_spectre_bhb(ci: &CpuInfo) {
         TRAMPOLINE_VECTORS_LOOP_32 => BhbMitigation::Loop32,
         TRAMPOLINE_VECTORS_LOOP_132 => BhbMitigation::Loop132,
         TRAMPOLINE_VECTORS_CLRBHB => BhbMitigation::Clrbhb,
+        TRAMPOLINE_VECTORS_PSCI_HVC => BhbMitigation::PsciHvc,
+        TRAMPOLINE_VECTORS_PSCI_SMC => BhbMitigation::PsciSmc,
         _ => BhbMitigation::None,
     };
     hal::arch::arm64::exception::set_bhb_mitigation(&ci.core, m);

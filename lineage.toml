@@ -8728,7 +8728,7 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/exception.rs"]
 status = "redesigned"
 license = "none"
-notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); the TTBR1_EL1 switch of the trampoline (pmap_tramp) is not configured (deviation)"
+notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); the TTBR1_EL1 switch of the trampoline (pmap_tramp) is not configured (deviation): N4.8d's, the user's decision of 2026-10-23"
 
 
 [[module]]
