@@ -2495,6 +2495,9 @@ pub(crate) mod tests {
         crate::kern::subr_autoconf::autoconf_test_reset();
         // And pf's OS fingerprints, whose entries came from pools other tests initialise again.
         crate::net::pf_osfp::pf_osfp_test_reset();
+        // And the sigio registrations (kernel::sigio's chain), malloc(9)'d from the memory
+        // just replaced.
+        kernel::sigio::sigio_test_reset();
         guard
     }
 
