@@ -65,14 +65,18 @@
 //!   lock. The functions below forward to their methods; the uniprocessor branches LZ kept
 //!   unbuilt are gone (decision 40); the release checks of N4.2 are `hal::klock`'s.
 
-use core::ptr;
 use core::sync::atomic::{Ordering, fence};
 
 use crate::sys::mutex::{DbMutex, Mutex, mutex_ipl};
 use crate::sys::pclock::PcLock;
-use hal::klock::MpLock;
 
-pub use hal::klock::KERNEL_LOCK;
+/// The name `kernel_lock` the C's `__mp_*(&kernel_lock)` calls pass: the lock itself is
+/// `hal::klock`'s, reached only through its functions (which refuse a release by a CPU that
+/// does not hold it); this value only says which lock is meant.
+pub struct KernelLockName;
+
+/// `kernel_lock`.
+pub static KERNEL_LOCK: KernelLockName = KernelLockName;
 
 /// `_kernel_lock_init`: `KERNEL_LOCK_INIT()`, once, from `main`: the ticket lock reset and
 /// the parking lots checked empty.
@@ -97,33 +101,28 @@ pub fn _kernel_lock_held() -> bool {
     hal::klock::kernel_lock_held()
 }
 
-/// `__mp_lock`: takes `mpl`, recursively.
-pub fn __mp_lock(mpl: &MpLock) {
-    mpl.lock();
+/// `__mp_lock(&kernel_lock)`: takes the kernel lock, recursively (an interrupt handler's
+/// entry: no scheduler assertion).
+pub fn __mp_lock(_mpl: &KernelLockName) {
+    hal::klock::mp_lock();
 }
 
-/// `__mp_unlock`: drops one level of this CPU's hold.
-pub fn __mp_unlock(mpl: &MpLock) {
-    mpl.unlock();
+/// `__mp_unlock(&kernel_lock)`: drops one level of this CPU's hold (`panic(9)` unless it
+/// holds the lock; the last level refuses a witness out).
+pub fn __mp_unlock(_mpl: &KernelLockName) {
+    hal::klock::kernel_unlock();
 }
 
-/// `__mp_release_all`: drops every level of this CPU's hold; returns how many there were.
-/// The kernel lock's goes through `hal::klock` (its release check, the host's double).
-pub fn __mp_release_all(mpl: &MpLock) -> u32 {
-    if ptr::eq(mpl, &KERNEL_LOCK) {
-        hal::klock::release_all()
-    } else {
-        mpl.release_all()
-    }
+/// `__mp_release_all(&kernel_lock)`: drops every level of this CPU's hold; returns how many
+/// there were (0, releasing nothing, when it holds none).
+pub fn __mp_release_all(_mpl: &KernelLockName) -> u32 {
+    hal::klock::release_all()
 }
 
-/// `__mp_acquire_count`: takes `mpl` `count` times (what `__mp_release_all` returned).
-pub fn __mp_acquire_count(mpl: &MpLock, count: u32) {
-    if ptr::eq(mpl, &KERNEL_LOCK) {
-        hal::klock::acquire_count(count);
-    } else {
-        mpl.acquire_count(count);
-    }
+/// `__mp_acquire_count(&kernel_lock, count)`: takes it `count` times (what
+/// `__mp_release_all` returned).
+pub fn __mp_acquire_count(_mpl: &KernelLockName, count: u32) {
+    hal::klock::acquire_count(count);
 }
 
 /// `__mtx_init`: a free mutex raising to `wantipl`.

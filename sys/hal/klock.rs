@@ -101,15 +101,25 @@
 //!   switch's [`release_all`], the last [`kernel_unlock`]) call [`assert_unwitnessed`], so a
 //!   holder never sleeps with one.
 //!
+//! - only the CPU that holds the lock releases it: an unlock by another is `panic(9)`, a
+//!   whole release by another releases nothing ([`MpLock::unlock`], [`MpLock::release_all`]),
+//!   and the lock itself is reached only through this module.
+//!
 //! So while a witness lives no other CPU holds the lock, and on this one only witnesses of
-//! the same kind are out: the cells it opens see one writer or readers, never both.
+//! the same kind are out: the cells it opens see one writer or readers, never both. (On the
+//! host the lock excludes nothing: its double is a per-thread depth, see the deviations.)
 //!
 //! ## Deviations
 //! - `__mp_lock_held` indexes the per-CPU holds by the CPU's number (`hal::cpu`'s), where the
 //!   C uses `CPU_INFO_UNIT(ci)`; both are the CPU's number on every machine OpenBSD runs.
-//! - `WITNESS` and `MP_LOCKDEBUG` (the spin-out into ddb, the "not held lock" check) are not
+//! - `WITNESS` and `MP_LOCKDEBUG`'s spin-out into ddb are not
 //!   configured, as in LZ.
-//! - The host's kernel lock is a per-thread depth (above).
+//! - The host's kernel lock is a per-thread depth (above): there two test threads may hold
+//!   it, and its witnesses, at once (each its own), so "no other CPU holds the lock" is a
+//!   machine's property only; the host tests check the rules per thread.
+//! - `MP_LOCKDEBUG`'s "not held lock" check of `__mp_unlock` is made in every build, and
+//!   `__mp_release_all` of a CPU that does not hold the lock releases nothing (the C's
+//!   callers never make that call): stricter than the C, never weaker.
 //!
 //! ## Redesign
 //! - N3.4c-N4.2: the kernel crate reached `bsd`'s `__mp_lock` through a `KernelLock` bridge,
@@ -125,7 +135,7 @@
 //!   always, not only under `DIAGNOSTIC`.
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering, fence};
 
 use crate::cpu::{self, MAXCPUS};
 use crate::intr::{IPL_VM, SplGuard, splraise};
@@ -171,7 +181,18 @@ impl MpLock {
     }
 
     /// `___mp_lock_init` (`__mp_lock_init`): nobody holds the lock; ticket 1 is served next.
+    /// `panic(9)` when a CPU holds the lock or waits for it: resetting the tickets under a
+    /// holder would let a second CPU in (the C runs it once, before any CPU takes the lock).
     pub fn init(&self) {
+        let busy = self.users.load(Ordering::Relaxed).wrapping_add(1)
+            != self.ticket.load(Ordering::Relaxed)
+            || self
+                .cpus
+                .iter()
+                .any(|c| c.depth.load(Ordering::Relaxed) != 0);
+        if busy {
+            crate::assert::hal_panic(format_args!("__mp_lock_init: the lock is in use"));
+        }
         for c in &self.cpus {
             c.ticket.store(0, Ordering::Relaxed);
             c.depth.store(0, Ordering::Relaxed);
@@ -215,10 +236,16 @@ impl MpLock {
     }
 
     /// `__mp_unlock`: drops one level of this CPU's hold; the last one serves the next
-    /// ticket.
+    /// ticket. `panic(9)` unless this CPU holds the lock (MP_LOCKDEBUG's "not held lock"
+    /// check, made always: a non-holder's unlock would serve the next ticket while the holder
+    /// still runs inside, and two CPUs would hold the lock and its witnesses).
     pub fn unlock(&self) {
-        let c = self.cpu(cpu::cpu_number());
-        // MP_LOCKDEBUG (the "not held lock" check): not configured. WITNESS_UNLOCK: neither.
+        let me = cpu::cpu_number();
+        if !self.held_by(me) {
+            crate::assert::hal_panic(format_args!("__mp_unlock(): not held lock"));
+        }
+        let c = self.cpu(me);
+        // WITNESS_UNLOCK: not configured.
         let masked = cpu::intr_disable();
         if c.depth.fetch_sub(1, Ordering::Relaxed) == 1 {
             fence(Ordering::Release); // membar_exit()
@@ -227,9 +254,16 @@ impl MpLock {
         drop(masked);
     }
 
-    /// `__mp_release_all`: drops every level of this CPU's hold; how many there were.
+    /// `__mp_release_all`: drops every level of this CPU's hold; how many there were. A CPU
+    /// that does not hold the lock releases nothing and serves no ticket (0): the C's callers
+    /// ask `_kernel_lock_held()` first (`kern_synch.c`, `sched_bsd.c`), and a ticket served
+    /// for a non-holder would let a second CPU in beside the holder.
     pub fn release_all(&self) -> u32 {
-        let c = self.cpu(cpu::cpu_number());
+        let me = cpu::cpu_number();
+        if !self.held_by(me) {
+            return 0;
+        }
+        let c = self.cpu(me);
         let masked = cpu::intr_disable();
         let rv = c.depth.load(Ordering::Relaxed);
         // WITNESS_UNLOCK for each level: not configured.
@@ -266,8 +300,20 @@ impl Default for MpLock {
     }
 }
 
-/// `kernel_lock`: the big lock serialising whatever is not yet `MPSAFE`.
-pub static KERNEL_LOCK: MpLock = MpLock::new();
+/// `kernel_lock`: the big lock serialising whatever is not yet `MPSAFE`. Crate-private: it
+/// is reached only through this module's functions, which keep the witnesses' rule (no
+/// release while one is out on the releasing CPU).
+#[cfg_attr(
+    not(target_os = "none"),
+    allow(
+        dead_code,
+        reason = "the host's kernel lock is arch/host's per-thread double"
+    )
+)]
+pub(crate) static KERNEL_LOCK: MpLock = MpLock::new();
+
+/// `KERNEL_LOCK_INIT()` ran.
+static INITED: AtomicBool = AtomicBool::new(false);
 
 /// The kernel lock on a machine: [`KERNEL_LOCK`] for the running CPU.
 #[cfg(target_os = "none")]
@@ -353,9 +399,12 @@ fn witnesses() -> &'static AtomicI64 {
     WITNESSES.get()
 }
 
-/// `KERNEL_LOCK_INIT()` (`_kernel_lock_init`'s lock half), once, from `main`.
+/// `KERNEL_LOCK_INIT()` (`_kernel_lock_init`'s lock half), once, from `main`; a later call
+/// does nothing.
 pub fn init() {
-    backend::init();
+    if !INITED.swap(true, Ordering::Relaxed) {
+        backend::init();
+    }
 }
 
 /// `_kernel_lock_held()`: the running CPU holds the kernel lock (always after a panic or in
@@ -483,6 +532,12 @@ pub fn acquire_count(count: u32) {
 pub fn kernel_assert_locked() {
     crate::assert::kassert!(kernel_lock_held());
 }
+
+/// `__mp_lock(&kernel_lock)`: the kernel lock taken without `_kernel_lock`'s scheduler
+/// assertion (an interrupt handler's entry, amd64's `intr_handler`).
+pub fn mp_lock() {
+    backend::lock();
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -607,6 +662,50 @@ mod tests {
             L.ticket.load(Ordering::Relaxed),
             L.users.load(Ordering::Relaxed) + 1
         );
+    }
+
+    /// A CPU that does not hold the ticket lock cannot release it: its whole release gives
+    /// nothing back and serves no ticket, its unlock is `panic(9)`, and the holder keeps
+    /// the lock (review finding 1: two CPUs would otherwise hold the kernel lock and its
+    /// witnesses). A held lock cannot be initialised again.
+    #[test]
+    fn a_non_holder_cannot_release_the_ticket_lock() {
+        static L: MpLock = MpLock::new();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            L.lock();
+            held_tx.send(cpu::cpu_number()).unwrap();
+            done_rx.recv().unwrap();
+            L.unlock();
+        });
+        let holder_cpu = held_rx.recv().unwrap();
+        assert_ne!(holder_cpu, cpu::cpu_number());
+        let served = L.ticket.load(Ordering::Relaxed);
+        assert_eq!(L.release_all(), 0);
+        assert_eq!(L.ticket.load(Ordering::Relaxed), served, "no ticket served");
+        assert!(L.held_by(holder_cpu));
+        assert!(std::panic::catch_unwind(|| L.unlock()).is_err());
+        assert!(L.held_by(holder_cpu));
+        assert!(std::panic::catch_unwind(|| L.init()).is_err());
+        done_tx.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(!L.held_by(holder_cpu));
+        L.init();
+    }
+
+    /// The same on the kernel lock's host double: a thread that does not hold it releases
+    /// nothing, and its unlock is `panic(9)`.
+    #[test]
+    fn a_thread_that_does_not_hold_the_kernel_lock_cannot_release_it() {
+        std::thread::spawn(|| {
+            assert_eq!(depth(), 0);
+            assert_eq!(release_all(), 0);
+            assert!(std::panic::catch_unwind(kernel_unlock).is_err());
+            assert_eq!(depth(), 0);
+        })
+        .join()
+        .unwrap();
     }
 }
 /* </TESTS> */

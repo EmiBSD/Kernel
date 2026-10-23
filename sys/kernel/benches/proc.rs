@@ -55,6 +55,9 @@
 //! - `prim.mutexed`: a `hal::Mutexed` taken and released (`fd_fplock`'s cost on these
 //!   doubles; LZ's `mtx_enter`/`mtx_leave` over `bsd`'s was 3.0 ns in the same run as the
 //!   "before").
+//! - `prim.mplock`: the ticket lock of `kernel_lock` (`hal::klock::MpLock`, a value of the
+//!   bench's own: the host's kernel lock is a per-thread double) taken and released
+//!   (`__mp_lock` + `__mp_unlock`).
 //!
 //! N4.5b's signals (`kernel::sig`; the "before" a scratch test of `bsd`'s kern_sig.rs at
 //! 14a259df, the LZ shape):
@@ -538,6 +541,16 @@ fn main() {
         name: "prim.mutexed",
         ops: PRIM,
         f: Box::new(prim(|| *black_box(&mtx).lock() += 1)),
+    });
+    let mpl: &'static hal::klock::MpLock = Box::leak(Box::new(hal::klock::MpLock::new()));
+    benches.push(Bench {
+        name: "prim.mplock",
+        ops: PRIM,
+        f: Box::new(prim(|| {
+            let l = black_box(mpl);
+            l.lock();
+            l.unlock();
+        })),
     });
     let Some(fpo) = fd_getfile(t3.fd(), 3) else {
         eprintln!("bench: no descriptor 3");
