@@ -1972,7 +1972,7 @@ rust = "sys/hal/arch/arm64/include/param.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/param.rs"]
 status = "redesigned"
-notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic, pmap and pte.rs"
+notes = "N3.1 (D17): the page geometry and KERNBASE, for hal's page arithmetic, pmap and pte.rs; N4.7a: MSGBUFSIZE, for kernel::log's static message buffer"
 
 [[module.fn]]
 lz = "sys/arch/arm64/include/param.rs::PAGE_SHIFT"
@@ -8894,7 +8894,7 @@ notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: Mapp
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); docs/ZERO_UNSAFE.md 0.1, decision 17"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
