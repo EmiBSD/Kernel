@@ -72,7 +72,8 @@ paid_by = "N9"
 # A safe trait: the user copies only read and write the byte slices they are given and user
 # memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
 # through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
-# window the kernel map's token minted.
+# window the kernel map's token minted. N4.6c: copyin32 (futex(2)'s aligned word, read in one
+# access, EFAULT when misaligned), for kernel::futex.
 # hal::user::UserCopy
 [[bridge]]
 trait = "UserCopy"

@@ -18,4 +18,7 @@ metadata:
 - bsd's MpLock depth is per `cpu_number()`, 0 for every host test thread: kern_lock.rs's release checks read a test-only per-thread depth that a test arms (`kernel_lock_checks_arm`), none elsewhere; never call `__mp_release_all` unarmed in a test (it zeroes CPU 0's depth every thread shares); host tests that reach `[K]` readers take `kernel_lock()` as the syscall would.
 - A kernel test that writes the user-copy double's memory (64 KiB, shared by parallel tests) takes a range of its own; kernel::pipe's tests use USER_BASE + 64.
 - A witness-taking form called from legacy code (VN_KNOTE's knote_locked) panics in the file systems' host tests, which run VOPs without the kernel lock: the legacy form takes the lock recursively itself.
+- Kernel tests that need real sleeps reuse kernel::sched's harness (`pub(crate) mod tests`: SchedGlue, setup, thread, run_as, VCPUS, TABLES): one host thread sleeps on vCPU a, a spawned one acts on vCPU b after polling `stat()==SSLEEP && !P_INSCHED`; never write a second harness (one `register_start` per process).
+- `pin!(..)` inside a call argument is not lifetime-extended (E0716): `let f = pin!(x); let f = use_it(f.into_ref());`.
+- kernel::testutil's copyin32 double (a std Mutex over the user memory) is ~9 ns dev vs bsd host's 0.5 ns: bench it as a prim before blaming a futex-like design.
 - kernel::testutil's 64 KiB user-memory double is shared: uio/select use 0x8000..0xC000, kernel::log 0xE000..0x10000 (kern.msgbuf's copy runs to the end and faults); pick an unused range and grep `USER_BASE + ` first.
