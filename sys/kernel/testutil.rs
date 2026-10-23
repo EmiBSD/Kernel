@@ -574,6 +574,10 @@ impl crate::clock::Uptime for TestUptime {
         let up = crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed));
         up.add(crate::clock::Timespec::new(BOOTTIME_SEC, 0))
     }
+
+    fn nanoboottime(&self) -> crate::clock::Timespec {
+        crate::clock::Timespec::new(BOOTTIME_SEC, 0)
+    }
 }
 
 static TEST_UPTIME: TestUptime = TestUptime;

@@ -152,6 +152,9 @@ pub trait Uptime: Sync {
     fn getnanouptime(&self) -> Timespec;
     /// `nanotime(&ts)`: the time of day (`CLOCK_REALTIME`).
     fn nanotime(&self) -> Timespec;
+    /// `nanoboottime(&ts)`: the time of day the system booted (N4.6b, `kinfo_proc`'s
+    /// start times).
+    fn nanoboottime(&self) -> Timespec;
 }
 
 /// Registers the [`Uptime`] bridge, once; a second call keeps the first and names it.
@@ -179,6 +182,12 @@ pub fn getnanouptime() -> Timespec {
 /// `nanotime(9)`: the time of day (zero before the bridge is registered).
 pub fn nanotime() -> Timespec {
     UPTIME.get().map_or(Timespec::ZERO, |u| u.nanotime())
+}
+
+/// `nanoboottime(9)`: the time of day the system booted (zero before the bridge is
+/// registered).
+pub fn nanoboottime() -> Timespec {
+    UPTIME.get().map_or(Timespec::ZERO, |u| u.nanoboottime())
 }
 
 /// `tstohz(ts)`: the ticks of `ts`, rounded up, plus one for the current tick to expire

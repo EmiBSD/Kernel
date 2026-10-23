@@ -72,8 +72,8 @@
 //! - The sysctl helpers (`sysctl_rdint`, `sysctl_int`, `sysctl_rdstruct`, `sysctl_string`),
 //!   `nkmempages`, `averunnable` and the process list are `bsd`'s until N4: one registered
 //!   bridge, [`VmSysctl`] (bridges.toml), one call each; the request's user addresses travel
-//!   as a [`SysctlReq`]. The dispatch, every value and every check (the three minimum
-//!   percentages' sum) are here. `vm.uvmexp`'s copy-out is the bridge's `rdstruct_uvmexp`
+//!   as a [`SysctlReq`] (`kernel::sysctl`'s since N4.7b, re-exported here). The dispatch,
+//!   every value and every check (the three minimum percentages' sum) are here. `vm.uvmexp`'s copy-out is the bridge's `rdstruct_uvmexp`
 //!   (`bsd`'s byte view of `struct uvmexp`, `SysctlPlain`).
 //! - `uvm_total` classifies the processes the bridge walks ([`ProcState`]: `p_stat` and
 //!   whether the thread is its CPU's idle thread), as `uvm_meter.c` does.
@@ -101,6 +101,7 @@ use hal::vm::uvmexp::{
 use super::init::machine;
 use super::proc::vmproc;
 use crate::assert::kpanic;
+pub use crate::sysctl::SysctlReq;
 
 /// `MAXSLP`: the time for a process to be blocked before being very swappable. This is a
 /// number of seconds which the system takes as being a non-trivial amount of real time. You
@@ -119,18 +120,6 @@ pub const SSLEEP: i32 = 3;
 pub const SSTOP: i32 = 4;
 /// `SONPROC`: thread is currently on a CPU.
 pub const SONPROC: i32 = 7;
-
-/// The user side of a sysctl request (`oldp`, `oldlenp`, `newp`, `newlen`).
-pub struct SysctlReq<'a> {
-    /// `oldp`: where the old value goes (0: nowhere).
-    pub oldp: usize,
-    /// `*oldlenp`: its room, then the value's length.
-    pub oldlenp: &'a mut usize,
-    /// `newp`: the new value (0: none).
-    pub newp: usize,
-    /// `newlen`.
-    pub newlen: usize,
-}
 
 /// What `uvm_total` reads of one thread of `allproc`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

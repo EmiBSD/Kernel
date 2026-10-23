@@ -352,6 +352,11 @@ impl kernel::clock::Uptime for BsdUptime {
         let ts = crate::kern::kern_tc::nanotime();
         kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
     }
+
+    fn nanoboottime(&self) -> kernel::clock::Timespec {
+        let ts = crate::kern::kern_tc::nanoboottime();
+        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
+    }
 }
 
 static BSD_UPTIME: BsdUptime = BsdUptime;

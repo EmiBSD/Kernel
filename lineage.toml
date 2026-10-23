@@ -10265,6 +10265,13 @@ native = ["Msgbuf::new"]
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/sysctl.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_sysctl.rs"]
+status = "redesigned"
+notes = "N4.6b: sysctl's core (N4.7b's SysctlNode/SysctlReq/rdquad/rdstruct kept): the helpers over hal::user::UserPtr, sys_sysctl and its dispatch over a registry of SysctlNodes (the lock sets and the error order the dispatcher's data), sysctl_vslock as the VsLock guard, kern and hw trees, sysctl_doproc and fill_kproc over kernel::proc (p_tsess for root only, N4.7 decision 8), proc_args over uvm_io into an MArray, proc_cwd over FileGlue::getcwd, disknames/diskstats owned by sysctl_disklock's Rwlocked through the DiskExport bridge, hostname/domainname Rwlocked, hw_vendor.. OnceStatics, cpu_cpuspeed and the BatteryCharge setters registered"
+
+[[module]]
 rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]

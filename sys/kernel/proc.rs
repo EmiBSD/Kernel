@@ -1002,6 +1002,50 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
             None => kpanic(format_args!("pgrp_ref: not a pooled group")),
         }
     }
+
+    // The sysctl tree's calls into what is still `bsd`'s (`kernel::sysctl`, N4.6b). The
+    // defaults are what a glue without that subsystem does (the kernel's tests).
+
+    /// `pledge_sysctl(p, namelen, name, new)` (`kern_pledge.c`, N8): whether a pledged `p`
+    /// may read (or, `new` not NULL, write) the variable `mib` names.
+    fn pledge_sysctl(_p: &Thread<Self>, _mib: &[i32], _new: usize) -> Result<(), Errno> {
+        Ok(())
+    }
+    /// A session's controlling terminal as `kinfo_proc` and `KERN_PROC_TTY` read it
+    /// (`s_ttyp`: its `t_dev`, `t_pgrp`'s id and `t_session`'s address; N4.7b, when the
+    /// terminal is the kernel's); `None` without one.
+    fn session_tty(_sess: &Session<Self>) -> Option<SessionTty> {
+        None
+    }
+    /// A process's unveil state for `kinfo_proc`'s `p_eflag` (`ps_uvpaths`, `ps_uvdone`;
+    /// `kern_unveil.c`, N8).
+    fn unveil_state(_pr: &Process<Self>) -> UnveilState {
+        UnveilState::default()
+    }
+    /// `CPU_INFO_UNIT(ci)` of CPU `n` (its device's unit number, `kinfo_proc.p_cpuid`).
+    fn cpu_unit(n: usize) -> u64 {
+        n as u64
+    }
+}
+
+/// A session's controlling terminal, as [`ProcGlue::session_tty`] reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionTty {
+    /// `t_dev`.
+    pub dev: hal::sys::types::Dev,
+    /// `t_pgrp->pg_id`, `None` without a foreground group.
+    pub pgid: Option<Pid>,
+    /// `t_session`'s address (`PTRTOINT64`, root's `kinfo_proc.p_tsess`).
+    pub session_addr: usize,
+}
+
+/// A process's unveil state, as [`ProcGlue::unveil_state`] reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnveilState {
+    /// `ps_uvpaths != NULL`: it has unveil settings.
+    pub paths: bool,
+    /// `ps_uvdone`: no more unveil is permitted.
+    pub done: bool,
 }
 
 /// Declares the list adapters of the glue `$glue` (`hal::pin_adapter!` and
