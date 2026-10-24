@@ -5,7 +5,7 @@ paths:
 
 # The reference trees are read-only
 
-`reference/openbsd-src/` is a sparse, shallow clone of https://github.com/openbsd/src, pinned at the
+`reference/openbsd-src/` is a sparse, shallow clone of https://github.com/EmiBSD/OpenBSD-src (the EmiBSD organisation's fork of openbsd/src with its whole history, kept so the reference survives a move of the upstream repository; the user's decision of 2026-10-23), pinned at the
 commit in `reference/PINNED.md`. It holds `sys/` (the kernel: the specification the port follows)
 and, since 2026-10-03 (the user's M8 decision), the userland sources M8 cross-compiles unmodified:
 `lib/`, `bin/`, `sbin/`, `usr.bin/`, `libexec/` and `include/` (the `/usr/include` headers libc

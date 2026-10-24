@@ -59,7 +59,7 @@ use crate::machine::tcb::Tcb;
 use crate::machine::{
     BootInfo, Console, Cpu, Exit, ExitStatus, Intr, MachineInfo, MachineParam, Pmap, VmParam,
 };
-use crate::sys::clockintr::Clockqueue;
+
 use crate::sys::device::{Cfdata, Cfdriver, DV_DULL, Device};
 use crate::sys::errno::Errno;
 use crate::sys::exec::{ExecPackage, PsStrings};
@@ -247,8 +247,6 @@ impl MachineParam for Machine {
 
 /// The host's `struct cpu_info`: what the generic clock and scheduler code reaches.
 pub struct HostCpuInfo {
-    /// `ci_queue`.
-    pub ci_queue: Clockqueue,
     /// `ci_schedstate`.
     pub ci_schedstate: SchedstatePercpu,
     /// `ci_randseed`.
@@ -262,7 +260,6 @@ unsafe impl Sync for HostCpuInfo {}
 
 /// The host's one CPU.
 static HOST_CPU_INFO: HostCpuInfo = HostCpuInfo {
-    ci_queue: Clockqueue::new(),
     ci_schedstate: SchedstatePercpu::new(),
     ci_randseed: Cell::new(1),
 };
@@ -375,10 +372,6 @@ impl Cpu for Machine {
 
     fn cpu_info_unit(_ci: &HostCpuInfo) -> u32 {
         0
-    }
-
-    fn ci_queue(ci: &HostCpuInfo) -> &Clockqueue {
-        &ci.ci_queue
     }
 
     fn ci_schedstate(ci: &HostCpuInfo) -> &SchedstatePercpu {

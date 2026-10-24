@@ -73,13 +73,15 @@ pub trait UserCopy {
 /// pattern is a valid value.
 pub unsafe trait AbiPod: Copy + 'static {}
 
-// SAFETY: a plain `int`: four initialised bytes, any pattern valid (the argument of most tty
-// and file ioctls, `*(int *)data`).
-unsafe impl AbiPod for i32 {}
-
-// SAFETY: a plain `u_int`: four initialised bytes, any pattern valid (`*(u_int *)data` of the
-// bpf(4) ioctls).
-unsafe impl AbiPod for u32 {}
+// SAFETY: `hal::user::AbiPod` is this trait's contract checked: its impls are the integer
+// primitives (four or eight initialised bytes, any pattern valid: `int`, `u_int`, ...),
+// arrays of `AbiPod` types, and the structures `hal::abi_pod!` declares after proving at
+// compile time that their listed fields tile them with no padding and each is `AbiPod`; no
+// other impl can be written (`cargo xtask lz check` refuses a hand-written one). So every
+// such type is `#[repr(C)]`-plain in the sense this trait's `# Safety` asks, and the kernel
+// crate's ABI types (`struct timespec`, `struct timeval`, ...) are copied by the legacy
+// copies too (N4.8a).
+unsafe impl<T: hal::user::AbiPod> AbiPod for T {}
 
 /// `copyin(uaddr, &obj, sizeof(obj))`: copies a `T` in from the user address `uaddr`.
 pub fn copyin_obj<T: AbiPod>(uaddr: usize) -> Result<T, Errno> {

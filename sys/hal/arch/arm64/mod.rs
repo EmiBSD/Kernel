@@ -44,6 +44,8 @@ pub(crate) mod sig;
 pub mod switch;
 #[cfg(not(feature = "module-rt"))]
 pub mod syscall;
+// The generic timer's registers and the clock frame (N4.8a).
+pub mod timer;
 #[cfg(not(feature = "module-rt"))]
 pub mod trap;
 

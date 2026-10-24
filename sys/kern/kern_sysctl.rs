@@ -82,9 +82,9 @@
 //!   `kernel::sysctl` has the same helpers over `hal::user::UserPtr` for its own nodes (the
 //!   same machine routines through the `UserCopy` bridge). Each `bsd` node moves to the
 //!   kernel's with its subsystem.
-//! - `kern.clockintr` reports itself with `unported!` and fails with `ENOSYS`
-//!   (`sysctl_clockintr`, `kern_clockintr.c`); `resettodr` after a new `kern.utc_offset` is
-//!   reported and skipped.
+//! - `resettodr` after a new `kern.utc_offset` is reported and skipped. (`kern.clockintr`,
+//!   LZ's `unported!`, is the kernel's `kernel::clockintr::ClockintrNode` since N4.8a, and
+//!   `kern.timecounter` is `kernel::tc::TcNode`: both registered from [`KERN_NODES`].)
 //! - `kern.file`: `fill_file` fills the `AF_INET` and `AF_INET6` (feature `inet6`) control
 //!   blocks and the TCP members (`fill_file_tcpcb`, zero for a control block without a
 //!   `tcpcb`). `KERN_FILE_BYFILE` of sockets walks `tcbtable`, `udbtable`, `rawcbtable`,
@@ -140,7 +140,7 @@ use crate::kern::kern_prot::suser;
 use crate::kern::kern_sched::{cpu_is_online, sysctl_hwblockcpu, sysctl_hwsmt};
 use crate::kern::kern_sensors::{sensor_find, sensordev_get};
 use crate::kern::kern_sig::NOSUIDCOREDUMP;
-use crate::kern::kern_tc::{microboottime, nanotime, sysctl_tc, tc_setrealtimeclock};
+use crate::kern::kern_tc::{microboottime, nanotime, tc_setrealtimeclock};
 use crate::kern::kern_watchdog::sysctl_wdog;
 use crate::kern::pipe_glue::pipe_kinfo;
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
@@ -1529,18 +1529,6 @@ fn kern_evcount(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     evcount_sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen)
 }
 
-/// `kern.clockintr`: `sysctl_clockintr` (`kern_clockintr.c`) is not ported.
-fn kern_clockintr(_name: &[i32], _req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    Err(unported!(
-        "kern.clockintr: sysctl_clockintr (kern_clockintr.c)"
-    ))
-}
-
-/// `kern.timecounter`.
-fn kern_timecounter(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_tc(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
 /// `hw.sensors`.
 fn hw_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_sensors(name, req.oldp, req.oldlenp, req.newp, req.newlen)
@@ -1596,10 +1584,11 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
     (KERN_INTRCNT, &Node(kern_intrcnt)),
     (KERN_WATCHDOG, &Node(kern_watchdog)),
     (KERN_EVCOUNT, &Node(kern_evcount)),
-    (KERN_CLOCKINTR, &Node(kern_clockintr)),
+    // `kern.clockintr` and `kern.timecounter`: the kernel's nodes (N4.8a).
+    (KERN_CLOCKINTR, &kernel::clockintr::ClockintrNode),
     // `kern.tty`: the kernel's node (N4.7b), over this glue's terminals.
     (KERN_TTY, &kernel::tty::TtyNode::<BsdProcGlue>::NODE),
-    (KERN_TIMECOUNTER, &Node(kern_timecounter)),
+    (KERN_TIMECOUNTER, &kernel::tc::TcNode),
 ];
 
 /// `sysctl_intrcnt`: `kern.intrcnt`, served by `evcount_sysctl`.

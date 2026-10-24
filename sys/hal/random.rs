@@ -105,8 +105,8 @@ pub fn arc4random_uniform(upper_bound: u32) -> u32 {
 }
 
 /// `enqueue_randomness(val)`: `val` mixed into `bsd`'s entropy pool (the terminal's input
-/// characters, `tty.c`'s `ttyinput`); nothing before the bridge is registered (no generator
-/// to feed yet).
+/// characters, `tty.c`'s `ttyinput`; the timecounters' first readings and the clock steps,
+/// `kern_tc.c`); nothing before the bridge is registered (no generator to feed yet).
 pub fn enqueue_randomness(val: u32) {
     if let Some(r) = bridges::random() {
         r.enqueue_randomness(val);

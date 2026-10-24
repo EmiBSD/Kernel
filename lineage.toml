@@ -1649,7 +1649,7 @@ adapted_by = ["sys/kernel/log.rs"]
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
@@ -1755,7 +1755,9 @@ adapted_by = ["sys/hal/intr.rs"]
 [[module]]
 rust = "sys/arch/arm64/dev/agtimer.rs"
 lz = ["sys/arch/arm64/dev/agtimer.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/arch/arm64/timer.rs", "sys/kernel/tc.rs", "sys/kernel/clockintr.rs", "sys/kernel/clock.rs"]
+notes = "N4.8a: the counter is AgtimerTc (kernel::tc::Timecounter) with its TcEntry, the interrupt clock AgtimerIntrclock (kernel::clockintr::Intrclock), the dispatch over the typed frame"
 
 [[module]]
 rust = "sys/arch/arm64/dev/ampintc.rs"
@@ -1845,8 +1847,8 @@ notes = "M2: struct bus_space with single-register accessors, map/unmap/subregio
 rust = "sys/arch/arm64/include/cpu.rs"
 lz = ["sys/arch/arm64/include/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/cpu.rs", "sys/hal/intr.rs"]
-notes = "M0: DAIF helpers (restore_daif, enable/disable_irq_daif[_ret], intr_enable/disable/restore); M4: struct cpu_info (the fields the exception and interrupt paths use, in C order), curcpu (tpidr_el1), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING, CPUF_*, CI_DDB_*; the topology fields, the scheduler state, CTL_MACHDEP and the cache helpers come with M4-b/M5; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = trapframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; M11a: struct cpu_info complete (topology, PSCI idle state, opp table/idx/max, cpu supply, capacity, prev_sleep/last_itime; srp hazards, xcall and ci_uvm still out); fields other CPUs touch are atomics (ci_flags, ci_want_resched, ci_opp_idx/max, ci_ddb_paused) or CiPtr (ci_next, ci_curproc, ci_curpm); ci_dev is a *const Device; CPU_IS_RUNNING true without MULTIPROCESSOR, CPU_INFO_UNIT from ci_dev with it; CPU_BUSY_CYCLE; M16d: cpu_rnd_messybits (CNTVCT_EL0 XOR its bit reversal, low 32 bits), machine::Cpu::cpu_rnd_messybits"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/cpu.rs", "sys/hal/intr.rs", "sys/kernel/clockintr.rs"]
+notes = "M0: DAIF helpers (restore_daif, enable/disable_irq_daif[_ret], intr_enable/disable/restore); M4: struct cpu_info (the fields the exception and interrupt paths use, in C order), curcpu (tpidr_el1), cpu_number, cpu_info_primary, CPU_IS_PRIMARY/RUNNING, CPUF_*, CI_DDB_*; the topology fields, the scheduler state, CTL_MACHDEP and the cache helpers come with M4-b/M5; M5: ci_schedstate, ci_queue, MAXCPUS (1), CPU_INFO_UNIT (0 until struct device), struct clockframe = trapframe, CLKF_USERMODE/PC/INTR; M5-b1: ci_curproc/ci_curpcb typed; M7a-3b: PROC_PC/PROC_STACK through Cpu::proc_pc/proc_stack; M8: need_proftick (aston) behind machine::cpu; M11a: struct cpu_info complete (topology, PSCI idle state, opp table/idx/max, cpu supply, capacity, prev_sleep/last_itime; srp hazards, xcall and ci_uvm still out); fields other CPUs touch are atomics (ci_flags, ci_want_resched, ci_opp_idx/max, ci_ddb_paused) or CiPtr (ci_next, ci_curproc, ci_curpm); ci_dev is a *const Device; CPU_IS_RUNNING true without MULTIPROCESSOR, CPU_INFO_UNIT from ci_dev with it; CPU_BUSY_CYCLE; M16d: cpu_rnd_messybits (CNTVCT_EL0 XOR its bit reversal, low 32 bits), machine::Cpu::cpu_rnd_messybits; N4.8a: ci_queue leaves cpu_info (kernel::clockintr::CPUS)"
 
 [[module]]
 rust = "sys/arch/arm64/include/db_machdep.rs"
@@ -3076,7 +3078,9 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/clock_subr.rs"
 lz = ["sys/dev/clock_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/time.rs"]
+notes = "N4.8a: struct todr_chip_handle implements kernel::time::Todr (quality, gettime, settime over the handle's functions)"
 
 [[module]]
 rust = "sys/dev/cons.rs"
@@ -5099,7 +5103,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5118,14 +5122,14 @@ status = "inherited"
 rust = "sys/kern/kern_clock.rs"
 lz = ["sys/kern/kern_clock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/sched.rs"]
-notes = "M5-a: stathz/profhz/profprocs/ticks/jiffies and the period globals, initclocks, hardclock, tvtohz, tstohz, statclock (the per-thread accounting and schedclock wait for struct proc, M5-b: reported); startprofclock/stopprofclock take a struct process (M5-b); sysctl_clockrate came with kern_sysctl.c; M7b: statclock's user/system/interrupt accounting, p_cpticks, the tusage ticks and sizes and schedclock every fourth tick (its unported! prints from the clock interrupt interleaved with user output and made smoke flaky); M11a: statclock's spc_cp_time update is a single-writer atomic store under the pc_lock"
+adapted_by = ["sys/kernel/vm/map.rs", "sys/kernel/clock.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/sched.rs", "sys/kernel/clockintr.rs"]
+notes = "M5-a: stathz/profhz/profprocs/ticks/jiffies and the period globals, initclocks, hardclock, tvtohz, tstohz, statclock (the per-thread accounting and schedclock wait for struct proc, M5-b: reported); startprofclock/stopprofclock take a struct process (M5-b); sysctl_clockrate came with kern_sysctl.c; M7b: statclock's user/system/interrupt accounting, p_cpticks, the tusage ticks and sizes and schedclock every fourth tick (its unported! prints from the clock interrupt interleaved with user output and made smoke flaky); M11a: statclock's spc_cp_time update is a single-writer atomic store under the pc_lock; N4.8a: the statics, hardclock, initclocks and sysctl_clockrate are kernel::clock's (re-exported or wrapped); statclock a kernel::clockintr callback over the typed frame"
 
 [[module]]
 rust = "sys/kern/kern_clockintr.rs"
 lz = ["sys/kern/kern_clockintr.rs"]
-status = "inherited"
-notes = "M5: clockintr_cpu_init, clockintr_trigger, clockintr_dispatch, clockintr_advance, clockrequest_advance[_random], clockintr_cancel[_locked], clockintr_bind/unbind (CL_BARRIER's msleep_nsec reported, M5-b), clockintr_schedule[_locked], clockintr_stagger, clockintr_hardclock, clockqueue_init, clockqueue_intrclock_install, clockqueue_next, clockqueue_pend_delete/insert, clockqueue_intrclock_reprogram, intrclock_rearm/trigger, nsec_advance; sysctl_clockintr is kern_sysctl.c (M6), db_show_all_clockintr the real ddb (M7); the cq_stat time sums wrap as the C's uint64_t do (a 15-bit i8254 timecounter can step uptime back, tested on the host); M11a: clock path audited for MP (it runs unlocked on every CPU): the per-CPU state it reaches is the CPU's own or behind the C's mutexes; the qemu-only uptime check compares with the same CPU's previous reading; M11b: checked per CPU with -smp 4 on both archs (every CPU dispatches its own queue off its LAPIC timer or agtimer); the qemu-only check counts its checks and the readings behind per CPU (uptime_check_counts) for selftest clockintr_percpu"
+status = "redesigned"
+notes = "M5: clockintr_cpu_init, clockintr_trigger, clockintr_dispatch, clockintr_advance, clockrequest_advance[_random], clockintr_cancel[_locked], clockintr_bind/unbind (CL_BARRIER's msleep_nsec reported, M5-b), clockintr_schedule[_locked], clockintr_stagger, clockintr_hardclock, clockqueue_init, clockqueue_intrclock_install, clockqueue_next, clockqueue_pend_delete/insert, clockqueue_intrclock_reprogram, intrclock_rearm/trigger, nsec_advance; sysctl_clockintr is kern_sysctl.c (M6), db_show_all_clockintr the real ddb (M7); the cq_stat time sums wrap as the C's uint64_t do (a 15-bit i8254 timecounter can step uptime back, tested on the host); M11a: clock path audited for MP (it runs unlocked on every CPU): the per-CPU state it reaches is the CPU's own or behind the C's mutexes; the qemu-only uptime check compares with the same CPU's previous reading; M11b: checked per CPU with -smp 4 on both archs (every CPU dispatches its own queue off its LAPIC timer or agtimer); the qemu-only check counts its checks and the readings behind per CPU (uptime_check_counts) for selftest clockintr_percpu; N4.8a: clockintr is kernel::clockintr's; this path re-exports the binders' and drivers' API, 0 unsafe (LZ 7), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/kern_descrip.rs"
@@ -5143,8 +5147,8 @@ notes = "N4.4: kern_event.c's body is sys/kernel/event.rs; this path keeps bsd's
 rust = "sys/kern/kern_exec.rs"
 lz = ["sys/kern/kern_exec.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/vm/aobj.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
-notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEAF|SAVENAME|EXECPATH with the cwd realpath through vfs_getcwd_common, VREG, VOP_GETATTR, MNT_NOEXEC, the execpromises/SUID refusal, MNT_NOSUID, VOP_ACCESS(VEXEC) and the x bits, VOP_OPEN, VOP_UNLOCK, the header through vn_rdwr, the exec switch with EXEC_DESTR, the entry and MAXTSIZ/lim_cur(RLIMIT_DATA) checks, bad1/bad2), sys_execve (the pathname and realpath namei buffers, single_thread_set, the NCARGS argument buffer from exec_map through kv_exec, the EXEC_HASARGL fake args, argv/envp copied with copyinstr (E2BIG), stackgap_random's sgap, the stack size check with ELF_AUX_WORDS, uvmspace_exec, ps_strings and ep_execpath below vm_minsaddr, copyargs, ps_auxinfo, the execpath copyoutstr, the pin tables into ps_pin and ps_libcpin freed, ps_comm from cn_nameptr, ps_textvp, PSI_* from EXEC_*, PS_PPWAIT, PS_SUGIDEXEC, the pledge hand-over, set[ug]id executables, the saved ids, exec_timekeep_map, exec_elf_fixup, setregs, exec_sigcode_map, p_descfd, exec_abort and free_pack_abort), copyargs, exec_sigcode_map, exec_timekeep_map (timekeep_object, the wired timekeep page kern_tc.c writes), stackgap_random, kv_exec; exec_conf.c's execsw[] (scripts, then ELF; M14) is here. exec_image(p, path, argp, envp, image) is the same body for the init boot module while there is no root file system (no vnode checks). Reported: prof_exec and stopprofclock (subr_prof.c), cancel_all_itimers (kern_time.c), cdevvp(getnulldev()) for a set[ug]id exec with stdin/stdout/stderr closed (<sys/conf.h>); KTRACE not configured; TooLs GmbH 4-clause licence accepted at M2; kern_time.c: cancel_all_itimers is real for a PS_SUGIDEXEC exec; kern_unveil.c: without execpromises sys_execve calls unveil_destroy and clears ps_uvdone; kern_event.c: knote(&ps_klist, NOTE_EXEC) is real; ; M11e: check_exec's KERNEL_LOCK/KERNEL_UNLOCK around vfs_getcwd_common are real calls"
+adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/vm/aobj.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/tc.rs"]
+notes = "M8: the whole file: exec_free_package, check_exec (namei FOLLOW|LOCKLEAF|SAVENAME|EXECPATH with the cwd realpath through vfs_getcwd_common, VREG, VOP_GETATTR, MNT_NOEXEC, the execpromises/SUID refusal, MNT_NOSUID, VOP_ACCESS(VEXEC) and the x bits, VOP_OPEN, VOP_UNLOCK, the header through vn_rdwr, the exec switch with EXEC_DESTR, the entry and MAXTSIZ/lim_cur(RLIMIT_DATA) checks, bad1/bad2), sys_execve (the pathname and realpath namei buffers, single_thread_set, the NCARGS argument buffer from exec_map through kv_exec, the EXEC_HASARGL fake args, argv/envp copied with copyinstr (E2BIG), stackgap_random's sgap, the stack size check with ELF_AUX_WORDS, uvmspace_exec, ps_strings and ep_execpath below vm_minsaddr, copyargs, ps_auxinfo, the execpath copyoutstr, the pin tables into ps_pin and ps_libcpin freed, ps_comm from cn_nameptr, ps_textvp, PSI_* from EXEC_*, PS_PPWAIT, PS_SUGIDEXEC, the pledge hand-over, set[ug]id executables, the saved ids, exec_timekeep_map, exec_elf_fixup, setregs, exec_sigcode_map, p_descfd, exec_abort and free_pack_abort), copyargs, exec_sigcode_map, exec_timekeep_map (timekeep_object, the wired timekeep page kern_tc.c writes), stackgap_random, kv_exec; exec_conf.c's execsw[] (scripts, then ELF; M14) is here. exec_image(p, path, argp, envp, image) is the same body for the init boot module while there is no root file system (no vnode checks). Reported: prof_exec and stopprofclock (subr_prof.c), cancel_all_itimers (kern_time.c), cdevvp(getnulldev()) for a set[ug]id exec with stdin/stdout/stderr closed (<sys/conf.h>); KTRACE not configured; TooLs GmbH 4-clause licence accepted at M2; kern_time.c: cancel_all_itimers is real for a PS_SUGIDEXEC exec; kern_unveil.c: without execpromises sys_execve calls unveil_destroy and clears ps_uvdone; kern_event.c: knote(&ps_klist, NOTE_EXEC) is real; ; M11e: check_exec's KERNEL_LOCK/KERNEL_UNLOCK around vfs_getcwd_common are real calls; N4.8a: the timekeep object is kernel::tc::timekeep_object's (made, wired and published by the kernel)"
 
 [[module]]
 rust = "sys/kern/kern_intrmap.rs"
@@ -5599,20 +5603,22 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs"]
-notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5)"
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs"]
+notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
 [[module]]
 rust = "sys/kern/kern_tc.rs"
 lz = ["sys/kern/kern_tc.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.8a: the timecounters are kernel::tc's; this path re-exports the readers and setters, keeps tc_init/tc_reset_quality/tc_set_frequency for the drivers' struct timecounter (a fixed table of TcEntry records) and sysctl_tc with kern_sysctl.c's arguments, 0 unsafe (LZ 7), forbid on its mod line"
 
 [[module]]
 rust = "sys/kern/kern_time.rs"
 lz = ["sys/kern/kern_time.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/time.rs", "sys/kernel/tc.rs", "sys/kernel/clockintr.rs"]
+notes = "N4.8a: settime, ratecheck, ppsratecheck (ppsratecheck_shared under kernel::time::ppsratecheck_locked), itimerfix, itimerdecr, the time-of-day chip and the periodic resettodr are kernel::time's, wrapped; clock_getres's timecounter resolution kernel::time::tc_resolution; adjfreq/adjtime over tc_lock's witnesses; itimer_update a kernel::clockintr callback; N4.8 a6: the ten sys_* are sysent[] rows over kernel::time's, settime/clock_gettime/itimerfix gone into kernel::time"
 
 [[module]]
 rust = "sys/kern/kern_unveil.rs"
@@ -5629,8 +5635,8 @@ status = "inherited"
 rust = "sys/kern/kern_xxx.rs"
 lz = ["sys/kern/kern_xxx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-notes = "M2: reboot() and rebooting; the curproc KASSERT returns with M5, stop_periodic_resettodr reported unported; sys_reboot, __stack_smash_handler, scdebug_*, sys_sysctl come with their subsystems; M8: sys_reboot (suser, then reboot); M8: reboot calls stop_periodic_resettodr; M8: scdebug_call/scdebug_ret and scdebug (option SYSCALL_DEBUG, feature syscall_debug), called from mi_syscall/mi_syscall_return; M11a: sys_reboot calls sched_stop_secondary_cpus with MULTIPROCESSOR; M13: do_powerdown, powerdown_task and powerbutton_event (acpi(4)'s power button; SUSPEND's resuming() is false while subr_suspend.c is not ported)"
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/reboot.rs"]
+notes = "M2: reboot() and rebooting; the curproc KASSERT returns with M5, stop_periodic_resettodr reported unported; sys_reboot, __stack_smash_handler, scdebug_*, sys_sysctl come with their subsystems; M8: sys_reboot (suser, then reboot); M8: reboot calls stop_periodic_resettodr; M8: scdebug_call/scdebug_ret and scdebug (option SYSCALL_DEBUG, feature syscall_debug), called from mi_syscall/mi_syscall_return; M11a: sys_reboot calls sched_stop_secondary_cpus with MULTIPROCESSOR; M13: do_powerdown, powerdown_task and powerbutton_event (acpi(4)'s power button; SUSPEND's resuming() is false while subr_suspend.c is not ported); N4.8a: rebooting and reboot() are kernel::reboot's"
 
 [[module]]
 rust = "sys/kern/sched_bsd.rs"
@@ -5708,8 +5714,9 @@ notes = "format engine is core::fmt (fmt::Arguments replaces fmt+va_list, so pri
 [[module]]
 rust = "sys/kern/subr_prof.rs"
 lz = ["sys/kern/subr_prof.rs"]
-status = "inherited"
-notes = "M5-a: profclock_period and profclock (addupc_intr reported, struct process M5-b); GPROF/DDBPROF not configured; sys_profil and addupc_* are M6; M8: sys_profil's checks (EPERM without PSI_PROFILE, EINVAL above 1.0, scale 0 stops); struct uprof, prof_fork/exec/write, addupc_intr/task and start/stopprofclock are not ported, so the rest is reported"
+status = "adapted"
+adapted_by = ["sys/kernel/clockintr.rs", "sys/kernel/clock.rs"]
+notes = "M5-a: profclock_period and profclock (addupc_intr reported, struct process M5-b); GPROF/DDBPROF not configured; sys_profil and addupc_* are M6; M8: sys_profil's checks (EPERM without PSI_PROFILE, EINVAL above 1.0, scale 0 stops); struct uprof, prof_fork/exec/write, addupc_intr/task and start/stopprofclock are not ported, so the rest is reported; N4.8a: profclock is a kernel::clockintr callback (the typed clock frame), profclock_period kernel::clock's"
 
 [[module]]
 rust = "sys/kern/subr_tree.rs"
@@ -6005,7 +6012,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_vnops.rs"
@@ -7470,8 +7477,18 @@ license = "Intel's EFI notice"
 [[module]]
 rust = "sys/sys/_time.rs"
 lz = ["sys/sys/_time.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.8a: struct itimerspec is kernel::time's (re-exported); the clock ids and __CLOCK_* helpers stay, 0 unsafe, forbid"
 
+[[module.fn]]
+lz = "sys/sys/_time.rs::Itimerspec"
+native = ["sys/kernel/time.rs::Itimerspec"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/_time.rs::Itimerspec::new"
+native = ["sys/kernel/time.rs::Itimerspec::new"]
+kind = "moved"
 [[module]]
 rust = "sys/sys/ataio.rs"
 lz = ["sys/sys/ataio.rs"]
@@ -7498,7 +7515,8 @@ license = "none"
 [[module]]
 rust = "sys/sys/clockintr.rs"
 lz = ["sys/sys/clockintr.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N4.8a: the structures and constants are kernel::clockintr's (re-exported), 0 unsafe (LZ 2), forbid"
 
 [[module]]
 rust = "sys/sys/conf.rs"
@@ -7803,7 +7821,8 @@ status = "inherited"
 rust = "sys/sys/sched.rs"
 lz = ["sys/sys/sched.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/list.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/hal/list.rs", "sys/kernel/sched.rs", "sys/kernel/clockintr.rs"]
+notes = "N4.8a: spc_itimer/profclock/roundrobin/statclock are the CPU's slots of kernel::clockintr"
 
 [[module]]
 rust = "sys/sys/scsiio.rs"
@@ -7828,6 +7847,13 @@ rust = "sys/sys/sensors.rs"
 lz = ["sys/sys/sensors.rs"]
 status = "adapted"
 adapted_by = ["sys/sys/sysctl.rs"]
+
+[[module]]
+rust = "sys/hal/sys/timetc.rs"
+crate = "hal"
+lz = ["sys/sys/timetc.rs"]
+status = "redesigned"
+notes = "N4.8a: struct timekeep (the ABI's record, Timekeep with TkBintime) and TimekeepAtomic, the same 88 bytes as atomics (offsets asserted), the view kernel::tc writes the page shared with userland through, with the C's generation protocol; TK_VERSION. struct timecounter is kernel::tc's (the Timecounter trait and TcEntry)"
 
 [[module]]
 rust = "sys/hal/sys/siginfo.rs"
@@ -7970,9 +7996,8 @@ notes = "N4.7b: an adapter of kernel::termios (0 unsafe, forbid): every item re-
 [[module]]
 rust = "sys/sys/time.rs"
 lz = ["sys/sys/time.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/resource.rs"]
-notes = "M5: timeval/timespec/bintime/timezone/itimerval/clockinfo, the timer*/timespec*/bintime* operations (cmp is the derived Ord), every conversion and *_TO_NSEC helper, FROMBCD/TOBCD, SECDAY/SECYR; M8: struct clock_ymdhms (ClockYmdhms); its conversions are kern/clock_subr.c; the function prototypes live with kern_tc.c/kern_time.c; kern_sig.c: struct timespec is AbiPod (copyin_obj); M8: struct timeval (TIOCGTSTAMP), struct timezone and struct itimerval are #[repr(C)] AbiPod (copied in and out by tty.c and kern_time.c)"
+status = "redesigned"
+notes = "M5: timeval/timespec/bintime/timezone/itimerval/clockinfo, the timer*/timespec*/bintime* operations (cmp is the derived Ord), every conversion and *_TO_NSEC helper, FROMBCD/TOBCD, SECDAY/SECYR; M8: struct clock_ymdhms (ClockYmdhms); its conversions are kern/clock_subr.c; the function prototypes live with kern_tc.c/kern_time.c; kern_sig.c: struct timespec is AbiPod (copyin_obj); M8: struct timeval (TIOCGTSTAMP), struct timezone and struct itimerval are #[repr(C)] AbiPod (copied in and out by tty.c and kern_time.c); N4.8a (decision 8): struct timeval, timespec, bintime are kernel::clock's and timezone, itimerval, clockinfo kernel::time's, re-exported; the free functions of the macros stay over them; the four unsafe impl AbiPod go (hal::abi_pod! beside the kernel's types, machine::copy's AbiPod covers every hal AbiPod type), 0 unsafe, forbid"
 
 [[module]]
 rust = "sys/sys/timeout.rs"
@@ -7983,8 +8008,9 @@ notes = "N4.1: the legacy timeout(9) API over kernel::timeout (sys/kernel/timeou
 [[module]]
 rust = "sys/sys/timetc.rs"
 lz = ["sys/sys/timetc.rs"]
-status = "inherited"
-notes = "M5: struct timecounter (driver-written fields are Cells; M13: tc_name too, set to dv_xname by acpitimer/acpihpet), struct timekeep, TK_VERSION; tc_lock (rwlock) and timekeep_object (M6) are not here"
+status = "adapted"
+adapted_by = ["sys/kernel/tc.rs"]
+notes = "M5: struct timecounter (driver-written fields are Cells; M13: tc_name too, set to dv_xname by acpitimer/acpihpet), struct timekeep, TK_VERSION; tc_lock (rwlock) and timekeep_object (M6) are not here; N4.8a: the drivers' struct timecounter implements kernel::tc::Timecounter and links its TcEntry (tc_entry), made by kern_tc's tc_init"
 
 [[module]]
 rust = "sys/sys/tprintf.rs"
@@ -8019,7 +8045,9 @@ notes = "N4.7b: an adapter of kernel::termios (0 unsafe, forbid): every item re-
 rust = "sys/hal/sys/types.rs"
 crate = "hal"
 lz = ["sys/sys/types.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/clock.rs"]
+notes = "N4.8a: suseconds_t is i64 (a long), the type of kernel::clock::Timeval's tv_usec"
 
 [[module]]
 rust = "sys/sys/ucred.rs"
@@ -8643,6 +8671,11 @@ native = ["PinRing::is_empty"]
 kind = "renamed"
 
 [[extra]]
+rust = "sys/hal/clock.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's clock callbacks read it (struct clockframe, CLKF_USERMODE, CLKF_PC, CLKF_INTR over the core's interrupt depth); the machine's frame type comes from arch/<machine>/timer.rs; bsd's include/cpu.rs keeps its CLKF_* for its own callers"
+
+[[extra]]
 rust = "sys/hal/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
@@ -8699,6 +8732,18 @@ lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
 status = "redesigned"
 license = "none"
 notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S); N4.8b: MachineSlot::aston (md_astpending for the kernel's signotify); N4.8b b3c: tcb_get, tcb_set and tcb_invalid (TCB_GET, TCB_SET, TCB_INVALID: another thread's TCB read under the scheduler's lock, which the running thread's set takes too; the machine's half in arch/*/switch.rs, the host's a side table by slot that cpu_fork copies)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/timer.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/dev/agtimer.rs"]
+status = "redesigned"
+notes = "N4.8a: agtimer.c's register half: CNTVCT_EL0 read around the Cortex-A73 858921 and Allwinner A64 errata (readcnt64_default, readcnt64_sun50i, readcnt64, timecount), CNTFRQ_EL0, CNTV_CTL_EL0/CNTV_TVAL_EL0 with their isb, CNTKCTL_EL1, CurrentEL, each one asm site; the clock frame (the trap frame, CLKF_USERMODE, CLKF_PC) hal::clock reads. The driver half (attach, timecounter, intrclock, clock registration) stays bsd's agtimer.rs (adapted) over these until N7"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_READCNT64"
+native = ["SUN50I"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/hal/arch/arm64/switch.rs"
@@ -9020,9 +9065,24 @@ reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of v
 [[module]]
 rust = "sys/kernel/clock.rs"
 crate = "kernel"
-lz = ["sys/kern/kern_clock.rs"]
+lz = ["sys/kern/kern_clock.rs", "sys/sys/time.rs"]
 status = "redesigned"
-notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8)"
+notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8). N4.8a (decision 8): the kernel's one struct timespec, timeval and bintime, repr(C) and AbiPod (hal::abi_pod!), the time.h macros as methods (bintimeadd/sub/addfrac, TIMECOUNT_TO_BINTIME, BINTIME_TO_*, TIMESPEC_TO_*, *_TO_NSEC, timerisset/isvalid, ...); kernel::resource::Timeval and kernel::pipe::Timespec re-export them"
+
+[[module.fn]]
+lz = "sys/sys/time.rs::Timezone"
+native = ["sys/kernel/time.rs::Timezone"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/time.rs::Itimerval"
+native = ["sys/kernel/time.rs::Itimerval"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/time.rs::Clockinfo"
+native = ["sys/kernel/time.rs::Clockinfo"]
+kind = "moved"
 
 [[module]]
 rust = "sys/kernel/cred.rs"
@@ -9483,6 +9543,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's delivery on a kernel-lock klist, kqueue_scan, kqueue_register, poll and select over the poll kqueue, an own-mutex klist) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/clock.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timecounter readers binuptime, getnanotime, nanouptime and tc_windup; the clock interrupt's dispatch and hardclock as they land) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/futex.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -9506,6 +9571,183 @@ reason = "decision 43: host microbenchmarks of N4.1's hot paths (timeout_add/del
 rust = "sys/kernel/benches/tty.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.7b's hot paths (the clists' putc/getc and b_to_q/q_to_b; the tty's per-character input raw and canonical with echo, a 512-byte write with ONLCR, the tty's lock) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[module]]
+rust = "sys/kernel/tc.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_tc.rs", "sys/sys/timetc.rs", "sys/kern/kern_exec.rs"]
+status = "redesigned"
+notes = "N4.8a: timecounters into the kernel crate (and exec_timekeep_map's first call, timekeep_object, with kern_exec.c's timekeep pointer), 0 unsafe (LZ kern_tc 7 + timetc 1): struct timecounter split into the Timecounter trait (the hardware's half, tc_priv is self) and TcEntry (the kernel's: [I] values copied at tc_init, quality/precision/freq_adj atomics, the tc_list link); the timehands ring all atomics behind the C's generation protocol (TH, ACTIVE), th_counter and timecounter hal::link::Links; windup_mtx a Mutexed<Windup> whose guard tc_windup takes (last_tc inside), tc_lock a RawRwlock whose witness the [T,W] setters take; the timekeep page written through hal::sys::timetc::TimekeepAtomic (timekeep_attach); log(9) and enqueue_randomness over the Printf and Random bridges. bsd's kern_tc.rs runs LZ's until the switch-over commit"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::dummy_get_timecount"
+native = ["Dummy::get_timecount"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::DUMMY_TIMECOUNTER"
+native = ["DUMMY"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::TH0"
+native = ["TH"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::TH1"
+native = ["TH"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::TIMEHANDS"
+native = ["ACTIVE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::WINDUP_MTX"
+native = ["WINDUP"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::TcListHead"
+native = []
+kind = "dropped"
+reason = "the Sync wrapper of tc_list's SlistHead: TC_LIST is a hal::list::List of &'static TcEntry, Sync as it is"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::tc_delta"
+native = ["Timehands::delta"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_tc.rs::TC_VARS"
+native = ["sysctl_tc"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/clockintr.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_clockintr.rs", "sys/sys/clockintr.rs"]
+status = "redesigned"
+notes = "N4.8a: clockintr(9) into the kernel crate, 0 unsafe (LZ kern_clockintr 7 + clockintr.h 2): the queue of each CPU a ClockCpu in a hal::percpu::PerCpu (struct clockqueue out of cpu_info), its [m] state one Queue inside the Mutexed (the five binders' slots: expiration, callback, pending; the pending order as an array of slots, equal expirations in insertion order; the running slot; cq_flags), a struct clockintr a Copy handle (CPU, Slot) instead of TAILQ-linked structures with Cell<*const> back pointers; cl_arg dropped (every binder passes NULL); the callback fn(&Clockrequest, &hal::clock::ClockFrame); struct intrclock the Intrclock trait (OnceStatic per CPU); cq_stat seven atomics behind cq_gen; clockintr_unbind(CL_BARRIER) sleeps on the queue's channel (clkbar), LZ's unported closed; ci_randseed the queue's own seed (set_randseed)"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::cl_queue"
+native = ["Clockintr::queue"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::clockintr_cancel_locked"
+native = ["ClockCpu::cancel_locked"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::clockintr_schedule_locked"
+native = ["ClockCpu::schedule_locked"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::clockqueue_next"
+native = ["Queue::next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::clockqueue_pend_delete"
+native = ["Queue::pend_delete"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::clockqueue_pend_insert"
+native = ["Queue::pend_insert"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::clockqueue_intrclock_reprogram"
+native = ["ClockCpu::reprogram"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::intrclock_rearm"
+native = ["ClockCpu::reprogram", "clockintr_dispatch"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::intrclock_trigger"
+native = ["ClockCpu::reprogram", "clockintr_trigger"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::uptime_check"
+native = ["ClockCpu::uptime_check"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::LAST_UPTIME"
+native = ["ClockCpu"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::UPTIME_CHECKS"
+native = ["ClockCpu"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_clockintr.rs::UPTIME_BEHIND"
+native = ["ClockCpu"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::Clockintr::new"
+native = ["Clockintr::of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::Clockintr::default"
+native = []
+kind = "dropped"
+reason = "a clock interrupt is a handle of a CPU's slot (Clockintr::of); there is no unbound value to default to"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::Clockrequest::default"
+native = []
+kind = "dropped"
+reason = "the request is each queue's own, made by ClockCpu::INIT; no other request exists"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::CLST_PENDING"
+native = ["Queue"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::Clockqueue"
+native = ["ClockCpu"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::Clockqueue::new"
+native = ["ClockCpu"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/clockintr.rs::Clockqueue::default"
+native = []
+kind = "dropped"
+reason = "the queues are CPUS, a PerCpu<ClockCpu> built from ClockCpu::INIT (PerCpuInit); no queue is made by Default"
+
+[[module]]
+rust = "sys/kernel/time.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_time.rs", "sys/dev/clock_subr.rs"]
+status = "redesigned"
+notes = "N4.8a: kern_time.c's parts no process owns, 0 unsafe: settime (securelevel from the caller), clock_getres's timecounter resolution (tc_resolution, under tc_lock read), itimerfix, itimerdecr, ratecheck(9), ppsratecheck(9) with ppsratecheck_locked/ppsratecheck_held (a counter shared between CPUs reached only with ppsratecheck_mtx held, the guard the proof, instead of LZ's ppsratecheck_shared raw pointers), the time-of-day chip: struct todr_chip_handle as the Todr trait (quality, gettime, settime; todr_setwen omitted: no implementer sets it and todr_wenable has no caller), todr_attach keeping the better quality in a Mutexed (LZ: an AtomicPtr deref), inittodr, resettodr and the periodic resettodr (a kernel Timeout and Task on systq); struct itimerspec, itimerval, timezone and clockinfo with abi_pod!.; N4.8 a6: the ten system calls (clock_gettime, clock_settime, clock_getres, nanosleep, gettimeofday, settimeofday, adjfreq, adjtime, getitimer, setitimer) with clock_gettime, generic over ProcGlue (setitimer, spc_runtime and pledge_adjtime are glue members: the interval timers are still bsd's BsdProcessG members), securelevel read from kernel::sysctl::SECURELEVEL right before settime. setitimer, realitexpire and itimer_update stay bsd's kern_time.rs until the timers move into kernel::proc::Process"
+
+[[module]]
+rust = "sys/kernel/reboot.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_xxx.rs"]
+status = "redesigned"
+notes = "N4.8a: rebooting and reboot(): stop_periodic_resettodr, rebooting set, the machine's boot(9) through the MachineBoot bridge (bsd's machdep until N7); the power button's path and the SYSCALL_DEBUG printers stay bsd's kern_xxx.rs; N4.8 a6: sys_reboot (suser, sched_stop_secondary_cpus, the primary-CPU KASSERT, reboot) generic over ProcGlue"
 
 [[module]]
 rust = "sys/kernel/task.rs"
@@ -10550,7 +10792,7 @@ rust = "sys/kernel/sysctl.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "redesigned"
-notes = "N4.6b: sysctl's core (N4.7b's SysctlNode/SysctlReq/rdquad/rdstruct kept): the helpers over hal::user::UserPtr, sys_sysctl and its dispatch over a registry of SysctlNodes (the lock sets and the error order the dispatcher's data), sysctl_vslock as the VsLock guard, kern and hw trees, sysctl_doproc and fill_kproc over kernel::proc (p_tsess for root only, N4.7 decision 8), proc_args over uvm_io into an MArray, proc_cwd over FileGlue::getcwd, disknames/diskstats owned by sysctl_disklock's Rwlocked through the DiskExport bridge, hostname/domainname Rwlocked, hw_vendor.. OnceStatics, cpu_cpuspeed and the BatteryCharge setters registered"
+notes = "N4.6b: sysctl's core (N4.7b's SysctlNode/SysctlReq/rdquad/rdstruct kept): the helpers over hal::user::UserPtr, sys_sysctl and its dispatch over a registry of SysctlNodes (the lock sets and the error order the dispatcher's data), sysctl_vslock as the VsLock guard, kern and hw trees, sysctl_doproc and fill_kproc over kernel::proc (p_tsess for root only, N4.7 decision 8), proc_args over uvm_io into an MArray, proc_cwd over FileGlue::getcwd, disknames/diskstats owned by sysctl_disklock's Rwlocked through the DiskExport bridge, hostname/domainname Rwlocked, hw_vendor.. OnceStatics, cpu_cpuspeed and the BatteryCharge setters registered; N4.8a (merged on n4/clock): rdint, int_bounded, string, rdstring were N4.8a's too, kept as main's, N4.8a's four tests added; kern.timecounter and kern.clockintr are kernel::tc::TcNode and kernel::clockintr::ClockintrNode"
 
 [[module.fn]]
 lz = "sys/kern/kern_sysctl.rs::PLEDGE_UNVEIL"

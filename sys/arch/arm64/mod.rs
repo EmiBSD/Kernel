@@ -52,7 +52,7 @@ use crate::machine::proc::MachineProc;
 use crate::machine::signal::MachineSignal;
 use crate::machine::tcb::Tcb;
 use crate::machine::{BootInfo, Console, Cpu, Exit, ExitStatus, Intr, MachineInfo, Pmap, VmParam};
-use crate::sys::clockintr::Clockqueue;
+
 use crate::sys::errno::Errno;
 use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::mbuf::Mbuf;
@@ -143,10 +143,6 @@ impl Cpu for Machine {
 
     fn cpu_info_unit(ci: &include::cpu::CpuInfo) -> u32 {
         include::cpu::cpu_info_unit(ci)
-    }
-
-    fn ci_queue(ci: &include::cpu::CpuInfo) -> &Clockqueue {
-        &ci.ci_queue
     }
 
     fn ci_schedstate(ci: &include::cpu::CpuInfo) -> &SchedstatePercpu {

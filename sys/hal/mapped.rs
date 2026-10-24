@@ -159,9 +159,16 @@
 //!   [`KernelMapper::map_direct`], the removal the drop. The segment handling, `UVMPAGER_*`
 //!   and the retry stay with `uvm_pagermapin` in the pager (`bsd`'s `uvm_pager.rs` now, the
 //!   kernel's `vm::pager` at N3.4c).
+//! - N4.8a: the timekeep page (`kern_exec.c`'s `timekeep`, written by `kern_tc.c`) is a third
+//!   view, [`KernelMapper::timekeep_view`]: one per boot, over a wired managed page whose
+//!   frame it claims for good in its `PageMd` with a claim of its own (`PG_HAL_KEEP`: held
+//!   like a window's, but not resting on `PG_BUSY`), so the rules above keep every other
+//!   kernel way to its bytes away (the N4.8a review: the token's word alone was the proof
+//!   before).
 
 use core::ptr;
 use core::slice;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::current::param::PAGE_SIZE;
 use crate::assert::hal_panic;
@@ -170,6 +177,7 @@ use crate::pmap::{
 };
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
+use crate::sys::timetc::TimekeepAtomic;
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 
 /// The bytes of frames mapped into kernel virtual space, `len` of them from [`MappedBytes::va`]
@@ -467,6 +475,96 @@ fn release(frames: &[Paddr]) {
         md("map_frames", pa).release_view();
     }
 }
+
+/// Whether [`KernelMapper::timekeep_view`] has handed its one view out.
+static TIMEKEEP_VIEWED: AtomicBool = AtomicBool::new(false);
+
+impl KernelMapper {
+    /// The page shared with userland for the timehands (`struct timekeep`), viewed at `va` as
+    /// the kernel writes it (`hal::sys::timetc::TimekeepAtomic`): `exec_timekeep_map`'s
+    /// first call maps the timekeep object into the kernel map, wires it, and hands the
+    /// address over (N4.8a; LZ wrote it through a raw `&mut` of the address).
+    ///
+    /// What makes the view the only kernel reference to the page's bytes, for ever:
+    /// - `None` for an address that is not page-aligned, not mapped in the kernel pmap, whose
+    ///   frame is not a managed page (device or boot-stolen memory) or not wired
+    ///   (`wire_count` 0: the page daemon could take it), and for every call after the first
+    ///   that succeeded: the view is made once per boot.
+    /// - The frame is claimed for good (`PageMd::claim_for_good`, writable) and never given
+    ///   back: a frame some byte view, copy or zeroing holds already is `panic(9)` (so is a
+    ///   second call racing the first on the same frame: it finds the frame claimed), and
+    ///   from now on the other ways to its bytes refuse it (`map_direct` and `map_frames`
+    ///   panic, `pmap_zero_page` and `pmap_copy_page` refuse it, the page system will not
+    ///   free it nor hand it out again), while `pmap_page_protect` spares the view's own
+    ///   mapping at `va` (recorded as the claim's address) and removes only the others
+    ///   (userland's read-only ones) or panics before write-protecting it. Unlike a pager
+    ///   window's, this claim does not rest on `PG_BUSY`: the fault path that maps the page
+    ///   into a process ends by clearing a `PG_BUSY` it never set (`uvm_fault_lower`, the
+    ///   page from the locked `uao_get`), and only the unlocked `uao_get` would busy it;
+    ///   neither changes its bytes nor its owner, so the page system lets both
+    ///   (`PageMd::in_busy_view` is false for this claim).
+    ///
+    /// The token holder's contract that stays (the module's docs): `va` is the kernel map's
+    /// mapping of the timekeep object, never removed through the token (its entry is the
+    /// kernel map's, which never unmaps it).
+    pub fn timekeep_view(&self, va: Vaddr) -> Option<&'static TimekeepAtomic> {
+        let addr = va.as_usize();
+        if addr == 0 || !addr.is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+        let pa = pmap::kernel().extract(va)?;
+        let pages = pmap::kernel().pages();
+        let md = pages.md_of(pa)?;
+        if !pages.is_wired(pa) {
+            return None;
+        }
+        if TIMEKEEP_VIEWED.load(Ordering::Acquire) {
+            return None;
+        }
+        if !md.claim_for_good() {
+            hal_panic(format_args!(
+                "timekeep_view: the frame {:#x} is in another view",
+                pa.as_usize()
+            ));
+        }
+        if TIMEKEEP_VIEWED.swap(true, Ordering::AcqRel) {
+            // Another call, over another frame, made the view in the meantime (one over this
+            // frame would have found it claimed above): the claim just taken goes back, and
+            // the frame is as it was.
+            md.release_view();
+            return None;
+        }
+        // The view's own entry, which `page_protect` spares.
+        md.set_view_va(addr);
+        let view = if PMAP_NOMMU {
+            pmap::direct_map(pa).as_usize()
+        } else {
+            addr
+        };
+        let p = ptr::with_exposed_provenance::<TimekeepAtomic>(view);
+        // SAFETY: the invariant: `view` addresses `size_of::<TimekeepAtomic>()` (88) bytes of
+        // one managed, wired page that no other kernel reference reaches, for `'static`.
+        // Established here: `addr` is page-aligned (checked) and the kernel pmap maps it to
+        // `pa` (checked: `extract`), so `view` (that address, or `pa`'s direct-map address on a
+        // machine without an MMU, the same frame) is page-aligned, hence aligned for
+        // `TimekeepAtomic` (8), and its 88 bytes lie in the one page (`size_of` <= `PAGE_SIZE`,
+        // asserted in `sys/timetc.rs`); the frame is a managed page (checked: `md_of`, so RAM,
+        // never device memory) and wired (checked: `is_wired`); this is the one view
+        // (`TIMEKEEP_VIEWED`, swapped once), and the frame is claimed for it and never
+        // released. Upheld: the claim makes the page system refuse to free or hand out the
+        // frame (`uvm_pageclean`, `PageMd::clear_attrs` panic on a claimed page), so the
+        // bytes stay this page's for `'static` (busying and unbusying it, which the claim
+        // allows: the fault's clear of a `PG_BUSY` it never set, an unlocked `uao_get`'s busy,
+        // move neither the bytes nor the page); `map_direct`, `map_frames`, `zero_page` and
+        // `copy_page` refuse a claimed frame, so no other kernel view or copy reaches them;
+        // `page_protect` spares the mapping at `addr`, and the token holder never removes the
+        // kernel map's entry (the contract above). Why the shared reference cannot race:
+        // every field is an atomic integer, so any bit pattern (a fresh object's zeroes) is a
+        // valid value and every access goes through the atomics' interior mutability;
+        // userland reads the page through read-only mappings, outside Rust's model.
+        Some(unsafe { &*p })
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -696,6 +794,78 @@ mod tests {
         let a = testutil::memory_frames(1);
         let b = testutil::memory_frames(1);
         let _ = mapper.map_frames(va, &[a[0], b[0]], PROT_READ);
+    }
+
+    /// The timekeep view's refusals and its one success share this test: the view is made
+    /// once per process (`TIMEKEEP_VIEWED`), so no other test may make it.
+    #[test]
+    fn the_timekeep_view_is_made_once_over_a_wired_managed_page() {
+        let (mapper, va) = window(20);
+        let rw = PROT_READ | PROT_WRITE;
+        assert!(
+            mapper.timekeep_view(va + Vsize::new(8)).is_none(),
+            "not page-aligned"
+        );
+        assert!(mapper.timekeep_view(va).is_none(), "nothing mapped");
+        // A frame that is not a managed page (device memory, say).
+        mapper.kenter(va, Paddr::new(0x30_0000), rw);
+        assert!(mapper.timekeep_view(va).is_none(), "not a managed page");
+        mapper.kremove(va, Vsize::new(PAGE_SIZE));
+        // A managed page that is not wired.
+        let unwired = testutil::memory_frames(1);
+        mapper.enter(va, unwired[0], rw, PMAP_WIRED | rw).unwrap();
+        assert!(mapper.timekeep_view(va).is_none(), "not wired");
+        mapper.remove(va, va + Vsize::new(PAGE_SIZE));
+        // A wired page another view holds: `panic(9)`, and the one view is still to be made.
+        let (_, held_va) = window(22);
+        let held = testutil::memory_frames(1);
+        testutil::set_wired(held[0]);
+        mapper.enter(held_va, held[0], rw, PMAP_WIRED | rw).unwrap();
+        let direct = mapper.map_direct(held[0]);
+        let held_md = pmap::kernel().pages().md_of(held[0]).unwrap();
+        assert!(held_md.in_busy_view(), "a direct view rests on PG_BUSY");
+        let refused = catch_unwind(AssertUnwindSafe(|| mapper.timekeep_view(held_va)));
+        assert!(refused.is_err(), "a frame in another view");
+        drop(direct);
+
+        // The timekeep page: managed, wired, mapped in the kernel pmap.
+        let frames = testutil::memory_frames(1);
+        testutil::set_wired(frames[0]);
+        mapper.enter(va, frames[0], rw, PMAP_WIRED | rw).unwrap();
+        let tk = mapper.timekeep_view(va).unwrap();
+        tk.tk_version.store(7, Ordering::Relaxed);
+        // The view is the frame's own bytes (the host double has no MMU: its direct map).
+        assert_eq!(
+            core::ptr::from_ref(tk).addr(),
+            pmap::direct_map(frames[0]).as_usize()
+        );
+
+        // Once: a second call, even over another wired page, has no view.
+        assert!(mapper.timekeep_view(va).is_none(), "the same page again");
+        let (_, other_va) = window(21);
+        let other = testutil::memory_frames(1);
+        testutil::set_wired(other[0]);
+        mapper
+            .enter(other_va, other[0], rw, PMAP_WIRED | rw)
+            .unwrap();
+        assert!(mapper.timekeep_view(other_va).is_none(), "another page");
+        let other_md = pmap::kernel().pages().md_of(other[0]).unwrap();
+        assert!(!other_md.in_view(), "a refused call claims nothing");
+
+        // The frame is held for good: no direct view, no zeroing, never handed out again,
+        // and removing its mappings spares the view's own.
+        let md = pmap::kernel().pages().md_of(frames[0]).unwrap();
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(mapper.map_direct(frames[0])))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| pmap::zero_page(frames[0]))).is_err());
+        let dst = testutil::memory_frames(1);
+        assert!(catch_unwind(AssertUnwindSafe(|| pmap::copy_page(frames[0], dst[0]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| md.clear_attrs())).is_err());
+        assert!(md.in_view() && md.spares(true, va.as_usize()));
+        // The claim is for good but not on PG_BUSY: the page system may busy and unbusy it.
+        assert!(!md.in_busy_view());
+        pmap::page_protect(md, PROT_NONE);
+        assert_eq!(pmap::kernel().extract(va), Some(frames[0]));
+        assert_eq!(tk.tk_version.load(Ordering::Relaxed), 7);
     }
 }
 /* </TESTS> */

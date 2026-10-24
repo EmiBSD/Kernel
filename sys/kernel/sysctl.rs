@@ -108,6 +108,9 @@
 //!   process's main-thread slot.
 //! - `kern.ttycount` is the kernel's (`kernel::tty::tty_count`, N4.7b) and `kern.tty` is
 //!   `kernel::tty::TtyNode`, which `bsd` registers over its glue.
+//! - `kern.timecounter` is `kernel::tc::TcNode` and `kern.clockintr`
+//!   `kernel::clockintr::ClockintrNode` (N4.8a), which `bsd` registers; N4.8a's helpers
+//!   (`rdint`, `int_bounded`, `string`, `rdstring`) are this module's.
 //! - `fill_kproc` runs under the caller's `ps_mtx` (a `MutexedGuard` it borrows), so the
 //!   vmspace reference it takes comes back as a [`KprocVm`] the caller drops after the
 //!   guard: the `uvmspace_free` that may tear the space down runs with no mutex held.
@@ -3741,6 +3744,126 @@ mod tests {
             proc_args_copy(&mut victim, 0x10, KERN_PROC_ARGV, &mut req, &mut buf),
             Err(Errno::EFAULT)
         );
+    }
+
+    /// N4.8a's range of the user-copy double: 0xC800..0xC900.
+    const U8A: usize = testutil::USER_BASE + 0xC800;
+
+    fn req8a(oldp: usize, oldlen: &mut usize, newp: usize, newlen: usize) -> SysctlReq<'_> {
+        SysctlReq {
+            oldp,
+            oldlenp: oldlen,
+            newp,
+            newlen,
+        }
+    }
+
+    #[test]
+    fn rdint_checks_the_room_and_refuses_a_write() {
+        testutil::install();
+        let mut len = 2;
+        assert_eq!(
+            rdint(&mut req8a(U8A, &mut len, 0, 0), 7),
+            Err(Errno::ENOMEM)
+        );
+        let mut len = 4;
+        assert_eq!(
+            rdint(&mut req8a(U8A, &mut len, U8A + 8, 4), 7),
+            Err(Errno::EPERM)
+        );
+        let mut len = 0;
+        assert_eq!(rdint(&mut req8a(0, &mut len, 0, 0), 7), Ok(()));
+        assert_eq!(len, 4, "a size query writes *oldlenp");
+        let mut len = 4;
+        assert_eq!(rdint(&mut req8a(U8A, &mut len, 0, 0), 7), Ok(()));
+        assert_eq!(UserPtr::<i32>::new(U8A).copyin(), Ok(7));
+    }
+
+    #[test]
+    fn int_bounded_refuses_out_of_range_and_returns_the_old_value() {
+        testutil::install();
+        static V: AtomicI32 = AtomicI32::new(0);
+        assert_eq!(UserPtr::<i32>::new(U8A + 16).copyout(&2), Ok(()));
+        let mut len = 4;
+        assert_eq!(
+            int_bounded(&mut req8a(U8A + 32, &mut len, U8A + 16, 4), &V, 0, 1),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(UserPtr::<i32>::new(U8A + 16).copyout(&1), Ok(()));
+        assert_eq!(
+            int_bounded(&mut req8a(U8A + 32, &mut len, U8A + 16, 4), &V, 0, 1),
+            Ok(())
+        );
+        assert_eq!(V.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            UserPtr::<i32>::new(U8A + 32).copyin(),
+            Ok(0),
+            "the old value"
+        );
+        assert_eq!(
+            int_bounded(&mut req8a(0, &mut len, U8A + 16, 4), &V, 1, 0),
+            Err(Errno::EPERM),
+            "read-only"
+        );
+        assert_eq!(
+            int_bounded(&mut req8a(0, &mut len, U8A + 16, 3), &V, 0, 1),
+            Err(Errno::EINVAL),
+            "newlen"
+        );
+    }
+
+    #[test]
+    fn strings_are_copied_with_their_nul() {
+        testutil::install();
+        let mut len = 16;
+        assert_eq!(
+            rdstring(&mut req8a(U8A + 64, &mut len, 0, 0), b"agtimer\0junk"),
+            Ok(())
+        );
+        assert_eq!(len, 8);
+        assert_eq!(
+            testutil::user_bytes(U8A + 64, 8).as_deref(),
+            Some(&b"agtimer\0"[..])
+        );
+        let mut len = 7;
+        assert_eq!(
+            rdstring(&mut req8a(U8A + 64, &mut len, 0, 0), b"agtimer"),
+            Err(Errno::ENOMEM)
+        );
+        // A new value lands NUL-terminated in the buffer; one as long as it is refused.
+        assert_eq!(UserPtr::<u8>::new(U8A + 96).copyout_slice(b"dummy"), Ok(()));
+        let mut buf = [0u8; 8];
+        buf[..3].copy_from_slice(b"old");
+        let mut len = 8;
+        assert_eq!(
+            string(&mut req8a(U8A + 64, &mut len, U8A + 96, 5), &mut buf),
+            Ok(())
+        );
+        assert_eq!(&buf[..6], b"dummy\0");
+        assert_eq!(
+            testutil::user_bytes(U8A + 64, 4).as_deref(),
+            Some(&b"old\0"[..])
+        );
+        assert_eq!(
+            string(&mut req8a(0, &mut len, U8A + 96, 8), &mut buf),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn rdstruct_copies_the_bytes() {
+        testutil::install();
+        let mut len = 3;
+        assert_eq!(
+            rdstruct(&mut req8a(U8A, &mut len, 0, 0), &[1, 2, 3, 4]),
+            Err(Errno::ENOMEM)
+        );
+        let mut len = 0;
+        assert_eq!(
+            rdstruct(&mut req8a(0, &mut len, 0, 0), &[1, 2, 3, 4]),
+            Ok(())
+        );
+        assert_eq!(len, 4);
     }
 }
 /* </TESTS> */

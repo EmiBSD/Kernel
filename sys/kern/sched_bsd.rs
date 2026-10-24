@@ -81,7 +81,6 @@
 //! - The scheduler's own state left `struct schedstate_percpu` for `kernel::sched::SchedCpu`
 //!   ([`sched_cpu`], [`curcpu_schedflags`]).
 
-use core::ffi::c_void;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
@@ -153,7 +152,7 @@ pub fn curcpu_schedflags() -> i32 {
 }
 
 /// `roundrobin`: force switch among equal priority processes every 100ms.
-pub fn roundrobin(cr: &Clockrequest, _cf: *mut c_void, _arg: *mut c_void) {
+pub fn roundrobin(cr: &Clockrequest, _frame: &hal::clock::ClockFrame) {
     let count = clockrequest_advance(cr, roundrobin_period());
     kernel::sched::roundrobin::<G>(count);
 }

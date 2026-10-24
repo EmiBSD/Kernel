@@ -55,6 +55,11 @@ pub(crate) mod assert;
 ))]
 pub mod bootmem;
 pub mod bridges;
+// The clock frame (N4.8a): wherever a machine's frame is (arm64 and the host; amd64's
+// `struct intrframe` at N10).
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod clock;
 pub mod cons;
 #[forbid(unsafe_code)]
 pub mod cpu;

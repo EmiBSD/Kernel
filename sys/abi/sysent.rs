@@ -37,8 +37,10 @@
 //! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/log.rs`). N4.6c: futex(2)
 //! (`KernelApi::futex`, `sys/kernel/futex.rs`). N4.6a: the process system calls'
 //! forty-six (`KernelApi::proc`, `sys/kernel/fork.rs`, `exit.rs`, `resource.rs`, `prot.rs`,
-//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`). N4.8b:
-//! sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig.rs` over `hal::sig`'s frame).
+//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`). N4.8: the
+//! ten time system calls and reboot(2) (`KernelApi::time`, `sys/kernel/time.rs` and
+//! `reboot.rs`). N4.8b: sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig.rs` over
+//! `hal::sig`'s frame).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -63,6 +65,10 @@ use hal::sys::syscall::{
     SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_sigreturn, SYS_sysctl, SYS_utrace,
     SYS_vfork, SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
 };
+use hal::sys::syscall::{
+    SYS_adjfreq, SYS_adjtime, SYS_clock_getres, SYS_clock_gettime, SYS_clock_settime,
+    SYS_getitimer, SYS_gettimeofday, SYS_nanosleep, SYS_reboot, SYS_setitimer, SYS_settimeofday,
+};
 
 /// A `Native` entry: the translation of one system call into its `kernel` entry point.
 pub type NativeFn = fn(&'static KernelApi, &SysArgs, &mut Rval) -> SysResult;
@@ -77,7 +83,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 94;
+pub const NATIVE: u32 = 105;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -181,6 +187,17 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_getrtable as usize] = Sysent::Native(sys_getrtable);
     table[SYS_setrtable as usize] = Sysent::Native(sys_setrtable);
     table[SYS_sysctl as usize] = Sysent::Native(sys_sysctl);
+    table[SYS_clock_gettime as usize] = Sysent::Native(sys_clock_gettime);
+    table[SYS_clock_settime as usize] = Sysent::Native(sys_clock_settime);
+    table[SYS_clock_getres as usize] = Sysent::Native(sys_clock_getres);
+    table[SYS_nanosleep as usize] = Sysent::Native(sys_nanosleep);
+    table[SYS_gettimeofday as usize] = Sysent::Native(sys_gettimeofday);
+    table[SYS_settimeofday as usize] = Sysent::Native(sys_settimeofday);
+    table[SYS_adjfreq as usize] = Sysent::Native(sys_adjfreq);
+    table[SYS_adjtime as usize] = Sysent::Native(sys_adjtime);
+    table[SYS_getitimer as usize] = Sysent::Native(sys_getitimer);
+    table[SYS_setitimer as usize] = Sysent::Native(sys_setitimer);
+    table[SYS_reboot as usize] = Sysent::Native(sys_reboot);
     table[SYS_sigreturn as usize] = Sysent::Native(sys_sigreturn);
     table
 };
@@ -1010,6 +1027,112 @@ fn sys_getrtable(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> S
 fn sys_setrtable(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.setrtable)(SYS_setrtable as Register, args[0] as i32, rval)
 }
+
+/// 87 = `clock_gettime(clockid_t clock_id, struct timespec *tp)`.
+fn sys_clock_gettime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.clock_gettime)(
+        SYS_clock_gettime as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 88 = `clock_settime(clockid_t clock_id, const struct timespec *tp)`.
+fn sys_clock_settime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.clock_settime)(
+        SYS_clock_settime as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 89 = `clock_getres(clockid_t clock_id, struct timespec *tp)`.
+fn sys_clock_getres(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.clock_getres)(
+        SYS_clock_getres as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 91 = `nanosleep(const struct timespec *rqtp, struct timespec *rmtp)`.
+fn sys_nanosleep(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.nanosleep)(
+        SYS_nanosleep as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 67 = `gettimeofday(struct timeval *tp, struct timezone *tzp)`.
+fn sys_gettimeofday(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.gettimeofday)(
+        SYS_gettimeofday as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 68 = `settimeofday(const struct timeval *tv, const struct timezone *tzp)`.
+fn sys_settimeofday(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.settimeofday)(
+        SYS_settimeofday as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 305 = `adjfreq(const int64_t *freq, int64_t *oldfreq)`.
+fn sys_adjfreq(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.adjfreq)(
+        SYS_adjfreq as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 140 = `adjtime(const struct timeval *delta, struct timeval *olddelta)`.
+fn sys_adjtime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.adjtime)(
+        SYS_adjtime as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 70 = `getitimer(int which, struct itimerval *itv)`.
+fn sys_getitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.getitimer)(
+        SYS_getitimer as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 69 = `setitimer(int which, const struct itimerval *itv, struct itimerval *oitv)`.
+fn sys_setitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.setitimer)(
+        SYS_setitimer as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 55 = `reboot(int opt)`.
+fn sys_reboot(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.time.reboot)(SYS_reboot as Register, args[0] as i32, rval)
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -1632,6 +1755,58 @@ mod tests {
             + newlen) as i32)
     }
 
+    fn t_clock(nr: Register, clock: i32, tp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(clock * 10 + tp as i32)
+    }
+    fn t_pair(nr: Register, a: usize, b: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err((a * 10 + b) as i32)
+    }
+    fn t_setitimer(
+        nr: Register,
+        which: i32,
+        itv: usize,
+        oitv: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(which * 100 + (itv * 10 + oitv) as i32)
+    }
+    fn t_reboot(nr: Register, opt: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(opt)
+    }
+
+    const TIME: hal::api::TimeEntries = hal::api::TimeEntries {
+        clock_gettime: t_clock,
+        clock_settime: t_clock,
+        clock_getres: t_clock,
+        nanosleep: t_pair,
+        gettimeofday: t_pair,
+        settimeofday: t_pair,
+        adjfreq: t_pair,
+        adjtime: t_pair,
+        getitimer: t_clock,
+        setitimer: t_setitimer,
+        reboot: t_reboot,
+    };
+
+    /// The time system calls and reboot(2) N4.8 made `Native` (`KernelApi::time`).
+    const TIME_CALLS: [i32; 11] = [
+        SYS_clock_gettime,
+        SYS_clock_settime,
+        SYS_clock_getres,
+        SYS_nanosleep,
+        SYS_gettimeofday,
+        SYS_settimeofday,
+        SYS_adjfreq,
+        SYS_adjtime,
+        SYS_getitimer,
+        SYS_setitimer,
+        SYS_reboot,
+    ];
+
     fn sigreturn(nr: Register, scp: usize, rval: &mut Rval) -> SysResult {
         rval[0] = nr;
         Err(scp as i32)
@@ -1639,7 +1814,7 @@ mod tests {
 
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
-        sigreturn,
+        TIME, sigreturn,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -1743,7 +1918,8 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_and_sigreturn_is_legacy() {
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_and_sigreturn_is_legacy()
+    {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
@@ -1755,12 +1931,48 @@ mod tests {
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
                 || EVENT_CALLS.iter().any(|&v| v as Register == nr)
                 || PROC_CALLS.iter().any(|&v| v as Register == nr)
+                || TIME_CALLS.iter().any(|&v| v as Register == nr)
             {
                 continue;
             }
             let mut rval = [-7; 2];
             assert_eq!(syscall(&API, nr, &[0; 6], &mut rval), Err(ENOSYS));
             assert_eq!(rval[0], nr, "number {nr} reached the fallback unchanged");
+        }
+    }
+
+    /// Each time translation (and reboot(2)'s) calls its own entry with its own number, the
+    /// arguments in `<sys/syscallargs.h>`'s order and the trap's return registers, through
+    /// the table as well.
+    #[test]
+    fn the_time_calls_are_native_and_pass_their_number_arguments_and_rval() {
+        for nr in TIME_CALLS {
+            assert!(
+                matches!(SYSENT[nr as usize], Sysent::Native(_)),
+                "SYS {nr} is Native"
+            );
+        }
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let cases: [(NativeFn, i32, i32); 11] = [
+            (sys_clock_gettime, SYS_clock_gettime, 12),
+            (sys_clock_settime, SYS_clock_settime, 12),
+            (sys_clock_getres, SYS_clock_getres, 12),
+            (sys_nanosleep, SYS_nanosleep, 12),
+            (sys_gettimeofday, SYS_gettimeofday, 12),
+            (sys_settimeofday, SYS_settimeofday, 12),
+            (sys_adjfreq, SYS_adjfreq, 12),
+            (sys_adjtime, SYS_adjtime, 12),
+            (sys_getitimer, SYS_getitimer, 12),
+            (sys_setitimer, SYS_setitimer, 123),
+            (sys_reboot, SYS_reboot, 1),
+        ];
+        for (f, nr, want) in cases {
+            let mut rval = [-7; 2];
+            assert_eq!(f(&API, &a, &mut rval), Err(want), "SYS {nr}");
+            assert_eq!(rval, [nr as Register, -7], "SYS {nr} wrote rval[0] only");
+            let mut rval = [-7; 2];
+            assert_eq!(syscall(&API, nr as Register, &a, &mut rval), Err(want));
+            assert_eq!(rval[0], nr as Register, "SYS {nr} reached its time entry");
         }
     }
 
@@ -1996,7 +2208,10 @@ mod tests {
             syscall(&API, SYS_sigreturn as Register, &a, &mut rval),
             Err(4242)
         );
-        assert_eq!(NATIVE, 94);
+        assert_eq!(
+            NATIVE, 105,
+            "93 through sysctl(2), 11 more with the time calls, 1 with sigreturn(2)"
+        );
     }
 
     #[test]

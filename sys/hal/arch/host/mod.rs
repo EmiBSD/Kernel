@@ -43,6 +43,7 @@ pub(crate) mod pmap;
 pub mod sig;
 #[cfg(not(feature = "module-rt"))]
 pub(crate) mod switch;
+pub mod timer;
 
 pub use self::param as vmparam;
 /// The host pmap's test knob (its only one): a failing `pmap_enter`.

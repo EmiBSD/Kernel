@@ -2195,7 +2195,10 @@ fn cpu_attach_secondary(ci: &'static CpuInfo) {
         spinup_data = OF_getpropint64(ci.ci_node.get(), b"cpu-release-addr", 0);
     }
 
-    clockqueue_init(&ci.ci_queue);
+    clockqueue_init(
+        crate::kern::kern_sched::cpu_number_of(ci),
+        cpu_is_primary(ci),
+    );
     sched_init_cpu(ci);
     if cpu_start_secondary(ci, spinup_method, spinup_data) {
         ci.ci_flags.fetch_or(CPUF_IDENTIFY, Ordering::Relaxed);
@@ -2409,6 +2412,11 @@ pub fn cpu_boot_secondary_processors() {
             }
 
             c.ci_randseed.set((arc4random() & 0x7fff_ffff) + 1);
+            // The randomized statclock's seed, the queue's own (N4.8a).
+            kernel::clockintr::set_randseed(
+                crate::kern::kern_sched::cpu_number_of(c),
+                c.ci_randseed.get(),
+            );
             cpu_boot_secondary(c);
         }
 

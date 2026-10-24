@@ -31,3 +31,4 @@ metadata:
 - `test_proc_glue!`'s tables are per test thread (a thread_local `ProcTables`): a list walk (`sysctl_doproc`) sees only the processes its own thread made, so an error that needs a process looked at (an unknown op's EINVAL) needs one put on the list first.
 - hal's host user-copy double keeps its own addresses below 4 GiB (EFAULT outside the user and foreign runs) and copies raw above, so bsd's UIO_SYSSPACE host tests reach the kcopy token with real host pointers.
 - A hal function the kernel calls with its test glues' thread types must not call `hal::thread::check_type` (one type per process): `slot_of` alone checks the layout (the TCB accessors).
+- A kernel syscall that reads a global the tests must vary (kern.securelevel) takes it through a private `*_secure(.., &AtomicI32)` helper the public wrapper calls with the global, loaded at the C's read point: the test passes its own atomic and never races the sysctl tests.

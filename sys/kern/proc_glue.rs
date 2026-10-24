@@ -448,28 +448,31 @@ impl ProcGlue for BsdProcGlue {
 
     /// `clockintr_cancel` of the running CPU's `spc_itimer` and `spc_profclock`, as asked.
     fn clocks_stop(itimer: bool, profclock: bool) {
-        let spc = Machine::ci_schedstate(curcpu());
+        use kernel::clockintr::{Clockintr, Slot, clockintr_cancel};
+        let n = hal::cpu::cpu_number();
         if itimer {
-            crate::kern::kern_clockintr::clockintr_cancel(&spc.spc_itimer);
+            clockintr_cancel(Clockintr::of(n, Slot::Itimer));
         }
         if profclock {
-            crate::kern::kern_clockintr::clockintr_cancel(&spc.spc_profclock);
+            clockintr_cancel(Clockintr::of(n, Slot::Profclock));
         }
     }
 
     /// `clockintr_advance` of the running CPU's `spc_itimer` and `spc_profclock`, as asked,
     /// and `spc_runtime = nanouptime()`.
     fn clocks_start(itimer: bool, profclock: bool) {
+        use kernel::clockintr::{Clockintr, Slot, clockintr_advance};
         let spc = Machine::ci_schedstate(curcpu());
+        let n = hal::cpu::cpu_number();
         if itimer {
-            crate::kern::kern_clockintr::clockintr_advance(
-                &spc.spc_itimer,
+            clockintr_advance(
+                Clockintr::of(n, Slot::Itimer),
                 crate::kern::kern_clock::hardclock_period(),
             );
         }
         if profclock {
-            crate::kern::kern_clockintr::clockintr_advance(
-                &spc.spc_profclock,
+            clockintr_advance(
+                Clockintr::of(n, Slot::Profclock),
                 crate::kern::subr_prof::profclock_period(),
             );
         }
@@ -675,6 +678,10 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_sysctl(p, mib, new)
     }
 
+    fn pledge_adjtime(p: &Proc, delta: usize) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_adjtime(p, delta)
+    }
+
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
         kernel::proc::UnveilState {
             paths: !pr.ps_uvpaths.get().is_null(),
@@ -735,6 +742,19 @@ impl ProcGlue for BsdProcGlue {
 
     fn cancel_all_itimers() {
         crate::kern::kern_time::cancel_all_itimers();
+    }
+
+    fn setitimer(
+        which: i32,
+        itv: Option<&kernel::time::Itimerval>,
+        olditv: Option<&mut kernel::time::Itimerval>,
+    ) {
+        crate::kern::kern_time::setitimer(which, itv, olditv);
+    }
+
+    /// `curcpu()->ci_schedstate.spc_runtime`.
+    fn spc_runtime() -> kernel::clock::Timespec {
+        Machine::ci_schedstate(curcpu()).spc_runtime.get()
     }
 
     fn unveil_destroy(pr: &Process) {

@@ -1320,13 +1320,13 @@ pub fn clockintr_percpu() {
     cpu_info_foreach(&mut |ci| {
         if cpu_is_running(ci) {
             let id = Machine::ci_cpuid(ci);
-            cpus.push((id, uptime_check_counts(id).0));
+            cpus.push((id, uptime_check_counts(id as usize).0));
         }
     });
     for _ in 0..200 {
         if cpus
             .iter()
-            .all(|&(id, base)| uptime_check_counts(id).0 >= base + MORE)
+            .all(|&(id, base)| uptime_check_counts(id as usize).0 >= base + MORE)
         {
             break;
         }
@@ -1341,7 +1341,7 @@ pub fn clockintr_percpu() {
     let mut ticking = 0;
     let mut behind_total = 0;
     for &(id, base) in &cpus {
-        let (checks, behind) = uptime_check_counts(id);
+        let (checks, behind) = uptime_check_counts(id as usize);
         kprintf!(
             "selftest: cpu{} clockintr: {} uptime checks, {} behind\n",
             id,

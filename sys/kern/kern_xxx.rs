@@ -67,16 +67,13 @@
 
 #[cfg(feature = "syscall_debug")]
 use core::sync::atomic::AtomicI32;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
-use crate::kern::kern_prot::suser;
 use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_sysctl::ALLOWPOWERDOWN;
 use crate::kern::kern_task::{SYSTQ, task_add};
-use crate::kern::kern_time::stop_periodic_resettodr;
 #[cfg(feature = "syscall_debug")]
 use crate::kern::subr_prf::printf;
-use crate::machine::cpu::boot;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::signal::SIGUSR2;
@@ -85,36 +82,34 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::task::Task;
 use crate::sys::types::Register;
 
-/// `rebooting`: set once the system started to go down, for the benefit of code that must not
-/// sleep any more.
-pub static REBOOTING: AtomicBool = AtomicBool::new(false);
+/// `rebooting`: the kernel's (`kernel::reboot`, N4.8a).
+pub use kernel::reboot::REBOOTING;
 
-/// `reboot(2)`: root only; goes down with the `RB_*` flags `opt` (`<sys/reboot.h>`).
+/// `reboot(2)`'s `sysent[]` row: the kernel's ([`kernel::reboot::sys_reboot`]: `suser`, the
+/// secondary CPUs stopped, then `reboot`); it returns only `suser`'s error.
 pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysRebootArgs = sysargs(v);
-
-    suser(p)?;
-
-    #[cfg(feature = "multiprocessor")]
-    {
-        crate::kern::kern_sched::sched_stop_secondary_cpus();
-        crate::kassert!(
-            <crate::machine::Machine as crate::machine::cpu::Cpu>::cpu_is_primary(
-                crate::machine::cpu::curcpu()
-            )
-        );
+    match kernel::reboot::sys_reboot(p, uap.opt.get()) {
+        Err(e) => Err(e),
+        Ok(never) => match never {},
     }
-    reboot(uap.opt.get())
-    // NOTREACHED
 }
 
-/// `reboot`: stops the clock bookkeeping and hands over to the machine's `boot(9)`.
+/// `KernelApi::time.reboot`: [`sys_reboot`]'s row through the system call prologue
+/// (`mi_syscall`: pledge, the pinned syscalls, the kernel-lock rule).
+pub fn native_reboot(nr: Register, opt: i32, rval: &mut [Register; 2]) -> hal::syscall::SysResult {
+    crate::kern::kern_descrip::native(
+        nr,
+        crate::sys::syscall::SYS_reboot,
+        [opt as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `reboot`: the kernel's (`kernel::reboot::reboot`: the clock bookkeeping stopped,
+/// `rebooting` set, the machine's `boot(9)`).
 pub fn reboot(howto: i32) -> ! {
-    stop_periodic_resettodr();
-
-    REBOOTING.store(true, Ordering::Relaxed);
-
-    boot(howto)
+    kernel::reboot::reboot(howto)
 }
 
 /// `powerdown_task`: runs `do_powerdown` on the system task queue.

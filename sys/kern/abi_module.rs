@@ -60,7 +60,8 @@ use crate::sys::types::Register;
 /// (`KernelApi::event`, `sys/kern/kern_event.rs`), sendsyslog(2) (`KernelApi::sendsyslog`,
 /// `sys/kern/subr_log.rs`), futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`), the
 /// process system calls (`KernelApi::proc`, `sys/kern/proc_glue.rs`), sysctl(2)
-/// (`KernelApi::sysctl`, `sys/kern/kern_sysctl.rs`) and sigreturn(2) (`KernelApi::sigreturn`,
+/// (`KernelApi::sysctl`, `sys/kern/kern_sysctl.rs`), the time system calls with reboot(2)
+/// (`KernelApi::time`, `sys/kern/kern_time.rs`) and sigreturn(2) (`KernelApi::sigreturn`,
 /// `sys/kern/kern_sig.rs`) are the kernel crate's, entered through `bsd`'s system call
 /// prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
@@ -75,6 +76,7 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::sys_futex::native_futex,
     crate::kern::proc_glue::PROC_ENTRIES,
     crate::kern::kern_sysctl::native_sysctl,
+    crate::kern::kern_time::TIME_ENTRIES,
     crate::kern::kern_sig::native_sigreturn,
 );
 

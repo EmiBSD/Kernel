@@ -41,6 +41,7 @@ pub mod init_main;
 pub mod init_sysent;
 pub mod kern_bufq;
 pub mod kern_clock;
+#[forbid(unsafe_code)]
 pub mod kern_clockintr;
 #[forbid(unsafe_code)]
 pub mod kern_descrip;
@@ -76,6 +77,7 @@ pub mod kern_sysctl;
 // task(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/task.rs`, still
 // reached at this path by its callers.
 pub use crate::sys::task as kern_task;
+#[forbid(unsafe_code)]
 pub mod kern_tc;
 pub mod kern_time;
 // timeout(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/timeout.rs`,

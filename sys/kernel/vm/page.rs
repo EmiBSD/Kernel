@@ -336,13 +336,16 @@ impl VmPage {
         self.pg_flags.fetch_or(bits, Mem::Relaxed);
     }
 
-    /// `atomic_clearbits_int(&pg->pg_flags, bits)`. Unbusying a page that `hal` holds in a
-    /// byte view (the pager's window) panics: its frames stay busy until the view's drop.
+    /// `atomic_clearbits_int(&pg->pg_flags, bits)`. Unbusying a busy page that `hal` holds in
+    /// a byte view resting on `PG_BUSY` (the pager's window, `PageMd::in_busy_view`) panics:
+    /// its frames stay busy until the view's drop. Clearing a `PG_BUSY` that is not set
+    /// (`uvm_fault_lower` ends so on the resident page it found unbusy) and unbusying the
+    /// timekeep page (whose claim is for good and not on `PG_BUSY`) pass, as in the C.
     /// (`pmap_zero_page`'s and `pmap_copy_page`'s holds are taken under the page's owner
     /// lock, or on a page the caller holds busy, as every `PG_BUSY` clear is, so they never
     /// meet one.)
     pub fn clear_bits(&self, bits: u32) {
-        if bits & PG_BUSY != 0 && self.mdpage.in_view() {
+        if bits & PG_BUSY != 0 && self.flags() & PG_BUSY != 0 && self.mdpage.in_busy_view() {
             kpanic(format_args!(
                 "uvm: PG_BUSY cleared on a page in a byte view"
             ));
@@ -1563,7 +1566,7 @@ pub fn uvm_pagecount(constraint: &UvmConstraintRange) -> usize {
 // answers the `PageMd` embedded in the frame's page, the same for ever (the array is never
 // freed); `is_busy` answers the page's `PG_BUSY` as this module keeps it, on which hal's
 // byte views rest (`sys/hal/mapped.rs`: only busy pages are viewed, and `clear_bits` keeps a
-// viewed page busy).
+// viewed page busy); `is_wired` its `wire_count`, on which the timekeep view rests.
 impl PhysPages for PhysPagesImpl {
     fn alloc_ptp(&self) -> Option<Paddr> {
         let pg = uvm_pagealloc(Owner::None, 0, UVM_PGA_USERESERVE | UVM_PGA_ZERO)?;
@@ -1588,6 +1591,10 @@ impl PhysPages for PhysPagesImpl {
 
     fn is_busy(&self, pa: Paddr) -> bool {
         PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.flags() & PG_BUSY != 0)
+    }
+
+    fn is_wired(&self, pa: Paddr) -> bool {
+        PHYS_TO_VM_PAGE(pa).is_some_and(|pg| pg.wire_count() != 0)
     }
 
     fn steal(&self, npg: usize) -> Option<Paddr> {

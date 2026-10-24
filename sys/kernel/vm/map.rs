@@ -8484,5 +8484,70 @@ mod tests {
         };
         uvm_map_fix_space(map, st, ew, &stale, k.into(), at, at, 0);
     }
+
+    /// The timekeep page under `hal`'s view (the N4.8a closing review): the per-process
+    /// mapping as `exec_timekeep_map` makes it (`PROT_READ`, `MAP_INHERIT_COPY`,
+    /// `MADV_RANDOM`), then a read fault, a wired fault (`mlock`) and a fork. Each fault ends
+    /// as `uvm_fault_lower` does, clearing `PG_BUSY` on the resident page it found unbusy,
+    /// which the view's claim (for good, not on `PG_BUSY`) lets pass; the arm64 boot of
+    /// 12e57ed2 panicked there on every process's first clock read. It must stay the only
+    /// caller of `timekeep_object` in the kernel's tests: that object (`kernel::tc`'s
+    /// `OBJECT`) and `hal`'s one timekeep view are made once per process, with no
+    /// `*_test_reset`.
+    #[test]
+    fn the_timekeep_page_maps_wires_and_forks_under_its_view() {
+        let _g = setup();
+        let _ = the_kernel_map();
+        let obj = crate::tc::timekeep_object().expect("the timekeep object");
+        obj.reference();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let mut va = 0;
+        uvm_map(
+            map,
+            &mut va,
+            PAGE_SIZE,
+            Some(obj.clone()),
+            0,
+            0,
+            uvm_mapflag(PROT_READ, PROT_READ, MAP_INHERIT_COPY, MADV_RANDOM, 0),
+        )
+        .expect("exec_timekeep_map's mapping");
+
+        // A process reads the clock: a read fault on the resident, wired page.
+        uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ).expect("read fault");
+        let pa = extract(map, va).expect("mapped");
+        let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
+        assert!(pg.mdpage.in_view(), "hal's timekeep view holds the frame");
+        assert!(!pg.mdpage.in_busy_view(), "for good, not on PG_BUSY");
+        assert_eq!(pg.flags() & PG_BUSY, 0);
+        // An unlocked uao_get's busy and its unbusy: PG_HAL_KEEP is what lets the unbusy of a
+        // busy, claimed page pass (a pager window's claim would panic here).
+        pg.set_bits(PG_BUSY);
+        pg.clear_bits(PG_BUSY);
+        let wired = pg.wire_count();
+        assert!(wired >= 1, "the kernel's mapping wired it");
+
+        // mlock(2) and munlock(2) of the mapping: a wired fault and the unwire.
+        uvm_map_pageable(map, va, va + PAGE_SIZE, false).expect("mlock");
+        assert_eq!(pg.wire_count(), wired + 1);
+        uvm_map_pageable(map, va, va + PAGE_SIZE, true).expect("munlock");
+        assert_eq!(pg.wire_count(), wired);
+
+        // A write is refused (the mapping is read-only), and the page stays the view's.
+        assert!(uvm_fault(map, va, VM_FAULT_INVALID, PROT_WRITE).is_err());
+
+        // fork(2): the child inherits the mapping and faults the same page in.
+        let child = uvmspace_fork(&vm);
+        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_READ).expect("the child's fault");
+        assert_eq!(extract(&child.vm_map, va), Some(pa));
+        assert!(pg.mdpage.in_view() && pg.flags() & PG_BUSY == 0);
+
+        // Both processes exit: their mappings go, the kernel's stays, the page held and wired.
+        uvmspace_free(child);
+        uvmspace_free(vm);
+        assert!(pg.mdpage.in_view());
+        assert_eq!(pg.wire_count(), wired);
+    }
 }
 /* </TESTS> */

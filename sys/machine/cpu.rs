@@ -43,7 +43,7 @@ use core::sync::atomic::AtomicI32;
 use crate::machine::Machine;
 use crate::machine::bootinfo::BootInfo;
 use crate::sys::buf::Buf;
-use crate::sys::clockintr::Clockqueue;
+
 use crate::sys::errno::Errno;
 use crate::sys::exec::{ExecPackage, PsStrings};
 use crate::sys::proc::Proc;
@@ -163,9 +163,6 @@ pub trait Cpu {
 
     /// `CPU_INFO_UNIT(ci)`: the CPU's device unit number.
     fn cpu_info_unit(ci: &Self::CpuInfo) -> u32;
-
-    /// `ci->ci_queue`: the CPU's clock interrupt queue.
-    fn ci_queue(ci: &Self::CpuInfo) -> &Clockqueue;
 
     /// `ci->ci_schedstate`: the CPU's scheduler state.
     fn ci_schedstate(ci: &Self::CpuInfo) -> &SchedstatePercpu;
