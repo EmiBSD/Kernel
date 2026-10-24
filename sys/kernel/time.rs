@@ -87,16 +87,23 @@
 //! LZ: sys/kern/kern_time.rs@3c62ede68802
 //! LZ: sys/dev/clock_subr.rs@3c62ede68802
 //!
-//! The system calls (`clock_gettime(2)` .. `setitimer(2)`), `setitimer`, `realitexpire` and
-//! `itimer_update` stay `bsd`'s `kern_time.rs` over these until the process's interval
-//! timers move with `struct process` (N4.6): they read and write `ps_timer`, `ps_realit_to`
-//! and the CPU-time aggregates there.
+//! The ten system calls (`clock_gettime(2)` .. `setitimer(2)`) are here since N4.8's a6,
+//! generic over the process glue as the other process system calls, and `bsd`'s `sysent[]`
+//! rows (the prologue: pledge, the pinned syscalls, the kernel lock) call them. What they
+//! reach of `bsd`'s goes through [`ProcGlue`]: `setitimer` itself (the interval timers,
+//! `ps_timer` and `ps_realit_to`, are still `bsd`'s members of `struct process`, with
+//! `realitexpire` and `itimer_update` over them), the running CPU's `spc_runtime` and
+//! `pledge_adjtime` (N8).
 //!
 //! ## Deviations
 //! - `itimerdecr` returns `bool` (`true` where the C returns 1: the timer is still
 //!   running).
-//! - `settime` takes `securelevel` from its caller (`bsd`'s `kern.securelevel`, N4.6's core
-//!   once it moves); the C reads the global.
+//! - `settime` takes `securelevel` from its caller (`kern.securelevel`,
+//!   `kernel::sysctl::SECURELEVEL`, which `clock_settime(2)` and `settimeofday(2)` read
+//!   right before the call); the C reads the global inside it.
+//! - `clock_getres(2)` divides by `stathz.max(1)` and `tc_resolution` by
+//!   `tc_getfrequency().max(1)`: a guard against a divide by zero the C would trap on (both
+//!   are set before the first process runs, so userland never sees the difference).
 //!
 //! ## Redesign
 //! - `struct todr_chip_handle` (`todr_quality` and two function pointers taking the handle,
@@ -113,22 +120,39 @@
 //!   `microuptime`'s and `maxpps == 0` allows nothing, as the C (LZ read `getmicrouptime` and
 //!   had no `maxpps == 0` branch, so a rate limit set to 0 let one event a second through).
 //! - `resettodr_to`/`resettodr_task` are a kernel `Timeout` and `Task`, pinned statics.
+//! - The system calls take their arguments typed (`clockid_t`, `int`, a `UserPtr` per user
+//!   pointer, `NULL` the null `UserPtr`) instead of LZ's `SysArgs` record, and `p` as a
+//!   `Thread<G>`; LZ's `clock_gettime` helper is [`clock_gettime`] over the glue's
+//!   `spc_runtime`. The checks, their order and the errnos are the C's: `suser` first in
+//!   `clock_settime(2)`, `settimeofday(2)` and (with a new value) `adjfreq(2)`/`adjtime(2)`,
+//!   `pledge_adjtime` before anything in `adjtime(2)`, the copyins before any change,
+//!   `settime`'s two securelevel gates, `getitimer(2)`/`setitimer(2)`'s range check before
+//!   any copy.
 
 use core::ffi::c_void;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use hal::intr::IPL_HIGH;
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::pin::pin_static;
+use hal::rwlock::RwMode;
+use hal::sleep::{PCATCH, PWAIT};
+use hal::user::UserPtr;
 
-use crate::clock::{Bintime, Timespec, Timeval};
+use crate::clock::{Bintime, STATHZ, Timespec, Timeval};
 use crate::prf::printf;
+use crate::proc::{ProcGlue, Thread, suser, tfind_user};
+use crate::resource::{Tusage, tuagg_get_proc, tuagg_get_process};
+use crate::sched::{NOWAKE, tsleep_nsec};
 use crate::sys::errno::Errno;
+use crate::sysctl::SECURELEVEL;
 use crate::task::{SYSTQ, Task, task_add, task_del};
 use crate::tc::{
-    TC_LOCK, getmicrouptime, microtime, microuptime, nanotime, tc_getfrequency, tc_getprecision,
-    tc_setclock, tc_setrealtimeclock,
+    TC_LOCK, getmicrouptime, getnanouptime, microtime, microuptime, nanoruntime, nanotime,
+    nanouptime, tc_adjfreq, tc_adjtime, tc_getfrequency, tc_getprecision, tc_setclock,
+    tc_setrealtimeclock,
 };
 use crate::timeout::Timeout;
 
@@ -144,6 +168,16 @@ pub const CLOCK_THREAD_CPUTIME_ID: i32 = 4;
 pub const CLOCK_UPTIME: i32 = 5;
 /// `CLOCK_BOOTTIME`.
 pub const CLOCK_BOOTTIME: i32 = 6;
+
+/// `ITIMER_REAL`: real time.
+pub const ITIMER_REAL: i32 = 0;
+/// `ITIMER_VIRTUAL`: virtual time.
+pub const ITIMER_VIRTUAL: i32 = 1;
+/// `ITIMER_PROF`: profiling.
+pub const ITIMER_PROF: i32 = 2;
+
+/// `MAXTSLP`: the longest sleep `nanosleep(2)` asks for at once (`<sys/systm.h>`).
+const MAXTSLP: u64 = u64::MAX - 1;
 
 /// `SECDAY`: seconds in a day.
 const SECDAY: i64 = 86400;
@@ -317,6 +351,411 @@ pub fn tc_resolution() -> Timespec {
     let bt = Bintime::new(0, tc_getprecision().wrapping_mul(scale));
     drop(r);
     bt.to_timespec()
+}
+
+/// `clock_gettime`: the time of `clock_id` as `p` sees it: the timecounter clocks, the CPU
+/// time of `p`'s process or of `p` (the running part since the slice began added), or of
+/// the thread of `p`'s process a `pthread_getcpuclockid()` clock names (`ESRCH` without
+/// it); `EINVAL` for any other clock.
+pub fn clock_gettime<G: ProcGlue>(p: &Thread<G>, clock_id: i32) -> Result<Timespec, Errno> {
+    match clock_id {
+        CLOCK_REALTIME => Ok(nanotime()),
+        CLOCK_UPTIME => Ok(nanoruntime()),
+        CLOCK_MONOTONIC | CLOCK_BOOTTIME => Ok(nanouptime()),
+        CLOCK_PROCESS_CPUTIME_ID => {
+            let tu = Tusage::new();
+            let tp = nanouptime();
+            tuagg_get_process(&tu, p.process());
+            Ok(tp.sub(G::spc_runtime()).add(tu.tu_runtime.get()))
+        }
+        CLOCK_THREAD_CPUTIME_ID => {
+            let tu = Tusage::new();
+            let tp = nanouptime();
+            tuagg_get_proc(&tu, p);
+            Ok(tp.sub(G::spc_runtime()).add(tu.tu_runtime.get()))
+        }
+        // check for clock from pthread_getcpuclockid()
+        _ if clock_type(clock_id) == CLOCK_THREAD_CPUTIME_ID => {
+            hal::klock::kernel_lock(); // KERNEL_LOCK()
+            let error = {
+                let r = hal::klock::reader();
+                match tfind_user::<G, _>(&r, clock_ptid(clock_id), p.process()) {
+                    None => Err(Errno::ESRCH),
+                    Some(q) => {
+                        let tu = Tusage::new();
+                        tuagg_get_proc(&tu, q);
+                        Ok(tu.tu_runtime.get())
+                    }
+                }
+            };
+            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            error
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `__CLOCK_TYPE(c)`: the clock of a `pthread_getcpuclockid()` id.
+const fn clock_type(c: i32) -> i32 {
+    c & 0xfff
+}
+
+/// `__CLOCK_PTID(c)`: the thread of a `pthread_getcpuclockid()` id.
+const fn clock_ptid(c: i32) -> i32 {
+    (c >> 12) & 0xfffff
+}
+
+/// `clock_gettime(2)`: the time of `clock_id` copied out to `tp`.
+pub fn sys_clock_gettime<G: ProcGlue>(
+    p: &Thread<G>,
+    clock_id: i32,
+    tp: UserPtr<Timespec>,
+) -> Result<(), Errno> {
+    let ats = clock_gettime(p, clock_id)?;
+    tp.copyout(&ats)
+    // KTRACE: not configured.
+}
+
+/// `clock_settime(2)`: root only; only `CLOCK_REALTIME` can be set, through `settime` and
+/// `kern.securelevel`.
+pub fn sys_clock_settime<G: ProcGlue>(
+    p: &Thread<G>,
+    clock_id: i32,
+    tp: UserPtr<Timespec>,
+) -> Result<(), Errno> {
+    clock_settime_secure(p, clock_id, tp, &SECURELEVEL)
+}
+
+/// [`sys_clock_settime`] with the `securelevel` it reads right before `settime`.
+fn clock_settime_secure<G: ProcGlue>(
+    p: &Thread<G>,
+    clock_id: i32,
+    tp: UserPtr<Timespec>,
+    securelevel: &AtomicI32,
+) -> Result<(), Errno> {
+    suser(p)?;
+
+    let ats = tp.copyin()?;
+
+    match clock_id {
+        CLOCK_REALTIME => {
+            if !ats.is_valid() {
+                return Err(Errno::EINVAL);
+            }
+            settime(&ats, securelevel.load(Ordering::Relaxed))
+        }
+        // Other clocks are read-only
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `clock_getres(2)`: the resolution of `clock_id` copied out to `tp` (when not `NULL`),
+/// at least one nanosecond: the timecounter's precision for the timecounter clocks, a
+/// statclock tick for the CPU-time clocks.
+pub fn sys_clock_getres<G: ProcGlue>(
+    p: &Thread<G>,
+    clock_id: i32,
+    tp: UserPtr<Timespec>,
+) -> Result<(), Errno> {
+    let stathz = || i64::from(STATHZ.load(Ordering::Relaxed).max(1));
+    let mut ts = Timespec::ZERO;
+
+    let error = match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME | CLOCK_UPTIME => {
+            ts = tc_resolution();
+            Ok(())
+        }
+        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
+            ts.tv_nsec = 1_000_000_000 / stathz();
+            Ok(())
+        }
+        // check for clock from pthread_getcpuclockid()
+        _ if clock_type(clock_id) == CLOCK_THREAD_CPUTIME_ID => {
+            hal::klock::kernel_lock(); // KERNEL_LOCK()
+            let found = {
+                let r = hal::klock::reader();
+                tfind_user::<G, _>(&r, clock_ptid(clock_id), p.process()).is_some()
+            };
+            let error = if found {
+                ts.tv_nsec = 1_000_000_000 / stathz();
+                Ok(())
+            } else {
+                Err(Errno::ESRCH)
+            };
+            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            error
+        }
+        _ => Err(Errno::EINVAL),
+    };
+
+    if error.is_ok() && !tp.is_null() {
+        ts.tv_nsec = ts.tv_nsec.max(1);
+        tp.copyout(&ts)?;
+        // KTRACE: not configured.
+    }
+
+    error
+}
+
+/// `nanosleep(2)`: sleeps for the time at `rqtp`, or until a signal (`EINTR`); the time
+/// left is copied out to `rmtp` when not `NULL`, whatever the sleep's result.
+pub fn sys_nanosleep<G: ProcGlue>(
+    _p: &Thread<G>,
+    rqtp: UserPtr<Timespec>,
+    rmtp: UserPtr<Timespec>,
+) -> Result<(), Errno> {
+    let mut request = rqtp.copyin()?;
+    // KTRACE: not configured.
+
+    if request.tv_sec < 0 || !request.is_valid() {
+        return Err(Errno::EINVAL);
+    }
+
+    let nowake = ptr::from_ref(&NOWAKE).addr();
+    let mut error;
+    loop {
+        let start = getnanouptime();
+        let nsecs = request.to_nsec().clamp(1, MAXTSLP);
+        error = tsleep_nsec::<G>(nowake, PWAIT | PCATCH, "nanoslp", nsecs);
+        let stop = getnanouptime();
+        request = request.sub(stop.sub(start));
+        if request.tv_sec < 0 {
+            request = Timespec::ZERO;
+        }
+        if error != Err(Errno::EWOULDBLOCK) || !request.is_set() {
+            break;
+        }
+    }
+
+    if error == Err(Errno::ERESTART) {
+        error = Err(Errno::EINTR);
+    }
+    if error == Err(Errno::EWOULDBLOCK) {
+        error = Ok(());
+    }
+
+    // KTRACE of the remainder: not configured.
+    if !rmtp.is_null()
+        && let Err(copyout_error) = rmtp.copyout(&request)
+    {
+        error = Err(copyout_error);
+    }
+
+    error
+}
+
+/// `gettimeofday(2)`: the time of day to `tp` and a zero time zone to `tzp`, each when not
+/// `NULL`.
+pub fn sys_gettimeofday<G: ProcGlue>(
+    _p: &Thread<G>,
+    tp: UserPtr<Timeval>,
+    tzp: UserPtr<Timezone>,
+) -> Result<(), Errno> {
+    if !tp.is_null() {
+        tp.copyout(&microtime())?;
+        // KTRACE: not configured.
+    }
+    if !tzp.is_null() {
+        tzp.copyout(&Timezone::default())?;
+    }
+    Ok(())
+}
+
+/// `settimeofday(2)`: root only; both arguments are copied in before the clock changes, the
+/// time zone only checked for readability; the time through `settime` and
+/// `kern.securelevel`.
+pub fn sys_settimeofday<G: ProcGlue>(
+    p: &Thread<G>,
+    tv: UserPtr<Timeval>,
+    tzp: UserPtr<Timezone>,
+) -> Result<(), Errno> {
+    settimeofday_secure(p, tv, tzp, &SECURELEVEL)
+}
+
+/// [`sys_settimeofday`] with the `securelevel` it reads right before `settime`.
+fn settimeofday_secure<G: ProcGlue>(
+    p: &Thread<G>,
+    tv: UserPtr<Timeval>,
+    tzp: UserPtr<Timezone>,
+    securelevel: &AtomicI32,
+) -> Result<(), Errno> {
+    suser(p)?;
+    // Verify all parameters before changing time.
+    let atv = if tv.is_null() {
+        None
+    } else {
+        Some(tv.copyin()?)
+    };
+    if !tzp.is_null() {
+        let _atz = tzp.copyin()?;
+    }
+    if let Some(atv) = atv {
+        // KTRACE: not configured.
+        if !atv.is_valid() {
+            return Err(Errno::EINVAL);
+        }
+        settime(&atv.to_timespec(), securelevel.load(Ordering::Relaxed))?;
+    }
+
+    Ok(())
+}
+
+/// `adjfreq(2)`: the timecounter's frequency adjustment to `oldfreq` (when not `NULL`),
+/// then, root only, the one at `freq` (when not `NULL`, `EINVAL` outside
+/// `ADJFREQ_MIN..=ADJFREQ_MAX`) set, under `tc_lock` (for writing when setting).
+pub fn sys_adjfreq<G: ProcGlue>(
+    p: &Thread<G>,
+    freq: UserPtr<i64>,
+    oldfreq: UserPtr<i64>,
+) -> Result<(), Errno> {
+    let mut f = 0i64;
+
+    if !freq.is_null() {
+        suser(p)?;
+        f = freq.copyin()?;
+        if !(ADJFREQ_MIN..=ADJFREQ_MAX).contains(&f) {
+            return Err(Errno::EINVAL);
+        }
+    }
+
+    let w = TC_LOCK.enter(if freq.is_null() {
+        RwMode::Read
+    } else {
+        RwMode::Write
+    });
+    let error = 'out: {
+        if !oldfreq.is_null() {
+            let mut oldf = 0i64;
+            tc_adjfreq(&w, Some(&mut oldf), None);
+            if let Err(e) = oldfreq.copyout(&oldf) {
+                break 'out Err(e);
+            }
+        }
+        if !freq.is_null() {
+            tc_adjfreq(&w, None, Some(f));
+        }
+        Ok(())
+    };
+    drop(w);
+    error
+}
+
+/// `adjtime(2)`: the clock's remaining adjustment to `olddelta` (when not `NULL`), then,
+/// root only and as pledge allows, the one at `delta` (when not `NULL`) set; `EINVAL` for
+/// an invalid `delta` or one whose microseconds overflow.
+pub fn sys_adjtime<G: ProcGlue>(
+    p: &Thread<G>,
+    delta: UserPtr<Timeval>,
+    olddelta: UserPtr<Timeval>,
+) -> Result<(), Errno> {
+    let mut adjustment = 0i64;
+
+    G::pledge_adjtime(p, delta.addr())?;
+
+    if !delta.is_null() {
+        suser(p)?;
+        let atv = delta.copyin()?;
+        // KTRACE: not configured.
+        if !atv.is_valid() {
+            return Err(Errno::EINVAL);
+        }
+
+        if atv.tv_sec > i64::MAX / 1_000_000 {
+            return Err(Errno::EINVAL);
+        }
+        if atv.tv_sec < i64::MIN / 1_000_000 {
+            return Err(Errno::EINVAL);
+        }
+        adjustment = atv.tv_sec * 1_000_000;
+        if adjustment > i64::MAX - atv.tv_usec {
+            return Err(Errno::EINVAL);
+        }
+        adjustment += atv.tv_usec;
+    }
+    let w = (!delta.is_null()).then(|| TC_LOCK.write());
+
+    let error = 'out: {
+        if !olddelta.is_null() {
+            let mut remaining = 0i64;
+            tc_adjtime(w.as_ref(), Some(&mut remaining), None);
+            let mut atv = Timeval::new(remaining / 1_000_000, remaining % 1_000_000);
+            if atv.tv_usec < 0 {
+                atv.tv_usec += 1_000_000;
+                atv.tv_sec -= 1;
+            }
+
+            if let Err(e) = olddelta.copyout(&atv) {
+                break 'out Err(e);
+            }
+        }
+
+        if !delta.is_null() {
+            tc_adjtime(w.as_ref(), None, Some(adjustment));
+        }
+        Ok(())
+    };
+    drop(w);
+    error
+}
+
+/// `getitimer(2)`: the calling process's interval timer `which` (`EINVAL` outside
+/// `ITIMER_REAL..=ITIMER_PROF`) copied out to `itv`.
+pub fn sys_getitimer<G: ProcGlue>(
+    _p: &Thread<G>,
+    which: i32,
+    itv: UserPtr<Itimerval>,
+) -> Result<(), Errno> {
+    if !(ITIMER_REAL..=ITIMER_PROF).contains(&which) {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut aitv = Itimerval::default();
+
+    G::setitimer(which, None, Some(&mut aitv));
+
+    itv.copyout(&aitv)
+    // KTRACE: not configured.
+}
+
+/// `setitimer(2)`: the calling process's interval timer `which` (`EINVAL` outside
+/// `ITIMER_REAL..=ITIMER_PROF`) set to the value at `itv` (when not `NULL`, checked by
+/// [`itimerfix`] first), its old value copied out to `oitv` (when not `NULL`); nothing to
+/// do with both `NULL`.
+pub fn sys_setitimer<G: ProcGlue>(
+    _p: &Thread<G>,
+    which: i32,
+    itv: UserPtr<Itimerval>,
+    oitv: UserPtr<Itimerval>,
+) -> Result<(), Errno> {
+    if !(ITIMER_REAL..=ITIMER_PROF).contains(&which) {
+        return Err(Errno::EINVAL);
+    }
+
+    let newitv = if itv.is_null() {
+        None
+    } else {
+        let mut aitv = itv.copyin()?;
+        // KTRACE: not configured.
+        itimerfix(&mut aitv)?;
+        Some(aitv)
+    };
+    if newitv.is_none() && oitv.is_null() {
+        return Ok(());
+    }
+
+    let mut olditv = Itimerval::default();
+    G::setitimer(
+        which,
+        newitv.as_ref(),
+        (!oitv.is_null()).then_some(&mut olditv),
+    );
+
+    if !oitv.is_null() {
+        return oitv.copyout(&olditv);
+        // KTRACE: not configured.
+    }
+
+    Ok(())
 }
 
 /// Checks a `setitimer(2)` value: `EINVAL` for a negative or invalid time or one past
@@ -827,6 +1266,240 @@ mod tests {
                 "lasttime {last0:?} curpps {pps0} maxpps {maxpps}"
             );
         }
+    }
+
+    // The system calls' checks (N4.8's a6), over a test glue with threads and credentials.
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// The tests' region of the user-copy double.
+    const UTIME: usize = testutil::USER_BASE + 0xCC00;
+
+    /// A thread of a new process `pid` whose uids are all `uid`.
+    fn thread_as(
+        pid: hal::sys::types::Pid,
+        uid: hal::sys::types::Uid,
+    ) -> (
+        crate::proc::ProcessRef<Procs>,
+        hal::pool::PoolBox<Thread<Procs>>,
+    ) {
+        std::thread_local! {
+            static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        testutil::install();
+        if !MADE.with(|m| m.replace(true)) {
+            crate::proc::procinit::<Procs>(64, 64);
+        }
+        let pr = crate::proc::process_alloc::<Procs>(pid, ());
+        let mut ids = crate::cred::Ucred::new();
+        ids.cr_ruid.set(uid);
+        ids.cr_uid.set(uid);
+        ids.cr_svuid.set(uid);
+        drop(pr.set_ucred(crate::cred::CredRef::new(ids)));
+        crate::proc::chgproccnt::<Procs>(uid, 1);
+        let t = crate::proc::thread_alloc::<Procs>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        (pr, t)
+    }
+
+    /// A user pointer to a `T` this test wrote at `UTIME + off`.
+    fn user<T: hal::user::AbiPod>(off: usize, v: &T) -> UserPtr<T> {
+        let u = UserPtr::<T>::new(UTIME + off);
+        u.copyout(v).unwrap();
+        u
+    }
+
+    /// kern_time.c: `settimeofday(2)`, `clock_settime(2)`, `adjtime(2)` and `adjfreq(2)` (with
+    /// a new value) and `reboot(2)` ask `suser` first: a user gets `EPERM` before any user
+    /// memory is read (the addresses are outside the double, `EFAULT` had they been).
+    #[test]
+    fn the_setters_and_reboot_are_root_s_and_ask_first() {
+        let (_pr, t) = thread_as(710, 1000);
+        let bad = |off| UTIME + 0x10_0000 + off;
+        assert_eq!(
+            sys_settimeofday(&t, UserPtr::new(bad(0)), UserPtr::new(bad(64))),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(
+            sys_settimeofday(&t, UserPtr::new(0), UserPtr::new(0)),
+            Err(Errno::EPERM),
+            "even with nothing to set"
+        );
+        for clock in [CLOCK_REALTIME, CLOCK_MONOTONIC, 99] {
+            assert_eq!(
+                sys_clock_settime(&t, clock, UserPtr::new(bad(0))),
+                Err(Errno::EPERM),
+                "clock {clock}"
+            );
+        }
+        assert_eq!(
+            sys_adjtime(&t, UserPtr::new(bad(0)), UserPtr::new(0)),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(
+            sys_adjfreq(&t, UserPtr::new(bad(0)), UserPtr::new(0)),
+            Err(Errno::EPERM)
+        );
+        assert!(matches!(
+            crate::reboot::sys_reboot(&t, 0),
+            Err(Errno::EPERM)
+        ));
+        // Reading the adjustments needs no privilege.
+        let old = UserPtr::<i64>::new(UTIME + 0x100);
+        assert_eq!(sys_adjfreq(&t, UserPtr::new(0), old), Ok(()));
+        let oldd = UserPtr::<Timeval>::new(UTIME + 0x110);
+        assert_eq!(sys_adjtime(&t, UserPtr::new(0), oldd), Ok(()));
+    }
+
+    /// `clock_settime(2)`: root's copy is read before the clock is checked, and only
+    /// `CLOCK_REALTIME` can be set (`EINVAL` for the others, the read-only and the unknown);
+    /// an invalid time is `EINVAL` too; a bad address `EFAULT`, before the clock's check.
+    #[test]
+    fn clock_settime_sets_only_the_realtime_clock() {
+        let (_pr, t) = thread_as(711, 0);
+        let now = user(0x200, &Timespec::new(5, 0));
+        for clock in [CLOCK_MONOTONIC, CLOCK_UPTIME, CLOCK_BOOTTIME, 99, -1] {
+            assert_eq!(
+                sys_clock_settime(&t, clock, now),
+                Err(Errno::EINVAL),
+                "clock {clock}"
+            );
+        }
+        assert_eq!(
+            sys_clock_settime(&t, CLOCK_MONOTONIC, UserPtr::new(UTIME + 0x10_0000)),
+            Err(Errno::EFAULT)
+        );
+        let invalid = user(0x210, &Timespec::new(5, 1_000_000_000));
+        assert_eq!(
+            sys_clock_settime(&t, CLOCK_REALTIME, invalid),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    /// `settime`'s gate through the system calls: at securelevel 2 the clock is never set
+    /// back (`EPERM`), whichever call asks, and the time zone is only read.
+    #[test]
+    fn the_setters_refuse_to_set_the_clock_back_when_secure() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _t = crate::tc::tests::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (_pr, t) = thread_as(712, 0);
+        let secure = AtomicI32::new(2);
+        let before = nanotime();
+        let tv = user(0x300, &Timeval::new(0, 0));
+        let tz = user(0x310, &Timezone::default());
+        assert_eq!(settimeofday_secure(&t, tv, tz, &secure), Err(Errno::EPERM));
+        let ts = user(0x320, &Timespec::new(0, 0));
+        assert_eq!(
+            clock_settime_secure(&t, CLOCK_REALTIME, ts, &secure),
+            Err(Errno::EPERM)
+        );
+        assert!(nanotime() >= before, "the clock did not go back");
+        assert!(testutil::printf_count("denied attempt to set clock back") >= 2);
+        // A time zone alone sets nothing, whatever the level; an unreadable one is EFAULT.
+        assert_eq!(
+            settimeofday_secure(&t, UserPtr::new(0), tz, &secure),
+            Ok(())
+        );
+        assert_eq!(
+            settimeofday_secure(
+                &t,
+                UserPtr::new(0),
+                UserPtr::new(UTIME + 0x10_0000),
+                &secure
+            ),
+            Err(Errno::EFAULT)
+        );
+        // An invalid time is EINVAL before the gate.
+        let invalid = user(0x330, &Timeval::new(0, 1_000_000));
+        assert_eq!(
+            settimeofday_secure(&t, invalid, UserPtr::new(0), &secure),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    /// `getitimer(2)` and `setitimer(2)` check `which` before any copy, `setitimer(2)` the
+    /// value with `itimerfix` before the timer is reached; `gettimeofday(2)` writes a zero
+    /// time zone; `clock_getres(2)` answers at least a nanosecond and `EINVAL` for an
+    /// unknown clock; `clock_gettime(2)` too.
+    #[test]
+    fn the_readers_and_the_itimers_check_as_the_c() {
+        let (_pr, t) = thread_as(713, 1000);
+        let bad = UserPtr::<Itimerval>::new(UTIME + 0x10_0000);
+        for which in [-1, 3, 99] {
+            assert_eq!(sys_getitimer(&t, which, bad), Err(Errno::EINVAL));
+            assert_eq!(sys_setitimer(&t, which, bad, bad), Err(Errno::EINVAL));
+        }
+        let invalid = user(
+            0x400,
+            &Itimerval {
+                it_interval: Timeval::new(0, 0),
+                it_value: Timeval::new(0, 1_000_000),
+            },
+        );
+        assert_eq!(
+            sys_setitimer(&t, ITIMER_REAL, invalid, UserPtr::new(0)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            sys_setitimer(&t, ITIMER_PROF, UserPtr::new(0), UserPtr::new(0)),
+            Ok(())
+        );
+        // The test glue keeps no timers: they read zero.
+        let out = UserPtr::<Itimerval>::new(UTIME + 0x420);
+        assert_eq!(sys_getitimer(&t, ITIMER_VIRTUAL, out), Ok(()));
+        assert_eq!(out.copyin().unwrap(), Itimerval::default());
+
+        let tz = user(
+            0x440,
+            &Timezone {
+                tz_minuteswest: 7,
+                tz_dsttime: 1,
+            },
+        );
+        assert_eq!(sys_gettimeofday(&t, UserPtr::new(0), tz), Ok(()));
+        assert_eq!(tz.copyin().unwrap(), Timezone::default());
+
+        let res = UserPtr::<Timespec>::new(UTIME + 0x460);
+        for clock in [CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID] {
+            assert_eq!(sys_clock_getres(&t, clock, res), Ok(()), "clock {clock}");
+            let r = res.copyin().unwrap();
+            assert!(r.tv_sec == 0 && r.tv_nsec >= 1, "clock {clock}: {r:?}");
+        }
+        assert_eq!(
+            sys_clock_getres(&t, CLOCK_REALTIME, UserPtr::new(0)),
+            Ok(())
+        );
+        assert_eq!(sys_clock_getres(&t, 99, res), Err(Errno::EINVAL));
+        assert_eq!(sys_clock_gettime(&t, 99, res), Err(Errno::EINVAL));
+        // A pthread_getcpuclockid() clock naming no thread of the process.
+        let other = CLOCK_THREAD_CPUTIME_ID | (5 << 12);
+        assert_eq!(sys_clock_gettime(&t, other, res), Err(Errno::ESRCH));
+        assert_eq!(sys_clock_getres(&t, other, res), Err(Errno::ESRCH));
+    }
+
+    /// `nanosleep(2)`: a negative or invalid request is `EINVAL` before any sleep.
+    #[test]
+    fn nanosleep_refuses_a_bad_request() {
+        let (_pr, t) = thread_as(714, 1000);
+        for bad in [
+            Timespec::new(-1, 0),
+            Timespec::new(0, -1),
+            Timespec::new(0, 1_000_000_000),
+        ] {
+            let rq = user(0x500, &bad);
+            assert_eq!(
+                sys_nanosleep(&t, rq, UserPtr::new(0)),
+                Err(Errno::EINVAL),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            sys_nanosleep(&t, UserPtr::new(UTIME + 0x10_0000), UserPtr::new(0)),
+            Err(Errno::EFAULT)
+        );
     }
 }
 /* </TESTS> */

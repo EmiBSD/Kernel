@@ -54,9 +54,10 @@
 //! Upstream: sys/kern/kern_xxx.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_xxx.rs@3c62ede68802
 //!
-//! `sys_reboot` (its `suser` and the secondary CPUs' stop), `powerbutton_event` and
+//! [`sys_reboot`] (`reboot(2)`: its `suser`, the secondary CPUs' stop, then `reboot`) is
+//! here since N4.8's a6, generic over the process glue; `powerbutton_event` and
 //! `do_powerdown` (a signal to init) and the `SYSCALL_DEBUG` printers stay `bsd`'s
-//! `kern_xxx.rs` until the process and the system call entry move (N4.6, N4.8b).
+//! `kern_xxx.rs` until the system call entry moves (N4.8b).
 //!
 //! ## Redesign
 //! - `reboot` ends in the machine's `boot(9)` through the [`MachineBoot`] bridge
@@ -65,14 +66,22 @@
 //! - `rebooting` is read by the kernel crate here ([`rebooting`]), not through `SysInfo`.
 //! - The C's `KASSERT((howto & RB_NOSYNC) || curproc != NULL)` is kept over
 //!   `hal::sleep::curproc_word` (LZ's `reboot` had dropped it; the N4.8a review).
+//! - `sys_reboot` takes `opt` typed instead of LZ's `SysArgs` record and returns
+//!   `Result<Infallible, Errno>`: the only way back is `suser`'s error (`/* NOTREACHED */`
+//!   as a type). The secondary CPUs' stop is unconditional: the kernel is MP code only
+//!   (decision 40), where LZ had it under `#[cfg(feature = "multiprocessor")]`.
 
+use core::convert::Infallible;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
+use hal::sys::errno::Errno;
 use hal::sys::reboot::RB_NOSYNC;
 
 use crate::assert::{kassert, kpanic};
+use crate::proc::{ProcGlue, Thread, suser};
+use crate::sched::sched_stop_secondary_cpus;
 use crate::time::stop_periodic_resettodr;
 
 /// `rebooting`: set once the system started to go down, for the code that must not sleep
@@ -94,6 +103,17 @@ pub fn install_machine_boot(imp: &'static dyn MachineBoot) -> Result<(), Already
     MACHINE_BOOT
         .set(imp)
         .map_err(|_| AlreadyRegistered("MachineBoot"))
+}
+
+/// `reboot(2)`: root only (`suser`'s error is the only return); the secondary CPUs stopped,
+/// then the system goes down with the `RB_*` flags `opt` (`<sys/reboot.h>`).
+pub fn sys_reboot<G: ProcGlue>(p: &Thread<G>, opt: i32) -> Result<Infallible, Errno> {
+    suser(p)?;
+
+    sched_stop_secondary_cpus::<G>();
+    kassert!(G::cpu_is_primary(hal::cpu::cpu_number()));
+    reboot(opt)
+    // NOTREACHED
 }
 
 /// `rebooting`.

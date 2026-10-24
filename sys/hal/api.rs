@@ -44,14 +44,15 @@
 //! `futex`, the kernel's entry for futex(2) ([`FutexEntry`]). Version 8 (N4.6a):
 //! [`ProcEntries`], the forty-six of the processes (fork, exit, wait, the limits, the ids
 //! and credentials, accounting, the TCB, the thread names, the routing table). Version 9
-//! (N4.6b): `sysctl`, the kernel's entry for sysctl(2) ([`SysctlEntry`]).
+//! (N4.6b): `sysctl`, the kernel's entry for sysctl(2) ([`SysctlEntry`]). Version 10
+//! (N4.8): [`TimeEntries`], the ten time system calls of kern_time.c and `reboot(2)`.
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 9;
+pub const KERNEL_API_VERSION: u32 = 10;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -239,6 +240,37 @@ pub type FutexEntry = fn(Register, usize, i32, i32, usize, usize, &mut Rval) -> 
 /// integers.
 pub type SysctlEntry = fn(Register, usize, u32, usize, usize, usize, usize, &mut Rval) -> SysResult;
 
+/// The time system calls' entries and `reboot(2)`'s (version 10, N4.8): the clocks, the
+/// time of day and its adjustments, `nanosleep(2)`, the interval timers: one typed entry
+/// each, its arguments as the registers carry them (the addresses as integers), the return
+/// registers given to the entry.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TimeEntries {
+    /// 87 = `clock_gettime(clockid_t clock_id, struct timespec *tp)`.
+    pub clock_gettime: fn(Register, i32, usize, &mut Rval) -> SysResult,
+    /// 88 = `clock_settime(clockid_t clock_id, const struct timespec *tp)`.
+    pub clock_settime: fn(Register, i32, usize, &mut Rval) -> SysResult,
+    /// 89 = `clock_getres(clockid_t clock_id, struct timespec *tp)`.
+    pub clock_getres: fn(Register, i32, usize, &mut Rval) -> SysResult,
+    /// 91 = `nanosleep(const struct timespec *rqtp, struct timespec *rmtp)`.
+    pub nanosleep: fn(Register, usize, usize, &mut Rval) -> SysResult,
+    /// 67 = `gettimeofday(struct timeval *tp, struct timezone *tzp)`.
+    pub gettimeofday: fn(Register, usize, usize, &mut Rval) -> SysResult,
+    /// 68 = `settimeofday(const struct timeval *tv, const struct timezone *tzp)`.
+    pub settimeofday: fn(Register, usize, usize, &mut Rval) -> SysResult,
+    /// 305 = `adjfreq(const int64_t *freq, int64_t *oldfreq)`.
+    pub adjfreq: fn(Register, usize, usize, &mut Rval) -> SysResult,
+    /// 140 = `adjtime(const struct timeval *delta, struct timeval *olddelta)`.
+    pub adjtime: fn(Register, usize, usize, &mut Rval) -> SysResult,
+    /// 70 = `getitimer(int which, struct itimerval *itv)`.
+    pub getitimer: fn(Register, i32, usize, &mut Rval) -> SysResult,
+    /// 69 = `setitimer(int which, const struct itimerval *itv, struct itimerval *oitv)`.
+    pub setitimer: fn(Register, i32, usize, usize, &mut Rval) -> SysResult,
+    /// 55 = `reboot(int opt)`.
+    pub reboot: fn(Register, i32, &mut Rval) -> SysResult,
+}
+
 /// The process system calls' entries (version 8, N4.6a): `fork(2)` and `vfork(2)`,
 /// `__tfork(2)`, `exit(2)` and `__threxit(2)`, `wait4(2)` and `waitid(2)`, the limits and
 /// usage (`getrusage`, `getrlimit`, `setrlimit`, `getpriority`, `setpriority`), `acct(2)`, the
@@ -376,6 +408,8 @@ pub struct KernelApi {
     pub proc: ProcEntries,
     /// sysctl(2) (version 9).
     pub sysctl: SysctlEntry,
+    /// The time system calls and reboot(2) (version 10).
+    pub time: TimeEntries,
 }
 
 impl KernelApi {
@@ -397,6 +431,7 @@ impl KernelApi {
         futex: FutexEntry,
         proc: ProcEntries,
         sysctl: SysctlEntry,
+        time: TimeEntries,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -412,6 +447,7 @@ impl KernelApi {
             futex,
             proc,
             sysctl,
+            time,
         }
     }
 }
@@ -458,8 +494,13 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 9 only adds: the version 8 fields keep their places, `sysctl` comes last.
-    assert!(offset_of!(KernelApi, sysctl) == size_of::<KernelApi>() - size_of::<SysctlEntry>());
+    // Version 10 only adds: the version 9 fields keep their places, `time` comes last.
+    assert!(offset_of!(KernelApi, time) == size_of::<KernelApi>() - size_of::<TimeEntries>());
+    assert!(
+        offset_of!(KernelApi, time) == offset_of!(KernelApi, sysctl) + size_of::<SysctlEntry>()
+    );
+    assert!(size_of::<TimeEntries>() == 11 * size_of::<fn()>());
+    // Version 9 added `sysctl` after `proc`.
     assert!(
         offset_of!(KernelApi, sysctl) == offset_of!(KernelApi, proc) + size_of::<ProcEntries>()
     );
@@ -1033,16 +1074,71 @@ mod tests {
         Err(nr as i32 + (name + namelen as usize + old + oldlenp + new + newlen) as i32)
     }
 
+    fn t_clock(nr: Register, clock: i32, tp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 * 100 + clock * 10 + tp as i32)
+    }
+    fn t_pair(nr: Register, a: usize, b: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 * 100 + (a * 10 + b) as i32)
+    }
+    fn t_getitimer(nr: Register, which: i32, itv: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 * 100 + which * 10 + itv as i32)
+    }
+    fn t_setitimer(
+        nr: Register,
+        which: i32,
+        itv: usize,
+        oitv: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 * 1000 + which * 100 + (itv * 10 + oitv) as i32)
+    }
+    fn t_reboot(nr: Register, opt: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 * 10 + opt)
+    }
+
+    const TIME: TimeEntries = TimeEntries {
+        clock_gettime: t_clock,
+        clock_settime: t_clock,
+        clock_getres: t_clock,
+        nanosleep: t_pair,
+        gettimeofday: t_pair,
+        settimeofday: t_pair,
+        adjfreq: t_pair,
+        adjtime: t_pair,
+        getitimer: t_getitimer,
+        setitimer: t_setitimer,
+        reboot: t_reboot,
+    };
+
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
+        TIME,
     );
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 9);
+        assert_eq!(KERNEL_API_VERSION, 10);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
+    }
+
+    #[test]
+    fn the_time_entries_are_the_callers_and_get_the_return_registers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.time.clock_gettime)(87, 3, 4, &mut rval), Err(8734));
+        assert_eq!(rval[0], 87);
+        assert_eq!((API.time.adjtime)(140, 1, 2, &mut rval), Err(14012));
+        assert_eq!(rval[0], 140);
+        assert_eq!((API.time.setitimer)(69, 1, 2, 3, &mut rval), Err(69123));
+        assert_eq!((API.time.getitimer)(70, 2, 5, &mut rval), Err(7025));
+        assert_eq!((API.time.reboot)(55, 4, &mut rval), Err(554));
+        assert_eq!(rval[0], 55);
     }
 
     #[test]

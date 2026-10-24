@@ -5635,7 +5635,7 @@ rust = "sys/kern/kern_time.rs"
 lz = ["sys/kern/kern_time.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/time.rs", "sys/kernel/tc.rs", "sys/kernel/clockintr.rs"]
-notes = "N4.8a: settime, ratecheck, ppsratecheck (ppsratecheck_shared under kernel::time::ppsratecheck_locked), itimerfix, itimerdecr, the time-of-day chip and the periodic resettodr are kernel::time's, wrapped; clock_getres's timecounter resolution kernel::time::tc_resolution; adjfreq/adjtime over tc_lock's witnesses; itimer_update a kernel::clockintr callback"
+notes = "N4.8a: settime, ratecheck, ppsratecheck (ppsratecheck_shared under kernel::time::ppsratecheck_locked), itimerfix, itimerdecr, the time-of-day chip and the periodic resettodr are kernel::time's, wrapped; clock_getres's timecounter resolution kernel::time::tc_resolution; adjfreq/adjtime over tc_lock's witnesses; itimer_update a kernel::clockintr callback; N4.8 a6: the ten sys_* are sysent[] rows over kernel::time's, settime/clock_gettime/itimerfix gone into kernel::time"
 
 [[module]]
 rust = "sys/kern/kern_unveil.rs"
@@ -9683,14 +9683,14 @@ rust = "sys/kernel/time.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_time.rs", "sys/dev/clock_subr.rs"]
 status = "redesigned"
-notes = "N4.8a: kern_time.c's parts no process owns, 0 unsafe: settime (securelevel from the caller), clock_getres's timecounter resolution (tc_resolution, under tc_lock read), itimerfix, itimerdecr, ratecheck(9), ppsratecheck(9) with ppsratecheck_locked/ppsratecheck_held (a counter shared between CPUs reached only with ppsratecheck_mtx held, the guard the proof, instead of LZ's ppsratecheck_shared raw pointers), the time-of-day chip: struct todr_chip_handle as the Todr trait (quality, gettime, settime; todr_setwen omitted: no implementer sets it and todr_wenable has no caller), todr_attach keeping the better quality in a Mutexed (LZ: an AtomicPtr deref), inittodr, resettodr and the periodic resettodr (a kernel Timeout and Task on systq); struct itimerspec, itimerval, timezone and clockinfo with abi_pod!. The system calls, setitimer, realitexpire and itimer_update stay bsd's kern_time.rs until struct process's timers move (N4.6)"
+notes = "N4.8a: kern_time.c's parts no process owns, 0 unsafe: settime (securelevel from the caller), clock_getres's timecounter resolution (tc_resolution, under tc_lock read), itimerfix, itimerdecr, ratecheck(9), ppsratecheck(9) with ppsratecheck_locked/ppsratecheck_held (a counter shared between CPUs reached only with ppsratecheck_mtx held, the guard the proof, instead of LZ's ppsratecheck_shared raw pointers), the time-of-day chip: struct todr_chip_handle as the Todr trait (quality, gettime, settime; todr_setwen omitted: no implementer sets it and todr_wenable has no caller), todr_attach keeping the better quality in a Mutexed (LZ: an AtomicPtr deref), inittodr, resettodr and the periodic resettodr (a kernel Timeout and Task on systq); struct itimerspec, itimerval, timezone and clockinfo with abi_pod!.; N4.8 a6: the ten system calls (clock_gettime, clock_settime, clock_getres, nanosleep, gettimeofday, settimeofday, adjfreq, adjtime, getitimer, setitimer) with clock_gettime, generic over ProcGlue (setitimer, spc_runtime and pledge_adjtime are glue members: the interval timers are still bsd's BsdProcessG members), securelevel read from kernel::sysctl::SECURELEVEL right before settime. setitimer, realitexpire and itimer_update stay bsd's kern_time.rs until the timers move into kernel::proc::Process"
 
 [[module]]
 rust = "sys/kernel/reboot.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_xxx.rs"]
 status = "redesigned"
-notes = "N4.8a: rebooting and reboot(): stop_periodic_resettodr, rebooting set, the machine's boot(9) through the MachineBoot bridge (bsd's machdep until N7); sys_reboot, the power button's path and the SYSCALL_DEBUG printers stay bsd's kern_xxx.rs (they reach the process and the syscall table)"
+notes = "N4.8a: rebooting and reboot(): stop_periodic_resettodr, rebooting set, the machine's boot(9) through the MachineBoot bridge (bsd's machdep until N7); the power button's path and the SYSCALL_DEBUG printers stay bsd's kern_xxx.rs; N4.8 a6: sys_reboot (suser, sched_stop_secondary_cpus, the primary-CPU KASSERT, reboot) generic over ProcGlue"
 
 [[module]]
 rust = "sys/kernel/task.rs"

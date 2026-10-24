@@ -27,18 +27,20 @@
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
 //! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
 //! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
-//! N4.6a) and sysctl(2) (`SysctlEntry`, N4.6b), which run the system call prologue still in
+//! N4.6a), sysctl(2) (`SysctlEntry`, N4.6b) and the time system calls with reboot(2)
+//! (`TimeEntries`, N4.8), which run the system call prologue still in
 //! `bsd` (pledge, the pinned syscalls) before `kernel::pipe`, `kernel::vm`,
 //! `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`, `kernel::futex`, the
-//! process modules and `kernel::sysctl`, `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
+//! process modules, `kernel::sysctl`, `kernel::time` and `kernel::reboot`,
+//! `sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
 //! `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`,
 //! `sys/kern/subr_log.rs`, `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`,
-//! `sys/kern/kern_sysctl.rs`); an entry moves to a `kernel` function
+//! `sys/kern/kern_sysctl.rs`, `sys/kern/kern_time.rs`); an entry moves to a `kernel` function
 //! when its subsystem does, and at N9 the kernel builds the table alone.
 
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
-    KernelApi, ProcEntries, SyscallHandler, SysctlEntry, VmEntries,
+    KernelApi, ProcEntries, SyscallHandler, SysctlEntry, TimeEntries, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -70,6 +72,7 @@ pub const fn table(
     futex: FutexEntry,
     proc: ProcEntries,
     sysctl: SysctlEntry,
+    time: TimeEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -84,6 +87,7 @@ pub const fn table(
         futex,
         proc,
         sysctl,
+        time,
     )
 }
 
@@ -497,8 +501,35 @@ mod tests {
         Err(nr as i32)
     }
 
+    fn t_clock(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn t_pair(nr: Register, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn t_setitimer(nr: Register, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+    fn t_reboot(nr: Register, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
+    const TIME: TimeEntries = TimeEntries {
+        clock_gettime: t_clock,
+        clock_settime: t_clock,
+        clock_getres: t_clock,
+        nanosleep: t_pair,
+        gettimeofday: t_pair,
+        settimeofday: t_pair,
+        adjfreq: t_pair,
+        adjtime: t_pair,
+        getitimer: t_clock,
+        setitimer: t_setitimer,
+        reboot: t_reboot,
+    };
+
     static API: KernelApi = table(
-        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
+        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME,
     );
 
     #[test]
@@ -528,6 +559,9 @@ mod tests {
         assert_eq!((API.proc.fork)(2, &mut rval), Err(2));
         assert_eq!((API.proc.setrtable)(310, 0, &mut rval), Err(310));
         assert_eq!((API.sysctl)(202, 0, 0, 0, 0, 0, 0, &mut rval), Err(202));
+        assert_eq!((API.time.clock_gettime)(87, 0, 0, &mut rval), Err(87));
+        assert_eq!((API.time.setitimer)(69, 0, 0, 0, &mut rval), Err(69));
+        assert_eq!((API.time.reboot)(55, 0, &mut rval), Err(55));
     }
 }
 /* </TESTS> */

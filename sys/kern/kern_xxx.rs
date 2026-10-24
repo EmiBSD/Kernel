@@ -69,7 +69,6 @@
 use core::sync::atomic::AtomicI32;
 use core::sync::atomic::Ordering;
 
-use crate::kern::kern_prot::suser;
 use crate::kern::kern_sig::prsignal;
 use crate::kern::kern_sysctl::ALLOWPOWERDOWN;
 use crate::kern::kern_task::{SYSTQ, task_add};
@@ -86,23 +85,25 @@ use crate::sys::types::Register;
 /// `rebooting`: the kernel's (`kernel::reboot`, N4.8a).
 pub use kernel::reboot::REBOOTING;
 
-/// `reboot(2)`: root only; goes down with the `RB_*` flags `opt` (`<sys/reboot.h>`).
+/// `reboot(2)`'s `sysent[]` row: the kernel's ([`kernel::reboot::sys_reboot`]: `suser`, the
+/// secondary CPUs stopped, then `reboot`); it returns only `suser`'s error.
 pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysRebootArgs = sysargs(v);
-
-    suser(p)?;
-
-    #[cfg(feature = "multiprocessor")]
-    {
-        crate::kern::kern_sched::sched_stop_secondary_cpus();
-        crate::kassert!(
-            <crate::machine::Machine as crate::machine::cpu::Cpu>::cpu_is_primary(
-                crate::machine::cpu::curcpu()
-            )
-        );
+    match kernel::reboot::sys_reboot(p, uap.opt.get()) {
+        Err(e) => Err(e),
+        Ok(never) => match never {},
     }
-    reboot(uap.opt.get())
-    // NOTREACHED
+}
+
+/// `KernelApi::time.reboot`: [`sys_reboot`]'s row through the system call prologue
+/// (`mi_syscall`: pledge, the pinned syscalls, the kernel-lock rule).
+pub fn native_reboot(nr: Register, opt: i32, rval: &mut [Register; 2]) -> hal::syscall::SysResult {
+    crate::kern::kern_descrip::native(
+        nr,
+        crate::sys::syscall::SYS_reboot,
+        [opt as Register, 0, 0, 0, 0, 0],
+        rval,
+    )
 }
 
 /// `reboot`: the kernel's (`kernel::reboot::reboot`: the clock bookkeeping stopped,
