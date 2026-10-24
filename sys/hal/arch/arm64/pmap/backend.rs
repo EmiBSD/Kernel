@@ -101,7 +101,8 @@
 //!   did not: printing them would add boot lines the smokes and dmesg never had, and the
 //!   memory `removing` reports is handed to uvm before the bootstrap here.
 //! - The direct map (another level-0 slot, the boot loader's tables below hal's copy of its
-//!   level-0 entries) gets `Lx_PT_PXN` and `Lx_PT_XN` on those entries, so nothing below them
+//!   level-0 entries) gets `ATTR_nG` on its leaves (see the redesign: the boot loaders make
+//!   them global) and `Lx_PT_PXN` and `Lx_PT_XN` on those entries, so nothing below them
 //!   executes whatever the boot loader's leaves say (Limine's were never checked; `locore0.S`'s
 //!   blocks are `ATTR_XN`), and `pmap_init` clears `TCR_EL1.HPD0`/`HPD1` so those table bits
 //!   count (both are clear under both boot loaders today: `locore.rs`'s `tcr` word, and the
@@ -158,7 +159,18 @@
 //!   bootstrap, refused by `pmap_setttb`, and filled by [`postinit`] (the head of
 //!   `pmap_postinit`, from `cpu_startup`), which then walks its tables and panics unless they
 //!   map the trampoline's pages and nothing else ([`pmap_tramp_check`]): the isolation is
-//!   proven at every boot, before user code runs under it. The C's walk-free `memset` of the
+//!   proven at every boot, before user code runs under it. The isolation also needs every
+//!   kernel mapping to be non-global, as the C's are (`pmap_pte_update`'s `ATTR_nG`, which
+//!   is why its trampoline needs no `tlbi`): a global TLB entry matches every ASID, so one the
+//!   kernel cached would survive the switch to `pmap_tramp` and stay within reach of a
+//!   speculative load from EL0. The C has no direct map and builds every kernel leaf itself;
+//!   here the boot loader's direct map and kernel-half leaves are global (`locore0.S`'s and
+//!   `bootarg_direct_map`'s blocks, Limine's HHDM), so the bootstrap sets `ATTR_nG` on every
+//!   block and page its root reaches ([`pmap_kernel_nonglobal`], before the switch's
+//!   `tlbi vmalle1is`), the leaves the pmap makes carry it already (`pmap_pte_update`,
+//!   `kernel_leaf`), and `postinit` walks the kernel's tables again and panics on a global
+//!   one ([`pmap_kernel_nonglobal_check`]). The cost is the C's: kernel TLB entries are tagged
+//!   with the running pair's ASID, refilled after a switch to another ASID. The C's walk-free `memset` of the
 //!   root is the steal's zeroing; it extracts the first page's address once and adds
 //!   `PAGE_SIZE`, here each page's address is extracted.
 //! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
@@ -563,6 +575,53 @@ fn pmap_kvp_alloc(pages: &dyn PhysPages) -> Option<Table> {
     Some(Table { hw, sw })
 }
 
+/// Every valid block and page descriptor reachable from the hardware table at `table` (a
+/// table of `level`, 0 for a root) given to `leaf` with its value; table descriptors are
+/// followed, whoever made the tables (the boot loader's, through the direct map, or ours).
+fn walk_kernel_leaves(table: Paddr, level: usize, leaf: &mut impl FnMut(&'static AtomicU64, u64)) {
+    for e in words(table) {
+        let d = e.load(Ordering::Acquire);
+        if d & Lx_TYPE_S == 0 {
+            continue;
+        }
+        if level < 3 && d & Lx_TYPE_MASK == Lx_TYPE_PT {
+            walk_kernel_leaves(Paddr::new((d & PTE_RPGN) as usize), level + 1, leaf);
+        } else {
+            leaf(e, d);
+        }
+    }
+}
+
+/// `pmap_bootstrap`'s half of the C's rule that every mapping is non-global (`pmap_pte_update`'s
+/// `ATTR_nG`, see the redesign): `ATTR_nG` set on every block and page the kernel's root
+/// reaches, the boot loader's direct map and kernel-half leaves included (`locore0.S`'s and
+/// `bootarg_direct_map`'s blocks, Limine's HHDM), before `switch_mmu_kernel_table`, whose
+/// `tlbi vmalle1is` drops the global entries cached so far. Only the TLB tagging changes
+/// (nG is one of the bits a live entry may change without break-before-make), so the
+/// mappings the kernel runs on stay as they were.
+fn pmap_kernel_nonglobal(root: Paddr) {
+    walk_kernel_leaves(root, 0, &mut |e, d| {
+        if d & ATTR_nG == 0 {
+            e.store(d | ATTR_nG, Ordering::Release);
+        }
+    });
+}
+
+/// The boot-time proof of [`pmap_kernel_nonglobal`]'s rule: panics on a block or page of the
+/// kernel's tables without `ATTR_nG`, which would match every ASID and so stay in the TLB
+/// while user code runs under `pmap_tramp`.
+#[cfg(not(feature = "module-rt"))]
+fn pmap_kernel_nonglobal_check(root: Paddr) {
+    walk_kernel_leaves(root, 0, &mut |e, d| {
+        if d & ATTR_nG == 0 {
+            hal_panic(format_args!(
+                "pmap_postinit: the global kernel mapping {d:#x} at {:p}",
+                ptr::from_ref(e)
+            ));
+        }
+    });
+}
+
 /// `pmap_steal_avail(2 * sizeof(struct pmapvp1))`: the kernel's root and `pmap_tramp`'s, both
 /// zeroed, their hardware pages stolen in one block so the trampoline's lies
 /// [`TRAMP_ROOT_OFFSET`] above the kernel's (what `trampoline.S` adds to `TTBR1_EL1`); the
@@ -702,7 +761,10 @@ pub fn switch_mmu_kernel_table() {
     //   Limine's on an application processor), the image, the direct map (the copied level-0
     //   slots, Limine's stacks there included) and the kernel map (the copied level-1 slots),
     //   with `Lx_PT_PXN`/`Lx_PT_XN` on the direct map's slots removing only execution, which
-    //   nothing does there (the code after the block is the image's text). So the return address, the
+    //   nothing does there (the code after the block is the image's text), and `ATTR_nG` on
+    //   every leaf (`pmap_kernel_nonglobal`, before the boot CPU's switch; an application
+    //   processor finds it set) changing only how their TLB entries are tagged, the
+    //   `tlbi vmalle1is` dropping the global entries cached before it. So the return address, the
     //   code after the block, the stack and every Rust reference stay mapped; only the image's
     //   permissions change, tighter: no Rust code writes the text or the read-only data (the
     //   boot seed in `.openbsd.randomdata` is wiped through another mapping), and nothing
@@ -1322,11 +1384,15 @@ pub fn postinit() {
         }
     }
     pmap_tramp_check(&range);
+    match KERNEL_PMAP.md.root() {
+        Some(root) => pmap_kernel_nonglobal_check(root.hw),
+        None => hal_panic(format_args!("pmap_postinit: before pmap_bootstrap")),
+    }
 }
 
 /// `postinit`'s boot-time proof of the isolation: every valid entry of `pmap_tramp` is a table
 /// of ours down to level 3, whose leaves are exactly the pages of `range`, each at the kernel's
-/// physical address, read-only, executable at EL1 and out of EL0's reach; anything else
+/// physical address, non-global, read-only, executable at EL1 and out of EL0's reach; anything else
 /// panics, before user code ever runs under them.
 #[cfg(not(feature = "module-rt"))]
 fn pmap_tramp_check(range: &Range<usize>) {
@@ -1361,10 +1427,13 @@ fn pmap_tramp_walk(t: Table, level: usize, base: usize, range: &Range<usize>) ->
         if level == 3 {
             // EL1 read-only (AP 0b10), not EL0's, executable at EL1 only.
             let kernel_rx = d & attr_ap(3) == attr_ap(2) && d & ATTR_UXN != 0 && d & ATTR_PXN == 0;
+            // Non-global, as every mapping (tagged with the pair's odd ASID at EL0).
+            let tagged = d & ATTR_nG != 0;
             let pa = Backend::extract(&KERNEL_PMAP, Vaddr::new(va));
             if d & Lx_TYPE_MASK != L3_P
                 || !range.contains(&va)
                 || !kernel_rx
+                || !tagged
                 || pa.map(|p| p.as_usize() as u64) != Some(d & PTE_RPGN)
             {
                 more();
@@ -1701,6 +1770,9 @@ impl PmapBackend for Backend {
                 options(nostack, preserves_flags),
             )
         };
+
+        // Every kernel mapping non-global, as the C's (see the redesign).
+        pmap_kernel_nonglobal(vp0.hw);
 
         // switch_mmu_kernel_table(pt1pa): the switch routine at its physical address, through
         // an identity table that maps its page alone (see the redesign), with the kernel's
