@@ -44,3 +44,13 @@ Deliberate, never automatic. See `docs/PORTING.md`, "Bumping the reference pin".
 `sys/` alone is hundreds of megabytes; the full history is gigabytes. `--depth 1` means `git log`
 inside the clone is useless, so drift is detected by blob hash (`cargo xtask ports drift`), not by
 history.
+
+## posix-2024/
+
+The HTML edition of IEEE Std 1003.1-2024 / The Open Group Base Specifications Issue 8
+(`susv5.tgz`, from https://pubs.opengroup.org/onlinepubs/9799919799/download/, downloaded
+2026-10-24; its hash in `SHA256`), extracted to `susv5-html/`. It is the specification the
+Userland's programs are surveyed and defined against (`susv5-html/utilities/<name>.html`,
+`basedefs/V1_chap12.html` for the utility conventions). Gitignored and **read-only**: The Open
+Group's terms allow the download for personal use only and forbid redistribution, so it is
+never committed and never copied into either repository; read it with `sed -n` or a browser.

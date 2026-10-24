@@ -1,6 +1,7 @@
 /target
 /reference/openbsd-src/
 /reference/emibsd-lz/
+/reference/posix-2024/
 *.img
 .DS_Store
 
