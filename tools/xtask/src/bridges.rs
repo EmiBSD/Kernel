@@ -26,7 +26,7 @@
 //!   the key is only a warning, so the redesigners' commits stay green until they add it.
 //! * `bridges.toml` at the root is optional. Each `[[bridge]]` row has `trait` (an identifier),
 //!   `for` (the `.rs` files under `sys/` that call through it, which must exist) and `paid_by`
-//!   (`N2`..`N9`, the milestone that removes the bridge). A duplicate trait, a malformed row or
+//!   (`N2`..`N10`, the milestone that removes the bridge; `N10` for amd64's, decision 44). A duplicate trait, a malformed row or
 //!   an unknown key is an error. `lz status` prints `bridges: <n> open (<by milestone>)`.
 
 use std::collections::BTreeMap;
@@ -117,10 +117,10 @@ fn is_ident(s: &str) -> bool {
 }
 
 fn is_milestone(s: &str) -> bool {
-    s.len() == 2
+    (s.len() == 2 || s == "N10")
         && matches!(
             s.strip_prefix('N').and_then(|d| d.parse::<u8>().ok()),
-            Some(2..=9)
+            Some(2..=10)
         )
 }
 
@@ -141,7 +141,7 @@ pub(crate) fn check_bridges(bridges: &[Bridge], exists: impl Fn(&str) -> bool) -
         seen.push(t);
         if !is_milestone(&b.paid_by) {
             errors.push(format!(
-                "{BRIDGES_FILE}: trait \"{t}\": paid_by = \"{}\" is not N2..N9",
+                "{BRIDGES_FILE}: trait \"{t}\": paid_by = \"{}\" is not N2..N10",
                 b.paid_by
             ));
         }
@@ -251,9 +251,10 @@ paid_by = "N2"
         };
         let errs = |b: &[Bridge]| check_bridges(b, exists);
         assert!(errs(&row("A", "\"sys/kern/a.rs\"", "N9")).is_empty());
+        assert!(errs(&row("A", "\"sys/kern/a.rs\"", "N10")).is_empty());
         assert_eq!(errs(&row("1A", "\"sys/kern/a.rs\"", "N2")).len(), 1);
         assert_eq!(errs(&row("A b", "\"sys/kern/a.rs\"", "N2")).len(), 1);
-        for p in ["N1", "N10", "n3", "M3", ""] {
+        for p in ["N1", "N11", "N010", "n3", "M3", ""] {
             assert_eq!(errs(&row("A", "\"sys/kern/a.rs\"", p)).len(), 1, "{p}");
         }
         assert_eq!(errs(&row("A", "", "N2")).len(), 1);

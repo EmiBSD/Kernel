@@ -105,10 +105,11 @@ paid_by = "N9"
 # 7) and the writable copy's memory is the kernel's (kernel::vm::km::module_memory(), a
 # hal::module::ModuleMemory passed to load as a value). N4.1, the boot entry.
 # hal::module::ModulePlatform
+# Re-dated N9 at the N4 close (the user, 2026-10-24): the module's boot entry goes with bsd's main().
 [[bridge]]
 trait = "ModulePlatform"
 for = ["sys/hal/module/load.rs"]
-paid_by = "N4"
+paid_by = "N9"
 
 
 # bsd: BUFPAGES_DEFICIT and BUFPAGES_INACT of sys/sys/mount.rs over bcstats (sys/kern/vfs_bio.rs),
@@ -128,10 +129,11 @@ paid_by = "N5"
 # each pipe): new, pgsigio, sigio_free, sigio_setown and sigio_getown left the trait, and the
 # glue holds nothing per pipe. What stays goes with the clock (N4.8).
 # kernel::pipe::PipeGlue
+# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
 [[bridge]]
 trait = "PipeGlue"
 for = ["sys/kernel/pipe.rs"]
-paid_by = "N4"
+paid_by = "N5"
 
 # bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
 # N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as
@@ -164,10 +166,11 @@ paid_by = "N8"
 # bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
 # (sys/kern/kern_descrip.rs, sys/sys/filedesc.rs), implemented by sys/kern/pipe_glue.rs.
 # kernel::pipe::PipeFiles
+# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
 [[bridge]]
 trait = "PipeFiles"
 for = ["sys/kernel/pipe.rs"]
-paid_by = "N4"
+paid_by = "N5"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
@@ -176,10 +179,11 @@ paid_by = "N4"
 # 11 of N4.6 (N4.5's decision 8: amd64 is frozen until N10, decision 44); paid_by stays N4
 # until xtask's schema accepts N10 (it takes N2..N9).
 # hal::pmap::TlbCpus
+# Re-dated N10 at the N4 close (the user, 2026-10-24; decision 11 of N4.6): amd64's, frozen until N10 (decision 44); bridges.rs accepts N10 since.
 [[bridge]]
 trait = "TlbCpus"
 for = ["sys/hal/arch/amd64/pmap/tlb.rs", "sys/hal/arch/amd64/pmap/backend.rs"]
-paid_by = "N4"
+paid_by = "N10"
 
 # bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
@@ -205,10 +209,11 @@ paid_by = "N5"
 # kqueue's sleep and EVFILT_TIMER's NOTE_ABSTIME), implemented by sys/kern/hal_bridges.rs
 # (BsdUptime). N4.8, with kern_tc. N4.6b: nanoboottime (kinfo_proc's start times).
 # kernel::clock::Uptime
+# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
 [[bridge]]
 trait = "Uptime"
 for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
-paid_by = "N4"
+paid_by = "N5"
 
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
@@ -268,10 +273,11 @@ paid_by = "N6"
 # &rebooting (sys/kern/kern_xxx.rs); implemented by sys/kern/vm_bsd.rs (BsdSysInfo) and
 # installed by bsd's uvm_init (N3.4e); (0, 0) and false before. N4, with kern_time and kern_xxx.
 # kernel::vm::vnode::SysInfo
+# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
 [[bridge]]
 trait = "SysInfo"
 for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/map.rs"]
-paid_by = "N4"
+paid_by = "N5"
 
 # bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
 # vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
@@ -293,10 +299,11 @@ paid_by = "N5"
 # sys/kern/vm_bsd.rs (N3.5 S1,
 # registered by bsd's uvm_init at the flip), one bsd call each. N4, when Proc moves.
 # kernel::vm::proc::VmProc
+# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
 [[bridge]]
 trait = "VmProc"
 for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs", "sys/kernel/vm/meter.rs"]
-paid_by = "N4"
+paid_by = "N5"
 
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
 # kernel::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from
