@@ -493,8 +493,8 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
                 Some(vm) => user_fault(vm),
                 None => kernel_fault(va),
             }),
-            FaultSource::User => {
-                with_trapped::<G, _>(|p| user_page_fault(&p, hal::trap::proc_stack(), user_fault))
+            FaultSource::User { sp } => {
+                with_trapped::<G, _>(|p| user_page_fault(&p, sp, user_fault))
             }
         }
     }

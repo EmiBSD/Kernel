@@ -132,6 +132,10 @@
 //! - `cpu_id_aa64pfr0`, `pfr1`, `isar0`, `isar1`, `isar2` (`cpu.c`'s userland view of the ID
 //!   registers, `emulate_msr`'s answers) are this module's statics, which `bsd`'s CPU code
 //!   writes (`cpu_identify_cleanup`).
+//! - N4.8d: `do_el0_sync` reads the frame's `elr` or `sp` in the arm that uses it, not once
+//!   for every exception, and `udata_abort` hands `PROC_STACK(p)`, read from the frame it
+//!   holds, to the kernel's `MAP_STACK` check in `hal::trap::FaultSource::User { sp }`: a user
+//!   fault borrows the frame once instead of twice, a system call not at all here.
 
 use core::fmt;
 use core::ptr::{self, NonNull};
@@ -345,9 +349,9 @@ fn fault(args: fmt::Arguments<'_>) {
 
 /// `udata_abort`: a data or instruction abort from EL0: the branch predictor flushed for a
 /// kernel address, an alignment fault signalled, then the fault served by the kernel on the
-/// process's map (`pmap_fault_fixup`, `uvm_fault`, the `MAP_STACK` check first); a fault it
-/// cannot serve is a signal.
-fn udata_abort(esr: u64, far: u64, exe: bool) {
+/// process's map (`pmap_fault_fixup`, `uvm_fault`, the `MAP_STACK` check of `sp`, the
+/// frame's stack pointer, first); a fault it cannot serve is a signal.
+fn udata_abort(esr: u64, far: u64, exe: bool, sp: usize) {
     let access_type = accesstype(esr, exe);
     let h = handler("udata_abort");
 
@@ -361,7 +365,7 @@ fn udata_abort(esr: u64, far: u64, exe: bool) {
         return;
     }
 
-    let error = match h.page_fault(FaultSource::User, va, access_type) {
+    let error = match h.page_fault(FaultSource::User { sp }, va, access_type) {
         Ok(()) => return,
         Err(e) => e,
     };
@@ -591,37 +595,40 @@ pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
     frame.make_current();
     h.refreshcreds();
 
-    let (elr, sp) = frame.with(|tf| (tf.tf_elr as usize, tf.tf_sp as usize));
+    // The frame's `elr` and `sp`, read in the arms that use them (one borrow each, none on
+    // the system call's and the FP traps' paths).
+    let elr = || frame.with(|tf| tf.tf_elr as usize);
+    let sp = || frame.with(|tf| tf.tf_sp as usize);
 
     match exception {
         EXCP_UNKNOWN => {
             crate::trap::flush_bp();
-            h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr);
+            h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr());
         }
         EXCP_SVE => fpu::sve_load_current(),
         EXCP_FP_SIMD | EXCP_TRAP_FP => fpu::load_current(),
         EXCP_BRANCH_TGT => {
             crate::trap::flush_bp();
-            h.trapsignal(SIGILL, esr, ILL_BTCFI, elr);
+            h.trapsignal(SIGILL, esr, ILL_BTCFI, elr());
         }
         EXCP_MSR if frame.with(|tf| emulate_msr(tf, esr)) => {}
         EXCP_MSR | EXCP_FPAC => {
             crate::trap::flush_bp();
-            h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr);
+            h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr());
         }
         EXCP_SVC => super::syscall::svc_handler(frame),
-        EXCP_INSN_ABORT_L => udata_abort(esr, far, true),
+        EXCP_INSN_ABORT_L => udata_abort(esr, far, true, sp()),
         EXCP_PC_ALIGN => {
             crate::trap::flush_bp();
-            h.trapsignal(SIGBUS, esr, BUS_ADRALN, elr);
+            h.trapsignal(SIGBUS, esr, BUS_ADRALN, elr());
         }
         EXCP_SP_ALIGN => {
             crate::trap::flush_bp();
-            h.trapsignal(SIGBUS, esr, BUS_ADRALN, sp);
+            h.trapsignal(SIGBUS, esr, BUS_ADRALN, sp());
         }
-        EXCP_DATA_ABORT_L => udata_abort(esr, far, false),
-        EXCP_BRK => h.trapsignal(SIGTRAP, esr, TRAP_BRKPT, elr),
-        EXCP_SOFTSTP_EL0 => h.trapsignal(SIGTRAP, esr, TRAP_TRACE, elr),
+        EXCP_DATA_ABORT_L => udata_abort(esr, far, false, sp()),
+        EXCP_BRK => h.trapsignal(SIGTRAP, esr, TRAP_BRKPT, elr()),
+        EXCP_SOFTSTP_EL0 => h.trapsignal(SIGTRAP, esr, TRAP_TRACE, elr()),
         _ => {
             // panic("Unknown userland exception %x esr_el1 %lx", exception, esr);
             // USERLAND MUST NOT PANIC MACHINE

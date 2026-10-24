@@ -21,13 +21,13 @@
  * out. Pulled in after exception.S, in the same assembly; its vempty and
  * vector macros are this file's own, so exception.S's are purged first.
  *
- * Not here: the switch of TTBR1_EL1 between the kernel's tables and the
- * trampoline's (pmap_tramp, which maps nothing of the kernel but this page),
- * whose pmap half is not configured (sys/hal/arch/arm64/pmap/backend.rs,
- * deviations): the kernel stays mapped while user code runs, and the vectors
- * keep the BHB mitigations and the vector switch; N4.8d adds it (the user's
- * decision of 2026-10-23). PSCI's tables are always assembled (NPSCI is 1 in
- * this kernel).
+ * While user code runs, TTBR1_EL1 holds pmap_tramp's root (which maps these
+ * pages and nothing else of the kernel) under the odd ASID of the pair:
+ * tramp_return switches to it before the eret, and every EL0 vector switches
+ * back to the kernel's root and even ASID before it touches memory, using
+ * x18 alone. The two roots lie TRAMP_ROOT_OFFSET apart (pmap/layout.rs, a
+ * const operand here; the C's 2 * PAGE_SIZE). PSCI's tables are always
+ * assembled (NPSCI is 1 in this kernel).
  */
 
 	.equ	SMCCC_ARCH_WORKAROUND_3, 0x80003fff
@@ -127,11 +127,19 @@
 	1: b	1b
 .endm
 
-/* The C's vector switches TTBR1_EL1 here, between the two halves (see above). */
+/*
+ * Back to the kernel's tables before anything but x18 is touched: the _late
+ * halves (the firmware calls) use the stack, which only the kernel's map.
+ */
 .macro	vector	name, bhb
 	.align 7
 	msr	tpidrro_el0, x18
 	spectre_bhb_\bhb\()_early
+	mrs	x18, ttbr1_el1
+	bic	x18, x18, #(1 << 48)
+	sub	x18, x18, #{TRAMP_ROOT_OFFSET}
+	msr	ttbr1_el1, x18
+	isb
 	spectre_bhb_\bhb\()_late
 	b	tramp_\name
 .endm
@@ -174,10 +182,15 @@ trampoline_vectors:
 	tramp_vector psci_smc
 	tramp_vector clrbhb
 
-/* The C switches TTBR1_EL1 back to the trampoline's tables first (see above). */
+/* To the trampoline's tables and the odd ASID, then out with x18 restored. */
 	.align 11
 	.globl tramp_return
 tramp_return:
+	mrs	x18, ttbr1_el1
+	orr	x18, x18, #(1 << 48)
+	add	x18, x18, #{TRAMP_ROOT_OFFSET}
+	msr	ttbr1_el1, x18
+	isb
 	mrs	x18, tpidrro_el0
 	msr	tpidrro_el0, xzr
 	eret

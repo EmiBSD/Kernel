@@ -68,8 +68,12 @@ pub struct Trapframe;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaultSource {
     /// A fault from user mode (`udata_abort`): the running process's map, after the
-    /// `MAP_STACK` check of its stack pointer (`uvm_map_inentry`), and `uvm_grow` when served.
-    User,
+    /// `MAP_STACK` check of its stack pointer `sp` (`uvm_map_inentry`, `PROC_STACK(p)`, which
+    /// the machine's trap code read from the frame it holds), and `uvm_grow` when served.
+    User {
+        /// The user stack pointer at the fault (`PROC_STACK(p)`).
+        sp: usize,
+    },
     /// A kernel access to a user address by an unprivileged load or store
     /// (`kdata_abort`'s `&p->p_vmspace->vm_map`: the copy routines): the running process's
     /// map, `uvm_grow` when served.

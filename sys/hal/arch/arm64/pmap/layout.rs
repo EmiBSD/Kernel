@@ -91,6 +91,11 @@
 //!   takes ([`kernel_leaf`]: the image, the switch's identity page, the module window) moved
 //!   here from the backend, so the host tests check them; the `TCR_EL1` bits `pmap_init`
 //!   clears ([`TCR_HPD`]).
+//! - N4.8d: the distance between the kernel's root and `pmap_tramp`'s
+//!   ([`TRAMP_ROOT_OFFSET`]; the C's `2 * PAGE_SIZE` literal, written in `pmap.c` and twice in
+//!   `trampoline.S`) is one constant here, which `trampoline.S` takes as a `const` operand of
+//!   `global_asm!`, and the `TTBR1_EL1` arithmetic of the trampoline's two switches is
+//!   mirrored by [`tramp_ttbr1`] and [`kernel_ttbr1`], which the host tests pin.
 
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
@@ -201,6 +206,27 @@ pub const TCR_TTBR0_FIELDS: u64 = 0xffff;
 pub const TCR_IDENTITY_TTBR0: u64 = 16 | (0b01 << 8) | (0b01 << 10) | (0b11 << 12);
 /// `TTBRx_EL1.BADDR`: bits 47:1 hold the table's physical address.
 pub const TTBR_BADDR_MASK: u64 = 0x0000_ffff_ffff_fffe;
+/// How far `pmap_tramp`'s root lies above the kernel's (the backend's `pmap_steal_roots`
+/// steals both hardware pages in one block): what `trampoline.S` adds to `TTBR1_EL1` on the
+/// way out to user mode and takes away on the way in. The C's `2 * PAGE_SIZE` is a
+/// `struct pmapvp1` (a hardware page and a software page); here a vp table's two pages are
+/// paired by `Table`, not by adjacency, so only the hardware roots are, one page apart.
+pub const TRAMP_ROOT_OFFSET: usize = PAGE_SIZE;
+
+/// `tramp_return`'s `orr x18, x18, #(1 << 48); add x18, x18, #TRAMP_ROOT_OFFSET`: the
+/// `TTBR1_EL1` user code runs under, from the one the kernel runs under (`kernel`: the
+/// kernel's root and a pair's even ASID). The odd ASID of the pair, the trampoline's root;
+/// `CnP` and the other ASID bits unchanged. `kernel`'s base is below 48 bits and a page below
+/// the last page, so the `add` carries into nothing.
+pub const fn tramp_ttbr1(kernel: u64) -> u64 {
+    (kernel | ASID_USER << 48) + TRAMP_ROOT_OFFSET as u64
+}
+
+/// The EL0 vectors' `bic x18, x18, #(1 << 48); sub x18, x18, #TRAMP_ROOT_OFFSET`: back from
+/// [`tramp_ttbr1`]'s value to the kernel's, before any memory access of the kernel.
+pub const fn kernel_ttbr1(tramp: u64) -> u64 {
+    (tramp & !(ASID_USER << 48)) - TRAMP_ROOT_OFFSET as u64
+}
 /// `ID_AA64MMFR0_ASID_BITS_MASK`.
 pub const ID_AA64MMFR0_ASID_BITS_MASK: u64 = 0xf << 4;
 /// `ID_AA64MMFR0_ASID_BITS_16`: the CPU has 16-bit ASIDs.
@@ -455,6 +481,7 @@ const _: () = {
             == 0
     );
     assert!(PMAP_ASID_MASK == 0xffff);
+    assert!(TRAMP_ROOT_OFFSET > 0 && TRAMP_ROOT_OFFSET & PAGE_MASK == 0);
     assert!(MODULE_WINDOW_SIZE.is_multiple_of(1 << VP_IDX2_POS));
     assert!(MODULE_WINDOW_NPTP > 0 && MODULE_WINDOW_NPTP < VP_ENTRIES);
     // The managed range lies in one level-0 slot, so its level-1 slots name it alone.
@@ -542,6 +569,44 @@ mod tests {
         assert_eq!(nasid_probe(0, TCR_AS), AsidWidth::Bits8);
         assert_eq!(AsidWidth::Bits16.nasid(), 65536);
         assert_eq!(AsidWidth::Bits8TcrAs.nasid(), 256);
+    }
+
+    #[test]
+    fn the_trampoline_ttbr_changes_the_base_and_bit_48_only() {
+        // A realistic kernel root under ASID 0, then under a user pair's even ASID with CnP.
+        for kernel in [0x4_0000_1000u64, (0x2a << 48) | 0x4_0000_1000 | 1] {
+            let tramp = tramp_ttbr1(kernel);
+            assert_eq!(
+                tramp & TTBR_BADDR_MASK,
+                (kernel & TTBR_BADDR_MASK) + PAGE_SIZE as u64
+            );
+            assert_eq!(tramp >> 48, (kernel >> 48) | ASID_USER, "{kernel:#x}");
+            assert_eq!(tramp & 1, kernel & 1, "CnP");
+            assert_eq!(kernel_ttbr1(tramp), kernel, "{kernel:#x}");
+        }
+        assert_eq!(tramp_ttbr1(0x4_0000_1000), 0x0001_0004_0000_2000);
+    }
+
+    #[test]
+    fn the_trampoline_offset_is_an_add_immediate() {
+        // A page multiple, encodable as `add`/`sub`'s 12-bit immediate, shifted by 12 or not.
+        let off = TRAMP_ROOT_OFFSET as u64;
+        assert!(off > 0 && off.is_multiple_of(PAGE_SIZE as u64));
+        assert!(off < 1 << 12 || (off.is_multiple_of(1 << 12) && off < 1 << 24));
+        // The kernel's table base is TTBR's BADDR: a page offset keeps it inside the mask.
+        assert_eq!(off & !TTBR_BADDR_MASK, 0);
+    }
+
+    #[test]
+    fn the_trampoline_ttbr_round_trips() {
+        for base in [0x1000u64, 0x4_0000_1000, (1 << 48) - 2 * PAGE_SIZE as u64] {
+            for asid in [0u64, 2, 0x100, 0xfffe] {
+                let kernel = asid << 48 | base;
+                assert_eq!(kernel_ttbr1(tramp_ttbr1(kernel)), kernel, "{kernel:#x}");
+                let tramp = tramp_ttbr1(kernel);
+                assert_eq!(tramp_ttbr1(kernel_ttbr1(tramp)), tramp, "{tramp:#x}");
+            }
+        }
     }
 
     #[test]
