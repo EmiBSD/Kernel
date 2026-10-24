@@ -575,6 +575,10 @@ fn pmap_kvp_alloc(pages: &dyn PhysPages) -> Option<Table> {
     Some(Table { hw, sw })
 }
 
+/// The descriptor's contiguous hint (Arm ARM, bit 52; the C's `pte.h` at the pin does not name
+/// it, since nothing there sets it): [`pmap_kernel_nonglobal`] refuses it.
+const ATTR_CONTIGUOUS: u64 = 1 << 52;
+
 /// Every valid block and page descriptor reachable from the hardware table at `table` (a
 /// table of `level`, 0 for a root) given to `leaf` with its value; table descriptors are
 /// followed, whoever made the tables (the boot loader's, through the direct map, or ours).
@@ -598,9 +602,19 @@ fn walk_kernel_leaves(table: Paddr, level: usize, leaf: &mut impl FnMut(&'static
 /// `bootarg_direct_map`'s blocks, Limine's HHDM), before `switch_mmu_kernel_table`, whose
 /// `tlbi vmalle1is` drops the global entries cached so far. Only the TLB tagging changes
 /// (nG is one of the bits a live entry may change without break-before-make), so the
-/// mappings the kernel runs on stay as they were.
+/// mappings the kernel runs on stay as they were. That holds only with the contiguous hint
+/// clear (Linux's `pgattr_change_is_safe` refuses a live change under `PTE_CONT`: a run half
+/// converted is a misprogramming the Arm ARM leaves undefined), so a leaf with
+/// [`ATTR_CONTIGUOUS`] set panics instead: no table of this tree sets it, and a boot loader's
+/// that did would be caught here, before the switch.
 fn pmap_kernel_nonglobal(root: Paddr) {
     walk_kernel_leaves(root, 0, &mut |e, d| {
+        if d & ATTR_CONTIGUOUS != 0 {
+            hal_panic(format_args!(
+                "pmap_bootstrap: the contiguous kernel mapping {d:#x} at {:p}",
+                ptr::from_ref(e)
+            ));
+        }
         if d & ATTR_nG == 0 {
             e.store(d | ATTR_nG, Ordering::Release);
         }
@@ -762,8 +776,11 @@ pub fn switch_mmu_kernel_table() {
     //   slots, Limine's stacks there included) and the kernel map (the copied level-1 slots),
     //   with `Lx_PT_PXN`/`Lx_PT_XN` on the direct map's slots removing only execution, which
     //   nothing does there (the code after the block is the image's text), and `ATTR_nG` on
-    //   every leaf (`pmap_kernel_nonglobal`, before the boot CPU's switch; an application
-    //   processor finds it set) changing only how their TLB entries are tagged, the
+    //   every leaf (`pmap_kernel_nonglobal`, before the boot CPU's switch, which refuses a
+    //   leaf with the contiguous hint, the one case where nG may not change on a live entry;
+    //   an application processor finds it set on the kernel's tables, and the Limine tables
+    //   it parked on are dropped from its TLB by its own `tlbi vmalle1` before any EL0 entry)
+    //   changing only how their TLB entries are tagged, the
     //   `tlbi vmalle1is` dropping the global entries cached before it. So the return address, the
     //   code after the block, the stack and every Rust reference stay mapped; only the image's
     //   permissions change, tighter: no Rust code writes the text or the read-only data (the
