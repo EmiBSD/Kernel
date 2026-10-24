@@ -1777,6 +1777,17 @@ macro_rules! test_proc_glue {
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
             }
+            /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
+            fn setitimer(
+                _which: i32,
+                _itv: Option<&$crate::time::Itimerval>,
+                _olditv: Option<&mut $crate::time::Itimerval>,
+            ) {
+            }
+            /// No per-CPU slice start: the uptime itself (no running part).
+            fn spc_runtime() -> $crate::clock::Timespec {
+                $crate::tc::nanouptime()
+            }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
                 match hal::pool::PoolArc::from_ref(pr) {
                     Some(a) => $crate::proc::StaticOrPooled::Pooled(a),

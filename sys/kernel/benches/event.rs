@@ -297,6 +297,17 @@ impl ProcGlue for BenchGlue {
     fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
         Ok(())
     }
+    /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
+    fn setitimer(
+        _which: i32,
+        _itv: Option<&kernel::time::Itimerval>,
+        _olditv: Option<&mut kernel::time::Itimerval>,
+    ) {
+    }
+    /// No per-CPU slice start: the uptime itself (no running part).
+    fn spc_runtime() -> kernel::clock::Timespec {
+        kernel::tc::nanouptime()
+    }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
         match hal::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),

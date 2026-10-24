@@ -101,6 +101,9 @@
 //! - `settime` takes `securelevel` from its caller (`kern.securelevel`,
 //!   `kernel::sysctl::SECURELEVEL`, which `clock_settime(2)` and `settimeofday(2)` read
 //!   right before the call); the C reads the global inside it.
+//! - `clock_getres(2)` divides by `stathz.max(1)` and `tc_resolution` by
+//!   `tc_getfrequency().max(1)`: a guard against a divide by zero the C would trap on (both
+//!   are set before the first process runs, so userland never sees the difference).
 //!
 //! ## Redesign
 //! - `struct todr_chip_handle` (`todr_quality` and two function pointers taking the handle,

@@ -2551,6 +2551,17 @@ pub(crate) mod tests {
         fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
         }
+        /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
+        fn setitimer(
+            _which: i32,
+            _itv: Option<&crate::time::Itimerval>,
+            _olditv: Option<&mut crate::time::Itimerval>,
+        ) {
+        }
+        /// No per-CPU slice start: the uptime itself (no running part).
+        fn spc_runtime() -> crate::clock::Timespec {
+            crate::tc::nanouptime()
+        }
 
         fn process_ref(pr: &Process<Self>) -> crate::proc::ProcessRef<Self> {
             match hal::pool::PoolArc::from_ref(pr) {
