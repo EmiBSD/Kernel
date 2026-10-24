@@ -1194,7 +1194,10 @@ t_kqueue(void)
 	R("outer add", kevent(kq, &kev, 1, NULL, 0, NULL));
 	kq_one("outer before", kq, &out);
 	R("write", write(p[1], "abc", 3));
-	kq_one("outer after", kq, &out);
+	memset(&out, 0, sizeof(out));
+	ts.tv_sec = 1;
+	ts.tv_nsec = 0;
+	R("outer after", kevent(kq, NULL, 0, &out, 1, &ts));
 	printf("outer event: filter %d data %lld\n", out.filter, (long long)out.data);
 	show_fd("kqueue fstat", kq2);
 	EV_SET(&kev, kq2, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
