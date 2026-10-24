@@ -132,3 +132,5 @@ metadata:
 - A slice that changes a console line a smoke expects (LZ's printf made the C's uprintf) must update the recipe's expectation in the same series; prefer a `--reject` of the old line, which asserts the C's behaviour, over deleting the expect.
 - In `sys/abi/sysent.rs` a Native flip also renames and extends the "every entry but ... is legacy" test; `NATIVE` lives in two tests and the justfile's three "331 syscalls, N native" lines; `hal/module/load.rs`'s tests build a KernelApi too.
 - Worktree guard: a Bash call that mixes git with cd, `&&`, `;` chains or `$VAR` paths is refused as "too complex"; run each git command alone, from the worktree cwd, with literal paths (cargo/just chains with cd are fine).
+- A `[[bench]]` without `harness = false` runs its `fn main` never: `cargo bench` prints "running 0 tests" and rc 0 (benches/syscall.rs until N4.8d); check the rows appear before taking a "before".
+- Worktree guard, sandbox: a command whose name or first operand is a `$VAR` (`$S/x.sh`, `sed -n ... $C/f`) or a `PATH=... just` prefix is refused; put the commands in a scratchpad script and run `/bin/zsh <literal path> args`.
