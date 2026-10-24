@@ -52,9 +52,6 @@
 //!   `struct cpu_info` is still `bsd`'s (N4), so the backend keeps its own record of each
 //!   CPU's loaded pmap ([`set_curpm`], written by `Backend::load` where `pmap_setttb` writes
 //!   `ci_curpm`, which the caller still does), indexed by `cpu_number()`.
-//! - The trampoline pmap (`pmap_tramp`, the user ASID's kernel view) is not configured, as in
-//!   LZ: the user ASID of a pair runs with the same tables (`TCR_EL1.E0PD` and the
-//!   trampoline's `TTBR1_EL1` switch are N4.8d's, the user's decision of 2026-10-23).
 //!
 //! ## Redesign
 //! - LZ caps the ASIDs at 256 (`PMAP_NASID`, an 8-word bitmap): the C's probe of

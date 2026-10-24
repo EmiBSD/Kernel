@@ -685,7 +685,11 @@ pub fn switch_mmu_kernel_table() {
     //   `TCR_EL1` are put back before the block ends, and `tlbi vmalle1` drops what this CPU
     //   cached through the identity table, so the lower half translates afterwards as before
     //   (the boot glue's device map, the kernel's empty table, or Limine's).
-    // - `TTBR1_EL1`: the routine (`cpufunc.rs`) runs from the identity page, so between its
+    // - `TTBR1_EL1`: this function runs at EL1, where the base is the kernel's root (with a
+    //   pair's even ASID): at EL0 `tramp_return` has put the trampoline's root and the odd
+    //   ASID in it, and every EL0 vector restores the kernel's before any memory access, so no
+    //   code of this block ever runs under the other base, and `live` above is the value the
+    //   kernel's code last wrote. The routine (`cpufunc.rs`) runs from the identity page, so between its
     //   `msr ttbr1_el1` and the completion of its `tlbi vmalle1is; dsb ish; isb` nothing is
     //   fetched or accessed through the upper half (break-before-make for the kernel's live
     //   entries, which change size and attributes here). `ttbr1` is the kernel pmap's root with
@@ -1434,7 +1438,9 @@ fn switch_space(pm: &Pmap, bits: u32) {
     // SAFETY: the lower half goes to the kernel's empty table (`pmap_bootstrap`'s zeroed page)
     // while its walk is resized, then to `pm`'s root (the machine part's invariant: a table
     // `create`/`create_efi` built, alive while the caller's handle is, or the kernel's empty
-    // table), with `pm`'s ASID in `TTBR1_EL1`, whose table base `bfi` leaves alone. Nothing of
+    // table), with `pm`'s ASID in `TTBR1_EL1`, whose table base `bfi` leaves alone (at EL1,
+    // where this runs, the kernel's root: only `trampoline.S` puts the trampoline's there, for
+    // EL0, and takes it away on every entry). Nothing of
     // the kernel lives in the lower half (no Rust reference points there; the EFI runtime is
     // called through it by `bsd`'s `efi_call` with interrupts disabled, its own trust), and
     // the kernel's translations through `TTBR1_EL1` stay; the `isb`s order the switches before

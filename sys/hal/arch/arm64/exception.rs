@@ -47,17 +47,10 @@
 //!   in it): the EL1 paths of the macros save the pre-exception `sp` with an `add` instead of
 //!   parking it in `x18` first, restore `x18` from the frame, and recover `sp` from the
 //!   frame's size instead of `mov sp, x18`. The EL0 paths are the C's.
-//! - The trampoline vectors do not switch `TTBR1_EL1` to the trampoline's tables
-//!   (`pmap_tramp`, the page-table isolation of the kernel while user code runs): the pmap's
-//!   half is not configured (`sys/hal/arch/arm64/pmap/backend.rs`, deviations), so the
-//!   kernel stays mapped at EL0 as in LZ. Against OpenBSD that is the isolation missing
-//!   (Meltdown, CVE-2017-5754, on the cores it affects; the kernel's layout open to timing
-//!   probes); it is N4.8d's, the slice right after N4.8b, before the N4 close (the user's
-//!   decision of 2026-10-23). The vector switch and the Spectre-BHB mitigations
-//!   of each table (the branch loops, the firmware's `SMCCC_ARCH_WORKAROUND_3`, `clrbhb`) are
-//!   the C's. `tramp_enter` loads `exception_vectors` by `adrp`/`add` where the C uses a
-//!   literal (`ldr =`); `return` takes `trampoline_vectors_none` for a CPU whose table is
-//!   still 0.
+//! - `tramp_enter` loads `exception_vectors` by `adrp`/`add` where the C uses a literal
+//!   (`ldr =`); `return` takes `trampoline_vectors_none` for a CPU whose table is still 0.
+//!   The vector switch, the Spectre-BHB mitigations of each table (the branch loops, the
+//!   firmware's `SMCCC_ARCH_WORKAROUND_3`, `clrbhb`) and the `TTBR1_EL1` switch are the C's.
 //!
 //! ## Redesign
 //! - N4.8b: the entry moves from `bsd` (`sys/arch/arm64/arm64/exception.rs`, an `extern`
@@ -66,6 +59,14 @@
 //!   kernel vectors left in `VBAR_EL1` (the trampoline was not ported, LZ's deviation, gap 3
 //!   of the brief, closed by the user's decision 7 of N4.8 except for the `TTBR1_EL1` half,
 //!   N4.8d's).
+//! - N4.8d: the page-table isolation of the kernel while user code runs (Meltdown,
+//!   CVE-2017-5754), the deviation N4.8b recorded, is closed: `tramp_return` puts
+//!   `pmap_tramp`'s root (the trampoline's pages alone, `pmap/backend.rs`) and the odd ASID
+//!   of the pair in `TTBR1_EL1` before the `eret`, and every EL0 vector puts the kernel's
+//!   root and even ASID back, with `x18` alone, before anything else; the C's ten
+//!   instructions, whose `2 * PAGE_SIZE` literal is the `const` operand `TRAMP_ROOT_OFFSET`
+//!   of `pmap/layout.rs` (one page here, its redesign says why), the value
+//!   `pmap_steal_roots` builds the roots with and the host tests pin.
 //! - `ci_trampoline_vectors` (`bsd`'s `cpu_info` held a table number) is the core's word
 //!   ([`CpuCore::trampoline_vectors`]), an address only this module writes: a CPU's code
 //!   chooses a [`BhbMitigation`], never an address.
@@ -78,6 +79,7 @@ use super::include::armreg::DBG_MDSCR_SS;
 use super::include::frame::{TF_SIZE, Trapframe};
 use super::include::pcb::Pcb;
 use super::include::proc::Mdproc;
+use super::pmap::layout::TRAMP_ROOT_OFFSET;
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC, CORE_TRAMPOLINE_VECTORS, CpuCore};
 use crate::thread::MachineSlot;
 
@@ -131,6 +133,7 @@ global_asm!(
     CI_TRAMPOLINE_VECTORS = const CORE_TRAMPOLINE_VECTORS,
     P_ASTPENDING = const offset_of!(MachineSlot, md) + offset_of!(Mdproc, md_astpending),
     PCB_FLAGS = const offset_of!(Pcb, pcb_flags),
+    TRAMP_ROOT_OFFSET = const TRAMP_ROOT_OFFSET,
     DBG_MDSCR_SS = const DBG_MDSCR_SS,
     DO_EL1H_SYNC = sym super::trap::do_el1h_sync,
     DO_EL1H_ERROR = sym super::trap::do_el1h_error,

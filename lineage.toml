@@ -1069,7 +1069,7 @@ rust = "sys/hal/arch/arm64/pmap/asid.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/pmap.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5: the ASID pairs (pmap_find_asid, pmap_rollover_asid, pmap_allocate_asid, pmap_free_asid): the bitmap inside pmap_asid_mtx (IPL_HIGH), the generation an atomic, the C's 16-bit probe of id_aa64mmfr0_el1 with TCR_EL1.AS (8 bits otherwise, the probe saying why), arc4random through the Random bridge (N7), each CPU's loaded pmap recorded here for the rollover (ci_curpm stays bsd's until N4)"
+notes = "N3.1 commit 5: the ASID pairs (pmap_find_asid, pmap_rollover_asid, pmap_allocate_asid, pmap_free_asid): the bitmap inside pmap_asid_mtx (IPL_HIGH), the generation an atomic, the C's 16-bit probe of id_aa64mmfr0_el1 with TCR_EL1.AS (8 bits otherwise, the probe saying why), arc4random through the Random bridge (N7), each CPU's loaded pmap recorded here for the rollover (ci_curpm stays bsd's until N4); N4.8d: the pair's odd ASID now runs user code under pmap_tramp's root (trampoline.S), the deviation that said it did not is gone"
 
 [[module]]
 rust = "sys/hal/arch/arm64/pmap/window.rs"
@@ -8773,7 +8773,7 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/exception.rs"]
 status = "redesigned"
 license = "none"
-notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); the TTBR1_EL1 switch of the trampoline (pmap_tramp) is not configured (deviation): N4.8d's, the user's decision of 2026-10-23"
+notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); N4.8d: the switch is the C's (tramp_return to pmap_tramp's root and the odd ASID, every EL0 vector back to the kernel's), pmap_tramp in pmap/backend.rs, the offset a const operand from pmap/layout.rs (TRAMP_ROOT_OFFSET)"
 
 
 [[module]]

@@ -90,8 +90,7 @@
 //! - `ci_trampoline_vectors` records which `trampoline_vectors_*` table the C picks, as a
 //!   `TRAMPOLINE_VECTORS_*` number; `cpu_mitigate_spectre_bhb` hands the choice to `hal`
 //!   (`hal::arch::arm64::exception::set_bhb_mitigation`, N4.8b), whose `trampoline.S` the
-//!   return to user mode installs (the `TTBR1_EL1` half of the trampoline is not configured,
-//!   N4.8d's: `sys/hal/arch/arm64/exception.rs`, deviations).
+//!   return to user mode installs.
 //! - `codepatch_nop(CPTAG_REPEAT_TLBI)` has nothing to patch: the TLB invalidations never
 //!   repeat yet (`cpufunc.rs`, deviations), which is the patched state; the CPUs the C keeps
 //!   the repeat for (CVE-2025-10263, not QEMU's Cortex-A72) go without it.

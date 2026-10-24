@@ -293,8 +293,12 @@ pub(super) fn cpu_setttb(pm: &Pmap) {
     // a CPU has it loaded), or the kernel's empty table (`pmap_bootstrap`'s zeroed page, and a
     // purged pmap's). `TTBR0_EL1` translates only the lower half, where no Rust reference of
     // the kernel points (the user copy reaches it through its own fault-checked routines);
-    // `bfi` changes only the ASID field of `TTBR1_EL1`, whose table base stays, so the
-    // kernel's code, stack and data translate as before. The `isb`s order the switch before
+    // `bfi` changes only the ASID field of `TTBR1_EL1`, whose table base stays (at EL1,
+    // where this runs, the kernel's root: `trampoline.S` puts the trampoline's there only for
+    // EL0 and restores the kernel's on every entry), so the kernel's code, stack and data
+    // translate as before. The ASID written is the pair's even member, the one EL1 runs
+    // under (`pm_asid`'s low bit is clear: `pmap_allocate_asid` hands out pairs, and the
+    // kernel's is 0); `tramp_return` sets bit 48, the odd member, for EL0 alone. The `isb`s order the switch before
     // the next instruction fetch; memory is a clobber.
     unsafe {
         asm!(
