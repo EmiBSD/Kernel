@@ -41,6 +41,15 @@
   ([lz-sync.toml](lz-sync.toml)).
 - A standalone `#![no_std]` kernel for amd64 and arm64, booted by its own boot(8)/efiboot or by
   Limine, run in QEMU.
+- The layers, top to bottom (the detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), "Vocabulary"; every term: [docs/GLOSSARY.md](docs/GLOSSARY.md)):
+
+  | Layer | What it is | `unsafe` |
+  |---|---|---|
+  | `abi` | Application Binary Interface: the bytes userland and the kernel agree on (syscall numbers, `#[repr(C)]` structs, ioctls, errno), as the module `abi_openbsd.ko`; translation only | 0 |
+  | `kernel` | every decision of the operating system, its own types | 0 |
+  | `hal` | Hardware Abstraction Layer: the hardware and the runtime (locks, pools, owned memory, the user copy), with a safe API | the only one |
+  | `lib` | `libkern` and `libz`, the leaves below `hal` | 10 |
+  | `bsd` | the LandingZone tree, the kernel that boots today, replaced subsystem by subsystem and deleted at N9 | legacy |
 
 ## The target: the kernel at N9
 
@@ -598,6 +607,7 @@ docs/                   the process (PHASE2), architecture, idioms, roadmap, syn
 | How do I set up the toolchain on macOS? | [docs/SETUP.md](docs/SETUP.md) |
 | How do I get the OpenBSD sources? | [reference/README.md](reference/README.md) |
 | Why is it built this way? What deviates from OpenBSD? | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| What do `hal`, `abi`, LZ, MP, KPTI, pmap, bridge, slice... mean? | [docs/GLOSSARY.md](docs/GLOSSARY.md); the layers in detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), "Vocabulary" |
 | Where does a module come from? | [lineage.toml](lineage.toml), [docs/PHASE2.md](docs/PHASE2.md), `cargo xtask lz trace` |
 | How is this LZ shape redesigned? | [docs/IDIOMS.md](docs/IDIOMS.md); the C -> LZ idioms, frozen: [docs/C_TO_RUST.md](docs/C_TO_RUST.md) |
 | What comes next? | [docs/ROADMAP.md](docs/ROADMAP.md) (N0..N8) |

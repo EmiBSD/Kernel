@@ -175,6 +175,8 @@ the session.
 - `docs/ROADMAP.md`: milestones N0.. with mechanical exit criteria. `docs/SYNC.md`: the monthly
   sync with LZ, step by step.
 - `docs/SETUP.md`: toolchain, QEMU and the boot loaders on macOS.
+- `docs/GLOSSARY.md`: every term and acronym (`hal`, `abi`, LZ, bridge, slice, ratchet, ...), one row
+  each; a new unexplained term is a new row in the same commit.
 - `.claude/agents/`: the subagent roles (`milestone-coordinator`, `redesigner`, `mechanical`,
   `integrator`, `debugger`, `reviewer`, `surveyor`, `planner`, `openbsd-probe`, `image-worker`); launch them by
   `subagent_type`; their lessons persist in `.claude/agent-memory/<agent>/`. The shared

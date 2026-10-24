@@ -8,6 +8,31 @@ Re-implement the OpenBSD kernel in Rust, file by file, preserving OpenBSD's stru
 semantics, as a standalone `#![no_std]` kernel for amd64 and arm64, booted by Limine, run in QEMU.
 The C tree under `reference/openbsd-src/sys` is the specification.
 
+## Vocabulary
+
+The names this repository uses without expanding them anywhere else (the user's request of
+2026-10-24: the layers in detail here, a summary in `README.md`, every term in
+`docs/GLOSSARY.md`). The layers, top to bottom, as the diagram of `docs/ZERO_UNSAFE.md` 0.1
+draws them.
+
+### The layers
+
+| Layer | Name | Expansion | Path | `unsafe` | What it is |
+|---|---|---|---|---|---|
+| 0 | userland | | outside this repository | | OpenBSD's own programs, binaries unchanged; what they see never changes |
+| 1 | `abi` | Application Binary Interface | `sys/abi/`, built as the loadable module `abi_openbsd.ko` | 0, `#![forbid(unsafe_code)]` | the contract in bytes between the kernel and the binaries of userland: the syscall numbers, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`), the ioctl and sysctl encodings, errno. Translation only, no logic (decision 21): bytes to the kernel's types, one `KernelApi` entry per syscall, an errno from its `Result`. Byte-identical to OpenBSD's, so its userland runs unchanged |
+| 2 | `kernel` | | `sys/kernel/` | 0, `#![forbid(unsafe_code)]` at the root; the compiler refuses one | every decision the operating system makes: memory, processes, the scheduler, signals, descriptors, kqueue, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first. Reaches what has not moved out of `bsd` only through a bridge trait registered in `hal` (`bridges.toml`, 0 rows at N9) |
+| 3 | `hal` | Hardware Abstraction Layer | `sys/hal/` | the only `unsafe` of the system, under `hal_ceiling`, every site with a soundness proof, Miri on its host tests | the hardware (page tables and the pmaps, traps, the syscall entry, the context switch, the interrupt level, MMIO, caches, early boot) and the runtime written new (locks that own their data, typed pools, owned memory, `OnceStatic`, the typed user copy, per-CPU data, the bridge registry, the module loader). Its API towards `kernel` is safe: `cargo xtask hal-check` refuses a `pub unsafe fn` |
+| 3' | `lib` | | `sys/lib/libkern/`, `sys/lib/libz/` | 10 and 0 (N1) | the leaf crates below `hal`: `libkern`, what the C kernel takes from libc (string and memory routines, `strlcpy`, `crc32`, `StaticCell`), and `libz`, what the kernel compiles of zlib (crc32, adler32, deflate, inflate). Both depend on nothing of ours; `hal` depends on `libkern` |
+| legacy | `bsd` | | `sys/` itself, named after OpenBSD's kernel image `/bsd` | 9,490 at the N4 close, 0 files at N9 | the LandingZone tree: OpenBSD's kernel ported file by file, the kernel that boots and passes every smoke while its subsystems move into `kernel` and `hal`. Calls down into the three crates, never the reverse; registers the `Legacy` syscall fallback and the bridge implementations in `hal` at boot |
+| 4 | hardware | | | | QEMU amd64 and arm64, real machines |
+
+Beside the layers, outside the four crates and unchanged: the boot loaders (`sys/stand/`,
+`sys/lib/libsa/`, `sys/arch/*/stand/`), separate binaries that run before the kernel.
+
+Every other term and acronym of these documents (LZ, MP, KPTI, MMIO, DMA, pmap, UVM, VFS, EFI,
+ACPI, bridge, slice, ratchet, zones, ...) is one row of `docs/GLOSSARY.md`.
+
 ## Four crates: `hal`, `kernel`, `abi` and the LZ tree `bsd` (decision 20, 2026-10-16)
 
 `sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
