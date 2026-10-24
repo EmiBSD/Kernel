@@ -1237,6 +1237,10 @@ pub fn cpu_startup() {
     // proc0.p_addr = proc0paddr, curpcb = &proc0paddr->u_pcb: hal's static u-area (E4).
     hal::thread::boot_uarea(hal::pin::pin_static(&PROC0));
 
+    // Give pmap a chance to set up a few more things now the vm is initialised: the
+    // trampoline's tables (hal's `pmap_postinit`, N4.8d).
+    hal::arch::arm64::pmap::postinit();
+
     // The message buffer mapping and initmsgbuf: the message buffer is static (M2).
 
     // Identify ourselves for the msgbuf (everything printed earlier will not be buffered).

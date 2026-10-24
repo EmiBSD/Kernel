@@ -31,6 +31,7 @@
 //! glue's `pmap_init`, after `pluartcn_remap`); [`stolen_bounds`] (`pmap_steal_memory`'s
 //! out-parameters); [`kernel_pt0pa`] (`cpu_init` and the secondary processors' start);
 //! [`switch_mmu_kernel_table`] (the secondary processors' start, onto the kernel's tables);
+//! [`postinit`] (`cpu_startup`'s `pmap_postinit`: the trampoline's tables, N4.8d);
 //! [`asid_width`] (the probe's answer, never printed at boot); `Pmap::set_guarded` (`setregs`).
 
 mod asid;
@@ -41,6 +42,8 @@ mod vp;
 mod window;
 
 pub use asid::asid_width;
+#[cfg(not(feature = "module-rt"))]
+pub use backend::postinit;
 pub(crate) use backend::{Backend, PmapMd};
 pub use backend::{
     VMMAP, VMMAP_SIZE, init_lower_half, kernel_pt0pa, stolen_bounds, switch_mmu_kernel_table,

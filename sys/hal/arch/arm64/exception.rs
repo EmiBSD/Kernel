@@ -149,7 +149,9 @@ global_asm!(
 // follow its label back to back, 2 KiB each (`.align 11`), 4608 words, before
 // `tramp_return`. They lie in the kernel text, which both boot paths and the kernel's own
 // tables map readable and nothing ever writes, so a shared view of them aliases no write;
-// the kernel only takes their addresses.
+// the kernel only takes their addresses. `trampoline_vectors_end` is the label after
+// `tramp_return`'s last instruction, a zero-length view that reads nothing: only its address
+// is taken (the end of what `pmap_postinit` maps into `pmap_tramp`).
 unsafe extern "C" {
     /// `exception_vectors`: the kernel's vector table (`VBAR_EL1` while kernel code runs).
     #[link_name = "exception_vectors"]
@@ -157,6 +159,9 @@ unsafe extern "C" {
     /// `trampoline_vectors`: the trampoline tables, one per [`BhbMitigation`].
     #[link_name = "trampoline_vectors"]
     safe static TRAMPOLINE_VECTORS: [u32; TRAMPOLINE_TABLES * TRAMPOLINE_TABLE / 4];
+    /// `trampoline_vectors_end`: the end of the trampoline's pages (after `tramp_return`).
+    #[link_name = "trampoline_vectors_end"]
+    safe static TRAMPOLINE_VECTORS_END: [u32; 0];
 }
 
 /// The address of the kernel's vector table, for `VBAR_EL1`.
@@ -167,6 +172,14 @@ pub fn exception_vectors_addr() -> u64 {
 /// The address of the trampoline table of mitigation `m`.
 fn trampoline_vectors_addr(m: BhbMitigation) -> usize {
     ptr::addr_of!(TRAMPOLINE_VECTORS).addr() + m.offset()
+}
+
+/// `trampoline_vectors..trampoline_vectors_end`: the kernel text user mode runs with
+/// (`pmap_postinit` maps its pages, and nothing else of the kernel, into `pmap_tramp`): the
+/// trampoline tables and `tramp_return`. Its start is page-aligned (`trampoline.S`'s
+/// `.align 12`).
+pub(crate) fn trampoline_range() -> core::ops::Range<usize> {
+    ptr::addr_of!(TRAMPOLINE_VECTORS).addr()..ptr::addr_of!(TRAMPOLINE_VECTORS_END).addr()
 }
 
 /// `WRITE_SPECIALREG(vbar_el1, exception_vectors); isb`: the kernel's vector table on this

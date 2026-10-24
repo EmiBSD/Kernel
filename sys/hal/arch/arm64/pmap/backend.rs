@@ -122,10 +122,10 @@
 //! - `vmmap` is the kernel virtual window below `virtual_avail` that `bus_space`'s
 //!   `generic_space_map` takes device mappings from ([`VMMAP`], [`VMMAP_SIZE`]), 1024 pages
 //!   where the C keeps one page (`pmap_bootstrap_bs_map`).
-//! - Pointer authentication (`pm_api*key`, `pmap_setpauthkeys`) and the trampoline pmap
-//!   (`pmap_tramp`, `pmap_postinit`'s `pmap_kvp_map` submap) are not configured, as in LZ
-//!   (`pmap_tramp` and the trampoline's `TTBR1_EL1` switch are N4.8d's, the user's decision
-//!   of 2026-10-23);
+//! - Pointer authentication (`pm_api*key`, `pmap_setpauthkeys`) and the tail of
+//!   `pmap_postinit` (the `pmap_kvp_map` submap reserved for growing the kernel's tables) are
+//!   not configured, as in LZ (`pmap_tramp`, the head of `pmap_postinit`, is: N4.8d, see the
+//!   redesign);
 //!   `pmap_vp_populate`/`__HAVE_PMAP_POPULATE` stays unconfigured (uvm_fault's slice decides,
 //!   N3.6): `uvm_fault` never calls it here.
 //! - `pmap_proc_iflush` syncs every page through its direct-map alias (the C syncs the user
@@ -152,6 +152,15 @@
 //!   same.
 //!
 //! ## Redesign
+//! - N4.8d: `pmap_tramp` ([`PMAP_TRAMP`]) is built as the C's: its root stolen with the
+//!   kernel's ([`pmap_steal_roots`], the hardware pages [`TRAMP_ROOT_OFFSET`] apart, where the
+//!   C's `2 * PAGE_SIZE` is a hardware and a software page each), configured by the
+//!   bootstrap, refused by `pmap_setttb`, and filled by [`postinit`] (the head of
+//!   `pmap_postinit`, from `cpu_startup`), which then walks its tables and panics unless they
+//!   map the trampoline's pages and nothing else ([`pmap_tramp_check`]): the isolation is
+//!   proven at every boot, before user code runs under it. The C's walk-free `memset` of the
+//!   root is the steal's zeroing; it extracts the first page's address once and adds
+//!   `PAGE_SIZE`, here each page's address is extracted.
 //! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
 //!   guard is the [`Locked`] witness of every walk of a user pmap's descriptors, the root
 //!   table (`pm_vp`: its two pages), `have_4_level_pt`, `pm_privileged`, `pm_pt0pa`,
@@ -207,9 +216,13 @@
 //!   refuses a CPU already on the kernel's tables with another value, so no caller can load
 //!   the kernel's tables under a user pmap's ASID.
 
+#[cfg(not(feature = "module-rt"))]
+use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
+#[cfg(not(feature = "module-rt"))]
+use super::super::exception::trampoline_range;
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
     ATTR_AF, ATTR_GP, ATTR_PXN, ATTR_UXN, ATTR_nG, L2_SIZE, L3_P, Lx_PT_PXN, Lx_PT_XN,
@@ -231,10 +244,13 @@ use super::layout::{
     PMAP_CACHE_CI, PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB, PMAP_CACHE_WT,
     PMAP_NOCACHE, PMAP_PA_MASK, PMAP_WC, PROT_MASK, PTED_VA_MANAGED_M, PTED_VA_WIRED_M,
     T1SZ_4LEVEL, TCR_A1, TCR_HPD, TCR_IDENTITY_TTBR0, TCR_T0SZ_MASK, TCR_TTBR0_FIELDS,
-    TTBR_BADDR_MASK, VP_IDX2_CNT, VP_IDX3_CNT, cache_of_pa, cache_valid, image_layout_ok,
-    image_page_prot, image_ptps, kernel_leaf, kernel_map_slot, tcr_t1sz, tlbi_asid, tlbi_page,
-    vp_idx,
+    TRAMP_ROOT_OFFSET, TTBR_BADDR_MASK, VP_IDX2_CNT, VP_IDX3_CNT, cache_of_pa, cache_valid,
+    image_layout_ok, image_page_prot, image_ptps, kernel_leaf, kernel_map_slot, tcr_t1sz,
+    tlbi_asid, tlbi_page, vp_idx,
 };
+// pmap_postinit's (the kernel's alone: the ABI module's image has no trampoline).
+#[cfg(not(feature = "module-rt"))]
+use super::layout::{VP_ENTRIES, VP_IDX0_POS, VP_IDX1_POS, VP_IDX2_POS, VP_IDX3_POS};
 use super::vp::{
     self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvHead, PvKind, Table, copy_frame, direct_map,
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
@@ -268,6 +284,11 @@ const AP_BITS_USER: [u64; 8] = [
     ATTR_PXN | ATTR_AF | attr_ap(1),            // PROT_EXEC|PROT_WRITE
     ATTR_PXN | ATTR_AF | attr_ap(1),            // PROT_EXEC|PROT_WRITE|PROT_READ
 ];
+
+/// The upper half's first address (`T1SZ` 16, four levels): the sign bits of every kernel
+/// address, where `pmap_tramp_walk` starts.
+#[cfg(not(feature = "module-rt"))]
+const KERNEL_VA_TOP: usize = !((1 << 48) - 1);
 
 /// The `MAIR_EL1` fields `pmap_bootstrap` writes (indices 2, 3, 4) and what it keeps.
 const MAIR_SET: u64 = mair_attr(MAIR_DEV_NGNRNE, 2) | mair_attr(MAIR_CI, 3) | mair_attr(MAIR_WT, 4);
@@ -383,6 +404,11 @@ struct Grow {
 
 /// `kernel_pmap_`: the kernel's pmap.
 static KERNEL_PMAP: Pmap = Pmap::kernel_with(PmapMd::new());
+/// `pmap_tramp`: the upper half user code runs under (see the redesign), the trampoline's
+/// pages at their kernel addresses and nothing else. Its root lies [`TRAMP_ROOT_OFFSET`]
+/// above the kernel's ([`pmap_steal_roots`]), which is how `trampoline.S` reaches it; never
+/// loaded by `pmap_setttb` (`Backend::load` refuses it) and filled once, by [`postinit`].
+static PMAP_TRAMP: Pmap = Pmap::kernel_with(PmapMd::new());
 /// `pmap_pted_pool`: the pool of user mappings' descriptors.
 static PMAP_PTED_POOL: BoxPool<PteDesc> = BoxPool::new();
 /// `pmap_initialized`.
@@ -535,6 +561,36 @@ fn pmap_kvp_alloc(pages: &dyn PhysPages) -> Option<Table> {
     };
     MAPPINGS_ALLOCATED.fetch_add(1, Ordering::Relaxed);
     Some(Table { hw, sw })
+}
+
+/// `pmap_steal_avail(2 * sizeof(struct pmapvp1))`: the kernel's root and `pmap_tramp`'s, both
+/// zeroed, their hardware pages stolen in one block so the trampoline's lies
+/// [`TRAMP_ROOT_OFFSET`] above the kernel's (what `trampoline.S` adds to `TTBR1_EL1`); the
+/// software pages need no place (a [`Table`] pairs them). `(kernel, tramp)`.
+fn pmap_steal_roots(pages: &dyn PhysPages) -> (Table, Table) {
+    let Some(hw) = pages.steal(TRAMP_ROOT_OFFSET / PAGE_SIZE + 1) else {
+        hal_panic(format_args!("pmap_bootstrap: out of memory"));
+    };
+    let tramp_hw = Paddr::new(hw.as_usize() + TRAMP_ROOT_OFFSET);
+    // Both bases inside TTBR's BADDR (bits 47:1), so the asm's `add`/`sub` of the offset never
+    // carries into the ASID field.
+    if tramp_hw.as_usize() as u64 & !TTBR_BADDR_MASK != 0 {
+        hal_panic(format_args!(
+            "pmap_bootstrap: the roots at {hw:?} are not below 48 bits"
+        ));
+    }
+    zero_frame(hw);
+    zero_frame(tramp_hw);
+    let kernel = Table {
+        hw,
+        sw: pmap_steal_table(pages),
+    };
+    let tramp = Table {
+        hw: tramp_hw,
+        sw: pmap_steal_table(pages),
+    };
+    MAPPINGS_ALLOCATED.fetch_add(2, Ordering::Relaxed);
+    (kernel, tramp)
 }
 
 /// A zeroed frame the bootstrap steals for a table of its own (the image's, the switch's
@@ -1218,6 +1274,117 @@ fn pmap_fault_fixup(pm: &Pmap, va: usize, ftype: VmProt) -> bool {
     true
 }
 
+/// `pmap_postinit`'s trampoline half, once, on the boot CPU, from `cpu_startup` before the
+/// first return to user mode (the C's place): the pages of `trampoline_vectors` to
+/// `trampoline_vectors_end` entered into `pmap_tramp` at their kernel addresses, read-only and
+/// executable at EL1 (`PMAP_WIRED`, the C's protections), then the proof that its tables hold
+/// those pages and nothing else ([`pmap_tramp_check`]). The kernel virtual space reserve of
+/// the C's tail (`pmap_kvp_map`) is not configured (see the deviations). The kernel's alone:
+/// the ABI module's image (`module-rt`) has no trampoline.
+#[cfg(not(feature = "module-rt"))]
+pub fn postinit() {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) {
+        hal_panic(format_args!("pmap_postinit: called twice"));
+    }
+    if !PMAP_INITIALIZED.load(Ordering::Acquire) || PMAP_TRAMP.md.root().is_none() {
+        hal_panic(format_args!("pmap_postinit: before pmap_init"));
+    }
+    let range = trampoline_range();
+    if range.start & PAGE_MASK != 0 || range.is_empty() {
+        hal_panic(format_args!(
+            "pmap_postinit: the trampoline {range:x?} does not start a page"
+        ));
+    }
+    let pages = PMAP_TRAMP.pages();
+    let prot = PROT_READ | PROT_EXEC;
+    for va in range.clone().step_by(PAGE_SIZE) {
+        let Some(pa) = Backend::extract(&KERNEL_PMAP, Vaddr::new(va)) else {
+            hal_panic(format_args!(
+                "pmap_postinit: the trampoline at {va:#x} is not mapped"
+            ));
+        };
+        // A managed page would put the mapping on a pv list, where `pmap_page_protect` could
+        // take it away; the image's text never is one.
+        if pages.md_of(pa).is_some() {
+            hal_panic(format_args!(
+                "pmap_postinit: the trampoline at {pa:?} is a managed page"
+            ));
+        }
+        if pmap_enter(&PMAP_TRAMP, va, pa.as_usize(), prot, prot | PMAP_WIRED).is_err() {
+            hal_panic(format_args!(
+                "pmap_postinit: cannot map the trampoline at {va:#x}"
+            ));
+        }
+    }
+    pmap_tramp_check(&range);
+}
+
+/// `postinit`'s boot-time proof of the isolation: every valid entry of `pmap_tramp` is a table
+/// of ours down to level 3, whose leaves are exactly the pages of `range`, each at the kernel's
+/// physical address, read-only, executable at EL1 and out of EL0's reach; anything else
+/// panics, before user code ever runs under them.
+#[cfg(not(feature = "module-rt"))]
+fn pmap_tramp_check(range: &Range<usize>) {
+    let Some(root) = PMAP_TRAMP.md.root() else {
+        hal_panic(format_args!("pmap_postinit: pmap_tramp has no tables"));
+    };
+    let leaves = pmap_tramp_walk(root, 0, KERNEL_VA_TOP, range);
+    if leaves != (range.end - range.start).div_ceil(PAGE_SIZE) {
+        hal_panic(format_args!(
+            "pmap_postinit: the trampoline table maps {leaves} pages, not the trampoline's"
+        ));
+    }
+}
+
+/// The valid leaves under `t`, a table of `level` whose first address is `base`, each checked
+/// against `range` ([`pmap_tramp_check`]).
+#[cfg(not(feature = "module-rt"))]
+fn pmap_tramp_walk(t: Table, level: usize, base: usize, range: &Range<usize>) -> usize {
+    const POS: [u32; 4] = [VP_IDX0_POS, VP_IDX1_POS, VP_IDX2_POS, VP_IDX3_POS];
+    let more = || -> ! {
+        hal_panic(format_args!(
+            "pmap_postinit: the trampoline table maps more than the trampoline"
+        ))
+    };
+    let mut leaves = 0;
+    for i in 0..VP_ENTRIES {
+        let d = t.entry(i).load(Ordering::Acquire);
+        if d == 0 {
+            continue;
+        }
+        let va = base | i << POS[level];
+        if level == 3 {
+            // EL1 read-only (AP 0b10), not EL0's, executable at EL1 only.
+            let kernel_rx = d & attr_ap(3) == attr_ap(2) && d & ATTR_UXN != 0 && d & ATTR_PXN == 0;
+            let pa = Backend::extract(&KERNEL_PMAP, Vaddr::new(va));
+            if d & Lx_TYPE_MASK != L3_P
+                || !range.contains(&va)
+                || !kernel_rx
+                || pa.map(|p| p.as_usize() as u64) != Some(d & PTE_RPGN)
+            {
+                more();
+            }
+            leaves += 1;
+            continue;
+        }
+        // A level-0..2 entry: a table this pmap hung (no block, no foreign table), which
+        // leads to at least one leaf.
+        let Some(c) = (d & Lx_TYPE_MASK == Lx_TYPE_PT)
+            .then(|| t.child(i))
+            .flatten()
+        else {
+            more();
+        };
+        let n = pmap_tramp_walk(c, level + 1, va, range);
+        if n == 0 {
+            more();
+        }
+        leaves += n;
+    }
+    leaves
+}
+
 /// `pmap_clear_modify` (`clear` = `PROT_WRITE`) and `pmap_clear_reference` (`PROT_MASK`: when
 /// this turns off read permissions it also disables write permissions so that mod is
 /// correctly tracked after clear_ref): the bits taken from every mapping of the page, so the
@@ -1423,9 +1590,7 @@ impl PmapBackend for Backend {
 
         // KERNEL IS ASSUMED TO BE 39 bits (or less) in the C; here the boot loader's four-level
         // tables are copied into vp tables (see the deviations).
-        let Some(vp0) = pmap_kvp_alloc(pages) else {
-            hal_panic(format_args!("pmap_bootstrap: out of memory"));
-        };
+        let (vp0, tramp) = pmap_steal_roots(pages);
         copy_frame(l0_pa, vp0.hw);
 
         let kslot = vp_idx(0, VM_MIN_KERNEL_ADDRESS);
@@ -1493,8 +1658,24 @@ impl PmapBackend for Backend {
         pm.md.active.store(1, Ordering::Relaxed);
         pm.md.guarded.store(ATTR_GP, Ordering::Relaxed);
         pm.md.set_asid(0);
-        // pmap_tramp: not configured (see the deviations). ASID 0 is the kernel's; the width
-        // from id_aa64mmfr0_el1.
+
+        // pmap_tramp: privileged (its leaves are the kernel's, EL1 only), four-level as the
+        // kernel's, empty until `postinit`; its lock is `pm_mtx` (`Locked::of`).
+        let tp = &PMAP_TRAMP;
+        if tp.pages.set(pages).is_err() {
+            hal_panic(format_args!("pmap_bootstrap: pmap_tramp has a provider"));
+        }
+        tp.md
+            .root_sw
+            .store(tramp.sw.as_usize() as u64, Ordering::Release);
+        tp.md
+            .root_hw
+            .store(tramp.hw.as_usize() as u64, Ordering::Release);
+        tp.md.active.store(1, Ordering::Relaxed);
+        tp.md.guarded.store(ATTR_GP, Ordering::Relaxed);
+        tp.md.set_asid(0);
+        // ASID 0 is the kernel's (its pair's odd member, the trampoline's); the width from
+        // id_aa64mmfr0_el1.
         asid::probe(mmfr0, tcr);
 
         // SAFETY: the fields written (indices 2, 3, 4) are the ones no mapping uses yet: the
@@ -1713,6 +1894,9 @@ impl PmapBackend for Backend {
         }
         if pmap.md.efi {
             hal_panic(format_args!("pmap_setttb: the EFI pmap"));
+        }
+        if ptr::eq(pmap, &PMAP_TRAMP) {
+            hal_panic(format_args!("pmap_setttb: pmap_tramp"));
         }
         if !pmap.is_kernel() && pmap.md.asid() & !PMAP_ASID_MASK != asid::generation() {
             pmap_allocate_asid(pmap);
