@@ -611,3 +611,66 @@ the review's fix c51cb2c2; `git diff --shortstat e3cdf1d3 n3/perf-opt -- sys`: 7
   C re-reads `uobj = pg->uobject` after the I/O (`uvm_fault.c:1641`) where the Rust panics on
   an owner-tag mismatch (2105-2108), a deviation the module notes already keep. Nothing
   applied.
+
+## N4 Processes and scheduling
+
+Met 2026-10-24 (under way since 2026-10-19). Boundary: from `docs: close N3` (549a1b93) to the
+`docs: close N4` commit. `git rev-list --count --no-merges 549a1b93..8e6db9d3`: 338 commits;
+`git log --merges --first-parent 549a1b93..8e6db9d3`: 21 merges into `main`, one per slice or fix.
+
+- What moved. `kernel`: timeout, task, extent (N4.1); proc, credentials, limits (N4.2); the
+  descriptors (N4.3); kqueue, select, poll (N4.4), and `struct filterops` as the `Filter<G>`
+  trait (N4.4b, decision 46); signals and sigio (N4.5b); futex (N4.6c); fork, exit, resources,
+  acct (N4.6a); sysctl's core (N4.6b); the message buffer, `/dev/klog`, sendsyslog (N4.7a); tty,
+  the clists, the line disciplines, pty (N4.7b); timecounters, clockintr, the clock, time,
+  reboot (N4.8a); the 11 time and reboot calls Native (a6). `hal`: the context switch and the
+  scheduler's machine half (N4.5a); spl, softintr, the kernel lock, the mutex (N4.5c); arm64's
+  generic timer and the timekeep page (N4.8a); exception vectors, trap, the syscall entry,
+  copy, cpufunc, sendsig and sigreturn, the Spectre-BHB trampolines (N4.8b); `pmap_tramp`, the
+  `TTBR1_EL1` switch and every kernel mapping non-global (N4.8d, added by the user on
+  2026-10-23). Native calls 17 -> 105; `hal` 100 -> 184 (`hal_ceiling` 600, the user's raise
+  before N4.5); `bsd` 10196 -> 9490 (`cargo xtask unsafe-report`).
+- Went well. Every slice ran surveyor -> planner -> redesigner -> reviewer and was booted on
+  arm64 before its merge and after it (decision 23 kept the build out of the commits; the
+  boot per merge caught what the host tests could not). The review rule of 2026-10-22 (one
+  review, a closing one after a blocking finding or in a security area, fixes to the same
+  redesigner) held: N4.8b's two blocking findings (`KcopyToken::take` reachable by a forbid
+  crate; `UserFrame::with`'s uniqueness against the EL0 IRQ/FIQ entries) and N4.8d's (the
+  direct map's global TLB entries surviving the switch to `pmap_tramp`) were found by the
+  first review and closed before the merge. The decisions the user delegated overnight on
+  2026-10-22/23 were taken with the recommended option and logged for the user.
+- Failed, and what fixed it. N4.5a's first boot panicked (CPU 0's idle thread started with
+  argument 0; ac635b78). A missing `uvmspace_addref` from N4.2 made `ps -ax` panic, found only
+  when `smoke-diag` joined the post-merge smokes (2536a3e6, and a third site in N4.6b's
+  `VsLock`). N4.8a's timekeep claim panicked the first user fault on the page (`PG_HAL_KEEP`,
+  e6b89051). At the close: a host size bound N4.8b moved (8e6db9d3: the host's `Mdproc` holds
+  the TCB); the kqueue-of-kqueue `diff-openbsd` step, added in N4.4 and first run here, raced
+  on both systems (the outer knote is activated by `systqmp`, as the C does; QEMU's TCG runs
+  that path cold on EmiBSD), so the step waits up to a second (d444f4e8). Another session's
+  builds into `Kernel/target/` (a stale `xtask` with its copy's root, a corrupted `bsd` rlib)
+  broke three post-merge and close runs; it now uses its own `CARGO_TARGET_DIR`.
+- The exit criterion was restated at the close (the user, 2026-10-24): `sys/kern/` still holds
+  N4's 28 adapters over `kernel::*` and files that belong to N5, N7, N8 and N9, each now named
+  in its row; seven bridges said `paid_by = "N4"` and were re-dated (3b7c45ae: five to N5,
+  whose implementations are the kernel's already; `ModulePlatform` to N9; `TlbCpus` to N10,
+  for which `bridges.rs` now accepts `N10`).
+- Idioms that took several attempts: the user frame borrowed per access (`UserFrame::with`,
+  three shapes before the IRQ/FIQ entries joined it); the kcopy token (lazy in bsd, then taken
+  first at boot); the timekeep page's claim (on `PG_BUSY`, then its own bit).
+- Open: `just comp` fails inside `xtask comp` (`ln: File exists` on generated LLVM sources);
+  `ci-full`'s installer recipes used the compiler of 2026-10-09. `just comp` and
+  `smoke-efiboot` still run amd64 steps under decision 44. `unsafe-report --write` would lower
+  `hal_ceiling` to 184; it stays at the user's 600.
+- Numbers at the close: `just check` rc=0 (217 s) and `just ci` rc=0 (500 s; 67 of 86
+  recipes, 19 amd64-only skipped) at 8e6db9d3; `just ci-full` rc=0 (1248 s); `just
+  diff-openbsd` rc=0 twice at d444f4e8 (111 steps, 108 equal, 3 expected, 0 unexpected);
+  `cargo xtask lz drift --security` empty; `lz check` 1209 modules (209 redesigned), 0 errors.
+- `just bench` (arm64, 10 runs, `docs/bench/n4-after-arm64.toml`, 1759 s) against N3's
+  `n3-perf-after-arm64.toml`, EmiBSD / OpenBSD medians: pagefault 81425 -> 115036 ns (+41 %;
+  OpenBSD +2 %), pipe 171062 -> 230368 (+35 %; +1 %), forkexec 6904563 -> 8571085 (+24 %; +6 %),
+  forkexit 2706914 -> 3210724 (+19 %; +5 %), fileread 867319 -> 960900 (+11 %; +4 %), boot
+  8.61 -> 9.05 s; ratios to OpenBSD now pagefault 0.915, pipe 1.227, forkexec 1.259, forkexit
+  1.383, fileread 1.049. Over decision 43's 10 % without a measured reason: the user's decision
+  of 2026-10-24 closes N4 with them recorded and gives them to N12's row (suspects: N4.8d's
+  TTBR1 switch and ASID-tagged kernel TLB entries, the owned locks, N4.8b's frame borrows).
+- Effort / Time: left for the user.

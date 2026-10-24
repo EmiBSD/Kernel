@@ -11,8 +11,8 @@
 # /progress measures its pace from them. Written once by hand; `--write` keeps them.
 
 [ratchet]
-forbid_floor = 348
-legacy_ceiling = 8501
+forbid_floor = 425
+legacy_ceiling = 7916
 legacy_baseline = 8748
 hal_ceiling = 600
 baseline_date = "2026-10-10"
@@ -26,20 +26,20 @@ name = "arch"
 total = 0
 
 [[subsystem]]
-name = "benches"
-total = 0
-
-[[subsystem]]
 name = "arch/amd64"
 total = 773
 
 [[subsystem]]
 name = "arch/arm64"
-total = 881
+total = 786
 
 [[subsystem]]
 name = "arch/host"
-total = 35
+total = 34
+
+[[subsystem]]
+name = "benches"
+total = 0
 
 [[subsystem]]
 name = "conf"
@@ -51,15 +51,15 @@ total = 5
 
 [[subsystem]]
 name = "ddb"
-total = 15
+total = 13
 
 [[subsystem]]
 name = "dev"
-total = 458
+total = 451
 
 [[subsystem]]
 name = "dev/acpi"
-total = 205
+total = 204
 
 [[subsystem]]
 name = "dev/ata"
@@ -87,7 +87,7 @@ total = 7
 
 [[subsystem]]
 name = "dev/ic"
-total = 664
+total = 662
 
 [[subsystem]]
 name = "dev/isa"
@@ -107,7 +107,7 @@ total = 21
 
 [[subsystem]]
 name = "dev/pci"
-total = 737
+total = 736
 
 [[subsystem]]
 name = "dev/pckbc"
@@ -131,11 +131,11 @@ total = 110
 
 [[subsystem]]
 name = "dev/usb"
-total = 528
+total = 525
 
 [[subsystem]]
 name = "dev/wscons"
-total = 335
+total = 330
 
 [[subsystem]]
 name = "dev/wsfont"
@@ -147,11 +147,11 @@ total = 11
 
 [[subsystem]]
 name = "isofs"
-total = 89
+total = 88
 
 [[subsystem]]
 name = "kern"
-total = 1117
+total = 635
 
 [[subsystem]]
 name = "lib/libkern"
@@ -167,11 +167,11 @@ total = 0
 
 [[subsystem]]
 name = "machine"
-total = 79
+total = 77
 
 [[subsystem]]
 name = "miscfs"
-total = 37
+total = 36
 
 [[subsystem]]
 name = "msdosfs"
@@ -179,7 +179,7 @@ total = 60
 
 [[subsystem]]
 name = "net"
-total = 1578
+total = 1573
 
 [[subsystem]]
 name = "netinet"
@@ -191,7 +191,7 @@ total = 355
 
 [[subsystem]]
 name = "nfs"
-total = 143
+total = 140
 
 [[subsystem]]
 name = "ntfs"
@@ -207,7 +207,7 @@ total = 235
 
 [[subsystem]]
 name = "sys"
-total = 328
+total = 235
 
 [[subsystem]]
 name = "tmpfs"
@@ -215,4 +215,4 @@ total = 24
 
 [[subsystem]]
 name = "ufs"
-total = 228
+total = 226
