@@ -322,8 +322,6 @@
 //! - `vm_map_lock` and friends are the `*_ln` functions without the `VMMAP_DEBUG` file/line
 //!   arguments and `LPRINTF`; the tree checks (`uvm_tree_sanity`, `uvm_tree_size_chk`,
 //!   `vmspace_validate`) run in host tests, as `option VMMAP_DEBUG`, which is not configured.
-//! - [`uvm_map_inentry`] prints with `printf` (no controlling terminal: `uprintf`); its
-//!   format becomes two words (`what`, `reason`).
 //! - `uvm_map_splitentry` takes the pager reference under `KERNEL_LOCK`, as the C (M11a).
 //! - `uvm_map_fill_vmmap` (`kinfo_vmentry`, sysctl) and the `ddb` printers
 //!   (`uvm_map_printit`, `uvm_object_printit`, `uvm_page_printit`) wait for their
@@ -433,6 +431,11 @@
 //!   fault reaches it through `FaultMapGuard::copy_amap`.
 //! - `struct vm_aref` is the `amap`/`pageoff` pair of [`Handles`]; LZ's `EntryRefs` (the
 //!   handles cloned for `uvm_map_lock_entry`) are a clone of the entry's [`Handles`].
+//! - [`uvm_map_inentry`]'s format argument is two words, `what` (the register: `sp`) and
+//!   `reason`, of the C's one format (`[%s]%d/%d sp=%lx inside %lx-%lx: not MAP_STACK`); its
+//!   report goes to the process's terminal with `VmProc::uprintf` (N4.8b), as the C's
+//!   `uprintf`, with the addresses in plain hexadecimal as `%lx` prints them (LZ printed it
+//!   on the console, with `0x` prefixes: no `uprintf`).
 
 use core::cmp::Ordering;
 use core::ops::Deref;
@@ -3596,8 +3599,8 @@ pub fn uvm_map_inentry(
             let p = vmproc();
             let mut comm = [0u8; 24];
             let n = p.comm(&mut comm).min(comm.len());
-            hal::prf::printf(format_args!(
-                "[{}]{}/{} {}={:#x} inside {:#x}-{:#x}: {}\n",
+            p.uprintf(format_args!(
+                "[{}]{}/{} {}={:x} inside {:x}-{:x}: {}\n",
                 core::str::from_utf8(&comm[..n]).unwrap_or("?"),
                 p.pid(),
                 p.tid(),
@@ -7447,6 +7450,87 @@ mod tests {
         assert_eq!(vm.vm_dused.load(Mem::Relaxed), 4);
         testutil::vmproc_with(|p| {
             p.limits.remove(&crate::vm::proc::RLIMIT_DATA);
+        });
+        uvmspace_free(vm);
+    }
+
+    /// `uvm_map_inentry` with `uvm_map_inentry_sp`: a stack pointer in a `MAP_STACK` entry
+    /// passes and is cached; one in a plain anonymous mapping fails, reported on the
+    /// process's terminal (`VmProc::uprintf`) in the C's format, `%lx` as plain hexadecimal
+    /// and the range the cache still holds (the C prints `ie` as the failed lookup left it),
+    /// with `AMAP` set and `SIGSEGV` at the trap's pc.
+    #[test]
+    fn inentry_reports_a_stack_outside_map_stack_on_the_terminal() {
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let len = 4 * PAGE_SIZE;
+        let mut stk = 0x4800_0000;
+        uvm_mapanon(
+            map,
+            &mut stk,
+            len,
+            0,
+            anon_flags(UVM_FLAG_FIXED | UVM_FLAG_STACK),
+        )
+        .expect("stack");
+        let mut plain = 0x4900_0000;
+        uvm_mapanon(map, &mut plain, len, 0, anon_flags(UVM_FLAG_FIXED)).expect("plain");
+        testutil::vmproc_with(|p| {
+            p.comm = b"pivot".to_vec();
+            p.pid = 77;
+            p.tid = 100_077;
+            p.pc = 0x1234;
+            p.acflag_amap = false;
+            p.segv.clear();
+            p.uprintfs.clear();
+        });
+
+        let mut ie = InentryCache::default();
+        let sp = stk + 2 * PAGE_SIZE + 0x10;
+        let what = ("sp", "not MAP_STACK");
+        assert!(uvm_map_inentry(
+            map,
+            &mut ie,
+            sp,
+            what.0,
+            what.1,
+            uvm_map_inentry_sp,
+            map.sserial()
+        ));
+        assert_eq!((ie.start, ie.end), (stk, stk + len));
+        assert!(testutil::vmproc_with(
+            |p| p.uprintfs.is_empty() && p.segv.is_empty()
+        ));
+
+        let bad = plain + PAGE_SIZE + 0x20;
+        assert!(!uvm_map_inentry(
+            map,
+            &mut ie,
+            bad,
+            what.0,
+            what.1,
+            uvm_map_inentry_sp,
+            map.sserial()
+        ));
+        assert_eq!(
+            (ie.start, ie.end),
+            (stk, stk + len),
+            "a failure leaves the cache"
+        );
+        let line = std::format!(
+            "[pivot]77/100077 sp={:x} inside {:x}-{:x}: not MAP_STACK\n",
+            bad,
+            stk,
+            stk + len - 1
+        );
+        testutil::vmproc_with(|p| {
+            assert_eq!(p.uprintfs, [line]);
+            assert!(p.acflag_amap);
+            assert_eq!(p.segv, [0x1234]);
+            p.uprintfs.clear();
+            p.segv.clear();
+            p.acflag_amap = false;
         });
         uvmspace_free(vm);
     }

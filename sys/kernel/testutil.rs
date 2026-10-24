@@ -42,10 +42,10 @@
 //!   its name ([`pool_knobs`]).
 //! - `Malloc`: the same leaked blocks (page-aligned, so `MALLOC_ALIGN`-aligned), the bytes out
 //!   counted per thread and malloc type ([`malloc_out`]); [`fail_pages`] fails them too.
-//! - `UserCopy`: one user address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything
-//!   outside it is `EFAULT`. Its `kcopy_in`/`kcopy_out` (a `hal::user::ForeignWindow`'s
-//!   copies) reach one run of "foreign" kernel memory of [`FOREIGN_LEN`] bytes at
-//!   [`FOREIGN_BASE`] ([`foreign_bytes`], [`set_foreign_bytes`]); anything outside it faults.
+//! - The user copy is `hal`'s own on the host (`hal::arch::host::copy`, N4.8b): one user
+//!   address space of [`USER_LEN`] bytes at [`USER_BASE`], one run of "foreign" kernel
+//!   memory of [`FOREIGN_LEN`] bytes at [`FOREIGN_BASE`] ([`user_bytes`], [`foreign_bytes`],
+//!   [`set_foreign_bytes`] are its, re-exported).
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
 //! - The kernel lock is `hal::klock`'s own since N4.5c, a per-thread depth on the host (no
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
@@ -97,7 +97,6 @@ use hal::prf::Printf;
 use hal::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
-use hal::user::UserCopy;
 use hal::vm::uvmexp::UVMEXP;
 
 use crate::vm::km::{KvMap, LegacyLend};
@@ -111,14 +110,10 @@ use crate::vm::vnode::{SysInfo, Uvn, VnodeOps};
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
 
-/// Where the user address space of the double starts.
-pub const USER_BASE: usize = 0x1000_0000;
-/// Its size.
-pub const USER_LEN: usize = 64 * 1024;
-/// Where the double's foreign kernel memory starts (a `ForeignWindow`'s side of `kcopy`).
-pub const FOREIGN_BASE: usize = 0x3000_0000;
-/// Its size.
-pub const FOREIGN_LEN: usize = 64 * 1024;
+/// The host's user and foreign memory (`hal`'s machine copies on the host, N4.8b).
+pub use hal::arch::host::copy::{
+    FOREIGN_BASE, FOREIGN_LEN, USER_BASE, USER_LEN, foreign_bytes, set_foreign_bytes, user_bytes,
+};
 
 /// One page of the doubles' memory: page-aligned, so a run of them is too.
 #[derive(Clone, Copy)]
@@ -138,6 +133,8 @@ std::thread_local! {
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
+    static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
+    static TTY_VNODE: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
@@ -147,11 +144,6 @@ std::thread_local! {
 static QUEUES: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
-
-/// The user address space of the double.
-static USER: Mutex<[u8; USER_LEN]> = Mutex::new([0; USER_LEN]);
-/// The double's foreign kernel memory.
-static FOREIGN: Mutex<[u8; FOREIGN_LEN]> = Mutex::new([0; FOREIGN_LEN]);
 
 /// A double's state, a panicking test's poison ignored.
 fn lock<T>(m: &'static Mutex<T>) -> MutexGuard<'static, T> {
@@ -415,93 +407,6 @@ impl PoolBackend for TestPools {
             wchan,
         })))
     }
-}
-
-/// The user copy double.
-struct TestUser;
-
-/// The range `[uaddr, uaddr + len)` of the double's address space, `EFAULT` outside it.
-fn user_range(uaddr: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
-    let start = uaddr.checked_sub(USER_BASE).ok_or(Errno::EFAULT)?;
-    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
-    if end > USER_LEN {
-        return Err(Errno::EFAULT);
-    }
-    Ok(start..end)
-}
-
-impl UserCopy for TestUser {
-    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        let r = user_range(uaddr, kbuf.len())?;
-        kbuf.copy_from_slice(&lock(&USER)[r]);
-        Ok(())
-    }
-
-    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
-        let r = user_range(uaddr, kbuf.len())?;
-        lock(&USER)[r].copy_from_slice(kbuf);
-        Ok(())
-    }
-
-    /// `copyinstr`: up to the NUL (copied), at most `kbuf.len()` bytes, `ENAMETOOLONG`
-    /// without one; `EFAULT` past the address space.
-    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
-        let user = lock(&USER);
-        for (i, b) in kbuf.iter_mut().enumerate() {
-            let r = user_range(uaddr + i, 1)?;
-            *b = user[r.start];
-            if *b == 0 {
-                return Ok(i + 1);
-            }
-        }
-        Err(Errno::ENAMETOOLONG)
-    }
-
-    /// `copyoutstr`: `kbuf` up to its NUL (copied), at most `kbuf.len()` bytes,
-    /// `ENAMETOOLONG` without one; `EFAULT` past the address space.
-    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
-        let mut user = lock(&USER);
-        for (i, &b) in kbuf.iter().enumerate() {
-            let r = user_range(uaddr + i, 1)?;
-            user[r.start] = b;
-            if b == 0 {
-                return Ok(i + 1);
-            }
-        }
-        Err(Errno::ENAMETOOLONG)
-    }
-
-    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno> {
-        if uaddr % 4 != 0 {
-            return Err(Errno::EFAULT);
-        }
-        let r = user_range(uaddr, 4)?;
-        let mut w = [0u8; 4];
-        w.copy_from_slice(&lock(&USER)[r]);
-        Ok(u32::from_ne_bytes(w))
-    }
-
-    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        let r = foreign_range(kva, kbuf.len())?;
-        kbuf.copy_from_slice(&lock(&FOREIGN)[r]);
-        Ok(())
-    }
-
-    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno> {
-        let r = foreign_range(kva, kbuf.len())?;
-        lock(&FOREIGN)[r].copy_from_slice(kbuf);
-        Ok(())
-    }
-}
-
-/// The range `[kva, kva + len)` of the double's foreign memory, `EFAULT` outside it.
-fn foreign_range(kva: usize, len: usize) -> Result<core::ops::Range<usize>, Errno> {
-    let start = kva.checked_sub(FOREIGN_BASE).ok_or(Errno::EFAULT)?;
-    let end = start.checked_add(len).ok_or(Errno::EFAULT)?;
-    if end > FOREIGN_LEN {
-        return Err(Errno::EFAULT);
-    }
-    Ok(start..end)
 }
 
 /// How many times this thread holds the kernel lock (`hal::klock`'s host double, a
@@ -858,7 +763,6 @@ static TEST_SLEEP: TestSleep = TestSleep;
 static TEST_PAGES: TestPages = TestPages;
 static TEST_POOLS: TestPools = TestPools;
 static TEST_MALLOC: TestMalloc = TestMalloc;
-static TEST_USER: TestUser = TestUser;
 
 /// The `printf(9)` double: every line formatted into one buffer.
 struct TestPrintf;
@@ -902,7 +806,6 @@ pub fn install() {
         let pools = bridges::register_pool_backend(&TEST_POOLS).is_ok();
         let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();
         let _ = MEMORY_DOUBLES.set(pools && malloc);
-        let _ = bridges::register_user_copy(&TEST_USER);
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
@@ -944,30 +847,6 @@ pub fn init_shared_once() {
     ONCE.call_once(|| {
         let _ = hal::rwlock::init_shared();
     });
-}
-
-/// `len` bytes of the double's user memory at `uaddr`, `None` outside it.
-pub fn user_bytes(uaddr: usize, len: usize) -> Option<Vec<u8>> {
-    let r = user_range(uaddr, len).ok()?;
-    Some(lock(&USER)[r].to_vec())
-}
-
-/// `len` bytes of the double's foreign kernel memory at `kva`, `None` outside it.
-pub fn foreign_bytes(kva: usize, len: usize) -> Option<Vec<u8>> {
-    let r = foreign_range(kva, len).ok()?;
-    Some(lock(&FOREIGN)[r].to_vec())
-}
-
-/// Writes `bytes` into the double's foreign kernel memory at `kva` (what the other process
-/// left in its pages); `false` outside it.
-pub fn set_foreign_bytes(kva: usize, bytes: &[u8]) -> bool {
-    match foreign_range(kva, bytes.len()) {
-        Ok(r) => {
-            lock(&FOREIGN)[r].copy_from_slice(bytes);
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 /// Makes this thread's page allocations fail, as `km_alloc` does when the kernel map is full:
@@ -1266,6 +1145,8 @@ pub struct VmProcState {
     pub segv: Vec<usize>,
     /// The `log` lines, with their level.
     pub logs: Vec<(i32, String)>,
+    /// The `uprintf` lines.
+    pub uprintfs: Vec<String>,
 }
 
 std::thread_local! {
@@ -1405,6 +1286,11 @@ impl crate::vm::proc::VmProc for TestVmProc {
         let line = std::format!("{args}");
         VM_PROC_STATE.with(|s| s.borrow_mut().logs.push((level, line)));
     }
+
+    fn uprintf(&self, args: core::fmt::Arguments<'_>) {
+        let line = std::format!("{args}");
+        VM_PROC_STATE.with(|s| s.borrow_mut().uprintfs.push(line));
+    }
 }
 
 static TEST_VM_PROC: TestVmProc = TestVmProc;
@@ -1487,6 +1373,32 @@ pub fn file_log_on() -> bool {
 /// Turns the record of [`file_log_on`] on or off for this thread.
 pub fn set_file_log(on: bool) {
     FILE_LOG_ON.with(|c| c.set(on));
+}
+
+/// What this thread's test glues' `pledge_syscall` answers for `code`: the refusal
+/// [`set_pledge_refusal`] armed for it, `Ok` for every other call.
+pub fn pledge_refusal(code: i32) -> Result<(), (Errno, u64)> {
+    match PLEDGE_REFUSE.with(Cell::get) {
+        Some((c, e, tval)) if c == code => Err((e, tval)),
+        _ => Ok(()),
+    }
+}
+
+/// Makes this thread's test glues refuse system call `code` with `error` and the promises
+/// `tval` (`None`: refuse nothing).
+pub fn set_pledge_refusal(r: Option<(i32, Errno, u64)>) {
+    PLEDGE_REFUSE.with(|c| c.set(r));
+}
+
+/// What this thread's test glues' `session_has_tty_vnode` answers (`s_ttyvp != NULL`):
+/// `false` until [`set_tty_vnode`] says otherwise.
+pub fn tty_vnode() -> bool {
+    TTY_VNODE.with(Cell::get)
+}
+
+/// Makes this thread's test glues answer `on` for every session's terminal vnode.
+pub fn set_tty_vnode(on: bool) {
+    TTY_VNODE.with(|c| c.set(on));
 }
 
 /// Records a test glue's hook call.
@@ -1764,12 +1676,21 @@ macro_rules! test_proc_glue {
                 $crate::testutil::file_log_push(std::format!("pledge_fail {code:#x}"));
                 error
             }
+            fn pledge_syscall(
+                _p: &$crate::proc::Thread<Self>,
+                code: i32,
+            ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+                $crate::testutil::pledge_refusal(code)
+            }
             fn pledge_sysctl(
                 _p: &$crate::proc::Thread<Self>,
                 _mib: &[i32],
                 _new: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
+            }
+            fn session_has_tty_vnode(_sess: &$crate::proc::Session<Self>) -> bool {
+                $crate::testutil::tty_vnode()
             }
             fn pledge_adjtime(
                 _p: &$crate::proc::Thread<Self>,

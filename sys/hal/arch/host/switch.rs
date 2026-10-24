@@ -142,15 +142,35 @@ pub(crate) fn switch(
 /// `cpu_fork`'s host half: a host thread for the child, which waits for the first switch to
 /// it, then runs the trampoline with `start` and `arg`.
 pub(crate) fn thread_setup(
-    _parent: &MachineSlot,
+    parent: &MachineSlot,
     _parent_runs: bool,
     child: &MachineSlot,
     _stack: usize,
-    _tcb: usize,
+    tcb: usize,
     start: usize,
     arg: usize,
 ) {
+    // The machine's `*pcb = p1->p_addr->u_pcb` copies the parent's TCB; a given one wins.
+    let tcb = if tcb != 0 { tcb } else { tcb_of(parent) };
+    set_tcb(child, tcb);
     spawn(core::ptr::from_ref(child).addr(), start, arg);
+}
+
+/// `TCB_GET(p)` of the thread whose slot is `slot`: its host `Mdproc`'s, 0 before one is set.
+pub(crate) fn tcb_of(slot: &MachineSlot) -> usize {
+    slot.md.tcb.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// `TCB_SET(p, addr)`: kept in the slot's host `Mdproc` (no register to load on the host).
+pub(crate) fn set_tcb(slot: &MachineSlot, tcb: usize) {
+    slot.md
+        .tcb
+        .store(tcb, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// `TCB_INVALID(addr)`: the host refuses no address.
+pub(crate) const fn tcb_invalid(_addr: usize) -> bool {
+    false
 }
 
 /// A thread that runs nowhere starts afresh with `start` and `arg`.

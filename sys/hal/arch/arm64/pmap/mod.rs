@@ -35,7 +35,7 @@
 
 mod asid;
 pub(crate) mod backend;
-mod cpufunc;
+pub(crate) mod cpufunc;
 pub mod layout;
 mod vp;
 mod window;

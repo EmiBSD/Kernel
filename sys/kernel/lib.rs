@@ -63,6 +63,7 @@ pub mod sched;
 pub mod select;
 pub mod sig;
 pub mod sigio;
+pub mod syscall;
 pub mod sysctl;
 pub mod task;
 pub mod tc;

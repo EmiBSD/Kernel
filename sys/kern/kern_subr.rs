@@ -67,6 +67,10 @@
 //! - `uiomove(cp, n, uio)` takes the kernel buffer as a slice whose length is `n`.
 //! - `PMAP_CHECK_COPYIN` (the `check_copyin` wrappers of `copyin`/`copyinstr`) is not
 //!   configured: the pinned-syscall regions it checks arrive with `pinsyscalls`.
+//! - N4.8b: `uiomove`'s `UIO_SYSSPACE` leg copies with `hal::user::KcopyToken` (the one
+//!   holder of `kcopy` onto kernel addresses, taken here) where LZ called the machine's
+//!   `unsafe` `kcopy` with the iovec's raw pointer; the vouching is the same (`struct uio`'s
+//!   contract), now `hal`'s documented trust.
 
 use core::ptr::{self, NonNull};
 
@@ -74,12 +78,14 @@ use crate::kassert;
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::sched_bsd::preempt;
 use crate::kern::subr_prf::panic;
-use crate::machine::copy::{copyin, copyout, kcopy};
+use crate::machine::copy::{copyin, copyout};
 use crate::sys::errno::Errno;
 use crate::sys::queue::{ListAdapter, ListHead};
 use crate::sys::sched::sched_pause;
 use crate::sys::types::Off;
 use crate::sys::uio::{Uio, UioRw, UioSeg};
+use hal::once::OnceStatic;
+use hal::user::KcopyToken;
 
 /// `uio->uio_iov++; uio->uio_iovcnt--`: steps past the first iovec.
 fn uio_next_iov(uio: &mut Uio<'_>) {
@@ -132,13 +138,13 @@ pub fn uiomove(cp: &mut [u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
                 }
             }
             UioSeg::UIO_SYSSPACE => {
+                // A UIO_SYSSPACE iovec is a kernel buffer of at least `iov_len` bytes its
+                // builder vouches for (`struct uio`'s contract): the token's (N4.8b).
+                let kva = iov.iov_base.expose_provenance();
                 if uio.uio_rw == UioRw::UIO_READ {
-                    // SAFETY: a UIO_SYSSPACE iovec is a kernel buffer of at least `iov_len`
-                    // bytes its builder vouches for (`struct uio`'s contract); `buf` is ours.
-                    unsafe { kcopy(buf.as_ptr(), iov.iov_base.cast(), cnt) }?;
+                    kcopy_token().kcopy_out(buf, kva)?;
                 } else {
-                    // SAFETY: as above.
-                    unsafe { kcopy(iov.iov_base.cast_const().cast(), buf.as_mut_ptr(), cnt) }?;
+                    kcopy_token().kcopy_in(kva, buf)?;
                 }
             }
         }
@@ -150,6 +156,51 @@ pub fn uiomove(cp: &mut [u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
         n -= cnt;
     }
     Ok(())
+}
+
+/// The one `hal::user::KcopyToken`, `uiomove`'s for its `UIO_SYSSPACE` leg (N4.8b).
+static KCOPY: OnceStatic<&'static KcopyToken> = OnceStatic::new();
+
+/// How long [`kcopy_take`] waits for a concurrent first taker's store before it calls the
+/// token stolen.
+const KCOPY_TAKE_SPINS: u32 = 1 << 20;
+
+/// Takes `hal`'s one `KcopyToken` for `uiomove` and `/dev/mem`. `hal_bridges_register` calls
+/// it first, before any code of the kernel or ABI crates runs, so none of them can hold the
+/// token (it is a safe copy onto any kernel address its holder names); another call keeps
+/// what is held. `panic(9)` when the token is gone and was not stored here: someone else took
+/// it.
+pub fn kcopy_take() {
+    if KCOPY.get().is_some() {
+        return;
+    }
+    if let Some(t) = KcopyToken::take() {
+        let _ = KCOPY.set(t);
+        return;
+    }
+    // Taken already: by a first caller about to store it (two host test threads at once), or
+    // by someone else.
+    for _ in 0..KCOPY_TAKE_SPINS {
+        if KCOPY.get().is_some() {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic(format_args!(
+        "kcopy: hal's token was taken outside bsd's boot"
+    ));
+}
+
+/// The token [`kcopy_take`] stored at boot (the host tests, which have no boot, take it here).
+pub(crate) fn kcopy_token() -> &'static KcopyToken {
+    if let Some(t) = KCOPY.get() {
+        return t;
+    }
+    kcopy_take();
+    match KCOPY.get() {
+        Some(t) => t,
+        None => panic(format_args!("kcopy: no token")),
+    }
 }
 
 /// Give next character to user as result of read.
@@ -260,6 +311,18 @@ mod tests {
 
     use super::*;
     use crate::sys::uio::Iovec;
+
+    /// `bsd` holds `hal`'s one kcopy token once its boot took it (here, the first
+    /// `UIO_SYSSPACE` user's take): another take gets nothing, so no other crate can hold
+    /// one, and taking again keeps what is held.
+    #[test]
+    fn the_kcopy_token_is_bsds_alone() {
+        kcopy_take();
+        let t = kcopy_token();
+        assert!(KcopyToken::take().is_none(), "a second take");
+        kcopy_take();
+        assert!(core::ptr::eq(kcopy_token(), t));
+    }
 
     #[test]
     fn sizes_round_up_to_powers_of_two() {

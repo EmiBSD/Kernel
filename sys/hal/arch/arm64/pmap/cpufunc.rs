@@ -204,8 +204,8 @@ macro_rules! cache_handle_range {
     ($va:expr, $len:expr, $dcop:literal) => {{
         let (va, len): (usize, usize) = ($va, $len);
         // SAFETY: cache maintenance by virtual address changes no data: `dc civac` writes a
-        // dirty line back before dropping it (the pmap uses no discarding operation), `dc
-        // cvau` writes back. An address that is not mapped faults like any kernel access (a
+        // dirty line back before dropping it, `dc cvac` and `dc cvau` write back (no caller
+        // has a discarding operation: `dc ivac` stays `bsd`'s `unsafe fn`). An address that is not mapped faults like any kernel access (a
         // trap, then a panic) and corrupts nothing. The loop's registers are the block's
         // own; memory is a clobber (not `nomem`), so the operation stays between the
         // accesses it orders.
@@ -335,7 +335,7 @@ pub(super) fn ttbr0_empty() {
 }
 
 /// `cpu_tlb_flush`: drops every TLB entry of the inner-shareable domain (all CPUs).
-pub(super) fn cpu_tlb_flush() {
+pub(crate) fn cpu_tlb_flush() {
     // SAFETY: TLB invalidation changes no mapping and no data: every later access refetches
     // its translation from the tables, which the `dsb ishst` made visible first.
     unsafe {
@@ -351,7 +351,7 @@ pub(super) fn cpu_tlb_flush() {
 
 /// `cpu_tlb_flush_asid(va)`: drops one page of one ASID on every CPU (`va` carries the ASID in
 /// bits 63:48 and the page number in 43:0).
-pub(super) fn cpu_tlb_flush_asid(va: u64) {
+pub(crate) fn cpu_tlb_flush_asid(va: u64) {
     // SAFETY: as for `cpu_tlb_flush`; any operand is a valid invalidation.
     unsafe {
         asm!(
@@ -366,7 +366,7 @@ pub(super) fn cpu_tlb_flush_asid(va: u64) {
 }
 
 /// `cpu_tlb_flush_all_asid(va)`: drops one page for every ASID on every CPU (kernel mappings).
-pub(super) fn cpu_tlb_flush_all_asid(va: u64) {
+pub(crate) fn cpu_tlb_flush_all_asid(va: u64) {
     // SAFETY: as for `cpu_tlb_flush`.
     unsafe {
         asm!(
@@ -381,7 +381,7 @@ pub(super) fn cpu_tlb_flush_all_asid(va: u64) {
 }
 
 /// `cpu_tlb_flush_asid_all(asid)`: drops every entry of one ASID (bits 63:48) on every CPU.
-pub(super) fn cpu_tlb_flush_asid_all(asid: u64) {
+pub(crate) fn cpu_tlb_flush_asid_all(asid: u64) {
     // SAFETY: as for `cpu_tlb_flush`.
     unsafe {
         asm!(
@@ -395,23 +395,30 @@ pub(super) fn cpu_tlb_flush_asid_all(asid: u64) {
     };
 }
 
+/// `cpu_dcache_wb_range(va, len)`: writes the dirty data cache lines of `[va, va + len)`
+/// back to memory (`dc cvac`), for a device about to read it (`bus_dma`, the interrupt
+/// controllers' tables; `hal::arch::arm64::cpufunc`).
+pub(crate) fn cpu_dcache_wb_range(va: usize, len: usize) {
+    cache_handle_range!(va, len, "cvac");
+}
+
 /// `cpu_dcache_wbinv_range(va, len)`: writes back and invalidates the data cache over
 /// `[va, va + len)` (`dc civac`).
-pub(super) fn cpu_dcache_wbinv_range(va: usize, len: usize) {
+pub(crate) fn cpu_dcache_wbinv_range(va: usize, len: usize) {
     cache_handle_range!(va, len, "civac");
 }
 
 /// `cpu_idcache_wbinv_range(va, len)`: writes back and invalidates the data cache, then
 /// invalidates the instruction cache, over `[va, va + len)` (a managed page about to be
 /// mapped non-cacheable).
-pub(super) fn cpu_idcache_wbinv_range(va: usize, len: usize) {
+pub(crate) fn cpu_idcache_wbinv_range(va: usize, len: usize) {
     cache_handle_range!(va, len, "civac", "ivau");
 }
 
 /// `cpu_icache_sync_range(va, len)`: makes instructions written to `[va, va + len)` visible
 /// to instruction fetch (data cache cleaned to the point of unification, instruction cache
 /// invalidated).
-pub(super) fn cpu_icache_sync_range(va: usize, len: usize) {
+pub(crate) fn cpu_icache_sync_range(va: usize, len: usize) {
     cache_handle_range!(va, len, "cvau", "ivau");
 }
 

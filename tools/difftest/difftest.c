@@ -1670,6 +1670,122 @@ t_tty(void)
 	printf("kern.msgbufsize positive: %d\n", v > 0);
 }
 
+/*
+ * Runs `probe` in a child with no controlling terminal (so the kernel's
+ * uprintf(9) about it prints nothing; main() already took the core file
+ * away), and prints how it ended: `name: sig N` when a signal killed it,
+ * `name: exit N` otherwise.
+ */
+static void
+entry_probe(const char *name, void (*probe)(void))
+{
+	pid_t pid;
+	int status;
+
+	fflush(stdout);
+	if ((pid = fork()) == 0) {
+		setsid();
+		probe();
+		_exit(0);
+	}
+	if (pid == -1 || waitpid(pid, &status, 0) != pid) {
+		printf("%s: -1 %s\n", name, ename(errno));
+		return;
+	}
+	if (WIFSIGNALED(status))
+		printf("%s: sig %d\n", name, WTERMSIG(status));
+	else
+		printf("%s: exit %d\n", name, WEXITSTATUS(status));
+}
+
+#ifdef __aarch64__
+/*
+ * A system call made with the stack pointer moved into an anonymous
+ * mapping that is not MAP_STACK (the shape of OpenBSD's regress
+ * sys/kern/stackpivot): the kernel's check at the system call entry
+ * signals SIGSEGV and fails the call with EPERM.
+ */
+static void
+pivot_probe(void)
+{
+	char *stk;
+
+	stk = mmap(NULL, 65536, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE,
+	    -1, 0);
+	if (stk == MAP_FAILED)
+		_exit(2);
+	__asm volatile(
+	    "mov x19, sp\n"
+	    "mov sp, %0\n"
+	    "mov x8, #20\n"		/* SYS_getpid */
+	    "svc 0\n"
+	    "dsb nsh\n"
+	    "isb\n"
+	    "mov sp, x19\n"
+	    : : "r"(stk + 65536)
+	    : "x0", "x1", "x8", "x19", "memory", "cc");
+}
+
+/*
+ * SYS_getpid with bit 32 set in x8, from a site no pin table names: the
+ * arm64 entry reads the number into an int, so the call is getpid, and
+ * pin_check kills the process (SIGABRT) for the unpinned site. Were the
+ * whole register the number, the call would fail (ENOSYS) and the child
+ * exit 2; had the binary's table pinned getpid everywhere ((u_int)-1),
+ * the call would run and the child exit 0.
+ */
+static void
+int_probe(void)
+{
+	int failed;
+
+	__asm volatile(
+	    "mov x8, #20\n"		/* SYS_getpid */
+	    "orr x8, x8, #0x100000000\n"
+	    "svc 0\n"
+	    "dsb nsh\n"
+	    "isb\n"
+	    "cset %w0, cs\n"		/* the carry flag: an error */
+	    : "=r"(failed) : : "x0", "x1", "x8", "memory", "cc");
+	_exit(failed ? 2 : 0);
+}
+
+/*
+ * A plain SYS_getpid from a site no pin table names: SIGABRT (exit 2 for
+ * an error returned, 0 for a call that ran, as int_probe).
+ */
+static void
+unpinned_probe(void)
+{
+	int failed;
+
+	__asm volatile(
+	    "mov x8, #20\n"		/* SYS_getpid */
+	    "svc 0\n"
+	    "dsb nsh\n"
+	    "isb\n"
+	    "cset %w0, cs\n"		/* the carry flag: an error */
+	    : "=r"(failed) : : "x0", "x1", "x8", "memory", "cc");
+	_exit(failed ? 2 : 0);
+}
+#endif
+
+/*
+ * The checks of the system call entry, each in a child: the stack pointer
+ * must lie in a MAP_STACK mapping, the number is an int, the call site
+ * must be the one pinned for it (arm64; amd64's at N10).
+ */
+static void
+t_entry(void)
+{
+	section("entry");
+#ifdef __aarch64__
+	entry_probe("stackpivot", pivot_probe);
+	entry_probe("int-syscall", int_probe);
+	entry_probe("unpinned-svc", unpinned_probe);
+#endif
+}
+
 static const struct {
 	const char *name;
 	void (*fn)(void);
@@ -1689,6 +1805,7 @@ static const struct {
 	{ "sysctl", t_sysctl },
 	{ "ostype", t_ostype },
 	{ "tty", t_tty },
+	{ "entry", t_entry },
 };
 
 /*

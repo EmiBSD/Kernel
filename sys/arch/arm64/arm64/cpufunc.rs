@@ -60,6 +60,13 @@
 //! `pmap_kenter_cache`'s non-cacheable mappings of managed pages (agintc's LPI and ITS
 //! tables), with `idcache_line_size` from `CTR_EL0` too.
 //!
+//! N4.8b: `cpu_wfi`, the four TLB flushes and the cache operations that discard nothing
+//! (`cpu_dcache_wb_range`, `cpu_dcache_wbinv_range`, `cpu_icache_sync_range`,
+//! `cpu_idcache_wbinv_range`) are `hal`'s (`hal::arch::arm64::cpufunc`, over the pmap's own
+//! copies), re-exported here; this module keeps the firmware calls (`smc_call`, `hvc_call`),
+//! `cpu_setttb` and `cpu_dcache_inv_range` (`unsafe fn`: it discards dirty lines) until their
+//! callers have typed ones.
+//!
 //! ## Deviations
 //! - Each routine is an `asm!` block instead of a `.S` entry: they are a few instructions each
 //!   and have no stack frame; the `RETGUARD` prologue has no meaning in Rust.
@@ -67,6 +74,11 @@
 //!   run time on affected cores) waits for `codepatch` (M4).
 
 use core::arch::asm;
+
+pub use hal::arch::arm64::cpufunc::{
+    cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range,
+    cpu_tlb_flush, cpu_tlb_flush_all_asid, cpu_tlb_flush_asid, cpu_tlb_flush_asid_all, cpu_wfi,
+};
 
 /// `smc_call(a0, a1, a2, a3)`: `smc #0` with the SMCCC registers `x0`..`x3`; returns `x0`.
 /// The call may clobber `x0`..`x3` only (SMCCC), which is all the asm declares.
@@ -130,74 +142,6 @@ pub unsafe fn cpu_setttb(asid: u64, pt0pa: u64) {
     };
 }
 
-/// `cpu_wfi`: `dsb sy; wfi`: waits for an interrupt, the default `cpu_idle_cycle_fcn`.
-pub fn cpu_wfi() {
-    // SAFETY: waiting for an interrupt has no effect on memory or registers; the barrier
-    // only completes pending stores first.
-    unsafe { asm!("dsb sy", "wfi", options(nomem, nostack, preserves_flags)) };
-}
-
-/// `cpu_tlb_flush`: invalidates every TLB entry of this inner-shareable domain.
-pub fn cpu_tlb_flush() {
-    // SAFETY: TLB invalidation only forces refetches; the barriers complete pending table
-    // writes first (`dsb ishst`) and the invalidation after (`dsb ish; isb`).
-    unsafe {
-        asm!(
-            "dsb ishst",
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
-            options(nostack, preserves_flags)
-        )
-    };
-}
-
-/// `cpu_tlb_flush_asid(va)`: invalidates one page of one ASID (`va` carries the ASID in bits
-/// 63:48 and the page number in 43:0).
-pub fn cpu_tlb_flush_asid(va: u64) {
-    // SAFETY: as for `cpu_tlb_flush`.
-    unsafe {
-        asm!(
-            "dsb ishst",
-            "tlbi vae1is, {va}",
-            "dsb ish",
-            "isb",
-            va = in(reg) va,
-            options(nostack, preserves_flags)
-        )
-    };
-}
-
-/// `cpu_tlb_flush_all_asid(va)`: invalidates one page for every ASID (kernel mappings).
-pub fn cpu_tlb_flush_all_asid(va: u64) {
-    // SAFETY: as for `cpu_tlb_flush`.
-    unsafe {
-        asm!(
-            "dsb ishst",
-            "tlbi vaale1is, {va}",
-            "dsb ish",
-            "isb",
-            va = in(reg) va,
-            options(nostack, preserves_flags)
-        )
-    };
-}
-
-/// `cpu_tlb_flush_asid_all(asid)`: invalidates every entry of one ASID (bits 63:48).
-pub fn cpu_tlb_flush_asid_all(asid: u64) {
-    // SAFETY: as for `cpu_tlb_flush`.
-    unsafe {
-        asm!(
-            "dsb ishst",
-            "tlbi aside1is, {asid}",
-            "dsb ish",
-            "isb",
-            asid = in(reg) asid,
-            options(nostack, preserves_flags)
-        )
-    };
-}
-
 /// The smallest data cache line, `dcache_line_size`, from `CTR_EL0.DminLine` (log2 of words).
 fn dcache_line_size() -> usize {
     let ctr: u64;
@@ -224,18 +168,6 @@ macro_rules! dcache_range {
     }};
 }
 
-/// `cpu_dcache_wb_range(va, len)`: writes the dirty data cache lines of `[va, va+len)` back
-/// to memory (`dc cvac`), for a device about to read it.
-pub fn cpu_dcache_wb_range(va: usize, len: usize) {
-    dcache_range!("cvac", va, len);
-}
-
-/// `cpu_dcache_wbinv_range(va, len)`: writes back and invalidates the data cache lines of
-/// `[va, va+len)` (`dc civac`).
-pub fn cpu_dcache_wbinv_range(va: usize, len: usize) {
-    dcache_range!("civac", va, len);
-}
-
 /// `cpu_dcache_inv_range(va, len)`: invalidates the data cache lines of `[va, va+len)`
 /// without writing them back (`dc ivac`), so a device's writes to memory become visible.
 ///
@@ -245,65 +177,5 @@ pub fn cpu_dcache_wbinv_range(va: usize, len: usize) {
 /// last cache lines) is still needed: dirty lines are discarded.
 pub unsafe fn cpu_dcache_inv_range(va: usize, len: usize) {
     dcache_range!("ivac", va, len);
-}
-
-/// `cpu_icache_sync_range(va, len)`: makes instructions written to `[va, va+len)` visible to
-/// instruction fetch: cleans the data cache to the point of unification and invalidates the
-/// instruction cache, line by line, then `dsb ish; isb`.
-pub fn cpu_icache_sync_range(va: usize, len: usize) {
-    let ctr: u64;
-    // SAFETY: `ctr_el0` is readable at EL1 and the read has no side effect.
-    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags)) };
-    // CTR_EL0.DminLine and IminLine: log2 of the line size in words.
-    let dline = 4usize << ((ctr >> 16) & 0xf);
-    let iline = 4usize << (ctr & 0xf);
-    let end = va + len;
-
-    let mut addr = va & !(dline - 1);
-    while addr < end {
-        // SAFETY: cache maintenance by address on a mapped range the caller owns.
-        unsafe { asm!("dc cvau, {}", in(reg) addr, options(nostack, preserves_flags)) };
-        addr += dline;
-    }
-    // SAFETY: a barrier.
-    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
-    let mut addr = va & !(iline - 1);
-    while addr < end {
-        // SAFETY: as above.
-        unsafe { asm!("ic ivau, {}", in(reg) addr, options(nostack, preserves_flags)) };
-        addr += iline;
-    }
-    // SAFETY: barriers.
-    unsafe { asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
-}
-
-/// `cpu_idcache_wbinv_range(va, len)`: writes back and invalidates the data cache lines of
-/// `[va, va+len)` (`dc civac`), then invalidates its instruction cache lines (`ic ivau`),
-/// stepping by `idcache_line_size`, the smaller of the two line sizes (`CTR_EL0`); for a
-/// managed page about to be mapped non-cacheable.
-pub fn cpu_idcache_wbinv_range(va: usize, len: usize) {
-    let ctr: u64;
-    // SAFETY: `ctr_el0` is readable at EL1 and the read has no side effect.
-    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags)) };
-    let line = (4usize << ((ctr >> 16) & 0xf)).min(4usize << (ctr & 0xf));
-    let end = va + len;
-
-    let mut addr = va & !(line - 1);
-    while addr < end {
-        // SAFETY: cache maintenance by address on a mapped range the caller owns; dirty lines
-        // are written back, not discarded.
-        unsafe { asm!("dc civac, {}", in(reg) addr, options(nostack, preserves_flags)) };
-        addr += line;
-    }
-    // SAFETY: a barrier.
-    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
-    let mut addr = va & !(line - 1);
-    while addr < end {
-        // SAFETY: as above.
-        unsafe { asm!("ic ivau, {}", in(reg) addr, options(nostack, preserves_flags)) };
-        addr += line;
-    }
-    // SAFETY: barriers.
-    unsafe { asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
 }
 /* </CODE> */

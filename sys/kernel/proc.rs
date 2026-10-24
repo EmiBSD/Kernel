@@ -911,33 +911,38 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn coredump(_p: &Thread<Self>) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    /// `sendsig(catcher, sig, mask, ksip, info, onstack)` (`machdep.c`, N4.8): the signal
-    /// frame of `p`, the running thread, built on its user stack for `catcher`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the C's six arguments and the thread"
-    )]
-    fn sendsig(
+
+    // The system call prologue's calls into what is still `bsd`'s (`kernel::syscall`, N4.8b).
+
+    /// `sigcoderet - sigcodecall` of the machine's signal trampoline: how far past its system
+    /// call instruction a thread's `PROC_PC` lies during the call (`pin_check` points back).
+    fn sigcode_svc_offset() -> usize {
+        0
+    }
+    /// `p->p_vmspace`: the address space of `p`, which `mi_syscall`'s `MAP_STACK` check and
+    /// the trap handler's faults use; `None` for a thread without one, which fails the check
+    /// (so a glue cannot skip it by forgetting this member).
+    fn user_vmspace(_p: &Thread<Self>) -> Option<&crate::vm::map::Vmspace> {
+        None
+    }
+    /// `pledge_syscall(p, code, &tval)` (`kern_pledge.c`, N8): whether pledged `p` may make
+    /// system call `code`; refused, the error and the promises that would allow it (`tval`)
+    /// for [`ProcGlue::pledge_fail`]. Required: a glue cannot drop pledge by forgetting it.
+    fn pledge_syscall(p: &Thread<Self>, code: i32) -> Result<(), (Errno, u64)>;
+    /// `scdebug_call(p, code, args)` (`SYSCALL_DEBUG`, `bsd`'s feature `syscall_debug`).
+    fn scdebug_call(
         _p: &Thread<Self>,
-        _catcher: hal::sys::signal::Sig,
-        _sig: i32,
-        _mask: hal::sys::signal::Sigset,
-        _ksip: &hal::sys::siginfo::Siginfo,
-        _info: bool,
-        _onstack: bool,
-    ) -> Result<(), Errno> {
-        Ok(())
+        _code: hal::syscall::Register,
+        _args: &hal::syscall::SysArgs,
+    ) {
     }
-    /// `signotify(p)` (`<machine/cpu.h>`, N4.8): the running thread `p` notices its signal at
-    /// its next return to user mode (an AST, and a kick of its CPU).
-    fn signotify(_p: &Thread<Self>) {}
-    /// `PROC_STACK(p)` (N4.8): the user stack pointer of `p`'s trap frame.
-    fn proc_stack(_p: &Thread<Self>) -> usize {
-        0
-    }
-    /// `TCB_GET(p)` (N4.8): `p`'s thread control block address.
-    fn tcb_get(_p: &Thread<Self>) -> usize {
-        0
+    /// `scdebug_ret(p, code, error, retval)` (`SYSCALL_DEBUG`).
+    fn scdebug_ret(
+        _p: &Thread<Self>,
+        _code: hal::syscall::Register,
+        _error: Result<(), Errno>,
+        _retval: &hal::syscall::Rval,
+    ) {
     }
     // The process code's calls into what is still `bsd`'s (`kernel::fork`, `kernel::exit`,
     // N4.6a). The defaults are what a glue without that subsystem does (the kernel's tests).
@@ -982,10 +987,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn child_return(_p: &Thread<Self>) {}
     /// `start_init(p)` (`init_main.c`, N9.1): process 1 execs init.
     fn start_init(_p: &Thread<Self>) {}
-    /// `TCB_INVALID(tcb)` of the machine (`__tfork(2)`, N4.8).
-    fn tcb_invalid(_tcb: usize) -> bool {
-        false
-    }
     /// init's `exit1` (pid 1, `EXIT_NORMAL`): the C panics ("init died"); under QEMU `bsd`
     /// ends the run instead.
     fn init_exited(xexit: i32, xsig: i32) -> ! {
@@ -1016,8 +1017,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn unveil_destroy(_pr: &Process<Self>) {}
     /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
     fn textvp_release(_pr: &Process<Self>) {}
-    /// `TCB_SET(p, tcb)` of the machine (`__set_tcb(2)`, N4.8).
-    fn tcb_set(_p: &Thread<Self>, _tcb: usize) {}
     /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
     fn rtable_exists(id: u32) -> bool {
         id == 0
@@ -3002,6 +3001,12 @@ mod tests {
             _code: u64,
         ) -> hal::sys::errno::Errno {
             error
+        }
+        fn pledge_syscall(
+            _p: &Thread<Self>,
+            _code: i32,
+        ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+            Ok(())
         }
         fn pledge_sysctl(
             _p: &Thread<Self>,

@@ -2541,6 +2541,13 @@ pub(crate) mod tests {
             error
         }
 
+        fn pledge_syscall(
+            _p: &Thread<Self>,
+            _code: i32,
+        ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+            Ok(())
+        }
+
         fn pledge_sysctl(
             _p: &Thread<Self>,
             _mib: &[i32],

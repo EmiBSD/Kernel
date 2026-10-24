@@ -40,8 +40,9 @@
 //! Status: `wip`. Milestone M2 ports the clock function table and `delay(9)`
 //! (`arm_clock_func`, `arm_clock_register`, `arm_dflt_delay`, `delay`, `cpu_initclocks`,
 //! `cpu_startclock`, `setstatclockrate`); M4 adds the IRQ/FIQ entry from `exception.S`
-//! (`arm_dflt_irq`, `arm_dflt_fiq`, `arm_irq_dispatch`, `arm_fiq_dispatch`, `arm_cpu_irq`,
-//! `arm_cpu_fiq`), the `spl` machinery (`arm_smask`, `arm_intr_func` with the `arm_dflt_*`
+//! (`arm_dflt_irq`, `arm_dflt_fiq`, `arm_irq_dispatch`, `arm_fiq_dispatch`; `arm_cpu_irq`
+//! and `arm_cpu_fiq` are `hal`'s since N4.8b, `sys/hal/arch/arm64/trap.rs`, which dispatch
+//! through [`ArmIntrHardware`]), the `spl` machinery (`arm_smask`, `arm_intr_func` with the `arm_dflt_*`
 //! functions, `arm_do_pending_intr`, `arm_set_intr_handler`, `arm_init_smask`, `splraise`,
 //! `spllower`, `splx`, `softintr`, `arm_splassert_check`), the wakeup hooks and the device
 //! tree registration (`arm_intr_get_parent`, the pre-registration `arm_intr_prereg_*` and
@@ -72,7 +73,6 @@
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::Ordering;
 
 use libkern::StaticCell;
 
@@ -93,7 +93,6 @@ use crate::queue_adapter;
 use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::unported;
-use hal::vm::uvmexp::UVMEXP;
 
 /// `arm_intr_func`: the controller's `spl` functions, the defaults until one attaches; `hal`
 /// reaches them through [`ArmIntrHardware`].
@@ -143,6 +142,20 @@ impl hal::intr::IntrHardware for ArmIntrHardware {
 
     fn splassert(&self, wantipl: i32, func: &str) {
         arm_splassert_check(wantipl, func);
+    }
+
+    /// `(*arm_irq_dispatch)(frame)`: what the controller gave `arm_set_intr_handler`.
+    fn dispatch_irq(&self, frame: &mut Trapframe) {
+        // SAFETY: written once during autoconfiguration, read on every interrupt afterwards.
+        let dispatch = unsafe { ARM_IRQ_DISPATCH.read() };
+        dispatch(frame);
+    }
+
+    /// `(*arm_fiq_dispatch)(frame)`.
+    fn dispatch_fiq(&self, frame: &mut Trapframe) {
+        // SAFETY: as for `dispatch_irq`.
+        let dispatch = unsafe { ARM_FIQ_DISPATCH.read() };
+        dispatch(frame);
     }
 }
 
@@ -259,32 +272,6 @@ pub static ARM_IRQ_DISPATCH: StaticCell<fn(&mut Trapframe)> = StaticCell::new(ar
 
 /// `arm_fiq_dispatch`: as `arm_irq_dispatch`, for FIQs.
 pub static ARM_FIQ_DISPATCH: StaticCell<fn(&mut Trapframe)> = StaticCell::new(arm_dflt_fiq);
-
-/// `arm_cpu_irq`: the IRQ entry, called from `handle_el1h_irq` (`exception.S`).
-#[unsafe(no_mangle)]
-pub extern "C" fn arm_cpu_irq(frame: &mut Trapframe) {
-    let ci = curcpu();
-
-    UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
-    ci.core.idepth_add(1);
-    // SAFETY: written once during autoconfiguration, read on every interrupt afterwards.
-    let dispatch = unsafe { ARM_IRQ_DISPATCH.read() };
-    dispatch(frame);
-    ci.core.idepth_add(-1);
-}
-
-/// `arm_cpu_fiq`: the FIQ entry, called from `handle_el1h_fiq` (`exception.S`).
-#[unsafe(no_mangle)]
-pub extern "C" fn arm_cpu_fiq(frame: &mut Trapframe) {
-    let ci = curcpu();
-
-    UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
-    ci.core.idepth_add(1);
-    // SAFETY: as for `arm_cpu_irq`.
-    let dispatch = unsafe { ARM_FIQ_DISPATCH.read() };
-    dispatch(frame);
-    ci.core.idepth_add(-1);
-}
 
 /// `arm_dflt_splraise`: raise the level in `ci_cpl` (`hal::intr`'s).
 pub fn arm_dflt_splraise(newcpl: i32) -> i32 {

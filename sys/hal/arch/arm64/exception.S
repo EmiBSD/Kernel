@@ -25,11 +25,15 @@
  */
 
 /*
- * The ported subset of exception.S: the register save/restore macros, the EL1h handlers and
- * the vector table (see exception.rs). The symbols written as NAME between braces are filled in by
- * exception.rs from the Rust definitions (assym.h in C). x18 is a general register in this
- * kernel (the C builds with -ffixed-x18 and keeps curcpu() in it), so the EL1 paths save and
- * restore it like any other register instead of reloading it from tpidr_el1.
+ * The exception entry of exception.S (see exception.rs): the register save
+ * and restore macros, the EL1h and EL0 handlers, syscall_return and the kernel
+ * vector table. The symbols written as NAME between braces are filled in by
+ * exception.rs from the Rust definitions (assym.h in C); the handlers it
+ * calls are Rust functions passed as sym operands. x18 is a general register
+ * in this kernel (the C builds with -ffixed-x18 and keeps curcpu() in it), so
+ * the EL1 paths save and restore it like any other register instead of
+ * reloading it from tpidr_el1. A return to user mode goes through the
+ * trampoline vectors (trampoline.S, pulled in after this file).
  */
 
 	.text
@@ -136,7 +140,7 @@
 
 	/* handle the ast */
 	mov	x0, sp
-	bl	ast
+	bl	{AST}
 	b	1b
 2:
 .endm
@@ -158,15 +162,65 @@
 1:
 .endm
 
+	.globl handle_el1h_sync
+	.type handle_el1h_sync,@function
+handle_el1h_sync:
+	save_registers 1
+	mov	x0, sp
+	bl	{DO_EL1H_SYNC}
+	restore_registers 1
+	eret
+	dsb nsh
+	isb
+
+	.globl handle_el1h_irq
+	.type handle_el1h_irq,@function
+handle_el1h_irq:
+	save_registers 1
+	mov	x0, sp
+	bl	{ARM_CPU_IRQ}
+	restore_registers 1
+	eret
+	dsb nsh
+	isb
+
+	.globl handle_el1h_fiq
+	.type handle_el1h_fiq,@function
+handle_el1h_fiq:
+	save_registers 1
+	mov	x0, sp
+	bl	{ARM_CPU_FIQ}
+	restore_registers 1
+	eret
+	dsb nsh
+	isb
+
+	.globl handle_el1h_error
+	.type handle_el1h_error,@function
+handle_el1h_error:
+	save_registers 1
+	mov	x0, sp
+	bl	{DO_EL1H_ERROR}
+	brk	0xf13
+	1: b 1b
+
 /*
- * The C's `return` switches VBAR_EL1 to the trampoline vectors (trampoline.S,
- * the Spectre mitigation) and erets from tramp_return; the trampoline is not
- * ported, so the kernel vectors stay in VBAR_EL1 and the eret is here.
+ * The return to user mode: the user's x18 parked in tpidrro_el0, VBAR_EL1
+ * switched to this CPU's trampoline vectors (ci_trampoline_vectors, the
+ * table of its Spectre-BHB mitigation), then tramp_return erets. A CPU whose
+ * table was never chosen (0) takes trampoline_vectors_none, the C's default.
  */
 .macro	return
-	eret
-	dsb	nsh
+	msr	tpidrro_el0, x18
+	mrs	x18, tpidr_el1
+	ldr	x18, [x18, #({CI_TRAMPOLINE_VECTORS})]
+	cbnz	x18, 9f
+	adrp	x18, trampoline_vectors_none
+	add	x18, x18, :lo12:trampoline_vectors_none
+9:
+	msr	vbar_el1, x18
 	isb
+	b	tramp_return
 .endm
 
 	.globl handle_el0_sync
@@ -175,7 +229,7 @@ handle_el0_sync:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	do_el0_sync
+	bl	{DO_EL0_SYNC}
 	do_ast
 	allow_ss
 	restore_registers 0
@@ -187,7 +241,7 @@ handle_el0_irq:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	arm_cpu_irq
+	bl	{ARM_CPU_IRQ_EL0}
 	do_ast
 	allow_ss
 	restore_registers 0
@@ -199,7 +253,7 @@ handle_el0_fiq:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	arm_cpu_fiq
+	bl	{ARM_CPU_FIQ_EL0}
 	do_ast
 	allow_ss
 	restore_registers 0
@@ -211,7 +265,7 @@ handle_el0_error:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	do_el0_error
+	bl	{DO_EL0_ERROR}
 	brk	0xf23
 	1: b 1b
 
@@ -221,48 +275,6 @@ syscall_return:
 	do_ast
 	restore_registers 0
 	return
-
-	.globl handle_el1h_sync
-	.type handle_el1h_sync,@function
-handle_el1h_sync:
-	save_registers 1
-	mov	x0, sp
-	bl	do_el1h_sync
-	restore_registers 1
-	eret
-	dsb nsh
-	isb
-
-	.globl handle_el1h_irq
-	.type handle_el1h_irq,@function
-handle_el1h_irq:
-	save_registers 1
-	mov	x0, sp
-	bl	arm_cpu_irq
-	restore_registers 1
-	eret
-	dsb nsh
-	isb
-
-	.globl handle_el1h_fiq
-	.type handle_el1h_fiq,@function
-handle_el1h_fiq:
-	save_registers 1
-	mov	x0, sp
-	bl	arm_cpu_fiq
-	restore_registers 1
-	eret
-	dsb nsh
-	isb
-
-	.globl handle_el1h_error
-	.type handle_el1h_error,@function
-handle_el1h_error:
-	save_registers 1
-	mov	x0, sp
-	bl	do_el1h_error
-	brk	0xf13
-	1: b 1b
 
 .macro	vempty
 	.align 7
@@ -288,10 +300,10 @@ exception_vectors:
 	vector el1h_fiq		/* FIQ EL1h */
 	vector el1h_error	/* Error EL1h */
 
-	vector el0_sync		/* Synchronous 64-bit EL0 */
-	vector el0_irq		/* IRQ 64-bit EL0 */
-	vector el0_fiq		/* FIQ 64-bit EL0 */
-	vector el0_error	/* Error 64-bit EL0 */
+	vempty			/* Synchronous 64-bit EL0 */
+	vempty			/* IRQ 64-bit EL0 */
+	vempty			/* FIQ 64-bit EL0 */
+	vempty			/* Error 64-bit EL0 */
 
 	vempty			/* Synchronous 32-bit EL0 */
 	vempty			/* IRQ 32-bit EL0 */

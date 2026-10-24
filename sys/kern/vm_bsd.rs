@@ -535,7 +535,7 @@ use crate::kern::kern_sig::{sigexit, trapsignal};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::getmicrouptime;
 use crate::kern::kern_xxx::REBOOTING;
-use crate::kern::subr_prf::{log, panic};
+use crate::kern::subr_prf::{log, panic, uprintf};
 use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
@@ -777,6 +777,10 @@ impl VmProc for BsdVmProc {
 
     fn log(&self, level: i32, args: fmt::Arguments<'_>) {
         log(level, args);
+    }
+
+    fn uprintf(&self, args: fmt::Arguments<'_>) {
+        uprintf(args);
     }
 }
 

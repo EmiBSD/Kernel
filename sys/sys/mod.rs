@@ -129,6 +129,7 @@ pub mod stat;
 #[forbid(unsafe_code)]
 pub mod swap;
 pub use hal::sys::syscall;
+#[forbid(unsafe_code)]
 pub mod syscall_mi;
 pub mod syscallargs;
 #[forbid(unsafe_code)]

@@ -20,6 +20,7 @@
 //! Header ports of OpenBSD `sys/arch/arm64/include/*.h` that name nothing of `bsd`.
 
 pub mod _types;
+pub mod armreg;
 pub mod disklabel;
 pub mod elf;
 pub mod frame;
@@ -30,6 +31,8 @@ pub mod pcb;
 pub mod proc;
 pub mod pte;
 pub mod reg;
+pub mod signal;
+pub mod tcb;
 pub mod timetc;
 pub mod vmparam;
 /* </CODE> */

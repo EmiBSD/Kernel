@@ -54,7 +54,7 @@
 //!   `ci_curpm`, which the caller still does), indexed by `cpu_number()`.
 //! - The trampoline pmap (`pmap_tramp`, the user ASID's kernel view) is not configured, as in
 //!   LZ: the user ASID of a pair runs with the same tables (`TCR_EL1.E0PD` and the
-//!   trampoline vectors are N4's).
+//!   trampoline's `TTBR1_EL1` switch are N4.8d's, the user's decision of 2026-10-23).
 //!
 //! ## Redesign
 //! - LZ caps the ASIDs at 256 (`PMAP_NASID`, an 8-word bitmap): the C's probe of

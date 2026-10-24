@@ -1083,7 +1083,7 @@ rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/arm64/locore.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus; N3.1 commit 8/8b: locore.S's switch_mmu_kernel as hal_switch_mmu_kernel (global_asm!, run at its physical address by the backend), cpu_ttbr1; locore.rs has no licence text (the .S holds it): locore.S's Andrew Turner block is kept whole beside the others"
+notes = "N3.1 commit 5: the TLB, cache and TTBR instructions the pmap uses as private asm! (split from cpufunc.rs, which keeps its own for bus_dma, efi_machdep and cpu until N4): cpu_setttb of a pmap, the empty table into TTBR0, the four inner-shareable tlbi flushes, cache_handle_range (one block per operation, line sizes from CTR_EL0); no IPI: arm64 registers no TlbCpus; N3.1 commit 8/8b: locore.S's switch_mmu_kernel as hal_switch_mmu_kernel (global_asm!, run at its physical address by the backend), cpu_ttbr1; locore.rs has no licence text (the .S holds it): locore.S's Andrew Turner block is kept whole beside the others; N4.8b: the TLB flushes and cache operations are pub(crate) for hal::arch::arm64::cpufunc, plus cpu_dcache_wb_range (dc cvac, the same macro)"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/cpufunc.rs::cpu_setttb"
@@ -1621,12 +1621,6 @@ status = "adapted"
 adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/arm64/ast.rs"
-lz = ["sys/arch/arm64/arm64/ast.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
-
-[[module]]
 rust = "sys/arch/arm64/arm64/autoconf.rs"
 lz = ["sys/arch/arm64/arm64/autoconf.rs"]
 status = "inherited"
@@ -1652,32 +1646,24 @@ status = "adapted"
 adapted_by = ["sys/kernel/log.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/arm64/copy.rs"
-lz = ["sys/arch/arm64/arm64/copy.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/cpu.rs"]
-license = "none"
-notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
-
-[[module]]
-rust = "sys/arch/arm64/arm64/copystr.rs"
-lz = ["sys/arch/arm64/arm64/copystr.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/cpu.rs"]
-license = "none"
-notes = "N4.5a: CI_CURPCB is the core's offset (cpu_info's first member, hal::cpu::CORE_CURPCB)"
-
-[[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
+adapted_by = ["sys/hal/arch/arm64/cpufunc.rs"]
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
-status = "inherited"
-notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_REPEAT_TLBI codepatch until M4); M6-b2: cpu_icache_sync_range (line sizes from CTR_EL0); M7b: cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_dcache_inv_range (unsafe: it discards dirty lines) for bus_dma, the cache_handle_range macro as dcache_range! with dcache_line_size read from CTR_EL0; M16f: cpu_idcache_wbinv_range (idcache_line_size from CTR_EL0), called by pmap_kenter_cache for non-cacheable mappings of managed pages (agintc's tables)"
+status = "adapted"
+notes = "TLB invalidations and cpu_setttb as asm! blocks (no RETGUARD, no CPTAG_REPEAT_TLBI codepatch until M4); M6-b2: cpu_icache_sync_range (line sizes from CTR_EL0); M7b: cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_dcache_inv_range (unsafe: it discards dirty lines) for bus_dma, the cache_handle_range macro as dcache_range! with dcache_line_size read from CTR_EL0; M16f: cpu_idcache_wbinv_range (idcache_line_size from CTR_EL0), called by pmap_kenter_cache for non-cacheable mappings of managed pages (agintc's tables); N4.8b: cpu_wfi, the four TLB flushes and the non-discarding cache operations are hal's (hal::arch::arm64::cpufunc), re-exported; smc_call, hvc_call, cpu_setttb and cpu_dcache_inv_range stay (unsafe fn or firmware calls, until typed)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/cpufunc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
+status = "redesigned"
+notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"
@@ -1689,7 +1675,7 @@ notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswit
 rust = "sys/arch/arm64/arm64/db_interface.rs"
 lz = ["sys/arch/arm64/arm64/db_interface.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/cpu.rs"]
+adapted_by = ["sys/hal/cpu.rs", "sys/hal/arch/arm64/trap.rs"]
 notes = "M2: db_enter; M4: ddb_regs (StaticCell), db_ktrap (no db_recover, splhigh reported, db_active is a bool, the MDSCR single-step handling kept), db_enter = brk #0xf000; M11c: db_regs[] (db_reg_var! entries; x30 is tf_lr, the C's tf_x[30] is past the array), db_machine_command_table (empty: all of arm64's are MULTIPROCESSOR), db_machine_init (MULTIPROCESSOR body); db_validate_address, db_read_bytes/db_write_bytes and db_branch_taken are not ported; M11c (MULTIPROCESSOR): ddb_mp_mutex (DbMutex), ddb_state, ddb_active_cpu, db_switch_cpu (AtomicBool), db_switch_to_cpu, db_ktrap's db_enter_ddb loop (the body the C repeats is db_ktrap_inddb), db_enter_ddb, db_startcpu, db_stopcpu, the ARM_IPI_DDB sends, the MP commands (db_cpuinfo_cmd, db_startproc_cmd, db_stopproc_cmd, db_ddbproc_cmd: cpuinfo, startcpu, stopcpu, ddbcpu first in the table) and db_machine_init's body; splhigh/splx around db_trap; a fault while a command loop runs (db_recover) prints 'Faulted in DDB' and do_el1h_sync panics (no longjmp)"
 
 [[module]]
@@ -1704,14 +1690,6 @@ lz = ["sys/arch/arm64/arm64/disksubr.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/arm64/exception.rs"
-lz = ["sys/arch/arm64/arm64/exception.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
-license = "none"
-notes = "M4: save_registers/restore_registers, handle_el1h_sync/irq/fiq/error, exception_vectors, in exception.S (global_asm! with the frame offsets as placeholders: assym.h); x18 is a general register here (the C's -ffixed-x18 curcpu register), so the EL1 paths save and restore it and recover sp from the frame size; do_ast, handle_el0_* and the trampoline return are M6 (their vector slots are vempty); M6-a: do_ast, disable_ss/allow_ss, handle_el0_sync/irq/fiq/error, syscall_return, the 64-bit EL0 vector slots; the return macro is an eret (trampoline.S not ported)"
-
-[[module]]
 rust = "sys/arch/arm64/arm64/fpu.rs"
 lz = ["sys/arch/arm64/arm64/fpu.rs"]
 status = "adapted"
@@ -1722,7 +1700,7 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/intr.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/intr.rs", "sys/hal/arch/arm64/trap.rs"]
 notes = "M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
 
 [[module]]
@@ -1748,26 +1726,8 @@ notes = "M2: initarm (the 1 GiB TTBR0 Device-nGnRnE identity block for devices u
 rust = "sys/arch/arm64/arm64/mem.rs"
 lz = ["sys/arch/arm64/arm64/mem.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/copy.rs"]
 notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through the direct map instead of a pmap_enter at vmmap, copied with kcopy; /dev/null; /dev/zero from a stack buffer), mmmmap, mmioctl; reported: /dev/kmem (uvm_kernacc, uvm_glue.c); APERTURE is not configured; wip until uvm_kernacc"
-
-[[module]]
-rust = "sys/arch/arm64/arm64/sig_machdep.rs"
-lz = ["sys/arch/arm64/arm64/sig_machdep.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-
-[[module]]
-rust = "sys/arch/arm64/arm64/syscall.rs"
-lz = ["sys/arch/arm64/arm64/syscall.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs"]
-
-[[module]]
-rust = "sys/arch/arm64/arm64/trap.rs"
-lz = ["sys/arch/arm64/arm64/trap.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/fault.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/vm/unix.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/intr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
@@ -1930,14 +1890,21 @@ rust = "sys/arch/arm64/include/frame.rs"
 lz = ["sys/arch/arm64/include/frame.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/arch/arm64/include/frame.rs"]
-notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod); N4.5a: callframe, trapframe, switchframe and the sizes are hal's (re-exported), sigframe stays until N4.5b"
+notes = "M2: struct callframe; M4: struct trapframe (trapframe_t), TF_SIZE; switchframe is M5; M5-b2: struct switchframe, SWITCHFRAME_SZ; kern_sig.c: struct sigframe (the hole after sf_signum as _pad; AbiPod); N4.5a: callframe, trapframe, switchframe and the sizes are hal's (re-exported), sigframe stays until N4.5b; N4.8b: sigframe is hal's too (hal::sig's sendsig builds it), re-exported; its unsafe impl AbiPod is gone (hal::abi_pod! in hal's header)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/frame.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/frame.rs"]
 status = "redesigned"
-notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b)"
+notes = "N4.5a: struct callframe, struct trapframe, struct switchframe, TF_SIZE and SWITCHFRAME_SZ, which hal's context switch and cpu_fork build; struct sigframe stays in bsd's header (the signal context and siginfo are bsd's until N4.5b); N4.8b: struct sigframe (hal::abi_pod!, Sigframe::zeroed), with the signal context of include/signal.rs"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/armreg.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/armreg.rs"]
+status = "redesigned"
+notes = "N4.8b: the part of <machine/armreg.h> the trap code reads (INSN_SIZE, ESR_ELx and the exception classes, the data, brk and msr syndrome bits, DBG_MDSCR_SS, the PSR bits), with trap.c's accesstype beside the bits it decodes (host-tested through sys/hal/arch/host/mod.rs); bsd's include/armreg.rs keeps the whole header and its register macros for the CPU, timer and GIC code (N7)"
 
 [[module]]
 rust = "sys/arch/arm64/include/hypervisor.rs"
@@ -2030,8 +1997,16 @@ status = "inherited"
 
 [[module]]
 rust = "sys/arch/arm64/include/signal.rs"
+adapted_by = ["sys/hal/arch/arm64/include/signal.rs"]
 lz = ["sys/arch/arm64/include/signal.rs"]
-status = "inherited"
+status = "adapted"
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/signal.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/signal.rs"]
+status = "redesigned"
+notes = "N4.8b: sig_atomic_t and struct sigcontext beside the signal frame hal::sig builds; LZ's unsafe impl AbiPod (bsd's copy trait) is hal::abi_pod!, which proves the fields tile it; bsd's header re-exports them"
 
 [[module]]
 rust = "sys/arch/arm64/include/simplebusvar.rs"
@@ -2042,7 +2017,14 @@ status = "inherited"
 rust = "sys/arch/arm64/include/tcb.rs"
 lz = ["sys/arch/arm64/include/tcb.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/arch/arm64/include/tcb.rs", "sys/hal/thread.rs"]
+
+[[module]]
+rust = "sys/hal/arch/arm64/include/tcb.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/include/tcb.rs"]
+status = "redesigned"
+notes = "N4.8b: the kernel half of <machine/tcb.h> with the pcb it reads: __aarch64_set_tcb (the msr tpidr_el0, LZ's 1 unsafe, moved from bsd) and TCB_INVALID (none on arm64); TCB_GET and TCB_SET are hal::thread::tcb_get and tcb_set over the switch's pcb access (another thread's read under the scheduler's lock, which the setter takes too); bsd's header keeps the names for its callers"
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/timetc.rs"
@@ -5208,7 +5190,7 @@ adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.
 rust = "sys/kern/proc_glue.rs"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs"]
 status = "redesigned"
-notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here"
+notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug); N4.8b: sendsig, signotify, proc_stack and proc_pc are no longer the glue's; N4.8b b3c: tcb_get, tcb_set and tcb_invalid are hal::thread's"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::HashTable"
@@ -5564,7 +5546,7 @@ adapted_by = ["sys/kernel/task.rs"]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
 status = "redesigned"
-notes = "N4.5b: bsd's edge of kernel::sig and kernel::sigio: the sysent rows (sys_sigaction .. sys___thrsigdivert, sys_nosys, sys_sigreturn), coredump (the file systems), and the LZ signatures over bsd's Proc (psignal, ptsignal, trapsignal, userret, sigabort pin the thread; pgsigio and sigio_setown/getown over kernel::sigio), 0 unsafe (LZ 17), forbid on its mod line"
+notes = "N4.5b: bsd's edge of kernel::sig and kernel::sigio: the sysent rows (sys_sigaction .. sys___thrsigdivert, sys_nosys, sys_sigreturn), coredump (the file systems), and the LZ signatures over bsd's Proc (psignal, ptsignal, trapsignal, userret, sigabort pin the thread; pgsigio and sigio_setown/getown over kernel::sigio), 0 unsafe (LZ 17), forbid on its mod line; N4.8b: native_sigreturn, KernelApi::sigreturn's entry through the prologue and the sysent row, whose arm64 body is the kernel's"
 
 [[module]]
 rust = "sys/kern/kern_smr.rs"
@@ -5580,9 +5562,10 @@ notes = "N4.5c: bsd's names over hal::softintr (softintr_init checks the queues,
 
 [[module]]
 rust = "sys/kern/kern_subr.rs"
+adapted_by = ["sys/hal/arch/arm64/copy.rs"]
 lz = ["sys/kern/kern_subr.rs"]
-status = "inherited"
-notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (hook_establish/disestablish, dohooks) wait for their first user; M7b (kern_descrip.c): uiomove (the kernel buffer as a slice; UIO_SYSSPACE through kcopy) and ureadc; PMAP_CHECK_COPYIN not configured; host tests"
+status = "adapted"
+notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (hook_establish/disestablish, dohooks) wait for their first user; M7b (kern_descrip.c): uiomove (the kernel buffer as a slice; UIO_SYSSPACE through kcopy) and ureadc; PMAP_CHECK_COPYIN not configured; host tests; N4.8b review: kcopy_take, called first by hal_bridges_register before any kernel or ABI code runs, holds hal's one KcopyToken in KCOPY (panic when another took it); kcopy_token reads it"
 
 [[module]]
 rust = "sys/kern/kern_synch.rs"
@@ -7957,9 +7940,8 @@ license = "none"
 [[module]]
 rust = "sys/sys/syscall_mi.rs"
 lz = ["sys/sys/syscall_mi.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-notes = "pin_check (SIGABRT through sigabort, the message by printf: no uprintf without a tty; KTRACE not configured), mi_syscall (refreshcreds, pin_check, pledge_syscall/pledge_fail, the MAP_STACK check uvm_map_inentry reported; SYSCALL_DEBUG as feature syscall_debug; KTRACE and dt(4) not configured), mi_syscall_return, mi_child_return, mi_ast (ADDUPROF reported, subr_prof.c); M11a: the kernel lock at the C's sites; M11e: SY_NOLOCK honoured as in C for the audited bodies (kern_prot.c ids, kern_sig.c sigprocmask/sigsuspend/__thrsigdivert, kern_time.c, getrlimit, futex, sched_yield, getentropy, utrace, __set_tcb/__get_tcb; the files audit: open, openat, __pledge_open, stat, lstat, fstatat, __realpath, dup, flock, lseek, kqueue, kqueue1, pipe, pipe2, getrtable, getdtablecount; the uvm audit: munmap, mprotect, minherit, kbind, and setrlimit); MULTIPROCESSOR deviation: SY_NOLOCK_DEFERRED lists the NOLOCK system calls still run under the kernel lock: after the whole M11e audit only the unported __thrsleep/__thrwakeup; host tests check the table against sysent (syscall_mi/tests.rs)"
+status = "redesigned"
+notes = "pin_check (SIGABRT through sigabort, the message by printf: no uprintf without a tty; KTRACE not configured), mi_syscall (refreshcreds, pin_check, pledge_syscall/pledge_fail, the MAP_STACK check uvm_map_inentry reported; SYSCALL_DEBUG as feature syscall_debug; KTRACE and dt(4) not configured), mi_syscall_return, mi_child_return, mi_ast (ADDUPROF reported, subr_prof.c); M11a: the kernel lock at the C's sites; M11e: SY_NOLOCK honoured as in C for the audited bodies (kern_prot.c ids, kern_sig.c sigprocmask/sigsuspend/__thrsigdivert, kern_time.c, getrlimit, futex, sched_yield, getentropy, utrace, __set_tcb/__get_tcb; the files audit: open, openat, __pledge_open, stat, lstat, fstatat, __realpath, dup, flock, lseek, kqueue, kqueue1, pipe, pipe2, getrtable, getdtablecount; the uvm audit: munmap, mprotect, minherit, kbind, and setrlimit); MULTIPROCESSOR deviation: SY_NOLOCK_DEFERRED lists the NOLOCK system calls still run under the kernel lock: after the whole M11e audit only the unported __thrsleep/__thrwakeup; host tests check the table against sysent (syscall_mi/tests.rs); N4.8b: an adapter over kernel::syscall (forbid, 0 unsafe): pin_check, mi_syscall (the row's lock and function as the body), mi_syscall_return, mi_child_return and mi_ast forward on the thread pinned; SY_NOLOCK_DEFERRED re-exported; the MAP_STACK check is made there"
 
 [[module]]
 rust = "sys/sys/syscallargs.rs"
@@ -8470,7 +8452,7 @@ lines = "L352-L357"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
-native = ["sys/arch/arm64/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
+native = ["sys/hal/arch/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
 lines = "L83-L88"
 
@@ -8704,6 +8686,16 @@ crate = "hal"
 reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above bsd over the Printf bridge (bsd's subr_prf printf: console and message buffer), dropped and counted before registration; bridges.toml Printf, paid by N9"
 
 [[extra]]
+rust = "sys/hal/trap.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack"
+
+[[extra]]
+rust = "sys/hal/sig.rs"
+crate = "hal"
+reason = "hal runtime, written new (N4.8b): the signal frame of the running thread, the machine's (arm64: sys/hal/arch/arm64/sig.rs, from LZ's sig_machdep.rs) behind sendsig(SigDelivery) and sigreturn(scp, cookie) -> mask or SigreturnError; the host's double (sys/hal/arch/host/sig.rs) records and answers; forbid, 0 unsafe; it replaces ProcGlue::sendsig"
+
+[[extra]]
 rust = "sys/hal/bootmem.rs"
 crate = "hal"
 reason = "hal runtime, written new (N3.3): steal_slice/steal_one, typed &'static memory built in place over pmap::steal_memory before the page system is up (uvm_pageboot_alloc's cast); docs/IDIOMS.md"
@@ -8739,7 +8731,7 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs"]
 status = "redesigned"
 license = "none"
-notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S)"
+notes = "N4.2 (decision P1): MachineSlot, the #[repr(C)] members of a thread both machines' assembly reaches by offset (p_stat, p_cpu, p_addr, p_md; genassym.cf), first in kernel::proc::Thread; N4.5a: SCHED_LOCK (a SharedMutex at IPL_SCHED) and its witness SchedHold (dormant across the switch, adopted by a new thread's trampoline), Next (the chosen thread's token, its generation checked under DIAGNOSTIC), ThreadLayout and the one-thread-type check, the machine-independent half of cpu_switchto (switch_to, exit_to_idle), cpu_fork's (thread_setup, thread_restart), the trampoline's (the adopted hold, the registered start: bridges.toml ThreadStart), and curproc as with_current (a pinned reference for a closure, the one deref of ci_curproc, E2 upheld by the threads' pool release check); the machine halves are arch/<machine>/switch.rs. The LZ source cpuswitch.rs has no licence text of its own (cpuswitch.S's notice travels with the .S); N4.8b: MachineSlot::aston (md_astpending for the kernel's signotify); N4.8b b3c: tcb_get, tcb_set and tcb_invalid (TCB_GET, TCB_SET, TCB_INVALID: another thread's TCB read under the scheduler's lock, which the running thread's set takes too; the machine's half in arch/*/switch.rs, the host's a side table by slot that cpu_fork copies)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/timer.rs"
@@ -8758,7 +8750,7 @@ rust = "sys/hal/arch/arm64/switch.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/vm_machdep.rs", "sys/arch/arm64/arm64/machdep.rs"]
 status = "redesigned"
-notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt does not compile it. cpuswitch.rs (LZ) has no licence text, so license is not none"
+notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt does not compile it. cpuswitch.rs (LZ) has no licence text, so license is not none; N4.8b b3c: tcb_of and set_tcb (pcb_tcb through with_pcb_of, then __aarch64_set_tcb) and tcb_invalid for hal::thread"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/cpuswitch.rs::proc_trampoline_run"
@@ -8774,6 +8766,66 @@ kind = "renamed"
 lz = "sys/arch/arm64/arm64/machdep.rs::proc0paddr"
 native = ["sys/hal/thread.rs::boot_uarea", "boot_uarea_word"]
 kind = "split"
+
+[[module]]
+rust = "sys/hal/arch/arm64/exception.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/exception.rs"]
+status = "redesigned"
+license = "none"
+notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); the TTBR1_EL1 switch of the trampoline (pmap_tramp) is not configured (deviation): N4.8d's, the user's decision of 2026-10-23"
+
+
+[[module]]
+rust = "sys/hal/arch/arm64/trap.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs", "sys/arch/arm64/arm64/intr.rs"]
+status = "redesigned"
+notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::trap::CpuHooks, db_ktrap through hal::trap::Debugger, the IRQ dispatch through hal::intr::IntrHardware; N4.8b b3a: the EL0 handlers hold the user frame as a UserFrame (a pointer borrowed per closure, a per-CPU flag against a second borrow; the frame's one unsafe), never across a call out; b3: proc_pc and proc_stack over it"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/trap.rs::accesstype"
+native = ["sys/hal/arch/arm64/include/armreg.rs::accesstype"]
+kind = "moved"
+
+[[module]]
+rust = "sys/hal/arch/arm64/syscall.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/syscall.rs"]
+status = "redesigned"
+notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13)"
+
+[[module]]
+rust = "sys/hal/arch/arm64/sig.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/sig_machdep.rs"]
+status = "redesigned"
+notes = "N4.8b: sendsig and the machine half of sys_sigreturn (sigreturn) behind hal::sig, on the running thread's UserFrame (trap.rs), borrowed around copyout and copyin, never across them; the process members the C reads from curproc (p_sigstk, ps_sigcode, ps_sigcookie) come in a hal::sig::SigDelivery; the frame arithmetic and the checks (signal_frame, enter_handler, check_cookie, check_mode, restore) are pure and host-tested on arm64's headers; forbid, 0 unsafe (LZ: 2, the raw pcb_tf dereferences); the 4-clause licence of the first block was accepted at M2"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/sig_machdep.rs::process_frame"
+native = ["sys/hal/arch/arm64/trap.rs::UserFrame::current"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/sig_machdep.rs::sys_sigreturn"
+native = ["sigreturn", "sys/kernel/sig.rs::sys_sigreturn"]
+kind = "split"
+lines = "L205-L255"
+
+[[module]]
+rust = "sys/hal/arch/arm64/copy.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/copy.rs", "sys/arch/arm64/arm64/copystr.rs"]
+status = "redesigned"
+license = "none"
+notes = "N4.8b: copy.S and copystr.S (Dale Rahn's and Patrick Wildt's ISC notices in the .S files) pulled in by one global_asm, the safe copies (kernel side a slice, the user side checked by the assembly) behind hal::user; kcopy is kcopy_in/kcopy_out, pub(crate) unsafe, called for a ForeignWindow's range and the KcopyToken only; both LZ sources had license none (the .rs zones hold the author's block)"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/copy.rs::kcopy"
+native = ["kcopy_in", "kcopy_out"]
+kind = "split"
+lines = "L88-L96"
 
 [[module]]
 rust = "sys/hal/arch/arm64/fpu.rs"
@@ -8945,7 +8997,7 @@ notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: Mapp
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17; N4.8b: the UserCopy bridge is gone: the copies are the machine's, hal's own (arch/arm64/copy.rs, the host's arch/host/copy.rs), an EFAULT stub where hal has none (amd64 until N10, the ABI module's runtime); KcopyToken, the one holder of kcopy onto kernel addresses it names (bsd's uiomove UIO_SYSSPACE leg, decision 13 of N4.8), taken once; ForeignWindow and the token each one unsafe per direction over the machine's kcopy_in/kcopy_out"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
@@ -8959,7 +9011,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -8979,12 +9031,12 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10)"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94)"
 
 [[extra]]
 rust = "sys/hal/module/rt.rs"
@@ -9003,12 +9055,12 @@ reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocati
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn"
 
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl"
 
 [[module]]
 rust = "sys/kernel/clock.rs"
@@ -9049,7 +9101,7 @@ rust = "sys/kernel/proc.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs", "sys/sys/user.rs"]
 status = "redesigned"
-notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's)"
+notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret; N4.8b: ProcGlue loses sendsig, signotify, proc_stack and proc_pc (hal::sig, kernel::sig's signotify, hal::trap::proc_pc/proc_stack); N4.8b b3c: ProcGlue loses tcb_get, tcb_set and tcb_invalid (hal::thread)"
 
 [[module.fn]]
 lz = "sys/sys/proc.rs::PInentry"
@@ -9072,7 +9124,7 @@ rust = "sys/kernel/fork.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_fork.rs"]
 status = "redesigned"
-notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported"
+notes = "N4.6a: fork1/thread_fork/process_new/thread_new/process_initialize/fork_check_maxthread/allocpid/alloctid/ispidtaken/freepid/fork(2)/vfork(2)/__tfork(2), Start (the thread start in two words, legacy fn table), thread_start registered with hal; RLIMIT_NPROC enforced (decision 12), sizkthread not accumulated (decision 13); ptrace, prof_fork, startprofclock reported; N4.8b: __tfork's TCB_INVALID is hal::thread::tcb_invalid"
 
 [[module.fn]]
 lz = "sys/kern/kern_fork.rs::pin_copy"
@@ -9136,7 +9188,7 @@ rust = "sys/kernel/prot.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_prot.rs"]
 status = "redesigned"
-notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's"
+notes = "N4.6a: the kern_prot.c system calls with typed arguments (getpid .. setthrname, __set_tcb/__get_tcb through the glue's TCB hooks), sugid_change, proc_cansugid, dorefreshcreds, and getrtable/setrtable (uipc_syscalls.c, rtable_exists through the glue); the credentials are kernel::cred's; N4.8b: __set_tcb and __get_tcb over hal::thread's tcb_invalid, tcb_set and tcb_get"
 
 [[module]]
 rust = "sys/kernel/pty.rs"
@@ -9501,6 +9553,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/syscall.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of the system call path (N4.8b: copyin, copyout and copyinstr through hal::user over the host's user-copy double; the MI prologue and pin_check at b4) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/proc.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.2's hot paths (the credentials' copy, hold and refresh, getuid, lim_cur, the process list and pid chain insert/remove under the kernel lock witness) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -9801,7 +9858,7 @@ rust = "sys/kernel/sig.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sig.rs", "sys/sys/signalvar.rs"]
 status = "redesigned"
-notes = "N4.5b: signals over kernel::proc and kernel::sched: struct sigacts (its [m] members a Guarded cell of the process's ps_mtx, a BoxPool sigapl item or process 0's static, held by Process), the generation (cansignal, killpg1, pgsignal, prsignal, psignal, ptsignal, ptsignal_locked over pinned threads, trapsignal), the delivery (setsigctx, cursig, postsig, postsig_done, sigexit, userret), job control and the debugger (process_stop, process_continue, proc_stop_setup/finish, process_suspend_signal, proc_trap), single-threading (proc_suspend_check[_locked], single_thread_set/clear), sigaltstack's words, and the system calls' bodies (sigaction, sigprocmask, sigsuspend, sigaltstack, kill, thrkill, thrsigdivert, nosys); exit1, coredump, sendsig, signotify, PROC_STACK, TCB_GET and initprocess through ProcGlue. bsd's kern_sig.rs keeps the sysent rows, coredump and (until b2) the sigio registrations"
+notes = "N4.5b: signals over kernel::proc and kernel::sched: struct sigacts (its [m] members a Guarded cell of the process's ps_mtx, a BoxPool sigapl item or process 0's static, held by Process), the generation (cansignal, killpg1, pgsignal, prsignal, psignal, ptsignal, ptsignal_locked over pinned threads, trapsignal), the delivery (setsigctx, cursig, postsig, postsig_done, sigexit, userret), job control and the debugger (process_stop, process_continue, proc_stop_setup/finish, process_suspend_signal, proc_trap), single-threading (proc_suspend_check[_locked], single_thread_set/clear), sigaltstack's words, and the system calls' bodies (sigaction, sigprocmask, sigsuspend, sigaltstack, kill, thrkill, thrsigdivert, nosys); exit1, coredump, sendsig, signotify, PROC_STACK, TCB_GET and initprocess through ProcGlue. bsd's kern_sig.rs keeps the sysent rows, coredump and (until b2) the sigio registrations; N4.8b: sendsig (the SigDelivery of the running thread for hal::sig::sendsig), signotify (aston on the thread's machine slot and the glue's cpu_unidle of its CPU) and sys_sigreturn (the PROC_PC check, hal::sig::sigreturn, sigexit for a bad cookie, the mask less sigcantmask, EJUSTRETURN): ProcGlue::sendsig, signotify and proc_stack are gone"
 [[module.fn]]
 lz = "sys/kern/kern_sig.rs::WCOREFLAG"
 native = ["sys/hal/sys/wait.rs::WCOREFLAG"]
@@ -10807,6 +10864,13 @@ lz = "sys/kern/kern_sysctl.rs::diskstats_mut"
 native = []
 kind = "dropped"
 reason = "the diskstats array is an MArray owned by sysctl_disklock's Rwlocked state (kernel::sysctl::DiskExports): its slice comes from the guard, no raw view"
+
+[[module]]
+rust = "sys/kernel/syscall.rs"
+crate = "kernel"
+lz = ["sys/sys/syscall_mi.rs"]
+status = "redesigned"
+notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above); N4.8b b3: PROC_PC and PROC_STACK from hal::trap (the glue's proc_pc and proc_stack are gone)"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

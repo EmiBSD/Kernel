@@ -256,8 +256,9 @@ impl Cpu for Machine {
         arm64::machdep::aston(p)
     }
 
-    fn child_return(arg: *mut c_void) {
-        arm64::syscall::child_return(arg)
+    /// `hal`'s (N4.8b), on the running thread, which `arg` names.
+    fn child_return(_arg: *mut c_void) {
+        hal::arch::arm64::syscall::child_return()
     }
 
     fn proc_pc(p: &Proc) -> usize {
@@ -1410,36 +1411,59 @@ impl Tcb for Machine {
     }
 }
 
+/// The machine's copies are `hal`'s since N4.8b (`sys/hal/arch/arm64/copy.rs`, through
+/// `hal::user`'s typed copies).
 impl UserCopy for Machine {
     fn copyin(uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
-        arm64::copy::copyin(uaddr, kbuf)
+        hal::user::UserPtr::<u8>::new(uaddr).copyin_slice(kbuf)
     }
 
     fn copyout(kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
-        arm64::copy::copyout(kbuf, uaddr)
+        hal::user::UserPtr::<u8>::new(uaddr).copyout_slice(kbuf)
     }
 
     fn copyinstr(uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
-        arm64::copystr::copyinstr(uaddr, kbuf)
+        hal::user::UserPtr::<u8>::new(uaddr).copyinstr(kbuf)
     }
 
     fn copyin32(uaddr: usize) -> Result<u32, Errno> {
-        arm64::copy::copyin32(uaddr)
+        hal::user::UserPtr::<u32>::new(uaddr).copyin32()
     }
 
     fn copyoutstr(kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
-        arm64::copystr::copyoutstr(kbuf, uaddr)
+        hal::user::UserPtr::<u8>::new(uaddr).copyoutstr(kbuf)
     }
 
+    /// `kcopy` through `uiomove`'s `hal::user::KcopyToken` (the caller vouches for both
+    /// ranges, the token's contract), a stack buffer at a time; a range that wraps the
+    /// address space is `EFAULT`, never a copy at a wrapped address.
     unsafe fn kcopy(src: *const u8, dst: *mut u8, len: usize) -> Result<(), Errno> {
-        // SAFETY: forwarded.
-        unsafe { arm64::copy::kcopy(src, dst, len) }
+        let token = crate::kern::kern_subr::kcopy_token();
+        let mut chunk = [0u8; 256];
+        let mut off = 0;
+        while off < len {
+            let n = (len - off).min(chunk.len());
+            let from = src
+                .expose_provenance()
+                .checked_add(off)
+                .ok_or(Errno::EFAULT)?;
+            let to = dst
+                .expose_provenance()
+                .checked_add(off)
+                .ok_or(Errno::EFAULT)?;
+            token.kcopy_in(from, &mut chunk[..n])?;
+            token.kcopy_out(&chunk[..n], to)?;
+            off += n;
+        }
+        Ok(())
     }
 }
 
 impl MachineSignal for Machine {
     type Sigcontext = include::signal::Sigcontext;
 
+    /// The kernel's (`kernel::sig::sendsig`, over `hal::sig`'s frame, N4.8b) for the running
+    /// thread; `EFAULT` without one.
     fn sendsig(
         catcher: Sig,
         sig: i32,
@@ -1448,11 +1472,21 @@ impl MachineSignal for Machine {
         info: bool,
         onstack: bool,
     ) -> Result<(), Errno> {
-        arm64::sig_machdep::sendsig(catcher, sig, mask, ksip, info, onstack)
+        let Some(p) = crate::machine::cpu::curproc() else {
+            return Err(Errno::EFAULT);
+        };
+        kernel::sig::sendsig::<crate::kern::proc_glue::BsdProcGlue>(
+            p, catcher, sig, mask, ksip, info, onstack,
+        )
     }
 
-    fn sys_sigreturn(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-        arm64::sig_machdep::sys_sigreturn(p, v, retval)
+    /// The kernel's (`kernel::sig::sys_sigreturn`, over `hal::sig`'s frame, N4.8b).
+    fn sys_sigreturn(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+        let uap: &crate::sys::syscallargs::SysSigreturnArgs = crate::sys::systm::sysargs(v);
+        kernel::sig::sys_sigreturn::<crate::kern::proc_glue::BsdProcGlue>(
+            p,
+            uap.sigcntxp.get() as usize,
+        )
     }
 
     fn sigcode() -> &'static [u8] {

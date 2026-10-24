@@ -80,13 +80,18 @@
 //!   and bounds every such lost event; Linux keeps it on for the same reason.
 //! - `psci* at fdt?` is configured (M13), so `NPSCI` is 1: `cpu_flush_bp_psci`'s
 //!   `psci_flush_bp`, `smccc_enable_arch_workaround_2` (Spectre-V4) and PSCI
-//!   `CPU_OFF`/`CPU_SUSPEND` in `cpu_halt` are the C's. The firmware Spectre-BHB vectors
-//!   (`smccc_needs_arch_workaround_3`, `trampoline_vectors_psci_{hvc,smc}`) wait for
-//!   `trampoline.S`; `psci_features` (`cpu_psci_init`, only with `cpu-idle-states`) and
+//!   `CPU_OFF`/`CPU_SUSPEND` in `cpu_halt` are the C's, and so (N4.8b) is the firmware's
+//!   Spectre-BHB workaround: a CPU with no loop chosen whose firmware needs
+//!   `SMCCC_ARCH_WORKAROUND_3` takes `trampoline_vectors_psci_hvc` or `_smc` (`hal`'s
+//!   `trampoline.S`) and a no-op `ci_flush_bp`; `psci_features` (`cpu_psci_init`, only with
+//!   `cpu-idle-states`) and
 //!   `psci_cpu_suspend` (`cpu_psci_idle_cycle`) stay reported: no idle state is ever picked.
 //!   `cpu_start_secondary` still starts the APs through Limine, never `psci_cpu_on`.
-//! - `trampoline.S` is not ported (`exception.rs`): `ci_trampoline_vectors` records which
-//!   `trampoline_vectors_*` table the C would pick, as a `TRAMPOLINE_VECTORS_*` number.
+//! - `ci_trampoline_vectors` records which `trampoline_vectors_*` table the C picks, as a
+//!   `TRAMPOLINE_VECTORS_*` number; `cpu_mitigate_spectre_bhb` hands the choice to `hal`
+//!   (`hal::arch::arm64::exception::set_bhb_mitigation`, N4.8b), whose `trampoline.S` the
+//!   return to user mode installs (the `TTBR1_EL1` half of the trampoline is not configured,
+//!   N4.8d's: `sys/hal/arch/arm64/exception.rs`, deviations).
 //! - `codepatch_nop(CPTAG_REPEAT_TLBI)` has nothing to patch: the TLB invalidations never
 //!   repeat yet (`cpufunc.rs`, deviations), which is the patched state; the CPUs the C keeps
 //!   the repeat for (CVE-2025-10263, not QEMU's Cortex-A72) go without it.
@@ -126,7 +131,10 @@ use crate::arch::arm64::include::fdt::FdtAttachArgs;
 use crate::arch::arm64::include::vmparam::USER_SPACE_BITS;
 #[cfg(feature = "multiprocessor")]
 use crate::dev::fdt::psci::{psci_can_suspend, psci_cpu_off};
-use crate::dev::fdt::psci::{psci_flush_bp, smccc_enable_arch_workaround_2};
+use crate::dev::fdt::psci::{
+    psci_flush_bp, psci_method, smccc_enable_arch_workaround_2, smccc_needs_arch_workaround_3,
+};
+use crate::dev::fdt::pscivar::{PSCI_METHOD_HVC, PSCI_METHOD_SMC};
 use crate::dev::ofw::fdt::{
     OF_child, OF_getindex, OF_getnodebyphandle, OF_getprop, OF_getpropbool, OF_getpropint,
     OF_getpropint64, OF_getpropintarray, OF_getproplen, OF_is_compatible, OF_peer,
@@ -138,6 +146,7 @@ use crate::kern::kern_task::{SYSTQ, task_add, task_set};
 use crate::kern::kern_tc::microuptime;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_set};
 use crate::kern::subr_autoconf::config_mountroot;
+use crate::kern::subr_prf::{Str, db_printf, panicstr_claim, vsnprintf};
 use crate::kern::subr_prf::{panic, snprintf};
 use crate::kern::vm_bsd::km_alloc;
 use crate::kprintf;
@@ -152,10 +161,10 @@ use crate::sys::time::timersub;
 use crate::sys::timeout::Timeout;
 use crate::unported;
 use crate::{kassert, queue_adapter};
+use hal::arch::arm64::exception::BhbMitigation;
 use kernel::vm::km::{KD_WAITOK, KP_ZERO, KV_ANY};
 
 #[cfg(feature = "multiprocessor")]
-use crate::arch::arm64::arm64::exception::exception_vectors_addr;
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::intr::{arm_intr_cpu_enable, arm_send_ipi, cpu_startclock, delay};
 #[cfg(feature = "multiprocessor")]
@@ -382,8 +391,8 @@ const NPSCI: i32 = 1;
 /// `NKSTAT`: `pseudo-device kstat` is not configured.
 const NKSTAT: i32 = 0;
 
-/// The `trampoline_vectors_*` table `ci_trampoline_vectors` names (`trampoline.S`, not
-/// ported: see the module's deviations): `trampoline_vectors_none`.
+/// The `trampoline_vectors_*` table `ci_trampoline_vectors` names (`hal`'s `trampoline.S`,
+/// `hal::arch::arm64::exception::BhbMitigation`): `trampoline_vectors_none`.
 pub const TRAMPOLINE_VECTORS_NONE: u64 = 0;
 /// `trampoline_vectors_loop_8`.
 pub const TRAMPOLINE_VECTORS_LOOP_8: u64 = 1;
@@ -397,6 +406,10 @@ pub const TRAMPOLINE_VECTORS_LOOP_32: u64 = 4;
 pub const TRAMPOLINE_VECTORS_LOOP_132: u64 = 5;
 /// `trampoline_vectors_clrbhb`.
 pub const TRAMPOLINE_VECTORS_CLRBHB: u64 = 6;
+/// `trampoline_vectors_psci_hvc`: the firmware's `SMCCC_ARCH_WORKAROUND_3` through `hvc`.
+pub const TRAMPOLINE_VECTORS_PSCI_HVC: u64 = 7;
+/// `trampoline_vectors_psci_smc`: the same through `smc`.
+pub const TRAMPOLINE_VECTORS_PSCI_SMC: u64 = 8;
 
 /// `struct cpu_cores`: a core of an implementer.
 pub struct CpuCores {
@@ -812,22 +825,17 @@ pub static CPU_MODEL: StaticCell<[u8; 64]> = StaticCell::new([0; 64]);
 /// `cpu_node`: the CPU node whose `clocks` `cpu_clockspeed` reads.
 pub static CPU_NODE: AtomicI32 = AtomicI32::new(0);
 
-/// `cpu_id_aa64isar0`: the userland view of `ID_AA64ISAR0_EL1` (`cpu_identify_cleanup`).
-pub static CPU_ID_AA64ISAR0: AtomicU64 = AtomicU64::new(0);
-/// `cpu_id_aa64isar1`.
-pub static CPU_ID_AA64ISAR1: AtomicU64 = AtomicU64::new(0);
-/// `cpu_id_aa64isar2`.
-pub static CPU_ID_AA64ISAR2: AtomicU64 = AtomicU64::new(0);
+/// `cpu_id_aa64isar0`, `isar1`, `isar2`, `pfr0` and `pfr1`: the userland view of the ID
+/// registers (`cpu_identify_cleanup`), which `hal`'s `emulate_msr` answers with (N4.8b).
+pub use hal::arch::arm64::trap::{
+    CPU_ID_AA64ISAR0, CPU_ID_AA64ISAR1, CPU_ID_AA64ISAR2, CPU_ID_AA64PFR0, CPU_ID_AA64PFR1,
+};
 /// `cpu_id_aa64mmfr0`.
 pub static CPU_ID_AA64MMFR0: AtomicU64 = AtomicU64::new(0);
 /// `cpu_id_aa64mmfr1`.
 pub static CPU_ID_AA64MMFR1: AtomicU64 = AtomicU64::new(0);
 /// `cpu_id_aa64mmfr2`.
 pub static CPU_ID_AA64MMFR2: AtomicU64 = AtomicU64::new(0);
-/// `cpu_id_aa64pfr0`.
-pub static CPU_ID_AA64PFR0: AtomicU64 = AtomicU64::new(0);
-/// `cpu_id_aa64pfr1`.
-pub static CPU_ID_AA64PFR1: AtomicU64 = AtomicU64::new(0);
 /// `cpu_id_aa64zfr0`.
 pub static CPU_ID_AA64ZFR0: AtomicU64 = AtomicU64::new(0);
 
@@ -973,8 +981,19 @@ pub fn cpu_mitigate_spectre_bhb(ci: &CpuInfo) {
     }
 
     // If we're not using a loop, let firmware decide. This also covers the original
-    // Spectre-V2 in addition to Spectre-BHB: smccc_needs_arch_workaround_3() and the
-    // trampoline_vectors_psci_{hvc,smc} tables, NPSCI > 0 only.
+    // Spectre-V2 in addition to Spectre-BHB.
+    if NPSCI > 0
+        && ci.ci_trampoline_vectors.get() == TRAMPOLINE_VECTORS_NONE
+        && smccc_needs_arch_workaround_3() != 0
+    {
+        ci.ci_flush_bp.set(Some(cpu_flush_bp_noop));
+        if psci_method() == PSCI_METHOD_HVC {
+            ci.ci_trampoline_vectors.set(TRAMPOLINE_VECTORS_PSCI_HVC);
+        }
+        if psci_method() == PSCI_METHOD_SMC {
+            ci.ci_trampoline_vectors.set(TRAMPOLINE_VECTORS_PSCI_SMC);
+        }
+    }
 
     // Prefer CLRBHB to mitigate Spectre-BHB.
     let id = read_specialreg!("id_aa64isar2_el1");
@@ -994,6 +1013,20 @@ pub fn cpu_mitigate_spectre_bhb(ci: &CpuInfo) {
     if id & ID_AA64PFR0_CSV2_MASK >= ID_AA64PFR0_CSV2_HCXT {
         ci.ci_trampoline_vectors.set(TRAMPOLINE_VECTORS_NONE);
     }
+
+    // The table the return to user mode installs (`hal`'s `trampoline.S`).
+    let m = match ci.ci_trampoline_vectors.get() {
+        TRAMPOLINE_VECTORS_LOOP_8 => BhbMitigation::Loop8,
+        TRAMPOLINE_VECTORS_LOOP_11 => BhbMitigation::Loop11,
+        TRAMPOLINE_VECTORS_LOOP_24 => BhbMitigation::Loop24,
+        TRAMPOLINE_VECTORS_LOOP_32 => BhbMitigation::Loop32,
+        TRAMPOLINE_VECTORS_LOOP_132 => BhbMitigation::Loop132,
+        TRAMPOLINE_VECTORS_CLRBHB => BhbMitigation::Clrbhb,
+        TRAMPOLINE_VECTORS_PSCI_HVC => BhbMitigation::PsciHvc,
+        TRAMPOLINE_VECTORS_PSCI_SMC => BhbMitigation::PsciSmc,
+        _ => BhbMitigation::None,
+    };
+    hal::arch::arm64::exception::set_bhb_mitigation(&ci.core, m);
 }
 
 /// `cpu_mitigate_spectre_v4`: enable mitigation for Spectre-V4 speculative store bypass
@@ -2302,6 +2335,41 @@ pub fn cpu_init() {
     }
 }
 
+/// The machine's per-CPU hooks of `hal`'s trap code (`hal::trap::CpuHooks`), over the running
+/// CPU's `cpu_info`: registered by `initarm` (N4.8b).
+pub struct ArmCpuHooks;
+
+impl hal::trap::CpuHooks for ArmCpuHooks {
+    /// `curcpu()->ci_flush_bp()`, a CPU whose choice is not made yet doing nothing.
+    fn flush_bp(&self) {
+        if let Some(flush_bp) = curcpu().ci_flush_bp.get() {
+            flush_bp();
+        }
+    }
+
+    /// `if (ci->ci_serror) ci->ci_serror()`.
+    fn serror(&self) {
+        if let Some(handler) = curcpu().ci_serror.get() {
+            handler();
+        }
+    }
+
+    /// `fault()`: `panicstr` claimed for this CPU's `ci_panicbuf`, the message formatted
+    /// into it and printed with `db_printf` (the `DDB` build's).
+    fn fault(&self, args: core::fmt::Arguments<'_>) {
+        let ci = curcpu();
+        panicstr_claim(ci.ci_panicbuf.get().cast::<u8>());
+
+        // SAFETY: this CPU's buffer, written only by this CPU, with no other reference alive.
+        let buf = unsafe { &mut *ci.ci_panicbuf.get() };
+        vsnprintf(buf, args);
+        db_printf(format_args!("{}\n", Str(buf)));
+    }
+}
+
+/// The hooks `initarm` registers.
+pub static ARM_CPU_HOOKS: ArmCpuHooks = ArmCpuHooks;
+
 /// `cpu_flush_bp_noop`: the CPU needs no branch predictor flush.
 pub fn cpu_flush_bp_noop() {}
 
@@ -2484,7 +2552,7 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
             write_specialreg!("cpacr_el1", cpacr);
             asm!("isb", options(nomem, nostack, preserves_flags));
             write_specialreg!("tpidr_el1", ci as u64);
-            write_specialreg!("vbar_el1", exception_vectors_addr());
+            hal::arch::arm64::exception::install_vectors();
             asm!("isb", options(nomem, nostack, preserves_flags));
         }
 

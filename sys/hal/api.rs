@@ -46,13 +46,14 @@
 //! and credentials, accounting, the TCB, the thread names, the routing table). Version 9
 //! (N4.6b): `sysctl`, the kernel's entry for sysctl(2) ([`SysctlEntry`]). Version 10
 //! (N4.8): [`TimeEntries`], the ten time system calls of kern_time.c and `reboot(2)`.
+//! Version 11 (N4.8b): `sigreturn`, the kernel's entry for sigreturn(2) ([`SigreturnEntry`]).
 
 use core::mem::{offset_of, size_of};
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 10;
+pub const KERNEL_API_VERSION: u32 = 11;
 
 /// The module's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
@@ -271,6 +272,11 @@ pub struct TimeEntries {
     pub reboot: fn(Register, i32, &mut Rval) -> SysResult,
 }
 
+/// 103 = `sigreturn(struct sigcontext *sigcntxp)` (version 11, N4.8b): `(nr, sigcntxp,
+/// rval)`, the context's user address as an integer; `EJUSTRETURN` once the context is
+/// restored (the registers are the context's, nothing is returned in them).
+pub type SigreturnEntry = fn(Register, usize, &mut Rval) -> SysResult;
+
 /// The process system calls' entries (version 8, N4.6a): `fork(2)` and `vfork(2)`,
 /// `__tfork(2)`, `exit(2)` and `__threxit(2)`, `wait4(2)` and `waitid(2)`, the limits and
 /// usage (`getrusage`, `getrlimit`, `setrlimit`, `getpriority`, `setpriority`), `acct(2)`, the
@@ -410,6 +416,8 @@ pub struct KernelApi {
     pub sysctl: SysctlEntry,
     /// The time system calls and reboot(2) (version 10).
     pub time: TimeEntries,
+    /// sigreturn(2) (version 11).
+    pub sigreturn: SigreturnEntry,
 }
 
 impl KernelApi {
@@ -432,6 +440,7 @@ impl KernelApi {
         proc: ProcEntries,
         sysctl: SysctlEntry,
         time: TimeEntries,
+        sigreturn: SigreturnEntry,
     ) -> Self {
         Self {
             prefix: ApiPrefix::CURRENT,
@@ -448,6 +457,7 @@ impl KernelApi {
             proc,
             sysctl,
             time,
+            sigreturn,
         }
     }
 }
@@ -494,8 +504,14 @@ const _: () = {
     assert!(offset_of!(ApiPrefix, version) == 0);
     assert!(offset_of!(ApiPrefix, size) == 4);
     assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 10 only adds: the version 9 fields keep their places, `time` comes last.
-    assert!(offset_of!(KernelApi, time) == size_of::<KernelApi>() - size_of::<TimeEntries>());
+    // Version 11 only adds: the version 10 fields keep their places, `sigreturn` comes last.
+    assert!(
+        offset_of!(KernelApi, sigreturn) == size_of::<KernelApi>() - size_of::<SigreturnEntry>()
+    );
+    assert!(
+        offset_of!(KernelApi, sigreturn) == offset_of!(KernelApi, time) + size_of::<TimeEntries>()
+    );
+    // Version 10 added `time` after `sysctl`.
     assert!(
         offset_of!(KernelApi, time) == offset_of!(KernelApi, sysctl) + size_of::<SysctlEntry>()
     );
@@ -1115,16 +1131,21 @@ mod tests {
         reboot: t_reboot,
     };
 
+    fn sigreturn(nr: Register, scp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(nr as i32 + scp as i32)
+    }
+
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
-        TIME,
+        TIME, sigreturn,
     );
 
     #[test]
     fn the_table_names_its_version_and_size() {
         assert_eq!(API.prefix, ApiPrefix::CURRENT);
         assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 10);
+        assert_eq!(KERNEL_API_VERSION, 11);
         assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
     }
 
@@ -1146,6 +1167,13 @@ mod tests {
         let mut rval = [0; 2];
         assert_eq!((API.sysctl)(202, 1, 2, 3, 4, 5, 6, &mut rval), Err(223));
         assert_eq!(rval[0], 202);
+    }
+
+    #[test]
+    fn the_sigreturn_entry_is_the_callers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.sigreturn)(103, 4, &mut rval), Err(107));
+        assert_eq!(rval[0], 103);
     }
 
     #[test]

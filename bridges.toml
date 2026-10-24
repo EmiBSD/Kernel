@@ -32,7 +32,8 @@
 # and arm_splassert_check), implemented by sys/arch/arm64/arm64/intr.rs (ArmIntrHardware, over
 # the table the GIC drivers give arm_set_intr_handler) and registered by arm64's initarm (N4.5c,
 # replacing IntrLevel: the level itself is hal's). Decision 46: the C's function table as a
-# trait. Paid when the GIC drivers move (N7).
+# trait. N4.8b: dispatch_irq and dispatch_fiq (arm_irq_dispatch, arm_fiq_dispatch), which
+# hal's arm_cpu_irq/arm_cpu_fiq call. Paid when the GIC drivers move (N7).
 # hal::intr::IntrHardware
 [[bridge]]
 trait = "IntrHardware"
@@ -58,17 +59,27 @@ trait = "Malloc"
 for = ["sys/hal/malloc.rs"]
 paid_by = "N9"
 
-# bsd: copyin, copyout, copyinstr, copyoutstr of sys/machine/copy.rs (copy.S with pcb_onfault).
-# A safe trait: the user copies only read and write the byte slices they are given and user
-# memory. N3.5 S0: kcopy_in/kcopy_out, kcopy onto a hal::user::ForeignWindow (uvm_io, kbind),
-# through uiomove's UIO_SYSSPACE path (sys/kern/kern_subr.rs); hal calls them only inside a
-# window the kernel map's token minted. N4.6c: copyin32 (futex(2)'s aligned word, read in one
-# access, EFAULT when misaligned), for kernel::futex.
-# hal::user::UserCopy
+
+
+# bsd: the machine's per-CPU hooks a trap calls (N4.8b): ci_flush_bp (cpu.c's choice, which
+# PSCI's psci_flush_bp rewrites on its first call), ci_serror (Apple's report) and fault()'s
+# claim of ci_panicbuf, implemented by sys/arch/arm64/arm64/cpu.rs (ArmCpuHooks) over the
+# running CPU's cpu_info and registered by arm64's initarm. Paid when the CPU and PSCI drivers
+# move (N7).
+# hal::trap::CpuHooks
 [[bridge]]
-trait = "UserCopy"
-for = ["sys/hal/user.rs"]
-paid_by = "N4"
+trait = "CpuHooks"
+for = ["sys/hal/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+paid_by = "N7"
+
+# bsd: ddb's db_ktrap (sys/arch/arm64/arm64/db_interface.rs, DdbDebugger), the kernel
+# debugger's entry from a trap (N4.8b), registered by arm64's initarm; absent, a kernel
+# breakpoint panics as the C without DDB. Paid with ddb (N9).
+# hal::trap::Debugger
+[[bridge]]
+trait = "Debugger"
+for = ["sys/hal/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+paid_by = "N9"
 
 # bsd: cnputc, cngetc, cnpollc of sys/dev/cons.rs, registered once consinit() has run.
 # hal::cons::Console
@@ -278,7 +289,8 @@ paid_by = "N5"
 # bsd: curproc's facts as uvm asks them (pledge_protexec, the W^X exemption and ps_wxcounter,
 # sigexit, trapsignal, ps_pid/p_tid/ps_comm/PROC_PC, ps_acflag, lim_cur, P_HASSIBLING,
 # ps_strings/ps_sigcode/ps_timekeep, fd_getfile..FRELE of a vnode, ps_kbind_* under ps_mtx,
-# ps_libcpin, p_ru's faults and maxrss, log(9)); implemented by sys/kern/vm_bsd.rs (N3.5 S1,
+# ps_libcpin, p_ru's faults and maxrss, log(9), uprintf(9) since N4.8b); implemented by
+# sys/kern/vm_bsd.rs (N3.5 S1,
 # registered by bsd's uvm_init at the flip), one bsd call each. N4, when Proc moves.
 # kernel::vm::proc::VmProc
 [[bridge]]
@@ -356,7 +368,14 @@ paid_by = "N7"
 # (the text vnode, N5; the unveils, N8), session_has_tty_vnode and session_ttydev (N4.7b),
 # pmap_activate, pmap_deactivate, pmap_purge, child_return, tcb_invalid and tcb_set (the
 # machine, N4.8/N10), start_init (N9.1), init_exited (the QEMU exit), cancel_all_itimers
-# (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. Re-dated N8 (the user's
+# (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. N4.8b: the system call
+# prologue's calls out joined it (kernel::syscall): proc_pc and sigcode_svc_offset (the
+# machine, N4.8b's b3 or N10), user_vmspace (the thread's word, until its [o] members are
+# typed), pledge_syscall (kern_pledge, N8) and scdebug_call/scdebug_ret (SYSCALL_DEBUG,
+# kern_xxx); hal::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. N4.8b b3:
+# sendsig, signotify, proc_stack and proc_pc left the trait (hal::sig's frame, kernel::sig's
+# signotify over hal::thread's aston and cpu_unidle, hal::trap::proc_pc/proc_stack); b3c:
+# tcb_get, tcb_set and tcb_invalid left it (hal::thread). Re-dated N8 (the user's
 # decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
 # pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
 # (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine).

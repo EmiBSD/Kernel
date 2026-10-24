@@ -63,10 +63,6 @@
 //! Upstream: sys/uvm/uvm_unix.c @ 3ce1f3f79392
 //! LZ: sys/uvm/uvm_unix.rs@3c62ede68802
 //!
-//! ## Deviations
-//! - `sys_obreak` prints its failure with `printf`: there is no controlling terminal for
-//!   `uprintf` yet (LZ's).
-//!
 //! ## Redesign
 //! - The functions take the address space (`&Vmspace`) instead of a `struct proc *`: `bsd`'s
 //!   system call adapter passes `p->p_vmspace`; the current process's limits, `ps_sigcode`
@@ -80,6 +76,8 @@
 //!   the protection, the amap handle, what the object is) and drops the lock before any
 //!   callback runs. The next step looks up the entry after the last one's start. The same
 //!   entries in the same order, the same segments.
+//! - `sys_obreak`'s failure goes to the process's controlling terminal with `uprintf`
+//!   (`VmProc::uprintf`, N4.8b), as in the C (LZ printed it on the console: no `uprintf`).
 
 use core::sync::atomic::Ordering;
 
@@ -97,7 +95,6 @@ use super::types::{
     CoredumpSeg, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_UNKNOWN_OFFSET, VmProt, uvm_mapflag,
 };
 use crate::assert::kpanic;
-use crate::prf::printf;
 
 /// `WALK_CHUNK`.
 const WALK_CHUNK: usize = 32;
@@ -161,8 +158,7 @@ pub fn sys_obreak(vm: &Vmspace, nsize: usize) -> Result<(), Errno> {
                 UVM_FLAG_FIXED | UVM_FLAG_COPYONW,
             ),
         ) {
-            // uprintf: see the module's deviations.
-            printf(format_args!(
+            vmproc().uprintf(format_args!(
                 "sbrk: grow {} failed, error = {}\n",
                 grow,
                 error.as_i32()

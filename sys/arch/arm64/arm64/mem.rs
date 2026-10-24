@@ -97,8 +97,8 @@
 //!   `pmap_enter` under `physlock`. Here `vmmap` is the device mapping window
 //!   (`sys/hal/arch/arm64/pmap/backend.rs`), and the kernel has a direct map, which the C's
 //!   arm64 does not; the page is reached through it, a page at a time under `physlock` as in C, and copied
-//!   through a small buffer with `kcopy`, so an address with nothing behind it fails with
-//!   `EFAULT`.
+//!   through a small buffer with `kcopy` (`uiomove`'s `hal::user::KcopyToken` since N4.8b), so
+//!   an address with nothing behind it fails with `EFAULT`.
 //! - `/dev/kmem` (minor 1) checks the range with `uvm_kernacc` (`uvm_glue.c`), which is not
 //!   ported: the read or write is reported and fails.
 //! - `/dev/zero` reads come from a zeroed buffer on the stack, `MEM_CHUNK` bytes per step,
@@ -108,10 +108,10 @@ use core::sync::atomic::Ordering;
 
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{rw_enter, rw_exit};
-use crate::kern::kern_subr::uiomove;
+use crate::kern::kern_subr::{kcopy_token, uiomove};
 use crate::kern::kern_sysctl::{ALLOWKMEM, SECURELEVEL};
 use crate::kern::subr_prf::panic;
-use crate::machine::copy::kcopy;
+
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
 use crate::sys::filio::FIOASYNC;
@@ -160,15 +160,15 @@ fn mm_physrw(uio: &mut Uio<'_>) -> Result<(), Errno> {
     let c = uio.uio_resid.min(PAGE_SIZE - o).min(MEM_CHUNK);
     let v = pmap_direct_map(Paddr::new(uio.uio_offset as usize)).as_usize();
 
+    // The direct-map side is the C's `uiomove((caddr_t)vmmap + o, c, uio)`'s kernel buffer,
+    // copied with `uiomove`'s token (`kcopy`: a fault there is `EFAULT`); `/dev/mem` writes are
+    // the superuser's (`mmopen`'s securelevel check), as in C.
     if uio.uio_rw == UioRw::UIO_READ {
-        // SAFETY: `kcopy` catches a fault on the direct-map side (`EFAULT`); `buf` is ours.
-        unsafe { kcopy(v as *const u8, buf.as_mut_ptr(), c) }?;
+        kcopy_token().kcopy_in(v, &mut buf[..c])?;
         uiomove(&mut buf[..c], uio)
     } else {
         uiomove(&mut buf[..c], uio)?;
-        // SAFETY: as above, in the other direction; `/dev/mem` writes are the superuser's
-        // (`mmopen`'s securelevel check), as in C.
-        unsafe { kcopy(buf.as_ptr(), v as *mut u8, c) }
+        kcopy_token().kcopy_out(&buf[..c], v)
     }
 }
 

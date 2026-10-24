@@ -19,7 +19,16 @@
 /* <CODE> */
 //! arm64 machine code moved into the HAL.
 
+// The user copies (N4.8b): the kernel's alone (the ABI module copies through `KernelApi`).
+#[cfg(not(feature = "module-rt"))]
+pub(crate) mod copy;
 pub(crate) mod cpu;
+// The cache, TLB and idle instructions for the code outside the pmap (N4.8b).
+pub mod cpufunc;
+// The exception entry, the trap handlers and the system call entry (N4.8b): the kernel's
+// alone, as the switch (the ABI module's image takes no trap of its own).
+#[cfg(not(feature = "module-rt"))]
+pub mod exception;
 // The context switch and the FP state (N4.5a): the kernel's alone, not the ABI module's
 // runtime (`module-rt`), whose image links no thread code (the switch's assembly calls two
 // symbols of `bsd`'s, `switch.rs`).
@@ -27,10 +36,18 @@ pub(crate) mod cpu;
 pub mod fpu;
 pub mod include;
 pub mod pmap;
+// The signal frame (N4.8b): `hal::sig`'s, on the trap code's user frame.
+#[cfg(not(feature = "module-rt"))]
+#[forbid(unsafe_code)]
+pub(crate) mod sig;
 #[cfg(not(feature = "module-rt"))]
 pub mod switch;
+#[cfg(not(feature = "module-rt"))]
+pub mod syscall;
 // The generic timer's registers and the clock frame (N4.8a).
 pub mod timer;
+#[cfg(not(feature = "module-rt"))]
+pub mod trap;
 
 /// `<machine/param.h>` and `<machine/vmparam.h>` as `hal::arch::current` names them.
 pub use self::include::{param, vmparam};

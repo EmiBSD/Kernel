@@ -135,16 +135,23 @@ use crate::once::OnceStatic;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub use crate::arch::arm64::include::proc::Mdproc;
 
-/// `struct mdproc` of the host tests: nothing of a machine's.
+/// `struct mdproc` of the host tests: nothing of a machine's but the thread's TCB, which a
+/// machine keeps in the thread's pcb (`pcb_tcb`) and the host's double keeps here, with the
+/// thread, so a new thread starts with none whatever address it reuses.
 #[cfg(not(target_os = "none"))]
 #[derive(Debug, Default)]
-pub struct Mdproc;
+pub struct Mdproc {
+    /// The host's `pcb_tcb` ([`tcb_get`], [`tcb_set`]).
+    pub(crate) tcb: core::sync::atomic::AtomicUsize,
+}
 
 #[cfg(not(target_os = "none"))]
 impl Mdproc {
     /// All zero.
     pub const fn new() -> Self {
-        Self
+        Self {
+            tcb: core::sync::atomic::AtomicUsize::new(0),
+        }
     }
 }
 
@@ -257,6 +264,15 @@ impl MachineSlot {
     #[inline]
     pub fn ctx(&self) -> u8 {
         self.ctx.load(AtomicOrdering::Acquire)
+    }
+
+    /// `aston(p)`: the thread takes an AST at its next return to user mode (arm64's
+    /// `md_astpending`, which `exception.S`'s `do_ast` reads and clears); from any CPU. The
+    /// host has no user mode: nothing.
+    #[inline]
+    pub fn aston(&self) {
+        #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+        self.md.md_astpending.store(1, AtomicOrdering::Relaxed);
     }
 }
 
@@ -689,6 +705,46 @@ pub fn running_anywhere<T: ThreadLayout>(t: &T) -> bool {
     crate::cpu::curcpu().curproc() == me || crate::cpu::cores().any(|c| c.curproc() == me)
 }
 
+/// `TCB_GET(p)`: the thread control block address saved for `t` (0 before one is set), a
+/// user address the kernel never follows. The running thread reads its own; another thread's
+/// is read under the scheduler's lock, which [`tcb_set`] takes for the one write a running
+/// thread makes, so a read from another CPU (`thrkill(2)`'s check) never races it, and
+/// which keeps the thread's u-area from being given back meanwhile (E4, E6).
+#[cfg(not(feature = "module-rt"))]
+pub fn tcb_get<T: ThreadLayout>(t: &T) -> usize {
+    let slot = slot_of(t);
+    if crate::cpu::curcpu().curproc() == core::ptr::from_ref(t).cast() {
+        return crate::arch::current::switch::tcb_of(slot);
+    }
+    let h = sched_lock();
+    let tcb = crate::arch::current::switch::tcb_of(slot);
+    drop(h);
+    tcb
+}
+
+/// `TCB_SET(p, addr)`: `addr` is the TCB of `t` from now on: saved in its pcb under the
+/// scheduler's lock and loaded at once into the register user space reads it from (arm64's
+/// `TPIDR_EL0`). `t` must be the running thread, as the C's macro says: on the machine another
+/// thread is `panic(9)` (its register is another CPU's, or loaded at its next switch); the
+/// host's tests set any thread's.
+#[cfg(not(feature = "module-rt"))]
+pub fn tcb_set<T: ThreadLayout>(t: &T, addr: usize) {
+    let slot = slot_of(t);
+    if cfg!(target_os = "none") && crate::cpu::curcpu().curproc() != core::ptr::from_ref(t).cast() {
+        hal_panic(format_args!("TCB_SET: not the running thread"));
+    }
+    let h = sched_lock();
+    crate::arch::current::switch::set_tcb(slot, addr);
+    drop(h);
+}
+
+/// `TCB_INVALID(addr)`: whether `addr` can never be a TCB on this machine (amd64: a
+/// non-canonical address; arm64 and the host refuse none).
+#[cfg(not(feature = "module-rt"))]
+pub fn tcb_invalid(addr: usize) -> bool {
+    crate::arch::current::switch::tcb_invalid(addr)
+}
+
 /// `cpu_fork(parent, child, stack, tcb, func, arg)`: the child's pcb and frames, so that its
 /// first switch runs the trampoline with `start` and `arg` (the registered start's words);
 /// `stack` and `tcb`, when not 0, its user stack pointer and TCB. The parent's FP state is
@@ -1042,6 +1098,8 @@ mod tests {
     /// A `ThreadLayout` naming a slot that is not the value's first member is refused.
     #[test]
     fn a_slot_elsewhere_is_refused() {
+        // `repr(C)`: the slot really is second (Rust's layout may reorder fields).
+        #[repr(C)]
         struct Elsewhere {
             _tail: u64,
             slot: MachineSlot,
@@ -1064,6 +1122,25 @@ mod tests {
             n: 0,
         };
         assert!(core::ptr::eq(slot_of(&t), &t.machine));
+    }
+
+    /// `TCB_SET` then `TCB_GET`: 0 before one is set; the running thread's read back as set,
+    /// another thread's read under the scheduler's lock (the host's tests may set any
+    /// thread's); no address is refused here.
+    #[test]
+    fn the_tcb_is_set_and_read_back() {
+        let t = test_thread();
+        let other = test_thread();
+        set_current_static(Some(crate::pin::pin_static(t)));
+        assert_eq!(tcb_get(t), 0);
+        tcb_set(t, 0x7f7f_1000);
+        assert_eq!(tcb_get(t), 0x7f7f_1000);
+        assert_eq!(tcb_get(other), 0, "another thread's has none yet");
+        tcb_set(other, 0x2000);
+        assert_eq!(tcb_get(other), 0x2000);
+        assert_eq!(tcb_get(t), 0x7f7f_1000, "each thread its own");
+        assert!(!tcb_invalid(0xffff_0000_0000_0000));
+        set_current_static::<TestThread>(None);
     }
 }
 /* </TESTS> */

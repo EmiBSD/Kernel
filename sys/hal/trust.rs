@@ -43,9 +43,15 @@
 //! last bytes are written and read back (then restored), so a block that is not memory, or
 //! not writable, fails at its first use instead of corrupting something later.
 //!
-//! The machine's `kcopy` (`hal::user::UserCopy::kcopy_in`/`kcopy_out`, N3.5 S0) writes and
-//! reads kernel memory named by an address. `hal` calls it only for a range inside a
-//! `hal::user::ForeignWindow`, which the kernel map's token alone mints
+//! The machine's `kcopy` (`kcopy_in`/`kcopy_out` of `arch/<machine>/copy.rs`, `hal`'s own since
+//! N4.8b; the `UserCopy` bridge's before) writes and reads kernel memory named by an address.
+//! `hal` calls it for two holders only. One is the `hal::user::KcopyToken`, taken once by
+//! `bsd`'s boot (`hal_bridges_register`'s first step, before the ABI module loads; an earlier
+//! take panics the boot, so no `forbid` crate can hold it) for `uiomove`'s `UIO_SYSSPACE` leg and
+//! `/dev/mem`: its holder vouches that every address it
+//! passes is a kernel buffer of the length copied that its builder owns for the copy
+//! (`struct uio`'s contract), nothing here checks it, and it goes with `UioMove` (N7). The
+//! other is a `hal::user::ForeignWindow`, which the kernel map's token alone mints
 //! (`KernelMapper::foreign_window`): nothing checks the range, so a window is a write to any
 //! kernel address its maker names, the strongest primitive the token gives. The token's
 //! contract (as for `kenter`'s addresses, which no check here could establish either): its

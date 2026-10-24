@@ -121,6 +121,10 @@ pub trait VmProc: Sync {
     fn ru_maxrss(&self, kb: usize);
     /// `log(level, ...)`: a line for `syslogd` (and the console), as `uvm_wxcheck`'s notice.
     fn log(&self, level: i32, args: fmt::Arguments<'_>);
+    /// `uprintf(...)`: a line to the controlling terminal of `curproc`'s process, nothing
+    /// without one (`uvm_map_inentry`'s and `sys_obreak`'s reports; the caller holds the
+    /// kernel lock).
+    fn uprintf(&self, args: fmt::Arguments<'_>);
 }
 
 /// Registers the process bridge, once (`bsd`'s `uvm_init`; the tests' doubles); a second call

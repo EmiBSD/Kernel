@@ -34,13 +34,14 @@
 //!
 //! A [`UserPtr<T>`] is a user address typed by what it points at: [`UserPtr::copyin`] and
 //! [`UserPtr::copyout`] move a whole `T`, the slice forms move `[T]` (`kevent(2)`'s arrays),
-//! [`UserPtr::copyinstr`] a NUL-terminated string. The copies themselves are the machine's
-//! (`copy.S` with `pcb_onfault`), reached through the [`UserCopy`] bridge (bridges.toml; paid
-//! by N4, when the machine code is `hal`'s own). The bridge is a safe trait: its user copies
-//! read and write the byte slices they are given and user memory, which aliases nothing of
-//! the kernel's, so no implementation of them can make this module unsound. Its kernel
-//! copies ([`UserCopy::kcopy_in`], [`UserCopy::kcopy_out`]) reach kernel memory by address:
-//! `hal` calls them only through a [`ForeignWindow`], below.
+//! [`UserPtr::copyinstr`] a NUL-terminated string. The copies themselves are the machine's,
+//! `hal`'s own since N4.8b (`arch/arm64/copy.rs`: `copy.S` and `copystr.S` with
+//! `pcb_onfault`; the host's double, `arch/host/copy.rs`): safe functions whose kernel side
+//! is the byte slice they are given and whose user side the assembly checks (user half, no
+//! overflow, unprivileged accesses, a fault `EFAULT`), so they alias nothing of the kernel's.
+//! The machine's kernel copies (`kcopy_in`, `kcopy_out`) reach kernel memory by address and
+//! are `unsafe`: `hal` calls them only through a [`ForeignWindow`] and the one
+//! [`KcopyToken`], below.
 //!
 //! A [`ForeignWindow`] is a run of kernel virtual addresses onto pages of another address
 //! space (`uvm_io`'s `uvm_map_extract` of a process's range into `kernel_map` for
@@ -53,8 +54,16 @@
 //! as for every address it maps, that the range is its own and that no Rust object lives in
 //! it (`sys/hal/trust.rs`); the window bounds every copy (one past its end panics).
 //!
-//! **Before registration** (early boot, host tests that register none) there is no user
-//! address space: every copy fails with `EFAULT`.
+//! A [`KcopyToken`] is the one holder of `kcopy` onto kernel addresses it names itself:
+//! `bsd`'s `uiomove`, whose `UIO_SYSSPACE` iovecs are kernel buffers their builders vouch
+//! for (`struct uio`'s contract), takes it once ([`KcopyToken::take`]). It is decision 30's
+//! documented trust, as the memory bridges' (`sys/hal/trust.rs`): nothing here can check
+//! the addresses, and the token goes with `UioMove` when the last `UIO_SYSSPACE` builder is
+//! typed (N7).
+//!
+//! **Where `hal` has no copy of the machine's** (amd64 until N10, the ABI module's runtime,
+//! which copies through `KernelApi`): every copy fails with `EFAULT`, as before a
+//! registration did.
 //!
 //! ## Redesign
 //! - `copyin(uaddr, &obj, sizeof(obj))` -> `UserPtr::<T>::new(uaddr).copyin()`, returning the
@@ -77,12 +86,18 @@
 //! - N4.6b: [`bytes_of`] and [`bytes_of_mut`] are public (no new `unsafe`: the two blocks were
 //!   here), so that `bsd`'s `SysctlPlain` is a blanket over `AbiPod` and its 12 `unsafe impl`s
 //!   go.
+//! - N4.8b: the `UserCopy` bridge is gone: the copies are the machine's, `hal`'s own
+//!   (`crate::arch::current::copy`); `bsd`'s `uiomove`'s `UIO_SYSSPACE` leg, an `unsafe`
+//!   `kcopy` over raw pointers in LZ (`kern_subr.rs`), is the [`KcopyToken`]'s safe copy
+//!   (the user's decision 13 of N4.8: `kcopy` itself `pub(crate)`, behind the window and the
+//!   token).
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::assert::hal_panic;
-use crate::bridges;
 #[cfg(any(
     not(target_os = "none"),
     target_arch = "x86_64",
@@ -92,29 +107,42 @@ use crate::pmap::KernelMapper;
 use crate::sys::errno::Errno;
 use crate::sys::types::Vaddr;
 
-/// The machine's copy routines, as `bsd` registers them (`sys/machine/copy.rs`).
-pub trait UserCopy: Sync {
-    /// `copyin(uaddr, kbuf, kbuf.len())`: `EFAULT` when the user range is not mapped or not
-    /// user space.
-    fn copyin(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno>;
-    /// `copyout(kbuf, uaddr, kbuf.len())`.
-    fn copyout(&self, kbuf: &[u8], uaddr: usize) -> Result<(), Errno>;
-    /// `copyinstr(uaddr, kbuf, kbuf.len(), &done)`: the bytes copied, the NUL included;
-    /// `ENAMETOOLONG` when the string does not fit.
-    fn copyinstr(&self, uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno>;
-    /// `copyoutstr(kbuf, uaddr, kbuf.len(), &done)`: the bytes copied, the NUL included.
-    fn copyoutstr(&self, kbuf: &[u8], uaddr: usize) -> Result<usize, Errno>;
-    /// `copyin32(uaddr, &v)`: the aligned 32-bit word at `uaddr`, read in one access (a
-    /// value another thread writes is never seen torn); `EFAULT` when `uaddr` is not 4-byte
-    /// aligned or not mapped user memory (`futex(2)`).
-    fn copyin32(&self, uaddr: usize) -> Result<u32, Errno>;
-    /// `kcopy(kva, kbuf, kbuf.len())`: the bytes at the kernel address `kva` into `kbuf`;
-    /// `EFAULT` when a page of the range faults (`pcb_onfault`). `hal` calls it only for a
-    /// range inside a [`ForeignWindow`].
-    fn kcopy_in(&self, kva: usize, kbuf: &mut [u8]) -> Result<(), Errno>;
-    /// `kcopy(kbuf, kva, kbuf.len())`: `kbuf` to the kernel address `kva`; `EFAULT` when a page
-    /// of the range faults. `hal` calls it only for a range inside a [`ForeignWindow`].
-    fn kcopy_out(&self, kbuf: &[u8], kva: usize) -> Result<(), Errno>;
+/// The machine's copies (`copy.S`, `copystr.S`; the host's double).
+#[cfg(any(
+    not(target_os = "none"),
+    all(target_arch = "aarch64", not(feature = "module-rt"))
+))]
+use crate::arch::current::copy as machine;
+
+/// No copy of the machine's in `hal` (amd64 until N10, the ABI module's runtime): every copy
+/// is `EFAULT`, as before the `UserCopy` bridge was registered.
+#[cfg(not(any(
+    not(target_os = "none"),
+    all(target_arch = "aarch64", not(feature = "module-rt"))
+)))]
+mod machine {
+    use crate::sys::errno::Errno;
+
+    /// `copyin`: no user address space.
+    pub(super) fn copyin(_uaddr: usize, _kbuf: &mut [u8]) -> Result<(), Errno> {
+        Err(Errno::EFAULT)
+    }
+    /// `copyout`.
+    pub(super) fn copyout(_kbuf: &[u8], _uaddr: usize) -> Result<(), Errno> {
+        Err(Errno::EFAULT)
+    }
+    /// `copyinstr`.
+    pub(super) fn copyinstr(_uaddr: usize, _kbuf: &mut [u8]) -> Result<usize, Errno> {
+        Err(Errno::EFAULT)
+    }
+    /// `copyoutstr`.
+    pub(super) fn copyoutstr(_kbuf: &[u8], _uaddr: usize) -> Result<usize, Errno> {
+        Err(Errno::EFAULT)
+    }
+    /// `copyin32`.
+    pub(super) fn copyin32(_uaddr: usize) -> Result<u32, Errno> {
+        Err(Errno::EFAULT)
+    }
 }
 
 /// A run of kernel virtual addresses onto pages of another address space (`uvm_io`'s and
@@ -153,29 +181,58 @@ impl ForeignWindow<'_> {
     }
 
     /// `kcopy(va + off, buf, buf.len())`: the window's bytes from `off` into `buf`; `EFAULT`
-    /// when a page faults (or before the bridge is registered). A range past the window's end
-    /// panics: the C would copy beyond what it extracted.
+    /// when a page faults (or where `hal` has no copy). A range past the window's end panics:
+    /// the C would copy beyond what it extracted.
     pub fn read_at(&self, off: usize, buf: &mut [u8]) -> Result<(), Errno> {
         let kva = self.at(off, buf.len());
         if buf.is_empty() {
             return Ok(());
         }
-        bridges::user_copy()
-            .ok_or(Errno::EFAULT)?
-            .kcopy_in(kva, buf)
+        #[cfg(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        ))]
+        // SAFETY: `[kva, kva + buf.len())` lies inside the window (`at` checked it), which the
+        // kernel map's token minted over a range of foreign pages its own `uvm_map_extract`
+        // put there, holding no Rust object, and keeps mapped while the window lives (its
+        // contract, `foreign_window`); the pages are also written by their own process, which
+        // the copy tolerates (it is the C's `kcopy`, no reference made), and a page that went
+        // away is `EFAULT` (`pcb_onfault`). `buf` is the caller's, borrowed for the copy.
+        let r = unsafe { machine::kcopy_in(kva, buf) };
+        #[cfg(not(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        )))]
+        let r = {
+            let _ = kva;
+            Err(Errno::EFAULT)
+        };
+        r
     }
 
     /// `kcopy(src, va + off, src.len())`: `src` into the window from `off`; `EFAULT` when a
-    /// page faults (or before the bridge is registered). A range past the window's end
-    /// panics.
+    /// page faults (or where `hal` has no copy). A range past the window's end panics.
     pub fn write_at(&self, off: usize, src: &[u8]) -> Result<(), Errno> {
         let kva = self.at(off, src.len());
         if src.is_empty() {
             return Ok(());
         }
-        bridges::user_copy()
-            .ok_or(Errno::EFAULT)?
-            .kcopy_out(src, kva)
+        #[cfg(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        ))]
+        // SAFETY: as in `read_at`: the range lies inside the window, foreign pages no Rust
+        // object occupies, mapped while the window lives; a page that went away is `EFAULT`.
+        let r = unsafe { machine::kcopy_out(src, kva) };
+        #[cfg(not(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        )))]
+        let r = {
+            let _ = kva;
+            Err(Errno::EFAULT)
+        };
+        r
     }
 
     /// The address of `n` bytes at `off`, checked to lie inside the window.
@@ -420,15 +477,15 @@ impl<T: AbiPod> UserPtr<T> {
     }
 
     /// `copyin(uaddr, objs, n * sizeof(T))`: `objs.len()` values from this address on.
+    #[inline]
     pub fn copyin_slice(self, objs: &mut [T]) -> Result<(), Errno> {
-        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
-        c.copyin(self.addr, bytes_of_mut(objs))
+        machine::copyin(self.addr, bytes_of_mut(objs))
     }
 
     /// `copyout(objs, uaddr, n * sizeof(T))`.
+    #[inline]
     pub fn copyout_slice(self, objs: &[T]) -> Result<(), Errno> {
-        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
-        c.copyout(bytes_of(objs), self.addr)
+        machine::copyout(bytes_of(objs), self.addr)
     }
 }
 
@@ -437,15 +494,13 @@ impl UserPtr<u8> {
     /// into `kbuf`; the bytes copied, the NUL included. `ENAMETOOLONG` when it does not fit,
     /// `EFAULT` when it is not mapped.
     pub fn copyinstr(self, kbuf: &mut [u8]) -> Result<usize, Errno> {
-        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
-        c.copyinstr(self.addr, kbuf)
+        machine::copyinstr(self.addr, kbuf)
     }
 
     /// `copyoutstr(kbuf, uaddr, kbuf.len(), &done)`: the NUL-terminated string at the start of
     /// `kbuf` to this address; the bytes copied, the NUL included.
     pub fn copyoutstr(self, kbuf: &[u8]) -> Result<usize, Errno> {
-        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
-        c.copyoutstr(kbuf, self.addr)
+        machine::copyoutstr(kbuf, self.addr)
     }
 }
 
@@ -453,8 +508,81 @@ impl UserPtr<u32> {
     /// `copyin32(uaddr, &v)`: the 32-bit word at this address in one access, as a futex is
     /// read; `EFAULT` when it is misaligned or not mapped.
     pub fn copyin32(self) -> Result<u32, Errno> {
-        let c = bridges::user_copy().ok_or(Errno::EFAULT)?;
-        c.copyin32(self.addr)
+        machine::copyin32(self.addr)
+    }
+}
+
+/// The right to `kcopy` onto kernel addresses its holder names itself (`bsd`'s `uiomove`'s
+/// `UIO_SYSSPACE` leg, the user's decision 13 of N4.8): one per kernel, taken once, by
+/// `bsd`'s boot (`hal_bridges_register`'s first step, before the ABI module loads; an
+/// earlier take by anyone panics the boot there), so no `forbid` crate can hold it: their
+/// later takes get `None`.
+///
+/// The holder's contract (decision 30's documented trust, `sys/hal/trust.rs`): every address
+/// it passes is a kernel buffer of at least the length copied that its builder owns for the
+/// copy (a `UIO_SYSSPACE` iovec's, `struct uio`'s contract), holding no Rust object that
+/// something else references during the copy; nothing here can check it. A page that is
+/// not mapped is `EFAULT` (`pcb_onfault`), as the C's `kcopy`. Gone with `UioMove` at N7.
+pub struct KcopyToken {
+    _private: (),
+}
+
+/// The one token.
+static KCOPY_TOKEN: KcopyToken = KcopyToken { _private: () };
+/// Whether [`KCOPY_TOKEN`] was taken.
+static KCOPY_TAKEN: AtomicBool = AtomicBool::new(false);
+
+impl KcopyToken {
+    /// The token, to its first taker only; `None` afterwards.
+    pub fn take() -> Option<&'static KcopyToken> {
+        if KCOPY_TAKEN.swap(true, Ordering::AcqRel) {
+            None
+        } else {
+            Some(&KCOPY_TOKEN)
+        }
+    }
+
+    /// `kcopy(kva, buf, buf.len())`: the bytes at the kernel address `kva` into `buf`;
+    /// `EFAULT` when a page faults (or where `hal` has no copy).
+    pub fn kcopy_in(&self, kva: usize, buf: &mut [u8]) -> Result<(), Errno> {
+        #[cfg(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        ))]
+        // SAFETY: the token's contract (the type's docs): `kva` names a kernel buffer of at
+        // least `buf.len()` bytes its holder vouches for, no Rust object written meanwhile; a
+        // page that is not mapped is `EFAULT`. `buf` is the caller's, borrowed for the copy.
+        let r = unsafe { machine::kcopy_in(kva, buf) };
+        #[cfg(not(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        )))]
+        let r = {
+            let _ = (kva, buf);
+            Err(Errno::EFAULT)
+        };
+        r
+    }
+
+    /// `kcopy(buf, kva, buf.len())`: `buf` to the kernel address `kva`; `EFAULT` when a page
+    /// faults (or where `hal` has no copy).
+    pub fn kcopy_out(&self, buf: &[u8], kva: usize) -> Result<(), Errno> {
+        #[cfg(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        ))]
+        // SAFETY: the token's contract: `kva` names a kernel buffer of at least `buf.len()`
+        // bytes its holder vouches for, which no Rust reference covers during the copy.
+        let r = unsafe { machine::kcopy_out(buf, kva) };
+        #[cfg(not(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        )))]
+        let r = {
+            let _ = (buf, kva);
+            Err(Errno::EFAULT)
+        };
+        r
     }
 }
 
@@ -710,6 +838,27 @@ mod tests {
         let _ = testutil::pmap_boot()
             .mapper
             .foreign_window(Vaddr::new(usize::MAX - 2), 16);
+    }
+
+    /// The token goes to its first taker alone, and copies kernel memory both ways: here the
+    /// host's own buffers (the token's holder vouches for them), a fault in the doubles'
+    /// address space being `EFAULT`.
+    #[test]
+    fn the_kcopy_token_is_taken_once_and_copies() {
+        let t = KcopyToken::take().expect("the first take");
+        assert!(KcopyToken::take().is_none(), "a second take");
+        let src = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut dst = [0u8; 8];
+        t.kcopy_in(core::ptr::from_ref(&src).expose_provenance(), &mut dst)
+            .unwrap();
+        assert_eq!(dst, src);
+        let mut out = [0u8; 8];
+        t.kcopy_out(&src[..4], core::ptr::from_mut(&mut out).expose_provenance())
+            .unwrap();
+        assert_eq!(out, [1, 2, 3, 4, 0, 0, 0, 0]);
+        let mut buf = [0u8; 4];
+        assert_eq!(t.kcopy_in(0x10, &mut buf), Err(Errno::EFAULT));
+        assert_eq!(t.kcopy_out(&buf, 0x10), Err(Errno::EFAULT));
     }
 }
 /* </TESTS> */

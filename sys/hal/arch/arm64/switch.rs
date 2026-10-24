@@ -128,6 +128,7 @@ use crate::arch::arm64::fpu;
 use crate::arch::arm64::include::frame::{SWITCHFRAME_SZ, Switchframe, Trapframe};
 use crate::arch::arm64::include::param::PAGE_SIZE;
 use crate::arch::arm64::include::pcb::{PCB_FPU, Pcb};
+use crate::arch::arm64::include::tcb::__aarch64_set_tcb;
 use crate::assert::hal_panic;
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC};
 use crate::sys::types::Register;
@@ -223,6 +224,30 @@ pub(crate) fn with_curpcb<R>(f: impl FnOnce(Option<&Pcb>) -> R) -> R {
     // above.
     let pcb = unsafe { pcb.as_ref() };
     f(pcb)
+}
+
+/// `TCB_GET(p)` of the thread whose slot is `slot`: its pcb's `pcb_tcb` (0 without a u-area),
+/// for a caller that runs the thread or holds the scheduler's lock (`with_pcb_of`'s premise;
+/// `hal::thread::tcb_get`).
+pub(crate) fn tcb_of(slot: &MachineSlot) -> usize {
+    with_pcb_of(slot, |pcb| pcb.map_or(0, |pcb| pcb.pcb_tcb.get().addr()))
+}
+
+/// `TCB_SET(p, addr)` for the running thread, whose slot is `slot`, under the scheduler's lock
+/// (`hal::thread::tcb_set`): its pcb's `pcb_tcb`, which the switch loads into `TPIDR_EL0`
+/// whenever it runs again, and `TPIDR_EL0` now.
+pub(crate) fn set_tcb(slot: &MachineSlot, tcb: usize) {
+    with_pcb_of(slot, |pcb| {
+        if let Some(pcb) = pcb {
+            pcb.pcb_tcb.set(ptr::with_exposed_provenance_mut(tcb));
+        }
+    });
+    __aarch64_set_tcb(tcb);
+}
+
+/// `TCB_INVALID(addr)`: none on arm64.
+pub(crate) const fn tcb_invalid(addr: usize) -> bool {
+    crate::arch::arm64::include::tcb::tcb_invalid(addr)
 }
 
 /// `ci->ci_curpcb = NULL` on this CPU: a secondary CPU's start, before its first thread (E5:
