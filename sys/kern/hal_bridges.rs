@@ -379,8 +379,10 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// keeps its first implementation). Called by `stand::start_kernel` before `main()`: the boot
 /// contract of the module docs.
 pub fn hal_bridges_register() {
-    // hal's one kcopy token, first: no code of the kernel or ABI crates has run yet, so none
-    // of them can hold it (a safe copy onto any kernel address its holder names, N4.8b).
+    // hal's one kcopy token, first in bsd's boot (a safe copy onto any kernel address its
+    // holder names, N4.8b): the kernel functions initarm already called take nothing, the ABI
+    // module is not loaded yet, and an earlier take by anyone panics the boot here, so no
+    // forbid crate can hold it.
     crate::kern::kern_subr::kcopy_take();
     let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);

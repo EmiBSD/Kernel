@@ -514,8 +514,9 @@ impl UserPtr<u32> {
 
 /// The right to `kcopy` onto kernel addresses its holder names itself (`bsd`'s `uiomove`'s
 /// `UIO_SYSSPACE` leg, the user's decision 13 of N4.8): one per kernel, taken once, by
-/// `bsd`'s boot before any code of the kernel or ABI crates runs (`hal_bridges_register`'s
-/// first step), so none of them can hold it: their later takes get `None`.
+/// `bsd`'s boot (`hal_bridges_register`'s first step, before the ABI module loads; an
+/// earlier take by anyone panics the boot there), so no `forbid` crate can hold it: their
+/// later takes get `None`.
 ///
 /// The holder's contract (decision 30's documented trust, `sys/hal/trust.rs`): every address
 /// it passes is a kernel buffer of at least the length copied that its builder owns for the

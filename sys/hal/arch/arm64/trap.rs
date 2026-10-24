@@ -135,7 +135,7 @@
 
 use core::fmt;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering, compiler_fence};
 
 use super::cpu::intr_enable;
 use super::fpu;
@@ -255,11 +255,15 @@ impl UserFrame {
     pub(crate) fn with<R>(self, f: impl FnOnce(&mut Trapframe) -> R) -> R {
         // The CPU's own flag, read and written by this CPU alone (the closure neither sleeps
         // nor switches, and an interrupt taken meanwhile runs on this CPU, which sees its own
-        // stores in order): relaxed.
+        // stores in order): relaxed. The two compiler fences keep the closure's accesses to the
+        // frame between the swap and the store: relaxed orders the flag for the hardware, not
+        // the compiler's placement of plain accesses around it, and an interrupt on this CPU
+        // must never see the flag clear while the frame is borrowed. They emit no instruction.
         let borrowed = &USER_FRAME_BORROWED[cpu_number()];
         if borrowed.swap(true, Ordering::Relaxed) {
             hal_panic(format_args!("trap: the user frame is borrowed twice"));
         }
+        compiler_fence(Ordering::Acquire);
         // SAFETY: valid: the pointer is the frame `exception.S` saved for this EL0 entry (`x0`
         // of `handle_el0_sync`, `handle_el0_irq`, `handle_el0_fiq`, `handle_el0_error` or
         // `do_ast`: a whole, aligned `struct trapframe` it wrote at the top of the running
@@ -281,6 +285,7 @@ impl UserFrame {
         // `pcb_tf` (`current` names this CPU's thread only), and the flag above refused a
         // second borrow on this CPU. The reference ends with `f`.
         let r = f(unsafe { &mut *self.0.as_ptr() });
+        compiler_fence(Ordering::Release);
         borrowed.store(false, Ordering::Relaxed);
         r
     }
