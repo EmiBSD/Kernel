@@ -1781,6 +1781,8 @@ mod tests {
         // ps_opptr's counted handle (16): +32, and the glue's ps_mainproc word goes (-8);
         // procpl unchanged (p_exited moved from the glue into the kernel's Thread as
         // `exited`). Accepted under the user's rule for N4's sizes (reported, pinned here).
+        // N4.8b (5cfef26e): procpl 1168 -> 1176 here only, the host double's Mdproc now
+        // holding the thread's TCB word (a machine keeps it in its pcb); arm64's is unchanged.
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1816,7 +1818,7 @@ mod tests {
             ),
         ];
         std::println!("procpl {proc}, {sizes:?}");
-        assert!(proc <= 1168, "procpl {proc}");
+        assert!(proc <= 1176, "procpl {proc}");
         assert_eq!(
             sizes,
             [
