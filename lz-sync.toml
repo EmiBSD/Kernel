@@ -785,3 +785,39 @@ subject = "rules: add the hardware lab rule"
 modules = []
 status = "not-applicable"
 reason = "native's target is QEMU (CLAUDE.md); the hardware lab is LZ's"
+
+[[commit]]
+lz = "c9e5275e5ccc"
+subject = "rules: remove the /port workflow; coordinators orchestrate"
+modules = []
+status = "applied"
+emibsd = "59a245c81924"
+method = "reimplemented"
+reason = "native retired its own /redesign workflow for the same reason in 59a245c8 (rules: retire /redesign; the session drives the redesign); LZ's /port, PORTING.md and coordinator text are LZ's"
+
+[[commit]]
+lz = "8bb23342bf3c"
+subject = "docs: feedback goes to LandingZone's issues; the lab log follows the checkout"
+modules = []
+status = "applied"
+emibsd = "f0151f22791d"
+method = "reimplemented"
+reason = "native's README already sends port problems to LandingZone's Issues (f0151f22); the lab's dnsmasq config is LZ's (native's target is QEMU)"
+
+[[commit]]
+lz = "bab90d1567ef"
+subject = "reference: point the OpenBSD clone at the EmiBSD/OpenBSD-src fork"
+modules = []
+status = "applied"
+emibsd = "b0b28b6c3365"
+method = "reimplemented"
+reason = "native pointed its own reference/PINNED.md, reference/README.md and reference-readonly.md at the fork in b0b28b6c (the user's decision of 2026-10-23); the OpenBSD pin 3ce1f3f79392 is unchanged on both sides; ports.toml and ports-tracker.md are LZ's"
+
+[[commit]]
+lz = "51e97f155978"
+subject = "docs: Ferffy is the child of Ferris and Puffy, not half of each"
+modules = []
+status = "applied"
+emibsd = "7b044a92fdc6"
+method = "reimplemented"
+reason = "native's README carries the same wording since 7b044a92"
