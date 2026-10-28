@@ -9548,6 +9548,11 @@ crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timecounter readers binuptime, getnanotime, nanouptime and tc_windup; the clock interrupt's dispatch and hardclock as they land) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/benches/pipe.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of pipe(2) (N5.0: pipe_pair_create and both ends closed, a 512-byte write and read through a pair with and without an EVFILT_READ knote, pipe2(2) and the close of both descriptors) over the doubles, a recycling pool backend and recycling buffer pages (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/futex.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of futex(2) (N4.6c: a FUTEX_WAIT that finds the word changed, a FUTEX_WAKE of nobody, both in a row, a shared FUTEX_WAKE on an unmapped word, and the rwlock, copyin32 and vmspace primitives they are made of) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
