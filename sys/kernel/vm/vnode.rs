@@ -349,29 +349,9 @@ enum UioRw {
     Write,
 }
 
-/// `enum vtype` (`<sys/vnode.h>`), as `mmap(2)` asks it of a vnode ([`VnodeOps::vtype`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(clippy::upper_case_acronyms)] // OpenBSD's names
-pub enum VType {
-    /// No type.
-    VNON,
-    /// Regular file.
-    VREG,
-    /// Directory.
-    VDIR,
-    /// Block device.
-    VBLK,
-    /// Character device.
-    VCHR,
-    /// Symbolic link.
-    VLNK,
-    /// Socket.
-    VSOCK,
-    /// Fifo.
-    VFIFO,
-    /// A vnode that has been cleaned out (`vgone`).
-    VBAD,
-}
+/// `enum vtype` (`<sys/vnode.h>`), as `mmap(2)` asks it of a vnode ([`VnodeOps::vtype`]):
+/// the vnode's own type (`kernel::fs::vnode`, N5.2).
+pub use crate::fs::vnode::Vtype as VType;
 
 /// `uvm_vnode_pool`.
 static UVN_POOL: TypedPool<Uvn> = TypedPool::new();

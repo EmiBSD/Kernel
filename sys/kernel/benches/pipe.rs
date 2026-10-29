@@ -429,6 +429,9 @@ impl FileGlue for BenchFiles {
     type Stat = testutil::TestStat;
     type Vnode = testutil::TestVnode;
     type FileList = FileListLink;
+    type VnodeG = ();
+    type Componentname = ();
+    type Nameidata<'a> = ();
 
     fn tables() -> &'static FileTables<Self> {
         &FILE_TABLES
@@ -505,7 +508,45 @@ impl FileGlue for BenchFiles {
     fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), Errno> {
         UserPtr::<testutil::TestStat>::new(sb).copyout(st)
     }
+    fn uiomove(buf: &mut [u8], uio: &mut kernel::uio::Uio<'_, BenchGlue>) -> Result<(), Errno> {
+        testutil::test_uiomove(buf, uio)
+    }
+    fn vfs() -> &'static kernel::fs::subr::VfsTables<BenchGlue> {
+        &VFS_TABLES
+    }
+    fn vnode_g_init(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
+    fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
+    fn cache_purge(vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {
+        vp.set_id(vp.id().wrapping_add(1));
+    }
+    fn lf_purgelocks(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
+    fn spec_advlock(
+        _vp: &'static kernel::fs::vnode::Vnode<BenchGlue>,
+        _id: *const core::ffi::c_void,
+        _op: i32,
+        _fl: &mut hal::sys::fcntl::Flock,
+        _flags: i32,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn abortop(_cnp: &mut Self::Componentname) {}
+    fn dounmount(
+        _mp: &'static kernel::fs::mount::Mount<BenchGlue>,
+        _flags: i32,
+        _p: &kernel::proc::Thread<BenchGlue>,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn session_ttyvp_take(
+        _p: &kernel::proc::Thread<BenchGlue>,
+        _vp: &'static kernel::fs::vnode::Vnode<BenchGlue>,
+    ) -> bool {
+        false
+    }
 }
+
+/// The VFS tables of the bench's processes (unused: no file system here).
+static VFS_TABLES: kernel::fs::subr::VfsTables<BenchGlue> = kernel::fs::subr::VfsTables::new();
 
 /// The pipes of the bench, over the recycling pages.
 static PIPES: Pipes<BenchGlue> = Pipes::new(&BENCH_PAGES);

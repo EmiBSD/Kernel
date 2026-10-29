@@ -95,7 +95,6 @@ use core::ptr;
 use core::sync::atomic::AtomicU32;
 
 use crate::kern::subr_prf::panic;
-use crate::machine::copy::AbiPod;
 use crate::net::radix::{RadixNode, RadixNodeHead};
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
@@ -111,30 +110,17 @@ use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::vnode::{VMntvnodes, Vnode};
 /// `struct bcachestats`: buffer cache statistics, `hal`'s (N5.1: one copy for the kernel's
 /// cache and `vfs.generic.bcachestat`).
-pub use hal::sys::mount::Bcachestats;
-
-/// `fsid_t`: file system id type.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Fsid {
-    /// `val`.
-    pub val: [i32; 2],
-}
-
-/// `MAXFIDSZ`.
-pub const MAXFIDSZ: usize = 16;
-
-/// `struct fid`: file identifier. These are unique per filesystem on a single machine.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Fid {
-    /// `fid_len`: length of data in bytes.
-    pub fid_len: u16,
-    /// `fid_reserved`: force longword alignment.
-    pub fid_reserved: u16,
-    /// `fid_data`: data (variable length).
-    pub fid_data: [u8; MAXFIDSZ],
-}
+pub use hal::sys::mount::{
+    Bcachestats, Fhandle, Fid, Fsid, MAXFIDSZ, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_BITS,
+    MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_DOOMED, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY,
+    MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_NOATIME, MNT_NODEV, MNT_NOEXEC, MNT_NOPERM, MNT_NOSUID,
+    MNT_NOWAIT, MNT_OP_FLAGS, MNT_QUOTA, MNT_RDONLY, MNT_RELOAD, MNT_ROOTFS, MNT_SOFTDEP,
+    MNT_STALLED, MNT_SWAPPABLE, MNT_SYNCHRONOUS, MNT_UNMOUNT, MNT_UPDATE, MNT_VISFLAGMASK,
+    MNT_WAIT, MNT_WANTRDWR, MNT_WXALLOWED, MOUNT_AFS, MOUNT_CD9660, MOUNT_EXT2FS, MOUNT_FFS,
+    MOUNT_FUSEFS, MOUNT_MFS, MOUNT_MSDOS, MOUNT_NCPFS, MOUNT_NFS, MOUNT_NTFS, MOUNT_TMPFS,
+    MOUNT_UDF, MOUNT_UFS, MountInfo, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
+    VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi,
+};
 
 /// `struct export_args`: export arguments for local filesystem mount calls. The two
 /// `struct sockaddr *` are user addresses (`usize`), which the kernel copies in when it
@@ -517,142 +503,6 @@ pub struct FusefsArgs {
 #[cfg(feature = "fuse")]
 mount_args_from_bytes!(FusefsArgs, "fusefs_args");
 
-/// `MFSNAMELEN`: length of fs type name, including nul.
-pub const MFSNAMELEN: usize = 16;
-/// `MNAMELEN`: length of buffer for returned name.
-pub const MNAMELEN: usize = 90;
-
-/// `union mount_info`: per-filesystem mount options (see the module's deviations).
-#[repr(C, align(8))]
-#[derive(Clone, Copy)]
-pub struct MountInfo {
-    /// `__align`: 64-bit alignment and room to grow.
-    pub __align: [u8; 160],
-}
-
-/// `struct statfs`: file system statistics, with mount options and statvfs fields.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Statfs {
-    /// `f_flags`: copy of mount flags.
-    pub f_flags: u32,
-    /// `f_bsize`: file system block size.
-    pub f_bsize: u32,
-    /// `f_iosize`: optimal transfer block size.
-    pub f_iosize: u32,
-    /// The hole before `f_blocks`.
-    pub _pad0: u32,
-    /// `f_blocks`: total data blocks in file system (unit is `f_bsize`).
-    pub f_blocks: u64,
-    /// `f_bfree`: free blocks in fs.
-    pub f_bfree: u64,
-    /// `f_bavail`: free blocks avail to non-superuser.
-    pub f_bavail: i64,
-    /// `f_files`: total file nodes in file system.
-    pub f_files: u64,
-    /// `f_ffree`: free file nodes in fs.
-    pub f_ffree: u64,
-    /// `f_favail`: free file nodes avail to non-root.
-    pub f_favail: i64,
-    /// `f_syncwrites`: count of sync writes since mount.
-    pub f_syncwrites: u64,
-    /// `f_syncreads`: count of sync reads since mount.
-    pub f_syncreads: u64,
-    /// `f_asyncwrites`: count of async writes since mount.
-    pub f_asyncwrites: u64,
-    /// `f_asyncreads`: count of async reads since mount.
-    pub f_asyncreads: u64,
-    /// `f_fsid`: file system id.
-    pub f_fsid: Fsid,
-    /// `f_namemax`: maximum filename length.
-    pub f_namemax: u32,
-    /// `f_owner`: user that mounted the file system.
-    pub f_owner: Uid,
-    /// `f_ctime`: last mount \[-u\] time.
-    pub f_ctime: u64,
-    /// `f_fstypename`: fs type name.
-    pub f_fstypename: [u8; MFSNAMELEN],
-    /// `f_mntonname`: directory on which mounted.
-    pub f_mntonname: [u8; MNAMELEN],
-    /// `f_mntfromname`: mounted file system.
-    pub f_mntfromname: [u8; MNAMELEN],
-    /// `f_mntfromspec`: special for mount request.
-    pub f_mntfromspec: [u8; MNAMELEN],
-    /// The hole before `mount_info`.
-    pub _pad1: [u8; 2],
-    /// `mount_info`: per-filesystem mount options.
-    pub mount_info: MountInfo,
-}
-
-impl Statfs {
-    /// A zeroed `struct statfs`.
-    pub const fn new() -> Self {
-        Self {
-            f_flags: 0,
-            f_bsize: 0,
-            f_iosize: 0,
-            _pad0: 0,
-            f_blocks: 0,
-            f_bfree: 0,
-            f_bavail: 0,
-            f_files: 0,
-            f_ffree: 0,
-            f_favail: 0,
-            f_syncwrites: 0,
-            f_syncreads: 0,
-            f_asyncwrites: 0,
-            f_asyncreads: 0,
-            f_fsid: Fsid { val: [0; 2] },
-            f_namemax: 0,
-            f_owner: 0,
-            f_ctime: 0,
-            f_fstypename: [0; MFSNAMELEN],
-            f_mntonname: [0; MNAMELEN],
-            f_mntfromname: [0; MNAMELEN],
-            f_mntfromspec: [0; MNAMELEN],
-            _pad1: [0; 2],
-            mount_info: MountInfo { __align: [0; 160] },
-        }
-    }
-}
-
-impl Default for Statfs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// SAFETY: `#[repr(C)]` integers and byte arrays, the C compiler's holes named (`_pad0`,
-// `_pad1`), no implicit padding (the compile-time checks below pin the layout).
-unsafe impl AbiPod for Statfs {}
-
-/// `MOUNT_FFS`: UNIX "Fast" Filesystem.
-pub const MOUNT_FFS: &[u8] = b"ffs";
-/// `MOUNT_UFS`: for compatibility.
-pub const MOUNT_UFS: &[u8] = MOUNT_FFS;
-/// `MOUNT_NFS`: Network Filesystem.
-pub const MOUNT_NFS: &[u8] = b"nfs";
-/// `MOUNT_MFS`: Memory Filesystem.
-pub const MOUNT_MFS: &[u8] = b"mfs";
-/// `MOUNT_MSDOS`: MSDOS Filesystem.
-pub const MOUNT_MSDOS: &[u8] = b"msdos";
-/// `MOUNT_AFS`: Andrew Filesystem.
-pub const MOUNT_AFS: &[u8] = b"afs";
-/// `MOUNT_CD9660`: ISO9660 (aka CDROM) Filesystem.
-pub const MOUNT_CD9660: &[u8] = b"cd9660";
-/// `MOUNT_EXT2FS`: Second Extended Filesystem.
-pub const MOUNT_EXT2FS: &[u8] = b"ext2fs";
-/// `MOUNT_NCPFS`: NetWare Network File System.
-pub const MOUNT_NCPFS: &[u8] = b"ncpfs";
-/// `MOUNT_NTFS`: NTFS.
-pub const MOUNT_NTFS: &[u8] = b"ntfs";
-/// `MOUNT_UDF`: UDF.
-pub const MOUNT_UDF: &[u8] = b"udf";
-/// `MOUNT_TMPFS`: tmpfs.
-pub const MOUNT_TMPFS: &[u8] = b"tmpfs";
-/// `MOUNT_FUSEFS`: FUSE.
-pub const MOUNT_FUSEFS: &[u8] = b"fuse";
-
 /// `struct mount`: structure per mounted file system. Each mounted file system has an array of
 /// operations and an instance record. The file systems are put on a doubly linked list.
 pub struct Mount {
@@ -751,105 +601,6 @@ queue_adapter!(
     /// `SLIST_HEAD(, mount)`: `dounmount`'s work queue, through `mnt_dounmount`.
     pub MntDounmount: Mount, mnt_dounmount => SlistEntry<Mount>
 );
-
-/// `MNT_RDONLY`: read only filesystem.
-pub const MNT_RDONLY: i32 = 0x0000_0001;
-/// `MNT_SYNCHRONOUS`: file system written synchronously.
-pub const MNT_SYNCHRONOUS: i32 = 0x0000_0002;
-/// `MNT_NOEXEC`: can't exec from filesystem.
-pub const MNT_NOEXEC: i32 = 0x0000_0004;
-/// `MNT_NOSUID`: don't honor setuid bits on fs.
-pub const MNT_NOSUID: i32 = 0x0000_0008;
-/// `MNT_NODEV`: don't interpret special files.
-pub const MNT_NODEV: i32 = 0x0000_0010;
-/// `MNT_NOPERM`: don't enforce permission checks.
-pub const MNT_NOPERM: i32 = 0x0000_0020;
-/// `MNT_ASYNC`: file system written asynchronously.
-pub const MNT_ASYNC: i32 = 0x0000_0040;
-/// `MNT_WXALLOWED`: filesystem allows W|X mappings.
-pub const MNT_WXALLOWED: i32 = 0x0000_0800;
-
-/// `MNT_EXRDONLY`: exported read only.
-pub const MNT_EXRDONLY: i32 = 0x0000_0080;
-/// `MNT_EXPORTED`: file system is exported.
-pub const MNT_EXPORTED: i32 = 0x0000_0100;
-/// `MNT_DEFEXPORTED`: exported to the world.
-pub const MNT_DEFEXPORTED: i32 = 0x0000_0200;
-/// `MNT_EXPORTANON`: use anon uid mapping for everyone.
-pub const MNT_EXPORTANON: i32 = 0x0000_0400;
-
-/// `MNT_LOCAL`: filesystem is stored locally.
-pub const MNT_LOCAL: i32 = 0x0000_1000;
-/// `MNT_QUOTA`: quotas are enabled on filesystem.
-pub const MNT_QUOTA: i32 = 0x0000_2000;
-/// `MNT_ROOTFS`: identifies the root filesystem.
-pub const MNT_ROOTFS: i32 = 0x0000_4000;
-
-/// `MNT_NOATIME`: don't update access times on fs.
-pub const MNT_NOATIME: i32 = 0x0000_8000;
-
-/// `MNT_VISFLAGMASK`: mask of flags that are visible to statfs().
-pub const MNT_VISFLAGMASK: i32 = 0x0400_ffff;
-
-/// `MNT_BITS`: the `%b` description of the mount flags.
-pub const MNT_BITS: &[u8] = b"\x10\x01RDONLY\x02SYNCHRONOUS\x03NOEXEC\x04NOSUID\x05NODEV\x06NOPERM\
-\x07ASYNC\x08EXRDONLY\x09EXPORTED\x0aDEFEXPORTED\x0bEXPORTANON\
-\x0cWXALLOWED\x0dLOCAL\x0eQUOTA\x0fROOTFS\x10NOATIME\x11UPDATE\
-\x12DELEXPORT\x13RELOAD\x14FORCE\x15STALLED\x16SWAPPABLE\x19UNMOUNT\
-\x1aWANTRDWR\x1bSOFTDEP\x1cDOOMED";
-
-/// `MNT_UPDATE`: not a real mount, just an update.
-pub const MNT_UPDATE: i32 = 0x0001_0000;
-/// `MNT_DELEXPORT`: delete export host lists.
-pub const MNT_DELEXPORT: i32 = 0x0002_0000;
-/// `MNT_RELOAD`: reload filesystem data.
-pub const MNT_RELOAD: i32 = 0x0004_0000;
-/// `MNT_FORCE`: force unmount or readonly change.
-pub const MNT_FORCE: i32 = 0x0008_0000;
-/// `MNT_STALLED`: filesystem stalled.
-pub const MNT_STALLED: i32 = 0x0010_0000;
-/// `MNT_SWAPPABLE`: filesystem can be used for swap.
-pub const MNT_SWAPPABLE: i32 = 0x0020_0000;
-/// `MNT_UNMOUNT`: unmount in progress.
-pub const MNT_UNMOUNT: i32 = 0x0100_0000;
-/// `MNT_WANTRDWR`: want upgrade to read/write.
-pub const MNT_WANTRDWR: i32 = 0x0200_0000;
-/// `MNT_SOFTDEP`: soft dependencies being done - now ignored.
-pub const MNT_SOFTDEP: i32 = 0x0400_0000;
-/// `MNT_DOOMED`: device behind filesystem is gone.
-pub const MNT_DOOMED: i32 = 0x0800_0000;
-
-/// `MNT_OP_FLAGS`.
-pub const MNT_OP_FLAGS: i32 = MNT_UPDATE | MNT_RELOAD | MNT_FORCE | MNT_WANTRDWR;
-
-/// `MNT_WAIT`: synchronously wait for I/O to complete.
-pub const MNT_WAIT: i32 = 1;
-/// `MNT_NOWAIT`: start all I/O, but do not wait for it.
-pub const MNT_NOWAIT: i32 = 2;
-/// `MNT_LAZY`: push data not written by filesystem syncer.
-pub const MNT_LAZY: i32 = 3;
-
-/// `struct fhandle` (`fhandle_t`): generic file handle.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Fhandle {
-    /// `fh_fsid`: file system id of mount point.
-    pub fh_fsid: Fsid,
-    /// `fh_fid`: file sys specific id.
-    pub fh_fid: Fid,
-}
-
-// SAFETY: `#[repr(C)]` integers only: two `i32`, two `u16` and 16 bytes, no padding.
-unsafe impl AbiPod for Fhandle {}
-
-/// `VFS_GENERIC`: generic filesystem information.
-pub const VFS_GENERIC: i32 = 0;
-/// `VFS_MAXTYPENUM`: int: highest defined filesystem type.
-pub const VFS_MAXTYPENUM: i32 = 1;
-/// `VFS_CONF`: struct: vfsconf for filesystem given as next argument.
-pub const VFS_CONF: i32 = 2;
-/// `VFS_BCACHESTAT`: struct: buffer cache statistics given as next argument.
-pub const VFS_BCACHESTAT: i32 = 3;
 
 /// `struct vfsconf`: filesystem configuration information. One of these exists for each type
 /// of filesystem supported by the kernel. These are searched at mount time to identify the
@@ -1122,28 +873,9 @@ impl Default for Netexport {
     }
 }
 
-/// `VB_READ`.
-pub const VB_READ: i32 = 0x01;
-/// `VB_WRITE`.
-pub const VB_WRITE: i32 = 0x02;
-/// `VB_NOWAIT`: immediately fail on busy lock.
-pub const VB_NOWAIT: i32 = 0x04;
-/// `VB_WAIT`: sleep fail on busy lock.
-pub const VB_WAIT: i32 = 0x08;
-/// `VB_DUPOK`: permit duplicate mount busying.
-pub const VB_DUPOK: i32 = 0x10;
-
-// The amd64/arm64 layout of `struct statfs` (both LP64).
+// The amd64/arm64 layout of the `*_args` (both LP64; `struct statfs` is hal's).
 const _: () = {
     use core::mem::offset_of;
-    assert!(offset_of!(Statfs, f_blocks) == 16);
-    assert!(offset_of!(Statfs, f_fsid) == 96);
-    assert!(offset_of!(Statfs, f_ctime) == 112);
-    assert!(offset_of!(Statfs, f_fstypename) == 120);
-    assert!(offset_of!(Statfs, f_mntfromspec) == 316);
-    assert!(offset_of!(Statfs, mount_info) == 408);
-    assert!(size_of::<Statfs>() == 568);
-    assert!(size_of::<Fhandle>() == 28);
     assert!(size_of::<ExportArgs>() == 120);
     assert!(UfsArgs::SIZE == 128);
     assert!(MfsArgs::SIZE == 144);

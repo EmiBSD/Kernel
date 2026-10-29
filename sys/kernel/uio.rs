@@ -282,6 +282,33 @@ impl<'a, G: ProcGlue> Uio<'a, G> {
     }
 }
 
+impl<'a, G: ProcGlue> Uio<'a, G> {
+    /// A `UIO_SYSSPACE` read into the kernel bytes `buf` (`aiov.iov_base = buf; auio.uio_segflg
+    /// = UIO_SYSSPACE; auio.uio_rw = UIO_READ`: the vnode pager's `VOP_READ` of a page), its
+    /// one iovec in `iov`, offset 0, all of `buf` to fill. The uio borrows `buf` mutably for as
+    /// long as it lives, so the address the iovec carries names bytes that exist, and that
+    /// nothing else reaches, for every `uiomove` made through it. The kernel's one way to
+    /// build a reading `UIO_SYSSPACE` uio.
+    pub fn kernel_read(
+        iov: &'a mut [Iovec; 1],
+        buf: &'a mut [u8],
+        procp: Option<&'a Thread<G>>,
+    ) -> Self {
+        iov[0] = Iovec {
+            iov_base: buf.as_mut_ptr().cast::<c_void>(),
+            iov_len: buf.len(),
+        };
+        Self {
+            uio_iov: iov,
+            uio_offset: 0,
+            uio_resid: buf.len(),
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_READ,
+            uio_procp: procp,
+        }
+    }
+}
+
 /// Where [`iovec_copyin`] puts a user's iovecs: the `UIO_SMALLIOV` the caller keeps on its
 /// stack (the C's `aiov[UIO_SMALLIOV]`), or, past them, a `malloc(M_IOV)` array this buffer
 /// owns and frees when it goes out of scope (the C's `iovec_free`).

@@ -243,6 +243,11 @@ impl FileGlue for BsdFileGlue {
     type Stat = Stat;
     type Vnode = Vnode;
     type FileList = FileListLink;
+    // The kernel's VFS core is not wired into bsd yet (N5.2's switch): its vnode members,
+    // tables and legs are bsd's from that commit.
+    type VnodeG = ();
+    type Componentname = crate::sys::namei::Componentname;
+    type Nameidata<'a> = crate::sys::namei::Nameidata<'a>;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()
@@ -400,7 +405,46 @@ impl FileGlue for BsdFileGlue {
         )?;
         Ok(bp)
     }
+    fn uiomove(buf: &mut [u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
+        crate::kern::kern_subr::uiomove(buf, uio)
+    }
+    fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
+        &VFS_TABLES
+    }
+    fn vnode_g_init(_vp: &'static kernel::fs::vnode::Vnode<crate::kern::proc_glue::BsdProcGlue>) {}
+    fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<crate::kern::proc_glue::BsdProcGlue>) {}
+    fn cache_purge(vp: &'static kernel::fs::vnode::Vnode<crate::kern::proc_glue::BsdProcGlue>) {
+        vp.set_id(vp.id().wrapping_add(1));
+    }
+    fn lf_purgelocks(_vp: &'static kernel::fs::vnode::Vnode<crate::kern::proc_glue::BsdProcGlue>) {}
+    fn spec_advlock(
+        _vp: &'static kernel::fs::vnode::Vnode<crate::kern::proc_glue::BsdProcGlue>,
+        _id: *const core::ffi::c_void,
+        _op: i32,
+        _fl: &mut hal::sys::fcntl::Flock,
+        _flags: i32,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn abortop(_cnp: &mut Self::Componentname) {}
+    fn dounmount(
+        _mp: &'static kernel::fs::mount::Mount<crate::kern::proc_glue::BsdProcGlue>,
+        _flags: i32,
+        _p: &kernel::proc::Thread<crate::kern::proc_glue::BsdProcGlue>,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn session_ttyvp_take(
+        _p: &kernel::proc::Thread<crate::kern::proc_glue::BsdProcGlue>,
+        _vp: &'static kernel::fs::vnode::Vnode<crate::kern::proc_glue::BsdProcGlue>,
+    ) -> bool {
+        false
+    }
 }
+
+/// The kernel VFS core's tables of bsd's processes (wired by N5.2's switch).
+static VFS_TABLES: kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> =
+    kernel::fs::subr::VfsTables::new();
 
 /// `filedesc_init`: the pools of open files and descriptor tables. A host test calls it once
 /// per test: its thread gets fresh tables first.

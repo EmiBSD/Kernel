@@ -7931,9 +7931,9 @@ notes = "N4.6b: sysctl.h's ids, name tables and structures moved into hal so ker
 [[module]]
 rust = "sys/hal/sys/mount.rs"
 crate = "hal"
-lz = ["sys/sys/mount.rs"]
+lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
-notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; the rest of mount.h moves with the VFS (N5.2, N5.4)"
+notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); the *_args stay bsd's (N5.4)"
 
 [[module]]
 rust = "sys/kernel/fs/buf.rs"
@@ -8111,6 +8111,78 @@ lz = "sys/kern/vfs_biomem.rs::nommu"
 native = []
 kind = "dropped"
 reason = "hal::pmap::PMAP_NOMMU is a constant the arena and the views read (sys/kernel/vm/km.rs, sys/hal/mapped.rs)"
+
+[[module]]
+rust = "sys/kernel/fs/default.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_default.rs"]
+status = "redesigned"
+notes = "N5.2: vfs_default.c's generic operations taking the C's arguments (the Vnops methods call them); abortop's namei buffer and revoke's forced dounmount through FileGlue legs (bsd's namei and dounmount until N5.3/N5.4); bwrite passes the buffer as it came (IoBuf)"
+
+[[module]]
+rust = "sys/kernel/fs/init.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_init.rs"]
+status = "redesigned"
+notes = "N5.2: vfsinit over the table bsd hands it (vfsconflist stays bsd's: the cfgs, order and type numbers), vfs_byname, vfs_bytypenum, rootvnode a Link of the tables (LZ's AtomicPtr and its unsafe deref go); namei_pool and nchinit are bsd's (N5.3)"
+
+[[module]]
+rust = "sys/kernel/fs/mount.rs"
+crate = "kernel"
+lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
+status = "redesigned"
+notes = "N5.2: struct mount as Mount<G>, never freed (D-N5.2-2: MBox::leak of an M_MOUNT allocation, recycled through the free list once mnt_refs, a hal Refcnt, reaches 0; vmstat -m's M_MOUNT a high-water mark), mnt_op/mnt_vfc one Link to the Vfsconf, mnt_flag a Relaxed atomic, mnt_stat a Mutexed at IPL_NONE beside the four I/O counters as atomics, mnt_lock a hal SplitRwlock (vfs_busy/vfs_unbusy split as the C), mnt_vnodelist a leaf Mutexed list; struct vfsconf as Vfsconf<G>; mountlist and the free mounts MountLists under a leaf mutex (D-N5.2-13); vfs_mount_alloc, vfs_mount_take, vfs_mount_rele, vfs_mount_free, vfs_busy, vfs_unbusy, vfs_isbusy from vfs_subr.c"
+
+[[module]]
+rust = "sys/kernel/fs/spec.rs"
+crate = "kernel"
+lz = ["sys/sys/specdev.rs", "sys/kern/spec_vnops.rs"]
+status = "redesigned"
+notes = "N5.2: struct specinfo as Specinfo<G> owned by its vnode's v_un (MBox M_VNODE, freed by vgonel), the clone bitmap a PoolArc of the clonemap pool shared by the aliases (D-N5.2-3), the cloneinfo a link in the parent's specinfo (clone_restore takes it; no M_TEMP cloneinfo), speclisth a leaf Mutexed of hal lists, the device switch the bridge Devsw<G> (decision 45, paid N7.2), spec_vops as SpecVops<G> (fixed id), spec_lock's nullop, the DIOCGPART unported! kept"
+
+[[module]]
+rust = "sys/kernel/fs/subr.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_subr.rs"]
+status = "redesigned"
+notes = "N5.2: vfs_subr.c's vnode table and helpers over VfsTables<G> (one per glue: the vnode BoxPool, items leaked; the free and hold lists under one Mutexed at IPL_BIO; the mount lists, speclisth and the syncer wheel; the Vnops registry by address, VopsId; rootvnode; the device switch); getnewvnode, insmntque, bdevvp, cdevvp, getdevvp, checkalias, vget, vref, vputonfreelist, vput, vrele, vhold, vdrop, vfs_mount_foreach_vnode, vflush, vclean, vrecycle, vgone, vgonel, vfinddev, vdevgone, vcount, vprint, printlockedvnodes, vfs_sysctl as the SysctlNode VfsSysctl, vfs_mountedon, vaccess, vnoperm, vfs_stall, vfs_stall_barrier, vwaitforio, vinvalbuf, vflushbuf, copy_statfs_info; the vnode's BufVnode and VnodeOps impls (from vfs_subr.rs and vm_bsd.rs); the shutdown trio and the NFS export list stay bsd's (D-N5.2-7)"
+
+[[module]]
+rust = "sys/kernel/fs/sync.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_sync.rs"]
+status = "redesigned"
+notes = "N5.2: the syncer's wheel a fixed array of SYNCER_MAXDELAY hal lists inside the tables' Mutexed at IPL_BIO (LZ's hashinit table behind an AtomicPtr and its unsafe slot accessor go), each vnode recording its slot; vn_syncer_add_to_worklist, syncer_remove, syncer_thread, sync_vops as SyncVops<G> (fixed id), vfs_allocate_syncvnode, sync_fsync, sync_inactive, sync_print"
+
+[[module]]
+rust = "sys/kernel/fs/vnode.rs"
+crate = "kernel"
+lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.2: struct vnode as Vnode<G>: the [K] words Relaxed atomics behind LZ's accessor names, [V] a Guarded cell of the one vnode_mtx (VNODE_MTX, IPL_BIO), [B] v_holdcnt a cell of the free lists' lock, hal ListEntry links, v_mount/v_uvm Links, v_un a ReadMostly cell holding the Specinfo by value, v_op an id into the registry (VopsId, kind()), v_data an AtomicPtr word, bsd's members (name cache heads, v_socket, si_lockf) the glue's VnodeG; enum vtype/vtagtype, struct vattr, the V*/IO_*/LK_* constants, iftovt/vttoif; vn_lock (vfs_vnops.c) and the Locked guard"
+
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Buflists"
+native = ["sys/kernel/fs/bio.rs::VnodeBufs"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_vnops.rs::File::vnode"
+native = ["sys/sys/file.rs::File::vnode"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/fs/vops.rs"
+crate = "kernel"
+lz = ["sys/sys/vnode.rs", "sys/sys/mount.rs", "sys/kern/vfs_vops.rs"]
+status = "redesigned"
+notes = "N5.2: struct vops as the trait Vnops<G> (each slot a method with the C's arguments, defaulting to the NULL slot's EOPNOTSUPP) and struct vfsops as Vfs<G>; bsd implements both on its Vops/Vfsops tables; the vfs_vops.c wrappers (vop_*: VBIOERROR in fsync, the releases of remove, ENOTDIR of readdir, pathconf's constant names, the curproc asserts) and the VFS_* macros as functions; Cred an opaque copy of struct ucred * (NOCRED/FSCRED compared, never dereferenced); IoBuf the buffer of strategy/bwrite as it came (token or lent)"
+
+[[module]]
+rust = "sys/kernel/fs/miscfs/deadfs.rs"
+crate = "kernel"
+lz = ["sys/miscfs/deadfs/dead_vnops.rs"]
+status = "redesigned"
+notes = "N5.2: dead_vops as DeadVops<G> (fixed id VopsId::DEAD), chkvnlock over vnode_mtx's cell, dead_strategy over IoBuf"
 
 [[module]]
 rust = "sys/kernel/fs/bufq.rs"
@@ -11281,6 +11353,11 @@ lz = "sys/sys/pipe.rs::Pipe::default"
 native = []
 kind = "dropped"
 reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
+
+[[extra]]
+rust = "sys/kernel/fs/testfs.rs"
+crate = "kernel"
+reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/testutil.rs"
