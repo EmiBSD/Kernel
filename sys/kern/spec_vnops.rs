@@ -305,7 +305,7 @@ pub fn spec_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
                     bread(vp, bn, bsize)
                 };
                 si.si_lastr.set(bn);
-                n = n.min(bsize as usize - bp.b_resid.get());
+                n = n.min(bsize as usize - bp.resid());
                 if let Err(error) = error {
                     brelse(bp);
                     return Err(error);
@@ -364,7 +364,7 @@ pub fn spec_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                 let on = (uio.uio_offset % i64::from(bsize)) as usize;
                 let mut n = (bsize as usize - on).min(uio.uio_resid);
                 let (bp, error) = bread(vp, bn, bsize);
-                n = n.min(bsize as usize - bp.b_resid.get());
+                n = n.min(bsize as usize - bp.resid());
                 if let Err(error) = error {
                     brelse(bp);
                     return Err(error);
@@ -470,7 +470,7 @@ pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 /// `spec_strategy`: `bdevsw[major(bp->b_dev)].d_strategy(bp)`.
 pub fn spec_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let maj = major(bp.b_dev.get());
+    let maj = major(bp.dev());
 
     (bdevsw(maj).d_strategy)(bp);
     Ok(())

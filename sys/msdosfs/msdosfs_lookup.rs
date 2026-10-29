@@ -1357,7 +1357,7 @@ mod tests {
         let e = *Direntry::at(unsafe { bp.data() }, off);
         brelse(bp);
         assert_eq!(&e.name11(), b"M10C-FATTXT");
-        assert_eq!(bp.b_bcount.get(), 512);
+        assert_eq!(bp.bcount(), 512);
 
         let dep: &'static Denode = Box::leak(Box::new(Denode::new()));
         dep.de_pmp.set(Some(pmp));
@@ -1393,7 +1393,7 @@ mod tests {
         assert_eq!(pmp.pm_rootdirsize.get(), 1);
         assert_eq!(pmp.pm_bpcluster.get(), 2048);
         let (bp, off) = readep(pmp, MSDOSFSROOT, 0).unwrap();
-        assert_eq!(bp.b_bcount.get(), 512);
+        assert_eq!(bp.bcount(), 512);
         // SAFETY: the buffer is busy for the test (from `readep`) and mapped.
         let e = *Direntry::at(unsafe { bp.data() }, off);
         brelse(bp);

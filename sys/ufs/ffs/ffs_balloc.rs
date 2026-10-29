@@ -263,9 +263,9 @@ pub fn ffs1_balloc(
             if let Some(b) = bpp {
                 let bp = getblk_wait(vp, lbn, bsize);
                 if nsize < bsize {
-                    bp.b_bcount.set(i64::from(nsize));
+                    bp.set_bcount(i64::from(nsize));
                 }
-                bp.b_blkno.set(fsbtodb(fs, newb));
+                bp.set_blkno(fsbtodb(fs, newb));
                 if flags & B_CLRBUF != 0 {
                     // SAFETY: the buffer is ours (busy from getblk) and mapped.
                     unsafe { clrbuf(bp) };
@@ -310,7 +310,7 @@ pub fn ffs1_balloc(
             allociblk[nalloc] = nb;
             nalloc += 1;
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
-            bp.b_blkno.set(fsbtodb(fs, nb));
+            bp.set_blkno(fsbtodb(fs, nb));
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(bp) };
 
@@ -353,7 +353,7 @@ pub fn ffs1_balloc(
             allociblk[nalloc] = nb;
             nalloc += 1;
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
-            nbp.b_blkno.set(fsbtodb(fs, nb));
+            nbp.set_blkno(fsbtodb(fs, nb));
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(nbp) };
 
@@ -392,7 +392,7 @@ pub fn ffs1_balloc(
             // *allocblk++ = nb: nothing reads it on the way out.
             if let Some(b) = bpp {
                 let nbp = getblk_wait(vp, lbn, bsize);
-                nbp.b_blkno.set(fsbtodb(fs, nb));
+                nbp.set_blkno(fsbtodb(fs, nb));
                 if flags & B_CLRBUF != 0 {
                     // SAFETY: the buffer is ours (busy from getblk) and mapped.
                     unsafe { clrbuf(nbp) };
@@ -420,7 +420,7 @@ pub fn ffs1_balloc(
                 nbp
             } else {
                 let nbp = getblk_wait(vp, lbn, bsize);
-                nbp.b_blkno.set(fsbtodb(fs, nb));
+                nbp.set_blkno(fsbtodb(fs, nb));
                 nbp
             };
             *b = Some(nbp);
@@ -615,9 +615,9 @@ pub fn ffs2_balloc(
             if let Some(b) = bpp {
                 let bp = getblk_wait(vp, lbn, bsize);
                 if nsize < bsize {
-                    bp.b_bcount.set(i64::from(nsize));
+                    bp.set_bcount(i64::from(nsize));
                 }
-                bp.b_blkno.set(fsbtodb(fs, newb));
+                bp.set_blkno(fsbtodb(fs, newb));
                 if flags & B_CLRBUF != 0 {
                     // SAFETY: the buffer is ours (busy from getblk) and mapped.
                     unsafe { clrbuf(bp) };
@@ -664,7 +664,7 @@ pub fn ffs2_balloc(
             allociblk[nalloc] = nb;
             nalloc += 1;
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
-            bp.b_blkno.set(fsbtodb(fs, nb));
+            bp.set_blkno(fsbtodb(fs, nb));
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(bp) };
 
@@ -716,7 +716,7 @@ pub fn ffs2_balloc(
             allociblk[nalloc] = nb;
             nalloc += 1;
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
-            nbp.b_blkno.set(fsbtodb(fs, nb));
+            nbp.set_blkno(fsbtodb(fs, nb));
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(nbp) };
 
@@ -762,7 +762,7 @@ pub fn ffs2_balloc(
 
             if let Some(b) = bpp {
                 let nbp = getblk_wait(vp, lbn, bsize);
-                nbp.b_blkno.set(fsbtodb(fs, nb));
+                nbp.set_blkno(fsbtodb(fs, nb));
                 if flags & B_CLRBUF != 0 {
                     // SAFETY: the buffer is ours (busy from getblk) and mapped.
                     unsafe { clrbuf(nbp) };
@@ -802,7 +802,7 @@ pub fn ffs2_balloc(
                 nbp
             } else {
                 let nbp = getblk_wait(vp, lbn, bsize);
-                nbp.b_blkno.set(fsbtodb(fs, nb));
+                nbp.set_blkno(fsbtodb(fs, nb));
                 // SAFETY: the buffer is ours (busy from getblk) and mapped.
                 unsafe { clrbuf(nbp) };
                 nbp
@@ -840,7 +840,7 @@ pub fn ffs2_balloc(
 
             let bp = getblk_wait(vp, indirs[i as usize].in_lbn, bsize);
             if bp.isset(B_DELWRI) {
-                let nb = fsbtodb(fs, cgtod(fs, dtog(fs, dbtofsb(fs, bp.b_blkno.get()))));
+                let nb = fsbtodb(fs, cgtod(fs, dtog(fs, dbtofsb(fs, bp.blkno()))));
                 let _ = bwrite(bp);
                 let bp = getblk_wait(ip.i_devvp(), nb, fs.fs_cgsize.get());
                 if bp.isset(B_DELWRI) {

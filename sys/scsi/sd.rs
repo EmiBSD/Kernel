@@ -165,6 +165,7 @@ use crate::scsi::scsiconf::{
     scsi_inqmatch, scsi_strvis, sid_ansii_rev,
 };
 use crate::scsi::sdvar::{SDF_DIRTY, SDF_DYING, SDF_THIN, SdSoftc};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, BUFQ_DEFAULT, BUFQ_FIFO, Buf};
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_DEACTIVATE, DVACT_POWERDOWN,
@@ -661,7 +662,7 @@ static ZERO_LABEL: Disklabel = Disklabel::zeroed();
 /// can understand. The transfer is described by a buf and will include only one physical
 /// transfer.
 pub fn sdstrategy(bp: &'static Buf) {
-    let dv = sdlookup(diskunit(bp.b_dev.get()));
+    let dv = sdlookup(diskunit(bp.dev()));
 
     'done: {
         let error = 'bad: {
@@ -706,10 +707,9 @@ pub fn sdstrategy(bp: &'static Buf) {
         };
 
         // bad:
-        bp.b_error.set(Some(error));
+        bp.set_error(Some(error));
         bp.set(B_ERROR);
-        bp.b_resid
-            .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+        bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
     }
 
     // done:
@@ -800,17 +800,17 @@ pub fn sdstart(xs: &'static ScsiXfer) {
     xs.timeout.set(60000);
     // SAFETY: `b_data` maps `b_bcount` bytes of the busy buffer, which nobody else touches
     // until `sd_buf_done` hands it back with `biodone` after the transfer completed.
-    unsafe { xs.set_data(bp.b_data.get(), bp.b_bcount.get() as i32) };
+    unsafe { xs.set_data(bp.data_ptr(), bp.bcount() as i32) };
     xs.done.set(Some(sd_buf_done));
     xs.cookie.set(ptr::from_ref(bp).cast_mut().cast());
     xs.bp.set(Some(bp));
 
     let (secno, nsecs) = sc.sc_dk.with_label(|lp| {
         let lp = lp.unwrap_or(&ZERO_LABEL);
-        let p = &lp.d_partitions[diskpart(bp.b_dev.get()) as usize];
-        let secno = dl_getpoffset(p) + dl_blktosec(lp, bp.b_blkno.get() as u64);
+        let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
+        let secno = dl_getpoffset(p) + dl_blktosec(lp, bp.blkno() as u64);
         let nsecs = howmany(
-            usize::try_from(bp.b_bcount.get()).unwrap_or(0),
+            usize::try_from(bp.bcount()).unwrap_or(0),
             lp.d_secsize as usize,
         ) as u32;
         (secno, nsecs)
@@ -855,9 +855,9 @@ pub fn sd_buf_done(xs: &'static ScsiXfer) {
     };
 
     let ok = |bp: &Buf| {
-        bp.b_error.set(None);
+        bp.set_error(None);
         bp.clr(B_ERROR);
-        bp.b_resid.set(xs.resid.get());
+        bp.set_resid(xs.resid.get());
     };
 
     // `None`: done; `Some(true)`: go to `retry`; `Some(false)`: the default case.
@@ -876,7 +876,7 @@ pub fn sd_buf_done(xs: &'static ScsiXfer) {
                 }
                 Err(error) => {
                     if error != ERESTART {
-                        bp.b_error.set(Some(error));
+                        bp.set_error(Some(error));
                         bp.set(B_ERROR);
                         xs.retries.set(0);
                     }
@@ -908,18 +908,17 @@ pub fn sd_buf_done(xs: &'static ScsiXfer) {
             }
         }
         // FALLTHROUGH, default:
-        if bp.b_error.get().is_none() {
-            bp.b_error.set(Some(EIO));
+        if bp.error().is_none() {
+            bp.set_error(Some(EIO));
         }
         bp.set(B_ERROR);
-        bp.b_resid
-            .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+        bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
     }
 
     disk_unbusy(
         &sc.sc_dk,
-        bp.b_bcount.get() - xs.resid.get() as i64,
-        bp.b_blkno.get(),
+        bp.bcount() - xs.resid.get() as i64,
+        bp.blkno(),
         bp.isset(B_READ),
     );
 
@@ -931,7 +930,7 @@ pub fn sd_buf_done(xs: &'static ScsiXfer) {
 
 /// `sdminphys`: trims a transfer to what the device and its adapter can do.
 pub fn sdminphys(bp: &Buf) {
-    let Some(dv) = sdlookup(diskunit(bp.b_dev.get())) else {
+    let Some(dv) = sdlookup(diskunit(bp.dev())) else {
         return; // XXX - right way to fail this?
     };
     let sc = sd_softc(dv);
@@ -952,8 +951,8 @@ pub fn sdminphys(bp: &Buf) {
             let secsize = sc.sc_dk.with_label(|lp| lp.map_or(0, |lp| lp.d_secsize));
             let max = i64::from(secsize) * 0xff;
 
-            if bp.b_bcount.get() > max {
-                bp.b_bcount.set(max);
+            if bp.bcount() > max {
+                bp.set_bcount(max);
             }
         }
 
@@ -2378,10 +2377,10 @@ mod tests {
     fn test_buf(flags: i64, blkno: Daddr, bcount: usize) -> &'static Buf {
         let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
         let data: &'static mut [u8] = Box::leak(vec![0u8; bcount].into_boxed_slice());
-        bp.b_flags.set(flags);
-        bp.b_blkno.set(blkno);
-        bp.b_bcount.set(bcount as i64);
-        bp.b_data.set(data.as_mut_ptr());
+        bp.set_flags(flags);
+        bp.set_blkno(blkno);
+        bp.set_bcount(bcount as i64);
+        bp.set_data_ptr(data.as_mut_ptr());
         bp
     }
 
@@ -2439,10 +2438,10 @@ mod tests {
         let bp = test_buf(B_READ, 0, 1024);
         start(sc, bp);
         assert!(bp.isset(B_DONE) && !bp.isset(B_ERROR));
-        assert_eq!(bp.b_resid.get(), 512);
-        assert_eq!(bp.b_error.get(), None);
+        assert_eq!(bp.resid(), 512);
+        assert_eq!(bp.error(), None);
         // SAFETY: the test's buffer, done.
-        assert_eq!(unsafe { *bp.b_data.get() }, 0x5a);
+        assert_eq!(unsafe { *bp.data_ptr() }, 0x5a);
 
         // Timeouts are retried SCSI_RETRIES times, then fail with EIO and nothing done.
         let replies = (0..=SCSI_RETRIES)
@@ -2453,15 +2452,15 @@ mod tests {
         start(sc, bp);
         assert_eq!(sent().len(), SCSI_RETRIES as usize + 1);
         assert!(bp.isset(B_ERROR));
-        assert_eq!(bp.b_error.get(), Some(EIO));
-        assert_eq!(bp.b_resid.get(), 512);
+        assert_eq!(bp.error(), Some(EIO));
+        assert_eq!(bp.resid(), 512);
 
         // A driver error is not retried.
         script(vec![Reply::Error(XS_DRIVER_STUFFUP)]);
         let bp = test_buf(B_WRITE, 0, 512);
         start(sc, bp);
         assert_eq!(sent().len(), 1);
-        assert_eq!(bp.b_error.get(), Some(EIO));
+        assert_eq!(bp.error(), Some(EIO));
 
         // A medium error is the sense's errno, not retried.
         let mut sense = ScsiSenseData::new();
@@ -2473,8 +2472,8 @@ mod tests {
         start(sc, bp);
         assert_eq!(sent().len(), 1);
         assert!(bp.isset(B_ERROR));
-        assert_eq!(bp.b_error.get(), Some(EIO));
-        assert_eq!(bp.b_resid.get(), 512);
+        assert_eq!(bp.error(), Some(EIO));
+        assert_eq!(bp.resid(), 512);
         teardown();
     }
 

@@ -1400,9 +1400,9 @@ pub fn nfs_clearcommit(mp: &Mount) {
                 continue 'restart;
             }
             for bp in vp.v_dirtyblkhd.iter() {
-                let flags = bp.b_flags.get();
+                let flags = bp.flags();
                 if flags & (B_BUSY | B_DELWRI | B_NEEDCOMMIT) == B_DELWRI | B_NEEDCOMMIT {
-                    bp.b_flags.set(flags & !B_NEEDCOMMIT);
+                    bp.set_flags(flags & !B_NEEDCOMMIT);
                 }
             }
         }
@@ -1438,8 +1438,8 @@ pub fn nfs_merge_commit_ranges(vp: &Vnode) {
 /// The byte range of a buffer's dirty data: `b_blkno * DEV_BSIZE` to that plus
 /// `b_dirtyend`.
 fn commit_range(bp: &Buf) -> (Off, Off) {
-    let lo = bp.b_blkno.get() * DEV_BSIZE as Off;
-    (lo, lo + Off::from(bp.b_dirtyend.get()))
+    let lo = bp.blkno() * DEV_BSIZE as Off;
+    (lo, lo + Off::from(bp.dirtyend()))
 }
 
 /// `nfs_in_committed_range(vp, bp)`: whether the buffer's dirty data was committed.
@@ -2076,8 +2076,8 @@ pub(crate) mod tests {
     fn commit_ranges() {
         let (vp, np, _) = nfs_vnode(VREG);
         let bp = Buf::new();
-        bp.b_blkno.set(2);
-        bp.b_dirtyend.set(100);
+        bp.set_blkno(2);
+        bp.set_dirtyend(100);
         let lo = 2 * DEV_BSIZE as Off;
         assert!(!nfs_in_tobecommitted_range(vp, &bp));
         nfs_add_tobecommitted_range(vp, &bp);
@@ -2090,8 +2090,8 @@ pub(crate) mod tests {
         // A second buffer further on widens the committed range; deleting the first leaves the
         // second's part.
         let bp2 = Buf::new();
-        bp2.b_blkno.set(10);
-        bp2.b_dirtyend.set(512);
+        bp2.set_blkno(10);
+        bp2.set_dirtyend(512);
         nfs_add_committed_range(vp, &bp2);
         assert_eq!(np.n_pushedhi.get(), 10 * DEV_BSIZE as Off + 512);
         nfs_del_committed_range(vp, &bp);

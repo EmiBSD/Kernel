@@ -97,6 +97,7 @@ use core::ptr::NonNull;
 
 use crate::kern::subr_prf::panic;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::param::{DEV_BSIZE, howmany};
 use crate::sys::types::{Daddr, Off};
 use crate::ufs::ufs::dinode::{NDADDR, Ufsino};
@@ -600,8 +601,8 @@ impl<'a> CgBuf<'a> {
     /// The caller owns the busy, mapped buffer (as `bread` returns it) for `'a`, nothing
     /// else reaches its data meanwhile, and it holds at least `size_of::<Cg>()` bytes.
     pub unsafe fn new(bp: &'a Buf) -> Self {
-        let len = usize::try_from(bp.b_bcount.get()).unwrap_or(0);
-        let Some(base) = NonNull::new(bp.b_data.get()) else {
+        let len = usize::try_from(bp.bcount()).unwrap_or(0);
+        let Some(base) = NonNull::new(bp.data_ptr()) else {
             panic(format_args!("CgBuf: unmapped buffer"));
         };
         if len < size_of::<Cg>() {

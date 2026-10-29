@@ -447,7 +447,7 @@ pub fn updatefats(pmp: &Msdosfsmount, bp: &'static Buf, mut fatbn: u32) {
         for _ in 1..pmp.pm_FATs() {
             fatbn = fatbn.wrapping_add(pmp.pm_FATsecs.get());
             // getblk() never fails
-            let bcount = bp.b_bcount.get();
+            let bcount = bp.bcount();
             let bpn = getblk_wait(pmp.devvp(), Daddr::from(fatbn), bcount as i32);
             let n = bcount as usize;
             // SAFETY: both buffers are busy for this function (`bpn` from `getblk`, `bp` from
@@ -1014,13 +1014,12 @@ pub fn extendfile(
                     );
                     frcn += 1;
                     // Do the bmap now, as in msdosfs_write.
-                    let mut blkno = bp.b_blkno.get();
-                    if pcbmap(dep, bp.b_lblkno.get() as u32, Some(&mut blkno), None, None).is_err()
-                    {
+                    let mut blkno = bp.blkno();
+                    if pcbmap(dep, bp.lblkno() as u32, Some(&mut blkno), None, None).is_err() {
                         blkno = -1;
                     }
-                    bp.b_blkno.set(blkno);
-                    if bp.b_blkno.get() == -1 {
+                    bp.set_blkno(blkno);
+                    if bp.blkno() == -1 {
                         panic(format_args!("extendfile: pcbmap"));
                     }
                     bp

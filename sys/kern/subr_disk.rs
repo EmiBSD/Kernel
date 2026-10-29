@@ -134,6 +134,7 @@ use crate::net::if_::{if_addgroup, if_put, if_unit};
 use crate::nfs::nfs_boot::set_nfsbootdevname;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfs_vfsops::nfs_mountroot;
+
 use crate::sys::buf::{B_BUSY, B_DONE, B_ERROR, B_RAW, B_READ, B_WRITE, Buf};
 use crate::sys::conf::SWDEVT;
 use crate::sys::conf::{DevTypeOpen, DevTypeStrategy};
@@ -408,9 +409,9 @@ pub fn readdisksector(
     lp: &Disklabel,
     sector: u64,
 ) -> Result<(), Errno> {
-    bp.b_blkno.set(dl_sectoblk(lp, sector) as Daddr);
-    bp.b_bcount.set(i64::from(lp.d_secsize));
-    bp.b_error.set(None);
+    bp.set_blkno(dl_sectoblk(lp, sector) as Daddr);
+    bp.set_bcount(i64::from(lp.d_secsize));
+    bp.set_error(None);
     bp.clr(B_READ | B_WRITE | B_DONE | B_ERROR);
     bp.set(B_BUSY | B_READ | B_RAW);
 
@@ -486,7 +487,7 @@ pub fn readdoslabel(
 
     partoff += DOS_LABELSECTOR;
     if readdisksector(bp, strat, lp, dl_blktosec(lp, partoff as u64)).is_err() {
-        return Err(bp.b_error.get().unwrap_or(Errno::EIO));
+        return Err(bp.error().unwrap_or(Errno::EIO));
     }
 
     let mut rlp = Disklabel::from_bytes(&buf_bytes::<DISKLABEL_SIZE>(
@@ -494,7 +495,7 @@ pub fn readdoslabel(
         dl_blkoffset(lp, partoff as u64) as usize,
     ));
     let (bstart, bend) = (dl_getbstart(&rlp), dl_getbend(&rlp));
-    checkdisklabel(bp.b_dev.get(), &mut rlp, lp, bstart, bend)
+    checkdisklabel(bp.dev(), &mut rlp, lp, bstart, bend)
 }
 
 /// Return the index into `dp[]` of the EFI GPT (0xEE) partition, or `None` if no such
@@ -1032,9 +1033,9 @@ pub fn setdisklabel(olp: &mut Disklabel, nlp: &mut Disklabel, openmask: u64) -> 
 /// partition. Adjust transfer if needed, and signal errors or early completion: `false`
 /// means the buffer is finished (`b_resid` set, and `B_ERROR` on an error).
 pub fn bounds_check_with_label(bp: &Buf, lp: &Disklabel) -> bool {
-    let p = &lp.d_partitions[diskpart(bp.b_dev.get()) as usize];
-    let blkno = bp.b_blkno.get();
-    let bcount = bp.b_bcount.get();
+    let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
+    let blkno = bp.blkno();
+    let bcount = bp.bcount();
 
     let ok = 'check: {
         // Avoid division by zero, negative offsets, and negative sizes.
@@ -1064,7 +1065,7 @@ pub fn bounds_check_with_label(bp: &Buf, lp: &Disklabel) -> bool {
         let mut sz = bcount >> DEV_BSHIFT;
         if sz > partblocks - blkno {
             sz = partblocks - blkno;
-            bp.b_bcount.set(sz << DEV_BSHIFT);
+            bp.set_bcount(sz << DEV_BSHIFT);
         }
 
         Ok(true)
@@ -1074,12 +1075,11 @@ pub fn bounds_check_with_label(bp: &Buf, lp: &Disklabel) -> bool {
         Ok(true) => return true,
         Ok(false) => {}
         Err(()) => {
-            bp.b_error.set(Some(Errno::EINVAL));
+            bp.set_error(Some(Errno::EINVAL));
             bp.set(B_ERROR);
         }
     }
-    bp.b_resid
-        .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+    bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
     false
 }
 
@@ -1095,8 +1095,8 @@ pub fn bounds_check_with_label(bp: &Buf, lp: &Disklabel) -> bool {
 /// The message should be completed (with at least a newline) with printf or addlog,
 /// respectively. There is no trailing space.
 pub fn diskerr(bp: &Buf, dname: &str, what: &str, pri: i32, blkdone: i32, lp: Option<&Disklabel>) {
-    let unit = diskunit(bp.b_dev.get());
-    let part = diskpart(bp.b_dev.get());
+    let unit = diskunit(bp.dev());
+    let part = diskpart(bp.dev());
     let partname = dl_partnum2name(part as usize).map_or('?', char::from);
     let pr = |args: fmt::Arguments<'_>| {
         if pri != LOG_PRINTF {
@@ -1113,8 +1113,8 @@ pub fn diskerr(bp: &Buf, dname: &str, what: &str, pri: i32, blkdone: i32, lp: Op
         "{dname}{unit}{partname}: {what} {}ing fsbn ",
         if bp.isset(B_READ) { "read" } else { "writ" }
     ));
-    let bcount = bp.b_bcount.get();
-    let mut sn = bp.b_blkno.get();
+    let bcount = bp.bcount();
+    let mut sn = bp.blkno();
     if bcount <= DEV_BSIZE as i64 {
         pr(format_args!("{sn}"));
     } else {
@@ -1124,8 +1124,8 @@ pub fn diskerr(bp: &Buf, dname: &str, what: &str, pri: i32, blkdone: i32, lp: Op
         }
         pr(format_args!(
             "{}-{}",
-            bp.b_blkno.get(),
-            bp.b_blkno.get() + (bcount - 1) / DEV_BSIZE as i64
+            bp.blkno(),
+            bp.blkno() + (bcount - 1) / DEV_BSIZE as i64
         ));
     }
     if let Some(lp) = lp
@@ -1929,6 +1929,7 @@ mod tests {
     use super::*;
     use crate::kern::vfs_bio::biodone;
     use crate::machine::intr::{splbio, splx};
+    use crate::sys::buf::BufLegacy;
     use crate::sys::disklabel::{DOSPARTOFF, DOSPTYP_FAT32, FS_SWAP};
 
     /// The in-memory disk the strategy below reads and writes, in `DEV_BSIZE` sectors.
@@ -1936,12 +1937,12 @@ mod tests {
 
     /// A strategy over `IMG`: a synchronous transfer at `b_blkno`, then `biodone`.
     fn img_strategy(bp: &'static Buf) {
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let mut img = IMG.lock().unwrap_or_else(|e| e.into_inner());
             if off + len > img.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
@@ -1951,7 +1952,7 @@ mod tests {
                 } else {
                     img[off..off + len].copy_from_slice(data);
                 }
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();
@@ -1965,8 +1966,8 @@ mod tests {
         *IMG.lock().unwrap_or_else(|e| e.into_inner()) = vec![0u8; sectors * DEV_BSIZE];
         let data: &'static mut [u8; 4096] = Box::leak(Box::new([0u8; 4096]));
         let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
-        bp.b_data.set(data.as_mut_ptr());
-        bp.b_dev.set(makediskdev(17, 0, RAW_PART));
+        bp.set_data_ptr(data.as_mut_ptr());
+        bp.set_dev(makediskdev(17, 0, RAW_PART));
         (g, bp)
     }
 
@@ -2088,26 +2089,26 @@ mod tests {
     fn bounds_check_truncates_and_rejects() {
         let lp = label(64);
         let bp = Buf::new();
-        bp.b_dev.set(makediskdev(17, 0, 0));
+        bp.set_dev(makediskdev(17, 0, 0));
 
-        bp.b_blkno.set(60);
-        bp.b_bcount.set(8 * 512);
+        bp.set_blkno(60);
+        bp.set_bcount(8 * 512);
         assert!(bounds_check_with_label(&bp, &lp));
-        assert_eq!(bp.b_bcount.get(), 4 * 512); // truncated at the end of `a`
+        assert_eq!(bp.bcount(), 4 * 512); // truncated at the end of `a`
 
-        bp.b_blkno.set(64);
-        bp.b_bcount.set(512);
+        bp.set_blkno(64);
+        bp.set_bcount(512);
         assert!(!bounds_check_with_label(&bp, &lp)); // EOF
         assert!(!bp.isset(B_ERROR));
-        assert_eq!(bp.b_resid.get(), 512);
+        assert_eq!(bp.resid(), 512);
 
-        bp.b_blkno.set(65);
+        bp.set_blkno(65);
         assert!(!bounds_check_with_label(&bp, &lp));
         assert!(bp.isset(B_ERROR));
-        assert_eq!(bp.b_error.get(), Some(Errno::EINVAL));
+        assert_eq!(bp.error(), Some(Errno::EINVAL));
 
         let bp = Buf::new();
-        bp.b_bcount.set(100); // not a whole sector
+        bp.set_bcount(100); // not a whole sector
         assert!(!bounds_check_with_label(&bp, &lp));
         assert!(bp.isset(B_ERROR));
     }

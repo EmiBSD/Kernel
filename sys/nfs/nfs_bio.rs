@@ -125,6 +125,7 @@ use crate::nfs::nfsnode::{
 use crate::nfs::nfsproto::{
     NFS_MAXPATHLEN, NFSV3WRITE_DATASYNC, NFSV3WRITE_FILESYNC, NFSV3WRITE_UNSTABLE,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{
     B_ASYNC, B_DELWRI, B_DONE, B_EINTR, B_ERROR, B_INVAL, B_NEEDCOMMIT, B_NOCACHE, B_PHYS, B_READ,
     B_WRITEINPROG, Buf,
@@ -159,7 +160,7 @@ fn getattr_proc(p: Option<&Proc>) -> &Proc {
 
 /// `bp->b_proc = p`.
 fn set_b_proc(bp: &Buf, p: Option<&Proc>) {
-    bp.b_proc.set(p.map_or(ptr::null(), ptr::from_ref));
+    bp.set_proc_ptr(p.map_or(ptr::null(), ptr::from_ref));
 }
 
 /// The cache block of a file offset for blocks of `biosize` bytes (a power of two):
@@ -314,12 +315,9 @@ pub fn nfs_bioread(
                     if offdiff < Off::from(n) {
                         n = offdiff as i32;
                     }
-                    if not_readin
-                        && n > 0
-                        && (on < bp.b_validoff.get() || (on + n) > bp.b_validend.get())
-                    {
+                    if not_readin && n > 0 && (on < bp.validoff() || (on + n) > bp.validend()) {
                         bp.set(B_INVAFTERWRITE);
-                        if bp.b_dirtyend.get() > 0 {
+                        if bp.dirtyend() > 0 {
                             if !bp.isset(B_DELWRI) {
                                 panic(format_args!("nfsbioread"));
                             }
@@ -331,10 +329,10 @@ pub fn nfs_bioread(
                         }
                         continue;
                     }
-                    let diff = if on >= bp.b_validend.get() {
+                    let diff = if on >= bp.validend() {
                         0
                     } else {
-                        bp.b_validend.get() - on
+                        bp.validend() - on
                     };
                     if diff < n {
                         n = diff;
@@ -355,7 +353,7 @@ pub fn nfs_bioread(
                         return Err(error);
                     }
                 }
-                let n = min(uio.uio_resid, NFS_MAXPATHLEN.wrapping_sub(bp.b_resid.get())) as i32;
+                let n = min(uio.uio_resid, NFS_MAXPATHLEN.wrapping_sub(bp.resid())) as i32;
                 (bp, 0, n)
             }
             t => panic(format_args!("nfsbioread: type {:x} unexpected", t as i32)),
@@ -470,9 +468,7 @@ pub fn nfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                 // If the new write will leave a contiguous dirty area, just update the
                 // b_dirtyoff and b_dirtyend, otherwise force a write rpc of the old dirty
                 // area.
-                if bp.b_dirtyend.get() > 0
-                    && (on > bp.b_dirtyend.get() || (on + n) < bp.b_dirtyoff.get())
-                {
+                if bp.dirtyend() > 0 && (on > bp.dirtyend() || (on + n) < bp.dirtyoff()) {
                     set_b_proc(bp, p);
                     if VOP_BWRITE(bp) == Err(Errno::EINTR) {
                         break 'out Err(Errno::EINTR);
@@ -493,19 +489,14 @@ pub fn nfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                 }
             }
             let (dirtyoff, dirtyend, validoff, validend) = nfs_bufranges(
-                (
-                    bp.b_dirtyoff.get(),
-                    bp.b_dirtyend.get(),
-                    bp.b_validoff.get(),
-                    bp.b_validend.get(),
-                ),
+                (bp.dirtyoff(), bp.dirtyend(), bp.validoff(), bp.validend()),
                 on,
                 n,
             );
-            bp.b_dirtyoff.set(dirtyoff);
-            bp.b_dirtyend.set(dirtyend);
-            bp.b_validoff.set(validoff);
-            bp.b_validend.set(validend);
+            bp.set_dirtyoff(dirtyoff);
+            bp.set_dirtyend(dirtyend);
+            bp.set_validoff(validoff);
+            bp.set_validend(validend);
 
             wrotedta = true;
 
@@ -698,7 +689,7 @@ fn nfs_sysuio<'a>(
 /// `nfs_doio(bp, p)`: do an I/O operation to/from a cache block. This may be called
 /// synchronously or from an nfsiod (`p` is then `None`).
 pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("nfs_doio: buffer {:p} without a vnode", bp));
     };
     let np = VTONFS(vp);
@@ -708,18 +699,18 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
         iov_base: ptr::null_mut(),
         iov_len: 0,
     }];
-    let blkoff = bp.b_blkno.get() << DEV_BSHIFT;
+    let blkoff = bp.blkno() << DEV_BSHIFT;
 
     // Historically, paging was done with physio, but no more.
     let resid = if bp.isset(B_PHYS) {
-        let len = bp.b_bcount.get() as usize;
+        let len = bp.bcount() as usize;
         // mapping was done by vmapbuf()
         let rw = if bp.isset(B_READ) {
             UioRw::UIO_READ
         } else {
             UioRw::UIO_WRITE
         };
-        let mut uio = nfs_sysuio(&mut io, bp.b_data.get(), len, blkoff, rw, p);
+        let mut uio = nfs_sysuio(&mut io, bp.data_ptr(), len, blkoff, rw, p);
         if bp.isset(B_READ) {
             NFSSTATS.read_physios.fetch_add(1, Ordering::Relaxed);
             error = nfs_readrpc(vp, &mut uio);
@@ -730,12 +721,12 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
         }
         if let Err(e) = error {
             bp.set(B_ERROR);
-            bp.b_error.set(Some(e));
+            bp.set_error(Some(e));
         }
         uio.uio_resid
     } else if bp.isset(B_READ) {
-        let len = bp.b_bcount.get() as usize;
-        let mut uio = nfs_sysuio(&mut io, bp.b_data.get(), len, 0, UioRw::UIO_READ, p);
+        let len = bp.bcount() as usize;
+        let mut uio = nfs_sysuio(&mut io, bp.data_ptr(), len, 0, UioRw::UIO_READ, p);
         match vp.v_type.get() {
             VREG => {
                 uio.uio_offset = blkoff;
@@ -744,17 +735,13 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
                 BCSTATS.numreads.fetch_add(1, Ordering::Relaxed);
                 error = nfs_readrpc(vp, &mut uio);
                 if error.is_ok() {
-                    bp.b_validoff.set(0);
+                    bp.set_validoff(0);
                     if uio.uio_resid != 0 {
                         // If len > 0, there is a hole in the file and no writes after the
                         // hole have been pushed to the server yet. Just zero fill the rest
                         // of the valid area.
-                        let (zero, validend) = nfs_shortread(
-                            bp.b_bcount.get(),
-                            uio.uio_resid,
-                            np.n_size.get(),
-                            blkoff,
-                        );
+                        let (zero, validend) =
+                            nfs_shortread(bp.bcount(), uio.uio_resid, np.n_size.get(), blkoff);
                         if zero > 0 {
                             let diff = validend as usize - zero;
                             // SAFETY: the buffer is busy for this I/O and mapped; the read
@@ -762,9 +749,9 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
                             let data = unsafe { bp.data() };
                             data[diff..diff + zero].fill(0);
                         }
-                        bp.b_validend.set(validend);
+                        bp.set_validend(validend);
                     } else {
-                        bp.b_validend.set(bp.b_bcount.get() as i32);
+                        bp.set_validend(bp.bcount() as i32);
                     }
                 }
                 if let Some(p) = p
@@ -789,19 +776,19 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
         }
         if let Err(e) = error {
             bp.set(B_ERROR);
-            bp.b_error.set(Some(e));
+            bp.set_error(Some(e));
         }
         uio.uio_resid
     } else {
-        let dirtyoff = bp.b_dirtyoff.get();
-        let len = (bp.b_dirtyend.get() - dirtyoff) as usize;
-        let offset = bp.b_blkno.get() * DEV_BSIZE as Daddr + Off::from(dirtyoff);
-        let base = bp.b_data.get().wrapping_add(dirtyoff as usize);
+        let dirtyoff = bp.dirtyoff();
+        let len = (bp.dirtyend() - dirtyoff) as usize;
+        let offset = bp.blkno() * DEV_BSIZE as Daddr + Off::from(dirtyoff);
+        let base = bp.data_ptr().wrapping_add(dirtyoff as usize);
         let mut uio = nfs_sysuio(&mut io, base, len, offset, UioRw::UIO_WRITE, p);
         NFSSTATS.write_bios.fetch_add(1, Ordering::Relaxed);
         BCSTATS.pendingwrites.fetch_add(1, Ordering::Relaxed);
         BCSTATS.numwrites.fetch_add(1, Ordering::Relaxed);
-        let mut iomode = if bp.b_flags.get() & (B_ASYNC | B_NEEDCOMMIT | B_NOCACHE) == B_ASYNC {
+        let mut iomode = if bp.flags() & (B_ASYNC | B_NEEDCOMMIT | B_NOCACHE) == B_ASYNC {
             NFSV3WRITE_UNSTABLE
         } else {
             NFSV3WRITE_FILESYNC
@@ -840,16 +827,16 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
         } else {
             if let Err(e) = error {
                 bp.set(B_ERROR);
-                bp.b_error.set(Some(e));
+                bp.set_error(Some(e));
                 np.n_error.set(e as i32);
                 np.set(NWRITEERR);
             }
-            bp.b_dirtyoff.set(0);
-            bp.b_dirtyend.set(0);
+            bp.set_dirtyoff(0);
+            bp.set_dirtyend(0);
         }
         uio.uio_resid
     };
-    bp.b_resid.set(resid);
+    bp.set_resid(resid);
     if must_commit && let Some(mp) = vp.v_mount.get() {
         nfs_clearcommit(mp);
     }

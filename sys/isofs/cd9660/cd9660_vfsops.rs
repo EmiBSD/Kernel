@@ -618,14 +618,13 @@ pub fn iso_disklabelspoof(
     lp: &mut Disklabel,
 ) -> Result<(), Errno> {
     let bp = geteblk(ISO_DEFAULT_BLOCK_SIZE);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
 
     let error: Result<(), Errno> = 'out: {
         let mut vdtype = 0;
         for iso_blknum in 16..100 {
-            bp.b_blkno
-                .set((iso_blknum * btodb(ISO_DEFAULT_BLOCK_SIZE)) as i64);
-            bp.b_bcount.set(ISO_DEFAULT_BLOCK_SIZE as i64);
+            bp.set_blkno((iso_blknum * btodb(ISO_DEFAULT_BLOCK_SIZE)) as i64);
+            bp.set_bcount(ISO_DEFAULT_BLOCK_SIZE as i64);
             bp.clr(B_READ | B_WRITE | B_DONE);
             bp.set(B_BUSY | B_READ | B_RAW);
 
@@ -1093,12 +1092,12 @@ mod tests {
 
     /// A synchronous transfer between the buffer and `DISK` at `b_blkno`, then `biodone`.
     fn transfer(bp: &'static Buf) {
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let mut d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
@@ -1108,7 +1107,7 @@ mod tests {
                 } else {
                     d[off..off + len].copy_from_slice(data);
                 }
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();

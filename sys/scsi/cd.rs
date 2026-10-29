@@ -179,6 +179,7 @@ use crate::scsi::scsiconf::{
     ScsiAttachArgs, ScsiInquiryPattern, ScsiLink, ScsiXfer, ScsiXshandler, TEST_READY_RETRIES,
     XS_BUSY, XS_NOERROR, XS_SENSE, XS_SHORTSENSE, XS_TIMEOUT, scsi_inqmatch, sid_ansii_rev,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, BUFQ_DEFAULT, Buf, Bufq};
 use crate::sys::cdio::{
     CD_LBA_FORMAT, CD_MSF_FORMAT, CDIOCALLOW, CDIOCCLOSE, CDIOCCLRDEBUG, CDIOCEJECT, CDIOCGETVOL,
@@ -1215,7 +1216,7 @@ static ZERO_LABEL: Disklabel = Disklabel::zeroed();
 /// can understand. The transfer is described by a buf and will include only one physical
 /// transfer.
 pub fn cdstrategy(bp: &'static Buf) {
-    let dv = cdlookup(diskunit(bp.b_dev.get()));
+    let dv = cdlookup(diskunit(bp.dev()));
 
     'done: {
         let error = 'bad: {
@@ -1256,10 +1257,9 @@ pub fn cdstrategy(bp: &'static Buf) {
         };
 
         // bad:
-        bp.b_error.set(Some(error));
+        bp.set_error(Some(error));
         bp.set(B_ERROR);
-        bp.b_resid
-            .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+        bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
     }
 
     // done:
@@ -1345,17 +1345,17 @@ pub fn cdstart(xs: &'static ScsiXfer) {
     xs.timeout.set(30000);
     // SAFETY: `b_data` maps `b_bcount` bytes of the busy buffer, which nobody else touches
     // until `cd_buf_done` hands it back with `biodone` after the transfer completed.
-    unsafe { xs.set_data(bp.b_data.get(), bp.b_bcount.get() as i32) };
+    unsafe { xs.set_data(bp.data_ptr(), bp.bcount() as i32) };
     xs.done.set(Some(cd_buf_done));
     xs.cookie.set(ptr::from_ref(bp).cast_mut().cast());
     xs.bp.set(Some(bp));
 
     let (secno, nsecs) = sc.sc_dk.with_label(|lp| {
         let lp = lp.unwrap_or(&ZERO_LABEL);
-        let p = &lp.d_partitions[diskpart(bp.b_dev.get()) as usize];
-        let secno = dl_getpoffset(p) + dl_blktosec(lp, bp.b_blkno.get() as u64);
+        let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
+        let secno = dl_getpoffset(p) + dl_blktosec(lp, bp.blkno() as u64);
         let nsecs = howmany(
-            usize::try_from(bp.b_bcount.get()).unwrap_or(0),
+            usize::try_from(bp.bcount()).unwrap_or(0),
             lp.d_secsize as usize,
         ) as u32;
         (secno, nsecs)
@@ -1394,9 +1394,9 @@ pub fn cd_buf_done(xs: &'static ScsiXfer) {
     };
 
     let ok = |bp: &Buf| {
-        bp.b_error.set(None);
+        bp.set_error(None);
         bp.clr(B_ERROR);
-        bp.b_resid.set(xs.resid.get());
+        bp.set_resid(xs.resid.get());
     };
 
     // `None`: done; `Some(true)`: go to `retry`; `Some(false)`: the default case.
@@ -1445,16 +1445,15 @@ pub fn cd_buf_done(xs: &'static ScsiXfer) {
             }
         }
         // FALLTHROUGH, default:
-        bp.b_error.set(Some(EIO));
+        bp.set_error(Some(EIO));
         bp.set(B_ERROR);
-        bp.b_resid
-            .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+        bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
     }
 
     disk_unbusy(
         &sc.sc_dk,
-        bp.b_bcount.get() - xs.resid.get() as i64,
-        bp.b_blkno.get(),
+        bp.bcount() - xs.resid.get() as i64,
+        bp.blkno(),
         bp.isset(B_READ),
     );
 
@@ -1466,7 +1465,7 @@ pub fn cd_buf_done(xs: &'static ScsiXfer) {
 
 /// `cdminphys`: trims a transfer to what the device and its adapter can do.
 pub fn cdminphys(bp: &Buf) {
-    let Some(dv) = cdlookup(diskunit(bp.b_dev.get())) else {
+    let Some(dv) = cdlookup(diskunit(bp.dev())) else {
         return;
     };
     let sc = cd_softc(dv);
@@ -1485,8 +1484,8 @@ pub fn cdminphys(bp: &Buf) {
         let secsize = sc.sc_dk.with_label(|lp| lp.map_or(0, |lp| lp.d_secsize));
         let max = i64::from(secsize) * 0xff;
 
-        if bp.b_bcount.get() > max {
-            bp.b_bcount.set(max);
+        if bp.bcount() > max {
+            bp.set_bcount(max);
         }
     }
 

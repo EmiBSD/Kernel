@@ -97,6 +97,7 @@ use crate::ntfs::ntfs_subr::{
     Rdata, ntfs_frele, ntfs_isnamepermitted, ntfs_ntget, ntfs_ntlookupfile, ntfs_ntput,
     ntfs_ntreaddir, ntfs_nttimetounix, ntfs_ntvattrget, ntfs_ntvattrrele, ntfs_readattr,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, B_READ, clrbuf};
 use crate::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN};
 use crate::sys::errno::Errno;
@@ -329,7 +330,7 @@ pub fn ntfs_print(ap: &mut VopPrintArgs) -> Result<(), Errno> {
 /// `ntfs_cntob(b_blkno)` into the buffer, zero past the end of the file.
 pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("ntfs_strategy: buffer without a vnode"));
     };
     let fp = VTOF(vp);
@@ -338,13 +339,13 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let mut error = Ok(());
 
     if bp.isset(B_READ) {
-        let boff = ntmp.ntfs_cntob(bp.b_blkno.get() as u64);
+        let boff = ntmp.ntfs_cntob(bp.blkno() as u64);
         if boff as u64 >= fp.f_size.get() {
             // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
             // mapped; the strategy owns it until biodone.
             unsafe { clrbuf(bp) };
         } else {
-            let bcount = bp.b_bcount.get() as u64;
+            let bcount = bp.bcount() as u64;
             let toread = bcount.min(fp.f_size.get() - boff as u64) as u32;
 
             // SAFETY: as above; the slice dies before biodone.
@@ -360,7 +361,7 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
                 &mut Rdata::Mem(&mut *data),
             ) {
                 printf(format_args!("ntfs_strategy: ntfs_readattr failed\n"));
-                bp.b_error.set(Some(e));
+                bp.set_error(Some(e));
                 bp.set(B_ERROR);
                 error = Err(e);
             }
@@ -370,7 +371,7 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
             }
         }
     } else {
-        bp.b_error.set(Some(Errno::EROFS));
+        bp.set_error(Some(Errno::EROFS));
         bp.set(B_ERROR);
         error = Err(Errno::EROFS);
     }
@@ -1243,18 +1244,18 @@ mod tests {
 
     /// A synchronous read of the image at `b_blkno`, then `biodone`.
     fn disk_io(bp: &'static Buf) {
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if !bp.isset(B_READ) || off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
                 let data = unsafe { bp.data() };
                 data.copy_from_slice(&d[off..off + len]);
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();

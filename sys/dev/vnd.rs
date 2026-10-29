@@ -122,6 +122,7 @@ use crate::machine::copy::{copyin, copyinstr};
 use crate::machine::cpu::curproc;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, Buf};
 use crate::sys::device::Device;
 use crate::sys::disk::Disk;
@@ -242,7 +243,7 @@ pub fn vndencryptbuf(sc: &VndSoftc, bp: &Buf, encrypt: bool) {
     // SAFETY: the buffer is busy and ours (the strategy routine's), mapped for `b_bcount`
     // bytes.
     let data = unsafe { bp.data() };
-    vndencrypt(sc, data, bp.b_blkno.get(), encrypt);
+    vndencrypt(sc, data, bp.blkno(), encrypt);
 }
 
 /// `vndattach(num)`: allocates `num` units; called by `main()` at boot time.
@@ -388,7 +389,7 @@ pub fn vndclose(dev: Dev, _flags: i32, mode: i32, _p: Option<&Proc>) -> Result<(
 
 /// `vndstrategy`: reads or writes the buffer's sectors from or to the file, synchronously.
 pub fn vndstrategy(bp: &'static Buf) {
-    let unit = diskunit(bp.b_dev.get());
+    let unit = diskunit(bp.dev());
 
     let label = vnd_softc(unit).and_then(|sc| {
         if sc.sc_flags.get() & VNF_HAVELABEL == 0 {
@@ -400,11 +401,10 @@ pub fn vndstrategy(bp: &'static Buf) {
 
     match label {
         None => {
-            bp.b_error.set(Some(Errno::ENXIO));
+            bp.set_error(Some(Errno::ENXIO));
             // bad:
             bp.set(B_ERROR);
-            bp.b_resid
-                .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+            bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
         }
         Some((sc, lp)) => vnd_transfer(sc, bp, &lp),
     }
@@ -425,13 +425,12 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
     //
     // We only do this for non-encrypted vnd, because encryption requires operating on
     // blocks at a time.
-    let origbcount = bp.b_bcount.get();
+    let origbcount = bp.bcount();
     if sc.sc_keyctx.get().is_none() {
         let secsize = i64::from(lp.d_secsize);
-        bp.b_bcount
-            .set(origbcount.wrapping_add(secsize - 1) & !(secsize - 1));
+        bp.set_bcount(origbcount.wrapping_add(secsize - 1) & !(secsize - 1));
         #[cfg(feature = "diagnostic")]
-        if bp.b_bcount.get() != origbcount
+        if bp.bcount() != origbcount
             && let Some(p) = curproc()
         {
             let pr = p.process();
@@ -441,26 +440,25 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
                 if bp.isset(B_READ) { "read" } else { "write" },
                 pr.ps_pid,
                 core::str::from_utf8(&pr.comm()).unwrap_or("?"),
-                bp.b_blkno.get(),
+                bp.blkno(),
                 origbcount
             ));
         }
     }
 
     if !bounds_check_with_label(bp, lp) {
-        bp.b_bcount.set(origbcount);
-        bp.b_resid.set(usize::try_from(origbcount).unwrap_or(0));
+        bp.set_bcount(origbcount);
+        bp.set_resid(usize::try_from(origbcount).unwrap_or(0));
         return;
     }
 
-    if origbcount < bp.b_bcount.get() {
-        bp.b_bcount.set(origbcount);
+    if origbcount < bp.bcount() {
+        bp.set_bcount(origbcount);
     }
 
-    let p = &lp.d_partitions[diskpart(bp.b_dev.get()) as usize];
+    let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
     let off = (dl_getpoffset(p) * u64::from(lp.d_secsize))
-        .wrapping_add((bp.b_blkno.get() as u64).wrapping_mul(DEV_BSIZE as u64))
-        as Off;
+        .wrapping_add((bp.blkno() as u64).wrapping_mul(DEV_BSIZE as u64)) as Off;
 
     if sc.sc_keyctx.get().is_some() && !bp.isset(B_READ) {
         vndencryptbuf(sc, bp, true);
@@ -476,13 +474,13 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
     } else {
         UioRw::UIO_WRITE
     };
-    let mut resid = bp.b_resid.get();
+    let mut resid = bp.resid();
     let error = match sc.sc_vp.get() {
         Some(vp) => vn_rdwr(
             rw,
             vp,
-            bp.b_data.get().cast::<c_void>(),
-            usize::try_from(bp.b_bcount.get()).unwrap_or(0),
+            bp.data_ptr().cast::<c_void>(),
+            usize::try_from(bp.bcount()).unwrap_or(0),
             off,
             UioSeg::UIO_SYSSPACE,
             IO_NOCACHE | IO_SYNC | IO_NOLIMIT,
@@ -493,8 +491,8 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
         // VNF_HAVELABEL is only set on a configured unit, which has its vnode.
         None => Err(Errno::ENXIO),
     };
-    bp.b_resid.set(resid);
-    bp.b_error.set(error.err());
+    bp.set_resid(resid);
+    bp.set_error(error.err());
     if error.is_err() {
         bp.set(B_ERROR);
     }
@@ -1027,10 +1025,10 @@ mod tests {
     fn buf(dev: Dev, blkno: Daddr, len: usize, read: bool, fill: u8) -> &'static Buf {
         let data: &'static mut Vec<u8> = Box::leak(Box::new(vec![fill; len]));
         let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
-        bp.b_data.set(data.as_mut_ptr());
-        bp.b_dev.set(dev);
-        bp.b_blkno.set(blkno);
-        bp.b_bcount.set(len as i64);
+        bp.set_data_ptr(data.as_mut_ptr());
+        bp.set_dev(dev);
+        bp.set_blkno(blkno);
+        bp.set_bcount(len as i64);
         bp.set(B_BUSY | if read { B_READ } else { B_WRITE });
         bp
     }
@@ -1038,7 +1036,7 @@ mod tests {
     /// The buffer's bytes.
     fn bytes(bp: &Buf) -> &'static [u8] {
         // SAFETY: the test's buffer of `b_bcount` bytes, leaked.
-        unsafe { core::slice::from_raw_parts(bp.b_data.get(), bp.b_bcount.get() as usize) }
+        unsafe { core::slice::from_raw_parts(bp.data_ptr(), bp.bcount() as usize) }
     }
 
     /// What `VNDIOCSET` does after opening the file, over a memfs file of `SECTORS` sectors
@@ -1124,8 +1122,8 @@ mod tests {
         let bp = buf(raw, 0, DEV_BSIZE, true, 0);
         vndstrategy(bp);
         assert!(bp.isset(B_DONE | B_ERROR));
-        assert_eq!(bp.b_error.get(), Some(Errno::ENXIO));
-        assert_eq!(bp.b_resid.get(), DEV_BSIZE);
+        assert_eq!(bp.error(), Some(Errno::ENXIO));
+        assert_eq!(bp.resid(), DEV_BSIZE);
 
         let mut data = vec![0u8; DISKLABEL_SIZE];
         assert_eq!(
@@ -1225,7 +1223,7 @@ mod tests {
         vndstrategy(bp);
         assert!(bp.isset(B_DONE));
         assert!(!bp.isset(B_ERROR));
-        assert_eq!(bp.b_resid.get(), 0);
+        assert_eq!(bp.resid(), 0);
         assert_eq!(
             bytes(bp),
             file(|f| f[2 * DEV_BSIZE..3 * DEV_BSIZE].to_vec())
@@ -1243,15 +1241,15 @@ mod tests {
         let bp = buf(raw, 0, 100, true, 0xee);
         vndstrategy(bp);
         assert!(!bp.isset(B_ERROR));
-        assert_eq!(bp.b_bcount.get(), 100);
-        assert_eq!(bp.b_resid.get(), 0);
+        assert_eq!(bp.bcount(), 100);
+        assert_eq!(bp.resid(), 0);
         assert_eq!(bytes(bp), file(|f| f[..100].to_vec()));
 
         // At the end of the disk: nothing transferred, no error.
         let bp = buf(raw, SECTORS as Daddr, DEV_BSIZE, true, 0xee);
         vndstrategy(bp);
         assert!(!bp.isset(B_ERROR));
-        assert_eq!(bp.b_resid.get(), DEV_BSIZE);
+        assert_eq!(bp.resid(), DEV_BSIZE);
 
         // The label ioctls.
         let mut data = vec![0u8; DISKLABEL_SIZE];

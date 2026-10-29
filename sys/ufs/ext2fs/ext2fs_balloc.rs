@@ -144,7 +144,7 @@ pub fn ext2fs_buf_alloc(
         ip.set_i_e2fs_block(bn as usize, newb.to_le());
         ip.set_flag(IN_CHANGE | IN_UPDATE);
         let bp = getblk_wait(vp, Daddr::from(bn), bsize);
-        bp.b_blkno.set(fsbtodb(fs, Daddr::from(newb)));
+        bp.set_blkno(fsbtodb(fs, Daddr::from(newb)));
         if flags & B_CLRBUF != 0 {
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(bp) };
@@ -182,7 +182,7 @@ pub fn ext2fs_buf_alloc(
             nalloc += 1;
             ip.i_e2fs_last_blk().set(newb);
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
-            bp.b_blkno.set(fsbtodb(fs, Daddr::from(newb)));
+            bp.set_blkno(fsbtodb(fs, Daddr::from(newb)));
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(bp) };
             // Write synchronously so that indirect blocks never point at garbage.
@@ -225,7 +225,7 @@ pub fn ext2fs_buf_alloc(
             nalloc += 1;
             ip.i_e2fs_last_blk().set(newb);
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
-            nbp.b_blkno.set(fsbtodb(fs, Daddr::from(nb)));
+            nbp.set_blkno(fsbtodb(fs, Daddr::from(nb)));
             // SAFETY: the buffer is ours (busy from getblk) and mapped.
             unsafe { clrbuf(nbp) };
             // Write synchronously so that indirect blocks never point at garbage.
@@ -272,7 +272,7 @@ pub fn ext2fs_buf_alloc(
                 bdwrite(bp);
             }
             let nbp = getblk_wait(vp, lbn, bsize);
-            nbp.b_blkno.set(fsbtodb(fs, Daddr::from(nb)));
+            nbp.set_blkno(fsbtodb(fs, Daddr::from(nb)));
             if flags & B_CLRBUF != 0 {
                 // SAFETY: the buffer is ours (busy from getblk) and mapped.
                 unsafe { clrbuf(nbp) };
@@ -289,7 +289,7 @@ pub fn ext2fs_buf_alloc(
             nbp
         } else {
             let nbp = getblk_wait(vp, lbn, bsize);
-            nbp.b_blkno.set(fsbtodb(fs, Daddr::from(nb)));
+            nbp.set_blkno(fsbtodb(fs, Daddr::from(nb)));
             nbp
         };
 

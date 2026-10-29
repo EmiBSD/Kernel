@@ -774,8 +774,8 @@ pub fn sdmmc_minphys(bp: &Buf, sl: &'static ScsiLink) {
 
     // limit to max. transfer size supported by card/host
     let limit = i64::from(sf.csd.get().sector_size) * sc.sc_max_xfer.get();
-    if sc.sc_max_xfer.get() != 0 && bp.b_bcount.get() > limit {
-        bp.b_bcount.set(limit);
+    if sc.sc_max_xfer.get() != 0 && bp.bcount() > limit {
+        bp.set_bcount(limit);
     } else {
         minphys(bp);
     }

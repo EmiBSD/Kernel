@@ -74,6 +74,7 @@ use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vops::VOP_STRATEGY;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_TEMP, M_WAITOK};
@@ -484,11 +485,11 @@ pub fn ffs_indirtrunc(
             .numreads
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         bp.set(B_READ);
-        if bp.b_bcount.get() > bp.b_bufsize.get() {
+        if bp.bcount() > bp.bufsize() {
             panic(format_args!("ffs_indirtrunc: bad buffer size"));
         }
-        bp.b_blkno.set(dbn);
-        if let Some(bvp) = bp.b_vp.get() {
+        bp.set_blkno(dbn);
+        if let Some(bvp) = bp.vp() {
             let _ = VOP_STRATEGY(bvp, bp);
         }
         error = biowait(bp);

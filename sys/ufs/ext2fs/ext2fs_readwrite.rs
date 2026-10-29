@@ -178,7 +178,7 @@ fn ext2_ind_read(
         // We should only get non-zero b_resid when an I/O error has occurred, which should
         // cause us to break above. However, if the short read did not cause an error, then
         // we want to ensure that we do not uiomove bad or uninitialized data.
-        size -= bp.b_resid.get() as i64;
+        size -= bp.resid() as i64;
         if size < xfersize {
             if size == 0 {
                 brelse(bp);
@@ -267,7 +267,7 @@ pub fn ext4_ext_read(
             brelse(bp);
             return Err(e);
         }
-        size -= bp.b_resid.get() as i64;
+        size -= bp.resid() as i64;
         if size < xfersize {
             if size == 0 {
                 brelse(bp);
@@ -383,7 +383,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         }
         let _ = uvm_vnp_uncache(vp);
 
-        let size = bsize - bp.b_resid.get() as i64;
+        let size = bsize - bp.resid() as i64;
         if size < xfersize {
             xfersize = size;
         }

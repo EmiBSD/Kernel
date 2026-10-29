@@ -173,6 +173,7 @@ use crate::scsi::scsiconf::{
     ScsibusSoftc, XS_DRIVER_STUFFUP, XS_NOERROR, XS_SENSE, scsi_detach_lun, scsi_get_link,
     scsi_probe_lun, scsiprint,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CALL, B_ERROR, B_PHYS, B_READ, B_WRITE, Buf};
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DETACH_FORCE, DV_DULL, DVACT_POWERDOWN, Device,
@@ -668,16 +669,16 @@ pub fn sr_rw(
         unsafe { item.as_ptr().write(Buf::new()) };
         // SAFETY: initialised above; it stays allocated until the `pool_put` below.
         let b: &'static Buf = unsafe { item.as_ref() };
-        b.b_flags.set(flags | B_PHYS);
-        b.b_proc.set(curproc().map_or(ptr::null(), ptr::from_ref));
-        b.b_dev.set(dev);
+        b.set_flags(flags | B_PHYS);
+        b.set_proc_ptr(curproc().map_or(ptr::null(), ptr::from_ref));
+        b.set_dev(dev);
         b.b_iodone.set(None);
-        b.b_error.set(None);
-        b.b_blkno.set(blkno);
-        b.b_data.set(data.as_mut_ptr());
-        b.b_bcount.set(bufsize as i64);
-        b.b_bufsize.set(bufsize as i64);
-        b.b_resid.set(bufsize);
+        b.set_error(None);
+        b.set_blkno(blkno);
+        b.set_data_ptr(data.as_mut_ptr());
+        b.set_bcount(bufsize as i64);
+        b.set_bufsize(bufsize as i64);
+        b.set_resid(bufsize);
         b.b_vp.set(Some(vp));
 
         if !b.isset(B_READ) {
@@ -693,9 +694,9 @@ pub fn sr_rw(
             printf(format_args!(
                 "{}: I/O error {} on dev {:#x} at block {}\n",
                 DEVNAME(sc),
-                b.b_error.get().map_or(0, |e| e as i32),
+                b.error().map_or(0, |e| e as i32),
                 dev,
-                b.b_blkno.get()
+                b.blkno()
             ));
             rv = Err(Errno::EIO);
             break;
@@ -2250,28 +2251,27 @@ pub unsafe fn sr_ccb_rw(
     ccb.ccb_target.set(chunk as i32);
 
     let b = &ccb.ccb_buf;
-    b.b_flags.set(B_PHYS | B_CALL);
+    b.set_flags(B_PHYS | B_CALL);
     if xsflags & SCSI_DATA_IN != 0 {
         b.set(B_READ);
     } else {
         b.set(B_WRITE);
     }
 
-    b.b_blkno
-        .set(blkno + Daddr::from(sd.sd_meta().ssd_data_blkno.get()));
-    b.b_bcount.set(len);
-    b.b_bufsize.set(len);
-    b.b_resid.set(usize::try_from(len).unwrap_or(0));
-    b.b_data.set(data);
-    b.b_error.set(None);
+    b.set_blkno(blkno + Daddr::from(sd.sd_meta().ssd_data_blkno.get()));
+    b.set_bcount(len);
+    b.set_bufsize(len);
+    b.set_resid(usize::try_from(len).unwrap_or(0));
+    b.set_data_ptr(data);
+    b.set_error(None);
     b.b_iodone.set(sd.sd_scsi_intr.get());
-    b.b_proc.set(curproc().map_or(ptr::null(), ptr::from_ref));
-    b.b_dev.set(sc.src_dev_mm.get());
+    b.set_proc_ptr(curproc().map_or(ptr::null(), ptr::from_ref));
+    b.set_dev(sc.src_dev_mm.get());
     b.b_vp.set(sc.src_vn.get());
     b.b_bq.set(None);
 
     if !b.isset(B_READ)
-        && let Some(vp) = b.b_vp.get()
+        && let Some(vp) = b.vp()
     {
         let s = splbio();
         vp.v_numoutput.set(vp.v_numoutput.get() + 1);
@@ -2312,9 +2312,9 @@ pub fn sr_ccb_done(ccb: &'static SrCcb) {
                 "{}: {}: i/o error {} @ {} block {}\n",
                 DEVNAME(sc),
                 Name(sd.sd_meta().ssd_devname.get()),
-                b.b_error.get().map_or(0, |e| e as i32),
+                b.error().map_or(0, |e| e as i32),
                 sd.name(),
-                b.b_blkno.get()
+                b.blkno()
             ));
         }
         ccb.ccb_state.set(SR_CCB_FAILED);
@@ -4867,7 +4867,7 @@ pub fn sr_raid_startwu(wu: &'static SrWorkunit) {
     for ccb in wu.swu_ccb.iter() {
         // SAFETY: ccbs live until `sr_ccb_free`; the iterator borrows the `'static` unit.
         let ccb: &'static SrCcb = unsafe { &*ptr::from_ref(ccb) };
-        let Some(vp) = ccb.ccb_buf.b_vp.get() else {
+        let Some(vp) = ccb.ccb_buf.vp() else {
             panic(format_args!("{}: ccb without vnode", DEVNAME(sd.sd_sc())));
         };
         let _ = VOP_STRATEGY(vp, &ccb.ccb_buf);

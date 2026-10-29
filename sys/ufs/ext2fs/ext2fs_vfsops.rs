@@ -1554,12 +1554,12 @@ pub(crate) mod tests {
     /// A synchronous transfer between the buffer and the image at `b_blkno`, then `biodone`.
     fn disk_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         let bp = ap.a_bp;
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let mut d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
@@ -1569,7 +1569,7 @@ pub(crate) mod tests {
                 } else {
                     d[off..off + len].copy_from_slice(data);
                 }
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();

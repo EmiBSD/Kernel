@@ -140,6 +140,7 @@ use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::scsi::scsiconf::{SCSI_DATA_IN, SCSI_DATA_OUT, XS_DRIVER_STUFFUP, XS_NOERROR};
+use crate::sys::buf::BufLegacy;
 use crate::sys::disk::Disk;
 use crate::sys::disklabel::{Disklabel, FS_RAID, diskpart};
 use crate::sys::dkio::DIOCGDINFO;
@@ -1536,7 +1537,7 @@ pub fn ccb_write_crypted(ccb: &SrCcb, crwu: Option<&'static SrCryptoWuReq>) {
             "sr_crypto: write without its crypto work unit"
         ));
     };
-    ccb.ccb_buf.b_data.set(crwu.cr_dmabuf());
+    ccb.ccb_buf.set_data_ptr(crwu.cr_dmabuf());
     ccb.ccb_opaque
         .set(ptr::from_ref(crwu).cast_mut().cast::<c_void>());
 }
@@ -2345,7 +2346,7 @@ mod tests {
         // the write's ccb writes the encrypted buffer
         let ccb: &'static SrCcb = Box::leak(Box::new(SrCcb::new()));
         ccb_write_crypted(ccb, Some(crwu));
-        assert_eq!(ccb.ccb_buf.b_data.get(), crwu.cr_dmabuf());
+        assert_eq!(ccb.ccb_buf.data_ptr(), crwu.cr_dmabuf());
         assert_eq!(
             ccb.ccb_opaque.get(),
             ptr::from_ref(crwu).cast_mut().cast::<c_void>()

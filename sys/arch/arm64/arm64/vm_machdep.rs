@@ -83,6 +83,7 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::pmap::pmap_activate;
 use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove, pmap_update};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_PHYS, Buf};
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::PAGE_SIZE;
@@ -147,8 +148,8 @@ pub fn vmapbuf(bp: &Buf, len: usize) {
     if !bp.isset(B_PHYS) {
         panic(format_args!("vmapbuf"));
     }
-    let data = bp.b_data.get();
-    bp.b_saveaddr.set(data.cast());
+    let data = bp.data_ptr();
+    bp.set_saveaddr_ptr(data.cast());
     let mut faddr = trunc_page(data as usize);
     let off = data as usize - faddr;
     let mut len = round_page(off + len);
@@ -157,11 +158,11 @@ pub fn vmapbuf(bp: &Buf, len: usize) {
         panic(format_args!("vmapbuf: no space in phys_map"));
     };
     let mut taddr = window.as_ptr() as usize;
-    bp.b_data.set(window.as_ptr().wrapping_add(off));
+    bp.set_data_ptr(window.as_ptr().wrapping_add(off));
 
     // SAFETY: physio set `b_proc` to the thread doing the I/O, which waits in physio until
     // vunmapbuf, so the process and its vmspace outlive the mapping.
-    let Some(p) = (unsafe { bp.b_proc.get().as_ref() }) else {
+    let Some(p) = (unsafe { bp.proc_ptr().as_ref() }) else {
         panic(format_args!("vmapbuf: no b_proc"));
     };
     let upmap = p.vmspace().vm_map.pmap();
@@ -189,7 +190,7 @@ pub fn vunmapbuf(bp: &Buf, len: usize) {
     if !bp.isset(B_PHYS) {
         panic(format_args!("vunmapbuf"));
     }
-    let data = bp.b_data.get();
+    let data = bp.data_ptr();
     let addr = trunc_page(data as usize);
     let off = data as usize - addr;
     let len = round_page(off + len);
@@ -200,7 +201,7 @@ pub fn vunmapbuf(bp: &Buf, len: usize) {
     if let Some(window) = NonNull::new(addr as *mut u8) {
         km_free(window, len, &KV_PHYSWAIT, &KP_NONE);
     }
-    bp.b_data.set(bp.b_saveaddr.get().cast());
-    bp.b_saveaddr.set(ptr::null_mut());
+    bp.set_data_ptr(bp.saveaddr_ptr().cast());
+    bp.set_saveaddr_ptr(ptr::null_mut());
 }
 /* </CODE> */

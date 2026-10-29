@@ -85,6 +85,7 @@ use crate::kern::vfs_subr::{VNODE_MTX, vput, vrele};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::Flock;
@@ -818,7 +819,7 @@ pub fn VOP_STRATEGY(vp: &'static Vnode, bp: &'static Buf) -> Result<(), Errno> {
 pub fn VOP_BWRITE(bp: &'static Buf) -> Result<(), Errno> {
     let mut a = VopBwriteArgs { a_bp: bp };
 
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("VOP_BWRITE: buffer {:p} without a vnode", bp));
     };
     match vp.op().vop_bwrite {

@@ -258,7 +258,7 @@ pub fn ffs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
         // We should only get non-zero b_resid when an I/O error has occurred, which should
         // cause us to break above. However, if the short read did not cause an error, then
         // we want to ensure that we do not uiomove bad or uninitialized data.
-        size -= bp.b_resid.get() as i64;
+        size -= bp.resid() as i64;
         if size < xfersize {
             if size == 0 {
                 brelse(bp);
@@ -369,7 +369,7 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         }
         let _ = uvm_vnp_uncache(vp);
 
-        let size = blksize(fs, ip, lbn) as i64 - bp.b_resid.get() as i64;
+        let size = blksize(fs, ip, lbn) as i64 - bp.resid() as i64;
         if size < xfersize {
             xfersize = size;
         }
@@ -458,7 +458,7 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
                 if !bp.isset(B_DELWRI) {
                     panic(format_args!("ffs_fsync: not dirty"));
                 }
-                if skipmeta && bp.b_lblkno.get() < 0 {
+                if skipmeta && bp.lblkno() < 0 {
                     continue;
                 }
 

@@ -146,6 +146,7 @@ use crate::net::radix::{
 };
 #[cfg(feature = "nfsserver")]
 use crate::netinet::in_::SockaddrIn;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DELWRI, B_DONE, B_INVAL, B_READ, B_WANTED, Buf};
 use crate::sys::conf::{D_CLONE, D_TTY};
 use crate::sys::errno::Errno;
@@ -258,7 +259,7 @@ unsafe fn bufremvn(bp: &'static Buf) {
 /// `rb_buf_compare(b1, b2)`: orders a vnode's buffers by logical block (`RBT_GENERATE
 /// (buf_rb_bufs, ...)`; the tree adapter is `sys/vnode.rs`'s `BufRbBufs`).
 pub fn rb_buf_compare(b1: &Buf, b2: &Buf) -> core::cmp::Ordering {
-    b1.b_lblkno.get().cmp(&b2.b_lblkno.get())
+    b1.lblkno().cmp(&b2.lblkno())
 }
 
 /// Initialize the vnode management data structures.
@@ -1930,7 +1931,7 @@ pub fn vfs_syncwait(p: &Proc, verbose: bool) -> i32 {
     for iter in 0..20u32 {
         nbusy = 0;
         for bp in BUFHEAD.0.iter() {
-            if bp.b_flags.get() & (B_BUSY | B_INVAL | B_READ) == B_BUSY {
+            if bp.flags() & (B_BUSY | B_INVAL | B_READ) == B_BUSY {
                 nbusy += 1;
             }
             // With soft updates, some buffers that are written will be remarked as dirty
@@ -2058,7 +2059,7 @@ pub fn vinvalbuf(
     let skipmeta = |mut b: Option<&'static Buf>| {
         if flags & V_SAVEMETA != 0 {
             while let Some(bp) = b
-                && bp.b_lblkno.get() < 0
+                && bp.lblkno() < 0
             {
                 b = ListHead::<BVnbufs>::next(bp);
             }
@@ -2079,7 +2080,7 @@ pub fn vinvalbuf(
             let mut next = Some(blist);
             while let Some(bp) = next {
                 next = ListHead::<BVnbufs>::next(bp);
-                if flags & V_SAVEMETA != 0 && bp.b_lblkno.get() < 0 {
+                if flags & V_SAVEMETA != 0 && bp.lblkno() < 0 {
                     continue;
                 }
                 if bp.isset(B_BUSY) {
@@ -2147,7 +2148,7 @@ pub fn vflushbuf(vp: &'static Vnode, sync: bool) {
             splx(s);
             // Wait for I/O associated with indirect blocks to complete, since there is no way
             // to quickly wait for them below.
-            if bp.b_vp.get().is_some_and(|bvp| ptr::eq(bvp, vp)) || !sync {
+            if bp.vp().is_some_and(|bvp| ptr::eq(bvp, vp)) || !sync {
                 bawrite(bp);
             } else {
                 let _ = bwrite(bp);
@@ -2176,15 +2177,15 @@ pub fn vflushbuf(vp: &'static Vnode, sync: bool) {
 pub fn bgetvp(vp: &'static Vnode, bp: &'static Buf) {
     splassert(IPL_BIO, "bgetvp");
 
-    if bp.b_vp.get().is_some() {
+    if bp.vp().is_some() {
         panic(format_args!("bgetvp: not free"));
     }
     vhold(vp);
     bp.b_vp.set(Some(vp));
     if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
-        bp.b_dev.set(vp.v_rdev());
+        bp.set_dev(vp.v_rdev());
     } else {
-        bp.b_dev.set(NODEV);
+        bp.set_dev(NODEV);
     }
     // Insert onto list for new vnode.
     // SAFETY: a buffer without a vnode is on no vnode list.
@@ -2197,7 +2198,7 @@ pub fn bgetvp(vp: &'static Vnode, bp: &'static Buf) {
 pub fn brelvp(bp: &'static Buf) {
     splassert(IPL_BIO, "brelvp");
 
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("brelvp: NULL"));
     };
     // Delete from old vnode list, if on one.
@@ -2221,7 +2222,7 @@ pub fn brelvp(bp: &'static Buf) {
 ///
 /// Ignores vnode buffer queues. Must be called at splbio().
 pub fn buf_replacevnode(bp: &'static Buf, newvp: &'static Vnode) {
-    let oldvp = bp.b_vp.get();
+    let oldvp = bp.vp();
 
     splassert(IPL_BIO, "buf_replacevnode");
 
@@ -2229,7 +2230,7 @@ pub fn buf_replacevnode(bp: &'static Buf, newvp: &'static Vnode) {
         brelvp(bp);
     }
 
-    if bp.b_flags.get() & (B_READ | B_DONE) == 0 {
+    if bp.flags() & (B_READ | B_DONE) == 0 {
         newvp.v_numoutput.set(newvp.v_numoutput.get() + 1); // put it on swapdev
         vwakeup(oldvp);
     }
@@ -2244,7 +2245,7 @@ pub fn buf_replacevnode(bp: &'static Buf, newvp: &'static Vnode) {
 ///
 /// Manipulates vnode buffer queues. Must be called at splbio().
 pub fn reassignbuf(bp: &'static Buf) {
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("reassignbuf: NULL"));
     };
 

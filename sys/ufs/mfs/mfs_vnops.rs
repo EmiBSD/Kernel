@@ -180,10 +180,10 @@ pub fn mfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
 /// address in its memory, which `copyin` (a read of the file system) and `copyout` (a write)
 /// reach.
 pub fn mfs_doio(mfsp: &Mfsnode, bp: &'static Buf) {
-    let offset = bp.b_blkno.get() << DEV_BSHIFT;
+    let offset = bp.blkno() << DEV_BSHIFT;
 
-    if bp.b_bcount.get() > mfsp.mfs_size.get() - offset {
-        bp.b_bcount.set(mfsp.mfs_size.get() - offset);
+    if bp.bcount() > mfsp.mfs_size.get() - offset {
+        bp.set_bcount(mfsp.mfs_size.get() - offset);
     }
 
     let base = mfsp.mfs_baseoff.get().wrapping_add(offset as usize);
@@ -197,11 +197,11 @@ pub fn mfs_doio(mfsp: &Mfsnode, bp: &'static Buf) {
     } else {
         copyout(data, base)
     };
-    bp.b_error.set(error.err());
+    bp.set_error(error.err());
     if error.is_err() {
         bp.set(B_ERROR);
     } else {
-        bp.b_resid.set(0);
+        bp.set_resid(0);
     }
     let s = splbio();
     biodone(bp);
@@ -298,6 +298,7 @@ mod tests {
     use crate::kern::vfs_bio::getblk;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
+    use crate::sys::buf::BufLegacy;
     use crate::sys::buf::{B_DONE, B_WRITEINPROG};
     use crate::sys::vnode::VT_MFS;
     use crate::ufs::ffs::ffs_vfsops::tests::{setup, teardown};
@@ -314,10 +315,10 @@ mod tests {
     fn buf_at(blkno: i64, len: usize, read: bool) -> (&'static Buf, &'static mut [u8]) {
         let data: &'static mut [u8] = Box::leak(vec![0u8; len].into_boxed_slice());
         let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
-        bp.b_data.set(data.as_mut_ptr());
-        bp.b_bcount.set(len as i64);
-        bp.b_blkno.set(blkno);
-        bp.b_flags.set(if read { B_READ } else { B_WRITEINPROG });
+        bp.set_data_ptr(data.as_mut_ptr());
+        bp.set_bcount(len as i64);
+        bp.set_blkno(blkno);
+        bp.set_flags(if read { B_READ } else { B_WRITEINPROG });
         (bp, data)
     }
 
@@ -336,18 +337,18 @@ mod tests {
         // A read of the second sector: the bytes at offset 512.
         let (bp, data) = buf_at(1, 1024, true);
         mfs_doio(mfsp, bp);
-        assert_eq!(bp.b_error.get(), None);
+        assert_eq!(bp.error(), None);
         assert!(!bp.isset(B_ERROR));
         assert!(bp.isset(B_DONE));
-        assert_eq!(bp.b_resid.get(), 0);
-        assert_eq!(bp.b_bcount.get(), 1024);
+        assert_eq!(bp.resid(), 0);
+        assert_eq!(bp.bcount(), 1024);
         assert_eq!(&data[..], &expect[512..1536]);
 
         // A write of the last sector goes to offset 3584 and leaves the rest alone.
         let (bp, data) = buf_at(7, 512, false);
         data.fill(0xa5);
         mfs_doio(mfsp, bp);
-        assert_eq!(bp.b_error.get(), None);
+        assert_eq!(bp.error(), None);
         assert!(bp.isset(B_DONE));
         // SAFETY: the memory is leaked, and nothing else reads it while this slice lives.
         let mem = unsafe {
@@ -370,16 +371,16 @@ mod tests {
         // 1024 bytes asked at offset 1536: only 512 are left, and b_bcount says so.
         let (bp, data) = buf_at(3, 1024, true);
         mfs_doio(mfsp, bp);
-        assert_eq!(bp.b_bcount.get(), 512);
-        assert_eq!(bp.b_error.get(), None);
+        assert_eq!(bp.bcount(), 512);
+        assert_eq!(bp.error(), None);
         assert!(data[..512].iter().all(|&b| b == 0x11));
         assert!(data[512..].iter().all(|&b| b == 0));
 
         // A request at the very end is empty.
         let (bp, _) = buf_at(4, 512, true);
         mfs_doio(mfsp, bp);
-        assert_eq!(bp.b_bcount.get(), 0);
-        assert_eq!(bp.b_error.get(), None);
+        assert_eq!(bp.bcount(), 0);
+        assert_eq!(bp.error(), None);
         assert!(bp.isset(B_DONE));
 
         // The process's memory is gone (no such address): the buffer gets the error.
@@ -387,7 +388,7 @@ mod tests {
         let (bp, _) = buf_at(0, 512, true);
         mfs_doio(mfsp, bp);
         // The host's copyin refuses a null address; offset 0 is that address.
-        assert_eq!(bp.b_error.get(), Some(Errno::EFAULT));
+        assert_eq!(bp.error(), Some(Errno::EFAULT));
         assert!(bp.isset(B_ERROR));
         assert!(bp.isset(B_DONE));
         teardown();

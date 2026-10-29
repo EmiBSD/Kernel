@@ -113,6 +113,7 @@ use core::ptr;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{bread, brelse};
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::types::Daddr;
 use crate::ufs::ext2fs::ext2fs::{MExt2fs, fsbtodb};
 use crate::ufs::ext2fs::ext2fs_dinode::{Ext2fsDinode, NDADDR, NIADDR};
@@ -240,7 +241,7 @@ const EXT4_ENTRY_SIZE: usize = 12;
 /// inode's `e2di_blocks`; the others fill the buffer `ep_bp`.
 fn ext4_ext_node_entries(path: &Ext4ExtentPath) -> Option<usize> {
     let room = match path.ep_bp {
-        Some(bp) => usize::try_from(bp.b_bcount.get()).unwrap_or(0),
+        Some(bp) => usize::try_from(bp.bcount()).unwrap_or(0),
         None => (NDADDR + NIADDR) * size_of::<u32>(),
     };
     // SAFETY: `ext4_ext_find_extent` points `ep_header` at the first bytes of the node, which
@@ -378,7 +379,7 @@ pub fn ext4_ext_find_extent<'a>(
             return None;
         }
         path.ep_bp = Some(bp);
-        ehp = bp.b_data.get().cast::<Ext4ExtentHeader>();
+        ehp = bp.data_ptr().cast::<Ext4ExtentHeader>();
         path.ep_header = ehp;
         i -= 1;
     }

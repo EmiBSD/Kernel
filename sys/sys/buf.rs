@@ -313,6 +313,136 @@ impl Buf {
         self.b_flags.set(self.b_flags.get() & !f);
     }
 
+    /// `bp->b_flags`.
+    pub fn flags(&self) -> i64 {
+        self.b_flags.get()
+    }
+
+    /// `bp->b_flags = f`.
+    pub fn set_flags(&self, f: i64) {
+        self.b_flags.set(f);
+    }
+
+    /// `bp->b_bufsize`.
+    pub fn bufsize(&self) -> i64 {
+        self.b_bufsize.get()
+    }
+
+    /// `bp->b_bufsize = n`.
+    pub fn set_bufsize(&self, n: i64) {
+        self.b_bufsize.set(n);
+    }
+
+    /// `bp->b_bcount`.
+    pub fn bcount(&self) -> i64 {
+        self.b_bcount.get()
+    }
+
+    /// `bp->b_bcount = n`.
+    pub fn set_bcount(&self, n: i64) {
+        self.b_bcount.set(n);
+    }
+
+    /// `bp->b_resid`.
+    pub fn resid(&self) -> usize {
+        self.b_resid.get()
+    }
+
+    /// `bp->b_resid = n`.
+    pub fn set_resid(&self, n: usize) {
+        self.b_resid.set(n);
+    }
+
+    /// `bp->b_error`: `None` for 0.
+    pub fn error(&self) -> Option<Errno> {
+        self.b_error.get()
+    }
+
+    /// `bp->b_error = e`.
+    pub fn set_error(&self, e: Option<Errno>) {
+        self.b_error.set(e);
+    }
+
+    /// `bp->b_dev`.
+    pub fn dev(&self) -> Dev {
+        self.b_dev.get()
+    }
+
+    /// `bp->b_dev = dev`.
+    pub fn set_dev(&self, dev: Dev) {
+        self.b_dev.set(dev);
+    }
+
+    /// `bp->b_lblkno`.
+    pub fn lblkno(&self) -> Daddr {
+        self.b_lblkno.get()
+    }
+
+    /// `bp->b_lblkno = bn`.
+    pub fn set_lblkno(&self, bn: Daddr) {
+        self.b_lblkno.set(bn);
+    }
+
+    /// `bp->b_blkno`.
+    pub fn blkno(&self) -> Daddr {
+        self.b_blkno.get()
+    }
+
+    /// `bp->b_blkno = bn`.
+    pub fn set_blkno(&self, bn: Daddr) {
+        self.b_blkno.set(bn);
+    }
+
+    /// `bp->b_dirtyoff`.
+    pub fn dirtyoff(&self) -> i32 {
+        self.b_dirtyoff.get()
+    }
+
+    /// `bp->b_dirtyoff = n`.
+    pub fn set_dirtyoff(&self, n: i32) {
+        self.b_dirtyoff.set(n);
+    }
+
+    /// `bp->b_dirtyend`.
+    pub fn dirtyend(&self) -> i32 {
+        self.b_dirtyend.get()
+    }
+
+    /// `bp->b_dirtyend = n`.
+    pub fn set_dirtyend(&self, n: i32) {
+        self.b_dirtyend.set(n);
+    }
+
+    /// `bp->b_validoff`.
+    pub fn validoff(&self) -> i32 {
+        self.b_validoff.get()
+    }
+
+    /// `bp->b_validoff = n`.
+    pub fn set_validoff(&self, n: i32) {
+        self.b_validoff.set(n);
+    }
+
+    /// `bp->b_validend`.
+    pub fn validend(&self) -> i32 {
+        self.b_validend.get()
+    }
+
+    /// `bp->b_validend = n`.
+    pub fn set_validend(&self, n: i32) {
+        self.b_validend.set(n);
+    }
+
+    /// `bp->b_poffs`.
+    pub fn poffs(&self) -> Off {
+        self.b_poffs.get()
+    }
+
+    /// `bp->b_poffs = off`.
+    pub fn set_poffs(&self, off: Off) {
+        self.b_poffs.set(off);
+    }
+
     /// The buffer's data: `b_bcount` bytes at `b_data`.
     ///
     /// # Safety
@@ -339,6 +469,56 @@ impl Buf {
 impl Default for Buf {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The members `bsd`'s drivers and file systems reach as the C's pointers (`b_data`,
+/// `b_saveaddr`, `b_proc`) or as `bsd`'s vnode (`b_vp`), whatever the buffer header's own
+/// shape: the call sites name these accessors, so the header can change under them (N5.1).
+pub trait BufLegacy {
+    /// `bp->b_data`: the address of the buffer's bytes, NULL when it is not mapped.
+    fn data_ptr(&self) -> *mut u8;
+    /// `bp->b_data = p`.
+    fn set_data_ptr(&self, p: *mut u8);
+    /// `bp->b_saveaddr`.
+    fn saveaddr_ptr(&self) -> *mut c_void;
+    /// `bp->b_saveaddr = p`.
+    fn set_saveaddr_ptr(&self, p: *mut c_void);
+    /// `bp->b_proc`: the thread the I/O is for, NULL for the kernel.
+    fn proc_ptr(&self) -> *const Proc;
+    /// `bp->b_proc = p`.
+    fn set_proc_ptr(&self, p: *const Proc);
+    /// `bp->b_vp`: the vnode the buffer belongs to.
+    fn vp(&self) -> Option<&'static Vnode>;
+}
+
+impl BufLegacy for Buf {
+    fn data_ptr(&self) -> *mut u8 {
+        self.b_data.get()
+    }
+
+    fn set_data_ptr(&self, p: *mut u8) {
+        self.b_data.set(p);
+    }
+
+    fn saveaddr_ptr(&self) -> *mut c_void {
+        self.b_saveaddr.get()
+    }
+
+    fn set_saveaddr_ptr(&self, p: *mut c_void) {
+        self.b_saveaddr.set(p);
+    }
+
+    fn proc_ptr(&self) -> *const Proc {
+        self.b_proc.get()
+    }
+
+    fn set_proc_ptr(&self, p: *const Proc) {
+        self.b_proc.set(p);
+    }
+
+    fn vp(&self) -> Option<&'static Vnode> {
+        self.b_vp.get()
     }
 }
 

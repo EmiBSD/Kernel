@@ -118,6 +118,7 @@ use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_subr::{vaccess, vput};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_BMAP, VOP_STRATEGY};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, Buf, clrbuf};
 use crate::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use crate::sys::errno::Errno;
@@ -462,7 +463,7 @@ pub fn cd9660_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
         };
         ci.ci_lastr = lbn;
         ip.i_ci.set(ci);
-        n = n.min((size as usize).saturating_sub(bp.b_resid.get()));
+        n = n.min((size as usize).saturating_sub(bp.resid()));
         if let Err(e) = error {
             brelse(bp);
             return Err(e);
@@ -694,7 +695,7 @@ pub fn cd9660_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
         let mut ino: Cdino = if isonum_711(ep.flags()) & 2 != 0 {
             isodirino(&ep, imp)
         } else {
-            ((b.b_blkno.get() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
+            ((b.blkno() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
         };
 
         idp.curroff += reclen as Off;
@@ -890,7 +891,7 @@ pub fn cd9660_unlock(ap: &mut VopUnlockArgs) -> Result<(), Errno> {
 /// done already, then call the device strategy routine.
 pub fn cd9660_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("cd9660_strategy: buffer without a vnode"));
     };
 
@@ -898,25 +899,25 @@ pub fn cd9660_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
         panic(format_args!("cd9660_strategy: spec"));
     }
-    if bp.b_blkno.get() == bp.b_lblkno.get() {
-        let mut blkno = bp.b_blkno.get();
-        let error = VOP_BMAP(vp, bp.b_lblkno.get(), None, Some(&mut blkno), None);
-        bp.b_blkno.set(blkno);
+    if bp.blkno() == bp.lblkno() {
+        let mut blkno = bp.blkno();
+        let error = VOP_BMAP(vp, bp.lblkno(), None, Some(&mut blkno), None);
+        bp.set_blkno(blkno);
         if let Err(e) = error {
-            bp.b_error.set(Some(e));
+            bp.set_error(Some(e));
             bp.set(B_ERROR);
             let s = splbio();
             biodone(bp);
             splx(s);
             return Err(e);
         }
-        if bp.b_blkno.get() == -1 {
+        if bp.blkno() == -1 {
             // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
             // mapped; the strategy owns it until biodone.
             unsafe { clrbuf(bp) };
         }
     }
-    if bp.b_blkno.get() == -1 {
+    if bp.blkno() == -1 {
         let s = splbio();
         biodone(bp);
         splx(s);
@@ -925,7 +926,7 @@ pub fn cd9660_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let Some(devvp) = ip.i_devvp.get() else {
         panic(format_args!("cd9660_strategy: no device vnode"));
     };
-    bp.b_dev.set(devvp.v_rdev());
+    bp.set_dev(devvp.v_rdev());
     let _ = VOP_STRATEGY(devvp, bp);
     Ok(())
 }

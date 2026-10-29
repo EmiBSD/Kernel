@@ -1687,7 +1687,8 @@ notes = "M2: db_stack_trace_print from a given frame (db_stack_dump); M4: the tr
 [[module]]
 rust = "sys/arch/arm64/arm64/disksubr.rs"
 lz = ["sys/arch/arm64/arm64/disksubr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/fpu.rs"
@@ -1733,7 +1734,7 @@ notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs", "sys/kernel/fork.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs", "sys/kernel/fork.rs", "sys/kernel/fs/buf.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -3044,7 +3045,8 @@ notes = "M16a: license: NetBSD Foundation BSD-2, kept whole; the whole header: t
 [[module]]
 rust = "sys/dev/ata/wd.rs"
 lz = ["sys/dev/ata/wd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 notes = "M16a: the whole driver but B_FORMAT (not defined: wdformat), WD_DUMP_NOT_TRUSTED (not defined) and HIBERNATE: wd_ca/wd_cd, wdprobe, wdattach (model string in wd_model), wdactivate, wddetach, wdstrategy, wdstart, __wdstart, wddone, wdrestart, wdread/wdwrite (physio), wdopen (wdopen_noproc for wdsize), wdclose, wdgetdefaultlabel, wdgetdisklabel (the label built in a local and installed as sd.rs does), wdioctl (DIOCRLDINFO's label malloc'ed as in the C; the rest to wdc_ioctl), wdsize, wddump (nothing calls it yet: dumpsys not ported), wd_get_params (always on sc_params, as every caller), wd_flushcache (keeps the C's test of ERR_NODEV against the AT_* flags), wd_standby. bdevsw 0 / cdevsw 3 on both archs (NWD 1 on amd64, 0 on arm64 as GENERIC). Host tests (model string, strncpy)"
 
 [[module]]
@@ -3417,7 +3419,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/ic/nvme.rs"
 lz = ["sys/dev/ic/nvme.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/ic/nvmeio.rs"
@@ -3587,7 +3590,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/isa/fd.rs"
 lz = ["sys/dev/isa/fd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 notes = "M16a: fd_types[] (FD_TYPES), struct fd_softc (Cells, Softc, FdDrivechain adapter), fd_ca/fd_cd, fdgetdisklabel (a local label installed by fdopen/DIOCRLDINFO, as wd.rs), fdprobe, fdattach (DKF_NOLABELREAD, disk_attach, bufq_init, the three timeouts), fdactivate, fd_nvtotype, fd_dev_to_type, fdstrategy, fdstart, fdfinish, fdread/fdwrite (physio), fd_set_motor, fd_motor_off, fd_motor_on, fdopen, fdclose, fdsize (-1), fddump (ENXIO), fdintr (the switch with its doseek/doio labels as an inner loop; isadma_start's result ignored as in C), fdtimeout, fdretry, fdioctl (MTIOCTOP, DIOC*, FD_FORM, FD_GTYPE, FD_GOPTS, FD_SOPTS; FD_STYPE ENOTTY as in C; addr the ioctl's kernel copy), fdformat (B_FORMAT = B_XXX; the request read unaligned); unit lookups panic where the C dereferences NULL; DIAGNOSTIC checks under feature diagnostic; cfg machine_x86; bdevsw 2/cdevsw 9 on amd64 (NFD 1); smoke-fd"
 
 [[module]]
@@ -4399,7 +4403,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/rd.rs"
 lz = ["sys/dev/rd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/rnd.rs"
@@ -4459,7 +4464,8 @@ notes = "M16a: the whole file but HIBERNATE (sdmmc_mem_hibernate_write not compi
 [[module]]
 rust = "sys/dev/sdmmc/sdmmc_scsi.rs"
 lz = ["sys/dev/sdmmc/sdmmc_scsi.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 notes = "M16a: the two prototypes, defined in sdmmc_scsi.rs (shared with sdmmc_scsi.c, one licence block: the two notices are the same); M16a: the whole file but HIBERNATE (sdmmc_scsi_hibernate_io not compiled) and SDMMC_DEBUG (DPRINTFs comments): sdmmc_switch (scsi_cmd, minphys), scsi_attach/detach (scsibus at sdmmc: target 0 the host, one target per card), CCBs (alloc/free, the iopool's io_get/io_put as unsafe fns), decode_rw, sdmmc_scsi_cmd (INQUIRY, READ CAPACITY, TUR/START_STOP/SYNC no-ops, READ/WRITE 6/10 queued on the slot thread or run at once when polled), sdmmc_inquiry (reply built by sdmmc_inquiry_data, host-tested: <SD/MMC, QEMU!, 0001> removable), start/complete/done_xs, stimeout. The target is bounds-checked before sc_tgt is indexed"
 
 [[module]]
@@ -4490,7 +4496,7 @@ notes = "M16a: the whole header: struct sdmmc_csd/cid/scr, sdmmc_response, struc
 rust = "sys/dev/softraid.rs"
 lz = ["sys/dev/softraid.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_concat.rs"
@@ -4501,7 +4507,7 @@ status = "inherited"
 rust = "sys/dev/softraid_crypto.rs"
 lz = ["sys/dev/softraid_crypto.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha1.rs", "sys/kernel/crypto/hmac.rs", "sys/crypto/rijndael.rs"]
+adapted_by = ["sys/kernel/crypto/sha1.rs", "sys/kernel/crypto/hmac.rs", "sys/crypto/rijndael.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_raid0.rs"
@@ -4521,12 +4527,14 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/softraid_raid5.rs"
 lz = ["sys/dev/softraid_raid5.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_raid6.rs"
 lz = ["sys/dev/softraid_raid6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraidvar.rs"
@@ -4779,7 +4787,7 @@ license = "ISC. M12: XHCI_CMD_TIMEOUT/MAX_CMDS/MAX_EVTS/MAX_XFER"
 rust = "sys/dev/vnd.rs"
 lz = ["sys/dev/vnd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/vndioctl.rs"
@@ -4993,7 +5001,8 @@ status = "inherited"
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_lookup.rs"
 lz = ["sys/isofs/cd9660/cd9660_lookup.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_node.rs"
@@ -5016,13 +5025,13 @@ status = "inherited"
 rust = "sys/isofs/cd9660/cd9660_vfsops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/iso.rs"
@@ -5054,7 +5063,8 @@ license = "public domain"
 [[module]]
 rust = "sys/isofs/udf/udf_subr.rs"
 lz = ["sys/isofs/udf/udf_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_vfsops.rs"
@@ -5066,7 +5076,7 @@ adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/cred.rs"]
 rust = "sys/isofs/udf/udf_vnops.rs"
 lz = ["sys/isofs/udf/udf_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/kern/clock_subr.rs"
@@ -5669,7 +5679,7 @@ kind = "renamed"
 rust = "sys/kern/spec_vnops.rs"
 lz = ["sys/kern/spec_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/kern/subr_autoconf.rs"
@@ -5679,7 +5689,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/kern/subr_evcount.rs"
@@ -5970,7 +5981,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_sync.rs"
@@ -5993,7 +6004,8 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
 lz = ["sys/kern/vfs_vops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/lib/libkern/crc32c.rs"
@@ -6398,7 +6410,8 @@ license = "zlib"
 [[module]]
 rust = "sys/miscfs/deadfs/dead_vnops.rs"
 lz = ["sys/miscfs/deadfs/dead_vnops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fuse_device.rs"
@@ -6488,25 +6501,26 @@ adapted_by = ["sys/crypto/siphash.rs", "sys/kern/vm_bsd.rs"]
 [[module]]
 rust = "sys/msdosfs/msdosfs_fat.rs"
 lz = ["sys/msdosfs/msdosfs_fat.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_lookup.rs"
 lz = ["sys/msdosfs/msdosfs_lookup.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_vfsops.rs"
 lz = ["sys/msdosfs/msdosfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_vnops.rs"
 lz = ["sys/msdosfs/msdosfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfsmount.rs"
@@ -7117,7 +7131,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/nfs/nfs_bio.rs"
 lz = ["sys/nfs/nfs_bio.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_boot.rs"
@@ -7169,13 +7183,13 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/nfs/nfs_subs.rs"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_syscalls.rs"
 lz = ["sys/nfs/nfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_var.rs"
@@ -7192,7 +7206,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/nfs/nfs_vnops.rs"
 lz = ["sys/nfs/nfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfsdiskless.rs"
@@ -7276,7 +7290,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/ntfs/ntfs_vnops.rs"
 lz = ["sys/ntfs/ntfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfsmount.rs"
@@ -7286,7 +7300,8 @@ status = "inherited"
 [[module]]
 rust = "sys/scsi/cd.rs"
 lz = ["sys/scsi/cd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/scsi/scsi_all.rs"
@@ -7327,7 +7342,8 @@ status = "inherited"
 [[module]]
 rust = "sys/scsi/sd.rs"
 lz = ["sys/scsi/sd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/scsi/sdvar.rs"
@@ -7474,7 +7490,7 @@ status = "inherited"
 rust = "sys/sys/buf.rs"
 lz = ["sys/sys/buf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/object.rs"]
+adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/sys/cdio.rs"
@@ -8141,12 +8157,14 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_balloc.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_balloc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_bmap.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_bmap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_bswap.rs"
@@ -8166,7 +8184,8 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_extents.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_extents.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_extern.rs"
@@ -8177,7 +8196,7 @@ status = "inherited"
 rust = "sys/ufs/ext2fs/ext2fs_inode.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_lookup.rs"
@@ -8188,7 +8207,7 @@ status = "inherited"
 rust = "sys/ufs/ext2fs/ext2fs_readwrite.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_readwrite.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_subr.rs"
@@ -8199,7 +8218,7 @@ status = "inherited"
 rust = "sys/ufs/ext2fs/ext2fs_vfsops.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_vnops.rs"
@@ -8211,13 +8230,13 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/ufs/ffs/ffs_alloc.rs"
 lz = ["sys/ufs/ffs/ffs_alloc.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_balloc.rs"
 lz = ["sys/ufs/ffs/ffs_balloc.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_extern.rs"
@@ -8228,7 +8247,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_inode.rs"
 lz = ["sys/ufs/ffs/ffs_inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_subr.rs"
@@ -8244,18 +8263,19 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
 lz = ["sys/ufs/ffs/ffs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
 lz = ["sys/ufs/ffs/fs.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfs_extern.rs"
@@ -8272,7 +8292,7 @@ adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
 rust = "sys/ufs/mfs/mfs_vnops.rs"
 lz = ["sys/ufs/mfs/mfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/thread.rs"]
+adapted_by = ["sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfsnode.rs"
@@ -8307,13 +8327,14 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ufs/ufs_bmap.rs"
 lz = ["sys/ufs/ufs/ufs_bmap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -8353,7 +8374,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/ufs/ufs/ufs_vnops.rs"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufsmount.rs"

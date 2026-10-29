@@ -277,7 +277,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                     ino = if isonum_711(rec.flags()) & 2 != 0 {
                         isodirino(&rec, imp)
                     } else {
-                        ((b.b_blkno.get() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
+                        ((b.blkno() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
                     };
                     let mut i_ino = ino;
                     let mut altname = [0u8; NAME_MAX + 1];
@@ -305,7 +305,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                         ino = if isonum_711(rec.flags()) & 2 != 0 {
                             isodirino(&rec, imp)
                         } else {
-                            ((b.b_blkno.get() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
+                            ((b.blkno() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
                         };
                         saveoffset = dp.i_offset.get();
                     } else if ino != 0 {

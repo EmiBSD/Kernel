@@ -99,6 +99,7 @@ use crate::machine::conf::{nblkdev, swapdev};
 use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_NONE, splbio, splx};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_INVAL, B_NOCACHE, Buf};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;
@@ -212,7 +213,7 @@ fn fs_allocsize(sbsize: i32) -> usize {
 /// (its mapping is page-rounded), and nothing else reaches its data while the reference
 /// lives.
 unsafe fn fs_in_buf(bp: &Buf) -> &Fs {
-    let p = bp.b_data.get();
+    let p = bp.data_ptr();
     if p.is_null() {
         panic(format_args!("ffs: unmapped super-block buffer"));
     }
@@ -661,7 +662,7 @@ pub fn ffs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Resul
     // the buffer `SBSIZE` >= `fs_sbsize` (ffs_validate); they do not overlap.
     unsafe {
         ptr::copy_nonoverlapping(
-            bp.b_data.get(),
+            bp.data_ptr(),
             ptr::from_ref(fs).cast_mut().cast::<u8>(),
             sbsize,
         );
@@ -707,7 +708,7 @@ fn read_summary(fs: &Fs, devvp: &'static Vnode) -> Result<(), Errno> {
         // (`ffs_mountfs` allocates `fs_cssize` rounded to fragments), and the buffer `size`;
         // they do not overlap.
         unsafe {
-            ptr::copy_nonoverlapping(bp.b_data.get(), space, size as usize);
+            ptr::copy_nonoverlapping(bp.data_ptr(), space, size as usize);
             space = space.add(size as usize);
         }
         brelse(bp);
@@ -863,7 +864,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
 
         // SAFETY: `fsmem` holds at least `fs_sbsize` bytes, the buffer `SBSIZE` >=
         // `fs_sbsize` (ffs_validate); they do not overlap.
-        unsafe { ptr::copy_nonoverlapping(b.b_data.get(), fsmem.as_ptr(), sbsize as usize) };
+        unsafe { ptr::copy_nonoverlapping(b.data_ptr(), fsmem.as_ptr(), sbsize as usize) };
         // SAFETY: `fsmem` is at least `size_of::<Fs>()` bytes from malloc (aligned), and
         // `Fs` is valid for any bytes; it lives until the unmount frees it.
         let fs: &'static Fs = unsafe { &*fsmem.as_ptr().cast::<Fs>() };
@@ -1510,7 +1511,7 @@ pub fn ffs_sbupdate(mp: &Ufsmount, waitfor: i32) -> Result<(), Errno> {
         // SAFETY: `fs_csp` holds whole fragments of summaries (`ffs_mountfs`), and the busy
         // buffer `size` mapped bytes; they do not overlap.
         unsafe {
-            ptr::copy_nonoverlapping(space, bp.b_data.get(), size as usize);
+            ptr::copy_nonoverlapping(space, bp.data_ptr(), size as usize);
             space = space.add(size as usize);
         }
         if waitfor != MNT_WAIT {
@@ -1537,7 +1538,7 @@ pub fn ffs_sbupdate(mp: &Ufsmount, waitfor: i32) -> Result<(), Errno> {
     unsafe {
         ptr::copy_nonoverlapping(
             ptr::from_ref(fs).cast::<u8>(),
-            bp.b_data.get(),
+            bp.data_ptr(),
             fs.fs_sbsize.get() as usize,
         );
     }
@@ -1554,7 +1555,7 @@ pub fn ffs_sbupdate(mp: &Ufsmount, waitfor: i32) -> Result<(), Errno> {
         let base = core::mem::offset_of!(Fs, fs_qbmask);
         // SAFETY: the 20 bytes from `fs_qbmask` are inside the super-block in the busy,
         // mapped buffer; `dfs` is not used while the slice lives.
-        let lp = unsafe { core::slice::from_raw_parts_mut(bp.b_data.get().add(base), 20) };
+        let lp = unsafe { core::slice::from_raw_parts_mut(bp.data_ptr().add(base), 20) };
         let word = |lp: &[u8], k: usize| [lp[k * 4], lp[k * 4 + 1], lp[k * 4 + 2], lp[k * 4 + 3]];
         let tmp = word(lp, 4);
         for k in (1..=4).rev() {
@@ -2416,12 +2417,12 @@ pub(crate) mod tests {
     /// `b_blkno`, then `biodone`.
     fn disk_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         let bp = ap.a_bp;
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let mut d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
@@ -2431,7 +2432,7 @@ pub(crate) mod tests {
                 } else {
                     d[off..off + len].copy_from_slice(data);
                 }
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();

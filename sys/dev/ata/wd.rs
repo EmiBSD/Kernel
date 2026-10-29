@@ -148,6 +148,7 @@ use crate::kern::vfs_bio::biodone;
 use crate::machine::cpu::delay;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, BUFQ_DEFAULT, Buf};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_POWERDOWN, DVACT_RESUME, DVACT_SUSPEND, Device,
@@ -493,7 +494,7 @@ pub fn wddetach(self_: &Device, _flags: i32) -> Result<(), Errno> {
 /// `wdstrategy`: read/write routine for a buffer. Validates the arguments and schedules
 /// the transfer. Does not wait for the transfer to complete.
 pub fn wdstrategy(bp: &'static Buf) {
-    let dv = wdlookup(diskunit(bp.b_dev.get()));
+    let dv = wdlookup(diskunit(bp.dev()));
 
     'done: {
         let error = 'bad: {
@@ -526,7 +527,7 @@ pub fn wdstrategy(bp: &'static Buf) {
             let secsize = wd
                 .sc_dk
                 .with_label(|lp| i64::from(lp.unwrap_or(&ZERO_LABEL).d_secsize));
-            if bp.b_bcount.get() / secsize >= (1i64 << NBBY) {
+            if bp.bcount() / secsize >= (1i64 << NBBY) {
                 break 'bad EINVAL;
             }
 
@@ -541,10 +542,9 @@ pub fn wdstrategy(bp: &'static Buf) {
         };
 
         // bad:
-        bp.b_error.set(Some(error));
+        bp.set_error(Some(error));
         bp.set(B_ERROR);
-        bp.b_resid
-            .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+        bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
     }
 
     // done:
@@ -584,12 +584,12 @@ pub fn __wdstart(wd: &'static WdSoftc, bp: &'static Buf) {
 
     let (blkno, nsecs) = wd.sc_dk.with_label(|lp| {
         let lp = lp.unwrap_or(&ZERO_LABEL);
-        let part = &lp.d_partitions[diskpart(bp.b_dev.get()) as usize];
+        let part = &lp.d_partitions[diskpart(bp.dev()) as usize];
         let blkno = dl_blktosec(
             lp,
-            (bp.b_blkno.get() as u64).wrapping_add(dl_sectoblk(lp, dl_getpoffset(part))),
+            (bp.blkno() as u64).wrapping_add(dl_sectoblk(lp, dl_getpoffset(part))),
         );
-        let nsecs = howmany(bp.b_bcount.get() as usize, lp.d_secsize as usize) as u64;
+        let nsecs = howmany(bp.bcount() as usize, lp.d_secsize as usize) as u64;
         (blkno, nsecs)
     });
     bio.blkno.set(blkno as Daddr);
@@ -614,8 +614,8 @@ pub fn __wdstart(wd: &'static WdSoftc, bp: &'static Buf) {
     if bp.isset(B_READ) {
         bio.set(ATA_READ);
     }
-    bio.bcount.set(bp.b_bcount.get());
-    bio.databuf.set(bp.b_data.get());
+    bio.bcount.set(bp.bcount());
+    bio.databuf.set(bp.data_ptr());
     bio.wd.set(Some(NonNull::from(wd)));
     // Instrumentation.
     disk_busy(&wd.sc_dk);
@@ -649,13 +649,12 @@ pub fn wddone(wd: &'static WdSoftc) {
         wd.sc_dev.xname()
     );
 
-    bp.b_resid
-        .set(usize::try_from(bio.bcount.get()).unwrap_or(0));
+    bp.set_resid(usize::try_from(bio.bcount.get()).unwrap_or(0));
     // `None`: the buffer's fate is set; `Some(what)`: goto retry with that message.
     let retry: Option<&str> = match bio.error.get() {
         ERR_NODEV => {
             bp.set(B_ERROR);
-            bp.b_error.set(Some(ENXIO));
+            bp.set_error(Some(ENXIO));
             None
         }
         ERR_DMA => Some("DMA error"),
@@ -693,12 +692,12 @@ pub fn wddone(wd: &'static WdSoftc) {
         }
         let _ = printf(format_args!("\n"));
         bp.set(B_ERROR);
-        bp.b_error.set(Some(EIO));
+        bp.set_error(Some(EIO));
     }
     disk_unbusy(
         &wd.sc_dk,
-        bp.b_bcount.get() - bp.b_resid.get() as i64,
-        bp.b_blkno.get(),
+        bp.bcount() - bp.resid() as i64,
+        bp.blkno(),
         bp.isset(B_READ),
     );
     biodone(bp);

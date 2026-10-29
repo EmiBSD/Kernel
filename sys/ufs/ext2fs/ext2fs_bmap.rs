@@ -82,6 +82,7 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{BCSTATS, biowait, brelse, getblk, incore};
 use crate::kern::vfs_vops::VOP_STRATEGY;
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_DELWRI, B_DONE, B_READ, Buf};
 use crate::sys::errno::Errno;
 use crate::sys::param::MAXBSIZE;
@@ -265,9 +266,9 @@ pub fn ext2fs_bmaparray(
         } else if cfg!(feature = "diagnostic") && daddr == 0 {
             panic(format_args!("ext2fs_bmaparry: indirect block not in cache"));
         } else {
-            b.b_blkno.set(blkptrtodb(ump, Daddr::from(daddr)));
+            b.set_blkno(blkptrtodb(ump, Daddr::from(daddr)));
             b.set(B_READ);
-            if let Some(bvp) = b.b_vp.get() {
+            if let Some(bvp) = b.vp() {
                 let _ = VOP_STRATEGY(bvp, b);
             }
             if let Some(p) = curproc() {

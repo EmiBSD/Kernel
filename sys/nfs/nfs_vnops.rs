@@ -176,6 +176,7 @@ use crate::nfs::nfsproto::{
     nfsx_sattr, vtonfsv2_mode, vtonfsv3_type,
 };
 use crate::nfs::xdr_subs::{fxdr_hyper, fxdr_nfsv3time, fxdr_unsigned, txdr_hyper, txdr_unsigned};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{
     B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_PHYS, B_RAW, B_READ, B_WANTED,
     B_WRITEINPROG, Buf,
@@ -3331,7 +3332,7 @@ pub fn nfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
     let mut error = Ok(());
 
-    if bp.b_flags.get() & (B_PHYS | B_ASYNC) == (B_PHYS | B_ASYNC) {
+    if bp.flags() & (B_PHYS | B_ASYNC) == (B_PHYS | B_ASYNC) {
         panic(format_args!("nfs physio/async"));
     }
     let p = if bp.isset(B_ASYNC) {
@@ -3393,9 +3394,7 @@ pub fn nfs_flush(
                 if bvecpos >= NFS_COMMITBVECSIZ {
                     break;
                 }
-                if bp.b_flags.get() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT)
-                    != (B_DELWRI | B_NEEDCOMMIT)
-                {
+                if bp.flags() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT) != (B_DELWRI | B_NEEDCOMMIT) {
                     continue;
                 }
                 bufcache_take(bp);
@@ -3407,13 +3406,13 @@ pub fn nfs_flush(
                 // be a race between the commit rpc and new uncommitted writes on the file.
                 bvec[bvecpos] = Some(bp);
                 bvecpos += 1;
-                let mut toff = (bp.b_blkno.get() as u64)
+                let mut toff = (bp.blkno() as u64)
                     .wrapping_mul(DEV_BSIZE as u64)
-                    .wrapping_add(bp.b_dirtyoff.get() as u64);
+                    .wrapping_add(bp.dirtyoff() as u64);
                 if toff < off {
                     off = toff;
                 }
-                toff = toff.wrapping_add((bp.b_dirtyend.get() - bp.b_dirtyoff.get()) as u64);
+                toff = toff.wrapping_add((bp.dirtyend() - bp.dirtyoff()) as u64);
                 if toff > endoff {
                     endoff = toff;
                 }
@@ -3446,8 +3445,8 @@ pub fn nfs_flush(
                     vp.v_numoutput.set(vp.v_numoutput.get() + 1);
                     bp.set(B_ASYNC);
                     bp.clr(B_READ | B_DONE | B_ERROR);
-                    bp.b_dirtyoff.set(0);
-                    bp.b_dirtyend.set(0);
+                    bp.set_dirtyoff(0);
+                    bp.set_dirtyend(0);
                     biodone(bp);
                     splx(s);
                 }
@@ -3616,7 +3615,7 @@ pub fn nfs_bwrite(ap: &mut VopBwriteArgs) -> Result<(), Errno> {
 /// `B_WRITEINPROG` isn't set unless the force flag is one and it also handles the
 /// `B_NEEDCOMMIT` flag.
 pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
-    let oldflags = bp.b_flags.get();
+    let oldflags = bp.flags();
     let mut retv: i32 = 1;
     let p = curproc(); // XXX
 
@@ -3624,7 +3623,7 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
         panic(format_args!("bwrite: buffer is not busy???"));
     }
 
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("nfs_writebp: buffer {:p} without a vnode", bp));
     };
     let np = VTONFS(vp);
@@ -3648,10 +3647,10 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
     // have to be scheduled via. VOP_STRATEGY(). If B_WRITEINPROG is already set, then push
     // it with a write anyhow.
     if oldflags & (B_NEEDCOMMIT | B_WRITEINPROG) == B_NEEDCOMMIT {
-        let mut off = (bp.b_blkno.get() as u64)
+        let mut off = (bp.blkno() as u64)
             .wrapping_mul(DEV_BSIZE as u64)
-            .wrapping_add(bp.b_dirtyoff.get() as u64) as Off;
-        let mut cnt = (bp.b_dirtyend.get() - bp.b_dirtyoff.get()) as usize;
+            .wrapping_add(bp.dirtyoff() as u64) as Off;
+        let mut cnt = (bp.dirtyend() - bp.dirtyoff()) as usize;
 
         rw_enter_write(&np.n_commitlock);
         if !bp.isset(B_NEEDCOMMIT) {
@@ -3694,8 +3693,8 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
 
         rw_exit_write(&np.n_commitlock);
         if retv == 0 {
-            bp.b_dirtyoff.set(0);
-            bp.b_dirtyend.set(0);
+            bp.set_dirtyoff(0);
+            bp.set_dirtyend(0);
             bp.clr(B_NEEDCOMMIT);
             let s = splbio();
             biodone(bp);

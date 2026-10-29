@@ -90,7 +90,7 @@ pub fn readdisklabel(
         // get a buffer and initialize it
         let b = geteblk(lp.d_secsize as usize);
         bp = Some(b);
-        b.b_dev.set(dev);
+        b.set_dev(dev);
 
         // Each spoof is tried in turn while nothing has matched (the C's `goto done`).
         #[cfg_attr(not(any(feature = "cd9660", feature = "udf")), allow(unused_mut))]
@@ -118,7 +118,7 @@ pub fn readdisklabel(
 pub fn writedisklabel(dev: Dev, strat: DevTypeStrategy, lp: &mut Disklabel) -> Result<(), Errno> {
     // get a buffer and initialize it
     let bp = geteblk(lp.d_secsize as usize);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
 
     let result = (|| {
         let mut partoff: Daddr = -1;

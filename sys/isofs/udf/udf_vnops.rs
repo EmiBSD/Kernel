@@ -120,6 +120,7 @@ use crate::kern::vfs_subr::{getnewvnode, vaccess, vget, vput, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BMAP, VOP_STRATEGY, VOP_UNLOCK};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, Buf, clrbuf};
 use crate::sys::dirent::{DT_DIR, DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use crate::sys::endian::{letoh16, letoh32, letoh64};
@@ -1115,26 +1116,25 @@ pub fn udf_readlink(_ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
 /// `udf_strategy` (`vop_strategy`).
 pub fn udf_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("udf_strategy: buffer without a vnode"));
     };
     let up = VTOU(vp);
 
     // cd9660 has this test reversed, but it seems more logical this way
-    if bp.b_blkno.get() != bp.b_lblkno.get() {
+    if bp.blkno() != bp.lblkno() {
         // Files that are embedded in the fentry don't translate well to a block number.
         // Reject.
         let off = bp
-            .b_lblkno
-            .get()
+            .lblkno()
             .wrapping_mul(Daddr::from(up.ump().um_bsize.get()));
         let invalid = match udf_bmap_internal(up, off) {
             Ok(UdfBmap::Block { sector, .. }) => {
-                bp.b_lblkno.set(sector);
+                bp.set_lblkno(sector);
                 false
             }
             Ok(UdfBmap::Invalid { sector }) => {
-                bp.b_lblkno.set(sector);
+                bp.set_lblkno(sector);
                 true
             }
             Err(_) => true,
@@ -1143,14 +1143,14 @@ pub fn udf_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
             // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
             // mapped; the strategy owns it until biodone.
             unsafe { clrbuf(bp) };
-            bp.b_blkno.set(-1);
+            bp.set_blkno(-1);
         }
     } else {
-        let mut blkno = bp.b_blkno.get();
-        let error = VOP_BMAP(vp, bp.b_lblkno.get(), None, Some(&mut blkno), None);
-        bp.b_blkno.set(blkno);
+        let mut blkno = bp.blkno();
+        let error = VOP_BMAP(vp, bp.lblkno(), None, Some(&mut blkno), None);
+        bp.set_blkno(blkno);
         if let Err(e) = error {
-            bp.b_error.set(Some(e));
+            bp.set_error(Some(e));
             bp.set(B_ERROR);
             let s = splbio();
             biodone(bp);
@@ -1158,19 +1158,19 @@ pub fn udf_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
             return Err(e);
         }
 
-        if bp.b_blkno.get() == -1 {
+        if bp.blkno() == -1 {
             // SAFETY: as above.
             unsafe { clrbuf(bp) };
         }
     }
 
-    if bp.b_blkno.get() == -1 {
+    if bp.blkno() == -1 {
         let s = splbio();
         biodone(bp);
         splx(s);
     } else {
         let devvp = up.devvp();
-        bp.b_dev.set(devvp.v_rdev());
+        bp.set_dev(devvp.v_rdev());
         let _ = VOP_STRATEGY(devvp, bp);
     }
 
@@ -1436,12 +1436,12 @@ pub unsafe fn udf_data<'a>(
         UdfData::Fentry(off) => (up.fentry_bytes(), off),
         UdfData::Buf(off) => match bp {
             Some(bp) => {
-                let len = usize::try_from(bp.b_bcount.get()).unwrap_or(0);
+                let len = usize::try_from(bp.bcount()).unwrap_or(0);
                 // SAFETY: the caller's contract: the buffer is busy for the caller and mapped
                 // (`b_data` holds `b_bcount` bytes, `buf_map`), and nothing writes it while
                 // the shared slice lives.
                 (
-                    unsafe { core::slice::from_raw_parts(bp.b_data.get(), len) },
+                    unsafe { core::slice::from_raw_parts(bp.data_ptr(), len) },
                     off,
                 )
             }
@@ -1513,9 +1513,7 @@ pub fn udf_readatoffset(
     let off = offset
         .checked_rem(Off::from(ump.um_bsize.get()))
         .unwrap_or(0) as usize;
-    let avail = usize::try_from(b.b_bcount.get())
-        .unwrap_or(0)
-        .saturating_sub(off);
+    let avail = usize::try_from(b.bcount()).unwrap_or(0).saturating_sub(off);
     *size = (*size as u32).min(avail as u32) as i32;
     Ok(UdfData::Buf(off))
 }
@@ -1977,18 +1975,18 @@ mod tests {
 
     /// A synchronous read of the image at `b_blkno`, then `biodone`.
     fn disk_io(bp: &'static Buf) {
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if !bp.isset(B_READ) || off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
                 let data = unsafe { bp.data() };
                 data.copy_from_slice(&d[off..off + len]);
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();

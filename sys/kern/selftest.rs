@@ -1851,16 +1851,16 @@ pub fn rd_check() {
     }
 
     let bp = geteblk(SBLOCKSIZE);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
     let mut found = None;
     for (sblock, magic, name) in SBLOCKS {
-        bp.b_blkno.set(sblock / 512);
-        bp.b_bcount.set(SBLOCKSIZE as i64);
-        bp.b_error.set(None);
+        bp.set_blkno(sblock / 512);
+        bp.set_bcount(SBLOCKSIZE as i64);
+        bp.set_error(None);
         bp.clr(B_READ | B_WRITE | B_DONE | B_ERROR);
         bp.set(B_BUSY | B_READ | B_RAW);
         (sw.d_strategy)(bp);
-        if biowait(bp).is_err() || bp.b_resid.get() != 0 {
+        if biowait(bp).is_err() || bp.resid() != 0 {
             continue;
         }
         // SAFETY: `geteblk` returned the buffer busy and mapped, for this test alone.

@@ -110,7 +110,7 @@ fn measure(ops: usize, mut f: impl FnMut() -> Duration) -> (f64, f64, f64) {
 /// `biodone`); no byte moves (the timed ops never reach it).
 fn strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    bp.b_resid.set(0);
+    bp.set_resid(0);
     let s = splbio();
     biodone(bp);
     splx(s);
@@ -338,7 +338,7 @@ fn main() {
         let bufs: Vec<&'static Buf> = (0..QN)
             .map(|i| {
                 let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
-                bp.b_blkno.set(((i * 97) % QN) as Daddr * STEP);
+                bp.set_blkno(((i * 97) % QN) as Daddr * STEP);
                 bp
             })
             .collect();

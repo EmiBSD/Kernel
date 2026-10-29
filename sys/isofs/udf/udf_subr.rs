@@ -146,14 +146,12 @@ fn spoof_read(
     sector: u32,
     bsize: usize,
 ) -> Result<(), Errno> {
-    bp.b_blkno
-        .set(Daddr::from(sector).wrapping_mul(btodb(bsize) as Daddr));
-    bp.b_bcount.set(bsize as i64);
+    bp.set_blkno(Daddr::from(sector).wrapping_mul(btodb(bsize) as Daddr));
+    bp.set_bcount(bsize as i64);
     bp.clr(B_READ | B_WRITE | B_DONE);
     bp.set(B_BUSY | B_READ | B_RAW);
     if secpercyl != 0 {
-        bp.b_resid
-            .set((bp.b_blkno.get() / Daddr::from(secpercyl)) as usize);
+        bp.set_resid((bp.blkno() / Daddr::from(secpercyl)) as usize);
     }
 
     strat(bp);
@@ -173,7 +171,7 @@ pub fn udf_disklabelspoof(
 
     // Get a buffer to work with.
     let bp = geteblk(bsize);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
 
     let error = 'out: {
         // Look for an Anchor Volume Descriptor at sector 256.

@@ -149,6 +149,7 @@ use crate::msdosfs::msdosfs_lookup::{
 use crate::msdosfs::msdosfsmount::{
     cntobn, de_clcount, de_cluster, de_cn2bn, de_cn2off, roottobn, vfstomsdosfs,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{Buf, clrbuf};
 use crate::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
 use crate::sys::errno::Errno;
@@ -794,7 +795,7 @@ pub fn msdosfs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
         } else {
             bread_cluster(vp, Daddr::from(cn), size)
         };
-        n = n.min(bpcluster.wrapping_sub(bp.b_resid.get() as u32));
+        n = n.min(bpcluster.wrapping_sub(bp.resid() as u32));
         if let Err(e) = r {
             brelse(bp);
             return Err(e);
@@ -912,12 +913,12 @@ pub fn msdosfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                     unsafe { clrbuf(bp) };
                     // Do the bmap now, since pcbmap needs buffers for the fat table. (see
                     // msdosfs_strategy)
-                    if bp.b_blkno.get() == bp.b_lblkno.get() {
-                        let mut blkno = bp.b_blkno.get();
-                        error = pcbmap(dep, bp.b_lblkno.get() as u32, Some(&mut blkno), None, None);
-                        bp.b_blkno.set(if error.is_err() { -1 } else { blkno });
+                    if bp.blkno() == bp.lblkno() {
+                        let mut blkno = bp.blkno();
+                        error = pcbmap(dep, bp.lblkno() as u32, Some(&mut blkno), None, None);
+                        bp.set_blkno(if error.is_err() { -1 } else { blkno });
                     }
-                    if bp.b_blkno.get() == -1 {
+                    if bp.blkno() == -1 {
                         brelse(bp);
                         if error.is_ok() {
                             error = Err(Errno::EIO); // XXX
@@ -1730,7 +1731,7 @@ pub fn msdosfs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
                 brelse(bp);
                 return Err(e);
             }
-            n = i64::from((n as u32).min((blsize as u32).wrapping_sub(bp.b_resid.get() as u32)));
+            n = i64::from((n as u32).min((blsize as u32).wrapping_sub(bp.resid() as u32)));
 
             // SAFETY: the buffer is busy for this function (from `bread`) and mapped; the
             // slice is not used after the buffer is released.
@@ -1945,7 +1946,7 @@ pub fn msdosfs_bmaparray(
 /// then pass it to the device.
 pub fn msdosfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let Some(bvp) = bp.b_vp.get() else {
+    let Some(bvp) = bp.vp() else {
         panic(format_args!("msdosfs_strategy: buffer without a vnode"));
     };
     let dep = vtode(bvp);
@@ -1957,17 +1958,17 @@ pub fn msdosfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     // If we don't already know the filesystem relative block number then get it using
     // pcbmap(). If pcbmap() returns the block number as -1 then we've got a hole in the file.
     // DOS filesystems don't allow files with holes, so we shouldn't ever see this.
-    if bp.b_blkno.get() == bp.b_lblkno.get() {
-        let mut blkno = bp.b_blkno.get();
-        error = pcbmap(dep, bp.b_lblkno.get() as u32, Some(&mut blkno), None, None);
-        bp.b_blkno.set(if error.is_err() { -1 } else { blkno });
-        if bp.b_blkno.get() == -1 {
+    if bp.blkno() == bp.lblkno() {
+        let mut blkno = bp.blkno();
+        error = pcbmap(dep, bp.lblkno() as u32, Some(&mut blkno), None, None);
+        bp.set_blkno(if error.is_err() { -1 } else { blkno });
+        if bp.blkno() == -1 {
             // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
             // mapped; the strategy owns it until biodone.
             unsafe { clrbuf(bp) };
         }
     }
-    if bp.b_blkno.get() == -1 {
+    if bp.blkno() == -1 {
         let s = splbio();
         biodone(bp);
         splx(s);
@@ -1978,7 +1979,7 @@ pub fn msdosfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let Some(vp) = dep.de_devvp.get() else {
         panic(format_args!("msdosfs_strategy: denode without a device"));
     };
-    bp.b_dev.set(vp.v_rdev());
+    bp.set_dev(vp.v_rdev());
     let _ = VOP_STRATEGY(vp, bp);
     Ok(())
 }

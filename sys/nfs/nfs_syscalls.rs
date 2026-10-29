@@ -93,6 +93,7 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::subr_prf::panic;
+use crate::sys::buf::BufLegacy;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::systm::{INFSLP, SysArgs};
@@ -915,25 +916,23 @@ pub fn nfssvc_iod(_arg: *mut c_void) {
             NFS_BUFQLEN.fetch_sub(1, Relaxed);
             wakeup_one(ptr::from_ref(&NFS_BUFQLEN));
             let mut bp = first;
-            if bp.b_flags.get() & B_READ != 0 {
+            if bp.flags() & B_READ != 0 {
                 let _ = nfs_doio(bp, None);
             } else {
                 loop {
                     // Look for a delayed write for the same vnode, so I can do it now. We
                     // must grab it before calling nfs_doio() to avoid any risk of the vnode
                     // getting vclean()'d while we are doing the write rpc.
-                    let Some(vp) = bp.b_vp.get() else {
+                    let Some(vp) = bp.vp() else {
                         panic(format_args!("nfssvc_iod: buffer without a vnode"));
                     };
                     let s = splbio();
                     let mut nbp = None;
                     for b in vp.v_dirtyblkhd.iter() {
-                        if b.b_flags.get() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT | B_NOCACHE)
-                            != B_DELWRI
-                        {
+                        if b.flags() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT | B_NOCACHE) != B_DELWRI {
                             continue;
                         }
-                        b.b_flags.set(b.b_flags.get() | B_ASYNC);
+                        b.set_flags(b.flags() | B_ASYNC);
                         bufcache_take(b);
                         buf_acquire(b);
                         nbp = Some(b);
@@ -942,10 +941,9 @@ pub fn nfssvc_iod(_arg: *mut c_void) {
                     // For the delayed write, do the first part of nfs_bwrite() up to, but not
                     // including nfs_strategy().
                     if let Some(nbp) = nbp {
-                        nbp.b_flags
-                            .set(nbp.b_flags.get() & !(B_READ | B_DONE | B_ERROR));
+                        nbp.set_flags(nbp.flags() & !(B_READ | B_DONE | B_ERROR));
                         buf_undirty(nbp);
-                        if let Some(nvp) = nbp.b_vp.get() {
+                        if let Some(nvp) = nbp.vp() {
                             nvp.v_numoutput.set(nvp.v_numoutput.get() + 1);
                         }
                     }

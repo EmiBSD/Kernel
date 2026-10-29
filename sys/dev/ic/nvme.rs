@@ -911,8 +911,8 @@ pub fn nvme_minphys(bp: &Buf, link: &'static ScsiLink) {
     let sc = nvme_link_softc(link);
 
     let mdts = sc.sc_mdts.get() as i64;
-    if bp.b_bcount.get() > mdts {
-        bp.b_bcount.set(mdts);
+    if bp.bcount() > mdts {
+        bp.set_bcount(mdts);
     }
 }
 
