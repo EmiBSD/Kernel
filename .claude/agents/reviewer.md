@@ -62,7 +62,12 @@ on the side it must match, and a concrete failing input or sequence when it is a
    soundness check repeated in the same walk (never removed), a handle cloned where the lock
    already keeps it alive (`docs/IDIOMS.md`, "hot path"). The commit carries the host
    microbenchmarks' `Bench:` lines (`sys/kernel/benches/vm.rs`, debug and release), and an
-   op more than 10 % slower has its reason in the body.
+   op more than 10 % slower has its reason in the body. Beyond the hot paths, in all the code
+   under review: the same complexity as the C, step by step. A walk the C makes by pointer
+   (`TAILQ_FOREACH`, `RBT_NEXT`) that the native code makes by finding the element again by key
+   at each step (`find` then `next`, N3's `next_key`: O(n log n) against O(n)) is a finding,
+   blocking on a hot path and should-fix elsewhere; so is an operation with more lock or spl
+   transitions than the C's (N5.1: each spl pair is an `ICC_PMR` write under TCG).
 6. Tests: the C's known-answer vectors are real standard vectors (spot-check); tests assert
    behaviour, not just that the code runs; the counts in the commit body match.
 7. Commit shape (`git-commits.md`): the subject, the body's numbers, `LZ:` lines matching the
