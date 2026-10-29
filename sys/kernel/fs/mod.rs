@@ -19,10 +19,11 @@
 /* <CODE> */
 //! The file systems' core, moving out of `bsd` piece by piece (N5, docs/ROADMAP.md): the
 //! buffer header and its owner's token, `<sys/buf.h>`, the buffer cache and its memory, and
-//! the disk queues (N5.1).
+//! the disk queues and physio (N5.1).
 
 pub mod bio;
 pub mod biomem;
 pub mod buf;
 pub mod bufq;
+pub mod physio;
 /* </CODE> */

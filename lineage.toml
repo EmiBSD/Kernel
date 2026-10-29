@@ -7988,6 +7988,13 @@ status = "redesigned"
 notes = "N5.1: disk queues: struct bufq_impl as the trait BufqDiscipline with Fifo and Nscan, both heads embedded in the queue's state (no M_DEVBUF head, so no bufq init fail), the queue all zero until bufq_init (a zeroed softc embeds it; its Mutexed raises to IPL_MPFLOOR, above IPL_BIO); a queued buffer's token parked in it, the lists SecondaryLists of members (counted for a cache buffer, 'static for a driver's); bufqs a hal::list::List of the softcs' queues; bufq_queue tells bwrite the queue (note_queued)"
 
 [[module]]
+rust = "sys/kernel/fs/physio.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_physio.rs"]
+status = "redesigned"
+notes = "N5.1: physio(9) over a bufpl box on an OwnedList of its own (never bufhead: numbufs untouched), its B_BUSY token consumed by the strategy routine (a closure; bsd's adapter parks it for the driver's fn(&'static Buf)) and taken back from the buffer's slot at B_DONE under the cache's lock (the C's splbio); each piece wired by uvm_vslock_device and mapped by DeviceLock::vmapbuf (km::PhysWindow, borrowing the lock, the address only), unmapped before uvm_vsunlock_device; a thread without an address space is EFAULT"
+
+[[module]]
 rust = "sys/hal/sys/syslimits.rs"
 crate = "hal"
 lz = ["sys/sys/syslimits.rs"]
