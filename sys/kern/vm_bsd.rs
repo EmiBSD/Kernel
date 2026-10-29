@@ -461,8 +461,9 @@
 //!   u-area with the legacy pointer.
 //! - What `sys/uvm/`'s adapters kept for `bsd` (N3.3 to N3.4e), now here: the page system's
 //!   machine inputs (`uvm_page.c`: the segment policy and `uvm_page_physload`'s lines,
-//!   `uvm_page_init` over the machine's constraints with `BsdBufCacheStats`, `uvm_pagealloc`
-//!   with the `(obj, anon)` pair, `uvm_pagealloc_multi`, `uvm_shutdown`,
+//!   `uvm_page_init` over the machine's constraints, `uvm_pagealloc`
+//!   with the `(obj, anon)` pair, `uvm_shutdown` (N5.1: `uvm_pagealloc_multi` is the kernel's
+//!   `vm::page`'s, with the buffer cache),
 //!   `paddr_is_dma_reachable`, `uvm_page_physdump`, `uvm_pmr_print`); the vnode as the
 //!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`; N5.0: `BsdSysInfo` is
 //!   gone, the pager reads `kernel::tc` and `kernel::reboot` itself) and the
@@ -474,9 +475,7 @@
 //! - `uvm_page_physload` after `uvm_init` needs `km_alloc` for the segment's pages: the
 //!   segment is ignored, with the C's lines, as the C does when that allocation fails (LZ's
 //!   deviation, kept).
-//! - On a machine without an MMU (`PMAP_NOMMU`, the host double) `uvm_pagealloc_multi` asks
-//!   for one physical segment: the buffer cache reaches a buffer's pages through the direct
-//!   map there (`vfs_biomem.rs`).
+
 //! - `uvn_attach` of a block device needs the device switch (`bdevsw[].d_type`, `DIOCGPART`
 //!   through `d_ioctl`, `conf.c`): reported by the kernel's pager, and the attach fails (NULL)
 //!   as for a device that is not a disk (LZ's). `uvm_vnp_sync(NULL)` is `uvm_vnp_sync(None)`;
@@ -513,21 +512,21 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::syscall::SysResult;
 use hal::user::UserPtr;
-use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::param::{round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
 use kernel::api::VmEntries;
 use kernel::pipe::UioMove;
 use kernel::vm::anon::Anon;
 use kernel::vm::init::VmMachine;
-use kernel::vm::km::{KmemDynMode, KmemPaMode, KmemVaMode, NO_CONSTRAINT, pa_mode};
+use kernel::vm::km::{KmemDynMode, KmemPaMode, KmemVaMode, pa_mode};
 use kernel::vm::map::{Vmspace as KVmspace, VmspaceRef, uvmspace_free, uvmspace_purge};
 use kernel::vm::mmap::MmapArgs;
 use kernel::vm::object::{ObjRef, Object};
 use kernel::vm::page::{
-    MAX_SEGS, Owner, PG_CLEAN, PG_DEV, PG_FAKE, Pglist, PhysloadError, SegPolicy, SegStrat, VmPage,
-    VmPhysseg, boot_segments, page_init_done, uvm_pagealloc_pg, uvm_pglistalloc, vm_physmem,
+    MAX_SEGS, Owner, PhysloadError, SegPolicy, SegStrat, VmPage, VmPhysseg, boot_segments,
+    page_init_done, vm_physmem,
 };
-use kernel::vm::pmemrange::BufCacheStats;
+
 use kernel::vm::types::{VmProt, Voff};
 use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 
@@ -561,7 +560,7 @@ use crate::sys::syscallargs::{
     SysMlockallArgs, SysMmapArgs, SysMprotectArgs, SysMqueryArgs, SysMsyncArgs, SysMunlockArgs,
     SysMunmapArgs, SysObreakArgs, SysPinsyscallsArgs,
 };
-use crate::sys::systm::{SysArgs, kernel_assert_locked, kernel_assert_unlocked, sysargs};
+use crate::sys::systm::{SysArgs, kernel_assert_unlocked, sysargs};
 use crate::sys::types::{Paddr, Vaddr};
 use crate::sys::types::{Register, Rlim};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -1106,22 +1105,6 @@ const SEG_POLICY: SegPolicy = SegPolicy {
     },
 };
 
-/// The buffer cache's statistics of `<sys/mount.h>`, for the kernel's allocator (the
-/// `BufCacheStats` bridge): one call each into the legacy function of the same name.
-struct BsdBufCacheStats;
-
-impl BufCacheStats for BsdBufCacheStats {
-    fn bufpages_deficit(&self) -> i64 {
-        crate::sys::mount::bufpages_deficit()
-    }
-
-    fn bufpages_inact(&self) -> i64 {
-        crate::sys::mount::bufpages_inact()
-    }
-}
-
-static BSD_BUFCACHE_STATS: BsdBufCacheStats = BsdBufCacheStats;
-
 /// The C's `(obj, anon)` pair (at most one of them) as the kernel's [`Owner`].
 pub fn owner<'a>(obj: Option<&'a Object>, anon: Option<&'a Anon>) -> Owner<'a> {
     kassert!(obj.is_none() || anon.is_none());
@@ -1142,8 +1125,6 @@ pub fn paddr_is_dma_reachable(paddr: Paddr) -> bool {
 /// and the buffer cache's statistics). Called from `uvm_init()`. Returns the range of kernel
 /// virtual memory left after the boot allocations in `kvm_startp`/`kvm_endp`.
 pub fn uvm_page_init(kvm_startp: &mut Vaddr, kvm_endp: &mut Vaddr) {
-    // A second registration (a host test's next set-up) keeps the first: the same statics.
-    let _ = kernel::vm::pmemrange::uvm_pmr_install_stats(&BSD_BUFCACHE_STATS);
     // The page system steals its boot memory through the pmap (the host double bootstraps it
     // here, as no boot path does).
     <Machine as Pmap>::pmap_bootstrap_lazy();
@@ -1247,40 +1228,6 @@ pub fn uvm_pagealloc(
     flags: i32,
 ) -> Option<&'static VmPage> {
     kernel::vm::page::uvm_pagealloc(owner(obj, anon), off, flags)
-}
-
-/// `uvm_pagealloc_multi`: interface used by the buffer cache to allocate a buffer at a time.
-pub fn uvm_pagealloc_multi(obj: &Object, off: Voff, size: usize, flags: i32) -> Result<(), Errno> {
-    kassert!(obj.is_bufcache());
-    kernel_assert_locked();
-    let plist = Pglist::new();
-    let r = uvm_pglistalloc(
-        size,
-        NO_CONSTRAINT.ucr_low,
-        NO_CONSTRAINT.ucr_high,
-        Paddr::new(0),
-        Paddr::new(0),
-        &plist,
-        // No MMU (the host double): the buffer cache reaches the pages through the direct
-        // map, so they must be one segment (see the module's deviations).
-        if <Machine as Pmap>::PMAP_NOMMU {
-            1
-        } else {
-            atop(round_page(size)) as i32
-        },
-        flags,
-    );
-    if r.is_ok() {
-        let mut i = 0;
-        while let Some(pg) = plist.pop_head() {
-            pg.set_wire_count(1);
-            pg.set_bits(PG_CLEAN | PG_FAKE);
-            kassert!(pg.flags() & PG_DEV == 0);
-            uvm_pagealloc_pg(pg, Owner::Object(obj), off + ptoa(i) as Voff);
-            i += 1;
-        }
-    }
-    r
 }
 
 const _: () = {

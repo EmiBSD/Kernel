@@ -82,7 +82,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::kern::kern_malloc::{malloc, mallocarray};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::subr_autoconf::{ALLDEVS, device_ref, device_unref};
 use crate::kern::subr_disk::{
     bounds_check_with_label, disk_attach, disk_closepart, disk_detach, disk_gone, disk_lock,
@@ -90,10 +89,12 @@ use crate::kern::subr_disk::{
     setdisklabel,
 };
 use crate::kern::subr_prf::{panic, snprintf};
-use crate::kern::vfs_bio::biodone;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdata, Cfdriver, DV_DISK, DVF_ACTIVE, Device, FSTATE_NOTFOUND, Softc,
 };
@@ -375,16 +376,15 @@ pub fn rdclose(dev: Dev, _flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), 
 
 /// `rdstrategy`: copies between the buffer and the image.
 pub fn rdstrategy(bp: &'static Buf) {
-    let dv = rdlookup(diskunit(bp.b_dev.get()));
+    let dv = rdlookup(diskunit(bp.dev()));
     let label = dv.and_then(|dv| rd_softc(dv).sc_dk.label());
 
     match label {
         None => {
-            bp.b_error.set(Some(Errno::ENXIO));
+            bp.set_error(Some(Errno::ENXIO));
             // bad:
             bp.set(B_ERROR);
-            bp.b_resid
-                .set(usize::try_from(bp.b_bcount.get()).unwrap_or(0));
+            bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
         }
         Some(lp) => {
             // Validate the request.
@@ -408,13 +408,13 @@ pub fn rdstrategy(bp: &'static Buf) {
 fn rd_transfer(bp: &Buf, lp: &Disklabel) {
     // XXX: Worry about overflow when computing off?
     let size = rd_root_size() as u64;
-    let p = &lp.d_partitions[diskpart(bp.b_dev.get()) as usize];
+    let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
     let mut off =
-        dl_getpoffset(p) * u64::from(lp.d_secsize) + (bp.b_blkno.get() as u64) * DEV_BSIZE as u64;
+        dl_getpoffset(p) * u64::from(lp.d_secsize) + (bp.blkno() as u64) * DEV_BSIZE as u64;
     if off > size {
         off = size;
     }
-    let bcount = usize::try_from(bp.b_bcount.get()).unwrap_or(0);
+    let bcount = usize::try_from(bp.bcount()).unwrap_or(0);
     let xfer = bcount.min((size - off) as usize);
     let image = RD_ROOT_IMAGE.load(Ordering::Relaxed);
     if xfer > 0 && !image.is_null() {
@@ -424,13 +424,13 @@ fn rd_transfer(bp: &Buf, lp: &Disklabel) {
         unsafe {
             let addr = image.add(off as usize);
             if bp.isset(B_READ) {
-                ptr::copy_nonoverlapping(addr, bp.b_data.get(), xfer);
+                ptr::copy_nonoverlapping(addr, bp.data_ptr(), xfer);
             } else {
-                ptr::copy_nonoverlapping(bp.b_data.get(), addr, xfer);
+                ptr::copy_nonoverlapping(bp.data_ptr(), addr, xfer);
             }
         }
     }
-    bp.b_resid.set(bcount - xfer);
+    bp.set_resid(bcount - xfer);
 }
 
 /// `rdioctl`.
@@ -622,10 +622,10 @@ mod tests {
     fn buf(dev: Dev, blkno: Daddr, len: usize, read: bool) -> &'static Buf {
         let data: &'static mut Vec<u8> = Box::leak(Box::new(vec![0xeeu8; len]));
         let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
-        bp.b_data.set(data.as_mut_ptr());
-        bp.b_dev.set(dev);
-        bp.b_blkno.set(blkno);
-        bp.b_bcount.set(len as i64);
+        bp.set_data_ptr(data.as_mut_ptr());
+        bp.set_dev(dev);
+        bp.set_blkno(blkno);
+        bp.set_bcount(len as i64);
         bp.set(B_BUSY | if read { B_READ } else { B_WRITE });
         bp
     }
@@ -670,7 +670,7 @@ mod tests {
         rdstrategy(bp);
         assert!(bp.isset(B_DONE));
         assert!(!bp.isset(B_ERROR));
-        assert_eq!(bp.b_resid.get(), 0);
+        assert_eq!(bp.resid(), 0);
         // SAFETY: the test's own buffer.
         assert!(unsafe { bp.data() }.iter().all(|&b| b == 2));
 
@@ -687,18 +687,18 @@ mod tests {
         // Past the end: truncated, then end of disk.
         let bp = buf(raw, SECTORS as Daddr - 1, 2 * DEV_BSIZE, true);
         rdstrategy(bp);
-        assert_eq!(bp.b_bcount.get(), DEV_BSIZE as i64);
-        assert_eq!(bp.b_resid.get(), 0);
+        assert_eq!(bp.bcount(), DEV_BSIZE as i64);
+        assert_eq!(bp.resid(), 0);
         let bp = buf(raw, SECTORS as Daddr, DEV_BSIZE, true);
         rdstrategy(bp);
         assert!(!bp.isset(B_ERROR));
-        assert_eq!(bp.b_resid.get(), DEV_BSIZE);
+        assert_eq!(bp.resid(), DEV_BSIZE);
 
         // No unit 1.
         let bp = buf(makediskdev(17, 1, RAW_PART), 0, DEV_BSIZE, true);
         rdstrategy(bp);
         assert!(bp.isset(B_ERROR));
-        assert_eq!(bp.b_error.get(), Some(Errno::ENXIO));
+        assert_eq!(bp.error(), Some(Errno::ENXIO));
 
         // DIOCGDINFO copies the in-core label out.
         let mut data = vec![0u8; DISKLABEL_SIZE];

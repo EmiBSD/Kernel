@@ -107,6 +107,7 @@
 
 use hal::arch::current::vmparam::{DFLDSIZ, DFLSSIZ, MAXDSIZ, MAXSSIZ};
 use hal::kmbuf::KmBuf;
+use hal::pmap::Pmap;
 use hal::rwlock::RwMode;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
@@ -116,7 +117,7 @@ use hal::vm::uvmexp::UVMEXP;
 
 use super::fault::{FaultMap, FaultMapGuard, uvm_fault_unwire_locked, uvm_fault_wire};
 use super::init::machine;
-use super::km::{KD_WAITOK, KP_ZERO, KmemVaMode, KvMap, dma_memory, km_alloc, km_free};
+use super::km::{KD_WAITOK, KP_ZERO, KmemVaMode, KvMap, PhysWindow, dma_memory, km_alloc, km_free};
 use super::map::{VmMap, uvm_map_pageable};
 use super::types::VmProt;
 use crate::prf::unported;
@@ -198,6 +199,21 @@ impl DeviceLock<'_> {
         self.bounce
             .as_ref()
             .map(|(buf, off)| Vaddr::new(buf.as_ptr().addr() + off))
+    }
+
+    /// `vmapbuf(bp, len)` over the pages this lock wired (physio, when the device reaches the
+    /// user's pages: no bounce): `phys_map` space with each wired page entered, borrowing the
+    /// lock, so it is gone before the pages are unwired. The kernel address of the user's
+    /// first byte is [`DeviceLock::window_addr`] of it (the C's `b_data` after `vmapbuf`).
+    pub fn vmapbuf(&self) -> PhysWindow<'_> {
+        let pmap: &Pmap = FaultMap::pmap(self.guard.map());
+        PhysWindow::map(pmap, self.start, self.end)
+    }
+
+    /// The kernel address of the user's first byte through `w`, a window of this lock
+    /// ([`DeviceLock::vmapbuf`]): `vmapbuf`'s `b_data = window + (addr - trunc_page(addr))`.
+    pub fn window_addr(&self, w: &PhysWindow<'_>) -> usize {
+        w.va().as_usize() + (self.addr - self.start)
     }
 }
 

@@ -103,6 +103,7 @@ use crate::scsi::scsiconf::{
     SCSI_DATA_IN, SCSI_DATA_OUT, SCSI_NOSLEEP, XS_DRIVER_STUFFUP, XS_NOERROR,
 };
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::param::{DEV_BSHIFT, MAXPHYS};
@@ -1009,8 +1010,8 @@ pub fn sr_raid6_intr(bp: &'static Buf) {
     let s = splbio();
     sr_ccb_done(ccb);
 
-    let len = usize::try_from(ccb.ccb_buf.b_bcount.get()).unwrap_or(0);
-    let b_data = ccb.ccb_buf.b_data.get();
+    let len = usize::try_from(ccb.ccb_buf.bcount()).unwrap_or(0);
+    let b_data = ccb.ccb_buf.data_ptr();
 
     // XOR data to result.
     if let Some(pq) = NonNull::new(ccb.ccb_opaque.get().cast::<SrRaid6Opaque>()) {
@@ -1044,9 +1045,9 @@ pub fn sr_raid6_intr(bp: &'static Buf) {
     // Free allocated data buffer.
     if ccb.ccb_flags.get() & SR_CCBF_FREEBUF != 0 {
         if let Some(p) = NonNull::new(b_data) {
-            sr_block_put(sd, p, ccb.ccb_buf.b_bcount.get());
+            sr_block_put(sd, p, ccb.ccb_buf.bcount());
         }
-        ccb.ccb_buf.b_data.set(ptr::null_mut());
+        ccb.ccb_buf.set_data_ptr(ptr::null_mut());
     }
 
     sr_wu_done(wu);

@@ -79,10 +79,11 @@
 use core::sync::atomic::Ordering;
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{BCSTATS, biowait, brelse, getblk, incore};
 use crate::kern::vfs_vops::VOP_STRATEGY;
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_DELWRI, B_DONE, B_READ, Buf};
+use crate::sys::buf::{BCSTATS, biowait, brelse, getblk, incore};
 use crate::sys::errno::Errno;
 use crate::sys::param::MAXBSIZE;
 use crate::sys::systm::INFSLP;
@@ -248,7 +249,7 @@ pub fn ext2fs_bmaparray(
         // isn't in the cache, or if we were looking for an indirect block and we've found
         // it.
         let metalbn = xap[x].in_lbn;
-        if (daddr == 0 && incore(vp, metalbn).is_none()) || metalbn == bn {
+        if (daddr == 0 && !incore(vp, metalbn)) || metalbn == bn {
             break;
         }
         // If we get here, we've either got the block in the cache or we have a disk address
@@ -265,9 +266,9 @@ pub fn ext2fs_bmaparray(
         } else if cfg!(feature = "diagnostic") && daddr == 0 {
             panic(format_args!("ext2fs_bmaparry: indirect block not in cache"));
         } else {
-            b.b_blkno.set(blkptrtodb(ump, Daddr::from(daddr)));
+            b.set_blkno(blkptrtodb(ump, Daddr::from(daddr)));
             b.set(B_READ);
-            if let Some(bvp) = b.b_vp.get() {
+            if let Some(bvp) = b.vp() {
                 let _ = VOP_STRATEGY(bvp, b);
             }
             if let Some(p) = curproc() {

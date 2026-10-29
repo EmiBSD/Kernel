@@ -117,7 +117,6 @@ use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::kern_synch::tsleep_nsec;
 use crate::kern::kern_tc::{getnanotime, gettime};
 use crate::kern::spec_vnops::{
     spec_advlock, spec_close, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_read,
@@ -125,8 +124,6 @@ use crate::kern::spec_vnops::{
 };
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{BCSTATS, biodone, biowait, brelse, buf_undirty, bufcache_take};
-use crate::kern::vfs_biomem::buf_acquire;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
 use crate::kern::vfs_default::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
@@ -176,10 +173,12 @@ use crate::nfs::nfsproto::{
     nfsx_sattr, vtonfsv2_mode, vtonfsv3_type,
 };
 use crate::nfs::xdr_subs::{fxdr_hyper, fxdr_nfsv3time, fxdr_unsigned, txdr_hyper, txdr_unsigned};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{
-    B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_PHYS, B_RAW, B_READ, B_WANTED,
-    B_WRITEINPROG, Buf,
+    B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_PHYS, B_RAW, B_READ, B_WRITEINPROG,
+    Buf,
 };
+use crate::sys::buf::{BCSTATS, biodone, biowait, brelse, buf_undirty, lend};
 use crate::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_recsize, iftodt};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_LINK, NOTE_TRUNCATE, NOTE_WRITE};
@@ -196,7 +195,7 @@ use crate::sys::namei::{
     CREATE, Componentname, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY,
     NAMECACHE_MAXLEN, PDIRUNLOCK, RENAME, SAVENAME, WANTPARENT,
 };
-use crate::sys::param::{DEV_BSIZE, MAXPATHLEN, PAGE_SIZE, PCATCH, PRIBIO, btodb};
+use crate::sys::param::{DEV_BSIZE, MAXPATHLEN, PAGE_SIZE, PCATCH, btodb};
 use crate::sys::proc::Proc;
 use crate::sys::syslimits::{LINK_MAX, NAME_MAX};
 use crate::sys::systm::INFSLP;
@@ -219,6 +218,7 @@ use crate::sys::vnode::{
     VopUnlockArgs, VopWriteArgs, Vops, Vtype, cred_ref, vttoif,
 };
 use crate::unported;
+use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_scan};
 
 use crate::nfs::nfs_vfsops::nfs_fsinfo;
 
@@ -3331,7 +3331,7 @@ pub fn nfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
     let mut error = Ok(());
 
-    if bp.b_flags.get() & (B_PHYS | B_ASYNC) == (B_PHYS | B_ASYNC) {
+    if bp.flags() & (B_PHYS | B_ASYNC) == (B_PHYS | B_ASYNC) {
         panic(format_args!("nfs physio/async"));
     }
     let p = if bp.isset(B_ASYNC) {
@@ -3389,31 +3389,36 @@ pub fn nfs_flush(
         let mut bvecpos = 0;
         if nfs_isv3(vp) && commit {
             let s = splbio();
-            for bp in vp.v_dirtyblkhd.iter() {
-                if bvecpos >= NFS_COMMITBVECSIZ {
+            // The cache's scan of the dirty list, from its head each time: a buffer taken is
+            // busy, so the next scan finds the one after it, as the C's single walk does.
+            while bvecpos < NFS_COMMITBVECSIZ {
+                let pick = |bp: &Buf| {
+                    if bp.flags() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT) != (B_DELWRI | B_NEEDCOMMIT)
+                    {
+                        DirtyPick::Skip
+                    } else {
+                        DirtyPick::Take
+                    }
+                };
+                let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "nfsfsync", 0, INFSLP, pick)
+                else {
                     break;
-                }
-                if bp.b_flags.get() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT)
-                    != (B_DELWRI | B_NEEDCOMMIT)
-                {
-                    continue;
-                }
-                bufcache_take(bp);
-                bp.set(B_WRITEINPROG);
-                buf_acquire(bp);
+                };
+                t.buf().set(B_WRITEINPROG);
+                let bp = lend(t);
 
                 // A list of these buffers is kept so that the second loop knows which
                 // buffers have actually been committed. This is necessary, since there may
                 // be a race between the commit rpc and new uncommitted writes on the file.
                 bvec[bvecpos] = Some(bp);
                 bvecpos += 1;
-                let mut toff = (bp.b_blkno.get() as u64)
+                let mut toff = (bp.blkno() as u64)
                     .wrapping_mul(DEV_BSIZE as u64)
-                    .wrapping_add(bp.b_dirtyoff.get() as u64);
+                    .wrapping_add(bp.dirtyoff() as u64);
                 if toff < off {
                     off = toff;
                 }
-                toff = toff.wrapping_add((bp.b_dirtyend.get() - bp.b_dirtyoff.get()) as u64);
+                toff = toff.wrapping_add((bp.dirtyend() - bp.dirtyoff()) as u64);
                 if toff > endoff {
                     endoff = toff;
                 }
@@ -3443,11 +3448,11 @@ pub fn nfs_flush(
                     }
                     let s = splbio();
                     buf_undirty(bp);
-                    vp.v_numoutput.set(vp.v_numoutput.get() + 1);
+                    vp.v_bufs.numoutput_inc();
                     bp.set(B_ASYNC);
                     bp.clr(B_READ | B_DONE | B_ERROR);
-                    bp.b_dirtyoff.set(0);
-                    bp.b_dirtyend.set(0);
+                    bp.set_dirtyoff(0);
+                    bp.set_dirtyend(0);
                     biodone(bp);
                     splx(s);
                 }
@@ -3457,18 +3462,23 @@ pub fn nfs_flush(
         // Start/do any write(s) that are required.
         'loop_: loop {
             let s = splbio();
-            for bp in vp.v_dirtyblkhd.iter() {
+            let pick = |bp: &Buf| {
                 if bp.isset(B_BUSY) {
                     if waitfor != MNT_WAIT || passone {
-                        continue;
+                        return DirtyPick::Skip;
                     }
-                    bp.set(B_WANTED);
-                    let error = tsleep_nsec(
-                        ptr::from_ref(bp),
-                        slpflag | (PRIBIO + 1),
-                        "nfsfsync",
-                        slptimeo,
-                    );
+                    return DirtyPick::Wait;
+                }
+                if !bp.isset(B_DELWRI) {
+                    panic(format_args!("nfs_fsync: not dirty"));
+                }
+                if (passone || !commit) && bp.isset(B_NEEDCOMMIT) {
+                    return DirtyPick::Skip;
+                }
+                DirtyPick::Take
+            };
+            match vnode_dirty_scan(&vp.v_bufs, "nfsfsync", slpflag, slptimeo, pick) {
+                DirtyScan::Waited(error) => {
                     splx(s);
                     if error.is_err() {
                         if nfs_sigintr(nmp, None, p).is_err() {
@@ -3481,22 +3491,17 @@ pub fn nfs_flush(
                     }
                     continue 'loop_;
                 }
-                if !bp.isset(B_DELWRI) {
-                    panic(format_args!("nfs_fsync: not dirty"));
+                DirtyScan::Taken(t) => {
+                    if passone || !commit {
+                        t.buf().set(B_ASYNC);
+                    } else {
+                        t.buf().set(B_ASYNC | B_WRITEINPROG | B_NEEDCOMMIT);
+                    }
+                    splx(s);
+                    let _ = VOP_BWRITE(lend(t));
+                    continue 'loop_;
                 }
-                if (passone || !commit) && bp.isset(B_NEEDCOMMIT) {
-                    continue;
-                }
-                bufcache_take(bp);
-                if passone || !commit {
-                    bp.set(B_ASYNC);
-                } else {
-                    bp.set(B_ASYNC | B_WRITEINPROG | B_NEEDCOMMIT);
-                }
-                buf_acquire(bp);
-                splx(s);
-                let _ = VOP_BWRITE(bp);
-                continue 'loop_;
+                DirtyScan::Done => {}
             }
             splx(s);
             if passone {
@@ -3518,7 +3523,7 @@ pub fn nfs_flush(
                         }
                         continue; // goto loop2
                     }
-                    let dirty = !vp.v_dirtyblkhd.is_empty() && commit;
+                    let dirty = !vp.v_bufs.dirty_is_empty() && commit;
                     splx(s);
                     break dirty;
                 };
@@ -3616,7 +3621,7 @@ pub fn nfs_bwrite(ap: &mut VopBwriteArgs) -> Result<(), Errno> {
 /// `B_WRITEINPROG` isn't set unless the force flag is one and it also handles the
 /// `B_NEEDCOMMIT` flag.
 pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
-    let oldflags = bp.b_flags.get();
+    let oldflags = bp.flags();
     let mut retv: i32 = 1;
     let p = curproc(); // XXX
 
@@ -3624,7 +3629,7 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
         panic(format_args!("bwrite: buffer is not busy???"));
     }
 
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("nfs_writebp: buffer {:p} without a vnode", bp));
     };
     let np = VTONFS(vp);
@@ -3641,17 +3646,17 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
         p.p_ru.ru_oublock.set(p.p_ru.ru_oublock.get() + 1);
     }
 
-    vp.v_numoutput.set(vp.v_numoutput.get() + 1);
+    vp.v_bufs.numoutput_inc();
     splx(s);
 
     // If B_NEEDCOMMIT is set, a commit rpc may do the trick. If not an actual write will
     // have to be scheduled via. VOP_STRATEGY(). If B_WRITEINPROG is already set, then push
     // it with a write anyhow.
     if oldflags & (B_NEEDCOMMIT | B_WRITEINPROG) == B_NEEDCOMMIT {
-        let mut off = (bp.b_blkno.get() as u64)
+        let mut off = (bp.blkno() as u64)
             .wrapping_mul(DEV_BSIZE as u64)
-            .wrapping_add(bp.b_dirtyoff.get() as u64) as Off;
-        let mut cnt = (bp.b_dirtyend.get() - bp.b_dirtyoff.get()) as usize;
+            .wrapping_add(bp.dirtyoff() as u64) as Off;
+        let mut cnt = (bp.dirtyend() - bp.dirtyoff()) as usize;
 
         rw_enter_write(&np.n_commitlock);
         if !bp.isset(B_NEEDCOMMIT) {
@@ -3694,8 +3699,8 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
 
         rw_exit_write(&np.n_commitlock);
         if retv == 0 {
-            bp.b_dirtyoff.set(0);
-            bp.b_dirtyend.set(0);
+            bp.set_dirtyoff(0);
+            bp.set_dirtyend(0);
             bp.clr(B_NEEDCOMMIT);
             let s = splbio();
             biodone(bp);

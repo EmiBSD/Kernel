@@ -156,11 +156,10 @@
 //! - There is no page daemon (N3.5): a `UVM_PLA_WAITOK` request that cannot be met reports
 //!   `unported: uvm_wait (uvm_pdaemon.c, M5)` once (`pmemrange::uvm_wait`) and fails with
 //!   `ENOMEM` (LZ's deviation, kept).
-//! - `uvm_pagealloc_multi` (the buffer cache's, under the kernel lock), `uvm_shutdown`
-//!   (`smr_flush`), the DMA reachability of `machine::Pmap` and the `uvm_pagewait` of the
-//!   objects still in `bsd` (a sleep on a legacy `rw_obj` lock, until N3.4c) stay in `bsd`'s
-//!   `sys/kern/vm_bsd.rs` (`sys/uvm/uvm_page.rs` until N3.5), over [`VmPage::set_bits`] and
-//!   [`uvm_pagealloc_pg`].
+//! - `uvm_shutdown` (`smr_flush`), the DMA reachability of `machine::Pmap` and the
+//!   `uvm_pagewait` of the objects still in `bsd` (a sleep on a legacy `rw_obj` lock, until
+//!   N3.4c) stay in `bsd`'s `sys/kern/vm_bsd.rs` (`sys/uvm/uvm_page.rs` until N3.5), over
+//!   [`VmPage::set_bits`] and [`uvm_pagealloc_pg`].
 //!
 //! ## Redesign
 //! - `struct vm_page`'s `uobject`/`uanon` back pointers (`Cell<*const T>`, followed by every
@@ -214,6 +213,8 @@ use hal::tree::{Tree, TreeEntry};
 use hal::vm::param::{DEFAULT_PAGE_SIZE, atop, ptoa, round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
 
+use super::km::NO_CONSTRAINT;
+use super::object::Object;
 use super::pmemrange;
 use super::types::{
     UVM_PGA_USERESERVE, UVM_PGA_ZERO, UVM_PLA_NOWAIT, UVM_PLA_USERESERVE, UVM_PLA_WAITOK,
@@ -1210,6 +1211,44 @@ pub fn uvm_pglistfree(list: &Pglist) {
     pmemrange::uvm_pmr_freepageq(list);
 }
 
+/// `uvm_pagealloc_multi`: interface used by the buffer cache to allocate a buffer at a time:
+/// the pages of `size` bytes, each wired once and given to the buffer's dummy object `obj` at
+/// `off`, `off + PAGE_SIZE`, ... ([`uvm_pagealloc_pg`]: `PG_BUSY | PG_FAKE`, kept for the
+/// buffer's life, and `PG_CLEAN`); `ENOMEM` when the pages are not there (`flags`:
+/// `UVM_PLA_NOWAIT | UVM_PLA_NOWAKE` or `UVM_PLA_WAITOK`). The caller holds the kernel lock.
+/// On a machine without an MMU (the host double) the pages are one physically contiguous
+/// segment: the buffer's bytes are read through the direct map there (`hal::mapped`).
+pub fn uvm_pagealloc_multi(obj: &Object, off: Voff, size: usize, flags: i32) -> Result<(), Errno> {
+    kassert!(obj.is_bufcache());
+    hal::klock::kernel_assert_locked();
+
+    let plist = Pglist::new();
+    let nsegs = if hal::pmap::PMAP_NOMMU {
+        1
+    } else {
+        atop(round_page(size)) as i32
+    };
+    uvm_pglistalloc(
+        size,
+        NO_CONSTRAINT.ucr_low,
+        NO_CONSTRAINT.ucr_high,
+        Paddr::new(0),
+        Paddr::new(0),
+        &plist,
+        nsegs,
+        flags,
+    )?;
+    let mut i = 0;
+    while let Some(pg) = plist.pop_head() {
+        pg.set_wire_count(1);
+        pg.set_bits(PG_CLEAN | PG_FAKE);
+        kassert!(pg.flags() & PG_DEV == 0);
+        uvm_pagealloc_pg(pg, Owner::Object(obj), off + ptoa(i) as Voff);
+        i += 1;
+    }
+    Ok(())
+}
+
 /// `uvm_pagealloc`: allocates a page for `owner` at `off` (an anon's at 0); `None` when no page
 /// is free. The caller holds the owner's lock, and activates or deactivates the page unless it
 /// wires it.
@@ -1250,6 +1289,12 @@ pub fn uvm_pagealloc(owner: Owner<'_>, off: Voff, flags: i32) -> Option<&'static
 /// at `newoff` (`Owner::None`: to no object). An anon is not an object: it panics.
 pub fn uvm_pagerealloc(pg: &VmPage, old: Owner<'_>, new: Owner<'_>, newoff: Voff) {
     let pg = static_of(pg);
+    // hal's byte view of the page (a buffer's window) must have given it up first: the page
+    // changes owner (`bread_cluster_callback` truncates the master's window, then moves the
+    // pages the other buffers read).
+    if pg.mdpage.in_view() {
+        kpanic(format_args!("uvm_pagerealloc: a page in a byte view"));
+    }
     // remove it from the old object
     if pg.has_object() {
         check_owner(pg, old, "uvm_pagerealloc");

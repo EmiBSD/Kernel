@@ -871,6 +871,45 @@ pub fn pool_get(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
     Some(pool_get_good(pp, v, flags))
 }
 
+/// `pool_get(pp, flags)` of an item the pool already holds (its per-CPU cache, or a page with
+/// a free item): never grows the pool, never sleeps and counts no failure (`pr_nfail`): `None`
+/// when it would have to grow, at the hard limit, or for a pool behind an rwlock (whose lock
+/// may sleep). `hal::pool::RawPool::get_idle`: the buffer cache's try under its lock, the
+/// C's `pool_get` at `splbio`, whose `PR_WAITOK` call counts nothing either. A pool with a
+/// per-CPU cache counts its cache's miss (`pc_nfail`) here and again in the `pool_get` that
+/// follows (`bufpl` has none). With the item, whether `pool_get` would yield now (its
+/// `(slowdown || pool_debug == 2) && PR_WAITOK`, computed where it computes it; a cache hit
+/// skips it, as `pool_get`'s `goto good`): the caller yields once it holds no lock.
+pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<(NonNull<u8>, bool)> {
+    // pool_get's own check on its flags (no assertwaitok: this try never sleeps, and its
+    // caller holds a mutex).
+    kassert!(flags & (PR_WAITOK | PR_NOWAIT) != 0);
+    if pp.pr_flags.get() & PR_RWLOCK != 0 {
+        return None;
+    }
+
+    #[cfg(feature = "multiprocessor")]
+    if !pp.pr_cache.load(Ordering::Acquire).is_null()
+        && let Some(v) = pool_cache_get(pp)
+    {
+        return Some((pool_get_good(pp, v, flags), false));
+    }
+
+    pl_enter(pp, &pp.pr_lock);
+    if pp.pr_nout.get() >= pp.pr_hardlimit.get() || pp.pr_curpage.get().is_null() {
+        pl_leave(pp, &pp.pr_lock);
+        return None;
+    }
+    // A page with a free item: pool_do_get takes it without leaving the lock.
+    let mut slowdown = 0;
+    let v = pool_do_get(pp, flags, &mut slowdown);
+    pl_leave(pp, &pp.pr_lock);
+
+    let yields =
+        (slowdown != 0 || POOL_DEBUG.load(Ordering::Relaxed) == 2) && flags & PR_WAITOK != 0;
+    v.map(|v| (pool_get_good(pp, v, flags), yields))
+}
+
 /// `pool_get`'s `good:` label: `PR_ZERO`.
 fn pool_get_good(pp: &Pool, v: NonNull<u8>, flags: i32) -> NonNull<u8> {
     if flags & PR_ZERO != 0 {
@@ -2504,6 +2543,10 @@ pub(crate) mod tests {
         // And sysctl's disk exports (kernel::sysctl's disknames and diskstats), malloc(9)'d
         // from the memory just replaced.
         kernel::sysctl::sysctl_test_reset();
+        // And the buffer cache (kernel::fs::bio: bufhead, the queues, the kva arena) and the
+        // disk queues' list, whose buffers and pages came from the memory just replaced.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         guard
     }
 

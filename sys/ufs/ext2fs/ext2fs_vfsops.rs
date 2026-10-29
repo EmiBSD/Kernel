@@ -95,7 +95,6 @@ use crate::kern::kern_tc::gettime;
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::{Str, panic};
-use crate::kern::vfs_bio::{bawrite, bread, brelse, bwrite, getblk};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
@@ -110,6 +109,8 @@ use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_NONE, splbio, splx};
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{bawrite, bread, brelse, bwrite, getblk};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
@@ -872,7 +873,7 @@ fn ext2fs_sync_vnode(vp: &'static Vnode, esa: &mut Ext2fsSyncArgs<'_>) -> Result
 
     let s = splbio();
     let skip = ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) == 0
-        && vp.v_dirtyblkhd.is_empty();
+        && vp.v_bufs.dirty_is_empty();
     splx(s);
 
     'end: {
@@ -1294,14 +1295,13 @@ pub(crate) mod tests {
     // mount, and unmount it clean; plus the super block checks.
 
     use core::mem::offset_of;
-    use core::sync::atomic::Ordering;
+
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
     use super::*;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::vfs_byname;
     use crate::kern::vfs_subr::{vflushbuf, vfs_mount_alloc};
@@ -1309,6 +1309,7 @@ pub(crate) mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::{B_ERROR, B_READ};
+    use crate::sys::buf::{biodone, bufinit};
     use crate::sys::mount::VFS_ROOT;
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -1554,12 +1555,12 @@ pub(crate) mod tests {
     /// A synchronous transfer between the buffer and the image at `b_blkno`, then `biodone`.
     fn disk_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         let bp = ap.a_bp;
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let mut d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
@@ -1569,7 +1570,7 @@ pub(crate) mod tests {
                 } else {
                     d[off..off + len].copy_from_slice(data);
                 }
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();
@@ -1610,27 +1611,9 @@ pub(crate) mod tests {
     pub(crate) fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = image;
         (g, p)

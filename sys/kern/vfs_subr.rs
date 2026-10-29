@@ -75,9 +75,17 @@
 //! - `getnewvnode` fails with `ENFILE` when `vnode_pool` cannot serve `PR_WAITOK` (the pool
 //!   cannot sleep yet, `subr_pool.rs`); `vfs_mount_alloc` and `checkalias` panic when
 //!   `malloc(M_WAITOK)` fails, since their callers cannot fail.
-//! - `bufinsvn`/`bufremvn` keep the buffer's `b_onvnbufs` flag in step with its vnode list
-//!   (the C's `NOLIST`, `sys/buf.rs`); `vinvalbuf` panics if it finds dirty buffers with no
-//!   thread to `VOP_FSYNC` them (the C always has `curproc`).
+//! - `vinvalbuf` panics if it finds dirty buffers with no thread to `VOP_FSYNC` them (the C
+//!   always has `curproc`).
+//! - The buffers' half of the vnode (N5.1): `bgetvp`, `brelvp`, `buf_replacevnode`,
+//!   `reassignbuf`, `vwakeup`, `bufinsvn`/`bufremvn` and `rb_buf_compare` are the buffer
+//!   cache's (`kernel::fs::bio`, `kernel::fs::buf`); `vinvalbuf`'s and `vflushbuf`'s loops over
+//!   the vnode's lists, and `vfs_syncwait`'s over `bufhead`, run there too
+//!   (`vinvalbuf_bufs`, `vnode_dirty_scan`, `bufhead_busy` and `take_dirty_buf`), each pass
+//!   from the head, as the C's restarts after each write or sleep; `vfs_syncwait` pushes the
+//!   idle delayed writes (the dirty queue) and counts the busy writes before it, where the C
+//!   counts and pushes in one walk of `bufhead` (a busy delayed write, which the C would
+//!   `bremfree`, is left to its owner). The vnode is the cache's `BufVnode` (below).
 //! - The device switch (`cdevsw[].d_type`/`d_flags`, `nblkdev`) is each architecture's
 //!   `conf.c`, through `machine::conf`.
 //! - `copy_statfs_info` never receives the mount's own `mnt_stat` (the callers pass a copy,
@@ -99,8 +107,12 @@
 //!   `debug`, as in C. The DDB printers (`vfs_buf_print`, `vfs_vnode_print`,
 //!   `vfs_mount_print`) wait for the ddb command loop (`db_command.c`).
 
+use core::any::Any;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
+
+use kernel::fs::bio::{self, BufVnode, DirtyPick, DirtyScan};
+use kernel::vm::vnode::{VType, VnodeOps};
 
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -112,16 +124,11 @@ use crate::kern::kern_rwlock::{
     rw_enter, rw_enter_read, rw_enter_write, rw_exit, rw_exit_read, rw_exit_write, rw_init_flags,
     rw_status,
 };
-use crate::kern::kern_synch::{
-    msleep_nsec, refcnt_init, refcnt_rele, refcnt_take, tsleep_nsec, wakeup,
-};
+use crate::kern::kern_synch::{msleep_nsec, refcnt_init, refcnt_rele, refcnt_take, wakeup};
 use crate::kern::kern_sysctl::{sysctl_rdint, sysctl_rdstruct};
-use crate::kern::sched_bsd::r#yield;
 use crate::kern::spec_vnops::{SPEC_VOPS, SPECLISTH};
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::{panic, panicstr, tablefull};
-use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, bawrite, brelse, bufcache_take, bwrite};
-use crate::kern::vfs_biomem::{buf_acquire, buf_acquire_nomap};
 use crate::kern::vfs_cache::{cache_purge, cache_tree_init};
 use crate::kern::vfs_init::{MAXVFSCONF, vfs_byname, vfs_bytypenum};
 use crate::kern::vfs_lockf::lf_purgelocks;
@@ -129,8 +136,8 @@ use crate::kern::vfs_sync::{SYNCDELAY, vn_initialize_syncerd, vn_syncer_add_to_w
 use crate::kern::vfs_syscalls::{dounmount, sys_sync};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{
-    VOP_BWRITE, VOP_CLOSE, VOP_FSYNC, VOP_INACTIVE, VOP_ISLOCKED, VOP_LOCK, VOP_RECLAIM,
-    VOP_REVOKE, VOP_UNLOCK,
+    VOP_BMAP, VOP_BWRITE, VOP_CLOSE, VOP_FSYNC, VOP_INACTIVE, VOP_ISLOCKED, VOP_LOCK, VOP_RECLAIM,
+    VOP_REVOKE, VOP_STRATEGY, VOP_UNLOCK,
 };
 use crate::kern::vm_bsd::{uvm_vnp_sync, uvm_vnp_terminate};
 use crate::kprintf;
@@ -146,7 +153,7 @@ use crate::net::radix::{
 };
 #[cfg(feature = "nfsserver")]
 use crate::netinet::in_::SockaddrIn;
-use crate::sys::buf::{B_BUSY, B_DELWRI, B_DONE, B_INVAL, B_READ, B_WANTED, Buf};
+use crate::sys::buf::{B_BUSY, B_DELWRI, BCSTATS, Buf, BufRef, lend};
 use crate::sys::conf::{D_CLONE, D_TTY};
 use crate::sys::errno::Errno;
 use crate::sys::event::NOTE_REVOKE;
@@ -159,19 +166,19 @@ use crate::sys::mbuf::Mbuf;
 #[cfg(feature = "nfsserver")]
 use crate::sys::mbuf::{MLEN, mtod};
 use crate::sys::mount::{
-    ExportArgs, Fsid, MFSNAMELEN, MNAMELEN, MNT_NOPERM, MNT_RDONLY, MNT_STALLED, MNT_UNMOUNT,
-    MNT_WAIT, MntList, Mount, Netcred, Netexport, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT,
-    VB_WRITE, VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VFS_SYNC, Vfsconf,
+    ExportArgs, Fsid, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_NOPERM, MNT_RDONLY, MNT_STALLED,
+    MNT_UNMOUNT, MNT_WAIT, MntList, Mount, Netcred, Netexport, Statfs, VB_DUPOK, VB_NOWAIT,
+    VB_READ, VB_WAIT, VB_WRITE, VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VFS_SYNC,
+    Vfsconf,
 };
 #[cfg(feature = "nfsserver")]
 use crate::sys::mount::{MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_EXPORTED};
 use crate::sys::mutex::Mutex;
-use crate::sys::param::{NODEV, PINOD, PRIBIO};
+use crate::sys::param::{NODEV, PINOD};
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::Proc;
 use crate::sys::queue::{ListHead, TailqHead};
 use crate::sys::rwlock::{RW_NOSLEEP, RW_READ, RW_WRITE, RWL_IS_VNODE, Rwlock};
-use crate::sys::sched::sched_pause;
 #[cfg(feature = "nfsserver")]
 use crate::sys::socket::AF_INET;
 use crate::sys::specdev::{CLONE_MAPSZ, CLONE_SHIFT, Specinfo, spechash};
@@ -180,14 +187,14 @@ use crate::sys::stat::{
     S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, S_IXGRP, S_IXOTH, S_IXUSR,
 };
 use crate::sys::systm::{INFSLP, kernel_assert_locked};
-use crate::sys::types::{Dev, Gid, Mode, Uid, major, makedev, minor};
+use crate::sys::types::{Daddr, Dev, Gid, Mode, Uid, major, makedev, minor};
 use crate::sys::ucred::{NOCRED, Ucred, Xucred};
 use crate::sys::vnode::VN_KNOTE;
 use crate::sys::vnode::{
-    BVnbufs, Buflists, DOCLOSE, FORCECLOSE, IGNORECLEAN, REVOKEALL, SKIPSYSTEM, V_SAVE, V_SAVEMETA,
-    VALIASED, VBAD, VBIOERROR, VBIOONFREELIST, VBIOONSYNCLIST, VBIOWAIT, VBLK, VCHR, VDIR, VEXEC,
-    VFIFO, VFreelist, VISTTY, VLNK, VNON, VNOVAL, VREAD, VREG, VROOT, VSOCK, VSYSTEM, VSynclist,
-    VT_NON, VWRITE, VXLOCK, VXWANT, Vattr, Vnode, VnodeUn, Vops, Vtagtype, Vtype, WRITECLOSE,
+    DOCLOSE, FORCECLOSE, IGNORECLEAN, REVOKEALL, SKIPSYSTEM, V_SAVE, V_SAVEMETA, VALIASED, VBAD,
+    VBIOERROR, VBIOONFREELIST, VBLK, VCHR, VDIR, VEXEC, VFIFO, VFreelist, VISTTY, VLNK, VNON,
+    VNOVAL, VREAD, VREG, VROOT, VSOCK, VSYSTEM, VSynclist, VT_NON, VWRITE, VXLOCK, VXWANT, Vattr,
+    Vnode, VnodeUn, Vops, Vtagtype, Vtype, WRITECLOSE,
 };
 
 /// `iftovt_tab[]`: the vnode type of each inode format (`IFTOVT`).
@@ -232,34 +239,6 @@ pub static VNODE_MTX: Mutex = Mutex::new(IPL_BIO);
 
 /// `vnode_pool`.
 pub static VNODE_POOL: Pool = Pool::new();
-
-/// `bufinsvn(bp, dp)`: puts a buffer on a vnode's clean or dirty list.
-///
-/// # Safety
-///
-/// `bp` is on no vnode list.
-unsafe fn bufinsvn(bp: &'static Buf, dp: &Buflists) {
-    // SAFETY: the caller's contract; the buffer stays in its pool item while linked.
-    unsafe { dp.insert_head(bp) };
-    bp.b_onvnbufs.set(true);
-}
-
-/// `bufremvn(bp)`: takes a buffer off its vnode list (`LIST_NEXT(bp, b_vnbufs) = NOLIST`).
-///
-/// # Safety
-///
-/// `bp` is on a vnode list.
-unsafe fn bufremvn(bp: &'static Buf) {
-    // SAFETY: the caller's contract.
-    unsafe { ListHead::<BVnbufs>::remove(bp) };
-    bp.b_onvnbufs.set(false);
-}
-
-/// `rb_buf_compare(b1, b2)`: orders a vnode's buffers by logical block (`RBT_GENERATE
-/// (buf_rb_bufs, ...)`; the tree adapter is `sys/vnode.rs`'s `BufRbBufs`).
-pub fn rb_buf_compare(b1: &Buf, b2: &Buf) -> core::cmp::Ordering {
-    b1.b_lblkno.get().cmp(&b2.b_lblkno.get())
-}
 
 /// Initialize the vnode management data structures.
 pub fn vntblinit() {
@@ -521,7 +500,9 @@ pub fn getnewvnode(
         unsafe { vp.as_ptr().write(Vnode::new()) };
         // SAFETY: as above; vnodes are never given back to the pool.
         let vp: &'static Vnode = unsafe { vp.as_ref() };
-        vp.v_bufs_tree.init();
+        // The vnode's buffer half is the cache's from here (`RBT_INIT` of `v_bufs_tree`: the
+        // fresh vnode's tree is empty).
+        vp.v_bufs.set_owner(vp);
         cache_tree_init(&vp.v_nc_tree);
         vp.v_cache_dst.init();
         NUMVNODES.fetch_add(1, Ordering::Relaxed);
@@ -544,7 +525,7 @@ pub fn getnewvnode(
 
         // SAFETY: `vp` is on `listhd` (it was found there), at splbio.
         unsafe { listhd.0.remove(vp) };
-        vp.v_bioflag.set(vp.v_bioflag.get() & !VBIOONFREELIST);
+        vp.v_bufs.clr_bioflag(VBIOONFREELIST);
         splx(s);
 
         if vp.v_type.get() != VBAD {
@@ -557,7 +538,7 @@ pub fn getnewvnode(
                 panic(format_args!("cleaned vnode isn't"));
             }
             let s = splbio();
-            if vp.v_numoutput.get() != 0 {
+            if vp.v_bufs.numoutput() != 0 {
                 panic(format_args!("Clean vnode has pending I/O's"));
             }
             splx(s);
@@ -746,7 +727,7 @@ pub fn vget(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
     mtx_leave(&VNODE_MTX);
 
     let s = splbio();
-    let onfreelist = vp.v_bioflag.get() & VBIOONFREELIST != 0;
+    let onfreelist = vp.v_bufs.bioflag() & VBIOONFREELIST != 0;
     if vp.v_usecount.get() == 0 && onfreelist {
         // SAFETY: a vnode marked `VBIOONFREELIST` is on the hold list while it has holds and
         // on the free list otherwise (`vputonfreelist`, `vhold`, `vdrop`), at splbio.
@@ -757,7 +738,7 @@ pub fn vget(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
                 VNODE_FREE_LIST.0.remove(vp);
             }
         }
-        vp.v_bioflag.set(vp.v_bioflag.get() & !VBIOONFREELIST);
+        vp.v_bufs.clr_bioflag(VBIOONFREELIST);
     }
     splx(s);
 
@@ -809,14 +790,14 @@ pub fn vputonfreelist(vp: &'static Vnode) {
             panic(format_args!("vputonfreelist: lock count is not zero"));
         }
 
-        if vp.v_bioflag.get() & VBIOONFREELIST != 0 {
+        if vp.v_bufs.bioflag() & VBIOONFREELIST != 0 {
             vprint(Some("vnode already on free list: "), vp);
             panic(format_args!("vnode already on free list"));
         }
     }
 
-    vp.v_bioflag
-        .set((vp.v_bioflag.get() | VBIOONFREELIST) & !VBIOERROR);
+    vp.v_bufs.set_bioflag(VBIOONFREELIST);
+    vp.v_bufs.clr_bioflag(VBIOERROR);
 
     let lst = if vp.v_holdcnt.get() > 0 {
         &VNODE_HOLD_LIST
@@ -861,7 +842,7 @@ pub fn vput(vp: &'static Vnode) {
     let _ = VOP_INACTIVE(vp, p);
 
     let s = splbio();
-    if vp.v_usecount.get() == 0 && vp.v_bioflag.get() & VBIOONFREELIST == 0 {
+    if vp.v_usecount.get() == 0 && vp.v_bufs.bioflag() & VBIOONFREELIST == 0 {
         vputonfreelist(vp);
     }
     splx(s);
@@ -897,7 +878,7 @@ pub fn vrele(vp: &'static Vnode) -> bool {
     let _ = VOP_INACTIVE(vp, p);
 
     let s = splbio();
-    if vp.v_usecount.get() == 0 && vp.v_bioflag.get() & VBIOONFREELIST == 0 {
+    if vp.v_usecount.get() == 0 && vp.v_bufs.bioflag() & VBIOONFREELIST == 0 {
         vputonfreelist(vp);
     }
     splx(s);
@@ -910,7 +891,7 @@ pub fn vhold(vp: &'static Vnode) {
 
     // If it is on the freelist and the hold count is currently zero, move it to the hold
     // list.
-    if vp.v_bioflag.get() & VBIOONFREELIST != 0
+    if vp.v_bufs.bioflag() & VBIOONFREELIST != 0
         && vp.v_holdcnt.get() == 0
         && vp.v_usecount.get() == 0
     {
@@ -937,7 +918,7 @@ pub fn vdrop(vp: &'static Vnode) {
     vp.v_holdcnt.set(vp.v_holdcnt.get() - 1);
 
     // If it is on the holdlist and the hold count drops to zero, move it to the free list.
-    if vp.v_bioflag.get() & VBIOONFREELIST != 0
+    if vp.v_bufs.bioflag() & VBIOONFREELIST != 0
         && vp.v_holdcnt.get() == 0
         && vp.v_usecount.get() == 0
     {
@@ -1017,7 +998,7 @@ fn vflush_vnode(vp: &'static Vnode, va: &mut VflushArgs) -> Result<(), Errno> {
     // XXX Might be nice to check per-fs "inode" flags, but generally the filesystem is sync'd
     // already, right?
     let s = splbio();
-    let empty = va.flags & IGNORECLEAN != 0 && vp.v_dirtyblkhd.is_empty();
+    let empty = va.flags & IGNORECLEAN != 0 && vp.v_bufs.dirty_is_empty();
     splx(s);
 
     if empty {
@@ -1236,7 +1217,7 @@ pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
     // Move onto the free list, unless we were called from getnewvnode and we're not on any
     // free list
     let s = splbio();
-    if vp.v_usecount.get() == 0 && vp.v_bioflag.get() & VBIOONFREELIST != 0 {
+    if vp.v_usecount.get() == 0 && vp.v_bufs.bioflag() & VBIOONFREELIST != 0 {
         if vp.v_holdcnt.get() > 0 {
             panic(format_args!("vgonel: not clean"));
         }
@@ -1316,9 +1297,9 @@ pub fn vprint(label: Option<&str>, vp: &'static Vnode) {
         (vp.v_flag.get() & VSYSTEM != 0, "VSYSTEM"),
         (vp.v_lflag.get() & VXLOCK != 0, "VXLOCK"),
         (vp.v_lflag.get() & VXWANT != 0, "VXWANT"),
-        (vp.v_bioflag.get() & VBIOWAIT != 0, "VBIOWAIT"),
-        (vp.v_bioflag.get() & VBIOONFREELIST != 0, "VBIOONFREELIST"),
-        (vp.v_bioflag.get() & VBIOONSYNCLIST != 0, "VBIOONSYNCLIST"),
+        (vp.v_bufs.bioflag() & VBIOWAIT != 0, "VBIOWAIT"),
+        (vp.v_bufs.bioflag() & VBIOONFREELIST != 0, "VBIOONFREELIST"),
+        (vp.v_bufs.bioflag() & VBIOONSYNCLIST != 0, "VBIOONSYNCLIST"),
         (vp.v_flag.get() & VALIASED != 0, "VALIASED"),
     ];
     let mut first = true;
@@ -1928,30 +1909,21 @@ pub fn vfs_syncwait(p: &Proc, verbose: bool) -> i32 {
     let mut dcount = 10000;
     let mut nbusy = 0;
     for iter in 0..20u32 {
-        nbusy = 0;
-        for bp in BUFHEAD.0.iter() {
-            if bp.b_flags.get() & (B_BUSY | B_INVAL | B_READ) == B_BUSY {
-                nbusy += 1;
-            }
-            // With soft updates, some buffers that are written will be remarked as dirty
-            // until other buffers are written.
-            //
-            // XXX here be dragons. this should really go away but should be carefully made to
-            // go away on it's own with testing.. XXX
-            if bp.isset(B_DELWRI) {
-                let s = splbio();
-                bufcache_take(bp);
-                buf_acquire(bp);
-                splx(s);
-                nbusy += 1;
-                bawrite(bp);
-                dcount -= 1;
-                if dcount <= 0 {
-                    if verbose {
-                        kprintf!("softdep ");
-                    }
-                    return 1;
+        nbusy = bio::bufhead_busy();
+        // With soft updates, some buffers that are written will be remarked as dirty until
+        // other buffers are written.
+        //
+        // XXX here be dragons. this should really go away but should be carefully made to go
+        // away on it's own with testing.. XXX
+        while let Some(t) = bio::take_dirty_buf() {
+            nbusy += 1;
+            bio::bawrite(t);
+            dcount -= 1;
+            if dcount <= 0 {
+                if verbose {
+                    kprintf!("softdep ");
                 }
+                return 1;
             }
         }
         if nbusy == 0 {
@@ -1979,9 +1951,8 @@ pub fn vfs_syncwait(p: &Proc, verbose: bool) -> i32 {
     nbusy
 }
 
-/// Wait for all outstanding I/Os to complete.
-///
-/// Manipulates `v_numoutput`. Must be called at `splbio()`.
+/// Wait for all outstanding I/Os to complete (`v_numoutput`; the cache's lock is its
+/// interlock). Called at `splbio()`.
 pub fn vwaitforio(
     vp: &'static Vnode,
     slpflag: i32,
@@ -1990,35 +1961,7 @@ pub fn vwaitforio(
 ) -> Result<(), Errno> {
     splassert(IPL_BIO, "vwaitforio");
 
-    while vp.v_numoutput.get() != 0 {
-        vp.v_bioflag.set(vp.v_bioflag.get() | VBIOWAIT);
-        tsleep_nsec(
-            ptr::from_ref(&vp.v_numoutput),
-            slpflag | (PRIBIO + 1),
-            wmesg,
-            timeo,
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Update outstanding I/O count and do wakeup if requested.
-///
-/// Manipulates `v_numoutput`. Must be called at `splbio()`.
-pub fn vwakeup(vp: Option<&'static Vnode>) {
-    splassert(IPL_BIO, "vwakeup");
-
-    if let Some(vp) = vp {
-        if vp.v_numoutput.get() == 0 {
-            panic(format_args!("vwakeup: neg numoutput"));
-        }
-        vp.v_numoutput.set(vp.v_numoutput.get() - 1);
-        if vp.v_bioflag.get() & VBIOWAIT != 0 && vp.v_numoutput.get() == 0 {
-            vp.v_bioflag.set(vp.v_bioflag.get() & !VBIOWAIT);
-            wakeup(ptr::from_ref(&vp.v_numoutput));
-        }
-    }
+    bio::vwaitforio(&vp.v_bufs, slpflag, wmesg, timeo)
 }
 
 /// Flush out and invalidate all buffers associated with a vnode. Called with the underlying
@@ -2036,7 +1979,7 @@ pub fn vinvalbuf(
     if flags & V_SAVE != 0 {
         let s = splbio();
         let _ = vwaitforio(vp, 0, "vinvalbuf", INFSLP);
-        if !vp.v_dirtyblkhd.is_empty() {
+        if !vp.v_bufs.dirty_is_empty() {
             splx(s);
             let Some(p) = p else {
                 panic(format_args!(
@@ -2045,7 +1988,7 @@ pub fn vinvalbuf(
             };
             VOP_FSYNC(vp, cred, MNT_WAIT, p)?;
             let s = splbio();
-            if vp.v_numoutput.get() > 0 || !vp.v_dirtyblkhd.is_empty() {
+            if vp.v_bufs.numoutput() > 0 || !vp.v_bufs.dirty_is_empty() {
                 panic(format_args!("vinvalbuf: dirty bufs, vp {:p}", vp));
             }
             splx(s);
@@ -2053,231 +1996,154 @@ pub fn vinvalbuf(
             splx(s);
         }
     }
-    // The first buffer of a list to look at, skipping the metadata (negative blocks) for
-    // V_SAVEMETA.
-    let skipmeta = |mut b: Option<&'static Buf>| {
-        if flags & V_SAVEMETA != 0 {
-            while let Some(bp) = b
-                && bp.b_lblkno.get() < 0
-            {
-                b = ListHead::<BVnbufs>::next(bp);
-            }
-        }
-        b
-    };
-    'restart: loop {
-        // loop:
-        let s = splbio();
-        loop {
-            let mut count = 0;
-            let Some(blist) =
-                skipmeta(vp.v_cleanblkhd.first()).or_else(|| skipmeta(vp.v_dirtyblkhd.first()))
-            else {
-                break;
-            };
-
-            let mut next = Some(blist);
-            while let Some(bp) = next {
-                next = ListHead::<BVnbufs>::next(bp);
-                if flags & V_SAVEMETA != 0 && bp.b_lblkno.get() < 0 {
-                    continue;
-                }
-                if bp.isset(B_BUSY) {
-                    bp.set(B_WANTED);
-                    if let Err(error) = tsleep_nsec(
-                        ptr::from_ref(bp),
-                        slpflag | (PRIBIO + 1),
-                        "vinvalbuf",
-                        slptimeo,
-                    ) {
-                        splx(s);
-                        return Err(error);
-                    }
-                    break;
-                }
-                bufcache_take(bp);
-                // XXX Since there are no node locks for NFS, I believe there is a slight
-                // chance that a delayed write will occur while sleeping just above, so check
-                // for it.
-                if bp.isset(B_DELWRI) && flags & V_SAVE != 0 {
-                    buf_acquire(bp);
-                    splx(s);
-                    let _ = VOP_BWRITE(bp);
-                    continue 'restart;
-                }
-                buf_acquire_nomap(bp);
-                bp.set(B_INVAL);
-                brelse(bp);
-                count += 1;
-                // XXX Temporary workaround XXX
-                //
-                // If this is a gigantisch vnode and we are trashing a ton of buffers, drop the
-                // lock and yield every so often. The longer term fix is to add a separate list
-                // for these invalid buffers so we don't have to do the work to free these here.
-                if count > 100 {
-                    splx(s);
-                    sched_pause(r#yield);
-                    continue 'restart;
-                }
-            }
-        }
-        if flags & V_SAVEMETA == 0 && (!vp.v_dirtyblkhd.is_empty() || !vp.v_cleanblkhd.is_empty()) {
-            panic(format_args!("vinvalbuf: flush failed, vp {:p}", vp));
-        }
-        splx(s);
-        return Ok(());
-    }
+    // The buffer lists' loop is the cache's (it takes, writes and frees the buffers).
+    bio::vinvalbuf_bufs(
+        &vp.v_bufs,
+        flags & V_SAVE != 0,
+        flags & V_SAVEMETA != 0,
+        slpflag,
+        slptimeo,
+    )
 }
 
 /// `vflushbuf(vp, sync)`: writes the vnode's dirty buffers out, and with `sync` waits for
 /// them.
 pub fn vflushbuf(vp: &'static Vnode, sync: bool) {
-    'restart: loop {
+    loop {
         // loop:
-        let s = splbio();
-        for bp in vp.v_dirtyblkhd.iter() {
+        let pick = |bp: &Buf| {
             if bp.isset(B_BUSY) {
-                continue;
+                return DirtyPick::Skip;
             }
             if !bp.isset(B_DELWRI) {
                 panic(format_args!("vflushbuf: not dirty"));
             }
-            bufcache_take(bp);
-            buf_acquire(bp);
-            splx(s);
+            DirtyPick::Take
+        };
+        if let DirtyScan::Taken(t) = bio::vnode_dirty_scan(&vp.v_bufs, "vflushbuf", 0, INFSLP, pick)
+        {
             // Wait for I/O associated with indirect blocks to complete, since there is no way
             // to quickly wait for them below.
-            if bp.b_vp.get().is_some_and(|bvp| ptr::eq(bvp, vp)) || !sync {
-                bawrite(bp);
+            if t.buf()
+                .vnode_bufs()
+                .is_some_and(|vb| ptr::eq(vb, &vp.v_bufs))
+                || !sync
+            {
+                bio::bawrite(t);
             } else {
-                let _ = bwrite(bp);
+                let _ = bio::bwrite(t);
             }
-            continue 'restart;
+            continue;
         }
         if !sync {
-            splx(s);
             return;
         }
+        let s = splbio();
         let _ = vwaitforio(vp, 0, "vflushbuf", INFSLP);
-        if !vp.v_dirtyblkhd.is_empty() {
+        if !vp.v_bufs.dirty_is_empty() {
             splx(s);
             #[cfg(feature = "diagnostic")]
             vprint(Some("vflushbuf: dirty"), vp);
-            continue 'restart;
+            continue;
         }
         splx(s);
         return;
     }
 }
 
-/// Associate a buffer with a vnode.
-///
-/// Manipulates buffer vnode queues. Must be called at splbio().
-pub fn bgetvp(vp: &'static Vnode, bp: &'static Buf) {
-    splassert(IPL_BIO, "bgetvp");
-
-    if bp.b_vp.get().is_some() {
-        panic(format_args!("bgetvp: not free"));
-    }
-    vhold(vp);
-    bp.b_vp.set(Some(vp));
-    if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
-        bp.b_dev.set(vp.v_rdev());
+/// The mount a vnode's I/O is charged to: a block device's `v_specmountpoint`, else
+/// `v_mount` (`vfs_bio.c`'s reads and writes).
+fn io_mount(vp: &Vnode) -> Option<&'static Mount> {
+    if vp.v_type.get() == VBLK {
+        vp.v_specmountpoint()
     } else {
-        bp.b_dev.set(NODEV);
+        vp.v_mount.get()
     }
-    // Insert onto list for new vnode.
-    // SAFETY: a buffer without a vnode is on no vnode list.
-    unsafe { bufinsvn(bp, &vp.v_cleanblkhd) };
 }
 
-/// Disassociate a buffer from a vnode.
-///
-/// Manipulates vnode buffer queues. Must be called at splbio().
-pub fn brelvp(bp: &'static Buf) {
-    splassert(IPL_BIO, "brelvp");
-
-    let Some(vp) = bp.b_vp.get() else {
-        panic(format_args!("brelvp: NULL"));
-    };
-    // Delete from old vnode list, if on one.
-    if bp.b_onvnbufs.get() {
-        // SAFETY: `b_onvnbufs` says the buffer is on a vnode list.
-        unsafe { bufremvn(bp) };
-    }
-    if vp.v_bioflag.get() & VBIOONSYNCLIST != 0 && vp.v_dirtyblkhd.is_empty() {
-        vp.v_bioflag.set(vp.v_bioflag.get() & !VBIOONSYNCLIST);
-        // SAFETY: a vnode marked `VBIOONSYNCLIST` is on the syncer's wheel.
-        unsafe { ListHead::<VSynclist>::remove(vp) };
-    }
-    bp.b_vp.set(None);
-
-    vdrop(vp);
-}
-
-/// Replaces the current vnode associated with the buffer, if any, with a new vnode.
-///
-/// If an output I/O is pending on the buffer, the old vnode I/O count is adjusted.
-///
-/// Ignores vnode buffer queues. Must be called at splbio().
-pub fn buf_replacevnode(bp: &'static Buf, newvp: &'static Vnode) {
-    let oldvp = bp.b_vp.get();
-
-    splassert(IPL_BIO, "buf_replacevnode");
-
-    if oldvp.is_some() {
-        brelvp(bp);
+// The vnode as the buffer cache reaches it (bridges.toml `BufVnode`, N5.1): one call each
+// into the vnode layer. Vnodes are never freed, so the cache keeps them as `&'static`.
+impl BufVnode for Vnode {
+    fn vhold(&'static self) {
+        vhold(self);
     }
 
-    if bp.b_flags.get() & (B_READ | B_DONE) == 0 {
-        newvp.v_numoutput.set(newvp.v_numoutput.get() + 1); // put it on swapdev
-        vwakeup(oldvp);
+    fn vdrop(&'static self) {
+        vdrop(self);
     }
 
-    bgetvp(newvp, bp);
-    // SAFETY: `bgetvp` just put the buffer on the new vnode's clean list.
-    unsafe { bufremvn(bp) };
-}
-
-/// Used to assign buffers to the appropriate clean or dirty list on the vnode and to add
-/// newly dirty vnodes to the appropriate filesystem syncer list.
-///
-/// Manipulates vnode buffer queues. Must be called at splbio().
-pub fn reassignbuf(bp: &'static Buf) {
-    let Some(vp) = bp.b_vp.get() else {
-        panic(format_args!("reassignbuf: NULL"));
-    };
-
-    splassert(IPL_BIO, "reassignbuf");
-
-    // Delete from old vnode list, if on one.
-    if bp.b_onvnbufs.get() {
-        // SAFETY: `b_onvnbufs` says the buffer is on a vnode list.
-        unsafe { bufremvn(bp) };
+    fn strategy(&'static self, bp: BufRef) -> Result<(), Errno> {
+        VOP_STRATEGY(self, lend(bp))
     }
 
-    // If dirty, put on list of dirty buffers; otherwise insert onto list of clean buffers.
-    let listheadp = if !bp.isset(B_DELWRI) {
-        if vp.v_bioflag.get() & VBIOONSYNCLIST != 0 && vp.v_dirtyblkhd.is_empty() {
-            vp.v_bioflag.set(vp.v_bioflag.get() & !VBIOONSYNCLIST);
-            // SAFETY: a vnode marked `VBIOONSYNCLIST` is on the syncer's wheel.
-            unsafe { ListHead::<VSynclist>::remove(vp) };
+    fn bwrite(&'static self, bp: BufRef) -> Result<(), Errno> {
+        VOP_BWRITE(lend(bp))
+    }
+
+    fn bmap(&'static self, bn: Daddr) -> Result<(Daddr, i32), Errno> {
+        let mut bnp = 0;
+        let mut runp = 0;
+        VOP_BMAP(self, bn, None, Some(&mut bnp), Some(&mut runp))?;
+        Ok((bnp, runp))
+    }
+
+    fn vtype(&self) -> VType {
+        <Vnode as VnodeOps>::vtype(self)
+    }
+
+    fn rdev(&self) -> Dev {
+        self.v_rdev()
+    }
+
+    fn mnt_async(&self) -> bool {
+        io_mount(self).is_some_and(|mp| mp.mnt_flag.get() & MNT_ASYNC != 0)
+    }
+
+    fn count_io(&self, write: bool, async_: bool) {
+        // Collect statistics on synchronous and asynchronous reads and writes. Block devices
+        // are charged to their associated filesystem (if any).
+        if let Some(mp) = io_mount(self) {
+            match (write, async_) {
+                (false, false) => mp.update_stat(|sp| sp.f_syncreads += 1),
+                (false, true) => mp.update_stat(|sp| sp.f_asyncreads += 1),
+                (true, false) => mp.update_stat(|sp| sp.f_syncwrites += 1),
+                (true, true) => mp.update_stat(|sp| sp.f_asyncwrites += 1),
+            }
         }
-        &vp.v_cleanblkhd
-    } else {
-        if vp.v_bioflag.get() & VBIOONSYNCLIST == 0 {
-            let syncdelay = SYNCDELAY.load(Ordering::Relaxed);
-            let delay = match vp.v_type.get() {
-                VDIR => syncdelay / 2,
-                VBLK if vp.v_specmountpoint().is_some() => syncdelay / 3,
-                _ => syncdelay,
-            };
-            vn_syncer_add_to_worklist(vp, delay);
+    }
+
+    fn charge_io(&self, output: bool) {
+        // Pay for the I/O operation.
+        if let Some(p) = curproc() {
+            if output {
+                p.p_ru.ru_oublock.set(p.p_ru.ru_oublock.get() + 1);
+            } else {
+                p.p_ru.ru_inblock.set(p.p_ru.ru_inblock.get() + 1); // XXX
+            }
         }
-        &vp.v_dirtyblkhd
-    };
-    // SAFETY: the buffer was just taken off its vnode list, if it was on one.
-    unsafe { bufinsvn(bp, listheadp) };
+    }
+
+    fn syncer_add_dirty(&'static self) {
+        let syncdelay = SYNCDELAY.load(Ordering::Relaxed);
+        let delay = match self.v_type.get() {
+            VDIR => syncdelay / 2,
+            VBLK if self.v_specmountpoint().is_some() => syncdelay / 3,
+            _ => syncdelay,
+        };
+        vn_syncer_add_to_worklist(self, delay);
+    }
+
+    fn syncer_remove(&'static self) {
+        // SAFETY: the cache calls this for a vnode marked `VBIOONSYNCLIST`, which is on one
+        // slot of the syncer's wheel (`vn_syncer_add_to_worklist` put it there and set the
+        // flag; nothing takes it off without clearing the flag, here or in `vfs_sync.rs`),
+        // under the kernel lock as every change of the wheel; vnodes never move.
+        unsafe { ListHead::<VSynclist>::remove(self) };
+    }
+
+    fn as_any(&'static self) -> &'static dyn Any {
+        self
+    }
 }
 
 // DDB: vfs_buf_print, vfs_vnode_print, vfs_mount_print wait for the ddb command loop.
@@ -2892,7 +2758,7 @@ pub(crate) mod tests {
         assert_eq!(vp.v_usecount.get(), 0);
         assert_eq!(testfs::INACTIVE.load(Ordering::SeqCst), 1);
         assert!(!testfs::any_locked());
-        assert!(vp.v_bioflag.get() & VBIOONFREELIST != 0);
+        assert!(vp.v_bufs.bioflag() & VBIOONFREELIST != 0);
         assert!(VNODE_FREE_LIST.0.iter().any(|v| ptr::eq(v, vp)));
         assert_eq!(testfs::node_of(vp), testfs::B);
 
@@ -2900,7 +2766,7 @@ pub(crate) mod tests {
         let again = testfs::vget_node(mp, testfs::B).unwrap();
         assert!(ptr::eq(again, vp));
         assert_eq!(vp.v_usecount.get(), 1);
-        assert!(vp.v_bioflag.get() & VBIOONFREELIST == 0);
+        assert!(vp.v_bufs.bioflag() & VBIOONFREELIST == 0);
         assert!(!VNODE_FREE_LIST.0.iter().any(|v| ptr::eq(v, vp)));
         vput(vp);
         assert_eq!(vp.v_usecount.get(), 0);

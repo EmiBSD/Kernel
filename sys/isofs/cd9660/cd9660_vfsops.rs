@@ -109,7 +109,6 @@ use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::eopnotsupp;
-use crate::kern::vfs_bio::{biowait, bread, brelse, geteblk};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     MOUNTLIST, bdevvp, checkalias, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
@@ -123,7 +122,9 @@ use crate::kprintf;
 use crate::machine::conf::{nblkdev, swapdev};
 use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{biowait, bread, brelse, geteblk};
 use crate::sys::cdio::CDIOREADMSADDR;
 use crate::sys::conf::DevTypeStrategy;
 use crate::sys::disklabel::{
@@ -618,14 +619,13 @@ pub fn iso_disklabelspoof(
     lp: &mut Disklabel,
 ) -> Result<(), Errno> {
     let bp = geteblk(ISO_DEFAULT_BLOCK_SIZE);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
 
     let error: Result<(), Errno> = 'out: {
         let mut vdtype = 0;
         for iso_blknum in 16..100 {
-            bp.b_blkno
-                .set((iso_blknum * btodb(ISO_DEFAULT_BLOCK_SIZE)) as i64);
-            bp.b_bcount.set(ISO_DEFAULT_BLOCK_SIZE as i64);
+            bp.set_blkno((iso_blknum * btodb(ISO_DEFAULT_BLOCK_SIZE)) as i64);
+            bp.set_bcount(ISO_DEFAULT_BLOCK_SIZE as i64);
             bp.clr(B_READ | B_WRITE | B_DONE);
             bp.set(B_BUSY | B_READ | B_RAW);
 
@@ -1061,7 +1061,7 @@ mod tests {
     // handles.
 
     use core::ptr;
-    use core::sync::atomic::Ordering;
+
     use std::sync::{Mutex, MutexGuard};
     use std::vec::Vec;
     use std::{assert_eq, vec};
@@ -1071,7 +1071,6 @@ mod tests {
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::subr_xxx::nullop;
     use crate::kern::sys_generic::sys_read;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
     use crate::kern::vfs_subr::{vflushbuf, vfs_busy, vfs_mount_alloc};
@@ -1080,6 +1079,7 @@ mod tests {
     use crate::machine::cpu::Cpu;
     use crate::machine::intr::{splbio, splx};
     use crate::sys::buf::{B_ERROR, B_READ};
+    use crate::sys::buf::{biodone, bufinit};
     use crate::sys::fcntl::O_RDONLY;
     use crate::sys::mount::{MNT_WAIT, VB_WAIT, VB_WRITE, VFS_ROOT};
     use crate::sys::param::DEV_BSIZE;
@@ -1093,12 +1093,12 @@ mod tests {
 
     /// A synchronous transfer between the buffer and `DISK` at `b_blkno`, then `biodone`.
     fn transfer(bp: &'static Buf) {
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let mut d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
@@ -1108,7 +1108,7 @@ mod tests {
                 } else {
                     d[off..off + len].copy_from_slice(data);
                 }
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();
@@ -1157,27 +1157,9 @@ mod tests {
         Machine::set_curproc(Machine::curcpu(), Some(p));
         crate::kern::proc_glue::test_set_limits(p, 128);
 
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
 
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;

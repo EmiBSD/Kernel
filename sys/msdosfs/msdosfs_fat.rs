@@ -115,7 +115,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use crate::kassert;
 use crate::kern::kern_tc::microtime;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::msdosfs::bpb::{Fsinfo, getulong, getushort, putulong, putushort};
 use crate::msdosfs::denode::{
     Denode, FC_LASTFC, FC_LASTMAP, FC_OLASTFC, FC_SIZE, FCE_EMPTY, fc_setcache,
@@ -129,7 +128,9 @@ use crate::msdosfs::msdosfsmount::{
     MSDOSFS_FATMIRROR, MSDOSFSMNT_WAITONFAT, Msdosfsmount, N_INUSEBITS, cntobn, de_bn2cn, de_cn2bn,
     de_cn2off, fatofs, fsi_size,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{Buf, clrbuf};
+use crate::sys::buf::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::sys::errno::Errno;
 use crate::sys::param::DEV_BSIZE;
 use crate::sys::systm::INFSLP;
@@ -447,7 +448,7 @@ pub fn updatefats(pmp: &Msdosfsmount, bp: &'static Buf, mut fatbn: u32) {
         for _ in 1..pmp.pm_FATs() {
             fatbn = fatbn.wrapping_add(pmp.pm_FATsecs.get());
             // getblk() never fails
-            let bcount = bp.b_bcount.get();
+            let bcount = bp.bcount();
             let bpn = getblk_wait(pmp.devvp(), Daddr::from(fatbn), bcount as i32);
             let n = bcount as usize;
             // SAFETY: both buffers are busy for this function (`bpn` from `getblk`, `bp` from
@@ -1014,20 +1015,17 @@ pub fn extendfile(
                     );
                     frcn += 1;
                     // Do the bmap now, as in msdosfs_write.
-                    let mut blkno = bp.b_blkno.get();
-                    if pcbmap(dep, bp.b_lblkno.get() as u32, Some(&mut blkno), None, None).is_err()
-                    {
+                    let mut blkno = bp.blkno();
+                    if pcbmap(dep, bp.lblkno() as u32, Some(&mut blkno), None, None).is_err() {
                         blkno = -1;
                     }
-                    bp.b_blkno.set(blkno);
-                    if bp.b_blkno.get() == -1 {
+                    bp.set_blkno(blkno);
+                    if bp.blkno() == -1 {
                         panic(format_args!("extendfile: pcbmap"));
                     }
                     bp
                 };
-                // SAFETY: `getblk` returned the buffer busy to us and mapped; no slice of it
-                // is alive.
-                unsafe { clrbuf(bp) };
+                clrbuf(bp);
                 if let Some(bpp) = bpp.take() {
                     *bpp = Some(bp);
                 } else {

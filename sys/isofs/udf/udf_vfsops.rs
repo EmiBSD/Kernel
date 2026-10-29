@@ -120,7 +120,6 @@ use crate::kern::kern_subr::{hashfree, hashinit};
 use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     checkalias, copy_statfs_info, vcount, vflush, vfs_mountedon, vgone, vinvalbuf, vref, vrele,
@@ -132,6 +131,8 @@ use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_NONE;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::dirent::MAXNAMLEN;
 use crate::sys::endian::{letoh16, letoh32};
 use crate::sys::errno::Errno;

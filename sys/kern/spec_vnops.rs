@@ -95,8 +95,6 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::{chrtoblk, nullop};
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, breadn, brelse, bufcache_take};
-use crate::kern::vfs_biomem::buf_acquire;
 use crate::kern::vfs_default::{
     vop_generic_badop, vop_generic_bmap, vop_generic_bwrite, vop_generic_lookup, vop_generic_revoke,
 };
@@ -108,7 +106,9 @@ use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR, VOP_UNLOCK};
 use crate::machine::conf::{bdevsw, cdevsw, iskmemdev, nblkdev, nchrdev};
 use crate::machine::intr::{splbio, splx};
-use crate::sys::buf::{B_BUSY, B_DELWRI};
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{B_BUSY, B_DELWRI, Buf};
+use crate::sys::buf::{bawrite, bdwrite, bread, breadn, brelse};
 use crate::sys::conf::{D_CLONE, D_DISK, D_TTY};
 use crate::sys::errno::Errno;
 use crate::sys::event::{__EV_POLL, __EV_SELECT};
@@ -136,6 +136,7 @@ use crate::sys::vnode::{
     VopReadArgs, VopSetattrArgs, VopStrategyArgs, VopWriteArgs, Vops,
 };
 use crate::unported;
+use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_scan};
 
 /// `speclisth[SPECHSZ]`: the special device vnodes, hashed by device (`SPECHASH`).
 pub struct Speclisth(pub [Vnodechain; SPECHSZ]);
@@ -305,7 +306,7 @@ pub fn spec_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
                     bread(vp, bn, bsize)
                 };
                 si.si_lastr.set(bn);
-                n = n.min(bsize as usize - bp.b_resid.get());
+                n = n.min(bsize as usize - bp.resid());
                 if let Err(error) = error {
                     brelse(bp);
                     return Err(error);
@@ -364,7 +365,7 @@ pub fn spec_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                 let on = (uio.uio_offset % i64::from(bsize)) as usize;
                 let mut n = (bsize as usize - on).min(uio.uio_resid);
                 let (bp, error) = bread(vp, bn, bsize);
-                n = n.min(bsize as usize - bp.b_resid.get());
+                n = n.min(bsize as usize - bp.resid());
                 if let Err(error) = error {
                     brelse(bp);
                     return Err(error);
@@ -437,26 +438,26 @@ pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     }
     // Flush all dirty buffers associated with a block device.
     'restart: loop {
-        // loop:
-        let s = splbio();
-        for bp in vp.v_dirtyblkhd.iter() {
+        // loop: the cache's scan of the dirty list (from its head after each write).
+        let pick = |bp: &Buf| {
             if bp.isset(B_BUSY) {
-                continue;
+                return DirtyPick::Skip;
             }
             if !bp.isset(B_DELWRI) {
                 panic(format_args!("spec_fsync: not dirty"));
             }
-            bufcache_take(bp);
-            buf_acquire(bp);
-            splx(s);
-            bawrite(bp);
+            DirtyPick::Take
+        };
+        if let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "spec_fsync", 0, INFSLP, pick) {
+            kernel::fs::bio::bawrite(t);
             continue 'restart;
         }
+        let s = splbio();
         if ap.a_waitfor == MNT_WAIT {
             let _ = vwaitforio(vp, 0, "spec_fsync", INFSLP);
 
             #[cfg(feature = "diagnostic")]
-            if !vp.v_dirtyblkhd.is_empty() {
+            if !vp.v_bufs.dirty_is_empty() {
                 splx(s);
                 crate::kern::vfs_subr::vprint(Some("spec_fsync: dirty"), vp);
                 continue 'restart;
@@ -470,7 +471,7 @@ pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 /// `spec_strategy`: `bdevsw[major(bp->b_dev)].d_strategy(bp)`.
 pub fn spec_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let maj = major(bp.b_dev.get());
+    let maj = major(bp.dev());
 
     (bdevsw(maj).d_strategy)(bp);
     Ok(())

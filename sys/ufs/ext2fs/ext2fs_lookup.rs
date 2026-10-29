@@ -105,7 +105,6 @@ use core::sync::atomic::Ordering;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::brelse;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
 use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
@@ -113,6 +112,8 @@ use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_READ, VOP_UNLOCK, VOP_WR
 use crate::kprintf;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::brelse;
 use crate::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_recsize};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};

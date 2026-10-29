@@ -107,5 +107,15 @@ path = "benches/pipe.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of the buffer cache and the disk queues (N5.1, decision 43;
+# benches/bio.rs): getblk and bread hits, brelse, getblk's allocation, the 2Q queues, a bufq
+# trip through nscan and fifo, over the doubles, never a kernel image:
+# `cargo bench -p kernel --features doubles --bench bio [--profile dev]`.
+[[bench]]
+name = "bio"
+path = "benches/bio.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

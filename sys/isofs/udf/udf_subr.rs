@@ -76,9 +76,10 @@ use crate::isofs::udf::udf_vnops::{udf_data, udf_readatoffset, udf_transname};
 use crate::kern::kern_malloc::malloc;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{biowait, brelse, geteblk};
 use crate::kern::vfs_subr::vput;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{biowait, brelse, geteblk};
 use crate::sys::conf::DevTypeStrategy;
 use crate::sys::disklabel::{
     DISKMAGIC, Disklabel, FS_UDF, MAXPARTITIONS, RAW_PART, dl_getdsize, dl_setpoffset, dl_setpsize,
@@ -146,14 +147,12 @@ fn spoof_read(
     sector: u32,
     bsize: usize,
 ) -> Result<(), Errno> {
-    bp.b_blkno
-        .set(Daddr::from(sector).wrapping_mul(btodb(bsize) as Daddr));
-    bp.b_bcount.set(bsize as i64);
+    bp.set_blkno(Daddr::from(sector).wrapping_mul(btodb(bsize) as Daddr));
+    bp.set_bcount(bsize as i64);
     bp.clr(B_READ | B_WRITE | B_DONE);
     bp.set(B_BUSY | B_READ | B_RAW);
     if secpercyl != 0 {
-        bp.b_resid
-            .set((bp.b_blkno.get() / Daddr::from(secpercyl)) as usize);
+        bp.set_resid((bp.blkno() / Daddr::from(secpercyl)) as usize);
     }
 
     strat(bp);
@@ -173,7 +172,7 @@ pub fn udf_disklabelspoof(
 
     // Get a buffer to work with.
     let bp = geteblk(bsize);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
 
     let error = 'out: {
         // Look for an Anchor Volume Descriptor at sector 256.

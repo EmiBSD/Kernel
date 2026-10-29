@@ -85,12 +85,13 @@ use crate::isofs::cd9660::iso::{
     ASSOCCHAR, Cdino, ISO_DIRECTORY_RECORD_SIZE, IsoDirectoryRecord, isonum_711,
 };
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
 use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mount::{MNT_RDONLY, Mount};
@@ -277,7 +278,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                     ino = if isonum_711(rec.flags()) & 2 != 0 {
                         isodirino(&rec, imp)
                     } else {
-                        ((b.b_blkno.get() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
+                        ((b.blkno() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
                     };
                     let mut i_ino = ino;
                     let mut altname = [0u8; NAME_MAX + 1];
@@ -305,7 +306,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                         ino = if isonum_711(rec.flags()) & 2 != 0 {
                             isodirino(&rec, imp)
                         } else {
-                            ((b.b_blkno.get() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
+                            ((b.blkno() << DEV_BSHIFT) + entryoffsetinblock as i64) as Cdino
                         };
                         saveoffset = dp.i_offset.get();
                     } else if ino != 0 {

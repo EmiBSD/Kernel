@@ -113,14 +113,11 @@ use crate::dev::isa::fdreg::{
 use crate::dev::isa::isadmavar::{
     DMAMODE_READ, DMAMODE_WRITE, isadma_abort, isadma_done, isadma_start,
 };
-use crate::kern::kern_bufq::{bufq_dequeue, bufq_init, bufq_queue};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::kern_synch::tsleep_nsec;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_disk::{disk_attach, disk_busy, disk_unbusy, diskerr, dkcksum, setdisklabel};
 use crate::kern::subr_prf::{Bitmask, panic, printf};
-use crate::kern::vfs_bio::{biodone, biowait};
 use crate::machine::bus::bus_space_write_1;
 use crate::machine::cpu::delay;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
@@ -131,9 +128,13 @@ use crate::machine::x86::{
     NVRAM_DISKETTE_720K, NVRAM_DISKETTE_NONE, NVRAM_DISKETTE_TYPE5, NVRAM_DISKETTE_TYPE6,
 };
 use crate::queue_adapter;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{
     B_BUSY, B_ERROR, B_PHYS, B_RAW, B_READ, B_WRITE, B_XXX, BUFQ_DEFAULT, Buf, Bufq,
 };
+use crate::sys::buf::{biodone, biowait};
+use crate::sys::buf::{bufq_dequeue, bufq_init, bufq_queue};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_POWERDOWN, DVACT_SUSPEND, Device, Softc,
 };
@@ -685,7 +686,7 @@ fn fd_dev_to_type(fd: &FdSoftc, dev: Dev) -> Option<&'static FdType> {
 
 /// `fdstrategy`: validates a buffer and queues it on its drive.
 pub fn fdstrategy(bp: &'static Buf) {
-    let fd = fd_softc(bp.b_dev.get());
+    let fd = fd_softc(bp.dev());
     let fd_bsize = i64::from(fd_bsize(fd.type_().secsize));
     let bf = fd_bsize / DEV_BSIZE as i64;
 
@@ -693,19 +694,19 @@ pub fn fdstrategy(bp: &'static Buf) {
         // bad:
         let error = 'bad: {
             // Valid unit, controller, and request?
-            let blkno = bp.b_blkno.get();
+            let blkno = bp.blkno();
             if blkno < 0
-                || ((blkno % bf != 0 || bp.b_bcount.get() % fd_bsize != 0) && !bp.isset(B_FORMAT))
+                || ((blkno % bf != 0 || bp.bcount() % fd_bsize != 0) && !bp.isset(B_FORMAT))
             {
                 break 'bad EINVAL;
             }
 
             // If it's a null transfer, return immediately.
-            if bp.b_bcount.get() == 0 {
+            if bp.bcount() == 0 {
                 break 'done;
             }
 
-            let mut sz = howmany(bp.b_bcount.get() as usize, DEV_BSIZE) as i64;
+            let mut sz = howmany(bp.bcount() as usize, DEV_BSIZE) as i64;
 
             let size = i64::from(fd.type_().size) * bf;
             if blkno + sz > size {
@@ -719,10 +720,10 @@ pub fn fdstrategy(bp: &'static Buf) {
                     break 'bad EINVAL;
                 }
                 // Otherwise, truncate request.
-                bp.b_bcount.set(sz << DEV_BSHIFT);
+                bp.set_bcount(sz << DEV_BSHIFT);
             }
 
-            bp.b_resid.set(bp.b_bcount.get() as usize);
+            bp.set_resid(bp.bcount() as usize);
 
             // Queue I/O
             bufq_queue(&fd.sc_bufq, bp);
@@ -748,12 +749,12 @@ pub fn fdstrategy(bp: &'static Buf) {
 
         // bad:
         bp.set(B_ERROR);
-        bp.b_error.set(Some(error));
+        bp.set_error(Some(error));
     }
 
     // done:
     // Toss transfer; we're done early.
-    bp.b_resid.set(bp.b_bcount.get() as usize);
+    bp.set_resid(bp.bcount() as usize);
     let s = splbio();
     biodone(bp);
     splx(s);
@@ -978,22 +979,21 @@ pub fn fdintr(fdc: &FdcSoftc) -> i32 {
         };
 
         let finfo: Option<*mut FdFormb> = if bp.isset(B_FORMAT) {
-            Some(bp.b_data.get().cast::<FdFormb>())
+            Some(bp.data_ptr().cast::<FdFormb>())
         } else {
             None
         };
 
-        let mut cylin = ((bp.b_blkno.get() * DEV_BSIZE as i64)
-            + (bp.b_bcount.get() - bp.b_resid.get() as i64))
+        let mut cylin = ((bp.blkno() * DEV_BSIZE as i64) + (bp.bcount() - bp.resid() as i64))
             / i64::from(fd_bsize * fd.type_().seccyl);
 
         let mut next = match fdc.sc_state.get() {
             DEVIDLE => {
                 fdc.sc_errors.set(0);
                 fd.sc_skip.set(0);
-                fd.sc_bcount.set(bp.b_bcount.get() as i32);
+                fd.sc_bcount.set(bp.bcount() as i32);
                 fd.sc_blkno
-                    .set(bp.b_blkno.get() / i64::from(fd_bsize / DEV_BSIZE as i32));
+                    .set(bp.blkno() / i64::from(fd_bsize / DEV_BSIZE as i32));
                 let _ = timeout_del(&fd.fd_motor_off_to);
                 if fd.sc_flags.get() & FD_MOTOR_WAIT != 0 {
                     fdc.sc_state.set(MOTORWAIT);
@@ -1067,7 +1067,7 @@ pub fn fdintr(fdc: &FdcSoftc) -> i32 {
 
                 disk_unbusy(
                     &fd.sc_dk,
-                    bp.b_bcount.get() - bp.b_resid.get() as i64,
+                    bp.bcount() - bp.resid() as i64,
                     fd.sc_blkno.get(),
                     bp.isset(B_READ),
                 );
@@ -1095,8 +1095,7 @@ pub fn fdintr(fdc: &FdcSoftc) -> i32 {
                     .set(fd.sc_blkno.get() + i64::from(fd.sc_nblks.get()));
                 fd.sc_skip.set(fd.sc_skip.get() + fd.sc_nbytes.get());
                 fd.sc_bcount.set(fd.sc_bcount.get() - fd.sc_nbytes.get());
-                bp.b_resid
-                    .set(bp.b_resid.get() - fd.sc_nbytes.get() as usize);
+                bp.set_resid(bp.resid() - fd.sc_nbytes.get() as usize);
                 if finfo.is_none() && fd.sc_bcount.get() > 0 {
                     cylin = fd.sc_blkno.get() / i64::from(fd.type_().seccyl);
                     Next::DoSeek
@@ -1208,7 +1207,7 @@ pub fn fdintr(fdc: &FdcSoftc) -> i32 {
                     nblks = nblks.min(FDC_MAXIOSIZE / fd_bsize);
                     fd.sc_nblks.set(nblks);
                     fd.sc_nbytes.set(if fb.is_some() {
-                        bp.b_bcount.get() as i32
+                        bp.bcount() as i32
                     } else {
                         nblks * fd_bsize
                     });
@@ -1235,7 +1234,7 @@ pub fn fdintr(fdc: &FdcSoftc) -> i32 {
                     // this part is `sc_nbytes` from `sc_skip`.
                     let _ = unsafe {
                         isadma_start(
-                            bp.b_data.get().add(fd.sc_skip.get() as usize),
+                            bp.data_ptr().add(fd.sc_skip.get() as usize),
                             fd.sc_nbytes.get() as usize,
                             fdc.sc_drq.get(),
                             read,
@@ -1346,8 +1345,8 @@ pub fn fdretry(fd: &'static FdSoftc) {
             ));
 
             bp.set(B_ERROR);
-            bp.b_error.set(Some(EIO));
-            bp.b_resid.set(bp.b_bcount.get() as usize);
+            bp.set_error(Some(EIO));
+            bp.set_resid(bp.bcount() as usize);
             fdfinish(fd, bp);
         }
     }
@@ -1502,20 +1501,19 @@ pub fn fdformat(dev: Dev, finfo: &mut [u8], p: &Proc) -> Result<(), Errno> {
         &*bpp.as_ptr()
     };
 
-    bp.b_flags.set(B_BUSY | B_PHYS | B_FORMAT | B_RAW);
-    bp.b_proc.set(ptr::from_ref(p));
-    bp.b_dev.set(dev);
+    bp.set_flags(B_BUSY | B_PHYS | B_FORMAT | B_RAW);
+    bp.set_proc_ptr(ptr::from_ref(p));
+    bp.set_dev(dev);
 
     // calculate a fake blkno, so fdstrategy() would initiate a seek to the requested
     // cylinder
-    bp.b_blkno.set(
+    bp.set_blkno(
         i64::from((f.cyl * (type_.sectrac * type_.heads) + f.head * type_.sectrac) * fd_bsize)
             / DEV_BSIZE as i64,
     );
 
-    bp.b_bcount
-        .set((size_of::<FdIdfieldData>() * usize::from(f.format_info.nsecs)) as i64);
-    bp.b_data.set(finfo.as_mut_ptr());
+    bp.set_bcount((size_of::<FdIdfieldData>() * usize::from(f.format_info.nsecs)) as i64);
+    bp.set_data_ptr(finfo.as_mut_ptr());
 
     // now do the format
     fdstrategy(bp);

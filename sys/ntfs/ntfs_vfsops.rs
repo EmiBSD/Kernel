@@ -109,7 +109,6 @@ use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mountedon,
@@ -132,6 +131,8 @@ use crate::ntfs::ntfs_subr::{
     ntfs_ntlookup, ntfs_ntput, ntfs_readattr, ntfs_toupper_unuse, ntfs_toupper_use,
 };
 use crate::ntfs::ntfs_vnops::NTFS_VOPS;
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::FREAD;

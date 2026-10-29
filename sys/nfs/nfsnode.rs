@@ -90,8 +90,7 @@ use core::sync::atomic::AtomicU32;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_lockf::LockfStateSlot;
 use crate::nfs::nfsproto::{NFS_MAXFHSIZE, Nfsfh, Nfsuint64};
-use crate::sys::buf::BFreelist;
-use crate::sys::queue::TailqHead;
+use crate::sys::buf::ByFreelist;
 use crate::sys::rwlock::{Rrwlock, Rwlock};
 use crate::sys::time::Timespec;
 use crate::sys::tree::RbtEntry;
@@ -99,6 +98,9 @@ use crate::sys::types::{Off, Time, Uid};
 use crate::sys::ucred::CredSlot;
 use crate::sys::vnode::{VT_NFS, Vattr, Vnode};
 use crate::tree_adapter;
+use hal::intr::IPL_BIO;
+use hal::mutex::Mutexed;
+use hal::owned::SecondaryList;
 
 /// `NFS_COMMIT_PUSH_VALID`: push range valid; values for `n_commitflags`.
 pub const NFS_COMMIT_PUSH_VALID: i32 = 0x0001;
@@ -319,14 +321,13 @@ tree_adapter!(
     pub NfsNodetree: NfsNode, n_entry => RbtEntry, nfsnode_cmp
 );
 
-/// `struct nfs_bufqhead`: the queue head for nfsiod's.
-pub struct NfsBufqhead(pub TailqHead<BFreelist>);
+/// `struct nfs_bufqhead`: the queue head for nfsiod's, its buffers linked through
+/// `b_freelist` (a busy buffer is on none of the cache's queues), under its own mutex.
+pub type NfsBufqhead = Mutexed<SecondaryList<ByFreelist>>;
 
-// SAFETY: the queue is changed at `splbio` under the kernel lock, as in C.
-unsafe impl Sync for NfsBufqhead {}
-
-/// `nfs_bufq`: buffers waiting for an nfsiod (defined in `nfs_bio.c`).
-pub static NFS_BUFQ: NfsBufqhead = NfsBufqhead(TailqHead::new());
+/// `nfs_bufq`: buffers waiting for an nfsiod (defined in `nfs_bio.c`), each with its token
+/// parked in it.
+pub static NFS_BUFQ: NfsBufqhead = Mutexed::new(IPL_BIO, SecondaryList::new());
 /// `nfs_bufqlen`: the length of `nfs_bufq` (defined in `nfs_bio.c`).
 pub static NFS_BUFQLEN: AtomicU32 = AtomicU32::new(0);
 /// `nfs_bufqmax`: the most buffers `nfs_bufq` may hold (defined in `nfs_bio.c`).

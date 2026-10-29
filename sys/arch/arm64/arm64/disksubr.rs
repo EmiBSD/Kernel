@@ -58,8 +58,9 @@
 use core::sync::atomic::Ordering;
 
 use crate::kern::subr_disk::{DISK_CHANGE, initdisklabel, readdisksector, readdoslabel};
-use crate::kern::vfs_bio::{biowait, brelse, geteblk};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{biowait, brelse, geteblk};
 use crate::sys::conf::DevTypeStrategy;
 use crate::sys::disklabel::{
     DISKLABEL_SIZE, DOS_LABELSECTOR, Disklabel, dl_blkoffset, dl_blktosec,
@@ -90,7 +91,7 @@ pub fn readdisklabel(
         // get a buffer and initialize it
         let b = geteblk(lp.d_secsize as usize);
         bp = Some(b);
-        b.b_dev.set(dev);
+        b.set_dev(dev);
 
         // Each spoof is tried in turn while nothing has matched (the C's `goto done`).
         #[cfg_attr(not(any(feature = "cd9660", feature = "udf")), allow(unused_mut))]
@@ -118,7 +119,7 @@ pub fn readdisklabel(
 pub fn writedisklabel(dev: Dev, strat: DevTypeStrategy, lp: &mut Disklabel) -> Result<(), Errno> {
     // get a buffer and initialize it
     let bp = geteblk(lp.d_secsize as usize);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
 
     let result = (|| {
         let mut partoff: Daddr = -1;

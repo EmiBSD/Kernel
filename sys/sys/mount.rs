@@ -109,6 +109,9 @@ use crate::sys::sysctl::Sysctlfn;
 use crate::sys::types::{Gid, Ino, Mode, Off, Uid};
 use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::vnode::{VMntvnodes, Vnode};
+/// `struct bcachestats`: buffer cache statistics, `hal`'s (N5.1: one copy for the kernel's
+/// cache and `vfs.generic.bcachestat`).
+pub use hal::sys::mount::Bcachestats;
 
 /// `fsid_t`: file system id type.
 #[repr(C)]
@@ -902,41 +905,9 @@ impl Vfsconf {
     }
 }
 
-/// `struct bcachestats`: buffer cache statistics.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Bcachestats {
-    /// `numbufs`: number of buffers allocated.
-    pub numbufs: i64,
-    /// `numbufpages`: number of pages in buffer cache.
-    pub numbufpages: i64,
-    /// `numdirtypages`: number of dirty free pages.
-    pub numdirtypages: i64,
-    /// `numcleanpages`: number of clean free pages.
-    pub numcleanpages: i64,
-    /// `pendingwrites`: number of pending writes.
-    pub pendingwrites: i64,
-    /// `pendingreads`: number of pending reads.
-    pub pendingreads: i64,
-    /// `numwrites`: total writes started.
-    pub numwrites: i64,
-    /// `numreads`: total reads started.
-    pub numreads: i64,
-    /// `cachehits`: total reads found in cache.
-    pub cachehits: i64,
-    /// `busymapped`: number of busy and mapped buffers.
-    pub busymapped: i64,
-    /// `delwribufs`: delayed write buffers.
-    pub delwribufs: i64,
-    /// `kvaslots`: kva slots total.
-    pub kvaslots: i64,
-    /// `kvaslots_avail`: available kva slots.
-    pub kvaslots_avail: i64,
-}
-
 /// `BUFPAGES_DEFICIT`: how far the buffer cache is below its low water mark, in pages.
 pub fn bufpages_deficit() -> i64 {
-    use crate::kern::vfs_bio::{BCSTATS, BUFLOWPAGES};
+    use crate::sys::buf::{BCSTATS, BUFLOWPAGES};
     let d = BUFLOWPAGES.load(core::sync::atomic::Ordering::Relaxed)
         - BCSTATS
             .numbufpages
@@ -946,7 +917,7 @@ pub fn bufpages_deficit() -> i64 {
 
 /// `BUFPAGES_INACT`: the buffer cache's clean pages above its low water mark.
 pub fn bufpages_inact() -> i64 {
-    use crate::kern::vfs_bio::{BCSTATS, BUFLOWPAGES};
+    use crate::sys::buf::{BCSTATS, BUFLOWPAGES};
     let d = BCSTATS
         .numcleanpages
         .load(core::sync::atomic::Ordering::Relaxed)

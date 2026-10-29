@@ -82,11 +82,12 @@ use crate::dev::rnd::{arc4random, arc4random_uniform};
 use crate::kern::kern_tc::nanotime;
 use crate::kern::kern_time::ratecheck;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, brelse, buf_adjcnt, getblk};
 use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::kprintf;
 use crate::log;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_DONE, Buf};
+use crate::sys::buf::{bawrite, bdwrite, bread, brelse, buf_adjcnt, getblk};
 use crate::sys::errno::Errno;
 use crate::sys::mount::VFS_VGET;
 use crate::sys::param::{btodb, clrbit, howmany, isclr, isset, setbit};
@@ -328,10 +329,10 @@ pub fn ffs_realloccg(
                 ip.dip_set_blocks(ip.dip_blocks() + btodb((nsize - osize) as usize) as i64);
                 ip.set_flag(IN_CHANGE | IN_UPDATE);
                 if let (Some(out), Some(b)) = (bpp.as_deref_mut(), bp) {
-                    if b.b_blkno.get() != fsbtodb(fs, bno) {
+                    if b.blkno() != fsbtodb(fs, bno) {
                         panic(format_args!("ffs_realloccg: bad blockno"));
                     }
-                    if cfg!(feature = "diagnostic") && i64::from(nsize) > b.b_bufsize.get() {
+                    if cfg!(feature = "diagnostic") && i64::from(nsize) > b.bufsize() {
                         panic(format_args!("ffs_realloccg: small buf"));
                     }
                     buf_adjcnt(b, i64::from(nsize));
@@ -405,8 +406,8 @@ pub fn ffs_realloccg(
             ip.dip_set_blocks(ip.dip_blocks() + btodb((nsize - osize) as usize) as i64);
             ip.set_flag(IN_CHANGE | IN_UPDATE);
             if let (Some(out), Some(b)) = (bpp, bp) {
-                b.b_blkno.set(fsbtodb(fs, bno));
-                if cfg!(feature = "diagnostic") && i64::from(nsize) > b.b_bufsize.get() {
+                b.set_blkno(fsbtodb(fs, bno));
+                if cfg!(feature = "diagnostic") && i64::from(nsize) > b.bufsize() {
                     panic(format_args!("ffs_realloccg: small buf 2"));
                 }
                 buf_adjcnt(b, i64::from(nsize));

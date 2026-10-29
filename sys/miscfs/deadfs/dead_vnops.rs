@@ -67,12 +67,13 @@ use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_synch::msleep_nsec;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::nullop;
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_default::{vop_generic_badop, vop_generic_lookup};
 use crate::kern::vfs_subr::VNODE_MTX;
 use crate::kern::vfs_vops::{VOP_BMAP, VOP_LOCK, VOP_STRATEGY, VOP_UNLOCK};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::B_ERROR;
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::errno::Errno;
 use crate::sys::event::{__EV_POLL, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE};
 use crate::sys::lock::LK_DRAIN;
@@ -178,7 +179,7 @@ pub fn dead_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
 /// Just call the device strategy routine.
 pub fn dead_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    match bp.b_vp.get() {
+    match bp.vp() {
         Some(vp) if chkvnlock(vp) => VOP_STRATEGY(vp, bp),
         _ => {
             bp.set(B_ERROR);

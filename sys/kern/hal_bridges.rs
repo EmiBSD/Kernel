@@ -53,7 +53,9 @@ use hal::prf::Printf;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::subr_pool::{pool_cache_init, pool_get, pool_init, pool_put, pool_sethiwat};
+use crate::kern::subr_pool::{
+    pool_cache_init, pool_get, pool_get_idle, pool_init, pool_put, pool_sethiwat,
+};
 use crate::kern::subr_prf::printf;
 use crate::sys::pool::Pool;
 
@@ -61,6 +63,14 @@ use crate::sys::pool::Pool;
 impl RawPool for Pool {
     fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
         pool_get(self, flags).map(|p| (p, self.pr_size.get() as usize))
+    }
+
+    fn get_idle(&self, flags: i32) -> Option<(NonNull<u8>, usize, bool)> {
+        pool_get_idle(self, flags).map(|(p, yields)| (p, self.pr_size.get() as usize, yields))
+    }
+
+    fn yield_now(&self) {
+        crate::kern::sched_bsd::r#yield();
     }
 
     fn put(&self, item: NonNull<u8>) {

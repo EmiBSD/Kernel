@@ -98,6 +98,7 @@ use crate::net::if_::{
 };
 use crate::net::if_ethersubr::ETHERBROADCASTADDR;
 use crate::netinet::if_ether::ETHER_ADDR_LEN;
+use crate::sys::buf::BufLegacy;
 use crate::sys::device::Device;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
@@ -588,7 +589,7 @@ pub fn malloc_pool_stress() {
 /// are written and read back through `b_data`, several at once, then freed; the counters come
 /// back to where they were.
 pub fn buffer_cache() {
-    use crate::kern::vfs_bio::{BCSTATS, brelse, geteblk};
+    use crate::sys::buf::{BCSTATS, brelse, geteblk};
 
     let numbufs = BCSTATS.numbufs.load(Ordering::Relaxed);
     let numbufpages = BCSTATS.numbufpages.load(Ordering::Relaxed);
@@ -1814,10 +1815,10 @@ pub fn vio_check() {
 /// checkout without `just userland`).
 pub fn rd_check() {
     use crate::dev::rd::rd_root_size;
-    use crate::kern::vfs_bio::{biowait, brelse, geteblk};
     use crate::machine::autoconf::nam2blk;
     use crate::machine::conf::bdevsw;
     use crate::sys::buf::{B_BUSY, B_DONE, B_ERROR, B_INVAL, B_RAW, B_READ, B_WRITE};
+    use crate::sys::buf::{biowait, brelse, geteblk};
     use crate::sys::disklabel::makediskdev;
     use crate::sys::stat::S_IFBLK;
 
@@ -1851,16 +1852,16 @@ pub fn rd_check() {
     }
 
     let bp = geteblk(SBLOCKSIZE);
-    bp.b_dev.set(dev);
+    bp.set_dev(dev);
     let mut found = None;
     for (sblock, magic, name) in SBLOCKS {
-        bp.b_blkno.set(sblock / 512);
-        bp.b_bcount.set(SBLOCKSIZE as i64);
-        bp.b_error.set(None);
+        bp.set_blkno(sblock / 512);
+        bp.set_bcount(SBLOCKSIZE as i64);
+        bp.set_error(None);
         bp.clr(B_READ | B_WRITE | B_DONE | B_ERROR);
         bp.set(B_BUSY | B_READ | B_RAW);
         (sw.d_strategy)(bp);
-        if biowait(bp).is_err() || bp.b_resid.get() != 0 {
+        if biowait(bp).is_err() || bp.resid() != 0 {
             continue;
         }
         // SAFETY: `geteblk` returned the buffer busy and mapped, for this test alone.

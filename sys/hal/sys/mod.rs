@@ -41,6 +41,8 @@ pub mod kernel;
 pub mod limits;
 #[forbid(unsafe_code)]
 pub mod mman;
+#[forbid(unsafe_code)]
+pub mod mount;
 /// `<sys/param.h>`'s page size for the headers moved here (`ioccom.h`'s `IOCPARM_MAX`): the
 /// machine's (`<machine/param.h>`), so `crate::sys::param::PAGE_SIZE` names the same constant in
 /// both crates.

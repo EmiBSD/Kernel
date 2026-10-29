@@ -82,7 +82,6 @@ use core::sync::atomic::AtomicI32;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
 use crate::kern::vfs_default::vop_generic_bwrite;
 use crate::kern::vfs_subr::{vput, vref};
@@ -97,6 +96,8 @@ use crate::ntfs::ntfs_subr::{
     Rdata, ntfs_frele, ntfs_isnamepermitted, ntfs_ntget, ntfs_ntlookupfile, ntfs_ntput,
     ntfs_ntreaddir, ntfs_nttimetounix, ntfs_ntvattrget, ntfs_ntvattrrele, ntfs_readattr,
 };
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, clrbuf};
 use crate::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN};
 use crate::sys::errno::Errno;
@@ -329,7 +330,7 @@ pub fn ntfs_print(ap: &mut VopPrintArgs) -> Result<(), Errno> {
 /// `ntfs_cntob(b_blkno)` into the buffer, zero past the end of the file.
 pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("ntfs_strategy: buffer without a vnode"));
     };
     let fp = VTOF(vp);
@@ -338,13 +339,11 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let mut error = Ok(());
 
     if bp.isset(B_READ) {
-        let boff = ntmp.ntfs_cntob(bp.b_blkno.get() as u64);
+        let boff = ntmp.ntfs_cntob(bp.blkno() as u64);
         if boff as u64 >= fp.f_size.get() {
-            // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
-            // mapped; the strategy owns it until biodone.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
         } else {
-            let bcount = bp.b_bcount.get() as u64;
+            let bcount = bp.bcount() as u64;
             let toread = bcount.min(fp.f_size.get() - boff as u64) as u32;
 
             // SAFETY: as above; the slice dies before biodone.
@@ -360,7 +359,7 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
                 &mut Rdata::Mem(&mut *data),
             ) {
                 printf(format_args!("ntfs_strategy: ntfs_readattr failed\n"));
-                bp.b_error.set(Some(e));
+                bp.set_error(Some(e));
                 bp.set(B_ERROR);
                 error = Err(e);
             }
@@ -370,7 +369,7 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
             }
         }
     } else {
-        bp.b_error.set(Some(Errno::EROFS));
+        bp.set_error(Some(Errno::EROFS));
         bp.set(B_ERROR);
         error = Err(Errno::EROFS);
     }
@@ -708,13 +707,11 @@ mod tests {
     // `ntfs_mountfs`, look names up, read files (by `VOP_READ` and through the buffer cache's
     // `ntfs_strategy`), read directories, take attributes and `statfs`, and unmount.
 
-    use core::sync::atomic::Ordering;
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
     use super::*;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, bread, brelse, bufinit};
     use crate::kern::vfs_init::vfs_byname;
     use crate::kern::vfs_subr::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free, vrele};
     use crate::kern::vfs_vops::{VOP_GETATTR, VOP_LOOKUP, VOP_READ, VOP_READDIR};
@@ -728,6 +725,7 @@ mod tests {
     use crate::ntfs::ntfs_vfsops::{ntfs_mountfs, ntfs_root, ntfs_statfs, ntfs_unmount};
     use crate::ntfs::ntfsmount::{NTFS_MFLAG_ALLNAMES, NTFS_MFLAG_CASEINS};
     use crate::sys::buf::Buf;
+    use crate::sys::buf::{bread, brelse, bufinit};
     use crate::sys::mount::{MNT_LOCAL, MNT_RDONLY, MNT_WAIT, Mount, NtfsArgs};
     use crate::sys::namei::{Componentname, LOOKUP};
     use crate::sys::param::DEV_BSIZE;
@@ -1243,18 +1241,18 @@ mod tests {
 
     /// A synchronous read of the image at `b_blkno`, then `biodone`.
     fn disk_io(bp: &'static Buf) {
-        let off = bp.b_blkno.get() as usize * DEV_BSIZE;
-        let len = bp.b_bcount.get() as usize;
+        let off = bp.blkno() as usize * DEV_BSIZE;
+        let len = bp.bcount() as usize;
         {
             let d = DISK.lock().unwrap_or_else(|e| e.into_inner());
             if !bp.isset(B_READ) || off + len > d.len() {
-                bp.b_error.set(Some(Errno::EIO));
+                bp.set_error(Some(Errno::EIO));
                 bp.set(B_ERROR);
             } else {
                 // SAFETY: the buffer is busy for this transfer and mapped.
                 let data = unsafe { bp.data() };
                 data.copy_from_slice(&d[off..off + len]);
-                bp.b_resid.set(0);
+                bp.set_resid(0);
             }
         }
         let s = splbio();
@@ -1290,27 +1288,9 @@ mod tests {
     fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
         ntfs_nthash_reset();
         ntfs_toupper_reset();

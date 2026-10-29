@@ -1687,7 +1687,8 @@ notes = "M2: db_stack_trace_print from a given frame (db_stack_dump); M4: the tr
 [[module]]
 rust = "sys/arch/arm64/arm64/disksubr.rs"
 lz = ["sys/arch/arm64/arm64/disksubr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/fpu.rs"
@@ -1733,7 +1734,7 @@ notes = "mmopen, mmclose, mmrw (/dev/mem a page at a time under physlock through
 rust = "sys/arch/arm64/arm64/vm_machdep.rs"
 lz = ["sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs", "sys/kernel/fork.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/hal/arch/arm64/switch.rs", "sys/kernel/fork.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONCRITICAL is kern_smr.c, M7); M8: bdevsw_lookup (a copy of the entry), chrtoblk, blktochr over machine::conf; M11a: assertwaitok's SMR_ASSERT_NONCRITICAL (kern_smr.c); M11e: uvm_purge's KERNEL_ASSERT_UNLOCKED is real; __HAVE_PMAP_PURGE: uvm_purge calls machine::pmap::pmap_purge (arm64's; nothing on amd64)"
 
 [[module]]
@@ -2150,7 +2151,8 @@ status = "inherited"
 [[module]]
 rust = "sys/conf/param.rs"
 lz = ["sys/conf/param.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 notes = "M2: hz, tick, tick_nsec, utc_offset as atomics; maxprocess/maxthread/maxfiles/nmbclust/bufcachepercent/bufpages/fscale, SysV IPC limits and utsname come with their subsystems; M5: MAXUSERS (80, GENERIC), NPROCESS/NTEXT/NVNODE, maxprocess, maxthread, maxfiles; M7b: nmbclust (AtomicI64, NMBCLUSTERS); kern_sysctl.c: fscale; vfs stage 1: initialvnodes (INITIALVNODES = NVNODE); vfs stage 2: bufcachepercent (BUFCACHEPERCENT 20) and bufpages (BUFPAGES 0), lowercase atomics beside the constants"
 
 [[module]]
@@ -3044,7 +3046,8 @@ notes = "M16a: license: NetBSD Foundation BSD-2, kept whole; the whole header: t
 [[module]]
 rust = "sys/dev/ata/wd.rs"
 lz = ["sys/dev/ata/wd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 notes = "M16a: the whole driver but B_FORMAT (not defined: wdformat), WD_DUMP_NOT_TRUSTED (not defined) and HIBERNATE: wd_ca/wd_cd, wdprobe, wdattach (model string in wd_model), wdactivate, wddetach, wdstrategy, wdstart, __wdstart, wddone, wdrestart, wdread/wdwrite (physio), wdopen (wdopen_noproc for wdsize), wdclose, wdgetdefaultlabel, wdgetdisklabel (the label built in a local and installed as sd.rs does), wdioctl (DIOCRLDINFO's label malloc'ed as in the C; the rest to wdc_ioctl), wdsize, wddump (nothing calls it yet: dumpsys not ported), wd_get_params (always on sc_params, as every caller), wd_flushcache (keeps the C's test of ERR_NODEV against the AT_* flags), wd_standby. bdevsw 0 / cdevsw 3 on both archs (NWD 1 on amd64, 0 on arm64 as GENERIC). Host tests (model string, strncpy)"
 
 [[module]]
@@ -3417,7 +3420,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/ic/nvme.rs"
 lz = ["sys/dev/ic/nvme.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/ic/nvmeio.rs"
@@ -3587,7 +3591,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/isa/fd.rs"
 lz = ["sys/dev/isa/fd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 notes = "M16a: fd_types[] (FD_TYPES), struct fd_softc (Cells, Softc, FdDrivechain adapter), fd_ca/fd_cd, fdgetdisklabel (a local label installed by fdopen/DIOCRLDINFO, as wd.rs), fdprobe, fdattach (DKF_NOLABELREAD, disk_attach, bufq_init, the three timeouts), fdactivate, fd_nvtotype, fd_dev_to_type, fdstrategy, fdstart, fdfinish, fdread/fdwrite (physio), fd_set_motor, fd_motor_off, fd_motor_on, fdopen, fdclose, fdsize (-1), fddump (ENXIO), fdintr (the switch with its doseek/doio labels as an inner loop; isadma_start's result ignored as in C), fdtimeout, fdretry, fdioctl (MTIOCTOP, DIOC*, FD_FORM, FD_GTYPE, FD_GOPTS, FD_SOPTS; FD_STYPE ENOTTY as in C; addr the ioctl's kernel copy), fdformat (B_FORMAT = B_XXX; the request read unaligned); unit lookups panic where the C dereferences NULL; DIAGNOSTIC checks under feature diagnostic; cfg machine_x86; bdevsw 2/cdevsw 9 on amd64 (NFD 1); smoke-fd"
 
 [[module]]
@@ -4399,7 +4404,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/rd.rs"
 lz = ["sys/dev/rd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/dev/rnd.rs"
@@ -4459,7 +4465,8 @@ notes = "M16a: the whole file but HIBERNATE (sdmmc_mem_hibernate_write not compi
 [[module]]
 rust = "sys/dev/sdmmc/sdmmc_scsi.rs"
 lz = ["sys/dev/sdmmc/sdmmc_scsi.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 notes = "M16a: the two prototypes, defined in sdmmc_scsi.rs (shared with sdmmc_scsi.c, one licence block: the two notices are the same); M16a: the whole file but HIBERNATE (sdmmc_scsi_hibernate_io not compiled) and SDMMC_DEBUG (DPRINTFs comments): sdmmc_switch (scsi_cmd, minphys), scsi_attach/detach (scsibus at sdmmc: target 0 the host, one target per card), CCBs (alloc/free, the iopool's io_get/io_put as unsafe fns), decode_rw, sdmmc_scsi_cmd (INQUIRY, READ CAPACITY, TUR/START_STOP/SYNC no-ops, READ/WRITE 6/10 queued on the slot thread or run at once when polled), sdmmc_inquiry (reply built by sdmmc_inquiry_data, host-tested: <SD/MMC, QEMU!, 0001> removable), start/complete/done_xs, stimeout. The target is bounds-checked before sc_tgt is indexed"
 
 [[module]]
@@ -4490,7 +4497,7 @@ notes = "M16a: the whole header: struct sdmmc_csd/cid/scr, sdmmc_response, struc
 rust = "sys/dev/softraid.rs"
 lz = ["sys/dev/softraid.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_concat.rs"
@@ -4501,7 +4508,7 @@ status = "inherited"
 rust = "sys/dev/softraid_crypto.rs"
 lz = ["sys/dev/softraid_crypto.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha1.rs", "sys/kernel/crypto/hmac.rs", "sys/crypto/rijndael.rs"]
+adapted_by = ["sys/kernel/crypto/sha1.rs", "sys/kernel/crypto/hmac.rs", "sys/crypto/rijndael.rs", "sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_raid0.rs"
@@ -4521,12 +4528,14 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/softraid_raid5.rs"
 lz = ["sys/dev/softraid_raid5.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_raid6.rs"
 lz = ["sys/dev/softraid_raid6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/dev/softraidvar.rs"
@@ -4779,7 +4788,7 @@ license = "ISC. M12: XHCI_CMD_TIMEOUT/MAX_CMDS/MAX_EVTS/MAX_XFER"
 rust = "sys/dev/vnd.rs"
 lz = ["sys/dev/vnd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/dev/vndioctl.rs"
@@ -4993,19 +5002,20 @@ status = "inherited"
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_lookup.rs"
 lz = ["sys/isofs/cd9660/cd9660_lookup.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_node.rs"
 lz = ["sys/isofs/cd9660/cd9660_node.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_rrip.rs"
 lz = ["sys/isofs/cd9660/cd9660_rrip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_util.rs"
@@ -5016,13 +5026,13 @@ status = "inherited"
 rust = "sys/isofs/cd9660/cd9660_vfsops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/iso.rs"
@@ -5043,7 +5053,7 @@ status = "inherited"
 rust = "sys/isofs/udf/udf.rs"
 lz = ["sys/isofs/udf/udf.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_extern.rs"
@@ -5054,19 +5064,20 @@ license = "public domain"
 [[module]]
 rust = "sys/isofs/udf/udf_subr.rs"
 lz = ["sys/isofs/udf/udf_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_vfsops.rs"
 lz = ["sys/isofs/udf/udf_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_vnops.rs"
 lz = ["sys/isofs/udf/udf_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/kern/clock_subr.rs"
@@ -5103,7 +5114,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5112,11 +5123,6 @@ lz = ["sys/kern/init_sysent.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs"]
 license = "none"
-
-[[module]]
-rust = "sys/kern/kern_bufq.rs"
-lz = ["sys/kern/kern_bufq.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/kern/kern_clock.rs"
@@ -5173,12 +5179,6 @@ lz = ["sys/kern/kern_malloc.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs"]
 notes = "malloc/free/mallocarray/kmeminit_nkmempages/kmeminit with BUCKETINDX; KMEMSTATS is feature kmemstats (default: GENERIC has option KMEMSTATS); btokup always range-checks; poison_*, uvm_map_checkprot and ratecheck reported; malloc_printit not here; M7b: kmeminit makes kmem_map with uvm_km_suballoc (VM_MAP_INTRSAFE) and kmembase/kmemlimit are its bounds; only the host double (PMAP_NOMMU) keeps the direct-map stand-in; diagnostic tools stage 2: sysctl_malloc, buckstring (KMEMSTATS) and memall (KMEMSTATS or DIAGNOSTIC) built by kmeminit; the structures go out through to_bytes; BUCKETINDX of a negative number is the smallest bucket; M11a: malloc_mtx is the C's mutex (IPL_VM) at the C's sites in malloc, free and sysctl_malloc (dropped around km_alloc/km_free, which run at splvm), with or without MULTIPROCESSOR; the KMEMSTATS ks_limit wait msleeps on it (memname as wmesg); DIAGNOSTIC assertwaitok, the pool_debug == 2 yield and the proc0 'cannot sleep for memory during boot' panic; N3.5 S2: LZ's KMEM_MAP pointer is gone: kmem_map is sys/kernel/vm/km.rs's KMEM_MAP slot, installed by kmeminit's uvm_km_suballoc into KMEM_MAP_STORE (install_submap(KvMap::Kmem, ..)); kmem_map() forwards to kernel::vm::km::kmem_map"
-
-[[module]]
-rust = "sys/kern/kern_physio.rs"
-lz = ["sys/kern/kern_physio.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/glue.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 
 [[module]]
 rust = "sys/kern/kern_pledge.rs"
@@ -5603,7 +5603,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5669,7 +5669,7 @@ kind = "renamed"
 rust = "sys/kern/spec_vnops.rs"
 lz = ["sys/kern/spec_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/kern/subr_autoconf.rs"
@@ -5679,7 +5679,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/kern/subr_evcount.rs"
@@ -5701,8 +5702,8 @@ status = "inherited"
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs"]
-notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress"
+adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/bio.rs"]
+notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress; N5.1, an exception to adapted (the user reviews it): adapted plus pool_get_idle, the RawPool::get_idle bridge method kernel's BoxPool needs (buf_get's try under the cache's lock: an item the pool holds, no growth, no sleep, no pr_nfail); moves with subr_pool's redesign"
 
 [[module]]
 rust = "sys/kern/subr_prf.rs"
@@ -5922,18 +5923,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
 
 [[module]]
-rust = "sys/kern/vfs_bio.rs"
-lz = ["sys/kern/vfs_bio.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/hal/thread.rs", "sys/sys/sysctl.rs"]
-
-[[module]]
-rust = "sys/kern/vfs_biomem.rs"
-lz = ["sys/kern/vfs_biomem.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs"]
-
-[[module]]
 rust = "sys/kern/vfs_cache.rs"
 lz = ["sys/kern/vfs_cache.rs"]
 status = "inherited"
@@ -5941,7 +5930,8 @@ status = "inherited"
 [[module]]
 rust = "sys/kern/vfs_default.rs"
 lz = ["sys/kern/vfs_default.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_getcwd.rs"
@@ -5970,13 +5960,13 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_sync.rs"
 lz = ["sys/kern/vfs_sync.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_syscalls.rs"
@@ -5993,7 +5983,8 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
 lz = ["sys/kern/vfs_vops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/lib/libkern/crc32c.rs"
@@ -6398,7 +6389,8 @@ license = "zlib"
 [[module]]
 rust = "sys/miscfs/deadfs/dead_vnops.rs"
 lz = ["sys/miscfs/deadfs/dead_vnops.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fuse_device.rs"
@@ -6483,30 +6475,31 @@ status = "inherited"
 rust = "sys/msdosfs/msdosfs_denode.rs"
 lz = ["sys/msdosfs/msdosfs_denode.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/crypto/siphash.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_fat.rs"
 lz = ["sys/msdosfs/msdosfs_fat.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_lookup.rs"
 lz = ["sys/msdosfs/msdosfs_lookup.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_vfsops.rs"
 lz = ["sys/msdosfs/msdosfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_vnops.rs"
 lz = ["sys/msdosfs/msdosfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfsmount.rs"
@@ -7117,7 +7110,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/nfs/nfs_bio.rs"
 lz = ["sys/nfs/nfs_bio.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_boot.rs"
@@ -7169,13 +7162,13 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/nfs/nfs_subs.rs"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_syscalls.rs"
 lz = ["sys/nfs/nfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_var.rs"
@@ -7186,13 +7179,13 @@ status = "inherited"
 rust = "sys/nfs/nfs_vfsops.rs"
 lz = ["sys/nfs/nfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_vnops.rs"
 lz = ["sys/nfs/nfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/nfs/nfsdiskless.rs"
@@ -7213,7 +7206,7 @@ status = "inherited"
 rust = "sys/nfs/nfsnode.rs"
 lz = ["sys/nfs/nfsnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/nfs/nfsproto.rs"
@@ -7264,19 +7257,20 @@ status = "inherited"
 [[module]]
 rust = "sys/ntfs/ntfs_subr.rs"
 lz = ["sys/ntfs/ntfs_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_vfsops.rs"
 lz = ["sys/ntfs/ntfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_vnops.rs"
 lz = ["sys/ntfs/ntfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfsmount.rs"
@@ -7286,7 +7280,8 @@ status = "inherited"
 [[module]]
 rust = "sys/scsi/cd.rs"
 lz = ["sys/scsi/cd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/scsi/scsi_all.rs"
@@ -7327,7 +7322,8 @@ status = "inherited"
 [[module]]
 rust = "sys/scsi/sd.rs"
 lz = ["sys/scsi/sd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/scsi/sdvar.rs"
@@ -7474,7 +7470,7 @@ status = "inherited"
 rust = "sys/sys/buf.rs"
 lz = ["sys/sys/buf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/object.rs"]
+adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/sys/cdio.rs"
@@ -7682,7 +7678,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/sys/mplock.rs"
@@ -7933,6 +7929,289 @@ status = "redesigned"
 notes = "N4.6b: sysctl.h's ids, name tables and structures moved into hal so kernel::sysctl and bsd share one copy; kinfo_proc and kinfo_file AbiPod through hal::abi_pod! (LZ: two MaybeUninit::zeroed and bsd's SysctlPlain impls); bsd's sys/sys/sysctl.rs re-exports it"
 
 [[module]]
+rust = "sys/hal/sys/mount.rs"
+crate = "hal"
+lz = ["sys/sys/mount.rs"]
+status = "redesigned"
+notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; the rest of mount.h moves with the VFS (N5.2, N5.4)"
+
+[[module]]
+rust = "sys/kernel/fs/buf.rs"
+crate = "kernel"
+lz = ["sys/sys/buf.rs"]
+status = "redesigned"
+notes = "N5.1: struct buf as a bufpl item of hal::pool::BoxPool (BUFPL, vmstat -m's bufpl) with hal::owned links (ByBufhead owning, ByLblkno, ByVnbufs, ByFreelist, ByValist, ByBufq), atomic scalars with the C's names as getters/setters, the busy state, b_pobj (Pages: none, own, a cluster master's counted link) and b_iodone (Iodone: a kernel callback given the token, or a bsd driver's given the address) in a Guarded cell of the cache's lock (a state byte for the unlocked is_held/is_parked); BufRef, B_BUSY's owner as a value holding a counted link (or a driver's &'static) and the view of the bytes (data() safe), parked in the buffer while a driver or a queue holds it by address (Buf::park, Buf::take_parked); buf.h's flags and limits; the cache (vfs_bio, vfs_biomem), the disk queues (kern_bufq) and physio follow in fs::bio, fs::biomem, fs::bufq, fs::physio"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufq"
+native = ["sys/kernel/fs/bufq.rs::Bufq"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufq::new"
+native = ["sys/kernel/fs/bufq.rs::Bufq::new"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufq::default"
+native = ["sys/kernel/fs/bufq.rs::Bufq::default"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/buf.rs::BufqFifoHead"
+native = ["sys/kernel/fs/bufq.rs::Fifo"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/buf.rs::BufqNscanHead"
+native = ["sys/kernel/fs/bufq.rs::Nscan"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Buf::pobj"
+native = ["Buf::with_pobj"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufhead"
+native = ["sys/kernel/fs/bio.rs::CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufqueue"
+native = ["sys/kernel/fs/bio.rs::CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufcache"
+native = ["sys/kernel/fs/bio.rs::CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufcache::new"
+native = ["sys/kernel/fs/bio.rs::CacheState::new"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/buf.rs::Bufcache::default"
+native = ["sys/kernel/fs/bio.rs::CacheState::new"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/buf.rs::unclean_pages"
+native = ["sys/kernel/fs/bio.rs::unclean_pages"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/fs/bio.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_bio.rs", "sys/kern/vfs_subr.rs"]
+status = "redesigned"
+notes = "N5.1: the buffer cache (vfs_bio.c) over one Mutexed CACHE at IPL_BIO (the C's splbio domain): bufhead an OwnedList that owns every buffer, the 2Q queues, the dirty queue and buf_valist SecondaryLists of counted members, the kva arena; bcstats atomics (Bcstats, snapshot into hal's Bcachestats), the tunables atomics (bufpages and bufcachepercent from conf/param.c); B_BUSY the token: getblk, bread, breadn, bread_cluster, geteblk, buf_get give it, brelse, bwrite, bdwrite, bawrite, biodone consume it, a synchronous I/O's caller keeping a counted link for biowait, which takes back the token biodone parks; VnodeBufs, the vnode's [B] half (tree, clean and dirty lists under the cache's lock, v_numoutput, v_bioflag) embedded in bsd's vnode, and the bridge BufVnode for what the cache asks of the vnode; bgetvp, brelvp, buf_replacevnode, reassignbuf, vwaitforio, vwakeup from vfs_subr.c; bread_cluster without the xbpp array (the read-ahead buffers found in one walk of the vnode's tree from the first buffer, their tokens parked; a stack array while they are set up); bwrite's bufq_wait on the queue a note keyed by the buffer names (bufq_queue writes it, bufq_done marks it done); the cleaner (buf_daemon) and the syncer identified by thread words"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VFS_STALLING"
+native = ["sys/kernel/file.rs::VFS_STALLING"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::BufheadStatic"
+native = []
+kind = "dropped"
+reason = "the Sync wrapper of LZ's LIST_HEAD bufhead: bufhead is CacheState's OwnedList, inside the Mutexed CACHE"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::BufqueueStatic"
+native = []
+kind = "dropped"
+reason = "the Sync wrapper of LZ's TAILQ dirtyqueue: the dirty queue is CacheState's SecondaryList, inside the Mutexed CACHE"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::HIGH_CONSTRAINT"
+native = []
+kind = "dropped"
+reason = "vfs_bio.c's global high_constraint, read by no code this kernel ports (LZ's note: unused by the file; the high-memory flipping of __HAVE_PMAP_DIRECT is amd64's, unported; arm64's bus_dma.c keeps a local of its own); nothing userland sees"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::BUFPOOL"
+native = ["sys/kernel/fs/buf.rs::BUFPL"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::BUFHEAD"
+native = ["CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::CLEANERPROC"
+native = ["CLEANER"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::CLEANCACHE"
+native = ["CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::DIRTYQUEUE"
+native = ["CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::cleanerproc"
+native = ["cleaner_word"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::curproc_ptr"
+native = []
+kind = "dropped"
+reason = "the cleaner's and the syncer's identities are thread words compared with hal::sleep::curproc_word (cleaner_word, syncer_word); no pointer is formed"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::xbpp_slice"
+native = []
+kind = "dropped"
+reason = "bread_cluster keeps no xbpp array (D-N5.1-3 moot): the read-ahead buffers are found by block in the vnode's tree (cluster_buffer), their tokens parked in them"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::bp_mount"
+native = ["sys/kern/vfs_subr.rs::io_mount"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::freelist_remove"
+native = ["bufcache_take", "chillbufs"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::freelist_insert_tail"
+native = ["bufcache_release", "chillbufs"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::bufcache_getcleanbuf"
+native = []
+kind = "dropped"
+reason = "its only caller in the C is hibernate_suspend_bufcache (HIBERNATE, not configured, as LZ's note says); bufcache_recover_pages takes its victims with bufcache_first, as LZ's and the C's do"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::bufcache_getdirtybuf"
+native = ["buf_daemon", "take_dirty_buf"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_bio.rs::dma_constraint"
+native = []
+kind = "dropped"
+reason = "the range LZ's bufbackoff ignored (its _range argument): one cache over all memory, the C's single-cache bufbackoff; the kernel's bufbackoff takes no range"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::bufinsvn"
+native = ["bgetvp", "reassignbuf"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::rb_buf_compare"
+native = ["sys/kernel/fs/buf.rs::rb_buf_compare"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/fs/biomem.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_biomem.rs"]
+status = "redesigned"
+notes = "N5.1: vfs_biomem.c over the cache's lock: the arena kernel::vm::km::BufArena (buf_mem_init), buf_map's slot (fresh, or stolen from the least recently used idle buffer by buf_unmap) mapped by BufSlot::map into a view the token holds (the idle buffer keeps it, Kva::Mapped), buf_dealloc_mem keeping the bare slot of a B_RELEASED buffer (Kva::Bare) until buf_unmap frees the buffer from bufhead, buf_fix_mapping as MappedBytes::truncate, buf_alloc_pages/buf_free_pages over kernel::vm::page::uvm_pagealloc_multi and the buffer's own object"
+[[module.fn]]
+lz = "sys/kern/vfs_biomem.rs::BufValist"
+native = ["sys/kernel/fs/bio.rs::CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_biomem.rs::BUF_KVA_START"
+native = ["sys/kernel/vm/km.rs::BufArena"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_biomem.rs::BUF_KVA_END"
+native = ["sys/kernel/vm/km.rs::BufArena"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_biomem.rs::BUF_VALIST"
+native = ["sys/kernel/fs/bio.rs::CacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_biomem.rs::nommu"
+native = []
+kind = "dropped"
+reason = "hal::pmap::PMAP_NOMMU is a constant the arena and the views read (sys/kernel/vm/km.rs, sys/hal/mapped.rs)"
+
+[[module]]
+rust = "sys/kernel/fs/bufq.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_bufq.rs"]
+status = "redesigned"
+notes = "N5.1: disk queues: struct bufq_impl as the trait BufqDiscipline with Fifo and Nscan, both heads embedded in the queue's state (no M_DEVBUF head, so no bufq init fail), the queue all zero until bufq_init (a zeroed softc embeds it; its Mutexed raises to IPL_MPFLOOR, above IPL_BIO); a queued buffer's token parked in it, the lists SecondaryLists of members (counted for a cache buffer, 'static for a driver's); bufqs a hal::list::List of the softcs' queues; bufq_queue tells bwrite the queue (note_queued)"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::BufqImpl"
+native = ["BufqDiscipline"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::Bufqs"
+native = []
+kind = "dropped"
+reason = "the Sync wrapper of LZ's SLIST bufqs: BUFQS is a hal::list::List inside its Mutexed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::BUFQS_MTX"
+native = ["BUFQS"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::BUFQ_IMPLS"
+native = ["BufqState::discipline"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bq_impl"
+native = ["BufqState::discipline"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_fifo_create"
+native = ["Fifo::new"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::fifo_head"
+native = []
+kind = "dropped"
+reason = "the cast of bufq_data to the fifo head: the head is a member of the queue's state (BufqState::discipline)"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_fifo_destroy"
+native = []
+kind = "dropped"
+reason = "the fifo head is embedded in the queue's state, so nothing is freed (free(M_DEVBUF)); bufq_destroy drains the queue as before"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_fifo_queue"
+native = ["Fifo::queue"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_fifo_dequeue"
+native = ["Fifo::dequeue"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_fifo_peek"
+native = ["Fifo::peek"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::BufqNscanData"
+native = ["Nscan"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_simple_nscan"
+native = ["Nscan::simple_nscan"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_nscan_resort"
+native = ["Nscan::resort"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::nscan_data"
+native = []
+kind = "dropped"
+reason = "the cast of bufq_data to the nscan head: the head is a member of the queue's state (BufqState::discipline)"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_nscan_create"
+native = ["Nscan::new"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_nscan_destroy"
+native = []
+kind = "dropped"
+reason = "the nscan head is embedded in the queue's state, so nothing is freed (free(M_DEVBUF)); bufq_destroy drains the queue as before"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_nscan_queue"
+native = ["Nscan::queue"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_nscan_dequeue"
+native = ["Nscan::dequeue"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/kern_bufq.rs::bufq_nscan_peek"
+native = ["Nscan::peek"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/physio.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_physio.rs"]
+status = "redesigned"
+notes = "N5.1: physio(9) over a bufpl box on an OwnedList of its own (never bufhead: numbufs untouched), its B_BUSY token consumed by the strategy routine (a closure; bsd's adapter parks it for the driver's fn(&'static Buf)) and taken back from the buffer's slot at B_DONE under the cache's lock (the C's splbio); each piece wired by uvm_vslock_device and mapped by DeviceLock::vmapbuf (km::PhysWindow, borrowing the lock, the address only), unmapped before uvm_vsunlock_device; a thread without an address space is EFAULT"
+
+[[module]]
 rust = "sys/hal/sys/syslimits.rs"
 crate = "hal"
 lz = ["sys/sys/syslimits.rs"]
@@ -8067,7 +8346,7 @@ status = "inherited"
 rust = "sys/sys/vnode.rs"
 lz = ["sys/sys/vnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/vnode.rs"]
+adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/hal/sys/wait.rs"
@@ -8122,17 +8401,20 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_alloc.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_alloc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_balloc.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_balloc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_bmap.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_bmap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_bswap.rs"
@@ -8152,7 +8434,8 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_extents.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_extents.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_extern.rs"
@@ -8163,29 +8446,31 @@ status = "inherited"
 rust = "sys/ufs/ext2fs/ext2fs_inode.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_lookup.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_lookup.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_readwrite.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_readwrite.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_subr.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_vfsops.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_vnops.rs"
@@ -8197,13 +8482,13 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/ufs/ffs/ffs_alloc.rs"
 lz = ["sys/ufs/ffs/ffs_alloc.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_balloc.rs"
 lz = ["sys/ufs/ffs/ffs_balloc.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_extern.rs"
@@ -8214,12 +8499,13 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_inode.rs"
 lz = ["sys/ufs/ffs/ffs_inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_subr.rs"
 lz = ["sys/ufs/ffs/ffs_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_tables.rs"
@@ -8230,18 +8516,19 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
 lz = ["sys/ufs/ffs/ffs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
 lz = ["sys/ufs/ffs/fs.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfs_extern.rs"
@@ -8252,13 +8539,13 @@ status = "inherited"
 rust = "sys/ufs/mfs/mfs_vfsops.rs"
 lz = ["sys/ufs/mfs/mfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfs_vnops.rs"
 lz = ["sys/ufs/mfs/mfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/thread.rs"]
+adapted_by = ["sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/mfs/mfsnode.rs"
@@ -8293,13 +8580,14 @@ status = "inherited"
 [[module]]
 rust = "sys/ufs/ufs/ufs_bmap.rs"
 lz = ["sys/ufs/ufs/ufs_bmap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -8321,7 +8609,7 @@ status = "inherited"
 rust = "sys/ufs/ufs/ufs_lookup.rs"
 lz = ["sys/ufs/ufs/ufs_lookup.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_quota.rs"
@@ -8339,7 +8627,7 @@ adapted_by = ["sys/kernel/cred.rs"]
 rust = "sys/ufs/ufs/ufs_vnops.rs"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufsmount.rs"
@@ -8595,7 +8883,7 @@ rust = "sys/hal/owned.rs"
 crate = "hal"
 lz = ["sys/kern/subr_tree.rs", "sys/sys/tree.rs", "sys/sys/queue.rs"]
 status = "redesigned"
-notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there"
+notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there. N5.1: SecondaryList<S>, queue.h's TAILQ/LIST/SIMPLEQ over a SecondaryEntry (push_head, push_tail, insert_before_first for bufq_simple_nscan, pop_head, remove, the walks), whose links are Member<A> values moved in and out with their count: counted for an owned element (Member::counted) or uncounted for a &'static one (Member::of_static, refused for an owned element; the entry records which), the buffer cache's queues and a disk's bufq"
 
 [[module]]
 rust = "sys/hal/pinlist.rs"
@@ -8950,7 +9238,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock)"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -8960,9 +9248,9 @@ reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's
 [[module]]
 rust = "sys/hal/mapped.rs"
 crate = "hal"
-lz = ["sys/uvm/uvm_pager.rs"]
+lz = ["sys/uvm/uvm_pager.rs", "sys/kern/vfs_biomem.rs"]
 status = "redesigned"
-notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: MappedBytes, KernelMapper::map_frames (the mapping loop) and map_direct (the one-page case), the drop the pmap_remove; each frame a busy managed page (PhysPages::is_busy, the C's KASSERT(PG_BUSY)) claimed for one view (PageMd's PG_HAL_VIEW, which zero_page/copy_page/page_protect/VmPage::clear_bits of PG_BUSY/uvm_pageclean/clear_attrs refuse), the window checked unmapped, prot with PROT_READ; outside pmap.rs, which forbids unsafe. uvm_pagermapin/out themselves (segments, UVMPAGER_*, uvm_wait) stay in bsd's uvm_pager.rs until N3.4c. The gap until N3.5 (the token holder's contract): no live window is overlaid, removed or write-protected through the kernel map's token but by its drop, and no frame is a busy page that backs kernel memory (the buffer cache's, busy for the buffer's life); the frames stay busy until the drop (unbusying, freeing or reallocating a viewed page panics)"
+notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: MappedBytes, KernelMapper::map_frames (the mapping loop) and map_direct (the one-page case), the drop the pmap_remove; each frame a busy managed page (PhysPages::is_busy, the C's KASSERT(PG_BUSY)) claimed for one view (PageMd's PG_HAL_VIEW, which zero_page/copy_page/page_protect/VmPage::clear_bits of PG_BUSY/uvm_pageclean/clear_attrs refuse), the window checked unmapped, prot with PROT_READ; outside pmap.rs, which forbids unsafe. uvm_pagermapin/out themselves (segments, UVMPAGER_*, uvm_wait) stay in bsd's uvm_pager.rs until N3.4c. The gap until N3.5 (the token holder's contract): no live window is overlaid, removed or write-protected through the kernel map's token but by its drop, and no frame is a busy page that backs kernel memory (the buffer cache's, busy for the buffer's life); the frames stay busy until the drop (unbusying, freeing or reallocating a viewed page panics). N5.1: vfs_biomem.c's buf_map loop as KernelMapper::kenter_frames, the same claimed view over an unmanaged (kenter) mapping, on no pv chain, removed by the drop (kremove); MappedBytes::truncate is buf_fix_mapping's kremove of the tail; the contract now names what stays the holder's: no overlay or removal but by the drop or truncate, and no frame of a busy page that backs kernel memory outside a view given to map_frames or map_direct"
 
 [[extra]]
 rust = "sys/hal/user.rs"
@@ -8981,7 +9269,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -9506,6 +9794,12 @@ reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's p
 [[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
+
+
+[[extra]]
+rust = "sys/kernel/benches/bio.rs"
+crate = "kernel"
+reason = "decision 43, N5.1: host microbenchmarks of the buffer cache and the disk queues on the kernel's shape, the op names of sys/benches/bio.rs (getblk and bread hits, brelse, getblk's allocation, the 2Q queues' take and release under the cache's lock, a bufq trip through nscan and fifo with a driver's tokens, splbio and the cache's lock) over the doubles and testutil's BufTestVnode (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/event.rs"
@@ -11028,7 +11322,7 @@ rust = "sys/kernel/vm/page.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_page.rs", "sys/uvm/uvm.rs"]
 status = "redesigned"
-notes = "N3.3: struct vm_page as VmPage in one boot-stolen array (hal::bootmem), &'static for real: pageq/objt hal List/Tree links, the owner as an OwnerTag compared and never followed (the owner passed as Owner<'_> through the PageObject/PageAnon bridge traits, bsd's UvmObject/VmAnon, N3.4), [o]/[F] scalars relaxed atomics, the array index for pg + n; the segment table in a Mutexed while the system boots and frozen by uvm_page_init into a published table (PHYS_TO_VM_PAGE lock-free), the machine's VM_PHYSSEG_MAX/STRAT passed as a SegPolicy; the page queues inside Mutexed<PageQueues> (uvm_pagedequeue takes &mut PageQueues), page_init_done an atomic; implements hal::pmap::PhysPages (PHYS_PAGES); N3.4b: uvm_pagewait(pg, owner, witness, wmesg) consumes the owner lock's witness (OwnerWitness); the !PMAP_STEAL_MEMORY boot path, the objects' legacy uvm_pagewait (until N3.4c), uvm_pagealloc_multi, uvm_shutdown and the DMA reachability stay in bsd's sys/uvm/uvm_page.rs"
+notes = "N3.3: struct vm_page as VmPage in one boot-stolen array (hal::bootmem), &'static for real: pageq/objt hal List/Tree links, the owner as an OwnerTag compared and never followed (the owner passed as Owner<'_> through the PageObject/PageAnon bridge traits, bsd's UvmObject/VmAnon, N3.4), [o]/[F] scalars relaxed atomics, the array index for pg + n; the segment table in a Mutexed while the system boots and frozen by uvm_page_init into a published table (PHYS_TO_VM_PAGE lock-free), the machine's VM_PHYSSEG_MAX/STRAT passed as a SegPolicy; the page queues inside Mutexed<PageQueues> (uvm_pagedequeue takes &mut PageQueues), page_init_done an atomic; implements hal::pmap::PhysPages (PHYS_PAGES); N3.4b: uvm_pagewait(pg, owner, witness, wmesg) consumes the owner lock's witness (OwnerWitness); the !PMAP_STEAL_MEMORY boot path, the objects' legacy uvm_pagewait (until N3.4c), uvm_pagealloc_multi, uvm_shutdown and the DMA reachability stay in bsd's sys/uvm/uvm_page.rs; N5.1: uvm_pagealloc_multi here (moved from bsd's sys/kern/vm_bsd.rs with the buffer cache: one segment without an MMU), and uvm_pagerealloc refuses a page a byte view holds (a buffer's window gives the cluster's pages up first, MappedBytes::truncate)"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_page.rs::PG_PMAP0"
@@ -11182,7 +11476,7 @@ rust = "sys/kernel/vm/pmemrange.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_pmemrange.rs", "sys/uvm/uvm_percpu.rs"]
 status = "redesigned"
-notes = "N3.3: the free page allocator of uvm_pmemrange.c over hal Tree/List of 'static pages and boot-stolen pmemranges (hal::bootmem::steal_one), uvm.fpageqlock as Mutexed<FreeState> whose guard every range function takes as proof, the size tree's pg[1] and the array-broke test by index; the per-CPU magazines of uvm_percpu.h in a hal::percpu::PerCpu of Links at splraise(IPL_BIO) with IntrLevel::splassert; the buffer cache's BUFPAGES_DEFICIT/INACT through the BufCacheStats bridge (N5); uvm_wait reports unported once through the Printf bridge and WAITOK fails with ENOMEM (LZ's deviation, kept; bsd's uvm_wait delegates here), the C's printf lines through hal::prf; the lock-free pmemrange index for uvm_pmr_cache_put; uvm_pmr_allocpmr after init panics (unreachable), uvm_pagezero_thread N4; uvm_pmr_free_frames (a frame list freed as one pglist; written for kernel::vm::km, which since N3.3 frees page lists itself, so only its test calls it)"
+notes = "N3.3: the free page allocator of uvm_pmemrange.c over hal Tree/List of 'static pages and boot-stolen pmemranges (hal::bootmem::steal_one), uvm.fpageqlock as Mutexed<FreeState> whose guard every range function takes as proof, the size tree's pg[1] and the array-broke test by index; the per-CPU magazines of uvm_percpu.h in a hal::percpu::PerCpu of Links at splraise(IPL_BIO) with IntrLevel::splassert; the buffer cache's BUFPAGES_DEFICIT/INACT through the BufCacheStats bridge (N5); uvm_wait reports unported once through the Printf bridge and WAITOK fails with ENOMEM (LZ's deviation, kept; bsd's uvm_wait delegates here), the C's printf lines through hal::prf; the lock-free pmemrange index for uvm_pmr_cache_put; uvm_pmr_allocpmr after init panics (unreachable), uvm_pagezero_thread N4; uvm_pmr_free_frames (a frame list freed as one pglist; written for kernel::vm::km, which since N3.3 frees page lists itself, so only its test calls it); N5.1: BUFPAGES_DEFICIT/INACT read from kernel::fs::bio (the BufCacheStats bridge is gone)"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_pmemrange.rs::pmr_static"
@@ -11193,12 +11487,20 @@ reason = "pmemranges are &'static by construction (hal::bootmem::steal_one, neve
 [[module]]
 rust = "sys/kernel/vm/km.rs"
 crate = "kernel"
-lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs"]
+lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs", "sys/kern/vfs_biomem.rs", "sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "redesigned"
-notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider); N3.5 S2: the KmMaps bridge is gone: a mode's virtual space is uvm_map/uvm_unmap of the kernel's own map in its slot (kernel_map from uvm_km_init, kmem_map from kmeminit, exec_map/phys_map from cpu_startup, install_submap), km_allocva sleeps on the map's address; kp_dma* are bsd's sys/kern/vm_bsd.rs"
+notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider); N3.5 S2: the KmMaps bridge is gone: a mode's virtual space is uvm_map/uvm_unmap of the kernel's own map in its slot (kernel_map from uvm_km_init, kmem_map from kmeminit, exec_map/phys_map from cpu_startup, install_submap), km_allocva sleeps on the map's address; kp_dma* are bsd's sys/kern/vm_bsd.rs; N5.1: the buffer cache's kva arena as BufArena (buf_mem_init's uvm_map of kernel_map, PROT_NONE; fake ranges no arena reuses without an MMU) handing out BufSlots of MAXPHYS, the only addresses BufSlot::map enters a buffer's pages at (KernelMapper::kenter_frames) and BufArena::unmap takes a view back to (buf_unmap); physio's window as PhysWindow (vm_machdep.c's vmapbuf/vunmapbuf: kv_physwait space, the user pmap's extract per wired page, the token's kenter; kremove and km_free on drop), made only by glue's DeviceLock::vmapbuf over the range it wired and borrowing it, the address only, no slice; KV_PHYSWAIT moved here (arm64's copy, vmapbuf and vunmapbuf left vm_machdep.rs and the machine contract with physio's switch); lz gains sys/kern/vfs_biomem.rs and sys/arch/arm64/arm64/vm_machdep.rs"
 [[module.fn]]
 lz = "sys/uvm/uvm_km.rs::kv_map_of"
 native = ["map_of"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/vm_machdep.rs::vmapbuf"
+native = ["PhysWindow::map"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/vm_machdep.rs::vunmapbuf"
+native = ["PhysWindow::drop"]
 kind = "renamed"
 
 [[module]]
@@ -11561,7 +11863,7 @@ rust = "sys/kernel/vm/glue.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_glue.rs"]
 status = "redesigned"
-notes = "N3.5 S1 (live since the flip, S2): uvm_vslock/vsunlock over &VmMap; uvm_vslock_device returns a DeviceLock (the FaultMap read guard and a KmBuf bounce of DMA pages from km::dma_memory) consumed by uvm_vsunlock_device; uvm_uarea_alloc/free as Vaddrs (the guard page kept unported); paddr_is_dma_reachable over VmMachine's dma_constraint; default_limits for bsd's uvm_init_limits (uvm_purge, uvm_exit, uvm_init_limits stay bsd's, sys/kern/vm_bsd.rs)"
+notes = "N3.5 S1 (live since the flip, S2): uvm_vslock/vsunlock over &VmMap; uvm_vslock_device returns a DeviceLock (the FaultMap read guard and a KmBuf bounce of DMA pages from km::dma_memory) consumed by uvm_vsunlock_device; uvm_uarea_alloc/free as Vaddrs (the guard page kept unported); paddr_is_dma_reachable over VmMachine's dma_constraint; default_limits for bsd's uvm_init_limits (uvm_purge, uvm_exit, uvm_init_limits stay bsd's, sys/kern/vm_bsd.rs); N5.1: DeviceLock::vmapbuf, physio's window (km::PhysWindow) over the range the lock wired, borrowing it, and window_addr, the C's b_data after vmapbuf"
 [[module.fn]]
 lz = "sys/uvm/uvm_glue.rs::KV_UAREA"
 native = ["kv_uarea"]

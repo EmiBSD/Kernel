@@ -73,12 +73,13 @@ use core::sync::atomic::Ordering;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, bwrite, getblk};
 use crate::kern::vfs_subr::{vinvalbuf, vrecycle};
 use crate::kern::vfs_vops::{VOP_STRATEGY, VOP_UNLOCK};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
+use crate::sys::buf::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, bwrite, getblk};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::mount::MNT_RDONLY;
@@ -315,7 +316,7 @@ pub fn ext2fs_truncate(
         let _ = uvm_vnp_uncache(ovp);
         // SAFETY: the buffer is ours (busy from ext2fs_buf_alloc) and mapped.
         (unsafe { bp.data() })[offset as usize..size].fill(0);
-        bp.b_bcount.set(size as i64);
+        bp.set_bcount(size as i64);
         if aflags & B_SYNC != 0 {
             let _ = bwrite(bp);
         } else {
@@ -415,7 +416,7 @@ pub fn ext2fs_truncate(
         }
         if length == 0 {
             let s = crate::machine::intr::splbio();
-            if !ovp.v_cleanblkhd.is_empty() || !ovp.v_dirtyblkhd.is_empty() {
+            if !ovp.v_bufs.clean_is_empty() || !ovp.v_bufs.dirty_is_empty() {
                 panic(format_args!("ext2fs_truncate3"));
             }
             crate::machine::intr::splx(s);
@@ -503,11 +504,11 @@ fn ext2fs_indirtrunc(
         BCSTATS.pendingreads.fetch_add(1, Ordering::Relaxed);
         BCSTATS.numreads.fetch_add(1, Ordering::Relaxed);
         bp.set(B_READ);
-        if bp.b_bcount.get() > bp.b_bufsize.get() {
+        if bp.bcount() > bp.bufsize() {
             panic(format_args!("ext2fs_indirtrunc: bad buffer size"));
         }
-        bp.b_blkno.set(dbn);
-        if let Some(bvp) = bp.b_vp.get() {
+        bp.set_blkno(dbn);
+        if let Some(bvp) = bp.vp() {
             let _ = VOP_STRATEGY(bvp, bp);
         }
         error = biowait(bp);

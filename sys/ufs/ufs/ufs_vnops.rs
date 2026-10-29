@@ -86,7 +86,6 @@ use crate::kern::kern_tc::getnanotime;
 use crate::kern::spec_vnops::{spec_close, spec_read, spec_write};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::vfs_relookup;
@@ -98,6 +97,8 @@ use crate::kern::vfs_vops::{
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_CLRBUF, B_ERROR, clrbuf};
 use crate::sys::dirent::Dirent;
 use crate::sys::errno::Errno;
@@ -1430,9 +1431,9 @@ pub fn ufs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
                 break;
             }
         };
-        let size = bp.b_bcount.get() - bp.b_resid.get() as i64 - boff as i64;
+        let size = bp.bcount() - bp.resid() as i64 - boff as i64;
         if size <= 0 {
-            crate::kern::vfs_bio::brelse(bp);
+            crate::sys::buf::brelse(bp);
             break;
         }
 
@@ -1500,7 +1501,7 @@ pub fn ufs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
             }
         }
 
-        crate::kern::vfs_bio::brelse(bp);
+        crate::sys::buf::brelse(bp);
         readcnt -= xfersize;
     }
 
@@ -1552,7 +1553,7 @@ pub fn ufs_islocked(ap: &mut VopIslockedArgs) -> i32 {
 /// already, then call the device strategy routine.
 pub fn ufs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
-    let Some(vp) = bp.b_vp.get() else {
+    let Some(vp) = bp.vp() else {
         panic(format_args!("ufs_strategy: buffer without a vnode"));
     };
 
@@ -1560,32 +1561,30 @@ pub fn ufs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
         panic(format_args!("ufs_strategy: spec"));
     }
-    if bp.b_blkno.get() == bp.b_lblkno.get() {
-        let mut blkno = bp.b_blkno.get();
-        let error = VOP_BMAP(vp, bp.b_lblkno.get(), None, Some(&mut blkno), None);
-        bp.b_blkno.set(blkno);
+    if bp.blkno() == bp.lblkno() {
+        let mut blkno = bp.blkno();
+        let error = VOP_BMAP(vp, bp.lblkno(), None, Some(&mut blkno), None);
+        bp.set_blkno(blkno);
         if let Err(e) = error {
-            bp.b_error.set(Some(e));
+            bp.set_error(Some(e));
             bp.set(B_ERROR);
             let s = splbio();
             biodone(bp);
             splx(s);
             return Err(e);
         }
-        if bp.b_blkno.get() == -1 {
-            // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
-            // mapped; the strategy owns it until biodone.
-            unsafe { clrbuf(bp) };
+        if bp.blkno() == -1 {
+            clrbuf(bp);
         }
     }
-    if bp.b_blkno.get() == -1 {
+    if bp.blkno() == -1 {
         let s = splbio();
         biodone(bp);
         splx(s);
         return Ok(());
     }
     let devvp = ip.i_devvp();
-    bp.b_dev.set(devvp.v_rdev());
+    bp.set_dev(devvp.v_rdev());
     let _ = VOP_STRATEGY(devvp, bp);
     Ok(())
 }

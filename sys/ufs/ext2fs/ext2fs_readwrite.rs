@@ -66,10 +66,11 @@
 
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, breadn, brelse, bwrite};
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_NOCACHE, B_SYNC};
+use crate::sys::buf::{bawrite, bdwrite, bread, breadn, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::sys::mount::MNT_NOATIME;
@@ -178,7 +179,7 @@ fn ext2_ind_read(
         // We should only get non-zero b_resid when an I/O error has occurred, which should
         // cause us to break above. However, if the short read did not cause an error, then
         // we want to ensure that we do not uiomove bad or uninitialized data.
-        size -= bp.b_resid.get() as i64;
+        size -= bp.resid() as i64;
         if size < xfersize {
             if size == 0 {
                 brelse(bp);
@@ -267,7 +268,7 @@ pub fn ext4_ext_read(
             brelse(bp);
             return Err(e);
         }
-        size -= bp.b_resid.get() as i64;
+        size -= bp.resid() as i64;
         if size < xfersize {
             if size == 0 {
                 brelse(bp);
@@ -383,7 +384,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         }
         let _ = uvm_vnp_uncache(vp);
 
-        let size = bsize - bp.b_resid.get() as i64;
+        let size = bsize - bp.resid() as i64;
         if size < xfersize {
             xfersize = size;
         }

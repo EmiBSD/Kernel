@@ -174,14 +174,30 @@ const _: () = assert!(
 
 /// One pool of `bsd`'s `pool(9)`, as [`PoolBackend::create`] returns it.
 ///
-/// The registration contract (`sys/hal/trust.rs`): `get` returns `None` or an item and the
-/// size granted (`pr_size`, at least the size the pool was created with), aligned to its
-/// `align`, that nothing else references until `put` takes it back. `hal` checks the
-/// alignment and the size of every item.
+/// The registration contract (`sys/hal/trust.rs`): `get` and `get_idle` return `None` or an
+/// item and the size granted (`pr_size`, at least the size the pool was created with),
+/// aligned to its `align`, that nothing else references until `put` takes it back. `hal`
+/// checks the alignment and the size of every item.
 pub trait RawPool: Sync {
     /// `pool_get(pp, flags)` (`PR_WAITOK`, `PR_NOWAIT`, `PR_LIMITFAIL`): the item and the
     /// size granted.
     fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)>;
+    /// `pool_get(pp, flags)` of an item the pool already holds (a free item of one of its
+    /// pages, or of its per-CPU cache): never grows the pool, never sleeps, never counts a
+    /// failure (`pr_nfail`); `None` when it would have to grow. Beside the item and the size
+    /// granted, whether `pool_get` would have yielded after this get (`pool_debug == 2` with
+    /// `PR_WAITOK`, as `pool_get` computes it): a yield the caller makes
+    /// ([`RawPool::yield_now`]) once it holds no lock. The default has no such try and
+    /// answers `None` (the caller then takes [`RawPool::get`]'s way). On a pool with a
+    /// per-CPU cache (`cache_init`), a `get_idle` that finds the cache empty and the `get`
+    /// that follows each count the cache's own miss (`pc_nfail`) once: twice where the C's
+    /// one `pool_get` counts it once (the buffer cache's `bufpl` has no cache).
+    fn get_idle(&self, _flags: i32) -> Option<(NonNull<u8>, usize, bool)> {
+        None
+    }
+    /// `yield()`: the yield a [`RawPool::get_idle`] asked for, made by its caller once it
+    /// holds no lock. The default does nothing (a backend whose `get_idle` never asks).
+    fn yield_now(&self) {}
     /// `pool_put(pp, item)`: the contract's other half. The item given back is one this pool
     /// granted and no view of it is alive; `hal` alone calls it (from the last `PoolArc`'s
     /// drop), since the pools never leave `hal` (`TypedPool` keeps them, and
@@ -1128,21 +1144,53 @@ impl<T: 'static> BoxPool<T> {
     pub fn get(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<PoolBox<T>> {
         let raw = *self.raw.get()?;
         let (block, granted) = raw.get(flags)?;
+        Some(self.boxed(block, granted, init))
+    }
+
+    /// [`BoxPool::get`] of an item the pool already holds ([`RawPool::get_idle`]): never
+    /// grows the pool, never sleeps, counts no failure; `None` when it would have to grow, or
+    /// the pool was never made, `init` not called then. For a caller that tries under a lock
+    /// it must not sleep with, and otherwise leaves that lock for [`BoxPool::get`] (the
+    /// buffer cache's `buf_get`, the C's `pool_get` at `splbio`).
+    pub fn get_idle(
+        &'static self,
+        flags: i32,
+        init: impl FnOnce() -> T,
+    ) -> Option<(PoolBox<T>, PoolYield)> {
+        let raw = *self.raw.get()?;
+        let (block, granted, yields) = raw.get_idle(flags)?;
+        Some((
+            self.boxed(block, granted, init),
+            PoolYield {
+                raw: yields.then_some(raw),
+            },
+        ))
+    }
+
+    /// The handle of the fresh item `block` (`granted` bytes) that [`RawPool::get`] or
+    /// [`RawPool::get_idle`] gave, `init()` written into it.
+    fn boxed(
+        &'static self,
+        block: NonNull<u8>,
+        granted: usize,
+        init: impl FnOnce() -> T,
+    ) -> PoolBox<T> {
         check_block("RawPool", block, granted, size_of::<T>(), align_of::<T>());
         let item = block.cast::<T>();
         // A panic in `init` leaks the item (it never reaches a handle); nothing reads it.
         let value = init();
         // SAFETY: `item` is aligned for `T` and at least `size_of::<T>()` bytes (`check_block`
         // above), and it is a fresh item of this pool that nothing else references: the
-        // registration contract of `RawPool` (the kernel's boot path registered its own
-        // `pool(9)`, once, before any user; `sys/hal/trust.rs`), a documented trust boundary.
-        // Writing a whole value initialises it, before the handle exists.
+        // registration contract of `RawPool`'s `get` and `get_idle`, the two callers' sources
+        // (the kernel's boot path registered its own `pool(9)`, once, before any user;
+        // `sys/hal/trust.rs`), a documented trust boundary. Writing a whole value initialises
+        // it, before the handle exists.
         unsafe { item.as_ptr().write(value) };
-        Some(PoolBox {
+        PoolBox {
             item,
             pool: self,
             _owns: PhantomData,
-        })
+        }
     }
 
     /// `pr_nout`: the items out of the pool now (0 before `init`).
@@ -1182,6 +1230,24 @@ impl<T: 'static> Default for BoxPool<T> {
 /// The one owner of a pool item holding a `T`: `Deref`/`DerefMut<Target = T>`; its drop drops
 /// the `T` and puts the item back into the pool it came from. Not `Clone`.
 ///
+/// What [`BoxPool::get_idle`] leaves to its caller: `pool_get`'s yield after a waiting get,
+/// when the pool asks for it (`kern.pool_debug` 2), which the caller makes once it holds no
+/// lock ([`PoolYield::now`]). Nothing to make when the pool did not ask.
+#[must_use = "pool_get's yield is the caller's to make, once it holds no lock"]
+pub struct PoolYield {
+    /// The pool that asked, `None` when none did.
+    raw: Option<&'static dyn RawPool>,
+}
+
+impl PoolYield {
+    /// `pool_get`'s `yield()`, when the pool asked for it; nothing otherwise.
+    pub fn now(self) {
+        if let Some(raw) = self.raw {
+            raw.yield_now();
+        }
+    }
+}
+
 /// Invariant: `item` names an initialised `T` in an item of `pool`, which nothing but this
 /// handle references, except when the handle is the private field of a [`SharedBox`]: that
 /// one never takes `&mut T`, and raw links may read the item beside its shared references
@@ -1694,6 +1760,31 @@ mod tests {
         let held = P.get(PR_NOWAIT, || 13).unwrap();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(held)));
         assert!(r.is_err());
+    }
+
+    /// A backend without an idle try (the default `RawPool::get_idle`, this double's) answers
+    /// `None` and builds nothing; the item comes from `get`, as a caller falls back to it.
+    #[test]
+    fn a_pool_without_an_idle_try_gives_none_and_get_still_works() {
+        static P: BoxPool<u64> = BoxPool::new();
+        static NEVER: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testidle"), Ok(()));
+        let mut called = false;
+        let none = P.get_idle(PR_NOWAIT, || {
+            called = true;
+            1
+        });
+        assert!(none.is_none());
+        assert!(!called, "init is not called without an item");
+        // The default backend's yield does nothing (a PoolYield of nothing to make).
+        PoolYield { raw: None }.now();
+        assert!(NEVER.get_idle(PR_NOWAIT, || 2).is_none());
+        let b = P.get(PR_NOWAIT, || 3).unwrap();
+        assert_eq!(*b, 3);
+        assert_eq!(P.nout(), 1);
+        drop(b);
+        assert_eq!(P.nout(), 0);
     }
 
     #[test]
