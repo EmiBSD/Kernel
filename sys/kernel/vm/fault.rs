@@ -456,6 +456,7 @@ pub trait FaultMapGuard: Sized {
     /// for writing, or still read-locked in the `Err` (the C's `FALSE`).
     fn upgrade(self) -> Result<Self, Self>;
     /// `vm_map_downgrade(map)`: write-locked to read-locked, without a window.
+    #[must_use]
     fn downgrade(self) -> Self;
     /// `amap_copy(map, entry, waitf, canchunk, startva, endva)` (its map half) of the entry
     /// that holds `va`: the map is write-locked; the entry may be clipped, so the caller looks
@@ -587,6 +588,10 @@ struct Aref {
 /// What the fault reads of the faulting entry, under the map lock: the C reads `ufi->entry`
 /// while the map is locked, or after a relock found the same version, which are the values
 /// taken here. The amap and the object are handles that keep them alive across the unlocks.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags are the map entry's own (wired, copy-on-write, needs-copy, ...) copied as the C reads them from ufi->entry"
+)]
 struct EntryView<O> {
     start: usize,
     end: usize,
@@ -842,48 +847,45 @@ fn uvmfault_anonget<'w, M: FaultMap>(
 
         // Is page resident? Make sure it is not busy/released.
         let lock_type = w.mode(); // rw_status(anon->an_lock)
-        match anon.page() {
-            Some(pg) => {
-                kassert!(pg.flags() & PQ_ANON != 0);
-                kassert!(pg.owned_by_anon(&**anon));
+        if let Some(pg) = anon.page() {
+            kassert!(pg.flags() & PQ_ANON != 0);
+            kassert!(pg.owned_by_anon(&**anon));
 
-                // if the page is busy, we drop all the locks and try again.
-                if pg.flags() & (PG_BUSY | PG_RELEASED) == 0 {
-                    return AnonGet::Resident(w);
-                }
-                counters_inc(UvmExpCounters::FltPgwait);
-
-                // The last unlock must be an atomic unlock and wait on the owner of page.
-                kassert!(!pg.has_object());
-                uvmfault_unlockall(ufi, None, None);
-                uvm_pagewait(pg, Owner::Anon(&**anon), w, "anonget");
+            // if the page is busy, we drop all the locks and try again.
+            if pg.flags() & (PG_BUSY | PG_RELEASED) == 0 {
+                return AnonGet::Resident(w);
             }
-            None => {
-                // No page, therefore allocate one. A write lock is required for this. If the
-                // caller didn't supply one, fail now and have them retry.
-                if lock_type == RwMode::Read {
-                    return AnonGet::NeedWrite(w);
+            counters_inc(UvmExpCounters::FltPgwait);
+
+            // The last unlock must be an atomic unlock and wait on the owner of page.
+            kassert!(!pg.has_object());
+            uvmfault_unlockall(ufi, None, None);
+            uvm_pagewait(pg, Owner::Anon(&**anon), w, "anonget");
+        } else {
+            // No page, therefore allocate one. A write lock is required for this. If the
+            // caller didn't supply one, fail now and have them retry.
+            if lock_type == RwMode::Read {
+                return AnonGet::NeedWrite(w);
+            }
+            match uvm_pagealloc(Owner::Anon(&**anon), 0, 0) {
+                None => {
+                    // Out of memory. Wait a little.
+                    uvmfault_unlockall(ufi, Some(w), None);
+                    counters_inc(UvmExpCounters::FltNoram);
+                    uvm_wait("flt_noram1");
                 }
-                match uvm_pagealloc(Owner::Anon(&**anon), 0, 0) {
-                    None => {
-                        // Out of memory. Wait a little.
-                        uvmfault_unlockall(ufi, Some(w), None);
-                        counters_inc(UvmExpCounters::FltNoram);
-                        uvm_wait("flt_noram1");
-                    }
-                    Some(pg) => {
-                        // PG_BUSY bit is set.
-                        owned = Some(pg);
-                        uvmfault_unlockall(ufi, Some(w), None);
+                Some(pg) => {
+                    // PG_BUSY bit is set.
+                    owned = Some(pg);
+                    uvmfault_unlockall(ufi, Some(w), None);
 
-                        // Pass a PG_BUSY+PG_FAKE+PG_CLEAN page into the uvm_swap_get()
-                        // function with all data structures unlocked. Note that it is OK to
-                        // read an_swslot here, because we hold PG_BUSY on the page.
-                        counters_inc(UvmExpCounters::Pageins);
-                        error = uvm_swap_get(pg, anon.swslot());
+                    // Pass a PG_BUSY+PG_FAKE+PG_CLEAN page into the uvm_swap_get()
+                    // function with all data structures unlocked. Note that it is OK to
+                    // read an_swslot here, because we hold PG_BUSY on the page.
+                    counters_inc(UvmExpCounters::Pageins);
+                    error = uvm_swap_get(pg, anon.swslot());
 
-                        // We clean up after the I/O below in the 'we_own' case.
-                    }
+                    // We clean up after the I/O below in the 'we_own' case.
                 }
             }
         }
@@ -1288,7 +1290,13 @@ fn uvm_fault_check<'v, M: FaultMap>(
     // entry. note that we only want to do this the first time through the fault. if we
     // ReFault we will disable this by setting "narrow" to true.
     let nback;
-    if !flt.narrow {
+    if flt.narrow {
+        // narrow fault!
+        nback = 0;
+        flt.startva = ufi.orig_rvaddr;
+        flt.npages = 1;
+        flt.centeridx = 0;
+    } else {
         // wide fault (!narrow)
         let advice = UVMADVICE[(view.advice & MADV_MASK) as usize];
         nback = advice
@@ -1303,12 +1311,6 @@ fn uvm_fault_check<'v, M: FaultMap>(
         flt.centeridx = nback;
 
         flt.narrow = true; // ensure only once per-fault
-    } else {
-        // narrow fault!
-        nback = 0;
-        flt.startva = ufi.orig_rvaddr;
-        flt.npages = 1;
-        flt.centeridx = 0;
     }
 
     let view: &'v EntryView<M::Object> = slot.insert(view);
@@ -1568,11 +1570,11 @@ fn uvm_fault_upper<'v, M: FaultMap>(
         // un-busy! new page
         pg.clear_bits(PG_BUSY | PG_FAKE);
         // UVM_PAGE_OWN(pg, NULL): not configured.
-        let replaced = match amap_add(amap, &mut ww, aref.pageoff, off, nanon.clone(), true) {
-            Ok(Some(replaced)) => replaced,
-            _ => kpanic(format_args!(
+        let Ok(Some(replaced)) = amap_add(amap, &mut ww, aref.pageoff, off, nanon.clone(), true)
+        else {
+            kpanic(format_args!(
                 "uvm_fault_upper: amap_add could not replace the anon"
-            )),
+            ))
         };
         kassert!(AnonRef::ptr_eq(&replaced, &oanon));
 
@@ -1850,23 +1852,7 @@ fn uvm_fault_lower<'v, M: FaultMap>(
     //  - at this point uobjpage could be PG_WANTED (handle later)
     let pg: &'static VmPage;
     let mut anon: Option<AnonRef> = None;
-    if !flt.promote {
-        // we are not promoting. if the mapping is COW ensure that we don't give more access
-        // than we should (e.g. when doing a read fault on a COPYONWRITE mapping we want to map
-        // the COW page in R/O even though the entry protection could be R/W).
-        //
-        // set "pg" to the page we want to map in (uobjpage, usually)
-        counters_inc(UvmExpCounters::FltObj);
-        if view.copyonwrite {
-            flt.enter_prot &= !PROT_WRITE;
-        }
-        let PageSlot::Page(page) = uobjpage else {
-            kpanic(format_args!("uvm_fault_lower: no object page to map"));
-        };
-        pg = page; // map in the actual object
-
-    // we are faulting directly on the page.
-    } else {
+    if flt.promote {
         // KASSERT(amap != NULL), and the amap's witness taken with it.
         let (Some(aref), Some(uw)) = (aref, upper.take()) else {
             kpanic(format_args!("uvm_fault_lower: promoting without an amap"));
@@ -1938,6 +1924,22 @@ fn uvm_fault_lower<'v, M: FaultMap>(
             return Err(Errno::ERESTART);
         }
         upper = Some(RwWitness::Write(ww));
+    } else {
+        // we are not promoting. if the mapping is COW ensure that we don't give more access
+        // than we should (e.g. when doing a read fault on a COPYONWRITE mapping we want to map
+        // the COW page in R/O even though the entry protection could be R/W).
+        //
+        // set "pg" to the page we want to map in (uobjpage, usually)
+        counters_inc(UvmExpCounters::FltObj);
+        if view.copyonwrite {
+            flt.enter_prot &= !PROT_WRITE;
+        }
+        let PageSlot::Page(page) = uobjpage else {
+            kpanic(format_args!("uvm_fault_lower: no object page to map"));
+        };
+        pg = page; // map in the actual object
+
+        // we are faulting directly on the page.
     }
 
     // anon must be write locked (promotion). uobj can be either.
@@ -2314,7 +2316,7 @@ where
         let uobj = guard.object(entry);
         let locks = EntryLocks::new(
             aref.as_ref().map(|a| a.amap.lock()),
-            uobj.as_ref().map(|o| o.vmobjlock()),
+            uobj.as_ref().map(FaultObject::vmobjlock),
         );
         let wired = entry.is_wired();
         let estart = entry.start();

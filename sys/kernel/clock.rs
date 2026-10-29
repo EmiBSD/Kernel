@@ -181,6 +181,7 @@ impl Timespec {
 
     /// `timespecadd(self, b, &res)`: the sum, the nanoseconds carried.
     #[inline]
+    #[must_use]
     pub const fn add(self, b: Timespec) -> Timespec {
         let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
         let mut nsec = self.tv_nsec + b.tv_nsec;
@@ -193,6 +194,7 @@ impl Timespec {
 
     /// `timespecsub(self, b, &res)`: the difference, the nanoseconds borrowed.
     #[inline]
+    #[must_use]
     pub const fn sub(self, b: Timespec) -> Timespec {
         let mut sec = self.tv_sec.wrapping_sub(b.tv_sec);
         let mut nsec = self.tv_nsec - b.tv_nsec;
@@ -266,6 +268,7 @@ impl Timeval {
 
     /// `timeradd(self, b, &res)`: the sum, the microseconds carried.
     #[inline]
+    #[must_use]
     pub const fn add(self, b: Timeval) -> Timeval {
         let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
         let mut usec = self.tv_usec + b.tv_usec;
@@ -278,6 +281,7 @@ impl Timeval {
 
     /// `timersub(self, b, &res)`: the difference, the microseconds borrowed.
     #[inline]
+    #[must_use]
     pub const fn sub(self, b: Timeval) -> Timeval {
         let mut sec = self.tv_sec.wrapping_sub(b.tv_sec);
         let mut usec = self.tv_usec - b.tv_usec;
@@ -347,6 +351,7 @@ impl Bintime {
 
     /// `bintimeaddfrac(bt, x, &ct)`: `self` plus `x` fractions of a second.
     #[inline]
+    #[must_use]
     pub const fn add_frac(self, x: u64) -> Bintime {
         let (frac, carry) = self.frac.overflowing_add(x);
         Bintime {
@@ -361,6 +366,7 @@ impl Bintime {
 
     /// `bintimeadd(bt, ct, &dt)`.
     #[inline]
+    #[must_use]
     pub const fn add(self, ct: Bintime) -> Bintime {
         let (frac, carry) = self.frac.overflowing_add(ct.frac);
         let sec = self.sec.wrapping_add(ct.sec);
@@ -372,6 +378,7 @@ impl Bintime {
 
     /// `bintimesub(bt, ct, &dt)`.
     #[inline]
+    #[must_use]
     pub const fn sub(self, ct: Bintime) -> Bintime {
         let (frac, borrow) = self.frac.overflowing_sub(ct.frac);
         let sec = self.sec.wrapping_sub(ct.sec);

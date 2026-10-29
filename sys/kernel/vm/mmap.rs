@@ -806,6 +806,10 @@ pub fn sys_minherit(vm: &Vmspace, addr: usize, size: usize, inherit: i32) -> Res
 }
 
 /// `sys_madvise`: give advice about memory usage.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+)]
 pub fn sys_madvise(vm: &Vmspace, addr: usize, size: usize, advice: i32) -> Result<(), Errno> {
     // align the address to a page boundary, and adjust the size accordingly
     let (start, end) = align_range(addr, size)?;

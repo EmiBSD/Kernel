@@ -743,7 +743,7 @@ pub fn tc_init(tc: &'static TcEntry) {
 /// `tc_reset_quality`: changes the counter's quality; if it is the active counter and no
 /// longer the best, the best one takes over.
 pub fn tc_reset_quality(tc: &'static TcEntry, quality: i32) {
-    if core::ptr::eq(tc, &DUMMY) {
+    if core::ptr::eq(tc, &raw const DUMMY) {
         kpanic(format_args!(
             "tc_reset_quality: cannot change dummy counter quality"
         ));
@@ -752,7 +752,7 @@ pub fn tc_reset_quality(tc: &'static TcEntry, quality: i32) {
     tc.quality.store(quality, Ordering::Relaxed);
     if TIMECOUNTER.points_to(tc) {
         let mut best: &'static TcEntry = &DUMMY;
-        for tmp in TC_LIST.iter() {
+        for tmp in &TC_LIST {
             if tmp.quality() < 0 {
                 continue;
             }
@@ -1113,7 +1113,7 @@ pub fn tc_select(name: &[u8]) -> Result<(), Errno> {
     if name == timecounter().name().as_bytes() {
         return Ok(());
     }
-    for newtc in TC_LIST.iter() {
+    for newtc in &TC_LIST {
         if name != newtc.name().as_bytes() {
             continue;
         }

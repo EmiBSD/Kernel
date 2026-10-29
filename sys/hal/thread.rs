@@ -353,13 +353,13 @@ impl Drop for UArea {
 /// u-area is one thread's.
 #[cfg(not(feature = "module-rt"))]
 pub fn boot_uarea<T: ThreadLayout>(t: Pin<&'static T>) {
+    static CLAIMED: AtomicUsize = AtomicUsize::new(0);
     check_type::<T>();
     let slot = slot_of(t.get_ref());
     if crate::cpu::curcpu().curproc() != core::ptr::from_ref(t.get_ref()).cast::<()>() {
         hal_panic(format_args!("proc0paddr: the thread is not this CPU's"));
     }
     let va = crate::arch::current::switch::boot_uarea_word();
-    static CLAIMED: AtomicUsize = AtomicUsize::new(0);
     let me = core::ptr::from_ref(slot).addr();
     match CLAIMED.compare_exchange(0, me, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed) {
         Ok(_) => {}
@@ -445,6 +445,10 @@ impl SchedHold {
     }
 
     /// The generation this hold was taken in.
+    #[allow(
+        clippy::unused_self,
+        reason = "the generation is read through a hold so that only the holder of the scheduler lock can ask for it"
+    )]
     fn generation(&self) -> u32 {
         GENERATION.load(Ordering::Relaxed)
     }
@@ -472,15 +476,14 @@ pub fn sched_locked() -> bool {
 #[inline]
 pub(crate) fn check_type<T: 'static>() {
     let want = TypeId::of::<T>();
-    let have = match THREAD_TYPE.get() {
-        Some(t) => *t,
-        None => {
-            // A race of two first users records one of them; the other is compared below.
-            let _ = THREAD_TYPE.set(want);
-            match THREAD_TYPE.get() {
-                Some(t) => *t,
-                None => want,
-            }
+    let have = if let Some(t) = THREAD_TYPE.get() {
+        *t
+    } else {
+        // A race of two first users records one of them; the other is compared below.
+        let _ = THREAD_TYPE.set(want);
+        match THREAD_TYPE.get() {
+            Some(t) => *t,
+            None => want,
         }
     };
     if have != want {
@@ -587,6 +590,10 @@ pub fn register_start(
 /// returns, releases the lock that CPU holds then. `next` must have been made under `h` (the
 /// generation).
 #[cfg(not(feature = "module-rt"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Next is a one-shot token made under the hold and spent by the switch; by value keeps it from being reused"
+)]
 pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
     check_type::<T>();
     next.check(h);
@@ -611,6 +618,10 @@ pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
 /// is marked dead under the hold (E6: its u-area can be given back once the lock is
 /// released, which happens on `next`, after this CPU left `old`'s stack).
 #[cfg(not(feature = "module-rt"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Next is a one-shot token made under the hold and spent by the switch; by value keeps it from being reused"
+)]
 pub fn exit_to_idle<T: ThreadLayout>(h: SchedHold, old: Option<Pin<&T>>, next: Next) -> ! {
     check_type::<T>();
     next.check(&h);

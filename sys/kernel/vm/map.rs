@@ -2012,7 +2012,7 @@ impl FaultMap for VmMap {
     }
 }
 
-impl<'a> FaultMapGuard for MapGuard<'a> {
+impl FaultMapGuard for MapGuard<'_> {
     type Entry = VmMapEntry;
     type Map = VmMap;
     type Object = ObjRef;
@@ -2889,10 +2889,10 @@ pub fn uvm_map(
     align: usize,
     flags: u32,
 ) -> Result<(), Errno> {
-    if !map.is_intrsafe() {
-        splassert(IPL_NONE, "uvm_map");
-    } else {
+    if map.is_intrsafe() {
         splassert(IPL_VM, "uvm_map");
+    } else {
+        splassert(IPL_NONE, "uvm_map");
     }
 
     // Decode parameters.
@@ -3478,22 +3478,21 @@ pub fn uvm_mapent_alloc(map: &VmMap, flags: u32) -> Option<PoolBox<VmMapEntry>> 
     if map.is_intrsafe() || cold() {
         let _m = UVM_KMAPENT_MTX.lock();
         let static_entry = || VmMapEntry::new(key, UVM_MAP_STATIC);
-        let me = match KENTRY_POOL.get(PR_NOWAIT, static_entry) {
-            Some(me) => me,
-            None => {
-                let Some(page) = KmBuf::alloc_wired(&KENTRY_PAGES, PAGE_SIZE, false) else {
-                    kpanic(format_args!("uvm_mapent_alloc: cannot allocate map entry"));
-                };
-                KENTRY_ARENA.extend(page);
-                if ratecheck(&UVM_KMAPENT_LAST_WARN_TIME, UVM_KMAPENT_WARN_RATE) {
-                    hal::prf::printf(format_args!(
-                        "uvm_mapent_alloc: out of static map entries\n"
-                    ));
-                }
-                match KENTRY_POOL.get(PR_NOWAIT, static_entry) {
-                    Some(me) => me,
-                    None => kpanic(format_args!("uvm_mapent_alloc: kentry_free is empty")),
-                }
+        let me = if let Some(me) = KENTRY_POOL.get(PR_NOWAIT, static_entry) {
+            me
+        } else {
+            let Some(page) = KmBuf::alloc_wired(&KENTRY_PAGES, PAGE_SIZE, false) else {
+                kpanic(format_args!("uvm_mapent_alloc: cannot allocate map entry"));
+            };
+            KENTRY_ARENA.extend(page);
+            if ratecheck(&UVM_KMAPENT_LAST_WARN_TIME, UVM_KMAPENT_WARN_RATE) {
+                hal::prf::printf(format_args!(
+                    "uvm_mapent_alloc: out of static map entries\n"
+                ));
+            }
+            match KENTRY_POOL.get(PR_NOWAIT, static_entry) {
+                Some(me) => me,
+                None => kpanic(format_args!("uvm_mapent_alloc: kentry_free is empty")),
             }
         };
         UVMEXP.kmapent.fetch_add(1, Mem::Relaxed);
@@ -4452,7 +4451,7 @@ pub fn uvm_map_pageable_all(
     // Count number of pages in all non-wired entries. If the number exceeds the limit,
     // abort.
     let mut size = 0;
-    for iter in g.state().addr.iter() {
+    for iter in &g.state().addr {
         if vm_mapent_iswired(iter) || uvm_et_ishole(iter) {
             continue;
         }
@@ -4749,7 +4748,7 @@ fn uvm_tree_assert(map: &VmMap, test: bool, test_str: &str, who: &str) {
 pub fn uvm_tree_sanity(map: &VmMap, st: &MapState, who: &str) {
     let owners = st.owners(map);
     let mut addr = map.min_offset();
-    for iter in st.addr.iter() {
+    for iter in &st.addr {
         // Valid start, end. Catch overflow for end+fspace.
         uvm_tree_assert(map, iter.end() >= iter.start(), "end >= start", who);
         uvm_tree_assert(
@@ -4821,7 +4820,7 @@ pub fn uvm_tree_sanity(map: &VmMap, st: &MapState, who: &str) {
 /// tests); `w` reads the entries' handles for `vmspace_validate`.
 pub fn uvm_tree_size_chk<W: Witness + ?Sized>(map: &VmMap, st: &MapState, w: &W, who: &str) {
     let mut size = 0;
-    for iter in st.addr.iter() {
+    for iter in &st.addr {
         if !uvm_et_ishole(iter) {
             size += iter.end() - iter.start();
         }
@@ -4855,7 +4854,7 @@ pub fn vmspace_validate<W: Witness + ?Sized>(map: &VmMap, st: &MapState, w: &W) 
     let stack_end = maxs.max(mins);
 
     let mut heap = 0;
-    for iter in st.addr.iter() {
+    for iter in &st.addr {
         let mut imin = iter.start();
 
         if uvm_et_ishole(iter)
@@ -6896,8 +6895,7 @@ fn uvm_map_fix_space(
         // Entries are merged if they point at the same uvm_free(). Exception to that rule:
         // if min == uvm_maxkaddr, a new entry is started regardless (otherwise the
         // allocators will get confused).
-        let merge =
-            cur.filter(|_| free == entfree && !(!map.is_vmspace() && min == uvm_maxkaddr()));
+        let merge = cur.filter(|_| free == entfree && (map.is_vmspace() || min != uvm_maxkaddr()));
         let reuse = cur.filter(|e| e.start() == min && e.end() == min && e.fspace() == 0);
         if let Some(e) = merge {
             kdassert!(vmmap_free_end(e) == min);
@@ -7055,18 +7053,16 @@ fn uvm_map_mquery_locked(
                 if vmmap_free_end(e) > st.b_end {
                     *addr = st.b_end;
                     continue;
-                } else {
-                    continue 'entries;
                 }
+                continue 'entries;
             }
             // Skip stack allocation addresses.
             if *addr + sz > st.s_start && *addr < st.s_end {
                 if vmmap_free_end(e) > st.s_end {
                     *addr = st.s_end;
                     continue;
-                } else {
-                    continue 'entries;
                 }
+                continue 'entries;
             }
             break;
         }

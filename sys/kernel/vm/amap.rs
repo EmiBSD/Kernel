@@ -433,7 +433,7 @@ fn amap_chunk_get(
 
     let baseslot = amap_base_slot(slot) as i32;
     let head = &mut buckets[geom.bucket(slot)];
-    let at = chain_position(head, baseslot);
+    let at = chain_position(head.as_ref(), baseslot);
     let cur = chain_at(head, at);
     if cur.is_some() {
         return cur.as_deref_mut();
@@ -481,7 +481,7 @@ fn amap_chunk_free(geom: Geom, tables: &mut Tables, baseslot: i32) {
     };
 
     let head = &mut buckets[geom.bucket(baseslot as usize)];
-    let at = chain_position(head, baseslot);
+    let at = chain_position(head.as_ref(), baseslot);
     let cur = chain_at(head, at);
     let Some(mut chunk) = cur.take() else {
         kpanic(format_args!("amap_chunk_free: no chunk at slot {baseslot}"));
@@ -494,9 +494,9 @@ fn amap_chunk_free(geom: Geom, tables: &mut Tables, baseslot: i32) {
 
 /// The position in a bucket's chain of the chunk whose first slot is `baseslot`, or the
 /// chain's length when it has none.
-fn chain_position(head: &Option<PoolBox<Chunk>>, baseslot: i32) -> usize {
+fn chain_position(head: Option<&PoolBox<Chunk>>, baseslot: i32) -> usize {
     let mut at = 0;
-    let mut cur = head.as_deref();
+    let mut cur = head.map(|c| &**c);
     while let Some(c) = cur {
         if c.baseslot == baseslot {
             break;
@@ -821,7 +821,7 @@ pub fn amap_copy_from(src: &Amap, src_pageoff: i32, slots: usize, waitf: i32) ->
 
             for k in 0..n {
                 let (i, j) = (i + k, j + k);
-                chunk.anons[i] = srcchunk.anons[j].clone();
+                chunk.anons[i].clone_from(&srcchunk.anons[j]);
                 let Some(anon) = chunk.anons[i].as_ref() else {
                     continue;
                 };
@@ -1330,7 +1330,7 @@ pub fn amap_populate_with(
             let baseslot = amap_base_slot(slot) as i32;
             kassert!(spare.0.baseslot == baseslot);
             let head = &mut buckets[geom.bucket(slot)];
-            let at = chain_position(head, baseslot);
+            let at = chain_position(head.as_ref(), baseslot);
             let cur = chain_at(head, at);
             if cur.is_none() {
                 *cur = Some(spare.0);

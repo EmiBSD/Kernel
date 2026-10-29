@@ -167,7 +167,7 @@ pub fn sys_getpgid<G: ProcGlue>(curp: &Thread<G>, pid: Pid) -> Result<Pid, Errno
 /// `getsid(2)`: the session leader's pid; `ESRCH` when the leader is gone (exiting).
 pub fn sys_getsid<G: ProcGlue>(curp: &Thread<G>, pid: Pid) -> Result<Pid, Errno> {
     let leader = sameses_target(curp, pid, |r, targpr| {
-        targpr.session(r).and_then(|s| s.leader_pid())
+        targpr.session(r).and_then(super::proc::Session::leader_pid)
     })?;
     // Skip exiting processes
     leader.ok_or(Errno::ESRCH)
@@ -261,15 +261,6 @@ pub fn sys_setsid<G: ProcGlue>(p: &Thread<G>) -> Result<Pid, Errno> {
 ///   (`EPERM`);
 /// - `pid` must not be a session leader (`EPERM`).
 pub fn sys_setpgid<G: ProcGlue>(curp: &Thread<G>, pid: Pid, pgid: Pid) -> Result<(), Errno> {
-    let curpr = curp.process();
-    let mut pgid = pgid;
-
-    if pgid < 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    let newpgrp = crate::proc::pgrp_alloc::<G>(G::PgrpG::default());
-
     /// What the checks under the reader decided.
     enum Move<G: ProcGlue> {
         /// Nothing to do.
@@ -279,6 +270,15 @@ pub fn sys_setpgid<G: ProcGlue>(curp: &Thread<G>, pid: Pid, pgid: Pid) -> Result
         /// Into the existing group.
         This(crate::proc::ProcessRef<G>, crate::proc::PgrpRef<G>),
     }
+
+    let curpr = curp.process();
+    let mut pgid = pgid;
+
+    if pgid < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let newpgrp = crate::proc::pgrp_alloc::<G>(G::PgrpG::default());
 
     let decided: Result<Move<G>, Errno> = 'out: {
         let r = klock::reader();
@@ -308,17 +308,17 @@ pub fn sys_setpgid<G: ProcGlue>(curp: &Thread<G>, pid: Pid, pgid: Pid) -> Result
         match crate::proc::pgfind::<G, _>(&r, pgid) {
             None => {
                 // can only create a new process group with pgid == pid
-                if pgid != targpr.ps_pid {
-                    Err(Errno::EPERM)
-                } else {
+                if pgid == targpr.ps_pid {
                     Ok(Move::New(G::process_ref(targpr)))
+                } else {
+                    Err(Errno::EPERM)
                 }
             }
             // anything to do?
             Some(pgrp)
-                if !targpr
-                    .pgrp(&r)
-                    .is_some_and(|cur| core::ptr::eq::<crate::proc::Pgrp<G>>(&**cur, pgrp)) =>
+                if !targpr.pgrp(&r).is_some_and(|cur| {
+                    core::ptr::eq::<crate::proc::Pgrp<G>>(&raw const **cur, pgrp)
+                }) =>
             {
                 let pgsess = pgrp
                     .session(&r)
@@ -531,10 +531,10 @@ pub fn sys_setregid<G: ProcGlue>(p: &Thread<G>, rgid: Gid, egid: Gid) -> Result<
     // effective gid. So, the svgid *won't* change when the rgid isn't specified or when the
     // rgid isn't changing and the svgid equals the requested egid.
     let new_egid = |cr: &Ucred| {
-        if egid != Gid::MAX {
-            egid
-        } else {
+        if egid == Gid::MAX {
             cr.cr_gid.get()
+        } else {
+            egid
         }
     };
     let pruc = pr.ucred();
@@ -590,10 +590,10 @@ pub fn sys_setreuid<G: ProcGlue>(p: &Thread<G>, ruid: Uid, euid: Uid) -> Result<
     // effective uid. So, the svuid *won't* change when the ruid isn't specified or when the
     // ruid isn't changing and the svuid equals the requested euid.
     let new_euid = |cr: &Ucred| {
-        if euid != Uid::MAX {
-            euid
-        } else {
+        if euid == Uid::MAX {
             cr.cr_uid.get()
+        } else {
+            euid
         }
     };
     let pruc = pr.ucred();
@@ -870,7 +870,7 @@ pub fn sys_getthrname<G: ProcGlue>(
 
     let n = if tid != 0 {
         let r = klock::reader();
-        crate::proc::tfind_user::<G, _>(&r, tid, curp.process()).map(|p| p.name())
+        crate::proc::tfind_user::<G, _>(&r, tid, curp.process()).map(Thread::name)
     } else {
         Some(curp.name())
     };

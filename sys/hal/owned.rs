@@ -601,14 +601,14 @@ impl<A: OwnedAdapter> OwnedTree<A> {
     pub fn next(&self, e: &A::Elem) -> Option<&A::Elem> {
         self.check("RBT_NEXT");
         let v = self.ent(e, "RBT_NEXT").view();
-        rb_next_from(self, NonNull::from(e), v).map(|p| self.node(p))
+        rb_next_from(self, NonNull::from(e), &v).map(|p| self.node(p))
     }
 
     /// `RBT_PREV(e)`: the element before `e` in order; `e` must be in this tree.
     pub fn prev(&self, e: &A::Elem) -> Option<&A::Elem> {
         self.check("RBT_PREV");
         let v = self.ent(e, "RBT_PREV").view();
-        rb_prev_from(self, NonNull::from(e), v).map(|p| self.node(p))
+        rb_prev_from(self, NonNull::from(e), &v).map(|p| self.node(p))
     }
 
     /// `RBT_FIND(key)`: the element equal to `key` in the tree's order.
@@ -860,6 +860,15 @@ impl<A: OwnedAdapter> OwnedTree<A> {
     }
 }
 
+impl<'s, A: OwnedAdapter> IntoIterator for &'s OwnedTree<A> {
+    type Item = &'s A::Elem;
+    type IntoIter = Iter<'s, A>;
+
+    fn into_iter(self) -> Iter<'s, A> {
+        self.iter()
+    }
+}
+
 impl<A: OwnedAdapter> Default for OwnedTree<A> {
     fn default() -> Self {
         Self::new()
@@ -1056,6 +1065,10 @@ impl<A: OwnedAdapter> OwnedList<A> {
     /// lends cannot be named across the `&mut self` this needs. Panics, before anything is
     /// changed, when `r` points at nothing or at an element this list does not own (I2), and
     /// while another secondary links the element (I4).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the counted reference is a token the call consumes: taking it by value ends its use, as the C hands the element over"
+    )]
     pub fn take(&mut self, r: SecondaryRef<A>) -> PoolBox<A::Elem> {
         self.check("TAILQ_REMOVE");
         let Some(x) = get(&r.to) else {
@@ -1119,6 +1132,15 @@ impl<A: OwnedAdapter> OwnedList<A> {
             None => put(&self.head, Some(x)),
         }
         put(&self.tail, Some(x));
+    }
+}
+
+impl<'s, A: OwnedAdapter> IntoIterator for &'s OwnedList<A> {
+    type Item = &'s A::Elem;
+    type IntoIter = ListIter<'s, A>;
+
+    fn into_iter(self) -> ListIter<'s, A> {
+        self.iter()
     }
 }
 
@@ -1256,14 +1278,14 @@ impl<S: SecondaryAdapter> SecondaryTree<S> {
     pub fn next(&self, e: &Elem<S>) -> Option<&Elem<S>> {
         self.check("RBT_NEXT");
         let v = self.ent(e, "RBT_NEXT").view();
-        rb_next_from(self, NonNull::from(e), v).map(|p| self.node(p))
+        rb_next_from(self, NonNull::from(e), &v).map(|p| self.node(p))
     }
 
     /// `RBT_PREV(e)`; `e` must be in this tree.
     pub fn prev(&self, e: &Elem<S>) -> Option<&Elem<S>> {
         self.check("RBT_PREV");
         let v = self.ent(e, "RBT_PREV").view();
-        rb_prev_from(self, NonNull::from(e), v).map(|p| self.node(p))
+        rb_prev_from(self, NonNull::from(e), &v).map(|p| self.node(p))
     }
 
     /// `RBT_FIND` without a key element (see [`OwnedTree::find_by`]).
@@ -1401,6 +1423,15 @@ impl<S: SecondaryAdapter> SecondaryTree<S> {
             cur = p;
         }
         core::mem::forget(changing);
+    }
+}
+
+impl<'s, S: SecondaryAdapter> IntoIterator for &'s SecondaryTree<S> {
+    type Item = &'s Elem<S>;
+    type IntoIter = SecondaryIter<'s, S>;
+
+    fn into_iter(self) -> SecondaryIter<'s, S> {
+        self.iter()
     }
 }
 
@@ -1676,6 +1707,15 @@ impl<S: SecondaryAdapter> SecondaryList<S> {
     }
 }
 
+impl<'s, S: SecondaryAdapter> IntoIterator for &'s SecondaryList<S> {
+    type Item = &'s Elem<S>;
+    type IntoIter = SecondaryListIter<'s, S>;
+
+    fn into_iter(self) -> SecondaryListIter<'s, S> {
+        self.iter()
+    }
+}
+
 impl<S: SecondaryAdapter> Default for SecondaryList<S> {
     fn default() -> Self {
         Self::new()
@@ -1756,6 +1796,10 @@ impl<A: OwnedAdapter> Member<A> {
     }
 
     /// The counted link `r` points with (its count moved), `None` when it points at nothing.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the counted reference is a token the call consumes: taking it by value ends its use"
+    )]
     pub fn from_ref(r: SecondaryRef<A>) -> Option<Self> {
         let p = get(&r.to)?;
         put(&r.to, None);
@@ -2135,6 +2179,10 @@ fn reclaim<T: 'static>(p: NonNull<T>, pool: &'static BoxPool<T>) -> PoolBox<T> {
 
 /// `RBT_MIN` from `x`: its leftmost descendant.
 #[inline]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "shares the Option shape of rb_next_from and rb_prev_from, which return it from rb_min and rb_max and can end the walk"
+)]
 fn rb_min<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
     let mut n = x;
     while let Some(l) = t.view(n).left() {
@@ -2145,6 +2193,10 @@ fn rb_min<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
 
 /// `RBT_MAX` from `x`: its rightmost descendant.
 #[inline]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "shares the Option shape of rb_next_from and rb_prev_from, which return it from rb_min and rb_max and can end the walk"
+)]
 fn rb_max<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
     let mut n = x;
     while let Some(r) = t.view(n).right() {
@@ -2156,13 +2208,13 @@ fn rb_max<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
 /// `RBT_NEXT(x)`.
 #[inline]
 fn rb_next<R: Rb>(t: &R, x: NonNull<R::T>) -> Option<NonNull<R::T>> {
-    rb_next_from(t, x, t.view(x))
+    rb_next_from(t, x, &t.view(x))
 }
 
 /// `RBT_NEXT(x)` from `x`'s view `xv` (its entry checked by the caller): each node of the
 /// walk is viewed, so checked, once.
 #[inline]
-fn rb_next_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: View<'_, R::T>) -> Option<NonNull<R::T>> {
+fn rb_next_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: &View<'_, R::T>) -> Option<NonNull<R::T>> {
     if let Some(r) = xv.right() {
         return rb_min(t, r);
     }
@@ -2181,7 +2233,7 @@ fn rb_next_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: View<'_, R::T>) -> Option<No
 
 /// `RBT_PREV(x)` from `x`'s view `xv`, as [`rb_next_from`].
 #[inline]
-fn rb_prev_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: View<'_, R::T>) -> Option<NonNull<R::T>> {
+fn rb_prev_from<R: Rb>(t: &R, x: NonNull<R::T>, xv: &View<'_, R::T>) -> Option<NonNull<R::T>> {
     if let Some(l) = xv.left() {
         return rb_max(t, l);
     }

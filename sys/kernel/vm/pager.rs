@@ -685,12 +685,12 @@ pub fn uvm_mk_pcluster(
 
             // XXX: protect wired page? see above comment.
             hal::pmap::page_protect(&pclust.mdpage, PROT_READ);
-            if !forward {
-                ppsp -= 1; // back up one page
-                pps[ppsp] = PageSlot::Page(pclust);
-            } else {
+            if forward {
                 // move forward one page
                 pps[ppsp + *npages as usize] = PageSlot::Page(pclust);
+            } else {
+                ppsp -= 1; // back up one page
+                pps[ppsp] = PageSlot::Page(pclust);
             }
             *npages += 1;
             curoff += incr;
@@ -743,13 +743,12 @@ pub fn uvm_pager_put(
 
     // attempt to build a cluster for pageout using its make-put-cluster function (if it has
     // one).
-    match uobj.mk_pcluster(w, pps, npages, pg, flags, start, stop) {
-        Some(at) => *ppsp = at, // update caller's index
-        None => {
-            *ppsp = 0;
-            pps[0] = PageSlot::Page(pg);
-            *npages = 1;
-        }
+    if let Some(at) = uobj.mk_pcluster(w, pps, npages, pg, flags, start, stop) {
+        *ppsp = at;
+    } else {
+        *ppsp = 0;
+        pps[0] = PageSlot::Page(pg);
+        *npages = 1;
     }
 
     // now that we've clustered we can unlock the page queues

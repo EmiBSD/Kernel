@@ -124,17 +124,14 @@ pub(crate) fn switch(
     let next = gate(new_addr);
     // The core leaves this host thread before the next one installs it (one runner a core).
     crate::arch::host::cpu::release_current();
-    match old {
-        Some(old) => {
-            let mine = gate(core::ptr::from_ref(old).addr());
-            open(&next, core);
-            wait(&mine);
-        }
-        None => {
-            open(&next, core);
-            loop {
-                std::thread::park();
-            }
+    if let Some(old) = old {
+        let mine = gate(core::ptr::from_ref(old).addr());
+        open(&next, core);
+        wait(&mine);
+    } else {
+        open(&next, core);
+        loop {
+            std::thread::park();
         }
     }
 }

@@ -272,7 +272,18 @@ use crate::select::{Selinfo, selwakeup};
 use crate::sig::{pgsignal, prsignal, sigismasked, sigpending};
 use crate::sigio::{TIOCGPGRP, TIOCSPGRP};
 use crate::sysctl::{SysctlNode, SysctlReq, rdquad, rdstruct};
-use crate::termios::*;
+use crate::termios::{
+    _POSIX_VDISABLE, ALTWERASE, BRKINT, CEOT, CHWFLOW, CIGNORE, CLOCAL, CREAD, Cc, ECHO, ECHOCTL,
+    ECHOE, ECHOK, ECHOKE, ECHONL, ECHOPRT, EXTPROC, FLUSHO, ICANON, ICRNL, IEXTEN, IGNBRK, IGNCR,
+    IGNPAR, IMAXBEL, INLCR, INPCK, ISIG, ISTRIP, IUCLC, IXANY, IXOFF, IXON, MDMBUF, NCCS, NOFLSH,
+    NOKERNINFO, OCRNL, OLCUC, ONLCR, ONLRET, ONOCR, ONOEOT, OPOST, OXTABS, PARMRK, PENDIN,
+    TIOCCBRK, TIOCCONS, TIOCDRAIN, TIOCEXCL, TIOCFLUSH, TIOCGETA, TIOCGETD, TIOCGSID, TIOCGTSTAMP,
+    TIOCGWINSZ, TIOCM_CAR, TIOCM_CTS, TIOCNXCL, TIOCOUTQ, TIOCSBRK, TIOCSCTTY, TIOCSETA, TIOCSETAF,
+    TIOCSETAW, TIOCSETD, TIOCSTART, TIOCSTAT, TIOCSTOP, TIOCSTSTAMP, TIOCSWINSZ, TOSTOP,
+    TTYDEFCHARS, Tcflag, Termios, Tstamps, VDISCARD, VDSUSP, VEOF, VEOL, VEOL2, VERASE, VINTR,
+    VKILL, VLNEXT, VMIN, VQUIT, VREPRINT, VSTART, VSTATUS, VSTOP, VSUSP, VTIME, VWERASE, Winsize,
+    XCASE, ctrl,
+};
 use crate::timeout::{KCLOCK_NONE, Timeout};
 use crate::uio::UioMove;
 
@@ -1489,7 +1500,7 @@ fn constty_forget<G: ProcGlue>(tp: &Tty<G>) {
 /// `cn_tab->cn_dev` (`ttwrite` copies what is written to that device into the console
 /// buffer), `None` without a console.
 pub fn console_dev<G: ProcGlue>() -> Option<Dev> {
-    devsw::<G>().and_then(|d| d.console_dev())
+    devsw::<G>().and_then(TtyDevsw::console_dev)
 }
 
 /// `isctty(pr, tp)`: is `tp` the controlling terminal of `pr`? Under the kernel lock (the
@@ -1682,9 +1693,8 @@ fn ttyinput_s<G: ProcGlue>(c: i32, s: &mut Sect<'_, G>) -> i32 {
                 } else if iflag & PARMRK != 0 {
                     parmrk(tp, c, iflag);
                     break 'switch Input::Endcase;
-                } else {
-                    c = 0;
                 }
+                c = 0;
             }
         }
         if c == 0o377 && iflag & ISTRIP == 0 && iflag & PARMRK != 0 {
@@ -1988,6 +1998,10 @@ pub fn ttyoutput<G: ProcGlue>(c: i32, tp: &Tty<G>) -> i32 {
 }
 
 /// [`ttyoutput`] inside a section.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+)]
 fn ttyoutput_s<G: ProcGlue>(c: i32, s: &mut Sect<'_, G>) -> i32 {
     let tp = s.tp;
     let mut c = c;
@@ -2232,7 +2246,7 @@ pub fn ttioctl<G: ProcGlue>(
             // become virtual console
             if int_arg(data)? != 0 {
                 if let Some(cons) = constty::<G>()
-                    && !ptr::eq::<Tty<G>>(&*cons, tp)
+                    && !ptr::eq::<Tty<G>>(&raw const *cons, tp)
                     && cons.t_state.get() & (TS_CARR_ON | TS_ISOPEN) == (TS_CARR_ON | TS_ISOPEN)
                 {
                     return Err(Errno::EBUSY);
@@ -2607,7 +2621,7 @@ pub fn ttkqfilter<G: ProcGlue>(tp: &Tty<G>, kn: &Knote<G>) -> Result<(), Errno> 
 
     // kn->kn_hook = tp
     if kn.set_hook_shared(PoolArc::erase(tty_ref(tp))).is_err() {
-        kpanic(format_args!("ttkqfilter: knote {:p} has a hook", kn));
+        kpanic(format_args!("ttkqfilter: knote {kn:p} has a hook"));
     }
 
     let _s = hal::intr::splraise(IPL_TTY);
@@ -2631,7 +2645,7 @@ impl<G: ProcGlue> TtyFiltops<G> {
 fn kn_tty<G: ProcGlue>(kn: &Knote<G>) -> &Tty<G> {
     match kn.hook_shared::<Tty<G>>() {
         Some(tp) => tp,
-        None => kpanic(format_args!("knote {:p}: no tty", kn)),
+        None => kpanic(format_args!("knote {kn:p}: no tty")),
     }
 }
 
@@ -3321,22 +3335,21 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
                 break 'top WriteExit::Done(Err(Errno::EIO));
             } else if flag & IO_NDELAY != 0 {
                 break 'top WriteExit::Out(Err(Errno::EWOULDBLOCK));
-            } else {
-                // Sleep awaiting carrier.
-                let error = {
-                    let _s = hal::intr::splraise(IPL_TTY);
-                    ttysleep(
-                        tp,
-                        ptr::from_ref(&tp.t_rawq).cast(),
-                        TTIPRI | PCATCH,
-                        TTOPEN,
-                    )
-                };
-                if let Err(e) = error {
-                    break 'top WriteExit::Out(Err(e));
-                }
-                continue 'top;
             }
+            // Sleep awaiting carrier.
+            let error = {
+                let _s = hal::intr::splraise(IPL_TTY);
+                ttysleep(
+                    tp,
+                    ptr::from_ref(&tp.t_rawq).cast(),
+                    TTIPRI | PCATCH,
+                    TTOPEN,
+                )
+            };
+            if let Err(e) = error {
+                break 'top WriteExit::Out(Err(e));
+            }
+            continue 'top;
         }
         // Hang the process if it's in the background.
         let bg = G::with_curproc(|p| {
@@ -4450,6 +4463,7 @@ mod tests {
     use crate::event::tests::{Kg, T, new_kqueue, setup, thread_of};
     use crate::event::{test_knote, test_knote_drop};
     use crate::proc::{Pgrp, Session, enternewpgrp, enterthispgrp, pgrp_alloc, session_alloc};
+    use crate::termios::{TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
     use crate::testutil;
 
     /// What the device switch saw: the `d_stop` calls; whether `/dev/console`'s access

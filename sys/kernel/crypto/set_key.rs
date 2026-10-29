@@ -143,7 +143,7 @@ static SHIFTS2: [bool; ITERATIONS] = [
 ];
 
 /// `check_parity`: true when every byte of the key has odd parity.
-fn check_parity(key: &DesCblock) -> bool {
+fn check_parity(key: DesCblock) -> bool {
     key.iter().all(|b| *b == ODD_PARITY[usize::from(*b)])
 }
 
@@ -164,18 +164,18 @@ impl DesKeySchedule {
     /// `des_set_key`: the key schedule of the 8-byte `key`. When `des_check_key` is set, an
     /// error for a key with a parity error (-1 in the C) or a weak key (-2).
     pub fn new(key: &DesCblock) -> Result<Self, Errno> {
-        Self::new_checked(key, DES_CHECK_KEY.load(Ordering::Relaxed))
+        Self::new_checked(*key, DES_CHECK_KEY.load(Ordering::Relaxed))
     }
 
     /// `des_set_key` with `des_check_key` given: `check` makes a parity error or a weak key
     /// an error. The tests call it directly instead of flipping the global under the other
     /// tests' feet.
-    fn new_checked(key: &DesCblock, check: bool) -> Result<Self, Errno> {
-        if check && (!check_parity(key) || des_is_weak_key(key)) {
+    fn new_checked(key: DesCblock, check: bool) -> Result<Self, Errno> {
+        if check && (!check_parity(key) || des_is_weak_key(&key)) {
             return Err(Errno::EINVAL);
         }
 
-        let [mut c, mut d] = c2l(key);
+        let [mut c, mut d] = c2l(&key);
 
         // I now do it in 47 simple operations :-) Thanks to John Fletcher
         // (john_fletcher@lccmail.ocf.llnl.gov) for the inspiration. :-)
@@ -240,14 +240,14 @@ mod tests {
             let y = ODD_PARITY[usize::from(x)];
             assert_eq!(y.count_ones() % 2, 1, "{x:#x}");
             assert_eq!(y & 0xfe, x & 0xfe, "{x:#x}");
-            assert_eq!(check_parity(&[x; 8]), x.count_ones() % 2 == 1, "{x:#x}");
+            assert_eq!(check_parity([x; 8]), x.count_ones() % 2 == 1, "{x:#x}");
         }
-        assert!(check_parity(&[0x01; 8]));
-        assert!(check_parity(&[
+        assert!(check_parity([0x01; 8]));
+        assert!(check_parity([
             0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1
         ]));
-        assert!(!check_parity(&[0x00; 8]));
-        assert!(!check_parity(&[
+        assert!(!check_parity([0x00; 8]));
+        assert!(!check_parity([
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x03
         ]));
     }
@@ -257,7 +257,7 @@ mod tests {
         for k in WEAK_KEYS.iter() {
             assert!(des_is_weak_key(k));
             // Weak keys have odd parity, so only the weakness test can reject them.
-            assert!(check_parity(k));
+            assert!(check_parity(*k));
         }
         assert!(!des_is_weak_key(&[
             0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1
@@ -275,15 +275,15 @@ mod tests {
         assert!(!DES_CHECK_KEY.load(Ordering::Relaxed));
         assert!(DesKeySchedule::new(&weak).is_ok());
         assert!(DesKeySchedule::new(&bad_parity).is_ok());
-        assert!(DesKeySchedule::new_checked(&weak, false).is_ok());
+        assert!(DesKeySchedule::new_checked(weak, false).is_ok());
         let (a, b) = (
-            DesKeySchedule::new_checked(&weak, true).map(drop),
-            DesKeySchedule::new_checked(&bad_parity, true).map(drop),
+            DesKeySchedule::new_checked(weak, true).map(drop),
+            DesKeySchedule::new_checked(bad_parity, true).map(drop),
         );
         assert_eq!((a, b), (Err(Errno::EINVAL), Err(Errno::EINVAL)));
         // A good key passes the checks, with the same schedule.
         let good = [0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1];
-        let checked = DesKeySchedule::new_checked(&good, true).expect("odd parity, not weak");
+        let checked = DesKeySchedule::new_checked(good, true).expect("odd parity, not weak");
         assert_eq!(
             checked.ks,
             DesKeySchedule::new(&good).expect("unchecked").ks

@@ -325,6 +325,10 @@ impl Sigacts {
     }
 
     /// Actions `m` and flags `flags` under `lock` (the new process's `ps_mtx`).
+    #[allow(
+        clippy::large_types_passed_by_value,
+        reason = "the actions are moved into the Guarded cell, so a reference would force a copy of 424 bytes"
+    )]
     fn new_under<U>(lock: &Mutexed<U>, m: SigactsM, flags: i32) -> Self {
         Self {
             m: Guarded::new_mutexed(lock, m),
@@ -374,6 +378,10 @@ pub enum SignalType {
 
 /// `struct sigctx`: the signal context `cursig` fills for `postsig` and `issignal`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags mirror the C struct sigctx, which cursig fills for postsig and issignal"
+)]
 pub struct Sigctx {
     /// `sig_action`.
     pub sig_action: Sig,
@@ -861,9 +869,7 @@ pub fn dosigsuspend<G: ProcGlue>(p: &Thread<G>, newmask: Sigset) {
 pub fn sigsuspend<G: ProcGlue>(p: &Thread<G>, mask: Sigset) -> Errno {
     dosigsuspend(p, mask & !sigcantmask());
     let nowake = ptr::from_ref(&NOWAKE).addr();
-    while sched::tsleep_nsec::<G>(nowake, PPAUSE | PCATCH, "sigsusp", INFSLP).is_ok() {
-        continue;
-    }
+    while sched::tsleep_nsec::<G>(nowake, PPAUSE | PCATCH, "sigsusp", INFSLP).is_ok() {}
     // always return EINTR rather than ERESTART...
     Errno::EINTR
 }
@@ -1752,9 +1758,8 @@ pub fn cursig<G: ProcGlue>(p: &Thread<G>, sctx: &mut Sigctx, deep: bool) -> i32 
                     // Except for SIGCONT, shouldn't get here. Default action is to ignore;
                     // drop it.
                     continue; // == ignore
-                } else {
-                    break; // goto keep
                 }
+                break; // goto keep
             }
             SIG_IGN => {
                 // Masking above should prevent us ever trying to take action on an ignored
@@ -1762,7 +1767,7 @@ pub fn cursig<G: ProcGlue>(p: &Thread<G>, sctx: &mut Sigctx, deep: bool) -> i32 
                 if prop & SA_CONT == 0 && pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED == 0 {
                     crate::prf::printf(format_args!("cursig\n"));
                 }
-                continue; // == ignore
+                // == ignore
             }
             _ => {
                 // This signal has an action, let postsig() process it.
@@ -1866,6 +1871,10 @@ pub fn process_continue<G: ProcGlue>(
 /// `process_stop`: signal all but `p` threads of a process `pr` to stop because of `flag`,
 /// under its `ps_mtx` (`g`) and `SCHED_LOCK` (`h`). Depending on `mode` stopped and sleeping
 /// threads may be woken up.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+)]
 pub fn process_stop<G: ProcGlue>(
     pr: &Process<G>,
     flag: i32,
@@ -2001,10 +2010,10 @@ pub fn postsig<G: ProcGlue>(p: &Thread<G>, signum: i32, sctx: &Sigctx) {
     let mask = sigmask(signum);
     p.p_siglist.fetch_and(!mask, Ordering::Relaxed);
 
-    let (trapno, code, sigval) = if p.p_sisig.get() != signum {
-        (0, SI_USER, Sigval::from_ptr(0))
-    } else {
+    let (trapno, code, sigval) = if p.p_sisig.get() == signum {
         (p.p_sitrapno.get(), p.p_sicode.get(), p.p_sigval.get())
+    } else {
+        (0, SI_USER, Sigval::from_ptr(0))
     };
     let si = initsiginfo(signum, trapno, code, sigval);
 
@@ -2172,10 +2181,10 @@ pub fn thrsigdivert<G: ProcGlue>(
     if !timeout.is_null() {
         let ts = timeout.copyin()?;
         // KTRACE: not configured.
-        if !ts.is_valid() {
-            timeinvalid = true;
-        } else {
+        if ts.is_valid() {
             nsecs = ts.to_nsec();
+        } else {
+            timeinvalid = true;
         }
     }
 
@@ -2224,6 +2233,10 @@ pub fn thrsigdivert<G: ProcGlue>(
 /// `initsiginfo`: the `siginfo_t` of signal `sig` with `code`; `trapno` and `val` fill the
 /// fault members for a kernel-generated `SIGSEGV`/`SIGILL`/`SIGBUS`/`SIGFPE`, `val` the
 /// value of a user-generated one.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+)]
 pub fn initsiginfo(sig: i32, trapno: u64, code: i32, val: Sigval) -> Siginfo {
     let mut si = Siginfo::zeroed();
 

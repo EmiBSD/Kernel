@@ -413,8 +413,8 @@ fn round(key: &CastKey, l: u32, r: u32, i: usize) -> u32 {
 }
 
 /// The two big-endian halves of `block`.
-fn halves(block: &[u8; 8]) -> (u32, u32) {
-    let [a, b, c, d, e, f, g, h] = *block;
+fn halves(block: [u8; 8]) -> (u32, u32) {
+    let [a, b, c, d, e, f, g, h] = block;
     (
         u32::from_be_bytes([a, b, c, d]),
         u32::from_be_bytes([e, f, g, h]),
@@ -432,7 +432,7 @@ impl CastKey {
     /// `cast_encrypt`: the encryption of `inblock`.
     pub fn encrypt(&self, inblock: &[u8; 8]) -> [u8; 8] {
         // Get inblock into l,r
-        let (mut l, mut r) = halves(inblock);
+        let (mut l, mut r) = halves(*inblock);
         // Do the work. Only do full 16 rounds if key length > 80 bits.
         let rounds = if self.rounds > 12 { 16 } else { 12 };
         for i in 0..rounds {
@@ -453,7 +453,7 @@ impl CastKey {
     /// `cast_decrypt`: the decryption of `inblock`.
     pub fn decrypt(&self, inblock: &[u8; 8]) -> [u8; 8] {
         // Get inblock into l,r
-        let (mut r, mut l) = halves(inblock);
+        let (mut r, mut l) = halves(*inblock);
         // Do the work. Only do full 16 rounds if key length > 80 bits.
         let rounds = if self.rounds > 12 { 16 } else { 12 };
         for i in (0..rounds).rev() {
@@ -492,70 +492,67 @@ impl CastKey {
         explicit_bzero(&mut raw);
         // Generate 32 subkeys, four at a time
         for i in (0..32).step_by(4) {
-            match i & 4 {
-                0 => {
-                    z[0] = x[0]
-                        ^ CAST_SBOX5[tb(x[3])]
-                        ^ CAST_SBOX6[td(x[3])]
-                        ^ CAST_SBOX7[ta(x[3])]
-                        ^ CAST_SBOX8[tc(x[3])]
-                        ^ CAST_SBOX7[ta(x[2])];
-                    t[0] = z[0];
-                    z[1] = x[2]
-                        ^ CAST_SBOX5[ta(z[0])]
-                        ^ CAST_SBOX6[tc(z[0])]
-                        ^ CAST_SBOX7[tb(z[0])]
-                        ^ CAST_SBOX8[td(z[0])]
-                        ^ CAST_SBOX8[tc(x[2])];
-                    t[1] = z[1];
-                    z[2] = x[3]
-                        ^ CAST_SBOX5[td(z[1])]
-                        ^ CAST_SBOX6[tc(z[1])]
-                        ^ CAST_SBOX7[tb(z[1])]
-                        ^ CAST_SBOX8[ta(z[1])]
-                        ^ CAST_SBOX5[tb(x[2])];
-                    t[2] = z[2];
-                    z[3] = x[1]
-                        ^ CAST_SBOX5[tc(z[2])]
-                        ^ CAST_SBOX6[tb(z[2])]
-                        ^ CAST_SBOX7[td(z[2])]
-                        ^ CAST_SBOX8[ta(z[2])]
-                        ^ CAST_SBOX6[td(x[2])];
-                    t[3] = z[3];
-                }
-                _ => {
-                    x[0] = z[2]
-                        ^ CAST_SBOX5[tb(z[1])]
-                        ^ CAST_SBOX6[td(z[1])]
-                        ^ CAST_SBOX7[ta(z[1])]
-                        ^ CAST_SBOX8[tc(z[1])]
-                        ^ CAST_SBOX7[ta(z[0])];
-                    t[0] = x[0];
-                    x[1] = z[0]
-                        ^ CAST_SBOX5[ta(x[0])]
-                        ^ CAST_SBOX6[tc(x[0])]
-                        ^ CAST_SBOX7[tb(x[0])]
-                        ^ CAST_SBOX8[td(x[0])]
-                        ^ CAST_SBOX8[tc(z[0])];
-                    t[1] = x[1];
-                    x[2] = z[1]
-                        ^ CAST_SBOX5[td(x[1])]
-                        ^ CAST_SBOX6[tc(x[1])]
-                        ^ CAST_SBOX7[tb(x[1])]
-                        ^ CAST_SBOX8[ta(x[1])]
-                        ^ CAST_SBOX5[tb(z[0])];
-                    t[2] = x[2];
-                    x[3] = z[3]
-                        ^ CAST_SBOX5[tc(x[2])]
-                        ^ CAST_SBOX6[tb(x[2])]
-                        ^ CAST_SBOX7[td(x[2])]
-                        ^ CAST_SBOX8[ta(x[2])]
-                        ^ CAST_SBOX6[td(z[0])];
-                    t[3] = x[3];
-                }
+            if i & 4 == 0 {
+                z[0] = x[0]
+                    ^ CAST_SBOX5[tb(x[3])]
+                    ^ CAST_SBOX6[td(x[3])]
+                    ^ CAST_SBOX7[ta(x[3])]
+                    ^ CAST_SBOX8[tc(x[3])]
+                    ^ CAST_SBOX7[ta(x[2])];
+                t[0] = z[0];
+                z[1] = x[2]
+                    ^ CAST_SBOX5[ta(z[0])]
+                    ^ CAST_SBOX6[tc(z[0])]
+                    ^ CAST_SBOX7[tb(z[0])]
+                    ^ CAST_SBOX8[td(z[0])]
+                    ^ CAST_SBOX8[tc(x[2])];
+                t[1] = z[1];
+                z[2] = x[3]
+                    ^ CAST_SBOX5[td(z[1])]
+                    ^ CAST_SBOX6[tc(z[1])]
+                    ^ CAST_SBOX7[tb(z[1])]
+                    ^ CAST_SBOX8[ta(z[1])]
+                    ^ CAST_SBOX5[tb(x[2])];
+                t[2] = z[2];
+                z[3] = x[1]
+                    ^ CAST_SBOX5[tc(z[2])]
+                    ^ CAST_SBOX6[tb(z[2])]
+                    ^ CAST_SBOX7[td(z[2])]
+                    ^ CAST_SBOX8[ta(z[2])]
+                    ^ CAST_SBOX6[td(x[2])];
+                t[3] = z[3];
+            } else {
+                x[0] = z[2]
+                    ^ CAST_SBOX5[tb(z[1])]
+                    ^ CAST_SBOX6[td(z[1])]
+                    ^ CAST_SBOX7[ta(z[1])]
+                    ^ CAST_SBOX8[tc(z[1])]
+                    ^ CAST_SBOX7[ta(z[0])];
+                t[0] = x[0];
+                x[1] = z[0]
+                    ^ CAST_SBOX5[ta(x[0])]
+                    ^ CAST_SBOX6[tc(x[0])]
+                    ^ CAST_SBOX7[tb(x[0])]
+                    ^ CAST_SBOX8[td(x[0])]
+                    ^ CAST_SBOX8[tc(z[0])];
+                t[1] = x[1];
+                x[2] = z[1]
+                    ^ CAST_SBOX5[td(x[1])]
+                    ^ CAST_SBOX6[tc(x[1])]
+                    ^ CAST_SBOX7[tb(x[1])]
+                    ^ CAST_SBOX8[ta(x[1])]
+                    ^ CAST_SBOX5[tb(z[0])];
+                t[2] = x[2];
+                x[3] = z[3]
+                    ^ CAST_SBOX5[tc(x[2])]
+                    ^ CAST_SBOX6[tb(x[2])]
+                    ^ CAST_SBOX7[td(x[2])]
+                    ^ CAST_SBOX8[ta(x[2])]
+                    ^ CAST_SBOX6[td(z[0])];
+                t[3] = x[3];
             }
-            match i & 12 {
-                0 | 12 => {
+            match i & 0b1100 {
+                0 | 0b1100 => {
                     key.xkey[i] = CAST_SBOX5[ta(t[2])]
                         ^ CAST_SBOX6[tb(t[2])]
                         ^ CAST_SBOX7[td(t[1])]
@@ -593,7 +590,7 @@ impl CastKey {
                         ^ CAST_SBOX8[td(t[2])];
                 }
             }
-            match i & 12 {
+            match i & 0b1100 {
                 0 => {
                     key.xkey[i] ^= CAST_SBOX5[tc(z[0])];
                     key.xkey[i + 1] ^= CAST_SBOX6[tc(z[1])];

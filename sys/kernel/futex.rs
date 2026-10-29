@@ -215,6 +215,10 @@ fn futex_is_eq(a: &FutexKey, b: &FutexKey) -> bool {
 
 /// `struct futex_slpque`: one bucket of waiting futexes.
 #[repr(align(64))]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct futex_slpque's fsq_* names so the C can be grepped"
+)]
 struct FutexSlpque {
     /// \[f\] `fsq_list`.
     fsq_list: PinList<FutexList>,
@@ -266,9 +270,9 @@ pub fn sys_futex<G: ProcGlue>(
 
     match op & FUTEX_OP_MASK {
         FUTEX_WAIT => futex_wait(p, uaddr, val, UserPtr::new(timeout), flags).map(|()| 0),
-        FUTEX_WAKE => futex_wake(p, uaddr, val, flags),
+        FUTEX_WAKE => Ok(futex_wake(p, uaddr, val, flags)),
         // The C passes the pointer argument as `(u_long)timeout` to a `uint32_t`.
-        FUTEX_REQUEUE => futex_requeue(p, uaddr, val, g, timeout as u32, flags),
+        FUTEX_REQUEUE => Ok(futex_requeue(p, uaddr, val, g, timeout as u32, flags)),
         _ => Err(Errno::ENOSYS),
     }
 }
@@ -457,7 +461,7 @@ fn futex_requeue<G: ProcGlue>(
     uaddr2: usize,
     m: u32,
     flags: i32,
-) -> Result<u32, Errno> {
+) -> u32 {
     if m == 0 {
         return futex_wake(p, uaddr, n, flags);
     }
@@ -509,7 +513,7 @@ fn futex_requeue<G: ProcGlue>(
         count
     };
 
-    Ok(count as u32)
+    count as u32
 }
 
 /// A requeued futex's new key and bucket (both locks held); `true`, so the move takes it.
@@ -537,9 +541,9 @@ fn lock_two<'a>(
 }
 
 /// Wakeup at most `n` sibling threads sleeping on a futex at address `uaddr`.
-fn futex_wake<G: ProcGlue>(p: &Thread<G>, uaddr: usize, n: u32, flags: i32) -> Result<u32, Errno> {
+fn futex_wake<G: ProcGlue>(p: &Thread<G>, uaddr: usize, n: u32, flags: i32) -> u32 {
     if n == 0 {
-        return Ok(0);
+        return 0;
     }
 
     let key = futex_addrs(p, uaddr, flags);
@@ -549,7 +553,7 @@ fn futex_wake<G: ProcGlue>(p: &Thread<G>, uaddr: usize, n: u32, flags: i32) -> R
     let count = futex_wake_matching::<G>(fsq, &mut w, &key, n as usize);
     drop(w);
 
-    Ok(count as u32)
+    count as u32
 }
 /* </CODE> */
 

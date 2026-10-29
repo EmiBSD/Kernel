@@ -579,10 +579,10 @@ impl RawMutex {
         }
         // WITNESS_CHECKORDER: not configured.
         let wantipl = self.wantipl.load(Ordering::Relaxed);
-        let s = if wantipl != IPL_NONE {
-            intr::splraise_raw(wantipl)
-        } else {
+        let s = if wantipl == IPL_NONE {
             IPL_NONE
+        } else {
+            intr::splraise_raw(wantipl)
         };
         let me = self_word();
         let owner = cas(&self.owner, 0, me);
@@ -614,10 +614,10 @@ impl RawMutex {
             return true;
         }
         let wantipl = self.wantipl.load(Ordering::Relaxed);
-        let s = if wantipl != IPL_NONE {
-            intr::splraise_raw(wantipl)
-        } else {
+        let s = if wantipl == IPL_NONE {
             IPL_NONE
+        } else {
+            intr::splraise_raw(wantipl)
         };
         let me = self_word();
         let owner = cas(&self.owner, 0, me);

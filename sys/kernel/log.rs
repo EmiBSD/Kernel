@@ -888,7 +888,7 @@ pub fn logread<G: ProcGlue>(uio: &mut dyn UioMove, flag: i32) -> Result<(), Errn
         drop(g);
         // Set up and enter sleep manually instead of using msleep() to keep log_mtx as a
         // leaf lock.
-        hal::sleep::sleep_setup(&LOG_RDCHAN, LOG_RDPRI | PCATCH, "klog");
+        hal::sleep::sleep_setup(&raw const LOG_RDCHAN, LOG_RDPRI | PCATCH, "klog");
         let error =
             hal::sleep::sleep_finish(INFSLP, log.state.load(Ordering::Relaxed) & LOG_RDWAIT != 0);
         g = LOG_MTX.lock();
@@ -1028,7 +1028,7 @@ pub fn logtick<G: ProcGlue>(_arg: *mut c_void) {
             pgsigio::<G>(&log.sigio, SIGIO, false);
         }
         if state & LOG_RDWAIT != 0 {
-            hal::sleep::wakeup(&LOG_RDCHAN);
+            hal::sleep::wakeup(&raw const LOG_RDCHAN);
         }
     }
     pin_static(&log.tick).add_msec(LOG_TICK);
@@ -1294,21 +1294,20 @@ pub fn dosendsyslog<G: ProcGlue>(
         }
     };
 
-    let error = match &fp {
-        Some(fp) => fp.ops().write(fp, &mut auio, 0),
-        None => {
-            let _k = KernelHold::take();
-            match crate::tty::console_bridge::<G>() {
-                Some(d) if d.console_tty() => {
-                    let error = d.console_write(&mut auio);
-                    let mut crlf = [Iovec::new()];
-                    let mut auio = Uio::kernel_write(&mut crlf, b"\r\n", Some(p));
-                    let _ = d.console_write(&mut auio);
-                    error
-                }
-                // XXX console redirection breaks down...
-                _ => console_putc(buf, start, nbyte),
+    let error = if let Some(fp) = &fp {
+        fp.ops().write(fp, &mut auio, 0)
+    } else {
+        let _k = KernelHold::take();
+        match crate::tty::console_bridge::<G>() {
+            Some(d) if d.console_tty() => {
+                let error = d.console_write(&mut auio);
+                let mut crlf = [Iovec::new()];
+                let mut auio = Uio::kernel_write(&mut crlf, b"\r\n", Some(p));
+                let _ = d.console_write(&mut auio);
+                error
             }
+            // XXX console redirection breaks down...
+            _ => console_putc(buf, start, nbyte),
         }
     };
 

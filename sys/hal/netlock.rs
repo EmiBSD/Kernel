@@ -46,7 +46,7 @@ pub trait NetLock: Sync {
 
 /// `rw_status(&netlock) == RW_WRITE` (false before the bridge is registered).
 pub fn net_lock_write_held() -> bool {
-    bridges::net_lock().is_some_and(|b| b.write_held())
+    bridges::net_lock().is_some_and(NetLock::write_held)
 }
 
 /// `NET_UNLOCK()` (nothing before the bridge is registered).

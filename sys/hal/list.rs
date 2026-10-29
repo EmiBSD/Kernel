@@ -237,7 +237,7 @@ impl<A: ListAdapter> List<A> {
         }
         let p = A::entry(at).prev.get();
         if p.is_none() {
-            self.check_end(self.first.points_to(at), "TAILQ_INSERT_BEFORE");
+            Self::check_end(self.first.points_to(at), "TAILQ_INSERT_BEFORE");
         }
         Self::claim(e, "TAILQ_INSERT_BEFORE");
         let ent = A::entry(e);
@@ -260,7 +260,7 @@ impl<A: ListAdapter> List<A> {
         }
         let n = A::entry(at).next.get();
         if n.is_none() {
-            self.check_end(self.last.points_to(at), "TAILQ_INSERT_AFTER");
+            Self::check_end(self.last.points_to(at), "TAILQ_INSERT_AFTER");
         }
         Self::claim(e, "TAILQ_INSERT_AFTER");
         let ent = A::entry(e);
@@ -275,7 +275,7 @@ impl<A: ListAdapter> List<A> {
 
     /// An end of an element that has no neighbour on that side must be this list's end: when
     /// it is not, the element is on another list (the one wrong use that can be seen).
-    fn check_end(&self, ok: bool, what: &str) {
+    fn check_end(ok: bool, what: &str) {
         if !ok {
             hal_panic(format_args!("{what}: the element is on another list"));
         }
@@ -293,10 +293,10 @@ impl<A: ListAdapter> List<A> {
         let p = ent.prev.get();
         // Both ends first: a failed check leaves every list as it was.
         if n.is_none() {
-            self.check_end(self.last.points_to(e), "TAILQ_REMOVE");
+            Self::check_end(self.last.points_to(e), "TAILQ_REMOVE");
         }
         if p.is_none() {
-            self.check_end(self.first.points_to(e), "TAILQ_REMOVE");
+            Self::check_end(self.first.points_to(e), "TAILQ_REMOVE");
         }
         match n {
             Some(n) => A::entry(n).prev.set(p),
@@ -348,6 +348,15 @@ impl<A: ListAdapter> List<A> {
             next: self.first.get(),
             _adapter: PhantomData,
         }
+    }
+}
+
+impl<A: ListAdapter> IntoIterator for &List<A> {
+    type Item = &'static A::Elem;
+    type IntoIter = Iter<A>;
+
+    fn into_iter(self) -> Iter<A> {
+        self.iter()
     }
 }
 

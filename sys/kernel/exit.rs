@@ -206,7 +206,10 @@ pub fn exit1<G: ProcGlue>(p: &Thread<G>, xexit: i32, xsig: i32, flags: i32) -> !
         None
     } else {
         let b = pr.take_box_locked(&mut g, p.p_seq.get());
-        kassert!(b.as_ref().is_some_and(|b| ptr::eq::<Thread<G>>(&**b, p)));
+        kassert!(
+            b.as_ref()
+                .is_some_and(|b| ptr::eq::<Thread<G>>(&raw const **b, p))
+        );
         b
     };
     pr.ps_threadcnt.set(pr.ps_threadcnt.get() - 1);
@@ -390,7 +393,7 @@ pub fn exit1<G: ProcGlue>(p: &Thread<G>, xexit: i32, xsig: i32, flags: i32) -> !
             kassert!(
                 orphan
                     .opptr_locked(&og)
-                    .is_some_and(|o| ptr::eq::<Process<G>>(&**o, &*pr))
+                    .is_some_and(|o| ptr::eq::<Process<G>>(&raw const **o, &raw const *pr))
             );
             drop(orphan.set_opptr_locked(&mut og, None));
             process_clear_orphan(&orphan, Some(&pr));
@@ -873,7 +876,9 @@ pub fn sys_waitid<G: ProcGlue>(
 pub fn proc_finish_wait<G: ProcGlue>(waiter: &Thread<G>, pr: ProcessRef<G>) {
     // If we got the child via a ptrace 'attach', we need to give it back to the old parent.
     let mut g = pr.ps_mtx.lock();
-    let pptr_addr = pr.pptr_locked(&g).map_or(0, |pp| pp.addr());
+    let pptr_addr = pr
+        .pptr_locked(&g)
+        .map_or(0, super::proc::StaticOrPooled::addr);
     let tr = pr
         .opptr_locked(&g)
         .filter(|tr| tr.addr() != pptr_addr)
@@ -917,7 +922,9 @@ pub fn proc_finish_wait<G: ProcGlue>(waiter: &Thread<G>, pr: ProcessRef<G>) {
 pub fn process_untrace<G: ProcGlue>(pr: &ProcessRef<G>, g: &mut PsGuard<'_, G>) {
     kassert!(pr.ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0);
 
-    let pptr_addr = pr.pptr_locked(g).map_or(0, |pp| pp.addr());
+    let pptr_addr = pr
+        .pptr_locked(g)
+        .map_or(0, super::proc::StaticOrPooled::addr);
     let ppr = pr
         .opptr_locked(g)
         .filter(|op| op.addr() != pptr_addr)
@@ -953,13 +960,17 @@ pub fn process_reparent<G: ProcGlue>(
     let old = child.pptr_locked(g).cloned();
     if old
         .as_ref()
-        .is_some_and(|o| ptr::eq::<Process<G>>(&**o, &**parent))
+        .is_some_and(|o| ptr::eq::<Process<G>>(&raw const **o, &raw const **parent))
     {
         return;
     }
 
     let opptr = child.opptr_locked(g).cloned();
-    kassert!(opptr.is_none() || opptr.as_ref().map(|o| o.addr()) == old.as_ref().map(|o| o.addr()));
+    kassert!(
+        opptr.is_none()
+            || opptr.as_ref().map(super::proc::StaticOrPooled::addr)
+                == old.as_ref().map(super::proc::StaticOrPooled::addr)
+    );
 
     {
         let mut w = klock::witness();

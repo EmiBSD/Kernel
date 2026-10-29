@@ -141,11 +141,13 @@ impl Paddr {
     }
 
     /// `round_page`.
+    #[must_use]
     pub const fn round_page(self) -> Paddr {
         Paddr(round_page(self.0))
     }
 
     /// `trunc_page`.
+    #[must_use]
     pub const fn trunc_page(self) -> Paddr {
         Paddr(trunc_page(self.0))
     }
@@ -153,11 +155,13 @@ impl Paddr {
 
 impl Vaddr {
     /// `round_page`.
+    #[must_use]
     pub const fn round_page(self) -> Vaddr {
         Vaddr(round_page(self.0))
     }
 
     /// `trunc_page`.
+    #[must_use]
     pub const fn trunc_page(self) -> Vaddr {
         Vaddr(trunc_page(self.0))
     }
@@ -165,6 +169,7 @@ impl Vaddr {
 
 impl Vsize {
     /// `round_page`.
+    #[must_use]
     pub const fn round_page(self) -> Vsize {
         Vsize(round_page(self.0))
     }

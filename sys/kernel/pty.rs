@@ -800,7 +800,7 @@ pub fn ptcwrite<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resu
 fn kn_pti<G: ProcGlue>(kn: &Knote<G>) -> &'static PtSoftc<G> {
     match pt_softc::<G>(kn.kn_hook.get().addr() as u32) {
         Some(pti) => pti,
-        None => kpanic(format_args!("knote {:p}: no pty", kn)),
+        None => kpanic(format_args!("knote {kn:p}: no pty")),
     }
 }
 
@@ -838,14 +838,14 @@ impl<G: ProcGlue> Filter<G> for PtcRead {
         }
         let mut active = kn.kn_data().get() > 0;
 
-        if !tp.t_state_isset(TS_CARR_ON) {
+        if tp.t_state_isset(TS_CARR_ON) {
+            kn.clear_flags(EV_EOF | __EV_HUP);
+        } else {
             kn.set_flags(EV_EOF);
             if kn.has_flags(__EV_POLL) {
                 kn.set_flags(__EV_HUP);
             }
             active = true;
-        } else {
-            kn.clear_flags(EV_EOF | __EV_HUP);
         }
 
         active
@@ -884,11 +884,11 @@ impl<G: ProcGlue> Filter<G> for PtcWrite {
 
         // Write-side HUP condition is only for poll(2) and select(2).
         if kn.has_flags(__EV_POLL | __EV_SELECT) {
-            if !tp.t_state_isset(TS_CARR_ON) {
+            if tp.t_state_isset(TS_CARR_ON) {
+                kn.clear_flags(__EV_HUP);
+            } else {
                 kn.set_flags(__EV_HUP);
                 active = true;
-            } else {
-                kn.clear_flags(__EV_HUP);
             }
         }
 
@@ -923,11 +923,11 @@ impl<G: ProcGlue> Filter<G> for PtcExcept {
         }
 
         if kn.has_flags(__EV_POLL) {
-            if !tp.t_state_isset(TS_CARR_ON) {
+            if tp.t_state_isset(TS_CARR_ON) {
+                kn.clear_flags(__EV_HUP);
+            } else {
                 kn.set_flags(__EV_HUP);
                 active = true;
-            } else {
-                kn.clear_flags(__EV_HUP);
             }
         }
 

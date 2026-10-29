@@ -800,7 +800,7 @@ pub fn fd_checkclosed<G: FileGlue>(fdp: &Filedesc<G>, fd: i32, fp: &File<G>) -> 
     let s = fdp.slots.lock();
     kassert!((fd as u32 as usize) < s.files.as_slice().len());
     !s.file(fd as u32 as usize)
-        .is_some_and(|f| core::ptr::eq(&**f, fp))
+        .is_some_and(|f| core::ptr::eq(&raw const **f, fp))
 }
 
 /// Duplicate a file descriptor (`dup(2)`): the new descriptor.
@@ -1333,10 +1333,10 @@ pub fn sys_fpathconf<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     let fp = fd_getfile(p.fd(), fd).ok_or(Errno::EBADF)?;
     let error = match fp.f_type() {
         DTYPE_PIPE | DTYPE_SOCKET => {
-            if name != _PC_PIPE_BUF {
-                Err(Errno::EINVAL)
-            } else {
+            if name == _PC_PIPE_BUF {
                 Ok(PIPE_BUF as Register)
+            } else {
+                Err(Errno::EINVAL)
             }
         }
         DTYPE_VNODE => G::pathconf(data_of(&fp), name),
@@ -1501,12 +1501,11 @@ pub fn falloc<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
             Err(error) => return Err(error),
         }
     };
-    match fnew(p) {
-        Some(fp) => Ok((fp, i)),
-        None => {
-            g.fd_unused(i);
-            Err(Errno::ENFILE)
-        }
+    if let Some(fp) = fnew(p) {
+        Ok((fp, i))
+    } else {
+        g.fd_unused(i);
+        Err(Errno::ENFILE)
     }
 }
 

@@ -194,6 +194,10 @@ impl Default for SigioRef {
 /// process exits or the process group disappears.
 ///
 /// Locking: I: immutable after creation; S: `sigio_lock`.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct sigio's sio_* names so the C can be grepped"
+)]
 struct Sigio {
     /// \[S\] The next registration of the chain.
     sio_next: Option<MBox<Sigio>>,
@@ -231,12 +235,12 @@ fn sigio_del(mut rmlist: Option<MBox<Sigio>>) {
 
 /// The registration `sir` holds, in the chain `chain`: one at `sir`'s recorded address whose
 /// `sio_myref` is `sir`.
-fn sigio_of<'a>(chain: &'a Option<MBox<Sigio>>, sir: &SigioRef) -> Option<&'a Sigio> {
+fn sigio_of<'a>(chain: Option<&'a MBox<Sigio>>, sir: &SigioRef) -> Option<&'a Sigio> {
     let at = sir.sir_sigio.load(Ordering::Relaxed);
     if at == 0 {
         return None;
     }
-    let mut cur = chain.as_deref();
+    let mut cur = chain.map(|m| &**m);
     while let Some(s) = cur {
         if s.addr() == at && s.sio_myref == sir.addr() {
             return Some(s);
@@ -305,7 +309,7 @@ pub fn pgsigio<G: ProcGlue>(sir: &SigioRef, sig: i32, checkctty: bool) {
     klock::kernel_lock();
     {
         let chain = SIGIO_LOCK.lock();
-        if let Some(sigio) = sigio_of(&chain, sir)
+        if let Some(sigio) = sigio_of((*chain).as_ref(), sir)
             && let Some(cred) = sigio.sio_ucred.as_ref()
         {
             let r = klock::reader();
@@ -468,7 +472,7 @@ pub fn sigio_setown<G: ProcGlue>(sir: &SigioRef, cmd: u64, pgid: Pid) -> Result<
 pub fn sigio_getown(sir: &SigioRef, cmd: u64) -> Pid {
     let pgid = {
         let chain = SIGIO_LOCK.lock();
-        sigio_of(&chain, sir).map_or(0, |s| s.sio_pgid)
+        sigio_of((*chain).as_ref(), sir).map_or(0, |s| s.sio_pgid)
     };
 
     if cmd == TIOCGPGRP { -pgid } else { pgid }
@@ -498,7 +502,7 @@ pub fn sigio_copy(dst: &SigioRef, src: &SigioRef) {
     let rm = {
         let mut chain = SIGIO_LOCK.lock();
 
-        let Some(sigio) = sigio_of(&chain, src) else {
+        let Some(sigio) = sigio_of((*chain).as_ref(), src) else {
             drop(chain);
             drop(newsigio);
             return;
@@ -506,7 +510,7 @@ pub fn sigio_copy(dst: &SigioRef, src: &SigioRef) {
 
         newsigio.sio_pgid = sigio.sio_pgid;
         // The source holds a reference to its credentials: one more for the copy.
-        newsigio.sio_ucred = sigio.sio_ucred.clone();
+        newsigio.sio_ucred.clone_from(&sigio.sio_ucred);
 
         let at = newsigio.addr();
         let rm = sigio_unlink(&mut chain, dst);

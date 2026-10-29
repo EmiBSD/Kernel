@@ -243,6 +243,7 @@ pub enum Dir {
 
 impl Dir {
     /// The other pipe of the pair (the C's `pipe_peer` before it is cleared).
+    #[must_use]
     pub const fn other(self) -> Dir {
         match self {
             Dir::Rd => Dir::Wr,
@@ -1361,7 +1362,7 @@ fn pair_of<G: ProcGlue>(kn: &Knote<G>) -> (PoolArc<PipePair<G>>, Dir) {
 pub fn filt_pipedetach<G: ProcGlue>(kn: &Knote<G>) {
     let (pair, _) = pair_of(kn);
     let Some(hook) = Dir::from_index(kn.kn_hook.get().addr()) else {
-        kpanic(format_args!("knote {:p}: no pipe", kn));
+        kpanic(format_args!("knote {kn:p}: no pipe"));
     };
     pair.detach(hook, kn);
 }

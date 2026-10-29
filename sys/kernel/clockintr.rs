@@ -199,7 +199,7 @@ impl Clockintr {
     }
 
     /// Its queue.
-    fn queue(&self) -> &'static ClockCpu {
+    fn queue(self) -> &'static ClockCpu {
         match CPUS.cpu(self.cpu as usize) {
             Some(q) => q,
             None => kpanic(format_args!("clockintr: no CPU {}", self.cpu)),

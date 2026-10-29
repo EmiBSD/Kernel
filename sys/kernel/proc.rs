@@ -2788,6 +2788,10 @@ pub fn enternewpgrp<G: ProcGlue>(
 /// `enterthispgrp(pr, pgrp)`: `pr` moves to the existing group `pgrp`; its old group goes
 /// when it was the last member. `fixjobc` runs under a reader (it may signal), the moves
 /// under the writer.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the callers hand over their counted group reference; borrowing would move where it is dropped, a change of behaviour for the redesigner and not a syntax fix"
+)]
 pub fn enterthispgrp<G: ProcGlue>(pr: &ProcessRef<G>, pgrp: PgrpRef<G>) {
     let savepgrp = {
         let r = klock::reader();
@@ -2882,7 +2886,7 @@ pub fn fixjobc<G: ProcGlue, W: Witness + ?Sized>(
     // count for pr's process group.
     if let Some(parent) = pr.pptr(w)
         && let Some(hispgrp) = parent.pgrp(w)
-        && !ptr::eq::<Pgrp<G>>(&**hispgrp, pgrp)
+        && !ptr::eq::<Pgrp<G>>(&raw const **hispgrp, pgrp)
         && hispgrp.session_addr(w) == mysession
     {
         jobc_adjust(w, pgrp, entering);
@@ -2892,7 +2896,7 @@ pub fn fixjobc<G: ProcGlue, W: Witness + ?Sized>(
     // so, adjust counts for children's process groups.
     for child in pr.ps_children.iter(w) {
         if let Some(hispgrp) = child.pgrp(w)
-            && !ptr::eq::<Pgrp<G>>(&**hispgrp, pgrp)
+            && !ptr::eq::<Pgrp<G>>(&raw const **hispgrp, pgrp)
             && hispgrp.session_addr(w) == mysession
             && child.ps_flags.load(Ordering::Relaxed) & PS_ZOMBIE == 0
         {

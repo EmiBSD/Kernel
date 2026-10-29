@@ -77,7 +77,7 @@ pub fn cnputs(s: &[u8]) {
 
 /// `cngetc()`: one character from the console, waiting for it; 0 before one is registered.
 pub fn cngetc() -> i32 {
-    bridges::console().map_or(0, |b| b.cngetc())
+    bridges::console().map_or(0, Console::cngetc)
 }
 
 /// `cnpollc(on)`: nothing before a console is registered.
