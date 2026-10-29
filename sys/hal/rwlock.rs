@@ -245,6 +245,14 @@
 //!   state: the process lists and links); the lock is held by the running CPU while one
 //!   lives and the per-CPU count of `hal::klock` keeps the writer and the readers apart on it
 //!   (that module's notes).
+//! - N5.2: a lock the C enters in one function and leaves in another without a witness in
+//!   between (`vfs_busy`/`vfs_unbusy` on `mnt_lock`, a file system's `VOP_LOCK`/`VOP_UNLOCK`
+//!   on its node's `rrwlock`) is [`SplitRwlock`] (`rw_enter`/`rw_exit`) or [`RecursiveRwlock`]
+//!   (`rrw_enter`/`rrw_exit`/`rrw_status`, `kern_rwlock.c`'s rrwlock: the writer may enter
+//!   again, `RW_RECURSEFAIL` makes that `EDEADLK`). Both keep their [`RawRwlock`] private and
+//!   hand out no witness, so no [`Guarded`] cell can be keyed to them: what they exclude is the
+//!   C's protocol (the file system's node, the mount's unmount), never a Rust reference; a
+//!   release the lock does not match is `panic(9)`, as the C's assertions make it.
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -277,6 +285,8 @@ pub const RW_NOSLEEP: i32 = 0x0040;
 pub const RW_WRITE: i32 = 0x0001;
 /// `RW_READ`: [`Rwlocked::status`] of a lock held by readers.
 pub const RW_READ: i32 = 0x0002;
+/// `RW_RECURSEFAIL`: fail on recursion for RRW locks ([`RecursiveRwlock::enter`]).
+pub const RW_RECURSEFAIL: i32 = 0x0080;
 /// `RW_WRITE_OTHER`: [`Rwlocked::status`] of a lock another process writes.
 pub const RW_WRITE_OTHER: i32 = 0x0100;
 
@@ -1830,6 +1840,131 @@ impl Witness for RwWitness<'_> {
     }
 }
 
+/// A `struct rwlock` entered and left by separate calls, with no witness in between: the
+/// C's `rw_enter(rwl, flags)` in one function and `rw_exit(rwl)` in another (`vfs_busy` and
+/// `vfs_unbusy` on a mount's `mnt_lock`). Its [`RawRwlock`] is private and gives no witness,
+/// so nothing can key a [`Guarded`] cell to it: it excludes the protocol its users follow,
+/// not references. Entering it for writing again from the writer is the C's `panic(9)`
+/// ("enter write deadlock"); leaving it when it is not held is `panic(9)` too.
+pub struct SplitRwlock {
+    lock: RawRwlock,
+}
+
+impl SplitRwlock {
+    /// `RWLOCK_INITIALIZER(name)`: a free lock whose sleeps say `name`.
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            lock: RawRwlock::new(name),
+        }
+    }
+
+    /// `rw_enter(rwl, flags)`: the mode of `flags & RW_OPMASK` ([`RW_WRITE`] or [`RW_READ`]),
+    /// with [`RW_NOSLEEP`] (`EBUSY` when it cannot be had now) and [`RW_INTR`] (the sleep's
+    /// error when a signal ends the wait). Any other mode is `panic(9)` (the C's
+    /// `panic("%s: bad flags")`).
+    pub fn enter(&self, flags: i32) -> Result<(), Errno> {
+        match flags & RW_OPMASK {
+            m if m == RW_WRITE => self.lock.enter_write(flags).map(|_| ()),
+            m if m == RW_READ => self.lock.enter_read(flags),
+            _ => self
+                .lock
+                .panic(format_args!("rw_enter: bad flags {flags:#x}")),
+        }
+    }
+
+    /// `rw_exit(rwl)`: leaves the lock in the mode it is held in (the writer's word, or one
+    /// reader of the count); a lock this process does not hold for writing, or that no one
+    /// holds, is `panic(9)` (`rw_assert_wrlock`, `rw_assert_rdlock`).
+    pub fn exit(&self) {
+        if self.lock.owner.load(Ordering::SeqCst) & RWLOCK_WRLOCK != 0 {
+            self.lock.exit_write(rw_self());
+        } else {
+            self.lock.exit_read();
+        }
+    }
+
+    /// `rw_status(rwl)`: [`RW_WRITE`] (this process writes), [`RW_WRITE_OTHER`], [`RW_READ`]
+    /// or 0 (free).
+    pub fn status(&self) -> i32 {
+        self.lock.status()
+    }
+
+    /// Whether this process holds the lock for writing (`rw_write_held`).
+    pub fn held_by_self(&self) -> bool {
+        self.lock.owner.load(Ordering::SeqCst) == rw_self()
+    }
+
+    /// `rwl_name`: the wait message.
+    pub fn name(&self) -> &'static str {
+        self.lock.name()
+    }
+}
+
+/// `struct rrwlock`: a [`SplitRwlock`] whose writer may enter it again (`rrw_enter`), the
+/// lock a file system's node carries for `VOP_LOCK`/`VOP_UNLOCK`. `wcnt` counts the
+/// writer's entries; it is read and written only by the process that holds the lock for
+/// writing (the owner word is its own, checked first), so no two writers of it ever race;
+/// readers never touch it but for the `rrw_enter` that set it to 1 after a read entry, as the
+/// C does (an unused value: a reader's `rrw_exit` never looks at it).
+pub struct RecursiveRwlock {
+    lock: SplitRwlock,
+    wcnt: AtomicU32,
+}
+
+impl RecursiveRwlock {
+    /// `rrw_init(rrwl, name)`: a free lock.
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            lock: SplitRwlock::new(name),
+            wcnt: AtomicU32::new(0),
+        }
+    }
+
+    /// `rrw_enter(rrwl, flags)`: the writer that holds the lock enters it once more
+    /// (`EDEADLK` instead with [`RW_RECURSEFAIL`]); anyone else enters it as
+    /// [`SplitRwlock::enter`] does.
+    pub fn enter(&self, flags: i32) -> Result<(), Errno> {
+        if self.lock.held_by_self() {
+            if flags & RW_RECURSEFAIL != 0 {
+                return Err(Errno::EDEADLK);
+            }
+            self.wcnt.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        self.lock.enter(flags)?;
+        self.wcnt.store(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// `rrw_exit(rrwl)`: the writer leaves one of its entries, the lock with the last; a
+    /// reader leaves its read hold.
+    pub fn exit(&self) {
+        if self.lock.held_by_self() {
+            let n = self.wcnt.load(Ordering::Relaxed);
+            kassert!(n > 0);
+            self.wcnt.store(n.saturating_sub(1), Ordering::Relaxed);
+            if n > 1 {
+                return;
+            }
+        }
+        self.lock.exit();
+    }
+
+    /// `rrw_status(rrwl)`: as [`SplitRwlock::status`].
+    pub fn status(&self) -> i32 {
+        self.lock.status()
+    }
+
+    /// The writer's entries (`rrwl_wcnt`), for assertions.
+    pub fn depth(&self) -> u32 {
+        if self.lock.held_by_self() {
+            self.wcnt.load(Ordering::Relaxed)
+        } else {
+            0
+        }
+    }
+}
+
 /// `rw_obj_init`: makes the pool of lock objects, `"rwobjpl"` at `IPL_MPFLOOR`, `PR_WAITOK`,
 /// once, before the first [`SharedRwlock::new`] (the kernel's `uvm_init`). `ENOMEM` before the
 /// pool bridge is registered, `EBUSY` when it was made already.
@@ -2691,6 +2826,83 @@ mod tests {
         let other = Mutexed::new(crate::intr::IPL_NONE, ());
         let g = other.lock();
         let _ = CELL.get(&g);
+    }
+
+    #[test]
+    fn a_split_lock_is_entered_and_left_by_separate_calls() {
+        testutil::install();
+        let l = SplitRwlock::new("split");
+        assert_eq!(l.status(), 0);
+        assert_eq!(l.enter(RW_READ), Ok(()));
+        assert_eq!(l.enter(RW_READ | RW_NOSLEEP), Ok(()));
+        assert_eq!(l.status(), RW_READ);
+        assert_eq!(l.enter(RW_WRITE | RW_NOSLEEP), Err(Errno::EBUSY));
+        l.exit();
+        l.exit();
+        assert_eq!(l.status(), 0);
+        assert_eq!(l.enter(RW_WRITE), Ok(()));
+        assert!(l.held_by_self());
+        assert_eq!(l.status(), RW_WRITE);
+        l.exit();
+        assert_eq!(l.status(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "enter write deadlock")]
+    fn a_split_lock_is_not_entered_twice_by_its_writer() {
+        testutil::install();
+        let l = SplitRwlock::new("split");
+        let _ = l.enter(RW_WRITE);
+        let _ = l.enter(RW_WRITE);
+    }
+
+    #[test]
+    #[should_panic(expected = "exit read on unlocked lock")]
+    fn a_split_lock_not_held_is_not_left() {
+        testutil::install();
+        SplitRwlock::new("split").exit();
+    }
+
+    #[test]
+    fn a_recursive_lock_counts_its_writer_s_entries() {
+        testutil::install();
+        let l = RecursiveRwlock::new("rrw");
+        assert_eq!(l.enter(RW_WRITE), Ok(()));
+        assert_eq!(l.depth(), 1);
+        assert_eq!(l.enter(RW_WRITE), Ok(()));
+        assert_eq!(l.depth(), 2);
+        // RW_RECURSEFAIL refuses the third entry and leaves the count alone.
+        assert_eq!(l.enter(RW_WRITE | RW_RECURSEFAIL), Err(Errno::EDEADLK));
+        assert_eq!(l.depth(), 2);
+        l.exit();
+        assert_eq!(l.status(), RW_WRITE);
+        assert_eq!(l.depth(), 1);
+        l.exit();
+        assert_eq!(l.status(), 0);
+        assert_eq!(l.depth(), 0);
+        // A reader is a plain one.
+        assert_eq!(l.enter(RW_READ), Ok(()));
+        assert_eq!(l.status(), RW_READ);
+        l.exit();
+        assert_eq!(l.status(), 0);
+    }
+
+    #[test]
+    fn a_recursive_lock_held_elsewhere_is_busy_for_a_try() {
+        testutil::install();
+        let l: &'static RecursiveRwlock =
+            std::boxed::Box::leak(std::boxed::Box::new(RecursiveRwlock::new("rrw")));
+        assert_eq!(l.enter(RW_WRITE), Ok(()));
+        thread::scope(|s| {
+            s.spawn(|| {
+                testutil::install();
+                assert_eq!(l.enter(RW_WRITE | RW_NOSLEEP), Err(Errno::EBUSY));
+                assert_eq!(l.enter(RW_READ | RW_NOSLEEP), Err(Errno::EBUSY));
+                assert_eq!(l.status(), RW_WRITE_OTHER);
+                assert_eq!(l.depth(), 0);
+            });
+        });
+        l.exit();
     }
 }
 /* </TESTS> */
