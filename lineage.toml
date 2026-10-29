@@ -9508,6 +9508,10 @@ rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/benches/bio.rs"
+reason = "decision 43, N5.1: host microbenchmarks of the buffer cache and the disk queues on LZ's shape (getblk and bread hits, brelse, getblk's allocation, the 2Q queues' take and release, a bufq trip through nscan and fifo) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed when sys/kernel/benches/bio.rs times the same ops on the kernel's shape; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/event.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's delivery on a kernel-lock klist, kqueue_scan, kqueue_register, poll and select over the poll kqueue, an own-mutex klist) over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
