@@ -163,11 +163,6 @@
 //!   taken writes without one and skips that one `bufq_wait`, where the C, which has no
 //!   bound, would throttle it: only the writer's pacing differs, never a result userland sees
 //!   (it never sleeps for a note: the C does not sleep before `VOP_STRATEGY`).
-//! - `buf_get` takes a buffer header the pool already holds under the cache's lock
-//!   (`BoxPool::get_idle`, the C's `pool_get` at `splbio`), and `pool_get`'s yield after a
-//!   `PR_WAITOK` get when `kern.pool_debug` is 2 (a debug knob, `bsd`'s) is not made on that
-//!   path: it cannot yield under the lock, and the knob is out of the kernel crate's reach.
-//!   The path that leaves the lock for `pool_get(PR_WAITOK)` keeps it.
 //! - `curproc->p_ru.ru_inblock++`/`ru_oublock++` go through the vnode's [`BufVnode`]
 //!   (`charge_io`), which reaches the running thread.
 //!
@@ -1810,14 +1805,15 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
     // pool_get(&bufpool, poolwait) at splbio, as the C calls it: an item the pool holds is
     // taken under the cache's lock (get_idle: never grows the pool, never sleeps, counts no
     // failure); only when the pool must grow is the lock left for the get, which may sleep
-    // (the C's splbio is left by a sleep) and taken again.
-    let b = match BUFPL.get_idle(poolwait, Buf::new) {
-        Some(b) => b,
+    // (the C's splbio is left by a sleep) and taken again. The yield pool_get makes after
+    // the get (kern.pool_debug 2) is made once the lock is left, at either return below.
+    let (b, pool_yield) = match BUFPL.get_idle(poolwait, Buf::new) {
+        Some((b, y)) => (b, Some(y)),
         None => {
             drop(g);
             let b = BUFPL.get(poolwait, Buf::new)?;
             g = CACHE.lock();
-            b
+            (b, None)
         }
     };
 
@@ -1833,6 +1829,9 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
         // instead of starting its own buf_get. But first, we check if someone beat us to it.
         drop(g);
         drop(b); // pool_put
+        if let Some(y) = pool_yield {
+            y.now();
+        }
         return None;
     }
 
@@ -1866,6 +1865,9 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
 
     t.buf().set(B_BC);
     drop(g);
+    if let Some(y) = pool_yield {
+        y.now();
+    }
 
     Some(t)
 }
@@ -3316,6 +3318,29 @@ mod tests {
         assert!(!incore(vb, 10));
         // The tests share the page system: the cache's target back as it was.
         TARGETPAGES.store(target, Mem::Relaxed);
+    }
+
+    /// buf_get's header from the pool's held items keeps pool_get's yield when the pool asks
+    /// for it (kern.pool_debug 2): made once, after the cache's lock is left (the test pool's
+    /// yield fails the test under a mutex); none when the pool does not ask.
+    #[test]
+    fn buf_get_makes_the_pools_yield_after_its_section() {
+        let (_g, tv) = setup(64);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+        let before = crate::testutil::pool_yields();
+        let t = getblk(vb, 4, size, 0, INFSLP).expect("a buffer");
+        brelse(t);
+        assert_eq!(
+            crate::testutil::pool_yields(),
+            before,
+            "not asked: no yield"
+        );
+        crate::testutil::set_pool_idle_yield(true);
+        let t = getblk(vb, 5, size, 0, INFSLP).expect("a buffer");
+        crate::testutil::set_pool_idle_yield(false);
+        assert_eq!(crate::testutil::pool_yields(), before + 1);
+        brelse(t);
     }
 
     #[test]

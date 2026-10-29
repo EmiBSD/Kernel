@@ -184,14 +184,20 @@ pub trait RawPool: Sync {
     fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)>;
     /// `pool_get(pp, flags)` of an item the pool already holds (a free item of one of its
     /// pages, or of its per-CPU cache): never grows the pool, never sleeps, never counts a
-    /// failure (`pr_nfail`); `None` when it would have to grow. The default has no such try
-    /// and answers `None` (the caller then takes [`RawPool::get`]'s way). On a pool with a
+    /// failure (`pr_nfail`); `None` when it would have to grow. Beside the item and the size
+    /// granted, whether `pool_get` would have yielded after this get (`pool_debug == 2` with
+    /// `PR_WAITOK`, as `pool_get` computes it): a yield the caller makes
+    /// ([`RawPool::yield_now`]) once it holds no lock. The default has no such try and
+    /// answers `None` (the caller then takes [`RawPool::get`]'s way). On a pool with a
     /// per-CPU cache (`cache_init`), a `get_idle` that finds the cache empty and the `get`
     /// that follows each count the cache's own miss (`pc_nfail`) once: twice where the C's
     /// one `pool_get` counts it once (the buffer cache's `bufpl` has no cache).
-    fn get_idle(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+    fn get_idle(&self, _flags: i32) -> Option<(NonNull<u8>, usize, bool)> {
         None
     }
+    /// `yield()`: the yield a [`RawPool::get_idle`] asked for, made by its caller once it
+    /// holds no lock. The default does nothing (a backend whose `get_idle` never asks).
+    fn yield_now(&self) {}
     /// `pool_put(pp, item)`: the contract's other half. The item given back is one this pool
     /// granted and no view of it is alive; `hal` alone calls it (from the last `PoolArc`'s
     /// drop), since the pools never leave `hal` (`TypedPool` keeps them, and
@@ -1146,10 +1152,19 @@ impl<T: 'static> BoxPool<T> {
     /// the pool was never made, `init` not called then. For a caller that tries under a lock
     /// it must not sleep with, and otherwise leaves that lock for [`BoxPool::get`] (the
     /// buffer cache's `buf_get`, the C's `pool_get` at `splbio`).
-    pub fn get_idle(&'static self, flags: i32, init: impl FnOnce() -> T) -> Option<PoolBox<T>> {
+    pub fn get_idle(
+        &'static self,
+        flags: i32,
+        init: impl FnOnce() -> T,
+    ) -> Option<(PoolBox<T>, PoolYield)> {
         let raw = *self.raw.get()?;
-        let (block, granted) = raw.get_idle(flags)?;
-        Some(self.boxed(block, granted, init))
+        let (block, granted, yields) = raw.get_idle(flags)?;
+        Some((
+            self.boxed(block, granted, init),
+            PoolYield {
+                raw: yields.then_some(raw),
+            },
+        ))
     }
 
     /// The handle of the fresh item `block` (`granted` bytes) that [`RawPool::get`] or
@@ -1215,6 +1230,24 @@ impl<T: 'static> Default for BoxPool<T> {
 /// The one owner of a pool item holding a `T`: `Deref`/`DerefMut<Target = T>`; its drop drops
 /// the `T` and puts the item back into the pool it came from. Not `Clone`.
 ///
+/// What [`BoxPool::get_idle`] leaves to its caller: `pool_get`'s yield after a waiting get,
+/// when the pool asks for it (`kern.pool_debug` 2), which the caller makes once it holds no
+/// lock ([`PoolYield::now`]). Nothing to make when the pool did not ask.
+#[must_use = "pool_get's yield is the caller's to make, once it holds no lock"]
+pub struct PoolYield {
+    /// The pool that asked, `None` when none did.
+    raw: Option<&'static dyn RawPool>,
+}
+
+impl PoolYield {
+    /// `pool_get`'s `yield()`, when the pool asked for it; nothing otherwise.
+    pub fn now(self) {
+        if let Some(raw) = self.raw {
+            raw.yield_now();
+        }
+    }
+}
+
 /// Invariant: `item` names an initialised `T` in an item of `pool`, which nothing but this
 /// handle references, except when the handle is the private field of a [`SharedBox`]: that
 /// one never takes `&mut T`, and raw links may read the item beside its shared references
@@ -1744,6 +1777,8 @@ mod tests {
         });
         assert!(none.is_none());
         assert!(!called, "init is not called without an item");
+        // The default backend's yield does nothing (a PoolYield of nothing to make).
+        PoolYield { raw: None }.now();
         assert!(NEVER.get_idle(PR_NOWAIT, || 2).is_none());
         let b = P.get(PR_NOWAIT, || 3).unwrap();
         assert_eq!(*b, 3);

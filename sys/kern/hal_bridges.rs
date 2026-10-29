@@ -65,8 +65,12 @@ impl RawPool for Pool {
         pool_get(self, flags).map(|p| (p, self.pr_size.get() as usize))
     }
 
-    fn get_idle(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
-        pool_get_idle(self, flags).map(|p| (p, self.pr_size.get() as usize))
+    fn get_idle(&self, flags: i32) -> Option<(NonNull<u8>, usize, bool)> {
+        pool_get_idle(self, flags).map(|(p, yields)| (p, self.pr_size.get() as usize, yields))
+    }
+
+    fn yield_now(&self) {
+        crate::kern::sched_bsd::r#yield();
     }
 
     fn put(&self, item: NonNull<u8>) {

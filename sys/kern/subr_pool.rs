@@ -877,8 +877,10 @@ pub fn pool_get(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
 /// may sleep). `hal::pool::RawPool::get_idle`: the buffer cache's try under its lock, the
 /// C's `pool_get` at `splbio`, whose `PR_WAITOK` call counts nothing either. A pool with a
 /// per-CPU cache counts its cache's miss (`pc_nfail`) here and again in the `pool_get` that
-/// follows (`bufpl` has none).
-pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
+/// follows (`bufpl` has none). With the item, whether `pool_get` would yield now (its
+/// `(slowdown || pool_debug == 2) && PR_WAITOK`, computed where it computes it; a cache hit
+/// skips it, as `pool_get`'s `goto good`): the caller yields once it holds no lock.
+pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<(NonNull<u8>, bool)> {
     // pool_get's own check on its flags (no assertwaitok: this try never sleeps, and its
     // caller holds a mutex).
     kassert!(flags & (PR_WAITOK | PR_NOWAIT) != 0);
@@ -890,7 +892,7 @@ pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
     if !pp.pr_cache.load(Ordering::Acquire).is_null()
         && let Some(v) = pool_cache_get(pp)
     {
-        return Some(pool_get_good(pp, v, flags));
+        return Some((pool_get_good(pp, v, flags), false));
     }
 
     pl_enter(pp, &pp.pr_lock);
@@ -902,7 +904,10 @@ pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
     let mut slowdown = 0;
     let v = pool_do_get(pp, flags, &mut slowdown);
     pl_leave(pp, &pp.pr_lock);
-    v.map(|v| pool_get_good(pp, v, flags))
+
+    let yields =
+        (slowdown != 0 || POOL_DEBUG.load(Ordering::Relaxed) == 2) && flags & PR_WAITOK != 0;
+    v.map(|v| (pool_get_good(pp, v, flags), yields))
 }
 
 /// `pool_get`'s `good:` label: `PR_ZERO`.

@@ -129,6 +129,8 @@ std::thread_local! {
     static COLD: Cell<bool> = const { Cell::new(false) };
     static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
     static NO_SLEEP: Cell<bool> = const { Cell::new(false) };
+    static POOL_IDLE_YIELD: Cell<bool> = const { Cell::new(false) };
+    static POOL_YIELDS: Cell<u32> = const { Cell::new(0) };
     static SCHED_PAUSES: Cell<u32> = const { Cell::new(0) };
     static RANDOM: Cell<u64> = const { Cell::new(0x9e37_79b9_7f4a_7c15) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
@@ -351,9 +353,22 @@ impl RawPool for TestPool {
     }
 
     /// The double keeps no pages of its own to run out of: an idle item is a fresh block
-    /// while the test memory lasts, as [`RawPool::get`] (a forced failure included).
-    fn get_idle(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
-        self.get(flags)
+    /// while the test memory lasts, as [`RawPool::get`] (a forced failure included); it asks
+    /// for the yield when this thread's test said so ([`set_pool_idle_yield`]).
+    fn get_idle(&self, flags: i32) -> Option<(NonNull<u8>, usize, bool)> {
+        let (p, n) = self.get(flags)?;
+        Some((p, n, POOL_IDLE_YIELD.with(Cell::get)))
+    }
+
+    /// Counts this thread's yields ([`pool_yields`]); a yield made under a mutex fails the
+    /// test (the caller must make it once it holds no lock).
+    fn yield_now(&self) {
+        assert_eq!(
+            hal::cpu::curcpu().mutex_level(),
+            0,
+            "pool_get's yield made under a mutex"
+        );
+        POOL_YIELDS.with(|c| c.set(c.get() + 1));
     }
 
     fn put(&self, _item: NonNull<u8>) {
@@ -856,6 +871,17 @@ pub fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
 /// Makes this thread see `cold || panicstr` as `cold` says (the sleeps' early return).
 pub fn set_cold(cold: bool) {
     COLD.with(|c| c.set(cold));
+}
+
+/// Makes the test pools' `get_idle` ask this thread for `pool_get`'s yield (`true`), as
+/// `kern.pool_debug` 2 makes bsd's ask.
+pub fn set_pool_idle_yield(on: bool) {
+    POOL_IDLE_YIELD.with(|c| c.set(on));
+}
+
+/// How many yields the test pools' callers made on this thread ([`RawPool::yield_now`]).
+pub fn pool_yields() -> u32 {
+    POOL_YIELDS.with(Cell::get)
 }
 
 /// Makes this thread's next sleeps fail the test (`true`) instead of waiting: a test that
