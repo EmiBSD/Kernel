@@ -268,7 +268,10 @@ pub fn with_private_buf<R>(f: impl FnOnce(&'static Buf) -> R) -> R {
     own.push(b);
     let mut r = SecondaryRef::new();
     r.set(own.last());
-    let bp = lend(BufRef::acquire(&mut bio::CACHE.lock(), r));
+    // The token first: the cache's guard must be gone before lend parks it (which takes the
+    // lock again).
+    let t = BufRef::acquire(&mut bio::CACHE.lock(), r);
+    let bp = lend(t);
     let rv = f(bp);
     let Some(t) = bp.take_parked() else {
         panic(format_args!(
@@ -496,6 +499,28 @@ mod tests {
         assert!(!bp.is_parked());
         t.release_unlocked();
         assert!(!bp.is_held());
+    }
+
+    /// `with_private_buf` (softraid's `sr_rw`): a `bufpl` item of its own, lent busy with its
+    /// token parked, the token taken and parked again by the caller's I/O (here by hand),
+    /// and the item freed when the closure returns.
+    #[test]
+    fn a_private_buffer_is_lent_parked_and_freed() {
+        let (_g, _p) = crate::kern::vfs_subr::tests::setup();
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
+        bufinit();
+        let before = BUFPL.nout();
+        let rv = with_private_buf(|bp| {
+            assert!(bp.is_parked() && bp.is_held() && bp.is_owned());
+            assert_eq!(BUFPL.nout(), before + 1);
+            let t = token_of(bp);
+            assert!(!bp.is_parked() && bp.is_held());
+            lend(t);
+            7
+        });
+        assert_eq!(rv, 7);
+        assert_eq!(BUFPL.nout(), before);
     }
 
     /// The legacy pointers are the header's words.

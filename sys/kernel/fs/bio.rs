@@ -159,8 +159,10 @@
 //! - `bwrite` learns the disk queue its write went on from a note it claims for the buffer
 //!   before `VOP_STRATEGY` (written by `bufq_queue`, marked done by `bufq_done`: the C's set
 //!   and clear of `b_bq`), not by reading `bp->b_bq` after it: the buffer may be another
-//!   owner's by then (the C reads it anyway). A `bwrite` beyond the table's 32 notes sleeps
-//!   for one.
+//!   owner's by then (the C reads it anyway). A `bwrite` that finds the table's 32 notes
+//!   taken writes without one and skips that one `bufq_wait`, where the C, which has no
+//!   bound, would throttle it: only the writer's pacing differs, never a result userland sees
+//!   (it never sleeps for a note: the C does not sleep before `VOP_STRATEGY`).
 //! - `curproc->p_ru.ru_inblock++`/`ru_oublock++` go through the vnode's [`BufVnode`]
 //!   (`charge_io`), which reaches the running thread.
 //!
@@ -533,8 +535,11 @@ impl CacheState {
     }
 }
 
-/// How many `bwrite`s may be between their strategy call and their `bufq_wait` at once; one
-/// more sleeps for a free note.
+/// How many `bwrite`s keep a note at once (between their strategy call and their
+/// `bufq_wait`). A `bwrite` that finds every note taken writes without one and skips that
+/// write's `bufq_wait` (the throttle): it never sleeps for a note, as the C never sleeps
+/// before `VOP_STRATEGY` (a note is held across the strategy call, and a strategy routine may
+/// itself sleep and write through the cache: `vnd`'s).
 const QUEUE_NOTES: usize = 32;
 
 /// A note's word: the buffer's address with this bit set once its I/O is done (`bufq_done`:
@@ -549,7 +554,13 @@ const NOTE_DONE: usize = 1;
 struct QueueNote {
     /// The buffer's address (with [`NOTE_DONE`]), 0 for a free note.
     word: AtomicUsize,
-    /// The queue `bufq_queue` put the buffer on; written and read by the claiming thread only.
+    /// The queue `bufq_queue` put the buffer on, written by whichever thread queues the buffer
+    /// (the strategy routine's, or a thread of the driver's it hands the buffer to) and read
+    /// by the claiming `bwrite` after its strategy call. An atomic link, so the two never
+    /// race on memory; a write that comes after the read only costs that write its
+    /// `bufq_wait`, and one meant for an earlier buffer at the same address (a note of the
+    /// same key claimed again) can only name a queue that buffer went on: only the pacing of
+    /// the writer can change, never a result.
     bq: hal::link::Link<super::bufq::Bufq>,
 }
 
@@ -607,8 +618,6 @@ static SYNCER: AtomicUsize = AtomicUsize::new(0);
 static QUEUE_NOTE: [QueueNote; QUEUE_NOTES] = [const { QueueNote::new() }; QUEUE_NOTES];
 /// How many notes are claimed: `bufq_queue` and `bufq_done` look only when some is.
 static NOTES_CLAIMED: AtomicUsize = AtomicUsize::new(0);
-/// Threads sleeping for a free note (its address the channel).
-static NOTES_WANTED: AtomicUsize = AtomicUsize::new(0);
 
 /// `cleanerproc` as a thread word.
 pub(crate) fn cleaner_word() -> usize {
@@ -1054,62 +1063,57 @@ const CLUSTER_MAX: usize = MAXPHYS / PAGE_SIZE;
 
 /// Called from interrupt context: the end of a cluster read (`bread_cluster`'s `B_CALL`). The
 /// read-ahead buffers are the busy buffers of the blocks after the master's whose pages are
-/// its (`Pages::Master`): found in one walk of the vnode's tree under the cache's lock, their
-/// parked tokens taken in the same section (the C's `xbpp` array, which `b_saveaddr` carries),
-/// in which their pages move to their own objects too (the cache's lock comes before the
-/// pages' locks, as `buf_free_pages` takes them).
+/// its (`Pages::Master`), found by walking the vnode's tree from the master (the C's `xbpp`
+/// array, which `b_saveaddr` carries). The whole callback is one section of the cache's
+/// lock, as the C's runs at splbio: each read-ahead buffer's pages move to its own object
+/// (the cache's lock comes before the pages' locks, as `buf_free_pages` takes them), it is
+/// done and released there (`biodone` of an asynchronous read), and so is the first buffer.
+/// No array of tokens: each is taken from its buffer as the walk reaches it.
 pub fn bread_cluster_callback(mut t: BufRef) {
     let vb = b_vp(t.buf());
-    let mut kids: [Option<BufRef>; CLUSTER_MAX] = [const { None }; CLUSTER_MAX];
-    let mut n = 1;
     let mut g = CACHE.lock();
+
+    // How many buffers the cluster has (`n`, the first included) and the read-ahead buffers'
+    // size, one for all (`bread_cluster` gave each `size`).
+    let mut n = 1;
+    let mut xsize = 0;
     {
-        let mut next = {
-            let st = vb.st.get(&g);
-            st.tree.next(t.buf()).map(counted)
-        };
-        while let Some(r) = next {
-            let Some(x) = r.get() else { break };
-            if !x.is_cluster_of(&g, t.buf()) || n >= CLUSTER_MAX {
+        let st = vb.st.get(&g);
+        let mut cur = st.tree.next(t.buf());
+        while let Some(x) = cur {
+            if !x.is_cluster_of(&g, t.buf()) {
                 break;
             }
-            let Some(xt) = x.take_parked_locked(&mut g) else {
-                kpanic(format_args!(
-                    "bread_cluster_callback: buffer {n} has no token"
-                ));
-            };
-            next = {
-                let st = vb.st.get(&g);
-                st.tree.next(xt.buf()).map(counted)
-            };
-            drop(r);
-            kids[n] = Some(xt);
+            if n == 1 {
+                xsize = x.bufsize();
+            }
+            kassert!(x.bufsize() == xsize);
             n += 1;
+            cur = st.tree.next(x);
         }
     }
 
     if n > 1 {
-        let newsize = kids[1].as_ref().map_or(0, |x| x.buf().bufsize());
-
         // Shrink this buffer's mapping to only cover its part of the total I/O.
-        buf_fix_mapping(&mut t, newsize as usize);
-        t.buf().set_bcount(newsize);
+        buf_fix_mapping(&mut t, xsize as usize);
+        t.buf().set_bcount(xsize);
     }
 
-    // Invalidate read-ahead buffers if read short
+    // Invalidate read-ahead buffers if read short: from the last back, as the C walks xbpp;
+    // the buffers from the `inval`th on.
     let bp = t.buf();
+    let mut inval = n;
     if bp.resid() > 0 {
+        let xs = xsize as usize;
         let mut i = n;
         while i > 1 {
             i -= 1;
-            let Some(x) = kids[i].as_ref() else { break };
-            let xsize = x.buf().bufsize() as usize;
-            if xsize <= bp.resid() {
-                bp.set_resid(bp.resid() - xsize);
-                x.buf().set(B_INVAL);
+            if xs <= bp.resid() {
+                bp.set_resid(bp.resid() - xs);
+                inval = i;
             } else if bp.resid() > 0 {
                 bp.set_resid(0);
-                x.buf().set(B_INVAL);
+                inval = i;
             } else {
                 break;
             }
@@ -1117,10 +1121,24 @@ pub fn bread_cluster_callback(mut t: BufRef) {
     }
 
     // Move the pages from the master buffer's uvm object into the individual buffer's uvm
-    // objects.
-    for x in kids[1..n].iter().flatten() {
-        let x = x.buf();
-        if t.buf().isset(B_ERROR) {
+    // objects; each read-ahead buffer is then done.
+    let error = t.buf().isset(B_ERROR);
+    let mut next = vb.st.get(&g).tree.next(t.buf()).map(counted);
+    for i in 1..n {
+        let Some(r) = next.take() else {
+            kpanic(format_args!(
+                "bread_cluster_callback: read-ahead buffer {i} is gone"
+            ));
+        };
+        let Some(x) = r.get() else {
+            kpanic(format_args!("bread_cluster_callback: a link to nothing"));
+        };
+        // The next one first: this one may be freed by its release below.
+        next = vb.st.get(&g).tree.next(x).map(counted);
+        if i >= inval {
+            x.set(B_INVAL);
+        }
+        if error {
             x.set(B_INVAL | B_ERROR);
         }
         let newobj = x.uobj();
@@ -1138,17 +1156,22 @@ pub fn bread_cluster_callback(mut t: BufRef) {
         }
         // Its pages are its own now: the master's link given back.
         x.set_pages(&mut g, Pages::Own);
+        // Its token last, straight into its biodone: no token is held across the steps
+        // above (a panic there unwinds, on the host, with the lock held).
+        let Some(xt) = x.take_parked_locked(&mut g) else {
+            kpanic(format_args!(
+                "bread_cluster_callback: buffer {i} has no token"
+            ));
+        };
+        drop(r);
+        biodone_async_locked(&mut g, xt);
     }
-    drop(g);
-    for xt in kids[1..n].iter_mut().filter_map(Option::take) {
-        biodone(xt);
-    }
+    drop(next);
 
     if t.buf().isset(B_ASYNC) {
-        brelse(t);
+        brelse_locked(&mut g, t);
     } else {
         let chan = ptr::from_ref(t.buf());
-        let mut g = CACHE.lock();
         t.buf().clr(B_WANTED);
         Buf::park_locked(&mut g, t);
         drop(g);
@@ -1330,12 +1353,13 @@ pub fn bwrite(t: BufRef) -> Result<(), Errno> {
     bp.set(B_WRITEINPROG);
     drop(g);
     let r = if async_ { None } else { t.counted() };
+    // No note free: this write goes without one, and without its bufq_wait below.
     let note = note_claim(bp);
     let _ = owner.strategy(t);
 
     // If the queue is above the high water mark, wait till the number of outstanding write
     // bufs drops below the low water mark.
-    if let Some(bq) = note_take(note) {
+    if let Some(bq) = note.and_then(note_take) {
         super::bufq::bufq_wait(bq);
     }
 
@@ -1357,8 +1381,9 @@ fn note_key(bp: &Buf) -> usize {
     ptr::from_ref(bp).addr()
 }
 
-/// A free note claimed for `bp`, its index; `None` when all are taken.
-fn note_try_claim(bp: &Buf) -> Option<usize> {
+/// `bwrite`'s note for `bp`, claimed before its strategy call: its index; `None`, at once,
+/// when all are taken (never a sleep: [`QUEUE_NOTES`]).
+fn note_claim(bp: &Buf) -> Option<usize> {
     let key = note_key(bp);
     for (i, n) in QUEUE_NOTE.iter().enumerate() {
         if n.word
@@ -1373,24 +1398,6 @@ fn note_try_claim(bp: &Buf) -> Option<usize> {
     None
 }
 
-/// `bwrite`'s note for `bp`, claimed before its strategy call; sleeps while all are taken
-/// (the check repeated after `sleep_setup`, so a note given back meanwhile is not missed).
-fn note_claim(bp: &Buf) -> usize {
-    loop {
-        if let Some(i) = note_try_claim(bp) {
-            return i;
-        }
-        NOTES_WANTED.fetch_add(1, Mem::SeqCst);
-        hal::sleep::sleep_setup(&raw const NOTES_WANTED, PRIBIO, "bqnote");
-        let got = note_try_claim(bp);
-        let _ = hal::sleep::sleep_finish(INFSLP, got.is_none());
-        NOTES_WANTED.fetch_sub(1, Mem::SeqCst);
-        if let Some(i) = got {
-            return i;
-        }
-    }
-}
-
 /// Gives the note `i` back: the queue its buffer went on, `None` when it went on none or its
 /// I/O is done already (the C's `bp->b_bq` after the strategy call).
 fn note_take(i: usize) -> Option<&'static super::bufq::Bufq> {
@@ -1399,9 +1406,6 @@ fn note_take(i: usize) -> Option<&'static super::bufq::Bufq> {
     n.bq.set(None);
     let word = n.word.swap(0, Mem::SeqCst);
     NOTES_CLAIMED.fetch_sub(1, Mem::SeqCst);
-    if NOTES_WANTED.load(Mem::SeqCst) != 0 {
-        wakeup(&raw const NOTES_WANTED);
-    }
     if word & NOTE_DONE != 0 { None } else { bq }
 }
 
@@ -1785,12 +1789,12 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
             return None;
         }
     }
-    // pool_get(&bufpool, poolwait) at splbio, as the C calls it: first without sleeping, under
-    // the cache's lock; only when the pool must wait is the lock left for the sleep (the C's
-    // splbio is, by a sleep) and taken again.
-    let b = match BUFPL.get(PR_NOWAIT, Buf::new) {
+    // pool_get(&bufpool, poolwait) at splbio, as the C calls it: an item the pool holds is
+    // taken under the cache's lock (get_idle: never grows the pool, never sleeps, counts no
+    // failure); only when the pool must grow is the lock left for the get, which may sleep
+    // (the C's splbio is left by a sleep) and taken again.
+    let b = match BUFPL.get_idle(poolwait, Buf::new) {
         Some(b) => b,
-        None if poolwait == PR_NOWAIT => return None,
         None => {
             drop(g);
             let b = BUFPL.get(poolwait, Buf::new)?;
@@ -1972,49 +1976,19 @@ pub fn biodone_parked(bp: &Buf) -> bool {
 /// [`biodone`] from its section of the cache's lock, `g`, which it gives up before the
 /// callback or the release. (`g` comes after `t`: a panic that unwinds, the host's, drops the
 /// parameters in reverse order, so the lock goes before the token's drop takes it again.)
-fn biodone_locked(t: BufRef, g: Cache) {
+fn biodone_locked(t: BufRef, mut g: Cache) {
     let chan = ptr::from_ref(t.buf());
     let flags = t.buf().flags();
     if flags & B_DONE != 0 {
         drop(g);
         kpanic(format_args!("biodone already"));
     }
-    let wait = flags & (B_CALL | B_ASYNC) == 0;
-
-    {
-        let bp = t.buf();
-        bp.set(B_DONE); // note that it's done
-
-        if let Some(bq) = bp.bq() {
-            super::bufq::bufq_done(bq, bp);
-        }
-
-        if !bp.isset(B_READ) {
-            bp.clr(B_WRITEINPROG);
-            vwakeup_locked(bp.vnode_bufs());
-        }
-        if BCSTATS.numbufs.load(Mem::Relaxed) != 0 && !bp.isset(B_RAW | B_PHYS) {
-            if !bp.isset(B_READ) {
-                bc_add(&BCSTATS.pendingwrites, -1);
-            } else {
-                bc_add(&BCSTATS.pendingreads, -1);
-            }
-        }
-    }
-    if wait {
-        // or just wakeup the buffer
-        t.buf().clr(B_WANTED);
-        let mut g = g;
-        Buf::park_locked(&mut g, t);
-        drop(g);
-        wakeup(chan);
-        return;
-    }
-    let iodone = t.buf().iodone(&g);
-    drop(g);
+    biodone_mark(&g, t.buf());
 
     if flags & B_CALL != 0 {
-        // if necessary, call out
+        // if necessary, call out (without the cache's lock: the callbacks take it)
+        let iodone = t.buf().iodone(&g);
+        drop(g);
         t.buf().clr(B_CALL); // but note callout done
         match iodone {
             Some(Iodone::Kernel(f)) => f(t),
@@ -2029,10 +2003,54 @@ fn biodone_locked(t: BufRef, g: Cache) {
             }
             None => kpanic(format_args!("biodone: B_CALL without b_iodone")),
         }
+    } else if flags & B_ASYNC != 0 {
+        // if async, release it: in this section, as the C releases it at splbio
+        brelse_locked(&mut g, t);
     } else {
-        // if async, release it
-        brelse(t);
+        // or just wakeup the buffer
+        t.buf().clr(B_WANTED);
+        Buf::park_locked(&mut g, t);
+        drop(g);
+        wakeup(chan);
     }
+}
+
+/// `biodone`'s marks under the cache's lock: `B_DONE`, the disk queue's `bufq_done`, a
+/// write's `vwakeup`, the pending counters.
+fn biodone_mark(_g: &Cache, bp: &Buf) {
+    bp.set(B_DONE); // note that it's done
+
+    if let Some(bq) = bp.bq() {
+        super::bufq::bufq_done(bq, bp);
+    }
+
+    if !bp.isset(B_READ) {
+        bp.clr(B_WRITEINPROG);
+        vwakeup_locked(bp.vnode_bufs());
+    }
+    if BCSTATS.numbufs.load(Mem::Relaxed) != 0 && !bp.isset(B_RAW | B_PHYS) {
+        if !bp.isset(B_READ) {
+            bc_add(&BCSTATS.pendingwrites, -1);
+        } else {
+            bc_add(&BCSTATS.pendingreads, -1);
+        }
+    }
+}
+
+/// [`biodone`] of a cluster read's read-ahead buffer inside the callback's section of the
+/// cache's lock (the C's callback calls `biodone` at splbio): an asynchronous read without a
+/// callback, marked done and released there. A token that breaks the rule is forgotten
+/// before the panic, so an unwinding panic (the host's) does not release it under the lock.
+fn biodone_async_locked(g: &mut Cache, t: BufRef) {
+    let flags = t.buf().flags();
+    if flags & B_DONE != 0 || flags & (B_CALL | B_ASYNC) != B_ASYNC {
+        core::mem::forget(t);
+        kpanic(format_args!(
+            "biodone: a read-ahead buffer done or not async"
+        ));
+    }
+    biodone_mark(g, t.buf());
+    brelse_locked(g, t);
 }
 
 // DDB: bcstats_print waits for the ddb command loop (db_command.c).
@@ -2609,7 +2627,6 @@ pub fn bio_test_reset() {
         n.bq.set(None);
     }
     NOTES_CLAIMED.store(0, Mem::Relaxed);
-    NOTES_WANTED.store(0, Mem::Relaxed);
 }
 
 const _: () = assert!(DEV_BSHIFT == 9);
@@ -2990,7 +3007,7 @@ mod tests {
         let b: &'static Buf = Box::leak(Box::new(Buf::new()));
 
         // Queued and not done: the writer waits on that queue.
-        let n = note_claim(a);
+        let n = note_claim(a).expect("a note");
         note_queued(b, bq); // another buffer's queue is not noted
         assert!(QUEUE_NOTE[n].bq.get().is_none());
         note_queued(a, bq);
@@ -2998,20 +3015,20 @@ mod tests {
         assert_eq!(NOTES_CLAIMED.load(Mem::SeqCst), 0);
 
         // Done before the strategy call returned: no wait (b_bq is NULL again).
-        let n = note_claim(a);
+        let n = note_claim(a).expect("a note");
         note_queued(a, bq);
         note_done(a);
         assert!(note_take(n).is_none());
 
         // Queued on none (a strategy that finished the I/O itself): no wait.
-        let n = note_claim(a);
+        let n = note_claim(a).expect("a note");
         assert!(note_take(n).is_none());
 
         // A note given back and claimed for another buffer: a late done of the first leaves
         // it alone.
-        let n = note_claim(a);
+        let n = note_claim(a).expect("a note");
         assert!(note_take(n).is_none());
-        let m = note_claim(b);
+        let m = note_claim(b).expect("a note");
         note_queued(b, bq);
         note_done(a);
         assert!(note_take(m).is_some_and(|q| ptr::eq(q, bq)));
@@ -3020,12 +3037,43 @@ mod tests {
         let bufs: Vec<&'static Buf> = (0..QUEUE_NOTES)
             .map(|_| &*Box::leak(Box::new(Buf::new())))
             .collect();
-        let held: Vec<usize> = bufs.iter().map(|bp| note_claim(bp)).collect();
-        assert!(note_try_claim(a).is_none());
+        let held: Vec<usize> = bufs
+            .iter()
+            .map(|bp| note_claim(bp).expect("a note"))
+            .collect();
+        assert!(
+            note_claim(a).is_none(),
+            "the table is full: no note, and no sleep"
+        );
         for i in held {
             assert!(note_take(i).is_none());
         }
-        assert!(note_try_claim(a).is_some_and(|i| note_take(i).is_none()));
+        assert!(note_claim(a).is_some_and(|i| note_take(i).is_none()));
+    }
+
+    /// The review's deadlock: with every note taken (32 writers inside their strategy
+    /// routines, a vnd's lower writes among them), a further bwrite neither sleeps nor fails:
+    /// it writes without a note and skips its bufq_wait.
+    #[test]
+    fn a_bwrite_with_the_note_table_full_writes_without_sleeping() {
+        let (_g, tv) = setup(64);
+        let vb = &tv.bufs;
+        let others: Vec<&'static Buf> = (0..QUEUE_NOTES)
+            .map(|_| &*Box::leak(Box::new(Buf::new())))
+            .collect();
+        let held: Vec<usize> = others
+            .iter()
+            .map(|bp| note_claim(bp).expect("a note"))
+            .collect();
+        let mut t = getblk(vb, 16, PAGE_SIZE as i32, 0, INFSLP).expect("a buffer");
+        t.data().fill(0x44);
+        assert_eq!(bwrite(t), Ok(()));
+        assert_eq!(tv.writes.load(Mem::Relaxed), 1);
+        assert_eq!(lock_disk(tv)[16 * DEV_BSIZE], 0x44);
+        assert_eq!(NOTES_CLAIMED.load(Mem::SeqCst), QUEUE_NOTES);
+        for i in held {
+            assert!(note_take(i).is_none());
+        }
     }
 
     /// The legacy boundary's `brelse` and `biodone` take the parked token in the cache's own
@@ -3189,6 +3237,27 @@ mod tests {
             r.is_err(),
             "a cache buffer's token never goes to a driver's callback"
         );
+    }
+
+    /// A cluster read cut short: the read-ahead buffers past what came in are invalidated
+    /// from the last back (the C's walk of xbpp), the one partly read too; those before stay.
+    #[test]
+    fn a_short_cluster_read_invalidates_the_read_ahead_buffers_it_missed() {
+        let (_g, tv) = setup(512);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+        tv.run.store(3, Mem::Relaxed);
+        // The cluster (blocks 1..4, at sector 1 by the identity bmap) comes in a page and a
+        // byte short: block 4's buffer and block 3's (partly missed) go.
+        tv.short_blk.store(1, Mem::Relaxed);
+        tv.short.store(PAGE_SIZE + 1, Mem::Relaxed);
+        let (t, error) = bread_cluster(vb, 0, size);
+        assert_eq!(error, Ok(()));
+        brelse(t);
+        assert_eq!(tv.reads.load(Mem::Relaxed), 2);
+        assert!(incore(vb, 1) && incore(vb, 2));
+        assert!(!incore(vb, 3) && !incore(vb, 4));
+        assert_eq!(stat(&BCSTATS.pendingreads), 0);
     }
 
     #[test]

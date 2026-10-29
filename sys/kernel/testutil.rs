@@ -1619,6 +1619,11 @@ pub struct BufTestVnode {
     pub run: core::sync::atomic::AtomicI32,
     /// `syncer_add_dirty` calls.
     pub synced: AtomicUsize,
+    /// The bytes a transfer at sector [`BufTestVnode::short_blk`] leaves undone (`b_resid`: a
+    /// short read), 0 for none; taken by that transfer.
+    pub short: AtomicUsize,
+    /// The sector whose transfer comes in short (-1: none).
+    pub short_blk: core::sync::atomic::AtomicI64,
 }
 
 impl BufTestVnode {
@@ -1638,6 +1643,8 @@ impl BufTestVnode {
             holdcnt: AtomicUsize::new(0),
             run: core::sync::atomic::AtomicI32::new(0),
             synced: AtomicUsize::new(0),
+            short: AtomicUsize::new(0),
+            short_blk: core::sync::atomic::AtomicI64::new(-1),
         }));
         tv.bufs.set_owner(tv);
         tv
@@ -1672,7 +1679,12 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
                 self.writes.fetch_add(1, Ordering::Relaxed);
             }
         }
-        bp.buf().set_resid(0);
+        let short = if blk == self.short_blk.load(Ordering::Relaxed) {
+            self.short.swap(0, Ordering::Relaxed)
+        } else {
+            0
+        };
+        bp.buf().set_resid(short);
         crate::fs::bio::biodone(bp);
         Ok(())
     }

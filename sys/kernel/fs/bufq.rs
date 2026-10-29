@@ -92,13 +92,15 @@ pub struct Bufq {
     waiting: AtomicI32,
     /// `bufq_stop`: `bufq_quiesce` stopped the queue (its address the channel).
     stop: AtomicI32,
+    /// `bufq_hi`: `bufq_wait` sleeps at this many outstanding buffers (0: never). Written
+    /// under `bufq_mtx` by `bufq_init`, read without it by `bufq_wait`'s first test, as the
+    /// C reads it.
+    hi: AtomicU32,
 }
 
-/// What `bufq_mtx` guards: the water marks, the discipline and its two heads.
+/// What `bufq_mtx` guards: the low water mark, the discipline and its two heads.
 struct BufqState {
-    /// `bufq_hi`: `bufq_wait` sleeps at this many outstanding buffers.
-    hi: u32,
-    /// `bufq_low`: and wakes below this many.
+    /// `bufq_low`: `bufq_wait`'s sleepers wake below this many.
     low: u32,
     /// `bufq_type`: `BUFQ_FIFO` or `BUFQ_NSCAN`.
     kind: i32,
@@ -111,7 +113,6 @@ struct BufqState {
 impl BufqState {
     const fn new() -> Self {
         Self {
-            hi: 0,
             low: 0,
             kind: 0,
             fifo: Fifo::new(),
@@ -138,6 +139,7 @@ impl Bufq {
             outstanding: AtomicU32::new(0),
             waiting: AtomicI32::new(0),
             stop: AtomicI32::new(0),
+            hi: AtomicU32::new(0),
         }
     }
 
@@ -149,7 +151,7 @@ impl Bufq {
     /// `(bq->bufq_hi, bq->bufq_low)`.
     pub fn water_marks(&self) -> (u32, u32) {
         let g = self.st.lock();
-        (g.hi, g.low)
+        (self.hi.load(Ordering::Relaxed), g.low)
     }
 
     /// `bq->bufq_type`.
@@ -315,7 +317,7 @@ pub fn bufq_init(bq: &'static Bufq, type_: i32) -> Result<(), Errno> {
 
     {
         let mut st = bq.st.lock();
-        st.hi = hi;
+        bq.hi.store(hi, Ordering::Relaxed);
         st.low = low;
         st.kind = type_;
         // impl_create: the discipline's heads are empty.
@@ -433,10 +435,11 @@ pub fn bufq_drain(bq: &Bufq) {
 
 /// `assertwaitok()` (`subr_xxx.c`): the caller may sleep: at no interrupt level
 /// (`splassert(IPL_NONE)`) and, under `diagnostic`, holding no mutex; nothing is checked
-/// while the system is cold or has panicked (`hal::sleep::cold`, the C's `panicstr ||
-/// db_active` return).
+/// after a panic or inside ddb (`hal::cpu::past_caring`, the C's `panicstr || db_active`).
+/// The C's `SMR_ASSERT_NONCRITICAL()` is not made: the SMR depth is `bsd`'s (`kern_smr`),
+/// out of the kernel crate's reach until SMR moves (a diagnostic check only).
 fn assertwaitok() {
-    if hal::sleep::cold() {
+    if hal::cpu::past_caring() {
         return;
     }
     splassert(IPL_NONE, "assertwaitok");
@@ -451,10 +454,11 @@ fn assertwaitok() {
 
 /// `bufq_wait(bq)`: a writer sleeps while the queue has `bufq_hi` buffers outstanding.
 pub fn bufq_wait(bq: &Bufq) {
-    assertwaitok();
-    let mut st = bq.st.lock();
-    if st.hi != 0 {
-        while bq.outstanding.load(Ordering::Relaxed) >= st.hi {
+    let hi = bq.hi.load(Ordering::Relaxed);
+    if hi != 0 {
+        assertwaitok();
+        let mut st = bq.st.lock();
+        while bq.outstanding.load(Ordering::Relaxed) >= hi {
             bq.waiting.fetch_add(1, Ordering::Relaxed);
             let _ = st.sleep_nsec(&raw const bq.waiting, PRIBIO, "bqwait", INFSLP);
             bq.waiting.fetch_sub(1, Ordering::Relaxed);
