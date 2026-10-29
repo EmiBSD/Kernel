@@ -1649,17 +1649,18 @@ pub fn ufsspec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
 /// `ufs_pathconf` (`vop_pathconf`): return POSIX pathconf information applicable to ufs
 /// filesystems.
 pub fn ufs_pathconf(ap: &mut VopPathconfArgs<'_>) -> Result<(), Errno> {
-    let stat = || vmount(ap.a_vp).stat();
+    // `v_mount` is read only by the three names that need it, as the C reads it.
+    let mp = || vmount(ap.a_vp);
     *ap.a_retval = match ap.a_name {
         _PC_LINK_MAX => LINK_MAX as Register,
         _PC_NAME_MAX => NAME_MAX as Register,
         _PC_CHOWN_RESTRICTED => 1,
         _PC_NO_TRUNC => 1,
-        _PC_ALLOC_SIZE_MIN => stat().f_bsize as Register,
+        _PC_ALLOC_SIZE_MIN => mp().bsize() as Register,
         _PC_FILESIZEBITS => 64,
-        _PC_REC_INCR_XFER_SIZE => stat().f_iosize as Register,
+        _PC_REC_INCR_XFER_SIZE => mp().iosize() as Register,
         _PC_REC_MAX_XFER_SIZE => -1, // means ``unlimited''
-        _PC_REC_MIN_XFER_SIZE => stat().f_iosize as Register,
+        _PC_REC_MIN_XFER_SIZE => mp().iosize() as Register,
         _PC_REC_XFER_ALIGN => PAGE_SIZE as Register,
         _PC_SYMLINK_MAX => MAXPATHLEN as Register,
         _PC_2_SYMLINKS => 1,

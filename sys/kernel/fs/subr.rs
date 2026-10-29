@@ -111,7 +111,9 @@
 //!   `getnewvnode` of a mounted vnode and per `vgonel`), the alias chains and the statistics,
 //!   on the mount, unmount, device-vnode and vnode-allocation paths, never on a read, a write
 //!   or a lookup's hit. The statistics' words the file systems read on those paths
-//!   (`f_iosize`, `f_bsize`, `f_flags`, `f_fsid`) are unlocked copies (`Mount::iosize`).
+//!   (`f_iosize`, `f_bsize`, `f_flags`, `f_fsid`, `f_owner`) are unlocked copies
+//!   (`Mount::iosize`), and a device vnode's `v_rdev` an unlocked copy of its specinfo's
+//!   `si_rdev` (`Vnode::rdev`), one load per element of an alias chain's walk.
 
 use core::any::Any;
 use core::ptr;

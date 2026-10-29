@@ -137,7 +137,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use hal::link::Link;
 use hal::list::ListEntry;
@@ -559,6 +559,9 @@ pub struct VLock {
     pub lockcount: u32,
 }
 
+/// [`Vnode`]'s `v_rdev` word holds a device (a specinfo is there).
+const RDEV_SET: u64 = 1 << 32;
+
 /// The id of a vnode's operations table (`v_op`): `Dead`, `Spec` and `Sync` are the
 /// kernel's own tables, the others index the registry of the file systems' tables
 /// ([`super::subr::VfsTables`]).
@@ -652,6 +655,12 @@ pub struct Vnode<G: ProcGlue> {
     pub(super) syncslot: AtomicU8,
     /// `v_un`.
     un: ReadMostly<VnodeUn<G>>,
+    /// `v_rdev`: a copy of the specinfo's `si_rdev`, which never changes, made when
+    /// `checkalias` gives the vnode its specinfo and dropped when the specinfo goes
+    /// ([`Vnode::take_un`]), so the alias chains' walks and `bgetvp` read the device with one
+    /// load instead of a read of `v_un`'s cell: bit 32 ([`RDEV_SET`]) while a specinfo is
+    /// there, the device in bits 0-31.
+    rdev: AtomicU64,
     /// `si_specnext`: the special-device alias chain.
     pub(super) specnext: ListEntry<Vnode<G>>,
     /// `v_data`: private data for fs.
@@ -692,6 +701,7 @@ impl<G: ProcGlue> Vnode<G> {
             synclist: ListEntry::new(),
             syncslot: AtomicU8::new(0),
             un: ReadMostly::new(VnodeUn::None),
+            rdev: AtomicU64::new(0),
             specnext: ListEntry::new(),
             data: AtomicPtr::new(ptr::null_mut()),
             klist: Klist::new(),
@@ -918,24 +928,34 @@ impl<G: ProcGlue> Vnode<G> {
     }
 
     /// `vp->v_specinfo = si` (`checkalias`'s new alias): a device vnode with no `v_un` yet.
+    /// The device's copy ([`Vnode::rdev`]) is set before the caller puts the vnode on its
+    /// alias chain, under the chains' lock, which every walker of the chain takes.
     pub(super) fn set_specinfo(&self, si: MBox<Specinfo<G>>) {
+        let rdev = si.rdev();
         let old = self.un.replace(VnodeUn::Specinfo(si));
         if !matches!(old, VnodeUn::None) {
             kpanic(format_args!("vnode {self:p}: checkalias over a v_un"));
         }
+        self.rdev
+            .store(RDEV_SET | u64::from(rdev as u32), Ordering::Relaxed);
     }
 
-    /// `vp->v_un` cleared (`vgonel`, `getnewvnode`), its specinfo given back to be freed.
+    /// `vp->v_un` cleared (`vgonel`, `getnewvnode`), its specinfo given back to be freed
+    /// (and the device's copy with it).
     pub(super) fn take_un(&self) -> VnodeUn<G> {
+        self.rdev.store(0, Ordering::Relaxed);
         self.un.replace(VnodeUn::None)
     }
 
-    /// `vp->v_rdev` (`v_specinfo->si_rdev`): panics for a vnode without a specinfo.
+    /// `vp->v_rdev` (`v_specinfo->si_rdev`): one load of the vnode's copy of it; panics for
+    /// a vnode without a specinfo (where the C would follow its NULL `v_specinfo`).
+    #[inline]
     pub fn rdev(&self) -> Dev {
-        match self.with_specinfo(Specinfo::rdev) {
-            Some(d) => d,
-            None => kpanic(format_args!("vnode {self:p}: no v_specinfo")),
+        let w = self.rdev.load(Ordering::Relaxed);
+        if w & RDEV_SET == 0 {
+            kpanic(format_args!("vnode {self:p}: no v_specinfo"));
         }
+        w as u32 as Dev
     }
 
     /// `vp->v_specmountpoint` (`v_specinfo->si_mountpoint`): `None` without a specinfo.
@@ -1096,6 +1116,27 @@ mod tests {
         for (i, name) in VTAG_NAMES.iter().enumerate() {
             let t = Vtagtype::from_u8(i as u8);
             assert_eq!(t as usize, i, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_device_word_follows_the_specinfo() {
+        use crate::fs::subr::M_VNODE;
+        use hal::malloc::M_WAITOK;
+        let _g = crate::fs::testfs::setup();
+        let vp: Vnode<crate::fs::testfs::TestGlue> = Vnode::new_unpooled();
+        assert_eq!(vp.rdev.load(Ordering::Relaxed), 0, "no specinfo, no device");
+        // NODEV is all ones: bit 31 and the low half read back whole, apart from the mark.
+        for dev in [hal::sys::types::makedev(4, 2), super::super::bio::NODEV] {
+            let Some(si) = MBox::new(M_VNODE, M_WAITOK, Specinfo::new(dev, 0, None)) else {
+                panic!("no memory for a specinfo");
+            };
+            vp.set_specinfo(si);
+            assert_eq!(vp.rdev(), dev);
+            assert_eq!(vp.with_specinfo(Specinfo::rdev), Some(dev));
+            drop(vp.take_un());
+            assert_eq!(vp.rdev.load(Ordering::Relaxed) & RDEV_SET, 0);
+            assert!(!vp.has_specinfo());
         }
     }
 

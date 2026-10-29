@@ -116,8 +116,9 @@
 //!   `mnt_stat` a mutex at `IPL_NONE` ([`Mount::stat`], [`Mount::with_stat`]) beside the four
 //!   I/O counters, atomics the buffer cache bumps without it (the C's unlocked `++`), merged
 //!   into every copy of the statistics, and the words the file systems read on their I/O and
-//!   lookup paths (`f_flags`, `f_bsize`, `f_iosize`, `f_fsid`: `ufs_bmaparray`'s run,
-//!   `ufs_lookup`'s block mask, the getattrs), Relaxed copies written with the statistics and
+//!   lookup paths (`f_flags`, `f_bsize`, `f_iosize`, `f_fsid`, `f_owner`: `ufs_bmaparray`'s
+//!   run, `ufs_lookup`'s block mask, the getattrs, `ufs_pathconf`, fusefs's access checks),
+//!   Relaxed copies written with the statistics and
 //!   read with no lock ([`Mount::iosize`] and its siblings), as the C reads `mnt_stat`: a
 //!   copy of the whole structure under the mutex for one word would be an spl pair the C
 //!   does not have on those paths; `mnt_lock` a [`SplitRwlock`] (`vfs_busy` and
@@ -275,9 +276,10 @@ pub struct Mount<G: ProcGlue> {
     stat: Mutexed<Statfs>,
     /// `mnt_stat.f_syncwrites`, `f_syncreads`, `f_asyncwrites`, `f_asyncreads`.
     io: [AtomicU64; 4],
-    /// `mnt_stat.f_flags`, `f_bsize`, `f_iosize`, `f_fsid.val[0]`, `f_fsid.val[1]`, as the
-    /// statistics last left them (written under their lock, read without it).
-    words: [AtomicU32; 5],
+    /// `mnt_stat.f_flags`, `f_bsize`, `f_iosize`, `f_fsid.val[0]`, `f_fsid.val[1]`,
+    /// `f_owner`, as the statistics last left them (written under their lock, read without
+    /// it).
+    words: [AtomicU32; 6],
     /// `mnt_data`: private data.
     data: AtomicPtr<c_void>,
 }
@@ -298,7 +300,7 @@ impl<G: ProcGlue> Mount<G> {
             flag: AtomicI32::new(0),
             stat: Mutexed::new(IPL_NONE, Statfs::new()),
             io: [const { AtomicU64::new(0) }; 4],
-            words: [const { AtomicU32::new(0) }; 5],
+            words: [const { AtomicU32::new(0) }; 6],
             data: AtomicPtr::new(ptr::null_mut()),
         }
     }
@@ -409,6 +411,7 @@ impl<G: ProcGlue> Mount<G> {
             sp.f_iosize,
             sp.f_fsid.val[0] as u32,
             sp.f_fsid.val[1] as u32,
+            sp.f_owner,
         ];
         for (w, x) in self.words.iter().zip(v) {
             w.store(x, Ordering::Relaxed);
@@ -444,6 +447,12 @@ impl<G: ProcGlue> Mount<G> {
                 self.words[4].load(Ordering::Relaxed) as i32,
             ],
         }
+    }
+
+    /// `mp->mnt_stat.f_owner`, read with no lock (as the C reads it: fusefs's access checks).
+    #[inline]
+    pub fn owner(&self) -> hal::sys::types::Uid {
+        self.words[5].load(Ordering::Relaxed)
     }
 
     /// The four I/O counters into `sp`.
@@ -837,6 +846,8 @@ mod tests {
         assert_eq!(mp.bsize(), 2048);
         assert_eq!(mp.stat_flags(), 0x1001);
         assert_eq!(mp.fsid().val, [-7, 42]);
+        mp.with_stat(|sp| sp.f_owner = 1000);
+        assert_eq!(mp.owner(), 1000);
         // The copy of the whole structure agrees with the words.
         let sp = mp.stat();
         assert_eq!((sp.f_iosize, sp.f_bsize, sp.f_flags), (16384, 2048, 0x1001));
@@ -845,6 +856,7 @@ mod tests {
         mp.reset();
         assert_eq!((mp.iosize(), mp.bsize(), mp.stat_flags()), (0, 0, 0));
         assert_eq!(mp.fsid().val, [0, 0]);
+        assert_eq!(mp.owner(), 0);
     }
 
     /// Three mounts on the test system's list, in order.

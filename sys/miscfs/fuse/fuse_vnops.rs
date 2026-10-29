@@ -451,7 +451,7 @@ pub fn fusefs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
 
     // Only user that mounted the file system can access it unless allow_other mount option
     // was specified.
-    if fmp.allow_other == 0 && cred.cr_uid.get() != fmp.mp.stat().f_owner {
+    if fmp.allow_other == 0 && cred.cr_uid.get() != fmp.mp.owner() {
         return Err(Errno::EACCES);
     }
 
@@ -493,8 +493,8 @@ pub fn fusefs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
 
     // Only user that mounted the file system can access it unless allow_other mount option
     // was specified. Return dummy values for the root inode in this situation.
-    let stat = fmp.mp.stat();
-    if fmp.allow_other == 0 && cred.cr_uid.get() != stat.f_owner {
+    let owner = fmp.mp.owner();
+    if fmp.allow_other == 0 && cred.cr_uid.get() != owner {
         *vap = Vattr::new();
         vap.va_type = VNON;
         if vmount(vp).flag() & MNT_RDONLY != 0 {
@@ -503,12 +503,14 @@ pub fn fusefs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
             vap.va_mode = S_IRWXU;
         }
         vap.va_nlink = 2;
-        vap.va_uid = stat.f_owner;
-        vap.va_gid = stat.f_owner;
-        vap.va_fsid = i64::from(stat.f_fsid.val[0]);
+        vap.va_uid = owner;
+        vap.va_gid = owner;
+        vap.va_fsid = i64::from(fmp.mp.fsid().val[0]);
         vap.va_fileid = ip.i_number;
         vap.va_size = S_BLKSIZE as u64;
         vap.va_blocksize = S_BLKSIZE as i64;
+        // `f_ctime` has no unlocked word: the statistics are copied on this refusal only.
+        let stat = fmp.mp.stat();
         vap.va_atime.tv_sec = stat.f_ctime as i64;
         vap.va_mtime.tv_sec = stat.f_ctime as i64;
         vap.va_ctime.tv_sec = stat.f_ctime as i64;
@@ -548,7 +550,7 @@ pub fn fusefs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_nlink = st.nlink as Nlink;
     vap.va_uid = st.uid as Uid;
     vap.va_gid = st.gid as Gid;
-    vap.va_fsid = i64::from(stat.f_fsid.val[0]);
+    vap.va_fsid = i64::from(fmp.mp.fsid().val[0]);
     vap.va_fileid = st.ino;
     vap.va_size = st.size;
     vap.va_blocksize = i64::from(st.blksize);
