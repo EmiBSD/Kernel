@@ -147,8 +147,8 @@ use crate::sys::types::{Ino, Uid};
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNON, VREG, VROOT, Vattr, Vnode};
 use crate::sys::vnode::{
-    MOUNTLIST, bdevvp, copy_statfs_info, vflush, vfs_getnewfsid, vfs_rootmountalloc, vfs_unbusy,
-    vget, vgone, vput, vref, vrele,
+    bdevvp, copy_statfs_info, vflush, vfs_getnewfsid, vfs_rootmountalloc, vfs_unbusy, vget, vgone,
+    vput, vref, vrele,
 };
 
 /// `nfs_vfsops`: nfs vfs operations.
@@ -401,8 +401,7 @@ pub fn nfs_mountroot() -> Result<(), Errno> {
     let _ = printf(format_args!("root on {}\n", Str(&nd.nd_root.ndm_host)));
 
     // Link it into the mount list.
-    // SAFETY: a new mount on no list, under the kernel lock; mounts never move.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     set_rootvp(Some(vp));
     vfs_unbusy(mp);
 
@@ -927,7 +926,7 @@ pub fn nfs_sync(
 
     // Force stale buffer cache information to be flushed.
     'restart: loop {
-        for vp in mp.mnt_vnodelist.iter() {
+        for vp in mp.vnodes() {
             // If the vnode that we are about to sync is no longer associated with this mount
             // point, start over.
             if !vp.mount().is_some_and(|m| ptr::eq(m, mp)) {
@@ -1327,7 +1326,7 @@ mod tests {
         assert_eq!(back.acdirmax, 60);
 
         // Through a mount's statfs.
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(None)));
         store_mount_args(mp, &a);
         assert_eq!(nfsargs_bytes(&mount_args(mp)), b);
     }
@@ -1367,7 +1366,7 @@ mod tests {
 
     #[test]
     fn operations_that_only_fail_or_do_nothing() {
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(None)));
         assert_eq!(nfs_start(mp, 0, &PROC0), Ok(()));
         assert!(matches!(
             nfs_quotactl(mp, 0, 0, 0, &PROC0),

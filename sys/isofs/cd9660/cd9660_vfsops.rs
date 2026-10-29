@@ -139,7 +139,6 @@ use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
 use crate::sys::param::{DEV_BSHIFT, DEV_BSIZE, MAXBSIZE, btodb};
 use crate::sys::proc::Proc;
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
-use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Dev, Ino, Uid, major};
@@ -149,7 +148,7 @@ use crate::sys::vnode::{
     Vnode, iftovt,
 };
 use crate::sys::vnode::{
-    MOUNTLIST, bdevvp, checkalias, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
+    bdevvp, checkalias, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
     vfs_export_lookup, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vgone,
     vinvalbuf, vput, vref, vrele,
 };
@@ -254,8 +253,7 @@ pub fn cd9660_mountroot() -> Result<(), Errno> {
         return Err(e);
     }
 
-    // SAFETY: a new mount on no list, under the kernel lock.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     let mut st = mp.stat();
     let _ = cd9660_statfs(mp, &mut st, p);
     mp.with_stat(|sp| *sp = st);
@@ -977,13 +975,13 @@ pub fn cd9660_vget_internal(
             }
             VCHR | VBLK => {
                 // if device, look at device number table for translation
-                vp.v_op.set(Some(&CD9660_SPECVOPS));
+                crate::sys::vnode::set_vops(vp, &CD9660_SPECVOPS);
                 if let Some(nvp) = checkalias(vp, ip.inode.get().iso_rdev, Some(mp)) {
                     // Discard unneeded vnode, but save its iso_node. Note that the lock is
                     // carried over in the iso_node
                     nvp.set_data(vp.data());
                     vp.set_data(ptr::null_mut());
-                    vp.v_op.set(Some(&SPEC_VOPS));
+                    vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                     vrele(vp);
                     vgone(vp);
                     // Reinitialize aliased inode.
@@ -1167,7 +1165,7 @@ mod tests {
     /// The fake disk's block device vnode, referenced.
     fn diskvp() -> &'static Vnode {
         let vp = bdevvp(DISKDEV).unwrap().unwrap();
-        vp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(vp, &DISK_VOPS);
         vp
     }
 
@@ -1190,8 +1188,7 @@ mod tests {
         cd9660_statfs(mp, &mut st, p).unwrap();
         mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));

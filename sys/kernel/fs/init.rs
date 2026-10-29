@@ -85,14 +85,23 @@ pub fn set_rootvnode<G: ProcGlue>(vp: Option<&'static Vnode<G>>) {
 }
 
 /// Initialize the vnode structures and initialize each file system type of `table`
-/// (`vfsconflist[]`); `initialvnodes` is `conf/param.c`'s.
-pub fn vfsinit<G: ProcGlue>(table: &'static [Vfsconf<G>], initialvnodes: i32) {
+/// (`vfsconflist[]`); `initialvnodes` is `conf/param.c`'s. `between` runs after the vnode
+/// table and before the types, where the C has `vntblinit`'s `rn_init` (`NFSSERVER`) and
+/// `nchinit`, the name cache's (`bsd`'s until N5.3 and N6).
+pub fn vfsinit<G: ProcGlue>(
+    table: &'static [Vfsconf<G>],
+    initialvnodes: i32,
+    between: impl FnOnce(),
+) {
     let t = vfs::<G>();
     // A second call (a test's) keeps the first table.
     let _ = t.vfsconf.set(table);
 
     // Initialize the vnode table.
     vntblinit::<G>(initialvnodes);
+
+    // Initialize the vnode name cache (and the export lists' radix keys).
+    between();
 
     let mut maxvfsconf = 0;
     for vfsp in vfsconf::<G>() {

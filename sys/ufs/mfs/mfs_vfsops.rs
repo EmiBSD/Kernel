@@ -308,7 +308,7 @@ mod tests {
     use crate::sys::mount::{MNT_LOCAL, VFS_ROOT, VFS_STATFS};
     use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
     use crate::sys::types::major;
-    use crate::sys::vnode::{MOUNTLIST, vfs_mount_alloc, vfs_unbusy, vref};
+    use crate::sys::vnode::{vfs_mount_alloc, vfs_unbusy, vref};
     use crate::ufs::ffs::ffs_vfsops::tests::{newfs, path, read_file, setup, sys, teardown};
     use crate::ufs::ffs::fs::FS_UFS2_MAGIC;
     use crate::ufs::mfs::mfs_vnops::MFS_VOPS;
@@ -350,8 +350,7 @@ mod tests {
         VFS_STATFS(mp, &mut st, p).unwrap();
         mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));

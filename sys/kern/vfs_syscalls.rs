@@ -86,7 +86,10 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::Ordering;
 
+use hal::list::List;
 use hal::user::UserPtr;
+use kernel::fs::mount::ByDounmount;
+use kernel::fs::sync::vfs_allocate_syncvnode;
 
 use crate::kern::kern_descrip::BsdFileData;
 use crate::kern::kern_descrip::{closef, dupfdopen, falloc, fd_getfile, fdinsert, fdremove};
@@ -97,14 +100,13 @@ use crate::kern::kern_resource::lim_cur_proc;
 use crate::kern::kern_sig::{psignal, single_thread_clear, single_thread_set};
 use crate::kern::kern_tc::{getnanotime, gettime};
 use crate::kern::kern_unveil::{unveil_add, unveil_removevnode};
-use crate::kern::proc_glue::proc_tables;
+use crate::kern::proc_glue::{BsdProcGlue, proc_tables};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::{cache_purge, cache_purgevfs};
 use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_init::{NAMEI_POOL, rootvnode, set_rootvnode, vfs_byname};
 use crate::kern::vfs_lookup::{namei, ndinit, ndinitat};
-use crate::kern::vfs_sync::vfs_allocate_syncvnode;
 use crate::kern::vfs_vnops::{VNOPS, vn_lock, vn_open, vn_stat, vn_writechk};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_ADVLOCK, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
@@ -131,9 +133,9 @@ use crate::sys::mount::{
     Fhandle, Fsid, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_DOOMED, MNT_FORCE, MNT_LAZY, MNT_NOATIME,
     MNT_NODEV, MNT_NOEXEC, MNT_NOPERM, MNT_NOSUID, MNT_NOWAIT, MNT_OP_FLAGS, MNT_RDONLY,
     MNT_RELOAD, MNT_ROOTFS, MNT_SYNCHRONOUS, MNT_UPDATE, MNT_VISFLAGMASK, MNT_WAIT, MNT_WANTRDWR,
-    MNT_WXALLOWED, MntDounmount, MntList, Mount, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT,
-    VB_WRITE, VFS_FHTOVP, VFS_MOUNT, VFS_QUOTACTL, VFS_ROOT, VFS_START, VFS_STATFS, VFS_SYNC,
-    VFS_UNMOUNT, VFS_VPTOFH,
+    MNT_WXALLOWED, Mount, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE, VFS_FHTOVP,
+    VFS_MOUNT, VFS_QUOTACTL, VFS_ROOT, VFS_START, VFS_STATFS, VFS_SYNC, VFS_UNMOUNT, VFS_VPTOFH,
+    mountlist_next,
 };
 use crate::sys::namei::{
     BYPASSUNVEIL, CREATE, DELETE, FOLLOW, LOCKLEAF, LOCKPARENT, LOOKUP, NOCACHE, NOFOLLOW,
@@ -147,7 +149,6 @@ use crate::sys::pledge::{
 };
 use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::{PS_CHROOT, PS_PLEDGE, Proc, SINGLE_UNWIND};
-use crate::sys::queue::{SlistHead, TailqHead};
 use crate::sys::resource::RLIMIT_FSIZE;
 use crate::sys::signal::SIGXFSZ;
 use crate::sys::stat::{
@@ -166,8 +167,8 @@ use crate::sys::vnode::{
     VCHR, VDIR, VEXEC, VNOVAL, VREAD, VROOT, VSGID, VSUID, VWRITE, Vattr, Vnode,
 };
 use crate::sys::vnode::{
-    MOUNTLIST, vattr_null, vfs_busy, vfs_getvfs, vfs_mount_alloc, vfs_mount_free, vfs_unbusy,
-    vgone, vinvalbuf, vnoperm, vput, vref, vrele,
+    vattr_null, vfs_busy, vfs_getvfs, vfs_mount_alloc, vfs_mount_free, vfs_unbusy, vgone,
+    vinvalbuf, vnoperm, vput, vref, vrele,
 };
 
 /// The user address of a pathname argument.
@@ -403,8 +404,7 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     // Put the new filesystem on the mount list after root.
     cache_purge(vp);
     if error.is_ok() {
-        // SAFETY: a new mount on no list; mounts never move.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         checkdirs(vp);
         vfs_unbusy(vmount);
         let _ = VOP_UNLOCK(vp);
@@ -512,25 +512,19 @@ pub fn sys_unmount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
     dounmount(mp, uap.flags.get() & MNT_FORCE, p)
 }
 
-/// A mount on `dounmount`'s work queue, which only holds `&'static Mount`s.
-fn queued(m: &Mount) -> &'static Mount {
-    // SAFETY: the queue only ever holds the busied, mounted file systems inserted above,
-    // which are `malloc`ed and stay allocated while mounted (`&'static Mount`, as everywhere).
-    unsafe { &*ptr::from_ref(m) }
-}
-
 /// Do the actual file system unmount.
 pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
-    let mplist: SlistHead<MntDounmount> = SlistHead::new();
+    // The work queue (`SLIST_HEAD(, mount) mplist`) through `mnt_dounmount`: every mount on it
+    // is write-busied by this thread, so no other unmount links it meanwhile.
+    let mplist: List<ByDounmount<BsdProcGlue>> = List::new();
 
-    // SAFETY: the mount is busied by the caller and on no unmount queue; mounts never move.
-    unsafe { mplist.insert_head(mp) };
+    mplist.insert_head(mp);
 
     // Collect nested mount points. This takes advantage of the mount list being ordered -
     // nested mount points come after their parent.
     let error = 'err: {
         let mut cur = mp;
-        while let Some(next) = TailqHead::<MntList>::next(cur) {
+        while let Some(next) = mountlist_next(cur, false) {
             cur = next;
             for nmp in mplist.iter() {
                 if !cur
@@ -550,24 +544,20 @@ pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> 
                         // removed from the mount list already. Restart the iteration from
                         // the last collected busy entry.
                         if let Some(first) = mplist.first() {
-                            cur = queued(first);
+                            cur = first;
                         }
                         break;
                     }
                     break 'err error;
                 }
-                // SAFETY: a busied mount on no unmount queue.
-                unsafe { mplist.insert_head(cur) };
+                mplist.insert_head(cur);
                 break;
             }
         }
 
         // Nested mount points cannot appear during this loop as mounting requires a read lock
         // for the parent mount point.
-        while let Some(m) = mplist.first() {
-            let m = queued(m);
-            // SAFETY: `m` is the queue's first element.
-            unsafe { mplist.remove_head() };
+        while let Some(m) = mplist.pop_head() {
             if let Err(error) = dounmount_leaf(m, flags, p) {
                 break 'err error;
             }
@@ -575,10 +565,7 @@ pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> 
         return Ok(());
     };
 
-    while let Some(m) = mplist.first() {
-        let m = queued(m);
-        // SAFETY: `m` is the queue's first element.
-        unsafe { mplist.remove_head() };
+    while let Some(m) = mplist.pop_head() {
         vfs_unbusy(m);
     }
     Err(error)
@@ -598,7 +585,7 @@ pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
 
     // Before calling file system unmount, make sure all unveils to vnodes in here are
     // dropped.
-    for vp in mp.mnt_vnodelist.iter() {
+    for vp in mp.vnodes() {
         unveil_removevnode(vp);
     }
 
@@ -619,14 +606,13 @@ pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
         return error;
     }
 
-    // SAFETY: a mounted file system is on the mount list.
-    unsafe { MOUNTLIST.0.remove(mp) };
+    crate::sys::mount::mountlist_remove(mp);
     if let Some(coveredvp) = mp.vnodecovered() {
         coveredvp.set_mountedhere(None);
         vrele(coveredvp);
     }
 
-    if !mp.mnt_vnodelist.is_empty() {
+    if !mp.vnodelist_is_empty() {
         panic(format_args!("unmount: dangling vnode"));
     }
 
@@ -638,7 +624,7 @@ pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
 
 /// Sync each mounted filesystem.
 pub fn sys_sync(p: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
-    for mp in MOUNTLIST.0.iter_reverse() {
+    for mp in crate::sys::mount::mountlist(true) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
             continue;
         }
@@ -751,7 +737,7 @@ pub fn sys_getfsstat(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     let mut sfsp = uap.buf.get() as usize;
     let mut count = 0usize;
 
-    for mp in MOUNTLIST.0.iter() {
+    for mp in crate::sys::mount::mountlist(false) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
             continue;
         }

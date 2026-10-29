@@ -117,9 +117,9 @@ use crate::sys::vnode::{
     FORCECLOSE, IGNORECLEAN, SKIPSYSTEM, V_SAVE, VBLK, VNON, VT_UFS, Vnode, WRITECLOSE,
 };
 use crate::sys::vnode::{
-    MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
-    vfs_mount_foreach_vnode, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget,
-    vgonel, vinvalbuf, vput, vref, vrele,
+    bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_mount_foreach_vnode,
+    vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget, vgonel, vinvalbuf, vput,
+    vref, vrele,
 };
 use crate::ufs::ffs::ffs_alloc::{ffs_inode_alloc, ffs_inode_free};
 use crate::ufs::ffs::ffs_balloc::ffs_balloc;
@@ -311,8 +311,7 @@ pub fn ffs_mountroot() -> Result<(), Errno> {
         return Err(e);
     }
 
-    // SAFETY: a new mount on no list, under the kernel lock.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     let ump = vfstoufs(mp);
     let fs = ump.fs();
     let (name, len) = mp.mntonname();
@@ -2484,7 +2483,7 @@ pub(crate) mod tests {
     /// The fake disk's block device vnode, referenced.
     fn diskvp() -> &'static Vnode {
         let vp = bdevvp(DISKDEV).unwrap().unwrap();
-        vp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(vp, &DISK_VOPS);
         vp
     }
 
@@ -2502,8 +2501,7 @@ pub(crate) mod tests {
         ffs_statfs(mp, &mut st, p).unwrap();
         mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));

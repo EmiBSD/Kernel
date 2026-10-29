@@ -758,7 +758,7 @@ pub(crate) mod tests {
     /// A mount structure for the device as `fusefs_mount` makes it, on a mount that is not a
     /// real one (the device only reads `max_read`, `max_write` and `sess_init`).
     pub(crate) fn fake_fmp(dev: Dev, max_read: i32) -> &'static FusefsMnt {
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(None)));
         Box::leak(Box::new(FusefsMnt {
             mp,
             undef_op: Cell::new(0),

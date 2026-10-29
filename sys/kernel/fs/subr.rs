@@ -77,10 +77,10 @@
 //!   always has `curproc`; LZ's, kept).
 //! - `vprint` is compiled under feature `diagnostic` or `debug`, `printlockedvnodes` under
 //!   `debug`, as in C. The DDB printers wait for the ddb command loop (LZ's, kept).
-//! - `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` are `bsd`'s (`vfs_syscalls.rs`)
-//!   until `dounmount` and `sys_sync` move (N5.4); the NFS export list (`vfs_hang_addrlist`,
-//!   `vfs_export`, `vfs_export_lookup`, feature `nfsserver`) is `bsd`'s `vfs_export.rs` until
-//!   the NFS server moves (N6).
+//! - `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` stay in `bsd`'s `vfs_subr.rs` until
+//!   `dounmount` and `sys_sync` move (N5.4); so does the NFS export list
+//!   (`vfs_hang_addrlist`, `vfs_export`, `vfs_export_lookup`, feature `nfsserver`, and
+//!   `vntblinit`'s `rn_init`), until the NFS server moves (N6).
 //!
 //! ## Redesign
 //! - LZ's global lists of `Cell` links under `unsafe impl Sync` (`VNODE_FREE_LIST`,

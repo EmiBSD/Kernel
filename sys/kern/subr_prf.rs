@@ -907,7 +907,7 @@ mod tests {
         assert!(tprintf_open(p).is_none());
         assert_eq!(count(&sess), base);
 
-        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
+        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
         sess.s_ttyvp.set(Some(vp));
         let handle = tprintf_open(p);
         assert!(

@@ -145,7 +145,6 @@ use crate::sys::param::btodb;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::Proc;
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
-use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Ino, Uid, major};
@@ -899,7 +898,7 @@ pub fn udf_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         // in the udf_node
         nvp.set_data(vp.data());
         vp.set_data(ptr::null_mut());
-        vp.v_op.set(Some(&SPEC_VOPS));
+        vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
         vrele(vp);
         vgone(vp);
         // Reinitialize aliased inode.

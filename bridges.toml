@@ -232,28 +232,38 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-# bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
-# vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
-# curproc's credentials: sys/sys/vnode.rs, sys/kern/vfs_subr.rs, vfs_vnops.rs, vfs_vops.rs),
-# implemented by bsd's Vnode (sys/kern/vm_bsd.rs since N3.5) and passed as &'static dyn VnodeOps to
-# uvn_attach and the uvm_vnp_* functions (vnodes are never freed); kept by the Uvn. N5, with
-# the vnode layer. N3.5 S1: mmap(2)'s v_type, iszerodev(v_rdev) and VOP_GETATTR's va_flags.
-# kernel::vm::vnode::VnodeOps
+# bsd: struct vops, the operations table of each bsd file system (ffs, mfs, ext2fs, cd9660,
+# msdosfs, udf, tmpfs, fuse, nfs, ntfs and their special-file tables: 25 statics of
+# Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each
+# method packs the slot's struct vop_*_args; a NULL slot answers EOPNOTSUPP) and registered by
+# address on a table's first getnewvnode (VopsId), dispatched by every vop_* of
+# kernel::fs::vops (N5.2). Paid when the last bsd file system moves (N5.5 to N5.9, nfs N6,
+# ntfs at N10 by the user's decision: the row's comment carries it).
+# kernel::fs::vops::Vnops
 [[bridge]]
-trait = "VnodeOps"
-for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/mmap.rs"]
-paid_by = "N5"
+trait = "Vnops"
+for = ["sys/kernel/fs/vops.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs"]
+paid_by = "N6"
 
-# bsd: struct vnode as the buffer cache asks things of it (vhold, vdrop, VOP_STRATEGY,
-# VOP_BWRITE, VOP_BMAP, v_type, v_rdev, the mount's MNT_ASYNC and f_*reads/f_*writes, the
-# thread's ru_inblock/ru_oublock, the syncer's worklist: sys/kern/vfs_subr.rs, vfs_sync.rs,
-# vfs_vops.rs), implemented by bsd's Vnode and kept by the vnode's VnodeBufs (set once at
-# getnewvnode; vnodes are never freed). N5.1 made it; N5.2 pays it, with the vnode layer.
-# kernel::fs::bio::BufVnode
+# bsd: struct vfsops, the operations of each bsd file system type (vfsconflist[]'s entries,
+# kern/vfs_init.rs), implemented on bsd's Vfsops by sys/kern/vfs_vops.rs and held by the
+# kernel's Vfsconf (N5.2); vfs_checkexp (the NFS server's) stays bsd's, reached through
+# as_any. Paid with Vnops, when the last bsd file system moves (nfs N6; ntfs at N10).
+# kernel::fs::vops::Vfs
 [[bridge]]
-trait = "BufVnode"
-for = ["sys/kernel/fs/bio.rs"]
-paid_by = "N5"
+trait = "Vfs"
+for = ["sys/kernel/fs/vops.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/init.rs"]
+paid_by = "N6"
+
+# bsd: the device switch as the special files call it (cdevsw[]/bdevsw[] of machine::conf,
+# nchrdev, nblkdev, chrtoblk, iskmemdev, iszerodev), implemented by sys/sys/specdev.rs
+# (BsdDevsw) and registered by hal_bridges_register (N5.2). Paid when the device switch moves
+# (N7.2, decision 45's CharDevice).
+# kernel::fs::spec::Devsw
+[[bridge]]
+trait = "Devsw"
+for = ["sys/kernel/fs/spec.rs", "sys/kernel/fs/subr.rs"]
+paid_by = "N7"
 
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
 # kernel::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from

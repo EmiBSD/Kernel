@@ -460,7 +460,7 @@ pub fn setup() -> MutexGuard<'static, ()> {
     hal::klock::kernel_lock();
     vfs_test_reset::<TestGlue>();
     NODES.with(|n| n.borrow_mut().clear());
-    super::init::vfsinit::<TestGlue>(&TEST_CONF, 64);
+    super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {});
     let _ = register_devsw::<TestGlue>(&TEST_DEVSW);
     g
 }

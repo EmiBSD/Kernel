@@ -70,19 +70,16 @@
 //!   opaque pointer until the tty layer (M10).
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_malloc::free;
 use crate::kern::kern_resource::lim_cur_proc;
 use crate::kern::kern_sig::psignal;
-use crate::kern::kern_synch::{msleep_nsec, wakeup_one};
 use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_lookup::namei;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_ADVLOCK, VOP_CLOSE, VOP_CREATE, VOP_GETATTR, VOP_IOCTL,
-    VOP_KQFILTER, VOP_LOCK, VOP_OPEN, VOP_READ, VOP_SETATTR, VOP_UNLOCK, VOP_WRITE,
+    VOP_KQFILTER, VOP_OPEN, VOP_READ, VOP_SETATTR, VOP_UNLOCK, VOP_WRITE,
 };
 use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::sys::errno::Errno;
@@ -96,20 +93,18 @@ use crate::sys::file::{FIF_HASLOCK, FO_POSITION, File, Fileops, foffset};
 use crate::sys::filio::{FIOASYNC, FIONREAD};
 use crate::sys::limits::LLONG_MAX;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::malloc::M_TEMP;
 use crate::sys::mount::{MNT_RDONLY, MNT_SYNCHRONOUS};
 use crate::sys::namei::{
     BYPASSUNVEIL, CREATE, FOLLOW, KERNELPATH, LOCKLEAF, LOCKPARENT, LOOKUP, NOFOLLOW, Nameidata,
 };
-use crate::sys::param::{MAXPATHLEN, PINOD};
+use crate::sys::param::MAXPATHLEN;
 use crate::sys::proc::Proc;
 use crate::sys::resource::RLIMIT_FSIZE;
 use crate::sys::signal::SIGXFSZ;
-use crate::sys::specdev::Cloneinfo;
 use crate::sys::stat::{
     S_BLKSIZE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFREG, S_IFSOCK, Stat,
 };
-use crate::sys::systm::{INFSLP, kernel_lock, kernel_unlock};
+use crate::sys::systm::{kernel_lock, kernel_unlock};
 use crate::sys::ttycom::TIOCSCTTY;
 use crate::sys::types::Off;
 use crate::sys::ucred::Ucred;
@@ -117,10 +112,9 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
 use crate::sys::vnode::{
     IO_APPEND, IO_NDELAY, IO_NODELOCKED, IO_NOLIMIT, IO_SYNC, IO_UNIT, VA_EXCLUSIVE, VBAD, VBLK,
-    VCHR, VCLONED, VDIR, VFIFO, VLNK, VNON, VREAD, VREG, VSOCK, VTEXT, VWRITE, VXLOCK, VXWANT,
-    Vattr, Vnode,
+    VCHR, VDIR, VFIFO, VLNK, VNON, VREAD, VREG, VSOCK, VTEXT, VWRITE, Vattr, Vnode,
 };
-use crate::sys::vnode::{VNODE_MTX, vattr_null, vput, vref, vrele};
+use crate::sys::vnode::{vattr_null, vput, vref, vrele};
 
 /// `vnops`: the file operations of a `DTYPE_VNODE` file.
 pub static VNOPS: Fileops = Fileops {
@@ -249,22 +243,12 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
         }
 
         let mut vp = vp;
-        if vp.flag() & VCLONED != 0 {
-            let cip = vp.data().cast::<Cloneinfo>();
-            // SAFETY: a `VCLONED` vnode's `v_data` is the `struct cloneinfo`
-            // `spec_open_clone` allocated, until this restores the original.
-            let (ci_vp, ci_data) = unsafe { ((*cip).ci_vp, (*cip).ci_data) };
-
-            vp.set_flag(vp.flag() & !VCLONED);
-
+        // A cloning device's open made a clone (`VCLONED`): the parent's specinfo records it
+        // (the C's `struct cloneinfo` in `v_data`), which the kernel takes back here.
+        if let Some(ci_vp) = kernel::fs::spec::clone_restore(vp) {
             ndp.ni_vp = Some(ci_vp); // return cloned vnode
-            vp.set_data(ci_data); // restore v_data
             let _ = VOP_UNLOCK(vp); // keep a reference
             vp = ci_vp; // for the increment below
-
-            if let Some(cip) = NonNull::new(cip) {
-                free(cip.cast(), M_TEMP, size_of::<Cloneinfo>());
-            }
         }
 
         if fmode & FWRITE != 0 {
@@ -586,50 +570,7 @@ pub fn vn_ioctl(fp: &File, com: u64, data: &mut [u8], p: &Proc) -> Result<(), Er
     error
 }
 
-/// Check that the vnode is still valid, and if so acquire requested lock.
-pub fn vn_lock(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
-    loop {
-        let error;
-        mtx_enter(&VNODE_MTX);
-        if vp.v_lflag.get() & VXLOCK != 0 {
-            vp.v_lflag.set(vp.v_lflag.get() | VXWANT);
-            let _ = msleep_nsec(ptr::from_ref(vp), &VNODE_MTX, PINOD, "vn_lock", INFSLP);
-            mtx_leave(&VNODE_MTX);
-            error = Errno::ENOENT;
-        } else {
-            vp.v_lockcount.set(vp.v_lockcount.get() + 1);
-            mtx_leave(&VNODE_MTX);
-
-            let lock = VOP_LOCK(vp, flags);
-
-            mtx_enter(&VNODE_MTX);
-            vp.v_lockcount.set(vp.v_lockcount.get() - 1);
-            let do_wakeup = vp.v_lockcount.get() == 0;
-            let xlocked = vp.v_lflag.get() & VXLOCK != 0;
-            mtx_leave(&VNODE_MTX);
-
-            match lock {
-                Ok(()) => {
-                    if !xlocked {
-                        return Ok(());
-                    }
-
-                    // The vnode was exclusively locked while acquiring the requested lock.
-                    // Release it and try again.
-                    error = Errno::ENOENT;
-                    let _ = VOP_UNLOCK(vp);
-                }
-                Err(e) => error = e,
-            }
-            if do_wakeup && xlocked {
-                wakeup_one(ptr::from_ref(&vp.v_lockcount));
-            }
-        }
-        if flags & LK_RETRY == 0 {
-            return Err(error);
-        }
-    }
-}
+pub use kernel::fs::vnode::vn_lock;
 
 /// File table vnode close routine.
 pub fn vn_closefile(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {

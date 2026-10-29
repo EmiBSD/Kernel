@@ -1207,6 +1207,9 @@ pub fn clone_restore<G: ProcGlue>(vp: &'static Vnode<G>) -> Option<&'static Vnod
         )),
     }
 }
+
+// SPECHASH's mask needs a power of two.
+const _: () = assert!(SPECHSZ.is_power_of_two());
 /* </CODE> */
 
 /* <TESTS> */

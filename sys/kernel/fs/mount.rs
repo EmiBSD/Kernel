@@ -294,6 +294,15 @@ impl<G: ProcGlue> Mount<G> {
         }
     }
 
+    /// A mount outside `vfs_mount_alloc`, for a test double (`bsd`'s file systems' unit tests
+    /// build one by hand), of the type `vfc` when given; on no list, not busy.
+    #[cfg(any(test, feature = "doubles"))]
+    pub fn new_unpooled(vfc: Option<&'static Vfsconf<G>>) -> Self {
+        let mp = Self::new();
+        mp.vfc.set(vfc);
+        mp
+    }
+
     /// `mp->mnt_vfc`, which every mount out of `vfs_mount_alloc` has.
     #[inline]
     pub fn vfc(&self) -> &'static Vfsconf<G> {
@@ -420,6 +429,37 @@ impl<G: ProcGlue> Mount<G> {
     /// Whether the mount is on `mountlist`.
     pub fn is_listed(&self) -> bool {
         self.listed.load(Ordering::Relaxed)
+    }
+
+    /// `TAILQ_FOREACH(vp, &mp->mnt_vnodelist, v_mntvnodes)`: the mount's vnodes, the first
+    /// read under the list's lock, each next one read before a vnode is handed out (unlocked,
+    /// as the C reads it), so the walker may move the vnode it has. A walker that sleeps
+    /// restarts when the vnode it is at left the mount (`vp.mount() != mp`), as the C's
+    /// `goto loop`s do.
+    pub fn vnodes(&self) -> MntVnodes<G> {
+        MntVnodes {
+            next: self.vnodelist.lock().first(),
+        }
+    }
+
+    /// `TAILQ_EMPTY(&mp->mnt_vnodelist)`.
+    pub fn vnodelist_is_empty(&self) -> bool {
+        self.vnodelist.lock().is_empty()
+    }
+}
+
+/// The walk of [`Mount::vnodes`].
+pub struct MntVnodes<G: ProcGlue> {
+    next: Option<&'static Vnode<G>>,
+}
+
+impl<G: ProcGlue> Iterator for MntVnodes<G> {
+    type Item = &'static Vnode<G>;
+
+    fn next(&mut self) -> Option<&'static Vnode<G>> {
+        let vp = self.next?;
+        self.next = List::<ByMntvnodes<G>>::next(vp);
+        Some(vp)
     }
 }
 

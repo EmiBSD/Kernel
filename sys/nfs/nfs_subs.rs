@@ -174,7 +174,6 @@ use crate::sys::param::DEV_BSIZE;
 use crate::sys::param::{BLKDEV_IOSIZE, MAXBSIZE};
 use crate::sys::pool::{PR_WAITOK, Pool};
 #[cfg(feature = "nfsclient")]
-use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::time::Timespec;
 use crate::sys::types::{Gid, Mode, Off, Uid};
 #[cfg(feature = "nfsclient")]
@@ -1203,13 +1202,13 @@ pub fn nfs_loadattrcache(
             return Err(Errno::EOPNOTSUPP);
         }
         if vtyp == VCHR || vtyp == VBLK {
-            vp.v_op.set(Some(&crate::nfs::nfs_vnops::NFS_SPECVOPS));
+            crate::sys::vnode::set_vops(vp, &crate::nfs::nfs_vnops::NFS_SPECVOPS);
             if let Some(nvp) = checkalias(vp, rdev, vp.mount()) {
                 // Discard unneeded vnode, but save its nfsnode. Since the nfsnode does not
                 // have a lock, its vnode lock has to be carried over.
                 nvp.set_data(vp.data());
                 vp.set_data(ptr::null_mut());
-                vp.v_op.set(Some(&SPEC_VOPS));
+                vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
                 // Reinitialize aliased node.
@@ -1394,7 +1393,7 @@ pub fn nfs_getattrcache(vp: &'static Vnode, vaper: &mut Vattr) -> Result<(), Err
 pub fn nfs_clearcommit(mp: &Mount) {
     let s = splbio();
     'restart: loop {
-        for vp in mp.mnt_vnodelist.iter() {
+        for vp in mp.vnodes() {
             if !vp.mount().is_some_and(|m| ptr::eq(m, mp)) {
                 // Paranoia.
                 continue 'restart;
@@ -2035,14 +2034,13 @@ pub(crate) mod tests {
             0,
         );
         let nmp: &'static NfsMount = Box::leak(Box::new(NfsMount::new()));
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
-        mp.mnt_vfc.set(Some(&CONF));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(Some(&CONF))));
         mp.set_data(ptr::from_ref(nmp).cast_mut().cast());
         let np: &'static NfsNode = Box::leak(Box::new(NfsNode::new()));
-        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
+        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
         vp.set_tag(VT_NFS);
         vp.set_vtype(vtype);
-        vp.v_mount.set(Some(mp));
+        crate::sys::vnode::insmntque(vp, Some(mp));
         vp.set_data(ptr::from_ref(np).cast_mut().cast());
         np.n_vnode.set(Some(vp));
         (vp, np, nmp)

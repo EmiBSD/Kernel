@@ -689,6 +689,13 @@ impl<G: ProcGlue> Vnode<G> {
         }
     }
 
+    /// A vnode outside the vnode pool, for a test double (`bsd`'s file systems' unit tests
+    /// build one by hand): deadfs's operations, on no list, no buffers' owner.
+    #[cfg(any(test, feature = "doubles"))]
+    pub fn new_unpooled() -> Self {
+        Self::new()
+    }
+
     /// `vp->v_op`: the vnode's operations table.
     #[inline]
     pub fn ops(&self) -> &'static dyn Vnops<G> {

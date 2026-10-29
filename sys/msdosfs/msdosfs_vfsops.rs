@@ -825,8 +825,8 @@ pub(crate) mod tests {
     use crate::sys::buf::{biodone, bufinit};
     use crate::sys::mount::{MOUNT_MSDOS, VB_WAIT, VB_WRITE};
     use crate::sys::types::makedev;
-    use crate::sys::vnode::{MOUNTLIST, bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy};
     use crate::sys::vnode::{VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops};
+    use crate::sys::vnode::{bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy};
 
     /// `mkfat`: a FAT image built in memory the way `newfs_msdos(8)` and `makefs -t msdos` build
     /// one, for the tests and as a record of the on-disk layout.
@@ -1301,7 +1301,7 @@ pub(crate) mod tests {
     /// The fake disk's block device vnode, referenced.
     pub(crate) fn diskvp() -> &'static Vnode {
         let vp = bdevvp(DISKDEV).unwrap().unwrap();
-        vp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(vp, &DISK_VOPS);
         vp
     }
 
@@ -1325,8 +1325,7 @@ pub(crate) mod tests {
         let mp = newmount(ronly);
         msdosfs_mountfs(diskvp(), mp, p, &noargs()).unwrap();
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         mp
     }
 
@@ -1540,8 +1539,7 @@ pub(crate) mod tests {
         msdosfs_mountfs(devvp, mp, p, &noargs()).unwrap();
         assert_eq!(vfstomsdosfs(mp).pm_nmbrofclusters.get(), 2031);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         unmount(p, mp);
         teardown();
         drop(g);

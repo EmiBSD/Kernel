@@ -650,8 +650,8 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `kqueue_scan`'s `vp->v_op == &dead_vops`); `false` for any other object.
     fn vnode_revoked(d: &Self::Data) -> bool;
     /// The vnode a `DTYPE_VNODE` file's object is (`(struct vnode *)fp->f_data`), as the
-    /// pager and `mmap(2)` see it (`VnodeOps`, `bsd`'s vnodes until N5); `None` for another
-    /// object.
+    /// pager and `mmap(2)` see it (`VnodeOps`, the kernel's vnode since N5.2); `None` for
+    /// another object.
     fn vnode_ops(d: &Self::Data) -> Option<&'static dyn crate::vm::vnode::VnodeOps>;
     /// The pipe a `DTYPE_PIPE` file's object holds (`fp->f_data`, the pipe the file reads
     /// and whose peer it writes), for the pipe's filters (`kernel::pipe`'s `filt_pipe*`);

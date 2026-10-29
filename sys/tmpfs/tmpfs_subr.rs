@@ -135,7 +135,6 @@ use crate::sys::param::{MAXPATHLEN, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::proc::Proc;
 use crate::sys::queue::{ListHead, TailqHead};
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
-use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISGID, S_ISTXT, SF_APPEND, SF_IMMUTABLE, SF_SETTABLE,
     UF_SETTABLE,
@@ -411,11 +410,11 @@ pub fn tmpfs_vnode_get(
     // Type-specific initialization.
     match node.tn_type.get() {
         VBLK | VCHR => {
-            vp.v_op.set(Some(&TMPFS_SPECVOPS));
+            crate::sys::vnode::set_vops(vp, &TMPFS_SPECVOPS);
             if let Some(nvp) = checkalias(vp, node.tn_spec.tn_dev.tn_rdev.get(), Some(mp)) {
                 nvp.set_data(vp.data());
                 vp.set_data(ptr::null_mut());
-                vp.v_op.set(Some(&SPEC_VOPS));
+                vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
                 vp = nvp;

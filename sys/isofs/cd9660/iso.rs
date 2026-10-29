@@ -735,8 +735,8 @@ pub(crate) mod tests {
     /// A mount of the test image as `iso_mountfs` sets it up (2048-byte blocks, the root at
     /// block 20, Rock Ridge with no skip), leaked so that nodes may point at it.
     pub(crate) fn test_mnt(ftype: IsoFtype) -> &'static mut IsoMnt {
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
-        let devvp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(None)));
+        let devvp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
         let mut root = [0u8; 34];
         root.copy_from_slice(&image::PVD_HEAD[156..190]);
         Box::leak(Box::new(IsoMnt {
@@ -762,7 +762,7 @@ pub(crate) mod tests {
     /// A node of `imp` with a vnode of its own, as `cd9660_vget_internal` links them.
     pub(crate) fn test_node(imp: &'static IsoMnt) -> (&'static IsoNode, &'static Vnode) {
         let ip: &'static IsoNode = Box::leak(Box::new(IsoNode::new()));
-        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
+        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
         vp.set_tag(VT_ISOFS);
         vp.set_data(core::ptr::from_ref(ip).cast_mut().cast());
         ip.i_vnode.set(Some(vp));

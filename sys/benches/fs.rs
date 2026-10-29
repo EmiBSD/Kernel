@@ -17,22 +17,24 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Host microbenchmarks of the vnode layer on LZ's shape (decision 43, N5.2:
-//! `sys/kern/vfs_subr.rs`, `vfs_vnops.rs`, `vfs_vops.rs`): what `namei`'s, `open`'s and
-//! `exec`'s paths cost in `vref`/`vrele`, `vget`/`vput`, `vn_lock`, `vhold`/`vdrop`, one
-//! operation's dispatch and a vnode's recycling before the vnode layer moves into
-//! `kernel::fs`, over the host's machine double and the kernel's doubles, on real page memory
-//! as the host tests load it. Never part of a kernel image; it measures and changes nothing.
-//! `sys/kernel/benches/fs.rs` times the same op names on the kernel's shape, and this file
-//! goes with the switch (N5.2's last bench commit).
+//! Host microbenchmarks of the vnode layer as `bsd` reaches it (decision 43, N5.2): what
+//! `namei`'s, `open`'s and `exec`'s paths cost in `vref`/`vrele`, `vget`/`vput`, `vn_lock`,
+//! `vhold`/`vdrop`, one operation's dispatch and a vnode's recycling. Since the switch the
+//! vnode layer is `kernel::fs`'s and the ops run it with `bsd`'s real glue (its `Vops` table
+//! through the kernel's `Vnops`, its `VnodeG`, its tables), over the host's machine double and
+//! the kernel's doubles, on real page memory as the host tests load it; before the switch
+//! (its parent commit) the same file timed LZ's shape. Never part of a kernel image; it
+//! measures and changes nothing. `sys/kernel/benches/fs.rs` times the same op names over the
+//! kernel's test glue, and this file goes with N5.2's last bench commit.
 //!
 //! `cargo bench -p bsd --bench fs` (release: the `bench` profile) or with `--profile dev`.
 //! Arguments: `list`; the names of the benches to run (all by default).
 //!
 //! The ops are the kernel bench's (see its notes). The file system's lock is one `Rrwlock`
 //! the bench's vnodes share (`rrw_enter`/`rrw_exit`/`rrw_status`, ufs's), its device vnode
-//! `spec_vops`'s (nullops); `prim.vnode-lists` is `splbio`/`splx`, the free lists' lock of
-//! LZ's shape.
+//! `spec_vops`'s (nullops); `prim.vnode-mtx` is one section of the kernel's `vnode_mtx`,
+//! `prim.vnode-lists` one of its free lists' lock (LZ's shape timed `mtx_enter`/`mtx_leave`
+//! and `splbio`/`splx` there).
 
 #![forbid(unsafe_code)]
 
@@ -42,16 +44,11 @@ use std::time::{Duration, Instant};
 use std::vec;
 use std::vec::Vec;
 
-use bsd::kern::kern_lock::{mtx_enter, mtx_leave};
+use bsd::kern::kern_descrip::VFS_TABLES;
 use bsd::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
-use bsd::kern::vfs_subr::{
-    MAXVNODES, VNODE_MTX, cdevvp, getnewvnode, vdrop, vfinddev, vfs_mount_alloc, vfs_unbusy, vget,
-    vhold, vput, vref, vrele,
-};
 use bsd::kern::vfs_vnops::vn_lock;
 use bsd::kern::vfs_vops::{VOP_ISLOCKED, VOP_UNLOCK};
 use bsd::kern::vm_bsd::{uvm_page_init, uvm_page_physload};
-use bsd::machine::intr::{splbio, splx};
 use bsd::sys::errno::Errno;
 use bsd::sys::lock::{LK_EXCLUSIVE, LK_RWFLAGS};
 use bsd::sys::mount::{MNT_LOCAL, Vfsconf, Vfsops};
@@ -59,6 +56,10 @@ use bsd::sys::param::PAGE_SIZE;
 use bsd::sys::rwlock::Rrwlock;
 use bsd::sys::systm::PHYSMEM;
 use bsd::sys::types::{Vaddr, makedev};
+use bsd::sys::vnode::{
+    MAXVNODES, VNODE_MTX, cdevvp, getnewvnode, vdrop, vfinddev, vfs_mount_alloc, vfs_unbusy, vget,
+    vhold, vput, vref, vrele,
+};
 use bsd::sys::vnode::{
     VCHR, VREG, VT_NON, VT_TMPFS, Vnode, VopInactiveArgs, VopIslockedArgs, VopLockArgs,
     VopUnlockArgs, Vops,
@@ -213,6 +214,9 @@ fn main() {
     // The VOPs run under the kernel lock, as the system calls that reach them take it.
     bsd::sys::systm::kernel_lock();
     bsd::kern::vfs_init::vfsinit();
+    let _ = kernel::fs::spec::register_devsw::<bsd::kern::proc_glue::BsdProcGlue>(
+        &bsd::sys::specdev::BSD_DEVSW,
+    );
     let mp = vfs_mount_alloc(None, &BENCH_CONF);
     vfs_unbusy(mp);
     // A file system's vnode in use (one reference kept), unlocked.
@@ -339,8 +343,7 @@ fn main() {
             names[8],
             measure(|| {
                 rounds(|| {
-                    mtx_enter(&VNODE_MTX);
-                    mtx_leave(&VNODE_MTX);
+                    drop(black_box(VNODE_MTX.lock()));
                 })
             }),
         );
@@ -350,8 +353,7 @@ fn main() {
             names[9],
             measure(|| {
                 rounds(|| {
-                    let s = splbio();
-                    splx(black_box(s));
+                    drop(black_box(VFS_TABLES.lists.lock()));
                 })
             }),
         );

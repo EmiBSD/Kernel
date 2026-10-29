@@ -2042,10 +2042,13 @@ mod tests {
     /// `udf_mountfs` of the disk on a fresh read-only mount.
     fn mount(p: &'static Proc) -> Result<&'static Mount, Errno> {
         let devvp = bdevvp(DISKDEV).unwrap().unwrap();
-        devvp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(devvp, &DISK_VOPS);
         let mp = vfs_mount_alloc(None, vfs_byname(b"udf").unwrap());
         mp.set_flag(mp.flag() | MNT_RDONLY);
-        match udf_mountfs(devvp, mp, 0, p) {
+        // Unbusied on both paths, as sys_mount leaves a mount (a mount is freed unbusied).
+        let r = udf_mountfs(devvp, mp, 0, p);
+        crate::sys::vnode::vfs_unbusy(mp);
+        match r {
             Ok(()) => Ok(mp),
             Err(e) => {
                 vrele(devvp);

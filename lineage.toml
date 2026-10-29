@@ -5120,7 +5120,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5609,7 +5609,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5670,12 +5670,6 @@ reason = "hal::thread::SCHED_LOCK is a static made at IPL_SCHED: SCHED_LOCK_INIT
 lz = "sys/kern/sched_bsd.rs::current"
 native = ["sys/kernel/sched.rs::with_curproc"]
 kind = "renamed"
-
-[[module]]
-rust = "sys/kern/spec_vnops.rs"
-lz = ["sys/kern/spec_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
 
 [[module]]
 rust = "sys/kern/subr_autoconf.rs"
@@ -5935,12 +5929,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/fs/vnode.rs"]
 
 [[module]]
-rust = "sys/kern/vfs_default.rs"
-lz = ["sys/kern/vfs_default.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
-
-[[module]]
 rust = "sys/kern/vfs_getcwd.rs"
 lz = ["sys/kern/vfs_getcwd.rs"]
 status = "adapted"
@@ -5950,7 +5938,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_lockf.rs"
@@ -5968,31 +5956,27 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
-
-[[module]]
-rust = "sys/kern/vfs_sync.rs"
-lz = ["sys/kern/vfs_sync.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs"]
+notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's"
 
 [[module]]
 rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_vnops.rs"
 lz = ["sys/kern/vfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/spec.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
 lz = ["sys/kern/vfs_vops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/default.rs"]
+notes = "N5.2: the VOP_* names as thin adapters over kernel::fs::vops's vop_* (the C pointer as Cred, a lent buffer as IoBuf::Lent), impl Vnops for Vops and impl Vfs for Vfsops (the bridges Vnops and Vfs), the vop_generic_* operations of vfs_default.c the file systems' tables hold over kernel::fs::default, abortop_putname (the FileGlue abortop leg)"
 
 [[module]]
 rust = "sys/lib/libkern/crc32c.rs"
@@ -6393,12 +6377,6 @@ rust = "sys/lib/libz/zutil.rs"
 lz = ["sys/lib/libz/zutil.rs"]
 status = "redesigned"
 license = "zlib"
-
-[[module]]
-rust = "sys/miscfs/deadfs/dead_vnops.rs"
-lz = ["sys/miscfs/deadfs/dead_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fuse_device.rs"
@@ -7693,7 +7671,8 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs"]
+notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps the *_args with their 3 read_unaligned (LZ's, N5.4) and struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6)"
 
 [[module]]
 rust = "sys/sys/mplock.rs"
@@ -7900,7 +7879,8 @@ status = "inherited"
 rust = "sys/sys/specdev.rs"
 lz = ["sys/sys/specdev.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/spec.rs"]
+notes = "N5.2: Specinfo the alias of the kernel's, the spec_* operations the file systems' special-file tables hold over kernel::fs::spec, and BsdDevsw, the device switch (machine::conf's cdevsw/bdevsw) as the kernel's Devsw bridge"
 
 [[module]]
 rust = "sys/sys/stat.rs"
@@ -8067,7 +8047,7 @@ kind = "dropped"
 reason = "bread_cluster keeps no xbpp array (D-N5.1-3 moot): the read-ahead buffers are found by block in the vnode's tree (cluster_buffer), their tokens parked in them"
 [[module.fn]]
 lz = "sys/kern/vfs_bio.rs::bp_mount"
-native = ["sys/kern/vfs_subr.rs::io_mount"]
+native = ["sys/kernel/fs/subr.rs::io_mount"]
 kind = "moved"
 [[module.fn]]
 lz = "sys/kern/vfs_bio.rs::freelist_remove"
@@ -8141,6 +8121,14 @@ crate = "kernel"
 lz = ["sys/kern/vfs_init.rs"]
 status = "redesigned"
 notes = "N5.2: vfsinit over the table bsd hands it (vfsconflist stays bsd's: the cfgs, order and type numbers), vfs_byname, vfs_bytypenum, rootvnode a Link of the tables (LZ's AtomicPtr and its unsafe deref go); namei_pool and nchinit are bsd's (N5.3)"
+[[module.fn]]
+lz = "sys/kern/vfs_init.rs::ROOTVNODE"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_init.rs::MAXVFSCONF"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/mount.rs"
@@ -8148,6 +8136,15 @@ crate = "kernel"
 lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
 notes = "N5.2: struct mount as Mount<G>, never freed (D-N5.2-2: MBox::leak of an M_MOUNT allocation, recycled through the free list once mnt_refs, a hal Refcnt, reaches 0; vmstat -m's M_MOUNT a high-water mark), mnt_op/mnt_vfc one Link to the Vfsconf, mnt_flag a Relaxed atomic, mnt_stat a Mutexed at IPL_NONE beside the four I/O counters as atomics, mnt_lock a hal SplitRwlock (vfs_busy/vfs_unbusy split as the C), mnt_vnodelist a leaf Mutexed list; struct vfsconf as Vfsconf<G>; mountlist and the free mounts MountLists under a leaf mutex (D-N5.2-13); vfs_mount_alloc, vfs_mount_take, vfs_mount_rele, vfs_mount_free, vfs_busy, vfs_unbusy, vfs_isbusy from vfs_subr.c"
+[[module.fn]]
+lz = "sys/sys/mount.rs::Mount::update_stat"
+native = ["Mount::with_stat"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/mount.rs::Mount::default"
+native = []
+kind = "dropped"
+reason = "a mount is made by vfs_mount_alloc only, never freed and recycled (D-N5.2-2); Mount::new is private and test doubles use Mount::new_unpooled"
 
 [[module]]
 rust = "sys/kernel/fs/spec.rs"
@@ -8155,6 +8152,35 @@ crate = "kernel"
 lz = ["sys/sys/specdev.rs", "sys/kern/spec_vnops.rs"]
 status = "redesigned"
 notes = "N5.2: struct specinfo as Specinfo<G> owned by its vnode's v_un (MBox M_VNODE, freed by vgonel), the clone bitmap a PoolArc of the clonemap pool shared by the aliases (D-N5.2-3), the cloneinfo a link in the parent's specinfo (clone_restore takes it; no M_TEMP cloneinfo), speclisth a leaf Mutexed of hal lists, the device switch the bridge Devsw<G> (decision 45, paid N7.2), spec_vops as SpecVops<G> (fixed id), spec_lock's nullop, the DIOCGPART unported! kept"
+[[module.fn]]
+lz = "sys/sys/specdev.rs::Vnodechain"
+native = ["BySpecnext"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/specdev.rs::Specinfo::default"
+native = []
+kind = "dropped"
+reason = "a specinfo is made by checkalias only (Specinfo::new is private): it is the vnode's, freed by vgonel"
+[[module.fn]]
+lz = "sys/sys/specdev.rs::Cloneinfo"
+native = ["Specinfo"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/spec_vnops.rs::Speclisth"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/spec_vnops.rs::SPECLISTH"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/spec_vnops.rs::SPEC_VOPS"
+native = ["SpecVops::TABLE"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/spec_vnops.rs::clone_bitmap"
+native = ["Specinfo::bitmap"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/subr.rs"
@@ -8162,6 +8188,62 @@ crate = "kernel"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "redesigned"
 notes = "N5.2: vfs_subr.c's vnode table and helpers over VfsTables<G> (one per glue: the vnode BoxPool, items leaked; the free and hold lists under one Mutexed at IPL_BIO; the mount lists, speclisth and the syncer wheel; the Vnops registry by address, VopsId; rootvnode; the device switch); getnewvnode, insmntque, bdevvp, cdevvp, getdevvp, checkalias, vget, vref, vputonfreelist, vput, vrele, vhold, vdrop, vfs_mount_foreach_vnode, vflush, vclean, vrecycle, vgone, vgonel, vfinddev, vdevgone, vcount, vprint, printlockedvnodes, vfs_sysctl as the SysctlNode VfsSysctl, vfs_mountedon, vaccess, vnoperm, vfs_stall, vfs_stall_barrier, vwaitforio, vinvalbuf, vflushbuf, copy_statfs_info; the vnode's BufVnode and VnodeOps impls (from vfs_subr.rs and vm_bsd.rs); the shutdown trio and the NFS export list stay bsd's (D-N5.2-7)"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::IFTOVT_TAB"
+native = ["sys/kernel/fs/vnode.rs::IFTOVT_TAB"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VTTOIF_TAB"
+native = ["sys/kernel/fs/vnode.rs::VTTOIF_TAB"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::Freelst"
+native = ["FreeLists"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::Mntlist"
+native = ["sys/kernel/fs/mount.rs::MountLists"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::PRTACTIVE"
+native = ["VfsTables", "sys/sys/vnode.rs::PRTACTIVE"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VNODE_HOLD_LIST"
+native = ["FreeLists"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VNODE_FREE_LIST"
+native = ["FreeLists"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::MOUNTLIST"
+native = ["sys/kernel/fs/mount.rs::MountLists"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::MAXVNODES"
+native = ["VfsTables", "sys/sys/vnode.rs::MAXVNODES"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VNODE_MTX"
+native = ["sys/kernel/fs/vnode.rs::VNODE_MTX"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VNODE_POOL"
+native = ["VfsTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::NUMVNODES"
+native = ["VfsTables", "sys/sys/vnode.rs::NUMVNODES"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::vfs_sysctl"
+native = ["VfsSysctl"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VFS_STALL_LOCK"
+native = ["VfsTables"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/sync.rs"
@@ -8169,6 +8251,43 @@ crate = "kernel"
 lz = ["sys/kern/vfs_sync.rs"]
 status = "redesigned"
 notes = "N5.2: the syncer's wheel a fixed array of SYNCER_MAXDELAY hal lists inside the tables' Mutexed at IPL_BIO (LZ's hashinit table behind an AtomicPtr and its unsafe slot accessor go), each vnode recording its slot; vn_syncer_add_to_worklist, syncer_remove, syncer_thread, sync_vops as SyncVops<G> (fixed id), vfs_allocate_syncvnode, sync_fsync, sync_inactive, sync_print"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::Synclist"
+native = ["BySynclist"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::syncer_maxdelay"
+native = ["Wheel"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::SYNCER_DELAYNO"
+native = ["Wheel"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::SYNCER_MASK"
+native = ["Wheel::mask"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::SYNCER_WORKITEM_PENDING"
+native = ["Wheel"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::SYNCERPROC"
+native = ["sys/kernel/fs/bio.rs::SYNCER"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::syncerproc"
+native = ["sys/kernel/fs/bio.rs::syncer_word"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::syncer_slot"
+native = []
+kind = "dropped"
+reason = "the wheel's slots are a fixed array the wheel's own lock guards (Wheel), indexed in place; LZ's accessor through the hashinit table's raw pointer has no successor"
+[[module.fn]]
+lz = "sys/kern/vfs_sync.rs::SYNC_VOPS"
+native = ["SyncVops::TABLE"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/vnode.rs"
@@ -8185,6 +8304,51 @@ kind = "renamed"
 lz = "sys/kern/vfs_vnops.rs::File::vnode"
 native = ["sys/sys/file.rs::File::vnode"]
 kind = "moved"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::op"
+native = ["Vnode::ops"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::v_mountedhere"
+native = ["Vnode::mountedhere"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::set_v_mountedhere"
+native = ["Vnode::set_mountedhere"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::v_socket"
+native = ["sys/sys/vnode.rs::VnodeG"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::set_v_socket"
+native = ["sys/sys/vnode.rs::VnodeG"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::v_specinfo"
+native = ["Vnode::with_specinfo"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::specinfo"
+native = ["Vnode::with_specinfo"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::v_rdev"
+native = ["Vnode::rdev"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::v_specmountpoint"
+native = ["Vnode::specmountpoint"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::v_specparent"
+native = ["Vnode::specparent"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/sys/vnode.rs::Vnode::default"
+native = []
+kind = "dropped"
+reason = "a vnode is made by getnewvnode only, a leaked item of the vnode pool (Vnode::new is private); test doubles use Vnode::new_unpooled"
 
 [[module]]
 rust = "sys/kernel/fs/vops.rs"
@@ -8199,6 +8363,26 @@ crate = "kernel"
 lz = ["sys/miscfs/deadfs/dead_vnops.rs"]
 status = "redesigned"
 notes = "N5.2: dead_vops as DeadVops<G> (fixed id VopsId::DEAD), chkvnlock over vnode_mtx's cell, dead_strategy over IoBuf"
+[[module.fn]]
+lz = "sys/miscfs/deadfs/dead_vnops.rs::DEAD_VOPS"
+native = ["DeadVops::TABLE"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/miscfs/deadfs/dead_vnops.rs::dead_ioctl"
+native = ["DeadVops::ioctl"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/miscfs/deadfs/dead_vnops.rs::dead_inactive"
+native = ["DeadVops::inactive"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/miscfs/deadfs/dead_vnops.rs::dead_bmap"
+native = ["DeadVops::bmap"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/miscfs/deadfs/dead_vnops.rs::dead_print"
+native = ["DeadVops::print"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/bufq.rs"
@@ -8434,7 +8618,8 @@ status = "inherited"
 rust = "sys/sys/vnode.rs"
 lz = ["sys/sys/vnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs"]
+notes = "N5.2: the face of kernel::fs::vnode for the bsd file systems: Vnode the alias of the kernel's Vnode<BsdProcGlue>, VnodeG (v_nc_tree, v_cache_dst, v_socket, si_lockf: bsd's members, LZ's unsafe impl Sync moved onto it from struct vnode, decision 2), the struct vop_*_args and struct vops of Option<fn> slots (kern/vfs_vops.rs implements the kernel's Vnops on it), cred_ref (2 unsafe, LZ's, until N5.3's credentials), vfs_subr.c's names over kernel::fs::subr (wrappers where the glue cannot be inferred), set_vops; Vnode::data_as (LZ's unsafe data<T>, no callers) deleted"
 
 [[module]]
 rust = "sys/hal/sys/wait.rs"
@@ -9887,7 +10072,7 @@ reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's p
 
 [[extra]]
 rust = "sys/benches/fs.rs"
-reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on LZ's shape (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx, splbio) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed with the switch to kernel::fs; no OpenBSD or LZ source"
+reason = "decision 43, N5.2: host microbenchmarks of the vnode layer as bsd reaches it (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx, the free lists' lock), on LZ's shape before the switch and on kernel::fs with bsd's real glue after it, over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed by N5.2's last bench commit; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/benches/legacy_sched.rs"
@@ -12600,7 +12785,7 @@ native = ["sys/kernel/vm/object.rs::ObjRef::uvn"]
 kind = "renamed"
 [[module.fn]]
 lz = "sys/uvm/uvm_vnode.rs::v_uvm"
-native = ["sys/kern/vm_bsd.rs::Vnode::uvn"]
+native = ["sys/kernel/fs/vnode.rs::Vnode::uvn"]
 kind = "renamed"
 [[module.fn]]
 lz = "sys/uvm/uvm_vnode.rs::uvn_get"

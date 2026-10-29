@@ -167,8 +167,8 @@ pub fn cache_zap(ncp: &'static Namecache) {
     }
     if let Some(ndvp) = ncp.nc_dvp.get() {
         // SAFETY: an entry with a parent is in the parent's tree (`cache_enter`).
-        unsafe { ndvp.v_nc_tree.remove(ncp) };
-        if ndvp.v_nc_tree.is_empty() {
+        unsafe { ndvp.g.v_nc_tree.remove(ncp) };
+        if ndvp.g.v_nc_tree.is_empty() {
             dvp = Some(ndvp);
         }
     }
@@ -178,7 +178,7 @@ pub fn cache_zap(ncp: &'static Namecache) {
     {
         // SAFETY: such an entry is on its vnode's reverse map while the capability number
         // has not changed (`cache_purge` empties the map before changing it).
-        unsafe { vp.v_cache_dst.remove(ncp) };
+        unsafe { vp.g.v_cache_dst.remove(ncp) };
     }
     pool_put(&NCH_POOL, NonNull::from(ncp).cast());
     if let Some(dvp) = dvp {
@@ -211,7 +211,7 @@ pub fn cache_lookup(
     let mut key = [0u8; NAMECACHE_MAXLEN];
     key[..name.len()].copy_from_slice(name);
     n.nc_name.set(key);
-    let Some(ncp) = dvp.v_nc_tree.find(&n) else {
+    let Some(ncp) = dvp.g.v_nc_tree.find(&n) else {
         NCHSTATS.ncs_miss.fetch_add(1, Ordering::Relaxed);
         return Ok(None);
     };
@@ -325,7 +325,7 @@ pub fn cache_revlookup(
     if DOINGCACHE.load(Ordering::Relaxed) == 0 {
         return Ok(None);
     }
-    let found = vp.v_cache_dst.iter().find_map(|ncp| {
+    let found = vp.g.v_cache_dst.iter().find_map(|ncp| {
         let dvp = ncp.nc_dvp.get()?;
         (!ptr::eq(dvp, vp) && ncp.nc_dvpid.get() == u64::from(dvp.id())).then_some((ncp, dvp))
     });
@@ -403,11 +403,11 @@ pub fn cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Compon
     let mut nc_name = [0u8; NAMECACHE_MAXLEN];
     nc_name[..name.len()].copy_from_slice(name);
     ncp.nc_name.set(nc_name);
-    if dvp.v_nc_tree.is_empty() {
+    if dvp.g.v_nc_tree.is_empty() {
         vhold(dvp);
     }
     // SAFETY: a fresh entry in no tree; it never moves.
-    if unsafe { dvp.v_nc_tree.insert(ncp) }.is_some() {
+    if unsafe { dvp.g.v_nc_tree.insert(ncp) }.is_some() {
         // someone has raced us and added a different entry for the same vnode (different
         // ncp) - we don't need this entry, so free it and we are done. We know now
         // dvp->v_nc_tree is not empty, no need to vdrop here.
@@ -421,7 +421,7 @@ pub fn cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Compon
             NUMCACHE.fetch_add(1, Ordering::Relaxed);
             // don't put . or .. in the reverse map
             if in_reverse_map(ncp, vp) {
-                vp.v_cache_dst.insert_tail(ncp);
+                vp.g.v_cache_dst.insert_tail(ncp);
             }
         }
     } else {
@@ -455,12 +455,12 @@ pub fn nchinit() {
 /// now be invalid.
 pub fn cache_purge(vp: &'static Vnode) {
     // We should never have destinations cached for a non-VDIR vnode.
-    kassert!(vp.vtype() == VDIR || vp.v_cache_dst.is_empty());
+    kassert!(vp.vtype() == VDIR || vp.g.v_cache_dst.is_empty());
 
-    while let Some(ncp) = vp.v_cache_dst.first() {
+    while let Some(ncp) = vp.g.v_cache_dst.first() {
         cache_zap(ncp);
     }
-    while let Some(ncp) = vp.v_nc_tree.root() {
+    while let Some(ncp) = vp.g.v_nc_tree.root() {
         cache_zap(ncp);
     }
 
@@ -559,7 +559,7 @@ mod tests {
         cache_enter(dvp, Some(vp), &cn(b"c", LOOKUP, MAKEENTRY));
         assert_eq!(NUMCACHE.load(Ordering::SeqCst), 1);
         // A directory entry other than . and .. goes into the reverse map.
-        assert!(vp.v_cache_dst.first().is_some());
+        assert!(vp.g.v_cache_dst.first().is_some());
 
         // A hit on the last component without LOCKPARENT unlocks the parent.
         let mut c = cn(b"c", LOOKUP, MAKEENTRY | ISLASTCN);
@@ -621,8 +621,8 @@ mod tests {
         let vp = vget_node(mp, B).unwrap();
         let _ = VOP_UNLOCK(vp);
         cache_enter(dvp, Some(vp), &cn(b"b", LOOKUP, MAKEENTRY));
-        assert!(!dvp.v_nc_tree.is_empty());
-        assert_eq!(dvp.v_holdcnt.get(), 1, "a directory with entries is held");
+        assert!(!dvp.g.v_nc_tree.is_empty());
+        assert_eq!(dvp.holdcnt(), 1, "a directory with entries is held");
 
         let id = vp.id();
         cache_purge(vp);
@@ -632,17 +632,13 @@ mod tests {
         let falsehits = NCHSTATS.ncs_falsehits.load(Ordering::SeqCst);
         assert!(matches!(cache_lookup(dvp, &mut c), Ok(None)));
         assert_eq!(NCHSTATS.ncs_falsehits.load(Ordering::SeqCst), falsehits + 1);
-        assert!(dvp.v_nc_tree.is_empty());
-        assert_eq!(
-            dvp.v_holdcnt.get(),
-            0,
-            "the last entry gone, the hold is dropped"
-        );
+        assert!(dvp.g.v_nc_tree.is_empty());
+        assert_eq!(dvp.holdcnt(), 0, "the last entry gone, the hold is dropped");
 
         // Purging the directory empties its own tree.
         cache_enter(dvp, Some(vp), &cn(b"b", LOOKUP, MAKEENTRY));
         cache_purge(dvp);
-        assert!(dvp.v_nc_tree.is_empty());
+        assert!(dvp.g.v_nc_tree.is_empty());
         assert_eq!(NUMCACHE.load(Ordering::SeqCst), 0);
         vrele(vp);
         crate::sys::vnode::vput(dvp);

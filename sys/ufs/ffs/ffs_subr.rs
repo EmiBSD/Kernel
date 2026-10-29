@@ -73,7 +73,6 @@ use crate::sys::buf::Buf;
 use crate::sys::buf::{bread, brelse, buf_adjcnt};
 use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
-use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::{
     VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, iftovt,
@@ -192,13 +191,13 @@ pub fn ffs_vinit(mntp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vn
     vp.set_vtype(iftovt(ip.dip_mode()));
     match vp.vtype() {
         VCHR | VBLK => {
-            vp.v_op.set(Some(&FFS_SPECVOPS));
+            crate::sys::vnode::set_vops(vp, &FFS_SPECVOPS);
             if let Some(nvp) = checkalias(vp, ip.dip_rdev() as Dev, Some(mntp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.
                 nvp.set_data(vp.data());
                 vp.set_data(ptr::null_mut());
-                vp.v_op.set(Some(&SPEC_VOPS));
+                vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
                 // Reinitialize aliased inode.

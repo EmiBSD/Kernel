@@ -194,8 +194,8 @@ use crate::sys::systm::{
 use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
 use crate::sys::unpcb::{UnpRefs, sotounpcb};
-use crate::sys::vnode::{MAXVNODES, NUMVNODES, vfs_sysctl};
-use crate::sys::vnode::{Vattr, Vnode, VnodeUn, makeimode};
+use crate::sys::vnode::NUMVNODES;
+use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
 use crate::{
@@ -231,7 +231,12 @@ static RAW_PART: AtomicI32 = AtomicI32::new(RAW_PART_C);
 /// registered with the kernel's dispatcher, which searches its own entries first.
 static KERN_VARS: [SysctlBoundedArgs; 15] = [
     SysctlBoundedArgs::readonly(KERN_OSREV, &OPENBSD),
-    SysctlBoundedArgs::new(KERN_MAXVNODES, &MAXVNODES, 0, i32::MAX),
+    SysctlBoundedArgs::new(
+        KERN_MAXVNODES,
+        &crate::kern::kern_descrip::VFS_TABLES.maxvnodes,
+        0,
+        i32::MAX,
+    ),
     SysctlBoundedArgs::new(KERN_MAXPROC, &MAXPROCESS, 0, i32::MAX),
     SysctlBoundedArgs::new(KERN_MAXFILES, &MAXFILES, 0, i32::MAX),
     SysctlBoundedArgs::readonly(KERN_NFILES, &NUMFILES),
@@ -619,13 +624,12 @@ pub fn sysctl_rdstruct(
 }
 
 /// `PTRTOINT64(vp->v_un.vu_socket)`: whatever pointer the vnode's union holds.
-fn vnode_un_ptr(un: VnodeUn) -> u64 {
-    match un {
-        VnodeUn::None => 0,
-        VnodeUn::Mountedhere(mp) => ptrtoint64(mp),
-        VnodeUn::Socket(so) => ptrtoint64(so),
-        VnodeUn::Specinfo(si) => ptrtoint64(si),
-        VnodeUn::Fifoinfo(fi) => ptrtoint64(fi),
+fn vnode_un_ptr(vp: &Vnode) -> u64 {
+    // `v_socket` is bsd's member of the vnode (`VnodeG`), the other members the kernel's
+    // `v_un`: one of them is set, as the C's union.
+    match vp.g.v_socket.get() {
+        Some(so) => ptrtoint64(so),
+        None => vp.un_addr() as u64,
     }
 }
 
@@ -789,7 +793,7 @@ fn file_data_addr(fp: &File) -> u64 {
 /// The `DTYPE_VNODE` case of `fill_file`.
 fn fill_file_vnode(kf: &mut KinfoFile, vp: &'static Vnode, p: &Proc, show_pointers: bool) {
     if show_pointers {
-        kf.v_un = vnode_un_ptr(vp.v_un.get());
+        kf.v_un = vnode_un_ptr(vp);
     }
     kf.v_type = vp.vtype() as u32;
     kf.v_tag = vp.tag() as u32;
@@ -1822,7 +1826,10 @@ static HW_NODES: [(i32, &dyn SysctlNode); 5] = [
 /// The top-level trees of `bsd`'s subsystems, by id (`ddb_sysctl` with `DDB`).
 static TOP_NODES: [(i32, &dyn SysctlNode); 4] = [
     (CTL_NET, &ProcNode(crate::kern::uipc_domain::net_sysctl)),
-    (CTL_VFS, &ProcNode(vfs_sysctl)),
+    (
+        CTL_VFS,
+        &kernel::fs::subr::VfsSysctl::<crate::kern::proc_glue::BsdProcGlue>::NODE,
+    ),
     (CTL_MACHDEP, &ProcNode(crate::machine::cpu::cpu_sysctl)),
     (CTL_DDB, &ProcNode(crate::ddb::db_usrreq::ddb_sysctl)),
 ];

@@ -194,7 +194,7 @@ impl Default for NfsMount {
 #[allow(non_snake_case)] // the C name
 pub fn VFSTONFS(mp: &Mount) -> &'static NfsMount {
     let data = mp.data();
-    let nfs = mp.mnt_vfc.get().map(|vfc| vfc.name()) == Some(b"nfs".as_slice());
+    let nfs = mp.vfc().name() == b"nfs".as_slice();
     if data.is_null() || !nfs {
         panic(format_args!(
             "VFSTONFS: mount {:p} is not a mounted NFS",

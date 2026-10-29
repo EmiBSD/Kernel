@@ -1316,7 +1316,7 @@ mod tests {
     /// `ntfs_nthashinit`.
     fn mount(p: &'static Proc, flag: u64) -> Result<&'static Mount, Errno> {
         let devvp = bdevvp(DISKDEV).unwrap().unwrap();
-        devvp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(devvp, &DISK_VOPS);
         let mp = vfs_mount_alloc(None, vfs_byname(b"ntfs").unwrap());
         mp.set_flag(mp.flag() | MNT_RDONLY);
         ntfs_nthashinit();

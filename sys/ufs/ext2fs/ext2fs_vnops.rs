@@ -1425,8 +1425,8 @@ mod tests {
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, Uio};
     use crate::sys::unistd::_PC_LINK_MAX;
-    use crate::sys::vnode::{MOUNTLIST, vattr_null, vfs_busy, vfs_unbusy};
     use crate::sys::vnode::{VCHR, Vattr};
+    use crate::sys::vnode::{vattr_null, vfs_busy, vfs_unbusy};
     use crate::ufs::ext2fs::ext2fs::{
         E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV1, EXT2F_INCOMPAT_FTYPE, EXT2F_ROCOMPAT_SPARSE_SUPER,
         Ext2Gd, Ext2fs, e2fs_sbsave,
@@ -1862,8 +1862,7 @@ mod tests {
         assert!(crate::kern::kern_tc::getnanotime().tv_sec >= 1_700_000_000);
         let mp = mount(p, false).unwrap();
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));

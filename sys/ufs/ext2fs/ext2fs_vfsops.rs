@@ -125,9 +125,9 @@ use crate::sys::types::{Daddr, Ino, Off, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{FORCECLOSE, V_SAVE, VBAD, VBLK, VNON, VT_EXT2FS, Vnode, WRITECLOSE};
 use crate::sys::vnode::{
-    MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
-    vfs_mount_foreach_vnode, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget,
-    vgonel, vinvalbuf, vput, vref, vrele,
+    bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_mount_foreach_vnode,
+    vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget, vgonel, vinvalbuf, vput,
+    vref, vrele,
 };
 use crate::ufs::ext2fs::ext2fs::{
     E2FS_ERRORS, E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV0, E2FS_REV1, EXT2_GD_SIZE,
@@ -265,8 +265,7 @@ pub fn ext2fs_mountroot() -> Result<(), Errno> {
         return Err(e);
     }
 
-    // SAFETY: a new mount on no list, under the kernel lock.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     let ump = vfstoufs(mp);
     let fs = ump.e2fs();
     let (name, len) = mp.mntonname();
@@ -1617,7 +1616,7 @@ pub(crate) mod tests {
     /// with.
     pub(crate) fn mount(p: &'static Proc, ronly: bool) -> Result<&'static Mount, Errno> {
         let devvp = bdevvp(DISKDEV).unwrap().unwrap();
-        devvp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(devvp, &DISK_VOPS);
         let mp = vfs_mount_alloc(None, vfs_byname(b"ext2fs").unwrap());
         if ronly {
             mp.set_flag(mp.flag() | MNT_RDONLY);
@@ -1631,6 +1630,8 @@ pub(crate) mod tests {
             }
             Err(e) => {
                 vrele(devvp);
+                // A mount is freed unbusied, as ext2fs_mountroot's failure does.
+                crate::sys::vnode::vfs_unbusy(mp);
                 vfs_mount_free(mp);
                 Err(e)
             }
@@ -1800,6 +1801,7 @@ pub(crate) mod tests {
         vput(hello);
         vput(root);
         ext2fs_unmount(mp, 0, p).unwrap();
+        crate::sys::vnode::vfs_unbusy(mp);
         vfs_mount_free(mp);
         // A read-only unmount writes nothing.
         assert_eq!(*DISK.lock().unwrap(), image(true));
@@ -1873,6 +1875,7 @@ pub(crate) mod tests {
         vput(hello);
         vput(root);
         ext2fs_unmount(mp, 0, p).unwrap();
+        crate::sys::vnode::vfs_unbusy(mp);
         vfs_mount_free(mp);
 
         // On the disk: clean, the counts and bitmaps back, hello.txt empty, inode 15 free.

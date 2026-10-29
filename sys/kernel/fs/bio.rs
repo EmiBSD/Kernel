@@ -177,8 +177,8 @@
 //!   `v_bioflag`, LZ's `bsd` fields) -> [`VnodeBufs`], embedded in `bsd`'s vnode, its tree and
 //!   lists a cell of the cache's lock; what the cache asks of the vnode itself (`vhold`,
 //!   `vdrop`, `VOP_STRATEGY`, `VOP_BWRITE`, `VOP_BMAP`, its type and device, its mount's
-//!   flags and counters, the syncer's worklist) is the bridge [`BufVnode`] (bridges.toml,
-//!   paid by N5.2). `bgetvp`, `brelvp`, `buf_replacevnode`, `reassignbuf`, `vwaitforio` and
+//!   flags and counters, the syncer's worklist) is the trait [`BufVnode`] (a bridge while
+//!   `bsd` implemented it; since N5.2 the kernel's vnode does, `kernel::fs::subr`). `bgetvp`, `brelvp`, `buf_replacevnode`, `reassignbuf`, `vwaitforio` and
 //!   `vwakeup` move here from `vfs_subr.c`'s port.
 //! - `B_BUSY` is the token (`kernel::fs::buf::BufRef`): `getblk`, `bread`, `geteblk` give
 //!   it, `brelse`, `bwrite`, `bdwrite`, `bawrite` and `biodone` consume it. A synchronous
@@ -454,8 +454,8 @@ impl Default for VnodeBufs {
     }
 }
 
-/// What the buffer cache asks of a vnode (`bsd`'s `struct vnode` until N5.2): one call each,
-/// implemented by `bsd`'s vnode (bridges.toml `BufVnode`, paid by N5.2).
+/// What the buffer cache asks of a vnode: one call each, implemented by the kernel's vnode
+/// (`kernel::fs::vnode::Vnode<G>`, since N5.2; `bsd`'s before, a bridge).
 pub trait BufVnode: Sync {
     /// `vhold(vp)`: the vnode gets a buffer reference (off the free list onto the hold list
     /// when it had none and is unused).

@@ -584,7 +584,7 @@ pub fn uipc_bind(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<()
         let Some(vp) = nd.ni_vp else {
             panic(format_args!("uipc_bind: VOP_CREATE returned no vnode"));
         };
-        vp.set_v_socket(Some(unp.unp_socket));
+        vp.g.v_socket.set(Some(unp.unp_socket));
         unp.unp_vnode.set(Some(vp));
         let cred = p.ucred();
         unp.unp_connid.set(Sockpeercred {
@@ -1005,7 +1005,7 @@ pub fn unp_detach(unp: &'static Unpcb) {
         // Enforce `i_lock' -> solock() lock order.
         sounlock(so);
         let _ = VOP_LOCK(vp, LK_EXCLUSIVE);
-        vp.set_v_socket(None);
+        vp.g.v_socket.set(None);
 
         kernel_lock();
         vput(vp);
@@ -1109,7 +1109,7 @@ pub fn unp_connect(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<
             if let Err(e) = VOP_ACCESS(vp, VWRITE, p.ucred_ptr(), p) {
                 break 'put Err(e);
             }
-            let Some(so2) = vp.v_socket() else {
+            let Some(so2) = vp.g.v_socket.get() else {
                 break 'put Err(Errno::ECONNREFUSED);
             };
             if so.so_type.get() != so2.so_type.get() {

@@ -55,9 +55,12 @@
 //!
 //! Upstream: sys/sys/mount.h @ 3ce1f3f79392
 //!
-//! A `struct mount` is `malloc(M_MOUNT)`ed by `vfs_mount_alloc` and freed when its last
-//! reference (`mnt_refs`) goes; it is handed around as `&'static Mount`, the `crget`/`crfree`
-//! idiom of `docs/C_TO_RUST.md`.
+//! Since N5.2 `struct mount` and `struct vfsconf` are the kernel crate's (`kernel::fs::mount`,
+//! never freed: a mount whose last reference goes is recycled, D-N5.2-2) and `struct vfsops`
+//! is the kernel's trait `Vfs`; this module is their face for the `bsd` file systems: the
+//! aliases [`Mount`] and [`Vfsconf`], `struct vfsops` of `fn` members (which
+//! `kern/vfs_vops.rs` implements as the kernel's `Vfs`), the `VFS_*` names over the kernel's
+//! and the per-file system `*_args`.
 //!
 //! ## How a file system plugs in
 //! - It fills a `static` [`Vfsops`] and an entry of `vfsconflist[]` (`kern/vfs_init.rs`).
@@ -67,9 +70,7 @@
 //! - Its per-mount data hangs from `mnt_data` (`*mut c_void`, as in C).
 //!
 //! ## Deviations
-//! - `mnt_op` and `mnt_vfc` are `Option`s (a zeroed allocation has neither) with accessors
-//!   that assert them; `mnt_stat` is a `Cell<Statfs>`, read with `get` and changed with
-//!   [`Mount::update_stat`].
+//! - `mnt_stat` is read with the kernel's `Mount::stat` and changed with `Mount::with_stat`.
 //! - `struct statfs` names the holes the C compiler leaves (`_pad0` after `f_iosize`, `_pad1`
 //!   before `mount_info`), so the structure is plain data that `copyout` may read whole;
 //!   `union mount_info` is its 160 bytes, 8-aligned: the per-filesystem views come with
@@ -78,7 +79,6 @@
 //!   with M10c, `nfs_args` with NFS (M10e); each `*Args::from_bytes` reads them out of the kernel copy of the mount
 //!   arguments). `ntfs_args` (`NtfsArgs`) and the two `NTFS_MFLAG_*` came with NTFS (M10d),
 //!   under cfg `option_ntfs` (feature `ntfs`, amd64 only: `sys/build.rs`).
-//! - `struct vfsconf`'s `vfc_refcount` is atomic (`atomic_inc_int` in C).
 //! - `VFS_*` are functions with the macros' names (`#[allow(non_snake_case)]`).
 //! - `struct netcred` and `struct netexport` are always defined, as the C header does, over
 //!   the ported radix tree (`net/radix.rs`): their members are `Cell`s, the `ne_rtable_inet`
@@ -90,24 +90,19 @@
 //!   ones are their functions in `vfs_subr.rs`, `vfs_init.rs` and `vfs_syscalls.rs`.
 
 use core::cell::Cell;
-use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::AtomicU32;
 
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::net::radix::{RadixNode, RadixNodeHead};
-use crate::queue_adapter;
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::Mbuf;
 use crate::sys::namei::Nameidata;
 use crate::sys::proc::Proc;
-use crate::sys::queue::{SlistEntry, TailqEntry, TailqHead};
-use crate::sys::refcnt::Refcnt;
-use crate::sys::rwlock::Rwlock;
 use crate::sys::sysctl::Sysctlfn;
 use crate::sys::types::{Gid, Ino, Mode, Off, Uid};
 use crate::sys::ucred::{Ucred, UcredCell};
-use crate::sys::vnode::{VMntvnodes, Vnode};
+use crate::sys::vnode::Vnode;
 /// `struct bcachestats`: buffer cache statistics, `hal`'s (N5.1: one copy for the kernel's
 /// cache and `vfs.generic.bcachestat`).
 pub use hal::sys::mount::{
@@ -121,6 +116,7 @@ pub use hal::sys::mount::{
     MOUNT_UDF, MOUNT_UFS, MountInfo, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
     VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi,
 };
+use kernel::fs::vops::Cred;
 
 /// `struct export_args`: export arguments for local filesystem mount calls. The two
 /// `struct sockaddr *` are user addresses (`usize`), which the kernel copies in when it
@@ -503,229 +499,16 @@ pub struct FusefsArgs {
 #[cfg(feature = "fuse")]
 mount_args_from_bytes!(FusefsArgs, "fusefs_args");
 
-/// `struct mount`: structure per mounted file system. Each mounted file system has an array of
-/// operations and an instance record. The file systems are put on a doubly linked list.
-pub struct Mount {
-    /// `mnt_list`: mount list.
-    pub mnt_list: TailqEntry<Mount>,
-    /// `mnt_dounmount`: unmount work queue.
-    pub mnt_dounmount: SlistEntry<Mount>,
-    /// `mnt_op`: operations on fs.
-    pub mnt_op: Cell<Option<&'static Vfsops>>,
-    /// `mnt_vfc`: configuration info.
-    pub mnt_vfc: Cell<Option<&'static Vfsconf>>,
-    /// `mnt_vnodecovered`: vnode we mounted on.
-    pub mnt_vnodecovered: Cell<Option<&'static Vnode>>,
-    /// `mnt_syncer`: syncer vnode.
-    pub mnt_syncer: Cell<Option<&'static Vnode>>,
-    /// `mnt_vnodelist`: list of vnodes this mount.
-    pub mnt_vnodelist: TailqHead<VMntvnodes>,
-    /// `mnt_lock`: mount structure lock.
-    pub mnt_lock: Rwlock,
-    /// `mnt_refs`.
-    pub mnt_refs: Refcnt,
-    /// `mnt_flag`: flags.
-    pub mnt_flag: Cell<i32>,
-    /// `mnt_stat`: cache of filesystem stats.
-    pub mnt_stat: Cell<Statfs>,
-    /// `mnt_data`: private data.
-    pub mnt_data: Cell<*mut c_void>,
-}
+/// `struct mount`: the kernel's.
+pub type Mount = kernel::fs::mount::Mount<BsdProcGlue>;
 
-// SAFETY: the members are changed under the kernel lock or `mnt_lock` (`vfs_busy`), as in
-// C; the kernel runs one CPU.
-unsafe impl Sync for Mount {}
+/// `struct vfsconf`: the kernel's (`vfsconflist[]` is `kern/vfs_init.rs`'s).
+pub type Vfsconf = kernel::fs::mount::Vfsconf<BsdProcGlue>;
 
-impl Mount {
-    /// A zeroed mount, as `malloc(M_MOUNT, M_ZERO)` returns it.
-    pub const fn new() -> Self {
-        Self {
-            mnt_list: TailqEntry::new(),
-            mnt_dounmount: SlistEntry::new(),
-            mnt_op: Cell::new(None),
-            mnt_vfc: Cell::new(None),
-            mnt_vnodecovered: Cell::new(None),
-            mnt_syncer: Cell::new(None),
-            mnt_vnodelist: TailqHead::new(),
-            mnt_lock: Rwlock::new("vfslock"),
-            mnt_refs: Refcnt::new(),
-            mnt_flag: Cell::new(0),
-            mnt_stat: Cell::new(Statfs::new()),
-            mnt_data: Cell::new(ptr::null_mut()),
-        }
-    }
-
-    /// `mp->mnt_op`, which `vfs_mount_alloc` set.
-    pub fn op(&self) -> &'static Vfsops {
-        match self.mnt_op.get() {
-            Some(op) => op,
-            None => panic(format_args!("mount {:p}: no mnt_op", self)),
-        }
-    }
-
-    /// `mp->mnt_flag`.
-    #[inline]
-    pub fn flag(&self) -> i32 {
-        self.mnt_flag.get()
-    }
-
-    /// `mp->mnt_flag = f`.
-    #[inline]
-    pub fn set_flag(&self, f: i32) {
-        self.mnt_flag.set(f);
-    }
-
-    /// `mp->mnt_flag |= f`.
-    #[inline]
-    pub fn flag_set(&self, f: i32) {
-        self.mnt_flag.set(self.mnt_flag.get() | f);
-    }
-
-    /// `mp->mnt_flag &= ~f`.
-    #[inline]
-    pub fn flag_clr(&self, f: i32) {
-        self.mnt_flag.set(self.mnt_flag.get() & !f);
-    }
-
-    /// `mp->mnt_stat`.
-    #[inline]
-    pub fn stat(&self) -> Statfs {
-        self.mnt_stat.get()
-    }
-
-    /// `mp->mnt_data`.
-    #[inline]
-    pub fn data(&self) -> *mut c_void {
-        self.mnt_data.get()
-    }
-
-    /// `mp->mnt_data = p`.
-    #[inline]
-    pub fn set_data(&self, p: *mut c_void) {
-        self.mnt_data.set(p);
-    }
-
-    /// `mp->mnt_vnodecovered`.
-    #[inline]
-    pub fn vnodecovered(&self) -> Option<&'static Vnode> {
-        self.mnt_vnodecovered.get()
-    }
-
-    /// `mp->mnt_vnodecovered = vp`.
-    #[inline]
-    pub fn set_vnodecovered(&self, vp: Option<&'static Vnode>) {
-        self.mnt_vnodecovered.set(vp);
-    }
-
-    /// `mp->mnt_syncer`.
-    #[inline]
-    pub fn syncer(&self) -> Option<&'static Vnode> {
-        self.mnt_syncer.get()
-    }
-
-    /// `mp->mnt_syncer = vp`.
-    #[inline]
-    pub fn set_syncer(&self, vp: Option<&'static Vnode>) {
-        self.mnt_syncer.set(vp);
-    }
-
-    /// Changes `mp->mnt_stat` in place.
-    pub fn with_stat(&self, f: impl FnOnce(&mut Statfs)) {
-        self.update_stat(f);
-    }
-
-    /// `mp->mnt_vfc`, which `vfs_mount_alloc` set.
-    pub fn vfc(&self) -> &'static Vfsconf {
-        match self.mnt_vfc.get() {
-            Some(vfc) => vfc,
-            None => panic(format_args!("mount {:p}: no mnt_vfc", self)),
-        }
-    }
-
-    /// Changes `mp->mnt_stat` in place.
-    pub fn update_stat(&self, f: impl FnOnce(&mut Statfs)) {
-        let mut sp = self.mnt_stat.get();
-        f(&mut sp);
-        self.mnt_stat.set(sp);
-    }
-
-    /// `mp->mnt_stat.f_mntonname`, without the NUL padding.
-    pub fn mntonname(&self) -> ([u8; MNAMELEN], usize) {
-        let name = self.mnt_stat.get().f_mntonname;
-        let len = name.iter().position(|&c| c == 0).unwrap_or(MNAMELEN);
-        (name, len)
-    }
-}
-
-impl Default for Mount {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-queue_adapter!(
-    /// `TAILQ_HEAD(mntlist, mount)`: the mounted file systems, through `mnt_list`.
-    pub MntList: Mount, mnt_list => TailqEntry<Mount>
-);
-
-queue_adapter!(
-    /// `SLIST_HEAD(, mount)`: `dounmount`'s work queue, through `mnt_dounmount`.
-    pub MntDounmount: Mount, mnt_dounmount => SlistEntry<Mount>
-);
-
-/// `struct vfsconf`: filesystem configuration information. One of these exists for each type
-/// of filesystem supported by the kernel. These are searched at mount time to identify the
-/// requested filesystem.
-pub struct Vfsconf {
-    /// `vfc_vfsops`: filesystem operations vector.
-    pub vfc_vfsops: &'static Vfsops,
-    /// `vfc_name`: filesystem type name.
-    pub vfc_name: [u8; MFSNAMELEN],
-    /// `vfc_typenum`: historic filesystem type number.
-    pub vfc_typenum: i32,
-    /// `vfc_refcount`: number mounted of this type.
-    pub vfc_refcount: AtomicU32,
-    /// `vfc_flags`: permanent flags.
-    pub vfc_flags: i32,
-    /// `vfc_datasize`: size of data args.
-    pub vfc_datasize: usize,
-}
-
-impl Vfsconf {
-    /// A configuration entry: `{ &ops, name, typenum, 0, flags, datasize }`.
-    pub const fn new(
-        vfsops: &'static Vfsops,
-        name: &[u8],
-        typenum: i32,
-        flags: i32,
-        datasize: usize,
-    ) -> Self {
-        let mut vfc_name = [0u8; MFSNAMELEN];
-        let mut i = 0;
-        while i < name.len() && i < MFSNAMELEN - 1 {
-            vfc_name[i] = name[i];
-            i += 1;
-        }
-        Self {
-            vfc_vfsops: vfsops,
-            vfc_name,
-            vfc_typenum: typenum,
-            vfc_refcount: AtomicU32::new(0),
-            vfc_flags: flags,
-            vfc_datasize: datasize,
-        }
-    }
-
-    /// `vfc_name` without the NUL padding.
-    pub fn name(&self) -> &[u8] {
-        let len = self
-            .vfc_name
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(MFSNAMELEN);
-        &self.vfc_name[..len]
-    }
-}
+pub use kernel::fs::mount::{
+    MountIter, mountlist, mountlist_first, mountlist_insert_head, mountlist_insert_tail,
+    mountlist_is_empty, mountlist_next, mountlist_remove,
+};
 
 /// `BUFPAGES_DEFICIT`: how far the buffer cache is below its low water mark, in pages.
 pub fn bufpages_deficit() -> i64 {
@@ -799,37 +582,37 @@ pub fn VFS_MOUNT(
     ndp: &mut Nameidata<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
-    (mp.op().vfs_mount)(mp, path, data, ndp, p)
+    kernel::fs::vops::VFS_MOUNT(mp, path, data, ndp, p)
 }
 
 /// `VFS_START(MP, FLAGS, P)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_START(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
-    (mp.op().vfs_start)(mp, flags, p)
+    kernel::fs::vops::VFS_START(mp, flags, p)
 }
 
 /// `VFS_UNMOUNT(MP, FORCE, P)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_UNMOUNT(mp: &'static Mount, force: i32, p: &Proc) -> Result<(), Errno> {
-    (mp.op().vfs_unmount)(mp, force, p)
+    kernel::fs::vops::VFS_UNMOUNT(mp, force, p)
 }
 
 /// `VFS_ROOT(MP, VPP)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_ROOT(mp: &'static Mount) -> Result<&'static Vnode, Errno> {
-    (mp.op().vfs_root)(mp)
+    kernel::fs::vops::VFS_ROOT(mp)
 }
 
 /// `VFS_QUOTACTL(MP, C, U, A, P)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_QUOTACTL(mp: &'static Mount, c: i32, u: Uid, a: usize, p: &Proc) -> Result<(), Errno> {
-    (mp.op().vfs_quotactl)(mp, c, u, a, p)
+    kernel::fs::vops::VFS_QUOTACTL(mp, c, u, a, p)
 }
 
 /// `VFS_STATFS(MP, SBP, P)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_STATFS(mp: &'static Mount, sbp: &mut Statfs, p: &Proc) -> Result<(), Errno> {
-    (mp.op().vfs_statfs)(mp, sbp, p)
+    kernel::fs::vops::VFS_STATFS(mp, sbp, p)
 }
 
 /// `VFS_SYNC(MP, W, S, C, P)`.
@@ -841,28 +624,25 @@ pub fn VFS_SYNC(
     c: *const Ucred,
     p: &Proc,
 ) -> Result<(), Errno> {
-    (mp.op().vfs_sync)(mp, w, s, c, p)
+    kernel::fs::vops::VFS_SYNC(mp, w, s, Cred::from_raw(c), p)
 }
 
 /// `VFS_VGET(MP, INO, VPP)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_VGET(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
-    (mp.op().vfs_vget)(mp, ino)
+    kernel::fs::vops::VFS_VGET(mp, ino)
 }
 
 /// `VFS_FHTOVP(MP, FIDP, VPP)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_FHTOVP(mp: &'static Mount, fidp: &Fid) -> Result<&'static Vnode, Errno> {
-    (mp.op().vfs_fhtovp)(mp, fidp)
+    kernel::fs::vops::VFS_FHTOVP(mp, fidp)
 }
 
 /// `VFS_VPTOFH(VP, FIDP)`.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_VPTOFH(vp: &'static Vnode, fidp: &mut Fid) -> Result<(), Errno> {
-    let Some(mp) = vp.v_mount.get() else {
-        panic(format_args!("VFS_VPTOFH: vnode {:p} has no mount", vp));
-    };
-    (mp.op().vfs_vptofh)(vp, fidp)
+    kernel::fs::vops::VFS_VPTOFH(vp, fidp)
 }
 
 /// `VFS_CHECKEXP(MP, NAM, EXFLG, CRED)`.
@@ -873,7 +653,14 @@ pub fn VFS_CHECKEXP(
     exflg: &mut i32,
     cred: &mut *const Ucred,
 ) -> Result<(), Errno> {
-    (mp.op().vfs_checkexp)(mp, nam, exflg, cred)
+    // `vfs_checkexp` is the NFS server's, `bsd`'s: the table as `bsd` knows it.
+    match mp.op().as_any().and_then(|a| a.downcast_ref::<Vfsops>()) {
+        Some(ops) => (ops.vfs_checkexp)(mp, nam, exflg, cred),
+        None => panic(format_args!(
+            "VFS_CHECKEXP: mount {:p} of a kernel file system",
+            mp
+        )),
+    }
 }
 
 /// `struct netcred`: network address lookup element. The radix tree of a [`Netexport`] holds

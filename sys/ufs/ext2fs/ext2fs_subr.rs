@@ -72,7 +72,6 @@ use crate::sys::buf::Buf;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
-use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::{
     VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, iftovt,
@@ -128,7 +127,7 @@ pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static V
 
     match vp.vtype() {
         VCHR | VBLK => {
-            vp.v_op.set(Some(&EXT2FS_SPECVOPS));
+            crate::sys::vnode::set_vops(vp, &EXT2FS_SPECVOPS);
 
             let rdev = u32::from_le(ip.with_e2din(|d| d.e2di_rdev())) as Dev;
             if let Some(nvp) = checkalias(vp, rdev, Some(mp)) {
@@ -136,7 +135,7 @@ pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static V
                 // over in the inode to the replacement vnode.
                 nvp.set_data(vp.data());
                 vp.set_data(ptr::null_mut());
-                vp.v_op.set(Some(&SPEC_VOPS));
+                vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
                 // Reinitialize aliased vnode.

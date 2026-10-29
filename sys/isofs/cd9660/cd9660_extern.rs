@@ -135,7 +135,7 @@ pub struct IsoMnt {
 /// `VFSTOISOFS(mp)`: the ISO 9660 data of a mounted cd9660 file system.
 pub fn vfstoisofs(mp: &Mount) -> &'static IsoMnt {
     let data = mp.data();
-    let cd9660 = mp.mnt_vfc.get().map(|vfc| vfc.name()) == Some(b"cd9660".as_slice());
+    let cd9660 = mp.vfc().name() == b"cd9660".as_slice();
     if data.is_null() || !cd9660 {
         panic(format_args!(
             "VFSTOISOFS: mount {:p} is not a mounted cd9660",

@@ -1072,7 +1072,7 @@ mod tests {
 
     /// `cd9660_setattr` of `vap` on a vnode of type `t`.
     fn setattr(t: crate::sys::vnode::Vtype, vap: &mut Vattr) -> Result<(), Errno> {
-        let vp: &'static Vnode = std::boxed::Box::leak(std::boxed::Box::new(Vnode::new()));
+        let vp: &'static Vnode = std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
         vp.set_vtype(t);
         let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
         let mut a = VopSetattrArgs {

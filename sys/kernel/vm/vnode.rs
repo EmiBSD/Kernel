@@ -117,11 +117,11 @@
 //!
 //! ## Redesign
 //! - The vnode (`struct vnode *u_vnode`, `vp->v_uvm`, and the `VOP_*`, `vget`, `vref`,
-//!   `vrele`, `vn_lock` calls on it) -> `&'static dyn VnodeOps`: a trait `bsd`'s `Vnode`
-//!   implements (bridges.toml `VnodeOps`, until the vnode layer moves, N5), each method one
-//!   call; `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset
-//!   (`bsd` builds the `UIO_SYSSPACE` uio over them with `curproc`'s credentials, as pipe's
-//!   `UioMove` does). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
+//!   `vrele`, `vn_lock` calls on it) -> `&'static dyn VnodeOps`: a trait the vnode implements
+//!   (`bsd`'s until N5.2, a bridge; since then `kernel::fs::vnode::Vnode<G>`'s, in
+//!   `kernel::fs::subr`: decision 39, the trait stays as API), each method one call;
+//!   `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset (a
+//!   `UIO_SYSSPACE` uio over them with `curproc`'s credentials). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
 //!   the VOP, the unlocks) is composed here from those one-call methods, the kernel lock
 //!   (`hal::klock`, `hal`'s own since N4.5c) and the `NetLock` bridge (`hal::netlock`).
 //!   `ratecheck`'s clock is `kernel::tc`'s `getmicrouptime`, and `rebooting` and its wait
@@ -362,10 +362,10 @@ static UVN_SYNC: Rwlocked<List<UvnSyncq>> = Rwlocked::new("uvnsync", List::new()
 /// `lasttime` of `uvn_flush`'s pageout error message (see the module's deviations).
 static FLUSH_LASTTIME: Mutexed<(i64, i64)> = Mutexed::new(IPL_HIGH, (0, 0));
 
-/// A vnode as the pager needs it (`struct vnode`, `bsd`'s until the vnode layer moves, N5):
-/// implemented by `bsd`'s `Vnode`, passed as `&'static dyn VnodeOps` (vnodes are never freed)
-/// and kept by the [`Uvn`]; each method is one call into the vnode layer (bridges.toml
-/// `VnodeOps`). The methods that reach the vnode layer take `&'static self`: its functions
+/// A vnode as the pager needs it (`struct vnode`): implemented by the kernel's vnode
+/// (`kernel::fs::vnode::Vnode<G>`, since N5.2; `bsd`'s before), passed as `&'static dyn
+/// VnodeOps` (vnodes are never freed) and kept by the [`Uvn`]; each method is one call into
+/// the vnode layer. The methods that reach the vnode layer take `&'static self`: its functions
 /// take `&'static Vnode`, and the pager only ever holds a vnode so.
 pub trait VnodeOps: Sync {
     /// `vp->v_uvm`: the vnode's object, once attached.
