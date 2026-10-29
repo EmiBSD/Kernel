@@ -22,7 +22,9 @@
 //! `vref`/`vrele`, `vget`/`vput`, `vn_lock`, `vhold`/`vdrop`, one operation's dispatch and
 //! a vnode's recycling, over the kernel's doubles and its test file system
 //! (`kernel::fs::testfs`, feature `doubles`). Never part of a kernel image; it measures and
-//! changes nothing. `sys/benches/fs.rs` times the same op names on LZ's shape.
+//! changes nothing. Until N5.2's last bench commit `sys/benches/fs.rs` timed the same op names
+//! on LZ's shape (and, at the switch, on `kernel::fs` with `bsd`'s glue); its numbers are in
+//! the commits b4c27cee and the one that removed it.
 //!
 //! `cargo bench -p kernel --features doubles --bench fs` (release: the `bench` profile) or
 //! with `--profile dev`. Arguments: `list`; the names of the benches to run (all by default).

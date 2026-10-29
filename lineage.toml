@@ -10071,10 +10071,6 @@ rust = "sys/benches/legacy_timeout.rs"
 reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's paths (timeout_set of a served wrapper, of a fresh wrapper at a known address, of a new address) over the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
-rust = "sys/benches/fs.rs"
-reason = "decision 43, N5.2: host microbenchmarks of the vnode layer as bsd reaches it (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx, the free lists' lock), on LZ's shape before the switch and on kernel::fs with bsd's real glue after it, over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed by N5.2's last bench commit; no OpenBSD or LZ source"
-
-[[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
