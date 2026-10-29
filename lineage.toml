@@ -5765,7 +5765,7 @@ notes = "N4.3: read/write/ioctl/utrace bodies moved into sys/kernel/descrip.rs a
 rust = "sys/kern/pipe_glue.rs"
 lz = ["sys/kern/sys_pipe.rs"]
 status = "redesigned"
-notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue"
+notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue (N4.4: the klist, N4.5b: the sigio left; N5.0: the clock, the filterops and their filt_pipe* functions are the kernel's, BsdPipeGlue gone, BsdFileGlue::pipe_of answers a pipe file's end)"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::fp_pipe"
@@ -5821,36 +5821,6 @@ kind = "split"
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::pipe_kqfilter"
 native = ["pipe_kqfilter", "sys/kernel/pipe.rs::PipePair::kqfilter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipedetach"
-native = ["filt_pipedetach", "sys/kernel/pipe.rs::PipePair::detach"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_piperead"
-native = ["filt_piperead", "sys/kernel/pipe.rs::PipePair::filter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipewrite"
-native = ["filt_pipewrite", "sys/kernel/pipe.rs::PipePair::filter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipeexcept"
-native = ["filt_pipeexcept", "sys/kernel/pipe.rs::PipePair::filter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipemodify"
-native = ["filt_pipemodify", "sys/kernel/pipe.rs::PipePair::with_lock"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipeprocess"
-native = ["filt_pipeprocess", "sys/kernel/pipe.rs::PipePair::with_lock"]
 kind = "split"
 
 [[module.fn]]
@@ -10882,13 +10852,28 @@ rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]
 status = "redesigned"
-notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy"
+notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy; N5.0: PipeGlue gone, the types generic over ProcGlue, the clock kernel::tc's getnanotime, the three filterops the Filter impls PipeRead/PipeWrite/PipeExcept erased as PipePair::PIPE_*FILTOPS with the C's filt_pipe* functions, finding the pair through FileGlue::pipe_of"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::PipePair::default"
 native = []
 kind = "dropped"
 reason = "a pair is built only by Pipes::create (PipePair::new is private and takes its glue, made fallibly); there is no zeroed pair"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_RFILTOPS"
+native = ["PipePair::PIPE_RFILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_WFILTOPS"
+native = ["PipePair::PIPE_WFILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_EFILTOPS"
+native = ["PipePair::PIPE_EFILTOPS"]
+kind = "moved"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::NBIGPIPE"

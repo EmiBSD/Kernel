@@ -1064,6 +1064,8 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     pub kq: Option<crate::event::KqRef<P>>,
     /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
     pub vnode: Option<&'static dyn VnodeOps>,
+    /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
+    pub pipe: Option<crate::pipe::PipeEnd<P>>,
 }
 
 impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
@@ -1075,6 +1077,7 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
             revoked: core::sync::atomic::AtomicBool::new(false),
             kq: None,
             vnode: None,
+            pipe: None,
         }
     }
 }
@@ -1358,6 +1361,9 @@ macro_rules! test_file_glue {
             }
             fn vnode_ops(d: &Self::Data) -> Option<&'static dyn $crate::vm::vnode::VnodeOps> {
                 d.vnode
+            }
+            fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
+                d.pipe.as_ref()
             }
             fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
                 $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));

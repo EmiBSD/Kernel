@@ -335,6 +335,15 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
+    fn pipe_of(
+        d: &BsdFileData,
+    ) -> Option<&kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>> {
+        match d {
+            BsdFileData::Pipe(pf) => Some(&pf.end),
+            _ => None,
+        }
+    }
+
     fn vnode_ops(d: &BsdFileData) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
         match d {
             BsdFileData::Vnode(v) => v

@@ -28,11 +28,11 @@
 //! `--profile dev`. Arguments: the names of the benches to run (all by default).
 //!
 //! The glue is this file's, as `bsd`'s is for the kernel: a process glue with no member of
-//! `bsd`'s, a file glue whose object holds a pipe's end (`bsd`'s `BsdFileData::Pipe`), and
-//! the pipe's own glue: the clock is `kernel::tc`'s `getnanotime` (what `bsd`'s glue reads)
-//! and the filterops find the pair through the knote's file, as `bsd`'s do. `dopipe`'s
-//! descriptor work is this file's copy of `bsd`'s (`sys/kern/pipe_glue.rs`) over the
-//! kernel's descriptor calls. What an op is:
+//! `bsd`'s and a file glue whose object holds a pipe's end (`bsd`'s `BsdFileData::Pipe`,
+//! `FileGlue::pipe_of`). Since N5.0 the clock (`kernel::tc`'s `getnanotime`) and the three
+//! filters (`kernel::pipe::PipeRead`, ...) are the kernel's; before, this file's pipe glue
+//! answered them as `bsd`'s did. `dopipe`'s descriptor work is this file's copy of `bsd`'s
+//! (`sys/kern/pipe_glue.rs`) over the kernel's descriptor calls. What an op is:
 //! - `pipe.create-close`: `pipe_pair_create` (the pool item, two buffers, the times) and
 //!   both ends dropped (`pipe_destroy` twice, the pair back to the pool).
 //! - `pipe.write-read-512`: one 512-byte write into a pair and one 512-byte read out of it.
@@ -60,14 +60,11 @@ use kernel::descrip::{
     closef, falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, fdremove, filedesc_init,
 };
 use kernel::event::{
-    __EV_HUP, __EV_POLL, __EV_SELECT, EV_ADD, EV_EOF, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE,
-    FILTEROP_ISFD, FILTEROP_MPSAFE, Filterops, Kevent, Knote, KqRef, ev_set, knote_modify,
-    knote_process, kqueue_alloc, kqueue_init, kqueue_register,
+    __EV_POLL, __EV_SELECT, EV_ADD, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, KqRef, ev_set,
+    kqueue_alloc, kqueue_init, kqueue_register,
 };
 use kernel::file::{DTYPE_PIPE, File, FileGlue, FileOps, FileTables, LockOwner};
-use kernel::pipe::{
-    Dir, PipeEnd, PipeFiles, PipeFilter, PipeFlags, PipeGlue, Pipes, Timespec, UioMove,
-};
+use kernel::pipe::{Dir, PipeEnd, PipeFiles, PipeFilter, PipeFlags, Pipes, UioMove};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::resource::{self, PlimitRef};
 use kernel::testutil;
@@ -362,7 +359,7 @@ impl ProcGlue for BenchGlue {
 /// The object of one of the bench's files (`f_data`): a pipe's end or a kqueue.
 pub enum BenchData {
     /// A pipe file's pipe (`bsd`'s `BsdFileData::Pipe`).
-    Pipe(PipeEnd<BenchPipe>),
+    Pipe(PipeEnd<BenchGlue>),
     /// A kqueue file's kqueue.
     Kqueue(KqRef<BenchGlue>),
 }
@@ -484,6 +481,12 @@ impl FileGlue for BenchFiles {
     fn vnode_ops(_d: &Self::Data) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
         None
     }
+    fn pipe_of(d: &Self::Data) -> Option<&PipeEnd<BenchGlue>> {
+        match d {
+            BenchData::Pipe(end) => Some(end),
+            BenchData::Kqueue(_) => None,
+        }
+    }
     fn sigpipe(_p: &Thread<BenchGlue>) {}
     fn pledge_fcntl(_p: &Thread<BenchGlue>, _cmd: i32) -> Result<(), Errno> {
         Ok(())
@@ -502,30 +505,11 @@ impl FileGlue for BenchFiles {
     }
 }
 
-/// The pipe's glue of this bench: the clock and the filterops, as `bsd`'s.
-pub struct BenchPipe;
-
-impl PipeGlue for BenchPipe {
-    type Proc = BenchGlue;
-
-    fn nanotime() -> Timespec {
-        kernel::tc::getnanotime()
-    }
-
-    fn filterops(filter: PipeFilter) -> &'static Filterops<BenchGlue> {
-        match filter {
-            PipeFilter::Read => &PIPE_RFILTOPS,
-            PipeFilter::Write => &PIPE_WFILTOPS,
-            PipeFilter::Except => &PIPE_EFILTOPS,
-        }
-    }
-}
-
 /// The pipes of the bench, over the recycling pages.
-static PIPES: Pipes<BenchPipe> = Pipes::new(&BENCH_PAGES);
+static PIPES: Pipes<BenchGlue> = Pipes::new(&BENCH_PAGES);
 
 /// The pair and the pipe of a pipe file (the pair counted again, as `bsd`'s `pipe_of`).
-fn pipe_of(fp: &File<BenchFiles>) -> (hal::pool::PoolArc<kernel::pipe::PipePair<BenchPipe>>, Dir) {
+fn pipe_of(fp: &File<BenchFiles>) -> (hal::pool::PoolArc<kernel::pipe::PipePair<BenchGlue>>, Dir) {
     match fp.data() {
         Some(BenchData::Pipe(end)) => (end.pair().clone(), end.dir()),
         _ => std::process::exit(1),
@@ -594,98 +578,24 @@ impl FileOps<BenchFiles> for BenchPipeOps {
 
 static BENCH_PIPEOPS: BenchPipeOps = BenchPipeOps;
 
-/// `filt_pipedetach`.
-fn filt_pipedetach(kn: &Knote<BenchGlue>) {
-    let (pair, _) = pipe_of(&kn.fp());
-    let Some(hook) = Dir::from_index(kn.kn_hook.get().addr()) else {
-        std::process::exit(1);
-    };
-    pair.detach(hook, kn);
-}
-
-/// One filter's answer written into the knote (`bsd`'s `filt_pipe`).
-fn filt_pipe(kn: &Knote<BenchGlue>, which: PipeFilter) -> bool {
-    let (pair, dir) = pipe_of(&kn.fp());
-    let answer = pair.filter(dir, which, kn.has_flags(__EV_POLL));
-    if let Some(data) = answer.data {
-        kn.kn_data().set(data);
-    }
-    if answer.eof {
-        kn.set_flags(EV_EOF);
-    }
-    if answer.hup {
-        kn.set_flags(__EV_HUP);
-    }
-    answer.active
-}
-
-fn filt_piperead(kn: &Knote<BenchGlue>, _hint: i64) -> bool {
-    filt_pipe(kn, PipeFilter::Read)
-}
-
-fn filt_pipewrite(kn: &Knote<BenchGlue>, _hint: i64) -> bool {
-    filt_pipe(kn, PipeFilter::Write)
-}
-
-fn filt_pipeexcept(kn: &Knote<BenchGlue>, _hint: i64) -> bool {
-    filt_pipe(kn, PipeFilter::Except)
-}
-
-fn filt_pipemodify(kev: &mut Kevent, kn: &Knote<BenchGlue>) -> bool {
-    let (pair, _) = pipe_of(&kn.fp());
-    pair.with_lock(|| knote_modify(kev, kn))
-}
-
-fn filt_pipeprocess(kn: &Knote<BenchGlue>, kev: Option<&mut Kevent>) -> bool {
-    let (pair, _) = pipe_of(&kn.fp());
-    pair.with_lock(|| knote_process(kn, kev))
-}
-
-static PIPE_RFILTOPS: Filterops<BenchGlue> = Filterops {
-    f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-    f_attach: None,
-    f_detach: Some(filt_pipedetach),
-    f_event: Some(filt_piperead),
-    f_modify: Some(filt_pipemodify),
-    f_process: Some(filt_pipeprocess),
-};
-
-static PIPE_WFILTOPS: Filterops<BenchGlue> = Filterops {
-    f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-    f_attach: None,
-    f_detach: Some(filt_pipedetach),
-    f_event: Some(filt_pipewrite),
-    f_modify: Some(filt_pipemodify),
-    f_process: Some(filt_pipeprocess),
-};
-
-static PIPE_EFILTOPS: Filterops<BenchGlue> = Filterops {
-    f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-    f_attach: None,
-    f_detach: Some(filt_pipedetach),
-    f_event: Some(filt_pipeexcept),
-    f_modify: Some(filt_pipemodify),
-    f_process: Some(filt_pipeprocess),
-};
-
 /// `dopipe`'s descriptor work for the thread `p` (`bsd`'s `BsdFiles`).
 struct BenchDopipe<'a> {
     p: &'a Thread<BenchGlue>,
 }
 
 /// Sets up a new pipe file: both ends are `FREAD | FWRITE`, as in the C.
-fn pipe_file(fp: &File<BenchFiles>, end: PipeEnd<BenchPipe>, flags: PipeFlags) {
+fn pipe_file(fp: &File<BenchFiles>, end: PipeEnd<BenchGlue>, flags: PipeFlags) {
     let fflag = 3 | if flags.nonblock { 0x0004 } else { 0 }; // FREAD | FWRITE [| FNONBLOCK]
     fp.f_flag.store(fflag, Ordering::SeqCst);
     fp.install(DTYPE_PIPE, &BENCH_PIPEOPS, BenchData::Pipe(end));
 }
 
-impl PipeFiles<BenchPipe> for BenchDopipe<'_> {
+impl PipeFiles<BenchGlue> for BenchDopipe<'_> {
     /// `bsd`'s `dopipe` (`sys/kern/pipe_glue.rs`), over the kernel's descriptor calls.
     fn dopipe(
         &self,
-        rpipe: PipeEnd<BenchPipe>,
-        wpipe: PipeEnd<BenchPipe>,
+        rpipe: PipeEnd<BenchGlue>,
+        wpipe: PipeEnd<BenchGlue>,
         flags: PipeFlags,
         copyout: &dyn Fn([i32; 2]) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
@@ -790,7 +700,7 @@ impl UioMove for Buf<'_> {
 }
 
 /// One 512-byte write into `w`'s peer and one 512-byte read out of `r`'s pipe.
-fn write_read(pair: &kernel::pipe::PipePair<BenchPipe>, src: &mut [u8; 512], dst: &mut [u8; 512]) {
+fn write_read(pair: &kernel::pipe::PipePair<BenchGlue>, src: &mut [u8; 512], dst: &mut [u8; 512]) {
     let mut wuio = Buf {
         data: src,
         pos: 0,

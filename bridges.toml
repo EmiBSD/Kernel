@@ -17,7 +17,7 @@
 # `kernel` reaches code that has not moved into them yet. The trait is declared by the crate
 # that calls it and held in a `OnceStatic<&'static dyn Trait>`; `bsd`'s `main()` registers an
 # implementation over its legacy code before first use. A bridge carries no logic of its own.
-# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::pipe::PipeGlue`) is a
+# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::uio::UioMove`) is a
 # row only while `bsd` implements it; the row goes when a `kernel` module does, and the trait
 # stays as API (decision 39). N9 requires this file to hold no row.
 #
@@ -121,19 +121,6 @@ trait = "BufCacheStats"
 for = ["sys/kernel/vm/pmemrange.rs"]
 paid_by = "N5"
 
-# bsd: getnanotime and the three pipe filterops (which find the pair through the knote's
-# file); implemented by sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not
-# a registered slot. N4.4: the klist is the kernel's, by value in each pipe
-# (kernel::event::Klist, Own kind): Knote, knote, klist_insert, klist_remove and klist_free
-# left the trait. N4.5b: the sigio registration is the kernel's too (kernel::sigio::SigioRef in
-# each pipe): new, pgsigio, sigio_free, sigio_setown and sigio_getown left the trait, and the
-# glue holds nothing per pipe. What stays goes with the clock (N4.8).
-# kernel::pipe::PipeGlue
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "PipeGlue"
-for = ["sys/kernel/pipe.rs"]
-paid_by = "N5"
 
 # bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
 # N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as
@@ -157,7 +144,9 @@ paid_by = "N7"
 # is kernel::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
 # file's revocation (vnode_revoked, N5) came. N4.6b: getcwd (kern.proc_cwd's
 # vfs_getcwd_common, N5). N5.0: a vnode file's vnode as the pager sees it (vnode_ops, N5:
-# mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end).
+# mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end), and a pipe file's pipe
+# (pipe_of, N8 with Data: the pipe's kernel filters find the pair through it, with the
+# PipeGlue bridge's end).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"

@@ -643,6 +643,10 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// pager and `mmap(2)` see it (`VnodeOps`, `bsd`'s vnodes until N5); `None` for another
     /// object.
     fn vnode_ops(d: &Self::Data) -> Option<&'static dyn crate::vm::vnode::VnodeOps>;
+    /// The pipe a `DTYPE_PIPE` file's object holds (`fp->f_data`, the pipe the file reads
+    /// and whose peer it writes), for the pipe's filters (`kernel::pipe`'s `filt_pipe*`);
+    /// `None` for another object.
+    fn pipe_of(d: &Self::Data) -> Option<&crate::pipe::PipeEnd<Self::Proc>>;
     /// `ptsignal(p, SIGPIPE, STHREAD)`.
     fn sigpipe(p: &Thread<Self::Proc>);
     /// `pledge_fcntl(p, cmd)`.

@@ -542,7 +542,7 @@ adds an operation the C's switch lacks.
 | `struct uvm_pagerops` | `uvm/uvm_pager.h` | `PageObject`, `FaultObject`; the vnode pager behind `VnodeOps` until N5 | N3 | done |
 | `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
 | `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the module's vtable | N2 | done, `abi` |
-| `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 44 statics | N4.4b | **corrective slice** (below) |
+| `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 41 statics (44 at N4.4b; the pipe's three are `kernel::pipe`'s impls since N5.0) | N4.4b | **corrective slice** (below) |
 | `struct arm_intr_func` (`raise`, `lower`, `x`, `setipl`, the wakeup hooks) | `arch/arm64/include/intr.h` | `hal::intr::IntrHardware` (default methods: the `arm_dflt_*`); `bsd`'s `ArmIntrHardware` over the table the GIC drivers fill, registered by `initarm` | N4.5c | done, `hal` (the bridge is paid N7) |
 | `struct interrupt_controller` (`ic_establish`, `ic_disestablish`, `ic_route`, `ic_barrier`, ...) | `arch/arm64/include/intr.h` | none yet: the GIC drivers' own table, kept in `bsd` until they move | N7.2 | kept, reason: its implementers (agintc, ampintc) and every caller are drivers that move together at N7 |
 | `struct softintr_hand` | `kern/kern_softintr.c` | not a trait: one function and its argument, a callback, not an operations table | N4.5c | kept as `fn(*mut c_void)` + argument |
