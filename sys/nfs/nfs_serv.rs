@@ -351,7 +351,7 @@ fn namei(
 /// sizeof(nfh)); fhp->fh_fsid = vp->v_mount->mnt_stat.f_fsid; VFS_VPTOFH(vp, &fhp->fh_fid)`.
 fn nfsrv_vptofh(vp: &'static Vnode) -> Result<Nfsfh, Errno> {
     let mut fh = Fhandle {
-        fh_fsid: v_mount(vp).stat().f_fsid,
+        fh_fsid: v_mount(vp).fsid(),
         ..Fhandle::default()
     };
     VFS_VPTOFH(vp, &mut fh.fh_fid)?;
@@ -3853,7 +3853,7 @@ mod tests {
             VFS_VPTOFH(vp, &mut fid).unwrap();
             vrele(vp);
             Fhandle {
-                fh_fsid: mp.stat().f_fsid,
+                fh_fsid: mp.fsid(),
                 fh_fid: fid,
             }
         };

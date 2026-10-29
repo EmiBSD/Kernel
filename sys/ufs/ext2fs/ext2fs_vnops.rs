@@ -360,7 +360,7 @@ pub fn ext2fs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_blocksize = match vp.vtype() {
         VBLK => BLKDEV_IOSIZE as i64,
         VCHR => MAXBSIZE as i64,
-        _ => i64::from(vmount(vp).stat().f_iosize),
+        _ => i64::from(vmount(vp).iosize()),
     };
     vap.va_bytes = dbtob(ip.i_e2fs_nblock() as usize) as u64;
     vap.va_type = vp.vtype();
@@ -1114,7 +1114,7 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
                 break 'bad Err(e);
             }
             let bsize = dp.e2fs().e2fs_bsize.get();
-            if i64::from(bsize) > vmount(dvp).stat().f_bsize as i64 {
+            if i64::from(bsize) > vmount(dvp).bsize() as i64 {
                 // XXX should grow with balloc()
                 panic(format_args!("ext2fs_mkdir: blksize"));
             } else {

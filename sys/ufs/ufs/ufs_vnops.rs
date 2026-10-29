@@ -420,7 +420,7 @@ pub fn ufs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_blocksize = match vp.vtype() {
         VBLK => BLKDEV_IOSIZE as i64,
         VCHR => MAXBSIZE as i64,
-        _ => i64::from(vmount(vp).stat().f_iosize),
+        _ => i64::from(vmount(vp).iosize()),
     };
     vap.va_bytes = dbtob(ip.dip_blocks() as usize) as u64;
     vap.va_type = vp.vtype();

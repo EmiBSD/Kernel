@@ -115,7 +115,12 @@
 //!   atomic (read unlocked by the file systems on every write, as the C reads it);
 //!   `mnt_stat` a mutex at `IPL_NONE` ([`Mount::stat`], [`Mount::with_stat`]) beside the four
 //!   I/O counters, atomics the buffer cache bumps without it (the C's unlocked `++`), merged
-//!   into every copy of the statistics; `mnt_lock` a [`SplitRwlock`] (`vfs_busy` and
+//!   into every copy of the statistics, and the words the file systems read on their I/O and
+//!   lookup paths (`f_flags`, `f_bsize`, `f_iosize`, `f_fsid`: `ufs_bmaparray`'s run,
+//!   `ufs_lookup`'s block mask, the getattrs), Relaxed copies written with the statistics and
+//!   read with no lock ([`Mount::iosize`] and its siblings), as the C reads `mnt_stat`: a
+//!   copy of the whole structure under the mutex for one word would be an spl pair the C
+//!   does not have on those paths; `mnt_lock` a [`SplitRwlock`] (`vfs_busy` and
 //!   `vfs_unbusy` are separate calls, as the C's); the WITNESS-only flags
 //!   (`RWL_IS_VNODE`, `VB_DUPOK`'s `RW_DUPOK`) are not configured.
 //! - `mountlist` and the free mounts are `MountLists`, under a leaf mutex at `IPL_NONE` the C
@@ -139,7 +144,7 @@ use hal::refcnt::Refcnt;
 use hal::rwlock::{RW_NOSLEEP, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
-    MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
+    Fsid, MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
 };
 
 use super::vnode::Vnode;
@@ -270,6 +275,9 @@ pub struct Mount<G: ProcGlue> {
     stat: Mutexed<Statfs>,
     /// `mnt_stat.f_syncwrites`, `f_syncreads`, `f_asyncwrites`, `f_asyncreads`.
     io: [AtomicU64; 4],
+    /// `mnt_stat.f_flags`, `f_bsize`, `f_iosize`, `f_fsid.val[0]`, `f_fsid.val[1]`, as the
+    /// statistics last left them (written under their lock, read without it).
+    words: [AtomicU32; 5],
     /// `mnt_data`: private data.
     data: AtomicPtr<c_void>,
 }
@@ -290,6 +298,7 @@ impl<G: ProcGlue> Mount<G> {
             flag: AtomicI32::new(0),
             stat: Mutexed::new(IPL_NONE, Statfs::new()),
             io: [const { AtomicU64::new(0) }; 4],
+            words: [const { AtomicU32::new(0) }; 5],
             data: AtomicPtr::new(ptr::null_mut()),
         }
     }
@@ -386,7 +395,55 @@ impl<G: ProcGlue> Mount<G> {
     pub fn with_stat<R>(&self, f: impl FnOnce(&mut Statfs) -> R) -> R {
         let mut g = self.stat.lock();
         self.merge_io(&mut g);
-        f(&mut g)
+        let r = f(&mut g);
+        self.copy_words(&g);
+        r
+    }
+
+    /// The unlocked copies of the words of `sp` ([`Mount::iosize`] and its siblings).
+    fn copy_words(&self, sp: &Statfs) {
+        #[allow(clippy::cast_sign_loss, reason = "the fsid's bits, as stored")]
+        let v = [
+            sp.f_flags,
+            sp.f_bsize,
+            sp.f_iosize,
+            sp.f_fsid.val[0] as u32,
+            sp.f_fsid.val[1] as u32,
+        ];
+        for (w, x) in self.words.iter().zip(v) {
+            w.store(x, Ordering::Relaxed);
+        }
+    }
+
+    /// `mp->mnt_stat.f_flags`, read with no lock (as the C reads it).
+    #[inline]
+    pub fn stat_flags(&self) -> u32 {
+        self.words[0].load(Ordering::Relaxed)
+    }
+
+    /// `mp->mnt_stat.f_bsize`, read with no lock (as the C reads it).
+    #[inline]
+    pub fn bsize(&self) -> u32 {
+        self.words[1].load(Ordering::Relaxed)
+    }
+
+    /// `mp->mnt_stat.f_iosize`, read with no lock (as the C reads it: `ufs_bmaparray`'s run,
+    /// `ufs_lookup`'s block mask).
+    #[inline]
+    pub fn iosize(&self) -> u32 {
+        self.words[2].load(Ordering::Relaxed)
+    }
+
+    /// `mp->mnt_stat.f_fsid`, read with no lock (as the C reads it).
+    #[inline]
+    pub fn fsid(&self) -> Fsid {
+        #[allow(clippy::cast_possible_wrap, reason = "the fsid's bits, as stored")]
+        Fsid {
+            val: [
+                self.words[3].load(Ordering::Relaxed) as i32,
+                self.words[4].load(Ordering::Relaxed) as i32,
+            ],
+        }
     }
 
     /// The four I/O counters into `sp`.
@@ -517,7 +574,7 @@ pub fn vfs_mount_alloc<G: ProcGlue>(
     mp.vfc.set(Some(vfsp));
     mp.flag.store(vfsp.vfc_flags, Ordering::Relaxed);
     let name = vfsp.name();
-    mp.stat.lock().f_fstypename[..name.len()].copy_from_slice(name);
+    mp.with_stat(|sp| sp.f_fstypename[..name.len()].copy_from_slice(name));
 
     mp
 }
@@ -545,6 +602,9 @@ impl<G: ProcGlue> Mount<G> {
         *self.stat.lock() = Statfs::new();
         for c in &self.io {
             c.store(0, Ordering::Relaxed);
+        }
+        for w in &self.words {
+            w.store(0, Ordering::Relaxed);
         }
         self.data.store(ptr::null_mut(), Ordering::Relaxed);
     }
@@ -713,6 +773,30 @@ mod tests {
         });
         assert_eq!(w, 3);
         assert_eq!(mp.stat().f_bsize, 512);
+    }
+
+    #[test]
+    fn the_words_the_file_systems_read_follow_the_statistics() {
+        let mp: Mount<crate::fs::testfs::TestGlue> = Mount::new();
+        assert_eq!((mp.iosize(), mp.bsize(), mp.stat_flags()), (0, 0, 0));
+        mp.with_stat(|sp| {
+            sp.f_iosize = 16384;
+            sp.f_bsize = 2048;
+            sp.f_flags = 0x1001;
+            sp.f_fsid.val = [-7, 42];
+        });
+        assert_eq!(mp.iosize(), 16384);
+        assert_eq!(mp.bsize(), 2048);
+        assert_eq!(mp.stat_flags(), 0x1001);
+        assert_eq!(mp.fsid().val, [-7, 42]);
+        // The copy of the whole structure agrees with the words.
+        let sp = mp.stat();
+        assert_eq!((sp.f_iosize, sp.f_bsize, sp.f_flags), (16384, 2048, 0x1001));
+        assert_eq!(sp.f_fsid.val, mp.fsid().val);
+        // A recycled mount starts from zero, as a new one.
+        mp.reset();
+        assert_eq!((mp.iosize(), mp.bsize(), mp.stat_flags()), (0, 0, 0));
+        assert_eq!(mp.fsid().val, [0, 0]);
     }
 
     #[test]

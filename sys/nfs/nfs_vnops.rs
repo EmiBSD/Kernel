@@ -3318,7 +3318,7 @@ pub fn nfs_bmap(ap: &mut VopBmapArgs<'_>) -> Result<(), Errno> {
         *vpp = Some(vp);
     }
     if let Some(bnp) = ap.a_bnp.as_deref_mut() {
-        let iosize = vmount(vp).stat().f_iosize as usize;
+        let iosize = vmount(vp).iosize() as usize;
         *bnp = ap.a_bn * btodb(iosize) as Daddr;
     }
     Ok(())

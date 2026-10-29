@@ -1220,13 +1220,13 @@ pub(crate) mod tests {
     fn vfs_getnewfsid_is_unique_among_mounts() {
         let (_g, _p, mp) = testfs::setup_root();
         vfs_getnewfsid(mp);
-        let fsid = mp.stat().f_fsid;
+        let fsid = mp.fsid();
         assert!(vfs_getvfs(&fsid).is_some_and(|m| ptr::eq(m, mp)));
         let mp2 = vfs_mount_alloc(None, &testfs::TESTFS_CONF);
         vfs_unbusy(mp2);
         mountlist_insert_tail(mp2);
         vfs_getnewfsid(mp2);
-        assert_ne!(mp2.stat().f_fsid, fsid);
+        assert_ne!(mp2.fsid(), fsid);
         assert_eq!(&mp2.stat().f_fstypename[..7], b"testfs\0");
     }
 

@@ -100,6 +100,18 @@
 //!   `getnewvnode` asks `VOP_ISLOCKED` of the free list's vnodes under its lock (the C at
 //!   `splbio`), an operation that neither sleeps nor locks.
 //! - `struct vflush_args` and its callback through `void *` -> a closure.
+//! - The C's cost, step by step: every walk (the free lists in `getnewvnode`, a mount's vnodes
+//!   in `vfs_mount_foreach_vnode` and `vflush`, `mountlist`, the alias chains of `checkalias`,
+//!   `vcount`, `vfinddev` and `vfs_mountedon`, the syncer's slots) steps by its list's next
+//!   link, O(1) a step, and restarts from the head where the C's `goto loop` does; none finds
+//!   its element again by key. The spl pairs are the C's on every vnode op (`vget`, `vput`,
+//!   `vrele`, `vhold`, `vdrop`, `vn_lock`, measured against vfs_subr.c's table at N5.2's
+//!   switch) but for the leaf mutexes the C covers with the kernel lock (D-N5.2-13): one pair
+//!   per section of the mount lists, a mount's vnode list (`insmntque`: one or two per
+//!   `getnewvnode` of a mounted vnode and per `vgonel`), the alias chains and the statistics,
+//!   on the mount, unmount, device-vnode and vnode-allocation paths, never on a read, a write
+//!   or a lookup's hit. The statistics' words the file systems read on those paths
+//!   (`f_iosize`, `f_bsize`, `f_flags`, `f_fsid`) are unlocked copies (`Mount::iosize`).
 
 use core::any::Any;
 use core::ptr;
@@ -379,7 +391,7 @@ fn strlcpy(dst: &mut [u8; MNAMELEN], src: &[u8]) {
 /// Lookup a mount point by filesystem identifier.
 pub fn vfs_getvfs<G: ProcGlue>(fsid: &Fsid) -> Option<&'static Mount<G>> {
     let g = vfs::<G>().mounts.lock();
-    g.all.iter().find(|mp| mp.stat().f_fsid.val == fsid.val)
+    g.all.iter().find(|mp| mp.fsid().val == fsid.val)
 }
 
 /// Get a new unique fsid.

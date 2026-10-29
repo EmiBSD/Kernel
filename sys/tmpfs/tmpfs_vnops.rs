@@ -607,7 +607,7 @@ pub fn tmpfs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_nlink = node.tn_links.get();
     vap.va_uid = node.tn_uid.get();
     vap.va_gid = node.tn_gid.get();
-    vap.va_fsid = i64::from(vmount(vp).stat().f_fsid.val[0]);
+    vap.va_fsid = i64::from(vmount(vp).fsid().val[0]);
     vap.va_fileid = node.tn_id.get();
     vap.va_size = node.tn_size.get() as u64;
     vap.va_blocksize = PAGE_SIZE as i64;

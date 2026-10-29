@@ -363,7 +363,7 @@ pub fn ufsdirhash_build(ip: &Inode) -> bool {
         dh.dh_score.set(DH_SCOREINIT);
         ip.i_dirhash.set(Some(dhp));
 
-        let bmask = ip.ump().mountp().stat().f_iosize as i32 - 1;
+        let bmask = ip.ump().mountp().iosize() as i32 - 1;
         let mut bp: Option<&'static Buf> = None;
         let mut pos: Doff = 0;
         while i64::from(pos) < ip.dip_size() as i64 {
@@ -518,7 +518,7 @@ pub fn ufsdirhash_lookup(
         dh.dh_score.set(dh.dh_score.get() + 1);
     }
 
-    let bmask = ip.ump().mountp().stat().f_iosize as i32 - 1;
+    let bmask = ip.ump().mountp().iosize() as i32 - 1;
     let mut blkoff: Doff = -1;
     let mut bp: Option<&'static Buf> = None;
     let mut prevoffp = prevoffp;

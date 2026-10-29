@@ -1434,7 +1434,7 @@ mod tests {
         assert_eq!(ntmp.ntm_cfree.get(), free);
         assert_eq!(mp.flag() & MNT_LOCAL, MNT_LOCAL);
         assert_eq!(mp.stat().f_namemax, 255);
-        assert_eq!(mp.stat().f_fsid.val[1], 6);
+        assert_eq!(mp.fsid().val[1], 6);
 
         let mut sb = mp.stat();
         ntfs_statfs(mp, &mut sb, p).unwrap();

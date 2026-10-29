@@ -1361,7 +1361,7 @@ pub fn sys_getfh(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let mut fh = Fhandle {
-        fh_fsid: vp.mount().map_or(Fsid::default(), |mp| mp.stat().f_fsid),
+        fh_fsid: vp.mount().map_or(Fsid::default(), |mp| mp.fsid()),
         ..Fhandle::default()
     };
     let error = VFS_VPTOFH(vp, &mut fh.fh_fid);

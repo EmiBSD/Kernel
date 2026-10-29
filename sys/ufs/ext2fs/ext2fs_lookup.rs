@@ -373,7 +373,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     // directory to determine that the entry does not exist. Caching the location of the last
     // DELETE or RENAME has not reduced profiling time and hence has been removed in the
     // interest of simplicity.
-    let bmask = vfstoufs(vmount(vdp)).mountp().stat().f_iosize as i32 - 1;
+    let bmask = vfstoufs(vmount(vdp)).mountp().iosize() as i32 - 1;
     let mut entryoffsetinblock: i32;
     let mut numdirpasses;
     if nameiop != LOOKUP || dp.i_diroff.get() == 0 || dp.i_diroff.get() as u64 > ext2fs_size(dp) {
@@ -817,7 +817,7 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
             uio_procp: None,
         };
         let error = VOP_WRITE(dvp, &mut auio, IO_SYNC, cnp.cn_cred);
-        if i64::from(dirblksize) > vfstoufs(vmount(dvp)).mountp().stat().f_bsize as i64 {
+        if i64::from(dirblksize) > vfstoufs(vmount(dvp)).mountp().bsize() as i64 {
             // XXX should grow with balloc()
             panic(format_args!("ext2fs_direnter: frag size"));
         } else if error.is_ok() {

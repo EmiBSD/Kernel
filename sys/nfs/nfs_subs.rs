@@ -1229,7 +1229,7 @@ pub fn nfs_loadattrcache(
     vap.va_type = vtyp;
     vap.va_rdev = rdev;
     vap.va_mtime = mtime;
-    vap.va_fsid = i64::from(mp.stat().f_fsid.val[0]);
+    vap.va_fsid = i64::from(mp.fsid().val[0]);
 
     let uid = fxdr_unsigned(fp.fa_uid);
     let gid = fxdr_unsigned(fp.fa_gid);
@@ -1247,7 +1247,7 @@ pub fn nfs_loadattrcache(
         VCHR => MAXBSIZE as i64,
         _ => {
             if v3 {
-                i64::from(mp.stat().f_iosize)
+                i64::from(mp.iosize())
             } else {
                 i64::from(fxdr_unsigned(fp.fa2_blocksize()) as i32)
             }

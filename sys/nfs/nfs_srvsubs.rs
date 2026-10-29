@@ -916,7 +916,7 @@ mod tests {
             VFS_VPTOFH(vp, &mut fid).unwrap();
             vrele(vp);
             Fhandle {
-                fh_fsid: mp.stat().f_fsid,
+                fh_fsid: mp.fsid(),
                 fh_fid: fid,
             }
         };

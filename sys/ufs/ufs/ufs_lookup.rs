@@ -223,7 +223,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     // directory to determine that the entry does not exist. Caching the location of the last
     // DELETE or RENAME has not reduced profiling time and hence has been removed in the
     // interest of simplicity.
-    let bmask = vfstoufs(vmount(vdp)).mountp().stat().f_iosize as i32 - 1;
+    let bmask = vfstoufs(vmount(vdp)).mountp().iosize() as i32 - 1;
 
     // The entry found: its DIRSIZ.
     let mut found: Option<usize> = None;
@@ -605,7 +605,7 @@ pub fn ufs_dirbad(ip: &Inode, offset: Doff, how: &str) {
         offset,
         how
     );
-    if mp.stat().f_flags & MNT_RDONLY as u32 == 0 {
+    if mp.stat_flags() & MNT_RDONLY as u32 == 0 {
         panic(format_args!("bad dir"));
     }
 }
@@ -689,8 +689,8 @@ pub fn ufs_direnter(
         dp.set_flag(IN_CHANGE | IN_UPDATE);
         uvm_vnp_setsize(dvp, dp.dip_size() as i64);
         dirp.d_reclen = DIRBLKSIZ as u16;
-        let blkoff = dp.i_offset.get() as usize
-            & (vfstoufs(vmount(dvp)).mountp().stat().f_iosize as usize - 1);
+        let blkoff =
+            dp.i_offset.get() as usize & (vfstoufs(vmount(dvp)).mountp().iosize() as usize - 1);
         // SAFETY: the buffer is ours (busy from UFS_BUF_ALLOC) and mapped; the slice dies
         // before it is written.
         let data = unsafe { bp.data() };

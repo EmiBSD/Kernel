@@ -1907,7 +1907,7 @@ pub fn msdosfs_bmaparray(
         // to be 1 block less so that we don't create a block larger than the device can
         // handle.
         *r = 0;
-        maxrun = ((MAXBSIZE as u32 / mp.stat().f_iosize).wrapping_sub(1))
+        maxrun = ((MAXBSIZE as u32 / mp.iosize()).wrapping_sub(1))
             .min(pmp.pm_maxcluster.get().wrapping_sub(cn)) as i32;
     }
 
