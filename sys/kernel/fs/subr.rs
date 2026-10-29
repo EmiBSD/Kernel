@@ -304,12 +304,6 @@ pub fn vops_id<G: ProcGlue>(ops: &'static dyn Vnops<G>) -> VopsId {
     ))
 }
 
-/// `[B]` `vp->v_holdcnt`, under the free lists' lock.
-pub(super) fn holdcnt_of<G: ProcGlue>(vp: &Vnode<G>) -> u32 {
-    let l = vfs::<G>().lists.lock();
-    *vp.holdcnt.get(&l)
-}
-
 /// `iftovt_tab[]`/`vttoif_tab[]` are `super::vnode`'s.
 ///
 /// Initialize the vnode management data structures (the pools may exist already: a second
@@ -485,7 +479,7 @@ pub fn getnewvnode_id<G: ProcGlue>(
         || (l.free.is_empty() && (l.hold.is_empty() || toggle != 0))
     {
         drop(l);
-        let Some(b) = t.vnodes.get(PR_WAITOK, || Vnode::new(&t.lists)) else {
+        let Some(b) = t.vnodes.get(PR_WAITOK, || Vnode::new()) else {
             <G::FileGlue as FileGlue>::tablefull("vnode");
             return Err(Errno::ENFILE);
         };
@@ -715,7 +709,7 @@ pub fn vget<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32) -> Result<(), Errno>
         let l = vfs::<G>().lists.lock();
         let onfreelist = vp.bufs.bioflag() & VBIOONFREELIST != 0;
         if vp.usecount() == 0 && onfreelist {
-            if *vp.holdcnt.get(&l) > 0 {
+            if vp.holdcnt() > 0 {
                 l.hold.remove(vp);
             } else {
                 l.free.remove(vp);
@@ -770,7 +764,7 @@ fn vputonfreelist_locked<G: ProcGlue>(l: &ListsGuard<'_, G>, vp: &'static Vnode<
 
         // If the hold count is still positive, one or many threads could still be waiting
         // on the vnode lock inside uvn_io().
-        if *vp.holdcnt.get(l) == 0 && vp.lockcount() != 0 {
+        if vp.holdcnt() == 0 && vp.lockcount() != 0 {
             kpanic(format_args!("vputonfreelist: lock count is not zero"));
         }
 
@@ -782,11 +776,7 @@ fn vputonfreelist_locked<G: ProcGlue>(l: &ListsGuard<'_, G>, vp: &'static Vnode<
     vp.bufs.set_bioflag(VBIOONFREELIST);
     vp.bufs.clr_bioflag(VBIOERROR);
 
-    let lst = if *vp.holdcnt.get(l) > 0 {
-        &l.hold
-    } else {
-        &l.free
-    };
+    let lst = if vp.holdcnt() > 0 { &l.hold } else { &l.free };
 
     if vp.vtype() == VBAD {
         lst.insert_head(vp);
@@ -858,29 +848,32 @@ pub fn vrele<G: ProcGlue>(vp: &'static Vnode<G>) -> bool {
 
 /// Page or buffer structure gets a reference.
 pub fn vhold<G: ProcGlue>(vp: &'static Vnode<G>) {
-    let mut l = vfs::<G>().lists.lock();
+    let l = vfs::<G>().lists.lock();
 
     // If it is on the freelist and the hold count is currently zero, move it to the hold
     // list.
-    if vp.bufs.bioflag() & VBIOONFREELIST != 0 && *vp.holdcnt.get(&l) == 0 && vp.usecount() == 0 {
+    // The C's test, its unlocked words first (the same answer, no read of the cell for a
+    // vnode in use).
+    if vp.bufs.bioflag() & VBIOONFREELIST != 0 && vp.usecount() == 0 && vp.holdcnt() == 0 {
         l.free.remove(vp);
         l.hold.insert_tail(vp);
     }
-    *vp.holdcnt.get_mut(&mut l) += 1;
+    vp.holdcnt.store(vp.holdcnt() + 1, Ordering::Relaxed);
 }
 
 /// Lose interest in a vnode.
 pub fn vdrop<G: ProcGlue>(vp: &'static Vnode<G>) {
-    let mut l = vfs::<G>().lists.lock();
+    let l = vfs::<G>().lists.lock();
 
-    if *vp.holdcnt.get(&l) == 0 {
+    let h = vp.holdcnt();
+    if h == 0 {
         kpanic(format_args!("vdrop: zero holdcnt"));
     }
-
-    *vp.holdcnt.get_mut(&mut l) -= 1;
+    vp.holdcnt.store(h - 1, Ordering::Relaxed);
+    let unheld = h == 1;
 
     // If it is on the holdlist and the hold count drops to zero, move it to the free list.
-    if vp.bufs.bioflag() & VBIOONFREELIST != 0 && *vp.holdcnt.get(&l) == 0 && vp.usecount() == 0 {
+    if vp.bufs.bioflag() & VBIOONFREELIST != 0 && unheld && vp.usecount() == 0 {
         l.hold.remove(vp);
         l.free.insert_tail(vp);
     }
@@ -1063,7 +1056,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
     }
     if active != 0 && vp.usecount_dec() == 0 {
         let l = vfs::<G>().lists.lock();
-        if *vp.holdcnt.get(&l) > 0 {
+        if vp.holdcnt() > 0 {
             kpanic(format_args!("vclean: not clean"));
         }
         vputonfreelist_locked(&l, vp);
@@ -1168,7 +1161,7 @@ pub fn vgonel<G: ProcGlue>(vp: &'static Vnode<G>, p: Option<&Thread<G>>) {
     // free list
     let l = vfs::<G>().lists.lock();
     if vp.usecount() == 0 && vp.bufs.bioflag() & VBIOONFREELIST != 0 {
-        if *vp.holdcnt.get(&l) > 0 {
+        if vp.holdcnt() > 0 {
             kpanic(format_args!("vgonel: not clean"));
         }
 

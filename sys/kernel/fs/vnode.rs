@@ -115,8 +115,9 @@
 //!   `v_uvcount`, `v_writecount`, `v_id`, `v_op`) are Relaxed atomics behind LZ's accessor
 //!   names (the C reads them unlocked and changes them under the kernel lock); `[V]`
 //!   (`v_lflag`, `v_lockcount`) is a cell of the one `vnode_mtx` ([`VNODE_MTX`], `IPL_BIO`);
-//!   `[B]` `v_holdcnt` a cell of the free lists' lock (the C's `splbio`); the free, mount and
-//!   alias links hal's `ListEntry`s of the lists that own them; `v_mount`, `v_uvm` `Link`s;
+//!   `[B]` `v_holdcnt` a word written under the free lists' lock (the C's `splbio`); the
+//!   free, mount and alias links hal's `ListEntry`s of the lists that own them; `v_mount`,
+//!   `v_uvm` `Link`s;
 //!   `v_un` a [`ReadMostly`] cell holding the device's [`Specinfo`] by value (freed by
 //!   `vgonel`, as the C's `free(M_VNODE)`).
 //! - `v_op` (a pointer compared with `&dead_vops` and `&spec_vops`) is an id: [`VopsId`], one
@@ -623,8 +624,9 @@ pub struct Vnode<G: ProcGlue> {
     id: AtomicU32,
     /// \[V\] `v_lflag`, `v_lockcount`.
     pub(super) vlock: Guarded<VLock>,
-    /// \[B\] `v_holdcnt`: buffer references.
-    pub(super) holdcnt: Guarded<u32>,
+    /// \[B\] `v_holdcnt`: buffer references (written under the free lists' lock: a word
+    /// of a foreign lock, read unlocked by the diagnostics).
+    pub(super) holdcnt: AtomicU32,
     /// `v_mount`: ptr to vfs we are in.
     mount: Link<Mount<G>>,
     /// \[B\] `v_freelist`: vnode freelist.
@@ -653,8 +655,8 @@ pub struct Vnode<G: ProcGlue> {
 
 impl<G: ProcGlue> Vnode<G> {
     /// A fresh vnode, as `pool_get(&vnode_pool, PR_ZERO)` returns it: its `[V]` cell keyed to
-    /// `vnode_mtx`, its hold count to `lists` (the free lists' lock).
-    pub(super) fn new<L>(lists: &Mutexed<L>) -> Self {
+    /// `vnode_mtx`.
+    pub(super) fn new() -> Self {
         Self {
             uvm: Link::new(),
             ops: AtomicU8::new(VopsId::DEAD.0),
@@ -672,7 +674,7 @@ impl<G: ProcGlue> Vnode<G> {
                     lockcount: 0,
                 },
             ),
-            holdcnt: Guarded::new_mutexed(lists, 0),
+            holdcnt: AtomicU32::new(0),
             mount: Link::new(),
             freelist: ListEntry::new(),
             mntvnodes: ListEntry::new(),
@@ -776,20 +778,21 @@ impl<G: ProcGlue> Vnode<G> {
         self.usecount.store(n, Ordering::Relaxed);
     }
 
-    /// `++vp->v_usecount`: the count after it.
+    /// `++vp->v_usecount`: the count after it. A load and a store, as the C's `++`: the
+    /// kernel lock serializes the writers of the `[K]` words.
     #[inline]
     pub(super) fn usecount_inc(&self) -> u32 {
-        self.usecount
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1)
+        let n = self.usecount.load(Ordering::Relaxed).wrapping_add(1);
+        self.usecount.store(n, Ordering::Relaxed);
+        n
     }
 
-    /// `--vp->v_usecount`: the count after it.
+    /// `--vp->v_usecount`: the count after it (the kernel lock's, as `usecount_inc`).
     #[inline]
     pub(super) fn usecount_dec(&self) -> u32 {
-        self.usecount
-            .fetch_sub(1, Ordering::Relaxed)
-            .wrapping_sub(1)
+        let n = self.usecount.load(Ordering::Relaxed).wrapping_sub(1);
+        self.usecount.store(n, Ordering::Relaxed);
+        n
     }
 
     /// `vp->v_uvcount`.
@@ -957,9 +960,9 @@ impl<G: ProcGlue> Vnode<G> {
         self.vlock.get(&g).lockcount
     }
 
-    /// `[B]` `vp->v_holdcnt`, read under the free lists' lock.
+    /// `[B]` `vp->v_holdcnt`.
     pub fn holdcnt(&self) -> u32 {
-        super::subr::holdcnt_of(self)
+        self.holdcnt.load(Ordering::Relaxed)
     }
 
     /// The vnode's address as a number (for messages and identity).

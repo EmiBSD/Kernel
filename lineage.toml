@@ -9864,9 +9864,18 @@ rust = "sys/benches/legacy_timeout.rs"
 reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's paths (timeout_set of a served wrapper, of a fresh wrapper at a known address, of a new address) over the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/benches/fs.rs"
+reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on LZ's shape (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx, splbio) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed with the switch to kernel::fs; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
+
+[[extra]]
+rust = "sys/kernel/benches/fs.rs"
+crate = "kernel"
+reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/bio.rs"

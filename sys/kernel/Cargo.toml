@@ -112,6 +112,12 @@ required-features = ["doubles"]
 # trip through nscan and fifo, over the doubles, never a kernel image:
 # `cargo bench -p kernel --features doubles --bench bio [--profile dev]`.
 [[bench]]
+name = "fs"
+path = "benches/fs.rs"
+harness = false
+required-features = ["doubles"]
+
+[[bench]]
 name = "bio"
 path = "benches/bio.rs"
 harness = false
