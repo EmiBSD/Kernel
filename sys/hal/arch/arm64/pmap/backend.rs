@@ -512,7 +512,7 @@ fn pted_pmap(pted: &PteDesc) -> &Pmap {
 /// kernel pmap's is its static arm.
 fn pmap_reference_pted(pted: &PteDesc) -> PmapRef {
     let p = pted.pmap.load(Ordering::Acquire);
-    if ptr::eq(p, &KERNEL_PMAP) {
+    if ptr::eq(p, &raw const KERNEL_PMAP) {
         return PmapRef::Kernel;
     }
     let Some(p) = NonNull::new(p) else {
@@ -823,7 +823,7 @@ pub fn switch_mmu_kernel_table() {
             in("x0") ttbr1,
             out("x30") _,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -1199,7 +1199,7 @@ fn pmap_page_ro(pm: &Pmap, pted: &PteDesc, pl3: &AtomicU64, prot: VmProt) {
 fn first_unspared<'w>(md: &PageMd, head: &'w MutexedGuard<'_, PvHead>) -> Option<&'w PteDesc> {
     let mut cur = head.0.target(head);
     while let Some(pted) = cur {
-        let kernel = ptr::eq(pted.pmap.load(Ordering::Acquire), &KERNEL_PMAP);
+        let kernel = ptr::eq(pted.pmap.load(Ordering::Acquire), &raw const KERNEL_PMAP);
         if !md.spares(kernel, pted_va(pted)) {
             return Some(pted);
         }
@@ -1553,7 +1553,7 @@ fn switch_space(pm: &Pmap, bits: u32) {
             tcr = out(reg) _,
             tmp = out(reg) _,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -1590,7 +1590,7 @@ pub fn init_lower_half() {
             set = in(reg) set,
             tcr = out(reg) _,
             options(nostack, preserves_flags),
-        )
+        );
     };
     cpu_tlb_flush();
     asid::set_curpm(&KERNEL_PMAP);
@@ -1671,7 +1671,7 @@ impl PmapBackend for Backend {
                 ttbr1 = out(reg) ttbr1,
                 mmfr0 = out(reg) mmfr0,
                 options(nomem, nostack, preserves_flags),
-            )
+            );
         };
         if tcr_t1sz(tcr) != T1SZ_4LEVEL {
             hal_panic(format_args!(
@@ -1785,7 +1785,7 @@ impl PmapBackend for Backend {
                 keep = in(reg) MAIR_KEEP,
                 set = in(reg) MAIR_SET,
                 options(nostack, preserves_flags),
-            )
+            );
         };
 
         // Every kernel mapping non-global, as the C's (see the redesign).
@@ -1895,7 +1895,7 @@ impl PmapBackend for Backend {
         let Some(root) = pmap.md.root() else {
             return;
         };
-        let top = if pmap.md.four_level() { 0 } else { 1 };
+        let top = usize::from(!pmap.md.four_level());
         let mut locked = pmap_lock(pmap);
         vp::destroy(
             root,
@@ -1990,7 +1990,7 @@ impl PmapBackend for Backend {
         if pmap.md.efi {
             hal_panic(format_args!("pmap_setttb: the EFI pmap"));
         }
-        if ptr::eq(pmap, &PMAP_TRAMP) {
+        if ptr::eq(pmap, &raw const PMAP_TRAMP) {
             hal_panic(format_args!("pmap_setttb: pmap_tramp"));
         }
         if !pmap.is_kernel() && pmap.md.asid() & !PMAP_ASID_MASK != asid::generation() {
@@ -2157,15 +2157,14 @@ impl PmapBackend for Backend {
             for i in vp_idx(1, g.maxkvaddr)..=vp_idx(1, maxkvaddr - 1) {
                 // Never executable at EL1 below a level-1 slot of the managed range.
                 let pxn = if kernel_map_slot(i) { Lx_PT_PXN } else { 0 };
-                let vp2 = match vp1.child(i) {
-                    Some(t) => t,
-                    None => {
-                        let Some(t) = pmap_kvp_alloc(pages) else {
-                            break 'fail;
-                        };
-                        vp1.set_child_with(i, t, pxn);
-                        t
-                    }
+                let vp2 = if let Some(t) = vp1.child(i) {
+                    t
+                } else {
+                    let Some(t) = pmap_kvp_alloc(pages) else {
+                        break 'fail;
+                    };
+                    vp1.set_child_with(i, t, pxn);
+                    t
                 };
 
                 let lb_idx2 = if i == vp_idx(1, g.maxkvaddr) {
@@ -2180,15 +2179,14 @@ impl PmapBackend for Backend {
                 };
 
                 for j in lb_idx2..=ub_idx2 {
-                    let vp3 = match vp2.child(j) {
-                        Some(t) => t,
-                        None => {
-                            let Some(t) = pmap_kvp_alloc(pages) else {
-                                break 'fail;
-                            };
-                            vp2.set_child_with(j, t, pxn);
-                            t
-                        }
+                    let vp3 = if let Some(t) = vp2.child(j) {
+                        t
+                    } else {
+                        let Some(t) = pmap_kvp_alloc(pages) else {
+                            break 'fail;
+                        };
+                        vp2.set_child_with(j, t, pxn);
+                        t
                     };
 
                     for k in 0..VP_IDX3_CNT {

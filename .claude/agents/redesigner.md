@@ -47,25 +47,39 @@ the loop), and `docs/IDIOMS.md`. Then merge the branch your prompt names.
    userland). Re-express the semantics; never copy C verbatim or translate it line by line.
    Never `todo!()`, `unimplemented!()`, an empty body or a silently dropped path; an inherited
    `unported!` stays in `## Deviations`, closed or kept visible, never widened.
-6. File layout (`rust-kernel.md`, `lineage.md`): `/* <LICENSES> */` with the author's ISC block
+6. Cost against the C, in all the code you write, not only on decision 43's hot paths: the
+   same complexity as the C, step by step. A walk the C writes as a pointer walk
+   (`TAILQ_FOREACH`, `RBT_FOREACH`, `RBT_NEXT`, `for (e = first; e != NULL; e = e->next)`) walks
+   with `next(e)` or a cursor, O(1) a step; never with the element found again by key at each
+   step (`find(key)` then `next`: N3's `next_key` in `sys/kernel/vm/map.rs`, O(log n) a step and
+   O(n log n) a walk where the C is O(n)). When the tree changes under the walk and a reference
+   cannot outlive the `&mut`, take the C's own restart or a cursor (a `hal` API with its first
+   user and its `docs/IDIOMS.md` row), never a search per step; if neither fits, stop and
+   report both costs. A lookup the C does once is done once, derived state is lent instead of
+   recomputed, a handle is lent where the lock keeps it alive (`docs/IDIOMS.md`, "hot path").
+   Count each operation's lock and spl transitions against the C's (N5.1: under TCG every spl
+   pair is an `ICC_PMR` write the host benches cannot see, and it cost fileread 35 %); one
+   above the C's count is a defect to fix, not to report. Any walk or operation whose cost is
+   not the C's is named in `## Redesign` with the reason and the slice that fixes it.
+7. File layout (`rust-kernel.md`, `lineage.md`): `/* <LICENSES> */` with the author's ISC block
    first and the original notice(s) of every LZ source whole after one blank line;
    `/* <CODE> */` with the `//! Upstream:` lines of every source, one `//! LZ: <path>@<12-hex>`
    per source, a `## Redesign` section (what changed shape and why) and `## Deviations`;
    `/* <TESTS> */` with inline host tests. OpenBSD's names where userland or a man page knows
    them; types CamelCase.
-7. `unsafe`: every block that stays has a `// SAFETY:` that is a soundness argument (the
+8. `unsafe`: every block that stays has a `// SAFETY:` that is a soundness argument (the
    invariant, who establishes it, who upholds it, why the operation cannot violate it; "the C
    does this" is not one); every `unsafe fn` a `# Safety` section; no `static mut`; MMIO
    through `bus_space`. More `unsafe` than LZ had is suspect: stop and ask. Never raise a line
    of `unsafe-budget.toml`. Watch amd64 kernel stack use in I/O paths (about 4.9 KB free).
-8. Prove: a test in `<TESTS>` for every behaviour whose shape changed (the C's test vectors
+9. Prove: a test in `<TESTS>` for every behaviour whose shape changed (the C's test vectors
    table-driven, property tests for parsers and bounds, a `*_test_reset` for a new global
    holding kernel memory), the affected smokes (one QEMU at a time), `just diff-openbsd` when
    syscalls, VFS or a file system are touched. In an area of `security-review.md`: every check
    the C makes kept or made a type (say which in the commit body), constant time where the C
    has it, secrets wiped on the real storage; the reviewer writes the `Security-Review:`
    paragraph, you do not.
-9. Record (`lineage.md`): the module `status = "redesigned"` with its `lz` list; one
+10. Record (`lineage.md`): the module `status = "redesigned"` with its `lz` list; one
    `[[module.fn]]` row per item split, renamed, moved, merged or dropped (`reason` on dropped,
    `lines` on split); `status = "adapted"` with `adapted_by` on every module whose call sites
    followed; `[[dropped]]` only by the user's decision. `cargo xtask lz trace` must answer

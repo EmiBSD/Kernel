@@ -29,6 +29,13 @@ gitignored, never edited, and never pushed to: LZ does not know this repository 
   denies Edit/Write there as a backstop, and the writing subagents' `agent-guard.sh` hook
   (`subagents.md`) refuses the Bash forms too (`sed -i`, a redirection, `git checkout`,
   `sparse-checkout`, a `cd` inside); do not work around either.
+- Read it with `grep` or a literal range. A `sed` whose script the harness cannot read before
+  it runs (a line number from a `$(...)`, a variable) counts as an edit of the file and is
+  refused by that deny rule, since `sed` can write (`w`, `-i`): 16 such refusals in the
+  project's transcripts by 2026-10-29. To read from a pattern, use `grep -n -A<N> '<pattern>'
+  <file>` (add `-B<M>` for lines before), or find the line with `grep -n` first and then read
+  `sed -n '<a>,<b>p'` with literal numbers in a second command. Never route around the
+  refusal with a wrapper script.
 - Never copy C verbatim into Rust and never transliterate line by line. Read, understand,
   re-express. Identifiers, constants, data layouts and the *meaning* of comments are preserved;
   the text is yours.

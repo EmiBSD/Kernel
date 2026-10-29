@@ -89,7 +89,7 @@ pub fn readcnt64_default() -> u64 {
             out(reg) val0,
             out(reg) val1,
             options(nostack, preserves_flags)
-        )
+        );
     };
     if (val0 ^ val1) & 0x1_0000_0000 != 0 {
         val0
@@ -108,7 +108,7 @@ pub fn readcnt64_sun50i() -> u64 {
     while retry < 150 {
         // SAFETY: a read of the virtual counter, which EL1 may always read; nothing else.
         unsafe {
-            asm!("mrs {}, cntvct_el0", out(reg) val, options(nomem, nostack, preserves_flags))
+            asm!("mrs {}, cntvct_el0", out(reg) val, options(nomem, nostack, preserves_flags));
         };
         if (val.wrapping_add(1) & 0x1ff) > 1 {
             break;
@@ -152,7 +152,7 @@ pub fn timecount() -> u32 {
             "mrs {}, cntvct_el0",
             out(reg) val,
             options(nostack, preserves_flags)
-        )
+        );
     };
     val as u32
 }
@@ -188,7 +188,7 @@ pub fn set_cntv_ctl(val: u32) {
             "isb",
             in(reg) u64::from(val),
             options(nostack, preserves_flags)
-        )
+        );
     };
 }
 
@@ -203,7 +203,7 @@ pub fn set_cntv_tval(val: u32) {
             "isb",
             in(reg) u64::from(val),
             options(nostack, preserves_flags)
-        )
+        );
     };
 }
 

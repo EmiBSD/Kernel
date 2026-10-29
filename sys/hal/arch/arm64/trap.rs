@@ -194,7 +194,7 @@ fn esr_far() -> (u64, u64) {
             out(reg) esr,
             out(reg) far,
             options(nomem, nostack, preserves_flags)
-        )
+        );
     };
     (esr, far)
 }
@@ -454,6 +454,10 @@ fn emulate_msr(frame: &mut Trapframe, esr: u64) -> bool {
     }
 
     let op2 = field(ISS_MSR_OP2_MASK, ISS_MSR_OP2_SHIFT);
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the C keeps the cases apart: one switch case per register"
+    )]
     let val = match (field(ISS_MSR_CRM_MASK, ISS_MSR_CRM_SHIFT), op2) {
         // MIDR_EL1
         (0, 0) => midr(),
@@ -495,7 +499,7 @@ fn midr() -> u64 {
     // SAFETY: `mrs` of `MIDR_EL1`, a read-only identification register: no memory, no
     // stack, no flags.
     unsafe {
-        core::arch::asm!("mrs {}, midr_el1", out(reg) v, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("mrs {}, midr_el1", out(reg) v, options(nomem, nostack, preserves_flags));
     };
     v
 }
@@ -600,6 +604,10 @@ pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
     let elr = || frame.with(|tf| tf.tf_elr as usize);
     let sp = || frame.with(|tf| tf.tf_sp as usize);
 
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the C keeps the cases apart: one switch case per exception class"
+    )]
     match exception {
         EXCP_UNKNOWN => {
             crate::trap::flush_bp();

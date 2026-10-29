@@ -41,6 +41,13 @@ inventory can be wrong.
   `filterops`, `linesw`, `audio_hw_if`, ...) is a trait named in the brief with its methods
   against the C's entries, or a written reason it is not one (decision 46; the inventory and
   the sketches are docs/ZERO_UNSAFE.md 0.11, updated by the brief when it fixes one).
+- Cost against the C: for every loop over a list or tree the slice writes, the brief gives its
+  cost per step against the C's and the `next(e)` or cursor that keeps it O(1) a step, as the
+  C's pointer walk; a shape that needs a search by key at each step (N3's `next_key` in
+  `sys/kernel/vm/map.rs`: O(n log n) where the C is O(n)) is a decision the brief names, with
+  its cost, never the default. Likewise each hot operation's lock and spl transitions against
+  the C's (the table N5.2's brief 7.4c wrote), and the bench that measures them before the
+  switch.
 - Say plainly what the design does not fix and which slice will (a `'static` that is still a
   lie until its owner's slice, a race the C has and keeps).
 

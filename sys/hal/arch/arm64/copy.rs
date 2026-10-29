@@ -117,7 +117,7 @@ pub(crate) fn copyin32(uaddr: usize) -> Result<u32, Errno> {
     let ua = core::ptr::with_exposed_provenance::<u32>(uaddr);
     // SAFETY: as for `copyin`; the kernel side is `word`, a local the routine writes once
     // (aligned, 4 bytes); the routine also refuses a misaligned user address.
-    errno(unsafe { sym::copyin32(ua, &mut word) })?;
+    errno(unsafe { sym::copyin32(ua, &raw mut word) })?;
     Ok(word)
 }
 
@@ -136,7 +136,7 @@ pub(crate) fn copyinstr(uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
     // SAFETY: as for `copyin`: the routine writes at most `kbuf.len()` bytes into `kbuf`
     // (its `len`), checks every user address it reads for the user half and reads it with
     // `ldtr`; `done` is a local it writes once.
-    errno(unsafe { sym::copyinstr(ua, kbuf.as_mut_ptr(), kbuf.len(), &mut done) })?;
+    errno(unsafe { sym::copyinstr(ua, kbuf.as_mut_ptr(), kbuf.len(), &raw mut done) })?;
     Ok(done)
 }
 
@@ -146,7 +146,7 @@ pub(crate) fn copyoutstr(kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
     let ua = core::ptr::with_exposed_provenance_mut::<u8>(uaddr);
     // SAFETY: as for `copyinstr`, with the kernel side `kbuf` only read (at most its length)
     // and the user side written with `sttr`.
-    errno(unsafe { sym::copyoutstr(kbuf.as_ptr(), ua, kbuf.len(), &mut done) })?;
+    errno(unsafe { sym::copyoutstr(kbuf.as_ptr(), ua, kbuf.len(), &raw mut done) })?;
     Ok(done)
 }
 

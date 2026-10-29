@@ -191,7 +191,7 @@ pub(super) fn cpu_ttbr1() -> u64 {
             "mrs {}, ttbr1_el1",
             out(reg) ttbr1,
             options(nomem, nostack, preserves_flags),
-        )
+        );
     };
     ttbr1
 }
@@ -312,7 +312,7 @@ pub(super) fn cpu_setttb(pm: &Pmap) {
             asid = in(reg) asid,
             pt0pa = in(reg) pt0pa,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -334,7 +334,7 @@ pub(super) fn ttbr0_empty() {
             "isb",
             in(reg) pt0pa,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -349,7 +349,7 @@ pub(crate) fn cpu_tlb_flush() {
             "dsb ish",
             "isb",
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -365,7 +365,7 @@ pub(crate) fn cpu_tlb_flush_asid(va: u64) {
             "isb",
             in(reg) va,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -380,7 +380,7 @@ pub(crate) fn cpu_tlb_flush_all_asid(va: u64) {
             "isb",
             in(reg) va,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -395,7 +395,7 @@ pub(crate) fn cpu_tlb_flush_asid_all(asid: u64) {
             "isb",
             in(reg) asid,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
