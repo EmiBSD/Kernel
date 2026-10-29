@@ -17,65 +17,62 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Host microbenchmarks of the buffer cache and the disk queues on LZ's shape (decision 43,
-//! N5.1: `sys/kern/vfs_bio.rs`, `sys/kern/vfs_biomem.rs`, `sys/kern/kern_bufq.rs`): what
-//! `fileread`'s path costs in `getblk`, `bread` and `brelse` before the cache moves into
-//! `kernel::fs`, over the host's machine double (`sys/arch/host`, `PMAP_NOMMU`: a buffer's
-//! pages are reached through the direct map) and the kernel's doubles, on real page memory as
-//! the host tests load it. Never part of a kernel image; it measures and changes nothing.
-//! `sys/kernel/benches/bio.rs` (N5.1's commit 7) times the same op names on the kernel's
-//! shape, and this file goes with it.
+//! Host microbenchmarks of the buffer cache and the disk queues on the kernel's shape
+//! (decision 43, N5.1: `kernel::fs::bio`, `kernel::fs::biomem`, `kernel::fs::bufq`): the ops
+//! `sys/benches/bio.rs` timed on LZ's shape, by the same names, over the kernel's host
+//! doubles (`kernel::testutil`, feature `doubles`; `PMAP_NOMMU`: a buffer's pages are reached
+//! through the direct map) on real page memory as the host tests load it. Never part of a
+//! kernel image; it measures and changes nothing.
 //!
-//! `cargo bench -p bsd --bench bio` (release: the `bench` profile) or with `--profile dev`.
-//! Arguments: `list`; the names of the benches to run (all by default).
+//! `cargo bench -p kernel --features doubles --bench bio` (release: the `bench` profile) or
+//! with `--profile dev`. Arguments: `list`; the names of the benches to run (all by default).
 //!
 //! The set-up: 64 MiB of host memory as the physical memory, `bufinit` with `bufpages` 4,096
-//! (256 kva slots of `MAXPHYS`), a vnode of its own whose strategy completes a read at once
-//! (`biodone`, no data copied: no timed op reaches it), and `CACHED` one-page blocks read
-//! into the cache, released, each idle and mapped. What an op is:
-//! - `getblk.hit`: `getblk(vp, blkno, PAGE_SIZE, 0, INFSLP)` of a cached, idle, mapped block:
-//!   the tree lookup, `bufcache_take` and `buf_acquire` (its mapping kept). Timed over the
-//!   `CACHED` blocks in a row; they are released afterwards, untimed.
-//! - `brelse`: `brelse` of those busy blocks: back to the 2Q queues and `buf_valist`.
+//! (256 kva slots of `MAXPHYS`), a vnode double (`testutil::BufTestVnode`, whose strategy
+//! completes a transfer at once; no timed op reaches it), and `CACHED` one-page blocks read
+//! into the cache, released, each idle and mapped. What an op is (the same work as LZ's,
+//! the token's part included):
+//! - `getblk.hit`: `getblk(vb, blkno, PAGE_SIZE, 0, INFSLP)` of a cached, idle, mapped block:
+//!   the tree lookup, `bufcache_take` and the acquire (the token made, the view taken from the
+//!   idle buffer). Timed over the `CACHED` blocks in a row; released afterwards, untimed.
+//! - `brelse`: `brelse` of those tokens: back to the 2Q queues and `buf_valist`, the view
+//!   kept by the idle buffer.
 //! - `bread.hit`: `bread` of a cached block holding valid data (`B_DONE`): `getblk.hit` and
-//!   `biowait`'s check, no I/O. Released afterwards, untimed.
+//!   the doread's check, no I/O. Released afterwards, untimed.
 //! - `getblk.miss-alloc`: `getblk` of a block the cache does not hold: `buf_get`'s
 //!   allocation of the header from `bufpl`, of its page (`uvm_pagealloc_multi`) and of its
-//!   mapping (a kva slot: once the arena is used up, the one an invalidated buffer left at the
+//!   view (a kva slot: once the arena is used up, the one an invalidated buffer left at the
 //!   head of `buf_valist`), and its links. `MISSES` fresh blocks a round, invalidated and
 //!   released afterwards, untimed (which frees them).
 //! - `bufcache.take-release`: `bufcache_take` and `bufcache_release` of a cached idle buffer
-//!   at `splbio`: the 2Q queues' half of an acquire and a release.
-//! - `bufq.nscan.queue-dequeue.128`: a disk's trip through an nscan queue: 128 buffers with
-//!   scattered block numbers `bufq_queue`d, then `bufq_dequeue`d and `bufq_done` each (the
-//!   sort of a segment included); an op is one buffer's three calls.
+//!   under the cache's lock, taken once a round as LZ's `splbio`: the 2Q queues' half of an
+//!   acquire and a release.
+//! - `bufq.nscan.queue-dequeue.128`: a disk's trip through an nscan queue: 128 buffers of a
+//!   driver's own (their tokens kept across rounds, as LZ's buffers stayed busy) with
+//!   scattered block numbers `bufq_queue`d (the token parked), then `bufq_dequeue`d (the
+//!   token taken back) and `bufq_done` each (the sort of a segment included); an op is one
+//!   buffer's three calls.
 //! - `bufq.fifo.queue-dequeue`: the same trip through a fifo queue, one buffer at a time.
-//! - `prim.splbio`: `splbio` and `splx`, the legacy cache's lock (the kernel's shape times
-//!   its own lock beside it).
+//! - `prim.splbio`: `splraise(IPL_BIO)` and its `splx`, the legacy cache's lock, beside
+//! - `prim.cache-lock`: the kernel's cache lock (`CACHE`, a `Mutexed` at `IPL_BIO`) taken and
+//!   dropped.
 
 #![forbid(unsafe_code)]
 
 use std::boxed::Box;
 use std::hint::black_box;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use std::vec;
 use std::vec::Vec;
 
-use bsd::kern::kern_bufq::{bufq_dequeue, bufq_done, bufq_init, bufq_queue};
-use bsd::kern::vfs_bio::{
-    biodone, bread, brelse, bufcache_release, bufcache_take, bufinit, getblk,
-};
-use bsd::kern::vm_bsd::{uvm_page_init, uvm_page_physload};
-use bsd::machine::intr::{splbio, splx};
-use bsd::sys::buf::{B_INVAL, BUFQ_FIFO, BUFQ_NSCAN, Buf, Bufq};
-use bsd::sys::errno::Errno;
-use bsd::sys::param::PAGE_SIZE;
-use bsd::sys::systm::{INFSLP, PHYSMEM};
-use bsd::sys::types::{Daddr, Vaddr};
-use bsd::sys::vnode::{VREG, Vnode, VopStrategyArgs, Vops};
-use hal::vm::param::atop;
-use hal::vm::uvmexp::UVMEXP;
+use hal::intr::{IPL_BIO, splraise};
+use hal::owned::SecondaryRef;
+use hal::sleep::INFSLP;
+use hal::sys::param::PAGE_SIZE;
+use hal::sys::types::Daddr;
+use kernel::fs::bio::{CACHE, VnodeBufs, bread, brelse, bufcache_release, bufcache_take, getblk};
+use kernel::fs::buf::{B_INVAL, BUFQ_FIFO, BUFQ_NSCAN, Buf, BufRef, ByBufhead};
+use kernel::fs::bufq::{Bufq, bufq_dequeue, bufq_done, bufq_init, bufq_queue};
+use kernel::testutil::{BufTestVnode, bufcache_install};
 
 /// The host memory loaded as the physical memory.
 const BLOCK_BYTES: usize = 64 << 20;
@@ -106,57 +103,20 @@ fn measure(ops: usize, mut f: impl FnMut() -> Duration) -> (f64, f64, f64) {
     (v[0], v[v.len() / 2], v[v.len() - 1])
 }
 
-/// The strategy of the bench's vnode: a read or write completes at once (`b_resid` 0,
-/// `biodone`); no byte moves (the timed ops never reach it).
-fn strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
-    let bp = ap.a_bp;
-    bp.set_resid(0);
-    let s = splbio();
-    biodone(bp);
-    splx(s);
-    Ok(())
-}
-
-/// The bench vnode's operations: the strategy alone.
-static BENCH_VOPS: Vops = Vops {
-    vop_strategy: Some(strategy),
-    ..Vops::EMPTY
-};
-
-/// What `subr_pool.rs`'s `setup_real_memory` does for the host tests (a bench target is not
-/// built with `cfg(test)`): host memory as the physical memory, the page system up, the
-/// host pmap's bootstrap and the kernel's doubles of `hal`'s bridges, `kmeminit`.
-fn setup_memory() {
-    bsd::kern::hal_bridges::hal_bridges_register_vm();
-    kernel::testutil::install();
-    kernel::vm::page::uvm_page_test_reset();
-    UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
-    kernel::vm::page::uvm_setpagesize();
-
-    let block: &'static mut [u8] = vec![0u8; BLOCK_BYTES + PAGE_SIZE].leak();
-    let base = (block.as_ptr() as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let (start, end) = (atop(base), atop(base + BLOCK_BYTES));
-    uvm_page_physload(start, end, start, end, 0);
-    PHYSMEM.store(end - start, Ordering::Relaxed);
-    let (mut s, mut e) = (Vaddr::new(0), Vaddr::new(0));
-    uvm_page_init(&mut s, &mut e);
-    hal::pmap::init();
-    bsd::kern::kern_malloc::kmeminit();
-}
-
-/// The bench's vnode: a regular file in use (so `vhold`/`vdrop` leave the free lists alone),
-/// leaked.
-fn vnode() -> &'static Vnode {
-    let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
-    vp.v_op.set(Some(&BENCH_VOPS));
-    vp.v_type.set(VREG);
-    vp.v_usecount.set(1);
-    vp
-}
-
 /// The block number of the `i`th cached block.
 fn cached(i: usize) -> Daddr {
     i as Daddr * STEP
+}
+
+/// Exits with `what` when `x` is `None`.
+fn need<T>(x: Option<T>, what: &str) -> T {
+    match x {
+        Some(x) => x,
+        None => {
+            eprintln!("bio: {what}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -173,6 +133,7 @@ fn main() {
         "bufq.nscan.queue-dequeue.128",
         "bufq.fifo.queue-dequeue",
         "prim.splbio",
+        "prim.cache-lock",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -182,20 +143,41 @@ fn main() {
     }
     let wanted = |n: &str| args.is_empty() || args.iter().any(|a| a == n);
 
-    setup_memory();
-    // The buffer cache runs under the kernel lock (`uvm_pagealloc_multi` asserts it).
-    bsd::sys::systm::kernel_lock();
-    bsd::conf::param::bufpages.store(BUFPAGES, Ordering::Relaxed);
-    bufinit();
-    let vp = vnode();
+    // The page memory, the kernel lock (the cache runs under it, as a system call), bufinit.
+    let _memory = bufcache_install(BLOCK_BYTES, BUFPAGES);
+    let tv = BufTestVnode::new(CACHED * STEP as usize);
+    let vb: &'static VnodeBufs = &tv.bufs;
     let size = PAGE_SIZE as i32;
     for i in 0..CACHED {
-        let (bp, r) = bread(vp, cached(i), size);
+        let (t, r) = bread(vb, cached(i), size);
         if r.is_err() {
             eprintln!("bio: the read of block {} failed", cached(i));
             std::process::exit(1);
         }
-        brelse(bp);
+        brelse(t);
+    }
+
+    // `profile SECS`: getblk.hit and brelse in a loop for SECS seconds, for a sampler
+    // (`sample <pid>`) to attribute their cost.
+    if args.first().map(String::as_str) == Some("profile") {
+        let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
+        println!("profile: pid {} for {secs} s", std::process::id());
+        let end = Instant::now() + Duration::from_secs(secs);
+        let mut ts: Vec<BufRef> = Vec::with_capacity(CACHED);
+        while Instant::now() < end {
+            for _ in 0..100 {
+                for i in 0..CACHED {
+                    ts.push(need(
+                        getblk(vb, black_box(cached(i)), size, 0, INFSLP),
+                        "getblk gave no buffer",
+                    ));
+                }
+                for b in ts.drain(..) {
+                    brelse(black_box(b));
+                }
+            }
+        }
+        return;
     }
 
     println!("# bench min median max ns/op, spread (max-min)/median, reps {REPS}");
@@ -209,31 +191,27 @@ fn main() {
             (max - min) / med * 100.0
         );
     };
-    let held = |bp: Option<&'static Buf>| match bp {
-        Some(bp) => bp,
-        None => {
-            eprintln!("bio: getblk gave no buffer");
-            std::process::exit(1);
-        }
-    };
 
     if wanted(names[0]) || wanted(names[1]) {
         const ROUNDS: usize = 200;
         let mut gets = Vec::new();
         let mut rels = Vec::new();
-        let mut bps: Vec<&'static Buf> = Vec::with_capacity(CACHED);
+        let mut ts: Vec<BufRef> = Vec::with_capacity(CACHED);
         for rep in 0..=REPS {
             let mut get = Duration::ZERO;
             let mut rel = Duration::ZERO;
             for _ in 0..ROUNDS {
                 let t = Instant::now();
                 for i in 0..CACHED {
-                    bps.push(held(getblk(vp, black_box(cached(i)), size, 0, INFSLP)));
+                    ts.push(need(
+                        getblk(vb, black_box(cached(i)), size, 0, INFSLP),
+                        "getblk gave no buffer",
+                    ));
                 }
                 get += t.elapsed();
                 let t = Instant::now();
-                for bp in bps.drain(..) {
-                    brelse(black_box(bp));
+                for b in ts.drain(..) {
+                    brelse(black_box(b));
                 }
                 rel += t.elapsed();
             }
@@ -256,19 +234,19 @@ fn main() {
 
     if wanted(names[2]) {
         const ROUNDS: usize = 200;
-        let mut bps: Vec<&'static Buf> = Vec::with_capacity(CACHED);
+        let mut ts: Vec<BufRef> = Vec::with_capacity(CACHED);
         let r = measure(CACHED * ROUNDS, || {
             let mut d = Duration::ZERO;
             for _ in 0..ROUNDS {
                 let t = Instant::now();
                 for i in 0..CACHED {
-                    let (bp, r) = bread(vp, black_box(cached(i)), size);
+                    let (b, r) = bread(vb, black_box(cached(i)), size);
                     black_box(r).ok();
-                    bps.push(bp);
+                    ts.push(b);
                 }
                 d += t.elapsed();
-                for bp in bps.drain(..) {
-                    brelse(bp);
+                for b in ts.drain(..) {
+                    brelse(b);
                 }
             }
             d
@@ -280,19 +258,22 @@ fn main() {
         const ROUNDS: usize = 50;
         // Fresh blocks past the cached ones, never asked for twice.
         let mut next = cached(CACHED) + 1024 * STEP;
-        let mut bps: Vec<&'static Buf> = Vec::with_capacity(MISSES);
+        let mut ts: Vec<BufRef> = Vec::with_capacity(MISSES);
         let r = measure(MISSES * ROUNDS, || {
             let mut d = Duration::ZERO;
             for _ in 0..ROUNDS {
                 let t = Instant::now();
                 for _ in 0..MISSES {
-                    bps.push(held(getblk(vp, black_box(next), size, 0, INFSLP)));
+                    ts.push(need(
+                        getblk(vb, black_box(next), size, 0, INFSLP),
+                        "getblk gave no buffer",
+                    ));
                     next += STEP;
                 }
                 d += t.elapsed();
-                for bp in bps.drain(..) {
-                    bp.set(B_INVAL);
-                    brelse(bp);
+                for b in ts.drain(..) {
+                    b.buf().set(B_INVAL);
+                    brelse(b);
                 }
             }
             d
@@ -302,24 +283,28 @@ fn main() {
 
     if wanted(names[4]) {
         const ROUNDS: usize = 500;
-        let bps: Vec<&'static Buf> = (0..CACHED)
-            .map(|i| match bsd::kern::vfs_bio::incore(vp, cached(i)) {
-                Some(bp) => bp,
-                None => {
-                    eprintln!("bio: block {} is not cached", cached(i));
-                    std::process::exit(1);
-                }
+        // Counted links to the cached buffers (each taken through a token, released at once).
+        let refs: Vec<SecondaryRef<ByBufhead>> = (0..CACHED)
+            .map(|i| {
+                let t = need(
+                    getblk(vb, cached(i), size, 0, INFSLP),
+                    "a block is not cached",
+                );
+                let r = need(t.counted(), "a cached buffer without its link");
+                brelse(t);
+                r
             })
             .collect();
         let r = measure(CACHED * ROUNDS, || {
             let t = Instant::now();
             for _ in 0..ROUNDS {
-                let s = splbio();
-                for &bp in &bps {
-                    bufcache_take(black_box(bp));
-                    bufcache_release(bp);
+                let mut g = CACHE.lock();
+                for r in &refs {
+                    let bp = need(r.get(), "a link points at nothing");
+                    bufcache_take(&mut g, black_box(bp));
+                    bufcache_release(&mut g, bp);
                 }
-                splx(s);
+                drop(g);
             }
             t.elapsed()
         });
@@ -335,21 +320,22 @@ fn main() {
             std::process::exit(1);
         }
         // Scattered block numbers: a multiplicative walk over the segment.
-        let bufs: Vec<&'static Buf> = (0..QN)
+        let mut ts: Vec<BufRef> = (0..QN)
             .map(|i| {
                 let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
                 bp.set_blkno(((i * 97) % QN) as Daddr * STEP);
-                bp
+                BufRef::foreign(bp)
             })
             .collect();
         let r = measure(QN * ROUNDS, || {
             let t = Instant::now();
             for _ in 0..ROUNDS {
-                for &bp in &bufs {
-                    bufq_queue(bq, black_box(bp));
+                for b in ts.drain(..) {
+                    bufq_queue(bq, black_box(b));
                 }
-                while let Some(bp) = bufq_dequeue(bq) {
-                    bufq_done(bq, black_box(bp));
+                while let Some(b) = bufq_dequeue(bq) {
+                    bufq_done(bq, black_box(b.buf()));
+                    ts.push(b);
                 }
             }
             t.elapsed()
@@ -365,12 +351,14 @@ fn main() {
             std::process::exit(1);
         }
         let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
+        let mut held = Some(BufRef::foreign(bp));
         let r = measure(ROUNDS, || {
             let t = Instant::now();
             for _ in 0..ROUNDS {
-                bufq_queue(bq, black_box(bp));
-                if let Some(bp) = bufq_dequeue(bq) {
-                    bufq_done(bq, black_box(bp));
+                bufq_queue(bq, black_box(need(held.take(), "the token is gone")));
+                if let Some(b) = bufq_dequeue(bq) {
+                    bufq_done(bq, black_box(b.buf()));
+                    held = Some(b);
                 }
             }
             t.elapsed()
@@ -383,12 +371,25 @@ fn main() {
         let r = measure(ROUNDS, || {
             let t = Instant::now();
             for _ in 0..ROUNDS {
-                let s = splbio();
-                splx(black_box(s));
+                let s = splraise(IPL_BIO);
+                drop(black_box(s));
             }
             t.elapsed()
         });
         report(names[7], r);
+    }
+
+    if wanted(names[8]) {
+        const ROUNDS: usize = 1_000_000;
+        let r = measure(ROUNDS, || {
+            let t = Instant::now();
+            for _ in 0..ROUNDS {
+                let g = CACHE.lock();
+                drop(black_box(g));
+            }
+            t.elapsed()
+        });
+        report(names[8], r);
     }
 }
 /* </CODE> */

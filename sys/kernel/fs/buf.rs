@@ -770,6 +770,7 @@ enum Hold {
 }
 
 impl Hold {
+    #[inline]
     fn buf(&self) -> &Buf {
         match self {
             Hold::Cached(r) => match r.get() {
@@ -881,15 +882,16 @@ impl BufRef {
     /// busy, or parked).
     pub fn release(mut self) {
         let view = self.view.take();
-        let bp = self.anchor();
-        let b = bp.buf();
-        let mut g = b.owned.lock();
-        if !matches!(g.slot, Slot::Busy) {
-            drop(g);
-            kpanic(format_args!("buf_release: buffer {:p} is not busy", b));
+        {
+            // The token's own hold keeps the buffer until `consumed` (no second count).
+            let b = self.hold.buf();
+            let mut g = b.owned.lock();
+            if !matches!(g.slot, Slot::Busy) {
+                drop(g);
+                kpanic(format_args!("buf_release: buffer {:p} is not busy", b));
+            }
+            g.slot = Slot::Idle(view.map_or(Kva::None, Kva::Mapped));
         }
-        g.slot = Slot::Idle(view.map_or(Kva::None, Kva::Mapped));
-        drop(g);
         self.consumed();
     }
 
@@ -904,16 +906,16 @@ impl BufRef {
                 self.buf()
             ));
         }
-        let bp = self.anchor();
-        let b = bp.buf();
-        let mut g = b.owned.lock();
-        if !matches!(g.slot, Slot::Busy) {
-            drop(g);
-            kpanic(format_args!("buf_dealloc_mem: buffer {:p} is not busy", b));
+        {
+            let b = self.hold.buf();
+            let mut g = b.owned.lock();
+            if !matches!(g.slot, Slot::Busy) {
+                drop(g);
+                kpanic(format_args!("buf_dealloc_mem: buffer {:p} is not busy", b));
+            }
+            b.b_data.store(slot.va().as_usize(), Mem::Relaxed);
+            g.slot = Slot::Idle(Kva::Bare(slot));
         }
-        b.b_data.store(slot.va().as_usize(), Mem::Relaxed);
-        g.slot = Slot::Idle(Kva::Bare(slot));
-        drop(g);
         self.consumed();
     }
 

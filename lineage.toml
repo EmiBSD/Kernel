@@ -9574,9 +9574,11 @@ reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's p
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
+
 [[extra]]
-rust = "sys/benches/bio.rs"
-reason = "decision 43, N5.1: host microbenchmarks of the buffer cache and the disk queues on LZ's shape (getblk and bread hits, brelse, getblk's allocation, the 2Q queues' take and release, a bufq trip through nscan and fifo) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed when sys/kernel/benches/bio.rs times the same ops on the kernel's shape; no OpenBSD or LZ source"
+rust = "sys/kernel/benches/bio.rs"
+crate = "kernel"
+reason = "decision 43, N5.1: host microbenchmarks of the buffer cache and the disk queues on the kernel's shape, the op names of sys/benches/bio.rs (getblk and bread hits, brelse, getblk's allocation, the 2Q queues' take and release under the cache's lock, a bufq trip through nscan and fifo with a driver's tokens, splbio and the cache's lock) over the doubles and testutil's BufTestVnode (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/event.rs"

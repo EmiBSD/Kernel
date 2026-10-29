@@ -1834,7 +1834,7 @@ fn bufcache_recover_pages(g: &mut Cache, _discard: bool, howmany: i64) -> i64 {
 
 /// `bufcache_take(bp)`: takes a free buffer off its cache queue (clean or dirty), to be
 /// acquired.
-fn bufcache_take(g: &mut Cache, bp: &Buf) {
+pub fn bufcache_take(g: &mut Cache, bp: &Buf) {
     kassert!(bp.isset(B_BC));
 
     let pages = bufpages_of(bp);
@@ -1897,7 +1897,7 @@ fn chillbufs(g: &mut Cache, which: ChillQueue) -> bool {
 /// `bufcache_release(bp)`: puts a buffer that is being released on the right cache queue:
 /// the dirty queue, the warm queue for a buffer that was warm or cold, the hot queue for the
 /// rest.
-fn bufcache_release(g: &mut Cache, bp: &Buf) {
+pub fn bufcache_release(g: &mut Cache, bp: &Buf) {
     kassert!(bp.isset(B_BC));
     let pages = bufpages_of(bp);
 

@@ -35,14 +35,6 @@ name = "legacy_sched"
 path = "benches/legacy_sched.rs"
 harness = false
 
-# Host microbenchmarks of the buffer cache and the disk queues on LZ's shape (decision 43,
-# N5.1; benches/bio.rs) over the host machine double and the kernel crate's doubles, never a
-# kernel image, until sys/kernel/benches/bio.rs replaces it:
-# `cargo bench -p bsd --bench bio [--profile dev]`.
-[[bench]]
-name = "bio"
-path = "benches/bio.rs"
-harness = false
 
 [features]
 # `multiprocessor` is always on: the MULTIPROCESSOR kernel is the only one built (decision 40).
