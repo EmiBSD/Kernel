@@ -916,7 +916,7 @@ pub fn spec_fsync<G: ProcGlue>(vp: &'static Vnode<G>, waitfor: i32) -> Result<()
 
             #[cfg(feature = "diagnostic")]
             if !vp.bufs.dirty_is_empty() {
-                subr::vprint(Some("spec_fsync: dirty"), vp);
+                super::subr::vprint(Some("spec_fsync: dirty"), vp);
                 continue;
             }
         }

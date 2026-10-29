@@ -645,7 +645,9 @@ pub trait Vfs<G: ProcGlue>: Sync + 'static {
 /// `KASSERT(p == curproc)`.
 fn assert_curproc<G: ProcGlue>(p: &Thread<G>) {
     #[cfg(feature = "diagnostic")]
-    G::with_curproc(|cur| kassert!(cur.is_some_and(|c| ptr::eq(c, p))));
+    G::with_curproc(|cur| {
+        kassert!(cur.is_some_and(|c| ptr::eq(c, p)));
+    });
     let _ = p;
 }
 
@@ -657,7 +659,7 @@ fn assert_curproc_opt<G: ProcGlue>(p: Option<&Thread<G>>) {
             (Some(p), Some(c)) => ptr::eq(p, c),
             (None, None) => true,
             _ => false,
-        })
+        });
     });
     let _ = p;
 }
