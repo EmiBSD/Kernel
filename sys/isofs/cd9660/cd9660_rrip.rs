@@ -1339,7 +1339,7 @@ mod tests {
         assert_eq!(getsymname(&r, imp), (b"abcdef".to_vec(), ISO_SUSP_SLINK));
         // the mount point
         imp.im_mountp
-            .update_stat(|sp| sp.f_mntonname[..6].copy_from_slice(b"/cdrom"));
+            .with_stat(|sp| sp.f_mntonname[..6].copy_from_slice(b"/cdrom"));
         let r = sl(b"\x00\x10\x00\x00\x03etc");
         assert_eq!(getsymname(&r, imp).0, b"/cdrom/etc");
         // a component running past the entry is invalid

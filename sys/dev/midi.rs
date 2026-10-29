@@ -71,7 +71,6 @@ use crate::kern::kern_synch::{msleep_nsec, tsleep_nsec, wakeup};
 use crate::kern::kern_timeout::{timeout_add, timeout_set};
 use crate::kern::subr_autoconf::{config_found, device_lookup, device_unref};
 use crate::kern::subr_prf::{Str, panic, printf};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::sys::conf::DevTypeOpen;
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, DVF_ACTIVE, Device, UNCONF};
@@ -88,6 +87,7 @@ use crate::sys::systm::{INFSLP, kernel_assert_locked};
 use crate::sys::time::{msec_to_nsec, sec_to_nsec};
 use crate::sys::types::{Dev, minor};
 use crate::sys::uio::Uio;
+use crate::sys::vnode::vdevgone;
 use crate::sys::vnode::{IO_NDELAY, VCHR};
 
 /// `NMIDI`: `midi* at ...` is configured (`needs-flag`).

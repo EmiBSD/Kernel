@@ -118,24 +118,19 @@ use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::{getnanotime, gettime};
-use crate::kern::spec_vnops::{
-    spec_advlock, spec_close, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_read,
-    spec_strategy, spec_write,
-};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
-use crate::kern::vfs_default::{
-    vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
-    vop_generic_lookup, vop_generic_revoke,
-};
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lockf::lf_advlock;
-use crate::kern::vfs_subr::{vaccess, vattr_null, vput, vref, vrele, vwaitforio};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BWRITE, VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR,
     VOP_STRATEGY, VOP_UNLOCK,
+};
+use crate::kern::vfs_vops::{
+    vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
+    vop_generic_lookup, vop_generic_revoke,
 };
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
@@ -197,6 +192,10 @@ use crate::sys::namei::{
 };
 use crate::sys::param::{DEV_BSIZE, MAXPATHLEN, PAGE_SIZE, PCATCH, btodb};
 use crate::sys::proc::Proc;
+use crate::sys::specdev::{
+    spec_advlock, spec_close, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_read,
+    spec_strategy, spec_write,
+};
 use crate::sys::syslimits::{LINK_MAX, NAME_MAX};
 use crate::sys::systm::INFSLP;
 use crate::sys::time::sec_to_nsec;
@@ -217,6 +216,7 @@ use crate::sys::vnode::{
     VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs,
     VopUnlockArgs, VopWriteArgs, Vops, Vtype, cred_ref, vttoif,
 };
+use crate::sys::vnode::{vaccess, vattr_null, vput, vref, vrele, vwaitforio};
 use crate::unported;
 use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_scan};
 
@@ -567,8 +567,8 @@ fn pnbuf_free(cnp: &Componentname) {
 
 /// `vp->v_mount->mnt_flag`.
 fn mnt_flag(vp: &Vnode) -> i32 {
-    match vp.v_mount.get() {
-        Some(mp) => mp.mnt_flag.get(),
+    match vp.mount() {
+        Some(mp) => mp.flag(),
         None => panic(format_args!("nfs: vnode {:p} has no mount", vp)),
     }
 }
@@ -693,7 +693,7 @@ pub fn nfs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     // Disallow write attempts on filesystems mounted read-only; unless the file is a socket,
     // fifo, or a block or character device resident on the filesystem.
     if ap.a_mode & VWRITE != 0 && mnt_flag(vp) & MNT_RDONLY != 0 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VREG | VDIR | VLNK => return Err(Errno::EROFS),
             _ => {}
         }
@@ -723,7 +723,7 @@ pub fn nfs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     info.nmi_mreq = Some(req);
     let mut mb = req;
     nfsm_fhtom(&mut mb, vp, v3);
-    let mode = nfs_access_mode(vp.v_type.get(), ap.a_mode);
+    let mode = nfs_access_mode(vp.vtype(), ap.a_mode);
     nfsm_build(&mut mb, NFSX_UNSIGNED).set(0, txdr_unsigned(mode));
 
     info.nmi_procp = Some(ap.a_p);
@@ -783,7 +783,7 @@ pub fn nfs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     let np = VTONFS(vp);
     let mut vattr = Vattr::new();
 
-    let vt = vp.v_type.get();
+    let vt = vp.vtype();
     if vt != VREG && vt != VDIR && vt != VLNK {
         #[cfg(feature = "diagnostic")]
         printf(format_args!("open eacces vtyp={}\n", vt as i32));
@@ -806,7 +806,7 @@ pub fn nfs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
         }
         let _ = uvm_vnp_uncache(vp);
         nfs_invalidate_attrcache(np);
-        if vp.v_type.get() == VDIR {
+        if vp.vtype() == VDIR {
             np.n_direofoffset.set(0);
         }
         VOP_GETATTR(vp, &mut vattr, ap.a_cred, ap.a_p)?;
@@ -814,7 +814,7 @@ pub fn nfs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     } else {
         VOP_GETATTR(vp, &mut vattr, ap.a_cred, ap.a_p)?;
         if np.n_mtime.get() != vattr.va_mtime {
-            if vp.v_type.get() == VDIR {
+            if vp.vtype() == VDIR {
                 np.n_direofoffset.set(0);
             }
             let error = nfs_vinvalbuf(vp, V_SAVE, ap.a_cred, Some(ap.a_p));
@@ -856,7 +856,7 @@ pub fn nfs_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     let np = VTONFS(vp);
     let mut error = Ok(());
 
-    if vp.v_type.get() == VREG {
+    if vp.vtype() == VREG {
         if np.isset(NMODIFIED) {
             if nfs_isv3(vp) {
                 error = nfs_flush(vp, ap.a_cred, MNT_WAIT, ap.a_p, false);
@@ -948,7 +948,7 @@ pub fn nfs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         return Err(Errno::EROFS);
     }
     if vap.va_size != VNOVAL as u64 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR => return Err(Errno::EISDIR),
             VCHR | VBLK | VSOCK | VFIFO => {
                 if vap.va_mtime.tv_nsec == i64::from(VNOVAL)
@@ -981,7 +981,7 @@ pub fn nfs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         }
     } else if (vap.va_mtime.tv_nsec != i64::from(VNOVAL)
         || vap.va_atime.tv_nsec != i64::from(VNOVAL))
-        && vp.v_type.get() == VREG
+        && vp.vtype() == VREG
     {
         let error = nfs_vinvalbuf(vp, V_SAVE, ap.a_cred, Some(ap.a_p));
         if error == Err(Errno::EINTR) {
@@ -1066,7 +1066,7 @@ pub fn nfs_setattrrpc(
             if vap.va_mode == VNOVAL as u32 {
                 nfs_xdrneg1
             } else {
-                vtonfsv2_mode(vp.v_type.get(), vap.va_mode)
+                vtonfsv2_mode(vp.vtype(), vap.va_mode)
             },
             if vap.va_uid == VNOVAL as Uid {
                 nfs_xdrneg1
@@ -1138,7 +1138,7 @@ fn nfsm_getfh(infop: &mut NfsmInfo<'_>, v3: bool) -> Result<NfsFh, Errno> {
 
 /// `vp->v_mount` of an NFS vnode.
 fn vmount(vp: &Vnode) -> &'static crate::sys::mount::Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("nfs: vnode {:p} has no mount", vp)),
     }
@@ -1166,7 +1166,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     {
         return Err(Errno::EROFS);
     }
-    if dvp.v_type.get() != VDIR {
+    if dvp.vtype() != VDIR {
         return Err(Errno::ENOTDIR);
     }
     let lockparent = flags & LOCKPARENT != 0;
@@ -1415,7 +1415,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 pub fn nfs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         return Err(Errno::EPERM);
     }
     nfs_bioread(vp, ap.a_uio, ap.a_ioflag, ap.a_cred)
@@ -1425,7 +1425,7 @@ pub fn nfs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
 pub fn nfs_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_type.get() != VLNK {
+    if vp.vtype() != VLNK {
         return Err(Errno::EPERM);
     }
     nfs_bioread(vp, ap.a_uio, 0, ap.a_cred)
@@ -1992,13 +1992,13 @@ pub fn nfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
         if cnp.cn_flags & HASBUF == 0 {
             panic(format_args!("nfs_remove: no name"));
         }
-        if vp.v_usecount.get() < 1 {
+        if vp.usecount() < 1 {
             panic(format_args!("nfs_remove: bad v_usecount"));
         }
     }
-    let error = if vp.v_type.get() == VDIR {
+    let error = if vp.vtype() == VDIR {
         Err(Errno::EPERM)
-    } else if vp.v_usecount.get() == 1
+    } else if vp.usecount() == 1
         || (np.n_sillyrename.get().is_some()
             && VOP_GETATTR(vp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
             && vattr.va_nlink > 1)
@@ -2040,7 +2040,7 @@ pub fn nfs_removeit(sp: &Sillyrename) -> Result<(), Errno> {
     //
     // NFS can potentially try to nuke a silly *after* the directory has already been pushed
     // out on a forced unmount. Since the silly is going to go away anyway, this is fine.
-    if sp.s_dvp.v_type.get() == VBAD {
+    if sp.s_dvp.vtype() == VBAD {
         return Ok(());
     }
     nfs_removerpc(
@@ -2093,7 +2093,7 @@ pub fn nfs_removerpc(
 
 /// Whether two vnodes are on the same mount (`a->v_mount == b->v_mount`).
 fn same_mount(a: &Vnode, b: &Vnode) -> bool {
-    match (a.v_mount.get(), b.v_mount.get()) {
+    match (a.mount(), b.mount()) {
         (Some(x), Some(y)) => ptr::eq(x, y),
         (None, None) => true,
         _ => false,
@@ -2122,9 +2122,9 @@ pub fn nfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
         // If the tvp exists and is in use, sillyrename it before doing the rename of the new
         // file over it.
         if let Some(t) = tvp
-            && t.v_usecount.get() > 1
+            && t.usecount() > 1
             && VTONFS(t).n_sillyrename.get().is_none()
-            && t.v_type.get() != VDIR
+            && t.vtype() != VDIR
             && nfs_sillyrename(tdvp, t, tcnp).is_ok()
         {
             VN_KNOTE(t, NOTE_DELETE);
@@ -2144,8 +2144,8 @@ pub fn nfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
         VN_KNOTE(fdvp, NOTE_WRITE);
         VN_KNOTE(tdvp, NOTE_WRITE);
 
-        if fvp.v_type.get() == VDIR {
-            if tvp.is_some_and(|t| t.v_type.get() == VDIR) {
+        if fvp.vtype() == VDIR {
+            if tvp.is_some_and(|t| t.vtype() == VDIR) {
                 cache_purge(tdvp);
             }
             cache_purge(fdvp);
@@ -2432,7 +2432,7 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
         {
             let nvp = NFSTOV(np);
             newvp = Some(nvp);
-            if nvp.v_type.get() != VDIR {
+            if nvp.vtype() != VDIR {
                 error = Err(Errno::EEXIST);
             }
         }
@@ -2541,7 +2541,7 @@ pub fn nfs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
     let mut eof = false;
     let cred = ap.a_cred;
 
-    if vp.v_type.get() != VDIR {
+    if vp.vtype() != VDIR {
         return Err(Errno::EPERM);
     }
     // First, check for hit on the EOF offset cache
@@ -3099,7 +3099,7 @@ pub fn nfs_sillyrename(
     vref(dvp);
 
     let error = 'bad: {
-        if vp.v_type.get() == VDIR {
+        if vp.vtype() == VDIR {
             #[cfg(feature = "diagnostic")]
             printf(format_args!("nfs: sillyrename dir\n"));
             break 'bad Err(Errno::EINVAL);
@@ -3318,7 +3318,7 @@ pub fn nfs_bmap(ap: &mut VopBmapArgs<'_>) -> Result<(), Errno> {
         *vpp = Some(vp);
     }
     if let Some(bnp) = ap.a_bnp.as_deref_mut() {
-        let iosize = vmount(vp).mnt_stat.get().f_iosize as usize;
+        let iosize = vmount(vp).stat().f_iosize as usize;
         *bnp = ap.a_bn * btodb(iosize) as Daddr;
     }
     Ok(())
@@ -3400,7 +3400,7 @@ pub fn nfs_flush(
                         DirtyPick::Take
                     }
                 };
-                let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "nfsfsync", 0, INFSLP, pick)
+                let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.bufs, "nfsfsync", 0, INFSLP, pick)
                 else {
                     break;
                 };
@@ -3448,7 +3448,7 @@ pub fn nfs_flush(
                     }
                     let s = splbio();
                     buf_undirty(bp);
-                    vp.v_bufs.numoutput_inc();
+                    vp.bufs.numoutput_inc();
                     bp.set(B_ASYNC);
                     bp.clr(B_READ | B_DONE | B_ERROR);
                     bp.set_dirtyoff(0);
@@ -3477,7 +3477,7 @@ pub fn nfs_flush(
                 }
                 DirtyPick::Take
             };
-            match vnode_dirty_scan(&vp.v_bufs, "nfsfsync", slpflag, slptimeo, pick) {
+            match vnode_dirty_scan(&vp.bufs, "nfsfsync", slpflag, slptimeo, pick) {
                 DirtyScan::Waited(error) => {
                     splx(s);
                     if error.is_err() {
@@ -3523,7 +3523,7 @@ pub fn nfs_flush(
                         }
                         continue; // goto loop2
                     }
-                    let dirty = !vp.v_bufs.dirty_is_empty() && commit;
+                    let dirty = !vp.bufs.dirty_is_empty() && commit;
                     splx(s);
                     break dirty;
                 };
@@ -3601,7 +3601,7 @@ pub fn nfs_print(ap: &mut VopPrintArgs) -> Result<(), Errno> {
             "tag VT_NFS, fileid {} fsid 0x{:x}",
             va.va_fileid as i64, va.va_fsid
         ));
-        if vp.v_type.get() == VFIFO {
+        if vp.vtype() == VFIFO {
             // fifo_printinfo(vp): miscfs/fifofs, not ported.
             let _ = unported!("fifo_printinfo (miscfs/fifofs)");
         }
@@ -3646,7 +3646,7 @@ pub fn nfs_writebp(bp: &'static Buf, force: bool) -> Result<(), Errno> {
         p.p_ru.ru_oublock.set(p.p_ru.ru_oublock.get() + 1);
     }
 
-    vp.v_bufs.numoutput_inc();
+    vp.bufs.numoutput_inc();
     splx(s);
 
     // If B_NEEDCOMMIT is set, a commit rpc may do the trick. If not an actual write will
@@ -3742,7 +3742,7 @@ pub fn nfsspec_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     // Disallow write attempts on filesystems mounted read-only; unless the file is a socket,
     // fifo, or a block or character device resident on the filesystem.
     if ap.a_mode & VWRITE != 0 && mnt_flag(vp) & MNT_RDONLY != 0 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VREG | VDIR | VLNK => return Err(Errno::EROFS),
             _ => {}
         }
@@ -3751,7 +3751,7 @@ pub fn nfsspec_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     VOP_GETATTR(vp, &mut va, ap.a_cred, ap.a_p)?;
 
     vaccess(
-        vp.v_type.get(),
+        vp.vtype(),
         va.va_mode,
         va.va_uid,
         va.va_gid,
@@ -3787,7 +3787,7 @@ fn nfs_settimes_on_close(ap: &mut VopCloseArgs<'_>, np: &NfsNode) {
     let vp = ap.a_vp;
 
     np.set(NCHG);
-    if vp.v_usecount.get() == 1 && mnt_flag(vp) & MNT_RDONLY == 0 {
+    if vp.usecount() == 1 && mnt_flag(vp) & MNT_RDONLY == 0 {
         let mut vattr = Vattr::new();
         vattr_null(&mut vattr);
         if np.isset(NACC) {

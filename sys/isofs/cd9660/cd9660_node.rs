@@ -129,7 +129,6 @@ use crate::kern::kern_malloc::free;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::cache_purge;
-use crate::kern::vfs_subr::{vget, vput, vrecycle, vrele};
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::queue_adapter;
 use crate::sys::buf::BufLegacy;
@@ -145,6 +144,7 @@ use crate::sys::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_I
 use crate::sys::time::Timespec;
 use crate::sys::types::{Dev, Gid, Uid};
 use crate::sys::vnode::{VT_ISOFS, Vnode, VopInactiveArgs, VopReclaimArgs};
+use crate::sys::vnode::{vget, vput, vrecycle, vrele};
 use libkern::StaticCell;
 
 /// `doff_t`.
@@ -317,8 +317,8 @@ static ISOHASHKEY: StaticCell<SiphashKey> = StaticCell::new(SiphashKey { k0: 0, 
 
 /// `VTOI(vp)`: the node of a cd9660 vnode.
 pub fn vtoi(vp: &Vnode) -> &'static IsoNode {
-    let data = vp.v_data.get();
-    if data.is_null() || vp.v_tag.get() != VT_ISOFS {
+    let data = vp.data();
+    if data.is_null() || vp.tag() != VT_ISOFS {
         panic(format_args!("VTOI: vnode {:p} has no iso_node", vp));
     }
     // SAFETY: a cd9660 vnode's `v_data` (checked above) is the node `cd9660_vget_internal`
@@ -375,12 +375,12 @@ pub fn cd9660_ihashget(dev: Dev, inum: Cdino) -> Option<&'static Vnode> {
         for ip in cd9660_isohash(dev, inum).iter() {
             if inum == ip.i_number.get() && dev == ip.i_dev.get() {
                 let vp = ip.itov();
-                let vpid = vp.v_id.get();
+                let vpid = vp.id();
                 // XXX locking unlock hash list?
                 if vget(vp, LK_EXCLUSIVE).is_err() {
                     continue 'loop_;
                 }
-                if vpid != vp.v_id.get() {
+                if vpid != vp.id() {
                     vput(vp);
                     continue 'loop_;
                 }
@@ -435,8 +435,8 @@ pub fn cd9660_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let ip = vtoi(vp);
 
     #[cfg(feature = "diagnostic")]
-    if crate::kern::vfs_subr::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("cd9660_inactive: pushing active"), vp);
+    if crate::sys::vnode::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("cd9660_inactive: pushing active"), vp);
     }
 
     ip.i_flag.set(0);
@@ -456,8 +456,8 @@ pub fn cd9660_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let ip = vtoi(vp);
 
     #[cfg(feature = "diagnostic")]
-    if crate::kern::vfs_subr::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("cd9660_reclaim: pushing active"), vp);
+    if crate::sys::vnode::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("cd9660_reclaim: pushing active"), vp);
     }
 
     // Remove the inode from its hash chain.
@@ -467,8 +467,8 @@ pub fn cd9660_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     if let Some(devvp) = ip.i_devvp.take() {
         vrele(devvp);
     }
-    if let Some(data) = NonNull::new(vp.v_data.get()) {
-        vp.v_data.set(ptr::null_mut());
+    if let Some(data) = NonNull::new(vp.data()) {
+        vp.set_data(ptr::null_mut());
         free(data.cast(), M_ISOFSNODE, size_of::<IsoNode>());
     }
     Ok(())

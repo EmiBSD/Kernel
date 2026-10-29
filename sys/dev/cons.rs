@@ -86,7 +86,6 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::kern::kern_prot::suser;
 use crate::kern::proc_glue::BsdProcGlue;
-use crate::kern::vfs_subr::{cdevvp, vcount, vfinddev, vrele};
 use crate::machine::conf::cdevsw;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
@@ -97,6 +96,7 @@ use crate::sys::ttycom::TIOCCONS;
 use crate::sys::types::{Dev, major};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{VCHR, Vnode};
+use crate::sys::vnode::{cdevvp, vcount, vfinddev, vrele};
 
 /// A counted reference to a tty (`constty`'s).
 type TtyRef = kernel::tty::TtyRef<BsdProcGlue>;

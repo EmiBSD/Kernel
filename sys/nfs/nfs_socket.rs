@@ -278,7 +278,7 @@ fn r_procp(rep: &NfsReq) -> Option<&Proc> {
 fn nm_mntfromname(nmp: &NfsMount) -> [u8; MNAMELEN] {
     nmp.nm_mountp
         .get()
-        .map_or([0; MNAMELEN], |mp| mp.mnt_stat.get().f_mntfromname)
+        .map_or([0; MNAMELEN], |mp| mp.stat().f_mntfromname)
 }
 
 /// `*mtod(m, int *) = v; m->m_len = sizeof(int)`: an option value for `sosetopt`.
@@ -1055,7 +1055,7 @@ pub fn nfs_request(
         rp.write(NfsReq::new());
         &*rp
     };
-    let Some(mount) = vp.v_mount.get() else {
+    let Some(mount) = vp.mount() else {
         panic(format_args!("nfs_request: vnode {:p} has no mount", vp));
     };
     rep.r_nmp.set(Some(VFSTONFS(mount)));

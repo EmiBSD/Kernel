@@ -86,7 +86,6 @@ use crate::isofs::cd9660::iso::{
 };
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
-use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::sys::buf::Buf;
@@ -102,6 +101,7 @@ use crate::sys::param::DEV_BSHIFT;
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::types::Off;
 use crate::sys::vnode::{VEXEC, Vnode, VopLookupArgs};
+use crate::sys::vnode::{vput, vref};
 
 /// Where the scan of a directory ended.
 enum Scan {
@@ -118,7 +118,7 @@ pub static ISO_NCHSTATS: Nchstats = Nchstats::new();
 
 /// The vnode's mount, which a cd9660 vnode always has.
 fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("cd9660: vnode {:p} without a mount", vp)),
     }
@@ -170,7 +170,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
 
     if flags & ISLASTCN != 0
-        && vmount(vdp).mnt_flag.get() & MNT_RDONLY != 0
+        && vmount(vdp).flag() & MNT_RDONLY != 0
         && (nameiop == DELETE || nameiop == RENAME)
     {
         return Err(Errno::EROFS);

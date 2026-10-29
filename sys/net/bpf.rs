@@ -172,7 +172,6 @@ use crate::kern::kern_timeout::{timeout_add_nsec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic};
 use crate::kern::uipc_mbuf::{MAX_LINKHDR, m_align, m_freem, m_gethdr, m_microtime};
 use crate::kern::uipc_mbuf2::{m_tag_get, m_tag_prepend};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::{AbiPod, copyin, copyout};
 use crate::machine::intr::IPL_NET;
@@ -212,6 +211,7 @@ use crate::sys::time::{Timeval, nsec_to_timeval, sec_to_nsec, timeval_to_nsec};
 use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Dev, SaFamily, minor};
 use crate::sys::uio::Uio;
+use crate::sys::vnode::vdevgone;
 use crate::sys::vnode::{IO_NDELAY, VCHR};
 
 /// `BPF_RELEASE`: BSD style release date.

@@ -89,7 +89,6 @@ use crate::dev::cons::{cn_devvp_set, cn_tab, cnwrite, constty};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::vrele;
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::machine::conf::cdevsw;
@@ -103,6 +102,7 @@ use crate::sys::tty::{Speedtab, Tty};
 use crate::sys::types::{Dev, major};
 use crate::sys::uio::{Uio, UioRw};
 use crate::sys::vnode::VREAD;
+use crate::sys::vnode::vrele;
 
 pub use kernel::tty::{
     CCLASSMASK, CHAR_TYPE, TK_CANCC, TK_NIN, TK_NOUT, TK_RAWCC, TTCLOS, TTOPEN, TTYBG, TTYIN,

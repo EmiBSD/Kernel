@@ -68,16 +68,16 @@
 use core::ptr;
 
 use crate::kern::kern_tc::getmicrouptime;
-use crate::kern::spec_vnops::SPEC_VOPS;
-use crate::kern::vfs_subr::{checkalias, vgone, vrele};
 use crate::sys::buf::Buf;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
+use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::{
     VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, iftovt,
 };
+use crate::sys::vnode::{checkalias, vgone, vrele};
 use crate::ufs::ext2fs::ext2fs::{blkoff, fsbtodb, lblkno};
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_ROOTINO, EXT4_EXTENTS};
 use crate::ufs::ext2fs::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
@@ -124,9 +124,9 @@ pub fn ext2fs_bufatoff(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize),
 pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vnode, Errno> {
     let mut vp = vp;
     let ip = vtoi(vp);
-    vp.v_type.set(iftovt(ip.i_e2fs_mode().into()));
+    vp.set_vtype(iftovt(ip.i_e2fs_mode().into()));
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VCHR | VBLK => {
             vp.v_op.set(Some(&EXT2FS_SPECVOPS));
 
@@ -134,8 +134,8 @@ pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static V
             if let Some(nvp) = checkalias(vp, rdev, Some(mp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.
-                nvp.v_data.set(vp.v_data.get());
-                vp.v_data.set(ptr::null_mut());
+                nvp.set_data(vp.data());
+                vp.set_data(ptr::null_mut());
                 vp.v_op.set(Some(&SPEC_VOPS));
                 vrele(vp);
                 vgone(vp);
@@ -150,7 +150,7 @@ pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static V
     }
 
     if ip.i_number.get() == EXT2_ROOTINO {
-        vp.v_flag.set(vp.v_flag.get() | VROOT);
+        vp.set_flag(vp.flag() | VROOT);
     }
 
     // Initialize modrev times

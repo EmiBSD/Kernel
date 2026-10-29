@@ -208,7 +208,6 @@ use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::tty::{ttioctl, ttsetwater, ttwakeupwr, ttychars, ttyclose, ttyfree, ttymalloc};
 use crate::kern::tty_conf::linesw;
 use crate::kern::tty_subr::ndflush;
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::copyin;
 use crate::machine::intr::{IPL_TTY, spltty, splx};
@@ -234,6 +233,7 @@ use crate::sys::ttydefaults::{
 };
 use crate::sys::types::{Dev, Paddr, major, makedev, minor};
 use crate::sys::vnode::VCHR;
+use crate::sys::vnode::vdevgone;
 
 /// `SCR_OPEN`: is it open?
 const SCR_OPEN: i32 = 1;

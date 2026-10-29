@@ -79,7 +79,6 @@ use crate::kern::kern_malloc::malloc;
 use crate::kern::kern_sig::cursig;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{checkalias, getnewvnode, vfs_busy, vrele};
 use crate::kern::vfs_syscalls::dounmount;
 use crate::machine::copy::copyinstr;
 use crate::sys::buf::BUFQ_FIFO;
@@ -100,6 +99,7 @@ use crate::sys::systm::INFSLP;
 use crate::sys::types::makedev;
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::{FORCECLOSE, VBLK, VT_MFS, WRITECLOSE};
+use crate::sys::vnode::{checkalias, getnewvnode, vfs_busy, vrele};
 use crate::ufs::ffs::ffs_vfsops::{
     ffs_fhtovp, ffs_flushfiles, ffs_init, ffs_mountfs, ffs_statfs, ffs_sync, ffs_sysctl,
     ffs_unmount, ffs_vget, ffs_vptofh,
@@ -161,17 +161,17 @@ pub fn mfs_mount(
 
     // If updating, check whether changing from read-only to read/write; if there is no device
     // name, that's all we do.
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         let ump = vfstoufs(mp);
         let fs = ump.fs();
-        if fs.fs_ronly.get() == 0 && mp.mnt_flag.get() & MNT_RDONLY != 0 {
+        if fs.fs_ronly.get() == 0 && mp.flag() & MNT_RDONLY != 0 {
             let mut flags = WRITECLOSE;
-            if mp.mnt_flag.get() & MNT_FORCE != 0 {
+            if mp.flag() & MNT_FORCE != 0 {
                 flags |= FORCECLOSE;
             }
             ffs_flushfiles(mp, flags, p)?;
         }
-        if fs.fs_ronly.get() != 0 && mp.mnt_flag.get() & MNT_WANTRDWR != 0 {
+        if fs.fs_ronly.get() != 0 && mp.flag() & MNT_WANTRDWR != 0 {
             fs.fs_ronly.set(0);
         }
         // EXPORTMFS: not configured.
@@ -183,7 +183,7 @@ pub fn mfs_mount(
     let mut fspec = [0u8; MNAMELEN];
     copyinstr(args.fspec, &mut fspec)?;
     let devvp = getnewvnode(VT_MFS, None, &MFS_VOPS)?;
-    devvp.v_type.set(VBLK);
+    devvp.set_vtype(VBLK);
     let minor = MFS_MINOR.load(Ordering::Relaxed);
     if checkalias(devvp, makedev(255, minor), None).is_some() {
         panic(format_args!("mfs_mount: dup dev"));
@@ -197,7 +197,7 @@ pub fn mfs_mount(
     unsafe { ptr::write(mem.as_ptr(), Mfsnode::new()) };
     // SAFETY: just initialised; freed only by `mfs_reclaim`, which clears `v_data`.
     let mfsp: &'static Mfsnode = unsafe { &*mem.as_ptr() };
-    devvp.v_data.set(mem.as_ptr().cast());
+    devvp.set_data(mem.as_ptr().cast());
     mfsp.mfs_baseoff.set(args.base);
     mfsp.mfs_size.set(args.size as i64);
     mfsp.mfs_vnode.set(Some(devvp));
@@ -213,7 +213,7 @@ pub fn mfs_mount(
 
     fs_strlcpy_fsmnt(fs, path);
     let fsmnt = fs.fs_fsmnt.get();
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         sp.f_mntonname.copy_from_slice(&fsmnt[..MNAMELEN]);
         mname_copy(&mut sp.f_mntfromname, &fspec);
         mname_copy(&mut sp.f_mntfromspec, &fspec);
@@ -302,13 +302,13 @@ mod tests {
     use crate::kern::sys_generic::sys_write;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
     use crate::kern::vfs_lookup::ndinit;
-    use crate::kern::vfs_subr::{MOUNTLIST, vfs_mount_alloc, vfs_unbusy, vref};
     use crate::kern::vfs_syscalls::{sys_open, sys_sync};
     use crate::kern::vfs_vops::VOP_UNLOCK;
     use crate::sys::fcntl::{O_CREAT, O_RDWR};
     use crate::sys::mount::{MNT_LOCAL, VFS_ROOT, VFS_STATFS};
     use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
     use crate::sys::types::major;
+    use crate::sys::vnode::{MOUNTLIST, vfs_mount_alloc, vfs_unbusy, vref};
     use crate::ufs::ffs::ffs_vfsops::tests::{newfs, path, read_file, setup, sys, teardown};
     use crate::ufs::ffs::fs::FS_UFS2_MAGIC;
     use crate::ufs::mfs::mfs_vnops::MFS_VOPS;
@@ -330,7 +330,7 @@ mod tests {
     fn new_mount(ronly: bool) -> &'static Mount {
         let mp = vfs_mount_alloc(None, vfs_byname(b"mfs").unwrap());
         if ronly {
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+            mp.set_flag(mp.flag() | MNT_RDONLY);
         }
         mp
     }
@@ -346,9 +346,9 @@ mod tests {
         );
         let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/"), p);
         mfs_mount(mp, b"/\0", &mut args, &mut nd, p).unwrap();
-        let mut st = mp.mnt_stat.get();
+        let mut st = mp.stat();
         VFS_STATFS(mp, &mut st, p).unwrap();
-        mp.mnt_stat.set(st);
+        mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
         // SAFETY: a new mount on no list.
         unsafe { MOUNTLIST.0.insert_tail(mp) };
@@ -427,20 +427,20 @@ mod tests {
         // The "device" is a made-up block device vnode of the mfs type, and the mount knows
         // what it was mounted from, on, and with.
         let devvp = ump.devvp();
-        assert_eq!(devvp.v_tag.get(), VT_MFS);
-        assert_eq!(devvp.v_type.get(), VBLK);
-        assert_eq!(major(devvp.v_rdev()), 255);
+        assert_eq!(devvp.tag(), VT_MFS);
+        assert_eq!(devvp.vtype(), VBLK);
+        assert_eq!(major(devvp.rdev()), 255);
         let mfsp = vtomfs(devvp);
         assert_eq!(mfsp.mfs_size.get(), image.len() as i64);
         assert_eq!(mfsp.mfs_baseoff.get(), image.as_ptr() as usize);
         assert_eq!(mfsp.mfs_tid.get(), p.p_tid.get());
         assert!(core::ptr::eq(crate::ufs::mfs::mfsnode::mfstov(mfsp), devvp));
-        let st = mp.mnt_stat.get();
+        let st = mp.stat();
         assert_eq!(&st.f_mntonname[..2], b"/\0");
         assert_eq!(&st.f_mntfromname[..9], b"mfs:1234\0");
         assert_eq!(&st.f_mntfromspec[..9], b"mfs:1234\0");
         assert_eq!(&st.f_fstypename[..4], b"mfs\0");
-        assert_eq!(st.f_fsid.val[0], devvp.v_rdev());
+        assert_eq!(st.f_fsid.val[0], devvp.rdev());
         assert_eq!(
             &st.mount_info.__align[..8],
             &(FSPEC.as_ptr() as usize).to_ne_bytes()
@@ -465,25 +465,22 @@ mod tests {
 
         // Unmount: the close of the device tells the process to exit, the image is clean.
         if let Some(cdir) = p.fd().replace_cdir(None) {
-            crate::kern::vfs_subr::vrele(cdir);
+            crate::sys::vnode::vrele(cdir);
         }
         if let Some(root) = crate::kern::vfs_init::rootvnode() {
             set_rootvnode(None);
-            crate::kern::vfs_subr::vrele(root);
+            crate::sys::vnode::vrele(root);
         }
-        crate::kern::vfs_subr::vfs_busy(
-            mp,
-            crate::sys::mount::VB_WRITE | crate::sys::mount::VB_WAIT,
-        )
-        .unwrap();
+        crate::sys::vnode::vfs_busy(mp, crate::sys::mount::VB_WRITE | crate::sys::mount::VB_WAIT)
+            .unwrap();
         crate::kern::vfs_syscalls::dounmount(mp, 0, p).unwrap();
         assert_eq!(mfsp.mfs_shutdown.load(Ordering::Relaxed), 1);
         newfs::check(&image, true);
         assert_eq!(newfs::clean(&image, true), 1);
 
         // Recycling the device vnode frees the mfsnode (`mfs_reclaim`).
-        crate::kern::vfs_subr::vgone(devvp);
-        assert!(devvp.v_data.get().is_null());
+        crate::sys::vnode::vgone(devvp);
+        assert!(devvp.data().is_null());
 
         // The same memory mounts again (a new "process"): the file written is still there.
         let mp = mount_mfs(p, &mut image, true);
@@ -525,7 +522,7 @@ mod tests {
             Err(Errno::EINVAL)
         );
         assert_eq!(MFS_MINOR.load(Ordering::Relaxed), minor + 1);
-        assert!(mp.mnt_data.get().is_null());
+        assert!(mp.data().is_null());
         teardown();
     }
 
@@ -539,19 +536,17 @@ mod tests {
 
         // An update to read-only flushes the files open for writing; the C leaves `fs_ronly` to
         // the generic code, and so does this.
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_UPDATE | MNT_RDONLY);
+        mp.set_flag(mp.flag() | MNT_UPDATE | MNT_RDONLY);
         mfs_mount(mp, b"/\0", &mut [], &mut nd, p).unwrap();
         assert_eq!(fs.fs_ronly.get(), 0);
 
         // A read-only file system asked to be read-write.
         fs.fs_ronly.set(1);
-        mp.mnt_flag
-            .set((mp.mnt_flag.get() & !MNT_RDONLY) | MNT_UPDATE | MNT_WANTRDWR);
+        mp.set_flag((mp.flag() & !MNT_RDONLY) | MNT_UPDATE | MNT_WANTRDWR);
         mfs_mount(mp, b"/\0", &mut [], &mut nd, p).unwrap();
         assert_eq!(fs.fs_ronly.get(), 0);
 
-        mp.mnt_flag
-            .set(mp.mnt_flag.get() & !(MNT_UPDATE | MNT_WANTRDWR));
+        mp.set_flag(mp.flag() & !(MNT_UPDATE | MNT_WANTRDWR));
         teardown();
     }
 

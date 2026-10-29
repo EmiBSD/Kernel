@@ -136,7 +136,6 @@ use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_subr::{vput, vref, vrele};
 use crate::ntfs::ntfs::{
     Attr, AttrAttrlist, AttrIndexalloc, AttrIndexentry, AttrIndexroot, AttrName, Cn, FTONT,
     Filerec, Fixuphdr, LOADED_NTNODE_HI, NTFS_A_ATTRLIST, NTFS_A_DATA, NTFS_A_INDX,
@@ -170,6 +169,7 @@ use crate::sys::time::Timespec;
 use crate::sys::types::{Daddr, Off};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{VDIR, VREG, Vnode};
+use crate::sys::vnode::{vput, vref, vrele};
 
 /// `VA_LOADED`.
 pub const VA_LOADED: u32 = 0x0001;
@@ -1436,7 +1436,7 @@ pub fn ntfs_ntlookupfile(
                                 VREG
                             };
 
-                        nvp.v_type.set(f_type);
+                        nvp.set_vtype(f_type);
 
                         if default_attr {
                             // Opening default attribute

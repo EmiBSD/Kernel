@@ -110,15 +110,11 @@ use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::gettime;
-#[cfg(feature = "nfsclient")]
-use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_pool::pool_init;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_align, m_get, m_trailingspace};
 #[cfg(feature = "nfsclient")]
 use crate::kern::vfs_cache::cache_purge;
-#[cfg(feature = "nfsclient")]
-use crate::kern::vfs_subr::{checkalias, vgone, vrele};
 #[cfg(feature = "nfsclient")]
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::machine::copy::copyout;
@@ -177,6 +173,8 @@ use crate::sys::param::DEV_BSIZE;
 #[cfg(feature = "nfsclient")]
 use crate::sys::param::{BLKDEV_IOSIZE, MAXBSIZE};
 use crate::sys::pool::{PR_WAITOK, Pool};
+#[cfg(feature = "nfsclient")]
+use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::time::Timespec;
 use crate::sys::types::{Gid, Mode, Off, Uid};
 #[cfg(feature = "nfsclient")]
@@ -187,6 +185,8 @@ use crate::sys::vnode::Vattr;
 #[cfg(feature = "nfsclient")]
 use crate::sys::vnode::iftovt;
 use crate::sys::vnode::{VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VNOVAL, VREG, VSOCK, Vnode, Vtype};
+#[cfg(feature = "nfsclient")]
+use crate::sys::vnode::{checkalias, vgone, vrele};
 #[cfg(feature = "nfsclient")]
 use kernel::vm::types::Voff;
 use libkern::StaticCell;
@@ -1194,9 +1194,9 @@ pub fn nfs_loadattrcache(
     // if it represents a special device, and if so, check for a possible alias. Once the
     // correct vnode has been obtained, fill in the rest of the information.
     let np = VTONFS(vp);
-    if vp.v_type.get() == VNON {
+    if vp.vtype() == VNON {
         cache_purge(vp);
-        vp.v_type.set(vtyp);
+        vp.set_vtype(vtyp);
         if vtyp == VFIFO {
             // `option FIFO` is in GENERIC but miscfs/fifofs is not ported: the C's !FIFO
             // path.
@@ -1204,11 +1204,11 @@ pub fn nfs_loadattrcache(
         }
         if vtyp == VCHR || vtyp == VBLK {
             vp.v_op.set(Some(&crate::nfs::nfs_vnops::NFS_SPECVOPS));
-            if let Some(nvp) = checkalias(vp, rdev, vp.v_mount.get()) {
+            if let Some(nvp) = checkalias(vp, rdev, vp.mount()) {
                 // Discard unneeded vnode, but save its nfsnode. Since the nfsnode does not
                 // have a lock, its vnode lock has to be carried over.
-                nvp.v_data.set(vp.v_data.get());
-                vp.v_data.set(ptr::null_mut());
+                nvp.set_data(vp.data());
+                vp.set_data(ptr::null_mut());
                 vp.v_op.set(Some(&SPEC_VOPS));
                 vrele(vp);
                 vgone(vp);
@@ -1220,7 +1220,7 @@ pub fn nfs_loadattrcache(
         }
         np.n_mtime.set(mtime);
     }
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         panic(format_args!(
             "nfs_loadattrcache: vnode {:p} has no mount",
             vp
@@ -1230,7 +1230,7 @@ pub fn nfs_loadattrcache(
     vap.va_type = vtyp;
     vap.va_rdev = rdev;
     vap.va_mtime = mtime;
-    vap.va_fsid = i64::from(mp.mnt_stat.get().f_fsid.val[0]);
+    vap.va_fsid = i64::from(mp.stat().f_fsid.val[0]);
 
     let uid = fxdr_unsigned(fp.fa_uid);
     let gid = fxdr_unsigned(fp.fa_gid);
@@ -1248,7 +1248,7 @@ pub fn nfs_loadattrcache(
         VCHR => MAXBSIZE as i64,
         _ => {
             if v3 {
-                i64::from(mp.mnt_stat.get().f_iosize)
+                i64::from(mp.stat().f_iosize)
             } else {
                 i64::from(fxdr_unsigned(fp.fa2_blocksize()) as i32)
             }
@@ -1317,13 +1317,13 @@ pub fn nfs_loadattrcache(
 #[cfg(feature = "nfsclient")]
 pub fn nfs_attrtimeo(np: &NfsNode) -> i32 {
     let vp = NFSTOV(np);
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         panic(format_args!("nfs_attrtimeo: vnode {:p} has no mount", vp));
     };
     let nmp = VFSTONFS(mp);
     let tenthage = ((gettime() - np.n_mtime.get().tv_sec) / 10) as i32;
 
-    let (minto, maxto) = if vp.v_type.get() == VDIR {
+    let (minto, maxto) = if vp.vtype() == VDIR {
         (
             i32::from(nmp.nm_acdirmin.get()),
             i32::from(nmp.nm_acdirmax.get()),
@@ -1395,11 +1395,11 @@ pub fn nfs_clearcommit(mp: &Mount) {
     let s = splbio();
     'restart: loop {
         for vp in mp.mnt_vnodelist.iter() {
-            if !vp.v_mount.get().is_some_and(|m| ptr::eq(m, mp)) {
+            if !vp.mount().is_some_and(|m| ptr::eq(m, mp)) {
                 // Paranoia.
                 continue 'restart;
             }
-            kernel::fs::bio::vnode_dirty_for_each(&vp.v_bufs, |bp| {
+            kernel::fs::bio::vnode_dirty_for_each(&vp.bufs, |bp| {
                 let flags = bp.flags();
                 if flags & (B_BUSY | B_DELWRI | B_NEEDCOMMIT) == B_DELWRI | B_NEEDCOMMIT {
                     bp.set_flags(flags & !B_NEEDCOMMIT);
@@ -2037,13 +2037,13 @@ pub(crate) mod tests {
         let nmp: &'static NfsMount = Box::leak(Box::new(NfsMount::new()));
         let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
         mp.mnt_vfc.set(Some(&CONF));
-        mp.mnt_data.set(ptr::from_ref(nmp).cast_mut().cast());
+        mp.set_data(ptr::from_ref(nmp).cast_mut().cast());
         let np: &'static NfsNode = Box::leak(Box::new(NfsNode::new()));
         let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
-        vp.v_tag.set(VT_NFS);
-        vp.v_type.set(vtype);
+        vp.set_tag(VT_NFS);
+        vp.set_vtype(vtype);
         vp.v_mount.set(Some(mp));
-        vp.v_data.set(ptr::from_ref(np).cast_mut().cast());
+        vp.set_data(ptr::from_ref(np).cast_mut().cast());
         np.n_vnode.set(Some(vp));
         (vp, np, nmp)
     }
@@ -2180,7 +2180,7 @@ pub(crate) mod tests {
     fn v3_sattr() {
         let _g = setup();
         let mut a = Vattr::new();
-        crate::kern::vfs_subr::vattr_null(&mut a);
+        crate::sys::vnode::vattr_null(&mut a);
         a.va_mode = 0o600;
         a.va_size = 5;
         a.va_mtime = Timespec::new(gettime() + 100, 9);

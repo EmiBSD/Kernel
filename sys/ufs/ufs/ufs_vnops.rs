@@ -83,13 +83,11 @@ use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::kern_tc::getnanotime;
-use crate::kern::spec_vnops::{spec_close, spec_read, spec_write};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::vfs_relookup;
-use crate::kern::vfs_subr::{vaccess, vgone, vnoperm, vput, vref, vrele};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BMAP, VOP_BWRITE, VOP_READ, VOP_REMOVE, VOP_STRATEGY, VOP_UNLOCK,
@@ -116,6 +114,7 @@ use crate::sys::namei::{
     Componentname, DELETE, ISDOTDOT, LOCKLEAF, LOCKPARENT, MODMASK, SAVESTART,
 };
 use crate::sys::param::{BLKDEV_IOSIZE, MAXBSIZE, MAXPATHLEN, PAGE_SIZE, dbtob};
+use crate::sys::specdev::{spec_close, spec_read, spec_write};
 use crate::sys::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISTXT, S_IXGRP, S_IXOTH, S_IXUSR, SF_APPEND, SF_IMMUTABLE,
     SF_SETTABLE, UF_SETTABLE,
@@ -139,6 +138,7 @@ use crate::sys::vnode::{
     VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, VopWriteArgs,
     cred_ref, iftovt, makeimode,
 };
+use crate::sys::vnode::{vaccess, vgone, vnoperm, vput, vref, vrele};
 use crate::ufs::ufs::dinode::{IFDIR, IFLNK, IFMT, IFREG, ISGID, ISUID, MAXSYMLINKLEN_UFS2};
 use crate::ufs::ufs::dir::{DIRBLKSIZ, DT_DIR, Direct, Dirtemplate, iftodt};
 use crate::ufs::ufs::inode::{
@@ -200,7 +200,7 @@ pub static UFSVNODE_FILTOPS: Filterops = Filterops {
 
 /// The vnode's mount, which a UFS vnode always has.
 fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("ufs: vnode {:p} without a mount", vp)),
     }
@@ -208,7 +208,7 @@ fn vmount(vp: &Vnode) -> &'static Mount {
 
 /// Whether the vnode's file system is mounted read-only.
 fn rdonly(vp: &Vnode) -> bool {
-    vmount(vp).mnt_flag.get() & MNT_RDONLY != 0
+    vmount(vp).flag() & MNT_RDONLY != 0
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
@@ -253,7 +253,7 @@ pub fn ufs_itimes(vp: &'static Vnode) {
             return;
         }
 
-        if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
+        if vp.vtype() == VBLK || vp.vtype() == VCHR {
             ip.set_flag(IN_LAZYMOD);
         } else {
             ip.set_flag(IN_MODIFIED);
@@ -316,7 +316,7 @@ pub fn ufs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
     // Remove inode so that it will be reloaded by VFS_VGET and checked to see if it is an
     // alias of an existing entry in the inode cache.
     vput(vp);
-    vp.v_type.set(VNON);
+    vp.set_vtype(VNON);
     vgone(vp);
     *ap.a_vpp = None;
     Ok(())
@@ -342,7 +342,7 @@ pub fn ufs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
 pub fn ufs_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_usecount.get() > 1 {
+    if vp.usecount() > 1 {
         ufs_itimes(vp);
     }
     Ok(())
@@ -357,7 +357,7 @@ pub fn ufs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     // Disallow write attempts on read-only file systems; unless the file is a socket, fifo,
     // or a block or character device resident on the file system.
     if mode & VWRITE != 0 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR | VLNK | VREG => {
                 if rdonly(vp) {
                     return Err(Errno::EROFS);
@@ -376,7 +376,7 @@ pub fn ufs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     if vnoperm(vp) {
         // For VEXEC, at least one of the execute bits must be set.
         if mode & VEXEC != 0
-            && vp.v_type.get() != VDIR
+            && vp.vtype() != VDIR
             && ip.dip_mode() & (S_IXUSR | S_IXGRP | S_IXOTH) == 0
         {
             return Err(Errno::EACCES);
@@ -385,7 +385,7 @@ pub fn ufs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     }
 
     vaccess(
-        vp.v_type.get(),
+        vp.vtype(),
         ip.dip_mode(),
         ip.dip_uid(),
         ip.dip_gid(),
@@ -417,13 +417,13 @@ pub fn ufs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_flags = u64::from(ip.dip_flags());
     vap.va_gen = u64::from(ip.dip_gen());
     // this doesn't belong here
-    vap.va_blocksize = match vp.v_type.get() {
+    vap.va_blocksize = match vp.vtype() {
         VBLK => BLKDEV_IOSIZE as i64,
         VCHR => MAXBSIZE as i64,
-        _ => i64::from(vmount(vp).mnt_stat.get().f_iosize),
+        _ => i64::from(vmount(vp).stat().f_iosize),
     };
     vap.va_bytes = dbtob(ip.dip_blocks() as usize) as u64;
-    vap.va_type = vp.v_type.get();
+    vap.va_type = vp.vtype();
     vap.va_filerev = ip.i_modrev.get();
     Ok(())
 }
@@ -491,7 +491,7 @@ pub fn ufs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         let oldsize = ip.dip_size();
         // Disallow write attempts on read-only file systems; unless the file is a socket,
         // fifo, or a block or character device resident on the file system.
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR => return Err(Errno::EISDIR),
             VLNK | VREG if rdonly(vp) => return Err(Errno::EROFS),
             _ => {}
@@ -524,7 +524,7 @@ pub fn ufs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             ip.set_flag(IN_CHANGE);
         }
         if vap.va_atime.tv_nsec != i64::from(VNOVAL)
-            && (vmount(vp).mnt_flag.get() & MNT_NOATIME == 0
+            && (vmount(vp).flag() & MNT_NOATIME == 0
                 || ip.i_flag.get() & (IN_CHANGE | IN_UPDATE) != 0)
         {
             ip.set_flag(IN_ACCESS);
@@ -561,7 +561,7 @@ pub fn ufs_chmod(vp: &'static Vnode, mode: i32, cred: *const Ucred) -> Result<()
         suser_ucred(c)?;
     }
     if c.cr_uid.get() != 0 && !vnoperm(vp) {
-        if vp.v_type.get() != VDIR && mode & S_ISTXT != 0 {
+        if vp.vtype() != VDIR && mode & S_ISTXT != 0 {
             return Err(Errno::EFTYPE);
         }
         if !groupmember(ip.dip_gid(), c) && mode & ISGID != 0 {
@@ -571,7 +571,7 @@ pub fn ufs_chmod(vp: &'static Vnode, mode: i32, cred: *const Ucred) -> Result<()
     ip.dip_set_mode(ip.dip_mode() & !ALLPERMS);
     ip.dip_set_mode(ip.dip_mode() | (mode & ALLPERMS));
     ip.set_flag(IN_CHANGE);
-    if vp.v_flag.get() & VTEXT != 0 && ip.dip_mode() & S_ISTXT == 0 {
+    if vp.flag() & VTEXT != 0 && ip.dip_mode() & S_ISTXT == 0 {
         let _ = uvm_vnp_uncache(vp);
     }
     Ok(())
@@ -679,7 +679,7 @@ pub fn ufs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
 
     let ip = vtoi(vp);
-    if vp.v_type.get() == VDIR
+    if vp.vtype() == VDIR
         || ip.dip_flags() & (IMMUTABLE | APPEND) != 0
         || vtoi(dvp).dip_flags() & APPEND != 0
     {
@@ -816,9 +816,9 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
         panic(format_args!("ufs_rename: no name"));
     }
     // Check for cross-device rename.
-    let fmp = fvp.v_mount.get().map(core::ptr::from_ref);
-    if fmp != tdvp.v_mount.get().map(core::ptr::from_ref)
-        || tvp.is_some_and(|t| fmp != t.v_mount.get().map(core::ptr::from_ref))
+    let fmp = fvp.mount().map(core::ptr::from_ref);
+    if fmp != tdvp.mount().map(core::ptr::from_ref)
+        || tvp.is_some_and(|t| fmp != t.mount().map(core::ptr::from_ref))
     {
         return rename_abortit(Errno::EXDEV, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
@@ -836,7 +836,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     if let Some(t) = tvp
         && core::ptr::eq(fvp, t)
     {
-        if fvp.v_type.get() == VDIR {
+        if fvp.vtype() == VDIR {
             // Linked directories are impossible, so we must have lost the race. Pretend
             // that the rename completed before the lookup.
             return rename_abortit(Errno::ENOENT, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
@@ -1218,7 +1218,7 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 
         ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
         ip.dip_set_mode(dmode);
-        tvp.v_type.set(VDIR); // Rest init'd in getnewvnode().
+        tvp.set_vtype(VDIR); // Rest init'd in getnewvnode().
         ip.i_effnlink.set(2);
         ip.dip_set_nlink(2);
 
@@ -1508,9 +1508,7 @@ pub fn ufs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
     uio.uio_offset = off;
     *ap.a_eofflag = i32::from(ip.dip_size() as i64 <= off);
 
-    if vmount(vp).mnt_flag.get() & MNT_NOATIME == 0
-        || ip.i_flag.get() & (IN_CHANGE | IN_UPDATE) != 0
-    {
+    if vmount(vp).flag() & MNT_NOATIME == 0 || ip.i_flag.get() & (IN_CHANGE | IN_UPDATE) != 0 {
         ip.set_flag(IN_ACCESS);
     }
 
@@ -1558,7 +1556,7 @@ pub fn ufs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     };
 
     let ip = vtoi(vp);
-    if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
+    if vp.vtype() == VBLK || vp.vtype() == VCHR {
         panic(format_args!("ufs_strategy: spec"));
     }
     if bp.blkno() == bp.lblkno() {
@@ -1584,7 +1582,7 @@ pub fn ufs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         return Ok(());
     }
     let devvp = ip.i_devvp();
-    bp.set_dev(devvp.v_rdev());
+    bp.set_dev(devvp.rdev());
     let _ = VOP_STRATEGY(devvp, bp);
     Ok(())
 }
@@ -1642,7 +1640,7 @@ pub fn ufsspec_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
 pub fn ufsspec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_usecount.get() > 1 {
+    if vp.usecount() > 1 {
         ufs_itimes(vp);
     }
     spec_close(ap)
@@ -1651,7 +1649,7 @@ pub fn ufsspec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
 /// `ufs_pathconf` (`vop_pathconf`): return POSIX pathconf information applicable to ufs
 /// filesystems.
 pub fn ufs_pathconf(ap: &mut VopPathconfArgs<'_>) -> Result<(), Errno> {
-    let stat = || vmount(ap.a_vp).mnt_stat.get();
+    let stat = || vmount(ap.a_vp).stat();
     *ap.a_retval = match ap.a_name {
         _PC_LINK_MAX => LINK_MAX as Register,
         _PC_NAME_MAX => NAME_MAX as Register,
@@ -1727,7 +1725,7 @@ pub fn ufs_makeinode(
 
     ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
     ip.dip_set_mode(mode);
-    tvp.v_type.set(iftovt(mode)); // Rest init'd in getnewvnode().
+    tvp.set_vtype(iftovt(mode)); // Rest init'd in getnewvnode().
     ip.i_effnlink.set(1);
     ip.dip_set_nlink(1);
     if ip.dip_mode() & ISGID != 0
@@ -1764,7 +1762,7 @@ pub fn ufs_makeinode(
     ip.i_effnlink.set(0);
     ip.dip_set_nlink(0);
     ip.set_flag(IN_CHANGE);
-    tvp.v_type.set(VNON);
+    tvp.set_vtype(VNON);
     vput(tvp);
 
     error
@@ -1784,7 +1782,7 @@ pub fn ufs_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
 
     kn.kn_hook.set(ptr::from_ref(vp).cast_mut().cast());
 
-    klist_insert_locked(&vp.v_klist, kn);
+    klist_insert_locked(&vp.klist, kn);
 
     Ok(())
 }
@@ -1803,7 +1801,7 @@ fn kn_vnode(kn: &Knote) -> &'static Vnode {
 pub fn filt_ufsdetach(kn: &Knote) {
     let vp = kn_vnode(kn);
 
-    klist_remove_locked(&vp.v_klist, kn);
+    klist_remove_locked(&vp.klist, kn);
 }
 
 /// `filt_ufsread`: the bytes past the file offset; always ready for poll and select.

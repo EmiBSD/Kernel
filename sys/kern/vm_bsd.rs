@@ -533,7 +533,6 @@ use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::machine::conf::iszerodev;
@@ -565,6 +564,7 @@ use crate::sys::types::{Paddr, Vaddr};
 use crate::sys::types::{Register, Rlim};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{VBLK, VTEXT, Vattr, Vnode, Vtype};
+use crate::sys::vnode::{vget, vref, vrele};
 use crate::{kassert, kprintf};
 
 /// The machine's constants `kernel::vm` reads (`kernel::vm::init::VmMachine`), handed down
@@ -1287,11 +1287,11 @@ fn vop_rw(
 // vnode layer. Vnodes are never freed, so the pager keeps them as `&'static`.
 impl VnodeOps for Vnode {
     fn uvn(&self) -> Option<&'static Uvn> {
-        self.v_uvm.get()
+        self.uvn()
     }
 
     fn set_uvn(&self, uvn: &'static Uvn) {
-        self.v_uvm.set(Some(uvn));
+        self.set_uvn(uvn);
     }
 
     fn attr_size(&'static self) -> Result<u64, Errno> {
@@ -1304,19 +1304,19 @@ impl VnodeOps for Vnode {
     }
 
     fn is_blk(&self) -> bool {
-        self.v_type.get() == VBLK
+        self.vtype() == VBLK
     }
 
     fn vtext(&self) -> bool {
-        self.v_flag.get() & VTEXT != 0
+        self.flag() & VTEXT != 0
     }
 
     fn clear_vtext(&self) {
-        self.v_flag.set(self.v_flag.get() & !VTEXT);
+        self.set_flag(self.flag() & !VTEXT);
     }
 
     fn mount_id(&self) -> usize {
-        mount_id(self.v_mount.get())
+        mount_id(self.mount())
     }
 
     fn vref(&'static self) {
@@ -1363,7 +1363,7 @@ impl VnodeOps for Vnode {
     }
 
     fn vtype(&self) -> VType {
-        match self.v_type.get() {
+        match self.vtype() {
             Vtype::VNON => VType::VNON,
             Vtype::VREG => VType::VREG,
             Vtype::VDIR => VType::VDIR,
@@ -1377,7 +1377,7 @@ impl VnodeOps for Vnode {
     }
 
     fn is_zero_device(&self) -> bool {
-        iszerodev(self.v_rdev())
+        iszerodev(self.rdev())
     }
 
     fn attr_flags(&'static self) -> Result<u64, Errno> {

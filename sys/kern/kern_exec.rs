@@ -107,7 +107,6 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{vput, vref, vrele};
 use crate::kern::vfs_syscalls::NameiBuf;
 use crate::kern::vfs_vnops::{vn_close, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_OPEN, VOP_UNLOCK};
@@ -160,6 +159,7 @@ use crate::sys::types::{Register, Vaddr, Vsize};
 use crate::sys::ucred::CredRef;
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
+use crate::sys::vnode::{vput, vref, vrele};
 use crate::unported;
 use hal::once::OnceStatic;
 use hal::vm::param::{atop, round_page, trunc_page};
@@ -333,7 +333,7 @@ pub fn check_exec(
     };
 
     // check for regular file
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         return bad1(ndp, Errno::EACCES);
     }
 
@@ -343,7 +343,7 @@ pub fn check_exec(
     }
 
     // Check mount point
-    let mnt_flag = vp.v_mount.get().map_or(0, |mp| mp.mnt_flag.get());
+    let mnt_flag = vp.mount().map_or(0, |mp| mp.flag());
     if mnt_flag & MNT_NOEXEC != 0 {
         return bad1(ndp, Errno::EACCES);
     }

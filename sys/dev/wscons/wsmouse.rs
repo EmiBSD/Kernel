@@ -187,7 +187,6 @@ use crate::kern::kern_sig::{sigio_getown, sigio_setown};
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::intr::{spltty, splx};
@@ -208,6 +207,7 @@ use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Dev, minor};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::VCHR;
+use crate::sys::vnode::vdevgone;
 
 /// `NWSMOUSE`: `wsmouse* at ...` is configured (`needs-flag`; GENERIC has it, though no
 /// parent attaches one before M16).

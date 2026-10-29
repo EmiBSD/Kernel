@@ -67,9 +67,8 @@ use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_synch::msleep_nsec;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::nullop;
-use crate::kern::vfs_default::{vop_generic_badop, vop_generic_lookup};
-use crate::kern::vfs_subr::VNODE_MTX;
 use crate::kern::vfs_vops::{VOP_BMAP, VOP_LOCK, VOP_STRATEGY, VOP_UNLOCK};
+use crate::kern::vfs_vops::{vop_generic_badop, vop_generic_lookup};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::B_ERROR;
 use crate::sys::buf::BufLegacy;
@@ -79,6 +78,7 @@ use crate::sys::event::{__EV_POLL, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE};
 use crate::sys::lock::LK_DRAIN;
 use crate::sys::param::PINOD;
 use crate::sys::systm::INFSLP;
+use crate::sys::vnode::VNODE_MTX;
 use crate::sys::vnode::{
     VISTTY, VXLOCK, VXWANT, Vnode, VopBmapArgs, VopInactiveArgs, VopIoctlArgs, VopKqfilterArgs,
     VopLockArgs, VopOpenArgs, VopPrintArgs, VopReadArgs, VopStrategyArgs, VopWriteArgs, Vops,
@@ -133,7 +133,7 @@ pub fn dead_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
         panic(format_args!("dead_read: lock"));
     }
     // Return EOF for tty devices, EIO for others
-    if ap.a_vp.v_flag.get() & VISTTY == 0 {
+    if ap.a_vp.flag() & VISTTY == 0 {
         return Err(Errno::EIO);
     }
     Ok(())

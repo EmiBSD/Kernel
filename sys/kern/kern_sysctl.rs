@@ -155,7 +155,6 @@ use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
 use crate::kern::vfs_cache::NCHSTATS;
 use crate::kern::vfs_lockf::MAXLOCKSPERUID;
-use crate::kern::vfs_subr::{MAXVNODES, NUMVNODES, vfs_sysctl};
 use crate::kern::vfs_vops::VOP_GETATTR;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
@@ -195,6 +194,7 @@ use crate::sys::systm::{
 use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
 use crate::sys::unpcb::{UnpRefs, sotounpcb};
+use crate::sys::vnode::{MAXVNODES, NUMVNODES, vfs_sysctl};
 use crate::sys::vnode::{Vattr, Vnode, VnodeUn, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
@@ -791,16 +791,16 @@ fn fill_file_vnode(kf: &mut KinfoFile, vp: &'static Vnode, p: &Proc, show_pointe
     if show_pointers {
         kf.v_un = vnode_un_ptr(vp.v_un.get());
     }
-    kf.v_type = vp.v_type.get() as u32;
-    kf.v_tag = vp.v_tag.get() as u32;
-    kf.v_flag = vp.v_flag.get();
+    kf.v_type = vp.vtype() as u32;
+    kf.v_tag = vp.tag() as u32;
+    kf.v_flag = vp.flag();
     if show_pointers {
-        kf.v_data = ptrtoint64(vp.v_data.get());
+        kf.v_data = ptrtoint64(vp.data());
     }
     if show_pointers {
-        kf.v_mount = vp.v_mount.get().map_or(0, |mp| ptrtoint64(mp));
+        kf.v_mount = vp.mount().map_or(0, |mp| ptrtoint64(mp));
     }
-    if let Some(mp) = vp.v_mount.get() {
+    if let Some(mp) = vp.mount() {
         let (name, len) = mp.mntonname();
         strlcpy(&mut kf.f_mntonname, &name[..len]);
     }

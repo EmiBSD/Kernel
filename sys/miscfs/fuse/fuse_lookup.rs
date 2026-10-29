@@ -47,7 +47,6 @@
 //! - `cnp->cn_proc` is read through `cn_proc` (`fuse_vnops.rs`), detached from `cnp` so that
 //!   the component's flags can change meanwhile.
 
-use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::miscfs::fuse::fuse_device::fuse_device_queue_fbuf;
@@ -63,6 +62,7 @@ use crate::sys::namei::{
 };
 use crate::sys::types::Ino;
 use crate::sys::vnode::{VDIR, VEXEC, VWRITE, VopLookupArgs, Vtype, iftovt};
+use crate::sys::vnode::{vput, vref};
 
 /// `fusefs_lookup` (`vop_lookup`).
 pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
@@ -81,7 +81,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     VOP_ACCESS(vdp, VEXEC, cred, p)?;
 
     if flags & ISLASTCN != 0
-        && vmount(vdp).mnt_flag.get() & MNT_RDONLY != 0
+        && vmount(vdp).flag() & MNT_RDONLY != 0
         && (nameiop == DELETE || nameiop == RENAME)
     {
         return Err(Errno::EROFS);
@@ -175,7 +175,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             };
 
             if let Some(t) = nvtype {
-                tdp.v_type.set(t);
+                tdp.set_vtype(t);
             }
             VTOI(tdp).i_parent_cache.set(dp.i_number);
             *ap.a_vpp = Some(tdp);
@@ -189,7 +189,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             ap.a_cnp.cn_flags |= PDIRUNLOCK;
 
             let tdp = match VFS_VGET(fmp.mp, nid) {
-                Ok(tdp) if tdp.v_type.get() != VDIR => {
+                Ok(tdp) if tdp.vtype() != VDIR => {
                     // DPRINTF("%s: parent not dir: %s\n", __func__, cnp->cn_nameptr);
                     Err(Errno::EIO)
                 }
@@ -228,13 +228,13 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             };
 
             if let Some(t) = nvtype {
-                tdp.v_type.set(t);
+                tdp.set_vtype(t);
             }
             VTOI(tdp).i_parent_cache.set(dp.i_number);
 
             // Cache the parent if it's a directory so that we can resolve any .. lookups
             // later.
-            if tdp.v_type.get() == VDIR {
+            if tdp.vtype() == VDIR {
                 VTOI(tdp).i_parent_cache.set(dp.i_number);
             }
 

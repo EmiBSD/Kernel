@@ -91,20 +91,16 @@ use core::sync::atomic::Ordering;
 use crate::kern::kern_prot::{groupmember, suser_ucred};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
-use crate::kern::spec_vnops::{
-    spec_advlock, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_strategy,
-};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::cache_purge;
-use crate::kern::vfs_default::{
+use crate::kern::vfs_lookup::vfs_relookup;
+use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
+use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_READ, VOP_REMOVE, VOP_UNLOCK};
+use crate::kern::vfs_vops::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
     vop_generic_lookup, vop_generic_revoke,
 };
-use crate::kern::vfs_lookup::vfs_relookup;
-use crate::kern::vfs_subr::{vaccess, vflushbuf, vgone, vput, vref, vrele};
-use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
-use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_READ, VOP_REMOVE, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
@@ -118,6 +114,9 @@ use crate::sys::namei::{
     Componentname, DELETE, ISDOTDOT, LOCKLEAF, LOCKPARENT, MODMASK, SAVESTART,
 };
 use crate::sys::param::{BLKDEV_IOSIZE, MAXBSIZE, dbtob};
+use crate::sys::specdev::{
+    spec_advlock, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_strategy,
+};
 use crate::sys::stat::{
     ACCESSPERMS, ALLPERMS, APPEND, IMMUTABLE, S_ISTXT, SF_APPEND, SF_IMMUTABLE,
 };
@@ -134,6 +133,7 @@ use crate::sys::vnode::{
     VopReadlinkArgs, VopReclaimArgs, VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs,
     VopSymlinkArgs, Vops, iftovt, makeimode,
 };
+use crate::sys::vnode::{vaccess, vflushbuf, vgone, vput, vref, vrele};
 use crate::ufs::ext2fs::ext2fs_alloc::ext2fs_inode_alloc;
 use crate::ufs::ext2fs::ext2fs_bmap::ext2fs_bmap;
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_APPEND, EXT2_IMMUTABLE, EXT2_MAXSYMLINKLEN};
@@ -236,7 +236,7 @@ pub static EXT2FS_SPECVOPS: Vops = Vops {
 
 /// The vnode's mount, which an ext2fs vnode always has.
 fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("ext2fs: vnode {:p} without a mount", vp)),
     }
@@ -244,7 +244,7 @@ fn vmount(vp: &Vnode) -> &'static Mount {
 
 /// Whether the vnode's file system is mounted read-only.
 fn rdonly(vp: &Vnode) -> bool {
-    vmount(vp).mnt_flag.get() & MNT_RDONLY != 0
+    vmount(vp).flag() & MNT_RDONLY != 0
 }
 
 /// `ip->i_e2fs_nlink += d` (`d` is -1, 1 or -2).
@@ -290,7 +290,7 @@ pub fn ext2fs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
     // Remove inode so that it will be reloaded by VFS_VGET and checked to see if it is an
     // alias of an existing entry in the inode cache.
     vput(vp);
-    vp.v_type.set(VNON);
+    vp.set_vtype(VNON);
     vgone(vp);
     vgone(vp);
     *ap.a_vpp = None;
@@ -319,7 +319,7 @@ pub fn ext2fs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     }
 
     vaccess(
-        vp.v_type.get(),
+        vp.vtype(),
         e2mode(ip),
         ip.i_e2fs_uid().get(),
         ip.i_e2fs_gid().get(),
@@ -357,13 +357,13 @@ pub fn ext2fs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     }
     vap.va_gen = u64::from(ip.i_e2fs_gen());
     // this doesn't belong here
-    vap.va_blocksize = match vp.v_type.get() {
+    vap.va_blocksize = match vp.vtype() {
         VBLK => BLKDEV_IOSIZE as i64,
         VCHR => MAXBSIZE as i64,
-        _ => i64::from(vmount(vp).mnt_stat.get().f_iosize),
+        _ => i64::from(vmount(vp).stat().f_iosize),
     };
     vap.va_bytes = dbtob(ip.i_e2fs_nblock() as usize) as u64;
-    vap.va_type = vp.v_type.get();
+    vap.va_type = vp.vtype();
     vap.va_filerev = ip.i_modrev.get();
     Ok(())
 }
@@ -431,7 +431,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
     if vap.va_size != VNOVAL as u64 {
         // Disallow write attempts on read-only file systems; unless the file is a socket,
         // fifo, or a block or character device resident on the file system.
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR => return Err(Errno::EISDIR),
             VLNK | VREG if rdonly(vp) => return Err(Errno::EROFS),
             _ => {}
@@ -460,7 +460,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             ip.set_flag(IN_CHANGE);
         }
         if vap.va_atime.tv_nsec != i64::from(VNOVAL)
-            && (vmount(vp).mnt_flag.get() & MNT_NOATIME == 0
+            && (vmount(vp).flag() & MNT_NOATIME == 0
                 || ip.i_flag.get() & (IN_CHANGE | IN_UPDATE) != 0)
         {
             ip.set_flag(IN_ACCESS);
@@ -492,7 +492,7 @@ fn ext2fs_chmod(vp: &'static Vnode, mode: Mode, cred: *const Ucred) -> Result<()
         suser_ucred(c)?;
     }
     if c.cr_uid.get() != 0 {
-        if vp.v_type.get() != VDIR && mode & S_ISTXT != 0 {
+        if vp.vtype() != VDIR && mode & S_ISTXT != 0 {
             return Err(Errno::EFTYPE);
         }
         if !groupmember(ip.i_e2fs_gid().get(), c) && mode & ISGID != 0 {
@@ -502,7 +502,7 @@ fn ext2fs_chmod(vp: &'static Vnode, mode: Mode, cred: *const Ucred) -> Result<()
     let m = (e2mode(ip) & !ALLPERMS) | (mode & ALLPERMS);
     ip.set_i_e2fs_mode(m as u16);
     ip.set_flag(IN_CHANGE);
-    if vp.v_flag.get() & VTEXT != 0 && e2mode(ip) & S_ISTXT == 0 {
+    if vp.flag() & VTEXT != 0 && e2mode(ip) & S_ISTXT == 0 {
         let _ = uvm_vnp_uncache(vp);
     }
     Ok(())
@@ -554,7 +554,7 @@ pub fn ext2fs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
 
     let ip = vtoi(vp);
-    if vp.v_type.get() == VDIR
+    if vp.vtype() == VDIR
         || ip.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
         || vtoi(dvp).i_e2fs_flags() & EXT2_APPEND != 0
     {
@@ -685,9 +685,9 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
         panic(format_args!("ext2fs_rename: no name"));
     }
     // Check for cross-device rename.
-    let fmp = fvp.v_mount.get().map(ptr::from_ref);
-    if fmp != tdvp.v_mount.get().map(ptr::from_ref)
-        || tvp.is_some_and(|t| fmp != t.v_mount.get().map(ptr::from_ref))
+    let fmp = fvp.mount().map(ptr::from_ref);
+    if fmp != tdvp.mount().map(ptr::from_ref)
+        || tvp.is_some_and(|t| fmp != t.mount().map(ptr::from_ref))
     {
         return rename_abortit(Errno::EXDEV, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
@@ -702,7 +702,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     if let Some(t) = tvp
         && ptr::eq(fvp, t)
     {
-        if fvp.v_type.get() == VDIR {
+        if fvp.vtype() == VDIR {
             return rename_abortit(Errno::EINVAL, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
         }
 
@@ -1068,7 +1068,7 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
         ip.i_e2fs_gid().set(dp.i_e2fs_gid().get());
         ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
         ip.set_i_e2fs_mode(dmode as u16);
-        tvp.v_type.set(VDIR); // Rest init'd in getnewvnode().
+        tvp.set_vtype(VDIR); // Rest init'd in getnewvnode().
         ip.set_i_e2fs_nlink(2);
         // The C stores this result and overwrites it at once with the parent's.
         let _ = ext2fs_update(ip, 1);
@@ -1114,7 +1114,7 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
                 break 'bad Err(e);
             }
             let bsize = dp.e2fs().e2fs_bsize.get();
-            if i64::from(bsize) > vmount(dvp).mnt_stat.get().f_bsize as i64 {
+            if i64::from(bsize) > vmount(dvp).stat().f_bsize as i64 {
                 // XXX should grow with balloc()
                 panic(format_args!("ext2fs_mkdir: blksize"));
             } else {
@@ -1306,7 +1306,7 @@ pub fn ext2fs_makeinode(
     ip.i_e2fs_uid().set(c.cr_uid.get());
     ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
     ip.set_i_e2fs_mode(mode as u16);
-    tvp.v_type.set(iftovt(mode)); // Rest init'd in getnewvnode().
+    tvp.set_vtype(iftovt(mode)); // Rest init'd in getnewvnode().
     ip.set_i_e2fs_nlink(1);
     if e2mode(ip) & ISGID != 0 && !groupmember(ip.i_e2fs_gid().get(), c) && suser_ucred(c).is_err()
     {
@@ -1334,7 +1334,7 @@ pub fn ext2fs_makeinode(
     pnbuf_free(cnp);
     ip.set_i_e2fs_nlink(0);
     ip.set_flag(IN_CHANGE);
-    tvp.v_type.set(VNON);
+    tvp.set_vtype(VNON);
     vput(tvp);
     error
 }
@@ -1353,8 +1353,8 @@ pub fn ext2fs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
     #[cfg(feature = "diagnostic")]
-    if crate::kern::vfs_subr::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("ext2fs_reclaim: pushing active"), vp);
+    if crate::sys::vnode::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("ext2fs_reclaim: pushing active"), vp);
     }
 
     // Remove the inode from its hash chain.
@@ -1374,7 +1374,7 @@ pub fn ext2fs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     }
 
     let ipp = NonNull::from(ip).cast::<u8>();
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
     pool_put(&EXT2FS_INODE_POOL, ipp);
 
     Ok(())
@@ -1405,7 +1405,6 @@ mod tests {
     use super::*;
     use crate::kern::vfs_init::set_rootvnode;
     use crate::kern::vfs_lookup::{namei, ndinit};
-    use crate::kern::vfs_subr::{MOUNTLIST, vattr_null, vfs_busy, vfs_unbusy};
     use crate::kern::vfs_syscalls::{
         dolinkat, domkdirat, domknodat, dorenameat, dosymlinkat, dounlinkat, dounmount,
     };
@@ -1426,6 +1425,7 @@ mod tests {
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, Uio};
     use crate::sys::unistd::_PC_LINK_MAX;
+    use crate::sys::vnode::{MOUNTLIST, vattr_null, vfs_busy, vfs_unbusy};
     use crate::sys::vnode::{VCHR, Vattr};
     use crate::ufs::ext2fs::ext2fs::{
         E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV1, EXT2F_INCOMPAT_FTYPE, EXT2F_ROCOMPAT_SPARSE_SUPER,

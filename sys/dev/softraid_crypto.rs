@@ -134,7 +134,6 @@ use crate::dev::softraidvar::*;
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_subr::{bdevvp, vput};
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN};
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
@@ -152,6 +151,7 @@ use crate::sys::types::{Daddr, Dev};
 use crate::sys::ucred::NOCRED;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::Vnode;
+use crate::sys::vnode::{bdevvp, vput};
 
 /// The number of descriptors a request of `MAXPHYS` bytes needs (one per sector).
 const SR_CRYPTO_NDESC: usize = MAXPHYS >> DEV_BSHIFT;

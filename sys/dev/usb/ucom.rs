@@ -110,7 +110,6 @@ use crate::kern::tty::{
 };
 use crate::kern::tty_conf::linesw;
 use crate::kern::tty_subr::{ndflush, ndqb};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{spltty, splx};
@@ -139,6 +138,7 @@ use crate::sys::ttydefaults::{
 use crate::sys::types::Dev;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::VCHR;
+use crate::sys::vnode::vdevgone;
 
 /// `NUCOM`: `ucom* at uftdi?` is configured (`needs-flag`; GENERIC has it).
 pub const NUCOM: i32 = 1;

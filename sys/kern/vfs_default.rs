@@ -100,7 +100,7 @@ pub fn vop_generic_revoke(ap: &mut VopRevokeArgs) -> Result<(), Errno> {
 
     let vp = ap.a_vp;
 
-    while vp.v_type.get() == VBLK
+    while vp.vtype() == VBLK
         && let Some(mp) = vp.v_specinfo().and_then(|si| si.si_mountpoint.get())
     {
         // If we have a mount point associated with the vnode, we must flush it out now, as
@@ -113,7 +113,7 @@ pub fn vop_generic_revoke(ap: &mut VopRevokeArgs) -> Result<(), Errno> {
         }
     }
 
-    if vp.v_flag.get() & VALIASED != 0 {
+    if vp.flag() & VALIASED != 0 {
         // If a vgone (or vclean) is already in progress, wait until it is done and return.
         mtx_enter(&VNODE_MTX);
         if vp.v_lflag.get() & VXLOCK != 0 {
@@ -133,15 +133,12 @@ pub fn vop_generic_revoke(ap: &mut VopRevokeArgs) -> Result<(), Errno> {
         vp.v_lflag.set(vp.v_lflag.get() | VXLOCK);
         mtx_leave(&VNODE_MTX);
 
-        while vp.v_flag.get() & VALIASED != 0 {
+        while vp.flag() & VALIASED != 0 {
             let Some(chain) = vp.v_specinfo().and_then(|si| si.si_hashchain.get()) else {
                 break;
             };
             for vq in chain.iter() {
-                if vq.v_rdev() != vp.v_rdev()
-                    || vq.v_type.get() != vp.v_type.get()
-                    || ptr::eq(vp, vq)
-                {
+                if vq.rdev() != vp.rdev() || vq.vtype() != vp.vtype() || ptr::eq(vp, vq) {
                     continue;
                 }
                 vgonel(vq, p);

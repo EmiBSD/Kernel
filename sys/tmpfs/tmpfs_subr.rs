@@ -116,11 +116,9 @@ use crate::kern::kern_rwlock::{rrw_init_flags, rw_enter_write, rw_exit_write, rw
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::kern_tc::{getnanotime, nanotime};
-use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_subr::{checkalias, getnewvnode, vget, vgone, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_ISLOCKED};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -137,6 +135,7 @@ use crate::sys::param::{MAXPATHLEN, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use crate::sys::proc::Proc;
 use crate::sys::queue::{ListHead, TailqHead};
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
+use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISGID, S_ISTXT, SF_APPEND, SF_IMMUTABLE, SF_SETTABLE,
     UF_SETTABLE,
@@ -150,6 +149,7 @@ use crate::sys::vnode::{
     VA_UTIMES_CHANGE, VA_UTIMES_NULL, VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VN_KNOTE, VNON, VNOVAL,
     VREG, VROOT, VSOCK, VT_TMPFS, VTEXT, VWRITE, Vattr, Vnode, Vtype,
 };
+use crate::sys::vnode::{checkalias, getnewvnode, vget, vgone, vrele};
 use crate::tmpfs::tmpfs::{
     TMPFS_DIRSEQ_DOT, TMPFS_DIRSEQ_DOTDOT, TMPFS_DIRSEQ_END, TMPFS_DIRSEQ_EOF, TMPFS_DIRSEQ_NONE,
     TMPFS_DIRSEQ_START, TMPFS_NODE_ACCESSED, TMPFS_NODE_CHANGED, TMPFS_NODE_GEN_MASK,
@@ -406,15 +406,15 @@ pub fn tmpfs_vnode_get(
     };
 
     rrw_init_flags(&node.tn_vlock, "tnode", RWL_DUPOK | RWL_IS_VNODE);
-    vp.v_type.set(node.tn_type.get());
+    vp.set_vtype(node.tn_type.get());
 
     // Type-specific initialization.
     match node.tn_type.get() {
         VBLK | VCHR => {
             vp.v_op.set(Some(&TMPFS_SPECVOPS));
             if let Some(nvp) = checkalias(vp, node.tn_spec.tn_dev.tn_rdev.get(), Some(mp)) {
-                nvp.v_data.set(vp.v_data.get());
-                vp.v_data.set(ptr::null_mut());
+                nvp.set_data(vp.data());
+                vp.set_data(ptr::null_mut());
                 vp.v_op.set(Some(&SPEC_VOPS));
                 vrele(vp);
                 vgone(vp);
@@ -430,7 +430,7 @@ pub fn tmpfs_vnode_get(
                 .get()
                 .is_some_and(|p| ptr::eq(p, node))
             {
-                vp.v_flag.set(vp.v_flag.get() | VROOT);
+                vp.set_flag(vp.flag() | VROOT);
             }
         }
         VLNK | VREG | VSOCK | VFIFO => {}
@@ -440,8 +440,7 @@ pub fn tmpfs_vnode_get(
     }
 
     uvm_vnp_setsize(vp, node.tn_size.get());
-    vp.v_data
-        .set(ptr::from_ref(node).cast_mut().cast::<c_void>());
+    vp.set_data(ptr::from_ref(node).cast_mut().cast::<c_void>());
     node.tn_vnode.set(Some(vp));
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
     rw_exit_write(&node.tn_nlock);
@@ -458,7 +457,7 @@ pub fn tmpfs_alloc_file(
     cnp: &mut Componentname,
     target: Option<&[u8]>,
 ) -> Result<&'static Vnode, Errno> {
-    let Some(mp) = dvp.v_mount.get() else {
+    let Some(mp) = dvp.mount() else {
         panic(format_args!(
             "tmpfs_alloc_file: vnode {:p} has no mount",
             dvp
@@ -988,7 +987,7 @@ pub fn tmpfs_dir_getdents(node: &'static TmpfsNode, uio: &mut Uio<'_>) -> Result
 /// `tmpfs_reg_resize`: resize the underlying UVM object associated with the specified
 /// regular file.
 pub fn tmpfs_reg_resize(vp: &'static Vnode, newsize: Off) -> Result<(), Errno> {
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         panic(format_args!(
             "tmpfs_reg_resize: vnode {:p} has no mount",
             vp
@@ -998,7 +997,7 @@ pub fn tmpfs_reg_resize(vp: &'static Vnode, newsize: Off) -> Result<(), Errno> {
     let node = VP_TO_TMPFS_NODE(vp);
     let uobj = node.tn_uobj();
 
-    kassert!(vp.v_type.get() == VREG);
+    kassert!(vp.vtype() == VREG);
     kassert!(newsize >= 0);
 
     let oldsize = node.tn_size.get();
@@ -1063,11 +1062,7 @@ pub fn tmpfs_chflags(vp: &'static Vnode, flags: u32, cred: &Ucred, _p: &Proc) ->
     kassert!(VOP_ISLOCKED(vp) != 0);
 
     // Disallow this operation if the file system is mounted read-only.
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         return Err(Errno::EROFS);
     }
 
@@ -1103,11 +1098,7 @@ pub fn tmpfs_chmod(vp: &'static Vnode, mode: Mode, cred: &Ucred, _p: &Proc) -> R
     kassert!(VOP_ISLOCKED(vp) != 0);
 
     // Disallow this operation if the file system is mounted read-only.
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         return Err(Errno::EROFS);
     }
 
@@ -1120,7 +1111,7 @@ pub fn tmpfs_chmod(vp: &'static Vnode, mode: Mode, cred: &Ucred, _p: &Proc) -> R
         suser_ucred(cred)?;
     }
     if cred.cr_uid.get() != 0 {
-        if vp.v_type.get() != VDIR && mode & S_ISTXT != 0 {
+        if vp.vtype() != VDIR && mode & S_ISTXT != 0 {
             return Err(Errno::EFTYPE);
         }
         if !groupmember(node.tn_gid.get(), cred) && mode & S_ISGID != 0 {
@@ -1130,7 +1121,7 @@ pub fn tmpfs_chmod(vp: &'static Vnode, mode: Mode, cred: &Ucred, _p: &Proc) -> R
 
     node.tn_mode.set(mode & ALLPERMS);
     tmpfs_update(node, TMPFS_NODE_CHANGED);
-    if vp.v_flag.get() & VTEXT != 0 && node.tn_mode.get() & S_ISTXT == 0 {
+    if vp.flag() & VTEXT != 0 && node.tn_mode.get() & S_ISTXT == 0 {
         let _ = uvm_vnp_uncache(vp);
     }
     VN_KNOTE(vp, NOTE_ATTRIB);
@@ -1166,11 +1157,7 @@ pub fn tmpfs_chown(
     };
 
     // Disallow this operation if the file system is mounted read-only.
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         return Err(Errno::EROFS);
     }
 
@@ -1200,14 +1187,10 @@ pub fn tmpfs_chsize(vp: &'static Vnode, size: u64, _cred: &Ucred, _p: &Proc) -> 
     kassert!(VOP_ISLOCKED(vp) != 0);
 
     // Decide whether this is a valid operation based on the file type.
-    match vp.v_type.get() {
+    match vp.vtype() {
         VDIR => return Err(Errno::EISDIR),
         VREG => {
-            if vp
-                .v_mount
-                .get()
-                .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-            {
+            if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
                 return Err(Errno::EROFS);
             }
         }
@@ -1243,11 +1226,7 @@ pub fn tmpfs_chtimes(
     kassert!(VOP_ISLOCKED(vp) != 0);
 
     // Disallow this operation if the file system is mounted read-only.
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         return Err(Errno::EROFS);
     }
 

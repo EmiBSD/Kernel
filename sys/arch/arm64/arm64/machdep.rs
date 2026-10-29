@@ -1481,7 +1481,7 @@ pub fn boot(howto: i32) -> ! {
             if howto & RB_NOSYNC == 0 && WAITTIME.load(Ordering::Relaxed) < 0 {
                 WAITTIME.store(0, Ordering::Relaxed);
                 if let Some(p) = crate::machine::cpu::curproc() {
-                    crate::kern::vfs_subr::vfs_shutdown(p);
+                    crate::sys::vnode::vfs_shutdown(p);
                 }
 
                 if howto & RB_TIMEBAD == 0 {

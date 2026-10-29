@@ -124,7 +124,6 @@ use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::vfs_subr::{VFS_STALL_LOCK, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
 use crate::machine::copy::copyout;
@@ -155,6 +154,7 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Off, Register, minor};
 use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
+use crate::sys::vnode::{VFS_STALL_LOCK, vref, vrele};
 
 /// `f_data`: what a `bsd` file is open on.
 pub enum BsdFileData {
@@ -294,15 +294,15 @@ impl FileGlue for BsdFileGlue {
     }
 
     fn isatty(d: &BsdFileData) -> bool {
-        vnode_of(d).v_flag.get() & VISTTY != 0
+        vnode_of(d).flag() & VISTTY != 0
     }
 
     fn position_check(d: &BsdFileData, offset: Off) -> Result<(), Errno> {
         let vp = vnode_of(d);
-        if vp.v_type.get() == VFIFO || vp.v_flag.get() & VISTTY != 0 {
+        if vp.vtype() == VFIFO || vp.flag() & VISTTY != 0 {
             return Err(Errno::ESPIPE);
         }
-        if offset < 0 && vp.v_type.get() != VCHR {
+        if offset < 0 && vp.vtype() != VCHR {
             return Err(Errno::EINVAL);
         }
         Ok(())

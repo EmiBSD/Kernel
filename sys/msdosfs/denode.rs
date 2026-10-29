@@ -435,8 +435,8 @@ pub fn de_externalize(dp: &mut Direntry, dep: &Denode) {
 
 /// `VTODE(vp)`: the denode of a msdosfs vnode.
 pub fn vtode(vp: &Vnode) -> &'static Denode {
-    let data = vp.v_data.get();
-    if data.is_null() || vp.v_tag.get() != VT_MSDOSFS {
+    let data = vp.data();
+    if data.is_null() || vp.tag() != VT_MSDOSFS {
         panic(format_args!("VTODE: vnode {:p} has no denode", vp));
     }
     // SAFETY: a msdosfs vnode's `v_data` (checked above) is the denode `deget` hung there,

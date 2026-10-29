@@ -110,10 +110,6 @@ use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{
-    copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mountedon,
-    vget, vinvalbuf, vput, vref, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_OPEN, VOP_UNLOCK};
 use crate::machine::conf::nblkdev;
@@ -151,6 +147,10 @@ use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{
     FORCECLOSE, SKIPSYSTEM, V_SAVE, VBAD, VBLK, VDIR, VNON, VREG, VROOT, VSYSTEM, VT_NTFS, Vnode,
     Vtype,
+};
+use crate::sys::vnode::{
+    copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mountedon,
+    vget, vinvalbuf, vput, vref, vrele,
 };
 
 /// `VG_DONTLOADIN`: tells `ntfs_vgetex` to do not call `ntfs_loadntnode()` on ntnode, even if
@@ -242,7 +242,7 @@ pub fn ntfs_mount(
 
     // If updating, check whether changing from read-only to read/write; if there is no
     // device name, that's all we do.
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         // if not updating name...
         if let Some(a) = args
             && a.fspec == 0
@@ -277,11 +277,11 @@ pub fn ntfs_mount(
     };
 
     let error: Result<(), Errno> = 'error_2: {
-        if devvp.v_type.get() != VBLK {
+        if devvp.vtype() != VBLK {
             break 'error_2 Err(Errno::ENOTBLK);
         }
 
-        if major(devvp.v_rdev()) >= nblkdev() {
+        if major(devvp.rdev()) >= nblkdev() {
             break 'error_2 Err(Errno::ENXIO);
         }
 
@@ -292,7 +292,7 @@ pub fn ntfs_mount(
         // Since this is a new mount, we want the names for the device and the mount point
         // copied in. If an error occurs, the mountpoint is discarded by the upper level
         // code. Save "last mounted on" info for mount point (NULL pad).
-        mp.update_stat(|sp| {
+        mp.with_stat(|sp| {
             mname_copy(&mut sp.f_mntonname, path);
             mname_copy(&mut sp.f_mntfromname, &fname);
             mname_copy(&mut sp.f_mntfromspec, &fspec);
@@ -310,9 +310,9 @@ pub fn ntfs_mount(
     // and mp->mnt_stat.f_mntfromname
     //
     // This code is common to root and non-root mounts
-    let mut sp = mp.mnt_stat.get();
+    let mut sp = mp.stat();
     let _ = VFS_STATFS(mp, &mut sp, p);
-    mp.mnt_stat.set(sp);
+    mp.with_stat(|cur| *cur = sp);
 
     Ok(())
 }
@@ -324,7 +324,7 @@ pub fn ntfs_mountfs(
     argsp: &NtfsArgs,
     p: &Proc,
 ) -> Result<(), Errno> {
-    let dev = devvp.v_rdev();
+    let dev = devvp.rdev();
 
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot). Flush
@@ -384,7 +384,7 @@ pub fn ntfs_mountfs(
         nt.ntm_gid.set(argsp.gid);
         nt.ntm_mode.set(argsp.mode);
         nt.ntm_flag.set(argsp.flag);
-        mp.mnt_data.set(ptr::from_ref(nt).cast_mut().cast());
+        mp.set_data(ptr::from_ref(nt).cast_mut().cast());
         nt.ntm_ntnodeq.init();
 
         // set file name encode/decode hooks XXX utf-8 only for now
@@ -401,7 +401,7 @@ pub fn ntfs_mountfs(
                     Err(e) => break 'out1 Err(e),
                 };
                 nt.ntm_sysvn[pi as usize].set(Some(vp));
-                vp.v_flag.set(vp.v_flag.get() | VSYSTEM);
+                vp.set_flag(vp.flag() | VSYSTEM);
                 vref(vp);
                 vput(vp);
             }
@@ -494,15 +494,13 @@ pub fn ntfs_mountfs(
                 vput(vp);
             }
 
-            mp.update_stat(|sp| {
+            mp.with_stat(|sp| {
                 sp.f_fsid.val[0] = dev;
                 sp.f_fsid.val[1] = mp.vfc().vfc_typenum;
                 sp.f_namemax = NTFS_MAXFILENAME as u32;
             });
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_LOCAL);
-            if let Some(si) = devvp.v_specinfo() {
-                si.si_mountpoint.set(Some(mp));
-            }
+            mp.set_flag(mp.flag() | MNT_LOCAL);
+            devvp.set_specmountpoint(Some(mp));
             return Ok(());
         };
 
@@ -519,9 +517,7 @@ pub fn ntfs_mountfs(
     };
 
     // out:
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
 
     if let Some(nt) = ntmp {
         if let Some(ad) = nt.ntm_ad.take() {
@@ -534,7 +530,7 @@ pub fn ntfs_mountfs(
         // SAFETY: the ntfsmount came from `ntfs_alloc(M_NTFSMNT)` above; its vnodes were
         // flushed, and `mnt_data` is cleared right after.
         unsafe { ntfs_dealloc(nt, M_NTFSMNT) };
-        mp.mnt_data.set(ptr::null_mut());
+        mp.set_data(ptr::null_mut());
     }
 
     // lock the device vnode before calling VOP_CLOSE()
@@ -563,7 +559,7 @@ pub fn ntfs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), E
 
     // Check if system vnodes are still referenced
     for sv in ntmp.ntm_sysvn.iter() {
-        if mntflags & MNT_FORCE == 0 && sv.get().is_some_and(|vp| vp.v_usecount.get() > 1) {
+        if mntflags & MNT_FORCE == 0 && sv.get().is_some_and(|vp| vp.usecount() > 1) {
             return Err(Errno::EBUSY);
         }
     }
@@ -587,10 +583,8 @@ pub fn ntfs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), E
     // Check if the type of device node isn't VBAD before touching v_specinfo. If the device
     // vnode is revoked, the field is NULL and touching it causes null pointer dereference.
     let devvp = ntmp.devvp();
-    if devvp.v_type.get() != VBAD
-        && let Some(si) = devvp.v_specinfo()
-    {
-        si.si_mountpoint.set(None);
+    if devvp.vtype() != VBAD {
+        devvp.set_specmountpoint(None);
     }
 
     // lock the device vnode before calling VOP_CLOSE()
@@ -612,8 +606,8 @@ pub fn ntfs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), E
     // SAFETY: the ntfsmount came from `ntfs_alloc(M_NTFSMNT)` in `ntfs_mountfs`; every vnode
     // of the mount was flushed, so no ntnode points at it, and `mnt_data` is cleared below.
     unsafe { ntfs_dealloc(ntmp, M_NTFSMNT) };
-    mp.mnt_data.set(ptr::null_mut());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
+    mp.set_data(ptr::null_mut());
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
 
@@ -828,7 +822,7 @@ pub fn ntfs_vgetex(
         // ntnode lock, since due to locking order vnode lock has to be acquired first.
         // ntfs_fget() bumped ntnode usecount, so ntnode won't be recycled prematurely.
         let vp = fp.f_vp.get();
-        let vpid = vp.map_or(0, |vp| vp.v_id.get());
+        let vpid = vp.map_or(0, |vp| vp.id());
         ntfs_ntput(ip);
 
         if let Some(vp) = vp {
@@ -836,7 +830,7 @@ pub fn ntfs_vgetex(
             if vget(vp, lkflags).is_err() {
                 continue;
             }
-            if vpid == vp.v_id.get() {
+            if vpid == vp.id() {
                 return Ok(vp);
             }
             vput(vp);
@@ -855,11 +849,11 @@ pub fn ntfs_vgetex(
         };
 
         fp.f_vp.set(Some(vp));
-        vp.v_data.set(ptr::from_ref(fp).cast_mut().cast::<c_void>());
-        vp.v_type.set(f_type);
+        vp.set_data(ptr::from_ref(fp).cast_mut().cast::<c_void>());
+        vp.set_vtype(f_type);
 
         if ino == NTFS_ROOTINO {
-            vp.v_flag.set(vp.v_flag.get() | VROOT);
+            vp.set_flag(vp.flag() | VROOT);
         }
 
         if lkflags & LK_TYPE_MASK != 0

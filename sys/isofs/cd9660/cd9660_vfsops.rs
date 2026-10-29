@@ -105,16 +105,10 @@ use crate::kern::init_main::{rootvp, set_rootvp, set_swapdev_vp};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_time::inittodr;
-use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::eopnotsupp;
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{
-    MOUNTLIST, bdevvp, checkalias, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
-    vfs_export_lookup, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vgone,
-    vinvalbuf, vput, vref, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvm_vnp_setsize;
@@ -145,6 +139,7 @@ use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
 use crate::sys::param::{DEV_BSHIFT, DEV_BSIZE, MAXBSIZE, btodb};
 use crate::sys::proc::Proc;
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
+use crate::sys::specdev::SPEC_VOPS;
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Dev, Ino, Uid, major};
@@ -152,6 +147,11 @@ use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{
     FORCECLOSE, V_SAVE, VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, VT_ISOFS,
     Vnode, iftovt,
+};
+use crate::sys::vnode::{
+    MOUNTLIST, bdevvp, checkalias, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
+    vfs_export_lookup, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vgone,
+    vinvalbuf, vput, vref, vrele,
 };
 
 /// `struct ifid`: an ISO 9660 file identifier, overlaid on `struct fid`.
@@ -256,9 +256,9 @@ pub fn cd9660_mountroot() -> Result<(), Errno> {
 
     // SAFETY: a new mount on no list, under the kernel lock.
     unsafe { MOUNTLIST.0.insert_tail(mp) };
-    let mut st = mp.mnt_stat.get();
+    let mut st = mp.stat();
     let _ = cd9660_statfs(mp, &mut st, p);
-    mp.mnt_stat.set(st);
+    mp.with_stat(|sp| *sp = st);
     vfs_unbusy(mp);
     inittodr(0);
 
@@ -276,13 +276,13 @@ pub fn cd9660_mount(
 ) -> Result<(), Errno> {
     let args = IsoArgs::from_bytes(data);
 
-    if mp.mnt_flag.get() & MNT_RDONLY == 0 {
+    if mp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EROFS);
     }
 
     // If updating, check whether changing from read-only to read/write; if there is no
     // device name, that's all we do.
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         let imp = vfstoisofs(mp);
         if let Some(a) = args
             && a.fspec == 0
@@ -306,16 +306,16 @@ pub fn cd9660_mount(
         return Err(Errno::ENOENT);
     };
 
-    if devvp.v_type.get() != VBLK {
+    if devvp.vtype() != VBLK {
         vrele(devvp);
         return Err(Errno::ENOTBLK);
     }
-    if major(devvp.v_rdev()) >= nblkdev() {
+    if major(devvp.rdev()) >= nblkdev() {
         vrele(devvp);
         return Err(Errno::ENXIO);
     }
 
-    let error = if mp.mnt_flag.get() & MNT_UPDATE == 0 {
+    let error = if mp.flag() & MNT_UPDATE == 0 {
         iso_mountfs(devvp, mp, p, &mut args)
     } else if !ptr::eq(devvp, vfstoisofs(mp).im_devvp) {
         Err(Errno::EINVAL) // needs translation
@@ -332,16 +332,16 @@ pub fn cd9660_mount(
     info.copy_from_slice(&data[..IsoArgs::SIZE]);
     let flags = core::mem::offset_of!(IsoArgs, flags);
     info[flags..flags + 4].copy_from_slice(&args.flags.to_ne_bytes());
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         mname_copy(&mut sp.f_mntonname, path);
         mname_copy(&mut sp.f_mntfromname, &fspec);
         mname_copy(&mut sp.f_mntfromspec, &fspec);
         sp.mount_info.__align[..IsoArgs::SIZE].copy_from_slice(&info);
     });
 
-    let mut st = mp.mnt_stat.get();
+    let mut st = mp.stat();
     let _ = cd9660_statfs(mp, &mut st, p);
-    mp.mnt_stat.set(st);
+    mp.with_stat(|sp| *sp = st);
 
     Ok(())
 }
@@ -353,8 +353,8 @@ fn iso_mountfs(
     p: &Proc,
     argp: &mut IsoArgs,
 ) -> Result<(), Errno> {
-    let dev = devvp.v_rdev();
-    let ronly = mp.mnt_flag.get() & MNT_RDONLY != 0;
+    let dev = devvp.rdev();
+    let ronly = mp.flag() & MNT_RDONLY != 0;
 
     if !ronly {
         return Err(Errno::EROFS);
@@ -501,12 +501,12 @@ fn iso_mountfs(
         pribp = None;
 
         let typenum = mp.vfc().vfc_typenum;
-        mp.update_stat(|sp| {
+        mp.with_stat(|sp| {
             sp.f_fsid.val[0] = dev;
             sp.f_fsid.val[1] = typenum;
             sp.f_namemax = NAME_MAX as u32;
         });
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_LOCAL);
+        mp.set_flag(mp.flag() | MNT_LOCAL);
 
         // Check the Rock Ridge Extension support
         if argp.flags & ISOFSMNT_NORRIP == 0 {
@@ -576,19 +576,15 @@ fn iso_mountfs(
         // SAFETY: a fresh allocation of `size_of::<IsoMnt>()` bytes, aligned for any kernel
         // structure (`malloc(9)`); `cd9660_unmount` frees it.
         unsafe { ptr::write(imp.as_ptr(), isomp) };
-        mp.mnt_data.set(imp.as_ptr().cast::<c_void>());
+        mp.set_data(imp.as_ptr().cast::<c_void>());
 
-        if let Some(si) = devvp.v_specinfo() {
-            si.si_mountpoint.set(Some(mp));
-        }
+        devvp.set_specmountpoint(Some(mp));
 
         return Ok(());
     };
 
     // out:
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
     for b in [bp, supbp, pribp].into_iter().flatten() {
         brelse(b);
     }
@@ -711,15 +707,13 @@ pub fn cd9660_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
     let isomp = vfstoisofs(mp);
     let devvp = isomp.im_devvp;
 
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
     let _ = VOP_CLOSE(devvp, FREAD, NOCRED, Some(p));
     vput(devvp);
-    mp.mnt_data.set(ptr::null_mut());
+    mp.set_data(ptr::null_mut());
     free(NonNull::from(isomp).cast(), M_ISOFSMNT, size_of::<IsoMnt>());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
 
@@ -838,7 +832,7 @@ pub fn cd9660_vget_internal(
         // done with.
         let ip: &'static IsoNode = unsafe { &*ipp.as_ptr() };
         rrw_init_flags(&ip.i_lock, "isoinode", RWL_DUPOK | RWL_IS_VNODE);
-        vp.v_data.set(ipp.as_ptr().cast());
+        vp.set_data(ipp.as_ptr().cast());
         ip.i_vnode.set(Some(vp));
         ip.i_dev.set(dev);
         ip.i_number.set(ino);
@@ -947,7 +941,7 @@ pub fn cd9660_vget_internal(
             .set(Doff::from(isonum_711(isodir.ext_attr_length())) + ip.iso_extent.get());
 
         // Setup time stamp, attribute
-        vp.v_type.set(VNON);
+        vp.set_vtype(VNON);
         if imp.iso_ftype == ISO_FTYPE_RRIP {
             cd9660_rrip_analyze(&isodir, ip, imp);
         } else {
@@ -974,7 +968,7 @@ pub fn cd9660_vget_internal(
         // Initialize the associated vnode
         let mut vp = vp;
         let vtype = iftovt(u32::from(ip.inode.get().iso_mode));
-        vp.v_type.set(vtype);
+        vp.set_vtype(vtype);
         match vtype {
             // FIFO: vp->v_op = &cd9660_fifovops (miscfs/fifofs, not ported); without FIFO:
             VFIFO => {
@@ -987,8 +981,8 @@ pub fn cd9660_vget_internal(
                 if let Some(nvp) = checkalias(vp, ip.inode.get().iso_rdev, Some(mp)) {
                     // Discard unneeded vnode, but save its iso_node. Note that the lock is
                     // carried over in the iso_node
-                    nvp.v_data.set(vp.v_data.get());
-                    vp.v_data.set(ptr::null_mut());
+                    nvp.set_data(vp.data());
+                    vp.set_data(ptr::null_mut());
                     vp.v_op.set(Some(&SPEC_VOPS));
                     vrele(vp);
                     vgone(vp);
@@ -1002,7 +996,7 @@ pub fn cd9660_vget_internal(
         }
 
         if ip.iso_extent.get() == Doff::from(imp.root_extent) {
-            vp.v_flag.set(vp.v_flag.get() | VROOT);
+            vp.set_flag(vp.flag() | VROOT);
         }
 
         // XXX need generation number?
@@ -1071,10 +1065,9 @@ mod tests {
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::subr_xxx::nullop;
     use crate::kern::sys_generic::sys_read;
-    use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
-    use crate::kern::vfs_subr::{vflushbuf, vfs_busy, vfs_mount_alloc};
     use crate::kern::vfs_syscalls::{dounmount, sys_getdents, sys_open, sys_readlink, sys_stat};
+    use crate::kern::vfs_vops::vop_generic_bwrite;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::machine::intr::{splbio, splx};
@@ -1087,6 +1080,7 @@ mod tests {
     use crate::sys::systm::{SyCall, SysArgs};
     use crate::sys::types::{Register, makedev};
     use crate::sys::vnode::{VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops};
+    use crate::sys::vnode::{vflushbuf, vfs_busy, vfs_mount_alloc};
 
     /// The disk the strategy below reads.
     static DISK: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1182,8 +1176,8 @@ mod tests {
     fn mount_root(p: &'static Proc, flags: i32) -> Result<(&'static Mount, i32), Errno> {
         let devvp = diskvp();
         let mp = vfs_mount_alloc(None, vfs_byname(b"cd9660").unwrap());
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
-        mp.update_stat(|sp| sp.f_mntonname[0] = b'/');
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+        mp.with_stat(|sp| sp.f_mntonname[0] = b'/');
         let mut args = IsoArgs::from_bytes(&[0u8; IsoArgs::SIZE]).unwrap();
         args.flags = flags;
         if let Err(e) = iso_mountfs(devvp, mp, p, &mut args) {
@@ -1192,9 +1186,9 @@ mod tests {
             vfs_mount_free(mp);
             return Err(e);
         }
-        let mut st = mp.mnt_stat.get();
+        let mut st = mp.stat();
         cd9660_statfs(mp, &mut st, p).unwrap();
-        mp.mnt_stat.set(st);
+        mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
         // SAFETY: a new mount on no list.
         unsafe { MOUNTLIST.0.insert_tail(mp) };
@@ -1327,9 +1321,9 @@ mod tests {
         assert_eq!(imp.iso_ftype, ISO_FTYPE_RRIP);
         assert_eq!((imp.logical_block_size, imp.im_bshift), (2048, 11));
         assert_eq!((imp.root_extent, imp.rr_skip, imp.rr_skip0), (20, 0, 0));
-        assert_eq!(mp.mnt_stat.get().f_blocks, 25);
-        assert_eq!(mp.mnt_stat.get().f_namemax, 255);
-        assert_ne!(mp.mnt_flag.get() & MNT_LOCAL, 0);
+        assert_eq!(mp.stat().f_blocks, 25);
+        assert_eq!(mp.stat().f_namemax, 255);
+        assert_ne!(mp.flag() & MNT_LOCAL, 0);
 
         assert_eq!(read_file(p, b"/m10c-iso.txt\0").unwrap(), b"m10c-iso-42\n");
         assert_eq!(

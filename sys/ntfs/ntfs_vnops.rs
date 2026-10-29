@@ -83,9 +83,8 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
-use crate::kern::vfs_default::vop_generic_bwrite;
-use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
+use crate::kern::vfs_vops::vop_generic_bwrite;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::machine::intr::{splbio, splx};
 use crate::ntfs::ntfs::{
@@ -115,6 +114,7 @@ use crate::sys::vnode::{
     VopGetattrArgs, VopInactiveArgs, VopLookupArgs, VopOpenArgs, VopPathconfArgs, VopPrintArgs,
     VopReadArgs, VopReaddirArgs, VopReclaimArgs, VopStrategyArgs, Vops, cred_ref,
 };
+use crate::sys::vnode::{vput, vref};
 
 /// `ntfs_prtactive`: 1 => print out reclaim of active vnodes.
 pub static NTFS_PRTACTIVE: AtomicI32 = AtomicI32::new(0);
@@ -250,13 +250,13 @@ pub fn ntfs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_flags = u64::from(ip.i_flag.get());
     vap.va_gen = 0;
     vap.va_blocksize = i64::from(ntmp.ntm_spc()) * i64::from(ntmp.ntm_bps());
-    vap.va_type = vp.v_type.get();
+    vap.va_type = vp.vtype();
     vap.va_filerev = 0;
 
     // Ensure that a directory link count is always 1 so that things like fts_read() do not
     // try to be smart and end up skipping over directories. Additionally, ip->i_nlink will
     // not be initialised until the ntnode has been loaded for the file.
-    if vp.v_type.get() == VDIR || ip.i_nlink.get() < 1 {
+    if vp.vtype() == VDIR || ip.i_nlink.get() < 1 {
         vap.va_nlink = 1;
     }
 
@@ -269,8 +269,8 @@ pub fn ntfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
     #[cfg(feature = "diagnostic")]
-    if NTFS_PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("ntfs_inactive: pushing active"), vp);
+    if NTFS_PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("ntfs_inactive: pushing active"), vp);
     }
 
     let _ = VOP_UNLOCK(vp);
@@ -288,8 +288,8 @@ pub fn ntfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let ip = FTONT(fp);
 
     #[cfg(feature = "diagnostic")]
-    if NTFS_PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("ntfs_reclaim: pushing active"), vp);
+    if NTFS_PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("ntfs_reclaim: pushing active"), vp);
     }
 
     ntfs_ntget(ip)?;
@@ -300,7 +300,7 @@ pub fn ntfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     ntfs_frele(fp);
     ntfs_ntput(ip);
 
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
 
     Ok(())
 }
@@ -390,7 +390,7 @@ pub fn ntfs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     // Disallow write attempts unless the file is a socket, fifo, or a block or character
     // device resident on the file system.
     if mode & VWRITE != 0 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR | VLNK | VREG => return Err(Errno::EROFS),
             _ => {}
         }
@@ -713,7 +713,6 @@ mod tests {
 
     use super::*;
     use crate::kern::vfs_init::vfs_byname;
-    use crate::kern::vfs_subr::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free, vrele};
     use crate::kern::vfs_vops::{VOP_GETATTR, VOP_LOOKUP, VOP_READ, VOP_READDIR};
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
@@ -733,6 +732,7 @@ mod tests {
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::sys::vnode::{VROOT, Vattr, Vnode, VopFsyncArgs, VopInactiveArgs};
+    use crate::sys::vnode::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free, vrele};
 
     /// The cluster size: two 512-byte sectors.
     const CL: usize = 1024;
@@ -1318,7 +1318,7 @@ mod tests {
         let devvp = bdevvp(DISKDEV).unwrap().unwrap();
         devvp.v_op.set(Some(&DISK_VOPS));
         let mp = vfs_mount_alloc(None, vfs_byname(b"ntfs").unwrap());
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+        mp.set_flag(mp.flag() | MNT_RDONLY);
         ntfs_nthashinit();
         match ntfs_mountfs(devvp, mp, &args(flag), p) {
             Ok(()) => Ok(mp),
@@ -1432,11 +1432,11 @@ mod tests {
         assert_eq!(ntmp.ntm_bpmftrec.get(), 2);
         assert_eq!(ntmp.ntm_adnum.get(), 3);
         assert_eq!(ntmp.ntm_cfree.get(), free);
-        assert_eq!(mp.mnt_flag.get() & MNT_LOCAL, MNT_LOCAL);
-        assert_eq!(mp.mnt_stat.get().f_namemax, 255);
-        assert_eq!(mp.mnt_stat.get().f_fsid.val[1], 6);
+        assert_eq!(mp.flag() & MNT_LOCAL, MNT_LOCAL);
+        assert_eq!(mp.stat().f_namemax, 255);
+        assert_eq!(mp.stat().f_fsid.val[1], 6);
 
-        let mut sb = mp.mnt_stat.get();
+        let mut sb = mp.stat();
         ntfs_statfs(mp, &mut sb, p).unwrap();
         assert_eq!(sb.f_bsize, 512);
         assert_eq!(sb.f_iosize, 1024);
@@ -1447,8 +1447,8 @@ mod tests {
 
         // The root.
         let root = ntfs_root(mp).unwrap();
-        assert!(root.v_flag.get() & VROOT != 0);
-        assert_eq!(root.v_type.get(), VDIR);
+        assert!(root.flag() & VROOT != 0);
+        assert_eq!(root.vtype(), VDIR);
         assert!(ptr::eq(root, ntmp.sysvn(NTFS_ROOTINO)));
         assert_eq!(getattr(p, root).va_nlink, 1);
         let want = [
@@ -1464,7 +1464,7 @@ mod tests {
 
         // A resident file.
         let hello = lookup(p, root, b"hello.txt").unwrap();
-        assert_eq!(hello.v_type.get(), VREG);
+        assert_eq!(hello.vtype(), VREG);
         assert_eq!(read_all(hello, 4), HELLO);
         let va = getattr(p, hello);
         assert_eq!(va.va_size, HELLO.len() as u64);
@@ -1526,7 +1526,7 @@ mod tests {
 
         // A directory whose names are in an index buffer.
         let sub = lookup(p, root, b"sub").unwrap();
-        assert_eq!(sub.v_type.get(), VDIR);
+        assert_eq!(sub.vtype(), VDIR);
         assert_eq!(
             names(&read_dir(sub, 4096)),
             [
@@ -1552,8 +1552,8 @@ mod tests {
         // Unmount: every vnode and ntnode goes, and the upper-case table with the last mount.
         let dev = ntmp.ntm_dev.get();
         ntfs_unmount(mp, 0, p).unwrap();
-        assert!(mp.mnt_data.get().is_null());
-        assert_eq!(mp.mnt_flag.get() & MNT_LOCAL, 0);
+        assert!(mp.data().is_null());
+        assert_eq!(mp.flag() & MNT_LOCAL, 0);
         assert!(ntfs_nthashlookup(dev, NTFS_MFTINO).is_none());
         assert!(ntfs_nthashlookup(dev, 16).is_none());
         vfs_mount_free(mp);

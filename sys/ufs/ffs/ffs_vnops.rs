@@ -68,17 +68,13 @@
 use core::ptr::{self, NonNull};
 
 use crate::kern::kern_subr::uiomove;
-use crate::kern::spec_vnops::{
-    spec_advlock, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_strategy,
-};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_default::{
+use crate::kern::vfs_vnops::vn_fsizechk;
+use crate::kern::vfs_vops::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
     vop_generic_lookup, vop_generic_revoke,
 };
-use crate::kern::vfs_subr::{vnoperm, vwaitforio};
-use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
@@ -87,6 +83,9 @@ use crate::sys::buf::{bawrite, bdwrite, bread, bread_cluster, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::sys::mount::{MNT_NOATIME, MNT_WAIT};
+use crate::sys::specdev::{
+    spec_advlock, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_strategy,
+};
 use crate::sys::stat::APPEND;
 use crate::sys::systm::INFSLP;
 #[cfg(feature = "diagnostic")]
@@ -96,6 +95,7 @@ use crate::sys::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VREG, VopFsyncArgs, VopReadArgs,
     VopReclaimArgs, VopWriteArgs, Vops, cred_ref,
 };
+use crate::sys::vnode::{vnoperm, vwaitforio};
 #[cfg(feature = "ffs2")]
 use crate::ufs::ffs::ffs_vfsops::FFS_DINODE2_POOL;
 use crate::ufs::ffs::ffs_vfsops::{FFS_DINODE1_POOL, FFS_INO_POOL};
@@ -205,12 +205,12 @@ pub fn ffs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
             panic(format_args!("ffs_read: mode"));
         }
 
-        if vp.v_type.get() == VLNK {
+        if vp.vtype() == VLNK {
             if ip.dip_size() < u64::from(ip.ump().um_maxsymlinklen.get()) {
                 panic(format_args!("ffs_read: short symlink"));
             }
-        } else if vp.v_type.get() != VREG && vp.v_type.get() != VDIR {
-            panic(format_args!("ffs_read: type {}", vp.v_type.get() as i32));
+        } else if vp.vtype() != VREG && vp.vtype() != VDIR {
+            panic(format_args!("ffs_read: type {}", vp.vtype() as i32));
         }
     }
     let fs = ip.fs();
@@ -280,10 +280,7 @@ pub fn ffs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
             break;
         }
     }
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_NOATIME == 0)
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_NOATIME == 0)
         || ip.i_flag.get() & (IN_CHANGE | IN_UPDATE) != 0
     {
         ip.set_flag(IN_ACCESS);
@@ -310,7 +307,7 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         return Ok(());
     }
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VREG => {
             if ioflag & IO_APPEND != 0 {
                 uio.uio_offset = ip.dip_size() as i64;
@@ -443,7 +440,7 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     let mut skipmeta = ap.a_waitfor == MNT_WAIT;
     let mut s = splbio();
     'loop_: loop {
-        vnode_dirty_for_each(&vp.v_bufs, |bp| bp.clr(B_SCANNED));
+        vnode_dirty_for_each(&vp.bufs, |bp| bp.clr(B_SCANNED));
         loop {
             // The cache's scan of the dirty list, from its head each time: since we may have
             // slept during the I/O, we need to start from a known point.
@@ -464,7 +461,7 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
                 }
                 DirtyPick::Take
             };
-            let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "ffs_fsync", 0, INFSLP, pick)
+            let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.bufs, "ffs_fsync", 0, INFSLP, pick)
             else {
                 break;
             };
@@ -491,7 +488,7 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
             splx(s);
             // XXX softdep was here. reconsider this locking dance
             s = splbio();
-            if !vp.v_bufs.dirty_is_empty() {
+            if !vp.bufs.dirty_is_empty() {
                 // Block devices associated with filesystems may have new I/O requests
                 // posted for them even if the vnode is locked, so no amount of trying will
                 // get them clean. Thus we give block devices a good effort, then just give
@@ -501,8 +498,8 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
                     continue 'loop_;
                 }
                 #[cfg(feature = "diagnostic")]
-                if vp.v_type.get() != crate::sys::vnode::VBLK {
-                    crate::kern::vfs_subr::vprint(Some("ffs_fsync: dirty"), vp);
+                if vp.vtype() != crate::sys::vnode::VBLK {
+                    crate::sys::vnode::vprint(Some("ffs_fsync: dirty"), vp);
                 }
             }
         }
@@ -532,7 +529,7 @@ pub fn ffs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     }
 
     let ipp = NonNull::from(ip).cast::<u8>();
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
     pool_put(&FFS_INO_POOL, ipp);
 
     Ok(())

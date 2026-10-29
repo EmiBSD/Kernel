@@ -75,14 +75,12 @@ use core::sync::atomic::Ordering;
 
 use crate::kern::kern_malloc::free;
 use crate::kern::kern_synch::wakeup;
-use crate::kern::spec_vnops::spec_fsync;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::nullop;
-use crate::kern::vfs_default::{
+use crate::kern::vfs_vops::VOP_UNLOCK;
+use crate::kern::vfs_vops::{
     vop_generic_badop, vop_generic_bmap, vop_generic_bwrite, vop_generic_revoke,
 };
-use crate::kern::vfs_subr::vinvalbuf;
-use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
@@ -95,7 +93,9 @@ use crate::sys::buf::{bufq_dequeue, bufq_destroy, bufq_queue};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_MFSNODE;
 use crate::sys::param::DEV_BSHIFT;
+use crate::sys::specdev::spec_fsync;
 use crate::sys::systm::INFSLP;
+use crate::sys::vnode::vinvalbuf;
 use crate::sys::vnode::{
     V_SAVE, VBLK, VopCloseArgs, VopInactiveArgs, VopIoctlArgs, VopOpenArgs, VopPrintArgs,
     VopReclaimArgs, VopStrategyArgs, Vops,
@@ -145,7 +145,7 @@ pub static MFS_VOPS: Vops = Vops {
 /// ourself.
 pub fn mfs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
-    if ap.a_vp.v_type.get() != VBLK {
+    if ap.a_vp.vtype() != VBLK {
         panic(format_args!("mfs_open not VBLK"));
     }
     #[cfg(not(feature = "diagnostic"))]
@@ -163,7 +163,7 @@ pub fn mfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let bp = ap.a_bp;
     let vp = ap.a_vp;
 
-    if vp.v_type.get() != VBLK || vp.v_usecount.get() == 0 {
+    if vp.vtype() != VBLK || vp.usecount() == 0 {
         panic(format_args!("mfs_strategy: bad dev"));
     }
 
@@ -256,10 +256,10 @@ pub fn mfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
 
     bufq_destroy(&mfsp.mfs_bufq);
 
-    if let Some(data) = ptr::NonNull::new(vp.v_data.get().cast::<u8>()) {
+    if let Some(data) = ptr::NonNull::new(vp.data().cast::<u8>()) {
         free(data, M_MFSNODE, size_of::<Mfsnode>());
     }
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
     Ok(())
 }
 
@@ -411,13 +411,12 @@ mod tests {
         let _ = bufq_init(&mfsp.mfs_bufq, crate::sys::buf::BUFQ_FIFO);
 
         // The "device" vnode, in use.
-        let vp = crate::kern::vfs_subr::getnewvnode(VT_MFS, None, &MFS_VOPS).unwrap();
-        vp.v_type.set(VBLK);
+        let vp = crate::sys::vnode::getnewvnode(VT_MFS, None, &MFS_VOPS).unwrap();
+        vp.set_vtype(VBLK);
         assert!(
-            crate::kern::vfs_subr::checkalias(vp, crate::sys::types::makedev(255, 900), None)
-                .is_none()
+            crate::sys::vnode::checkalias(vp, crate::sys::types::makedev(255, 900), None).is_none()
         );
-        vp.v_data.set(core::ptr::from_ref(mfsp).cast_mut().cast());
+        vp.set_data(core::ptr::from_ref(mfsp).cast_mut().cast());
         mfsp.mfs_vnode.set(Some(vp));
 
         // Our own process: done on the spot.

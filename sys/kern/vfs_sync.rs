@@ -77,7 +77,6 @@ use crate::kern::kern_tc::getnsecuptime;
 use crate::kern::sched_bsd::r#yield;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_subr::{getnewvnode, vfs_busy, vfs_unbusy, vget, vput};
 use crate::kern::vfs_vops::{VOP_FSYNC, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
@@ -94,6 +93,7 @@ use crate::sys::vnode::{
     VBIOONSYNCLIST, VNON, VSynclist, VT_VFS, Vnode, VopFsyncArgs, VopInactiveArgs, VopPrintArgs,
     Vops,
 };
+use crate::sys::vnode::{getnewvnode, vfs_busy, vfs_unbusy, vget, vput};
 
 /// `SYNCER_MAXDELAY`: maximum sync delay time.
 pub const SYNCER_MAXDELAY: i32 = 32;
@@ -177,12 +177,12 @@ pub fn vn_syncer_add_to_worklist(vp: &'static Vnode, delay: i32) {
         & SYNCER_MASK.load(Ordering::Relaxed);
 
     let s = splbio();
-    if vp.v_bufs.bioflag() & VBIOONSYNCLIST != 0 {
+    if vp.bufs.bioflag() & VBIOONSYNCLIST != 0 {
         // SAFETY: a vnode marked `VBIOONSYNCLIST` is on one slot of the wheel.
         unsafe { ListHead::<VSynclist>::remove(vp) };
     }
 
-    vp.v_bufs.set_bioflag(VBIOONSYNCLIST);
+    vp.bufs.set_bioflag(VBIOONSYNCLIST);
     // SAFETY: the vnode was just taken off the wheel (or was on none); vnodes never move.
     unsafe { syncer_slot(slot).insert_head(vp) };
     splx(s);
@@ -224,9 +224,9 @@ pub fn syncer_thread(_arg: *mut core::ffi::c_void) {
                 // Note: disk vps can remain on the worklist too with no dirty blocks, but
                 // since sync_fsync() moves it to a different slot we are safe.
                 #[cfg(feature = "diagnostic")]
-                if vp.v_bufs.dirty_is_empty() && vp.v_type.get() != crate::sys::vnode::VBLK {
-                    crate::kern::vfs_subr::vprint(Some("fsync failed"), vp);
-                    if let Some(mp) = vp.v_mount.get() {
+                if vp.bufs.dirty_is_empty() && vp.vtype() != crate::sys::vnode::VBLK {
+                    crate::sys::vnode::vprint(Some("fsync failed"), vp);
+                    if let Some(mp) = vp.mount() {
                         let (name, len) = mp.mntonname();
                         crate::kprintf!(
                             "mounted on: {}\n",
@@ -310,12 +310,12 @@ pub fn vfs_allocate_syncvnode(mp: &'static Mount) -> Result<(), Errno> {
     let vp = match getnewvnode(VT_VFS, Some(mp), &SYNC_VOPS) {
         Ok(vp) => vp,
         Err(error) => {
-            mp.mnt_syncer.set(None);
+            mp.set_syncer(None);
             return Err(error);
         }
     };
-    vp.v_writecount.set(1);
-    vp.v_type.set(VNON);
+    vp.set_writecount(1);
+    vp.set_vtype(VNON);
     // Place the vnode onto the syncer worklist. We attempt to scatter them about on the list
     // so that they will go off at evenly distributed times even if all the filesystems are
     // mounted at once.
@@ -334,14 +334,14 @@ pub fn vfs_allocate_syncvnode(mp: &'static Mount) -> Result<(), Errno> {
     }
     NEXT.store(next, Ordering::Relaxed);
     vn_syncer_add_to_worklist(vp, next as i32);
-    mp.mnt_syncer.set(Some(vp));
+    mp.set_syncer(Some(vp));
     Ok(())
 }
 
 /// Do a lazy sync of the filesystem.
 pub fn sync_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     let syncvp = ap.a_vp;
-    let Some(mp) = syncvp.v_mount.get() else {
+    let Some(mp) = syncvp.mount() else {
         panic(format_args!("sync_fsync: syncer vnode without a mount"));
     };
 
@@ -355,11 +355,11 @@ pub fn sync_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 
     // Walk the list of vnodes pushing all that are dirty and not already on the sync list.
     if vfs_busy(mp, VB_READ | VB_NOWAIT).is_ok() {
-        let asyncflag = mp.mnt_flag.get() & MNT_ASYNC;
-        mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_ASYNC);
+        let asyncflag = mp.flag() & MNT_ASYNC;
+        mp.set_flag(mp.flag() & !MNT_ASYNC);
         let _ = VFS_SYNC(mp, MNT_LAZY, 0, ap.a_cred, ap.a_p);
         if asyncflag != 0 {
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_ASYNC);
+            mp.set_flag(mp.flag() | MNT_ASYNC);
         }
         vfs_unbusy(mp);
     }
@@ -371,24 +371,24 @@ pub fn sync_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 pub fn sync_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         let _ = VOP_UNLOCK(vp);
         return Ok(());
     }
 
-    if let Some(mp) = vp.v_mount.get() {
-        mp.mnt_syncer.set(None);
+    if let Some(mp) = vp.mount() {
+        mp.set_syncer(None);
     }
 
     let s = splbio();
 
     // SAFETY: the syncer vnode is on the wheel from `vfs_allocate_syncvnode` until here.
     unsafe { ListHead::<VSynclist>::remove(vp) };
-    vp.v_bufs.clr_bioflag(VBIOONSYNCLIST);
+    vp.bufs.clr_bioflag(VBIOONSYNCLIST);
 
     splx(s);
 
-    vp.v_writecount.set(0);
+    vp.set_writecount(0);
     vput(vp);
 
     Ok(())
@@ -410,7 +410,7 @@ mod tests {
 
     use super::*;
     use crate::kern::vfs_subr::tests::{setup, testfs::TESTFS_CONF};
-    use crate::kern::vfs_subr::vfs_mount_alloc;
+    use crate::sys::vnode::vfs_mount_alloc;
 
     /// Whether `vp` is on slot `slot` (modulo the wheel) of the wheel.
     fn on_slot(slot: usize, vp: &Vnode) -> bool {
@@ -428,8 +428,8 @@ mod tests {
 
         let mp = vfs_mount_alloc(None, &TESTFS_CONF);
         vfs_allocate_syncvnode(mp).expect("a syncer vnode");
-        let vp = mp.mnt_syncer.get().expect("mnt_syncer");
-        assert!(vp.v_bufs.bioflag() & VBIOONSYNCLIST != 0);
+        let vp = mp.syncer().expect("mnt_syncer");
+        assert!(vp.bufs.bioflag() & VBIOONSYNCLIST != 0);
         assert!(core::ptr::eq(vp.op(), &SYNC_VOPS));
         assert!((0..max).filter(|&d| on_slot(base + d, vp)).count() == 1);
 

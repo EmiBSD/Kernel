@@ -349,7 +349,7 @@ pub fn fatofs(pmp: &Msdosfsmount, cn: u32) -> u32 {
 
 /// `VFSTOMSDOSFS(mp)`: the msdos mount structure of `mp`.
 pub fn vfstomsdosfs(mp: &Mount) -> &'static Msdosfsmount {
-    let data = mp.mnt_data.get();
+    let data = mp.data();
     let msdos = mp.mnt_vfc.get().map(|vfc| vfc.name()) == Some(MOUNT_MSDOS);
     if data.is_null() || !msdos {
         panic(format_args!(

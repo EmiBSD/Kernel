@@ -217,7 +217,7 @@ fn main() {
     vfs_unbusy(mp);
     // A file system's vnode in use (one reference kept), unlocked.
     let vp: &'static Vnode = need(getnewvnode(VT_TMPFS, Some(mp), &BENCH_VOPS), "getnewvnode");
-    vp.v_type.set(VREG);
+    vp.set_vtype(VREG);
     // A device vnode in use.
     let dev = makedev(5, 1);
     let dvp = match cdevvp(dev) {
@@ -308,7 +308,7 @@ fn main() {
     if wanted(names[6]) {
         // One free vnode, and no new one allowed: each getnewvnode recycles it.
         let first = need(getnewvnode(VT_NON, None, &BENCH_VOPS), "getnewvnode");
-        first.v_type.set(VREG);
+        first.set_vtype(VREG);
         let _ = vrele(first);
         let saved = MAXVNODES.load(Ordering::Relaxed);
         MAXVNODES.store(1, Ordering::Relaxed);
@@ -317,7 +317,7 @@ fn main() {
             measure(|| {
                 rounds(|| {
                     let nvp = need(getnewvnode(VT_NON, None, &BENCH_VOPS), "getnewvnode");
-                    nvp.v_type.set(VREG);
+                    nvp.set_vtype(VREG);
                     let _ = vrele(black_box(nvp));
                 })
             }),

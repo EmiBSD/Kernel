@@ -96,7 +96,6 @@ use crate::kern::uipc_socket2::{
     sounlock_shared,
 };
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::vput;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_GETATTR, VOP_READ};
 use crate::machine::copy::{copyin, copyin_obj, copyout};
 use crate::netinet::in_::{IPPORT_RESERVED, InAddr, SockaddrIn};
@@ -137,6 +136,7 @@ use crate::sys::time::{Timespec, timespecadd, timespecsub};
 use crate::sys::types::{Register, Socklen};
 use crate::sys::uio::{Iovec, UIO_SMALLIOV, Uio, UioRw, UioSeg};
 use crate::sys::unistd::SEEK_SET;
+use crate::sys::vnode::vput;
 use crate::sys::vnode::{VREG, Vattr};
 use kernel::sysctl::{DOMAINNAMELEN, MAXHOSTNAMELEN, with_domainname};
 
@@ -1755,7 +1755,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
         if let Err(e) = VOP_GETATTR(vp, &mut va, p.ucred_ptr(), p) {
             break 'verror Err(e);
         }
-        if vp.v_type.get() != VREG || va.va_size != Ypbinding::SIZE as u64 {
+        if vp.vtype() != VREG || va.va_size != Ypbinding::SIZE as u64 {
             break 'verror Err(Errno::EFTYPE);
         }
 

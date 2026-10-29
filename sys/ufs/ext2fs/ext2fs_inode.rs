@@ -73,7 +73,6 @@ use core::sync::atomic::Ordering;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{vinvalbuf, vrecycle};
 use crate::kern::vfs_vops::{VOP_STRATEGY, VOP_UNLOCK};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
@@ -88,6 +87,7 @@ use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Off};
 use crate::sys::ucred::{NOCRED, Ucred};
 use crate::sys::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG, VopInactiveArgs};
+use crate::sys::vnode::{vinvalbuf, vrecycle};
 use crate::ufs::ext2fs::ext2fs::{
     E2FS_REV0, EXT2F_ROCOMPAT_LARGE_FILE, blkoff, fsbtodb, ino_to_fsba, ino_to_fsbo, lblkno, nindir,
 };
@@ -150,16 +150,13 @@ pub fn ext2fs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let mut error = Ok(());
 
     #[cfg(feature = "diagnostic")]
-    if crate::kern::vfs_subr::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("ext2fs_inactive: pushing active"), vp);
+    if crate::sys::vnode::PRTACTIVE.load(Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("ext2fs_inactive: pushing active"), vp);
     }
 
     // Get rid of inodes related to stale file handles.
     if !(ip.din_is_null() || ip.i_e2fs_mode() == 0 || ip.i_e2fs_dtime() != 0) {
-        let rdonly = vp
-            .v_mount
-            .get()
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0);
+        let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
         if ip.i_e2fs_nlink() == 0 && !rdonly {
             if ext2fs_size(ip) != 0 {
                 error = ext2fs_truncate(ip, 0, 0, NOCRED);
@@ -190,9 +187,8 @@ pub fn ext2fs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 pub fn ext2fs_update(ip: &Inode, waitfor: i32) -> Result<(), Errno> {
     if ip
         .itov()
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
+        .mount()
+        .is_some_and(|mp| mp.flag() & MNT_RDONLY != 0)
     {
         return Ok(());
     }
@@ -252,7 +248,7 @@ pub fn ext2fs_truncate(
         return Err(Errno::EINVAL);
     }
 
-    let t = ovp.v_type.get();
+    let t = ovp.vtype();
     if t != VREG && t != VDIR && t != VLNK {
         return Ok(());
     }
@@ -416,7 +412,7 @@ pub fn ext2fs_truncate(
         }
         if length == 0 {
             let s = crate::machine::intr::splbio();
-            if !ovp.v_bufs.clean_is_empty() || !ovp.v_bufs.dirty_is_empty() {
+            if !ovp.bufs.clean_is_empty() || !ovp.bufs.dirty_is_empty() {
                 panic(format_args!("ext2fs_truncate3"));
             }
             crate::machine::intr::splx(s);

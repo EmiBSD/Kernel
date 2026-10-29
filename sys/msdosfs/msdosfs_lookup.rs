@@ -102,7 +102,6 @@
 
 use crate::kern::subr_prf::printf;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
-use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::msdosfs::bpb::getushort;
@@ -131,6 +130,7 @@ use crate::sys::proc::Proc;
 use crate::sys::types::Daddr;
 use crate::sys::ucred::NOCRED;
 use crate::sys::vnode::{VEXEC, VROOT, VWRITE, VopLookupArgs};
+use crate::sys::vnode::{vput, vref};
 
 /// `sizeof(struct direntry)`.
 const DIRENTRY_SIZE: u32 = Direntry::SIZE as u32;
@@ -218,7 +218,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         return Ok(());
     }
 
-    let vroot = vdp.v_flag.get() & VROOT != 0;
+    let vroot = vdp.flag() & VROOT != 0;
     let (isadir, mut scn, cluster, blkoff) =
         match msdosfs_lookup_search(dp, vroot, cnp, nameiop, flags)? {
             Search::Found {
@@ -1048,7 +1048,6 @@ mod tests {
 
     use super::*;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_subr::{getnewvnode, vrele};
     use crate::msdosfs::direntry::ATTR_ARCHIVE;
     use crate::msdosfs::fat::CLUST_END;
     use crate::msdosfs::msdosfs_fat::fc_purge;
@@ -1059,6 +1058,7 @@ mod tests {
     use crate::sys::mount::{MNT_WAIT, Mount};
     use crate::sys::namei::LOOKUP;
     use crate::sys::vnode::{VDIR, VT_MSDOSFS, Vnode, VopInactiveArgs, VopReclaimArgs, Vops};
+    use crate::sys::vnode::{getnewvnode, vrele};
 
     /// The name of a 2-part long name entry file in the sample image.
     const LONG2: &[u8] = b"a rather long name.txt";
@@ -1610,7 +1610,7 @@ mod tests {
     }
 
     fn test_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
-        ap.a_vp.v_data.set(core::ptr::null_mut());
+        ap.a_vp.set_data(core::ptr::null_mut());
         Ok(())
     }
 
@@ -1629,8 +1629,8 @@ mod tests {
     /// A vnode of `mp` for the directory denode `dp`.
     fn dirvnode(mp: &'static Mount, dp: &'static Denode) -> &'static Vnode {
         let vp = getnewvnode(VT_MSDOSFS, Some(mp), &TEST_VOPS).unwrap();
-        vp.v_type.set(VDIR);
-        vp.v_data.set(core::ptr::from_ref(dp).cast_mut().cast());
+        vp.set_vtype(VDIR);
+        vp.set_data(core::ptr::from_ref(dp).cast_mut().cast());
         dp.de_vnode.set(Some(vp));
         vp
     }
@@ -1641,7 +1641,7 @@ mod tests {
         let (_g, p) = setup(disk);
         let (mp, pmp, root) = mounted(p);
         let rootvp = dirvnode(mp, root);
-        rootvp.v_flag.set(rootvp.v_flag.get() | VROOT);
+        rootvp.set_flag(rootvp.flag() | VROOT);
         let subdp = dirnode(pmp, sub);
         let subvp = dirvnode(mp, subdp);
 

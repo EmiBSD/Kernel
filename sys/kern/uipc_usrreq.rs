@@ -119,7 +119,6 @@ use crate::kern::uipc_socket2::{
     sounlock, sounlock_pair,
 };
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{vattr_null, vput, vrele};
 use crate::kern::vfs_vnops::vn_isunder;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_CREATE, VOP_LOCK, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
@@ -166,6 +165,7 @@ use crate::sys::unpcb::{
     sotounpcb,
 };
 use crate::sys::vnode::{VBLK, VDIR, VSOCK, VWRITE, Vattr};
+use crate::sys::vnode::{vattr_null, vput, vrele};
 
 /// `PIPSIZ`: both send and receive buffers are allocated `PIPSIZ` bytes of buffering for
 /// stream sockets, although the total for sender and receiver is actually only `PIPSIZ`.
@@ -1103,7 +1103,7 @@ pub fn unp_connect(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<
             panic(format_args!("unp_connect: namei returned no vnode"));
         };
         let error: Result<(), Errno> = 'put: {
-            if vp.v_type.get() != VSOCK {
+            if vp.vtype() != VSOCK {
                 break 'put Err(Errno::ENOTSOCK);
             }
             if let Err(e) = VOP_ACCESS(vp, VWRITE, p.ucred_ptr(), p) {
@@ -1335,8 +1335,7 @@ pub fn unp_externalize(
             {
                 let vp = fp.vnode();
 
-                if vp.v_type.get() == VBLK || (vp.v_type.get() == VDIR && !vn_isunder(vp, rdir, p))
-                {
+                if vp.vtype() == VBLK || (vp.vtype() == VDIR && !vn_isunder(vp, rdir, p)) {
                     error = Err(Errno::EPERM);
                     break;
                 }

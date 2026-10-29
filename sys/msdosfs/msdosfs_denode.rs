@@ -104,9 +104,6 @@ use crate::kern::kern_subr::hashinit;
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vfs_cache::cache_purge;
-#[cfg(feature = "diagnostic")]
-use crate::kern::vfs_subr::PRTACTIVE;
-use crate::kern::vfs_subr::{getnewvnode, vget, vinvalbuf, vput, vrecycle, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -140,9 +137,12 @@ use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Dev};
 use crate::sys::ucred::{NOCRED, Ucred};
+#[cfg(feature = "diagnostic")]
+use crate::sys::vnode::PRTACTIVE;
 use crate::sys::vnode::{
     IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VREG, VROOT, VT_MSDOSFS, VopInactiveArgs, VopReclaimArgs,
 };
+use crate::sys::vnode::{getnewvnode, vget, vinvalbuf, vput, vrecycle, vref, vrele};
 use libkern::StaticCell;
 
 /// The hash chains, with the claim that makes them shareable.
@@ -235,10 +235,10 @@ fn msdosfs_hashget(dev: Dev, dirclust: u32, diroff: u32) -> Option<&'static Deno
                 && dep.de_refcnt.get() != 0
             {
                 let vp = dep.detov();
-                let vpid = vp.v_id.get();
+                let vpid = vp.id();
 
                 if vget(vp, LK_EXCLUSIVE).is_ok() {
-                    if vpid != vp.v_id.get() {
+                    if vpid != vp.id() {
                         vput(vp);
                         continue 'retry;
                     }
@@ -336,7 +336,7 @@ pub fn deget(
         // SAFETY: as above; it lives until `msdosfs_reclaim` frees it.
         let ldep: &'static Denode = unsafe { p.as_ref() };
         rrw_init_flags(&ldep.de_lock, "denode", RWL_DUPOK | RWL_IS_VNODE);
-        nvp.v_data.set(p.as_ptr().cast());
+        nvp.set_data(p.as_ptr().cast());
         ldep.de_vnode.set(Some(nvp));
         ldep.de_flag.set(0);
         ldep.de_devvp.set(None);
@@ -374,7 +374,7 @@ pub fn deget(
         // should probably rummage through the root directory and find a label entry (if it
         // exists), and then use the time and date from that entry as the time and date for
         // the root denode.
-        nvp.v_flag.set(nvp.v_flag.get() | VROOT); // should be further down XXX
+        nvp.set_flag(nvp.flag() | VROOT); // should be further down XXX
 
         ldep.de_Attributes.set(ATTR_DIRECTORY);
         if fat32(pmp) {
@@ -413,7 +413,7 @@ pub fn deget(
         // Since DOS directory entries that describe directories have 0 in the filesize field,
         // we take this opportunity to find out the length of the directory and plug it into
         // the denode structure.
-        nvp.v_type.set(VDIR);
+        nvp.set_vtype(VDIR);
         if ldep.de_StartCluster.get() != MSDOSFSROOT {
             let mut size = 0;
             match pcbmap(ldep, CLUST_END, None, Some(&mut size), None) {
@@ -426,7 +426,7 @@ pub fn deget(
             }
         }
     } else {
-        nvp.v_type.set(VREG);
+        nvp.set_vtype(VREG);
     }
     vref(pmp.devvp());
     Ok(ldep)
@@ -437,9 +437,8 @@ pub fn deget(
 pub fn deupdat(dep: &Denode, waitfor: i32) -> Result<(), Errno> {
     if dep
         .detov()
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
+        .mount()
+        .is_some_and(|mp| mp.flag() & MNT_RDONLY != 0)
     {
         return Ok(());
     }
@@ -485,7 +484,7 @@ pub fn detrunc(
     // just the way dos filesystems are. We use the VROOT bit in the vnode because checking for
     // the directory bit and a startcluster of 0 in the denode is not adequate to recognize the
     // root directory at this point in a file or directory's life.
-    if vp.v_flag.get() & VROOT != 0 && !fat32(pmp) {
+    if vp.flag() & VROOT != 0 && !fat32(pmp) {
         printf(format_args!(
             "detrunc(): can't truncate root directory, clust {}, offset {}\n",
             dep.de_dirclust.get(),
@@ -587,7 +586,7 @@ pub fn deextend(dep: &Denode, length: u32, cred: *const Ucred) -> Result<(), Err
     let pmp = dep.pmp();
 
     // The root of a DOS filesystem cannot be extended.
-    if dep.detov().v_flag.get() & VROOT != 0 && !fat32(pmp) {
+    if dep.detov().flag() & VROOT != 0 && !fat32(pmp) {
         return Err(Errno::EINVAL);
     }
 
@@ -640,8 +639,8 @@ pub fn msdosfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let dep = vtode(vp);
 
     #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("msdosfs_reclaim(): pushing active"), vp);
+    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("msdosfs_reclaim(): pushing active"), vp);
     }
 
     // Remove the denode from its hash chain.
@@ -652,7 +651,7 @@ pub fn msdosfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
         vrele(devvp);
     }
     // `#if 0 /* XXX */ dep->de_flag = 0;` in the C.
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
     free(NonNull::from(dep).cast(), M_MSDOSFSNODE, 0);
     Ok(())
 }
@@ -665,8 +664,8 @@ pub fn msdosfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let mut error = Ok(());
 
     #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("msdosfs_inactive(): pushing active"), vp);
+    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("msdosfs_inactive(): pushing active"), vp);
     }
 
     // Get rid of denodes related to stale file handles.
@@ -674,10 +673,7 @@ pub fn msdosfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
         // If the file has been deleted and it is on a read/write filesystem, then truncate the
         // file, and mark the directory slot as empty. (This may not be necessary for the dos
         // filesystem.)
-        let rdonly = vp
-            .v_mount
-            .get()
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0);
+        let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
         if dep.de_refcnt.get() <= 0 && !rdonly {
             error = detrunc(dep, 0, 0, NOCRED, ap.a_p);
             let mut name = dep.de_Name.get();

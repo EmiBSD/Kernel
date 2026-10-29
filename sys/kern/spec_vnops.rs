@@ -189,19 +189,15 @@ pub static SPEC_VOPS: Vops = Vops {
 pub fn spec_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     let p = ap.a_p;
     let vp = ap.a_vp;
-    let dev = vp.v_rdev();
+    let dev = vp.rdev();
     let maj = major(dev);
 
     // Don't allow open if fs is mounted -nodev.
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_NODEV != 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_NODEV != 0) {
         return Err(Errno::ENXIO);
     }
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VCHR => {
             if maj >= nchrdev() {
                 return Err(Errno::ENXIO);
@@ -219,7 +215,7 @@ pub fn spec_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
                     let bdev = chrtoblk(dev);
                     if bdev != NODEV
                         && let Some(bvp) = vfinddev(bdev, VBLK)
-                        && bvp.v_usecount.get() > 0
+                        && bvp.usecount() > 0
                     {
                         vfs_mountedon(bvp)?;
                     }
@@ -230,7 +226,7 @@ pub fn spec_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
             }
             let sw = cdevsw(maj);
             if sw.d_type == D_TTY {
-                vp.v_flag.set(vp.v_flag.get() | VISTTY);
+                vp.set_flag(vp.flag() | VISTTY);
             }
             if sw.d_flags & D_CLONE != 0 {
                 return spec_open_clone(ap);
@@ -277,10 +273,10 @@ pub fn spec_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
         return Ok(());
     }
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VCHR => {
             let _ = VOP_UNLOCK(vp);
-            let dev = vp.v_rdev();
+            let dev = vp.rdev();
             let error = (cdevsw(major(dev)).d_read)(dev, uio, ap.a_ioflag);
             let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
             error
@@ -342,10 +338,10 @@ pub fn spec_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         panic(format_args!("spec_write mode"));
     }
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VCHR => {
             let _ = VOP_UNLOCK(vp);
-            let dev = vp.v_rdev();
+            let dev = vp.rdev();
             let error = (cdevsw(major(dev)).d_write)(dev, uio, ap.a_ioflag);
             let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
             error
@@ -393,7 +389,7 @@ pub fn spec_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
 /// that `DIOCGPART` reports (`frag * fsize` of an `FS_BSDFFS` partition).
 fn spec_bsize(vp: &'static Vnode, who: &'static str) -> i32 {
     let bsize = BLKDEV_IOSIZE as i32;
-    if major(vp.v_rdev()) < nblkdev() {
+    if major(vp.rdev()) < nblkdev() {
         // (*bdevsw[majordev].d_ioctl)(vp->v_rdev, DIOCGPART, &dpart, FREAD, p): struct
         // partinfo is disklabel.h's, not ported. Without it the C's ioctl failure path:
         // BLKDEV_IOSIZE.
@@ -405,10 +401,10 @@ fn spec_bsize(vp: &'static Vnode, who: &'static str) -> i32 {
 
 /// Device ioctl operation.
 pub fn spec_ioctl(ap: &mut VopIoctlArgs<'_>) -> Result<(), Errno> {
-    let dev = ap.a_vp.v_rdev();
+    let dev = ap.a_vp.rdev();
     let maj = major(dev);
 
-    match ap.a_vp.v_type.get() {
+    match ap.a_vp.vtype() {
         VCHR => (cdevsw(maj).d_ioctl)(dev, ap.a_command, ap.a_data, ap.a_fflag, ap.a_p),
         VBLK => (bdevsw(maj).d_ioctl)(dev, ap.a_command, ap.a_data, ap.a_fflag, ap.a_p),
         _ => panic(format_args!("spec_ioctl")),
@@ -417,9 +413,9 @@ pub fn spec_ioctl(ap: &mut VopIoctlArgs<'_>) -> Result<(), Errno> {
 
 /// `spec_kqfilter`: the driver's `d_kqfilter`, or `seltrue_kqfilter` for poll/select.
 pub fn spec_kqfilter(ap: &mut VopKqfilterArgs) -> Result<(), Errno> {
-    let dev = ap.a_vp.v_rdev();
+    let dev = ap.a_vp.rdev();
 
-    match ap.a_vp.v_type.get() {
+    match ap.a_vp.vtype() {
         VCHR => match cdevsw(major(dev)).d_kqfilter {
             Some(kqfilter) => kqfilter(dev, ap.a_kn),
             None => Err(Errno::EOPNOTSUPP),
@@ -433,7 +429,7 @@ pub fn spec_kqfilter(ap: &mut VopKqfilterArgs) -> Result<(), Errno> {
 pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_type.get() == VCHR {
+    if vp.vtype() == VCHR {
         return Ok(());
     }
     // Flush all dirty buffers associated with a block device.
@@ -448,7 +444,7 @@ pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
             }
             DirtyPick::Take
         };
-        if let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "spec_fsync", 0, INFSLP, pick) {
+        if let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.bufs, "spec_fsync", 0, INFSLP, pick) {
             kernel::fs::bio::bawrite(t);
             continue 'restart;
         }
@@ -457,7 +453,7 @@ pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
             let _ = vwaitforio(vp, 0, "spec_fsync", INFSLP);
 
             #[cfg(feature = "diagnostic")]
-            if !vp.v_bufs.dirty_is_empty() {
+            if !vp.bufs.dirty_is_empty() {
                 splx(s);
                 crate::kern::vfs_subr::vprint(Some("spec_fsync: dirty"), vp);
                 continue 'restart;
@@ -481,14 +477,14 @@ pub fn spec_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
 pub fn spec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     let p = ap.a_p;
     let vp = ap.a_vp;
-    let dev = vp.v_rdev();
+    let dev = vp.rdev();
     let mut clone = false;
 
     mtx_enter(&VNODE_MTX);
     let xlocked = vp.v_lflag.get() & VXLOCK != 0;
     mtx_leave(&VNODE_MTX);
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VCHR => {
             // Hack: a tty device that is a controlling terminal has a reference from the
             // session structure. We cannot easily tell that a character device is a
@@ -545,7 +541,7 @@ pub fn spec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     if relock {
         let _ = VOP_UNLOCK(vp);
     }
-    let error = if vp.v_type.get() == VCHR {
+    let error = if vp.vtype() == VCHR {
         (cdevsw(major(dev)).d_close)(dev, ap.a_fflag, S_IFCHR as i32, p)
     } else {
         (bdevsw(major(dev)).d_close)(dev, ap.a_fflag, S_IFBLK as i32, p)
@@ -556,7 +552,7 @@ pub fn spec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
 
     if error.is_ok()
         && clone
-        && let Some(pvp) = vp.v_specparent()
+        && let Some(pvp) = vp.specparent()
     {
         // get parent device
         if let Some(map) = clone_bitmap(pvp.v_specinfo().map(|si| si.si_ci_bitmap.get())) {
@@ -581,10 +577,10 @@ fn clone_bitmap<'b>(map: Option<*mut u8>) -> Option<&'b mut [u8]> {
 pub fn spec_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_flag.get() & VCLONE == 0 {
+    if vp.flag() & VCLONE == 0 {
         return Err(Errno::EBADF);
     }
-    let Some(parent) = vp.v_specparent() else {
+    let Some(parent) = vp.specparent() else {
         return Err(Errno::EBADF);
     };
 
@@ -600,10 +596,10 @@ pub fn spec_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
     let p = ap.a_p;
     let vp = ap.a_vp;
 
-    if vp.v_flag.get() & VCLONE == 0 {
+    if vp.flag() & VCLONE == 0 {
         return Err(Errno::EBADF);
     }
-    let Some(parent) = vp.v_specparent() else {
+    let Some(parent) = vp.specparent() else {
         return Err(Errno::EBADF);
     };
 
@@ -618,10 +614,10 @@ pub fn spec_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
 pub fn spec_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
-    if vp.v_flag.get() & VCLONE == 0 {
+    if vp.flag() & VCLONE == 0 {
         return Err(Errno::EBADF);
     }
-    let Some(parent) = vp.v_specparent() else {
+    let Some(parent) = vp.specparent() else {
         return Err(Errno::EBADF);
     };
 
@@ -637,8 +633,8 @@ pub fn spec_print(ap: &mut VopPrintArgs) -> Result<(), Errno> {
     #[cfg(any(feature = "debug", feature = "diagnostic"))]
     crate::kprintf!(
         "tag VT_NON, dev {}, {}\n",
-        major(ap.a_vp.v_rdev()),
-        minor(ap.a_vp.v_rdev())
+        major(ap.a_vp.rdev()),
+        minor(ap.a_vp.rdev())
     );
     #[cfg(not(any(feature = "debug", feature = "diagnostic")))]
     let _ = ap;
@@ -674,7 +670,7 @@ pub fn spec_advlock(ap: &mut VopAdvlockArgs<'_>) -> Result<(), Errno> {
 /// whose minor carries the instance number, recorded in the parent's bitmap.
 pub fn spec_open_clone(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
-    let rdev = vp.v_rdev();
+    let rdev = vp.rdev();
 
     // CLONE_DEBUG: not configured.
 
@@ -711,7 +707,7 @@ pub fn spec_open_clone(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
 
     let _ = VOP_UNLOCK(vp);
 
-    let error = (cdevsw(major(rdev)).d_open)(cvp.v_rdev(), ap.a_mode, S_IFCHR as i32, ap.a_p);
+    let error = (cdevsw(major(rdev)).d_open)(cvp.rdev(), ap.a_mode, S_IFCHR as i32, ap.a_p);
 
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 
@@ -721,7 +717,7 @@ pub fn spec_open_clone(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
         return Err(error); // device open failed
     }
 
-    cvp.v_flag.set(cvp.v_flag.get() | VCLONE);
+    cvp.set_flag(cvp.flag() | VCLONE);
 
     let Some(mem) = malloc(size_of::<Cloneinfo>(), M_TEMP, M_WAITOK) else {
         panic(format_args!("spec_open_clone: out of memory"));
@@ -732,15 +728,15 @@ pub fn spec_open_clone(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     unsafe {
         cip.as_ptr().write(Cloneinfo {
             ci_vp: cvp,
-            ci_data: vp.v_data.get(),
+            ci_data: vp.data(),
         })
     };
 
     if let Some(si) = cvp.v_specinfo() {
         si.si_ci_parent.set(Some(vp));
     }
-    vp.v_flag.set(vp.v_flag.get() | VCLONED);
-    vp.v_data.set(cip.as_ptr().cast::<c_void>());
+    vp.set_flag(vp.flag() | VCLONED);
+    vp.set_data(cip.as_ptr().cast::<c_void>());
 
     Ok(()) // device cloned
 }

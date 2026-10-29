@@ -67,7 +67,6 @@ use core::ptr::NonNull;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vops::VOP_STRATEGY;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
@@ -82,6 +81,7 @@ use crate::sys::param::btodb;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Off};
 use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::vnode::vinvalbuf;
 use crate::sys::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG};
 use crate::ufs::ffs::ffs_alloc::ffs_blkfree;
 use crate::ufs::ffs::fs::{
@@ -177,7 +177,7 @@ pub fn ffs_truncate(oip: &Inode, length: Off, flags: i32, cred: *const Ucred) ->
     }
     let ovp = oip.itov();
 
-    let t = ovp.v_type.get();
+    let t = ovp.vtype();
     if t != VREG && t != VDIR && t != VLNK {
         return Ok(());
     }

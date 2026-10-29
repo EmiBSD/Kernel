@@ -106,7 +106,6 @@ use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
-use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::kprintf;
@@ -130,6 +129,7 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{
     IO_NODELOCKED, IO_SYNC, VDIR, VEXEC, VWRITE, Vnode, VopLookupArgs, VopReaddirArgs,
 };
+use crate::sys::vnode::{vput, vref};
 use crate::ufs::ext2fs::ext2fs::{E2FS_REV0, EXT2F_INCOMPAT_FTYPE};
 use crate::ufs::ext2fs::ext2fs_dir::{
     Doff, Ext2fsDirect, Ext2fsDirtemplate, Ext2fsSearchslot, Slotstatus, e2d_ino, e2d_name,
@@ -149,7 +149,7 @@ const MINDIRSIZ: usize = Ext2fsDirtemplate::SIZE / 2;
 
 /// The vnode's mount, which an ext2fs vnode always has.
 fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("ext2fs: vnode {:p} without a mount", vp)),
     }
@@ -223,7 +223,7 @@ pub fn ext2fs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
     let fs = vtoi(vp).e2fs();
     let mut off = uio.uio_offset;
 
-    if vp.v_type.get() != VDIR {
+    if vp.vtype() != VDIR {
         return Err(Errno::ENOTDIR);
     }
 
@@ -345,7 +345,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
 
     if flags & ISLASTCN != 0
-        && vmount(vdp).mnt_flag.get() & MNT_RDONLY != 0
+        && vmount(vdp).flag() & MNT_RDONLY != 0
         && (nameiop == DELETE || nameiop == RENAME)
     {
         return Err(Errno::EROFS);
@@ -373,7 +373,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     // directory to determine that the entry does not exist. Caching the location of the last
     // DELETE or RENAME has not reduced profiling time and hence has been removed in the
     // interest of simplicity.
-    let bmask = vfstoufs(vmount(vdp)).mountp().mnt_stat.get().f_iosize as i32 - 1;
+    let bmask = vfstoufs(vmount(vdp)).mountp().stat().f_iosize as i32 - 1;
     let mut entryoffsetinblock: i32;
     let mut numdirpasses;
     if nameiop != LOOKUP || dp.i_diroff.get() == 0 || dp.i_diroff.get() as u64 > ext2fs_size(dp) {
@@ -462,7 +462,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         {
             // Creation of files on a read-only mounted file system is pointless, so don't
             // proceed any further.
-            if vmount(vdp).mnt_flag.get() & MNT_RDONLY != 0 {
+            if vmount(vdp).flag() & MNT_RDONLY != 0 {
                 return Err(Errno::EROFS);
             }
             // Access for write is interpreted as allowing creation of files in the
@@ -817,7 +817,7 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
             uio_procp: None,
         };
         let error = VOP_WRITE(dvp, &mut auio, IO_SYNC, cnp.cn_cred);
-        if i64::from(dirblksize) > vfstoufs(vmount(dvp)).mountp().mnt_stat.get().f_bsize as i64 {
+        if i64::from(dirblksize) > vfstoufs(vmount(dvp)).mountp().stat().f_bsize as i64 {
             // XXX should grow with balloc()
             panic(format_args!("ext2fs_direnter: frag size"));
         } else if error.is_ok() {
@@ -1028,7 +1028,7 @@ pub fn ext2fs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> R
             let Some(cur) = vp else {
                 break 'out Ok(());
             };
-            if cur.v_type.get() != VDIR {
+            if cur.vtype() != VDIR {
                 break 'out Err(Errno::ENOTDIR);
             }
             let mut dirbuf = [0u8; Ext2fsDirtemplate::SIZE];

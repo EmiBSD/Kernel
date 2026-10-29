@@ -746,7 +746,7 @@ pub fn nfs_cmpfh(n: &NfsNode, f: &[u8]) -> bool {
 
 /// `NFS_ISV3(v)`: whether the vnode's mount speaks NFS version 3.
 pub fn nfs_isv3(vp: &Vnode) -> bool {
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         panic(format_args!("NFS_ISV3: vnode {:p} has no mount", vp));
     };
     VFSTONFS(mp).nm_flag.get() & NFSMNT_NFSV3 != 0

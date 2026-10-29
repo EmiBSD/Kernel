@@ -75,7 +75,6 @@ use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{vget, vput};
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::miscfs::fuse::fusefs::FusefsMnt;
 use crate::miscfs::fuse::fusefs_node::{FusefsIHash, FusefsNode, ITOV};
@@ -85,6 +84,7 @@ use crate::sys::malloc::{M_FUSEFS, M_WAITOK};
 use crate::sys::queue::ListHead;
 use crate::sys::types::Ino;
 use crate::sys::vnode::Vnode;
+use crate::sys::vnode::{vget, vput};
 
 /// The hash chains, with the claim that makes them shareable.
 #[derive(Clone, Copy)]
@@ -160,12 +160,12 @@ pub fn fuse_ihashget(fmp: &FusefsMnt, inum: Ino) -> Option<&'static Vnode> {
         for ip in ipp.iter() {
             if inum == ip.i_number && ptr::eq(fmp, ip.i_fmp) {
                 let vp = ITOV(ip);
-                let vpid = vp.v_id.get();
+                let vpid = vp.id();
                 // XXXLOCKING unlock hash list?
                 if vget(vp, LK_EXCLUSIVE).is_err() {
                     continue 'loop_;
                 }
-                if vpid != vp.v_id.get() {
+                if vpid != vp.id() {
                     vput(vp);
                     continue 'loop_;
                 }
@@ -229,16 +229,16 @@ mod tests {
     use std::boxed::Box;
 
     use super::*;
-    use crate::kern::vfs_subr::getnewvnode;
     use crate::miscfs::fuse::fuse_device::tests::{fake_fmp, setup};
     use crate::miscfs::fuse::fuse_vnops::FUSEFS_VOPS;
     use crate::sys::vnode::VT_FUSEFS;
+    use crate::sys::vnode::getnewvnode;
 
     /// A vnode and its node for inode `ino` of `fmp`, unhashed.
     fn node(fmp: &'static FusefsMnt, ino: Ino) -> &'static FusefsNode {
         let vp = getnewvnode(VT_FUSEFS, None, &FUSEFS_VOPS).expect("vnode");
         let ip: &'static FusefsNode = Box::leak(Box::new(FusefsNode::new(vp, fmp, ino)));
-        vp.v_data.set(ptr::from_ref(ip).cast_mut().cast());
+        vp.set_data(ptr::from_ref(ip).cast_mut().cast());
         ip
     }
 

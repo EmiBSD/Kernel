@@ -77,12 +77,12 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::kern::subr_pool::pool_init;
 use crate::kern::vfs_cache::nchinit;
-use crate::kern::vfs_subr::vntblinit;
 use crate::machine::intr::IPL_NONE;
 use crate::sys::mount::Vfsconf;
 use crate::sys::param::MAXPATHLEN;
 use crate::sys::pool::{PR_WAITOK, Pool};
 use crate::sys::vnode::Vnode;
+use crate::sys::vnode::vntblinit;
 
 /// `namei_pool`: the `MAXPATHLEN` pathname buffers of `namei`.
 pub static NAMEI_POOL: Pool = Pool::new();

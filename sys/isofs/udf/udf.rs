@@ -354,8 +354,8 @@ pub const UDF_MNT_USES_META: i32 = 0x04;
 /// `VTOU(vp)`: the unode of a UDF vnode.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VTOU(vp: &Vnode) -> &'static Unode {
-    let data = vp.v_data.get();
-    if data.is_null() || vp.v_tag.get() != VT_UDF {
+    let data = vp.data();
+    if data.is_null() || vp.tag() != VT_UDF {
         panic(format_args!("VTOU: vnode {:p} has no unode", vp));
     }
     // SAFETY: a UDF vnode's `v_data` (checked above) is the unode `udf_vget` hung there,
@@ -405,7 +405,7 @@ pub struct UdfDirstream {
 /// `VFSTOUDFFS(mp)`: the umount of a UDF mount.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFSTOUDFFS(mp: &Mount) -> &'static Umount {
-    let data = mp.mnt_data.get();
+    let data = mp.data();
     if data.is_null() {
         panic(format_args!("VFSTOUDFFS: mount {:p} has no umount", mp));
     }

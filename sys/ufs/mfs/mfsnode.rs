@@ -114,8 +114,8 @@ impl Default for Mfsnode {
 
 /// `VTOMFS(vp)`: convert a vnode pointer to an mfsnode pointer.
 pub fn vtomfs(vp: &'static Vnode) -> &'static Mfsnode {
-    let data = vp.v_data.get();
-    if vp.v_tag.get() != VT_MFS || data.is_null() {
+    let data = vp.data();
+    if vp.tag() != VT_MFS || data.is_null() {
         panic(format_args!("VTOMFS: vnode {:p} is not an mfs node", vp));
     }
     // SAFETY: a `VT_MFS` vnode's `v_data` (checked above) is the `struct mfsnode` that

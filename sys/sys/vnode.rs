@@ -86,7 +86,7 @@
 //!   either.
 //! - `struct buf *` (`a_bp`) is a `&'static Buf` (`sys/buf.rs`).
 //! - The `[B]` members `v_bioflag`, `v_bufs_tree`, `v_cleanblkhd`, `v_dirtyblkhd` and
-//!   `v_numoutput` are `v_bufs`, the buffer cache's `kernel::fs::bio::VnodeBufs` (N5.1): the
+//!   `v_numoutput` are `bufs`, the buffer cache's `kernel::fs::bio::VnodeBufs` (N5.1): the
 //!   tree and the lists under the cache's lock, the count and the flags atomics; the cache
 //!   reaches the vnode through the bridge `BufVnode` (`vfs_subr.rs`).
 //! - `a_cred` is the C's `struct ucred *`, a raw pointer, since `NOCRED` and `FSCRED` are
@@ -260,7 +260,7 @@ pub struct Vnode {
     pub v_mntvnodes: TailqEntry<Vnode>,
     /// \[B\] `v_bioflag`, `v_bufs_tree`, `v_cleanblkhd`, `v_dirtyblkhd`, `v_numoutput`: the
     /// vnode's buffers (`kernel::fs::bio::VnodeBufs`).
-    pub v_bufs: VnodeBufs,
+    pub bufs: VnodeBufs,
     /// \[B\] `v_synclist`: vnode with dirty buffers.
     pub v_synclist: ListEntry<Vnode>,
     /// `v_un`: the union of `v_mountedhere`, `v_socket`, `v_specinfo`, `v_fifoinfo`.
@@ -274,7 +274,7 @@ pub struct Vnode {
     /// `v_data`: private data for fs.
     pub v_data: Cell<*mut c_void>,
     /// `v_klist`: identity of poller(s).
-    pub v_klist: Klist,
+    pub klist: Klist,
 }
 
 // SAFETY: the members are mutated under the kernel lock, `vnode_mtx` or `splbio`, as in C;
@@ -300,14 +300,14 @@ impl Vnode {
             v_mount: Cell::new(None),
             v_freelist: TailqEntry::new(),
             v_mntvnodes: TailqEntry::new(),
-            v_bufs: VnodeBufs::new(),
+            bufs: VnodeBufs::new(),
             v_synclist: ListEntry::new(),
             v_un: Cell::new(VnodeUn::None),
             v_specnext: SlistEntry::new(),
             v_nc_tree: RbtHead::new(),
             v_cache_dst: TailqHead::new(),
             v_data: Cell::new(ptr::null_mut()),
-            v_klist: Klist::new(),
+            klist: Klist::new(),
         }
     }
 
@@ -758,7 +758,7 @@ pub fn makeimode(indx: Vtype, mode: Mode) -> Mode {
 /// `VN_KNOTE(vp, b)`: posts the vnode event `b` (`NOTE_*`) to the vnode's knotes.
 #[allow(non_snake_case)] // the C name
 pub fn VN_KNOTE(vp: &Vnode, b: u32) {
-    crate::kern::kern_event::knote_locked(&vp.v_klist, i64::from(b));
+    crate::kern::kern_event::knote_locked(&vp.klist, i64::from(b));
 }
 
 /// `SKIPSYSTEM`: vflush: skip vnodes marked `VSYSTEM`.

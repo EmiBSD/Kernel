@@ -65,14 +65,14 @@
 //!   the no-quota answers of `ufs_quota_stub.c` without it.
 
 use crate::kern::vfs_cache::cache_purge;
-#[cfg(feature = "diagnostic")]
-use crate::kern::vfs_subr::PRTACTIVE;
-use crate::kern::vfs_subr::{vrecycle, vrele};
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::sys::errno::Errno;
 use crate::sys::mount::MNT_RDONLY;
 use crate::sys::ucred::NOCRED;
+#[cfg(feature = "diagnostic")]
+use crate::sys::vnode::PRTACTIVE;
 use crate::sys::vnode::{Vnode, VopInactiveArgs};
+use crate::sys::vnode::{vrecycle, vrele};
 use crate::ufs::ufs::inode::{
     IN_ACCESS, IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_UPDATE, UFS_INODE_FREE, UFS_TRUNCATE,
     UFS_UPDATE, vtoi,
@@ -88,16 +88,13 @@ pub fn ufs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let mut error = Ok(());
 
     #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("ufs_inactive: pushing active"), vp);
+    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("ufs_inactive: pushing active"), vp);
     }
 
     // Ignore inodes related to stale file handles.
     if !(ip.din_is_null() || ip.dip_mode() == 0) {
-        let rdonly = vp
-            .v_mount
-            .get()
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0);
+        let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
         if ip.dip_nlink() <= 0 && !rdonly {
             if getinoquota(ip).is_ok() {
                 let _ = ufs_quota_free_inode(ip, NOCRED);
@@ -132,8 +129,8 @@ pub fn ufs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 /// of a file system's `vop_reclaim`).
 pub fn ufs_reclaim(vp: &'static Vnode) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("ufs_reclaim: pushing active"), vp);
+    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("ufs_reclaim: pushing active"), vp);
     }
 
     let ip = vtoi(vp);

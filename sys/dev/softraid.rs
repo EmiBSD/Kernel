@@ -147,7 +147,6 @@ use crate::kern::subr_disk::{
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
 use crate::kern::subr_xxx::blktochr;
-use crate::kern::vfs_subr::{bdevvp, cdevvp, vput};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN, VOP_STRATEGY};
 use crate::machine::copy::copyin;
@@ -202,6 +201,7 @@ use crate::sys::task::SYSTQ;
 use crate::sys::time::{msec_to_nsec, sec_to_nsec};
 use crate::sys::types::{Daddr, Dev, major};
 use crate::sys::ucred::NOCRED;
+use crate::sys::vnode::{bdevvp, cdevvp, vput};
 
 /// `SR_META_NOTCLAIMED`.
 pub const SR_META_NOTCLAIMED: i32 = 0;
@@ -674,7 +674,7 @@ pub fn sr_rw(
 
             if !b.isset(B_READ) {
                 let s = splbio();
-                vp.v_bufs.numoutput_inc();
+                vp.bufs.numoutput_inc();
                 splx(s);
             }
 
@@ -2263,7 +2263,7 @@ pub unsafe fn sr_ccb_rw(
         && let Some(vp) = b.vp()
     {
         let s = splbio();
-        vp.v_bufs.numoutput_inc();
+        vp.bufs.numoutput_inc();
         splx(s);
     }
 

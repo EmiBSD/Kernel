@@ -128,12 +128,11 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
-use crate::kern::vfs_default::{vop_generic_abortop, vop_generic_bmap, vop_generic_revoke};
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lockf::lf_advlock;
-use crate::kern::vfs_subr::{vaccess, vattr_null, vput, vrecycle, vref, vrele};
 use crate::kern::vfs_vnops::{vn_fsizechk, vn_lock};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_UNLOCK};
+use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bmap, vop_generic_revoke};
 use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
@@ -170,6 +169,7 @@ use crate::sys::vnode::{
     VopReclaimArgs, VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs,
     VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, cred_ref,
 };
+use crate::sys::vnode::{vaccess, vattr_null, vput, vrecycle, vref, vrele};
 use crate::tmpfs::tmpfs::{
     TMPFS_DIRSEQ_EOF, TMPFS_MAXNAMLEN, TMPFS_NODE_ACCESSED, TMPFS_NODE_CHANGED,
     TMPFS_NODE_MODIFIED, TMPFS_NODE_STATUSALL, TmpfsDirent, TmpfsMount, TmpfsNode, VFS_TO_TMPFS,
@@ -280,7 +280,7 @@ pub static TMPFSVNODE_FILTOPS: Filterops = Filterops {
 
 /// The vnode's mount, which a tmpfs vnode always has.
 fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("tmpfs: vnode {:p} without a mount", vp)),
     }
@@ -375,7 +375,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         // If requesting the last path component on a read-only file system with a write
         // operation, deny it.
         if lastcn
-            && vmount(dvp).mnt_flag.get() & MNT_RDONLY != 0
+            && vmount(dvp).flag() & MNT_RDONLY != 0
             && (cnp.cn_nameiop == DELETE || cnp.cn_nameiop == RENAME)
         {
             break 'out Err(Errno::EROFS);
@@ -571,9 +571,9 @@ pub fn tmpfs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     kassert!(VOP_ISLOCKED(vp) != 0);
 
     // Possible?
-    match vp.v_type.get() {
+    match vp.vtype() {
         VDIR | VLNK | VREG => {
-            if writing && vmount(vp).mnt_flag.get() & MNT_RDONLY != 0 {
+            if writing && vmount(vp).flag() & MNT_RDONLY != 0 {
                 return Err(Errno::EROFS);
             }
         }
@@ -585,7 +585,7 @@ pub fn tmpfs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     }
 
     vaccess(
-        vp.v_type.get(),
+        vp.vtype(),
         node.tn_mode.get(),
         node.tn_uid.get(),
         node.tn_gid.get(),
@@ -602,12 +602,12 @@ pub fn tmpfs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
 
     vattr_null(vap);
 
-    vap.va_type = vp.v_type.get();
+    vap.va_type = vp.vtype();
     vap.va_mode = node.tn_mode.get();
     vap.va_nlink = node.tn_links.get();
     vap.va_uid = node.tn_uid.get();
     vap.va_gid = node.tn_gid.get();
-    vap.va_fsid = i64::from(vmount(vp).mnt_stat.get().f_fsid.val[0]);
+    vap.va_fsid = i64::from(vmount(vp).stat().f_fsid.val[0]);
     vap.va_fileid = node.tn_id.get();
     vap.va_size = node.tn_size.get() as u64;
     vap.va_blocksize = PAGE_SIZE as i64;
@@ -617,7 +617,7 @@ pub fn tmpfs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     // vap->va_birthtime = node->tn_birthtime;
     vap.va_gen = tmpfs_node_gen(node);
     vap.va_flags = u64::from(node.tn_flags.get());
-    vap.va_rdev = if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
+    vap.va_rdev = if vp.vtype() == VBLK || vp.vtype() == VCHR {
         node.tn_spec.tn_dev.tn_rdev.get()
     } else {
         VNOVAL
@@ -700,7 +700,7 @@ pub fn tmpfs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
 
     kassert!(VOP_ISLOCKED(vp) != 0);
 
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         return Err(Errno::EISDIR);
     }
     if uio.uio_offset < 0 {
@@ -724,7 +724,7 @@ pub fn tmpfs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
         error = tmpfs_uiomove(node, uio, len as usize);
     }
 
-    if vmount(vp).mnt_flag.get() & MNT_NOATIME == 0 {
+    if vmount(vp).flag() & MNT_NOATIME == 0 {
         tmpfs_update(node, TMPFS_NODE_ACCESSED);
     }
 
@@ -743,7 +743,7 @@ pub fn tmpfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     let node = VP_TO_TMPFS_NODE(vp);
     let oldsize = node.tn_size.get();
 
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         return Err(Errno::EINVAL);
     }
 
@@ -820,7 +820,7 @@ pub fn tmpfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
     kassert!(cnp.cn_flags & HASBUF != 0);
 
     let error: Result<(), Errno> = 'out: {
-        if vp.v_type.get() == VDIR {
+        if vp.vtype() == VDIR {
             break 'out Err(Errno::EPERM);
         }
 
@@ -1013,7 +1013,7 @@ pub fn tmpfs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
     kassert!(VOP_ISLOCKED(vp) != 0);
 
     // This operation only makes sense on directory nodes.
-    if vp.v_type.get() != VDIR {
+    if vp.vtype() != VDIR {
         return Err(Errno::ENOTDIR);
     }
     let node = VP_TO_TMPFS_DIR(vp);
@@ -1035,7 +1035,7 @@ pub fn tmpfs_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
 
     kassert!(VOP_ISLOCKED(vp) != 0);
     kassert!(uio.uio_offset == 0);
-    kassert!(vp.v_type.get() == VLNK);
+    kassert!(vp.vtype() == VLNK);
 
     let node = VP_TO_TMPFS_NODE(vp);
     let link = node.link();
@@ -1044,7 +1044,7 @@ pub fn tmpfs_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
     buf[..len].copy_from_slice(&link[..len]);
     let error = uiomove(&mut buf[..len], uio);
 
-    if vmount(vp).mnt_flag.get() & MNT_NOATIME == 0 {
+    if vmount(vp).flag() & MNT_NOATIME == 0 {
         tmpfs_update(node, TMPFS_NODE_ACCESSED);
     }
 
@@ -1061,7 +1061,7 @@ pub fn tmpfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 
     let node = VP_TO_TMPFS_NODE(vp);
 
-    if vp.v_type.get() == VREG && tmpfs_uio_cached(node) {
+    if vp.vtype() == VREG && tmpfs_uio_cached(node) {
         tmpfs_uio_uncache(node);
     }
 
@@ -1079,7 +1079,7 @@ pub fn tmpfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 /// node if it has no links (unless `tmpfs_vnode_get` is about to give it a new vnode).
 pub fn tmpfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         crate::kern::subr_prf::panic(format_args!("tmpfs_reclaim: vnode {:p} has no mount", vp));
     };
     let tmp = VFS_TO_TMPFS(mp);
@@ -1088,7 +1088,7 @@ pub fn tmpfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     // Disassociate inode from vnode.
     rw_enter_write(&node.tn_nlock);
     node.tn_vnode.set(None);
-    vp.v_data.set(core::ptr::null_mut());
+    vp.set_data(core::ptr::null_mut());
     // Check if tmpfs_vnode_get() is racing with us.
     let racing = tmpfs_node_reclaiming(node);
     rw_exit_write(&node.tn_nlock);
@@ -1212,8 +1212,8 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     kassert!(!ap.a_fcnp.cn_nameptr.is_null());
     // KASSERT(VOP_ISLOCKED(fdvp) != LK_EXCLUSIVE);
     // KASSERT(VOP_ISLOCKED(fvp) != LK_EXCLUSIVE);
-    kassert!(fdvp.v_type.get() == VDIR);
-    kassert!(tdvp.v_type.get() == VDIR);
+    kassert!(fdvp.vtype() == VDIR);
+    kassert!(tdvp.vtype() == VDIR);
     kassert!(ap.a_fcnp.cn_flags & HASBUF != 0);
     kassert!(ap.a_tcnp.cn_flags & HASBUF != 0);
 
@@ -1221,9 +1221,9 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     kassert!(ptr::eq(ap.a_tcnp.cn_cred, cred));
 
     // Check for cross-device rename. Also don't allow renames of mount points.
-    if !same(fvp.v_mount.get(), tdvp.v_mount.get())
-        || !same(fdvp.v_mount.get(), fvp.v_mount.get())
-        || tvp.is_some_and(|tvp| !same(fvp.v_mount.get(), tvp.v_mount.get()))
+    if !same(fvp.mount(), tdvp.mount())
+        || !same(fdvp.mount(), fvp.mount())
+        || tvp.is_some_and(|tvp| !same(fvp.mount(), tvp.mount()))
     {
         tmpfs_rename_abort(ap);
         return Err(Errno::EXDEV);
@@ -1286,9 +1286,9 @@ fn tmpfs_sane_rename(
 ) -> Result<(), Errno> {
     // KASSERT(VOP_ISLOCKED(fdvp) != LK_EXCLUSIVE);
     // KASSERT(VOP_ISLOCKED(tdvp) != LK_EXCLUSIVE);
-    kassert!(fdvp.v_type.get() == VDIR);
-    kassert!(tdvp.v_type.get() == VDIR);
-    kassert!(same(fdvp.v_mount.get(), tdvp.v_mount.get()));
+    kassert!(fdvp.vtype() == VDIR);
+    kassert!(tdvp.vtype() == VDIR);
+    kassert!(same(fdvp.mount(), tdvp.mount()));
     kassert!(fcnp.cn_flags & ISDOTDOT == 0);
     kassert!(tcnp.cn_flags & ISDOTDOT == 0);
     kassert!(!is_dot_or_dotdot(fcnp));
@@ -1303,10 +1303,10 @@ fn tmpfs_sane_rename(
     kassert!(tdnode.tn_type.get() == VDIR);
 
     let mount = vmount(fdvp);
-    kassert!(same(Some(mount), tdvp.v_mount.get()));
+    kassert!(same(Some(mount), tdvp.mount()));
     // XXX How can we be sure this stays true? (Not that you're likely to mount a tmpfs
     // read-only...)
-    kassert!(mount.mnt_flag.get() & MNT_RDONLY == 0);
+    kassert!(mount.flag() & MNT_RDONLY == 0);
     let tmpfs = VFS_TO_TMPFS(mount);
 
     // Decide whether we need a new name, and allocate memory for it if so. Do this before
@@ -1334,12 +1334,12 @@ fn tmpfs_sane_rename(
         // Check that everything is locked and looks right.
         let fnode = td_node(fde);
         kassert!(same(fnode.tn_vnode.get(), Some(fvp)));
-        kassert!(fnode.tn_type.get() == fvp.v_type.get());
+        kassert!(fnode.tn_type.get() == fvp.vtype());
         kassert!(tde.is_none() == tvp.is_none());
         kassert!(tde.is_none_or(|tde| tde.td_node.get().is_some()));
         kassert!(tde.is_none_or(|tde| same(td_node(tde).tn_vnode.get(), tvp)));
         kassert!(tde.is_none_or(|tde| {
-            tvp.is_some_and(|tvp| td_node(tde).tn_type.get() == tvp.v_type.get())
+            tvp.is_some_and(|tvp| td_node(tde).tn_type.get() == tvp.vtype())
         }));
         kassert!(VOP_ISLOCKED(fdvp) == LK_EXCLUSIVE);
         kassert!(VOP_ISLOCKED(tdvp) == LK_EXCLUSIVE);
@@ -1371,8 +1371,8 @@ fn tmpfs_sane_rename(
                 // or vice versa, or to clobber a non-empty directory.
                 if let Some(tvp) = tvp {
                     kassert!(tde.is_some_and(|tde| tde.td_node.get().is_some()));
-                    let fdir = fvp.v_type.get() == VDIR;
-                    let tdir = tvp.v_type.get() == VDIR;
+                    let fdir = fvp.vtype() == VDIR;
+                    let tdir = tvp.vtype() == VDIR;
                     let error = match (fdir, tdir) {
                         (true, true) if tde.is_some_and(|tde| td_node(tde).tn_size.get() > 0) => {
                             Err(Errno::ENOTEMPTY)
@@ -1519,7 +1519,7 @@ fn tmpfs_rename_enter_common(
     let parent = dnode.tn_spec.tn_dir.tn_parent.get();
     let entered: Result<RenameEntered, Errno> = 'fail1: {
         // Did we lose a race with mount?
-        if dvp.v_mountedhere().is_some() {
+        if dvp.mountedhere().is_some() {
             break 'fail1 Err(Errno::EBUSY);
         }
 
@@ -1548,11 +1548,11 @@ fn tmpfs_rename_enter_common(
         };
         kassert!(VOP_ISLOCKED(fvp) == LK_EXCLUSIVE);
         kassert!(!ptr::eq(fvp, dvp));
-        kassert!(same(fvp.v_mount.get(), Some(mount)));
+        kassert!(same(fvp.mount(), Some(mount)));
 
         let entered: Result<RenameEntered, Errno> = 'fail2: {
             // Refuse to rename a mount point.
-            if fvp.v_type.get() == VDIR && fvp.v_mountedhere().is_some() {
+            if fvp.vtype() == VDIR && fvp.mountedhere().is_some() {
                 break 'fail2 Err(Errno::EBUSY);
             }
 
@@ -1571,9 +1571,9 @@ fn tmpfs_rename_enter_common(
                             Ok(tvp) => tvp,
                             Err(e) => break 'fail2 Err(e),
                         };
-                        kassert!(same(tvp.v_mount.get(), Some(mount)));
+                        kassert!(same(tvp.mount(), Some(mount)));
                         // Refuse to rename over a mount point.
-                        if tvp.v_type.get() == VDIR && tvp.v_mountedhere().is_some() {
+                        if tvp.vtype() == VDIR && tvp.mountedhere().is_some() {
                             // fail3: tvp is not fvp here.
                             vput(tvp);
                             break 'fail2 Err(Errno::EBUSY);
@@ -1828,7 +1828,7 @@ fn tmpfs_rename_lock(
 
     let locked: Result<RenameLocked, Errno> = 'fail1: {
         // Did we lose a race with mount?
-        if a_dvp.v_mountedhere().is_some() {
+        if a_dvp.mountedhere().is_some() {
             break 'fail1 Err(Errno::EBUSY);
         }
 
@@ -1853,9 +1853,9 @@ fn tmpfs_rename_lock(
                     Ok(a_vp) => a_vp,
                     Err(e) => break 'fail1 Err(e),
                 };
-                kassert!(same(a_vp.v_mount.get(), Some(mount)));
+                kassert!(same(a_vp.mount(), Some(mount)));
                 // Refuse to rename (over) a mount point.
-                if a_vp.v_type.get() == VDIR && a_vp.v_mountedhere().is_some() {
+                if a_vp.vtype() == VDIR && a_vp.mountedhere().is_some() {
                     // fail2:
                     kassert!(VOP_ISLOCKED(a_vp) == LK_EXCLUSIVE);
                     vput(a_vp);
@@ -1876,7 +1876,7 @@ fn tmpfs_rename_lock(
 
             let locked: Result<RenameLocked, Errno> = 'fail3: {
                 // Did we lose a race with mount?
-                if b_dvp.v_mountedhere().is_some() {
+                if b_dvp.mountedhere().is_some() {
                     break 'fail3 Err(Errno::EBUSY);
                 }
 
@@ -1902,10 +1902,10 @@ fn tmpfs_rename_lock(
                                 Ok(b_vp) => b_vp,
                                 Err(e) => break 'fail3 Err(e),
                             };
-                            kassert!(same(b_vp.v_mount.get(), Some(mount)));
+                            kassert!(same(b_vp.mount(), Some(mount)));
                             kassert!(!same(a_vp, Some(b_vp)));
                             // Refuse to rename (over) a mount point.
-                            if b_vp.v_type.get() == VDIR && b_vp.v_mountedhere().is_some() {
+                            if b_vp.vtype() == VDIR && b_vp.mountedhere().is_some() {
                                 // fail4: b_vp is not a_vp here.
                                 kassert!(VOP_ISLOCKED(b_vp) == LK_EXCLUSIVE);
                                 vput(b_vp);
@@ -2020,7 +2020,7 @@ fn tmpfs_rename_attachdetach(
     if let Some(tde) = tde {
         let tdnode = VP_TO_TMPFS_DIR(tdvp);
         let tnode = td_node(tde);
-        kassert!(tvp.is_some_and(|tvp| (fvp.v_type.get() == VDIR) == (tvp.v_type.get() == VDIR)));
+        kassert!(tvp.is_some_and(|tvp| (fvp.vtype() == VDIR) == (tvp.vtype() == VDIR)));
         if tnode.tn_type.get() == VDIR {
             kassert!(tnode.tn_size.get() == 0);
             kassert!(tnode.tn_links.get() == 2);
@@ -2253,14 +2253,14 @@ fn tmpfs_rename_cache_purge(
     kassert!(!ptr::eq(tdvp, fvp));
     kassert!(!same(Some(tdvp), tvp));
     kassert!(!same(Some(fvp), tvp));
-    kassert!(fdvp.v_type.get() == VDIR);
-    kassert!(tdvp.v_type.get() == VDIR);
+    kassert!(fdvp.vtype() == VDIR);
+    kassert!(tdvp.vtype() == VDIR);
 
     // XXX What actually needs to be purged?
 
     cache_purge(fdvp);
 
-    if fvp.v_type.get() == VDIR {
+    if fvp.vtype() == VDIR {
         cache_purge(fvp);
     }
 
@@ -2269,7 +2269,7 @@ fn tmpfs_rename_cache_purge(
     }
 
     if let Some(tvp) = tvp
-        && tvp.v_type.get() == VDIR
+        && tvp.vtype() == VDIR
     {
         cache_purge(tvp);
     }
@@ -2310,7 +2310,7 @@ pub fn tmpfs_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
 
     kn.kn_hook.set(ptr::from_ref(vp).cast_mut().cast());
 
-    klist_insert_locked(&vp.v_klist, kn);
+    klist_insert_locked(&vp.klist, kn);
 
     Ok(())
 }
@@ -2329,7 +2329,7 @@ fn kn_vnode(kn: &Knote) -> &'static Vnode {
 pub fn filt_tmpfsdetach(kn: &Knote) {
     let vp = kn_vnode(kn);
 
-    klist_remove_locked(&vp.v_klist, kn);
+    klist_remove_locked(&vp.klist, kn);
 }
 
 /// `filt_tmpfsread`: the bytes past the file offset; always ready for poll and select.
@@ -2400,7 +2400,6 @@ mod tests {
     use super::*;
     use crate::kern::vfs_init::set_rootvnode;
     use crate::kern::vfs_lookup::{namei, ndinit};
-    use crate::kern::vfs_subr::{vfs_mount_alloc, vfs_unbusy};
     use crate::kern::vfs_syscalls::{
         dolinkat, domkdirat, doreadlinkat, dorenameat, dosymlinkat, dounlinkat,
     };
@@ -2415,6 +2414,7 @@ mod tests {
     use crate::sys::param::DEV_BSIZE;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::sys::vnode::Vattr;
+    use crate::sys::vnode::{vfs_mount_alloc, vfs_unbusy};
     use crate::tmpfs::tmpfs_vfsops::tests::{args, setup, tmpfs_conf};
     use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
 
@@ -2933,9 +2933,9 @@ mod tests {
                 .is_some_and(|f| ptr::eq(f, &TMPFSVNODE_FILTOPS))
         );
         assert!(ptr::eq(kn_vnode(kn), vp));
-        assert!(!vp.v_klist.is_empty());
+        assert!(!vp.klist.is_empty());
         filt_tmpfsdetach(kn);
-        assert!(vp.v_klist.is_empty());
+        assert!(vp.klist.is_empty());
         crate::kern::kern_event::tests::owned_knote_drop(p, kq, h);
         let bad: &'static Knote = Box::leak(Box::new(Knote::detached()));
         bad.kn_filter().set(-100);

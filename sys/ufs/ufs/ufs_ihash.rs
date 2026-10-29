@@ -71,7 +71,6 @@ use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::sched_bsd::r#yield;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{vget, vput};
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::sys::errno::Errno;
 use crate::sys::lock::LK_EXCLUSIVE;
@@ -80,6 +79,7 @@ use crate::sys::mount::MNT_RDONLY;
 use crate::sys::queue::ListHead;
 use crate::sys::types::Dev;
 use crate::sys::vnode::Vnode;
+use crate::sys::vnode::{vget, vput};
 use crate::ufs::ufs::dinode::Ufsino;
 use crate::ufs::ufs::inode::{IHash, IN_HASHED, Inode};
 use libkern::StaticCell;
@@ -156,10 +156,7 @@ pub fn ufs_ihashget(dev: Dev, inum: Ufsino) -> Option<&'static Vnode> {
                 }
                 // Check if the inode is valid. The condition has been adapted from
                 // ufs_inactive().
-                let rdonly = vp
-                    .v_mount
-                    .get()
-                    .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0);
+                let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
                 // XXX DIP does not cover ext2fs so hack around this for now since this is
                 // using ufs_ihashget as well.
                 #[cfg(feature = "ext2fs")]

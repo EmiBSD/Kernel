@@ -289,7 +289,7 @@ fn kn_vnode(kn: &Knote) -> &'static Vnode {
 pub fn filt_nfsdetach(kn: &Knote) {
     let vp = kn_vnode(kn);
 
-    klist_remove_locked(&vp.v_klist, kn);
+    klist_remove_locked(&vp.klist, kn);
 
     // Remove the vnode from watch list
     if !kn.has_flags(__EV_POLL | __EV_SELECT) {
@@ -406,7 +406,7 @@ pub fn nfs_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
         nfs_kqwatch(vp)?;
     }
 
-    klist_insert_locked(&vp.v_klist, kn);
+    klist_insert_locked(&vp.klist, kn);
 
     Ok(())
 }

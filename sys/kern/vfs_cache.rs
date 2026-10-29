@@ -80,7 +80,6 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 use crate::kassert;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{vdrop, vget, vhold, vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::intr::IPL_NONE;
@@ -95,6 +94,7 @@ use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::queue::TailqHead;
 use crate::sys::tree::RbtHead;
 use crate::sys::vnode::{VDIR, Vnode};
+use crate::sys::vnode::{vdrop, vget, vhold, vput, vref};
 
 // TODO: namecache access should really be locked.
 
@@ -146,7 +146,7 @@ pub fn cache_tree_init(tree: &RbtHead<NamecacheRbCache>) {
 fn in_reverse_map(ncp: &Namecache, vp: &Vnode) -> bool {
     let (name, nlen) = ncp.name();
     !ncp.nc_dvp.get().is_some_and(|dvp| ptr::eq(dvp, vp))
-        && vp.v_type.get() == VDIR
+        && vp.vtype() == VDIR
         && (nlen > 2 || (nlen > 1 && name[1] != b'.') || (nlen > 0 && name[0] != b'.'))
 }
 
@@ -173,7 +173,7 @@ pub fn cache_zap(ncp: &'static Namecache) {
         }
     }
     if let Some(vp) = ncp.nc_vp.get()
-        && ncp.nc_vpid.get() == u64::from(vp.v_id.get())
+        && ncp.nc_vpid.get() == u64::from(vp.id())
         && in_reverse_map(ncp, vp)
     {
         // SAFETY: such an entry is on its vnode's reverse map while the capability number
@@ -240,7 +240,7 @@ pub fn cache_lookup(
         cache_zap(ncp);
         return Ok(None);
     };
-    if ncp.nc_vpid.get() != u64::from(vp.v_id.get()) {
+    if ncp.nc_vpid.get() != u64::from(vp.id()) {
         NCHSTATS.ncs_falsehits.fetch_add(1, Ordering::Relaxed);
         cache_zap(ncp);
         return Ok(None);
@@ -255,7 +255,7 @@ pub fn cache_lookup(
         }
     }
 
-    let vpid = vp.v_id.get();
+    let vpid = vp.id();
     let mut error = if ptr::eq(vp, dvp) {
         // lookup on "."
         vref(dvp);
@@ -287,7 +287,7 @@ pub fn cache_lookup(
 
     // Check that the lock succeeded, and that the capability number did not change while we
     // were waiting for the lock.
-    if error.is_err() || vpid != vp.v_id.get() {
+    if error.is_err() || vpid != vp.id() {
         if error.is_ok() {
             vput(vp);
             NCHSTATS.ncs_falsehits.fetch_add(1, Ordering::Relaxed);
@@ -327,7 +327,7 @@ pub fn cache_revlookup(
     }
     let found = vp.v_cache_dst.iter().find_map(|ncp| {
         let dvp = ncp.nc_dvp.get()?;
-        (!ptr::eq(dvp, vp) && ncp.nc_dvpid.get() == u64::from(dvp.v_id.get())).then_some((ncp, dvp))
+        (!ptr::eq(dvp, vp) && ncp.nc_dvpid.get() == u64::from(dvp.id())).then_some((ncp, dvp))
     });
     let Some((ncp, dvp)) = found else {
         NCHSTATS.ncs_revmiss.fetch_add(1, Ordering::Relaxed);
@@ -392,12 +392,12 @@ pub fn cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Compon
     // grab the vnode we just found
     ncp.nc_vp.set(vp);
     if let Some(vp) = vp {
-        ncp.nc_vpid.set(u64::from(vp.v_id.get()));
+        ncp.nc_vpid.set(u64::from(vp.id()));
     }
 
     // fill in cache info
     ncp.nc_dvp.set(Some(dvp));
-    ncp.nc_dvpid.set(u64::from(dvp.v_id.get()));
+    ncp.nc_dvpid.set(u64::from(dvp.id()));
     let name = cnp.name();
     ncp.nc_nlen.set(name.len() as u8);
     let mut nc_name = [0u8; NAMECACHE_MAXLEN];
@@ -455,7 +455,7 @@ pub fn nchinit() {
 /// now be invalid.
 pub fn cache_purge(vp: &'static Vnode) {
     // We should never have destinations cached for a non-VDIR vnode.
-    kassert!(vp.v_type.get() == VDIR || vp.v_cache_dst.is_empty());
+    kassert!(vp.vtype() == VDIR || vp.v_cache_dst.is_empty());
 
     while let Some(ncp) = vp.v_cache_dst.first() {
         cache_zap(ncp);
@@ -469,7 +469,7 @@ pub fn cache_purge(vp: &'static Vnode) {
     if id == 0 {
         id = NEXTVNODEID.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     }
-    vp.v_id.set(id);
+    vp.set_id(id);
 }
 
 /// Cache flush, a whole filesystem; called when filesys is umounted to remove entries that
@@ -478,7 +478,7 @@ pub fn cache_purgevfs(mp: &'static Mount) {
     let ours = |ncp: &Namecache| {
         ncp.nc_dvp
             .get()
-            .is_some_and(|dvp| dvp.v_mount.get().is_some_and(|m| ptr::eq(m, mp)))
+            .is_some_and(|dvp| dvp.mount().is_some_and(|m| ptr::eq(m, mp)))
     };
 
     // whack the regular entries
@@ -516,9 +516,9 @@ mod tests {
     use crate::kern::vfs_subr::tests::testfs::{
         self, A, B, C, LONG, any_locked, node_of, vget_node,
     };
-    use crate::kern::vfs_subr::vrele;
     use crate::kern::vfs_vops::VOP_ISLOCKED;
     use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
+    use crate::sys::vnode::vrele;
 
     /// A componentname for `name` in a lookup with `flags`.
     fn cn(name: &'static [u8], op: u64, flags: u64) -> Componentname {
@@ -554,7 +554,7 @@ mod tests {
         let dvp = vget_node(mp, A).unwrap();
         let vp = vget_node(mp, C).unwrap();
         let _ = VOP_UNLOCK(vp);
-        let uses = vp.v_usecount.get();
+        let uses = vp.usecount();
 
         cache_enter(dvp, Some(vp), &cn(b"c", LOOKUP, MAKEENTRY));
         assert_eq!(NUMCACHE.load(Ordering::SeqCst), 1);
@@ -566,12 +566,12 @@ mod tests {
         let hits = NCHSTATS.ncs_goodhits.load(Ordering::SeqCst);
         let found = cache_lookup(dvp, &mut c).unwrap().unwrap();
         assert!(ptr::eq(found, vp));
-        assert_eq!(vp.v_usecount.get(), uses + 1);
+        assert_eq!(vp.usecount(), uses + 1);
         assert_eq!(VOP_ISLOCKED(vp), 1);
         assert_eq!(VOP_ISLOCKED(dvp), 0);
         assert!(c.cn_flags & PDIRUNLOCK != 0);
         assert_eq!(NCHSTATS.ncs_goodhits.load(Ordering::SeqCst), hits + 1);
-        crate::kern::vfs_subr::vput(vp);
+        crate::sys::vnode::vput(vp);
 
         // With LOCKPARENT on the last component the parent stays locked.
         crate::kern::vfs_vnops::vn_lock(dvp, crate::sys::lock::LK_EXCLUSIVE).unwrap();
@@ -579,8 +579,8 @@ mod tests {
         let found = cache_lookup(dvp, &mut c).unwrap().unwrap();
         assert_eq!(VOP_ISLOCKED(dvp), 1);
         assert!(c.cn_flags & PDIRUNLOCK == 0);
-        crate::kern::vfs_subr::vput(found);
-        crate::kern::vfs_subr::vput(dvp);
+        crate::sys::vnode::vput(found);
+        crate::sys::vnode::vput(dvp);
         assert!(!any_locked());
     }
 
@@ -611,7 +611,7 @@ mod tests {
         assert!(matches!(cache_lookup(dvp, &mut long), Ok(None)));
         assert_eq!(NCHSTATS.ncs_long.load(Ordering::SeqCst), n + 1);
         assert!(long.cn_flags & MAKEENTRY == 0);
-        crate::kern::vfs_subr::vput(dvp);
+        crate::sys::vnode::vput(dvp);
     }
 
     #[test]
@@ -624,9 +624,9 @@ mod tests {
         assert!(!dvp.v_nc_tree.is_empty());
         assert_eq!(dvp.v_holdcnt.get(), 1, "a directory with entries is held");
 
-        let id = vp.v_id.get();
+        let id = vp.id();
         cache_purge(vp);
-        assert_ne!(vp.v_id.get(), id);
+        assert_ne!(vp.id(), id);
         // The entry is still in the parent's tree but its capability is stale: a false hit.
         let mut c = cn(b"b", LOOKUP, MAKEENTRY | ISLASTCN);
         let falsehits = NCHSTATS.ncs_falsehits.load(Ordering::SeqCst);
@@ -645,7 +645,7 @@ mod tests {
         assert!(dvp.v_nc_tree.is_empty());
         assert_eq!(NUMCACHE.load(Ordering::SeqCst), 0);
         vrele(vp);
-        crate::kern::vfs_subr::vput(dvp);
+        crate::sys::vnode::vput(dvp);
     }
 
     #[test]
@@ -670,8 +670,8 @@ mod tests {
             cache_revlookup(vp, &mut bp, Some(&mut small)),
             Err(Errno::ERANGE)
         ));
-        crate::kern::vfs_subr::vput(vp);
-        crate::kern::vfs_subr::vput(dvp);
+        crate::sys::vnode::vput(vp);
+        crate::sys::vnode::vput(dvp);
     }
 
     #[test]

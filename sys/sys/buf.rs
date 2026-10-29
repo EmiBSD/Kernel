@@ -188,7 +188,7 @@ impl BufLegacy for Buf {
     }
 
     fn set_vp(&self, vp: Option<&'static Vnode>) {
-        Buf::set_vp_unheld(self, vp.map(|vp| &vp.v_bufs));
+        Buf::set_vp_unheld(self, vp.map(|vp| &vp.bufs));
     }
 
     fn set_iodone_fn(&self, f: Option<fn(&'static Buf)>) {
@@ -306,7 +306,7 @@ fn parked_ref(r: &SecondaryRef<ByBufhead>) -> &'static Buf {
 /// `bread(vp, blkno, size, &bp)`: reads a disk block; the busy buffer and the read's result
 /// (its token parked by the kernel's own section: [`lend`]'s fast path).
 pub fn bread(vp: &'static Vnode, blkno: Daddr, size: i32) -> (&'static Buf, Result<(), Errno>) {
-    let (r, rv) = bio::bread_parked(&vp.v_bufs, blkno, size);
+    let (r, rv) = bio::bread_parked(&vp.bufs, blkno, size);
     (parked_ref(&r), rv)
 }
 
@@ -319,7 +319,7 @@ pub fn breadn(
     rablks: &[Daddr],
     rasizes: &[i32],
 ) -> (&'static Buf, Result<(), Errno>) {
-    let (t, rv) = bio::breadn(&vp.v_bufs, blkno, size, rablks, rasizes);
+    let (t, rv) = bio::breadn(&vp.bufs, blkno, size, rablks, rasizes);
     (lend(t), rv)
 }
 
@@ -330,7 +330,7 @@ pub fn bread_cluster(
     blkno: Daddr,
     size: i32,
 ) -> (&'static Buf, Result<(), Errno>) {
-    let (r, rv) = bio::bread_cluster_parked(&vp.v_bufs, blkno, size);
+    let (r, rv) = bio::bread_cluster_parked(&vp.bufs, blkno, size);
     (parked_ref(&r), rv)
 }
 
@@ -373,7 +373,7 @@ pub fn brelse(bp: &'static Buf) {
 
 /// `incore(vp, blkno)`: whether the block's buffer is in the cache and valid.
 pub fn incore(vp: &'static Vnode, blkno: Daddr) -> bool {
-    bio::incore(&vp.v_bufs, blkno)
+    bio::incore(&vp.bufs, blkno)
 }
 
 /// `getblk(vp, blkno, size, slpflag, slptimeo)`: the busy buffer of the block, cached or
@@ -385,7 +385,7 @@ pub fn getblk(
     slpflag: i32,
     slptimeo: u64,
 ) -> Option<&'static Buf> {
-    bio::getblk_parked(&vp.v_bufs, blkno, size, slpflag, slptimeo).map(|r| parked_ref(&r))
+    bio::getblk_parked(&vp.bufs, blkno, size, slpflag, slptimeo).map(|r| parked_ref(&r))
 }
 
 /// `geteblk(size)`: an empty, disassociated busy buffer.

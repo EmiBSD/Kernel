@@ -763,8 +763,8 @@ pub(crate) mod tests {
     pub(crate) fn test_node(imp: &'static IsoMnt) -> (&'static IsoNode, &'static Vnode) {
         let ip: &'static IsoNode = Box::leak(Box::new(IsoNode::new()));
         let vp: &'static Vnode = Box::leak(Box::new(Vnode::new()));
-        vp.v_tag.set(VT_ISOFS);
-        vp.v_data.set(core::ptr::from_ref(ip).cast_mut().cast());
+        vp.set_tag(VT_ISOFS);
+        vp.set_data(core::ptr::from_ref(ip).cast_mut().cast());
         ip.i_vnode.set(Some(vp));
         ip.i_mnt.set(Some(imp));
         (ip, vp)

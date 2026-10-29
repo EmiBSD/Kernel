@@ -284,13 +284,13 @@ pub fn vfs_mount_alloc(vp: Option<&'static Vnode>, vfsp: &'static Vfsconf) -> &'
     let _ = vfs_busy(mp, VB_READ | VB_NOWAIT);
 
     mp.mnt_vnodelist.init();
-    mp.mnt_vnodecovered.set(vp);
+    mp.set_vnodecovered(vp);
 
     vfsp.vfc_refcount.fetch_add(1, Ordering::SeqCst);
     mp.mnt_vfc.set(Some(vfsp));
     mp.mnt_op.set(Some(vfsp.vfc_vfsops));
-    mp.mnt_flag.set(vfsp.vfc_flags);
-    mp.update_stat(|sp| {
+    mp.set_flag(vfsp.vfc_flags);
+    mp.with_stat(|sp| {
         let name = vfsp.name();
         sp.f_fstypename = [0; MFSNAMELEN];
         sp.f_fstypename[..name.len()].copy_from_slice(name);
@@ -314,7 +314,7 @@ fn vfs_mount_rele(mp: &'static Mount) {
 
 /// Release a mount point.
 pub fn vfs_mount_free(mp: &'static Mount) {
-    mp.mnt_flag.set(mp.mnt_flag.get() | MNT_UNMOUNT);
+    mp.set_flag(mp.flag() | MNT_UNMOUNT);
     mp.vfc().vfc_refcount.fetch_sub(1, Ordering::SeqCst);
     vfs_mount_rele(mp);
 }
@@ -340,7 +340,7 @@ pub fn vfs_busy(mp: &'static Mount, flags: i32) -> Result<(), Errno> {
     vfs_mount_take(mp);
     if rw_enter(&mp.mnt_lock, rwflags).is_err() {
         error = Err(Errno::EBUSY);
-    } else if mp.mnt_flag.get() & MNT_UNMOUNT != 0 {
+    } else if mp.flag() & MNT_UNMOUNT != 0 {
         rw_exit(&mp.mnt_lock);
         error = Err(Errno::EBUSY);
     }
@@ -367,8 +367,8 @@ pub fn vfs_rootmountalloc(fstypename: &[u8], devname: &[u8]) -> Result<&'static 
         return Err(Errno::ENODEV);
     };
     let mp = vfs_mount_alloc(None, vfsp);
-    mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
-    mp.update_stat(|sp| {
+    mp.set_flag(mp.flag() | MNT_RDONLY);
+    mp.with_stat(|sp| {
         sp.f_mntonname[0] = b'/';
         strlcpy(&mut sp.f_mntfromname, devname);
         strlcpy(&mut sp.f_mntfromspec, devname);
@@ -389,7 +389,7 @@ pub fn vfs_getvfs(fsid: &Fsid) -> Option<&'static Mount> {
     MOUNTLIST
         .0
         .iter()
-        .find(|mp| mp.mnt_stat.get().f_fsid.val == fsid.val)
+        .find(|mp| mp.stat().f_fsid.val == fsid.val)
 }
 
 /// Get a new unique fsid.
@@ -398,7 +398,7 @@ pub fn vfs_getnewfsid(mp: &'static Mount) {
 
     let mtype = mp.vfc().vfc_typenum;
     let base = nblkdev() + mtype as u32;
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         sp.f_fsid.val[0] = makedev(base, 0);
         sp.f_fsid.val[1] = mtype;
     });
@@ -414,7 +414,7 @@ pub fn vfs_getnewfsid(mp: &'static Mount) {
             XXXFS_MNTID.fetch_add(1, Ordering::Relaxed);
         }
     }
-    mp.update_stat(|sp| sp.f_fsid.val[0] = tfsid.val[0]);
+    mp.with_stat(|sp| sp.f_fsid.val[0] = tfsid.val[0]);
 }
 
 /// Set vnode attributes to `VNOVAL`.
@@ -502,7 +502,7 @@ pub fn getnewvnode(
         let vp: &'static Vnode = unsafe { vp.as_ref() };
         // The vnode's buffer half is the cache's from here (`RBT_INIT` of `v_bufs_tree`: the
         // fresh vnode's tree is empty).
-        vp.v_bufs.set_owner(vp);
+        vp.bufs.set_owner(vp);
         cache_tree_init(&vp.v_nc_tree);
         vp.v_cache_dst.init();
         NUMVNODES.fetch_add(1, Ordering::Relaxed);
@@ -518,49 +518,49 @@ pub fn getnewvnode(
         };
 
         #[cfg(feature = "diagnostic")]
-        if vp.v_usecount.get() != 0 {
+        if vp.usecount() != 0 {
             vprint(Some("free vnode"), vp);
             panic(format_args!("free vnode isn't"));
         }
 
         // SAFETY: `vp` is on `listhd` (it was found there), at splbio.
         unsafe { listhd.0.remove(vp) };
-        vp.v_bufs.clr_bioflag(VBIOONFREELIST);
+        vp.bufs.clr_bioflag(VBIOONFREELIST);
         splx(s);
 
-        if vp.v_type.get() != VBAD {
+        if vp.vtype() != VBAD {
             vgonel(vp, p);
         }
         #[cfg(feature = "diagnostic")]
         {
-            if !vp.v_data.get().is_null() {
+            if !vp.data().is_null() {
                 vprint(Some("cleaned vnode"), vp);
                 panic(format_args!("cleaned vnode isn't"));
             }
             let s = splbio();
-            if vp.v_bufs.numoutput() != 0 {
+            if vp.bufs.numoutput() != 0 {
                 panic(format_args!("Clean vnode has pending I/O's"));
             }
             splx(s);
         }
-        vp.v_flag.set(0);
+        vp.set_flag(0);
         vp.v_un.set(VnodeUn::None);
         vp
     };
     cache_purge(vp);
-    vp.v_type.set(VNON);
-    vp.v_tag.set(tag);
+    vp.set_vtype(VNON);
+    vp.set_tag(tag);
     vp.v_op.set(Some(vops));
     insmntque(vp, mp);
-    vp.v_usecount.set(1);
-    vp.v_data.set(ptr::null_mut());
+    vp.set_usecount(1);
+    vp.set_data(ptr::null_mut());
     Ok(vp)
 }
 
 /// Move a vnode from one mount queue to another.
 pub fn insmntque(vp: &'static Vnode, mp: Option<&'static Mount>) {
     // Delete from old mount point vnode list, if on one.
-    if let Some(old) = vp.v_mount.get() {
+    if let Some(old) = vp.mount() {
         // SAFETY: a vnode with a `v_mount` is on that mount's list (this function is the
         // only one that changes both).
         unsafe { old.mnt_vnodelist.remove(vp) };
@@ -592,13 +592,13 @@ pub fn getdevvp(dev: Dev, type_: Vtype) -> Result<Option<&'static Vnode>, Errno>
     }
     let nvp = getnewvnode(VT_NON, None, &SPEC_VOPS)?;
     let mut vp = nvp;
-    vp.v_type.set(type_);
+    vp.set_vtype(type_);
     if let Some(alias) = checkalias(vp, dev, None) {
         vput(vp);
         vp = alias;
     }
-    if vp.v_type.get() == VCHR && cdevsw(major(vp.v_rdev())).d_type == D_TTY {
-        vp.v_flag.set(vp.v_flag.get() | VISTTY);
+    if vp.vtype() == VCHR && cdevsw(major(vp.rdev())).d_type == D_TTY {
+        vp.set_flag(vp.flag() | VISTTY);
     }
     Ok(Some(vp))
 }
@@ -614,26 +614,26 @@ pub fn checkalias(
 ) -> Option<&'static Vnode> {
     let p = curproc();
 
-    if nvp.v_type.get() != VBLK && nvp.v_type.get() != VCHR {
+    if nvp.vtype() != VBLK && nvp.vtype() != VCHR {
         return None;
     }
 
     let vchain = &SPECLISTH.0[spechash(nvp_rdev)];
     let vp = 'search: loop {
         for vp in vchain.iter() {
-            if nvp_rdev != vp.v_rdev() || nvp.v_type.get() != vp.v_type.get() {
+            if nvp_rdev != vp.rdev() || nvp.vtype() != vp.vtype() {
                 continue;
             }
             // Alias, but not in use, so flush it out.
-            if vp.v_usecount.get() == 0 {
+            if vp.usecount() == 0 {
                 vgonel(vp, p);
                 continue 'search;
             }
-            let vpid = vp.v_id.get();
+            let vpid = vp.id();
             if vget(vp, LK_EXCLUSIVE).is_err() {
                 continue 'search;
             }
-            if vpid != vp.v_id.get() {
+            if vpid != vp.id() {
                 vput(vp);
                 continue 'search;
             }
@@ -644,7 +644,7 @@ pub fn checkalias(
 
     // Common case is actually in the if statement
     match vp {
-        Some(vp) if vp.v_tag.get() == VT_NON && vp.v_type.get() == VBLK => {
+        Some(vp) if vp.tag() == VT_NON && vp.vtype() == VBLK => {
             // This code is the uncommon case. It is called in case we found an alias that
             // was VT_NON && vtype of VBLK. This means we found a block device that was
             // created using bdevvp. An example of such a vnode is the root partition device
@@ -654,8 +654,8 @@ pub fn checkalias(
             let _ = VOP_UNLOCK(vp);
             vclean(vp, 0, p);
             vp.v_op.set(nvp.v_op.get());
-            vp.v_tag.set(nvp.v_tag.get());
-            nvp.v_type.set(VNON);
+            vp.set_tag(nvp.tag());
+            nvp.set_vtype(VNON);
             insmntque(vp, mp);
             Some(vp)
         }
@@ -675,7 +675,7 @@ pub fn checkalias(
             si.si_lockf.set(None);
             si.si_ci_bitmap.set(ptr::null_mut());
             nvp.v_un.set(VnodeUn::Specinfo(si));
-            if nvp.v_type.get() == VCHR
+            if nvp.vtype() == VCHR
                 && cdevsw(major(nvp_rdev)).d_flags & D_CLONE != 0
                 && minor(nvp_rdev) >> CLONE_SHIFT == 0
             {
@@ -694,8 +694,8 @@ pub fn checkalias(
             // SAFETY: `nvp` is a new device vnode on no chain; vnodes never move.
             unsafe { vchain.insert_head(nvp) };
             if let Some(vp) = vp {
-                nvp.v_flag.set(nvp.v_flag.get() | VALIASED);
-                vp.v_flag.set(vp.v_flag.get() | VALIASED);
+                nvp.set_flag(nvp.flag() | VALIASED);
+                vp.set_flag(vp.flag() | VALIASED);
                 vput(vp);
             }
             None
@@ -727,8 +727,8 @@ pub fn vget(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
     mtx_leave(&VNODE_MTX);
 
     let s = splbio();
-    let onfreelist = vp.v_bufs.bioflag() & VBIOONFREELIST != 0;
-    if vp.v_usecount.get() == 0 && onfreelist {
+    let onfreelist = vp.bufs.bioflag() & VBIOONFREELIST != 0;
+    if vp.usecount() == 0 && onfreelist {
         // SAFETY: a vnode marked `VBIOONFREELIST` is on the hold list while it has holds and
         // on the free list otherwise (`vputonfreelist`, `vhold`, `vdrop`), at splbio.
         unsafe {
@@ -738,16 +738,16 @@ pub fn vget(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
                 VNODE_FREE_LIST.0.remove(vp);
             }
         }
-        vp.v_bufs.clr_bioflag(VBIOONFREELIST);
+        vp.bufs.clr_bioflag(VBIOONFREELIST);
     }
     splx(s);
 
-    vp.v_usecount.set(vp.v_usecount.get() + 1);
+    vp.set_usecount(vp.usecount() + 1);
     if flags & LK_TYPE_MASK != 0 {
         let error = vn_lock(vp, flags);
         if error.is_err() {
-            vp.v_usecount.set(vp.v_usecount.get() - 1);
-            if vp.v_usecount.get() == 0 && onfreelist {
+            vp.set_usecount(vp.usecount() - 1);
+            if vp.usecount() == 0 && onfreelist {
                 vputonfreelist(vp);
             }
         }
@@ -763,14 +763,14 @@ pub fn vref(vp: &'static Vnode) {
 
     #[cfg(feature = "diagnostic")]
     {
-        if vp.v_usecount.get() == 0 {
+        if vp.usecount() == 0 {
             panic(format_args!("vref used where vget required"));
         }
-        if vp.v_type.get() == VNON {
+        if vp.vtype() == VNON {
             panic(format_args!("vref on a VNON vnode"));
         }
     }
-    vp.v_usecount.set(vp.v_usecount.get() + 1);
+    vp.set_usecount(vp.usecount() + 1);
 }
 
 /// `vputonfreelist(vp)`: puts an unused vnode on the hold list (if buffers reference it) or
@@ -780,7 +780,7 @@ pub fn vputonfreelist(vp: &'static Vnode) {
 
     #[cfg(feature = "diagnostic")]
     {
-        if vp.v_usecount.get() != 0 {
+        if vp.usecount() != 0 {
             panic(format_args!("Use count is not zero!"));
         }
 
@@ -790,14 +790,14 @@ pub fn vputonfreelist(vp: &'static Vnode) {
             panic(format_args!("vputonfreelist: lock count is not zero"));
         }
 
-        if vp.v_bufs.bioflag() & VBIOONFREELIST != 0 {
+        if vp.bufs.bioflag() & VBIOONFREELIST != 0 {
             vprint(Some("vnode already on free list: "), vp);
             panic(format_args!("vnode already on free list"));
         }
     }
 
-    vp.v_bufs.set_bioflag(VBIOONFREELIST);
-    vp.v_bufs.clr_bioflag(VBIOERROR);
+    vp.bufs.set_bioflag(VBIOONFREELIST);
+    vp.bufs.clr_bioflag(VBIOERROR);
 
     let lst = if vp.v_holdcnt.get() > 0 {
         &VNODE_HOLD_LIST
@@ -807,7 +807,7 @@ pub fn vputonfreelist(vp: &'static Vnode) {
 
     // SAFETY: the vnode is on no free list (`VBIOONFREELIST` was clear); vnodes never move.
     unsafe {
-        if vp.v_type.get() == VBAD {
+        if vp.vtype() == VBAD {
             lst.0.insert_head(vp);
         } else {
             lst.0.insert_tail(vp);
@@ -822,19 +822,19 @@ pub fn vput(vp: &'static Vnode) {
     let p = curproc();
 
     #[cfg(feature = "diagnostic")]
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         vprint(Some("vput: bad ref count"), vp);
         panic(format_args!("vput: ref cnt"));
     }
-    vp.v_usecount.set(vp.v_usecount.get() - 1);
-    kassert!(vp.v_usecount.get() > 0 || vp.v_uvcount.get() == 0);
-    if vp.v_usecount.get() > 0 {
+    vp.set_usecount(vp.usecount() - 1);
+    kassert!(vp.usecount() > 0 || vp.uvcount() == 0);
+    if vp.usecount() > 0 {
         let _ = VOP_UNLOCK(vp);
         return;
     }
 
     #[cfg(feature = "diagnostic")]
-    if vp.v_writecount.get() != 0 {
+    if vp.writecount() != 0 {
         vprint(Some("vput: bad writecount"), vp);
         panic(format_args!("vput: v_writecount != 0"));
     }
@@ -842,7 +842,7 @@ pub fn vput(vp: &'static Vnode) {
     let _ = VOP_INACTIVE(vp, p);
 
     let s = splbio();
-    if vp.v_usecount.get() == 0 && vp.v_bufs.bioflag() & VBIOONFREELIST == 0 {
+    if vp.usecount() == 0 && vp.bufs.bioflag() & VBIOONFREELIST == 0 {
         vputonfreelist(vp);
     }
     splx(s);
@@ -854,17 +854,17 @@ pub fn vrele(vp: &'static Vnode) -> bool {
     let p = curproc();
 
     #[cfg(feature = "diagnostic")]
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         vprint(Some("vrele: bad ref count"), vp);
         panic(format_args!("vrele: ref cnt"));
     }
-    vp.v_usecount.set(vp.v_usecount.get() - 1);
-    if vp.v_usecount.get() > 0 {
+    vp.set_usecount(vp.usecount() - 1);
+    if vp.usecount() > 0 {
         return false;
     }
 
     #[cfg(feature = "diagnostic")]
-    if vp.v_writecount.get() != 0 {
+    if vp.writecount() != 0 {
         vprint(Some("vrele: bad writecount"), vp);
         panic(format_args!("vrele: v_writecount != 0"));
     }
@@ -878,7 +878,7 @@ pub fn vrele(vp: &'static Vnode) -> bool {
     let _ = VOP_INACTIVE(vp, p);
 
     let s = splbio();
-    if vp.v_usecount.get() == 0 && vp.v_bufs.bioflag() & VBIOONFREELIST == 0 {
+    if vp.usecount() == 0 && vp.bufs.bioflag() & VBIOONFREELIST == 0 {
         vputonfreelist(vp);
     }
     splx(s);
@@ -891,10 +891,7 @@ pub fn vhold(vp: &'static Vnode) {
 
     // If it is on the freelist and the hold count is currently zero, move it to the hold
     // list.
-    if vp.v_bufs.bioflag() & VBIOONFREELIST != 0
-        && vp.v_holdcnt.get() == 0
-        && vp.v_usecount.get() == 0
-    {
+    if vp.bufs.bioflag() & VBIOONFREELIST != 0 && vp.v_holdcnt.get() == 0 && vp.usecount() == 0 {
         // SAFETY: an unheld vnode marked `VBIOONFREELIST` is on the free list, at splbio.
         unsafe {
             VNODE_FREE_LIST.0.remove(vp);
@@ -918,10 +915,7 @@ pub fn vdrop(vp: &'static Vnode) {
     vp.v_holdcnt.set(vp.v_holdcnt.get() - 1);
 
     // If it is on the holdlist and the hold count drops to zero, move it to the free list.
-    if vp.v_bufs.bioflag() & VBIOONFREELIST != 0
-        && vp.v_holdcnt.get() == 0
-        && vp.v_usecount.get() == 0
-    {
+    if vp.bufs.bioflag() & VBIOONFREELIST != 0 && vp.v_holdcnt.get() == 0 && vp.usecount() == 0 {
         // SAFETY: a held vnode marked `VBIOONFREELIST` was on the hold list, at splbio.
         unsafe {
             VNODE_HOLD_LIST.0.remove(vp);
@@ -940,7 +934,7 @@ pub fn vfs_mount_foreach_vnode(
 ) -> Result<(), Errno> {
     'restart: loop {
         for vp in mp.mnt_vnodelist.iter() {
-            if !vp.v_mount.get().is_some_and(|m| ptr::eq(m, mp)) {
+            if !vp.mount().is_some_and(|m| ptr::eq(m, mp)) {
                 continue 'restart;
             }
 
@@ -965,18 +959,18 @@ fn vflush_vnode(vp: &'static Vnode, va: &mut VflushArgs) -> Result<(), Errno> {
         return Ok(());
     }
 
-    if va.flags & SKIPSYSTEM != 0 && vp.v_flag.get() & VSYSTEM != 0 {
+    if va.flags & SKIPSYSTEM != 0 && vp.flag() & VSYSTEM != 0 {
         return Ok(());
     }
 
     // If WRITECLOSE is set, only flush out regular file vnodes open for writing.
-    if va.flags & WRITECLOSE != 0 && (vp.v_writecount.get() == 0 || vp.v_type.get() != VREG) {
+    if va.flags & WRITECLOSE != 0 && (vp.writecount() == 0 || vp.vtype() != VREG) {
         return Ok(());
     }
 
     // With v_usecount == 0, all we need to do is clear out the vnode data structures and we
     // are done.
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         vgonel(vp, p);
         return Ok(());
     }
@@ -984,7 +978,7 @@ fn vflush_vnode(vp: &'static Vnode, va: &mut VflushArgs) -> Result<(), Errno> {
     // If FORCECLOSE is set, forcibly close the vnode. For block or character devices,
     // revert to an anonymous device. For all other files, just kill them.
     if va.flags & FORCECLOSE != 0 {
-        if vp.v_type.get() != VBLK && vp.v_type.get() != VCHR {
+        if vp.vtype() != VBLK && vp.vtype() != VCHR {
             vgonel(vp, p);
         } else {
             vclean(vp, 0, p);
@@ -998,7 +992,7 @@ fn vflush_vnode(vp: &'static Vnode, va: &mut VflushArgs) -> Result<(), Errno> {
     // XXX Might be nice to check per-fs "inode" flags, but generally the filesystem is sync'd
     // already, right?
     let s = splbio();
-    let empty = va.flags & IGNORECLEAN != 0 && vp.v_bufs.dirty_is_empty();
+    let empty = va.flags & IGNORECLEAN != 0 && vp.bufs.dirty_is_empty();
     splx(s);
 
     if empty {
@@ -1037,9 +1031,9 @@ pub fn vclean(vp: &'static Vnode, flags: i32, p: Option<&Proc>) {
     // Check to see if the vnode is in use. If so we have to reference it before we clean it
     // out so that its count cannot fall to zero and generate a race against ourselves to
     // recycle it.
-    let active = vp.v_usecount.get();
+    let active = vp.usecount();
     if active != 0 {
-        vp.v_usecount.set(active + 1);
+        vp.set_usecount(active + 1);
     }
 
     // Prevent the vnode from being recycled or brought into use while we clean it out.
@@ -1079,7 +1073,7 @@ pub fn vclean(vp: &'static Vnode, flags: i32, p: Option<&Proc>) {
             "vclean: failed to flush buffers, error {}; discarding dirty buffers",
             error as i32
         );
-        if let Some(mp) = vp.v_mount.get() {
+        if let Some(mp) = vp.mount() {
             let (name, len) = mp.mntonname();
             kprintf!("; mounted on: {}", crate::kern::subr_prf::Str(&name[..len]));
         }
@@ -1104,8 +1098,8 @@ pub fn vclean(vp: &'static Vnode, flags: i32, p: Option<&Proc>) {
         panic(format_args!("vclean: cannot reclaim"));
     }
     if active != 0 {
-        vp.v_usecount.set(vp.v_usecount.get() - 1);
-        if vp.v_usecount.get() == 0 {
+        vp.set_usecount(vp.usecount() - 1);
+        if vp.usecount() == 0 {
             let s = splbio();
             if vp.v_holdcnt.get() > 0 {
                 panic(format_args!("vclean: not clean"));
@@ -1119,7 +1113,7 @@ pub fn vclean(vp: &'static Vnode, flags: i32, p: Option<&Proc>) {
     // Done with purge, notify sleepers of the grim news.
     vp.v_op.set(Some(&DEAD_VOPS));
     VN_KNOTE(vp, NOTE_REVOKE);
-    vp.v_tag.set(VT_NON);
+    vp.set_tag(VT_NON);
     // VFSLCKDEBUG: not configured.
     mtx_enter(&VNODE_MTX);
     vp.v_lflag.set(vp.v_lflag.get() & !VXLOCK);
@@ -1135,7 +1129,7 @@ pub fn vclean(vp: &'static Vnode, flags: i32, p: Option<&Proc>) {
 
 /// Recycle an unused vnode to the front of the free list.
 pub fn vrecycle(vp: &'static Vnode, p: Option<&Proc>) -> bool {
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         vgonel(vp, p);
         return true;
     }
@@ -1150,7 +1144,7 @@ pub fn vgone(vp: &'static Vnode) {
 
 /// vgone, with struct proc.
 pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
-    kassert!(vp.v_uvcount.get() == 0);
+    kassert!(vp.uvcount() == 0);
 
     // If a vgone (or vclean) is already in progress, wait until it is done and return.
     mtx_enter(&VNODE_MTX);
@@ -1165,15 +1159,15 @@ pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
     // Clean out the filesystem specific data.
     vclean(vp, DOCLOSE, p);
     // Delete from old mount point vnode list, if on one.
-    if vp.v_mount.get().is_some() {
+    if vp.mount().is_some() {
         insmntque(vp, None);
     }
     // If special device, remove it from special device alias list if it is on one.
-    if (vp.v_type.get() == VBLK || vp.v_type.get() == VCHR)
+    if (vp.vtype() == VBLK || vp.vtype() == VCHR)
         && let Some(si) = vp.v_specinfo()
     {
-        if vp.v_flag.get() & VALIASED == 0
-            && vp.v_type.get() == VCHR
+        if vp.flag() & VALIASED == 0
+            && vp.vtype() == VCHR
             && cdevsw(major(si.si_rdev.get())).d_flags & D_CLONE != 0
             && minor(si.si_rdev.get()) >> CLONE_SHIFT == 0
             && let Some(map) = NonNull::new(si.si_ci_bitmap.get())
@@ -1183,11 +1177,11 @@ pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
         if let Some(chain) = si.si_hashchain.get() {
             // SAFETY: a device vnode with a specinfo is on its hash chain (`checkalias`).
             unsafe { chain.remove(vp) };
-            if vp.v_flag.get() & VALIASED != 0 {
+            if vp.flag() & VALIASED != 0 {
                 let mut vx: Option<&'static Vnode> = None;
                 let mut more = false;
                 for vq in chain.iter() {
-                    if vq.v_rdev() != si.si_rdev.get() || vq.v_type.get() != vp.v_type.get() {
+                    if vq.rdev() != si.si_rdev.get() || vq.vtype() != vp.vtype() {
                         continue;
                     }
                     if vx.is_some() {
@@ -1200,9 +1194,9 @@ pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
                     panic(format_args!("missing alias"));
                 };
                 if !more {
-                    vx.v_flag.set(vx.v_flag.get() & !VALIASED);
+                    vx.set_flag(vx.flag() & !VALIASED);
                 }
-                vp.v_flag.set(vp.v_flag.get() & !VALIASED);
+                vp.set_flag(vp.flag() & !VALIASED);
             }
         }
         if si.si_lockf.get().is_some() {
@@ -1212,12 +1206,12 @@ pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
         free(NonNull::from(si).cast(), M_VNODE, size_of::<Specinfo>());
     }
     // If it is on the freelist and not already at the head, move it to the head of the list.
-    vp.v_type.set(VBAD);
+    vp.set_vtype(VBAD);
 
     // Move onto the free list, unless we were called from getnewvnode and we're not on any
     // free list
     let s = splbio();
-    if vp.v_usecount.get() == 0 && vp.v_bufs.bioflag() & VBIOONFREELIST != 0 {
+    if vp.usecount() == 0 && vp.bufs.bioflag() & VBIOONFREELIST != 0 {
         if vp.v_holdcnt.get() > 0 {
             panic(format_args!("vgonel: not clean"));
         }
@@ -1237,7 +1231,7 @@ pub fn vgonel(vp: &'static Vnode, p: Option<&Proc>) {
 pub fn vfinddev(dev: Dev, type_: Vtype) -> Option<&'static Vnode> {
     SPECLISTH.0[spechash(dev)]
         .iter()
-        .find(|vp| dev == vp.v_rdev() && type_ == vp.v_type.get())
+        .find(|vp| dev == vp.rdev() && type_ == vp.vtype())
 }
 
 /// Revoke all the vnodes corresponding to the specified minor number range (endpoints
@@ -1253,23 +1247,23 @@ pub fn vdevgone(maj: u32, minl: u32, minh: u32, type_: Vtype) {
 /// Calculate the total number of references to a special device.
 pub fn vcount(vp: &'static Vnode) -> i32 {
     'restart: loop {
-        if vp.v_flag.get() & VALIASED == 0 {
-            return vp.v_usecount.get() as i32;
+        if vp.flag() & VALIASED == 0 {
+            return vp.usecount() as i32;
         }
         let mut count = 0;
         let Some(chain) = vp.v_specinfo().and_then(|si| si.si_hashchain.get()) else {
-            return vp.v_usecount.get() as i32;
+            return vp.usecount() as i32;
         };
         for vq in chain.iter() {
-            if vq.v_rdev() != vp.v_rdev() || vq.v_type.get() != vp.v_type.get() {
+            if vq.rdev() != vp.rdev() || vq.vtype() != vp.vtype() {
                 continue;
             }
             // Alias, but not in use, so flush it out.
-            if vq.v_usecount.get() == 0 && !ptr::eq(vq, vp) {
+            if vq.usecount() == 0 && !ptr::eq(vq, vp) {
                 vgone(vq);
                 continue 'restart;
             }
-            count += vq.v_usecount.get() as i32;
+            count += vq.usecount() as i32;
         }
         return count;
     }
@@ -1286,21 +1280,21 @@ pub fn vprint(label: Option<&str>, vp: &'static Vnode) {
     kprintf!(
         "{:p}, type {}, use {}, write {}, hold {},",
         vp,
-        VTYPE_NAMES[vp.v_type.get() as usize],
-        vp.v_usecount.get(),
-        vp.v_writecount.get(),
+        VTYPE_NAMES[vp.vtype() as usize],
+        vp.usecount(),
+        vp.writecount(),
         vp.v_holdcnt.get()
     );
     let flags: [(bool, &str); 9] = [
-        (vp.v_flag.get() & VROOT != 0, "VROOT"),
-        (vp.v_flag.get() & VTEXT != 0, "VTEXT"),
-        (vp.v_flag.get() & VSYSTEM != 0, "VSYSTEM"),
+        (vp.flag() & VROOT != 0, "VROOT"),
+        (vp.flag() & VTEXT != 0, "VTEXT"),
+        (vp.flag() & VSYSTEM != 0, "VSYSTEM"),
         (vp.v_lflag.get() & VXLOCK != 0, "VXLOCK"),
         (vp.v_lflag.get() & VXWANT != 0, "VXWANT"),
-        (vp.v_bufs.bioflag() & VBIOWAIT != 0, "VBIOWAIT"),
-        (vp.v_bufs.bioflag() & VBIOONFREELIST != 0, "VBIOONFREELIST"),
-        (vp.v_bufs.bioflag() & VBIOONSYNCLIST != 0, "VBIOONSYNCLIST"),
-        (vp.v_flag.get() & VALIASED != 0, "VALIASED"),
+        (vp.bufs.bioflag() & VBIOWAIT != 0, "VBIOWAIT"),
+        (vp.bufs.bioflag() & VBIOONFREELIST != 0, "VBIOONFREELIST"),
+        (vp.bufs.bioflag() & VBIOONSYNCLIST != 0, "VBIOONSYNCLIST"),
+        (vp.flag() & VALIASED != 0, "VALIASED"),
     ];
     let mut first = true;
     for (set, name) in flags {
@@ -1312,7 +1306,7 @@ pub fn vprint(label: Option<&str>, vp: &'static Vnode) {
     if !first {
         kprintf!(")");
     }
-    if vp.v_data.get().is_null() {
+    if vp.data().is_null() {
         kprintf!("\n");
     } else {
         kprintf!("\n\t");
@@ -1426,17 +1420,17 @@ pub fn vfs_sysctl(
 
 /// Check to see if a filesystem is mounted on a block device.
 pub fn vfs_mountedon(vp: &'static Vnode) -> Result<(), Errno> {
-    if vp.v_specmountpoint().is_some() {
+    if vp.specmountpoint().is_some() {
         return Err(Errno::EBUSY);
     }
-    if vp.v_flag.get() & VALIASED != 0
+    if vp.flag() & VALIASED != 0
         && let Some(chain) = vp.v_specinfo().and_then(|si| si.si_hashchain.get())
     {
         for vq in chain.iter() {
-            if vq.v_rdev() != vp.v_rdev() || vq.v_type.get() != vp.v_type.get() {
+            if vq.rdev() != vp.rdev() || vq.vtype() != vp.vtype() {
                 continue;
             }
-            if vq.v_specmountpoint().is_some() {
+            if vq.specmountpoint().is_some() {
                 return Err(Errno::EBUSY);
             }
         }
@@ -1467,13 +1461,13 @@ fn vfs_hang_addrlist(
     argp: &ExportArgs,
 ) -> Result<(), Errno> {
     if argp.ex_addrlen == 0 {
-        if mp.mnt_flag.get() & MNT_DEFEXPORTED != 0 {
+        if mp.flag() & MNT_DEFEXPORTED != 0 {
             return Err(Errno::EPERM);
         }
         let np = &nep.ne_defexported;
         // fill in the kernel's ucred from userspace's xucred
         netc_anon_fill(np, &argp.ex_anon)?;
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_DEFEXPORTED);
+        mp.set_flag(mp.flag() | MNT_DEFEXPORTED);
         np.netc_exflags.set(argp.ex_flags);
         return Ok(());
     }
@@ -1625,12 +1619,11 @@ pub fn vfs_export(
     {
         if argp.ex_flags & MNT_DELEXPORT != 0 {
             vfs_free_addrlist(nep);
-            mp.mnt_flag
-                .set(mp.mnt_flag.get() & !(MNT_EXPORTED | MNT_DEFEXPORTED));
+            mp.set_flag(mp.flag() & !(MNT_EXPORTED | MNT_DEFEXPORTED));
         }
         if argp.ex_flags & MNT_EXPORTED != 0 {
             vfs_hang_addrlist(mp, nep, argp)?;
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_EXPORTED);
+            mp.set_flag(mp.flag() | MNT_EXPORTED);
         }
         Ok(())
     }
@@ -1675,7 +1668,7 @@ unsafe fn export_lookup(
     saddr: Option<*const u8>,
 ) -> Option<&'static Netcred> {
     let mut np: Option<&'static Netcred> = None;
-    if mp.mnt_flag.get() & MNT_EXPORTED != 0 {
+    if mp.flag() & MNT_EXPORTED != 0 {
         // Lookup in the export list first.
         if let Some(saddr) = saddr {
             // SAFETY: the caller's contract: the family byte is readable.
@@ -1694,7 +1687,7 @@ unsafe fn export_lookup(
             }
         }
         // If no address match, use the default if it exists.
-        if np.is_none() && mp.mnt_flag.get() & MNT_DEFEXPORTED != 0 {
+        if np.is_none() && mp.flag() & MNT_DEFEXPORTED != 0 {
             np = Some(&nep.ne_defexported);
         }
     }
@@ -1774,12 +1767,12 @@ pub fn vaccess(
 /// `vnoperm(vp)`: whether permission checks are off for the vnode's file system
 /// (`MNT_NOPERM`); never for a file system root or a vnode without a mount.
 pub fn vnoperm(vp: &'static Vnode) -> bool {
-    if vp.v_flag.get() & VROOT != 0 {
+    if vp.flag() & VROOT != 0 {
         return false;
     }
-    match vp.v_mount.get() {
+    match vp.mount() {
         None => false,
-        Some(mp) => mp.mnt_flag.get() & MNT_NOPERM != 0,
+        Some(mp) => mp.flag() & MNT_NOPERM != 0,
     }
 }
 
@@ -1815,10 +1808,10 @@ pub fn vfs_stall(p: &Proc, stall: bool) -> Result<(), Errno> {
                 allerror = Err(error);
                 continue;
             }
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_STALLED);
-        } else if mp.mnt_flag.get() & MNT_STALLED != 0 {
+            mp.set_flag(mp.flag() | MNT_STALLED);
+        } else if mp.flag() & MNT_STALLED != 0 {
             vfs_unbusy(mp);
-            mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_STALLED);
+            mp.set_flag(mp.flag() & !MNT_STALLED);
         }
     }
 
@@ -1961,7 +1954,7 @@ pub fn vwaitforio(
 ) -> Result<(), Errno> {
     splassert(IPL_BIO, "vwaitforio");
 
-    bio::vwaitforio(&vp.v_bufs, slpflag, wmesg, timeo)
+    bio::vwaitforio(&vp.bufs, slpflag, wmesg, timeo)
 }
 
 /// Flush out and invalidate all buffers associated with a vnode. Called with the underlying
@@ -1979,7 +1972,7 @@ pub fn vinvalbuf(
     if flags & V_SAVE != 0 {
         let s = splbio();
         let _ = vwaitforio(vp, 0, "vinvalbuf", INFSLP);
-        if !vp.v_bufs.dirty_is_empty() {
+        if !vp.bufs.dirty_is_empty() {
             splx(s);
             let Some(p) = p else {
                 panic(format_args!(
@@ -1988,7 +1981,7 @@ pub fn vinvalbuf(
             };
             VOP_FSYNC(vp, cred, MNT_WAIT, p)?;
             let s = splbio();
-            if vp.v_bufs.numoutput() > 0 || !vp.v_bufs.dirty_is_empty() {
+            if vp.bufs.numoutput() > 0 || !vp.bufs.dirty_is_empty() {
                 panic(format_args!("vinvalbuf: dirty bufs, vp {:p}", vp));
             }
             splx(s);
@@ -1998,7 +1991,7 @@ pub fn vinvalbuf(
     }
     // The buffer lists' loop is the cache's (it takes, writes and frees the buffers).
     bio::vinvalbuf_bufs(
-        &vp.v_bufs,
+        &vp.bufs,
         flags & V_SAVE != 0,
         flags & V_SAVEMETA != 0,
         slpflag,
@@ -2020,15 +2013,10 @@ pub fn vflushbuf(vp: &'static Vnode, sync: bool) {
             }
             DirtyPick::Take
         };
-        if let DirtyScan::Taken(t) = bio::vnode_dirty_scan(&vp.v_bufs, "vflushbuf", 0, INFSLP, pick)
-        {
+        if let DirtyScan::Taken(t) = bio::vnode_dirty_scan(&vp.bufs, "vflushbuf", 0, INFSLP, pick) {
             // Wait for I/O associated with indirect blocks to complete, since there is no way
             // to quickly wait for them below.
-            if t.buf()
-                .vnode_bufs()
-                .is_some_and(|vb| ptr::eq(vb, &vp.v_bufs))
-                || !sync
-            {
+            if t.buf().vnode_bufs().is_some_and(|vb| ptr::eq(vb, &vp.bufs)) || !sync {
                 bio::bawrite(t);
             } else {
                 let _ = bio::bwrite(t);
@@ -2040,7 +2028,7 @@ pub fn vflushbuf(vp: &'static Vnode, sync: bool) {
         }
         let s = splbio();
         let _ = vwaitforio(vp, 0, "vflushbuf", INFSLP);
-        if !vp.v_bufs.dirty_is_empty() {
+        if !vp.bufs.dirty_is_empty() {
             splx(s);
             #[cfg(feature = "diagnostic")]
             vprint(Some("vflushbuf: dirty"), vp);
@@ -2054,10 +2042,10 @@ pub fn vflushbuf(vp: &'static Vnode, sync: bool) {
 /// The mount a vnode's I/O is charged to: a block device's `v_specmountpoint`, else
 /// `v_mount` (`vfs_bio.c`'s reads and writes).
 fn io_mount(vp: &Vnode) -> Option<&'static Mount> {
-    if vp.v_type.get() == VBLK {
-        vp.v_specmountpoint()
+    if vp.vtype() == VBLK {
+        vp.specmountpoint()
     } else {
-        vp.v_mount.get()
+        vp.mount()
     }
 }
 
@@ -2092,11 +2080,11 @@ impl BufVnode for Vnode {
     }
 
     fn rdev(&self) -> Dev {
-        self.v_rdev()
+        self.rdev()
     }
 
     fn mnt_async(&self) -> bool {
-        io_mount(self).is_some_and(|mp| mp.mnt_flag.get() & MNT_ASYNC != 0)
+        io_mount(self).is_some_and(|mp| mp.flag() & MNT_ASYNC != 0)
     }
 
     fn count_io(&self, write: bool, async_: bool) {
@@ -2104,10 +2092,10 @@ impl BufVnode for Vnode {
         // are charged to their associated filesystem (if any).
         if let Some(mp) = io_mount(self) {
             match (write, async_) {
-                (false, false) => mp.update_stat(|sp| sp.f_syncreads += 1),
-                (false, true) => mp.update_stat(|sp| sp.f_asyncreads += 1),
-                (true, false) => mp.update_stat(|sp| sp.f_syncwrites += 1),
-                (true, true) => mp.update_stat(|sp| sp.f_asyncwrites += 1),
+                (false, false) => mp.with_stat(|sp| sp.f_syncreads += 1),
+                (false, true) => mp.with_stat(|sp| sp.f_asyncreads += 1),
+                (true, false) => mp.with_stat(|sp| sp.f_syncwrites += 1),
+                (true, true) => mp.with_stat(|sp| sp.f_asyncwrites += 1),
             }
         }
     }
@@ -2125,9 +2113,9 @@ impl BufVnode for Vnode {
 
     fn syncer_add_dirty(&'static self) {
         let syncdelay = SYNCDELAY.load(Ordering::Relaxed);
-        let delay = match self.v_type.get() {
+        let delay = match self.vtype() {
             VDIR => syncdelay / 2,
-            VBLK if self.v_specmountpoint().is_some() => syncdelay / 3,
+            VBLK if self.specmountpoint().is_some() => syncdelay / 3,
             _ => syncdelay,
         };
         vn_syncer_add_to_worklist(self, delay);
@@ -2156,7 +2144,7 @@ pub fn copy_statfs_info(sbp: &mut Statfs, mp: &Mount) {
     sbp.f_fstypename[..name.len()].copy_from_slice(name);
 
     // sbp == &mp->mnt_stat never happens here (see the module's deviations).
-    let mbp = mp.mnt_stat.get();
+    let mbp = mp.stat();
     sbp.f_fsid = mbp.f_fsid;
     sbp.f_owner = mbp.f_owner;
     sbp.f_flags = mbp.f_flags;
@@ -2329,7 +2317,7 @@ pub(crate) mod tests {
 
         /// The node a testfs vnode stands for.
         pub(crate) fn node_of(vp: &Vnode) -> usize {
-            let idx = vp.v_data.get() as usize;
+            let idx = vp.data() as usize;
             assert!(idx > 0, "not a testfs vnode");
             idx - 1
         }
@@ -2342,7 +2330,7 @@ pub(crate) mod tests {
 
         /// The use count of every node's vnode (0 for none).
         pub(crate) fn usecounts() -> [u32; N] {
-            core::array::from_fn(|i| vnode_of(i).map_or(0, |vp| vp.v_usecount.get()))
+            core::array::from_fn(|i| vnode_of(i).map_or(0, |vp| vp.usecount()))
         }
 
         /// Whether any node's lock is held.
@@ -2357,15 +2345,14 @@ pub(crate) mod tests {
                 return Ok(vp);
             }
             let vp = getnewvnode(VT_TMPFS, Some(mp), &TESTFS_VOPS)?;
-            vp.v_type.set(match NODES[idx].kind {
+            vp.set_vtype(match NODES[idx].kind {
                 Kind::Dir => VDIR,
                 Kind::Reg => VREG,
                 Kind::Lnk(_) => VLNK,
             });
-            vp.v_data
-                .set(ptr::without_provenance_mut::<c_void>(idx + 1));
+            vp.set_data(ptr::without_provenance_mut::<c_void>(idx + 1));
             if idx == ROOT {
-                vp.v_flag.set(VROOT);
+                vp.set_flag(VROOT);
             }
             vn_lock(vp, LK_EXCLUSIVE)?;
             VTAB[idx].store(ptr::from_ref(vp).cast_mut(), Ordering::SeqCst);
@@ -2453,7 +2440,7 @@ pub(crate) mod tests {
             let idx = node_of(ap.a_vp);
             VTAB[idx].store(ptr::null_mut(), Ordering::SeqCst);
             LOCKED[idx].store(0, Ordering::SeqCst);
-            ap.a_vp.v_data.set(ptr::null_mut());
+            ap.a_vp.set_data(ptr::null_mut());
             Ok(())
         }
 
@@ -2463,7 +2450,7 @@ pub(crate) mod tests {
             let dvp = ap.a_dvp;
             let cnp = &mut *ap.a_cnp;
             *ap.a_vpp = None;
-            if dvp.v_type.get() != VDIR {
+            if dvp.vtype() != VDIR {
                 return Err(Errno::ENOTDIR);
             }
             let lockparent = cnp.cn_flags & LOCKPARENT != 0;
@@ -2533,7 +2520,7 @@ pub(crate) mod tests {
             let idx = node_of(ap.a_vp);
             let va = &mut *ap.a_vap;
             *va = crate::sys::vnode::Vattr::new();
-            va.va_type = ap.a_vp.v_type.get();
+            va.va_type = ap.a_vp.vtype();
             va.va_mode = 0o755;
             va.va_nlink = 1;
             va.va_fsid = 99;
@@ -2619,7 +2606,7 @@ pub(crate) mod tests {
             MP.store(ptr::from_ref(mp).cast_mut(), Ordering::SeqCst);
             // SAFETY: a new mount on no list.
             unsafe { MOUNTLIST.0.insert_tail(mp) };
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_ROOTFS);
+            mp.set_flag(mp.flag() | MNT_ROOTFS);
             let Ok(root) = VFS_ROOT(mp) else {
                 std::panic!("testfs: no root");
             };
@@ -2726,14 +2713,14 @@ pub(crate) mod tests {
         let (_g, _p, mp) = testfs::setup_root();
         let before = NUMVNODES.load(Ordering::SeqCst);
         let vp = getnewvnode(VT_NON, Some(mp), &testfs::TESTFS_VOPS).unwrap();
-        assert_eq!(vp.v_usecount.get(), 1);
-        assert_eq!(vp.v_type.get(), VNON);
-        assert!(vp.v_mount.get().is_some_and(|m| ptr::eq(m, mp)));
+        assert_eq!(vp.usecount(), 1);
+        assert_eq!(vp.vtype(), VNON);
+        assert!(vp.mount().is_some_and(|m| ptr::eq(m, mp)));
         assert!(mp.mnt_vnodelist.iter().any(|v| ptr::eq(v, vp)));
         assert_eq!(NUMVNODES.load(Ordering::SeqCst), before + 1);
 
         insmntque(vp, None);
-        assert!(vp.v_mount.get().is_none());
+        assert!(vp.mount().is_none());
         assert!(!mp.mnt_vnodelist.iter().any(|v| ptr::eq(v, vp)));
     }
 
@@ -2741,35 +2728,35 @@ pub(crate) mod tests {
     fn use_counts_and_the_free_list() {
         let (_g, _p, mp) = testfs::setup_root();
         let vp = testfs::vget_node(mp, testfs::B).unwrap();
-        assert_eq!(vp.v_usecount.get(), 1);
+        assert_eq!(vp.usecount(), 1);
         assert_eq!(VOP_ISLOCKED(vp), 1);
 
         vref(vp);
-        assert_eq!(vp.v_usecount.get(), 2);
+        assert_eq!(vp.usecount(), 2);
         // vput of a vnode still referenced only unlocks it.
         vput(vp);
-        assert_eq!(vp.v_usecount.get(), 1);
+        assert_eq!(vp.usecount(), 1);
         assert_eq!(VOP_ISLOCKED(vp), 0);
         assert_eq!(testfs::INACTIVE.load(Ordering::SeqCst), 0);
 
         // The last vrele locks, deactivates (which unlocks) and frees the vnode, which keeps its
         // identity on the free list.
         assert!(vrele(vp));
-        assert_eq!(vp.v_usecount.get(), 0);
+        assert_eq!(vp.usecount(), 0);
         assert_eq!(testfs::INACTIVE.load(Ordering::SeqCst), 1);
         assert!(!testfs::any_locked());
-        assert!(vp.v_bufs.bioflag() & VBIOONFREELIST != 0);
+        assert!(vp.bufs.bioflag() & VBIOONFREELIST != 0);
         assert!(VNODE_FREE_LIST.0.iter().any(|v| ptr::eq(v, vp)));
         assert_eq!(testfs::node_of(vp), testfs::B);
 
         // vget takes it back off the free list, referenced and locked.
         let again = testfs::vget_node(mp, testfs::B).unwrap();
         assert!(ptr::eq(again, vp));
-        assert_eq!(vp.v_usecount.get(), 1);
-        assert!(vp.v_bufs.bioflag() & VBIOONFREELIST == 0);
+        assert_eq!(vp.usecount(), 1);
+        assert!(vp.bufs.bioflag() & VBIOONFREELIST == 0);
         assert!(!VNODE_FREE_LIST.0.iter().any(|v| ptr::eq(v, vp)));
         vput(vp);
-        assert_eq!(vp.v_usecount.get(), 0);
+        assert_eq!(vp.usecount(), 0);
         assert_eq!(testfs::INACTIVE.load(Ordering::SeqCst), 2);
     }
 
@@ -2792,19 +2779,19 @@ pub(crate) mod tests {
         let (_g, _p, mp) = testfs::setup_root();
         let vp = testfs::vget_node(mp, testfs::C).unwrap();
         let _ = VOP_UNLOCK(vp);
-        let id = vp.v_id.get();
+        let id = vp.id();
 
         // An active vnode: closed, deactivated, reclaimed; the reference survives.
         vgone(vp);
         assert_eq!(testfs::RECLAIM.load(Ordering::SeqCst), 1);
         assert_eq!(testfs::INACTIVE.load(Ordering::SeqCst), 1);
-        assert_eq!(vp.v_type.get(), VBAD);
+        assert_eq!(vp.vtype(), VBAD);
         assert!(ptr::eq(vp.op(), &DEAD_VOPS));
-        assert!(vp.v_mount.get().is_none());
-        assert!(vp.v_data.get().is_null());
-        assert_ne!(vp.v_id.get(), id, "cache_purge gives a new capability");
+        assert!(vp.mount().is_none());
+        assert!(vp.data().is_null());
+        assert_ne!(vp.id(), id, "cache_purge gives a new capability");
         assert!(testfs::vnode_of(testfs::C).is_none());
-        assert_eq!(vp.v_usecount.get(), 1);
+        assert_eq!(vp.usecount(), 1);
 
         // The dead vnode's last release puts it at the head of the free list, to be recycled
         // first.
@@ -2824,8 +2811,8 @@ pub(crate) mod tests {
         assert_eq!(NUMVNODES.load(Ordering::SeqCst), before);
         assert_eq!(testfs::RECLAIM.load(Ordering::SeqCst), 1);
         assert!(testfs::vnode_of(testfs::B).is_none());
-        assert_eq!(nvp.v_usecount.get(), 1);
-        assert!(nvp.v_mount.get().is_none());
+        assert_eq!(nvp.usecount(), 1);
+        assert!(nvp.mount().is_none());
     }
 
     #[test]
@@ -2844,7 +2831,7 @@ pub(crate) mod tests {
 
         assert_eq!(vflush(mp, root, FORCECLOSE), Ok(()));
         assert!(testfs::vnode_of(testfs::B).is_none());
-        assert_eq!(busy.v_type.get(), VBAD);
+        assert_eq!(busy.vtype(), VBAD);
         // Only the skipped root is left on the mount.
         assert_eq!(mp.mnt_vnodelist.iter().count(), 1);
     }
@@ -2856,25 +2843,25 @@ pub(crate) mod tests {
         assert!(vfs_isbusy(mp));
         vfs_unbusy(mp);
         assert!(!vfs_isbusy(mp));
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_UNMOUNT);
+        mp.set_flag(mp.flag() | MNT_UNMOUNT);
         assert_eq!(vfs_busy(mp, VB_READ | VB_NOWAIT), Err(Errno::EBUSY));
         assert!(!vfs_isbusy(mp));
-        mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_UNMOUNT);
+        mp.set_flag(mp.flag() & !MNT_UNMOUNT);
     }
 
     #[test]
     fn vfs_getnewfsid_is_unique_among_mounts() {
         let (_g, _p, mp) = testfs::setup_root();
         vfs_getnewfsid(mp);
-        let fsid = mp.mnt_stat.get().f_fsid;
+        let fsid = mp.stat().f_fsid;
         assert!(vfs_getvfs(&fsid).is_some_and(|m| ptr::eq(m, mp)));
         let mp2 = vfs_mount_alloc(None, &testfs::TESTFS_CONF);
         vfs_unbusy(mp2);
         // SAFETY: a new mount on no list.
         unsafe { MOUNTLIST.0.insert_tail(mp2) };
         vfs_getnewfsid(mp2);
-        assert_ne!(mp2.mnt_stat.get().f_fsid, fsid);
-        assert_eq!(&mp2.mnt_stat.get().f_fstypename[..7], b"testfs\0");
+        assert_ne!(mp2.stat().f_fsid, fsid);
+        assert_eq!(&mp2.stat().f_fstypename[..7], b"testfs\0");
     }
 
     #[test]
@@ -2982,7 +2969,7 @@ pub(crate) mod tests {
                 vfs_export(mp, nep, &args(ro, 32767, Some(net), Some(mask))),
                 Ok(())
             );
-            assert!(mp.mnt_flag.get() & MNT_EXPORTED != 0);
+            assert!(mp.flag() & MNT_EXPORTED != 0);
             assert!(nep.ne_rtable_inet.get().is_some());
 
             assert_eq!(lookup(mp, nep, [10, 1, 2, 3]), Some((ro, 32767)));
@@ -3048,7 +3035,7 @@ pub(crate) mod tests {
 
             let ro = MNT_EXPORTED | MNT_EXRDONLY;
             vfs_export(mp, nep, &args(ro, 77, None, None)).unwrap();
-            assert!(mp.mnt_flag.get() & MNT_DEFEXPORTED != 0);
+            assert!(mp.flag() & MNT_DEFEXPORTED != 0);
             assert_eq!(lookup(mp, nep, [172, 16, 0, 1]), Some((ro, 77)));
             assert_eq!(lookup(mp, nep, [10, 0, 0, 7]), Some((MNT_EXPORTED, 1)));
             // No address at all (a NULL `nam`): only the default.
@@ -3070,7 +3057,7 @@ pub(crate) mod tests {
             assert!(lookup(mp, nep, [10, 1, 0, 9]).is_some());
 
             vfs_export(mp, nep, &args(MNT_DELEXPORT, 0, None, None)).unwrap();
-            assert_eq!(mp.mnt_flag.get() & (MNT_EXPORTED | MNT_DEFEXPORTED), 0);
+            assert_eq!(mp.flag() & (MNT_EXPORTED | MNT_DEFEXPORTED), 0);
             assert!(nep.ne_rtable_inet.get().is_none());
             assert_eq!(lookup(mp, nep, [10, 1, 0, 9]), None);
             assert!(vfs_export_lookup(mp, nep, None).is_none());

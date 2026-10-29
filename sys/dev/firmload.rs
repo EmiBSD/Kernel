@@ -64,7 +64,6 @@ use core::ptr::{self, NonNull};
 use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{vcount, vput};
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ};
 use crate::machine::cpu::curproc;
 use crate::sys::device::FIRMWARE_MAX;
@@ -75,6 +74,7 @@ use crate::sys::param::MAXPATHLEN;
 use crate::sys::pledge::PLEDGE_RPATH;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{VREG, Vattr};
+use crate::sys::vnode::{vcount, vput};
 
 /// The directory firmware files live in.
 const FIRMWARE_DIR: &str = "/etc/firmware/";
@@ -138,7 +138,7 @@ fn loadfirmware_path(
         vput(vp);
         return Err(e);
     }
-    if vp.v_type.get() != VREG || va.va_size == 0 {
+    if vp.vtype() != VREG || va.va_size == 0 {
         vput(vp);
         return Err(Errno::EINVAL);
     }
