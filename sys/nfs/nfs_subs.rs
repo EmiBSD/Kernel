@@ -133,9 +133,9 @@ use crate::nfs::nfsm_subs::{XdrIn, XdrOut, nfsm_avail};
 use crate::nfs::nfsmount::VFSTONFS;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfsnode::{NACC, NCHG, NMODIFIED, NUPD};
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfsnode::{NFS_BUFQ, NFSTOV, NfsNode};
 use crate::nfs::nfsnode::{NFS_COMMIT_PUSH_VALID, NFS_COMMIT_PUSHED_VALID, VTONFS};
+#[cfg(feature = "nfsclient")]
+use crate::nfs::nfsnode::{NFSTOV, NfsNode};
 use crate::nfs::nfsproto::{NFBLK, NFCHR, NFDIR, NFFIFO, NFLNK, NFNON, NFREG, NFSOCK};
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfsproto::{NFS_FABLKSIZE, NfsFattr, nfsv2tov_type, nfsv3tov_type, nfsx_fattr};
@@ -1136,7 +1136,7 @@ pub fn nfs_init() {
 /// `nfs_vfs_init` (`vfs_init`): the nfsiod buffer queue and the nfsnode pool.
 #[cfg(feature = "nfsclient")]
 pub fn nfs_vfs_init(_vfsp: &'static Vfsconf) -> Result<(), Errno> {
-    NFS_BUFQ.0.init();
+    // TAILQ_INIT(&nfs_bufq): the queue is empty from its construction (`nfsnode.rs`).
 
     pool_init(
         &NFS_NODE_POOL,
@@ -1399,12 +1399,12 @@ pub fn nfs_clearcommit(mp: &Mount) {
                 // Paranoia.
                 continue 'restart;
             }
-            for bp in vp.v_dirtyblkhd.iter() {
+            kernel::fs::bio::vnode_dirty_for_each(&vp.v_bufs, |bp| {
                 let flags = bp.flags();
                 if flags & (B_BUSY | B_DELWRI | B_NEEDCOMMIT) == B_DELWRI | B_NEEDCOMMIT {
                     bp.set_flags(flags & !B_NEEDCOMMIT);
                 }
-            }
+            });
         }
         break;
     }

@@ -1140,9 +1140,7 @@ pub fn udf_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
             Err(_) => true,
         };
         if invalid {
-            // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
-            // mapped; the strategy owns it until biodone.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
             bp.set_blkno(-1);
         }
     } else {
@@ -1159,8 +1157,7 @@ pub fn udf_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         }
 
         if bp.blkno() == -1 {
-            // SAFETY: as above.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
         }
     }
 
@@ -1682,7 +1679,7 @@ mod tests {
     // label and unmount; plus the pure helpers (tags, times, modes, names).
 
     use core::mem::offset_of;
-    use core::sync::atomic::Ordering;
+
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
@@ -1703,7 +1700,7 @@ mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::B_READ;
-    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, bufinit};
+    use crate::sys::buf::bufinit;
     use crate::sys::disklabel::{DISKMAGIC, Disklabel, FS_UDF, RAW_PART, dl_getpsize, dl_setdsize};
     use crate::sys::mount::{MNT_LOCAL, MNT_RDONLY, MNT_WAIT};
     use crate::sys::namei::{Componentname, ISDOTDOT};
@@ -2030,27 +2027,9 @@ mod tests {
     fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = image;
         (g, p)

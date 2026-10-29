@@ -177,12 +177,12 @@ pub fn vn_syncer_add_to_worklist(vp: &'static Vnode, delay: i32) {
         & SYNCER_MASK.load(Ordering::Relaxed);
 
     let s = splbio();
-    if vp.v_bioflag.get() & VBIOONSYNCLIST != 0 {
+    if vp.v_bufs.bioflag() & VBIOONSYNCLIST != 0 {
         // SAFETY: a vnode marked `VBIOONSYNCLIST` is on one slot of the wheel.
         unsafe { ListHead::<VSynclist>::remove(vp) };
     }
 
-    vp.v_bioflag.set(vp.v_bioflag.get() | VBIOONSYNCLIST);
+    vp.v_bufs.set_bioflag(VBIOONSYNCLIST);
     // SAFETY: the vnode was just taken off the wheel (or was on none); vnodes never move.
     unsafe { syncer_slot(slot).insert_head(vp) };
     splx(s);
@@ -193,6 +193,8 @@ pub fn syncer_thread(_arg: *mut core::ffi::c_void) {
     let Some(p) = curproc() else {
         panic(format_args!("syncer_thread: no curproc"));
     };
+    // `syncerproc`, as the buffer cache knows it (its kva and page reserves).
+    kernel::fs::bio::set_syncer(hal::sleep::curproc_word());
 
     loop {
         let start = getnsecuptime();
@@ -222,7 +224,7 @@ pub fn syncer_thread(_arg: *mut core::ffi::c_void) {
                 // Note: disk vps can remain on the worklist too with no dirty blocks, but
                 // since sync_fsync() moves it to a different slot we are safe.
                 #[cfg(feature = "diagnostic")]
-                if vp.v_dirtyblkhd.is_empty() && vp.v_type.get() != crate::sys::vnode::VBLK {
+                if vp.v_bufs.dirty_is_empty() && vp.v_type.get() != crate::sys::vnode::VBLK {
                     crate::kern::vfs_subr::vprint(Some("fsync failed"), vp);
                     if let Some(mp) = vp.v_mount.get() {
                         let (name, len) = mp.mntonname();
@@ -382,7 +384,7 @@ pub fn sync_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 
     // SAFETY: the syncer vnode is on the wheel from `vfs_allocate_syncvnode` until here.
     unsafe { ListHead::<VSynclist>::remove(vp) };
-    vp.v_bioflag.set(vp.v_bioflag.get() & !VBIOONSYNCLIST);
+    vp.v_bufs.clr_bioflag(VBIOONSYNCLIST);
 
     splx(s);
 
@@ -427,7 +429,7 @@ mod tests {
         let mp = vfs_mount_alloc(None, &TESTFS_CONF);
         vfs_allocate_syncvnode(mp).expect("a syncer vnode");
         let vp = mp.mnt_syncer.get().expect("mnt_syncer");
-        assert!(vp.v_bioflag.get() & VBIOONSYNCLIST != 0);
+        assert!(vp.v_bufs.bioflag() & VBIOONSYNCLIST != 0);
         assert!(core::ptr::eq(vp.op(), &SYNC_VOPS));
         assert!((0..max).filter(|&d| on_slot(base + d, vp)).count() == 1);
 

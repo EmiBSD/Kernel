@@ -452,9 +452,9 @@ impl Default for VnodeBufs {
 pub trait BufVnode: Sync {
     /// `vhold(vp)`: the vnode gets a buffer reference (off the free list onto the hold list
     /// when it had none and is unused).
-    fn vhold(&self);
+    fn vhold(&'static self);
     /// `vdrop(vp)`: the vnode loses a buffer reference.
-    fn vdrop(&self);
+    fn vdrop(&'static self);
     /// `VOP_STRATEGY(vp, bp)`: starts the I/O of the buffer `bp` (its token passes to the
     /// file system and on to the driver, whose `biodone` gives it back).
     fn strategy(&'static self, bp: BufRef) -> Result<(), Errno>;
@@ -478,10 +478,10 @@ pub trait BufVnode: Sync {
     /// `reassignbuf`'s `vn_syncer_add_to_worklist(vp, delay)` of a vnode getting its first
     /// dirty buffer: `syncdelay / 2` for a directory, `/ 3` for a mounted block device, else
     /// `syncdelay` (the worklist sets `VBIOONSYNCLIST`).
-    fn syncer_add_dirty(&self);
+    fn syncer_add_dirty(&'static self);
     /// `LIST_REMOVE(vp, v_synclist)`: off the syncer's worklist (`VBIOONSYNCLIST` cleared by
     /// the caller).
-    fn syncer_remove(&self);
+    fn syncer_remove(&'static self);
     /// The vnode as `bsd` knows it, for `bsd`'s adapter (`bp->b_vp`).
     fn as_any(&'static self) -> &'static dyn core::any::Any;
 }
@@ -550,10 +550,14 @@ pub static BUFHIGHPAGES: AtomicI64 = AtomicI64::new(0);
 pub static BUFBACKPAGES: AtomicI64 = AtomicI64::new(0);
 /// `bufkvm`: the kernel virtual space for mapping buffers (0: let `bufinit` decide).
 pub static BUFKVM: AtomicUsize = AtomicUsize::new(0);
-/// `bufpages`: max number of pages for buffers' data (0: let `bufinit` decide).
+/// `bufpages`: max number of pages for buffers' data (`param.c`'s `BUFPAGES`, 0: let
+/// `bufinit` decide).
 pub static BUFPAGES: AtomicI64 = AtomicI64::new(0);
-/// `bufcachepercent`: the cache's share of DMA-reachable memory (0: let `bufinit` decide).
-pub static BUFCACHEPERCENT: AtomicI32 = AtomicI32::new(0);
+/// `BUFCACHEPERCENT` (`param.c`): the default share of memory for the buffer cache.
+pub const BUFCACHEPERCENT_DEFAULT: i32 = 20;
+/// `bufcachepercent`: the cache's share of DMA-reachable memory (`param.c`'s
+/// `BUFCACHEPERCENT`; 0: `bufinit` takes 10).
+pub static BUFCACHEPERCENT: AtomicI32 = AtomicI32::new(BUFCACHEPERCENT_DEFAULT);
 /// `nobuffers`: the syncer or the cleaner sleeps for buffers (its address the channel).
 pub static NOBUFFERS: AtomicI32 = AtomicI32::new(0);
 /// `needbuffer`: threads sleeping for the cache to shrink (its address the channel).
@@ -848,6 +852,19 @@ fn io_result(bp: &Buf) -> Result<(), Errno> {
     } else {
         Ok(())
     }
+}
+
+/// `biowait(bp)` for a buffer whose busy token stays where it is (parked in it by the driver's
+/// `biodone`, as `bsd`'s callers that name the buffer by address keep it): waits for `B_DONE`
+/// and gives the I/O's error value.
+pub fn biowait_buf(bp: &Buf) -> Result<(), Errno> {
+    kassert!(!bp.isset(B_ASYNC));
+    let mut g = CACHE.lock();
+    while !bp.isset(B_DONE) {
+        let _ = g.sleep_nsec(ptr::from_ref(bp), PRIBIO + 1, "biowait", INFSLP);
+    }
+    drop(g);
+    io_result(bp)
 }
 
 /// The buffer of a synchronous `bio_doread` and its read's result (`biowait`).
@@ -2073,6 +2090,190 @@ pub fn vwakeup(vb: Option<&'static VnodeBufs>) {
     vwakeup_locked(vb);
 }
 
+/// What a scan of a vnode's dirty buffers ([`vnode_dirty_scan`]) does with the buffer it is
+/// at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirtyPick {
+    /// Go on to the next one.
+    Skip,
+    /// Take it off its cache queue and make it busy: the scan gives its token (`bremfree`,
+    /// `buf_acquire`). Only for a buffer that is not busy.
+    Take,
+    /// Wait for it to be released (`B_WANTED`, a sleep on the buffer): the scan ends.
+    Wait,
+}
+
+/// What a dirty scan found.
+pub enum DirtyScan {
+    /// The token of the buffer the scan took.
+    Taken(BufRef),
+    /// The scan slept on a busy buffer; the sleep's result (`PCATCH`, the timeout).
+    Waited(Result<(), Errno>),
+    /// No buffer was taken or waited for.
+    Done,
+}
+
+/// One pass over `vb`'s dirty list from its head (`LIST_FOREACH(bp, &vp->v_dirtyblkhd,
+/// b_vnbufs)` at `splbio`, the C's fsync loops: `spec_fsync`, `ffs_fsync`, `nfs_flush`,
+/// `vflushbuf`, `nfssvc_iod`'s write-behind), `pick` deciding at each buffer: the first one
+/// taken ends the scan with its token, as the C's loops restart from the head after each
+/// write. `pick` runs under the cache's lock: it reads and sets flags, nothing else of the
+/// cache. A buffer to wait for is marked `B_WANTED` and slept on with `slpflag | (PRIBIO +
+/// 1)`, `wmesg` and `slptimeo`.
+pub fn vnode_dirty_scan(
+    vb: &'static VnodeBufs,
+    wmesg: &'static str,
+    slpflag: i32,
+    slptimeo: u64,
+    mut pick: impl FnMut(&Buf) -> DirtyPick,
+) -> DirtyScan {
+    let mut g = CACHE.lock();
+    let found = {
+        let st = vb.st.get(&g);
+        let mut found = None;
+        for bp in st.dirty.iter() {
+            match pick(bp) {
+                DirtyPick::Skip => continue,
+                p => {
+                    found = Some((counted(bp), p));
+                    break;
+                }
+            }
+        }
+        found
+    };
+    let Some((r, p)) = found else {
+        return DirtyScan::Done;
+    };
+    let Some(bp) = r.get() else {
+        kpanic(format_args!("vnode_dirty_scan: a link to nothing"));
+    };
+    if p == DirtyPick::Wait {
+        bp.set(B_WANTED);
+        let chan = ptr::from_ref(bp);
+        drop(r);
+        return DirtyScan::Waited(g.sleep_nsec(chan, slpflag | (PRIBIO + 1), wmesg, slptimeo));
+    }
+    if bp.isset(B_BUSY) {
+        kpanic(format_args!("vnode_dirty_scan: buffer {:p} taken busy", bp));
+    }
+    bufcache_take(&mut g, bp);
+    DirtyScan::Taken(buf_acquire(&mut g, r))
+}
+
+/// `f` on each of `vb`'s dirty buffers, under the cache's lock (`ffs_fsync`'s clearing of
+/// `B_SCANNED`, `nfs_clearcommit`'s of `B_NEEDCOMMIT`): flags only.
+pub fn vnode_dirty_for_each(vb: &VnodeBufs, mut f: impl FnMut(&Buf)) {
+    let g = CACHE.lock();
+    for bp in vb.st.get(&g).dirty.iter() {
+        f(bp);
+    }
+}
+
+/// The first buffer of `l` from its head, the metadata (negative logical blocks) skipped when
+/// `savemeta` (`vinvalbuf`'s `V_SAVEMETA`).
+fn first_kept(l: &SecondaryList<ByVnbufs>, savemeta: bool) -> Option<&Buf> {
+    let mut b = l.first();
+    if savemeta {
+        while let Some(bp) = b
+            && bp.lblkno() < 0
+        {
+            b = l.next(bp);
+        }
+    }
+    b
+}
+
+/// `vinvalbuf`'s buffer half: flushes out (`save`: a delayed write is written with
+/// `VOP_BWRITE`) and invalidates every buffer of the vnode, the clean list's first, then the
+/// dirty list's (the metadata kept for `savemeta`), waiting for a busy one
+/// (`slpflag | (PRIBIO + 1)`, "vinvalbuf", `slptimeo`: its error ends the call). The C walks
+/// a list from its head and restarts after each write or sleep; here every step restarts
+/// from the head (an invalidated buffer has left the list). Every 100 buffers it yields.
+/// Panics when, without `savemeta`, a buffer is left (`vinvalbuf: flush failed`).
+pub fn vinvalbuf_bufs(
+    vb: &'static VnodeBufs,
+    save: bool,
+    savemeta: bool,
+    slpflag: i32,
+    slptimeo: u64,
+) -> Result<(), Errno> {
+    let mut count = 0;
+    loop {
+        // loop:
+        let mut g = CACHE.lock();
+        let first = {
+            let st = vb.st.get(&g);
+            first_kept(&st.clean, savemeta)
+                .or_else(|| first_kept(&st.dirty, savemeta))
+                .map(counted)
+        };
+        let Some(r) = first else {
+            let st = vb.st.get(&g);
+            if !savemeta && (!st.dirty.is_empty() || !st.clean.is_empty()) {
+                kpanic(format_args!("vinvalbuf: flush failed, vnode {:p}", vb));
+            }
+            return Ok(());
+        };
+        let Some(bp) = r.get() else {
+            kpanic(format_args!("vinvalbuf: a link to nothing"));
+        };
+        if bp.isset(B_BUSY) {
+            bp.set(B_WANTED);
+            let chan = ptr::from_ref(bp);
+            drop(r);
+            g.sleep_nsec(chan, slpflag | (PRIBIO + 1), "vinvalbuf", slptimeo)?;
+            count = 0;
+            continue;
+        }
+        bufcache_take(&mut g, bp);
+        // XXX Since there are no node locks for NFS, I believe there is a slight chance that a
+        // delayed write will occur while sleeping just above, so check for it.
+        if bp.isset(B_DELWRI) && save {
+            let t = buf_acquire(&mut g, r);
+            drop(g);
+            let _ = vb.owner().bwrite(t);
+            count = 0;
+            continue;
+        }
+        let t = buf_acquire_nomap(&mut g, r);
+        t.buf().set(B_INVAL);
+        brelse_locked(&mut g, t);
+        count += 1;
+        // XXX Temporary workaround XXX
+        //
+        // If this is a gigantisch vnode and we are trashing a ton of buffers, drop the lock and
+        // yield every so often. The longer term fix is to add a separate list for these invalid
+        // buffers so we don't have to do the work to free these here.
+        if count > 100 {
+            drop(g);
+            sched_pause();
+            count = 0;
+        }
+    }
+}
+
+/// `vfs_syncwait`'s count of the busy buffers being written (`(b_flags & (B_BUSY | B_INVAL |
+/// B_READ)) == B_BUSY` over `bufhead`).
+pub fn bufhead_busy() -> i32 {
+    let g = CACHE.lock();
+    g.bufhead
+        .iter()
+        .filter(|bp| bp.flags() & (B_BUSY | B_INVAL | B_READ) == B_BUSY)
+        .count() as i32
+}
+
+/// `vfs_syncwait`'s next delayed-write buffer to push: the head of the dirty queue (the idle
+/// `B_DELWRI` buffers), taken off it and made busy; `None` when there is none.
+pub fn take_dirty_buf() -> Option<BufRef> {
+    let mut g = CACHE.lock();
+    let r = g.dirty.first().map(counted)?;
+    if let Some(bp) = r.get() {
+        bufcache_take(&mut g, bp);
+    }
+    Some(buf_acquire(&mut g, r))
+}
+
 /// The cache forgotten, without freeing anything (a host test's fresh memory makes what the
 /// last test left meaningless): `bufhead`, the queues and the arena leaked, the counters and
 /// the tunables zeroed, the thread identities cleared (testing.md's resets).
@@ -2094,7 +2295,7 @@ pub fn bio_test_reset() {
         a.store(0, Mem::Relaxed);
     }
     BUFKVM.store(0, Mem::Relaxed);
-    BUFCACHEPERCENT.store(0, Mem::Relaxed);
+    BUFCACHEPERCENT.store(BUFCACHEPERCENT_DEFAULT, Mem::Relaxed);
     NOBUFFERS.store(0, Mem::Relaxed);
     NEEDBUFFER.store(0, Mem::Relaxed);
     BUF_NEEDVA.store(0, Mem::Relaxed);

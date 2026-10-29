@@ -128,6 +128,7 @@ use crate::msdosfs::msdosfsmount::{
     MSDOSFS_FATMIRROR, MSDOSFSMNT_WAITONFAT, Msdosfsmount, N_INUSEBITS, cntobn, de_bn2cn, de_cn2bn,
     de_cn2off, fatofs, fsi_size,
 };
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{Buf, clrbuf};
 use crate::sys::buf::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::sys::errno::Errno;
@@ -1024,9 +1025,7 @@ pub fn extendfile(
                     }
                     bp
                 };
-                // SAFETY: `getblk` returned the buffer busy to us and mapped; no slice of it
-                // is alive.
-                unsafe { clrbuf(bp) };
+                clrbuf(bp);
                 if let Some(bpp) = bpp.take() {
                     *bpp = Some(bp);
                 } else {

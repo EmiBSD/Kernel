@@ -39,7 +39,6 @@ pub mod hal_bridges;
 pub mod init_main;
 #[forbid(unsafe_code)]
 pub mod init_sysent;
-pub mod kern_bufq;
 pub mod kern_clock;
 #[forbid(unsafe_code)]
 pub mod kern_clockintr;
@@ -54,7 +53,6 @@ pub mod kern_kthread;
 #[forbid(unsafe_code)]
 pub mod kern_lock;
 pub mod kern_malloc;
-pub mod kern_physio;
 #[forbid(unsafe_code)]
 pub mod kern_pledge;
 #[forbid(unsafe_code)]
@@ -141,8 +139,6 @@ pub mod uipc_syscalls;
 pub mod uipc_usrreq;
 #[forbid(unsafe_code)]
 pub mod unported;
-pub mod vfs_bio;
-pub mod vfs_biomem;
 pub mod vfs_cache;
 #[forbid(unsafe_code)]
 pub mod vfs_default;

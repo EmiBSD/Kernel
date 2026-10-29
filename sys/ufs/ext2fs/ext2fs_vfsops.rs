@@ -109,6 +109,7 @@ use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_NONE, splbio, splx};
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bawrite, bread, brelse, bwrite, getblk};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;
@@ -872,7 +873,7 @@ fn ext2fs_sync_vnode(vp: &'static Vnode, esa: &mut Ext2fsSyncArgs<'_>) -> Result
 
     let s = splbio();
     let skip = ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) == 0
-        && vp.v_dirtyblkhd.is_empty();
+        && vp.v_bufs.dirty_is_empty();
     splx(s);
 
     'end: {
@@ -1294,7 +1295,7 @@ pub(crate) mod tests {
     // mount, and unmount it clean; plus the super block checks.
 
     use core::mem::offset_of;
-    use core::sync::atomic::Ordering;
+
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
@@ -1308,7 +1309,7 @@ pub(crate) mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::{B_ERROR, B_READ};
-    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
+    use crate::sys::buf::{biodone, bufinit};
     use crate::sys::mount::VFS_ROOT;
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -1610,27 +1611,9 @@ pub(crate) mod tests {
     pub(crate) fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = image;
         (g, p)

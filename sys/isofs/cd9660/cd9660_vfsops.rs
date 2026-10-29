@@ -122,6 +122,7 @@ use crate::kprintf;
 use crate::machine::conf::{nblkdev, swapdev};
 use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
 use crate::sys::buf::{biowait, bread, brelse, geteblk};
 use crate::sys::cdio::CDIOREADMSADDR;
@@ -1060,7 +1061,7 @@ mod tests {
     // handles.
 
     use core::ptr;
-    use core::sync::atomic::Ordering;
+
     use std::sync::{Mutex, MutexGuard};
     use std::vec::Vec;
     use std::{assert_eq, vec};
@@ -1078,7 +1079,7 @@ mod tests {
     use crate::machine::cpu::Cpu;
     use crate::machine::intr::{splbio, splx};
     use crate::sys::buf::{B_ERROR, B_READ};
-    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
+    use crate::sys::buf::{biodone, bufinit};
     use crate::sys::fcntl::O_RDONLY;
     use crate::sys::mount::{MNT_WAIT, VB_WAIT, VB_WRITE, VFS_ROOT};
     use crate::sys::param::DEV_BSIZE;
@@ -1156,27 +1157,9 @@ mod tests {
         Machine::set_curproc(Machine::curcpu(), Some(p));
         crate::kern::proc_glue::test_set_limits(p, 128);
 
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
 
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;

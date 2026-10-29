@@ -106,9 +106,9 @@ use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR, VOP_UNLOCK};
 use crate::machine::conf::{bdevsw, cdevsw, iskmemdev, nblkdev, nchrdev};
 use crate::machine::intr::{splbio, splx};
-use crate::sys::buf::buf_acquire;
-use crate::sys::buf::{B_BUSY, B_DELWRI};
-use crate::sys::buf::{bawrite, bdwrite, bread, breadn, brelse, bufcache_take};
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{B_BUSY, B_DELWRI, Buf};
+use crate::sys::buf::{bawrite, bdwrite, bread, breadn, brelse};
 use crate::sys::conf::{D_CLONE, D_DISK, D_TTY};
 use crate::sys::errno::Errno;
 use crate::sys::event::{__EV_POLL, __EV_SELECT};
@@ -136,6 +136,7 @@ use crate::sys::vnode::{
     VopReadArgs, VopSetattrArgs, VopStrategyArgs, VopWriteArgs, Vops,
 };
 use crate::unported;
+use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_scan};
 
 /// `speclisth[SPECHSZ]`: the special device vnodes, hashed by device (`SPECHASH`).
 pub struct Speclisth(pub [Vnodechain; SPECHSZ]);
@@ -437,26 +438,26 @@ pub fn spec_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     }
     // Flush all dirty buffers associated with a block device.
     'restart: loop {
-        // loop:
-        let s = splbio();
-        for bp in vp.v_dirtyblkhd.iter() {
+        // loop: the cache's scan of the dirty list (from its head after each write).
+        let pick = |bp: &Buf| {
             if bp.isset(B_BUSY) {
-                continue;
+                return DirtyPick::Skip;
             }
             if !bp.isset(B_DELWRI) {
                 panic(format_args!("spec_fsync: not dirty"));
             }
-            bufcache_take(bp);
-            buf_acquire(bp);
-            splx(s);
-            bawrite(bp);
+            DirtyPick::Take
+        };
+        if let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "spec_fsync", 0, INFSLP, pick) {
+            kernel::fs::bio::bawrite(t);
             continue 'restart;
         }
+        let s = splbio();
         if ap.a_waitfor == MNT_WAIT {
             let _ = vwaitforio(vp, 0, "spec_fsync", INFSLP);
 
             #[cfg(feature = "diagnostic")]
-            if !vp.v_dirtyblkhd.is_empty() {
+            if !vp.v_bufs.dirty_is_empty() {
                 splx(s);
                 crate::kern::vfs_subr::vprint(Some("spec_fsync: dirty"), vp);
                 continue 'restart;

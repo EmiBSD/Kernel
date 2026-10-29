@@ -341,9 +341,7 @@ pub fn ntfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     if bp.isset(B_READ) {
         let boff = ntmp.ntfs_cntob(bp.blkno() as u64);
         if boff as u64 >= fp.f_size.get() {
-            // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
-            // mapped; the strategy owns it until biodone.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
         } else {
             let bcount = bp.bcount() as u64;
             let toread = bcount.min(fp.f_size.get() - boff as u64) as u32;
@@ -709,7 +707,6 @@ mod tests {
     // `ntfs_mountfs`, look names up, read files (by `VOP_READ` and through the buffer cache's
     // `ntfs_strategy`), read directories, take attributes and `statfs`, and unmount.
 
-    use core::sync::atomic::Ordering;
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
@@ -728,7 +725,7 @@ mod tests {
     use crate::ntfs::ntfs_vfsops::{ntfs_mountfs, ntfs_root, ntfs_statfs, ntfs_unmount};
     use crate::ntfs::ntfsmount::{NTFS_MFLAG_ALLNAMES, NTFS_MFLAG_CASEINS};
     use crate::sys::buf::Buf;
-    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, bread, brelse, bufinit};
+    use crate::sys::buf::{bread, brelse, bufinit};
     use crate::sys::mount::{MNT_LOCAL, MNT_RDONLY, MNT_WAIT, Mount, NtfsArgs};
     use crate::sys::namei::{Componentname, LOOKUP};
     use crate::sys::param::DEV_BSIZE;
@@ -1291,27 +1288,9 @@ mod tests {
     fn setup(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Proc) {
         let (g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
         ntfs_nthash_reset();
         ntfs_toupper_reset();

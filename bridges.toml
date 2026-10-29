@@ -112,14 +112,6 @@ for = ["sys/hal/module/load.rs"]
 paid_by = "N9"
 
 
-# bsd: BUFPAGES_DEFICIT and BUFPAGES_INACT of sys/sys/mount.rs over bcstats (sys/kern/vfs_bio.rs),
-# implemented by sys/kern/vm_bsd.rs (BsdBufCacheStats) and registered by its uvm_page_init;
-# 0 before registration (their boot values). N5, with the buffer cache.
-# kernel::vm::pmemrange::BufCacheStats
-[[bridge]]
-trait = "BufCacheStats"
-for = ["sys/kernel/vm/pmemrange.rs"]
-paid_by = "N5"
 
 # bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
 # N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as

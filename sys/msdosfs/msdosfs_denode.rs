@@ -128,6 +128,7 @@ use crate::msdosfs::msdosfsmount::{
     Msdosfsmount, cntobn, de_blk, de_clcount, de_cluster, de_cn2off,
 };
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bdwrite, bread, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};

@@ -619,6 +619,20 @@ impl Buf {
         self.b_vp.set(vb);
     }
 
+    /// `bp->b_vp = vp` of a buffer the cache keeps on no vnode list (a driver's own, or one of
+    /// its caller's: `softraid`'s `sr_rw` and ccbs, as physio's in the C): no `vhold`, no list,
+    /// so its writes count on the vnode (`v_numoutput`, `vwakeup`) and nothing else. Panics on
+    /// a buffer on a vnode's list (the cache's buffers get theirs through `bgetvp`).
+    pub fn set_vp_unheld(&self, vb: Option<&'static VnodeBufs>) {
+        if self.b_vnbufs_linked() {
+            kpanic(format_args!(
+                "Buf::set_vp_unheld: buffer {:p} is on a vnode's list",
+                self
+            ));
+        }
+        self.b_vp.set(vb);
+    }
+
     /// `bp->b_bq`: the disk queue the buffer is on, `None` for none.
     #[inline]
     pub fn bq(&self) -> Option<&'static Bufq> {

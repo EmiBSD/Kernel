@@ -65,6 +65,7 @@
 //!   every other caller puts it.
 
 use crate::kern::subr_prf::panic;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_INVAL, B_SYNC, Buf, clrbuf};
 use crate::sys::buf::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::sys::errno::Errno;
@@ -146,8 +147,7 @@ pub fn ext2fs_buf_alloc(
         let bp = getblk_wait(vp, Daddr::from(bn), bsize);
         bp.set_blkno(fsbtodb(fs, Daddr::from(newb)));
         if flags & B_CLRBUF != 0 {
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
         }
         return Ok(bp);
     }
@@ -183,8 +183,7 @@ pub fn ext2fs_buf_alloc(
             ip.i_e2fs_last_blk().set(newb);
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
             bp.set_blkno(fsbtodb(fs, Daddr::from(newb)));
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
             // Write synchronously so that indirect blocks never point at garbage.
             if let Err(e) = bwrite(bp) {
                 break 'fail e;
@@ -226,8 +225,7 @@ pub fn ext2fs_buf_alloc(
             ip.i_e2fs_last_blk().set(newb);
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
             nbp.set_blkno(fsbtodb(fs, Daddr::from(nb)));
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(nbp) };
+            clrbuf(nbp);
             // Write synchronously so that indirect blocks never point at garbage.
             if let Err(e) = bwrite(nbp) {
                 brelse(bp);
@@ -274,8 +272,7 @@ pub fn ext2fs_buf_alloc(
             let nbp = getblk_wait(vp, lbn, bsize);
             nbp.set_blkno(fsbtodb(fs, Daddr::from(nb)));
             if flags & B_CLRBUF != 0 {
-                // SAFETY: the buffer is ours (busy from getblk) and mapped.
-                unsafe { clrbuf(nbp) };
+                clrbuf(nbp);
             }
             return Ok(nbp);
         }

@@ -70,8 +70,8 @@
 //! - `nfs_bufq`, `nfs_bufqlen` and `nfs_bufqmax` are defined in `nfsnode.rs` (`NFS_BUFQ`,
 //!   `NFS_BUFQLEN`, `NFS_BUFQMAX`), where the header declares them. The sleep channels are
 //!   the addresses of those statics, as in C: `nfssvc_iod` sleeps on `&NFS_BUFQ` and wakes
-//!   `&NFS_BUFQLEN`. A buffer on `nfs_bufq` is linked through `b_freelist` as in C, without
-//!   `b_onfreelist` (that flag marks the cache's own queues).
+//!   `&NFS_BUFQLEN`. A buffer on `nfs_bufq` is linked through `b_freelist` as in C, a counted
+//!   member of a `SecondaryList` under its own mutex, its busy token parked in it.
 //! - `nfs_bioread` and `nfs_write` pass `uio_procp` to `VOP_GETATTR`, which takes a thread:
 //!   when the uio has none (the C would pass NULL) `curproc` stands in, and `proc0` before any
 //!   thread runs.
@@ -144,6 +144,7 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{
     IO_APPEND, IO_SYNC, V_SAVE, VLNK, VN_KNOTE, VREG, VROOT, VTEXT, Vattr, Vnode, VopWriteArgs,
 };
+use hal::owned::Member;
 
 /// `nfs_numasync`: the number of running nfsiods.
 fn nfs_numasync() -> i32 {
@@ -278,7 +279,7 @@ pub fn nfs_bioread(
                     {
                         let rabn =
                             (lbn + 1 + Daddr::from(nra)) * Daddr::from(biosize / DEV_BSIZE as i32);
-                        if incore(vp, rabn).is_none() {
+                        if !incore(vp, rabn) {
                             let Some(rabp) = nfs_getcacheblk(vp, rabn, biosize, p) else {
                                 return Err(Errno::EINTR);
                             };
@@ -648,10 +649,10 @@ pub fn nfs_asyncio(bp: &'static Buf, readahead: bool) -> Result<(), Errno> {
             bp.set(B_WRITEINPROG);
         }
 
-        // SAFETY: the caller owns the busy buffer, so it is on none of the cache's free-list
-        // queues (`bufcache_take` took it off) nor on `nfs_bufq`; an nfsiod unlinks it before
-        // `nfs_doio` completes it, and buffers are pool items that stay in place.
-        unsafe { NFS_BUFQ.0.insert_tail(bp) };
+        // The caller owns the busy buffer, so it is on none of the cache's free-list queues
+        // (`bufcache_take` took it off) nor on `nfs_bufq`: its link goes on the queue, counted
+        // (the cache cannot free it meanwhile), its token stays parked in it for the nfsiod.
+        NFS_BUFQ.lock().push_tail(Member::counted(bp));
         NFS_BUFQLEN.fetch_add(1, Ordering::Relaxed);
 
         wakeup_one(ptr::from_ref(&NFS_BUFQ));

@@ -131,6 +131,7 @@ use crate::ntfs::ntfs_subr::{
     ntfs_ntlookup, ntfs_ntput, ntfs_readattr, ntfs_toupper_unuse, ntfs_toupper_use,
 };
 use crate::ntfs::ntfs_vnops::NTFS_VOPS;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;

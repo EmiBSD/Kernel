@@ -109,13 +109,13 @@ pub static FSCALE: AtomicI32 = AtomicI32::new(crate::sys::param::FSCALE as i32);
 
 /// `BUFCACHEPERCENT`: the default share of memory for the buffer cache.
 pub const BUFCACHEPERCENT: i32 = 20;
-/// `bufcachepercent`.
-#[allow(non_upper_case_globals)] // BUFCACHEPERCENT is the default of the same name
-pub static bufcachepercent: AtomicI32 = AtomicI32::new(BUFCACHEPERCENT);
-
 /// `BUFPAGES`: the default buffer cache size in pages (0: `bufinit` decides).
 pub const BUFPAGES: i64 = 0;
-/// `bufpages`: max number of pages for buffers' data.
-#[allow(non_upper_case_globals)] // BUFPAGES is the default of the same name
-pub static bufpages: AtomicI64 = AtomicI64::new(BUFPAGES);
+
+// `bufcachepercent` and `bufpages` are the buffer cache's (N5.1), which starts them at the
+// defaults above (the checks below).
+pub use kernel::fs::bio::{BUFCACHEPERCENT as bufcachepercent, BUFPAGES as bufpages};
+
+const _: () = assert!(BUFCACHEPERCENT == kernel::fs::bio::BUFCACHEPERCENT_DEFAULT);
+const _: () = assert!(BUFPAGES == 0);
 /* </CODE> */

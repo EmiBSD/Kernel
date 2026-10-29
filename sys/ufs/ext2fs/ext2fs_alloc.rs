@@ -74,6 +74,7 @@ use crate::kern::kern_tc::gettime;
 use crate::kern::subr_prf::{panic, uprintf};
 use crate::kprintf;
 use crate::log;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bdwrite, bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::mount::VFS_VGET;

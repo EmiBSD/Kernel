@@ -190,17 +190,17 @@ use crate::nfs::nfs_vnops::NFS_NUMASYNC;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfsnode::{NFS_BUFQ, NFS_BUFQLEN, NFS_BUFQMAX};
 #[cfg(feature = "nfsclient")]
-use crate::sys::buf::buf_acquire;
-#[cfg(feature = "nfsclient")]
 use crate::sys::buf::{
-    B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_NOCACHE, B_READ,
+    B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_NOCACHE, B_READ, Buf,
 };
 #[cfg(feature = "nfsclient")]
-use crate::sys::buf::{BCSTATS, buf_undirty, bufcache_take};
+use crate::sys::buf::{BCSTATS, buf_undirty, lend};
 #[cfg(feature = "nfsclient")]
 use crate::sys::param::PWAIT;
 #[cfg(feature = "nfsclient")]
 use crate::sys::signal::SIGKILL;
+#[cfg(feature = "nfsclient")]
+use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_scan};
 
 /// `SLP_INIT`: NFS data undergoing initialization.
 #[cfg(feature = "nfsserver")]
@@ -906,16 +906,24 @@ pub fn nfssvc_iod(_arg: *mut c_void) {
     // Just loop around doin our stuff until SIGKILL.
     let mut error: Result<(), Errno> = Ok(());
     loop {
-        while NFS_BUFQ.0.first().is_none() && error.is_ok() {
+        while NFS_BUFQ.lock().is_empty() && error.is_ok() {
             error = tsleep_nsec(ptr::from_ref(&NFS_BUFQ), PWAIT | PCATCH, "nfsidl", INFSLP);
         }
-        while let Some(first) = NFS_BUFQ.0.first() {
-            // Take one off the front of the list.
-            // SAFETY: `first` is the head of the queue `nfs_asyncio` linked it on.
-            unsafe { NFS_BUFQ.0.remove(first) };
+        loop {
+            // Take one off the front of the list: its token, parked in it by the thread
+            // that queued it (`nfs_asyncio`), comes with it.
+            let Some(m) = NFS_BUFQ.lock().pop_head() else {
+                break;
+            };
+            let Some(t) = m.get().take_parked() else {
+                panic(format_args!(
+                    "nfssvc_iod: a queued buffer without its token"
+                ));
+            };
+            drop(m);
             NFS_BUFQLEN.fetch_sub(1, Relaxed);
             wakeup_one(ptr::from_ref(&NFS_BUFQLEN));
-            let mut bp = first;
+            let mut bp = lend(t);
             if bp.flags() & B_READ != 0 {
                 let _ = nfs_doio(bp, None);
             } else {
@@ -927,24 +935,24 @@ pub fn nfssvc_iod(_arg: *mut c_void) {
                         panic(format_args!("nfssvc_iod: buffer without a vnode"));
                     };
                     let s = splbio();
-                    let mut nbp = None;
-                    for b in vp.v_dirtyblkhd.iter() {
+                    let pick = |b: &Buf| {
                         if b.flags() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT | B_NOCACHE) != B_DELWRI {
-                            continue;
+                            return DirtyPick::Skip;
                         }
                         b.set_flags(b.flags() | B_ASYNC);
-                        bufcache_take(b);
-                        buf_acquire(b);
-                        nbp = Some(b);
-                        break;
-                    }
+                        DirtyPick::Take
+                    };
+                    let nbp = match vnode_dirty_scan(&vp.v_bufs, "nfsidl", 0, INFSLP, pick) {
+                        DirtyScan::Taken(t) => Some(lend(t)),
+                        _ => None,
+                    };
                     // For the delayed write, do the first part of nfs_bwrite() up to, but not
                     // including nfs_strategy().
                     if let Some(nbp) = nbp {
                         nbp.set_flags(nbp.flags() & !(B_READ | B_DONE | B_ERROR));
                         buf_undirty(nbp);
                         if let Some(nvp) = nbp.vp() {
-                            nvp.v_numoutput.set(nvp.v_numoutput.get() + 1);
+                            nvp.v_bufs.numoutput_inc();
                         }
                     }
                     splx(s);

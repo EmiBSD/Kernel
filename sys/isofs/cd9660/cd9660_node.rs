@@ -132,6 +132,7 @@ use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_subr::{vget, vput, vrecycle, vrele};
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::queue_adapter;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::brelse;
 use crate::sys::buf::{Buf, ClusterInfo};
 use crate::sys::errno::Errno;

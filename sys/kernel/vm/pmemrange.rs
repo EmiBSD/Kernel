@@ -110,8 +110,8 @@
 //!   `uvm_pmr_init` alone, reaches it, so the path is not reachable): it panics, as LZ did
 //!   after reporting it unported.
 //! - The buffer cache's statistics the allocator reads (`BUFPAGES_DEFICIT`,
-//!   `BUFPAGES_INACT`, over `bcstats`) come through the [`BufCacheStats`] bridge (N5);
-//!   before it is registered they are 0, their values at boot.
+//!   `BUFPAGES_INACT`, over `bcstats`) are `crate::fs::bio`'s since N5.1 (the
+//!   `BufCacheStats` bridge of N3.3 is gone); 0 before `bufinit`, their values at boot.
 //!
 //! ## Redesign
 //! - The ranges' and the pages' links are `hal::tree::Tree`/`hal::list::List` over `'static`
@@ -139,11 +139,9 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 use hal::bootmem;
-use hal::bridges::AlreadyRegistered;
 use hal::intr::IPL_VM;
 use hal::list::{List, ListEntry};
 use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
 use hal::sleep::wakeup;
 use hal::sys::errno::Errno;
 use hal::sys::types::Paddr;
@@ -468,27 +466,8 @@ static FREE: Mutexed<FreeState> = Mutexed::new(IPL_VM, FreeState::new());
 /// Every CPU's page cache (`ci_uvm`, see the module's deviations).
 static UVM_PMR_CACHES: PerCpu<UvmPmrCache> = PerCpu::new();
 
-/// The buffer cache's statistics, once registered.
-static STATS: OnceStatic<&'static dyn BufCacheStats> = OnceStatic::new();
-
 /// The pmemranges' lock-free index (published at the end of `uvm_pmr_init`).
 static PMR_INDEX: PmrIndex = PmrIndex::new();
-
-/// The buffer cache's page statistics the allocator reads to wake the page daemon early
-/// (`<sys/mount.h>`'s `BUFPAGES_DEFICIT` and `BUFPAGES_INACT` over `bcstats`), still `bsd`'s:
-/// a bridge (bridges.toml `BufCacheStats`, N5), no logic.
-pub trait BufCacheStats: Sync {
-    /// `BUFPAGES_DEFICIT`: how far the buffer cache is below its low water mark (0 or more).
-    fn bufpages_deficit(&self) -> i64;
-    /// `BUFPAGES_INACT`: the buffer cache's clean pages above its low water mark (0 or more).
-    fn bufpages_inact(&self) -> i64;
-}
-
-/// Registers the buffer cache's statistics, once (`bsd`'s `uvm_page_init`); a second
-/// registration keeps the first.
-pub fn uvm_pmr_install_stats(s: &'static dyn BufCacheStats) -> Result<(), AlreadyRegistered> {
-    STATS.set(s).map_err(|_| AlreadyRegistered("BufCacheStats"))
-}
 
 /// `uvm_lock_fpageq()`: the free page state, locked until the guard drops.
 pub fn uvm_lock_fpageq() -> MutexedGuard<'static, FreeState> {
@@ -1208,9 +1187,10 @@ pub fn uvm_pmr_getpages(
     // retry: the return point after sleeping is not reachable (uvm_wait is not here).
 
     // check to see if we need to generate some free pages waking the pagedaemon.
-    let (deficit, inact) = STATS
-        .get()
-        .map_or((0, 0), |s| (s.bufpages_deficit(), s.bufpages_inact()));
+    let (deficit, inact) = (
+        crate::fs::bio::bufpages_deficit(),
+        crate::fs::bio::bufpages_inact(),
+    );
     let free = i64::from(UVMEXP.free.load(Ordering::Relaxed));
     if (free - deficit) < i64::from(UVMEXP.freemin.load(Ordering::Relaxed))
         || ((free - deficit) < i64::from(UVMEXP.freetarg.load(Ordering::Relaxed))

@@ -153,6 +153,7 @@ use crate::ntfs::ntfs_inode::{
 use crate::ntfs::ntfs_vfsops::{VG_DONTLOADIN, VG_DONTVALIDFN, VG_EXT, ntfs_vgetex};
 use crate::ntfs::ntfsmount::{NTFS_MFLAG_ALLNAMES, NTFS_MFLAG_CASEINS};
 use crate::queue_adapter;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::lock::LK_EXCLUSIVE;

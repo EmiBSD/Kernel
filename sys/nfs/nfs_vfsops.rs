@@ -938,7 +938,7 @@ pub fn nfs_sync(
                 continue;
             }
             let s = splbio();
-            let empty = vp.v_dirtyblkhd.is_empty();
+            let empty = vp.v_bufs.dirty_is_empty();
             splx(s);
             if empty {
                 continue;

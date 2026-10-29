@@ -192,7 +192,7 @@ pub fn ufs_bmaparray(
         // isn't in the cache, or if we were looking for an indirect block and we've found
         // it.
         let metalbn = xap[x].in_lbn;
-        if (daddr == 0 && incore(vp, metalbn).is_none()) || metalbn == bn {
+        if (daddr == 0 && !incore(vp, metalbn)) || metalbn == bn {
             break;
         }
         // If we get here, we've either got the block in the cache or we have a disk address

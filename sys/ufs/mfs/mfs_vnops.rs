@@ -86,6 +86,7 @@ use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::biodone;
 #[cfg(feature = "diagnostic")]
 use crate::sys::buf::bufq_peek;

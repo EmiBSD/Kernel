@@ -84,6 +84,7 @@ use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::kprintf;
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_SYNC, Buf};
 use crate::sys::buf::{bdwrite, brelse, bwrite};
 use crate::sys::errno::Errno;

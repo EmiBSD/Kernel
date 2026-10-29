@@ -416,7 +416,7 @@ pub fn ext2fs_truncate(
         }
         if length == 0 {
             let s = crate::machine::intr::splbio();
-            if !ovp.v_cleanblkhd.is_empty() || !ovp.v_dirtyblkhd.is_empty() {
+            if !ovp.v_bufs.clean_is_empty() || !ovp.v_bufs.dirty_is_empty() {
                 panic(format_args!("ext2fs_truncate3"));
             }
             crate::machine::intr::splx(s);

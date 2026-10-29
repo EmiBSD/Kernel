@@ -28,8 +28,10 @@
 //! `curproc` (`ci_curproc`, `set_curproc`), `proc0paddr`, the context switch
 //! (`cpu_switchto`, `cpu_fork`), `clear_resched`, `cpu_unidle`, the idle loop hooks
 //! (`cpu_idle_enter`/`cpu_idle_cycle`/`cpu_idle_leave`), `CPU_INFO_FOREACH` and the mutex
-//! nesting counter. M10a adds physio's `vmapbuf`/`vunmapbuf` (`vm_machdep.c`, declared in
-//! `<uvm/uvm_extern.h>`). M11a adds the `MULTIPROCESSOR` contract: `cpu_number`,
+//! nesting counter. M10a added physio's `vmapbuf`/`vunmapbuf` (`vm_machdep.c`, declared in
+//! `<uvm/uvm_extern.h>`), which left the contract at N5.1 (`kernel::vm::km::PhysWindow`, the
+//! same algorithm on every machine; amd64's implementation goes at N10, decision 44). M11a
+//! adds the `MULTIPROCESSOR` contract: `cpu_number`,
 //! `ci_cpuid`, `CPU_IS_RUNNING`, `intr_disable`/`intr_restore` (the kernel lock and the
 //! mutex's parking lots), `cpu_boot_secondary_processors` and the application processor's
 //! entry from the boot glue, `cpu_hatch`; and `ci_cputype`, `ci_smt_id`
@@ -42,7 +44,6 @@ use core::sync::atomic::AtomicI32;
 
 use crate::machine::Machine;
 use crate::machine::bootinfo::BootInfo;
-use crate::sys::buf::Buf;
 
 use crate::sys::errno::Errno;
 use crate::sys::exec::{ExecPackage, PsStrings};
@@ -248,16 +249,6 @@ pub trait Cpu {
         arg: *mut c_void,
     );
 
-    /// `vmapbuf(bp, len)` (`vm_machdep.c`): maps the user pages of a physio request
-    /// (`B_PHYS`, wired by `uvm_vslock_device`; `b_data` is the user address, `b_proc` the
-    /// thread) into kernel virtual space from `phys_map`: `b_data` becomes the kernel address
-    /// and the user one is saved in `b_saveaddr`.
-    fn vmapbuf(bp: &Buf, len: usize);
-
-    /// `vunmapbuf(bp, len)` (`vm_machdep.c`): undoes [`Cpu::vmapbuf`] once the transfer is
-    /// over and restores `b_data` from `b_saveaddr`.
-    fn vunmapbuf(bp: &Buf, len: usize);
-
     /// `setregs(p, pack, stack, arginfo)` (`machdep.c`): clear registers on exec: `p` will
     /// return to user mode at `pack.ep_entry` with the stack pointer at `stack`, every other
     /// register zero and the machine state of a fresh thread.
@@ -415,16 +406,6 @@ pub fn kbd_reset() -> Option<&'static AtomicI32> {
 /// `child_return` on the selected machine.
 pub fn child_return(arg: *mut c_void) {
     Machine::child_return(arg)
-}
-
-/// `vmapbuf` on the selected machine.
-pub fn vmapbuf(bp: &Buf, len: usize) {
-    Machine::vmapbuf(bp, len)
-}
-
-/// `vunmapbuf` on the selected machine.
-pub fn vunmapbuf(bp: &Buf, len: usize) {
-    Machine::vunmapbuf(bp, len)
 }
 
 /// `curproc`: the thread running on this CPU, `None` before `proc0` is set up.

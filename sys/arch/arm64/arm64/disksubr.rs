@@ -58,6 +58,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::kern::subr_disk::{DISK_CHANGE, initdisklabel, readdisksector, readdoslabel};
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
 use crate::sys::buf::{biowait, brelse, geteblk};
 use crate::sys::conf::DevTypeStrategy;

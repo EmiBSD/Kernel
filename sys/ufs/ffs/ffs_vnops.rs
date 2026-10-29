@@ -81,9 +81,9 @@ use crate::kern::vfs_subr::{vnoperm, vwaitforio};
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::intr::{splbio, splx};
-use crate::sys::buf::buf_acquire;
-use crate::sys::buf::{B_BUSY, B_CLRBUF, B_DELWRI, B_NOCACHE, B_SCANNED, B_SYNC};
-use crate::sys::buf::{bawrite, bdwrite, bread, bread_cluster, brelse, bufcache_take, bwrite};
+use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{B_BUSY, B_CLRBUF, B_DELWRI, B_NOCACHE, B_SCANNED, B_SYNC, Buf};
+use crate::sys::buf::{bawrite, bdwrite, bread, bread_cluster, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::sys::mount::{MNT_NOATIME, MNT_WAIT};
@@ -113,6 +113,7 @@ use crate::ufs::ufs::ufs_vnops::{
     ufs_readdir, ufs_readlink, ufs_remove, ufs_rename, ufs_rmdir, ufs_setattr, ufs_strategy,
     ufs_symlink, ufs_unlock, ufsspec_close, ufsspec_read, ufsspec_write,
 };
+use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_for_each, vnode_dirty_scan};
 
 /// `ffs_vops`: the operations of a file, directory or symbolic link on an FFS.
 pub static FFS_VOPS: Vops = Vops {
@@ -442,43 +443,41 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     let mut skipmeta = ap.a_waitfor == MNT_WAIT;
     let mut s = splbio();
     'loop_: loop {
-        for bp in vp.v_dirtyblkhd.iter() {
-            bp.clr(B_SCANNED);
-        }
-        'scan: loop {
-            for bp in vp.v_dirtyblkhd.iter() {
-                // Reasons to skip this buffer: it has already been considered on this
-                // pass, this pass is the first time through on a synchronous flush request
-                // and the buffer being considered is metadata, the buffer has dependencies
-                // that will cause it to be redirtied and it has not already been deferred,
-                // or it is already being written.
+        vnode_dirty_for_each(&vp.v_bufs, |bp| bp.clr(B_SCANNED));
+        loop {
+            // The cache's scan of the dirty list, from its head each time: since we may have
+            // slept during the I/O, we need to start from a known point.
+            let pick = |bp: &Buf| {
+                // Reasons to skip this buffer: it has already been considered on this pass,
+                // this pass is the first time through on a synchronous flush request and the
+                // buffer being considered is metadata, the buffer has dependencies that will
+                // cause it to be redirtied and it has not already been deferred, or it is
+                // already being written.
                 if bp.isset(B_BUSY | B_SCANNED) {
-                    continue;
+                    return DirtyPick::Skip;
                 }
                 if !bp.isset(B_DELWRI) {
                     panic(format_args!("ffs_fsync: not dirty"));
                 }
                 if skipmeta && bp.lblkno() < 0 {
-                    continue;
+                    return DirtyPick::Skip;
                 }
-
-                bufcache_take(bp);
-                buf_acquire(bp);
-                bp.set(B_SCANNED);
-                splx(s);
-                // On our final pass through, do all I/O synchronously so that we can find
-                // out if our flush is failing because of write errors.
-                if passes > 0 || ap.a_waitfor != MNT_WAIT {
-                    bawrite(bp);
-                } else {
-                    bwrite(bp)?;
-                }
-                s = splbio();
-                // Since we may have slept during the I/O, we need to start from a known
-                // point.
-                continue 'scan;
+                DirtyPick::Take
+            };
+            let DirtyScan::Taken(t) = vnode_dirty_scan(&vp.v_bufs, "ffs_fsync", 0, INFSLP, pick)
+            else {
+                break;
+            };
+            t.buf().set(B_SCANNED);
+            splx(s);
+            // On our final pass through, do all I/O synchronously so that we can find out if
+            // our flush is failing because of write errors.
+            if passes > 0 || ap.a_waitfor != MNT_WAIT {
+                kernel::fs::bio::bawrite(t);
+            } else {
+                kernel::fs::bio::bwrite(t)?;
             }
-            break;
+            s = splbio();
         }
         if skipmeta {
             skipmeta = false;
@@ -492,7 +491,7 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
             splx(s);
             // XXX softdep was here. reconsider this locking dance
             s = splbio();
-            if !vp.v_dirtyblkhd.is_empty() {
+            if !vp.v_bufs.dirty_is_empty() {
                 // Block devices associated with filesystems may have new I/O requests
                 // posted for them even if the vnode is locked, so no amount of trying will
                 // get them clean. Thus we give block devices a good effort, then just give

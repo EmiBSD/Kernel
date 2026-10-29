@@ -461,7 +461,7 @@
 //!   u-area with the legacy pointer.
 //! - What `sys/uvm/`'s adapters kept for `bsd` (N3.3 to N3.4e), now here: the page system's
 //!   machine inputs (`uvm_page.c`: the segment policy and `uvm_page_physload`'s lines,
-//!   `uvm_page_init` over the machine's constraints with `BsdBufCacheStats`, `uvm_pagealloc`
+//!   `uvm_page_init` over the machine's constraints, `uvm_pagealloc`
 //!   with the `(obj, anon)` pair, `uvm_shutdown` (N5.1: `uvm_pagealloc_multi` is the kernel's
 //!   `vm::page`'s, with the buffer cache),
 //!   `paddr_is_dma_reachable`, `uvm_page_physdump`, `uvm_pmr_print`); the vnode as the
@@ -526,7 +526,7 @@ use kernel::vm::page::{
     MAX_SEGS, Owner, PhysloadError, SegPolicy, SegStrat, VmPage, VmPhysseg, boot_segments,
     page_init_done, vm_physmem,
 };
-use kernel::vm::pmemrange::BufCacheStats;
+
 use kernel::vm::types::{VmProt, Voff};
 use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 
@@ -1105,22 +1105,6 @@ const SEG_POLICY: SegPolicy = SegPolicy {
     },
 };
 
-/// The buffer cache's statistics of `<sys/mount.h>`, for the kernel's allocator (the
-/// `BufCacheStats` bridge): one call each into the legacy function of the same name.
-struct BsdBufCacheStats;
-
-impl BufCacheStats for BsdBufCacheStats {
-    fn bufpages_deficit(&self) -> i64 {
-        crate::sys::mount::bufpages_deficit()
-    }
-
-    fn bufpages_inact(&self) -> i64 {
-        crate::sys::mount::bufpages_inact()
-    }
-}
-
-static BSD_BUFCACHE_STATS: BsdBufCacheStats = BsdBufCacheStats;
-
 /// The C's `(obj, anon)` pair (at most one of them) as the kernel's [`Owner`].
 pub fn owner<'a>(obj: Option<&'a Object>, anon: Option<&'a Anon>) -> Owner<'a> {
     kassert!(obj.is_none() || anon.is_none());
@@ -1141,8 +1125,6 @@ pub fn paddr_is_dma_reachable(paddr: Paddr) -> bool {
 /// and the buffer cache's statistics). Called from `uvm_init()`. Returns the range of kernel
 /// virtual memory left after the boot allocations in `kvm_startp`/`kvm_endp`.
 pub fn uvm_page_init(kvm_startp: &mut Vaddr, kvm_endp: &mut Vaddr) {
-    // A second registration (a host test's next set-up) keeps the first: the same statics.
-    let _ = kernel::vm::pmemrange::uvm_pmr_install_stats(&BSD_BUFCACHE_STATS);
     // The page system steals its boot memory through the pmap (the host double bootstraps it
     // here, as no boot path does).
     <Machine as Pmap>::pmap_bootstrap_lazy();

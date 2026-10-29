@@ -2504,6 +2504,10 @@ pub(crate) mod tests {
         // And sysctl's disk exports (kernel::sysctl's disknames and diskstats), malloc(9)'d
         // from the memory just replaced.
         kernel::sysctl::sysctl_test_reset();
+        // And the buffer cache (kernel::fs::bio: bufhead, the queues, the kva arena) and the
+        // disk queues' list, whose buffers and pages came from the memory just replaced.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         guard
     }
 

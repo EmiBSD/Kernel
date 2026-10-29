@@ -62,8 +62,9 @@
 //!   `sr_validate_stripsize` returns `Option` (`None` for the C's -1; a zero strip size,
 //!   which loops forever in C, is `None`); `sr_block_get` returns `Option<NonNull<u8>>`.
 //! - Metadata buffers are cell views (`&[Cell<u8>]`, `SrMetaView` structures); `sr_rw`
-//!   reads into and writes from such a view. Its `struct buf` (a local in C) is a `bufpool`
-//!   item, as `physio` makes one, because `VOP_STRATEGY`/`biowait` take `&'static Buf`;
+//!   reads into and writes from such a view. Its `struct buf` (a local in C) is a buffer of
+//!   its own (`sys/buf.rs`'s `with_private_buf`: a `bufpl` item on a list of its own, as
+//!   physio's), because `VOP_STRATEGY`/`biowait` take `&'static Buf`;
 //!   `dma_alloc` is `DmaBuf` (`kern/dma_alloc.c` is not ported: `malloc(9)` memory).
 //! - `sr_meta_save`'s fake work unit and `sr_rebuild`'s two `struct scsi_xfer` locals are
 //!   allocated (`sr_malloc`, `scsi_xfer_pool`), for the same reason.
@@ -174,7 +175,7 @@ use crate::scsi::scsiconf::{
 };
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CALL, B_ERROR, B_PHYS, B_READ, B_WRITE, Buf};
-use crate::sys::buf::{BUFPOOL, biowait};
+use crate::sys::buf::{biowait, with_private_buf};
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DETACH_FORCE, DV_DULL, DVACT_POWERDOWN, Device,
 };
@@ -643,77 +644,65 @@ pub fn sr_rw(
         }
     };
 
-    // The C's `struct buf b` on the stack: a bufpool item, as `physio` makes one.
-    let s = splbio();
-    let Some(mem) = pool_get(&BUFPOOL, PR_WAITOK | PR_ZERO) else {
-        panic(format_args!("sr_rw: pool_get"));
-    };
-    splx(s);
-    let item = mem.cast::<Buf>();
+    // The C's `struct buf b` on the stack: a buffer of our own, as physio's.
+    let rv = with_private_buf(|b| {
+        let mut off = 0;
+        let mut rv = Ok(());
+        while size > 0 {
+            // DNPRINTF(SR_D_MISC, "dma_buf %p, size %zu, blkno %lld")
 
-    let mut off = 0;
-    let mut rv = Ok(());
-    while size > 0 {
-        // DNPRINTF(SR_D_MISC, "dma_buf %p, size %zu, blkno %lld")
+            let bufsize = size.min(MAXPHYS);
+            let chunk = &buf[off..off + bufsize];
+            let data = dma_buf.bytes();
+            if flags == B_WRITE {
+                cells_read(&mut data[..bufsize], chunk);
+            }
 
-        let bufsize = size.min(MAXPHYS);
-        let chunk = &buf[off..off + bufsize];
-        let data = dma_buf.bytes();
-        if flags == B_WRITE {
-            cells_read(&mut data[..bufsize], chunk);
+            // bzero(&b, sizeof(b)): every member this I/O reads is set afresh (the previous
+            // iteration's I/O is done: `biowait`; `bufq_done` cleared `b_bq`).
+            b.set_flags(flags | B_PHYS);
+            b.set_proc_ptr(curproc().map_or(ptr::null(), ptr::from_ref));
+            b.set_dev(dev);
+            b.set_iodone_fn(None);
+            b.set_error(None);
+            b.set_blkno(blkno);
+            b.set_data_ptr(data.as_mut_ptr());
+            b.set_bcount(bufsize as i64);
+            b.set_bufsize(bufsize as i64);
+            b.set_resid(bufsize);
+            b.set_vp(Some(vp));
+
+            if !b.isset(B_READ) {
+                let s = splbio();
+                vp.v_bufs.numoutput_inc();
+                splx(s);
+            }
+
+            let _ = VOP_STRATEGY(vp, b);
+            let _ = biowait(b);
+
+            if b.isset(B_ERROR) {
+                printf(format_args!(
+                    "{}: I/O error {} on dev {:#x} at block {}\n",
+                    DEVNAME(sc),
+                    b.error().map_or(0, |e| e as i32),
+                    dev,
+                    b.blkno()
+                ));
+                rv = Err(Errno::EIO);
+                break;
+            }
+
+            if flags == B_READ {
+                cells_write(chunk, &dma_buf.bytes()[..bufsize]);
+            }
+
+            size -= bufsize;
+            off += bufsize;
+            blkno += bufsize.div_ceil(DEV_BSIZE) as Daddr;
         }
-
-        // SAFETY: a suitably aligned `bufpool` item of `size_of::<Buf>()` bytes, rewritten
-        // (`bzero(&b, sizeof(b))`) while nothing else references it: the previous
-        // iteration's I/O is done (`biowait`).
-        unsafe { item.as_ptr().write(Buf::new()) };
-        // SAFETY: initialised above; it stays allocated until the `pool_put` below.
-        let b: &'static Buf = unsafe { item.as_ref() };
-        b.set_flags(flags | B_PHYS);
-        b.set_proc_ptr(curproc().map_or(ptr::null(), ptr::from_ref));
-        b.set_dev(dev);
-        b.b_iodone.set(None);
-        b.set_error(None);
-        b.set_blkno(blkno);
-        b.set_data_ptr(data.as_mut_ptr());
-        b.set_bcount(bufsize as i64);
-        b.set_bufsize(bufsize as i64);
-        b.set_resid(bufsize);
-        b.b_vp.set(Some(vp));
-
-        if !b.isset(B_READ) {
-            let s = splbio();
-            vp.v_numoutput.set(vp.v_numoutput.get() + 1);
-            splx(s);
-        }
-
-        let _ = VOP_STRATEGY(vp, b);
-        let _ = biowait(b);
-
-        if b.isset(B_ERROR) {
-            printf(format_args!(
-                "{}: I/O error {} on dev {:#x} at block {}\n",
-                DEVNAME(sc),
-                b.error().map_or(0, |e| e as i32),
-                dev,
-                b.blkno()
-            ));
-            rv = Err(Errno::EIO);
-            break;
-        }
-
-        if flags == B_READ {
-            cells_write(chunk, &dma_buf.bytes()[..bufsize]);
-        }
-
-        size -= bufsize;
-        off += bufsize;
-        blkno += bufsize.div_ceil(DEV_BSIZE) as Daddr;
-    }
-
-    let s = splbio();
-    pool_put(&BUFPOOL, mem);
-    splx(s);
+        rv
+    });
 
     vput(vp);
 
@@ -2264,17 +2253,17 @@ pub unsafe fn sr_ccb_rw(
     b.set_resid(usize::try_from(len).unwrap_or(0));
     b.set_data_ptr(data);
     b.set_error(None);
-    b.b_iodone.set(sd.sd_scsi_intr.get());
+    b.set_iodone_fn(sd.sd_scsi_intr.get());
     b.set_proc_ptr(curproc().map_or(ptr::null(), ptr::from_ref));
     b.set_dev(sc.src_dev_mm.get());
-    b.b_vp.set(sc.src_vn.get());
-    b.b_bq.set(None);
+    // `b_bq = NULL`: `bufq_done` cleared it when the ccb's last I/O completed.
+    b.set_vp(sc.src_vn.get());
 
     if !b.isset(B_READ)
         && let Some(vp) = b.vp()
     {
         let s = splbio();
-        vp.v_numoutput.set(vp.v_numoutput.get() + 1);
+        vp.v_bufs.numoutput_inc();
         splx(s);
     }
 

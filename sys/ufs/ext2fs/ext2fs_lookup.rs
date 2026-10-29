@@ -112,6 +112,7 @@ use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_READ, VOP_UNLOCK, VOP_WR
 use crate::kprintf;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::brelse;
 use crate::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_recsize};
 use crate::sys::errno::Errno;

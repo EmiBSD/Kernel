@@ -429,7 +429,7 @@ pub fn VOP_FSYNC(
 
     let mut r = f(&mut a);
     let s = splbio();
-    if r.is_ok() && vp.v_bioflag.get() & VBIOERROR != 0 {
+    if r.is_ok() && vp.v_bufs.bioflag() & VBIOERROR != 0 {
         r = Err(Errno::EIO);
     }
     splx(s);

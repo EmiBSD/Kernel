@@ -85,8 +85,10 @@
 //! - `v_uvm` is `Option<&'static Uvn>`: a `uvm_vnode_pool` item is never freed
 //!   either.
 //! - `struct buf *` (`a_bp`) is a `&'static Buf` (`sys/buf.rs`).
-//! - `RBT_HEAD(buf_rb_bufs, buf)` is the [`BufRbBufs`] adapter, ordered by `vfs_subr.c`'s
-//!   `rb_buf_compare`; `LIST_HEAD(buflists, buf)` is [`Buflists`] through `b_vnbufs`.
+//! - The `[B]` members `v_bioflag`, `v_bufs_tree`, `v_cleanblkhd`, `v_dirtyblkhd` and
+//!   `v_numoutput` are `v_bufs`, the buffer cache's `kernel::fs::bio::VnodeBufs` (N5.1): the
+//!   tree and the lists under the cache's lock, the count and the flags atomics; the cache
+//!   reaches the vnode through the bridge `BufVnode` (`vfs_subr.rs`).
 //! - `a_cred` is the C's `struct ucred *`, a raw pointer, since `NOCRED` and `FSCRED` are
 //!   sentinel values; [`cred_ref`] turns a real one into a reference.
 //! - `IFTOVT`, `VTTOIF` and `MAKEIMODE` are functions over the tables `vfs_subr.rs` defines.
@@ -107,15 +109,15 @@ use crate::sys::fcntl::Flock;
 use crate::sys::mount::Mount;
 use crate::sys::namei::{Componentname, NamecacheRbCache, NcMe};
 use crate::sys::proc::Proc;
-use crate::sys::queue::{ListEntry, ListHead, SlistEntry, TailqEntry, TailqHead};
+use crate::sys::queue::{ListEntry, SlistEntry, TailqEntry, TailqHead};
 use crate::sys::socketvar::Socket;
 use crate::sys::specdev::Specinfo;
 use crate::sys::time::Timespec;
-use crate::sys::tree::{RbtEntry, RbtHead};
+use crate::sys::tree::RbtHead;
 use crate::sys::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
-use crate::tree_adapter;
+use kernel::fs::bio::VnodeBufs;
 use kernel::vm::vnode::Uvn;
 
 /// `enum vtype`: vnode types. `VNON` means no type.
@@ -242,8 +244,6 @@ pub struct Vnode {
     pub v_writecount: Cell<u32>,
     /// \[V\] `v_lockcount`: # threads waiting on lock.
     pub v_lockcount: Cell<u32>,
-    /// \[B\] `v_bioflag`: flags accessed in interrupts.
-    pub v_bioflag: Cell<u32>,
     /// \[B\] `v_holdcnt`: buffer references.
     pub v_holdcnt: Cell<u32>,
     /// `v_id`: capability identifier.
@@ -254,14 +254,9 @@ pub struct Vnode {
     pub v_freelist: TailqEntry<Vnode>,
     /// `v_mntvnodes`: vnodes for mount point.
     pub v_mntvnodes: TailqEntry<Vnode>,
-    /// \[B\] `v_bufs_tree`: lookup of all bufs.
-    pub v_bufs_tree: RbtHead<BufRbBufs>,
-    /// \[B\] `v_cleanblkhd`: clean blocklist head.
-    pub v_cleanblkhd: Buflists,
-    /// \[B\] `v_dirtyblkhd`: dirty blocklist head.
-    pub v_dirtyblkhd: Buflists,
-    /// \[B\] `v_numoutput`: num of writes in progress.
-    pub v_numoutput: Cell<u32>,
+    /// \[B\] `v_bioflag`, `v_bufs_tree`, `v_cleanblkhd`, `v_dirtyblkhd`, `v_numoutput`: the
+    /// vnode's buffers (`kernel::fs::bio::VnodeBufs`).
+    pub v_bufs: VnodeBufs,
     /// \[B\] `v_synclist`: vnode with dirty buffers.
     pub v_synclist: ListEntry<Vnode>,
     /// `v_un`: the union of `v_mountedhere`, `v_socket`, `v_specinfo`, `v_fifoinfo`.
@@ -296,16 +291,12 @@ impl Vnode {
             v_uvcount: Cell::new(0),
             v_writecount: Cell::new(0),
             v_lockcount: Cell::new(0),
-            v_bioflag: Cell::new(0),
             v_holdcnt: Cell::new(0),
             v_id: Cell::new(0),
             v_mount: Cell::new(None),
             v_freelist: TailqEntry::new(),
             v_mntvnodes: TailqEntry::new(),
-            v_bufs_tree: RbtHead::new(),
-            v_cleanblkhd: ListHead::new(),
-            v_dirtyblkhd: ListHead::new(),
-            v_numoutput: Cell::new(0),
+            v_bufs: VnodeBufs::new(),
             v_synclist: ListEntry::new(),
             v_un: Cell::new(VnodeUn::None),
             v_specnext: SlistEntry::new(),
@@ -399,19 +390,6 @@ impl Default for Vnode {
         Self::new()
     }
 }
-
-queue_adapter!(
-    /// `LIST_HEAD(buflists, buf)`: a vnode's clean or dirty buffers, through `b_vnbufs`.
-    pub BVnbufs: Buf, b_vnbufs => ListEntry<Buf>
-);
-
-/// `struct buflists`.
-pub type Buflists = ListHead<BVnbufs>;
-
-tree_adapter!(
-    /// `RBT_HEAD(buf_rb_bufs, buf)`: a vnode's buffers by logical block, through `b_rbbufs`.
-    pub BufRbBufs: Buf, b_rbbufs => RbtEntry, crate::kern::vfs_subr::rb_buf_compare
-);
 
 queue_adapter!(
     /// `TAILQ_HEAD(freelst, vnode)`: the vnode free and hold lists, through `v_freelist`.

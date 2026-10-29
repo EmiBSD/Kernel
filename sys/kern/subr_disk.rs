@@ -133,6 +133,7 @@ use crate::net::if_::{if_addgroup, if_put, if_unit};
 use crate::nfs::nfs_boot::set_nfsbootdevname;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfs_vfsops::nfs_mountroot;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::biowait;
 
 use crate::sys::buf::{B_BUSY, B_DONE, B_ERROR, B_RAW, B_READ, B_WRITE, Buf};

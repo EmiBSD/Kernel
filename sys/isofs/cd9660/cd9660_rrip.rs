@@ -134,6 +134,7 @@ use crate::isofs::cd9660::iso_rrip::{
 use crate::kern::subr_prf::panic;
 use crate::kprintf;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::mount::MNAMELEN;
 use crate::sys::param::{DEV_BSHIFT, MAXHOSTNAMELEN, MAXPATHLEN};

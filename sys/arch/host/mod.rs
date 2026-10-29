@@ -59,7 +59,6 @@ use crate::machine::tcb::Tcb;
 use crate::machine::{
     BootInfo, Console, Cpu, Exit, ExitStatus, Intr, MachineInfo, MachineParam, Pmap, VmParam,
 };
-use crate::sys::buf::BufLegacy;
 
 use crate::sys::device::{Cfdata, Cfdriver, DV_DULL, Device};
 use crate::sys::errno::Errno;
@@ -458,19 +457,6 @@ impl Cpu for Machine {
         _func: fn(*mut core::ffi::c_void),
         _arg: *mut core::ffi::c_void,
     ) {
-    }
-
-    /// User addresses are host addresses here (the host `copyin` dereferences them), so the
-    /// kernel view of a physio buffer is its user address: `b_saveaddr` keeps it as the C
-    /// does and `b_data` stays.
-    fn vmapbuf(bp: &crate::sys::buf::Buf, _len: usize) {
-        bp.set_saveaddr_ptr(bp.data_ptr().cast());
-    }
-
-    /// Undoes the host `vmapbuf`.
-    fn vunmapbuf(bp: &crate::sys::buf::Buf, _len: usize) {
-        bp.set_data_ptr(bp.saveaddr_ptr().cast());
-        bp.set_saveaddr_ptr(core::ptr::null_mut());
     }
 
     /// No user mode to return to.

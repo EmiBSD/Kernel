@@ -906,9 +906,7 @@ pub fn msdosfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                     // If either the whole cluster gets written, or we write the cluster from
                     // its start beyond EOF, then no need to read data from disk.
                     let bp = getblk_wait(thisvp, Daddr::from(cn), bpcluster as i32);
-                    // SAFETY: the buffer is busy for this function (from `getblk`) and
-                    // mapped.
-                    unsafe { clrbuf(bp) };
+                    clrbuf(bp);
                     // Do the bmap now, since pcbmap needs buffers for the fat table. (see
                     // msdosfs_strategy)
                     if bp.blkno() == bp.lblkno() {
@@ -1961,9 +1959,7 @@ pub fn msdosfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         error = pcbmap(dep, bp.lblkno() as u32, Some(&mut blkno), None, None);
         bp.set_blkno(if error.is_err() { -1 } else { blkno });
         if bp.blkno() == -1 {
-            // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
-            // mapped; the strategy owns it until biodone.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
         }
     }
     if bp.blkno() == -1 {

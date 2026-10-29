@@ -98,6 +98,7 @@ use crate::net::if_::{
 };
 use crate::net::if_ethersubr::ETHERBROADCASTADDR;
 use crate::netinet::if_ether::ETHER_ADDR_LEN;
+use crate::sys::buf::BufLegacy;
 use crate::sys::device::Device;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};

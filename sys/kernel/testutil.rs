@@ -1639,11 +1639,11 @@ impl BufTestVnode {
 }
 
 impl crate::fs::bio::BufVnode for BufTestVnode {
-    fn vhold(&self) {
+    fn vhold(&'static self) {
         self.holdcnt.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn vdrop(&self) {
+    fn vdrop(&'static self) {
         self.holdcnt.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -1698,12 +1698,12 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
 
     fn charge_io(&self, _output: bool) {}
 
-    fn syncer_add_dirty(&self) {
+    fn syncer_add_dirty(&'static self) {
         self.bufs.set_bioflag(crate::fs::bio::VBIOONSYNCLIST);
         self.synced.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn syncer_remove(&self) {}
+    fn syncer_remove(&'static self) {}
 
     fn as_any(&'static self) -> &'static dyn core::any::Any {
         self

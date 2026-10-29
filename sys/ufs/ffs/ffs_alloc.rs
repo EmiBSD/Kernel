@@ -85,6 +85,7 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::kprintf;
 use crate::log;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_DONE, Buf};
 use crate::sys::buf::{bawrite, bdwrite, bread, brelse, buf_adjcnt, getblk};
 use crate::sys::errno::Errno;

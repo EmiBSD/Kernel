@@ -131,6 +131,7 @@ use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_NONE;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::dirent::MAXNAMLEN;
 use crate::sys::endian::{letoh16, letoh32};

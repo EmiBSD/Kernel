@@ -80,6 +80,7 @@ use crate::kern::subr_prf::panic;
 use crate::kern::vfs_vops::VOP_FSYNC;
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::machine::cpu::curproc;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_INVAL, B_SYNC, Buf, clrbuf};
 use crate::sys::buf::{bawrite, bdwrite, bread, brelse, buf_adjcnt, bwrite, getblk};
 use crate::sys::errno::Errno;
@@ -267,8 +268,7 @@ pub fn ffs1_balloc(
                 }
                 bp.set_blkno(fsbtodb(fs, newb));
                 if flags & B_CLRBUF != 0 {
-                    // SAFETY: the buffer is ours (busy from getblk) and mapped.
-                    unsafe { clrbuf(bp) };
+                    clrbuf(bp);
                 }
                 *b = Some(bp);
             }
@@ -311,8 +311,7 @@ pub fn ffs1_balloc(
             nalloc += 1;
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
             bp.set_blkno(fsbtodb(fs, nb));
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
 
             // Write synchronously so that indirect blocks never point at garbage.
             if let Err(e) = bwrite(bp) {
@@ -354,8 +353,7 @@ pub fn ffs1_balloc(
             nalloc += 1;
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
             nbp.set_blkno(fsbtodb(fs, nb));
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(nbp) };
+            clrbuf(nbp);
 
             // Write synchronously so that indirect blocks never point at garbage.
             if let Err(e) = bwrite(nbp) {
@@ -394,8 +392,7 @@ pub fn ffs1_balloc(
                 let nbp = getblk_wait(vp, lbn, bsize);
                 nbp.set_blkno(fsbtodb(fs, nb));
                 if flags & B_CLRBUF != 0 {
-                    // SAFETY: the buffer is ours (busy from getblk) and mapped.
-                    unsafe { clrbuf(nbp) };
+                    clrbuf(nbp);
                 }
                 *b = Some(nbp);
             }
@@ -619,8 +616,7 @@ pub fn ffs2_balloc(
                 }
                 bp.set_blkno(fsbtodb(fs, newb));
                 if flags & B_CLRBUF != 0 {
-                    // SAFETY: the buffer is ours (busy from getblk) and mapped.
-                    unsafe { clrbuf(bp) };
+                    clrbuf(bp);
                 }
                 *b = Some(bp);
             }
@@ -665,8 +661,7 @@ pub fn ffs2_balloc(
             nalloc += 1;
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
             bp.set_blkno(fsbtodb(fs, nb));
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
 
             // Write synchronously so that indirect blocks never point at garbage.
             if let Err(e) = bwrite(bp) {
@@ -717,8 +712,7 @@ pub fn ffs2_balloc(
             nalloc += 1;
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
             nbp.set_blkno(fsbtodb(fs, nb));
-            // SAFETY: the buffer is ours (busy from getblk) and mapped.
-            unsafe { clrbuf(nbp) };
+            clrbuf(nbp);
 
             // Write synchronously so that indirect blocks never point at garbage.
             if let Err(e) = bwrite(nbp) {
@@ -764,8 +758,7 @@ pub fn ffs2_balloc(
                 let nbp = getblk_wait(vp, lbn, bsize);
                 nbp.set_blkno(fsbtodb(fs, nb));
                 if flags & B_CLRBUF != 0 {
-                    // SAFETY: the buffer is ours (busy from getblk) and mapped.
-                    unsafe { clrbuf(nbp) };
+                    clrbuf(nbp);
                 }
                 *b = Some(nbp);
             }
@@ -803,8 +796,7 @@ pub fn ffs2_balloc(
             } else {
                 let nbp = getblk_wait(vp, lbn, bsize);
                 nbp.set_blkno(fsbtodb(fs, nb));
-                // SAFETY: the buffer is ours (busy from getblk) and mapped.
-                unsafe { clrbuf(nbp) };
+                clrbuf(nbp);
                 nbp
             };
 

@@ -141,7 +141,7 @@ use crate::machine::cons::consinit;
 use crate::machine::copy::copyout;
 use crate::machine::cpu::{Cpu, cpu_configure, cpu_startup, curcpu};
 use crate::machine::param::MachineParam;
-use crate::sys::buf::{CLEANERPROC, buf_daemon};
+use crate::sys::buf::buf_daemon;
 
 use crate::kern::vm_bsd::uvm_init;
 use crate::kern::vm_bsd::uvm_init_limits;
@@ -608,10 +608,10 @@ pub fn main() -> ! {
     if kernel::exit::start_reaper::<BsdProcGlue>().is_err() {
         panic(format_args!("fork reaper"));
     }
-    // Create the cleaner daemon kernel thread.
-    match kthread_create(buf_daemon, core::ptr::null_mut(), b"cleaner") {
-        Ok(cp) => CLEANERPROC.store(ptr::from_ref(cp).cast_mut(), Ordering::Relaxed),
-        Err(_) => panic(format_args!("fork cleaner")),
+    // Create the cleaner daemon kernel thread (`cleanerproc`: the thread names itself to the
+    // cache, `kernel::fs::bio::buf_daemon`).
+    if kthread_create(buf_daemon, core::ptr::null_mut(), b"cleaner").is_err() {
+        panic(format_args!("fork cleaner"));
     }
     // Create the update daemon kernel thread.
     match kthread_create(syncer_thread, core::ptr::null_mut(), b"update") {

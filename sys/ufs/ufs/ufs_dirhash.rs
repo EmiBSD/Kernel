@@ -98,6 +98,7 @@ use crate::kern::subr_pool::{pool_destroy, pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{Str, panic};
 use crate::machine::intr::IPL_NONE;
 use crate::sys::buf::Buf;
+use crate::sys::buf::BufLegacy;
 use crate::sys::buf::brelse;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DIRHASH, M_NOWAIT, M_ZERO};
@@ -1226,7 +1227,7 @@ mod tests {
     use crate::machine::cpu::Cpu;
     use crate::machine::intr::{splbio, splx};
     use crate::sys::buf::{B_ERROR, B_READ};
-    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
+    use crate::sys::buf::{biodone, bufinit};
     use crate::sys::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
     use crate::sys::mount::{MNT_WAIT, Mount, VB_WAIT, VB_WRITE, VFS_ROOT, VFS_VGET};
     use crate::sys::param::DEV_BSIZE;
@@ -1446,27 +1447,9 @@ mod tests {
         Machine::set_curproc(Machine::curcpu(), Some(p));
         crate::kern::proc_glue::test_set_limits(p, 128);
 
-        BUFHEAD.0.init();
-        for c in [
-            &BCSTATS.numbufs,
-            &BCSTATS.numbufpages,
-            &BCSTATS.numdirtypages,
-            &BCSTATS.numcleanpages,
-            &BCSTATS.pendingwrites,
-            &BCSTATS.pendingreads,
-            &BCSTATS.numwrites,
-            &BCSTATS.numreads,
-            &BCSTATS.cachehits,
-            &BCSTATS.busymapped,
-            &BCSTATS.delwribufs,
-        ] {
-            c.store(0, Ordering::Relaxed);
-        }
-        CLEANCACHE.hotbufpages.set(0);
-        CLEANCACHE.warmbufpages.set(0);
-        CLEANCACHE.cachepages.set(0);
-        BUFKVM.store(0, Ordering::Relaxed);
-        crate::conf::param::bufpages.store(0, Ordering::Relaxed);
+        // A fresh buffer cache over this test's memory.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
         bufinit();
 
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = image;

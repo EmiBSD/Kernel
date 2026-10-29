@@ -1574,9 +1574,7 @@ pub fn ufs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
             return Err(e);
         }
         if bp.blkno() == -1 {
-            // SAFETY: a buffer handed to the strategy routine is busy for this I/O and
-            // mapped; the strategy owns it until biodone.
-            unsafe { clrbuf(bp) };
+            clrbuf(bp);
         }
     }
     if bp.blkno() == -1 {

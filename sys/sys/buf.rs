@@ -54,443 +54,75 @@
 
 /* <CODE> */
 //! `<sys/buf.h>`: the buffer header that describes an I/O operation in the kernel (`struct
-//! buf`), its `B_*` flags, the disk queues (`struct bufq`) and the 2Q cache's queues
-//! (`struct bufcache`), and the interface of the buffer cache (`vfs_bio.c`,
-//! `vfs_biomem.c`, `kern_bufq.c`).
+//! buf`), its `B_*` flags, the disk queues (`struct bufq`) and the interface of the buffer
+//! cache (`vfs_bio.c`, `vfs_biomem.c`, `kern_bufq.c`, `kern_physio.c`), as `bsd` names them.
 //!
 //! Upstream: sys/sys/buf.h @ 3ce1f3f79392
 //!
-//! A buffer is a `bufpool` item, so it travels as `&'static Buf` with `Cell` members, as a
-//! vnode or an mbuf does: the C mutates buffers through shared pointers at `splbio`, and the
-//! `B_BUSY` flag says who owns one. `buf_put` hands it back to the pool; nobody touches it
-//! after that, as in C.
+//! Since N5.1 the header, its owner's token, the cache, the disk queues and physio are the
+//! kernel crate's (`kernel::fs::{buf, bio, biomem, bufq, physio}`); this module is their face
+//! for the `bsd` modules that still name a busy buffer by address (`&'static Buf`, the C's
+//! `struct buf *`): the drivers and the file systems, until N7 and N5.2 give them tokens.
+//! The legacy protocol: a busy buffer `bsd` code holds by address has its token
+//! (`kernel::fs::buf::BufRef`) parked in it. Every function here that hands a busy buffer out
+//! ([`bread`], [`getblk`], [`bufq_dequeue`], a strategy routine's argument, ...) parks the
+//! token and lends the buffer ([`lend`]); every one that takes a buffer back ([`brelse`],
+//! [`bwrite`], [`biodone`], [`bufq_queue`], ...) takes the token out ([`token_of`]): the
+//! parked one, else (a driver's own buffer) a new one. The lent `&'static Buf` is valid until
+//! the token is consumed (the C's rule: a `struct buf *` is the `B_BUSY` owner's until
+//! `brelse` or `biodone`); that rule is the one `unsafe` this boundary keeps ([`legacy_ref`]),
+//! with LZ's `unsafe fn data()` (the drivers' and file systems' view of `b_data`), both paid
+//! at N7 (D-N5.1-1, the user's decision of 2026-10-28: option (a)).
 //!
 //! ## Deviations
-//! - `NOLIST`, the sentinel the C writes into `b_vnbufs.le_next` and `b_freelist.tqe_next` of
-//!   a buffer on no vnode list or free list, is two flags, `b_onvnbufs` and `b_onfreelist`:
-//!   the queue links are private to `sys/queue.rs`.
-//! - `union bufq_data` (`bufq_data_fifo` and `bufq_data_nscan`, both one `SIMPLEQ_ENTRY`) is
-//!   one link, `b_bufq`, which both disciplines use through [`BufqEntries`].
-//! - `b_error` is `Option<Errno>`: `None` is the C's 0.
-//! - `b_iodone` is an `Option<fn(&'static Buf)>`, `b_data` a raw pointer (the buffer's kernel
-//!   mapping, or NULL), `b_saveaddr` a `*mut c_void` as in C.
-//! - `b_flags` is an `i64` (the C's `volatile long`) changed at `splbio`; the `B_*` flags are
-//!   `i64` constants.
-//! - `UNCLEAN_PAGES` is [`unclean_pages`]; `clrbuf` is a function; the prototypes are the
-//!   functions of `vfs_bio.rs`, `vfs_biomem.rs`, `kern_bufq.rs` and `vfs_subr.rs`.
-//! - `struct bufq_impl` is `kern_bufq.c`'s, so `bufq_impl` names `kern_bufq.rs`'s
-//!   [`BufqImpl`].
+//! - `b_error` is `Option<Errno>`: `None` is the C's 0. `b_iodone` is an `Iodone` (a
+//!   driver's `fn(&'static Buf)` is `Iodone::Legacy`). `b_flags` is an `i64` (the C's
+//!   `volatile long`), the `B_*` flags `i64` constants.
+//! - `incore` answers whether the block is cached, not with the buffer (its callers only
+//!   test it); `clrbuf` is safe (the token's view clears the bytes).
+//! - `bufinit` takes the machine's `physmem` from `sys/systm.rs`.
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use crate::kern::kern_bufq::BufqImpl;
-use crate::machine::intr::IPL_BIO;
-use crate::queue_adapter;
+use hal::owned::{OwnedList, SecondaryRef};
+use hal::pool::PR_WAITOK;
+use kernel::fs::bio;
+
+use crate::kern::subr_prf::panic;
+use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
-use crate::sys::mutex::Mutex;
-use crate::sys::param::{MAXPHYS, PAGE_SIZE};
+use crate::sys::param::DEV_BSIZE;
 use crate::sys::proc::Proc;
-use crate::sys::queue::{
-    ListEntry, ListHead, SimpleqEntry, SimpleqHead, SlistEntry, TailqEntry, TailqHead,
-};
-use crate::sys::tree::RbtEntry;
+use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Daddr, Dev, Off};
+use crate::sys::uio::Uio;
 use crate::sys::vnode::Vnode;
-use kernel::vm::object::{ObjKind, Object};
 
-// The functions `<sys/buf.h>` declares, and the cache's globals its callers read, named through
-// this module whatever module implements them (N5.1: the cache moves into `kernel::fs`).
-pub use crate::kern::kern_bufq::{
-    bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_peek, bufq_queue,
+pub use kernel::fs::bio::{
+    BCSTATS, BUFHIGHPAGES, BUFKVM, BUFLOWPAGES, Bcstats, bufadjust, unclean_pages,
 };
-pub use crate::kern::kern_physio::{minphys, physio};
-pub use crate::kern::vfs_bio::{
-    BCSTATS, BUFHEAD, BUFHIGHPAGES, BUFKVM, BUFLOWPAGES, BUFPOOL, CLEANCACHE, CLEANERPROC, bawrite,
-    bdwrite, biodone, biowait, bread, bread_cluster, breadn, brelse, buf_adjcnt, buf_daemon,
-    buf_dirty, buf_undirty, bufadjust, bufcache_take, bufinit, bwrite, getblk, geteblk, incore,
+pub use kernel::fs::buf::{
+    B_AGE, B_ASYNC, B_BAD, B_BC, B_BITS, B_BUSY, B_CACHE, B_CALL, B_CLRBUF, B_COLD, B_DEFERRED,
+    B_DELWRI, B_DONE, B_EINTR, B_ERROR, B_INVAL, B_NEEDCOMMIT, B_NOCACHE, B_PDAEMON, B_PHYS, B_RAW,
+    B_READ, B_RELEASED, B_SCANNED, B_SYNC, B_WANTED, B_WARM, B_WRITE, B_WRITEINPROG, B_XXX,
+    BCACHE_MIN, BUFPL, BUFQ_DEFAULT, BUFQ_FIFO, BUFQ_HI, BUFQ_HOWMANY, BUFQ_LOW, BUFQ_NSCAN,
+    BUFQ_NSCAN_N, Buf, BufRef, ByBufhead, ByFreelist, ClusterInfo, Iodone, RESERVE_PAGES,
+    RESERVE_SLOTS,
 };
-pub use crate::kern::vfs_biomem::{buf_acquire, buf_acquire_nomap};
-
-// Buffer queues
-
-/// `BUFQ_NSCAN_N`: the segment the nscan discipline sorts at a time.
-pub const BUFQ_NSCAN_N: i32 = 128;
-/// `BUFQ_FIFO`.
-pub const BUFQ_FIFO: i32 = 0;
-/// `BUFQ_NSCAN`.
-pub const BUFQ_NSCAN: i32 = 1;
-/// `BUFQ_DEFAULT`.
-pub const BUFQ_DEFAULT: i32 = BUFQ_NSCAN;
-/// `BUFQ_HOWMANY`.
-pub const BUFQ_HOWMANY: usize = 2;
-
-// Write limits for bufq - defines high and low water marks for how many kva slots are allowed
-// to be consumed to parallelize writes from the buffer cache from any individual bufq.
-
-/// `BUFQ_HI`.
-pub const BUFQ_HI: u32 = 128;
-/// `BUFQ_LOW`.
-pub const BUFQ_LOW: u32 = 64;
-
-/// `struct bufq`: a disk's queue of buffers, with the discipline `bufq_impl` keeps in
-/// `bufq_data`.
-///
-/// Protected by: `bufq_mtx` (the list of all queues by `bufqs_mtx`).
-pub struct Bufq {
-    /// `bufq_entries`: the link in `bufqs`.
-    pub bufq_entries: SlistEntry<Bufq>,
-    /// `bufq_mtx`.
-    pub bufq_mtx: Mutex,
-    /// `bufq_data`: the discipline's head, from its `impl_create`.
-    pub bufq_data: Cell<*mut c_void>,
-    /// `bufq_outstanding`: buffers queued and not yet done.
-    pub bufq_outstanding: Cell<u32>,
-    /// `bufq_hi`: `bufq_wait` sleeps at this many outstanding buffers.
-    pub bufq_hi: Cell<u32>,
-    /// `bufq_low`: and wakes below this many.
-    pub bufq_low: Cell<u32>,
-    /// `bufq_waiting`: the writers sleeping in `bufq_wait`.
-    pub bufq_waiting: Cell<i32>,
-    /// `bufq_stop`: `bufq_quiesce` stopped the queue.
-    pub bufq_stop: Cell<i32>,
-    /// `bufq_type`: `BUFQ_FIFO` or `BUFQ_NSCAN`.
-    pub bufq_type: Cell<i32>,
-    /// `bufq_impl`: the discipline.
-    pub bufq_impl: Cell<Option<&'static BufqImpl>>,
-}
-
-// SAFETY: the members are changed under `bufq_mtx` (or `bufqs_mtx` for the link), as in C;
-// the kernel runs one CPU.
-unsafe impl Sync for Bufq {}
-
-impl Bufq {
-    /// A queue with no discipline, for `bufq_init` to set up (a disk's softc holds one).
-    pub const fn new() -> Self {
-        Self {
-            bufq_entries: SlistEntry::new(),
-            bufq_mtx: Mutex::new(IPL_BIO),
-            bufq_data: Cell::new(ptr::null_mut()),
-            bufq_outstanding: Cell::new(0),
-            bufq_hi: Cell::new(0),
-            bufq_low: Cell::new(0),
-            bufq_waiting: Cell::new(0),
-            bufq_stop: Cell::new(0),
-            bufq_type: Cell::new(0),
-            bufq_impl: Cell::new(None),
-        }
-    }
-}
-
-impl Default for Bufq {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-queue_adapter!(
-    /// `SLIST_HEAD(, bufq) bufqs`: every initialised queue, through `bufq_entries`.
-    pub BufqList: Bufq, bufq_entries => SlistEntry<Bufq>
-);
-
-queue_adapter!(
-    /// `SIMPLEQ_HEAD(bufq_fifo_head, buf)` and `SIMPLEQ_HEAD(bufq_nscan_head, buf)`: a
-    /// discipline's buffers, through `b_bufq` (the C's `bqf_entries` of either union member).
-    pub BufqEntries: Buf, b_bufq => SimpleqEntry<Buf>
-);
-
-/// `struct bufq_fifo_head`.
-pub type BufqFifoHead = SimpleqHead<BufqEntries>;
-/// `struct bufq_nscan_head`.
-pub type BufqNscanHead = SimpleqHead<BufqEntries>;
-
-/// `struct buf`: the buffer header describes an I/O operation in the kernel.
-///
-/// Locks: `splbio` for the lists and the flags; the rest belongs to whoever has it `B_BUSY`.
-pub struct Buf {
-    /// `b_rbbufs`: vnode "hash" tree.
-    pub b_rbbufs: RbtEntry,
-    /// `b_list`: all allocated buffers.
-    pub b_list: ListEntry<Buf>,
-    /// `b_vnbufs`: buffer's associated vnode.
-    pub b_vnbufs: ListEntry<Buf>,
-    /// Whether `b_vnbufs` is linked (the C's `LIST_NEXT(bp, b_vnbufs) != NOLIST`).
-    pub b_onvnbufs: Cell<bool>,
-    /// `b_freelist`: free list position if not active.
-    pub b_freelist: TailqEntry<Buf>,
-    /// Whether `b_freelist` is linked (the C's `b_freelist.tqe_next != NOLIST`).
-    pub b_onfreelist: Cell<bool>,
-    /// `b_proc`: associated proc; NULL if kernel.
-    pub b_proc: Cell<*const Proc>,
-    /// `b_flags`: `B_*` flags.
-    pub b_flags: Cell<i64>,
-    /// `b_bufsize`: allocated buffer size.
-    pub b_bufsize: Cell<i64>,
-    /// `b_bcount`: valid bytes in buffer.
-    pub b_bcount: Cell<i64>,
-    /// `b_resid`: remaining I/O.
-    pub b_resid: Cell<usize>,
-    /// `b_error`: errno value.
-    pub b_error: Cell<Option<Errno>>,
-    /// `b_dev`: device associated with buffer.
-    pub b_dev: Cell<Dev>,
-    /// `b_data`: associated data.
-    pub b_data: Cell<*mut u8>,
-    /// `b_saveaddr`: original `b_data` for physio.
-    pub b_saveaddr: Cell<*mut c_void>,
-    /// `b_valist`: LRU of va to reuse.
-    pub b_valist: TailqEntry<Buf>,
-    /// `b_bufq`: the link of the disk queue's discipline (`union bufq_data`).
-    pub b_bufq: SimpleqEntry<Buf>,
-    /// `b_bq`: what bufq this buf is on.
-    pub b_bq: Cell<Option<&'static Bufq>>,
-    /// `b_pobj`: the object holding the pages (`b_uobj`, or a cluster's first buffer's).
-    pub b_pobj: Cell<*const Object>,
-    /// `b_uobj`: object containing the pages (the buffer cache's dummy object).
-    pub b_uobj: Object,
-    /// `b_poffs`: offset within object.
-    pub b_poffs: Cell<Off>,
-    /// `b_lblkno`: logical block number.
-    pub b_lblkno: Cell<Daddr>,
-    /// `b_blkno`: underlying physical block number.
-    pub b_blkno: Cell<Daddr>,
-    /// `b_iodone`: function to call upon completion. Will be called at `splbio()`.
-    pub b_iodone: Cell<Option<fn(&'static Buf)>>,
-    /// `b_vp`: device vnode.
-    pub b_vp: Cell<Option<&'static Vnode>>,
-    /// `b_dirtyoff`: offset in buffer of dirty region.
-    pub b_dirtyoff: Cell<i32>,
-    /// `b_dirtyend`: offset of end of dirty region.
-    pub b_dirtyend: Cell<i32>,
-    /// `b_validoff`: offset in buffer of valid region.
-    pub b_validoff: Cell<i32>,
-    /// `b_validend`: offset of end of valid region.
-    pub b_validend: Cell<i32>,
-}
-
-// SAFETY: the members are changed at `splbio` or by the buffer's `B_BUSY` owner, as in C; the
-// kernel runs one CPU.
-unsafe impl Sync for Buf {}
-
-impl Buf {
-    /// A zeroed buffer, as `pool_get(&bufpool, PR_ZERO)` returns it.
-    pub const fn new() -> Self {
-        Self {
-            b_rbbufs: RbtEntry::new(),
-            b_list: ListEntry::new(),
-            b_vnbufs: ListEntry::new(),
-            b_onvnbufs: Cell::new(false),
-            b_freelist: TailqEntry::new(),
-            b_onfreelist: Cell::new(false),
-            b_proc: Cell::new(ptr::null()),
-            b_flags: Cell::new(0),
-            b_bufsize: Cell::new(0),
-            b_bcount: Cell::new(0),
-            b_resid: Cell::new(0),
-            b_error: Cell::new(None),
-            b_dev: Cell::new(0),
-            b_data: Cell::new(ptr::null_mut()),
-            b_saveaddr: Cell::new(ptr::null_mut()),
-            b_valist: TailqEntry::new(),
-            b_bufq: SimpleqEntry::new(),
-            b_bq: Cell::new(None),
-            b_pobj: Cell::new(ptr::null()),
-            b_uobj: Object::dummy(ObjKind::Bufcache, 0),
-            b_poffs: Cell::new(0),
-            b_lblkno: Cell::new(0),
-            b_blkno: Cell::new(0),
-            b_iodone: Cell::new(None),
-            b_vp: Cell::new(None),
-            b_dirtyoff: Cell::new(0),
-            b_dirtyend: Cell::new(0),
-            b_validoff: Cell::new(0),
-            b_validend: Cell::new(0),
-        }
-    }
-
-    /// `ISSET(bp->b_flags, f)`.
-    pub fn isset(&self, f: i64) -> bool {
-        self.b_flags.get() & f != 0
-    }
-
-    /// `SET(bp->b_flags, f)`.
-    pub fn set(&self, f: i64) {
-        self.b_flags.set(self.b_flags.get() | f);
-    }
-
-    /// `CLR(bp->b_flags, f)`.
-    pub fn clr(&self, f: i64) {
-        self.b_flags.set(self.b_flags.get() & !f);
-    }
-
-    /// `bp->b_flags`.
-    pub fn flags(&self) -> i64 {
-        self.b_flags.get()
-    }
-
-    /// `bp->b_flags = f`.
-    pub fn set_flags(&self, f: i64) {
-        self.b_flags.set(f);
-    }
-
-    /// `bp->b_bufsize`.
-    pub fn bufsize(&self) -> i64 {
-        self.b_bufsize.get()
-    }
-
-    /// `bp->b_bufsize = n`.
-    pub fn set_bufsize(&self, n: i64) {
-        self.b_bufsize.set(n);
-    }
-
-    /// `bp->b_bcount`.
-    pub fn bcount(&self) -> i64 {
-        self.b_bcount.get()
-    }
-
-    /// `bp->b_bcount = n`.
-    pub fn set_bcount(&self, n: i64) {
-        self.b_bcount.set(n);
-    }
-
-    /// `bp->b_resid`.
-    pub fn resid(&self) -> usize {
-        self.b_resid.get()
-    }
-
-    /// `bp->b_resid = n`.
-    pub fn set_resid(&self, n: usize) {
-        self.b_resid.set(n);
-    }
-
-    /// `bp->b_error`: `None` for 0.
-    pub fn error(&self) -> Option<Errno> {
-        self.b_error.get()
-    }
-
-    /// `bp->b_error = e`.
-    pub fn set_error(&self, e: Option<Errno>) {
-        self.b_error.set(e);
-    }
-
-    /// `bp->b_dev`.
-    pub fn dev(&self) -> Dev {
-        self.b_dev.get()
-    }
-
-    /// `bp->b_dev = dev`.
-    pub fn set_dev(&self, dev: Dev) {
-        self.b_dev.set(dev);
-    }
-
-    /// `bp->b_lblkno`.
-    pub fn lblkno(&self) -> Daddr {
-        self.b_lblkno.get()
-    }
-
-    /// `bp->b_lblkno = bn`.
-    pub fn set_lblkno(&self, bn: Daddr) {
-        self.b_lblkno.set(bn);
-    }
-
-    /// `bp->b_blkno`.
-    pub fn blkno(&self) -> Daddr {
-        self.b_blkno.get()
-    }
-
-    /// `bp->b_blkno = bn`.
-    pub fn set_blkno(&self, bn: Daddr) {
-        self.b_blkno.set(bn);
-    }
-
-    /// `bp->b_dirtyoff`.
-    pub fn dirtyoff(&self) -> i32 {
-        self.b_dirtyoff.get()
-    }
-
-    /// `bp->b_dirtyoff = n`.
-    pub fn set_dirtyoff(&self, n: i32) {
-        self.b_dirtyoff.set(n);
-    }
-
-    /// `bp->b_dirtyend`.
-    pub fn dirtyend(&self) -> i32 {
-        self.b_dirtyend.get()
-    }
-
-    /// `bp->b_dirtyend = n`.
-    pub fn set_dirtyend(&self, n: i32) {
-        self.b_dirtyend.set(n);
-    }
-
-    /// `bp->b_validoff`.
-    pub fn validoff(&self) -> i32 {
-        self.b_validoff.get()
-    }
-
-    /// `bp->b_validoff = n`.
-    pub fn set_validoff(&self, n: i32) {
-        self.b_validoff.set(n);
-    }
-
-    /// `bp->b_validend`.
-    pub fn validend(&self) -> i32 {
-        self.b_validend.get()
-    }
-
-    /// `bp->b_validend = n`.
-    pub fn set_validend(&self, n: i32) {
-        self.b_validend.set(n);
-    }
-
-    /// `bp->b_poffs`.
-    pub fn poffs(&self) -> Off {
-        self.b_poffs.get()
-    }
-
-    /// `bp->b_poffs = off`.
-    pub fn set_poffs(&self, off: Off) {
-        self.b_poffs.set(off);
-    }
-
-    /// The buffer's data: `b_bcount` bytes at `b_data`.
-    ///
-    /// # Safety
-    ///
-    /// The caller owns the buffer (it is `B_BUSY` for the caller, as `bread`, `getblk` and
-    /// `geteblk` return it), the buffer is mapped (`b_data` is not NULL) and no other slice of
-    /// it is alive.
-    #[allow(clippy::mut_from_ref)] // the B_BUSY owner's view, as the C's b_data
-    pub unsafe fn data(&self) -> &mut [u8] {
-        let len = usize::try_from(self.b_bcount.get()).unwrap_or(0);
-        // SAFETY: the caller's contract; a mapped buffer has `b_bufsize >= b_bcount` bytes at
-        // `b_data` (`buf_map`).
-        unsafe { core::slice::from_raw_parts_mut(self.b_data.get(), len) }
-    }
-
-    /// The buffer's object (`b_pobj`).
-    pub fn pobj(&self) -> Option<&Object> {
-        // SAFETY: `b_pobj` is NULL, the buffer's own `b_uobj` or the `b_uobj` of the first
-        // buffer of a read cluster, which outlives the cluster's I/O (`bread_cluster`).
-        unsafe { self.b_pobj.get().as_ref() }
-    }
-}
-
-impl Default for Buf {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use kernel::fs::bufq::{
+    Bufq, bufq_destroy, bufq_done, bufq_drain, bufq_init, bufq_peek, bufq_quiesce, bufq_restart,
+};
+pub use kernel::fs::physio::minphys;
 
 /// The members `bsd`'s drivers and file systems reach as the C's pointers (`b_data`,
-/// `b_saveaddr`, `b_proc`) or as `bsd`'s vnode (`b_vp`), whatever the buffer header's own
-/// shape: the call sites name these accessors, so the header can change under them (N5.1).
+/// `b_saveaddr`, `b_proc`), as `bsd`'s vnode (`b_vp`) or as a driver's callback (`b_iodone`),
+/// over the kernel's buffer header, whose words they are.
 pub trait BufLegacy {
     /// `bp->b_data`: the address of the buffer's bytes, NULL when it is not mapped.
     fn data_ptr(&self) -> *mut u8;
-    /// `bp->b_data = p`.
+    /// `bp->b_data = p` (a driver's or physio's own memory).
     fn set_data_ptr(&self, p: *mut u8);
     /// `bp->b_saveaddr`.
     fn saveaddr_ptr(&self) -> *mut c_void;
@@ -502,212 +134,347 @@ pub trait BufLegacy {
     fn set_proc_ptr(&self, p: *const Proc);
     /// `bp->b_vp`: the vnode the buffer belongs to.
     fn vp(&self) -> Option<&'static Vnode>;
+    /// `bp->b_vp = vp` of a buffer the cache keeps on no vnode list (a driver's own:
+    /// `softraid`'s), without a hold.
+    fn set_vp(&self, vp: Option<&'static Vnode>);
+    /// `bp->b_iodone = f` (a driver's callback, `B_CALL`).
+    fn set_iodone_fn(&self, f: Option<fn(&'static Buf)>);
+    /// The buffer's data: `b_bcount` bytes at `b_data`.
+    ///
+    /// # Safety
+    ///
+    /// The caller owns the buffer (it is `B_BUSY` for the caller, as [`bread`], [`getblk`] and
+    /// [`geteblk`] return it, its token parked in it), the buffer is mapped (`b_data` is not
+    /// NULL) and no other slice of it is alive.
+    #[allow(clippy::mut_from_ref)] // the B_BUSY owner's view, as the C's b_data
+    unsafe fn data(&self) -> &mut [u8];
 }
 
 impl BufLegacy for Buf {
     fn data_ptr(&self) -> *mut u8 {
-        self.b_data.get()
+        ptr::with_exposed_provenance_mut(self.data_addr())
     }
 
     fn set_data_ptr(&self, p: *mut u8) {
-        self.b_data.set(p);
+        self.set_data_addr(p.expose_provenance());
     }
 
     fn saveaddr_ptr(&self) -> *mut c_void {
-        self.b_saveaddr.get()
+        ptr::with_exposed_provenance_mut(self.saveaddr())
     }
 
     fn set_saveaddr_ptr(&self, p: *mut c_void) {
-        self.b_saveaddr.set(p);
+        self.set_saveaddr(p.expose_provenance());
     }
 
     fn proc_ptr(&self) -> *const Proc {
-        self.b_proc.get()
+        ptr::with_exposed_provenance(self.proc_addr())
     }
 
     fn set_proc_ptr(&self, p: *const Proc) {
-        self.b_proc.set(p);
+        self.set_proc_addr(p.expose_provenance());
     }
 
     fn vp(&self) -> Option<&'static Vnode> {
-        self.b_vp.get()
-    }
-}
-
-queue_adapter!(
-    /// `LIST_HEAD(bufhead, buf)`: all allocated buffers, through `b_list`.
-    pub BList: Buf, b_list => ListEntry<Buf>
-);
-
-/// `struct bufhead`.
-pub type Bufhead = ListHead<BList>;
-
-queue_adapter!(
-    /// `TAILQ_HEAD(bufqueue, buf)`: the cache's queues, through `b_freelist`.
-    pub BFreelist: Buf, b_freelist => TailqEntry<Buf>
-);
-
-queue_adapter!(
-    /// `TAILQ_HEAD(, buf) buf_valist`: mapped buffers whose kva may be reused, through
-    /// `b_valist`.
-    pub BValist: Buf, b_valist => TailqEntry<Buf>
-);
-
-/// `struct bufqueue`.
-pub type Bufqueue = TailqHead<BFreelist>;
-
-/// `struct bufcache`: one 2Q cache (`vfs_bio.c`).
-///
-/// Protected by: `splbio`.
-pub struct Bufcache {
-    /// `hotbufpages`.
-    pub hotbufpages: Cell<i64>,
-    /// `warmbufpages`.
-    pub warmbufpages: Cell<i64>,
-    /// `cachepages`.
-    pub cachepages: Cell<i64>,
-    /// `hotqueue`.
-    pub hotqueue: Bufqueue,
-    /// `coldqueue`.
-    pub coldqueue: Bufqueue,
-    /// `warmqueue`.
-    pub warmqueue: Bufqueue,
-}
-
-// SAFETY: changed at `splbio`, as in C; the kernel runs one CPU.
-unsafe impl Sync for Bufcache {}
-
-impl Bufcache {
-    /// An empty cache (`bufcache_init` initialises the queues).
-    pub const fn new() -> Self {
-        Self {
-            hotbufpages: Cell::new(0),
-            warmbufpages: Cell::new(0),
-            cachepages: Cell::new(0),
-            hotqueue: TailqHead::new(),
-            coldqueue: TailqHead::new(),
-            warmqueue: TailqHead::new(),
+        let vb = self.vnode_bufs()?;
+        let any = vb.owner().as_any();
+        match any.downcast_ref::<Vnode>() {
+            Some(vp) => Some(vp),
+            None => panic(format_args!("buf {:p}: b_vp is not a vnode", self)),
         }
     }
-}
 
-impl Default for Bufcache {
-    fn default() -> Self {
-        Self::new()
+    fn set_vp(&self, vp: Option<&'static Vnode>) {
+        Buf::set_vp_unheld(self, vp.map(|vp| &vp.v_bufs));
+    }
+
+    fn set_iodone_fn(&self, f: Option<fn(&'static Buf)>) {
+        self.set_iodone(f.map(Iodone::Legacy));
+    }
+
+    unsafe fn data(&self) -> &mut [u8] {
+        let len = usize::try_from(self.bcount()).unwrap_or(0);
+        // SAFETY: the caller's contract: it is the buffer's `B_BUSY` owner, the buffer is
+        // mapped and no other slice of it is alive. A cache buffer's `b_data` is the address
+        // of the view its token holds (`BufRef::set_view` exposed it), `b_bufsize >= b_bcount`
+        // bytes the parked token keeps mapped until it is consumed; any other buffer's is the
+        // memory its owner set (`set_data_ptr`: a driver's DMA buffer, physio's window or
+        // bounce), valid for `b_bcount` bytes for the I/O, as the C's `b_data`.
+        unsafe { core::slice::from_raw_parts_mut(self.data_ptr(), len) }
     }
 }
 
-// These flags are kept in b_flags.
-
-/// `B_WRITE`: write buffer (pseudo flag).
-pub const B_WRITE: i64 = 0x00000000;
-/// `B_AGE`: move to age queue when I/O done.
-pub const B_AGE: i64 = 0x00000001;
-/// `B_NEEDCOMMIT`: needs committing to stable storage.
-pub const B_NEEDCOMMIT: i64 = 0x00000002;
-/// `B_ASYNC`: start I/O, do not wait.
-pub const B_ASYNC: i64 = 0x00000004;
-/// `B_BAD`: bad block revectoring in progress.
-pub const B_BAD: i64 = 0x00000008;
-/// `B_BUSY`: I/O in progress.
-pub const B_BUSY: i64 = 0x00000010;
-/// `B_CACHE`: bread found us in the cache.
-pub const B_CACHE: i64 = 0x00000020;
-/// `B_CALL`: call `b_iodone` from biodone.
-pub const B_CALL: i64 = 0x00000040;
-/// `B_DELWRI`: delay I/O until buffer reused.
-pub const B_DELWRI: i64 = 0x00000080;
-/// `B_DONE`: I/O completed.
-pub const B_DONE: i64 = 0x00000100;
-/// `B_EINTR`: I/O was interrupted.
-pub const B_EINTR: i64 = 0x00000200;
-/// `B_ERROR`: I/O error occurred.
-pub const B_ERROR: i64 = 0x00000400;
-/// `B_INVAL`: does not contain valid info.
-pub const B_INVAL: i64 = 0x00000800;
-/// `B_NOCACHE`: do not cache block after use.
-pub const B_NOCACHE: i64 = 0x00001000;
-/// `B_PHYS`: I/O to user memory.
-pub const B_PHYS: i64 = 0x00002000;
-/// `B_RAW`: set by physio for raw transfers.
-pub const B_RAW: i64 = 0x00004000;
-/// `B_READ`: read buffer.
-pub const B_READ: i64 = 0x00008000;
-/// `B_WANTED`: process wants this buffer.
-pub const B_WANTED: i64 = 0x00010000;
-/// `B_WRITEINPROG`: write in progress.
-pub const B_WRITEINPROG: i64 = 0x00020000;
-/// `B_XXX`: debugging flag.
-pub const B_XXX: i64 = 0x00040000;
-/// `B_DEFERRED`: skipped over for cleaning.
-pub const B_DEFERRED: i64 = 0x00080000;
-/// `B_SCANNED`: block already pushed during sync.
-pub const B_SCANNED: i64 = 0x00100000;
-/// `B_PDAEMON`: I/O started by pagedaemon.
-pub const B_PDAEMON: i64 = 0x00200000;
-/// `B_RELEASED`: free this buffer after its kvm.
-pub const B_RELEASED: i64 = 0x00400000;
-/// `B_WARM`: buffer is or has been on the warm queue.
-pub const B_WARM: i64 = 0x00800000;
-/// `B_COLD`: buffer is on the cold queue.
-pub const B_COLD: i64 = 0x01000000;
-/// `B_BC`: buffer is managed by the cache.
-pub const B_BC: i64 = 0x02000000;
-
-/// `B_BITS`: the `%b` description of the flags.
-pub const B_BITS: &[u8] = b"\x10\x01AGE\x02NEEDCOMMIT\x03ASYNC\x04BAD\x05BUSY\
-\x06CACHE\x07CALL\x08DELWRI\x09DONE\x0aEINTR\x0bERROR\
-\x0cINVAL\x0dNOCACHE\x0ePHYS\x0fRAW\x10READ\
-\x11WANTED\x12WRITEINPROG\x13XXX(FORMAT)\x14DEFERRED\
-\x15SCANNED\x16DAEMON\x17RELEASED\x18WARM\x19COLD\x1aBC";
-
-/// Zero out the buffer's data area.
-///
-/// # Safety
-///
-/// As [`Buf::data`]: the caller owns the mapped buffer.
-pub unsafe fn clrbuf(bp: &Buf) {
-    // SAFETY: the caller's contract.
-    unsafe { bp.data() }.fill(0);
-    bp.b_resid.set(0);
+/// The buffer of the token `t` as the C's `struct buf *`: valid until the token is consumed
+/// (`brelse`, `bwrite`, `biodone`, a queue that takes it), the `B_BUSY` owner's rule `bsd`'s
+/// callers keep (D-N5.1-1). A driver's own buffer is `'static` already.
+pub fn legacy_ref(t: &BufRef) -> &'static Buf {
+    if let Some(bp) = t.foreign_buf() {
+        return bp;
+    }
+    let bp: *const Buf = t.buf();
+    // SAFETY: `bp` is a `bufpl` item an owning list keeps (`bufhead`, or physio's or
+    // `with_private_buf`'s own) and `t` holds a counted link to it: the owner refuses to free
+    // a counted element (`hal::owned`'s I4) and a pool item never moves, so the item stays
+    // at this address, initialised, while the token lives, parked in the buffer or held. The
+    // reference is shared, and every member is an atomic or a lock (`Buf` is `Sync`). Its
+    // `'static` outlives the token: the bound is the legacy protocol's, the C's rule that a
+    // `struct buf *` is used by the `B_BUSY` owner only, until it gives the buffer back
+    // (`brelse`, `biodone`), which every caller in `bsd` keeps as LZ's and the C's code did;
+    // a use after that is the C's use-after-release, which this boundary does not make
+    // impossible (D-N5.1-1, option (a), paid at N7 when the drivers hold tokens).
+    unsafe { &*bp }
 }
 
-// Flags to low-level allocation routines.
-
-/// `B_CLRBUF`: request allocated buffer be cleared.
-pub const B_CLRBUF: i32 = 0x01;
-/// `B_SYNC`: do all allocations synchronously.
-pub const B_SYNC: i32 = 0x02;
-
-/// `struct cluster_info`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ClusterInfo {
-    /// `ci_lastr`: last read (read-ahead).
-    pub ci_lastr: Daddr,
-    /// `ci_lastw`: last write (write cluster).
-    pub ci_lastw: Daddr,
-    /// `ci_cstart`: start block of cluster.
-    pub ci_cstart: Daddr,
-    /// `ci_lasta`: last allocation.
-    pub ci_lasta: Daddr,
-    /// `ci_clen`: length of current cluster.
-    pub ci_clen: i32,
-    /// `ci_ralen`: read-ahead length.
-    pub ci_ralen: i32,
-    /// `ci_maxra`: last readahead block.
-    pub ci_maxra: Daddr,
+/// Lends the buffer of `t` to legacy code: the token is parked in the buffer and the buffer
+/// given as `&'static Buf` ([`legacy_ref`]).
+pub fn lend(t: BufRef) -> &'static Buf {
+    let bp = legacy_ref(&t);
+    Buf::park(t);
+    bp
 }
 
-/// `RESERVE_SLOTS`: kva slots (of size `MAXPHYS`) reserved for syncer and cleaner.
-pub const RESERVE_SLOTS: i64 = 4;
-/// `RESERVE_PAGES`: buffer cache pages reserved for syncer and cleaner.
-pub const RESERVE_PAGES: i64 = RESERVE_SLOTS * (MAXPHYS / PAGE_SIZE) as i64;
-/// `BCACHE_MIN`: minimum size of the buffer cache, in pages.
-pub const BCACHE_MIN: i64 = RESERVE_PAGES * 2;
+/// The token of the busy buffer legacy code gives back: the one parked in it, else (a
+/// driver's own buffer, idle) a new one, which makes it busy.
+pub fn token_of(bp: &'static Buf) -> BufRef {
+    match bp.take_parked() {
+        Some(t) => t,
+        None => BufRef::foreign(bp),
+    }
+}
 
-/// `UNCLEAN_PAGES`: the cache's pages that are not clean (`bcstats.numbufpages -
-/// bcstats.numcleanpages`).
-pub fn unclean_pages() -> i64 {
-    BCSTATS.numbufpages.load(Ordering::Relaxed) - BCSTATS.numcleanpages.load(Ordering::Relaxed)
+/// A buffer of the caller's own for the length of `f` (`softraid`'s `sr_rw`, the C's `struct
+/// buf b` on the stack, as physio's): a `bufpl` item on a list of its own (never `bufhead`),
+/// lent busy to `f` with its token parked, freed when `f` returns (its token must be parked
+/// in it again: `biowait` leaves it so).
+pub fn with_private_buf<R>(f: impl FnOnce(&'static Buf) -> R) -> R {
+    let mut own: OwnedList<ByBufhead> = OwnedList::new();
+    let Some(b) = BUFPL.get(PR_WAITOK, Buf::new) else {
+        panic(format_args!("with_private_buf: pool_get"));
+    };
+    own.push(b);
+    let mut r = SecondaryRef::new();
+    r.set(own.last());
+    let bp = lend(BufRef::acquire(r));
+    let rv = f(bp);
+    let Some(t) = bp.take_parked() else {
+        panic(format_args!(
+            "with_private_buf: buffer {:p} not given back",
+            bp
+        ));
+    };
+    if t.buf().vnode_bufs().is_some() {
+        t.buf().set_vp_unheld(None);
+    }
+    let Some(r) = t.into_counted() else {
+        panic(format_args!("with_private_buf: a driver's buffer"));
+    };
+    drop(own.take(r));
+    rv
+}
+
+/// `bufinit()`: the cache over the machine's memory (`physmem`).
+pub fn bufinit() {
+    bio::bufinit(PHYSMEM.load(Ordering::Relaxed));
+}
+
+/// `bread(vp, blkno, size, &bp)`: reads a disk block; the busy buffer and the read's result.
+pub fn bread(vp: &'static Vnode, blkno: Daddr, size: i32) -> (&'static Buf, Result<(), Errno>) {
+    let (t, rv) = bio::bread(&vp.v_bufs, blkno, size);
+    (lend(t), rv)
+}
+
+/// `breadn(vp, blkno, size, rablks, rasizes, nrablks, &bp)`: `bread` with read-ahead of the
+/// blocks `rablks` (sizes `rasizes`).
+pub fn breadn(
+    vp: &'static Vnode,
+    blkno: Daddr,
+    size: i32,
+    rablks: &[Daddr],
+    rasizes: &[i32],
+) -> (&'static Buf, Result<(), Errno>) {
+    let (t, rv) = bio::breadn(&vp.v_bufs, blkno, size, rablks, rasizes);
+    (lend(t), rv)
+}
+
+/// `bread_cluster(vp, blkno, size, &bp)`: `bread` with the following blocks read ahead in
+/// one I/O.
+pub fn bread_cluster(
+    vp: &'static Vnode,
+    blkno: Daddr,
+    size: i32,
+) -> (&'static Buf, Result<(), Errno>) {
+    let (t, rv) = bio::bread_cluster(&vp.v_bufs, blkno, size);
+    (lend(t), rv)
+}
+
+/// `bwrite(bp)`: writes the busy buffer; a synchronous write waits and releases it.
+pub fn bwrite(bp: &'static Buf) -> Result<(), Errno> {
+    bio::bwrite(token_of(bp))
+}
+
+/// `bdwrite(bp)`: marks the busy buffer a delayed write and releases it.
+pub fn bdwrite(bp: &'static Buf) {
+    bio::bdwrite(token_of(bp));
+}
+
+/// `bawrite(bp)`: starts an asynchronous write of the busy buffer.
+pub fn bawrite(bp: &'static Buf) {
+    bio::bawrite(token_of(bp));
+}
+
+/// `buf_dirty(bp)`: marks the busy buffer dirty (`B_DELWRI`).
+pub fn buf_dirty(bp: &'static Buf) {
+    let t = token_of(bp);
+    bio::buf_dirty(&t);
+    Buf::park(t);
+}
+
+/// `buf_undirty(bp)`: marks the busy buffer clean.
+pub fn buf_undirty(bp: &'static Buf) {
+    let t = token_of(bp);
+    bio::buf_undirty(&t);
+    Buf::park(t);
+}
+
+/// `brelse(bp)`: releases the busy buffer to the cache.
+pub fn brelse(bp: &'static Buf) {
+    bio::brelse(token_of(bp));
+}
+
+/// `incore(vp, blkno)`: whether the block's buffer is in the cache and valid.
+pub fn incore(vp: &'static Vnode, blkno: Daddr) -> bool {
+    bio::incore(&vp.v_bufs, blkno)
+}
+
+/// `getblk(vp, blkno, size, slpflag, slptimeo)`: the busy buffer of the block, cached or
+/// new; `None` when a sleep for a busy one was interrupted.
+pub fn getblk(
+    vp: &'static Vnode,
+    blkno: Daddr,
+    size: i32,
+    slpflag: i32,
+    slptimeo: u64,
+) -> Option<&'static Buf> {
+    bio::getblk(&vp.v_bufs, blkno, size, slpflag, slptimeo).map(lend)
+}
+
+/// `geteblk(size)`: an empty, disassociated busy buffer.
+pub fn geteblk(size: usize) -> &'static Buf {
+    lend(bio::geteblk(size))
+}
+
+/// `buf_daemon(arg)`: the cleaner kthread's body.
+pub fn buf_daemon(_arg: *mut c_void) {
+    bio::buf_daemon()
+}
+
+/// `biowait(bp)`: waits for the I/O of the busy buffer (its token parked in it by the
+/// driver's `biodone`) and gives its error value.
+pub fn biowait(bp: &'static Buf) -> Result<(), Errno> {
+    bio::biowait_buf(bp)
+}
+
+/// `biodone(bp)`: the I/O of the busy buffer is over (a driver's interrupt).
+pub fn biodone(bp: &'static Buf) {
+    bio::biodone(token_of(bp));
+}
+
+/// `buf_adjcnt(bp, ncount)`: shortens the valid part of the busy buffer.
+pub fn buf_adjcnt(bp: &'static Buf, ncount: i64) {
+    let t = token_of(bp);
+    bio::buf_adjcnt(&t, ncount);
+    Buf::park(t);
+}
+
+/// `clrbuf(bp)`: zeroes the busy buffer's data and its residual count.
+pub fn clrbuf(bp: &'static Buf) {
+    let mut t = token_of(bp);
+    t.clear();
+    Buf::park(t);
+}
+
+/// `bufq_queue(bq, bp)`: queues the busy buffer on the disk queue (a strategy routine).
+pub fn bufq_queue(bq: &'static Bufq, bp: &'static Buf) {
+    kernel::fs::bufq::bufq_queue(bq, token_of(bp));
+}
+
+/// `bufq_dequeue(bq)`: the next buffer of the disk queue, busy, its token parked.
+pub fn bufq_dequeue(bq: &Bufq) -> Option<&'static Buf> {
+    kernel::fs::bufq::bufq_dequeue(bq).map(lend)
+}
+
+/// `physio(strategy, dev, flags, minphys, uio)`: raw I/O between the device and `curproc`'s
+/// buffers, through the driver's strategy routine.
+pub fn physio(
+    strategy: fn(&'static Buf),
+    dev: Dev,
+    flags: i64,
+    minphys: fn(&Buf),
+    uio: &mut Uio<'_>,
+) -> Result<(), Errno> {
+    if uio.uio_offset % DEV_BSIZE as Off != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let Some(p) = curproc() else {
+        panic(format_args!("physio: no curproc"));
+    };
+    kernel::fs::physio::physio(&mut |t| strategy(lend(t)), dev, flags, minphys, uio, p)
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::boxed::Box;
+
+    use super::*;
+
+    /// A disk's softc is zeroed by autoconf (`Softc`): an all-zero `Bufq` is the unused
+    /// queue `bufq_init` fills in, as the drivers' `Softc` claims say.
+    #[test]
+    fn a_zeroed_bufq_is_an_unused_queue() {
+        // SAFETY: `Bufq` is atomics, a `Mutexed` (an atomic owner word, an integer level, the
+        // state of integers and two empty `SecondaryList`s: null links, a zero identity, a
+        // false poison flag) and a `hal::list` entry of null links: every member is valid
+        // all zero, the claim the test checks by using it.
+        let bq: &'static Bufq = Box::leak(Box::new(unsafe { core::mem::zeroed::<Bufq>() }));
+        assert!(!bufq_peek(bq));
+        assert_eq!(bq.outstanding(), 0);
+        bufq_init(bq, BUFQ_FIFO).expect("bufq_init");
+        assert_eq!(bq.kind(), BUFQ_FIFO);
+        assert!(!bufq_peek(bq));
+        bufq_destroy(bq);
+    }
+
+    /// A driver's own buffer goes through the legacy protocol: made busy by its first
+    /// `token_of`, parked by `lend`, taken back and idle again.
+    #[test]
+    fn a_drivers_buffer_is_lent_and_taken_back() {
+        let bp: &'static Buf = Box::leak(Box::new(Buf::new()));
+        assert!(!bp.is_held());
+        let t = token_of(bp);
+        assert!(bp.is_held() && !bp.is_parked());
+        let again = lend(t);
+        assert!(core::ptr::eq(again, bp));
+        assert!(bp.is_parked());
+        let t = token_of(bp);
+        assert!(!bp.is_parked());
+        t.release();
+        assert!(!bp.is_held());
+    }
+
+    /// The legacy pointers are the header's words.
+    #[test]
+    fn the_legacy_pointers_are_the_words() {
+        let bp = Buf::new();
+        let mut bytes = [0u8; 8];
+        bp.set_data_ptr(bytes.as_mut_ptr());
+        assert_eq!(bp.data_ptr(), bytes.as_mut_ptr());
+        assert_eq!(bp.data_addr(), bytes.as_ptr() as usize);
+        bp.set_saveaddr_ptr(core::ptr::without_provenance_mut(0x1000));
+        assert_eq!(bp.saveaddr(), 0x1000);
+        assert!(bp.proc_ptr().is_null());
+        assert!(bp.vp().is_none());
+    }
+}
+/* </TESTS> */
