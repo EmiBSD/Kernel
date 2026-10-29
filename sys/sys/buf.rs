@@ -70,7 +70,10 @@
 //! [`bwrite`], [`biodone`], [`bufq_queue`], ...) takes the token out ([`token_of`]): the
 //! parked one, else (a driver's own buffer) a new one. The lent `&'static Buf` is valid until
 //! the token is consumed (the C's rule: a `struct buf *` is the `B_BUSY` owner's until
-//! `brelse` or `biodone`); that rule is the one `unsafe` this boundary keeps ([`legacy_ref`]),
+//! `brelse` or `biodone`). The busiest of them keep the token parked through the kernel's own
+//! lock sections instead of a take and a park ([`brelse`], [`biodone`], [`bufq_queue`],
+//! [`bufq_dequeue`], [`bread`], [`bread_cluster`], [`getblk`]: the kernel's `*_parked`
+//! functions). The C's rule is the one `unsafe` this boundary keeps ([`legacy_ref`]),
 //! with LZ's `unsafe fn data()` (the drivers' and file systems' view of `b_data`), both paid
 //! at N7 (D-N5.1-1, the user's decision of 2026-10-28: option (a)).
 //!
@@ -194,41 +197,52 @@ impl BufLegacy for Buf {
 
     unsafe fn data(&self) -> &mut [u8] {
         let len = usize::try_from(self.bcount()).unwrap_or(0);
-        // SAFETY: the caller's contract: it is the buffer's `B_BUSY` owner, the buffer is
-        // mapped and no other slice of it is alive. A cache buffer's `b_data` is the address
-        // of the view its token holds (`BufRef::set_view` exposed it), `b_bufsize >= b_bcount`
-        // bytes the parked token keeps mapped until it is consumed; any other buffer's is the
-        // memory its owner set (`set_data_ptr`: a driver's DMA buffer, physio's window or
-        // bounce), valid for `b_bcount` bytes for the I/O, as the C's `b_data`.
+        // SAFETY: this is the legacy hole N7 closes (D-N5.1-1), not a proof. What holds: for
+        // a cache buffer, `b_data` is the address of the view its token holds
+        // (`BufRef::set_view` exposed it), `b_bufsize >= b_bcount` bytes the parked token
+        // keeps mapped until it is consumed, and the caller, the `B_BUSY` owner by the C's
+        // rule, takes no other slice of it meanwhile. What does not: for any other buffer
+        // `b_data` is whatever its owner set (`set_data_ptr`: a driver's DMA buffer, or
+        // physio's window or bounce), and physio's window is user memory shared with the
+        // process by design (the C's semantics), which may write it while a driver holds
+        // this `&mut [u8]` (`vnd.rs`'s copy through it, `svnd`): an aliasing Rust cannot
+        // rule out here; the C has the same race. Until N7 gives the drivers the token's view
+        // (and physio's window no slice at all), the callers keep the C's protocol.
         unsafe { core::slice::from_raw_parts_mut(self.data_ptr(), len) }
     }
 }
 
-/// The buffer of the token `t` as the C's `struct buf *`: valid until the token is consumed
-/// (`brelse`, `bwrite`, `biodone`, a queue that takes it), the `B_BUSY` owner's rule `bsd`'s
-/// callers keep (D-N5.1-1). A driver's own buffer is `'static` already.
-pub fn legacy_ref(t: &BufRef) -> &'static Buf {
-    if let Some(bp) = t.foreign_buf() {
-        return bp;
-    }
-    let bp: *const Buf = t.buf();
-    // SAFETY: `bp` is a `bufpl` item an owning list keeps (`bufhead`, or physio's or
-    // `with_private_buf`'s own) and `t` holds a counted link to it: the owner refuses to free
-    // a counted element (`hal::owned`'s I4) and a pool item never moves, so the item stays
-    // at this address, initialised, while the token lives, parked in the buffer or held. The
-    // reference is shared, and every member is an atomic or a lock (`Buf` is `Sync`). Its
-    // `'static` outlives the token: the bound is the legacy protocol's, the C's rule that a
-    // `struct buf *` is used by the `B_BUSY` owner only, until it gives the buffer back
-    // (`brelse`, `biodone`), which every caller in `bsd` keeps as LZ's and the C's code did;
-    // a use after that is the C's use-after-release, which this boundary does not make
-    // impossible (D-N5.1-1, option (a), paid at N7 when the drivers hold tokens).
-    unsafe { &*bp }
+/// The busy buffer `bp` as the C's `struct buf *`: valid until its token is consumed
+/// (`brelse`, `bwrite`, `biodone`), the `B_BUSY` owner's rule `bsd`'s callers keep
+/// (D-N5.1-1). The caller holds the token or it is parked in `bp`. Private: [`lend`] (the
+/// token in hand, parked next), [`parked_ref`] and [`bufq_dequeue`] (the token parked, a
+/// counted link or the queue's in hand) are its only users.
+fn legacy_ref(bp: &Buf) -> &'static Buf {
+    let p: *const Buf = bp;
+    // SAFETY: `bp` is busy and its token is the caller's or parked in it (each caller's own
+    // state, above). Either `bp` is a `bufpl` item an owning list keeps (`bufhead`, or
+    // physio's or `with_private_buf`'s own) and that token holds a counted link to it: the
+    // owner refuses to free a counted element (`hal::owned`'s I4) and a pool item never
+    // moves, so the item stays at this address, initialised, while the token lives, parked
+    // or held. Or no list owns it, and then it is a buffer a driver embeds, which is
+    // `'static` already: only `BufRef::foreign` makes a token of a buffer no list owns and
+    // only `Member::of_static` queues one, and both take a `&'static Buf`. The reference is
+    // shared, and every member is an atomic or a lock (`Buf` is `Sync`). Its `'static`
+    // outlives the token: the bound is the legacy protocol's, the C's rule that a `struct buf
+    // *` is used by the `B_BUSY` owner only, until it gives the buffer back (`brelse`,
+    // `biodone`), which every caller in `bsd` keeps as LZ's and the C's code did; a use after
+    // that is the C's use-after-release, which this boundary does not make impossible
+    // (D-N5.1-1, option (a), paid at N7 when the drivers hold tokens).
+    unsafe { &*p }
 }
 
 /// Lends the buffer of `t` to legacy code: the token is parked in the buffer and the buffer
-/// given as `&'static Buf` ([`legacy_ref`]).
+/// given as `&'static Buf` ([`legacy_ref`]; a driver's own buffer is `'static` already).
 pub fn lend(t: BufRef) -> &'static Buf {
-    let bp = legacy_ref(&t);
+    let bp = match t.foreign_buf() {
+        Some(bp) => bp,
+        None => legacy_ref(t.buf()),
+    };
     Buf::park(t);
     bp
 }
@@ -254,7 +268,7 @@ pub fn with_private_buf<R>(f: impl FnOnce(&'static Buf) -> R) -> R {
     own.push(b);
     let mut r = SecondaryRef::new();
     r.set(own.last());
-    let bp = lend(BufRef::acquire(r));
+    let bp = lend(BufRef::acquire(&mut bio::CACHE.lock(), r));
     let rv = f(bp);
     let Some(t) = bp.take_parked() else {
         panic(format_args!(
@@ -265,7 +279,7 @@ pub fn with_private_buf<R>(f: impl FnOnce(&'static Buf) -> R) -> R {
     if t.buf().vnode_bufs().is_some() {
         t.buf().set_vp_unheld(None);
     }
-    let Some(r) = t.into_counted() else {
+    let Some(r) = t.into_counted(&mut bio::CACHE.lock()) else {
         panic(format_args!("with_private_buf: a driver's buffer"));
     };
     drop(own.take(r));
@@ -277,10 +291,20 @@ pub fn bufinit() {
     bio::bufinit(PHYSMEM.load(Ordering::Relaxed));
 }
 
-/// `bread(vp, blkno, size, &bp)`: reads a disk block; the busy buffer and the read's result.
+/// The buffer a counted link names, its token parked in it ([`legacy_ref`]): what the
+/// kernel's `*_parked` reads give.
+fn parked_ref(r: &SecondaryRef<ByBufhead>) -> &'static Buf {
+    match r.get() {
+        Some(bp) => legacy_ref(bp),
+        None => panic(format_args!("a parked buffer's link names nothing")),
+    }
+}
+
+/// `bread(vp, blkno, size, &bp)`: reads a disk block; the busy buffer and the read's result
+/// (its token parked by the kernel's own section: [`lend`]'s fast path).
 pub fn bread(vp: &'static Vnode, blkno: Daddr, size: i32) -> (&'static Buf, Result<(), Errno>) {
-    let (t, rv) = bio::bread(&vp.v_bufs, blkno, size);
-    (lend(t), rv)
+    let (r, rv) = bio::bread_parked(&vp.v_bufs, blkno, size);
+    (parked_ref(&r), rv)
 }
 
 /// `breadn(vp, blkno, size, rablks, rasizes, nrablks, &bp)`: `bread` with read-ahead of the
@@ -303,8 +327,8 @@ pub fn bread_cluster(
     blkno: Daddr,
     size: i32,
 ) -> (&'static Buf, Result<(), Errno>) {
-    let (t, rv) = bio::bread_cluster(&vp.v_bufs, blkno, size);
-    (lend(t), rv)
+    let (r, rv) = bio::bread_cluster_parked(&vp.v_bufs, blkno, size);
+    (parked_ref(&r), rv)
 }
 
 /// `bwrite(bp)`: writes the busy buffer; a synchronous write waits and releases it.
@@ -336,9 +360,12 @@ pub fn buf_undirty(bp: &'static Buf) {
     Buf::park(t);
 }
 
-/// `brelse(bp)`: releases the busy buffer to the cache.
+/// `brelse(bp)`: releases the busy buffer to the cache (its parked token taken back in the
+/// cache's own section, [`token_of`]'s fast path).
 pub fn brelse(bp: &'static Buf) {
-    bio::brelse(token_of(bp));
+    if !bio::brelse_parked(bp) {
+        bio::brelse(BufRef::foreign(bp));
+    }
 }
 
 /// `incore(vp, blkno)`: whether the block's buffer is in the cache and valid.
@@ -355,7 +382,7 @@ pub fn getblk(
     slpflag: i32,
     slptimeo: u64,
 ) -> Option<&'static Buf> {
-    bio::getblk(&vp.v_bufs, blkno, size, slpflag, slptimeo).map(lend)
+    bio::getblk_parked(&vp.v_bufs, blkno, size, slpflag, slptimeo).map(|r| parked_ref(&r))
 }
 
 /// `geteblk(size)`: an empty, disassociated busy buffer.
@@ -374,9 +401,12 @@ pub fn biowait(bp: &'static Buf) -> Result<(), Errno> {
     bio::biowait_buf(bp)
 }
 
-/// `biodone(bp)`: the I/O of the busy buffer is over (a driver's interrupt).
+/// `biodone(bp)`: the I/O of the busy buffer is over (a driver's interrupt; its parked token
+/// taken back in the cache's own section, [`token_of`]'s fast path).
 pub fn biodone(bp: &'static Buf) {
-    bio::biodone(token_of(bp));
+    if !bio::biodone_parked(bp) {
+        bio::biodone(BufRef::foreign(bp));
+    }
 }
 
 /// `buf_adjcnt(bp, ncount)`: shortens the valid part of the busy buffer.
@@ -393,14 +423,19 @@ pub fn clrbuf(bp: &'static Buf) {
     Buf::park(t);
 }
 
-/// `bufq_queue(bq, bp)`: queues the busy buffer on the disk queue (a strategy routine).
+/// `bufq_queue(bq, bp)`: queues the busy buffer on the disk queue (a strategy routine); a
+/// cache buffer's parked token stays parked ([`token_of`]'s fast path), a driver's own
+/// buffer's token is queued.
 pub fn bufq_queue(bq: &'static Bufq, bp: &'static Buf) {
-    kernel::fs::bufq::bufq_queue(bq, token_of(bp));
+    if !kernel::fs::bufq::bufq_queue_parked(bq, bp) {
+        kernel::fs::bufq::bufq_queue(bq, token_of(bp));
+    }
 }
 
-/// `bufq_dequeue(bq)`: the next buffer of the disk queue, busy, its token parked.
+/// `bufq_dequeue(bq)`: the next buffer of the disk queue, busy, its token parked (left so by
+/// the queue: [`lend`]'s fast path).
 pub fn bufq_dequeue(bq: &Bufq) -> Option<&'static Buf> {
-    kernel::fs::bufq::bufq_dequeue(bq).map(lend)
+    kernel::fs::bufq::bufq_dequeue_parked(bq).map(|m| legacy_ref(m.get()))
 }
 
 /// `physio(strategy, dev, flags, minphys, uio)`: raw I/O between the device and `curproc`'s
@@ -459,7 +494,7 @@ mod tests {
         assert!(bp.is_parked());
         let t = token_of(bp);
         assert!(!bp.is_parked());
-        t.release();
+        t.release_unlocked();
         assert!(!bp.is_held());
     }
 

@@ -70,17 +70,52 @@
 use core::sync::atomic::Ordering;
 
 use hal::sleep::{INFSLP, PRIBIO, curproc_word, wakeup};
+use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::Paddr;
 use hal::vm::param::{atop, ptoa, round_page};
 
 use super::bio::{BCSTATS, Cache, bufbackoff_locked, cleaner_word, syncer_word};
-use super::buf::{B_BUSY, B_RELEASED, Buf, BufRef, Kva, Pages, RESERVE_SLOTS};
+use super::buf::{B_BUSY, B_RELEASED, Buf, BufRef, Kva, MAXPHYS, Pages, RESERVE_SLOTS};
 use crate::assert::{kassert, kpanic};
 use crate::vm::km::{BufArena, BufSlot};
 use crate::vm::object::uvm_obj_free;
 use crate::vm::page::{uvm_pagealloc_multi, uvm_pagelookup, vm_page_to_phys};
 use crate::vm::types::{UVM_PLA_NOWAIT, UVM_PLA_NOWAKE, UVM_PLA_WAITOK, Voff};
 use hal::owned::Member;
+
+/// At most a slot's worth of pages.
+const SLOT_PAGES: usize = MAXPHYS / PAGE_SIZE;
+
+/// The frames of a buffer's pages, up to a slot's worth (`buf_map`'s loop over them).
+struct Frames {
+    f: [Paddr; SLOT_PAGES],
+    n: usize,
+}
+
+impl Frames {
+    const fn new() -> Self {
+        Self {
+            f: [Paddr::new(0); SLOT_PAGES],
+            n: 0,
+        }
+    }
+
+    fn push(&mut self, pa: Paddr) {
+        if self.n == SLOT_PAGES {
+            kpanic(format_args!("buf_map: more pages than a slot holds"));
+        }
+        self.f[self.n] = pa;
+        self.n += 1;
+    }
+}
+
+impl core::ops::Deref for Frames {
+    type Target = [Paddr];
+
+    fn deref(&self) -> &[Paddr] {
+        &self.f[..self.n]
+    }
+}
 
 /// `buf_needva`: threads sleeping for a slot (its address is the channel).
 pub(crate) static BUF_NEEDVA: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
@@ -108,7 +143,7 @@ pub(crate) fn buf_acquire(
     kassert!(!bp.isset(B_BUSY));
     // Busy before waiting for kvm.
     bp.set(B_BUSY);
-    let mut t = BufRef::acquire(r);
+    let mut t = BufRef::acquire(g, r);
     buf_map(g, &mut t);
     t
 }
@@ -123,7 +158,7 @@ pub(crate) fn buf_acquire_nomap(
         kpanic(format_args!("buf_acquire_nomap: no buffer"));
     };
     bp.set(B_BUSY);
-    let t = BufRef::acquire(r);
+    let t = BufRef::acquire(g, r);
     if t.is_mapped() {
         drop(g.valist.remove(t.buf()));
         BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
@@ -159,7 +194,7 @@ pub(crate) fn buf_map(g: &mut Cache, t: &mut BufRef) {
                 buf_unmap(g)
             }
         };
-        let frames = pages_of(t.buf());
+        let frames = pages_of(g, t.buf());
         t.set_view(slot.map(&frames));
     } else {
         drop(g.valist.remove(t.buf()));
@@ -170,14 +205,14 @@ pub(crate) fn buf_map(g: &mut Cache, t: &mut BufRef) {
 
 /// The frames of `bp`'s pages, `b_bufsize` bytes of its `b_pobj` from `b_poffs` (`buf_map`'s
 /// `uvm_pagelookup` loop); `panic(9)` for a page that is gone (the C's `KASSERT`).
-fn pages_of(bp: &Buf) -> heapless_frames::Frames {
+fn pages_of(g: &Cache, bp: &Buf) -> Frames {
     let n = atop(bp.bufsize() as usize);
     let off = bp.poffs();
-    bp.with_pobj(|obj| {
+    bp.with_pobj(g, |obj| {
         let Some(obj) = obj else {
             kpanic(format_args!("buf_map: buffer {:p} has no pages", bp));
         };
-        let mut frames = heapless_frames::Frames::new();
+        let mut frames = Frames::new();
         for i in 0..n {
             let Some(pg) = uvm_pagelookup(obj, off + ptoa(i) as Voff) else {
                 kpanic(format_args!("buf_map: page {i} of {:p} is gone", bp));
@@ -186,48 +221,6 @@ fn pages_of(bp: &Buf) -> heapless_frames::Frames {
         }
         frames
     })
-}
-
-/// A buffer's frames, `MAXPHYS / PAGE_SIZE` at most (a slot's), on the stack.
-mod heapless_frames {
-    use hal::sys::types::Paddr;
-
-    use super::super::buf::MAXPHYS;
-    use crate::assert::kpanic;
-
-    /// At most a slot's worth of pages.
-    const MAX: usize = MAXPHYS / hal::sys::param::PAGE_SIZE;
-
-    /// Up to [`MAX`] frames.
-    pub(crate) struct Frames {
-        f: [Paddr; MAX],
-        n: usize,
-    }
-
-    impl Frames {
-        pub(crate) const fn new() -> Self {
-            Self {
-                f: [Paddr::new(0); MAX],
-                n: 0,
-            }
-        }
-
-        pub(crate) fn push(&mut self, pa: Paddr) {
-            if self.n == MAX {
-                kpanic(format_args!("buf_map: more pages than a slot holds"));
-            }
-            self.f[self.n] = pa;
-            self.n += 1;
-        }
-    }
-
-    impl core::ops::Deref for Frames {
-        type Target = [Paddr];
-
-        fn deref(&self) -> &[Paddr] {
-            &self.f[..self.n]
-        }
-    }
 }
 
 /// `buf_release`: clears `B_BUSY` and lets the buffer's mapping be stolen (on the tail of
@@ -245,7 +238,7 @@ pub(crate) fn buf_release(g: &mut Cache, t: BufRef) {
         }
     }
     bp.clr(B_BUSY);
-    t.release();
+    t.release(g);
 }
 
 /// Deallocates all memory resources of the buffer `t` holds (`buf_dealloc_mem`). The kvm is
@@ -263,8 +256,8 @@ pub(crate) fn buf_dealloc_mem(g: &mut Cache, mut t: BufRef) -> Option<BufRef> {
         unmap(g, v)
     });
 
-    if t.buf().has_pages() {
-        buf_free_pages(t.buf());
+    if t.buf().has_pages(g) {
+        buf_free_pages(g, t.buf());
     }
 
     let Some(slot) = slot else {
@@ -285,7 +278,7 @@ pub(crate) fn buf_dealloc_mem(g: &mut Cache, mut t: BufRef) -> Option<BufRef> {
     }
     bp.set(B_RELEASED);
     let m = Member::counted(bp);
-    t.release_bare(slot);
+    t.release_bare(g, slot);
     g.valist.push_head(m);
     BCSTATS.kvaslots_avail.fetch_add(1, Ordering::Relaxed);
     None
@@ -323,7 +316,7 @@ pub(crate) fn buf_unmap(g: &mut Cache) -> BufSlot {
     BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
     let bp = m.get();
     kassert!(!bp.isset(B_BUSY));
-    let slot = match bp.take_idle_kva() {
+    let slot = match bp.take_idle_kva(g) {
         Kva::Mapped(v) => unmap(g, v),
         Kva::Bare(slot) => slot,
         Kva::None => kpanic(format_args!("buf_unmap: buffer {:p} has no kva", bp)),
@@ -347,7 +340,7 @@ pub(crate) fn buf_unmap(g: &mut Cache) -> BufSlot {
 pub(crate) fn buf_alloc_pages(g: &mut Cache, t: &BufRef, size: usize) {
     let bp = t.buf();
     kassert!(size == round_page(size));
-    kassert!(!bp.has_pages());
+    kassert!(!bp.has_pages(g));
     kassert!(!t.is_mapped());
 
     bp.uobj().reinit_dummy(1); // uvm_obj_init(&bp->b_uobj, &bufcache_pager, 1)
@@ -377,19 +370,19 @@ pub(crate) fn buf_alloc_pages(g: &mut Cache, t: &BufRef, size: usize) {
     }
 
     BCSTATS.numbufpages.fetch_add(npages, Ordering::Relaxed);
-    bp.set_pages(Pages::Own);
+    bp.set_pages(g, Pages::Own);
     bp.set_poffs(0);
     bp.set_bufsize(size as i64);
 }
 
 /// `buf_free_pages(bp)`: frees the buffer's pages (it has no mapping): unwired, then its object
 /// emptied (`uvm_obj_free`).
-pub(crate) fn buf_free_pages(bp: &Buf) {
+pub(crate) fn buf_free_pages(g: &mut Cache, bp: &Buf) {
     kassert!(bp.data_addr() == 0);
 
     let off = bp.poffs();
     let n = atop(bp.bufsize() as usize);
-    bp.with_pobj(|uobj| {
+    bp.with_pobj(g, |uobj| {
         let Some(uobj) = uobj else {
             kpanic(format_args!("buf_free_pages: buffer {:p} has no pages", bp));
         };
@@ -405,7 +398,7 @@ pub(crate) fn buf_free_pages(bp: &Buf) {
         uvm_obj_free(uobj);
     });
     bp.set_poffs(0);
-    bp.set_pages(Pages::None);
+    bp.set_pages(g, Pages::None);
 }
 
 const _: () = assert!(size_of::<Paddr>() == size_of::<usize>());

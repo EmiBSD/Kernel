@@ -66,14 +66,14 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::intr::{IPL_BIO, IPL_NONE};
+use hal::intr::{IPL_BIO, IPL_NONE, splassert, splraise};
 use hal::list::{List, ListEntry};
 use hal::mutex::Mutexed;
 use hal::owned::{Member, SecondaryList};
 use hal::sleep::{INFSLP, PRIBIO, wakeup};
 use hal::sys::errno::Errno;
 
-use super::bio::{BCSTATS, biodone, note_queued};
+use super::bio::{BCSTATS, biodone, note_done, note_queued};
 use super::buf::{
     B_ERROR, BUFQ_FIFO, BUFQ_HI, BUFQ_HOWMANY, BUFQ_LOW, BUFQ_NSCAN, BUFQ_NSCAN_N, Buf, BufRef,
     ByBufhead, ByBufq,
@@ -343,15 +343,10 @@ pub fn bufq_destroy(bq: &'static Bufq) {
 }
 
 /// `bufq_queue(bq, bp)`: queues the buffer of the token `t` for the disk (the token parked in
-/// the buffer until `bufq_dequeue`), sleeping while the queue is stopped.
+/// the buffer until `bufq_dequeue`), sleeping while the queue is stopped. The token is parked
+/// before the queue's lock is taken (the cache's lock comes first: `biodone` holds it when it
+/// calls `bufq_done`).
 pub fn bufq_queue(bq: &'static Bufq, t: BufRef) {
-    let mut st = bq.st.lock();
-    while bq.stop.load(Ordering::Relaxed) != 0 {
-        let _ = st.sleep_nsec(&raw const bq.stop, PRIBIO, "bqqueue", INFSLP);
-    }
-
-    t.buf().set_bq(Some(bq));
-    bq.outstanding.fetch_add(1, Ordering::Relaxed);
     let m = match (t.counted(), t.foreign_buf()) {
         (Some(r), _) => Member::from_ref(r),
         (None, Some(b)) => Some(Member::of_static(b)),
@@ -361,9 +356,35 @@ pub fn bufq_queue(bq: &'static Bufq, t: BufRef) {
         kpanic(format_args!("bufq_queue: a consumed token"));
     };
     Buf::park(t);
+    bufq_queue_member(bq, m);
+}
+
+/// [`bufq_queue`] of a cache or physio buffer a legacy strategy routine holds by address, its
+/// token parked in it (`bsd`'s boundary): the token stays parked and the buffer is queued by a
+/// counted link of its own, so neither a take nor a park of the token costs a section of the
+/// cache's lock. `false`, with nothing done, for a buffer with no token parked or one a driver
+/// embeds (the caller queues its token).
+pub fn bufq_queue_parked(bq: &'static Bufq, bp: &Buf) -> bool {
+    // The caller holds the buffer busy: its parked token, which holds a counted link, stays
+    // until the caller gives the buffer back.
+    if !bp.is_parked() || !bp.is_owned() {
+        return false;
+    }
+    bufq_queue_member(bq, Member::counted(bp));
+    true
+}
+
+/// [`bufq_queue`]'s part under the queue's lock: `m`'s buffer, its token parked, onto `bq`.
+fn bufq_queue_member(bq: &'static Bufq, m: Member<ByBufhead>) {
+    let mut st = bq.st.lock();
+    while bq.stop.load(Ordering::Relaxed) != 0 {
+        let _ = st.sleep_nsec(&raw const bq.stop, PRIBIO, "bqqueue", INFSLP);
+    }
+
+    m.get().set_bq(Some(bq));
+    bq.outstanding.fetch_add(1, Ordering::Relaxed);
+    note_queued(m.get(), bq);
     st.discipline().queue(m);
-    drop(st);
-    note_queued(bq);
 }
 
 /// `bufq_dequeue(bq)`: the next buffer for the disk, its token taken back.
@@ -379,6 +400,19 @@ pub fn bufq_dequeue(bq: &Bufq) -> Option<BufRef> {
     }
 }
 
+/// [`bufq_dequeue`] for a legacy driver: the next buffer with its token left parked, as the
+/// queue's link to it (counted, or a driver's `'static` buffer's), which the caller turns
+/// into the address it hands on (`bsd`'s boundary). No section of the cache's lock.
+pub fn bufq_dequeue_parked(bq: &Bufq) -> Option<Member<ByBufhead>> {
+    let m = bq.st.lock().discipline().dequeue()?;
+    if !m.get().is_parked() {
+        kpanic(format_args!(
+            "bufq_dequeue: a queued buffer without its token"
+        ));
+    }
+    Some(m)
+}
+
 /// `bufq_peek(bq)`: whether a buffer is queued.
 pub fn bufq_peek(bq: &Bufq) -> bool {
     bq.st.lock().discipline().peek()
@@ -389,12 +423,35 @@ pub fn bufq_drain(bq: &Bufq) {
     while let Some(t) = bufq_dequeue(bq) {
         t.buf().set_error(Some(Errno::ENXIO));
         t.buf().set(B_ERROR);
+        // biodone at splbio, as an interrupt would call it (the callback and the release
+        // included, not only the cache's own section).
+        let s = splraise(IPL_BIO);
         biodone(t);
+        drop(s);
+    }
+}
+
+/// `assertwaitok()` (`subr_xxx.c`): the caller may sleep: at no interrupt level
+/// (`splassert(IPL_NONE)`) and, under `diagnostic`, holding no mutex; nothing is checked
+/// while the system is cold or has panicked (`hal::sleep::cold`, the C's `panicstr ||
+/// db_active` return).
+fn assertwaitok() {
+    if hal::sleep::cold() {
+        return;
+    }
+    splassert(IPL_NONE, "assertwaitok");
+    #[cfg(feature = "diagnostic")]
+    {
+        let level = hal::cpu::curcpu().mutex_level();
+        if level != 0 {
+            kpanic(format_args!("assertwaitok: non-zero mutex count: {level}"));
+        }
     }
 }
 
 /// `bufq_wait(bq)`: a writer sleeps while the queue has `bufq_hi` buffers outstanding.
 pub fn bufq_wait(bq: &Bufq) {
+    assertwaitok();
     let mut st = bq.st.lock();
     if st.hi != 0 {
         while bq.outstanding.load(Ordering::Relaxed) >= st.hi {
@@ -418,6 +475,7 @@ pub fn bufq_done(bq: &Bufq, bp: &Buf) {
     }
     drop(st);
     bp.set_bq(None);
+    note_done(bp);
 }
 
 /// `bufq_quiesce()`: stops every queue and waits for its outstanding I/O.
@@ -518,6 +576,45 @@ mod tests {
             bufq_done(bq, t.buf());
         }
         v
+    }
+
+    /// The legacy boundary's queue: a cache buffer whose token is parked goes through the
+    /// queue with the token left parked (queued and dequeued by a counted link); a driver's
+    /// own buffer, or one without a parked token, is refused before anything changes (its
+    /// token is queued instead, and the dequeue gives its uncounted link, the token parked).
+    #[test]
+    fn a_parked_token_stays_parked_through_the_queue() {
+        let _g = setup();
+        let bq = queue(BUFQ_FIFO);
+        let bp = buf(7);
+        assert!(!bufq_queue_parked(bq, bp), "no token parked");
+        Buf::park(BufRef::foreign(bp));
+        assert!(!bufq_queue_parked(bq, bp), "a driver's own buffer");
+        assert!(!bufq_peek(bq));
+        bufq_queue(bq, bp.take_parked().expect("still parked"));
+        assert!(bp.is_parked() && bq.outstanding() == 1);
+        let m = bufq_dequeue_parked(bq).expect("the buffer");
+        assert!(core::ptr::eq(m.get(), bp) && !m.is_counted() && bp.is_parked());
+        bufq_done(bq, m.get());
+        drop(m);
+        let t = bp.take_parked().expect("still parked");
+        t.release_unlocked();
+
+        // A cache buffer: queued by a counted link, which the dequeue gives back.
+        let tv = BufTestVnode::new(64);
+        let t =
+            getblk(&tv.bufs, 3, hal::sys::param::PAGE_SIZE as i32, 0, INFSLP).expect("a buffer");
+        let r = t.counted().expect("a cache buffer");
+        let cb = r.get().expect("the buffer");
+        Buf::park(t);
+        assert!(bufq_queue_parked(bq, cb));
+        let m = bufq_dequeue_parked(bq).expect("the cache buffer");
+        assert!(core::ptr::eq(m.get(), cb) && m.is_counted());
+        bufq_done(bq, m.get());
+        drop(m);
+        brelse(cb.take_parked().expect("still parked"));
+        drop(r);
+        bufq_destroy(bq);
     }
 
     #[test]

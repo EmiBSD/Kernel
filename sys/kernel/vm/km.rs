@@ -197,9 +197,9 @@
 //!
 //! Upstream: sys/uvm/uvm_km.c @ 3ce1f3f79392
 //! Upstream: sys/uvm/uvm_extern.h @ 3ce1f3f79392
-//! LZ: sys/uvm/uvm_km.rs@3c62ede68802
 //! Upstream: sys/kern/vfs_biomem.c @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/vm_machdep.c @ 3ce1f3f79392
+//! LZ: sys/uvm/uvm_km.rs@3c62ede68802
 //! LZ: sys/uvm/uvm_extern.rs@3c62ede68802
 //! LZ: sys/kern/vfs_biomem.rs@3c62ede68802
 //! LZ: sys/arch/arm64/arm64/vm_machdep.rs@3c62ede68802

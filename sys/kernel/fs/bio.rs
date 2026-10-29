@@ -133,8 +133,9 @@
 //! **Locks.** The C's `splbio()` domain is one lock, [`CACHE`] (a `Mutexed` at `IPL_BIO`,
 //! which `biodone` from interrupt context takes too): `bufhead`, the 2Q queues, the dirty
 //! queue, `buf_valist`, the arena, and every vnode's tree and lists ([`VnodeBufs`], a cell
-//! opened by the cache's guard). A buffer's own leaf lock (`kernel::fs::buf`) is taken inside
-//! it. The kernel lock is held by every caller, as in the C. Where the C sleeps at `splbio`
+//! opened by the cache's guard), and each buffer's busy state, `b_pobj` and `b_iodone` (a
+//! cell of the same lock, `kernel::fs::buf`). The kernel lock is held by every caller, as in
+//! the C. Where the C sleeps at `splbio`
 //! (`getblk` on a busy buffer, `biowait`, `buf_get` for buffers, `buf_map` for kva,
 //! `vwaitforio`) the cache's lock is left for the sleep and taken again (`msleep`); a sleeping
 //! caller holds no counted link to a buffer it does not own. The strategy routines and the
@@ -155,9 +156,11 @@
 //!   `buf_get` returns NULL when the pool fails, which `getblk` retries as the C does after a
 //!   sleep, and `buf_alloc_pages` panics as the C does when even the waiting allocation fails
 //!   (LZ's).
-//! - `bwrite` learns the disk queue its write went on from the queue (the queue a strategy
-//!   routine last queued on, under the kernel lock), not by reading `bp->b_bq` after
-//!   `VOP_STRATEGY`: the buffer may be gone by then (the C reads it anyway).
+//! - `bwrite` learns the disk queue its write went on from a note it claims for the buffer
+//!   before `VOP_STRATEGY` (written by `bufq_queue`, marked done by `bufq_done`: the C's set
+//!   and clear of `b_bq`), not by reading `bp->b_bq` after it: the buffer may be another
+//!   owner's by then (the C reads it anyway). A `bwrite` beyond the table's 32 notes sleeps
+//!   for one.
 //! - `curproc->p_ru.ru_inblock++`/`ru_oublock++` go through the vnode's [`BufVnode`]
 //!   (`charge_io`), which reaches the running thread.
 //!
@@ -182,7 +185,9 @@
 //! - `bread_cluster`'s `xbpp` array (`malloc(M_TEMP)`, `NULL`-terminated, hung from
 //!   `b_saveaddr`) is gone: the read-ahead buffers are the busy buffers of the following
 //!   blocks whose pages are the first buffer's (`Pages::Master`), which the callback finds in
-//!   the vnode's tree; their tokens wait parked in them.
+//!   one walk of the vnode's tree from the first buffer, taking their parked tokens in the
+//!   same section of the cache's lock; the set-up keeps the tokens in a stack array (the C's
+//!   `xbpp`) while it fills the buffers in one section, then parks them.
 //! - `cleanerproc`/`syncerproc` identities are thread words ([`set_syncer`], the cleaner's
 //!   own at its start), compared with `curproc`'s.
 
@@ -528,6 +533,35 @@ impl CacheState {
     }
 }
 
+/// How many `bwrite`s may be between their strategy call and their `bufq_wait` at once; one
+/// more sleeps for a free note.
+const QUEUE_NOTES: usize = 32;
+
+/// A note's word: the buffer's address with this bit set once its I/O is done (`bufq_done`:
+/// the C's `bp->b_bq = NULL`). A `Buf` is aligned to 8, so the bit is never an address's.
+const NOTE_DONE: usize = 1;
+
+/// A `bwrite`'s note of the disk queue its buffer went on. The C reads `bp->b_bq` after
+/// `VOP_STRATEGY`, when the buffer is the driver's (and an asynchronous write's may be done
+/// and reused): here the token went with the buffer, so `bwrite` claims a note for the
+/// buffer's address before the strategy call, `bufq_queue` writes the queue into it, and
+/// `bufq_done` marks it done, as the C clears `b_bq`.
+struct QueueNote {
+    /// The buffer's address (with [`NOTE_DONE`]), 0 for a free note.
+    word: AtomicUsize,
+    /// The queue `bufq_queue` put the buffer on; written and read by the claiming thread only.
+    bq: hal::link::Link<super::bufq::Bufq>,
+}
+
+impl QueueNote {
+    const fn new() -> Self {
+        Self {
+            word: AtomicUsize::new(0),
+            bq: hal::link::Link::new(),
+        }
+    }
+}
+
 /// The cache's lock held: what the C's `splbio()` section is.
 pub type Cache = MutexedGuard<'static, CacheState>;
 
@@ -568,9 +602,13 @@ pub static BD_REQ: AtomicI32 = AtomicI32::new(0);
 static CLEANER: AtomicUsize = AtomicUsize::new(0);
 /// `syncerproc`: the syncer thread's word (0 before it runs).
 static SYNCER: AtomicUsize = AtomicUsize::new(0);
-/// The disk queue the last strategy routine queued a buffer on (`bufq_queue`, under the
-/// kernel lock), for `bwrite`'s `bufq_wait`.
-static LAST_QUEUED: hal::link::Link<super::bufq::Bufq> = hal::link::Link::new();
+/// The notes of the `bwrite`s in their strategy call (keyed by buffer, so a strategy routine
+/// that writes another buffer itself, `vnd`'s, has its own; nothing global to save).
+static QUEUE_NOTE: [QueueNote; QUEUE_NOTES] = [const { QueueNote::new() }; QUEUE_NOTES];
+/// How many notes are claimed: `bufq_queue` and `bufq_done` look only when some is.
+static NOTES_CLAIMED: AtomicUsize = AtomicUsize::new(0);
+/// Threads sleeping for a free note (its address the channel).
+static NOTES_WANTED: AtomicUsize = AtomicUsize::new(0);
 
 /// `cleanerproc` as a thread word.
 pub(crate) fn cleaner_word() -> usize {
@@ -629,7 +667,7 @@ fn b_vp(bp: &Buf) -> &'static VnodeBufs {
 /// `bufpl`, or later, from `buf_unmap`, when `buf_dealloc_mem` keeps it for its kva).
 pub(crate) fn buf_put(g: &mut Cache, t: BufRef) {
     let bp = t.buf();
-    if bp.has_pages() {
+    if bp.has_pages(g) {
         kassert!(bp.bufsize() > 0);
     }
     if bp.isset(B_DELWRI) {
@@ -644,7 +682,7 @@ pub(crate) fn buf_put(g: &mut Cache, t: BufRef) {
     bc_add(&BCSTATS.numbufs, -1);
 
     if let Some(t) = buf_dealloc_mem(g, t) {
-        match t.into_counted() {
+        match t.into_counted(g) {
             // pool_put(&bufpool, bp)
             Some(r) => drop(g.bufhead.take(r)),
             None => kpanic(format_args!("buf_put: a driver's buffer")),
@@ -657,9 +695,11 @@ pub(crate) fn buf_put(g: &mut Cache, t: BufRef) {
 /// the queues and the kva arena.
 pub fn bufinit(physmem: usize) {
     let mut pages = uvm_pagecount(&NO_CONSTRAINT) as u64;
-    // take away a guess at how much of this the kernel will consume
-    let free = UVMEXP.free.load(Mem::Relaxed).max(0) as u64;
-    pages = pages.wrapping_sub((physmem as u64).wrapping_sub(free));
+    // take away a guess at how much of this the kernel will consume: the C's
+    // `atop(physmem) - atop(uvmexp.free)`, kept as written although both are page counts
+    // already (so the guess takes away almost nothing): OpenBSD's cache size is the spec.
+    let free = UVMEXP.free.load(Mem::Relaxed).max(0) as usize;
+    pages = pages.wrapping_sub((atop(physmem) as u64).wrapping_sub(atop(free) as u64));
     let pages = pages as i64;
 
     // If MD code doesn't say otherwise, use up to 10% of DMA'able memory for buffers.
@@ -795,21 +835,66 @@ pub(crate) fn bufbackoff_locked(g: &mut Cache, size: i64) -> u64 {
 pub(crate) enum Doread {
     /// The buffer holds valid data (or a delayed write): its token.
     Held(BufRef),
+    /// The same for a legacy caller ([`Park::Valid`]): the token parked in getblk's section,
+    /// a counted link.
+    Parked(SecondaryRef<ByBufhead>),
     /// A synchronous read was started: a counted link for `biowait`.
     Started(SecondaryRef<ByBufhead>),
     /// An asynchronous read was started, or the buffer was valid and released.
     Released,
 }
 
+/// When `getblk` parks the token it gives, for `bsd`'s legacy callers, who name the buffer by
+/// address with its token parked in it: inside getblk's own section of the cache's lock, so
+/// the park costs no section of its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Park {
+    /// Never: the caller takes the token.
+    Never,
+    /// A cached buffer always (a legacy `getblk`); a new one is parked by the caller.
+    Cached,
+    /// A cached buffer holding valid data or a delayed write (a legacy read: a buffer to read
+    /// into goes to the strategy routine with its token).
+    Valid,
+}
+
+/// What [`getblk_in`] gives.
+enum Got {
+    /// The token.
+    Token(BufRef),
+    /// The token parked in the buffer ([`Park`]), a counted link.
+    Parked(SecondaryRef<ByBufhead>),
+}
+
 /// `bio_doread`: the buffer of `blkno`, with a read started when it holds no valid data
 /// (asynchronous with `async_` = `B_ASYNC`).
 pub(crate) fn bio_doread(vb: &'static VnodeBufs, blkno: Daddr, size: i32, async_: i64) -> Doread {
-    let t = loop {
-        if let Some(t) = getblk(vb, blkno, size, 0, INFSLP) {
-            break t;
+    bio_doread_in(vb, blkno, size, async_, Park::Never)
+}
+
+/// [`bio_doread`], a valid cached buffer's token parked for a legacy caller (`park`
+/// [`Park::Valid`]: a synchronous read only).
+fn bio_doread_in(
+    vb: &'static VnodeBufs,
+    blkno: Daddr,
+    size: i32,
+    async_: i64,
+    park: Park,
+) -> Doread {
+    let got = loop {
+        if let Some(got) = getblk_in(vb, blkno, size, 0, INFSLP, park) {
+            break got;
         }
     };
     let owner = vb.owner();
+    let t = match got {
+        Got::Token(t) => t,
+        Got::Parked(r) => {
+            // Valid already (getblk parked it only so): no read, the statistics only.
+            owner.count_io(false, async_ != 0);
+            return Doread::Parked(r);
+        }
+    };
 
     // If buffer does not have valid data, start a read. Note that if buffer is B_INVAL,
     // getblk() won't return it. Therefore, it's valid if its I/O has completed or been
@@ -876,6 +961,45 @@ fn doread_wait(d: Doread) -> (BufRef, Result<(), Errno>) {
             (t, r)
         }
         Doread::Started(r) => biowait(r),
+        Doread::Parked(r) => {
+            let Some(t) = r.get().and_then(Buf::take_parked) else {
+                kpanic(format_args!("bread: a parked buffer without its token"));
+            };
+            let rv = io_result(t.buf());
+            (t, rv)
+        }
+        Doread::Released => kpanic(format_args!("bread: a synchronous read went away")),
+    }
+}
+
+/// [`doread_wait`] for a legacy caller: the buffer with its token parked (by getblk, or by
+/// the driver's `biodone` for `biowait`, where it stays), as a counted link, and the read's
+/// result.
+fn doread_wait_parked(d: Doread) -> (SecondaryRef<ByBufhead>, Result<(), Errno>) {
+    match d {
+        Doread::Parked(r) => {
+            let Some(bp) = r.get() else {
+                kpanic(format_args!("bread: a link to nothing"));
+            };
+            kassert!(bp.isset(B_DONE));
+            let rv = io_result(bp);
+            (r, rv)
+        }
+        Doread::Started(r) => {
+            let Some(bp) = r.get() else {
+                kpanic(format_args!("bread: a link to nothing"));
+            };
+            let rv = biowait_buf(bp);
+            (r, rv)
+        }
+        Doread::Held(t) => {
+            let Some(r) = t.counted() else {
+                kpanic(format_args!("bread: a driver's buffer"));
+            };
+            Buf::park(t);
+            let rv = r.get().map_or(Err(Errno::EIO), io_result);
+            (r, rv)
+        }
         Doread::Released => kpanic(format_args!("bread: a synchronous read went away")),
     }
 }
@@ -887,6 +1011,16 @@ pub fn bread(vb: &'static VnodeBufs, blkno: Daddr, size: i32) -> (BufRef, Result
 
     // Wait for the read to complete, and return result.
     doread_wait(d)
+}
+
+/// [`bread`] for `bsd`'s legacy callers: the buffer with its token parked in it, as a counted
+/// link (no section of the cache's lock of its own for the park).
+pub fn bread_parked(
+    vb: &'static VnodeBufs,
+    blkno: Daddr,
+    size: i32,
+) -> (SecondaryRef<ByBufhead>, Result<(), Errno>) {
+    doread_wait_parked(bio_doread_in(vb, blkno, size, 0, Park::Valid))
 }
 
 /// Read-ahead multiple disk blocks. The first is sync, the rest async. Trivial modification
@@ -915,41 +1049,47 @@ pub fn breadn(
     doread_wait(d)
 }
 
-/// The read-ahead buffer `i` (1, 2, ...) of the cluster whose first buffer is `master`: the
-/// busy buffer of the block after its `i - 1` predecessors, whose pages are `master`'s
-/// (`Pages::Master`); `None` past the last.
-fn cluster_buffer(
-    g: &Cache,
-    vb: &'static VnodeBufs,
-    master: &Buf,
-    i: i64,
-) -> Option<SecondaryRef<ByBufhead>> {
-    let blk = master.lblkno() + i;
-    let st = vb.st.get(g);
-    let bp = st.tree.find_by(|b| blk.cmp(&b.lblkno()))?;
-    bp.is_cluster_of(master).then(|| counted(bp))
-}
+/// The most buffers a cluster read gives (`MAXPHYS` of one-page blocks).
+const CLUSTER_MAX: usize = MAXPHYS / PAGE_SIZE;
 
-/// Called from interrupt context: the end of a cluster read (`bread_cluster`'s `B_CALL`).
+/// Called from interrupt context: the end of a cluster read (`bread_cluster`'s `B_CALL`). The
+/// read-ahead buffers are the busy buffers of the blocks after the master's whose pages are
+/// its (`Pages::Master`): found in one walk of the vnode's tree under the cache's lock, their
+/// parked tokens taken in the same section (the C's `xbpp` array, which `b_saveaddr` carries),
+/// in which their pages move to their own objects too (the cache's lock comes before the
+/// pages' locks, as `buf_free_pages` takes them).
 pub fn bread_cluster_callback(mut t: BufRef) {
     let vb = b_vp(t.buf());
-    // The read-ahead buffers, found by block in the vnode's tree (the C's xbpp array).
-    let n = {
-        let g = CACHE.lock();
-        let mut n = 1;
-        while cluster_buffer(&g, vb, t.buf(), n).is_some() {
+    let mut kids: [Option<BufRef>; CLUSTER_MAX] = [const { None }; CLUSTER_MAX];
+    let mut n = 1;
+    let mut g = CACHE.lock();
+    {
+        let mut next = {
+            let st = vb.st.get(&g);
+            st.tree.next(t.buf()).map(counted)
+        };
+        while let Some(r) = next {
+            let Some(x) = r.get() else { break };
+            if !x.is_cluster_of(&g, t.buf()) || n >= CLUSTER_MAX {
+                break;
+            }
+            let Some(xt) = x.take_parked_locked(&mut g) else {
+                kpanic(format_args!(
+                    "bread_cluster_callback: buffer {n} has no token"
+                ));
+            };
+            next = {
+                let st = vb.st.get(&g);
+                st.tree.next(xt.buf()).map(counted)
+            };
+            drop(r);
+            kids[n] = Some(xt);
             n += 1;
         }
-        n
-    };
+    }
 
     if n > 1 {
-        let newsize = {
-            let g = CACHE.lock();
-            cluster_buffer(&g, vb, t.buf(), 1)
-                .and_then(|r| r.get().map(Buf::bufsize))
-                .unwrap_or(0)
-        };
+        let newsize = kids[1].as_ref().map_or(0, |x| x.buf().bufsize());
 
         // Shrink this buffer's mapping to only cover its part of the total I/O.
         buf_fix_mapping(&mut t, newsize as usize);
@@ -962,39 +1102,27 @@ pub fn bread_cluster_callback(mut t: BufRef) {
         let mut i = n;
         while i > 1 {
             i -= 1;
-            let g = CACHE.lock();
-            let Some(r) = cluster_buffer(&g, vb, bp, i) else {
-                break;
-            };
-            drop(g);
-            let Some(x) = r.get() else { break };
-            let xsize = x.bufsize() as usize;
+            let Some(x) = kids[i].as_ref() else { break };
+            let xsize = x.buf().bufsize() as usize;
             if xsize <= bp.resid() {
                 bp.set_resid(bp.resid() - xsize);
-                x.set(B_INVAL);
+                x.buf().set(B_INVAL);
             } else if bp.resid() > 0 {
                 bp.set_resid(0);
-                x.set(B_INVAL);
+                x.buf().set(B_INVAL);
             } else {
                 break;
             }
         }
     }
 
-    for i in 1..n {
-        let g = CACHE.lock();
-        let Some(r) = cluster_buffer(&g, vb, t.buf(), i) else {
-            kpanic(format_args!("bread_cluster_callback: buffer {i} is gone"));
-        };
-        drop(g);
-        let Some(x) = r.get() else {
-            kpanic(format_args!("bread_cluster_callback: buffer {i} is gone"));
-        };
+    // Move the pages from the master buffer's uvm object into the individual buffer's uvm
+    // objects.
+    for x in kids[1..n].iter().flatten() {
+        let x = x.buf();
         if t.buf().isset(B_ERROR) {
             x.set(B_INVAL | B_ERROR);
         }
-        // Move the pages from the master buffer's uvm object into the individual buffer's
-        // uvm objects.
         let newobj = x.uobj();
         let oldobj = t.buf().uobj();
         newobj.reinit_dummy(1); // uvm_obj_init(newobj, &bufcache_pager, 1)
@@ -1008,14 +1136,11 @@ pub fn bread_cluster_callback(mut t: BufRef) {
             kassert!(pg.wire_count() == 1);
             uvm_pagerealloc(pg, Owner::Object(oldobj), Owner::Object(newobj), off);
         }
-        x.set_pages(Pages::Own);
-
-        let Some(xt) = x.take_parked() else {
-            kpanic(format_args!(
-                "bread_cluster_callback: buffer {i} has no token"
-            ));
-        };
-        drop(r);
+        // Its pages are its own now: the master's link given back.
+        x.set_pages(&mut g, Pages::Own);
+    }
+    drop(g);
+    for xt in kids[1..n].iter_mut().filter_map(Option::take) {
         biodone(xt);
     }
 
@@ -1023,9 +1148,9 @@ pub fn bread_cluster_callback(mut t: BufRef) {
         brelse(t);
     } else {
         let chan = ptr::from_ref(t.buf());
-        let g = CACHE.lock();
+        let mut g = CACHE.lock();
         t.buf().clr(B_WANTED);
-        Buf::park(t);
+        Buf::park_locked(&mut g, t);
         drop(g);
         wakeup(chan);
     }
@@ -1046,14 +1171,32 @@ pub fn bread_cluster(
     doread_wait(rbp)
 }
 
+/// [`bread_cluster`] for `bsd`'s legacy callers: the first buffer with its token parked in
+/// it, as a counted link.
+pub fn bread_cluster_parked(
+    vb: &'static VnodeBufs,
+    blkno: Daddr,
+    size: i32,
+) -> (SecondaryRef<ByBufhead>, Result<(), Errno>) {
+    let rbp = bio_doread_in(vb, blkno, size, 0, Park::Valid);
+    cluster_readahead(vb, blkno, size, &rbp);
+    doread_wait_parked(rbp)
+}
+
 /// `bread_cluster`'s read-ahead of the blocks after `blkno`, when the first one was not in
 /// the cache: one buffer with the pages of all of them, read in one request, whose callback
-/// hands each block's pages to its own buffer.
+/// hands each block's pages to its own buffer. The read-ahead buffers' tokens are kept in a
+/// stack array while they are set up (the C's `xbpp`), then parked in their buffers for the
+/// I/O.
 fn cluster_readahead(vb: &'static VnodeBufs, blkno: Daddr, size: i32, rbp: &Doread) {
-    // If the buffer is in the cache skip any I/O operation.
-    if let Doread::Held(t) = rbp
-        && t.buf().isset(B_CACHE)
-    {
+    // If the buffer is in the cache skip any I/O operation (the first buffer's B_CACHE,
+    // whether its read was started or not).
+    let cached = match rbp {
+        Doread::Held(t) => t.buf().isset(B_CACHE),
+        Doread::Parked(r) | Doread::Started(r) => r.get().is_some_and(|b| b.isset(B_CACHE)),
+        Doread::Released => false,
+    };
+    if cached {
         return;
     }
 
@@ -1073,70 +1216,52 @@ fn cluster_readahead(vb: &'static VnodeBufs, blkno: Daddr, size: i32, rbp: &Dore
 
     let howmany = ((MAXPHYS / size as usize) as i32).min(maxra) as usize;
 
-    // The read-ahead buffers, from the last to the first (which allocates big enough size to
-    // cover what all the other buffers need), each parked in itself while the read runs.
-    let mut first = None;
+    // From the last to the first, which allocates big enough size to cover what all the other
+    // buffers need.
+    let mut xbpp: [Option<BufRef>; CLUSTER_MAX] = [const { None }; CLUSTER_MAX];
     let mut i = howmany;
     while i > 0 {
         i -= 1;
         let sz = if i == 0 { howmany * size as usize } else { 0 };
-        let Some(t) = buf_get(Some(vb), blkno + i as Daddr + 1, sz) else {
-            // Undo: the buffers already made are invalidated and released.
-            for j in i + 1..howmany {
-                let g = CACHE.lock();
-                let blk = blkno + j as Daddr + 1;
-                let r = vb
-                    .st
-                    .get(&g)
-                    .tree
-                    .find_by(|b| blk.cmp(&b.lblkno()))
-                    .map(counted);
-                drop(g);
-                if let Some(x) = r.as_ref().and_then(SecondaryRef::get)
-                    && let Some(xt) = x.take_parked()
-                {
+        match buf_get(Some(vb), blkno + i as Daddr + 1, sz) {
+            Some(t) => xbpp[i] = Some(t),
+            None => {
+                // Undo: the buffers already made are invalidated and released.
+                for xt in xbpp[i + 1..howmany].iter_mut().filter_map(Option::take) {
                     xt.buf().set(B_INVAL);
-                    drop(r);
                     brelse(xt);
                 }
+                return;
             }
-            return;
-        };
-        if i == 0 {
-            first = Some(t);
-        } else {
-            Buf::park(t);
         }
     }
 
-    let Some(t) = first else {
+    let Some(t) = xbpp[0].take() else {
         return;
     };
 
     let inc = (size as i64) >> DEV_BSHIFT;
     let bp = t.buf();
-    for i in 1..howmany {
-        let g = CACHE.lock();
-        let blk = blkno + i as Daddr + 1;
-        let r = vb
-            .st
-            .get(&g)
-            .tree
-            .find_by(|b| blk.cmp(&b.lblkno()))
-            .map(counted);
-        drop(g);
-        let Some(x) = r.as_ref().and_then(SecondaryRef::get) else {
-            kpanic(format_args!("bread_cluster: read-ahead buffer {i} is gone"));
-        };
-        bc_add(&BCSTATS.pendingreads, 1);
-        bc_add(&BCSTATS.numreads, 1);
-        x.set(B_READ | B_ASYNC);
-        x.set_blkno(sblkno + i as Daddr * inc);
-        x.set_bufsize(i64::from(size));
-        x.set_bcount(i64::from(size));
-        x.set_data_addr(0);
-        x.set_pages(Pages::Master(counted(bp)));
-        x.set_poffs(bp.poffs() + i as i64 * i64::from(size));
+    {
+        let mut g = CACHE.lock();
+        for (i, slot) in xbpp.iter_mut().enumerate().take(howmany).skip(1) {
+            let Some(xt) = slot.take() else {
+                kpanic(format_args!("bread_cluster: read-ahead buffer {i} is gone"));
+            };
+            let x = xt.buf();
+            bc_add(&BCSTATS.pendingreads, 1);
+            bc_add(&BCSTATS.numreads, 1);
+            x.set(B_READ | B_ASYNC);
+            x.set_blkno(sblkno + i as Daddr * inc);
+            x.set_bufsize(i64::from(size));
+            x.set_bcount(i64::from(size));
+            x.set_data_addr(0);
+            x.set_pages(&mut g, Pages::Master(counted(bp)));
+            x.set_poffs(bp.poffs() + i as i64 * i64::from(size));
+            // Parked in its buffer for the I/O: the callback takes it back.
+            Buf::park_locked(&mut g, xt);
+        }
+        bp.set_iodone_locked(&mut g, Some(Iodone::Kernel(bread_cluster_callback)));
     }
 
     kassert!(bp.lblkno() == blkno + 1);
@@ -1144,7 +1269,6 @@ fn cluster_readahead(vb: &'static VnodeBufs, blkno: Daddr, size: i32, rbp: &Dore
 
     bp.set_blkno(sblkno);
     bp.set(B_READ | B_ASYNC | B_CALL);
-    bp.set_iodone(Some(Iodone::Kernel(bread_cluster_callback)));
 
     bc_add(&BCSTATS.pendingreads, 1);
     bc_add(&BCSTATS.numreads, 1);
@@ -1164,6 +1288,14 @@ pub fn bwrite(t: BufRef) -> Result<(), Errno> {
     // XXX note that this relies on delayed tape writes being converted to async, not sync
     // writes (which is safe, but ugly).
     let async_ = bp.isset(B_ASYNC);
+    if !async_ && t.foreign_buf().is_some() {
+        // A synchronous write waits for the buffer (`biowait`) and then releases it to the
+        // cache: neither applies to a buffer a driver embeds, and no caller writes one so.
+        kpanic(format_args!(
+            "bwrite: a driver's own buffer {:p} written synchronously",
+            bp
+        ));
+    }
     if !async_ && owner.mnt_async() {
         // Don't convert writes from VND on async filesystems that already have delayed writes
         // in the upper layer.
@@ -1198,12 +1330,12 @@ pub fn bwrite(t: BufRef) -> Result<(), Errno> {
     bp.set(B_WRITEINPROG);
     drop(g);
     let r = if async_ { None } else { t.counted() };
-    LAST_QUEUED.set(None);
+    let note = note_claim(bp);
     let _ = owner.strategy(t);
 
     // If the queue is above the high water mark, wait till the number of outstanding write
     // bufs drops below the low water mark.
-    if let Some(bq) = LAST_QUEUED.get() {
+    if let Some(bq) = note_take(note) {
         super::bufq::bufq_wait(bq);
     }
 
@@ -1220,10 +1352,86 @@ pub fn bwrite(t: BufRef) -> Result<(), Errno> {
     rv
 }
 
-/// Records that a strategy routine queued a buffer on `bq` (`bufq_queue`), for the `bwrite`
-/// that called it.
-pub(crate) fn note_queued(bq: &'static super::bufq::Bufq) {
-    LAST_QUEUED.set(Some(bq));
+/// The address a note keys a buffer by.
+fn note_key(bp: &Buf) -> usize {
+    ptr::from_ref(bp).addr()
+}
+
+/// A free note claimed for `bp`, its index; `None` when all are taken.
+fn note_try_claim(bp: &Buf) -> Option<usize> {
+    let key = note_key(bp);
+    for (i, n) in QUEUE_NOTE.iter().enumerate() {
+        if n.word
+            .compare_exchange(0, key, Mem::SeqCst, Mem::Relaxed)
+            .is_ok()
+        {
+            n.bq.set(None);
+            NOTES_CLAIMED.fetch_add(1, Mem::SeqCst);
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// `bwrite`'s note for `bp`, claimed before its strategy call; sleeps while all are taken
+/// (the check repeated after `sleep_setup`, so a note given back meanwhile is not missed).
+fn note_claim(bp: &Buf) -> usize {
+    loop {
+        if let Some(i) = note_try_claim(bp) {
+            return i;
+        }
+        NOTES_WANTED.fetch_add(1, Mem::SeqCst);
+        hal::sleep::sleep_setup(&raw const NOTES_WANTED, PRIBIO, "bqnote");
+        let got = note_try_claim(bp);
+        let _ = hal::sleep::sleep_finish(INFSLP, got.is_none());
+        NOTES_WANTED.fetch_sub(1, Mem::SeqCst);
+        if let Some(i) = got {
+            return i;
+        }
+    }
+}
+
+/// Gives the note `i` back: the queue its buffer went on, `None` when it went on none or its
+/// I/O is done already (the C's `bp->b_bq` after the strategy call).
+fn note_take(i: usize) -> Option<&'static super::bufq::Bufq> {
+    let n = &QUEUE_NOTE[i];
+    let bq = n.bq.get();
+    n.bq.set(None);
+    let word = n.word.swap(0, Mem::SeqCst);
+    NOTES_CLAIMED.fetch_sub(1, Mem::SeqCst);
+    if NOTES_WANTED.load(Mem::SeqCst) != 0 {
+        wakeup(&raw const NOTES_WANTED);
+    }
+    if word & NOTE_DONE != 0 { None } else { bq }
+}
+
+/// `bufq_queue` put `bp` on `bq`: written into the note a `bwrite` claimed for `bp`, if any.
+pub(crate) fn note_queued(bp: &Buf, bq: &'static super::bufq::Bufq) {
+    if NOTES_CLAIMED.load(Mem::SeqCst) == 0 {
+        return;
+    }
+    let key = note_key(bp);
+    if let Some(n) = QUEUE_NOTE.iter().find(|n| n.word.load(Mem::SeqCst) == key) {
+        n.bq.set(Some(bq));
+    }
+}
+
+/// `bufq_done` for `bp`: its note, if a `bwrite` holds one, marked done (the C's `b_bq =
+/// NULL`). The mark is a compare-and-swap on the claimed word, so a note given back and
+/// claimed again for another buffer meanwhile is left alone.
+pub(crate) fn note_done(bp: &Buf) {
+    if NOTES_CLAIMED.load(Mem::SeqCst) == 0 {
+        return;
+    }
+    let key = note_key(bp);
+    for n in &QUEUE_NOTE {
+        if n.word
+            .compare_exchange(key, key | NOTE_DONE, Mem::SeqCst, Mem::Relaxed)
+            .is_ok()
+        {
+            return;
+        }
+    }
 }
 
 /// Delayed write.
@@ -1289,6 +1497,21 @@ pub fn buf_undirty(t: &BufRef) {
 pub fn brelse(t: BufRef) {
     let mut g = CACHE.lock();
     brelse_locked(&mut g, t);
+}
+
+/// [`brelse`] of a buffer whose token is parked in it (`bsd`'s legacy callers, which hold the
+/// buffer by address): the token taken back and the buffer released in one section of the
+/// cache's lock. `false`, with nothing done, when no token is parked (a driver's own idle
+/// buffer, whose token the caller makes).
+pub fn brelse_parked(bp: &Buf) -> bool {
+    let mut g = CACHE.lock();
+    match bp.take_parked_locked(&mut g) {
+        Some(t) => {
+            brelse_locked(&mut g, t);
+            true
+        }
+        None => false,
+    }
 }
 
 /// [`brelse`] with the cache's lock held.
@@ -1415,6 +1638,42 @@ pub fn getblk(
     slpflag: i32,
     slptimeo: u64,
 ) -> Option<BufRef> {
+    match getblk_in(vb, blkno, size, slpflag, slptimeo, Park::Never)? {
+        Got::Token(t) => Some(t),
+        Got::Parked(_) => kpanic(format_args!("getblk: a token parked unasked")),
+    }
+}
+
+/// [`getblk`] for `bsd`'s legacy callers: the buffer with its token parked in it, as a
+/// counted link (a cached one's parked in getblk's own section of the cache's lock).
+pub fn getblk_parked(
+    vb: &'static VnodeBufs,
+    blkno: Daddr,
+    size: i32,
+    slpflag: i32,
+    slptimeo: u64,
+) -> Option<SecondaryRef<ByBufhead>> {
+    match getblk_in(vb, blkno, size, slpflag, slptimeo, Park::Cached)? {
+        Got::Parked(r) => Some(r),
+        Got::Token(t) => {
+            let Some(r) = t.counted() else {
+                kpanic(format_args!("getblk: a driver's buffer"));
+            };
+            Buf::park(t);
+            Some(r)
+        }
+    }
+}
+
+/// [`getblk`]'s body, the token parked as `park` says.
+fn getblk_in(
+    vb: &'static VnodeBufs,
+    blkno: Daddr,
+    size: i32,
+    slpflag: i32,
+    slptimeo: u64,
+    park: Park,
+) -> Option<Got> {
     // XXX
     // The following is an inlined version of 'incore()', but with the 'invalid' test moved to
     // after the 'busy' test. It's necessary because there are some cases in which the NFS code
@@ -1444,13 +1703,24 @@ pub fn getblk(
                 bc_add(&BCSTATS.cachehits, 1);
                 bp.set(B_CACHE);
                 bufcache_take(&mut g, bp);
-                return Some(buf_acquire(&mut g, r));
+                let t = buf_acquire(&mut g, r);
+                let parks = match park {
+                    Park::Never => false,
+                    Park::Cached => true,
+                    Park::Valid => t.buf().isset(B_DONE | B_DELWRI),
+                };
+                if parks {
+                    let r = counted(t.buf());
+                    Buf::park_locked(&mut g, t);
+                    return Some(Got::Parked(r));
+                }
+                return Some(Got::Token(t));
             }
         }
         drop(g);
 
         if let Some(t) = buf_get(Some(vb), blkno, size as usize) {
-            return Some(t);
+            return Some(Got::Token(t));
         }
     }
 }
@@ -1515,10 +1785,19 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
             return None;
         }
     }
-    // pool_get may sleep: the cache's lock is left for it, as the C's splbio is by a sleep.
-    drop(g);
-    let b = BUFPL.get(poolwait, Buf::new)?;
-    let mut g = CACHE.lock();
+    // pool_get(&bufpool, poolwait) at splbio, as the C calls it: first without sleeping, under
+    // the cache's lock; only when the pool must wait is the lock left for the sleep (the C's
+    // splbio is, by a sleep) and taken again.
+    let b = match BUFPL.get(PR_NOWAIT, Buf::new) {
+        Some(b) => b,
+        None if poolwait == PR_NOWAIT => return None,
+        None => {
+            drop(g);
+            let b = BUFPL.get(poolwait, Buf::new)?;
+            g = CACHE.lock();
+            b
+        }
+    };
 
     // bp->b_freelist.tqe_next = NOLIST: on no queue.
     b.set_dev(NODEV);
@@ -1644,7 +1923,7 @@ pub fn biowait(r: SecondaryRef<ByBufhead>) -> (BufRef, Result<(), Errno>) {
     while !bp.isset(B_DONE) {
         let _ = g.sleep_nsec(ptr::from_ref(bp), PRIBIO + 1, "biowait", INFSLP);
     }
-    let t = bp.take_parked();
+    let t = bp.take_parked_locked(&mut g);
     drop(g);
     let Some(t) = t else {
         kpanic(format_args!(
@@ -1672,14 +1951,36 @@ pub fn biowait(r: SecondaryRef<ByBufhead>) -> (BufRef, Result<(), Errno>) {
 /// Called at `splbio()` (from interrupt context, or by a strategy routine): it takes the cache's
 /// lock, which masks the interrupt.
 pub fn biodone(t: BufRef) {
+    let g = CACHE.lock();
+    biodone_locked(t, g);
+}
+
+/// [`biodone`] of a buffer whose token is parked in it (a legacy driver's, which holds the
+/// buffer by address): the token taken back in biodone's own section of the cache's lock.
+/// `false`, with nothing done, when no token is parked.
+pub fn biodone_parked(bp: &Buf) -> bool {
+    let mut g = CACHE.lock();
+    match bp.take_parked_locked(&mut g) {
+        Some(t) => {
+            biodone_locked(t, g);
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`biodone`] from its section of the cache's lock, `g`, which it gives up before the
+/// callback or the release. (`g` comes after `t`: a panic that unwinds, the host's, drops the
+/// parameters in reverse order, so the lock goes before the token's drop takes it again.)
+fn biodone_locked(t: BufRef, g: Cache) {
     let chan = ptr::from_ref(t.buf());
     let flags = t.buf().flags();
     if flags & B_DONE != 0 {
+        drop(g);
         kpanic(format_args!("biodone already"));
     }
     let wait = flags & (B_CALL | B_ASYNC) == 0;
 
-    let g = CACHE.lock();
     {
         let bp = t.buf();
         bp.set(B_DONE); // note that it's done
@@ -1703,17 +2004,19 @@ pub fn biodone(t: BufRef) {
     if wait {
         // or just wakeup the buffer
         t.buf().clr(B_WANTED);
-        Buf::park(t);
+        let mut g = g;
+        Buf::park_locked(&mut g, t);
         drop(g);
         wakeup(chan);
         return;
     }
+    let iodone = t.buf().iodone(&g);
     drop(g);
 
     if flags & B_CALL != 0 {
         // if necessary, call out
         t.buf().clr(B_CALL); // but note callout done
-        match t.buf().iodone() {
+        match iodone {
             Some(Iodone::Kernel(f)) => f(t),
             Some(Iodone::Legacy(f)) => {
                 let Some(bp) = t.foreign_buf() else {
@@ -1721,7 +2024,7 @@ pub fn biodone(t: BufRef) {
                         "biodone: a driver's callback on a cache buffer"
                     ));
                 };
-                t.release();
+                t.release_unlocked();
                 f(bp);
             }
             None => kpanic(format_args!("biodone: B_CALL without b_iodone")),
@@ -1831,7 +2134,7 @@ fn discard_buffer(g: &mut Cache, r: SecondaryRef<ByBufhead>) {
         brelvp(g, bp);
     }
     // The buffer is not busy: its ownership taken for the free, B_BUSY left clear.
-    let t = BufRef::acquire(r);
+    let t = BufRef::acquire(g, r);
     buf_put(g, t);
 }
 
@@ -2301,7 +2604,12 @@ pub fn bio_test_reset() {
     BUF_NEEDVA.store(0, Mem::Relaxed);
     CLEANER.store(0, Mem::Relaxed);
     SYNCER.store(0, Mem::Relaxed);
-    LAST_QUEUED.set(None);
+    for n in &QUEUE_NOTE {
+        n.word.store(0, Mem::Relaxed);
+        n.bq.set(None);
+    }
+    NOTES_CLAIMED.store(0, Mem::Relaxed);
+    NOTES_WANTED.store(0, Mem::Relaxed);
 }
 
 const _: () = assert!(DEV_BSHIFT == 9);
@@ -2316,6 +2624,7 @@ mod tests {
     // `bread_cluster`, the vnode's output count, and the kva of `vfs_biomem` (a slot stolen
     // from an idle buffer, a released buffer freed by `buf_unmap`).
 
+    use std::boxed::Box;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::MutexGuard;
     use std::vec::Vec;
@@ -2489,6 +2798,309 @@ mod tests {
         brelse(t);
     }
 
+    #[test]
+    fn a_cached_first_block_whose_read_is_started_gets_no_read_ahead() {
+        let (_g, tv) = setup(512);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+        tv.run.store(3, Mem::Relaxed);
+        // Block 0 cached but not valid (released without B_DONE): getblk finds it (B_CACHE)
+        // and bio_doread starts its read; the C tests the first buffer's B_CACHE in every
+        // case, so no cluster is read.
+        let t = getblk(vb, 0, size, 0, INFSLP).expect("a buffer");
+        assert!(!t.buf().isset(B_DONE));
+        brelse(t);
+        assert!(incore(vb, 0));
+        let (t, error) = bread_cluster(vb, 0, size);
+        assert_eq!(error, Ok(()));
+        assert!(t.buf().isset(B_CACHE));
+        brelse(t);
+        assert_eq!(
+            tv.reads.load(Mem::Relaxed),
+            1,
+            "block 0's own read, no cluster"
+        );
+        assert!(!incore(vb, 1));
+    }
+
+    /// LZ's `delayed_writes_go_dirty_and_vflushbuf_writes_them`, on the kernel's halves:
+    /// `vflushbuf`'s loop over `vnode_dirty_scan` (as `bsd`'s `vflushbuf` runs it) and
+    /// `vinvalbuf_bufs` with `V_SAVE`.
+    #[test]
+    fn a_dirty_scan_flushes_delayed_writes_and_vinvalbuf_saves_them() {
+        let (_g, tv) = setup(256);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+
+        let mut t = getblk(vb, 32, size, 0, INFSLP).expect("a buffer");
+        t.data().fill(0x5a);
+        let bp: *const Buf = t.buf();
+        bdwrite(t);
+        {
+            let g = CACHE.lock();
+            let b = vb.st.get(&g).dirty.first().expect("on the dirty list");
+            assert!(ptr::eq(b, bp) && b.isset(B_DELWRI) && !b.isset(B_BUSY));
+            assert!(g.dirty.first().is_some_and(|d| ptr::eq(d, bp)));
+        }
+        assert!(vb.bioflag() & VBIOONSYNCLIST != 0);
+        assert_eq!(stat(&BCSTATS.delwribufs), 1);
+        assert_eq!(stat(&BCSTATS.numdirtypages), 1);
+        assert_eq!(tv.writes.load(Mem::Relaxed), 0);
+
+        // vflushbuf(vp, 1): every dirty buffer taken by the scan and written.
+        let pick = |b: &Buf| {
+            if b.isset(B_BUSY) {
+                return DirtyPick::Skip;
+            }
+            assert!(b.isset(B_DELWRI), "vflushbuf: not dirty");
+            DirtyPick::Take
+        };
+        let mut taken = 0;
+        while let DirtyScan::Taken(t) = vnode_dirty_scan(vb, "vflushbuf", 0, INFSLP, pick) {
+            assert!(t.buf().vnode_bufs().is_some_and(|v| ptr::eq(v, vb)));
+            bawrite(t);
+            taken += 1;
+        }
+        assert_eq!(taken, 1);
+        assert_eq!(vwaitforio(vb, 0, "vflushbuf", INFSLP), Ok(()));
+        assert_eq!(tv.writes.load(Mem::Relaxed), 1);
+        assert!(
+            lock_disk(tv)[32 * DEV_BSIZE..32 * DEV_BSIZE + PAGE_SIZE]
+                .iter()
+                .all(|&b| b == 0x5a)
+        );
+        assert!(vb.dirty_is_empty());
+        {
+            let g = CACHE.lock();
+            assert!(vb.st.get(&g).clean.iter().any(|b| ptr::eq(b, bp)));
+        }
+        assert!(vb.bioflag() & VBIOONSYNCLIST == 0);
+        assert_eq!(vb.numoutput(), 0);
+        assert_eq!(stat(&BCSTATS.delwribufs), 0);
+        assert_eq!(stat(&BCSTATS.pendingwrites), 0);
+
+        // A synchronous bwrite writes and releases.
+        let mut t = getblk(vb, 48, size, 0, INFSLP).expect("a buffer");
+        t.data().fill(0x77);
+        let bp48: *const Buf = t.buf();
+        assert_eq!(bwrite(t), Ok(()));
+        assert!(idle_on_its_lists(vb, bp48));
+        assert_eq!(lock_disk(tv)[48 * DEV_BSIZE], 0x77);
+
+        // vinvalbuf with V_SAVE writes a dirty buffer before throwing it away.
+        let mut t = getblk(vb, 64, size, 0, INFSLP).expect("a buffer");
+        t.data().fill(0x33);
+        bdwrite(t);
+        assert_eq!(vinvalbuf_bufs(vb, true, false, 0, INFSLP), Ok(()));
+        assert_eq!(lock_disk(tv)[64 * DEV_BSIZE], 0x33);
+        assert!(vb.dirty_is_empty() && vb.clean_is_empty());
+        assert_eq!(stat(&BCSTATS.numbufs), 0);
+    }
+
+    /// Whether the buffer at `bp` is on `vb`'s lists and idle (`!B_BUSY`).
+    fn idle_on_its_lists(vb: &'static VnodeBufs, bp: *const Buf) -> bool {
+        let g = CACHE.lock();
+        let st = vb.st.get(&g);
+        st.clean
+            .iter()
+            .chain(st.dirty.iter())
+            .any(|b| ptr::eq(b, bp) && !b.isset(B_BUSY))
+    }
+
+    #[test]
+    fn a_dirty_scan_skips_takes_and_ends() {
+        let (_g, tv) = setup(256);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+        for blk in [8, 16] {
+            let t = getblk(vb, blk, size, 0, INFSLP).expect("a buffer");
+            bdwrite(t);
+        }
+        // Everything skipped: the scan ends with nothing.
+        assert!(matches!(
+            vnode_dirty_scan(vb, "test", 0, INFSLP, |_| DirtyPick::Skip),
+            DirtyScan::Done
+        ));
+        // The first buffer the pick takes ends the scan, busy and off the cache's queue.
+        let scan = vnode_dirty_scan(vb, "test", 0, INFSLP, |b| {
+            if b.lblkno() == 16 {
+                DirtyPick::Take
+            } else {
+                DirtyPick::Skip
+            }
+        });
+        let DirtyScan::Taken(t) = scan else {
+            panic!("block 16 taken");
+        };
+        assert_eq!(t.buf().lblkno(), 16);
+        assert!(t.buf().isset(B_BUSY) && t.buf().isset(B_DELWRI));
+        assert!(!t.buf().b_freelist_linked());
+        // A busy buffer is skipped by a pick that skips the busy ones.
+        assert!(matches!(
+            vnode_dirty_scan(vb, "test", 0, INFSLP, |b| {
+                if b.isset(B_BUSY) || b.lblkno() != 16 {
+                    DirtyPick::Skip
+                } else {
+                    DirtyPick::Take
+                }
+            }),
+            DirtyScan::Done
+        ));
+        brelse(t);
+        assert_eq!(stat(&BCSTATS.delwribufs), 2);
+    }
+
+    #[test]
+    fn vinvalbuf_keeps_the_metadata_for_savemeta_and_waits_for_nothing_idle() {
+        let (_g, tv) = setup(256);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+        // A data block (clean, valid) and a metadata block (negative lblkno, dirty).
+        let (t, error) = bread(vb, 8, size);
+        assert_eq!(error, Ok(()));
+        brelse(t);
+        let t = getblk(vb, -12, size, 0, INFSLP).expect("a metadata buffer");
+        bdwrite(t);
+        // V_SAVEMETA without V_SAVE: the data invalidated, the metadata kept, nothing written.
+        assert_eq!(vinvalbuf_bufs(vb, false, true, 0, INFSLP), Ok(()));
+        assert!(!incore(vb, 8));
+        assert!(vb.clean_is_empty());
+        {
+            let g = CACHE.lock();
+            let st = vb.st.get(&g);
+            assert_eq!(st.dirty.iter().map(Buf::lblkno).collect::<Vec<_>>(), [-12]);
+        }
+        assert_eq!(tv.writes.load(Mem::Relaxed), 0);
+        // Without it, the dirty metadata is thrown away too (no V_SAVE: not written).
+        assert_eq!(vinvalbuf_bufs(vb, false, false, 0, INFSLP), Ok(()));
+        assert!(vb.dirty_is_empty() && vb.clean_is_empty());
+        assert_eq!(tv.writes.load(Mem::Relaxed), 0);
+        assert_eq!(stat(&BCSTATS.delwribufs), 0);
+    }
+
+    /// `bwrite`'s queue notes (the C's `bp->b_bq` read after the strategy call): the queue
+    /// noted for the claimed buffer only, cleared by `bufq_done`, a note reused for another
+    /// buffer left alone by a late `done`, and the table's bound.
+    #[test]
+    fn a_bwrite_note_names_its_buffers_queue_until_the_io_is_done() {
+        let (_g, _tv) = setup(64);
+        let bq: &'static super::super::bufq::Bufq =
+            Box::leak(Box::new(super::super::bufq::Bufq::new()));
+        let a: &'static Buf = Box::leak(Box::new(Buf::new()));
+        let b: &'static Buf = Box::leak(Box::new(Buf::new()));
+
+        // Queued and not done: the writer waits on that queue.
+        let n = note_claim(a);
+        note_queued(b, bq); // another buffer's queue is not noted
+        assert!(QUEUE_NOTE[n].bq.get().is_none());
+        note_queued(a, bq);
+        assert!(note_take(n).is_some_and(|q| ptr::eq(q, bq)));
+        assert_eq!(NOTES_CLAIMED.load(Mem::SeqCst), 0);
+
+        // Done before the strategy call returned: no wait (b_bq is NULL again).
+        let n = note_claim(a);
+        note_queued(a, bq);
+        note_done(a);
+        assert!(note_take(n).is_none());
+
+        // Queued on none (a strategy that finished the I/O itself): no wait.
+        let n = note_claim(a);
+        assert!(note_take(n).is_none());
+
+        // A note given back and claimed for another buffer: a late done of the first leaves
+        // it alone.
+        let n = note_claim(a);
+        assert!(note_take(n).is_none());
+        let m = note_claim(b);
+        note_queued(b, bq);
+        note_done(a);
+        assert!(note_take(m).is_some_and(|q| ptr::eq(q, bq)));
+
+        // The table's bound: every note claimed, then none.
+        let bufs: Vec<&'static Buf> = (0..QUEUE_NOTES)
+            .map(|_| &*Box::leak(Box::new(Buf::new())))
+            .collect();
+        let held: Vec<usize> = bufs.iter().map(|bp| note_claim(bp)).collect();
+        assert!(note_try_claim(a).is_none());
+        for i in held {
+            assert!(note_take(i).is_none());
+        }
+        assert!(note_try_claim(a).is_some_and(|i| note_take(i).is_none()));
+    }
+
+    /// The legacy boundary's `brelse` and `biodone` take the parked token in the cache's own
+    /// section: the buffer released, or done and its token parked again for `biowait`; with
+    /// no token parked they do nothing and say so.
+    #[test]
+    fn brelse_and_biodone_of_a_parked_token() {
+        let (_g, tv) = setup(64);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+
+        let t = getblk(vb, 8, size, 0, INFSLP).expect("a buffer");
+        let r = t.counted().expect("a cache buffer");
+        let bp = r.get().expect("the buffer");
+        assert!(!brelse_parked(bp), "nothing parked while the token is held");
+        Buf::park(t);
+        assert!(brelse_parked(bp));
+        assert!(!bp.is_held() && !bp.isset(B_BUSY));
+        assert!(!brelse_parked(bp), "an idle buffer has no parked token");
+
+        // A synchronous read done by a legacy driver: the token parked again, B_DONE set.
+        let t = getblk(vb, 8, size, 0, INFSLP).expect("the buffer again");
+        bc_add(&BCSTATS.pendingreads, 1);
+        t.buf().set(B_READ);
+        t.buf().clr(B_DONE);
+        Buf::park(t);
+        assert!(biodone_parked(bp));
+        assert!(bp.isset(B_DONE) && bp.is_parked());
+        assert!(biowait_buf(bp).is_ok());
+        assert!(brelse_parked(bp));
+        assert!(!biodone_parked(bp), "an idle buffer has no parked token");
+        drop(r);
+    }
+
+    /// The legacy boundary's reads: the buffer comes back with its token parked (a miss's
+    /// left parked by `biodone` for the wait, a hit's parked in getblk's own section), and
+    /// the legacy `brelse` takes it back.
+    #[test]
+    fn a_legacy_read_gives_the_buffer_with_its_token_parked() {
+        let (_g, tv) = setup(64);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+
+        // A miss: read from the disk, the token parked by biodone and left there.
+        let (r, rv) = bread_parked(vb, 2, size);
+        assert_eq!(rv, Ok(()));
+        let bp = r.get().expect("the buffer");
+        assert!(bp.is_parked() && bp.isset(B_DONE | B_BUSY));
+        assert_eq!(tv.reads.load(Mem::Relaxed), 1);
+        assert!(brelse_parked(bp));
+        drop(r);
+        // A hit: no read, the token parked in getblk's section.
+        let (r, rv) = bread_parked(vb, 2, size);
+        assert_eq!(rv, Ok(()));
+        let bp = r.get().expect("the buffer");
+        assert!(bp.is_parked() && bp.isset(B_CACHE));
+        assert_eq!(tv.reads.load(Mem::Relaxed), 1);
+        assert!(brelse_parked(bp));
+        drop(r);
+
+        // getblk for a legacy caller: a new buffer parked after buf_get, a cached one in
+        // getblk's section; neither is read.
+        let r = getblk_parked(vb, 3, size, 0, INFSLP).expect("a new buffer");
+        let bp = r.get().expect("the buffer");
+        assert!(bp.is_parked() && !bp.isset(B_DONE));
+        assert!(brelse_parked(bp));
+        drop(r);
+        let r = getblk_parked(vb, 3, size, 0, INFSLP).expect("the cached buffer");
+        let bp = r.get().expect("the buffer");
+        assert!(bp.is_parked() && bp.isset(B_CACHE));
+        assert!(brelse_parked(bp));
+        drop(r);
+        assert_eq!(tv.reads.load(Mem::Relaxed), 1);
+    }
+
     fn lock_disk(tv: &BufTestVnode) -> std::sync::MutexGuard<'_, Vec<u8>> {
         tv.disk.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -2623,7 +3235,7 @@ mod tests {
             // The identity bmap put the cluster at sector 1, a page (8 sectors) per block:
             // block `blk`'s first byte is sector 1 + 8 * (blk - 1)'s.
             assert_eq!(t.bytes()[0], (1 + 8 * (blk - 1)) as u8);
-            assert!(!t.buf().pages_are_masters());
+            assert!(!t.buf().pages_are_masters(&CACHE.lock()));
             brelse(t);
         }
         assert!(!incore(vb, 5));
@@ -2648,7 +3260,7 @@ mod tests {
         assert_eq!(stat(&BCSTATS.kvaslots_avail), slots as i64 - 1);
         let g = CACHE.lock();
         let lru = g.bufhead.iter().find(|b| b.lblkno() == 0).expect("block 0");
-        assert!(lru.data_addr() == 0 && !lru.idle_mapped());
+        assert!(lru.data_addr() == 0 && !lru.idle_mapped(&g));
         assert!(!g.valist.contains(lru));
         drop(g);
         brelse(t);
@@ -2672,7 +3284,7 @@ mod tests {
         {
             let g = CACHE.lock();
             let bp = g.valist.first().expect("the released buffer");
-            assert!(bp.isset(B_RELEASED) && bp.idle_mapped() && !bp.has_pages());
+            assert!(bp.isset(B_RELEASED) && bp.idle_mapped(&g) && !bp.has_pages(&g));
             assert_eq!(g.bufhead.iter().count(), 1);
         }
         // buf_unmap takes the slot and gives the buffer back to bufpl.

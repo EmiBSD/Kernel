@@ -56,6 +56,15 @@
 //! - `prim.splbio`: `splraise(IPL_BIO)` and its `splx`, the legacy cache's lock, beside
 //! - `prim.cache-lock`: the kernel's cache lock (`CACHE`, a `Mutexed` at `IPL_BIO`) taken and
 //!   dropped.
+//! - `legacy.park-take`: what `bsd`'s boundary adds to each busy period a legacy caller holds
+//!   by address (`sys/sys/buf.rs`): `lend`'s `Buf::park` of the token and `token_of`'s
+//!   `take_parked`, on a cached busy buffer (LZ's `&'static Buf` cost nothing there).
+//! - `legacy.getblk-brelse.hit`: a legacy caller's `getblk` and `brelse` of a cached block
+//!   through the boundary as it was first: `getblk.hit`, the park and the take, `brelse`
+//!   (LZ: `getblk.hit` plus `brelse`).
+//! - `legacy.parked.getblk-brelse.hit`: the same through the boundary's fast paths, what
+//!   `bsd`'s `getblk` and `brelse` call now: `getblk_parked` (the token parked in getblk's
+//!   section) and `brelse_parked` (taken back in brelse's).
 
 #![forbid(unsafe_code)]
 
@@ -69,7 +78,10 @@ use hal::owned::SecondaryRef;
 use hal::sleep::INFSLP;
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::Daddr;
-use kernel::fs::bio::{CACHE, VnodeBufs, bread, brelse, bufcache_release, bufcache_take, getblk};
+use kernel::fs::bio::{
+    CACHE, VnodeBufs, bread, brelse, brelse_parked, bufcache_release, bufcache_take, getblk,
+    getblk_parked,
+};
 use kernel::fs::buf::{B_INVAL, BUFQ_FIFO, BUFQ_NSCAN, Buf, BufRef, ByBufhead};
 use kernel::fs::bufq::{Bufq, bufq_dequeue, bufq_done, bufq_init, bufq_queue};
 use kernel::testutil::{BufTestVnode, bufcache_install};
@@ -134,6 +146,9 @@ fn main() {
         "bufq.fifo.queue-dequeue",
         "prim.splbio",
         "prim.cache-lock",
+        "legacy.park-take",
+        "legacy.getblk-brelse.hit",
+        "legacy.parked.getblk-brelse.hit",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -390,6 +405,89 @@ fn main() {
             t.elapsed()
         });
         report(names[8], r);
+    }
+
+    if wanted(names[9]) || wanted(names[10]) || wanted(names[11]) {
+        const ROUNDS: usize = 200;
+        // Counted links to the cached buffers, made untimed: the boundary's `&'static Buf`
+        // stands for them (it counts nothing).
+        let refs: Vec<SecondaryRef<ByBufhead>> = (0..CACHED)
+            .map(|i| {
+                let t = need(
+                    getblk(vb, cached(i), size, 0, INFSLP),
+                    "a block is not cached",
+                );
+                let r = need(t.counted(), "a cached buffer without its link");
+                brelse(t);
+                r
+            })
+            .collect();
+        if wanted(names[9]) {
+            let mut ts: Vec<BufRef> = Vec::with_capacity(CACHED);
+            let mut back: Vec<BufRef> = Vec::with_capacity(CACHED);
+            let r = measure(CACHED * ROUNDS, || {
+                let mut d = Duration::ZERO;
+                for _ in 0..ROUNDS {
+                    for i in 0..CACHED {
+                        ts.push(need(
+                            getblk(vb, cached(i), size, 0, INFSLP),
+                            "getblk gave no buffer",
+                        ));
+                    }
+                    let t = Instant::now();
+                    for (b, r) in ts.drain(..).zip(&refs) {
+                        Buf::park(black_box(b));
+                        let bp = need(r.get(), "a link points at nothing");
+                        back.push(need(bp.take_parked(), "the parked token is gone"));
+                    }
+                    d += t.elapsed();
+                    for b in back.drain(..) {
+                        brelse(b);
+                    }
+                }
+                d
+            });
+            report(names[9], r);
+        }
+        if wanted(names[10]) {
+            let r = measure(CACHED * ROUNDS, || {
+                let t = Instant::now();
+                for _ in 0..ROUNDS {
+                    for (i, r) in refs.iter().enumerate() {
+                        let b = need(
+                            getblk(vb, black_box(cached(i)), size, 0, INFSLP),
+                            "getblk gave no buffer",
+                        );
+                        Buf::park(b);
+                        let bp = need(r.get(), "a link points at nothing");
+                        let back = need(bp.take_parked(), "the parked token is gone");
+                        brelse(black_box(back));
+                    }
+                }
+                t.elapsed()
+            });
+            report(names[10], r);
+        }
+        if wanted(names[11]) {
+            let r = measure(CACHED * ROUNDS, || {
+                let t = Instant::now();
+                for _ in 0..ROUNDS {
+                    for i in 0..CACHED {
+                        let r = need(
+                            getblk_parked(vb, black_box(cached(i)), size, 0, INFSLP),
+                            "getblk gave no buffer",
+                        );
+                        let bp = need(r.get(), "a link points at nothing");
+                        if !brelse_parked(black_box(bp)) {
+                            eprintln!("bio: the parked token is gone");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                t.elapsed()
+            });
+            report(names[11], r);
+        }
     }
 }
 /* </CODE> */

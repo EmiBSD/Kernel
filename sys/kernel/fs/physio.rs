@@ -145,7 +145,7 @@ pub fn physio<G: ProcGlue>(
     own.push(b);
     let mut r = SecondaryRef::new();
     r.set(own.last());
-    let mut tok = BufRef::acquire(r);
+    let mut tok = BufRef::acquire(&mut CACHE.lock(), r);
 
     // [set up the fixed part of the buffer for a transfer]
     // (b_vnbufs is on no list: a fresh header's.)
@@ -233,7 +233,7 @@ pub fn physio<G: ProcGlue>(
                 while !bp.isset(B_DONE) {
                     let _ = g.sleep_nsec(ptr::from_ref(bp), PRIBIO + 1, "physio", INFSLP);
                 }
-                let back = bp.take_parked();
+                let back = bp.take_parked_locked(&mut g);
                 drop(g);
                 back
             };
@@ -282,7 +282,7 @@ pub fn physio<G: ProcGlue>(
     if tok.buf().vnode_bufs().is_some() {
         brelvp_buf(&tok);
     }
-    let Some(r) = tok.into_counted() else {
+    let Some(r) = tok.into_counted(&mut CACHE.lock()) else {
         kpanic(format_args!("physio: a driver's buffer"));
     };
     drop(own.take(r));

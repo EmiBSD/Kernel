@@ -105,8 +105,11 @@
 //!   `b_flags` and the owner's fields, read and written Relaxed where the C reads them
 //!   unlocked), the links `hal::owned` entries ([`ByBufhead`], [`ByLblkno`], [`ByVnbufs`],
 //!   [`ByFreelist`], [`ByValist`], [`ByBufq`]), the busy state, the pages' object and the
-//!   callback inside the buffer's own leaf lock (`Mutexed` at `IPL_BIO`); `Send` and `Sync`
-//!   by construction.
+//!   callback one `Guarded` cell of the cache's lock (`CACHE`: the cache's paths, which hold
+//!   it already, change them with no lock of their own), with a state byte beside it for the
+//!   unlocked `is_held`/`is_parked`; `Send` and `Sync` by construction. (A leaf lock per
+//!   buffer at first: its two extra `spl` transitions on every acquire, release, park and
+//!   take were a measured part of QEMU's `fileread` regression.)
 //! - `B_BUSY`'s owner -> [`BufRef`], with the view of the bytes: `data()` is safe, one owner
 //!   at a time by construction (the C's rule "touch a buffer only while you have it busy").
 //! - `bufpool` (`pool_init(.., "bufpl")`) -> [`BUFPL`], a `hal::pool::BoxPool<Buf>` of the
@@ -116,19 +119,18 @@
 use core::cmp::Ordering;
 use core::mem;
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering as Mem};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicUsize, Ordering as Mem};
 
-use hal::intr::IPL_BIO;
 use hal::link::Link;
 use hal::mapped::MappedBytes;
-use hal::mutex::Mutexed;
 use hal::owned::{OwnedEntry, SecondaryEntry, SecondaryRef};
 use hal::pool::BoxPool;
+use hal::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::{Daddr, Dev, Off};
 
-use super::bio::VnodeBufs;
+use super::bio::{CACHE, Cache, VnodeBufs};
 use super::bufq::Bufq;
 use crate::assert::kpanic;
 use crate::vm::km::BufSlot;
@@ -298,7 +300,8 @@ enum Slot {
     Parked(BufRef),
 }
 
-/// What the buffer's leaf lock guards.
+/// What the cache's lock guards in the buffer (the C's `splbio`): its busy state, `b_pobj` and
+/// `b_iodone`.
 struct Owned {
     slot: Slot,
     pages: Pages,
@@ -307,9 +310,10 @@ struct Owned {
 
 /// `struct buf`: the buffer header describes an I/O operation in the kernel.
 ///
-/// Locks: the links and the 2Q flags are the cache's (`splbio`); `slot`, the pages and the
-/// callback are the buffer's leaf lock's (never held across another lock); the other scalars
-/// belong to the buffer's owner and are atomics read unlocked where the C reads them so.
+/// Locks: the links, the 2Q flags, the busy state (`slot`), the pages and the callback are the
+/// cache's (`CACHE`, the C's `splbio`), so the cache's own paths, which hold it already, change
+/// them with no lock of their own; the other scalars belong to the buffer's owner and are
+/// atomics read unlocked where the C reads them so.
 pub struct Buf {
     /// `b_list`: all allocated buffers (`bufhead`), or physio's own list.
     b_list: OwnedEntry<Buf>,
@@ -363,9 +367,19 @@ pub struct Buf {
     b_uobj: Object,
     /// `b_poffs`: offset within object.
     b_poffs: AtomicI64,
-    /// The busy state, `b_pobj` and `b_iodone`: the buffer's leaf lock.
-    owned: Mutexed<Owned>,
+    /// The busy state, `b_pobj` and `b_iodone`: a cell of the cache's lock.
+    owned: Guarded<Owned>,
+    /// The busy state's variant (`IDLE`, `BUSY`, `PARKED`), written with `slot` under the
+    /// cache's lock and read without it, as `B_BUSY` is (a hint: a holder's own checks).
+    state: AtomicU8,
 }
+
+/// [`Buf`]'s `state`: idle.
+const IDLE: u8 = 0;
+/// Busy, its token outside the buffer.
+const BUSY: u8 = 1;
+/// Busy, its token parked in the buffer.
+const PARKED: u8 = 2;
 
 impl Buf {
     /// A zeroed, idle buffer, as `pool_get(&bufpool, PR_ZERO)` returns it.
@@ -396,15 +410,27 @@ impl Buf {
             b_bq: Link::new(),
             b_uobj: Object::dummy(ObjKind::Bufcache, 0),
             b_poffs: AtomicI64::new(0),
-            owned: Mutexed::new(
-                IPL_BIO,
+            owned: Guarded::new_static_mutexed(
+                &CACHE,
                 Owned {
                     slot: Slot::Idle(Kva::None),
                     pages: Pages::None,
                     iodone: None,
                 },
             ),
+            state: AtomicU8::new(IDLE),
         }
+    }
+
+    /// The busy state and `slot` set together (under the cache's lock).
+    fn set_slot(&self, o: &mut Owned, slot: Slot) -> Slot {
+        let st = match slot {
+            Slot::Idle(_) => IDLE,
+            Slot::Busy => BUSY,
+            Slot::Parked(_) => PARKED,
+        };
+        self.state.store(st, Mem::Release);
+        mem::replace(&mut o.slot, slot)
     }
 
     /// `bp->b_flags`.
@@ -656,28 +682,26 @@ impl Buf {
 
     /// Whether the buffer's pages are `master`'s (a read-ahead buffer of the cluster `master`
     /// reads, `bread_cluster`).
-    pub(crate) fn is_cluster_of(&self, master: &Buf) -> bool {
-        matches!(&self.owned.lock().pages, Pages::Master(r) if r.points_to(master))
+    pub(crate) fn is_cluster_of(&self, g: &Cache, master: &Buf) -> bool {
+        matches!(&self.owned.get(g).pages, Pages::Master(r) if r.points_to(master))
     }
 
     /// `bp->b_pobj != NULL`: whether the buffer has pages.
-    pub fn has_pages(&self) -> bool {
-        !matches!(self.owned.lock().pages, Pages::None)
+    pub fn has_pages(&self, g: &Cache) -> bool {
+        !matches!(self.owned.get(g).pages, Pages::None)
     }
 
     /// `bp->b_pobj = ..`: where the buffer's pages are; the old value is dropped (a master's
     /// link given back).
-    pub fn set_pages(&self, p: Pages) {
-        let old = mem::replace(&mut self.owned.lock().pages, p);
+    pub fn set_pages(&self, g: &mut Cache, p: Pages) {
+        let old = mem::replace(&mut self.owned.get_mut(g).pages, p);
         drop(old);
     }
 
-    /// Runs `f` on `bp->b_pobj` (`None` when the buffer has no pages) under the buffer's lock:
-    /// its own `b_uobj` or, during a cluster read, the first buffer's. `f` may not take this
-    /// buffer's lock again.
-    pub fn with_pobj<R>(&self, f: impl FnOnce(Option<&Object>) -> R) -> R {
-        let g = self.owned.lock();
-        match &g.pages {
+    /// Runs `f` on `bp->b_pobj` (`None` when the buffer has no pages): its own `b_uobj` or,
+    /// during a cluster read, the first buffer's.
+    pub fn with_pobj<R>(&self, g: &Cache, f: impl FnOnce(Option<&Object>) -> R) -> R {
+        match &self.owned.get(g).pages {
             Pages::None => f(None),
             Pages::Own => f(Some(&self.b_uobj)),
             Pages::Master(r) => match r.get() {
@@ -688,83 +712,102 @@ impl Buf {
     }
 
     /// Whether the pages are a cluster master's (`b_pobj != &bp->b_uobj`).
-    pub fn pages_are_masters(&self) -> bool {
-        matches!(self.owned.lock().pages, Pages::Master(_))
+    pub fn pages_are_masters(&self, g: &Cache) -> bool {
+        matches!(self.owned.get(g).pages, Pages::Master(_))
     }
 
     /// `bp->b_iodone`.
-    pub fn iodone(&self) -> Option<Iodone> {
-        self.owned.lock().iodone
+    pub fn iodone(&self, g: &Cache) -> Option<Iodone> {
+        self.owned.get(g).iodone
     }
 
-    /// `bp->b_iodone = f`.
+    /// `bp->b_iodone = f`, the cache's lock taken.
     pub fn set_iodone(&self, f: Option<Iodone>) {
-        self.owned.lock().iodone = f;
+        let mut g = CACHE.lock();
+        self.set_iodone_locked(&mut g, f);
+    }
+
+    /// `bp->b_iodone = f` under the cache's lock.
+    pub fn set_iodone_locked(&self, g: &mut Cache, f: Option<Iodone>) {
+        self.owned.get_mut(g).iodone = f;
     }
 
     /// Whether the buffer is busy now (its token exists, parked or not): the ownership
-    /// `B_BUSY` stands for.
+    /// `B_BUSY` stands for. Read without the lock, as `B_BUSY` is.
     pub fn is_held(&self) -> bool {
-        !matches!(self.owned.lock().slot, Slot::Idle(_))
+        self.state.load(Mem::Acquire) != IDLE
     }
 
     /// Whether the buffer is idle with kernel virtual space kept (`b_data != NULL` of an idle
     /// buffer: on `buf_valist`).
-    pub fn idle_mapped(&self) -> bool {
+    pub fn idle_mapped(&self, g: &Cache) -> bool {
         matches!(
-            self.owned.lock().slot,
+            self.owned.get(g).slot,
             Slot::Idle(Kva::Mapped(_) | Kva::Bare(_))
         )
     }
 
     /// Takes away the kernel virtual space an idle buffer keeps (`buf_unmap`: its slot is
     /// stolen; `b_data = NULL`), for the caller to unmap and reuse. Panics on a busy buffer.
-    pub(crate) fn take_idle_kva(&self) -> Kva {
-        let mut g = self.owned.lock();
-        match &mut g.slot {
+    pub(crate) fn take_idle_kva(&self, g: &mut Cache) -> Kva {
+        match &mut self.owned.get_mut(g).slot {
             Slot::Idle(k) => {
                 let k = mem::replace(k, Kva::None);
                 self.b_data.store(0, Mem::Relaxed);
                 k
             }
-            _ => {
-                drop(g);
-                kpanic(format_args!("buf_unmap: buffer {:p} is busy", self))
-            }
+            _ => kpanic(format_args!("buf_unmap: buffer {:p} is busy", self)),
         }
     }
 
     /// Parks the busy buffer's token in the buffer, while a driver or a queue holds the buffer
     /// by address: [`Buf::take_parked`] gives it back. Panics when the buffer is not busy
-    /// with its token outside (a token parked twice).
+    /// with its token outside (a token parked twice). Takes the cache's lock.
     pub fn park(t: BufRef) {
+        let mut g = CACHE.lock();
+        Buf::park_locked(&mut g, t);
+    }
+
+    /// [`Buf::park`] under the cache's lock.
+    pub fn park_locked(g: &mut Cache, t: BufRef) {
         let anchor = t.anchor();
         let bp = anchor.buf();
-        let mut g = bp.owned.lock();
-        if matches!(g.slot, Slot::Busy) {
-            g.slot = Slot::Parked(t);
-            return;
+        let o = bp.owned.get_mut(g);
+        if !matches!(o.slot, Slot::Busy) {
+            kpanic(format_args!("Buf::park: buffer {:p} is not busy", bp));
         }
-        drop(g);
-        kpanic(format_args!("Buf::park: buffer {:p} is not busy", bp))
+        let _ = bp.set_slot(o, Slot::Parked(t));
     }
 
     /// The token parked in the buffer ([`Buf::park`]), which the caller now holds; `None`
-    /// when none is parked.
+    /// when none is parked. Takes the cache's lock.
     pub fn take_parked(&self) -> Option<BufRef> {
-        let mut g = self.owned.lock();
-        match mem::replace(&mut g.slot, Slot::Busy) {
+        let mut g = CACHE.lock();
+        self.take_parked_locked(&mut g)
+    }
+
+    /// [`Buf::take_parked`] under the cache's lock.
+    pub fn take_parked_locked(&self, g: &mut Cache) -> Option<BufRef> {
+        let o = self.owned.get_mut(g);
+        if !matches!(o.slot, Slot::Parked(_)) {
+            return None;
+        }
+        match self.set_slot(o, Slot::Busy) {
             Slot::Parked(t) => Some(t),
-            other => {
-                g.slot = other;
-                None
-            }
+            _ => None,
         }
     }
 
-    /// Whether a token is parked in the buffer.
+    /// Whether a token is parked in the buffer (read without the lock: the parker's own
+    /// check, or a hint).
     pub fn is_parked(&self) -> bool {
-        matches!(self.owned.lock().slot, Slot::Parked(_))
+        self.state.load(Mem::Acquire) == PARKED
+    }
+
+    /// Whether an owning list owns the buffer (`bufhead`, physio's own): a `bufpl` item, not a
+    /// buffer a driver embeds.
+    pub fn is_owned(&self) -> bool {
+        self.b_list.is_linked()
     }
 }
 
@@ -852,12 +895,14 @@ impl BufRef {
                 bp
             ));
         }
-        let mut g = bp.owned.lock();
-        if !matches!(g.slot, Slot::Idle(Kva::None)) {
+        let mut g = CACHE.lock();
+        let o = bp.owned.get_mut(&mut g);
+        if !matches!(o.slot, Slot::Idle(Kva::None)) {
             drop(g);
             kpanic(format_args!("BufRef::foreign: buffer {:p} is busy", bp));
         }
-        g.slot = Slot::Busy;
+        let _ = bp.set_slot(o, Slot::Busy);
+        drop(g);
         BufRef {
             hold: Hold::Foreign(bp),
             view: None,
@@ -867,24 +912,22 @@ impl BufRef {
     /// `buf_acquire`'s ownership half of the cache's or physio's buffer `r` points at: marks
     /// it busy and takes its idle view, if it kept one. Panics when it is busy already (the
     /// C's `KASSERT(!ISSET(bp->b_flags, B_BUSY))`) or when `r` points at nothing.
-    pub fn acquire(r: SecondaryRef<ByBufhead>) -> BufRef {
+    pub fn acquire(g: &mut Cache, r: SecondaryRef<ByBufhead>) -> BufRef {
         let Some(bp) = r.get() else {
             kpanic(format_args!("BufRef::acquire: no buffer"));
         };
-        let mut g = bp.owned.lock();
-        let view = match mem::replace(&mut g.slot, Slot::Busy) {
-            Slot::Idle(Kva::None) => None,
-            Slot::Idle(Kva::Mapped(v)) => Some(v),
-            other => {
-                g.slot = other;
-                drop(g);
-                kpanic(format_args!(
-                    "buf_acquire: buffer {:p} is busy or released",
-                    bp
-                ))
-            }
+        let o = bp.owned.get_mut(g);
+        let view = match &mut o.slot {
+            Slot::Idle(k @ (Kva::None | Kva::Mapped(_))) => match mem::replace(k, Kva::None) {
+                Kva::Mapped(v) => Some(v),
+                _ => None,
+            },
+            _ => kpanic(format_args!(
+                "buf_acquire: buffer {:p} is busy or released",
+                bp
+            )),
         };
-        drop(g);
+        let _ = bp.set_slot(o, Slot::Busy);
         BufRef {
             hold: Hold::Cached(r),
             view,
@@ -894,26 +937,31 @@ impl BufRef {
     /// `buf_release`'s ownership half: the buffer goes idle, keeping the view for its next
     /// owner; the token is consumed. Panics when the buffer's token is not this one's (not
     /// busy, or parked).
-    pub fn release(mut self) {
+    pub fn release(mut self, g: &mut Cache) {
         let view = self.view.take();
         {
             // The token's own hold keeps the buffer until `consumed` (no second count).
             let b = self.hold.buf();
-            let mut g = b.owned.lock();
-            if !matches!(g.slot, Slot::Busy) {
-                drop(g);
+            let o = b.owned.get_mut(g);
+            if !matches!(o.slot, Slot::Busy) {
                 kpanic(format_args!("buf_release: buffer {:p} is not busy", b));
             }
-            g.slot = Slot::Idle(view.map_or(Kva::None, Kva::Mapped));
+            let _ = b.set_slot(o, Slot::Idle(view.map_or(Kva::None, Kva::Mapped)));
         }
-        self.consumed();
+        self.forget_consumed();
+    }
+
+    /// [`BufRef::release`] taking the cache's lock (a driver's own buffer, a dropped token).
+    pub fn release_unlocked(self) {
+        let mut g = CACHE.lock();
+        self.release(&mut g);
     }
 
     /// `buf_dealloc_mem`'s end of a busy period: the buffer goes idle keeping only the kva
     /// `slot` (its pages are gone: `B_RELEASED`, `b_data` the slot's address); the token is
     /// consumed. Panics on a mapped token (the view must be gone first) or a buffer that is
     /// not busy with it.
-    pub(crate) fn release_bare(mut self, slot: BufSlot) {
+    pub(crate) fn release_bare(self, g: &mut Cache, slot: BufSlot) {
         if self.view.is_some() {
             kpanic(format_args!(
                 "buf_dealloc_mem: buffer {:p} is still mapped",
@@ -922,21 +970,20 @@ impl BufRef {
         }
         {
             let b = self.hold.buf();
-            let mut g = b.owned.lock();
-            if !matches!(g.slot, Slot::Busy) {
-                drop(g);
+            let o = b.owned.get_mut(g);
+            if !matches!(o.slot, Slot::Busy) {
                 kpanic(format_args!("buf_dealloc_mem: buffer {:p} is not busy", b));
             }
             b.b_data.store(slot.va().as_usize(), Mem::Relaxed);
-            g.slot = Slot::Idle(Kva::Bare(slot));
+            let _ = b.set_slot(o, Slot::Idle(Kva::Bare(slot)));
         }
-        self.consumed();
+        self.forget_consumed();
     }
 
     /// The token taken apart into the counted link it held (`buf_put`'s `bufhead.take`, a
     /// cluster's master link), the buffer marked idle with no view (the caller dropped the
     /// view or kept it); `None` for a foreign token, whose buffer is marked idle too.
-    pub fn into_counted(mut self) -> Option<SecondaryRef<ByBufhead>> {
+    pub fn into_counted(mut self, g: &mut Cache) -> Option<SecondaryRef<ByBufhead>> {
         if self.view.is_some() {
             kpanic(format_args!(
                 "BufRef::into_counted: buffer {:p} is still mapped",
@@ -945,17 +992,19 @@ impl BufRef {
         }
         {
             let b = self.buf();
-            let mut g = b.owned.lock();
-            if !matches!(g.slot, Slot::Busy) {
-                drop(g);
+            let o = b.owned.get_mut(g);
+            if !matches!(o.slot, Slot::Busy) {
                 kpanic(format_args!(
                     "BufRef::into_counted: buffer {:p} is not busy",
                     b
                 ));
             }
-            g.slot = Slot::Idle(Kva::None);
+            let _ = b.set_slot(o, Slot::Idle(Kva::None));
         }
-        match mem::replace(&mut self.hold, Hold::Cached(SecondaryRef::new())) {
+        let hold = mem::replace(&mut self.hold, Hold::Cached(SecondaryRef::new()));
+        // Nothing is left for the drop to end (an empty link, no view).
+        mem::forget(self);
+        match hold {
             Hold::Cached(r) => Some(r),
             Hold::Foreign(_) => None,
         }
@@ -966,9 +1015,15 @@ impl BufRef {
         matches!(&self.hold, Hold::Cached(r) if !r.is_some())
     }
 
-    /// Marks the token consumed: its hold an empty link, which ends nothing when dropped.
-    fn consumed(&mut self) {
+    /// Ends a token whose busy period is over: its hold given back (the counted link dropped)
+    /// and the token forgotten, since nothing is left for its drop to end (its view is gone:
+    /// the callers took it), so the release paths pay no drop glue.
+    fn forget_consumed(mut self) {
         let _ = mem::replace(&mut self.hold, Hold::Cached(SecondaryRef::new()));
+        if self.view.is_some() {
+            kpanic(format_args!("BufRef: a consumed token kept its view"));
+        }
+        mem::forget(self);
     }
 
     /// Whether the buffer is mapped (`b_data != NULL` of a busy buffer).
@@ -1047,7 +1102,7 @@ impl Drop for BufRef {
         let view = self.view.take();
         let t = BufRef { hold, view };
         if t.foreign_buf().is_some() {
-            t.release();
+            t.release_unlocked();
         } else {
             super::bio::brelse(t);
         }
@@ -1102,6 +1157,7 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Once;
 
+    use hal::intr::IPL_BIO;
     use hal::owned::OwnedList;
     use hal::pool::{PR_WAITOK, PoolBox};
 
@@ -1143,14 +1199,15 @@ mod tests {
         bp.set_bcount(4096);
         bp.set_lblkno(-3);
         assert_eq!((bp.bcount(), bp.lblkno()), (4096, -3));
-        assert!(!bp.has_pages() && bp.iodone().is_none() && !bp.is_held());
+        let g = CACHE.lock();
+        assert!(!bp.has_pages(&g) && bp.iodone(&g).is_none() && !bp.is_held());
     }
 
     #[test]
     fn a_token_parks_and_is_taken_back_once() {
         let mut bufhead = OwnedList::<ByBufhead>::new();
         bufhead.push(fresh());
-        let t = BufRef::acquire(head(&bufhead));
+        let t = BufRef::acquire(&mut CACHE.lock(), head(&bufhead));
         let bp = bufhead.first().unwrap();
         assert!(bp.is_held() && !bp.is_parked());
         assert_eq!(bp.b_list.indexed(), 1);
@@ -1164,7 +1221,7 @@ mod tests {
         let t = bp.take_parked().expect("the parked token");
         assert!(bp.take_parked().is_none(), "taken once");
         assert!(bp.is_held() && !bp.is_parked());
-        t.release();
+        t.release_unlocked();
         assert!(!bp.is_held());
         assert_eq!(bp.b_list.indexed(), 0);
         assert!(bufhead.pop().is_some());
@@ -1175,8 +1232,8 @@ mod tests {
     fn a_busy_buffer_is_not_acquired_again() {
         let bufhead: &'static mut OwnedList<ByBufhead> = Box::leak(Box::new(OwnedList::new()));
         bufhead.push(fresh());
-        let _t = BufRef::acquire(head(bufhead));
-        let _u = BufRef::acquire(head(bufhead));
+        let _t = BufRef::acquire(&mut CACHE.lock(), head(bufhead));
+        let _u = BufRef::acquire(&mut CACHE.lock(), head(bufhead));
     }
 
     #[test]
@@ -1184,7 +1241,7 @@ mod tests {
     fn bufhead_refuses_a_buffer_a_token_holds() {
         let bufhead: &'static mut OwnedList<ByBufhead> = Box::leak(Box::new(OwnedList::new()));
         bufhead.push(fresh());
-        let t = BufRef::acquire(head(bufhead));
+        let t = BufRef::acquire(&mut CACHE.lock(), head(bufhead));
         // The token stays alive while the list is asked for the buffer.
         Box::leak(Box::new(t));
         let _ = bufhead.pop();
@@ -1194,8 +1251,10 @@ mod tests {
     fn a_consumed_token_gives_the_buffer_back() {
         let mut bufhead = OwnedList::<ByBufhead>::new();
         bufhead.push(fresh());
-        let t = BufRef::acquire(head(&bufhead));
-        let r = t.into_counted().expect("a pool item's");
+        let mut g = CACHE.lock();
+        let t = BufRef::acquire(&mut g, head(&bufhead));
+        let r = t.into_counted(&mut g).expect("a pool item's");
+        drop(g);
         let b = bufhead.take(r);
         assert!(!b.is_held());
     }
@@ -1209,11 +1268,14 @@ mod tests {
         let bufhead: &'static mut OwnedList<ByBufhead> = bufhead;
         let master = bufhead.first().unwrap();
         let child = bufhead.last().unwrap();
-        master.set_pages(Pages::Own);
-        child.set_pages(Pages::Master(head(&bufhead)));
-        assert!(child.pages_are_masters());
-        let held = child.with_pobj(|o| o.is_some_and(|o| ptr::eq(o, master.uobj())));
-        assert!(held);
+        {
+            let mut g = CACHE.lock();
+            master.set_pages(&mut g, Pages::Own);
+            child.set_pages(&mut g, Pages::Master(head(&bufhead)));
+            assert!(child.pages_are_masters(&g) && child.is_cluster_of(&g, master));
+            let held = child.with_pobj(&g, |o| o.is_some_and(|o| ptr::eq(o, master.uobj())));
+            assert!(held);
+        }
         let _ = bufhead.pop();
     }
 
@@ -1223,9 +1285,12 @@ mod tests {
         bufhead.push(fresh());
         bufhead.push(fresh());
         let child = bufhead.last().unwrap();
-        child.set_pages(Pages::Master(head(&bufhead)));
-        child.set_pages(Pages::Own);
-        assert!(child.with_pobj(|o| o.is_some_and(|o| ptr::eq(o, child.uobj()))));
+        {
+            let mut g = CACHE.lock();
+            child.set_pages(&mut g, Pages::Master(head(&bufhead)));
+            child.set_pages(&mut g, Pages::Own);
+            assert!(child.with_pobj(&g, |o| o.is_some_and(|o| ptr::eq(o, child.uobj()))));
+        }
         assert!(bufhead.pop().is_some());
     }
 
@@ -1239,7 +1304,7 @@ mod tests {
         assert!(again.is_err(), "a second owner");
         Buf::park(t);
         let t = bp.take_parked().expect("parked");
-        assert!(t.into_counted().is_none());
+        assert!(t.into_counted(&mut CACHE.lock()).is_none());
         assert!(!bp.is_held());
     }
 
@@ -1265,11 +1330,12 @@ mod tests {
         fn done(_: &'static Buf) {}
         let bp = Buf::new();
         bp.set_iodone(Some(Iodone::Legacy(done)));
-        assert!(matches!(bp.iodone(), Some(Iodone::Legacy(_))));
-        bp.set_iodone(None);
-        assert!(bp.iodone().is_none());
-        bp.set_pages(Pages::Own);
-        assert!(bp.has_pages() && !bp.pages_are_masters());
+        let mut g = CACHE.lock();
+        assert!(matches!(bp.iodone(&g), Some(Iodone::Legacy(_))));
+        bp.set_iodone_locked(&mut g, None);
+        assert!(bp.iodone(&g).is_none());
+        bp.set_pages(&mut g, Pages::Own);
+        assert!(bp.has_pages(&g) && !bp.pages_are_masters(&g));
     }
 
     #[test]
@@ -1277,11 +1343,12 @@ mod tests {
         // vmstat -m's `bufpl` item size (D-N5.1-2): LZ's `struct buf` is 288 bytes (the host
         // and both machines, 64-bit alike); the native one carries the owned links (an
         // `OwnedEntry` and five `SecondaryEntry`s: 248 bytes where LZ's six links took about
-        // 100) and the buffer's leaf lock with the token's slot (the view of an idle mapped
-        // buffer, its bare kva slot, or the parked token), `b_pobj` and `b_iodone`: 504
-        // bytes at N5.1's commit 2, 520 with `b_vp` and `b_bq` (a word each).
+        // 100) and the token's slot (the view of an idle mapped buffer, its bare kva slot, or
+        // the parked token), `b_pobj` and `b_iodone`: 504 bytes at N5.1's commit 2 (under a
+        // leaf lock of the buffer's own), 520 with `b_vp` and `b_bq` (a word each), 528 once
+        // the slot became a cell of the cache's lock (its key a word) with its state byte.
         assert_eq!(pool().item_size(), Some(size_of::<Buf>()));
-        assert_eq!(size_of::<Buf>(), 520);
+        assert_eq!(size_of::<Buf>(), 528);
     }
 }
 /* </TESTS> */
