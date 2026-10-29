@@ -3361,6 +3361,11 @@ mod tests {
 
     #[test]
     fn the_registry_answers_eopnotsupp_and_enotdir_in_the_c_s_order() {
+        // The page system's guard, held for the whole test, with its counters reset:
+        // sysctl_vslock reads uvmexp.wired against wiredmax (0 in the host tests, where
+        // uvmpd_tune never runs), so a concurrent test's wired pages made its EFAULT below an
+        // ENOMEM.
+        let _mem = testutil::pages_reset();
         registered();
         let (_pr, p) = caller(4800, 0);
         let at = testutil::USER_BASE + 0x5800;
