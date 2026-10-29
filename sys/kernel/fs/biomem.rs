@@ -171,34 +171,31 @@ pub(crate) fn buf_acquire_nomap(
 /// least recently used idle buffer, which loses its own (`buf_unmap`); sleeps on
 /// `buf_needva` (the cache's lock left) while none may be stolen.
 pub(crate) fn buf_map(g: &mut Cache, t: &mut BufRef) {
-    if !t.is_mapped() {
+    if t.is_mapped() {
+        drop(g.valist.remove(t.buf()));
+        BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
+    } else {
         // First, just use the pre-allocated space until we run out.
-        let slot = match g.arena.as_mut().and_then(BufArena::take) {
-            Some(slot) => {
-                BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
-                slot
-            }
-            None => {
-                // Find some buffer we can steal the space from.
-                loop {
-                    let cur = curproc_word();
-                    let reserved = cur != syncer_word()
-                        && cur != cleaner_word()
-                        && BCSTATS.kvaslots_avail.load(Ordering::Relaxed) <= RESERVE_SLOTS;
-                    if !reserved && !g.valist.is_empty() {
-                        break;
-                    }
-                    BUF_NEEDVA.fetch_add(1, Ordering::Relaxed);
-                    let _ = g.sleep_nsec(&raw const BUF_NEEDVA, PRIBIO, "buf_needva", INFSLP);
+        let slot = if let Some(slot) = g.arena.as_mut().and_then(BufArena::take) {
+            BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
+            slot
+        } else {
+            // Find some buffer we can steal the space from.
+            loop {
+                let cur = curproc_word();
+                let reserved = cur != syncer_word()
+                    && cur != cleaner_word()
+                    && BCSTATS.kvaslots_avail.load(Ordering::Relaxed) <= RESERVE_SLOTS;
+                if !reserved && !g.valist.is_empty() {
+                    break;
                 }
-                buf_unmap(g)
+                BUF_NEEDVA.fetch_add(1, Ordering::Relaxed);
+                let _ = g.sleep_nsec(&raw const BUF_NEEDVA, PRIBIO, "buf_needva", INFSLP);
             }
+            buf_unmap(g)
         };
         let frames = pages_of(g, t.buf());
         t.set_view(slot.map(&frames));
-    } else {
-        drop(g.valist.remove(t.buf()));
-        BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
     }
     BCSTATS.busymapped.fetch_add(1, Ordering::Relaxed);
 }
@@ -210,12 +207,12 @@ fn pages_of(g: &Cache, bp: &Buf) -> Frames {
     let off = bp.poffs();
     bp.with_pobj(g, |obj| {
         let Some(obj) = obj else {
-            kpanic(format_args!("buf_map: buffer {:p} has no pages", bp));
+            kpanic(format_args!("buf_map: buffer {bp:p} has no pages"));
         };
         let mut frames = Frames::new();
         for i in 0..n {
             let Some(pg) = uvm_pagelookup(obj, off + ptoa(i) as Voff) else {
-                kpanic(format_args!("buf_map: page {i} of {:p} is gone", bp));
+                kpanic(format_args!("buf_map: page {i} of {bp:p} is gone"));
             };
             frames.push(vm_page_to_phys(pg));
         }
@@ -265,16 +262,16 @@ pub(crate) fn buf_dealloc_mem(g: &mut Cache, mut t: BufRef) -> Option<BufRef> {
     };
 
     let bp = t.buf();
-    if !busy {
-        // XXX - need better test
-        drop(g.valist.remove(bp));
-        BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
-    } else {
+    if busy {
         bp.clr(B_BUSY);
         if BUF_NEEDVA.load(Ordering::Relaxed) != 0 {
             BUF_NEEDVA.store(0, Ordering::Relaxed);
             wakeup(&raw const BUF_NEEDVA);
         }
+    } else {
+        // XXX - need better test
+        drop(g.valist.remove(bp));
+        BCSTATS.kvaslots_avail.fetch_sub(1, Ordering::Relaxed);
     }
     bp.set(B_RELEASED);
     let m = Member::counted(bp);
@@ -319,7 +316,7 @@ pub(crate) fn buf_unmap(g: &mut Cache) -> BufSlot {
     let slot = match bp.take_idle_kva(g) {
         Kva::Mapped(v) => unmap(g, v),
         Kva::Bare(slot) => slot,
-        Kva::None => kpanic(format_args!("buf_unmap: buffer {:p} has no kva", bp)),
+        Kva::None => kpanic(format_args!("buf_unmap: buffer {bp:p} has no kva")),
     };
     if bp.isset(B_RELEASED) {
         match m.into_ref() {
@@ -384,11 +381,11 @@ pub(crate) fn buf_free_pages(g: &mut Cache, bp: &Buf) {
     let n = atop(bp.bufsize() as usize);
     bp.with_pobj(g, |uobj| {
         let Some(uobj) = uobj else {
-            kpanic(format_args!("buf_free_pages: buffer {:p} has no pages", bp));
+            kpanic(format_args!("buf_free_pages: buffer {bp:p} has no pages"));
         };
         for i in 0..n {
             let Some(pg) = uvm_pagelookup(uobj, off + ptoa(i) as Voff) else {
-                kpanic(format_args!("buf_free_pages: page {i} of {:p} is gone", bp));
+                kpanic(format_args!("buf_free_pages: page {i} of {bp:p} is gone"));
             };
             kassert!(pg.wire_count() == 1);
             pg.set_wire_count(0);

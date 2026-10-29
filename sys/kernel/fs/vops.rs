@@ -1131,7 +1131,7 @@ pub fn VFS_FHTOVP<G: ProcGlue>(
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_VPTOFH<G: ProcGlue>(vp: &'static Vnode<G>, fidp: &mut Fid) -> Result<(), Errno> {
     let Some(mp) = vp.mount() else {
-        kpanic(format_args!("VFS_VPTOFH: vnode {:p} has no mount", vp));
+        kpanic(format_args!("VFS_VPTOFH: vnode {vp:p} has no mount"));
     };
     mp.op().vptofh(vp, fidp)
 }

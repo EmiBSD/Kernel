@@ -299,7 +299,7 @@ impl<G: ProcGlue> Mount<G> {
     pub fn vfc(&self) -> &'static Vfsconf<G> {
         match self.vfc.get() {
             Some(vfc) => vfc,
-            None => kpanic(format_args!("mount {:p}: no mnt_vfc", self)),
+            None => kpanic(format_args!("mount {self:p}: no mnt_vfc")),
         }
     }
 
@@ -492,14 +492,12 @@ impl<G: ProcGlue> Mount<G> {
         self.syncer.set(None);
         if !self.vnodelist.lock().is_empty() {
             kpanic(format_args!(
-                "vfs_mount_alloc: reused mount {:p} has vnodes",
-                self
+                "vfs_mount_alloc: reused mount {self:p} has vnodes"
             ));
         }
         if self.lock.status() != 0 {
             kpanic(format_args!(
-                "vfs_mount_alloc: reused mount {:p} is busy",
-                self
+                "vfs_mount_alloc: reused mount {self:p} is busy"
             ));
         }
         self.refs.init();

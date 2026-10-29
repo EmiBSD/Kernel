@@ -286,7 +286,7 @@ pub fn vops_id<G: ProcGlue>(ops: &'static dyn Vnops<G>) -> VopsId {
         let id = VopsId(VopsId::FIRST_FS + i as u8);
         match slot.get() {
             Some(o) if ptr::addr_eq(*o, ops) => return id,
-            Some(_) => continue,
+            Some(_) => {}
             None => {
                 if slot.set(ops).is_ok() {
                     return id;
@@ -907,29 +907,25 @@ struct VflushArgs<G: ProcGlue> {
 }
 
 /// `vflush_vnode(vp, arg)`: one vnode of `vflush`.
-fn vflush_vnode<G: ProcGlue>(
-    vp: &'static Vnode<G>,
-    va: &mut VflushArgs<G>,
-    p: Option<&Thread<G>>,
-) -> Result<(), Errno> {
+fn vflush_vnode<G: ProcGlue>(vp: &'static Vnode<G>, va: &mut VflushArgs<G>, p: Option<&Thread<G>>) {
     if va.skipvp.is_some_and(|skip| ptr::eq(skip, vp)) {
-        return Ok(());
+        return;
     }
 
     if va.flags & SKIPSYSTEM != 0 && vp.flag() & VSYSTEM != 0 {
-        return Ok(());
+        return;
     }
 
     // If WRITECLOSE is set, only flush out regular file vnodes open for writing.
     if va.flags & WRITECLOSE != 0 && (vp.writecount() == 0 || vp.vtype() != VREG) {
-        return Ok(());
+        return;
     }
 
     // With v_usecount == 0, all we need to do is clear out the vnode data structures and we
     // are done.
     if vp.usecount() == 0 {
         vgonel(vp, p);
-        return Ok(());
+        return;
     }
 
     // If FORCECLOSE is set, forcibly close the vnode. For block or character devices,
@@ -942,19 +938,18 @@ fn vflush_vnode<G: ProcGlue>(
             vp.set_ops_id(VopsId::SPEC);
             insmntque(vp, None);
         }
-        return Ok(());
+        return;
     }
 
     // If set, this is allowed to ignore vnodes which don't have changes pending to disk.
     // XXX Might be nice to check per-fs "inode" flags, but generally the filesystem is sync'd
     // already, right?
     if va.flags & IGNORECLEAN != 0 && vp.bufs.dirty_is_empty() {
-        return Ok(());
+        return;
     }
 
     // DEBUG_SYSCTL busyprt: not configured.
     va.busy += 1;
-    Ok(())
 }
 
 /// Remove any vnodes in the vnode table belonging to mount point `mp`.
@@ -974,7 +969,10 @@ pub fn vflush<G: ProcGlue>(
     };
 
     G::with_curproc(|p| {
-        let _ = vfs_mount_foreach_vnode(mp, &mut |vp| vflush_vnode(vp, &mut va, p));
+        let _ = vfs_mount_foreach_vnode(mp, &mut |vp| {
+            vflush_vnode(vp, &mut va, p);
+            Ok(())
+        });
     });
 
     if va.busy != 0 {
@@ -1131,7 +1129,7 @@ pub fn vgonel<G: ProcGlue>(vp: &'static Vnode<G>, p: Option<&Thread<G>>) {
                 let vt = vp.vtype();
                 let mut vx: Option<&'static Vnode<G>> = None;
                 let mut more = false;
-                for vq in chain.iter() {
+                for vq in chain {
                     if vq.rdev() != rdev || vq.vtype() != vt {
                         continue;
                     }
@@ -1202,7 +1200,7 @@ pub fn vcount<G: ProcGlue>(vp: &'static Vnode<G>) -> i32 {
             let chains = vfs::<G>().spechash.lock();
             let mut count = 0;
             let mut gone = None;
-            for vq in chains[bucket].iter() {
+            for vq in &chains[bucket] {
                 if vq.rdev() != rdev || vq.vtype() != vt {
                     continue;
                 }
@@ -1469,13 +1467,13 @@ pub fn vfs_stall<G: ProcGlue>(p: &Thread<G>, stall: bool) -> Result<(), Errno> {
         let name = core::str::from_utf8(&name[..len]).unwrap_or("?");
         if stall {
             if let Err(error) = vfs_busy(mp, VB_WRITE | VB_WAIT | VB_DUPOK) {
-                crate::prf::printf(format_args!("{}: busy\n", name));
+                crate::prf::printf(format_args!("{name}: busy\n"));
                 allerror = Err(error);
                 continue;
             }
             crate::vm::vnode::uvm_vnp_sync(Some(mp.addr()));
             if let Err(error) = VFS_SYNC(mp, MNT_WAIT, 1, Cred::real(p.ucred()), p) {
-                crate::prf::printf(format_args!("{}: failed to sync\n", name));
+                crate::prf::printf(format_args!("{name}: failed to sync\n"));
                 vfs_unbusy(mp);
                 allerror = Err(error);
                 continue;
@@ -1537,7 +1535,7 @@ pub fn vinvalbuf<G: ProcGlue>(
             };
             vop_fsync(vp, cred, MNT_WAIT, p)?;
             if vp.bufs.numoutput() > 0 || !vp.bufs.dirty_is_empty() {
-                kpanic(format_args!("vinvalbuf: dirty bufs, vp {:p}", vp));
+                kpanic(format_args!("vinvalbuf: dirty bufs, vp {vp:p}"));
             }
         }
     }
@@ -1568,7 +1566,11 @@ pub fn vflushbuf<G: ProcGlue>(vp: &'static Vnode<G>, sync: bool) {
         if let DirtyScan::Taken(t) = bio::vnode_dirty_scan(&vp.bufs, "vflushbuf", 0, INFSLP, pick) {
             // Wait for I/O associated with indirect blocks to complete, since there is no way
             // to quickly wait for them below.
-            if t.buf().vnode_bufs().is_some_and(|vb| ptr::eq(vb, &vp.bufs)) || !sync {
+            if t.buf()
+                .vnode_bufs()
+                .is_some_and(|vb| ptr::eq(vb, &raw const vp.bufs))
+                || !sync
+            {
                 bio::bawrite(t);
             } else {
                 let _ = bio::bwrite(t);
@@ -1773,7 +1775,7 @@ impl<G: ProcGlue> VnodeOps for Vnode<G> {
     }
 
     fn mount_id(&self) -> usize {
-        self.mount().map_or(0, |m| m.addr())
+        self.mount().map_or(0, super::mount::Mount::addr)
     }
 
     fn vref(&'static self) {

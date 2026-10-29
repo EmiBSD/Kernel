@@ -1095,6 +1095,7 @@ pub fn spec_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
 }
 
 /// Return POSIX pathconf information applicable to special devices.
+#[allow(clippy::match_same_arms, reason = "the C keeps the cases apart")]
 pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
     *retval = match name {
         _PC_LINK_MAX => LINK_MAX as Register,
@@ -1157,15 +1158,12 @@ pub fn spec_open_clone<G: ProcGlue>(
         return Err(Errno::EBUSY); // too many open instances
     }
 
-    let cvp = match cdevvp::<G>(makedev(
+    let Ok(Some(cvp)) = cdevvp::<G>(makedev(
         major(rdev),
         ((i as u32) << CLONE_SHIFT) | minor(rdev),
-    )) {
-        Ok(Some(cvp)) => cvp,
-        Ok(None) | Err(_) => {
-            clrbit(&map, i);
-            return Err(Errno::ENFILE); // out of vnodes
-        }
+    )) else {
+        clrbit(&map, i);
+        return Err(Errno::ENFILE); // out of vnodes
     };
 
     let _ = vop_unlock(vp);
@@ -1205,8 +1203,7 @@ pub fn clone_restore<G: ProcGlue>(vp: &'static Vnode<G>) -> Option<&'static Vnod
     match ci_vp.flatten() {
         Some(c) => Some(c),
         None => kpanic(format_args!(
-            "vn_open: VCLONED vnode {:p} without a clone",
-            vp
+            "vn_open: VCLONED vnode {vp:p} without a clone"
         )),
     }
 }

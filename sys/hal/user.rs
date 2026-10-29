@@ -396,6 +396,10 @@ macro_rules! abi_pod {
         // and has no `..`, so a field left out (a zero-sized one included) does not compile,
         // and binding a union's field by value needs `unsafe`, so a union does not either.
         // Compile time only; never called.
+        #[allow(
+            clippy::used_underscore_binding,
+            reason = "the check binds every field by its name, the named holes too"
+        )]
         const _: fn(&$ty) = |v: &$ty| {
             $(let _: *const $fty = ::core::ptr::addr_of!(v.$field);)+
             let $ty { $($field),+ } = *v;

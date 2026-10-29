@@ -664,17 +664,14 @@ impl RawRwlock {
         exit: impl FnOnce(),
     ) -> Result<(), Errno> {
         self.check_sleep(ident, prio);
-        match bridges::sleep() {
-            Some(b) => {
-                b.sleep_setup(chan(ident), prio, wmesg);
-                exit();
-                b.sleep_finish(nsecs, true)
-            }
-            None => {
-                exit();
-                core::hint::spin_loop();
-                Ok(())
-            }
+        if let Some(b) = bridges::sleep() {
+            b.sleep_setup(chan(ident), prio, wmesg);
+            exit();
+            b.sleep_finish(nsecs, true)
+        } else {
+            exit();
+            core::hint::spin_loop();
+            Ok(())
         }
     }
 }

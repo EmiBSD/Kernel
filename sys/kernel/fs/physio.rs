@@ -202,17 +202,14 @@ pub fn physio<G: ProcGlue>(
             };
             // The C's `map`: the bounce buffer's kernel address; else vmapbuf, which keeps
             // the user's address in b_saveaddr and points b_data into the window.
-            let window = match lock.bounce_va() {
-                Some(bounce) => {
-                    bp.set_data_addr(bounce.as_usize());
-                    None
-                }
-                None => {
-                    let w = lock.vmapbuf();
-                    bp.set_saveaddr(iov_base);
-                    bp.set_data_addr(lock.window_addr(&w));
-                    Some(w)
-                }
+            let window = if let Some(bounce) = lock.bounce_va() {
+                bp.set_data_addr(bounce.as_usize());
+                None
+            } else {
+                let w = lock.vmapbuf();
+                bp.set_saveaddr(iov_base);
+                bp.set_data_addr(lock.window_addr(&w));
+                Some(w)
             };
 
             // [call strategy to start the transfer]; the buffer is reached through a counted
@@ -263,7 +260,7 @@ pub fn physio<G: ProcGlue>(
 
             // [deduct the transfer size from the total number of data to transfer]
             let resid = bp.resid();
-            kassert!(resid <= i64::MAX as usize); // strategy broken
+            kassert!(i64::try_from(resid).is_ok()); // strategy broken
             let done = bp.bcount() - resid as i64;
             kassert!(done >= 0); // strategy broken
             kassert!(done as usize <= todo); // strategy broken

@@ -824,14 +824,13 @@ pub fn uvn_flush(
                     pagewait_relock(pp, uobj, w, "uvn_flsh");
                     q = uvm_lock_pageq();
                     continue; // the same offset again
-                } else {
-                    hal::pmap::page_protect(&pp.mdpage, PROT_NONE);
-                    // dequeue to prevent lock recursion
-                    if pp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
-                        uvm_pagedequeue(&mut q, pp, owner);
-                    }
-                    uvm_pagefree(pp, owner);
                 }
+                hal::pmap::page_protect(&pp.mdpage, PROT_NONE);
+                // dequeue to prevent lock recursion
+                if pp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
+                    uvm_pagedequeue(&mut q, pp, owner);
+                }
+                uvm_pagefree(pp, owner);
             }
             curoff += ps;
             continue;
@@ -1486,7 +1485,7 @@ pub fn uvm_vnp_sync(mp: Option<usize>) {
 
     // step 2: build up a simpleq of uvns of interest based on the write list. we gain a
     // reference to uvns of interest.
-    for uvn in UVN_WLIST.iter() {
+    for uvn in &UVN_WLIST {
         let vp = uvn.vnode;
         if let Some(mp) = mp
             && vp.mount_id() != mp

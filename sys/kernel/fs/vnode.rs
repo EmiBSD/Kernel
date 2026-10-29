@@ -881,8 +881,7 @@ impl<G: ProcGlue> Vnode<G> {
             .replace(mp.map_or(VnodeUn::None, VnodeUn::Mountedhere));
         if matches!(old, VnodeUn::Specinfo(_)) {
             kpanic(format_args!(
-                "vnode {:p}: v_mountedhere over v_specinfo",
-                self
+                "vnode {self:p}: v_mountedhere over v_specinfo"
             ));
         }
     }
@@ -905,7 +904,7 @@ impl<G: ProcGlue> Vnode<G> {
     pub(super) fn set_specinfo(&self, si: MBox<Specinfo<G>>) {
         let old = self.un.replace(VnodeUn::Specinfo(si));
         if !matches!(old, VnodeUn::None) {
-            kpanic(format_args!("vnode {:p}: checkalias over a v_un", self));
+            kpanic(format_args!("vnode {self:p}: checkalias over a v_un"));
         }
     }
 
@@ -918,7 +917,7 @@ impl<G: ProcGlue> Vnode<G> {
     pub fn rdev(&self) -> Dev {
         match self.with_specinfo(Specinfo::rdev) {
             Some(d) => d,
-            None => kpanic(format_args!("vnode {:p}: no v_specinfo", self)),
+            None => kpanic(format_args!("vnode {self:p}: no v_specinfo")),
         }
     }
 

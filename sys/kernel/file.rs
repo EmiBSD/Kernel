@@ -351,6 +351,7 @@ impl<G: FileGlue> FileRef<G> {
     }
 
     /// `FREF(fp)`: one more reference, after `vfs_stall_barrier()`.
+    #[must_use]
     pub fn fref(&self) -> Self {
         vfs_stall_barrier::<G>();
         self.clone()
@@ -752,12 +753,11 @@ pub fn fnew<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) -> 
         return None;
     }
     let cred = p.cred_ref();
-    match t.filepl.get_homed(hal::pool::PR_WAITOK, || File::new(cred)) {
-        Some(fp) => Some(FileRef(Some(fp))),
-        None => {
-            t.numfiles.fetch_sub(1, Ordering::AcqRel);
-            None
-        }
+    if let Some(fp) = t.filepl.get_homed(hal::pool::PR_WAITOK, || File::new(cred)) {
+        Some(FileRef(Some(fp)))
+    } else {
+        t.numfiles.fetch_sub(1, Ordering::AcqRel);
+        None
     }
 }
 

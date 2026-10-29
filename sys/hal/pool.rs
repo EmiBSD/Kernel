@@ -350,13 +350,13 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
 
     /// `pr_nout`: the items out of the pool now (0 before `init`).
     pub fn nout(&self) -> u64 {
-        self.raw().map_or(0, |r| r.nout())
+        self.raw().map_or(0, RawPool::nout)
     }
 
     /// `pr_size` of the pool once made, as `vmstat -m` reports it: an item holds the count
     /// and the pool's address beside the `T`. `None` before `init`.
     pub fn item_size(&self) -> Option<usize> {
-        self.raw().map(|r| r.size())
+        self.raw().map(RawPool::size)
     }
 
     /// `pool_sethiwat(9)`: the pool keeps at most `n` idle items (`uvm_anon_init`'s

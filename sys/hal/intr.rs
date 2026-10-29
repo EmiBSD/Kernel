@@ -453,6 +453,10 @@ pub fn splassert(wantipl: i32, func: &str) {
 /// `splraise(ipl)` for this crate's locks, which keep the level to restore in their guards:
 /// always `Some` (the level is `hal`'s own since N4.5c; the `Option` stays the guards' shape).
 #[inline]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the guards' shape: restore takes what raise gave"
+)]
 pub(crate) fn raise(ipl: i32) -> Option<i32> {
     Some(splraise_raw(ipl))
 }
