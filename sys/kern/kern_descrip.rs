@@ -335,6 +335,15 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
+    fn vnode_ops(d: &BsdFileData) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
+        match d {
+            BsdFileData::Vnode(v) => v
+                .get()
+                .map(|vp| vp as &'static dyn kernel::vm::vnode::VnodeOps),
+            _ => None,
+        }
+    }
+
     fn sigpipe(p: &Proc) {
         ptsignal(p, SIGPIPE, SignalType::STHREAD);
     }

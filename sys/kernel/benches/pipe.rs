@@ -334,6 +334,12 @@ impl ProcGlue for BenchGlue {
     fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
         Ok(())
     }
+    fn pledge_protexec(_p: &Thread<Self>, _prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn textvp_wxallowed(_pr: &Process<Self>) -> bool {
+        false
+    }
     /// No interval timers: nothing is set, the old value stays zero.
     fn setitimer(
         _which: i32,
@@ -474,6 +480,9 @@ impl FileGlue for BenchFiles {
     }
     fn vnode_revoked(_d: &Self::Data) -> bool {
         false
+    }
+    fn vnode_ops(_d: &Self::Data) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
+        None
     }
     fn sigpipe(_p: &Thread<BenchGlue>) {}
     fn pledge_fcntl(_p: &Thread<BenchGlue>, _cmd: i32) -> Result<(), Errno> {

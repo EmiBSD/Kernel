@@ -135,6 +135,8 @@ std::thread_local! {
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     static TTY_VNODE: Cell<bool> = const { Cell::new(false) };
+    static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
+    static TEXTVP_WXALLOWED: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
@@ -1259,6 +1261,8 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     pub revoked: core::sync::atomic::AtomicBool,
     /// A kqueue file's kqueue.
     pub kq: Option<crate::event::KqRef<P>>,
+    /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
+    pub vnode: Option<&'static dyn VnodeOps>,
 }
 
 impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
@@ -1269,6 +1273,7 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
             dns: false,
             revoked: core::sync::atomic::AtomicBool::new(false),
             kq: None,
+            vnode: None,
         }
     }
 }
@@ -1339,6 +1344,32 @@ pub fn tty_vnode() -> bool {
 /// Makes this thread's test glues answer `on` for every session's terminal vnode.
 pub fn set_tty_vnode(on: bool) {
     TTY_VNODE.with(|c| c.set(on));
+}
+
+/// What this thread's test glues' `pledge_protexec` answers: `EPERM` for a `PROT_EXEC`
+/// request once [`set_pledge_protexec`] made the thread pledged without `prot_exec` (and past
+/// its first `kbind(2)`), `Ok` otherwise.
+pub fn pledge_protexec_answer(prot: crate::vm::types::VmProt) -> Result<(), Errno> {
+    if PLEDGE_PROTEXEC_DENIED.with(Cell::get) && prot & hal::sys::mman::PROT_EXEC != 0 {
+        return Err(Errno::EPERM);
+    }
+    Ok(())
+}
+
+/// Makes this thread's test glues refuse `PROT_EXEC` (`denied`) or allow it.
+pub fn set_pledge_protexec(denied: bool) {
+    PLEDGE_PROTEXEC_DENIED.with(|c| c.set(denied));
+}
+
+/// What this thread's test glues' `textvp_wxallowed` answers (`false` until
+/// [`set_textvp_wxallowed`]).
+pub fn textvp_wxallowed() -> bool {
+    TEXTVP_WXALLOWED.with(Cell::get)
+}
+
+/// Makes this thread's test glues answer `on` for the text vnode's `MNT_WXALLOWED`.
+pub fn set_textvp_wxallowed(on: bool) {
+    TEXTVP_WXALLOWED.with(|c| c.set(on));
 }
 
 /// Records a test glue's hook call.
@@ -1524,6 +1555,9 @@ macro_rules! test_file_glue {
             fn vnode_revoked(d: &Self::Data) -> bool {
                 d.revoked.load(core::sync::atomic::Ordering::Relaxed)
             }
+            fn vnode_ops(d: &Self::Data) -> Option<&'static dyn $crate::vm::vnode::VnodeOps> {
+                d.vnode
+            }
             fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
                 $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));
             }
@@ -1637,6 +1671,15 @@ macro_rules! test_proc_glue {
                 _delta: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
+            }
+            fn pledge_protexec(
+                _p: &$crate::proc::Thread<Self>,
+                prot: $crate::vm::types::VmProt,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_protexec_answer(prot)
+            }
+            fn textvp_wxallowed(_pr: &$crate::proc::Process<Self>) -> bool {
+                $crate::testutil::textvp_wxallowed()
             }
             /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
             fn setitimer(

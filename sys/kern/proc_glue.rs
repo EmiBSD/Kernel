@@ -682,6 +682,18 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_adjtime(p, delta)
     }
 
+    fn pledge_protexec(p: &Proc, prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_protexec(p, prot)
+    }
+
+    /// `ps_textvp`'s mount carries `MNT_WXALLOWED` (no text vnode or no mount: no).
+    fn textvp_wxallowed(pr: &Process) -> bool {
+        pr.ps_textvp
+            .get()
+            .and_then(|vp| vp.v_mount.get())
+            .is_some_and(|mp| mp.mnt_flag.get() & crate::sys::mount::MNT_WXALLOWED != 0)
+    }
+
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
         kernel::proc::UnveilState {
             paths: !pr.ps_uvpaths.get().is_null(),

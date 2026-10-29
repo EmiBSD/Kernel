@@ -156,7 +156,8 @@ paid_by = "N7"
 # maxfiles and tablefull). N4.4: knote_fdclose, fdkq_free and the Knote/FdKq types left (kqueue
 # is kernel::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
 # file's revocation (vnode_revoked, N5) came. N4.6b: getcwd (kern.proc_cwd's
-# vfs_getcwd_common, N5).
+# vfs_getcwd_common, N5). N5.0: a vnode file's vnode as the pager sees it (vnode_ops, N5:
+# mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
@@ -367,7 +368,10 @@ paid_by = "N7"
 # tcb_get, tcb_set and tcb_invalid left it (hal::thread). Re-dated N8 (the user's
 # decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
 # pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
-# (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine).
+# (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine). N5.0: vm's calls
+# out joined it with the VmProc bridge's end: pledge_protexec (kern_pledge, N8, required as
+# the other pledge hooks) and textvp_wxallowed (ps_textvp's MNT_WXALLOWED, N5 with
+# textvp_release).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"

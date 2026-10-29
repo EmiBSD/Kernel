@@ -1013,10 +1013,20 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// `PLEDGE_SETTIME` may only read the adjustment (`EPERM` for a non-NULL `delta`).
     /// Required: a glue cannot drop pledge by forgetting it.
     fn pledge_adjtime(p: &Thread<Self>, delta: usize) -> Result<(), Errno>;
+    /// `pledge_protexec(p, prot)` (`kern_pledge.c`, N8): a pledged process that has made its
+    /// first `kbind(2)` (or had its cookie set) may ask `PROT_EXEC` of `mmap(2)` and
+    /// `mprotect(2)` only with `prot_exec` (`EPERM` through `pledge_fail`). Required: a glue
+    /// cannot drop pledge by forgetting it.
+    fn pledge_protexec(p: &Thread<Self>, prot: crate::vm::types::VmProt) -> Result<(), Errno>;
     /// `unveil_destroy(pr)` (`kern_unveil.c`, N8).
     fn unveil_destroy(_pr: &Process<Self>) {}
     /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
     fn textvp_release(_pr: &Process<Self>) {}
+    /// `pr->ps_textvp->v_mount && (pr->ps_textvp->v_mount->mnt_flag & MNT_WXALLOWED)`
+    /// (`uvm_wxcheck`): the program's text is on a file system mounted `wxallowed` (the text
+    /// vnode and its mount are `bsd`'s until N5). The caller ANDs it with `PSI_WXNEEDED`.
+    /// Required: a glue cannot widen W^X by forgetting it.
+    fn textvp_wxallowed(pr: &Process<Self>) -> bool;
     /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
     fn rtable_exists(id: u32) -> bool {
         id == 0
@@ -3017,6 +3027,15 @@ mod tests {
         }
         fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
+        }
+        fn pledge_protexec(
+            _p: &Thread<Self>,
+            _prot: crate::vm::types::VmProt,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
+        }
+        fn textvp_wxallowed(_pr: &Process<Self>) -> bool {
+            false
         }
         /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
         fn setitimer(
