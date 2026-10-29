@@ -172,13 +172,15 @@ pub fn physio(
             } else {
                 PROT_READ
             };
-            let lock = match uvm_vslock_device(&p.vmspace().vm_map, iov_base, todo, access) {
-                Ok(lock) => lock,
-                Err(e) => {
-                    error = Err(e);
-                    break 'done;
-                }
-            };
+            let lock =
+                match uvm_vslock_device(&p.vmspace().vm_map, iov_base, todo, access, Some(&p.p_ru))
+                {
+                    Ok(lock) => lock,
+                    Err(e) => {
+                        error = Err(e);
+                        break 'done;
+                    }
+                };
             // The C's `map`: the bounce buffer's kernel address, or none.
             let map = lock.bounce_va();
             match map {

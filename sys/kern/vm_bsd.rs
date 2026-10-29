@@ -417,9 +417,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `bsd`'s side of the kernel's virtual memory system (`kernel::vm`, N3.5): what still
-//! belongs to `struct proc`, the system call table, the sysctl helpers and the boot order
-//! until those move (N4), each a thin call into the kernel or one call of `bsd`'s.
+//! `bsd`'s side of the kernel's virtual memory system (`kernel::vm`, N3.5): the system call
+//! table's adapters (which pass the thread and its address space), `struct process`'s
+//! address space hand-overs and the boot order, each a thin call into the kernel or one call
+//! of `bsd`'s (since N5.0 nothing of `struct proc` is answered through a bridge here).
 //!
 //! Upstream: sys/uvm/uvm_mmap.c @ 3ce1f3f79392
 //! Upstream: sys/uvm/uvm_unix.c @ 3ce1f3f79392
@@ -440,8 +441,11 @@
 //! LZ: sys/uvm/uvm_vnode.rs@3c62ede68802
 //! LZ: sys/uvm/uvm_km.rs@3c62ede68802
 //!
-//! - The bridge the kernel's vm reaches `bsd` through: [`BsdVmProc`] (`kernel::vm::proc::
-//!   VmProc`, curproc's facts), one call of `bsd`'s each. N4.6b: `BsdVmSysctl`
+//! - N5.0: no bridge left here. `BsdVmProc` (`kernel::vm::proc::VmProc`, curproc's facts, one
+//!   call of `bsd`'s each, N3.5 S1) is gone: the vm system calls and the fault take the thread
+//!   the adapters below pass, and the three calls that are still `bsd`'s are the glues'
+//!   (`ProcGlue::pledge_protexec`, `ProcGlue::textvp_wxallowed`, `FileGlue::vnode_ops`).
+//!   N4.6b: `BsdVmSysctl`
 //!   (`kernel::vm::meter::VmSysctl`) is gone: the sysctl helpers, `averunnable` and `allproc`
 //!   are the kernel's, `nkmempages` the `Malloc` bridge's, and `CTL_VM` is dispatched by
 //!   `kernel::sysctl`.
@@ -460,7 +464,8 @@
 //!   `uvm_page_init` over the machine's constraints with `BsdBufCacheStats`, `uvm_pagealloc`
 //!   with the `(obj, anon)` pair, `uvm_pagealloc_multi`, `uvm_shutdown`,
 //!   `paddr_is_dma_reachable`, `uvm_page_physdump`, `uvm_pmr_print`); the vnode as the
-//!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`, `BsdSysInfo`) and the
+//!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`; N5.0: `BsdSysInfo` is
+//!   gone, the pager reads `kernel::tc` and `kernel::reboot` itself) and the
 //!   file systems' `uvn_attach`/`uvm_vnp_*` with `bsd`'s signatures; and `uvm_km.c`'s `bsd`
 //!   shapes (`kp_dma*` over the machine's `dma_constraint`, `km_alloc`/`km_free` with the
 //!   legacy pointer, `vm_min_kernel_address`).
@@ -506,7 +511,6 @@ use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hal::malloc::MArray;
 use hal::syscall::SysResult;
 use hal::user::UserPtr;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
@@ -524,39 +528,27 @@ use kernel::vm::page::{
     VmPhysseg, boot_segments, page_init_done, uvm_pagealloc_pg, uvm_pglistalloc, vm_physmem,
 };
 use kernel::vm::pmemrange::BufCacheStats;
-use kernel::vm::proc::{KbindSlot, VmProc};
 use kernel::vm::types::{VmProt, Voff};
-use kernel::vm::vnode::{SysInfo, Uvn, VType, VnodeOps, install_sysinfo};
+use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 
 use crate::kern::init_sysent::SYSENT;
-use crate::kern::kern_descrip::fd_getfile;
-use crate::kern::kern_pledge::pledge_protexec;
-use crate::kern::kern_sig::{sigexit, trapsignal};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::kern_tc::getmicrouptime;
-use crate::kern::kern_xxx::REBOOTING;
-use crate::kern::subr_prf::{log, panic, uprintf};
+use crate::kern::subr_prf::panic;
 use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::machine::conf::iszerodev;
-use crate::machine::cpu::{Cpu, curproc};
+use crate::machine::cpu::curproc;
 use crate::machine::exec::MachineExec;
 use crate::machine::param::MachineParam;
 use crate::machine::{Machine, Pmap, VmParam};
-use crate::sys::acct::AMAP;
 use crate::sys::errno::Errno;
-use crate::sys::file::FileExt;
-use crate::sys::file::{DTYPE_VNODE, frele};
-use crate::sys::mount::MNT_WXALLOWED;
 use crate::sys::mount::Mount;
 use crate::sys::param::{USPACE, USPACE_ALIGN};
 use crate::sys::proc::ProcExt;
-use crate::sys::proc::{PSI_WXNEEDED, Proc, Process, p_hassibling};
+use crate::sys::proc::{Proc, Process};
 use crate::sys::resource::{RLIMIT_DATA, RLIMIT_RSS, RLIMIT_STACK};
-use crate::sys::resourcevar::{Plimit, lim_cur};
-use crate::sys::siginfo::{SEGV_ACCERR, Sigval};
-use crate::sys::signal::SIGSEGV;
+use crate::sys::resourcevar::Plimit;
 use crate::sys::smr::smr_flush;
 use crate::sys::syscall::{
     SYS_break, SYS_kbind, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock, SYS_mlockall,
@@ -575,12 +567,6 @@ use crate::sys::types::{Register, Rlim};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{VBLK, VTEXT, Vattr, Vnode, Vtype};
 use crate::{kassert, kprintf};
-
-/// `curproc` as `kernel::vm` asks about it (`kernel::vm::proc::VmProc`).
-pub struct BsdVmProc;
-
-/// The registered process bridge.
-pub static BSD_VM_PROC: BsdVmProc = BsdVmProc;
 
 /// The machine's constants `kernel::vm` reads (`kernel::vm::init::VmMachine`), handed down
 /// by [`uvm_init`].
@@ -629,161 +615,6 @@ fn vmspace_take(pr: &Process) -> Option<VmspaceRef> {
     pr.set_vmspace(None)
 }
 
-/// `pr->ps_libcpin = { base, end, pins, npins }`, the kernel's table handed over.
-fn pin_install(pr: &Process, base: usize, end: usize, pins: MArray<u32>) {
-    drop(pr.ps_libcpin.replace(kernel::proc::PinTable {
-        start: base,
-        end,
-        pins: Some(pins),
-    }));
-}
-
-impl VmProc for BsdVmProc {
-    fn pledge_protexec(&self, prot: VmProt) -> Result<(), Errno> {
-        pledge_protexec(curp("pledge_protexec"), prot)
-    }
-
-    fn wx_allowed(&self) -> bool {
-        let pr = curp("uvm_wxcheck").process();
-        let wxallowed = pr
-            .ps_textvp
-            .get()
-            .and_then(|vp| vp.v_mount.get())
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_WXALLOWED != 0);
-        wxallowed && pr.ps_iflags.get() & PSI_WXNEEDED != 0
-    }
-
-    fn wxcounter_inc(&self) -> u32 {
-        let pr = curp("uvm_wxcheck").process();
-        let n = pr.ps_wxcounter.get();
-        pr.ps_wxcounter.set(n + 1);
-        n as u32
-    }
-
-    fn sigexit(&self, sig: i32) -> ! {
-        sigexit(curp("sigexit"), sig)
-    }
-
-    fn trapsignal_segv(&self, pc: usize) {
-        trapsignal(
-            curp("trapsignal"),
-            SIGSEGV,
-            0,
-            SEGV_ACCERR,
-            Sigval::from_ptr(pc),
-        );
-    }
-
-    fn pid(&self) -> i32 {
-        curp("pid").process().ps_pid
-    }
-
-    fn tid(&self) -> i32 {
-        curp("tid").p_tid.get()
-    }
-
-    fn comm(&self, out: &mut [u8]) -> usize {
-        let comm = curp("comm").process().comm();
-        let n = comm.len().min(out.len());
-        out[..n].copy_from_slice(&comm[..n]);
-        n
-    }
-
-    fn pc(&self) -> usize {
-        <Machine as Cpu>::proc_pc(curp("PROC_PC"))
-    }
-
-    fn set_acflag_amap(&self) {
-        let pr = curp("ps_acflag").process();
-        pr.ps_acflag.set(pr.ps_acflag.get() | AMAP);
-    }
-
-    fn lim_cur(&self, which: i32) -> u64 {
-        lim_cur(which as usize)
-    }
-
-    fn has_sibling(&self) -> bool {
-        p_hassibling(curp("P_HASSIBLING"))
-    }
-
-    fn ps_strings(&self) -> usize {
-        curp("ps_strings").process().ps_strings.get()
-    }
-
-    fn ps_sigcode(&self) -> usize {
-        curp("ps_sigcode").process().ps_sigcode.get()
-    }
-
-    fn ps_timekeep(&self) -> usize {
-        curp("ps_timekeep").process().ps_timekeep.get()
-    }
-
-    fn with_fd_vnode(
-        &self,
-        fd: i32,
-        f: &mut dyn FnMut(Option<&'static dyn VnodeOps>, u32) -> Result<(), Errno>,
-    ) -> Result<(), Errno> {
-        let p = curp("fd_getfile");
-        let Some(fp) = fd_getfile(p.fd(), fd) else {
-            return Err(Errno::EBADF);
-        };
-        let vp: Option<&'static dyn VnodeOps> = if fp.f_type() == DTYPE_VNODE {
-            Some(fp.vnode())
-        } else {
-            None
-        };
-        let r = f(vp, fp.flag() as u32);
-        let _ = frele(fp, p);
-        r
-    }
-
-    fn with_kbind(&self, f: &mut dyn FnMut(&mut KbindSlot)) {
-        let pr = curp("kbind").process();
-        let g_pr = pr.ps_mtx.lock();
-        let mut slot = KbindSlot {
-            addr: pr.ps_kbind_addr.get(),
-            cookie: pr.ps_kbind_cookie.get() as u64,
-        };
-        f(&mut slot);
-        pr.ps_kbind_addr.set(slot.addr);
-        pr.ps_kbind_cookie.set(slot.cookie as i64);
-        drop(g_pr);
-    }
-
-    fn pin_table_set(&self, base: usize, end: usize, pins: MArray<u32>) {
-        pin_install(curp("pinsyscalls").process(), base, end, pins);
-    }
-
-    fn ru_minflt_inc(&self) {
-        if let Some(p) = curproc() {
-            p.p_ru.ru_minflt.set(p.p_ru.ru_minflt.get() + 1);
-        }
-    }
-
-    fn ru_majflt_inc(&self) {
-        if let Some(p) = curproc() {
-            p.p_ru.ru_majflt.set(p.p_ru.ru_majflt.get() + 1);
-        }
-    }
-
-    fn ru_maxrss(&self, kb: usize) {
-        if let Some(p) = curproc() {
-            let kb = i64::try_from(kb).unwrap_or(i64::MAX);
-            if p.p_ru.ru_maxrss.get() < kb {
-                p.p_ru.ru_maxrss.set(kb);
-            }
-        }
-    }
-
-    fn log(&self, level: i32, args: fmt::Arguments<'_>) {
-        log(level, args);
-    }
-
-    fn uprintf(&self, args: fmt::Arguments<'_>) {
-        uprintf(args);
-    }
-}
-
 /// A `struct uio` as `uvm_io` moves bytes through it (`kernel::pipe::UioMove`): `uiomove`
 /// in the uio's own direction; no file, so never non-blocking.
 pub struct VmUio<'a, 'b>(pub &'a mut Uio<'b>);
@@ -821,7 +652,7 @@ pub fn sys_mquery(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         fd: uap.fd.get(),
         pos: uap.pos.get(),
     };
-    retval[0] = kernel::vm::mmap::sys_mquery(vmspace_of(p), a)? as Register;
+    retval[0] = kernel::vm::mmap::sys_mquery(p, vmspace_of(p), a)? as Register;
     Ok(())
 }
 
@@ -836,7 +667,7 @@ pub fn sys_mmap(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(),
         fd: uap.fd.get(),
         pos: uap.pos.get(),
     };
-    retval[0] = kernel::vm::mmap::sys_mmap(vmspace_of(p), a)? as Register;
+    retval[0] = kernel::vm::mmap::sys_mmap(p, vmspace_of(p), a)? as Register;
     Ok(())
 }
 
@@ -861,6 +692,7 @@ pub fn sys_munmap(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
 pub fn sys_mprotect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysMprotectArgs = sysargs(v);
     kernel::vm::mmap::sys_mprotect(
+        p,
         vmspace_of(p),
         uap.addr.get() as usize,
         uap.len.get(),
@@ -872,6 +704,7 @@ pub fn sys_mprotect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
 pub fn sys_pinsyscalls(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPinsyscallsArgs = sysargs(v);
     kernel::vm::mmap::sys_pinsyscalls(
+        p,
         vmspace_of(p),
         uap.base.get() as usize,
         uap.len.get(),
@@ -911,7 +744,7 @@ pub fn sys_madvise(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
 /// `sysent[]`'s `mlock(2)`.
 pub fn sys_mlock(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysMlockArgs = sysargs(v);
-    kernel::vm::mmap::sys_mlock(vmspace_of(p), uap.addr.get() as usize, uap.len.get())
+    kernel::vm::mmap::sys_mlock(p, vmspace_of(p), uap.addr.get() as usize, uap.len.get())
 }
 
 /// `sysent[]`'s `munlock(2)`.
@@ -923,7 +756,7 @@ pub fn sys_munlock(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
 /// `sysent[]`'s `mlockall(2)`.
 pub fn sys_mlockall(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysMlockallArgs = sysargs(v);
-    kernel::vm::mmap::sys_mlockall(vmspace_of(p), uap.flags.get())
+    kernel::vm::mmap::sys_mlockall(p, vmspace_of(p), uap.flags.get())
 }
 
 /// `sysent[]`'s `munlockall(2)`.
@@ -935,6 +768,7 @@ pub fn sys_munlockall(p: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Re
 pub fn sys_kbind(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysKbindArgs = sysargs(v);
     kernel::vm::mmap::sys_kbind(
+        p,
         vmspace_of(p),
         UserPtr::new(uap.param.get() as usize),
         uap.psize.get(),
@@ -945,7 +779,7 @@ pub fn sys_kbind(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 /// `sysent[]`'s `break` (`sys_obreak`).
 pub fn sys_obreak(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysObreakArgs = sysargs(v);
-    kernel::vm::unix::sys_obreak(vmspace_of(p), uap.nsize.get() as usize)
+    kernel::vm::unix::sys_obreak(p, vmspace_of(p), uap.nsize.get() as usize)
 }
 
 /// A `Native` vm entry: the thread on this CPU runs `mi_syscall` on row `nr` of `sysent[]`
@@ -1119,8 +953,6 @@ pub fn uvm_init() {
     crate::kern::hal_bridges::hal_bridges_register_vm();
     // The u-areas `fork1` gives its threads (hal::thread's E4 provider).
     let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
-    uvn_install_sysinfo();
-    let _ = kernel::vm::proc::install(&BSD_VM_PROC);
     kernel::vm::init::uvm_machine_init(&VM_MACHINE);
 
     // Init the page sub-system. This includes allocating the vm_page structures, and setting
@@ -1468,8 +1300,8 @@ const _: () = {
 };
 
 /*
- * The vnode as the kernel's vnode pager reaches it (uvm_vnode.c, bridges.toml `VnodeOps`
- * and `SysInfo`), and the file systems' calls into the pager with bsd's signatures.
+ * The vnode as the kernel's vnode pager reaches it (uvm_vnode.c, bridges.toml `VnodeOps`),
+ * and the file systems' calls into the pager with bsd's signatures.
  */
 
 /// `VOP_READ`/`VOP_WRITE` of `buf` at `off` (`UIO_SYSSPACE`, `curproc`'s credentials): the
@@ -1616,32 +1448,6 @@ fn mount_id(mp: Option<&'static Mount>) -> usize {
     mp.map_or(0, |m| core::ptr::from_ref(m).addr())
 }
 
-/// The system's clock and shutdown state for the vnode pager (bridges.toml `SysInfo`).
-struct BsdSysInfo;
-
-impl SysInfo for BsdSysInfo {
-    fn uptime(&self) -> (i64, i64) {
-        let tv = getmicrouptime();
-        (tv.tv_sec, tv.tv_usec as i64)
-    }
-
-    fn rebooting(&self) -> bool {
-        REBOOTING.load(Ordering::Relaxed)
-    }
-
-    fn rebooting_chan(&self) -> *const () {
-        core::ptr::from_ref(&REBOOTING).cast()
-    }
-}
-
-static BSD_SYS_INFO: BsdSysInfo = BsdSysInfo;
-
-/// Installs the `SysInfo` bridge for the kernel's vnode pager (`uvm_init`; a second call keeps
-/// the first).
-pub fn uvn_install_sysinfo() {
-    let _ = install_sysinfo(&BSD_SYS_INFO);
-}
-
 /// uvn_attach
 ///
 /// attach a vnode structure to a VM object. if the vnode is already attached, then just bump
@@ -1750,6 +1556,8 @@ pub(crate) fn uvm_km_test_init() {
 mod tests {
     // Over the host's memory (`setup_real_memory`, which runs uvm_km_test_init).
 
+    use hal::malloc::MArray;
+
     use super::*;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::malloc::{M_PINSYSCALL, M_WAITOK};
@@ -1786,8 +1594,8 @@ mod tests {
 
     #[test]
     fn a_pinsyscalls_table_is_honoured_at_syscall_entry() {
-        // sys_pinsyscalls builds the table in an MArray and VmProc::pin_table_set hands it to
-        // the process (its ReadMostly ps_libcpin): pin_check, at every system call, reads it.
+        // sys_pinsyscalls builds the table in an MArray and hands it to the process (its
+        // ReadMostly ps_libcpin, replaced as below): pin_check, at every system call, reads it.
         let _g = setup_real_memory();
         let pr = crate::kern::proc_glue::test_process(1);
         let p = crate::kern::proc_glue::test_thread(pr);
@@ -1797,7 +1605,11 @@ mod tests {
         // signal trampoline), inside [0, PAGE_SIZE).
         pins[SYS_getpid as usize] = u32::MAX; // "multiple locations"
         pins[SYS_getppid as usize] = 0; // not pinned
-        pin_install(pr, 0, PAGE_SIZE, pins);
+        drop(pr.ps_libcpin.replace(kernel::proc::PinTable {
+            start: 0,
+            end: PAGE_SIZE,
+            pins: Some(pins),
+        }));
         {
             let t = pr.ps_libcpin.read();
             assert_eq!((t.start, t.end), (0, PAGE_SIZE));

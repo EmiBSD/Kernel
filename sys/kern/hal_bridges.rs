@@ -269,35 +269,6 @@ impl Printf for BsdPrintf {
     }
 }
 
-/// The kernel crate's clocks (`kernel::clock::Uptime`) over `nanouptime`, `getnanouptime`
-/// and `nanotime` of `sys/kern/kern_tc.rs`, the userland-shaped `Timespec` turned into the
-/// kernel's.
-struct BsdUptime;
-
-impl kernel::clock::Uptime for BsdUptime {
-    fn nanouptime(&self) -> kernel::clock::Timespec {
-        let ts = crate::kern::kern_tc::nanouptime();
-        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
-    }
-
-    fn getnanouptime(&self) -> kernel::clock::Timespec {
-        let ts = crate::kern::kern_tc::getnanouptime();
-        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
-    }
-
-    fn nanotime(&self) -> kernel::clock::Timespec {
-        let ts = crate::kern::kern_tc::nanotime();
-        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
-    }
-
-    fn nanoboottime(&self) -> kernel::clock::Timespec {
-        let ts = crate::kern::kern_tc::nanoboottime();
-        kernel::clock::Timespec::new(ts.tv_sec, ts.tv_nsec)
-    }
-}
-
-static BSD_UPTIME: BsdUptime = BsdUptime;
-
 /// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
 /// vnode pager's `uvn_io` (N3.4e).
 struct BsdNetLock;
@@ -396,7 +367,6 @@ pub fn hal_bridges_register() {
     // The start of every new thread and the kernel's own threads: `kernel::fork` (N4.6a).
     let _ = kernel::fork::init::<crate::kern::proc_glue::BsdProcGlue>();
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
-    let _ = kernel::clock::install_uptime(&BSD_UPTIME);
     let _ = kernel::acct::install_acct_file(&crate::kern::proc_glue::BSD_ACCT_FILE);
     // N4.8a: the machine's clock hardware and boot(9), for kernel::clock and kernel::reboot.
     let _ = kernel::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);

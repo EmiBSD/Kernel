@@ -978,7 +978,7 @@ mod tests {
             ..FutexKey::default()
         };
         assert_eq!(futex_shared_key(map, at), alone(at));
-        uvm_fault(map, sa, VM_FAULT_INVALID, PROT_WRITE).expect("a write fault");
+        uvm_fault(map, sa, VM_FAULT_INVALID, PROT_WRITE, None).expect("a write fault");
         let (amap, pageoff) = {
             let g = map.lock_read();
             let e = g.lookup(sa).expect("the entry");

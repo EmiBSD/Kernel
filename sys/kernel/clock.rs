@@ -99,10 +99,9 @@
 //! queue alone binds the hardclock); timeout(9)'s `timeout_adjust_ticks` moves it forward
 //! under the wheel's lock; everyone else reads it.
 //!
-//! The timecounters are `kernel::tc`'s since N4.8a. [`nanouptime`], [`getnanouptime`] and
-//! [`nanotime`] here still go through the [`Uptime`] bridge (bridges.toml; paid by N4),
-//! which `bsd` registers over `kernel::tc` (through its `kern_tc.rs`); retiring it moves the
-//! kernel tests' uptime double, a later slice.
+//! The timecounters are `kernel::tc`'s since N4.8a; [`nanouptime`], [`getnanouptime`],
+//! [`nanotime`] and [`nanoboottime`] are its readers, re-exported here for the callers that
+//! name them through the clock (N5.0).
 //!
 //! ## Redesign
 //! - `ticks` moved here from `kern_clock.rs`, which re-exports it: the timeout wheel, now in
@@ -119,7 +118,10 @@
 //!   macros of `<sys/time.h>` is [`Timespec`] with methods and `Ord` (seconds, then
 //!   nanoseconds: `timespeccmp`'s order); the userland `struct timespec` stays `bsd`'s, at the
 //!   ABI edge, and converts field by field.
-//! - `nanouptime(9)` is [`nanouptime`], over the [`Uptime`] bridge.
+//! - `nanouptime(9)`, `getnanouptime(9)`, `nanotime(9)` and `nanoboottime(9)` are
+//!   `kernel::tc`'s readers, re-exported (N5.0: the `Uptime` bridge of N4.1, which `bsd`
+//!   implemented over those same readers through its `kern_tc.rs`, is gone with its slot and
+//!   the tests' double; the host tests read the timecounters, on the dummy counter).
 //! - N4.8a (decision 8): the kernel's one `struct timespec`, `struct timeval` and `struct
 //!   bintime` are here, `#[repr(C)]` and `AbiPod` (`hal::abi_pod!`), with the field names
 //!   and types of `<sys/time.h>` (`time_t` and `long` are `i64` on both machines), so
@@ -135,6 +137,8 @@
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::bridges::AlreadyRegistered;
+
+pub use crate::tc::{getnanouptime, nanoboottime, nanotime, nanouptime};
 
 use crate::assert::{kassert, kpanic};
 use hal::once::OnceStatic;
@@ -453,29 +457,6 @@ pub static STATCLOCK_IS_RANDOMIZED: AtomicBool = AtomicBool::new(false);
 /// \[I\] `profclock_period`: the profiling clock's period (ns; `subr_prof.c`'s).
 pub static PROFCLOCK_PERIOD: AtomicU64 = AtomicU64::new(0);
 
-/// The [`Uptime`] bridge, registered once by `bsd` (the host tests' doubles).
-static UPTIME: OnceStatic<&'static dyn Uptime> = OnceStatic::new();
-
-/// The uptime clock (`nanouptime(9)` over the timecounters of `sys/kern/kern_tc.rs`), until
-/// `kern_tc` moves (N4.8): bridges.toml `Uptime`. N4.4: the coarse uptime and the precise
-/// time of day too (kqueue's `kqueue_sleep` and `EVFILT_TIMER`'s `NOTE_ABSTIME`).
-pub trait Uptime: Sync {
-    /// `nanouptime(&ts)`: the time since boot, monotonic.
-    fn nanouptime(&self) -> Timespec;
-    /// `getnanouptime(&ts)`: the time since boot as of the last tick.
-    fn getnanouptime(&self) -> Timespec;
-    /// `nanotime(&ts)`: the time of day (`CLOCK_REALTIME`).
-    fn nanotime(&self) -> Timespec;
-    /// `nanoboottime(&ts)`: the time of day the system booted (N4.6b, `kinfo_proc`'s
-    /// start times).
-    fn nanoboottime(&self) -> Timespec;
-}
-
-/// Registers the [`Uptime`] bridge, once; a second call keeps the first and names it.
-pub fn install_uptime(imp: &'static dyn Uptime) -> Result<(), AlreadyRegistered> {
-    UPTIME.set(imp).map_err(|_| AlreadyRegistered("Uptime"))
-}
-
 /// `ticks`.
 pub fn ticks() -> i32 {
     TICKS.load(Ordering::Relaxed)
@@ -608,23 +589,6 @@ pub fn hardclock(_frame: &hal::clock::ClockFrame) {
     crate::timeout::hardclock_update();
 }
 
-/// `nanouptime(9)`: the time since boot (zero before the bridge is registered: no clock runs
-/// yet).
-pub fn nanouptime() -> Timespec {
-    UPTIME.get().map_or(Timespec::ZERO, |u| u.nanouptime())
-}
-
-/// `getnanouptime(9)`: the time since boot as of the last tick (zero before the bridge is
-/// registered).
-pub fn getnanouptime() -> Timespec {
-    UPTIME.get().map_or(Timespec::ZERO, |u| u.getnanouptime())
-}
-
-/// `nanotime(9)`: the time of day (zero before the bridge is registered).
-pub fn nanotime() -> Timespec {
-    UPTIME.get().map_or(Timespec::ZERO, |u| u.nanotime())
-}
-
 /// `sysctl_clockrate`: `kern.clockrate`, a `struct clockinfo` (tick, hz, profhz, stathz).
 pub fn sysctl_clockrate(req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
     let clkinfo = crate::time::Clockinfo {
@@ -636,12 +600,6 @@ pub fn sysctl_clockrate(req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Er
     let mut bytes = [0u8; size_of::<crate::time::Clockinfo>()];
     let _ = hal::user::pod_to_bytes(&clkinfo, &mut bytes);
     crate::sysctl::rdstruct(req, &bytes)
-}
-
-/// `nanoboottime(9)`: the time of day the system booted (zero before the bridge is
-/// registered).
-pub fn nanoboottime() -> Timespec {
-    UPTIME.get().map_or(Timespec::ZERO, |u| u.nanoboottime())
 }
 
 /// `tstohz(ts)`: the ticks of `ts`, rounded up, plus one for the current tick to expire

@@ -4117,6 +4117,29 @@ pub(crate) mod tests {
         fd
     }
 
+    /// A test file of type `ty` (`DTYPE_*`) on the object `data` at the lowest free
+    /// descriptor, open for reading and writing (`kernel::vm::mmap`'s `getvnode` tests).
+    pub(crate) fn open_data(p: T, ty: i32, data: TestFileData<Kg>) -> i32 {
+        open_file(p, ty, &TOPS, data)
+    }
+
+    /// [`open_data`] with the file's operations `ops` (`kernel::pipe`'s tests: a pipe file).
+    pub(crate) fn open_file(
+        p: T,
+        ty: i32,
+        ops: &'static dyn crate::file::FileOps<Kf>,
+        data: TestFileData<Kg>,
+    ) -> i32 {
+        let mut g = fdplock(p.fd());
+        let (fp, fd) = crate::descrip::falloc(p, &mut g).unwrap();
+        fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
+        fp.install(ty, ops, data);
+        fdinsert(&mut g, fd, 0, &fp);
+        drop(g);
+        fp.frele(Some(p)).unwrap();
+        fd
+    }
+
     /// `close(2)` of `fd`.
     pub(crate) fn close_fd(p: T, fd: i32) {
         assert_eq!(fdrelease(p, fdplock(p.fd()), fd), Ok(()));
@@ -4559,8 +4582,10 @@ pub(crate) mod tests {
             reg(p, &kq, ev_set(6, EVFILT_TIMER, EV_ADD, 0x100, 10, 0)),
             Err(Errno::EINVAL)
         );
-        // An absolute time already past expires at once.
-        let mut kev = ev_set(7, EVFILT_TIMER, EV_ADD, NOTE_ABSTIME | NOTE_SECONDS, 1, 0);
+        // An absolute time already past expires at once: the epoch itself, past whatever
+        // the host tests' realtime clock reads (kernel::tc's dummy counter: the uptime since
+        // the epoch, or what a test set).
+        let mut kev = ev_set(7, EVFILT_TIMER, EV_ADD, NOTE_ABSTIME | NOTE_SECONDS, 0, 0);
         assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].data), (7, 1));

@@ -200,8 +200,11 @@
 //!   comment that a tmpfs vnode's pages are its UAO's describes NetBSD's tmpfs; OpenBSD's
 //!   shares neither the pages nor the lock (`tmpfs_subr.c`'s `#if 0`), so the wired path's
 //!   `KASSERT(uobj->vmobjlock == pg->uobject->vmobjlock)` is the page's owner being `uobj`.
-//! - `curproc->p_ru` (`ru_minflt`, `ru_majflt`, `ru_maxrss`) is `bsd`'s process until N4: the
-//!   map's notes ([`FaultMap::note_minflt`], `note_majflt`, `note_maxrss`).
+//! - `curproc->p_ru` (`ru_minflt`, `ru_majflt`, `ru_maxrss`) is the record the caller names:
+//!   [`uvm_fault`] and [`uvm_fault_wire`] take `ru: Option<&Rusage>`, the faulting thread's
+//!   `p_ru` (the trap's, `mlock(2)`'s, `sysctl(2)`'s wiring), kept in the [`FaultInfo`] and
+//!   bumped where the C bumps `curproc`'s; `None` for a fault no thread takes (N5.0: until
+//!   then the map's notes asked the `VmProc` bridge for `curproc`).
 //! - `pmap_enter` on `kernel_map`'s pmap goes through the kernel map's token (`vm::km`), a
 //!   user pmap's through the handle (`hal::pmap::PmapRef`); `pmap_update` has nothing to do
 //!   (`hal`'s pmap does its TLB work in each call).
@@ -255,6 +258,7 @@ use super::pmemrange::uvm_wait;
 use super::types::{MADV_MASK, PROT_MASK, UVM_PGA_ZERO, VmFault, VmProt, Voff};
 use crate::assert::{kassert, kpanic};
 use crate::prf::unported;
+use crate::resource::Rusage;
 
 /// `VM_FAULT_INVALID`: invalid mapping.
 pub const VM_FAULT_INVALID: VmFault = 0x0;
@@ -425,13 +429,6 @@ pub trait FaultMap: Sized + 'static {
     fn is_intrsafe(&self) -> bool;
     /// `map->flags & VM_MAP_PAGEABLE`.
     fn is_pageable(&self) -> bool;
-    /// `curproc->p_ru.ru_minflt++`.
-    fn note_minflt(&self);
-    /// `curproc->p_ru.ru_majflt++`.
-    fn note_majflt(&self);
-    /// `if (p->p_ru.ru_maxrss < kb) p->p_ru.ru_maxrss = kb` for `curproc`, whose vmspace is
-    /// this map (the C's `KASSERT(p != NULL && &p->p_vmspace->vm_map == map)`).
-    fn note_maxrss(&self, kb: usize);
 }
 
 /// A locked map ([`FaultMap::lock`]): the proof the entries it hands out are valid, and the
@@ -521,11 +518,13 @@ pub struct FaultInfo<'m, M: FaultMap> {
     version: u32,
     /// Size of interest.
     size: usize,
+    /// `curproc->p_ru`: the faulting thread's counters (`None`: no thread's).
+    ru: Option<&'m Rusage>,
 }
 
 impl<'m, M: FaultMap> FaultInfo<'m, M> {
-    /// The IN parameters (`orig_*`), before [`uvmfault_lookup`].
-    fn new(orig_map: &'m M, orig_rvaddr: usize, orig_size: usize) -> Self {
+    /// The IN parameters (`orig_*`) and the counters' record, before [`uvmfault_lookup`].
+    fn new(orig_map: &'m M, orig_rvaddr: usize, orig_size: usize, ru: Option<&'m Rusage>) -> Self {
         Self {
             orig_map,
             orig_rvaddr,
@@ -534,6 +533,21 @@ impl<'m, M: FaultMap> FaultInfo<'m, M> {
             guard: None,
             version: 0,
             size: 0,
+            ru,
+        }
+    }
+
+    /// `curproc->p_ru.ru_minflt++`.
+    fn minflt(&self) {
+        if let Some(ru) = self.ru {
+            ru.ru_minflt.add(1);
+        }
+    }
+
+    /// `curproc->p_ru.ru_majflt++`.
+    fn majflt(&self) {
+        if let Some(ru) = self.ru {
+            ru.ru_majflt.add(1);
         }
     }
 
@@ -814,9 +828,9 @@ fn uvmfault_anonget<'w, M: FaultMap>(
     // Increment the counters.
     counters_inc(UvmExpCounters::FltAnget);
     if anon.page().is_some() {
-        ufi.orig_map.note_minflt();
+        ufi.minflt();
     } else {
-        ufi.orig_map.note_majflt();
+        ufi.majflt();
     }
     let mut w = w;
 
@@ -1058,11 +1072,17 @@ fn uvmfault_update_stats<M: FaultMap>(ufi: &FaultInfo<'_, M>) {
     // If this is a nested pmap (eg, a virtual machine pmap managed by vmm(4) on amd64/i386),
     // don't do any updating, just return. pmap_nested() is 0 here (no vmm).
 
-    // Update the maxrss for the process.
-    if map.is_vmspace() {
+    // Update the maxrss for the process (KASSERT(p != NULL && &p->p_vmspace->vm_map ==
+    // map): the faulting thread's map is a vmspace's, the module's deviations).
+    if map.is_vmspace()
+        && let Some(ru) = ufi.ru
+    {
         let res = usize::try_from(map.pmap().resident_count()).unwrap_or(0);
         // Convert res from pages to kilobytes.
-        map.note_maxrss(res << (PAGE_SHIFT - 10));
+        let res = i64::try_from(res << (PAGE_SHIFT - 10)).unwrap_or(i64::MAX);
+        if ru.ru_maxrss.get() < res {
+            ru.ru_maxrss.set(res);
+        }
     }
 }
 
@@ -1078,17 +1098,20 @@ fn uvmfault_update_stats<M: FaultMap>(ufi: &FaultInfo<'_, M>) {
 ///   us (c.f. `uvm_map_pageable`). This should be avoided because it keeps the map locked off
 ///   during I/O.
 /// - MUST NEVER BE CALLED IN INTERRUPT CONTEXT
+/// - `ru` is `curproc->p_ru`, the faulting thread's counters (`ru_minflt`, `ru_majflt`,
+///   `ru_maxrss`); `None` when no thread's are to count.
 pub fn uvm_fault<M: FaultMap>(
     orig_map: &M,
     vaddr: usize,
     fault_type: VmFault,
     access_type: VmProt,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     counters_inc(UvmExpCounters::Faults);
     // TRACEPOINT(uvm, fault, ...): dt is not configured.
 
     // init the IN parameters in the ufi
-    let mut ufi = FaultInfo::new(orig_map, trunc_page(vaddr), PAGE_SIZE);
+    let mut ufi = FaultInfo::new(orig_map, trunc_page(vaddr), PAGE_SIZE, ru);
     let mut flt = FaultCtx {
         enter_prot: 0,
         access_type,
@@ -1815,7 +1838,7 @@ fn uvm_fault_lower<'v, M: FaultMap>(
         (_, _, w) => {
             lower = w;
             // update rusage counters
-            ufi.orig_map.note_minflt();
+            ufi.minflt();
             if let (PageSlot::Page(pg), Some(o)) = (uobjpage, uobj) {
                 uvm_pageactivate(pg, o.owner());
             }
@@ -2050,7 +2073,7 @@ fn uvm_fault_lower_io<'v, M: FaultMap>(
     uvmfault_unlockall(ufi, upper, None);
 
     // update rusage counters
-    ufi.orig_map.note_majflt();
+    ufi.majflt();
 
     // KASSERT(rw_write_held(uobj->vmobjlock)): `lw`.
     counters_inc(UvmExpCounters::FltGet);
@@ -2155,18 +2178,20 @@ fn uvm_fault_lower_io<'v, M: FaultMap>(
 /// - map may be read-locked by caller, but MUST NOT be write-locked.
 /// - if map is read-locked, any operations which may cause map to be write-locked in
 ///   [`uvm_fault`] must be taken care of by the caller. See `uvm_map_pageable()`.
+/// - the faults count on `ru` (`curproc->p_ru`), as [`uvm_fault`]'s.
 pub fn uvm_fault_wire<M: FaultMap>(
     map: &M,
     start: usize,
     end: usize,
     access_type: VmProt,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     // now fault it in a page at a time. if the fault fails then we have to undo what we have
     // done. note that in uvm_fault PROT_NONE is replaced with the max protection if
     // fault_type is VM_FAULT_WIRE.
     let mut va = start;
     while va < end {
-        if let Err(rv) = uvm_fault(map, va, VM_FAULT_WIRE, access_type) {
+        if let Err(rv) = uvm_fault(map, va, VM_FAULT_WIRE, access_type, ru) {
             if va != start {
                 uvm_fault_unwire(map, start, va);
             }
@@ -2851,9 +2876,8 @@ mod tests {
     struct FakeMap {
         state: Rwlocked<FakeState>,
         pmap: PmapRef,
-        minflt: AtomicUsize,
-        majflt: AtomicUsize,
-        maxrss: AtomicUsize,
+        /// The faulting thread's counters, given to every fault on this map.
+        ru: Rusage,
     }
 
     /// A map of `entries` (in address order) over a new user pmap, leaked (its pmap keeps the
@@ -2868,9 +2892,7 @@ mod tests {
                 },
             ),
             pmap: hal::pmap::create().expect("a pmap"),
-            minflt: AtomicUsize::new(0),
-            majflt: AtomicUsize::new(0),
-            maxrss: AtomicUsize::new(0),
+            ru: Rusage::new(),
         }))
     }
 
@@ -2959,15 +2981,6 @@ mod tests {
         }
         fn is_pageable(&self) -> bool {
             true
-        }
-        fn note_minflt(&self) {
-            self.minflt.fetch_add(1, Ordering::Relaxed);
-        }
-        fn note_majflt(&self) {
-            self.majflt.fetch_add(1, Ordering::Relaxed);
-        }
-        fn note_maxrss(&self, kb: usize) {
-            self.maxrss.fetch_max(kb, Ordering::Relaxed);
         }
     }
 
@@ -3165,7 +3178,10 @@ mod tests {
 
         // A read fault: the amap is made (needs-copy without an object), the read lock on it
         // upgraded for the promotion, and a zeroed anon page mapped (case 2B, zero fill).
-        assert_eq!(uvm_fault(map, VA + 8, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA + 8, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         let anon = map.anon(VA).expect("an anon");
         let pg = anon.page().expect("its page");
         assert_eq!(map.pa(VA), Some(pg.phys_addr()));
@@ -3177,12 +3193,15 @@ mod tests {
         assert_eq!(count(UvmExpCounters::FltAmcopy), amcopy + 1);
         assert_eq!(count(UvmExpCounters::FltPrzero), przero + 1);
         assert_eq!(count(UvmExpCounters::FltUp), up + 1);
-        assert_eq!(map.minflt.load(Ordering::Relaxed), 1);
-        assert!(map.maxrss.load(Ordering::Relaxed) >= 4);
+        assert_eq!(map.ru.ru_minflt.get(), 1);
+        assert!(map.ru.ru_maxrss.get() >= 4);
 
         // A write fault on it is case 1A: the same anon and page.
         let anon1a = count(UvmExpCounters::FltAnon);
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
+            Ok(())
+        );
         assert!(map.anon(VA).is_some_and(|a| AnonRef::ptr_eq(&a, &anon)));
         assert_eq!(map.pa(VA), Some(pg.phys_addr()));
         assert_eq!(count(UvmExpCounters::FltAnon), anon1a + 1);
@@ -3203,29 +3222,47 @@ mod tests {
             FakeEntry::with_object(VA + 8 * PAGE_SIZE, 1, &o),
         ]);
         assert_eq!(
-            uvm_fault(map, 0x1000, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(map, 0x1000, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
             Err(Errno::EFAULT),
             "outside the map"
         );
         assert_eq!(
-            uvm_fault(map, VA + 2 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + 2 * PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Err(Errno::EFAULT),
             "no entry"
         );
         assert_eq!(
-            uvm_fault(map, VA + 4 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + 4 * PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Err(Errno::EFAULT),
             "case 0"
         );
         assert_eq!(
-            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_EXEC),
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_EXEC, Some(&map.ru)),
             Err(Errno::EACCES),
             "more than the entry allows"
         );
         // The pager fails a read of an ordinary entry: EIO.
         o.0.script.borrow_mut().push_back(VM_PAGER_ERROR);
         assert_eq!(
-            uvm_fault(map, VA + 8 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + 8 * PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Err(Errno::EIO)
         );
         assert!(map.is_free());
@@ -3250,12 +3287,18 @@ mod tests {
             cow: true,
             ..child_entry
         }]);
-        assert_eq!(uvm_fault(parent, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(parent, VA, VM_FAULT_INVALID, PROT_READ, Some(&parent.ru)),
+            Ok(())
+        );
         let parent_pa = parent.pa(VA).expect("the parent's page");
 
         // The child's read fault copies the amap (no object: needs-copy is resolved) and maps
         // the parent's page read-only (case 1A with an_ref 2).
-        assert_eq!(uvm_fault(child, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(child, VA, VM_FAULT_INVALID, PROT_READ, Some(&child.ru)),
+            Ok(())
+        );
         assert_eq!(child.pa(VA), Some(parent_pa));
         assert_eq!(parent_anon.refs(), 2);
         assert_eq!(x.refs(), 1);
@@ -3263,7 +3306,10 @@ mod tests {
         // Its write fault promotes a copy into a new anon (case 1B).
         let acow = count(UvmExpCounters::FltAcow);
         let out = anons_out();
-        assert_eq!(uvm_fault(child, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(child, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&child.ru)),
+            Ok(())
+        );
         let child_anon = child.anon(VA).expect("the child's anon");
         assert!(!AnonRef::ptr_eq(&child_anon, &parent_anon));
         assert_eq!((parent_anon.refs(), child_anon.refs()), (1, 1));
@@ -3306,7 +3352,10 @@ mod tests {
 
         // A read fault: no page and only a read lock (ENOLCK), the upgrade, the page read in
         // with everything unlocked, the relock, the retry, case 1A.
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         no_swap_get();
         assert_eq!(*slots.borrow(), [5]);
         let pg = anon.page().expect("the page read in");
@@ -3318,7 +3367,7 @@ mod tests {
         assert_eq!(count(UvmExpCounters::FltRelck), relck + 1);
         // uvmfault_anonget counts each call, the retry after the upgrade too (the C's
         // `goto retry` calls it again).
-        assert_eq!(map.majflt.load(Ordering::Relaxed), 2);
+        assert_eq!(map.ru.ru_majflt.get(), 2);
         assert!(map.is_free());
         assert_eq!(x.lock().status(), 0);
     }
@@ -3348,7 +3397,10 @@ mod tests {
         // The relock fails while anonget owns the page: it takes the anon's lock again to
         // finish the read (the page activated, unbusied), lets it go and restarts; the next
         // round finds the page resident.
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
+            Ok(())
+        );
         no_swap_get();
         assert_eq!(reads.get(), 1);
         assert_eq!(count(UvmExpCounters::FltNorelck), norelck + 1);
@@ -3404,7 +3456,10 @@ mod tests {
 
         // The fault waits for the page, relocks, finds another anon in the slot (ERESTART),
         // and the next round maps the new anon's page.
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         mover.join().unwrap();
         assert_eq!(count(UvmExpCounters::FltPgwait), pgwait + 1);
         assert_eq!(count(UvmExpCounters::FltRelck), relck + 1);
@@ -3425,7 +3480,7 @@ mod tests {
         let map = map_of(vec![FakeEntry::with_amap(VA, 1, &x)]);
         // No stand-in: uvm_swap_get is reported and fails, as without swap.
         assert_eq!(
-            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE),
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
             Err(Errno::EACCES)
         );
         assert!(anon.page().is_none());
@@ -3460,7 +3515,10 @@ mod tests {
 
         // The read fault's promotion cannot upgrade beside the other reader: ERESTART, and the
         // next round takes the amap for writing at once (no upgrade), once the reader left.
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         let _ = go_tx.send(());
         reader.join().unwrap();
         assert_eq!(count(UvmExpCounters::FltNoup), noup + 1);
@@ -3485,7 +3543,10 @@ mod tests {
 
         // The read fault reads the page in, finds a new map version (nothing is locked then:
         // ERESTART), and the next round maps the page it finds resident (case 2A).
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         *o.0.meanwhile.borrow_mut() = None;
         assert_eq!(count(UvmExpCounters::FltNorelck), norelck + 1);
         assert_eq!(count(UvmExpCounters::FltObj), obj2a + 1);
@@ -3493,8 +3554,8 @@ mod tests {
         let pg = o.page(0).expect("the object's page");
         assert_eq!(pg.flags() & (PG_BUSY | PG_WANTED), 0);
         assert_eq!(map.pa(VA), Some(pg.phys_addr()));
-        assert_eq!(map.majflt.load(Ordering::Relaxed), 1);
-        assert_eq!(map.minflt.load(Ordering::Relaxed), 1);
+        assert_eq!(map.ru.ru_majflt.get(), 1);
+        assert_eq!(map.ru.ru_minflt.get(), 1);
         assert!(map.is_free());
         assert_eq!(o.0.lock.status(), 0);
     }
@@ -3525,7 +3586,10 @@ mod tests {
 
         // The fault finds the page released: uvm_anon_release frees it, ERESTART, and the
         // next round zero-fills a new anon in the empty slot.
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
+            Ok(())
+        );
         no_swap_get();
         assert_eq!(count(UvmExpCounters::FltPgrele), pgrele + 1);
         assert!(anon.page().is_none());
@@ -3559,7 +3623,13 @@ mod tests {
         // ahead; the page itself comes from the object (case 2A).
         let up = count(UvmExpCounters::FltUp);
         assert_eq!(
-            uvm_fault(map, VA + 8 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + 8 * PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Ok(())
         );
         assert_eq!(
@@ -3588,7 +3658,7 @@ mod tests {
         ]);
         let end = VA + 4 * PAGE_SIZE;
 
-        assert_eq!(uvm_fault_wire(map, VA, end, RW), Ok(()));
+        assert_eq!(uvm_fault_wire(map, VA, end, RW, Some(&map.ru)), Ok(()));
         for i in 0..4 {
             let pa = map.pa(VA + i * PAGE_SIZE).expect("mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
@@ -3624,7 +3694,10 @@ mod tests {
         o.0.script.borrow_mut().push_back(VM_PAGER_AGAIN);
 
         let t = Instant::now();
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         assert!(
             t.elapsed() >= Duration::from_millis(5),
             "the fltagain2 pause"
@@ -3647,7 +3720,10 @@ mod tests {
         o.0.script.borrow_mut().push_back(VM_PAGER_ERROR);
 
         let przero = count(UvmExpCounters::FltPrzero);
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         assert_eq!(count(UvmExpCounters::FltPrzero), przero + 1);
         let anon = map.anon(VA).expect("a zero-filled anon");
         assert_eq!(map.pa(VA), anon.page().map(VmPage::phys_addr));
@@ -3667,14 +3743,20 @@ mod tests {
 
         // A read maps the object's page read-only (case 2A on a copy-on-write entry; the
         // needs-copy stays, there is an object).
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         let opg = o.page(0).expect("the object's page");
         assert_eq!(map.pa(VA), Some(opg.phys_addr()));
         assert!(map.amap(VA).is_none());
 
         // A write copies it into an anon (case 2B with a copy).
         let prcopy = count(UvmExpCounters::FltPrcopy);
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
+            Ok(())
+        );
         assert_eq!(count(UvmExpCounters::FltPrcopy), prcopy + 1);
         let anon = map.anon(VA).expect("the copy");
         let pg = anon.page().expect("its page");
@@ -3690,7 +3772,13 @@ mod tests {
         let map = map_of(vec![FakeEntry::anon(VA, 8)]);
         for i in 0..8 {
             assert_eq!(
-                uvm_fault(map, VA + i * PAGE_SIZE, VM_FAULT_INVALID, PROT_WRITE),
+                uvm_fault(
+                    map,
+                    VA + i * PAGE_SIZE,
+                    VM_FAULT_INVALID,
+                    PROT_WRITE,
+                    Some(&map.ru)
+                ),
                 Ok(())
             );
         }
@@ -3701,7 +3789,13 @@ mod tests {
         // entry's end) too.
         let namap = count(UvmExpCounters::FltNamap);
         assert_eq!(
-            uvm_fault(map, VA + 4 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + 4 * PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Ok(())
         );
         for i in 1..8 {
@@ -3720,7 +3814,10 @@ mod tests {
         e.submap = Some(sub);
         let map = map_of(vec![e]);
 
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
+            Ok(())
+        );
         let anon = sub.anon(VA).expect("the submap's anon");
         // The original map's pmap gets the mapping.
         assert_eq!(map.pa(VA), anon.page().map(VmPage::phys_addr));
@@ -3748,7 +3845,13 @@ mod tests {
 
         // A read fault: the aobj has no page yet, uao_get makes a zeroed one (case 2A).
         assert_eq!(
-            uvm_fault(map, VA + PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Ok(())
         );
         let pg = aobj_page(&o, PAGE_SIZE).expect("the aobj's page");
@@ -3761,7 +3864,13 @@ mod tests {
 
         // A write fault on it finds it resident (no I/O): the same page, writable.
         assert_eq!(
-            uvm_fault(map, VA + PAGE_SIZE, VM_FAULT_INVALID, PROT_WRITE),
+            uvm_fault(
+                map,
+                VA + PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_WRITE,
+                Some(&map.ru)
+            ),
             Ok(())
         );
         assert_eq!(count(UvmExpCounters::FltGet), get + 1);
@@ -3779,12 +3888,18 @@ mod tests {
         e.needscopy.set(true);
         let map = map_of(vec![e]);
 
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         let opg = aobj_page(&o, 0).expect("the aobj's page");
         assert_eq!(map.pa(VA), Some(opg.phys_addr()));
 
         let prcopy = count(UvmExpCounters::FltPrcopy);
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
+            Ok(())
+        );
         assert_eq!(count(UvmExpCounters::FltPrcopy), prcopy + 1);
         let anon = map.anon(VA).expect("the copy");
         let pg = anon.page().expect("its page");
@@ -3804,7 +3919,10 @@ mod tests {
 
         // Page 0 resident with a swap slot (as after a swap-in: the slot stays; slots exist
         // only by uao_set_swslot until uvm_swap, N3.5), page 1 not resident.
-        assert_eq!(uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ), Ok(()));
+        assert_eq!(
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_READ, Some(&map.ru)),
+            Ok(())
+        );
         let aobj = o.aobj().expect("an aobj");
         {
             let mut w = o.lock().write();
@@ -3813,7 +3931,10 @@ mod tests {
 
         // The wired PQ_AOBJ pages go through uao_dropswap: page 0's slot is released (its
         // uvm_swap_free reported), page 1 had none.
-        assert_eq!(uvm_fault_wire(map, VA, VA + 2 * PAGE_SIZE, RW), Ok(()));
+        assert_eq!(
+            uvm_fault_wire(map, VA, VA + 2 * PAGE_SIZE, RW, Some(&map.ru)),
+            Ok(())
+        );
         {
             let w = o.lock().read();
             assert_eq!(uao_find_swslot(aobj, &w, 0), 0, "the slot was dropped");
@@ -3848,13 +3969,19 @@ mod tests {
 
         // The file's second page (100 bytes, then zeroes) is read in and mapped (case 2A).
         assert_eq!(
-            uvm_fault(map, VA + PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Ok(())
         );
         let pg = aobj_page(&o, PAGE_SIZE).expect("the vnode's page");
         assert_eq!(map.pa(VA + PAGE_SIZE), Some(pg.phys_addr()));
         assert_eq!(pg.flags() & (PG_BUSY | PG_FAKE | PG_WANTED), 0);
-        assert_eq!(map.majflt.load(Ordering::Relaxed), 1);
+        assert_eq!(map.ru.ru_majflt.get(), 1);
         // Its bytes: the file's (i % 251) up to its end, zeroes after (a view wants the page
         // busy, as the pager's).
         let bytes = {
@@ -3877,7 +4004,13 @@ mod tests {
         // Past the file's end the pager answers VM_PAGER_BAD and the fault EIO (the trap's
         // SIGBUS, diff-openbsd's child_sigbus).
         assert_eq!(
-            uvm_fault(map, VA + 2 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                map,
+                VA + 2 * PAGE_SIZE,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                Some(&map.ru)
+            ),
             Err(Errno::EIO)
         );
         assert!(map.pa(VA + 2 * PAGE_SIZE).is_none());
@@ -3897,7 +4030,7 @@ mod tests {
         // no swap configured uvm_swapisfull() is true (0 of 0 pages), so ENOMEM, as the C.
         testutil::fail_pool("amapchunkpl", 1);
         assert_eq!(
-            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE),
+            uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru)),
             Err(Errno::ENOMEM)
         );
         assert_eq!(count(UvmExpCounters::FltNoamap), noamap + 1);
@@ -3910,7 +4043,7 @@ mod tests {
         // new anon.
         UVMEXP.swpages.store(100, Ordering::Relaxed);
         testutil::fail_pool("amapchunkpl", 1);
-        let result = uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE);
+        let result = uvm_fault(map, VA, VM_FAULT_INVALID, PROT_WRITE, Some(&map.ru));
         testutil::fail_pool("amapchunkpl", 0);
         UVMEXP.swpages.store(0, Ordering::Relaxed);
         assert_eq!(result, Ok(()));

@@ -925,10 +925,14 @@ pub fn sysctl_vslock<G: ProcGlue>(p: &Thread<G>, addr: usize, len: usize) -> Res
             Err(Errno::ENOMEM)
         } else {
             match p.vmspace_share() {
-                Some(vm) => {
-                    crate::vm::glue::uvm_vslock(&vm.vm_map, addr, len, PROT_READ | PROT_WRITE)
-                        .map(|()| vm)
-                }
+                Some(vm) => crate::vm::glue::uvm_vslock(
+                    &vm.vm_map,
+                    addr,
+                    len,
+                    PROT_READ | PROT_WRITE,
+                    Some(&p.p_ru),
+                )
+                .map(|()| vm),
                 // A thread without an address space (a kernel thread) has no user buffer.
                 None => Err(Errno::EFAULT),
             }
@@ -1060,7 +1064,7 @@ fn top_sysctl<G: ProcGlue>(
     match top {
         Top::Kern => kern_sysctl(p, name, req),
         Top::Hw => hw_sysctl(p, name, req),
-        Top::Vm => crate::vm::meter::uvm_sysctl::<G>(name, req),
+        Top::Vm => crate::vm::meter::uvm_sysctl(p, name, req),
         Top::Net | Top::Vfs | Top::Machdep | Top::Ddb => match node(&TOP, ctl) {
             Some(n) => n.sysctl(name, req),
             None => Err(Errno::EOPNOTSUPP),

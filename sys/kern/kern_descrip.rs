@@ -123,7 +123,6 @@ use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
 use crate::kern::kern_sig::ptsignal;
-use crate::kern::pipe_glue::PipeFile;
 use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::vfs_subr::{VFS_STALL_LOCK, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
@@ -164,8 +163,8 @@ pub enum BsdFileData {
     /// `DTYPE_SOCKET`: the socket, as an address (`Socket` is not `Sync`; `fp_socket` keeps
     /// its deref until the sockets move, N6), cleared by `soo_close`.
     Socket(PtrWord<Socket>),
-    /// `DTYPE_PIPE`: the pipe this file reads, and the opener's ids for `pipe_stat`.
-    Pipe(PipeFile),
+    /// `DTYPE_PIPE`: the pipe this file reads (and whose peer it writes).
+    Pipe(kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>),
     /// `DTYPE_KQUEUE`: the kqueue, a counted reference the file drops with its last
     /// reference (`kqueue_close` terminates the queue first).
     Kqueue(KqRef),
@@ -317,6 +316,12 @@ impl FileGlue for BsdFileGlue {
         (&crate::kern::kern_event::KQUEUEOPS, BsdFileData::Kqueue(kq))
     }
 
+    fn pipe_file(
+        end: kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>,
+    ) -> (&'static Fileops, BsdFileData) {
+        (&crate::kern::pipe_glue::PIPEOPS, BsdFileData::Pipe(end))
+    }
+
     fn kqueue_of(d: &BsdFileData) -> Option<&KqRef> {
         match d {
             BsdFileData::Kqueue(kq) => Some(kq),
@@ -332,6 +337,24 @@ impl FileGlue for BsdFileGlue {
                 })
             }),
             _ => false,
+        }
+    }
+
+    fn pipe_of(
+        d: &BsdFileData,
+    ) -> Option<&kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>> {
+        match d {
+            BsdFileData::Pipe(end) => Some(end),
+            _ => None,
+        }
+    }
+
+    fn vnode_ops(d: &BsdFileData) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
+        match d {
+            BsdFileData::Vnode(v) => v
+                .get()
+                .map(|vp| vp as &'static dyn kernel::vm::vnode::VnodeOps),
+            _ => None,
         }
     }
 

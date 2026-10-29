@@ -120,6 +120,7 @@ use super::km::{KD_WAITOK, KP_ZERO, KmemVaMode, KvMap, dma_memory, km_alloc, km_
 use super::map::{VmMap, uvm_map_pageable};
 use super::types::VmProt;
 use crate::prf::unported;
+use crate::resource::Rusage;
 
 /// The u-area mode (`kv_uarea`): `kernel_map`, `USPACE_ALIGN`ed.
 pub fn kv_uarea() -> KmemVaMode {
@@ -140,14 +141,21 @@ fn page_range(addr: usize, len: usize) -> Option<(usize, usize)> {
 }
 
 /// `uvm_vslock`: wires the user memory `[addr, addr + len)` of `map` for I/O, so that it
-/// cannot fault while a lock is held (`sys_sysctl`). `access_type` is the C's argument,
-/// which the wiring does not use either.
-pub fn uvm_vslock(map: &VmMap, addr: usize, len: usize, access_type: VmProt) -> Result<(), Errno> {
+/// cannot fault while a lock is held (`sys_sysctl`); the wiring's faults count on `ru`, the
+/// caller's `p_ru` (the C's `curproc`). `access_type` is the C's argument, which the wiring
+/// does not use either.
+pub fn uvm_vslock(
+    map: &VmMap,
+    addr: usize,
+    len: usize,
+    access_type: VmProt,
+    ru: Option<&Rusage>,
+) -> Result<(), Errno> {
     let _ = access_type;
     let Some((start, end)) = page_range(addr, len) else {
         return Err(Errno::EINVAL);
     };
-    uvm_map_pageable(map, start, end, false)
+    uvm_map_pageable(map, start, end, false, ru)
 }
 
 /// `uvm_vsunlock`: unwires the user memory wired by [`uvm_vslock`] (`sys_sysctl`).
@@ -155,7 +163,8 @@ pub fn uvm_vsunlock(map: &VmMap, addr: usize, len: usize) {
     let start = trunc_page(addr);
     let end = round_page(addr.wrapping_add(len));
     crate::assert::kassert!(end > start);
-    let _ = uvm_map_pageable(map, start, end, true);
+    // An unwiring takes no fault: no counters.
+    let _ = uvm_map_pageable(map, start, end, true, None);
 }
 
 /// What [`uvm_vslock_device`] holds until [`uvm_vsunlock_device`]: the map read-locked with
@@ -215,13 +224,15 @@ pub fn paddr_is_dma_reachable(pa: Paddr) -> bool {
 /// necessary (physio).
 ///
 /// On success the map stays read-locked until [`uvm_vsunlock_device`] (the [`DeviceLock`]
-/// holds the guard) and the bounce buffer, if any, holds a copy of the `len` user bytes.
-pub fn uvm_vslock_device(
-    map: &VmMap,
+/// holds the guard) and the bounce buffer, if any, holds a copy of the `len` user bytes. The
+/// wiring's faults count on `ru`, the caller's `p_ru`.
+pub fn uvm_vslock_device<'a>(
+    map: &'a VmMap,
     addr: usize,
     len: usize,
     access_type: VmProt,
-) -> Result<DeviceLock<'_>, Errno> {
+    ru: Option<&Rusage>,
+) -> Result<DeviceLock<'a>, Errno> {
     let Some((start, end)) = page_range(addr, len) else {
         return Err(Errno::EINVAL);
     };
@@ -232,7 +243,7 @@ pub fn uvm_vslock_device(
     // C's `mapv != map->timestamp` loop).
     let mut mapv = FaultMapGuard::version(&FaultMap::lock(map, RwMode::Read));
     let guard = loop {
-        uvm_fault_wire(map, start, end, access_type)?;
+        uvm_fault_wire(map, start, end, access_type, ru)?;
         match FaultMap::relock(map, mapv) {
             Some(g) => break g,
             None => mapv = FaultMapGuard::version(&FaultMap::lock(map, RwMode::Read)),

@@ -172,6 +172,12 @@ impl ProcGlue for BenchGlue {
     fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
         Ok(())
     }
+    fn pledge_protexec(_p: &Thread<Self>, _prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn textvp_wxallowed(_pr: &kernel::proc::Process<Self>) -> bool {
+        false
+    }
     /// The bench keeps no interval timers: nothing is set, the old value stays zero.
     fn setitimer(
         _which: i32,
@@ -324,6 +330,7 @@ fn main() {
         f: Box::new(prim(|| {
             let mut ie = t.p_spinentry.get();
             let ok = kernel::vm::map::uvm_map_inentry(
+                p,
                 &vm_ref.vm_map,
                 &mut ie,
                 black_box(SP),

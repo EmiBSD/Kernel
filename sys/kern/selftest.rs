@@ -2320,11 +2320,13 @@ fn mpstress_uvm_phase(me: usize, rand: &mut u64) {
         km_free(buf, npages * PAGE_SIZE, &KV_ANY, &KP_PAGEABLE);
         MPSTRESS_STATS[6].fetch_add(npages as u64, Ordering::Relaxed);
 
-        // The thread's slice of the shared anonymous map.
+        // The thread's slice of the shared anonymous map; the faults count on this kernel
+        // thread's p_ru (the C's curproc).
+        let ru = crate::machine::cpu::curproc().map(|p| &p.p_ru);
         let mut pas = [None; MPSTRESS_UVM_PAGES];
         for (i, slot) in pas.iter_mut().enumerate() {
             let va = slice + i * PAGE_SIZE;
-            if uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ | PROT_WRITE).is_err() {
+            if uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ | PROT_WRITE, ru).is_err() {
                 mpstress_fail(9);
                 continue;
             }
@@ -2335,7 +2337,7 @@ fn mpstress_uvm_phase(me: usize, rand: &mut u64) {
         }
         for (i, pa) in pas.iter().enumerate() {
             let va = slice + i * PAGE_SIZE;
-            if uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ).is_err() {
+            if uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ, ru).is_err() {
                 mpstress_fail(9);
                 continue;
             }

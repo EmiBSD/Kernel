@@ -639,6 +639,18 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// Whether a vnode file's vnode was revoked (its operations are deadfs's:
     /// `kqueue_scan`'s `vp->v_op == &dead_vops`); `false` for any other object.
     fn vnode_revoked(d: &Self::Data) -> bool;
+    /// The vnode a `DTYPE_VNODE` file's object is (`(struct vnode *)fp->f_data`), as the
+    /// pager and `mmap(2)` see it (`VnodeOps`, `bsd`'s vnodes until N5); `None` for another
+    /// object.
+    fn vnode_ops(d: &Self::Data) -> Option<&'static dyn crate::vm::vnode::VnodeOps>;
+    /// The pipe a `DTYPE_PIPE` file's object holds (`fp->f_data`, the pipe the file reads
+    /// and whose peer it writes), for the pipe's filters (`kernel::pipe`'s `filt_pipe*`);
+    /// `None` for another object.
+    fn pipe_of(d: &Self::Data) -> Option<&crate::pipe::PipeEnd<Self::Proc>>;
+    /// `pipeops` and the object of a new pipe file (`dopipe`'s `f_ops` and `f_data`): the
+    /// object holds `end`, the file's pipe, which goes with the file's last reference
+    /// (`pipe_close`'s `pipe_destroy`).
+    fn pipe_file(end: crate::pipe::PipeEnd<Self::Proc>) -> (&'static Self::Ops, Self::Data);
     /// `ptsignal(p, SIGPIPE, STHREAD)`.
     fn sigpipe(p: &Thread<Self::Proc>);
     /// `pledge_fcntl(p, cmd)`.

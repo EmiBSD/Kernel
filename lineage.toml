@@ -5765,7 +5765,7 @@ notes = "N4.3: read/write/ioctl/utrace bodies moved into sys/kernel/descrip.rs a
 rust = "sys/kern/pipe_glue.rs"
 lz = ["sys/kern/sys_pipe.rs"]
 status = "redesigned"
-notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue"
+notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue (N4.4: the klist, N4.5b: the sigio left; N5.0: the clock, the filterops and their filt_pipe* functions are the kernel's, BsdPipeGlue gone, BsdFileGlue::pipe_of answers a pipe file's end; dopipe is kernel::pipe::Pipes::dopipe over the kernel's descriptors, BsdFiles/PipeFile go, BsdFileGlue::pipe_file gives PIPEOPS and BsdFileData::Pipe(end), pipe_stat reads f_cred)"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::fp_pipe"
@@ -5790,8 +5790,8 @@ kind = "split"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::dopipe"
-native = ["dopipe", "sys/kernel/pipe.rs::Pipes::dopipe"]
-kind = "split"
+native = ["sys/kernel/pipe.rs::Pipes::dopipe"]
+kind = "moved"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::pipe_read"
@@ -5824,36 +5824,6 @@ native = ["pipe_kqfilter", "sys/kernel/pipe.rs::PipePair::kqfilter"]
 kind = "split"
 
 [[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipedetach"
-native = ["filt_pipedetach", "sys/kernel/pipe.rs::PipePair::detach"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_piperead"
-native = ["filt_piperead", "sys/kernel/pipe.rs::PipePair::filter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipewrite"
-native = ["filt_pipewrite", "sys/kernel/pipe.rs::PipePair::filter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipeexcept"
-native = ["filt_pipeexcept", "sys/kernel/pipe.rs::PipePair::filter"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipemodify"
-native = ["filt_pipemodify", "sys/kernel/pipe.rs::PipePair::with_lock"]
-kind = "split"
-
-[[module.fn]]
-lz = "sys/kern/sys_pipe.rs::filt_pipeprocess"
-native = ["filt_pipeprocess", "sys/kernel/pipe.rs::PipePair::with_lock"]
-kind = "split"
-
-[[module.fn]]
 lz = "sys/kern/sys_pipe.rs::pipe_init"
 native = ["pipe_init", "sys/kernel/pipe.rs::Pipes::init"]
 kind = "split"
@@ -5862,7 +5832,7 @@ kind = "split"
 rust = "sys/kern/vm_bsd.rs"
 lz = ["sys/uvm/uvm_mmap.rs", "sys/uvm/uvm_unix.rs", "sys/uvm/uvm_glue.rs", "sys/uvm/uvm_meter.rs", "sys/uvm/uvm_init.rs", "sys/uvm/uvm_page.rs", "sys/uvm/uvm_vnode.rs", "sys/uvm/uvm_km.rs"]
 status = "redesigned"
-notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd's only file of the subsystem (forbid, 0 unsafe): BsdVmProc (VmProc over curproc) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp as UvmexpCopy::to_ne_bytes, nkmempages, averunnable, allproc), registered by uvm_init; the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (VM_ENTRIES = KernelApi::vm, mi_syscall on the same row); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits, uvmspace_exec's install of a new vmspace, fork1's share-or-copy, the u-area with the legacy pointer, uvm_sysctl with sysctl(2)'s arguments, VmUio (a uio as UioMove for uvm_io); from sys/uvm/uvm_page.rs: the segment policy and uvm_page_physload's lines, uvm_page_init with BsdBufCacheStats, uvm_pagealloc with (obj, anon), uvm_pagealloc_multi, uvm_shutdown, paddr_is_dma_reachable, uvm_page_physdump, uvm_pmr_print; from sys/uvm/uvm_vnode.rs: impl VnodeOps for Vnode, BsdSysInfo, uvn_attach and the uvm_vnp_* wrappers; from sys/uvm/uvm_km.rs: kp_dma*, km_alloc/km_free with the legacy pointer, vm_min_kernel_address; host tests: the km wrappers, a pinsyscalls table honoured by pin_check, CTL_VM through the kernel"
+notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd's only file of the subsystem (forbid, 0 unsafe): BsdVmProc (VmProc over curproc) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp as UvmexpCopy::to_ne_bytes, nkmempages, averunnable, allproc), registered by uvm_init; the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (VM_ENTRIES = KernelApi::vm, mi_syscall on the same row); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits, uvmspace_exec's install of a new vmspace, fork1's share-or-copy, the u-area with the legacy pointer, uvm_sysctl with sysctl(2)'s arguments, VmUio (a uio as UioMove for uvm_io); from sys/uvm/uvm_page.rs: the segment policy and uvm_page_physload's lines, uvm_page_init with BsdBufCacheStats, uvm_pagealloc with (obj, anon), uvm_pagealloc_multi, uvm_shutdown, paddr_is_dma_reachable, uvm_page_physdump, uvm_pmr_print; from sys/uvm/uvm_vnode.rs: impl VnodeOps for Vnode, BsdSysInfo (gone at N5.0: the pager reads kernel::tc and kernel::reboot), uvn_attach and the uvm_vnp_* wrappers; from sys/uvm/uvm_km.rs: kp_dma*, km_alloc/km_free with the legacy pointer, vm_min_kernel_address; host tests: the km wrappers, a pinsyscalls table honoured by pin_check, CTL_VM through the kernel; N5.0: BsdVmProc gone (the adapters pass the thread to kernel::vm), the three bsd calls on BsdProcGlue (pledge_protexec, textvp_wxallowed) and BsdFileGlue (vnode_ops)"
 
 [[module]]
 rust = "sys/kern/sys_socket.rs"
@@ -9011,7 +8981,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -9067,7 +9037,7 @@ rust = "sys/kernel/clock.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_clock.rs", "sys/sys/time.rs"]
 status = "redesigned"
-notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8). N4.8a (decision 8): the kernel's one struct timespec, timeval and bintime, repr(C) and AbiPod (hal::abi_pod!), the time.h macros as methods (bintimeadd/sub/addfrac, TIMECOUNT_TO_BINTIME, BINTIME_TO_*, TIMESPEC_TO_*, *_TO_NSEC, timerisset/isvalid, ...); kernel::resource::Timeval and kernel::pipe::Timespec re-export them"
+notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8; N5.0: the bridge is gone, nanouptime, getnanouptime, nanotime and nanoboottime are kernel::tc's readers re-exported). N4.8a (decision 8): the kernel's one struct timespec, timeval and bintime, repr(C) and AbiPod (hal::abi_pod!), the time.h macros as methods (bintimeadd/sub/addfrac, TIMECOUNT_TO_BINTIME, BINTIME_TO_*, TIMESPEC_TO_*, *_TO_NSEC, timerisset/isvalid, ...); kernel::resource::Timeval and kernel::pipe::Timespec re-export them"
 
 [[module.fn]]
 lz = "sys/sys/time.rs::Timezone"
@@ -9546,6 +9516,11 @@ reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's deliv
 rust = "sys/kernel/benches/clock.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timecounter readers binuptime, getnanotime, nanouptime and tc_windup; the clock interrupt's dispatch and hardclock as they land) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/benches/pipe.rs"
+crate = "kernel"
+reason = "decision 43: host microbenchmarks of pipe(2) (N5.0: pipe_pair_create and both ends closed, a 512-byte write and read through a pair with and without an EVFILT_READ knote, pipe2(2) and the close of both descriptors) over the doubles, a recycling pool backend and recycling buffer pages (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/futex.rs"
@@ -10877,13 +10852,28 @@ rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]
 status = "redesigned"
-notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy"
+notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy; N5.0: PipeGlue gone, the types generic over ProcGlue, the clock kernel::tc's getnanotime, the three filterops the Filter impls PipeRead/PipeWrite/PipeExcept erased as PipePair::PIPE_*FILTOPS with the C's filt_pipe* functions, finding the pair through FileGlue::pipe_of; PipeFiles gone, sys_pipe/sys_pipe2/dopipe take the thread and run the C's dopipe over kernel::descrip with FileGlue::pipe_file"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::PipePair::default"
 native = []
 kind = "dropped"
 reason = "a pair is built only by Pipes::create (PipePair::new is private and takes its glue, made fallibly); there is no zeroed pair"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_RFILTOPS"
+native = ["PipePair::PIPE_RFILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_WFILTOPS"
+native = ["PipePair::PIPE_WFILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/sys_pipe.rs::PIPE_EFILTOPS"
+native = ["PipePair::PIPE_EFILTOPS"]
+kind = "moved"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::NBIGPIPE"
@@ -11326,7 +11316,7 @@ rust = "sys/kernel/vm/map.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_map.rs", "sys/uvm/uvm_extern.rs", "sys/uvm/uvm.rs", "sys/uvm/uvm_amap.rs", "sys/uvm/uvm_anon.rs", "sys/uvm/uvm_fault.rs"]
 status = "redesigned"
-notes = "N3.5 S1-R1: struct vm_map/vm_map_entry/vmspace in the kernel: entries are PoolBoxes owned by an augmented hal::owned::OwnedTree (or a dead OwnedList), the static entries a StaticArena behind their own BoxPool, vmmpepl/vmmpekpl kept; scalars relaxed atomics written through the split write guard's EntryWrite, the two handles (object, aref) one Guarded<Handles> keyed to the map lock (part 1), the state (tree, selectors, brk/stack) a Guarded<MapState> (part 0) keyed at uvm_map_setup; vm_map_lock & co. as MapGuard/MapWriteGuard/MapBusy values over the rwlock or the INTRSAFE mutex with busy/nbusy under flags_lock and the timestamp; entries named by their start across tree changes; busy walkers under short read locks; VmspaceVars in the map, Vmspace derefs to them, VmspaceRef a PoolArc of vmsppl (vmspace0 too); uvm_map_pageable_locked (UVM_LK_ENTER, consumes) and _keep (ENTER|EXIT); RLIMIT_DATA in uvm_map_protect over VmProc (LZ's unported! closed); impl FaultMap/FaultMapGuard/FaultEntry. Dead until the flip (S2): bsd's sys/uvm keeps every LZ item, so no fn rows yet (S2 lists them)"
+notes = "N3.5 S1-R1: struct vm_map/vm_map_entry/vmspace in the kernel: entries are PoolBoxes owned by an augmented hal::owned::OwnedTree (or a dead OwnedList), the static entries a StaticArena behind their own BoxPool, vmmpepl/vmmpekpl kept; scalars relaxed atomics written through the split write guard's EntryWrite, the two handles (object, aref) one Guarded<Handles> keyed to the map lock (part 1), the state (tree, selectors, brk/stack) a Guarded<MapState> (part 0) keyed at uvm_map_setup; vm_map_lock & co. as MapGuard/MapWriteGuard/MapBusy values over the rwlock or the INTRSAFE mutex with busy/nbusy under flags_lock and the timestamp; entries named by their start across tree changes; busy walkers under short read locks; VmspaceVars in the map, Vmspace derefs to them, VmspaceRef a PoolArc of vmsppl (vmspace0 too); uvm_map_pageable_locked (UVM_LK_ENTER, consumes) and _keep (ENTER|EXIT); RLIMIT_DATA in uvm_map_protect over VmProc (LZ's unported! closed; N5.0: over the thread uvm_map_protect takes, uvm_map_inentry takes the pinned thread it signals, the uvm_map_pageable family the wiring's ru); impl FaultMap/FaultMapGuard/FaultEntry. Dead until the flip (S2): bsd's sys/uvm keeps every LZ item, so no fn rows yet (S2 lists them)"
 [[module.fn]]
 lz = "sys/uvm/uvm_extern.rs::Vmspace::copy_startcopy_from"
 native = ["VmspaceVars::copy_startcopy_from"]
@@ -11545,21 +11535,21 @@ kind = "merged"
 [[extra]]
 rust = "sys/kernel/vm/proc.rs"
 crate = "kernel"
-reason = "N3.5 S1: the VmProc bridge (bridges.toml), curproc as uvm asks about it until Proc moves (N4): the trait, its registered slot and the RLIMIT_*/LOG_NOTICE/BOGO_PC numbers; no LZ source (LZ's uvm files read struct proc directly)"
+reason = "N3.5 S1: the VmProc bridge (bridges.toml), curproc as uvm asks about it until Proc moves (N4): the trait, its registered slot and the RLIMIT_*/LOG_NOTICE/BOGO_PC numbers; no LZ source (LZ's uvm files read struct proc directly). N5.0: the bridge, its slot and vmproc() are gone (the vm entry points take the thread, the fault the counters' record): the numbers and KbindSlot (sys_kbind's view of ps_kbind_addr/cookie under ps_mtx) remain"
 
 [[module]]
 rust = "sys/kernel/vm/mmap.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_mmap.rs"]
 status = "redesigned"
-notes = "N3.5 S1 (live since the flip, S2): the 14 mmap system calls and kbind as functions of &Vmspace and typed arguments (MmapArgs), every check the C's, curproc's facts through VmProc (pledge_protexec, the W^X exemption, ps_wxcounter and log, sigexit, lim_cur, P_HASSIBLING, with_fd_vnode for the file half under the kernel lock, with_kbind under ps_mtx, pin_table_set with an MArray<u32>), the vnode's v_type/iszerodev/va_flags through VnodeOps; kbind writes through km's KernelWindow (minted from uvm_map_extract's result); uvm_mmaplock hands its write guard to uvm_map_pageable_locked; the checks split into table-tested helpers (mmap_check_flags, mmap_check_fixed, mmap_maxprot, pins_count/pins_check, kbind_blocks, kbind_check, wire_limits_ok); UVM_WXABORT the kern.wxabort atomic; udv_attach kept unported"
+notes = "N3.5 S1 (live since the flip, S2): the 14 mmap system calls and kbind as functions of &Vmspace and typed arguments (MmapArgs), every check the C's (N5.0: the thread passed, sys_*<G: ProcGlue>(p, vm, ..), its fields read in place, pledge_protexec/textvp_wxallowed on ProcGlue, the vnode on FileGlue::vnode_ops; before:), curproc's facts through VmProc (pledge_protexec, the W^X exemption, ps_wxcounter and log, sigexit, lim_cur, P_HASSIBLING, with_fd_vnode for the file half under the kernel lock, with_kbind under ps_mtx, pin_table_set with an MArray<u32>), the vnode's v_type/iszerodev/va_flags through VnodeOps; kbind writes through km's KernelWindow (minted from uvm_map_extract's result); uvm_mmaplock hands its write guard to uvm_map_pageable_locked; the checks split into table-tested helpers (mmap_check_flags, mmap_check_fixed, mmap_maxprot, pins_count/pins_check, kbind_blocks, kbind_check, wire_limits_ok); UVM_WXABORT the kern.wxabort atomic; udv_attach kept unported"
 
 [[module]]
 rust = "sys/kernel/vm/unix.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_unix.rs"]
 status = "redesigned"
-notes = "N3.5 S1 (live since the flip, S2): sys_obreak(vm, nsize) and uvm_grow(vm, sp) over the vmspace's atomics and VmProc's limits; the core dump walk with &mut dyn FnMut callbacks over CoredumpSeg, each entry copied out (Seg) under a short read lock before any callback runs (the C walks unlocked)"
+notes = "N3.5 S1 (live since the flip, S2): sys_obreak(vm, nsize) and uvm_grow(vm, sp) over the vmspace's atomics and VmProc's limits; the core dump walk with &mut dyn FnMut callbacks over CoredumpSeg, each entry copied out (Seg) under a short read lock before any callback runs (the C walks unlocked); N5.0: sys_obreak, uvm_grow and uvm_coredump_walkmap take the thread (its limits, ps_sigcode, ps_timekeep, uprintf to its terminal), the VmProc bridge gone"
 [[module.fn]]
 lz = "sys/uvm/uvm_unix.rs::noop"
 native = []
@@ -11843,11 +11833,11 @@ kind = "dropped"
 reason = "the page array is PageSlot (Empty, DontCare, Page): a match"
 [[module.fn]]
 lz = "sys/uvm/uvm_fault.rs::ru_minflt_inc"
-native = ["sys/kernel/vm/map.rs::VmMap::note_minflt"]
+native = ["FaultInfo::minflt"]
 kind = "renamed"
 [[module.fn]]
 lz = "sys/uvm/uvm_fault.rs::ru_majflt_inc"
-native = ["sys/kernel/vm/map.rs::VmMap::note_majflt"]
+native = ["FaultInfo::majflt"]
 kind = "renamed"
 
 [[module]]
@@ -12147,7 +12137,7 @@ rust = "sys/kernel/vm/vnode.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_vnode.rs"]
 status = "redesigned"
-notes = "N3.4c: struct uvm_vnode as Uvn, a PoolArc of uvmvnodes leaked once made (PoolArc::leak: never freed, the vnode keeps it as the C), ObjRef::Vnode; the vnode a &'static dyn VnodeOps (bsd's Vnode at the flip, bridges.toml VnodeOps), uvn_io composed from one-call methods with the KernelLock, NetLock and SysInfo bridges; u_flags/u_nio/u_size relaxed atomics whose setters assert the lock; uvn_wlist a hal List under the kernel lock, uvn_sync_q inside the Rwlocked uvnsync; uvn_get split into uvn_get_locked and uvn_get_sync; the pager window a PagerWindow; ratecheck's lasttime in a Mutexed (IPL_HIGH). Live since the flip (N3.4e, one commit with the fault): bsd keeps 0-unsafe adapters (uvm_anon VmAref, uvm_amap amap_copy's map half, uvm_vnode VnodeOps, uvm_fault FaultMap) and re-exports kernel::vm::{object, aobj, pager} under their uvm_* paths"
+notes = "N3.4c: struct uvm_vnode as Uvn, a PoolArc of uvmvnodes leaked once made (PoolArc::leak: never freed, the vnode keeps it as the C), ObjRef::Vnode; the vnode a &'static dyn VnodeOps (bsd's Vnode at the flip, bridges.toml VnodeOps), uvn_io composed from one-call methods with the KernelLock, NetLock and SysInfo bridges (N5.0: SysInfo gone, the clock is kernel::tc's getmicrouptime and rebooting/&rebooting kernel::reboot's); u_flags/u_nio/u_size relaxed atomics whose setters assert the lock; uvn_wlist a hal List under the kernel lock, uvn_sync_q inside the Rwlocked uvnsync; uvn_get split into uvn_get_locked and uvn_get_sync; the pager window a PagerWindow; ratecheck's lasttime in a Mutexed (IPL_HIGH). Live since the flip (N3.4e, one commit with the fault): bsd keeps 0-unsafe adapters (uvm_anon VmAref, uvm_amap amap_copy's map half, uvm_vnode VnodeOps, uvm_fault FaultMap) and re-exports kernel::vm::{object, aobj, pager} under their uvm_* paths"
 [[module.fn]]
 lz = "sys/uvm/uvm_vnode.rs::UvmVnode"
 native = ["Uvn"]

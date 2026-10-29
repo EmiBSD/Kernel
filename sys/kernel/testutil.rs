@@ -51,17 +51,19 @@
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
 //! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
 //! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
-//! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
-//!   timecounter), and [`uptime_advance`].
+//! - The clocks are not a double since N5.0: `kernel::tc`'s readers on its dummy counter (a
+//!   microsecond more per read at its nominal 1 MHz), whose timehands nothing winds up but a
+//!   test that calls `tc::tc_ticktock` (the coarse clocks stay where they are).
 //! - `thread`'s operations: a host thread holding the kernel lock double from its start; a
 //!   deferred creation runs at once in this crate's own tests and is held everywhere else
 //!   (`bsd`'s host tests, the benches), as LZ's host tests never ran `main`'s
 //!   `kthread_run_deferred_queue`: those tests drive a queue's workers by hand, and a worker
 //!   thread would race them; `kthread_exit` unwinds the thread, which its spawner catches.
-//! - `vm::vnode`'s `SysInfo`: the host's monotonic clock from one second at the first call,
-//!   never rebooting.
-//! - `vm::proc`'s `VmProc`: each test thread a process, whose answers and records are a
-//!   per-thread [`VmProcState`] ([`vmproc_with`]); `sigexit` panics with its signal.
+
+//! - The `ProcGlue` members of `vm` (N5.0: the `VmProc` double is gone; the vm calls take a
+//!   real thread): `pledge_protexec` and `textvp_wxallowed` answer per test thread
+//!   ([`set_pledge_protexec`], [`set_textvp_wxallowed`]); a vnode file's vnode is
+//!   [`TestFileData`]'s `vnode`.
 //! - `vm::vnode`'s `VnodeOps`, not a slot: [`MemVnode`], a vnode whose file is a `Vec` in
 //!   memory ([`mem_vnode`] leaks one), which records what it saw during its last read.
 //! - `vm::km`'s maps, not a double: [`kernel_maps_install`] sets up the kernel's own
@@ -105,7 +107,7 @@ use crate::vm::page::{
     uvm_setpagesize,
 };
 use crate::vm::types::{UvmConstraintRange, Voff};
-use crate::vm::vnode::{SysInfo, Uvn, VnodeOps};
+use crate::vm::vnode::{Uvn, VnodeOps};
 
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
@@ -135,6 +137,8 @@ std::thread_local! {
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     static TTY_VNODE: Cell<bool> = const { Cell::new(false) };
+    static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
+    static TEXTVP_WXALLOWED: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
@@ -444,68 +448,6 @@ pub fn net_lock_held() -> bool {
 
 static TEST_NET_LOCK: TestNetLock = TestNetLock;
 
-/// The clock and shutdown double of `vm::vnode`.
-struct TestSysInfo;
-
-/// When the clock double started.
-static CLOCK_START: OnceLock<Instant> = OnceLock::new();
-
-/// `rebooting`'s wait channel in the double.
-static REBOOTING_CHAN: u8 = 0;
-
-impl SysInfo for TestSysInfo {
-    fn uptime(&self) -> (i64, i64) {
-        let t = CLOCK_START.get_or_init(Instant::now).elapsed() + Duration::from_secs(1);
-        (t.as_secs() as i64, i64::from(t.subsec_micros()))
-    }
-
-    fn rebooting(&self) -> bool {
-        false
-    }
-
-    fn rebooting_chan(&self) -> *const () {
-        std::ptr::from_ref(&REBOOTING_CHAN).cast()
-    }
-}
-
-static TEST_SYS_INFO: TestSysInfo = TestSysInfo;
-
-/// The uptime double: a clock in nanoseconds that advances a microsecond per read (as LZ's
-/// dummy timecounter did for the wheel's tests), and by [`uptime_advance`].
-struct TestUptime;
-
-/// The double's uptime, in nanoseconds, from one second.
-static UPTIME_NS: AtomicU64 = AtomicU64::new(1_000_000_000);
-
-/// The double's time of day at its uptime 0 (2026-10-22).
-const BOOTTIME_SEC: i64 = 1_792_627_200;
-
-impl crate::clock::Uptime for TestUptime {
-    fn nanouptime(&self) -> crate::clock::Timespec {
-        crate::clock::Timespec::from_nsec(UPTIME_NS.fetch_add(1_000, Ordering::Relaxed))
-    }
-
-    fn getnanouptime(&self) -> crate::clock::Timespec {
-        crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed))
-    }
-
-    fn nanotime(&self) -> crate::clock::Timespec {
-        let up = crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed));
-        up.add(crate::clock::Timespec::new(BOOTTIME_SEC, 0))
-    }
-
-    fn nanoboottime(&self) -> crate::clock::Timespec {
-        crate::clock::Timespec::new(BOOTTIME_SEC, 0)
-    }
-}
-
-static TEST_UPTIME: TestUptime = TestUptime;
-
-/// Moves the uptime double forward by `ns`.
-pub fn uptime_advance(ns: u64) {
-    UPTIME_NS.fetch_add(ns, Ordering::Relaxed);
-}
-
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
 /// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
@@ -809,10 +751,10 @@ pub fn install() {
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
-        let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
-        let _ = crate::vm::proc::install(&TEST_VM_PROC);
 
-        let _ = crate::clock::install_uptime(&TEST_UPTIME);
+        // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per
+        // read at its nominal 1 MHz, warmed up as initclocks does.
+        crate::tc::inittimecounter();
         crate::thread::install_test_ops(crate::thread::Ops {
             create: TestKthread::create,
             exit: TestKthread::exit,
@@ -1096,205 +1038,6 @@ pub fn pages_install(bytes: usize) -> MutexGuard<'static, ()> {
     pages_setup(&[(start, end)], &[])
 }
 
-/// `RLIM_INFINITY`: what the `VmProc` double answers for a limit a test did not set.
-pub const RLIM_INFINITY: u64 = (1 << 63) - 1;
-
-/// What the `VmProc` double answers and records for the calling test thread (each test
-/// thread a process): set it up with [`vmproc_with`].
-#[derive(Default)]
-pub struct VmProcState {
-    /// `pledge_protexec` fails with `EPERM` for a `PROT_EXEC` request.
-    pub pledge_denies_exec: bool,
-    /// `uvm_wxcheck`'s exemption.
-    pub wx_allowed: bool,
-    /// `ps_wxcounter`.
-    pub wxcounter: u32,
-    /// `ps_pid`.
-    pub pid: i32,
-    /// `p_tid`.
-    pub tid: i32,
-    /// `ps_comm`.
-    pub comm: Vec<u8>,
-    /// `PROC_PC(p)`.
-    pub pc: usize,
-    /// `ps_acflag & AMAP`.
-    pub acflag_amap: bool,
-    /// `lim_cur(which)` by `which`; a missing one is [`RLIM_INFINITY`].
-    pub limits: BTreeMap<i32, u64>,
-    /// `P_HASSIBLING(p)`.
-    pub sibling: bool,
-    /// `ps_strings`.
-    pub ps_strings: usize,
-    /// `ps_sigcode`.
-    pub ps_sigcode: usize,
-    /// `ps_timekeep`.
-    pub ps_timekeep: usize,
-    /// The descriptors: number, vnode (`None`: not `DTYPE_VNODE`), `f_flag`.
-    pub files: Vec<(i32, Option<&'static dyn VnodeOps>, u32)>,
-    /// `ps_kbind_addr`/`ps_kbind_cookie`.
-    pub kbind: crate::vm::proc::KbindSlot,
-    /// `ps_libcpin` as `pin_table_set` left it: start, end, the table.
-    pub libcpin: Option<(usize, usize, Vec<u32>)>,
-    /// `ru_minflt`.
-    pub minflt: u64,
-    /// `ru_majflt`.
-    pub majflt: u64,
-    /// `ru_maxrss`.
-    pub maxrss: usize,
-    /// The pcs `trapsignal_segv` was given.
-    pub segv: Vec<usize>,
-    /// The `log` lines, with their level.
-    pub logs: Vec<(i32, String)>,
-    /// The `uprintf` lines.
-    pub uprintfs: Vec<String>,
-}
-
-std::thread_local! {
-    static VM_PROC_STATE: RefCell<VmProcState> = RefCell::new(VmProcState::default());
-}
-
-/// `f` on the calling thread's [`VmProcState`] (registers the double first).
-pub fn vmproc_with<R>(f: impl FnOnce(&mut VmProcState) -> R) -> R {
-    install();
-    VM_PROC_STATE.with(|s| f(&mut s.borrow_mut()))
-}
-
-/// The `VmProc` double: answers from the calling thread's [`VmProcState`]; `sigexit` panics
-/// with the signal's number (`sigexit(N)`), as nothing returns from it.
-struct TestVmProc;
-
-impl crate::vm::proc::VmProc for TestVmProc {
-    fn pledge_protexec(&self, prot: crate::vm::types::VmProt) -> Result<(), Errno> {
-        let denied = VM_PROC_STATE.with(|s| s.borrow().pledge_denies_exec);
-        if denied && prot & hal::sys::mman::PROT_EXEC != 0 {
-            return Err(Errno::EPERM);
-        }
-        Ok(())
-    }
-
-    fn wx_allowed(&self) -> bool {
-        VM_PROC_STATE.with(|s| s.borrow().wx_allowed)
-    }
-
-    fn wxcounter_inc(&self) -> u32 {
-        VM_PROC_STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            let n = s.wxcounter;
-            s.wxcounter = n + 1;
-            n
-        })
-    }
-
-    fn sigexit(&self, sig: i32) -> ! {
-        crate::assert::kpanic(format_args!("sigexit({sig})"))
-    }
-
-    fn trapsignal_segv(&self, pc: usize) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().segv.push(pc));
-    }
-
-    fn pid(&self) -> i32 {
-        VM_PROC_STATE.with(|s| s.borrow().pid)
-    }
-
-    fn tid(&self) -> i32 {
-        VM_PROC_STATE.with(|s| s.borrow().tid)
-    }
-
-    fn comm(&self, out: &mut [u8]) -> usize {
-        VM_PROC_STATE.with(|s| {
-            let s = s.borrow();
-            let n = s.comm.len().min(out.len());
-            out[..n].copy_from_slice(&s.comm[..n]);
-            n
-        })
-    }
-
-    fn pc(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().pc)
-    }
-
-    fn set_acflag_amap(&self) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().acflag_amap = true);
-    }
-
-    fn lim_cur(&self, which: i32) -> u64 {
-        VM_PROC_STATE
-            .with(|s| s.borrow().limits.get(&which).copied())
-            .unwrap_or(RLIM_INFINITY)
-    }
-
-    fn has_sibling(&self) -> bool {
-        VM_PROC_STATE.with(|s| s.borrow().sibling)
-    }
-
-    fn ps_strings(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().ps_strings)
-    }
-
-    fn ps_sigcode(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().ps_sigcode)
-    }
-
-    fn ps_timekeep(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().ps_timekeep)
-    }
-
-    fn with_fd_vnode(
-        &self,
-        fd: i32,
-        f: &mut dyn FnMut(Option<&'static dyn VnodeOps>, u32) -> Result<(), Errno>,
-    ) -> Result<(), Errno> {
-        let file = VM_PROC_STATE.with(|s| {
-            s.borrow()
-                .files
-                .iter()
-                .find(|(n, _, _)| *n == fd)
-                .map(|&(_, vp, flag)| (vp, flag))
-        });
-        let (vp, flag) = file.ok_or(Errno::EBADF)?;
-        f(vp, flag)
-    }
-
-    fn with_kbind(&self, f: &mut dyn FnMut(&mut crate::vm::proc::KbindSlot)) {
-        let mut slot = VM_PROC_STATE.with(|s| s.borrow().kbind);
-        f(&mut slot);
-        VM_PROC_STATE.with(|s| s.borrow_mut().kbind = slot);
-    }
-
-    fn pin_table_set(&self, base: usize, end: usize, pins: hal::malloc::MArray<u32>) {
-        let table = pins.to_vec();
-        VM_PROC_STATE.with(|s| s.borrow_mut().libcpin = Some((base, end, table)));
-    }
-
-    fn ru_minflt_inc(&self) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().minflt += 1);
-    }
-
-    fn ru_majflt_inc(&self) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().majflt += 1);
-    }
-
-    fn ru_maxrss(&self, kb: usize) {
-        VM_PROC_STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            s.maxrss = s.maxrss.max(kb);
-        });
-    }
-
-    fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
-        let line = std::format!("{args}");
-        VM_PROC_STATE.with(|s| s.borrow_mut().logs.push((level, line)));
-    }
-
-    fn uprintf(&self, args: core::fmt::Arguments<'_>) {
-        let line = std::format!("{args}");
-        VM_PROC_STATE.with(|s| s.borrow_mut().uprintfs.push(line));
-    }
-}
-
-static TEST_VM_PROC: TestVmProc = TestVmProc;
-
 /// The machine's constants of `vm::init` for the host tests: amd64's numbers, no DMA
 /// constraint.
 static TEST_VM_MACHINE: crate::vm::init::VmMachine = crate::vm::init::VmMachine {
@@ -1319,6 +1062,10 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     pub revoked: core::sync::atomic::AtomicBool,
     /// A kqueue file's kqueue.
     pub kq: Option<crate::event::KqRef<P>>,
+    /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
+    pub vnode: Option<&'static dyn VnodeOps>,
+    /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
+    pub pipe: Option<crate::pipe::PipeEnd<P>>,
 }
 
 impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
@@ -1329,6 +1076,8 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
             dns: false,
             revoked: core::sync::atomic::AtomicBool::new(false),
             kq: None,
+            vnode: None,
+            pipe: None,
         }
     }
 }
@@ -1399,6 +1148,32 @@ pub fn tty_vnode() -> bool {
 /// Makes this thread's test glues answer `on` for every session's terminal vnode.
 pub fn set_tty_vnode(on: bool) {
     TTY_VNODE.with(|c| c.set(on));
+}
+
+/// What this thread's test glues' `pledge_protexec` answers: `EPERM` for a `PROT_EXEC`
+/// request once [`set_pledge_protexec`] made the thread pledged without `prot_exec` (and past
+/// its first `kbind(2)`), `Ok` otherwise.
+pub fn pledge_protexec_answer(prot: crate::vm::types::VmProt) -> Result<(), Errno> {
+    if PLEDGE_PROTEXEC_DENIED.with(Cell::get) && prot & hal::sys::mman::PROT_EXEC != 0 {
+        return Err(Errno::EPERM);
+    }
+    Ok(())
+}
+
+/// Makes this thread's test glues refuse `PROT_EXEC` (`denied`) or allow it.
+pub fn set_pledge_protexec(denied: bool) {
+    PLEDGE_PROTEXEC_DENIED.with(|c| c.set(denied));
+}
+
+/// What this thread's test glues' `textvp_wxallowed` answers (`false` until
+/// [`set_textvp_wxallowed`]).
+pub fn textvp_wxallowed() -> bool {
+    TEXTVP_WXALLOWED.with(Cell::get)
+}
+
+/// Makes this thread's test glues answer `on` for the text vnode's `MNT_WXALLOWED`.
+pub fn set_textvp_wxallowed(on: bool) {
+    TEXTVP_WXALLOWED.with(|c| c.set(on));
 }
 
 /// Records a test glue's hook call.
@@ -1502,6 +1277,79 @@ macro_rules! test_file_glue {
 
         static TEST_KQUEUE_OPS: TestKqueueOps = TestKqueueOps;
 
+        /// The operations of a test glue's pipe file (`pipeops`): `kqfilter` is the C's
+        /// `pipe_kqfilter` over the kernel pair (the filter by `EVFILT_*`, `__EV_SELECT` and
+        /// `__EV_POLL` passed); the tests move the bytes through the pair itself.
+        pub struct TestPipeOps;
+
+        impl $crate::file::FileOps<$name> for TestPipeOps {
+            fn read(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _fflags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Err(hal::sys::errno::Errno::ENODEV)
+            }
+            fn write(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _fflags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Err(hal::sys::errno::Errno::ENODEV)
+            }
+            fn ioctl(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _com: u64,
+                _data: &mut [u8],
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Err(hal::sys::errno::Errno::ENOTTY)
+            }
+            fn kqfilter(
+                &self,
+                fp: &$crate::file::File<$name>,
+                kn: &$crate::event::Knote<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                let Some(end) = fp.data().and_then(|d| d.pipe.as_ref()) else {
+                    return Err(hal::sys::errno::Errno::EBADF);
+                };
+                let filter = match kn.kn_filter().get() {
+                    $crate::event::EVFILT_READ => Some($crate::pipe::PipeFilter::Read),
+                    $crate::event::EVFILT_WRITE => Some($crate::pipe::PipeFilter::Write),
+                    $crate::event::EVFILT_EXCEPT => Some($crate::pipe::PipeFilter::Except),
+                    _ => None,
+                };
+                end.pair().kqfilter(
+                    end.dir(),
+                    filter,
+                    kn.has_flags($crate::event::__EV_SELECT),
+                    kn.has_flags($crate::event::__EV_POLL),
+                    kn,
+                )
+            }
+            fn stat(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _st: &mut $crate::testutil::TestStat,
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            /// The end is the file's object, dropped with the file's item (`pipe_destroy`).
+            fn close(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _p: Option<&$crate::proc::Thread<$proc>>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+        }
+
+        static TEST_PIPE_OPS: TestPipeOps = TestPipeOps;
+
         impl $crate::file::FileGlue for $name {
             type Proc = $proc;
             type Ops = dyn $crate::file::FileOps<$name>;
@@ -1583,6 +1431,22 @@ macro_rules! test_file_glue {
             }
             fn vnode_revoked(d: &Self::Data) -> bool {
                 d.revoked.load(core::sync::atomic::Ordering::Relaxed)
+            }
+            fn vnode_ops(d: &Self::Data) -> Option<&'static dyn $crate::vm::vnode::VnodeOps> {
+                d.vnode
+            }
+            fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
+                d.pipe.as_ref()
+            }
+            fn pipe_file(end: $crate::pipe::PipeEnd<$proc>) -> (&'static Self::Ops, Self::Data) {
+                (
+                    &TEST_PIPE_OPS,
+                    $crate::testutil::TestFileData {
+                        id: end.pair().kinfo(end.dir()).addr,
+                        pipe: Some(end),
+                        ..$crate::testutil::TestFileData::default()
+                    },
+                )
             }
             fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
                 $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));
@@ -1697,6 +1561,15 @@ macro_rules! test_proc_glue {
                 _delta: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
+            }
+            fn pledge_protexec(
+                _p: &$crate::proc::Thread<Self>,
+                prot: $crate::vm::types::VmProt,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_protexec_answer(prot)
+            }
+            fn textvp_wxallowed(_pr: &$crate::proc::Process<Self>) -> bool {
+                $crate::testutil::textvp_wxallowed()
             }
             /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
             fn setitimer(

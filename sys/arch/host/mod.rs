@@ -602,16 +602,15 @@ impl Pmap for Machine {
             });
             #[cfg(test)]
             {
-                // bsd's own kernel lock, net lock and clock first (the bridges uvm_init
-                // registers on a boot): the legacy code that takes the kernel lock is what the
-                // kernel's objects and vnode pager assert, not the doubles' count. The order
-                // is the point: a slot keeps its first registration, `install` below skips the
-                // three it finds taken, and this runs once per process inside every test's
+                // bsd's own kernel lock and net lock first (the bridges uvm_init registers on
+                // a boot): the legacy code that takes the kernel lock is what the kernel's
+                // objects and vnode pager assert, not the doubles' count. The order is the
+                // point: a slot keeps its first registration, `install` below skips the ones
+                // it finds taken, and this runs once per process inside every test's
                 // `setup_real_memory` (`uvm_page_init`), before any other caller of
                 // `kernel::testutil::install` in this binary (`pipe_glue`'s tests reach it
                 // through `kern_event::tests::setup`, which sets up the memory first).
                 crate::kern::hal_bridges::hal_bridges_register_vm();
-                crate::kern::vm_bsd::uvn_install_sysinfo();
                 kernel::testutil::install();
                 hal::pmap::init();
             }

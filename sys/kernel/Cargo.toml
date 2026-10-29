@@ -97,5 +97,15 @@ path = "benches/clock.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of pipe(2) (N5.0, decision 43; benches/pipe.rs): a pair made and
+# closed, a 512-byte write and read with and without a knote, pipe2(2) and two closes, over
+# the doubles, never a kernel image: `cargo bench -p kernel --features doubles --bench pipe
+# [--profile dev]`.
+[[bench]]
+name = "pipe"
+path = "benches/pipe.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

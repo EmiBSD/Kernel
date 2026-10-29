@@ -80,11 +80,13 @@
 //! `cpipe`: the I/O lock (`pipeiolk`), the reader (`piperd`), the writer (`pipewr`), all
 //! `PRIBIO | PCATCH`, and `pipe_destroy`'s rundown (`pipecl`, `PRIBIO`).
 //!
-//! The kernel holds every decision here; what is still `bsd`'s (the file, the descriptor
-//! table, the filterops' file lookup, the `uio`) is reached through three traits that
-//! `bsd`'s glue implements (`sys/kern/pipe_glue.rs`, `bridges.toml`): [`PipeGlue`] (the
-//! clock, the filterops), [`UioMove`] (the copy) and [`PipeFiles`] (`dopipe`'s descriptor
-//! work). A pipe's `SIGIO` registration is [`crate::sigio`]'s (N4.5b).
+//! The kernel holds every decision here; what is still `bsd`'s (the file's operations and
+//! object, the `uio`) is reached through the file glue (`FileGlue::pipe_file`, the
+//! operations and object of a new pipe file; `FileGlue::pipe_of`, a pipe file's pipe) and
+//! [`UioMove`] (the copy), which `bsd`'s glue implements (`sys/kern/pipe_glue.rs`,
+//! `bridges.toml`). `dopipe` is this module's over the kernel's descriptor table
+//! (`kernel::descrip`, N5.0). A pipe's `SIGIO` registration is [`crate::sigio`]'s (N4.5b),
+//! its clock `kernel::tc`'s `getnanotime` and its three filters this module's (N5.0).
 //!
 //! ## Deviations
 //! - A pair is allocated with `PR_WAITOK`, and `hal`'s pool answers `None` only where
@@ -121,17 +123,28 @@
 //! - The buffer is a [`KmBuf`] moved out of the lock while `uiomove` runs and put back before
 //!   anything else (decision 11), so the three `unsafe` slices of LZ are safe slices; only
 //!   the holder of `PIPE_LOCK` takes it.
-//! - The kernel names nothing of `bsd`: the pair is generic over the glue type, `G:
-//!   PipeGlue`, which `bsd` instantiates once (`Pipes<BsdPipeGlue>`); the klist is the
-//!   kernel's (`Klist<G::Proc>`, by value in each pipe, since N4.4) and so is the sigio
-//!   registration (`SigioRef`, one word in each pipe, since N4.5b). The ioctl commands and the
-//!   kqueue filters arrive as [`PipeIoctl`] and [`PipeFilter`], translated by the glue from
-//!   `bsd`'s numbers; `pipe_stat` returns a [`PipeStat`] and `kern_sysctl`'s fill a
-//!   [`PipeKinfo`], which the glue writes into `bsd`'s structures.
+//! - The kernel names nothing of `bsd`: the pair is generic over the process glue, `G:
+//!   ProcGlue`, which `bsd` instantiates once (`Pipes<BsdProcGlue>`); the klist is the
+//!   kernel's (`Klist<G>`, by value in each pipe, since N4.4) and so is the sigio
+//!   registration (`SigioRef`, one word in each pipe, since N4.5b). N5.0: the `PipeGlue`
+//!   bridge (its clock and the three filterops) is gone: the clock is `kernel::tc`'s
+//!   `getnanotime`, and `struct filterops`' three tables are the [`Filter`] impls
+//!   [`PipeRead`], [`PipeWrite`] and [`PipeExcept`] (decision 46), erased once as
+//!   `PipePair::PIPE_RFILTOPS`, `PIPE_WFILTOPS`, `PIPE_EFILTOPS` (`Filterops::of`), whose
+//!   functions find the pair through the knote's file and `FileGlue::pipe_of`. The ioctl
+//!   commands and the kqueue filters arrive as [`PipeIoctl`] and [`PipeFilter`], translated by
+//!   the glue from `bsd`'s numbers; `pipe_stat` returns a [`PipeStat`] and `kern_sysctl`'s
+//!   fill a [`PipeKinfo`], which the glue writes into `bsd`'s structures.
 //! - A knote's `kn_hook` is the [`Dir`] of the pipe whose klist holds it, not a pointer.
 //! - `fp_pipe`, `kn_pipe`, `Pipe::lock`, `pipe_peer`'s raw link and the `int` ioctl argument
 //!   helpers have no counterpart: the glue reaches the pair through its file's typed slot,
 //!   the lock is the pair's, the peer is `Dir::other`.
+//! - N5.0: `dopipe` runs here over `kernel::descrip` (`fdplock`, `falloc`, `fdinsert`, the
+//!   `copyout` through `UserPtr`, `fdrelease` of both on a fault, `fdremove`/`closef` and the
+//!   ends dropped on a failed `falloc`, the C's `free3`/`free2`), each file set up with the
+//!   glue's `pipeops` and object (`FileGlue::pipe_file`, which takes the end); the
+//!   `PipeFiles` bridge `bsd` implemented is gone, and so are `pipe_stat`'s copied uid and
+//!   gid (`bsd` reads the file's own `f_cred`).
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -141,6 +154,7 @@ use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
 use hal::sleep::{PCATCH, wakeup};
 use hal::sys::errno::Errno;
+use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::signal::SIGIO;
 use hal::user::UserPtr;
 
@@ -149,8 +163,15 @@ pub use crate::uio::UioMove;
 use crate::assert::{kassert, kpanic};
 /// `struct timespec` as the pipe keeps its times: the kernel's one (`kernel::clock`, N4.8a).
 pub use crate::clock::Timespec;
-use crate::event::{Filterops, Klist, Knote};
-use crate::proc::ProcGlue;
+use crate::descrip::{
+    UF_EXCLOSE, UF_FORKCLOSE, closef, falloc, fdinsert, fdplock, fdrelease, fdremove,
+};
+use crate::event::{
+    __EV_HUP, __EV_POLL, EV_EOF, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist,
+    Knote, knote_modify, knote_process,
+};
+use crate::file::{DTYPE_PIPE, FileGlue};
+use crate::proc::{ProcGlue, Thread};
 use crate::sigio::{SigioRef, pgsigio, sigio_free, sigio_getown, sigio_setown};
 
 /// `PIPE_SIZE`: pipe buffer size, keep moderate in value, pipes take kva space.
@@ -305,7 +326,7 @@ type Guard<'a> = WriteGuard<'a, PairState>;
 
 /// `struct pipe` outside the lock: the words readable without it, its klist and its sigio
 /// registration.
-struct Pipe<G: PipeGlue> {
+struct Pipe<G: ProcGlue> {
     /// `[p]` `pipe_state` (`PIPE_*`): stored only under the pair's write guard; read under
     /// it, and without it only by `kern_sysctl` ([`PipePair::kinfo`]), the C's racy read.
     state: AtomicU32,
@@ -316,12 +337,12 @@ struct Pipe<G: PipeGlue> {
     /// `[p]` `pipe_buffer.size`: the buffer's size, stored only under the guard.
     size: AtomicU32,
     /// `[p]` `pipe_klist`: the knotes on this pipe, an `Own` klist (see the deviations).
-    klist: Klist<G::Proc>,
+    klist: Klist<G>,
     /// `[S]` `pipe_sigio`: the `SIGIO` registration (`kernel::sigio`, `sigio_lock`).
     sigio: SigioRef,
 }
 
-impl<G: PipeGlue> Pipe<G> {
+impl<G: ProcGlue> Pipe<G> {
     fn new() -> Self {
         Self {
             state: AtomicU32::new(0),
@@ -374,7 +395,7 @@ impl<G: PipeGlue> Pipe<G> {
 }
 
 /// `struct pipe_pair`: both pipes and the lock they share, a pool item of [`Pipes`].
-pub struct PipePair<G: PipeGlue> {
+pub struct PipePair<G: ProcGlue> {
     /// The pipes' globals (the pool, `nbigpipe`, `amountpipekva`).
     pipes: &'static Pipes<G>,
     /// `pp_lock`: one lock is used per pipe pair in order to obtain exclusive access to the
@@ -386,12 +407,12 @@ pub struct PipePair<G: PipeGlue> {
 
 /// One pipe of a pair, owned by the file that reads it: dropping it is `pipe_close`'s
 /// `pipe_destroy` of that pipe, and the pair goes back to the pool with its last handle.
-pub struct PipeEnd<G: PipeGlue> {
+pub struct PipeEnd<G: ProcGlue> {
     pair: PoolArc<PipePair<G>>,
     dir: Dir,
 }
 
-impl<G: PipeGlue> PipeEnd<G> {
+impl<G: ProcGlue> PipeEnd<G> {
     /// The pair this end belongs to (cloned by whoever needs it beyond a borrow).
     pub fn pair(&self) -> &PoolArc<PipePair<G>> {
         &self.pair
@@ -484,20 +505,18 @@ pub struct PipeKinfo {
     pub state: u32,
 }
 
-/// `pipe2(2)`'s flags, as `dopipe` uses them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct PipeFlags {
-    /// `O_CLOEXEC`: `UF_EXCLOSE` on both descriptors.
-    pub cloexec: bool,
-    /// `O_CLOFORK`: `UF_FORKCLOSE` on both descriptors.
-    pub clofork: bool,
-    /// `FNONBLOCK`: both files non-blocking.
-    pub nonblock: bool,
-}
+/// `pipe_rfiltops`'s filter: `EVFILT_READ` on a pipe.
+pub struct PipeRead;
+
+/// `pipe_wfiltops`'s filter: `EVFILT_WRITE` on a pipe.
+pub struct PipeWrite;
+
+/// `pipe_efiltops`'s filter: `EVFILT_EXCEPT` on a pipe, poll's hang-up only.
+pub struct PipeExcept;
 
 /// The pipes' globals: the pool of pairs, `nbigpipe` and `amountpipekva`, and the kernel map's
 /// pages the buffers come from. `bsd` keeps one `static` of it over its glue.
-pub struct Pipes<G: PipeGlue> {
+pub struct Pipes<G: ProcGlue> {
     /// `pipe_pair_pool`.
     pool: TypedPool<PipePair<G>>,
     /// The buffers' pages (`km_alloc(&kv_any, &kp_pageable, &kd_waitok)`: the kernel's
@@ -509,7 +528,7 @@ pub struct Pipes<G: PipeGlue> {
     amountpipekva: AtomicU32,
 }
 
-impl<G: PipeGlue> Pipes<G> {
+impl<G: ProcGlue> Pipes<G> {
     /// The globals before `pipe_init`, the buffers from `mem`.
     pub const fn new(mem: &'static dyn PageMemory) -> Self {
         Self {
@@ -536,77 +555,101 @@ impl<G: PipeGlue> Pipes<G> {
     }
 }
 
-/// What a pipe needs of `bsd` (`sys/kern/pipe_glue.rs`): the clock, and the filterops of a
-/// pipe file, which find the pair through the knote's file. A bridge (`bridges.toml`): one
-/// call into `bsd` per function, no logic. (N4.5b: a pipe's `sigio` registration is the
-/// kernel's own, [`crate::sigio`]; the glue holds nothing per pipe.)
-pub trait PipeGlue: Send + Sync + Sized + 'static {
-    /// The processes whose knotes a pipe's klist holds.
-    type Proc: ProcGlue;
-
-    /// `getnanotime(9)`.
-    fn nanotime() -> Timespec;
-    /// `pipe_rfiltops`, `pipe_wfiltops`, `pipe_efiltops`: the filterops of `filter`.
-    fn filterops(filter: PipeFilter) -> &'static Filterops<Self::Proc>;
-}
-
-/// `dopipe`'s descriptor work, which stays `bsd`'s until descriptors move (N4): two
-/// `falloc`s under `fdplock`, the files set up (`DTYPE_PIPE`, `pipeops`, `FREAD | FWRITE`
-/// and `FNONBLOCK`), `fdinsert` of both, `copyout` of the two numbers, and on a failure the
-/// C's error paths (`fdrelease` both after a fault; the ends dropped, `wpipe` first, when a
-/// `falloc` fails). A bridge (`bridges.toml`).
-pub trait PipeFiles<G: PipeGlue> {
-    /// `dopipe(p, ufds, flags)` from the new pair on: `rpipe` for `fds[0]`, `wpipe` for
-    /// `fds[1]`; `copyout` copies the two numbers to userland.
-    fn dopipe(
-        &self,
-        rpipe: PipeEnd<G>,
-        wpipe: PipeEnd<G>,
-        flags: PipeFlags,
-        copyout: &dyn Fn([i32; 2]) -> Result<(), Errno>,
-    ) -> Result<(), Errno>;
-}
-
-impl<G: PipeGlue> Pipes<G> {
-    /// The pipe system call for the `DTYPE_PIPE` type of pipes.
-    pub fn sys_pipe(
-        &'static self,
-        fdp: UserPtr<i32>,
-        files: &dyn PipeFiles<G>,
-    ) -> Result<(), Errno> {
-        self.dopipe(fdp, 0, files)
+impl<G: ProcGlue> Pipes<G> {
+    /// The pipe system call for the `DTYPE_PIPE` type of pipes, for the thread `p`.
+    pub fn sys_pipe(&'static self, p: &Thread<G>, fdp: UserPtr<i32>) -> Result<(), Errno> {
+        self.dopipe(p, fdp, 0)
     }
 
     /// `pipe2(2)`: `pipe(2)` with `O_CLOEXEC`, `O_CLOFORK` and `O_NONBLOCK`; any other flag
     /// is `EINVAL`.
     pub fn sys_pipe2(
         &'static self,
+        p: &Thread<G>,
         fdp: UserPtr<i32>,
         flags: i32,
-        files: &dyn PipeFiles<G>,
     ) -> Result<(), Errno> {
         if flags & !(O_CLOEXEC | O_CLOFORK | FNONBLOCK) != 0 {
             return Err(Errno::EINVAL);
         }
-        self.dopipe(fdp, flags, files)
+        self.dopipe(p, fdp, flags)
     }
 
-    /// `dopipe(p, ufds, flags)`: a new pair, its two files installed by the glue, the two
-    /// descriptors copied out to the two `int`s at `ufds` (the C's `copyout(fds, ufds,
-    /// sizeof(fds))`, the same 8 bytes).
-    fn dopipe(
-        &'static self,
-        ufds: UserPtr<i32>,
-        flags: i32,
-        files: &dyn PipeFiles<G>,
-    ) -> Result<(), Errno> {
-        let pflags = PipeFlags {
-            cloexec: flags & O_CLOEXEC != 0,
-            clofork: flags & O_CLOFORK != 0,
-            nonblock: flags & FNONBLOCK != 0,
-        };
+    /// `dopipe(p, ufds, flags)`: a new pair, its two files at the lowest free descriptors of
+    /// `p` (`rpipe` at `fds[0]`, `wpipe` at `fds[1]`), both `FREAD | FWRITE` (and
+    /// `FNONBLOCK`) with the glue's `pipeops` and object, and the two descriptors copied out to
+    /// the two `int`s at `ufds` (the C's `copyout(fds, ufds, sizeof(fds))`, the same 8 bytes).
+    /// On a failed `falloc` the C's `free3`/`free2` (the descriptor and the file given back,
+    /// then the ends dropped, `wpipe` first: `pipe_destroy`); on a fault of the copy both
+    /// descriptors are released (`fdrelease`, which closes the files).
+    fn dopipe(&'static self, p: &Thread<G>, ufds: UserPtr<i32>, flags: i32) -> Result<(), Errno> {
+        let fdp = p.fd();
+
+        let fdflags = (if flags & O_CLOEXEC != 0 {
+            UF_EXCLOSE
+        } else {
+            0
+        }) | (if flags & O_CLOFORK != 0 {
+            UF_FORKCLOSE
+        } else {
+            0
+        });
+        // FREAD | FWRITE | (flags & FNONBLOCK)
+        let fflag = (FREAD | FWRITE | (flags & FNONBLOCK)) as u32;
+
         let (rpipe, wpipe) = self.create()?;
-        files.dopipe(rpipe, wpipe, pflags, &|fds| ufds.copyout_slice(&fds))
+
+        let mut g = fdplock(fdp);
+
+        let (rf, fd0) = match falloc(p, &mut g) {
+            Ok(r) => r,
+            Err(error) => {
+                // free2:
+                drop(g);
+                drop(wpipe);
+                drop(rpipe);
+                return Err(error);
+            }
+        };
+        rf.f_flag.store(fflag, Ordering::SeqCst);
+        let (ops, data) = <G::FileGlue as FileGlue>::pipe_file(rpipe);
+        rf.install(DTYPE_PIPE, ops, data);
+
+        let (wf, fd1) = match falloc(p, &mut g) {
+            Ok(r) => r,
+            Err(error) => {
+                // free3: the descriptor (no slot holds the file yet) and the file, whose
+                // last reference closes it, which destroys rpipe.
+                let _ = fdremove(&mut g, fd0);
+                let _ = closef(rf, Some(p));
+                // free2:
+                drop(g);
+                drop(wpipe);
+                return Err(error);
+            }
+        };
+        wf.f_flag.store(fflag, Ordering::SeqCst);
+        let (ops, data) = <G::FileGlue as FileGlue>::pipe_file(wpipe);
+        wf.install(DTYPE_PIPE, ops, data);
+
+        fdinsert(&mut g, fd0, fdflags, &rf);
+        fdinsert(&mut g, fd1, fdflags, &wf);
+
+        let fds = [fd0, fd1];
+        let error = ufds.copyout_slice(&fds);
+        if error.is_ok() {
+            drop(g); // fdpunlock
+        // KTRACE (ktrfds): not configured.
+        } else {
+            // fdrelease() unlocks fdp.
+            let _ = fdrelease(p, g, fd0);
+            let g = fdplock(fdp);
+            let _ = fdrelease(p, g, fd1);
+        }
+
+        let _ = rf.frele(Some(p));
+        let _ = wf.frele(Some(p));
+        error
     }
 
     /// `pipe_init`: the pool of pipe pairs, `pipepl`, at `ipl` (`IPL_MPFLOOR`), `PR_WAITOK`.
@@ -648,7 +691,24 @@ impl<G: PipeGlue> Pipes<G> {
     }
 }
 
-impl<G: PipeGlue> PipePair<G> {
+impl<G: ProcGlue> PipePair<G> {
+    /// `pipe_rfiltops`: `EVFILT_READ` on a pipe, [`PipeRead`] erased.
+    pub const PIPE_RFILTOPS: Filterops<G> = Filterops::of::<PipeRead>();
+    /// `pipe_wfiltops`: `EVFILT_WRITE` on a pipe, [`PipeWrite`] erased.
+    pub const PIPE_WFILTOPS: Filterops<G> = Filterops::of::<PipeWrite>();
+    /// `pipe_efiltops`: `EVFILT_EXCEPT` on a pipe (poll's hang-up only), [`PipeExcept`]
+    /// erased.
+    pub const PIPE_EFILTOPS: Filterops<G> = Filterops::of::<PipeExcept>();
+
+    /// The filterops of `filter` (`kn_fop`'s link, the constants' promoted addresses).
+    pub fn filterops(filter: PipeFilter) -> &'static Filterops<G> {
+        match filter {
+            PipeFilter::Read => &Self::PIPE_RFILTOPS,
+            PipeFilter::Write => &Self::PIPE_WFILTOPS,
+            PipeFilter::Except => &Self::PIPE_EFILTOPS,
+        }
+    }
+
     /// A pair as `pipe_pair_create` links it, before `pipe_create`: each pipe the other's
     /// peer, the lock `pipelk`, the klists and the sigio registrations set up (`sigio_init`).
     fn new(pipes: &'static Pipes<G>) -> Self {
@@ -709,7 +769,7 @@ impl<G: PipeGlue> PipePair<G> {
     fn pipe_create(&self, g: &mut Guard<'_>, dir: Dir) -> Result<(), Errno> {
         self.buffer_realloc(g, dir, PIPE_SIZE)?;
 
-        let now = G::nanotime();
+        let now = crate::tc::getnanotime();
         let st = &mut g.ends[dir.index()];
         st.ctime = now;
         st.atime = now;
@@ -775,7 +835,7 @@ impl<G: PipeGlue> PipePair<G> {
         cpipe.klist.knote(0);
 
         if cpipe.has(PIPE_ASYNC) {
-            pgsigio::<G::Proc>(&cpipe.sigio, SIGIO, false);
+            pgsigio::<G>(&cpipe.sigio, SIGIO, false);
         }
     }
 
@@ -874,7 +934,7 @@ impl<G: PipeGlue> PipePair<G> {
             self.iounlock(&mut g, dir);
 
             if error.is_ok() {
-                g.ends[d].atime = G::nanotime();
+                g.ends[d].atime = crate::tc::getnanotime();
             }
         }
         // unlocked_error:
@@ -1041,7 +1101,7 @@ impl<G: PipeGlue> PipePair<G> {
         }
 
         if error.is_ok() {
-            g.ends[w].mtime = G::nanotime();
+            g.ends[w].mtime = crate::tc::getnanotime();
         }
         // We have something to offer, wake up select/poll.
         if wpipe.cnt() != 0 {
@@ -1072,7 +1132,7 @@ impl<G: PipeGlue> PipePair<G> {
                 Ok(Some(mpipe.cnt() as i32))
             }
             PipeIoctl::SetOwn { cmd, arg } => {
-                sigio_setown::<G::Proc>(&mpipe.sigio, cmd, arg).map(|()| None)
+                sigio_setown::<G>(&mpipe.sigio, cmd, arg).map(|()| None)
             }
             PipeIoctl::GetOwn { cmd } => Ok(Some(sigio_getown(&mpipe.sigio, cmd))),
             PipeIoctl::Other => Err(Errno::ENOTTY),
@@ -1174,13 +1234,13 @@ impl<G: PipeGlue> PipePair<G> {
         filter: Option<PipeFilter>,
         select: bool,
         poll: bool,
-        kn: &Knote<G::Proc>,
+        kn: &Knote<G>,
     ) -> Result<(), Errno> {
         let _g = self.lock.write();
         let wdir = self.peer_of(dir);
 
         let attach = |which: PipeFilter, hook: Dir| -> Result<(), Errno> {
-            kn.kn_fop.set(Some(G::filterops(which)));
+            kn.kn_fop.set(Some(Self::filterops(which)));
             kn.kn_hook.set(ptr::without_provenance_mut(hook.index()));
             self.end(hook).klist.insert(kn);
             Ok(())
@@ -1202,7 +1262,7 @@ impl<G: PipeGlue> PipePair<G> {
 
     /// `filt_pipedetach(kn)`: unhooks the knote from the klist of pipe `hook` (its
     /// `kn_hook`), under the pair's lock.
-    pub fn detach(&self, hook: Dir, kn: &Knote<G::Proc>) {
+    pub fn detach(&self, hook: Dir, kn: &Knote<G>) {
         let _g = self.lock.write();
         self.end(hook).klist.remove(kn);
     }
@@ -1286,13 +1346,136 @@ impl<G: PipeGlue> PipePair<G> {
     }
 }
 
-impl<G: PipeGlue> Drop for PipeEnd<G> {
+/// The pair and the pipe of a knote's pipe file (`kn->kn_fp->f_data`): the pair counted
+/// again (the knote's file is a temporary handle); `panic(9)` for a file that is not a pipe's,
+/// which the pipe's own `kqfilter` never hooks.
+fn pair_of<G: ProcGlue>(kn: &Knote<G>) -> (PoolArc<PipePair<G>>, Dir) {
+    let fp = kn.fp();
+    match fp.data().and_then(<G::FileGlue as FileGlue>::pipe_of) {
+        Some(end) => (end.pair().clone(), end.dir()),
+        None => kpanic(format_args!("file {:#x}: not an open pipe", fp.addr())),
+    }
+}
+
+/// `filt_pipedetach(kn)`: unhooks the knote from the klist of the pipe its `kn_hook` names.
+pub fn filt_pipedetach<G: ProcGlue>(kn: &Knote<G>) {
+    let (pair, _) = pair_of(kn);
+    let Some(hook) = Dir::from_index(kn.kn_hook.get().addr()) else {
+        kpanic(format_args!("knote {:p}: no pipe", kn));
+    };
+    pair.detach(hook, kn);
+}
+
+/// One filter's answer written into the knote: `kn_data`, `EV_EOF`, `__EV_HUP`.
+fn filt_pipe<G: ProcGlue>(kn: &Knote<G>, which: PipeFilter) -> bool {
+    let (pair, dir) = pair_of(kn);
+    let answer = pair.filter(dir, which, kn.has_flags(__EV_POLL));
+    if let Some(data) = answer.data {
+        kn.kn_data().set(data);
+    }
+    if answer.eof {
+        kn.set_flags(EV_EOF);
+    }
+    if answer.hup {
+        kn.set_flags(__EV_HUP);
+    }
+    answer.active
+}
+
+/// `filt_piperead(kn, hint)`.
+pub fn filt_piperead<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
+    filt_pipe(kn, PipeFilter::Read)
+}
+
+/// `filt_pipewrite(kn, hint)`.
+pub fn filt_pipewrite<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
+    filt_pipe(kn, PipeFilter::Write)
+}
+
+/// `filt_pipeexcept(kn, hint)`.
+pub fn filt_pipeexcept<G: ProcGlue>(kn: &Knote<G>, _hint: i64) -> bool {
+    filt_pipe(kn, PipeFilter::Except)
+}
+
+/// `filt_pipemodify(kev, kn)`: `knote_modify` under the pipe's lock.
+pub fn filt_pipemodify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+    let (pair, _) = pair_of(kn);
+    pair.with_lock(|| knote_modify(kev, kn))
+}
+
+/// `filt_pipeprocess(kn, kev)`: `knote_process` under the pipe's lock.
+pub fn filt_pipeprocess<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+    let (pair, _) = pair_of(kn);
+    pair.with_lock(|| knote_process(kn, kev))
+}
+
+impl<G: ProcGlue> Filter<G> for PipeRead {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
+
+    fn detach(kn: &Knote<G>) {
+        filt_pipedetach(kn);
+    }
+
+    fn event(kn: &Knote<G>, hint: i64) -> bool {
+        filt_piperead(kn, hint)
+    }
+
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        filt_pipemodify(kev, kn)
+    }
+
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        filt_pipeprocess(kn, kev)
+    }
+}
+
+impl<G: ProcGlue> Filter<G> for PipeWrite {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
+
+    fn detach(kn: &Knote<G>) {
+        filt_pipedetach(kn);
+    }
+
+    fn event(kn: &Knote<G>, hint: i64) -> bool {
+        filt_pipewrite(kn, hint)
+    }
+
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        filt_pipemodify(kev, kn)
+    }
+
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        filt_pipeprocess(kn, kev)
+    }
+}
+
+impl<G: ProcGlue> Filter<G> for PipeExcept {
+    const FLAGS: i32 = FILTEROP_ISFD | FILTEROP_MPSAFE;
+
+    fn detach(kn: &Knote<G>) {
+        filt_pipedetach(kn);
+    }
+
+    fn event(kn: &Knote<G>, hint: i64) -> bool {
+        filt_pipeexcept(kn, hint)
+    }
+
+    fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
+        filt_pipemodify(kev, kn)
+    }
+
+    fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
+        filt_pipeprocess(kn, kev)
+    }
+}
+
+impl<G: ProcGlue> Drop for PipeEnd<G> {
     fn drop(&mut self) {
         self.pair.destroy(self.dir);
     }
 }
 
-impl<G: PipeGlue> Drop for PipePair<G> {
+impl<G: ProcGlue> Drop for PipePair<G> {
     /// `pipe_pair_destroy(pp)`: both klists must be empty; the item goes back to the pool
     /// after this (`PoolArc`'s last drop).
     fn drop(&mut self) {
@@ -1307,14 +1490,15 @@ impl<G: PipeGlue> Drop for PipePair<G> {
 #[cfg(test)]
 mod tests {
     // Host tests for pipes over `hal`'s runtime and this crate's doubles of its bridges
-    // (`crate::testutil`): every pair comes from `Pipes::create`, its buffers are
-    // `PIPE_SIZE` bytes of the page double, and `TestGlue` gives the clock and the filterops;
-    // the knotes are `kernel::event`'s, on a test kqueue, and the sigio registrations
+    // (`crate::testutil`): every pair comes from `Pipes::create` over `kernel::event`'s test
+    // glue (`Kg`), its buffers are `PIPE_SIZE` bytes of the page double, its clock is
+    // `kernel::tc`'s; the knotes are `kernel::event`'s, on a test kqueue, hooked through real
+    // pipe files of a test thread (`TestFileData::pipe`), and the sigio registrations
     // `kernel::sigio`'s, of a test process. A test that counts the pool's items or the big
     // pipes uses a `Pipes` of its own, since the tests run in parallel.
 
-    use std::sync::atomic::{AtomicBool, AtomicI64};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::thread;
     use std::time::Duration;
     use std::vec::Vec;
@@ -1322,57 +1506,8 @@ mod tests {
 
     use super::*;
     use crate::event::tests::Kg;
-    use crate::event::{FILTEROP_ISFD, FILTEROP_MPSAFE};
+    use crate::event::{EV_ADD, EV_DELETE, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, ev_set};
     use crate::testutil;
-
-    /// The glue of the tests.
-    struct TestGlue;
-
-    /// How many times a pipe's klist called a test filter's event (`knote_locked`).
-    static FILTER_CALLS: AtomicU32 = AtomicU32::new(0);
-
-    fn filt_test(_kn: &Knote<Kg>, _hint: i64) -> bool {
-        FILTER_CALLS.fetch_add(1, Ordering::Relaxed);
-        false
-    }
-
-    /// The test filterops, one per [`PipeFilter`] (told apart by address).
-    static TEST_FILTOPS: [Filterops<Kg>; 3] = [const {
-        Filterops {
-            f_flags: FILTEROP_ISFD | FILTEROP_MPSAFE,
-            f_attach: None,
-            f_detach: None,
-            f_event: Some(filt_test),
-            f_modify: None,
-            f_process: None,
-        }
-    }; 3];
-
-    fn filter_index(filter: PipeFilter) -> usize {
-        match filter {
-            PipeFilter::Read => 0,
-            PipeFilter::Write => 1,
-            PipeFilter::Except => 2,
-        }
-    }
-
-    /// The clock of the tests: one second later at every call.
-    static CLOCK: AtomicI64 = AtomicI64::new(0);
-
-    impl PipeGlue for TestGlue {
-        type Proc = Kg;
-
-        fn nanotime() -> Timespec {
-            Timespec {
-                tv_sec: CLOCK.fetch_add(1, Ordering::Relaxed) + 1,
-                tv_nsec: 7,
-            }
-        }
-
-        fn filterops(filter: PipeFilter) -> &'static Filterops<Kg> {
-            &TEST_FILTOPS[filter_index(filter)]
-        }
-    }
 
     /// A process `pid` of `Kg` with its actions, `SIGIO` caught, and one thread on its list,
     /// the test thread's `curproc`: an owner `sigio_setown` accepts and `pgsigio` signals.
@@ -1396,10 +1531,10 @@ mod tests {
     }
 
     /// The pipes most tests share.
-    static PIPES: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+    static PIPES: Pipes<Kg> = Pipes::new(testutil::page_memory());
 
     /// Registers the doubles and makes `pipes`'s pool (once).
-    fn setup(pipes: &'static Pipes<TestGlue>) -> &'static Pipes<TestGlue> {
+    fn setup(pipes: &'static Pipes<Kg>) -> &'static Pipes<Kg> {
         testutil::install();
         match pipes.init(9) {
             Ok(()) | Err(Errno::EBUSY) => pipes,
@@ -1408,11 +1543,7 @@ mod tests {
     }
 
     /// A new pair of the shared pipes: (`fds[0]`'s end, `fds[1]`'s end, the pair).
-    fn pair() -> (
-        PipeEnd<TestGlue>,
-        PipeEnd<TestGlue>,
-        PoolArc<PipePair<TestGlue>>,
-    ) {
+    fn pair() -> (PipeEnd<Kg>, PipeEnd<Kg>, PoolArc<PipePair<Kg>>) {
         let (r, w) = setup(&PIPES).create().unwrap();
         let pp = r.pair().clone();
         (r, w, pp)
@@ -1463,12 +1594,7 @@ mod tests {
     }
 
     /// `write(2)` of `bytes` on the file of pipe `dir`: the result and how much went in.
-    fn write(
-        pp: &PipePair<TestGlue>,
-        dir: Dir,
-        bytes: &[u8],
-        nb: bool,
-    ) -> (Result<(), Errno>, usize) {
+    fn write(pp: &PipePair<Kg>, dir: Dir, bytes: &[u8], nb: bool) -> (Result<(), Errno>, usize) {
         let mut uio = Buf {
             data: bytes.to_vec(),
             pos: 0,
@@ -1481,7 +1607,7 @@ mod tests {
     }
 
     /// `read(2)` of at most `n` bytes on the file of pipe `dir`.
-    fn read(pp: &PipePair<TestGlue>, dir: Dir, n: usize, nb: bool) -> (Result<(), Errno>, Vec<u8>) {
+    fn read(pp: &PipePair<Kg>, dir: Dir, n: usize, nb: bool) -> (Result<(), Errno>, Vec<u8>) {
         let mut uio = Buf {
             data: vec![0; n],
             pos: 0,
@@ -1500,7 +1626,7 @@ mod tests {
     }
 
     /// The buffer pointers of pipe `dir`: (`cnt`, `in`, `out`).
-    fn pointers(pp: &PipePair<TestGlue>, dir: Dir) -> (usize, u32, u32) {
+    fn pointers(pp: &PipePair<Kg>, dir: Dir) -> (usize, u32, u32) {
         let g = pp.lock.read();
         let b = &g.ends[dir.index()].buffer;
         (pp.end(dir).cnt(), b.r#in, b.out)
@@ -1508,7 +1634,7 @@ mod tests {
 
     #[test]
     fn create_links_two_pipes_and_the_last_close_frees_the_pair_once() {
-        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+        static P: Pipes<Kg> = Pipes::new(testutil::page_memory());
         let pipes = setup(&P);
         let pages = testutil::pages_out();
         for reader_first in [true, false] {
@@ -1543,7 +1669,7 @@ mod tests {
 
     #[test]
     fn create_fails_with_enomem_before_pipe_init() {
-        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+        static P: Pipes<Kg> = Pipes::new(testutil::page_memory());
         testutil::install();
         assert_eq!(P.create().err(), Some(Errno::ENOMEM));
         assert_eq!(P.nout(), 0);
@@ -1554,7 +1680,7 @@ mod tests {
     /// freed, the pair back in the pool, `ENOMEM`.
     #[test]
     fn create_fails_with_enomem_when_a_buffer_cannot_be_had() {
-        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+        static P: Pipes<Kg> = Pipes::new(testutil::page_memory());
         let pipes = setup(&P);
         let pages = testutil::pages_out();
         for skip in [0, 1] {
@@ -1576,7 +1702,7 @@ mod tests {
     /// `nbigpipe` slot back, as the C does; the write goes on in the small buffer.
     #[test]
     fn a_failed_grow_keeps_the_small_buffer() {
-        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+        static P: Pipes<Kg> = Pipes::new(testutil::page_memory());
         let (r, w) = setup(&P).create().unwrap();
         let pp = r.pair().clone();
 
@@ -1877,79 +2003,112 @@ mod tests {
         w.close();
     }
 
+    /// `pipe(2)` of the shared pipes on `p`'s table (the test glue's `pipe_file`: its
+    /// `TestPipeOps`, whose `kqfilter` is `pipe_kqfilter`): the descriptors and the pair.
+    fn pipe_files(p: crate::event::tests::T) -> ([i32; 2], PoolArc<PipePair<Kg>>) {
+        let ufds = UserPtr::new(testutil::USER_BASE + 72);
+        setup(&PIPES).sys_pipe(p, ufds).unwrap();
+        let mut fds = [0i32; 2];
+        ufds.copyin_slice(&mut fds).unwrap();
+        let fp = crate::descrip::fd_getfile(p.fd(), fds[0]).unwrap();
+        let pp = fp
+            .data()
+            .and_then(|d| d.pipe.as_ref())
+            .unwrap()
+            .pair()
+            .clone();
+        fp.frele(Some(p)).unwrap();
+        (fds, pp)
+    }
+
+    /// `pipe_kqfilter` hooks each filter where the C does, and the kernel's filters (the
+    /// erased `PipeRead`, `PipeWrite`, `PipeExcept`) find the pair through the knote's file
+    /// (`FileGlue::pipe_of`): `EVFILT_READ` on `fds[0]`'s own pipe, `EVFILT_WRITE` on the pipe
+    /// `fds[1]` writes into (its peer), or on its own once the reader is gone; a write wakes
+    /// the reader's knotes (`pipe_wakeup`), each filter running with the pair's lock held.
     #[test]
     fn kqfilter_hooks_each_filter_where_the_c_does() {
-        let (r, w, pp) = pair();
         let p = crate::event::tests::setup(70);
         let (_kfd, kq) = crate::event::tests::new_kqueue(p);
-        let kns: Vec<_> = (1..=5).map(|i| crate::event::test_knote(&kq, i)).collect();
-        let kn = |i: usize| kns[i - 1].kn();
-        // Where a knote was hooked: its filterops and its `kn_hook`.
-        let hooked = |i: usize, filter: PipeFilter, dir: Dir| {
-            ptr::eq(kn(i).fop(), &TEST_FILTOPS[filter_index(filter)])
-                && kn(i).kn_hook.get().addr() == dir.index()
+        let ([rfd, wfd], pp) = pipe_files(p);
+        let mut out = [crate::event::Kevent::default(); 4];
+        let reg = |fd: i32, filter: i16, flags: u16| {
+            crate::event::tests::reg(p, &kq, ev_set(fd as usize, filter, flags, 0, 0, 0))
         };
 
-        // EVFILT_READ on rf: rf's own pipe.
-        assert_eq!(
-            pp.kqfilter(Dir::Rd, Some(PipeFilter::Read), false, false, kn(1)),
-            Ok(())
-        );
-        // EVFILT_WRITE on wf: the pipe wf writes into, its peer.
-        assert_eq!(
-            pp.kqfilter(Dir::Wr, Some(PipeFilter::Write), false, false, kn(2)),
-            Ok(())
-        );
-        assert!(hooked(1, PipeFilter::Read, Dir::Rd));
-        assert!(hooked(2, PipeFilter::Write, Dir::Rd));
+        // EVFILT_READ on rf: rf's own pipe. EVFILT_WRITE on wf: the pipe wf writes into.
+        assert_eq!(reg(rfd, EVFILT_READ, EV_ADD), Ok(()));
+        assert_eq!(reg(wfd, EVFILT_WRITE, EV_ADD), Ok(()));
         assert!(!pp.end(Dir::Rd).klist.is_empty() && pp.end(Dir::Wr).klist.is_empty());
-        // EVFILT_EXCEPT: poll's only.
+        // Empty: only the writer is active, with the room it has.
+        assert_eq!(crate::event::tests::scan(p, &kq, &mut out), (1, Ok(())));
+        assert_eq!(
+            (out[0].ident, out[0].filter, out[0].data),
+            (wfd as usize, EVFILT_WRITE, PIPE_SIZE as i64)
+        );
+
+        // A write wakes the reader's knote: readable with the byte, the writer's room less.
+        assert_eq!(write(&pp, Dir::Wr, b"x", false), (Ok(()), 1));
+        let (n, r) = crate::event::tests::scan(p, &kq, &mut out);
+        assert_eq!((n, r), (2, Ok(())));
+        let seen = |fd: i32, filter: i16| {
+            out[..n]
+                .iter()
+                .find(|e| e.ident == fd as usize && e.filter == filter)
+                .map(|e| e.data)
+        };
+        assert_eq!(seen(rfd, EVFILT_READ), Some(1));
+        assert_eq!(seen(wfd, EVFILT_WRITE), Some(PIPE_SIZE as i64 - 1));
+
+        // EVFILT_EXCEPT: poll's only (kevent(2) gets EINVAL; select's EPERM, below).
+        assert_eq!(reg(rfd, EVFILT_EXCEPT, EV_ADD), Err(Errno::EINVAL));
+        let held = crate::event::test_knote(&kq, 999);
+        let kn = held.kn();
         let except = Some(PipeFilter::Except);
         assert_eq!(
-            pp.kqfilter(Dir::Rd, except, true, true, kn(3)),
+            pp.kqfilter(Dir::Rd, except, true, true, kn),
             Err(Errno::EPERM)
         );
         assert_eq!(
-            pp.kqfilter(Dir::Rd, except, false, false, kn(3)),
+            pp.kqfilter(Dir::Rd, except, false, false, kn),
             Err(Errno::EINVAL)
         );
-        assert_eq!(pp.kqfilter(Dir::Rd, except, false, true, kn(3)), Ok(()));
-        assert!(hooked(3, PipeFilter::Except, Dir::Rd));
         assert_eq!(
-            pp.kqfilter(Dir::Rd, None, false, false, kn(4)),
+            pp.kqfilter(Dir::Rd, None, false, false, kn),
             Err(Errno::EINVAL)
         );
-        assert!(
-            !TEST_FILTOPS.iter().any(|f| ptr::eq(kn(4).fop(), f)),
-            "nothing hooked"
-        );
+        crate::event::test_knote_drop(&kq, held);
 
-        // A write wakes the reader's knotes (pipe_wakeup's knote_locked): each filter runs.
-        let before = FILTER_CALLS.load(Ordering::Relaxed);
-        assert_eq!(write(&pp, Dir::Wr, b"x", false), (Ok(()), 1));
-        assert!(FILTER_CALLS.load(Ordering::Relaxed) >= before + 3);
-
-        for i in [1, 2, 3] {
-            pp.detach(Dir::Rd, kn(i));
-        }
+        // EV_DELETE detaches through the filter (filt_pipedetach, under the pair's lock).
+        assert_eq!(reg(rfd, EVFILT_READ, EV_DELETE), Ok(()));
+        assert_eq!(reg(wfd, EVFILT_WRITE, EV_DELETE), Ok(()));
         assert!(pp.end(Dir::Rd).klist.is_empty());
 
-        // The reader gone, EVFILT_WRITE hooks on wf's own pipe.
-        r.close();
-        assert_eq!(
-            pp.kqfilter(Dir::Wr, Some(PipeFilter::Write), false, false, kn(5)),
-            Ok(())
-        );
-        assert!(hooked(5, PipeFilter::Write, Dir::Wr));
+        // The reader gone, EVFILT_WRITE hooks on wf's own pipe, active with EOF.
+        crate::event::tests::close_fd(p, rfd);
+        assert_eq!(reg(wfd, EVFILT_WRITE, EV_ADD), Ok(()));
         assert!(!pp.end(Dir::Wr).klist.is_empty());
-        pp.detach(Dir::Wr, kn(5));
+        assert_eq!(crate::event::tests::scan(p, &kq, &mut out), (1, Ok(())));
+        assert_eq!((out[0].ident, out[0].data), (wfd as usize, 0));
+        assert_ne!(out[0].flags & crate::event::EV_EOF, 0, "EV_EOF");
+        assert_eq!(reg(wfd, EVFILT_WRITE, EV_DELETE), Ok(()));
         assert!(pp.end(Dir::Wr).klist.is_empty());
 
-        for h in kns {
-            crate::event::test_knote_drop(&kq, h);
-        }
         drop(pp);
-        w.close();
+        crate::event::tests::close_fd(p, wfd);
+    }
+
+    /// The erased tables are the filters' own: `FILTEROP_ISFD | FILTEROP_MPSAFE` and every
+    /// entry the impl's (`f_attach` the trait's default: the C's NULL, never called for a
+    /// knote `pipe_kqfilter` hooked).
+    #[test]
+    fn the_pipe_filterops_are_the_filters_erased() {
+        for f in [PipeFilter::Read, PipeFilter::Write, PipeFilter::Except] {
+            let t = PipePair::<Kg>::filterops(f);
+            assert_eq!(t.f_flags, FILTEROP_ISFD | FILTEROP_MPSAFE);
+            assert!(t.f_detach.is_some() && t.f_event.is_some());
+            assert!(t.f_modify.is_some() && t.f_process.is_some());
+        }
     }
 
     #[test]
@@ -1977,7 +2136,7 @@ mod tests {
 
     #[test]
     fn a_big_write_grows_an_empty_buffer() {
-        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+        static P: Pipes<Kg> = Pipes::new(testutil::page_memory());
         let (r, w) = setup(&P).create().unwrap();
         let pp = r.pair().clone();
 
@@ -2087,76 +2246,75 @@ mod tests {
         w.close();
     }
 
-    /// `dopipe`'s descriptor work in the tests: keeps the ends, copies out 3 and 4.
-    struct TestFiles {
-        ends: Mutex<Vec<(PipeEnd<TestGlue>, PipeFlags)>>,
-    }
-
-    impl PipeFiles<TestGlue> for TestFiles {
-        fn dopipe(
-            &self,
-            rpipe: PipeEnd<TestGlue>,
-            wpipe: PipeEnd<TestGlue>,
-            flags: PipeFlags,
-            copyout: &dyn Fn([i32; 2]) -> Result<(), Errno>,
-        ) -> Result<(), Errno> {
-            // On a fault the C releases both descriptors, which closes both pipes.
-            copyout([3, 4])?;
-            let mut ends = self.ends.lock().unwrap();
-            ends.push((rpipe, flags));
-            ends.push((wpipe, flags));
-            Ok(())
-        }
-    }
-
+    /// `pipe2(2)` end to end on a thread's own table: the flags checked first, a pair whose
+    /// files are the two lowest free descriptors (`fds[0]` reads `pp_rpipe`, `fds[1]`
+    /// `pp_wpipe`), both `FREAD | FWRITE` (and `FNONBLOCK`), `pipe_file`'s object holding the
+    /// end, `UF_EXCLOSE`/`UF_FORKCLOSE` on both, the two numbers copied out; a fault on the
+    /// copy releases both descriptors and the pair goes back to its pool with its files.
     #[test]
     fn pipe2_checks_its_flags_and_copies_out_both_descriptors() {
-        static P: Pipes<TestGlue> = Pipes::new(testutil::page_memory());
+        static P: Pipes<Kg> = Pipes::new(testutil::page_memory());
         let pipes = setup(&P);
-        let files = TestFiles {
-            ends: Mutex::new(Vec::new()),
-        };
+        let p = crate::event::tests::setup(71);
         let fdp = UserPtr::new(testutil::USER_BASE + 64);
 
         assert_eq!(
-            pipes.sys_pipe2(fdp, 0x8000_0000_u32 as i32, &files),
+            pipes.sys_pipe2(p, fdp, 0x8000_0000_u32 as i32),
             Err(Errno::EINVAL)
         );
-        assert_eq!(
-            pipes.sys_pipe2(fdp, O_CLOEXEC | 0x1, &files),
-            Err(Errno::EINVAL)
-        );
+        assert_eq!(pipes.sys_pipe2(p, fdp, O_CLOEXEC | 0x1), Err(Errno::EINVAL));
         assert_eq!(pipes.nout(), 0, "no pair for bad flags");
 
-        assert_eq!(pipes.sys_pipe2(fdp, O_CLOEXEC | FNONBLOCK, &files), Ok(()));
-        let mut expect = 3i32.to_ne_bytes().to_vec();
-        expect.extend_from_slice(&4i32.to_ne_bytes());
-        assert_eq!(
-            testutil::user_bytes(testutil::USER_BASE + 64, 8),
-            Some(expect)
-        );
-        {
-            let ends = files.ends.lock().unwrap();
-            assert_eq!(ends.len(), 2);
-            assert_eq!((ends[0].0.dir(), ends[1].0.dir()), (Dir::Rd, Dir::Wr));
-            let flags = PipeFlags {
-                cloexec: true,
-                clofork: false,
-                nonblock: true,
-            };
-            assert_eq!((ends[0].1, ends[1].1), (flags, flags));
+        assert_eq!(pipes.sys_pipe2(p, fdp, O_CLOEXEC | FNONBLOCK), Ok(()));
+        let mut fds = [0i32; 2];
+        fdp.copyin_slice(&mut fds).unwrap();
+        assert_eq!(fds, [0, 1], "the lowest free descriptors");
+        for (fd, dir) in [(fds[0], Dir::Rd), (fds[1], Dir::Wr)] {
+            let (fp, fl) = crate::descrip::fd_getfile_flags(p.fd(), fd).unwrap();
+            assert_eq!(fp.f_type(), crate::file::DTYPE_PIPE);
+            assert_eq!(fp.flag(), FREAD | FWRITE | FNONBLOCK);
+            assert_eq!(fl & crate::descrip::UF_EXCLOSE, crate::descrip::UF_EXCLOSE);
+            let end = fp.data().and_then(|d| d.pipe.as_ref()).unwrap();
+            assert_eq!(end.dir(), dir);
+            fp.frele(Some(p)).unwrap();
         }
-        assert_eq!(pipes.sys_pipe(fdp, &files), Ok(()));
-        assert_eq!(files.ends.lock().unwrap()[2].1, PipeFlags::default());
+        assert_eq!(pipes.nout(), 1);
+
+        assert_eq!(pipes.sys_pipe(p, fdp), Ok(()));
+        fdp.copyin_slice(&mut fds).unwrap();
+        assert_eq!(fds, [2, 3]);
+        let (fp, fl) = crate::descrip::fd_getfile_flags(p.fd(), 2).unwrap();
+        assert_eq!(
+            (fp.flag(), fl & crate::descrip::UF_EXCLOSE),
+            (FREAD | FWRITE, 0)
+        );
+        fp.frele(Some(p)).unwrap();
         assert_eq!(pipes.nout(), 2);
 
-        // A fault on the copy: the pair goes back with its ends.
+        // O_CLOFORK: UF_FORKCLOSE (and not UF_EXCLOSE) on both descriptors.
+        assert_eq!(pipes.sys_pipe2(p, fdp, O_CLOFORK), Ok(()));
+        fdp.copyin_slice(&mut fds).unwrap();
+        assert_eq!(fds, [4, 5]);
+        for fd in fds {
+            let (fp, fl) = crate::descrip::fd_getfile_flags(p.fd(), fd).unwrap();
+            let both = crate::descrip::UF_EXCLOSE | crate::descrip::UF_FORKCLOSE;
+            assert_eq!(fl & both, crate::descrip::UF_FORKCLOSE, "descriptor {fd}");
+            assert_eq!(fp.flag(), FREAD | FWRITE);
+            fp.frele(Some(p)).unwrap();
+        }
+        assert_eq!(pipes.nout(), 3);
+
+        // A fault on the copy: both descriptors released, the pair back with its files.
         let bad = UserPtr::new(testutil::USER_BASE + testutil::USER_LEN - 4);
-        assert_eq!(pipes.sys_pipe2(bad, O_CLOFORK, &files), Err(Errno::EFAULT));
-        assert_eq!(pipes.nout(), 2);
+        assert_eq!(pipes.sys_pipe2(p, bad, O_CLOFORK), Err(Errno::EFAULT));
+        assert!(crate::descrip::fd_getfile(p.fd(), 6).is_none());
+        assert!(crate::descrip::fd_getfile(p.fd(), 7).is_none());
+        assert_eq!(pipes.nout(), 3);
 
-        files.ends.lock().unwrap().clear();
-        assert_eq!(pipes.nout(), 0);
+        for fd in 0..6 {
+            crate::event::tests::close_fd(p, fd);
+        }
+        assert_eq!(pipes.nout(), 0, "the last close frees each pair");
     }
 
     #[test]

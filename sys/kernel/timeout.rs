@@ -135,8 +135,8 @@
 //!   never changed after boot); `softintr_establish` and `kthread_create[_deferred]` go through
 //!   `hal::softintr` (`hal`'s own since N4.5c) and `kernel::thread` (`kernel::fork`'s since
 //!   N4.6a),
-//!   `nanouptime` through
-//!   `kernel::clock` (`Uptime`).
+//!   `nanouptime` is `kernel::tc`'s (through `kernel::clock`'s re-export; the `Uptime`
+//!   bridge is gone since N5.0).
 //! - `timeout_sysctl` stays at the ABI's side (`sys/sys/timeout.rs`): [`stats`] is the copy of
 //!   `tostat` it takes under the lock, in the C's field order.
 //! - N4.4: a timeout whose function dereferenced its `void *` (kqueue's `filt_timerexpire`,
@@ -1551,8 +1551,8 @@ pub(crate) mod tests {
         static TO: Timeout = Timeout::unset();
         let to = pinned(&TO);
         to.set(Some(fire), ptr::null_mut(), KCLOCK_UPTIME, 0);
-        // The uptime double advances a microsecond per read: a deadline a few reads ahead is
-        // reached after a handful of ticks.
+        // The dummy timecounter advances a microsecond per read: a deadline a few reads
+        // ahead is reached after a handful of ticks.
         let deadline = clock::nanouptime().add(Timespec::new(0, 2_000));
         assert!(to.abs_ts(&deadline));
         let mut n = 0;

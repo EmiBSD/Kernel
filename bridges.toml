@@ -17,7 +17,7 @@
 # `kernel` reaches code that has not moved into them yet. The trait is declared by the crate
 # that calls it and held in a `OnceStatic<&'static dyn Trait>`; `bsd`'s `main()` registers an
 # implementation over its legacy code before first use. A bridge carries no logic of its own.
-# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::pipe::PipeGlue`) is a
+# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::uio::UioMove`) is a
 # row only while `bsd` implements it; the row goes when a `kernel` module does, and the trait
 # stays as API (decision 39). N9 requires this file to hold no row.
 #
@@ -121,20 +121,6 @@ trait = "BufCacheStats"
 for = ["sys/kernel/vm/pmemrange.rs"]
 paid_by = "N5"
 
-# bsd: getnanotime and the three pipe filterops (which find the pair through the knote's
-# file); implemented by sys/kern/pipe_glue.rs (BsdPipeGlue), the pair's generic parameter, not
-# a registered slot. N4.4: the klist is the kernel's, by value in each pipe
-# (kernel::event::Klist, Own kind): Knote, knote, klist_insert, klist_remove and klist_free
-# left the trait. N4.5b: the sigio registration is the kernel's too (kernel::sigio::SigioRef in
-# each pipe): new, pgsigio, sigio_free, sigio_setown and sigio_getown left the trait, and the
-# glue holds nothing per pipe. What stays goes with the clock (N4.8).
-# kernel::pipe::PipeGlue
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "PipeGlue"
-for = ["sys/kernel/pipe.rs"]
-paid_by = "N5"
-
 # bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
 # N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as
 # &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io (kern.proc_args). N4.3: paid by
@@ -156,21 +142,16 @@ paid_by = "N7"
 # maxfiles and tablefull). N4.4: knote_fdclose, fdkq_free and the Knote/FdKq types left (kqueue
 # is kernel::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
 # file's revocation (vnode_revoked, N5) came. N4.6b: getcwd (kern.proc_cwd's
-# vfs_getcwd_common, N5).
+# vfs_getcwd_common, N5). N5.0: a vnode file's vnode as the pager sees it (vnode_ops, N5:
+# mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end), and a pipe file's pipe
+# (pipe_of, N8 with Data: the pipe's kernel filters find the pair through it, with the
+# PipeGlue bridge's end) and a new pipe file's pipeops and object (pipe_file, N8 with Ops and
+# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
 for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 paid_by = "N8"
-
-# bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
-# (sys/kern/kern_descrip.rs, sys/sys/filedesc.rs), implemented by sys/kern/pipe_glue.rs.
-# kernel::pipe::PipeFiles
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "PipeFiles"
-for = ["sys/kernel/pipe.rs"]
-paid_by = "N5"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
@@ -203,16 +184,6 @@ paid_by = "N7"
 [[bridge]]
 trait = "AcctFile"
 for = ["sys/kernel/acct.rs"]
-paid_by = "N5"
-
-# bsd: nanouptime, getnanouptime and nanotime of sys/kern/kern_tc.rs (the last two N4.4,
-# kqueue's sleep and EVFILT_TIMER's NOTE_ABSTIME), implemented by sys/kern/hal_bridges.rs
-# (BsdUptime). N4.8, with kern_tc. N4.6b: nanoboottime (kinfo_proc's start times).
-# kernel::clock::Uptime
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "Uptime"
-for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
 paid_by = "N5"
 
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
@@ -269,16 +240,6 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-# bsd: getmicrouptime (sys/kern/kern_tc.rs, for the vnode pager's own ratecheck), rebooting and
-# &rebooting (sys/kern/kern_xxx.rs); implemented by sys/kern/vm_bsd.rs (BsdSysInfo) and
-# installed by bsd's uvm_init (N3.4e); (0, 0) and false before. N4, with kern_time and kern_xxx.
-# kernel::vm::vnode::SysInfo
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "SysInfo"
-for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/map.rs"]
-paid_by = "N5"
-
 # bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
 # vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
 # curproc's credentials: sys/sys/vnode.rs, sys/kern/vfs_subr.rs, vfs_vnops.rs, vfs_vops.rs),
@@ -289,20 +250,6 @@ paid_by = "N5"
 [[bridge]]
 trait = "VnodeOps"
 for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/mmap.rs"]
-paid_by = "N5"
-
-
-# bsd: curproc's facts as uvm asks them (pledge_protexec, the W^X exemption and ps_wxcounter,
-# sigexit, trapsignal, ps_pid/p_tid/ps_comm/PROC_PC, ps_acflag, lim_cur, P_HASSIBLING,
-# ps_strings/ps_sigcode/ps_timekeep, fd_getfile..FRELE of a vnode, ps_kbind_* under ps_mtx,
-# ps_libcpin, p_ru's faults and maxrss, log(9), uprintf(9) since N4.8b); implemented by
-# sys/kern/vm_bsd.rs (N3.5 S1,
-# registered by bsd's uvm_init at the flip), one bsd call each. N4, when Proc moves.
-# kernel::vm::proc::VmProc
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "VmProc"
-for = ["sys/kernel/vm/proc.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/unix.rs", "sys/kernel/vm/meter.rs"]
 paid_by = "N5"
 
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
@@ -385,7 +332,10 @@ paid_by = "N7"
 # tcb_get, tcb_set and tcb_invalid left it (hal::thread). Re-dated N8 (the user's
 # decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
 # pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
-# (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine).
+# (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine). N5.0: vm's calls
+# out joined it with the VmProc bridge's end: pledge_protexec (kern_pledge, N8, required as
+# the other pledge hooks) and textvp_wxallowed (ps_textvp's MNT_WXALLOWED, N5 with
+# textvp_release).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"

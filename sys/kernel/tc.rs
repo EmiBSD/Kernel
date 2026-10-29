@@ -896,8 +896,11 @@ pub fn timekeep_attach(tk: &'static TimekeepAtomic) -> Result<(), &'static Timek
 /// kernel map read-write and `MAP_INHERIT_SHARE`, wired, and attached as the page the
 /// windups publish to ([`timekeep_attach`]); later calls return it again. Exec runs under
 /// the kernel lock, so no two callers make one. `ENOMEM` when the object, the mapping or the
-/// wiring fails (each undone, as the C).
-pub fn timekeep_object() -> Result<crate::vm::object::ObjRef, Errno> {
+/// wiring fails (each undone, as the C). The wiring's faults count on `ru`, the exec'ing
+/// thread's `p_ru` (the C's `curproc`).
+pub fn timekeep_object(
+    ru: Option<&crate::resource::Rusage>,
+) -> Result<crate::vm::object::ObjRef, Errno> {
     use crate::sys::mman::{MADV_RANDOM, MAP_INHERIT_SHARE, PROT_READ, PROT_WRITE};
     use crate::vm::km::kernel_map;
 
@@ -934,8 +937,14 @@ pub fn timekeep_object() -> Result<crate::vm::object::ObjRef, Errno> {
         obj.detach();
         return Err(Errno::ENOMEM);
     }
-    if crate::vm::fault::uvm_fault_wire(kernel_map(), va, va + timekeep_sz, PROT_READ | PROT_WRITE)
-        .is_err()
+    if crate::vm::fault::uvm_fault_wire(
+        kernel_map(),
+        va,
+        va + timekeep_sz,
+        PROT_READ | PROT_WRITE,
+        ru,
+    )
+    .is_err()
     {
         crate::vm::map::uvm_unmap(kernel_map(), va, va + timekeep_sz);
         obj.detach();

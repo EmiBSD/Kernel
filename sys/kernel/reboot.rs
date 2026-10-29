@@ -125,12 +125,19 @@ pub fn rebooting() -> bool {
 /// `reboot`: stops the clock bookkeeping, marks the system going down and hands over to the
 /// machine's `boot(9)` with the `RB_*` flags `howto` (`<sys/reboot.h>`).
 pub fn reboot(howto: i32) -> ! {
+    reboot_flagging(howto, &REBOOTING)
+}
+
+/// [`reboot`] with the `rebooting` flag it raises named: [`REBOOTING`] itself, or a host
+/// test's own (the process-wide flag stays false, which the vnode pager's tests read: its
+/// `uvn_io` error path sleeps for the end while it is set, `"uvndead"`).
+fn reboot_flagging(howto: i32, rebooting: &AtomicBool) -> ! {
     // Syncing the file systems needs a thread to do it on.
     kassert!(howto & RB_NOSYNC != 0 || hal::sleep::curproc_word() != 0);
 
     stop_periodic_resettodr();
 
-    REBOOTING.store(true, Ordering::Relaxed);
+    rebooting.store(true, Ordering::Relaxed);
 
     match MACHINE_BOOT.get() {
         Some(m) => m.boot(howto),
@@ -158,7 +165,9 @@ mod tests {
         if MACHINE_BOOT.get().is_some() {
             kpanic(format_args!("reboot: no machine boot registered"));
         }
-        reboot(0);
+        // The test's own flag: the process-wide one stays false for the other tests.
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        reboot_flagging(0, &FLAG);
     }
 }
 /* </TESTS> */

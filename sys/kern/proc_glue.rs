@@ -682,6 +682,18 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_adjtime(p, delta)
     }
 
+    fn pledge_protexec(p: &Proc, prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_protexec(p, prot)
+    }
+
+    /// `ps_textvp`'s mount carries `MNT_WXALLOWED` (no text vnode or no mount: no).
+    fn textvp_wxallowed(pr: &Process) -> bool {
+        pr.ps_textvp
+            .get()
+            .and_then(|vp| vp.v_mount.get())
+            .is_some_and(|mp| mp.mnt_flag.get() & crate::sys::mount::MNT_WXALLOWED != 0)
+    }
+
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
         kernel::proc::UnveilState {
             paths: !pr.ps_uvpaths.get().is_null(),
@@ -1783,6 +1795,9 @@ mod tests {
         // `exited`). Accepted under the user's rule for N4's sizes (reported, pinned here).
         // N4.8b (5cfef26e): procpl 1168 -> 1176 here only, the host double's Mdproc now
         // holding the thread's TCB word (a machine keeps it in its pcb); arm64's is unchanged.
+        // N5.0 (dopipe into kernel::pipe): filepl 184 -> 176, bsd's BsdFileData::Pipe holds the
+        // PipeEnd alone (the opener's uid and gid copies gone: pipe_stat reads f_cred), so the
+        // object enum is 8 bytes smaller.
         let _g = setup();
         crate::kern::kern_descrip::filedesc_init();
         let t = proc_tables();
@@ -1825,7 +1840,7 @@ mod tests {
                 ("processpl", 1536),
                 ("pgrppl", 136),
                 ("sessionpl", 160),
-                ("filepl", 184),
+                ("filepl", 176),
                 ("fdescpl", 560),
                 ("ucredpl", 120),
                 ("plimitpl", 160),
