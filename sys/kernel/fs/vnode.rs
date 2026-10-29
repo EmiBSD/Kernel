@@ -571,8 +571,15 @@ impl VopsId {
     pub const SYNC: VopsId = VopsId(2);
     /// The first id a file system's table gets.
     pub(super) const FIRST_FS: u8 = 3;
-    /// The ids there are (the registry's size plus the kernel's three).
+    /// The ids there are (the registry's size plus the kernel's three): 32 in a kernel, whose
+    /// file systems have at most 25 tables (the C's count).
+    #[cfg(not(any(test, feature = "doubles")))]
     pub(super) const MAX: u8 = 32;
+    /// The ids there are in the host tests: their one process registers every file system's
+    /// tables and the tests' own (the registry is never reset, so a table keeps its id from
+    /// test to test), more than a kernel's 29 slots.
+    #[cfg(any(test, feature = "doubles"))]
+    pub(super) const MAX: u8 = 128;
 }
 
 /// What a vnode's operations are, for the C's compares of `v_op` with a table's address.

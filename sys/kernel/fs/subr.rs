@@ -291,7 +291,7 @@ pub(super) fn vops_table<G: ProcGlue>(id: VopsId) -> &'static dyn Vnops<G> {
 }
 
 /// The id of a file system's operations table, registered on its first use (by the table's
-/// address); a 33rd table is `panic(9)` (the C has 25).
+/// address); a table past the registry's size (29 in a kernel; the C has 25) is `panic(9)`.
 pub fn vops_id<G: ProcGlue>(ops: &'static dyn Vnops<G>) -> VopsId {
     let t = vfs::<G>();
     for (i, slot) in t.vops.iter().enumerate() {
@@ -312,7 +312,7 @@ pub fn vops_id<G: ProcGlue>(ops: &'static dyn Vnops<G>) -> VopsId {
     }
     kpanic(format_args!(
         "getnewvnode: more vnode operations tables than {}",
-        VopsId::MAX
+        VopsId::MAX - VopsId::FIRST_FS
     ))
 }
 
@@ -1933,6 +1933,27 @@ mod tests {
         insmntque(vp, None);
         assert!(vp.mount().is_none());
         assert!(!on_mount(mp, vp));
+    }
+
+    #[test]
+    fn the_registry_holds_more_tables_in_the_host_tests_than_a_kernel_has() {
+        let _g = testfs::setup();
+        // A table of every slot's default (`EOPNOTSUPP`), a field so each has its own address.
+        struct Table {
+            _id: u8,
+        }
+        impl Vnops<TestGlue> for Table {}
+        let tables: std::vec::Vec<&'static dyn Vnops<TestGlue>> = (0..40u8)
+            .map(|i| &*std::boxed::Box::leak(std::boxed::Box::new(Table { _id: i })) as _)
+            .collect();
+        let ids: std::vec::Vec<VopsId> = tables.iter().map(|t| vops_id(*t)).collect();
+        for (i, (t, id)) in tables.iter().zip(&ids).enumerate() {
+            // Registered once: the same id again, and that id names the table.
+            assert_eq!(vops_id(*t), *id);
+            assert!(ptr::addr_eq(vops_table::<TestGlue>(*id), *t));
+            assert!(id.0 >= VopsId::FIRST_FS);
+            assert!(ids[..i].iter().all(|other| other != id));
+        }
     }
 
     #[test]
