@@ -8,3 +8,4 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - Worktree isolation refuses compound shell (pipes into bash, heredoc with git, cd then git): put steps in a scratchpad .sh, run `bash script`, one simple command per call; commit with `git commit -F file`.
 - rustfmt resolves cfg-gated `mod` files: a new `pub mod arm64;` under a cfg needs its file in the same commit or `cargo fmt` (the hook) fails.
 - Before moving an inherited header into hal, grep it for `crate::reftest` (test-only, pub(crate) in bsd): such files cannot move byte-identical.
+- A sweep that renames an LZ item (method) of an adapted module forces [[module.fn]] rows: keep the old method and let the new name delegate, or lz check fails; a path-prefix rewrite must skip `::tests::` imports and the frozen amd64 tree.
