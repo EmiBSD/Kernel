@@ -59,8 +59,7 @@
 //!   (`bsd`'s host tests, the benches), as LZ's host tests never ran `main`'s
 //!   `kthread_run_deferred_queue`: those tests drive a queue's workers by hand, and a worker
 //!   thread would race them; `kthread_exit` unwinds the thread, which its spawner catches.
-//! - `vm::vnode`'s `SysInfo`: the host's monotonic clock from one second at the first call,
-//!   never rebooting.
+
 //! - `vm::proc`'s `VmProc`: each test thread a process, whose answers and records are a
 //!   per-thread [`VmProcState`] ([`vmproc_with`]); `sigexit` panics with its signal.
 //! - `vm::vnode`'s `VnodeOps`, not a slot: [`MemVnode`], a vnode whose file is a `Vec` in
@@ -106,7 +105,7 @@ use crate::vm::page::{
     uvm_setpagesize,
 };
 use crate::vm::types::{UvmConstraintRange, Voff};
-use crate::vm::vnode::{SysInfo, Uvn, VnodeOps};
+use crate::vm::vnode::{Uvn, VnodeOps};
 
 /// The page size of the doubles.
 const TEST_PAGE: usize = 4096;
@@ -445,32 +444,6 @@ pub fn net_lock_held() -> bool {
 
 static TEST_NET_LOCK: TestNetLock = TestNetLock;
 
-/// The clock and shutdown double of `vm::vnode`.
-struct TestSysInfo;
-
-/// When the clock double started.
-static CLOCK_START: OnceLock<Instant> = OnceLock::new();
-
-/// `rebooting`'s wait channel in the double.
-static REBOOTING_CHAN: u8 = 0;
-
-impl SysInfo for TestSysInfo {
-    fn uptime(&self) -> (i64, i64) {
-        let t = CLOCK_START.get_or_init(Instant::now).elapsed() + Duration::from_secs(1);
-        (t.as_secs() as i64, i64::from(t.subsec_micros()))
-    }
-
-    fn rebooting(&self) -> bool {
-        false
-    }
-
-    fn rebooting_chan(&self) -> *const () {
-        std::ptr::from_ref(&REBOOTING_CHAN).cast()
-    }
-}
-
-static TEST_SYS_INFO: TestSysInfo = TestSysInfo;
-
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
 /// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
@@ -774,7 +747,7 @@ pub fn install() {
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
-        let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
+
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
 
         // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per

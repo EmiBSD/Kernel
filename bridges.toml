@@ -260,15 +260,6 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-# bsd: getmicrouptime (sys/kern/kern_tc.rs, for the vnode pager's own ratecheck), rebooting and
-# &rebooting (sys/kern/kern_xxx.rs); implemented by sys/kern/vm_bsd.rs (BsdSysInfo) and
-# installed by bsd's uvm_init (N3.4e); (0, 0) and false before. N4, with kern_time and kern_xxx.
-# kernel::vm::vnode::SysInfo
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "SysInfo"
-for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/map.rs"]
-paid_by = "N5"
 
 # bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
 # vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with

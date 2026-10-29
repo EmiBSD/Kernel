@@ -460,7 +460,8 @@
 //!   `uvm_page_init` over the machine's constraints with `BsdBufCacheStats`, `uvm_pagealloc`
 //!   with the `(obj, anon)` pair, `uvm_pagealloc_multi`, `uvm_shutdown`,
 //!   `paddr_is_dma_reachable`, `uvm_page_physdump`, `uvm_pmr_print`); the vnode as the
-//!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`, `BsdSysInfo`) and the
+//!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`; N5.0: `BsdSysInfo` is
+//!   gone, the pager reads `kernel::tc` and `kernel::reboot` itself) and the
 //!   file systems' `uvn_attach`/`uvm_vnp_*` with `bsd`'s signatures; and `uvm_km.c`'s `bsd`
 //!   shapes (`kp_dma*` over the machine's `dma_constraint`, `km_alloc`/`km_free` with the
 //!   legacy pointer, `vm_min_kernel_address`).
@@ -526,15 +527,14 @@ use kernel::vm::page::{
 use kernel::vm::pmemrange::BufCacheStats;
 use kernel::vm::proc::{KbindSlot, VmProc};
 use kernel::vm::types::{VmProt, Voff};
-use kernel::vm::vnode::{SysInfo, Uvn, VType, VnodeOps, install_sysinfo};
+use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::fd_getfile;
 use crate::kern::kern_pledge::pledge_protexec;
 use crate::kern::kern_sig::{sigexit, trapsignal};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::kern_tc::getmicrouptime;
-use crate::kern::kern_xxx::REBOOTING;
+
 use crate::kern::subr_prf::{log, panic, uprintf};
 use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
@@ -1119,7 +1119,6 @@ pub fn uvm_init() {
     crate::kern::hal_bridges::hal_bridges_register_vm();
     // The u-areas `fork1` gives its threads (hal::thread's E4 provider).
     let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
-    uvn_install_sysinfo();
     let _ = kernel::vm::proc::install(&BSD_VM_PROC);
     kernel::vm::init::uvm_machine_init(&VM_MACHINE);
 
@@ -1614,32 +1613,6 @@ impl VnodeOps for Vnode {
 /// A mount's identity for the pager (its address as a number, 0 for none).
 fn mount_id(mp: Option<&'static Mount>) -> usize {
     mp.map_or(0, |m| core::ptr::from_ref(m).addr())
-}
-
-/// The system's clock and shutdown state for the vnode pager (bridges.toml `SysInfo`).
-struct BsdSysInfo;
-
-impl SysInfo for BsdSysInfo {
-    fn uptime(&self) -> (i64, i64) {
-        let tv = getmicrouptime();
-        (tv.tv_sec, tv.tv_usec as i64)
-    }
-
-    fn rebooting(&self) -> bool {
-        REBOOTING.load(Ordering::Relaxed)
-    }
-
-    fn rebooting_chan(&self) -> *const () {
-        core::ptr::from_ref(&REBOOTING).cast()
-    }
-}
-
-static BSD_SYS_INFO: BsdSysInfo = BsdSysInfo;
-
-/// Installs the `SysInfo` bridge for the kernel's vnode pager (`uvm_init`; a second call keeps
-/// the first).
-pub fn uvn_install_sysinfo() {
-    let _ = install_sysinfo(&BSD_SYS_INFO);
 }
 
 /// uvn_attach
