@@ -163,6 +163,11 @@
 //!   taken writes without one and skips that one `bufq_wait`, where the C, which has no
 //!   bound, would throttle it: only the writer's pacing differs, never a result userland sees
 //!   (it never sleeps for a note: the C does not sleep before `VOP_STRATEGY`).
+//! - `buf_get` takes a buffer header the pool already holds under the cache's lock
+//!   (`BoxPool::get_idle`, the C's `pool_get` at `splbio`), and `pool_get`'s yield after a
+//!   `PR_WAITOK` get when `kern.pool_debug` is 2 (a debug knob, `bsd`'s) is not made on that
+//!   path: it cannot yield under the lock, and the knob is out of the kernel crate's reach.
+//!   The path that leaves the lock for `pool_get(PR_WAITOK)` keeps it.
 //! - `curproc->p_ru.ru_inblock++`/`ru_oublock++` go through the vnode's [`BufVnode`]
 //!   (`charge_io`), which reaches the running thread.
 //!
@@ -1123,7 +1128,15 @@ pub fn bread_cluster_callback(mut t: BufRef) {
     // Move the pages from the master buffer's uvm object into the individual buffer's uvm
     // objects; each read-ahead buffer is then done.
     let error = t.buf().isset(B_ERROR);
-    let mut next = vb.st.get(&g).tree.next(t.buf()).map(counted);
+    // A counted link to the next read-ahead buffer only, never past the last: a link to
+    // the buffer after the cluster (any idle one at a higher block) held across a release
+    // below would stop the release's page recovery from freeing that buffer (bufhead's take
+    // refuses a counted element). The C keeps nothing past xbpp[n - 1].
+    let mut next = if n > 1 {
+        vb.st.get(&g).tree.next(t.buf()).map(counted)
+    } else {
+        None
+    };
     for i in 1..n {
         let Some(r) = next.take() else {
             kpanic(format_args!(
@@ -1133,8 +1146,13 @@ pub fn bread_cluster_callback(mut t: BufRef) {
         let Some(x) = r.get() else {
             kpanic(format_args!("bread_cluster_callback: a link to nothing"));
         };
-        // The next one first: this one may be freed by its release below.
-        next = vb.st.get(&g).tree.next(x).map(counted);
+        // The next one first (this one may be freed by its release below), and only while
+        // there is one.
+        next = if i + 1 < n {
+            vb.st.get(&g).tree.next(x).map(counted)
+        } else {
+            None
+        };
         if i >= inval {
             x.set(B_INVAL);
         }
@@ -3067,7 +3085,11 @@ mod tests {
             .collect();
         let mut t = getblk(vb, 16, PAGE_SIZE as i32, 0, INFSLP).expect("a buffer");
         t.data().fill(0x44);
-        assert_eq!(bwrite(t), Ok(()));
+        // A sleep for a note would hang the test: the double fails it instead.
+        crate::testutil::forbid_sleep(true);
+        let rv = bwrite(t);
+        crate::testutil::forbid_sleep(false);
+        assert_eq!(rv, Ok(()));
         assert_eq!(tv.writes.load(Mem::Relaxed), 1);
         assert_eq!(lock_disk(tv)[16 * DEV_BSIZE], 0x44);
         assert_eq!(NOTES_CLAIMED.load(Mem::SeqCst), QUEUE_NOTES);
@@ -3258,6 +3280,42 @@ mod tests {
         assert!(incore(vb, 1) && incore(vb, 2));
         assert!(!incore(vb, 3) && !incore(vb, 4));
         assert_eq!(stat(&BCSTATS.pendingreads), 0);
+    }
+
+    /// The second closing review's defect: the callback's walk kept a counted link to the
+    /// buffer after the cluster (any clean idle buffer at a higher block) while the last
+    /// read-ahead buffer's release recovered pages, and the recovery freed that buffer under
+    /// the link (`bufhead`'s take refuses a counted element). Here the buffer after the
+    /// cluster is the oldest idle one, without kva, and targetpages falls below the cache's
+    /// pages while the cluster's I/O is out.
+    #[test]
+    fn a_cluster_callback_holds_no_link_past_its_last_buffer() {
+        let (_g, tv) = setup(512);
+        let vb = &tv.bufs;
+        let size = PAGE_SIZE as i32;
+        // One read-ahead buffer (block 2, after the first, block 1): its release is the
+        // walk's last, and the first to recover pages.
+        tv.run.store(1, Mem::Relaxed);
+        // Block 10: cached, clean, idle, its kva taken (so buf_put frees it at once).
+        let t = getblk(vb, 10, size, 0, INFSLP).expect("a buffer");
+        brelse(t);
+        let slot = {
+            let mut g = CACHE.lock();
+            super::super::biomem::buf_unmap(&mut g)
+        };
+        drop(slot);
+        assert!(incore(vb, 10));
+        // The cluster of blocks 1..2 (at sector 1), its I/O out when targetpages drops.
+        let target = TARGETPAGES.load(Mem::Relaxed);
+        tv.target_at.store(1, Mem::Relaxed);
+        tv.target_to.store(0, Mem::Relaxed);
+        let (t, error) = bread_cluster(vb, 0, size);
+        assert_eq!(error, Ok(()));
+        brelse(t);
+        // The recovery the release made freed block 10 (and the others, idle by then).
+        assert!(!incore(vb, 10));
+        // The tests share the page system: the cache's target back as it was.
+        TARGETPAGES.store(target, Mem::Relaxed);
     }
 
     #[test]

@@ -185,7 +185,10 @@ pub trait RawPool: Sync {
     /// `pool_get(pp, flags)` of an item the pool already holds (a free item of one of its
     /// pages, or of its per-CPU cache): never grows the pool, never sleeps, never counts a
     /// failure (`pr_nfail`); `None` when it would have to grow. The default has no such try
-    /// and answers `None` (the caller then takes [`RawPool::get`]'s way).
+    /// and answers `None` (the caller then takes [`RawPool::get`]'s way). On a pool with a
+    /// per-CPU cache (`cache_init`), a `get_idle` that finds the cache empty and the `get`
+    /// that follows each count the cache's own miss (`pc_nfail`) once: twice where the C's
+    /// one `pool_get` counts it once (the buffer cache's `bufpl` has no cache).
     fn get_idle(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
         None
     }

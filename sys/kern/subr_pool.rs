@@ -875,8 +875,13 @@ pub fn pool_get(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
 /// a free item): never grows the pool, never sleeps and counts no failure (`pr_nfail`): `None`
 /// when it would have to grow, at the hard limit, or for a pool behind an rwlock (whose lock
 /// may sleep). `hal::pool::RawPool::get_idle`: the buffer cache's try under its lock, the
-/// C's `pool_get` at `splbio`, whose `PR_WAITOK` call counts nothing either.
+/// C's `pool_get` at `splbio`, whose `PR_WAITOK` call counts nothing either. A pool with a
+/// per-CPU cache counts its cache's miss (`pc_nfail`) here and again in the `pool_get` that
+/// follows (`bufpl` has none).
 pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
+    // pool_get's own check on its flags (no assertwaitok: this try never sleeps, and its
+    // caller holds a mutex).
+    kassert!(flags & (PR_WAITOK | PR_NOWAIT) != 0);
     if pp.pr_flags.get() & PR_RWLOCK != 0 {
         return None;
     }

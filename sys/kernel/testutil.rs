@@ -128,6 +128,7 @@ std::thread_local! {
     static PENDING: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
     static COLD: Cell<bool> = const { Cell::new(false) };
     static COLD_YIELDS: Cell<u32> = const { Cell::new(0) };
+    static NO_SLEEP: Cell<bool> = const { Cell::new(false) };
     static SCHED_PAUSES: Cell<u32> = const { Cell::new(0) };
     static RANDOM: Cell<u64> = const { Cell::new(0x9e37_79b9_7f4a_7c15) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
@@ -184,7 +185,11 @@ impl Sleep for TestSleep {
         PROC.with(|p| std::ptr::from_ref(p).addr() & !0xf) | 0x10
     }
 
-    fn sleep_setup(&self, ident: *const (), _prio: i32, _wmesg: &'static str) {
+    fn sleep_setup(&self, ident: *const (), _prio: i32, wmesg: &'static str) {
+        assert!(
+            !NO_SLEEP.with(Cell::get),
+            "a sleep on {wmesg:?} where the test forbids sleeping"
+        );
         let q = lock(&QUEUES);
         let chan = ident.addr();
         let generation = q.get(&chan).copied().unwrap_or(0);
@@ -851,6 +856,12 @@ pub fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
 /// Makes this thread see `cold || panicstr` as `cold` says (the sleeps' early return).
 pub fn set_cold(cold: bool) {
     COLD.with(|c| c.set(cold));
+}
+
+/// Makes this thread's next sleeps fail the test (`true`) instead of waiting: a test that
+/// must not sleep fails at once rather than hang.
+pub fn forbid_sleep(on: bool) {
+    NO_SLEEP.with(|c| c.set(on));
 }
 
 /// How many times this thread's sleeps took the `cold` early return's yield.
@@ -1624,6 +1635,11 @@ pub struct BufTestVnode {
     pub short: AtomicUsize,
     /// The sector whose transfer comes in short (-1: none).
     pub short_blk: core::sync::atomic::AtomicI64,
+    /// A sector whose transfer sets the cache's `targetpages` to [`BufTestVnode::target_to`]
+    /// before its `biodone` (-1: none): memory pressure that comes while the I/O is out.
+    pub target_at: core::sync::atomic::AtomicI64,
+    /// The `targetpages` that transfer sets.
+    pub target_to: core::sync::atomic::AtomicI64,
 }
 
 impl BufTestVnode {
@@ -1645,6 +1661,8 @@ impl BufTestVnode {
             synced: AtomicUsize::new(0),
             short: AtomicUsize::new(0),
             short_blk: core::sync::atomic::AtomicI64::new(-1),
+            target_at: core::sync::atomic::AtomicI64::new(-1),
+            target_to: core::sync::atomic::AtomicI64::new(0),
         }));
         tv.bufs.set_owner(tv);
         tv
@@ -1685,6 +1703,10 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
             0
         };
         bp.buf().set_resid(short);
+        if blk == self.target_at.load(Ordering::Relaxed) {
+            crate::fs::bio::TARGETPAGES
+                .store(self.target_to.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
         crate::fs::bio::biodone(bp);
         Ok(())
     }
