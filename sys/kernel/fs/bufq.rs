@@ -242,9 +242,11 @@ impl Nscan {
 
     /// `bufq_simple_nscan(head, bp)`: inserts the buffer in block order: after the last
     /// buffer it is not before (the C's walk to the first slot where it would fit, then the
-    /// insertion after the element it passed).
+    /// insertion after the element it passed). The buffer's block (`BUF_INORDER`'s key) is
+    /// read once, before the walk.
     fn simple_nscan(head: &mut SecondaryList<ByBufq>, m: Member<ByBufhead>) {
-        head.insert_before_first(m, buf_inorder);
+        let blkno = m.get().blkno();
+        head.insert_before_first(m, |cur| blkno < cur.blkno());
     }
 
     /// `bufq_nscan_resort`: takes `BUFQ_NSCAN_N` buffers from the fifo queue and sorts them.

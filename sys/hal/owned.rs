@@ -175,6 +175,12 @@
 //!   an adapter of the removal (whose `entry` and `augment` see the element being removed and
 //!   could link it from a secondary): only this module's code runs between that read and the
 //!   box, and a late link panics with the container poisoned, the element never given back.
+//!   The count is `Relaxed`: its changes are ordered with the links by the lock the users
+//!   hold (the owner's, or the protocol of the element's holder: the buffer cache's `CACHE`
+//!   and a busy buffer's token), not by the count itself; a count that would wrap is
+//!   `panic(9)`. A secondary claims an element by its owner word with a compare-exchange
+//!   from 0, so two secondaries under different locks racing on one element panic, never
+//!   both link it.
 //! - I5, poisoning: a panic in the middle of a change (an adapter's `cmp` or `augment`, a
 //!   refused entry, a broken shape) poisons the containers being changed, which then never
 //!   read or change their links again (every method panics, the drop leaks).
@@ -236,6 +242,9 @@ use crate::pool::{BoxPool, PoolBox};
 const BLACK: u8 = 0;
 /// `RB_RED`.
 const RED: u8 = 1;
+/// The most counted links an element takes ([`OwnedEntry`]'s `indexed`): half the range, so
+/// a count never wraps to 0 (I4), even while panics unwind.
+const COUNT_LIMIT: u32 = u32::MAX / 2;
 
 /// Declares `$name`, the [`OwnedAdapter`] of `$elem`'s field `$field` ordered by `$cmp` (a
 /// function or a closure without captures, `fn(&$elem, &$elem) -> Ordering`), augmented by
@@ -368,24 +377,23 @@ impl<T: 'static> OwnedEntry<T> {
         self.pool.set(None);
     }
 
-    /// One more counted link; a count that would wrap panics before it changes.
+    /// One more counted link; a count past [`COUNT_LIMIT`] panics. One atomic add, not a
+    /// compare-exchange loop (the buffer cache's hot path): the add is undone before the
+    /// panic, so even a panic that unwinds (the host's) leaves the count at most
+    /// `COUNT_LIMIT` plus the adds racing in that window, never near a wrap to 0, which would
+    /// let the owner free a linked element (I4).
     fn count_up(&self) {
-        if self
-            .indexed
-            .fetch_update(Mem::Relaxed, Mem::Relaxed, |n| n.checked_add(1))
-            .is_err()
-        {
+        if self.indexed.fetch_add(1, Mem::Relaxed) >= COUNT_LIMIT {
+            self.indexed.fetch_sub(1, Mem::Relaxed);
             hal_panic(format_args!("OwnedEntry: too many secondary links"));
         }
     }
 
-    /// One counted link fewer; a count already 0 is a broken secondary, `panic`.
+    /// One counted link fewer; a count already 0 is a broken secondary, `panic` (the
+    /// subtraction undone first, the count left at 0).
     fn count_down(&self) {
-        if self
-            .indexed
-            .fetch_update(Mem::Relaxed, Mem::Relaxed, |n| n.checked_sub(1))
-            .is_err()
-        {
+        if self.indexed.fetch_sub(1, Mem::Relaxed) == 0 {
+            self.indexed.fetch_add(1, Mem::Relaxed);
             hal_panic(format_args!(
                 "OwnedEntry: a secondary link that was not counted"
             ));
@@ -1332,9 +1340,19 @@ impl<S: SecondaryAdapter> SecondaryTree<S> {
         if self.id == 0 {
             self.id = fresh_id();
         }
+        // The claim: from no secondary to this one, or another secondary under another lock
+        // got there first (the check above raced): refused before anything changes.
+        if sent
+            .owner
+            .compare_exchange(0, self.id, Mem::Relaxed, Mem::Relaxed)
+            .is_err()
+        {
+            hal_panic(format_args!(
+                "RBT_INSERT: the element was linked from a secondary meanwhile"
+            ));
+        }
         let changing = Mutating(&self.poisoned);
         owner.count_up();
-        sent.owner.store(self.id, Mem::Relaxed);
         rb_link(self, NonNull::from(e), parent, went);
         core::mem::forget(changing);
         None
@@ -1524,21 +1542,22 @@ impl<S: SecondaryAdapter> SecondaryList<S> {
         self.link(m, tail, "TAILQ_INSERT_TAIL");
     }
 
-    /// Inserts `m` before the first element `cur` for which `before(m, cur)`, or at the tail
-    /// when there is none (`bufq_simple_nscan`'s walk and its `SIMPLEQ_INSERT_AFTER` of the
-    /// element it passed, or `SIMPLEQ_INSERT_HEAD`). The walk runs before anything changes,
-    /// so a panic in `before` leaves the list as it was.
+    /// Inserts `m` before the first element `cur` for which `before(cur)` (the caller's key of
+    /// `m`, taken once, against `cur`'s), or at the tail when there is none
+    /// (`bufq_simple_nscan`'s walk and its `SIMPLEQ_INSERT_AFTER` of the element it passed,
+    /// or `SIMPLEQ_INSERT_HEAD`). The walk runs before anything changes, so a panic in
+    /// `before` leaves the list as it was.
     pub fn insert_before_first(
         &mut self,
         m: Member<S::Owner>,
-        mut before: impl FnMut(&Elem<S>, &Elem<S>) -> bool,
+        mut before: impl FnMut(&Elem<S>) -> bool,
     ) {
         self.check("SIMPLEQ_INSERT_AFTER");
         let mut prev = None;
         let mut cur = get(&self.head);
         while let Some(x) = cur {
             let c = self.node(x);
-            if before(m.get(), c) {
+            if before(c) {
                 break;
             }
             prev = Some(x);
@@ -1568,13 +1587,22 @@ impl<S: SecondaryAdapter> SecondaryList<S> {
         if self.id == 0 {
             self.id = fresh_id();
         }
+        // The claim, as `SecondaryTree::insert`'s: refused before anything changes.
+        if sent
+            .owner
+            .compare_exchange(0, self.id, Mem::Relaxed, Mem::Relaxed)
+            .is_err()
+        {
+            hal_panic(format_args!(
+                "{what}: the element was linked from a secondary meanwhile"
+            ));
+        }
         let x = NonNull::from(e);
         let changing = Mutating(&self.poisoned);
         let next = match prev {
             Some(p) => get(&self.ent(self.node(p), what).right),
             None => get(&self.head),
         };
-        sent.owner.store(self.id, Mem::Relaxed);
         sent.uncounted.store(!m.counted, Mem::Relaxed);
         put(&sent.left, prev);
         put(&sent.right, next);
@@ -3211,15 +3239,15 @@ mod tests {
             assert!(t.insert(node(k, 0, &drops)).is_none());
         }
         let mut sorted = SecondaryList::<ByFreeList>::new();
-        let inorder = |a: &Node, b: &Node| a.key < b.key;
         for k in [50u64, 10, 40, 20, 30, 35, 5] {
             let e = t.find_by(|n| k.cmp(&n.key)).unwrap();
-            sorted.insert_before_first(Member::counted(e), inorder);
+            let key = e.key;
+            sorted.insert_before_first(Member::counted(e), |c: &Node| key < c.key);
         }
         assert_eq!(keys(&sorted), [5, 10, 20, 30, 35, 40, 50]);
         // An equal key goes after its equals (the C inserts after the element it passed).
         let s = static_node(30);
-        sorted.insert_before_first(Member::of_static(s), inorder);
+        sorted.insert_before_first(Member::of_static(s), |c: &Node| s.key < c.key);
         let after: Vec<bool> = sorted.iter().map(|n| ptr::eq(n, s)).collect();
         assert_eq!(
             after,
@@ -3313,14 +3341,30 @@ mod tests {
         q.push_tail(Member::of_static(static_node(1)));
         q.push_tail(Member::of_static(static_node(3)));
         let r = catch_unwind(AssertUnwindSafe(|| {
-            q.insert_before_first(Member::of_static(static_node(2)), |_, _| {
+            q.insert_before_first(Member::of_static(static_node(2)), |_| {
                 panic!("the walk's comparison panicked")
             });
         }));
         assert!(r.is_err());
         assert_eq!(keys(&q), [1, 3]);
-        q.insert_before_first(Member::of_static(static_node(2)), |a, b| a.key < b.key);
+        q.insert_before_first(Member::of_static(static_node(2)), |c: &Node| 2 < c.key);
         assert_eq!(keys(&q), [1, 2, 3]);
+    }
+
+    /// I4's count never wraps: past its limit an add panics and is undone, as is a
+    /// subtraction from 0, so a panic that unwinds leaves the count where it was.
+    #[test]
+    fn a_count_at_its_bounds_panics_and_is_left_as_it_was() {
+        let e = OwnedEntry::<Node>::new();
+        e.indexed.store(COUNT_LIMIT, Mem::Relaxed);
+        assert!(catch_unwind(AssertUnwindSafe(|| e.count_up())).is_err());
+        assert_eq!(e.indexed.load(Mem::Relaxed), COUNT_LIMIT);
+        e.indexed.store(0, Mem::Relaxed);
+        assert!(catch_unwind(AssertUnwindSafe(|| e.count_down())).is_err());
+        assert_eq!(e.indexed.load(Mem::Relaxed), 0);
+        e.count_up();
+        e.count_down();
+        assert_eq!(e.indexed.load(Mem::Relaxed), 0);
     }
 
     #[test]
