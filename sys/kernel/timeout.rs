@@ -647,6 +647,10 @@ impl Drop for Timeout {
 
 /// `struct timeoutstat`: statistics and totals, `[T]`.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct timeoutstat's tos_* names so the C can be grepped"
+)]
 struct Timeoutstat {
     /// `tos_added`: `timeout_add*(9)` calls.
     tos_added: u64,
@@ -895,11 +899,11 @@ pub fn startup(hz: i32, tick: i32, tick_nsec: i32) {
 /// `softclock` threads deferred until threads can be made. Panics, as the C, when the soft
 /// interrupt cannot be had.
 pub fn proc_init() {
-    let si = match hal::softintr::establish(IPL_SOFTCLOCK, softclock_si, core::ptr::null_mut()) {
-        Some(si) => si,
-        None => kpanic(format_args!(
+    let Some(si) = hal::softintr::establish(IPL_SOFTCLOCK, softclock_si, core::ptr::null_mut())
+    else {
+        kpanic(format_args!(
             "timeout_proc_init: unable to register softclock interrupt"
-        )),
+        ))
     };
     if SOFTCLOCK_SI.set(si).is_err() {
         kpanic(format_args!("timeout_proc_init: called twice"));
@@ -994,7 +998,7 @@ pub fn hardclock_update() {
     // Update the cached state for each kclock.
     let w = todo.data_mut();
     let tick_ts = w.tick_ts;
-    for kc in w.kclock.iter_mut() {
+    for kc in &mut w.kclock {
         kc.lastscan = now.add(kc.offset);
         kc.late = kc.lastscan.sub(tick_ts);
     }
@@ -1011,12 +1015,12 @@ pub fn hardclock_update() {
 /// cleared and `TIMEOUT_TRIGGERED` set while it was taken, its function and argument copied
 /// then): recorded as running, its function called with the lock released (it may add or
 /// delete itself), the lock taken again, which is returned.
-fn run_taken<'w>(
-    mut g: MutexedGuard<'w, WheelState>,
+fn run_taken(
+    mut g: MutexedGuard<'_, WheelState>,
     ctx: Ctx,
     call: Option<Call>,
     addr: usize,
-) -> MutexedGuard<'w, WheelState> {
+) -> MutexedGuard<'_, WheelState> {
     // needsproc: WITNESS only. NKCOV > 0: kcov_process.
     g.running[ctx as usize] = addr;
     drop(g);
@@ -1036,10 +1040,10 @@ fn run_taken<'w>(
 
 /// The first timeout of `ctx`'s queue taken off it and run ([`run_taken`]): the guard back,
 /// `false` when the queue was empty (a thread's loop).
-fn run_first<'w>(
-    mut g: MutexedGuard<'w, WheelState>,
+fn run_first(
+    mut g: MutexedGuard<'_, WheelState>,
     ctx: Ctx,
-) -> (MutexedGuard<'w, WheelState>, bool) {
+) -> (MutexedGuard<'_, WheelState>, bool) {
     // The context's queue bound once for the look and the removal.
     let mut q = ring(ctx.todo()).bound(&mut g);
     let Some((call, addr)) = q.first().map(|to| {

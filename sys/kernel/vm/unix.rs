@@ -103,6 +103,10 @@ use crate::proc::{ProcGlue, Thread};
 const WALK_CHUNK: usize = 32;
 
 /// What the core dump's walk reads of one map entry, copied out under the map's read lock.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags are the map entry's kinds (submap, conceal, device, vnode) the core dump's walk tests one by one, as the C does"
+)]
 struct Seg {
     /// `entry->start`.
     start: usize,
@@ -241,7 +245,7 @@ fn uvm_coredump_walk_amap(
         let npages = ((entry_end - pos) >> PAGE_SHIFT).min(WALK_CHUNK);
         amap_present(amap, *pageoff, pos - seg.start, &mut present[..npages]);
         for (i, &here) in present[..npages].iter().enumerate() {
-            if !here == absent {
+            if here != absent {
                 continue;
             }
             if !absent {

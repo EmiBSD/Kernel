@@ -156,7 +156,7 @@ pub fn wakeup_one<T: ?Sized>(ident: *const T) {
 /// `curproc` as a word (0 before the bridge is registered): an identity, compared and never
 /// dereferenced (an rwlock's writer, a map's `busy` owner, `vm_map_busy_ln`).
 pub fn curproc_word() -> usize {
-    bridges::sleep().map_or(0, |b| b.curproc_word())
+    bridges::sleep().map_or(0, Sleep::curproc_word)
 }
 
 /// `cold`: autoconfiguration is not over, so nothing may sleep or rely on the kernel map
@@ -164,7 +164,7 @@ pub fn curproc_word() -> usize {
 /// answers `cold || panicstr` (after a panic the static entries serve too, harmlessly);
 /// before it is registered the kernel is booting: `true`.
 pub fn cold() -> bool {
-    bridges::sleep().is_none_or(|b| b.cold())
+    bridges::sleep().is_none_or(Sleep::cold)
 }
 
 /// `sched_pause(yield)` (`<sys/sched.h>`): gives the CPU up when its scheduler asks
@@ -178,7 +178,7 @@ pub fn sched_pause() {
 
 /// `_kernel_lock_held()` (`false` before the bridge is registered).
 pub(crate) fn kernel_lock_held() -> bool {
-    bridges::sleep().is_some_and(|b| b.kernel_lock_held())
+    bridges::sleep().is_some_and(Sleep::kernel_lock_held)
 }
 /* </CODE> */
 

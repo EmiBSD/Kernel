@@ -213,6 +213,10 @@ pub const EX_NOBOUNDARY: u64 = 0;
 
 /// `struct extent_region`: one allocated region `[er_start, er_end]`, or a free descriptor of
 /// a fixed extent. Its fields are written under its extent's lock.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct extent_region's er_* names so the C can be grepped"
+)]
 pub struct ExtentRegion {
     /// `er_link`: the extent's region tree or a fixed extent's freelist.
     er_link: OwnedEntry<ExtentRegion>,
@@ -946,13 +950,13 @@ fn extent_insert_and_optimize(
     g: &mut MutexedGuard<'_, ExState>,
     start: u64,
     size: u64,
-    c: Coalesced,
+    c: &Coalesced,
     rp: PoolBox<ExtentRegion>,
 ) {
     match c {
         Coalesced::Merged => extent_free_region_descriptor(ex, g, rp),
         Coalesced::MergedTakeNext(next) => {
-            if let Some(nextr) = take(g, next) {
+            if let Some(nextr) = take(g, *next) {
                 extent_free_region_descriptor(ex, g, nextr);
             }
             extent_free_region_descriptor(ex, g, rp);
@@ -1040,7 +1044,7 @@ fn extent_do_alloc_region(
         // "last" is the region we fall after, `None` at the head.
         let placed = 'walk: {
             let mut last: Option<&ExtentRegion> = None;
-            for rp in g.regions.iter() {
+            for rp in &g.regions {
                 if rp.start() > end {
                     // We lie before this region and don't conflict.
                     break;
@@ -1080,7 +1084,7 @@ fn extent_do_alloc_region(
 
         match placed {
             Placed::Insert(c) => {
-                extent_insert_and_optimize(ex, g, start, size, c, myrp);
+                extent_insert_and_optimize(ex, g, start, size, &c, myrp);
                 return Ok(());
             }
             Placed::Sleep => {
@@ -1378,7 +1382,7 @@ fn extent_do_alloc(
 
         // found: insert ourselves into the region list (after "last", the region in hand).
         let c = coalesce(ex, &g.regions, start, size, after);
-        extent_insert_and_optimize(ex, g, start, size, c, myrp);
+        extent_insert_and_optimize(ex, g, start, size, &c, myrp);
         return Ok(start);
     }
 }
@@ -1431,7 +1435,7 @@ fn extent_free(ex: &Extent, start: u64, size: u64, flags: i32) -> Result<(), Err
         // 3a move its start or end in place; what changes the tree (case 1's or 1a's removal,
         // case 4's new region) is done once the walk's borrow has ended.
         let act = 'walk: {
-            for r in g.regions.iter() {
+            for r in &g.regions {
                 let (rs, re) = (r.start(), r.end());
 
                 // Does the current region end before the chunk to be freed begins?
@@ -1647,7 +1651,7 @@ fn print_locked(ex: &Extent, st: &ExState, pr: fn(fmt::Arguments<'_>)) {
         ex.ex_end,
         ExfBits(ex.flags_of(st))
     ));
-    for rp in st.regions.iter() {
+    for rp in &st.regions {
         pr(format_args!("     0x{:x} - 0x{:x}\n", rp.start(), rp.end()));
     }
 }

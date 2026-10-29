@@ -794,7 +794,7 @@ impl<G: ProcGlue> Knote<G> {
     pub fn set_hook_shared(&self, obj: AnyArc) -> Result<(), AnyArc> {
         self.hook.set(KnHook::Shared(obj)).map_err(|h| match h {
             KnHook::Shared(a) => a,
-            KnHook::Timer(_) => kpanic(format_args!("knote {:p}: a timer hook", self)),
+            KnHook::Timer(_) => kpanic(format_args!("knote {self:p}: a timer hook")),
         })
     }
 
@@ -848,7 +848,7 @@ impl<G: ProcGlue> Knote<G> {
         let fp = self.fp.lock().get().cloned();
         match fp {
             Some(fp) => fp,
-            None => kpanic(format_args!("knote {:p}: no kn_fp", self)),
+            None => kpanic(format_args!("knote {self:p}: no kn_fp")),
         }
     }
 
@@ -856,7 +856,7 @@ impl<G: ProcGlue> Knote<G> {
     pub fn fop(&self) -> &'static Filterops<G> {
         match self.kn_fop.get() {
             Some(fop) => fop,
-            None => kpanic(format_args!("knote {:p}: no kn_fop", self)),
+            None => kpanic(format_args!("knote {self:p}: no kn_fop")),
         }
     }
 
@@ -869,7 +869,7 @@ impl<G: ProcGlue> Knote<G> {
     pub fn kq_ref(&self) -> &KqRef<G> {
         match &self.kq {
             Some(kq) => kq,
-            None => kpanic(format_args!("knote {:p}: no kn_kq", self)),
+            None => kpanic(format_args!("knote {self:p}: no kn_kq")),
         }
     }
 
@@ -898,7 +898,7 @@ impl<G: ProcGlue> Knote<G> {
     pub fn pinned(&self) -> Pin<&Self> {
         match hal::owned::pinned::<G::KnLink>(self) {
             Some(p) => p,
-            None => kpanic(format_args!("knote {:p}: owned by no kqueue", self)),
+            None => kpanic(format_args!("knote {self:p}: owned by no kqueue")),
         }
     }
 
@@ -908,7 +908,7 @@ impl<G: ProcGlue> Knote<G> {
         let pr = self.process.lock().clone();
         match pr {
             Some(pr) => pr,
-            None => kpanic(format_args!("knote {:p}: no process", self)),
+            None => kpanic(format_args!("knote {self:p}: no process")),
         }
     }
 
@@ -1043,7 +1043,7 @@ impl<G: ProcGlue> Klist<G> {
     fn own(&self) -> &SharedMutex {
         match self.own.get() {
             Some(m) => m,
-            None => kpanic(format_args!("klist {:p}: no own mutex", self)),
+            None => kpanic(format_args!("klist {self:p}: no own mutex")),
         }
     }
 
@@ -1196,7 +1196,7 @@ impl<G: ProcGlue> Klist<G> {
     /// `klist_free(klist)`: the list must be empty.
     pub fn free(&self) {
         if !self.is_empty() {
-            kpanic(format_args!("klist_free: klist {:p} is not empty", self));
+            kpanic(format_args!("klist_free: klist {self:p} is not empty"));
         }
     }
 
@@ -1652,32 +1652,23 @@ pub trait Filter<G: ProcGlue>: 'static {
 
     /// `f_attach(kn)`.
     fn attach(kn: &Knote<G>) -> Result<(), Errno> {
-        kpanic(format_args!(
-            "filter_attach: knote {:p} has no f_attach",
-            kn
-        ))
+        kpanic(format_args!("filter_attach: knote {kn:p} has no f_attach"))
     }
 
     /// `f_detach(kn)`.
     fn detach(kn: &Knote<G>) {
-        kpanic(format_args!(
-            "filter_detach: knote {:p} has no f_detach",
-            kn
-        ))
+        kpanic(format_args!("filter_detach: knote {kn:p} has no f_detach"))
     }
 
     /// `f_event(kn, hint)`: whether the event is active.
     fn event(kn: &Knote<G>, _hint: i64) -> bool {
-        kpanic(format_args!("knote {:p}: no f_event", kn))
+        kpanic(format_args!("knote {kn:p}: no f_event"))
     }
 
     /// `f_modify(kev, kn)`: whether the knote has become active.
     fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
         if Self::FLAGS & FILTEROP_MPSAFE != 0 {
-            kpanic(format_args!(
-                "filter_modify: knote {:p} has no f_modify",
-                kn
-            ));
+            kpanic(format_args!("filter_modify: knote {kn:p} has no f_modify"));
         }
         let _s = hal::intr::splhigh();
         knote_modify(kev, kn)
@@ -1687,8 +1678,7 @@ pub trait Filter<G: ProcGlue>: 'static {
     fn process(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool {
         if Self::FLAGS & FILTEROP_MPSAFE != 0 {
             kpanic(format_args!(
-                "filter_process: knote {:p} has no f_process",
-                kn
+                "filter_process: knote {kn:p} has no f_process"
             ));
         }
         let _s = hal::intr::splhigh();
@@ -1713,7 +1703,7 @@ fn fp_kqueue<G: ProcGlue>(fp: &File<Files<G>>) -> KqRef<G> {
 fn fop_event<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
     match kn.fop().f_event {
         Some(f_event) => f_event(kn, hint),
-        None => kpanic(format_args!("knote {:p}: no f_event", kn)),
+        None => kpanic(format_args!("knote {kn:p}: no f_event")),
     }
 }
 
@@ -2084,7 +2074,7 @@ fn filt_timervalidate(sfflags: u32, sdata: i64) -> Result<Timespec, Errno> {
 fn filt_timer<G: ProcGlue>(kn: &Knote<G>) -> &PoolArc<FiltTimer<G>> {
     match kn.hook.get() {
         Some(KnHook::Timer(ft)) => ft,
-        _ => kpanic(format_args!("knote {:p}: no timer", kn)),
+        _ => kpanic(format_args!("knote {kn:p}: no timer")),
     }
 }
 
@@ -2210,7 +2200,7 @@ impl<G: ProcGlue> Filter<G> for TimerFilter {
             0,
         );
         if kn.hook.set(KnHook::Timer(ft.clone())).is_err() {
-            kpanic(format_args!("filt_timerattach: knote {:p} has a timer", kn));
+            kpanic(format_args!("filt_timerattach: knote {kn:p} has a timer"));
         }
 
         let mut st = ft.st.lock();
@@ -2312,6 +2302,10 @@ impl<G: ProcGlue> Filter<G> for UserFilter {
     }
 
     /// `filt_usermodify`: `NOTE_TRIGGER` activates, the `NOTE_FF*` control combines `fflags`.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+    )]
     fn modify(kev: &mut Kevent, kn: &Knote<G>) -> bool {
         if kev.fflags & NOTE_TRIGGER != 0 {
             kn.useract.store(true, Ordering::Relaxed);
@@ -2446,7 +2440,7 @@ impl<G: ProcGlue> Filter<G> for BadfdFilter {
 
     /// `filt_deaddetach`.
     fn detach(kn: &Knote<G>) {
-        DeadFilter::detach(kn)
+        DeadFilter::detach(kn);
     }
 
     /// `filt_badfd`: the descriptor was closed under a poll or select.
@@ -2471,10 +2465,7 @@ impl<G: ProcGlue> Filter<G> for BadfdFilter {
 fn filter_attach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
     let fop = kn.fop();
     let Some(f_attach) = fop.f_attach else {
-        kpanic(format_args!(
-            "filter_attach: knote {:p} has no f_attach",
-            kn
-        ));
+        kpanic(format_args!("filter_attach: knote {kn:p} has no f_attach"));
     };
 
     if fop.f_flags & FILTEROP_MPSAFE != 0 {
@@ -2489,10 +2480,7 @@ fn filter_attach<G: ProcGlue>(kn: &Knote<G>) -> Result<(), Errno> {
 fn filter_detach<G: ProcGlue>(kn: &Knote<G>) {
     let fop = kn.fop();
     let Some(f_detach) = fop.f_detach else {
-        kpanic(format_args!(
-            "filter_detach: knote {:p} has no f_detach",
-            kn
-        ));
+        kpanic(format_args!("filter_detach: knote {kn:p} has no f_detach"));
     };
 
     if fop.f_flags & FILTEROP_MPSAFE != 0 {
@@ -2522,19 +2510,15 @@ fn filter_modify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
     if fop.f_flags & FILTEROP_MPSAFE != 0 {
         match fop.f_modify {
             Some(f_modify) => f_modify(kev, kn),
-            None => kpanic(format_args!(
-                "filter_modify: knote {:p} has no f_modify",
-                kn
-            )),
+            None => kpanic(format_args!("filter_modify: knote {kn:p} has no f_modify")),
         }
     } else {
         let _k = KernelHold::take();
-        match fop.f_modify {
-            Some(f_modify) => f_modify(kev, kn),
-            None => {
-                let _s = hal::intr::splhigh();
-                knote_modify(kev, kn)
-            }
+        if let Some(f_modify) = fop.f_modify {
+            f_modify(kev, kn)
+        } else {
+            let _s = hal::intr::splhigh();
+            knote_modify(kev, kn)
         }
     }
 }
@@ -2547,18 +2531,16 @@ fn filter_process<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool 
         match fop.f_process {
             Some(f_process) => f_process(kn, kev),
             None => kpanic(format_args!(
-                "filter_process: knote {:p} has no f_process",
-                kn
+                "filter_process: knote {kn:p} has no f_process"
             )),
         }
     } else {
         let _k = KernelHold::take();
-        match fop.f_process {
-            Some(f_process) => f_process(kn, kev),
-            None => {
-                let _s = hal::intr::splhigh();
-                knote_process(kn, kev)
-            }
+        if let Some(f_process) = fop.f_process {
+            f_process(kn, kev)
+        } else {
+            let _s = hal::intr::splhigh();
+            knote_process(kn, kev)
         }
     }
 }
@@ -2573,7 +2555,7 @@ pub fn thread_kq<G: ProcGlue>(p: &Thread<G>) -> &KqRef<G> {
 
 /// `p->p_kq == kq`.
 fn is_thread_kq<G: ProcGlue>(p: &Thread<G>, kq: &Kqueue<G>) -> bool {
-    p.p_kq.get().is_some_and(|k| ptr::eq(&**k, kq))
+    p.p_kq.get().is_some_and(|k| ptr::eq(&raw const **k, kq))
 }
 
 /// `LIST_INSERT_HEAD(&fdp->fd_kqlist, kq, kq_next)`, under the list's mutex (the C's
@@ -2910,16 +2892,15 @@ pub fn kqueue_register<G: ProcGlue>(
         let mut held = None;
         if let Some(found) = found {
             let h = KnHold::of(found);
-            match knote_acquire(&mut g, h) {
-                Some(h) => held = Some(h),
-                None => {
-                    // knote_acquire() has slept; the knote may be stale: again.
-                    drop(g);
-                    if let Some(f) = fp.take() {
-                        let _ = f.frele(p);
-                    }
-                    continue;
+            if let Some(h) = knote_acquire(&mut g, h) {
+                held = Some(h);
+            } else {
+                // knote_acquire() has slept; the knote may be stale: again.
+                drop(g);
+                if let Some(f) = fp.take() {
+                    let _ = f.frele(p);
                 }
+                continue;
             }
         }
 
@@ -3047,6 +3028,10 @@ pub fn kqueue_register<G: ProcGlue>(
 }
 
 /// `sysfilt_ops[i]`: the system filter of `~filter`.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+)]
 fn sysfilt_ops<G: ProcGlue>(i: usize) -> Option<&'static Filterops<G>> {
     match i {
         0 | 1 | 3 | 7 | 8 => Some(&Kqueue::<G>::FILE_FILTOPS), // READ, WRITE, VNODE, DEVICE, EXCEPT
@@ -3511,6 +3496,10 @@ fn knote_acquire<G: ProcGlue>(g: &mut KqGuard<'_, G>, h: KnHold<G>) -> Option<Kn
 }
 
 /// `knote_release(kn)`: release an acquired knote, clearing `KN_PROCESSING`.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the KnHold is the acquired knote's token: releasing it spends it, so the caller cannot use the hold again"
+)]
 fn knote_release<G: ProcGlue>(g: &mut KqGuard<'_, G>, h: KnHold<G>) {
     let kn = h.kn();
     kassert!(kn.kn_filter().get() != EVFILT_MARKER);
@@ -3562,7 +3551,7 @@ fn knote_remove<'a, G: ProcGlue>(
         let Some(kn) = list.iter().find(|kn| purge || !kn.fop_is(FILTEROP_BADFD)) else {
             return g;
         };
-        kassert!(ptr::eq(kn.kq(), &**kq));
+        kassert!(ptr::eq(kn.kq(), &raw const **kq));
 
         let h = KnHold::of(kn);
         let Some(h) = knote_acquire(&mut g, h) else {

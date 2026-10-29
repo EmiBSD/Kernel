@@ -674,3 +674,34 @@ Met 2026-10-24 (under way since 2026-10-19). Boundary: from `docs: close N3` (54
   of 2026-10-24 closes N4 with them recorded and gives them to N12's row (suspects: N4.8d's
   TTBR1 switch and ASID-tagged kernel TLB entries, the owned locks, N4.8b's frame borrows).
 - Effort / Time: left for the user.
+
+## N5 VFS and file systems
+
+(The close fills this section; the entries below are dated events inside the milestone.)
+
+### clippy::pedantic in the three crates (2026-10-29)
+
+- The user asked whether `clippy::pedantic` was on (it was not: the workspace lints were a
+  hand-picked list over clippy's default set with `-D warnings`) and, after a measurement,
+  decided to turn it on in `kernel`, `hal` and `abi`, never in `bsd`.
+- Measured first, on the host, read-only: with pedantic as a whole, `kernel` 7,880 warnings
+  (the run compiles `hal` and `libz` too), `hal` 785, `abi` 283 of its own; `bsd` 35,182.
+  By lint: 4,480 literals without separators (4,135 of them the hex tables of
+  `kernel::crypto::{cast,blf,sk,spr}`), 857 backticks in docs, 639 `must_use`, 483 `# Errors`;
+  and the ones that matter, 1,348 casts that lose sign, truncate or wrap (kernel 1,061, abi 235,
+  hal 52). `abi`'s 235 are all in `sysent.rs`, the syscall arguments: the place where an
+  `as u32` on a negative userland value is an ABI bug.
+- The shape: `#![warn(clippy::pedantic)]` as an inner attribute of the three crate roots (not
+  `[workspace.lints]`, which `bsd` inherits), with the cosmetic lints allowed permanently with a
+  `reason` each, and the three cast lints allowed with a `reason` that dates them: `abi`'s 235 are a
+  slice of their own at the N5 close or the N6 start (the user, through the N5 session, the
+  same day: the userland boundary does not wait), `kernel`'s 1,061 and `hal`'s 52 at N11,
+  whose row names them. What remained, 232 small findings in 40
+  redesigned or extra files (`uninlined_format_args` 46, `redundant_closure_for_method_calls`
+  23, `if_not_else` 22, `single_match_else` 20, `return_self_not_must_use` 16, `borrow_as_ptr`
+  16 inside `hal`'s `unsafe`, ...), is fixed by a `mechanical` run; the twelve findings that fell
+  in inherited headers of `hal/sys/` (`_IOR` names, `_pad` fields) are two more permanent allows,
+  since an inherited file cannot change.
+- Userland was not the place: it is in planning, with a designer session working in its tree;
+  two `cargo clippy --fix` runs from this session deadlocked against it on one `target/`
+  (the lesson is in the session memory: tooling experiments go to the Kernel).

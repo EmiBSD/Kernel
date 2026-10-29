@@ -29,6 +29,46 @@
 //! `hal::sys::syscall`'s, not a copy of them.
 #![no_std]
 #![forbid(unsafe_code)]
+// `clippy::pedantic` is on in this crate (the user's decision of 2026-10-29, measured first:
+// docs/JOURNAL.md). What it asks and this crate declines, each with its reason; the three cast
+// lints are allowed until N11 types their sites one by one (docs/ROADMAP.md, N11).
+#![warn(clippy::pedantic)]
+#![allow(
+    clippy::unreadable_literal,
+    reason = "the hex tables of the ciphers and the constants of the C headers read as the C writes them"
+)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    reason = "the C's names in prose and the `Result`'s type say it; backticks and an `# Errors` section per function are noise"
+)]
+#![allow(
+    clippy::must_use_candidate,
+    reason = "a `#[must_use]` on every pure function is noise; the ones that matter carry it"
+)]
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    reason = "OpenBSD's names are kept so the C can be grepped (`uvm::uvm_fault::uvm_fault`, `p`, `pr`, `ps`)"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::inline_always,
+    reason = "a function the C keeps whole stays whole; `#[inline(always)]` sits on the hot paths decision 43 measures"
+)]
+#![allow(
+    clippy::used_underscore_items,
+    clippy::pub_underscore_fields,
+    reason = "the C's `_IOR`/`_IOW` names and the `_pad` fields of `#[repr(C)]` layouts, kept as the C spells them"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "typed one by one, 1,348 sites: abi's 235 (sysent.rs, the syscall arguments) in a slice of their own at the N5 close or the N6 start, the user's decision of 2026-10-29; kernel's 1,061 and hal's 52 at N11"
+)]
 
 #[cfg(test)]
 extern crate std;

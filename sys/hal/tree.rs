@@ -684,6 +684,15 @@ impl<A: TreeAdapter> Tree<A> {
     }
 }
 
+impl<A: TreeAdapter> IntoIterator for &Tree<A> {
+    type Item = &'static A::Elem;
+    type IntoIter = Iter<A>;
+
+    fn into_iter(self) -> Iter<A> {
+        self.iter()
+    }
+}
+
 impl<A: TreeAdapter> Default for Tree<A> {
     fn default() -> Self {
         Self::new()

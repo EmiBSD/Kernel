@@ -73,7 +73,7 @@ pub(crate) fn sendsig(d: &SigDelivery<'_>) -> Result<(), Errno> {
             onstack: d.onstack,
             sigcode: d.sigcode,
             cookie: d.cookie,
-        })
+        });
     });
     if SENDSIG_FAILS.with(Cell::get) {
         return Err(Errno::EFAULT);

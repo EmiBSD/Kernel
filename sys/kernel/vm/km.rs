@@ -387,6 +387,10 @@ pub struct KmemVaMode {
 
 /// `struct kmem_pa_mode`: allocation mode for physical pages.
 #[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the C struct kmem_pa_mode, whose flags callers set by field name"
+)]
 pub struct KmemPaMode {
     /// Allocation constraint for physical pages.
     pub kp_constraint: &'static UvmConstraintRange,
@@ -604,13 +608,13 @@ impl VmMapper {
 
     /// `pmap_remove(pmap_kernel(), sva, eva)` (`KernelMapper::remove`): the map's unmap path.
     pub(super) fn remove(self, sva: Vaddr, eva: Vaddr) {
-        self.0.remove(sva, eva)
+        self.0.remove(sva, eva);
     }
 
     /// `pmap_protect(pmap_kernel(), sva, eva, prot)` (`KernelMapper::protect`): the map's
     /// `uvm_map_protect`.
     pub(super) fn protect(self, sva: Vaddr, eva: Vaddr, prot: VmProt) {
-        self.0.protect(sva, eva, prot)
+        self.0.protect(sva, eva, prot);
     }
 
     /// The direct map's view of the page at `pa` (`KernelMapper::map_direct`).

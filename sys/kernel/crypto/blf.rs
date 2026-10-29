@@ -202,7 +202,7 @@ impl BlfCtx {
     pub fn expand0state(&mut self, key: &[u8]) {
         let mut j = 0u16;
 
-        for p in self.p.iter_mut() {
+        for p in &mut self.p {
             // Extract 4 int8 to 1 int32 from keystream
             *p ^= Blowfish_stream2word(key, &mut j);
         }
@@ -225,7 +225,7 @@ impl BlfCtx {
     pub fn expandstate(&mut self, data: &[u8], key: &[u8]) {
         let mut j = 0u16;
 
-        for p in self.p.iter_mut() {
+        for p in &mut self.p {
             // Extract 4 int8 to 1 int32 from keystream
             *p ^= Blowfish_stream2word(key, &mut j);
         }
@@ -274,14 +274,14 @@ impl BlfCtx {
     /// `blf_ecb_encrypt`: encrypts the whole 8-byte blocks of `data`.
     pub fn ecb_encrypt(&self, data: &mut [u8]) {
         for blk in data.as_chunks_mut::<8>().0 {
-            *blk = store_block(self.encipher(load_block(blk)));
+            *blk = store_block(self.encipher(load_block(*blk)));
         }
     }
 
     /// `blf_ecb_decrypt`: decrypts the whole 8-byte blocks of `data`.
     pub fn ecb_decrypt(&self, data: &mut [u8]) {
         for blk in data.as_chunks_mut::<8>().0 {
-            *blk = store_block(self.decipher(load_block(blk)));
+            *blk = store_block(self.decipher(load_block(*blk)));
         }
     }
 
@@ -290,7 +290,7 @@ impl BlfCtx {
         let mut prev = *iv;
         for blk in data.as_chunks_mut::<8>().0 {
             blk.iter_mut().zip(prev).for_each(|(b, v)| *b ^= v);
-            *blk = store_block(self.encipher(load_block(blk)));
+            *blk = store_block(self.encipher(load_block(*blk)));
             prev = *blk;
         }
     }
@@ -307,7 +307,7 @@ impl BlfCtx {
                 None => *iva,
             };
             let blk = &mut blocks[b];
-            *blk = store_block(self.decipher(load_block(blk)));
+            *blk = store_block(self.decipher(load_block(*blk)));
             blk.iter_mut().zip(iv).for_each(|(x, v)| *x ^= v);
         }
     }
@@ -507,8 +507,8 @@ pub fn Blowfish_stream2word(data: &[u8], current: &mut u16) -> u32 {
 }
 
 /// The big-endian halves of the block `data`.
-fn load_block(data: &[u8; 8]) -> [u32; 2] {
-    let [a, b, c, d, e, f, g, h] = *data;
+fn load_block(data: [u8; 8]) -> [u32; 2] {
+    let [a, b, c, d, e, f, g, h] = data;
     [
         u32::from_be_bytes([a, b, c, d]),
         u32::from_be_bytes([e, f, g, h]),
@@ -707,7 +707,7 @@ mod tests {
                 for i in 0..8 {
                     x[i] = pb[i] ^ prev[i];
                 }
-                assert_eq!(store_block(c.encipher(load_block(&x))), cb);
+                assert_eq!(store_block(c.encipher(load_block(x))), cb);
                 prev.copy_from_slice(cb);
             }
             assert_eq!(buf[whole..], data[whole..]);

@@ -1766,7 +1766,7 @@ fn doproc_matches<G: ProcGlue>(
         KERN_PROC_PID => pr.ps_pid == arg,
         // could do this by traversing pgrp
         KERN_PROC_PGRP => pr.pgid(r) == arg,
-        KERN_PROC_SESSION => sess.and_then(|s| s.leader_pid()) == Some(arg),
+        KERN_PROC_SESSION => sess.and_then(super::proc::Session::leader_pid) == Some(arg),
         KERN_PROC_TTY => {
             flags & PS_CONTROLT != 0
                 && sess
@@ -1835,7 +1835,7 @@ pub fn fill_kproc<G: ProcGlue>(
         // vm = pr->ps_vmspace; uvmspace_addref(vm): a process that is not exiting holds
         // its vmspace, and the reference keeps it while it is read. The handle is the C's
         // pointer, not a reference: the returned `KprocVm` gives back the one taken here.
-        vm = g.vmspace.clone();
+        vm.clone_from(&g.vmspace);
         if let Some(vm) = &vm {
             crate::vm::map::uvmspace_addref(vm);
         }
@@ -1843,25 +1843,22 @@ pub fn fill_kproc<G: ProcGlue>(
 
     let tu = Tusage::new();
     let isthread = p.is_some();
-    let p: &Thread<G> = match p {
-        Some(p) => {
-            crate::resource::tuagg_get_proc(&tu, p);
-            p
+    let p: &Thread<G> = if let Some(p) = p {
+        crate::resource::tuagg_get_proc(&tu, p);
+        p
+    } else {
+        // p = pr->ps_mainproc: the process's main thread, its slot's, under the
+        // caller's ps_mtx (a process keeps it until process_zap).
+        let Some(mainp) = pr.main_thread(g) else {
+            kpanic(format_args!("fill_kproc: process without a main thread"));
+        };
+        // tuagg_get_process(&tu, pr), under the caller's ps_mtx.
+        tu.clear();
+        crate::resource::tuagg_sumup(&tu, &pr.ps_tu);
+        for t in pr.ps_threads.iter(g) {
+            crate::resource::tuagg_sumup(&tu, &t.p_tu);
         }
-        None => {
-            // p = pr->ps_mainproc: the process's main thread, its slot's, under the
-            // caller's ps_mtx (a process keeps it until process_zap).
-            let Some(mainp) = pr.main_thread(g) else {
-                kpanic(format_args!("fill_kproc: process without a main thread"));
-            };
-            // tuagg_get_process(&tu, pr), under the caller's ps_mtx.
-            tu.clear();
-            crate::resource::tuagg_sumup(&tu, &pr.ps_tu);
-            for t in pr.ps_threads.iter(g) {
-                crate::resource::tuagg_sumup(&tu, &t.p_tu);
-            }
-            mainp.get_ref()
-        }
+        mainp.get_ref()
     };
     let uc = g.ucred();
 
@@ -2017,7 +2014,7 @@ pub fn fill_kproc<G: ProcGlue>(
     // end of FILL_KPROC
 
     // stuff that's too painful to generalize into the macros
-    if let Some(leader) = s.and_then(|s| s.leader_pid()) {
+    if let Some(leader) = s.and_then(super::proc::Session::leader_pid) {
         ki.p_sid = leader;
     }
 
@@ -2393,7 +2390,7 @@ pub fn sysctl_proc_cwd<G: ProcGlue>(
     *req.oldlenp = 0;
 
     // snag a reference to the vnode before we can sleep
-    let Some(vp) = findpr.fd_opt().and_then(|fdp| fdp.cdir()) else {
+    let Some(vp) = findpr.fd_opt().and_then(super::descrip::Filedesc::cdir) else {
         // No current directory before a root file system is mounted.
         return Err(Errno::ENOENT);
     };

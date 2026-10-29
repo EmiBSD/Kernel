@@ -912,7 +912,7 @@ pub fn inittodr(base: i64) {
     }
 
     let todr = todr_handle();
-    let rtctime = match todr.map(|t| t.gettime()) {
+    let rtctime = match todr.map(Todr::gettime) {
         Some(Ok(tv)) if tv.tv_sec >= (MINYEAR - 1970) * SECYR => Some(tv),
         _ => None,
     };

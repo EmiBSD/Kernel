@@ -423,7 +423,7 @@ impl PmrIndex {
     fn publish(&self, fs: &FreeState) {
         self.withdraw();
         let mut n = 0;
-        for pmr in fs.control.addr.iter() {
+        for pmr in &fs.control.addr {
             let Some(slot) = self.slots.get(n) else {
                 return;
             };
@@ -1433,7 +1433,7 @@ pub fn uvm_pmr_getpages(
     #[cfg(feature = "diagnostic")]
     let (mut diag_fnsegs, mut diag_fcount, mut diag_prev): (usize, usize, Option<&VmPage>) =
         (0, 0, None);
-    for found in result.iter() {
+    for found in result {
         found.mdpage.clear_attrs();
 
         if found.flags() & PG_ZERO != 0 {
@@ -1547,7 +1547,7 @@ pub fn uvm_pmr_freepages(pg: &'static VmPage, count: usize) {
 
 /// `uvm_pmr_freepageq`: free all pages in the queue.
 pub fn uvm_pmr_freepageq(pgl: &Pglist) {
-    for pg in pgl.iter() {
+    for pg in pgl {
         kassert!(!pg.has_owner());
 
         if !(pg.flags() & PQ_FREE == 0 && valid_flags(pg.flags())) {
@@ -1582,7 +1582,7 @@ pub fn uvm_pmemrange_use_insert(
     pmr: &'static UvmPmemrange,
 ) -> Option<&'static UvmPmemrange> {
     let mut at = None;
-    for iter in useq.iter() {
+    for iter in useq {
         match uvm_pmemrange_use_cmp(pmr, iter) {
             Cmp::Equal => return Some(iter),
             Cmp::Less => {
@@ -1993,7 +1993,7 @@ pub fn uvm_pmr_get1page(
         }
 
         // Outside requested range.
-        if !(start == 0 && end == 0) && !pmr_intersects_with(pmr.low(), pmr.high(), start, end) {
+        if !(pmr_intersects_with(pmr.low(), pmr.high(), start, end) || start == 0 && end == 0) {
             continue;
         }
 
@@ -2109,7 +2109,7 @@ pub fn uvm_pmr_print(out: &mut dyn Write) {
     let fs = FREE.lock();
     let _ = writeln!(out, "Ranges, use queue:");
     let mut useq_len = 0;
-    for pmr in fs.control.r#use.iter() {
+    for pmr in &fs.control.r#use {
         useq_len += 1;
         let mut free = 0usize;
         let mut size = [0usize; UVM_PMR_MEMTYPE_MAX];
@@ -2120,7 +2120,7 @@ pub fn uvm_pmr_print(out: &mut dyn Write) {
             };
             *sz = pg.map_or(0, fpgsz);
 
-            for pg in pmr.addr.iter() {
+            for pg in &pmr.addr {
                 free += fpgsz(pg);
             }
         }
@@ -2183,7 +2183,7 @@ pub fn uvm_pmr_cache_get(flags: i32) -> Option<&'static VmPage> {
     let actv = upc.upc_actv.load(Ordering::Relaxed);
     let mut upci = &upc.upc_magz[actv];
     if upci.npages() == 0 {
-        let prev = if actv == 0 { 1 } else { 0 };
+        let prev = usize::from(actv == 0);
         upci = &upc.upc_magz[prev];
         if upci.npages() == 0 {
             UVMEXP.pcpmiss.fetch_add(1, Ordering::Relaxed);
@@ -2260,7 +2260,7 @@ pub fn uvm_pmr_cache_put(pg: &'static VmPage) {
     let actv = upc.upc_actv.load(Ordering::Relaxed);
     let mut upci = &upc.upc_magz[actv];
     if upci.npages() >= UVM_PMR_CACHEMAGSZ {
-        let prev = if actv == 0 { 1 } else { 0 };
+        let prev = usize::from(actv == 0);
         upci = &upc.upc_magz[prev];
         if upci.npages() > 0 {
             let _ = uvm_pmr_cache_free(upci);

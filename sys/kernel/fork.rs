@@ -692,8 +692,8 @@ pub fn fork1_with<G: ProcGlue>(
     cpu_fork(curp, p, 0, 0, start.words(me));
 
     let vmsize = pr.vmspace_share().map_or(0, |vm| {
-        (vm.vm_dsize.load(Ordering::Relaxed) as i64 + vm.vm_ssize.load(Ordering::Relaxed) as i64)
-            as u64
+        (i64::from(vm.vm_dsize.load(Ordering::Relaxed))
+            + i64::from(vm.vm_ssize.load(Ordering::Relaxed))) as u64
     });
     forkstat_add(&FORKSTAT, flags, vmsize);
 

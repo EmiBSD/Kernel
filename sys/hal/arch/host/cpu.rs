@@ -51,9 +51,10 @@ std::thread_local! {
 /// The running thread's core: the one installed on it, else its own.
 #[inline]
 pub(crate) fn current() -> Option<&'static CpuCore> {
-    CURRENT.with(|cur| match cur.get() {
-        Some(c) => Some(c),
-        None => {
+    CURRENT.with(|cur| {
+        if let Some(c) = cur.get() {
+            Some(c)
+        } else {
             let own = OWN.with(|c| *c);
             cur.set(Some(own));
             Some(own)

@@ -432,6 +432,7 @@ impl Cpuset {
     }
 
     /// `cpuset_copy`.
+    #[must_use]
     pub fn copy(&self) -> Cpuset {
         let to = Cpuset::new();
         for (t, f) in to.0.iter().zip(self.0.iter()) {
@@ -1110,7 +1111,7 @@ fn requeue_first<G: ProcGlue>(h: &mut SchedHold, spc: &SchedCpu<G>, queue: usize
     };
     let dst = cpu_of::<G>(n);
     let dstq = &dst.qs[usize::from(prio >> 2)];
-    if ptr::eq(dstq, &spc.qs[queue]) {
+    if ptr::eq(dstq, &raw const spc.qs[queue]) {
         let rotate: PinList<G::ThreadRunq> = PinList::new();
         spc.qs[queue].move_first_to(h, &rotate);
         rotate.move_first_to(h, dstq);
@@ -1196,7 +1197,7 @@ pub fn sched_choosecpu_fork<G: ProcGlue>() -> usize {
     let mut best_run = u32::MAX;
     while let Some(n) = set.first() {
         set.del(n);
-        let run = t.cpu(n).map_or(0, |c| c.nrun());
+        let run = t.cpu(n).map_or(0, SchedCpu::nrun);
         if choice.is_none() || run < best_run {
             choice = Some(n);
             best_run = run;
@@ -1527,7 +1528,7 @@ pub fn sched_barrier<G: ProcGlue>(n: Option<usize>) {
     let n = match n {
         Some(n) => n,
         None => match hal::cpu::cores()
-            .map(|c| c.number())
+            .map(hal::cpu::CpuCore::number)
             .find(|&n| G::cpu_is_primary(n))
         {
             Some(n) => n,
@@ -1812,15 +1813,15 @@ pub fn mi_switch<G: ProcGlue>(p: Pin<&Thread<G>>, mut h: SchedHold) {
 
     let next = sched_chooseproc::<G>(&mut h);
 
-    if next.thread_addr() != addr_of(p.get_ref()) {
+    if next.thread_addr() == addr_of(p.get_ref()) {
+        // TRACEPOINT(sched, remain__cpu, NULL).
+        let _ = next;
+        p.set_stat(SONPROC);
+    } else {
         UVMEXP.swtch.fetch_add(1, Ordering::Relaxed);
         // TRACEPOINT(sched, off__cpu, ...): dt(4), not configured.
         hal::thread::switch_to(&mut h, p, next);
         // TRACEPOINT(sched, on__cpu, NULL).
-    } else {
-        // TRACEPOINT(sched, remain__cpu, NULL).
-        let _ = next;
-        p.set_stat(SONPROC);
     }
 
     hal::cpu::curcpu().set_want_resched(0); // clear_resched(curcpu())

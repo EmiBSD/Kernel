@@ -794,7 +794,7 @@ fn uaddr_kbootstrap_select<'t>(
     offset: usize,
 ) -> Result<(&'t VmMapEntry, usize), Errno> {
     let maxkaddr = UVM_MAXKADDR.load(AtomicOrdering::Relaxed);
-    for entry in cx.tree.iter() {
+    for entry in cx.tree {
         if vmmap_free_end(entry) <= maxkaddr
             && let Ok((addr, _)) = uvm_addr_fitspace(
                 vmmap_free_start(entry),
@@ -1041,7 +1041,7 @@ fn uaddr_pivot_newpivot<'t>(
     let addr = if found_maxaddr == found_minaddr {
         found_minaddr
     } else {
-        kassert!(align >= PAGE_SIZE && align & (align - 1) == 0);
+        kassert!(align >= PAGE_SIZE && align.is_power_of_two());
         let arc4_arg = found_maxaddr - found_minaddr;
         if arc4_arg > 0xffff_ffff {
             found_minaddr + (arc4random() as usize & !(align - 1))

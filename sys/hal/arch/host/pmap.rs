@@ -70,7 +70,9 @@ impl PmapMd {
 
     /// The mappings, a poisoned lock taken over (a test that panicked holding it).
     fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<usize, usize>> {
-        self.mappings.lock().unwrap_or_else(|e| e.into_inner())
+        self.mappings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

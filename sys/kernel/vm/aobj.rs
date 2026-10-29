@@ -786,17 +786,16 @@ pub fn uao_create(size: Vsize, flags: i32) -> Option<ObjRef> {
             kpanic(format_args!("uao_create: malloc swslots failed"));
         };
 
-        match handle.as_mut() {
+        if let Some(h) = handle.as_mut() {
             // A fresh aobj, still its maker's alone.
-            Some(h) => match PoolArc::get_mut(h) {
+            match PoolArc::get_mut(h) {
                 Some(a) => *a.swap.get_mut_owned() = swap,
                 None => kpanic(format_args!("uao_create: a shared new aobj")),
-            },
-            // The kernel object, under its lock.
-            None => {
-                let mut w = KERNEL_OBJECT.obj.lock().write();
-                *KERNEL_OBJECT.swap.get_mut(&mut w) = swap;
             }
+        } else {
+            // The kernel object, under its lock.
+            let mut w = KERNEL_OBJECT.obj.lock().write();
+            *KERNEL_OBJECT.swap.get_mut(&mut w) = swap;
         }
 
         if flags & UAO_FLAG_KERNSWAP != 0 {
@@ -1299,6 +1298,10 @@ pub fn uao_pagein<'a>(
 /// is held for writing (`w`) and comes back held.
 ///
 /// Returns `true` if pagein was aborted due to lack of memory.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the C keeps the cases apart; OpenBSD's shape is kept so it can be grepped"
+)]
 pub fn uao_pagein_page<'a>(
     aobj: &'a Aobj,
     w: WriteWitness<'a>,

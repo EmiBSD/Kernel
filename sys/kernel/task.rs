@@ -403,6 +403,10 @@ pub fn taskq_create(name: &'static [u8], nthreads: u32, ipl: i32, flags: u32) ->
 /// `taskq_destroy(tq)`: a queue in `TQ_S_CREATED` is marked destroyed (its creator, which
 /// holds its own handle, finds it so and makes no thread); a running one wakes its idle
 /// workers and waits until they are gone. The queue's memory goes with its last handle.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "destroying spends the caller's handle: its memory goes with the last one"
+)]
 pub fn taskq_destroy(tq: TaskqRef) {
     destroy(&tq);
 }
@@ -443,6 +447,10 @@ fn destroy(tq: &Taskq) {
 
 /// `taskq_create_thread(tq)` (deferred by `taskq_init`/`taskq_create`): the queue's threads,
 /// unless it was destroyed meanwhile.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the deferred task owns its handle; the call is the end of that ownership"
+)]
 pub(crate) fn taskq_create_thread(tq: TqHandle) {
     let mut g = tq.st.lock();
 
