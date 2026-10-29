@@ -51,8 +51,9 @@
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
 //! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
 //! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
-//! - `clock`'s `Uptime`: nanoseconds from one second, a microsecond more per read (LZ's dummy
-//!   timecounter), and [`uptime_advance`].
+//! - The clocks are not a double since N5.0: `kernel::tc`'s readers on its dummy counter (a
+//!   microsecond more per read at its nominal 1 MHz), whose timehands nothing winds up but a
+//!   test that calls `tc::tc_ticktock` (the coarse clocks stay where they are).
 //! - `thread`'s operations: a host thread holding the kernel lock double from its start; a
 //!   deferred creation runs at once in this crate's own tests and is held everywhere else
 //!   (`bsd`'s host tests, the benches), as LZ's host tests never ran `main`'s
@@ -470,42 +471,6 @@ impl SysInfo for TestSysInfo {
 
 static TEST_SYS_INFO: TestSysInfo = TestSysInfo;
 
-/// The uptime double: a clock in nanoseconds that advances a microsecond per read (as LZ's
-/// dummy timecounter did for the wheel's tests), and by [`uptime_advance`].
-struct TestUptime;
-
-/// The double's uptime, in nanoseconds, from one second.
-static UPTIME_NS: AtomicU64 = AtomicU64::new(1_000_000_000);
-
-/// The double's time of day at its uptime 0 (2026-10-22).
-const BOOTTIME_SEC: i64 = 1_792_627_200;
-
-impl crate::clock::Uptime for TestUptime {
-    fn nanouptime(&self) -> crate::clock::Timespec {
-        crate::clock::Timespec::from_nsec(UPTIME_NS.fetch_add(1_000, Ordering::Relaxed))
-    }
-
-    fn getnanouptime(&self) -> crate::clock::Timespec {
-        crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed))
-    }
-
-    fn nanotime(&self) -> crate::clock::Timespec {
-        let up = crate::clock::Timespec::from_nsec(UPTIME_NS.load(Ordering::Relaxed));
-        up.add(crate::clock::Timespec::new(BOOTTIME_SEC, 0))
-    }
-
-    fn nanoboottime(&self) -> crate::clock::Timespec {
-        crate::clock::Timespec::new(BOOTTIME_SEC, 0)
-    }
-}
-
-static TEST_UPTIME: TestUptime = TestUptime;
-
-/// Moves the uptime double forward by `ns`.
-pub fn uptime_advance(ns: u64) {
-    UPTIME_NS.fetch_add(ns, Ordering::Relaxed);
-}
-
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
 /// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
@@ -812,7 +777,9 @@ pub fn install() {
         let _ = crate::vm::vnode::install_sysinfo(&TEST_SYS_INFO);
         let _ = crate::vm::proc::install(&TEST_VM_PROC);
 
-        let _ = crate::clock::install_uptime(&TEST_UPTIME);
+        // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per
+        // read at its nominal 1 MHz, warmed up as initclocks does.
+        crate::tc::inittimecounter();
         crate::thread::install_test_ops(crate::thread::Ops {
             create: TestKthread::create,
             exit: TestKthread::exit,

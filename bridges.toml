@@ -205,15 +205,6 @@ trait = "AcctFile"
 for = ["sys/kernel/acct.rs"]
 paid_by = "N5"
 
-# bsd: nanouptime, getnanouptime and nanotime of sys/kern/kern_tc.rs (the last two N4.4,
-# kqueue's sleep and EVFILT_TIMER's NOTE_ABSTIME), implemented by sys/kern/hal_bridges.rs
-# (BsdUptime). N4.8, with kern_tc. N4.6b: nanoboottime (kinfo_proc's start times).
-# kernel::clock::Uptime
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "Uptime"
-for = ["sys/kernel/clock.rs", "sys/kernel/timeout.rs", "sys/kernel/event.rs"]
-paid_by = "N5"
 
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),

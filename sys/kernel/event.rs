@@ -4559,8 +4559,10 @@ pub(crate) mod tests {
             reg(p, &kq, ev_set(6, EVFILT_TIMER, EV_ADD, 0x100, 10, 0)),
             Err(Errno::EINVAL)
         );
-        // An absolute time already past expires at once.
-        let mut kev = ev_set(7, EVFILT_TIMER, EV_ADD, NOTE_ABSTIME | NOTE_SECONDS, 1, 0);
+        // An absolute time already past expires at once: the epoch itself, past whatever
+        // the host tests' realtime clock reads (kernel::tc's dummy counter: the uptime since
+        // the epoch, or what a test set).
+        let mut kev = ev_set(7, EVFILT_TIMER, EV_ADD, NOTE_ABSTIME | NOTE_SECONDS, 0, 0);
         assert_eq!(kqueue_register(&kq, &mut kev, 0, Some(p)), Ok(()));
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!((out[0].ident, out[0].data), (7, 1));
