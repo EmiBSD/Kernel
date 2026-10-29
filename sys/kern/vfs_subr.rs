@@ -110,7 +110,9 @@ use crate::sys::malloc::{M_NETADDR, M_RTABLE, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::Mbuf;
 #[cfg(feature = "nfsserver")]
 use crate::sys::mbuf::{MLEN, mtod};
-use crate::sys::mount::{ExportArgs, Mount, Netcred, Netexport, VB_NOWAIT, VB_WRITE, mountlist};
+use crate::sys::mount::{
+    ExportArgs, Mount, Netcred, Netexport, VB_NOWAIT, VB_WRITE, mountlist_safe,
+};
 #[cfg(feature = "nfsserver")]
 use crate::sys::mount::{MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_EXPORTED};
 use crate::sys::proc::Proc;
@@ -383,7 +385,7 @@ pub fn vfs_unmountall() {
 
     loop {
         let mut allerror = false;
-        for mp in mountlist(true) {
+        for mp in mountlist_safe(true) {
             if vfs_busy(mp, VB_WRITE | VB_NOWAIT).is_err() {
                 continue;
             }

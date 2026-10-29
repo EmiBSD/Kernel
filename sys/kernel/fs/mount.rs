@@ -716,15 +716,61 @@ pub fn mountlist_next<G: ProcGlue>(mp: &'static Mount<G>, rev: bool) -> Option<&
     }
 }
 
-/// A walk of `mountlist` (`TAILQ_FOREACH_SAFE`, `_REVERSE_SAFE` with `rev`): the successor is
-/// read before a mount is handed out, so the walker may unmount it; a successor that left the
-/// list ends the walk.
+/// Where a [`MountIter`] stands.
+enum MountWalk<G: ProcGlue> {
+    /// Nothing handed out yet.
+    Start,
+    /// The mount handed out last.
+    At(&'static Mount<G>),
+    /// The walk is over.
+    Done,
+}
+
+/// A walk of `mountlist` (`TAILQ_FOREACH`, `TAILQ_FOREACH_REVERSE` with `rev`): the next mount
+/// is read when it is asked for, after the walker's body, from the mount handed out last, as
+/// the C reads `TAILQ_NEXT(mp)` at the end of each pass while the walker kept `mp` on the list
+/// (`vfs_busy`); a mount the body removed from the list is still passed (the walk goes on from
+/// the mount the walker holds). A mount that itself left the list ends the walk, where the C
+/// would follow a stale link. O(1) a step, as the C's.
 pub struct MountIter<G: ProcGlue> {
-    next: Option<&'static Mount<G>>,
+    at: MountWalk<G>,
     rev: bool,
 }
 
 impl<G: ProcGlue> Iterator for MountIter<G> {
+    type Item = &'static Mount<G>;
+
+    fn next(&mut self) -> Option<&'static Mount<G>> {
+        let next = match self.at {
+            MountWalk::Start => mountlist_first(self.rev),
+            MountWalk::At(mp) => mountlist_next(mp, self.rev),
+            MountWalk::Done => None,
+        };
+        self.at = match next {
+            Some(mp) => MountWalk::At(mp),
+            None => MountWalk::Done,
+        };
+        next
+    }
+}
+
+/// `TAILQ_FOREACH(mp, &mountlist, mnt_list)` (`TAILQ_FOREACH_REVERSE` with `rev`).
+pub fn mountlist<G: ProcGlue>(rev: bool) -> MountIter<G> {
+    MountIter {
+        at: MountWalk::Start,
+        rev,
+    }
+}
+
+/// A walk of `mountlist` (`TAILQ_FOREACH_SAFE`, `TAILQ_FOREACH_REVERSE_SAFE` with `rev`): the
+/// successor is read before a mount is handed out, so the walker may remove the mount it holds
+/// (`vfs_unmountall`'s `dounmount`); a successor that left the list ends the walk.
+pub struct MountIterSafe<G: ProcGlue> {
+    next: Option<&'static Mount<G>>,
+    rev: bool,
+}
+
+impl<G: ProcGlue> Iterator for MountIterSafe<G> {
     type Item = &'static Mount<G>;
 
     fn next(&mut self) -> Option<&'static Mount<G>> {
@@ -738,9 +784,10 @@ impl<G: ProcGlue> Iterator for MountIter<G> {
     }
 }
 
-/// `TAILQ_FOREACH(mp, &mountlist, mnt_list)` (`TAILQ_FOREACH_REVERSE` with `rev`).
-pub fn mountlist<G: ProcGlue>(rev: bool) -> MountIter<G> {
-    MountIter {
+/// `TAILQ_FOREACH_SAFE(mp, &mountlist, mnt_list, nmp)` (`TAILQ_FOREACH_REVERSE_SAFE` with
+/// `rev`).
+pub fn mountlist_safe<G: ProcGlue>(rev: bool) -> MountIterSafe<G> {
+    MountIterSafe {
         next: mountlist_first(rev),
         rev,
     }
@@ -751,6 +798,7 @@ pub fn mountlist<G: ProcGlue>(rev: bool) -> MountIter<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::testfs::TestGlue;
 
     #[test]
     fn the_four_io_counters_land_in_every_copy_of_the_statistics() {
@@ -797,6 +845,97 @@ mod tests {
         mp.reset();
         assert_eq!((mp.iosize(), mp.bsize(), mp.stat_flags()), (0, 0, 0));
         assert_eq!(mp.fsid().val, [0, 0]);
+    }
+
+    /// Three mounts on the test system's list, in order.
+    fn three_mounts() -> [&'static Mount<TestGlue>; 3] {
+        core::array::from_fn(|_| {
+            let mp = vfs_mount_alloc(None, &crate::fs::testfs::TEST_CONF[0]);
+            vfs_unbusy(mp);
+            mountlist_insert_tail(mp);
+            mp
+        })
+    }
+
+    fn addrs(mps: &[&'static Mount<TestGlue>]) -> std::vec::Vec<usize> {
+        mps.iter().map(|mp| mp.addr()).collect()
+    }
+
+    #[test]
+    fn a_walk_reads_the_next_mount_after_the_body() {
+        let _g = crate::fs::testfs::setup();
+        let m = three_mounts();
+
+        // The successor removed during the body: the walk goes on from the mount it holds
+        // and still reaches the one after (the C reads TAILQ_NEXT after the body).
+        let mut seen = std::vec::Vec::new();
+        for mp in mountlist::<TestGlue>(false) {
+            seen.push(mp);
+            if core::ptr::eq(mp, m[0]) {
+                mountlist_remove(m[1]);
+            }
+        }
+        assert_eq!(addrs(&seen), addrs(&[m[0], m[2]]));
+
+        // The same backwards: m0, m2, m1 now; m2 removed while m1 is in hand.
+        mountlist_insert_tail(m[1]);
+        let mut seen = std::vec::Vec::new();
+        for mp in mountlist::<TestGlue>(true) {
+            seen.push(mp);
+            if core::ptr::eq(mp, m[1]) {
+                mountlist_remove(m[2]);
+            }
+        }
+        assert_eq!(addrs(&seen), addrs(&[m[1], m[0]]));
+
+        // A mount inserted after the one in hand is seen, as the C sees it.
+        let mut seen = std::vec::Vec::new();
+        for mp in mountlist::<TestGlue>(false) {
+            seen.push(mp);
+            if core::ptr::eq(mp, m[1]) {
+                mountlist_insert_tail(m[2]);
+            }
+        }
+        assert_eq!(addrs(&seen), addrs(&[m[0], m[1], m[2]]));
+
+        // The mount in hand leaving the list ends the walk, where the C would follow a stale
+        // link.
+        let mut seen = std::vec::Vec::new();
+        for mp in mountlist::<TestGlue>(false) {
+            seen.push(mp);
+            if core::ptr::eq(mp, m[0]) {
+                mountlist_remove(m[0]);
+            }
+        }
+        assert_eq!(addrs(&seen), addrs(&[m[0]]));
+    }
+
+    #[test]
+    fn the_safe_walk_lets_the_body_remove_the_mount_it_holds() {
+        let _g = crate::fs::testfs::setup();
+        let m = three_mounts();
+
+        // vfs_unmountall's shape: every mount removed as it is handed out, backwards.
+        let mut seen = std::vec::Vec::new();
+        for mp in mountlist_safe::<TestGlue>(true) {
+            seen.push(mp);
+            mountlist_remove(mp);
+        }
+        assert_eq!(addrs(&seen), addrs(&[m[2], m[1], m[0]]));
+        assert!(mountlist_is_empty::<TestGlue>());
+
+        // A successor read ahead that leaves the list ends the walk.
+        for mp in m {
+            mountlist_insert_tail(mp);
+        }
+        let mut seen = std::vec::Vec::new();
+        for mp in mountlist_safe::<TestGlue>(false) {
+            seen.push(mp);
+            if core::ptr::eq(mp, m[0]) {
+                mountlist_remove(m[1]);
+            }
+        }
+        assert_eq!(addrs(&seen), addrs(&[m[0]]));
     }
 
     #[test]

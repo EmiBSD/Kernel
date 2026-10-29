@@ -506,8 +506,8 @@ pub type Mount = kernel::fs::mount::Mount<BsdProcGlue>;
 pub type Vfsconf = kernel::fs::mount::Vfsconf<BsdProcGlue>;
 
 pub use kernel::fs::mount::{
-    MountIter, mountlist, mountlist_first, mountlist_insert_head, mountlist_insert_tail,
-    mountlist_is_empty, mountlist_next, mountlist_remove,
+    MountIter, MountIterSafe, mountlist, mountlist_first, mountlist_insert_head,
+    mountlist_insert_tail, mountlist_is_empty, mountlist_next, mountlist_remove, mountlist_safe,
 };
 
 /// `BUFPAGES_DEFICIT`: how far the buffer cache is below its low water mark, in pages.
