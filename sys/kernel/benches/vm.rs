@@ -52,6 +52,12 @@
 //!   faults of a trivial program; `exec` times that part alone.
 //! - `map.anon`, `map.syscall`: `uvm_mapanon` + `uvm_unmap` of one page, and `sys_mmap` +
 //!   `sys_munmap`, in a map holding the program's entries and 64 more.
+//! - `mprotect.k`, `madvise.k`, `minherit.k`, `mlock-munlock.k` (k = 64, 1024): the call
+//!   pair over a range of k one-page anonymous entries, alternately read-only and
+//!   read-write (none join), faulted (to read-write and back to read-only; random and normal
+//!   advice; shared and copy inheritance; wire and unwire), ns per call; `munmap.k` the
+//!   `uvm_unmap` of such a range alone (laid out again after it); `fork.k` the
+//!   `uvmspace_fork` of the vmspace holding it alone (N12.1: the map's walks).
 //! - `cmp.*`: anonymous memory only, through `uvm_mapanon`/`uvm_unmap`/`uvm_fault`/
 //!   `uvmspace_fork`/`uvmspace_free` (a 1024-page mapping faulted; a fork of 70 one-page
 //!   entries, alone, its free, and with a copy-on-write fault on each side; a one-page map
@@ -76,8 +82,8 @@ use hal::pool::{PoolBackend, RawPool};
 use hal::rwlock::SharedRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::mman::{
-    MADV_NORMAL, MAP_ANON, MAP_INHERIT_COPY, MAP_PRIVATE, PROT_EXEC, PROT_NONE, PROT_READ,
-    PROT_WRITE,
+    MADV_NORMAL, MADV_RANDOM, MAP_ANON, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, MAP_PRIVATE,
+    PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE,
 };
 use kernel::proc::{ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
@@ -87,8 +93,9 @@ use kernel::vm::aobj::uao_init;
 use kernel::vm::fault::{FaultMapGuard, VM_FAULT_INVALID, uvm_fault, uvmfault_init};
 use kernel::vm::glue::{uvm_uarea_alloc, uvm_uarea_free};
 use kernel::vm::map::{
-    Vmspace, VmspaceRef, uvm_map, uvm_map_init, uvm_mapanon, uvm_unmap, uvmspace_alloc,
-    uvmspace_exec, uvmspace_fork, uvmspace_free,
+    Vmspace, VmspaceRef, uvm_map, uvm_map_advice, uvm_map_inherit, uvm_map_init, uvm_map_pageable,
+    uvm_map_protect, uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_exec, uvmspace_fork,
+    uvmspace_free,
 };
 use kernel::vm::mmap::{MmapArgs, sys_mmap, sys_munmap};
 use kernel::vm::object::ObjRef;
@@ -527,6 +534,68 @@ fn anon_args(len: usize) -> MmapArgs {
     }
 }
 
+/// Where the range operations' entries start.
+const RANGE_BASE: usize = 0x6000_0000;
+
+/// The entry counts of the range operations, with their benches' names (`mprotect`,
+/// `madvise`, `minherit`, `mlock` + `munlock`, `munmap`, `fork`).
+const RANGE_KS: [(usize, [&str; 6]); 2] = [
+    (
+        64,
+        [
+            "mprotect.64",
+            "madvise.64",
+            "minherit.64",
+            "mlock-munlock.64",
+            "munmap.64",
+            "fork.64",
+        ],
+    ),
+    (
+        1024,
+        [
+            "mprotect.1024",
+            "madvise.1024",
+            "minherit.1024",
+            "mlock-munlock.1024",
+            "munmap.1024",
+            "fork.1024",
+        ],
+    ),
+];
+
+/// The vmspaces of one entry count of the range operations.
+struct Range {
+    k: usize,
+    names: [&'static str; 6],
+    /// `mprotect`'s, `madvise`'s, `minherit`'s, `mlock`'s and `fork`'s.
+    ops: VmspaceRef,
+    /// `munmap`'s.
+    unmap: VmspaceRef,
+}
+
+/// `k` one-page anonymous entries from `RANGE_BASE`, alternately read-only and read-write
+/// (so no two join), each faulted.
+fn lay_out(vm: &Vmspace, k: usize) {
+    for i in 0..k {
+        let (prot, access) = if i % 2 == 0 {
+            (PROT_READ, PROT_READ)
+        } else {
+            (RW, PROT_WRITE)
+        };
+        let flags = uvm_mapflag(
+            prot,
+            PROT_MASK,
+            MAP_INHERIT_COPY,
+            MADV_NORMAL,
+            UVM_FLAG_FIXED | UVM_FLAG_COPYONW,
+        );
+        let mut a = RANGE_BASE + i * PAGE;
+        ok(uvm_mapanon(&vm.vm_map, &mut a, PAGE, 0, flags), "lay out");
+        fault(vm, a, access);
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // The harness.
 
@@ -677,6 +746,23 @@ fn main() {
         fault(&cmp_parent_vm, a, PROT_WRITE);
         cmp_small.push(a);
     }
+    // The range operations' vmspaces: k one-page entries each, for the operations and for
+    // munmap's (which lays its range out again after each timed call).
+    let ranges: Vec<Range> = RANGE_KS
+        .iter()
+        .map(|&(k, names)| {
+            let ops = user_vmspace();
+            lay_out(&ops, k);
+            let unmap = user_vmspace();
+            lay_out(&unmap, k);
+            Range {
+                k,
+                names,
+                ops,
+                unmap,
+            }
+        })
+        .collect();
     let mut benches: Vec<Bench<'_>> = Vec::new();
 
     benches.push(Bench {
@@ -778,6 +864,73 @@ fn main() {
             d
         }),
     });
+    for r in &ranges {
+        let m = &r.ops.vm_map;
+        let end = RANGE_BASE + r.k * PAGE;
+        let [mprotect, madvise, minherit, mlock, munmap, fork] = r.names;
+        benches.push(Bench {
+            name: mprotect,
+            ops: 2,
+            f: Box::new(whole(move || {
+                let p = |prot| uvm_map_protect(thread(), m, RANGE_BASE, end, prot, 0, false, true);
+                ok(p(RW), "mprotect RW");
+                ok(p(PROT_READ), "mprotect READ");
+            })),
+        });
+        benches.push(Bench {
+            name: madvise,
+            ops: 2,
+            f: Box::new(whole(move || {
+                ok(uvm_map_advice(m, RANGE_BASE, end, MADV_RANDOM), "madvise");
+                ok(uvm_map_advice(m, RANGE_BASE, end, MADV_NORMAL), "madvise");
+            })),
+        });
+        benches.push(Bench {
+            name: minherit,
+            ops: 2,
+            f: Box::new(whole(move || {
+                let share = uvm_map_inherit(m, RANGE_BASE, end, MAP_INHERIT_SHARE);
+                ok(share, "minherit");
+                ok(
+                    uvm_map_inherit(m, RANGE_BASE, end, MAP_INHERIT_COPY),
+                    "minherit",
+                );
+            })),
+        });
+        benches.push(Bench {
+            name: mlock,
+            ops: 2,
+            f: Box::new(whole(move || {
+                ok(uvm_map_pageable(m, RANGE_BASE, end, false, ru()), "mlock");
+                ok(uvm_map_pageable(m, RANGE_BASE, end, true, ru()), "munlock");
+            })),
+        });
+        let unmap_vm = &r.unmap;
+        let k = r.k;
+        benches.push(Bench {
+            name: munmap,
+            ops: 1,
+            f: Box::new(move || {
+                let t = Instant::now();
+                uvm_unmap(&unmap_vm.vm_map, RANGE_BASE, end);
+                let d = t.elapsed();
+                lay_out(unmap_vm, k);
+                d
+            }),
+        });
+        let parent = &r.ops;
+        benches.push(Bench {
+            name: fork,
+            ops: 1,
+            f: Box::new(move || {
+                let t = Instant::now();
+                let child = uvmspace_fork(parent);
+                let d = t.elapsed();
+                uvmspace_free(child);
+                d
+            }),
+        });
+    }
 
     let parent_ref = &parent;
     let forkexit = move || {

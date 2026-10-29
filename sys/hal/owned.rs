@@ -2970,6 +2970,42 @@ mod tests {
     }
 
     #[test]
+    fn a_counted_link_survives_changes_around_it_and_walks_on() {
+        // The kernel's map walks (kernel::vm::map's Held, N12.1): a SecondaryRef kept on an
+        // element while others are inserted and removed (rebalancing relinks nodes, never
+        // moves them) still names it, and RBT_NEXT from it continues the in-order walk.
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut t = OwnedTree::<ByKey>::new();
+        for k in (0..32u64).map(|i| i * 2) {
+            assert!(t.insert(node(k, 0, &drops)).is_none());
+        }
+        let mut r = SecondaryRef::<ByKey>::new();
+        r.set(t.find_by(|n| 20u64.cmp(&n.key)));
+        let mut seen = Vec::new();
+        while let Some(e) = r.get() {
+            let key = e.key;
+            seen.push(key);
+            // Around an even element held: an odd key inserted after it, and the even one two
+            // before it removed (never the one held).
+            if key % 2 == 0 {
+                assert!(t.insert(node(key + 1, 0, &drops)).is_none());
+                assert!(t.take_by(|n| (key - 4).cmp(&n.key)).is_some());
+            }
+            assert_eq!(r.get().map(|e| e.key), Some(key), "the link still names it");
+            let next = r.get().and_then(|e| t.next(e));
+            r.set(next);
+            if seen.len() > 200 {
+                break;
+            }
+        }
+        // From 20, every key in order: each even key, then the odd one inserted after it.
+        assert_eq!(seen, (20..64).collect::<Vec<_>>());
+        drop(r);
+        // 32 keys, 22 odd ones inserted (21..=63), 22 even ones removed (16..=58).
+        assert_eq!(t.iter().count(), 32);
+    }
+
+    #[test]
     #[should_panic(expected = "still linked from a secondary tree")]
     fn pop_refuses_a_counted_element() {
         let drops = Arc::new(AtomicUsize::new(0));
