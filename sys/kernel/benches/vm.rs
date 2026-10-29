@@ -57,7 +57,7 @@
 //!   read-write (none join), faulted (to read-write and back to read-only; random and normal
 //!   advice; shared and copy inheritance; wire and unwire), ns per call; `munmap.k` the
 //!   `uvm_unmap` of such a range alone (laid out again after it); `fork.k` the
-//!   `uvmspace_fork` of the vmspace holding it alone (N12a: the map's walks).
+//!   `uvmspace_fork` of the vmspace holding it alone (N12.1: the map's walks).
 //! - `cmp.*`: anonymous memory only, through `uvm_mapanon`/`uvm_unmap`/`uvm_fault`/
 //!   `uvmspace_fork`/`uvmspace_free` (a 1024-page mapping faulted; a fork of 70 one-page
 //!   entries, alone, its free, and with a copy-on-write fault on each side; a one-page map

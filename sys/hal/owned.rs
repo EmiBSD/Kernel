@@ -2971,7 +2971,7 @@ mod tests {
 
     #[test]
     fn a_counted_link_survives_changes_around_it_and_walks_on() {
-        // The kernel's map walks (kernel::vm::map's Held, N12a): a SecondaryRef kept on an
+        // The kernel's map walks (kernel::vm::map's Held, N12.1): a SecondaryRef kept on an
         // element while others are inserted and removed (rebalancing relinks nodes, never
         // moves them) still names it, and RBT_NEXT from it continues the in-order walk.
         let drops = Arc::new(AtomicUsize::new(0));

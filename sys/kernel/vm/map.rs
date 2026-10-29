@@ -370,7 +370,7 @@
 //!   across a change of the tree. N3.5 named entries by their `start` (the address tree's
 //!   unique key: `uvm_mapent_addr_insert` panics on a collision, as the C) and found them
 //!   again after each change, O(log n) a step where the C's walks are O(1) a step. Since
-//!   N12a a walk that changes the tree holds the C's pointer as a counted link (`Held`, a
+//!   N12.1 a walk that changes the tree holds the C's pointer as a counted link (`Held`, a
 //!   `hal::owned::SecondaryRef`): the entry it lends borrows the hold, not the tree, the
 //!   walk steps with `RBT_NEXT` from it, and the tree refuses to give a counted entry back
 //!   (I4), so the C's rule that nothing frees the entry under the walk is checked. The
@@ -387,18 +387,21 @@
 //!   the busy mark (a hold left after the unlock would make another thread's unmap panic):
 //!   it is declared after the guard, or in a block that ends before an explicit drop of the
 //!   guard or the busy mark, which reverse declaration order does not cover
-//!   (`uvm_map_clean`); a lifetime tying `Held` to the guard is left to N12b (the write
-//!   guard's `split` borrows it mutably, so the tie spreads to every walk's shape).
+//!   (`uvm_map_clean`); a lifetime tying `Held` to the guard is left to N12.2 (the write
+//!   guard's `split` borrows it mutably, so the tie spreads to every walk's shape). Debug
+//!   builds (the host tests, the smokes' kernel) make that rule a check any single-threaded
+//!   test meets: the map counts its live holds and a write guard or busy mark that lets the
+//!   map go with more than it found panics (`HoldsCheck`; nothing of it in a release build).
 //!   Three places pay a search the C does not, each named: `uvm_map_protect`'s
 //!   `VM_MAP_WIREFUTURE` step releases its hold around `uvm_map_pageable` (whose own clips
-//!   could move it) and finds the entry again by its start (one search, a rare path; N12a's
+//!   could move it) and finds the entry again by its start (one search, a rare path; N12.1's
 //!   decision 4); `uvm_map_pageable`'s wiring holds the entry after the one it faults and
 //!   `end` across the unlocked faults, not `first` and the faulted one (a fault's chunk clip
 //!   moves only the faulted entry), and finds those again by their starts on the error path
 //!   only; and the removal paths (`uvm_unmap_remove`, `uvm_mapent_mkfree`,
 //!   `uvm_map_mkentry`, `uvm_map_freelist_update_clear`, `uvm_map_submap`, the
 //!   `uvm_map_clip_*_at` wrappers they use) still name entries by key between two changes,
-//!   one search per change: N12b moves them to holds. The free-list functions take the
+//!   one search per change: N12.2 moves them to holds. The free-list functions take the
 //!   entry with the state split around it ([`MapState`]'s `free_parts`: the tree shared, the
 //!   selectors mutable), `uvm_map_mkentry` and `uvm_mapent_clone` give back the entry they
 //!   made, and `uvmspace_fork` and `uvm_map_teardown` follow the links of a tree no step
@@ -468,6 +471,7 @@
 //!   on the console, with `0x` prefixes: no `uprintf`).
 
 use core::cmp::Ordering;
+use core::marker::PhantomData;
 use core::ops::Deref;
 use core::pin::Pin;
 use core::ptr;
@@ -1336,29 +1340,44 @@ impl FreeParts<'_> {
 /// C's clipper keeps its pointer; any other removal of a held entry panics (I4), never
 /// frees it under the walk. Every `Held` is a local of the function that holds the map's
 /// write lock (or its busy mark) and goes before it.
-struct Held(SecondaryRef<ByAddr>);
+struct Held<'m> {
+    /// The counted link.
+    link: SecondaryRef<ByAddr>,
+    /// The map whose entry it holds: debug builds count its live holds there
+    /// ([`HoldsCheck`]).
+    #[cfg(debug_assertions)]
+    map: &'m VmMap,
+    /// The map's lifetime in a release build, where nothing is counted.
+    _map: PhantomData<&'m VmMap>,
+}
 
-impl Held {
-    /// A hold on nothing (`NULL`).
-    const fn none() -> Self {
-        Self(SecondaryRef::new())
+impl<'m> Held<'m> {
+    /// A hold on nothing (`NULL`) of `map`'s entries.
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
+    fn none(map: &'m VmMap) -> Self {
+        Self {
+            link: SecondaryRef::new(),
+            #[cfg(debug_assertions)]
+            map,
+            _map: PhantomData,
+        }
     }
 
-    /// A hold on `e`, an entry of a map's tree (`None`: on nothing).
-    fn of(e: Option<&VmMapEntry>) -> Self {
-        let mut h = Self::none();
-        h.0.set(e);
+    /// A hold on `e`, an entry of `map`'s tree (`None`: on nothing).
+    fn of(map: &'m VmMap, e: Option<&VmMapEntry>) -> Self {
+        let mut h = Self::none(map);
+        h.set(e);
         h
     }
 
     /// The entry held, `None` for nothing.
     fn get(&self) -> Option<&VmMapEntry> {
-        self.0.get()
+        self.link.get()
     }
 
     /// The entry held, which the caller (`who`) holds by its invariant.
     fn entry(&self, who: &str) -> &VmMapEntry {
-        match self.0.get() {
+        match self.link.get() {
             Some(e) => e,
             None => kpanic(format_args!("{who}: no entry held")),
         }
@@ -1366,24 +1385,105 @@ impl Held {
 
     /// Whether `e` is the entry held (the C's `iter == end`, an address comparison).
     fn is(&self, e: &VmMapEntry) -> bool {
-        self.0.points_to(e)
+        self.link.points_to(e)
     }
 
-    /// Holds `e` instead (`None`: nothing); the old entry's count goes back.
+    /// Holds `e` instead (`None`: nothing); the old entry's count goes back. Debug builds
+    /// count the map's live holds (a hold starts or ends here).
     fn set(&mut self, e: Option<&VmMapEntry>) {
-        self.0.set(e);
+        #[cfg(debug_assertions)]
+        match (self.link.is_some(), e.is_some()) {
+            (false, true) => {
+                self.map.holds.fetch_add(1, Mem::Relaxed);
+            }
+            (true, false) => {
+                self.map.holds.fetch_sub(1, Mem::Relaxed);
+            }
+            _ => {}
+        }
+        self.link.set(e);
     }
 
     /// `entry = RBT_NEXT(uvm_map_addr, entry)`: the entry after the one held, in `tree`,
     /// which holds it (one step of the C's walk, no search).
     fn step(&mut self, tree: &OwnedTree<ByAddr>) {
         let next = self.get().and_then(|e| tree.next(e));
-        self.0.set(next);
+        self.set(next);
     }
 
     /// Holds nothing: before the entry held leaves the tree.
     fn release(&mut self) {
-        self.0.set(None);
+        self.set(None);
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Debug builds: that no hold ([`Held`]) of a map's entries outlives the write lock or the
+/// busy mark under which it was made (`uvm_map_clean`'s walk once ended holding the entry
+/// past its range after `vm_map_unbusy`, which a race alone could show). Every hold is made
+/// by the thread that holds the map's write lock or its busy mark: `Held` is `map.rs`'s
+/// own, made only under a [`MapWriteGuard`] or a [`MapBusy`], and while either lives no
+/// other thread can make one (`VmMap::lock`, `lock_try` and `MapGuard::upgrade` refuse a map
+/// busy for another; readers make none). So the map's count moves only on that thread, and
+/// a write guard (armed when taken: `lock`, `lock_try`, `upgrade`) or a busy mark checks,
+/// when it lets the map go, that the count is back at what it found (`base`: the holds of
+/// an enclosing busy window of the same thread, such as `uvm_map_pageable`'s across the
+/// faults that write-lock the map). `into_busy` hands its base to the busy mark without a
+/// check (the window's holds go on), `relock_unbusy` hands it back to the write guard.
+#[cfg(debug_assertions)]
+struct HoldsCheck<'a> {
+    map: &'a VmMap,
+    /// The map's live holds when the guard or the mark was taken.
+    base: usize,
+    /// Whether this guard checks (a write lock or a busy mark; a read lock never does).
+    armed: bool,
+    /// What lets the map go, for the message.
+    what: &'static str,
+}
+
+#[cfg(debug_assertions)]
+impl<'a> HoldsCheck<'a> {
+    /// The check of a guard of `map` taken now.
+    fn new(map: &'a VmMap, armed: bool, what: &'static str) -> Self {
+        Self {
+            map,
+            base: map.holds.load(Mem::Relaxed),
+            armed,
+            what,
+        }
+    }
+
+    /// Hands the check on (its base) without checking.
+    fn take(&mut self) -> usize {
+        self.armed = false;
+        self.base
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for HoldsCheck<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(test)]
+        if std::thread::panicking() {
+            return;
+        }
+        let n = self.map.holds.load(Mem::Relaxed);
+        if n != self.base {
+            kpanic(format_args!(
+                "{}: map {:#x} let go with {n} hold(s) of its entries alive (Held), {} when taken",
+                self.what,
+                self.map.addr(),
+                self.base
+            ));
+        }
     }
 }
 
@@ -1421,6 +1521,9 @@ pub struct VmMap {
     /// \[v\] The entries, the selectors and the brk/stack areas, keyed to `lock` (or `mtx`)
     /// by `uvm_map_setup`, where the map stays.
     state: OnceStatic<Guarded<MapState>>,
+    /// Debug builds: the live holds ([`Held`]) of the entries, which [`HoldsCheck`] checks.
+    #[cfg(debug_assertions)]
+    holds: AtomicUsize,
 }
 
 impl VmMap {
@@ -1446,6 +1549,8 @@ impl VmMap {
             mtx: Mutexed::new(IPL_VM, ()),
             flags_lock: Mutexed::new(IPL_VM, Busy { owner: 0, nbusy: 0 }),
             state: OnceStatic::new(),
+            #[cfg(debug_assertions)]
+            holds: AtomicUsize::new(0),
         }
     }
 
@@ -1601,6 +1706,8 @@ impl VmMap {
             map: self,
             w,
             mode: RwMode::Write,
+            #[cfg(debug_assertions)]
+            holds: HoldsCheck::new(self, true, "vm_map_unlock"),
         })
     }
 
@@ -1630,6 +1737,8 @@ impl VmMap {
             map: self,
             w,
             mode: RwMode::Write,
+            #[cfg(debug_assertions)]
+            holds: HoldsCheck::new(self, true, "vm_map_unlock"),
         }))
     }
 
@@ -1644,6 +1753,8 @@ impl VmMap {
             map: self,
             w,
             mode: RwMode::Read,
+            #[cfg(debug_assertions)]
+            holds: HoldsCheck::new(self, false, "vm_map_unlock_read"),
         }
     }
 
@@ -1672,6 +1783,9 @@ pub struct MapGuard<'a> {
     map: &'a VmMap,
     w: AnyWitness<'a>,
     mode: RwMode,
+    /// Debug builds: no hold outlives the write lock ([`HoldsCheck`]).
+    #[cfg(debug_assertions)]
+    holds: HoldsCheck<'a>,
 }
 
 impl<'a> MapGuard<'a> {
@@ -1722,6 +1836,8 @@ impl<'a> MapGuard<'a> {
     /// another thread is in the way (other readers, or the map busy for another).
     pub fn upgrade(self) -> Result<MapWriteGuard<'a>, MapGuard<'a>> {
         let map = self.map;
+        #[cfg(debug_assertions)]
+        let holds = self.holds;
         let w = match self.w {
             // MUTEX_ASSERT_LOCKED(&map->mtx): the guard is the proof.
             AnyWitness::Intr(g) => AnyWitness::Intr(g),
@@ -1731,6 +1847,8 @@ impl<'a> MapGuard<'a> {
                         map,
                         w: AnyWitness::Rw(rw),
                         mode: self.mode,
+                        #[cfg(debug_assertions)]
+                        holds,
                     });
                 }
                 match rw.try_upgrade() {
@@ -1740,16 +1858,23 @@ impl<'a> MapGuard<'a> {
                             map,
                             w: AnyWitness::Rw(rw),
                             mode: self.mode,
+                            #[cfg(debug_assertions)]
+                            holds,
                         });
                     }
                 }
             }
         };
         map.bump();
+        // The read guard's check (never armed) goes; the write lock's starts.
+        #[cfg(debug_assertions)]
+        drop(holds);
         Ok(MapWriteGuard(MapGuard {
             map,
             w,
             mode: RwMode::Write,
+            #[cfg(debug_assertions)]
+            holds: HoldsCheck::new(map, true, "vm_map_unlock"),
         }))
     }
 
@@ -1814,22 +1939,31 @@ impl<'a> MapWriteGuard<'a> {
     /// `vm_map_downgrade(map)` (`vm_map_downgrade_ln`): the write lock becomes a read lock,
     /// without a window (an `INTRSAFE` map keeps its mutex).
     pub fn downgrade(self) -> MapGuard<'a> {
-        let MapGuard { map, w, .. } = self.0;
+        let MapGuard {
+            map,
+            w,
+            #[cfg(debug_assertions)]
+            holds,
+            ..
+        } = self.0;
         let w = match w {
             AnyWitness::Rw(RwWitness::Write(w)) => AnyWitness::Rw(RwWitness::Read(w.downgrade())),
             other => other,
         };
+        // The write lock's check goes on to the read lock's end: no writer comes in between.
         MapGuard {
             map,
             w,
             mode: RwMode::Read,
+            #[cfg(debug_assertions)]
+            holds,
         }
     }
 
     /// `vm_map_busy(map)` then `vm_map_unlock(map)`: the map stays busy for this thread
     /// (other writers wait, readers pass) while unlocked; the [`MapBusy`]'s drop is
     /// `vm_map_unbusy`.
-    pub fn into_busy(self) -> MapBusy<'a> {
+    pub fn into_busy(mut self) -> MapBusy<'a> {
         let map = self.0.map;
         kassert!(!map.is_intrsafe());
         {
@@ -1837,8 +1971,20 @@ impl<'a> MapWriteGuard<'a> {
             kassert!(f.owner == 0);
             f.owner = curproc_word();
         }
+        // The holds go on across the busy window: the mark checks them when it goes.
+        #[cfg(debug_assertions)]
+        let base = self.0.holds.take();
         drop(self);
-        MapBusy { map }
+        MapBusy {
+            map,
+            #[cfg(debug_assertions)]
+            holds: HoldsCheck {
+                map,
+                base,
+                armed: true,
+                what: "vm_map_unbusy",
+            },
+        }
     }
 
     /// The guard as the fault sees it (a write-locked [`MapGuard`]).
@@ -1893,6 +2039,10 @@ impl EntryWrite<'_> {
 #[must_use = "dropping the busy mark at once unbusies the map"]
 pub struct MapBusy<'a> {
     map: &'a VmMap,
+    /// Debug builds: no hold outlives the busy mark ([`HoldsCheck`]), checked after the
+    /// unbusy.
+    #[cfg(debug_assertions)]
+    holds: HoldsCheck<'a>,
 }
 
 impl<'a> MapBusy<'a> {
@@ -1912,8 +2062,16 @@ impl<'a> MapBusy<'a> {
     }
 
     /// `vm_map_lock(map); vm_map_unbusy(map);`.
-    pub fn relock_unbusy(self) -> MapWriteGuard<'a> {
-        let g = self.map.lock();
+    pub fn relock_unbusy(mut self) -> MapWriteGuard<'a> {
+        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+        let mut g = self.map.lock();
+        // The map goes from busy to write-locked by this thread with no window: the busy
+        // window's holds may go on, and the write guard checks them against the window's
+        // base when it goes.
+        #[cfg(debug_assertions)]
+        {
+            g.0.holds.base = self.holds.take();
+        }
         drop(self);
         g
     }
@@ -2140,7 +2298,7 @@ impl FaultMapGuard for MapGuard<'_> {
         let map = self.map;
         let mut sp = self.split_write();
         let (st, ew) = sp.parts();
-        let mut held = Held::of(uvm_map_lookup_entry(&st.addr, va));
+        let mut held = Held::of(map, uvm_map_lookup_entry(&st.addr, va));
         if held.get().is_none() {
             kpanic(format_args!("amap_copy: no entry holds {va:#x}"));
         }
@@ -2400,7 +2558,7 @@ fn owners_lent(map: &VmMap, st: &MapState, owners: &Owners, who: &str) {
 
 /// `uvm_mapent_addr_insert`: handle address tree insertion (a collision panics, as the C);
 /// the state split for the free-list functions and the entry, lent by the insert
-/// (`OwnedTree::insert_get`), so the caller goes on from it without a search (N12a: every
+/// (`OwnedTree::insert_get`), so the caller goes on from it without a search (N12.1: every
 /// insert lends its entry).
 fn uvm_mapent_addr_insert<'s>(
     map: &VmMap,
@@ -4064,8 +4222,8 @@ fn unmap_remove(
             kassert!(e.start() < end);
         }
         let e = if e.end() > end {
-            // N12b: the walk holds its entry; until then it is found again after the clip.
-            let h = Held::of(Some(e));
+            // N12.2: the walk holds its entry; until then it is found again after the clip.
+            let h = Held::of(map, Some(e));
             uvm_map_clip_end(map, st, ew, h.entry("uvm_unmap_remove"), end);
             drop(h);
             ent(&st.addr, key, "uvm_unmap_remove")
@@ -4170,8 +4328,8 @@ fn wire_skips(e: &VmMapEntry) -> bool {
 fn uvm_map_pageable_wire<'a>(
     map: &'a VmMap,
     mut g: MapWriteGuard<'a>,
-    first: Held,
-    end: Held,
+    first: Held<'a>,
+    end: Held<'a>,
     start_addr: usize,
     end_addr: usize,
     keep: bool,
@@ -4189,7 +4347,7 @@ fn uvm_map_pageable_wire<'a>(
     {
         let mut sp = g.split();
         let (st, ew) = sp.parts();
-        let mut iter = Held::of(first.get());
+        let mut iter = Held::of(map, first.get());
         while let Some(e) = iter.get().filter(|e| !end.is(e)) {
             kdassert!(e.start() >= start_addr && e.end() <= end_addr);
             if !wire_skips(e) {
@@ -4442,14 +4600,16 @@ fn uvm_map_pageable_core<'a>(
                 match last {
                     None => match st.addr.max() {
                         Some(max) if max.end() >= end => {
-                            Ok((Held::of(Some(first)), Held::of(Some(max))))
+                            Ok((Held::of(map, Some(first)), Held::of(map, Some(max))))
                         }
                         _ => Err(Errno::EINVAL),
                     },
                     Some(l) => {
                         kassert!(!ptr::eq(l, first));
                         match st.addr.prev(l) {
-                            Some(prev) => Ok((Held::of(Some(first)), Held::of(Some(prev)))),
+                            Some(prev) => {
+                                Ok((Held::of(map, Some(first)), Held::of(map, Some(prev))))
+                            }
                             None => Err(Errno::EINVAL),
                         }
                     }
@@ -4557,7 +4717,7 @@ pub fn uvm_map_pageable_all(
     }
 
     // uvm_map_pageable_wire will release lock
-    let first = Held::of(g.state().addr.min());
+    let first = Held::of(map, g.state().addr.min());
     if first.get().is_none() {
         return Ok(());
     }
@@ -4565,7 +4725,7 @@ pub fn uvm_map_pageable_all(
         map,
         g,
         first,
-        Held::none(),
+        Held::none(map),
         map.min_offset(),
         map.max_offset(),
         false,
@@ -5113,7 +5273,7 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
                 ));
             }
         }
-        Held::of(first)
+        Held::of(map, first)
     };
     if error.is_err() {
         drop(first);
@@ -5225,7 +5385,7 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
 
         if let Some((ws, we)) = wire {
             // The guard moves into uvm_map_pageable, whose clips are its own: the hold is
-            // released and the entry found again by its start after (decision 4 of N12a;
+            // released and the entry found again by its start after (decision 4 of N12.1;
             // the rare mlockall(MCL_FUTURE) path, one search).
             iter.release();
             let (back, r) = uvm_map_pageable_keep(g, ws, we, false, Some(&p.p_ru));
@@ -5693,7 +5853,7 @@ fn uvm_mapent_forkcopy(
     //    to call amap_cow_now to avoid page faults in the parent process. since
     //    amap_cow_now requires "needs_copy" to be clear we might as well clear it here as
     //    well.
-    let mut held = Held::none();
+    let mut held = Held::none(new.map);
     let ne = if let Some(old_amap) = &o.handles.amap
         && (old_amap.flags() & AMAP_SHARED != 0 || o.wired)
     {
@@ -5868,7 +6028,7 @@ pub fn uvmspace_fork(vm1: &Vmspace) -> VmspaceRef {
             // Apply inheritance.
             let forked = match oe.inheritance() {
                 MAP_INHERIT_SHARE => {
-                    let mut held = Held::of(Some(oe));
+                    let mut held = Held::of(old.map, Some(oe));
                     let forked = uvm_mapent_forkshared(&mut new, &mut old, &mut held, &mut dead);
                     iter = held.get().and_then(|e| old.st.addr.next(e));
                     forked
@@ -6073,20 +6233,20 @@ pub fn uvm_map_deallocate(map: &'static VmMap) {
 /// The entry an operation on `[start, end)` starts at, held: the one holding `start`,
 /// clipped there, or the next one when `start` is in its free space
 /// (`uvm_map_inherit`'s and `uvm_map_immutable`'s first step).
-fn clip_first(
-    map: &VmMap,
+fn clip_first<'m>(
+    map: &'m VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
     start: usize,
     who: &str,
-) -> Held {
+) -> Held<'m> {
     let e = entry_at(map, &st.addr, start, who);
     if e.end() > start {
-        let mut h = Held::of(Some(e));
+        let mut h = Held::of(map, Some(e));
         uvm_map_clip_start_held(map, st, ew, &mut h, start);
         h
     } else {
-        Held::of(st.addr.next(e))
+        Held::of(map, st.addr.next(e))
     }
 }
 
@@ -6208,12 +6368,12 @@ pub fn uvm_map_advice(map: &VmMap, start: usize, end: usize, new_advice: i32) ->
 
     let mut iter = match uvm_map_entrybyaddr(&st.addr, start) {
         Some(entry) if entry.end() > start => {
-            let mut h = Held::of(Some(entry));
+            let mut h = Held::of(map, Some(entry));
             uvm_map_clip_start_held(map, st, ew, &mut h, start);
             h
         }
-        Some(entry) => Held::of(st.addr.next(entry)),
-        None => Held::none(),
+        Some(entry) => Held::of(map, st.addr.next(entry)),
+        None => Held::none(map),
     };
 
     // XXXJRT: disallow holes?
@@ -6287,7 +6447,7 @@ fn uvm_map_extract_locked(
     let Some(first) = uvm_map_entrybyaddr(&st.addr, start) else {
         return Err(Errno::EINVAL);
     };
-    let mut first = Held::of(Some(first));
+    let mut first = Held::of(srcmap, Some(first));
 
     // Check that the range is contiguous.
     let mut entry = first.get();
@@ -6305,7 +6465,7 @@ fn uvm_map_extract_locked(
 
     // Handle need-copy flag. The C's pointers: amap_copy's chunk clip_start may split the
     // first entry, whose pointer (iter's, and first's) then names the upper part.
-    let mut iter = Held::of(first.get());
+    let mut iter = Held::of(srcmap, first.get());
     while let Some(e) = iter.get().filter(|e| e.start() < end) {
         if uvm_et_isneedscopy(e) {
             let stack = uvm_et_isstack(e);
@@ -6449,7 +6609,7 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
             }
             entry = st.addr.next(e);
         }
-        (Held::of(first), imut)
+        (Held::of(map, first), imut)
     };
 
     let busy = g.into_busy();
@@ -6602,7 +6762,7 @@ fn uvm_map_clip_end_held(
     }
 }
 
-/// [`uvm_map_clip_end_held`] of the entry at `key` (`uvm_map_submap`'s, which N12b holds
+/// [`uvm_map_clip_end_held`] of the entry at `key` (`uvm_map_submap`'s, which N12.2 holds
 /// by reference).
 fn uvm_map_clip_end_at(
     map: &VmMap,
@@ -6611,7 +6771,7 @@ fn uvm_map_clip_end_at(
     key: usize,
     addr: usize,
 ) {
-    let h = Held::of(Some(ent(&st.addr, key, "uvm_map_clip_end")));
+    let h = Held::of(map, Some(ent(&st.addr, key, "uvm_map_clip_end")));
     uvm_map_clip_end_held(map, st, ew, h.entry("uvm_map_clip_end"), addr);
 }
 
@@ -6652,7 +6812,7 @@ fn uvm_map_clip_start_held(
 }
 
 /// [`uvm_map_clip_start_held`] of the entry at `key`; the key of the entry the C's pointer
-/// names afterwards (`uvm_unmap_remove`'s and `uvm_map_submap`'s, which N12b holds by
+/// names afterwards (`uvm_unmap_remove`'s and `uvm_map_submap`'s, which N12.2 holds by
 /// reference).
 fn uvm_map_clip_start_at(
     map: &VmMap,
@@ -6661,7 +6821,7 @@ fn uvm_map_clip_start_at(
     key: usize,
     addr: usize,
 ) -> usize {
-    let mut h = Held::of(Some(ent(&st.addr, key, "uvm_map_clip_start")));
+    let mut h = Held::of(map, Some(ent(&st.addr, key, "uvm_map_clip_start")));
     uvm_map_clip_start_held(map, st, ew, &mut h, addr);
     h.entry("uvm_map_clip_start").start()
 }
@@ -6701,7 +6861,7 @@ fn uvm_map_clip_start(
     uvm_mapent_copy(&entry, ew, &mut tmp);
 
     // Put new entry in place of original entry (lent by the insert, held for the split).
-    let mut lower = Held::none();
+    let mut lower = Held::none(map);
     {
         let (mut fp, t) = uvm_mapent_addr_insert(map, st, &owners, tmp);
         uvm_mapent_free_insert(&mut fp, ew, free, t);
@@ -6875,8 +7035,8 @@ fn uvm_map_freelist_update_refill(
     // entry), stepped with RBT_NEXT.
     let owners = st.owners(map);
     {
-        let mut iter = Held::of(st.addr.min());
-        let mut last = Held::none();
+        let mut iter = Held::of(map, st.addr.min());
+        let mut last = Held::none(map);
         while let Some(e) = iter.get() {
             let min = vmmap_free_start(e);
             let max = vmmap_free_end(e);
@@ -6946,19 +7106,19 @@ pub fn uvm_map_set_uaddr(map: &VmMap, which: Slot, newval: Option<Selector>) {
 /// holds, or a new entry not yet in the tree, which `uvm_map_fix_space` links first and goes
 /// on from (`uvm_map_mkentry`'s `uvm_mapent_addr_insert(map, entry)` followed by
 /// `uvm_map_fix_space(map, entry, ..)`).
-enum FixFrom<'h> {
+enum FixFrom<'h, 'm> {
     /// `entry == NULL`.
     None,
-    /// The entry at this key (N12b: `uvm_mapent_mkfree`'s, `uvm_map_mkentry`'s).
+    /// The entry at this key (N12.2: `uvm_mapent_mkfree`'s, `uvm_map_mkentry`'s).
     Key(usize),
     /// The entry the caller holds, and the hold that takes the entry the function returns
     /// (`uvm_map_freelist_update_refill`'s walk goes on from it).
-    Held(&'h VmMapEntry, &'h mut Held),
+    Held(&'h VmMapEntry, &'h mut Held<'m>),
     /// The new entry, linked first.
     New(PoolBox<VmMapEntry>),
 }
 
-impl From<Option<usize>> for FixFrom<'_> {
+impl From<Option<usize>> for FixFrom<'_, '_> {
     fn from(key: Option<usize>) -> Self {
         key.map_or(FixFrom::None, FixFrom::Key)
     }
@@ -6977,7 +7137,7 @@ fn uvm_map_fix_space(
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
     owners: &Owners,
-    entry: FixFrom<'_>,
+    entry: FixFrom<'_, '_>,
     min: usize,
     max: usize,
     flags: u32,
@@ -8011,7 +8171,7 @@ pub(crate) mod tests {
             let mut g = map.lock();
             let mut sp = g.split();
             let (st, ew) = sp.parts();
-            let mut h = Held::of(uvm_map_entrybyaddr(&st.addr, base));
+            let mut h = Held::of(map, uvm_map_entrybyaddr(&st.addr, base));
             // clip_end: the entry held stays the lower part.
             uvm_map_clip_end_held(map, st, ew, h.entry("test"), base + 2 * PAGE_SIZE);
             let e = h.entry("test");
@@ -8042,6 +8202,69 @@ pub(crate) mod tests {
         }
         sane(map);
         assert_eq!(dump(map, base, base + 4 * PAGE_SIZE).len(), 3);
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "vm_map_unbusy: map")]
+    fn a_hold_alive_at_the_unbusy_panics() {
+        // uvm_map_clean's bug of 475b3d53, single-threaded: the busy mark goes while a hold
+        // made under it still counts an entry; the check fires with no other thread.
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let mut a = 0x5000_0000;
+        uvm_mapanon(map, &mut a, PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("map");
+        let g = map.lock();
+        let h = Held::of(map, g.state().addr.min());
+        let busy = g.into_busy();
+        drop(busy);
+        drop(h);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "vm_map_unlock: map")]
+    fn a_hold_alive_at_the_unlock_panics() {
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let g = map.lock();
+        let h = Held::of(map, g.state().addr.min());
+        drop(g);
+        drop(h);
+    }
+
+    #[test]
+    fn holds_carried_across_a_busy_window_and_a_nested_lock_pass() {
+        // What the walks do: holds made under the write lock go on across the busy window,
+        // the busy thread's own write lock inside it (a fault's) finds them and checks only
+        // its own, and relock_unbusy hands the window's base back to the write guard.
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let g = map.lock();
+        let mut h = Held::of(map, g.state().addr.min());
+        let busy = g.into_busy();
+        {
+            let inner = busy.lock();
+            let other = Held::of(map, inner.state().addr.max());
+            drop(other);
+            drop(inner);
+        }
+        let g = busy.relock_unbusy();
+        h.release();
+        drop(g);
+        drop(h);
+        // A reader never checks: a hold of the write lock's thread is not its business.
+        let g = map.lock();
+        let h = Held::of(map, g.state().addr.min());
+        let busy = g.into_busy();
+        let r = busy.lock_read();
+        drop(r);
+        drop(h);
+        drop(busy);
         uvmspace_free(vm);
     }
 
