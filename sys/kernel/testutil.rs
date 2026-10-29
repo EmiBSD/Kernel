@@ -1277,6 +1277,79 @@ macro_rules! test_file_glue {
 
         static TEST_KQUEUE_OPS: TestKqueueOps = TestKqueueOps;
 
+        /// The operations of a test glue's pipe file (`pipeops`): `kqfilter` is the C's
+        /// `pipe_kqfilter` over the kernel pair (the filter by `EVFILT_*`, `__EV_SELECT` and
+        /// `__EV_POLL` passed); the tests move the bytes through the pair itself.
+        pub struct TestPipeOps;
+
+        impl $crate::file::FileOps<$name> for TestPipeOps {
+            fn read(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _fflags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Err(hal::sys::errno::Errno::ENODEV)
+            }
+            fn write(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _fflags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Err(hal::sys::errno::Errno::ENODEV)
+            }
+            fn ioctl(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _com: u64,
+                _data: &mut [u8],
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Err(hal::sys::errno::Errno::ENOTTY)
+            }
+            fn kqfilter(
+                &self,
+                fp: &$crate::file::File<$name>,
+                kn: &$crate::event::Knote<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                let Some(end) = fp.data().and_then(|d| d.pipe.as_ref()) else {
+                    return Err(hal::sys::errno::Errno::EBADF);
+                };
+                let filter = match kn.kn_filter().get() {
+                    $crate::event::EVFILT_READ => Some($crate::pipe::PipeFilter::Read),
+                    $crate::event::EVFILT_WRITE => Some($crate::pipe::PipeFilter::Write),
+                    $crate::event::EVFILT_EXCEPT => Some($crate::pipe::PipeFilter::Except),
+                    _ => None,
+                };
+                end.pair().kqfilter(
+                    end.dir(),
+                    filter,
+                    kn.has_flags($crate::event::__EV_SELECT),
+                    kn.has_flags($crate::event::__EV_POLL),
+                    kn,
+                )
+            }
+            fn stat(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _st: &mut $crate::testutil::TestStat,
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            /// The end is the file's object, dropped with the file's item (`pipe_destroy`).
+            fn close(
+                &self,
+                _fp: &$crate::file::File<$name>,
+                _p: Option<&$crate::proc::Thread<$proc>>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+        }
+
+        static TEST_PIPE_OPS: TestPipeOps = TestPipeOps;
+
         impl $crate::file::FileGlue for $name {
             type Proc = $proc;
             type Ops = dyn $crate::file::FileOps<$name>;
@@ -1364,6 +1437,16 @@ macro_rules! test_file_glue {
             }
             fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
                 d.pipe.as_ref()
+            }
+            fn pipe_file(end: $crate::pipe::PipeEnd<$proc>) -> (&'static Self::Ops, Self::Data) {
+                (
+                    &TEST_PIPE_OPS,
+                    $crate::testutil::TestFileData {
+                        id: end.pair().kinfo(end.dir()).addr,
+                        pipe: Some(end),
+                        ..$crate::testutil::TestFileData::default()
+                    },
+                )
             }
             fn sigpipe(_p: &$crate::proc::Thread<$proc>) {
                 $crate::testutil::file_log_push(std::string::String::from("SIGPIPE"));

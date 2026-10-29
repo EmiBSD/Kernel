@@ -647,6 +647,10 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// and whose peer it writes), for the pipe's filters (`kernel::pipe`'s `filt_pipe*`);
     /// `None` for another object.
     fn pipe_of(d: &Self::Data) -> Option<&crate::pipe::PipeEnd<Self::Proc>>;
+    /// `pipeops` and the object of a new pipe file (`dopipe`'s `f_ops` and `f_data`): the
+    /// object holds `end`, the file's pipe, which goes with the file's last reference
+    /// (`pipe_close`'s `pipe_destroy`).
+    fn pipe_file(end: crate::pipe::PipeEnd<Self::Proc>) -> (&'static Self::Ops, Self::Data);
     /// `ptsignal(p, SIGPIPE, STHREAD)`.
     fn sigpipe(p: &Thread<Self::Proc>);
     /// `pledge_fcntl(p, cmd)`.

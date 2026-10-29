@@ -5765,7 +5765,7 @@ notes = "N4.3: read/write/ioctl/utrace bodies moved into sys/kernel/descrip.rs a
 rust = "sys/kern/pipe_glue.rs"
 lz = ["sys/kern/sys_pipe.rs"]
 status = "redesigned"
-notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue (N4.4: the klist, N4.5b: the sigio left; N5.0: the clock, the filterops and their filt_pipe* functions are the kernel's, BsdPipeGlue gone, BsdFileGlue::pipe_of answers a pipe file's end)"
+notes = "N2.6: the 0-unsafe call-site adapter of sys/kernel/pipe.rs (listed as such, docs/ROADMAP.md N2): PIPEOPS and the three filterops over the kernel pair, dopipe's descriptor work (PipeFiles), the per-pipe klist and sigio (PipeGlue, recycled PipeKlists), the sysent entries and pipe_init; goes at N4 with descriptors and kqueue (N4.4: the klist, N4.5b: the sigio left; N5.0: the clock, the filterops and their filt_pipe* functions are the kernel's, BsdPipeGlue gone, BsdFileGlue::pipe_of answers a pipe file's end; dopipe is kernel::pipe::Pipes::dopipe over the kernel's descriptors, BsdFiles/PipeFile go, BsdFileGlue::pipe_file gives PIPEOPS and BsdFileData::Pipe(end), pipe_stat reads f_cred)"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::fp_pipe"
@@ -5790,8 +5790,8 @@ kind = "split"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::dopipe"
-native = ["dopipe", "sys/kernel/pipe.rs::Pipes::dopipe"]
-kind = "split"
+native = ["sys/kernel/pipe.rs::Pipes::dopipe"]
+kind = "moved"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::pipe_read"
@@ -10852,7 +10852,7 @@ rust = "sys/kernel/pipe.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_pipe.rs", "sys/sys/pipe.rs"]
 status = "redesigned"
-notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy; N5.0: PipeGlue gone, the types generic over ProcGlue, the clock kernel::tc's getnanotime, the three filterops the Filter impls PipeRead/PipeWrite/PipeExcept erased as PipePair::PIPE_*FILTOPS with the C's filt_pipe* functions, finding the pair through FileGlue::pipe_of"
+notes = "N2.6: pipe(2) in the kernel crate, generic over bsd's glue (PipeGlue, UioMove, PipeFiles; bridges.toml): the pair a PoolArc of a TypedPool, each pipe owned by a PipeEnd whose drop is pipe_destroy, the [p] state inside Rwlocked<PairState>, the buffer a KmBuf moved out of the lock for the copy; N5.0: PipeGlue gone, the types generic over ProcGlue, the clock kernel::tc's getnanotime, the three filterops the Filter impls PipeRead/PipeWrite/PipeExcept erased as PipePair::PIPE_*FILTOPS with the C's filt_pipe* functions, finding the pair through FileGlue::pipe_of; PipeFiles gone, sys_pipe/sys_pipe2/dopipe take the thread and run the C's dopipe over kernel::descrip with FileGlue::pipe_file"
 
 [[module.fn]]
 lz = "sys/kern/sys_pipe.rs::PipePair::default"

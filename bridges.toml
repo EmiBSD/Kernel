@@ -146,21 +146,14 @@ paid_by = "N7"
 # vfs_getcwd_common, N5). N5.0: a vnode file's vnode as the pager sees it (vnode_ops, N5:
 # mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end), and a pipe file's pipe
 # (pipe_of, N8 with Data: the pipe's kernel filters find the pair through it, with the
-# PipeGlue bridge's end).
+# PipeGlue bridge's end) and a new pipe file's pipeops and object (pipe_file, N8 with Ops and
+# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
 for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 paid_by = "N8"
 
-# bsd: dopipe's descriptor work, falloc/fdinsert/fdrelease/closef under fdplock
-# (sys/kern/kern_descrip.rs, sys/sys/filedesc.rs), implemented by sys/kern/pipe_glue.rs.
-# kernel::pipe::PipeFiles
-# Re-dated N5 at the N4 close (the user, 2026-10-24): what it calls is the kernel's since N4 (kernel::tc, kernel::reboot, kernel::proc, kernel::file); N5's first slice wires it and removes the row.
-[[bridge]]
-trait = "PipeFiles"
-for = ["sys/kernel/pipe.rs"]
-paid_by = "N5"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),

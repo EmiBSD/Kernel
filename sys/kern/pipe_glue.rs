@@ -45,15 +45,16 @@
 //!
 //! Every decision pipe(2) makes is the kernel crate's; this file holds the `struct fileops`
 //! (`PIPEOPS`) of a pipe file, which turns `bsd`'s `File`, `Uio`, ioctl numbers and `Stat`
-//! into the kernel's types; the descriptor work of `dopipe` ([`PipeFiles`]); the system call
-//! entries `bsd`'s `sysent[]` keeps (the `Legacy` path, which calls the same kernel function
-//! as the module's `Native` entry); and `pipe_init`. N5.0: the clock and the three
-//! `struct filterops` are the kernel's (`kernel::pipe::PipeRead`, `PipeWrite`, `PipeExcept`,
-//! which find the pair through `BsdFileGlue::pipe_of`); the `PipeGlue` bridge is gone.
+//! into the kernel's types; the system call entries `bsd`'s `sysent[]` keeps (the `Legacy`
+//! path, which calls the same kernel function as the module's `Native` entry); and
+//! `pipe_init`. N5.0: the clock and the three `struct filterops` are the kernel's
+//! (`kernel::pipe::PipeRead`, `PipeWrite`, `PipeExcept`, which find the pair through
+//! `BsdFileGlue::pipe_of`), and so is `dopipe` (`kernel::pipe::Pipes::dopipe` over the
+//! kernel's descriptor table, a file set up by `BsdFileGlue::pipe_file` with [`PIPEOPS`]);
+//! the `PipeGlue` and `PipeFiles` bridges are gone.
 //!
-//! A pipe file holds its pipe in its typed slot, `File::f_pipe` (`sys/sys/file.rs`): the
-//! [`PipeEnd`] the kernel made for it, with the opener's uid and gid. `f_data` stays null for
-//! a pipe. Every file operation clones the pair's handle and reads which pipe it is
+//! A pipe file's object is its pipe (`BsdFileData::Pipe`): the [`PipeEnd`] the kernel made
+//! for it. Every file operation clones the pair's handle and reads which pipe it is
 //! ([`pipe_of`]), never calling into the pair while it reads the file's object. `fo_close` takes the end out under the mutex, releases it, and
 //! only then drops the end, whose drop is `pipe_destroy` (it sleeps on `PIPE_WANTD`, which a
 //! spinning mutex must not be held across).
@@ -62,10 +63,6 @@
 //! sigio registration (`kernel::sigio::SigioRef`, N4.5b: one atomic word, `Send` and `Sync`).
 //!
 //! ## Deviations
-//! - `pipe_stat`'s `st_uid`/`st_gid` are the opener's credentials read when `dopipe` makes
-//!   the files: the very `struct ucred` `fnew` stores in `f_cred`, which is never written once
-//!   shared (`crcopy`), so the values are the C's; reading `f_cred` itself needs `unsafe`
-//!   until descriptors move (N4, `CredRef`).
 //! - `fo_ioctl`'s `data` is the kernel copy of the argument (`sys_ioctl`), at least an `int`
 //!   wide; the `int` is read and written in native byte order (LZ's).
 //! - `KTRACE` is not configured (`ktrfds`), as in LZ.
@@ -79,21 +76,15 @@
 //! - A knote's `kn_hook` holds the index of the pipe whose klist it is on (`Dir::index`, as
 //!   an address without provenance, set by the kernel's `kqfilter`), not a pointer (LZ's
 //!   `kn_pipe` cast it back; the kernel's `filt_pipedetach` reads it).
-//! - `dopipe`'s descriptor work is [`BsdFiles`], the kernel's [`PipeFiles`]: the same
-//!   `falloc`s under `fdplock`, the same error paths (the ends dropped where the C calls
-//!   `pipe_destroy`), the same `copyout` of both numbers (the kernel's `UserPtr`), `fdrelease`
-//!   of both on a fault.
-
-use core::sync::atomic::Ordering;
+//! - `pipe_stat`'s `st_uid`/`st_gid` are the file's `f_cred` (`File::cred`, N5.0), as the
+//!   C's; N4 copied them into the pipe's slot when `dopipe` made the file.
 
 use hal::pool::PoolArc;
 use hal::user::UserPtr;
-use kernel::pipe::{
-    Dir, PipeEnd, PipeFiles, PipeFilter, PipeFlags, PipeIoctl, PipeKinfo, PipePair, Pipes, UioMove,
-};
+use kernel::pipe::{Dir, PipeEnd, PipeFilter, PipeIoctl, PipeKinfo, PipePair, Pipes, UioMove};
 
 use crate::kern::init_sysent::SYSENT;
-use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fdinsert, fdrelease, fdremove};
+use crate::kern::kern_descrip::BsdFileData;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
@@ -101,9 +92,8 @@ use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
 use crate::sys::event::{__EV_POLL, __EV_SELECT, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote};
-use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
-use crate::sys::file::{DTYPE_PIPE, File, Fileops, frele};
-use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, fdplock};
+use crate::sys::fcntl::FNONBLOCK;
+use crate::sys::file::{File, Fileops};
 use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use crate::sys::proc::Proc;
 use crate::sys::sockio::{SIOCGPGRP, SIOCSPGRP};
@@ -114,25 +104,8 @@ use crate::sys::syscallargs::{SysPipe2Args, SysPipeArgs};
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
-use crate::sys::types::{Gid, Register, Uid};
+use crate::sys::types::Register;
 use crate::sys::uio::Uio;
-
-/// What a pipe file's typed slot holds: its pipe, and the opener's credentials for
-/// `pipe_stat`.
-pub struct PipeFile {
-    /// The pipe this file reads (and whose peer it writes).
-    pub end: PipeEnd<BsdProcGlue>,
-    /// `f_cred->cr_uid` of the opener.
-    pub uid: Uid,
-    /// `f_cred->cr_gid` of the opener.
-    pub gid: Gid,
-}
-
-/// `dopipe`'s descriptor work for the thread `p`.
-pub struct BsdFiles<'a> {
-    /// The thread that called `pipe(2)`.
-    pub p: &'a Proc,
-}
 
 /// A `Uio` as the kernel's pipe moves bytes through it, with the file it is on (whose
 /// `FNONBLOCK` the pipe reads at every check).
@@ -186,22 +159,10 @@ impl UioMove for UioAdapter<'_, '_> {
     }
 }
 
-impl PipeFiles<BsdProcGlue> for BsdFiles<'_> {
-    fn dopipe(
-        &self,
-        rpipe: PipeEnd<BsdProcGlue>,
-        wpipe: PipeEnd<BsdProcGlue>,
-        flags: PipeFlags,
-        copyout: &dyn Fn([i32; 2]) -> Result<(), Errno>,
-    ) -> Result<(), Errno> {
-        dopipe(self.p, rpipe, wpipe, flags, copyout)
-    }
-}
-
-/// A pipe file's object (`f_data`): its end and the opener's ids.
-fn pipe_file_of(fp: &File) -> Option<&PipeFile> {
+/// A pipe file's object (`f_data`): its end.
+fn pipe_file_of(fp: &File) -> Option<&PipeEnd<BsdProcGlue>> {
     match fp.data() {
-        Some(BsdFileData::Pipe(pf)) => Some(pf),
+        Some(BsdFileData::Pipe(end)) => Some(end),
         _ => None,
     }
 }
@@ -210,14 +171,14 @@ fn pipe_file_of(fp: &File) -> Option<&PipeFile> {
 /// temporary handle).
 pub fn pipe_of(fp: &File) -> (PoolArc<PipePair<BsdProcGlue>>, Dir) {
     match pipe_file_of(fp) {
-        Some(pf) => (pf.end.pair().clone(), pf.end.dir()),
+        Some(end) => (end.pair().clone(), end.dir()),
         None => panic(format_args!("file {:#x}: not an open pipe", fp.addr())),
     }
 }
 
 /// `kern_sysctl`'s `fill_file` of a pipe file.
 pub fn pipe_kinfo(fp: &File) -> Option<PipeKinfo> {
-    pipe_file_of(fp).map(|pf| pf.end.pair().kinfo(pf.end.dir()))
+    pipe_file_of(fp).map(|end| end.pair().kinfo(end.dir()))
 }
 
 /// The int an `ioctl` argument holds.
@@ -237,7 +198,7 @@ fn set_int_arg(data: &mut [u8], v: i32) {
 pub fn sys_pipe(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPipeArgs = sysargs(v);
 
-    PIPES.sys_pipe(UserPtr::new(uap.fdp.get() as usize), &BsdFiles { p })
+    PIPES.sys_pipe(p, UserPtr::new(uap.fdp.get() as usize))
 }
 
 /// `pipe2(2)`: `pipe(2)` with `O_CLOEXEC`, `O_CLOFORK` and `O_NONBLOCK` (`sysent[]`'s
@@ -245,11 +206,7 @@ pub fn sys_pipe(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
 pub fn sys_pipe2(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPipe2Args = sysargs(v);
 
-    PIPES.sys_pipe2(
-        UserPtr::new(uap.fdp.get() as usize),
-        uap.flags.get(),
-        &BsdFiles { p },
-    )
+    PIPES.sys_pipe2(p, UserPtr::new(uap.fdp.get() as usize), uap.flags.get())
 }
 
 /// `KernelApi::pipe2`, the module's `Native` pipe(2) and pipe2(2): the thread on this CPU
@@ -267,84 +224,6 @@ pub fn native_pipe2(nr: Register, fdp: usize, flags: Register) -> Result<(), i32
     let args: SysArgs = [fdp as Register, flags, 0, 0, 0, 0];
     let mut rval: [Register; 2] = [0, 0];
     mi_syscall(p, nr, &SYSENT[nr as usize], &args, &mut rval).map_err(Errno::as_i32)
-}
-
-/// Sets up a new pipe file: both ends are `FREAD | FWRITE`, as in the C.
-fn pipe_file(fp: &File, end: PipeEnd<BsdProcGlue>, flags: PipeFlags, p: &Proc) {
-    let fflag = (FREAD | FWRITE | if flags.nonblock { FNONBLOCK } else { 0 }) as u32;
-    let cred = p.ucred();
-    fp.f_flag.store(fflag, Ordering::SeqCst);
-    fp.install(
-        DTYPE_PIPE,
-        &PIPEOPS,
-        BsdFileData::Pipe(PipeFile {
-            end,
-            uid: cred.cr_uid.get(),
-            gid: cred.cr_gid.get(),
-        }),
-    );
-}
-
-/// `dopipe(p, ufds, flags)` from the new pair on: installs its two files at the lowest free
-/// descriptors and copies them out.
-pub fn dopipe(
-    p: &Proc,
-    rpipe: PipeEnd<BsdProcGlue>,
-    wpipe: PipeEnd<BsdProcGlue>,
-    flags: PipeFlags,
-    copyout: &dyn Fn([i32; 2]) -> Result<(), Errno>,
-) -> Result<(), Errno> {
-    let fdp = p.fd();
-
-    let fdflags = (if flags.cloexec { UF_EXCLOSE } else { 0 })
-        | (if flags.clofork { UF_FORKCLOSE } else { 0 });
-
-    let mut g = fdplock(fdp);
-
-    let (rf, fd0) = match falloc(p, &mut g) {
-        Ok(r) => r,
-        Err(error) => {
-            // free2:
-            drop(g);
-            drop(wpipe);
-            drop(rpipe);
-            return Err(error);
-        }
-    };
-    pipe_file(&rf, rpipe, flags, p);
-
-    let (wf, fd1) = match falloc(p, &mut g) {
-        Ok(r) => r,
-        Err(error) => {
-            // free3: the descriptor (no slot holds the file yet) and the file, whose last
-            // reference closes it, which destroys `rpipe`.
-            let _ = fdremove(&mut g, fd0);
-            let _ = closef(rf, p);
-            // free2:
-            drop(g);
-            drop(wpipe);
-            return Err(error);
-        }
-    };
-    pipe_file(&wf, wpipe, flags, p);
-
-    fdinsert(&mut g, fd0, fdflags, &rf);
-    fdinsert(&mut g, fd1, fdflags, &wf);
-
-    let error = copyout([fd0, fd1]);
-    if error.is_ok() {
-        drop(g);
-        // KTRACE (ktrfds): not configured.
-    } else {
-        // fdrelease() unlocks fdp.
-        let _ = fdrelease(p, g, fd0);
-        let g = fdplock(fdp);
-        let _ = fdrelease(p, g, fd1);
-    }
-
-    let _ = frele(rf, p);
-    let _ = frele(wf, p);
-    error
 }
 
 /// `fo_read` of a pipe.
@@ -382,7 +261,7 @@ pub fn pipe_ioctl(fp: &File, cmd: u64, data: &mut [u8], _p: &Proc) -> Result<(),
 /// `fo_stat` of a pipe: a FIFO whose size is what is buffered.
 pub fn pipe_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
     let (pair, dir) = pipe_of(fp);
-    let (uid, gid) = pipe_file_of(fp).map_or((0, 0), |pf| (pf.uid, pf.gid));
+    let cred = fp.cred();
     let st = pair.stat(dir);
 
     *ub = Stat::default();
@@ -393,8 +272,8 @@ pub fn pipe_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
     ub.st_atim = Timespec::new(st.atime.tv_sec, st.atime.tv_nsec);
     ub.st_mtim = Timespec::new(st.mtime.tv_sec, st.mtime.tv_nsec);
     ub.st_ctim = Timespec::new(st.ctime.tv_sec, st.ctime.tv_nsec);
-    ub.st_uid = uid;
-    ub.st_gid = gid;
+    ub.st_uid = cred.cr_uid.get();
+    ub.st_gid = cred.cr_gid.get();
     // Left as 0: st_dev, st_ino, st_nlink, st_rdev, st_flags, st_gen.
     // XXX (st_dev, st_ino) should be unique.
     Ok(())
@@ -443,6 +322,7 @@ mod tests {
     // `fo_stat`; what `kern_sysctl` reports; the sigio stores recycled.
 
     use core::ptr;
+    use core::sync::atomic::Ordering;
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
@@ -457,6 +337,7 @@ mod tests {
     };
     use crate::kern::kern_event::{kqpoll_exit, kqueue_register};
     use crate::sys::event::{EV_ADD, EV_EOF, EV_ONESHOT, Kevent, ev_set};
+    use crate::sys::fcntl::{FREAD, FWRITE};
     use crate::sys::filio::FIONBIO;
     use crate::sys::poll::{POLLHUP, POLLIN, POLLNVAL, POLLOUT, Pollfd};
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
@@ -480,7 +361,10 @@ mod tests {
         let pair = r.pair().clone();
         for (fd, end) in [(3, r), (4, w)] {
             let fp = fnew(p).unwrap();
-            pipe_file(&fp, end, PipeFlags::default(), p);
+            fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
+            let (ops, data) =
+                <crate::kern::kern_descrip::BsdFileGlue as kernel::file::FileGlue>::pipe_file(end);
+            fp.install(crate::sys::file::DTYPE_PIPE, ops, data);
             install(p, fd, &fp);
         }
         pair

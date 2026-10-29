@@ -31,8 +31,9 @@
 //! `bsd`'s and a file glue whose object holds a pipe's end (`bsd`'s `BsdFileData::Pipe`,
 //! `FileGlue::pipe_of`). Since N5.0 the clock (`kernel::tc`'s `getnanotime`) and the three
 //! filters (`kernel::pipe::PipeRead`, ...) are the kernel's; before, this file's pipe glue
-//! answered them as `bsd`'s did. `dopipe`'s descriptor work is this file's copy of `bsd`'s
-//! (`sys/kern/pipe_glue.rs`) over the kernel's descriptor calls. What an op is:
+//! answered them as `bsd`'s did; since N5.0 `dopipe` is the kernel's too, over the kernel's
+//! descriptor calls and this glue's `pipe_file` (before, this file's copy of `bsd`'s). What an
+//! op is:
 //! - `pipe.create-close`: `pipe_pair_create` (the pool item, two buffers, the times) and
 //!   both ends dropped (`pipe_destroy` twice, the pair back to the pool).
 //! - `pipe.write-read-512`: one 512-byte write into a pair and one 512-byte read out of it.
@@ -56,15 +57,13 @@ use hal::pool::{PoolBackend, RawPool};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Off, Register};
 use hal::user::UserPtr;
-use kernel::descrip::{
-    closef, falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, fdremove, filedesc_init,
-};
+use kernel::descrip::{falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, filedesc_init};
 use kernel::event::{
     __EV_POLL, __EV_SELECT, EV_ADD, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, KqRef, ev_set,
     kqueue_alloc, kqueue_init, kqueue_register,
 };
-use kernel::file::{DTYPE_PIPE, File, FileGlue, FileOps, FileTables, LockOwner};
-use kernel::pipe::{Dir, PipeEnd, PipeFiles, PipeFilter, PipeFlags, Pipes, UioMove};
+use kernel::file::{File, FileGlue, FileOps, FileTables, LockOwner};
+use kernel::pipe::{Dir, PipeEnd, PipeFilter, Pipes, UioMove};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::resource::{self, PlimitRef};
 use kernel::testutil;
@@ -487,6 +486,9 @@ impl FileGlue for BenchFiles {
             BenchData::Kqueue(_) => None,
         }
     }
+    fn pipe_file(end: PipeEnd<BenchGlue>) -> (&'static Self::Ops, Self::Data) {
+        (&BENCH_PIPEOPS, BenchData::Pipe(end))
+    }
     fn sigpipe(_p: &Thread<BenchGlue>) {}
     fn pledge_fcntl(_p: &Thread<BenchGlue>, _cmd: i32) -> Result<(), Errno> {
         Ok(())
@@ -578,74 +580,9 @@ impl FileOps<BenchFiles> for BenchPipeOps {
 
 static BENCH_PIPEOPS: BenchPipeOps = BenchPipeOps;
 
-/// `dopipe`'s descriptor work for the thread `p` (`bsd`'s `BsdFiles`).
-struct BenchDopipe<'a> {
-    p: &'a Thread<BenchGlue>,
-}
-
-/// Sets up a new pipe file: both ends are `FREAD | FWRITE`, as in the C.
-fn pipe_file(fp: &File<BenchFiles>, end: PipeEnd<BenchGlue>, flags: PipeFlags) {
-    let fflag = 3 | if flags.nonblock { 0x0004 } else { 0 }; // FREAD | FWRITE [| FNONBLOCK]
-    fp.f_flag.store(fflag, Ordering::SeqCst);
-    fp.install(DTYPE_PIPE, &BENCH_PIPEOPS, BenchData::Pipe(end));
-}
-
-impl PipeFiles<BenchGlue> for BenchDopipe<'_> {
-    /// `bsd`'s `dopipe` (`sys/kern/pipe_glue.rs`), over the kernel's descriptor calls.
-    fn dopipe(
-        &self,
-        rpipe: PipeEnd<BenchGlue>,
-        wpipe: PipeEnd<BenchGlue>,
-        flags: PipeFlags,
-        copyout: &dyn Fn([i32; 2]) -> Result<(), Errno>,
-    ) -> Result<(), Errno> {
-        let p = self.p;
-        let fdp = p.fd();
-        let fdflags = if flags.cloexec { 0x01 } else { 0 } | if flags.clofork { 0x04 } else { 0 };
-        let mut g = fdplock(fdp);
-        let (rf, fd0) = match falloc(p, &mut g) {
-            Ok(r) => r,
-            Err(error) => {
-                drop(g);
-                drop(wpipe);
-                drop(rpipe);
-                return Err(error);
-            }
-        };
-        pipe_file(&rf, rpipe, flags);
-        let (wf, fd1) = match falloc(p, &mut g) {
-            Ok(r) => r,
-            Err(error) => {
-                let _ = fdremove(&mut g, fd0);
-                let _ = closef(rf, Some(p));
-                drop(g);
-                drop(wpipe);
-                return Err(error);
-            }
-        };
-        pipe_file(&wf, wpipe, flags);
-        fdinsert(&mut g, fd0, fdflags, &rf);
-        fdinsert(&mut g, fd1, fdflags, &wf);
-        let error = copyout([fd0, fd1]);
-        if error.is_ok() {
-            drop(g);
-        } else {
-            let _ = fdrelease(p, g, fd0);
-            let g = fdplock(fdp);
-            let _ = fdrelease(p, g, fd1);
-        }
-        let _ = rf.frele(Some(p));
-        let _ = wf.frele(Some(p));
-        error
-    }
-}
-
 /// `pipe2(2)` of the bench's thread into its user buffer: the two descriptors.
 fn pipe2(p: &Thread<BenchGlue>) -> [i32; 2] {
-    if PIPES
-        .sys_pipe2(UserPtr::new(UFDS), 0, &BenchDopipe { p })
-        .is_err()
-    {
+    if PIPES.sys_pipe2(p, UserPtr::new(UFDS), 0).is_err() {
         eprintln!("bench: pipe2 failed");
         std::process::exit(1);
     }
