@@ -366,19 +366,41 @@
 //!   entry, so the tree refuses to give an entry back while one still names it. An entry's
 //!   pool goes back with its box (`uvm_mapent_free`'s dispatch on `UVM_MAP_STATIC`/`KMEM`);
 //!   `uvmexp.kmapent` is counted at the static allocation and at the static entry's drop.
-//! - **Entries by key.** A reference to an entry borrows the map's state, so it cannot live
-//!   across a change of the tree: functions name entries by their `start`, the address
-//!   tree's unique key (`uvm_mapent_addr_insert` panics on a collision, as the C), and find
-//!   them again after each insert or removal, and only then (decision 43): between two
-//!   changes a walk holds the entry it found (`uvm_map_fix_space`, `uvm_map_mkentry`,
-//!   `uvm_mapent_mkfree`, `uvm_unmap_remove`, the free-list update), the free-list functions
-//!   take the entry with the state split around it ([`MapState`]'s `free_parts`: the tree
-//!   shared, the selectors mutable), `uvm_map_mkentry` and `uvm_mapent_clone` give back the
-//!   entry they made, and `uvmspace_fork` and `uvm_map_teardown` follow the links of a tree
-//!   no step changes (`RBT_FOREACH`), as the C's pointers do. A clip takes the original out of the tree,
-//!   edits the box and puts the parts back, which is what `uvm_map_clip_start` does in the C
-//!   (unlink, copy, insert the copy, split); the C's rule that a clipper keeps the pointer it
-//!   is given is the key it returns.
+//! - **Entries held.** A reference to an entry borrows the map's state, so it cannot live
+//!   across a change of the tree. N3.5 named entries by their `start` (the address tree's
+//!   unique key: `uvm_mapent_addr_insert` panics on a collision, as the C) and found them
+//!   again after each change, O(log n) a step where the C's walks are O(1) a step. Since
+//!   N12a a walk that changes the tree holds the C's pointer as a counted link (`Held`, a
+//!   `hal::owned::SecondaryRef`): the entry it lends borrows the hold, not the tree, the
+//!   walk steps with `RBT_NEXT` from it, and the tree refuses to give a counted entry back
+//!   (I4), so the C's rule that nothing frees the entry under the walk is checked. The
+//!   clippers take the entry held (`uvm_map_clip_start_held` releases the hold before the
+//!   original leaves the tree, its one search, the C's `RBT_REMOVE`, and sets it on the
+//!   upper part the split's insert lends: the C's rule that a clipper keeps the pointer it is
+//!   given; `uvm_map_clip_end_held` keeps it on the lower part); `uvm_map_splitentry` finds
+//!   nothing; `amap_copy` takes the hold of its entry (a chunk clip moves it as the C's
+//!   pointer moves); `uvm_map_fix_space` lends the entry it ends at to the refill's next
+//!   hold. So `uvm_map_protect`, `uvm_map_inherit`, `uvm_map_immutable`, `uvm_map_advice`,
+//!   `uvm_map_pageable` (both passes and the unwind), `uvm_map_clean`, `uvm_map_extract`,
+//!   `uvmspace_fork`'s shared and copied entries and the free-list refill walk at the C's
+//!   cost. A hold is released before its entry leaves the tree and goes before the lock or
+//!   the busy mark (a hold left after the unlock would make another thread's unmap panic).
+//!   Three places pay a search the C does not, each named: `uvm_map_protect`'s
+//!   `VM_MAP_WIREFUTURE` step releases its hold around `uvm_map_pageable` (whose own clips
+//!   could move it) and finds the entry again by its start (one search, a rare path; N12a's
+//!   decision 4); `uvm_map_pageable`'s wiring holds the entry after the one it faults and
+//!   `end` across the unlocked faults, not `first` and the faulted one (a fault's chunk clip
+//!   moves only the faulted entry), and finds those again by their starts on the error path
+//!   only; and the removal paths (`uvm_unmap_remove`, `uvm_mapent_mkfree`,
+//!   `uvm_map_mkentry`, `uvm_map_freelist_update_clear`, `uvm_map_submap`, the
+//!   `uvm_map_clip_*_at` wrappers they use) still name entries by key between two changes,
+//!   one search per change: N12b moves them to holds. The free-list functions take the
+//!   entry with the state split around it ([`MapState`]'s `free_parts`: the tree shared, the
+//!   selectors mutable), `uvm_map_mkentry` and `uvm_mapent_clone` give back the entry they
+//!   made, and `uvmspace_fork` and `uvm_map_teardown` follow the links of a tree no step
+//!   changes (`RBT_FOREACH`), as the C's pointers do. A clip takes the original out of the
+//!   tree, edits the box and puts the parts back, which is what `uvm_map_clip_start` does in
+//!   the C (unlink, copy, insert the copy, split).
 //! - **Fields.** Every scalar of an entry is a relaxed atomic (the tree adapters, the busy
 //!   walkers and the trap's `sserial` read them without the lock, as the C's plain loads),
 //!   written by setters that take the write lock's [`EntryWrite`]; an entry's two handles
@@ -460,7 +482,7 @@ use hal::kmbuf::{KmBuf, PageKind, PageMemory};
 use hal::malloc::{M_NOWAIT, M_WAITOK, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
-use hal::owned::{OwnedEntry, OwnedList, OwnedTree, SecondaryEntry};
+use hal::owned::{OwnedEntry, OwnedList, OwnedTree, SecondaryEntry, SecondaryRef};
 use hal::pmap::PmapRef;
 use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, StaticArena, TypedPool};
 use hal::random::{arc4random, arc4random_uniform};
@@ -1300,6 +1322,67 @@ impl FreeParts<'_> {
     }
 }
 
+/// The C's `struct vm_map_entry *` kept across a change of the map's address tree: a counted
+/// link (`hal::owned::SecondaryRef`), which the tree refuses to give back while it lives
+/// (`hal::owned`'s I4), so a walk steps with `RBT_NEXT` from the entry in hand while clips
+/// and inserts happen around it, at the C's cost (no search per step). The entry it lends
+/// borrows the `Held`, not the tree, so it coexists with the state's `&mut`. An entry held
+/// must leave the tree only after its holds are released ([`Held::release`]): a splitting
+/// `uvm_map_clip_start` releases the hold it is given and sets it on the upper part, as the
+/// C's clipper keeps its pointer; any other removal of a held entry panics (I4), never
+/// frees it under the walk. Every `Held` is a local of the function that holds the map's
+/// write lock (or its busy mark) and goes before it.
+struct Held(SecondaryRef<ByAddr>);
+
+impl Held {
+    /// A hold on nothing (`NULL`).
+    const fn none() -> Self {
+        Self(SecondaryRef::new())
+    }
+
+    /// A hold on `e`, an entry of a map's tree (`None`: on nothing).
+    fn of(e: Option<&VmMapEntry>) -> Self {
+        let mut h = Self::none();
+        h.0.set(e);
+        h
+    }
+
+    /// The entry held, `None` for nothing.
+    fn get(&self) -> Option<&VmMapEntry> {
+        self.0.get()
+    }
+
+    /// The entry held, which the caller (`who`) holds by its invariant.
+    fn entry(&self, who: &str) -> &VmMapEntry {
+        match self.0.get() {
+            Some(e) => e,
+            None => kpanic(format_args!("{who}: no entry held")),
+        }
+    }
+
+    /// Whether `e` is the entry held (the C's `iter == end`, an address comparison).
+    fn is(&self, e: &VmMapEntry) -> bool {
+        self.0.points_to(e)
+    }
+
+    /// Holds `e` instead (`None`: nothing); the old entry's count goes back.
+    fn set(&mut self, e: Option<&VmMapEntry>) {
+        self.0.set(e);
+    }
+
+    /// `entry = RBT_NEXT(uvm_map_addr, entry)`: the entry after the one held, in `tree`,
+    /// which holds it (one step of the C's walk, no search).
+    fn step(&mut self, tree: &OwnedTree<ByAddr>) {
+        let next = self.get().and_then(|e| tree.next(e));
+        self.0.set(next);
+    }
+
+    /// Holds nothing: before the entry held leaves the tree.
+    fn release(&mut self) {
+        self.0.set(None);
+    }
+}
+
 /// `struct vm_map`: a virtual address space, the entries that describe it and the pmap that
 /// backs it.
 ///
@@ -2053,10 +2136,11 @@ impl FaultMapGuard for MapGuard<'_> {
         let map = self.map;
         let mut sp = self.split_write();
         let (st, ew) = sp.parts();
-        let Some(key) = uvm_map_lookup_entry(&st.addr, va).map(VmMapEntry::start) else {
+        let mut held = Held::of(uvm_map_lookup_entry(&st.addr, va));
+        if held.get().is_none() {
             kpanic(format_args!("amap_copy: no entry holds {va:#x}"));
-        };
-        amap_copy(map, st, ew, key, waitf, canchunk, start, end);
+        }
+        amap_copy(map, st, ew, &mut held, waitf, canchunk, start, end);
     }
 
     fn submap(&self, entry: &VmMapEntry) -> Option<&'static VmMap> {
@@ -2207,13 +2291,6 @@ fn find(tree: &OwnedTree<ByAddr>, key: usize) -> Option<&VmMapEntry> {
     tree.find_by(|n| key.cmp(&n.start()))
 }
 
-/// The key of the entry after the one at `key`.
-fn next_key(tree: &OwnedTree<ByAddr>, key: usize) -> Option<usize> {
-    find(tree, key)
-        .and_then(|e| tree.next(e))
-        .map(VmMapEntry::start)
-}
-
 /// The entry that describes `addr`, which every address inside the map has (the tree has
 /// no gaps); a missing one is a corrupted tree.
 fn entry_at<'t>(
@@ -2322,25 +2399,11 @@ fn owners_lent(map: &VmMap, st: &MapState, owners: &Owners, who: &str) {
     }
 }
 
-/// `uvm_mapent_addr_insert`: handle address tree insertion; the entry's key.
-fn uvm_mapent_addr_insert(map: &VmMap, st: &mut MapState, entry: PoolBox<VmMapEntry>) -> usize {
-    kdassert!(entry.start() <= entry.end());
-    kdassert!(entry.start() & PAGE_MASK == 0 && entry.end() & PAGE_MASK == 0);
-
-    // TRACEPOINT(uvm, map_insert, ...): dt is not configured.
-
-    let key = entry.start();
-    if let Some(back) = st.addr.insert(entry) {
-        let res = ent(&st.addr, key, "uvm_mapent_addr_insert");
-        addr_collision(map, &back, res);
-    }
-    key
-}
-
-/// [`uvm_mapent_addr_insert`] for a walk that goes on from the entry it links
-/// (`uvm_map_fix_space`): the state split for the free-list functions and the entry, lent by
-/// the insert (`OwnedTree::insert_get`), so it is not searched for again.
-fn uvm_mapent_addr_insert_parts<'s>(
+/// `uvm_mapent_addr_insert`: handle address tree insertion (a collision panics, as the C);
+/// the state split for the free-list functions and the entry, lent by the insert
+/// (`OwnedTree::insert_get`), so the caller goes on from it without a search (N12a: every
+/// insert lends its entry).
+fn uvm_mapent_addr_insert<'s>(
     map: &VmMap,
     st: &'s mut MapState,
     owners: &'s Owners,
@@ -4002,7 +4065,10 @@ fn unmap_remove(
             kassert!(e.start() < end);
         }
         let e = if e.end() > end {
-            uvm_map_clip_end(map, st, ew, key, end);
+            // N12b: the walk holds its entry; until then it is found again after the clip.
+            let h = Held::of(Some(e));
+            uvm_map_clip_end(map, st, ew, h.entry("uvm_unmap_remove"), end);
+            drop(h);
             ent(&st.addr, key, "uvm_unmap_remove")
         } else {
             e
@@ -4073,20 +4139,20 @@ fn uvm_map_pageable_pgon(
     map: &VmMap,
     st: &MapState,
     ew: &mut EntryWrite<'_>,
-    first: Option<usize>,
-    end: Option<usize>,
+    first: Option<&VmMapEntry>,
+    end: Option<&VmMapEntry>,
     start_addr: usize,
     end_addr: usize,
 ) {
+    // Nothing changes the tree: the C's walk, entry by entry (`iter != end` by address).
     let mut iter = first;
-    while let Some(key) = iter.filter(|k| Some(*k) != end) {
-        let e = ent(&st.addr, key, "uvm_map_pageable_pgon");
+    while let Some(e) = iter.filter(|e| !end.is_some_and(|x| ptr::eq(*e, x))) {
         kdassert!(e.start() >= start_addr && e.end() <= end_addr);
         if vm_mapent_iswired(e) && !uvm_et_ishole(e) {
             e.set_wired_count(ew, 0);
             unwire_held(map, st, ew, e.start(), e.end());
         }
-        iter = next_key(&st.addr, key);
+        iter = st.addr.next(e);
     }
 }
 
@@ -4105,8 +4171,8 @@ fn wire_skips(e: &VmMapEntry) -> bool {
 fn uvm_map_pageable_wire<'a>(
     map: &'a VmMap,
     mut g: MapWriteGuard<'a>,
-    first: usize,
-    end: Option<usize>,
+    first: Held,
+    end: Held,
     start_addr: usize,
     end_addr: usize,
     keep: bool,
@@ -4124,11 +4190,9 @@ fn uvm_map_pageable_wire<'a>(
     {
         let mut sp = g.split();
         let (st, ew) = sp.parts();
-        let mut iter = Some(first);
-        while let Some(key) = iter.filter(|k| Some(*k) != end) {
-            let e = ent(&st.addr, key, "uvm_map_pageable_wire");
+        let mut iter = Held::of(first.get());
+        while let Some(e) = iter.get().filter(|e| !end.is(e)) {
             kdassert!(e.start() >= start_addr && e.end() <= end_addr);
-            let mut key = key;
             if !wire_skips(e) {
                 // Perform actions of vm_map_lookup that need the write lock: create an
                 // anonymous map for copy-on-write, anonymous map for zero-fill. Skip
@@ -4140,56 +4204,65 @@ fn uvm_map_pageable_wire<'a>(
                         || e.handles(ew.witness()).uvm_obj().is_none())
                 {
                     let (s, x, stack) = (e.start(), e.end(), uvm_et_isstack(e));
-                    let nk = amap_copy(map, st, ew, key, M_WAITOK, !stack, s, x);
-                    if key == first {
-                        first = nk;
+                    // The chunk clips at [s, x) rounded out never split this entry (the
+                    // C's pointers stay); `first` follows it all the same, released while
+                    // amap_copy holds it alone.
+                    let was_first = first.is(e);
+                    if was_first {
+                        first.release();
                     }
-                    key = nk;
+                    amap_copy(map, st, ew, &mut iter, M_WAITOK, !stack, s, x);
+                    if was_first {
+                        first.set(iter.get());
+                    }
                 }
-                let e = ent(&st.addr, key, "uvm_map_pageable_wire");
+                let e = iter.entry("uvm_map_pageable_wire");
                 e.set_wired_count(ew, e.wired_count() + 1);
             }
-            iter = next_key(&st.addr, key);
+            iter.step(&st.addr);
         }
     }
 
-    // Pass 2.
+    // Pass 2. The map is busy and unlocked: no other thread changes its tree, and this
+    // one's faults change only the entry they wire (amap_copy's chunk clips). So the walk
+    // holds the entry after the one faulted (read under the short read lock before the
+    // fault, as before) and `end`, neither of which a fault touches; `first` is released
+    // and found again by its start on the error path only.
     let timestamp_save = map.timestamp();
+    let first_key = first.get().map(VmMapEntry::start);
+    let mut iter = first;
     let busy = g.into_busy();
 
     let mut error = Ok(());
     let mut failed_at = None;
-    let mut iter = Some(first);
     loop {
         // The entry's fields under a short read lock (the map is busy: writers wait).
         let step = {
             let r = busy.lock_read();
             let st = r.state();
-            iter.filter(|k| Some(*k) != end).map(|key| {
-                let e = ent(&st.addr, key, "uvm_map_pageable_wire");
-                let wire = !wire_skips(e) && e.wired_count() == 1;
-                (
-                    key,
-                    wire,
-                    e.start(),
-                    e.end(),
-                    e.protection(),
-                    st.addr.next(e).map(VmMapEntry::start),
-                )
-            })
+            match iter.get().filter(|e| !end.is(e)) {
+                None => None,
+                Some(e) => {
+                    let wire = !wire_skips(e) && e.wired_count() == 1;
+                    let fields = (wire, e.start(), e.end(), e.protection());
+                    let next = st.addr.next(e);
+                    iter.set(next);
+                    Some(fields)
+                }
+            }
         };
-        let Some((key, wire, s, x, prot, next)) = step else {
+        let Some((wire, s, x, prot)) = step else {
             break;
         };
         if wire {
             error = uvm_fault_wire(map, s, x, prot, ru);
             if error.is_err() {
-                failed_at = Some(key);
+                failed_at = Some(s);
                 break;
             }
         }
-        iter = next;
     }
+    drop(iter);
 
     let mut g = busy.relock_unbusy();
 
@@ -4201,33 +4274,39 @@ fn uvm_map_pageable_wire<'a>(
         {
             let mut sp = g.split();
             let (st, ew) = sp.parts();
+            let st: &MapState = st;
+            // Nothing below changes the tree: the C's walks from the entries it names,
+            // found once each by their starts (the error path only).
+            let failed = failed_at.and_then(|k| find(&st.addr, k));
+            let is_failed = |e: &VmMapEntry| failed.is_some_and(|f| ptr::eq(e, f));
             // first is no longer needed to restart loops. Use it as iterator to unwire
             // entries that were successfully wired above.
-            let mut iter = Some(first);
-            while let Some(key) = iter.filter(|k| Some(*k) != failed_at) {
-                let e = ent(&st.addr, key, "uvm_map_pageable_wire");
+            let mut iter = first_key.and_then(|k| find(&st.addr, k));
+            while let Some(e) = iter.filter(|e| !is_failed(e)) {
                 if !wire_skips(e) {
                     e.set_wired_count(ew, e.wired_count() - 1);
                     if !vm_mapent_iswired(e) {
                         unwire_held(map, st, ew, e.start(), e.end());
                     }
                 }
-                iter = next_key(&st.addr, key);
+                iter = st.addr.next(e);
             }
 
             // decrease counter in the rest of the entries
-            let mut iter = failed_at;
-            while let Some(key) = iter.filter(|k| Some(*k) != end) {
-                let e = ent(&st.addr, key, "uvm_map_pageable_wire");
+            let mut iter = failed;
+            while let Some(e) = iter.filter(|e| !end.is(e)) {
                 if !wire_skips(e) {
                     e.set_wired_count(ew, e.wired_count() - 1);
                 }
-                iter = next_key(&st.addr, key);
+                iter = st.addr.next(e);
             }
         }
 
+        // A hold never outlives the lock (an unmap after it would find the entry counted).
+        drop(end);
         return (keep.then_some(g), error);
     }
+    drop(end);
 
     if keep {
         if cfg!(feature = "diagnostic") && timestamp_save != map.timestamp() {
@@ -4361,13 +4440,15 @@ fn uvm_map_pageable_core<'a>(
             } else {
                 match last {
                     None => match st.addr.max() {
-                        Some(max) if max.end() >= end => Ok((first.start(), max.start())),
+                        Some(max) if max.end() >= end => {
+                            Ok((Held::of(Some(first)), Held::of(Some(max))))
+                        }
                         _ => Err(Errno::EINVAL),
                     },
                     Some(l) => {
                         kassert!(!ptr::eq(l, first));
                         match st.addr.prev(l) {
-                            Some(prev) => Ok((first.start(), prev.start())),
+                            Some(prev) => Ok((Held::of(Some(first)), Held::of(Some(prev)))),
                             None => Err(Errno::EINVAL),
                         }
                     }
@@ -4375,42 +4456,43 @@ fn uvm_map_pageable_core<'a>(
             }
         }
     };
-    let (first, last) = match found {
+    let (mut first, mut last) = match found {
         Ok(f) => f,
         Err(e) => return (keep.then_some(g), Err(e)),
     };
 
-    // Wire/unwire pages here.
-    let (first, tmp) = {
+    // Wire/unwire pages here: the C's first and last pointers, held through the clips.
+    {
         let mut sp = g.split();
         let (st, ew) = sp.parts();
-        let wired = |k: usize| vm_mapent_iswired(ent(&st.addr, k, "uvm_map_pageable"));
         // Mark pageable: entries that are not wired are untouched. Mark wired: entries are
         // always touched (because recovery needs this).
-        let mut last = last;
-        let mut first = first;
-        if wired(first) == new_pageable {
-            let nf = uvm_map_clip_start_at(map, st, ew, first, start);
-            if last == first {
-                last = nf;
+        if vm_mapent_iswired(first.entry("uvm_map_pageable")) == new_pageable {
+            // A split gives first's hold the upper part; last, the same entry, follows it.
+            let same = last.is(first.entry("uvm_map_pageable"));
+            if same {
+                last.release();
             }
-            first = nf;
+            uvm_map_clip_start_held(map, st, ew, &mut first, start);
+            if same {
+                last.set(first.get());
+            }
         }
         // Split last at end. Make tmp be the first entry after what is to be touched. If
         // last is not wired (pageable: is wired), don't touch it.
-        let tmp = if vm_mapent_iswired(ent(&st.addr, last, "uvm_map_pageable")) == new_pageable {
-            uvm_map_clip_end_at(map, st, ew, last, end);
-            next_key(&st.addr, last)
-        } else {
-            Some(last)
-        };
-        if new_pageable {
-            uvm_map_pageable_pgon(map, st, ew, Some(first), tmp, start, end);
+        if vm_mapent_iswired(last.entry("uvm_map_pageable")) == new_pageable {
+            uvm_map_clip_end_held(map, st, ew, last.entry("uvm_map_pageable"), end);
+            last.step(&st.addr);
         }
-        (first, tmp)
-    };
+        if new_pageable {
+            uvm_map_pageable_pgon(map, st, ew, first.get(), last.get(), start, end);
+        }
+    }
+    let tmp = last;
 
     if new_pageable {
+        // A hold never outlives the lock.
+        drop((first, tmp));
         return (keep.then_some(g), Ok(()));
     }
     uvm_map_pageable_wire(map, g, first, tmp, start, end, keep, ru)
@@ -4434,7 +4516,8 @@ pub fn uvm_map_pageable_all(
         {
             let mut sp = g.split();
             let (st, ew) = sp.parts();
-            let first = st.addr.min().map(VmMapEntry::start);
+            let st: &MapState = st;
+            let first = st.addr.min();
             uvm_map_pageable_pgon(map, st, ew, first, None, map.min_offset(), map.max_offset());
         }
         map.modflags(0, VM_MAP_WIREFUTURE);
@@ -4473,14 +4556,15 @@ pub fn uvm_map_pageable_all(
     }
 
     // uvm_map_pageable_wire will release lock
-    let Some(first) = g.state().addr.min().map(VmMapEntry::start) else {
+    let first = Held::of(g.state().addr.min());
+    if first.get().is_none() {
         return Ok(());
-    };
+    }
     uvm_map_pageable_wire(
         map,
         g,
         first,
-        None,
+        Held::none(),
         map.min_offset(),
         map.max_offset(),
         false,
@@ -4621,15 +4705,17 @@ pub fn uvm_map_setup_entries(map: &VmMap, st: &mut MapState, ew: &mut EntryWrite
 
 /// `uvm_map_splitentry`: split entry at given address.
 ///
-/// orig (its key): entry that is to be split. next: a newly allocated map entry that is not
-/// linked. split: address at which the split is done.
+/// orig: entry that is to be split, held by the caller. next: a newly allocated map entry
+/// that is not linked. split: address at which the split is done. `upper`, if given, holds
+/// `next` afterwards (lent by its insert, never searched for).
 fn uvm_map_splitentry(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
-    orig: usize,
+    orig: &VmMapEntry,
     mut next: PoolBox<VmMapEntry>,
     split: usize,
+    upper: Option<&mut Held>,
 ) {
     if split & PAGE_MASK != 0 {
         kpanic(format_args!(
@@ -4640,11 +4726,11 @@ fn uvm_map_splitentry(
         uvm_tree_sanity(map, st, "uvm_map_splitentry");
     }
 
-    // orig stays where it is in the tree until next goes in: found once.
+    // orig stays where it is in the tree until next goes in.
     let owners = st.owners(map);
     let free = {
         let mut fp = st.free_parts(&owners);
-        let o = ent(fp.tree, orig, "uvm_map_splitentry");
+        let o = orig;
         kassert!(o.start() < split && vmmap_free_end(o) > split);
 
         // Free space will change, unlink from free space tree.
@@ -4710,11 +4796,12 @@ fn uvm_map_splitentry(
         uvm_mapent_free_insert(&mut fp, ew, free_before, o);
         free
     };
-    let nkey = uvm_mapent_addr_insert(map, st, next);
     {
-        let mut fp = st.free_parts(&owners);
-        let n = ent(fp.tree, nkey, "uvm_map_splitentry");
+        let (mut fp, n) = uvm_mapent_addr_insert(map, st, &owners, next);
         uvm_mapent_free_insert(&mut fp, ew, free, n);
+        if let Some(u) = upper {
+            u.set(Some(n));
+        }
     }
 
     if cfg!(test) {
@@ -5025,9 +5112,10 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
                 ));
             }
         }
-        first.map(VmMapEntry::start)
+        Held::of(first)
     };
     if error.is_err() {
+        drop(first);
         return (g, error, etype);
     }
 
@@ -5048,21 +5136,20 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
         etype
     };
 
-    // Fix protections.
+    // Fix protections: the C's pointer, held through the clips and stepped with RBT_NEXT.
     let mut iter = first;
-    while let Some(key) = iter {
+    loop {
         // The entry's changes under the write lock; whether to wire it (VM_MAP_WIREFUTURE)
         // after.
-        let step = {
+        let wire = {
             let mut sp = g.split();
             let (st, ew) = sp.parts();
-            let e = ent(&st.addr, key, "uvm_map_protect");
-            if e.start() >= end {
+            let Some(e) = iter.get().filter(|e| e.start() < end) else {
                 break;
-            }
+            };
             // Treat memory holes as free space.
             if e.start() == e.end() || uvm_et_ishole(e) {
-                (key, None)
+                None
             } else {
                 let old_prot = e.protection();
 
@@ -5073,11 +5160,11 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
                     old_prot == new_prot
                 };
                 if skip {
-                    (key, None)
+                    None
                 } else {
-                    let key = uvm_map_clip_start_at(map, st, ew, key, start);
-                    uvm_map_clip_end_at(map, st, ew, key, end);
-                    let e = ent(&st.addr, key, "uvm_map_protect");
+                    uvm_map_clip_start_held(map, st, ew, &mut iter, start);
+                    let e = iter.entry("uvm_map_protect");
+                    uvm_map_clip_end_held(map, st, ew, e, end);
 
                     if set_max {
                         e.set_max_protection(ew, new_prot);
@@ -5130,13 +5217,16 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
                         && !vm_mapent_iswired(e)
                         && old_prot == PROT_NONE
                         && new_prot != PROT_NONE;
-                    (key, wire.then(|| (e.start(), e.end())))
+                    wire.then(|| (e.start(), e.end()))
                 }
             }
         };
 
-        let (key, wire) = step;
         if let Some((ws, we)) = wire {
+            // The guard moves into uvm_map_pageable, whose clips are its own: the hold is
+            // released and the entry found again by its start after (decision 4 of N12a;
+            // the rare mlockall(MCL_FUTURE) path, one search).
+            iter.release();
             let (back, r) = uvm_map_pageable_keep(g, ws, we, false, Some(&p.p_ru));
             g = back;
             if r.is_err() {
@@ -5149,8 +5239,9 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
                 // would XXX normally return.
                 error = Err(Errno::ENOMEM);
             }
+            iter.set(find(&g.state().addr, ws));
         }
-        iter = next_key(&g.state().addr, key);
+        iter.step(&g.state().addr);
     }
     // pmap_update(map->pmap): nothing to do.
 
@@ -5435,8 +5526,8 @@ fn uvm_mapent_clone<'s>(
     Some(ne)
 }
 
-/// `uvm_mapent_share`: clones the entry at `old_key` of `old_map` into `dstmap` sharing its
-/// amap.
+/// `uvm_mapent_share`: clones the entry `old` (held) of `old_map` into `dstmap` sharing
+/// its amap.
 #[allow(clippy::too_many_arguments)] // the C's signature
 fn uvm_mapent_share<'s>(
     dstmap: &VmMap,
@@ -5451,7 +5542,7 @@ fn uvm_mapent_share<'s>(
     old_map: &VmMap,
     ost: &mut MapState,
     oew: &mut EntryWrite<'_>,
-    old_key: usize,
+    old: &mut Held,
     dead: &mut DeadQueue,
 ) -> Option<&'s VmMapEntry> {
     // If old_entry refers to a copy-on-write region that has not yet been written to
@@ -5462,13 +5553,13 @@ fn uvm_mapent_share<'s>(
     // between the processes is no longer shared.
     //
     // [in other words, we need to clear needs_copy]
-    if uvm_et_isneedscopy(ent(&ost.addr, old_key, "uvm_mapent_share")) {
+    if uvm_et_isneedscopy(old.entry("uvm_mapent_share")) {
         // get our own amap, clears needs_copy
-        amap_copy(old_map, ost, oew, old_key, M_WAITOK, false, 0, 0);
+        amap_copy(old_map, ost, oew, old, M_WAITOK, false, 0, 0);
         // XXXCDC: WAITOK???
     }
 
-    let old = OldEntry::of(ent(&ost.addr, old_key, "uvm_mapent_share"), oew);
+    let old = OldEntry::of(old.entry("uvm_mapent_share"), oew);
     uvm_mapent_clone(
         dstmap,
         st,
@@ -5529,10 +5620,10 @@ impl Forked {
 fn uvm_mapent_forkshared(
     new: &mut ForkDst<'_, '_>,
     old: &mut ForkSrc<'_, '_>,
-    old_key: usize,
+    old_entry: &mut Held,
     dead: &mut DeadQueue,
 ) -> Option<Forked> {
-    let oe = ent(&old.st.addr, old_key, "uvm_mapent_forkshared");
+    let oe = old_entry.entry("uvm_mapent_forkshared");
     let (start, end) = (oe.start(), oe.end());
     let (prot, maxprot) = (oe.protection(), oe.max_protection());
     uvm_mapent_share(
@@ -5548,7 +5639,7 @@ fn uvm_mapent_forkshared(
         old.map,
         old.st,
         old.ew,
-        old_key,
+        old_entry,
         dead,
     )
     .map(Forked::of)
@@ -5601,14 +5692,15 @@ fn uvm_mapent_forkcopy(
     //    to call amap_cow_now to avoid page faults in the parent process. since
     //    amap_cow_now requires "needs_copy" to be clear we might as well clear it here as
     //    well.
+    let mut held = Held::none();
     let ne = if let Some(old_amap) = &o.handles.amap
         && (old_amap.flags() & AMAP_SHARED != 0 || o.wired)
     {
-        // XXXCDC: M_WAITOK ... ok? (the entry is found again after the copy, which may
-        // change the child's map through its write lock)
-        let key = ne.start();
-        let key = amap_copy(new.map, new.st, new.ew, key, M_WAITOK, false, 0, 0);
-        ent(&new.st.addr, key, "uvm_mapent_forkcopy")
+        // XXXCDC: M_WAITOK ... ok? (the entry is held across the copy, which changes the
+        // child's map through its write lock)
+        held.set(Some(ne));
+        amap_copy(new.map, new.st, new.ew, &mut held, M_WAITOK, false, 0, 0);
+        held.entry("uvm_mapent_forkcopy")
     } else {
         ne
     };
@@ -5751,7 +5843,7 @@ pub fn uvmspace_fork(vm1: &Vmspace) -> VmspaceRef {
         // RBT_FOREACH over the parent's entries: no fork function moves, adds or removes an
         // entry of the parent's map (the shared case's amap_copy does not chunk), so the walk
         // follows the links from the entry in hand; the shared case, which changes the
-        // parent's map through its write lock, finds its entry again by its start.
+        // parent's map through its write lock, holds its entry across the change.
         let mut iter = old.st.addr.min();
         while let Some(oe) = iter {
             if oe.start() == oe.end() {
@@ -5775,9 +5867,9 @@ pub fn uvmspace_fork(vm1: &Vmspace) -> VmspaceRef {
             // Apply inheritance.
             let forked = match oe.inheritance() {
                 MAP_INHERIT_SHARE => {
-                    let key = oe.start();
-                    let forked = uvm_mapent_forkshared(&mut new, &mut old, key, &mut dead);
-                    iter = find(&old.st.addr, key).and_then(|e| old.st.addr.next(e));
+                    let mut held = Held::of(Some(oe));
+                    let forked = uvm_mapent_forkshared(&mut new, &mut old, &mut held, &mut dead);
+                    iter = held.get().and_then(|e| old.st.addr.next(e));
                     forked
                 }
                 MAP_INHERIT_COPY => {
@@ -5976,22 +6068,23 @@ pub fn uvm_map_deallocate(map: &'static VmMap) {
     uvm_unmap_detach(&mut dead, 0);
 }
 
-/// The key of the entry an operation on `[start, end)` starts at: the one holding `start`,
+/// The entry an operation on `[start, end)` starts at, held: the one holding `start`,
 /// clipped there, or the next one when `start` is in its free space
-/// (`uvm_map_inherit`'s, `uvm_map_immutable`'s and `uvm_map_advice`'s first step).
+/// (`uvm_map_inherit`'s and `uvm_map_immutable`'s first step).
 fn clip_first(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
     start: usize,
     who: &str,
-) -> Option<usize> {
+) -> Held {
     let e = entry_at(map, &st.addr, start, who);
-    let key = e.start();
     if e.end() > start {
-        Some(uvm_map_clip_start_at(map, st, ew, key, start))
+        let mut h = Held::of(Some(e));
+        uvm_map_clip_start_held(map, st, ew, &mut h, start);
+        h
     } else {
-        next_key(&st.addr, key)
+        Held::of(st.addr.next(e))
     }
 }
 
@@ -6023,10 +6116,10 @@ pub fn uvm_map_inherit(
     let mut sp = g.split();
     let (st, ew) = sp.parts();
 
-    let first = clip_first(map, st, ew, start, "uvm_map_inherit");
+    let mut iter = clip_first(map, st, ew, start, "uvm_map_inherit");
 
     // First check for illegal operations
-    let mut entry1 = first.and_then(|k| find(&st.addr, k));
+    let mut entry1 = iter.get();
     while let Some(e1) = entry1.filter(|e| e.start() < end) {
         if e1.etype() & UVM_ET_IMMUTABLE != 0 {
             return Err(Errno::EPERM);
@@ -6037,11 +6130,10 @@ pub fn uvm_map_inherit(
         entry1 = st.addr.next(e1);
     }
 
-    let mut iter = first;
-    while let Some(key) = iter.filter(|k| *k < end) {
-        uvm_map_clip_end_at(map, st, ew, key, end);
-        ent(&st.addr, key, "uvm_map_inherit").set_inheritance(ew, new_inheritance);
-        iter = next_key(&st.addr, key);
+    while let Some(e) = iter.get().filter(|e| e.start() < end) {
+        uvm_map_clip_end_held(map, st, ew, e, end);
+        e.set_inheritance(ew, new_inheritance);
+        iter.step(&st.addr);
     }
 
     Ok(())
@@ -6066,10 +6158,10 @@ pub fn uvm_map_immutable(map: &VmMap, start: usize, end: usize, imut: bool) -> R
     let mut sp = g.split();
     let (st, ew) = sp.parts();
 
-    let first = clip_first(map, st, ew, start, "uvm_map_immutable");
+    let mut iter = clip_first(map, st, ew, start, "uvm_map_immutable");
 
     // First check for illegal operations
-    let mut entry1 = first.and_then(|k| find(&st.addr, k));
+    let mut entry1 = iter.get();
     while let Some(e1) = entry1.filter(|e| e.start() < end) {
         if e1.inheritance() == MAP_INHERIT_ZERO {
             return Err(Errno::EPERM);
@@ -6077,16 +6169,14 @@ pub fn uvm_map_immutable(map: &VmMap, start: usize, end: usize, imut: bool) -> R
         entry1 = st.addr.next(e1);
     }
 
-    let mut iter = first;
-    while let Some(key) = iter.filter(|k| *k < end) {
-        uvm_map_clip_end_at(map, st, ew, key, end);
-        let e = ent(&st.addr, key, "uvm_map_immutable");
+    while let Some(e) = iter.get().filter(|e| e.start() < end) {
+        uvm_map_clip_end_held(map, st, ew, e, end);
         if imut {
             e.etype_set(ew, UVM_ET_IMMUTABLE);
         } else {
             e.etype_clear(ew, UVM_ET_IMMUTABLE);
         }
-        iter = next_key(&st.addr, key);
+        iter.step(&st.addr);
     }
 
     Ok(())
@@ -6116,18 +6206,19 @@ pub fn uvm_map_advice(map: &VmMap, start: usize, end: usize, new_advice: i32) ->
 
     let mut iter = match uvm_map_entrybyaddr(&st.addr, start) {
         Some(entry) if entry.end() > start => {
-            let key = entry.start();
-            Some(uvm_map_clip_start_at(map, st, ew, key, start))
+            let mut h = Held::of(Some(entry));
+            uvm_map_clip_start_held(map, st, ew, &mut h, start);
+            h
         }
-        Some(entry) => st.addr.next(entry).map(VmMapEntry::start),
-        None => None,
+        Some(entry) => Held::of(st.addr.next(entry)),
+        None => Held::none(),
     };
 
     // XXXJRT: disallow holes?
-    while let Some(key) = iter.filter(|k| *k < end) {
-        uvm_map_clip_end_at(map, st, ew, key, end);
-        ent(&st.addr, key, "uvm_map_advice").set_advice(ew, new_advice);
-        iter = next_key(&st.addr, key);
+    while let Some(e) = iter.get().filter(|e| e.start() < end) {
+        uvm_map_clip_end_held(map, st, ew, e, end);
+        e.set_advice(ew, new_advice);
+        iter.step(&st.addr);
     }
 
     Ok(())
@@ -6191,12 +6282,13 @@ fn uvm_map_extract_locked(
     let end = start + len;
 
     // Lock srcmap, lookup first and last entry in <start,len>.
-    let Some(mut first) = uvm_map_entrybyaddr(&st.addr, start).map(VmMapEntry::start) else {
+    let Some(first) = uvm_map_entrybyaddr(&st.addr, start) else {
         return Err(Errno::EINVAL);
     };
+    let mut first = Held::of(Some(first));
 
     // Check that the range is contiguous.
-    let mut entry = find(&st.addr, first);
+    let mut entry = first.get();
     while let Some(e) = entry.filter(|e| e.end() < end) {
         if vmmap_free_end(e) != e.end() || uvm_et_ishole(e) {
             return Err(Errno::EINVAL);
@@ -6209,25 +6301,28 @@ fn uvm_map_extract_locked(
         _ => {}
     }
 
-    // Handle need-copy flag.
-    let mut iter = Some(first);
-    while let Some(key) = iter.filter(|k| ent(&st.addr, *k, "uvm_map_extract").start() < end) {
-        let e = ent(&st.addr, key, "uvm_map_extract");
-        let mut key = key;
+    // Handle need-copy flag. The C's pointers: amap_copy's chunk clip_start may split the
+    // first entry, whose pointer (iter's, and first's) then names the upper part.
+    let mut iter = Held::of(first.get());
+    while let Some(e) = iter.get().filter(|e| e.start() < end) {
         if uvm_et_isneedscopy(e) {
             let stack = uvm_et_isstack(e);
-            let nk = amap_copy(srcmap, st, ew, key, M_NOWAIT, !stack, start, end);
-            if key == first {
-                first = nk;
+            let was_first = first.is(e);
+            if was_first {
+                first.release();
             }
-            key = nk;
+            amap_copy(srcmap, st, ew, &mut iter, M_NOWAIT, !stack, start, end);
+            if was_first {
+                first.set(iter.get());
+            }
         }
-        if uvm_et_isneedscopy(ent(&st.addr, key, "uvm_map_extract")) {
+        if uvm_et_isneedscopy(iter.entry("uvm_map_extract")) {
             // amap_copy failure
             return Err(Errno::ENOMEM);
         }
-        iter = next_key(&st.addr, key);
+        iter.step(&st.addr);
     }
+    drop(iter);
 
     // Lock destination map (kernel_map).
     let kmap = kernel_map();
@@ -6244,10 +6339,10 @@ fn uvm_map_extract_locked(
     // step 1: start looping through map entries, performing extraction.
     let mut error = Ok(dstaddr);
     let kowners = kst.owners(kmap);
-    let mut iter = Some(first);
-    while let Some(key) = iter.filter(|k| ent(&st.addr, *k, "uvm_map_extract").start() < end) {
-        iter = next_key(&st.addr, key);
-        let e = ent(&st.addr, key, "uvm_map_extract");
+    // The source's tree does not change here: the C's walk, entry by entry.
+    let mut iter = first.get();
+    while let Some(e) = iter.filter(|e| e.start() < end) {
+        iter = st.addr.next(e);
         kdassert!(!uvm_et_isneedscopy(e));
         if uvm_et_ishole(e) {
             continue;
@@ -6352,11 +6447,14 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
             }
             entry = st.addr.next(e);
         }
-        (first.map(VmMapEntry::start), imut)
+        (Held::of(first), imut)
     };
 
     let busy = g.into_busy();
     let mut error = Ok(());
+    // The C's pointer, held across the unlocked steps: the map is busy, so no writer
+    // changes its tree, and this walk changes none. Declared after the busy mark, so it goes
+    // before it on every path.
     let mut iter = first;
     loop {
         // The entry's fields and handles under a short read lock (the map is busy:
@@ -6364,12 +6462,12 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
         let step = {
             let r = busy.lock_read();
             let st = r.state();
-            iter.and_then(|k| find(&st.addr, k))
-                .filter(|e| e.start() < end)
-                .map(|e| {
+            match iter.get().filter(|e| e.start() < end) {
+                None => None,
+                Some(e) => {
                     let h = e.handles(r.witness());
                     let uobj = h.uvm_obj().cloned().filter(|_| uvm_et_isobj(e));
-                    (
+                    let fields = (
                         e.start(),
                         e.end(),
                         e.etype(),
@@ -6378,14 +6476,16 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
                         h.amap.clone(),
                         h.pageoff,
                         uobj,
-                        st.addr.next(e).map(VmMapEntry::start),
-                    )
-                })
+                    );
+                    let next = st.addr.next(e);
+                    iter.set(next);
+                    Some(fields)
+                }
+            }
         };
-        let Some((es, ee, etype, maxprot, offset, amap, pageoff, uobj, next)) = step else {
+        let Some((es, ee, etype, maxprot, offset, amap, pageoff, uobj)) = step else {
             break;
         };
-        iter = next;
 
         // No amap cleaning necessary if: there's no amap; we're not deactivating or freeing
         // pages.
@@ -6478,10 +6578,26 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
     error
 }
 
-/// `UVM_MAP_CLIP_END(map, entry, addr)`: ensure that the entry at `key` ends at or before
-/// the ending address, if it doesn't we split the entry (`key` stays the lower part's).
+/// `UVM_MAP_CLIP_END(map, entry, addr)`: ensure that `e`, an entry of the map's tree that
+/// the caller holds, ends at or before the ending address, if it doesn't we split the entry
+/// (`e` stays the lower part).
 ///
 /// - map must be locked by caller
+fn uvm_map_clip_end_held(
+    map: &VmMap,
+    st: &mut MapState,
+    ew: &mut EntryWrite<'_>,
+    e: &VmMapEntry,
+    addr: usize,
+) {
+    kassert!(e.start() < addr);
+    if e.end() > addr {
+        uvm_map_clip_end(map, st, ew, e, addr);
+    }
+}
+
+/// [`uvm_map_clip_end_held`] of the entry at `key` (`uvm_map_submap`'s, which N12b holds
+/// by reference).
 fn uvm_map_clip_end_at(
     map: &VmMap,
     st: &mut MapState,
@@ -6489,36 +6605,49 @@ fn uvm_map_clip_end_at(
     key: usize,
     addr: usize,
 ) {
-    let e = ent(&st.addr, key, "uvm_map_clip_end");
-    kassert!(e.start() < addr);
-    if e.end() > addr {
-        uvm_map_clip_end(map, st, ew, key, addr);
-    }
+    let h = Held::of(Some(ent(&st.addr, key, "uvm_map_clip_end")));
+    uvm_map_clip_end_held(map, st, ew, h.entry("uvm_map_clip_end"), addr);
 }
 
-/// `uvm_map_clip_end`: `UVM_MAP_CLIP_END` implementation.
+/// `uvm_map_clip_end`: `UVM_MAP_CLIP_END` implementation (`e` held by the caller).
 fn uvm_map_clip_end(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
-    key: usize,
+    e: &VmMapEntry,
     addr: usize,
 ) {
-    let e = ent(&st.addr, key, "uvm_map_clip_end");
     kassert!(e.start() < addr && vmmap_free_end(e) > addr);
     let Some(tmp) = uvm_mapent_alloc(map, 0) else {
         kpanic(format_args!("uvm_map_clip_end: no map entry"));
     };
 
     // Invoke splitentry.
-    uvm_map_splitentry(map, st, ew, key, tmp, addr);
+    uvm_map_splitentry(map, st, ew, e, tmp, addr, None);
 }
 
-/// `UVM_MAP_CLIP_START(map, entry, addr)`: ensure that the entry at `key` begins at or after
-/// the starting address, if it doesn't we split the entry; the key of the entry the C's
-/// pointer names afterwards (the part from `addr`).
+/// `UVM_MAP_CLIP_START(map, entry, addr)`: ensure that the entry `held` begins at or after
+/// the starting address, if it doesn't we split the entry; `held` holds afterwards the entry
+/// the C's pointer names (the part from `addr`).
 ///
 /// - map must be locked by caller
+fn uvm_map_clip_start_held(
+    map: &VmMap,
+    st: &mut MapState,
+    ew: &mut EntryWrite<'_>,
+    held: &mut Held,
+    addr: usize,
+) {
+    let e = held.entry("uvm_map_clip_start");
+    kassert!(e.end() + e.fspace() > addr);
+    if e.start() < addr {
+        uvm_map_clip_start(map, st, ew, held, addr);
+    }
+}
+
+/// [`uvm_map_clip_start_held`] of the entry at `key`; the key of the entry the C's pointer
+/// names afterwards (`uvm_unmap_remove`'s and `uvm_map_submap`'s, which N12b holds by
+/// reference).
 fn uvm_map_clip_start_at(
     map: &VmMap,
     st: &mut MapState,
@@ -6526,13 +6655,9 @@ fn uvm_map_clip_start_at(
     key: usize,
     addr: usize,
 ) -> usize {
-    let e = ent(&st.addr, key, "uvm_map_clip_start");
-    kassert!(e.end() + e.fspace() > addr);
-    if e.start() < addr {
-        uvm_map_clip_start(map, st, ew, key, addr)
-    } else {
-        key
-    }
+    let mut h = Held::of(Some(ent(&st.addr, key, "uvm_map_clip_start")));
+    uvm_map_clip_start_held(map, st, ew, &mut h, addr);
+    h.entry("uvm_map_clip_start").start()
 }
 
 /// `uvm_map_clip_start`: `UVM_MAP_CLIP_START` implementation.
@@ -6540,23 +6665,26 @@ fn uvm_map_clip_start_at(
 /// Clippers are required to not change the pointers to the entry they are clipping on.
 /// Since `uvm_map_splitentry` turns the original entry into the lowest entry (address
 /// wise) we do a swap between the new entry and the original entry, prior to calling
-/// `uvm_map_splitentry`: the original's box becomes the upper part, whose key is returned.
+/// `uvm_map_splitentry`: the original's box becomes the upper part, which `held` holds
+/// afterwards. The hold is released before the original leaves the tree (its one search,
+/// the C's `RBT_REMOVE`); no other hold may name it (I4).
 fn uvm_map_clip_start(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
-    key: usize,
+    held: &mut Held,
     addr: usize,
-) -> usize {
+) {
     // Unlink original.
     let owners = st.owners(map);
-    let free = {
+    let (free, key) = {
+        let e = held.entry("uvm_map_clip_start");
         let mut fp = st.free_parts(&owners);
-        let e = ent(fp.tree, key, "uvm_map_clip_start");
         let free = owners.uaddr_e(e);
         uvm_mapent_free_remove(&mut fp, ew, free, e);
-        free
+        (free, e.start())
     };
+    held.release();
     let entry = uvm_mapent_addr_remove(st, key);
 
     // Copy entry.
@@ -6566,17 +6694,17 @@ fn uvm_map_clip_start(
     };
     uvm_mapent_copy(&entry, ew, &mut tmp);
 
-    // Put new entry in place of original entry.
-    let tkey = uvm_mapent_addr_insert(map, st, tmp);
+    // Put new entry in place of original entry (lent by the insert, held for the split).
+    let mut lower = Held::none();
     {
-        let mut fp = st.free_parts(&owners);
-        let t = ent(fp.tree, tkey, "uvm_map_clip_start");
+        let (mut fp, t) = uvm_mapent_addr_insert(map, st, &owners, tmp);
         uvm_mapent_free_insert(&mut fp, ew, free, t);
+        lower.set(Some(t));
     }
 
     // Invoke splitentry.
-    uvm_map_splitentry(map, st, ew, tkey, entry, addr);
-    addr
+    let lower_e = lower.entry("uvm_map_clip_start");
+    uvm_map_splitentry(map, st, ew, lower_e, entry, addr, Some(held));
 }
 
 /// `uvm_map_boundfix`: boundary fixer.
@@ -6736,17 +6864,23 @@ fn uvm_map_freelist_update_refill(
     flags: u32,
 ) {
     // RBT_FOREACH, where the body replaces `entry` by what uvm_map_fix_space returns and
-    // the next step continues from there.
+    // the next step continues from there: the entry in hand and the one fix_space ends at
+    // are held (two holds, swapped each step: the second is set while the first lends its
+    // entry), stepped with RBT_NEXT.
     let owners = st.owners(map);
-    let mut iter = st.addr.min().map(VmMapEntry::start);
-    while let Some(key) = iter {
-        let e = ent(&st.addr, key, "uvm_map_freelist_update_refill");
-        let min = vmmap_free_start(e);
-        let max = vmmap_free_end(e);
-        e.set_fspace(ew, 0);
+    {
+        let mut iter = Held::of(st.addr.min());
+        let mut last = Held::none();
+        while let Some(e) = iter.get() {
+            let min = vmmap_free_start(e);
+            let max = vmmap_free_end(e);
+            e.set_fspace(ew, 0);
 
-        let last = uvm_map_fix_space(map, st, ew, &owners, FixFrom::Key(key), min, max, flags);
-        iter = last.and_then(|l| next_key(&st.addr, l));
+            let from = FixFrom::Held(e, &mut last);
+            uvm_map_fix_space(map, st, ew, &owners, from, min, max, flags);
+            core::mem::swap(&mut iter, &mut last);
+            iter.step(&st.addr);
+        }
     }
 
     if cfg!(test) {
@@ -6802,19 +6936,23 @@ pub fn uvm_map_set_uaddr(map: &VmMap, which: Slot, newval: Option<Selector>) {
     uvm_unmap_detach(&mut dead, 0);
 }
 
-/// `uvm_map_fix_space`'s `entry`: none (`NULL`), the entry at a key, or a new entry not yet
-/// in the tree, which `uvm_map_fix_space` links first and goes on from (`uvm_map_mkentry`'s
-/// `uvm_mapent_addr_insert(map, entry)` followed by `uvm_map_fix_space(map, entry, ..)`).
-enum FixFrom {
+/// `uvm_map_fix_space`'s `entry`: none (`NULL`), the entry at a key, an entry the caller
+/// holds, or a new entry not yet in the tree, which `uvm_map_fix_space` links first and goes
+/// on from (`uvm_map_mkentry`'s `uvm_mapent_addr_insert(map, entry)` followed by
+/// `uvm_map_fix_space(map, entry, ..)`).
+enum FixFrom<'h> {
     /// `entry == NULL`.
     None,
-    /// The entry at this key.
+    /// The entry at this key (N12b: `uvm_mapent_mkfree`'s, `uvm_map_mkentry`'s).
     Key(usize),
+    /// The entry the caller holds, and the hold that takes the entry the function returns
+    /// (`uvm_map_freelist_update_refill`'s walk goes on from it).
+    Held(&'h VmMapEntry, &'h mut Held),
     /// The new entry, linked first.
     New(PoolBox<VmMapEntry>),
 }
 
-impl From<Option<usize>> for FixFrom {
+impl From<Option<usize>> for FixFrom<'_> {
     fn from(key: Option<usize>) -> Self {
         key.map_or(FixFrom::None, FixFrom::Key)
     }
@@ -6833,12 +6971,13 @@ fn uvm_map_fix_space(
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
     owners: &Owners,
-    entry: FixFrom,
+    entry: FixFrom<'_>,
     min: usize,
     max: usize,
     flags: u32,
 ) -> Option<usize> {
     owners_lent(map, st, owners, "uvm_map_fix_space");
+    let mut out = None;
     let (mut fp, mut cur) = match entry {
         FixFrom::None => (st.free_parts(owners), None),
         FixFrom::Key(k) => {
@@ -6846,8 +6985,12 @@ fn uvm_map_fix_space(
             let e = ent(fp.tree, k, "uvm_map_fix_space");
             (fp, Some(e))
         }
+        FixFrom::Held(e, last) => {
+            out = Some(last);
+            (st.free_parts(owners), Some(e))
+        }
         FixFrom::New(e) => {
-            let (fp, e) = uvm_mapent_addr_insert_parts(map, st, owners, e);
+            let (fp, e) = uvm_mapent_addr_insert(map, st, owners, e);
             (fp, Some(e))
         }
     };
@@ -6931,7 +7074,7 @@ fn uvm_map_fix_space(
             *ne.handles_owned() = Handles::default();
 
             // The tree changed: the insert lends the new entry.
-            let (nfp, e) = uvm_mapent_addr_insert_parts(map, st, owners, ne);
+            let (nfp, e) = uvm_mapent_addr_insert(map, st, owners, ne);
             fp = nfp;
             cur = Some(e);
             entfree = free;
@@ -6944,6 +7087,9 @@ fn uvm_map_fix_space(
         uvm_mapent_free_insert(&mut fp, ew, entfree, e);
     }
 
+    if let Some(out) = out {
+        out.set(cur);
+    }
     cur.map(VmMapEntry::start)
 }
 
@@ -7092,8 +7238,9 @@ fn uvm_map_setup_md(st: &mut MapState, min: usize, max: usize) {
     st.uaddr_brk_stack = Some(uaddr_stack_brk_create(min, max));
 }
 
-/// `amap_copy`: ensure that the entry at `key`'s "needs_copy" flag is false by copying the
-/// amap if necessary; the key of the entry afterwards (a chunking clip may move it).
+/// `amap_copy`: ensure that the entry `entry` (held)'s "needs_copy" flag is false by copying
+/// the amap if necessary; `entry` holds afterwards the entry the C's pointer names (a
+/// chunking clip_start gives it the upper part).
 ///
 /// An entry with a null amap pointer will get a new (blank) one. The map that the map entry
 /// belongs to must be locked by caller (its write lock: `st`, `ew`). The amap currently
@@ -7102,23 +7249,22 @@ fn uvm_map_setup_md(st: &mut MapState, min: usize, max: usize) {
 /// used to limit chunking (e.g. if you have a large space that you know you are going to
 /// need to allocate amaps for, there is no point in allowing that to be chunked).
 #[allow(clippy::too_many_arguments)] // the C's signature
-pub fn amap_copy(
+fn amap_copy(
     map: &VmMap,
     st: &mut MapState,
     ew: &mut EntryWrite<'_>,
-    key: usize,
+    entry: &mut Held,
     waitf: i32,
     canchunk: bool,
     startva: usize,
     endva: usize,
-) -> usize {
-    let mut key = key;
+) {
     let mut lazyalloc = false;
 
     // KASSERT(map != kernel_map): we use sleeping locks (the kernel map, M7a part 2).
 
     // Is there an amap to copy? If not, create one.
-    let e = ent(&st.addr, key, "amap_copy");
+    let e = entry.entry("amap_copy");
     let Some(srcamap) = e.handles(ew.witness()).amap.as_ref() else {
         // Check to see if we have a large amap that we can chunk. We align startva/endva
         // to chunk-sized boundaries and then clip to them.
@@ -7132,17 +7278,17 @@ pub fn amap_copy(
                 let startva = (startva / chunksize) * chunksize;
                 // roundup(endva, chunksize), wrapping as the C's unsigned arithmetic does.
                 let endva = (endva.wrapping_add(chunksize - 1) / chunksize) * chunksize;
-                key = uvm_map_clip_start_at(map, st, ew, key, startva);
+                uvm_map_clip_start_held(map, st, ew, entry, startva);
                 // watch out for endva wrap-around!
                 if endva >= startva {
-                    uvm_map_clip_end_at(map, st, ew, key, endva);
+                    uvm_map_clip_end_held(map, st, ew, entry.entry("amap_copy"), endva);
                 }
             } else {
                 lazyalloc = true;
             }
         }
 
-        let e = ent(&st.addr, key, "amap_copy");
+        let e = entry.entry("amap_copy");
         let amap = amap_alloc(e.end() - e.start(), waitf, lazyalloc);
         let made = amap.is_some();
         {
@@ -7153,7 +7299,7 @@ pub fn amap_copy(
         if made {
             e.etype_clear(ew, UVM_ET_NEEDSCOPY);
         }
-        return key;
+        return;
     };
 
     // The amap's half: take the source over when the entry holds its only reference, else
@@ -7179,7 +7325,6 @@ pub fn amap_copy(
         // No memory: the entry still needs a copy, as the C leaves it.
         CopyOutcome::NoMemory => {}
     }
-    key
 }
 
 // The map's state and every entry's handles are cells of different parts of the lock.
@@ -7741,6 +7886,253 @@ pub(crate) mod tests {
 
         uvmspace_free(child);
         assert_eq!(child_amap.refs(), 1, "the child's reference is gone");
+        uvmspace_free(vm);
+    }
+
+    /// The mapped entries of `map` in `[lo, hi)`: start, end, protection, inheritance,
+    /// advice and etype.
+    fn dump(map: &VmMap, lo: usize, hi: usize) -> Vec<(usize, usize, VmProt, VmInherit, i32, i32)> {
+        let g = map.lock_read();
+        g.state()
+            .addr
+            .iter()
+            .filter(|e| e.start() != e.end() && e.start() >= lo && e.end() <= hi)
+            .map(|e| {
+                (
+                    e.start(),
+                    e.end(),
+                    e.protection(),
+                    e.inheritance(),
+                    e.advice(),
+                    e.etype() & !UVM_ET_FREEMAPPED,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn range_ops_over_many_entries_clip_only_at_the_bounds() {
+        type Op<'a> = &'a dyn Fn(&VmMap) -> Result<(), Errno>;
+        // Nine two-page entries, alternately read-only and read-write (none join); each range
+        // operation over [e2 + 1 page, e7 + 1 page) splits e2 and e7 and changes the entries
+        // from e2's upper half to e7's lower half, each walked once through the held entry.
+        let _g = setup();
+        let p = thread(231);
+        let base = 0x5000_0000;
+        let len = 2 * PAGE_SIZE;
+        let (lo, hi) = (base + 2 * len + PAGE_SIZE, base + 7 * len + PAGE_SIZE);
+        let protect = |m: &VmMap| uvm_map_protect(p, m, lo, hi, PROT_NONE, 0, false, true);
+        let inherit = |m: &VmMap| uvm_map_inherit(m, lo, hi, MAP_INHERIT_SHARE);
+        let advice = |m: &VmMap| uvm_map_advice(m, lo, hi, MADV_RANDOM);
+        let immutable = |m: &VmMap| uvm_map_immutable(m, lo, hi, true);
+        let ops: [(&str, Op<'_>); 4] = [
+            ("mprotect", &protect),
+            ("minherit", &inherit),
+            ("madvise", &advice),
+            ("mimmutable", &immutable),
+        ];
+        for (name, op) in ops {
+            let vm = user_vmspace();
+            let map = &vm.vm_map;
+            for i in 0..9 {
+                let prot = if i % 2 == 0 { PROT_READ } else { RW };
+                let flags = uvm_mapflag(
+                    prot,
+                    RWX,
+                    MAP_INHERIT_COPY,
+                    MADV_NORMAL,
+                    UVM_FLAG_FIXED | UVM_FLAG_COPYONW,
+                );
+                let mut a = base + i * len;
+                uvm_mapanon(map, &mut a, len, 0, flags).expect("mapanon");
+            }
+            let before = dump(map, base, base + 9 * len);
+            assert_eq!(before.len(), 9, "{name}: nine entries");
+            op(map).expect(name);
+            let after = dump(map, base, base + 9 * len);
+
+            // The bounds: e2 and e7 split at their middles, nothing else.
+            let mut want_bounds = Vec::new();
+            for i in 0..9 {
+                let s = base + i * len;
+                if i == 2 || i == 7 {
+                    want_bounds.push((s, s + PAGE_SIZE));
+                    want_bounds.push((s + PAGE_SIZE, s + len));
+                } else {
+                    want_bounds.push((s, s + len));
+                }
+            }
+            let bounds: Vec<_> = after.iter().map(|e| (e.0, e.1)).collect();
+            assert_eq!(bounds, want_bounds, "{name}: the clips");
+
+            // Inside the range, the change; outside, each part as its entry was.
+            for e in &after {
+                let was = before
+                    .iter()
+                    .find(|b| b.0 <= e.0 && e.1 <= b.1)
+                    .expect("the entry it came from");
+                let inside = e.0 >= lo && e.1 <= hi;
+                let want = if inside {
+                    match name {
+                        "mprotect" => (PROT_NONE, was.3, was.4, was.5),
+                        "minherit" => (was.2, MAP_INHERIT_SHARE, was.4, was.5),
+                        "madvise" => (was.2, was.3, MADV_RANDOM, was.5),
+                        _ => (was.2, was.3, was.4, was.5 | UVM_ET_IMMUTABLE),
+                    }
+                } else {
+                    (was.2, was.3, was.4, was.5)
+                };
+                assert_eq!(
+                    (e.2, e.3, e.4, e.5),
+                    want,
+                    "{name}: the entry at {:#x}",
+                    e.0
+                );
+            }
+            sane(map);
+            uvmspace_free(vm);
+        }
+    }
+
+    #[test]
+    fn held_entry_survives_a_clip_end_and_clip_start_lends_the_upper_part() {
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let mut base = 0x5000_0000;
+        uvm_mapanon(map, &mut base, 4 * PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("map");
+        {
+            let mut g = map.lock();
+            let mut sp = g.split();
+            let (st, ew) = sp.parts();
+            let mut h = Held::of(uvm_map_entrybyaddr(&st.addr, base));
+            // clip_end: the entry held stays the lower part.
+            uvm_map_clip_end_held(map, st, ew, h.entry("test"), base + 2 * PAGE_SIZE);
+            let e = h.entry("test");
+            assert_eq!((e.start(), e.end()), (base, base + 2 * PAGE_SIZE));
+            // RBT_NEXT from it reaches the upper part.
+            h.step(&st.addr);
+            let e = h.entry("test");
+            assert_eq!(
+                (e.start(), e.end()),
+                (base + 2 * PAGE_SIZE, base + 4 * PAGE_SIZE)
+            );
+            // clip_start: the hold moves to the part from addr (the original's box), whose
+            // lower neighbour is the new copy.
+            uvm_map_clip_start_held(map, st, ew, &mut h, base + 3 * PAGE_SIZE);
+            let e = h.entry("test");
+            assert_eq!(
+                (e.start(), e.end()),
+                (base + 3 * PAGE_SIZE, base + 4 * PAGE_SIZE)
+            );
+            let prev = st.addr.prev(e).expect("the lower part");
+            assert_eq!(
+                (prev.start(), prev.end()),
+                (base + 2 * PAGE_SIZE, base + 3 * PAGE_SIZE)
+            );
+            // A clip_start that does not split keeps the hold where it is.
+            uvm_map_clip_start_held(map, st, ew, &mut h, base + 3 * PAGE_SIZE);
+            assert_eq!(h.entry("test").start(), base + 3 * PAGE_SIZE);
+        }
+        sane(map);
+        assert_eq!(dump(map, base, base + 4 * PAGE_SIZE).len(), 3);
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    fn fork_shares_through_the_held_parent_entry() {
+        // MAP_INHERIT_SHARE of a needs-copy entry: the fork's amap_copy on the parent clears
+        // its needs-copy through the entry the parent's walk holds; the child shares the amap.
+        let _g = setup();
+        let va = 0x5000_0000;
+        let vm = vmspace_with_anon(va, 2 * PAGE_SIZE);
+        let next = va + 4 * PAGE_SIZE;
+        let mut a = next;
+        uvm_mapanon(&vm.vm_map, &mut a, PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("map");
+        uvm_map_inherit(&vm.vm_map, va, va + 2 * PAGE_SIZE, MAP_INHERIT_SHARE).expect("share");
+        let (_, _, _, etype) = entry_holding(&vm.vm_map, va).expect("parent");
+        assert_ne!(etype & UVM_ET_NEEDSCOPY, 0, "needs a copy before the fork");
+
+        let child = uvmspace_fork(&vm);
+        let (_, _, _, etype) = entry_holding(&vm.vm_map, va).expect("parent");
+        assert_eq!(etype & UVM_ET_NEEDSCOPY, 0, "the parent's copy was made");
+        let amap_of = |m: &VmMap| {
+            let g = m.lock_read();
+            g.lookup(va)
+                .and_then(|e| e.handles(g.witness()).amap.clone())
+        };
+        let pa = amap_of(&vm.vm_map).expect("the parent's amap");
+        let ca = amap_of(&child.vm_map).expect("the child's amap");
+        assert!(
+            core::ptr::eq(core::ptr::from_ref(&*pa), core::ptr::from_ref(&*ca)),
+            "one amap, shared"
+        );
+        assert_eq!(pa.refs(), 2);
+        // The walk went on past the shared entry: the next one is inherited too.
+        assert!(entry_holding(&child.vm_map, next).is_some());
+        sane(&vm.vm_map);
+        sane(&child.vm_map);
+        drop((pa, ca));
+        uvmspace_free(child);
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    fn extract_clips_a_large_first_entry_at_its_chunk() {
+        // A needs-copy entry of UVM_AMAP_LARGE pages or more, extracted from inside: its
+        // amap_copy chunks it at UVM_AMAP_CHUNK boundaries, splitting the first entry (the
+        // C's first pointer then names the upper part) and the copy succeeds from there.
+        let _g = setup();
+        let kmap = the_kernel_map();
+        let va = 0x2000_0000;
+        let pages = UVM_AMAP_LARGE + 44;
+        let vm = vmspace_with_anon(va, pages * PAGE_SIZE);
+        let chunk = UVM_AMAP_CHUNK * PAGE_SIZE;
+        let start = va + chunk + 4 * PAGE_SIZE;
+        let kva = uvm_map_extract(&vm.vm_map, start, 2 * PAGE_SIZE, UVM_EXTRACT_FIXPROT)
+            .expect("extract");
+        let bounds: Vec<_> = dump(&vm.vm_map, va, va + pages * PAGE_SIZE)
+            .iter()
+            .map(|e| (e.0, e.1, e.5 & UVM_ET_NEEDSCOPY))
+            .collect();
+        assert_eq!(
+            bounds,
+            [
+                (va, va + chunk, UVM_ET_NEEDSCOPY),
+                (va + chunk, va + 2 * chunk, 0),
+                (va + 2 * chunk, va + pages * PAGE_SIZE, UVM_ET_NEEDSCOPY),
+            ]
+        );
+        {
+            let g = kmap.lock_read();
+            let e = g.lookup(kva).expect("the clone");
+            assert_eq!((e.start(), e.end()), (kva, kva + 2 * PAGE_SIZE));
+        }
+        sane(&vm.vm_map);
+        uvm_unmap(kmap, kva, kva + 2 * PAGE_SIZE);
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    fn refill_goes_on_from_the_entry_fix_space_returns() {
+        // uvm_map_set_uaddr: the free lists emptied and refilled over a map with entries on
+        // both sides of a new selector's bounds; the tree after is whole and its entries
+        // the same.
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let base = 0x5000_0000;
+        for i in 0..6 {
+            let mut a = base + i * 4 * PAGE_SIZE;
+            uvm_mapanon(map, &mut a, PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("map");
+        }
+        let before = dump(map, VM_MIN_ADDRESS, VM_MAXUSER_ADDRESS);
+        let sel = uaddr_bestfit_create(base + 6 * PAGE_SIZE, base + 18 * PAGE_SIZE);
+        uvm_map_set_uaddr(map, Slot::Any(1), Some(sel));
+        sane(map);
+        assert_eq!(dump(map, VM_MIN_ADDRESS, VM_MAXUSER_ADDRESS), before);
+        uvm_map_set_uaddr(map, Slot::Any(1), None);
+        sane(map);
         uvmspace_free(vm);
     }
 
