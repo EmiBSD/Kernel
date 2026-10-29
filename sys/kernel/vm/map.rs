@@ -384,7 +384,11 @@
 //!   `uvm_map_pageable` (both passes and the unwind), `uvm_map_clean`, `uvm_map_extract`,
 //!   `uvmspace_fork`'s shared and copied entries and the free-list refill walk at the C's
 //!   cost. A hold is released before its entry leaves the tree and goes before the lock or
-//!   the busy mark (a hold left after the unlock would make another thread's unmap panic).
+//!   the busy mark (a hold left after the unlock would make another thread's unmap panic):
+//!   it is declared after the guard, or in a block that ends before an explicit drop of the
+//!   guard or the busy mark, which reverse declaration order does not cover
+//!   (`uvm_map_clean`); a lifetime tying `Held` to the guard is left to N12b (the write
+//!   guard's `split` borrows it mutably, so the tie spreads to every walk's shape).
 //!   Three places pay a search the C does not, each named: `uvm_map_protect`'s
 //!   `VM_MAP_WIREFUTURE` step releases its hold around `uvm_map_pageable` (whose own clips
 //!   could move it) and finds the entry again by its start (one search, a rare path; N12a's
@@ -2284,11 +2288,6 @@ fn ent<'t>(tree: &'t OwnedTree<ByAddr>, key: usize, who: &str) -> &'t VmMapEntry
         Some(e) => e,
         None => kpanic(format_args!("{who}: no entry at {key:#x}")),
     }
-}
-
-/// The entry at `key`, if any.
-fn find(tree: &OwnedTree<ByAddr>, key: usize) -> Option<&VmMapEntry> {
-    tree.find_by(|n| key.cmp(&n.start()))
 }
 
 /// The entry that describes `addr`, which every address inside the map has (the tree has
@@ -4262,6 +4261,7 @@ fn uvm_map_pageable_wire<'a>(
             }
         }
     }
+    // No hold outlives the busy mark: the next entry's goes here, `end`'s before the lock.
     drop(iter);
 
     let mut g = busy.relock_unbusy();
@@ -4276,12 +4276,13 @@ fn uvm_map_pageable_wire<'a>(
             let (st, ew) = sp.parts();
             let st: &MapState = st;
             // Nothing below changes the tree: the C's walks from the entries it names,
-            // found once each by their starts (the error path only).
-            let failed = failed_at.and_then(|k| find(&st.addr, k));
+            // found once each by their starts (the error path only; a missing one is a
+            // corrupted tree, which panics).
+            let failed = failed_at.map(|k| ent(&st.addr, k, "uvm_map_pageable_wire"));
             let is_failed = |e: &VmMapEntry| failed.is_some_and(|f| ptr::eq(e, f));
             // first is no longer needed to restart loops. Use it as iterator to unwire
             // entries that were successfully wired above.
-            let mut iter = first_key.and_then(|k| find(&st.addr, k));
+            let mut iter = first_key.map(|k| ent(&st.addr, k, "uvm_map_pageable_wire"));
             while let Some(e) = iter.filter(|e| !is_failed(e)) {
                 if !wire_skips(e) {
                     e.set_wired_count(ew, e.wired_count() - 1);
@@ -5239,7 +5240,7 @@ fn uvm_map_protect_locked<'a, G: ProcGlue>(
                 // would XXX normally return.
                 error = Err(Errno::ENOMEM);
             }
-            iter.set(find(&g.state().addr, ws));
+            iter.set(Some(ent(&g.state().addr, ws, "uvm_map_protect")));
         }
         iter.step(&g.state().addr);
     }
@@ -5904,6 +5905,7 @@ pub fn uvmspace_fork(vm1: &Vmspace) -> VmspaceRef {
     new_map.modflags(old_map.flags() & VM_MAP_PINSYSCALL_ONCE, 0);
     // PMAP_CHECK_COPYIN is not configured.
 
+    // No hold is alive here: the shared case's lives in its match arm.
     drop(g1);
     drop(g2);
 
@@ -6453,127 +6455,131 @@ pub fn uvm_map_clean(map: &VmMap, start: usize, end: usize, flags: i32) -> Resul
     let busy = g.into_busy();
     let mut error = Ok(());
     // The C's pointer, held across the unlocked steps: the map is busy, so no writer
-    // changes its tree, and this walk changes none. Declared after the busy mark, so it goes
-    // before it on every path.
-    let mut iter = first;
-    loop {
-        // The entry's fields and handles under a short read lock (the map is busy:
-        // writers wait).
-        let step = {
-            let r = busy.lock_read();
-            let st = r.state();
-            match iter.get().filter(|e| e.start() < end) {
-                None => None,
-                Some(e) => {
-                    let h = e.handles(r.witness());
-                    let uobj = h.uvm_obj().cloned().filter(|_| uvm_et_isobj(e));
-                    let fields = (
-                        e.start(),
-                        e.end(),
-                        e.etype(),
-                        e.max_protection(),
-                        e.offset(),
-                        h.amap.clone(),
-                        h.pageoff,
-                        uobj,
-                    );
-                    let next = st.addr.next(e);
-                    iter.set(next);
-                    Some(fields)
-                }
-            }
-        };
-        let Some((es, ee, etype, maxprot, offset, amap, pageoff, uobj)) = step else {
-            break;
-        };
-
-        // No amap cleaning necessary if: there's no amap; we're not deactivating or freeing
-        // pages.
-        if let Some(amap) = amap.filter(|_| flags & (PGO_DEACTIVATE | PGO_FREE) != 0) {
-            if imut {
-                return Err(Errno::EPERM);
-            }
-
-            let mut cp_start = es.max(start);
-            let cp_end = ee.min(end);
-
-            let mut w = amap.lock().write();
-            while cp_start != cp_end {
-                let off = cp_start - es;
-                cp_start += PAGE_SIZE;
-                let Some(anon) = amap_lookup(&amap, &w, pageoff, off).cloned() else {
-                    continue;
-                };
-
-                kassert!(anon.shares_lock(amap.lock()));
-                let Some(pg) = anon.page() else {
-                    continue;
-                };
-                kassert!(pg.flags() & PQ_ANON != 0);
-
-                match flags & (PGO_CLEANIT | PGO_FREE | PGO_DEACTIVATE) {
-                    // In these first 3 cases, we just deactivate the page.
-                    f if f == PGO_CLEANIT | PGO_FREE
-                        || f == PGO_CLEANIT | PGO_DEACTIVATE
-                        || f == PGO_DEACTIVATE =>
-                    {
-                        kassert!(pg.owned_by_anon(&*anon));
-                        uvm_pagedeactivate(pg, Owner::Anon(&*anon));
+    // changes its tree, and this walk changes none. The hold lives in this block, after the
+    // busy mark: it goes before the mark on every path, the early returns (reverse order of
+    // declaration) and the walk's end (the block's), where it still holds the first entry
+    // past the range, which an unmap after the unbusy may take (I4).
+    {
+        let mut iter = first;
+        loop {
+            // The entry's fields and handles under a short read lock (the map is busy:
+            // writers wait).
+            let step = {
+                let r = busy.lock_read();
+                let st = r.state();
+                match iter.get().filter(|e| e.start() < end) {
+                    None => None,
+                    Some(e) => {
+                        let h = e.handles(r.witness());
+                        let uobj = h.uvm_obj().cloned().filter(|_| uvm_et_isobj(e));
+                        let fields = (
+                            e.start(),
+                            e.end(),
+                            e.etype(),
+                            e.max_protection(),
+                            e.offset(),
+                            h.amap.clone(),
+                            h.pageoff,
+                            uobj,
+                        );
+                        let next = st.addr.next(e);
+                        iter.set(next);
+                        Some(fields)
                     }
-                    f if f == PGO_FREE => {
-                        // If there are multiple references to the amap, just deactivate
-                        // the page.
-                        if amap.refs() > 1 {
+                }
+            };
+            let Some((es, ee, etype, maxprot, offset, amap, pageoff, uobj)) = step else {
+                break;
+            };
+
+            // No amap cleaning necessary if: there's no amap; we're not deactivating or freeing
+            // pages.
+            if let Some(amap) = amap.filter(|_| flags & (PGO_DEACTIVATE | PGO_FREE) != 0) {
+                if imut {
+                    return Err(Errno::EPERM);
+                }
+
+                let mut cp_start = es.max(start);
+                let cp_end = ee.min(end);
+
+                let mut w = amap.lock().write();
+                while cp_start != cp_end {
+                    let off = cp_start - es;
+                    cp_start += PAGE_SIZE;
+                    let Some(anon) = amap_lookup(&amap, &w, pageoff, off).cloned() else {
+                        continue;
+                    };
+
+                    kassert!(anon.shares_lock(amap.lock()));
+                    let Some(pg) = anon.page() else {
+                        continue;
+                    };
+                    kassert!(pg.flags() & PQ_ANON != 0);
+
+                    match flags & (PGO_CLEANIT | PGO_FREE | PGO_DEACTIVATE) {
+                        // In these first 3 cases, we just deactivate the page.
+                        f if f == PGO_CLEANIT | PGO_FREE
+                            || f == PGO_CLEANIT | PGO_DEACTIVATE
+                            || f == PGO_DEACTIVATE =>
+                        {
                             kassert!(pg.owned_by_anon(&*anon));
                             uvm_pagedeactivate(pg, Owner::Anon(&*anon));
-                            continue;
                         }
+                        f if f == PGO_FREE => {
+                            // If there are multiple references to the amap, just deactivate
+                            // the page.
+                            if amap.refs() > 1 {
+                                kassert!(pg.owned_by_anon(&*anon));
+                                uvm_pagedeactivate(pg, Owner::Anon(&*anon));
+                                continue;
+                            }
 
-                        // skip the page if it's wired
-                        if pg.wire_count() != 0 {
-                            continue;
+                            // skip the page if it's wired
+                            if pg.wire_count() != 0 {
+                                continue;
+                            }
+                            let anon = amap_unadd(&amap, &mut w, pageoff, off);
+                            let refs = anon.refs() - 1;
+                            anon.set_refs(refs);
+                            if refs == 0 {
+                                uvm_anfree(&anon);
+                            }
                         }
-                        let anon = amap_unadd(&amap, &mut w, pageoff, off);
-                        let refs = anon.refs() - 1;
-                        anon.set_refs(refs);
-                        if refs == 0 {
-                            uvm_anfree(&anon);
-                        }
+                        _ => kpanic(format_args!("uvm_map_clean: weird flags")),
                     }
-                    _ => kpanic(format_args!("uvm_map_clean: weird flags")),
                 }
+                drop(w);
             }
-            drop(w);
-        }
 
-        // flush_object:
-        let cp_start = es.max(start);
-        let cp_end = ee.min(end);
+            // flush_object:
+            let cp_start = es.max(start);
+            let cp_end = ee.min(end);
 
-        // flush pages if we've got a valid backing object.
-        //
-        // Don't PGO_FREE if we don't have write permission and don't flush if this is a
-        // copy-on-write object since we can't know our permissions on it.
-        if let Some(uobj) = uobj
-            && (flags & PGO_FREE == 0
-                || (maxprot & PROT_WRITE != 0 && etype & UVM_ET_COPYONWRITE == 0))
-        {
-            let mut w = uobj.lock().write();
-            let rv = uobj.flush(
-                &mut w,
-                (cp_start - es) as Voff + offset,
-                (cp_end - es) as Voff + offset,
-                flags,
-            );
-            drop(w);
+            // flush pages if we've got a valid backing object.
+            //
+            // Don't PGO_FREE if we don't have write permission and don't flush if this is a
+            // copy-on-write object since we can't know our permissions on it.
+            if let Some(uobj) = uobj
+                && (flags & PGO_FREE == 0
+                    || (maxprot & PROT_WRITE != 0 && etype & UVM_ET_COPYONWRITE == 0))
+            {
+                let mut w = uobj.lock().write();
+                let rv = uobj.flush(
+                    &mut w,
+                    (cp_start - es) as Voff + offset,
+                    (cp_end - es) as Voff + offset,
+                    flags,
+                );
+                drop(w);
 
-            if !rv {
-                error = Err(Errno::EFAULT);
+                if !rv {
+                    error = Err(Errno::EFAULT);
+                }
             }
         }
     }
 
-    // vm_map_unbusy(map): the busy mark's drop.
+    // vm_map_unbusy(map): the busy mark's drop (no hold is alive: the walk's block ended).
     drop(busy);
     error
 }
