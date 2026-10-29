@@ -71,6 +71,9 @@ use crate::sys::queue::SlistHead;
 use crate::sys::types::{Daddr, Dev};
 use crate::sys::vnode::{VSpecnext, Vnode};
 
+/// The sweep's seam: `kern::spec_vnops` reached as `sys::specdev::X` (step C deletes it).
+pub use crate::kern::spec_vnops::*;
+
 /// `CLONE_SHIFT`: we use the upper 16 bits of the minor to record the clone instance. This
 /// gives us 8 bits for encoding the real minor number.
 pub const CLONE_SHIFT: u32 = 8;

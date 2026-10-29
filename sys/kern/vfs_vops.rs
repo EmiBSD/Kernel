@@ -106,6 +106,9 @@ use crate::sys::vnode::{
     VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, VopWriteArgs,
 };
 
+/// The sweep's seam: `kern::vfs_default` reached as `kern::vfs_vops::X` (step C deletes it).
+pub use crate::kern::vfs_default::*;
+
 /// `KASSERT(p == curproc)`.
 fn assert_curproc(p: &Proc) {
     kassert!(curproc().is_some_and(|cur| ptr::eq(cur, p)));

@@ -5984,7 +5984,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs
 rust = "sys/kern/vfs_vops.rs"
 lz = ["sys/kern/vfs_vops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
 
 [[module]]
 rust = "sys/lib/libkern/crc32c.rs"
@@ -7678,7 +7678,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs"]
 
 [[module]]
 rust = "sys/sys/mplock.rs"
@@ -7884,7 +7884,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/specdev.rs"
 lz = ["sys/sys/specdev.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/vnode.rs"]
 
 [[module]]
 rust = "sys/sys/stat.rs"
@@ -8418,7 +8419,7 @@ status = "inherited"
 rust = "sys/sys/vnode.rs"
 lz = ["sys/sys/vnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
 
 [[module]]
 rust = "sys/hal/sys/wait.rs"

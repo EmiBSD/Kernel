@@ -120,6 +120,10 @@ use crate::sys::uio::Uio;
 use kernel::fs::bio::VnodeBufs;
 use kernel::vm::vnode::Uvn;
 
+/// The sweep's seam: the vnode functions of `kern::vfs_subr` reached as `sys::vnode::X`, the
+/// path the kernel's `fs::vnode` has (step C deletes the module re-exported here).
+pub use crate::kern::vfs_subr::*;
+
 /// `enum vtype`: vnode types. `VNON` means no type.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,6 +319,181 @@ impl Vnode {
         }
     }
 
+    /// `vp->v_type` (the sweep's seam: the kernel's `Vnode::vtype`).
+    #[inline]
+    pub fn vtype(&self) -> Vtype {
+        self.v_type.get()
+    }
+
+    /// `vp->v_type = v`.
+    #[inline]
+    pub fn set_vtype(&self, v: Vtype) {
+        self.v_type.set(v);
+    }
+
+    /// `vp->v_tag` (the sweep's seam: the kernel's `Vnode::tag`).
+    #[inline]
+    pub fn tag(&self) -> Vtagtype {
+        self.v_tag.get()
+    }
+
+    /// `vp->v_tag = v`.
+    #[inline]
+    pub fn set_tag(&self, v: Vtagtype) {
+        self.v_tag.set(v);
+    }
+
+    /// `vp->v_usecount` (the sweep's seam: the kernel's `Vnode::usecount`).
+    #[inline]
+    pub fn usecount(&self) -> u32 {
+        self.v_usecount.get()
+    }
+
+    /// `vp->v_usecount = v`.
+    #[inline]
+    pub fn set_usecount(&self, v: u32) {
+        self.v_usecount.set(v);
+    }
+
+    /// `vp->v_uvcount` (the sweep's seam: the kernel's `Vnode::uvcount`).
+    #[inline]
+    pub fn uvcount(&self) -> u32 {
+        self.v_uvcount.get()
+    }
+
+    /// `vp->v_uvcount = v`.
+    #[inline]
+    pub fn set_uvcount(&self, v: u32) {
+        self.v_uvcount.set(v);
+    }
+
+    /// `vp->v_writecount` (the sweep's seam: the kernel's `Vnode::writecount`).
+    #[inline]
+    pub fn writecount(&self) -> u32 {
+        self.v_writecount.get()
+    }
+
+    /// `vp->v_writecount = v`.
+    #[inline]
+    pub fn set_writecount(&self, v: u32) {
+        self.v_writecount.set(v);
+    }
+
+    /// `vp->v_id` (the sweep's seam: the kernel's `Vnode::id`).
+    #[inline]
+    pub fn id(&self) -> u32 {
+        self.v_id.get()
+    }
+
+    /// `vp->v_id = v`.
+    #[inline]
+    pub fn set_id(&self, v: u32) {
+        self.v_id.set(v);
+    }
+
+    /// `vp->v_data` (the sweep's seam: the kernel's `Vnode::data`).
+    #[inline]
+    pub fn data(&self) -> *mut c_void {
+        self.v_data.get()
+    }
+
+    /// `vp->v_data = v`.
+    #[inline]
+    pub fn set_data(&self, v: *mut c_void) {
+        self.v_data.set(v);
+    }
+
+    /// `vp->v_flag`.
+    #[inline]
+    pub fn flag(&self) -> u32 {
+        self.v_flag.get()
+    }
+
+    /// `vp->v_flag = f`.
+    #[inline]
+    pub fn set_flag(&self, f: u32) {
+        self.v_flag.set(f);
+    }
+
+    /// `vp->v_flag |= f`.
+    #[inline]
+    pub fn flag_set(&self, f: u32) {
+        self.v_flag.set(self.v_flag.get() | f);
+    }
+
+    /// `vp->v_flag &= ~f`.
+    #[inline]
+    pub fn flag_clr(&self, f: u32) {
+        self.v_flag.set(self.v_flag.get() & !f);
+    }
+
+    /// `vp->v_mount`.
+    #[inline]
+    pub fn mount(&self) -> Option<&'static Mount> {
+        self.v_mount.get()
+    }
+
+    /// `vp->v_uvm`.
+    #[inline]
+    pub fn uvn(&self) -> Option<&'static Uvn> {
+        self.v_uvm.get()
+    }
+
+    /// `vp->v_uvm = uvn`.
+    pub fn set_uvn(&self, uvn: &'static Uvn) {
+        self.v_uvm.set(Some(uvn));
+    }
+
+    /// `vp->v_specmountpoint = mp` (`v_specinfo->si_mountpoint`); panics for a vnode without
+    /// a specinfo.
+    pub fn set_specmountpoint(&self, mp: Option<&'static Mount>) {
+        self.specinfo().si_mountpoint.set(mp);
+    }
+
+    /// Whether the vnode has a `v_specinfo`.
+    pub fn has_specinfo(&self) -> bool {
+        self.v_specinfo().is_some()
+    }
+
+    /// `[V]` `vp->v_lflag`.
+    #[inline]
+    pub fn lflag(&self) -> u32 {
+        self.v_lflag.get()
+    }
+
+    /// `[B]` `vp->v_holdcnt`.
+    #[inline]
+    pub fn holdcnt(&self) -> u32 {
+        self.v_holdcnt.get()
+    }
+
+    /// `vp->v_mountedhere`.
+    #[inline]
+    pub fn mountedhere(&self) -> Option<&'static Mount> {
+        self.v_mountedhere()
+    }
+
+    /// `vp->v_mountedhere = mp`.
+    pub fn set_mountedhere(&self, mp: Option<&'static Mount>) {
+        self.set_v_mountedhere(mp);
+    }
+
+    /// `vp->v_rdev`.
+    #[inline]
+    pub fn rdev(&self) -> Dev {
+        self.v_rdev()
+    }
+
+    /// `vp->v_specmountpoint`.
+    pub fn specmountpoint(&self) -> Option<&'static Mount> {
+        self.v_specmountpoint()
+    }
+
+    /// `vp->v_specparent`.
+    pub fn specparent(&self) -> Option<&'static Vnode> {
+        self.v_specparent()
+    }
+
     /// `vp->v_mountedhere`.
     pub fn v_mountedhere(&self) -> Option<&'static Mount> {
         match self.v_un.get() {
@@ -379,7 +558,7 @@ impl Vnode {
     ///
     /// `v_data` points at a live `T`: the caller is the file system that stored it (its `v_tag`
     /// and `v_op` say so) and the node is not reclaimed.
-    pub unsafe fn data<T>(&self) -> &T {
+    pub unsafe fn data_as<T>(&self) -> &T {
         // SAFETY: the caller's contract.
         unsafe { &*self.v_data.get().cast::<T>() }
     }

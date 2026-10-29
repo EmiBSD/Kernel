@@ -563,6 +563,77 @@ impl Mount {
         }
     }
 
+    /// `mp->mnt_flag`.
+    #[inline]
+    pub fn flag(&self) -> i32 {
+        self.mnt_flag.get()
+    }
+
+    /// `mp->mnt_flag = f`.
+    #[inline]
+    pub fn set_flag(&self, f: i32) {
+        self.mnt_flag.set(f);
+    }
+
+    /// `mp->mnt_flag |= f`.
+    #[inline]
+    pub fn flag_set(&self, f: i32) {
+        self.mnt_flag.set(self.mnt_flag.get() | f);
+    }
+
+    /// `mp->mnt_flag &= ~f`.
+    #[inline]
+    pub fn flag_clr(&self, f: i32) {
+        self.mnt_flag.set(self.mnt_flag.get() & !f);
+    }
+
+    /// `mp->mnt_stat`.
+    #[inline]
+    pub fn stat(&self) -> Statfs {
+        self.mnt_stat.get()
+    }
+
+    /// `mp->mnt_data`.
+    #[inline]
+    pub fn data(&self) -> *mut c_void {
+        self.mnt_data.get()
+    }
+
+    /// `mp->mnt_data = p`.
+    #[inline]
+    pub fn set_data(&self, p: *mut c_void) {
+        self.mnt_data.set(p);
+    }
+
+    /// `mp->mnt_vnodecovered`.
+    #[inline]
+    pub fn vnodecovered(&self) -> Option<&'static Vnode> {
+        self.mnt_vnodecovered.get()
+    }
+
+    /// `mp->mnt_vnodecovered = vp`.
+    #[inline]
+    pub fn set_vnodecovered(&self, vp: Option<&'static Vnode>) {
+        self.mnt_vnodecovered.set(vp);
+    }
+
+    /// `mp->mnt_syncer`.
+    #[inline]
+    pub fn syncer(&self) -> Option<&'static Vnode> {
+        self.mnt_syncer.get()
+    }
+
+    /// `mp->mnt_syncer = vp`.
+    #[inline]
+    pub fn set_syncer(&self, vp: Option<&'static Vnode>) {
+        self.mnt_syncer.set(vp);
+    }
+
+    /// Changes `mp->mnt_stat` in place.
+    pub fn with_stat(&self, f: impl FnOnce(&mut Statfs)) {
+        self.update_stat(f);
+    }
+
     /// `mp->mnt_vfc`, which `vfs_mount_alloc` set.
     pub fn vfc(&self) -> &'static Vfsconf {
         match self.mnt_vfc.get() {
