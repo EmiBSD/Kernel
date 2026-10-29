@@ -123,7 +123,10 @@
 //! - `v_op` (a pointer compared with `&dead_vops` and `&spec_vops`) is an id: [`VopsId`], one
 //!   byte into the subsystem's registry of tables ([`super::subr::VfsTables`]); `Dead`,
 //!   `Spec` and `Sync` are fixed ids 0-2 and [`Vnode::kind`] answers the C's compares; a file
-//!   system's table registers by its address on its first `getnewvnode`.
+//!   system's table registers by its address on its first `getnewvnode`, and every
+//!   `getnewvnode` finds its id from the address's home slot in the registry (an
+//!   open-addressed set, [`super::subr::vops_id`]): one probe or a few, where the C stores the
+//!   pointer with none.
 //! - `v_data` is the word [`Vnode::data`] (an `AtomicPtr`: the file system's node, read back
 //!   with the file system's own cast, `bsd`'s `data<T>`); the members of `bsd`'s types (the
 //!   name cache's heads, `v_socket`, the device's lock list) are the glue's

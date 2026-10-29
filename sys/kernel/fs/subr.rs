@@ -292,10 +292,22 @@ pub(super) fn vops_table<G: ProcGlue>(id: VopsId) -> &'static dyn Vnops<G> {
 
 /// The id of a file system's operations table, registered on its first use (by the table's
 /// address); a table past the registry's size (29 in a kernel; the C has 25) is `panic(9)`.
+///
+/// The registry is an open-addressed set keyed by the table's address: the search starts at
+/// the address's home slot (`vops_home`) and steps to the next slot while it meets other
+/// tables, so a table is found in one probe or a few whatever the order the tables came in
+/// (the C stores `v_op` without a lookup). Slots are set once and never emptied, so a table
+/// registered at a slot past its home finds every slot before it taken on each later search,
+/// and two CPUs registering one table meet at the same slot.
 pub fn vops_id<G: ProcGlue>(ops: &'static dyn Vnops<G>) -> VopsId {
     let t = vfs::<G>();
-    for (i, slot) in t.vops.iter().enumerate() {
+    let n = t.vops.len();
+    let mut i = vops_home(ops, n);
+    for _ in 0..n {
+        let slot = &t.vops[i];
+        // `i < n <= VopsId::MAX - VopsId::FIRST_FS`, both `u8`s.
         let id = VopsId(VopsId::FIRST_FS + i as u8);
+        i = if i + 1 == n { 0 } else { i + 1 };
         match slot.get() {
             Some(o) if ptr::addr_eq(*o, ops) => return id,
             Some(_) => {}
@@ -314,6 +326,16 @@ pub fn vops_id<G: ProcGlue>(ops: &'static dyn Vnops<G>) -> VopsId {
         "getnewvnode: more vnode operations tables than {}",
         VopsId::MAX - VopsId::FIRST_FS
     ))
+}
+
+/// The registry slot a table's search starts at, of `n`: its address hashed (Fibonacci
+/// hashing: bits 32-63 of the address times 2^64 / phi, modulo 2^64), so tables laid out next
+/// to each other spread over the slots.
+fn vops_home<G: ProcGlue>(ops: &'static dyn Vnops<G>, n: usize) -> usize {
+    let a = ptr::from_ref(ops).cast::<()>().addr() as u64;
+    let h = a.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32;
+    // `h < 2^32`, so it fits a `usize` on every target the kernel builds for.
+    h as usize % n
 }
 
 /// `iftovt_tab[]`/`vttoif_tab[]` are `super::vnode`'s.
