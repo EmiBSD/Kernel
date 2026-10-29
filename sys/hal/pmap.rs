@@ -170,11 +170,13 @@
 //!   removes or lowers every other one (see the deviations), and refuses to lower a viewed
 //!   page's mappings to a `prot` without `PROT_READ` or, for a writable view, without
 //!   `PROT_WRITE`;
-//!   [`PhysPages::is_busy`] answers `PG_BUSY` for the views' check. The gap until N3.5 (the
-//!   token holder's contract): no live window is overlaid, removed or write-protected
-//!   through the kernel map's token but by its drop, and no frame is a busy page that backs
-//!   kernel memory (the buffer cache's, busy for the buffer's life); the frames stay busy
-//!   until the drop (unbusying, freeing or reallocating a viewed page panics).
+//!   [`PhysPages::is_busy`] answers `PG_BUSY` for the views' check. The token holder's
+//!   contract (`sys/hal/mapped.rs`): no live window is overlaid, removed or write-protected
+//!   through the kernel map's token but by its drop (or `truncate`), and no frame of a busy
+//!   page that backs kernel memory outside a view (a buffer's while it is unmapped) is given
+//!   to `map_frames` or `map_direct`; the frames stay busy until the drop (unbusying, freeing
+//!   or reallocating a viewed page panics). A buffer's window (N5.1, `kenter_frames`) is
+//!   unmanaged, on no pv chain, so [`page_protect`] never reaches it.
 //! - The page allocator is a value passed down, [`PhysPages`] (D16), given to [`bootstrap`]
 //!   and kept by the kernel pmap, copied into every pmap [`create`] makes: `uvm_pagealloc`,
 //!   `uvm_pagefree`, `PHYS_TO_VM_PAGE`, `uvm_page_physsteal`. `pmap_steal_memory` reads the

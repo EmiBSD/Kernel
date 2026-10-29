@@ -90,8 +90,9 @@
 
 /* <CODE> */
 //! `OwnedTree<A>` and `OwnedList<A>`: an intrusive red-black tree and tail queue that own
-//! their elements, pool items freed explicitly; `SecondaryTree<S>` and `SecondaryRef<A>`:
-//! links to elements another container owns, counted in the element.
+//! their elements, pool items freed explicitly; `SecondaryTree<S>`, `SecondaryList<S>` and
+//! `SecondaryRef<A>`: links to elements another container owns, counted in the element (or,
+//! on a list, to elements that live for ever, uncounted: `Member<A>`).
 //!
 //! Upstream: sys/kern/subr_tree.c @ 3ce1f3f79392
 //! Upstream: sys/sys/tree.h @ 3ce1f3f79392
@@ -132,6 +133,17 @@
 //! the free tree before the address tree (`uvm_mapent_free_remove` before
 //! `uvm_mapent_addr_remove`) becomes a checked precondition.
 //!
+//! **Secondary lists** (N5.1, the buffer cache: a vnode's clean and dirty buffers, the 2Q
+//! queues, `buf_valist`, a disk queue's discipline). A [`SecondaryList`] is a tail queue over
+//! a [`SecondaryEntry`] whose links are [`Member`]s moved in and out: a member is either a
+//! counted link to an element an owning container owns ([`Member::counted`], as a
+//! [`SecondaryRef`]) or an uncounted link to an element that lives for ever
+//! ([`Member::of_static`], from a `&'static`: a buffer a driver's softc embeds, never a pool
+//! item an owner can give back). A push consumes the member, [`SecondaryList::pop_head`] and
+//! [`SecondaryList::remove`] give it back with its count, so an element moves from one list
+//! to another (`TAILQ_REMOVE` then `TAILQ_INSERT_TAIL`) without its count ever falling to 0,
+//! and a caller that removed it still holds what keeps it alive.
+//!
 //! As with every lock-free structure of `hal`, the lock that keeps a container consistent is
 //! its owner's: the containers change only through `&mut self` (the map's write lock, by the
 //! guard it gives) and are read through `&self`.
@@ -153,7 +165,11 @@
 //!   entry, a static, or a different entry on different calls, is refused, never followed.
 //! - I3, links: a container's head and the links of the entries carrying its identity name only
 //!   elements it owns (a [`SecondaryTree`]: only elements some owning container owns, each
-//!   counted once in that element's [`OwnedEntry`]; a [`SecondaryRef`]'s pointer likewise).
+//!   counted once in that element's [`OwnedEntry`]; a [`SecondaryRef`]'s pointer likewise; a
+//!   [`SecondaryList`] and a [`Member`]: such counted elements, or, when the link's entry or
+//!   the member says uncounted, an element whose pointer was taken from a `&'static`
+//!   reference by [`Member::of_static`], the only maker of an uncounted member, which no
+//!   owning container owned then; the lists move a member's pointer and flag together).
 //! - I4, counting: an owning container gives no element back while its count is not 0; a
 //!   secondary uncounts only what it unlinks. The count is read last after every call into
 //!   an adapter of the removal (whose `entry` and `augment` see the element being removed and
@@ -191,6 +207,18 @@
 //! - The free trees' links (`dfree.rbtree`, in the same union as the dead queue's) are a
 //!   [`SecondaryEntry`] of their own, so a counted link survives the move onto a dead list
 //!   and is undone by the selector's own destruction ([`SecondaryTree`]'s drop).
+//! - N5.1: the buffer cache's `TAILQ`s, `LIST`s and `SIMPLEQ`s over `struct buf` (LZ's
+//!   `queue_adapter!` lists of `&'static Buf`: `b_freelist`, `b_vnbufs`, `b_valist`,
+//!   `b_bufq`, each insert and remove an `unsafe` block whose comment says the buffer stays in
+//!   its pool item while linked) -> [`SecondaryList`]: `TAILQ_INSERT_HEAD`/`_TAIL`
+//!   ([`SecondaryList::push_head`], [`SecondaryList::push_tail`]), `TAILQ_REMOVE`
+//!   ([`SecondaryList::remove`]), `TAILQ_FIRST` and `TAILQ_REMOVE` of it
+//!   ([`SecondaryList::pop_head`]), and `SIMPLEQ_INSERT_AFTER` of the element a walk passed
+//!   (`bufq_simple_nscan`) as one call, [`SecondaryList::insert_before_first`], since a walk's
+//!   element borrows the list the insertion changes. What links an element is a [`Member`],
+//!   moved in and out with its count, or uncounted for a `'static` element
+//!   ([`Member::of_static`]: the brief's `push_tail_static`), so a `LIST`/`TAILQ` holding
+//!   both pool items and a driver's embedded buffers needs no second family.
 
 use core::cmp::Ordering;
 use core::marker::PhantomData;
@@ -371,19 +399,23 @@ impl<T: 'static> Default for OwnedEntry<T> {
     }
 }
 
-/// An element's links in one secondary tree (`RBT_ENTRY`: the selectors' `dfree.rbtree`) and
-/// the identity of the tree it is in.
+/// An element's links in one secondary tree (`RBT_ENTRY`: the selectors' `dfree.rbtree`) or
+/// list (`TAILQ_ENTRY`: `left` is the previous element there and `right` the next) and the
+/// identity of the container it is in.
 pub struct SecondaryEntry<T: 'static> {
     left: AtomicPtr<T>,
     right: AtomicPtr<T>,
     parent: AtomicPtr<T>,
-    /// The identity of the secondary tree, 0 when the element is in none.
+    /// The identity of the secondary container, 0 when the element is in none.
     owner: AtomicUsize,
     color: AtomicU8,
+    /// On a [`SecondaryList`]: the link is uncounted, the element a `'static` one
+    /// ([`Member::of_static`]). Always false in a tree.
+    uncounted: AtomicBool,
 }
 
 impl<T: 'static> SecondaryEntry<T> {
-    /// An entry in no tree.
+    /// An entry in no container.
     pub const fn new() -> Self {
         Self {
             left: AtomicPtr::new(ptr::null_mut()),
@@ -391,10 +423,11 @@ impl<T: 'static> SecondaryEntry<T> {
             parent: AtomicPtr::new(ptr::null_mut()),
             owner: AtomicUsize::new(0),
             color: AtomicU8::new(BLACK),
+            uncounted: AtomicBool::new(false),
         }
     }
 
-    /// Whether the element is in a secondary tree through this entry.
+    /// Whether the element is in a secondary container through this entry.
     pub fn is_linked(&self) -> bool {
         self.owner.load(Mem::Relaxed) != 0
     }
@@ -415,6 +448,7 @@ impl<T: 'static> SecondaryEntry<T> {
         put(&self.parent, None);
         self.color.store(BLACK, Mem::Relaxed);
         self.owner.store(0, Mem::Relaxed);
+        self.uncounted.store(false, Mem::Relaxed);
     }
 }
 
@@ -1384,6 +1418,367 @@ impl<'s, S: SecondaryAdapter> Iterator for SecondaryIter<'s, S> {
     }
 }
 
+/// A tail queue of elements that owning containers own or that live for ever (`TAILQ_HEAD`
+/// of the buffer cache's queues): it links them through their [`SecondaryEntry`], each link a
+/// [`Member`] moved in by a push and out by [`SecondaryList::pop_head`] or
+/// [`SecondaryList::remove`], so an owned element's owner keeps it while it is here (I4).
+pub struct SecondaryList<S: SecondaryAdapter> {
+    head: AtomicPtr<Elem<S>>,
+    tail: AtomicPtr<Elem<S>>,
+    /// The list's identity (I2), drawn at the first element; 0 before.
+    id: usize,
+    /// I5.
+    poisoned: AtomicBool,
+    _adapter: PhantomData<fn() -> S>,
+}
+
+impl<S: SecondaryAdapter> SecondaryList<S> {
+    /// `TAILQ_HEAD_INITIALIZER`: an empty list.
+    pub const fn new() -> Self {
+        Self {
+            head: AtomicPtr::new(ptr::null_mut()),
+            tail: AtomicPtr::new(ptr::null_mut()),
+            id: 0,
+            poisoned: AtomicBool::new(false),
+            _adapter: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn node(&self, p: NonNull<Elem<S>>) -> &Elem<S> {
+        counted_ref(self, p)
+    }
+
+    /// `e`'s secondary entry, checked to be this list's (I2); `panic` otherwise.
+    #[inline]
+    fn ent<'e>(&self, e: &'e Elem<S>, what: &str) -> &'e SecondaryEntry<Elem<S>> {
+        let ent = secondary_entry_of::<S>(e);
+        if self.id == 0 || ent.owner.load(Mem::Relaxed) != self.id {
+            hal_panic(format_args!("{what}: the element is not on this list"));
+        }
+        ent
+    }
+
+    #[inline]
+    fn check(&self, what: &str) {
+        if self.poisoned.load(Mem::Relaxed) {
+            poisoned(what);
+        }
+    }
+
+    /// `TAILQ_EMPTY`.
+    pub fn is_empty(&self) -> bool {
+        self.check("TAILQ_EMPTY");
+        get(&self.head).is_none()
+    }
+
+    /// `TAILQ_FIRST`.
+    pub fn first(&self) -> Option<&Elem<S>> {
+        self.check("TAILQ_FIRST");
+        get(&self.head).map(|p| self.node(p))
+    }
+
+    /// `TAILQ_LAST`.
+    pub fn last(&self) -> Option<&Elem<S>> {
+        self.check("TAILQ_LAST");
+        get(&self.tail).map(|p| self.node(p))
+    }
+
+    /// `TAILQ_NEXT(e)`; `e` must be on this list.
+    pub fn next(&self, e: &Elem<S>) -> Option<&Elem<S>> {
+        self.check("TAILQ_NEXT");
+        get(&self.ent(e, "TAILQ_NEXT").right).map(|p| self.node(p))
+    }
+
+    /// `TAILQ_PREV(e)`; `e` must be on this list.
+    pub fn prev(&self, e: &Elem<S>) -> Option<&Elem<S>> {
+        self.check("TAILQ_PREV");
+        get(&self.ent(e, "TAILQ_PREV").left).map(|p| self.node(p))
+    }
+
+    /// Whether `e` is on this list.
+    pub fn contains(&self, e: &Elem<S>) -> bool {
+        self.check("SecondaryList::contains");
+        self.id != 0 && secondary_entry_of::<S>(e).owner.load(Mem::Relaxed) == self.id
+    }
+
+    /// The elements from the head (`TAILQ_FOREACH`).
+    pub fn iter(&self) -> SecondaryListIter<'_, S> {
+        self.check("TAILQ_FOREACH");
+        SecondaryListIter {
+            list: self,
+            next: get(&self.head),
+        }
+    }
+
+    /// `TAILQ_INSERT_HEAD(m)` (`LIST_INSERT_HEAD`, `SIMPLEQ_INSERT_HEAD`): `m`'s count, if it
+    /// has one, becomes the link's.
+    pub fn push_head(&mut self, m: Member<S::Owner>) {
+        self.link(m, None, "TAILQ_INSERT_HEAD");
+    }
+
+    /// `TAILQ_INSERT_TAIL(m)` (`SIMPLEQ_INSERT_TAIL`): `m`'s count, if it has one, becomes the
+    /// link's.
+    pub fn push_tail(&mut self, m: Member<S::Owner>) {
+        let tail = get(&self.tail);
+        self.link(m, tail, "TAILQ_INSERT_TAIL");
+    }
+
+    /// Inserts `m` before the first element `cur` for which `before(m, cur)`, or at the tail
+    /// when there is none (`bufq_simple_nscan`'s walk and its `SIMPLEQ_INSERT_AFTER` of the
+    /// element it passed, or `SIMPLEQ_INSERT_HEAD`). The walk runs before anything changes,
+    /// so a panic in `before` leaves the list as it was.
+    pub fn insert_before_first(
+        &mut self,
+        m: Member<S::Owner>,
+        mut before: impl FnMut(&Elem<S>, &Elem<S>) -> bool,
+    ) {
+        self.check("SIMPLEQ_INSERT_AFTER");
+        let mut prev = None;
+        let mut cur = get(&self.head);
+        while let Some(x) = cur {
+            let c = self.node(x);
+            if before(m.get(), c) {
+                break;
+            }
+            prev = Some(x);
+            cur = get(&self.ent(c, "SIMPLEQ_INSERT_AFTER").right);
+        }
+        self.link(m, prev, "SIMPLEQ_INSERT_AFTER");
+    }
+
+    /// Links `m`'s element after `prev`, an element of this list (`None`: at the head).
+    fn link(&mut self, m: Member<S::Owner>, prev: Option<NonNull<Elem<S>>>, what: &str) {
+        self.check(what);
+        let e = m.get();
+        let sent = secondary_entry_of::<S>(e);
+        if sent.is_linked() {
+            hal_panic(format_args!(
+                "{what}: the element is in a secondary container already"
+            ));
+        }
+        // The member's kind is the element's state: a counted one is owned (its count keeps
+        // it so, I4), an uncounted one owned by none (`Member::of_static`; it can never be
+        // since, being `'static`).
+        if m.counted != entry_of::<S::Owner>(e).is_linked() {
+            hal_panic(format_args!(
+                "{what}: a member's count does not match its element"
+            ));
+        }
+        if self.id == 0 {
+            self.id = fresh_id();
+        }
+        let x = NonNull::from(e);
+        let changing = Mutating(&self.poisoned);
+        let next = match prev {
+            Some(p) => get(&self.ent(self.node(p), what).right),
+            None => get(&self.head),
+        };
+        sent.owner.store(self.id, Mem::Relaxed);
+        sent.uncounted.store(!m.counted, Mem::Relaxed);
+        put(&sent.left, prev);
+        put(&sent.right, next);
+        match prev {
+            Some(p) => put(&self.ent(self.node(p), what).right, Some(x)),
+            None => put(&self.head, Some(x)),
+        }
+        match next {
+            Some(n) => put(&self.ent(self.node(n), what).left, Some(x)),
+            None => put(&self.tail, Some(x)),
+        }
+        core::mem::forget(changing);
+        // The member's count, if any, is the link's from here.
+        core::mem::forget(m);
+    }
+
+    /// `TAILQ_REMOVE(e)`: unlinks `e`, which must be on this list, and gives its link back as
+    /// a [`Member`] (counted, the count kept, or uncounted).
+    pub fn remove(&mut self, e: &Elem<S>) -> Member<S::Owner> {
+        self.check("TAILQ_REMOVE");
+        self.ent(e, "TAILQ_REMOVE");
+        self.unlink(NonNull::from(e), "TAILQ_REMOVE")
+    }
+
+    /// `TAILQ_FIRST` and `TAILQ_REMOVE` of it (`SIMPLEQ_REMOVE_HEAD`): the head's link as a
+    /// [`Member`], `None` when the list is empty.
+    pub fn pop_head(&mut self) -> Option<Member<S::Owner>> {
+        self.check("TAILQ_REMOVE");
+        let x = get(&self.head)?;
+        Some(self.unlink(x, "TAILQ_REMOVE"))
+    }
+
+    /// Unlinks `x`, an element of this list (its entry carries the list's identity), and
+    /// makes its link a member.
+    fn unlink(&mut self, x: NonNull<Elem<S>>, what: &str) -> Member<S::Owner> {
+        let ent = self.ent(self.node(x), what);
+        let changing = Mutating(&self.poisoned);
+        let prev = get(&ent.left);
+        let next = get(&ent.right);
+        if (prev.is_none() && get(&self.head) != Some(x))
+            || (next.is_none() && get(&self.tail) != Some(x))
+        {
+            hal_panic(format_args!("{what}: the list's ends are broken"));
+        }
+        match prev {
+            Some(p) => put(&self.ent(self.node(p), what).right, next),
+            None => put(&self.head, next),
+        }
+        match next {
+            Some(n) => put(&self.ent(self.node(n), what).left, prev),
+            None => put(&self.tail, prev),
+        }
+        let counted = !ent.uncounted.load(Mem::Relaxed);
+        ent.clear();
+        core::mem::forget(changing);
+        // The link's count, if any, is the member's from here.
+        Member {
+            to: AtomicPtr::new(x.as_ptr()),
+            counted,
+            _adapter: PhantomData,
+        }
+    }
+
+    /// Unlinks every element and gives its count back, from the head (`TAILQ_INIT` of a list
+    /// being torn down): the list is empty afterwards.
+    pub fn clear(&mut self) {
+        self.check("SecondaryList::clear");
+        while let Some(m) = self.pop_head() {
+            drop(m);
+        }
+    }
+}
+
+impl<S: SecondaryAdapter> Default for SecondaryList<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S: SecondaryAdapter> Drop for SecondaryList<S> {
+    /// Unlinks every element and gives the counts back ([`SecondaryList::clear`]). A poisoned
+    /// list keeps its counts, so the owners of its elements never free them (I4, I5).
+    fn drop(&mut self) {
+        if !self.poisoned.load(Mem::Relaxed) {
+            self.clear();
+        }
+    }
+}
+
+/// The iterator of [`SecondaryList::iter`].
+pub struct SecondaryListIter<'s, S: SecondaryAdapter> {
+    list: &'s SecondaryList<S>,
+    next: Option<NonNull<Elem<S>>>,
+}
+
+impl<'s, S: SecondaryAdapter> Iterator for SecondaryListIter<'s, S> {
+    type Item = &'s Elem<S>;
+
+    fn next(&mut self) -> Option<&'s Elem<S>> {
+        let x = self.next?;
+        let e = self.list.node(x);
+        self.next = get(&self.list.ent(e, "TAILQ_FOREACH").right);
+        Some(e)
+    }
+}
+
+/// One link to an element, as a [`SecondaryList`] holds it: counted in the element's
+/// [`OwnedEntry`] when an owning container owns it ([`Member::counted`]), so its owner keeps
+/// it (I4), or uncounted when it lives for ever ([`Member::of_static`]). Moved into a list by
+/// its pushes and out by [`SecondaryList::pop_head`] and [`SecondaryList::remove`], the count
+/// with it; its drop gives a count back.
+pub struct Member<A: OwnedAdapter> {
+    /// Never null: the element.
+    to: AtomicPtr<A::Elem>,
+    /// Whether the element's [`OwnedEntry`] counts this link.
+    counted: bool,
+    _adapter: PhantomData<fn() -> A>,
+}
+
+impl<A: OwnedAdapter> Member<A> {
+    /// A counted link to `e`, which an owning container must own (panics otherwise).
+    pub fn counted(e: &A::Elem) -> Self {
+        let ent = entry_of::<A>(e);
+        if !ent.is_linked() {
+            hal_panic(format_args!(
+                "Member: counts only an element a container owns"
+            ));
+        }
+        ent.count_up();
+        Self {
+            to: AtomicPtr::new(ptr::from_ref(e).cast_mut()),
+            counted: true,
+            _adapter: PhantomData,
+        }
+    }
+
+    /// An uncounted link to `e`, which lives for ever (a buffer a driver's softc embeds).
+    /// Panics when an owning container owns it: an owned element is a pool item its owner
+    /// gives back, which a `&'static` to it would outlive.
+    pub fn of_static(e: &'static A::Elem) -> Self {
+        if entry_of::<A>(e).is_linked() {
+            hal_panic(format_args!(
+                "Member: an element a container owns is not a 'static one"
+            ));
+        }
+        Self {
+            to: AtomicPtr::new(ptr::from_ref(e).cast_mut()),
+            counted: false,
+            _adapter: PhantomData,
+        }
+    }
+
+    /// The counted link `r` points with (its count moved), `None` when it points at nothing.
+    pub fn from_ref(r: SecondaryRef<A>) -> Option<Self> {
+        let p = get(&r.to)?;
+        put(&r.to, None);
+        Some(Self {
+            to: AtomicPtr::new(p.as_ptr()),
+            counted: true,
+            _adapter: PhantomData,
+        })
+    }
+
+    /// The counted link as a [`SecondaryRef`] (its count moved), or the uncounted member
+    /// back.
+    pub fn into_ref(self) -> Result<SecondaryRef<A>, Self> {
+        if !self.counted {
+            return Err(self);
+        }
+        let r = SecondaryRef::<A>::new();
+        put(&r.to, get(&self.to));
+        core::mem::forget(self);
+        Ok(r)
+    }
+
+    /// The element.
+    pub fn get(&self) -> &A::Elem {
+        match get(&self.to) {
+            Some(p) => counted_ref(self, p),
+            None => hal_panic(format_args!("Member: a link to nothing")),
+        }
+    }
+
+    /// Whether the element's owner counts this link (false: a `'static` element).
+    pub fn is_counted(&self) -> bool {
+        self.counted
+    }
+}
+
+impl<A: OwnedAdapter> Drop for Member<A> {
+    fn drop(&mut self) {
+        if self.counted
+            && let Some(p) = get(&self.to)
+        {
+            let e = counted_ref(self, p);
+            let ent = entry_of::<A>(e);
+            if !ent.is_linked() {
+                hal_panic(format_args!("Member: its element is in no container"));
+            }
+            ent.count_down();
+        }
+    }
+}
+
 /// A counted pointer to an element an owning container owns (`up_pivot.entry`, the pivot's
 /// entry): set, the element's [`OwnedEntry`] counts it, so its owner keeps it (I4); unset or
 /// dropped, the count goes back.
@@ -1670,21 +2065,29 @@ fn owned_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
 /// The element a secondary's pointer names, borrowed for as long as the secondary.
 ///
 /// Its callers, all in this module, pass only a pointer read from a [`SecondaryTree`]'s root
-/// or from a [`SecondaryEntry`] it checked to carry its identity, a [`SecondaryRef`]'s, or
-/// the address of an element its caller holds by reference and the tree checked to carry its
-/// identity (`SecondaryTree::next(&self, e)`, `remove`), used only while that reference lives.
+/// or a [`SecondaryList`]'s ends, or from a [`SecondaryEntry`] the container checked to carry
+/// its identity, a [`SecondaryRef`]'s or a [`Member`]'s, or the address of an element its
+/// caller holds by reference and the container checked to carry its identity
+/// (`SecondaryTree::next(&self, e)`, `remove`), used only while that reference lives.
 #[inline]
 fn counted_ref<T: 'static, C>(_by: &C, p: NonNull<T>) -> &T {
-    // SAFETY: `p` names an element that an owning container owns and whose `OwnedEntry`
-    // counts this link (I3: a secondary links only an owned element and counts it before it
-    // stores the pointer, and uncounts only after it removed it); an owning container never
-    // gives back, so never frees, a counted element (I4), and a container dropped with one
-    // panics before it frees it; so the element is a live, initialised pool item that does
-    // not move, reached only by shared references (it is owned, so no box and no `&mut`
-    // exists, I1). The reference borrows `_by`, which uncounts the link only through `&mut
-    // self`. Every stored pointer was taken from a shared reference to the element (the
-    // insert's, the `set`'s), as is one passed by the caller, so the reference made here is
-    // a shared one of the same element.
+    // SAFETY: `p` names one of two kinds of element (I3). Counted: an element that an owning
+    // container owns and whose `OwnedEntry` counts this link (a secondary links only an owned
+    // element and counts it before it stores the pointer, and uncounts only after it removed
+    // it; a member's count moves with its pointer, into a list's link and out of it, never
+    // dropped in between); an owning container never gives back, so never frees, a counted
+    // element (I4), and a container dropped with one panics before it frees it; so the
+    // element is a live, initialised pool item that does not move, reached only by shared
+    // references (it is owned, so no box and no `&mut` exists, I1). Uncounted (a list link
+    // whose entry says so, a member made uncounted): the pointer was taken from a `&'static`
+    // reference by `Member::of_static`, the only maker of an uncounted member, and the lists
+    // copy a member's pointer and kind together; a `&'static` shared reference is valid for
+    // the rest of the program and no `&mut` to its value can exist again, so the element is
+    // live, does not move and is reached only by shared references, whatever the borrow.
+    // The reference borrows `_by`, which uncounts or unlinks only through `&mut self` (or by
+    // value). Every stored pointer was taken from a shared reference to the element (the
+    // insert's, the `set`'s, the member's), as is one passed by the caller, so the reference
+    // made here is a shared one of the same element.
     unsafe { p.as_ref() }
 }
 
@@ -2102,6 +2505,7 @@ fn rb_remove_color<R: Rb>(t: &R, parent: Option<NonNull<R::T>>, x: Option<NonNul
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
     use std::collections::BTreeSet;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Arc;
@@ -2731,6 +3135,198 @@ mod tests {
         );
         drop(l);
         assert_eq!(drops.load(Mem::Relaxed), 1);
+    }
+
+    secondary_adapter!(ByFreeList: ByKey, free, |a, b| a.key.cmp(&b.key));
+
+    /// A node that lives for ever and no container owns (a driver's embedded buffer).
+    fn static_node(key: u64) -> &'static Node {
+        Box::leak(Box::new(Node {
+            key,
+            fspace: AtomicU64::new(0),
+            augment: AtomicU64::new(0),
+            link: OwnedEntry::new(),
+            free: SecondaryEntry::new(),
+            other: OwnedEntry::new(),
+            drops: None,
+            explode: false,
+        }))
+    }
+
+    fn keys(l: &SecondaryList<ByFreeList>) -> Vec<u64> {
+        l.iter().map(|n| n.key).collect()
+    }
+
+    #[test]
+    fn a_secondary_list_moves_its_members_with_their_counts() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut t = OwnedTree::<ByKey>::new();
+        for k in 0..6u64 {
+            assert!(t.insert(node(k, 0, &drops)).is_none());
+        }
+        let mut hot = SecondaryList::<ByFreeList>::new();
+        let mut cold = SecondaryList::<ByFreeList>::new();
+        assert!(hot.is_empty() && hot.first().is_none() && hot.pop_head().is_none());
+        for e in t.iter() {
+            if e.key % 2 == 0 {
+                hot.push_tail(Member::counted(e));
+            } else {
+                hot.push_head(Member::counted(e));
+            }
+        }
+        assert_eq!(keys(&hot), [5, 3, 1, 0, 2, 4]);
+        assert!(t.iter().all(|n| n.link.indexed() == 1));
+        assert_eq!(hot.first().unwrap().key, 5);
+        assert_eq!(hot.last().unwrap().key, 4);
+        let one = t.find_by(|n| 1u64.cmp(&n.key)).unwrap();
+        assert_eq!(hot.next(one).unwrap().key, 0);
+        assert_eq!(hot.prev(one).unwrap().key, 3);
+        assert!(hot.contains(one) && !cold.contains(one));
+
+        // TAILQ_REMOVE then TAILQ_INSERT_TAIL on another queue: the count never falls to 0.
+        let m = hot.pop_head().unwrap();
+        assert!(m.is_counted() && m.get().key == 5 && m.get().link.indexed() == 1);
+        cold.push_tail(m);
+        let m = hot.remove(one);
+        assert_eq!(one.link.indexed(), 1);
+        cold.push_tail(m);
+        assert_eq!(keys(&hot), [3, 0, 2, 4]);
+        assert_eq!(keys(&cold), [5, 1]);
+
+        // A removed member dropped gives its count back: the owner may give the element back.
+        drop(hot.remove(t.find_by(|n| 2u64.cmp(&n.key)).unwrap()));
+        assert_eq!(t.take_by(|n| 2u64.cmp(&n.key)).unwrap().key, 2);
+        drop(hot);
+        drop(cold);
+        assert!(t.iter().all(|n| n.link.indexed() == 0));
+        drop(t);
+        assert_eq!(drops.load(Mem::Relaxed), 6);
+    }
+
+    #[test]
+    fn insert_before_first_sorts_as_bufq_simple_nscan() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut t = OwnedTree::<ByKey>::new();
+        for k in [50u64, 10, 40, 20, 30, 35, 5] {
+            assert!(t.insert(node(k, 0, &drops)).is_none());
+        }
+        let mut sorted = SecondaryList::<ByFreeList>::new();
+        let inorder = |a: &Node, b: &Node| a.key < b.key;
+        for k in [50u64, 10, 40, 20, 30, 35, 5] {
+            let e = t.find_by(|n| k.cmp(&n.key)).unwrap();
+            sorted.insert_before_first(Member::counted(e), inorder);
+        }
+        assert_eq!(keys(&sorted), [5, 10, 20, 30, 35, 40, 50]);
+        // An equal key goes after its equals (the C inserts after the element it passed).
+        let s = static_node(30);
+        sorted.insert_before_first(Member::of_static(s), inorder);
+        let after: Vec<bool> = sorted.iter().map(|n| ptr::eq(n, s)).collect();
+        assert_eq!(
+            after,
+            [false, false, false, false, true, false, false, false]
+        );
+        assert!(!sorted.remove(s).is_counted());
+    }
+
+    #[test]
+    fn a_static_member_is_linked_uncounted() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        let mut q = SecondaryList::<ByFreeList>::new();
+        let s = static_node(7);
+        q.push_tail(Member::of_static(s));
+        q.push_tail(Member::counted(l.first().unwrap()));
+        q.push_tail(Member::of_static(static_node(9)));
+        assert_eq!(keys(&q), [7, 1, 9]);
+        assert_eq!(l.first().unwrap().link.indexed(), 1);
+        let m = q.pop_head().unwrap();
+        assert!(!m.is_counted() && ptr::eq(m.get(), s));
+        assert!(!s.free.is_linked());
+        let m = m.into_ref().err().unwrap();
+        drop(m);
+        let m = q.pop_head().unwrap();
+        assert!(m.is_counted());
+        let r = m.into_ref().ok().unwrap();
+        assert_eq!(r.get().unwrap().link.indexed(), 1);
+        let m = Member::from_ref(r).unwrap();
+        assert_eq!(m.get().link.indexed(), 1);
+        drop(m);
+        assert_eq!(l.first().unwrap().link.indexed(), 0);
+        drop(q);
+        assert!(l.pop().is_some());
+        assert_eq!(drops.load(Mem::Relaxed), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "still linked from a secondary tree")]
+    fn an_owner_refuses_an_element_a_list_counts() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        let mut q = SecondaryList::<ByFreeList>::new();
+        q.push_tail(Member::counted(l.first().unwrap()));
+        let _ = l.pop();
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a 'static one")]
+    fn a_static_member_of_an_owned_element_is_refused() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let l: &'static mut OwnedList<ByKey> = Box::leak(Box::new(OwnedList::new()));
+        l.push(node(1, 0, &drops));
+        let l: &'static OwnedList<ByKey> = l;
+        let _ = Member::<ByKey>::of_static(l.first().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "counts only an element a container owns")]
+    fn a_counted_member_of_a_loose_element_is_refused() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let b = node(1, 0, &drops);
+        let _ = Member::<ByKey>::counted(&b);
+    }
+
+    #[test]
+    #[should_panic(expected = "not on this list")]
+    fn an_element_of_another_list_is_refused() {
+        let mut a = SecondaryList::<ByFreeList>::new();
+        let mut b = SecondaryList::<ByFreeList>::new();
+        a.push_tail(Member::of_static(static_node(1)));
+        b.push_tail(Member::of_static(static_node(2)));
+        let _ = b.remove(a.first().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "in a secondary container already")]
+    fn an_element_is_on_one_list_through_an_entry() {
+        let s = static_node(3);
+        let mut a = SecondaryList::<ByFreeList>::new();
+        let mut b = SecondaryList::<ByFreeList>::new();
+        a.push_tail(Member::of_static(s));
+        b.push_tail(Member::of_static(s));
+    }
+
+    #[test]
+    fn a_panic_in_the_walk_leaves_the_list_as_it_was() {
+        let mut q = SecondaryList::<ByFreeList>::new();
+        q.push_tail(Member::of_static(static_node(1)));
+        q.push_tail(Member::of_static(static_node(3)));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            q.insert_before_first(Member::of_static(static_node(2)), |_, _| {
+                panic!("the walk's comparison panicked")
+            });
+        }));
+        assert!(r.is_err());
+        assert_eq!(keys(&q), [1, 3]);
+        q.insert_before_first(Member::of_static(static_node(2)), |a, b| a.key < b.key);
+        assert_eq!(keys(&q), [1, 2, 3]);
+    }
+
+    #[test]
+    fn the_list_and_its_members_are_small() {
+        assert_eq!(size_of::<SecondaryList<ByFreeList>>(), 32);
+        assert_eq!(size_of::<Member<ByKey>>(), 16);
     }
 }
 /* </TESTS> */

@@ -77,15 +77,35 @@
  *
  *	@(#)vm_pager.h	8.5 (Berkeley) 7/7/94
  */
+
+/*
+ * Copyright (c) 2007 Artur Grabowski <art@openbsd.org>
+ * Copyright (c) 2012-2016,2019 Bob Beck <beck@openbsd.org>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
 //! `MappedBytes`: the bytes of physical pages mapped into kernel virtual space for I/O (the
-//! pager's window, `uvm_pagermapin`), as a slice; its drop removes the mappings.
+//! pager's window, `uvm_pagermapin`; a buffer's window, `buf_map`), as a slice; its drop
+//! removes the mappings.
 //!
 //! Upstream: sys/uvm/uvm_pager.h @ 3ce1f3f79392
 //! Upstream: sys/uvm/uvm_pager.c @ 3ce1f3f79392
+//! Upstream: sys/kern/vfs_biomem.c @ 3ce1f3f79392
 //! LZ: sys/uvm/uvm_pager.rs@3c62ede68802
+//! LZ: sys/kern/vfs_biomem.rs@3c62ede68802
 //!
 //! The C's `uvm_pagermapin(pps, npages, flags)` enters each busy page at the next page of a
 //! pager segment with `pmap_enter(pmap_kernel(), cva, pa, prot, PMAP_WIRED | PMAP_CANFAIL |
@@ -96,7 +116,11 @@
 //! [`MappedBytes::as_slice`] and [`MappedBytes::as_slice_mut`] are the bytes and whose drop
 //! is the `pmap_remove`; [`KernelMapper::map_direct`] is the one-page direct-map case. The
 //! pager segment the window sits in stays the caller's (`kernel::vm::pager`, N3.4c), who
-//! releases it after the drop.
+//! releases it after the drop. The buffer cache's window (`vfs_biomem.c`'s `buf_map`:
+//! `pmap_kenter_pa` of each of the buffer's pages at its kva slot, `PROT_READ | PROT_WRITE`)
+//! is [`KernelMapper::kenter_frames`]: the same view over an unmanaged mapping, which
+//! [`MappedBytes::truncate`] shortens (`buf_fix_mapping`) and whose drop is the `pmap_kremove`
+//! (`buf_unmap`, `buf_dealloc_mem`).
 //!
 //! **What makes a view the only reference to its bytes.**
 //! - Each frame is checked to be a managed page (the frame proof the C's `struct vm_page *`
@@ -121,16 +145,26 @@
 //!   holders (the kernel's `vm::km`, and those it lends the token to: `bsd`'s
 //!   `machine::pmap`, the pager) can make a view, not any kernel code. The window's
 //!   addresses are the holder's (a pager segment it took).
-//! - **The gap until N3.5** (the token holder's contract): no live window is overlaid,
-//!   removed or write-protected through the kernel map's token but by its drop, and no frame
-//!   is a busy page that backs kernel memory (the buffer cache's, busy for the buffer's
-//!   life); the frames stay busy until the drop (unbusying, freeing or reallocating a viewed
-//!   page panics). The token's ways in are `KernelMapper::enter`/`kenter` (an overlay),
-//!   `remove`/`kremove` and `protect` on `pmap_kernel()`, and `bsd`'s safe `pmap_enter`,
-//!   `pmap_remove` and `pmap_protect` on `pmap_kernel()` (`sys/machine/pmap.rs`, the legacy
-//!   trust `kernel::vm::km` records for its lend); the buffer cache's pages are
-//!   `uvm_pagealloc_multi`'s, which leaves `PG_BUSY | PG_FAKE` set for the buffer's life
-//!   (`vfs_biomem` maps them with `kenter`, `bsd` reaches them by raw pointers).
+//! - A buffer's window ([`KernelMapper::kenter_frames`]) is entered with `kenter`: unmanaged,
+//!   on no pv chain, so neither `pmap_page_protect` nor the reference and modify emulation
+//!   (`pmap_clear_reference`, `pmap_clear_modify`, which walk the pv chain) ever touch it; it
+//!   leaves only by [`MappedBytes::truncate`], which shortens the view first, and by the drop.
+//!   Its frames are the buffer's own pages, `uvm_pagealloc_multi`'s, busy (`PG_BUSY |
+//!   PG_FAKE`) for the buffer's life, claimed for the view like a pager window's.
+//! - **The token holder's contract** (what `hal` cannot check): no live window is overlaid,
+//!   removed or write-protected through the kernel map's token but by its drop (or
+//!   `truncate`), and no frame of a busy page that backs kernel memory outside a view is
+//!   given to [`KernelMapper::map_frames`] or [`KernelMapper::map_direct`]. The buffer cache's
+//!   pages are such pages while a buffer is unmapped (the buffer's dummy object, which no
+//!   pager walks, so no pager window is made of them); a mapped buffer's are claimed by its
+//!   window (`kenter_frames`), so a pager window over them panics. Until the cache maps its
+//!   buffers through `kenter_frames` (N5.1's `kernel::fs::biomem`), `bsd`'s `vfs_biomem`
+//!   maps them with the legacy `kenter` and reaches them by raw pointers, and `bsd`'s drivers
+//!   reach a busy buffer's bytes by its address (`b_data`, their own `unsafe fn data`, N7).
+//!   The token's ways in are `KernelMapper::enter`/`kenter` (an overlay), `remove`/`kremove`
+//!   and `protect` on `pmap_kernel()`, and `bsd`'s safe `pmap_enter`, `pmap_remove` and
+//!   `pmap_protect` on `pmap_kernel()` (`sys/machine/pmap.rs`, the legacy trust
+//!   `kernel::vm::km` records for its lend).
 //!
 //! On a machine without an MMU (`PMAP_NOMMU`, only the host test double) a virtual address
 //! maps nothing, so the window's bytes are read through the direct map (the identity there):
@@ -165,6 +199,13 @@
 //!   like a window's, but not resting on `PG_BUSY`), so the rules above keep every other
 //!   kernel way to its bytes away (the N4.8a review: the token's word alone was the proof
 //!   before).
+//! - N5.1: the mapping half of `vfs_biomem.c`'s `buf_map` (LZ: `pmap_kenter_pa` of each page
+//!   through `bsd`'s legacy `unsafe fn`, the buffer's bytes then reached through the raw
+//!   `b_data`) is [`KernelMapper::kenter_frames`], a fourth view over an unmanaged mapping,
+//!   and `buf_fix_mapping`'s `pmap_kremove` of the tail is [`MappedBytes::truncate`]; the
+//!   checks every window makes before it claims (`window_of`, `check_frames`, `claim_all`)
+//!   are shared with `map_frames`. The arena's slots and the buffer's pages stay the kernel's
+//!   (`kernel::vm::km`, `kernel::fs::biomem`).
 
 use core::ptr;
 use core::slice;
@@ -204,8 +245,12 @@ pub struct MappedBytes<'m> {
 
 /// How a [`MappedBytes`]' frames are mapped.
 enum Kind<'m> {
-    /// Entered at `va` by this token: removed by the drop, the frames found by `extract`.
+    /// Entered at `va` by this token, managed and wired (`pmap_enter`): removed by the drop
+    /// (`pmap_remove`), the frames found by `extract`.
     Window(&'m KernelMapper),
+    /// Entered at `va` by this token, unmanaged (`pmap_kenter_pa`): removed by the drop
+    /// (`pmap_kremove`), the frames found by `extract`.
+    Unmanaged(&'m KernelMapper),
     /// The direct map of this one frame: nothing to remove.
     Direct(Paddr),
 }
@@ -246,20 +291,23 @@ impl MappedBytes<'_> {
         // keeps): the window was entered where nothing was
         // mapped and `pmap_page_protect` spares a held page's window entry (`PageMd::spares`,
         // recorded before the entry is made, the entry removed by the identity checked; the
-        // direct map, on no pv chain, never goes; `page_protect` refuses a `prot` that would
-        // take a view's read access, or a writable one's write access, away). Each frame is
-        // claimed by this value alone, so no other view exists,
+        // direct map and an unmanaged window (`kenter_frames`), on no pv chain, never go, nor
+        // does the reference and modify emulation reach them; `page_protect` refuses a `prot`
+        // that would take a view's read access, or a writable one's write access, away). Each
+        // frame is claimed by this value alone, so no other view exists,
         // `pmap_zero_page`/`pmap_copy_page` refuse it, and the page system can neither
         // unbusy, free nor hand it out again while the claim lives (it panics), so
         // the frames stay busy, their owner's, until the drop; no `&mut` through this value
         // is alive beside this `&` (`as_slice_mut` needs `&mut self`). Pages of
         // `uvm_pglistalloc` and the page tables are never busy, so no reference to that
-        // kernel memory reaches the frames. What `hal` cannot check is the gap until N3.5,
-        // the token holder's contract (the module's docs): no live window is overlaid,
-        // removed or write-protected through the kernel map's token but by its drop, and no
-        // frame is a busy page that backs kernel memory (the buffer cache's, busy for the
-        // buffer's life). The slice borrows `self`, so it ends before the drop unmaps and
-        // releases.
+        // kernel memory reaches the frames. `truncate` (by `&mut self`, so with no slice
+        // alive) shortens `len` before it gives frames up and removes their entries, so `len`
+        // never covers a page this value no longer holds. What `hal` cannot check is the
+        // token holder's contract (the module's docs): no live window is overlaid, removed or
+        // write-protected through the kernel map's token but by its drop or `truncate`, and
+        // no frame of a busy page that backs kernel memory outside a view is given to
+        // `map_frames` or `map_direct`. The slice borrows `self`, so it ends before the drop
+        // unmaps and releases.
         unsafe { slice::from_raw_parts(p, self.len) }
     }
 
@@ -286,6 +334,41 @@ impl MappedBytes<'_> {
     pub fn unmap(self) -> Vaddr {
         self.va
     }
+
+    /// `buf_fix_mapping(bp, newsize)`: shortens the view to its first `new_len` bytes (a whole
+    /// number of pages, at least one): the frames past it are given up and their entries
+    /// removed (`pmap_kremove(va + newsize, len - newsize)`, a pager window's by
+    /// `pmap_remove`), so the pages can go to another owner (`bread_cluster_callback`'s
+    /// `uvm_pagerealloc` of the pages the other buffers of a cluster read). Nothing happens
+    /// when `new_len` is the length. Panics on a `new_len` that is 0, longer than the view or
+    /// not a whole number of pages.
+    pub fn truncate(&mut self, new_len: usize) {
+        if new_len == 0 || new_len > self.len || !new_len.is_multiple_of(PAGE_SIZE) {
+            hal_panic(format_args!(
+                "MappedBytes: a window of {:#x} bytes truncated to {new_len:#x}",
+                self.len
+            ));
+        }
+        if new_len == self.len {
+            return;
+        }
+        let old = self.len;
+        // The view stops covering the cut pages before they are given up.
+        self.len = new_len;
+        let cut = self.va + Vsize::new(new_len);
+        match self.kind {
+            Kind::Window(mapper) => {
+                give_up(cut, old - new_len);
+                mapper.remove(cut, self.va + Vsize::new(old));
+            }
+            Kind::Unmanaged(mapper) => {
+                give_up(cut, old - new_len);
+                mapper.kremove(cut, Vsize::new(old - new_len));
+            }
+            // A direct view is one page, which no `new_len` above shortens.
+            Kind::Direct(_) => hal_panic(format_args!("MappedBytes: a direct view truncated")),
+        }
+    }
 }
 
 impl Drop for MappedBytes<'_> {
@@ -296,22 +379,30 @@ impl Drop for MappedBytes<'_> {
         match self.kind {
             Kind::Direct(pa) => md("MappedBytes", pa).release_view(),
             Kind::Window(mapper) => {
-                // The claims go first: the frames are found through the window's own
-                // mapping (`extract`), which the removal takes away. No reference into the
-                // view is alive (the drop holds it mutably), so a frame claimed anew between
-                // the release and the removal meets no reader through this window.
-                for i in 0..self.len / PAGE_SIZE {
-                    let cva = self.va + Vsize::new(i * PAGE_SIZE);
-                    match pmap::kernel().extract(cva) {
-                        Some(pa) => md("MappedBytes", pa).release_view(),
-                        None => hal_panic(format_args!(
-                            "MappedBytes: the window page at {:#x} lost its mapping",
-                            cva.as_usize()
-                        )),
-                    }
-                }
+                give_up(self.va, self.len);
                 mapper.remove(self.va, self.va + Vsize::new(self.len));
             }
+            Kind::Unmanaged(mapper) => {
+                give_up(self.va, self.len);
+                mapper.kremove(self.va, Vsize::new(self.len));
+            }
+        }
+    }
+}
+
+/// Gives up the claims of the frames a window maps at `[va, va + len)`, found through the
+/// window's own entries (`extract`), before the caller removes them. No reference into the
+/// view is alive (the caller holds it mutably), so a frame claimed anew between the release
+/// and the removal meets no reader through this window.
+fn give_up(va: Vaddr, len: usize) {
+    for i in 0..len / PAGE_SIZE {
+        let cva = va + Vsize::new(i * PAGE_SIZE);
+        match pmap::kernel().extract(cva) {
+            Some(pa) => md("MappedBytes", pa).release_view(),
+            None => hal_panic(format_args!(
+                "MappedBytes: the window page at {:#x} lost its mapping",
+                cva.as_usize()
+            )),
         }
     }
 }
@@ -342,49 +433,13 @@ impl KernelMapper {
         frames: &[Paddr],
         prot: VmProt,
     ) -> Result<MappedBytes<'_>, Errno> {
-        let Some(&first) = frames.first() else {
-            hal_panic(format_args!("map_frames: no frame"));
-        };
-        let len = frames
-            .len()
-            .checked_mul(PAGE_SIZE)
-            .filter(|&l| l <= isize::MAX.unsigned_abs())
-            .filter(|&l| va.as_usize().checked_add(l).is_some());
-        let Some(len) = len.filter(|_| va.as_usize().is_multiple_of(PAGE_SIZE)) else {
-            hal_panic(format_args!(
-                "map_frames: a window of {} pages at {:#x}",
-                frames.len(),
-                va.as_usize()
-            ));
-        };
+        let (first, len) = window_of("map_frames", va, frames);
         if prot & PROT_READ == 0 {
             hal_panic(format_args!("map_frames: prot {prot:#x} without PROT_READ"));
         }
-        for (i, &pa) in frames.iter().enumerate() {
-            let _ = busy_md("map_frames", pa);
-            if PMAP_NOMMU && pa.as_usize() != first.as_usize() + i * PAGE_SIZE {
-                hal_panic(format_args!(
-                    "map_frames: frames not contiguous on a machine without an MMU"
-                ));
-            }
-            let cva = va + Vsize::new(i * PAGE_SIZE);
-            if pmap::kernel().extract(cva).is_some() {
-                hal_panic(format_args!(
-                    "map_frames: the window page at {:#x} is mapped already",
-                    cva.as_usize()
-                ));
-            }
-        }
+        check_frames("map_frames", va, frames, first);
         let writable = prot & PROT_WRITE != 0;
-        for (i, &pa) in frames.iter().enumerate() {
-            if !md("map_frames", pa).claim_view(writable) {
-                release(&frames[..i]);
-                hal_panic(format_args!(
-                    "map_frames: the frame {:#x} is in another view",
-                    pa.as_usize()
-                ));
-            }
-        }
+        claim_all("map_frames", frames, writable);
         for (i, &pa) in frames.iter().enumerate() {
             let cva = va + Vsize::new(i * PAGE_SIZE);
             // The window's own entry, which `page_protect` spares (recorded before it exists).
@@ -407,6 +462,43 @@ impl KernelMapper {
             writable,
             kind: Kind::Window(self),
         })
+    }
+
+    /// `buf_map`'s loop: enters the managed pages `frames` at `va`, `va + PAGE_SIZE`, ... in
+    /// the kernel pmap unmanaged, read and write (`pmap_kenter_pa(va, pa, PROT_READ |
+    /// PROT_WRITE)`: no pv entry, which `pmap_kenter_pa` cannot fail to make), and returns the
+    /// writable view of their bytes; the drop removes them (`pmap_kremove`), and
+    /// [`MappedBytes::truncate`] the tail (`buf_fix_mapping`).
+    ///
+    /// Exclusivity: as [`KernelMapper::map_frames`]: each frame must be a busy managed page
+    /// (a buffer's own, `uvm_pagealloc_multi`'s `PG_BUSY | PG_FAKE`) and is claimed for this
+    /// view alone; a frame already held (this one included, twice in `frames`) is
+    /// `panic(9)`, after the claims made so far are given up. A page of the window already
+    /// mapped is `panic(9)` before anything is claimed; the frames stay busy until the drop.
+    /// `va` is kernel virtual space the caller owns (a kva slot of the buffer arena,
+    /// `kernel::vm::km`). The token holder's contract (the module's docs): the window is
+    /// removed only by the drop or `truncate`. Panics on no frame, a window that is not
+    /// page-aligned or wraps, a frame that is not a managed page or not busy, and on a
+    /// machine without an MMU frames that are not contiguous.
+    pub fn kenter_frames(&self, va: Vaddr, frames: &[Paddr]) -> MappedBytes<'_> {
+        let (first, len) = window_of("kenter_frames", va, frames);
+        check_frames("kenter_frames", va, frames, first);
+        claim_all("kenter_frames", frames, true);
+        for (i, &pa) in frames.iter().enumerate() {
+            self.kenter(va + Vsize::new(i * PAGE_SIZE), pa, PROT_READ | PROT_WRITE);
+        }
+        let view = if PMAP_NOMMU {
+            pmap::direct_map(first).as_usize()
+        } else {
+            va.as_usize()
+        };
+        MappedBytes {
+            va,
+            view,
+            len,
+            writable: true,
+            kind: Kind::Unmanaged(self),
+        }
     }
 
     /// `pmap_map_direct(pg)`: the one managed page `pa` through the direct map, read and
@@ -473,6 +565,63 @@ fn busy_md(what: &str, pa: Paddr) -> &'static PageMd {
 fn release(frames: &[Paddr]) {
     for &pa in frames {
         md("map_frames", pa).release_view();
+    }
+}
+
+/// The first frame of a window of `frames` at `va` and its length in bytes; `panic(9)` naming
+/// `what` for no frame, a window that is not page-aligned, wraps, or is longer than
+/// `isize::MAX`.
+fn window_of(what: &str, va: Vaddr, frames: &[Paddr]) -> (Paddr, usize) {
+    let Some(&first) = frames.first() else {
+        hal_panic(format_args!("{what}: no frame"));
+    };
+    let len = frames
+        .len()
+        .checked_mul(PAGE_SIZE)
+        .filter(|&l| l <= isize::MAX.unsigned_abs())
+        .filter(|&l| va.as_usize().checked_add(l).is_some());
+    let Some(len) = len.filter(|_| va.as_usize().is_multiple_of(PAGE_SIZE)) else {
+        hal_panic(format_args!(
+            "{what}: a window of {} pages at {:#x}",
+            frames.len(),
+            va.as_usize()
+        ));
+    };
+    (first, len)
+}
+
+/// Checks, before anything is claimed, that every frame is a busy managed page (contiguous
+/// from `first` on a machine without an MMU) and that no page of the window at `va` is mapped;
+/// `panic(9)` naming `what` otherwise.
+fn check_frames(what: &str, va: Vaddr, frames: &[Paddr], first: Paddr) {
+    for (i, &pa) in frames.iter().enumerate() {
+        let _ = busy_md(what, pa);
+        if PMAP_NOMMU && pa.as_usize() != first.as_usize() + i * PAGE_SIZE {
+            hal_panic(format_args!(
+                "{what}: frames not contiguous on a machine without an MMU"
+            ));
+        }
+        let cva = va + Vsize::new(i * PAGE_SIZE);
+        if pmap::kernel().extract(cva).is_some() {
+            hal_panic(format_args!(
+                "{what}: the window page at {:#x} is mapped already",
+                cva.as_usize()
+            ));
+        }
+    }
+}
+
+/// Claims every frame for one view (`writable` when it may write); on a frame already held,
+/// gives up the claims made so far and `panic(9)`s naming `what`.
+fn claim_all(what: &str, frames: &[Paddr], writable: bool) {
+    for (i, &pa) in frames.iter().enumerate() {
+        if !md(what, pa).claim_view(writable) {
+            release(&frames[..i]);
+            hal_panic(format_args!(
+                "{what}: the frame {:#x} is in another view",
+                pa.as_usize()
+            ));
+        }
     }
 }
 
@@ -866,6 +1015,113 @@ mod tests {
         pmap::page_protect(md, PROT_NONE);
         assert_eq!(pmap::kernel().extract(va), Some(frames[0]));
         assert_eq!(tk.tk_version.load(Ordering::Relaxed), 7);
+    }
+
+    /// Whether `pa` is held by a view now (a direct view of it is refused).
+    fn held(mapper: &KernelMapper, pa: Paddr) -> bool {
+        catch_unwind(AssertUnwindSafe(|| drop(mapper.map_direct(pa)))).is_err()
+    }
+
+    #[test]
+    fn a_buffer_window_is_entered_unmanaged_and_kremoved() {
+        let (mapper, va) = window(30);
+        let frames = testutil::memory_frames(3);
+        let mut w = mapper.kenter_frames(va, &frames);
+        assert_eq!(
+            (w.va(), w.len(), w.is_writable()),
+            (va, 3 * PAGE_SIZE, true)
+        );
+        for (i, &pa) in frames.iter().enumerate() {
+            assert_eq!(
+                pmap::kernel().extract(va + Vsize::new(i * PAGE_SIZE)),
+                Some(pa)
+            );
+            assert!(held(mapper, pa));
+        }
+        w.as_slice_mut()[2 * PAGE_SIZE] = 9;
+        drop(w);
+        assert_eq!(pmap::kernel().extract(va), None);
+        assert_eq!(pmap::kernel().extract(va + Vsize::new(2 * PAGE_SIZE)), None);
+        // The claims are gone and the bytes stayed with the frames.
+        assert!(frames.iter().all(|&pa| !held(mapper, pa)));
+        assert_eq!(mapper.map_direct(frames[2]).as_slice()[0], 9);
+    }
+
+    #[test]
+    fn truncate_gives_the_tail_up_and_keeps_the_head() {
+        let (mapper, va) = window(31);
+        let frames = testutil::memory_frames(3);
+        let mut w = mapper.kenter_frames(va, &frames);
+        w.as_slice_mut()[..4].copy_from_slice(b"head");
+        w.truncate(3 * PAGE_SIZE);
+        assert_eq!(w.len(), 3 * PAGE_SIZE);
+        w.truncate(PAGE_SIZE);
+        assert_eq!((w.len(), w.as_slice().len()), (PAGE_SIZE, PAGE_SIZE));
+        assert_eq!(&w.as_slice()[..4], b"head");
+        assert_eq!(pmap::kernel().extract(va), Some(frames[0]));
+        assert_eq!(pmap::kernel().extract(va + Vsize::new(PAGE_SIZE)), None);
+        assert_eq!(pmap::kernel().extract(va + Vsize::new(2 * PAGE_SIZE)), None);
+        assert!(held(mapper, frames[0]));
+        assert!(!held(mapper, frames[1]) && !held(mapper, frames[2]));
+        drop(w);
+        assert!(!held(mapper, frames[0]));
+        assert_eq!(pmap::kernel().extract(va), None);
+    }
+
+    #[test]
+    fn a_pager_window_truncates_too() {
+        let (mapper, va) = window(32);
+        let frames = testutil::memory_frames(2);
+        let mut w = mapper
+            .map_frames(va, &frames, PROT_READ | PROT_WRITE)
+            .unwrap();
+        w.truncate(PAGE_SIZE);
+        assert_eq!(pmap::kernel().extract(va + Vsize::new(PAGE_SIZE)), None);
+        assert!(!held(mapper, frames[1]));
+        drop(w);
+        assert!(!held(mapper, frames[0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "truncated to")]
+    fn truncate_to_nothing_is_refused() {
+        let (mapper, va) = window(33);
+        let frames = testutil::memory_frames(1);
+        let mut w = mapper.kenter_frames(va, &frames);
+        w.truncate(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "truncated to")]
+    fn truncate_to_part_of_a_page_is_refused() {
+        let (mapper, va) = window(34);
+        let frames = testutil::memory_frames(2);
+        let mut w = mapper.kenter_frames(va, &frames);
+        w.truncate(PAGE_SIZE + 1);
+    }
+
+    #[test]
+    fn a_buffer_window_over_a_viewed_frame_panics_and_gives_its_claims_back() {
+        let (mapper, va) = window(35);
+        let frames = testutil::memory_frames(2);
+        let pinned = mapper.map_direct(frames[1]);
+        let refused = catch_unwind(AssertUnwindSafe(|| {
+            drop(mapper.kenter_frames(va, &frames));
+        }));
+        assert!(refused.is_err());
+        assert_eq!(pmap::kernel().extract(va), None);
+        assert!(!held(mapper, frames[0]));
+        drop(pinned);
+        drop(mapper.kenter_frames(va, &frames));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a busy page")]
+    fn a_buffer_window_refuses_a_frame_that_is_not_busy() {
+        let (mapper, va) = window(36);
+        let frames = testutil::memory_frames(1);
+        testutil::set_idle(frames[0]);
+        let _ = mapper.kenter_frames(va, &frames);
     }
 }
 /* </TESTS> */
