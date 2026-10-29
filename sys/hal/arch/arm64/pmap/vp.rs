@@ -528,15 +528,14 @@ pub(super) fn enter(
     };
     for level in levels(pm.md.four_level()) {
         let i = vp_idx(level, va);
-        t = match t.child(i) {
-            Some(c) => c,
-            None => {
-                let Some(c) = alloc() else {
-                    return Err(level + 1);
-                };
-                t.set_child(i, c);
-                c
-            }
+        t = if let Some(c) = t.child(i) {
+            c
+        } else {
+            let Some(c) = alloc() else {
+                return Err(level + 1);
+            };
+            t.set_child(i, c);
+            c
         };
     }
     Ok(L3 {
