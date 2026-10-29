@@ -103,6 +103,7 @@ use crate::sys::tree::RbtHead;
 use crate::sys::types::{Daddr, Dev, Register};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
+use hal::link::Link;
 use kernel::fs::subr;
 use kernel::fs::vops::Cred;
 
@@ -129,8 +130,10 @@ pub struct VnodeG {
     pub v_nc_tree: RbtHead<NamecacheRbCache>,
     /// `v_cache_dst`: cache entries to us.
     pub v_cache_dst: TailqHead<NcMe>,
-    /// `v_socket` (`v_un.vu_socket`): unix ipc, the socket bound to the name.
-    pub v_socket: Cell<Option<&'static Socket>>,
+    /// `v_socket` (`v_un.vu_socket`): unix ipc, the socket bound to the name. An atomic
+    /// word: `unp_detach` clears it under the vnode's lock alone and `sysctl_file` reads it
+    /// with no lock, as the C does (`uipc_usrreq.c:787`).
+    pub v_socket: Link<Socket>,
     /// `v_speclockf` (`v_specinfo->si_lockf`): a device vnode's advisory lock list.
     pub v_speclockf: LockfStateSlot,
 }
@@ -140,20 +143,25 @@ impl Default for VnodeG {
         Self {
             v_nc_tree: RbtHead::new(),
             v_cache_dst: TailqHead::new(),
-            v_socket: Cell::new(None),
+            v_socket: Link::new(),
             v_speclockf: Cell::new(None),
         }
     }
 }
 
 // SAFETY: LZ's argument for `struct vnode` (sys/sys/vnode.rs:280 at the pin), moved with the
-// members it covered (D-N5.2-1, decision 2: the same site, not a new one). Each member is
-// written and read only under the lock the C keeps it under: the name cache's heads by
-// `vfs_cache.rs` and `v_socket` by `uipc_usrreq.rs`'s bind, connect and detach under the
-// kernel lock (the C's `KERNEL_LOCK()` around them), the device's lock list by `vfs_lockf.rs`
-// under `lockf_lock`; `getnewvnode` initialises them (`vnode_g_init`, `vnode_recycle`) on a
-// vnode no other thread reaches yet. So no two CPUs touch one `Cell` at once. Paid at N5.3,
-// when the name cache and lockf get typed owners.
+// members it covered (D-N5.2-1, decision 2: the same site, not a new one), narrowed to the
+// members that are `Cell`s. The name cache's heads (`v_nc_tree`, `v_cache_dst`) are written
+// and read only by `vfs_cache.rs` under the kernel lock (the C's `KERNEL_LOCK()` around
+// `namei` and `cache_purge`), and the device's lock list (`v_speclockf`) only by
+// `vfs_lockf.rs` under `lockf_lock`; `vnode_g_init` initialises the heads on a vnode no other
+// thread reaches yet. So no two CPUs touch one `Cell` at once. `v_socket` needs no lock: it is
+// an atomic word (`Link`), whose loads and stores never race; it is not `Sync` by itself only
+// because `Socket` is not (its fields are `Cell`s under the socket's lock), and the reference
+// it hands another CPU is opened as every socket reference of `bsd` is: `unp_connect` reads
+// `so_type` (`[I]`, set once by `socreate`) and takes `solock` before the rest, `sysctl_file`
+// takes only the address. Paid at N5.3 (the name cache and lockf get typed owners) and N6 (the
+// sockets).
 unsafe impl Sync for VnodeG {}
 
 /// `prtactive`: 1 => print out reclaim of active vnodes (the kernel's word).
