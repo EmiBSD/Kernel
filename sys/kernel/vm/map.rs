@@ -1392,7 +1392,10 @@ impl<'m> Held<'m> {
     /// count the map's live holds (a hold starts or ends here).
     fn set(&mut self, e: Option<&VmMapEntry>) {
         #[cfg(debug_assertions)]
-        match (self.link.is_some(), e.is_some()) {
+        let was = self.link.is_some();
+        self.link.set(e);
+        #[cfg(debug_assertions)]
+        match (was, e.is_some()) {
             (false, true) => {
                 self.map.holds.fetch_add(1, Mem::Relaxed);
             }
@@ -1401,7 +1404,6 @@ impl<'m> Held<'m> {
             }
             _ => {}
         }
-        self.link.set(e);
     }
 
     /// `entry = RBT_NEXT(uvm_map_addr, entry)`: the entry after the one held, in `tree`,
@@ -1417,6 +1419,8 @@ impl<'m> Held<'m> {
     }
 }
 
+/// Debug builds: a hold that goes counts down (a release build has only the link's own drop).
+#[cfg(debug_assertions)]
 impl Drop for Held<'_> {
     fn drop(&mut self) {
         self.release();
@@ -1427,14 +1431,17 @@ impl Drop for Held<'_> {
 /// busy mark under which it was made (`uvm_map_clean`'s walk once ended holding the entry
 /// past its range after `vm_map_unbusy`, which a race alone could show). Every hold is made
 /// by the thread that holds the map's write lock or its busy mark: `Held` is `map.rs`'s
-/// own, made only under a [`MapWriteGuard`] or a [`MapBusy`], and while either lives no
-/// other thread can make one (`VmMap::lock`, `lock_try` and `MapGuard::upgrade` refuse a map
-/// busy for another; readers make none). So the map's count moves only on that thread, and
-/// a write guard (armed when taken: `lock`, `lock_try`, `upgrade`) or a busy mark checks,
-/// when it lets the map go, that the count is back at what it found (`base`: the holds of
-/// an enclosing busy window of the same thread, such as `uvm_map_pageable`'s across the
-/// faults that write-lock the map). `into_busy` hands its base to the busy mark without a
-/// check (the window's holds go on), `relock_unbusy` hands it back to the write guard.
+/// own, made only under a [`MapWriteGuard`] or a [`MapBusy`], and while the lock or the mark
+/// is held no other thread can make one (`VmMap::lock`, `lock_try` and `MapGuard::upgrade`
+/// refuse a map busy for another; readers make none). So, while it is held, the map's count
+/// moves only on that thread, and a write guard (armed when taken: `lock`, `lock_try`,
+/// `upgrade`) or a busy mark reads the count before it lets the map go (the guard's check is
+/// its first field, dropped before the witness; the busy mark reads it before clearing its
+/// owner) and panics if it differs from what it found (`base`: the holds of an enclosing busy
+/// window of the same thread, such as `uvm_map_pageable`'s across the faults that write-lock
+/// the map). Once the map is let go another thread may make holds, so nothing is read after.
+/// `into_busy` hands its base to the busy mark without a check (the window's holds go on),
+/// `relock_unbusy` hands it back to the write guard.
 #[cfg(debug_assertions)]
 struct HoldsCheck<'a> {
     map: &'a VmMap,
@@ -1448,11 +1455,16 @@ struct HoldsCheck<'a> {
 
 #[cfg(debug_assertions)]
 impl<'a> HoldsCheck<'a> {
-    /// The check of a guard of `map` taken now.
+    /// The check of a guard of `map` taken now: a write lock's (`armed`) reads the count, a
+    /// read lock's checks nothing.
     fn new(map: &'a VmMap, armed: bool, what: &'static str) -> Self {
         Self {
             map,
-            base: map.holds.load(Mem::Relaxed),
+            base: if armed {
+                map.holds.load(Mem::Relaxed)
+            } else {
+                0
+            },
             armed,
             what,
         }
@@ -1463,26 +1475,39 @@ impl<'a> HoldsCheck<'a> {
         self.armed = false;
         self.base
     }
+
+    /// The check, read while the lock or the mark is still held, and disarmed: the count
+    /// that differs from the base, if any (none while a panic unwinds, which would make a
+    /// second one).
+    fn verdict(&mut self) -> Option<usize> {
+        if !core::mem::replace(&mut self.armed, false) {
+            return None;
+        }
+        #[cfg(any(test, feature = "doubles"))]
+        if std::thread::panicking() {
+            return None;
+        }
+        let n = self.map.holds.load(Mem::Relaxed);
+        (n != self.base).then_some(n)
+    }
+
+    /// The panic of a count `n` found by [`HoldsCheck::verdict`].
+    fn fail(&self, n: usize) -> ! {
+        kpanic(format_args!(
+            "{}: map {:#x} let go with {n} hold(s) of its entries alive (Held), {} when taken",
+            self.what,
+            self.map.addr(),
+            self.base
+        ))
+    }
 }
 
 #[cfg(debug_assertions)]
 impl Drop for HoldsCheck<'_> {
+    /// A guard's check: its first field, so it runs before the witness unlocks the map.
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        #[cfg(test)]
-        if std::thread::panicking() {
-            return;
-        }
-        let n = self.map.holds.load(Mem::Relaxed);
-        if n != self.base {
-            kpanic(format_args!(
-                "{}: map {:#x} let go with {n} hold(s) of its entries alive (Held), {} when taken",
-                self.what,
-                self.map.addr(),
-                self.base
-            ));
+        if let Some(n) = self.verdict() {
+            self.fail(n);
         }
     }
 }
@@ -1780,12 +1805,14 @@ enum AnyWitness<'a> {
 /// `vm_map_unlock_read`/`vm_map_unlock`.
 #[must_use = "dropping the guard at once unlocks the map"]
 pub struct MapGuard<'a> {
+    /// Debug builds: no hold outlives the write lock ([`HoldsCheck`]). The first field on
+    /// purpose: fields drop in declaration order, so the count is read before `w` unlocks
+    /// the map (after it, another thread's legitimate hold could be counted).
+    #[cfg(debug_assertions)]
+    holds: HoldsCheck<'a>,
     map: &'a VmMap,
     w: AnyWitness<'a>,
     mode: RwMode,
-    /// Debug builds: no hold outlives the write lock ([`HoldsCheck`]).
-    #[cfg(debug_assertions)]
-    holds: HoldsCheck<'a>,
 }
 
 impl<'a> MapGuard<'a> {
@@ -1943,9 +1970,13 @@ impl<'a> MapWriteGuard<'a> {
             map,
             w,
             #[cfg(debug_assertions)]
-            holds,
+            mut holds,
             ..
         } = self.0;
+        #[cfg(debug_assertions)]
+        {
+            holds.what = "vm_map_unlock_read";
+        }
         let w = match w {
             AnyWitness::Rw(RwWitness::Write(w)) => AnyWitness::Rw(RwWitness::Read(w.downgrade())),
             other => other,
@@ -1963,6 +1994,7 @@ impl<'a> MapWriteGuard<'a> {
     /// `vm_map_busy(map)` then `vm_map_unlock(map)`: the map stays busy for this thread
     /// (other writers wait, readers pass) while unlocked; the [`MapBusy`]'s drop is
     /// `vm_map_unbusy`.
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     pub fn into_busy(mut self) -> MapBusy<'a> {
         let map = self.0.map;
         kassert!(!map.is_intrsafe());
@@ -2039,8 +2071,9 @@ impl EntryWrite<'_> {
 #[must_use = "dropping the busy mark at once unbusies the map"]
 pub struct MapBusy<'a> {
     map: &'a VmMap,
-    /// Debug builds: no hold outlives the busy mark ([`HoldsCheck`]), checked after the
-    /// unbusy.
+    /// Debug builds: no hold outlives the busy mark ([`HoldsCheck`]): the count is read before
+    /// the unbusy clears the owner, and a mismatch panics after it (a test is not left with a
+    /// busy map).
     #[cfg(debug_assertions)]
     holds: HoldsCheck<'a>,
 }
@@ -2062,6 +2095,7 @@ impl<'a> MapBusy<'a> {
     }
 
     /// `vm_map_lock(map); vm_map_unbusy(map);`.
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     pub fn relock_unbusy(mut self) -> MapWriteGuard<'a> {
         #[cfg_attr(not(debug_assertions), allow(unused_mut))]
         let mut g = self.map.lock();
@@ -2082,6 +2116,9 @@ impl Drop for MapBusy<'_> {
     fn drop(&mut self) {
         let map = self.map;
         kassert!(!map.is_intrsafe());
+        // The holds, read while the map is still busy for this thread.
+        #[cfg(debug_assertions)]
+        let late = self.holds.verdict();
         let nbusy = {
             let mut f = map.flags_lock.lock();
             kassert!(f.owner == curproc_word());
@@ -2090,6 +2127,10 @@ impl Drop for MapBusy<'_> {
         };
         if nbusy > 0 {
             wakeup(ptr::from_ref(&map.flags_lock));
+        }
+        #[cfg(debug_assertions)]
+        if let Some(n) = late {
+            self.holds.fail(n);
         }
     }
 }
@@ -8237,6 +8278,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     fn holds_carried_across_a_busy_window_and_a_nested_lock_pass() {
         // What the walks do: holds made under the write lock go on across the busy window,
         // the busy thread's own write lock inside it (a fault's) finds them and checks only
@@ -8244,17 +8286,21 @@ pub(crate) mod tests {
         let _g = setup();
         let vm = user_vmspace();
         let map = &vm.vm_map;
+        let holds = || map.holds.load(Mem::Relaxed);
         let g = map.lock();
         let mut h = Held::of(map, g.state().addr.min());
         let busy = g.into_busy();
+        assert_eq!(holds(), 1, "the window's hold goes on");
         {
             let inner = busy.lock();
             let other = Held::of(map, inner.state().addr.max());
+            assert_eq!(holds(), 2);
             drop(other);
             drop(inner);
         }
         let g = busy.relock_unbusy();
         h.release();
+        assert_eq!(holds(), 0);
         drop(g);
         drop(h);
         // A reader never checks: a hold of the write lock's thread is not its business.
@@ -8265,6 +8311,67 @@ pub(crate) mod tests {
         drop(r);
         drop(h);
         drop(busy);
+        assert_eq!(holds(), 0);
+
+        // An upgraded read lock checks its own holds; a downgrade carries the check to the
+        // read lock's end.
+        let r = map.lock_read();
+        let Ok(w) = r.upgrade() else {
+            panic!("no other reader: the upgrade succeeds");
+        };
+        let h = Held::of(map, w.state().addr.min());
+        assert_eq!(holds(), 1);
+        drop(h);
+        let r = w.downgrade();
+        assert_eq!(holds(), 0);
+        drop(r);
+        uvmspace_free(vm);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "vm_map_unlock_read: map")]
+    fn a_hold_alive_at_a_downgraded_unlock_panics() {
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let g = map.lock();
+        let h = Held::of(map, g.state().addr.min());
+        let r = g.downgrade();
+        drop(r);
+        drop(h);
+    }
+
+    #[test]
+    fn holds_of_another_thread_never_trip_the_check() {
+        // N12.1's closing review: the check reads the count while the lock or the busy mark is
+        // held, never after. One thread msyncs a range (a busy window, uvm_map_clean) while
+        // the other unmaps the middle of another mapping and maps it again (a write lock and
+        // a hold of clip_start's), on the same map, many times.
+        let _g = setup();
+        let vm = user_vmspace();
+        let map = &vm.vm_map;
+        let (mut a, mut b) = (0x5000_0000, 0x5100_0000);
+        uvm_mapanon(map, &mut a, 4 * PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("a");
+        uvm_mapanon(map, &mut b, 3 * PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("b");
+        const ROUNDS: usize = 4000;
+        let cleaner = {
+            let vm = vm.clone();
+            thread::spawn(move || {
+                for _ in 0..ROUNDS {
+                    uvm_map_clean(&vm.vm_map, a, a + PAGE_SIZE, 0).expect("msync");
+                }
+            })
+        };
+        for _ in 0..ROUNDS {
+            uvm_unmap(map, b + PAGE_SIZE, b + 2 * PAGE_SIZE);
+            let mut m = b + PAGE_SIZE;
+            uvm_mapanon(map, &mut m, PAGE_SIZE, 0, anon_flags(UVM_FLAG_FIXED)).expect("remap");
+        }
+        cleaner.join().expect("the cleaner");
+        #[cfg(debug_assertions)]
+        assert_eq!(map.holds.load(Mem::Relaxed), 0);
+        sane(map);
         uvmspace_free(vm);
     }
 
