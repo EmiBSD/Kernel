@@ -77,7 +77,6 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kern::subr_prf::{Str, panic};
-use crate::kern::vfs_bio::{bdwrite, brelse, bwrite};
 use crate::kern::vfs_cache::{NCHSTATS, cache_enter, cache_lookup};
 use crate::kern::vfs_subr::{vnoperm, vput, vref, vrele};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
@@ -86,6 +85,7 @@ use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::kprintf;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_CLRBUF, B_SYNC, Buf};
+use crate::sys::buf::{bdwrite, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mount::{MNT_RDONLY, VFS_VGET};

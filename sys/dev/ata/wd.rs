@@ -133,9 +133,7 @@ use crate::dev::ic::wdcreg::{
     WDCE_ABRT, WDCE_MC, WDCE_MCR, WDCS_DRDY, WDSF_EN_WR_CACHE, WDSF_READAHEAD_EN,
 };
 use crate::kern::init_main::BOOTHOWTO;
-use crate::kern::kern_bufq::{bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_queue};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_autoconf::device_unref;
 use crate::kern::subr_disk::{
@@ -144,12 +142,14 @@ use crate::kern::subr_disk::{
     dkcksum, initdisklabel, setdisklabel,
 };
 use crate::kern::subr_prf::{Str, panic, printf};
-use crate::kern::vfs_bio::biodone;
 use crate::machine::cpu::delay;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, BUFQ_DEFAULT, Buf};
+use crate::sys::buf::{bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_queue};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_POWERDOWN, DVACT_RESUME, DVACT_SUSPEND, Device,
 };

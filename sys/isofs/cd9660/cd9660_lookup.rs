@@ -85,12 +85,12 @@ use crate::isofs::cd9660::iso::{
     ASSOCCHAR, Cdino, ISO_DIRECTORY_RECORD_SIZE, IsoDirectoryRecord, isonum_711,
 };
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
 use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::sys::buf::Buf;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mount::{MNT_RDONLY, Mount};

@@ -907,7 +907,7 @@ impl Vfsconf {
 
 /// `BUFPAGES_DEFICIT`: how far the buffer cache is below its low water mark, in pages.
 pub fn bufpages_deficit() -> i64 {
-    use crate::kern::vfs_bio::{BCSTATS, BUFLOWPAGES};
+    use crate::sys::buf::{BCSTATS, BUFLOWPAGES};
     let d = BUFLOWPAGES.load(core::sync::atomic::Ordering::Relaxed)
         - BCSTATS
             .numbufpages
@@ -917,7 +917,7 @@ pub fn bufpages_deficit() -> i64 {
 
 /// `BUFPAGES_INACT`: the buffer cache's clean pages above its low water mark.
 pub fn bufpages_inact() -> i64 {
-    use crate::kern::vfs_bio::{BCSTATS, BUFLOWPAGES};
+    use crate::sys::buf::{BCSTATS, BUFLOWPAGES};
     let d = BCSTATS
         .numcleanpages
         .load(core::sync::atomic::Ordering::Relaxed)

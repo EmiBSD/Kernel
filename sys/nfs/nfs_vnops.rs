@@ -125,8 +125,6 @@ use crate::kern::spec_vnops::{
 };
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{BCSTATS, biodone, biowait, brelse, buf_undirty, bufcache_take};
-use crate::kern::vfs_biomem::buf_acquire;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
 use crate::kern::vfs_default::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
@@ -177,10 +175,12 @@ use crate::nfs::nfsproto::{
 };
 use crate::nfs::xdr_subs::{fxdr_hyper, fxdr_nfsv3time, fxdr_unsigned, txdr_hyper, txdr_unsigned};
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::buf_acquire;
 use crate::sys::buf::{
     B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_PHYS, B_RAW, B_READ, B_WANTED,
     B_WRITEINPROG, Buf,
 };
+use crate::sys::buf::{BCSTATS, biodone, biowait, brelse, buf_undirty, bufcache_take};
 use crate::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_recsize, iftodt};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_LINK, NOTE_TRUNCATE, NOTE_WRITE};

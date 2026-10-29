@@ -95,7 +95,6 @@ use crate::kern::kern_tc::gettime;
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::{Str, panic};
-use crate::kern::vfs_bio::{bawrite, bread, brelse, bwrite, getblk};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
@@ -110,6 +109,7 @@ use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_NONE, splbio, splx};
 use crate::sys::buf::Buf;
+use crate::sys::buf::{bawrite, bread, brelse, bwrite, getblk};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
@@ -1301,7 +1301,6 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::vfs_byname;
     use crate::kern::vfs_subr::{vflushbuf, vfs_mount_alloc};
@@ -1309,6 +1308,7 @@ pub(crate) mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::{B_ERROR, B_READ};
+    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::sys::mount::VFS_ROOT;
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};

@@ -118,11 +118,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use libkern::strlcpy;
 
 use crate::kern::init_main::BOOTHOWTO;
-use crate::kern::kern_bufq::{
-    bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_peek, bufq_queue,
-};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::subr_autoconf::device_unref;
 use crate::kern::subr_disk::{
     bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
@@ -130,7 +126,6 @@ use crate::kern::subr_disk::{
     initdisklabel, setdisklabel,
 };
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
-use crate::kern::vfs_bio::biodone;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::scsi::scsi_all::{
@@ -166,7 +161,10 @@ use crate::scsi::scsiconf::{
 };
 use crate::scsi::sdvar::{SDF_DIRTY, SDF_DYING, SDF_THIN, SdSoftc};
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, BUFQ_DEFAULT, BUFQ_FIFO, Buf};
+use crate::sys::buf::{bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_peek, bufq_queue};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_DEACTIVATE, DVACT_POWERDOWN,
     DVACT_RESUME, DVACT_SUSPEND, Device,

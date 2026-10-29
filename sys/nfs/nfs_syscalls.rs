@@ -178,10 +178,6 @@ use crate::kern::kern_sig::psignal;
 #[cfg(feature = "nfsclient")]
 use crate::kern::kern_synch::wakeup_one;
 #[cfg(feature = "nfsclient")]
-use crate::kern::vfs_bio::{BCSTATS, buf_undirty, bufcache_take};
-#[cfg(feature = "nfsclient")]
-use crate::kern::vfs_biomem::buf_acquire;
-#[cfg(feature = "nfsclient")]
 use crate::machine::cpu::curproc;
 #[cfg(feature = "nfsclient")]
 use crate::machine::intr::{splbio, splx};
@@ -194,9 +190,13 @@ use crate::nfs::nfs_vnops::NFS_NUMASYNC;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfsnode::{NFS_BUFQ, NFS_BUFQLEN, NFS_BUFQMAX};
 #[cfg(feature = "nfsclient")]
+use crate::sys::buf::buf_acquire;
+#[cfg(feature = "nfsclient")]
 use crate::sys::buf::{
     B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_NOCACHE, B_READ,
 };
+#[cfg(feature = "nfsclient")]
+use crate::sys::buf::{BCSTATS, buf_undirty, bufcache_take};
 #[cfg(feature = "nfsclient")]
 use crate::sys::param::PWAIT;
 #[cfg(feature = "nfsclient")]

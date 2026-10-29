@@ -69,9 +69,9 @@ use core::ptr;
 
 use crate::kern::kern_tc::getmicrouptime;
 use crate::kern::spec_vnops::SPEC_VOPS;
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_subr::{checkalias, vgone, vrele};
 use crate::sys::buf::Buf;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
 use crate::sys::types::{Daddr, Dev, Off};

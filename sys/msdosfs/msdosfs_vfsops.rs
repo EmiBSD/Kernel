@@ -97,7 +97,6 @@ use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     copy_statfs_info, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mount_foreach_vnode,
@@ -126,6 +125,7 @@ use crate::msdosfs::msdosfsmount::{
     N_INUSEBITS, fsi_size, vfstomsdosfs,
 };
 use crate::sys::buf::{B_INVAL, Buf};
+use crate::sys::buf::{bread, brelse};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::dkio::DIOCCACHESYNC;
 use crate::sys::errno::Errno;
@@ -820,7 +820,6 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::vfs_byname;
     use crate::kern::vfs_subr::{
@@ -831,6 +830,7 @@ pub(crate) mod tests {
     use crate::machine::cpu::Cpu;
     use crate::msdosfs::fat::fat16;
     use crate::sys::buf::{B_ERROR, B_READ};
+    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::sys::mount::{MOUNT_MSDOS, VB_WAIT, VB_WRITE};
     use crate::sys::types::makedev;
     use crate::sys::vnode::{VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops};

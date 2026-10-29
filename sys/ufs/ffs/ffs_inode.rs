@@ -67,15 +67,15 @@ use core::ptr::NonNull;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{
-    BCSTATS, bawrite, bdwrite, biowait, bread, brelse, buf_adjcnt, bwrite, getblk,
-};
 use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vops::VOP_STRATEGY;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
+use crate::sys::buf::{
+    BCSTATS, bawrite, bdwrite, biowait, bread, brelse, buf_adjcnt, bwrite, getblk,
+};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::param::btodb;

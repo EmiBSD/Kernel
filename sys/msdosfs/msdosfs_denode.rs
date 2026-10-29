@@ -103,7 +103,6 @@ use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bdwrite, bread, brelse, bwrite};
 use crate::kern::vfs_cache::cache_purge;
 #[cfg(feature = "diagnostic")]
 use crate::kern::vfs_subr::PRTACTIVE;
@@ -129,6 +128,7 @@ use crate::msdosfs::msdosfsmount::{
     Msdosfsmount, cntobn, de_blk, de_clcount, de_cluster, de_cn2off,
 };
 use crate::sys::buf::Buf;
+use crate::sys::buf::{bdwrite, bread, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::malloc::{M_MSDOSFSMNT, M_MSDOSFSNODE, M_WAITOK, M_ZERO};

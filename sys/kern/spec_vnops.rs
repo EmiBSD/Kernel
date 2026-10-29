@@ -95,8 +95,6 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::{chrtoblk, nullop};
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, breadn, brelse, bufcache_take};
-use crate::kern::vfs_biomem::buf_acquire;
 use crate::kern::vfs_default::{
     vop_generic_badop, vop_generic_bmap, vop_generic_bwrite, vop_generic_lookup, vop_generic_revoke,
 };
@@ -108,7 +106,9 @@ use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR, VOP_UNLOCK};
 use crate::machine::conf::{bdevsw, cdevsw, iskmemdev, nblkdev, nchrdev};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::buf_acquire;
 use crate::sys::buf::{B_BUSY, B_DELWRI};
+use crate::sys::buf::{bawrite, bdwrite, bread, breadn, brelse, bufcache_take};
 use crate::sys::conf::{D_CLONE, D_DISK, D_TTY};
 use crate::sys::errno::Errno;
 use crate::sys::event::{__EV_POLL, __EV_SELECT};

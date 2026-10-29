@@ -115,9 +115,6 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{
-    bawrite, bdwrite, biodone, bread, bread_cluster, brelse, bwrite, getblk,
-};
 use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_default::{vop_generic_abortop, vop_generic_bwrite, vop_generic_revoke};
 use crate::kern::vfs_init::NAMEI_POOL;
@@ -151,6 +148,7 @@ use crate::msdosfs::msdosfsmount::{
 };
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{Buf, clrbuf};
+use crate::sys::buf::{bawrite, bdwrite, biodone, bread, bread_cluster, brelse, bwrite, getblk};
 use crate::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
 use crate::sys::errno::Errno;
 use crate::sys::event::{

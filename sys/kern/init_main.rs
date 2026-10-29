@@ -129,7 +129,6 @@ use crate::kern::tty::tty_init;
 use crate::kern::uipc_domain::domaininit;
 use crate::kern::uipc_mbuf::{mbcpuinit, mbinit};
 use crate::kern::uipc_socket::soinit;
-use crate::kern::vfs_bio::{CLEANERPROC, buf_daemon};
 use crate::kern::vfs_init::{set_rootvnode, vfsinit};
 use crate::kern::vfs_lockf::lf_init;
 use crate::kern::vfs_lookup::{namei, ndinit};
@@ -142,6 +141,7 @@ use crate::machine::cons::consinit;
 use crate::machine::copy::copyout;
 use crate::machine::cpu::{Cpu, cpu_configure, cpu_startup, curcpu};
 use crate::machine::param::MachineParam;
+use crate::sys::buf::{CLEANERPROC, buf_daemon};
 
 use crate::kern::vm_bsd::uvm_init;
 use crate::kern::vm_bsd::uvm_init_limits;

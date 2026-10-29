@@ -68,7 +68,6 @@ use crate::dev::sdmmc::sdmmcvar::{
 };
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
-use crate::kern::kern_physio::minphys;
 use crate::kern::kern_rwlock::rw_assert_wrlock;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set};
 use crate::kern::subr_autoconf::{config_detach, config_found};
@@ -89,6 +88,7 @@ use crate::scsi::scsiconf::{
     ScsiIopool, ScsiLink, ScsiXfer, ScsibusAttachArgs, XS_DRIVER_STUFFUP, XS_NOERROR, scsiprint,
 };
 use crate::sys::buf::Buf;
+use crate::sys::buf::minphys;
 use crate::sys::device::{DETACH_FORCE, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO};

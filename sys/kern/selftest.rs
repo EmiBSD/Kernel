@@ -588,7 +588,7 @@ pub fn malloc_pool_stress() {
 /// are written and read back through `b_data`, several at once, then freed; the counters come
 /// back to where they were.
 pub fn buffer_cache() {
-    use crate::kern::vfs_bio::{BCSTATS, brelse, geteblk};
+    use crate::sys::buf::{BCSTATS, brelse, geteblk};
 
     let numbufs = BCSTATS.numbufs.load(Ordering::Relaxed);
     let numbufpages = BCSTATS.numbufpages.load(Ordering::Relaxed);
@@ -1814,10 +1814,10 @@ pub fn vio_check() {
 /// checkout without `just userland`).
 pub fn rd_check() {
     use crate::dev::rd::rd_root_size;
-    use crate::kern::vfs_bio::{biowait, brelse, geteblk};
     use crate::machine::autoconf::nam2blk;
     use crate::machine::conf::bdevsw;
     use crate::sys::buf::{B_BUSY, B_DONE, B_ERROR, B_INVAL, B_RAW, B_READ, B_WRITE};
+    use crate::sys::buf::{biowait, brelse, geteblk};
     use crate::sys::disklabel::makediskdev;
     use crate::sys::stat::S_IFBLK;
 

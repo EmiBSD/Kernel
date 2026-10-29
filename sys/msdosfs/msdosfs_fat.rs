@@ -115,7 +115,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use crate::kassert;
 use crate::kern::kern_tc::microtime;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::msdosfs::bpb::{Fsinfo, getulong, getushort, putulong, putushort};
 use crate::msdosfs::denode::{
     Denode, FC_LASTFC, FC_LASTMAP, FC_OLASTFC, FC_SIZE, FCE_EMPTY, fc_setcache,
@@ -130,6 +129,7 @@ use crate::msdosfs::msdosfsmount::{
     de_cn2off, fatofs, fsi_size,
 };
 use crate::sys::buf::{Buf, clrbuf};
+use crate::sys::buf::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::sys::errno::Errno;
 use crate::sys::param::DEV_BSIZE;
 use crate::sys::systm::INFSLP;

@@ -101,7 +101,6 @@
 //!   feature here.
 
 use crate::kern::subr_prf::printf;
-use crate::kern::vfs_bio::{bread, brelse, bwrite};
 use crate::kern::vfs_cache::{cache_enter, cache_lookup};
 use crate::kern::vfs_subr::{vput, vref};
 use crate::kern::vfs_vnops::vn_lock;
@@ -119,6 +118,7 @@ use crate::msdosfs::msdosfsmount::{
     Msdosfsmount, bptoep, cntobn, de_blk, de_bn2off, de_clcount, de_cluster, de_cn2off, detobn,
 };
 use crate::sys::buf::Buf;
+use crate::sys::buf::{bread, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mount::{MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};

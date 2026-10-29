@@ -85,7 +85,6 @@ use crate::kern::kern_tc::gettime;
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bawrite, bread, brelse, bwrite, getblk};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
@@ -101,6 +100,7 @@ use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_NONE, splbio, splx};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_INVAL, B_NOCACHE, Buf};
+use crate::sys::buf::{bawrite, bread, brelse, bwrite, getblk};
 use crate::sys::disk::DM_OPENBLCK;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
@@ -1647,7 +1647,6 @@ pub(crate) mod tests {
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::subr_xxx::nullop;
     use crate::kern::sys_generic::{sys_read, sys_write};
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
     use crate::kern::vfs_subr::{vflushbuf, vfs_busy, vfs_mount_alloc};
@@ -1659,6 +1658,7 @@ pub(crate) mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::{B_ERROR, B_READ};
+    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::sys::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
     use crate::sys::mount::{MNT_WAIT, VB_WAIT, VB_WRITE, VFS_ROOT};
     use crate::sys::systm::{SyCall, SysArgs};

@@ -113,14 +113,11 @@ use crate::dev::isa::fdreg::{
 use crate::dev::isa::isadmavar::{
     DMAMODE_READ, DMAMODE_WRITE, isadma_abort, isadma_done, isadma_start,
 };
-use crate::kern::kern_bufq::{bufq_dequeue, bufq_init, bufq_queue};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::kern_synch::tsleep_nsec;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_disk::{disk_attach, disk_busy, disk_unbusy, diskerr, dkcksum, setdisklabel};
 use crate::kern::subr_prf::{Bitmask, panic, printf};
-use crate::kern::vfs_bio::{biodone, biowait};
 use crate::machine::bus::bus_space_write_1;
 use crate::machine::cpu::delay;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
@@ -135,6 +132,9 @@ use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{
     B_BUSY, B_ERROR, B_PHYS, B_RAW, B_READ, B_WRITE, B_XXX, BUFQ_DEFAULT, Buf, Bufq,
 };
+use crate::sys::buf::{biodone, biowait};
+use crate::sys::buf::{bufq_dequeue, bufq_init, bufq_queue};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_POWERDOWN, DVACT_SUSPEND, Device, Softc,
 };

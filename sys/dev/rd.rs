@@ -82,7 +82,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::kern::kern_malloc::{malloc, mallocarray};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::subr_autoconf::{ALLDEVS, device_ref, device_unref};
 use crate::kern::subr_disk::{
     bounds_check_with_label, disk_attach, disk_closepart, disk_detach, disk_gone, disk_lock,
@@ -90,11 +89,12 @@ use crate::kern::subr_disk::{
     setdisklabel,
 };
 use crate::kern::subr_prf::{panic, snprintf};
-use crate::kern::vfs_bio::biodone;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdata, Cfdriver, DV_DISK, DVF_ACTIVE, Device, FSTATE_NOTFOUND, Softc,
 };

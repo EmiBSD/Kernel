@@ -82,7 +82,6 @@ use core::sync::atomic::AtomicI32;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
 use crate::kern::vfs_default::vop_generic_bwrite;
 use crate::kern::vfs_subr::{vput, vref};
@@ -98,6 +97,7 @@ use crate::ntfs::ntfs_subr::{
     ntfs_ntreaddir, ntfs_nttimetounix, ntfs_ntvattrget, ntfs_ntvattrrele, ntfs_readattr,
 };
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, clrbuf};
 use crate::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN};
 use crate::sys::errno::Errno;
@@ -715,7 +715,6 @@ mod tests {
     use std::{assert, assert_eq, vec};
 
     use super::*;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, bread, brelse, bufinit};
     use crate::kern::vfs_init::vfs_byname;
     use crate::kern::vfs_subr::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free, vrele};
     use crate::kern::vfs_vops::{VOP_GETATTR, VOP_LOOKUP, VOP_READ, VOP_READDIR};
@@ -729,6 +728,7 @@ mod tests {
     use crate::ntfs::ntfs_vfsops::{ntfs_mountfs, ntfs_root, ntfs_statfs, ntfs_unmount};
     use crate::ntfs::ntfsmount::{NTFS_MFLAG_ALLNAMES, NTFS_MFLAG_CASEINS};
     use crate::sys::buf::Buf;
+    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, bread, brelse, bufinit};
     use crate::sys::mount::{MNT_LOCAL, MNT_RDONLY, MNT_WAIT, Mount, NtfsArgs};
     use crate::sys::namei::{Componentname, LOOKUP};
     use crate::sys::param::DEV_BSIZE;

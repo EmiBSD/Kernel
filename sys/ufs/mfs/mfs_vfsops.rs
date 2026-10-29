@@ -75,7 +75,6 @@
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::kern::kern_bufq::{bufq_dequeue, bufq_init};
 use crate::kern::kern_malloc::malloc;
 use crate::kern::kern_sig::cursig;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
@@ -84,6 +83,7 @@ use crate::kern::vfs_subr::{checkalias, getnewvnode, vfs_busy, vrele};
 use crate::kern::vfs_syscalls::dounmount;
 use crate::machine::copy::copyinstr;
 use crate::sys::buf::BUFQ_FIFO;
+use crate::sys::buf::{bufq_dequeue, bufq_init};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_MFSNODE, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::Mbuf;

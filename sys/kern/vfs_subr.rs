@@ -120,8 +120,6 @@ use crate::kern::sched_bsd::r#yield;
 use crate::kern::spec_vnops::{SPEC_VOPS, SPECLISTH};
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::{panic, panicstr, tablefull};
-use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, bawrite, brelse, bufcache_take, bwrite};
-use crate::kern::vfs_biomem::{buf_acquire, buf_acquire_nomap};
 use crate::kern::vfs_cache::{cache_purge, cache_tree_init};
 use crate::kern::vfs_init::{MAXVFSCONF, vfs_byname, vfs_bytypenum};
 use crate::kern::vfs_lockf::lf_purgelocks;
@@ -148,6 +146,8 @@ use crate::net::radix::{
 use crate::netinet::in_::SockaddrIn;
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DELWRI, B_DONE, B_INVAL, B_READ, B_WANTED, Buf};
+use crate::sys::buf::{BCSTATS, BUFHEAD, bawrite, brelse, bufcache_take, bwrite};
+use crate::sys::buf::{buf_acquire, buf_acquire_nomap};
 use crate::sys::conf::{D_CLONE, D_TTY};
 use crate::sys::errno::Errno;
 use crate::sys::event::NOTE_REVOKE;

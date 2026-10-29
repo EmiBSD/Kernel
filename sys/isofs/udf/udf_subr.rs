@@ -76,9 +76,9 @@ use crate::isofs::udf::udf_vnops::{udf_data, udf_readatoffset, udf_transname};
 use crate::kern::kern_malloc::malloc;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{biowait, brelse, geteblk};
 use crate::kern::vfs_subr::vput;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{biowait, brelse, geteblk};
 use crate::sys::conf::DevTypeStrategy;
 use crate::sys::disklabel::{
     DISKMAGIC, Disklabel, FS_UDF, MAXPARTITIONS, RAW_PART, dl_getdsize, dl_setpoffset, dl_setpsize,

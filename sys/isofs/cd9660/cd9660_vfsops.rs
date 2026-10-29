@@ -109,7 +109,6 @@ use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::eopnotsupp;
-use crate::kern::vfs_bio::{biowait, bread, brelse, geteblk};
 use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_subr::{
     MOUNTLIST, bdevvp, checkalias, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
@@ -124,6 +123,7 @@ use crate::machine::conf::{nblkdev, swapdev};
 use crate::machine::copy::copyinstr;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{biowait, bread, brelse, geteblk};
 use crate::sys::cdio::CDIOREADMSADDR;
 use crate::sys::conf::DevTypeStrategy;
 use crate::sys::disklabel::{
@@ -1070,7 +1070,6 @@ mod tests {
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::subr_xxx::nullop;
     use crate::kern::sys_generic::sys_read;
-    use crate::kern::vfs_bio::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
     use crate::kern::vfs_subr::{vflushbuf, vfs_busy, vfs_mount_alloc};
@@ -1079,6 +1078,7 @@ mod tests {
     use crate::machine::cpu::Cpu;
     use crate::machine::intr::{splbio, splx};
     use crate::sys::buf::{B_ERROR, B_READ};
+    use crate::sys::buf::{BCSTATS, BUFHEAD, BUFKVM, CLEANCACHE, biodone, bufinit};
     use crate::sys::fcntl::O_RDONLY;
     use crate::sys::mount::{MNT_WAIT, VB_WAIT, VB_WRITE, VFS_ROOT};
     use crate::sys::param::DEV_BSIZE;

@@ -99,7 +99,6 @@ use crate::kern::kern_sig::psignal;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_prf::{panic, uprintf};
-use crate::kern::vfs_bio::{BCSTATS, bdwrite, biodone, brelse, buf_dirty, getblk, incore};
 use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vfs_vops::{VOP_BWRITE, VOP_GETATTR};
@@ -130,6 +129,7 @@ use crate::sys::buf::{
     B_ASYNC, B_DELWRI, B_DONE, B_EINTR, B_ERROR, B_INVAL, B_NEEDCOMMIT, B_NOCACHE, B_PHYS, B_READ,
     B_WRITEINPROG, Buf,
 };
+use crate::sys::buf::{BCSTATS, bdwrite, biodone, brelse, buf_dirty, getblk, incore};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_TRUNCATE, NOTE_WRITE};
 use crate::sys::mount::{NFSMNT_GOTFSINFO, NFSMNT_INT, NFSMNT_NFSV3};

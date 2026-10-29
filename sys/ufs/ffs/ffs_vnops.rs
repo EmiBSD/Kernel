@@ -73,8 +73,6 @@ use crate::kern::spec_vnops::{
 };
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, bread_cluster, brelse, bufcache_take, bwrite};
-use crate::kern::vfs_biomem::buf_acquire;
 use crate::kern::vfs_default::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
     vop_generic_lookup, vop_generic_revoke,
@@ -83,7 +81,9 @@ use crate::kern::vfs_subr::{vnoperm, vwaitforio};
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::buf_acquire;
 use crate::sys::buf::{B_BUSY, B_CLRBUF, B_DELWRI, B_NOCACHE, B_SCANNED, B_SYNC};
+use crate::sys::buf::{bawrite, bdwrite, bread, bread_cluster, brelse, bufcache_take, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::sys::mount::{MNT_NOATIME, MNT_WAIT};

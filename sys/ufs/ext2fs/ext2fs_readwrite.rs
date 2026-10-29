@@ -66,10 +66,10 @@
 
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, breadn, brelse, bwrite};
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::buf::{B_CLRBUF, B_NOCACHE, B_SYNC};
+use crate::sys::buf::{bawrite, bdwrite, bread, breadn, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::sys::mount::MNT_NOATIME;

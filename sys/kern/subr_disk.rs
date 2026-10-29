@@ -122,7 +122,6 @@ use crate::kern::subr_autoconf::{device_lookup, device_ref, device_unref};
 use crate::kern::subr_prf::Str;
 use crate::kern::subr_prf::{addlog, log, panic, printf, snprintf};
 use crate::kern::subr_xxx::blktochr;
-use crate::kern::vfs_bio::biowait;
 use crate::kern::vfs_subr::{cdevvp, vdevgone, vput};
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN};
 use crate::machine::autoconf::nam2blk;
@@ -134,6 +133,7 @@ use crate::net::if_::{if_addgroup, if_put, if_unit};
 use crate::nfs::nfs_boot::set_nfsbootdevname;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfs_vfsops::nfs_mountroot;
+use crate::sys::buf::biowait;
 
 use crate::sys::buf::{B_BUSY, B_DONE, B_ERROR, B_RAW, B_READ, B_WRITE, Buf};
 use crate::sys::conf::SWDEVT;
@@ -1927,9 +1927,9 @@ mod tests {
     use std::{assert, assert_eq, vec};
 
     use super::*;
-    use crate::kern::vfs_bio::biodone;
     use crate::machine::intr::{splbio, splx};
     use crate::sys::buf::BufLegacy;
+    use crate::sys::buf::biodone;
     use crate::sys::disklabel::{DOSPARTOFF, DOSPTYP_FAT32, FS_SWAP};
 
     /// The in-memory disk the strategy below reads and writes, in `DEV_BSIZE` sectors.

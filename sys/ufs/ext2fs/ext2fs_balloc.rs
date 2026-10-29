@@ -65,8 +65,8 @@
 //!   every other caller puts it.
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::sys::buf::{B_CLRBUF, B_INVAL, B_SYNC, Buf, clrbuf};
+use crate::sys::buf::{bdwrite, bread, brelse, bwrite, getblk};
 use crate::sys::errno::Errno;
 use crate::sys::param::btodb;
 use crate::sys::systm::INFSLP;

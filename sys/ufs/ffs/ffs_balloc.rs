@@ -77,11 +77,11 @@
 //!   the no-quota answers of `ufs_quota_stub.c` without it.
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bawrite, bdwrite, bread, brelse, buf_adjcnt, bwrite, getblk};
 use crate::kern::vfs_vops::VOP_FSYNC;
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::{B_CLRBUF, B_DELWRI, B_INVAL, B_SYNC, Buf, clrbuf};
+use crate::sys::buf::{bawrite, bdwrite, bread, brelse, buf_adjcnt, bwrite, getblk};
 use crate::sys::errno::Errno;
 use crate::sys::mount::MNT_WAIT;
 use crate::sys::param::btodb;

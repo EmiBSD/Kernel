@@ -79,11 +79,11 @@
 use core::sync::atomic::Ordering;
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{BCSTATS, biowait, brelse, getblk, incore};
 use crate::kern::vfs_vops::VOP_STRATEGY;
 use crate::machine::cpu::curproc;
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_DELWRI, B_DONE, B_READ, Buf};
+use crate::sys::buf::{BCSTATS, biowait, brelse, getblk, incore};
 use crate::sys::errno::Errno;
 use crate::sys::param::MAXBSIZE;
 use crate::sys::systm::INFSLP;

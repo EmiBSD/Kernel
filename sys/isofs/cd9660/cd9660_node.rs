@@ -128,11 +128,11 @@ use crate::isofs::cd9660::iso::{
 use crate::kern::kern_malloc::free;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::brelse;
 use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_subr::{vget, vput, vrecycle, vrele};
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::queue_adapter;
+use crate::sys::buf::brelse;
 use crate::sys::buf::{Buf, ClusterInfo};
 use crate::sys::errno::Errno;
 use crate::sys::lock::LK_EXCLUSIVE;

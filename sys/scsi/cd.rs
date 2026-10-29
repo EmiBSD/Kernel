@@ -139,10 +139,6 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
-use crate::kern::kern_bufq::{
-    bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_peek, bufq_queue,
-};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::subr_autoconf::device_unref;
 use crate::kern::subr_disk::{
     bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
@@ -150,7 +146,6 @@ use crate::kern::subr_disk::{
     initdisklabel, setdisklabel,
 };
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::biodone;
 use crate::machine::copy::copyout;
 use crate::machine::disklabel::readdisklabel;
 use crate::machine::intr::{splbio, splx};
@@ -180,7 +175,10 @@ use crate::scsi::scsiconf::{
     XS_BUSY, XS_NOERROR, XS_SENSE, XS_SHORTSENSE, XS_TIMEOUT, scsi_inqmatch, sid_ansii_rev,
 };
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, BUFQ_DEFAULT, Buf, Bufq};
+use crate::sys::buf::{bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_peek, bufq_queue};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::cdio::{
     CD_LBA_FORMAT, CD_MSF_FORMAT, CDIOCALLOW, CDIOCCLOSE, CDIOCCLRDEBUG, CDIOCEJECT, CDIOCGETVOL,
     CDIOCLOADUNLOAD, CDIOCPAUSE, CDIOCPLAYBLOCKS, CDIOCPLAYMSF, CDIOCPLAYTRACKS, CDIOCPREVENT,

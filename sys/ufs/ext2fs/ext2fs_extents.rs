@@ -111,9 +111,9 @@ use core::mem::size_of;
 use core::ptr;
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::sys::buf::Buf;
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::types::Daddr;
 use crate::ufs::ext2fs::ext2fs::{MExt2fs, fsbtodb};
 use crate::ufs::ext2fs::ext2fs_dinode::{Ext2fsDinode, NDADDR, NIADDR};

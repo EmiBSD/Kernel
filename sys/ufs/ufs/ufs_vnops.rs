@@ -86,7 +86,6 @@ use crate::kern::kern_tc::getnanotime;
 use crate::kern::spec_vnops::{spec_close, spec_read, spec_write};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::vfs_relookup;
@@ -99,6 +98,7 @@ use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_CLRBUF, B_ERROR, clrbuf};
 use crate::sys::dirent::Dirent;
 use crate::sys::errno::Errno;
@@ -1433,7 +1433,7 @@ pub fn ufs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
         };
         let size = bp.bcount() - bp.resid() as i64 - boff as i64;
         if size <= 0 {
-            crate::kern::vfs_bio::brelse(bp);
+            crate::sys::buf::brelse(bp);
             break;
         }
 
@@ -1501,7 +1501,7 @@ pub fn ufs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
             }
         }
 
-        crate::kern::vfs_bio::brelse(bp);
+        crate::sys::buf::brelse(bp);
         readcnt -= xfersize;
     }
 

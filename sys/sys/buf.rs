@@ -87,7 +87,6 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::kern::kern_bufq::BufqImpl;
-use crate::kern::vfs_bio::BCSTATS;
 use crate::machine::intr::IPL_BIO;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
@@ -101,6 +100,19 @@ use crate::sys::tree::RbtEntry;
 use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::Vnode;
 use kernel::vm::object::{ObjKind, Object};
+
+// The functions `<sys/buf.h>` declares, and the cache's globals its callers read, named through
+// this module whatever module implements them (N5.1: the cache moves into `kernel::fs`).
+pub use crate::kern::kern_bufq::{
+    bufq_dequeue, bufq_destroy, bufq_drain, bufq_init, bufq_peek, bufq_queue,
+};
+pub use crate::kern::kern_physio::{minphys, physio};
+pub use crate::kern::vfs_bio::{
+    BCSTATS, BUFHEAD, BUFHIGHPAGES, BUFKVM, BUFLOWPAGES, BUFPOOL, CLEANCACHE, CLEANERPROC, bawrite,
+    bdwrite, biodone, biowait, bread, bread_cluster, breadn, brelse, buf_adjcnt, buf_daemon,
+    buf_dirty, buf_undirty, bufadjust, bufcache_take, bufinit, bwrite, getblk, geteblk, incore,
+};
+pub use crate::kern::vfs_biomem::{buf_acquire, buf_acquire_nomap};
 
 // Buffer queues
 

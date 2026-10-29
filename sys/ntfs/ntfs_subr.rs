@@ -136,7 +136,6 @@ use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_bio::{bread, brelse};
 use crate::kern::vfs_subr::{vput, vref, vrele};
 use crate::ntfs::ntfs::{
     Attr, AttrAttrlist, AttrIndexalloc, AttrIndexentry, AttrIndexroot, AttrName, Cn, FTONT,
@@ -154,6 +153,7 @@ use crate::ntfs::ntfs_inode::{
 use crate::ntfs::ntfs_vfsops::{VG_DONTLOADIN, VG_DONTVALIDFN, VG_EXT, ntfs_vgetex};
 use crate::ntfs::ntfsmount::{NTFS_MFLAG_ALLNAMES, NTFS_MFLAG_CASEINS};
 use crate::queue_adapter;
+use crate::sys::buf::{bread, brelse};
 use crate::sys::errno::Errno;
 use crate::sys::lock::LK_EXCLUSIVE;
 use crate::sys::malloc::{

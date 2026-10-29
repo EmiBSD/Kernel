@@ -146,7 +146,6 @@ use crate::kern::subr_disk::{
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
 use crate::kern::subr_xxx::blktochr;
-use crate::kern::vfs_bio::{BUFPOOL, biowait};
 use crate::kern::vfs_subr::{bdevvp, cdevvp, vput};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN, VOP_STRATEGY};
@@ -175,6 +174,7 @@ use crate::scsi::scsiconf::{
 };
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CALL, B_ERROR, B_PHYS, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{BUFPOOL, biowait};
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DETACH_FORCE, DV_DULL, DVACT_POWERDOWN, Device,
 };

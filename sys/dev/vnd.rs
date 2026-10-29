@@ -105,7 +105,6 @@ use libkern::{explicit_bzero, strlcpy};
 use crate::crypto::blf::{BLF_MAXUTILIZED, BlfCtx};
 use crate::dev::vndioctl::{VNDIOCCLR, VNDIOCGET, VNDIOCSET, VNDNLEN, VndIoctl, VndUser};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
-use crate::kern::kern_physio::{minphys, physio};
 use crate::kern::kern_prot::{crdup, crfree, suser};
 use crate::kern::subr_autoconf::device_ref;
 use crate::kern::subr_disk::{
@@ -113,7 +112,6 @@ use crate::kern::subr_disk::{
     disk_lock_nointr, disk_openpart, disk_unlock, dkcksum, initdisklabel, setdisklabel,
 };
 use crate::kern::subr_prf::{panic, printf, snprintf};
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_lookup::ndinit;
 use crate::kern::vfs_vnops::{vn_close, vn_open, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_UNLOCK};
@@ -123,7 +121,9 @@ use crate::machine::cpu::curproc;
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
+use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, Buf};
+use crate::sys::buf::{minphys, physio};
 use crate::sys::device::Device;
 use crate::sys::disk::Disk;
 use crate::sys::disklabel::{

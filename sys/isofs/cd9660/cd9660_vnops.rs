@@ -109,7 +109,6 @@ use crate::kern::spec_vnops::{
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_bio::{biodone, bread, breadn, brelse};
 use crate::kern::vfs_default::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
     vop_generic_lookup, vop_generic_revoke,
@@ -120,6 +119,7 @@ use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_BMAP, VOP_STRATEGY};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, Buf, clrbuf};
+use crate::sys::buf::{biodone, bread, breadn, brelse};
 use crate::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use crate::sys::errno::Errno;
 use crate::sys::event::{

@@ -73,15 +73,11 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-#[cfg(feature = "diagnostic")]
-use crate::kern::kern_bufq::bufq_peek;
-use crate::kern::kern_bufq::{bufq_dequeue, bufq_destroy, bufq_queue};
 use crate::kern::kern_malloc::free;
 use crate::kern::kern_synch::wakeup;
 use crate::kern::spec_vnops::spec_fsync;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::nullop;
-use crate::kern::vfs_bio::biodone;
 use crate::kern::vfs_default::{
     vop_generic_badop, vop_generic_bmap, vop_generic_bwrite, vop_generic_revoke,
 };
@@ -90,7 +86,11 @@ use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::biodone;
+#[cfg(feature = "diagnostic")]
+use crate::sys::buf::bufq_peek;
 use crate::sys::buf::{B_ERROR, B_READ, Buf};
+use crate::sys::buf::{bufq_dequeue, bufq_destroy, bufq_queue};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_MFSNODE;
 use crate::sys::param::DEV_BSHIFT;
@@ -294,12 +294,12 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_bufq::{bufq_init, bufq_peek};
-    use crate::kern::vfs_bio::getblk;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::BufLegacy;
+    use crate::sys::buf::getblk;
     use crate::sys::buf::{B_DONE, B_WRITEINPROG};
+    use crate::sys::buf::{bufq_init, bufq_peek};
     use crate::sys::vnode::VT_MFS;
     use crate::ufs::ffs::ffs_vfsops::tests::{setup, teardown};
 

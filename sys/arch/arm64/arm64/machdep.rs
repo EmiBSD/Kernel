@@ -177,7 +177,6 @@ use crate::kern::init_main::{BOOTHOWTO, PROC0};
 use crate::kern::kern_malloc::{kmeminit_nkmempages, nkmempages};
 use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_int, sysctl_rdquad, sysctl_rdstring};
 use crate::kern::subr_log::init_static_msgbuf;
-use crate::kern::vfs_bio::bufinit;
 use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
 use crate::machine::bootinfo::BootCpu;
@@ -186,6 +185,7 @@ use crate::machine::bootinfo::{BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap
 use crate::machine::db_machdep::{db_enter, db_machine_init};
 use crate::machine::{Cpu, Machine};
 use crate::netinet::if_ether::ETHER_ADDR_LEN;
+use crate::sys::buf::bufinit;
 use crate::sys::errno::Errno;
 use crate::sys::exec::{EXEC_NOBTCFI, ExecPackage, PsStrings};
 use crate::sys::param::{NCARGS, roundup};
