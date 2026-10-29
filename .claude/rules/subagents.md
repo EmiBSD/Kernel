@@ -164,7 +164,9 @@ A prompt that misses one of these gets a question back, not a guess.
   its log has not changed for ten minutes (`stat -f %m <log>`); a progress report gives the
   log's last change time; before the final report every background task started is waited for
   or stopped, and `ps` shows none left (the report names any that was killed).
-- Read cheaply: `grep`, `sed -n 'a,bp'`, long output redirected to scratchpad files. An LZ
+- Read cheaply: `grep`, `sed -n 'a,bp'` with literal numbers, `grep -n -A<N> '<pattern>'` to read
+  from a pattern (a computed `sed` range on `reference/` is refused: `reference-readonly.md`),
+  long output redirected to scratchpad files. An LZ
   module being redesigned, and the C behind it, are still read completely, in ranges.
 - Behaviour: OpenBSD's behaviour is the specification and what userland sees never changes
   (the syscall ABI, sysctl MIBs, ioctls, device majors, every `#[repr(C)]` shared with
