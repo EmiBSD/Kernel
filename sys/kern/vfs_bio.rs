@@ -229,23 +229,6 @@ impl Default for Bcstats {
     }
 }
 
-// `#[repr(C)]`, thirteen `i64`s, no padding (`vfs.generic.bcachestat` copies it out).
-hal::abi_pod!(Bcachestats {
-    numbufs: i64,
-    numbufpages: i64,
-    numdirtypages: i64,
-    numcleanpages: i64,
-    pendingwrites: i64,
-    pendingreads: i64,
-    numwrites: i64,
-    numreads: i64,
-    cachehits: i64,
-    busymapped: i64,
-    delwribufs: i64,
-    kvaslots: i64,
-    kvaslots_avail: i64,
-});
-
 /// `bufhead`'s type: the list of every buffer, a `Sync` static.
 pub struct BufheadStatic(pub Bufhead);
 

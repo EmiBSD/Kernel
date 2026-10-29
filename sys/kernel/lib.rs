@@ -50,6 +50,7 @@ pub mod exit;
 pub mod extent;
 pub mod file;
 pub mod fork;
+pub mod fs;
 pub mod futex;
 pub mod log;
 pub mod pipe;
