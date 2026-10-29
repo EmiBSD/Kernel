@@ -61,7 +61,7 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    reason = "N11: 1,348 sites (kernel 1,061, abi 235, hal 52) typed one by one, abi's syscall arguments first"
+    reason = "typed one by one, 1,348 sites: abi's 235 (sysent.rs, the syscall arguments) in a slice of their own at the N5 close or the N6 start, the user's decision of 2026-10-29; kernel's 1,061 and hal's 52 at N11"
 )]
 
 // The host tests (and the doubles other crates' tests use) link std; a kernel image never

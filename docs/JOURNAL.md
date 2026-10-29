@@ -693,8 +693,10 @@ Met 2026-10-24 (under way since 2026-10-19). Boundary: from `docs: close N3` (54
   `as u32` on a negative userland value is an ABI bug.
 - The shape: `#![warn(clippy::pedantic)]` as an inner attribute of the three crate roots (not
   `[workspace.lints]`, which `bsd` inherits), with the cosmetic lints allowed permanently with a
-  `reason` each, and the three cast lints allowed with `reason = "N11: ..."`: N11's row now names
-  them, to be removed crate by crate, `abi` first. What remained, 232 small findings in 40
+  `reason` each, and the three cast lints allowed with a `reason` that dates them: `abi`'s 235 are a
+  slice of their own at the N5 close or the N6 start (the user, through the N5 session, the
+  same day: the userland boundary does not wait), `kernel`'s 1,061 and `hal`'s 52 at N11,
+  whose row names them. What remained, 232 small findings in 40
   redesigned or extra files (`uninlined_format_args` 46, `redundant_closure_for_method_calls`
   23, `if_not_else` 22, `single_match_else` 20, `return_self_not_must_use` 16, `borrow_as_ptr`
   16 inside `hal`'s `unsafe`, ...), is fixed by a `mechanical` run; the twelve findings that fell
